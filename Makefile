@@ -25,7 +25,7 @@ export CC_GATE_PIN_SYNC_DISABLE := 1
 TEST_TZ := Asia/Seoul
 export TZ := $(TEST_TZ)
 
-.PHONY: lint readme check check-unattended-refusal check-gate-suite policy-drift rule-enforcement testtest-rest gate-shard print-gate-shards print-gate-lanes print-gate-slots print-gate-sections print-gate-digests rest-shard print-rest-shards print-rest-goals test-active-notify test-orchestrator test-darwin test-darwin-narrow run-gate-shard-selftest run-check-gate-selftest run-rest-shard-selftest print-test-tz tz-probe check-cheap check-push check-push-verify run-check-push-selftest run-test-tree-selftest run-test-slots-selftest run-gate-timing-selftest run-ci-duration-selftest print-gate-iso-extra run-gate-isolation-selftest isolation-check isolation-sweep isolation-capacity
+.PHONY: lint readme check check-unattended-refusal check-gate-suite policy-drift rule-enforcement testtest-rest gate-shard print-gate-shards print-gate-lanes print-gate-slots print-gate-sections print-gate-digests rest-shard print-rest-shards print-rest-goals test-active-notify test-orchestrator test-darwin test-darwin-narrow run-gate-shard-selftest run-check-gate-selftest run-rest-shard-selftest print-test-tz tz-probe check-cheap check-push check-push-verify check-items run-check-push-selftest run-test-tree-selftest run-test-slots-selftest run-test-reuse-selftest run-gate-timing-selftest run-ci-duration-selftest print-gate-iso-extra run-gate-isolation-selftest isolation-check isolation-sweep isolation-capacity
 
 lint:
 	bash scripts/lint-skill-invariants.sh
@@ -186,6 +186,7 @@ check-cheap:
 #   CHECK_PUSH_GOALS        REST goals (`make -s print-rest-goals`), comma-separated
 #   CHECK_PUSH_JOBS         section lanes and goal jobs run at once (default 4;
 #                           1 runs them in turn, as before)
+#   CHECK_PUSH_REUSE        0 turns off the reuse of recorded passes (default 1)
 #   CC_TEST_SLOTS           host-wide test slots, one CPU's share each: a
 #                           positive whole number, or auto for max(4, CPUs);
 #                           unset, empty or 0 (the default) turns them off
@@ -199,11 +200,21 @@ check-cheap:
 # tree gets no stamp and check-push-verify stays non-zero; name the sections of
 # the axis that changed and run it again. This carries over the refusal `check`
 # makes through check-gate-suite.
+#
+# check-cheap and each goal run in a checkout of their own and leave a record
+# of the tracked files they read; a later check-push whose tree keeps those
+# files as they were, under the same doubles and tools, within 24 hours, skips
+# the item and says so. `check-items` runs check-cheap and CHECK_PUSH_GOALS the
+# same way only to leave those records — no lint, readme or sections, and no
+# stamp written or removed. Not part of `check`.
 check-push:
 	bash scripts/check-push.sh run
 
 check-push-verify:
 	bash scripts/check-push.sh verify
+
+check-items:
+	bash scripts/check-push.sh items
 
 # `check` runs the gate suite, but only when the change touches gate.sh.
 # scripts/test-gate.sh is the one suite that catches a broken grading table —
@@ -558,7 +569,7 @@ $(TEST_GOALS): run/%:
 test: $(NOTIFY_TESTS:%=run/%) $(LINT_TESTS:%=run/%) $(ORCH_TESTS:%=run/%) \
 	run-gate-shard-selftest run-check-gate-selftest \
 	run-rest-shard-selftest run-check-push-selftest run-test-tree-selftest \
-	run-test-slots-selftest \
+	run-test-slots-selftest run-test-reuse-selftest \
 	run-gate-timing-selftest run-ci-duration-selftest run-gate-isolation-selftest
 
 # How many runners the gate suite runs on (N), and how many rows each runner
@@ -630,7 +641,7 @@ ORCH_TESTS_REST := $(filter-out scripts/test-gate.sh,$(ORCH_TESTS))
 REST_GOALS := $(NOTIFY_TESTS:%=run/%) $(LINT_TESTS:%=run/%) $(ORCH_TESTS_REST:%=run/%) \
 	run-gate-shard-selftest run-check-gate-selftest \
 	run-rest-shard-selftest run-check-push-selftest run-test-tree-selftest \
-	run-test-slots-selftest \
+	run-test-slots-selftest run-test-reuse-selftest \
 	run-gate-timing-selftest run-ci-duration-selftest run-gate-isolation-selftest
 
 test-rest: $(REST_GOALS)
@@ -841,6 +852,9 @@ run-test-tree-selftest:
 
 run-test-slots-selftest:
 	bash scripts/test-slots.sh --self-test
+
+run-test-reuse-selftest:
+	bash scripts/test-reuse.sh --self-test
 
 run-rest-shard-selftest:
 	bash scripts/rest-shard.sh --self-test

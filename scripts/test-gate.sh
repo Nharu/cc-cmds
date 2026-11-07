@@ -37997,6 +37997,93 @@ esac
 ( cd "$REPO" && git update-ref refs/remotes/origin/main "$SPV_ORIGIN0" )
 CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$SPV_PREV_AR"
 
+# --- 34ro. 리뷰전용 세그먼트의 출처 — 고정 헤드에 선 남의 PR 은 강제 표면을 바꿔도 cone 에 잡히지 않는다 ---
+# --- section: 34ro | group: cone | covers: act, snapshot, surface-class | anchors: 34ro: 고정 헤드의 리뷰전용 세그먼트는 출처 검사를 통과한다, 34ro: 고정 헤드의 리뷰전용 세그먼트에는 cone 시드 뒤 blocked 행이 없다, 34ro: HEAD 가 움직인 리뷰전용 세그먼트는 거절된다, 34ro: HEAD 가 움직인 리뷰전용 세그먼트는 cone 시드 뒤 blocked 행으로 막힌다, 34ro: 같은 변경의 구현 세그먼트는 거절된다, 34ro: 같은 변경의 구현 세그먼트는 cone 시드 뒤 blocked 행으로 막힌다, 34ro: 고정 헤드가 없는 리뷰전용 세그먼트는 면제되지 않는다 ---
+#
+# A REVIEW-ONLY SEGMENT'S WORKTREE IS SOMEONE ELSE'S PULL REQUEST, checked out
+# detached at the `고정 헤드` its planning row recorded. What that pull request
+# changed is what the review reads, not a change this run would have to approve,
+# so the provenance check passes it while its HEAD equals the pin — and refuses
+# again the moment anything moves that HEAD. The fixture: an implementation
+# segment whose branch changes the root CLAUDE.md, and a review-only segment
+# whose detached worktree pins a commit with the same kind of change. A cone
+# row anchored on a separate segment runs the seed over every other segment,
+# so one act shows both sides. The review-only rows are planted the way
+# the planning act writes them: the gate refuses `종류` and `고정 헤드` from a
+# caller.
+SRO_PREV_AR="${CC_CMDS_AUTOPILOT_AUTO_RESOLVE:-}"
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=0
+sap_fx RSRO1 SRI "5e5e5e5e-6666-7777-8888-999999999999"
+check "34ro: 픽스처의 구현 세그먼트 행이 섰다" "$SAP_SEG_RC" "0"
+SRO_ORIGIN0=$(cd "$REPO" && git rev-parse refs/remotes/origin/main)
+( cd "$REPO" && git update-ref refs/remotes/origin/main "$SAP_BASE" )
+( cd "$SAP_WT" && printf '# root by the stage\n' > CLAUDE.md && git add -A && git commit -qm 'CLAUDE.md 를 고친다' ) >/dev/null 2>&1
+SRO_WT="$WORK/sro-detached"
+( cd "$REPO" && git worktree add -q --detach "$SRO_WT" "$SAP_BASE" \
+  && cd "$SRO_WT" && printf '# root by the author\n' > CLAUDE.md && git add -A && git commit -qm 'PR 이 CLAUDE.md 를 고친다' ) >/dev/null 2>&1
+SRO_PIN=$(cd "$SRO_WT" && git rev-parse HEAD)
+printf -- '- `segment` | id=SRO | 상태=실행중 | 종류=리뷰전용 | 고정 헤드=%s | 베이스 sha=%s | 워크트리=%s | 선행=없음 | prev=x\n' \
+  "$SRO_PIN" "$SAP_BASE" "$SRO_WT" >> "$CAP_LEDGER"
+# A second review-only segment pinned at the same commit whose detached HEAD
+# moved one commit past it. It stands beside the first, so the one cone act
+# below measures the pinned and the moved HEAD on the same derivation.
+SRM_WT="$WORK/sro-moved"
+( cd "$REPO" && git worktree add -q --detach "$SRM_WT" "$SRO_PIN" \
+  && cd "$SRM_WT" && printf 'moved\n' > a.txt && git add -A && git commit -qm 'HEAD 를 옮긴다' ) >/dev/null 2>&1
+printf -- '- `segment` | id=SRM | 상태=실행중 | 종류=리뷰전용 | 고정 헤드=%s | 베이스 sha=%s | 워크트리=%s | 선행=없음 | prev=x\n' \
+  "$SRO_PIN" "$SAP_BASE" "$SRM_WT" >> "$CAP_LEDGER"
+sro_pv() { cap_gate "$SAP_SEAT" '' surface-provenance --manifest "$CAP_NM" --segment "$1" --target infra; }
+sro_blocked() {  # sro_blocked <세그먼트> — how many provenance `blocked` rows anchor on it
+  { grep -F "앵커 세그먼트=$1 |" "$CAP_LEDGER" || true; } \
+    | { grep -F '사유=강제 표면이 좌석 적용 밖에서 바뀜' || true; } | grep -c . || true
+}
+# The cone anchor is a fourth segment of its own: the seed loop skips the
+# anchor, so a row anchored on any of the three would leave that one unseeded.
+printf -- '- `segment` | id=SRX | 상태=실행중 | 선행=없음 | prev=x\n' >> "$CAP_LEDGER"
+sro_cone_act() {  # a cone row anchored on SRX, whose derivation seeds over every other segment
+  cap_gate "$SAP_SEAT" '' act --manifest "$CAP_NM" --kind blocked --target infra --cutpoint 커밋 --surface 읽기 \
+    --snapshot-digest "$(cap_H "$SAP_SEAT" '')" --rationale x \
+    -- 스코프=cone 원인=막힘 '앵커 세그먼트=SRX' '사유=34ro — 시드를 일으킨다' '근거=픽스처' '재개 명령=없음'
+}
+
+# The read verb first: at the pin nothing is named; one commit past the pin
+# the exemption is off and the ordinary check refuses; the implementation
+# segment with the same kind of change is refused as before.
+sro_pv SRO
+check "34ro: 고정 헤드의 리뷰전용 세그먼트는 출처 검사를 통과한다" "$rc/$(cat "$CAP_OUT")" "0/"
+sro_pv SRM
+check "34ro: HEAD 가 움직인 리뷰전용 세그먼트는 거절된다" "$rc" "3"
+case "$(cat "$CAP_OUT")" in
+  *'CLAUDE.md'$'\t'*'좌석 적용 커밋 없이 바뀜'*) ok "34ro: 움직인 리뷰전용 세그먼트의 거절이 CLAUDE.md 와 이유를 댄다" ;;
+  *) bad "34ro: 움직인 리뷰전용 세그먼트의 거절이 CLAUDE.md 와 이유를 댄다" "$(cat "$CAP_OUT")" ;;
+esac
+sro_pv SRI
+check "34ro: 같은 변경의 구현 세그먼트는 거절된다" "$rc" "3"
+case "$(cat "$CAP_OUT")" in
+  *'CLAUDE.md'$'\t'*'좌석 적용 커밋 없이 바뀜'*) ok "34ro: 그 거절이 CLAUDE.md 와 이유를 댄다" ;;
+  *) bad "34ro: 그 거절이 CLAUDE.md 와 이유를 댄다" "$(cat "$CAP_OUT")" ;;
+esac
+
+# Then one cone act, whose seed visits all three segments: the pinned
+# review-only segment gets no row, the moved one and the implementation
+# segment each get one.
+sro_cone_act
+check "34ro: cone 행위가 기록된다" "$rc" "0"
+check "34ro: 고정 헤드의 리뷰전용 세그먼트에는 cone 시드 뒤 blocked 행이 없다" "$(sro_blocked SRO)" "0"
+check "34ro: HEAD 가 움직인 리뷰전용 세그먼트는 cone 시드 뒤 blocked 행으로 막힌다" "$(sro_blocked SRM)" "1"
+check "34ro: 같은 변경의 구현 세그먼트는 cone 시드 뒤 blocked 행으로 막힌다" "$(sro_blocked SRI)" "1"
+
+# Both inputs have to be read: a review-only row with no pin at a HEAD that
+# carries the same change is checked as any other segment.
+printf -- '- `segment` | id=SRP | 상태=실행중 | 종류=리뷰전용 | 베이스 sha=%s | 워크트리=%s | 선행=없음 | prev=x\n' \
+  "$SAP_BASE" "$SRO_WT" >> "$CAP_LEDGER"
+sro_pv SRP
+check "34ro: 고정 헤드가 없는 리뷰전용 세그먼트는 면제되지 않는다" "$rc" "3"
+
+( cd "$REPO" && git worktree remove --force "$SRO_WT" && git worktree remove --force "$SRM_WT" ) >/dev/null 2>&1
+( cd "$REPO" && git update-ref refs/remotes/origin/main "$SRO_ORIGIN0" )
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$SRO_PREV_AR"
+
 # --- 34n. 답의 라우팅 — 갈래가 없는 답은 누구의 것이든 기록되지 않고, 교대가 되돌린 답은 다시 질문이 된다 ---
 # --- section: 34n | group: cone | covers: act, snapshot, shift-halt | anchors: 34n: 세션 id 없는 키의 사람 답은 라우팅 불가로 거절된다, 34n: 들여온 적용 정산 기록의 질문과 관측 끝에 게이트 정산 판정 줄이 붙는다, 34n: 긴 관측에서도 원뿔 행 근거가 게이트 정산 판정 줄을 온전히 싣는다, 34n: 같은 감사 키의 두 번째 자동 채택은 거절된다, 34n: 라우팅 막힘 행에 게이트가 막힌 답 줄을 찍는다, 34n: 되돌려진 기록의 좌석 자동 답은 거절된다 ---
 #
@@ -62998,8 +63085,10 @@ cat > "$RV106_STUB" <<'RV106EOF'
 # 리뷰 게시 행위의 GitHub 대역. 답은 `$RV106_S` 의 파일이 고른다:
 #   login · head · reviews · rid · tamper(있으면 재판독 본문 끝에 x 를 더한다)
 #   status(있으면 POST 의 답: none 은 상태 줄 없이 실패, 422 는 4xx, 500 은 5xx, noid 는 id 없는 200)
+# 받은 환경에 GH_TOKEN·GITHUB_TOKEN 이 있었는지를 호출마다 env.log 에 한 줄로 남긴다.
 D=${RV106_S:?}
 printf '%s\n' "$*" >> "$D/gh.log"
+printf 'GH_TOKEN=%s GITHUB_TOKEN=%s\n' "${GH_TOKEN+있음}" "${GITHUB_TOKEN+있음}" >> "$D/env.log"
 if [ "$*" = "api user --jq .login" ]; then cat "$D/login"; exit 0; fi
 [ "${1:-}" = api ] || exit 1
 if [ "$2 $3" = "-X POST" ]; then
@@ -63211,6 +63300,8 @@ rv106_pr=$(rv106_last '리뷰 게시')
 check "108: 게시가 POST 한 번과 대조 일치 행을 남긴다" \
   "$rc|$(rv106_posts)|$(rv106_n '리뷰 게시 시도')|$(sa_field "$rv106_pr" '리뷰 id')|$(sa_field "$rv106_pr" 종류)|$(sa_field "$rv106_pr" 대조)|$(sa_field "$rv106_pr" '헤드 변경')" \
   "0|1|1|555|APPROVE|일치|아니오"
+check "108: 전용 쓰기 자격의 게시는 두 행에 게시 자격=전용 을 남긴다" \
+  "$(sa_field "$(rv106_last '리뷰 게시 시도')" '게시 자격')|$(sa_field "$rv106_pr" '게시 자격')" "전용|전용"
 check "108: POST 본문은 고정 헤드에 APPROVE 로 인라인 코멘트 없이 나간다" \
   "$(jq -c '[.commit_id, .event, ((.comments // []) | length)]' "$RV106_S/posted.json" 2>/dev/null)" \
   "[\"$rv106_h7\",\"APPROVE\",0]"
@@ -63410,6 +63501,60 @@ sag act --manifest "$SA_MANIFEST" --kind segment --target main --segment P3 --cu
 check "108: 계획하지 못한 리뷰 PR 세그먼트는 park 로만 닫힌다" \
   "$rv106_got|$rc|$(sa_field "$(sa_seg_last P3)" 상태)" "3|0|park"
 
+# 전용 쓰기 자격 없음 — 이 호스트의 gh 로그인으로 게시하고, 계정 일치 확인은 그대로 건다 -----------
+#
+# 이 구간의 게시만 `bash "$GATE"` 로 띄운다. `credentials.sh` 는 CC_GATE_KEYCHAIN 을 소싱할 때 한 번
+# 읽으므로, 그 값을 바꾼 호출은 gate_inproc 이 97 로 거절한다. 쓰기 자격 비움과 없는 키체인 서비스
+# 이름은 그 호출의 환경에만 둬서, 구간이 끝나면 따로 되돌릴 것이 없다.
+rv106_post_amb() {
+  # rv106_post_amb <세그먼트> [VAR=값 ...] — 전용 쓰기 자격 없이 내는 게시. 뒤 인자는 그 호출의 환경에 더한다.
+  local seg="$1" out h; shift
+  h=$(SAH)
+  out=$(cd "$SA_WT" && env CC_GATE_TOKEN_RW= CC_GATE_KEYCHAIN=cc-cmds-rv106-absent "$@" \
+      bash "$GATE" act --manifest "$SA_MANIFEST" --kind review-post --target main --segment "$seg" --cutpoint 커밋 \
+        --surface 외부상태변경 --snapshot-digest "$h" --rationale x -- 게시 2>&1); rc=$?
+  msg=$(printf '%s' "$out" | grep -vE '\[run\] ' | tr '\n' ' ' | sed 's/[[:space:]]*$//')
+}
+rv106_new "주변 자격 게시" 직접 허용
+rv106_fetch P1 7; rv106_fetch P2 8
+rv106_plan P1; rv106_plan P2
+rv106_h7=$(git --git-dir="$SA_REMOTE" rev-parse refs/pull/7/head)
+rv106_h8=$(git --git-dir="$SA_REMOTE" rev-parse refs/pull/8/head)
+rv106_cycle P1 "$rv106_h7"; rv106_cycle P2 "$rv106_h8"
+printf '%s\n' "$rv106_h7" > "$RV106_S/head"; printf '561\n' > "$RV106_S/rid"
+: > "$RV106_S/login"
+rv106_post_amb P1
+case "$rc|$(rv106_posts)|$(rv106_n '리뷰 게시 시도')|$msg" in
+  "3|0|0|"*"전용 쓰기 자격이 없고 이 호스트의 gh 로그인도 읽지 못했습니다"*"리뷰 게시 거절"*)
+    ok "108: 쓰기 자격도 gh 로그인도 없는 게시는 둘 다 없다고 말하며 POST 없이 rc 3 이다" ;;
+  *) bad "108: 쓰기 자격도 gh 로그인도 없는 게시는 둘 다 없다고 말하며 POST 없이 rc 3 이다" "rc=$rc posts=$(rv106_posts) $msg" ;;
+esac
+printf 'someone-else\n' > "$RV106_S/login"
+rv106_post_amb P1
+case "$rc|$(rv106_posts)|$(rv106_n '리뷰 게시 시도')|$msg" in
+  "3|0|0|"*"자격 출처=주변"*"리뷰 게시 거절"*) ok "108: 주변 자격의 계정 불일치 게시는 자격 출처를 말하며 POST 없이 rc 3 이다" ;;
+  *) bad "108: 주변 자격의 계정 불일치 게시는 자격 출처를 말하며 POST 없이 rc 3 이다" "rc=$rc posts=$(rv106_posts) $msg" ;;
+esac
+printf 'rv-bot\n' > "$RV106_S/login"; : > "$RV106_S/env.log"
+rv106_post_amb P1 GH_TOKEN=rv106-ambient-leak GITHUB_TOKEN=rv106-ambient-leak
+rv106_pr=$(rv106_last '리뷰 게시')
+case "$rc|$(rv106_posts)|$(sa_field "$rv106_pr" '리뷰 id')|$(sa_field "$rv106_pr" 대조)|$(sa_field "$(rv106_last '리뷰 게시 시도')" '게시 자격')|$(sa_field "$rv106_pr" '게시 자격')|$msg" in
+  "0|1|561|일치|주변|주변|"*"이 호스트의 gh 로그인으로 냅니다"*) ok "108: 쓰기 자격 없는 게시는 gh 로그인으로 나가 두 행에 게시 자격=주변 을 남긴다" ;;
+  *) bad "108: 쓰기 자격 없는 게시는 gh 로그인으로 나가 두 행에 게시 자격=주변 을 남긴다" "rc=$rc posts=$(rv106_posts) $rv106_pr $msg" ;;
+esac
+check "108: 주변 자격의 게시에서 gh 대역이 받은 환경에는 GH_TOKEN·GITHUB_TOKEN 이 없다" \
+  "$([ -s "$RV106_S/env.log" ] && echo 기록)|$({ grep -c '있음' "$RV106_S/env.log" || true; })" "기록|0"
+printf '%s\n' "$rv106_h8" > "$RV106_S/head"; printf '562\n' > "$RV106_S/rid"; printf '500\n' > "$RV106_S/status"
+rv106_post_amb P2
+rv106_got="$rc|$(rv106_posts)|$(sa_field "$(rv106_last '리뷰 게시 시도')" '게시 자격')"
+rm -f "$RV106_S/status"
+printf '[{"id":562,"user":{"login":"rv-bot"},"state":"APPROVED","commit_id":"%s"}]\n' "$rv106_h8" > "$RV106_S/reviews"
+rv106_post P2
+rv106_pr=$(rv106_last '리뷰 게시')
+check "108: 재판독 갈래의 게시 행은 시도 행의 게시 자격을 이어 적는다" \
+  "$rv106_got|$rc|$(rv106_posts)|$(sa_field "$rv106_pr" 세그먼트)|$(sa_field "$rv106_pr" 대조)|$(sa_field "$rv106_pr" '게시 자격')" \
+  "3|2|주변|0|2|P2|일치|주변"
+
 # 리뷰어 런 밖 — 드라이버가 머지 행에 싣는 베이스 sha 는 호출자 값으로 받는다 ---------------------
 sa_new "드라이버 머지 행의 베이스 sha"
 sa_seg_row S106B ""
@@ -63562,7 +63707,7 @@ unset -f rv108_pick rv108_call rv108_ur rv108_cs
 unset rv108_prev_ar rv108_tpl rv108_fetch_t rv108_add_t rv108_rm_t rv108_plan_t rv108_post_t rv108_ur1 rv108_ur2 \
   rv108_have rv108_x rv108_w1 rv108_w2 rv108_w3 rv108_h7 rv108_h8 rv108_got rv108_fr rv108_l1 rv108_pv rv108_ok rv108_okb
 
-unset -f gh rv106_new rv106_done rv106_wt rv106_fetch rv106_plan rv106_cycle rv106_post rv106_next rv106_posts rv106_n rv106_last rv106_ev rv106_rp rv106_bsb rd106 rd106_ev rd106_v
+unset -f gh rv106_new rv106_done rv106_wt rv106_fetch rv106_plan rv106_cycle rv106_post rv106_post_amb rv106_next rv106_posts rv106_n rv106_last rv106_ev rv106_rp rv106_bsb rd106 rd106_ev rd106_v
 unset RV106_STUB RV106_S
 if [ -n "$RV106_HAD_RW" ]; then export CC_GATE_TOKEN_RW="$RV106_PREV_RW"; else unset CC_GATE_TOKEN_RW; fi
 

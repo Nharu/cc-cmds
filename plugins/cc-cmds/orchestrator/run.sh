@@ -3357,15 +3357,14 @@ EOF
         || [ -n "$(slice_field "$doc" "$id" '폭발 반경')" ] \
         || { warn "슬라이스 $id: 적용 주체가 파이프라인인데 폭발 반경이 없음"; return 1; }
     fi
-    # The composition rule the planner used to own and the shell must now
-    # enforce: README is generated from skill frontmatter and gated for
-    # staleness, so the sharing is real but invisible in prose.
-    case "$(slice_field "$doc" "$id" '선언 파일')" in
-      *SKILL.md*) case "$(slice_field "$doc" "$id" '선언 파일')" in
-                    *README.md*) : ;;
-                    *) warn "슬라이스 $id: SKILL.md 를 선언하면서 README.md 를 선언하지 않음"; return 1 ;;
-                  esac ;;
-    esac
+    # NO `SKILL.md` ⇒ `README.md` RULE HERE. README is generated from skill
+    # frontmatter, so whether a slice changes it depends on whether the slice
+    # creates a skill or edits frontmatter — a body-only edit leaves README as
+    # it was. The declaration cannot show which, so the designer judges it, and
+    # a substring rule refused every body-only slice whose designer judged
+    # correctly; no audit or reconverge stage could repair a declaration that
+    # was right. A slice that does regenerate README without declaring it is
+    # still caught: `fileset_escape` parks it as an edit outside its files.
   done
   if [ "$mode" != "base" ]; then
     v=$(slicing_label_ack_defects "$doc" | sed -n 1p)
