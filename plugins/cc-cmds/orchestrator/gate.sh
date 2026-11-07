@@ -83,7 +83,7 @@
 #   3  rule refusal — a catalog rule said no. From `seat-apply-preview` also:
 #      the record or the segment worktree fails a check the apply makes. From
 #      `surface-provenance`: the branch changed an enforcement surface outside
-#      a seat apply. The reviewer run's fixed rules refuse with 3 too: planning
+#      a seat apply and no `강제 표면 승인` row lets it through. The reviewer run's fixed rules refuse with 3 too: planning
 #      a review-only segment whose pull-request head moved, any write to an
 #      author's branch from a review-only segment (push, commit, implement
 #      dispatch, lead fix, merge, pull-request creation), `review-post`'s
@@ -235,6 +235,11 @@
 #                    the apply scope and the question line the seat asks with;
 #                    writes nothing. Refused (3) when the record or the segment
 #                    worktree fails the apply's own checks
+#   gate.sh surface-approval-preview --manifest <path> --record <halt record>
+#                    for a `강제 표면 승인` shift halt record: prints the
+#                    question line the seat asks a person with, first and alone
+#                    on its line, then each `**승인 대상**` path with its class,
+#                    both entries and the diff between them; writes nothing
 #   gate.sh surface-provenance --manifest <path> --segment <id> [--target <alias>]
 #                    the merge-time provenance check of the segment's
 #                    enforcement surface: one `<path>\t<why>` line per
@@ -12996,8 +13001,14 @@ gate_adoption_halt_source() {
   fi
   step=$(sed -n 's/^\*\*스텝\*\*: //p' "$rec" | sed -n '1p')
   step="${step%% — *}"
+  # A person's `승인` at the shift site `강제 표면 승인` needs no session
+  # either: its approval already stands as the earlier ledger's
+  # `강제 표면 승인` rows, which the next manifest carries, so it is not an
+  # answer that blocks the adoption.
   if { [ "$skill" != "implement-unattended" ] || [ "$opt" != "재수렴" ] \
        || [ "${step#*CFI-U3 BT-STOP}" = "$step" ]; } \
+     && { [ "$opt" != "승인" ] || [ "$step" != "교대 정지" ] \
+          || ! grep -qxF '**스텝**: 교대 정지 — 강제 표면 승인' "$rec"; } \
      && ! gate_halt_answer_deferred "$sledger" "$ln"; then
     GATE_CARRY_WHY="스킬 ${skill:-미상} 의 기록(스텝 「${step}」)에 대한 답 「${opt}」 은 멈춘 세션을 다시 붙여 넘기는 답인데, 그 세션은 출처 런의 것이라 이 런에서 다시 붙일 수 없고, 출처 원장에 그 답을 다음 런으로 넘긴 이월 행도 없습니다 — implement-unattended 기록 중 스텝 문면의 첫 \` — \` 앞에 CFI-U3 BT-STOP 이 있는 기록에 대한 「재수렴」 답과, 출처 원장의 이월 행이 이름 짓는 답만 이 런으로 이어집니다"
     return 2
@@ -20651,12 +20662,12 @@ gate_main() {
     esac
   done
 
-  if [ -n "$sa_record" ] && [ "$verb" != "seat-apply-preview" ]; then
-    printf 'gate: --record is used only with seat-apply-preview (verb received: %s)\n' "$verb" >&2
+  if [ -n "$sa_record" ] && [ "$verb" != "seat-apply-preview" ] && [ "$verb" != "surface-approval-preview" ]; then
+    printf 'gate: --record is used only with seat-apply-preview and surface-approval-preview (verb received: %s)\n' "$verb" >&2
     exit 2
   fi
-  if [ "$verb" = "seat-apply-preview" ] && [ -z "$sa_record" ]; then
-    printf 'gate: seat-apply-preview needs --record <halt record>\n' >&2
+  if { [ "$verb" = "seat-apply-preview" ] || [ "$verb" = "surface-approval-preview" ]; } && [ -z "$sa_record" ]; then
+    printf 'gate: %s needs --record <halt record>\n' "$verb" >&2
     exit 2
   fi
   if [ "${#ss_flags[@]}" -gt 0 ] && [ "$verb" != "surface-screen" ]; then
@@ -21552,6 +21563,12 @@ gate_main() {
       # built in an isolated object directory, and the question the seat asks.
       # No ledger row, no ref, no object in the common store.
       gate_seat_apply_preview "$sa_record" "$alias"
+      ;;
+    surface-approval-preview)
+      # Reading, not acting: the question line the seat asks a person with for
+      # a `강제 표면 승인` shift record, first and alone on its line, then what
+      # each `**승인 대상**` path changes. No ledger row.
+      gate_surface_approval_preview "$sa_record"
       ;;
     surface-provenance)
       # Reading, not acting: the merge-time provenance check of one segment's
@@ -25411,7 +25428,7 @@ gate_halt_answer_route() {
       [ -n "$st" ] || why="$key 에 segment 행이 없어 교대가 교대 정지 기록의 답을 실행할 세그먼트가 없습니다"
       hsite=$(gate_row_field "$(gate_shift_halt_row_of "$rec" | cut -d: -f2-)" '자리')
       case "$hsite:$opt" in
-        '적용 정산:재실행'|'적용 정산:사람 확인 정산'|'들여온 적용 정산:사람 확인 정산')
+        '적용 정산:재실행'|'적용 정산:사람 확인 정산'|'들여온 적용 정산:사람 확인 정산'|'강제 표면 승인:승인')
           [ "$by" = "사람" ] \
             || why="「${opt}」 는 사람의 답으로만 집행됩니다 — 답한 주체=${by:-(없음)} 인 답은 교대가 실행할 갈래가 없습니다" ;;
       esac
@@ -25614,6 +25631,7 @@ master 수리 불가|없음|수리 런을 띄울 수 없게 한 원인(끄는 �
 게시 대조|없음|게시물이 렌더 결과와 바이트로 다르다 — 남의 PR 에 이미 올라간 리뷰를 그대로 둘지 손으로 고칠지는 그 리뷰를 본 사람만 정한다|다음 교대가 게시하지 않고 그 리뷰를 다시 읽어 렌더 결과와 다시 대조한다
 리뷰 게시 거절|없음|전용 쓰기 자격이 없고 이 호스트의 gh 로그인도 읽히지 않았거나, 실행 계정이 동결한 계정과 다르거나, GitHub 가 게시를 4xx 로 거절했거나, 게시의 결과를 모른다 — 그중 어느 것인지는 관측에 실린 게이트 거절 줄이 말한다|사람이 원인을 고친 뒤, 다음 교대가 review-post 를 처음부터 한 번 더 낸다
 보류 리뷰 선점|없음|이 계정의 보류 리뷰가 이미 있다 — 그 보류 리뷰를 제출할지 지울지는 그것을 쓴 사람만 정한다|사람이 그 보류 리뷰를 제출하거나 지운 뒤, 다음 교대가 review-post 를 처음부터 한 번 더 낸다
+강제 표면 승인|없음|세그먼트가 바꾼 강제 표면 경로를 보인 내용 그대로 받아들일지는 그 diff 를 본 사람만 정한다|다음 교대가 승인 없이 출처 검사를 다시 잰다 — 사람이 브랜치를 고쳤으면 리뷰를 다시 파견하고, 그대로면 같은 거절에 닿아 이 자리에 다시 선다|승인:사람이 기록의 승인 대상 경로와 항목을 그대로 승인하면 게이트가 경로마다 강제 표면 승인 원장 행을 쓰고, 다음 교대가 이 세그먼트의 리뷰를 다시 파견한다(선머지후리뷰 세그먼트는 거절된 머지 행위를 다시 낸다)
 EOF
 }
 
@@ -25692,6 +25710,9 @@ push원격불일치|세그먼트 park|이 세그먼트의 변경이 원격에 �
 종료 절 근거|불가능으로 정산|이 절이 불가능으로 정산되어 런이 무효화로 끝나고, 그 절이 요구한 결과는 이 런에서 얻지 못합니다
 master 수리 불가|재시도|사람이 원인을 고치기 전에 고르면 CI 대조가 같은 결과를 내어 이 자리에 다시 섭니다
 master 수리 불가|세그먼트 park|이 세그먼트가 깨진 베이스 위에서 머지되지 않은 채 이번 런에서 빠지고, 이 세그먼트에 기대는 세그먼트도 함께 빠집니다
+강제 표면 승인|재시도|사람이 브랜치를 고치지 않고 고르면 출처 검사가 같은 거절을 내어 이 자리에 다시 섭니다
+강제 표면 승인|세그먼트 park|이 세그먼트가 리뷰·머지되지 않은 채 이번 런에서 빠지고, 이 세그먼트에 기대는 세그먼트도 함께 빠집니다
+강제 표면 승인|승인|게이트·훅·지침 같은 강제 표면이 보인 내용 그대로 리뷰와 머지를 지나가므로, 그 변경이 방벽을 약하게 만들면 그대로 베이스에 들어갑니다
 게시 대조|재시도|올라간 리뷰를 사람이 손대지 않았으면 다시 읽어도 같은 바이트라 같은 불일치로 이 자리에 다시 섭니다
 게시 대조|세그먼트 park|렌더와 다른 리뷰가 PR 에 올라간 채 남고, 원장에는 대조 불일치로만 기록됩니다
 리뷰 게시 거절|재시도|사람이 원인을 고치기 전에 고르면 같은 거절에 다시 닿아 이 자리에 다시 섭니다
@@ -30175,6 +30196,148 @@ gate_surface_resume_text() {
   esac
 }
 
+gate_surface_approval_targets() {
+  # gate_surface_approval_targets <segment> [<alias>] — 0 when the segment's
+  # provenance check refuses (status 3) and every refused path is `승인 가능`,
+  # with GATE_SURFACE_TARGETS set to one `<경로> | <분류> | <베이스 항목> |
+  # <승인 항목>` line per refused path, sorted; otherwise a warning naming why
+  # and GATE_EXIT_RULE. The approval site writes these lines into its record
+  # and the answer measures them again, so the two compare as text.
+  local seg="$1" al="${2:-}" tf rc=0 p cls eb eh v bad=''
+  GATE_SURFACE_TARGETS=''
+  tf=$(mktemp "${TMPDIR:-/tmp}/gate-sp.XXXXXX") || return 1
+  gate_surface_provenance "$seg" "$al" > "$tf" || rc=$?
+  if [ "$rc" != "$GATE_EXIT_RULE" ]; then
+    if [ "$rc" = 0 ]; then
+      warn "세그먼트 $seg 의 강제 표면 출처 검사가 통과합니다 — 승인할 경로가 없습니다"
+    else
+      warn "세그먼트 $seg 의 강제 표면 출처를 판정할 수 없어(rc=$rc) 승인 자리를 세우지 않습니다: $(tr '\t\n' ' ;' < "$tf")"
+    fi
+    rm -f "$tf"
+    return "$GATE_EXIT_RULE"
+  fi
+  rm -f "$tf"
+  while IFS=$'\t' read -r p cls eb eh v; do
+    [ -n "$p" ] || continue
+    [ "$v" = '승인 가능' ] || bad="$bad${bad:+, }$p ($v)"
+    GATE_SURFACE_TARGETS="$GATE_SURFACE_TARGETS$p | $cls | $eb | $eh"$'\n'
+  done <<EOF
+$GATE_SURFACE_DETAIL
+EOF
+  if [ -n "$bad" ]; then
+    GATE_SURFACE_TARGETS=''
+    warn "세그먼트 $seg 의 거절 경로 중 승인으로 풀리지 않는 경로가 있습니다: $bad — $(gate_surface_resume_text "$(gate_surface_verdict_kind "$(printf '%s' "$GATE_SURFACE_DETAIL" | awk -F'\t' 'NF { print $1 "\t-\t" $5 }')")")"
+    return "$GATE_EXIT_RULE"
+  fi
+  GATE_SURFACE_TARGETS=$(printf '%s' "$GATE_SURFACE_TARGETS" | LC_ALL=C sort)
+  [ -n "$GATE_SURFACE_TARGETS" ] || return "$GATE_EXIT_RULE"
+  return 0
+}
+
+gate_surface_record_targets() {
+  # gate_surface_record_targets <record> — the record's `**승인 대상**` values,
+  # one per line, sorted.
+  sed -n 's/^\*\*승인 대상\*\*: //p' "$1" 2>/dev/null | LC_ALL=C sort
+}
+
+gate_surface_open_approval_record() {
+  # gate_surface_open_approval_record <segment> — the path of the segment's
+  # `강제 표면 승인` shift record no `중단 답` row answers yet, or nothing.
+  local seg="$1" r rec answered
+  answered=$( { gate_rows '중단 답' 2>/dev/null || true; } | while IFS= read -r r; do
+    [ -n "$r" ] && manifest_row_fields "$r" '중단 기록' && printf '\n'; done)
+  while IFS= read -r r; do
+    [ -n "$r" ] || continue
+    [ "$(manifest_row_fields "$r" '앵커 세그먼트')" = "$seg" ] || continue
+    [ "$(manifest_row_fields "$r" '자리')" = '강제 표면 승인' ] || continue
+    rec=$(manifest_row_fields "$r" '중단 기록')
+    [ -n "$rec" ] || continue
+    printf '%s\n' "$answered" | grep -qxF -- "$rec" && continue
+    printf '%s' "$rec"
+    return 0
+  done <<EOF
+$( { gate_rows 'blocked' 2>/dev/null || true; } )
+EOF
+  return 1
+}
+
+gate_surface_approval_question() {
+  # gate_surface_approval_question <record digest> <segment> <targets> — the
+  # question line the seat asks verbatim and the frame check looks for: the
+  # record digest and every `**승인 대상**` path.
+  local paths n
+  paths=$(printf '%s\n' "$3" | LC_ALL=C awk -F ' \\| ' 'NF { printf "%s%s", (n++ ? ", " : ""), $1 }')
+  n=$(printf '%s\n' "$3" | grep -c . || true)
+  printf '기록 %s — 세그먼트 %s 의 강제 표면 변경 %s건을 보인 내용 그대로 승인합니다: %s.' "$1" "$2" "$n" "$paths"
+}
+
+gate_surface_approval_preview() {
+  # gate_surface_approval_preview <record> — the question line the seat asks,
+  # first and alone on its line, then what each `**승인 대상**` path changes:
+  # its class, both entries and the diff between the two blobs, read in the
+  # segment worktree. Nothing is written.
+  local rec="$1" seg first dig tg wt p cls eb eh ob oh
+  case "$rec" in
+    "$RUN_DIR"/halt/shift/*.md) ;;
+    *) warn "--record has to be a shift record under this run's halt directory ($RUN_DIR/halt/shift/): $rec"; return "$GATE_EXIT_VOCAB" ;;
+  esac
+  case "$rec" in */../*|*/./*) warn "--record cannot carry a relative segment: $rec"; return "$GATE_EXIT_VOCAB" ;; esac
+  [ -f "$rec" ] || { warn "the halt record does not exist: $rec"; return "$GATE_EXIT_VOCAB"; }
+  grep -qxF -- '**스텝**: 교대 정지 — 강제 표면 승인' "$rec" \
+    || { warn "the record is not a \`강제 표면 승인\` shift halt: $rec"; return "$GATE_EXIT_RULE"; }
+  first=$(sed -n '1p' "$rec")
+  seg=$(printf '%s' "$first" | sed -n 's/^<!-- cc-pipeline-halt v1;.* stage=\([^;#]*\)[#;].*/\1/p')
+  [ -n "$seg" ] || { warn "the record's header names no stage: $rec"; return "$GATE_EXIT_VOCAB"; }
+  dig=$(shasum -a 256 "$rec" | cut -d' ' -f1)
+  tg=$(gate_surface_record_targets "$rec")
+  [ -n "$tg" ] || { warn "the record carries no \`**승인 대상**\` line: $rec"; return "$GATE_EXIT_RULE"; }
+  gate_surface_approval_question "$dig" "$seg" "$tg"; printf '\n'
+  wt=$(gate_segment_worktree "$seg")
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    eh=${p##* | }; p=${p% | *}
+    eb=${p##* | }; p=${p% | *}
+    cls=${p##* | }; p=${p% | *}
+    printf '\n경로: %s\n분류: %s\n베이스 항목: %s\n승인 항목: %s\n' "$p" "$cls" "$eb" "$eh"
+    ob=${eb##* }; oh=${eh##* }
+    case "$wt" in /*) [ -d "$wt" ] || continue ;; *) continue ;; esac
+    if [ "$eb" != '없음' ] && [ "$eh" != '없음' ]; then
+      (cd "$wt" && git -c core.quotePath=false diff --no-color "$ob" "$oh" 2>/dev/null) || true
+    elif [ "$eh" != '없음' ]; then
+      printf '%s\n' '(새 파일)'
+      (cd "$wt" && git cat-file -p "$oh" 2>/dev/null) || true
+    else
+      printf '%s\n' '(삭제)'
+    fi
+  done <<EOF
+$tg
+EOF
+}
+
+gate_surface_approval_rows_each() {
+  # gate_surface_approval_rows_each <mode> <segment> <branch> <record> <digest>
+  # <frame> <targets> — with <mode> `measure`, 0 when every `강제 표면 승인`
+  # ledger row the answer would write fits the row cap, else the first path
+  # that does not on stdout and 1; with <mode> `write`, append them in order.
+  local mode="$1" seg="$2" br="$3" rec="$4" dig="$5" fr="$6" tg="$7" p cls eb eh
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    eh=${p##* | }; p=${p% | *}
+    eb=${p##* | }; p=${p% | *}
+    cls=${p##* | }; p=${p% | *}
+    set -- "세그먼트=$seg" "브랜치=$br" "경로=$p" "분류=$cls" "베이스 항목=$eb" "승인 항목=$eh" \
+      '근거=교대 정지 승인' "중단 기록=$rec" "기록 다이제스트=$dig" "승인 프레임=$fr"
+    if [ "$mode" = measure ]; then
+      [ "$(gate_row_projected_bytes '강제 표면 승인' "$@")" -le "$GATE_ROW_MAX" ] || { printf '%s' "$p"; return 1; }
+    else
+      gate_append '강제 표면 승인' "$@" || return 1
+    fi
+  done <<EOF
+$tg
+EOF
+  return 0
+}
+
 gate_surface_provenance() {
   # gate_surface_provenance <segment> [<alias>] — 0 when every enforcement-surface
   # path the segment branch changed stands as this run's seat applies left it,
@@ -30225,6 +30388,10 @@ gate_surface_provenance() {
   # refuses again. Every caller gets the same answer because it lives here.
   local seg="$1" al="${2:-}" wt bref bend mb mbrc=0 lst rc=0 out='' line cls p eh eb em s es found ok
   local shas='' r row tch anchored rohead ropin v why apr ar am ad
+  # GATE_SURFACE_DETAIL — one `<path>\t<class>\t<eb>\t<eh>\t<verdict>` line per
+  # refused path, for a caller that runs this in the current shell (the
+  # approval site and its answer); a `$(…)` caller never sees it.
+  GATE_SURFACE_DETAIL=''
   wt=$(gate_segment_worktree "$seg")
   case "$wt" in ''|-) return 0 ;; esac
   [ -d "$wt" ] || return 0
@@ -30316,6 +30483,7 @@ EOF
     case "$v" in
       '양쪽 변경')
         out="$out$p"$'\t'"베이스와 세그먼트 양쪽에서 바뀜 ($cls)"$'\t양쪽 변경\n'
+        GATE_SURFACE_DETAIL="$GATE_SURFACE_DETAIL$p"$'\t'"$cls"$'\t'"$eb"$'\t'"$eh"$'\t양쪽 변경\n'
         continue ;;
       '통과') continue ;;
     esac
@@ -30379,6 +30547,7 @@ EOF
       [ "$ad" = 1 ] && why="$why — 승인된 내용과 다름"
     fi
     out="$out$p"$'\t'"$why"$'\t'"$v"$'\n'
+    GATE_SURFACE_DETAIL="$GATE_SURFACE_DETAIL$p"$'\t'"$cls"$'\t'"$eb"$'\t'"$eh"$'\t'"$v"$'\n'
   done <<EOF
 $lst
 EOF
@@ -38206,6 +38375,39 @@ EOF
       # The route `외부-보류` is stamped on the row: the consumer, the park's
       # copy of the judgment and the hold predicate read the token alone.
       [ "$GATE_HALT_ROUTE_ID" != "외부-보류" ] || hxr='외부-보류'
+      # AN ENFORCEMENT-SURFACE APPROVAL IS A PERSON'S, PROVED BY THE FRAME, AND
+      # IT COVERS EXACTLY WHAT WAS SHOWN. The route above already refused every
+      # answerer but a person. The frame proves the person was asked with the
+      # line `surface-approval-preview` prints; the provenance check is run
+      # again and its refused paths and entries have to be the record's
+      # `**승인 대상**` lines byte for byte, so a branch that moved after the
+      # record was written is refused. Every row the answer writes is measured
+      # first, and none is written when one does not fit.
+      local hfs='' hfsq='' hfstg='' hfsdig='' hfsbr='' hfslong
+      if [ -n "$hsrow" ] && [ "$hopt" = "승인" ] \
+         && [ "$(gate_row_field "${hsrow#*:}" '자리')" = "강제 표면 승인" ]; then
+        hfsdig=$(shasum -a 256 "$hrec" | cut -d' ' -f1)
+        hfstg=$(gate_surface_record_targets "$hrec")
+        [ -n "$hfstg" ] || { warn "the record carries no \`**승인 대상**\` line, so there is nothing to approve: $hrec"; return "$GATE_EXIT_RULE"; }
+        hfsq=$(gate_surface_approval_question "$hfsdig" "$seg" "$hfstg")
+        gate_seat_apply_frame "$hfsdig" "$hfsq" "$hrec" "$hopt" surface-approval-preview || return "$?"
+        hsafr=$GATE_SA_FRAME
+        gate_surface_approval_targets "$seg" "$alias" || {
+          warn "기록 뒤 세그먼트 $seg 의 강제 표면 판정이 바뀌어 이 승인을 기록하지 않습니다: $hrec"
+          return "$GATE_EXIT_RULE"; }
+        if [ "$GATE_SURFACE_TARGETS" != "$hfstg" ]; then
+          warn "기록 뒤 세그먼트 $seg 의 브랜치나 베이스가 움직여 거절 경로·항목이 기록의 승인 대상과 다릅니다 — 이 승인을 기록하지 않습니다: $hrec"
+          return "$GATE_EXIT_RULE"
+        fi
+        hfsbr=$(gate_segment_branch "$seg")
+        [ -n "$hfsbr" ] || { warn "세그먼트 $seg 의 브랜치를 읽을 수 없어 승인 행을 쓸 수 없습니다"; return "$GATE_EXIT_RULE"; }
+        if ! hfslong=$(gate_surface_approval_rows_each measure "$seg" "$hfsbr" "$hrec" "$hfsdig" "$hsafr" "$hfstg"); then
+          warn "경로 ${hfslong} 의 \`강제 표면 승인\` 행이 원장 행 상한(${GATE_ROW_MAX}바이트)을 넘어 아무 행도 쓰지 않습니다 — 기록은 미답으로 남습니다: \`세그먼트 park\` 로 답하거나 브랜치에서 그 경로를 고치세요"
+          return "$GATE_EXIT_RULE"
+        fi
+        hkinds='강제 표면 승인'
+        hfs=1
+      fi
       if [ "$hby" != "사람" ]; then
         if [ "$hby" = "교대" ]; then
           log "자동 채택 — 구속-이탈 ($seg ← 재수렴)"
@@ -38299,8 +38501,18 @@ EOF
             return "$GATE_EXIT_RULE"
           fi
         else
+          # THE APPROVAL ROWS FIRST, THE ANSWER ROW LAST. A write that stops in
+          # between leaves rows no `중단 답` stands behind, which the reader does
+          # not count; the record stays unanswered and its frame unspent, and
+          # answering it again writes every row again.
+          if [ -n "$hfs" ]; then
+            gate_surface_approval_rows_each write "$seg" "$hfsbr" "$hrec" "$hfsdig" "$hsafr" "$hfstg" || {
+              warn "\`강제 표면 승인\` 행을 다 쓰지 못했습니다 — \`중단 답\` 을 쓰지 않으므로 기록은 미답으로 남습니다: $hrec"
+              return "$GATE_EXIT_RULE"; }
+          fi
           gate_append '중단 답' "세그먼트=$seg" "중단 기록=$hrec" "스킬=${hskill:-미상}" \
             "선택지=$hopt" "답한 주체=$hby" "근거=$hwhy" ${hkinds:+"근거 종류=$hkinds"} \
+            ${hsafr:+"승인 프레임=$hsafr"} \
             ${hdm:+"초안 채택=$hdm"} ${hsanh:+"사람 몫=$hsanh"} ${hladder:+"잔여 판정=$hladder"} ${hxj:+"고칠 곳=$hfix"} ${hxj:+"판정 주체=$hxj"} \
             ${hxs:+"판정 신호=$hxs"} ${hxe:+"판정 근거=$hxe"} ${hxg:+"측정 등급=$hxg"} ${hxr:+"라우팅=$hxr"} \
             "기록 다이제스트=$hdig" \
@@ -38417,6 +38629,23 @@ EOF
           warn "there is no segment row for $seg — a shift stops a segment the ledger knows"
           return "$GATE_EXIT_VOCAB"; }
       fi
+      # AN APPROVAL SITE STANDS ONLY ON WHAT THE GATE MEASURES NOW. The shift
+      # says the review or the merge was refused; the gate runs the provenance
+      # check itself and writes the record only when it refuses and every
+      # refused path is one an approval can let through. The paths and entries
+      # the person approves are the gate's, written as `**승인 대상**` lines.
+      # One unanswered record per segment: a second would ask the same person
+      # the same thing while the first still waits.
+      local stg='' sopen
+      if [ "$ssite" = "강제 표면 승인" ]; then
+        sopen=$(gate_surface_open_approval_record "$seg") || sopen=''
+        if [ -n "$sopen" ]; then
+          warn "세그먼트 $seg 에는 아직 답이 없는 \`강제 표면 승인\` 기록이 있습니다 — 새 기록을 쓰지 않습니다: $sopen"
+          return "$GATE_EXIT_RULE"
+        fi
+        gate_surface_approval_targets "$seg" "$alias" || return "$?"
+        stg=$GATE_SURFACE_TARGETS
+      fi
       # A SEGMENT WHOSE ANSWER IS CARRIED OVER IS NOT STOPPED AGAIN. The person
       # already answered its halt and the next run takes the answer up; a shift
       # record here would put a second question about the same stop before them.
@@ -38496,6 +38725,7 @@ EOF
         [ -z "$sresult" ] || printf '**실행 결과**: %s\n' "$sresult"
         [ -z "$sdraft" ] || printf '**명령 초안**: %s\n' "$(printf '%s' "$sdraft" | tr '\n\r' '  ')"
         [ -z "$sexpect" ] || printf '**기대 결과**: %s\n' "$(printf '%s' "$sexpect" | tr '\n\r' '  ')"
+        [ -z "$stg" ] || printf '%s\n' "$stg" | sed '/^$/d;s/^/**승인 대상**: /'
         printf '**선택지**:\n%s\n' "$sopts"
         if [ -n "$srec" ]; then
           printf '**추천**: `%s` — 추천 근거의 인용이 이 선택지를 정한다\n' "$srec"
