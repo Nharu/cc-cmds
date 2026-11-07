@@ -62977,14 +62977,16 @@ unset d104 c104 p104 f104 d104n
 
 # ---------------------------------------------------------------------------
 # 108. 리뷰어 런 — 리뷰 전용 세그먼트의 계획·리뷰 줄·쓰기 거절·게시·대조
-# --- section: 108 | group: sa | covers: snapshot, act, plan, exec, review-line, review-post, gate_review_pr_plan, gate_exec_review_post_form, gate_exec_author_write_form, gate_check_review_post, gate_perform_review_post, gate_clause_review_evidence_check, binding_set_bytes, gate_review_fetch_surface, gate_collaboration_surface, gate_worktree_add_base_mismatch, reach, autopilot-router-shift | anchors: 108: 스냅숏이 리뷰 PR 행마다 리뷰 전용 세그먼트를 낸다, 108: 계획 행이 종류·고정 헤드·베이스 sha 를 싣는다, 108: 원격 헤드가 워크트리 HEAD 와 다른 계획은 rc 3 이다, 108: 리뷰 줄이 PR·베이스·고정 헤드·깊이·게시 항목 요청을 싣는다, 108: 리뷰 전용 세그먼트의 작성자 브랜치 쓰기는 모두 rc 3 이다, 108: 게시가 POST 한 번과 대조 일치 행을 남긴다, 108: 재판독이 한 바이트 다르면 대조 불일치 행과 rc 3 이다, 108: 리뷰를 근거로 한 충족은 대조 일치 리뷰에만 선다, 108: 직접 리뷰 게시는 사전 인가 행이 있어도 rc 3 이다, 108: 렌더는 방식·의사표시로 종류를 정하고 diff 밖 항목을 본문에 둔다, 108: 리뷰어 네 행이 구속 다이제스트를 움직인다, 108: 결과 미상 뒤의 재호출은 POST 없이 올라간 리뷰를 대조한다, 108: 계획하지 못한 리뷰 PR 세그먼트는 park 로만 닫힌다, 108: 리뷰어 런 밖의 세그먼트 행은 호출자의 베이스 sha 를 받는다, 108: 스킬 문면에서 리뷰어 런 호출 일곱 가지를 모두 읽는다, 108: 스킬 문면 그대로의 리뷰어 런 호출이 계획부터 정리까지 통과한다, 108: 스킬 문면의 fetch 는 도달 협업으로 기록되고 게시는 대조 일치다, 108: 헤드가 움직인 재시도는 워크트리를 다시 만들어 새 헤드를 고정하고 메인 체크아웃은 그대로다, 108: 닫힌 PR 은 fetch 가 도달 park 가 아닌 실패이고 park 와 ref 정리는 통과한다, 108: 다른 런 id 목적지의 fetch 는 협업이 아니어서 도달 park 다, 108: 다른 세그먼트의 리뷰 ref 로 뜨는 리뷰 워크트리는 시작점 검사에 rc 2 다, 108: 협업으로 받는 fetch 는 이 런의 리뷰 ref 로만 받는 좁은 형태 하나다 ---
+# --- section: 108 | group: sa | covers: snapshot, act, plan, exec, review-line, review-post, gate_review_pr_plan, gate_exec_review_post_form, gate_exec_author_write_form, gate_check_review_post, gate_perform_review_post, gate_clause_review_evidence_check, binding_set_bytes, gate_review_fetch_surface, gate_collaboration_surface, gate_worktree_add_base_mismatch, reach, autopilot-router-shift | anchors: 108: 스냅숏이 리뷰 PR 행마다 리뷰 전용 세그먼트를 낸다, 108: 계획 행이 종류·고정 헤드·베이스 sha 를 싣는다, 108: 원격 헤드가 워크트리 HEAD 와 다른 계획은 rc 3 이다, 108: 리뷰 줄이 PR·베이스·고정 헤드·깊이·게시 항목 요청을 싣는다, 108: 리뷰 전용 세그먼트의 작성자 브랜치 쓰기는 모두 rc 3 이다, 108: 게시가 POST 한 번과 대조 일치 행을 남긴다, 108: 재판독이 한 바이트 다르면 대조 불일치 행과 rc 3 이다, 108: 리뷰를 근거로 한 충족은 대조 일치 리뷰에만 선다, 108: 직접 리뷰 게시는 사전 인가 행이 있어도 rc 3 이다, 108: 렌더는 방식·의사표시로 종류를 정하고 diff 밖 항목을 본문에 둔다, 108: 리뷰어 네 행이 구속 다이제스트를 움직인다, 108: 결과 미상 뒤의 재호출은 POST 없이 올라간 리뷰를 대조한다, 108: 계획하지 못한 리뷰 PR 세그먼트는 park 로만 닫힌다, 108: 인라인 코멘트가 붙은 게시는 PR 단위 코멘트 목록으로 대조 일치다, 108: 줄이나 면이 렌더와 다른 인라인 코멘트는 대조 불일치와 rc 3 이다, 108: 헤드가 움직여 line 이 옮겨진 뒤의 재판독은 POST 없이 대조 일치다, 108: 대조는 게시 커밋 기준 줄과 면으로 응답 모양을 가른다, 108: 리뷰어 런 밖의 세그먼트 행은 호출자의 베이스 sha 를 받는다, 108: 스킬 문면에서 리뷰어 런 호출 일곱 가지를 모두 읽는다, 108: 스킬 문면 그대로의 리뷰어 런 호출이 계획부터 정리까지 통과한다, 108: 스킬 문면의 fetch 는 도달 협업으로 기록되고 게시는 대조 일치다, 108: 헤드가 움직인 재시도는 워크트리를 다시 만들어 새 헤드를 고정하고 메인 체크아웃은 그대로다, 108: 닫힌 PR 은 fetch 가 도달 park 가 아닌 실패이고 park 와 ref 정리는 통과한다, 108: 다른 런 id 목적지의 fetch 는 협업이 아니어서 도달 park 다, 108: 다른 세그먼트의 리뷰 ref 로 뜨는 리뷰 워크트리는 시작점 검사에 rc 2 다, 108: 협업으로 받는 fetch 는 이 런의 리뷰 ref 로만 받는 좁은 형태 하나다 ---
 #
 # 베어 원격 하나에 다른 작성자의 PR 둘(`refs/pull/7/head`, `refs/pull/8/head`)을 두고,
 # 리뷰어 계획(`run_profile: reviewer`)과 `리뷰 PR`·`리뷰 게시`·`리뷰 깊이` 행을 실은
 # 매니페스트로 라우터가 하는 순서를 그대로 밟는다 — fetch 와 분리 워크트리, `--review-pr`
 # 계획 행, 리뷰 줄, cycle 행, `act --kind review-post`. GitHub 는 함수로 가린 대역이 받고,
 # POST 의 요청 본문을 파일로 남겨 재판독에 그대로 돌려준다. `tamper` 파일이 있으면 재판독
-# 본문에 한 바이트를 더해 돌려준다. 렌더러는 따로 불러 종류·인라인·본문 배치를 잰다.
+# 본문에 한 바이트를 더해 돌려준다. 코멘트 재판독은 GitHub 의 응답 모양을 따른다 — 리뷰 단위
+# 코멘트는 줄·면이 null 이고, PR 단위 목록은 줄·면이 채워지고 다른 리뷰의 코멘트가 섞인다.
+# 렌더러는 따로 불러 종류·인라인·본문 배치를 잰다.
 # ---------------------------------------------------------------------------
 RV106_RP="$repo_root/plugins/cc-cmds/orchestrator/review-post.sh"
 RV106_FMT="$repo_root/plugins/cc-cmds/orchestrator/review-format.default.md"
@@ -62998,6 +63000,10 @@ cat > "$RV106_STUB" <<'RV106EOF'
 # 리뷰 게시 행위의 GitHub 대역. 답은 `$RV106_S` 의 파일이 고른다:
 #   login · head · reviews · rid · tamper(있으면 재판독 본문 끝에 x 를 더한다)
 #   status(있으면 POST 의 답: none 은 상태 줄 없이 실패, 422 는 4xx, 500 은 5xx, noid 는 id 없는 200)
+#   comment-tamper(PR 단위 코멘트 목록의 이 리뷰 코멘트를 바꾼다: line 은 줄을 하나 내리고, side 는 면을 뒤집는다)
+#   comment-moved(있으면 PR 단위 목록의 line 만 새 헤드 기준처럼 옮기고 original_line 은 그대로 둔다)
+# 코멘트 재판독은 GitHub 가 실제로 주는 두 모양을 낸다. 리뷰 단위 엔드포인트는 줄·면을 null 로,
+# 위치만 채워 주고, PR 단위 목록은 줄·면과 리뷰 id 를 채우되 다른 리뷰의 코멘트를 한 페이지 섞는다.
 D=${RV106_S:?}
 printf '%s\n' "$*" >> "$D/gh.log"
 if [ "$*" = "api user --jq .login" ]; then cat "$D/login"; exit 0; fi
@@ -63016,7 +63022,21 @@ fi
 if [ "$2" = --paginate ]; then
   case "$3" in
     */reviews) cat "$D/reviews"; exit 0 ;;
-    */comments) jq -c '.comments // []' "$D/posted.json"; exit 0 ;;
+    */reviews/*/comments)
+      jq -c --argjson id "$(cat "$D/rid")" \
+        '[(.comments // [])[] | {pull_request_review_id: $id, path, line: null, original_line: null, side: null,
+                                 position: .line, original_position: .line, body}]' "$D/posted.json"
+      exit 0 ;;
+    */pulls/*/comments)
+      printf '[{"id":9001,"pull_request_review_id":1,"path":"a.txt","line":1,"original_line":1,"side":"RIGHT","position":1,"original_position":1,"body":"앞선 리뷰의 코멘트"}]\n'
+      t=$(cat "$D/comment-tamper" 2>/dev/null || true); m=""; [ -f "$D/comment-moved" ] && m=1
+      jq -c --argjson id "$(cat "$D/rid")" --arg t "$t" --arg m "$m" \
+        '[(.comments // [])[] | {pull_request_review_id: $id, path,
+                                 line: (if $m == "" then .line else .line + 10 end), original_line: .line,
+                                 side: (if $t == "side" then (if .side == "LEFT" then "RIGHT" else "LEFT" end) else .side end),
+                                 position: .line, original_position: .line, body}
+          | if $t == "line" then .line += 1 | .original_line += 1 else . end]' "$D/posted.json"
+      exit 0 ;;
   esac
   exit 1
 fi
@@ -63081,6 +63101,15 @@ rv106_cycle() {
   sag act --manifest "$SA_MANIFEST" --kind cycle --target main --segment "$1" --cutpoint 커밋 \
       --snapshot-digest "$(SAH)" --rationale x \
       -- 사이클=1 P0=0 P1=0 "리뷰 HEAD=$2" "리포트 경로=$(sa_canon "$1" "$RV106_ROOT/rep-$SA_ID-$1.md")"
+}
+rv106_cycle_inline() {
+  # rv106_cycle_inline <세그먼트> <리뷰 HEAD> <파일> <줄> — PR diff 의 hunk 안 RIGHT 줄을 가리키는
+  # P1 게시 항목 하나를 둔 리포트와 그에 맞춘 P1=1 cycle 행.
+  printf '# 코드 리뷰 리포트\n\n- **리뷰 HEAD**: `%s`\n- **발견 요약**: 🔴 P0 0건 | 🟠 P1 1건 | 🟡 P2 0건 | 🟢 P3 0건\n\n## 게시 항목\n\n### G1\n- **등급**: P1\n- **제목**: 더한 줄을 다시 봐야 합니다\n- **파일**: %s\n- **줄**: %s\n- **면**: RIGHT\n- **근거**: 더한 줄의 값이 맞지 않습니다.\n- **제안**: 값을 고치면 됩니다.\n' \
+    "$2" "$3" "$4" > "$RV106_ROOT/rep-$SA_ID-$1.md"
+  sag act --manifest "$SA_MANIFEST" --kind cycle --target main --segment "$1" --cutpoint 커밋 \
+      --snapshot-digest "$(SAH)" --rationale x \
+      -- 사이클=1 P0=0 P1=1 "리뷰 HEAD=$2" "리포트 경로=$(sa_canon "$1" "$RV106_ROOT/rep-$SA_ID-$1.md")"
 }
 rv106_post() {
   sag act --manifest "$SA_MANIFEST" --kind review-post --target main --segment "$1" --cutpoint 커밋 \
@@ -63343,6 +63372,17 @@ jq '.body += "x"' "$RV106_ROOT/rv.json" > "$RV106_ROOT/rv2.json"
 printf 'notjson\n' > "$RV106_ROOT/rv3.json"
 rd106_v() { "$RV106_RP" verify --request "$RV106_ROOT/rq-rc.json" --review "$RV106_ROOT/$1" --comments "$RV106_ROOT/cm.json" 2>/dev/null; }
 check "108: 대조는 일치·불일치·판독불가 셋을 낸다" "$(rd106_v rv.json)|$(rd106_v rv2.json)|$(rd106_v rv3.json)" "일치|불일치|판독불가"
+rd106_cv() {
+  # rd106_cv <코멘트 변형 jq> — rq-rc.json 의 코멘트를 GitHub 응답 모양으로 바꿔 대조한다.
+  jq -c "[.comments[] | {pull_request_review_id: 555, path, line, original_line: .line, side,
+                         position: .line, original_position: .line, body} | $1]" \
+    "$RV106_ROOT/rq-rc.json" > "$RV106_ROOT/cv.json"
+  "$RV106_RP" verify --request "$RV106_ROOT/rq-rc.json" --review "$RV106_ROOT/rv.json" --comments "$RV106_ROOT/cv.json" 2>/dev/null
+}
+rd106_got="$(rd106_cv '.line = null | .original_line = null | .side = null')|$(rd106_cv '.')"
+rd106_got="$rd106_got|$(rd106_cv '.line += 7')|$(rd106_cv '.original_line += 1')"
+rd106_got="$rd106_got|$(rd106_cv '.side = (if .side == "LEFT" then "RIGHT" else "LEFT" end)')"
+check "108: 대조는 게시 커밋 기준 줄과 면으로 응답 모양을 가른다" "$rd106_got" "불일치|일치|일치|불일치|불일치"
 awk '{ print } /^리뷰 결과를 올립니다/ && !done { print "{모름}"; done = 1 }' "$RV106_FMT" > "$RV106_ROOT/badfmt.md"
 "$RV106_RP" render --settle --format "$RV106_ROOT/badfmt.md" --report "$RV106_ROOT/items.md" --head "$rd106_head" \
   --p0 1 --p1 2 --out "$RV106_ROOT/s.json" >/dev/null 2>&1
@@ -63409,6 +63449,37 @@ sag act --manifest "$SA_MANIFEST" --kind segment --target main --segment P3 --cu
     --snapshot-digest "$(SAH)" --rationale x -- 상태=park "워크트리=$rv106_w3"
 check "108: 계획하지 못한 리뷰 PR 세그먼트는 park 로만 닫힌다" \
   "$rv106_got|$rc|$(sa_field "$(sa_seg_last P3)" 상태)" "3|0|park"
+
+# 인라인 게시 — diff 안 줄을 가리키는 게시 항목의 리뷰를 PR 단위 코멘트 목록으로 대조한다 ----------
+rv106_new "인라인 게시" 직접 허용
+rv106_fetch P1 7; rv106_fetch P2 8
+rv106_plan P1; rv106_plan P2
+rv106_h7=$(git --git-dir="$SA_REMOTE" rev-parse refs/pull/7/head)
+rv106_h8=$(git --git-dir="$SA_REMOTE" rev-parse refs/pull/8/head)
+rv106_cycle_inline P1 "$rv106_h7" a.txt 2; rv106_cycle_inline P2 "$rv106_h8" b.txt 1
+printf '%s\n' "$rv106_h7" > "$RV106_S/head"; printf '559\n' > "$RV106_S/rid"
+rv106_post P1
+rv106_pr=$(rv106_last '리뷰 게시')
+check "108: 인라인 코멘트가 붙은 게시는 PR 단위 코멘트 목록으로 대조 일치다" \
+  "$rc|$(rv106_posts)|$(jq -c '[(.comments // [])[] | "\(.path):\(.line):\(.side)"]' "$RV106_S/posted.json" 2>/dev/null)|$(sa_field "$rv106_pr" '리뷰 id')|$(sa_field "$rv106_pr" 대조)" \
+  "0|1|[\"a.txt:2:RIGHT\"]|559|일치"
+printf '%s\n' "$rv106_h8" > "$RV106_S/head"; printf '560\n' > "$RV106_S/rid"; printf 'line\n' > "$RV106_S/comment-tamper"
+rv106_post P2
+rv106_pr=$(rv106_last '리뷰 게시')
+rv106_got="$rc|$(rv106_posts)|$(sa_field "$rv106_pr" '리뷰 id')|$(sa_field "$rv106_pr" 대조)"
+case "$msg" in *"게시 대조"*) rv106_got="$rv106_got|게시 대조" ;; esac
+printf 'side\n' > "$RV106_S/comment-tamper"
+rv106_post P2
+rv106_pr=$(rv106_last '리뷰 게시')
+rv106_got="$rv106_got;$rc|$(rv106_posts)|$(sa_field "$rv106_pr" '리뷰 id')|$(sa_field "$rv106_pr" 대조)"
+case "$msg" in *"게시 대조"*) rv106_got="$rv106_got|게시 대조" ;; esac
+check "108: 줄이나 면이 렌더와 다른 인라인 코멘트는 대조 불일치와 rc 3 이다" \
+  "$rv106_got" "3|2|560|불일치|게시 대조;3|2|560|불일치|게시 대조"
+rm -f "$RV106_S/comment-tamper"; : > "$RV106_S/comment-moved"
+rv106_post P2
+rv106_pr=$(rv106_last '리뷰 게시')
+check "108: 헤드가 움직여 line 이 옮겨진 뒤의 재판독은 POST 없이 대조 일치다" \
+  "$rc|$(rv106_posts)|$(sa_field "$rv106_pr" '리뷰 id')|$(sa_field "$rv106_pr" 대조)" "0|2|560|일치"
 
 # 리뷰어 런 밖 — 드라이버가 머지 행에 싣는 베이스 sha 는 호출자 값으로 받는다 ---------------------
 sa_new "드라이버 머지 행의 베이스 sha"
