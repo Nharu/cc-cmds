@@ -1290,8 +1290,10 @@ fleet_start_watch() {
   # and not a second watcher beside the first. A seventh argument `no-poller`
   # starts everything but the poller: a re-entry whose poller is alive and whose
   # watcher is not restarts the watcher and not a second poller. A seventh
-  # argument `no-master` starts everything but the master observer child: a
-  # repair run started by an observer child is watched by that child already.
+  # argument `master` starts the master observer child alone: a re-entry whose
+  # watcher is alive still owes its own job an observer. A seventh argument
+  # `no-master` starts everything but the master observer child: a repair run
+  # started by an observer child is watched by that child already.
   #
   # THE OBSERVER CHILD is `fleet.sh master-watch`, from this copy of the file
   # and not the run's pinned gate directory, on the lane this job dispatches
@@ -1300,12 +1302,12 @@ fleet_start_watch() {
   # fingerprint is taken as `cc_holder_is_live` takes it, with no TZ of its own:
   # the child inherits this environment, so both sides read one clock zone.
   local home="$1" pdir="$2" manifest="$3" run_dir="$4" ledger="$5" mark="${6:-}" only="${7:-}"
-  if [ "$only" != "poller" ]; then
+  if [ "$only" != "poller" ] && [ "$only" != "master" ]; then
     CLAUDE_CONFIG_DIR="$home" CC_PIPELINE_REENTRY="$mark" bash "$pdir/gate.sh" snapshot --manifest "$manifest" >/dev/null || true
     mkdir -p "$run_dir"
     bash "$pdir/watch.sh" --run-dir "$run_dir" --ledger "$ledger" --stall 1200 --interval 60 --after-stage 120 --run-open 300 --silence 300 > "$run_dir/watch.log" 2>&1 < /dev/null &
   fi
-  if { [ "$only" = "" ] || [ "$only" = "no-poller" ]; } && [ -n "${FLEET_LANE:-}" ]; then
+  if { [ "$only" = "" ] || [ "$only" = "no-poller" ] || [ "$only" = "master" ]; } && [ -n "${FLEET_LANE:-}" ]; then
     bash "$FLEET_DIR/fleet.sh" master-watch "$FLEET_LANE" "$$" "$(cc_proc_fingerprint "$$")" > "$run_dir/master-watch.log" 2>&1 < /dev/null &
   fi
   # THE POLLER BELONGS ON THIS PATH, NOT ONLY ON THE SUPERVISED ONE. The CI
@@ -1317,7 +1319,7 @@ fleet_start_watch() {
   # reads as "nothing recorded", which the gate passes — so the absence is
   # byte-identical to a green night. Interval is pinned to 60 for the same
   # reason the watcher's is: they are one threshold, not two.
-  [ "$only" != "no-poller" ] || return 0
+  [ "$only" != "no-poller" ] && [ "$only" != "master" ] || return 0
   bash "$pdir/checks.sh" --run-dir "$run_dir" --ledger "$ledger" --manifest "$manifest" --interval 60 > "$run_dir/checks.log" 2>&1 < /dev/null &
   return 0
 }
@@ -1380,25 +1382,33 @@ fleet_reentry_launches() {
 }
 
 fleet_reentry_poller_live() {
-  # fleet_reentry_poller_live <run dir> — the gate's test for the CI poller
-  # (`gate_relay_poller_live`): a bare pid in `checks.pid` that exists.
-  local p
-  p=$( { cat "$1/checks.pid" 2>/dev/null || true; } | tr -d '[:space:]')
-  case "$p" in ''|*[!0-9]*) return 1 ;; esac
-  cc_pid_exists "$p"
+  # fleet_reentry_poller_live <run dir> — a bare pid in `checks.pid` that exists
+  # and runs `checks.sh` (`fleet_reentry_script_live`). Stricter than the
+  # gate's own test (`gate_relay_poller_live`, existence alone): a re-entry that
+  # reads a pid the system handed to another process as a live poller starts
+  # none, and a run with no poller reads as a green night.
+  fleet_reentry_script_live "$1/checks.pid" 'checks\.sh'
 }
 
 fleet_reentry_watcher_live() {
   # fleet_reentry_watcher_live <run dir> — a bare pid in `watch.pid` that exists
-  # and runs `watch.sh`. The watcher rewrites that file with its own pid on
-  # every pass and never removes it, so a finished watcher leaves its pid
-  # behind; the command test keeps a pid the system handed to another process
-  # from reading as a live watcher, which would leave the run with none.
+  # and runs `watch.sh` (`fleet_reentry_script_live`). The watcher rewrites
+  # that file with its own pid on every pass and never removes it, so a
+  # finished watcher leaves its pid behind.
+  fleet_reentry_script_live "$1/watch.pid" 'watch\.sh'
+}
+
+fleet_reentry_script_live() {
+  # fleet_reentry_script_live <pid file> <script name as an ERE> — the pid file holds a
+  # bare pid that exists and whose command runs that script: the name as a
+  # whole word after `/` or at the start, so `test-watch.sh` is not `watch.sh`.
+  # The command test keeps a pid the system handed to another process from
+  # reading as the live loop, which would leave the run without it.
   local p
-  p=$( { cat "$1/watch.pid" 2>/dev/null || true; } | tr -d '[:space:]')
+  p=$( { cat "$1" 2>/dev/null || true; } | tr -d '[:space:]')
   case "$p" in ''|*[!0-9]*) return 1 ;; esac
   cc_pid_exists "$p" || return 1
-  ps -p "$p" -o command= 2>/dev/null | grep -q 'watch\.sh'
+  ps -p "$p" -o command= 2>/dev/null | grep -qE "(^|/)$2( |\$)"
 }
 
 fleet_reentry_driven_since() {
@@ -1573,8 +1583,9 @@ fleet_reentry_settled_since() {
 }
 
 fleet_reentry_reason_wait() {
-  # fleet_reentry_reason_wait <run dir> <ledger> — succeeds in the two states
-  # the run's own pinned gate takes `대기` in, asked of that gate.
+  # fleet_reentry_reason_wait <run dir> <ledger> — succeeds in the states the
+  # run's own pinned gate takes `대기` in (`gate_relay_reentry_allowed`), asked
+  # of that gate.
   #
   # THE GATE'S OWN INPUTS FIRST. `gate_relay_reentry_allowed` reads whether the
   # run is a failover run, and that needs the manifest; with `RUN_DIR` and
@@ -1595,10 +1606,11 @@ fleet_reentry_reason_wait() {
 fleet_reentry_reason() {
   # fleet_reentry_reason <run dir> <ledger> <boot epoch> — the reason
   # the re-entry issues, read off the settled ledger, or empty for none.
-  # `대기` in the two states the gate takes it in — the latest handoff `대기`
-  # with no launch after it, or a limit-shaped `무기록` whose shift's stream
-  # yields a reset within the horizon — asked of the run's own pinned gate so
-  # the two never disagree. Otherwise `중단`, but only when this boot's
+  # `대기` in the states the gate takes it in — the latest handoff `대기` with
+  # no launch after it, or a limit-shaped `무기록` whose shift's stream yields a
+  # reset within the horizon, and in a failover run the deadline-or-room, moved
+  # shift and failover-wait readings of that `무기록` — asked of the run's own
+  # pinned gate so the two never disagree. Otherwise `중단`, but only when this boot's
   # settlement added a row: a run a person left at `중단` is not restarted on
   # every boot.
   local rd="$1" ledger="$2" boot="$3"
@@ -1702,7 +1714,7 @@ fleet_reentry_run() {
       return 1
     fi
     # THE REASON IS READ AGAIN ON THE SETTLED LEDGER, as the seat would issue
-    # it: `대기` in the gate's two waiting states, `상한` after a cap handoff
+    # it: `대기` in the gate's waiting states, `상한` after a cap handoff
     # with no launch. Nothing else is this trigger's to issue, so an empty
     # reason returns before the marker and the row.
     reason=""
@@ -1724,15 +1736,21 @@ fleet_reentry_run() {
   # refuses a second copy of itself, and the seat-limit trigger comes back at
   # every resume time and every grace of a failover wait, so starting both on
   # every call would stack one watcher and one poller per call until they idle
-  # out. A boot leaves neither alive, so the boot trigger still starts both.
+  # out. Liveness is the pid file's pid running that script, so a pid the
+  # system reused after a boot reads as dead and both still start. The master
+  # observer child is this job's, not the run's, so it is started whatever the
+  # run's watcher and poller are — its own claim refuses a second.
   if ! fleet_reentry_watcher_live "$rd"; then
     if fleet_reentry_poller_live "$rd"; then
       ( cd "$R_WT" 2>/dev/null || cd /; fleet_start_watch "$R_HOME" "$pdir" "$R_MAN" "$rd" "$ledger" "$R_MARK" no-poller )
     else
       ( cd "$R_WT" 2>/dev/null || cd /; fleet_start_watch "$R_HOME" "$pdir" "$R_MAN" "$rd" "$ledger" "$R_MARK" )
     fi
-  elif ! fleet_reentry_poller_live "$rd"; then
-    ( cd "$R_WT" 2>/dev/null || cd /; fleet_start_watch "$R_HOME" "$pdir" "$R_MAN" "$rd" "$ledger" "$R_MARK" poller )
+  else
+    ( cd "$R_WT" 2>/dev/null || cd /; fleet_start_watch "$R_HOME" "$pdir" "$R_MAN" "$rd" "$ledger" "$R_MARK" master )
+    if ! fleet_reentry_poller_live "$rd"; then
+      ( cd "$R_WT" 2>/dev/null || cd /; fleet_start_watch "$R_HOME" "$pdir" "$R_MAN" "$rd" "$ledger" "$R_MARK" poller )
+    fi
   fi
   fleet_log "재진입 $lane: $id — 계기 $trig · 사유 $reason 로 교대를 부른다 (레인 $R_HOME)"
 
