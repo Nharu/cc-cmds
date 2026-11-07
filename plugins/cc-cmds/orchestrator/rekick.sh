@@ -402,7 +402,8 @@ for rk_f in manifest_field manifest_hdr_field manifest_row_fields manifest_plan_
             judgment_class_ok judgment_class_forbidden \
             cc_live_stages cc_shift_is_live cc_relay_is_live cc_waiting_fresh_count cc_unanswered_halts cc_halt_answered \
             cc_unresolved_blocked cc_open_approval_rows cc_segment_states \
-            dr_duration_seconds manifest_rekick_rows manifest_adoption_rows manifest_plugin_allow_rows manifest_failover_allow_rows slice_ids; do  command -v "$rk_f" >/dev/null 2>&1 || rk_refuse "run.sh 에 $rk_f 가 없습니다"
+            dr_duration_seconds manifest_rekick_rows manifest_adoption_rows manifest_surface_approval_rows \
+            manifest_plugin_allow_rows manifest_failover_allow_rows slice_ids; do  command -v "$rk_f" >/dev/null 2>&1 || rk_refuse "run.sh 에 $rk_f 가 없습니다"
 done
 
 # The plugin judgment — the functions the kickoff judges its plugin defaults
@@ -558,6 +559,16 @@ EOF
 #                                     three cells all 없음, 불일치 or 미상
 #   pr-view <번호> <slug>             <state>\t<head branch>\t<head 40 hex>\t
 #                                     <true|false>\t<owner>\t<base branch>, or 미상
+#   sa-ledger <seg>                   the ledger's standing `강제 표면 승인` rows of
+#                                     that segment, one per line and as the
+#                                     ledger holds them — the gate's own reader,
+#                                     so a row whose `중단 답` is missing is not
+#                                     among them — or 판정불가 when any line is
+#                                     not such a row of that segment
+#   sa-verdict <path> <eh> <eb> <em> [<row>]
+#                                     the gate's one path verdict: 양쪽 변경,
+#                                     통과, 경로 문자, 승인 가능, or given a row
+#                                     승인 가능<TAB>맞음 | 승인 가능<TAB>내용 다름
 #
 # The context is the caller's to choose and the gate functions trust it: for
 # `adopt-check` and `halt-source` the manifest is a private copy holding only
@@ -567,11 +578,11 @@ EOF
 # that writes a ledger row.
 # ---------------------------------------------------------------------------
 rk_gate() {
-  local g="$RK_DIR/gate.sh" out='' mode="$1" a b c d x
+  local g="$RK_DIR/gate.sh" out='' mode="$1" a b c d x sa_seg="${8:-}" sa_l sa_bad
   [ -r "$g" ] && out=$(CC_GATE_SOURCE_ONLY=1 bash -c '
     g=$1; mode=$2; mf=$3; rid=$4; rd=$5; led=$6; gr=$7; err=$8
     shift 8
-    a1=${1:-}; a2=${2:-}; a3=${3:-}; a4=${4:-}
+    a1=${1:-}; a2=${2:-}; a3=${3:-}; a4=${4:-}; a5=${5:-}
     set --
     . "$g" >/dev/null 2>&1 || { printf "판정불가"; exit 0; }
     set +e
@@ -633,6 +644,12 @@ ROWS
               (.headRepositoryOwner | if type == \"object\" then (.login // \"\") else (. // \"\" | tostring) end),
               (.baseRefName // \"\" | tostring) ] | join(\"\t\")
           end" 2>/dev/null || printf "미상" ;;
+      sa-ledger)
+        printf "sa-ledger\n"
+        [ -f "$led" ] || exit 0
+        gate_surface_approval_ledger_rows "$a1" 2>"$err" ;;
+      sa-verdict)
+        gate_surface_path_verdict "$a1" "$a2" "$a3" "$a4" "$a5" 2>"$err" ;;
     esac
   ' _ "$g" "$@" 2>/dev/null)
   case "$mode" in
@@ -667,6 +684,32 @@ EOF
       else out="미상${TAB}미상${TAB}미상"; fi ;;
     pr-view)
       rk_prview_ok "$out" || out='미상' ;;
+    sa-ledger)
+      # The header proves the child ran to the reader; every line after it is
+      # one row of that segment, or the whole answer is refused — a row half
+      # read is never carried.
+      case "$out" in
+        sa-ledger) out='' ;;
+        sa-ledger$'\n'*)
+          out=${out#sa-ledger$'\n'}; sa_bad=''
+          while IFS= read -r sa_l; do
+            case "$sa_l" in
+              *[[:cntrl:]]*) sa_bad=1 ;;
+              '- `강제 표면 승인` | '*)
+                [ "$(manifest_row_fields "$sa_l" '세그먼트')" = "$sa_seg" ] || sa_bad=1 ;;
+              *) sa_bad=1 ;;
+            esac
+          done <<EOF
+$out
+EOF
+          [ -z "$sa_bad" ] || out='판정불가' ;;
+        *) out='판정불가' ;;
+      esac ;;
+    sa-verdict)
+      case "$out" in
+        '양쪽 변경'|'통과'|'경로 문자'|'승인 가능'|"승인 가능${TAB}맞음"|"승인 가능${TAB}내용 다름") ;;
+        *) out='판정불가' ;;
+      esac ;;
     *) out='판정불가' ;;
   esac
   printf '%s' "$out"
@@ -818,11 +861,14 @@ EOF
 # rk_adopt_manifest <row> <out> — the current MANIFEST with every
 # `세그먼트 입양` row removed and this one row written at the end of `## 인가`.
 # A source that adopted the segment itself carries its own adoption row, and
-# the gate reads the first row of a segment only, so the old one must go.
+# the gate reads the first row of a segment only, so the old one must go. Every
+# `강제 표면 승인` row goes with them: such a row stands under an adoption row,
+# and one left behind with no adoption row is a manifest the check refuses.
 rk_adopt_manifest() {
   ( umask 077; RA_ROW="$1" awk '
       function put() { if (!done && sec == "## 인가") { print ENVIRON["RA_ROW"]; done = 1 } }
       /^- `세그먼트 입양`/ { next }
+      /^- `강제 표면 승인`/ { next }
       /^## / { put(); for (i = 1; i <= nb; i++) print ""; nb = 0; sec = $0; print; next }
       /^$/ { nb++; next }
       { for (i = 1; i <= nb; i++) print ""; nb = 0; print }
@@ -1105,6 +1151,159 @@ EOF
     printf '입양후보\t%s\t%s\t%s\t%s\t%s%s%s%s\n' "$key" "$B" "$W" "$n" "$h" "$pre" "$tail" "$cim"
   done <<EOF
 $keys
+EOF
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# Enforcement-surface approvals of an adopted segment. A person approved a
+# path's bytes once — at a kickoff (a manifest row) or at the shift halt of a
+# run (a ledger row the gate wrote after that person's answer) — and the
+# approval travels with the adoption, never wider: the new run's provenance
+# check lets the path through only while the base entry and the branch entry
+# are still the approved ones. Whether they are is the gate's path verdict,
+# never a comparison written here.
+# ---------------------------------------------------------------------------
+
+# rk_sa_base_ref <seg> <worktree> <target rows> — the ref the base end is read
+# at, by the gate's own rule: the target's base branch under
+# `refs/remotes/origin/` when the worktree has an `origin` remote, under
+# `refs/heads/` otherwise. The target is the one the candidate check finds,
+# by the remote slug the segment's ledger rows record. Returns 1 for none.
+rk_sa_base_ref() {
+  local slug row tbase=''
+  slug=$(rk_rows_last_field "$(rk_ledger_seg_rows "$1")" '레포')
+  [ -n "$slug" ] || return 1
+  while IFS= read -r row; do
+    [ -n "$row" ] || continue
+    [ "$(manifest_row_fields "$row" '원격 슬러그' | head -n 1)" = "$slug" ] || continue
+    tbase=$(manifest_row_fields "$row" '베이스 브랜치' | head -n 1)
+    break
+  done <<EOF
+$3
+EOF
+  [ -n "$tbase" ] || return 1
+  if ( cd "$2" && git --no-optional-locks remote get-url origin ) >/dev/null 2>&1; then
+    printf 'refs/remotes/origin/%s' "$tbase"
+  else
+    printf 'refs/heads/%s' "$tbase"
+  fi
+}
+
+# rk_sa_row_ok <row> — the shape the driver's manifest check admits.
+rk_sa_row_ok() {
+  printf '%s\n' "$1" | grep -qE '^- `강제 표면 승인` \| 세그먼트=[A-Za-z0-9_.-]+ \| 브랜치=[^ |]+ \| 경로=[^ |]([^|]*[^ |])? \| 분류=(프로젝트설정|트랜스크립트|규칙카탈로그|지침파일) \| 베이스 항목=([0-7]{6} [0-9a-f]{40}|없음) \| 승인 항목=([0-7]{6} [0-9a-f]{40}|없음) \| 근거=[^ |]([^|]*[^ |])?$'
+}
+
+# rk_sa_rows <seg> <branch> <worktree> <head> <target rows> <out> <notes> — the
+# `강제 표면 승인` rows the new manifest writes right under this segment's
+# adoption row, appended to <out>, and one notice line per carried row
+# appended to <notes>. Reads the current MANIFEST (the previous run's copy),
+# RK_PREV, RK_PL and the `--asked` file. Three sources, in this order:
+#   (가) the previous manifest's rows of this segment and branch, byte for byte;
+#   (나) the previous ledger's standing rows of this segment on this branch —
+#        the gate's reader leaves out a row whose `중단 답` is not there —
+#        rewritten as manifest rows with `근거=이월 <run> 원장 <line>`, the
+#        last row of a path when there are several;
+#   (다) on a person's re-kickoff only, the listing rows of a `승인 <sha256>`
+#        answer to `강제 표면 <seg>`, with `근거=킥오프 확인`, written only
+#        when the listing made again here is the one that answer saw.
+# One row per path: a later source replaces an earlier one, since its answer
+# is the later person's. Returns 1 with RK_SA_WHY set when a row cannot be
+# derived; nothing is written to <out> then.
+rk_sa_rows() {
+  local seg="$1" br="$2" wt="$3" hd="$4" trows="$5" out="$6" notes="$7"
+  local lst="$RK_TMP/sa.$seg.list" lrc=0 bref led r p ln ans rows v ent kind
+  RK_SA_WHY=''
+  : > "$lst"
+  if bref=$(rk_sa_base_ref "$seg" "$wt" "$trows"); then
+    bash "$RK_DIR/enforcement-surface-screen.sh" --between "$wt" "$bref" "$hd" < /dev/null > "$lst" 2>/dev/null || lrc=$?
+  else
+    lrc=2
+  fi
+  [ "$lrc" = 0 ] || : > "$lst"
+  # (가)
+  : > "$RK_TMP/sa.a"
+  while IFS= read -r r; do
+    [ -n "$r" ] || continue
+    [ "$(manifest_row_fields "$r" '세그먼트')" = "$seg" ] && [ "$(manifest_row_fields "$r" '브랜치')" = "$br" ] || continue
+    printf '%s\t%s\n' "$(manifest_row_fields "$r" '경로')" "$r" >> "$RK_TMP/sa.a"
+  done <<EOF
+$(manifest_surface_approval_rows)
+EOF
+  # (나)
+  : > "$RK_TMP/sa.b0"
+  led=$(rk_gate sa-ledger "$MANIFEST" "$RK_PREV" "$RK_PRD" "$RK_PL" "$RK_PG" "$RK_TMP/sa.err" "$seg")
+  if [ "$led" = '판정불가' ]; then
+    RK_SA_WHY="세그먼트 $seg 의 원천 원장 강제 표면 승인 행을 읽지 못했습니다"
+    return 1
+  fi
+  while IFS= read -r r; do
+    [ -n "$r" ] || continue
+    [ "$(manifest_row_fields "$r" '브랜치')" = "$br" ] || continue
+    ln=$(grep -nxF -- "$r" "$RK_PL" 2>/dev/null | tail -n 1 | cut -d: -f1)
+    rk_num "$ln" || { RK_SA_WHY="세그먼트 $seg 의 원장 강제 표면 승인 행의 줄을 원천 원장에서 찾지 못했습니다"; return 1; }
+    p=$(manifest_row_fields "$r" '경로')
+    v=$(printf -- '- `강제 표면 승인` | 세그먼트=%s | 브랜치=%s | 경로=%s | 분류=%s | 베이스 항목=%s | 승인 항목=%s | 근거=이월 %s 원장 %s' \
+          "$seg" "$br" "$p" "$(manifest_row_fields "$r" '분류')" "$(manifest_row_fields "$r" '베이스 항목')" \
+          "$(manifest_row_fields "$r" '승인 항목')" "$RK_PREV" "$ln")
+    rk_sa_row_ok "$v" || { RK_SA_WHY="세그먼트 $seg 의 원장 강제 표면 승인 행(원장 $ln 줄)을 매니페스트 행으로 옮길 수 없습니다"; return 1; }
+    printf '%s\t%s\n' "$p" "$v" >> "$RK_TMP/sa.b0"
+  done <<EOF
+$led
+EOF
+  awk -F '\t' '{ r[NR] = $0; k[NR] = $1; last[$1] = NR } END { for (i = 1; i <= NR; i++) if (last[k[i]] == i) print r[i] }' \
+    "$RK_TMP/sa.b0" > "$RK_TMP/sa.b"
+  # (다)
+  : > "$RK_TMP/sa.c"
+  if [ "$RK_AUTO" != "1" ]; then
+    ans=$(rk_asked_answer "강제 표면 $seg")
+    if printf '%s\n' "$ans" | grep -qxE '승인 [0-9a-f]{64}'; then
+      [ "$lrc" = 0 ] \
+        || { RK_SA_WHY="세그먼트 $seg 의 강제 표면 목록을 다시 만들지 못했습니다 — 승인 답을 행으로 옮기지 않습니다"; return 1; }
+      [ "$(rk_sha "$lst")" = "${ans#승인 }" ] \
+        || { RK_SA_WHY="세그먼트 $seg 의 강제 표면 목록이 질문 때 보인 것과 다릅니다 — 강제 표면 $seg 를 다시 묻습니다"; return 1; }
+      awk -F '\t' -v s="$seg" -v b="$br" '$5 == "승인 가능" {
+          printf "%s\t- `강제 표면 승인` | 세그먼트=%s | 브랜치=%s | 경로=%s | 분류=%s | 베이스 항목=%s | 승인 항목=%s | 근거=킥오프 확인\n", $1, s, b, $1, $2, $3, $4
+        }' "$lst" > "$RK_TMP/sa.c"
+    fi
+  fi
+  # One row per path, the later source first.
+  rows=$(awk -F '\t' '
+      FILENAME == ARGV[3] { c[$1] = 1; out3[++n3] = $0; next }
+      FILENAME == ARGV[2] { b[$1] = 1; out2[++n2] = $0; next }
+      { out1[++n1] = $0 }
+      END {
+        for (i = 1; i <= n1; i++) { split(out1[i], f, "\t"); if (!(f[1] in b) && !(f[1] in c)) print "1\t" out1[i] }
+        for (i = 1; i <= n2; i++) { split(out2[i], f, "\t"); if (!(f[1] in c)) print "2\t" out2[i] }
+        for (i = 1; i <= n3; i++) print "3\t" out3[i]
+      }' "$RK_TMP/sa.a" "$RK_TMP/sa.b" "$RK_TMP/sa.c")
+  while IFS="$TAB" read -r kind p r; do
+    [ -n "$kind" ] || continue
+    printf '%s\n' "$r" >> "$out"
+    [ "$kind" = 3 ] && continue
+    # The notice for a carried row: the listing made here says whether the
+    # branch and the base still hold the approved bytes, judged by the gate.
+    if [ "$lrc" != 0 ]; then v='판정 불가'
+    else
+      ent=$(awk -F '\t' -v p="$p" '$1 == p' "$lst" | head -n 1)
+      if [ -z "$ent" ]; then v='이어받음'
+      else
+        case "$(printf '%s' "$ent" | cut -f5)" in
+          '승인 가능')
+            case "$(rk_gate sa-verdict "$MANIFEST" "$RK_PREV" "$RK_PRD" "$RK_PL" "$RK_PG" "$RK_TMP/sa.err" \
+                      "$p" "$(printf '%s' "$ent" | cut -f4)" "$(printf '%s' "$ent" | cut -f3)" "$(printf '%s' "$ent" | cut -f3)" "$r")" in
+              "승인 가능${TAB}맞음") v='이어받음' ;;
+              판정불가) v='판정 불가' ;;
+              *) v='내용 다름' ;;
+            esac ;;
+          *) v='내용 다름' ;;
+        esac
+      fi
+    fi
+    printf '강제 표면 승인 알림\t%s\t%s\t%s\n' "$v" "$seg" "$p" >> "$notes"
+  done <<EOF
+$rows
 EOF
   return 0
 }
@@ -2581,8 +2780,10 @@ rk_render() {
     /^- `사전 인가` \| 이어받은 런=/ { next }
     # The adoption rows of the previous run are never carried: an adoption row
     # of this run is one derived again at this call, written when the section
-    # closes.
+    # closes. The `강제 표면 승인` rows go with them and are written again under
+    # the adoption rows they belong to, so a segment not adopted keeps none.
     /^- `세그먼트 입양`/ { next }
+    /^- `강제 표면 승인`/ { next }
     # The plugin rows of the previous run are carried in place, byte for byte,
     # except a row whose key is now in the seed or judged not installed.
     # Dropping a row only narrows the successor.
@@ -2821,9 +3022,15 @@ rk_render_manifest() {
     approval=$(rk_asked_answer '5l')
     if [ -z "$approval" ]; then approval=$(rk_trim "$RK_ARG"); [ -n "$approval" ] || approval='/cc-cmds:autopilot'; fi
   fi
+  # The seat asks nothing, so an approval answer on its link is one nobody gave.
+  if [ "$RK_AUTO" = "1" ] && [ -n "$RK_ASKED" ] && awk -F '\t' '$1 ~ /^강제 표면 / { f = 1 } END { exit !f }' "$RK_ASKED"; then
+    rk_refuse "좌석은 강제 표면 승인을 묻지 않습니다 — --asked 에 강제 표면 키가 있습니다"
+  fi
   # The adoption rows, derived again here over the targets the draft carries:
   # every candidate on the seat's link, and each candidate a person answered
-  # `이어받기` otherwise.
+  # `이어받기` otherwise. Right under each one, the `강제 표면 승인` rows that
+  # segment carries (rk_sa_rows).
+  : > "$RK_TMP/sa.notes"
   if [ "$RK_NOADOPT" != "1" ]; then
     local trows kind seg cb cw cn ch
     if [ -n "$RK_TARGETS" ]; then trows=$(grep -E '^- `target`' "$RK_TARGETS" 2>/dev/null || true); else trows=$(manifest_targets); fi
@@ -2835,6 +3042,7 @@ rk_render_manifest() {
         continue
       fi
       { rk_adopt_row "$seg" "$cb" "$cw" "$cn"; printf '\n'; } >> "$RK_ADOPT_ROWS"
+      rk_sa_rows "$seg" "$cb" "$cw" "$ch" "$trows" "$RK_ADOPT_ROWS" "$RK_TMP/sa.notes" || rk_fail "$RK_SA_WHY"
     done <<EOF
 $(rk_adopt_candidates "$trows" full)
 EOF
@@ -2855,6 +3063,11 @@ EOF
   done <<EOF
 $RK_PA_UNSURE
 EOF
+  # One line per carried `강제 표면 승인` row: `이어받음` when the new run's
+  # check will let it through, `내용 다름` when the branch or the base no longer
+  # holds the approved bytes (the row is carried and lets nothing through), and
+  # `판정 불가` when the listing could not be made.
+  cat "$RK_TMP/sa.notes" >&2
   cat "$RK_TMP/draft.md"
   exit 0
 }
@@ -3526,6 +3739,62 @@ $(awk -F '\t' '$1 ~ /^입양 / { print substr($1, length("입양 ") + 1) }' "$RK
 EOF
   fi
   vs_check 입양 "$why"
+
+  # 13b — the `강제 표면 승인` rows: right under the adoption row of their
+  # segment and nowhere else, and under each adoption row exactly the rows
+  # rk_sa_rows derives again here over the previous manifest, the previous
+  # ledger and this call's `--asked` file. A row only the draft holds is
+  # refused — a new approval stands only on a person's `강제 표면 <seg>`
+  # answer, which the seat's link never carries.
+  local sa_all sa_blk sa_exp sa_act sa_saved
+  why=""
+  if [ "$RK_AUTO" = "1" ]; then
+    awk -F '\t' '$1 ~ /^강제 표면 / { f = 1 } END { exit !f }' "$RK_ASKED" \
+      && why="${why:+$why; }좌석은 강제 표면 승인을 묻지 않습니다 — --asked 에 강제 표면 키가 있습니다"
+  else
+    while IFS= read -r akey; do
+      [ -n "$akey" ] || continue
+      printf '%s\n' "$arows" | { grep -F -- "| 세그먼트=$akey |" || true; } | grep -q . \
+        || why="${why:+$why; }강제 표면 $akey 는 입양 행이 없는 세그먼트의 키입니다"
+    done <<EOF
+$(awk -F '\t' '$1 ~ /^강제 표면 / { print substr($1, length("강제 표면 ") + 1) }' "$RK_ASKED" | awk '!seen[$0]++')
+EOF
+  fi
+  sa_all=$(MANIFEST="$draft" manifest_surface_approval_rows)
+  sa_blk=$(awk '
+      /^## / { sec = $0; inb = 0; next }
+      sec == "## 인가" && /^- `세그먼트 입양`/ { inb = 1; next }
+      sec == "## 인가" && inb && /^- `강제 표면 승인`/ { print; next }
+      { inb = 0 }' "$draft")
+  [ "$sa_all" = "$sa_blk" ] || why="${why:+$why; }입양 행 바로 아래가 아닌 강제 표면 승인 행이 있습니다"
+  sa_saved="${MANIFEST:-}"
+  MANIFEST="$prev"
+  while IFS= read -r arow; do
+    [ -n "$arow" ] || continue
+    akey=$(manifest_row_fields "$arow" '세그먼트' | head -n 1)
+    : > "$RK_TMP/vs.sa.exp"
+    cline=$(printf '%s\n' "$cands" | awk -F '\t' -v k="$akey" '$1 == "입양후보" && $2 == k')
+    if [ -n "$cline" ]; then
+      IFS="$TAB" read -r _ _ cb cw cn ch _ <<EOF
+$cline
+EOF
+      if ! rk_sa_rows "$akey" "$cb" "$cw" "$ch" "$(MANIFEST="$draft" manifest_targets)" "$RK_TMP/vs.sa.exp" "$RK_TMP/vs.sa.notes"; then
+        why="${why:+$why; }$RK_SA_WHY"; continue
+      fi
+    fi
+    sa_exp=$(cat "$RK_TMP/vs.sa.exp")
+    sa_act=$(RA_ROW="$arow" awk '
+        /^## / { sec = $0; inb = 0; next }
+        sec == "## 인가" && $0 == ENVIRON["RA_ROW"] { inb = 1; next }
+        sec == "## 인가" && inb && /^- `강제 표면 승인`/ { print; next }
+        { inb = 0 }' "$draft")
+    [ "$sa_act" = "$sa_exp" ] \
+      || why="${why:+$why; }세그먼트 $akey 의 강제 표면 승인 행이 다시 유도한 행과 다릅니다"
+  done <<EOF
+$arows
+EOF
+  MANIFEST="$sa_saved"
+  vs_check 강제표면 "$why"
 
   # Last — the previous files measured again, against the provenance row.
   why=""
