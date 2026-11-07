@@ -64839,7 +64839,7 @@ unset RV107_P2 RV107_P3 RV107_OUT RV107_JSON RV107_RC
 
 # ---------------------------------------------------------------------------
 # 112. 계정 이전 — 판정 함수의 출력, 대기·마감 초과 행과 종료 코드, 좌석 되돌림, 허용 술어
-# --- section: 112 | group: failover | covers: gate_failover_judge, gate_failover_wait, gate_relay_wait, gate_failover_row, gate_shift_launch_drop_claims, run_failover_allowed, resolve_account_seat_reverted, resolve_account, gate_seat_config_dir, gate_append | anchors: 112: 판정이 후보 상태 일곱과 고름·재개 시각을 낸다, 110: 판정불가 여섯 입력은 rc 2 이고 고름이 없다, 110: 대기는 rc 3 과 계정 이전 행 하나를 남기고 이 기동자의 점유만 지운다, 110: 같은 재개 시각의 대기는 다시 쓰지 않는다, 110: 릴레이 안의 대기는 rc 0 으로 릴레이를 잇고 relay.live 를 남긴다, 110: 릴레이는 선 깨움 키가 있어도 계정 이전 대기의 재개 시각 전에는 깨지 않는다, 110: 마감을 넘는 재개 시각은 마감 초과 행과 blocked 행이고 rc 3 이다, 110: 재개 시각 직후의 판정은 유예 대기를 한 번만 쓴다, 110: 아홉 계정이 모두 인벤토리 밖인 행도 행 상한 안이다, 110: 옮긴 교대 안에서만 좌석으로 되돌린다, 110: 계정 이전 허용 행과 라우팅 기록이 함께 있을 때만 이전 런이다 ---
+# --- section: 112 | group: failover | covers: gate_failover_judge, gate_failover_wait, gate_relay_wait, gate_failover_row, gate_shift_launch_drop_claims, run_failover_allowed, resolve_account_seat_reverted, resolve_account, gate_seat_config_dir, gate_append | anchors: 112: 판정이 후보 상태 일곱과 고름·재개 시각을 낸다, 112: 판정불가 여섯 입력은 rc 2 이고 고름이 없다, 112: 대기는 rc 3 과 계정 이전 행 하나를 남기고 이 기동자의 점유만 지운다, 112: 같은 재개 시각의 대기는 다시 쓰지 않는다, 112: 릴레이 안의 대기는 rc 0 으로 릴레이를 잇고 relay.live 를 남긴다, 112: 릴레이는 선 깨움 키가 있어도 계정 이전 대기의 재개 시각 전에는 깨지 않는다, 112: 마감을 넘는 재개 시각은 마감 초과 행과 blocked 행이고 rc 3 이다, 112: 재개 시각 직후의 판정은 유예 대기를 한 번만 쓴다, 112: 아홉 계정이 모두 인벤토리 밖인 행도 행 상한 안이다, 112: 옮긴 교대 안에서만 좌석으로 되돌린다, 112: 계정 이전 허용 행과 라우팅 기록이 함께 있을 때만 이전 런이다 ---
 #
 # 판정 함수는 라우터 문맥·분류·목록 id 를 읽고 한 줄씩 낸다. 그 셋을 서브셸에서 갈아 끼워
 # 상태 일곱과 고르기 규칙(남은 몫이 큰 쪽, 같으면 목록 순서), 재개 시각(소진 계정과 좌석
@@ -65093,9 +65093,10 @@ fo110_stage_in() {  # fo110_stage_in <라우팅 0/1> — 「설정 디렉터리|
   FO110_ROUTED="$1"
   run_routed() { [ "$FO110_ROUTED" = 1 ]; }
   gate_launch_route() { GATE_ROUTE_VERDICT=WAIT; }
+  gate_stage_launch_dir() { printf '%s' "$fo_root"; }
   gate_launch_wait() { printf '%s|%s|감독관' "$CLAUDE_CONFIG_DIR" "$CC_GATE_SHIFT_LANE"; }
   gate_stage_instructions_for_launch() { printf '%s|%s|기동' "$CLAUDE_CONFIG_DIR" "$CC_GATE_SHIFT_LANE" >&2; return 127; }
-  gate_launch_stage infra S110 implement -p x 2>&1 | tail -1
+  gate_launch_stage infra S110 implement -p x 2>&1 < /dev/null | tail -1
 }
 check "112: 옮긴 교대에서 낸 라우팅 꺼진 스테이지는 좌석 설정 디렉터리로 뜬다" \
   "$(lsr_in - "$fo110_l" - fo110_stage_in 0 2>/dev/null)" "$FO_SEAT||기동"
