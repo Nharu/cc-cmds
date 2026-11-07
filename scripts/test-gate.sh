@@ -40086,6 +40086,33 @@ HOME="$FK_H" rl_call 상한
 rl_join
 check "34w: 좌석 레인 교대가 한도로 죽으면 이전 런에서도 그 스트림의 리셋이 원소이고 재진입이 허용된다" \
   "$rc|$(cat "$RL_O/cfg.1" 2>/dev/null)|$(fk_moved_fn)" "1|$FK_H/.claude-seat|교대#1:$RL_RESETAT|y"
+# 좌석 레인 교대가 한도로 죽고 그 리셋이 마감 뒤이며 목록 계정에도 여유가 없으면 재진입은
+# 거부된다. 게이트가 그 `무기록` 뒤에 이미 `결과=대기` 를 썼다면(첫 판정 때 있던 여유가 기동
+# 전 대기 사이에 사라진 경우) 재진입은 허용되고, 재개 시각이 지난 `대기` 재발행은 rc 3 이
+# 아니라 판정에 닿아 유예한 재개 시각으로 `결과=대기` 를 다시 쓴다.
+fk_new RFOW u-b
+fk_usage 'acct("seat"; free)'
+RL_RESETAT=$((fk_now + 7200))
+rl_case foseatwait limitdie
+HOME="$FK_H" rl_call 상한
+rl_join
+fk_usage 'acct("u-b"; .exhausted_until_epoch = ($now + 7200) | .windows.five_hour.utilization = 1)'
+fk_deadline "$(rl_ep_iso "$((fk_now + 1800))")"
+check "34w: 좌석 레인 무기록 의 리셋이 마감 뒤이고 여유 계정이 없으면 재진입은 거부된다" \
+  "$rc|$(cat "$RL_O/cfg.1" 2>/dev/null)|$(fk_moved_fn)" "1|$FK_H/.claude-seat|교대#1:$RL_RESETAT|n"
+fk_prev=$((fk_now - 60))
+printf -- '- `계정 이전` | 서수=2 | 좌석 레인=~/.claude-seat | 증거=사용량 | 결과=대기 | 레인=- | 계정=- | 재개 시각=%s | 후보=u-b:소진 | 기록 시각=%s\n' \
+  "$(rl_ep_iso "$fk_prev")" "$(rl_ep_iso "$((fk_now - 600))")" >> "$CAP_LEDGER"
+check "34w: 게이트가 쓴 결과=대기 뒤에는 여유가 없어도 재진입이 허용된다" "$(fk_moved_fn | sed 's/.*|//')" "y"
+fk_w0=$(fk_rows)
+rl_case foseatwait2 cap
+RL_HOLD=5 HOME="$FK_H" rl_call 대기
+rl_join
+fk_w=$(fk_last)
+check "34w: 재개 시각이 지난 대기 재발행은 거부되지 않고 기동 없이 유예한 재개 시각으로 결과=대기 를 다시 쓴다" \
+  "$rc|$(rl_calls)|$(( $(fk_rows) - fk_w0 ))|$(row_field "$fk_w" 결과)|$(row_field "$fk_w" '재개 시각')" \
+  "0|0|1|대기|$(rl_ep_iso "$((fk_prev + 900))")"
+unset fk_prev fk_w0 fk_w
 unset fk_md fk_mr
 RL_RESETAT=''
 

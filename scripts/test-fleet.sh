@@ -1083,6 +1083,18 @@ t3_run F5 "$T2_LAUNCH" "$T3_WAIT"; printf 'handback\n' > "$WORK/xdg/cc-cmds/run/
 t3_run F6 "$T2_LAUNCH" "$T3_WAIT"; : > "$WORK/xdg/cc-cmds/run/F6/fo-rc2"
 t3_run F7 "$T2_LAUNCH" "$T3_WAIT"; : > "$WORK/xdg/cc-cmds/run/F7/fo-flip"
 t3_run F8 "$T2_LAUNCH" "$T3_WAIT"; : > "$WORK/xdg/cc-cmds/run/F8/fo-late"
+# Runs whose watcher or poller is still alive, each otherwise the F1 state: the
+# chain starts only what is not alive. FD's `watch.pid` names a live process that
+# is not `watch.sh`, which is not a watcher.
+T3L="$WORK/t3live"; mkdir -p "$T3L"
+printf '#!/usr/bin/env bash\nsleep 300 & trap "kill $!" TERM\nwait\n' > "$T3L/watch.sh"
+bash "$T3L/watch.sh" & t3_watch=$!; BG_PIDS="$BG_PIDS $t3_watch"
+sleep 300 & t3_poll=$!; BG_PIDS="$BG_PIDS $t3_poll"
+t3_run FA "$T2_LAUNCH" "$T3_WAIT"
+printf '%s' "$t3_watch" > "$WORK/xdg/cc-cmds/run/FA/watch.pid"; printf '%s\n' "$t3_poll" > "$WORK/xdg/cc-cmds/run/FA/checks.pid"
+t3_run FB "$T2_LAUNCH" "$T3_WAIT"; printf '%s' "$t3_watch" > "$WORK/xdg/cc-cmds/run/FB/watch.pid"
+t3_run FC "$T2_LAUNCH" "$T3_WAIT"; printf '%s\n' "$t3_poll" > "$WORK/xdg/cc-cmds/run/FC/checks.pid"
+t3_run FD "$T2_LAUNCH" "$T3_WAIT"; printf '%s' "$t3_poll" > "$WORK/xdg/cc-cmds/run/FD/watch.pid"
 # One run per predicate, each the F1 state with that one predicate failing.
 t3_run P1 "$T2_LAUNCH" "$T3_WAIT"
 printf '<!-- cc-run-manifest v1; run-id=P1; owner-doc=docs/x.md; origin-worktree=%s; -->\n' "$WT" > "$WORK/t2man/P1.plan.md"
@@ -1123,6 +1135,13 @@ check "좌석 한도: 정산 뒤 낼 사유가 없으면 행도 호출도 .gap �
   "$(t3n seat-limit-recall F7):$(t3n router-shift F7):$( [ -e "$PACE/reentry/F7.gap" ] && printf marked || printf none)" "0:0:none"
 check "좌석 한도: 잠금 사이에 쓰인 미래 대기는 잠금 뒤 재확인이 막는다" \
   "$(t3n seat-limit-recall F8):$(t3n router-shift F8):$( [ -e "$PACE/reentry/F8.gap" ] && printf marked || printf none)" "0:0:none"
+t3w() { printf '%s:%s' "$(grep -c "^watch $1\$" "$TEST_LOG_DIR/t2.log" 2>/dev/null || true)" "$(grep -c "^checks $1\$" "$TEST_LOG_DIR/t2-checks.log" 2>/dev/null || true)"; }
+check "좌석 한도: 워처도 폴러도 살아 있지 않은 런에는 둘 다 한 번씩 띄운다" "$(t3w F1)" "1:1"
+check "좌석 한도: 워처와 폴러가 살아 있는 런에는 아무것도 더 띄우지 않고 부른다" "$(t3w FA):$(t3n router-shift FA)" "0:0:1"
+check "좌석 한도: 워처만 살아 있는 런에는 폴러만 띄운다" "$(t3w FB)" "0:1"
+check "좌석 한도: 폴러만 살아 있는 런에는 워처만 띄운다" "$(t3w FC)" "1:0"
+check "좌석 한도: watch.pid 가 워처가 아닌 프로세스를 가리키면 워처로 보지 않는다" "$(t3w FD)" "1:1"
+unset -f t3w
 check "좌석 한도: 부팅 표지는 읽지도 옮기지도 않는다" \
   "$(cat "$PACE/reentry/F1.boot" 2>/dev/null)" "$T3BOOT"
 for p in P1 P2 P3 P4 P5 P6 P7 P8 P9 PA PB PC; do
@@ -1141,8 +1160,8 @@ T3BOOT2=$(( T3BOOT + 60 ))
 FLEET_REENTRY_PAUSE_TEST_SECONDS=0 CC_SYSCTL_TEST_VALUES="kern.boottime=$T3BOOT2" ORCH_HOST_OS=Darwin fleet dispatch u1 >/dev/null 2>"$WORK/t3-3.err"
 check "좌석 한도: 그 뒤의 부팅 재진입은 막히지 않는다" \
   "$(grep -c '^reentry F5 사유=대기 ' "$TEST_LOG_DIR/t3.log" || true):$(cat "$PACE/reentry/F5.boot" 2>/dev/null)" "1:$T3BOOT2"
-kill "$t3_relay" 2>/dev/null || true
-rm -rf "$WORK"/xdg/cc-cmds/run/F? "$WORK"/xdg/cc-cmds/run/P?
+kill "$t3_relay" "$t3_watch" "$t3_poll" 2>/dev/null || true
+rm -rf "$WORK"/xdg/cc-cmds/run/F? "$WORK"/xdg/cc-cmds/run/P? "$T3L"
 
 # The real gate, not the fake: the functions the tick lifts from `fleet.sh` run
 # against the gate this tree ships, so the two cannot drift apart unseen.

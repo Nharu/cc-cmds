@@ -1287,9 +1287,11 @@ fleet_start_watch() {
   # is a gate call of the re-entry like any other; the watcher and the poller
   # do not carry it. A seventh argument `poller` starts the poller alone: a
   # re-entry whose relay came back because the poller died restarts that one
-  # and not a second watcher beside the first. A seventh argument `no-master`
-  # starts everything but the master observer child: a repair run started by
-  # an observer child is watched by that child already.
+  # and not a second watcher beside the first. A seventh argument `no-poller`
+  # starts everything but the poller: a re-entry whose poller is alive and whose
+  # watcher is not restarts the watcher and not a second poller. A seventh
+  # argument `no-master` starts everything but the master observer child: a
+  # repair run started by an observer child is watched by that child already.
   #
   # THE OBSERVER CHILD is `fleet.sh master-watch`, from this copy of the file
   # and not the run's pinned gate directory, on the lane this job dispatches
@@ -1303,7 +1305,7 @@ fleet_start_watch() {
     mkdir -p "$run_dir"
     bash "$pdir/watch.sh" --run-dir "$run_dir" --ledger "$ledger" --stall 1200 --interval 60 --after-stage 120 --run-open 300 --silence 300 > "$run_dir/watch.log" 2>&1 < /dev/null &
   fi
-  if [ "$only" = "" ] && [ -n "${FLEET_LANE:-}" ]; then
+  if { [ "$only" = "" ] || [ "$only" = "no-poller" ]; } && [ -n "${FLEET_LANE:-}" ]; then
     bash "$FLEET_DIR/fleet.sh" master-watch "$FLEET_LANE" "$$" "$(cc_proc_fingerprint "$$")" > "$run_dir/master-watch.log" 2>&1 < /dev/null &
   fi
   # THE POLLER BELONGS ON THIS PATH, NOT ONLY ON THE SUPERVISED ONE. The CI
@@ -1315,6 +1317,7 @@ fleet_start_watch() {
   # reads as "nothing recorded", which the gate passes — so the absence is
   # byte-identical to a green night. Interval is pinned to 60 for the same
   # reason the watcher's is: they are one threshold, not two.
+  [ "$only" != "no-poller" ] || return 0
   bash "$pdir/checks.sh" --run-dir "$run_dir" --ledger "$ledger" --manifest "$manifest" --interval 60 > "$run_dir/checks.log" 2>&1 < /dev/null &
   return 0
 }
@@ -1383,6 +1386,19 @@ fleet_reentry_poller_live() {
   p=$( { cat "$1/checks.pid" 2>/dev/null || true; } | tr -d '[:space:]')
   case "$p" in ''|*[!0-9]*) return 1 ;; esac
   cc_pid_exists "$p"
+}
+
+fleet_reentry_watcher_live() {
+  # fleet_reentry_watcher_live <run dir> — a bare pid in `watch.pid` that exists
+  # and runs `watch.sh`. The watcher rewrites that file with its own pid on
+  # every pass and never removes it, so a finished watcher leaves its pid
+  # behind; the command test keeps a pid the system handed to another process
+  # from reading as a live watcher, which would leave the run with none.
+  local p
+  p=$( { cat "$1/watch.pid" 2>/dev/null || true; } | tr -d '[:space:]')
+  case "$p" in ''|*[!0-9]*) return 1 ;; esac
+  cc_pid_exists "$p" || return 1
+  ps -p "$p" -o command= 2>/dev/null | grep -q 'watch\.sh'
 }
 
 fleet_reentry_driven_since() {
@@ -1704,7 +1720,20 @@ fleet_reentry_run() {
       -- "사유=$reason" "레이블=$lane" "열쇠=$key" > /dev/null 2>&1 \
       || fleet_log "좌석 한도 $lane: $id 의 좌석 한도 재호출 행을 쓰지 못했다 — 호출은 그대로 낸다"
   fi
-  ( cd "$R_WT" 2>/dev/null || cd /; fleet_start_watch "$R_HOME" "$pdir" "$R_MAN" "$rd" "$ledger" "$R_MARK" )
+  # ONLY WHAT IS NOT ALIVE IS STARTED. Neither `watch.sh` nor `checks.sh`
+  # refuses a second copy of itself, and the seat-limit trigger comes back at
+  # every resume time and every grace of a failover wait, so starting both on
+  # every call would stack one watcher and one poller per call until they idle
+  # out. A boot leaves neither alive, so the boot trigger still starts both.
+  if ! fleet_reentry_watcher_live "$rd"; then
+    if fleet_reentry_poller_live "$rd"; then
+      ( cd "$R_WT" 2>/dev/null || cd /; fleet_start_watch "$R_HOME" "$pdir" "$R_MAN" "$rd" "$ledger" "$R_MARK" no-poller )
+    else
+      ( cd "$R_WT" 2>/dev/null || cd /; fleet_start_watch "$R_HOME" "$pdir" "$R_MAN" "$rd" "$ledger" "$R_MARK" )
+    fi
+  elif ! fleet_reentry_poller_live "$rd"; then
+    ( cd "$R_WT" 2>/dev/null || cd /; fleet_start_watch "$R_HOME" "$pdir" "$R_MAN" "$rd" "$ledger" "$R_MARK" poller )
+  fi
   fleet_log "재진입 $lane: $id — 계기 $trig · 사유 $reason 로 교대를 부른다 (레인 $R_HOME)"
 
   # THE CALL, IN THE FOREGROUND: the label template does not abandon its

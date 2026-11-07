@@ -60728,6 +60728,15 @@ gate_relay_reentry_allowed() {
   # reads the moved lane as `죽은 교대`; once it has passed, that account may be
   # picked again. A moved shift that died with no clock stays refused, as any
   # other clock-less death.
+  #
+  # A FAILOVER WAIT THE GATE WROTE IS WAITED IN TOO. Once the latest `계정 이전`
+  # row after that `무기록` reads `결과=대기` (`cc_failover_wait_resume`), the
+  # gate has already judged the lanes and chosen to wait, and the next judgment
+  # decides again: a move, a new `결과=대기`, the grace, or `마감 초과`. The seat's
+  # re-issue after a hold, the relay's launch at the resume time and the fleet
+  # tick's probe all reach that judgment through here, so the reset, the
+  # deadline and room are not asked again: asking them would refuse with rc 3
+  # before any of those rows is written, whatever the resume time.
   local st n at
   [ -n "${LEDGER:-}" ] && [ -f "$LEDGER" ] || return 1
   # `이월` waits too: for the deadline, after which the successor ends the run
@@ -60749,6 +60758,7 @@ gate_relay_reentry_allowed() {
   n=$( { LC_ALL=C grep -E '^- `교대 기동` ' "$LEDGER" 2>/dev/null || true; } | tail -1)
   n=$(gate_row_field "$n" '서수')
   case "$n" in ''|*[!0-9]*) return 1 ;; esac
+  if run_failover_allowed 2>/dev/null && [ -n "$(cc_failover_wait_resume "$LEDGER")" ]; then return 0; fi
   at=$(gate_cut_key_reset_at "교대#$n")
   if gate_failover_moved_shift "$n"; then [ -n "$at" ]; return; fi
   # IN A FAILOVER RUN THE TEST IS THE DEADLINE OR ROOM, NOT THE HORIZON. A
