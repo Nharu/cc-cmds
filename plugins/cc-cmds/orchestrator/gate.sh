@@ -30038,11 +30038,26 @@ gate_surface_provenance() {
   # cannot be found refuses, because what it covered can no longer be shown.
   # Rows carried in by an adoption (`출처 런`) are not counted — a seat apply of
   # another run is that run's trust, not this one's.
+  #
+  # A REVIEW-ONLY SEGMENT AT ITS PINNED HEAD IS NOT CHECKED. Its worktree is a
+  # detached checkout of someone else's pull request at the `고정 헤드` the
+  # planning row recorded, so the surfaces that pull request changed are what
+  # the review reads, not changes this run would have to approve. The check is
+  # skipped only while the worktree HEAD equals that pin and both are readable:
+  # once anything moves the HEAD, the exemption is off and the ordinary check
+  # refuses again. Every caller gets the same answer because it lives here.
   local seg="$1" al="${2:-}" wt bref bend mb mbrc=0 lst rc=0 out='' line cls p eh eb em s es found ok
-  local shas='' r row tch anchored
+  local shas='' r row tch anchored rohead ropin
   wt=$(gate_segment_worktree "$seg")
   case "$wt" in ''|-) return 0 ;; esac
   [ -d "$wt" ] || return 0
+  if gate_segment_review_only "$seg"; then
+    rohead=$(cd "$wt" && git rev-parse --verify -q 'HEAD^{commit}' 2>/dev/null) || rohead=''
+    ropin=$(gate_segment_kept_field "$seg" '고정 헤드')
+    if [ -n "$rohead" ] && [ -n "$ropin" ] && [ "$rohead" = "$ropin" ]; then
+      return 0
+    fi
+  fi
   if ! gate_es true; then
     printf '%s\t%s\n' '-' '분류 라이브러리를 읽을 수 없어 판정 불가'
     return 2

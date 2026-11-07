@@ -5,6 +5,15 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.36.4] - 2026-11-07
+
+리뷰어 런의 리뷰전용 세그먼트가 고정 헤드에 그대로 서 있으면 강제 표면 출처 검사를 건너뛴다. 리뷰할 PR 이 `CLAUDE.md` 같은 강제 표면을 바꾸면 그 변경이 좌석 적용 커밋 없이 바뀐 것으로 읽혀, cone 시드가 리뷰전용 세그먼트를 `blocked` 행으로 막았다.
+
+### Fixed
+
+- **리뷰전용 세그먼트의 출처 검사** — `gate_surface_provenance` 가 리뷰전용 세그먼트이고 워크트리 HEAD 가 계획 행의 `고정 헤드` 와 같을 때(둘 다 읽힐 때) 0 을 돌려준다. 읽기 동사 `surface-provenance`, cone 시드, 리뷰 파견, 머지 행위가 모두 같은 답을 받는다. HEAD 가 고정 헤드에서 움직이거나 고정 헤드를 읽지 못하면 지금처럼 검사해 차단한다. 구현 세그먼트의 동작은 바뀌지 않는다.
+- **시험** — test-gate 절 34ro 가 고정 헤드의 리뷰전용 세그먼트는 통과하고 cone 시드 뒤 `blocked` 행이 없음을, HEAD 를 옮기면 거절되고 막힘을, 같은 변경의 구현 세그먼트는 그대로 막힘을, 고정 헤드가 없는 리뷰전용 행은 면제되지 않음을 단언한다.
+
 ## [3.36.3] - 2026-11-07
 
 리뷰어 런의 리뷰 게시가 전용 쓰기 자격이 없는 호스트에서 정지하지 않는다. 지금까지는 게시 행위가 전용 쓰기 자격(`CC_GATE_TOKEN_RW` 또는 키체인 `cc-cmds-autopilot`/`write`)을 읽지 못하면 그 자리에서 「리뷰 게시 거절」로 멈췄고, 정지 문면은 원인이 이 호스트의 자격 부재라는 것을 말하지 않았다.
