@@ -37473,7 +37473,7 @@ check "34s: 미리보기의 diff 가 적용된 커밋의 diff 와 같다" \
 # THE SAME FRAME DOES NOT APPROVE TWICE.
 sap_mark
 sap_ans "$SAP_OK" 사람
-sap_refused "같은 프레임의 두 번째 좌석 적용" 'already approved a seat apply'
+sap_refused "같은 프레임의 두 번째 좌석 적용" 'already approved a halt record'
 
 # THE ROW FAILS, AND THE COMMIT GOES WITH IT.
 SAP_RB="$CAP_DIR/halt/SAP#21.md"
