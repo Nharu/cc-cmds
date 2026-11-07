@@ -596,6 +596,22 @@ hook_lane_tail_verdict() {
   return 0
 }
 
+hook_visual_lane_verdict() {
+  # hook_visual_lane_verdict <절대 철자> — 문서 단위 레인 기록
+  # (`<base>/docs/visual-lane/<slug>.md`). 캔버스 이관이 끝난 시각 발행 스테이지의
+  # 행을 닫을 때 게이트만 쓰고, 같은 문서의 다음 런이 이 기록의 레인으로 고정한다 —
+  # 스테이지가 쓰면 다음 런의 고정 레인을 스스로 고르는 셈이다. 대소문자를 접는
+  # 파일 시스템이라 접어서 비교한다. 게이트의 `gate_visual_lane_doc_spelling` 이
+  # Bash 쪽의 같은 거부다.
+  local lc
+  lc=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
+  case "$lc" in
+    */docs/visual-lane|*/docs/visual-lane/*)
+      deny "$(jstr 'gate: the document-level migration record is the gate'"'"'s to write, when it closes a visual publish stage whose canvas migration finished — a stage does not write under docs/visual-lane/')" ;;
+  esac
+  return 0
+}
+
 hook_suffix_verdict() {
   # hook_suffix_verdict <절대 철자> — 앵커를 변수로 잡을 수 없어 어휘 계층만 있는
   # 접미 글롭들. 같은 이유로 함수이고, 호출자는 철자를 접은 단계마다 하나씩이다.
@@ -604,18 +620,10 @@ hook_suffix_verdict() {
   # 여기서는 그 토큰으로 문면만 고른다 — 게이트·드라이버·탐지 도구가 같은 분류를
   # 소싱하므로 팔이 늘면 모두가 함께 따라간다. 분류기를 적재하지 못했으면 판정할
   # 수 없다는 것이고, 그것은 허용이 아니다.
-  local es_tok es_route lc
-  # 문서 단위 레인 기록(`<base>/docs/visual-lane/<slug>.md`). 캔버스 이관이 끝난
-  # 시각 발행 스테이지의 행을 닫을 때 게이트만 쓰고, 같은 문서의 다음 런이 이
-  # 기록의 레인으로 고정한다 — 스테이지가 쓰면 다음 런의 고정 레인을 스스로 고르는
-  # 셈이다. 대소문자를 접는 파일 시스템이라 접어서 비교하고, 1차 철자와 접힌 철자
-  # 두 패스가 모두 이 함수를 지나므로 말단 심링크도 같은 팔에 걸린다. 게이트의
-  # `gate_visual_lane_doc_spelling` 이 Bash 쪽의 같은 거부다.
-  lc=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
-  case "$lc" in
-    */docs/visual-lane|*/docs/visual-lane/*)
-      deny "$(jstr 'gate: the document-level migration record is the gate'"'"'s to write, when it closes a visual publish stage whose canvas migration finished — a stage does not write under docs/visual-lane/')" ;;
-  esac
+  local es_tok es_route
+  # 레인 기록 거부는 여기서 부른다. 1차 철자와 접힌 철자 두 패스가 모두 이 함수를
+  # 지나므로 말단 심링크도 같은 거부에 걸린다.
+  hook_visual_lane_verdict "$1"
   [ "$ES_OK" = 1 ] \
     || deny "$(jstr 'gate: the enforcement surface classifier next to this hook could not be loaded, so this edit cannot be judged — cannot judge is not allow')"
   es_tok=$(es_class "$1") || return 0
