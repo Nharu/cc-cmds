@@ -219,6 +219,14 @@
 #                    manifest's design document, one per line in document
 #                    order, or `문서 판독 불가 — <reason>`; empty when none
 #                    does. Writes nothing
+#   gate.sh pr-links --manifest <path> --segment <id>
+#                    prints the lines a pull request of the segment carries
+#                    under `## 관련 이슈·티켓`, one per `출처 티켓` row in row
+#                    order: `Closes <owner>/<name>#<N>` on the last segment by
+#                    merge order and `Refs <owner>/<name>#<N>` on the others for
+#                    a github row, `원 티켓: <URL>` on every segment for a
+#                    clickup row; empty on a manifest with no such row. Writes
+#                    nothing
 #   gate.sh seat-apply-preview --manifest <path> --record <halt record> [--target <alias>]
 #                    for a `Step 3 강제 표면 좌석 적용` halt record: prints the
 #                    record digest, the `--numstat` and unified diff of the
@@ -7162,15 +7170,15 @@ surface_of_argv0() {
     clickup-relate.py)
       printf '외부상태변경' ;;
     # The base split helper is graded by its subcommand, which is its first
-    # argument. `check` only reads the document; `plan` writes its plan file
-    # under the run directory; `record` rewrites the ticket registry beside the
-    # document. Anything else is a spelling the helper refuses, and it takes the
-    # highest of the three rather than a guess.
+    # argument. `check` and `fence-check` only read; `plan` writes its plan file
+    # under the run directory; `record`, `child-doc` and `revise` write the
+    # registry or a document. Anything else is a spelling the helper refuses, and
+    # it takes the highest of the three rather than a guess.
     base-split.py)
       case "${1:-}" in
-        check)  printf '읽기' ;;
-        plan)   printf '트리밖쓰기' ;;
-        *)      printf '워크트리쓰기' ;;
+        check|fence-check) printf '읽기' ;;
+        plan)              printf '트리밖쓰기' ;;
+        *)                 printf '워크트리쓰기' ;;
       esac ;;
     # The stage rules helper. `status` only reads the instruction file it is
     # given and prints counts. `extract --out-dir` writes the run's snapshot and
@@ -16749,6 +16757,9 @@ gate_snapshot() {
   # sends and whether the audit carries `--base` and a split follows. A plan
   # frozen before the field existed has no key and reads as `single`.
   printf '  "design_scope": "%s",\n' "$(gate_snapshot_design_scope)"
+  # THE DELIVERY SHAPE, because `tickets` ends a single-scope run at the split
+  # the same way a base scope does. A plan with no key reads as `slices`.
+  printf '  "design_delivery": "%s",\n' "$(gate_snapshot_design_delivery)"
   # THE DESIGN SKILL, so a shift sends `/cc-cmds:<design_skill>` rather than
   # mapping scope and tier itself. The value is `manifest_design_skill`'s, the
   # same function the driver's design arm and the design-dispatch check below
@@ -16960,6 +16971,23 @@ gate_snapshot_design_scope() {
     base) printf 'base' ;;
     *) printf 'single' ;;
   esac
+}
+
+gate_snapshot_design_delivery() {
+  # `slices` or `tickets`. An absent key, an unparsable plan block and a value
+  # outside the two all read `slices` — the shape every run had before the field.
+  local v
+  v=$( { manifest_plan_json 2>/dev/null | jq -r '.design_delivery // "slices"' 2>/dev/null; } || true)
+  case "$v" in
+    tickets) printf 'tickets' ;;
+    *) printf 'slices' ;;
+  esac
+}
+
+gate_split_run() {
+  # 0 when the run's graph ends at the split rather than at segments: a base
+  # scope, or a single-scope design delivered as tickets.
+  [ "$(gate_snapshot_design_scope)" = "base" ] || [ "$(gate_snapshot_design_delivery)" = "tickets" ]
 }
 
 gate_snapshot_design_skill_json() {
@@ -21503,6 +21531,13 @@ gate_main() {
       [ "$segment" != "-" ] && [ -n "$segment" ] \
         || { printf 'gate: unclosed-decisions requires --segment\n' >&2; exit 2; }
       unresolved_closure_pending "${DOC:-}" "$segment"
+      ;;
+    pr-links)
+      # Reading, not acting: the lines the shift copies under `## 관련 이슈·티켓`,
+      # the same lines the check on `gh pr create` looks for. No ledger row.
+      [ "$segment" != "-" ] && [ -n "$segment" ] \
+        || { printf 'gate: pr-links requires --segment\n' >&2; exit 2; }
+      gate_pr_links "$segment"
       ;;
     seat-apply-preview)
       # Reading, not acting: the diff a seat apply of the record would commit,
@@ -46169,6 +46204,181 @@ gate_exec_author_write_form() {
   return 0
 }
 
+gate_pr_links_last_segment() {
+  # gate_pr_links_last_segment <segment> — prints the last segment by merge
+  # order. The nodes are the document's declared slices, then the ledger's
+  # segments by first row, then the asked segment; the edges are `선행` and
+  # `머지 순서` from the declaration and the ledger alike. Each pick takes the
+  # first node in that order whose predecessors are all placed, so a tie falls
+  # to declaration order and the later-declared node ends up last. A cycle, which
+  # the plan admission refuses elsewhere, takes the first unplaced node rather
+  # than stopping.
+  local seg="$1" n d i placed=" " seen=" " last="" ready pick
+  local -a nodes=() deps=()
+  for n in $(if [ -n "${DOC:-}" ] && [ -f "${DOC:-}" ]; then slice_ids "$DOC" 2>/dev/null || true; fi) \
+           $(gate_rows 'segment' | gate_row_ids | awk '!s[$0]++') "$seg"; do
+    case "$seen" in *" $n "*) continue ;; esac
+    seen="$seen$n "
+    nodes+=("$n")
+    d=$(gate_chain_deps_of "$n")
+    if [ -n "${DOC:-}" ] && [ -f "${DOC:-}" ]; then
+      d="$d $(gate_dep_tokens "$(slice_field "$DOC" "$n" '선행' 2>/dev/null || true)") $(gate_dep_tokens "$(slice_field "$DOC" "$n" '머지 순서' 2>/dev/null || true)")"
+    fi
+    deps+=("$d")
+  done
+  local left=${#nodes[@]}
+  while [ "$left" -gt 0 ]; do
+    pick=""
+    i=0
+    while [ "$i" -lt "${#nodes[@]}" ]; do
+      n=${nodes[$i]}
+      ready=1
+      case "$placed" in *" $n "*) ready=0 ;; esac
+      if [ "$ready" = 1 ]; then
+        for d in ${deps[$i]}; do
+          case "$seen" in *" $d "*) ;; *) continue ;; esac
+          case "$placed" in *" $d "*) ;; *) ready=0; break ;; esac
+        done
+      fi
+      if [ "$ready" = 1 ]; then pick=$n; break; fi
+      i=$((i + 1))
+    done
+    if [ -z "$pick" ]; then
+      for n in "${nodes[@]}"; do
+        case "$placed" in *" $n "*) ;; *) pick=$n; break ;; esac
+      done
+    fi
+    placed="$placed$pick "
+    last=$pick
+    left=$((left - 1))
+  done
+  printf '%s' "$last"
+}
+
+gate_pr_links() {
+  # gate_pr_links <segment> — prints the segment's `## 관련 이슈·티켓` lines, one
+  # per `출처 티켓` row in row order; nothing on a manifest with no such row.
+  local seg="$1" rows row tracker ref last=""
+  rows=$(manifest_source_ticket_rows)
+  [ -n "$rows" ] || return 0
+  while IFS= read -r row; do
+    [ -n "$row" ] || continue
+    tracker=$(manifest_row_fields "$row" '트래커')
+    ref=$(manifest_row_fields "$row" '참조')
+    case "$tracker" in
+      github)
+        [ -n "$last" ] || last=$(gate_pr_links_last_segment "$seg")
+        if [ "$last" = "$seg" ]; then printf 'Closes %s\n' "$ref"; else printf 'Refs %s\n' "$ref"; fi ;;
+      clickup)
+        printf '원 티켓: %s\n' "$ref" ;;
+    esac
+  done <<ROWS
+$rows
+ROWS
+}
+
+gate_pr_create_body_args() {
+  # gate_pr_create_body_args <args of gh…> — reads the flags of a `gh pr create`
+  # the way pflag does, wherever they stand. GATE_PRC_BODIES holds each `--body`
+  # value, GATE_PRC_FILES each `--body-file` value, and GATE_PRC_OPAQUE the first
+  # flag that fills the body some other way.
+  local n=$# i=0 j w c
+  local -a a=("$@")
+  GATE_PRC_BODIES=() GATE_PRC_FILES=() GATE_PRC_OPAQUE=""
+  while [ "$i" -lt "$n" ]; do
+    w=${a[$i]}
+    i=$((i + 1))
+    case "$w" in
+      --) break ;;
+      --body=*) GATE_PRC_BODIES+=("${w#--body=}") ;;
+      --body) GATE_PRC_BODIES+=("${a[$i]:-}"); i=$((i + 1)) ;;
+      --body-file=*) GATE_PRC_FILES+=("${w#--body-file=}") ;;
+      --body-file) GATE_PRC_FILES+=("${a[$i]:-}"); i=$((i + 1)) ;;
+      --template|--recover) GATE_PRC_OPAQUE=${GATE_PRC_OPAQUE:-$w}; i=$((i + 1)) ;;
+      --fill|--fill=*|--fill-first|--fill-first=*|--fill-verbose|--fill-verbose=*|--editor|--editor=*|--web|--web=*|--template=*|--recover=*)
+        GATE_PRC_OPAQUE=${GATE_PRC_OPAQUE:-${w%%=*}} ;;
+      --attach|--base|--head|--repo|--assignee|--label|--milestone|--project|--reviewer|--title) i=$((i + 1)) ;;
+      --*) ;;
+      -?*)
+        j=1
+        while [ "$j" -lt "${#w}" ]; do
+          c=${w:j:1}
+          j=$((j + 1))
+          case "$c" in
+            e|f|w) GATE_PRC_OPAQUE=${GATE_PRC_OPAQUE:--$c} ;;
+            d|h) ;;
+            B|F|H|R|T|a|b|l|m|p|r|t)
+              local v=${w:j}
+              v=${v#=}
+              if [ "$j" -ge "${#w}" ]; then v=${a[$i]:-}; i=$((i + 1)); fi
+              case "$c" in
+                b) GATE_PRC_BODIES+=("$v") ;;
+                F) GATE_PRC_FILES+=("$v") ;;
+                T) GATE_PRC_OPAQUE=${GATE_PRC_OPAQUE:--T} ;;
+              esac
+              break ;;
+          esac
+        done ;;
+    esac
+  done
+}
+
+gate_exec_pr_create_refusal() {
+  # gate_exec_pr_create_refusal <target> <segment> <argv…> — prints why the argv
+  # is a `gh pr create` the run's `출처 티켓` rows refuse, or nothing. On a run
+  # with such a row, every pull request carries its segment's `pr-links` lines,
+  # so the body has to be one the gate can read — a `--body` value or a regular
+  # file named by `--body-file`, resolved from the directory the act runs in —
+  # and hold each line whole.
+  local alias="$1" seg="$2"
+  shift 2
+  gate_rv_unwrap "$@"
+  [ "${#GATE_RV_ARGV[@]}" -ge 2 ] && [ "${GATE_RV_ARGV[0]##*/}" = gh ] || return 0
+  gate_gh_strip_repo "${GATE_RV_ARGV[@]:1}"
+  gate_gh_group_verb ${GATE_GH_ARGV[@]+"${GATE_GH_ARGV[@]}"}
+  [ "$GATE_GH_CG" = pr ] && { [ "$GATE_GH_CV" = create ] || [ "$GATE_GH_CV" = new ]; } || return 0
+  [ -n "$(manifest_source_ticket_rows)" ] || return 0
+  if [ -z "$seg" ] || [ "$seg" = "-" ]; then
+    printf '이 호출에 --segment 가 없어 넣어야 할 줄을 정할 수 없습니다'
+    return 0
+  fi
+  gate_pr_create_body_args "${GATE_RV_ARGV[@]:1}"
+  if [ -n "$GATE_PRC_OPAQUE" ]; then
+    printf '%s 는 게이트가 읽을 수 없는 본문입니다' "$GATE_PRC_OPAQUE"
+    return 0
+  fi
+  if [ "${#GATE_PRC_BODIES[@]}" -eq 0 ] && [ "${#GATE_PRC_FILES[@]}" -eq 0 ]; then
+    printf '본문 인자가 없습니다'
+    return 0
+  fi
+  local lines line body f path dir
+  lines=$(gate_pr_links "$seg")
+  dir=$(gate_act_worktree "$alias" "$seg" 2>/dev/null) || dir=""
+  for f in ${GATE_PRC_FILES[@]+"${GATE_PRC_FILES[@]}"}; do
+    case "$f" in
+      /*) path=$f ;;
+      *) path="${dir:-.}/$f" ;;
+    esac
+    if [ "$f" = "-" ] || [ ! -f "$path" ] || [ ! -r "$path" ]; then
+      printf -- '--body-file %s 는 게이트가 읽을 수 없는 본문입니다' "$f"
+      return 0
+    fi
+    GATE_PRC_BODIES+=("$(cat "$path")")
+  done
+  for body in "${GATE_PRC_BODIES[@]}"; do
+    while IFS= read -r line; do
+      [ -n "$line" ] || continue
+      if ! printf '%s\n' "$body" | grep -Fxq -- "$line"; then
+        printf '본문에 「%s」 줄이 없습니다' "$line"
+        return 0
+      fi
+    done <<LINES
+$lines
+LINES
+  done
+  return 0
+}
+
 gate_review_only_seg_of_act() {
   # gate_review_only_seg_of_act <segment> — prints the review-only segment an
   # exec acts on: the `--segment` it names when that is one, else, on a
@@ -46284,6 +46494,12 @@ gate_verb_act() {
         warn "세그먼트 ${rv_seg} 는 리뷰 전용 세그먼트입니다 — 작성자 브랜치에 쓰는 ${rv_why} 는 받지 않습니다"
         exit "$GATE_EXIT_RULE"
       fi
+    fi
+    rv_why=$(gate_exec_pr_create_refusal "$alias" "$segment" "$@")
+    if [ -n "$rv_why" ]; then
+      warn "출처 티켓 행이 있는 런의 gh pr create 를 받지 않습니다 — ${rv_why}"
+      warn "본문을 --body 또는 --body-file <파일> 로 주고, gate.sh pr-links --manifest <매니페스트> --segment <세그먼트> 의 줄을 그대로 넣으십시오"
+      exit "$GATE_EXIT_RULE"
     fi
   fi
 
@@ -46900,8 +47116,8 @@ gate_verb_act() {
         ;;
     esac
 
-    if [ "$rs_kind" = "split" ] && [ "$(gate_snapshot_design_scope)" != "base" ]; then
-      warn "분할 스테이지는 실행 계획의 design_scope 가 base 인 런에서만 띄웁니다"
+    if [ "$rs_kind" = "split" ] && ! gate_split_run; then
+      warn "분할 스테이지는 실행 계획의 design_scope 가 base 이거나 design_delivery 가 tickets 인 런에서만 띄웁니다"
       exit "$GATE_EXIT_RULE"
     fi
 
@@ -56897,11 +57113,12 @@ gate_done_conditions() {
     if dstep=$(gate_run_scope_step design); then
       dname=$(manifest_field '요소' '설계 문서' 2>/dev/null) || dname=""
       drows=$(gate_stage_result_rows_of "$dstep")
-      # The driver names its design stage `S1design` and writes no `종류`. A base
-      # run never has a segment, so this arm is where the driver's design row
-      # has to be read too — otherwise its finished design reads as no row at all
-      # and the document it froze as one nobody will dispatch again.
-      if [ -z "$drows" ] && [ "$(gate_snapshot_design_scope)" = "base" ]; then
+      # The driver names its design stage `S1design` and writes no `종류`. A run
+      # that ends at the split never has a segment, so this arm is where the
+      # driver's design row has to be read too — otherwise its finished design
+      # reads as no row at all and the document it froze as one nobody will
+      # dispatch again.
+      if [ -z "$drows" ] && gate_split_run; then
         drows=$( { gate_rows 'stage-result' || true; } \
                  | { grep -F '세그먼트=- | 스테이지=S1design |' || true; })
       fi
@@ -56934,7 +57151,7 @@ gate_done_conditions() {
           # audit after one, is the run's next work whatever follows the audit
           # in the plan: the line names the wait, as the audit-first arm does,
           # and is not a head the disposition drops.
-          if [ -z "$dnext" ] && [ "$(gate_snapshot_design_scope)" != "base" ] \
+          if [ -z "$dnext" ] && ! gate_split_run \
              && astep=$(gate_run_scope_step audit) \
              && ! gate_audit_concluded "$astep"; then
             case "$GATE_AUDIT_WAIT" in
@@ -56943,7 +57160,7 @@ gate_done_conditions() {
                 dwhy="" ;;
             esac
           fi
-          if [ -z "$dnext" ] && [ -z "$dwait" ] && [ "$(gate_snapshot_design_scope)" != "base" ] \
+          if [ -z "$dnext" ] && [ -z "$dwait" ] && ! gate_split_run \
              && gate_plan_ends_at_design; then
             if astep=$(gate_run_scope_step audit); then
               if gate_audit_concluded "$astep"; then
@@ -56978,21 +57195,21 @@ gate_done_conditions() {
           fi
         fi
       fi
-      # A BASE RUN'S FINISHED DESIGN IS NOT A DEAD ONE. In a single run a design
-      # that ended `정상 완료` with no segment after it means the plan stopped
-      # there, and when the plan ends at the design (and its audit) that ending
-      # and the frozen document are the run's work done, judged above; in a base
-      # run it is the normal road to the audit and the split, which the base arm
-      # below judges.
+      # THE FINISHED DESIGN OF A RUN THAT ENDS AT THE SPLIT IS NOT A DEAD ONE. In
+      # any other run a design that ended `정상 완료` with no segment after it
+      # means the plan stopped there, and when the plan ends at the design (and
+      # its audit) that ending and the frozen document are the run's work done,
+      # judged above; here it is the normal road to the audit and the split,
+      # which the split arm below judges.
       #
       # So is one that was never dispatched because the document was already
-      # there and frozen. A base run kicked off again over the same document —
+      # there and frozen. Such a run kicked off again over the same document —
       # the recovery after a split stopped and a person fixed the document —
       # skips the design in both routers and the driver, so it has no design row
       # at all, and the frozen document is the same input a `정상 완료` would
       # have left. An unfrozen document keeps the line: nothing audits or splits
       # it.
-      if [ "$(gate_snapshot_design_scope)" = "base" ]; then
+      if gate_split_run; then
         if [ "$dlast" = '정상 완료' ] \
            || { [ -z "$drows" ] && [ "$dwhy" = '설계 문서가 이미 있음' ] && doc_is_frozen "${DOC:-}"; }; then
           dwhy=""
@@ -57024,10 +57241,10 @@ gate_done_conditions() {
     elif [ "$dmet" = 1 ]; then
       # The plan ended at the design (and its audit), and it froze: held.
       :
-    elif [ "$(gate_snapshot_design_scope)" = "base" ]; then
-      # A BASE RUN NEVER HAS A SEGMENT. Its graph ends at the split, so "no
-      # segment" is its normal end and the plain line below would hold it
-      # forever. What it waits on instead is the split: met when the split step's
+    elif gate_split_run; then
+      # A BASE OR TICKET-DELIVERY RUN NEVER HAS A SEGMENT. Its graph ends at the
+      # split, so "no segment" is its normal end and the plain line below would
+      # hold it forever. What it waits on instead is the split: met when the split step's
       # latest attempt carries its terminal literal and the registry is complete
       # for the current document, closed when the audit or the split will not be
       # dispatched again, and otherwise not finished yet.

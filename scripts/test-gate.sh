@@ -14237,6 +14237,136 @@ done
 check "15d-3: 사유 거둠 절이 네 표식 값을 모두 싣는다" "$rc15d3_n" "4"
 
 # ---------------------------------------------------------------------------
+# 15d-4. 티켓 배달 상위 문서에서 child-doc 이 만든 하위 문서가 세그먼트 계획까지 간다
+# --- section: 15d-4 | group: base | covers: act, plan, unclosed-decisions, unresolved_closure_pending, child-doc | anchors: 15d-4: 배정 없는 하위 문서의 슬라이스 A 가 계획됨 이다, 15d-4: 배정 없는 하위 문서의 unclosed-decisions 는 빈다, 15d-4: 배정한 하위 문서의 슬라이스 A 가 계획됨 이다, 15d-4: 배정한 하위 문서의 unclosed-decisions 가 옮겨진 항목만 찍는다, 15d-4: 티켓 밖 파일이 있는 하위 문서도 계획된다, 15d-4: T4 와 미해결 판독기가 같은 항목을 연다 ---
+#
+# 상위 문서는 분할 뒤 티켓마다 하위 런의 설계 문서가 된다. `design_required` 가 false 인
+# 구현 → 리뷰 계획이 그 문서를 그대로 받아 선언 기반 세그먼트 계획과 미결 판독을 지나는
+# 것이 이 경로의 전부이므로, 스킬 없이 명령 셋을 차례로 부른다.
+#
+# T4 대조는 같은 문서를 base-split 의 검사와 게이트의 판독기에 함께 준다. 둘의 열림
+# 판정이 갈리면 상위 문서 검사를 지난 항목이 하위 런에서 처음 막힌다.
+# ---------------------------------------------------------------------------
+td15r_bs="$repo_root/plugins/cc-cmds/orchestrator/base-split.py"
+td15r_plan='{ "design_required": false, "steps": [ { "id": "I1", "skill": "implement", "summary": "구현", "depends_on": [] }, { "id": "V1", "skill": "review", "summary": "리뷰", "depends_on": ["I1"] } ] }'
+mkdir -p "$WT/docs/pipeline-grant"
+td15r_ticket() {  # td15r_ticket <id> <제목> <종류> <선행> <제공> <소비> <소유> <설계 절> <하위 설계> <잔여> <미해결>
+  printf '### 티켓 %s — %s\n**종류**: %s\n**레포**: t/infra\n**선행**: %s\n**제공 계약**: %s\n**소비 계약**: %s\n' "$1" "$2" "$3" "$4" "$5" "$6"
+  printf '**소유 파일**: %s\n**공유 파일**: 없음\n**설계 절**: %s\n**하위 설계**: %s\n**잔여 항목**: %s\n**미해결 항목**: %s\n' "$7" "$8" "$9" "${10}" "${11}"
+  printf '**범위**: %s 의 범위.\n**완료 기준**:\n- 시험이 통과한다.\n**발행 제목**: %s 구현\n**발행 본문**:\n````text\n%s 을 맡는다.\n````\n\n' "$2" "$2" "$2"
+}
+td15r_doc() {  # td15r_doc <문서 이름> <T1 미해결 항목 값> <미해결 절 본문> [<미해결 절 앞에 넣을 줄>]
+  {
+    printf '# 상태 파일 티켓 배달\n\n**문서 종류**: 티켓 배달 설계\n**상태**: 초안\n\n'
+    printf '## 팀이 정한 요구 결정\n요구 하나: 상태 파일은 하나다.\n\n'
+    printf '## 합의된 아키텍처\n상태 파일과 그 위의 소비자.\n\n### 저장 형식\n이름과 크기.\n\n### 화면\n목록 하나.\n\n'
+    printf '## 주요 결정사항과 근거\n\n### 읽기\n읽기는 잠그지 않는다.\n\n'
+    [ -z "${4:-}" ] || printf '%s\n\n' "$4"
+    printf '## 미해결 이슈 / 트레이드오프\n\n%s\n\n' "$3"
+    printf '## 검증 기록\nV1 관측한 사실.\n\n## 구현 시 검증 항목\n\n### R1. 형식 확인\n**검증 레시피**: §저장 형식 을 본다.\n\n### R2. 화면 확인\n**검증 레시피**: §화면 을 본다.\n\n'
+    printf '## 티켓 간 계약\n\n### 계약 C1 — 형식\n**제공 티켓**: T1\n**소비 티켓**: T2\n**형태**: 파일 형식\n**인터페이스**:\n````text\nname=<이름>\n````\n\n'
+    printf '## 티켓 분할\n**티켓 수**: 2\n**임계 경로**: T1 → T2\n**병렬 폭**: 1\n**분할 사유**: 형식과 화면이 다른 시점에 나간다.\n\n'
+    printf '### 베이스 티켓\n**발행 제목**: 상태 파일 도입\n**발행 본문**:\n````text\n상태 파일을 들인다.\n````\n\n'
+    td15r_ticket T1 형식 계약 없음 C1 없음 '`src/fmt.py`' '「### 저장 형식」' '생략 가능' '「### R1. 형식 확인」' "$2"
+    td15r_ticket T2 화면 구현 T1 없음 C1 '`ui/`' '「### 화면」' '필요' '「### R2. 화면 확인」' 없음
+    printf '## 개정 이력\n없음\n'
+  } > "$WT/docs/$1.md"
+}
+td15r_child() {  # td15r_child <상위 문서 이름> <하위 문서 이름> — rc 를 남긴다
+  rm -f "$WT/docs/$2.md"
+  ( cd "$WT" && python3 "$td15r_bs" child-doc "docs/$1.md" --ticket T1 --cutpoint 머지 --out "docs/$2.md" ) >/dev/null 2>&1; rc=$?
+}
+td15r_unclosed() {  # td15r_unclosed <run id> — stdout 만
+  ( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" gate_inproc unclosed-decisions --manifest "$WORK/plan-$1.md" --segment A 2>/dev/null ) \
+    | { grep -vE '\[run\] ' || true; }
+}
+
+# 배정 없는 픽스처.
+td15r_doc td15r-none 없음 '없음'
+td15r_child td15r-none td15r-none-child
+check "15d-4: 배정 없는 상위 문서에서 child-doc 이 끝난다" "$rc" "0"
+check "15d-4: 그 하위 문서는 슬라이스 하나로 동결돼 있다" \
+  "$(grep -cxF '**상태**: 동결됨' "$WT/docs/td15r-none-child.md" || true)/$(grep -cxF '**슬라이스 수**: 1' "$WT/docs/td15r-none-child.md" || true)" "1/1"
+g15_run R15RN docs/td15r-none-child.md "$td15r_plan" -
+g15_mkwt R15RN A
+g15_plan act R15RN A 상태=계획됨 "워크트리=$(g15_wt R15RN A)"
+check "15d-4: 배정 없는 하위 문서의 세그먼트 계획이 거부 없이 끝난다" "$rc" "0"
+check "15d-4: 배정 없는 하위 문서의 슬라이스 A 가 계획됨 이다" \
+  "$(g15_row R15RN A | tr '|' '\n' | sed -n 's/^ *상태=//p' | sed 's/[[:space:]]*$//')" "계획됨"
+check "15d-4: 그 런의 세그먼트 행은 A 하나다" \
+  "$( { grep -F '`segment`' "$WT/docs/pipeline-run/R15RN.md" || true; } | grep -c . || true)" "1"
+check "15d-4: 배정 없는 하위 문서의 unclosed-decisions 는 빈다" "$(td15r_unclosed R15RN)" ""
+
+# 구현 전 결정 항목 하나를 T1 에 배정한 픽스처. 닫힌 항목을 같은 절에 두어, 옮겨지는
+# 것이 배정된 항목뿐임을 함께 본다.
+td15r_doc td15r-open '「### 구현 전 결정 하나」' '### 구현 전 결정 하나
+**상태**: 보류
+**구현 처분**: 구현 전 결정
+
+### 닫힌 항목
+**상태**: 해결 — 정함'
+td15r_child td15r-open td15r-open-child
+check "15d-4: 배정한 상위 문서에서 child-doc 이 끝난다" "$rc" "0"
+g15_run R15RO docs/td15r-open-child.md "$td15r_plan" -
+g15_mkwt R15RO A
+g15_plan act R15RO A 상태=계획됨 "워크트리=$(g15_wt R15RO A)"
+check "15d-4: 배정한 하위 문서의 세그먼트 계획이 거부 없이 끝난다" "$rc" "0"
+check "15d-4: 배정한 하위 문서의 슬라이스 A 가 계획됨 이다" \
+  "$(g15_row R15RO A | tr '|' '\n' | sed -n 's/^ *상태=//p' | sed 's/[[:space:]]*$//')" "계획됨"
+check "15d-4: 배정한 하위 문서의 unclosed-decisions 가 옮겨진 항목만 찍는다" \
+  "$(td15r_unclosed R15RO)" "### 구현 전 결정 하나"
+
+# 슬라이스 블록의 티켓 밖 파일 — 경계가 서면 선언 기반 계획은 그 파일을 그대로 받는다.
+td15r_child td15r-none td15r-out-child
+awk '{ print }
+  index($0, "**절단점**:") == 1 && !d { d = 1; print "**티켓 밖 파일**:"; print "- `extra.txt` — 형식과 같은 커밋에 가야 한다"; print "" }' \
+  "$WT/docs/td15r-out-child.md" > "$WT/docs/td15r-out-child.md.t" && mv "$WT/docs/td15r-out-child.md.t" "$WT/docs/td15r-out-child.md"
+awk 'index($0, "**선언 파일**:") == 1 { $0 = $0 ", `extra.txt`" } { print }' \
+  "$WT/docs/td15r-out-child.md" > "$WT/docs/td15r-out-child.md.t" && mv "$WT/docs/td15r-out-child.md.t" "$WT/docs/td15r-out-child.md"
+td15r_fc=$(cd "$WT" && python3 "$td15r_bs" fence-check docs/td15r-out-child.md 2>&1); rc=$?
+check "15d-4: 티켓 밖 파일이 있는 하위 문서가 경계 검사를 지난다" "$rc/$td15r_fc" "0/"
+g15_run R15RX docs/td15r-out-child.md "$td15r_plan" -
+g15_mkwt R15RX A
+g15_plan act R15RX A 상태=계획됨 "워크트리=$(g15_wt R15RX A)"
+check "15d-4: 티켓 밖 파일이 있는 하위 문서도 계획된다" "$rc" "0"
+check "15d-4: 그 슬라이스의 선언 파일이 티켓 밖 파일을 담는다" \
+  "$( ( cd "$WT" && CC_GATE_SOURCE_ONLY=1 bash -c '. "'"$GATE"'"; slice_field docs/td15r-out-child.md A "선언 파일"' ) | { grep -cF 'extra.txt' || true; } )" "1"
+
+# T4 대조 — 모든 열린 항목이 구현 전 결정이고 슬라이싱 절이 없는 상위 문서.
+td15r_doc td15r-t4 없음 '| 항목 | 상태 |
+|---|---|
+| 표 열림 | 보류 |
+| 표 닫힘 | 해결 |
+
+### 열린 보류
+**상태**: 보류
+**구현 처분**: 구현 전 결정
+
+### 해결 대기
+**상태**: 해결 대기
+**구현 처분**: 구현 전 결정
+
+### 메모 해결
+**상태**: 해결 — 정함
+
+### 해결됨 항목
+**상태**: 해결됨' '## 미해결 이슈 (앞 절)
+
+### 앞 절 항목
+**상태**: 보류
+**구현 처분**: 구현 전 결정'
+td15r_t4_out=$(cd "$WT" && python3 "$td15r_bs" check docs/td15r-t4.md 2>&1 || true)
+td15r_ucp_out=$(cd "$WT" && CC_GATE_SOURCE_ONLY=1 bash -c '. "'"$GATE"'"; unresolved_closure_pending docs/td15r-t4.md A')
+td15r_verdicts=""
+for td15r_t in '표 열림' '표 닫힘' '열린 보류' '해결 대기' '메모 해결' '해결됨 항목' '앞 절 항목'; do
+  td15r_a=닫힘; case "$td15r_t4_out" in *"$td15r_t"*) td15r_a=열림 ;; esac
+  td15r_b=닫힘; case "$td15r_ucp_out" in *"$td15r_t"*) td15r_b=열림 ;; esac
+  td15r_verdicts="$td15r_verdicts[$td15r_t $td15r_a/$td15r_b]"
+done
+check "15d-4: T4 와 미해결 판독기가 같은 항목을 연다" "$td15r_verdicts" \
+  "[표 열림 열림/열림][표 닫힘 닫힘/닫힘][열린 보류 열림/열림][해결 대기 열림/열림][메모 해결 닫힘/닫힘][해결됨 항목 닫힘/닫힘][앞 절 항목 닫힘/닫힘]"
+
+# ---------------------------------------------------------------------------
 # 15e. The audit is dispatched as a run-scope step, on preconditions the gate checks
 # --- section: 15e | group: base | covers: act, plan, wait, supervise, done-conditions | anchors: 15e: 동결된 설계 뒤 --segment - 감사 파견의 plan 이 통과한다, 15e: 감사 단계의 stage-result 행이 세그먼트=- · 스테이지=A1 · 종류=audit 이다, 15e: 설계가 끝나기 전의 감사 파견은 승인 행 없이 거부된다, 15e: 감사 단계가 없는 계획에서는 감사 면제가 서지 않는다, 15e: 미동결 문서에는 감사가 뜨지 않는다, 15e: 설계 시도가 살아 있으면 감사가 뜨지 않는다, 15e: - reconverge 와 - implement 는 여전히 거부된다, 15e: 감사 단계의 재개가 받힌다, 15e: 감사 파견이 fetch 뒤 원격 베이스 끝에 분리된 감사 워크트리를 만든다, 15e: 그 감사 워크트리는 로컬 main 끝에서 뜨지 않는다,15e: 감사 스테이지 자신의 --segment - 행위가 감사 워크트리에서 돈다, 15e: 같은 감사 단계의 재파견은 감사 워크트리를 다시 쓴다, 15e: 설계 단계가 없는 계획의 감사 파견 plan 이 동결된 문서에서 통과한다, 15e: 설계 단계가 없는 계획의 감사 행이 세그먼트=- · 스테이지=A1 · 종류=audit 로 정상 완료다, 15e: 감사 뒤 구현 단계가 남은 계획은 조건 1 이 그 단계를 든다, 15e: 감사만 있는 계획은 감사가 정상 완료로 끝나면 조건 1 이 선다 ---
 #
@@ -60040,6 +60170,292 @@ while IFS= read -r p92; do
 done < "$d92/corpus"
 check "100: 분류되는 경로는 훅이 거부하고 분류되지 않는 경로는 허용한다" "[$m92]" "[]"
 check "100: 훅의 거부가 강제 표면 문면이다 (다른 팔의 거부가 아니다)" "[$w92]" "[]"
+
+# ---------------------------------------------------------------------------
+# 89d. 티켓 배달 런은 범위가 single 이면서 분할로 끝난다
+# --- section: 89d | group: tier | covers: tier, snapshot, check_manifest, act, plan, done-conditions, gate_split_run, split_registry_complete | anchors: 89d: 검사기가 티켓 배달 계획을 통과시킨다, 89d: 검사기가 목록 밖 design_delivery 를 거부한다, 89d: 스냅숏이 design_delivery 를 tickets 로 찍는다, 89d: 설계 티어 행이 같은 계획의 slices 런과 같다, 89d: 감사가 끝나기 전의 분할 파견은 거부된다, 89d: 티켓 배달 런의 분할 파견이 정상 완료로 끝난다, 89d: 세그먼트 없이 조건 1 이 선다, 89d: slices 런의 분할 파견은 거부된다, 89d: 착수 행이 있는 레지스트리도 분할 충족이다, 89d: 사다리 잔여 동결 거부는 베이스 설계 스킬 이름에 걸린 그대로다, 89d: 사이드카 문면이 출처 티켓 행을 얼린다, 89d: 라우터 문면이 분할 파견 조건을 싣는다 ---
+#
+# 분할로 끝나는 런이 베이스 런만은 아니다. `design_delivery` 가 `tickets` 인 런은 범위가
+# single 이어서 설계 스킬과 감사 인자는 단일 설계의 것을 쓰고, 그래프와 끝은 베이스 런의
+# 것을 쓴다. 같은 계획의 slices 런을 대조군으로 같은 절에 둔다 — 다른 절에 두면 이 절만
+# 고른 실행이 반대편을 돌리지 않는다.
+# ---------------------------------------------------------------------------
+pre_tier
+TKX_STEPS='"steps": [ { "id": "D1", "skill": "design", "summary": "설계", "depends_on": [] }, { "id": "A1", "skill": "design-audit", "summary": "감사", "depends_on": ["D1"] }, { "id": "S1", "skill": "split", "summary": "분할", "depends_on": ["D1", "A1"] } ]'
+TKX_PLAN="{ $TIER_TEAM4_HEAD, \"design_path\": \"solo-audit\", \"design_delivery\": \"tickets\", $TKX_STEPS }"
+TKX_TWIN="{ $TIER_TEAM4_HEAD, \"design_path\": \"solo-audit\", \"design_delivery\": \"slices\", $TIER_STEPS_TEAM4 }"
+
+tier_check "$TKX_PLAN"
+check "89d: 검사기가 티켓 배달 계획을 통과시킨다" "$TIER_RC/$TIER_OUT" "0/"
+tier_check "$TKX_TWIN"
+check "89d: 검사기가 slices 계획을 통과시킨다" "$TIER_RC/$TIER_OUT" "0/"
+tier_check "$TIER_PLAN_SOLOPATH"
+check "89d: 검사기가 design_delivery 키 없는 계획을 통과시킨다" "$TIER_RC/$TIER_OUT" "0/"
+tkx_refuses() {  # tkx_refuses <라벨> <계획 json> <기대 문면>
+  tier_check "$2"
+  case "$TIER_RC/$TIER_OUT" in
+    0/*) bad "$1" "통과했다" ;;
+    *"$3"*) ok "$1" ;;
+    *) bad "$1" "$TIER_OUT" ;;
+  esac
+}
+tkx_refuses "89d: 검사기가 목록 밖 design_delivery 를 거부한다" \
+  "{ $TIER_TEAM4_HEAD, \"design_path\": \"solo-audit\", \"design_delivery\": \"chunks\", $TIER_STEPS_TEAM4 }" \
+  '(h) design_delivery 가 slices · tickets 중 하나가 아닙니다'
+tkx_refuses "89d: 검사기가 범위 base 의 tickets 계획을 거부한다" \
+  "{ \"design_required\": true, \"design_tier\": \"team-4\", \"design_scope\": \"base\", \"design_path\": \"solo-audit\", \"design_delivery\": \"tickets\", $TKX_STEPS }" \
+  '(h) tickets 계획의 design_scope 가 single 이 아닙니다'
+tkx_refuses "89d: 검사기가 설계 없는 tickets 계획을 거부한다" \
+  "{ \"design_required\": false, \"design_tier\": \"team-4\", \"design_scope\": \"single\", \"design_path\": \"solo-audit\", \"design_delivery\": \"tickets\", $TKX_STEPS }" \
+  '(h) tickets 계획의 design_required 가 true 가 아닙니다'
+tkx_refuses "89d: 검사기가 solo 티어의 tickets 계획을 거부한다" \
+  "{ \"design_required\": true, \"design_tier\": \"solo\", \"design_scope\": \"single\", \"design_path\": \"solo-audit\", \"design_delivery\": \"tickets\", $TKX_STEPS }" \
+  '(h) tickets 계획의 design_tier 가 team-4 가 아닙니다'
+tkx_refuses "89d: 검사기가 경로 없는 tickets 계획을 거부한다" \
+  "{ \"design_required\": true, \"design_tier\": \"team-4\", \"design_scope\": \"single\", \"design_delivery\": \"tickets\", $TKX_STEPS }" \
+  '(h) tickets 계획의 design_path 가'
+tkx_refuses "89d: 검사기가 핫픽스 틀의 tickets 계획을 거부한다" \
+  "{ \"design_required\": true, \"design_tier\": \"team-4\", \"design_scope\": \"single\", \"design_path\": \"solo-audit\", \"design_delivery\": \"tickets\", \"run_profile\": \"hotfix\", $TKX_STEPS }" \
+  '(h) tickets 계획의 run_profile 이 standard 가 아닙니다'
+
+tier_fresh RTD "$TKX_PLAN" "$BSX_PUB_NONE"
+gateB snapshot --manifest "$WORK/bsx-RTD.md"
+check "89d: 티켓 배달 런의 매니페스트가 검사를 통과한다" "$rc" "0"
+check "89d: 스냅숏이 design_delivery 를 tickets 로 찍는다" \
+  "$(bsx_snap "$WORK/bsx-RTD.md" | jq -r '.design_delivery + "/" + .design_scope + "/" + .design_skill')" \
+  "tickets/single/design-solo-unattended"
+tier_fresh RTDS "$TKX_TWIN"
+gateB snapshot --manifest "$WORK/bsx-RTDS.md"
+check "89d: 대조군 slices 런의 매니페스트가 검사를 통과한다" "$rc" "0"
+check "89d: 대조군의 스냅숏은 slices 다" "$(bsx_snap "$WORK/bsx-RTDS.md" | jq -r .design_delivery)" "slices"
+check "89d: 설계 티어 행이 하나씩 있다 (아래가 공허하지 않다)" \
+  "$(tier_rows RTD | grep -c . || true)/$(tier_rows RTDS | grep -c . || true)" "1/1"
+tkx_tier_row() { tier_rows "$1" | sed -E 's/ \| prev=[^|]*$//'; }
+check "89d: 설계 티어 행이 같은 계획의 slices 런과 같다" "$(tkx_tier_row RTD)" "$(tkx_tier_row RTDS)"
+check "89d: 그 행은 범위를 single 로 찍는다" "$(tier_field RTD 범위)" "single"
+
+bsx_doc_frozen RTD
+tier_plan_rc RTD "$TIER_P_SOLO"
+check "89d: 티켓 배달 런의 설계 파견은 단일 설계 스킬로 통과한다" "$rc" "0"
+bsx_launch RTD "$WORK/bin/bsx-design" design "$TIER_P_SOLO" D1
+check "89d: 설계 단계가 정상 완료로 끝난다 (아래가 공허하지 않다)" "$(bsx_class RTD '| 스테이지=D1 | 종류=design ')" "정상 완료"
+gateB plan --manifest "$WORK/bsx-RTD.md" --kind skill --target infra --segment - --cutpoint 커밋 \
+  --surface 워크트리쓰기 -- split -p "$(bsx_p RTD "$BSX_P_SPLIT")"
+check "89d: 감사가 끝나기 전의 분할 파견은 거부된다" "$rc" "3"
+bsx_launch RTD "$WORK/bin/bsx-audit" audit "$TIER_P_AUDIT" A1
+check "89d: 감사 단계가 --base 없는 감사 명령으로 정상 완료다" "$(bsx_class RTD '| 스테이지=A1 | 종류=audit ')" "정상 완료"
+gateB plan --manifest "$WORK/bsx-RTD.md" --kind skill --target infra --segment - --cutpoint 커밋 \
+  --surface 워크트리쓰기 -- split -p "$(bsx_p RTD "$BSX_P_SPLIT")"
+check "89d: 감사 뒤의 분할 파견 plan 이 통과한다" "$rc" "0"
+bsx_registry RTD
+bsx_launch RTD "$WORK/bin/bsx-split" split "$BSX_P_SPLIT" S1
+check "89d: 티켓 배달 런의 분할 파견이 정상 완료로 끝난다" "$(bsx_class RTD '| 스테이지=S1 | 종류=split ')" "정상 완료"
+check "89d: 세그먼트 없이 조건 1 이 선다" "$(bsx_c1 "$WORK/bsx-RTD.md")" ""
+check "89d: 그 런의 원장에는 segment 행이 없다" \
+  "$( { grep -F '`segment`' "$WT/docs/pipeline-run/RTD.md" 2>/dev/null || true; } | grep -c . || true)" "0"
+printf '덧붙인 줄\n' >> "$WT/docs/bsxd-RTD.md"
+case "$(bsx_c1 "$WORK/bsx-RTD.md")" in
+  "1 베이스 분할이"*) ok "89d: 문서가 레지스트리 뒤에 바뀌면 조건 1 이 서지 않는다" ;;
+  *) bad "89d: 문서가 레지스트리 뒤에 바뀌면 조건 1 이 서지 않는다" "$(bsx_c1 "$WORK/bsx-RTD.md")" ;;
+esac
+
+gateB plan --manifest "$WORK/bsx-RTDS.md" --kind skill --target infra --segment - --cutpoint 커밋 \
+  --surface 워크트리쓰기 -- split -p "$(bsx_p RTDS "$BSX_P_SPLIT")"
+case "$rc/$msg" in
+  3/*"split 스테이지를 --segment - 로 띄우려면 실행 계획이 skill 이 split 인 단계를 정확히 하나 가져야 합니다"*)
+    ok "89d: slices 런의 분할 파견은 거부된다" ;;
+  *) bad "89d: slices 런의 분할 파견은 거부된다" "$rc/$msg" ;;
+esac
+# 분할 단계를 든 slices 계획은 파견까지 오지 못하고 매니페스트 검사에서 멈춘다.
+tier_fresh RTDN "{ $TIER_TEAM4_HEAD, \"design_path\": \"solo-audit\", \"design_delivery\": \"slices\", $TKX_STEPS }"
+gateB plan --manifest "$WORK/bsx-RTDN.md" --kind skill --target infra --segment - --cutpoint 커밋 \
+  --surface 워크트리쓰기 -- split -p "$(bsx_p RTDN "$BSX_P_SPLIT")"
+case "$rc/$msg" in
+  1/*"design_scope 가 base 가 아닌데 실행 계획에 split 단계가 있습니다"*)
+    ok "89d: 분할 단계를 든 slices 계획은 매니페스트 검사가 거부한다" ;;
+  *) bad "89d: 분할 단계를 든 slices 계획은 매니페스트 검사가 거부한다" "$rc/$msg" ;;
+esac
+
+# 착수 행은 하위 런이 레지스트리에 더한다. 분할의 완결 판정은 그 줄을 읽지 않는다.
+tier_fresh RTDR "$TKX_PLAN" "$BSX_PUB_NONE"
+bsx_doc_frozen RTDR
+bsx_launch RTDR "$WORK/bin/bsx-design" design "$TIER_P_SOLO" D1
+bsx_launch RTDR "$WORK/bin/bsx-audit" audit "$TIER_P_AUDIT" A1
+bsx_registry RTDR
+tkx_reg="$WT/docs/design-base/bsxd-RTDR.tickets.md"
+awk '{ print } index($0, "- `티켓` | id=T2") == 1 { print "- `착수` | id=T1 | 런=R1" }' "$tkx_reg" > "$tkx_reg.t" && mv "$tkx_reg.t" "$tkx_reg"
+check "89d: 픽스처 레지스트리가 착수 행을 지닌다 (아래가 공허하지 않다)" \
+  "$(grep -cF -- '- `착수` | id=T1 | 런=R1' "$tkx_reg" || true)" "1"
+bsx_launch RTDR "$WORK/bin/bsx-split" split "$BSX_P_SPLIT" S1
+check "89d: 착수 행이 있는 레지스트리도 분할 충족이다" \
+  "$(bsx_class RTDR '| 스테이지=S1 | 종류=split ')/$(bsx_c1 "$WORK/bsx-RTDR.md")" "정상 완료/"
+
+# 티켓 배달 상위 런의 무인 잔여 동결은 허용한다. 거부는 베이스 설계 스킬 이름에 걸린
+# 그대로여야 하고 분할 런 술어로 넓어지면 안 된다.
+check "89d: 사다리 잔여 동결 거부는 베이스 설계 스킬 이름에 걸린 그대로다" \
+  "$(grep -B1 -F "a base design's ladder is never frozen without a person" "$GATE" | sed -n '1p' | sed 's/^ *//')" \
+  'if [ "$skill" = "design-base-unattended" ]; then'
+
+# 문면 대조 — 얼리는 행 목록, 분할로 끝나는 런의 조건, 라우터의 풀이.
+tkx_sc="$repo_root/plugins/cc-cmds/skills/_common/pipeline-sidecar.md"
+tkx_rl="$repo_root/plugins/cc-cmds/skills/autopilot/references/router-lead-copy.md"
+tkx_sd="$repo_root/plugins/cc-cmds/skills/autopilot-router-shift/references/split-dispatch.md"
+tkx_rs="$repo_root/plugins/cc-cmds/skills/autopilot-router-shift/SKILL.md"
+tkx_has() { grep -qF -- "$2" "$1" && printf 있음 || printf 없음; }
+check "89d: 사이드카 문면이 출처 티켓 행을 얼린다" \
+  "$(tkx_has "$tkx_sc" '**the `출처 티켓` rows**')/$(tkx_has "$tkx_sc" '`베이스 설계`, `출처 티켓`, `세그먼트 입양`')" "있음/있음"
+check "89d: 사이드카 문법이 출처 티켓 두 꼴을 싣는다" \
+  "$(tkx_has "$tkx_sc" '- `출처 티켓` | 트래커=github | 참조=<owner>/<name>#<N>')/$(tkx_has "$tkx_sc" '- `출처 티켓` | 트래커=clickup | 참조=<URL>')" "있음/있음"
+check "89d: 사이드카 베이스 발행 주석이 분할로 끝나는 런을 든다" \
+  "$(tkx_has "$tkx_sc" '분할로 끝나는 런(design_scope 가 base 이거나 design_delivery 가 tickets)일 때만')/$(tkx_has "$tkx_sc" '← design_scope 가 base 일 때만')" "있음/없음"
+check "89d: 사이드카가 베이스 발행 행을 분할로 끝나는 런의 결정으로 든다" \
+  "$(tkx_has "$tkx_sc" '**The `베이스 발행` row is the publication decision of a run that ends at the split**')/$(tkx_has "$tkx_sc" '**The `베이스 발행` row is a base run'"'"'s publication decision**')" "있음/없음"
+check "89d: 사이드카의 금지 문장이 분할로 끝나지 않는 런을 든다" \
+  "$(tkx_has "$tkx_sc" 'A run that does not end')/$(tkx_has "$tkx_sc" '`single` forbids a `split` step')" "있음/없음"
+tkx_cond='When the run ends at the split — the snapshot'"'"'s `design_scope` is `base` or its `design_delivery` is `tickets` —, `steps[]` carries exactly one step'
+check "89d: 라우터 문면이 분할 파견 조건을 싣는다" \
+  "$(tkx_has "$tkx_rl" "$tkx_cond")/$(tkx_has "$tkx_sd" "$tkx_cond")" "있음/있음"
+check "89d: 라우터 문면이 design_delivery 를 풀이하고 감사 --base 를 베이스 전용으로 둔다" \
+  "$(tkx_has "$tkx_rl" '| `design_delivery` | `slices` or `tickets`')/$(tkx_has "$tkx_rl" 'the audit takes no `--base`')" "있음/있음"
+check "89d: 교대 문면이 PR 본문에 pr-links 출력을 넣게 한다" \
+  "$(tkx_has "$tkx_rs" 'gate.sh pr-links --manifest <매니페스트> --segment <세그먼트>')/$(tkx_has "$tkx_rs" '`## 관련 이슈·티켓`')" "있음/있음"
+
+# ---------------------------------------------------------------------------
+# 89p. 출처 티켓 행이 PR 본문의 연결 줄을 정한다
+# --- section: 89p | group: tier | covers: pr-links, gate_pr_links, gate_exec_pr_create_refusal, exec, grade, check_manifest | anchors: 89p: 머지 순서상 마지막 세그먼트가 Closes 를 받는다, 89p: 앞 세그먼트는 Refs 를 받는다, 89p: clickup 행은 모든 세그먼트에 원 티켓 줄이다, 89p: 동률은 선언 순서를 따른다, 89p: 머지 순서 필드도 순서를 정한다, 89p: 슬라이스 선언 없는 계획자 세그먼트도 같은 규칙이다, 89p: 행 없는 매니페스트는 아무것도 찍지 않는다, 89p: --segment 없는 pr-links 는 rc 2 다, 89p: 줄이 빠진 gh pr create 는 rc 3 이다, 89p: 줄을 모두 실은 본문은 그 거부에 걸리지 않는다, 89p: 파일 본문의 줄 누락도 거부된다, 89p: 읽을 수 없는 본문 꼴은 거부된다, 89p: 본문 인자 없는 gh pr create 는 거부된다, 89p: --segment 없는 gh pr create 는 거부된다, 89p: 행 없는 런은 본문을 묻지 않는다, 89p: gh pr edit 은 검사 밖이다, 89p: fence-check 는 읽기다 ---
+#
+# 머지 순서는 슬라이스의 `선행`·`머지 순서` 와 원장 행에서 나오고 동률은 선언 순서다.
+# 거부 시험은 gh 를 실제로 부르지 않는다 — 거부가 먼저 서고, 통과 시험은 그 거부 문면이
+# 없는지만 본다(뒤의 게이트 판정은 절단점에 달려 있어 이 절의 관심이 아니다).
+# ---------------------------------------------------------------------------
+pre_tier
+PRX_PLAN='{ "design_required": false, "steps": [ { "id": "I1", "skill": "implement", "summary": "구현", "depends_on": [] } ] }'
+PRX_GH='- `출처 티켓` | 트래커=github | 참조=t/infra#7'
+PRX_CU='- `출처 티켓` | 트래커=clickup | 참조=https://app.clickup.com/t/86ab'
+prx_doc() {  # prx_doc <run id> <슬라이스 id:선행:머지 순서>... — 동결 문서를 docs/bsxd-<run id>.md 에
+  local r="$1" s id dep ord
+  shift
+  mkdir -p "$WT/docs"
+  {
+    printf '# 픽스처 설계\n\n**상태**: 동결됨\n\n## 구현 슬라이싱\n\n**슬라이스 수**: %s\n' "$#"
+    for s in "$@"; do
+      id=${s%%:*}; s=${s#*:}; dep=${s%%:*}; ord=${s#*:}
+      printf '\n### 슬라이스 %s — 픽스처\n\n**스킬**: implement\n**레포**: t/infra\n**선언 파일**: `%s.txt`\n' "$id" "$id"
+      printf '**선행**: %s\n**머지 순서**: %s\n**절단점**: 커밋\n' "$dep" "$ord"
+    done
+  } > "$WT/docs/bsxd-$r.md"
+}
+prx_fresh() {  # prx_fresh <run id> [<행>] — 구현 런의 매니페스트와 인가
+  bsx_write "$WORK/bsx-$1.md" "$1" "$PRX_PLAN" "docs/bsxd-$1.md" "${2-$PRX_GH
+$PRX_CU}"
+  bsx_grant "$1" "docs/bsxd-$1.md"
+}
+prx_links() {  # prx_links <run id> <segment> — stdout 만
+  ( cd "$WT" && XDG_STATE_HOME="$BSX_STATE" gate_inproc pr-links --manifest "$WORK/bsx-$1.md" --segment "$2" 2>/dev/null )
+}
+PRX_CU_LINE='원 티켓: https://app.clickup.com/t/86ab'
+
+prx_fresh RPA
+prx_doc RPA 'A:없음:없음' 'B:A:없음'
+check "89p: 머지 순서상 마지막 세그먼트가 Closes 를 받는다" "$(prx_links RPA B | sed -n '1p')" "Closes t/infra#7"
+check "89p: 앞 세그먼트는 Refs 를 받는다" "$(prx_links RPA A | sed -n '1p')" "Refs t/infra#7"
+check "89p: clickup 행은 모든 세그먼트에 원 티켓 줄이다" \
+  "$(prx_links RPA A | sed -n '2p')/$(prx_links RPA B | sed -n '2p')" "$PRX_CU_LINE/$PRX_CU_LINE"
+# 선언 순서를 거스르는 선행 — 뒤에 선언된 슬라이스가 먼저 머지된다.
+prx_fresh RPB
+prx_doc RPB 'A:B:없음' 'B:없음:없음'
+check "89p: 선언 순서보다 선행이 앞선다" "$(prx_links RPB A | sed -n '1p')/$(prx_links RPB B | sed -n '1p')" "Closes t/infra#7/Refs t/infra#7"
+prx_fresh RPC
+prx_doc RPC 'A:없음:없음' 'B:없음:없음'
+check "89p: 동률은 선언 순서를 따른다" "$(prx_links RPC A | sed -n '1p')/$(prx_links RPC B | sed -n '1p')" "Refs t/infra#7/Closes t/infra#7"
+prx_fresh RPD
+prx_doc RPD 'A:없음:B' 'B:없음:없음'
+check "89p: 머지 순서 필드도 순서를 정한다" "$(prx_links RPD A | sed -n '1p')/$(prx_links RPD B | sed -n '1p')" "Closes t/infra#7/Refs t/infra#7"
+# 슬라이스 선언 없는 문서 — 계획자가 만든 세그먼트. 원장 행이 첫 등장 순서로 노드가 된다.
+prx_fresh RPE
+printf '# 픽스처 설계\n\n**상태**: 동결됨\n\n## 합의된 아키텍처\n\n본문\n' > "$WT/docs/bsxd-RPE.md"
+check "89p: 슬라이스 선언 없는 계획자 세그먼트도 같은 규칙이다" "$(prx_links RPE Z | sed -n '1p')" "Closes t/infra#7"
+mkdir -p "$WT/docs/pipeline-run"
+gateB snapshot --manifest "$WORK/bsx-RPE.md"
+printf -- '- `segment` | id=X | 상태=계획됨 | 대상=infra\n- `segment` | id=Y | 상태=계획됨 | 대상=infra | 선행=X\n' >> "$WT/docs/pipeline-run/RPE.md"
+check "89p: 원장의 계획자 세그먼트는 선행으로 순서가 선다" \
+  "$(prx_links RPE X | sed -n '1p')/$(prx_links RPE Y | sed -n '1p')" "Refs t/infra#7/Closes t/infra#7"
+prx_fresh RPN ""
+prx_doc RPN 'A:없음:없음'
+check "89p: 행 없는 매니페스트는 아무것도 찍지 않는다" "$(prx_links RPN A)" ""
+gateB pr-links --manifest "$WORK/bsx-RPA.md"
+check "89p: --segment 없는 pr-links 는 rc 2 다" "$rc" "2"
+
+prx_create() {  # prx_create <run id> <segment> <gh pr create 뒤 인자>... — rc 와 msg 를 남긴다
+  local r="$1" s="$2"
+  shift 2
+  gateB exec --manifest "$WORK/bsx-$r.md" --target infra --segment "$s" --cutpoint PR --surface 외부상태변경 --reach 협업 \
+    --snapshot-digest "$(bsx_H "$WORK/bsx-$r.md")" --rationale x -- gh pr create "$@"
+}
+PRX_REFUSED='출처 티켓 행이 있는 런의 gh pr create 를 받지 않습니다'
+prx_refused() {  # prx_refused <라벨> <기대 문면> — 직전 prx_create 의 결과
+  case "$rc/$msg" in
+    3/*"$PRX_REFUSED"*"$2"*) ok "$1" ;;
+    *) bad "$1" "$rc/$msg" ;;
+  esac
+}
+prx_passed() {  # prx_passed <라벨> — 직전 호출이 이 거부에 걸리지 않았다
+  case "$msg" in
+    *"$PRX_REFUSED"*) bad "$1" "$msg" ;;
+    *) ok "$1" ;;
+  esac
+}
+PRX_B_FULL="$(printf '## 변경\n\n본문\n\n## 관련 이슈·티켓\n\nCloses t/infra#7\n%s\n' "$PRX_CU_LINE")"
+PRX_A_FULL="$(printf '## 관련 이슈·티켓\n\nRefs t/infra#7\n%s\n' "$PRX_CU_LINE")"
+prx_create RPA B --title t --body "## 변경"
+prx_refused "89p: 줄이 빠진 gh pr create 는 rc 3 이다" "본문에 「Closes t/infra#7」 줄이 없습니다"
+prx_create RPA B --title t --body "$PRX_A_FULL"
+prx_refused "89p: 앞 세그먼트의 Refs 를 실은 마지막 세그먼트 본문은 거부된다" "본문에 「Closes t/infra#7」 줄이 없습니다"
+prx_create RPA B --title t --body "$(printf 'Closes t/infra#7 뒤에 말을 붙였다\n%s\n' "$PRX_CU_LINE")"
+prx_refused "89p: 줄은 통째로 맞아야 한다" "본문에 「Closes t/infra#7」 줄이 없습니다"
+prx_create RPA B --title t --body "$PRX_B_FULL"
+prx_passed "89p: 줄을 모두 실은 본문은 그 거부에 걸리지 않는다"
+prx_create RPA B --title t "--body=$PRX_B_FULL"
+prx_passed "89p: --body= 철자도 읽는다"
+prx_create RPA B --title t -b "$PRX_B_FULL"
+prx_passed "89p: -b 철자도 읽는다"
+prx_create RPA A --title t --body "$PRX_A_FULL"
+prx_passed "89p: 앞 세그먼트는 Refs 줄로 통과한다"
+prx_bf="$WORK/prx-body-full.md"; printf '%s\n' "$PRX_B_FULL" > "$prx_bf"
+prx_bn="$WORK/prx-body-none.md"; printf '본문\n' > "$prx_bn"
+prx_create RPA B --title t --body-file "$prx_bf"
+prx_passed "89p: 줄을 실은 파일 본문은 통과한다"
+prx_create RPA B --title t --body-file "$prx_bn"
+prx_refused "89p: 파일 본문의 줄 누락도 거부된다" "줄이 없습니다"
+prx_create RPA B --title t --body-file -
+prx_refused "89p: --body-file - 는 거부된다" "게이트가 읽을 수 없는 본문입니다"
+prx_create RPA B --title t --body-file "$WORK/prx-없는-파일.md"
+prx_refused "89p: 없는 본문 파일은 거부된다" "게이트가 읽을 수 없는 본문입니다"
+for prx_flag in --fill --fill-first --fill-verbose --editor --web -f -e -w; do
+  prx_create RPA B --title t "$prx_flag"
+  prx_refused "89p: 읽을 수 없는 본문 꼴은 거부된다 ($prx_flag)" "게이트가 읽을 수 없는 본문입니다"
+done
+prx_create RPA B --title t --template x.md
+prx_refused "89p: 읽을 수 없는 본문 꼴은 거부된다 (--template)" "--template 는 게이트가 읽을 수 없는 본문입니다"
+prx_create RPA B --title t --recover x
+prx_refused "89p: 읽을 수 없는 본문 꼴은 거부된다 (--recover)" "--recover 는 게이트가 읽을 수 없는 본문입니다"
+prx_create RPA B --title t --fill --body "$PRX_B_FULL"
+prx_refused "89p: 본문을 줘도 --fill 이 있으면 거부된다" "--fill 는 게이트가 읽을 수 없는 본문입니다"
+prx_create RPA B --title t
+prx_refused "89p: 본문 인자 없는 gh pr create 는 거부된다" "본문 인자가 없습니다"
+gateB exec --manifest "$WORK/bsx-RPA.md" --target infra --segment B --cutpoint PR --surface 외부상태변경 --reach 협업 \
+  --snapshot-digest "$(bsx_H "$WORK/bsx-RPA.md")" --rationale x -- gh pr new --title t --fill
+prx_refused "89p: gh pr new 철자도 같은 거부를 받는다" "--fill 는 게이트가 읽을 수 없는 본문입니다"
+gateB exec --manifest "$WORK/bsx-RPA.md" --target infra --segment - --cutpoint PR --surface 외부상태변경 --reach 협업 \
+  --snapshot-digest "$(bsx_H "$WORK/bsx-RPA.md")" --rationale x -- gh pr create --title t --body "$PRX_B_FULL"
+prx_refused "89p: --segment 없는 gh pr create 는 거부된다" "--segment 가 없어"
+prx_create RPN A --title t --fill
+prx_passed "89p: 행 없는 런은 본문을 묻지 않는다"
+gateB exec --manifest "$WORK/bsx-RPA.md" --target infra --segment B --cutpoint PR --surface 외부상태변경 --reach 협업 \
+  --snapshot-digest "$(bsx_H "$WORK/bsx-RPA.md")" --rationale x -- gh pr edit 7 --body 없음
+prx_passed "89p: gh pr edit 은 검사 밖이다"
+
+graded_as '읽기' '89p: fence-check 는 읽기다' -- "$CC_ORCH/base-split.py" fence-check docs/x.md
 
 # ---------------------------------------------------------------------------
 # 101. 진입 계획의 강제 표면 판정은 모양이 단언된다
