@@ -6167,6 +6167,8 @@ pre_tier() {
   [ -n "${PRE_TIER_DONE:-}" ] && return 0
   PRE_TIER_DONE=1
   pre_bsplit
+  # tkx_has <파일> <고정 문자열> — 문면 대조 단언이 쓴다. 있음 또는 없음을 찍는다.
+  tkx_has() { grep -qF -- "$2" "$1" && printf 있음 || printf 없음; }
   TIER_CHECK="$repo_root/plugins/cc-cmds/orchestrator/prompts/entry-plan.check.jq"
   TIER_STEPS_SOLO='"steps": [ { "id": "D1", "skill": "design", "summary": "설계", "depends_on": [] }, { "id": "I1", "skill": "implement", "summary": "구현", "depends_on": ["D1"] } ]'
   TIER_STEPS_TEAM4='"steps": [ { "id": "D1", "skill": "design", "summary": "설계", "depends_on": [] }, { "id": "A1", "skill": "design-audit", "summary": "감사", "depends_on": ["D1"] }, { "id": "I1", "skill": "implement", "summary": "구현", "depends_on": ["D1", "A1"] } ]'
@@ -60596,7 +60598,6 @@ tkx_sc="$repo_root/plugins/cc-cmds/skills/_common/pipeline-sidecar.md"
 tkx_rl="$repo_root/plugins/cc-cmds/skills/autopilot/references/router-lead-copy.md"
 tkx_sd="$repo_root/plugins/cc-cmds/skills/autopilot-router-shift/references/split-dispatch.md"
 tkx_rs="$repo_root/plugins/cc-cmds/skills/autopilot-router-shift/SKILL.md"
-tkx_has() { grep -qF -- "$2" "$1" && printf 있음 || printf 없음; }
 check "89d: 사이드카 문면이 출처 티켓 행을 얼린다" \
   "$(tkx_has "$tkx_sc" '**the `출처 티켓` rows**')/$(tkx_has "$tkx_sc" '`베이스 설계`, `출처 티켓`, `세그먼트 입양`')" "있음/있음"
 check "89d: 사이드카 문법이 출처 티켓 두 꼴을 싣는다" \
@@ -60751,6 +60752,169 @@ gateB exec --manifest "$WORK/bsx-RPA.md" --target infra --segment B --cutpoint P
 prx_passed "89p: gh pr edit 은 검사 밖이다"
 
 graded_as '읽기' '89p: fence-check 는 읽기다' -- "$CC_ORCH/base-split.py" fence-check docs/x.md
+
+# ---------------------------------------------------------------------------
+# 89q. 티켓 배달의 스킬 문면
+# --- section: 89q | group: tier | covers: 킥오프 문면, design_delivery, ticket-delivery | anchors: 89q: 킥오프가 판정의 배달 방식을 대조하고 묻는다, 89q: 킥오프가 하위 런의 설계 생략과 착수 행을 싣는다, 89q: 경계 문면이 티켓 배달 런의 종료 절과 5r 을 싣는다, 89q: 자가 점검이 티켓 배달 꼴과 출처 티켓 꼴을 싣는다, 89q: 재킥오프가 새 런 id 로 착수 행을 쓴다, 89q: 아침 보고가 두 절을 싣는다, 89q: 설계 두 갈래가 티켓 배달 절을 공유한다, 89q: 분할과 리뷰가 티켓 배달을 읽는다, 89q: 공유 계약의 닫힘 경로가 구현 중단을 든다 ---
+#
+# 게이트와 스크립트는 다른 절이 재므로 여기서는 문면만 대조한다. 옛 문면이 남으면 같은
+# 일을 두 가지로 적은 것이 되므로 없음도 함께 단언한다.
+# ---------------------------------------------------------------------------
+pre_tier
+tkq_sk="$repo_root/plugins/cc-cmds/skills"
+tkq_ap="$tkq_sk/autopilot/SKILL.md"
+tkq_bd="$tkq_sk/autopilot/references/boundaries.md"
+tkq_fz="$tkq_sk/autopilot/references/freeze.md"
+tkq_rk="$tkq_sk/autopilot/references/rekickoff.md"
+tkq_a3="$tkq_sk/autopilot/references/act3-report.md"
+tkq_ds="$tkq_sk/design-discuss-unattended/SKILL.md"
+tkq_so="$tkq_sk/design-solo-unattended/SKILL.md"
+tkq_ba="$tkq_sk/design-base-unattended/SKILL.md"
+tkq_rv="$tkq_sk/review-unattended/SKILL.md"
+tkq_bl="$tkq_sk/_common/base-linkage.md"
+tkq_td="$tkq_sk/_common/ticket-delivery.md"
+check "89q: 킥오프가 판정의 배달 방식을 대조하고 묻는다" \
+  "$(tkx_has "$tkq_ap" "jq -e '.design_delivery == \"slices\"'")/$(tkx_has "$tkq_ap" '(header chip `배달 방식`)')/$(tkx_has "$tkq_ap" '`한 런 안 슬라이스`')/$(tkx_has "$tkq_ap" '`티켓 배달`')" "있음/있음/있음/있음"
+check "89q: design_path 재작성은 다섯 경우다" \
+  "$(tkx_has "$tkq_ap" 'is rewritten in five cases')/$(tkx_has "$tkq_ap" 'is rewritten in four cases')" "있음/없음"
+check "89q: 킥오프가 하위 런의 설계 생략과 착수 행을 싣는다" \
+  "$(tkx_has "$tkq_ap" '(header chip `설계 생략`)')/$(tkx_has "$tkq_ap" 'child-doc <상위 문서> --ticket T<n> --cutpoint <절단점> --out docs/<하위 슬러그>.md')/$(tkx_has "$tkq_ap" 'record --started <상위 문서> --ticket T<n> --run <run id>')/$(tkx_has "$tkq_ap" '트래커=github | 참조=<owner>/<name>#<N>')" "있음/있음/있음/있음"
+check "89q: 경계 문면이 티켓 배달 런의 종료 절과 5r 을 싣는다" \
+  "$(tkx_has "$tkq_bd" '문면=티켓 배달 설계 문서가 동결되고 감사가 `--base` 없이 돈 design-audit 을 마쳤다')/$(tkx_has "$tkq_bd" 'when `design_scope` is `base` or `design_delivery` is `tickets`.**')/$(tkx_has "$tkq_bd" 'publishes its tickets, when `design_scope` is `base`.**')" "있음/있음/없음"
+check "89q: 자가 점검이 티켓 배달 꼴과 출처 티켓 꼴을 싣는다" \
+  "$(tkx_has "$tkq_fz" '`design_delivery` is `tickets` and the plan is not the `tickets` run'"'"'s shape')/$(tkx_has "$tkq_fz" 'a `출처 티켓` row fits neither')/$(tkx_has "$tkq_fz" 'the `출처 티켓` rows, the `세그먼트 입양` rows')" "있음/있음/있음"
+check "89q: 자가 점검의 금지 문장이 분할로 끝나지 않는 런을 든다" \
+  "$(tkx_has "$tkq_fz" 'A run that does not end at a split')/$(tkx_has "$tkq_fz" 'A `single` plan that carries')" "있음/없음"
+check "89q: 재킥오프가 새 런 id 로 착수 행을 쓴다" \
+  "$(tkx_has "$tkq_rk" 'record --started <상위 문서> --ticket T<n> --run <new-id>')/$(tkx_has "$tkq_rk" 'a refused `record --started`')" "있음/있음"
+check "89q: 아침 보고가 두 절을 싣는다" \
+  "$(tkx_has "$tkq_a3" '- **새 티켓 초안** — ')/$(tkx_has "$tkq_a3" '- **상위 출처 이슈** — ')" "있음/있음"
+check "89q: 설계 두 갈래가 티켓 배달 절을 공유한다" \
+  "$(tkx_has "$tkq_ds" '### Ticket delivery (driver dispatch)')/$(tkx_has "$tkq_so" '- `### Ticket delivery (driver dispatch)`')/$(tkx_has "$tkq_ds" 'BS fence-check <문서>')/$(tkx_has "$tkq_ds" 'BS revise <상위 문서> --from <개정 전 사본> --to <후보>')" "있음/있음/있음/있음"
+check "89q: 분할과 리뷰가 티켓 배달을 읽는다" \
+  "$(tkx_has "$tkq_ba" '`--split` reads both document kinds')/$(tkx_has "$tkq_rv" '- **Ticket fence.**')/$(tkx_has "$tkq_bl" '`design-discuss-unattended`·`design-solo-unattended` Step 1')" "있음/있음/있음"
+check "89q: 공유 계약의 닫힘 경로가 구현 중단을 든다" \
+  "$(tkx_has "$tkq_td" '구현 중단 기록으로 사람에게 넘기며')/$(tkx_has "$tkq_td" '설계를 생략한 하위 런은 구현 중단에서 사람이 정한다')/$(tkx_has "$tkq_td" '기록 주체」 가 정한다')" "있음/있음/없음"
+
+# ---------------------------------------------------------------------------
+# 89r. 아침 보고의 상위 착지 판정
+# --- section: 89r | group: tier | covers: act3 착지 판정, design_delivery, ticket-delivery | anchors: 89r: 세그먼트 행이 없는 원장은 없음이다, 89r: PR 뒤에 PR 없는 park 행이 와도 PR 을 읽는다, 89r: 머지 뒤 적용 행으로 끝나도 머지다, 89r: PR 이 없는 park 세그먼트는 브랜치로 찾는다, 89r: 머지 커밋만 든 가져오기 행은 머지다, 89r: 세그먼트 행의 레포를 그 행 밖의 행에도 잇는다, 89r: 행이 아직 없는 선언 슬라이스는 없음으로 찍힌다, 89r: 슬라이싱 절이 없는 문서는 찍힌 행만 본다, 89r: 재킥오프의 앞뒤 런이 슬라이스를 남기면 미착지다, 89r: 문면이 상태 입력의 규칙을 싣는다, 89r: 모든 티켓이 착수하고 머지되면 착지다, 89r: 열린 PR 이 남으면 미착지다, 89r: 상태 줄 없는 티켓은 미착지다, 89r: 착수 행 없는 티켓은 미착지다, 89r: 티켓 행 없는 등록부는 착지가 아니다 ---
+#
+# 두 프로그램은 보고 문면의 울타리에만 있으므로 그 울타리에서 뽑아 돌린다. 첫
+# 울타리는 런 원장을 세그먼트별 PR 판독 근거로 줄이고, 둘째는 착지를 판정한다.
+# ---------------------------------------------------------------------------
+pre_tier
+tkr_dir="$WORK/act3-landing"
+mkdir -p "$tkr_dir"
+tkr_a3="$repo_root/plugins/cc-cmds/skills/autopilot/references/act3-report.md"
+tkr_fence() {  # tkr_fence <몇 번째 awk 울타리> — 그 울타리의 본문을 찍는다
+  awk -v want="$1" '/^  ```awk$/ { n++; on = (n == want); next } on && /^  ```$/ { exit } on { print }' "$tkr_a3"
+}
+tkr_read="$tkr_dir/reader.awk"
+tkr_fence 1 > "$tkr_read"
+tkr_prog="$tkr_dir/landing.awk"
+tkr_fence 2 > "$tkr_prog"
+tkr_led="$tkr_dir/ledger.md"
+tkr_rows_of() {  # tkr_rows_of <문서> <원장 줄…> — 원장을 그 줄들로 쓰고 판독 결과를 쉼표로 이어 찍는다
+  local doc="$1"; shift
+  printf '%s\n' '# 런 원장' "$@" > "$tkr_led"
+  LC_ALL=C awk -f "$tkr_read" "$doc" "$tkr_led" | tr '\t' ':' | paste -sd, -
+}
+tkr_rows() { tkr_rows_of /dev/null "$@"; }  # 설계 문서가 없는 런의 판독
+tkr_plan='- `segment` | 교대=2 | id=B | 상태=계획됨 | 레포=o/r | 선행=없음 | 워크트리=/w/B | 브랜치=seg/r-B | prev=a'
+check "89r: 세그먼트 행이 없는 원장은 없음이다" \
+  "$(tkr_rows '- `run` | run-id=R1 | RUN_DIR=/r' '- `stage-result` | 세그먼트=A | PR=9')" "-:없음:-:-"
+check "89r: PR 뒤에 PR 없는 park 행이 와도 PR 을 읽는다" \
+  "$(tkr_rows "$tkr_plan" '- `segment` | 교대=5 | id=B | 상태=리뷰중 | PR=12 | 워크트리=/w/B | prev=b' \
+     '- `segment` | 교대=6 | id=B | 상태=park | 워크트리=/w/B | prev=c')" "B:PR:12:o/r"
+check "89r: 머지 뒤 적용 행으로 끝나도 머지다" \
+  "$(tkr_rows "$tkr_plan" '- `segment` | 교대=5 | id=B | 상태=머지됨 | PR=12 | 머지 커밋=abc | 워크트리=/w/B | prev=b' \
+     '- `segment` | 교대=6 | id=B | 상태=적용 준비 | 워크트리=/w/B | 고정 커밋=abc | 적용 명령=x | prev=c' \
+     '- `segment` | 교대=6 | id=B | 상태=park | 워크트리=/w/B | 고정 커밋=abc | 적용=사전 실패 | prev=d')" "B:머지:-:o/r"
+check "89r: 닫힌 PR 뒤의 머지 커밋이 PR 을 이긴다" \
+  "$(tkr_rows '- `segment` | id=B | 상태=park | PR=12' '- `segment` | id=B | 상태=머지됨 | 머지 커밋=abc')" "B:머지:-:-"
+check "89r: 뒤의 PR 값이 앞의 값을 대신하고 빈 값은 값이 아니다" \
+  "$(tkr_rows '- `segment` | id=B | 상태=리뷰중 | PR=12' '- `segment` | id=B | 상태=리뷰중 | PR=13' '- `segment` | id=B | 상태=park | PR=-')" "B:PR:13:-"
+check "89r: PR 이 없는 park 세그먼트는 브랜치로 찾는다" \
+  "$(tkr_rows "$tkr_plan" '- `segment` | 교대=7 | id=B | 상태=park | 워크트리=/w/B | prev=e')" "B:브랜치:seg/r-B:o/r"
+check "89r: 머지 커밋만 든 가져오기 행은 머지다" \
+  "$(tkr_rows '- `segment` | 교대=2 | id=A | 상태=머지됨 | 머지 커밋=abc | 워크트리=- | 선행=없음 | 출처=매니페스트 | prev=f')" "A:머지:-:-"
+check "89r: 선머지 완료 행은 브랜치를 찾지 않고 머지다" \
+  "$(tkr_rows "$tkr_plan" '- `segment` | 교대=5 | id=B | 상태=완료 | 머지 커밋=abc | 워크트리=/w/B | prev=g')" "B:머지:-:o/r"
+check "89r: 세그먼트 행의 레포를 그 행 밖의 행에도 잇는다" \
+  "$(tkr_rows '- `segment` | id=B | 상태=계획됨 | 레포=o/other | 브랜치=seg/r-B' '- `segment` | id=B | 상태=리뷰중 | PR=12')" "B:PR:12:o/other"
+check "89r: 세그먼트마다 처음 나온 순서로 한 줄씩 찍는다" \
+  "$(tkr_rows "$tkr_plan" '- `segment` | id=A | 상태=머지됨 | PR=3' '- `segment` | id=C | 상태=계획됨 | 워크트리=/w/C')" "B:브랜치:seg/r-B:o/r,A:PR:3:-,C:없음:-:-"
+tkr_slices="$tkr_dir/slices.md"
+printf '%s\n' '# 문서' '**슬라이스 수**: 1' '### 슬라이스 Z — 절 밖' '## 구현 슬라이싱' \
+  '### 슬라이스 A — 앞' '**절단점**: 머지' '```text' '### 슬라이스 X — 울타리 안' '```' \
+  '### 슬라이스 B' '**선행**: 슬라이스 A' '### 슬라이스 C10 — 커밋까지' '**절단점**: 커밋' \
+  '## 다음 절' '### 슬라이스 Y — 다음 절' > "$tkr_slices"
+tkr_merged_a='- `segment` | id=A | 상태=머지됨 | 레포=o/r | PR=3 | 머지 커밋=abc'
+check "89r: 행이 아직 없는 선언 슬라이스는 없음으로 찍힌다" \
+  "$(tkr_rows_of "$tkr_slices" "$tkr_merged_a")" "A:머지:-:o/r,B:없음:-:-,C10:없음:-:-"
+check "89r: 뒤 슬라이스 행이 있으면 찍힌 순서와 값이 행을 따른다" \
+  "$(tkr_rows_of "$tkr_slices" "$tkr_merged_a" '- `segment` | id=B | 상태=리뷰중 | PR=4' '- `segment` | id=C10 | 상태=계획됨 | 브랜치=seg/r-C10')" "A:머지:-:o/r,B:PR:4:-,C10:브랜치:seg/r-C10:-"
+check "89r: 세그먼트 행이 없어도 선언 슬라이스가 찍힌다" \
+  "$(tkr_rows_of "$tkr_slices" '- `run` | run-id=R1')" "A:없음:-:-,B:없음:-:-,C10:없음:-:-"
+tkr_noslice="$tkr_dir/noslice.md"
+printf '%s\n' '# 문서' '## 다른 절' '### 슬라이스 A — 슬라이싱 절이 아니다' > "$tkr_noslice"
+check "89r: 슬라이싱 절이 없는 문서는 찍힌 행만 본다" \
+  "$(tkr_rows_of "$tkr_noslice" "$tkr_merged_a")" "A:머지:-:o/r"
+tkr_fences="$tkr_dir/fences.md"
+printf '%s\n' '## 구현 슬라이싱' '### 슬라이스 A' '````text' '```' '~~~~' '```` 닫힘아님' '### 슬라이스 X' '````' \
+  '### 슬라이스 B' '~~~' '```' '### 슬라이스 Y' '~~~' '  ```' '### 슬라이스 Z' '  ```' '### 슬라이스 C' > "$tkr_fences"
+check "89r: 울타리는 같은 문자의 같거나 긴 빈 줄만 닫고 들여쓴 울타리도 센다" \
+  "$(tkr_rows_of "$tkr_fences" '- `run` | run-id=R1')" "A:없음:-:-,B:없음:-:-,C:없음:-:-"
+tkr_open="$tkr_dir/open.md"
+printf '%s\n' '## 구현 슬라이싱' '### 슬라이스 A' '```' '### 슬라이스 B' > "$tkr_open"
+tkr_open_rc=0
+tkr_open_out="$(LC_ALL=C awk -f "$tkr_read" "$tkr_open" "$tkr_led")" || tkr_open_rc=$?
+check "89r: 닫히지 않은 울타리는 아무것도 찍지 않고 읽기 실패다" "$tkr_open_rc/$tkr_open_out" "3/"
+check "89r: 문면이 판독기의 문서 입력을 싣는다" \
+  "$(tkx_has "$tkr_a3" 'as `LC_ALL=C awk -f <이 프로그램> <문서> <원장>`')/$(tkx_has "$tkr_a3" '`<base>/<값>` when that is a file, otherwise `/<값>` when that is a file')/$(tkx_has "$tkr_a3" '`/dev/null` when the value is `(없음)` or the plan has no such line')/$(tkx_has "$tkr_a3" 'A plan that cannot be read is a failed read')/$(tkx_has "$tkr_a3" 'A value that names no file is not a failed read')/$(tkx_has "$tkr_a3" 'any non-zero exit is a failed read')" "있음/있음/있음/있음/있음/있음"
+check "89r: 문면이 상태 입력의 규칙을 싣는다" \
+  "$(tkx_has "$tkr_a3" 'A ledger file that does not exist is not a failed read')/$(tkx_has "$tkr_a3" '`<레포>` is the line'"'"'s `<행 레포>`; when that is `-`, it is the `**레포**` of that ticket'"'"'s `### 티켓 T<n> — ` block in the upper document')/$(tkx_has "$tkr_a3" 'a `브랜치` whose answer reads `no pull requests found for branch` is `없음`')/$(tkx_has "$tkr_a3" '`MERGED` only when every printed line of that run is `MERGED`')/$(tkx_has "$tkr_a3" 'the `원격 슬러그` of the manifest'"'"'s target row')/$(tkx_has "$tkr_a3" 'every segment of that run has a pull request')" "있음/있음/있음/있음/없음/없음"
+tkr_reg="$tkr_dir/reg.md"
+printf '%s\n' '<!-- cc-design-base-tickets v1; doc=docs/x.md -->' \
+  '- `베이스` | 상태=발행됨 | 참조=- | 노드 id=-' \
+  '- `티켓` | id=T1 | 상태=발행됨 | 참조=- | 노드 id=- | 유사 후보=-' \
+  '- `티켓` | id=T2 | 상태=발행됨 | 참조=- | 노드 id=- | 유사 후보=-' \
+  '- `착수` | id=T1 | 런=R1' \
+  '- `착수` | id=T2 | 런=R2' > "$tkr_reg"
+tkr_judge() {  # tkr_judge <등록부> <상태 줄…> — 줄마다 탭으로 나눈 티켓과 PR 상태
+  local reg="$1" st="$tkr_dir/status.tsv"; shift
+  : > "$st"
+  while [ "$#" -gt 0 ]; do printf '%s\n' "$1" >> "$st"; shift; done
+  LC_ALL=C awk -f "$tkr_prog" "$st" "$reg"
+}
+tkr_tab="$(printf '\t')"
+check "89r: 모든 티켓이 착수하고 머지되면 착지다" \
+  "$(tkr_judge "$tkr_reg" "T1${tkr_tab}MERGED" "T2${tkr_tab}MERGED")" "착지"
+check "89r: 열린 PR 이 남으면 미착지다" \
+  "$(tkr_judge "$tkr_reg" "T1${tkr_tab}MERGED" "T2${tkr_tab}OPEN")" "미착지 1"
+check "89r: 후속 런의 머지가 앞 런의 닫힌 PR 을 대신한다" \
+  "$(tkr_judge "$tkr_reg" "T1${tkr_tab}CLOSED" "T1${tkr_tab}MERGED" "T2${tkr_tab}MERGED")" "착지"
+tkr_fold() {  # tkr_fold <티켓> <판독 결과> — 쉼표로 이은 판독 줄을 문면의 규칙대로 상태 한 줄로 접는다(PR 은 열림으로 친다)
+  printf '%s\n' "$2" | tr ',' '\n' | awk -F: -v t="$1" '
+    { s = ($2 == "머지") ? "MERGED" : (($2 == "PR") ? "OPEN" : "없음"); if (s != "MERGED" && o == "") o = s }
+    END { print t "\t" (o == "" ? "MERGED" : o) }'
+}
+tkr_slices_ab="$tkr_dir/slices-ab.md"
+printf '%s\n' '## 구현 슬라이싱' '### 슬라이스 A — 앞' '### 슬라이스 B — 뒤' > "$tkr_slices_ab"
+tkr_front="$(tkr_fold T1 "$(tkr_rows_of "$tkr_slices_ab" "$tkr_merged_a")")"
+tkr_back="$(tkr_fold T1 "$(tkr_rows_of "$tkr_slices_ab" "$tkr_merged_a" '- `segment` | id=B | 상태=리뷰중 | PR=4')")"
+check "89r: 재킥오프의 앞뒤 런이 슬라이스를 남기면 미착지다" \
+  "$(tkr_judge "$tkr_reg" "$tkr_front" "$tkr_back" "T2${tkr_tab}MERGED")" "미착지 1"
+check "89r: 앞 런이 슬라이스 하나만 머지하면 그 런은 없음이다" "$tkr_front" "T1${tkr_tab}없음"
+check "89r: 상태 줄 없는 티켓은 미착지다" \
+  "$(tkr_judge "$tkr_reg" "T1${tkr_tab}MERGED")" "미착지 1"
+grep -vF -- '- `착수` | id=T2 ' "$tkr_reg" > "$tkr_dir/nostart.md"
+check "89r: 착수 행 없는 티켓은 미착지다" \
+  "$(tkr_judge "$tkr_dir/nostart.md" "T1${tkr_tab}MERGED" "T2${tkr_tab}MERGED")" "미착지 1"
+grep -vF -- '- `티켓` ' "$tkr_reg" > "$tkr_dir/noticket.md"
+check "89r: 티켓 행 없는 등록부는 착지가 아니다" \
+  "$(tkr_judge "$tkr_dir/noticket.md" "T1${tkr_tab}MERGED")" "판정 못 함"
 
 # ---------------------------------------------------------------------------
 # 101. 진입 계획의 강제 표면 판정은 모양이 단언된다
