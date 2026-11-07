@@ -20651,6 +20651,11 @@ gate_main() {
       --record)          sa_record="$2"; shift 2 ;;
       # The screening tool's own three switches, handed to it as they came.
       --list|--tokens|-z) ss_flags+=("$1"); shift ;;
+      # The listing mode between two revisions is a kickoff's, run outside any
+      # run; the relay inside a run does not hand it on.
+      --between)
+        printf 'gate: surface-screen does not relay --between — the kickoff runs enforcement-surface-screen.sh --between itself, outside the run\n' >&2
+        exit 2 ;;
       # THE SELECTOR OWNS THE COMMA. A bare `--fields` (no value, or the next
       # token is another flag or the `--` separator) selects the default list;
       # the value is never read as a filename, so `--fields --` cannot swallow
@@ -30335,6 +30340,92 @@ gate_surface_approval_rows_each() {
   done <<EOF
 $tg
 EOF
+  return 0
+}
+
+gate_surface_approval_status() {
+  # gate_surface_approval_status <segment> — `<record>\t<status>` for the
+  # segment's last `강제 표면 승인` shift record: `미답`, `세그먼트 park`, or the
+  # answered option's name followed by ` 이행 전` while no later act of the
+  # next shift took it up. `-\t기록 없음` when the segment has none.
+  local seg="$1" r rec='' ar ln opt st
+  while IFS= read -r r; do
+    [ -n "$r" ] || continue
+    [ "$(gate_row_field "$r" '앵커 세그먼트')" = "$seg" ] || continue
+    [ "$(gate_row_field "$r" '자리')" = '강제 표면 승인' ] || continue
+    rec=$(gate_row_field "$r" '중단 기록')
+  done <<EOF
+$( { gate_rows 'blocked' || true; } )
+EOF
+  if [ -z "$rec" ]; then printf '%s\t%s\n' '-' '기록 없음'; return 0; fi
+  ar=$( { grep -n "^- \`중단 답\` " "$LEDGER" 2>/dev/null || true; } \
+        | { grep -F "| 중단 기록=$rec |" || true; } | tail -1)
+  if [ -z "$ar" ]; then printf '%s\t%s\n' "$rec" '미답'; return 0; fi
+  ln=${ar%%:*}
+  opt=$(gate_row_field "${ar#*:}" '선택지')
+  st=$opt
+  if [ "$opt" != '세그먼트 park' ] && ! gate_halt_answer_spent "$LEDGER" "$seg" "$ln"; then
+    st="$opt 이행 전"
+  fi
+  printf '%s\t%s\n' "$rec" "$st"
+}
+
+gate_surface_unapproved_report() {
+  # gate_surface_unapproved_report — the morning report's enforcement-surface
+  # entries, one `<label>\t<text>` line each, for every segment of this run that
+  # did not land. A segment whose worktree is there is measured again: status 3
+  # is `강제 표면 미승인` with each refused path, its class and reason, the
+  # person's next step for its verdict kind and the last approval record's
+  # state; status 2 is `강제 표면 출처 판정 불가`. A segment whose worktree is
+  # gone cannot be measured — the check passes silently there — so its entry
+  # rests on what the run recorded, in this order: its last provenance block
+  # row (the verdict kind it carries), the `**승인 대상**` lines of its last
+  # approval record, the driver's merge park. With none of them, no entry.
+  # Writes nothing.
+  local seg wt rc out st rec stat why ps br pr vk
+  [ -n "${LEDGER:-}" ] && [ -f "$LEDGER" ] || return 0
+  for seg in $( { gate_rows 'segment' || true; } | gate_row_ids | LC_ALL=C sort -u); do
+    [ -z "$( { gate_rows 'segment' || true; } | gate_rows_field_eq 'id' "$seg" | gate_rows_field_eq '상태' '머지됨')" ] || continue
+    st=$(gate_surface_approval_status "$seg")
+    rec=${st%%$'\t'*}; stat=${st#*$'\t'}
+    wt=$(gate_segment_worktree "$seg")
+    if [ -n "$wt" ] && [ "$wt" != '-' ] && [ -d "$wt" ]; then
+      rc=0
+      out=$(gate_surface_provenance "$seg" 2>/dev/null) || rc=$?
+      case "$rc" in
+        0) continue ;;
+        "$GATE_EXIT_RULE")
+          ps=$(printf '%s\n' "$out" | LC_ALL=C awk -F'\t' 'NF { printf "%s%s (%s)", (n++ ? "; " : ""), $1, $2 }')
+          printf '%s\t%s — %s — %s — 승인 기록 %s (%s)\n' '강제 표면 미승인' "$seg" "$ps" \
+            "$(gate_surface_resume_text "$(gate_surface_verdict_kind "$out")")" "$rec" "$stat" ;;
+        *)
+          printf '%s\t%s — rc=%s — %s\n' '강제 표면 출처 판정 불가' "$seg" "$rc" \
+            "$(printf '%s' "${out:-(출력 없음)}" | tr '\t\n' ' ;')" ;;
+      esac
+      continue
+    fi
+    br=$( { gate_rows 'blocked' || true; } | gate_rows_field_eq '앵커 세그먼트' "$seg" \
+          | gate_rows_field_eq '사유' '강제 표면이 좌석 적용 밖에서 바뀜' | tail -1)
+    if [ -n "$br" ]; then
+      vk=$(gate_row_field "$br" '판정')
+      printf '%s\t%s — 워크트리 없음, 막힘 행 기준(판정 %s) — %s — 승인 기록 %s (%s)\n' '강제 표면 미승인' "$seg" \
+        "${vk:-승인 가능}" "$(gate_surface_resume_text "${vk:-승인 가능}")" "$rec" "$stat"
+      continue
+    fi
+    if [ "$rec" != '-' ] && [ -f "$rec" ]; then
+      ps=$(gate_surface_record_targets "$rec" | LC_ALL=C awk -F ' \\| ' 'NF { printf "%s%s (%s)", (n++ ? "; " : ""), $1, $2 }')
+      printf '%s\t%s — 워크트리 없음, 승인 기록 기준 — %s — %s — 승인 기록 %s (%s)\n' '강제 표면 미승인' "$seg" \
+        "${ps:-(승인 대상 없음)}" "$(gate_surface_resume_text '승인 가능')" "$rec" "$stat"
+      continue
+    fi
+    pr=$( { gate_rows 'blocked' || true; } | gate_rows_field_eq '대상' "$seg" \
+          | gate_rows_field_eq '사유' '머지 직전 강제 표면 출처' | tail -1)
+    if [ -n "$pr" ]; then
+      why=$(gate_row_field "$pr" '관측')
+      printf '%s\t%s — 워크트리 없음, 드라이버 머지 park 기준 — %s — %s\n' '강제 표면 미승인' "$seg" \
+        "$why" "$(gate_row_field "$pr" '재개 명령')"
+    fi
+  done
   return 0
 }
 
