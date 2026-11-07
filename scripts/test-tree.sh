@@ -77,6 +77,30 @@ TT_RECORD=""
 TT_PROGRESS_SECS=60
 TT_POOL_PIDS=""
 
+# The host-wide test slots every job of the pool, and each of the two calls of
+# the TT_JOBS 1 path, waits for before it starts (scripts/test-slots.sh).
+# shellcheck source=scripts/test-slots.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/test-slots.sh"
+
+# Proven-input reuse of goal passes (scripts/test-reuse.sh). Off unless the
+# caller turns it on, which only check-push's run and items do: TT_REUSE 1,
+# TT_REUSE_GDIR the common git directory the records live under,
+# TT_REUSE_COMMIT the input HEAD commit and TT_REUSE_BASE the base merged into
+# the tested tree (empty: none). The repro and base-verdict commands and the
+# base contrast leave it off, since they run items to tell a defect apart; the
+# TT_JOBS 1 path never uses it. TT_REUSED collects the item keys a run reused,
+# comma-joined.
+TT_REUSE=0
+TT_REUSE_GDIR=""
+TT_REUSE_COMMIT=""
+TT_REUSE_BASE=""
+TT_REUSED=""
+TT_REUSE_LIST=""
+TT_IT_DIR=""
+TT_IT_REC=0
+# shellcheck source=scripts/test-reuse.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/test-reuse.sh"
+
 # --- small helpers -----------------------------------------------------------
 
 tt_or_none() {
@@ -325,6 +349,7 @@ tt_cleanup() {
     for p in $TT_POOL_PIDS; do wait "$p" 2>/dev/null; done
     TT_POOL_PIDS=""
   fi
+  ts_release_mine
   if [ -n "${TT_DIR:-}" ]; then
     rm -rf "$TT_DIR"
     TT_DIR=""
@@ -504,9 +529,41 @@ $(tt_missing_from "$goals" "$glist")"
   return 0
 }
 
+# Decides the slot store for this process: a private one under TT_DIR while a
+# double stands, so a self-test never waits on or writes to the host's store.
+tt_slots_init() {
+  local priv=""
+  if [ "$(tt_doubles)" != 없음 ] && [ -n "${TT_DIR:-}" ]; then priv="$TT_DIR/slots"; fi
+  ts_init "$priv"
+}
+
+# Runs "$@" in a slot of weight 1 named $1, unmeasured. Holding a slot, the
+# command runs in a subshell that passes CC_TEST_SLOT_HELD=1 on; otherwise it
+# runs as it did before slots.
+tt_slot_run() {
+  local name="$1" got rc
+  shift
+  tt_slots_init
+  ts_slot_wait "$name" ""
+  got="$TS_GOT"
+  if [ "$TS_MODE" = held ]; then
+    (
+      CC_TEST_SLOT_HELD=1
+      export CC_TEST_SLOT_HELD
+      "$@"
+    )
+    rc=$?
+  else
+    "$@"
+    rc=$?
+  fi
+  ts_release "$got"
+  return "$rc"
+}
+
 # With TT_JOBS 1: one test-gate call for every section, then one make for every
-# goal. The failure names the whole list, because the list is what failed.
-# Above 1 the items go to the job pool below.
+# goal, each in a slot of weight 1. The failure names the whole list, because
+# the list is what failed. Above 1 the items go to the job pool below.
 tt_run_items() {
   local secs="$1" goals="$2" rc
   TT_FAILED=""
@@ -516,7 +573,7 @@ tt_run_items() {
     return $?
   fi
   if [ -n "$secs" ]; then
-    tt_gate --sections "$secs"
+    tt_slot_run "절 $secs" tt_gate --sections "$secs"
     rc=$?
     if [ "$rc" != 0 ]; then
       TT_FAILED="절=$secs"
@@ -529,13 +586,98 @@ tt_run_items() {
       words+=("${rest%%,*}")
       rest="${rest#*,}"
     done
-    tt_make --no-print-directory "${words[@]}"
+    tt_slot_run "목표 $goals" tt_make --no-print-directory "${words[@]}"
     rc=$?
     if [ "$rc" != 0 ]; then
       TT_FAILED="목표=$goals"
       return "$rc"
     fi
   fi
+  return 0
+}
+
+# --- item checkouts and reuse ----------------------------------------------------
+#
+# An item that may be recorded runs in a checkout of its own under
+# $TT_DIR/items/<id>/, so what it reads is its own; the side files of
+# scripts/test-reuse.sh sit next to it as items/<id>.*. The checkout, its
+# baseline and the canary are made before the item waits for its slots, and
+# the read set is collected after it gave them back, so neither counts in the
+# slot's wall seconds or the goal's recorded time. Any step that fails leaves
+# the item to run in the shared clone as before, unrecorded.
+
+tt_reuse_on() {
+  [ "${TT_REUSE:-0}" = 1 ] && [ -n "$TT_REUSE_GDIR" ] && [ -n "${TT_COMMIT:-}" ] && [ -n "${TT_TREE:-}" ]
+}
+
+# Sets TT_REUSE_LIST to the tracked listing of the tested tree, made once per
+# tree; the file is empty when the listing failed.
+tt_reuse_list() {
+  TT_REUSE_LIST="$TT_DIR/reuse-list.$TT_TREE"
+  [ -e "$TT_REUSE_LIST" ] || tr_list "$TT_WORK" "$TT_COMMIT" "$TT_REUSE_LIST" || : > "$TT_REUSE_LIST"
+}
+
+# A shared, unchecked-out clone of the clone at $1 with the tested commit
+# checked out. The clone, not the common git directory, is the source: a
+# merged tree and its commit exist only in the clone's object store.
+tt_item_checkout() {
+  (
+    unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_COMMON_DIR
+    git clone --quiet --shared --no-checkout "$TT_WORK" "$1" < /dev/null > /dev/null 2>&1 \
+      && cd "$1" && git checkout --quiet --detach "$TT_COMMIT" < /dev/null > /dev/null 2>&1 \
+      && git config core.trustctime false && git config core.checkStat minimal
+  )
+}
+
+# 0 when item key $1 may skip its run: prints the reuse line and adds the key
+# to TT_REUSED.
+tt_item_reuse() {
+  local key="$1" hit
+  tt_reuse_on || return 1
+  tt_reuse_list
+  hit=$(tr_reuse_find "$TT_REUSE_GDIR" "$key" "$TT_TREE" "$TT_REUSE_COMMIT" "$TT_REUSE_BASE" "$(tt_doubles)" "$TT_REUSE_LIST") || return 1
+  printf '%s: 재사용 %s ← %s (%s)\n' "$TT_PREFIX" "$key" "${hit%%$'\t'*}" "${hit#*$'\t'}" >&2
+  TT_REUSED="${TT_REUSED:+$TT_REUSED,}$key"
+  return 0
+}
+
+# Prepares item <id> $1 with key $2 to run in a checkout of its own. Sets
+# TT_IT_DIR to the checkout (empty: the shared clone) and TT_IT_REC to 1 when
+# the run may be recorded.
+tt_item_prepare() {
+  local d="$TT_DIR/items/$1" key="$2"
+  TT_IT_DIR=""
+  TT_IT_REC=0
+  tt_reuse_on || return 0
+  tr_excluded "$key" && return 0
+  tt_reuse_list
+  [ -s "$TT_REUSE_LIST" ] || return 0
+  if mkdir -p "$TT_DIR/items" && tt_item_checkout "$d" && tr_baseline "$d" "$d" "$TT_REUSE_LIST" && tr_shims "$d" "$d"; then
+    TT_IT_DIR="$d"
+    if tr_canary "$d"; then
+      TT_IT_REC=1
+    else
+      printf '%s: 읽기가 atime 을 움직이지 않는 볼륨 — %s 는 기록하지 않는다\n' "$TT_PREFIX" "$key" >&2
+    fi
+  else
+    printf '%s: 항목 체크아웃을 준비하지 못했다 — %s 는 공유 복제본에서 돈다\n' "$TT_PREFIX" "$key" >&2
+    rm -rf "$d" "$d".*
+  fi
+  return 0
+}
+
+# After the item in checkout $1 (empty: none) with key $3 ended with status
+# $2: records the pass when $4 is 1, then removes the checkout.
+tt_item_done() {
+  local d="$1" rc="$2" key="$3" rec="$4"
+  [ -n "$d" ] || return 0
+  if [ "$rc" = 0 ] && [ "$rec" = 1 ]; then
+    if ! tr_collect "$d" "$d" "$TT_REUSE_LIST" "$d.read" \
+      || ! tr_record_write "$TT_REUSE_GDIR" "$key" "$TT_TREE" "$TT_REUSE_COMMIT" "$TT_REUSE_BASE" "$(tt_doubles)" "$TT_REUSE_LIST" "$d.read"; then
+      printf '%s: 통과 기록을 쓰지 못했다 — %s\n' "$TT_PREFIX" "$key" >&2
+    fi
+  fi
+  rm -rf "$d" "$d".*
   return 0
 }
 
@@ -549,7 +691,7 @@ tt_run_items() {
 # every section runs in one lane: the same coverage, only slower. The heaviest
 # job starts first and a job with no estimate counts as the heaviest, so a long
 # job does not start last. bash 3.2: no `wait -n` and no associative arrays; a
-# slot is watched with kill -0, as gate-census.sh's pool does. Every job runs
+# slot is watched with kill -0. Every job runs
 # to its end, so one run names every failure.
 
 # The estimate of key $1 in the estimate file $2 in whole seconds, or nothing.
@@ -581,8 +723,13 @@ tt_pool_cut() {
 # Starts job $1 in the background: stdin closed, both streams into its own
 # file. A lane gets its own TMPDIR, XDG_STATE_HOME and marker file, and merges
 # its times into TT_RECORD; a goal runs as tt_make does and records nothing.
+# Call it right after ts_slot_take let the job start: with slots off or nested
+# the job execs as it always did; otherwise it runs under the job shell of
+# scripts/test-slots.sh, which measures its weight when it holds slots and
+# passes CC_TEST_SLOT_HELD=1 on to it.
 tt_pool_start() {
-  local i="$1" jd gate="${CC_TEST_TREE_GATE:-}" mk="${CC_TEST_TREE_MAKE:-make}"
+  local i="$1" jd gate="${CC_TEST_TREE_GATE:-}" mk="${CC_TEST_TREE_MAKE:-make}" how="$TS_MODE" key
+  key=$(ts_job_key "${TT_PJ_KEY[$i]}")
   jd="$TT_POOL_DIR/job-$i"
   mkdir -p "$jd/tmp" "$jd/state" || return 1
   if [ "${TT_PJ_KIND[$i]}" = lane ]; then
@@ -591,17 +738,34 @@ tt_pool_start() {
       tt_unset_callers
       TMPDIR="$jd/tmp" XDG_STATE_HOME="$jd/state" CC_GATE_TIMING_OUT="$jd/marks.tsv" CC_GATE_TIMING_RECORD="${TT_RECORD:-off}"
       export TMPDIR XDG_STATE_HOME CC_GATE_TIMING_OUT CC_GATE_TIMING_RECORD
-      if [ -n "$gate" ]; then exec "$gate" --sections "${TT_PJ_ARG[$i]}"; fi
-      exec bash scripts/test-gate.sh --sections "${TT_PJ_ARG[$i]}"
+      if [ "$how" = exec ]; then
+        if [ -n "$gate" ]; then exec "$gate" --sections "${TT_PJ_ARG[$i]}"; fi
+        exec bash scripts/test-gate.sh --sections "${TT_PJ_ARG[$i]}"
+      fi
+      if [ "$how" = held ]; then CC_TEST_SLOT_HELD=1; export CC_TEST_SLOT_HELD; fi
+      if [ -n "$gate" ]; then
+        ts_job_shell bg "$key" "$gate" --sections "${TT_PJ_ARG[$i]}"
+        exit $?
+      fi
+      ts_job_shell bg "$key" bash scripts/test-gate.sh --sections "${TT_PJ_ARG[$i]}"
+      exit $?
     ) < /dev/null > "$jd/out" 2>&1 &
   else
     (
-      cd "$TT_WORK" || exit 2
+      cd "${TT_PJ_IT[$i]:-$TT_WORK}" || exit 2
+      if [ -n "${TT_PJ_IT[$i]:-}" ]; then
+        PATH="${TT_PJ_IT[$i]}.shim:$PATH"
+        export PATH
+        unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_COMMON_DIR
+      fi
       export MAKEFLAGS='' MFLAGS='' MAKELEVEL=''
       tt_unset_callers
       CC_GATE_TIMING_RECORD=off
       export CC_GATE_TIMING_RECORD
-      exec "$mk" --no-print-directory "${TT_PJ_ARG[$i]}"
+      if [ "$how" = exec ]; then exec "$mk" --no-print-directory "${TT_PJ_ARG[$i]}"; fi
+      if [ "$how" = held ]; then CC_TEST_SLOT_HELD=1; export CC_TEST_SLOT_HELD; fi
+      ts_job_shell bg "$key" "$mk" --no-print-directory "${TT_PJ_ARG[$i]}"
+      exit $?
     ) < /dev/null > "$jd/out" 2>&1 &
   fi
   TT_PJ_PID[$i]=$!
@@ -615,6 +779,8 @@ tt_pool_finish() {
   local i="$1" rc="$2" p left=""
   TT_PJ_DONE[$i]=1
   TT_PJ_RC[$i]="$rc"
+  ts_release "${TT_PJ_SLOTS[$i]:-}"
+  TT_PJ_SLOTS[$i]=""
   TT_PJ_EL[$i]=$(( $(date +%s) - ${TT_PJ_T0[$i]:-$(date +%s)} ))
   for p in $TT_POOL_PIDS; do
     [ "$p" = "${TT_PJ_PID[$i]:-}" ] || left="$left $p"
@@ -629,7 +795,8 @@ tt_pool_run() {
   local order=()
   tab=$(printf '\t')
   TT_PJ_KIND=(); TT_PJ_ARG=(); TT_PJ_NAME=(); TT_PJ_EST=(); TT_PJ_PID=(); TT_PJ_T0=()
-  TT_PJ_DONE=(); TT_PJ_RC=(); TT_PJ_EL=()
+  TT_PJ_DONE=(); TT_PJ_RC=(); TT_PJ_EL=(); TT_PJ_KEY=(); TT_PJ_SLOTS=()
+  TT_PJ_PREP=(); TT_PJ_IT=(); TT_PJ_REC=(); TT_PJ_REUSED=()
   TT_FAILED_SECTIONS=""
   TT_FAILED_GOALS=""
   [ -n "$secs" ] || [ -n "$goals" ] || return 0
@@ -671,6 +838,7 @@ tt_pool_run() {
         *) if [ -f "$TT_POOL_DIR/timing.tsv" ]; then e=$(( (load + 500) / 1000 + ${h:-0} )); fi ;;
       esac
       TT_PJ_KIND[$n]=lane; TT_PJ_ARG[$n]="$ids"; TT_PJ_NAME[$n]="레인 $k($ids)"; TT_PJ_EST[$n]="$e"
+      TT_PJ_KEY[$n]="lane:$ids"
       n=$((n + 1))
     done < "$lanes"
   fi
@@ -680,7 +848,7 @@ tt_pool_run() {
       g="${rest%%,*}"
       rest="${rest#*,}"
       [ -n "$g" ] || continue
-      TT_PJ_KIND[$n]=goal; TT_PJ_ARG[$n]="$g"; TT_PJ_NAME[$n]="목표 $g"
+      TT_PJ_KIND[$n]=goal; TT_PJ_ARG[$n]="$g"; TT_PJ_NAME[$n]="목표 $g"; TT_PJ_KEY[$n]="make:$g"
       TT_PJ_EST[$n]=$(tt_pool_est_of "make:$g" "$est")
       n=$((n + 1))
     done
@@ -693,17 +861,40 @@ tt_pool_run() {
   order=($(i=0; while [ "$i" -lt "$n" ]; do printf '%s\t%s\n' "${TT_PJ_EST[$i]:-999999999}" "$i"; i=$((i + 1)); done \
     | sort -t "$tab" -k1,1nr -k2,2n | cut -f2))
 
+  # Each job starts only once it has its slots: one try per pass, and a job
+  # that cannot have them yet leaves the start loop to the next second. A goal
+  # is judged for reuse and given its checkout once, before its first try; a
+  # reused goal takes no slot and counts as finished.
+  tt_slots_init
   t0=$(date +%s)
   lastp="$t0"
   while [ "$ndone" -lt "$n" ]; do
     while [ "$running" -lt "$jeff" ] && [ "$next" -lt "$n" ]; do
       i="${order[$next]}"
+      if [ "${TT_PJ_KIND[$i]}" = goal ] && [ -z "${TT_PJ_PREP[$i]:-}" ]; then
+        TT_PJ_PREP[$i]=1
+        if tt_item_reuse "${TT_PJ_KEY[$i]}"; then
+          TT_PJ_REUSED[$i]=1
+          TT_PJ_DONE[$i]=1
+          TT_PJ_RC[$i]=0
+          TT_PJ_EL[$i]=0
+          next=$((next + 1))
+          ndone=$((ndone + 1))
+          continue
+        fi
+        tt_item_prepare "$i" "${TT_PJ_KEY[$i]}"
+        TT_PJ_IT[$i]="$TT_IT_DIR"
+        TT_PJ_REC[$i]="$TT_IT_REC"
+      fi
+      ts_slot_take "${TT_PJ_NAME[$i]}" "${TT_PJ_KEY[$i]}" || break
+      TT_PJ_SLOTS[$i]="$TS_GOT"
       next=$((next + 1))
       if tt_pool_start "$i"; then
         running=$((running + 1))
       else
         TT_PJ_T0[$i]=$(date +%s)
         tt_pool_finish "$i" 1
+        tt_item_done "${TT_PJ_IT[$i]:-}" 1 "${TT_PJ_KEY[$i]}" 0
         ndone=$((ndone + 1))
       fi
     done
@@ -717,6 +908,7 @@ tt_pool_run() {
       wait "${TT_PJ_PID[$i]}"
       rc=$?
       tt_pool_finish "$i" "$rc"
+      tt_item_done "${TT_PJ_IT[$i]:-}" "$rc" "${TT_PJ_KEY[$i]}" "${TT_PJ_REC[$i]:-0}"
       running=$((running - 1))
       ndone=$((ndone + 1))
     done
@@ -745,6 +937,7 @@ tt_pool_run() {
   i=0
   while [ "$i" -lt "$n" ]; do
     printf '=== %s: 잡 %s ===\n' "$TT_PREFIX" "${TT_PJ_NAME[$i]}"
+    if [ -n "${TT_PJ_REUSED[$i]:-}" ]; then printf '재사용 — 돌리지 않았다\n'; fi
     cat "$TT_POOL_DIR/job-$i/out" 2>/dev/null
     i=$((i + 1))
   done
@@ -768,6 +961,8 @@ tt_pool_run() {
     elif [ "$rc" != 0 ]; then
       printf '%s: %s 가 종료 코드 %s 로 끝났다\n' "$TT_PREFIX" "${TT_PJ_NAME[$i]}" "$rc" >&2
       fgoals="${fgoals:+$fgoals,}${TT_PJ_ARG[$i]}"
+    elif [ -n "${TT_PJ_REUSED[$i]:-}" ]; then
+      :
     else
       printf 'make:%s\t%s\n' "${TT_PJ_ARG[$i]}" "${TT_PJ_EL[$i]}" >> "$TT_POOL_DIR/goal-times.tsv"
     fi
@@ -942,6 +1137,8 @@ tt_items_cell() {
 tt_base_contrast() {
   local base="$1" secs="$2" goals="$3" rc rest it fs="" fg=""
   local psecs="" pgoals="" bsecs="" bgoals="" dsecs="" dgoals=""
+  # The base is run to tell a defect apart, so nothing is reused or recorded.
+  local TT_REUSE=0
   TT_PRE_ITEMS=""
   TT_BRANCH_ITEMS=""
   TT_BASE_DROPPED=""
@@ -1363,13 +1560,13 @@ tt_cli_base_verdict() {
 
 # --- self-test ---------------------------------------------------------------
 
-# What every case starts from: no git location, pipeline, check-push or make
-# variable inherited from whoever ran the self-test.
+# What every case starts from: no git location, pipeline, check-push, make or
+# test-slot variable inherited from whoever ran the self-test.
 tt_st_scrub() {
   local v
   for v in $(compgen -e); do
     case "$v" in
-      GIT_DIR|GIT_WORK_TREE|GIT_INDEX_FILE|GIT_COMMON_DIR|GIT_OBJECT_DIRECTORY|GIT_ALTERNATE_OBJECT_DIRECTORIES|CC_PIPELINE_*|CHECK_PUSH_*|CC_TEST_TREE_*|CC_CHECK_PUSH_*|MAKEFLAGS|MFLAGS|MAKELEVEL) unset "$v" ;;
+      GIT_DIR|GIT_WORK_TREE|GIT_INDEX_FILE|GIT_COMMON_DIR|GIT_OBJECT_DIRECTORY|GIT_ALTERNATE_OBJECT_DIRECTORIES|CC_PIPELINE_*|CHECK_PUSH_*|CC_TEST_TREE_*|CC_CHECK_PUSH_*|CC_TEST_SLOT*|MAKEFLAGS|MFLAGS|MAKELEVEL) unset "$v" ;;
     esac
   done
   GIT_CONFIG_GLOBAL=/dev/null
@@ -2036,6 +2233,169 @@ ci-base: 목록 없음 — job=21 「rest-tests (3)」 의 로그에 절 목록�
   hasnt "F9 진행 중인 런에 repro 줄이 없다" "$out" "bash scripts/test-tree.sh repro"
   rm -f "$T/gh-log-fail"
 
+  # --- F38 시험 자리 -----------------------------------------------------------
+  # Pools in separate processes share one store. The make double logs when a
+  # goal starts and ends, read off the clock at the line it writes; goal rc7
+  # ends with 7, goal long waits until TERM reaches it.
+  sed "s|@T@|$T|g" > "$T/bin/slowmake" <<'EOF'
+#!/usr/bin/env bash
+g="${2:-}"
+printf 'S %s %s held=%s\n' "$g" "$(date +%s)" "${CC_TEST_SLOT_HELD-unset}" >> "@T@/slot.log"
+case "$g" in
+  rc7) exit 7 ;;
+  long)
+    trap 'printf "T %s\n" "$g" >> "@T@/slot.log"; kill "$sp" 2>/dev/null; exit 143' TERM
+    sleep 60 &
+    sp=$!
+    wait "$sp"
+    exit 0 ;;
+esac
+sleep "${SLOW_SECS:-0}"
+printf 'E %s %s\n' "$g" "$(date +%s)" >> "@T@/slot.log"
+EOF
+  chmod +x "$T/bin/slowmake"
+  # One pool of <goals> as process <tag>, two jobs at a time, with the
+  # variables given after the goals. Start it with `&`: the background shell
+  # becomes the pool's own bash, so a TERM sent to $! reaches the pool.
+  sp() {
+    local tag="$1" goals="$2"
+    shift 2
+    cd "$W" || exit 2
+    exec env CC_TEST_TREE_MAKE="$T/bin/slowmake" CC_TEST_TREE_GATE="$T/bin/gate" "$@" bash -c '
+      . "$1"; trap "tt_cleanup; exit 143" TERM; cd "$2" && tt_clone > /dev/null && TT_JOBS=2 && tt_pool_run "" "$3" > /dev/null; printf "rc=%s\n" "$?"; tt_cleanup' _ "$self" "$W" "$goals" > "$T/sp-$tag.out" 2> "$T/sp-$tag.err"
+  }
+  # Waits until the double logged line $1 (up to 30 seconds).
+  logwait() {
+    local k=0
+    while [ "$k" -lt 30 ] && ! grep -q -- "$1" "$T/slot.log" 2>/dev/null; do sleep 1; k=$((k + 1)); done
+  }
+  # The most goals that ran at once, from the S and E lines.
+  maxdepth() { awk '$1 == "S" { d++; if (d > m) m = d } $1 == "E" { d-- } END { print m + 0 }' "$T/slot.log"; }
+  # The field $2 of the S or E line of goal $1.
+  logat() { awk -v k="$1" -v g="$2" '$1 == k && $2 == g { print $3 }' "$T/slot.log"; }
+
+  rm -rf "$T/slots"
+  : > "$T/slot.log"
+  sp A a1,a2 CC_TEST_SLOTS=1 CC_TEST_SLOTS_DIR="$T/slots" SLOW_SECS=3 &
+  v=$!
+  logwait "^S a1 "
+  sp B b1 CC_TEST_SLOTS=1 CC_TEST_SLOTS_DIR="$T/slots" SLOW_SECS=3 &
+  wait "$v" $!
+  check "F38 자리 하나면 두 풀의 잡이 겹치지 않는다" "$(maxdepth)|$(cat "$T/sp-A.out" "$T/sp-B.out" | tr '\n' ' ')" "1|rc=0 rc=0 "
+  check "F38 먼저 온 풀의 다음 잡이 나중 풀의 잡보다 먼저 돈다" "$(awk '$1 == "S" { printf "%s ", $2 }' "$T/slot.log")" "a1 a2 b1 "
+  has "F38 자리를 잡은 잡은 CC_TEST_SLOT_HELD=1 을 받는다" "$(grep '^S b1 ' "$T/slot.log")" "held=1"
+  out=$(sed -n 's/^test-tree: 자리 잡음 목표 b1 (\([0-9][0-9]*\)초 대기)$/\1/p' "$T/sp-B.err")
+  line=$(sed -n 's/^test-tree: 끝 — 목표 b1 rc=0 \([0-9][0-9]*\)초$/\1/p' "$T/sp-B.err")
+  v=$(( $(logat E b1) - $(logat S b1) ))
+  if [ -n "$out" ] && [ -n "$line" ] && [ "$out" -ge 2 ] && [ $((line - v)) -lt "$out" ]; then
+    ok "F38 목표 시간에 자리 대기가 빠진다"
+  else
+    bad "F38 목표 시간에 자리 대기가 빠진다" "대기=$out 끝=$line 대역=$v $(cat "$T/sp-B.err")"
+  fi
+
+  rm -rf "$T/slots"
+  mkdir -p "$T/slots/weights"
+  printf '2\n' > "$T/slots/weights/make:w1"
+  printf '2\n' > "$T/slots/weights/make:w2"
+  : > "$T/slot.log"
+  sp A w1 CC_TEST_SLOTS=3 CC_TEST_SLOTS_DIR="$T/slots" SLOW_SECS=2 &
+  v=$!
+  sp B w2 CC_TEST_SLOTS=3 CC_TEST_SLOTS_DIR="$T/slots" SLOW_SECS=2 &
+  wait "$v" $!
+  check "F38 무게 2 의 잡 둘은 자리 셋에서 겹치지 않는다" "$(maxdepth)|$(grep -c '^S ' "$T/slot.log")" "1|2"
+
+  rm -rf "$T/slots"
+  : > "$T/slot.log"
+  sp A rc7 CC_TEST_SLOTS=2 CC_TEST_SLOTS_DIR="$T/slots" &
+  wait $!
+  has "F38 잡 셸은 대역 목표의 종료 코드를 돌려준다" "$(cat "$T/sp-A.err")" "test-tree: 끝 — 목표 rc7 rc=7 "
+  check "F38 종료 코드 7 의 목표는 풀을 실패시킨다" "$(cat "$T/sp-A.out")" "rc=1"
+
+  rm -rf "$T/slots"
+  : > "$T/slot.log"
+  sp A long CC_TEST_SLOTS=2 CC_TEST_SLOTS_DIR="$T/slots" &
+  v=$!
+  logwait "^S long "
+  sleep 1
+  kill -TERM "$v" 2>/dev/null
+  wait "$v"
+  check "F38 정리 때의 TERM 이 잡 셸을 지나 대역 목표까지 닿는다" "$(grep -c '^T long$' "$T/slot.log")" "1"
+  check "F38 정리가 자기 자리와 표를 지운다" "$(find "$T/slots" -name 'slot-*' | wc -l | tr -d ' ')|$(find "$T/slots/queue" -name '[0-9]*' | wc -l | tr -d ' ')" "0|0"
+
+  : > "$T/slot.log"
+  rm -rf "$T/slots"
+  sp A o1 CC_TEST_SLOTS=0 CC_TEST_SLOTS_DIR="$T/slots" &
+  wait $!
+  check "F38 CC_TEST_SLOTS=0 이면 저장소도 CC_TEST_SLOT_HELD 도 없다" "$([ -e "$T/slots" ] && echo 있음 || echo 없음)|$(cat "$T/sp-A.out")|$(grep '^S o1 ' "$T/slot.log" | cut -d' ' -f4)" "없음|rc=0|held=unset"
+  : > "$T/slot.log"
+  sp A d1 CC_TEST_SLOTS_DIR="$T/slots" &
+  wait $!
+  check "F38 CC_TEST_SLOTS 가 없는 기본 실행은 저장소도 CC_TEST_SLOT_HELD 도 없다" "$([ -e "$T/slots" ] && echo 있음 || echo 없음)|$(cat "$T/sp-A.out")|$(grep '^S d1 ' "$T/slot.log" | cut -d' ' -f4)" "없음|rc=0|held=unset"
+  hasnt "F38 기본 실행은 자리 줄을 남기지 않는다" "$(cat "$T/sp-A.err")" "자리"
+  : > "$T/slot.log"
+  sp A rc7 CC_TEST_SLOTS_DIR="$T/slots" &
+  wait $!
+  has "F38 기본 실행도 대역 목표의 종료 코드를 그대로 받는다" "$(cat "$T/sp-A.err")" "test-tree: 끝 — 목표 rc7 rc=7 "
+  check "F38 기본 실행도 종료 코드 7 의 목표로 풀을 실패시키고 저장소를 만들지 않는다" "$(cat "$T/sp-A.out")|$([ -e "$T/slots" ] && echo 있음 || echo 없음)" "rc=1|없음"
+  : > "$T/slot.log"
+  sp A o2 CC_TEST_SLOT_HELD=1 CC_TEST_SLOTS_DIR="$T/slots" &
+  wait $!
+  check "F38 자리 안에서 뜬 풀은 자리를 잡지 않는다" "$([ -e "$T/slots" ] && echo 있음 || echo 없음)|$(cat "$T/sp-A.out")" "없음|rc=0"
+
+  check "F38 무게 계산: CPU 25초 / 벽시계 10초 → 올림(2.25) = 3" "$(ts_weight_calc "0m20.000s 0m5.000s" 10)" "3"
+  check "F38 무게 계산: CPU/벽시계 2.25 경계 → 2" "$(ts_weight_calc "0m22.500s 0m0.000s" 10)" "2"
+  check "F38 무게 계산: 벽시계 10초 미만이면 갱신하지 않는다" "$(ts_weight_calc "0m50.000s 0m0.000s" 9)" ""
+
+  # --- F40 항목 체크아웃과 재사용 --------------------------------------------------
+  # The make double logs where each goal ran, what git PATH finds and whether
+  # an inherited GIT_ALTERNATE_OBJECT_DIRECTORIES reached it; it reads
+  # tracked.txt, and goal f1 fails. A volume where reads do not move the access
+  # time records nothing, so both branches check the same number of things.
+  sed "s|@T@|$T|g" > "$T/bin/rmake" <<'EOF'
+#!/usr/bin/env bash
+g="${2:-}"
+printf '%s cwd=%s git=%s alt=%s\n' "$g" "$(pwd -P)" "$(command -v git)" "${GIT_ALTERNATE_OBJECT_DIRECTORIES-unset}" >> "@T@/rmake.log"
+cat tracked.txt > /dev/null
+[ "$g" != f1 ]
+EOF
+  chmod +x "$T/bin/rmake"
+  mkdir -p "$T/emptyobj"
+  # One pool of <goals> with reuse set to $2 and records under $T/rg.
+  rp() {
+    (cd "$W" && env CC_TEST_TREE_MAKE="$T/bin/rmake" CC_TEST_TREE_GATE="$T/bin/gate" GIT_ALTERNATE_OBJECT_DIRECTORIES="$T/emptyobj" bash -c '
+      . "$1"; cd "$2" && tt_clone > /dev/null && TT_COMMIT=$(tt_git rev-parse HEAD) && TT_TREE=$(tt_git rev-parse "HEAD^{tree}") \
+        && tt_checkout "$TT_COMMIT" && TT_JOBS=2 && TT_REUSE="$5" && TT_REUSE_GDIR="$3" && TT_REUSE_COMMIT="$TT_COMMIT" \
+        && tt_pool_run "" "$4" > /dev/null; printf "rc=%s reused=%s\n" "$?" "$TT_REUSED"; tt_cleanup' _ "$self" "$W" "$T/rg" "$1" "$2")
+  }
+  v=0
+  if tr_canary "$T/probe"; then v=1; fi
+  : > "$T/rmake.log"
+  out=$(rp r1,f1 1 2> "$T/rp.err")
+  check "F40 첫 실행: 실패 목표가 풀을 실패시키고 재사용은 없다" "$out" "rc=1 reused="
+  check "F40 목표는 항목 체크아웃에서 돈다" "$(grep -c '^r1 cwd=.*/items/[0-9]* ' "$T/rmake.log")" "1"
+  has "F40 항목 환경의 PATH 맨 앞에 git 감시 꼴" "$(grep '^r1 ' "$T/rmake.log")" ".shim/git "
+  has "F40 항목 환경은 GIT_ALTERNATE_OBJECT_DIRECTORIES 를 지운다" "$(grep '^r1 ' "$T/rmake.log")" "alt=unset"
+  check "F40 실패한 목표는 기록이 없다" "$([ -e "$T/rg/cc-cmds-check-push-items/make:f1" ] && echo 있음 || echo 없음)" "없음"
+  : > "$T/rmake.log"
+  out=$(rp r1 1 2> "$T/rp.err")
+  if [ "$v" = 1 ]; then
+    check "F40 다음 실행은 통과 기록으로 재사용한다" "$out|$(wc -l < "$T/rmake.log" | tr -d ' ')" "rc=0 reused=make:r1|0"
+    has "F40 재사용 줄" "$(cat "$T/rp.err")" "test-tree: 재사용 make:r1 ← "
+    hasnt "F40 재사용한 목표는 자리를 잡거나 끝 줄을 남기지 않는다" "$(cat "$T/rp.err")" "끝 — 목표 r1"
+  else
+    check "F40 카나리아 정지 볼륨: 다음 실행도 돈다" "$out|$(wc -l < "$T/rmake.log" | tr -d ' ')" "rc=0 reused=|1"
+    hasnt "F40 카나리아 정지 볼륨: 재사용 줄이 없다" "$(cat "$T/rp.err")" "재사용 make:r1"
+    has "F40 카나리아 정지 볼륨: 기록하지 않는다는 줄" "$(cat "$T/rp.err")" "기록하지 않는다"
+  fi
+  rm -rf "$T/rg"
+  : > "$T/rmake.log"
+  # Only a cwd that is itself an item checkout counts: this self-test may run
+  # inside check-push's own item checkout, so the shared clone's path can hold
+  # an /items/ component too.
+  out=$(rp r1 0 2> "$T/rp.err")
+  check "F40 끈 실행은 공유 복제본에서 돌고 기록하지 않는다" "$out|$(grep -c ' cwd=[^ ]*/items/[0-9]* ' "$T/rmake.log")|$([ -e "$T/rg" ] && echo 있음 || echo 없음)" "rc=0 reused=|0|없음"
+  rm -f "$T/probe".*
+
   # --- F28 repro side ---------------------------------------------------------
   out=$(find "$T/tmp" -maxdepth 1 -name 'cc-test-tree.*' | wc -l | tr -d ' ')
   check "F28 repro(판정, 5, 6)·base-verdict(판정, 3~6)와 라이브러리 뒤 TMPDIR 에 cc-test-tree.* 가 없다" "$out" "0"
@@ -2043,8 +2403,8 @@ ci-base: 목록 없음 — job=21 「rest-tests (3)」 의 로그에 절 목록�
   rm -rf "$T"
   printf 'test-tree self-test: %d passed, %d failed\n' "$passed" "$failed"
   # A floor on the count, so a refactor that silently skips cases cannot pass.
-  if [ "$passed" -lt 143 ]; then
-    printf 'test-tree self-test: 통과 수 %d 가 하한 143 에 못 미칩니다\n' "$passed" >&2
+  if [ "$passed" -lt 181 ]; then
+    printf 'test-tree self-test: 통과 수 %d 가 하한 181 에 못 미칩니다\n' "$passed" >&2
     return 1
   fi
   [ "$failed" = "0" ]

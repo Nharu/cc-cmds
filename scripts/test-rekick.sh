@@ -167,6 +167,8 @@ mf_check() {
 # write_manifest <path> <id> — the previous run's manifest. Knobs (all optional):
 #   P_KAT P_DL P_PLAN P_DOC P_CUT P_AXES P_RULES P_EXTRA P_NOIV P_INTENT P_PROBE
 #   P_AA (the apply actor, with an apply point beside it) P_AUTOADOPT (the auto-adoption row's class)
+#   P_NOROSTER (no design roster row, as a solo-audit plan has none)
+#   P_DOCSHA (the frozen document hash line, as a kickoff whose graph keeps the design writes it)
 write_manifest() {
   local m="$1" id="$2" doc="${P_DOC:-$DOC}" cut="${P_CUT:-머지}" ivsha
   ivsha=$(sha "$BASE/docs/pipeline-run/$id.interview.md")
@@ -182,6 +184,7 @@ write_manifest() {
     printf '## 대상\n**대상 맵 다이제스트**: @TD@\n'
     printf -- '- `target` | 별칭=rk | 메인 워크트리=%s | 공통 git 디렉터리=%s | 베이스 브랜치=main | 홈=예 | 원격 슬러그=t/rk | 절단점=%s | 말단 행위 상한=없음\n\n' "$WT" "$CG" "$cut"
     printf '## 요소\n**설계 문서**: %s\n' "$doc"
+    [ -z "${P_DOCSHA:-}" ] || printf '**설계 문서 전체 sha256**: %s\n' "$P_DOCSHA"
     [ -z "${P_PROBE:-}" ] || printf '**적용 프로브**: %s\n' "$P_PROBE"
     [ -z "${P_AA:-}" ] || printf '**적용 지점**: 픽스처 배포\n'
     printf '**적용 주체**: %s\n\n' "${P_AA:-(해당 없음)}"
@@ -197,7 +200,7 @@ write_manifest() {
     if [ -z "${P_NOIV:-}" ]; then
       printf -- '- `사전 인가` | 인터뷰 기록=docs/pipeline-run/%s.interview.md | sha256=%s\n' "$id" "${ivsha:-0000000000000000000000000000000000000000000000000000000000000000}"
     fi
-    printf -- '- `설계 로스터` | 역할=architecture | 범위=구조 | 모델=opus\n'
+    [ -n "${P_NOROSTER:-}" ] || printf -- '- `설계 로스터` | 역할=architecture | 범위=구조 | 모델=opus\n'
     [ -z "${P_EXTRA:-}" ] || printf '%s\n' "$P_EXTRA"
   } > "$m"
   seal "$m"
@@ -1964,7 +1967,7 @@ seat_link() {
     rk render-interview --prev "$src" --base "$BASE" --expect-sha256 "$SL_PMS" > "$BASE/docs/pipeline-run/$new.interview.md"
   fi
   conf=$(awk -F': ' '$1 == "**사용자 확인 문면**" { print $2 }' "$SL_OUT")
-  grant_block "$new" 머지 '픽스처가 끝나면' "$conf" "${SL_DOCSHA:-$DOCSHA}" > "$WORK/sl.block"
+  grant_block "$new" "${P_GCUT:-머지}" '픽스처가 끝나면' "$conf" "${SL_DOCSHA:-$DOCSHA}" > "$WORK/sl.block"
   [ -z "${SL_MID:-}" ] || "$SL_MID"
   # shellcheck disable=SC2086
   SL_VS=$(col "$(rk verify-subset "$SL_OUT" "$pm" --expect-sha256 "$SL_PMS" --expect-grant-sha256 "$SL_PGS" \
@@ -2492,6 +2495,357 @@ out=$(jdg RKLSB1)
 check "14: 좌석의 끊긴 고리 — judge 의 L12 줄이 고리 사유를 싣는다" \
   "$(printf '%s\n' "$out" | awk -F'\t' '$1 == "금지선" && $2 == "L12" { print $3 }')" \
   "verify 가 실패했습니다 (인터뷰 — 계보 고리 RKLSB1 → RKLSB0: 조상 매니페스트 sha256 이 이어받은 런 행과 다릅니다)"
+
+# ---------------------------------------------------------------------------
+# 15. 티켓 배달 — 그래프 보존, 출처 티켓 행, 개정한 상위 문서의 해시 이월
+# ---------------------------------------------------------------------------
+TK_STEPS='"steps": [ { "id": "D1", "skill": "design", "summary": "설계", "depends_on": [] }, { "id": "A1", "skill": "design-audit", "summary": "감사", "depends_on": ["D1"] }, { "id": "S1", "skill": "split", "summary": "분할", "depends_on": ["D1", "A1"] } ]'
+TK_HEAD='"design_required": true, "design_tier_judged": "team-4", "design_tier": "team-4", "design_heavy_reasons": ["세 티켓의 계약"], "estimated_files": 9, "design_scope": "single", "design_path": "solo-audit", "entry_skill": "design"'
+PLANTK="{ $TK_HEAD, \"design_delivery\": \"tickets\", $TK_STEPS }"
+PLANTKS="{ $TK_HEAD, \"design_delivery\": \"slices\", $TK_STEPS }"
+TK_PUB='- `베이스 발행` | 트래커=없음 | 대상=-'
+TK_SRC='- `출처 티켓` | 트래커=github | 참조=t/rk#7
+- `출처 티켓` | 트래커=clickup | 참조=https://app.clickup.com/t/86ab'
+# tk_design_done — the design and the audit of the current fixture run are done.
+tk_design_done() {
+  fx_row 'stage-result' "세그먼트=-" "스테이지=D1" "종류=design" "종단 부류=정상 완료"
+  fx_row '문서 해시' "스테이지=A1 이후" "sha256=$DOCSHA" "동결값=-" "관측=-"
+  fx_row 'stage-result' "세그먼트=-" "스테이지=A1" "종류=audit" "종단 부류=정상 완료"
+}
+
+P_NOROSTER=1 P_PLAN="$PLANTK" P_CUT=커밋 P_GCUT=커밋 P_EXTRA="$TK_PUB
+$TK_SRC" mk_prev RKTG
+tk_design_done; fx_done
+mf_check "$BASE/docs/pipeline-run/RKTG.plan.md"; rc=$?
+check "15: 티켓 배달 원천이 check_manifest 를 통과한다 (아래가 공허하지 않다)" "$rc" "0"
+[ "$rc" = 0 ] || tail -1 "$WORK/check.err" >&2
+out=$(rk graph --prev RKTG --base "$BASE")
+check "15: 티켓 배달 그래프는 설계와 감사가 끝나도 빼지 않는다" \
+  "$(cnt "$out" 건너뜀)/$(col "$out" 범위)/$(col "$out" 그래프)" "0/single/순수"
+has "15: 남긴 이유를 티켓 배달로 적는다" "$out" "티켓 배달 런의 그래프는 빼지 않습니다"
+P_PLAN="$PLANTKS" P_CUT=커밋 P_GCUT=커밋 mk_prev RKTGS
+tk_design_done; fx_done
+out=$(rk graph --prev RKTGS --base "$BASE")
+case "$(cnt "$out" 건너뜀)" in
+  0) bad "15: 같은 그래프의 slices 런은 끝난 설계를 뺀다" "건너뜀 줄이 없다" ;;
+  *) ok "15: 같은 그래프의 slices 런은 끝난 설계를 뺀다" ;;
+esac
+
+P_DOCSHA='(해당 없음)' P_NOROSTER=1 P_PLAN="$PLANTK" P_CUT=커밋 P_GCUT=커밋 P_EXTRA="$SEAT_ROW
+$TK_PUB
+$TK_SRC" mk_prev RKTS
+tk_design_done; seat_end 마감
+out=$(jdg RKTS)
+check "15: 티켓 배달 좌석 원천의 judge 는 허용이다" "$(col "$out" 판정)" "허용"
+SL_ASKED=""; SL_DOCSHA='(해당 없음)' P_GCUT=커밋 seat_link RKTS RKTS1
+check "15: 티켓 배달 원천의 초안이 verify-subset --auto 를 통과한다" "$SL_RC/$SL_VS" "0/통과"
+TKS_PM="$BASE/docs/pipeline-run/RKTS.plan.md"
+check "15: 출처 티켓 행이 바이트 그대로 옮겨진다" \
+  "$(grep -F -- '- `출처 티켓`' "$SL_OUT")" "$(grep -F -- '- `출처 티켓`' "$TKS_PM")"
+check "15: 초안의 실행 계획 JSON 이 원천과 같다" \
+  "$(awk '/^```json$/ { f = 1; next } /^```$/ { f = 0 } f' "$SL_OUT")" "$(awk '/^```json$/ { f = 1; next } /^```$/ { f = 0 } f' "$TKS_PM")"
+check "15: 출처 티켓 행이 초안의 구속 집합에 든다" \
+  "$(drv "$SL_OUT" binding_set_bytes | grep -c '^srcticket')" "2"
+check "15: 초안의 구속 다이제스트는 초안의 구속 집합으로 다시 잰 값이다" \
+  "$(awk -F': ' '$1 == "**구속 다이제스트**" { print $2 }' "$SL_OUT")" "$(drv "$SL_OUT" binding_set_bytes | shasum -a 256 | cut -d' ' -f1)"
+mf_check "$SL_OUT"; rc=$?
+check "15: 그 초안이 check_manifest 를 통과한다" "$rc" "0"
+[ "$rc" = 0 ] || tail -1 "$WORK/check.err" >&2
+
+# vs_tk <label> <want> <draft> [check name] — verify-subset against RKTS with the
+# seat's own answers, so only the row each draft changed can fail it.
+TKS_V=$(rk verify --prev RKTS --base "$BASE")
+TKS_MS=$(printf '%s\n' "$TKS_V" | awk -F'\t' '$1 == "해시" && $2 == "매니페스트" { print $3 }')
+TKS_GS=$(printf '%s\n' "$TKS_V" | awk -F'\t' '$1 == "해시" && $2 == "인가 기록" { print $3 }')
+: > "$WORK/asked-tk"
+vs_tk() {
+  local o
+  o=$(rk verify-subset "$3" "$TKS_PM" --expect-sha256 "$TKS_MS" --expect-grant-sha256 "$TKS_GS" \
+        --asked "$WORK/asked-tk" --grant "$WORK/sl.block" --auto)
+  check "15: $1" "$(col "$o" 판정)" "$2"
+  [ "$(col "$o" 판정)" = "$2" ] || printf '%s\n' "$o" | grep -E '^(판정|불일치)' >&2
+  [ -z "${4:-}" ] || has "15: $1 — 실패한 검사는 $4 다" "$(col "$o" 판정 3)" "$4"
+}
+TKS_DRAFT="$BASE/docs/pipeline-run/RKTS1.plan.md"
+vs_tk "그린 초안 그대로는 통과한다" 통과 "$TKS_DRAFT"
+grep -vF -- '- `출처 티켓` | 트래커=clickup' "$TKS_DRAFT" > "$WORK/tk-less.md"
+vs_tk "출처 티켓 행을 뺀 초안은 실패한다" 실패 "$WORK/tk-less.md" 출처티켓
+{ cat "$TKS_DRAFT"; printf -- '- `출처 티켓` | 트래커=github | 참조=t/rk#8\n'; } > "$WORK/tk-more.md"
+vs_tk "출처 티켓 행을 더한 초안은 실패한다" 실패 "$WORK/tk-more.md" 출처티켓
+sed 's/참조=t\/rk#7/참조=t\/rk#9/' "$TKS_DRAFT" > "$WORK/tk-swap.md"
+vs_tk "출처 티켓 참조를 바꾼 초안은 실패한다" 실패 "$WORK/tk-swap.md" 출처티켓
+awk '/^- `출처 티켓` \| 트래커=github/ { held = $0; next }
+     { print }
+     /^- `출처 티켓` \| 트래커=clickup/ { print held }' "$TKS_DRAFT" > "$WORK/tk-order.md"
+vs_tk "출처 티켓 행의 순서만 다른 초안은 통과한다" 통과 "$WORK/tk-order.md"
+
+# The upper document a child run revises, bound by a `베이스 설계` row at the hash
+# it had when the run froze. up_doc writes it with an empty revision history;
+# up_entry appends one entry; up_src opens a seat source bound to it.
+up_doc() { printf '# 상위 문서\n\n본문\n\n## 개정 이력\n없음\n' > "$BASE/docs/$1.md"; }
+up_entry() {  # up_entry <name> <date> <run>
+  local f="$BASE/docs/$1.md"
+  if [ "$(tail -n 1 "$f")" = "없음" ]; then sed '$d' "$f" > "$f.t" && mv "$f.t" "$f"; fi
+  printf '### 개정 1 — %s · 런 %s · 티켓 T1\n**바꾼 절**: 설계 절\n\n' "$2" "$3" >> "$f"
+}
+up_row() { printf -- '- `베이스 설계` | 문서=docs/%s.md | sha256=%s | 티켓=T1' "$1" "$(sha "$BASE/docs/$1.md")"; }
+up_src() {  # up_src <run> <name> — stopped at the deadline, not yet ended
+  P_EXTRA="$SEAT_ROW
+$(up_row "$2")" mk_prev "$1"
+}
+up_row_sha() {  # up_row_sha <manifest> — the hash its `베이스 설계` row carries
+  awk -F' \\| ' '/^- `베이스 설계`/ { for (i = 2; i <= NF; i++) if ($i ~ /^sha256=/) { sub(/^sha256=/, "", $i); print $i } }' "$1"
+}
+
+up_doc rk-up1; up_src RKUL rk-up1
+UL_OLD=$(sha "$BASE/docs/rk-up1.md")
+up_entry rk-up1 2026-11-03 RKUL
+seat_end 마감
+out=$(rk verify --prev RKUL --base "$BASE")
+check "15: 계보가 개정했으면 verify 는 질문하지 않고 베이스설계 줄만 낸다" \
+  "$(col "$out" 베이스설계 3)/$(col "$out" 베이스설계 4)/$(printf '%s\n' "$out" | awk -F'\t' '$1 == "질문" && $2 == "베이스설계"' | grep -c .)" \
+  "$UL_OLD/$(sha "$BASE/docs/rk-up1.md")/0"
+out=$(jdg RKUL)
+check "15: 계보가 개정했으면 judge 는 7.8 을 기다리지 않는다" "$(col "$out" 판정)/$(cnt "$out" 대기)" "허용/0"
+SL_ASKED=""; seat_link RKUL RKUL1
+check "15: 계보가 개정한 초안은 --bind-base 없이 verify-subset 을 통과한다" "$SL_RC/$SL_VS" "0/통과"
+check "15: 그 초안의 베이스 설계 행은 지금 해시를 싣는다" "$(up_row_sha "$SL_OUT")" "$(sha "$BASE/docs/rk-up1.md")"
+hasnt "15: 7.8 을 묻지 않았으니 확인 문면에 답이 없다" "$(awk -F': ' '$1 == "**사용자 확인 문면**" { print $2 }' "$SL_OUT")" "묶는다"
+
+# A revision made by an earlier run of the same lineage counts too.
+up_doc rk-up2; lin_anc RKUA0
+UL_ROW=$(up_row rk-up2)
+up_entry rk-up2 2026-11-03 RKUA0
+LIN_VIS=1 LIN_SEAT=1 LIN_PRE="$SEAT_ROW
+$UL_ROW" mk_lin RKUA1 RKUA0
+out=$(jdg RKUA1)
+check "15: 이어받은 런이 개정했어도 7.8 을 기다리지 않는다" "$(col "$out" 판정)/$(cnt "$out" 대기)" "허용/0"
+
+# up_waits <label> <source> — the seat stops at 7.8 before anything is frozen, and
+# a draft that took the present hash anyway is refused.
+up_waits() {
+  local o draft="$WORK/up-wait.md" doc nowsha
+  o=$(jdg "$2")
+  check "15: $1 — judge 는 7.8 을 기다린다" "$(col "$o" 판정)/$(col "$o" 대기)/$(col "$o" 대기 3)" "대기/베이스설계/7.8"
+  SL_ASKED=""; seat_link "$2" "$2-x"
+  doc=$(awk -F' \\| ' '/^- `베이스 설계`/ { sub(/^문서=/, "", $2); print $2 }' "$SL_OUT")
+  nowsha=$(sha "$BASE/$doc")
+  check "15: $1 — 초안은 원천의 해시를 그대로 둔다" "$(up_row_sha "$SL_OUT")" "$(up_row_sha "$BASE/docs/pipeline-run/$2.plan.md")"
+  sed "s/^\(- \`베이스 설계\` .*sha256=\)[0-9a-f]*/\1$nowsha/" "$SL_OUT" > "$draft"
+  o=$(rk verify-subset "$draft" "$BASE/docs/pipeline-run/$2.plan.md" --expect-sha256 "$(sha "$BASE/docs/pipeline-run/$2.plan.md")" \
+        --expect-grant-sha256 "$(sha "$BASE/docs/pipeline-grant/$2.md")" --asked "$SL_ASKED" --grant "$WORK/sl.block" --auto)
+  check "15: $1 — 지금 해시를 넣은 초안은 거부된다" "$(col "$o" 판정)" "실패"
+  has "15: $1 — 거부 사유는 베이스설계다" "$(col "$o" 판정 3)" "베이스설계"
+}
+up_doc rk-up3; up_src RKUF rk-up3
+up_entry rk-up3 2026-11-03 RKSOMEONE
+seat_end 마감
+up_waits "다른 런이 개정했으면" RKUF
+up_doc rk-up4; up_src RKUN rk-up4
+printf '덧붙인 줄\n' >> "$BASE/docs/rk-up4.md"
+seat_end 마감
+up_waits "개정 이력 없이 문서가 바뀌었으면" RKUN
+up_doc rk-up5; up_src RKUB rk-up5
+printf '### 개정 어긋난 꼴\n' >> "$BASE/docs/rk-up5.md"
+seat_end 마감
+up_waits "이력 항목의 꼴이 어긋났으면" RKUB
+up_doc rk-up6; up_src RKUM rk-up6
+up_entry rk-up6 2026-11-03 RKUM; up_entry rk-up6 2026-11-04 RKSOMEONE
+seat_end 마감
+up_waits "계보와 다른 런이 함께 개정했으면" RKUM
+# Dated before the day before the kickoff, an entry was in the document when the
+# row was frozen; on that day the zone-less date cannot tell, so it counts.
+up_doc rk-up7; up_entry rk-up7 2026-09-29 RKSOMEONE; up_src RKUO rk-up7
+up_entry rk-up7 2026-11-03 RKUO
+seat_end 마감
+out=$(jdg RKUO)
+check "15: 킥오프 전전날의 다른 런 항목은 계보 판정에 들지 않는다" "$(col "$out" 판정)/$(cnt "$out" 대기)" "허용/0"
+up_doc rk-up8; up_entry rk-up8 2026-09-30 RKSOMEONE; up_src RKUE rk-up8
+up_entry rk-up8 2026-11-03 RKUE
+seat_end 마감
+up_waits "킥오프 전날의 다른 런 항목이 있으면" RKUE
+
+# ---------------------------------------------------------------------------
+# 15b. 상위 개정 경로 관통 — 착수 행, 게이트를 지나는 개정, 좌석 재킥오프의 해시 이월
+# ---------------------------------------------------------------------------
+TH_DOC="$BASE/docs/rk-thru.md"
+# 게이트는 argv0 의 부모가 자기 플러그인 경로와 문자열로 같을 때만 실행으로 읽으므로,
+# 복제본이 심볼릭 링크 아래 있어도 같도록 물리 경로로 쓴다.
+TH_BS="$(cd "$ORCH" && pwd -P)/base-split.py"
+cat > "$WORK/th-pristine.md" <<'THDOC'
+# 상태 파일 티켓 배달
+
+**문서 종류**: 티켓 배달 설계
+**상태**: 동결됨
+
+## 팀이 정한 요구 결정
+요구 하나: 상태 파일은 하나다.
+
+## 합의된 아키텍처
+상태 파일과 그 위의 소비자.
+
+### 저장 형식
+이름과 크기 두 필드.
+
+### 읽기, 쓰기 경로
+한 번에 하나의 쓰기.
+
+### 화면
+목록 하나.
+
+## 주요 결정사항과 근거
+
+### 읽기
+읽기는 잠그지 않는다.
+
+## 미해결 이슈 / 트레이드오프
+
+### 열린 항목 하나
+**상태**: 보류
+**구현 처분**: 구현 전 결정
+
+### 열린 항목 둘
+**상태**: 구현 재량
+
+## 검증 기록
+V1 관측한 사실.
+
+## 구현 시 검증 항목
+
+### R1. 형식 확인
+**검증 레시피**: §저장 형식 의 필드를 본다.
+
+### R2. 화면 확인
+**검증 레시피**: R1 을 먼저 본다.
+
+## 티켓 간 계약
+
+### 계약 C1 — 형식
+**제공 티켓**: T1
+**소비 티켓**: T2
+**형태**: 파일 형식
+**인터페이스**:
+````text
+name=<이름>
+````
+
+## 티켓 분할
+**티켓 수**: 2
+**임계 경로**: T1 → T2
+**병렬 폭**: 1
+**분할 사유**: 형식과 화면이 다른 시점에 나간다.
+
+### 베이스 티켓
+**발행 제목**: 상태 파일 도입
+**발행 본문**:
+````text
+상태 파일을 들인다.
+````
+
+### 티켓 T1 — 형식
+**종류**: 계약
+**레포**: t/rk
+**선행**: 없음
+**제공 계약**: C1
+**소비 계약**: 없음
+**소유 파일**: `src/fmt.py`
+**공유 파일**: 없음
+**설계 절**: 「### 저장 형식」, 「### 읽기, 쓰기 경로」
+**하위 설계**: 생략 가능
+**잔여 항목**: 「### R1. 형식 확인」
+**미해결 항목**: 「### 열린 항목 하나」
+**범위**: 형식 의 범위.
+**완료 기준**:
+- 시험이 통과한다.
+**발행 제목**: 형식 구현
+**발행 본문**:
+````text
+이 작업은 상태 파일의 형식 을 맡는다.
+````
+
+### 티켓 T2 — 화면
+**종류**: 구현
+**레포**: t/rk
+**선행**: T1
+**제공 계약**: 없음
+**소비 계약**: C1
+**소유 파일**: `ui/`
+**공유 파일**: 없음
+**설계 절**: 「### 화면」, 「### 읽기, 쓰기 경로」
+**하위 설계**: 필요
+**잔여 항목**: 「### R2. 화면 확인」
+**미해결 항목**: 「### 열린 항목 둘」
+**범위**: 화면 의 범위.
+**완료 기준**:
+- 시험이 통과한다.
+**발행 제목**: 화면 구현
+**발행 본문**:
+````text
+이 작업은 상태 파일의 화면 을 맡는다.
+````
+
+## 개정 이력
+없음
+THDOC
+cp "$WORK/th-pristine.md" "$TH_DOC"
+TH_OLD=$(sha "$TH_DOC")
+"$TH_BS" check "$TH_DOC" >"$WORK/th.out" 2>&1; rc=$?
+check "15b: 상위 문서가 분할 검사를 통과한다 (아래가 공허하지 않다)" "$rc" "0"
+[ "$rc" = 0 ] || cat "$WORK/th.out" >&2
+"$TH_BS" record "$TH_DOC" --row "$TK_PUB" --doc-only >/dev/null 2>"$WORK/th.err"; rc=$?
+check "15b: 레지스트리를 만든다" "$rc" "0"
+
+# The child run: its manifest is frozen bound to the document, and the kickoff
+# leaves the started row.
+P_EXTRA="$SEAT_ROW
+- \`베이스 설계\` | 문서=docs/rk-thru.md | sha256=$TH_OLD | 티켓=T1" mk_prev RKTH
+"$TH_BS" record --started "$TH_DOC" --ticket T1 --run RKTH >/dev/null 2>"$WORK/th.err"; rc=$?
+check "15b: 착수 행을 남긴다" "$rc" "0"
+has "15b: 레지스트리에 그 런의 착수 행이 있다" "$(cat "$BASE/docs/design-base/rk-thru.tickets.md")" '- `착수` | id=T1 | 런=RKTH'
+
+awk 'BEGIN { first = 1 }
+     first && $0 == "**설계 절**: 「### 저장 형식」, 「### 읽기, 쓰기 경로」" { print "**설계 절**: 「### 저장 형식」"; first = 0; next }
+     $0 == "## 개정 이력" { print; getline
+       print "### 개정 1 — 2026-11-03 · 런 RKTH · 티켓 T1"
+       print "**바꾼 절**: 설계 절"
+       print "**영향 티켓**: T1"
+       print "**완료 티켓 차이**: 없음"
+       next }
+     { print }' "$WORK/th-pristine.md" > "$WORK/th-candidate.md"
+
+# The revision goes through the gate as a child design stage's act: the verb's
+# own grade and a run-local reach, with the run id the command checks.
+TH_M="$BASE/docs/pipeline-run/RKTH.plan.md"
+TH_H=$( cd "$WT" && "$BASH" "$GATE_SH" snapshot --manifest "$TH_M" --fields H 2>"$WORK/th.snap.err" )
+has "15b: 게이트가 그 런의 스냅숏을 낸다" "$TH_H" "-"
+( cd "$WT" && CC_PIPELINE_RUN_ID=RKTH "$BASH" "$GATE_SH" exec --manifest "$TH_M" --target rk --segment - --cutpoint 커밋 \
+    --surface 워크트리쓰기 --reach 런로컬 --snapshot-digest "$TH_H" --rationale '픽스처 — 상위 문서를 개정한다' \
+    -- "$TH_BS" revise "$TH_DOC" --from "$WORK/th-pristine.md" --to "$WORK/th-candidate.md" --ticket T1 --run RKTH ) \
+  >"$WORK/th.exec" 2>&1; rc=$?
+check "15b: 게이트를 지난 revise 가 성공한다" "$rc" "0"
+[ "$rc" = 0 ] || tail -5 "$WORK/th.exec" >&2
+check "15b: 문서는 후보 그대로다" "$(sha "$TH_DOC")" "$(sha "$WORK/th-candidate.md")"
+# 행의 argv 는 길이 예산에서 잘려 긴 경로에서는 헬퍼 이름이 남지 않으므로 근거로 고른다.
+TH_ROW=$(grep -F '근거=픽스처 — 상위 문서를 개정한다' "$BASE/docs/pipeline-run/RKTH.md" | tail -n 1)
+has "15b: 원장의 그 행은 선언한 표면을 적는다" "$TH_ROW" "선언=워크트리쓰기"
+has "15b: 원장의 그 행은 선언한 도달을 적는다" "$TH_ROW" "도달=런로컬"
+
+seat_end 마감
+TH_V=$(rk verify --prev RKTH --base "$BASE")
+check "15b: verify 는 질문하지 않는다" \
+  "$(printf '%s\n' "$TH_V" | awk -F'\t' '$1 == "질문" && $2 == "베이스설계"' | grep -c .)" "0"
+out=$(jdg RKTH)
+check "15b: judge 는 7.8 을 기다리지 않는다" "$(col "$out" 판정)/$(cnt "$out" 대기)" "허용/0"
+SL_ASKED=""; seat_link RKTH RKTH1
+check "15b: 초안이 verify-subset --auto 를 통과한다" "$SL_RC/$SL_VS" "0/통과"
+check "15b: 베이스 설계 행의 해시는 개정한 상위 문서의 sha256 이다" "$(up_row_sha "$SL_OUT")" "$(sha "$TH_DOC")"
+case "$(up_row_sha "$SL_OUT")" in
+  "$TH_OLD") bad "15b: 그 해시는 개정 전 값이 아니다" "개정 전 값이다" ;;
+  *) ok "15b: 그 해시는 개정 전 값이 아니다" ;;
+esac
+mf_check "$SL_OUT"; rc=$?
+check "15b: 그 초안이 check_manifest 를 통과한다" "$rc" "0"
+[ "$rc" = 0 ] || tail -1 "$WORK/check.err" >&2
 
 # ---------------------------------------------------------------------------
 # 13. 입양 — 이전 런의 착지하지 않은 세그먼트를 새 런이 이어받는가

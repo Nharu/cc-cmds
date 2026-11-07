@@ -396,7 +396,8 @@ set +o pipefail
 for rk_f in manifest_field manifest_hdr_field manifest_row_fields manifest_plan_json manifest_plan_field \
             manifest_targets manifest_rule_lines manifest_preauth_rows manifest_autoadopt_rows_anywhere \
             manifest_design_roster_rows_anywhere manifest_clause_rows_raw manifest_base_design_rows \
-            manifest_design_scope manifest_apply_code_rows target_field target_aliases canonical_targets binding_set_bytes \
+            manifest_design_scope manifest_split_run manifest_design_delivery manifest_source_ticket_rows \
+            manifest_apply_code_rows target_field target_aliases canonical_targets binding_set_bytes \
             check_manifest rundir_of_run_id deadline_instant cutpoint_index \
             judgment_class_ok judgment_class_forbidden \
             cc_live_stages cc_shift_is_live cc_relay_is_live cc_waiting_fresh_count cc_unanswered_halts cc_halt_answered \
@@ -1678,6 +1679,65 @@ rk_carry_parse() {
     }'
 }
 
+# rk_upper_lineage_holds — 0 when the base document moved since the current
+# MANIFEST's `베이스 설계` row and only this run's own lineage moved it, so the
+# row may take the document's present hash without a question. Sets RK_UL_NOW to
+# that hash. The lineage is MANIFEST's run and every run its `이어받은 런` rows
+# reach while each link's manifest matches the hash the row carries. An entry of
+# `## 개정 이력` counts as after the row when it is dated on or after the day
+# before the source's kickoff: entries hold a date with no zone, and the row
+# matched the document when that kickoff froze it. An earlier foreign entry on
+# that day therefore refuses too, which only sends the re-kickoff down the path
+# it takes without this function. No such entry, or any entry from outside the
+# lineage, returns 1.
+rk_upper_lineage_holds() {
+  RK_UL_NOW=""
+  local row doc sha now epoch since runs cur rows n out a msha gsha amf depth=0 e seen=0
+  row=$(manifest_base_design_rows | head -n 1)
+  [ -n "$row" ] || return 1
+  doc=$(manifest_row_fields "$row" '문서' | head -n 1)
+  sha=$(manifest_row_fields "$row" 'sha256' | head -n 1)
+  now=$(rk_sha "$RK_BASE/$doc")
+  [ -n "$now" ] && [ "$now" != "$sha" ] || return 1
+  epoch=$(rk_wide_instant "$(manifest_field '런 정체' '킥오프 일시')")
+  rk_num "$epoch" || return 1
+  since=$(jq -nr --argjson e "$((epoch - 86400))" '$e | gmtime | strftime("%Y-%m-%d")' 2>/dev/null)
+  [ -n "$since" ] || return 1
+
+  runs=" $(manifest_hdr_field 'run-id') "; cur=$MANIFEST
+  while [ "$depth" -lt "$RK_IV_DEPTH_MAX" ]; do
+    rows=$(MANIFEST="$cur" rk_carry_rows); n=$(printf '%s' "$rows" | grep -c . || true)
+    [ "${n:-0}" = "1" ] || break
+    out=$(printf '%s\n' "$rows" | rk_carry_parse link)
+    case "$out" in ok"$TAB"*) ;; *) break ;; esac
+    IFS="$TAB" read -r _ a msha gsha <<EOF
+$out
+EOF
+    case "$runs" in *" $a "*) break ;; esac
+    depth=$((depth + 1))
+    amf=$(rk_copy "$RK_BASE/docs/pipeline-run/$a.plan.md" "lineage.$depth.plan.md") || break
+    [ "$(rk_sha "$amf")" = "$msha" ] || break
+    runs="$runs$a "; cur=$amf
+  done
+
+  while IFS= read -r e; do
+    [ -n "$e" ] || continue
+    case "$runs" in *" $e "*) seen=1 ;; *) return 1 ;; esac
+  done <<EOF
+$(awk -v since="$since" '
+    /^## / { insec = ($0 == "## 개정 이력"); next }
+    !insec || !/^### / { next }
+    {
+      if ($0 !~ /^### 개정 [0-9]+ — [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9] · 런 [^ ]+ · 티켓 T[0-9]+$/) { print "?"; next }
+      split($0, f, " · ")
+      d = f[1]; sub(/^.* — /, "", d)
+      if (d >= since) { r = f[2]; sub(/^런 /, "", r); print r }
+    }' "$RK_BASE/$doc" 2>/dev/null)
+EOF
+  [ "$seen" = 1 ] || return 1
+  RK_UL_NOW=$now
+}
+
 # rk_iv_resolve <keep> — where the new run's interview record comes from. The
 # argument is the count of remaining `design`/`visual` steps (`G_IV_KEEP`, or
 # check 8's `hasiv`). Reads the current MANIFEST (the previous run's copy),
@@ -2010,7 +2070,8 @@ rk_verify() {
   printf '해시\t매니페스트\t%s\n해시\t인가 기록\t%s\n해시\t인터뷰\t%s\n' "$pm_sha" "$pg_sha" "$iv_sha"
   [ -z "$iv_line" ] || printf '%s\n' "$iv_line"
 
-  # A base binding whose document moved is a question, not a failure.
+  # A base binding whose document moved is a question, not a failure — unless
+  # only this run's own lineage moved it, and the render then rebinds it.
   local bdrow bdoc bsha bnow
   bdrow=$(manifest_base_design_rows | head -n 1)
   if [ -n "$bdrow" ]; then
@@ -2018,7 +2079,8 @@ rk_verify() {
     bsha=$(manifest_row_fields "$bdrow" 'sha256' | head -n 1)
     bnow=$(rk_sha "$RK_BASE/$bdoc"); [ -n "$bnow" ] || bnow="-"
     printf '베이스설계\t%s\t%s\t%s\n' "$bdoc" "$bsha" "$bnow"
-    [ "$bnow" = "$bsha" ] || printf '질문\t베이스설계\t%s\t%s\t%s\n' "$bdoc" "$bsha" "$bnow"
+    [ "$bnow" = "$bsha" ] || rk_upper_lineage_holds \
+      || printf '질문\t베이스설계\t%s\t%s\t%s\n' "$bdoc" "$bsha" "$bnow"
   fi
 
   # An auto-adoption row whose class the driver no longer accepts is neither
@@ -2080,6 +2142,7 @@ rk_graph_compute() {
   local plan doc docf docsha did aid lastn hashrow hsha frozen
   plan=$(manifest_plan_json)
   G_SCOPE=$(manifest_design_scope)
+  if manifest_split_run; then G_SPLIT=true; else G_SPLIT=false; fi
   G_REMOVED=""; G_SKIPS=""; G_DESIGN_OUT=0; G_DOC_SHA="-"
   G_DESIGN_PLANNED=0; G_DOC_NOW="-"; G_IV_KEEP=0
   G_DESIGN_NOTE="없음${TAB}계획에 설계 단계가 없습니다"; G_AUDIT_NOTE="없음${TAB}계획에 감사 단계가 없습니다"
@@ -2090,9 +2153,11 @@ rk_graph_compute() {
   did=$(printf '%s' "$plan" | jq -r '[.steps[]? | select(type == "object" and .skill == "design") | .id // empty] | if length == 1 then .[0] else empty end' 2>/dev/null)
   aid=$(printf '%s' "$plan" | jq -r '[.steps[]? | select(type == "object" and .skill == "design-audit") | .id // empty] | if length == 1 then .[0] else empty end' 2>/dev/null)
 
-  if [ "$G_SCOPE" = "base" ]; then
-    [ -z "$did" ] || G_DESIGN_NOTE="남음${TAB}base 범위 런의 그래프는 빼지 않습니다"
-    [ -z "$aid" ] || G_AUDIT_NOTE="남음${TAB}base 범위 런의 그래프는 빼지 않습니다"
+  if [ "$G_SPLIT" = true ]; then
+    local keepword='base 범위'
+    [ "$G_SCOPE" = "base" ] || keepword='티켓 배달'
+    [ -z "$did" ] || G_DESIGN_NOTE="남음${TAB}${keepword} 런의 그래프는 빼지 않습니다"
+    [ -z "$aid" ] || G_AUDIT_NOTE="남음${TAB}${keepword} 런의 그래프는 빼지 않습니다"
     G_PLAN=$(printf '%s' "$plan" | jq -c . 2>/dev/null)
     rk_graph_derived "$did"
     return 0
@@ -2199,17 +2264,18 @@ rk_graph_derived() {
   if [ "${n:-0}" -ge 1 ] 2>/dev/null; then G_IV_KEEP=1; else G_IV_KEEP=0; fi
 }
 
-# rk_plan_shape <json> — the step-graph shape the kickoff checks before it
-# writes: ids present and unique, every dependency names a step that is there,
-# at most one design step, and a `split` step only in a base run.
+# rk_plan_shape <json> <split run: true|false> — the step-graph shape the
+# kickoff checks before it writes: ids present and unique, every dependency names
+# a step that is there, at most one design step, and a `split` step only in a run
+# that ends at the split.
 rk_plan_shape() {
-  printf '%s' "$1" | jq -e --arg scope "$2" '
+  printf '%s' "$1" | jq -e --argjson split_run "$2" '
     [.steps[]? | select(type == "object")] as $s
     | ([$s[].id // ""] | map(select(. == "")) | length) == 0
     and ([$s[].id] | unique | length) == ($s | length)
     and ([$s[] | (.depends_on // [])[]] - [$s[].id] | length) == 0
     and ([$s[] | select(.skill == "design")] | length) <= 1
-    and ($scope == "base" or ([$s[] | select(.skill == "split")] | length) == 0)
+    and ($split_run or ([$s[] | select(.skill == "split")] | length) == 0)
   ' >/dev/null 2>&1
 }
 
@@ -2253,7 +2319,7 @@ rk_graph() {
   } > "$RK_TMP/graph.out"
 
   why=""
-  rk_plan_shape "$G_PLAN" "$G_SCOPE" || why="빼고 난 그래프가 모양 검사를 통과하지 않습니다"
+  rk_plan_shape "$G_PLAN" "$G_SPLIT" || why="빼고 난 그래프가 모양 검사를 통과하지 않습니다"
   if [ -z "$why" ] && [ -n "$G_REMOVED" ]; then
     # The manifest the removal would freeze, with this run's own identity, put
     # through the driver's own manifest check.
@@ -2415,7 +2481,8 @@ rk_render() {
   # A mapping row that cannot be carried is dropped, and a confirmed mapping is
   # written as a new row bound to the probe the draft will carry: the confirmed
   # `apply-probe` when one is set, the previous value otherwise.
-  local acdrop="" acrow="" acv acprobe
+  local acdrop="" acrow="" acv acprobe bindsha="$RK_BIND"
+  if [ -z "$bindsha" ] && rk_upper_lineage_holds; then bindsha=$RK_UL_NOW; fi
   if apply_code_row_reask; then
     acdrop=1
     acv=$(awk -F '\t' '$5 == "apply-probe-codes" { print $4 }' "$RK_TMP/sets.tsv")
@@ -2432,7 +2499,7 @@ rk_render() {
   R_RFILE="$( [ -n "$RK_ROWS" ] && printf '%s' "$RK_TMP/shape.rows")" R_RULES="$RK_TMP/rules.kv" \
   R_PADROP="$RK_TMP/plugin.drop" R_PFILE="$( [ -s "$RK_TMP/plugin.rows" ] && printf '%s' "$RK_TMP/plugin.rows")" \
   R_FFILE="$( [ -s "$RK_TMP/failover.rows" ] && printf '%s' "$RK_TMP/failover.rows")" \
-  R_BIND="$RK_BIND" R_IVPATH="docs/pipeline-run/$newid.interview.md" R_ADOPT="${RK_ADOPT_ROWS:-}" R_IVANC="$RK_IVANC" \
+  R_BIND="$bindsha" R_IVPATH="docs/pipeline-run/$newid.interview.md" R_ADOPT="${RK_ADOPT_ROWS:-}" R_IVANC="$RK_IVANC" \
   awk '
     function field(line,   p) { p = index(line, "**: "); return substr(line, 3, p - 3) }
     # What a section must still carry is written when it closes, before the
@@ -2745,7 +2812,7 @@ rk_render_manifest() {
     # The graph `graph` calls changed has no approval a seat may give: a plan
     # that fails the shape check is refused here, as the removal's manifest
     # check is after the draft is drawn.
-    rk_plan_shape "$G_PLAN" "$G_SCOPE" || rk_refuse "빼고 난 그래프가 모양 검사를 통과하지 않습니다 — 좌석은 바뀐 그래프를 승인하지 않습니다"
+    rk_plan_shape "$G_PLAN" "$G_SPLIT" || rk_refuse "빼고 난 그래프가 모양 검사를 통과하지 않습니다 — 좌석은 바뀐 그래프를 승인하지 않습니다"
     RK_PROV_SEAT=" | 좌석 연쇄=$RK_CH_K | 뿌리 런=$RK_CH_ROOT | 원인=$RK_CH_CAUSE"
     confirm=$(rk_seat_confirm_text "$RK_PREV")
     approval='좌석 재킥오프'
@@ -3066,14 +3133,25 @@ EOF
     bind=$(rk_asked_answer '7.8')
     bdoc=$(manifest_row_fields "$pbd" '문서' | head -n 1)
     bnow=""; [ -n "$bdoc" ] && bnow=$(rk_sha "$pbase/$bdoc")
-    case "$bind" in
-      묶는다*)
-        [ -n "$bnow" ] && [ "$(printf '%s' "$pbd" | sed "s/sha256=[0-9a-f]*/sha256=$bnow/")" = "$dbd" ] \
-          || why="베이스 설계 행이 지금 해시로 묶은 것과 다릅니다" ;;
-      *) why="베이스 설계 행이 원천과 다릅니다" ;;
-    esac
+    if MANIFEST="$prev" rk_upper_lineage_holds \
+       && [ "$(printf '%s' "$pbd" | sed "s/sha256=[0-9a-f]*/sha256=$RK_UL_NOW/")" = "$dbd" ]; then
+      :
+    else
+      case "$bind" in
+        묶는다*)
+          [ -n "$bnow" ] && [ "$(printf '%s' "$pbd" | sed "s/sha256=[0-9a-f]*/sha256=$bnow/")" = "$dbd" ] \
+            || why="베이스 설계 행이 지금 해시로 묶은 것과 다릅니다" ;;
+        *) why="베이스 설계 행이 원천과 다릅니다" ;;
+      esac
+    fi
   fi
   vs_check 베이스설계 "$why"
+
+  # 4b — the source-ticket rows, as a set.
+  why=""
+  [ "$(MANIFEST="$prev" manifest_source_ticket_rows | sort)" = "$(MANIFEST="$draft" manifest_source_ticket_rows | sort)" ] \
+    || why="출처 티켓 행이 원천과 다릅니다"
+  vs_check 출처티켓 "$why"
 
   # 5 — every answer stands verbatim in the confirmation text.
   local qk qa

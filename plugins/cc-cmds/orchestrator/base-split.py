@@ -6,10 +6,29 @@
     base-split.py record DOC --row ROW (--doc-only
                                        | --entry ID --plan FILE [--state S] [--ref R]
                                          [--node-id N] [--similar LIST])
+    base-split.py record --started DOC --ticket T<n> --run RUN
+    base-split.py child-doc DOC --ticket T<n> --cutpoint C --out PATH
+    base-split.py fence-check CHILD
+    base-split.py revise DOC --from OLD --to NEW --ticket T<n> --run RUN
 
 A base design document is the upper design of a piece of work that is cut
 into several tickets; its grammar, the predicates below, the issue-body rules
 and the registry format are defined once in `skills/_common/base-design.md`.
+A ticket delivery design (`**문서 종류**: 티켓 배달 설계`) is a complete
+design whose slicing is a ticket split in the same grammar; what it adds is
+defined in `skills/_common/ticket-delivery.md`. The discriminator line picks
+the kind, and `check` runs T0–T5 on top of the checks below for that kind.
+
+`record --started` adds the `착수` row of a child run to the registry of a
+ticket delivery design, under the `<doc file name>.revise.lock` lock, keeping
+the document sha256 the registry head carries. `child-doc` writes the frozen
+child document of a ticket whose child design is skipped, only when it passes
+`fence-check`. `fence-check` reads a child document and prints one `F1`
+line per declared slice file outside the ticket's owned and shared files and
+not listed with a reason under `**티켓 밖 파일**`. `revise` replaces the
+upper document with a candidate after checking that the change stays inside
+what the child run of that ticket may change, then rewrites the registry
+head sha256, all under the same lock.
 
 `check` prints one line `<predicate> <detail>` per violation of D0 (the
 discriminator), P1 (graph shape), P2 (edges and contracts), P3 (file
@@ -67,8 +86,10 @@ import re  # noqa: E402
 import subprocess  # noqa: E402
 import shlex  # noqa: E402
 import tempfile  # noqa: E402
+import time  # noqa: E402
 
 KIND_LINE = "**문서 종류**: 베이스 설계"
+TICKETS_KIND_LINE = "**문서 종류**: 티켓 배달 설계"
 SPLIT_HEADING = "## 티켓 분할"
 SLICING_HEADING = "## 구현 슬라이싱"
 CONTRACT_SECTION = "## 티켓 간 계약"
@@ -118,6 +139,9 @@ REG_TICKET_RE = re.compile(
 # list by its tracker id rather than a document ticket.
 REG_REL_RE = re.compile(r"^- `관계` \| 종류=(하위|선행|외부선행|외부후행) \| 원=(T\d+) "
                         r"\| 대상=(T\d+|베이스|[A-Za-z0-9_-]+) \| 상태=(대기|걸림|문서만)$")
+# A child run of a ticket delivery design that started on ticket T<n>; the
+# rows of one ticket from different runs all stay.
+REG_STARTED_RE = re.compile(r"^- `착수` \| id=(T\d+) \| 런=([A-Za-z0-9_.-]+)$")
 
 
 class Refused(Exception):
@@ -352,13 +376,15 @@ def norm_path(path):
 
 
 class Doc(object):
-    def __init__(self, path):
+    def __init__(self, path, raw=None):
         self.path = path
-        try:
-            with open(path, "rb") as f:
-                self.raw = f.read()
-        except OSError as e:
-            raise UsageError("cannot read %s (%s)" % (path, type(e).__name__))
+        if raw is None:
+            try:
+                with open(path, "rb") as f:
+                    raw = f.read()
+            except OSError as e:
+                raise UsageError("cannot read %s (%s)" % (path, type(e).__name__))
+        self.raw = raw
         try:
             text = self.raw.decode("utf-8")
         except UnicodeDecodeError:
@@ -367,6 +393,8 @@ class Doc(object):
         self.lines = split_lines(text)
         self.inside = mark_fences(self.lines)
         self.kind_line = False
+        self.tickets_kind_line = False
+        self.heads = []        # [(index, level, text)] of `##`/`###` lines outside fences
         self.split_heading = False
         self.slicing_heading = False
         self.header = {}
@@ -383,6 +411,8 @@ class Doc(object):
                 continue
             if line == KIND_LINE:
                 self.kind_line = True
+            if line == TICKETS_KIND_LINE:
+                self.tickets_kind_line = True
             if line.startswith("## ") or line.startswith("### "):
                 level = 2 if line.startswith("## ") else 3
                 heads.append((i, level, line))
@@ -390,6 +420,7 @@ class Doc(object):
                     self.split_heading = True
                 if line == SLICING_HEADING:
                     self.slicing_heading = True
+        self.heads = heads
         section = None
         for k, (i, level, text) in enumerate(heads):
             end = heads[k + 1][0] if k + 1 < len(heads) else len(lines)
@@ -412,6 +443,50 @@ class Doc(object):
                 if m:
                     self.contracts.append((m.group(1), int(m.group(2)), m.group(3),
                                            parse_block(lines, inside, i + 1, end)))
+
+    @property
+    def kind(self):
+        """`base`, `tickets`, or None when the document carries no single
+        discriminator line (D0 reports both cases)."""
+        if self.kind_line == self.tickets_kind_line:
+            return None
+        return "base" if self.kind_line else "tickets"
+
+    def h2_sections(self):
+        """[(heading, start, end)]: each `## ` heading line and the index of
+        the next `## ` heading (or the end of the document)."""
+        h2 = [(i, text) for i, level, text in self.heads if level == 2]
+        out = []
+        for k, (i, text) in enumerate(h2):
+            end = h2[k + 1][0] if k + 1 < len(h2) else len(self.lines)
+            out.append((text, i, end))
+        return out
+
+    def section(self, heading):
+        """(start, end) of the first `## ` section with this exact heading."""
+        for text, i, end in self.h2_sections():
+            if text == heading:
+                return i, end
+        return None
+
+    def h3_blocks(self, start, end):
+        """[(heading, i, j)] of the `### ` blocks between start and end; j is
+        the next `##`/`###` heading or end."""
+        inner = [(i, level, text) for i, level, text in self.heads if start <= i < end]
+        out = []
+        for k, (i, level, text) in enumerate(inner):
+            if level != 3:
+                continue
+            j = inner[k + 1][0] if k + 1 < len(inner) else end
+            out.append((text, i, j))
+        return out
+
+    def block_lines(self, i, j):
+        """Lines i..j with the trailing blank lines dropped."""
+        seg = list(self.lines[i:j])
+        while seg and not seg[-1].strip():
+            seg.pop()
+        return seg
 
 
 # --------------------------------------------------------------------------
@@ -729,12 +804,15 @@ class Graph(object):
 
 def check_d0(doc):
     out = []
-    if not doc.kind_line:
-        out.append(("D0", "판별자 줄 없음 %s" % KIND_LINE))
+    if not doc.kind_line and not doc.tickets_kind_line:
+        out.append(("D0", "판별자 줄 없음 %s 또는 %s" % (KIND_LINE, TICKETS_KIND_LINE)))
+    elif doc.kind_line and doc.tickets_kind_line:
+        out.append(("D0", "판별자 줄 둘 %s 와 %s" % (KIND_LINE, TICKETS_KIND_LINE)))
     if not doc.split_heading:
         out.append(("D0", "표제 없음 %s" % SPLIT_HEADING))
     if doc.slicing_heading:
-        out.append(("D0", "베이스 문서에 %s 가 있음" % SLICING_HEADING))
+        what = "티켓 배달 설계 문서" if doc.kind == "tickets" else "베이스 문서"
+        out.append(("D0", "%s에 %s 가 있음" % (what, SLICING_HEADING)))
     return out
 
 
@@ -827,6 +905,8 @@ def run_checks(doc):
         v.extend(check_p3(g, anc))
         v.extend(check_p4(g))
     v.extend(check_b1(doc))
+    if doc.kind == "tickets":
+        v.extend(check_tickets_kind(doc, g))
     seen = set()
     uniq = []
     for item in v:
@@ -834,6 +914,260 @@ def run_checks(doc):
             seen.add(item)
             uniq.append(item)
     return uniq, g
+
+
+# --------------------------------------------------------------------------
+# Ticket delivery documents — `skills/_common/ticket-delivery.md`
+# --------------------------------------------------------------------------
+
+ARCH_HEADING = "## 합의된 아키텍처"
+DECISIONS_HEADING = "## 주요 결정사항과 근거"
+RESIDUAL_HEADING = "## 구현 시 검증 항목"
+HISTORY_HEADING = "## 개정 이력"
+UNRESOLVED_RE = re.compile(r"^## .*미해결\s+이슈")
+R_HEAD_RE = re.compile(r"^### R(\d+)\. (.+)$")
+TD_FIELDS = ("설계 절", "하위 설계", "잔여 항목", "미해결 항목")
+TD_LIST_FIELDS = ("설계 절", "잔여 항목", "미해결 항목")
+SUB_DESIGN_VALUES = ("생략 가능", "필요")
+SKIPPABLE_MAX_FILES = 20
+CUTPOINTS = ("커밋", "브랜치", "push", "PR", "머지", "배포", "머지후착수")
+RUN_ID_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
+STATE_LINE_RE = re.compile(r"^\s*(?:[-*]\s+)?(?:\*\*상태\*\*:|\*\*상태:|상태:)\s*(.*)$")
+STATE_CLOSED_RE = re.compile(r"^해결(?:됨)?(?:\s*[—·(].*)?$")
+LINKAGE_SENTENCE = ("이 문서의 `## 베이스 제약` 절에 옮긴 티켓 블록과 계약 블록은 "
+                    "이 절의 결정과 똑같이 구현을 구속한다.")
+CHILD_SENTENCE = "이 문서의 설계는 `## 베이스 제약` 에 옮긴 상위 티켓 부분이 전부다."
+DECISIONS_COPY_HEADING = "### 상위 문서의 주요 결정사항과 근거"
+
+
+def parse_quoted(value):
+    """(items, fault) of a `「### …」` list: one item per pair, only commas
+    and blanks between pairs, each item a `### ` heading compared by the text
+    after `### `. `없음` is the empty list."""
+    if value is None:
+        return [], "필드 없음"
+    value = value.strip()
+    if value == "없음":
+        return [], None
+    if value == "":
+        return [], "값이 비어 있음"
+    items = []
+    pos = 0
+    while pos < len(value):
+        ch = value[pos]
+        if ch in ", \t":
+            pos += 1
+            continue
+        if ch != "「":
+            return items, "쌍 밖의 글 %s" % value[pos:pos + 12]
+        close = value.find("」", pos + 1)
+        if close == -1:
+            return items, "닫히지 않은 「"
+        inner = value[pos + 1:close]
+        if not inner.startswith("### ") or not inner[4:].strip():
+            return items, "항목이 ### 표제가 아님 「%s」" % inner
+        if inner[4:] in items:
+            return items, "같은 항목 두 번 「%s」" % inner
+        items.append(inner[4:])
+        pos = close + 1
+    if not items:
+        return items, "값이 비어 있음"
+    return items, None
+
+
+def quoted_list(items):
+    return ", ".join("「### %s」" % x for x in items) if items else "없음"
+
+
+def heading_titles(doc):
+    """The texts of every `##`/`###` heading, without the `#` prefix."""
+    return [text.split(" ", 1)[1] for _, _, text in doc.heads]
+
+
+def longest_heading(rest, titles):
+    best = None
+    for t in titles:
+        if rest.startswith(t) and (best is None or len(t) > len(best)):
+            best = t
+    return best
+
+
+def arch_subsections(doc):
+    """[(title, i, j)] of the `###` blocks of `## 합의된 아키텍처`."""
+    sec = doc.section(ARCH_HEADING)
+    if sec is None:
+        return []
+    return [(t[4:], i, j) for t, i, j in doc.h3_blocks(*sec)]
+
+
+def residual_items(doc):
+    """[(title, number, i, j)] of the `### R<n>. …` blocks."""
+    sec = doc.section(RESIDUAL_HEADING)
+    if sec is None:
+        return []
+    out = []
+    for t, i, j in doc.h3_blocks(*sec):
+        m = R_HEAD_RE.match(t)
+        if m:
+            out.append((t[4:], int(m.group(1)), i, j))
+    return out
+
+
+def unresolved_section(doc):
+    found = None
+    for text, i, end in doc.h2_sections():
+        if UNRESOLVED_RE.match(text):
+            found = (i, end)
+    return found
+
+
+def open_entries(doc):
+    """([(title, i, j)] of the open `###` entries, [table rows that are open])
+    of the last `## …미해결 이슈…` section, read as `unresolved-closure.md`
+    reads it: an entry is closed when its first `상태` value is `해결` or
+    `해결됨`, alone or followed by `—`, `·` or `(`."""
+    sec = unresolved_section(doc)
+    if sec is None:
+        return [], []
+    start, end = sec
+    blocks = doc.h3_blocks(start, end)
+    entries = []
+    for t, i, j in blocks:
+        state = None
+        for k in range(i + 1, j):
+            if doc.inside[k]:
+                continue
+            m = STATE_LINE_RE.match(doc.lines[k])
+            if m:
+                state = m.group(1).replace("**", "").strip()
+                break
+        if state is None or not STATE_CLOSED_RE.match(state):
+            entries.append((t[4:], i, j))
+    first = blocks[0][1] if blocks else end
+    rows = []
+    for k in range(start + 1, first):
+        line = doc.lines[k].strip()
+        if doc.inside[k] or not line.startswith("|") or re.match(r"^\|[\s:|-]+\|?$", line):
+            continue
+        cells = [c.strip() for c in line.strip("|").split("|")]
+        if cells and cells[0] in ("항목", "표제", "제목"):
+            continue
+        if not any(STATE_CLOSED_RE.match(c) for c in cells[1:]):
+            rows.append(cells[0])
+    return entries, rows
+
+
+def td_ticket_lists(doc, g):
+    """{ticket: {field: items}} and the format violations of the four fields."""
+    lists, out = {}, []
+    for tid, num, title, f in doc.tickets:
+        if tid in lists:
+            continue
+        lists[tid] = {}
+        for key in TD_LIST_FIELDS:
+            pred = {"설계 절": "T1", "잔여 항목": "T3", "미해결 항목": "T4"}[key]
+            items, fault = parse_quoted(f.get(key))
+            shape = [x for x in list_shape_faults(f, key) if x != "값이 비어 있음"]
+            if fault or shape:
+                out.append((pred, "%s %s 목록 형식 오류 %s" % (tid, key, "; ".join(([fault] if fault else []) + shape))))
+            lists[tid][key] = items
+    return lists, out
+
+
+def check_assignment(pred, what, owned_lists, titles, out):
+    """Each title is named by exactly one ticket, and each named item is one
+    title."""
+    count = dict((t, 0) for t in titles)
+    for tid, items in owned_lists:
+        for x in items:
+            n = sum(1 for t in titles if t == x)
+            if n == 0:
+                out.append((pred, "%s 의 %s 항목에 맞는 표제 없음 「### %s」" % (tid, what, x)))
+            elif n > 1:
+                out.append((pred, "%s 의 %s 항목에 맞는 표제 %d개 「### %s」" % (tid, what, n, x)))
+            else:
+                count[x] += 1
+    for t in titles:
+        if count[t] == 0:
+            out.append((pred, "%s 배정 없음 「### %s」" % (what, t)))
+        elif count[t] > 1:
+            out.append((pred, "%s 두 티켓 이상에 배정 「### %s」" % (what, t)))
+
+
+def check_tickets_kind(doc, g):
+    """T0–T5: the checks a ticket delivery design adds to D0–B1."""
+    out = []
+    # T0 — the split reason and the revision history.
+    reason = doc.header.get("분할 사유")
+    if reason is None or not reason.strip():
+        out.append(("T0", "분할 사유 줄 없음"))
+    elif "분할 사유" in getattr(doc.header, "dups", ()):
+        out.append(("T0", "분할 사유 줄이 둘 이상"))
+    hist = sum(1 for text, _, _ in doc.h2_sections() if text == HISTORY_HEADING)
+    if hist != 1:
+        out.append(("T0", "%s 표제 %d개 (정확히 하나여야 함)" % (HISTORY_HEADING, hist)))
+
+    lists, faults = td_ticket_lists(doc, g)
+    out.extend(faults)
+    ids = [tid for tid in lists]
+
+    # T1 — design sections.
+    subs = [t for t, _, _ in arch_subsections(doc)]
+    for tid in ids:
+        for x in lists[tid]["설계 절"]:
+            n = subs.count(x)
+            if n == 0:
+                out.append(("T1", "%s 설계 절에 맞는 표제 없음 「### %s」" % (tid, x)))
+            elif n > 1:
+                out.append(("T1", "%s 설계 절에 맞는 표제 %d개 「### %s」" % (tid, n, x)))
+    named = set(x for tid in ids for x in lists[tid]["설계 절"])
+    for t in subs:
+        if t not in named:
+            out.append(("T1", "어느 티켓도 이름 부르지 않은 설계 절 소절 「### %s」" % t))
+
+    # T2 — child design and the fence of a ticket whose child design is skipped.
+    for tid, num, title, f in doc.tickets:
+        value = (f.get("하위 설계") or "").strip()
+        if value not in SUB_DESIGN_VALUES:
+            out.append(("T2", "%s 하위 설계 값 %s" % (tid, value or "(없음)")))
+            continue
+        if value != "생략 가능" or tid not in g.t:
+            continue
+        entries = []
+        for key in FILE_LIST_FIELDS:
+            for p in split_paths(f.get(key))[0]:
+                if p == WHOLE_REPO or p.endswith("/") or any(ch in p for ch in GLOB_META):
+                    out.append(("T2", "%s 생략 가능 티켓의 %s 항목이 파일 경로가 아님 %s" % (tid, key, p)))
+                if p not in entries:
+                    entries.append(p)
+        if len(entries) > SKIPPABLE_MAX_FILES:
+            out.append(("T2", "%s 생략 가능 티켓의 파일 %d개 (상한 %d)" % (tid, len(entries), SKIPPABLE_MAX_FILES)))
+        if (any(posixpath.basename(p) == "SKILL.md" for p in entries)
+                and "README.md" not in entries):
+            out.append(("T2", "%s 생략 가능 티켓이 SKILL.md 를 담고 README.md 를 담지 않음" % tid))
+
+    # T3 — residual items.
+    rtitles = [t for t, _, _, _ in residual_items(doc)]
+    check_assignment("T3", "잔여 항목", [(tid, lists[tid]["잔여 항목"]) for tid in ids], rtitles, out)
+
+    # T4 — open unresolved entries.
+    entries, rows = open_entries(doc)
+    for r in rows:
+        out.append(("T4", "표 행으로 적힌 열린 미해결 항목 %s" % r))
+    check_assignment("T4", "미해결 항목", [(tid, lists[tid]["미해결 항목"]) for tid in ids],
+                     [t for t, _, _ in entries], out)
+
+    # T5 — every `§` of a residual item names a heading of this document.
+    titles = heading_titles(doc)
+    for t, n, i, j in residual_items(doc):
+        for k in range(i + 1, j):
+            line = doc.lines[k]
+            pos = line.find("§")
+            while pos != -1:
+                if longest_heading(line[pos + 1:], titles) is None:
+                    out.append(("T5", "R%d 의 § 참조에 맞는 표제 없음 %s" % (n, line[pos:pos + 20])))
+                pos = line.find("§", pos + 1)
+    return out
 
 
 # --------------------------------------------------------------------------
@@ -885,6 +1219,7 @@ class Registry(object):
         self.base = None          # (state, ref, node)
         self.tickets = {}         # id -> [state, ref, node, similar]
         self.rels = {}            # (kind, src, dst) -> state
+        self.started = set()      # (ticket id, run id)
 
     def load(self):
         if not os.path.exists(self.path):
@@ -910,7 +1245,10 @@ class Registry(object):
             b = REG_BASE_RE.match(line)
             t = REG_TICKET_RE.match(line)
             r = REG_REL_RE.match(line)
-            if b:
+            s = REG_STARTED_RE.match(line)
+            if s:
+                self.started.add((s.group(1), s.group(2)))
+            elif b:
                 self.base = (b.group(1), b.group(2), b.group(3))
             elif t:
                 self.tickets[t.group(1)] = [t.group(2), t.group(3), t.group(4), t.group(5)]
@@ -928,9 +1266,12 @@ class Registry(object):
         if self.exists and self.recorded_sha != self.doc.sha256:
             raise Refused("등록부 doc-sha256 이 문서의 현재 sha256 과 다름")
 
-    def render(self, g):
+    def render(self, g, sha=None):
+        """The registry bytes; `sha` replaces the document sha256 of the head
+        (`record --started` keeps the value it read, `revise` writes the
+        sha256 of the document it put in place)."""
         out = ["<!-- %s; doc=%s; doc-sha256=%s; tracker=%s; target=%s -->"
-               % (REGISTRY_VERSION, doc_field(self.doc.path), self.doc.sha256,
+               % (REGISTRY_VERSION, doc_field(self.doc.path), sha or self.doc.sha256,
                   self.tracker, self.target)]
         if self.base:
             out.append("- `베이스` | 상태=%s | 참조=%s | 노드 id=%s" % self.base)
@@ -938,6 +1279,8 @@ class Registry(object):
             s = self.tickets[tid]
             out.append("- `티켓` | id=%s | 상태=%s | 참조=%s | 노드 id=%s | 유사 후보=%s"
                        % (tid, s[0], s[1], s[2], s[3]))
+        for tid, run in sorted(self.started, key=lambda x: (int(x[0][1:]), x[1])):
+            out.append("- `착수` | id=%s | 런=%s" % (tid, run))
         for key in sorted(self.rels, key=rel_sort_key):
             out.append("- `관계` | 종류=%s | 원=%s | 대상=%s | 상태=%s" % (key + (self.rels[key],)))
         out.append(REGISTRY_END)
@@ -955,8 +1298,8 @@ class Registry(object):
             for x in g.t[tid]["ext_succ"]:
                 self.rels.setdefault(("외부후행", tid, x), default)
 
-    def write(self, g):
-        data = self.render(g).encode("utf-8")
+    def write(self, g, sha=None):
+        data = self.render(g, sha).encode("utf-8")
         d = os.path.dirname(self.path)
         os.makedirs(d, exist_ok=True)
         fd, tmp = tempfile.mkstemp(dir=d, prefix=".tickets.", suffix=".tmp")
@@ -1706,6 +2049,678 @@ def cmd_record(args):
     return 0
 
 
+def say(line, err=False):
+    stream = sys.stderr.buffer if err else sys.stdout.buffer
+    stream.write((line + "\n").encode("utf-8"))
+    stream.flush()
+
+
+def refused(e):
+    say("base-split.py: 거절 %s" % e, err=True)
+    return 3
+
+
+# --------------------------------------------------------------------------
+# The revise lock and the registry opened by its head
+# --------------------------------------------------------------------------
+
+def lock_path(doc_path):
+    a = os.path.abspath(doc_path)
+    return os.path.join(os.path.dirname(a), os.path.basename(a) + ".revise.lock")
+
+
+def take_lock(doc_path, run):
+    """Take `<doc file name>.revise.lock` next to the document, without
+    waiting; the run id and the time go in a file inside it."""
+    path = lock_path(doc_path)
+    try:
+        os.mkdir(path)
+    except FileExistsError:
+        raise Refused("잠금이 이미 있음 %s" % path)
+    except OSError as e:
+        raise Refused("잠금을 잡지 못함 (%s)" % type(e).__name__)
+    with open(os.path.join(path, "holder"), "wb") as f:
+        f.write(("run=%s\ntime=%s\n" % (run, time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())))
+                .encode("utf-8"))
+    return path
+
+
+def require_doc_file(path):
+    """A missing document is a usage error before the lock is tried, as Doc
+    reports it; only whether the path is a file is looked at here."""
+    if not os.path.isfile(path):
+        raise UsageError("cannot read %s (FileNotFoundError)" % path)
+
+
+def drop_lock(path):
+    holder = os.path.join(path, "holder")
+    if os.path.exists(holder):
+        os.unlink(holder)
+    os.rmdir(path)
+
+
+def open_registry_by_head(doc):
+    """The registry of doc, its tracker and target read from its head line."""
+    path = registry_path(doc.path)
+    if not os.path.exists(path):
+        raise Refused("등록부 없음 %s" % path)
+    try:
+        with open(path, "rb") as f:
+            first = split_lines(f.read().decode("utf-8"))[:1]
+    except (OSError, UnicodeDecodeError) as e:
+        raise Refused("등록부를 읽지 못함 (%s)" % type(e).__name__)
+    m = REG_HEAD_RE.match(first[0]) if first else None
+    if not m:
+        raise Refused("등록부 머리 줄을 읽지 못함")
+    return Registry(doc, m.group(3), m.group(4)).load()
+
+
+def ticket_ids(doc):
+    return [tid for tid, _, _, _ in doc.tickets]
+
+
+def cmd_record_started(args):
+    for name in ("row", "entry", "plan", "state", "ref", "node_id", "similar"):
+        if getattr(args, name) is not None:
+            raise UsageError("--started takes no --%s" % name.replace("_", "-"))
+    if args.doc_only:
+        raise UsageError("--started takes no --doc-only")
+    if not args.ticket or not args.run:
+        raise UsageError("--started needs --ticket and --run")
+    # The lock comes first: the document and the registry are read under it.
+    require_doc_file(args.doc)
+    try:
+        if not RUN_ID_RE.match(args.run):
+            raise Refused("런 id 를 등록부에 쓸 수 없음")
+        lock = take_lock(args.doc, args.run)
+    except Refused as e:
+        return refused(e)
+    try:
+        doc = Doc(args.doc)
+        if doc.kind != "tickets":
+            raise Refused("티켓 배달 설계 문서가 아님")
+        if args.ticket not in ticket_ids(doc):
+            raise Refused("문서에 없는 티켓 %s" % args.ticket)
+        reg = open_registry_by_head(doc)
+        key = (args.ticket, args.run)
+        if key in reg.started:
+            say("착수 이미 기록됨 %s %s" % key)
+            return 0
+        reg.started.add(key)
+        reg.write(None, sha=reg.recorded_sha)
+        say("기록 %s" % reg.path)
+        return 0
+    except Refused as e:
+        return refused(e)
+    finally:
+        drop_lock(lock)
+
+
+# --------------------------------------------------------------------------
+# child-doc and fence-check
+# --------------------------------------------------------------------------
+
+BASE_CONSTRAINT_HEADING = "## 베이스 제약"
+SLICE_HEAD_RE = re.compile(r"^### 슬라이스 (\S+) — (.+)$")
+OUTSIDE_FIELD = "티켓 밖 파일"
+OUTSIDE_ITEM_RE = re.compile(r"^- `([^`]+)` —(?: (.*))?$")
+R_REF_RE = re.compile(r"(?<![A-Za-z0-9_])R(\d+)(?![A-Za-z0-9_])")
+LABEL_REF_RE = re.compile(r"(?<![A-Za-z0-9_])([TC]\d+)(?![A-Za-z0-9_])")
+
+
+def ticket_block(doc, tid):
+    sec = doc.section(SPLIT_HEADING)
+    for t, i, j in doc.h3_blocks(*sec) if sec else []:
+        m = TICKET_HEAD_RE.match(t)
+        if m and m.group(1) == tid:
+            return i, j
+    return None
+
+
+def contract_blocks(doc, ids):
+    sec = doc.section(CONTRACT_SECTION)
+    out = []
+    for t, i, j in doc.h3_blocks(*sec) if sec else []:
+        m = CONTRACT_HEAD_RE.match(t)
+        if m and m.group(1) in ids:
+            out.append((int(m.group(2)), i, j))
+    return [(i, j) for _, i, j in sorted(out)]
+
+
+def section_body(doc, heading):
+    """The lines under a `## ` heading, with leading and trailing blank lines
+    dropped, or None when the document has no such section."""
+    sec = doc.section(heading)
+    if sec is None:
+        return None
+    body = doc.block_lines(sec[0] + 1, sec[1])
+    while body and not body[0].strip():
+        body.pop(0)
+    return body
+
+
+def upper_labels(doc):
+    """The ticket and contract labels (`T<n>`, `C<n>`) of the upper document."""
+    return set(ticket_ids(doc)) | set(cid for cid, _, _, _ in doc.contracts)
+
+
+def rewrite_labels(line, labels):
+    """One pass over a moved unresolved-entry body line: only the upper
+    document's `T<n>`/`C<n>` labels are rewritten, as `rewrite_residual`
+    rewrites them."""
+    out = []
+    pos = 0
+    while pos < len(line):
+        m = LABEL_REF_RE.match(line, pos)
+        if m and m.group(1) in labels:
+            out.append("상위 문서의 %s" % m.group(1))
+            pos = m.end()
+            continue
+        out.append(line[pos])
+        pos += 1
+    return "".join(out)
+
+
+def rewrite_residual(line, titles, moved, upper, labels=frozenset()):
+    """One pass over a residual body line: `§<heading>` becomes
+    `상위 문서의 「<heading>」` (the longest heading that prefixes the text
+    after `§`), a word-boundary `R<n>` becomes the new number of an item moved
+    into the same child document or `상위 문서의 「### R<n>. …」`, and a
+    word-boundary `T<n>`/`C<n>` that is one of the upper document's ticket or
+    contract labels becomes `상위 문서의 T<n>`/`상위 문서의 C<n>`. The text put
+    in is not scanned again, so a label inside a heading `§` took stays."""
+    out = []
+    pos = 0
+    while pos < len(line):
+        m = LABEL_REF_RE.match(line, pos)
+        if m and m.group(1) in labels:
+            out.append("상위 문서의 %s" % m.group(1))
+            pos = m.end()
+            continue
+        if line[pos] == "§":
+            t = longest_heading(line[pos + 1:], titles)
+            if t is None:
+                raise Refused("§ 참조에 맞는 상위 표제 없음 %s" % line[pos:pos + 20])
+            out.append("상위 문서의 「%s」" % t)
+            pos += 1 + len(t)
+            continue
+        m = R_REF_RE.match(line, pos)
+        if m:
+            n = int(m.group(1))
+            if n in moved:
+                out.append("R%d" % moved[n])
+            elif n in upper:
+                out.append("상위 문서의 「### %s」" % upper[n])
+            else:
+                raise Refused("상위 문서에 없는 항목 R%d" % n)
+            pos = m.end()
+            continue
+        out.append(line[pos])
+        pos += 1
+    return "".join(out)
+
+
+def build_child_doc(doc, g, tid, cutpoint):
+    lists, _ = td_ticket_lists(doc, g)
+    t = g.t[tid]
+    f = next(x[3] for x in doc.tickets if x[0] == tid)
+    blocks = []
+    i, j = ticket_block(doc, tid)
+    blocks.append(doc.block_lines(i, j))
+    for i, j in contract_blocks(doc, set(t["provides"]) | set(t["consumes"])):
+        blocks.append(doc.block_lines(i, j))
+    for title, i, j in arch_subsections(doc):
+        if title in lists[tid]["설계 절"]:
+            blocks.append(doc.block_lines(i, j))
+    decisions = section_body(doc, DECISIONS_HEADING)
+    blocks.append([DECISIONS_COPY_HEADING, ""] + (decisions or ["없음"]))
+
+    out = ["# %s" % t["title"], "", "**상태**: 동결됨", "", BASE_CONSTRAINT_HEADING, "",
+           "**베이스 문서**: %s" % doc_field(doc.path),
+           "**티켓**: %s" % tid,
+           "**베이스 sha256**: %s" % doc.sha256]
+    for b in blocks:
+        out += [""] + b
+    out += ["", ARCH_HEADING, "", LINKAGE_SENTENCE, "", CHILD_SENTENCE]
+
+    out += ["", "## 미해결 이슈 / 트레이드오프", ""]
+    labels = upper_labels(doc)
+    entries, _ = open_entries(doc)
+    mine = [(i, j) for title, i, j in entries if title in lists[tid]["미해결 항목"]]
+    if mine:
+        for k, (i, j) in enumerate(mine):
+            # The heading line stays byte for byte: the open-decision reader
+            # and an answer's sub-heading are matched against it.
+            block = doc.block_lines(i, j)
+            out += ([""] if k else []) + block[:1] + [rewrite_labels(x, labels) for x in block[1:]]
+    else:
+        out.append("없음")
+
+    items = residual_items(doc)
+    upper = dict((n, title) for title, n, _, _ in items)
+    taken = [(title, n, i, j) for title, n, i, j in items if title in lists[tid]["잔여 항목"]]
+    moved = dict((n, k + 1) for k, (_, n, _, _) in enumerate(taken))
+    titles = heading_titles(doc)
+    new_heads = []
+    if taken:
+        out += ["", RESIDUAL_HEADING]
+        for title, n, i, j in taken:
+            head = "R%d. %s" % (moved[n], R_HEAD_RE.match("### " + title).group(2))
+            new_heads.append(head)
+            out += ["", "### " + head]
+            out += [rewrite_residual(x, titles, moved, upper, labels) for x in doc.block_lines(i + 1, j)]
+
+    declared = []
+    for p in t["owned"] + t["shared"]:
+        if p not in declared:
+            declared.append(p)
+    count = 1 if CUTPOINTS.index(cutpoint) >= CUTPOINTS.index("PR") else 0
+    out += ["", SLICING_HEADING, "", "**슬라이스 수**: %d" % count, "",
+            "### 슬라이스 A — %s" % t["title"],
+            "**스킬**: implement",
+            "**레포**: %s" % strip_code(f.get("레포") or "").strip(),
+            "**선언 파일**: %s" % ", ".join("`%s`" % p for p in declared),
+            "**선행**: 없음",
+            "**머지 순서**: 없음",
+            "**절단점**: %s" % cutpoint,
+            "**잔여 항목**: %s" % quoted_list(new_heads)]
+    return "".join(x + "\n" for x in out).encode("utf-8")
+
+
+def outside_entries(doc, start, end):
+    """({path: reason}, faults) of the `**티켓 밖 파일**` field of one slice
+    block: `없음`, or an empty field line with one `` - `<path>` — <reason> ``
+    bullet per line under it. A block without the field has none. The field
+    ends at the first blank line after `없음` or after its bullet run, so a
+    paragraph that follows it is not part of it."""
+    entries, faults = {}, []
+    k = next((x for x in range(start, end) if not doc.inside[x]
+              and FIELD_RE.match(doc.lines[x]) and FIELD_RE.match(doc.lines[x]).group(1) == OUTSIDE_FIELD), None)
+    if k is None:
+        return entries, faults
+    value = (FIELD_RE.match(doc.lines[k]).group(2) or "").strip()
+    under = []
+    x = k + 1
+    if not value:
+        # Blank lines between the field line and its first bullet, as
+        # parse_block reads them.
+        while x < end and not doc.inside[x] and not doc.lines[x].strip():
+            x += 1
+    while x < end and (doc.inside[x] or not FIELD_RE.match(doc.lines[x])):
+        if not doc.inside[x] and not doc.lines[x].strip():
+            break
+        if doc.lines[x].strip():
+            under.append(doc.lines[x])
+        x += 1
+    if value == "없음":
+        if under:
+            faults.append("%s 이 없음 인데 아래 줄이 있음" % OUTSIDE_FIELD)
+        return entries, faults
+    if value:
+        faults.append("%s 값 꼴 어긋남 %s" % (OUTSIDE_FIELD, value))
+        return entries, faults
+    if not under:
+        faults.append("%s 항목이 비어 있음" % OUTSIDE_FIELD)
+    for line in under:
+        m = OUTSIDE_ITEM_RE.match(line.rstrip())
+        if not m:
+            faults.append("%s 줄 꼴 어긋남 %s" % (OUTSIDE_FIELD, line.strip()))
+        elif not (m.group(2) or "").strip():
+            faults.append("%s 사유 없음 %s" % (OUTSIDE_FIELD, m.group(1)))
+        else:
+            entries[norm_path(m.group(1))] = m.group(2).strip()
+    return entries, faults
+
+
+def fence_faults(doc):
+    """The `F1` details of a child document: every declared file of every
+    slice is inside the ticket's owned and shared files or one of that
+    slice's `**티켓 밖 파일**` entries."""
+    out = []
+    fence = None
+    sec = doc.section(BASE_CONSTRAINT_HEADING)
+    if sec is None:
+        out.append("표제 없음 %s" % BASE_CONSTRAINT_HEADING)
+    else:
+        tblocks = [(i, j) for t, i, j in doc.h3_blocks(*sec) if TICKET_HEAD_RE.match(t)]
+        if len(tblocks) != 1:
+            out.append("%s 의 티켓 블록 %d개 (정확히 하나여야 함)" % (BASE_CONSTRAINT_HEADING, len(tblocks)))
+        else:
+            f = parse_block(doc.lines, doc.inside, tblocks[0][0] + 1, tblocks[0][1])
+            fence = []
+            for key in FILE_LIST_FIELDS:
+                entries, faults = split_paths(f.get(key))
+                if key == "소유 파일" and f.get(key) is None:
+                    faults.append("필드 없음")
+                for x in faults:
+                    out.append("티켓 블록 %s %s" % (key, x))
+                fence += entries
+    sl = doc.section(SLICING_HEADING)
+    if sl is None:
+        out.append("표제 없음 %s" % SLICING_HEADING)
+        return out
+    slices = [(t, i, j) for t, i, j in doc.h3_blocks(*sl) if t.startswith("### 슬라이스 ")]
+    if not slices:
+        out.append("슬라이스 블록 없음")
+    for t, i, j in slices:
+        m = SLICE_HEAD_RE.match(t)
+        sid = m.group(1) if m else t[4:]
+        f = parse_block(doc.lines, doc.inside, i + 1, j)
+        if f.get("선언 파일") is None:
+            out.append("슬라이스 %s 선언 파일 필드 없음" % sid)
+        declared, faults = split_paths(f.get("선언 파일"))
+        for x in faults:
+            out.append("슬라이스 %s 선언 파일 %s" % (sid, x))
+        outside, faults = outside_entries(doc, i + 1, j)
+        for x in faults:
+            out.append("슬라이스 %s %s" % (sid, x))
+        for p in declared:
+            inside = fence is not None and any(covered_by(p, s) for s in fence)
+            if not inside and p not in outside:
+                out.append("슬라이스 %s 울타리 밖 선언 파일 %s" % (sid, p))
+        for p in sorted(outside):
+            if p not in declared:
+                out.append("슬라이스 %s 선언 파일에 없는 %s 항목 %s" % (sid, OUTSIDE_FIELD, p))
+    return out
+
+
+def cmd_fence_check(args):
+    doc = Doc(args.doc)
+    lines = ["F1 %s" % x for x in fence_faults(doc)]
+    for line in lines:
+        say(line)
+    return 1 if lines else 0
+
+
+def cmd_child_doc(args):
+    doc = Doc(args.doc)
+    try:
+        if doc.kind != "tickets":
+            raise Refused("티켓 배달 설계 문서가 아님")
+        if args.cutpoint not in CUTPOINTS:
+            raise Refused("절단점 %s 이 절단점 어휘 밖" % args.cutpoint)
+        violations, g = run_checks(doc)
+        if violations:
+            raise Refused("상위 문서 점검 위반 %d건 — check 로 확인" % len(violations))
+        if args.ticket not in g.t:
+            raise Refused("문서에 없는 티켓 %s" % args.ticket)
+        f = next(x[3] for x in doc.tickets if x[0] == args.ticket)
+        if (f.get("하위 설계") or "").strip() != "생략 가능":
+            raise Refused("%s 의 하위 설계가 생략 가능 이 아님" % args.ticket)
+        if os.path.lexists(args.out):
+            raise Refused("--out 이 이미 있음")
+        data = build_child_doc(doc, g, args.ticket, args.cutpoint)
+        faults = fence_faults(Doc(args.out, raw=data))
+        if faults:
+            raise Refused("만든 문서가 fence-check 를 통과하지 못함 — %s" % "; ".join(faults))
+        out_dir = os.path.dirname(os.path.abspath(args.out))
+        if not os.path.isdir(out_dir):
+            raise Refused("--out 의 디렉터리가 없음")
+    except Refused as e:
+        return refused(e)
+    write_atomic(os.path.abspath(args.out), data)
+    say("하위 문서 %s" % args.out)
+    return 0
+
+
+# --------------------------------------------------------------------------
+# revise
+# --------------------------------------------------------------------------
+
+REVISION_HEAD_RE = re.compile(r"^### 개정 (\d+) — (\d{4}-\d{2}-\d{2}) · 런 (\S+) · 티켓 (T\d+)$")
+REVISION_FIELDS = ("바꾼 절", "영향 티켓", "완료 티켓 차이")
+P_FIELDS = TD_FIELDS
+UNSTARTED_FIELDS = ("소유 파일", "공유 파일", "중첩 사유")
+
+
+def trimmed(seg):
+    seg = list(seg)
+    while seg and not seg[-1].strip():
+        seg.pop()
+    return seg
+
+
+def blocks_by_head(doc, sec):
+    """(lines before the first `###`, [(heading, lines)]) of one section."""
+    if sec is None:
+        return [], []
+    start, end = sec
+    blocks = doc.h3_blocks(start, end)
+    first = blocks[0][1] if blocks else end
+    return trimmed(doc.lines[start + 1:first]), [(t, trimmed(doc.lines[i:j])) for t, i, j in blocks]
+
+
+def revision_entry(old, new, ticket, run):
+    """(changed-sections value, fault) of the one entry the candidate's
+    `## 개정 이력` adds to the old one."""
+    o = section_body(old, HISTORY_HEADING)
+    n = section_body(new, HISTORY_HEADING)
+    if o is None or n is None:
+        return None, "%s 표제 없음" % HISTORY_HEADING
+    prefix = [] if [x for x in o if x.strip()] == ["없음"] else o
+    if n[:len(prefix)] != prefix:
+        return None, "%s 의 앞 내용이 바뀜" % HISTORY_HEADING
+    rest = n[len(prefix):]
+    while rest and not rest[0].strip():
+        rest.pop(0)
+    heads = [k for k, x in enumerate(rest) if x.startswith("### ")]
+    if not rest or heads != [0]:
+        return None, "새 개정 항목이 정확히 하나가 아님 (%d개)" % len(heads)
+    m = REVISION_HEAD_RE.match(rest[0])
+    sec = old.section(HISTORY_HEADING)
+    count = len(old.h3_blocks(*sec))
+    if not m:
+        return None, "새 개정 항목 표제 꼴 어긋남 %s" % rest[0]
+    if int(m.group(1)) != count + 1:
+        return None, "새 개정 항목 번호 %s ≠ %d" % (m.group(1), count + 1)
+    if m.group(3) != run or m.group(4) != ticket:
+        return None, "새 개정 항목의 런·티켓이 --run·--ticket 과 다름"
+    fields = parse_block(rest, mark_fences(rest), 1, len(rest))
+    for key in REVISION_FIELDS:
+        if not (fields.get(key) or "").strip():
+            return None, "새 개정 항목에 %s 없음" % key
+        if key in fields.dups:
+            return None, "새 개정 항목에 %s 가 둘 이상" % key
+    return fields["바꾼 절"], None
+
+
+def revise_faults(old, new, own, started, changed):
+    """Why the candidate changes the document outside what this ticket's
+    child run may change, or []."""
+    out = []
+    ever = set(tid for tid, _ in started)
+    gold, gnew = Graph(old), Graph(new)
+    lold, _ = td_ticket_lists(old, gold)
+    lnew, _ = td_ticket_lists(new, gnew)
+    p = set([own]) | set(t for t in ticket_ids(new) + ticket_ids(old) if t not in ever)
+
+    def holders(field, title):
+        return set(t for lists in (lold, lnew) for t in lists if title in lists[t][field])
+
+    def first_lines(doc):
+        h2 = doc.h2_sections()
+        return trimmed(doc.lines[:h2[0][1]] if h2 else doc.lines)
+
+    if first_lines(old) != first_lines(new):
+        out.append("첫 ## 앞 머리가 바뀜")
+    heads_old = [t for t, _, _ in old.h2_sections()]
+    heads_new = [t for t, _, _ in new.h2_sections()]
+    if heads_old != heads_new:
+        out.append("## 표제 순서가 바뀜")
+        return out
+    unresolved = unresolved_section(old)
+    unresolved_head = old.lines[unresolved[0]] if unresolved else None
+
+    for k, (head, i, end) in enumerate(old.h2_sections()):
+        _, ni, nend = new.h2_sections()[k]
+        if trimmed(old.lines[i:end]) == trimmed(new.lines[ni:nend]):
+            continue
+        name = head[3:]
+        pre_o, blk_o = blocks_by_head(old, (i, end))
+        pre_n, blk_n = blocks_by_head(new, (ni, nend))
+        if head == SPLIT_HEADING:
+            if pre_o != pre_n:
+                out.append("%s 머리가 바뀜" % head)
+            if [t for t, _ in blk_o] != [t for t, _ in blk_n]:
+                out.append("%s 의 블록 집합·순서가 바뀜" % head)
+                continue
+            for (t, lo), (_, ln) in zip(blk_o, blk_n):
+                m = TICKET_HEAD_RE.match(t)
+                if not m:
+                    if lo != ln:
+                        out.append("%s 가 바뀜" % t)
+                    continue
+                tid = m.group(1)
+                allowed = set()
+                if tid in p:
+                    allowed |= set(P_FIELDS)
+                if tid not in ever:
+                    allowed |= set(UNSTARTED_FIELDS)
+                uo = [u for u in field_units_of(lo) if u[0] not in allowed]
+                un = [u for u in field_units_of(ln) if u[0] not in allowed]
+                if uo != un:
+                    diff = [u for u in uo if u not in un] + [u for u in un if u not in uo]
+                    keys = sorted(set(u[0] or "(머리)" for u in diff))
+                    out.append("%s 의 바꿀 수 없는 필드가 바뀜 %s" % (tid, ", ".join(keys) or "(순서)"))
+            for tid in ticket_ids(new):
+                if tid in ever or tid not in gnew.t or tid not in gold.t:
+                    continue
+                # New per field: an entry moved from the shared list to the
+                # owned list (or back) is a new entry of the list it moved to.
+                added = []
+                for key in ("owned", "shared"):
+                    for x in gnew.t[tid][key]:
+                        if x not in gold.t[tid][key] and x not in added:
+                            added.append(x)
+                for s in sorted(ever):
+                    if s not in gnew.t or gnew.t[s]["repo"] != gnew.t[tid]["repo"]:
+                        continue
+                    for x in added:
+                        for q in gnew.t[s]["owned"]:
+                            if paths_overlap(x, q):
+                                out.append("%s 에 더한 %s 가 착수한 %s 의 소유 파일 %s 와 겹침" % (tid, x, s, q))
+        elif head == ARCH_HEADING:
+            if pre_o != pre_n:
+                out.append("%s 의 첫 ### 앞 줄이 바뀜" % head)
+            if [t for t, _ in blk_o] != [t for t, _ in blk_n]:
+                out.append("%s 의 소절 순서가 바뀜" % head)
+                continue
+            for (t, lo), (_, ln) in zip(blk_o, blk_n):
+                if lo == ln:
+                    continue
+                who = holders("설계 절", t[4:])
+                if who - p:
+                    out.append("설계 절 소절 「%s」 을 이름 부르는 티켓 %s 가 바꿀 수 있는 티켓이 아님"
+                               % (t, ", ".join(sorted(who - p, key=lambda x: int(x[1:])))))
+        elif head == DECISIONS_HEADING:
+            if "주요 결정사항과 근거" not in (changed or ""):
+                out.append("%s 가 바뀌었는데 바꾼 절 이 그 절을 적지 않음" % head)
+        elif head == unresolved_head or head == RESIDUAL_HEADING:
+            field = "잔여 항목" if head == RESIDUAL_HEADING else "미해결 항목"
+            if pre_o != pre_n:
+                out.append("%s 의 첫 ### 앞 줄이 바뀜" % head)
+            do, dn = dict(blk_o), dict(blk_n)
+            for t in sorted(set(do) | set(dn)):
+                if do.get(t) == dn.get(t):
+                    continue
+                who = holders(field, t[4:])
+                if not who:
+                    out.append("배정 없는 항목 「%s」 이 바뀜" % t)
+                elif who - p:
+                    out.append("항목 「%s」 을 배정받은 티켓 %s 가 바꿀 수 있는 티켓이 아님"
+                               % (t, ", ".join(sorted(who - p, key=lambda x: int(x[1:])))))
+                if name not in (changed or "") and t[4:] not in (changed or ""):
+                    out.append("항목 「%s」 이 바뀌었는데 바꾼 절 이 그 절이나 항목을 적지 않음" % t)
+        elif head == HISTORY_HEADING:
+            continue
+        else:
+            out.append("%s 는 바꿀 수 없는 절" % head)
+    return out
+
+
+def field_units_of(lines):
+    """[(key, lines)] of one block: a unit is a field line outside fences and
+    every line under it up to the next such line; the lines before the first
+    field line (the heading) are the unit of key None."""
+    inside = mark_fences(lines)
+    units = [(None, [])]
+    for k, line in enumerate(lines):
+        m = FIELD_RE.match(line) if not inside[k] else None
+        if m:
+            units.append((m.group(1), []))
+        units[-1][1].append(line)
+    return [(key, trimmed(x)) for key, x in units]
+
+
+def cmd_revise(args):
+    for name in ("from_", "to", "ticket", "run"):
+        if not getattr(args, name):
+            raise UsageError("revise needs --from, --to, --ticket and --run")
+    # The lock is the first act: the document is read and checked under it, so
+    # a revision that finished in between is seen as a sha256 that moved.
+    require_doc_file(args.doc)
+    try:
+        if not RUN_ID_RE.match(args.run):
+            raise Refused("런 id 꼴 어긋남")
+        lock = take_lock(args.doc, args.run)
+    except Refused as e:
+        return refused(e)
+    replacing = False
+    try:
+        doc = Doc(args.doc)
+        if doc.kind != "tickets":
+            raise Refused("티켓 배달 설계 문서가 아님")
+        old = Doc(args.from_)
+        new = Doc(args.to)
+        # 1 — the document is still the copy the revision started from.
+        if doc.sha256 != old.sha256:
+            raise Refused("상위 문서의 sha256 이 --from 과 다름")
+        # 2 — this run started this ticket.
+        reg = open_registry_by_head(doc)
+        if (args.ticket, args.run) not in reg.started:
+            raise Refused("등록부에 %s 의 런 %s 착수 행이 없음" % (args.ticket, args.run))
+        # The calling run's id comes from its environment, never from --run
+        # alone: a missing value is refused rather than skipped, since
+        # skipping it is the same path as clearing the variable.
+        env_run = os.environ.get("CC_PIPELINE_RUN_ID")
+        if not env_run:
+            raise Refused("환경에 이 런의 run id(CC_PIPELINE_RUN_ID)가 없음")
+        if env_run != args.run:
+            raise Refused("--run 이 이 런의 run id 와 다름")
+        # 4 — exactly one new revision entry (its changed sections bound 3).
+        changed, fault = revision_entry(old, new, args.ticket, args.run)
+        if fault:
+            raise Refused(fault)
+        # 3 — every change is inside what this ticket's child run may change.
+        faults = revise_faults(old, new, args.ticket, reg.started, changed)
+        if faults:
+            raise Refused("허용 영역 밖 변경 — %s" % "; ".join(faults))
+        # 5 — the candidate passes check.
+        if new.kind != "tickets":
+            raise Refused("후보가 티켓 배달 설계 문서가 아님")
+        violations, _ = run_checks(new)
+        if violations:
+            raise Refused("후보 점검 위반 %d건 — check 로 확인" % len(violations))
+        # 6 — the document first, then the registry head.
+        replacing = True
+        write_atomic(os.path.abspath(doc.path), new.raw)
+        reg.write(None, sha=new.sha256)
+    except Refused as e:
+        if not replacing:
+            drop_lock(lock)
+        return refused(e)
+    except BaseException:
+        if not replacing:
+            drop_lock(lock)
+        else:
+            say("base-split.py: 거절 교체 중 실패 — 잠금 %s 을 남김" % lock, err=True)
+            return 3
+        raise
+    drop_lock(lock)
+    say("개정 %s %s → %s" % (args.doc, doc.sha256, new.sha256))
+    return 0
+
+
 # --------------------------------------------------------------------------
 
 def build_parser():
@@ -1729,7 +2744,8 @@ def build_parser():
     p.add_argument("--fields")
     r = sub.add_parser("record", allow_abbrev=False)
     r.add_argument("doc")
-    r.add_argument("--row", required=True)
+    # Required unless --started; cmd_record checks it.
+    r.add_argument("--row")
     r.add_argument("--doc-only", action="store_true")
     r.add_argument("--entry")
     r.add_argument("--plan")
@@ -1737,16 +2753,48 @@ def build_parser():
     r.add_argument("--ref")
     r.add_argument("--node-id")
     r.add_argument("--similar")
+    r.add_argument("--started", action="store_true")
+    r.add_argument("--ticket")
+    r.add_argument("--run")
+    d = sub.add_parser("child-doc", allow_abbrev=False)
+    d.add_argument("doc")
+    d.add_argument("--ticket", required=True)
+    d.add_argument("--cutpoint", required=True)
+    d.add_argument("--out", required=True)
+    fc = sub.add_parser("fence-check", allow_abbrev=False)
+    fc.add_argument("doc")
+    rv = sub.add_parser("revise", allow_abbrev=False)
+    rv.add_argument("doc")
+    rv.add_argument("--from", dest="from_", required=True)
+    rv.add_argument("--to", required=True)
+    rv.add_argument("--ticket", required=True)
+    rv.add_argument("--run", required=True)
     return parser
 
 
 def main(argv=None):
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if args.command == "record" and not args.started:
+        if args.row is None:
+            sys.stderr.write("base-split.py record: error: the following arguments are required: --row\n")
+            return 2
+        if args.ticket is not None or args.run is not None:
+            sys.stderr.write("base-split.py record: error: --ticket and --run go with --started\n")
+            return 2
     try:
         if args.command == "check":
             return cmd_check(args)
         if args.command == "plan":
             return cmd_plan(args)
+        if args.command == "child-doc":
+            return cmd_child_doc(args)
+        if args.command == "fence-check":
+            return cmd_fence_check(args)
+        if args.command == "revise":
+            return cmd_revise(args)
+        if args.started:
+            return cmd_record_started(args)
         return cmd_record(args)
     except UsageError as e:
         sys.stderr.write("base-split.py: %s\n" % e)

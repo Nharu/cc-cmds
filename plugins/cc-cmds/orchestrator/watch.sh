@@ -408,6 +408,81 @@ file_mtime() {
   date -u -r "$1" +%s 2>/dev/null || true
 }
 
+host_load_num() {
+  # host_load_num <value> — the value itself when it is a JSON number (an integer
+  # or a decimal with no leading zero), else `null`. Every field of the host-load
+  # sample goes through this, so a command that printed nothing, an error text or
+  # a locale's decimal comma lands as `null` rather than as a line no JSON reader
+  # can parse.
+  local re='^(0|[1-9][0-9]*)(\.[0-9]+)?$'
+  if [[ "$1" =~ $re ]]; then printf '%s' "$1"; else printf 'null'; fi
+}
+
+host_load_sample() {
+  # host_load_sample <stages> — append one line to `$RUN_DIR/host-load.jsonl`:
+  #
+  #   {"schema":1,"at":…,"load1":…,"load5":…,"load15":…,"ncpu":…,"claude_procs":…,"runs":…,"stages":…}
+  #
+  # The keys and their order are fixed. A reader running while the run is still
+  # going takes the last complete line and treats the load as unknown when its
+  # `at` is older than three intervals.
+  #
+  # `load*` and `ncpu` come from `sysctl` on Darwin and from `/proc/loadavg` and
+  # `getconf` elsewhere. `claude_procs` counts `pgrep -x claude` across the host:
+  # no match is 0, and a missing or failing `pgrep` is `null`. `runs` counts the
+  # sibling run directories whose `watch.heartbeat` was rewritten within three
+  # intervals, this one included — measured in seconds through `file_mtime`,
+  # since `find -mmin` rounds to minutes and `stat` flags differ by platform.
+  # `stages` is the count this pass's heartbeat line carries.
+  #
+  # THE SAMPLE NEVER DECIDES ANYTHING ABOUT THE WATCHER. A value it cannot read is
+  # `null`, a write that fails is ignored, and the heartbeat, the stall arms and
+  # the exit status are the same with or without this file. Nothing rotates or
+  # deletes it: one line is about 150 bytes, a day of them about 0.2MB.
+  #
+  # The host check is SEAMED (`CC_WATCH_HOST_OS`) so a test on any host can drive
+  # the Darwin branch, the one whose commands a PATH stub can make fail.
+  local os la l1="" l5="" l15="" _rest nc procs out rc runs=0 hb mt now
+  os=${CC_WATCH_HOST_OS:-$(uname -s 2>/dev/null || true)}
+  if [ "$os" = Darwin ]; then
+    la=$(sysctl -n vm.loadavg 2>/dev/null || true)
+    la=$(printf '%s' "$la" | tr -d '{}')
+    nc=$(sysctl -n hw.ncpu 2>/dev/null || true)
+  else
+    la=$(cut -d' ' -f1-3 /proc/loadavg 2>/dev/null || true)
+    nc=$(getconf _NPROCESSORS_ONLN 2>/dev/null || true)
+  fi
+  read -r l1 l5 l15 _rest <<EOF
+$la
+EOF
+  procs=null
+  if command -v pgrep >/dev/null 2>&1; then
+    out=$(pgrep -x claude 2>/dev/null); rc=$?
+    case "$rc" in
+      0) procs=$(printf '%s\n' "$out" | grep -c . || true) ;;
+      1) procs=0 ;;
+    esac
+  fi
+  # The run root keeps every finished run's directory and its last heartbeat, so
+  # reading each mtime would fork once per run ever made on this host, every
+  # pass. `ls -t` lists them newest first in one process, and the walk stops at
+  # the first one outside the window: the forks are the fresh heartbeats plus one.
+  now=$(now_epoch)
+  while IFS= read -r hb; do
+    [ -n "$hb" ] || continue
+    mt=$(file_mtime "$hb")
+    [ -n "$mt" ] || continue
+    [ $(( now - mt )) -le $(( 3 * INTERVAL )) ] || break
+    runs=$((runs + 1))
+  done <<EOF
+$(ls -t "$(dirname "$RUN_DIR")"/*/watch.heartbeat 2>/dev/null)
+EOF
+  { printf '{"schema":1,"at":"%s","load1":%s,"load5":%s,"load15":%s,"ncpu":%s,"claude_procs":%s,"runs":%s,"stages":%s}\n' \
+      "$(now_iso)" "$(host_load_num "$l1")" "$(host_load_num "$l5")" "$(host_load_num "$l15")" \
+      "$(host_load_num "$nc")" "$(host_load_num "$procs")" "$(host_load_num "$runs")" \
+      "$(host_load_num "$1")" >> "$RUN_DIR/host-load.jsonl"; } 2>/dev/null || true
+}
+
 shift_active() {
   # Is a routing shift being launched right now?
   #
@@ -729,6 +804,10 @@ beat() {
   grew=$(sed -n '2p' "$RUN_DIR/watch.state" 2>/dev/null || true)
   printf '%s 원장 %s초 전 갱신 · 스테이지 %s개 · 대기 승인 %s건 · 비종단 세그먼트 %s개 · 원장크기=%s · 마지막성장=%s\n' \
     "$(now_iso)" "$age" "$live" "$pend" "$nonterm" "$size" "$grew" > "$RUN_DIR/watch.heartbeat"
+  # The host-load sample rides the same cadence, after the heartbeat so its own
+  # file already counts toward `runs`. `beat` also runs in the `done` tail, so the
+  # last heartbeat leaves a sample too.
+  [ -d "$RUN_DIR" ] && host_load_sample "$live"
   printf '%s [watch] 살아 있음 — 원장 %s초 전 갱신, 스테이지 %s개, 대기 승인 %s건, 비종단 세그먼트 %s개\n' \
     "$(now_iso)" "$age" "$live" "$pend" "$nonterm"
 }

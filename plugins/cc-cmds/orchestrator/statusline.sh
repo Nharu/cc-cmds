@@ -24,6 +24,13 @@
 # `rt_borrow_read` in `route.sh`, and the suite's live route equivalence cases
 # are what tie the two together.
 #
+# A FINISHED RUN THAT CANNOT WIN IS NOT JUDGED, AND THAT IS COMPUTED, NOT
+# CACHED. The selection below screens out dormant runs — no pid that answers,
+# no ledger or heartbeat inside the dormancy window — from the file times and
+# the process table on every call, and judges one only when it could still take
+# the line. Nothing is kept between calls, so a ledger that grows again puts its
+# run back into the judgement on the next render.
+#
 # Compatibility: bash 3.2 — no associative arrays, no `mapfile`, no `wait -n`.
 # No `date -r` or `date -d` either: the two date implementations disagree on
 # both, so the one epoch this file formats goes through the shell arithmetic of
@@ -580,19 +587,60 @@ idx="$CC_SL_STATE/session/$sid"
 # pruned, because this file writes nothing by contract; the pruning belongs to
 # the gate, which does it on a sparse cycle beside the reclamation that removed
 # those directories in the first place.
-best_rd=""; best_rid=""; best_state=""; best_ledger=""; best_t=-1; best_rank=9
+#
+# A DORMANT RUN IS NOT JUDGED UNLESS IT COULD WIN, and nothing about that is
+# remembered. Judging a run spawns several processes that read its ledger, so a
+# session that had piled up finished runs paid for every one of them on every
+# render — measured, a 24-run session under heavy load took the pane helper 40
+# seconds against its 8-second limit. A run is DORMANT when all four of these
+# hold, and then `cc_run_state` can only give it rank 5 or 6:
+#
+#   1. no `*.pid` in its directory (any name, `watch.pid` included) names a pid
+#      that answers `kill -0` — no fingerprint, so a reused pid only costs a
+#      judgement;
+#   2. no `*.waiting` marker's last `보유자=` pid answers `kill -0`;
+#   3. `shift.live` is absent, or its first-line pid does not answer;
+#   4. the ledger and `watch.heartbeat`, whichever exist, are both older than the
+#      dormancy window: `CC_SL_ABANDON` rounded up to minutes, plus one.
+#
+# Every rank-4-or-better arm of `cc_run_state` needs one of those: a live stage
+# or a fresh waiter for 도는중, a live shift for a settling `done`, a heartbeat
+# inside 120 seconds for rank 2, and a growth time inside `CC_SL_ABANDON` for the
+# rest — and the heartbeat's `마지막성장` is written before the heartbeat file, so
+# it is never later than that file's mtime. The test is conservative: a run it
+# fails to call dormant is judged as before, at a cost and never a wrong line.
+# Conditions 1-3 use shell builtins only; condition 4 is one `find` over the
+# whole index, so the screening costs a constant number of processes. A file
+# dated in the future is inside the window and so not dormant.
+#
+# THE ORDER THEN KEEPS THE RESULT THAT OF JUDGING EVERY RUN. Non-dormant runs are
+# judged first, in index order. If the best of them has rank 4 or better no
+# dormant run can beat it and none is judged. Otherwise the dormant runs are
+# walked newest clock first (`done`, else the ledger — one `ls -t`), and the walk
+# stops at the first whose clock is older than the best so far once that best
+# has rank 5 or better: a terminal run there loses on time, and anything else on
+# rank. Equal clocks keep walking, because the index order still decides them.
+# A `find` or `ls` that fails turns the shortcut off for this render.
+#
+# Two read-only knobs, read like `CC_SL_PANE_FIELDS`: `CC_SL_SCREEN=0` turns the
+# screening off (every run is judged), which is what the suite compares the
+# default output against; `CC_SL_TRACE=1` writes `cc-sl-derive <run id>` to
+# stderr each time a run is judged, which is what it counts.
+sl_screen=1; [ "${CC_SL_SCREEN:-}" = "0" ] && sl_screen=0
+sl_trace=0; [ "${CC_SL_TRACE:-}" = "1" ] && sl_trace=1
+best_rd=""; best_rid=""; best_state=""; best_ledger=""; best_t=-1; best_rank=9; best_i=-1
 now=$(date -u +%s)
-while IFS= read -r rid; do
-  [ -n "$rid" ] || continue
-  rd="$CC_SL_STATE/run/$rid"
-  # Readability is tested alongside existence. A directory that is there but
-  # cannot be opened yields empty reads all the way down, and empty reads look
-  # exactly like a quiet run — so without this the line would confidently
-  # describe a run it never managed to read.
-  [ -d "$rd" ] && [ -r "$rd" ] || continue
-  ledger=$(cat "$rd/ledger-path" 2>/dev/null || true)
+
+sl_judge() {
+  # sl_judge <index position> — judges that run and keeps it if it beats the
+  # best so far: a lower rank, else a later time, else an earlier index line.
+  # The last clause is what lets the dormant walk visit runs out of index order
+  # and still pick the run a walk in index order would.
+  local i="$1" rd rid ledger st rank hb_t g t
+  rid="${sl_rid[$i]}"; rd="${sl_rd[$i]}"; ledger="${sl_led[$i]}"
+  [ "$sl_trace" = 1 ] && printf 'cc-sl-derive %s\n' "$rid" >&2
   st=$(cc_run_state "$rd" "$ledger" "$CC_SL_STALL" "$CC_SL_ABANDON" 2>/dev/null || true)
-  [ -n "$st" ] || continue
+  [ -n "$st" ] || return 0
   rank=$(cc_run_grade "$st" 2>/dev/null || true)
   [ -n "$rank" ] || rank=9
   # A WAITING APPROVAL HOLDS ITS RANK ONLY WHILE A WATCHER CAN STILL DELIVER IT.
@@ -628,11 +676,217 @@ while IFS= read -r rid; do
   fi
   [ -n "$t" ] || t=0
   if [ -z "$best_rd" ] || [ "$rank" -lt "$best_rank" ] \
-     || { [ "$rank" -eq "$best_rank" ] && [ "$t" -gt "$best_t" ]; }; then
+     || { [ "$rank" -eq "$best_rank" ] && [ "$t" -gt "$best_t" ]; } \
+     || { [ "$rank" -eq "$best_rank" ] && [ "$t" -eq "$best_t" ] && [ "$i" -lt "$best_i" ]; }; then
     best_rd=$rd; best_rid=$rid; best_state=$st; best_ledger=$ledger
-    best_t=$t; best_rank=$rank
+    best_t=$t; best_rank=$rank; best_i=$i
   fi
+  return 0
+}
+
+sl_pid_answers() {
+  # sl_pid_answers <file> — succeeds when the file's first line, blanks
+  # removed, is a pid some process holds. The existence test is
+  # `cc_pid_exists` from `liveness.sh`, so this file keeps no liveness
+  # judgement of its own; a reused pid only costs a judgement here.
+  local p=""
+  IFS= read -r p < "$1" || [ -n "$p" ] || return 1
+  p=${p//[[:space:]]/}
+  cc_pid_exists "$p"
+}
+
+sl_awake_by_pid() {
+  # sl_awake_by_pid <run-dir> — succeeds when screening conditions 1-3 find a
+  # pid that answers, or a file they could not read (which is not evidence of
+  # dormancy).
+  local rd="$1" f l h
+  for f in "$rd"/*.pid; do
+    [ -f "$f" ] || continue
+    [ -r "$f" ] || return 0
+    sl_pid_answers "$f" && return 0
+  done
+  for f in "$rd"/*.waiting; do
+    [ -f "$f" ] || continue
+    [ -r "$f" ] || return 0
+    h=""
+    while IFS= read -r l || [ -n "$l" ]; do
+      case "$l" in 보유자=*) h=${l#보유자=} ;; esac
+      l=""
+    done < "$f"
+    h=${h//[[:space:]]/}
+    cc_pid_exists "$h" && return 0
+  done
+  if [ -f "$rd/shift.live" ]; then
+    [ -r "$rd/shift.live" ] || return 0
+    sl_pid_answers "$rd/shift.live" && return 0
+  fi
+  return 1
+}
+
+sl_split_lines() {
+  # sl_split_lines <text> — sl_lines holds its non-empty lines. Word splitting
+  # on newlines with globbing off, not a here-document: bash 3.2 backs a
+  # here-document with a temporary file, and this script writes nothing.
+  local IFS=$'\n' x
+  sl_lines=()
+  set -f
+  for x in $1; do sl_lines[${#sl_lines[@]}]=$x; done
+  set +f
+}
+
+sl_find_arg_ok() {
+  # sl_find_arg_ok <path> — a path `find` would read as an operand rather than
+  # as part of its expression.
+  case "$1" in
+    ''|-*|'('*|')'*|'!'*) return 1 ;;
+  esac
+  return 0
+}
+
+# Pass 1: walk the index once. Indexed arrays, never associative ones, and
+# every expansion is guarded by its length first: bash 3.2 under `set -u`
+# treats an empty "${a[@]}" as unbound.
+sl_n=0
+sl_rid=(); sl_rd=(); sl_led=(); sl_hb=(); sl_clk=(); sl_dorm=(); sl_paths=()
+while IFS= read -r rid; do
+  [ -n "$rid" ] || continue
+  rd="$CC_SL_STATE/run/$rid"
+  # Readability is tested alongside existence. A directory that is there but
+  # cannot be opened yields empty reads all the way down, and empty reads look
+  # exactly like a quiet run — so without this the line would confidently
+  # describe a run it never managed to read.
+  [ -d "$rd" ] && [ -r "$rd" ] || continue
+  # The ledger path is read with the `read` builtin rather than `cat`. For a
+  # one-line file, with or without its final newline, that is the value
+  # `$(cat …)` gives; a file with a second line keeps the `cat` value and the
+  # run is not dormant.
+  dorm=$sl_screen; ledger=""
+  if [ -e "$rd/ledger-path" ]; then
+    l1=""; l2=""
+    if [ -f "$rd/ledger-path" ] && [ -r "$rd/ledger-path" ]; then
+      { if IFS= read -r l1; then
+          if IFS= read -r l2 || [ -n "$l2" ]; then l2=more; fi
+        fi; } 2>/dev/null < "$rd/ledger-path"
+    else
+      l2=more
+    fi
+    if [ -n "$l2" ]; then
+      ledger=$(cat "$rd/ledger-path" 2>/dev/null || true); dorm=0
+    else
+      ledger=$l1
+    fi
+  fi
+  hbp="$rd/watch.heartbeat"
+  if [ "$dorm" = 1 ] && sl_awake_by_pid "$rd"; then dorm=0; fi
+  if [ "$dorm" = 1 ]; then
+    for p in "$ledger" "$hbp"; do
+      [ -n "$p" ] && [ -f "$p" ] || continue
+      if sl_find_arg_ok "$p"; then sl_paths[${#sl_paths[@]}]=$p; else dorm=0; fi
+    done
+  fi
+  if [ -f "$rd/done" ]; then clk="$rd/done"
+  elif [ -n "$ledger" ] && [ -f "$ledger" ]; then clk=$ledger
+  else clk=""
+  fi
+  sl_rid[$sl_n]=$rid; sl_rd[$sl_n]=$rd; sl_led[$sl_n]=$ledger; sl_hb[$sl_n]=$hbp
+  sl_clk[$sl_n]=$clk; sl_dorm[$sl_n]=$dorm
+  sl_n=$((sl_n + 1))
 done < "$idx"
+
+# Condition 4, for the whole index at once. A path `find` prints is inside the
+# window, and every run holding that path as its ledger or heartbeat is awake —
+# two runs sharing one ledger (a successor run) both are. `-L` follows a link
+# to the file's own time, as `cc_mtime` does.
+if [ "$sl_screen" = 1 ] && [ "${#sl_paths[@]}" -gt 0 ]; then
+  sl_win=$(( (CC_SL_ABANDON + 59) / 60 + 1 ))
+  if sl_fresh=$(find -L "${sl_paths[@]}" -prune -mmin "-$sl_win" -print 2>/dev/null); then
+    sl_split_lines "$sl_fresh"
+    j=0
+    while [ "$j" -lt "${#sl_lines[@]}" ]; do
+      p=${sl_lines[$j]}
+      i=0
+      while [ "$i" -lt "$sl_n" ]; do
+        if [ "${sl_led[$i]}" = "$p" ] || [ "${sl_hb[$i]}" = "$p" ]; then sl_dorm[$i]=0; fi
+        i=$((i + 1))
+      done
+      j=$((j + 1))
+    done
+  else
+    i=0
+    while [ "$i" -lt "$sl_n" ]; do sl_dorm[$i]=0; i=$((i + 1)); done
+  fi
+fi
+
+# Pass 2: every run that is not dormant, in index order.
+i=0
+while [ "$i" -lt "$sl_n" ]; do
+  [ "${sl_dorm[$i]}" = 1 ] || sl_judge "$i"
+  i=$((i + 1))
+done
+
+# Pass 3: the dormant runs, only when the best so far is rank 5 or worse.
+if [ "$best_rank" -gt 4 ]; then
+  sl_order=(); sl_files=()
+  i=0
+  while [ "$i" -lt "$sl_n" ]; do
+    if [ "${sl_dorm[$i]}" = 1 ] && [ -n "${sl_clk[$i]}" ]; then
+      dup=0; j=0
+      while [ "$j" -lt "${#sl_files[@]}" ]; do
+        [ "${sl_files[$j]}" = "${sl_clk[$i]}" ] && { dup=1; break; }
+        j=$((j + 1))
+      done
+      [ "$dup" = 1 ] || sl_files[${#sl_files[@]}]=${sl_clk[$i]}
+    fi
+    i=$((i + 1))
+  done
+  sl_walk_stops=1
+  if [ "${#sl_files[@]}" -gt 0 ]; then
+    if sl_sorted=$(ls -1tL -- "${sl_files[@]}" 2>/dev/null); then
+      sl_split_lines "$sl_sorted"
+      j=0
+      while [ "$j" -lt "${#sl_lines[@]}" ]; do
+        p=${sl_lines[$j]}
+        i=0
+        while [ "$i" -lt "$sl_n" ]; do
+          if [ "${sl_dorm[$i]}" = 1 ] && [ "${sl_clk[$i]}" = "$p" ]; then
+            sl_order[${#sl_order[@]}]=$i
+          fi
+          i=$((i + 1))
+        done
+        j=$((j + 1))
+      done
+    else
+      sl_walk_stops=0
+    fi
+  fi
+  if [ "$sl_walk_stops" = 1 ]; then
+    # The runs with no clock file go last, in index order.
+    i=0
+    while [ "$i" -lt "$sl_n" ]; do
+      if [ "${sl_dorm[$i]}" = 1 ] && [ -z "${sl_clk[$i]}" ]; then sl_order[${#sl_order[@]}]=$i; fi
+      i=$((i + 1))
+    done
+  else
+    sl_order=()
+    i=0
+    while [ "$i" -lt "$sl_n" ]; do
+      [ "${sl_dorm[$i]}" = 1 ] && sl_order[${#sl_order[@]}]=$i
+      i=$((i + 1))
+    done
+  fi
+  k=0
+  while [ "$k" -lt "${#sl_order[@]}" ]; do
+    i=${sl_order[$k]}
+    if [ "$sl_walk_stops" = 1 ] && [ -n "$best_rd" ] && [ "$best_rank" -le 5 ]; then
+      c=""
+      [ -n "${sl_clk[$i]}" ] && c=$(cc_mtime "${sl_clk[$i]}")
+      [ -n "$c" ] || c=0
+      [ "$c" -lt "$best_t" ] && break
+    fi
+    sl_judge "$i"
+    k=$((k + 1))
+  done
+fi
 
 [ -n "$best_rd" ] || sl_exit_fallback
 

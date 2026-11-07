@@ -1,12 +1,14 @@
 // 런 상태 패널 mod. 대화형 세션에서만 깨어나, 상태 표시줄이 고른 런 하나의 상태를
 // orchestrator/run-pane.sh 에서 받아 패널에 그린다. 문구·순서·색조·부류·주기와 줄 상한은
 // 모두 그 헬퍼가 정하고, 이 모듈은 언제 헬퍼를 부르고 언제 패널을 여닫는지만 정한다.
-// 이 모듈이 플러그인의 유일한 `modules` 진입이며, 질문지 서브 mod 의 등록도 넘겨준다.
+// 이 모듈이 플러그인의 유일한 `modules` 진입이며, 질문지 서브 mod 와 원격 답 모드의 등록도
+// 넘겨준다.
 import { atom, read, update } from 'claude-code'
 import type { Hook, Register } from 'claude-code'
 
 import type { PaneControl, PaneLine, PaneLines, PanePart } from '../types'
 import { register as registerQuestionForm } from './question-form/index'
+import { register as registerRemoteReply } from './remote-reply/index'
 
 type Dollar = Parameters<Hook<'session.start'>>[0]
 
@@ -49,6 +51,7 @@ const BUNDLES = new Set([
 const snapshot = atom({ plugin: 'cc-cmds', key: 'paneLines' } as const, {
   lines: [],
   warning: null,
+  okAt: null,
 } as PaneLines)
 
 const control = atom({ plugin: 'cc-cmds', key: 'paneControl' } as const, {
@@ -93,6 +96,25 @@ const parse = (stdout: string): { head: Head; lines: PaneLine[] } | string => {
   }
 
   return { head, lines }
+}
+
+// 경과를 상태줄 age_phrase 와 같은 경계(60초, 3600초)로 적는다.
+const agePhrase = (ms: number): string => {
+  const s = Math.max(0, Math.floor(ms / 1000))
+  if (s < 60) return `${s}초 전`
+  if (s < 3600) return `${Math.floor(s / 60)}분 전`
+
+  return `${Math.floor(s / 3600)}시간 전`
+}
+
+// 경고 줄 끝의 꼬리: 마지막 성공 화면이 언제 것인지. okAt 은 이 필드를 모르던 모듈이
+// 저장한 값에서 undefined 이므로 null 로 읽는다. okAt 이 없는데 줄이 있으면 그 줄이
+// 언제 것인지 모르므로 꼬리를 붙이지 않는다.
+export const ageTail = (s: PaneLines, endAt: number): string => {
+  const okAt = s.okAt ?? null
+  if (okAt !== null) return ` · ${agePhrase(endAt - okAt)} 화면`
+
+  return s.lines.length === 0 ? ' · 이전 화면 없음' : ''
 }
 
 const remember = (ids: readonly string[], id: string): string[] =>
@@ -154,36 +176,58 @@ async function statMtime($: Dollar, path: string | null): Promise<number | null>
 
 // 헬퍼를 한 번 돌리고 결과를 상태에 반영한다. 실패하면 마지막 좋은 줄을 두고 경고 줄만
 // 더하며, 자동으로 열지 않는다. tickPath 는 tickMtime 을 잰 목록 경로이고, startedAt 은
-// 헬퍼를 부르기 전에 읽은 시각이다. 헬퍼가 걸린 시간을 다음 기한에 더하지 않도록
+// 틱이 시작될 때 읽은 시각이다. 헬퍼가 걸린 시간을 다음 기한에 더하지 않도록
 // lastRunAt 에는 이 값을 적는다.
+//
+// 실패는 두 갈래다. $.process.run 은 시한 초과와 시작 실패를 둘 다 거부로만 알리고 거부
+// 문구는 계약 밖이므로, 호출 직전(callAt)과 거부 직후(endAt)에 읽은 모듈 시계의 경과로
+// 가른다. 경과가 시한에서 500 ms 를 뺀 값 이상이면 시한 초과, 아니면 시작 실패다. 그
+// 여유는 엔진의 시한 시계와 모듈 시계가 조금 어긋나도 시한 초과를 시작 실패로 읽지 않게
+// 둔다. 시작 실패, 0 이 아닌 종료, 출력 형식 불일치는 모두 실행 실패 한 갈래이고 괄호의
+// 사유로 구별한다. startedAt 에는 그 뒤의 await 지연이 끼어 있어 시한 판정과 okAt 에는
+// callAt 을 쓴다.
 async function runHelper($: Dollar, sid: string, tickMtime: number | null, tickPath: string | null, startedAt: number) {
   if (isRunning) return
   isRunning = true
   try {
-    let parsed: ReturnType<typeof parse> = '실행하지 못함'
-    let failure: string | null = null
     const size = dock === undefined ? [] : ['--cols', String(dock.columns), '--rows', String(dock.rows)]
+    const callAt = await $.clock.now()
+    let ran: { exitCode: number; stdout: string } | null = null
     try {
-      const ran = await $.process.run(['bash', `${$.plugin.root}/orchestrator/run-pane.sh`, sid, ...size], {
+      ran = await $.process.run(['bash', `${$.plugin.root}/orchestrator/run-pane.sh`, sid, ...size], {
         timeoutMs: HELPER_TIMEOUT_MS,
       })
-      if (ran.exitCode !== 0) failure = `종료 코드 ${ran.exitCode}`
-      else parsed = parse(ran.stdout)
     } catch {
-      failure = '실행하지 못함'
+      ran = null
+    }
+    const endAt = await $.clock.now()
+
+    // 실패면 경고 줄의 문구, 성공이면 머리와 본문.
+    const readFailed = (why: string) => `⚠ 런 상태를 읽지 못했다 (${why})`
+    let outcome: ReturnType<typeof parse>
+    if (ran === null) {
+      outcome =
+        endAt - callAt >= HELPER_TIMEOUT_MS - 500
+          ? `⚠ 런 상태 갱신이 ${HELPER_TIMEOUT_MS / 1000}초 시한을 넘겼다`
+          : readFailed('실행하지 못함')
+    } else if (ran.exitCode !== 0) {
+      outcome = readFailed(`종료 코드 ${ran.exitCode}`)
+    } else {
+      const got = parse(ran.stdout)
+      outcome = typeof got === 'string' ? readFailed(got) : got
     }
 
-    if (failure !== null || typeof parsed === 'string') {
-      const why = failure ?? parsed
-      await update($, snapshot, s => ({ ...s, warning: `⚠ 런 상태를 읽지 못했다 (${why})` }))
+    if (typeof outcome === 'string') {
+      const text = outcome
+      await update($, snapshot, s => ({ ...s, warning: text + ageTail(s, endAt) }))
       await update($, control, c => ({ ...c, lastRunAt: startedAt, lastSid: sid, lastMtime: tickMtime }))
 
       return
     }
 
-    const { head, lines } = parsed
+    const { head, lines } = outcome
     const mtime = head.indexPath === tickPath ? tickMtime : await statMtime($, head.indexPath)
-    await update($, snapshot, () => ({ lines, warning: null }))
+    await update($, snapshot, () => ({ lines, warning: null, okAt: callAt }))
     const before = await update($, control, c => ({
       ...c,
       lastRunAt: startedAt,
@@ -337,8 +381,9 @@ export const register: Register = (on, options) => {
               : line.parts.map(one => <Text {...toneProps(one.tone, one.bold)}>{one.text}</Text>)}
           </Text>
         ))}
+        {/* 경고 줄은 감는다. 끝의 나이 꼬리가 44칸 도크에서 잘리지 않게 하기 위해서다. */}
         {warning !== null && (
-          <Text color="warning" wrap="truncate-end">
+          <Text color="warning" wrap="wrap">
             {warning}
           </Text>
         )}
@@ -347,4 +392,5 @@ export const register: Register = (on, options) => {
   })
 
   registerQuestionForm(on, options)
+  registerRemoteReply(on, options)
 }

@@ -625,9 +625,14 @@ fi
 # `CC_GATE_SOURCE_ONLY=1`, which runs no verb and writes no gate record. That
 # path line is dropped the same whole-line way, and the check after the scan
 # holds the claim it rests on — the only use of that path is a source-only read.
+#
+# The host-load sample counts the host's `claude` processes with `pgrep`, which
+# reads the process table and starts nothing; its one line is dropped the same
+# whole-line way.
 if grep -vE '^[[:space:]]*#' "$WATCH" \
    | grep -vxF '. "$WATCH_DIR/notify-run.sh"' \
    | grep -vxF '  local g="$WATCH_DIR/gate.sh" base' \
+   | grep -vxF '    out=$(pgrep -x claude 2>/dev/null); rc=$?' \
    | grep_all_q -E '\bclaude\b|run\.sh|gate\.sh'; then
   bad "재개 금지" "감시 스크립트가 무언가를 기동한다 — 두 번째 의사결정자가 생긴다"
 else
@@ -746,6 +751,64 @@ if [ -n "$hb2" ]; then
   ok "원장이 그대로여도 하트비트는 다시 쓰인다"
 else
   bad "하트비트 갱신" "mtime 을 읽지 못했다"
+fi
+
+# ---------------------------------------------------------------------------
+# Host-load sample — one JSONL line beside each heartbeat, nine fixed keys. The
+# sample never changes what the watcher does: a command that fails leaves a
+# `null`, and a write that fails leaves the heartbeat and the exit status alone.
+# ---------------------------------------------------------------------------
+HL_KEYS='["schema","at","load1","load5","load15","ncpu","claude_procs","runs","stages"]'
+if ! command -v jq >/dev/null 2>&1; then
+  skip "부하 표본" "jq 가 없다"
+else
+  HLD="$WORK/hl-ok"; mkdir -p "$HLD"
+  HLG="$WORK/hl-ok.md"; printf -- '- `run` | run-id=R1 | prev=x\n' > "$HLG"
+  bash "$WATCH" --run-dir "$HLD" --ledger "$HLG" --once >/dev/null 2>&1
+  check "부하 표본: 심박 한 번에 host-load.jsonl 한 줄" \
+    "$(grep -c . "$HLD/host-load.jsonl" 2>/dev/null || true)" "1"
+  check "부하 표본: 키 집합과 순서가 고정 9개이고 schema 가 1 이다" \
+    "$(jq -c '[keys_unsorted, .schema]' "$HLD/host-load.jsonl" 2>/dev/null)" "[$HL_KEYS,1]"
+  check "부하 표본: runs 는 자기 심박을 세고 stages 는 심박 줄의 스테이지 수다" \
+    "$(jq -r '"\(.runs >= 1) \(.stages)"' "$HLD/host-load.jsonl" 2>/dev/null)" \
+    "true $(sed -n 's/.*스테이지 \([0-9][0-9]*\)개.*/\1/p' "$HLD/watch.heartbeat")"
+  case "$(cat "$HLD/watch.heartbeat" 2>/dev/null)" in
+    *" 원장 "*"초 전 갱신 · 스테이지 "*"개 · 대기 승인 "*"건 · 비종단 세그먼트 "*"개 · 원장크기="*" · 마지막성장="*) \
+      ok "부하 표본: 심박 줄의 꼴은 그대로다" ;;
+    *) bad "부하 표본 심박 꼴" "$(cat "$HLD/watch.heartbeat" 2>/dev/null)" ;;
+  esac
+  bash "$WATCH" --run-dir "$HLD" --ledger "$HLG" --once >/dev/null 2>&1
+  check "부하 표본: 다음 회차는 줄을 덧붙인다" \
+    "$(grep -c . "$HLD/host-load.jsonl" 2>/dev/null || true)" "2"
+
+  # The reading commands fail. The Darwin branch is pinned through the seam so
+  # every leg reaches the commands the stubs replace.
+  mkdir -p "$WORK/hl-bin"
+  for c in sysctl pgrep getconf; do
+    printf '#!/usr/bin/env bash\nexit 2\n' > "$WORK/hl-bin/$c"; chmod +x "$WORK/hl-bin/$c"
+  done
+  HLF="$WORK/hl-fail"; mkdir -p "$HLF"
+  PATH="$WORK/hl-bin:$PATH" CC_WATCH_HOST_OS=Darwin \
+    bash "$WATCH" --run-dir "$HLF" --ledger "$HLG" --once >/dev/null 2>&1
+  check "부하 표본: 읽는 명령이 실패하면 그 필드가 null 이다" \
+    "$(jq -c '[.load1, .load5, .load15, .ncpu, .claude_procs]' "$HLF/host-load.jsonl" 2>/dev/null)" \
+    "[null,null,null,null,null]"
+  check "부하 표본: 읽기 실패에도 심박은 쓰인다" \
+    "$( [ -s "$HLF/watch.heartbeat" ] && printf yes || printf no )" "yes"
+
+  # The write itself fails: a directory sits where the file goes.
+  HLW="$WORK/hl-write"; mkdir -p "$HLW/host-load.jsonl"
+  printf 'stale\n' > "$HLW/watch.heartbeat"; touch -t 202001010000 "$HLW/watch.heartbeat"
+  hlw_err=$(bash "$WATCH" --run-dir "$HLW" --ledger "$HLG" --once 2>&1 >/dev/null); hlw_rc=$?
+  check "부하 표본: 쓰기가 실패해도 감시자는 정상 종료한다" "$hlw_rc" "0"
+  case "$(cat "$HLW/watch.heartbeat" 2>/dev/null)" in
+    *"스테이지"*) ok "부하 표본: 쓰기가 실패해도 심박은 갱신된다" ;;
+    *) bad "부하 표본 쓰기 실패 뒤 심박" "$(cat "$HLW/watch.heartbeat" 2>/dev/null)" ;;
+  esac
+  case "$hlw_err" in
+    *host-load*) bad "부하 표본 쓰기 실패 진단" "$hlw_err" ;;
+    *) ok "부하 표본: 쓰기 실패는 진단 출력을 남기지 않는다" ;;
+  esac
 fi
 
 # ---------------------------------------------------------------------------

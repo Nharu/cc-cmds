@@ -1039,8 +1039,10 @@ for pair in "리드:$AP_ROUTER" "교대:$RS_CORPUS"; do
     "#### Dispatching the audit stage|grep -qxF '**상태**: 동결됨' <문서>" \
     '#### Dispatching the audit stage|`<main worktree>-run-<run id>-<audit step id>` with `git worktree add --detach`' \
     '#### Dispatching the audit stage|do not write a `segment` row to name it' \
+    '#### Dispatching the audit stage|with `git worktree add --detach` at the tip of `refs/remotes/origin/<base branch>`, resolved after fetching that ref' \
     '#### Planning the segments|`슬라이싱`' \
-    '#### Planning the segments|git worktree add -b <슬라이싱 의 브랜치> <슬라이싱 의 워크트리> <베이스>' \
+    '#### Planning the segments|git worktree add -b <슬라이싱 의 브랜치> <슬라이싱 의 워크트리> <슬라이싱 의 베이스>' \
+    '#### Planning the segments|never a local branch name (`main`, `master`) or `HEAD` in its place' \
     '#### Planning the segments|--from-declaration' \
     '#### Planning the segments|-- 상태=계획됨 워크트리=<슬라이싱 의 워크트리>' \
     '#### Planning the segments|its predecessor'"'"'s `segments[]` entry reads `"착지": true`' \
@@ -1082,7 +1084,7 @@ for pair in "리드:$AP_ROUTER|### Proposing that the run is done" \
             "교대:$RS_CORPUS|### Settling the termination clauses and proposing done"; do
   who=${pair%%:*}; rest=${pair#*:}; file=${rest%%|*}; head=${rest#*|}
   sec=$(router_section "$file" "$head")
-  n1=$(printf '%s\n' "$sec" | grep -cF -- '--cutpoint 커밋 --surface 외부상태변경 --reach 협업' || true)
+  n1=$(printf '%s\n' "$sec" | grep -cF -- '--cutpoint 커밋 --surface 외부상태변경 -- 게시' || true)
   n2=$(printf '%s\n' "$sec" | grep -cF -- 'pulls/<n>/reviews' || true)
   if [ "${n1:-0}" != "0" ] && [ "${n2:-0}" != "0" ]; then
     ok "$who 사본의 「${head#'### '}」 절이 리뷰 게시 철자와 신고를 함께 싣는다"
@@ -1416,6 +1418,17 @@ check "수정 대상 조각: 공통 파일의 시작 조건이 두 조각을 모
 check "공통 fix-cycle 파일을 가리키는 파일은 두 무인 스킬뿐이다" \
   "$(cd "$repo_root" && grep -rl 'fix-cycle' plugins/cc-cmds/skills | LC_ALL=C sort | tr '\n' ' ')" \
   "plugins/cc-cmds/skills/implement-unattended/SKILL.md plugins/cc-cmds/skills/review-unattended/SKILL.md "
+iu_15a=$(grep -F -- '- **1.5a — Discovery & classification (read-only)**' "$IU" 2>/dev/null || true)
+for lit in \
+  'identical to the base skill, with one exception' \
+  'an item graded `반증됨(실패)` whose `반증 시 처리` reads `파킹`' \
+  '「A parking item the document already grades `반증됨(실패)`」'
+do
+  check "1.5a 의 종단 등급 건너뜀이 파킹 항목을 예외로 둔다: ${lit}" \
+    "$(printf '%s\n' "$iu_15a" | grep -cF -- "$lit" || true)" "1"
+done
+check "1.5a 가 가리키는 파킹 항목 정지 불릿이 있다" \
+  "$(grep -cF -- '- **A parking item the document already grades `반증됨(실패)` is not measured again.**' "$IU" || true)" "1"
 check "공통 fix-cycle 파일에 질문 면과 알림 면 문자열이 없다" \
   "$(grep -cE -- 'AskUserQuestion|question_form|EnterPlanMode|ExitPlanMode|PushNotification|notify\.sh|terminal-notifier' "$FC" 2>/dev/null || true)" "0"
 fc_copies=0
@@ -1490,6 +1503,8 @@ done
 check "두 사본의 구현 뒤 라우팅 절이 바이트 동일하다" "$in_sec_rs" "$in_sec_ap"
 check "리드 사본의 키 표가 implement_next[] 행을 싣는다" \
   "$(grep -c -- '^| `implement_next\[\]` |' "$AP_ROUTER" || true)" "1"
+check "리드 사본의 키 표가 refutation_next[] 행을 싣는다" \
+  "$(grep -c -- '^| `refutation_next\[\]` |' "$AP_ROUTER" || true)" "1"
 ha_sec=$(router_section "$RS_CORPUS" "#### Handing on a person's answer to a halt")
 for lit in \
   '| `빈-대상` | 7 |' \

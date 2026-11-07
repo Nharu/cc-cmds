@@ -2,12 +2,35 @@
 # run-stops.sh — the stop events of one settled run, derived from what the run
 # already recorded.
 #
-#   run-stops.sh <ledger> <run-dir> [--manifest <path>]
+#   run-stops.sh <ledger> <run-dir> [--manifest <path>] [--by-fix-site]
 #   run-stops.sh --vocab <table>
+#   run-stops.sh --predicate target-stop <ledger> <alias>
+#   run-stops.sh --predicate external-hold <ledger> <segment>
+#   run-stops.sh --predicate remeasure-refused <ledger> <segment> <R number>
 #
 # One line per event on stdout, tab-separated:
 #
 #   <서명> <TAB> <의도|비의도> <TAB> <제외 사유|-> <TAB> <표지|->
+#
+# With `--by-fix-site` the intended events are left out and every other event
+# is one line of five columns, deduplicated on all five:
+#
+#   <고칠 곳> <TAB> <판정 주체|-> <TAB> <서명> <TAB> <신원|-> <TAB> <신호 또는 근거|->
+#
+# The fix site is read, in this order, from the segment's park rows since its
+# last row in any other state (the last one carrying `고칠 곳`), the stop's
+# `blocked` row, the last `중단 답` row whose `중단 기록` names the stop's halt
+# record, and that halt record's `**관측 상세**`; found nowhere, it is
+# `판정 불가`. A stop whose identity is `-` skips the segment and the record.
+# Tabs and newlines in every column are written as one space.
+#
+# `--predicate` reads the ledger and writes nothing. It exits 0 and prints what
+# holds the stop when the predicate is true, and exits 1 when it is false:
+#   target-stop        the segment whose `park 적용=불명` row carries the target
+#                      defect signal for <alias> and is not yet settled
+#   external-hold      the line of the `라우팅=외부-보류` answer whose segment
+#                      park still holds
+#   remeasure-refused  that line, when the answer's `측정 등급` names <R number>
 #
 # `서명` is `<부류>/<사유>[/<종류>]` and every slot comes from a closed table
 # below; a value outside its table folds to `미분류` rather than being copied.
@@ -20,9 +43,15 @@
 # WHAT THIS DOES NOT DO, and each is a boundary rather than a gap. It never
 # calls `gh` and holds no credential: the gate is the only writer of an issue.
 # It writes nothing — not to the ledger, not to the run directory. And it reads
-# no free text: a reason, a question, a halt record's observation body are
-# never parsed, because a classification read off prose changes when the prose
-# does. The inputs are tokens the gate, the watcher and the driver wrote.
+# no free text: a reason or a question is never parsed, because a
+# classification read off prose changes when the prose does. Of a halt record's
+# `**관측 상세**` only one part is read: it is split on ` / `, and the first
+# part starting `고칠 곳=` that comes before the first part starting
+# `고칠 곳 근거=` gives the fix site. From that `고칠 곳 근거=` part to the end
+# is an excerpt, shown in the fifth column and never classified, so a
+# ` / 고칠 곳=<값>` inside it changes nothing; a value outside the closed set
+# reads `판정 불가`. The inputs are tokens the gate, the watcher and the driver
+# wrote.
 #
 # WHY A SEPARATE FILE. Every event class here can be pinned against a fixture
 # ledger without starting a gate, which is how `scripts/test-run-stops.sh`
@@ -99,9 +128,23 @@ PR
 머지
 배포
 머지후착수'
+# The prefix of an act-scope block the apply act writes for a target whose
+# apply is stopped. The alias follows it, so it is matched as a prefix.
+RUN_STOPS_ACT_STOP='대상 적용 정지'
+# The closed set of `고칠 곳`. `판정 불가` is also what a stop with no
+# judgment anywhere reads.
+RUN_STOPS_FIX_SITE='런
+대상 레포
+외부 서비스
+판정 불가'
+# The signal the apply supervisor stamps on a `park 적용=불명` row when the
+# command exited 0 and the probe still reads 「필요」.
+RUN_STOPS_TARGET_SIGNAL='종료 코드·사후 프로브 불일치'
 
 run_stops_vocab() {
   case "$1" in
+    act-stop)    printf '%s\n' "$RUN_STOPS_ACT_STOP" ;;
+    fix-site)    printf '%s\n' "$RUN_STOPS_FIX_SITE" ;;
     run-blocked) printf '%s\n' "$RUN_STOPS_RUN_BLOCKED" ;;
     stage)       printf '%s\n' "$RUN_STOPS_STAGE" ;;
     halt)        printf '%s\n' "$RUN_STOPS_HALT" ;;
@@ -128,15 +171,143 @@ run_stops_ceiling() {
   printf '%s' "$v"
 }
 
+# THE AWK FIELD READER the predicates share with the event pass: a field of a
+# `|`-separated ledger row, by key, trimmed.
+RUN_STOPS_AWK_FLD='
+    function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
+    function fld(k,   i, p) {
+      for (i = 2; i <= NF; i++) {
+        p = trim($i)
+        if (index(p, k "=") == 1) return substr(p, length(k) + 2)
+      }
+      return ""
+    }
+    function series_of(   r) {
+      if (!match($0, /^- `[^`]*`/)) return ""
+      return substr($0, 4, RLENGTH - 4)
+    }
+'
+
+run_stops_target_stop() {
+  # run_stops_target_stop <ledger> <alias> — the apply of <alias> is stopped.
+  # A `park 적용=불명` segment row naming the alias and carrying the target
+  # defect signal sets the stop for that segment. A later `완료` row of the
+  # same segment — the settlement's `완료 적용=정산`, or the completion after a
+  # rerun or a person's settlement — releases it, and so does a person's
+  # `세그먼트 park` answer for that segment. Prints the segments still holding
+  # it, in the order they were stopped; 0 when there is one, 1 when none.
+  local ledger="$1" alias="$2"
+  [ -n "$ledger" ] && [ -f "$ledger" ] && [ -n "$alias" ] || return 1
+  RS_ALIAS="$alias" RS_SIG="$RUN_STOPS_TARGET_SIGNAL" awk -F'|' "$RUN_STOPS_AWK_FLD"'
+    BEGIN { a = ENVIRON["RS_ALIAS"]; sig = ENVIRON["RS_SIG"] }
+    {
+      sr = series_of()
+      if (sr == "segment") {
+        s = fld("id"); st = fld("상태")
+        if (st == "park" && fld("적용") == "불명" && fld("판정 신호") == sig && fld("대상") == a) {
+          if (!(s in ORD)) { n++; ORD[s] = n; ID[n] = s }
+          HOLD[s] = 1
+        } else if (st == "완료" && (s in HOLD)) delete HOLD[s]
+      } else if (sr == "중단 답") {
+        s = fld("세그먼트")
+        if ((s in HOLD) && fld("선택지") == "세그먼트 park" && fld("답한 주체") == "사람") delete HOLD[s]
+      }
+    }
+    END {
+      for (i = 1; i <= n; i++) if (ID[i] in HOLD) { print ID[i]; hit = 1 }
+      exit hit ? 0 : 1
+    }
+  ' "$ledger"
+}
+
+run_stops_external_hold() {
+  # run_stops_external_hold <ledger> <segment> [<R number>] — the segment is
+  # parked on an answer the gate routed `외부-보류`. The hold is set by the
+  # segment's `park` row after such an answer, and released by a person's
+  # answer to the same halt record or by a `한도 해제` row after that park.
+  # Prints the ledger line of the answer and exits 0 while it holds. With an R
+  # number it holds only when that answer's `측정 등급` names the item.
+  local ledger="$1" seg="$2" rn="${3:-}"
+  [ -n "$ledger" ] && [ -f "$ledger" ] && [ -n "$seg" ] || return 1
+  RS_SEG="$seg" RS_RN="$rn" awk -F'|' "$RUN_STOPS_AWK_FLD"'
+    BEGIN { seg = ENVIRON["RS_SEG"]; rn = ENVIRON["RS_RN"] }
+    {
+      sr = series_of()
+      if (sr == "중단 답") {
+        if (fld("세그먼트") != seg) next
+        if (fld("라우팅") == "외부-보류") {
+          al = NR; arec = fld("중단 기록"); agr = fld("측정 등급"); held = 0
+        } else if (al && fld("답한 주체") == "사람" && fld("중단 기록") == arec) {
+          al = 0; held = 0
+        }
+      } else if (sr == "segment") {
+        if (fld("id") == seg && al && fld("상태") == "park") held = 1
+      } else if (sr == "한도 해제") {
+        if (held) { al = 0; held = 0 }
+      }
+    }
+    END {
+      if (!(al && held)) exit 1
+      if (rn != "") {
+        n = split(agr, G, ",")
+        for (i = 1; i <= n; i++) { g = G[i]; gsub(/^[ \t]+|[ \t]+$/, "", g); sub(/:.*/, "", g); if (g == rn) found = 1 }
+        if (!found) exit 1
+      }
+      print al
+      exit 0
+    }
+  ' "$ledger"
+}
+
+run_stops_predicate() {
+  # run_stops_predicate <kind> <args>... — the read-only predicate mode.
+  case "${1:-}" in
+    target-stop)       [ $# -eq 3 ] || { printf 'run-stops.sh: usage: --predicate target-stop <ledger> <alias>\n' >&2; return 2; }
+                       run_stops_target_stop "$2" "$3" ;;
+    external-hold)     [ $# -eq 3 ] || { printf 'run-stops.sh: usage: --predicate external-hold <ledger> <segment>\n' >&2; return 2; }
+                       run_stops_external_hold "$2" "$3" ;;
+    remeasure-refused) [ $# -eq 4 ] || { printf 'run-stops.sh: usage: --predicate remeasure-refused <ledger> <segment> <R number>\n' >&2; return 2; }
+                       [ -n "$4" ] || return 1
+                       run_stops_external_hold "$2" "$3" "$4" ;;
+    *) printf 'run-stops.sh: unknown predicate %s\n' "${1:-}" >&2; return 2 ;;
+  esac
+}
+
+run_stops_detail_fix() {
+  # run_stops_detail_fix <halt record> — `<고칠 곳>\t<발췌>` from the record's
+  # `**관측 상세**`, read by the boundary the header states; empty columns
+  # when it carries neither.
+  awk '
+    index($0, "**관측 상세**: ") == 1 {
+      rest = substr($0, length("**관측 상세**: ") + 1); fix = ""; ex = ""
+      while (rest != "") {
+        i = index(rest, " / ")
+        if (i) { part = substr(rest, 1, i - 1); nxt = substr(rest, i + 3) } else { part = rest; nxt = "" }
+        if (index(part, "고칠 곳 근거=") == 1) { ex = substr(rest, length("고칠 곳 근거=") + 1); break }
+        if (fix == "" && index(part, "고칠 곳=") == 1) fix = substr(part, length("고칠 곳=") + 1)
+        rest = nxt
+      }
+      sub(/^[ \t]+/, "", fix); sub(/[ \t]+$/, "", fix)
+      gsub(/\t/, " ", ex); gsub(/\t/, " ", fix)
+      printf "%s\t%s", fix, ex
+      exit
+    }
+  ' "$1" 2>/dev/null || true
+}
+
 run_stops_main() {
-  local ledger="" run_dir="" manifest="" halts shalts ceiling blocked f id cls tail
+  local ledger="" run_dir="" manifest="" halts shalts ceiling blocked f id cls tail byfix="" tstop="" a
   if [ "${1:-}" = "--vocab" ]; then
     run_stops_vocab "${2:-}"; return $?
+  fi
+  if [ "${1:-}" = "--predicate" ]; then
+    shift; run_stops_predicate "$@"; return $?
   fi
   ledger="${1:-}"; run_dir="${2:-}"; shift 2 2>/dev/null || true
   while [ $# -gt 0 ]; do
     case "$1" in
       --manifest) manifest="${2:-}"; shift 2 ;;
+      --by-fix-site) byfix=1; shift ;;
       *) printf 'run-stops.sh: unknown argument %s\n' "$1" >&2; return 2 ;;
     esac
   done
@@ -163,7 +334,7 @@ run_stops_main() {
       cls=$( { grep -m1 -E '^\*\*분류\*\*: ' "$f" 2>/dev/null || true; } \
              | sed 's/^\*\*분류\*\*: //; s/[[:space:]]*$//')
       [ -n "$cls" ] || continue
-      halts="${halts}$(printf '%s\t%s' "$id" "$cls")
+      halts="${halts}$(printf '%s\t%s\t%s' "$id" "$cls" "$(run_stops_detail_fix "$f")")
 "
     done
   fi
@@ -188,10 +359,23 @@ run_stops_main() {
       cls=$( { grep -m1 -E '^\*\*분류\*\*: ' "$f" 2>/dev/null || true; } \
              | sed 's/^\*\*분류\*\*: //; s/[[:space:]]*$//')
       [ -n "$cls" ] || continue
-      shalts="${shalts}$(printf '%s\t%s' "$id" "$cls")
+      shalts="${shalts}$(printf '%s\t%s\t%s' "$id" "$cls" "$(run_stops_detail_fix "$f")")
 "
     done
   fi
+
+  # TARGET STOPS STILL HOLDING: the act-scope `대상 적용 정지 <별칭>` blocks are
+  # read by alias, and an alias whose stop the predicate no longer reads as
+  # holding has its blocks left out.
+  while IFS= read -r a; do
+    [ -n "$a" ] || continue
+    run_stops_target_stop "$ledger" "$a" >/dev/null && tstop="${tstop}${a}
+"
+  done <<EOF
+$(RS_P="$RUN_STOPS_ACT_STOP " awk -F'|' "$RUN_STOPS_AWK_FLD"'
+    series_of() == "blocked" && fld("스코프") == "act" && index(fld("사유"), ENVIRON["RS_P"]) == 1 { print fld("대상") }
+  ' "$ledger" | sort -u)
+EOF
 
   # RUN-SCOPE BLOCKS: the ledger's unresolved ones, by the same fold every other
   # reader uses, plus the watcher observations not yet transcribed. The fold
@@ -214,22 +398,52 @@ $(cut -f2 "$run_dir/stall" 2>/dev/null || true)"
   RS_V_HA="$RUN_STOPS_HALT" RS_V_KI="$RUN_STOPS_KINDS" \
   RS_V_BO="$RUN_STOPS_BOUNDARY" RS_V_CE="$RUN_STOPS_INTENDED_CELLS" \
   RS_V_PA="$RUN_STOPS_PARK" RS_V_CU="$RUN_STOPS_CUTPOINTS" \
-  awk -F'|' '
-    function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
-    function fld(k,   i, p) {
-      for (i = 2; i <= NF; i++) {
-        p = trim($i)
-        if (index(p, k "=") == 1) return substr(p, length(k) + 2)
-      }
-      return ""
-    }
+  RS_V_FX="$RUN_STOPS_FIX_SITE" RS_V_AS="$RUN_STOPS_ACT_STOP " \
+  RS_BYFIX="$byfix" RS_TSTOP="$tstop" \
+  awk -F'|' "$RUN_STOPS_AWK_FLD"'
     function settab(name, src,   n, a, i) {
       n = split(src, a, "\n")
       for (i = 1; i <= n; i++) if (a[i] != "") T[name, a[i]] = 1
     }
     function inv(name, v) { return ((name, v) in T) }
     function kindof(k) { return inv("KI", k) ? k : "미분류" }
-    function emit(sig, judged, why, mark) {
+    # The halt record a `중단 기록` path names: its file name without `.md`,
+    # with `shift/` before it for a routing shift record, whose names can
+    # repeat a stage record name.
+    function reckey(p,   pre) {
+      pre = (index(p, "/halt/shift/") ? "shift/" : "")
+      sub(/.*\//, "", p); sub(/\.md$/, "", p)
+      return pre p
+    }
+    # The judgment a `blocked` row carries, kept under <k>; the last row wins.
+    function keepb(k) { BF[k] = fld("고칠 곳"); BJ[k] = fld("판정 주체"); BG[k] = fld("판정 신호"); BX[k] = fld("판정 근거") }
+    function pick(f, j, g, x) {
+      if (f == "") return 0
+      if (!inv("FX", f)) { FX = "판정 불가"; FJ = "-"; FV = "-"; return 1 }
+      FX = f; FJ = (j == "" ? "-" : j); FV = (x != "" ? x : (g != "" ? g : "-"))
+      return 1
+    }
+    # The fix site of one stop, in the four places the header names.
+    function fixsite(id, seg, rec, bk) {
+      if (id != "-" && seg != "" && (seg in PF) && pick(PF[seg], PJ[seg], PG[seg], PX[seg])) return
+      if (bk != "" && (bk in BF) && pick(BF[bk], BJ[bk], BG[bk], BX[bk])) return
+      if (rec != "" && (rec in QF) && pick(QF[rec], QJ[rec], QG[rec], QX[rec])) return
+      if (id != "-" && rec != "" && (rec in RF) && pick(RF[rec], "스테이지", "", RX[rec])) return
+      FX = "판정 불가"; FJ = "-"; FV = "-"
+    }
+    function tabless(s) { gsub(/[\t\n]/, " ", s); return s }
+    # emit(<서명>, <의도|비의도>, <제외 사유>, <표지>, <신원>, <세그먼트>,
+    # <중단 기록 키>, <blocked 키>) — the last four are read by --by-fix-site.
+    function emit(sig, judged, why, mark, id, seg, rec, bk,   line) {
+      if (byfix) {
+        if (judged == "의도") return
+        if (id == "") id = "-"
+        if (seg == "-" || !(seg in SEGST)) seg = ""
+        fixsite(id, seg, rec, bk)
+        line = tabless(FX) "\t" tabless(FJ) "\t" tabless(sig) "\t" tabless(id) "\t" tabless(FV)
+        if (!(line in OUT)) { OUT[line] = 1; print line }
+        return
+      }
       if (!((sig, judged, why, mark) in OUT)) {
         OUT[sig, judged, why, mark] = 1
         printf "%s\t%s\t%s\t%s\n", sig, judged, (why == "" ? "-" : why), (mark == "" ? "-" : mark)
@@ -240,6 +454,8 @@ $(cut -f2 "$run_dir/stall" 2>/dev/null || true)"
       settab("HA", ENVIRON["RS_V_HA"]); settab("KI", ENVIRON["RS_V_KI"])
       settab("BO", ENVIRON["RS_V_BO"]); settab("CE", ENVIRON["RS_V_CE"])
       settab("PA", ENVIRON["RS_V_PA"]); settab("CU", ENVIRON["RS_V_CU"])
+      settab("FX", ENVIRON["RS_V_FX"]); settab("TS", ENVIRON["RS_TSTOP"])
+      asp = ENVIRON["RS_V_AS"]; byfix = (ENVIRON["RS_BYFIX"] != "")
       halts = ENVIRON["RS_HALTS"]; shalts = ENVIRON["RS_SHALTS"]; blocked = ENVIRON["RS_BLOCKED"]; ceiling = ENVIRON["RS_CEILING"]
       nrc = 0; nsk = 0; lastshift = 0; b4end = 0; lastcost = ""
     }
@@ -274,10 +490,20 @@ $(cut -f2 "$run_dir/stall" 2>/dev/null || true)"
         AST[id] = fld("상태"); ADISP[id] = fld("처분 사유")
         c = fld("절단점"); if (c != "") ACUT[id] = c
         o = fld("연 자리"); if (o != "") AOPEN[id] = o
+      } else if (series == "중단 답") {
+        k = reckey(fld("중단 기록"))
+        QF[k] = fld("고칠 곳"); QJ[k] = fld("판정 주체"); QG[k] = fld("판정 신호"); QX[k] = fld("판정 근거")
       } else if (series == "blocked") {
         sc = fld("스코프"); rs = fld("사유")
+        if (sc == "run") keepb("R" SUBSEP rs)
         if (sc == "act") {
-          s = fld("세그먼트"); if (s != "" && s != "-") { ACTR[s] = rs; ACTC[s] = fld("도달 판정") }
+          s = fld("세그먼트"); if (s != "" && s != "-") { ACTR[s] = rs; ACTC[s] = fld("도달 판정"); keepb("A" SUBSEP s) }
+          # A target whose apply is stopped: the last such block per segment
+          # is one stop, whatever state the segment row is in.
+          if (index(rs, asp) == 1 && s != "" && s != "-") {
+            if (!(s in ASAL)) { ASN++; ASID[ASN] = s }
+            ASAL[s] = fld("대상"); keepb("T" SUBSEP s)
+          }
           st2 = fld("스테이지")
           if (rs == "도달 park" && st2 != "" && st2 != "-") PARKCELL[st2] = fld("도달 판정")
           # A routing shift runs with no stage id, so its reach park carries
@@ -295,6 +521,8 @@ $(cut -f2 "$run_dir/stall" 2>/dev/null || true)"
           # The last row per 사유 decides, as in every other fold: a later
           # `원인=해소` row of the same 사유 resolves it. An undecidable ancestry
           # row has no anchor; it names the two segments it could not measure.
+          if (fld("중단 기록") != "") keepb("S" SUBSEP reckey(fld("중단 기록")))
+          keepb("C" SUBSEP rs)
           if (!(rs in CONE)) { CN++; CID[CN] = rs }
           CONE[rs] = fld("원인"); CA[rs] = fld("앵커 세그먼트")
           CM[rs] = fld("구성원 세그먼트"); CS[rs] = fld("후보 세그먼트")
@@ -303,6 +531,13 @@ $(cut -f2 "$run_dir/stall" 2>/dev/null || true)"
         s = fld("id"); if (s == "") next
         if (!(s in SEGST)) { SN++; SID[SN] = s }
         st = fld("상태"); if (st != "") SEGST[s] = st
+        # The judgment of the current park run: a row in any other state ends
+        # the run and its judgment, and a park row without `고칠 곳` keeps the
+        # judgment an earlier row of the same run carried.
+        if (st != "" && st != "park") { PF[s] = ""; PJ[s] = ""; PG[s] = ""; PX[s] = "" }
+        else if (st == "park" && fld("고칠 곳") != "") {
+          PF[s] = fld("고칠 곳"); PJ[s] = fld("판정 주체"); PG[s] = fld("판정 신호"); PX[s] = fld("판정 근거")
+        }
       } else if (series == "cost") {
         v = fld("누적 usd"); if (v != "") lastcost = v
       }
@@ -312,15 +547,18 @@ $(cut -f2 "$run_dir/stall" 2>/dev/null || true)"
       n = split(blocked, B, "\n")
       for (i = 1; i <= n; i++) {
         r = trim(B[i]); if (r == "") continue
-        emit("run-blocked/" (inv("RB", r) ? r : "미분류"), "비의도")
+        emit("run-blocked/" (inv("RB", r) ? r : "미분류"), "비의도", "", "", "-", "", "", "R" SUBSEP r)
       }
       # stage: the last attempt of each segment·stage. Every end class but the
       # two that are no event is one; a class outside the table folds to 미분류.
       for (i = 1; i <= SRN; i++) {
         key = SRK[i]; cl = SR[key]
         if (cl == "" || cl == "정상 완료" || cl == "의도된 park") continue
-        emit("stage/" (inv("ST", cl) ? cl : "미분류") "/" kindof(SRKIND[key]), "비의도")
-        EV[SRSEG[key]] = 1; split(key, kp, SUBSEP); EV[kp[2]] = 1
+        split(key, kp, SUBSEP)
+        # A stage of no segment is named by its stage id.
+        sid = (SRSEG[key] != "" && SRSEG[key] != "-") ? SRSEG[key] : kp[2]
+        emit("stage/" (inv("ST", cl) ? cl : "미분류") "/" kindof(SRKIND[key]), "비의도", "", "", sid, SRSEG[key])
+        EV[SRSEG[key]] = 1; EV[kp[2]] = 1
       }
       # halt: a record, unless a later attempt of the same stage completed
       n = split(halts, H, "\n")
@@ -334,11 +572,12 @@ $(cut -f2 "$run_dir/stall" 2>/dev/null || true)"
         sig = "halt/" (inv("HA", cls) ? cls : "미분류") "/" k
         seg = (base in STGSEG) ? STGSEG[base] : base
         EV[seg] = 1; EV[base] = 1
+        RF[hid] = hp[3]; RX[hid] = hp[4]
         if (cls == "gate-unanswerable") {
-          if (!(hid in PARKCELL)) emit(sig, "비의도", "", "원인 셀 미결합")
+          if (!(hid in PARKCELL)) emit(sig, "비의도", "", "원인 셀 미결합", hid, seg, hid)
           else if (inv("CE", PARKCELL[hid])) emit(sig, "의도", "사전 인가 밖")
-          else emit(sig, "비의도")
-        } else emit(sig, "비의도")
+          else emit(sig, "비의도", "", "", hid, seg, hid)
+        } else emit(sig, "비의도", "", "", hid, seg, hid)
       }
       # shift halt: an unanswered one, of the segment it names. A record the
       # gate wrote at `도달 거부` is bound to the shift reach park before it,
@@ -350,11 +589,12 @@ $(cut -f2 "$run_dir/stall" 2>/dev/null || true)"
         seg = hid; sub(/#[0-9]+$/, "", seg)
         sig = "halt/" (inv("HA", cls) ? cls : "미분류") "/" ((seg in SEGKIND) ? kindof(SEGKIND[seg]) : "미분류")
         EV[seg] = 1
+        rk = "shift/" hid; RF[rk] = hp[3]; RX[rk] = hp[4]
         if (cls == "gate-unanswerable") {
-          if (!(hid in SHCELL)) emit(sig, "비의도", "", "원인 셀 미결합")
+          if (!(hid in SHCELL)) emit(sig, "비의도", "", "원인 셀 미결합", seg, seg, rk, "S" SUBSEP rk)
           else if (inv("CE", SHCELL[hid])) emit(sig, "의도", "사전 인가 밖")
-          else emit(sig, "비의도")
-        } else emit(sig, "비의도")
+          else emit(sig, "비의도", "", "", seg, seg, rk, "S" SUBSEP rk)
+        } else emit(sig, "비의도", "", "", seg, seg, rk, "S" SUBSEP rk)
       }
       # cone: only where no stage or halt event of a segment it names explains it
       for (i = 1; i <= CN; i++) {
@@ -362,7 +602,7 @@ $(cut -f2 "$run_dir/stall" 2>/dev/null || true)"
         if (CONE[rs] != "판정 불가") continue
         if ((CA[rs] != "" && (CA[rs] in EV)) || (CM[rs] != "" && (CM[rs] in EV)) \
             || (CS[rs] != "" && (CS[rs] in EV))) continue
-        emit("cone/판정 불가", "비의도")
+        emit("cone/판정 불가", "비의도", "", "", (CA[rs] != "" ? CA[rs] : "-"), CA[rs], "", "C" SUBSEP rs)
       }
       # run-end
       if ("무효화 종료" in RUNEND) emit("run-end/무효화 종료", "비의도")
@@ -379,7 +619,7 @@ $(cut -f2 "$run_dir/stall" 2>/dev/null || true)"
       for (i = 1; i <= nsk; i++) {
         s = SKS[i]
         if ((s in LAUNCH) && LAUNCH[s] > SKN[i]) continue
-        emit("stage-launch/기동 전제 실패/" ((s in SEGKIND) ? kindof(SEGKIND[s]) : "미분류"), "비의도")
+        emit("stage-launch/기동 전제 실패/" ((s in SEGKIND) ? kindof(SEGKIND[s]) : "미분류"), "비의도", "", "", s, s)
       }
       # approval: the ones still waiting
       for (i = 1; i <= AN; i++) {
@@ -401,17 +641,28 @@ $(cut -f2 "$run_dir/stall" 2>/dev/null || true)"
         } else if (inv("CU", c)) emit(sig, "의도", "사전 인가 밖")
         else emit(sig, "비의도")
       }
-      # park: a parked segment no stage or halt event explains
+      # act: a target whose apply is stopped, one stop per segment whatever
+      # the segment row says, while the stop of its alias still holds. The
+      # alias tail is not carried into the signature.
+      for (i = 1; i <= ASN; i++) {
+        s = ASID[i]
+        if (!inv("TS", ASAL[s])) continue
+        emit("act/대상 적용 정지", "비의도", "", "", s, s, "", "T" SUBSEP s)
+      }
+      # park: a parked segment no stage or halt event explains. A segment
+      # whose last act-scope block is a target stop belongs to the branch
+      # above.
       for (i = 1; i <= SN; i++) {
         s = SID[i]
         if (SEGST[s] != "park" || (s in EV)) continue
-        if (!(s in ACTR)) { emit("segment/park", "비의도"); continue }
+        if (!(s in ACTR)) { emit("segment/park", "비의도", "", "", s, s); continue }
         rs = ACTR[s]; cell = ACTC[s]
+        if (index(rs, asp) == 1) continue
         if (rs == "도달 park") {
           if (inv("CE", cell)) emit("park/" cell, "의도", "사전 인가 밖")
-          else emit("park/" (inv("PA", cell) ? cell : "미분류"), "비의도")
-        } else if (rs == "대상 미선언") emit("park/대상 미선언", "비의도")
-        else emit("park/미분류", "비의도")
+          else emit("park/" (inv("PA", cell) ? cell : "미분류"), "비의도", "", "", s, s, "", "A" SUBSEP s)
+        } else if (rs == "대상 미선언") emit("park/대상 미선언", "비의도", "", "", s, s, "", "A" SUBSEP s)
+        else emit("park/미분류", "비의도", "", "", s, s, "", "A" SUBSEP s)
       }
     }
   ' "$ledger"

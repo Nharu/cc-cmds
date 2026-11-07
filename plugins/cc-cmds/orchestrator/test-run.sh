@@ -2200,7 +2200,7 @@ check "다중 바이트 후행 글자: 한글 뒤" "$(slice_field "$SLI/mbtail.m
 check "id 로 끝나는 헤딩" "$(slice_field "$SLI/mbtail.md" G '선언 파일')" '`g.txt`'
 check "체크섬은 PR 이상 블록 수에서 파생된다" "$(slicing_pr_count "$SLI/tilde.md")" "1"
 sed 's|^\*\*선언 파일\*\*: .*$|**선언 파일**: `x/SKILL.md`|' "$SLI/tilde.md" > "$SLI/skillonly.md"
-check "SKILL.md 만 선언하면 필드 검사 실패" "$(slicing_branch "$SLI/skillonly.md" 2>/dev/null)" "선언불완전"
+check "SKILL.md 만 선언해도 필드 검사는 통과한다(README 선언은 설계 판단)" "$(slicing_branch "$SLI/skillonly.md" 2>/dev/null)" "선언통치"
 sed 's|^\*\*선언 파일\*\*: .*$|**선언 파일**: `x/SKILL.md`, `README.md`|' "$SLI/tilde.md" > "$SLI/skillreadme.md"
 check "SKILL.md + README.md 는 통과한다" "$(slicing_branch "$SLI/skillreadme.md")" "선언통치"
 
@@ -2466,8 +2466,10 @@ else
   bad "수렴 기록" "정상 완료 행이 없다"
 fi
 
-# (5) 사전 21 → 사후 21 — 적용 불명. 재시도 0회, 워크트리 보존, 사람 대조 표시.
-ap_manifest_codes "sh -c 'echo x >> $AP_CNT'" 0 21
+# (5) 사전 21 → 명령 exit 1 → 사후 21 — 적용 불명. 재시도 0회, 워크트리 보존, 사람
+# 대조 표시. 명령이 실패했으니 대상 결함 신호(exit 0 인데 사후가 「필요」)가 아니고,
+# 선언된 반경 정지가 그대로 선다.
+ap_manifest_codes "sh -c 'echo x >> $AP_CNT; exit 1'" 0 21
 : > "$LEDGER"; : > "$AP_CNT"; printf '21\n' > "$AP_ST"
 if apply_stage segA; then
   bad "적용 불명" "사후에도 변경이 남았는데 성공을 돌려줬다"
@@ -2495,6 +2497,64 @@ else
 fi
 check "park 이 선언된 폭발 반경을 싣는다" \
   "$(grep -c "폭발 반경 '레포'" "$LEDGER")" "1"
+check "명령이 실패한 적용 불명에는 고칠 곳이 없다" "$( { grep -c '고칠 곳=' "$LEDGER" || true; } )" "0"
+AP_WT="$(apply_worktree segA)"
+[ -d "$AP_WT" ] && ( cd "$AP_REPO" && git worktree remove --force "$AP_WT" >/dev/null 2>&1; git worktree prune >/dev/null 2>&1 )
+
+# (5e) 사전 21 → 명령 exit 0 → 사후 21 — 대상 결함. 명령은 끝났다고 하는데 대상은
+# 아무것도 바뀌지 않았다고 말한다. 반경이 `런` 이 아니고 다른 레포가 기대지 않으면
+# 반경 정지 대신 반환 코드 3 으로 그 대상의 적용만 멈추고, park 행이 게이트 판정
+# 세 필드를 싣는다. 같은 대상의 다음 적용은 명령 전에 act 스코프로 막힌다.
+ap_manifest_codes "sh -c 'echo x >> $AP_CNT'" 0 21
+: > "$LEDGER"; : > "$AP_CNT"; printf '21\n' > "$AP_ST"
+RUN_HALTED=0; rm -f "$RUN_DIR/halted-repo.txt" "$RUN_DIR/halted-segments.txt"
+ap_rc=0; apply_stage segA || ap_rc=$?
+check "대상 결함: 반환 코드 3 을 돌려준다" "$ap_rc" "3"
+check "대상 결함: 명령은 한 번 돈다" "$(grep -c . "$AP_CNT")" "1"
+check "대상 결함: segment park 행이 판정 세 필드와 대상 별칭을 싣는다" \
+  "$( { grep -F '`segment`' "$LEDGER" || true; } | tail -1 \
+      | grep -c '상태=park | 적용=불명 .*| 고칠 곳=대상 레포 | 판정 주체=게이트 | 판정 신호=종료 코드·사후 프로브 불일치 | 대상=only' || true)" "1"
+check "대상 결함: park 의 blocked 행이 12번째 인자로 판정 세 필드를 싣는다" \
+  "$( { grep -F '`blocked`' "$LEDGER" || true; } | tail -1 \
+      | grep -c '스코프=act | 원인=불명 .*| 고칠 곳=대상 레포 | 판정 주체=게이트 | 판정 신호=종료 코드·사후 프로브 불일치' || true)" "1"
+check "대상 결함: 런 스코프 막힘이 없다" "$( { grep -F '`blocked`' "$LEDGER" | grep -c '스코프=run' || true; } )" "0"
+check "대상 결함: 반경 정지를 기록하지 않는다" \
+  "$( [ -e "$RUN_DIR/halted-repo.txt" ] || [ -e "$RUN_DIR/halted-segments.txt" ] || [ "$RUN_HALTED" = 1 ] && echo 있다 || echo 없다 )" "없다"
+check "대상 결함: 정지 술어가 그 세그먼트를 낸다" "$(apply_target_stopped only)" "segA"
+: > "$AP_CNT"
+ap_rc=0; apply_stage segA || ap_rc=$?
+check "대상 정지: 같은 대상의 다음 적용도 반환 코드 3" "$ap_rc" "3"
+check "대상 정지: 명령 전에 막혀 명령이 돌지 않는다" "$(grep -c . "$AP_CNT")" "0"
+check "대상 정지: act 스코프 대상 적용 정지 막힘을 쓴다" \
+  "$( { grep -F '`blocked`' "$LEDGER" || true; } | tail -1 \
+      | grep -c '대상=only | 세그먼트=segA | 스코프=act | 원인=막힘 | 사유=대상 적용 정지 only' || true)" "1"
+ledger_row 'segment' 'id=segA' '상태=완료' '적용=정산'
+if apply_target_stopped only >/dev/null; then
+  bad "대상 정지 풀림" "완료 행 뒤에도 정지가 남았다"
+else
+  ok "대상 정지: 그 세그먼트의 완료 행이 정지를 푼다"
+fi
+check "드라이버 호출자: 반환 코드 3 은 세그먼트 반환 5 로 옮겨진다" \
+  "$(sed -n '/^segment_cycle()/,/^}/p' "$DRIVER" | grep -cF '[ "$arc" = "3" ] && return 5')" "1"
+check "드라이버 걷기: 반환 5 는 landed 가 아니라 parked 로 센다" \
+  "$(awk '/^      5\) # A target stop/{f=1} f && /parked=\$\(\(parked \+ 1\)\) ;;/{print "parked"; exit} f && /landed=/{print "landed"; exit}' "$DRIVER")" "parked"
+check "대상 결함: 반경 런이면 대상만 멈추지 않는다" "$(apply_target_only_stop segA 런 && echo 대상만 || echo 반경)" "반경"
+AP_WT="$(apply_worktree segA)"
+[ -d "$AP_WT" ] && ( cd "$AP_REPO" && git worktree remove --force "$AP_WT" >/dev/null 2>&1; git worktree prune >/dev/null 2>&1 )
+
+# (5f) 반경 `런` 이 선언된 대상 결함 — 반경 정지가 이긴다. 대상 정지 없이 예전처럼
+# 반환 1 로 반경 정지에 넘기고, park 행에 고칠 곳을 싣지 않는다.
+eval "ap_field_orig() $(declare -f apply_field | sed '1d')"
+apply_field() { if [ "$2" = '폭발 반경' ]; then printf '런'; else ap_field_orig "$@"; fi; }
+: > "$LEDGER"; : > "$AP_CNT"; printf '21\n' > "$AP_ST"
+ap_rc=0; apply_stage segA || ap_rc=$?
+check "반경 런 대상 결함: 반경 정지(반환 1)로 간다" "$ap_rc" "1"
+check "반경 런 대상 결함: park 이 반경 런을 싣는다" "$(grep -c "폭발 반경 '런'" "$LEDGER")" "1"
+check "반경 런 대상 결함: 고칠 곳 필드가 없다" "$( { grep -c '고칠 곳=' "$LEDGER" || true; } )" "0"
+eval "apply_field() $(declare -f ap_field_orig | sed '1d')"
+unset -f ap_field_orig
+AP_WT="$(apply_worktree segA)"
+[ -d "$AP_WT" ] && ( cd "$AP_REPO" && git worktree remove --force "$AP_WT" >/dev/null 2>&1; git worktree prune >/dev/null 2>&1 )
 
 # (5b) 처분 함수는 대응을 인자로 받는 순수 함수다. 기본 0/2 에서 옛 처분과 같고,
 # 다른 대응에서는 「불필요」·「필요」 코드로만 가른다. 사후 프로브도 같은 대응으로 읽는다.
@@ -3464,6 +3524,40 @@ MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""
 grep -v '^- `선행 착지`' "$MFROS" > "$MFROS.t" && mv "$MFROS.t" "$MFROS"
 check "선행 착지 행이 없으면 그 행을 얼리기 전과 같은 바이트다" \
   "$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)" "$bd_noros"
+
+# 구속 집합의 출처 티켓 행. 이 런의 PR 이 닫거나 참조할 이슈를 이 행이 정하므로 런
+# 도중 행을 덧붙일 수 있으면 사람이 지목하지 않은 이슈가 닫힌다. 그래서 다이제스트가
+# 움직여야 하고, 행이 없으면 0바이트여야 진행 중인 런이 부적합이 되지 않는다.
+printf -- '- `출처 티켓` | 트래커=github | 참조=Nharu/cc-cmds#7\n' >> "$MFROS"
+check "픽스처가 실제로 출처 티켓 행을 얻었다 (아래가 공허하지 않다)" \
+  "$(manifest_source_ticket_rows | grep -c .)" "1"
+bd_st=$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)
+if [ "$bd_st" = "$bd_noros" ]; then
+  bad "구속 집합 감도" "출처 티켓 행을 더했는데 다이제스트가 그대로다 — 런 도중 닫을 이슈를 바꿀 수 있다"
+else
+  ok "출처 티켓 행이 생기면 구속 다이제스트가 움직인다"
+fi
+check "구속 집합이 출처 티켓 행을 자기 접두로 싣는다" \
+  "$( { binding_set_bytes | grep -c '^srcticket' || true; } )" "1"
+manifest_snapshot_take
+check "메모 판독기가 파일 판독기와 같은 출처 티켓 행을 낸다" \
+  "$(manifest_source_ticket_rows)" "$(grep -E '^- `출처 티켓`' "$MFROS")"
+check "메모가 켜진 상태의 출처 티켓 다이제스트가 파일 판독과 같다" \
+  "$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)" "$bd_st"
+MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""
+MFST_DIG="$WORK/mf-st-digest.md"
+write_manifest "$MFST_DIG" "" "$bd_st"
+printf -- '- `출처 티켓` | 트래커=github | 참조=Nharu/cc-cmds#8\n' >> "$MFST_DIG"
+st_dig_out=$( ( MANIFEST="$MFST_DIG"; MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""; check_manifest ) 2>&1 ); st_dig_rc=$?
+case "$st_dig_rc/$st_dig_out" in
+  0/*) bad "구속 다이제스트 불일치" "얼린 뒤 바뀐 출처 티켓 행이 통과했다" ;;
+  *"구속 다이제스트가 얼린 집합과 일치하지 않습니다"*"베이스 설계·출처 티켓·세그먼트 입양"*)
+    ok "얼린 뒤 바뀐 출처 티켓 행은 구속 다이제스트에서 거부되고 문면이 그 행을 부른다" ;;
+  *) bad "구속 다이제스트 불일치" "$st_dig_out" ;;
+esac
+grep -v '^- `출처 티켓`' "$MFROS" > "$MFROS.t" && mv "$MFROS.t" "$MFROS"
+check "출처 티켓 행이 없으면 그 행을 얼리기 전과 같은 바이트다" \
+  "$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)" "$bd_noros"
 MANIFEST="$MANIFEST_SAVE21r"
 
 # --- 21c 설계 팔의 발화 조건과 재개 판별 — 팔을 태운다 ------------------------
@@ -3641,6 +3735,101 @@ for bp_row in '- `베이스 발행` | 트래커=clickup | 대상=900 | 원 티�
     0\ *) bad "원 티켓 형식 오류" "통과했다: $bp_row" ;;
     *"「베이스 발행」 행의 형식이 어긋났습니다"*"원 티켓=<task id>"*) ok "원 티켓 형식 오류는 행 형식 오류다 (${bp_row#*트래커=})" ;;
     *) bad "원 티켓 형식 오류" "$bp_r" ;;
+  esac
+done
+
+# 티켓 배달 런 — 그래프는 베이스 런과 같고 분할에서 끝난다. 절단점은 전 대상 커밋이고
+# 대상 맵 다이제스트가 대상 행을 덮으므로 그 값을 행과 함께 다시 잰다.
+TKD="$WORK/ticket-delivery"; mkdir -p "$TKD"
+TK_STEPS='"steps": [ { "id": "D1", "skill": "design", "summary": "s", "depends_on": [] }, { "id": "A1", "skill": "design-audit", "summary": "s", "depends_on": ["D1"] }, { "id": "S1", "skill": "split", "summary": "s", "depends_on": ["D1", "A1"] } ]'
+TK_HEAD='"design_required": true, "design_tier_judged": "team-4", "design_tier": "team-4", "design_heavy_reasons": ["세 티켓의 계약"], "estimated_files": 9'
+TK_PLAN="{ $TK_HEAD, \"design_scope\": \"single\", \"design_path\": \"solo-audit\", \"design_delivery\": \"tickets\", $TK_STEPS }"
+TK_PUB='- `베이스 발행` | 트래커=없음 | 대상=-'
+tk_manifest() {   # tk_manifest <출력> <계획 json> [절단점] — 대상 절단점과 그 다이제스트를 함께 맞춘다
+  local out="$1" plan="$2" cut="${3:-커밋}" trow tdig
+  write_manifest "$out" "" "" main "docs/x.md"
+  awk -v p="$plan" -v c="$cut" '
+    $0 == "{ \"steps\": [\"audit\", \"implement\"] }" { print p; next }
+    index($0, "- `target`") == 1 { sub(/절단점=머지/, "절단점=" c) }
+    { print }' "$out" > "$out.t" && mv "$out.t" "$out"
+  trow=$(grep -F -- '- `target`' "$out")
+  tdig=$(printf '%s\n' "$trow" | sed 's/[[:space:]]\{1,\}/ /g' | sort | shasum -a 256 | cut -d' ' -f1)
+  awk -v d="$tdig" 'index($0, "**대상 맵 다이제스트**:") == 1 { print "**대상 맵 다이제스트**: " d; next } { print }' "$out" > "$out.t" \
+    && mv "$out.t" "$out"
+}
+tk_verdict() {   # tk_verdict <매니페스트> — 「rc 마지막줄」
+  local out rc
+  out=$( ( MANIFEST="$1"; MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""; check_manifest ) 2>&1 ); rc=$?
+  printf '%s %s' "$rc" "$(printf '%s\n' "$out" | tail -1)"
+}
+tk_refused() {   # tk_refused <라벨> <매니페스트> <기대 문면>
+  local r; r=$(tk_verdict "$2")
+  case "$r" in
+    0\ *) bad "$1" "통과했다" ;;
+    *"$3"*) ok "$1" ;;
+    *) bad "$1" "$r" ;;
+  esac
+}
+MFTK="$TKD/ok.md"; tk_manifest "$MFTK" "$TK_PLAN"; printf '%s\n' "$TK_PUB" >> "$MFTK"
+check "티켓 배달 계획은 design_delivery 를 tickets 로, 범위를 single 로 읽는다" \
+  "$(MANIFEST="$MFTK"; MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""; manifest_design_delivery)/$(MANIFEST="$MFTK"; MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""; manifest_design_scope)" "tickets/single"
+tk_r=$(tk_verdict "$MFTK")
+case "$tk_r" in 0\ *) ok "티켓 배달 그래프와 베이스 발행 행 하나가 통과한다" ;; *) bad "티켓 배달 그래프" "$tk_r" ;; esac
+if ( MANIFEST="$MFTK"; MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""; manifest_split_run ); then
+  ok "티켓 배달 런은 분할에서 끝나는 런이다"
+else
+  bad "manifest_split_run" "티켓 배달 런을 분할 런으로 읽지 않았다"
+fi
+MFTK_NOKEY="$TKD/nokey.md"; write_manifest "$MFTK_NOKEY"
+check "키 없는 계획은 slices 로 읽고 분할 런이 아니다" \
+  "$(MANIFEST="$MFTK_NOKEY"; MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""; manifest_design_delivery)/$( (MANIFEST="$MFTK_NOKEY"; MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""; manifest_split_run) && echo 분할 || echo 아님)" "slices/아님"
+
+MFTK_NOPUB="$TKD/nopub.md"; tk_manifest "$MFTK_NOPUB" "$TK_PLAN"
+tk_refused "티켓 배달 런은 베이스 발행 행을 요구한다" "$MFTK_NOPUB" "design_delivery 가 tickets 인데 「베이스 발행」 행이 0개입니다"
+
+MFTK_G="$TKD/graph.md"; tk_manifest "$MFTK_G" "{ $TK_HEAD, \"design_scope\": \"single\", \"design_path\": \"solo-audit\", \"design_delivery\": \"tickets\", \"steps\": [ { \"id\": \"D1\", \"skill\": \"design\", \"summary\": \"s\", \"depends_on\": [] }, { \"id\": \"A1\", \"skill\": \"design-audit\", \"summary\": \"s\", \"depends_on\": [\"D1\"] }, { \"id\": \"I1\", \"skill\": \"implement\", \"summary\": \"s\", \"depends_on\": [\"D1\", \"A1\"] } ] }"
+printf '%s\n' "$TK_PUB" >> "$MFTK_G"
+tk_refused "분할로 끝나지 않는 티켓 배달 그래프는 거부된다" "$MFTK_G" "design_delivery 가 tickets 인 런의 단계 그래프는"
+
+MFTK_B="$TKD/base.md"; tk_manifest "$MFTK_B" "{ $TK_HEAD, \"design_scope\": \"base\", \"design_path\": \"none\", \"design_delivery\": \"tickets\", $TK_STEPS }"
+printf '%s\n' "$TK_PUB" >> "$MFTK_B"
+tk_refused "tickets 이면서 범위가 base 인 계획은 거부된다" "$MFTK_B" "design_delivery 가 tickets 인데 design_scope 가 base 입니다"
+
+MFTK_BD="$TKD/basedesign.md"; tk_manifest "$MFTK_BD" "$TK_PLAN"; printf '%s\n' "$TK_PUB" >> "$MFTK_BD"
+printf -- '- `베이스 설계` | 문서=docs/u.md | sha256=%064d | 티켓=T1\n' 0 >> "$MFTK_BD"
+tk_refused "베이스 설계 행이 있는 하위 런은 티켓 배달을 고르지 못한다" "$MFTK_BD" "하위 런은 티켓 배달을 고르지 않습니다"
+
+MFTK_C="$TKD/cut.md"; tk_manifest "$MFTK_C" "$TK_PLAN" 머지; printf '%s\n' "$TK_PUB" >> "$MFTK_C"
+tk_refused "절단점이 커밋이 아닌 대상은 거부된다" "$MFTK_C" "대상 home 의 절단점이 커밋이 아닙니다"
+
+MFTK_V="$TKD/value.md"; tk_manifest "$MFTK_V" "{ $TK_HEAD, \"design_scope\": \"single\", \"design_path\": \"solo-audit\", \"design_delivery\": \"chunks\", \"steps\": [ { \"id\": \"D1\", \"skill\": \"design\", \"summary\": \"s\", \"depends_on\": [] }, { \"id\": \"A1\", \"skill\": \"design-audit\", \"summary\": \"s\", \"depends_on\": [\"D1\"] }, { \"id\": \"I1\", \"skill\": \"implement\", \"summary\": \"s\", \"depends_on\": [\"D1\", \"A1\"] } ] }"
+tk_refused "목록 밖 design_delivery 값은 검사기에서 거부된다" "$MFTK_V" "(h) design_delivery 가 slices · tickets 중 하나가 아닙니다"
+
+# design_tier_judged 가 없어도 design_delivery 가 있으면 검사기가 돈다. 검사기가 돌지
+# 않으면 (h) 가 그 계획에는 공허하다.
+MFTK_NJ="$TKD/nojudged.md"; tk_manifest "$MFTK_NJ" "{ \"design_required\": true, \"design_tier\": \"team-4\", \"design_delivery\": \"tickets\", \"design_scope\": \"single\", $TK_STEPS }"
+printf '%s\n' "$TK_PUB" >> "$MFTK_NJ"
+tk_refused "판정 키 없이 design_delivery 만 있는 계획도 검사기를 지난다" "$MFTK_NJ" "(h) tickets 계획의 design_path 가"
+MFTK_NJS="$TKD/nojudged-slices.md"; tk_manifest "$MFTK_NJS" '{ "design_required": false, "design_delivery": "slices", "steps": ["audit", "implement"] }' 머지
+tk_r=$(tk_verdict "$MFTK_NJS")
+case "$tk_r" in 0\ *) ok "판정 키 없이 slices 만 있는 계획은 통과한다" ;; *) bad "판정 키 없는 slices 계획" "$tk_r" ;; esac
+
+# 출처 티켓 행의 형식. 값은 이 런의 PR 본문에 그대로 들어가므로 형식 밖은 킥오프에서 멈춘다.
+st_check() {   # st_check <행> — 「rc 마지막줄」
+  local m="$TKD/st.md"
+  write_manifest "$m"; printf '%s\n' "$1" >> "$m"
+  tk_verdict "$m"
+}
+for st_row in '- `출처 티켓` | 트래커=github | 참조=Nharu/cc-cmds#12' '- `출처 티켓` | 트래커=clickup | 참조=https://app.clickup.com/t/86ab'; do
+  st_r=$(st_check "$st_row")
+  case "$st_r" in 0\ *) ok "출처 티켓 행이 통과한다 (${st_row#*트래커=})" ;; *) bad "출처 티켓 행" "$st_r" ;; esac
+done
+for st_row in '- `출처 티켓` | 트래커=github | 참조=cc-cmds#12' '- `출처 티켓` | 트래커=github | 참조=Nharu/cc-cmds' '- `출처 티켓` | 트래커=clickup | 참조=86ab' '- `출처 티켓` | 트래커=jira | 참조=X-1' '- `출처 티켓` | 참조=Nharu/cc-cmds#12 | 트래커=github'; do
+  st_r=$(st_check "$st_row")
+  case "$st_r" in
+    0\ *) bad "출처 티켓 형식 오류" "통과했다: $st_row" ;;
+    *"「출처 티켓」 행의 형식이 어긋났습니다"*) ok "출처 티켓 형식 오류가 거부된다 (${st_row#*| })" ;;
+    *) bad "출처 티켓 형식 오류" "$st_r" ;;
   esac
 done
 

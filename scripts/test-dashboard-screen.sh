@@ -554,7 +554,36 @@ async function baseFilterCases() {
   report("선택이 풀리면 빠진 레포의 필터를 비운다", lastURL().includes("base=&") && !!c.link("/run/plain-run"), true);
 }
 
-listCases().then(detailCases).then(endedHoldCases).then(baseFilterCases).catch((e) => { console.error(e && e.stack || e); process.exit(1); });
+// A waiting run hidden for a dead seat sits in the abandoned group under its own
+// state, and the hidden count splits the abandoned runs from the seatless ones.
+async function seatCases() {
+  const gone = (id, state) => ({
+    id, goal: "목표 " + id, attention: "dead", hidden: true, state, seat_active: false, last_growth: 1793690000,
+    elapsed_s: 60, base: "/a", seg: {}, cost_usd: 1, waiting: [], prs: [],
+  });
+  const c = await boot("/", (url) => {
+    const dead = new URL(url, "http://stub").searchParams.get("dead") === "1";
+    return {
+      tz_offset_s: 32400, tz_label: "KST", generated_at: 1793700000, today: "2026-11-04",
+      runs: dead ? [gone("noseat-run", "승인대기"), gone("gone-run", "버려짐")] : [],
+      totals: {}, bases: ["/a"], hidden: dead ? 0 : 3, hidden_no_seat: dead ? 0 : 2, hidden_experiment: 0,
+    };
+  });
+  const byId = (id) => { let hit = null; c.app.walk((n) => { if (!hit && n.getAttribute("id") === id) hit = n; }); return hit; };
+  const text = () => c.app.textContent;
+  report("숨긴 수 문구가 버려짐과 세션 없음으로 나뉜다", text().includes("숨긴 런 3 — 실험 0 · 버려짐 1 · 세션 없음 2"), true);
+  report("빈 목록 안내가 세션 없는 대기 런을 따로 센다", text().includes("버려진 런 1건 · 세션 없는 대기 런 2건이 있습니다."), true);
+  c.app.querySelectorAll("button").find((b) => b.getAttribute("data-fk") === "dead").fire("click");
+  await c.settle();
+  const noSeat = byId("run-noseat-run"), abandoned = byId("run-gone-run");
+  report("숨김을 풀면 좌석 없는 대기 런이 버려진 런 묶음에 있다", !!noSeat && byId("g-gone").contains(noSeat), true);
+  report("그 행은 제 상태를 표지로 달고 버려짐을 달지 않는다", !!noSeat && noSeat.textContent.includes("승인대기") && !noSeat.textContent.includes("버려짐"), true);
+  report("그 행에 활성 세션 없음이 붙는다", !!noSeat && noSeat.textContent.includes("활성 세션 없음"), true);
+  report("버려진 행은 버려짐 표지이고 활성 세션 없음이 붙지 않는다", !!abandoned && abandoned.textContent.includes("버려짐") && !abandoned.textContent.includes("활성 세션 없음"), true);
+  report("버려진 런 묶음의 부제가 좌석 없는 대기 런을 말한다", text().includes("버려졌거나 활성 세션 없이 기다리는 런"), true);
+}
+
+listCases().then(detailCases).then(endedHoldCases).then(baseFilterCases).then(seatCases).catch((e) => { console.error(e && e.stack || e); process.exit(1); });
 JS
 
 if command -v node >/dev/null 2>&1; then

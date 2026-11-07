@@ -23,7 +23,8 @@
 #     component runs last, so a recipe that stopped early or ignored the last
 #     status would pass on it.
 #   - Last, the targets that put the bundle in front of a push: `check-push`,
-#     `check-push-verify` and the self-test that `test` and `test-rest` run.
+#     `check-push-verify`, `check-items` (one call, not in `check`) and the
+#     self-tests that `test` and `test-rest` run.
 #     Only the Makefile wiring is asserted. The instruction to run them lives in
 #     the repository CLAUDE.md, which is not tracked, so CI and the clone
 #     `check-push` builds have no copy of it to read.
@@ -212,6 +213,16 @@ for v in CHECK_PUSH_SECTIONS=x CHECK_PUSH_GOALS=x; do
 done
 dry=$(cd "$repo_root" && make -n check-push-verify 2>&1)
 if [ "$(printf '%s\n' "$dry" | grep -cxF 'bash scripts/check-push.sh verify' || true)" -ge 1 ]; then ok "make check-push-verify 가 check-push.sh verify 를 부른다"; else bad "check-push-verify 타깃" "$dry"; fi
+# check-items records passes and nothing else, so it is exactly one call, takes
+# its goals the way check-push does, and stays out of `check`.
+for v in "" CHECK_PUSH_GOALS=x; do
+  dry=$(cd "$repo_root" && MAKEFLAGS='' MFLAGS='' MAKELEVEL='' make -n check-items ${v:+"$v"} 2>&1)
+  if [ "$dry" = "bash scripts/check-push.sh items" ]; then ok "make -n check-items ${v:+$v }이 정확히 check-push.sh items 를 찍는다"; else bad "check-items 타깃 (${v:-변수 없음})" "$dry"; fi
+done
+case "$check_line" in
+  *check-items*) bad "check 타깃" "check 가 check-items 를 선행으로 둔다: $check_line" ;;
+  *) ok "check-items 는 make check 에 들어가지 않는다" ;;
+esac
 # The prerequisites are read from make's own database rather than the file: a
 # rule may name them through a variable (`test-rest: $(REST_GOALS)`), and the
 # database prints the list with every variable expanded, on one line.
@@ -225,6 +236,10 @@ for t in test test-rest; do
   case "$tline" in
     *run-test-tree-selftest*) ok "$t 가 test-tree 자가 시험을 선행으로 둔다" ;;
     *) bad "$t 선행" "run-test-tree-selftest 가 없다: $tline" ;;
+  esac
+  case "$tline" in
+    *run-test-reuse-selftest*) ok "$t 가 test-reuse 자가 시험을 선행으로 둔다" ;;
+    *) bad "$t 선행" "run-test-reuse-selftest 가 없다: $tline" ;;
   esac
 done
 

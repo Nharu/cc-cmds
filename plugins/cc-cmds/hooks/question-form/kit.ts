@@ -36,7 +36,21 @@ export function world(on: On, options: WorldOptions = {}) {
     // 훅들이 엔진 스크롤로 넘긴 입력. 순서대로 쌓는다.
     engineScrolls: [] as { by: number; origin?: { kind: string }; pointer?: unknown }[],
   }
-  mock.env(on, { CC_PIPELINE_SEGMENT: '', CC_PIPELINE_STAGE_ID: '', CC_PIPELINE_SHIFT_ID: '', CC_PIPELINE_RUN_ID: '', CC_PIPELINE_REENTRY: '', ...options.env })
+  // HOME·XDG_STATE_HOME 은 없는 경로로 고정해, 같은 진입으로 실리는 원격 답 모드가 이
+  // 세계에서 잠든 채로 있게 한다(스풀 루트를 찾지 못하면 프로세스를 띄우지 않는다).
+  mock.env(on, {
+    HOME: '/nonexistent/home',
+    XDG_STATE_HOME: '/nonexistent/state',
+    CC_PIPELINE_SEGMENT: '',
+    CC_PIPELINE_STAGE_ID: '',
+    CC_PIPELINE_SHIFT_ID: '',
+    CC_PIPELINE_RUN_ID: '',
+    CC_PIPELINE_REENTRY: '',
+    ...options.env,
+  })
+  on('fs.list', () => {
+    throw Object.assign(new Error('ENOENT: no such file or directory'), { code: 'ENOENT' })
+  })
   const clock = mock.clock(on, { now: options.now ?? 1_000_000 })
   mock.store(on, options.store ?? {})
   // 이벤트는 결과를 그대로 돌려준다.
