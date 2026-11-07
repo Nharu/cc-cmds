@@ -607,6 +607,28 @@ tr_g_lent() {
   check "$lb: pin_lane 없는 요청의 문맥 seat 는 오늘과 같다" "$(route_gather_context "$(tr_req)" /seat 2>/dev/null | jq -c '.seat')" '{"config_dir":"/seat"}'
   check "$lb: 빈 pin_lane 은 고정이 아니다" \
     "$(route_gather_context "$(tr_req | jq -c '. + {pin_lane: ""}')" /seat 2>/dev/null | jq -c '.seat')" '{"config_dir":"/seat"}'
+  # 고정의 출처. 요청의 `pin_lane` 과 함께 온 `host`·`run-record` 만 `seat.pin_source` 가
+  # 되고, 다른 값이나 `pin_lane` 없는 요청, `fleet-lane` 에서 얻은 고정에는 출처가 없다.
+  local row
+  for row in '{"pin_lane":" a ","pin_source":"host"}|host' '{"pin_lane":"a","pin_source":"run-record"}|run-record' \
+             '{"pin_lane":"a","pin_source":"seat"}|' '{"pin_source":"host"}|' '{"pin_lane":" ","pin_source":"host"}|' \
+             '{"pin_lane":"a"}|' 'not-json|'; do
+    check "$lb: route__pin_source_of ${row%|*} → '${row##*|}'" "$(route__pin_source_of "${row%|*}")" "${row##*|}"
+  done
+  check "$lb: pin_lane·pin_source host → seat.pin_source" \
+    "$(route_gather_context "$(printf '%s' "$preq" | jq -c '. + {pin_source: "host"}')" /seat 2>/dev/null | jq -c '.seat')" \
+    '{"config_dir":"/seat","lane":"cc","pin_source":"host"}'
+  check "$lb: pin_lane·pin_source run-record → seat.pin_source" \
+    "$(route_gather_context "$(printf '%s' "$preq" | jq -c '. + {pin_source: "run-record"}')" /seat 2>/dev/null | jq -c '.seat')" \
+    '{"config_dir":"/seat","lane":"cc","pin_source":"run-record"}'
+  check "$lb: 알 수 없는 pin_source 는 싣지 않는다" \
+    "$(route_gather_context "$(printf '%s' "$preq" | jq -c '. + {pin_source: "seat"}')" /seat 2>/dev/null | jq -c '.seat')" \
+    '{"config_dir":"/seat","lane":"cc"}'
+  printf 'cc\n' > "$RUN_DIR/fleet-lane"
+  check "$lb: fleet-lane 고정은 pin_source 가 있어도 출처가 없다" \
+    "$(route_gather_context "$(tr_req | jq -c '. + {pin_source: "host"}')" /seat 2>/dev/null | jq -c '.seat')" \
+    '{"config_dir":"/seat","lane":"cc"}'
+  rm -f "$RUN_DIR/fleet-lane"
   expect "$lb: pin_lane·가드 1·고정 계정 없는 인벤토리 → PARK lent-seat-unrouted" \
     "$(route__resolve_as 1 "$(tr_req | jq -c '. + {pin_lane: "zz"}')" 2>/dev/null)" \
     '.verdict == "PARK" and .reason == "lent-seat-unrouted" and .account == "zz" and (.recovery | contains("인벤토리에 없다"))'
@@ -3432,6 +3454,145 @@ for f in 'REQ({nonce: "n-r1-S1"})|같은 nonce' '.|nonce 없는 멱등'; do
   check "발행-거래: 창 하나 미상의 ${f#*|} 유지 뒤 임대 유지" "$(count_files "$d")" 1
 done
 
+# ===========================================================================
+# 고정 계정의 이관. 이관 가능(`request.migratable`)을 싣고 고정에 출처(`seat.pin_source`)가
+# 있는 요청만 이관 판정에 든다. `MIG` 는 발행 행 p 의 사람 고정, `RREC` 는 무인 계정 a 에
+# 런 기록으로 이어진 이관 고정이다. 발행 행이 주간 예비분 상한(9800)에 닿았거나 주간 창
+# 때문에 소진됐으면, 정책을 통과하고 사용량이 신선하며 주간 창을 알고 그 사용량이 상한
+# 아래인 다른 무인 계정 가운데 입장을 통과한 쪽으로 옮긴다. 이관 고정은 주간 창 술어에서만
+# 다시 옮기고, 그 밖에는 고정 계정 하나를 보통 무인 계정의 입장 규칙으로 판정한다. 이 절의
+# 사례는 고정 입장 판정 집계에 넣지 않는다 — 이관 고정은 방 수로 기다릴 수 있다.
+# ===========================================================================
+MJ="$PJ"'
+  def MIG: REQ({migratable: true}) | .seat.pin_source = "host";
+  def RREC: REQ({migratable: true}) | .seat.lane = "a" | .seat.pin_source = "run-record";
+  def AX(f): .usage.accounts |= map(if .id == "a" then f else . end);
+  def AINV(f): .inventory.accounts |= map(if .id == "a" then f else . end);
+  def MB($u5; $u7): .inventory.accounts += [A("b")] | .usage.accounts += [UA("b"; $u5; $u7)];'
+mg() { printf '.verdict == "GRANT" and .account == "%s" and .migrated == {from: "%s", to: "%s", why: "%s"}' "$2" "$1" "$2" "$3"; }
+NOFRESH='(has("fresh") | not)'
+NOMIG='(has("migrated") | not)'
+# 이관이 드는 다섯 사건. 재개만 새 세션이다.
+expect "이관: 발행 행 reserve 의 첫 요청 → GRANT a, 이관 칸" "$(decide "$MJ OPEN | PUB(0.98) | MIG")" \
+  "$(mg p a reserve) and .basis == \"first\" and $NOFRESH and .txn.op == \"write\""
+for ev in limit-reclaim first-reject crash-retry hollow-retry; do
+  expect "이관: 발행 행 reserve·죽은 p 임대의 $ev → GRANT a, fresh 없음" \
+    "$(decide "$MJ OPEN | PUB(0.98) | LIVE(\"p\"; false) | REQ({event: \"$ev\"}) | MIG")" "$(mg p a reserve) and $NOFRESH"
+  expect "이관 대조: 이관 가능 없는 $ev 는 지금 그대로 PARK reserve" \
+    "$(decide "$MJ OPEN | PUB(0.98) | LIVE(\"p\"; false) | REQ({event: \"$ev\"}) | .seat.pin_source = \"host\"")" "$(ppb reserve)"
+done
+expect "이관: 발행 행 reserve·죽은 p 임대의 resume → GRANT a, fresh, resume-bound" \
+  "$(decide "$MJ OPEN | PUB(0.98) | LIVE(\"p\"; false) | RSM(\"p\") | MIG")" \
+  "$(mg p a reserve) and .fresh == true and .basis == \"resume-bound\""
+# 첫 줄(새 기동) × 원인.
+expect "이관 표 첫 줄: 주간 소진 → GRANT a, 원인 exhausted" "$(decide "$MJ OPEN | PUB(1.0) | MIG")" "$(mg p a exhausted) and $NOFRESH"
+expect "이관 표 첫 줄: 5시간 소진 + 주간 0.99 → GRANT a, 원인 exhausted" \
+  "$(decide "$MJ OPEN | PUB(0.99) | PX(.windows.five_hour.utilization = 1.0) | MIG")" "$(mg p a exhausted)"
+out=$(decide "$MJ OPEN | PUB(0.5) | PX(.windows.five_hour.utilization = 1.0) | MIG")
+expect "이관 표 첫 줄: 5시간만 소진 → 이관 아닌 WAIT group-exhausted, 5시간 리셋 시각" "$out" \
+  ".verdict == \"WAIT\" and .reason == \"group-exhausted\" and .until_epoch == $((NOW + 3600))"
+expect "이관 대조: 5시간만 소진·이관 가능 없음 → PARK exhausted" \
+  "$(decide "$MJ OPEN | PUB(0.5) | PX(.windows.five_hour.utilization = 1.0)")" "$(ppb exhausted)"
+for row in 'logged-out|PX(.login = "expired")' 'mismatch|PX(.config_dir = "/h/.claude-q")' \
+           'usage-stale|.usage.written_at_epoch = ($now - 1000)' 'window-unknown|OLD7'; do
+  expect "이관 표 첫 줄: 발행 행 ${row%%|*} → 지금 그대로 PARK" "$(decide "$MJ OPEN | PUB(0.98) | ${row#*|} | MIG")" "$(ppb "${row%%|*}")"
+done
+expect "이관 표 첫 줄: 발행 행 사용량 행 없음 → 지금 그대로 PARK" "$(decide "$MJ OPEN | PUB0 | MIG")" "$(ppb usage-row-missing)"
+expect "이관 표 첫 줄: 주간 0.5 → 이관 없이 GRANT p" "$(decide "$MJ OPEN | PUB(0.5) | MIG")" "$PG and $NOMIG"
+# 이관 고정의 첫 줄.
+expect "이관 고정: 상한 아래·입장 통과 → GRANT a, 이관 칸 없음" "$(decide "$MJ OPEN | RREC")" \
+  '.verdict == "GRANT" and .account == "a" and .basis == "first" and (has("migrated") | not) and (has("fresh") | not)'
+out=$(decide "$MJ UBLK | RREC")
+expect "이관 고정: 5시간 막힘 → pinned-lend-blocked 아닌 WAIT no-room, 계정 a 의 그룹" "$out" \
+  '.verdict == "WAIT" and .reason == "no-room" and (.until_epoch | type) == "number"'
+expect "이관 고정: FIFO 대기 항목 → WAIT fifo-yield" "$(decide "$MJ OPEN | RREC | ITEMS([LR(\"r9\"; \"S9\"; \"a\"; \"wait\"; null; true; 1)])")" \
+  '.verdict == "WAIT" and .reason == "fifo-yield"'
+expect "이관 고정: 로그인 끊김 → PARK resume-logged-out" "$(decide "$MJ OPEN | RREC | AX(.login = \"expired\")")" \
+  '.verdict == "PARK" and .reason == "resume-logged-out" and .account == "a"'
+expect "이관 고정: 디렉터리 불일치 → PARK pinned-lane-ineligible(mismatch)" "$(decide "$MJ OPEN | RREC | AX(.config_dir = \"/h/.claude-q\")")" \
+  '.verdict == "PARK" and .reason == "pinned-lane-ineligible" and .account == "a" and .why == "mismatch" and (.recovery | contains("a"))'
+expect "이관 고정: 무인 켜짐 아님 → PARK pinned-lane-ineligible(unattended-off)" "$(decide "$MJ OPEN | RREC | AINV(.unattended = \"disabled\")")" \
+  '.verdict == "PARK" and .reason == "pinned-lane-ineligible" and .account == "a" and .why == "unattended-off"'
+expect "이관 고정: 그룹 예약 → PARK pinned-lane-ineligible(group-reserved)" \
+  "$(decide "$MJ OPEN | RREC | AX(. + {org_hash: \"h\"}) | CCX(. + {org_hash: \"h\"})")" \
+  '.verdict == "PARK" and .reason == "pinned-lane-ineligible" and .account == "a" and .why == "group-reserved"'
+expect "이관 고정: 차용 중만 → WAIT resume-bound-borrowed" "$(decide "$MJ OPEN | RREC | LEND(\"a\")")" \
+  '.verdict == "WAIT" and .reason == "resume-bound-borrowed" and .account == "a"'
+expect "이관 고정: 주간 0.99 → b 로 다시 이관, 원인 cap" "$(decide "$MJ OPEN | RREC | AX(.windows.seven_day.utilization = 0.99) | MB(0.1; 0.2)")" \
+  "$(mg a b cap) and $NOFRESH"
+expect "이관 고정: 주간 소진 → b 로 다시 이관, 원인 exhausted" "$(decide "$MJ OPEN | RREC | AX(.windows.seven_day.utilization = 1.0) | MB(0.1; 0.2)")" \
+  "$(mg a b exhausted)"
+expect "이관 고정: 주간 0.99·다른 후보 없음 → 현재 고정 계정은 후보 아님, PARK no-successor" \
+  "$(decide "$MJ OPEN | RREC | AX(.windows.seven_day.utilization = 0.99)")" \
+  '.verdict == "PARK" and .reason == "pinned-publish-no-successor" and .account == "a" and .why == "cap"'
+expect "이관 고정 대조: 이관 가능 없는 run-record 고정 → 지금 그대로 PARK pinned-lane-ineligible" \
+  "$(decide "$MJ OPEN | .seat.lane = \"a\" | .seat.pin_source = \"run-record\"")" '.verdict == "PARK" and .reason == "pinned-lane-ineligible"'
+expect "이관 고정 대조: 출처 없는 이관 가능 고정 → 지금 그대로 PARK pinned-lane-ineligible" \
+  "$(decide "$MJ OPEN | .seat.lane = \"a\" | REQ({migratable: true})")" '.verdict == "PARK" and .reason == "pinned-lane-ineligible"'
+# 둘째 줄(살아 있는 임대의 재개).
+expect "이관 표 둘째 줄: 살아 있는 p 임대 + reserve → 이관 없이 GRANT p resume-bound" \
+  "$(decide "$MJ OPEN | PUB(0.99) | LIVE(\"p\"; true) | REQ({event: \"resume\"}) | MIG")" "$PG and .basis == \"resume-bound\" and $NOMIG"
+expect "이관 표 둘째 줄: 살아 있는 p 임대 + 주간 소진 → 지금 그대로 PARK exhausted" \
+  "$(decide "$MJ OPEN | PUB(1.0) | LIVE(\"p\"; true) | REQ({event: \"resume\"}) | MIG")" "$(ppb exhausted)"
+expect "이관 표 둘째 줄: 이관 고정의 살아 있는 a 임대 + 주간 소진 → WAIT resume-bound-exhausted" \
+  "$(decide "$MJ OPEN | RREC | LIVE(\"a\"; true) | REQ({event: \"resume\"}) | AX(.windows.seven_day.utilization = 1.0) | MB(0.1; 0.2)")" \
+  '.verdict == "WAIT" and .reason == "resume-bound-exhausted" and .account == "a"'
+expect "이관 표 둘째 줄: 이관 고정의 살아 있는 a 임대 + 5시간 막힘 → GRANT a 유지" \
+  "$(decide "$MJ UBLK | RREC | LIVE(\"a\"; true) | REQ({event: \"resume\"})")" \
+  '.verdict == "GRANT" and .account == "a" and .basis == "resume-bound" and (has("fresh") | not)'
+expect "이관 표 둘째 줄: 이관 고정의 살아 있는 a 임대 + 로그인 끊김 → PARK resume-logged-out" \
+  "$(decide "$MJ OPEN | RREC | LIVE(\"a\"; true) | REQ({event: \"resume\"}) | AX(.login = \"expired\")")" \
+  '.verdict == "PARK" and .reason == "resume-logged-out"'
+# 셋째 줄(살아 있는 임대의 첫 요청 멱등과 crash-retry/hollow-retry).
+for f in 'REQ({event: "crash-retry"})|sticky' 'REQ({event: "hollow-retry"})|sticky' 'REQ({nonce: "n-r1-S1"})|first'; do
+  expect "이관 표 셋째 줄: 살아 있는 p 임대 + reserve 의 ${f%|*} → GRANT p 유지" \
+    "$(decide "$MJ OPEN | PUB(0.99) | LIVE(\"p\"; true) | ${f%|*} | MIG")" "$PG and .basis == \"${f#*|}\" and $NOMIG"
+  expect "이관 표 셋째 줄: 살아 있는 p 임대 + 주간 소진의 ${f%|*} → GRANT a 이관" \
+    "$(decide "$MJ OPEN | PUB(1.0) | LIVE(\"p\"; true) | ${f%|*} | MIG")" "$(mg p a exhausted) and $NOFRESH"
+  expect "이관 표 셋째 줄: 살아 있는 p 임대 + 5시간만 소진의 ${f%|*} → 첫 줄의 WAIT" \
+    "$(decide "$MJ OPEN | PUB(0.5) | PX(.windows.five_hour.utilization = 1.0) | LIVE(\"p\"; true) | ${f%|*} | MIG")" \
+    '.verdict == "WAIT" and .reason == "group-exhausted"'
+  expect "이관 표 셋째 줄: 이관 고정의 살아 있는 a 임대 + 5시간 막힘의 ${f%|*} → GRANT a 유지" \
+    "$(decide "$MJ UBLK | RREC | LIVE(\"a\"; true) | ${f%|*}")" ".verdict == \"GRANT\" and .account == \"a\" and .basis == \"${f#*|}\""
+  check "이관 표 셋째 줄: 이관 고정의 로그인 끊김 ${f%|*} 은 첫 줄과 같은 판정" \
+    "$(decide "$MJ OPEN | RREC | LIVE(\"a\"; true) | ${f%|*} | AX(.login = \"expired\")" | jq -c '[.verdict, .reason]')" \
+    "$(decide "$MJ OPEN | RREC | AX(.login = \"expired\")" | jq -c '[.verdict, .reason]')"
+done
+# 후보와 순서.
+expect "이관 후보: 주간 사용량이 작은 b 가 먼저" "$(decide "$MJ OPEN | PUB(0.98) | MIG | MB(0.1; 0.05)")" "$(mg p b reserve)"
+expect "이관 후보: 주간 사용량이 큰 b 는 뒤" "$(decide "$MJ OPEN | PUB(0.98) | MIG | MB(0.1; 0.5)")" "$(mg p a reserve)"
+expect "이관 후보: 5시간이 막힌 a 는 건너뛰고 b" "$(decide "$MJ UBLK | PUB(0.98) | MIG | MB(0.1; 0.5)")" "$(mg p b reserve)"
+out=$(decide "$MJ OPEN | PUB(0.98) | MIG | AINV(.unattended = \"disabled\")")
+expect "이관 후보 없음: a 무인 꺼짐 → PARK pinned-publish-no-successor, 원 계정과 원인" "$out" \
+  '.verdict == "PARK" and .reason == "pinned-publish-no-successor" and .account == "p" and .why == "reserve"'
+expect "이관 후보 없음: 안내는 원 계정, 주간 리셋 시각, 계정별 원인을 담는다" "$out" \
+  "(.recovery | contains(\"고정 계정 p\")) and (.recovery | contains(\"($((NOW + 86400)))\"))
+   and (.recovery | contains(\"a(unattended-off)\")) and (.recovery | contains(\"cc(unattended-off)\"))"
+for row in 'window-unknown|AX(.windows.seven_day.observed_at_epoch = ($now - 4000))' 'seven-day-cap|AX(.windows.seven_day.utilization = 0.98)' \
+           'logged-out|AX(.login = "expired")' 'mismatch|AX(.config_dir = "/h/.claude-q")' \
+           'group-reserved|AX(. + {org_hash: "hc"})'; do
+  out=$(decide "$MJ OPEN | PUB(0.98) | MIG | ${row#*|}")
+  expect "이관 후보 없음: a 의 ${row%%|*} → PARK pinned-publish-no-successor" "$out" \
+    ".verdict == \"PARK\" and .reason == \"pinned-publish-no-successor\" and (.recovery | contains(\"a(${row%%|*})\"))"
+done
+expect "이관 후보: FIFO 로만 떨어지면 WAIT fifo-yield" \
+  "$(decide "$MJ OPEN | PUB(0.98) | MIG | ITEMS([LR(\"r9\"; \"S9\"; \"a\"; \"wait\"; null; true; 1)])")" '.verdict == "WAIT" and .reason == "fifo-yield"'
+expect "이관 후보: 5시간으로만 떨어지면 WAIT no-room" "$(decide "$MJ UBLK | PUB(0.98) | MIG")" '.verdict == "WAIT" and .reason == "no-room"'
+# 이관 고정의 재개가 다른 계정에 묶임.
+for lv in false true; do
+  expect "이관 고정 재개: 묶인 b 임대(live=$lv) → resume-bound-ineligible 아닌 GRANT a, fresh" \
+    "$(decide "$MJ OPEN | RREC | MB(0.1; 0.2) | LIVE(\"b\"; $lv) | RSM(\"b\")")" \
+    '.verdict == "GRANT" and .account == "a" and .fresh == true and .basis == "resume-bound" and (has("migrated") | not)'
+done
+expect "이관 고정 재개: 묶인 계정이 a → fresh 없음" "$(decide "$MJ OPEN | RREC | LIVE(\"a\"; false) | RSM(\"a\")")" \
+  '.verdict == "GRANT" and .account == "a" and .basis == "resume-bound" and (has("fresh") | not)'
+expect "이관 고정 재개: 주간 0.99·묶인 b → b 로 이관, fresh" \
+  "$(decide "$MJ OPEN | RREC | AX(.windows.seven_day.utilization = 0.99) | MB(0.1; 0.2) | LIVE(\"b\"; false) | RSM(\"b\")")" \
+  "$(mg a b cap) and .fresh == true and .basis == \"resume-bound\""
+expect "이관 고정 재개 대조: 이관 가능 없는 고정의 다른 계정 묶임 → 지금 그대로 PARK" \
+  "$(decide "$MJ OPEN | .seat.lane = \"a\" | .seat.pin_source = \"run-record\" | MB(0.1; 0.2) | LIVE(\"b\"; false) | RSM(\"b\")")" \
+  '.verdict == "PARK"'
+
 # 완료 기준. 고정 요청의 새 기동 입장 판정은 대기로 끝나지 않는다 — 특히 계정 없는
 # no-room 대기가 하나도 없다. 모은 줄 수가 어긋나면 사례가 빠졌거나 수집이 끊긴 것이다.
 check "고정 입장 판정: 모은 봉투 가운데 WAIT 없음" "$(jq -c 'select(.verdict == "WAIT")' "$PINSEEN" | grep -c . || true)" 0
@@ -4177,6 +4338,7 @@ for tok in \
   "PARK resume-unbound" "PARK resume-logged-out" "PARK resume-bound-ineligible" "PARK resume-bound-unknown-account" \
   "PARK deadline" "PARK borrow-record-corrupt" "PARK lent-seat-unrouted" \
   "PARK pinned-publish-blocked" "PARK pinned-lend-blocked" "PARK pinned-lane-ineligible" \
+  "PARK pinned-publish-no-successor" \
   "WAIT group-exhausted" "WAIT no-room" "WAIT unknown-concurrency" "WAIT resume-bound-exhausted" \
   "WAIT resume-bound-no-room" "WAIT resume-bound-borrowed" "WAIT lease-lock-busy" "WAIT lease-contention" "WAIT fifo-yield" \
   "GRANT first" "GRANT sticky" "GRANT resume-bound" "GRANT reassigned-after-limit" "GRANT reassigned-no-room" \
@@ -4194,15 +4356,17 @@ tk1_fall=$(sed -n '/^gate_launch_route_carry() {/,/^}/s/^ *\(deadline|resume-[a-
   | tr '|' '\n' | LC_ALL=C sort | tr '\n' ' ')
 check "TK1: 게이트의 넘어가는 이유 목록이 다섯이다" "$tk1_fall" \
   "deadline resume-bound-ineligible resume-bound-unknown-account resume-logged-out resume-unbound "
-tk1_stay="lease-table-corrupt borrow-record-corrupt lent-seat-unrouted inventory-corrupt own-lease-corrupt pinned-publish-blocked pinned-lend-blocked"
-tk1_src=$( { sed -n '/^def rt_decide(/,/rt_resume(\$p)$/p' "$TR_ROUTE"; sed -n '/^def rt_resume(/,/^def rt_waitpick(/p' "$TR_ROUTE"; } )
+tk1_stay="lease-table-corrupt borrow-record-corrupt lent-seat-unrouted inventory-corrupt own-lease-corrupt pinned-publish-blocked pinned-lend-blocked pinned-publish-no-successor"
+tk1_src=$( { sed -n '/^def rt_decide(/,/rt_resume(\$p)$/p' "$TR_ROUTE"; sed -n '/^def rt_resume(/,/^def rt_lend_block(/p' "$TR_ROUTE"; } )
 tk1_seen=$( { printf '%s\n' "$tk1_src" | grep -oE 'rt_park\("[a-z-]+"' | sed 's/^rt_park("//; s/"$//'
               case "$tk1_src" in (*'rt_park_deadline('*) printf 'deadline\n' ;; esac
               case "$tk1_src" in (*rt_park_borrow_corrupt*) printf 'borrow-record-corrupt\n' ;; esac
               case "$tk1_src" in (*rt_park_unrouted*) printf 'lent-seat-unrouted\n' ;; esac
               case "$tk1_src" in (*rt_park_publish*) printf 'pinned-publish-blocked\n' ;; esac
-              case "$tk1_src" in (*rt_park_lend*) printf 'pinned-lend-blocked\n' ;; esac; } | LC_ALL=C sort -u)
-check "TK1: 판정 앞단과 rt_resume 에서 뽑은 PARK 이유가 열두 개다 (공허하지 않다)" "$(printf '%s\n' "$tk1_seen" | grep -c .)" "12"
+              case "$tk1_src" in (*rt_park_lend*) printf 'pinned-lend-blocked\n' ;; esac
+              # 이관 선택은 후보가 없을 때 이름 붙은 생성기 `rt_park_no_successor` 로 PARK 한다.
+              case "$tk1_src" in (*rt_park_no_successor*|*rt_mig_pick*) printf 'pinned-publish-no-successor\n' ;; esac; } | LC_ALL=C sort -u)
+check "TK1: 판정 앞단과 rt_resume 에서 뽑은 PARK 이유가 열세 개다 (공허하지 않다)" "$(printf '%s\n' "$tk1_seen" | grep -c .)" "13"
 tk1_miss=""
 for tk1_r in $tk1_seen; do
   case " $tk1_fall $tk1_stay " in *" $tk1_r "*) ;; *) tk1_miss="$tk1_miss $tk1_r" ;; esac
