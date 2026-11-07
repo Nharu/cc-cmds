@@ -60590,7 +60590,7 @@ check "89q: 공유 계약의 닫힘 경로가 구현 중단을 든다" \
 
 # ---------------------------------------------------------------------------
 # 89r. 아침 보고의 상위 착지 판정
-# --- section: 89r | group: tier | covers: act3 착지 판정, design_delivery, ticket-delivery | anchors: 89r: 세그먼트 행이 없는 원장은 없음이다, 89r: 머지 뒤 PR 없는 행이 와도 PR 을 읽는다, 89r: PR 이 없는 park 세그먼트는 브랜치로 찾는다, 89r: 머지 커밋만 든 가져오기 행은 머지다, 89r: 문면이 상태 입력의 세 규칙을 싣는다, 89r: 모든 티켓이 착수하고 머지되면 착지다, 89r: 열린 PR 이 남으면 미착지다, 89r: 상태 줄 없는 티켓은 미착지다, 89r: 착수 행 없는 티켓은 미착지다, 89r: 티켓 행 없는 등록부는 착지가 아니다 ---
+# --- section: 89r | group: tier | covers: act3 착지 판정, design_delivery, ticket-delivery | anchors: 89r: 세그먼트 행이 없는 원장은 없음이다, 89r: PR 뒤에 PR 없는 park 행이 와도 PR 을 읽는다, 89r: 머지 뒤 적용 행으로 끝나도 머지다, 89r: PR 이 없는 park 세그먼트는 브랜치로 찾는다, 89r: 머지 커밋만 든 가져오기 행은 머지다, 89r: 세그먼트 행의 레포를 그 행 밖의 행에도 잇는다, 89r: 문면이 상태 입력의 규칙을 싣는다, 89r: 모든 티켓이 착수하고 머지되면 착지다, 89r: 열린 PR 이 남으면 미착지다, 89r: 상태 줄 없는 티켓은 미착지다, 89r: 착수 행 없는 티켓은 미착지다, 89r: 티켓 행 없는 등록부는 착지가 아니다 ---
 #
 # 두 프로그램은 보고 문면의 울타리에만 있으므로 그 울타리에서 뽑아 돌린다. 첫
 # 울타리는 런 원장을 세그먼트별 PR 판독 근거로 줄이고, 둘째는 착지를 판정한다.
@@ -60613,23 +60613,30 @@ tkr_rows() {  # tkr_rows <원장 줄…> — 원장을 그 줄들로 쓰고 판�
 }
 tkr_plan='- `segment` | 교대=2 | id=B | 상태=계획됨 | 레포=o/r | 선행=없음 | 워크트리=/w/B | 브랜치=seg/r-B | prev=a'
 check "89r: 세그먼트 행이 없는 원장은 없음이다" \
-  "$(tkr_rows '- `run` | run-id=R1 | RUN_DIR=/r' '- `stage-result` | 세그먼트=A | PR=9')" "-:없음:-"
-check "89r: 머지 뒤 PR 없는 행이 와도 PR 을 읽는다" \
+  "$(tkr_rows '- `run` | run-id=R1 | RUN_DIR=/r' '- `stage-result` | 세그먼트=A | PR=9')" "-:없음:-:-"
+check "89r: PR 뒤에 PR 없는 park 행이 와도 PR 을 읽는다" \
+  "$(tkr_rows "$tkr_plan" '- `segment` | 교대=5 | id=B | 상태=리뷰중 | PR=12 | 워크트리=/w/B | prev=b' \
+     '- `segment` | 교대=6 | id=B | 상태=park | 워크트리=/w/B | prev=c')" "B:PR:12:o/r"
+check "89r: 머지 뒤 적용 행으로 끝나도 머지다" \
   "$(tkr_rows "$tkr_plan" '- `segment` | 교대=5 | id=B | 상태=머지됨 | PR=12 | 머지 커밋=abc | 워크트리=/w/B | prev=b' \
      '- `segment` | 교대=6 | id=B | 상태=적용 준비 | 워크트리=/w/B | 고정 커밋=abc | 적용 명령=x | prev=c' \
-     '- `segment` | 교대=6 | id=B | 상태=완료 | 워크트리=/w/B | 고정 커밋=abc | 머지 커밋=abc | 적용=수렴 | prev=d')" "B:PR:12"
+     '- `segment` | 교대=6 | id=B | 상태=park | 워크트리=/w/B | 고정 커밋=abc | 적용=사전 실패 | prev=d')" "B:머지:-:o/r"
+check "89r: 닫힌 PR 뒤의 머지 커밋이 PR 을 이긴다" \
+  "$(tkr_rows '- `segment` | id=B | 상태=park | PR=12' '- `segment` | id=B | 상태=머지됨 | 머지 커밋=abc')" "B:머지:-:-"
 check "89r: 뒤의 PR 값이 앞의 값을 대신하고 빈 값은 값이 아니다" \
-  "$(tkr_rows '- `segment` | id=B | 상태=리뷰중 | PR=12' '- `segment` | id=B | 상태=리뷰중 | PR=13' '- `segment` | id=B | 상태=park | PR=-')" "B:PR:13"
+  "$(tkr_rows '- `segment` | id=B | 상태=리뷰중 | PR=12' '- `segment` | id=B | 상태=리뷰중 | PR=13' '- `segment` | id=B | 상태=park | PR=-')" "B:PR:13:-"
 check "89r: PR 이 없는 park 세그먼트는 브랜치로 찾는다" \
-  "$(tkr_rows "$tkr_plan" '- `segment` | 교대=7 | id=B | 상태=park | 워크트리=/w/B | prev=e')" "B:브랜치:seg/r-B"
+  "$(tkr_rows "$tkr_plan" '- `segment` | 교대=7 | id=B | 상태=park | 워크트리=/w/B | prev=e')" "B:브랜치:seg/r-B:o/r"
 check "89r: 머지 커밋만 든 가져오기 행은 머지다" \
-  "$(tkr_rows '- `segment` | 교대=2 | id=A | 상태=머지됨 | 머지 커밋=abc | 워크트리=- | 선행=없음 | 출처=매니페스트 | prev=f')" "A:머지:-"
+  "$(tkr_rows '- `segment` | 교대=2 | id=A | 상태=머지됨 | 머지 커밋=abc | 워크트리=- | 선행=없음 | 출처=매니페스트 | prev=f')" "A:머지:-:-"
 check "89r: 선머지 완료 행은 브랜치를 찾지 않고 머지다" \
-  "$(tkr_rows "$tkr_plan" '- `segment` | 교대=5 | id=B | 상태=완료 | 머지 커밋=abc | 워크트리=/w/B | prev=g')" "B:머지:-"
+  "$(tkr_rows "$tkr_plan" '- `segment` | 교대=5 | id=B | 상태=완료 | 머지 커밋=abc | 워크트리=/w/B | prev=g')" "B:머지:-:o/r"
+check "89r: 세그먼트 행의 레포를 그 행 밖의 행에도 잇는다" \
+  "$(tkr_rows '- `segment` | id=B | 상태=계획됨 | 레포=o/other | 브랜치=seg/r-B' '- `segment` | id=B | 상태=리뷰중 | PR=12')" "B:PR:12:o/other"
 check "89r: 세그먼트마다 처음 나온 순서로 한 줄씩 찍는다" \
-  "$(tkr_rows "$tkr_plan" '- `segment` | id=A | 상태=머지됨 | PR=3' '- `segment` | id=C | 상태=계획됨 | 워크트리=/w/C')" "B:브랜치:seg/r-B,A:PR:3,C:없음:-"
-check "89r: 문면이 상태 입력의 세 규칙을 싣는다" \
-  "$(tkx_has "$tkr_a3" 'A ledger file that does not exist is not a failed read')/$(tkx_has "$tkr_a3" '`<레포>` is the `**레포**` of that ticket'"'"'s `### 티켓 T<n> — ` block in the upper document')/$(tkx_has "$tkr_a3" 'a `브랜치` whose answer reads `no pull requests found for branch` is `없음`')/$(tkx_has "$tkr_a3" '`MERGED` only when every printed line of that run is `MERGED`')/$(tkx_has "$tkr_a3" 'the `원격 슬러그` of the manifest'"'"'s target row')/$(tkx_has "$tkr_a3" 'every segment of that run has a pull request')" "있음/있음/있음/있음/없음/없음"
+  "$(tkr_rows "$tkr_plan" '- `segment` | id=A | 상태=머지됨 | PR=3' '- `segment` | id=C | 상태=계획됨 | 워크트리=/w/C')" "B:브랜치:seg/r-B:o/r,A:PR:3:-,C:없음:-:-"
+check "89r: 문면이 상태 입력의 규칙을 싣는다" \
+  "$(tkx_has "$tkr_a3" 'A ledger file that does not exist is not a failed read')/$(tkx_has "$tkr_a3" '`<레포>` is the line'"'"'s `<행 레포>`; when that is `-`, it is the `**레포**` of that ticket'"'"'s `### 티켓 T<n> — ` block in the upper document')/$(tkx_has "$tkr_a3" 'a `브랜치` whose answer reads `no pull requests found for branch` is `없음`')/$(tkx_has "$tkr_a3" '`MERGED` only when every printed line of that run is `MERGED`')/$(tkx_has "$tkr_a3" 'the `원격 슬러그` of the manifest'"'"'s target row')/$(tkx_has "$tkr_a3" 'every segment of that run has a pull request')" "있음/있음/있음/있음/없음/없음"
 tkr_reg="$tkr_dir/reg.md"
 printf '%s\n' '<!-- cc-design-base-tickets v1; doc=docs/x.md -->' \
   '- `베이스` | 상태=발행됨 | 참조=- | 노드 id=-' \
