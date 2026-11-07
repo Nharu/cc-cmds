@@ -61861,7 +61861,7 @@ check "97: 가장 긴 질문 문면의 발행 행도 1024바이트 안이다" \
 
 # ---------------------------------------------------------------------------
 # 98b. 멈춘 스테이지의 보호 기록 — 감독자의 쓰기·지우기, 차용 중 재개 대기
-# --- section: 98b | group: ledger_series | covers: gate_sup_halt_hold_put, gate_verb_supervise_stage, gate_launch_route_carry, gate_launch_wait, gate_stage_wait_row, run_ledger_series_check, gate_argv_prompt_keep, gate_argv_prompt_restore, gate_route_env_fresh, gate_fresh_session_prompt, gate_launch_stage, gate_launch_route | needs: 75,95 | anchors: 98: 대기 끝 이관 GRANT 의 감독자는 --resume 없이 디스패치 프롬프트로 새 세션을 띄운다, 98: 재부착 문장을 보존한 대기 끝 이관 GRANT 의 새 세션은 게이트가 지은 디스패치 형식으로 뜬다, 98: 이관 GRANT 의 새 세션 프롬프트는 종류의 재진입 틀과 DOC 로 짓는다, 98: 디스패치 시점·운반·대기 끝의 이관 새 세션이 같은 프롬프트 함수를 지난다,98: 의도된 park 의 시도는 보호 기록 하나를 남긴다, 98: 정상 완료로 끝난 시도는 보호 기록을 남기지 않는다, 98: 보호 디렉터리에 쓸 수 없어도 rc 0 이고 경고 한 줄이다, 98: 감독자는 종단 행 뒤 반납 앞에서 보호 기록을 한 번 쓴다, 98: 감독자는 세 기록 뒤 스폰 대기 앞에서 보호 기록을 지운다, 98: 차용 중 재개 대기는 계정과 함께 받고 비용 두 칸은 - 다, 98: 차용 중 재개 대기는 계정=- 로는 거부된다, 98: 차용된 묶인 대기와 새 열린 대기면 묶인 대기다, 98: 차용된 묶인 대기와 새 GRANT 면 새 세션이다, 98: 차용된 묶인 재개의 파견은 대기 토큰·감독자·FIFO 항목·표지를 남긴다 ---
+# --- section: 98b | group: ledger_series | covers: gate_sup_halt_hold_put, gate_verb_supervise_stage, gate_launch_route_carry, gate_launch_wait, gate_stage_wait_row, run_ledger_series_check, gate_argv_prompt_keep, gate_argv_prompt_restore, gate_route_env_fresh, gate_fresh_session_prompt, gate_launch_stage, gate_launch_route | needs: 75,95 | anchors: 98: 대기 끝 이관 GRANT 의 감독자는 --resume 없이 디스패치 프롬프트로 새 세션을 띄운다, 98: 재부착 문장을 보존한 대기 끝 이관 GRANT 의 새 세션은 게이트가 지은 디스패치 형식으로 뜬다, 98: 이관 GRANT 의 새 세션 프롬프트는 종류의 재진입 틀과 DOC 로 짓는다, 98: 재부착 문장을 실은 디스패치 시점 이관 GRANT 의 새 세션은 게이트가 지은 디스패치 형식으로 뜬다, 98: 디스패치 시점·운반·대기 끝의 이관 새 세션이 같은 프롬프트 함수를 지난다,98: 의도된 park 의 시도는 보호 기록 하나를 남긴다, 98: 정상 완료로 끝난 시도는 보호 기록을 남기지 않는다, 98: 보호 디렉터리에 쓸 수 없어도 rc 0 이고 경고 한 줄이다, 98: 감독자는 종단 행 뒤 반납 앞에서 보호 기록을 한 번 쓴다, 98: 감독자는 세 기록 뒤 스폰 대기 앞에서 보호 기록을 지운다, 98: 차용 중 재개 대기는 계정과 함께 받고 비용 두 칸은 - 다, 98: 차용 중 재개 대기는 계정=- 로는 거부된다, 98: 차용된 묶인 대기와 새 열린 대기면 묶인 대기다, 98: 차용된 묶인 대기와 새 GRANT 면 새 세션이다, 98: 차용된 묶인 재개의 파견은 대기 토큰·감독자·FIFO 항목·표지를 남긴다 ---
 #
 # 보호 기록은 라우팅된 시도가 질문으로 멈춘 뒤 임대가 반납되는 순간에도 그 계정이 cc 레인의
 # 차용 기증자 순위 맨 뒤로 가도록 남기는 표다. 감독자 전체를 띄우는 대신 감독자가 부르는
@@ -62104,6 +62104,19 @@ check "98: 이관 GRANT 의 새 세션 프롬프트는 종류의 재진입 틀�
         if gate_fresh_session_prompt "$k" "$s" "$p"; then printf "%s;" "${GATE_FRESH_PROMPT/"$DOC"/DOC}"; else printf "rc1;"; fi
       done' 2>/dev/null)" \
   "/cc-cmds:visual-publish-unattended DOC;/cc-cmds:visual-publish-unattended DOC --x;/cc-cmds:visual-publish-unattended DOC;/cc-cmds:visual-publish-unattended DOC;/cc-cmds:design-reconverge DOC R2;rc1;"
+# 디스패치 시점의 같은 모양. 계정 u1 의 세션으로 끊긴 감사 스테이지를 시프트가
+# `--resume` 과 고정 재부착 문장으로 재부착할 때 라우터가 u1 에서 옮긴 이관 GRANT 를
+# 내면, 파견 반쪽은 재부착하지 않고(토큰 둘째 줄이 빈다) 게이트가 지은 디스패치
+# 형식으로 감독자를 띄운다. 감사의 재진입 틀은 `<문서>` 칸뿐이라 같은 함수를 지난다.
+h98_dl=$(lsr75_new fresh98)
+lsr93_park "$h98_dl" A1 1 "$lsr93_sid" 'Step 6 CFI-3b — 질문' audit '외부 종료'
+h98_dgr='{"verdict":"GRANT","basis":"resume-bound","account":"u2","config_dir":"/h/.claude-u2","nonce":"n98d","dormant":false,"fresh":true,"migrated":{"from":"u1","to":"u2","why":"reserve"}}'
+check "98: 재부착 문장을 실은 디스패치 시점 이관 GRANT 의 새 세션은 게이트가 지은 디스패치 형식으로 뜬다" \
+  "$(LSR93_BENV=$h98_dgr LSR93_DL=1900000000 H98_RA=$h98_ra H98_SID=$lsr93_sid lsr93_in "$h98_dl" eval '
+      GATE_RESUME=$H98_SID; r=0
+      gate_launch_stage infra A1 audit -p "$H98_RA" >"$RUN_DIR/h98d.err" 2>&1 || r=$?
+      printf "%s" "$r"; [ "$r" = 0 ] || tail -3 "$RUN_DIR/h98d.err" | tr "\n" " "' 2>/dev/null)|$(sed -n '/^--$/,$p' "${h98_dl%/*}/argv" 2>/dev/null | sed -n '2,4p' | paste -sd'|' -)|$(sed -n '2p' "${h98_dl%/*}/A1.launch" 2>/dev/null)|$(lsr93_n "${h98_dl%/*}/argv" "$h98_ra")" \
+  "0|audit|-p|/cc-cmds:design-audit-unattended $lsr93_doc||0"
 check "98: 디스패치 시점·운반·대기 끝의 이관 새 세션이 같은 프롬프트 함수를 지난다" \
   "$(sed -n '/^gate_launch_route()/,/^}/p' "$GATE" | grep -c 'GATE_RESUME=""; GATE_ROUTE_FRESH=1')/$(sed -n '/^gate_launch_route_carry()/,/^}/p' "$GATE" | grep -c 'GATE_RESUME=""; GATE_ROUTE_FRESH=1')/$(sed -n '/^gate_launch_stage()/,/^}/p' "$GATE" | grep -c 'gate_fresh_session_prompt "$kind" "$GATE_DISPATCH_PROMPT_SET" "$GATE_DISPATCH_PROMPT"')/$(sed -n '/^gate_verb_supervise_stage()/,/^}/p' "$GATE" | grep -c 'gate_fresh_session_prompt "$kind" "$disp_set" "$disp_p"')" \
   "1/1/1/1"
