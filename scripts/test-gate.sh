@@ -60653,8 +60653,18 @@ tkr_noslice="$tkr_dir/noslice.md"
 printf '%s\n' '# 문서' '## 다른 절' '### 슬라이스 A — 슬라이싱 절이 아니다' > "$tkr_noslice"
 check "89r: 슬라이싱 절이 없는 문서는 찍힌 행만 본다" \
   "$(tkr_rows_of "$tkr_noslice" "$tkr_merged_a")" "A:머지:-:o/r"
+tkr_fences="$tkr_dir/fences.md"
+printf '%s\n' '## 구현 슬라이싱' '### 슬라이스 A' '````text' '```' '~~~~' '```` 닫힘아님' '### 슬라이스 X' '````' \
+  '### 슬라이스 B' '~~~' '```' '### 슬라이스 Y' '~~~' '  ```' '### 슬라이스 Z' '  ```' '### 슬라이스 C' > "$tkr_fences"
+check "89r: 울타리는 같은 문자의 같거나 긴 빈 줄만 닫고 들여쓴 울타리도 센다" \
+  "$(tkr_rows_of "$tkr_fences" '- `run` | run-id=R1')" "A:없음:-:-,B:없음:-:-,C:없음:-:-"
+tkr_open="$tkr_dir/open.md"
+printf '%s\n' '## 구현 슬라이싱' '### 슬라이스 A' '```' '### 슬라이스 B' > "$tkr_open"
+tkr_open_rc=0
+tkr_open_out="$(LC_ALL=C awk -f "$tkr_read" "$tkr_open" "$tkr_led")" || tkr_open_rc=$?
+check "89r: 닫히지 않은 울타리는 아무것도 찍지 않고 읽기 실패다" "$tkr_open_rc/$tkr_open_out" "3/"
 check "89r: 문면이 판독기의 문서 입력을 싣는다" \
-  "$(tkx_has "$tkr_a3" 'as `LC_ALL=C awk -f <이 프로그램> <문서> <원장>`')/$(tkx_has "$tkr_a3" '`<base>/<값>` when that is a file, otherwise `/<값>` when that is a file')/$(tkx_has "$tkr_a3" 'A plan that cannot be read, or a value that names no file, is a failed read')" "있음/있음/있음"
+  "$(tkx_has "$tkr_a3" 'as `LC_ALL=C awk -f <이 프로그램> <문서> <원장>`')/$(tkx_has "$tkr_a3" '`<base>/<값>` when that is a file, otherwise `/<값>` when that is a file')/$(tkx_has "$tkr_a3" '`/dev/null` when the value is `(없음)` or the plan has no such line')/$(tkx_has "$tkr_a3" 'A plan that cannot be read is a failed read')/$(tkx_has "$tkr_a3" 'A value that names no file is not a failed read')/$(tkx_has "$tkr_a3" 'any non-zero exit is a failed read')" "있음/있음/있음/있음/있음/있음"
 check "89r: 문면이 상태 입력의 규칙을 싣는다" \
   "$(tkx_has "$tkr_a3" 'A ledger file that does not exist is not a failed read')/$(tkx_has "$tkr_a3" '`<레포>` is the line'"'"'s `<행 레포>`; when that is `-`, it is the `**레포**` of that ticket'"'"'s `### 티켓 T<n> — ` block in the upper document')/$(tkx_has "$tkr_a3" 'a `브랜치` whose answer reads `no pull requests found for branch` is `없음`')/$(tkx_has "$tkr_a3" '`MERGED` only when every printed line of that run is `MERGED`')/$(tkx_has "$tkr_a3" 'the `원격 슬러그` of the manifest'"'"'s target row')/$(tkx_has "$tkr_a3" 'every segment of that run has a pull request')" "있음/있음/있음/있음/없음/없음"
 tkr_reg="$tkr_dir/reg.md"
@@ -60677,8 +60687,18 @@ check "89r: 열린 PR 이 남으면 미착지다" \
   "$(tkr_judge "$tkr_reg" "T1${tkr_tab}MERGED" "T2${tkr_tab}OPEN")" "미착지 1"
 check "89r: 후속 런의 머지가 앞 런의 닫힌 PR 을 대신한다" \
   "$(tkr_judge "$tkr_reg" "T1${tkr_tab}CLOSED" "T1${tkr_tab}MERGED" "T2${tkr_tab}MERGED")" "착지"
+tkr_fold() {  # tkr_fold <티켓> <판독 결과> — 쉼표로 이은 판독 줄을 문면의 규칙대로 상태 한 줄로 접는다(PR 은 열림으로 친다)
+  printf '%s\n' "$2" | tr ',' '\n' | awk -F: -v t="$1" '
+    { s = ($2 == "머지") ? "MERGED" : (($2 == "PR") ? "OPEN" : "없음"); if (s != "MERGED" && o == "") o = s }
+    END { print t "\t" (o == "" ? "MERGED" : o) }'
+}
+tkr_slices_ab="$tkr_dir/slices-ab.md"
+printf '%s\n' '## 구현 슬라이싱' '### 슬라이스 A — 앞' '### 슬라이스 B — 뒤' > "$tkr_slices_ab"
+tkr_front="$(tkr_fold T1 "$(tkr_rows_of "$tkr_slices_ab" "$tkr_merged_a")")"
+tkr_back="$(tkr_fold T1 "$(tkr_rows_of "$tkr_slices_ab" "$tkr_merged_a" '- `segment` | id=B | 상태=리뷰중 | PR=4')")"
 check "89r: 재킥오프의 앞뒤 런이 슬라이스를 남기면 미착지다" \
-  "$(tkr_judge "$tkr_reg" "T1${tkr_tab}없음" "T1${tkr_tab}OPEN" "T2${tkr_tab}MERGED")" "미착지 1"
+  "$(tkr_judge "$tkr_reg" "$tkr_front" "$tkr_back" "T2${tkr_tab}MERGED")" "미착지 1"
+check "89r: 앞 런이 슬라이스 하나만 머지하면 그 런은 없음이다" "$tkr_front" "T1${tkr_tab}없음"
 check "89r: 상태 줄 없는 티켓은 미착지다" \
   "$(tkr_judge "$tkr_reg" "T1${tkr_tab}MERGED")" "미착지 1"
 grep -vF -- '- `착수` | id=T2 ' "$tkr_reg" > "$tkr_dir/nostart.md"
