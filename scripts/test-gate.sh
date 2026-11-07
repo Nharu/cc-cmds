@@ -40069,6 +40069,23 @@ fk_deadline "$(rl_ep_iso "$((fk_now + 1800))")"
 check "34w: (나) 목록 계정이 하나이고 리셋이 마감 뒤여도 재진입은 거부되지 않는다" "$(fk_moved_fn)" "|y"
 fk_moved_reissue fomovedseat2
 check "34w: (나) 그 대기 는 rc 3 으로 거부되지 않고 좌석 레인으로 뜬다" "$fk_mr" "0|1|$FK_H/.claude-seat"
+# 음성 대조 둘 — 한도가 아닌 까닭으로 죽은 옮긴 교대는 시계가 없어 재진입이 거부되고,
+# 좌석 레인에서 뜬 교대의 `무기록` 은 이전 런에서도 그 스트림의 리셋을 원소로 싣는다.
+fk_new RFOT u-b
+fk_usage
+rl_case fomovedplain plaindie
+HOME="$FK_H" rl_call 상한
+rl_join
+check "34w: 한도가 아닌 까닭으로 죽은 옮긴 교대 뒤에는 리셋 원소가 없고 재진입이 거부된다" \
+  "$rc|$(cat "$RL_O/cfg.1" 2>/dev/null)|$(fk_moved_fn)" "1|$FK_H/.claude-u-b||n"
+fk_new RFOU u-b
+fk_usage 'acct("seat"; free)'
+RL_RESETAT=$((fk_now + 2400))
+rl_case foseatdie limitdie
+HOME="$FK_H" rl_call 상한
+rl_join
+check "34w: 좌석 레인 교대가 한도로 죽으면 이전 런에서도 그 스트림의 리셋이 원소이고 재진입이 허용된다" \
+  "$rc|$(cat "$RL_O/cfg.1" 2>/dev/null)|$(fk_moved_fn)" "1|$FK_H/.claude-seat|교대#1:$RL_RESETAT|y"
 unset fk_md fk_mr
 RL_RESETAT=''
 

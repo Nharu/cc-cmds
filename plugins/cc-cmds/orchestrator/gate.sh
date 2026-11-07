@@ -60721,9 +60721,13 @@ gate_relay_reentry_allowed() {
   #
   # A SHIFT THE GATE MOVED IS NOT A SEAT-LANE DEATH. In a failover run, when
   # that shift ran on a listed account (`gate_failover_moved_shift`), its reset
-  # is that account's and says nothing of the seat lane: re-entry is allowed
-  # with no reset to hold for, and the launch's judgment picks the lane — the
-  # judgment already reads the moved lane's death as `죽은 교대`.
+  # is that account's and says nothing of the seat lane: the death still has to
+  # be limit-shaped — its stream yields a reset clock — but the deadline, the
+  # horizon and room are not asked, there is no reset to hold for, and the
+  # launch's judgment picks the lane. While that clock is ahead the judgment
+  # reads the moved lane as `죽은 교대`; once it has passed, that account may be
+  # picked again. A moved shift that died with no clock stays refused, as any
+  # other clock-less death.
   local st n at
   [ -n "${LEDGER:-}" ] && [ -f "$LEDGER" ] || return 1
   # `이월` waits too: for the deadline, after which the successor ends the run
@@ -60745,8 +60749,8 @@ gate_relay_reentry_allowed() {
   n=$( { LC_ALL=C grep -E '^- `교대 기동` ' "$LEDGER" 2>/dev/null || true; } | tail -1)
   n=$(gate_row_field "$n" '서수')
   case "$n" in ''|*[!0-9]*) return 1 ;; esac
-  if gate_failover_moved_shift "$n"; then return 0; fi
   at=$(gate_cut_key_reset_at "교대#$n")
+  if gate_failover_moved_shift "$n"; then [ -n "$at" ]; return; fi
   # IN A FAILOVER RUN THE TEST IS THE DEADLINE OR ROOM, NOT THE HORIZON. A
   # seven_day reset lies past the horizon, and the run must still take `대기`
   # there when a listed account has room to move the next shift to — and when

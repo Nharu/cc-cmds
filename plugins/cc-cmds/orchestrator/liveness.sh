@@ -718,9 +718,19 @@ cc_relay_result_after_ref() {
   # relay before the reset it is holding for. Whether the death was limit-shaped
   # is the gate's judgement, from the stream with jq; it reaches this file only
   # as the entry it wrote, so no stream is read here.
+  #
+  # A SHIFT THE GATE MOVED TO A LISTED ACCOUNT leaves no `교대#…` entry: its
+  # reset is that account's, and the relay does not wait it out. The relay holds
+  # after a `무기록` only when the gate allowed it, so a live relay record under a
+  # latest `무기록` makes that row the reference too.
   local anyref=0
   [ -n "$1" ] && [ -f "$1" ] || return 1
   case ",$(cc_relay_field "${2:-}" reset)," in *,교대#*) anyref=1 ;; esac
+  if [ "$anyref" = 0 ] && [ -n "${2:-}" ] && [ -f "$2/relay.live" ]; then
+    case "$( { LC_ALL=C grep -E '^- `handoff` ' "$1" 2>/dev/null || true; } | tail -1)" in
+      *' | 사유=무기록 | '*|*' | 사유=무기록') anyref=1 ;;
+    esac
+  fi
   # `사유=이월` is a reference row too: the relay waits after it as after `대기`.
   LC_ALL=C awk -v anyref="$anyref" '
     /^- `handoff` / {
