@@ -37997,6 +37997,93 @@ esac
 ( cd "$REPO" && git update-ref refs/remotes/origin/main "$SPV_ORIGIN0" )
 CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$SPV_PREV_AR"
 
+# --- 34ro. 리뷰전용 세그먼트의 출처 — 고정 헤드에 선 남의 PR 은 강제 표면을 바꿔도 cone 에 잡히지 않는다 ---
+# --- section: 34ro | group: cone | covers: act, snapshot, surface-class | anchors: 34ro: 고정 헤드의 리뷰전용 세그먼트는 출처 검사를 통과한다, 34ro: 고정 헤드의 리뷰전용 세그먼트에는 cone 시드 뒤 blocked 행이 없다, 34ro: HEAD 가 움직인 리뷰전용 세그먼트는 거절된다, 34ro: HEAD 가 움직인 리뷰전용 세그먼트는 cone 시드 뒤 blocked 행으로 막힌다, 34ro: 같은 변경의 구현 세그먼트는 거절된다, 34ro: 같은 변경의 구현 세그먼트는 cone 시드 뒤 blocked 행으로 막힌다, 34ro: 고정 헤드가 없는 리뷰전용 세그먼트는 면제되지 않는다 ---
+#
+# A REVIEW-ONLY SEGMENT'S WORKTREE IS SOMEONE ELSE'S PULL REQUEST, checked out
+# detached at the `고정 헤드` its planning row recorded. What that pull request
+# changed is what the review reads, not a change this run would have to approve,
+# so the provenance check passes it while its HEAD equals the pin — and refuses
+# again the moment anything moves that HEAD. The fixture: an implementation
+# segment whose branch changes the root CLAUDE.md, and a review-only segment
+# whose detached worktree pins a commit with the same kind of change. A cone
+# row anchored on a separate segment runs the seed over every other segment,
+# so one act shows both sides. The review-only rows are planted the way
+# the planning act writes them: the gate refuses `종류` and `고정 헤드` from a
+# caller.
+SRO_PREV_AR="${CC_CMDS_AUTOPILOT_AUTO_RESOLVE:-}"
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=0
+sap_fx RSRO1 SRI "5e5e5e5e-6666-7777-8888-999999999999"
+check "34ro: 픽스처의 구현 세그먼트 행이 섰다" "$SAP_SEG_RC" "0"
+SRO_ORIGIN0=$(cd "$REPO" && git rev-parse refs/remotes/origin/main)
+( cd "$REPO" && git update-ref refs/remotes/origin/main "$SAP_BASE" )
+( cd "$SAP_WT" && printf '# root by the stage\n' > CLAUDE.md && git add -A && git commit -qm 'CLAUDE.md 를 고친다' ) >/dev/null 2>&1
+SRO_WT="$WORK/sro-detached"
+( cd "$REPO" && git worktree add -q --detach "$SRO_WT" "$SAP_BASE" \
+  && cd "$SRO_WT" && printf '# root by the author\n' > CLAUDE.md && git add -A && git commit -qm 'PR 이 CLAUDE.md 를 고친다' ) >/dev/null 2>&1
+SRO_PIN=$(cd "$SRO_WT" && git rev-parse HEAD)
+printf -- '- `segment` | id=SRO | 상태=실행중 | 종류=리뷰전용 | 고정 헤드=%s | 베이스 sha=%s | 워크트리=%s | 선행=없음 | prev=x\n' \
+  "$SRO_PIN" "$SAP_BASE" "$SRO_WT" >> "$CAP_LEDGER"
+# A second review-only segment pinned at the same commit whose detached HEAD
+# moved one commit past it. It stands beside the first, so the one cone act
+# below measures the pinned and the moved HEAD on the same derivation.
+SRM_WT="$WORK/sro-moved"
+( cd "$REPO" && git worktree add -q --detach "$SRM_WT" "$SRO_PIN" \
+  && cd "$SRM_WT" && printf 'moved\n' > a.txt && git add -A && git commit -qm 'HEAD 를 옮긴다' ) >/dev/null 2>&1
+printf -- '- `segment` | id=SRM | 상태=실행중 | 종류=리뷰전용 | 고정 헤드=%s | 베이스 sha=%s | 워크트리=%s | 선행=없음 | prev=x\n' \
+  "$SRO_PIN" "$SAP_BASE" "$SRM_WT" >> "$CAP_LEDGER"
+sro_pv() { cap_gate "$SAP_SEAT" '' surface-provenance --manifest "$CAP_NM" --segment "$1" --target infra; }
+sro_blocked() {  # sro_blocked <세그먼트> — how many provenance `blocked` rows anchor on it
+  { grep -F "앵커 세그먼트=$1 |" "$CAP_LEDGER" || true; } \
+    | { grep -F '사유=강제 표면이 좌석 적용 밖에서 바뀜' || true; } | grep -c . || true
+}
+# The cone anchor is a fourth segment of its own: the seed loop skips the
+# anchor, so a row anchored on any of the three would leave that one unseeded.
+printf -- '- `segment` | id=SRX | 상태=실행중 | 선행=없음 | prev=x\n' >> "$CAP_LEDGER"
+sro_cone_act() {  # a cone row anchored on SRX, whose derivation seeds over every other segment
+  cap_gate "$SAP_SEAT" '' act --manifest "$CAP_NM" --kind blocked --target infra --cutpoint 커밋 --surface 읽기 \
+    --snapshot-digest "$(cap_H "$SAP_SEAT" '')" --rationale x \
+    -- 스코프=cone 원인=막힘 '앵커 세그먼트=SRX' '사유=34ro — 시드를 일으킨다' '근거=픽스처' '재개 명령=없음'
+}
+
+# The read verb first: at the pin nothing is named; one commit past the pin
+# the exemption is off and the ordinary check refuses; the implementation
+# segment with the same kind of change is refused as before.
+sro_pv SRO
+check "34ro: 고정 헤드의 리뷰전용 세그먼트는 출처 검사를 통과한다" "$rc/$(cat "$CAP_OUT")" "0/"
+sro_pv SRM
+check "34ro: HEAD 가 움직인 리뷰전용 세그먼트는 거절된다" "$rc" "3"
+case "$(cat "$CAP_OUT")" in
+  *'CLAUDE.md'$'\t'*'좌석 적용 커밋 없이 바뀜'*) ok "34ro: 움직인 리뷰전용 세그먼트의 거절이 CLAUDE.md 와 이유를 댄다" ;;
+  *) bad "34ro: 움직인 리뷰전용 세그먼트의 거절이 CLAUDE.md 와 이유를 댄다" "$(cat "$CAP_OUT")" ;;
+esac
+sro_pv SRI
+check "34ro: 같은 변경의 구현 세그먼트는 거절된다" "$rc" "3"
+case "$(cat "$CAP_OUT")" in
+  *'CLAUDE.md'$'\t'*'좌석 적용 커밋 없이 바뀜'*) ok "34ro: 그 거절이 CLAUDE.md 와 이유를 댄다" ;;
+  *) bad "34ro: 그 거절이 CLAUDE.md 와 이유를 댄다" "$(cat "$CAP_OUT")" ;;
+esac
+
+# Then one cone act, whose seed visits all three segments: the pinned
+# review-only segment gets no row, the moved one and the implementation
+# segment each get one.
+sro_cone_act
+check "34ro: cone 행위가 기록된다" "$rc" "0"
+check "34ro: 고정 헤드의 리뷰전용 세그먼트에는 cone 시드 뒤 blocked 행이 없다" "$(sro_blocked SRO)" "0"
+check "34ro: HEAD 가 움직인 리뷰전용 세그먼트는 cone 시드 뒤 blocked 행으로 막힌다" "$(sro_blocked SRM)" "1"
+check "34ro: 같은 변경의 구현 세그먼트는 cone 시드 뒤 blocked 행으로 막힌다" "$(sro_blocked SRI)" "1"
+
+# Both inputs have to be read: a review-only row with no pin at a HEAD that
+# carries the same change is checked as any other segment.
+printf -- '- `segment` | id=SRP | 상태=실행중 | 종류=리뷰전용 | 베이스 sha=%s | 워크트리=%s | 선행=없음 | prev=x\n' \
+  "$SAP_BASE" "$SRO_WT" >> "$CAP_LEDGER"
+sro_pv SRP
+check "34ro: 고정 헤드가 없는 리뷰전용 세그먼트는 면제되지 않는다" "$rc" "3"
+
+( cd "$REPO" && git worktree remove --force "$SRO_WT" && git worktree remove --force "$SRM_WT" ) >/dev/null 2>&1
+( cd "$REPO" && git update-ref refs/remotes/origin/main "$SRO_ORIGIN0" )
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$SRO_PREV_AR"
+
 # --- 34n. 답의 라우팅 — 갈래가 없는 답은 누구의 것이든 기록되지 않고, 교대가 되돌린 답은 다시 질문이 된다 ---
 # --- section: 34n | group: cone | covers: act, snapshot, shift-halt | anchors: 34n: 세션 id 없는 키의 사람 답은 라우팅 불가로 거절된다, 34n: 들여온 적용 정산 기록의 질문과 관측 끝에 게이트 정산 판정 줄이 붙는다, 34n: 긴 관측에서도 원뿔 행 근거가 게이트 정산 판정 줄을 온전히 싣는다, 34n: 같은 감사 키의 두 번째 자동 채택은 거절된다, 34n: 라우팅 막힘 행에 게이트가 막힌 답 줄을 찍는다, 34n: 되돌려진 기록의 좌석 자동 답은 거절된다 ---
 #
