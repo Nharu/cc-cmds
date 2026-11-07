@@ -2762,8 +2762,9 @@ has "15b: 게이트가 그 런의 스냅숏을 낸다" "$TH_H" "-"
 check "15b: 게이트를 지난 revise 가 성공한다" "$rc" "0"
 [ "$rc" = 0 ] || tail -5 "$WORK/th.exec" >&2
 check "15b: 문서는 후보 그대로다" "$(sha "$TH_DOC")" "$(sha "$WORK/th-candidate.md")"
+# 행의 argv 는 길이 예산에서 잘려 긴 경로에서는 헬퍼 이름이 남지 않으므로 근거로 고른다.
 has "15b: 원장의 그 행은 revise 를 워크트리쓰기로 적는다" \
-  "$(grep -F 'base-split.py' "$BASE/docs/pipeline-run/RKTH.md" | tail -n 1)" "워크트리쓰기"
+  "$(grep -F '근거=픽스처 — 상위 문서를 개정한다' "$BASE/docs/pipeline-run/RKTH.md" | tail -n 1)" "축2=워크트리쓰기"
 
 seat_end 마감
 TH_V=$(rk verify --prev RKTH --base "$BASE")
