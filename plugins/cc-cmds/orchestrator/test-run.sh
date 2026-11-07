@@ -1683,6 +1683,24 @@ fi
 grep -v '^\*\*비용 천장\*\*: ' "$MF" > "$MF.c" && mv "$MF.c" "$MF"
 check "천장 필드가 없으면 그 필드를 얼리기 전과 같은 바이트다 (기존 매니페스트가 그대로 적합하다)" \
   "$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)" "$bd_nocost"
+# 계정 이전 목록은 교대가 다른 계정을 쓰게 하므로 같은 조건으로 같은 집합에 든다.
+cp "$MF" "$MF.fo-save"
+printf -- '- `계정 이전 허용` | 계정=u-a | 사유=픽스처\n' >> "$MF"
+bd_fo=$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)
+if [ "$bd_fo" = "$bd_nocost" ]; then
+  bad "구속 집합 감도" "계정 이전 허용 행을 더했는데 다이제스트가 그대로다"
+else
+  ok "계정 이전 허용 행이 생기면 구속 다이제스트가 움직인다"
+fi
+printf -- '- `계정 이전 허용` | 계정=u-b | 사유=픽스처\n' >> "$MF"
+if [ "$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)" = "$bd_fo" ]; then
+  bad "구속 집합 감도" "목록에 계정을 더했는데 다이제스트가 그대로다"
+else
+  ok "목록의 계정이 늘면 구속 다이제스트가 움직인다"
+fi
+mv "$MF.fo-save" "$MF"
+check "계정 이전 허용 행이 없으면 그 행을 얼리기 전과 같은 바이트다" \
+  "$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)" "$bd_nocost"
 # 무진전 상한도 런을 끝내므로 같은 조건으로 같은 집합에 든다.
 awk '/^\*\*벽시계 마감\*\*: /{print; print "**무진전 상한**: 7"; next} {print}' "$MF" > "$MF.c" && mv "$MF.c" "$MF"
 check "픽스처가 실제로 상한 줄을 얻었다 (아래 둘이 공허하지 않다)" \
@@ -8134,6 +8152,20 @@ want=$(CLAUDE_CONFIG_DIR="$LD/env" HOME="$LD/home" \
        /usr/bin/env sh -c 'printf %s "${CLAUDE_CONFIG_DIR:-$HOME/.claude}"')
 got=$(CLAUDE_CONFIG_DIR="$LD/env" RUN_DIR="$LD/rundir" HOME="$LD/home" XDG_CONFIG_HOME="$LD/xdg" resolve_account)
 check "T7 1단의 반환값이 변경 전 구현과 바이트 동일" "$got" "$want"
+
+# --- T7a: 옮긴 교대 안에서만 1단을 건너뛴다 ---------------------------------
+# 게이트가 옮긴 교대는 고른 계정의 디렉터리를 환경변수와 표지에 함께 받는다. 그 안에서
+# 해석하는 좌석은 런의 기록이어야 하고, 표지가 없거나 값이 다르면 1단은 그대로다.
+v=$(CLAUDE_CONFIG_DIR="$LD/env" CC_GATE_SHIFT_LANE="$LD/env" CC_PIPELINE_SHIFT_ID="R#2" RUN_DIR="$LD/rundir" HOME="$LD/home" XDG_CONFIG_HOME="$LD/xdg" resolve_account)
+check "T7a 옮긴 교대: 표지와 환경이 같으면 1단을 건너뛰어 런의 기록을 낸다" "$v" "$LD/runrec"
+v=$(CLAUDE_CONFIG_DIR="$LD/env/" CC_GATE_SHIFT_LANE="$LD/env" CC_PIPELINE_SHIFT_ID="R#2" RUN_DIR="$LD/rundir" HOME="$LD/home" XDG_CONFIG_HOME="$LD/xdg" resolve_account)
+check "T7a 옮긴 교대: 끝 슬래시 차이는 같은 값이다" "$v" "$LD/runrec"
+v=$(CLAUDE_CONFIG_DIR="$LD/env" CC_GATE_SHIFT_LANE="" CC_PIPELINE_SHIFT_ID="R#2" RUN_DIR="$LD/rundir" HOME="$LD/home" XDG_CONFIG_HOME="$LD/xdg" resolve_account)
+check "T7a 빈 표지: 1단이 그대로다" "$v" "$LD/env"
+v=$(CLAUDE_CONFIG_DIR="$LD/env" CC_GATE_SHIFT_LANE="$LD/other" CC_PIPELINE_SHIFT_ID="R#2" RUN_DIR="$LD/rundir" HOME="$LD/home" XDG_CONFIG_HOME="$LD/xdg" resolve_account)
+check "T7a 다른 값의 표지: 1단이 그대로다" "$v" "$LD/env"
+v=$(unset CC_PIPELINE_SHIFT_ID; CLAUDE_CONFIG_DIR="$LD/env" CC_GATE_SHIFT_LANE="$LD/env" RUN_DIR="$LD/rundir" HOME="$LD/home" XDG_CONFIG_HOME="$LD/xdg" resolve_account)
+check "T7a 교대 밖의 표지: 1단이 그대로다" "$v" "$LD/env"
 
 # --- T7b: init 이 쓰는 값이 init 이 읽는 술어를 만족한다 --------------------
 # 이것을 **왕복**으로 재지 않으면 잡히지 않는다. 4단은 `$HOME/.claude` 를 검증 없이

@@ -66,6 +66,10 @@ export XDG_STATE_HOME="$WORK/state"
 # The config root the account inventory is read under is moved off the host's,
 # so the fixture run opens unrouted whatever this machine has.
 export XDG_CONFIG_HOME="$WORK/config"
+# The snapshot's `shift.context` is read from the calling session's transcript.
+# Inherited from a live session it would measure that session while it writes,
+# and two snapshots of one ledger would differ.
+unset CLAUDE_CODE_SESSION_ID
 
 passed=0; failed=0
 ok()   { passed=$((passed + 1)); printf 'PASS: %s\n' "$1"; }
@@ -3162,6 +3166,43 @@ printf -- '- `중단 답` | 교대=1 | 세그먼트=S8 | 중단 기록=%s | 스�
 check "사람의 새 답이 서면 returned_halts 는 비고 새 답이 answered_halts 에 오른다" \
   "$(ret_read gate_returned_halts_json 'length')/$(ret_read gate_answered_halts_json '[.[] | .option]')" '0/["재시도"]'
 rm -rf "$RET_DIR"
+
+# ---------------------------------------------------------------------------
+# 계정 이전 대기 — 릴레이의 재개 시각 원소와 깨움 키, 게이트·워처가 함께 읽는 대기 판독.
+# 판독은 원장의 행과 relay.live 의 `resume=` 줄만 보므로 게이트 없이 liveness.sh 로 잰다.
+# ---------------------------------------------------------------------------
+FOS_DIR="$WORK/fo-wait"
+mkdir -p "$FOS_DIR"
+FOS_LG="$FOS_DIR/ledger.md"
+fos_read() { ( . "$repo_root/plugins/cc-cmds/orchestrator/liveness.sh"; "$@" ); }
+fos_iso() { fos_read cc_epoch_to_iso "$1"; }
+fos_now=$(date -u +%s)
+fos_row() {  # fos_row <결과> <재개 epoch> — 원장 끝에 계정 이전 행 하나
+  printf -- '- `계정 이전` | 교대=1 | 서수=2 | 좌석 레인=~/.claude | 증거=사용량 | 결과=%s | 레인=- | 계정=- | 재개 시각=%s | 후보=- | 기록 시각=%s | prev=0\n' \
+    "$1" "$(fos_iso "$2")" "$(fos_iso "$fos_now")" >> "$FOS_LG"
+}
+printf -- '- `handoff` | 교대=1 | 대상=t | 사유=대기 | prev=0\n' > "$FOS_LG"
+check "대기 행이 없으면 재개 시각도 대기 판독도 없다" \
+  "[$(fos_read cc_failover_wait_resume "$FOS_LG")]/$(fos_read cc_failover_waiting_now "$FOS_LG" "$fos_now" 0 && printf 예 || printf 아니오)" "[]/아니오"
+fos_row 대기 "$((fos_now + 300))"
+check "최신 인계 뒤의 대기 행이 재개 시각을 낸다" "$(fos_read cc_failover_wait_resume "$FOS_LG")" "$((fos_now + 300))"
+check "재개 시각 전이면 대기로 읽는다" "$(fos_read cc_failover_waiting_now "$FOS_LG" "$fos_now" 0 && printf 예 || printf 아니오)" "예"
+check "여유 0 으로 재개 시각 뒤면 대기가 아니다" "$(fos_read cc_failover_waiting_now "$FOS_LG" "$((fos_now + 301))" 0 && printf 예 || printf 아니오)" "아니오"
+check "여유 안의 재개 시각 뒤는 대기로 읽는다" "$(fos_read cc_failover_waiting_now "$FOS_LG" "$((fos_now + 301))" 1620 && printf 예 || printf 아니오)" "예"
+fos_row 이전 "$((fos_now + 300))"
+check "대기 뒤의 다른 결과 행은 대기를 끝낸다" "$(fos_read cc_failover_waiting_now "$FOS_LG" "$fos_now" 0 && printf 예 || printf 아니오)" "아니오"
+printf -- '- `handoff` | 교대=2 | 대상=t | 사유=대기 | prev=0\n' >> "$FOS_LG"
+fos_row 대기 "$((fos_now - 90))"
+printf 'resume=%s\n' "$((fos_now - 90))" > "$FOS_DIR/relay.live"
+check "재개 시각이 지나면 fr 키가 그 시각을 시계로 선다" \
+  "$(fos_read cc_relay_wake_keys "$FOS_DIR" "$FOS_LG" | grep '^fr:')" "$(printf 'fr:계정 이전\t%s' "$((fos_now - 90))")"
+printf 'resume=%s\n' "$((fos_now + 600))" > "$FOS_DIR/relay.live"
+check "재개 시각 전에는 fr 키가 서지 않는다" \
+  "$( { fos_read cc_relay_wake_keys "$FOS_DIR" "$FOS_LG" | grep -c '^fr:' || true; } | tr -d ' ')" "0"
+check "워처 여유 값은 900·600·120 의 합이다" "$(fos_read eval 'printf %s "$CC_FAILOVER_WATCH_SLACK_SECONDS"')" "1620"
+rm -rf "$FOS_DIR"
+unset -f fos_read fos_iso fos_row
+unset FOS_DIR FOS_LG fos_now
 
 printf '\ntest-snapshot: %d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" = "0" ]

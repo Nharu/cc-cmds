@@ -1685,6 +1685,69 @@ check "7: @inline 키의 --rows 행은 render-manifest 가 1 이다" "$rc" "1"
 VS_PREV="$PM"; VS_PMSHA="$PMSHA"; VS_PGSHA="$PGSHA"
 rm -rf "$CLAUDE_CONFIG_DIR"; mkdir -p "$CLAUDE_CONFIG_DIR"
 
+# (h) `계정 이전 허용` rows on the person's path. Nothing is judged again: the
+# source's row carries byte for byte, and acct-b is a default 5o confirmed for a
+# blank, appended through --rows with its blank row, its 5o line and its answer
+# in the confirmation line.
+FA_ROW7="- \`계정 이전 허용\` | 계정=acct-a | 사유=픽스처"
+FA_DEF="- \`계정 이전 허용\` | 계정=acct-b | 사유=킥오프 기본값"
+P_EXTRA="$FA_ROW7" mk_prev RKFH; fx_done
+FMH=$(sha "$BASE/docs/pipeline-run/RKFH.plan.md"); FGH=$(sha "$BASE/docs/pipeline-grant/RKFH.md")
+VS_PREV="$BASE/docs/pipeline-run/RKFH.plan.md"; VS_PMSHA="$FMH"; VS_PGSHA="$FGH"
+# fh_render <out> <args…> — render-manifest from RKFH.
+fh_render() {
+  local o="$1"; shift
+  rk render-manifest --prev RKFH --base "$BASE" --run-id RKNF --kickoff-at "$KAT1" --deadline "$DL1" \
+     --expect-sha256 "$FMH" --expect-grant-sha256 "$FGH" "$@" > "$o"
+}
+fh_render "$WORK/v-fa0.md" --asked "$E"; rc=$?
+check "7: 계정 이전 행을 가진 원천의 render-manifest 는 0 이고 그 행을 바이트 그대로 하나 옮긴다" \
+  "$rc/$(grep -c '^- `계정 이전 허용`' "$WORK/v-fa0.md")/$(grep -cxF -- "$FA_ROW7" "$WORK/v-fa0.md")" "0/1/1"
+mf_check "$WORK/v-fa0.md"; rc=$?
+check "7: 계정 이전 행을 이어 쓴 초안이 check_manifest 를 통과한다" "$rc" "0"
+vs "이어 쓴 계정 이전 행만 가진 사람 초안은 통과한다" 통과 "$WORK/v-fa0.md" "$E"
+grep -vxF -- "$FA_ROW7" "$WORK/v-fa0.md" > "$WORK/v-fa0-drop.md"
+vs "앞선 계정 이전 행을 뺀 사람 초안은 실패한다" 실패 "$WORK/v-fa0-drop.md" "$E" '계정 이전'
+sed '/^- `계정 이전 허용`/s/| 사유=픽스처$/| 사유=바뀜/' "$WORK/v-fa0.md" > "$WORK/v-fa0-ch.md"
+vs "앞선 행과 바이트가 다른 계정 이전 행의 사람 초안은 실패한다" 실패 "$WORK/v-fa0-ch.md" "$E" '계정 이전'
+
+FH_SHAPE=$(grep -E '^- `(사전 인가` \| 형태=|자동 채택`)' "$BASE/docs/pipeline-run/RKFH.plan.md")
+{ printf '%s\n' "$FH_SHAPE"; printf '%s\n' "$FA_DEF"; } > "$WORK/rows-fa"
+printf '5o 런:account-failover=acct-b\t런:account-failover=acct-b\n' > "$WORK/asked-fa"
+blanks "$WORK/blanks-fa" "런${TAB}account-failover${TAB}acct-b"
+fh_render "$WORK/v-fa1.md" --asked "$WORK/asked-fa" --rows "$WORK/rows-fa"; rc=$?
+check "7: --rows 의 계정 이전 행을 받은 render-manifest 는 0 이다" "$rc" "0"
+[ "$rc" = 0 ] || tail -2 "$WORK/rk.err" >&2
+check "7: 덧붙인 계정 이전 행은 이어 쓴 행 뒤에 온다" \
+  "$(grep -E '^- `계정 이전 허용` ' "$WORK/v-fa1.md" | awk -F' [|] ' '{ print $2 }' | paste -sd/ -)" "계정=acct-a/계정=acct-b"
+has "7: 사용자 확인 문면이 5o 의 계정 이전 답을 적는다" "$(awk -F': ' '$1 == "**사용자 확인 문면**" { print $2 }' "$WORK/v-fa1.md")" " / 런:account-failover=acct-b"
+mf_check "$WORK/v-fa1.md"; rc=$?
+check "7: 계정 이전 기본값 행을 덧붙인 초안이 check_manifest 를 통과한다" "$rc" "0"
+vs "5o 확정 계정 이전 기본값을 덧붙인 초안은 --blank-rows 를 적재해 통과한다" 통과 "$WORK/v-fa1.md" "$WORK/asked-fa" "" \
+  --blank-rows "$WORK/blanks-fa"
+vs "--blank-rows 가 없으면 덧붙인 계정 이전 행은 실패한다" 실패 "$WORK/v-fa1.md" "$WORK/asked-fa" '계정 이전'
+vs "5o 줄 없이 덧붙인 계정 이전 행은 실패한다" 실패 "$WORK/v-fa1.md" "$E" '계정 이전' --blank-rows "$WORK/blanks-fa"
+sed '/^- `계정 이전 허용` | 계정=acct-b/s/| 사유=킥오프 기본값$/| 사유=다른 사유/' "$WORK/v-fa1.md" > "$WORK/v-fa1-r.md"
+vs "사유가 킥오프 기본값이 아닌 계정 이전 덧붙임은 실패한다" 실패 "$WORK/v-fa1-r.md" "$WORK/asked-fa" '계정 이전' \
+  --blank-rows "$WORK/blanks-fa"
+sed "s| / 런:account-failover=acct-b||" "$WORK/v-fa1.md" > "$WORK/v-fa1-c.md"
+vs "사용자 확인 문면에 계정 이전 답이 없는 덧붙임은 실패한다" 실패 "$WORK/v-fa1-c.md" "$WORK/asked-fa" '계정 이전' \
+  --blank-rows "$WORK/blanks-fa"
+# Rows --rows may not add.
+printf '%s\n' '- `계정 이전 허용` | 계정=Bad_Id | 사유=킥오프 기본값' > "$WORK/rows-fa-bad"
+fh_render "$WORK/v-fax.md" --rows "$WORK/rows-fa-bad"; rc=$?
+check "7: 모양이 틀린 --rows 계정 이전 행은 render-manifest 가 1 이고 출력이 없다" "$rc/$(cat "$WORK/v-fax.md")" "1/"
+has "7: 그 거절은 계정 이전 행 형식을 짚는다" "$(cat "$WORK/rk.err")" "계정 이전 허용 행 형식이 어긋났습니다"
+printf '%s\n' '- `계정 이전 허용` | 계정=acct-a | 사유=킥오프 기본값' > "$WORK/rows-fa-dup"
+fh_render "$WORK/v-fax.md" --rows "$WORK/rows-fa-dup"; rc=$?
+check "7: 이어 쓴 계정과 같은 계정의 --rows 행은 render-manifest 가 1 이다" "$rc" "1"
+has "7: 그 거절은 이어 쓰는 계정 이전 행을 짚는다" "$(cat "$WORK/rk.err")" "앞선 런에서 이어 쓰는 행이 이미 있습니다"
+printf '%s\n%s\n' "$FA_DEF" "$FA_DEF" > "$WORK/rows-fa-two"
+fh_render "$WORK/v-fax.md" --rows "$WORK/rows-fa-two"; rc=$?
+check "7: --rows 안에서 같은 계정이 두 번이면 render-manifest 가 1 이다" "$rc" "1"
+has "7: 그 거절은 두 계정 이전 행을 짚는다" "$(cat "$WORK/rk.err")" "행이 둘 이상입니다"
+VS_PREV="$PM"; VS_PMSHA="$PMSHA"; VS_PGSHA="$PGSHA"
+
 # ---------------------------------------------------------------------------
 # 12. 좌석 — judge 의 금지선과 기다림, --auto 렌더·검증, 연쇄 계수
 # ---------------------------------------------------------------------------

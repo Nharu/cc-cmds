@@ -170,6 +170,15 @@
 # `플러그인 알림<TAB>초안에서 빠진 판정 불가 행<TAB><키><TAB><경로>`; a row
 # that differs from every previous row, or whose key is in the seed, fails.
 #
+# THE `계정 이전 허용` ROWS CARRY by the same path, byte for byte, with
+# nothing judged again. `--rows` may add rows for the account defaults 5o
+# confirmed for a blank, `- \`계정 이전 허용\` | 계정=<id> | 사유=킥오프 기본값`,
+# refused on the same terms as a plugin row. `verify-subset` checks them as
+# `계정 이전`: a person's draft holds every previous row, and each other row is
+# a confirmed default with its `빈칸` row, `--asked` key
+# `5o <범위>:account-failover=<id>` and answer in the confirmation text; the
+# seat's draft holds the previous rows exactly.
+#
 # `detect` takes no `<base>`: the kickoff resolves its own `<base>` only after
 # the targets are settled, and this step runs before that. Each candidate's
 # `<base>` comes from its run directory's `ledger-path`, and the `재킥오프`
@@ -394,7 +403,7 @@ for rk_f in manifest_field manifest_hdr_field manifest_row_fields manifest_plan_
             cc_live_stages cc_shift_is_live cc_relay_is_live cc_waiting_fresh_count cc_unanswered_halts cc_halt_answered \
             cc_unresolved_blocked cc_open_approval_rows cc_segment_states \
             dr_duration_seconds manifest_rekick_rows manifest_adoption_rows manifest_surface_approval_rows \
-            manifest_plugin_allow_rows slice_ids; do  command -v "$rk_f" >/dev/null 2>&1 || rk_refuse "run.sh 에 $rk_f 가 없습니다"
+            manifest_plugin_allow_rows manifest_failover_allow_rows slice_ids; do  command -v "$rk_f" >/dev/null 2>&1 || rk_refuse "run.sh 에 $rk_f 가 없습니다"
 done
 
 # The plugin judgment — the functions the kickoff judges its plugin defaults
@@ -2605,6 +2614,40 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
+# Account rows. Every previous `계정 이전 허용` row is carried in place, byte
+# for byte, and nothing is judged again: an account the lane inventory no
+# longer enables shows at launch as `인벤토리 밖` on the `후보=` field.
+# ---------------------------------------------------------------------------
+rk_fa_key() { manifest_row_fields "$1" '계정' | head -n 1; }
+
+# rk_failover_rows <out> — the `계정 이전 허용` rows of `--rows`, written to
+# <out> in order; each one is a row a person confirmed at 5o for a blank
+# `--carry` showed. Prints the first refusal and returns 1 for a row of
+# another shape, a row under `--auto` (the seat confirms nothing), and an
+# account given twice or already carried.
+rk_failover_rows() {
+  local out="$1" r k seen='' carried
+  : > "$out"
+  [ -n "$RK_ROWS" ] || return 0
+  carried=$(manifest_failover_allow_rows | while IFS= read -r kr; do [ -n "$kr" ] && rk_fa_key "$kr" && printf '\n'; done)
+  while IFS= read -r r; do
+    [ -n "$r" ] || continue
+    [ "$RK_AUTO" != "1" ] || { printf '%s' "--auto 의 --rows 에 계정 이전 허용 행이 있습니다 — 좌석은 기본값을 확정하지 않습니다: $r"; return 1; }
+    printf '%s\n' "$r" | grep -qE '^- `계정 이전 허용` \| 계정=[a-z0-9-]+ \| 사유=[^|]*[^ |]$' \
+      || { printf '%s' "--rows 의 계정 이전 허용 행 형식이 어긋났습니다: $r"; return 1; }
+    k=$(rk_fa_key "$r")
+    case "$seen" in *" $k "*) printf '%s' "--rows 에 계정 $k 의 행이 둘 이상입니다"; return 1 ;; esac
+    seen="$seen $k "
+    printf '%s\n' "$carried" | grep -qxF -- "$k" \
+      && { printf '%s' "--rows 의 계정 $k 는 앞선 런에서 이어 쓰는 행이 이미 있습니다"; return 1; }
+    printf '%s\n' "$r" >> "$out"
+  done <<EOF
+$(grep -E '^- `계정 이전 허용`' "$RK_ROWS" 2>/dev/null || true)
+EOF
+  return 0
+}
+
+# ---------------------------------------------------------------------------
 # The draft. rk_render <out> <new id> <kickoff at> <deadline> <confirmation>
 # <approval> <previous manifest sha256> <previous grant sha256> — reads the
 # current MANIFEST (the previous run's copy) and the G_* graph values, and the
@@ -2631,6 +2674,7 @@ rk_render() {
   rk_plugin_carry
   printf '%s' "$RK_PA_DROP" > "$RK_TMP/plugin.drop"
   RK_RENDER_WHY=$(rk_plugin_rows "$RK_TMP/plugin.rows") || return 1
+  RK_RENDER_WHY=$(rk_failover_rows "$RK_TMP/failover.rows") || return 1
   printf '%s' "$RK_RULES" > "$RK_TMP/rules.kv"
   [ -f "$RK_TMP/sets.tsv" ] || : > "$RK_TMP/sets.tsv"
   # A mapping row that cannot be carried is dropped, and a confirmed mapping is
@@ -2653,6 +2697,7 @@ rk_render() {
   R_PLANF="$planf" R_PROV="$prov" R_TFILE="$( [ -n "$RK_TARGETS" ] && printf '%s' "$RK_TMP/targets.rows")" \
   R_RFILE="$( [ -n "$RK_ROWS" ] && printf '%s' "$RK_TMP/shape.rows")" R_RULES="$RK_TMP/rules.kv" \
   R_PADROP="$RK_TMP/plugin.drop" R_PFILE="$( [ -s "$RK_TMP/plugin.rows" ] && printf '%s' "$RK_TMP/plugin.rows")" \
+  R_FFILE="$( [ -s "$RK_TMP/failover.rows" ] && printf '%s' "$RK_TMP/failover.rows")" \
   R_BIND="$bindsha" R_IVPATH="docs/pipeline-run/$newid.interview.md" R_ADOPT="${RK_ADOPT_ROWS:-}" R_IVANC="$RK_IVANC" \
   awk '
     function field(line,   p) { p = index(line, "**: "); return substr(line, 3, p - 3) }
@@ -2669,6 +2714,7 @@ rk_render() {
         if (!adopt_done && ENVIRON["R_ADOPT"] != "") { while ((getline l < ENVIRON["R_ADOPT"]) > 0) print l; close(ENVIRON["R_ADOPT"]); adopt_done = 1 }
         if (!acrow_done && ENVIRON["R_ACROW"] != "") { print ENVIRON["R_ACROW"]; acrow_done = 1 }
         if (!plugin_done && pfile != "") { while ((getline l < pfile) > 0) print l; close(pfile); plugin_done = 1 }
+        if (!failover_done && ENVIRON["R_FFILE"] != "") { while ((getline l < ENVIRON["R_FFILE"]) > 0) print l; close(ENVIRON["R_FFILE"]); failover_done = 1 }
         # An interview row found up the lineage, its path moved to the new run.
         if (!ivanc_done && ENVIRON["R_IVANC"] != "") {
           line = ENVIRON["R_IVANC"]; sub(/인터뷰 기록=[^|]*\|/, "인터뷰 기록=" ENVIRON["R_IVPATH"] " |", line); print line; ivanc_done = 1
@@ -2745,6 +2791,9 @@ rk_render() {
       if (match($0, /플러그인=[^ |]*/) && (substr($0, RSTART + length("플러그인="), RLENGTH - length("플러그인=")) in padrop)) next
       print; next
     }
+    # The account rows of the previous run are carried in place, byte for
+    # byte, with nothing judged again.
+    /^- `계정 이전 허용`/ { print; next }
     # A mapping row the pipeline cannot run on is not carried; 5c answers it
     # again and the confirmed row is written when the section closes.
     /^- `적용 프로브 코드`/ { if (ENVIRON["R_ACDROP"] == "1") next; print; next }
@@ -3453,6 +3502,49 @@ $pa_d
 EOF
   fi
   vs_check 플러그인 "$why"
+
+  # 7c — the `계정 이전 허용` rows. Nothing is judged again, so a person's
+  # draft holds every previous row byte for byte, and any other row is a
+  # default 5o confirmed for a blank: that row shape, a `빈칸` row of
+  # `--blank-rows` for the account, its `--asked` key and its answer in the
+  # confirmation text. The seat's draft holds the previous rows exactly.
+  local fa_prev fa_d fa_k fa_sc fa_dups fa_bwhy=''
+  why=""
+  fa_prev=$(MANIFEST="$prev" manifest_failover_allow_rows)
+  fa_d=$(MANIFEST="$draft" manifest_failover_allow_rows)
+  fa_dups=$(printf '%s\n' "$fa_d" | while IFS= read -r row; do [ -n "$row" ] && rk_fa_key "$row" && printf '\n'; done | sort | uniq -d | paste -sd, -)
+  [ -z "$fa_dups" ] || why="${why:+$why; }초안에 같은 계정의 계정 이전 허용 행이 둘 이상입니다: $fa_dups"
+  if [ "$RK_AUTO" = "1" ]; then
+    [ "$fa_d" = "$fa_prev" ] \
+      || why="${why:+$why; }좌석은 계정 이전 허용 행을 바꾸지 않습니다 — 초안의 행이 앞선 런과 바이트 단위로 다릅니다"
+  else
+    while IFS= read -r row; do
+      [ -n "$row" ] || continue
+      vs_in "$row" "$fa_d" || why="${why:+$why; }앞선 런에서 이어 써야 할 계정 이전 허용 행이 초안에 없습니다: $row"
+    done <<EOF
+$fa_prev
+EOF
+    while IFS= read -r row; do
+      [ -n "$row" ] || continue
+      vs_in "$row" "$fa_prev" && continue
+      fa_k=$(rk_fa_key "$row")
+      if [ "$row" != "- \`계정 이전 허용\` | 계정=$fa_k | 사유=킥오프 기본값" ]; then
+        why="${why:+$why; }앞선 런에 없고 5o 에서 확정한 기본값의 행 모양이 아닙니다: $row"; continue
+      fi
+      if [ -z "$VS_BLANKS" ] && [ -z "$fa_bwhy" ]; then
+        fa_bwhy=$(vs_load_blanks '앞선 런에 없는 계정 이전 허용 행') || :
+        if [ -n "$fa_bwhy" ]; then why="${why:+$why; }$fa_bwhy"; else VS_BLANKS="$RK_TMP/blanks.tsv"; fi
+      fi
+      [ -n "$VS_BLANKS" ] || continue
+      fa_sc=$(FK="$fa_k" awk -F '\t' '$1 == "빈칸" && $3 == "account-failover" && $4 == ENVIRON["FK"] { print $2; exit }' "$VS_BLANKS")
+      if [ -z "$fa_sc" ]; then why="${why:+$why; }계정 $fa_k 는 5o 가 보인 빈칸 행이 아닙니다"; continue; fi
+      [ -n "$(rk_asked_answer "5o $fa_sc:account-failover=$fa_k")" ] || why="${why:+$why; }$fa_sc:account-failover=$fa_k 는 5o 에서 묻지 않은 값입니다"
+      case " / $D_CONFIRM / " in *" / $fa_sc:account-failover=$fa_k / "*) ;; *) why="${why:+$why; }$fa_sc:account-failover=$fa_k 가 사용자 확인 문면에 없습니다" ;; esac
+    done <<EOF
+$fa_d
+EOF
+  fi
+  vs_check '계정 이전' "$why"
 
   # 8 — the interview row: exactly one when the draft plan holds a design or a
   # visual step (the stages that read the record), none when both are out, and
