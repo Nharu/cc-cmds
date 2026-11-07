@@ -2763,8 +2763,9 @@ check "15b: 게이트를 지난 revise 가 성공한다" "$rc" "0"
 [ "$rc" = 0 ] || tail -5 "$WORK/th.exec" >&2
 check "15b: 문서는 후보 그대로다" "$(sha "$TH_DOC")" "$(sha "$WORK/th-candidate.md")"
 # 행의 argv 는 길이 예산에서 잘려 긴 경로에서는 헬퍼 이름이 남지 않으므로 근거로 고른다.
-has "15b: 원장의 그 행은 revise 를 워크트리쓰기로 적는다" \
-  "$(grep -F '근거=픽스처 — 상위 문서를 개정한다' "$BASE/docs/pipeline-run/RKTH.md" | tail -n 1)" "축2=워크트리쓰기"
+TH_ROW=$(grep -F '근거=픽스처 — 상위 문서를 개정한다' "$BASE/docs/pipeline-run/RKTH.md" | tail -n 1)
+has "15b: 원장의 그 행은 선언한 표면을 적는다" "$TH_ROW" "선언=워크트리쓰기"
+has "15b: 원장의 그 행은 선언한 도달을 적는다" "$TH_ROW" "도달=런로컬"
 
 seat_end 마감
 TH_V=$(rk verify --prev RKTH --base "$BASE")
