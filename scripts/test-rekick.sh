@@ -3870,7 +3870,7 @@ has "17: 새 런 고지는 「다시 <런 id>」 를 가리킨다" "$OUT" "「�
 # byte for byte, so that intent matches both. The kickoff then asks, and calls
 # detect again with the chosen id alone: an id after the intent is not a run id
 # argument.
-MQA='20261020-00b0000a'; MQB='20261020-00b0000b'
+MQA='20261020-00b1000a'; MQB='20261020-00b1000b'
 IQ='같은 의도를 이어받은 두 런'
 P_KAT='2026-10-30T00:00:00Z' P_INTENT="$IQ" mk_prev "$MQA"
 P_KAT='2026-10-31T00:00:00Z' P_INTENT="$IQ" mk_prev "$MQB"; fx_done
