@@ -165,6 +165,7 @@ whole, creation-only, no append form**), `ledger.md` (driver, append-only),
 - `출처 티켓` | 트래커=github | 참조=<owner>/<name>#<N>     ← 이 런의 PR 이 이어야 할 이슈마다 한 행, 여러 행 가능
 - `출처 티켓` | 트래커=clickup | 참조=<URL>     ← 이 런의 PR 이 이어야 할 ClickUp 티켓마다 한 행, 여러 행 가능
 - `세그먼트 입양` | 세그먼트=<id> | 브랜치=<브랜치> | 워크트리=<절대 경로> | 출처 런=<런 id 또는 -> | PR=<번호>     ← 이전 런이 머지 전에 남긴 세그먼트나 런 밖에서 사람이 만든 브랜치·PR 을 이어받을 때만(런 밖이면 `출처 런=-`), 세그먼트당 많아야 한 행. 재킥오프가 쓰는 행은 사람이 읽어 준 값이 아니라 rekick.sh 가 다시 유도한 값
+- `머지 입양` | 세그먼트=<id> | 대상=<별칭> | PR=<번호> | 머지 커밋=<40자 hex> | PR 헤드=<40자 hex> | 출처 런=<런 id 또는 ->     ← 런 밖에서(또는 이전 런이) 머지한 PR 을 사후 리뷰하려고 이어받을 때만, 설계 문서 없는 계획에서 세그먼트당 많아야 한 행. 같은 세그먼트의 `세그먼트 입양` 행과는 짝으로 설 수 있다(이전 런이 남긴 수정 브랜치). 재킥오프가 쓰는 행은 rekick.sh 가 다시 유도한 값
 - `강제 표면 승인` | 세그먼트=<id> | 브랜치=<브랜치> | 경로=<경로> | 분류=<분류> | 베이스 항목=<mode oid|없음> | 승인 항목=<mode oid|없음> | 근거=<한 줄>     ← 입양한 세그먼트의 브랜치가 좌석 적용 밖에서 바꾼 강제 표면 경로를 사람이 킥오프에서 승인할 때만, 같은 세그먼트·브랜치의 `세그먼트 입양` 행이 있어야 하고 (세그먼트, 경로)마다 많아야 한 행. 값은 `enforcement-surface-screen.sh --between` 의 출력에서 그대로 옮긴다
 - `선행 착지` | 슬라이스=<id> | 원격 슬러그=<owner>/<name> | 머지 커밋=<40자리 hex>     ← 어느 런 원장에도 착지 기록이 없는 선행 슬라이스마다, 사람이 확인한 한 행
 - `플러그인 허용` | 플러그인=<이름@마켓> | 사유=<한 줄>     ← 킥오프 5t 에서 사람이 고르거나 5o 에서 확정한 플러그인마다 한 행(5o 확정 행의 사유는 `킥오프 기본값`), 키마다 많아야 한 행
@@ -201,7 +202,7 @@ What IS frozen, and what `구속 다이제스트` covers: the goal, the terminat
 point together with its decomposition into checkable clauses, the targets and
 their per-target cutpoints, the rule-catalog settings, the list of predicted
 irreversible acts, **the `자동 채택` rows**, **the `설계 로스터` rows**, **the
-`베이스 발행` and `베이스 설계` rows**, **the `출처 티켓` rows**, **the `세그먼트 입양` rows**, **the `강제 표면 승인` rows**, **the `선행
+`베이스 발행` and `베이스 설계` rows**, **the `출처 티켓` rows**, **the `세그먼트 입양` rows**, **the `머지 입양` rows**, **the `강제 표면 승인` rows**, **the `선행
 착지` rows**, **the `플러그인 허용` rows**, **the `계정 이전 허용` rows**, **the `적용 프로브 코드` row when written**, **the `라벨 인정` rows**, **the
 `리뷰 PR`, `리뷰 게시`, `리뷰 깊이` and `리뷰 문면` rows** (a manifest without them
 serializes none, so its digest does not move), the cost ceiling and
@@ -256,6 +257,30 @@ branch: there is no earlier ledger to say the segment landed, no earlier stage
 that could still run on it, and no answer to carry. The worktree still carries
 the reserved infix, so the kickoff moves a person's tree under it before it
 freezes the row, and `입양` in the snapshot's `슬라이싱` is `-`.
+
+**The `머지 입양` row hands this run a pull request merged outside it, to
+review after the fact** — the segment, the target, the pull request, the merge
+commit GitHub made on the base and the request's head at the merge, and the run
+it came from (`-` when no run cut it). The manifest check reads its form only;
+the segment's planning act reads the remote again and refuses (exit 3, nothing
+written) unless the request is merged at that merge commit and head, against
+the target's base branch, from the target's own repository, not by
+fast-forward, with the merge commit on the base's first-parent line right
+after its own first parent, an ancestor of the remote base and contained in the
+segment worktree's HEAD. It then fetches the request's head into
+`refs/cc-review/<run id>/<segment>`, writes the segment's `리뷰 의무` row —
+`머지 커밋` the merge commit, `분기점` merge-base(its first parent, the
+request's head) — unless a row of that obligation id already stands, and only
+then the planned row, carrying `리뷰 정책=선리뷰후머지`. The segment is planned
+in its derived worktree, or, beside a `세그먼트 입양` row of the same segment
+(a fix branch a re-kickoff took over), in that row's worktree, whose
+repository must be the row's `대상`. Its `다음` is `사후리뷰` until a `cycle`
+row follows the obligation's issuing row; a review that passes with no commit
+ahead of the base reads `입양 종결`, and the router then fulfils the
+obligation and writes `상태=완료` with no `커밋`, no push and no pull request.
+A fix the review asked for is reviewed and merged as any `선리뷰후머지`
+segment's. The pinned ref is dropped when the segment's `완료` or `park` row
+lands.
 
 **A `강제 표면 승인` row carries a person's approval of one enforcement-surface
 path across runs.** An adopted branch that changed a rule file, an instruction
@@ -629,7 +654,7 @@ match act reads it to decide `수리 통과` (§3.2).
 **`리뷰 정책 상한` is optional on the target row, and its absence reads as
 `선리뷰후머지`.** It sits on the target row rather than in `## 인가` because that
 is one of the few surfaces where a NEW key actually enters the frozen set: the
-freeze covers the `target`, `종료 절`, `사전 인가`, `자동 채택`, `설계 로스터`, `베이스 발행`, `베이스 설계`, `출처 티켓`, `세그먼트 입양`, `강제 표면 승인`, `선행 착지`, `플러그인 허용`, `계정 이전 허용`, `적용 프로브 코드`, `라벨 인정`, `수리 사건`, `리뷰 PR`, `리뷰 게시`, `리뷰 깊이`, `리뷰 문면` and `재킥오프` rows and lines
+freeze covers the `target`, `종료 절`, `사전 인가`, `자동 채택`, `설계 로스터`, `베이스 발행`, `베이스 설계`, `출처 티켓`, `세그먼트 입양`, `머지 입양`, `강제 표면 승인`, `선행 착지`, `플러그인 허용`, `계정 이전 허용`, `적용 프로브 코드`, `라벨 인정`, `수리 사건`, `리뷰 PR`, `리뷰 게시`, `리뷰 깊이`, `리뷰 문면` and `재킥오프` rows and lines
 whose value is literally `켬` or `끔`, and **an ordinary `**키**: 값` line inside
 `## 인가` moves neither digest.** The next optional field takes the same care.
 
@@ -768,6 +793,17 @@ never compared.
     segment per named step, on the target whose common git directory the row's
     worktree shares, and at most one more on the home target. Each violation is
     a **hard stop**.
+    **`머지 입양` rows** match their form, their `대상` is a declared target
+    whose `리뷰 정책 상한` is not `리뷰없음`, their `출처 런` is a run id other
+    than this run's or `-`, no segment has two of them, they stand beside no
+    `리뷰 PR` row, and the manifest's `설계 문서` is `(없음)`; each one's
+    `세그먼트` is one of the plan's implementation step ids, and the
+    implementation steps a `세그먼트 입양` or `머지 입양` row names are counted
+    together for the at-most-one-left rule above. A `세그먼트 입양` row and a
+    `머지 입양` row of the same segment are a pair, not two rows of one kind.
+    Whether the two name the same repository, and whether the pull request is
+    still merged as the row says, are the planning act's to read. Each
+    violation is a **hard stop**.
     **`강제 표면 승인` rows** match their form in §2b.1, their `경로` carries no
     control character, at most one row names a (segment, path) pair, a
     `세그먼트 입양` row names the same segment and branch, and one classifier
@@ -1312,7 +1348,7 @@ Exit 3 is what the seat already reads as "another launcher holds it", so a seat 
 
 **The rules read four values the gate derives, never the ledger.** Before a rule runs the gate exports `GATE_SEGMENT_LAST_CYCLE` (the body of the segment's last `cycle` row, chosen by field equality on `세그먼트`), `GATE_SEGMENT_LAST_SEGMENT` (the body of the segment's last `segment` row, chosen by field equality on `id`), `GATE_SEGMENT_REVIEW_DISMISSED` and `GATE_SEGMENT_REVIEW_CARRIED` (each the `<사이클>@<리뷰 HEAD>` of the last cycle when a `리뷰 기각` or a `리뷰 이월` row binds it, empty otherwise). On a merge act whose worktree HEAD is not R the gate also exports `GATE_META_RESOLVED_HEAD` — that HEAD — when it proves it the renumbering merge of R onto the base the latest `베이스 판정` row named, and clears the variable on entry otherwise, so a caller cannot set it; the merge rule passes a HEAD equal to it. Under `선리뷰후머지`, when that proof does not hold, the gate likewise exports `GATE_PATCH_SAME_HEAD` — the HEAD — when it proves the HEAD's branch patch the same as R's against that row's `베이스`, and clears it on entry otherwise; the merge rule passes a HEAD equal to that too. A rule that picked a row by substring would take another segment's `cycle` row whose free text names this one; that is why the selection is the gate's. An empty or non-canonical `P0` or `P1` is never read as zero.
 
-**`review_next[]` is the one value the routers branch on after a review.** The snapshot carries one element per segment that has a `cycle` row and has not merged: `세그먼트`, `다음`, and the last cycle's `사이클`, `리뷰 HEAD` and `리포트 경로` (absolute — what a carry-over act, the lead fix and the re-check name). A segment with no `cycle` row is left out; its `다음` is `리뷰 없음` by definition. **A `선머지후리뷰` segment past its merge has an element of its own**, with or without a `cycle` row, while its last `segment` row is `사후리뷰`, or `머지됨` with `적용` `없음` and a `리뷰 의무` row of the segment: `다음` is `사후리뷰` while no `cycle` row follows its last `머지됨` row, and otherwise the table's value below, read with no base overlay and no CI layer (the merged commits are already on the base) — except that `머지` or `이월 머지` reads `선머지` when the worktree HEAD carries commits past the merged tip (the last `리뷰 의무` row's `머지 커밋`), and that `선머지` carries the CI layer on a routed run as the first merge's `implement_next[]` value does. `review_carry` carries the constants `REIMPL_CYCLE_CAP` (2) and `RECHECK_ROUND_CAP` (2) for display only — the routers branch on `다음`, never on a constant. A **lead-fix row** is a `stage-result` row of the segment with `종류=lead-fix`, or the driver's `스테이지=S5F` with no `종류`; a **re-convergence row** is one with `종류=reconverge`, `정상` when its `종단 부류` is `정상 완료`; a **re-authoring row** after the last cycle row is a lead-fix row after it, or a `stage-result` row with `종류=implement` (the driver's `스테이지=S4` with no `종류`) after a `정상` re-convergence row that itself follows the last cycle row — a re-implementation. Any other implement row, such as the base resolution after a carried-over re-check, re-authors nothing, so `이월 머지` and the base overlay's `해소 리뷰` above it stand. The **re-check** is every `cycle` row after the segment's first lead-fix row in the ledger — the review after a re-implementation is a re-check too — and **K** is the number of them. `다음` is the first row of this table that holds:
+**`review_next[]` is the one value the routers branch on after a review.** The snapshot carries one element per segment that has a `cycle` row and has not merged: `세그먼트`, `다음`, and the last cycle's `사이클`, `리뷰 HEAD` and `리포트 경로` (absolute — what a carry-over act, the lead fix and the re-check name). A segment with no `cycle` row is left out; its `다음` is `리뷰 없음` by definition. **A `선머지후리뷰` segment past its merge has an element of its own**, with or without a `cycle` row, while its last `segment` row is `사후리뷰`, or `머지됨` with `적용` `없음` and a `리뷰 의무` row of the segment: `다음` is `사후리뷰` while no `cycle` row follows its last `머지됨` row, and otherwise the table's value below, read with no base overlay and no CI layer (the merged commits are already on the base) — except that `머지` or `이월 머지` reads `선머지` when the worktree HEAD carries commits past the merged tip (the last `리뷰 의무` row's `머지 커밋`), and that `선머지` carries the CI layer on a routed run as the first merge's `implement_next[]` value does. **A segment adopted as a merged pull request (a `머지 입양` row) has an element too**, with or without a `cycle` row, until its `완료` row: `다음` is `사후리뷰` while no `cycle` row follows the issuing row of its `리뷰 의무`; otherwise, when the commits its worktree HEAD carries ahead of the base cannot be read, `판정 불가`; when there are none and the table's value is `머지` or `이월 머지`, `입양 종결` — read before the base overlay and the CI layer, which it never gets — and otherwise the table's value with the overlay and the CI layer of any `선리뷰후머지` segment. At `입양 종결` the router fulfils the obligation and writes `상태=완료` with no `커밋`; the gate accepts that `완료` only with the obligation fulfilled and no commit ahead of the base. `review_carry` carries the constants `REIMPL_CYCLE_CAP` (2) and `RECHECK_ROUND_CAP` (2) for display only — the routers branch on `다음`, never on a constant. A **lead-fix row** is a `stage-result` row of the segment with `종류=lead-fix`, or the driver's `스테이지=S5F` with no `종류`; a **re-convergence row** is one with `종류=reconverge`, `정상` when its `종단 부류` is `정상 완료`; a **re-authoring row** after the last cycle row is a lead-fix row after it, or a `stage-result` row with `종류=implement` (the driver's `스테이지=S4` with no `종류`) after a `정상` re-convergence row that itself follows the last cycle row — a re-implementation. Any other implement row, such as the base resolution after a carried-over re-check, re-authors nothing, so `이월 머지` and the base overlay's `해소 리뷰` above it stand. The **re-check** is every `cycle` row after the segment's first lead-fix row in the ledger — the review after a re-implementation is a re-check too — and **K** is the number of them. `다음` is the first row of this table that holds:
 
 | Order | Condition | `다음` | Disposition |
 | --- | --- | --- | --- |
@@ -1453,7 +1489,7 @@ Both carry a derived `의무 id` (`PO-<8 hex>` over the run id and the free-text
 | `cost` | `누적 usd` · `스테이지 수` · `관측 시각` |
 | `blocked` | `대상` · `스코프`(act\|cone\|run) · `원인`(막힘\|무효화\|불명\|판정 불가\|거절 소진\|해소) · `사유` · `근거` · `앵커 세그먼트`(scope `cone`: a segment id, or a run-scope step id — the design, the audit, the split, the visual stage or the visual publish stage) · `미완 선행`(the fixed-graph driver's dependency park only: the predecessors not yet landed, in declaration order, comma-joined) · `의존 세그먼트 수`(scope `cone`) · `의존 세그먼트`(scope `cone`, clipped) · `구성원 세그먼트`(`원인=판정 불가` 행 전용: the cone member whose ancestry could not be measured) · `후보 세그먼트`(같음: the candidate measured against it) · `관측` · `재개 명령` · `재킥 원인`(`표면이동` on the run-scope row of a forced surface move \| `대상미선언` \| `슬라이싱` on the park rows of those two causes) · `도달 판정`(도달 park 행 전용) · `세그먼트`(도달 park 행, the slice park of `재킥 원인=슬라이싱`, a carry's cap row, and the row of `사유=이월 중단 답 행 상한 초과 — …`: the adopted segment, or the run-scope step's row segment) · `스테이지`(도달 park 행, a carry's cap row, and the run-scope step's row of `사유=이월 중단 답 행 상한 초과 — …`: its key) · `축2`(같음) · `도달`(같음) · `행위 다이제스트`(같음) · `행 값`(도달 park 행 전용: as on `자율 승인`) · `신고 불일치`(같음) · `이슈`(`사유=리뷰 잔여` 행 전용: the one issue URL the residual park filed; absent when filing failed) · `판정`(the review dispatch's `사유=강제 표면이 좌석 적용 밖에서 바뀜` row only: the verdict kind, `양쪽 변경` \| `승인 가능` \| `경로 문자`) · `중단 기록`(shift-halt 행 전용: the record's absolute path under `halt/shift/`) · `기록 다이제스트`(shift-halt 행 전용: gate-stamped record sha256) · `자리`(shift-halt 행 전용) · `교대`(shift-halt 행 전용: the writing shift's ordinal) · `막힌 답 줄`(gate-stamped on a `스코프=cone 원인=막힘` row whose `사유` opens `중단 답 라우팅 — <record file name> — ` while an open answer of the anchor names that record: the answer's ledger line; refused in argv) · `중단 답 줄`(the ledger line of the `중단 답` row a carry stopped or deferred: the cap rows of `사유=중단 답 라우팅 — …` and the rows of `사유=중단 답 이월 — …`) · `고칠 곳` · `판정 주체` · `판정 신호`(the fix-site judgment of §3.3, gate-written only: on the act-scope row of `사유=대상 적용 정지 <별칭>` and on the `스코프=cone` row a `병합 거절` shift stop writes; never `판정 근거`) |
 | `승인` | `승인 id` · `상태` · `대상` · `절단점`(adjudicated rung) · `유도 절단점`(rung derived from argv \| `-`) · `행위 다이제스트` · `구속 튜플` · `막는 세그먼트` · `연 자리`(judgment issue row only: a `stage-result` kind \| `라우터` \| `미상`; outside the id and the tuple) · `질문 문면` · `답변 문면` · `사이드카 앵커` · `판단 부류`(judgment approvals: the issue row and the free-input `대기` row; `-` when the judgment carried none) · `발행 시각` · `해소 시각` · `응답 토큰`(closing rows) · `답변 다이제스트`(closing rows) · `사유`(`철회` only — written by the boundary evaluation that withdraws) · `처분 사유`(a `대기` row appended after a free-input answer, which auto-resolution then leaves open; `원격 발신자 미인가` on a `대기` row appended when a remote answer's sender is not authorized at the close, which auto-resolution also leaves open and which is not a person's answer; `자동 해소` on a closing row the gate wrote itself; `중단 답 연동` on a closing row the gate wrote inside a person's `중단 답` act to a visual publish stage's record, which a reader takes as that person's answer) · `관측 시각`(the free-input row) · `응답 경로`(closing rows `close` writes from an answer frame: `원격` when exactly one apply record of the attention spool matches the frame, `로컬` otherwise; left off a row the row cap cannot hold it on) · `원격 발신`(a closing row with `응답 경로=원격` only: the sender the apply record names; left off first under the row cap) |
-| `리뷰 의무` | `의무 id` · `상태` · `세그먼트` · `대상` · `머지 커밋` · `분기점`(gate-written: the merge-base of `머지 커밋` and the local remote-tracking base read when the obligation is issued, before the merge lands, or `-` when it cannot be read; the fulfilling row carries the issued row's value; the review line of a merge-first segment past its merge takes its `--base-sha` from the segment's first issued row carrying one when no segment row names a `베이스 sha`) · `생성 등급`(축 2) · `이행 판정`(fulfilling row) · `근거`(fulfilling row) · `발행 시각` · `이행 시각` |
+| `리뷰 의무` | `의무 id` · `상태` · `세그먼트` · `대상` · `머지 커밋` · `분기점`(gate-written: the merge-base of `머지 커밋` and the local remote-tracking base read when the obligation is issued, before the merge lands, or `-` when it cannot be read; the fulfilling row carries the issued row's value; the review line of a merge-first segment past its merge takes its `--base-sha` from the segment's first issued row carrying one when no segment row names a `베이스 sha`; on the obligation of a segment adopted as a merged pull request, written by its planning act, `머지 커밋` is the merge commit GitHub made on the base, `분기점` is merge-base(that commit's first parent, the request's head), `생성 등급` is `-`, and the adoption review line takes its `--base-sha` and `--merged` from that row) · `생성 등급`(축 2) · `이행 판정`(fulfilling row) · `근거`(fulfilling row) · `발행 시각` · `이행 시각` |
 | `적용 인계` | `세그먼트` · `대상` · `적용 주체`(`사람`) · `머지 커밋` · `적용 명령`(clipped) · `관측` — gate-written by the apply act when the actor is a person; nothing runs |
 | `들여온 정산` | `세그먼트` · `대상` · `정산 판정`(`필요` \| `측정 실패` \| `검증 불성립`) · `정산 근거`(the probe code and its mapping, or the reason the evidence or a precondition did not stand, clipped to 240) · `고정 커밋`(the imported row's `머지 커밋`, `-` when entry d stopped before reading it) · `증거 런`(the run id of the evidence ledger, the imported row's `출처`) — gate-written by `act --kind apply-settle` on entry d, in place of the park a settlement of this run's own merge writes; the segment row and the run-scope `blocked` row are not written, so the segment's last row stays `머지됨 적용=미정산` |
 | `대상 추가` | `별칭` · `원격 슬러그` · `메인 워크트리` · `공통 git 디렉터리` · `베이스 브랜치` · `층`(0\|1) · `발견 경로` · `기록 시각` |
@@ -1587,7 +1623,7 @@ So the row's `층` is `0` or `1` and never higher. Layer 0 is read-only — clon
 
 **`리뷰 의무` exists because `선머지후리뷰` defers an obligation rather than removing one.**
 
-**On a merge-first segment the series is also the proof the apply act and termination condition 12 read.** The apply act's precondition 3 takes the segment's last `미이행` row written before its last `segment` row in place of a passing cycle, and precondition 4 compares that row's `머지 커밋` with the merge commit's second parent. The obligation of the merge being applied is left out of the open obligations the apply hands the `리뷰-후-머지` rule — it is the apply's proof, not a debt that blocks the next merge. Condition 12 holds the run open until the segment's last `cycle` row covers the `머지 커밋` of its last row and that cycle's review table value is `머지` or `이월 머지`; a segment whose last row is `park` is not held.
+**On a merge-first segment the series is also the proof the apply act and termination condition 12 read.** The apply act's precondition 3 takes the segment's last `미이행` row written before its last `segment` row in place of a passing cycle, and precondition 4 compares that row's `머지 커밋` with the merge commit's second parent. The obligation of the merge being applied is left out of the open obligations the apply hands the `리뷰-후-머지` rule — it is the apply's proof, not a debt that blocks the next merge. Condition 12 holds the run open until the segment's last `cycle` row covers the `머지 커밋` of its last row and that cycle's review table value is `머지` or `이월 머지`; a segment whose last row is `park` is not held. A segment a `머지 입양` row names is held the same way, whatever its review policy: its obligation was written when the segment was planned, so the run stays open until a passing review covers the adopted merge or the merge of the fix after it.
 
 **`생성 등급` on this series is read by nothing.** The excusal rule reads a field of the same name on `problem` rows; this one is kept because the morning wants to know what kind of act deferred the review.
 
@@ -1656,7 +1692,7 @@ So the row's `층` is `0` or `1` and never higher. Layer 0 is read-only — clon
 | `stage-lease.단계 출처` | `declared` \| `absent` \| `expired` \| `corrupt` \| `-`(only with `단계=-`) |
 | `stage-wait.근거` | `group-exhausted` \| `no-room` \| `unknown-concurrency` \| `fifo-yield` \| `resume-bound-exhausted` \| `resume-bound-no-room` \| `resume-bound-borrowed` \| `lease-lock-busy` \| `lease-contention` \| `lease-hold-busy` \| `lease-hold-lost` \| `wait-end-refused` |
 | `압축 창.출처` | `argv` \| `런설정` \| `프로젝트` \| `레인` \| `꺼짐` \| `미상` (the parenthesised token of `압축 창` on `stage-result` and `교대 기동`; `-` carries no source) |
-| `segment.상태` | `계획됨` \| `실행중` \| `리뷰중` \| `머지됨` \| `완료` \| `적용 준비` \| `사후리뷰` \| `park` — `사후리뷰` is taken only on a `선머지후리뷰` segment that has a `머지됨` row and a `리뷰 의무` row, and is non-terminal |
+| `segment.상태` | `계획됨` \| `실행중` \| `리뷰중` \| `머지됨` \| `완료` \| `적용 준비` \| `사후리뷰` \| `park` — `사후리뷰` is taken only on a `선머지후리뷰` segment that has a `머지됨` row and a `리뷰 의무` row, or on a segment adopted as a merged pull request (a `머지 입양` row) that has a `리뷰 의무` row and whose previous row is `계획됨` or `사후리뷰`, and is non-terminal |
 | `generation.segmentation` | `ok` \| `low-confidence` |
 | `checks.상태` | `대기` \| `통과` \| `실패` \| `미등록` \| `판정 불가` |
 | `checks.필수 집합` | `없음` \| `판정 불가` \| check names joined by `, ` |

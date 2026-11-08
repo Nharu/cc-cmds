@@ -1606,6 +1606,25 @@ check "교대 사본의 「Waiting on a stage」 절에 고르지 않고 대기�
   "$(mo_count "$(router_section "$RS_CORPUS" '### Waiting on a stage')" "$mo_none")" "1"
 check "교대 사본에는 포그라운드 스테이지 대기 문장 전체가 없다" "$(mo_count "$(cat "$RS_CORPUS")" "$mo_wait")" "0"
 check "리드 사본에는 포그라운드 대기 문장 전체가 없다" "$(mo_count "$(cat "$AP_ROUTER")" "$mo_wait")" "0"
+
+# A merged pull request a `머지 입양` row hands the run is routed by the same
+# sentences in BOTH router copies: how its slice is planned and first reviewed,
+# what its review line carries, how `입양 종결` closes it, and how termination
+# condition 12 holds it. Each is counted once over the whole copy, so a copy
+# that drops or rewords one of them fails here.
+for pair in "리드:$AP_ROUTER" "교대:$RS_CORPUS"; do
+  who=${pair%%:*}; file=${pair#*:}
+  for lit in \
+    '**A slice whose `슬라이싱` entry carries `머지 입양` is a pull request merged outside this run**' \
+    'Write `리뷰 정책=선리뷰후머지` on its first row either way; the gate refuses any other policy on it.' \
+    'the line names the adopted pull request'"'"'s URL instead of a branch and carries `--base-sha <분기점> --merged <머지 커밋> --judge-head <워크트리 HEAD>`' \
+    '- **`입양 종결`** → a segment a `머지 입양` row adopted passed its review with no commit over its base.' \
+    'A segment a `머지 입양` row adopted carries an element too, with or without a `cycle` row, until its `완료` row.' \
+    '**A segment a `머지 입양` row adopted is held the same way, whatever its review policy, from the moment it is planned**'
+  do
+    check "$who 사본에 머지 입양 문장이 한 번 실린다 — 「${lit:0:50}」" "$(mo_count "$(cat "$file")" "$lit")" "1"
+  done
+done
 # The planning-order refusal is consumed by the router, not only written by the
 # gate: the copies quote the gate's own words, so a gate rewording that leaves
 # the router text behind fails here, and the broad sentence that sent this
@@ -1708,15 +1727,15 @@ done
 # re-derived exception
 #
 # The clause that keeps the re-kickoff from carrying a ledger row now names the
-# one row it derives again instead, the `세그먼트 입양` row, and says what
-# happens to every segment that fails the derivation. Both halves are pinned in
+# two rows it derives again instead, the `세그먼트 입양` and `머지 입양` rows,
+# and says what happens to every segment that fails the derivation. Both halves are pinned in
 # the resident body, so a rewording that keeps the exception and drops the
 # report of what was not adopted fails here. The third phrase pins the lineage
 # walk for an interview record: a broken link stops the re-kickoff and is never
 # bridged by a farther ancestor.
 # ---------------------------------------------------------------------------
 for lit in \
-  'a ledger row only triggers a question — or, for a `세그먼트 입양` row alone, a re-derivation' \
+  'a ledger row only triggers a question — or, for a `세그먼트 입양` or `머지 입양` row alone, a re-derivation' \
   'anything else is not adopted and is reported with its cause' \
   'and it never skips to a farther ancestor'
 do
