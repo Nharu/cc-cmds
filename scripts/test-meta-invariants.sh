@@ -907,6 +907,40 @@ if grep -qF -- '정지 자리는 닫힌 다섯이다.' "$VP_SKILL"; then
 else
   bad "visual-publish-unattended 문면의 정지 자리 수" "「정지 자리는 닫힌 다섯이다.」가 없다"
 fi
+# Two documents' runs can wait on one design system confirmation line. The
+# gate and the driver compare the whole line with the document's expected
+# line, so the run answered second must not overwrite the first run's
+# approval: row 14 halts on the kept line, and the writes re-read it first.
+VP_SIDECAR="$PLUGIN_ROOT/skills/visual/references/sidecar.md"
+for lit in \
+  '| 14 | `디자인-시스템-판정` `승인` 또는 `수정 요청` — Step 1.3 이 받은 줄이 이 문서 키가 아닌 `사람 승인 — 문서 <키>` 줄' \
+  '**Another document'"'"'s approval is never overwritten.**' \
+  'reads the line again with `visual-check.sh confirm <document>` right before the Claude Design publish (K1 of a new version or of the first publish) and right before its first local write.' \
+  '`디자인-시스템-판정` `승인` 또는 `수정 요청` 으로 들어왔는데 확인 줄이 이미 다른 문서 키의 `사람 승인` 이다(Step 2a 14 행)' \
+  'every row but 7 and 14, which halt first'; do
+  if grep -qF -- "$lit" "$VP_SKILL"; then
+    ok "visual-publish-unattended 문면이 다른 문서의 승인 줄을 덮지 않는다 — 「${lit}」"
+  else
+    bad "visual-publish-unattended 문면의 다른 문서 승인 줄" "「${lit}」가 없다"
+  fi
+done
+if grep -qF -- '다른 문서 키의 `사람 승인` 이면 줄을 지우지도 쓰지도 않고 멈춘다' "$VP_SIDECAR"; then
+  ok "visual sidecar 계약이 다른 문서의 승인 줄을 덮지 않는다"
+else
+  bad "visual sidecar 계약의 다른 문서 승인 줄" "「다른 문서 키의 \`사람 승인\` 이면 줄을 지우지도 쓰지도 않고 멈춘다」가 없다"
+fi
+for old in 'no consumer refuses a key mismatch' 'the key of the run answered first remains'; do
+  if grep -qF -- "$old" "$VP_SKILL"; then
+    bad "visual-publish-unattended 문면의 옛 문장" "「${old}」가 남았다"
+  else
+    ok "visual-publish-unattended 문면에 옛 문장 「${old}」가 없다"
+  fi
+done
+if grep -qF -- '소비처는 키 불일치를 거부하지 않는다' "$VP_SIDECAR"; then
+  bad "visual sidecar 계약의 옛 문장" "「소비처는 키 불일치를 거부하지 않는다」가 남았다"
+else
+  ok "visual sidecar 계약에 옛 문장 「소비처는 키 불일치를 거부하지 않는다」가 없다"
+fi
 for old in 'Every site except `review-cap` is a refusal' 'write nothing at all' 'with no terminal literal.'; do
   if grep -qF -- "$old" "$VU_SKILL"; then
     bad "visual-unattended 문면의 옛 문장" "「${old}」가 남았다"
