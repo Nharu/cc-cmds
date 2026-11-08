@@ -10325,9 +10325,15 @@ check "물려받은 값 위에 호스트 auto 면 판단 호출의 환경에 그
   "$(ct_jc CLAUDE_CODE_PROMPT_CACHE_TTL=5m CC_ORCH_PROMPT_CACHE_TTL=auto)" "unset"
 # The driver's own spawn runs the setter inside the subshell that execs the
 # wrapper, before the exec; its launched environment is asserted by the
-# driver's suite, which has a harness that drives the spawn to the end.
-ct_drv=$(awk '/\( cd "\$cwd" &&/ { s = NR; t = ($0 ~ /stage_cache_ttl_env/) }
-  /exec nohup bash "\$ORCH_DIR\/stage-wrapper\.sh"/ { print ((s && NR - s <= 6 && t) ? "부른다" : "부르지 않는다"); exit }' \
+# driver's suite, which has a harness that drives the spawn to the end. The
+# subshell is followed through its backslash-continued lines rather than a
+# fixed line count, so an export added between the setter and the exec keeps
+# the two in the same statement without moving the assertion.
+ct_drv=$(awk '/\( cd "\$cwd" &&/ { s = 1; t = ($0 ~ /stage_cache_ttl_env/); c = ($0 ~ /\\$/); next }
+  s && !c { s = 0 }
+  s && /stage_cache_ttl_env/ { t = 1 }
+  /exec nohup bash "\$ORCH_DIR\/stage-wrapper\.sh"/ { print ((s && t) ? "부른다" : "부르지 않는다"); exit }
+  s { c = ($0 ~ /\\$/) }' \
   "$repo_root/plugins/cc-cmds/orchestrator/run.sh")
 check "드라이버 스폰 서브셸이 래퍼 exec 앞에서 캐시 수명 헬퍼를 부른다" "$ct_drv" "부른다"
 check "레인 라벨은 HOME 접두를 ~ 로 바꾼다" \
