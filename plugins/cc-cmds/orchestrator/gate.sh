@@ -45885,10 +45885,16 @@ gate_perform_review_post() {
   case "$rid" in
     ''|*[!0-9]*) ;;
     *)
+      # The comments are read from the pull request's comment list, not from
+      # the review's own comment endpoint: that endpoint returns an inline
+      # comment's `line`, `original_line` and `side` as null, so a correct post
+      # could never compare equal to the render. The pull request's list also
+      # carries every earlier review's comments, so it is narrowed to this
+      # review id, which the case arm above has already proved numeric.
       if [ -n "$req" ] \
          && rev=$(gate_label_ack_gh_write "$creds" api "repos/$GATE_RVP_SLUG/pulls/$GATE_RVP_PR/reviews/$rid" 2>/dev/null) \
-         && com=$(gate_label_ack_gh_write "$creds" api --paginate "repos/$GATE_RVP_SLUG/pulls/$GATE_RVP_PR/reviews/$rid/comments" 2>/dev/null \
-                  | jq -s -c 'add // []' 2>/dev/null); then
+         && com=$(gate_label_ack_gh_write "$creds" api --paginate "repos/$GATE_RVP_SLUG/pulls/$GATE_RVP_PR/comments" 2>/dev/null \
+                  | jq -s -c --argjson rid "$rid" 'add // [] | map(select(.pull_request_review_id == $rid))' 2>/dev/null); then
         printf '%s' "$rev" > "$dir/$tag.review.json"
         printf '%s' "$com" > "$dir/$tag.comments.json"
         verdict=$("$GATE_DIR/review-post.sh" verify --request "$req" --review "$dir/$tag.review.json" \
