@@ -571,6 +571,7 @@ write_system() {
     echo "<!-- cc-visual-system v1; writer=visual-unattended; reader=visual; owner-doc=(없음); owner-repo=$RR; NOT a design doc; mechanism-local, never staged by a skill -->"
     echo "**아티팩트**: $art"
     echo "**출처**: $src"
+    [ "$k" != conf ] || printf '%s\n' "$v"
     echo "**tokens.css sha256**: $tok"
     [ "$k" != lift ] || echo "**금지 해제**: $v"
   } > "$RSYS"
@@ -735,6 +736,190 @@ for args in "" "$RDOC" "--record $REC" "$RDOC --record" "$RDOC --record $T/nope.
   bash "$CHECK" reuse $args > /dev/null 2>&1 || rc=$?
   [ "$rc" = 2 ] && pass "reuse: 인자 「${args}」 는 2" || fail "reuse 인자 「${args}」 = ${rc}"
 done
+
+# --- confirm ------------------------------------------------------------------
+# The confirmation line sits right after `**출처**`; removing it in the
+# normalized digest leaves the bytes of the same file without it, so writing
+# or changing it moves no sidecar's pinned value.
+TOKSHA=$(sha_of "$RTOK")
+WAITL='**확인**: 대기 — 문서 docs/reuse.md — 런 20261104-aaaaaaaa'
+OKL="**확인**: 사람 승인 — 문서 docs/reuse.md — tokens.css sha256 ${TOKSHA} — 사람 답 S2P#2.md — 런 20261104-aaaaaaaa — 2026-11-04T09:00:00Z"
+OTHERL="**확인**: 사람 승인 — 문서 docs/other.md — tokens.css sha256 ${TOKSHA} — 사람 답 S2P#2.md — 런 20261104-aaaaaaaa — 2026-11-04T09:00:00Z"
+write_system; plain=$(bash "$CHECK" system "$RDOC")
+write_system "conf=${WAITL}"; withw=$(bash "$CHECK" system "$RDOC")
+write_system "conf=${OKL}"; witho=$(bash "$CHECK" system "$RDOC")
+[ "$plain" = "$withw" ] && [ "$plain" = "$witho" ] \
+  && pass "system: 출처 다음 확인 줄은 정규화 다이제스트를 바꾸지 않는다" \
+  || fail "system: 확인 줄이 정규화 다이제스트를 바꿨다 (${plain:0:12} / ${withw:0:12} / ${witho:0:12})"
+write_system; cp "$RSYS" "$T/sys.plain"
+write_system "conf=${WAITL}"
+nl_plain=$(LC_ALL=C awk '{ if (w > 0) printf "\n"; printf "%s", $0; w++ } END { if (w > 0) printf "\n" }' "$T/sys.plain" | shasum -a 256 | awk '{print $1}')
+nl_conf=$(LC_ALL=C awk 'index($0, "**확인**: ") == 1 { next } { if (w > 0) printf "\n"; printf "%s", $0; w++ } END { if (w > 0) printf "\n" }' "$RSYS" | shasum -a 256 | awk '{print $1}')
+[ "$nl_plain" = "$nl_conf" ] && [ "$nl_plain" = "$(sha_of "$T/sys.plain")" ] \
+  && pass "system: 출처 다음 확인 줄을 지운 바이트는 줄 없는 같은 파일의 바이트와 같다" \
+  || fail "system: 확인 줄을 지운 바이트가 줄 없는 파일과 다르다"
+printf '**확인**: 대기 — 문서 docs/reuse.md — 런 R1\n# DS\n' > "$RSYS"
+first=$(bash "$CHECK" system "$RDOC"); printf '# DS\n' > "$RSYS"
+[ "$first" = "$(sha_of "$RSYS")" ] && pass "system: 1행 확인 줄을 지워도 앞에 개행이 남지 않는다" || fail "system: 1행 확인 줄 제거가 바이트를 바꿨다"
+confirm_case() { # <label> <want>
+  local rc=0 out
+  out=$(bash "$CHECK" confirm "$RDOC" 2>&1) || rc=$?
+  [ "$rc $out" = "0 $2" ] && pass "confirm: $1" || fail "confirm $1 = ${rc} ${out}"
+}
+write_system
+confirm_case "확인 줄이 없으면 확인 없음" "확인 없음"
+write_system "conf=${WAITL}"
+confirm_case "대기 줄" "확인 대기 — 문서 docs/reuse.md"
+write_system "conf=${OKL}"
+confirm_case "사람 승인 줄" "사람 승인 — 문서 docs/reuse.md"
+write_system "conf=**확인**: 사람 승인 — 문서 docs/reuse.md"
+confirm_case "꼬리 없는 사람 승인 줄은 형식 오류" "확인 형식 오류"
+write_system "conf=**확인**: 됨"
+confirm_case "두 꼴 밖의 줄은 형식 오류" "확인 형식 오류"
+write_system "conf=${WAITL}
+${OKL}"
+confirm_case "확인 줄이 둘이면 형식 오류" "확인 형식 오류"
+write_system "conf=- ${WAITL}"
+confirm_case "글머리표를 단 확인 줄은 형식 오류" "확인 형식 오류"
+write_system "conf=  ${WAITL}"
+confirm_case "앞에 공백을 둔 확인 줄은 형식 오류" "확인 형식 오류"
+write_system "conf=**확인**:대기 — 문서 docs/reuse.md — 런 20261104-aaaaaaaa"
+confirm_case "콜론 뒤 공백이 없는 확인 줄은 형식 오류" "확인 형식 오류"
+write_system "conf=${OKL}"
+cp "$RTOK" "$T/tokens.save"; printf '%s\n' ':root { --c: #555; }' > "$RTOK"
+confirm_case "승인 줄의 tokens.css 값이 실제 파일과 다르면 확인 대기" "확인 대기 — 문서 docs/reuse.md"
+rm -f "$RTOK"
+confirm_case "승인 줄이 있어도 tokens.css 가 없으면 확인 대기" "확인 대기 — 문서 docs/reuse.md"
+mv "$T/tokens.save" "$RTOK"
+mv "$RSYS" "$T/system.save"
+confirm_case "system.md 가 없으면 확인 없음" "확인 없음"
+mv "$T/system.save" "$RSYS"
+rc=0; bash "$CHECK" confirm > /dev/null 2>&1 || rc=$?
+[ "$rc" = 2 ] && pass "confirm: 인자가 없으면 2" || fail "confirm 인자 없음 = ${rc}"
+# A reusable design system still waits when its line says so.
+write_system; write_reuse 발행됨; write_system "conf=${WAITL}"
+reuse_case "대기 줄이 있어도 재사용 판정은 그대로" 0 "재사용 발행됨"
+confirm_case "재사용이 성립하는 디자인 시스템에서도 대기 줄이면 확인 대기" "확인 대기 — 문서 docs/reuse.md"
+
+# --- system --owner widened by the confirmation line ---------------------------
+write_system; write_reuse 발행됨 'sys=(없음)'; write_system "conf=${OKL}"
+owner_case "사람 승인 줄이 이 문서면 옛 디자인 시스템을 고정한 사이드카여도 0" 0 "이 문서의 디자인 시스템 — 사람 확인"
+write_system "conf=${OTHERL}"
+owner_case "사람 승인 줄이 다른 문서면 같은 사이드카에서 1" 1 "이 문서의 디자인 시스템 아님 — 디자인 시스템 다이제스트가 다르다"
+rm -f "$RSC"
+write_system "conf=${WAITL}"
+owner_case "대기 줄이 이 문서여도 사이드카 판정을 따른다" 1 "이 문서의 디자인 시스템 아님 — 사이드카 없음"
+write_system "conf=${OKL}"
+owner_case "사람 승인 줄이 이 문서면 사이드카가 없어도 0" 0 "이 문서의 디자인 시스템 — 사람 확인"
+write_system "conf=${OTHERL}"
+owner_case "다른 문서 키면 사이드카 없음으로 1" 1 "이 문서의 디자인 시스템 아님 — 사이드카 없음"
+write_system "conf=${OKL}"
+cp "$RTOK" "$T/tokens.save"; printf '%s\n' ':root { --c: #444; }' > "$RTOK"
+owner_case "승인 줄의 tokens.css 값과 실제 파일이 다르면 넓히지 않고 사이드카 판정으로 1" 1 "이 문서의 디자인 시스템 아님 — 사이드카 없음"
+mv "$T/tokens.save" "$RTOK"
+
+# --- system-users -------------------------------------------------------------
+# Other documents' sidecars pinning the current design system, or the --also
+# digest; this document's own sidecar is never listed.
+write_system
+CUR=$(bash "$CHECK" system "$RDOC")
+OLD=$(printf 'old' | shasum -a 256 | awk '{print $1}')
+write_user() { # <slug> <owner> <state> <sys> [approval]
+  {
+    echo "# 시각 디자인 연결 — $2"
+    echo "<!-- cc-visual v1; writer=visual-unattended; reader=visual; owner-doc=$2; origin-worktree=$RR; NOT a design doc; mechanism-local, never staged by a skill -->"
+    echo "**상태**: $3"
+    echo "**디자인 시스템 sha256**: $4"
+    [ -z "${5:-}" ] || echo "**구현 승인**: $5"
+  } > "$RR/docs/visual/$1.md"
+}
+users() { local rc=0 out; out=$(bash "$CHECK" system-users "$RDOC" "$@" 2>&1) || rc=$?; printf '%s %s' "$rc" "$out"; }
+got=$(users)
+[ "$got" = "0 없음" ] && pass "system-users: 다른 문서 사이드카가 없으면 없음" || fail "system-users 없음 = ${got}"
+write_reuse 발행됨
+write_user docs-a docs/a.md 발행됨 "$CUR" "2026-11-04T00:00:00Z — 입력 묶음 x"
+write_user docs-b docs/b.md '검토 통과' "$OLD"
+got=$(users)
+[ "$got" = "0 docs/a.md — 상태 발행됨 — 구현 승인 있음" ] && pass "system-users: 지금 값을 고정한 다른 문서만 찍고 이 문서는 뺀다" || fail "system-users = ${got}"
+got=$(users --also "$OLD")
+[ "$got" = "0 docs/a.md — 상태 발행됨 — 구현 승인 있음
+docs/b.md — 상태 검토 통과 — 구현 승인 없음" ] && pass "system-users: --also 값을 고정한 문서도 찍는다" || fail "system-users --also = ${got}"
+rc=0; bash "$CHECK" system-users "$RDOC" --also nothex > /dev/null 2>&1 || rc=$?
+[ "$rc" = 2 ] && pass "system-users: --also 가 16진수가 아니면 2" || fail "system-users --also 형식 = ${rc}"
+rm -f "$RR/docs/visual/docs-a.md" "$RR/docs/visual/docs-b.md"
+
+# --- approval never reads the confirmation line --------------------------------
+# The interactive skill keeps working over a waiting design system; only the
+# unattended consumers apply the waiting verdict.
+printf '**확인**: 대기 — 문서 docs/other.md — 런 R1\n' > "$R/docs/visual-system/system.md"
+printf '%s\n' '<!doctype html><p>home</p>' > "$R/docs/visual/docs-feature.home.html"
+write_sidecar 발행됨 "${APL}"
+got=$(approval)
+[ "$got" = "0 승인 유효 ${B:0:12}" ] && pass "approval: 대기 줄이 있어도 묶음이 같으면 유효" || fail "approval 대기 = ${got}"
+printf '**확인**: 엉망\n' > "$R/docs/visual-system/system.md"
+got=$(approval)
+[ "$got" = "0 승인 유효 ${B:0:12}" ] && pass "approval: 확인 형식 오류도 판정에 쓰지 않는다" || fail "approval 형식 오류 = ${got}"
+rm -f "$R/docs/visual-system/system.md"
+got=$(approval)
+[ "$got" = "0 승인 유효 ${B:0:12}" ] && pass "approval: 확인 줄이 없으면 그대로 유효" || fail "approval 확인 없음 = ${got}"
+
+# --- run-state -----------------------------------------------------------------
+RS_RID=20261104-bbbbbbbb
+RS_DIR="$T/run/$RS_RID"; mkdir -p "$RS_DIR/halt"
+RS_LED="$T/ledger/$RS_RID.md"; mkdir -p "$T/ledger"
+RS_MAN="$T/manifest.md"
+rs_manifest() { # <skill of the second step>
+  {
+    echo '## 실행 계획'
+    echo '```json'
+    printf '{"steps":[{"id":"S2V","skill":"visual"},{"id":"S2P","skill":"%s"}]}\n' "$1"
+    echo '```'
+  } > "$RS_MAN"
+}
+rs_halt() { # <attempt> <step> [extra line]
+  {
+    echo "**스텝**: $2"
+    [ -z "${3:-}" ] || echo "$3"
+  } > "$RS_DIR/halt/S2P#$1.md"
+}
+rs_answer() { # <attempt> <by> <option>
+  echo "- \`중단 답\` | 중단 기록=$RS_DIR/halt/S2P#$1.md | 답한 주체=$2 | 선택지=$3" >> "$RS_LED"
+}
+run_state() { local rc=0 out; out=$(bash "$CHECK" run-state "$RDOC" --run-dir "$RS_DIR" --ledger "$RS_LED" --manifest "$RS_MAN" 2>&1) || rc=$?; printf '%s %s' "$rc" "$out"; }
+write_system
+rs_manifest visual; : > "$RS_LED"
+got=$(run_state)
+[ "$got" = "0 S2P 없음
+디자인-시스템-판정 기록 없음
+디자인-시스템-판정 사람 답 없음
+시각-판정 기록 없음
+시각-판정 사람 답 없음
+수정 횟수 0
+확인 확인 없음" ] && pass "run-state: 기록이 없으면 일곱 줄 모두 없음" || fail "run-state 빈 런 = ${got}"
+rs_manifest visual-publish
+rs_halt 1 '디자인-시스템-판정 — 제시'
+rs_answer 1 사람 '수정 요청'
+rs_halt 2 '디자인-시스템-판정 — 제시' '- 입력 없음=S2P#1.md'
+rs_answer 2 사람 '수정 요청'
+rs_halt 3 '디자인-시스템-판정 — 제시'
+rs_answer 3 좌석 '승인'
+rs_halt 4 '시각-판정'
+rs_answer 4 사람 '디자인 시스템 다시 열기'
+write_system "conf=${WAITL}"
+got=$(run_state)
+[ "$got" = "0 S2P 있음
+디자인-시스템-판정 기록 S2P#3.md
+디자인-시스템-판정 사람 답 없음
+시각-판정 기록 S2P#4.md
+시각-판정 사람 답 디자인 시스템 다시 열기
+수정 횟수 2
+확인 확인 대기 — 문서 docs/reuse.md" ] && pass "run-state: 최신 기록·사람 답·입력 없음을 뺀 수정 횟수·확인 상태" || fail "run-state = ${got}"
+mkdir -p "$T/ledger2"; RS_OTHER="$T/ledger2/other.md"; cp "$RS_LED" "$RS_OTHER"
+got=$(bash "$CHECK" run-state "$RDOC" --run-dir "$RS_DIR" --ledger "$RS_OTHER" --manifest "$RS_MAN" 2>&1 | sed -n 6p)
+[ "$got" = "수정 횟수 0" ] && pass "run-state: 이 런의 원장이 아니면 답 행을 읽지 않는다" || fail "run-state 다른 원장 = ${got}"
+rc=0; bash "$CHECK" run-state "$RDOC" --run-dir "$RS_DIR" > /dev/null 2>&1 || rc=$?
+[ "$rc" = 2 ] && pass "run-state: 인자가 모자라면 2" || fail "run-state 인자 = ${rc}"
+write_system
 
 # --- grammar examples of the shared contract ----------------------------------
 # Print the first fenced block under `### <heading>` of the references file.

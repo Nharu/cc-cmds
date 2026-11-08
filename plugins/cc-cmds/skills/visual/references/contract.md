@@ -81,7 +81,7 @@
 
 | 국면 | 키 | 기본값 | 누가 부르나 |
 | --- | --- | --- | --- |
-| 디자인 시스템 생성 | `ds-generate` | `fable` | `visual`·`visual-unattended` |
+| 디자인 시스템 생성 | `ds-generate` | `fable` | `visual`·`visual-unattended`·`visual-publish-unattended` |
 | 화면 생성 | `screen-generate` | `opus` | `visual`·`visual-unattended`·`visual-publish-unattended`(`수정 요청` 의 다시 생성) |
 | 수정 목록 다듬기 | `polish` | `fable` | `visual`·`visual-unattended`·`visual-publish-unattended`(아래 강등 뒤) |
 | 큰 화면 번역 | `implement-large` | `fable` | `implement`·`implement-unattended` |
