@@ -9,10 +9,10 @@
 # and the C4 section of `scripts/test-gate.sh`. One file is what keeps the three
 # from asserting different rules.
 #
-# A PLAN WITHOUT `design_tier_judged` IS ASSERTED ON (f) ALONE. Every plan
-# frozen before the key existed lacks it, and its tier (`team-2`, `lead-solo`,
-# `null`) is outside the two values below; refusing it here would stop runs
-# that are already frozen.
+# A PLAN WITHOUT `design_tier_judged` IS ASSERTED ON (f) AND (h) ALONE. Every
+# plan frozen before the key existed lacks it, and its tier (`team-2`,
+# `lead-solo`, `null`) is outside the two values below; refusing it here would
+# stop runs that are already frozen.
 #
 # The tier and the path read as the contract sentence `run.sh` writes once, on
 # `manifest_design_skill`:
@@ -26,7 +26,7 @@
 #   > a writer (a team-4 single-scope design) and `none` elsewhere. Only
 #   > `manifest_design_skill` turns scope, tier and path into the design skill.
 #
-# SEVEN ASSERTIONS AND NO MORE. A `team-4` graph is asserted on only through
+# EIGHT ASSERTIONS AND NO MORE. A `team-4` graph is asserted on only through
 # `design_path`, and only when the key is present:
 #
 #   (a) a `team-4` judgment carries at least one heavy reason that is not blank,
@@ -77,11 +77,20 @@
 #       has a `review_expand_rationale` that is not blank. A plan frozen
 #       before the key existed has none and is not asserted on it, for the
 #       reason (e) gives.
+#   (h) a `design_delivery` key, when present, holds `slices` or `tickets`. A
+#       `tickets` plan has the fields of a ticket-delivery run: `design_scope`
+#       `single`, `design_required` true, `design_tier` `team-4`, `design_path`
+#       `solo-audit` or `discuss-audit`, `run_profile` `standard`. A plan
+#       without the key passes (h) and reads `slices`. That the entry judgment
+#       itself always writes `slices` is not asserted here: the kickoff rewrites
+#       the key to `tickets` on a person's answer and this file runs on that
+#       plan too, so the kickoff compares the judgment output right after it.
 #
-# (f) RUNS ON THE EARLY RETURN TOO. A hotfix plan that dropped
+# (f) AND (h) RUN ON THE EARLY RETURN TOO. A hotfix plan that dropped
 # `design_tier_judged` would otherwise skip the one assertion that pins its
-# frame. A plan frozen before `design_tier_judged` existed has no `run_profile`
-# either, so on that branch nothing is still asserted on it.
+# frame, and a `tickets` plan the one that pins its fields. A plan frozen before
+# `design_tier_judged` existed has neither `run_profile` nor `design_delivery`,
+# so on that branch nothing is still asserted on it.
 
 def tier_rank:
   if . == "solo" then 0 elif . == "team-4" then 1 else null end;
@@ -183,10 +192,35 @@ def profile_violations:
         else empty end )
     end;
 
+# (h), as a list of violations: the fields a ticket-delivery plan fixes.
+def delivery_violations:
+  . as $p
+  | if has("design_delivery") | not then empty
+    elif ($p.design_delivery | IN("slices", "tickets")) | not then
+      "(h) design_delivery 가 slices · tickets 중 하나가 아닙니다: \($p.design_delivery | tojson)"
+    elif $p.design_delivery != "tickets" then empty
+    else
+      ( if $p.design_scope != "single" then
+          "(h) tickets 계획의 design_scope 가 single 이 아닙니다: \($p.design_scope | tojson)"
+        else empty end ),
+      ( if $p.design_required != true then
+          "(h) tickets 계획의 design_required 가 true 가 아닙니다: \($p.design_required | tojson)"
+        else empty end ),
+      ( if $p.design_tier != "team-4" then
+          "(h) tickets 계획의 design_tier 가 team-4 가 아닙니다: \($p.design_tier | tojson)"
+        else empty end ),
+      ( if ($p.design_path | IN("solo-audit", "discuss-audit")) | not then
+          "(h) tickets 계획의 design_path 가 solo-audit · discuss-audit 중 하나가 아닙니다: \($p.design_path | tojson)"
+        else empty end ),
+      ( if ($p.run_profile // "standard") != "standard" then
+          "(h) tickets 계획의 run_profile 이 standard 가 아닙니다: \($p.run_profile | tojson)"
+        else empty end )
+    end;
+
 if type != "object" then
   "계획이 JSON 객체가 아닙니다\n" | halt_error(1)
 elif has("design_tier_judged") | not then
-  [profile_violations] | report
+  [profile_violations, delivery_violations] | report
 else
   . as $p
   | ($p.design_tier_judged) as $judged
@@ -293,7 +327,9 @@ else
                   "(g) review_expand 가 비어 있지 않은데 review_expand_rationale 이 비어 있습니다"
                 else empty end )
             end
-        else empty end )
+        else empty end ),
+      # (h)
+      ( $p | delivery_violations )
     ]
   | report
 end

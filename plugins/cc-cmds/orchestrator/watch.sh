@@ -408,6 +408,81 @@ file_mtime() {
   date -u -r "$1" +%s 2>/dev/null || true
 }
 
+host_load_num() {
+  # host_load_num <value> — the value itself when it is a JSON number (an integer
+  # or a decimal with no leading zero), else `null`. Every field of the host-load
+  # sample goes through this, so a command that printed nothing, an error text or
+  # a locale's decimal comma lands as `null` rather than as a line no JSON reader
+  # can parse.
+  local re='^(0|[1-9][0-9]*)(\.[0-9]+)?$'
+  if [[ "$1" =~ $re ]]; then printf '%s' "$1"; else printf 'null'; fi
+}
+
+host_load_sample() {
+  # host_load_sample <stages> — append one line to `$RUN_DIR/host-load.jsonl`:
+  #
+  #   {"schema":1,"at":…,"load1":…,"load5":…,"load15":…,"ncpu":…,"claude_procs":…,"runs":…,"stages":…}
+  #
+  # The keys and their order are fixed. A reader running while the run is still
+  # going takes the last complete line and treats the load as unknown when its
+  # `at` is older than three intervals.
+  #
+  # `load*` and `ncpu` come from `sysctl` on Darwin and from `/proc/loadavg` and
+  # `getconf` elsewhere. `claude_procs` counts `pgrep -x claude` across the host:
+  # no match is 0, and a missing or failing `pgrep` is `null`. `runs` counts the
+  # sibling run directories whose `watch.heartbeat` was rewritten within three
+  # intervals, this one included — measured in seconds through `file_mtime`,
+  # since `find -mmin` rounds to minutes and `stat` flags differ by platform.
+  # `stages` is the count this pass's heartbeat line carries.
+  #
+  # THE SAMPLE NEVER DECIDES ANYTHING ABOUT THE WATCHER. A value it cannot read is
+  # `null`, a write that fails is ignored, and the heartbeat, the stall arms and
+  # the exit status are the same with or without this file. Nothing rotates or
+  # deletes it: one line is about 150 bytes, a day of them about 0.2MB.
+  #
+  # The host check is SEAMED (`CC_WATCH_HOST_OS`) so a test on any host can drive
+  # the Darwin branch, the one whose commands a PATH stub can make fail.
+  local os la l1="" l5="" l15="" _rest nc procs out rc runs=0 hb mt now
+  os=${CC_WATCH_HOST_OS:-$(uname -s 2>/dev/null || true)}
+  if [ "$os" = Darwin ]; then
+    la=$(sysctl -n vm.loadavg 2>/dev/null || true)
+    la=$(printf '%s' "$la" | tr -d '{}')
+    nc=$(sysctl -n hw.ncpu 2>/dev/null || true)
+  else
+    la=$(cut -d' ' -f1-3 /proc/loadavg 2>/dev/null || true)
+    nc=$(getconf _NPROCESSORS_ONLN 2>/dev/null || true)
+  fi
+  read -r l1 l5 l15 _rest <<EOF
+$la
+EOF
+  procs=null
+  if command -v pgrep >/dev/null 2>&1; then
+    out=$(pgrep -x claude 2>/dev/null); rc=$?
+    case "$rc" in
+      0) procs=$(printf '%s\n' "$out" | grep -c . || true) ;;
+      1) procs=0 ;;
+    esac
+  fi
+  # The run root keeps every finished run's directory and its last heartbeat, so
+  # reading each mtime would fork once per run ever made on this host, every
+  # pass. `ls -t` lists them newest first in one process, and the walk stops at
+  # the first one outside the window: the forks are the fresh heartbeats plus one.
+  now=$(now_epoch)
+  while IFS= read -r hb; do
+    [ -n "$hb" ] || continue
+    mt=$(file_mtime "$hb")
+    [ -n "$mt" ] || continue
+    [ $(( now - mt )) -le $(( 3 * INTERVAL )) ] || break
+    runs=$((runs + 1))
+  done <<EOF
+$(ls -t "$(dirname "$RUN_DIR")"/*/watch.heartbeat 2>/dev/null)
+EOF
+  { printf '{"schema":1,"at":"%s","load1":%s,"load5":%s,"load15":%s,"ncpu":%s,"claude_procs":%s,"runs":%s,"stages":%s}\n' \
+      "$(now_iso)" "$(host_load_num "$l1")" "$(host_load_num "$l5")" "$(host_load_num "$l15")" \
+      "$(host_load_num "$nc")" "$(host_load_num "$procs")" "$(host_load_num "$runs")" \
+      "$(host_load_num "$1")" >> "$RUN_DIR/host-load.jsonl"; } 2>/dev/null || true
+}
+
 shift_active() {
   # Is a routing shift being launched right now?
   #
@@ -484,6 +559,57 @@ fleet_run_marker_live() {
   return 1
 }
 
+failover_clock_note() {
+  # Called once per pass. Keeps `watch.failover-clock`: this pass's epoch, the
+  # current account-failover wait's resume time (`-` with none), and the seconds
+  # of clock jump this watcher saw after that resume time.
+  #
+  # A JUMP IS THE GAP BETWEEN TWO PASSES PAST THREE INTERVALS: the host slept,
+  # or something held this process. The slack `failover_waiting` gives covers a
+  # host that stays awake and a tick that runs on time; a sleep over the whole
+  # slack would otherwise have the first pass after it read a run the next tick
+  # will resume as silent, and write a `blocked` row a resolving row has to take
+  # back, a shift's or a person's. No
+  # ordering holds between that pass and the tick, so the part of the jump past
+  # the resume time is taken off the clock the slack is measured on: the tick
+  # gets its own awake slack, and with no jump nothing is taken off. A new
+  # resume time starts from zero.
+  local f="$RUN_DIR/watch.failover-clock" now at last prev_at held iv from
+  now=$(now_epoch)
+  at=$(cc_failover_wait_resume "$LEDGER" 2>/dev/null || true)
+  last=$(sed -n '1p' "$f" 2>/dev/null || true)
+  prev_at=$(sed -n '2p' "$f" 2>/dev/null || true)
+  held=$(sed -n '3p' "$f" 2>/dev/null || true)
+  case "$last" in ''|*[!0-9]*) last=$now ;; esac
+  case "$held" in ''|*[!0-9]*) held=0 ;; esac
+  [ "$prev_at" = "${at:--}" ] || held=0
+  if [ -n "$at" ]; then
+    iv=${INTERVAL%.*}
+    case "$iv" in ''|*[!0-9]*) iv=1 ;; esac
+    if [ $((now - last)) -gt $((iv * 3)) ]; then
+      from=$last
+      [ "$from" -ge "$at" ] || from=$at
+      [ "$now" -le "$from" ] || held=$((held + now - from))
+    fi
+  fi
+  printf '%s\n%s\n%s\n' "$now" "${at:--}" "$held" > "$f.tmp.$$" 2>/dev/null \
+    && mv -f "$f.tmp.$$" "$f" 2>/dev/null || rm -f "$f.tmp.$$" 2>/dev/null
+  return 0
+}
+
+failover_waiting() {
+  # The run is inside an account-failover wait: the latest `계정 이전` row
+  # after the latest `handoff` is `결과=대기` and its `재개 시각`, plus the
+  # slack in which the relay or the fleet tick makes the next call
+  # (`CC_FAILOVER_WATCH_SLACK_SECONDS`), has not come. Read by the shared
+  # helper the gate and the fleet tick use, on this watcher's clock less the
+  # jump `failover_clock_note` kept, which is none on a host that stayed awake.
+  local held
+  held=$(sed -n '3p' "$RUN_DIR/watch.failover-clock" 2>/dev/null || true)
+  case "$held" in ''|*[!0-9]*) held=0 ;; esac
+  cc_failover_waiting_now "$LEDGER" "$(( $(now_epoch) - held ))" "$CC_FAILOVER_WATCH_SLACK_SECONDS"
+}
+
 stall_threshold() {
   # The threshold T of the general and settle-stall arms. `STALL` while a seat
   # turn is open or a halt record waits for a person's answer — neither is a
@@ -495,9 +621,17 @@ stall_threshold() {
   # router, no shift and no handoff row, and its driver polls CI inline outside
   # the gate for up to an hour — no gate entry, no ledger row, no stage — so
   # `SILENCE` would call a healthy merge wait a stall and leave a run-scope
-  # `blocked` row only a person can resolve.
+  # `blocked` row that stays until a resolving row takes it back, which that run
+  # has no shift to write.
+  #
+  # `STALL` too while the run waits for an account-failover resume time
+  # (`failover_waiting`): the gate wrote that wait and launches nothing until
+  # then, so the quiet is the wait itself. The silence, after-stage, run-open
+  # and settle arms also read the same judgment as a conjunct and raise nothing
+  # before that time; past it they judge as before.
   local h
   if seat_turn_open; then printf '%s' "$STALL"; return 0; fi
+  if failover_waiting; then printf '%s' "$STALL"; return 0; fi
   h=$(cc_unanswered_halts "$RUN_DIR" "$LEDGER" 2>/dev/null || printf 0)
   if [ "${h:-0}" -ge 1 ] 2>/dev/null; then printf '%s' "$STALL"; return 0; fi
   if fleet_run_marker_live; then printf '%s' "$STALL"; return 0; fi
@@ -670,6 +804,10 @@ beat() {
   grew=$(sed -n '2p' "$RUN_DIR/watch.state" 2>/dev/null || true)
   printf '%s 원장 %s초 전 갱신 · 스테이지 %s개 · 대기 승인 %s건 · 비종단 세그먼트 %s개 · 원장크기=%s · 마지막성장=%s\n' \
     "$(now_iso)" "$age" "$live" "$pend" "$nonterm" "$size" "$grew" > "$RUN_DIR/watch.heartbeat"
+  # The host-load sample rides the same cadence, after the heartbeat so its own
+  # file already counts toward `runs`. `beat` also runs in the `done` tail, so the
+  # last heartbeat leaves a sample too.
+  [ -d "$RUN_DIR" ] && host_load_sample "$live"
   printf '%s [watch] 살아 있음 — 원장 %s초 전 갱신, 스테이지 %s개, 대기 승인 %s건, 비종단 세그먼트 %s개\n' \
     "$(now_iso)" "$age" "$live" "$pend" "$nonterm"
 }
@@ -710,6 +848,7 @@ settle_stall_arm() {
   [ "$(cc_unresolved_blocked "$LEDGER" | grep -c . || true)" = "0" ] || return 0
   [ -n "${quiet:-}" ] && [ "$quiet" -ge "$thr" ] || return 0
   [ "${relay_eff:-0}" = "0" ] || return 0
+  ! failover_waiting || return 0
   mk="$RUN_DIR/watch.announced-settle-stall-$size"
   [ ! -f "$mk" ] || return 0
   : > "$mk"
@@ -731,6 +870,7 @@ pass() {
   local age live live_w pend nonterm run_age gate_idle size grew silent id newly stale
   local cause reason slug mk thr quiet relay_eff
   beat
+  failover_clock_note
   # THE GATE'S IDLE TIME SITS BESIDE `age` because two arms read it: the
   # run-open arm, and the quiet base of the general and settle-stall arms.
   gate_idle=$(gate_idle_seconds)
@@ -822,7 +962,7 @@ pass() {
   # stranding, and it is read as an EXPIRY rather than as a flag; see
   # `shift_active`.
   if [ "$live_w" = "0" ] && [ "$pend" = "0" ] && [ "$age" -ge "$AFTER_STAGE" ] \
-     && [ "$nonterm" -ge 1 ] && ! shift_active \
+     && [ "$nonterm" -ge 1 ] && ! shift_active && ! failover_waiting \
      && [ -z "$(cat "$RUN_DIR/done" 2>/dev/null || true)" ] \
      && [ "$( { grep -E '^- `' "$LEDGER" 2>/dev/null || true; } | tail -1 \
              | grep -cE '^- `(stage-result|cost)`' || true)" != "0" ] \
@@ -872,11 +1012,11 @@ pass() {
   # justification: an unresolved run-scope block stands up a termination condition
   # and the shared state predicate then refuses terminal forever, so one long
   # legitimate stage would stop the run from ending all night and would need a
-  # person to write the resolving row. The tolerance for false positives above is
-  # bought entirely by "firing leaves a line, it does not kill" — a block row
-  # spends that. And the two differ in kind: the sibling arms measure the
-  # ROUTER's silence, which needs a person to break, while this one measures a
-  # STAGE's, which resolves by itself when the stage ends.
+  # person or a shift to write the resolving row. The tolerance for false positives
+  # above is bought entirely by "firing leaves a line, it does not kill" — a block
+  # row spends that. And the two differ in kind: the sibling arms measure the
+  # ROUTER's silence, which takes a person or a shift to break, while this one
+  # measures a STAGE's, which resolves by itself when the stage ends.
   #
   # The once-guard is a dedicated per-stage marker for the same reason the arms
   # above use one: the gate empties `stall` on every act, so a guard reading that
@@ -957,6 +1097,10 @@ pass() {
   # segment row, so the segment count alone excludes it, and the `done` guard
   # excludes it a second time.
   #
+  # A RUN WAITING ON AN ACCOUNT-FAILOVER RESUME TIME STAYS OUT TOO: a first shift
+  # can hit the limit before any segment opens, and then no segment and no gate
+  # entry is the wait the gate wrote, which the next call ends.
+  #
   # The once-guard is a dedicated marker for the same reason the arm above's is:
   # the gate empties `stall` on every act, so a guard that read that file would
   # come back to life and this arm would re-fire every pass.
@@ -966,6 +1110,7 @@ pass() {
      && [ -n "$run_age" ] && [ "$run_age" -ge "$RUN_OPEN" ] \
      && [ "$age" -ge "$AFTER_STAGE" ] \
      && [ -n "$gate_idle" ] && [ "$gate_idle" -ge "$AFTER_STAGE" ] \
+     && ! failover_waiting \
      && [ -z "$(cat "$RUN_DIR/done" 2>/dev/null || true)" ] \
      && [ ! -f "$RUN_DIR/watch.announced-run-open" ]; then
     : > "$RUN_DIR/watch.announced-run-open"
@@ -1014,7 +1159,7 @@ pass() {
   silent=$(cc_unresolved_blocked "$LEDGER" | grep -cF '라이브니스 침묵' || true)
   if [ "$live_w" = "0" ] && [ "$pend" = "0" ] \
      && [ -n "$quiet" ] && [ "$quiet" -ge "$thr" ] \
-     && [ "$relay_eff" = "0" ] \
+     && [ "$relay_eff" = "0" ] && ! failover_waiting \
      && { [ "$nonterm" -ge 1 ] \
           || { [ "$(cc_segment_count "$LEDGER")" = "0" ] \
                && [ ! -f "$RUN_DIR/watch.announced-run-open" ]; }; } \

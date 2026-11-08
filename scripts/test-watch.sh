@@ -625,9 +625,14 @@ fi
 # `CC_GATE_SOURCE_ONLY=1`, which runs no verb and writes no gate record. That
 # path line is dropped the same whole-line way, and the check after the scan
 # holds the claim it rests on — the only use of that path is a source-only read.
+#
+# The host-load sample counts the host's `claude` processes with `pgrep`, which
+# reads the process table and starts nothing; its one line is dropped the same
+# whole-line way.
 if grep -vE '^[[:space:]]*#' "$WATCH" \
    | grep -vxF '. "$WATCH_DIR/notify-run.sh"' \
    | grep -vxF '  local g="$WATCH_DIR/gate.sh" base' \
+   | grep -vxF '    out=$(pgrep -x claude 2>/dev/null); rc=$?' \
    | grep_all_q -E '\bclaude\b|run\.sh|gate\.sh'; then
   bad "재개 금지" "감시 스크립트가 무언가를 기동한다 — 두 번째 의사결정자가 생긴다"
 else
@@ -746,6 +751,64 @@ if [ -n "$hb2" ]; then
   ok "원장이 그대로여도 하트비트는 다시 쓰인다"
 else
   bad "하트비트 갱신" "mtime 을 읽지 못했다"
+fi
+
+# ---------------------------------------------------------------------------
+# Host-load sample — one JSONL line beside each heartbeat, nine fixed keys. The
+# sample never changes what the watcher does: a command that fails leaves a
+# `null`, and a write that fails leaves the heartbeat and the exit status alone.
+# ---------------------------------------------------------------------------
+HL_KEYS='["schema","at","load1","load5","load15","ncpu","claude_procs","runs","stages"]'
+if ! command -v jq >/dev/null 2>&1; then
+  skip "부하 표본" "jq 가 없다"
+else
+  HLD="$WORK/hl-ok"; mkdir -p "$HLD"
+  HLG="$WORK/hl-ok.md"; printf -- '- `run` | run-id=R1 | prev=x\n' > "$HLG"
+  bash "$WATCH" --run-dir "$HLD" --ledger "$HLG" --once >/dev/null 2>&1
+  check "부하 표본: 심박 한 번에 host-load.jsonl 한 줄" \
+    "$(grep -c . "$HLD/host-load.jsonl" 2>/dev/null || true)" "1"
+  check "부하 표본: 키 집합과 순서가 고정 9개이고 schema 가 1 이다" \
+    "$(jq -c '[keys_unsorted, .schema]' "$HLD/host-load.jsonl" 2>/dev/null)" "[$HL_KEYS,1]"
+  check "부하 표본: runs 는 자기 심박을 세고 stages 는 심박 줄의 스테이지 수다" \
+    "$(jq -r '"\(.runs >= 1) \(.stages)"' "$HLD/host-load.jsonl" 2>/dev/null)" \
+    "true $(sed -n 's/.*스테이지 \([0-9][0-9]*\)개.*/\1/p' "$HLD/watch.heartbeat")"
+  case "$(cat "$HLD/watch.heartbeat" 2>/dev/null)" in
+    *" 원장 "*"초 전 갱신 · 스테이지 "*"개 · 대기 승인 "*"건 · 비종단 세그먼트 "*"개 · 원장크기="*" · 마지막성장="*) \
+      ok "부하 표본: 심박 줄의 꼴은 그대로다" ;;
+    *) bad "부하 표본 심박 꼴" "$(cat "$HLD/watch.heartbeat" 2>/dev/null)" ;;
+  esac
+  bash "$WATCH" --run-dir "$HLD" --ledger "$HLG" --once >/dev/null 2>&1
+  check "부하 표본: 다음 회차는 줄을 덧붙인다" \
+    "$(grep -c . "$HLD/host-load.jsonl" 2>/dev/null || true)" "2"
+
+  # The reading commands fail. The Darwin branch is pinned through the seam so
+  # every leg reaches the commands the stubs replace.
+  mkdir -p "$WORK/hl-bin"
+  for c in sysctl pgrep getconf; do
+    printf '#!/usr/bin/env bash\nexit 2\n' > "$WORK/hl-bin/$c"; chmod +x "$WORK/hl-bin/$c"
+  done
+  HLF="$WORK/hl-fail"; mkdir -p "$HLF"
+  PATH="$WORK/hl-bin:$PATH" CC_WATCH_HOST_OS=Darwin \
+    bash "$WATCH" --run-dir "$HLF" --ledger "$HLG" --once >/dev/null 2>&1
+  check "부하 표본: 읽는 명령이 실패하면 그 필드가 null 이다" \
+    "$(jq -c '[.load1, .load5, .load15, .ncpu, .claude_procs]' "$HLF/host-load.jsonl" 2>/dev/null)" \
+    "[null,null,null,null,null]"
+  check "부하 표본: 읽기 실패에도 심박은 쓰인다" \
+    "$( [ -s "$HLF/watch.heartbeat" ] && printf yes || printf no )" "yes"
+
+  # The write itself fails: a directory sits where the file goes.
+  HLW="$WORK/hl-write"; mkdir -p "$HLW/host-load.jsonl"
+  printf 'stale\n' > "$HLW/watch.heartbeat"; touch -t 202001010000 "$HLW/watch.heartbeat"
+  hlw_err=$(bash "$WATCH" --run-dir "$HLW" --ledger "$HLG" --once 2>&1 >/dev/null); hlw_rc=$?
+  check "부하 표본: 쓰기가 실패해도 감시자는 정상 종료한다" "$hlw_rc" "0"
+  case "$(cat "$HLW/watch.heartbeat" 2>/dev/null)" in
+    *"스테이지"*) ok "부하 표본: 쓰기가 실패해도 심박은 갱신된다" ;;
+    *) bad "부하 표본 쓰기 실패 뒤 심박" "$(cat "$HLW/watch.heartbeat" 2>/dev/null)" ;;
+  esac
+  case "$hlw_err" in
+    *host-load*) bad "부하 표본 쓰기 실패 진단" "$hlw_err" ;;
+    *) ok "부하 표본: 쓰기 실패는 진단 출력을 남기지 않는다" ;;
+  esac
 fi
 
 # ---------------------------------------------------------------------------
@@ -1986,7 +2049,7 @@ case "$out" in
 esac
 # NOTIFY ONLY; NO BLOCK ROW. An unresolved run-scope block stands up a
 # termination condition, so one long legitimate stage would stop the run from
-# ending all night and would need a person to write the resolving row — which
+# ending all night and would need a person or a shift to write the resolving row — which
 # spends the very tolerance for false positives this arm's threshold rests on.
 if [ -f "$RD/stall" ]; then
   bad "스테이지 연령 arm" "막힘 관측 파일을 남겼다 — 정당한 긴 스테이지 하나가 밤새 런의 종료를 막는다"
@@ -2561,6 +2624,7 @@ r7_drive() {
     bash -c '
       . "$LIVENESS_SH"
       eval "$CC_SETTLE_FN"
+      failover_waiting() { return 1; }
       announce() { [ "$R7_WHERE" = before ] && sleep 1; return 0; }
       cc_notify_fire() { printf "%s\n" "$1" >> "$R7_LOG"; [ "$R7_WHERE" = after ] && sleep 1; return 0; }
       STALL=100 age=300 live=0 pend=0 nonterm=0 size=1 thr=100 quiet=300 relay_eff=0
@@ -2824,6 +2888,83 @@ check "고정 그래프: 정착 갈래도 살아 있는 표지 곁에서는 301�
   "$( [ -z "$(ls "$RD"/watch.announced-settle-stall-* 2>/dev/null || true)" ] && printf 0 || printf 1)" "0"
 sil_fleet_clear
 
+# 계정 이전 대기 — 최신 handoff 뒤의 최신 `계정 이전` 행이 `결과=대기` 이고 그
+# `재개 시각` 이 아직 오지 않았으면, 그 조용함은 게이트가 고른 기다림이므로 일반·
+# 스테이지 종료 뒤·런 개시·정착 갈래 모두 말하지 않는다. 재개 시각 직후에는 릴레이나 틱이
+# 아직 부르지 않았으므로 여유(CC_FAILOVER_WATCH_SLACK_SECONDS) 동안 기다림으로 읽고,
+# 그 여유가 지나면 전과 같이 판정한다.
+sil_iso() { perl -MPOSIX -e 'print strftime("%Y-%m-%dT%H:%M:%SZ", gmtime(time + $ARGV[0]))' -- "$1"; }
+sil_fo_row() {  # sil_fo_row <결과> <재개 시각까지 초> — 원장 끝에 계정 이전 행 하나
+  printf -- '- `계정 이전` | 서수=1 | 좌석 레인=~/.claude | 증거=사용량 | 결과=%s | 레인=- | 계정=- | 재개 시각=%s | 후보=- | 기록 시각=%s\n' \
+    "$1" "$(sil_iso "$2")" "$(sil_iso 0)" >> "$LG"
+}
+sil_case 1201; sil_fo_row 대기 600; sil_measure 1201
+check "계정 이전: 재개 시각 전의 대기는 1201초에도 기록하지 않는다" "$(sil_fired)" "0"
+sil_case 1201; sil_fo_row 대기 -5; sil_measure 1201
+check "계정 이전: 재개 시각 5초 뒤의 대기는 다음 호출의 여유 안이라 1201초에도 기록하지 않는다" "$(sil_fired)" "0"
+sil_case 301; sil_fo_row 대기 "-$((CC_FAILOVER_WATCH_SLACK_SECONDS + 5))"; sil_measure 301
+check "계정 이전: 재개 시각에 여유를 더한 시각이 지난 대기는 301초에 기록한다" "$(sil_fired)" "1"
+sil_case 301; sil_fo_row 대기 600; sil_fo_row 이전 0; sil_measure 301
+check "계정 이전: 대기 뒤의 다른 결과 행은 대기를 끝내 301초에 기록한다" "$(sil_fired)" "1"
+sil_case 121; sil_fo_row 대기 600
+printf -- '- `stage-result` | 세그먼트=S1 | 스테이지=S1 | 종류=implement | 종단 부류=정상 완료\n' >> "$LG"
+sil_measure 121
+check "계정 이전: 재개 시각 전에는 스테이지 종료 뒤 갈래도 기록하지 않는다" \
+  "$( [ -f "$RD/watch.announced-after-stage" ] && printf 1 || printf 0)" "0"
+sil_case 121; sil_fo_row 대기 "-$((CC_FAILOVER_WATCH_SLACK_SECONDS + 5))"
+printf -- '- `stage-result` | 세그먼트=S1 | 스테이지=S1 | 종류=implement | 종단 부류=정상 완료\n' >> "$LG"
+sil_measure 121
+check "계정 이전: 재개 시각에 여유를 더한 시각이 지나면 스테이지 종료 뒤 갈래가 121초에 기록한다" \
+  "$( [ -f "$RD/watch.announced-after-stage" ] && printf 1 || printf 0)" "1"
+sil_case 0
+printf 'resume=%s\n' "$(( $(date -u +%s) + 60 ))" > "$RD/relay.live"
+check "계정 이전: 재개 시각 전에는 fr 깨움 키가 서지 않는다" \
+  "$( { cc_relay_wake_keys "$RD" "$LG" | grep -c '^fr:' || true; } | tr -d ' ')" "0"
+sil_fr=$(( $(date -u +%s) - 5 ))
+printf 'resume=%s\n' "$sil_fr" > "$RD/relay.live"
+check "계정 이전: 재개 시각이 지나면 fr 키가 그 시각을 시계로 선다" \
+  "$(cc_relay_wake_keys "$RD" "$LG" | grep '^fr:')" "$(printf 'fr:계정 이전\t%s' "$sil_fr")"
+rm -f "$RD/relay.live"
+
+# 시계 도약 — 호스트가 잠든 동안은 어떤 프로세스도 재개 시각을 잴 수 없으므로, 재개 시각
+# 뒤로 도약한 패스의 그 구간은 여유에 넣지 않는다. 상태 파일은 앞 패스의 시각, 재개 시각,
+# 누적 도약이고, 앞 패스를 3시간 전으로 심어 도약을 모사한다. 깨어난 패스는 틱·릴레이가
+# 먼저 돌았든 워처가 먼저 돌았든 행이 없고, 깨어 있는 1620초가 지나면 행이 선다.
+sil_const() { sed -n "s/^readonly $2=\([0-9][0-9]*\).*/\1/p" "$repo_root/plugins/cc-cmds/orchestrator/$1"; }
+check "계정 이전: 워처 여유는 게이트 유예·틱 조용한 창·틱 한 주기의 합이다" \
+  "$CC_FAILOVER_WATCH_SLACK_SECONDS" \
+  "$(( $(sil_const gate.sh GATE_FAILOVER_RESUME_GRACE_SECONDS) + $(sil_const fleet.sh FLEET_FAILOVER_QUIET_SECONDS) + $(sil_const fleet.sh FLEET_DISPATCH_START_INTERVAL) ))"
+sil_jump() {
+  # sil_jump <앞 패스까지 초> <누적> [<앞 패스가 본 재개 시각>] — 앞 패스 기록을 심는다.
+  # 재개 시각은 원장 행에서 읽는다. 따로 계산하면 초 경계를 넘을 때 다른 대기로 읽힌다.
+  printf '%s\n%s\n%s\n' "$(( $(date -u +%s) - $1 ))" "${3:-$(cc_failover_wait_resume "$LG")}" "$2" \
+    > "$RD/watch.failover-clock"
+}
+sil_held() { sed -n '3p' "$RD/watch.failover-clock"; }
+sil_case 1201; sil_fo_row 대기 -7200; sil_jump 10800 0; sil_measure 1201
+check "계정 이전: 재개 시각을 넘긴 도약 뒤 워처가 먼저 돌아도 기록하지 않는다" "$(sil_fired)" "0"
+check "계정 이전: 재개 시각 앞의 잠든 구간은 도약에 넣지 않는다" \
+  "$( [ "$(sil_held)" -ge 7200 ] && [ "$(sil_held)" -lt 10800 ] && printf 예 || printf "아니오 $(sil_held)")" "예"
+sil_case 121; sil_fo_row 대기 -7200
+printf -- '- `stage-result` | 세그먼트=S1 | 스테이지=S1 | 종류=implement | 종단 부류=정상 완료\n' >> "$LG"
+sil_jump 10800 0; sil_measure 121
+check "계정 이전: 재개 시각을 넘긴 도약 뒤 스테이지 종료 뒤 갈래도 기록하지 않는다" \
+  "$( [ -f "$RD/watch.announced-after-stage" ] && printf 1 || printf 0)" "0"
+# 틱이 먼저 돈 런 — 게이트 진입과 원장 행이 방금이고, 대기는 이전 행이나 새 대기 행으로 끝났다.
+sil_case 0; sil_fo_row 대기 -7200; sil_fo_row 이전 0
+sil_jump 10800 0 "$(cc_iso_to_epoch "$(sil_iso -7200)")"; sil_measure 0
+check "계정 이전: 도약 뒤 틱이 먼저 돌아 교대를 옮긴 런은 기록하지 않는다" "$(sil_fired)" "0"
+sil_case 0; sil_fo_row 대기 -7200; sil_fo_row 대기 600
+sil_jump 10800 7200 "$(cc_iso_to_epoch "$(sil_iso -7200)")"; sil_measure 0
+check "계정 이전: 도약 뒤 틱이 먼저 돌아 새 대기를 쓴 런은 기록하지 않는다" "$(sil_fired)" "0"
+check "계정 이전: 새 대기는 쌓인 도약을 비운다" "$(sil_held)" "0"
+sil_case 301; sil_fo_row 대기 -7200; sil_jump 10 7200; sil_measure 301
+check "계정 이전: 도약분을 뺀 깨어 있는 시간이 여유 안이면 기록하지 않는다" "$(sil_fired)" "0"
+sil_case 301; sil_fo_row 대기 -9000; sil_jump 10 7200; sil_measure 301
+check "계정 이전: 도약 뒤 깨어 있는 시간이 여유를 넘기면 기록한다" "$(sil_fired)" "1"
+sil_case 301; sil_fo_row 대기 "-$((CC_FAILOVER_WATCH_SLACK_SECONDS - 60))"; sil_measure 301
+check "계정 이전: 도약이 없으면 여유 안의 대기는 기록하지 않는다" "$(sil_fired)" "0"
+
 # ---------------------------------------------------------------------------
 # 릴레이 — 유효한 릴레이는 일반·정착 갈래를 멈추고, 걸린 릴레이는 그러지 못한다.
 # 처음 셋은 최신 handoff 를 대기 인계로 두고 릴레이 pid 를 살려 둔다: 살아 있는
@@ -2923,6 +3064,19 @@ sil_settle
 check "정착 갈래: 릴레이 없는 정산 런은 301초에 기록한다" "$SIL_SETTLE" "1"
 sil_settle 릴레이
 check "정착 갈래: 유효한 릴레이가 있으면 기록하지 않는다" "$SIL_SETTLE" "0"
+sil_settle_fo() {  # sil_settle_fo <재개 시각까지 초> — 계정 이전 대기 중인 정산 런, 유휴 301초
+  sil_case 301
+  printf -- '- `segment` | id=S1 | 상태=머지됨\n' > "$LG"
+  printf '1\n' > "$RD/ends-on-done"
+  sil_fo_row 대기 "$1"
+  sil_measure 301
+  SIL_SETTLE=0
+  [ -z "$(ls "$RD"/watch.announced-settle-stall-* 2>/dev/null || true)" ] || SIL_SETTLE=1
+}
+sil_settle_fo 600
+check "정착 갈래: 계정 이전 대기의 재개 시각 전에는 배너를 내지 않는다" "$SIL_SETTLE" "0"
+sil_settle_fo "-$((CC_FAILOVER_WATCH_SLACK_SECONDS + 5))"
+check "정착 갈래: 재개 시각에 여유를 더한 시각이 지나면 301초에 기록한다" "$SIL_SETTLE" "1"
 
 # ---------------------------------------------------------------------------
 # 런 개시 첫 창 — 계획만 있고 세그먼트 행이 없는 원장, 원장 유휴 301초.
@@ -2937,6 +3091,18 @@ check "런 개시: 게이트에 들어온 런의 첫 창 기록은 하나이고 
 sil_open; rm -f "$RD/started-at"; sil_measure 301
 check "런 개시: 게이트에 한 번도 들어오지 않은 런은 일반 갈래가 하나 기록한다" \
   "$(grep -c . "$RD/stall" 2>/dev/null || true):$(sil_fired)" "1:1"
+sil_open_quiet() {
+  printf '%s:%s' "$( { cat "$RD/stall" 2>/dev/null || true; } | { grep -c . || true; })" \
+    "$( [ -f "$RD/watch.announced-run-open" ] && printf 1 || printf 0)"
+}
+sil_open; sil_fo_row 대기 600; sil_measure 301
+check "런 개시: 첫 세그먼트 전 계정 이전 대기의 재개 시각 전에는 기록하지 않는다" "$(sil_open_quiet)" "0:0"
+sil_open; sil_fo_row 대기 -7200; sil_jump 10800 0; sil_measure 301
+check "런 개시: 재개 시각을 넘긴 도약 뒤에도 기록하지 않는다" "$(sil_open_quiet)" "0:0"
+sil_open; sil_fo_row 대기 "-$((CC_FAILOVER_WATCH_SLACK_SECONDS + 5))"; sil_measure 301
+check "런 개시: 재개 시각에 여유를 더한 시각이 지나면 세그먼트 미개시 하나를 기록한다" \
+  "$(grep -c . "$RD/stall" 2>/dev/null || true):$(grep -c '세그먼트 미개시' "$RD/stall" 2>/dev/null || true)" "1:1"
+unset -f sil_jump sil_held sil_const sil_open_quiet
 
 printf '\ntest-watch: %d passed, %d failed, %d skipped\n' "$passed" "$failed" "$skipped"
 [ "$failed" = "0" ]

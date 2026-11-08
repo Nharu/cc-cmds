@@ -339,7 +339,7 @@ esac
 # Spelling the set out means a suite added to this tree that calls the gate
 # family has to be added here as well. That edit is the point rather than a cost:
 # it is the one moment somebody looks at whether the new suite kills the channel.
-_selected_want="test-attention-funnel.sh test-gate-chain-equiv.sh test-gate-oracle.sh test-gate.sh test-kickoff-defaults.sh test-kickoff-hook-probe.sh test-liveness-agreement.sh test-local-bundle.sh test-lost-dispatch.sh test-measure-test-share.sh test-meta-invariants.sh test-orchestrator-pretool-hook.sh test-reader-model-pair-audit.sh test-rekick.sh test-repair.sh test-run-issue-filing.sh test-run.sh test-snapshot.sh test-solo-audit-experiment.sh test-stage-supervisor.sh test-suite-isolation.sh test-tree.sh test-visual-check.sh test-waiting-decisions.sh"
+_selected_want="test-attention-funnel.sh test-fleet.sh test-gate-chain-equiv.sh test-gate-oracle.sh test-gate.sh test-kickoff-defaults.sh test-kickoff-hook-probe.sh test-liveness-agreement.sh test-local-bundle.sh test-lost-dispatch.sh test-measure-test-share.sh test-meta-invariants.sh test-orchestrator-pretool-hook.sh test-reader-model-pair-audit.sh test-rekick.sh test-repair.sh test-run-issue-filing.sh test-run.sh test-snapshot.sh test-solo-audit-experiment.sh test-stage-supervisor.sh test-suite-isolation.sh test-tree.sh test-visual-check.sh test-waiting-decisions.sh"
 _selected_got=$(printf '%s\n' $_selected_names | sort | tr '\n' ' ' \
                   | sed -e 's/  */ /g' -e 's/^ //' -e 's/ $//')
 check "누출 술어가 고르는 스위트 집합이 그대로다" "$_selected_got" "$_selected_want"
@@ -1062,8 +1062,10 @@ for pair in "리드:$AP_ROUTER" "교대:$RS_CORPUS"; do
     "#### Dispatching the audit stage|grep -qxF '**상태**: 동결됨' <문서>" \
     '#### Dispatching the audit stage|`<main worktree>-run-<run id>-<audit step id>` with `git worktree add --detach`' \
     '#### Dispatching the audit stage|do not write a `segment` row to name it' \
+    '#### Dispatching the audit stage|with `git worktree add --detach` at the tip of `refs/remotes/origin/<base branch>`, resolved after fetching that ref' \
     '#### Planning the segments|`슬라이싱`' \
-    '#### Planning the segments|git worktree add -b <슬라이싱 의 브랜치> <슬라이싱 의 워크트리> <베이스>' \
+    '#### Planning the segments|git worktree add -b <슬라이싱 의 브랜치> <슬라이싱 의 워크트리> <슬라이싱 의 베이스>' \
+    '#### Planning the segments|never a local branch name (`main`, `master`) or `HEAD` in its place' \
     '#### Planning the segments|--from-declaration' \
     '#### Planning the segments|-- 상태=계획됨 워크트리=<슬라이싱 의 워크트리>' \
     '#### Planning the segments|its predecessor'"'"'s `segments[]` entry reads `"착지": true`' \
@@ -1105,7 +1107,7 @@ for pair in "리드:$AP_ROUTER|### Proposing that the run is done" \
             "교대:$RS_CORPUS|### Settling the termination clauses and proposing done"; do
   who=${pair%%:*}; rest=${pair#*:}; file=${rest%%|*}; head=${rest#*|}
   sec=$(router_section "$file" "$head")
-  n1=$(printf '%s\n' "$sec" | grep -cF -- '--cutpoint 커밋 --surface 외부상태변경 --reach 협업' || true)
+  n1=$(printf '%s\n' "$sec" | grep -cF -- '--cutpoint 커밋 --surface 외부상태변경 -- 게시' || true)
   n2=$(printf '%s\n' "$sec" | grep -cF -- 'pulls/<n>/reviews' || true)
   if [ "${n1:-0}" != "0" ] && [ "${n2:-0}" != "0" ]; then
     ok "$who 사본의 「${head#'### '}」 절이 리뷰 게시 철자와 신고를 함께 싣는다"

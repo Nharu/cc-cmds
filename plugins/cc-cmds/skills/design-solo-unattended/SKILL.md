@@ -29,6 +29,7 @@ Discuss-arm parts this arm reads:
 - `### Step 1: Read the brief and guard it`
 - `6. (driver dispatch only) the interview record governs, and what the team decides in its place is listed:`
 - `### Step 7U: Coherence, slicing self-check, residual ladder, freeze (driver dispatch)`
+- `### Ticket delivery (driver dispatch)`
 - `### The requirement-decision list (driver dispatch)`
 - `- **Research.** Research is open:`
 
@@ -112,7 +113,7 @@ The lead alone reads the interview record (or, without one, the task sentence an
 
 - **Verification.** `${CLAUDE_SKILL_DIR}/../_common/verification.md` applies as written: a claim settled against the tree goes to `## 검증 기록`, a claim that cannot be settled now goes to `## 구현 시 검증 항목` as an `### R<n>` with its required fields, and the pre-save sweep's four conditions hold before the Write.
 - **Substitution 6** of the discuss arm's `### Step 3 · Step 4: Interim body` (the listed item, not the rest of that section) applies as written: the record governs, a requirement-level choice the record left open is decided and listed in `## 팀이 정한 요구 결정` in the form of `### The requirement-decision list (driver dispatch)`, and a verified base-design row brings `## 베이스 제약` with its fixed first sentence in `## 합의된 아키텍처`.
-- **Headings, in this order:** the H1; the document status line; `## 팀이 정한 요구 결정`; `## 베이스 제약` (only with a base-design row); `## 합의된 아키텍처`; `## 주요 결정사항과 근거`; `## 검증 기록` (when a claim was settled); `## 미해결 이슈 / 트레이드오프` (its entries at `상태: 보류`, or the single line `없음`); `## 구현 시 검증 항목` (when an item exists); `## 구현 슬라이싱` (always, in the declaration form `design/SKILL.md` defines). Implementation binds by section identity, so no other heading is invented to carry a decision.
+- **Headings, in this order:** the H1; the document status line; `## 팀이 정한 요구 결정`; `## 베이스 제약` (only with a base-design row); `## 합의된 아키텍처`; `## 주요 결정사항과 근거`; `## 검증 기록` (when a claim was settled); `## 미해결 이슈 / 트레이드오프` (its entries at `상태: 보류`, or the single line `없음`); `## 구현 시 검증 항목` (when an item exists); `## 구현 슬라이싱` (always on any other run, in the declaration form `design/SKILL.md` defines). On a plan reading `design_delivery` `tickets`, the line `**문서 종류**: 티켓 배달 설계` follows the status line and `## 티켓 간 계약`, `## 티켓 분할` and `## 개정 이력` stand in the place of `## 구현 슬라이싱`, as `### Ticket delivery (driver dispatch)` of the discuss arm says. Implementation binds by section identity, so no other heading is invented to carry a decision.
 - **Every `상태: 보류` entry carries `**구현 처분**`** and its companion field, chosen and written by `${CLAUDE_SKILL_DIR}/../_common/unresolved-closure.md` (`## 값 고르는 기준`, `## 작성자 꼴`). An entry whose `사유` is `베이스 계약 변경 필요` is `구현 전 결정`. Such an entry is closed only by `${CLAUDE_SKILL_DIR}/../_common/unresolved-closure.md`, `## 사유 거둠`, and this stage never closes it.
 - **A hotfix run's slices merge first.** When the plan in the manifest's `## 실행 계획` carries `run_profile` `hotfix`, every implementation slice of `## 구현 슬라이싱` declares `**리뷰 정책**: 선머지후리뷰`, which is the run's frozen review policy ceiling. The number of slices follows the slicing rules as written.
 - **The document status line before the freeze is `**상태**: 초안`**, on its own line below the H1. That value is this arm's own: no other skill defines a pre-freeze document status, and it overlaps none of the item status values (`대기`·`조사중`·`결정대기`·`해결`·`보류`), so the freeze Edit matches exactly one line.
@@ -127,7 +128,7 @@ There is no walkthrough and no pass-through refinement. An entry that cannot be 
 Read the discuss arm's Step 7U and follow its five jobs in order, with the first replaced:
 
 1. **Re-read against the requirements.** The lead re-reads the whole document against the record's `## 확인된 요구` and fixes it in place. A finding that departs from a recorded answer does not halt: it is listed by job 3 as `벗어남 — 문 <n>`. There is no team to resume and no team cleanup.
-2. **Slicing self-check** — unchanged; a repair that needs a decision nobody made → halt `slicing-unknown`. Read item `8. **Slicing self-check` of `${CLAUDE_SKILL_DIR}/../design/SKILL.md` with its indented lines: rules (f) and (g), their baseline and their counting are defined there and nowhere in this arm. Neither split rule ever reaches `slicing-unknown`: a split nobody decided is not made, and the reason field is written instead.
+2. **Slicing self-check** — unchanged; a repair that needs a decision nobody made → halt `slicing-unknown`. Read item `8. **Slicing self-check` of `${CLAUDE_SKILL_DIR}/../design/SKILL.md` with its indented lines: rules (f) and (g), their baseline and their counting are defined there and nowhere in this arm. Neither split rule ever reaches `slicing-unknown`: a split nobody decided is not made, and the reason field is written instead. An upper run's `BS check` and a child run's `BS fence-check` are inherited from the discuss arm's `### Ticket delivery (driver dispatch)`, and so are a child run's copies and its revision steps; this arm does not fix a child run's `design_path`.
 3. **Requirement-decision list** — unchanged.
 4. **Residual ladder** — unchanged, W3 included; an item no rung settles → halt `ladder-unsettled`, after every item has been walked.
 5. **Freeze.** When this freeze follows an answer to this stage's `ladder-unsettled` halt, first write the `**잔여 동결**` line directly below the status line, in the discuss arm's Step 7U job 5 form. Then one Edit that replaces the single line `**상태**: 초안` with `**상태**: 동결됨`; this is the last document edit. Then emit, in the terminal message, the freeze literal *"설계 문서를 동결했습니다."* on its own line, followed by the document path and its whole-file `sha256`, then the discuss arm's `강제 표면:` line from job 2's screen when the document has `## 구현 슬라이싱`. No judgment markers follow. Name no next step. End the turn.
@@ -138,7 +139,7 @@ Read the discuss arm's Step 7U and follow its five jobs in order, with the first
 - Every Bash command goes through `gate.sh exec`, with the `--reach` discipline of `implement-unattended`'s CFI-U7. Call external commands directly, never inside `bash -c`; read pipeline variables by name, never with bare `env`.
 - **Never reach a notification surface** and **never write a pipeline sidecar** (CFI-L3).
 - **Research** follows the research paragraph of the discuss arm's `## Constraints` as written.
-- **The design document's only writes** are: the Step 3 Write, Step 7U's in-place fixes, slicing repair, requirement-decision entries and `### 확인된 요구와의 대응` block, W3 lines (with the `**검증 시점**` revert W3 entails), the `**잔여 동결**` line, and the freeze Edit.
+- **The design document's only writes** are: the Step 3 Write, Step 7U's in-place fixes, slicing repair, a child run's re-copy of `## 베이스 제약` after a passed `revise`, requirement-decision entries and `### 확인된 요구와의 대응` block, W3 lines (with the `**검증 시점**` revert W3 entails), the `**잔여 동결**` line, and the freeze Edit.
 
 ## Resumed turns
 

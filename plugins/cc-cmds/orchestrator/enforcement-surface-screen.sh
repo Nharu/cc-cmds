@@ -6,6 +6,7 @@
 # Usage
 #
 #   enforcement-surface-screen.sh [--list] [--tokens] [-z] [--] [<path>…]
+#   enforcement-surface-screen.sh --between <worktree> <base-rev> <branch-rev>
 #
 #   <path>…   each path that is an enforcement surface is printed as
 #             `<path><TAB><class>`; a path that is not one prints nothing. A
@@ -21,6 +22,18 @@
 #             applies to a `좌석 실행` command.
 #   -z        read the paths (or command lines) NUL-separated from standard
 #             input instead of the argument list.
+#   --between the kickoff's listing of what an adopted branch changed on the
+#             enforcement surface, read in <worktree>: the merge base of
+#             <base-rev> (the base end) and <branch-rev> (the branch end) is
+#             found as the gate's provenance check finds it, and every path
+#             changed from there to the branch end that the classifier names is
+#             printed as `<path><TAB><class><TAB><base entry><TAB><branch
+#             entry><TAB><verdict>`, an entry being `<mode> <oid>` or `없음`. A
+#             path the branch end holds as the base end does is not printed —
+#             the gate lets it through. The verdict is `승인 가능`, `양쪽 변경`
+#             or `경로 문자`, and comes from the gate's own path verdict
+#             function, sourced from `gate.sh` beside this tool; this mode
+#             implements no rule of its own. It takes no other switch.
 #
 #   The classes are a closed set of four: 프로젝트설정, 트랜스크립트,
 #   규칙카탈로그, 지침파일.
@@ -30,10 +43,14 @@
 #   0  judged — whether or not anything was printed
 #   1  malformed invocation
 #   2  the classifier beside this tool could not be loaded, so nothing was
-#      judged; a caller reads this as `판정불가`, never as "no surface"
+#      judged; a caller reads this as `판정불가`, never as "no surface". From
+#      `--between` also: the gate's verdict function could not be loaded, a
+#      revision does not resolve, the repository is shallow below the fork
+#      point, or the merge base or the changed paths could not be read
 #
-# READS ONLY. No manifest, no run and no repository are needed, and nothing is
-# written. The arms are not here: they are in `../hooks/enforcement-surfaces.sh`,
+# READS ONLY. The path modes need no manifest, no run and no repository;
+# `--between` reads two revisions, so it needs the repository, and still no
+# manifest and no run. Nothing is written. The arms are not here: they are in `../hooks/enforcement-surfaces.sh`,
 # the same file the run hook sources, so this tool cannot disagree with the hook
 # about a spelling. Inside a run a stage cannot launch a script from the pinned
 # plugin copy, so it calls `gate.sh surface-screen`, which runs this file from
@@ -50,6 +67,72 @@ if ! command -v es_class >/dev/null 2>&1; then
   printf 'enforcement-surface-screen: the classifier %s could not be loaded — nothing was judged\n' \
     "$es_here/../hooks/enforcement-surfaces.sh" >&2
   exit 2
+fi
+
+es_between() {
+  # es_between <worktree> <base-rev> <branch-rev> — the `--between` listing.
+  # The gate is sourced in a child shell, as the driver's gate calls source it,
+  # so its run state never reaches this one.
+  local wt="$1" brev="$2" hrev="$3"
+  [ -d "$wt" ] || { printf 'enforcement-surface-screen: --between: no such worktree: %s\n' "$wt" >&2; return 2; }
+  (
+    CC_GATE_SOURCE_ONLY=1
+    export CC_GATE_SOURCE_ONLY
+    # shellcheck source=/dev/null
+    . "$es_here/gate.sh" >/dev/null 2>&1 || exit 2  # lint-harness-global-collisions: child-shell
+    set +e
+    unset CC_GATE_SOURCE_ONLY CC_ORCH_SOURCE_ONLY
+    command -v gate_surface_path_verdict >/dev/null 2>&1 || {
+      printf 'enforcement-surface-screen: --between: the gate verdict function beside this tool could not be loaded\n' >&2
+      exit 2; }
+    cd "$wt" || exit 2
+    bend=$(git rev-parse --verify --quiet "$brev^{commit}" 2>/dev/null) || bend=''
+    hend=$(git rev-parse --verify --quiet "$hrev^{commit}" 2>/dev/null) || hend=''
+    if [ -z "$bend" ] || [ -z "$hend" ]; then
+      printf 'enforcement-surface-screen: --between: a revision does not resolve (base %s, branch %s)\n' "$brev" "$hrev" >&2
+      exit 2
+    fi
+    # THE MERGE BASE, FOUND THE THREE WAYS THE GATE FINDS IT: the common
+    # ancestor when there is one, the empty tree for a branch with no common
+    # history, and no verdict when a shallow clone hides the fork point or
+    # anything else fails.
+    mbrc=0
+    mb=$(git merge-base "$bend" "$hend" 2>/dev/null) || mbrc=$?
+    if [ "$mbrc" = 1 ] && [ -z "$mb" ] && [ "$(git rev-parse --is-shallow-repository 2>/dev/null)" = true ]; then
+      printf 'enforcement-surface-screen: --between: the repository is shallow, so the merge base cannot be decided\n' >&2
+      exit 2
+    elif [ "$mbrc" = 1 ] && [ -z "$mb" ]; then
+      mb=$(git hash-object -t tree /dev/null 2>/dev/null) || mb=''
+    elif [ "$mbrc" != 0 ]; then
+      mb=''
+    fi
+    [ -n "$mb" ] || { printf 'enforcement-surface-screen: --between: the merge base cannot be read (rc=%s)\n' "$mbrc" >&2; exit 2; }
+    lrc=0
+    lst=$( { git -c core.quotePath=false diff --no-renames -z --name-only "$mb" "$hend" 2>/dev/null; } \
+           | gate__es_class_z) || lrc=$?
+    [ "$lrc" = 0 ] || { printf 'enforcement-surface-screen: --between: the changed paths cannot be read (rc=%s)\n' "$lrc" >&2; exit 2; }
+    while IFS=$'\t' read -r cls p; do
+      [ -n "$p" ] || continue
+      eh=$(gate__tree_entry "$hend" "$p")
+      eb=$(gate__tree_entry "$bend" "$p")
+      em=$(gate__tree_entry "$mb" "$p")
+      v=$(gate_surface_path_verdict "$p" "$eh" "$eb" "$em")
+      [ "$v" != '통과' ] || continue
+      printf '%s\t%s\t%s\t%s\t%s\n' "$p" "$cls" "$eb" "$eh" "$v"
+    done <<EOF
+$lst
+EOF
+    exit 0
+  )
+}
+
+if [ "${1:-}" = "--between" ]; then
+  if [ $# -ne 4 ]; then
+    printf 'enforcement-surface-screen: --between takes exactly <worktree> <base-rev> <branch-rev> and no other switch\n' >&2
+    exit 1
+  fi
+  es_between "$2" "$3" "$4"
+  exit $?
 fi
 
 es_list=0 es_tokens=0 es_nul=0
