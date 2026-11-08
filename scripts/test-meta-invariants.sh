@@ -857,7 +857,7 @@ for lit in \
 done
 # Both halts that refuse an earlier output give a person options, and the
 # labels are the ones a resumed turn reads back.
-for lab in '있는 디자인 시스템을 쓴다' '새로 만들어 덮는다' '신규로 만든다' '재사용으로 진행' '다시 생성'; do
+for lab in '있는 디자인 시스템을 쓴다' '새로 만들어 덮는다' '신규로 만든다' '확인 대기인 채 화면을 만든다' '재사용으로 진행' '다시 생성'; do
   if grep -qF -- "- \`${lab}\` — " "$VU_SKILL"; then
     ok "visual-unattended 문면에 선택지 「${lab}」 줄이 있다"
   else
@@ -870,21 +870,119 @@ if grep -qF -- "rewrite only the sidecar's \`**기록**\` line" "$VU_SKILL"; the
 else
   bad "visual-unattended 재사용 갈래" "기록 경로를 고쳐 쓰는 문면이 없다"
 fi
-# A resumed turn reruns Step 1 from item 1, and item 6 runs before item 7, so
-# an `output-present` answer is applied only while the following record carries
-# the earlier `system-mismatch` answer and item 6 reads it back for the same
-# case. Without both sentences the two halts alternate without end.
+# A resumed turn reruns Step 1 from item 1, and item 4 runs before item 6 and
+# item 6 before item 7, so a later halt's answer is applied only while its
+# record carries the earlier `system-mismatch` answer and the earlier item reads
+# it back for the same case. That holds for an `output-present` halt and for a
+# second `system-mismatch` case alike (a waiting design system answered with
+# `확인 대기인 채 화면을 만든다`, then `신규·다른 문서` at item 6). Without
+# these sentences the two halts alternate without end.
 for lit in \
   '`앞선 답=<label> · 경우=<key> · 기록=<earlier halt record path>`' \
-  'While item 6 computes a `system-mismatch` with the same `경우=` as that piece, it does not halt' \
-  'Its record'"'"'s `**관측 상세**` holds the applied answer as an `앞선 답=` piece'; do
+  'While item 4 or item 6 computes a `system-mismatch` with the same `경우=` as that piece, it does not halt' \
+  'Its record'"'"'s `**관측 상세**` holds the applied answer as an `앞선 답=` piece' \
+  'then halts at `output-present`, or at a `system-mismatch` of another case, carries that answer forward' \
+  'An `output-present` record, and a `system-mismatch` record of another case, of an attempt that applied a `system-mismatch` answer also carries that answer'; do
   if grep -qF -- "$lit" "$VU_SKILL"; then
     ok "visual-unattended 재개 턴이 앞선 시스템 불일치 답을 나른다 — 「${lit}」"
   else
     bad "visual-unattended 재개 턴의 앞선 답" "「${lit}」가 없다"
   fi
 done
-for old in 'Every site except `review-cap` is a refusal' 'write nothing at all'; do
+# The design system terminal ends on its own fixed line, and a plan with no
+# publish step ends a waiting design system on a halt a person can answer,
+# never on a terminal message without a literal.
+for lit in \
+  '디자인 시스템을 사람 확인으로 넘겼습니다.' \
+  '`system-mismatch` | `디자인 시스템 확인 대기` |'; do
+  if grep -qF -- "$lit" "$VU_SKILL"; then
+    ok "visual-unattended 문면이 디자인 시스템 확인 대기 끝을 고정한다 — 「${lit}」"
+  else
+    bad "visual-unattended 문면의 디자인 시스템 확인 대기 끝" "「${lit}」가 없다"
+  fi
+done
+VP_SKILL="$PLUGIN_ROOT/skills/visual-publish-unattended/SKILL.md"
+if grep -qF -- '정지 자리는 닫힌 다섯이다.' "$VP_SKILL"; then
+  ok "visual-publish-unattended 문면이 정지 자리를 닫힌 다섯으로 적는다"
+else
+  bad "visual-publish-unattended 문면의 정지 자리 수" "「정지 자리는 닫힌 다섯이다.」가 없다"
+fi
+# Two documents' runs can wait on one design system confirmation line. The
+# gate and the driver compare the whole line with the document's expected
+# line, so the run answered second must not overwrite the first run's
+# approval: row 14 halts on the kept line, and the writes re-read it first.
+# The re-read halts only on a line that changed from the one the run expects,
+# so a reopening over an approval it expects still proceeds, and a re-publish
+# of a reopening that halted before its rewrite does that rewrite itself.
+VP_SIDECAR="$PLUGIN_ROOT/skills/visual/references/sidecar.md"
+for lit in \
+  '| 14 | `디자인-시스템-판정` `승인` 또는 `수정 요청` — Step 1.3 이 받은 줄이 이 문서 키가 아닌 `사람 승인 — 문서 <키>` 줄' \
+  '**Another document'"'"'s approval written during this run'"'"'s phase is never overwritten.**' \
+  'reads the line again with `visual-check.sh confirm <document>` right before the Claude Design publish (K1 of a new version or of the first publish) and right before its first local write.' \
+  'When the re-read now prints a line that differs from the line this run expects and is a `사람 승인 — 문서 <key>` line whose key is not this document'"'"'s' \
+  'another document'"'"'s approval that is the line this run expects included' \
+  'The line this run expects is the line Step 1.3 kept — on row 13, the `기대 확인=` piece of the failed record it answers instead' \
+  'a failed record without the piece, or whose piece reads `없음`, expects no other document'"'"'s `사람 승인` line, and a failure record such an invocation writes before it rewrites the confirmation line itself carries `기대 확인=없음` — and, once this run has rewritten the confirmation line itself (a reopening'"'"'s waiting line), the line `confirm` prints for what it wrote.' \
+  '다시 읽기의 기대하는 줄은 Step 1.3 이 받은 줄이 아니라 실패 기록의 `기대 확인=` 조각이고, 그 조각이 없거나 `없음` 이면 다른 문서 키의 `사람 승인` 줄은 모두 기대하는 줄과 다르다' \
+  'a reopening is the only one to reach such a line — rows 11 and 12, and row 13 answering the record of a reopening that stopped before its rewrite — and it rewrites it to waiting' \
+  'and then removes `**구현 승인**` and rewrites the line to waiting itself before anything else of rows 11 and 12' \
+  '실패 기록에 `다시 열기 단계=남음` 조각이 있으면(다시 열기가 `**구현 승인**` 지움과 `대기` 다시 쓰기 전에 멈춤) 다시 읽기를 지난 뒤 `**구현 승인**` 지움 → 확인 줄을 `대기` 로 → 입력 유무에 따라 11 행 또는 12 행의 나머지(입력은 이 `다시 발행` 답의 첨부와 지금의 코멘트·직접 편집값이고' \
+  '`다시 열기 단계=남음` 으로 12 행의 나머지를 거치면 `입력 없음=<run-state 의 시각-판정 기록 파일 이름>` 도' \
+  'on row 13 resuming such a reopening, the `시각-판정 기록` file name `run-state` prints, since the `발행-실패` record it answers is not counted.' \
+  'and `다시 열기 단계=남음` too when a reopening — rows 11 and 12, or row 13 answering a record that carries the piece — halts before it removed `**구현 승인**` and rewrote the confirmation line to waiting' \
+  '`수정 <n>회`, and `기대 확인=<the line this invocation expected at the halt' \
+  '다시 읽은 확인 줄이 이 런이 기대하는 줄과 다르고 다른 문서 키의 `사람 승인` 이다' \
+  '`디자인-시스템-판정` `승인` 또는 `수정 요청` 으로 들어왔는데 확인 줄이 이미 다른 문서 키의 `사람 승인` 이다(Step 2a 14 행)' \
+  'every row but 7 and 14, which halt first'; do
+  if grep -qF -- "$lit" "$VP_SKILL"; then
+    ok "visual-publish-unattended 문면이 다른 문서의 승인 줄을 덮지 않는다 — 「${lit}」"
+  else
+    bad "visual-publish-unattended 문면의 다른 문서 승인 줄" "「${lit}」가 없다"
+  fi
+done
+if grep -qF -- '그 런이 기대하는 줄(진입 때 읽은 줄 — 디자인 시스템 국면의 `발행-실패` 에 대한 `다시 발행` 이면 실패 기록의 `기대 확인=` 조각, 그 조각이 없거나 `없음` 이면 다른 문서 키의 `사람 승인` 은 모두 다른 줄 — 또는 그 런이 스스로 고쳐 쓴 줄)과 다르고 다른 문서 키의 `사람 승인` 이면 줄을 지우지도 쓰지도 않고 멈춘다' "$VP_SIDECAR"; then
+  ok "visual sidecar 계약이 다른 문서의 승인 줄을 덮지 않는다"
+else
+  bad "visual sidecar 계약의 다른 문서 승인 줄" "「그 런이 기대하는 줄(…)과 다르고 다른 문서 키의 \`사람 승인\` 이면 줄을 지우지도 쓰지도 않고 멈춘다」가 없다"
+fi
+# A re-publish after a design system publish failure runs in a new session
+# whose kept line may already be another document's approval written while
+# the failure halt waited, so its expected line comes from the failed record.
+for old in '쓰는 쪽이 진입 때 받은 `confirm` 출력이고' '그 런이 기대하는 줄(진입 때 읽은 줄, 또는 그 런이 스스로 고쳐 쓴 줄)'; do
+  if grep -qF -- "$old" "$VP_SIDECAR"; then
+    bad "visual sidecar 계약의 옛 기대하는 줄 정의" "「${old}」가 남았다"
+  else
+    ok "visual sidecar 계약에 옛 기대하는 줄 정의 「${old}」가 없다"
+  fi
+done
+if grep -qF -- '그 런이 기대하는 줄인 다른 문서의 승인은 이 정지에 걸리지 않고, 디자인 시스템 다시 열기가 그 줄을 `대기` 로 고쳐 써' "$VP_SIDECAR"; then
+  ok "visual sidecar 계약이 기대하는 승인 위의 다시 열기를 막지 않는다"
+else
+  bad "visual sidecar 계약의 기대하는 승인 위 다시 열기" "「그 런이 기대하는 줄인 다른 문서의 승인은 이 정지에 걸리지 않고, …」가 없다"
+fi
+if grep -qF -- '다시 열기가 그 고쳐 쓰기 전에 멈췄으면 실패 기록이 `다시 열기 단계=남음` 조각을 싣고, 그 기록에 대한 `다시 발행` 이 `**구현 승인**` 지움과 고쳐 쓰기를 대신 한다' "$VP_SIDECAR"; then
+  ok "visual sidecar 계약이 멈춘 다시 열기의 고쳐 쓰기를 다시 발행에 맡긴다"
+else
+  bad "visual sidecar 계약의 멈춘 다시 열기" "「다시 열기가 그 고쳐 쓰기 전에 멈췄으면 …」가 없다"
+fi
+if grep -qF -- '진입 때 이미 서 있던 다른 문서의 승인은 이 정지에 걸리지 않고' "$VP_SIDECAR"; then
+  bad "visual sidecar 계약의 옛 무조건 면제" "「진입 때 이미 서 있던 다른 문서의 승인은 이 정지에 걸리지 않고」가 남았다"
+else
+  ok "visual sidecar 계약에 옛 무조건 면제 문장이 없다"
+fi
+for old in 'no consumer refuses a key mismatch' 'the key of the run answered first remains' 'the confirmation line stays as it is — waiting.' 'the confirmation line stays waiting and the screen slices stay parked' 'When it now prints a `사람 승인 — 문서 <key>` line whose key is not this document' 'Another document'"'"'s approval is never overwritten.' 'The line this run expects is the line Step 1.3 kept, and,' 'the only row that reaches such a line' 'a reopening (rows 11 and 12) is the only row to reach such a line' 'approval that already stood when Step 1.3 kept the line included' 'finds the line as its `기대 확인=` piece and passes it the same way.'; do
+  if grep -qF -- "$old" "$VP_SKILL"; then
+    bad "visual-publish-unattended 문면의 옛 문장" "「${old}」가 남았다"
+  else
+    ok "visual-publish-unattended 문면에 옛 문장 「${old}」가 없다"
+  fi
+done
+if grep -qF -- '소비처는 키 불일치를 거부하지 않는다' "$VP_SIDECAR"; then
+  bad "visual sidecar 계약의 옛 문장" "「소비처는 키 불일치를 거부하지 않는다」가 남았다"
+else
+  ok "visual sidecar 계약에 옛 문장 「소비처는 키 불일치를 거부하지 않는다」가 없다"
+fi
+for old in 'Every site except `review-cap` is a refusal' 'write nothing at all' 'with no terminal literal.'; do
   if grep -qF -- "$old" "$VU_SKILL"; then
     bad "visual-unattended 문면의 옛 문장" "「${old}」가 남았다"
   else
@@ -948,6 +1046,24 @@ for pair in "리드:$AP_ROUTER" "교대:$RS_CORPUS"; do
   if [ -z "$reattach_prompt" ]; then reattach_prompt="$prompt"; else reattach_prompt_rs="$prompt"; fi
 done
 check "두 사본의 이어 가기 프롬프트가 바이트 동일하다" "$reattach_prompt_rs" "$reattach_prompt"
+
+# THE DELEGATED RE-ATTACHMENT, one paragraph in both copies: when none of the
+# three signs that a limit cleared holds, a cut on an inventory account is
+# handed to the router once with `--limit-delegate`. The shift and the lead
+# read the same rule — when the delegation is spent, which answers launch, and
+# what the gate's refusal leaves — so the two paragraphs are compared byte for
+# byte, and each must name the flag, the rationale marker and the exit code.
+reattach_delegate() {
+  reattach_section "$1" | grep -F -- '**When none of (a), (b) and (c) holds, a cut on an account can still be delegated once.**' || true
+}
+rd_lead=$(reattach_delegate "$AP_ROUTER")
+rd_shift=$(reattach_delegate "$RS_CORPUS")
+check "두 사본의 위임 갈래 문단이 한 줄씩 있다" \
+  "$(printf '%s\n' "$rd_lead" | grep -c . || true)/$(printf '%s\n' "$rd_shift" | grep -c . || true)" "1/1"
+check "두 사본의 위임 갈래 문단이 바이트 동일하다" "$rd_shift" "$rd_lead"
+for lit in '--limit-delegate' "'한도 해제 근거=이관 판정 위임'" 'exit `21`' '`resume-unbound`' '`wait` returns `21`'; do
+  check "위임 갈래 문단이 「${lit}」을 싣는다" "$(printf '%s\n' "$rd_shift" | grep -cF -- "$lit" || true)" "1"
+done
 
 # THE RULES AROUND THE RE-ATTACHMENT, which all sit outside the section the
 # extraction above cuts out — the fourth and fifth ending reasons, the gate's `무기록` row,

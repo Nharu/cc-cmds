@@ -2887,8 +2887,8 @@ AU_SKILL="$repo_root/plugins/cc-cmds/skills/design-audit-unattended/SKILL.md"
 AU_ANS="$repo_root/plugins/cc-cmds/skills/_common/pipeline-sidecar.md"
 SEAT_REF="$AP_REFS/act2-seat.md"
 has(){ if grep -qF -- "$2" "$1"; then echo 예; else echo 아니오; fi; }
-check "design-audit-unattended: 재개와 운반 재진입은 사이드카 4.1 을 읽는다" \
-  "$(has "$AU_SKILL" "or started with \`CC_PIPELINE_HALT_ANSWER\` set (a fresh session carrying a person's answer to an earlier attempt's synthesis halt), Reads \`\${CLAUDE_SKILL_DIR}/../_common/pipeline-sidecar.md\` §4.1 before anything else")" 예
+check "design-audit-unattended: 재개와 운반·카드 재진입은 사이드카 4.1 을 읽는다" \
+  "$(has "$AU_SKILL" "or started with \`CC_PIPELINE_HALT_ANSWER\` set (a fresh session carrying a person's answer to an earlier attempt's synthesis halt), or started with \`CC_PIPELINE_REENTRY_CARD\` naming a card whose \`**스테이지**\` equals \`CC_PIPELINE_STAGE_ID\` (a resume moved to a new session on another account), Reads \`\${CLAUDE_SKILL_DIR}/../_common/pipeline-sidecar.md\` §4.1 before anything else")" 예
 check "design-audit-unattended: 종합 정지 전에 사이드카 4.1 의 조정 처분을 쓴다" \
   "$(has "$AU_SKILL" "Read \`\${CLAUDE_SKILL_DIR}/../_common/pipeline-sidecar.md\` §4.1 and write its \`## 조정 처분\` block into the report")" 예
 for f in "$RC_SKILL" "$AU_ANS"; do
@@ -3078,6 +3078,12 @@ check "design-base-unattended: 베이스 설계 흐름은 토론 갈래의 면�
   "$(has "$DB_SKILL" "Its re-entry exemption of the document-present guard and its **Re-entered with a carried answer** do not apply here")" 예
 check "design-base-unattended: 분할 재진입에는 문서 존재 면제가 없다" \
   "$(has "$DB_SKILL" "There is no document-present exemption: this mode saves no document and has no such guard.")" 예
+check "design-solo-unattended: 문서 존재 가드는 자기 스테이지의 재진입 카드도 면제한다" \
+  "$(has "$DS_SKILL" "**A re-entry card is exempt too**: when \`CC_PIPELINE_REENTRY_CARD\` names a card whose \`**스테이지**\` equals this stage's \`CC_PIPELINE_STAGE_ID\`, do not halt")" 예
+check "design-discuss-unattended: 문서 존재 가드는 자기 스테이지의 재진입 카드도 면제한다" \
+  "$(has "$DD_SKILL" "So is a re-entry card whose \`**스테이지**\` equals \`CC_PIPELINE_STAGE_ID\`.")" 예
+check "design-base-unattended: 베이스 설계 흐름은 재진입 카드 갈래만 토론 갈래에서 받는다" \
+  "$(has "$DB_SKILL" "Its **Re-entered on a re-entry card** applies here, with the guard's exemption for that card")" 예
 check "교대 계약: 재진입 표는 일곱 행이다" "$(has "$RS_CORPUS" "The table holds seven halts.")" 예
 check "교대 계약: 시각 발행 정지는 visual-publish 로 운반한다" \
   "$(has "$RS_CORPUS" "is carried as \`visual-publish\` with \`-p \"/cc-cmds:visual-publish-unattended <스냅숏 design_doc>\"\`")" 예
@@ -3107,7 +3113,7 @@ check "사이드카: 들인 답은 재부착하지 않고 상한 행과 18 로 �
 check "사이드카: answered_halts 원소가 carry_prompt 를 싣는다" \
   "$(has "$AU_ANS" "and \`carry_prompt\`, the \`-p\` text of the carry act for an implement, design or split halt the re-entry table holds")" 예
 check "사이드카: 재진입 표의 일곱 행" \
-  "$(has "$AU_ANS" "an audit's synthesis halt, a re-convergence's Step 3 halt, the visual publish stage's \`시각-판정\`, \`금지-후보\` and \`발행-실패\`, an implement stage's halt, a design discussion's halt, a lead solo design's halt, a base split's halt")" 예
+  "$(has "$AU_ANS" "an audit's synthesis halt, a re-convergence's Step 3 halt, the visual publish stage's \`시각-판정\`, \`금지-후보\`, \`발행-실패\` and \`디자인-시스템-판정\`, an implement stage's halt, a design discussion's halt, a lead solo design's halt, a base split's halt")" 예
 # 앞선 런이 이월한 답은 다음 런(입양·재킥오프 후속)이 운반 act 로 이어받는다 — 사람에게 다시
 # 묻지 않는다는 약속은 이 문장들이 싣고, 아침 보고의 새 절이 그 답을 사람에게 보인다.
 for pair in "autopilot-router-shift:$RS_CORPUS" "references:$AP_ROUTER"; do
@@ -3127,8 +3133,8 @@ check "아침 보고: 이월 절은 게이트가 쓰는 사유 머리와 같다"
   "$(has "$GATE" "'중단 답 이월 — 마감 안에 자리 없음'")" 예
 check "아침 보고: S2P 가 있는 런의 시각 승인 지시는 발행 단계의 중단 기록을 가리킨다" \
   "$(has "$AP_REFS/act3-report.md" "「\`S2P\` 중단 기록 \`<기록 파일>\` 의 캔버스 \`<URL>\` 을 보고 좌석 질문에 \`승인\`·\`수정 요청\`·\`거부\` 로 답하세요」")/$(has "$AP_REFS/act3-report.md" "A closing row reading \`처분 사유=중단 답 연동\` is read as the person's own answer")" "예/예"
-check "좌석 사본: S2P 의 세 자리 기록에는 사람의 답만 받고 좌석은 답하지 않는다" \
-  "$(has "$SEAT_REF" "**The gate takes only a person's answer to these three records: never answer one with \`답한 주체=좌석\`, whatever its \`**추천**\` line says.**")" 예
+check "좌석 사본: S2P 의 네 자리 기록에는 사람의 답만 받고 좌석은 답하지 않는다" \
+  "$(has "$SEAT_REF" "**The gate takes only a person's answer to these four records: never answer one with \`답한 주체=좌석\`, whatever its \`**추천**\` line says.**")" 예
 
 # ---------------------------------------------------------------------------
 # 13. An answer a routing block stamped leaves answered_halts for returned_halts

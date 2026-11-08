@@ -5879,13 +5879,13 @@ pre_ledger_series() {
   }
 
   lsr_lease_cases() {
-    # 근거 아홉 × 예약 값/`-` × 관측 값/`none`/`-`. `계정` 은 결합 규칙에 맞는
+    # 근거 열 × 예약 값/`-` × 관측 값/`none`/`-`. `계정` 은 결합 규칙에 맞는
     # 쪽만 — 좌석 근거는 `-`, 그 밖은 계정 id(계정 이전 교대의 `failover-shift`
     # 포함). 어긋난 조합은 거부 사례다.
     # `비용`·`비용 출처` 는 예약과 함께 값이거나 함께 `-` 다. 예약이 값이면 단계 세
     # 칸은 1.0000 을 넘는 문턱을 단 쉼이고, 아니면 셋 다 `-` 다.
     local b acct lane bp obs c cs ph ps th
-    for b in first sticky resume-bound reassigned-after-limit reassigned-no-room \
+    for b in first sticky resume-bound resume-migrated reassigned-after-limit reassigned-no-room \
              after-wait shift-seat-fallback single-seat failover-shift; do
       case "$b" in
         single-seat|shift-seat-fallback) acct='-'; lane='~' ;;
@@ -5911,7 +5911,7 @@ pre_ledger_series() {
     local r acct g u c cs
     for r in group-exhausted no-room unknown-concurrency fifo-yield \
              resume-bound-exhausted resume-bound-no-room lease-lock-busy lease-contention \
-             lease-hold-busy lease-hold-lost; do
+             lease-hold-busy lease-hold-lost wait-end-refused; do
       case "$r" in resume-bound-*) acct='acct-a' ;; *) acct='-' ;; esac
       for g in - org:0123456789abcdef acct:acct-b; do
         for u in 2026-09-27T01:02:03Z -; do
@@ -10450,9 +10450,15 @@ check "물려받은 값 위에 호스트 auto 면 판단 호출의 환경에 그
   "$(ct_jc CLAUDE_CODE_PROMPT_CACHE_TTL=5m CC_ORCH_PROMPT_CACHE_TTL=auto)" "unset"
 # The driver's own spawn runs the setter inside the subshell that execs the
 # wrapper, before the exec; its launched environment is asserted by the
-# driver's suite, which has a harness that drives the spawn to the end.
-ct_drv=$(awk '/\( cd "\$cwd" &&/ { s = NR; t = ($0 ~ /stage_cache_ttl_env/) }
-  /exec nohup bash "\$ORCH_DIR\/stage-wrapper\.sh"/ { print ((s && NR - s <= 6 && t) ? "부른다" : "부르지 않는다"); exit }' \
+# driver's suite, which has a harness that drives the spawn to the end. The
+# subshell is followed through its backslash-continued lines rather than a
+# fixed line count, so an export added between the setter and the exec keeps
+# the two in the same statement without moving the assertion.
+ct_drv=$(awk '/\( cd "\$cwd" &&/ { s = 1; t = ($0 ~ /stage_cache_ttl_env/); c = ($0 ~ /\\$/); next }
+  s && !c { s = 0 }
+  s && /stage_cache_ttl_env/ { t = 1 }
+  /exec nohup bash "\$ORCH_DIR\/stage-wrapper\.sh"/ { print ((s && t) ? "부른다" : "부르지 않는다"); exit }
+  s { c = ($0 ~ /\\$/) }' \
   "$repo_root/plugins/cc-cmds/orchestrator/run.sh")
 check "드라이버 스폰 서브셸이 래퍼 exec 앞에서 캐시 수명 헬퍼를 부른다" "$ct_drv" "부른다"
 check "레인 라벨은 HOME 접두를 ~ 로 바꾼다" \
@@ -14157,9 +14163,15 @@ check "15d-2: 종료 코드 0 의 거절 스트림도 거절 종료다" "$(last1
 # The residual share of an implement process B.
 E4D15R="$WORK/e4-15r"
 mkdir -p "$E4D15R"
+# The document declares one implement slice, which owns every item. Without a
+# declaration the share depends on how many `segment` rows the ledger holds, and
+# the fixture ledger holds many (one per dispatch probe above), so no segment
+# would own any item.
 e4doc15r() {  # e4doc15r <path> <R1 노트 줄|-> — R1 is the share; R2 carries 실행 주의 and is not
   {
-    printf '# 픽스처 설계\n\n**상태**: 동결됨\n\n## 구현 시 검증 항목\n\n'
+    printf '# 픽스처 설계\n\n**상태**: 동결됨\n\n'
+    printf '## 구현 슬라이싱\n\n### 슬라이스 A — 픽스처\n\n**스킬**: implement\n\n'
+    printf '## 구현 시 검증 항목\n\n'
     printf '### R1. 거절 판독이 선다\n\n- **검증 등급**: '
     if [ "$2" = "-" ]; then printf '구현 시 검증\n'; else printf '검증됨(통과)\n- **구현 시 검증 기록**: %s\n' "$2"; fi
     printf -- '- **검증 레시피**: `true`\n\n'
@@ -15682,7 +15694,7 @@ check "15v: 아무것도 남기지 않은 시각 단계는 공허한 성공이�
 au15_dispatch R15V "$STUB_AU_HOLLOW" visual "$visual15v" --resume sau-hollow
 check "15v: 공허한 성공 시각 단계의 첫 계속이 기동한다" "$rc" "0"
 au15_wait R15V S2V
-if grep -qF '검토 통과로 확정된 시각 사이드카도 시각 종결 문구(시각 디자인을 검토 통과로 확정했습니다.)도 정지 기록도 없다' "$RD15V/stub-au-prompt.txt" 2>/dev/null \
+if grep -qF '검토 통과로 확정된 시각 사이드카와 시각 종결 문구(시각 디자인을 검토 통과로 확정했습니다.)도, 사람 확인을 기다리는 디자인 시스템과 그 종결 문구(디자인 시스템을 사람 확인으로 넘겼습니다.)도, 정지 기록도 없다' "$RD15V/stub-au-prompt.txt" 2>/dev/null \
    && ! grep -qF '/cc-cmds:' "$RD15V/stub-au-prompt.txt" 2>/dev/null; then
   ok "15v: 시각 단계의 계속은 사이드카와 시각 종결 문구를 이름 대는 계속 메시지를 싣는다"
 else
@@ -15706,15 +15718,18 @@ check "15v: 검토 통과 사이드카를 둔 시각 파견이 기동한다" "$r
 au15_wait R15V S2V
 check "15v: 그 시각 단계의 기다림이 상한 안에 끝난다 (아래 판정이 앞 행을 읽지 않는다)" "$rc" "0"
 check "15v: 종결 문구와 검토 통과 사이드카가 함께인 시각 단계는 정상 완료다" "$(au15_class R15V S2V visual)" "정상 완료"
-# A re-kicked run's visual stage reuses its source's published sidecar without
-# generating it again (it rewrites only the record path line to this run's), so
-# a `발행됨` sidecar with the literal completes the step too.
-printf '# 시각 사이드카\n\n**상태**: 발행됨\n' > "$SC15V"
+# A step that ended `정상 완료` on its screens is not dispatched again in the
+# same run: only the design system round trip re-opens a finished visual step,
+# and 15vp drives that one. That the `발행됨` sidecar of a re-kicked run's
+# reused screens also completes the step is read there on the predicate.
 au15_dispatch R15V "$STUB_VIS15" visual "$visual15v"
-check "15v: 발행됨 사이드카를 둔 시각 파견이 기동한다" "$rc" "0"
-au15_wait R15V S2V
-check "15v: 그 시각 단계의 기다림도 상한 안에 끝난다" "$rc" "0"
-check "15v: 종결 문구와 발행됨 사이드카가 함께인 시각 단계도 정상 완료다" "$(au15_class R15V S2V visual)" "정상 완료"
+check "15v: 화면 종단으로 정상 완료한 시각 단계의 재파견은 거부된다" "$rc" "3"
+case "$out" in
+  *"생성 단계 S2V 는 화면 종단(시각 종단=화면)으로 정상 완료했습니다"*) ok "15v: 그 거부는 화면 종단을 든다" ;;
+  *) bad "15v: 그 거부는 화면 종단을 든다" "$out" ;;
+esac
+check "15v: 정상 완료한 시각 단계의 행은 시각 종단=화면 을 싣는다" \
+  "$(au15_rows R15V '| 세그먼트=- | 스테이지=S2V | 종류=visual |' | tail -1 | grep -c '| 시각 종단=화면 |' || true)" "1"
 check "15v: 시각 파견 뒤에도 원장에 segment 행이 생기지 않는다" \
   "$( { grep -F '`segment`' "$WT/docs/pipeline-run/R15V.md" 2>/dev/null || true; } | grep -c . || true)" "0"
 rm -f "$SC15V" "$WT/$DOC15V"
@@ -15742,7 +15757,7 @@ rm -f "$WORK/plan15v-shape.md"
 
 # ---------------------------------------------------------------------------
 # 15vp. The run-scope visual publish step: its readers, its halts and its grades
-# --- section: 15vp | group: base | covers: act, plan, grade, exec, gate_visual_halt_refusal, gate_visual_halt_linked_close, visual_approval_provenance, gate_visual_approval_resolve, visual_publish_standing_refusal, visual_publish_person_answer, visual_publish_artifact_complete, gate_own_visual_helper, gate_argv_visual_helper, gate_argv_visual_helper_write, gate_reach_disposition | anchors: 15vp: S2P 는 visual-publish 종류다, 15vp: 계획의 visual-publish 단계가 런 범위 단계다, 15vp: 시각 발행만 Artifact 환경과 표지를 받는다, 15vp: 시각 발행이 아닌 종류는 고정 lane 이 없다, 15vp: 시각 발행 종류는 호스트 파일의 lane 을 고정한다, 15vp: 재진입 표에 시각 발행 정지 셋이 있다, 15vp: 사람이 아닌 답은 거부를 세우지 않는다, 15vp: 시각-판정 의 사람 거부는 거부다, 15vp: 뒤의 사람 승인이 앞의 거부를 지운다, 15vp: 발행-실패 의 발행하지 않음 은 무효다, 15vp: 출처 꼬리 없는 승인 줄은 발행 단계가 있는 런에서 무효다, 15vp: 마지막 시각-판정 기록이 아닌 꼬리는 무효다, 15vp: 사람 승인 답이 없는 꼬리는 무효다, 15vp: 마지막 기록에 사람 승인이 있는 꼬리는 선다, 15vp: 발행 단계가 없는 런은 꼬리 없는 줄을 받는다, 15vp: 종결 문구만 있는 발행 단계는 산출이 아니다, 15vp: 발행됨 사이드카와 종결 문구는 산출이다, 15vp: 사람 거부 뒤의 종결 문구는 산출이다, 15vp: 발행 단계 밖의 account 는 등급 미상이다, 15vp: 발행 단계의 account 는 트리 밖 쓰기다, 15vp: 사람 승인한 후보의 append 는 트리 밖 쓰기다, 15vp: 다른 후보의 append 는 등급 미상이다, 15vp: 소비된 답의 append 는 등급 미상이다, 15vp: lane 은 읽기다, 15vp: 중단 답 연동 닫기가 처분 사유를 싣는다, 15vp: 게이트 옆이 아닌 시각 헬퍼 사본의 append 는 선언으로 열리지 않는다, 15vp: find -exec 뒤의 시각 헬퍼 append 는 선언으로 열리지 않는다, 15vp: xargs 뒤의 시각 헬퍼 append 는 선언으로 열리지 않는다, 15vp: 실행기 뒤의 시각 헬퍼 append 는 선언으로 열리지 않는다, 15vp: 실행기 뒤의 시각 헬퍼 lane 은 쓰기 거부에 걸리지 않는다, 15vp: 발행 단계의 account 는 기기전역 선언으로 열린다, 15vp: 사람 승인한 후보의 append 는 기기전역 선언으로 열린다, 15vp: 게이트 옆이 아닌 사본의 account 는 같은 등급으로도 기기전역 선언으로 열리지 않는다, 15vp: 호스트 금지 목록을 그 경로로 읽는 shasum 는 읽기 선언으로 통과한다, 15vp: 호스트 금지 목록을 그 경로로 읽는 scan 은 읽기 선언으로 통과한다 ---
+# --- section: 15vp | group: base | covers: act, plan, grade, exec, gate_visual_halt_refusal, gate_visual_halt_linked_close, visual_approval_provenance, gate_visual_approval_resolve, visual_publish_standing_refusal, visual_publish_person_answer, visual_publish_artifact_complete, visual_ds_confirm_provenance, visual_row_pieces, visual_overwrite_report, gate_halt_record_question, gate_own_visual_helper, gate_argv_visual_helper, gate_argv_visual_helper_write, gate_reach_disposition | anchors: 15vp: S2P 는 visual-publish 종류다, 15vp: 계획의 visual-publish 단계가 런 범위 단계다, 15vp: 시각 발행만 Artifact 환경과 표지를 받는다, 15vp: 시각 발행이 아닌 종류는 고정 lane 이 없다, 15vp: 시각 발행 종류는 호스트 파일의 lane 을 고정한다, 15vp: 재진입 표에 시각 발행 정지 넷이 있다, 15vp: 사람이 아닌 답은 거부를 세우지 않는다, 15vp: 시각-판정 의 사람 거부는 거부다, 15vp: 뒤의 사람 승인이 앞의 거부를 지운다, 15vp: 발행-실패 의 발행하지 않음 은 무효다, 15vp: 출처 꼬리 없는 승인 줄은 발행 단계가 있는 런에서 무효다, 15vp: 마지막 시각-판정 기록이 아닌 꼬리는 무효다, 15vp: 사람 승인 답이 없는 꼬리는 무효다, 15vp: 마지막 기록에 사람 승인이 있는 꼬리는 선다, 15vp: 발행 단계가 없는 런은 꼬리 없는 줄을 받는다, 15vp: 종결 문구만 있는 발행 단계는 산출이 아니다, 15vp: 발행됨 사이드카와 종결 문구는 산출이다, 15vp: 사람 거부 뒤의 종결 문구는 산출이다, 15vp: 발행 단계 밖의 account 는 등급 미상이다, 15vp: 발행 단계의 account 는 트리 밖 쓰기다, 15vp: 사람 승인한 후보의 append 는 트리 밖 쓰기다, 15vp: 다른 후보의 append 는 등급 미상이다, 15vp: 소비된 답의 append 는 등급 미상이다, 15vp: lane 은 읽기다, 15vp: 중단 답 연동 닫기가 처분 사유를 싣는다, 15vp: 게이트 옆이 아닌 시각 헬퍼 사본의 append 는 선언으로 열리지 않는다, 15vp: find -exec 뒤의 시각 헬퍼 append 는 선언으로 열리지 않는다, 15vp: xargs 뒤의 시각 헬퍼 append 는 선언으로 열리지 않는다, 15vp: 실행기 뒤의 시각 헬퍼 append 는 선언으로 열리지 않는다, 15vp: 실행기 뒤의 시각 헬퍼 lane 은 쓰기 거부에 걸리지 않는다, 15vp: 발행 단계의 account 는 기기전역 선언으로 열린다, 15vp: 사람 승인한 후보의 append 는 기기전역 선언으로 열린다, 15vp: 게이트 옆이 아닌 사본의 account 는 같은 등급으로도 기기전역 선언으로 열리지 않는다, 15vp: 호스트 금지 목록을 그 경로로 읽는 shasum 는 읽기 선언으로 통과한다, 15vp: 호스트 금지 목록을 그 경로로 읽는 scan 은 읽기 선언으로 통과한다 ---
 #
 # The publish step is the fifth row of the run-scope table. It runs after the
 # visual step, publishes the screens at the one lane the host file pins, and
@@ -15753,7 +15768,7 @@ rm -f "$WORK/plan15v-shape.md"
 # of those files and nothing else.
 # ---------------------------------------------------------------------------
 VP15="$WORK/vp15"
-rm -rf "$VP15"; mkdir -p "$VP15/run/halt" "$VP15/docs/visual" "$VP15/cfg/cc-cmds"
+rm -rf "$VP15"; mkdir -p "$VP15/R15VP/halt" "$VP15/docs/visual" "$VP15/cfg/cc-cmds"
 plan15vp='{ "design_required": true, "steps": [ { "id": "D1", "skill": "design", "summary": "설계", "depends_on": [] }, { "id": "A1", "skill": "design-audit", "summary": "감사", "depends_on": ["D1"] }, { "id": "S2V", "skill": "visual", "summary": "시각", "depends_on": ["A1"] }, { "id": "S2P", "skill": "visual-publish", "summary": "발행", "depends_on": ["S2V"] }, { "id": "S2", "skill": "implement", "summary": "구현", "depends_on": ["S2P"] } ] }'
 write15c "$VP15/m.md" "$plan15vp" docs/fixture-design-15vp.md R15VP
 write15c "$VP15/m-nop.md" '{ "design_required": true, "steps": [ { "id": "D1", "skill": "design", "summary": "설계", "depends_on": [] }, { "id": "A1", "skill": "design-audit", "summary": "감사", "depends_on": ["D1"] }, { "id": "S2V", "skill": "visual", "summary": "시각", "depends_on": ["A1"] }, { "id": "S2", "skill": "implement", "summary": "구현", "depends_on": ["S2V"] } ] }' docs/fixture-design-15vp.md R15VP
@@ -15761,16 +15776,16 @@ printf '# 원장\n\n## 실행 R15VP\n' > "$VP15/led.md"
 vp15_halt() {  # vp15_halt <n> <step> [<candidate id>] — an S2P halt record
   { printf '# 정지\n\n**분류**: gate-unanswerable\n**스텝**: %s\n' "$2"
     [ -z "${3:-}" ] || printf '**금지 후보**: %s\n' "$3"
-    printf '**질문 문면**: 픽스처\n'; } > "$VP15/run/halt/S2P#$1.md"
+    printf '**질문 문면**: 픽스처\n'; } > "$VP15/R15VP/halt/S2P#$1.md"
 }
 vp15_answer() {  # vp15_answer <n> <answered by> <option> — a `중단 답` row
   printf -- '- `중단 답` | 중단 기록=%s | 답한 주체=%s | 선택지=%s\n' \
-    "$VP15/run/halt/S2P#$1.md" "$2" "$3" >> "$VP15/led.md"
+    "$VP15/R15VP/halt/S2P#$1.md" "$2" "$3" >> "$VP15/led.md"
 }
 vp15() {  # vp15 <manifest> <stage id or -> <snippet> [args...] — run a snippet in the sourced gate
   local m="$1" sid="$2" snip="$3"; shift 3
   ( cd "$WT" && CC_GATE_SOURCE_ONLY=1 VP_M="$m" VP_SID="$sid" VP_L="$VP15/led.md" \
-      VP_RD="$VP15/run" VP_SNIP="$snip" XDG_CONFIG_HOME="$VP15/cfg" bash -c '
+      VP_RD="$VP15/R15VP" VP_SNIP="$snip" XDG_CONFIG_HOME="$VP15/cfg" bash -c '
     . "'"$GATE"'" >/dev/null 2>&1
     set +e
     MANIFEST="$VP_M"; LEDGER="$VP_L"; RUN_ID=R15VP; RUN_DIR="$VP_RD"; DOC=docs/fixture-design-15vp.md
@@ -15793,8 +15808,10 @@ check "15vp: 호스트 파일에 lane 이 없으면 시각 발행 종류의 고�
 printf '%s\n' 'account = design.owner@example.com' 'lane = u2' > "$VP15/cfg/cc-cmds/claude-design"
 check "15vp: 시각 발행 종류는 호스트 파일의 lane 을 고정한다" \
   "$(vp15 "$VP15/m.md" - 'kind_pin_lane_of visual-publish')" "u2"
-check "15vp: 재진입 표에 시각 발행 정지 셋이 있다" \
-  "$(vp15 "$VP15/m.md" - 'gate_reentry_table' | grep -c '^visual-publish-unattended|' || true)" "6"
+check "15vp: 재진입 표에 시각 발행 정지 넷이 있다" \
+  "$(vp15 "$VP15/m.md" - 'gate_reentry_table' | grep -c '^visual-publish-unattended|' || true)" "8"
+check "15vp: 재진입 표의 디자인-시스템-판정 행은 발행 단계로 운반한다" \
+  "$(vp15 "$VP15/m.md" - 'gate_reentry_table' | grep -c '^visual-publish-unattended|디자인-시스템-판정\( — \*\)\{0,1\}|visual-publish|' || true)" "2"
 
 # The standing refusal is the last person's answer to a verdict or a failed
 # publish; a seat's or router's answer stands for nothing, and a later approval
@@ -15860,7 +15877,7 @@ esac
 # person's no at one of the stage's halts. The records and answers above are
 # cleared first, so these checks start from no halt at all.
 printf '시각 발행 단계를 마쳤습니다.\n' > "$VP15/stream.txt"
-rm -f "$VP15/run/halt"/S2P#*.md
+rm -f "$VP15/R15VP/halt"/S2P#*.md
 printf '# 원장\n\n## 실행 R15VP\n' > "$VP15/led.md"
 mkdir -p "$WT/docs/visual"
 printf '# 픽스처 설계\n' > "$WT/docs/fixture-design-15vp.md"
@@ -16011,6 +16028,210 @@ check "15vp: 게이트 옆이 아닌 사본의 account 는 같은 등급으로�
   "$(vp15_reach 'S2P#3' 트리밖쓰기 0 "$VP15/copy/visual-config.sh" account)" "트리밖쓰기|기기전역/argv0-path"
 check "15vp: 게이트 옆 사본의 다른 부속 명령은 같은 등급으로도 기기전역 선언으로 열리지 않는다" \
   "$(vp15_reach 'S2P#3' 트리밖쓰기 0 "$CC_ORCH/visual-config.sh" seed)" "트리밖쓰기|기기전역/argv0-path"
+
+# The design system phase, on the same sourced readers. A generate stage that
+# left a new design system for a person ends on its own literal with the
+# confirmation line waiting; the publish stage ends that phase on a person's
+# `승인` to its `디자인-시스템-판정` record, which the approval line names, while
+# no sidecar pins the approved palette. A hand-written approval line names no
+# such record. The repository's system.md is put back as it was.
+printf '# 원장\n\n## 실행 R15VP\n' > "$VP15/led.md"
+rm -f "$VP15/R15VP/halt"/S2P#*.md
+printf '# 픽스처 설계\n' > "$WT/docs/fixture-design-15vp.md"
+SYS15VP="$WT/docs/visual-system/system.md"
+sysbak15vp=''
+if [ -f "$SYS15VP" ]; then sysbak15vp="$WORK/system-15vp.bak"; cp "$SYS15VP" "$sysbak15vp"; fi
+mkdir -p "$(dirname "$SYS15VP")"
+# A person's approval stands only on the tokens.css beside system.md, so the
+# fixture keeps one and the approval lines below carry its hash.
+TOK15VP="$(dirname "$SYS15VP")/tokens.css"
+tokbak15vp=''
+if [ -f "$TOK15VP" ]; then tokbak15vp="$WORK/tokens-15vp.bak"; cp "$TOK15VP" "$tokbak15vp"; fi
+printf ':root { --fixture-15vp: #000; }\n' > "$TOK15VP"
+rm -f "$SC15VP"
+printf '디자인 시스템을 사람 확인으로 넘겼습니다.\n' > "$VP15/ds-stream.txt"
+printf '화면 둘을 만들었습니다.\n시각 디자인을 검토 통과로 확정했습니다.\n' > "$VP15/vis-stream.txt"
+printf '# 디자인 시스템\n\n**확인**: 대기 — 문서 docs/fixture-design-15vp.md — 런 R15VP\n' > "$SYS15VP"
+check "15vp: confirm 은 읽기다" \
+  "$(vp15 "$VP15/m.md" 'S2P#2' 'surface_of_argv0 "$1" confirm "$2"' "$CC_ORCH/visual-check.sh" "$WT/docs/fixture-design-15vp.md")" "읽기"
+check "15vp: system-users 는 읽기다" \
+  "$(vp15 "$VP15/m.md" 'S2V#1' 'surface_of_argv0 "$1" system-users "$2"' "$CC_ORCH/visual-check.sh" "$WT/docs/fixture-design-15vp.md")" "읽기"
+check "15vp: 픽스처의 확인 줄이 이 문서의 대기로 읽힌다 (아래가 공허하지 않다)" \
+  "$(vp15 "$VP15/m.md" - 'visual_confirm_state "$DOC"')" "확인 대기 — 문서 docs/fixture-design-15vp.md"
+check "15vp: 디자인 시스템 종단 문구와 대기 확인 줄은 생성 단계의 산출이다" \
+  "$(vp15 "$VP15/m.md" - 'visual_generate_artifact_complete "$1"; printf "rc=%s" "$?"' "$VP15/ds-stream.txt")" "rc=0"
+check "15vp: 화면 종단 문구만 있고 사이드카가 없으면 생성 단계의 산출이 아니다" \
+  "$(vp15 "$VP15/m.md" - 'visual_generate_artifact_complete "$1"; printf "rc=%s" "$?"' "$VP15/vis-stream.txt")" "rc=1"
+# A re-kicked run's visual stage reuses its source's published sidecar without
+# generating it again, so a `발행됨` sidecar with the literal completes it too.
+printf '# 시각 사이드카\n\n**상태**: 발행됨\n' > "$SC15VP"
+check "15vp: 화면 종단 문구와 발행됨 사이드카는 생성 단계의 산출이다" \
+  "$(vp15 "$VP15/m.md" - 'visual_generate_artifact_complete "$1"; printf "rc=%s" "$?"' "$VP15/vis-stream.txt")" "rc=0"
+rm -f "$SC15VP"
+case "$(vp15 "$VP15/m.md" - 'visual_approval_route_hint')" in
+  *"시각 발행 단계(S2P)가 디자인-시스템-판정 중단 기록을 남길 때까지"*) ok "15vp: 디자인 시스템이 기다리는 동안 승인 안내는 디자인-시스템-판정 을 든다" ;;
+  *) bad "15vp: 디자인 시스템이 기다리는 동안 승인 안내는 디자인-시스템-판정 을 든다" "$(vp15 "$VP15/m.md" - 'visual_approval_route_hint')" ;;
+esac
+vp15_halt 1 '디자인-시스템-판정 — 팔레트'
+tok15vp=$(shasum -a 256 "$TOK15VP" | awk '{print $1}')
+printf '**관측 상세**: 국면 진입=생성 단계 종단 / 제시 tokens.css=%s\n' "$tok15vp" >> "$VP15/R15VP/halt/S2P#1.md"
+case "$(vp15 "$VP15/m.md" - 'visual_approval_route_hint')" in
+  *"디자인-시스템-판정 중단 기록 $VP15/R15VP/halt/S2P#1.md 에 사람이 답하세요"*) ok "15vp: 기록이 서면 승인 안내는 그 디자인-시스템-판정 기록을 든다" ;;
+  *) bad "15vp: 기록이 서면 승인 안내는 그 디자인-시스템-판정 기록을 든다" "$(vp15 "$VP15/m.md" - 'visual_approval_route_hint')" ;;
+esac
+check "15vp: 디자인-시스템-판정 은 사람 전용 지점이다" \
+  "$(vp15 "$VP15/m.md" - 'halt_step_is_visual_publish_site "$RUN_DIR/halt/S2P#1.md" 시각-판정 금지-후보 발행-실패 디자인-시스템-판정 && printf 예')" "예"
+check "15vp: 런 상태 하위 명령은 읽기다" \
+  "$(vp15 "$VP15/m.md" 'S2V#1' 'surface_of_argv0 "$1" run-state "$2"' "$CC_ORCH/visual-check.sh" "$WT/docs/fixture-design-15vp.md")" "읽기"
+printf '# 디자인 시스템\n\n**확인**: 사람 승인 — 문서 docs/fixture-design-15vp.md — tokens.css sha256 %s — 사람 답 S2P#1.md — 런 R15VP — 2026-11-04T09:00:00Z\n' \
+  "$tok15vp" > "$SYS15VP"
+check "15vp: 사람 승인한 디자인 시스템은 디자인 시스템 종단의 산출이 아니다" \
+  "$(vp15 "$VP15/m.md" - 'visual_generate_artifact_complete "$1"; printf "rc=%s" "$?"' "$VP15/ds-stream.txt")" "rc=1"
+check "15vp: 답이 없는 기록을 가리키는 확인 줄은 출처가 서지 않는다" \
+  "$(vp15 "$VP15/m.md" - 'visual_ds_confirm_provenance "$DOC" >/dev/null; printf "rc=%s" "$?"')" "rc=1"
+vp15_answer 1 좌석 승인
+check "15vp: 좌석의 승인 답은 확인 줄의 출처를 세우지 않는다" \
+  "$(vp15 "$VP15/m.md" - 'visual_ds_confirm_provenance "$DOC" >/dev/null; printf "rc=%s" "$?"')" "rc=1"
+check "15vp: 출처 없는 확인 줄의 발행 단계는 산출이 아니다" \
+  "$(vp15 "$VP15/m.md" - 'visual_publish_artifact_complete "$1"; printf "rc=%s" "$?"' "$VP15/stream.txt")" "rc=1"
+vp15_answer 1 사람 승인
+check "15vp: 사람의 승인 답이 확인 줄의 출처를 세운다" \
+  "$(vp15 "$VP15/m.md" - 'visual_ds_confirm_provenance "$DOC"; printf "rc=%s" "$?"')" "rc=0"
+check "15vp: 출처가 선 사람 승인과 사이드카 없음의 발행 단계는 디자인 시스템 국면의 산출이다" \
+  "$(vp15 "$VP15/m.md" - 'visual_publish_artifact_complete "$1"; printf "rc=%s" "$?"' "$VP15/stream.txt")" "rc=0"
+# Each condition of the provenance alone turns it down: the palette the person
+# was shown, the run the line names, a later record of the same site, and a
+# refusal a person left at the stage. The fixture is put back after each.
+vp15_ds_prov() {  # vp15_ds_prov — the provenance verdict and its exit, on one line
+  vp15 "$VP15/m.md" - 'visual_ds_confirm_provenance "$DOC"; printf " rc=%s" "$?"'
+}
+cp "$VP15/R15VP/halt/S2P#1.md" "$VP15/s2p1.bak"
+vp15_halt 1 '디자인-시스템-판정 — 팔레트'
+printf '**관측 상세**: 제시 tokens.css=%s\n' "$(printf '%064d' 1)" >> "$VP15/R15VP/halt/S2P#1.md"
+case "$(vp15_ds_prov)" in
+  *"사람에게 보인 tokens.css("*")가 확인 줄의 값과 다르다 rc=1") ok "15vp: 사람에게 보인 tokens.css 와 다른 확인 줄은 출처가 서지 않는다" ;;
+  *) bad "15vp: 사람에게 보인 tokens.css 와 다른 확인 줄은 출처가 서지 않는다" "$(vp15_ds_prov)" ;;
+esac
+vp15_halt 1 '디자인-시스템-판정 — 팔레트'
+case "$(vp15_ds_prov)" in
+  *"사람에게 보인 tokens.css((없음))가 확인 줄의 값과 다르다 rc=1") ok "15vp: 제시 tokens.css 조각이 없는 기록은 출처가 서지 않는다" ;;
+  *) bad "15vp: 제시 tokens.css 조각이 없는 기록은 출처가 서지 않는다" "$(vp15_ds_prov)" ;;
+esac
+mv "$VP15/s2p1.bak" "$VP15/R15VP/halt/S2P#1.md"
+cp "$SYS15VP" "$VP15/sys.bak"
+printf '# 디자인 시스템\n\n**확인**: 사람 승인 — 문서 docs/fixture-design-15vp.md — tokens.css sha256 %s — 사람 답 S2P#1.md — 런 R-OTHER — 2026-11-04T09:00:00Z\n' \
+  "$tok15vp" > "$SYS15VP"
+case "$(vp15_ds_prov)" in
+  *"확인 줄의 런 R-OTHER 가 이 런(R15VP)이 아니다 rc=1") ok "15vp: 다른 런의 확인 줄은 출처가 서지 않는다" ;;
+  *) bad "15vp: 다른 런의 확인 줄은 출처가 서지 않는다" "$(vp15_ds_prov)" ;;
+esac
+mv "$VP15/sys.bak" "$SYS15VP"
+vp15_halt 3 '디자인-시스템-판정 — 다시 묻기'
+case "$(vp15_ds_prov)" in
+  *"가장 마지막 디자인-시스템-판정 기록 S2P#3.md 이 아니다 rc=1") ok "15vp: 더 뒤의 디자인-시스템-판정 기록이 있으면 앞 기록을 가리키는 확인 줄은 출처가 서지 않는다" ;;
+  *) bad "15vp: 더 뒤의 디자인-시스템-판정 기록이 있으면 앞 기록을 가리키는 확인 줄은 출처가 서지 않는다" "$(vp15_ds_prov)" ;;
+esac
+rm -f "$VP15/R15VP/halt/S2P#3.md"
+vp15_halt 5 '시각-판정 — 화면'
+vp15_answer 5 사람 거부
+case "$(vp15_ds_prov)" in
+  *"S2P#5.md 에 사람이 남긴 「거부」 답이 서 있다 rc=1") ok "15vp: 사람의 거부가 서 있으면 확인 줄은 출처가 서지 않는다" ;;
+  *) bad "15vp: 사람의 거부가 서 있으면 확인 줄은 출처가 서지 않는다" "$(vp15_ds_prov)" ;;
+esac
+vp15_answer 5 사람 승인
+case "$(vp15_ds_prov)" in
+  *" rc=0") ok "15vp: 출처 음성 픽스처를 되돌리면 출처가 다시 선다 (위가 공허하지 않다)" ;;
+  *) bad "15vp: 출처 음성 픽스처를 되돌리면 출처가 다시 선다 (위가 공허하지 않다)" "$(vp15_ds_prov)" ;;
+esac
+norm15vp=$(cd "$WT" && bash "$CC_ORCH/visual-check.sh" system "$WT/docs/fixture-design-15vp.md" 2>/dev/null)
+printf '# 시각 사이드카\n\n**상태**: 검토 통과\n**디자인 시스템 sha256**: %s\n' "$norm15vp" > "$SC15VP"
+check "15vp: 승인한 디자인 시스템을 사이드카가 이미 고정했으면 디자인 시스템 국면의 산출이 아니다" \
+  "$(vp15 "$VP15/m.md" - 'visual_publish_artifact_complete "$1"; printf "rc=%s" "$?"' "$VP15/stream.txt")" "rc=1"
+rm -f "$SC15VP"
+printf '# 디자인 시스템\n\n**확인**: 사람 승인 — 문서 docs/fixture-design-15vp.md — tokens.css sha256 %s — 사람 답 S2P#9.md — 런 R15VP — 2026-11-04T09:00:00Z\n' \
+  "$tok15vp" > "$SYS15VP"
+case "$(vp15 "$VP15/m.md" - 'visual_ds_confirm_provenance "$DOC"; printf " rc=%s" "$?"')" in
+  *"이 런의 디자인-시스템-판정 기록이 아니다 rc=1") ok "15vp: 이 런의 기록을 가리키지 않는 손으로 쓴 승인 줄은 출처가 서지 않는다" ;;
+  *) bad "15vp: 이 런의 기록을 가리키지 않는 손으로 쓴 승인 줄은 출처가 서지 않는다" "$(vp15 "$VP15/m.md" - 'visual_ds_confirm_provenance "$DOC"')" ;;
+esac
+vp15_halt 2 '디자인-시스템-판정'
+vp15_answer 2 사람 거부
+check "15vp: 디자인-시스템-판정 의 사람 거부는 거부다" \
+  "$(vp15 "$VP15/m.md" - 'gate_visual_halt_refusal' | cut -f1,3)" "거부	거부"
+check "15vp: 디자인 시스템 거부 뒤의 종결 문구는 발행 단계의 산출이다" \
+  "$(vp15 "$VP15/m.md" - 'visual_publish_artifact_complete "$1"; printf "rc=%s" "$?"' "$VP15/stream.txt")" "rc=0"
+printf '# 원장\n\n## 실행 R15VP\n' > "$VP15/led.md"
+printf -- '- `승인` | 승인 id=J5 | 상태=대기 | 판단 부류=시각-승인 | 질문 문면=화면 승인\n' >> "$VP15/led.md"
+vp15_answer 2 사람 거부
+vp15 "$VP15/m.md" - 'gate_visual_halt_linked_close J5' >/dev/null
+case "$(grep -F '| 승인 id=J5 |' "$VP15/led.md" | tail -1)" in
+  *"| 상태=거부 |"*"답변 문면=중단 답 연동(기록 S2P#2.md, 선택지 거부)"*) ok "15vp: 디자인 시스템 거부도 시각-승인 을 연동해 닫는다" ;;
+  *) bad "15vp: 디자인 시스템 거부도 시각-승인 을 연동해 닫는다" "$(grep -F '| 승인 id=J5 |' "$VP15/led.md" | tail -1)" ;;
+esac
+# The `시각 종단` piece of a visual stage's row is built in one place: placed
+# right before `종단 부류`, `디자인 시스템` only with the literal and a waiting
+# line, `화면` otherwise, never on another kind, and a caller's own piece dropped.
+printf '# 디자인 시스템\n\n**확인**: 대기 — 문서 docs/fixture-design-15vp.md — 런 R15VP\n' > "$SYS15VP"
+check "15vp: 시각 단계 행의 시각 종단 조각은 종단 부류 바로 앞에 디자인 시스템 으로 선다" \
+  "$(vp15 "$VP15/m.md" - 'visual_row_pieces visual "$1" "종료 코드=0" "시각 종단=화면" "종단 부류=정상 완료" "실패 서명=x"; printf "%s;" "${VISUAL_ROW_PIECES[@]}"' "$VP15/ds-stream.txt")" \
+  "종료 코드=0;시각 종단=디자인 시스템;종단 부류=정상 완료;실패 서명=x;"
+check "15vp: 화면 종단 문구의 시각 단계 행은 시각 종단=화면 이다" \
+  "$(vp15 "$VP15/m.md" - 'visual_row_pieces visual "$1" "종단 부류=정상 완료"; printf "%s;" "${VISUAL_ROW_PIECES[@]}"' "$VP15/vis-stream.txt")" \
+  "시각 종단=화면;종단 부류=정상 완료;"
+check "15vp: 종단 부류 없는 시각 단계 행은 시각 종단 조각을 끝에 단다" \
+  "$(vp15 "$VP15/m.md" - 'visual_row_pieces visual "$1" "종료 코드=0"; printf "%s;" "${VISUAL_ROW_PIECES[@]}"' "$VP15/vis-stream.txt")" \
+  "종료 코드=0;시각 종단=화면;"
+check "15vp: 시각 단계가 아닌 행은 시각 종단 조각을 싣지 않고 넘겨받은 것도 버린다" \
+  "$(vp15 "$VP15/m.md" - 'visual_row_pieces visual-publish "$1" "시각 종단=디자인 시스템" "종단 부류=정상 완료"; printf "%s;" "${VISUAL_ROW_PIECES[@]}"' "$VP15/ds-stream.txt")" \
+  "종단 부류=정상 완료;"
+check "15vp: 시각 종단 필드가 없는 옛 행은 화면 으로 읽힌다" \
+  "$(vp15 "$VP15/m.md" - 'visual_row_end "- \`stage-result\` | 스테이지=S2V | 종단 부류=정상 완료"')" "화면"
+# A plan without the publish stage ends a waiting design system on a halt the
+# driver tells apart by its case piece.
+printf '**스텝**: system-mismatch\n**관측 상세**: 경우=디자인 시스템 확인 대기 / 확인 대기 — 문서 x\n' > "$VP15/vu-halt.md"
+check "15vp: 디자인 시스템 확인 대기 경우의 생성 단계 정지를 드라이버가 가린다" \
+  "$(vp15 "$VP15/m.md" - 'visual_halt_is_ds_wait "$1" && printf 예' "$VP15/vu-halt.md")" "예"
+printf '**스텝**: system-mismatch\n**관측 상세**: 경우=신규·다른 문서\n' > "$VP15/vu-halt.md"
+check "15vp: 다른 경우의 생성 단계 정지는 디자인 시스템 확인 대기가 아니다" \
+  "$(vp15 "$VP15/m.md" - 'visual_halt_is_ds_wait "$1" || printf 아님' "$VP15/vu-halt.md")" "아님"
+# A regeneration after the person's design system approval overwrites a
+# published sidecar; what it erased goes into the morning report.
+printf '# 시각 사이드카\n\n**상태**: 발행됨\n**구현 승인**: 2026-11-04 — 입력 묶음 x\n\n### 화면 home\n**아티팩트**: https://claude.ai/design/p/old-home\n' > "$SC15VP"
+vp15 "$VP15/m.md" - 'visual_sidecar_snapshot "$DOC"' > "$VP15/sc-before"
+printf '# 시각 사이드카\n\n**상태**: 검토 통과\n\n### 화면 home\n**아티팩트**: (미발행)\n' > "$SC15VP"
+check "15vp: 덮어쓴 사이드카의 사라진 구현 승인과 고아 URL 이 보고에 실린다" \
+  "$(vp15 "$VP15/m.md" - 'report_append() { printf "%s|%s\n" "$1" "$2"; }; visual_overwrite_report "$DOC" "$1"' "$VP15/sc-before")" \
+  "시각|다시 생성한 시각 단계가 발행된 사이드카를 덮어써 구현 승인 줄이 사라졌다 — 새 화면은 다시 승인을 받아야 한다
+시각|다시 생성한 시각 단계가 사이드카에서 지운 발행 아티팩트 URL 이 고아로 남았다 — https://claude.ai/design/p/old-home"
+cp "$VP15/sc-before" "$VP15/sc-same"
+printf '# 시각 사이드카\n\n**상태**: 발행됨\n**구현 승인**: 2026-11-04 — 입력 묶음 x\n\n### 화면 home\n**아티팩트**: https://claude.ai/design/p/old-home\n' > "$SC15VP"
+check "15vp: 지운 것이 없으면 덮어쓰기 보고는 없다" \
+  "$(vp15 "$VP15/m.md" - 'report_append() { printf "%s|%s\n" "$1" "$2"; }; visual_overwrite_report "$DOC" "$1"' "$VP15/sc-same")" ""
+rm -f "$SC15VP"
+# An input-less `수정 요청` leaves the count where it was, so the record it
+# writes repeats the answered record's step and question byte for byte, and the
+# carry guard's same-question test — the step and the normalized question —
+# matches it and ends the loop at the carry cap. A revision that raised the
+# count changes the step and is not matched.
+vp15_ds_rec() {  # vp15_ds_rec <n> <step> — a design system record with a fixed question
+  printf '%s\n' '**분류**: gate-unanswerable' "**스텝**: $2" \
+    '**질문 문면**: 디자인 시스템 팔레트를 승인하는가 —' '  입력(코멘트·첨부·직접 편집값)이 없어 바뀌지 않았다' \
+    '**선택지**:' '- `승인` — 승인' "**관측 상세**: 입력 없음=S2P#$(( $1 - 1 )).md / 제시 tokens.css=$tok15vp" \
+    > "$VP15/R15VP/halt/S2P#$1.md"
+}
+vp15_ds_rec 6 '디자인-시스템-판정 — 수정 1회'
+vp15_ds_rec 7 '디자인-시스템-판정 — 수정 1회'
+check "15vp: 입력 없는 수정 요청이 다시 쓴 기록은 같은 질문 이월 상한에 걸린다" \
+  "$(vp15 "$VP15/m.md" - '[ "$(gate_halt_record_step "$1")" = "$(gate_halt_record_step "$2")" ] && [ "$(gate_halt_record_question "$1")" = "$(gate_halt_record_question "$2")" ] && printf 같음' \
+     "$VP15/R15VP/halt/S2P#6.md" "$VP15/R15VP/halt/S2P#7.md")" "같음"
+vp15_ds_rec 7 '디자인-시스템-판정 — 수정 2회'
+check "15vp: 수정 횟수를 올린 기록은 같은 질문으로 읽히지 않는다" \
+  "$(vp15 "$VP15/m.md" - '[ "$(gate_halt_record_step "$1")" = "$(gate_halt_record_step "$2")" ] || printf 다름' \
+     "$VP15/R15VP/halt/S2P#6.md" "$VP15/R15VP/halt/S2P#7.md")" "다름"
+rm -f "$VP15/R15VP/halt/S2P#6.md" "$VP15/R15VP/halt/S2P#7.md"
+if [ -n "$tokbak15vp" ]; then mv "$tokbak15vp" "$TOK15VP"; else rm -f "$TOK15VP"; fi
+if [ -n "$sysbak15vp" ]; then mv "$sysbak15vp" "$SYS15VP"; else rm -f "$SYS15VP"; rmdir "$(dirname "$SYS15VP")" 2>/dev/null || true; fi
+rm -f "$WT/docs/fixture-design-15vp.md"
 rm -rf "$VP15"
 
 # The ban list's reads, spelled as the publish stage's Step 1 spells them: the
@@ -16132,6 +16353,126 @@ esac
 rm -rf "$VPC15"
 CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$CC_GATE_PREV_AR15VP"
 
+# The design system round trip, through the gate's own dispatch. A finished
+# visual or publish step is dispatched again in the same run only when the
+# design system brings it back: the generate step after it ended on the design
+# system and a person's `승인` to the publish stage's `디자인-시스템-판정`
+# record stands behind the approval line while no sidecar pins that palette,
+# the publish step after the generate step finished again later in the ledger.
+# The generate stage runs for real; the publish stage's rows and the person's
+# answer are the fixture's, since what the rule reads is the ledger.
+DOC15VR='docs/fixture-design-15vr.md'
+plan15vr='{ "design_required": true, "steps": [ { "id": "D1", "skill": "design", "summary": "설계", "depends_on": [] }, { "id": "A1", "skill": "design-audit", "summary": "감사", "depends_on": ["D1"] }, { "id": "S2V", "skill": "visual", "summary": "시각", "depends_on": ["A1"] }, { "id": "S2P", "skill": "visual-publish", "summary": "발행", "depends_on": ["S2V"] }, { "id": "S2", "skill": "implement", "summary": "구현", "depends_on": ["S2V"] } ] }'
+au15_run R15VR "$DOC15VR" "$plan15vr"
+RD15VR="$STATE_LATE/cc-cmds/run/R15VR"
+LED15VR="$WT/docs/pipeline-run/R15VR.md"
+SYS15VR="$WT/docs/visual-system/system.md"
+SC15VR="$WT/docs/visual/docs-fixture-design-15vr.md"
+vis15vr="/cc-cmds:visual-unattended $WT/$DOC15VR"
+sysbak15vr=''
+if [ -f "$SYS15VR" ]; then sysbak15vr="$WORK/system-15vr.bak"; cp "$SYS15VR" "$sysbak15vr"; fi
+mkdir -p "$(dirname "$SYS15VR")" "$(dirname "$SC15VR")" "$RD15VR/halt"
+TOK15VR="$(dirname "$SYS15VR")/tokens.css"
+tokbak15vr=''
+if [ -f "$TOK15VR" ]; then tokbak15vr="$WORK/tokens-15vr.bak"; cp "$TOK15VR" "$tokbak15vr"; fi
+printf ':root { --fixture-15vr: #000; }\n' > "$TOK15VR"
+tok15vr=$(shasum -a 256 "$TOK15VR" | awk '{print $1}')
+rm -f "$SC15VR"
+vr15_stub() {  # vr15_stub <path> <result text> — a visual stub that goes through the gate once
+  {
+    printf '%s\n' '#!/usr/bin/env bash' \
+      'h=$(bash "$CC_PIPELINE_GATE" snapshot --manifest "$CC_PIPELINE_MANIFEST" --fields H 2>/dev/null)' \
+      'bash "$CC_PIPELINE_GATE" exec --manifest "$CC_PIPELINE_MANIFEST" --target "$CC_PIPELINE_TARGET" \' \
+      '  --segment "$CC_PIPELINE_SEGMENT" --cutpoint 커밋 --surface 읽기 --snapshot-digest "$h" \' \
+      '  --rationale "픽스처 — 시각 스테이지 자신의 게이트 호출" -- ls "$CC_PIPELINE_RUN_DIR" >/dev/null 2>&1'
+    printf "printf '%%s\\\\n' '{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"total_cost_usd\":0.1,\"session_id\":\"svr\",\"num_turns\":1,\"result\":\"%s\"}'\n" "$2"
+    printf 'exit 0\n'
+  } > "$1"
+  chmod +x "$1"
+}
+STUB_DS15VR="$WORK/bin/claude-stub-ds15vr"
+STUB_VIS15VR="$WORK/bin/claude-stub-vis15vr"
+vr15_stub "$STUB_DS15VR" '디자인 시스템을 만들었습니다.\n디자인 시스템을 사람 확인으로 넘겼습니다.'
+vr15_stub "$STUB_VIS15VR" '화면 둘을 만들었습니다.\n시각 디자인을 검토 통과로 확정했습니다.'
+pub15vr_plan() {  # pub15vr_plan — the publish step's re-dispatch, as plan; sets rc, msg
+  gateL plan --manifest "$WORK/plan-R15VR.md" --kind skill --target infra --segment - --cutpoint 커밋 \
+       --surface 워크트리쓰기 -- visual-publish -p "/cc-cmds:visual-publish-unattended $WT/$DOC15VR"
+}
+au15_freeze "$DOC15VR"
+au15_dispatch R15VR "$STUB_AU_DESIGN" design "/cc-cmds:design-discuss-unattended $WT/$DOC15VR \"테스트\""
+au15_wait R15VR D1
+au15_dispatch R15VR "$STUB_AU_AUDIT" audit "/cc-cmds:design-audit-unattended $WT/$DOC15VR"
+au15_wait R15VR A1
+check "15vp: 왕복 픽스처의 감사 단계가 정상 완료다 (아래가 공허하지 않다)" "$(au15_class R15VR A1 audit)" "정상 완료"
+
+printf '# 디자인 시스템\n\n**확인**: 대기 — 문서 %s — 런 R15VR\n' "$DOC15VR" > "$SYS15VR"
+au15_dispatch R15VR "$STUB_DS15VR" visual "$vis15vr"
+check "15vp: 디자인 시스템 종단의 시각 파견이 기동한다" "$rc" "0"
+au15_wait R15VR S2V
+check "15vp: 디자인 시스템 종단 문구와 대기 확인 줄의 시각 단계는 정상 완료다" "$(au15_class R15VR S2V visual)" "정상 완료"
+check "15vp: 그 행은 시각 종단=디자인 시스템 을 싣는다" \
+  "$(au15_rows R15VR '| 세그먼트=- | 스테이지=S2V | 종류=visual |' | tail -1 | grep -c '| 시각 종단=디자인 시스템 |' || true)" "1"
+
+# The publish stage halted on the design system and a person answered it.
+printf -- '- `stage-result` | 세그먼트=- | 스테이지=S2P | 종류=visual-publish | 종료 코드=0 | 실행 버전=1 | 세션 id=spub1 | 종단 부류=의도된 park | 실패 서명=x\n' >> "$LED15VR"
+rec15vr="$RD15VR/halt/S2P#1.md"
+printf '%s\n' '<!-- cc-pipeline-halt v1; writer=visual-publish-unattended; reader=orchestrator; stage=S2P#1; run=R15VR -->' \
+  '**스킬**: visual-publish-unattended' '**스텝**: 디자인-시스템-판정 — 팔레트' \
+  '**분류**: gate-unanswerable' '**질문 문면**: 픽스처' '**선택지**:' \
+  '- `승인` — 이 팔레트로 화면을 만든다' '- `수정 요청` — 고친 뒤 다시 묻는다' '- `거부` — 화면을 만들지 않는다' \
+  '**선택지 리스크**: 픽스처' "**관측 상세**: 국면 진입=생성 단계 종단 / 제시 tokens.css=$tok15vr" \
+  '<!-- /cc-pipeline-halt v1 -->' > "$rec15vr"
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=1 gateL act --manifest "$WORK/plan-R15VR.md" --kind halt-answer --target infra --segment S2P --cutpoint 커밋 --surface 읽기 \
+      --snapshot-digest "$(au15_H R15VR)" --rationale x \
+      -- "중단 기록=$rec15vr" '선택지=승인' '답한 주체=좌석' '근거=좌석 추천'
+check "15vp: 디자인-시스템-판정 의 좌석 답은 거부된다" "$rc" "3"
+case "$msg" in
+  *"시각 발행 단계의 사람 전용 질문입니다"*"디자인-시스템-판정"*) ok "15vp: 그 거부는 사람 전용 질문을 든다" ;;
+  *) bad "15vp: 그 거부는 사람 전용 질문을 든다" "$msg" ;;
+esac
+gateL act --manifest "$WORK/plan-R15VR.md" --kind halt-answer --target infra --segment S2P --cutpoint 커밋 --surface 읽기 \
+      --snapshot-digest "$(au15_H R15VR)" --rationale x \
+      -- "중단 기록=$rec15vr" '선택지=승인' '답한 주체=사람' '근거=사람이 팔레트를 승인함'
+if [ "$rc" = "0" ]; then
+  ok "15vp: 디자인-시스템-판정 의 사람 승인 답이 기록된다"
+else
+  bad "15vp: 디자인-시스템-판정 의 사람 승인 답이 기록된다" "rc=$rc $msg"
+  printf -- '- `중단 답` | 중단 기록=%s | 답한 주체=사람 | 선택지=승인 | 근거=사람이 팔레트를 승인함\n' "$rec15vr" >> "$LED15VR"
+fi
+printf -- '- `stage-result` | 세그먼트=- | 스테이지=S2P | 종류=visual-publish | 종료 코드=0 | 실행 버전=2 | 세션 id=spub2 | 종단 부류=정상 완료 | 실패 서명=x\n' >> "$LED15VR"
+
+# Refused while the confirmation line still waits.
+au15_dispatch R15VR "$STUB_VIS15VR" visual "$vis15vr"
+check "15vp: 확인 줄이 대기인 디자인 시스템 종단 뒤의 시각 재파견은 거부된다" "$rc" "3"
+case "$out" in
+  *"디자인 시스템의 확인 줄이 이 문서의 사람 승인이 아닙니다"*) ok "15vp: 그 거부는 확인 줄이 사람 승인이 아님을 든다" ;;
+  *) bad "15vp: 그 거부는 확인 줄이 사람 승인이 아님을 든다" "$out" ;;
+esac
+printf '# 디자인 시스템\n\n**확인**: 사람 승인 — 문서 %s — tokens.css sha256 %s — 사람 답 S2P#1.md — 런 R15VR — 2026-11-04T09:00:00Z\n' \
+  "$DOC15VR" "$tok15vr" > "$SYS15VR"
+# The publish step has nothing new to judge before the generate step ran again.
+pub15vr_plan
+check "15vp: 생성 단계가 다시 끝나기 전의 발행 재파견은 거부된다" "$rc" "3"
+case "$msg" in
+  *"발행 단계 S2P 는 정상 완료했고, 그 뒤 생성 단계 S2V 가 정상 완료한 행이 없습니다"*) ok "15vp: 그 거부는 뒤따른 생성 단계 행이 없음을 든다" ;;
+  *) bad "15vp: 그 거부는 뒤따른 생성 단계 행이 없음을 든다" "$msg" ;;
+esac
+# The sidecar the screens leave carries no design system digest, so it pins no
+# palette, and the stage reviews it.
+printf '# 시각 사이드카\n\n**상태**: 검토 통과\n' > "$SC15VR"
+au15_dispatch R15VR "$STUB_VIS15VR" visual "$vis15vr"
+if [ "$rc" = "0" ]; then ok "15vp: 사람이 승인한 디자인 시스템 뒤의 시각 재파견이 통과한다"
+else bad "15vp: 사람이 승인한 디자인 시스템 뒤의 시각 재파견이 통과한다" "rc=$rc $out | 원장: $(grep -nE '중단 답|^## ' "$LED15VR" | tr '\n' '~')"; fi
+au15_wait R15VR S2V
+check "15vp: 다시 띄운 시각 단계는 화면 종단으로 정상 완료한다" \
+  "$(au15_class R15VR S2V visual)/$(au15_rows R15VR '| 세그먼트=- | 스테이지=S2V | 종류=visual |' | tail -1 | grep -c '| 시각 종단=화면 |' || true)" "정상 완료/1"
+pub15vr_plan
+if [ "$rc" = "0" ]; then ok "15vp: 생성 단계가 다시 끝난 뒤의 발행 재파견이 통과한다"
+else bad "15vp: 생성 단계가 다시 끝난 뒤의 발행 재파견이 통과한다" "rc=$rc $msg"; fi
+if [ -n "$tokbak15vr" ]; then mv "$tokbak15vr" "$TOK15VR"; else rm -f "$TOK15VR"; fi
+if [ -n "$sysbak15vr" ]; then mv "$sysbak15vr" "$SYS15VR"; else rm -f "$SYS15VR"; rmdir "$(dirname "$SYS15VR")" 2>/dev/null || true; fi
+rm -f "$SC15VR" "$WT/$DOC15VR"
+
 # ---------------------------------------------------------------------------
 # 15vm. A visual publish pin the router migrates is recorded by the gate
 # --- section: 15vm | group: base | covers: grade, gate_resume_grant_ok, gate_visual_lane_auth_email, gate_visual_lane_write, gate_visual_lane_commit, gate_visual_lane_doc_commit, gate_route_env_fresh, kind_pin_resolve, kind_pin_request_json, gate_launch_stage, gate_launch_route, gate_launch_route_ask, gate_launch_route_carry, gate_verb_supervise_stage, gate_record_stage_outcome | anchors: 15vm: 시각 발행 요청 칸은 migratable 과 호스트 고정을 싣는다, 15vm: 이관 fresh GRANT 는 재부착 구속을 지난다, 15vm: 이관 GRANT 가 런 지역 이관 기록을 쓴다, 15vm: 새 레인의 계정을 읽지 못하면 기록을 쓰지 않고 레인과 원인을 낸다, 15vm: 문서 단위 기록의 레인을 받은 첫 GRANT 는 승계 줄을 쓴다, 15vm: 마지막 이관이 끝났으면 문서 단위 기록이 쓰인다, 15vm: 파견 경로 다섯이 같은 기록 함수와 요청 칸을 지난다 ---
@@ -16249,7 +16590,7 @@ check "15vm: 파견 경로 다섯이 같은 기록 함수와 요청 칸을 지�
   "$(grep -c -- '--argjson pinf "$(kind_pin_request_json "$kind")"' "$GATE")/$(grep -c -E -- '--argjson pinf "\$\(kind_pin_request_json "\$(kind|3)"\)"' "$RUN_SH")/$(grep -c 'gate_visual_lane_commit "$kind"' "$GATE")/$(grep -c 'gate_visual_lane_commit "$kind"' "$RUN_SH")/$(grep -c -- '--arg pin "$(kind_pin_lane_of' "$GATE" "$RUN_SH" | awk -F: '{s+=$2} END{print s}')" \
   "2/2/2/1/0"
 check "15vm: 운반·일반 기동·대기 재질의가 fresh GRANT 에서 재부착을 비운다" \
-  "$(sed -n '/^gate_launch_route_carry()/,/^}/p' "$GATE" | grep -c 'gate_route_env_fresh "$benv"')/$(sed -n '/^gate_launch_route()/,/^}/p' "$GATE" | grep -c 'gate_route_env_fresh "$GATE_ROUTE_ENV"')/$(sed -n '/^gate_verb_supervise_stage()/,/^}/p' "$GATE" | grep -c 'gate_route_env_fresh "$wenv"')/$(grep -c '\.fresh == true' "$RUN_SH")" \
+  "$(sed -n '/^gate_launch_route_carry()/,/^}/p' "$GATE" | grep -c 'gate_route_env_fresh "$benv"')/$(sed -n '/^gate_launch_route()/,/^}/p' "$GATE" | grep -c 'gate_route_env_fresh "$GATE_ROUTE_ENV"')/$(sed -n '/^gate_verb_supervise_stage()/,/^}/p' "$GATE" | grep -c 'gate_route_env_fresh "$wenv"')/$(grep -c 'if \.fresh == true then' "$RUN_SH")" \
   "1/1/1/1"
 check "15vm: 고정 레인 없음 문면이 세 출처를 모두 이름 댄다" \
   "$(grep -c "고정 레인 없음 — 호스트 파일 .* 런 지역 이관 기록 \$RUN_DIR/visual-lane 도 문서 단위 이관 기록 " "$GATE")" "1"
@@ -16257,7 +16598,7 @@ rm -rf "$VM15"
 
 # ---------------------------------------------------------------------------
 # 15w. A screen slice is not dispatched before its screens are approved
-# --- section: 15w | group: base | covers: act, plan, snapshot | anchors: 15w: 설계 스킬의 화면 문법 예시 두 줄이 선언통치 분기를 낸다, 15w: 모양이 틀린 화면 값은 슬라이싱 결함 줄에 실린다, 15w: 승인 없는 화면 id 목록 슬라이스의 구현 파견은 거부된다, 15w: 화면 필드가 없는 슬라이스도 사이드카가 있으면 기다린다, 15w: 화면이 없음 인 슬라이스는 승인 없이 파견된다, 15w: 선언 없는 런의 구현 파견은 승인 없이 통과한다, 15w: 구현 승인 줄 뒤 화면 슬라이스의 파견이 통과한다, 15w: 소비된 시각-승인 거부 뒤 화면 슬라이스의 파견은 승인 줄이 있어도 거부된다 ---
+# --- section: 15w | group: base | covers: act, plan, snapshot, visual_approval_verdict | anchors: 15w: 설계 스킬의 화면 문법 예시 두 줄이 선언통치 분기를 낸다, 15w: 모양이 틀린 화면 값은 슬라이싱 결함 줄에 실린다, 15w: 승인 없는 화면 id 목록 슬라이스의 구현 파견은 거부된다, 15w: 화면 필드가 없는 슬라이스도 사이드카가 있으면 기다린다, 15w: 화면이 없음 인 슬라이스는 승인 없이 파견된다, 15w: 선언 없는 런의 구현 파견은 승인 없이 통과한다, 15w: 구현 승인 줄 뒤 화면 슬라이스의 파견이 통과한다, 15w: 소비된 시각-승인 거부 뒤 화면 슬라이스의 파견은 승인 줄이 있어도 거부된다 ---
 #
 # A declared run's segment id is its slice id, and a slice whose `**화면**`
 # lists screen ids — or omits the field while the document has a visual
@@ -16344,6 +16685,34 @@ check "15w 픽스처: 구현 승인 줄 뒤 술어가 선다" \
 w15_dispatch R15WA SA
 check "15w: 구현 승인 줄 뒤 화면 슬라이스의 파견이 통과한다" "$rc" "0"
 [ "$rc" = 0 ] || bad "15w 승인 뒤 파견 문면" "$msg"
+
+# The same approval over the same bundle is void to the run while the design
+# system waits for a person: the helper's `approval` does not read the
+# confirmation line, the gate's verdict does. The repository's system.md is put
+# back as it was.
+SYS15W="$w15_base/docs/visual-system/system.md"
+sysbak15w=''
+if [ -f "$SYS15W" ]; then sysbak15w="$WORK/system-15w.bak"; cp "$SYS15W" "$sysbak15w"; fi
+mkdir -p "$(dirname "$SYS15W")"
+printf '# 디자인 시스템\n\n**확인**: 대기 — 문서 %s — 런 R15WA\n' "$DOC15W" > "$SYS15W"
+check "15w 픽스처: 대기 줄이 서도 helper 의 approval 은 승인 유효다" \
+  "$(bash "$CC_ORCH/visual-check.sh" approval "$WT/$DOC15W" >/dev/null 2>&1; echo $?)" "0"
+check "15w: 디자인 시스템 확인 대기 동안 승인 판정은 무효다" \
+  "$( cd "$WT" && CC_GATE_SOURCE_ONLY=1 W15_DOC="$WT/$DOC15W" bash -c '
+      . "'"$GATE"'" >/dev/null 2>&1; set +e; DOC="$W15_DOC"
+      visual_approval_verdict "$ORCH_DIR"; printf " rc=%s" "$?"' 2>/dev/null )" \
+  "승인 무효 — 디자인 시스템 확인 대기 rc=1"
+w15_dispatch R15WA SA
+if w15_screen_refused; then ok "15w: 디자인 시스템 확인 대기 동안 화면 슬라이스의 파견은 거부된다"
+else bad "15w: 디자인 시스템 확인 대기 동안 화면 슬라이스의 파견은 거부된다" "rc=$rc $msg"; fi
+printf '# 디자인 시스템\n\n**확인**: 대기 — 문서 docs/other.md — 런 R15WA\n' > "$SYS15W"
+check "15w: 다른 문서 키의 대기 줄도 승인 판정을 무효로 한다" \
+  "$( cd "$WT" && CC_GATE_SOURCE_ONLY=1 W15_DOC="$WT/$DOC15W" bash -c '
+      . "'"$GATE"'" >/dev/null 2>&1; set +e; DOC="$W15_DOC"
+      visual_approval_verdict "$ORCH_DIR" >/dev/null; printf "rc=%s" "$?"' 2>/dev/null )" "rc=1"
+if [ -n "$sysbak15w" ]; then mv "$sysbak15w" "$SYS15W"; else rm -f "$SYS15W"; rmdir "$(dirname "$SYS15W")" 2>/dev/null || true; fi
+w15_dispatch R15WA SA
+check "15w: 대기 줄이 걷히면 같은 파견이 다시 통과한다" "$rc" "0"
 
 # A person's `거부` on the slice's `시각-승인` still says no once it is consumed:
 # the consumption lifts the person hold and the sidecar's approval line is left
@@ -49010,27 +49379,27 @@ check "61: 대조 — 같은 식이 호출 한 줄은 센다" \
 # 호스트를 Darwin 이 아닌 값으로 주입해 어느 러너에서도 락 없는 갈래를 탄다. 락
 # 걸린 갈래는 63 이 잰다.
 #
-# 사례표는 근거 아홉과 대기 원인 열을 모두 지나고, `교대` 원천 세 조건(표식 없음,
+# 사례표는 근거 열과 대기 원인 열을 모두 지나고, `교대` 원천 세 조건(표식 없음,
 # 한 자리, 두 자리)을 같은 원장 끝에 붙인다.
 # ---------------------------------------------------------------------------
 lsr62_g=$(lsr_ledger w62-gate)
 lsr62_d=$(lsr_ledger w62-driver)
 lsr62_m=$(lsr_ledger w62-mixed)
 { lsr_lease_cases; lsr_wait_cases; } > "$lsr_root/cases62.tsv"
-check "62: 사례표가 임대 54·대기 60 줄이다" "$( { grep -c . "$lsr_root/cases62.tsv" || true; } )" "114"
+check "62: 사례표가 임대 60·대기 66 줄이다" "$( { grep -c . "$lsr_root/cases62.tsv" || true; } )" "126"
 check "62: 주입한 호스트에서 lock_tool 이 비어 있다 (락 없는 갈래)" \
   "$(lsr_in Linux "$lsr62_g" - lock_tool)" ""
 check "62: 게이트 기록자가 사례를 전부 받는다" \
-  "$(lsr_in Linux "$lsr62_g" - lsr_each gate_append < "$lsr_root/cases62.tsv" | sort | uniq -c | tr -s ' ' | sed 's/^ //')" "114 0"
+  "$(lsr_in Linux "$lsr62_g" - lsr_each gate_append < "$lsr_root/cases62.tsv" | sort | uniq -c | tr -s ' ' | sed 's/^ //')" "126 0"
 check "62: 드라이버 기록자가 사례를 전부 받는다" \
-  "$(lsr_in Linux "$lsr62_d" - lsr_each ledger_row < "$lsr_root/cases62.tsv" | sort | uniq -c | tr -s ' ' | sed 's/^ //')" "114 0"
-sed -n '1p;55p' "$lsr_root/cases62.tsv" > "$lsr_root/shift62.tsv"
+  "$(lsr_in Linux "$lsr62_d" - lsr_each ledger_row < "$lsr_root/cases62.tsv" | sort | uniq -c | tr -s ' ' | sed 's/^ //')" "126 0"
+sed -n '1p;61p' "$lsr_root/cases62.tsv" > "$lsr_root/shift62.tsv"
 for lsr62_sh in 'LS#7' 'LS#12'; do
   lsr_in Linux "$lsr62_g" "$lsr62_sh" lsr_each gate_append < "$lsr_root/shift62.tsv" >/dev/null
   lsr_in Linux "$lsr62_d" "$lsr62_sh" lsr_each ledger_row < "$lsr_root/shift62.tsv" >/dev/null
 done
-check "62: 두 원장이 각각 118행이다" \
-  "$( { grep -c '^- `' "$lsr62_g" || true; } )/$( { grep -c '^- `' "$lsr62_d" || true; } )" "118/118"
+check "62: 두 원장이 각각 130행이다" \
+  "$( { grep -c '^- `' "$lsr62_g" || true; } )/$( { grep -c '^- `' "$lsr62_d" || true; } )" "130/130"
 if cmp -s "$lsr62_g" "$lsr62_d"; then
   ok "62: 두 기록자가 같은 바이트와 같은 체인을 쓴다"
 else
@@ -49047,16 +49416,16 @@ check "62: 첫 행이 고정된 문법 그대로다" \
   "- \`stage-lease\` | 교대=0 | 파견 id=S1-impl-1.retry | 계보=S1-impl-1 | 계정=acct-a | 레인=~/.claude-a | 예약=0.2500/0.1000 | 비용=0.0300/0.0080 | 비용 출처=group-kind/kind | 근거=first | 관측=usage-cache@1790000000.5 | 단계=rest | 단계 출처=declared | 문턱=1.2000 | prev=$lsr62_seed"
 check "62: 교대 원천 세 조건 — 표식 없음 0, #7 은 7, #12 는 12" \
   "$( { grep -cF '| 교대=0 |' "$lsr62_d" || true; } )/$( { grep -cF '| 교대=7 |' "$lsr62_d" || true; } )/$( { grep -cF '| 교대=12 |' "$lsr62_d" || true; } )" \
-  "114/2/2"
+  "126/2/2"
 check "62: 락 없는 갈래는 락 파일을 만들지 않는다" \
   "$(ls -A "${lsr62_g%/*}" "${lsr62_d%/*}" | { grep -c 'ledger\.lock' || true; })" "0"
 check "62: 번갈아 쓴 두 기록자도 사례를 전부 받는다" \
-  "$(lsr_in Linux "$lsr62_m" - lsr_each alt < "$lsr_root/cases62.tsv" | sort | uniq -c | tr -s ' ' | sed 's/^ //')" "114 0"
+  "$(lsr_in Linux "$lsr62_m" - lsr_each alt < "$lsr_root/cases62.tsv" | sort | uniq -c | tr -s ' ' | sed 's/^ //')" "126 0"
 rc=0; lsr_in Linux "$lsr62_m" - gate_chain_verify >/dev/null 2>&1 || rc=$?
 check "62: 번갈아 쓴 원장의 사슬이 검증된다" "$rc" "0"
 check "62: 번갈아 쓴 원장이 한 기록자가 쓴 원장과 같은 바이트다" \
   "$( { grep '^- `' "$lsr62_m" || true; } | shasum -a 256 | cut -d' ' -f1)" \
-  "$( { grep '^- `' "$lsr62_g" || true; } | sed -n '1,114p' | shasum -a 256 | cut -d' ' -f1)"
+  "$( { grep '^- `' "$lsr62_g" || true; } | sed -n '1,126p' | shasum -a 256 | cut -d' ' -f1)"
 
 # ---------------------------------------------------------------------------
 # 63. 락 아래 섞어 쓴 두 기록자
@@ -49383,6 +49752,10 @@ lsr65_rb=$(jq -cn '{verdict: "GRANT", basis: "resume-bound", account: "acct-a", 
   reservation_bp: null, observed: "-", dormant: false}')
 lsr65_rw=$(jq -cn '{verdict: "WAIT", reason: "resume-bound-exhausted", group: "acct:acct-a",
   account: "acct-a", until_epoch: 1790000000}')
+# 소진된 구속 계정에서 다른 계정의 새 세션으로 옮긴 재개. 구속은 `migrated.from` 이다.
+lsr65_rm=$(jq -cn '{verdict: "GRANT", basis: "resume-migrated", account: "acct-b", config_dir: "/lanes/b",
+  reservation_bp: null, observed: "-", dormant: false, fresh: true,
+  migrated: {from: "acct-a", to: "acct-b", why: "resume-bound-exhausted"}}')
 lsr65_sh=$(lsr_sha "$lsr65_l")
 lsr65_bad=""
 lsr65_try() {
@@ -49423,6 +49796,9 @@ lsr65_try unbound-account-wait 2 gate_stage_wait_row 'S1-x' \
 lsr65_try rb-none 2 gate_stage_lease_row 'S1-x' "$lsr65_rb"
 lsr65_try rb-other 2 gate_stage_lease_row 'S1-x' "$lsr65_rb" acct-b
 lsr65_try rb-seat 2 gate_stage_lease_row 'S1-x' "$lsr65_rb" -
+lsr65_try rm-none 2 gate_stage_lease_row 'S1-x' "$lsr65_rm"
+lsr65_try rm-other 2 gate_stage_lease_row 'S1-x' "$lsr65_rm" acct-c
+lsr65_try rm-not-fresh 2 gate_stage_lease_row 'S1-x' "$(printf '%s' "$lsr65_rm" | jq -c '.fresh = false')" acct-a
 lsr65_try rw-none 2 gate_stage_wait_row 'S1-x' "$lsr65_rw"
 lsr65_try rw-other 2 gate_stage_wait_row 'S1-x' "$lsr65_rw" acct-b
 check "65: 봉투 거부 사례가 모두 rc 2 다 (GRANT/WAIT 밖·빈 출력·쓰레기 예약·줄바꿈·재개 구속 없음·불일치)" \
@@ -49431,6 +49807,9 @@ check "65: 먼저 담기 — 거부된 봉투는 한 바이트도 남기지 않�
 rc=0; lsr_in Linux "$lsr65_l" - gate_stage_lease_row 'S1-impl-5' "$lsr65_rb" acct-a >/dev/null 2>&1 || rc=$?
 check "65: 맞는 구속을 단 resume-bound GRANT 는 행이 된다" "$rc/$(lsr_body "$lsr65_l")" \
   "0/- \`stage-lease\` | 교대=0 | 파견 id=S1-impl-5 | 계보=S1-impl-5 | 계정=acct-a | 레인=/lanes/a | 예약=- | 비용=- | 비용 출처=- | 근거=resume-bound | 관측=- | 단계=- | 단계 출처=- | 문턱=-"
+rc=0; lsr_in Linux "$lsr65_l" - gate_stage_lease_row 'S1-impl-8' "$lsr65_rm" acct-a >/dev/null 2>&1 || rc=$?
+check "65: 옮겨 온 구속을 단 resume-migrated GRANT 는 새 계정의 행이 된다" "$rc/$(lsr_body "$lsr65_l")" \
+  "0/- \`stage-lease\` | 교대=0 | 파견 id=S1-impl-8 | 계보=S1-impl-8 | 계정=acct-b | 레인=/lanes/b | 예약=- | 비용=- | 비용 출처=- | 근거=resume-migrated | 관측=- | 단계=- | 단계 출처=- | 문턱=-"
 rc=0; lsr_in Linux "$lsr65_l" - gate_stage_wait_row 'S2-impl-3' "$lsr65_rw" acct-a >/dev/null 2>&1 || rc=$?
 check "65: 맞는 구속을 단 resume-bound 대기는 행이 된다" "$rc/$(lsr_body "$lsr65_l")" \
   "0/- \`stage-wait\` | 교대=0 | 계보=S2-impl-3 | 그룹=acct:acct-a | 계정=acct-a | 까지=2026-09-21T14:13:20Z | 비용=- | 비용 출처=- | 근거=resume-bound-exhausted"
@@ -49455,8 +49834,8 @@ rc=0; lsr_in Linux "$lsr65_l" - gate_chain_verify >/dev/null 2>&1 || rc=$?
 check "65: 래퍼가 쓴 원장의 사슬이 검증된다" "$rc" "0"
 
 # 추출기 격리.
-check "65: 이 절이 더한 새 계열 행은 열여섯이다" \
-  "$( { grep -cE '^- `stage-(lease|wait)`' "$lsr65_l" || true; } )" "16"
+check "65: 이 절이 더한 새 계열 행은 열일곱이다" \
+  "$( { grep -cE '^- `stage-(lease|wait)`' "$lsr65_l" || true; } )" "17"
 lsr65_d1=$(lsr_in Linux "$lsr65_l" - lsr_digest "$FX_MANIFEST" 2>/dev/null)
 if [ -n "$lsr65_d0" ] && [ "$lsr65_d1" = "$lsr65_d0" ]; then
   ok "65: 새 계열 행은 진전 해시를 움직이지 않는다"
@@ -49904,6 +50283,65 @@ LC_ALL=C awk '/^## / { skip = ($0 == "## Pipeline variables") } !skip' "$fc67d_p
 check "67d: 절을 지운 사본에서 절 단언이 실패한다" "$(fc67d_heads "$fc67d_cp/no-section.md")" "0"
 
 # ---------------------------------------------------------------------------
+# 67r. 스테이지 스킬의 재진입 카드 절
+# --- section: 67r | group: static | covers: - | anchors: 67r: 종류마다 스킬 본문이 재진입 카드 변수를 이름으로 읽는다, 67r: 재진입 카드 절은 카드의 스테이지를 자기 스테이지 id 와 대조한다, 67r: 스킬 본문은 부팅 재진입 표지 이름을 적지 않는다, 67r: 팀 프로토콜에 이관 재진입의 채택 절이 하나 있다, 67r: 재진입 절마다 끝낸 일을 가리는 내구 입력을 이름으로 적는다, 67r: 절을 지운 사본에서 절 단언이 실패한다 ---
+#
+# 묶인 계정이 소진된 재개를 다른 계정의 새 세션으로 옮기면 게이트는 재진입 카드를 남기고
+# 그 경로를 `CC_PIPELINE_REENTRY_CARD` 로 넘긴다. 새 세션에는 이어 갈 대화가 없으므로,
+# 그 종류의 스킬 본문이 카드를 읽고 내구 상태에서 이어 가는 절을 갖고 있어야 처음부터
+# 다시 하지 않는다. 종류마다 그 절이 있는지와, 절이 끝낸 일을 가리는 입력을 이름으로
+# 적는지를 본문에서 읽는다. 감사의 절은 감사 본문의 바이트 상한 때문에 사이드카에 있다.
+# ---------------------------------------------------------------------------
+fc67r_sk="$repo_root/plugins/cc-cmds/skills"
+fc67r_kinds='implement-unattended design-solo-unattended design-discuss-unattended design-base-unattended design-audit-unattended design-reconverge review-unattended visual-unattended visual-publish-unattended'
+fc67r_body() {  # fc67r_body <스킬> — 그 종류의 재진입 절을 싣는 본문(감사는 본문과 사이드카)
+  cat "$fc67r_sk/$1/SKILL.md"
+  [ "$1" != design-audit-unattended ] || cat "$fc67r_sk/_common/pipeline-sidecar.md"
+}
+fc67r_card() {  # fc67r_card <스킬>... — 변수 이름과 절 표제가 모두 있는 본문이 아니면 그 이름
+  local k out=''
+  for k in "$@"; do
+    case "$(fc67r_body "$k")" in
+      *'`CC_PIPELINE_REENTRY_CARD`'*'Re-entered on a re-entry card'* | *'Re-entered on a re-entry card'*'`CC_PIPELINE_REENTRY_CARD`'*) ;;
+      *) out="$out $k" ;;
+    esac
+  done
+  printf '%s' "${out# }"
+}
+# shellcheck disable=SC2086
+check "67r: 종류마다 스킬 본문이 재진입 카드 변수를 이름으로 읽는다" "$(fc67r_card $fc67r_kinds)" ""
+fc67r_cmp=''
+for k in $fc67r_kinds; do
+  case "$(fc67r_body "$k")" in
+    *'`**스테이지**`'*'CC_PIPELINE_STAGE_ID'*) ;;
+    *) fc67r_cmp="$fc67r_cmp $k" ;;
+  esac
+done
+check "67r: 재진입 카드 절은 카드의 스테이지를 자기 스테이지 id 와 대조한다" "${fc67r_cmp# }" ""
+fc67r_boot=''
+for k in $fc67r_kinds; do
+  grep -qE 'CC_PIPELINE_REENTRY([^_A-Z]|$)' "$fc67r_sk/$k/SKILL.md" && fc67r_boot="$fc67r_boot $k"
+done
+check "67r: 스킬 본문은 부팅 재진입 표지 이름을 적지 않는다" "${fc67r_boot# }" ""
+check "67r: 팀 프로토콜에 이관 재진입의 채택 절이 하나 있다" \
+  "$(grep -cxF '### Adoption across a migrated re-entry' "$fc67r_sk/_common/agent-team-protocol.md" || true)" "1"
+# 끝낸 일을 가리는 내구 입력 — 감사의 `## 감사 개시`, 재수렴의 `**처리 기록**`, 리드 수정의
+# 수정 기록과 세그먼트 커밋, 시각의 `로컬 초안` 사이드카와 `**검토**` 줄.
+fc67r_dur=''
+for pair in 'design-audit-unattended|`## 감사 개시`' 'design-audit-unattended|`frozen-sha256`' \
+  'design-reconverge|`**처리 기록**`' 'review-unattended|A fix record already at the rule'"'"'s path means step 5 ran' \
+  'review-unattended|git log --oneline <that head>..HEAD' 'visual-unattended|**A sidecar at `로컬 초안`**' \
+  'visual-unattended|its `**검토**` count'; do
+  case "$(fc67r_body "${pair%%|*}")" in *"${pair#*|}"*) ;; *) fc67r_dur="$fc67r_dur ${pair%%|*}" ;; esac
+done
+check "67r: 재진입 절마다 끝낸 일을 가리는 내구 입력을 이름으로 적는다" "${fc67r_dur# }" ""
+# 음성 대조 — 절 표제를 지운 사본에서는 같은 단언이 그 종류를 낸다.
+fc67r_cp=$(mktemp -d "$WORK/guard67r.XXXXXX")
+mkdir -p "$fc67r_cp/visual-unattended"
+sed 's/Re-entered on a re-entry card/Re-entered/' "$fc67r_sk/visual-unattended/SKILL.md" > "$fc67r_cp/visual-unattended/SKILL.md"
+check "67r: 절을 지운 사본에서 절 단언이 실패한다" "$(fc67r_sk=$fc67r_cp fc67r_card visual-unattended)" "visual-unattended"
+
+# ---------------------------------------------------------------------------
 # 75. 라우팅된 런의 파견 반쪽 — 라우터 답마다의 처분, 선점, 발행분 반납
 # --- section: 75 | group: ledger_series | covers: act, gate_append | anchors: 75: WAIT 가 계보 B:SW1#1 의 stage-wait 행을 남긴다 ---
 #
@@ -50240,7 +50678,7 @@ esac
 
 # ---------------------------------------------------------------------------
 # 95. 중단 답 운반 — 두 질문과 고르는 순서, 거절 조항, 상한, 답 카드
-# --- section: 95 | group: ledger_series | covers: act, gate_carry_check, gate_launch_route_carry, gate_halt_card_write, handoff, shift-halt, gate_defer_end_due, relay, gate_done_conditions, binding-digest | needs: 75 | anchors: 95: 묶인 GRANT 는 멈춘 세션을 재부착한다, 95: 둘 다 마감 PARK 면 이월 행 하나와 exit 16 이다, 95: 실측 1 — 감사 키의 답이 새 계정 u7 의 세션에 카드로 닿는다, 95: 같은 스텝과 문면으로 다시 멈춘 운반 뒤의 운반은 exit 18 이다, 95: TH1 마감 뒤의 이월 인계는 받고 그 자리에서 런을 마감으로 끝낸다, 95: TN5 진전 축 없는 런의 마감 뒤 운반 act 는 exit 16 이다, 95: TH2 마감 전 이월만 남은 대기는 붙듦 상한에서 좌석에 돌려준다, 95: TD2 이월된 세그먼트는 답 이월 대기이고 대조 세그먼트는 오늘의 줄이다 ---
+# --- section: 95 | group: ledger_series | covers: act, gate_carry_check, gate_launch_route_carry, gate_halt_card_write, handoff, shift-halt, gate_defer_end_due, relay, gate_done_conditions, binding-digest | needs: 75 | anchors: 95: 묶인 GRANT 는 멈춘 세션을 재부착한다, 95: 둘 다 마감 PARK 면 이월 행 하나와 exit 16 이다, 95: 실측 1 — 감사 키의 답이 소진 이관의 새 계정 u2 의 세션에 카드로 닿는다, 95: 같은 스텝과 문면으로 다시 멈춘 운반 뒤의 운반은 exit 18 이다, 95: TH1 마감 뒤의 이월 인계는 받고 그 자리에서 런을 마감으로 끝낸다, 95: TN5 진전 축 없는 런의 마감 뒤 운반 act 는 exit 16 이다, 95: TH2 마감 전 이월만 남은 대기는 붙듦 상한에서 좌석에 돌려준다, 95: TD2 이월된 세그먼트는 답 이월 대기이고 대조 세그먼트는 오늘의 줄이다 ---
 #
 # 운반 act 는 멈춘 시도의 세션에 묶인 질문과 새 세션의 질문을 둘 다 묻고 하나를
 # 고른다. 절 75 의 사본과 같은 방식으로 게이트를 소싱한 자식에서 운반 검사와 파견
@@ -50546,23 +50984,29 @@ jq -cn --argjson now 1800000000 \
   > "$lsr75/ctx93-2.json"
 
 # 실측 1 — 감사 스텝(런 스코프 키 A1)의 종합 요구 질문에 사람이 답했다.
-# 새 질문은 5시간 부하가 가장 낮은 u7 을 받는다 — 라우터의 정렬이 주간 키보다
-# load5 를 먼저 보기 때문이고, 묶인 u1 이 아닌 계정이라는 것이 이 단언의 요점이다.
+# 묶인 u1 의 주간 창이 소진됐고 재개는 고정되지 않았으므로, 묶인 질문에 라우터가
+# 다른 계정으로 옮기는 이관 부여(`resume-migrated`)를 낸다. 운반은 묶인 쪽의 부여를
+# 고르므로 새 질문은 묻지 않고, 묶인 u1 이 아닌 계정의 새 세션이 답 카드와 재진입
+# 카드를 함께 받는다는 것이 이 단언의 요점이다. 감사는 디스패치 프롬프트 기록이
+# 없어도 재진입 틀이 하나뿐이라 그 틀로 옮긴다.
 lsr93_a=$(lsr75_new real93a)
 lsr93_park "$lsr93_a" A1 1 "$lsr93_sid" 'Step 6 CFI-3b — 종합 요구' audit
 lsr93_aln=$(lsr93_ans "$lsr93_a" A1 "${lsr93_a%/*}/halt/A1#1.md" design-audit-unattended 적용)
-check "95: 실측 1 — 감사 키의 답이 새 계정 u7 의 세션에 카드로 닿는다" \
+check "95: 실측 1 — 감사 키의 답이 소진 이관의 새 계정 u2 의 세션에 카드로 닿는다" \
   "$(LSR93_BENV="decide:$lsr75/ctx93-1.json" LSR93_FENV="decide:$lsr75/ctx93-1.json" LSR93_DL=$lsr93_dl \
      lsr93_go "$lsr93_a" "$lsr93_aln" A1 audit "/cc-cmds:design-audit-unattended $lsr93_doc" launch)" \
-  "0|GRANT|first||u7|/h/.claude-u7"
-check "95: 실측 1 — 묶인 질문이 먼저, 새 질문이 그다음이다" \
-  "$(lsr93_events "$lsr93_a")|$(jq -r '.bound_account // "-"' "${lsr93_a%/*}/requests" | paste -sd, -)" "resume,first|u1,-"
+  "0|GRANT|resume||u2|/h/.claude-u2"
+check "95: 실측 1 — 묶인 질문의 이관 부여를 골라 새 질문은 묻지 않는다" \
+  "$(lsr93_events "$lsr93_a")|$(jq -r '.bound_account // "-"' "${lsr93_a%/*}/requests" | paste -sd, -)" "resume|u1"
+check "95: 실측 1 — 이관 새 세션의 재진입 카드가 원 계정 u1 과 새 계정 u2 를 싣는다" \
+  "$(sed -n -E 's/^\*\*(원 계정|새 계정|원인)\*\*: //p' "${lsr93_a%/*}/reentry/$(lsr93_in "$lsr93_a" eval 'session_uuid A1 2' 2>/dev/null).md" 2>/dev/null | paste -sd'|' -)" \
+  "u1|u2|resume-bound-exhausted"
 check "95: 실측 1 — 감독자 argv 가 새 파견 형식의 프롬프트를 그대로 싣는다" \
   "$(sed -n '/^--$/,$p' "${lsr93_a%/*}/argv" | sed -n '2,4p' | paste -sd'|' -)" \
   "audit|-p|/cc-cmds:design-audit-unattended $lsr93_doc"
 lsr93_atk=$(cat "${lsr93_a%/*}/A1.launch" 2>/dev/null)
-check "95: 실측 1 — 시동 토큰이 재부착 id 없이 계정 u7 의 디렉터리를 넘긴다" \
-  "$(printf '%s\n' "$lsr93_atk" | sed -n '2p')|$(printf '%s\n' "$lsr93_atk" | sed -n '6,7p' | paste -sd'|' -)" "|u7|/h/.claude-u7"
+check "95: 실측 1 — 시동 토큰이 재부착 id 없이 계정 u2 의 디렉터리를 넘긴다" \
+  "$(printf '%s\n' "$lsr93_atk" | sed -n '2p')|$(printf '%s\n' "$lsr93_atk" | sed -n '6,7p' | paste -sd'|' -)" "|u2|/h/.claude-u2"
 check "95: 실측 1 — 임대 행 하나, 반납 없음" \
   "$(lsr93_n "$lsr93_a" '- `stage-lease` ')|$(lsr93_rel "$lsr93_a")" "1|-"
 lsr93_card="${lsr93_a%/*}/halt-answer/A1#2.md"
@@ -51650,7 +52094,7 @@ esac
 
 # ---------------------------------------------------------------------------
 # 95c. 재진입 표의 구현·토론·단독·분할 행은 원장 값 칸을 게이트가 지어 대조한다
-# --- section: 95c | group: ledger_series | covers: act, gate_carry_check, gate_ci_join_line_refuse,gate_carry_ledger_frame, gate_carry_frame_reads, gate_carry_prompt_of, gate_carry_origin_cap, gate_carry_cap_row, gate_answered_halts_json, gate_adoption_halt_carry, gate_carry_import_row, gate_carry_frame_build, gate_carry_origin, gate_reentry_row_of, gate_carry_doc_of, gate_carry_routed_elsewhere, gate_carry_untabled_after | needs: 95 | anchors: 95c: 재진입 표는 열두 행이다, 95c: 다음 런에 들인 수정 사이클 구현 정지의 carry_prompt 는 출처 원장의 사이클과 수정 대상을 싣는다, 95c: 다음 런에 들인 구현 정지의 carry_prompt 를 그대로 낸 운반은 새 세션으로 뜨고 그 바이트를 받는다, 95c: 다음 런에 들인 구현 정지를 이 런 원장 값으로 낸 운반은 19 가 아니라 상한 행 하나와 18 이고 그 뒤 일반 파견은 3 이다, 95c: 다음 런에 들인 베이스 해소 정지의 운반은 19 가 아니라 상한 행 하나와 18 이고 그 뒤 일반 파견은 3 이다, 95c: 다음 런에 들인 표 밖 정지의 운반은 19 가 아니라 상한 행 하나와 18 이고 그 뒤 일반 파견은 3 이다, 95c: 연쇄로 들인 분할 정지의 carry_prompt 를 그대로 낸 운반은 새 세션으로 뜨고 그 바이트를 받는다, 95c: 같은 런의 표 밖 정지 운반은 여전히 19·행 없음이고 재부착을 시킨다, 95c: 사이클 행 없는 구현 정지의 운반은 사이클 1 이고 수정 대상이 없다, 95c: 다음 이 수정 인 구현 정지의 운반은 수정 대상을 싣는다, 95c: 사이클 칸이 다른 구현 운반은 exit 19·행 없음, 95c: 문서가 다른 구현 운반은 exit 3·행 없음, 95c: 다음 이 베이스 해소 인 구현 정지의 틀 운반은 exit 19 다, 95c: 다음 이 CI 수정 인 구현 정지의 틀 운반은 exit 19 다, 95c: 토론 설계 정지의 운반은 매니페스트 의도를 싣는다, 95c: 분할 정지의 운반은 분할 형식이다, 95c: 베이스 설계 모드의 정지는 표 밖이라 exit 19 다 ---
+# --- section: 95c | group: ledger_series | covers: act, gate_carry_check, gate_ci_join_line_refuse,gate_carry_ledger_frame, gate_carry_frame_reads, gate_carry_prompt_of, gate_carry_origin_cap, gate_carry_cap_row, gate_answered_halts_json, gate_adoption_halt_carry, gate_carry_import_row, gate_carry_frame_build, gate_carry_origin, gate_reentry_row_of, gate_carry_doc_of, gate_carry_routed_elsewhere, gate_carry_untabled_after | needs: 95 | anchors: 95c: 재진입 표는 열네 행이다, 95c: 다음 런에 들인 수정 사이클 구현 정지의 carry_prompt 는 출처 원장의 사이클과 수정 대상을 싣는다, 95c: 다음 런에 들인 구현 정지의 carry_prompt 를 그대로 낸 운반은 새 세션으로 뜨고 그 바이트를 받는다, 95c: 다음 런에 들인 구현 정지를 이 런 원장 값으로 낸 운반은 19 가 아니라 상한 행 하나와 18 이고 그 뒤 일반 파견은 3 이다, 95c: 다음 런에 들인 베이스 해소 정지의 운반은 19 가 아니라 상한 행 하나와 18 이고 그 뒤 일반 파견은 3 이다, 95c: 다음 런에 들인 표 밖 정지의 운반은 19 가 아니라 상한 행 하나와 18 이고 그 뒤 일반 파견은 3 이다, 95c: 연쇄로 들인 분할 정지의 carry_prompt 를 그대로 낸 운반은 새 세션으로 뜨고 그 바이트를 받는다, 95c: 같은 런의 표 밖 정지 운반은 여전히 19·행 없음이고 재부착을 시킨다, 95c: 사이클 행 없는 구현 정지의 운반은 사이클 1 이고 수정 대상이 없다, 95c: 다음 이 수정 인 구현 정지의 운반은 수정 대상을 싣는다, 95c: 사이클 칸이 다른 구현 운반은 exit 19·행 없음, 95c: 문서가 다른 구현 운반은 exit 3·행 없음, 95c: 다음 이 베이스 해소 인 구현 정지의 틀 운반은 exit 19 다, 95c: 다음 이 CI 수정 인 구현 정지의 틀 운반은 exit 19 다, 95c: 토론 설계 정지의 운반은 매니페스트 의도를 싣는다, 95c: 분할 정지의 운반은 분할 형식이다, 95c: 베이스 설계 모드의 정지는 표 밖이라 exit 19 다 ---
 #
 # 구현·설계 토론·리드 단독 설계·베이스 분할의 정지는 보통 파견과 같은 틀로 운반된다.
 # 그 틀의 칸 중 문서 말고는 모두 원장에서 오므로, 게이트가 같은 원장에서 값을 지어
@@ -51682,9 +52126,9 @@ lsr95c_go() {
 lsr95c_ok='0|GRANT|first||u2|/h/.claude-u2'
 lsr95c_q() { printf '"%s"' "$1"; }
 
-check "95c: 재진입 표는 열두 행이다" \
+check "95c: 재진입 표는 열네 행이다" \
   "$(lsr93_in "$lsr_root/ta0/ledger.md" gate_reentry_table 2>/dev/null | cut -d'|' -f1,3 | paste -sd, -)" \
-  "design-audit-unattended|audit,design-reconverge|reconverge,visual-publish-unattended|visual-publish,visual-publish-unattended|visual-publish,visual-publish-unattended|visual-publish,visual-publish-unattended|visual-publish,visual-publish-unattended|visual-publish,visual-publish-unattended|visual-publish,implement-unattended|implement,design-discuss-unattended|design,design-solo-unattended|design,design-base-unattended|split"
+  "design-audit-unattended|audit,design-reconverge|reconverge,visual-publish-unattended|visual-publish,visual-publish-unattended|visual-publish,visual-publish-unattended|visual-publish,visual-publish-unattended|visual-publish,visual-publish-unattended|visual-publish,visual-publish-unattended|visual-publish,visual-publish-unattended|visual-publish,visual-publish-unattended|visual-publish,implement-unattended|implement,design-discuss-unattended|design,design-solo-unattended|design,design-base-unattended|split"
 check "95c: 픽스처 매니페스트의 의도 첫 줄" \
   "$(lsr93_in "$lsr_root/ta0/ledger.md" manifest_intent_line 2>/dev/null)" "테스트"
 
@@ -63741,6 +64185,236 @@ check "98: 재부착 문장을 실은 디스패치 시점 이관 GRANT 의 새 �
 check "98: 디스패치 시점·운반·대기 끝의 이관 새 세션이 같은 프롬프트 함수를 지난다" \
   "$(sed -n '/^gate_launch_route()/,/^}/p' "$GATE" | grep -c 'GATE_RESUME=""; GATE_ROUTE_FRESH=1')/$(sed -n '/^gate_launch_route_carry()/,/^}/p' "$GATE" | grep -c 'GATE_RESUME=""; GATE_ROUTE_FRESH=1')/$(sed -n '/^gate_launch_stage()/,/^}/p' "$GATE" | grep -c 'gate_fresh_session_prompt "$kind" "$GATE_DISPATCH_PROMPT_SET" "$GATE_DISPATCH_PROMPT"')/$(sed -n '/^gate_verb_supervise_stage()/,/^}/p' "$GATE" | grep -c 'gate_fresh_session_prompt "$kind" "$disp_set" "$disp_p"')" \
   "1/1/1/1"
+
+# ---------------------------------------------------------------------------
+# 98m. 소진된 재개의 계정 이관 — 디스패치 프롬프트 기록, 재진입 카드, 이관 금지, 위임
+# --- section: 98m | group: ledger_series | covers: gate_dispatch_prompt_record, gate_migrate_prompt, gate_reentry_card_write, gate_env_migrated, gate_delegate_refuse, gate_route_flags_json, gate_launch_route, gate_launch_stage, gate_launch_wait, gate_sup_delegate_grant_ok, gate_sup_wait_refuse, gate_verb_supervise_stage, gate_verb_wait, act | needs: 75,95 | anchors: 98m: 기록이 있는 종류마다 이관 새 세션은 그 기록을 -p 로 받고 카드를 쓴다, 98m: 기록 없는 감사는 채운 재진입 틀로 이관한다, 98m: 기록도 하나뿐인 틀도 없는 종류는 no_migrate 로 묻고 묶인 계정에서 기다린다, 98m: 카드를 쓰지 못한 이관 부여는 돌려주고 no_migrate 로 다시 물어 기다린다, 98m: 위임 행위는 이관이 아닌 부여를 돌려주고 21 로 끝난다, 98m: 위임 행위의 소진 대기는 표지에 위임을 싣는다, 98m: --resume 없는 --limit-delegate 는 인자 오류다, 98m: 대기 끝 위임 거르기는 리셋 뒤 관측한 같은 계정 부여만 받는다, 98m: 대기 끝 이관 기동은 카드 경로를 스테이지 환경에 싣는다 ---
+#
+# 묶인 계정이 소진된 재개를 라우터가 다른 계정으로 옮기면(`resume-migrated`) 게이트는
+# 끊긴 세션을 재부착하지 않고 새 세션을 띄운다. 새 세션의 `-p` 는 끊긴 세션이 처음 받은
+# 디스패치 프롬프트의 기록이고, 기록이 없으면 그 종류의 재진입 틀이 하나뿐이고 칸이 모두
+# 찰 때의 틀이며, 둘 다 없으면 라우터에 묻기 전에 `no_migrate` 를 싣는다. 절 95 의 사본
+# 자식에서 파견 반쪽을 직접 부르고, 감독자는 절 98b 처럼 기동 래퍼 자리를 대역으로 둔다.
+# ---------------------------------------------------------------------------
+pre_ledger_series
+h98m_ra='중단된 지점부터 이어 간다. 같은 일을 처음부터 다시 하지 않는다.'
+h98m_mg='{"verdict":"GRANT","basis":"resume-migrated","account":"u2","config_dir":"/h/.claude-u2","nonce":"n98m","dormant":false,"fresh":true,"observed":"none","migrated":{"from":"u1","to":"u2","why":"resume-bound-exhausted"}}'
+h98m_bw='{"verdict":"WAIT","reason":"resume-bound-exhausted","group":null,"account":"u1","until_epoch":1890000000}'
+h98m_go() {
+  # h98m_go <원장> <키> <종류> [<앞머리 eval>] — 세션 H98M_SID(없으면 lsr93_sid)를
+  # 재개하는 파견 반쪽 한 번. 라우터 대역은 LSR93_BENV. 「rc|판정」 을 내고, 표준
+  # 출력은 원장 옆 h98m.out 에 남긴다.
+  H98M_KEY=$2 H98M_KIND=$3 H98M_PRE=${4:-} H98M_RA=$h98m_ra H98M_SID=${H98M_SID:-$lsr93_sid} \
+  LSR93_DL=1900000000 lsr93_in "$1" eval '
+    gate_visual_lane_commit() { return 0; }
+    eval "$H98M_PRE"
+    GATE_RESUME=$H98M_SID; r=0
+    gate_launch_stage infra "$H98M_KEY" "$H98M_KIND" -p "$H98M_RA" >"$RUN_DIR/h98m.out" 2>"$RUN_DIR/h98m.err" || r=$?
+    printf "%s|%s" "$r" "${GATE_ROUTE_VERDICT:-}"' 2>/dev/null
+}
+h98m_cli() {  # h98m_cli <원장> — 띄운 CLI 의 종류·-p·프롬프트를 | 로 이은 것, 띄우지 않았으면 -
+  if [ -f "${1%/*}/argv" ]; then sed -n '/^--$/,$p' "${1%/*}/argv" | sed -n '2,$p' | paste -sd'|' -; else printf -- -; fi
+}
+h98m_card() {  # h98m_card <원장> <키> <시도> — 그 새 세션의 카드 필드 일곱 줄을 ; 로 이은 것, 없으면 -
+  local sid f
+  sid=$(lsr93_in "$1" eval "session_uuid '$2' '$3'" 2>/dev/null)
+  f="${1%/*}/reentry/$sid.md"
+  if [ -f "$f" ]; then sed -n '2,8p' "$f" | paste -sd';' -; else printf -- -; fi
+}
+h98m_want_card() {  # h98m_want_card <키> <종류> — 시도 1 의 세션 lsr93_sid 를 옮긴 시도 2 의 카드
+  printf '**스테이지**: %s#2;**종류**: %s;**원 세션**: %s;**원 스테이지**: %s#1;**원 계정**: u1;**새 계정**: u2;**원인**: resume-bound-exhausted' \
+    "$1" "$2" "$lsr93_sid" "$1"
+}
+h98m_nm() {  # h98m_nm <원장> — 라우터 요청마다의 no_migrate·limit_delegate, 없으면 -
+  if [ -s "${1%/*}/requests" ]; then
+    jq -r '"\(.no_migrate // "-")/\(.limit_delegate // "-")"' "${1%/*}/requests" | paste -sd, -
+  else printf -- -; fi
+}
+h98m_rec() {  # h98m_rec <원장> <세션> <프롬프트> — 그 세션의 디스패치 프롬프트 기록
+  mkdir -p "${1%/*}/dispatch-prompt"
+  printf '%s' "$3" > "${1%/*}/dispatch-prompt/$2"
+}
+
+# 종류마다 — 기록이 있으면 그 바이트가 새 세션의 -p 이고, 카드가 시도 2 의 세션 id 로
+# 서며, 새 세션의 기록이 다시 남는다. 재부착 문장은 어느 종류에서도 -p 가 되지 않는다.
+# 시각 발행은 고정 레인이 있어야 뜨므로 그 조회만 대역으로 둔다.
+h98m_vp='kind_pin_lane_of() { printf u2; }'
+h98m_kinds_got=""; h98m_kinds_want=""
+for h98m_k in design audit split visual visual-publish implement review reconverge; do
+  h98m_key=K9; [ "$h98m_k" != audit ] || h98m_key=A1
+  h98m_l=$(lsr75_new "mk-$h98m_k")
+  lsr93_park "$h98m_l" "$h98m_key" 1 "$lsr93_sid" 'Step 1 — 질문' "$h98m_k" '한도 종료'
+  h98m_p="/cc-cmds:$h98m_k-rec $lsr93_doc \"기록된 프롬프트\""
+  h98m_rec "$h98m_l" "$lsr93_sid" "$h98m_p"
+  h98m_r=$(LSR93_BENV=$h98m_mg h98m_go "$h98m_l" "$h98m_key" "$h98m_k" "$h98m_vp")
+  h98m_nsid=$(lsr93_in "$h98m_l" eval "session_uuid '$h98m_key' 2" 2>/dev/null)
+  h98m_kinds_got="$h98m_kinds_got[$h98m_k] $h98m_r|$(h98m_cli "$h98m_l")|$(h98m_card "$h98m_l" "$h98m_key" 2)|$(cat "${h98m_l%/*}/dispatch-prompt/$h98m_nsid" 2>/dev/null)|$(h98m_nm "$h98m_l")|$(lsr93_n "${h98m_l%/*}/argv" "$h98m_ra") "
+  h98m_kinds_want="$h98m_kinds_want[$h98m_k] 0|GRANT|$h98m_k|-p|$h98m_p|$(h98m_want_card "$h98m_key" "$h98m_k")|$h98m_p|-/-|0 "
+done
+check "98m: 기록이 있는 종류마다 이관 새 세션은 그 기록을 -p 로 받고 카드를 쓴다" "$h98m_kinds_got" "$h98m_kinds_want"
+check "98m: 이관 기동은 계정 이관 로그 한 줄을 남기고 옛 문구를 쓰지 않는다" \
+  "$(lsr93_n "${h98m_l%/*}/h98m.err" '계정 이관 — K9 는 세션')/$(lsr93_n "${h98m_l%/*}/h98m.err" '시각 발행 이관')" "1/0"
+
+# 기록이 없을 때 — 감사와 시각 발행은 틀이 하나뿐이고 `<문서>` 칸만 있어 채운 틀로 옮긴다.
+h98m_l=$(lsr75_new mk-audit-frame)
+lsr93_park "$h98m_l" A1 1 "$lsr93_sid" 'Step 1 — 질문' audit '한도 종료'
+check "98m: 기록 없는 감사는 채운 재진입 틀로 이관한다" \
+  "$(LSR93_BENV=$h98m_mg h98m_go "$h98m_l" A1 audit)|$(h98m_cli "$h98m_l")|$(h98m_nm "$h98m_l")|$( [ "$(h98m_card "$h98m_l" A1 2)" = - ] && printf 없음 || printf 카드)" \
+  "0|GRANT|audit|-p|/cc-cmds:design-audit-unattended $lsr93_doc|-/-|카드"
+h98m_l=$(lsr75_new mk-vp-frame)
+lsr93_park "$h98m_l" K9 1 "$lsr93_sid" 'Step 1 — 질문' visual-publish '한도 종료'
+check "98m: 기록 없는 시각 발행도 채운 재진입 틀로 이관한다" \
+  "$(LSR93_BENV=$h98m_mg h98m_go "$h98m_l" K9 visual-publish "$h98m_vp")|$(h98m_cli "$h98m_l")|$(h98m_nm "$h98m_l")" \
+  "0|GRANT|visual-publish|-p|/cc-cmds:visual-publish-unattended $lsr93_doc|-/-"
+
+# 기록이 없고 틀도 쓸 수 없는 종류 — 리뷰(틀 없음), 설계(틀 둘), 재수렴(`<범위>` 칸) —
+# 는 라우터에 `no_migrate` 를 싣고, 소진 대기를 받아 묶인 계정에서 기다린다. 막힘 행은
+# 없고, 대기 표지가 `이관금지=1` 을 실어 감독자의 재질의도 같은 칸을 싣는다.
+h98m_nm_got=""; h98m_nm_want=""
+for h98m_k in review design reconverge; do
+  h98m_l=$(lsr75_new "nm-$h98m_k")
+  lsr93_park "$h98m_l" K9 1 "$lsr93_sid" 'Step 1 — 질문' "$h98m_k" '한도 종료'
+  h98m_r=$(LSR93_BENV=$h98m_bw h98m_go "$h98m_l" K9 "$h98m_k")
+  h98m_nm_got="$h98m_nm_got[$h98m_k] $h98m_r|$(h98m_nm "$h98m_l")|$(lsr93_n "$h98m_l" '- `blocked` ')|$(lsr93_n "$h98m_l" '- `stage-wait` ')|$(lsr93_n "${h98m_l%/*}/K9.waiting" '이관금지=1') "
+  h98m_nm_want="$h98m_nm_want[$h98m_k] 0|WAIT|true/-|0|1|1 "
+done
+check "98m: 기록도 하나뿐인 틀도 없는 종류는 no_migrate 로 묻고 묶인 계정에서 기다린다" "$h98m_nm_got" "$h98m_nm_want"
+# 이관이 아닌 첫 기동은 칸을 싣지 않는다.
+h98m_l=$(lsr75_new nm-first)
+check "98m: 재개가 아닌 기동의 요청에는 no_migrate 도 위임도 없다" \
+  "$(LSR93_FENV=$lsr93_FG LSR93_DL=1900000000 H98M_RA=$h98m_ra lsr93_in "$h98m_l" eval '
+      r=0; gate_launch_stage infra K9 review -p "$H98M_RA" >/dev/null 2>&1 || r=$?; printf "%s" "$r"' 2>/dev/null)|$(h98m_nm "$h98m_l")|$(lsr93_n "${h98m_l%/*}/dispatch-prompt/$(lsr93_in "$h98m_l" eval 'session_uuid K9 1' 2>/dev/null)" "$h98m_ra")" \
+  "0|-/-|1"
+
+# 카드를 쓰지 못한 이관 부여 — 부여를 돌려주고 `no_migrate` 로 한 번 더 물어 묶인 계정에서
+# 기다린다. 런 디렉터리의 `reentry` 자리를 일반 파일로 막아 카드 쓰기를 실패시킨다.
+h98m_route='route_resolve() {
+      printf "%s\n" "$1" >> "$LSR93_REQ"
+      if [ "$(printf "%s" "$1" | jq -r ".no_migrate // false")" = true ]; then printf "%s" "$H98M_W"; else printf "%s" "$H98M_G"; fi
+    }'
+h98m_l=$(lsr75_new cf-route)
+lsr93_park "$h98m_l" K9 1 "$lsr93_sid" 'Step 1 — 질문' review '한도 종료'
+h98m_rec "$h98m_l" "$lsr93_sid" "/cc-cmds:review-unattended $lsr93_doc"
+: > "${h98m_l%/*}/reentry"
+check "98m: 카드를 쓰지 못한 이관 부여는 돌려주고 no_migrate 로 다시 물어 기다린다" \
+  "$(H98M_G=$h98m_mg H98M_W=$h98m_bw h98m_go "$h98m_l" K9 review "$h98m_route")|$(h98m_nm "$h98m_l")|$(lsr93_rel "$h98m_l")|$(lsr93_n "$h98m_l" '- `blocked` ')|$(lsr93_n "$h98m_l" '- `stage-lease` ')|$(lsr93_n "${h98m_l%/*}/K9.waiting" '이관금지=1')" \
+  "0|WAIT|-/-,true/-|n98m|0|0|1"
+
+# 위임 행위 — 이관 부여와 묶인 계정의 소진 대기만 받는다. 그 밖은 부여를 돌려주고 행
+# 없이 「위임 불성립」 줄과 21 로 끝난다.
+h98m_dl() {  # h98m_dl <이름> <봉투> [<앞머리 eval>] — 위임 행위 한 번. 「rc|판정|위임 칸|불성립 줄|막힘|임대|대기|반납|기동」
+  local l
+  l=$(lsr75_new "dl-$1")
+  lsr93_park "$l" K9 1 "$lsr93_sid" 'Step 1 — 질문' review '한도 종료'
+  h98m_rec "$l" "$lsr93_sid" "/cc-cmds:review-unattended $lsr93_doc"
+  printf '%s|%s|%s|%s|%s|%s|%s|%s' \
+    "$(LSR93_BENV=$2 h98m_go "$l" K9 review "GATE_LIMIT_DELEGATE=1; ${3:-}")" "$(h98m_nm "$l")" \
+    "$(lsr93_n "${l%/*}/h98m.out" '위임 불성립 — ')" "$(lsr93_n "$l" '- `blocked` ')" \
+    "$(lsr93_n "$l" '- `stage-lease` ')" "$(lsr93_n "$l" '- `stage-wait` ')" "$(lsr93_rel "$l")" \
+    "$( [ -f "${l%/*}/argv" ] && printf 기동 || printf -- -)"
+}
+check "98m: 위임 행위는 이관이 아닌 부여를 돌려주고 21 로 끝난다" \
+  "$(h98m_dl same "$lsr93_BG")" "21|GRANT|-/true|1|0|0|0|n1|-"
+check "98m: 위임 행위의 PARK 는 막힘 행 없이 21 이다" \
+  "$(h98m_dl park "$(lsr93_park_of quota)")" "21|PARK|-/true|1|0|0|0|-|-"
+check "98m: 위임 행위의 다른 사유 대기는 대기 행 없이 21 이다" \
+  "$(h98m_dl grp "$lsr93_FWU")" "21|WAIT|-/true|1|0|0|0|-|-"
+check "98m: 위임 행위의 이관 부여는 새 세션으로 뜬다" \
+  "$(h98m_dl mig "$h98m_mg")" "0|GRANT|-/true|0|0|1|0|-|기동"
+check "98m: 위임 행위의 카드 실패는 부여를 돌려주고 21 이다" \
+  "$(h98m_dl cf "$h98m_mg" ': > "$RUN_DIR/reentry"')" "21|GRANT|-/true|1|0|0|0|n98m|-"
+check "98m: 라우팅이 꺼진 위임 행위는 묻지 않고 21 이다" \
+  "$(h98m_dl off "$h98m_mg" 'run_routed() { return 1; }')" "21||-|1|0|0|0|-|-"
+check "98m: 위임 행위의 소진 대기는 표지에 위임을 싣는다" \
+  "$(h98m_dl wait "$h98m_bw")|$(lsr93_n "$lsr_root/dl-wait/K9.waiting" '위임=1')" "0|WAIT|-/true|0|0|0|1|-|기동|1"
+
+# 인자 — 재부착할 세션이 없으면 위임할 판정도 없다.
+gate act --manifest "$FX_MANIFEST" --kind skill --target infra --segment SNOSUCH --cutpoint 커밋 \
+     --surface 워크트리쓰기 --snapshot-digest "$(HH)" --rationale x --limit-delegate -- review -p x
+check "98m: --resume 없는 --limit-delegate 는 인자 오류다" \
+  "$rc|$(printf '%s' "$msg" | { grep -c 'needs --resume' || true; })" "2|1"
+
+# 대기 끝 거르기 — 위임으로 연 대기의 끝 부여는 이관이거나, 묶인 계정 자신의 새 세션 아닌
+# 부여로 끊긴 시도의 리셋 시각 뒤에 관측한 사용량을 실었을 때만 받는다.
+check "98m: 대기 끝 위임 거르기는 리셋 뒤 관측한 같은 계정 부여만 받는다" \
+  "$(lsr93_in "$lsr75/c93/ledger.md" eval '
+      gate_cut_key_reset_at() { printf "%s" "${H98M_RS-1800000000}"; }
+      for e in "u1|false|usage@1800000001" "u1|false|usage@1800000000.5" "u1|false|usage@1799999999" \
+               "u1|false|none" "u2|false|usage@1800000001" "u1|true|usage@1800000001"; do
+        a=${e%%|*}; r=${e#*|}; f=${r%%|*}; o=${r#*|}
+        env=$(jq -cn --arg a "$a" --argjson f "$f" --arg o "$o" "{verdict:\"GRANT\",account:\$a,fresh:\$f,observed:\$o}")
+        if gate_sup_delegate_grant_ok K9 u1 "$env"; then printf 받음,; else printf 거름,; fi
+      done
+      H98M_RS=""
+      gate_sup_delegate_grant_ok K9 u1 "{\"account\":\"u1\",\"observed\":\"usage@1900000000\"}" && printf 받음 || printf 거름' 2>/dev/null)" \
+  "받음,받음,거름,거름,거름,거름,거름"
+
+# 감독자 — 위임 대기(dl-wait)의 끝. 감독자는 대기 반쪽이 넘긴 argv·토큰을 그대로 받아
+# 돌리고, 대기 고리·임대 확보·임대 행만 대역으로 둔다. 기동 래퍼 자리의 대역은 받은 argv
+# 와 두 재진입 변수를 적고 감독자를 끝낸다.
+h98m_sup() {
+  # h98m_sup <원장> <키> <대기 끝 봉투> — 「기동|카드 변수|부팅 표지 변수」, 기동하지 않았으면 -
+  local l="$1" d="${1%/*}" av nonce cli=() seen=0 ln
+  av="$d/argv"
+  nonce=$(awk 'p { print; exit } $0 == "--nonce" { p = 1 }' "$av" 2>/dev/null)
+  while IFS= read -r ln; do
+    if [ "$seen" = 1 ]; then cli+=("$ln"); elif [ "$ln" = -- ]; then seen=1; fi
+  done < "$av"
+  rm -f "$d/spawn-argv" "$d/spawn-env"
+  RUN_PACE_ROOT="$lsr_root/pace98m" CC_GATE_DISPATCH_PROMPT_SET=1 CC_GATE_DISPATCH_PROMPT="$h98m_ra" \
+    H98M_FENV=$3 H98M_NONCE=$nonce H98M_KEY=$2 H98M_K=${cli[0]:-} H98M_P1=${cli[1]:-} H98M_P2=${cli[2]:-} \
+    lsr93_in "$l" eval '
+      gate_sup_await_dispatch() { :; }
+      eval "h98m_cwf() $(declare -f cc_waiting_field | tail -n +2)"
+      cc_waiting_field() { if [ "$2" = 보유자 ]; then printf "%s" "$$"; else h98m_cwf "$@"; fi; }
+      stage_wait_loop() { WAIT_LOOP_ENV=$H98M_FENV; return 0; }
+      gate_stage_lease_row() { return 0; }
+      gate_visual_lane_commit() { return 0; }
+      gate_sup_wait_ended() { return 0; }
+      gate_sup_lease_secure() { return 0; }
+      bash() {
+        if [ "${1:-}" = "$GATE_DIR/stage-wrapper.sh" ]; then
+          printf "%s\n" "$@" > "$RUN_DIR/spawn-argv"
+          printf "%s|%s\n" "${CC_PIPELINE_REENTRY_CARD-unset}" "${CC_PIPELINE_REENTRY-unset}" > "$RUN_DIR/spawn-env"
+          kill -KILL $$
+        fi
+        command bash "$@"
+      }
+      gate_verb_supervise_stage infra "$H98M_KEY" "$H98M_NONCE" "$H98M_K" "$H98M_P1" "$H98M_P2"' >/dev/null 2>&1
+  if [ -f "$d/spawn-argv" ]; then printf '기동|%s' "$(cat "$d/spawn-env" 2>/dev/null)"; else printf -- '-'; fi
+}
+h98m_wl="$lsr_root/dl-wait/ledger.md"
+for h98m_f in K9.launch K9.waiting; do cp "$lsr_root/dl-wait/$h98m_f" "$lsr_root/dl-wait/$h98m_f.h98m" 2>/dev/null || true; done
+# 거르기에 걸린 끝은 라우터 PARK 가 아니다 — 막힘 행 없이 부여를 돌려주고 표지를 내리며,
+# 그 시도의 계보로 `wait-end-refused` 원인 행 하나를 남기고, wait 은 그 시도를 위임 행위의
+# 거부와 같은 21 로 읽는다.
+h98m_wcause='| 계보=B:K9#2 | 그룹=- | 계정=- | 까지=- | 비용=- | 비용 출처=- | 근거=wait-end-refused'
+h98m_wait() {  # h98m_wait <원장> — wait 의 마지막 줄(시각 뺌)과 rc
+  lsr93_in "$1" eval 'r=0; GATE_SETTLED_SEGMENTS=""; o=$(gate_verb_wait K9 300 5 2>/dev/null) || r=$?
+    printf "%s|rc=%s" "$(printf "%s\n" "$o" | tail -1 | sed "s/^[^ ]* //")" "$r"' 2>/dev/null
+}
+check "98m: 위임 대기 끝의 묶인 계정 부여가 리셋 뒤 관측이 아니면 기동하지 않고 막힘 행 없이 원인 행을 남긴다" \
+  "$(h98m_sup "$h98m_wl" K9 "$lsr93_BG")|$(lsr93_n "$h98m_wl" '- `blocked` ')|$(lsr93_n "$h98m_wl" "$h98m_wcause")|$( [ -f "$lsr_root/dl-wait/K9.waiting" ] && printf 표지 || printf -- -)|$(lsr93_rel "$h98m_wl")" \
+  "-|0|1|-|n1"
+check "98m: wait 은 대기 끝 거부를 21 로 읽는다" \
+  "$(h98m_wait "$h98m_wl")" "[wait] K9 대기 끝 거부 — 시도 2 — rc=21|rc=21"
+# 카드 실패 둘째 갈래 — 표지가 이미 `이관금지=1` 인데 이관 부여가 와서 카드를 쓰지 못하면
+# 묶인 계정 대기로 다시 돌릴 수 없다. 이 끝도 막힘 행 없이 같은 원인 행으로 끝난다.
+for h98m_f in K9.launch K9.waiting; do cp "$lsr_root/dl-wait/$h98m_f.h98m" "$lsr_root/dl-wait/$h98m_f" 2>/dev/null || true; done
+lsr93_in "$h98m_wl" eval 'wait_marker_set "$RUN_DIR/K9.waiting" 이관금지 1' >/dev/null 2>&1
+: > "$lsr_root/dl-wait/reentry"
+check "98m: 이관 금지 대기 끝의 카드 실패는 기동하지 않고 막힘 행 없이 원인 행을 남긴다" \
+  "$(h98m_sup "$h98m_wl" K9 "$h98m_mg")|$(lsr93_n "$h98m_wl" '- `blocked` ')|$(lsr93_n "$h98m_wl" "$h98m_wcause")|$( [ -f "$lsr_root/dl-wait/K9.waiting" ] && printf 표지 || printf -- -)" \
+  "-|0|2|-"
+rm -f "$lsr_root/dl-wait/reentry"
+for h98m_f in K9.launch K9.waiting; do cp "$lsr_root/dl-wait/$h98m_f.h98m" "$lsr_root/dl-wait/$h98m_f" 2>/dev/null || true; done
+h98m_sv=$(h98m_sup "$h98m_wl" K9 "$h98m_mg")
+h98m_svc=$(lsr93_in "$h98m_wl" eval 'gate_reentry_card_path "$(session_uuid K9 2)"' 2>/dev/null)
+check "98m: 대기 끝 이관 기동은 카드 경로를 스테이지 환경에 싣는다" \
+  "$h98m_sv|$( [ -f "$h98m_svc" ] && printf 카드 || printf 없음)" "기동|$h98m_svc|unset|카드"
+check "98m: 대기 끝 이관 기동의 -p 는 끊긴 세션의 기록이다" \
+  "$(sed -n '/^--$/,$p' "$lsr_root/dl-wait/spawn-argv" 2>/dev/null | sed -n '2,3p' | paste -sd'|' -)" \
+  "-p|/cc-cmds:review-unattended $lsr93_doc"
 
 # ---------------------------------------------------------------------------
 # 98h. 감독자의 임대 확보 — 잠금 경합·잃은 임대의 원인 행, wait 20, 끝난 런의 임대 정리
