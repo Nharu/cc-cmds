@@ -911,11 +911,16 @@ fi
 # gate and the driver compare the whole line with the document's expected
 # line, so the run answered second must not overwrite the first run's
 # approval: row 14 halts on the kept line, and the writes re-read it first.
+# The re-read halts only on a line that changed from the one the run expects,
+# so a reopening over an approval that already stood at entry still proceeds.
 VP_SIDECAR="$PLUGIN_ROOT/skills/visual/references/sidecar.md"
 for lit in \
   '| 14 | `디자인-시스템-판정` `승인` 또는 `수정 요청` — Step 1.3 이 받은 줄이 이 문서 키가 아닌 `사람 승인 — 문서 <키>` 줄' \
-  '**Another document'"'"'s approval is never overwritten.**' \
+  '**Another document'"'"'s approval written during this run'"'"'s phase is never overwritten.**' \
   'reads the line again with `visual-check.sh confirm <document>` right before the Claude Design publish (K1 of a new version or of the first publish) and right before its first local write.' \
+  'When the re-read now prints a line that differs from the line this run expects and is a `사람 승인 — 문서 <key>` line whose key is not this document'"'"'s' \
+  'another document'"'"'s approval that already stood when Step 1.3 kept the line included' \
+  '다시 읽은 확인 줄이 이 런이 기대하는 줄과 다르고 다른 문서 키의 `사람 승인` 이다' \
   '`디자인-시스템-판정` `승인` 또는 `수정 요청` 으로 들어왔는데 확인 줄이 이미 다른 문서 키의 `사람 승인` 이다(Step 2a 14 행)' \
   'every row but 7 and 14, which halt first'; do
   if grep -qF -- "$lit" "$VP_SKILL"; then
@@ -924,12 +929,12 @@ for lit in \
     bad "visual-publish-unattended 문면의 다른 문서 승인 줄" "「${lit}」가 없다"
   fi
 done
-if grep -qF -- '다른 문서 키의 `사람 승인` 이면 줄을 지우지도 쓰지도 않고 멈춘다' "$VP_SIDECAR"; then
+if grep -qF -- '그 런이 기대하는 줄(진입 때 읽은 줄, 또는 그 런이 스스로 고쳐 쓴 줄)과 다르고 다른 문서 키의 `사람 승인` 이면 줄을 지우지도 쓰지도 않고 멈춘다' "$VP_SIDECAR"; then
   ok "visual sidecar 계약이 다른 문서의 승인 줄을 덮지 않는다"
 else
-  bad "visual sidecar 계약의 다른 문서 승인 줄" "「다른 문서 키의 \`사람 승인\` 이면 줄을 지우지도 쓰지도 않고 멈춘다」가 없다"
+  bad "visual sidecar 계약의 다른 문서 승인 줄" "「그 런이 기대하는 줄(…)과 다르고 다른 문서 키의 \`사람 승인\` 이면 줄을 지우지도 쓰지도 않고 멈춘다」가 없다"
 fi
-for old in 'no consumer refuses a key mismatch' 'the key of the run answered first remains' 'the confirmation line stays as it is — waiting.' 'the confirmation line stays waiting and the screen slices stay parked'; do
+for old in 'no consumer refuses a key mismatch' 'the key of the run answered first remains' 'the confirmation line stays as it is — waiting.' 'the confirmation line stays waiting and the screen slices stay parked' 'When it now prints a `사람 승인 — 문서 <key>` line whose key is not this document' 'Another document'"'"'s approval is never overwritten.'; do
   if grep -qF -- "$old" "$VP_SKILL"; then
     bad "visual-publish-unattended 문면의 옛 문장" "「${old}」가 남았다"
   else
