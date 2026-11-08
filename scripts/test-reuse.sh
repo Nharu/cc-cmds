@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Proven-input reuse of test passes for the job pool of scripts/test-tree.sh and
-# the serial check-cheap of scripts/check-push.sh.
+# Proven-input reuse of test passes for the job pool of scripts/test-tree.sh
+# (its goals and its test-gate lanes) and the serial check-cheap of
+# scripts/check-push.sh.
 #
 # A PASS IS REUSED ONLY WHEN ITS INPUTS ARE PROVEN THE SAME. An item (a make
 # goal or check-cheap) that ran in a checkout of its own, on a volume where a
@@ -29,6 +30,16 @@
 # `/` spelled `%2F`>/<tested tree>, one record per tree, written under a
 # temporary name and moved into place. Writing a record removes every record of
 # the store last modified over 24 hours ago, and the key directories it empties.
+#
+# A TEST-GATE LANE KEEPS A RECORD OF ITS OWN SHAPE, version 2, under `lane/` of
+# the same store, named `<sha256 of the key>.<tested tree>`: the key holds the
+# lane's section ids, which can be longer than a file name may be. Beside the
+# fields of a goal record it carries `절`, the ids sorted and comma-joined, and
+# `컷증명`, the digest of the cut those ids make (`test-gate.sh --cut-digest`):
+# the lane ran a copy of test-gate.sh kept outside its checkout, so the bytes of
+# the suite it ran are proven by the digest, not by the read set. A lane record
+# is reused only for the same sections and the same digest, on top of every
+# condition a goal record meets; the goal judge refuses a lane record.
 
 TR_EXCLUDE=""
 # Records older than this many seconds are not reused.
@@ -65,6 +76,25 @@ tr_excluded() {
 
 tr_store() {
   printf '%s/cc-cmds-check-push-items' "$1"
+}
+
+# The sha256 of standard input, in hex.
+tr_sha256() {
+  local s
+  if command -v sha256sum > /dev/null 2>&1; then s=$(sha256sum) || return 1; else s=$(shasum -a 256) || return 1; fi
+  printf '%s' "${s%% *}"
+}
+
+# Section ids $1 (comma-separated, any order) sorted and comma-joined.
+tr_lane_ids() {
+  printf '%s\n' "$1" | tr ',' '\n' | awk 'NF' | LC_ALL=C sort -u | awk '{ printf "%s%s", (NR > 1 ? "," : ""), $0 }'
+}
+
+# The record path of the lane over ids $2 on tree $3 in common git directory $1.
+tr_lane_path() {
+  local key
+  key="lane:$(tr_lane_ids "$2")"
+  printf '%s/lane/%s.%s' "$(tr_store "$1")" "$(printf '%s' "$key" | tr_sha256)" "$3"
 }
 
 # "<atime> <mtime> <path>" for each path given: the access time in whole epoch
@@ -354,13 +384,41 @@ tr_sweep() {
 # the tracked listing of the tree, $8 the read set of tr_collect.
 tr_record_write() {
   local gdir="$1" key="$2" tree="$3" commit="$4" base="${5:-없음}" doubles="$6" list="$7" rs="$8"
-  local store d tmp whole nr nl at stamp
+  local store d
   tr_excluded "$key" && return 0
   [ -n "$TR_FP" ] || tr_fp_init || return 1
   store=$(tr_store "$gdir")
   d="$store/$(tr_key_name "$key")"
   mkdir -p "$d" || return 1
-  tmp=$(mktemp "$d/.r.XXXXXX" 2>/dev/null) || return 1
+  tr_record_put "$store" "$d/$tree" 1 "$key" "" "$tree" "$commit" "$base" "$doubles" "$list" "$rs"
+}
+
+# Writes the record of the lane over section ids $2 that passed on tree $3,
+# with cut digest $9; the other arguments are tr_record_write's.
+tr_lane_write() {
+  local gdir="$1" ids tree="$3" commit="$4" base="${5:-없음}" doubles="$6" list="$7" rs="$8" dig="${9:-}"
+  local store path key
+  ids=$(tr_lane_ids "$2")
+  key="lane:$ids"
+  [ -n "$ids" ] || return 1
+  case "$dig" in *[!0-9a-f]*|'') return 1 ;; esac
+  tr_excluded "$key" && return 0
+  [ -n "$TR_FP" ] || tr_fp_init || return 1
+  store=$(tr_store "$gdir")
+  path=$(tr_lane_path "$gdir" "$ids" "$tree") || return 1
+  mkdir -p "$store/lane" || return 1
+  tr_record_put "$store" "$path" 2 "$key" "$(printf '절\t%s\n컷증명\t%s' "$ids" "$dig")" \
+    "$tree" "$commit" "$base" "$doubles" "$list" "$rs"
+}
+
+# The one record writer: into path $2 of store $1, version $3, key $4, the
+# version's own header lines $5 (empty: none), then tree, commit, base,
+# doubles, listing and read set. Written beside the path and moved over it;
+# then the store is swept.
+tr_record_put() {
+  local store="$1" path="$2" ver="$3" key="$4" extra="$5" tree="$6" commit="$7" base="$8" doubles="$9" list="${10}" rs="${11}"
+  local tmp whole nr nl at stamp
+  tmp=$(mktemp "${path%/*}/.r.XXXXXX" 2>/dev/null) || return 1
   IFS= read -r whole < "$rs"
   case "$whole" in 예|아니오) ;; *) rm -f "$tmp"; return 1 ;; esac
   nr=$(($(wc -l < "$rs") - 1))
@@ -368,15 +426,17 @@ tr_record_write() {
   at=$(tr_now)
   stamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   if {
-    printf 'cc-check-push-items 1\n'
-    printf '항목\t%s\n시험트리\t%s\n커밋\t%s\n베이스\t%s\n' "$key" "$tree" "$commit" "$base"
+    printf 'cc-check-push-items %s\n' "$ver"
+    printf '항목\t%s\n' "$key"
+    [ -z "$extra" ] || printf '%s\n' "$extra"
+    printf '시험트리\t%s\n커밋\t%s\n베이스\t%s\n' "$tree" "$commit" "$base"
     printf '시각\t%s\n시각표기\t%s\n대역\t%s\n도구\t%s\n' "$at" "$stamp" "$doubles" "$TR_FP"
     printf '트리전체\t%s\n읽은경로\t%s\n' "$whole" "$((nr))"
     sed -n '2,$p' "$rs"
     printf '목록\t%s\n' "$((nl))"
     cat "$list"
     printf '끝\n'
-  } > "$tmp" && mv -f "$tmp" "$d/$tree"; then
+  } > "$tmp" && mv -f "$tmp" "$path"; then
     tr_sweep "$store"
     return 0
   fi
@@ -389,10 +449,31 @@ tr_record_write() {
 # when the pass may be reused; 1 for any other record, unreadable or malformed
 # ones included.
 tr_judge() {
-  local rec="$1" key="$2" tree="$3" commit="$4" base="${5:-없음}" doubles="$6" list="$7" now
+  tr_judge_ver 1 "" "" "$@"
+}
+
+# Judges lane record $1 against tree $3 (listing $7) for section ids $2, input
+# commit $4, base $5 (empty: none), doubles $6 and cut digest $8. Every
+# condition of tr_judge holds, the record is version 2, its `절` are the ids
+# and its `컷증명` is the digest; an empty $8 leaves the digest unchecked, so a
+# caller can compute it only for a record that met everything else. Prints
+# "<tree><TAB><record time><TAB><record digest>" and 0 when the pass may be
+# reused.
+tr_lane_judge() {
+  local ids
+  ids=$(tr_lane_ids "$2")
+  [ -n "$ids" ] || return 1
+  tr_judge_ver 2 "$ids" "${8:-}" "$1" "lane:$ids" "$3" "$4" "$5" "$6" "$7"
+}
+
+# The judge of both versions: $1 the version, $2 the ids and $3 the digest a
+# version-2 record must carry, then tr_judge's arguments.
+tr_judge_ver() {
+  local ver="$1" ids="$2" cut="$3" rec="$4" key="$5" tree="$6" commit="$7" base="${8:-없음}" doubles="$9" list="${10}" now
   [ -r "$rec" ] && [ -r "$list" ] || return 1
   now=$(tr_now)
-  awk -v key="$key" -v tree="$tree" -v commit="$commit" -v base="$base" \
+  awk -v ver="$ver" -v ids="$ids" -v cut="$cut" \
+      -v key="$key" -v tree="$tree" -v commit="$commit" -v base="$base" \
       -v doubles="$doubles" -v fp="$TR_FP" -v now="$now" -v maxage="$TR_MAX_AGE" '
     function entry(s, which,   t, h, p, e) {
       t = index(s, "\t"); if (!t) return 0
@@ -404,7 +485,7 @@ tr_judge() {
       return 1
     }
     FNR == NR { if (!entry($0, 2)) bad = 1; next }
-    FNR == 1 { if ($0 != "cc-check-push-items 1") exit; st = "head"; next }
+    FNR == 1 { if ($0 != "cc-check-push-items " ver) exit; st = "head"; next }
     st == "head" {
       t = index($0, "\t"); if (!t) exit
       f = substr($0, 1, t - 1); v = substr($0, t + 1); H[f] = v
@@ -430,6 +511,12 @@ tr_judge() {
         if (H["시험트리"] != tree || H["커밋"] != commit || H["베이스"] != base) exit 1
       } else if (H["트리전체"] != "아니오") exit 1
       for (i = 1; i <= nr; i++) if (!(rd[i] in b1) || b1[rd[i]] != b2[rd[i]]) exit 1
+      if (ver == 2) {
+        if (H["절"] != ids || H["컷증명"] !~ /^[0-9a-f]+$/) exit 1
+        if (cut != "" && H["컷증명"] != cut) exit 1
+        printf "%s\t%s\t%s\n", H["시험트리"], H["시각표기"], H["컷증명"]
+        exit 0
+      }
       printf "%s\t%s\n", H["시험트리"], H["시각표기"]
       exit 0
     }
@@ -454,6 +541,60 @@ tr_reuse_find() {
     if tr_judge "$rec" "$key" "$tree" "$4" "$5" "$6" "$list"; then return 0; fi
   done
   return 1
+}
+
+# Picks the lane records that let sections of the requested ids $2 (comma-
+# separated) skip on tree $3: $1 the common git directory, $4 the input commit,
+# $5 the base (empty: none), $6 the doubles, $7 the tracked listing of the tree
+# (empty or missing: nothing is reused), and the rest the command that prints
+# the cut digest of the ids it is given as its last argument. Records are read
+# newest first, and one is taken only when its sections all lie in the part of
+# the request no taken record covers yet, so a record with a section outside
+# the request, or one an earlier record already covers, is left. The digest is
+# computed only for a record that met every other condition, and once per set
+# of sections. Prints "<ids><TAB><tree><TAB><record time>" per record taken.
+tr_lane_pick() {
+  local gdir="$1" want="$2" tree="$3" commit="$4" base="$5" doubles="$6" list="$7"
+  local d rec name ids left hit dig seen="" digs="" id ok
+  shift 7
+  [ -n "$list" ] && [ -s "$list" ] || return 0
+  [ -n "$TR_FP" ] || tr_fp_init || return 0
+  d="$(tr_store "$gdir")/lane"
+  [ -d "$d" ] || return 0
+  left=",$(tr_lane_ids "$want"),"
+  while IFS= read -r name; do
+    [ "$left" != "," ] || break
+    case "$name" in ''|.*) continue ;; esac
+    rec="$d/$name"
+    [ -f "$rec" ] || continue
+    ids=$(awk -F '\t' 'NR == 1 && $0 != "cc-check-push-items 2" { exit } $1 == "절" { print $2; exit }' "$rec" 2>/dev/null)
+    [ -n "$ids" ] || continue
+    tr_excluded "lane:$ids" && continue
+    ok=1
+    for id in $(printf '%s' "$ids" | tr ',' ' '); do
+      case "$left" in *",$id,"*) ;; *) ok=0; break ;; esac
+    done
+    [ "$ok" = 1 ] || continue
+    hit=$(tr_lane_judge "$rec" "$ids" "$tree" "$commit" "$base" "$doubles" "$list" "") || continue
+    case "$seen" in
+      *"|$ids|"*)
+        dig=$(printf '%s\n' "$digs" | awk -F '\t' -v k="$ids" '$1 == k { print $2; exit }') ;;
+      *)
+        dig=$("$@" "$ids" 2>/dev/null) || dig=""
+        case "$dig" in *[!0-9a-f]*) dig="" ;; esac
+        seen="$seen|$ids|"
+        digs="$digs${ids}	$dig
+" ;;
+    esac
+    [ -n "$dig" ] || continue
+    [ "${hit##*$'\t'}" = "$dig" ] || continue
+    hit="${hit%$'\t'*}"
+    printf '%s\t%s\n' "$ids" "$hit"
+    for id in $(printf '%s' "$ids" | tr ',' ' '); do left="${left/,$id,/,}"; done
+  done <<EOF
+$(ls -t "$d" 2>/dev/null)
+EOF
+  return 0
 }
 
 # --- self-test ---------------------------------------------------------------------------
@@ -686,11 +827,83 @@ tr_self_test() {
   tr_collect "$CK" "$S" "$L" "$T/rsc"
   check "감시 꼴 표지가 있으면 트리 전체" "$(head -n 1 "$T/rsc")" "예"
 
+  # --- lane records (version 2) ---
+  local D1 D2 LD lrec lj lp n1 n2 longids
+  D1=$(printf 'one' | tr_sha256)
+  D2=$(printf 'two' | tr_sha256)
+  check "레인: 절 id 는 정렬해 쉼표로 잇는다" "$(tr_lane_ids 's2,s10,,s1,s2')" "s1,s10,s2"
+  tr_lane_write "$G" s2,s1 "$tree1" "$c1" "" 없음 "$L" "$rs" "$D1"
+  lrec=$(tr_lane_path "$G" s1,s2 "$tree1")
+  check "레인 기록: lane/<키의 sha256>.<트리> 에 생긴다" \
+    "$([ -f "$lrec" ] && echo 있음)|${lrec#"$(tr_store "$G")/lane/"}" "있음|$(printf 'lane:s1,s2' | tr_sha256).$tree1"
+  has "레인 기록: 판 2 머리와 정렬한 절·컷증명" "$(cat "$lrec")" "cc-check-push-items 2
+항목	lane:s1,s2
+절	s1,s2
+컷증명	$D1"
+  lj() { if tr_lane_judge "$lrec" "$1" "$tree1" "$c1" "" 없음 "$L" "$2" > /dev/null; then echo 재사용; else echo 재실행; fi; }
+  check "레인 판정: 같은 절·같은 컷증명이면 재사용" "$(lj s2,s1 "$D1")" "재사용"
+  check "레인 판정: 컷증명이 다르면 재실행" "$(lj s1,s2 "$D2")" "재실행"
+  check "레인 판정: 절이 다르면 재실행" "$(lj s1 "$D1")" "재실행"
+  out=$(TR_FP=other; if tr_lane_judge "$lrec" s1,s2 "$tree1" "$c1" "" 없음 "$L" "$D1" > /dev/null; then echo 재사용; else echo 재실행; fi)
+  check "레인 판정: 목표 기록의 조건(도구 지문)도 그대로 건다" "$out" "재실행"
+  out=$(if tr_judge "$lrec" lane:s1,s2 "$tree1" "$c1" "" 없음 "$L" > /dev/null; then echo 재사용; else echo 재실행; fi)
+  check "목표 판정기는 레인 기록(판 2)을 거절한다" "$out" "재실행"
+  out=$(if tr_lane_judge "$rec" make:t "$tree1" "$c1" "" 없음 "$L" "$D1" > /dev/null; then echo 재사용; else echo 재실행; fi)
+  check "레인 판정기는 목표 기록(판 1)을 거절한다" "$out" "재실행"
+  if tr_lane_write "$G" s1 "$tree1" "$c1" "" 없음 "$L" "$rs" ""; then bad "레인 기록: 컷증명 없이는 쓰지 않는다"; else ok "레인 기록: 컷증명 없이는 쓰지 않는다"; fi
+  longids=$(i=0; while [ "$i" -lt 120 ]; do printf 'long-section-id-%03d,' "$i"; i=$((i + 1)); done)
+  tr_lane_write "$G" "$longids" "$tree1" "$c1" "" 없음 "$L" "$rs" "$D1"
+  lp=$(tr_lane_path "$G" "$longids" "$tree1")
+  check "레인 기록: 긴 ids 도 키 해시 이름으로 쓰인다" "$([ -f "$lp" ] && echo 있음)|${#longids}" "있음|2400"
+  rm -f "$lp"
+  tr_lane_write "$G" s1,s2 deadbeef "$c1" "" 없음 "$L" "$rs" "$D1"
+  check "레인 기록: 같은 절·다른 트리의 두 기록이 함께 남는다" \
+    "$([ -f "$lrec" ] && [ -f "$(tr_lane_path "$G" s1,s2 deadbeef)" ] && echo 둘)" "둘"
+  rm -f "$(tr_lane_path "$G" s1,s2 deadbeef)"
+
+  # Picking: the digest double logs each set of sections it is asked about.
+  LD="$(tr_store "$G")/lane"
+  rm -f "$LD"/*
+  DIGV="$D1"
+  fake_dig() { printf '%s\n' "$1" >> "$T/digcalls"; printf '%s' "$DIGV"; }
+  # The order of the records is set by their modification times, seconds
+  # apart within the current minute, so the sweep keeps them all.
+  local mnow
+  mnow=$(date +%Y%m%d%H%M)
+  lw() {  # <ids> <seconds into the minute>
+    tr_lane_write "$G" "$1" "$tree1" "$c1" "" 없음 "$L" "$rs" "$D1"
+    touch -t "$mnow.$2" "$(tr_lane_path "$G" "$1" "$tree1")"
+  }
+  lp() { : > "$T/digcalls"; tr_lane_pick "$G" "$1" "$tree1" "$c1" "" 없음 "$L" fake_dig | cut -f1 | tr '\n' ' '; }
+  lw s1 01
+  lw s3 02
+  check "고르기: 서로소 두 기록을 함께 받는다" "$(lp s1,s2,s3)" "s3 s1 "
+  check "고르기: 같은 절 묶음마다 다이제스트를 한 번 계산한다" "$(LC_ALL=C sort "$T/digcalls" | tr '\n' ' ')" "s1 s3 "
+  lw s1,s2,s3,s4 03
+  check "고르기: 요청 밖 절을 담은 상위 집합 기록은 쓰지 않는다" "$(lp s1,s2,s3)" "s3 s1 "
+  lw s1,s2 04
+  check "고르기: 겹치는 두 기록 가운데 새것만 받는다" "$(lp s1,s2,s3)" "s1,s2 s3 "
+  check "고르기: 다른 조건이 어긋난 기록은 다이제스트를 계산하지 않는다" \
+    "$(: > "$T/digcalls"; tr_lane_pick "$G" s1,s2 "$tree1" "$c1" "" 다른대역 "$L" fake_dig; grep -c . "$T/digcalls")" "0"
+  DIGV="$D2"
+  tr_lane_write "$G" s1,s2 deadbeef "$c1" "" 없음 "$L" "$rs" "$D1"
+  touch -t "$mnow.05" "$(tr_lane_path "$G" s1,s2 deadbeef)"
+  check "고르기: 컷증명이 다르면 받지 않는다" "$(lp s1,s2,s3)" ""
+  check "고르기: 같은 절의 두 기록에도 다이제스트는 한 번이다" "$(grep -cx s1,s2 "$T/digcalls")" "1"
+  rm -f "$(tr_lane_path "$G" s1,s2 deadbeef)"
+  DIGV="$D1"
+  check "고르기: 지금 트리의 목록이 없으면 받지 않는다" "$(: > "$T/digcalls"; tr_lane_pick "$G" s1 "$tree1" "$c1" "" 없음 "" fake_dig | grep -c .)" "0"
+  n1=$(find "$LD" -type f | grep -c .)
+  touch -t 200001010000 "$(tr_lane_path "$G" s3 "$tree1")"
+  tr_lane_write "$G" s9 "$tree1" "$c1" "" 없음 "$L" "$rs" "$D1"
+  n2=$(find "$LD" -type f | grep -c .)
+  check "정리: 24시간 지난 레인 기록도 지운다" "$n1 $n2 $([ -e "$(tr_lane_path "$G" s3 "$tree1")" ] && echo 있음 || echo 없음)" "4 4 없음"
+
   rm -rf "$T"
   printf 'test-reuse self-test: %d passed, %d failed\n' "$passed" "$failed"
   # A floor on the count, so a refactor that silently skips cases cannot pass.
-  if [ "$passed" -lt 66 ]; then
-    printf 'test-reuse self-test: 통과 수 %d 가 하한 %d 에 못 미칩니다\n' "$passed" 66 >&2
+  if [ "$passed" -lt 87 ]; then
+    printf 'test-reuse self-test: 통과 수 %d 가 하한 %d 에 못 미칩니다\n' "$passed" 87 >&2
     return 1
   fi
   [ "$failed" = "0" ]

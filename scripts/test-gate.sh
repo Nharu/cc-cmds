@@ -27,6 +27,12 @@
 #
 # Usage: bash scripts/test-gate.sh [--list | --sections <id>[,<id>...] | --run-one <id>]
 #        bash scripts/test-gate.sh --digests [--from <file>]
+#        bash scripts/test-gate.sh --sections <id>[,<id>...] --cut-digest
+#
+# `--cut-digest` prints the sha256 of the cut `--sections` would run — the head,
+# the closure of the named sections with their preludes and the tail — with the
+# per-run paths written into the cut replaced by fixed placeholders, so the same
+# tree gives the same value from any scratch directory. It runs nothing.
 #
 # `--digests` prints `<id><TAB><sha256>` for every addressable section of this
 # file, or of `<file>` — the bytes of each range the selector cuts. It runs no
@@ -169,11 +175,13 @@ CC_CMDS_AUTOPILOT_AUTO_RESOLVE=0
 export CC_CMDS_AUTOPILOT_AUTO_RESOLVE
 
 script_dir=$(cd "$(dirname "$0")" && pwd)
-# `CC_TEST_GATE_REPO_ROOT` IS THE SECTION SELECTOR'S HANDOFF, not a general
-# override. The selector runs a cut-down COPY of this file out of a scratch
-# directory, and a copy outside `scripts/` cannot derive the repository root
-# from its own path. A full run never sets the variable, so the derivation
-# below is what it always was.
+# `CC_TEST_GATE_REPO_ROOT` IS A HANDOFF TO A COPY, not a general override. The
+# selector runs a cut-down COPY of this file out of a scratch directory, and a
+# copy outside `scripts/` cannot derive the repository root from its own path.
+# `scripts/test-tree.sh` sets it for the same reason: a check-push lane runs a
+# copy of this file kept outside the lane's own clone, against that clone. A
+# full run from the checkout never sets the variable, so the derivation below
+# is what it always was.
 repo_root=${CC_TEST_GATE_REPO_ROOT:-$(cd "$script_dir/.." && pwd)}
 # EXPORTED, AND THAT IS NOT A STYLE CHOICE. Nothing in any child reads this out
 # of the environment — every use is in this shell, in a subshell, or in a
@@ -315,6 +323,11 @@ rec_add_file=""
 digests_mode=0
 digests_from=""
 digests_from_given=0
+# `--cut-digest` builds the cut `--sections` would run and prints its sha256
+# instead of running it. A caller that remembers which sections passed on one
+# tree uses the value to tell whether the code those sections stand on is still
+# the same on another; it runs no assertion and leaves nothing behind.
+cutdig_mode=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --list)
@@ -332,6 +345,8 @@ while [ "$#" -gt 0 ]; do
       if [ "$#" -ge 2 ]; then shift 2; else shift; fi ;;
     --digests)
       digests_mode=1; shift ;;
+    --cut-digest)
+      cutdig_mode=1; shift ;;
     --from)
       digests_from="${2-}"; digests_from_given=1
       if [ "$#" -ge 2 ]; then shift 2; else shift; fi ;;
@@ -354,7 +369,7 @@ while [ "$#" -gt 0 ]; do
       oracle_mode="wrap"; oracle_arg1="${2-}"; oracle_arg2="${3-}"
       if [ "$#" -ge 3 ]; then shift 3; else shift "$#"; fi ;;
     *)
-      printf 'test-gate: 모르는 인자입니다: %s (쓸 수 있는 것: --list, --sections <id>[,<id>...], --run-one <id>, --estimate [--goals <목표>[,<목표>...]] [--timing-table <path>], --record-add <file>, --digests [--from <file>], 그리고 오라클 시험용 --oracle-judge <dir> / --oracle-probe / --oracle-wrap <script> <map>)\n' "$1" >&2
+      printf 'test-gate: 모르는 인자입니다: %s (쓸 수 있는 것: --list, --sections <id>[,<id>...], --run-one <id>, --estimate [--goals <목표>[,<목표>...]] [--timing-table <path>], --record-add <file>, --digests [--from <file>], --sections <id>[,<id>...] --cut-digest, 그리고 오라클 시험용 --oracle-judge <dir> / --oracle-probe / --oracle-wrap <script> <map>)\n' "$1" >&2
       exit 2 ;;
   esac
 done
@@ -376,6 +391,20 @@ fi
 if [ "$sections_given" = "1" ] && [ -z "$sections_want" ]; then
   printf 'test-gate: --sections 에 빈 값이 왔습니다 — 전량을 원하면 플래그를 주지 마세요\n' >&2
   exit 2
+fi
+# THE CUT DIGEST NAMES ONE CUT OR NONE. It is the digest of what `--sections`
+# would run, so it needs `--sections` and takes no other mode beside it: a
+# value printed for a different shape of cut than the one later run would let
+# a caller reuse a pass for code it never ran.
+if [ "$cutdig_mode" = "1" ]; then
+  if [ "$sections_given" != "1" ] || [ "$sections_strict" = "1" ] \
+     || [ "$sections_list" = "1" ] || [ "$est_mode" = "1" ] \
+     || [ "$est_goals_given" = "1" ] || [ -n "$est_table_out" ] \
+     || [ -n "$rec_add_file" ] || [ "$digests_mode" = "1" ] \
+     || [ "$digests_from_given" = "1" ] || [ -n "$oracle_mode" ]; then
+    printf 'test-gate: --cut-digest 는 --sections <id>[,<id>...] 와만 함께 씁니다\n' >&2
+    exit 2
+  fi
 fi
 
 # THE SECTION-BOUNDARY MARKERS GO TO A FILE, NEVER TO THE TRANSCRIPT. CI weighs
@@ -763,6 +792,12 @@ case "$sec_iso_trace,$sec_iso_overlay" in
 esac
 if [ -n "$sec_iso_trace" ] && [ -z "$sec_iso_out" ]; then
   printf 'test-gate: CC_GATE_ISO_TRACE 는 기록 디렉터리 CC_GATE_ISO_OUT(절대 경로)과 함께 줍니다\n' >&2
+  exit 2
+fi
+# An isolation cut is not the cut a lane runs, so its digest would name a cut
+# nobody reuses.
+if [ "$cutdig_mode" = "1" ] && [ -n "$sec_iso_out$sec_iso_trace$sec_iso_overlay$sec_iso_solo" ]; then
+  printf 'test-gate: --cut-digest 는 CC_GATE_ISO_* 와 함께 쓰지 않습니다\n' >&2
   exit 2
 fi
 # The cut runs under the `bash` on PATH, not under the interpreter reading this
@@ -1410,6 +1445,11 @@ if [ "$sections_list" = "1" ] || [ -n "$sections_want" ] || [ "$est_mode" = "1" 
         printf 'test-gate: 구역 표시를 찾지 못해 절 목록을 낼 수 없습니다 (`# --- preamble-end ---`, `# --- epilogue-begin ---`)\n' >&2
         exit 2
       fi
+      # The full run this falls back to has no cut, so it has no cut digest.
+      if [ "$cutdig_mode" = "1" ]; then
+        printf 'test-gate: 구역 표시를 찾지 못해 컷 다이제스트를 낼 수 없습니다\n' >&2
+        exit 2
+      fi
       printf 'test-gate: 구역 표시를 찾지 못했습니다 — 전량 실행합니다\n' >&2
       sec_idx="" ;;
   esac
@@ -1578,6 +1618,11 @@ FRONTEOF
     printf 'test-gate: --run-one 에 모르는 절 id 입니다: %s — 전량으로 떨어지지 않고 여기서 멈춥니다 (`--list` 로 id 를 확인하세요)\n' "$sec_miss" >&2
     exit 2
   fi
+  # An unknown id makes `--sections` run everything, and the full run is no cut.
+  if [ -n "$sec_miss" ] && [ "$cutdig_mode" = "1" ]; then
+    printf 'test-gate: --cut-digest 에 모르는 절 id 입니다: %s — 실행하면 전량이 돌아 컷이 없습니다\n' "$sec_miss" >&2
+    exit 2
+  fi
   # THE ESTIMATE FOLLOWS THE SAME ESCAPE. An unknown id under `--sections`
   # would run everything, so the estimate says that and gives the maximum
   # limit rather than estimating a run nobody asked for; `--run-one` stopped
@@ -1633,8 +1678,16 @@ FRONTEOF
     # cut as it did before the wrapper existed, so it gets neither the file nor
     # the section names below. The path is written into the cut as a literal,
     # under the timing path's rule: absolute and free of single quotes.
+    #
+    # THE CUT DIGEST HASHES THE CUT THE WRAPPED CALL WOULD RUN, so it takes both
+    # literal paths that call writes in — this file and the marker file a lane
+    # always gives — as fixed placeholders. The real ones differ in every
+    # scratch directory, and the digest must not.
     sec_fail=""
-    if [ -z "${CC_TEST_GATE_ORACLE_INNER:-}" ]; then
+    if [ "$cutdig_mode" = "1" ]; then
+      sec_fail='/cc-cut-digest/fail'
+      sec_timing_out='/cc-cut-digest/marks'
+    elif [ -z "${CC_TEST_GATE_ORACLE_INNER:-}" ]; then
       sec_fail=$(mktemp "$sec_dir/fail.XXXXXX")
       case "$sec_fail" in
         *"'"*) sec_fail="" ;;
@@ -1862,6 +1915,25 @@ SECEOF
       printf 'test-gate: 절 안에 경계 모양(`# ---` 줄 + `# <번호>. ` 줄, 또는 `# --- <번호>. … ---` 한 줄)이 새로 생겼는지 보세요 — 그 절은 id 로는 여전히 해소되지만 끝 줄이 당겨집니다\n' >&2
       rm -rf "$sec_dir"
       exit 2
+    fi
+
+    # The digest is taken after the anchor check, so a truncated section has no
+    # digest either: what is hashed is a cut that would have been run.
+    if [ "$cutdig_mode" = "1" ]; then
+      if command -v sha256sum >/dev/null 2>&1; then
+        sec_dig=$(sha256sum < "$sec_cut") || sec_dig=""
+      else
+        sec_dig=$(shasum -a 256 < "$sec_cut") || sec_dig=""
+      fi
+      sec_dig=${sec_dig%% *}
+      rm -rf "$sec_dir"
+      case "$sec_dig" in
+        *[!0-9a-f]*|'')
+          printf 'test-gate: 컷 다이제스트 계산이 실패했습니다\n' >&2
+          exit 2 ;;
+      esac
+      printf '%s\n' "$sec_dig"
+      exit 0
     fi
 
     # THE TRANSCRIPT CARRIES THE SCOPE IT RAN, not just the count it produced.
@@ -7281,6 +7353,59 @@ else
   skip "추적한 절의 줄 집합이 컷 좌표로 남고 대응표가 있다 — PATH 의 bash 가 4.1 미만"
 fi
 rm -rf "$isf_dir"
+
+# ---------------------------------------------------------------------------
+# 0h. The cut digest, and a copy of this file run against a checkout
+# --- section: 0h | group: static | covers: - | anchors: 컷 다이제스트는 임시 디렉터리가 달라도 같다, 닫힘 안 절의 한 줄은 값을 바꾸고 닫힘 밖 절의 한 줄은 바꾸지 않는다, 밖 복사본의 좁힌 실행은 제자리 실행과 같은 PASS 줄과 합계 줄을 낸다 ---
+# ---------------------------------------------------------------------------
+# check-push reuses a lane's pass on another tree only when this value is the
+# same there, so it must follow the code the cut runs and nothing else: not the
+# scratch directory, not where the file sits, not a section outside the cut.
+# A lane also runs a copy of this file kept outside its own clone, so the copy
+# run is held to the in-place one. `0d` is the cut, as in 0e and 0g; `0e` is the
+# neighbour outside its closure.
+cdg_dir=$(mktemp -d "${TMPDIR:-/tmp}/cc-gate-cutdig.XXXXXX")
+cdg_suite="$repo_root/scripts/test-gate.sh"
+mkdir -p "$cdg_dir/t1" "$cdg_dir/t2" "$cdg_dir/out"
+cdg_a=$(TMPDIR="$cdg_dir/t1" bash "$cdg_suite" --sections 0d --cut-digest 2>/dev/null) || cdg_a="rc=$?"
+cdg_b=$(TMPDIR="$cdg_dir/t2" bash "$cdg_suite" --sections 0d --cut-digest 2>/dev/null) || cdg_b="rc=$?"
+check "컷 다이제스트는 임시 디렉터리가 달라도 같다" \
+  "$(printf '%s' "$cdg_a" | grep -cE '^[0-9a-f]{64}$' || true)|$([ "$cdg_a" = "$cdg_b" ] && echo same)" "1|same"
+check "컷 다이제스트는 임시 디렉터리에 아무것도 남기지 않는다" \
+  "$(find "$cdg_dir/t1" "$cdg_dir/t2" -mindepth 1 | grep -c . || true)" "0"
+cp "$cdg_suite" "$cdg_dir/out/plain.sh"
+awk '{ if ($0 == "# This was the file'"'"'s only silent fallback. An id nobody declared says so and" && !m) { print $0 " x"; m = 1 } else print }' \
+  "$cdg_suite" > "$cdg_dir/out/in.sh"
+awk '{ if (index($0, "# 0e. ") == 1 && !m) { print $0 " x"; m = 1 } else print }' \
+  "$cdg_suite" > "$cdg_dir/out/nb.sh"
+cdg_plain=$(CC_TEST_GATE_REPO_ROOT="$repo_root" bash "$cdg_dir/out/plain.sh" --sections 0d --cut-digest 2>/dev/null) || cdg_plain="rc=$?"
+cdg_in=$(CC_TEST_GATE_REPO_ROOT="$repo_root" bash "$cdg_dir/out/in.sh" --sections 0d --cut-digest 2>/dev/null) || cdg_in="rc=$?"
+cdg_nb=$(CC_TEST_GATE_REPO_ROOT="$repo_root" bash "$cdg_dir/out/nb.sh" --sections 0d --cut-digest 2>/dev/null) || cdg_nb="rc=$?"
+check "같은 내용의 밖 복사본은 같은 컷 다이제스트를 낸다" "$cdg_plain" "$cdg_a"
+check "닫힘 안 절의 한 줄은 값을 바꾸고 닫힘 밖 절의 한 줄은 바꾸지 않는다" \
+  "$(cmp -s "$cdg_dir/out/in.sh" "$cdg_suite" || echo edited)|$(cmp -s "$cdg_dir/out/nb.sh" "$cdg_suite" || echo edited)|$([ "$cdg_in" != "$cdg_a" ] && echo moved)|$([ "$cdg_nb" = "$cdg_a" ] && echo kept)" \
+  "edited|edited|moved|kept"
+cdg_rc_u=0; bash "$cdg_suite" --sections no-such-0h --cut-digest > "$cdg_dir/u.out" 2>/dev/null || cdg_rc_u=$?
+cdg_rc_i=0; CC_GATE_ISO_SOLO=1 bash "$cdg_suite" --sections 0d --cut-digest > "$cdg_dir/i.out" 2>/dev/null || cdg_rc_i=$?
+cdg_rc_n=0; bash "$cdg_suite" --cut-digest > "$cdg_dir/n.out" 2>/dev/null || cdg_rc_n=$?
+cdg_rc_r=0; bash "$cdg_suite" --run-one 0d --cut-digest > "$cdg_dir/r.out" 2>/dev/null || cdg_rc_r=$?
+check "모르는 id·격리 선택지·--sections 없음·--run-one 은 다이제스트 없이 exit 2 다" \
+  "$cdg_rc_u $cdg_rc_i $cdg_rc_n $cdg_rc_r|$(cat "$cdg_dir/u.out" "$cdg_dir/i.out" "$cdg_dir/n.out" "$cdg_dir/r.out" | grep -c . || true)" "2 2 2 2|0"
+# The lane's own form: the wrapper, a copy outside `scripts/`, and the checkout
+# named by the variable. The in-place run is the same wrapper on the file itself.
+mkdir -p "$cdg_dir/t3" "$cdg_dir/t4"
+env -u CC_TEST_GATE_ORACLE_INNER TMPDIR="$cdg_dir/t3" CC_TEST_GATE_REPO_ROOT="$repo_root" \
+  bash "$cdg_dir/out/plain.sh" --sections 0d > "$cdg_dir/copy.out" 2>&1 || true
+env -u CC_TEST_GATE_ORACLE_INNER TMPDIR="$cdg_dir/t4" \
+  bash "$cdg_suite" --sections 0d > "$cdg_dir/self.out" 2>&1 || true
+cdg_copy_pass=$(grep -E '^PASS: ' "$cdg_dir/copy.out" || true)
+cdg_self_pass=$(grep -E '^PASS: ' "$cdg_dir/self.out" || true)
+cdg_copy_tot=$(grep -E '^test-gate: [0-9]+ passed, [0-9]+ failed$' "$cdg_dir/copy.out" || true)
+cdg_self_tot=$(grep -E '^test-gate: [0-9]+ passed, [0-9]+ failed$' "$cdg_dir/self.out" || true)
+check "밖 복사본의 좁힌 실행은 제자리 실행과 같은 PASS 줄과 합계 줄을 낸다" \
+  "$([ -n "$cdg_self_pass" ] && [ "$cdg_copy_pass" = "$cdg_self_pass" ] && echo pass)|$([ -n "$cdg_self_tot" ] && [ "$cdg_copy_tot" = "$cdg_self_tot" ] && echo total)|$(printf '%s' "$cdg_self_tot" | sed -n 's/^test-gate: [0-9]* passed, \([0-9]*\) failed$/\1/p')" \
+  "pass|total|0"
+rm -rf "$cdg_dir"
 
 # ---------------------------------------------------------------------------
 # 1. The snapshot is a JSON object, not a table

@@ -201,12 +201,13 @@ check-cheap:
 # the axis that changed and run it again. This carries over the refusal `check`
 # makes through check-gate-suite.
 #
-# check-cheap and each goal run in a checkout of their own and leave a record
-# of the tracked files they read; a later check-push whose tree keeps those
-# files as they were, under the same doubles and tools, within 24 hours, skips
-# the item and says so. `check-items` runs check-cheap and CHECK_PUSH_GOALS the
-# same way only to leave those records — no lint, readme or sections, and no
-# stamp written or removed. Not part of `check`.
+# check-cheap, each goal and each lane of sections run in a checkout of their
+# own and leave a record of the tracked files they read (a lane also the digest
+# of the cut it ran); a later check-push whose tree keeps those files (and that
+# cut) as they were, under the same doubles and tools, within 24 hours, skips
+# the item and says so. `check-items` runs check-cheap, CHECK_PUSH_SECTIONS and
+# CHECK_PUSH_GOALS the same way only to leave those records — no lint or
+# readme, and no stamp written or removed. Not part of `check`.
 check-push:
 	bash scripts/check-push.sh run
 
