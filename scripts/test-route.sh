@@ -1165,8 +1165,38 @@ out=$(decide "$ONE | .usage.accounts[0].login = \"expired\" | REQ({event: \"resu
 expect "로그인이 끊긴 묶인 계정 → PARK" "$out" '.verdict == "PARK" and .reason == "resume-logged-out"'
 expect "살아 있는 자기 임대의 계정 로그인이 끊기면 → PARK" "$(decide "$ONE | .usage.accounts[0].login = \"expired\" | ITEMS([LG(\"r1\"; \"S1\"; \"a\"; true)]) | REQ({event: \"resume\"})")" \
   '.verdict == "PARK" and .reason == "resume-logged-out"'
-expect "살아 있는 자기 임대의 계정이 소진이면 그 계정으로 기다린다" "$(decide "$ONE | .usage.accounts[0].windows.seven_day.utilization = 1.1 | ITEMS([LG(\"r1\"; \"S1\"; \"a\"; true)]) | REQ({event: \"resume\"})")" \
-  '.verdict == "WAIT" and .reason == "resume-bound-exhausted" and .account == "a"'
+# 고정 없는 재개의 소진 이관. 묶인 계정이 소진이고 입장을 통과하는 다른 무인 계정이 있으면
+# 살아 있는 자기 임대 쪽도 반납된 계보 쪽도 그 계정의 새 세션 GRANT 다. 받을 계정이 없거나
+# 고정이 걸렸거나 요청에 `no_migrate` 가 있으면 지금의 결과 그대로다.
+X7A='.usage.accounts[0].windows.seven_day.utilization = 1.1'
+X5A='.usage.accounts[0].windows.five_hour.utilization = 1.1'
+LIVEA='ITEMS([LG("r1"; "S1"; "a"; true)]) | REQ({event: "resume"})'
+RETA='REQ({event: "resume", bound_account: "a"})'
+MIGOK='.verdict == "GRANT" and .basis == "resume-migrated" and .account == "b" and .fresh == true and .migrated == {from: "a", to: "b", why: "resume-bound-exhausted"} and .txn.op == "write"'
+WAITA='.verdict == "WAIT" and .reason == "resume-bound-exhausted" and .account == "a" and (has("migrated") | not)'
+expect "살아 있는 자기 임대의 계정이 소진이면 다른 계정 b 의 새 세션으로 옮긴다" "$(decide "$ONE | $X7A | $LIVEA")" "$MIGOK"
+expect "반납된 계보의 묶인 계정이 소진이면 다른 계정 b 의 새 세션으로 옮긴다" "$(decide "$ONE | $X7A | $RETA")" "$MIGOK"
+for side in "$LIVEA" "$RETA"; do
+  case "$side" in ITEMS*) lbl="살아 있는 임대" ;; *) lbl="반납된 계보" ;; esac
+  expect "이관 대조($lbl): b 도 소진이면 a 로 기다린다" \
+    "$(decide "$ONE | $X7A | .usage.accounts[1].windows.seven_day.utilization = 1.1 | $side")" "$WAITA"
+  expect "이관 대조($lbl): b 가 무인 사용에서 빠지면 a 로 기다린다" \
+    "$(decide "$ONE | $X7A | .inventory.accounts[1].unattended = \"disabled\" | $side")" "$WAITA"
+  expect "이관 대조($lbl): b 의 주간 창이 신선하지 않으면 a 로 기다린다" \
+    "$(decide "$ONE | $X7A | .usage.accounts[1].windows.seven_day.observed_at_epoch = (\$now - 4000) | $side")" "$WAITA"
+  expect "이관 대조($lbl): no_migrate 이면 b 가 받을 수 있어도 a 로 기다린다" \
+    "$(decide "$ONE | $X7A | $side | REQ({no_migrate: true})")" "$WAITA"
+  expect "이관($lbl): 5시간 창만 소진이어도 옮긴다" \
+    "$(decide "$ONE | $X5A | .usage.accounts[0].windows.seven_day.utilization = 0.1 | $side")" "$MIGOK"
+  expect "이관($lbl): 후보가 둘이면 7일 창 실효 사용량이 작은 쪽" \
+    "$(decide "ONLY([\"a\", \"b\", \"c\"]) | USE([UA(\"a\"; 0.1; 1.1), UA(\"b\"; 0.1; 0.5), UA(\"c\"; 0.1; 0.2)]) | $side")" \
+    '.verdict == "GRANT" and .basis == "resume-migrated" and .account == "c" and .migrated.to == "c"'
+  expect "이관 대조($lbl): 대여 좌석 고정이면 옮기지 않는다" \
+    "$(decide "$ONE | $X7A | .seat.lane = \"a\" | $side")" '(has("migrated") | not) and .basis != "resume-migrated"'
+done
+expect "이관 대조: a 의 주간 창이 신선하지 않으면 소진으로 읽지 않아 a 의 resume-bound" \
+  "$(decide "$ONE | $X7A | .usage.accounts[0].windows.seven_day.observed_at_epoch = (\$now - 4000) | $LIVEA")" \
+  '.verdict == "GRANT" and .basis == "resume-bound" and .account == "a" and (has("migrated") | not)'
 
 out=$(decide "$ONE | $FULL_A | .leases.items += [LG(\"r1\"; \"S1\"; \"a\"; true)] | REQ({event: \"crash-retry\"})")
 expect "살아 있는 자기 임대의 crash-retry 는 입장 없이 sticky" "$out" '.verdict == "GRANT" and .basis == "sticky" and .account == "a" and .nonce == "n-r1-S1" and .txn.op == "hold"'
@@ -1268,6 +1298,9 @@ expect "새 GRANT 는 두 창 비용을 싣는다" "$(decide '.')" ".verdict == 
 out=$(decide "$ONE | $FULL_A | REQ({event: \"resume\", bound_account: \"a\"})")
 expect "묶인 계정의 자리 없음 대기는 그 판정의 비용" "$out" ".reason == \"resume-bound-no-room\" and .cost == $TCOST"
 out=$(decide "$ONE | .usage.accounts[0].windows.seven_day.utilization = 1.1 | ITEMS([LG(\"r1\"; \"S1\"; \"a\"; true)]) | REQ({event: \"resume\"})")
+expect "살아 있는 묶인 임대의 소진 이관은 받을 계정 입장 판정의 비용" "$out" \
+  ".verdict == \"GRANT\" and .basis == \"resume-migrated\" and .account == \"b\" and .fresh == true and .migrated == {from: \"a\", to: \"b\", why: \"resume-bound-exhausted\"} and .txn.op == \"write\" and .cost == $TCOST"
+out=$(decide "$ONE | .usage.accounts[0].windows.seven_day.utilization = 1.1 | ITEMS([LG(\"r1\"; \"S1\"; \"a\"; true)]) | REQ({event: \"resume\", no_migrate: true})")
 expect "살아 있는 묶인 임대의 소진 대기도 그 판정의 비용" "$out" ".reason == \"resume-bound-exhausted\" and .cost == $TCOST"
 out=$(decide "$NOROOM")
 expect "빈자리 없음 대기는 고른 후보의 비용" "$out" ".reason == \"no-room\" and .cost == $TCOST"
@@ -1678,6 +1711,17 @@ live_lease "$d" r1 S1 a
 printf '{' > "$d/r9+x.lease"
 expect "깨진 표에서도 살아 있는 자기 임대의 유지는 진행한다" "$(txn "$d" 'REQ({event: "crash-retry"})')" '.verdict == "GRANT" and .basis == "sticky"'
 expect "깨진 표에서도 살아 있는 자기 임대의 재개는 진행한다" "$(txn "$d" 'REQ({event: "resume"})')" '.verdict == "GRANT" and .basis == "resume-bound"'
+# 살아 있는 소진 임대 위의 이관 GRANT 는 그 계보의 기록을 새 계정 하나로 바꿔 쓴다 — 원
+# 계정 그룹의 예약 합계에 그 계보 몫이 남지 않는다.
+d=$(tnew mig-live)
+live_lease "$d" r1 S1 a
+expect "살아 있는 소진 임대의 재개 거래는 b 로 옮긴다" \
+  "$(txn "$d" '.usage.accounts[0].windows.seven_day.utilization = 1.1 | REQ({event: "resume"})')" \
+  '.verdict == "GRANT" and .basis == "resume-migrated" and .account == "b" and .migrated.from == "a" and .fresh == true'
+check "이관 뒤 그 계보의 임대 파일은 하나" "$(count_files "$d")" 1
+check "이관 뒤 그 계보의 계정은 b" "$(jq -r '.account' "$d"/*.lease)" b
+check "이관 뒤 a 의 예약 합계에 그 계보 몫이 없다" \
+  "$(jq -s '[.[] | select(.account == "a") | .reservation_bp.seven_day] | add // 0' "$d"/*.lease)" 0
 d=$(tnew c-stale)
 dead_lease "$d" r1 S1 a
 printf '{' > "$d/r9+x.lease"
@@ -3548,6 +3592,15 @@ expect "이관 표 둘째 줄: 살아 있는 p 임대 + 주간 소진 → 지금
 expect "이관 표 둘째 줄: 이관 고정의 살아 있는 a 임대 + 주간 소진 → WAIT resume-bound-exhausted" \
   "$(mdecide "$MJ OPEN | RREC | LIVE(\"a\"; true) | RSM(\"a\") | AX(.windows.seven_day.utilization = 1.0) | MB(0.1; 0.2)")" \
   '.verdict == "WAIT" and .reason == "resume-bound-exhausted" and .account == "a"'
+# 고정 없는 재개의 소진 이관은 고정 갈래에 들지 않는다 — 이관 고정(위), 발행 전용 행에 묶인
+# 재개, 대여 등록 행에 묶인 재개는 b 가 받을 수 있어도 지금의 결과다.
+expect "소진 이관 대조: 발행 전용 행에 묶인 고정 없는 재개는 옮기지 않는다" \
+  "$(decide "$MJ OPEN | PUB(1.0) | del(.seat.lane) | MB(0.1; 0.2) | RSM(\"p\")")" '(has("migrated") | not) and .basis != "resume-migrated"'
+for lv in true false; do
+  expect "소진 이관 대조: 대여 등록 행(live=$lv)에 묶인 재개는 옮기지 않는다" \
+    "$(decide "$MJ OPEN | CCX(.windows.seven_day.utilization = 1.1) | MB(0.1; 0.2) | LIVE(\"cc\"; $lv) | RSM(\"cc\")")" \
+    '(has("migrated") | not) and .basis != "resume-migrated"'
+done
 expect "이관 표 둘째 줄: 이관 고정의 살아 있는 a 임대 + 5시간 막힘 → GRANT a 유지" \
   "$(mdecide "$MJ UBLK | RREC | LIVE(\"a\"; true) | REQ({event: \"resume\"})")" \
   '.verdict == "GRANT" and .account == "a" and .basis == "resume-bound" and (has("fresh") | not)'
@@ -4384,7 +4437,7 @@ for tok in \
   "WAIT group-exhausted" "WAIT no-room" "WAIT unknown-concurrency" "WAIT resume-bound-exhausted" \
   "WAIT resume-bound-no-room" "WAIT resume-bound-borrowed" "WAIT lease-lock-busy" "WAIT lease-contention" "WAIT fifo-yield" \
   "GRANT first" "GRANT sticky" "GRANT resume-bound" "GRANT reassigned-after-limit" "GRANT reassigned-no-room" \
-  "GRANT after-wait" "GRANT shift-seat-fallback" "GRANT single-seat"; do
+  "GRANT after-wait" "GRANT shift-seat-fallback" "GRANT single-seat" "GRANT resume-migrated"; do
   if grep -F -x "$tok" "$SEEN" >/dev/null; then ok "부류 포괄: $tok 관측"; else bad "부류 포괄: $tok 관측" "어느 사례에서도 나오지 않았다"; fi
   if grep -F "\"${tok#* }\"" "$TR_ROUTE" >/dev/null; then :; else bad "부류 포괄: ${tok#* } 가 route.sh 에 없다"; fi
 done

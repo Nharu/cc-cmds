@@ -116,6 +116,11 @@
 #      left a cause row (`stage-wait` with `근거` `lease-hold-busy` or
 #      `lease-hold-lost`) and ended without launching the stage. Dispatch the
 #      same step again: the new attempt is admitted by its own `lease-txn`.
+#  21  from act: a delegated re-attachment the router did not take
+#      (GATE_EXIT_DELEGATE). From `wait`: the waiting supervisor ended on a
+#      grant the launch that opened the wait does not take, handed it back and
+#      launched nothing, leaving a cause row (`stage-wait` with `근거`
+#      `wait-end-refused`) and no park row. Both are read as the act's 21.
 #
 # Usage:
 #   gate.sh snapshot --manifest <path> [--render]
@@ -981,6 +986,23 @@ readonly GATE_EXIT_CARRY_CAP=18
 # over from an earlier run (`출처 런`) ends GATE_EXIT_CARRY_CAP at each of
 # these refusals.
 readonly GATE_EXIT_CARRY_UNTABLED=19
+
+# A DELEGATED RE-ATTACHMENT THE ROUTER DID NOT TAKE. `act --kind skill --resume
+# <session> --limit-delegate` hands the router the question whether a stage cut
+# off by a limit moves to another account. The act accepts only a
+# `resume-migrated` grant (a new session on the other account) and a
+# `resume-bound-exhausted` wait; on any other answer — a same-account grant, a
+# park, a wait for another reason, or a re-entry card that cannot be written —
+# it launches nothing, hands back the grant it minted, writes no `blocked` and
+# no `stage-result` row, prints `위임 불성립 — <verdict and reason>` and ends
+# here. Not 16: 16 comes with a router park row, and the shift reads that row;
+# here no row stands and the shift goes on as if the delegation did not exist —
+# a reset wait when it can read the clock, a `중단` hand-off otherwise.
+# `gate.sh wait` ends with the same value when the wait such an act opened ends
+# on a grant the delegation does not take, or when a wait's move cannot be made
+# and the wait can no longer ask again with `no_migrate`: the supervisor hands
+# the grant back and leaves the `wait-end-refused` cause row, never a park row.
+readonly GATE_EXIT_DELEGATE=21
 
 # The head of a gate-dispatched lineage. The driver's dispatch ids begin with
 # `S4:`, `S5:`, `S5R:`, `S1':`, `S1design` or `S2`, and the router strips only
@@ -15260,8 +15282,9 @@ gate_stage_lease_row() {
   # gate_stage_lease_row <파견 id> <봉투 json> [<구속 토큰>] — one `stage-lease`
   # row from a `GRANT` envelope. rc 2 and no row for anything but a `GRANT`, for
   # a `reservation_bp` component that is not an integer in 0..10000, for a value
-  # carrying a line break, and for `근거=resume-bound` without a binding the
-  # envelope satisfies; otherwise whatever `gate_append` answers.
+  # carrying a line break, and for `근거=resume-bound` or `근거=resume-migrated`
+  # without a binding the envelope satisfies; otherwise whatever `gate_append`
+  # answers.
   #
   # FIELDS ARE READ BY NAME and the envelope is never serialized onto the row. A
   # null renders as `-`, never as jq's `null`, which would pass the identity rule
@@ -15300,7 +15323,10 @@ $vals
 EOF
   lineage=$(route_lineage_of "$did")
   if [ "$cdir" = "-" ]; then lane="-"; else lane=$(lane_label_of "${cdir#=}"); fi
-  if [ "$basis" = "resume-bound" ]; then
+  # A resume that moved from its exhausted bound account to another account's new
+  # session (`resume-migrated`) is still a resume of that binding: the envelope's
+  # `migrated.from` must be it.
+  if [ "$basis" = "resume-bound" ] || [ "$basis" = "resume-migrated" ]; then
     [ -n "$bind" ] || return 2
     gate_resume_grant_ok "$bind" "$env" || return 2
   fi
@@ -15408,7 +15434,8 @@ gate_resume_grant_ok() {
   #   branch hands back the lease's account without consulting the binding, so
   #   route cannot be assumed to refuse a wrong resume on its own.
   # - A migration `GRANT` (`fresh: true` with `migrated.from` equal to the
-  #   binding) passes: the router moved the visual publish pin off the bound
+  #   binding) passes: the router moved the visual publish pin, or an unpinned
+  #   resume whose bound account is exhausted (`resume-migrated`), off the bound
   #   account, and `fresh` tells the launch to start a new session on the new
   #   account rather than re-attach the bound one, so nothing is resumed across
   #   accounts.
@@ -20657,6 +20684,10 @@ gate_main() {
   # The ledger line of the `중단 답` row a carry act hands on, the same way: only
   # the argv flag sets it, and only `act --kind skill` takes it.
   GATE_CARRY_ANSWER=""
+  # The marker of a re-attachment that delegates the limit judgment to the
+  # router, the same way: only the argv flag sets it, and only `act --kind
+  # skill --resume` takes it.
+  GATE_LIMIT_DELEGATE=""
   # The trigger a review dispatch declares and the reason a `라우터 판단` one
   # gives, the same way: only the argv flags set them, and only `act`/`plan
   # --kind skill` of a review takes them.
@@ -20742,7 +20773,8 @@ gate_main() {
       --reject)          reject=1; shift ;;
       --resume)          GATE_RESUME="$2"; shift 2 ;;
       --carry-answer)    GATE_CARRY_ANSWER="$2"; shift 2 ;;
-      --site)           GATE_SHIFT_HALT_SITE="$2"; shift 2 ;;
+      --limit-delegate)  GATE_LIMIT_DELEGATE=1; shift ;;
+      --site)          GATE_SHIFT_HALT_SITE="$2"; shift 2 ;;
       --rerun-answer)    GATE_APPLY_RERUN_ANSWER="$2"; shift 2 ;;
       --answer)          GATE_SETTLE_ANSWER="$2"; shift 2 ;;
       --from-declaration) GATE_FROM_DECLARATION=1; shift ;;
@@ -20860,6 +20892,20 @@ gate_main() {
     if [ -n "$GATE_RESUME" ]; then
       printf 'gate: --carry-answer and --resume together — the gate decides whether the halted session is re-attached; pass --carry-answer alone\n' >&2
       exit 3
+    fi
+  fi
+  # `--limit-delegate` asks the router whether a re-attachment cut off by a
+  # limit moves to another account; without the session it re-attaches there
+  # is nothing to delegate, and on any other verb or kind it would be a marker
+  # the caller believes is honoured.
+  if [ -n "$GATE_LIMIT_DELEGATE" ]; then
+    if [ "$verb:$kind" != "act:skill" ]; then
+      printf 'gate: --limit-delegate is used only with act --kind skill (received: %s --kind %s)\n' "$verb" "${kind:-(none)}" >&2
+      exit 2
+    fi
+    if [ -z "$GATE_RESUME" ]; then
+      printf 'gate: --limit-delegate needs --resume <session id> — it delegates the judgment of a re-attachment\n' >&2
+      exit 2
     fi
   fi
   # `--trigger` and `--trigger-reason` declare why a review is dispatched; on
@@ -41518,6 +41564,161 @@ gate_stage_launch_dir_record() {
   ) || warn "stage launch: could not record the launch directory for session $sid"
 }
 
+gate_dispatch_prompt_record() {
+  # gate_dispatch_prompt_record <session-id> <cli args...> — keep the `-p` a NEW
+  # session is launched with at `$RUN_DIR/dispatch-prompt/<session-id>`, byte
+  # for byte, so a later move of that session to another account can start the
+  # new session with the prompt the cut one was dispatched with. A `--resume`
+  # re-attachment is not a new session and is never recorded: its argv carries
+  # the shift's fixed re-attach sentence. Same umask and atomic publish as the
+  # launch directory record; a failure only warns, and a session without a
+  # record is later not moved but waits on its bound account.
+  local sid="$1" p="" had=0
+  shift
+  while [ "$#" -gt 0 ]; do
+    if [ "$1" = "-p" ] && [ "$#" -ge 2 ]; then p=$2; had=1; break; fi
+    shift
+  done
+  [ -n "$sid" ] && [ "$had" = "1" ] || return 0
+  (
+    umask 077
+    mkdir -p "$RUN_DIR/dispatch-prompt" || exit 1
+    tmp=$(mktemp "$RUN_DIR/dispatch-prompt/.rec.XXXXXX") || exit 1
+    printf '%s' "$p" > "$tmp" || { rm -f "$tmp"; exit 1; }
+    mv "$tmp" "$RUN_DIR/dispatch-prompt/$sid"
+  ) || warn "stage launch: could not record the dispatch prompt for session $sid"
+}
+
+gate_migrate_prompt() {
+  # gate_migrate_prompt <stage-kind> <key> <cut session id> — the `-p` of the
+  # new session a `resume-migrated` grant starts in place of re-attaching the
+  # cut session, in GATE_MIG_PROMPT; 1, with it empty, when there is none and
+  # the resume may therefore not move.
+  #
+  # THE ORDER. The cut session's own dispatch prompt record first. Without it,
+  # the kind's re-entry frame from `gate_reentry_table`, only when the table
+  # holds exactly one frame for the kind (design has two, one per skill, and
+  # the frame alone cannot tell which skill the stage was), with `<문서>` and
+  # every ledger-valued slot filled the way the halt answer carry fills them,
+  # no `<…>` slot left (re-convergence's `<범위>` comes only from a halt
+  # record), and the cut attempt not a directive-line or re-implementation
+  # dispatch the frame cannot hold. Never the caller's argv: on a resume that
+  # is the shift's fixed re-attach sentence, which names neither the skill nor
+  # the document. Asked before the router is, so a resume with no prompt asks
+  # with `no_migrate: true`.
+  local kind="$1" key="$2" cut="$3" f p sk sg tkind fr one="" n=0 doc
+  GATE_MIG_PROMPT=""
+  [ -n "$cut" ] || return 1
+  f="$RUN_DIR/dispatch-prompt/$cut"
+  if [ -f "$f" ] && [ -s "$f" ]; then
+    # The trailing sentinel keeps the record's trailing newlines.
+    p=$(cat "$f" 2>/dev/null && printf x) || p=""
+    p=${p%x}
+    if [ -n "$p" ]; then GATE_MIG_PROMPT=$p; return 0; fi
+  fi
+  while IFS='|' read -r sk sg tkind fr; do
+    [ "$tkind" = "$kind" ] || continue
+    if [ "$n" = "0" ]; then one=$fr; n=1
+    elif [ "$fr" != "$one" ]; then n=2
+    fi
+  done <<EOF
+$(gate_reentry_table)
+EOF
+  [ "$n" = "1" ] || return 1
+  doc=$(gate_carry_doc_of "$kind")
+  [ -n "$doc" ] || return 1
+  gate_carry_frame_build "$one" "$key" "$LEDGER" "$RUN_DIR" "$key"
+  [ -z "$GATE_CF_DIRV" ] && [ -z "$GATE_CF_REIM" ] || return 1
+  p=$(gate_fill_slot "$GATE_CARRY_WANT" '<문서>' "$doc")
+  case "$p" in *'<'*'>'*) return 1 ;; esac
+  GATE_MIG_PROMPT=$p
+  return 0
+}
+
+gate_reentry_card_path() {
+  # gate_reentry_card_path <session id> — where the re-entry card of the new
+  # session with that id lives.
+  printf '%s/reentry/%s.md' "$RUN_DIR" "$1"
+}
+
+gate_reentry_card_write() {
+  # gate_reentry_card_write <stage id> <stage-kind> <cut session id>
+  #                         <new session id> <envelope> — write the re-entry card
+  # a `resume-migrated` grant's new session reads, and print its path. 1, with
+  # nothing written, when the envelope carries no migration or the ledger names
+  # no attempt of the cut session; the caller then does not migrate.
+  #
+  # `**원 스테이지**` is one `<key>#<실행 버전>` per `stage-result` row carrying
+  # the cut session's id, in ledger order: a session re-attached with `--resume`
+  # keeps its id, so it has several. When the cut session itself started from a
+  # card, that card's value goes in front, so the field holds the whole chain
+  # and a stage that adopts a witness directory finds the attempt that made it.
+  # The key is the one the attempt's `CC_PIPELINE_STAGE_ID` carried: the
+  # `스테이지` field on the gate's rows, and the `파견 id` on the driver's, whose
+  # `스테이지` holds the kind label (`S4`, `S5`, `S5R`, `S1'`) for the readers
+  # that group on it while the stage was launched under its dispatch id.
+  #
+  # Written under umask 077 through a temporary file and a rename, before the
+  # launch's `stage-lease` row, so a stage that starts never reads half a card.
+  local stage="$1" kind="$2" cut="$3" sid="$4" env="$5" mig from to why row k v orig="" prev="" card
+  [ -n "$cut" ] && [ -n "$sid" ] || return 1
+  mig=$(printf '%s' "$env" | jq -r '
+    if type == "object" and (.migrated | type) == "object"
+       and ([.migrated.from, .migrated.to, .migrated.why] | all(type == "string" and . != "" and (test("[\r\n]") | not)))
+    then .migrated.from, .migrated.to, .migrated.why else empty end' 2>/dev/null) || mig=""
+  [ -n "$mig" ] || { warn "the grant carries no migration — no re-entry card for $stage"; return 1; }
+  { IFS= read -r from; IFS= read -r to; IFS= read -r why; } <<EOF
+$mig
+EOF
+  while IFS= read -r row; do
+    [ -n "$row" ] || continue
+    k=$(gate_row_field "$row" '파견 id')
+    [ -n "$k" ] || k=$(gate_row_field "$row" '스테이지')
+    v=$(gate_row_field "$row" '실행 버전')
+    [ -n "$k" ] && [ -n "$v" ] || continue
+    orig="${orig:+$orig, }$k#$v"
+  done <<EOF
+$( { LC_ALL=C grep -E '^- `stage-result` ' "$LEDGER" 2>/dev/null || true; } | { grep -F "세션 id=$cut " || true; } )
+EOF
+  [ -n "$orig" ] || { warn "the ledger names no attempt of session $cut — no re-entry card for $stage"; return 1; }
+  card=$(gate_reentry_card_path "$cut")
+  [ ! -f "$card" ] || prev=$(sed -n 's/^\*\*원 스테이지\*\*: //p' "$card" 2>/dev/null | sed -n '1p')
+  [ -z "$prev" ] || orig="$prev, $orig"
+  card=$(gate_reentry_card_path "$sid")
+  (
+    umask 077
+    mkdir -p "$RUN_DIR/reentry" || exit 1
+    tmp=$(mktemp "$RUN_DIR/reentry/.card.XXXXXX") || exit 1
+    {
+      printf '%s\n' '<!-- cc-reentry v1; writer=gate; reader=stage skills -->'
+      printf '**스테이지**: %s\n' "$stage"
+      printf '**종류**: %s\n' "$kind"
+      printf '**원 세션**: %s\n' "$cut"
+      printf '**원 스테이지**: %s\n' "$orig"
+      printf '**원 계정**: %s\n' "$from"
+      printf '**새 계정**: %s\n' "$to"
+      printf '**원인**: %s\n' "$why"
+      printf '**시각**: %s\n' "$(now_iso)"
+    } > "$tmp" || { rm -f "$tmp"; exit 1; }
+    mv -f "$tmp" "$card" || { rm -f "$tmp"; exit 1; }
+  ) || { warn "could not write the re-entry card ($stage)"; return 1; }
+  printf '%s' "$card"
+}
+
+gate_env_migrated() {
+  # gate_env_migrated <envelope> — 0 when the grant moves an exhausted resume
+  # to another account's new session: basis `resume-migrated` with `fresh`.
+  [ "$(printf '%s' "${1:-}" | jq -r 'if type == "object" and .basis == "resume-migrated" and .fresh == true then "1" else "0" end' 2>/dev/null)" = "1" ]
+}
+
+gate_delegate_refuse() {
+  # gate_delegate_refuse <segment> <why> — the end of a delegated
+  # re-attachment the router did not take: the line the shift reads, and no row.
+  printf '위임 불성립 — %s\n' "$2"
+  warn "위임 불성립 — $1 은 기동하지 않습니다 ($2)"
+  return "$GATE_EXIT_DELEGATE"
+}
+
 gate_caller_is_audit_stage() {
   # 0 when this gate call comes from the run-scope audit stage or a member it
   # spawned: the launcher hands the stage `CC_PIPELINE_STAGE_ID=<step>#<attempt>`
@@ -52859,11 +53060,16 @@ gate_launch_route() {
   # and a resume the binding does not allow — the binding is checked whatever
   # the envelope's basis. The guard record is compared by the caller, before
   # this, under either guard.
-  local alias="$1" seg="$2" kind="$3" rowseg why event=first reqbind="" req prior verdict dormant
+  local alias="$1" seg="$2" kind="$3" rowseg why event=first reqbind="" req prior verdict dormant reason
   GATE_ROUTE_ATTEMPT=""; GATE_ROUTE_LINEAGE=""; GATE_ROUTE_ENV=""; GATE_ROUTE_NONCE=""
   GATE_ROUTE_VERDICT=""; GATE_ROUTE_WHY=""; GATE_ROUTE_EVENT=""
   GATE_ROUTE_ACCOUNT="-"; GATE_ROUTE_CFG=""; GATE_ROUTE_MINTED=0; GATE_ROUTE_BIND=""
   GATE_ROUTE_FRESH=""
+  # THE ACCOUNT MOVE OF AN EXHAUSTED RESUME: GATE_ROUTE_MIGRATED `1` on a
+  # `resume-migrated` grant, whose new session starts with GATE_MIG_PROMPT and
+  # reads the card at GATE_REENTRY_CARD; GATE_ROUTE_NOMIG `1` when this launch
+  # asked with `no_migrate: true`, which a wait it turns into keeps.
+  GATE_ROUTE_MIGRATED=""; GATE_REENTRY_CARD=""; GATE_MIG_PROMPT=""; GATE_ROUTE_NOMIG=0
   rowseg=$(gate_stage_row_segment "$seg" "$kind")
   # Every routed dispatch passes here, a carry included, before its own
   # admission scans the table.
@@ -52884,29 +53090,59 @@ gate_launch_route() {
     event=resume
     GATE_ROUTE_BIND=$(gate_resume_binding_of "$seg" "$GATE_RESUME" 2>/dev/null) || GATE_ROUTE_BIND=""
     case "$GATE_ROUTE_BIND" in ''|-) ;; *) reqbind=$GATE_ROUTE_BIND ;; esac
+    # Decided before the router is asked: a resume whose new session would
+    # have no prompt does not move, and waits on its bound account.
+    gate_migrate_prompt "$kind" "$seg" "$GATE_RESUME" || GATE_ROUTE_NOMIG=1
   fi
   GATE_ROUTE_EVENT=$event
+  # ONE QUESTION, AND ONE MORE ONLY WHEN A MIGRATION GRANT'S CARD CANNOT BE
+  # WRITTEN: that grant is handed back and the router is asked again with
+  # `no_migrate: true`, so the resume waits on its bound account instead of
+  # parking for a person.
+  while :; do
   # THE PIN RIDES HERE AND IN `gate_launch_route_ask` ALIKE: the carry path
   # asks through that one, and a pin on one builder only would let a resumed
   # visual publish stage land on a lane its first launch was not pinned to.
+  # So do `no_migrate` and the delegation marker, which the router reads from
+  # the request and every later question of the same launch repeats.
   req=$(jq -cn --arg run "$RUN_ID" --arg lin "$GATE_ROUTE_LINEAGE" --arg ev "$event" \
           --arg kind "$kind" --arg bound "$reqbind" --argjson pid "$$" \
           --argjson dl "$(wait_request_deadline "$kind")" \
           --argjson pinf "$(kind_pin_request_json "$kind")" \
+          --argjson flags "$(gate_route_flags_json "$GATE_ROUTE_NOMIG" "${GATE_LIMIT_DELEGATE:-}")" \
           '{run_id: $run, lineage: $lin, event: $ev, kind: $kind, holders: [$pid],
             bound_account: (if $bound == "" then null else $bound end)}
            + (if $dl == null then {} else {deadline: $dl} end)
-           + $pinf') \
+           + $pinf + $flags') \
     || { warn "could not build the router request ($seg)"; return 1; }
   prior=$( { route_lease_of "$(run_pace_root)/leases" "$RUN_ID" "$GATE_ROUTE_LINEAGE" 2>/dev/null || true; } \
            | { jq -r '.nonce // empty' 2>/dev/null || true; })
   GATE_ROUTE_ENV=$(route_resolve "$req") || { warn "the account resolver stopped — $seg is not launched"; return 1; }
   verdict=$(printf '%s' "$GATE_ROUTE_ENV" | jq -r '.verdict // ""' 2>/dev/null || true)
+  reason=$(printf '%s' "$GATE_ROUTE_ENV" | jq -r '.reason // ""' 2>/dev/null || true)
   why=$(printf '%s' "$GATE_ROUTE_ENV" | jq -r '"라우터 판정 \(.verdict) \(.reason // "-")"
         + (if (.recovery // "") != "" then " — \(.recovery)" else "" end)' 2>/dev/null) \
     || why="라우터 판정 $verdict"
   GATE_ROUTE_VERDICT=$verdict
   GATE_ROUTE_WHY=$why
+  # A DELEGATED RE-ATTACHMENT TAKES TWO ANSWERS ONLY: a move to another
+  # account's new session, and a wait on the exhausted bound account. Every
+  # other answer is refused before any row — the grant handed back — and the
+  # shift goes on as if it had not delegated.
+  if [ -n "${GATE_LIMIT_DELEGATE:-}" ]; then
+    case "$verdict:$reason" in
+      WAIT:resume-bound-exhausted) ;;
+      GRANT:*)
+        if ! gate_env_migrated "$GATE_ROUTE_ENV"; then
+          GATE_ROUTE_NONCE=$(printf '%s' "$GATE_ROUTE_ENV" | jq -r '.nonce // empty')
+          if [ -n "$GATE_ROUTE_NONCE" ] && [ "$GATE_ROUTE_NONCE" != "$prior" ]; then GATE_ROUTE_MINTED=1; fi
+          gate_launch_route_drop
+          gate_delegate_refuse "$seg" "$why — 이관 새 세션이 아니다"
+          return $?
+        fi ;;
+      *) gate_delegate_refuse "$seg" "$why"; return $? ;;
+    esac
+  fi
   case "$verdict" in
     GRANT) ;;
     WAIT)
@@ -52951,15 +53187,52 @@ gate_launch_route() {
     gate_launch_route_park "$alias" "$rowseg" "$seg" "$why"
     return "$GATE_EXIT_ROUTE"
   fi
+  # AN EXHAUSTED RESUME MOVED TO ANOTHER ACCOUNT: the new session's prompt was
+  # settled before the question, and its card is written here, before the
+  # caller pins the attempt and writes the `stage-lease` row. The cut session's
+  # id is taken before GATE_RESUME is emptied below.
+  if [ "$event" = "resume" ] && gate_env_migrated "$GATE_ROUTE_ENV"; then
+    if GATE_REENTRY_CARD=$(gate_reentry_card_write "$seg#$GATE_ROUTE_ATTEMPT" "$kind" "$GATE_RESUME" \
+                             "$(session_uuid "$seg" "$GATE_ROUTE_ATTEMPT")" "$GATE_ROUTE_ENV"); then
+      GATE_ROUTE_MIGRATED=1
+    else
+      GATE_REENTRY_CARD=""
+      gate_launch_route_drop
+      if [ -n "${GATE_LIMIT_DELEGATE:-}" ]; then
+        gate_delegate_refuse "$seg" "$why — 재진입 카드를 쓰지 못했다"
+        return $?
+      fi
+      if [ "$GATE_ROUTE_NOMIG" = "1" ]; then
+        warn "the router moved a resume it was asked not to move — $seg is not launched"
+        return 1
+      fi
+      log "계정 이관 — $seg 의 재진입 카드를 쓰지 못해 부여를 돌려주고 묶인 계정에서 기다리도록 다시 묻는다"
+      GATE_ROUTE_NOMIG=1
+      continue
+    fi
+  fi
+  break
+  done
   # A MIGRATION GRANT ON A RESUME STARTS A NEW SESSION: the bound session lives
   # in the old account's config directory, and the grant names another one.
   # GATE_ROUTE_FRESH tells the caller to give the new session the prompt
-  # `gate_fresh_session_prompt` builds, not the re-attach argv it was handed.
+  # settled above for an exhausted resume's move, and the one
+  # `gate_fresh_session_prompt` builds for the visual publish lane's, not the
+  # re-attach argv it was handed.
   if [ "$event" = "resume" ] && gate_route_env_fresh "$GATE_ROUTE_ENV"; then
-    log "시각 발행 이관 — $seg 는 세션 $GATE_RESUME 을 재부착하지 않고 새 세션으로 뜬다"
+    log "계정 이관 — $seg 는 세션 $GATE_RESUME 을 재부착하지 않고 새 세션으로 뜬다"
     GATE_RESUME=""; GATE_ROUTE_FRESH=1
   fi
   return 0
+}
+
+gate_route_flags_json() {
+  # gate_route_flags_json <no-migrate 0|1> <delegate empty|1> — the request
+  # fields a launch's constraints add: `no_migrate: true` and
+  # `limit_delegate: true`, each only when set.
+  jq -cn --arg nm "${1:-0}" --arg dg "${2:-}" \
+    '(if $nm == "1" then {no_migrate: true} else {} end)
+     + (if $dg == "1" then {limit_delegate: true} else {} end)'
 }
 
 gate_route_env_fresh() {
@@ -53051,18 +53324,20 @@ EOF
 }
 
 gate_launch_route_ask() {
-  # gate_launch_route_ask <segment> <stage-kind> <event> <bound account or ""> —
-  # one router question for this dispatch's lineage, the request built the way
-  # `gate_launch_route` builds it. Prints the envelope.
-  local seg="$1" kind="$2" event="$3" bound="$4" req
+  # gate_launch_route_ask <segment> <stage-kind> <event> <bound account or "">
+  #                       [<no-migrate 0|1>] — one router question for this
+  # dispatch's lineage, the request built the way `gate_launch_route` builds
+  # it, `no_migrate` included. Prints the envelope.
+  local seg="$1" kind="$2" event="$3" bound="$4" nomig="${5:-0}" req
   req=$(jq -cn --arg run "$RUN_ID" --arg lin "$GATE_ROUTE_LINEAGE" --arg ev "$event" \
           --arg kind "$kind" --arg bound "$bound" --argjson pid "$$" \
           --argjson dl "$(wait_request_deadline "$kind")" \
           --argjson pinf "$(kind_pin_request_json "$kind")" \
+          --argjson flags "$(gate_route_flags_json "$nomig" "${GATE_LIMIT_DELEGATE:-}")" \
           '{run_id: $run, lineage: $lin, event: $ev, kind: $kind, holders: [$pid],
             bound_account: (if $bound == "" then null else $bound end)}
            + (if $dl == null then {} else {deadline: $dl} end)
-           + $pinf') \
+           + $pinf + $flags') \
     || { warn "could not build the router request ($seg)"; return 1; }
   route_resolve "$req" || { warn "the account resolver stopped — $seg is not launched"; return 1; }
 }
@@ -53120,9 +53395,13 @@ gate_launch_route_carry() {
   if [ -n "$bound" ]; then
     bind=$(gate_resume_binding_of "$seg" "$bound" 2>/dev/null) || bind=""
     case "$bind" in ''|-) ;; *) reqbind=$bind ;; esac
+    # The bound question asks with `no_migrate: true` when the halted
+    # session's new session would have no prompt, as a routing launch does.
+    gate_migrate_prompt "$kind" "$seg" "$bound" || GATE_ROUTE_NOMIG=1
+    while :; do
     prior=$( { route_lease_of "$(run_pace_root)/leases" "$RUN_ID" "$GATE_ROUTE_LINEAGE" 2>/dev/null || true; } \
              | { jq -r '.nonce // empty' 2>/dev/null || true; })
-    benv=$(gate_launch_route_ask "$seg" "$kind" resume "$reqbind") || return 1
+    benv=$(gate_launch_route_ask "$seg" "$kind" resume "$reqbind" "$GATE_ROUTE_NOMIG") || return 1
     bv=$(printf '%s' "$benv" | jq -r '.verdict // ""' 2>/dev/null || true)
     breason=$(printf '%s' "$benv" | jq -r '.reason // ""' 2>/dev/null || true)
     bwhy=$(gate_launch_route_why "$benv")
@@ -53134,7 +53413,26 @@ gate_launch_route_carry() {
           gate_launch_route_drop
           return 1
         fi
-        if gate_resume_grant_ok "$bind" "$benv"; then
+        if gate_resume_grant_ok "$bind" "$benv" && gate_env_migrated "$benv"; then
+          # The card of the moved session, written before the caller's
+          # `stage-lease` row; one that cannot be written hands the grant back
+          # and asks the bound question again with `no_migrate: true`.
+          if GATE_REENTRY_CARD=$(gate_reentry_card_write "$seg#$GATE_ROUTE_ATTEMPT" "$kind" "$bound" \
+                                   "$(session_uuid "$seg" "$GATE_ROUTE_ATTEMPT")" "$benv"); then
+            GATE_ROUTE_MIGRATED=1
+            bcls=grant
+          else
+            GATE_REENTRY_CARD=""
+            gate_launch_route_drop
+            if [ "$GATE_ROUTE_NOMIG" = "1" ]; then
+              warn "the router moved a resume it was asked not to move — $seg is not launched"
+              return 1
+            fi
+            log "계정 이관 — $seg 의 재진입 카드를 쓰지 못해 부여를 돌려주고 묶인 계정에서 기다리도록 다시 묻는다"
+            GATE_ROUTE_NOMIG=1
+            continue
+          fi
+        elif gate_resume_grant_ok "$bind" "$benv"; then
           bcls=grant
         else
           dormant=$(printf '%s' "$benv" | jq -r 'if .dormant == true then "1" else "0" end')
@@ -53167,6 +53465,8 @@ gate_launch_route_carry() {
         esac ;;
       *) warn "the router answered without a verdict — $seg is not launched"; return 1 ;;
     esac
+    break
+    done
   else
     bwhy="재부착할 세션 없음"
   fi
@@ -53180,6 +53480,7 @@ gate_launch_route_carry() {
     # and takes the answer from the card the dispatch writes.
     if gate_route_env_fresh "$benv"; then
       GATE_RESUME=""; GATE_ROUTE_FRESH=1
+      log "계정 이관 — $seg 는 세션 $bound 을 재부착하지 않고 새 세션으로 뜬다"
       log "중단 답 운반 — $seg 는 이관 GRANT 로 새 세션이 답 카드를 받는다 (묶인 세션 $bound 은 재부착하지 않음)"
       return 0
     fi
@@ -53343,10 +53644,18 @@ gate_launch_wait() {
     fi
   fi
   m="$RUN_DIR/$seg.waiting"
+  # THE LAUNCH'S CONSTRAINTS RIDE THE MARKER, not the token, whose shape is
+  # fixed: `이관금지=1` when this launch asked with `no_migrate: true`, so every
+  # question of the wait asks the same, and `위임=1` for a delegated
+  # re-attachment, whose grant at the end of the wait is filtered. Each is
+  # written only when set.
+  local wflags=()
+  [ "${GATE_ROUTE_NOMIG:-0}" != "1" ] || wflags+=("이관금지=1")
+  [ -z "${GATE_LIMIT_DELEGATE:-}" ] || wflags+=("위임=1")
   if ! wait_marker_write "$m" "보유자=$sup" "지문=$(cc_proc_fingerprint "$sup")" "기록자=게이트" \
          "계보=$GATE_ROUTE_LINEAGE" "그룹=$grp" "까지=$upto" "갱신=$(now_epoch)" "종류=$kind" \
          "논스=$wnonce" "시도=$attempt" "재파견=$(gate_redispatch_line "$alias" "$rowseg")" \
-         "$(wait_seen_kv "$GATE_ROUTE_ENV")"; then
+         "$(wait_seen_kv "$GATE_ROUTE_ENV")" ${wflags[@]+"${wflags[@]}"}; then
     warn "could not write the waiting marker ($seg) — the waiting supervisor ends on its own"
     [ "$wnonce" = "-" ] || route_lease_wait_drop "$(run_pace_root)/leases" "$RUN_ID" "$GATE_ROUTE_LINEAGE" "$wnonce" >/dev/null 2>&1 || true
     return 1
@@ -53379,10 +53688,54 @@ gate_sup_wait_stop() {
   gate_launch_route_park "$GATE_SUP_ALIAS" "$GATE_SUP_ROWSEG" "$GATE_SUP_KEY" "$1" "$GATE_SUP_LINEAGE"
 }
 
+gate_sup_wait_refuse() {
+  # gate_sup_wait_refuse <why> — the end of a wait whose grant the launch that
+  # opened it does not take: a delegated re-attachment's grant that is neither
+  # a move nor a bound-account grant observed after the reset, or a move whose
+  # prompt or card cannot be made when the wait can no longer ask again with
+  # `no_migrate`. The caller has handed the grant back already.
+  #
+  # NO PARK. The shift reads a park row's 16 as "do not dispatch into the same
+  # answer" and a person is called; this end is the delegation not taking, and
+  # the shift goes on as after the act's 21 — a reset wait, or a `중단`
+  # hand-off. So it leaves one `stage-wait` cause row of this attempt's lineage,
+  # which `gate.sh wait` reads as 21. A refused cause row leaves nothing, and
+  # `wait` then reads the attempt as a launch that left no row.
+  local rc=0
+  gate_append 'stage-wait' "계보=$GATE_SUP_LINEAGE" '그룹=-' '계정=-' '까지=-' '비용=-' '비용 출처=-' \
+    '근거=wait-end-refused' || rc=$?
+  if [ "$rc" != "0" ]; then
+    warn "대기 끝 거부 — $GATE_SUP_KEY 의 원인 행이 거부됐다 (rc=$rc) — 기동하지 않는다 ($1)"
+    return 0
+  fi
+  warn "대기 끝 거부 — $GATE_SUP_KEY 는 기동하지 않는다 ($1)"
+}
+
 gate_sup_wait_ended() {
   # The same run-end refusal the act prelude applies to a dispatch, read again
   # because this supervisor passed that prelude once, before its wait began.
   gate_run_ended_ok skill -
+}
+
+gate_sup_delegate_grant_ok() {
+  # gate_sup_delegate_grant_ok <key> <bound account> <envelope> — 0 when a
+  # delegated re-attachment's wait may launch on this grant though it is not a
+  # move: a grant on the bound account itself, not a new session, whose usage
+  # the router observed (`observed`, `<source>@<epoch>`) at or after the reset
+  # clock of the key's cut attempt. That observation is the evidence the limit
+  # cleared; without a clock, or with an older or no observation, there is none.
+  local key="$1" bound="$2" env="$3" acct obs reset
+  [ -n "$bound" ] || return 1
+  acct=$(printf '%s' "$env" | jq -r '.account // ""' 2>/dev/null || true)
+  [ "$acct" = "$bound" ] || return 1
+  ! gate_route_env_fresh "$env" || return 1
+  obs=$(printf '%s' "$env" | jq -r '.observed // "" | tostring' 2>/dev/null || true)
+  case "$obs" in *@*) obs=${obs##*@} ;; *) return 1 ;; esac
+  obs=${obs%%.*}
+  case "$obs" in ''|*[!0-9]*) return 1 ;; esac
+  reset=$(gate_cut_key_reset_at "$key")
+  [ -n "$reset" ] || return 1
+  [ "$obs" -ge "$reset" ]
 }
 
 gate_sup_await_dispatch() {
@@ -53657,6 +54010,13 @@ gate_launch_stage() {
     [ -n "$seat_cfg" ] \
       || warn "the seat lane could not be resolved for a stage dispatched from a moved shift — it inherits the shift's lane ($seg)"
   fi
+  # A DELEGATED RE-ATTACHMENT NEEDS THE ROUTER: with routing off nothing judges
+  # the limit, and a plain re-attachment would run on an account no evidence
+  # says has cleared.
+  if [ -n "${GATE_LIMIT_DELEGATE:-}" ] && ! run_routed; then
+    gate_delegate_refuse "$seg" "라우팅 꺼짐 — 이관 판정을 맡길 라우터가 없다"
+    return $?
+  fi
   if run_routed; then
     routed=1
     gate_launch_route "$alias" "$seg" "$kind" "$@" || return $?
@@ -53669,7 +54029,14 @@ gate_launch_stage() {
     # the gate builds for the kind: the argv of a cut-off or refused stage's
     # re-attachment carries the shift's fixed re-attach sentence, which names
     # neither the skill nor the document.
-    if [ "${GATE_ROUTE_FRESH:-}" = "1" ]; then
+    # An exhausted resume's move takes the prompt `gate_launch_route` settled
+    # before asking — the cut session's record or the kind's filled frame —
+    # and never the caller's re-attach sentence.
+    if [ "${GATE_ROUTE_MIGRATED:-}" = "1" ]; then
+      gate_argv_prompt_restore "$GATE_MIG_PROMPT" "$@"
+      set -- "${GATE_RESTORED_ARGV[@]}"
+      gate_argv_prompt_keep "$@"
+    elif [ "${GATE_ROUTE_FRESH:-}" = "1" ]; then
       if gate_fresh_session_prompt "$kind" "$GATE_DISPATCH_PROMPT_SET" "$GATE_DISPATCH_PROMPT"; then
         gate_argv_prompt_restore "$GATE_FRESH_PROMPT" "$@"
         set -- "${GATE_RESTORED_ARGV[@]}"
@@ -53775,6 +54142,7 @@ gate_launch_stage() {
     gate_stage_instructions_record "$(session_uuid "$seg" "$attempt")" "$instr"
   fi
   [ -n "${GATE_RESUME:-}" ] || gate_stage_launch_dir_record "$(session_uuid "$seg" "$attempt")" "$GATE_LAUNCH_DIR"
+  [ -n "${GATE_RESUME:-}" ] || gate_dispatch_prompt_record "$(session_uuid "$seg" "$attempt")" "$@"
   # THE STREAM IS SCOPED BY ATTEMPT; the supervisor derives the same name from
   # the same pin through `stage_log_path`, so the supervisor's own log sits
   # beside the stage's stream under the same attempt.
@@ -54025,16 +54393,57 @@ gate_verb_supervise_stage() {
     GATE_SUP_ALIAS=$alias GATE_SUP_KEY=$seg GATE_SUP_LINEAGE=$r_lineage GATE_SUP_BIND=$r_bound GATE_SUP_MARKER=$wm
     GATE_SUP_ROWSEG=$(gate_stage_row_segment "$seg" "$kind")
     GATE_SUP_CARRY=$(gate_halt_card_line "$seg#$attempt")
-    stage_wait_loop "$seg" "$kind" "$wm" "$r_event" "$r_bound" \
-      gate_sup_wait_heartbeat gate_sup_wait_deadline gate_sup_wait_stop gate_sup_wait_ended || wrc=$?
-    if [ "$wrc" != "0" ]; then
-      rm -f "$RUN_DIR/$seg.sup" "$RUN_DIR/$seg.sup.start" "$RUN_DIR/$seg.launch.taken"
-      return 0
-    fi
-    wenv=$WAIT_LOOP_ENV
-    r_nonce=$(printf '%s' "$wenv" | jq -r '.nonce // empty' 2>/dev/null || true)
-    r_acct=$(printf '%s' "$wenv" | jq -r '.account // "-"' 2>/dev/null || printf '%s' '-')
-    r_cfg=$(printf '%s' "$wenv" | jq -r '.config_dir // empty' 2>/dev/null || true)
+    # THE WAIT KEEPS THE CONSTRAINTS OF THE LAUNCH THAT OPENED IT. A
+    # `resume-migrated` grant at its end gets the same prompt order and the
+    # same card as at dispatch time, both settled before the `stage-lease` row;
+    # when either fails the grant goes back and the wait goes on with
+    # `이관금지=1`, so the next question asks with `no_migrate: true`. A
+    # delegated re-attachment's wait (`위임=1`) takes only that move, or a grant
+    # on the bound account whose usage was observed after the cut attempt's
+    # limit reset; any other grant goes back and the wait ends.
+    local wdel wnomig wwhy
+    wdel=$(cc_waiting_field "$wm" '위임' | tr -d '[:space:]')
+    GATE_REENTRY_CARD=""; GATE_MIG_PROMPT=""
+    while :; do
+      wrc=0
+      stage_wait_loop "$seg" "$kind" "$wm" "$r_event" "$r_bound" \
+        gate_sup_wait_heartbeat gate_sup_wait_deadline gate_sup_wait_stop gate_sup_wait_ended || wrc=$?
+      if [ "$wrc" != "0" ]; then
+        rm -f "$RUN_DIR/$seg.sup" "$RUN_DIR/$seg.sup.start" "$RUN_DIR/$seg.launch.taken"
+        return 0
+      fi
+      wenv=$WAIT_LOOP_ENV
+      r_nonce=$(printf '%s' "$wenv" | jq -r '.nonce // empty' 2>/dev/null || true)
+      r_acct=$(printf '%s' "$wenv" | jq -r '.account // "-"' 2>/dev/null || printf '%s' '-')
+      r_cfg=$(printf '%s' "$wenv" | jq -r '.config_dir // empty' 2>/dev/null || true)
+      wwhy=$(gate_launch_route_why "$wenv")
+      if [ -n "$resume" ] && gate_env_migrated "$wenv"; then
+        if gate_migrate_prompt "$kind" "$seg" "$resume" \
+           && GATE_REENTRY_CARD=$(gate_reentry_card_write "$seg#$attempt" "$kind" "$resume" \
+                                    "$(session_uuid "$seg" "$attempt")" "$wenv"); then
+          break
+        fi
+        GATE_REENTRY_CARD=""
+        [ -z "$r_nonce" ] || route_lease_release "$(run_pace_root)/leases" "$RUN_ID" "$r_lineage" "$r_nonce" >/dev/null 2>&1 || true
+        wnomig=$(cc_waiting_field "$wm" '이관금지' | tr -d '[:space:]')
+        if [ "$wnomig" = "1" ] || ! wait_marker_set "$wm" '이관금지' 1; then
+          gate_sup_wait_refuse "$wwhy — 이관 새 세션의 프롬프트나 재진입 카드를 마련하지 못했고 묶인 계정 대기로 돌릴 수 없다"
+          wait_drop "$wm"
+          rm -f "$RUN_DIR/$seg.sup" "$RUN_DIR/$seg.sup.start" "$RUN_DIR/$seg.launch.taken"
+          return 0
+        fi
+        log "계정 이관 — $seg 의 새 세션 프롬프트나 재진입 카드를 마련하지 못해 부여를 돌려주고 묶인 계정에서 계속 기다린다"
+        continue
+      fi
+      if [ "$wdel" = "1" ] && ! gate_sup_delegate_grant_ok "$seg" "$r_bound" "$wenv"; then
+        [ -z "$r_nonce" ] || route_lease_release "$(run_pace_root)/leases" "$RUN_ID" "$r_lineage" "$r_nonce" >/dev/null 2>&1 || true
+        gate_sup_wait_refuse "위임 불성립 — 대기 끝 부여가 이관 새 세션도, 리셋 뒤 관측으로 한도 해제가 보이는 묶인 계정 부여도 아니다 ($wwhy)"
+        wait_drop "$wm"
+        rm -f "$RUN_DIR/$seg.sup" "$RUN_DIR/$seg.sup.start" "$RUN_DIR/$seg.launch.taken"
+        return 0
+      fi
+      break
+    done
     # THE END IS READ ONCE MORE AFTER THE LEASE ROW, the last row before the
     # spawn: the loop read it on the grant, and synthesizing the instructions
     # under the granted account takes long enough for a boundary to land.
@@ -54049,13 +54458,20 @@ gate_verb_supervise_stage() {
     # `gate_fresh_session_prompt` builds for the kind: it names the skill and
     # the document, and the answer card, when there is one, still reaches it
     # through CC_PIPELINE_HALT_ANSWER.
-    if [ -n "$resume" ] && gate_route_env_fresh "$wenv"; then
-      log "시각 발행 이관 — $seg 는 대기 끝에 세션 $resume 을 재부착하지 않고 새 세션으로 뜬다"
+    # An exhausted resume's move takes the prompt settled in the loop above.
+    if [ -n "$resume" ] && [ -n "$GATE_REENTRY_CARD" ]; then
+      log "계정 이관 — $seg 는 대기 끝에 세션 $resume 을 재부착하지 않고 새 세션으로 뜬다"
+      resume=""
+      gate_argv_prompt_restore "$GATE_MIG_PROMPT" "$@"
+      set -- "${GATE_RESTORED_ARGV[@]}"
+      log "계정 이관 — $seg 의 새 세션은 재부착 문장이 아니라 디스패치 프롬프트로 뜬다"
+    elif [ -n "$resume" ] && gate_route_env_fresh "$wenv"; then
+      log "계정 이관 — $seg 는 대기 끝에 세션 $resume 을 재부착하지 않고 새 세션으로 뜬다"
       resume=""
       if gate_fresh_session_prompt "$kind" "$disp_set" "$disp_p"; then
         gate_argv_prompt_restore "$GATE_FRESH_PROMPT" "$@"
         set -- "${GATE_RESTORED_ARGV[@]}"
-        log "시각 발행 이관 — $seg 의 새 세션은 재부착 문장이 아니라 디스패치 프롬프트로 뜬다"
+        log "계정 이관 — $seg 의 새 세션은 재부착 문장이 아니라 디스패치 프롬프트로 뜬다"
       else
         warn "the wait launch handed down no dispatch prompt ($seg) — the new session starts with the argv as handed over"
       fi
@@ -54086,6 +54502,7 @@ gate_verb_supervise_stage() {
       gate_stage_instructions_record "$(session_uuid "$seg" "$attempt")" "$instr"
     fi
     [ -n "$resume" ] || [ -z "$launch_dir" ] || gate_stage_launch_dir_record "$(session_uuid "$seg" "$attempt")" "$launch_dir"
+    [ -n "$resume" ] || gate_dispatch_prompt_record "$(session_uuid "$seg" "$attempt")" "$@"
   fi
   # The plugin root the wrapper injects, so the stage's slash commands resolve.
   # This assignment was once deleted by an edit that moved the block above it;
@@ -54285,6 +54702,17 @@ gate_verb_supervise_stage() {
     CC_PIPELINE_HALT_ANSWER=$(gate_halt_card_path "$seg#$attempt")
   else
     unset CC_PIPELINE_HALT_ANSWER
+  fi
+  # THE RE-ENTRY CARD, when a `resume-migrated` grant's launch wrote one for
+  # this attempt's new session. Its path follows from the session id, so the
+  # token carries nothing new; a `--resume` re-attachment, and every launch
+  # with no card, gets no variable, whatever this process inherited. The boot
+  # re-entry marker `CC_PIPELINE_REENTRY` is not touched here.
+  if [ -z "$resume" ] && [ -f "$(gate_reentry_card_path "$(session_uuid "$seg" "$attempt")")" ]; then
+    local -x CC_PIPELINE_REENTRY_CARD
+    CC_PIPELINE_REENTRY_CARD=$(gate_reentry_card_path "$(session_uuid "$seg" "$attempt")")
+  else
+    unset CC_PIPELINE_REENTRY_CARD
   fi
   CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS="${CC_ORCH_BG_WAIT_CEILING_MS:-14400000}" \
   CC_CLAUDE_BIN="$CLI_BIN" \
@@ -56279,7 +56707,7 @@ gate_verb_wait() {
   # gate_verb_wait <segment> <interval-seconds> <timeout-seconds>
   #
   # Block until the segment's dispatched stage terminates, then exit with the
-  # stage's own rc — or 11/12/13/14/16/20 (see the exit-code table at the top).
+  # stage's own rc — or 11/12/13/14/16/20/21 (see the exit-code table at the top).
   #
   # THE AUTHORITY IS THE LEDGER READ IN STEP (3); STEP (1) IS A FAST PATH IN
   # FRONT OF IT. This call's own prelude may have just settled the segment, and
@@ -56308,7 +56736,9 @@ gate_verb_wait() {
   #       of that attempt → 16 (the supervisor parked before spawning)
   #   (3c) pinned, neither row, and a `stage-wait` row of that lineage whose
   #       `근거` is `lease-hold-busy` or `lease-hold-lost` → 20 (the supervisor
-  #       could not hold its lease and launched nothing)
+  #       could not hold its lease and launched nothing); one whose `근거` is
+  #       `wait-end-refused` → 21 (the wait ended on a grant its launch does
+  #       not take, and nothing was launched)
   #   (4) no `<seg>.attempt` → 11
   #   (5) pinned but no row: wait one grace period, re-run (2)/(3); still
   #       nothing → remove `.sup`/`.sup.start`/`.launch`, exit 14
@@ -56385,15 +56815,24 @@ gate_verb_wait() {
     # It is a wait for a resource, read before (5) so the attempt is not taken
     # for a launch that failed: the shift dispatches the step again. A
     # `stage-wait` row of the same lineage with any other cause is a heartbeat
-    # and is not read here.
-    local hold_cause="" hr hc
+    # and is not read here. A waiting supervisor that ended on a grant its launch
+    # does not take leaves the `wait-end-refused` cause row instead: that is the
+    # delegation not taking, read as the act's 21, and never as a park.
+    local hold_cause="" wait_refused=0 hr hc
     while IFS= read -r hr; do
       [ -n "$hr" ] || continue
       hc=$(gate_row_field "$hr" '근거')
-      case "$hc" in lease-hold-busy|lease-hold-lost) hold_cause=$hc ;; esac
+      case "$hc" in
+        lease-hold-busy|lease-hold-lost) hold_cause=$hc ;;
+        wait-end-refused) wait_refused=1 ;;
+      esac
     done <<EOF
 $( { gate_rows 'stage-wait' | cc_rows_naming_lineage "B:$seg#$attempt"; } 2>/dev/null || true )
 EOF
+    if [ "$wait_refused" = "1" ]; then
+      printf '%s [wait] %s 대기 끝 거부 — 시도 %s — rc=%s\n' "$(now_iso)" "$seg" "$attempt" "$GATE_EXIT_DELEGATE"
+      return "$GATE_EXIT_DELEGATE"
+    fi
     if [ -n "$hold_cause" ]; then
       printf '%s [wait] %s 자원 대기 — 원인 %s — 시도 %s — rc=%s\n' "$(now_iso)" "$seg" "$hold_cause" "$attempt" "$GATE_EXIT_WAIT_LEASE_HOLD"
       return "$GATE_EXIT_WAIT_LEASE_HOLD"
@@ -61497,6 +61936,8 @@ gate_launch_shift() {
   # it so that no banner rises from a process with no seat; the shift and its
   # stages are already "not the router" by `CC_PIPELINE_SHIFT_ID`, and a test
   # run inside a stage must not inherit a fourth marker it never set.
+  # `CC_PIPELINE_REENTRY_CARD` is cleared beside it: a re-entry card belongs to
+  # the one stage launch that wrote it, never to a shift.
   #
   # THE VISUAL PUBLISH STAGE'S TWO VARIABLES ARE CLEARED as for every kind but
   # that one: a shift launched from inside that stage would otherwise load the
@@ -61518,6 +61959,7 @@ gate_launch_shift() {
   CC_PIPELINE_SEGMENT= \
   CC_PIPELINE_STAGE_ID= \
   CC_PIPELINE_REENTRY= \
+  CC_PIPELINE_REENTRY_CARD= \
   CC_PIPELINE_SHIFT_ID="$RUN_ID#$n" \
   CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$(gate_auto_resolve_enabled && printf 1 || printf 0)" \
   bash "$wrapper" \
