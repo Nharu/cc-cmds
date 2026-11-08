@@ -5,7 +5,7 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [3.40.2] - 2026-11-09
+## [3.41.2] - 2026-11-09
 
 한 세션이 연 런 가운데 끝나지 않은 것이 둘 이상이면 autopilot 의 재킥오프 판별이 최신 런 하나로만 판정해, 더 오래된 끝나지 않은 런을 조용히 놓치던 결함을 고쳤다. 이제 판별은 그런 런들을 후보로 내고 사람이 이어갈 런을 고르며, 인자 끝에 런 id 를 붙이면 그 런 하나만 판정한다.
 
