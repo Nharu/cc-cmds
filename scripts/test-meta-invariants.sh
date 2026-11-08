@@ -920,7 +920,10 @@ for lit in \
   'reads the line again with `visual-check.sh confirm <document>` right before the Claude Design publish (K1 of a new version or of the first publish) and right before its first local write.' \
   'When the re-read now prints a line that differs from the line this run expects and is a `사람 승인 — 문서 <key>` line whose key is not this document'"'"'s' \
   'another document'"'"'s approval that already stood when Step 1.3 kept the line included' \
-  'The line this run expects is the line Step 1.3 kept, and, once this run has rewritten the confirmation line itself (a reopening'"'"'s waiting line), the line `confirm` prints for what it wrote.' \
+  'The line this run expects is the line Step 1.3 kept — on row 13, the `기대 확인=` piece of the failed record it answers instead' \
+  'a failed record without the piece expects no other document'"'"'s `사람 승인` line — and, once this run has rewritten the confirmation line itself (a reopening'"'"'s waiting line), the line `confirm` prints for what it wrote.' \
+  '다시 읽기의 기대하는 줄은 Step 1.3 이 받은 줄이 아니라 실패 기록의 `기대 확인=` 조각이고, 그 조각이 없으면 다른 문서 키의 `사람 승인` 줄은 모두 기대하는 줄과 다르다' \
+  '`수정 <n>회`, and `기대 확인=<the line this invocation expected at the halt' \
   '다시 읽은 확인 줄이 이 런이 기대하는 줄과 다르고 다른 문서 키의 `사람 승인` 이다' \
   '`디자인-시스템-판정` `승인` 또는 `수정 요청` 으로 들어왔는데 확인 줄이 이미 다른 문서 키의 `사람 승인` 이다(Step 2a 14 행)' \
   'every row but 7 and 14, which halt first'; do
@@ -930,17 +933,27 @@ for lit in \
     bad "visual-publish-unattended 문면의 다른 문서 승인 줄" "「${lit}」가 없다"
   fi
 done
-if grep -qF -- '그 런이 기대하는 줄(진입 때 읽은 줄, 또는 그 런이 스스로 고쳐 쓴 줄)과 다르고 다른 문서 키의 `사람 승인` 이면 줄을 지우지도 쓰지도 않고 멈춘다' "$VP_SIDECAR"; then
+if grep -qF -- '그 런이 기대하는 줄(진입 때 읽은 줄 — 디자인 시스템 국면의 `발행-실패` 에 대한 `다시 발행` 이면 실패 기록의 `기대 확인=` 조각, 그 조각이 없으면 다른 문서 키의 `사람 승인` 은 모두 다른 줄 — 또는 그 런이 스스로 고쳐 쓴 줄)과 다르고 다른 문서 키의 `사람 승인` 이면 줄을 지우지도 쓰지도 않고 멈춘다' "$VP_SIDECAR"; then
   ok "visual sidecar 계약이 다른 문서의 승인 줄을 덮지 않는다"
 else
   bad "visual sidecar 계약의 다른 문서 승인 줄" "「그 런이 기대하는 줄(…)과 다르고 다른 문서 키의 \`사람 승인\` 이면 줄을 지우지도 쓰지도 않고 멈춘다」가 없다"
 fi
+# A re-publish after a design system publish failure runs in a new session
+# whose kept line may already be another document's approval written while
+# the failure halt waited, so its expected line comes from the failed record.
+for old in '쓰는 쪽이 진입 때 받은 `confirm` 출력이고' '그 런이 기대하는 줄(진입 때 읽은 줄, 또는 그 런이 스스로 고쳐 쓴 줄)'; do
+  if grep -qF -- "$old" "$VP_SIDECAR"; then
+    bad "visual sidecar 계약의 옛 기대하는 줄 정의" "「${old}」가 남았다"
+  else
+    ok "visual sidecar 계약에 옛 기대하는 줄 정의 「${old}」가 없다"
+  fi
+done
 if grep -qF -- '진입 때 이미 서 있던 다른 문서의 승인은 이 정지에 걸리지 않고, 디자인 시스템 다시 열기가 그 줄을 `대기` 로 고쳐 써' "$VP_SIDECAR"; then
   ok "visual sidecar 계약이 진입 때 서 있던 승인 위의 다시 열기를 막지 않는다"
 else
   bad "visual sidecar 계약의 진입 때 승인 위 다시 열기" "「진입 때 이미 서 있던 다른 문서의 승인은 이 정지에 걸리지 않고, …」가 없다"
 fi
-for old in 'no consumer refuses a key mismatch' 'the key of the run answered first remains' 'the confirmation line stays as it is — waiting.' 'the confirmation line stays waiting and the screen slices stay parked' 'When it now prints a `사람 승인 — 문서 <key>` line whose key is not this document' 'Another document'"'"'s approval is never overwritten.'; do
+for old in 'no consumer refuses a key mismatch' 'the key of the run answered first remains' 'the confirmation line stays as it is — waiting.' 'the confirmation line stays waiting and the screen slices stay parked' 'When it now prints a `사람 승인 — 문서 <key>` line whose key is not this document' 'Another document'"'"'s approval is never overwritten.' 'The line this run expects is the line Step 1.3 kept, and,' 'the only row that reaches such a line'; do
   if grep -qF -- "$old" "$VP_SKILL"; then
     bad "visual-publish-unattended 문면의 옛 문장" "「${old}」가 남았다"
   else
