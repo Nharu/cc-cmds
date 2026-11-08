@@ -921,8 +921,9 @@ for lit in \
   'When the re-read now prints a line that differs from the line this run expects and is a `사람 승인 — 문서 <key>` line whose key is not this document'"'"'s' \
   'another document'"'"'s approval that already stood when Step 1.3 kept the line included' \
   'The line this run expects is the line Step 1.3 kept — on row 13, the `기대 확인=` piece of the failed record it answers instead' \
-  'a failed record without the piece expects no other document'"'"'s `사람 승인` line — and, once this run has rewritten the confirmation line itself (a reopening'"'"'s waiting line), the line `confirm` prints for what it wrote.' \
-  '다시 읽기의 기대하는 줄은 Step 1.3 이 받은 줄이 아니라 실패 기록의 `기대 확인=` 조각이고, 그 조각이 없으면 다른 문서 키의 `사람 승인` 줄은 모두 기대하는 줄과 다르다' \
+  'a failed record without the piece, or whose piece reads `없음`, expects no other document'"'"'s `사람 승인` line, and a failure record such an invocation writes carries `기대 확인=없음` — and, once this run has rewritten the confirmation line itself (a reopening'"'"'s waiting line), the line `confirm` prints for what it wrote.' \
+  '다시 읽기의 기대하는 줄은 Step 1.3 이 받은 줄이 아니라 실패 기록의 `기대 확인=` 조각이고, 그 조각이 없거나 `없음` 이면 다른 문서 키의 `사람 승인` 줄은 모두 기대하는 줄과 다르다' \
+  'a reopening (rows 11 and 12) is the only row to reach such a line, and it rewrites it to waiting' \
   '`수정 <n>회`, and `기대 확인=<the line this invocation expected at the halt' \
   '다시 읽은 확인 줄이 이 런이 기대하는 줄과 다르고 다른 문서 키의 `사람 승인` 이다' \
   '`디자인-시스템-판정` `승인` 또는 `수정 요청` 으로 들어왔는데 확인 줄이 이미 다른 문서 키의 `사람 승인` 이다(Step 2a 14 행)' \
@@ -933,7 +934,7 @@ for lit in \
     bad "visual-publish-unattended 문면의 다른 문서 승인 줄" "「${lit}」가 없다"
   fi
 done
-if grep -qF -- '그 런이 기대하는 줄(진입 때 읽은 줄 — 디자인 시스템 국면의 `발행-실패` 에 대한 `다시 발행` 이면 실패 기록의 `기대 확인=` 조각, 그 조각이 없으면 다른 문서 키의 `사람 승인` 은 모두 다른 줄 — 또는 그 런이 스스로 고쳐 쓴 줄)과 다르고 다른 문서 키의 `사람 승인` 이면 줄을 지우지도 쓰지도 않고 멈춘다' "$VP_SIDECAR"; then
+if grep -qF -- '그 런이 기대하는 줄(진입 때 읽은 줄 — 디자인 시스템 국면의 `발행-실패` 에 대한 `다시 발행` 이면 실패 기록의 `기대 확인=` 조각, 그 조각이 없거나 `없음` 이면 다른 문서 키의 `사람 승인` 은 모두 다른 줄 — 또는 그 런이 스스로 고쳐 쓴 줄)과 다르고 다른 문서 키의 `사람 승인` 이면 줄을 지우지도 쓰지도 않고 멈춘다' "$VP_SIDECAR"; then
   ok "visual sidecar 계약이 다른 문서의 승인 줄을 덮지 않는다"
 else
   bad "visual sidecar 계약의 다른 문서 승인 줄" "「그 런이 기대하는 줄(…)과 다르고 다른 문서 키의 \`사람 승인\` 이면 줄을 지우지도 쓰지도 않고 멈춘다」가 없다"
