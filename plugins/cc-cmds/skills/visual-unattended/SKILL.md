@@ -172,6 +172,16 @@ Re-check the boundary gate against the Step 2 baselines; a mismatch → halt at 
 
 디자인 시스템을 사람 확인으로 넘겼습니다.
 
+## Re-entered on a re-entry card
+
+When `CC_PIPELINE_REENTRY_CARD` names a card whose `**스테이지**` equals `CC_PIPELINE_STAGE_ID`, the gate moved a resume whose bound account ran out to this new session on another account (`${CLAUDE_SKILL_DIR}/../_common/pipeline-sidecar.md` §4.2). Read the card once, at entry, and nothing of the cut session's transcript. Run the steps as written — the drafts the cut session saved are what Step 1 already reads:
+
+- **A sidecar at `로컬 초안`** of this document → item 7 inherits it: its screen files, its `**검토**` count and its `**다듬기**` lines stand, Step 3 generates no screen again, and the review loop continues from the next round. A round the cut session started but did not record in `**검토**` is run again.
+- **A sidecar at `검토 통과`** → the reuse check of item 4 takes it, and the stage ends as that branch ends, generating nothing.
+- **No sidecar** → the cut session saved no draft the stage can take. Go on as a first attempt; any screen file it left is one of this stage's exempt outputs and Step 3 writes over it.
+
+Step 2 makes a new witness directory and takes the baselines afresh, as it does for every attempt. The cut session's renders and review scratch are not read.
+
 ## Resumed turns
 
 A `system-mismatch` or `output-present` halt is answered inside the same run by re-attaching this session with the halt record and the chosen option in the prompt; the gate's re-entry table holds no row for this stage, so no fresh session is handed a card. On such a turn:

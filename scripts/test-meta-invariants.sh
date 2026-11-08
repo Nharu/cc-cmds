@@ -1047,6 +1047,24 @@ for pair in "리드:$AP_ROUTER" "교대:$RS_CORPUS"; do
 done
 check "두 사본의 이어 가기 프롬프트가 바이트 동일하다" "$reattach_prompt_rs" "$reattach_prompt"
 
+# THE DELEGATED RE-ATTACHMENT, one paragraph in both copies: when none of the
+# three signs that a limit cleared holds, a cut on an inventory account is
+# handed to the router once with `--limit-delegate`. The shift and the lead
+# read the same rule — when the delegation is spent, which answers launch, and
+# what the gate's refusal leaves — so the two paragraphs are compared byte for
+# byte, and each must name the flag, the rationale marker and the exit code.
+reattach_delegate() {
+  reattach_section "$1" | grep -F -- '**When none of (a), (b) and (c) holds, a cut on an account can still be delegated once.**' || true
+}
+rd_lead=$(reattach_delegate "$AP_ROUTER")
+rd_shift=$(reattach_delegate "$RS_CORPUS")
+check "두 사본의 위임 갈래 문단이 한 줄씩 있다" \
+  "$(printf '%s\n' "$rd_lead" | grep -c . || true)/$(printf '%s\n' "$rd_shift" | grep -c . || true)" "1/1"
+check "두 사본의 위임 갈래 문단이 바이트 동일하다" "$rd_shift" "$rd_lead"
+for lit in '--limit-delegate' "'한도 해제 근거=이관 판정 위임'" 'exit `21`' '`resume-unbound`' '`wait` returns `21`'; do
+  check "위임 갈래 문단이 「${lit}」을 싣는다" "$(printf '%s\n' "$rd_shift" | grep -cF -- "$lit" || true)" "1"
+done
+
 # THE RULES AROUND THE RE-ATTACHMENT, which all sit outside the section the
 # extraction above cuts out — the fourth and fifth ending reasons, the gate's `무기록` row,
 # a handoff entry read as a past observation, the seat's exception for a person

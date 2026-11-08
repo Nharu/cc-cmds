@@ -56,7 +56,7 @@ The attended skill marks its ask points with a judgment grade (`${CLAUDE_SKILL_D
 
 ### Steps 0–2
 
-**Read Step 0, Step 1 and Step 2 of `design-discuss-unattended` and follow them**, with two differences. Its re-entry exemption of the document-present guard and its **Re-entered with a carried answer** do not apply here: a halt of this design flow is not in the gate's re-entry table, so a person's answer to it comes back only by re-attaching the halted session, never as a card to a fresh one. And the default roster under driver dispatch is this one, frozen here and read, never chosen.
+**Read Step 0, Step 1 and Step 2 of `design-discuss-unattended` and follow them**, with two differences. Its re-entry exemption of the document-present guard and its **Re-entered with a carried answer** do not apply here: a halt of this design flow is not in the gate's re-entry table, so a person's answer to it comes back only by re-attaching the halted session, never as a card to a fresh one. Its **Re-entered on a re-entry card** applies here, with the guard's exemption for that card: a re-entry card (`CC_PIPELINE_REENTRY_CARD`) does not come from that table, and this flow re-enters on it at the same points. And the default roster under driver dispatch is this one, frozen here and read, never chosen.
 
 ```
 - `설계 로스터` | 역할=architecture | 범위=the requirement's structure, contracts and interfaces across the affected surfaces, and the alternatives to them | 모델=opus
@@ -117,6 +117,8 @@ Driver dispatch only: `CC_PIPELINE_RUN_ID`, `CC_PIPELINE_RUN_DIR`, `CC_PIPELINE_
 2. **Run steps 1–9 from the top, from what is on disk** — the document, the registry and the run directory's `split/` output — and apply the card's option at the site the record names as the answer to its `**질문 문면**`. The registry is idempotent on resume (steps 5 and 7), so the steps before that site redo nothing an earlier attempt finished. Do not ask that question again. There is no document-present exemption: this mode saves no document and has no such guard.
 3. **If the first site that fails is not the record's, or its question is not the record's**, do not apply the answer: write a new halt record for the site reached now, with the card's path in its `관측 상세`.
 4. **Never rewrite the carried record** — the card's `**중단 기록**` belongs to the earlier attempt, and the answer is bound to its digest.
+
+**Re-entered on a re-entry card (split mode).** When `CC_PIPELINE_REENTRY_CARD` names a card whose `**스테이지**` equals `CC_PIPELINE_STAGE_ID`, the gate moved a resume whose bound account ran out to this new session (`${CLAUDE_SKILL_DIR}/../_common/pipeline-sidecar.md` §4.2). Read it once, at entry; an answer card set too comes first. Run steps 1–9 from the top, from the document and the registry: the registry is the idempotent ledger of what the cut session published (step 5 skips a `발행됨` or `발행중` row's query, step 7's `resolve` settles a `발행중` row), so nothing published is published again. `OUT` is this attempt's own directory and is built afresh by step 6.
 
 ## Constraints
 
