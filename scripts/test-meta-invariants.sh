@@ -929,7 +929,7 @@ if grep -qF -- '다른 문서 키의 `사람 승인` 이면 줄을 지우지도 
 else
   bad "visual sidecar 계약의 다른 문서 승인 줄" "「다른 문서 키의 \`사람 승인\` 이면 줄을 지우지도 쓰지도 않고 멈춘다」가 없다"
 fi
-for old in 'no consumer refuses a key mismatch' 'the key of the run answered first remains'; do
+for old in 'no consumer refuses a key mismatch' 'the key of the run answered first remains' 'the confirmation line stays as it is — waiting.' 'the confirmation line stays waiting and the screen slices stay parked'; do
   if grep -qF -- "$old" "$VP_SKILL"; then
     bad "visual-publish-unattended 문면의 옛 문장" "「${old}」가 남았다"
   else
