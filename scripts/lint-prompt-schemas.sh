@@ -54,6 +54,11 @@
 #      exactly `요구` / `문서표현`. The driver and the gate put the value on
 #      every review line and the checker's (g) asserts on it, so a field
 #      cannot appear or vanish without this lint noticing.
+#   9. `entry-plan.schema.json` carries `design_delivery` in both sets, and its
+#      enum is exactly `slices` / `tickets`. The key names how a single design
+#      is delivered, `manifest_split_run` and `gate_split_run` branch on it and
+#      the checker's (h) asserts on it, so a value cannot appear or vanish
+#      without this lint noticing.
 #
 # Usage:
 #   bash scripts/lint-prompt-schemas.sh
@@ -355,6 +360,33 @@ if [[ -f "$ENTRY" ]] && jq empty "$ENTRY" 2>/dev/null; then
   fi
   if [[ "$expand_ok" == "1" ]]; then
     echo "OK:   $rel — review_expand pair present on both sides, enum pinned"
+  else
+    fail=1
+  fi
+fi
+
+# ---------- Rule 9: the design-delivery key in entry-plan ---------------------
+
+if [[ -f "$ENTRY" ]] && jq empty "$ENTRY" 2>/dev/null; then
+  rel=${ENTRY#"$repo_root/"}
+  delivery_ok=1
+  in_props=$(jq -r '(.properties // {}) | has("design_delivery")' "$ENTRY")
+  in_req=$(jq -r '(.required // []) | index("design_delivery") != null' "$ENTRY")
+  if [[ "$in_props" != "true" ]]; then
+    echo "FAIL: $rel — 'design_delivery' is missing from .properties" >&2
+    delivery_ok=0
+  fi
+  if [[ "$in_req" != "true" ]]; then
+    echo "FAIL: $rel — 'design_delivery' is missing from .required" >&2
+    delivery_ok=0
+  fi
+  delivery_enum=$(jq -c '.properties.design_delivery.enum // []' "$ENTRY")
+  if [[ "$delivery_enum" != '["slices","tickets"]' ]]; then
+    echo "FAIL: $rel — design_delivery enum must be exactly [\"slices\",\"tickets\"], found $delivery_enum" >&2
+    delivery_ok=0
+  fi
+  if [[ "$delivery_ok" == "1" ]]; then
+    echo "OK:   $rel — design_delivery present on both sides, enum pinned"
   else
     fail=1
   fi

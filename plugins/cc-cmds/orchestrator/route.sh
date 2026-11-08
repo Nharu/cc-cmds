@@ -330,7 +330,8 @@ def rt_lending_why:
 # 인벤토리 행 하나의 대여 등록. 예약이면서 무인 꺼짐인 행에 `auto` 일 때만이다.
 def rt_enrolled: .interactive_lending == "auto" and .interactive_reserved == true and .unattended == "disabled";
 # 인벤토리 행 하나의 발행 전용. 키가 불리언 참이고, 예약이 아니고, 무인 꺼짐이고, 대여 `auto`
-# 가 아닐 때만이다. 같은 계정의 두 번째 설정 디렉터리로, 고정된 발행 스테이지만 이 행에 든다.
+# 가 아닐 때만이다. 같은 계정의 두 번째 설정 디렉터리일 수도, 별개 계정의 디렉터리일 수도
+# 있고, 어느 쪽이든 고정된 발행 스테이지만 이 행에 든다.
 def rt_publish_row: .publish_only == true and .interactive_reserved != true and .unattended == "disabled"
   and .interactive_lending != "auto";
 # 발행 예비분 상한(bp). 발행 전용 행의 그룹 7일 창 실효 사용량이 이보다 작아야 새로 입장한다.
@@ -773,6 +774,12 @@ def rt_prep($schema):
   | {c: $c, schema: $schema, fresh: $fresh, orgs: $orgs, items: $items, groups: $gv,
      lend_groups: ([$inv[] | select(rt_enrolled) | rt_group_of($orgs; .id)] | unique),
      pin: (if (($c.seat.lane? // null) | type) == "string" and $c.seat.lane != "" then $c.seat.lane else null end),
+     # 고정의 출처와 이관 가능. 출처는 고정이 있고 문맥이 두 값 가운데 하나를 실었을
+     # 때만이다 — `fleet-lane` 에서 얻은 고정에는 출처가 없다.
+     pin_source: (if (($c.seat.lane? // null) | type) == "string" and $c.seat.lane != ""
+                     and (($c.seat.pin_source? // null) == "host" or ($c.seat.pin_source? // null) == "run-record")
+                  then $c.seat.pin_source else null end),
+     migratable: ($c.request.migratable? == true),
      accounts: ([$inv[] | rt_aview($c; $orgs; $fresh; $gv; $donors; $bgroups)] | sort_by(.id)),
      okey: (if (($c.request.run_id | type) == "string") and (($c.request.lineage | type) == "string")
             then rt_key($c.request.run_id; $c.request.lineage) else null end),
@@ -1053,11 +1060,38 @@ def rt_lend_fail($adm):
 def rt_publish_admit($p; $a):
   rt_admit_core($p.c; $p.groups[$a.group]; $a.exhausted_until)
   + {admitted: ($a.publish.why == null), failed: (if $a.publish.why == null then [] else ["publish"] end), ready_at: null};
-# 고정 행의 종류. 발행 전용 행, 대여 등록 행(발행 전용 표시가 결함인 행은 빼고), 그 밖이다.
-def rt_pin_kind($a):
-  if $a.publish_row == true then "publish"
+# 이관 판정에 드는 요청. 요청이 이관 가능을 싣고 고정에 출처가 있을 때만이다. 이 술어가
+# 거짓인 요청의 판정은 이관과 무관하게 그대로다.
+def rt_migok($p): $p.migratable == true and $p.pin_source != null;
+# 고정 행의 종류. 런 지역 이관 기록에서 온 고정(이관 고정), 발행 전용 행, 대여 등록 행(발행
+# 전용 표시가 결함인 행은 빼고), 그 밖이다.
+def rt_pin_kind($p; $a):
+  if rt_migok($p) and $p.pin_source == "run-record" then "migrated"
+  elif $a.publish_row == true then "publish"
   elif $a.lend_enrolled == true and ($a.publish_defect != true) then "lend"
   else "other" end;
+# 이관의 7일 창 술어. 그룹 7일 창의 실효 사용량이 발행 예비분 상한 이상이거나 7일 창이
+# 소진됐을 때다. 창을 모르면 사용량이 숫자가 아니라 거짓이다.
+def rt_mig7($G):
+  (rt_ueff($G.windows.seven_day) as $u | ($u | type) == "number" and $u >= rt_publish_cap_bp)
+  or ($G.windows.seven_day.state == "exhausted");
+# 고정 계정이 이관을 받아야 하는가. 발행 행 고정은 예비분 상한, 또는 소진이면서 7일 창
+# 술어일 때다. 이관 고정은 7일 창 술어일 때다. 그 밖의 고정은 이관하지 않는다.
+def rt_mig_due($p):
+  rt_av($p; $p.pin) as $a
+  | if $a == null then false
+    else $p.groups[$a.group] as $G
+      | rt_pin_kind($p; $a) as $k
+      | if $k == "publish" then ($a.publish.why == "reserve") or ($a.publish.why == "exhausted" and rt_mig7($G))
+        elif $k == "migrated" then rt_mig7($G)
+        else false end end;
+# 이관 봉투와 PARK 에 싣는 원인. 발행 행 고정은 발행 예비분 술어의 원인, 이관 고정은 7일
+# 창이 소진이면 `exhausted`, 상한에 닿았으면 `cap` 이다.
+def rt_mig_why($p):
+  rt_av($p; $p.pin) as $a
+  | if rt_pin_kind($p; $a) == "migrated" then
+      (if $p.groups[$a.group].windows.seven_day.state == "exhausted" then "exhausted" else "cap" end)
+    else $a.publish.why end;
 def rt_admit($p; $a):
   if $a.publish_row == true then rt_publish_admit($p; $a)
   else rt_admit_core($p.c; $p.groups[$a.group]; $a.exhausted_until) as $adm
@@ -1241,91 +1275,6 @@ def rt_rec_new($p; $e):
 def rt_rec_hold($p):
   $p.own | del(.live, .path) | .holders = ((.holders + ($p.c.request.holders // [])) | unique_by(.pid));
 
-def rt_resume($p):
-  $p.own as $o
-  | if $o != null and $o.kind == "grant" and $o.live == true then
-      rt_av($p; $o.account) as $a
-      | $p.groups[rt_group_of($p.orgs; $o.account)] as $G
-      | (if $a != null then $a.class else rt_class_of($G; null) end) as $cls
-      | if $p.pin != null and $o.account != $p.pin then
-          rt_env(rt_park("resume-bound-ineligible"; "대여 좌석에 고정된 런의 재개가 다른 계정에 묶여 있다 — 계보를 새로 시작한다"); "none"; null)
-        # 발행 전용 행이 소진됐으면 기다리지 않는다. 대여 등록 행은 다시 열릴 시각을 알 때만
-        # 기다리고, 모르면 계정과 원인을 밝혀 PARK 한다.
-        elif $cls == "X" and ($a.publish_row? == true) then
-          rt_env(rt_park_publish($p; $a; "exhausted"); "none"; null)
-        elif $cls == "X" then
-          rt_admit_core($p.c; $G; ($a.exhausted_until? // null)) as $adm
-          | if ($a.lend_enrolled? == true) and $adm.ready_at == null then
-              rt_env(rt_park_lend($o.account; "exhausted"; null); "none"; null)
-            else rt_env(rt_wait_c($G.group; $o.account; $adm.ready_at; "resume-bound-exhausted"; $adm.cost); "none"; null) end
-        elif $a != null and $a.login_bad then
-          rt_env(rt_park("resume-logged-out"; "묶인 계정의 로그인이 끊겼다 — 그 설정 디렉터리에서 claude /login 을 한다"); "none"; null)
-        else rt_env(rt_grant_lease($p; $o; "resume-bound"); "hold"; rt_rec_hold($p)) end
-    else
-      $p.c.request.bound_account as $b
-      | if (($b | type) != "string") or $b == "" then
-          rt_env(rt_park("resume-unbound"; "재개할 세션의 계정 기록이 없다 — 계보를 새로 시작한다"); "none"; null)
-        else rt_av($p; $b) as $a
-          | if $a == null then
-              rt_env(rt_park("resume-bound-unknown-account"; "묶인 계정이 인벤토리에 없다 — cc-lane account check"); "none"; null)
-            elif $p.pin != null and $b != $p.pin then
-              rt_env(rt_park("resume-bound-ineligible"; "대여 좌석에 고정된 런의 재개가 다른 계정에 묶여 있다 — 계보를 새로 시작한다"); "none"; null)
-            elif ($a.lend_enrolled == true) and ($a.lend.ok != true) then
-              rt_env(rt_park("resume-bound-ineligible"; "묶인 계정의 대여 닫힘(\($a.lend.why)) — 대여가 다시 열린 뒤 같은 세그먼트를 다시 파견하거나 계보를 새로 시작한다"); "none"; null)
-            # 발행 전용 행에 묶인 재개는 새 기동과 같은 발행 예비분 규칙으로 입장한다. 무인
-            # 사용 대상이 아니라는 아래 갈래보다 앞이라, 로그인·임대 표·차용 기록 검사를 여기서
-            # 스스로 되풀이한다.
-            elif $a.publish_row == true then
-              (if $a.login_bad then
-                 rt_env(rt_park("resume-logged-out"; "묶인 계정의 로그인이 끊겼다 — 그 설정 디렉터리에서 claude /login 을 한다"); "none"; null)
-               elif $p.table_corrupt then
-                 rt_env(rt_park("lease-table-corrupt"; rt_mv(rt_corrupt_path($p))); "none"; null)
-               elif $p.borrow_corrupt then rt_env(rt_park_borrow_corrupt; "none"; null)
-               elif $a.publish.why == null then
-                 rt_grant_new($p; $a; rt_publish_admit($p; $a); "resume-bound") as $e | rt_env($e; "write"; rt_rec_new($p; $e))
-               else rt_env(rt_park_publish($p; $a; $a.publish.why); "none"; null) end)
-            # 무인 사용에서 빠진 이유가 cc 레인의 차용뿐이면 사람을 부르지 않고 기다린다.
-            # 그룹 대표의 대기 기록이 cc-lane 의 체인을 부르고, 차용이 끝나면 다음 질의에서
-            # `borrowed` 가 떨어져 재개가 부여된다. 로그인·임대 표·차용 기록이 깨진 상태는
-            # 사람이 풀어야 하므로 이 갈래에 들지 않고 아래의 PARK 로 간다.
-            elif ($a.lend_enrolled != true) and ($a.unattended == "enabled") and ($a.group_reserved | not)
-                 and ($a.mismatch | not) and (($a.borrowed // null) != null)
-                 and ($a.login_bad | not) and ($p.table_corrupt | not) and ($p.borrow_corrupt | not) then
-              rt_env(rt_wait_c($a.group; $a.id; null; "resume-bound-borrowed"; null); "none"; null)
-            elif (($a.lend_enrolled != true)
-                  and (($a.unattended != "enabled") or $a.group_reserved or (($a.borrowed // null) != null)))
-                 or $a.mismatch then
-              rt_env(rt_park("resume-bound-ineligible"; "묶인 계정이 무인 사용 대상이 아니다 — 계정 정책을 확인하거나 계보를 새로 시작한다"); "none"; null)
-            elif $a.login_bad then
-              rt_env(rt_park("resume-logged-out"; "묶인 계정의 로그인이 끊겼다 — 그 설정 디렉터리에서 claude /login 을 한다"); "none"; null)
-            elif $p.table_corrupt then
-              rt_env(rt_park("lease-table-corrupt"; rt_mv(rt_corrupt_path($p))); "none"; null)
-            elif $p.borrow_corrupt then rt_env(rt_park_borrow_corrupt; "none"; null)
-            else rt_admit($p; $a) as $adm
-              | (if $adm.failed == ["exhausted"] then "resume-bound-exhausted" else "resume-bound-no-room" end) as $why
-              | if $adm.admitted then
-                  rt_grant_new($p; $a; $adm; "resume-bound") as $e | rt_env($e; "write"; rt_rec_new($p; $e))
-                elif rt_past_deadline($p.c; $adm.ready_at) then
-                  [$a.group] as $gs
-                  | rt_pressed($p; $gs; rt_seen_in($p.c)) as $mem
-                  | (if rt_lend_g($p; $a.group) then null else rt_pass_pick($p.c; $p.groups[$a.group]) end) as $pass
-                  | (if rt_past_deadline($p.c; $p.c.now) or rt_lend_g($p; $a.group) then null
-                     elif $pass != null then rt_wait_reserve($a.group; $a.id; $why; $adm.cost; $pass)
-                     else rt_press_pick_pressed($p; $a.group; $mem) as $q
-                       | if $q == null then null
-                         else rt_wait_reserve($a.group; $a.id; $why; $adm.cost; $q) | .reserve.pressed_at_epoch = $q.pressed_at_epoch end
-                     end) as $w
-                  | if $w != null then rt_env($w + {reserve_seen: rt_seen_out($p; $gs; $mem)}; "none"; null)
-                    else rt_env(rt_park_deadline($adm.ready_at); "none"; null) end
-                # 대여 등록 행에 묶인 재개가 끝 시각 없이 막히면 기다리지 않는다.
-                elif ($a.lend_enrolled == true) and $adm.ready_at == null then
-                  rt_env(rt_park_lend($a.id; ($adm.failed[0] // "room"); null); "none"; null)
-                else rt_env(rt_wait_c($a.group; $a.id; $adm.ready_at; $why; $adm.cost); "none"; null)
-                end
-            end
-        end
-    end;
-
 def rt_waitpick($p; $b):
   ([$b[] | select((.ready | type) == "number")] | sort_by([.ready, .g]) | .[0]) as $m
   | (if $m != null then $m.ready else null end) as $until
@@ -1363,6 +1312,182 @@ def rt_nocand($p; $pool):
       rt_env(rt_wait(([$b[] | select(.why == "fifo") | .g] | sort | .[0]); null; null; "fifo-yield"); "none"; null)
     else rt_waitpick($p; $b) end;
 
+# 발행 행 고정이 7일 창 밖의 원인(5시간 창 소진이나 소진 해제 시각)으로만 소진됐을 때의
+# 대기. 그 행 하나를 소진 항목으로 대기 지명에 넘겨, 다시 볼 시각을 입장 판정의 해제
+# 시각으로 둔다 — 보통 요청이 소진으로 기다릴 때와 같은 계산이다.
+def rt_pub_xwait($p; $a):
+  rt_admit_core($p.c; $p.groups[$a.group]; $a.exhausted_until) as $adm
+  | rt_waitpick($p; [{g: $a.group, why: "x", ready: $adm.ready_at, cost: $adm.cost}]);
+
+# 이관 후보가 아닌 계정의 첫 원인. 후보 없음 PARK 의 복구 줄이 계정마다 싣는다.
+def rt_mig_reject($p; $a):
+  $p.groups[$a.group] as $G
+  | if $a.unattended != "enabled" then "unattended-off"
+    elif $a.group_reserved then "group-reserved"
+    elif $a.login_bad then "logged-out"
+    elif $a.mismatch then "mismatch"
+    elif ($a.borrowed // null) != null then "borrowed"
+    elif ($p.fresh | not) then "usage-stale"
+    elif $G.windows.seven_day.state == "unknown" then "window-unknown"
+    elif (rt_ueff($G.windows.seven_day) as $u | (($u | type) == "number") and $u < rt_publish_cap_bp) | not then "seven-day-cap"
+    else null end;
+# 이관을 받을 후보가 하나도 없는 PARK. 계정은 원 고정 계정, `why` 는 이관 원인이다. 복구
+# 줄에 원 계정 그룹의 7일 창 리셋 시각과 후보가 아닌 계정마다의 원인을 싣는다.
+def rt_park_no_successor($p; $from; $why):
+  rt_av($p; $from) as $f
+  | (if $f != null then $p.groups[$f.group].windows.seven_day.resets_at else null end) as $at
+  | ([$p.accounts[] | select(.id != $from) | (.) as $a | "\($a.id)(\(rt_mig_reject($p; $a) // "admit"))"] | join(", ")) as $rs
+  | rt_park_aw("pinned-publish-no-successor";
+      "고정 계정 \($from) 의 주간 사용량이 막혀(\($why)) 이관할 무인 계정이 없다 — 원 계정의 주간 리셋\(rt_at($at)) 뒤 다시 파견하거나 무인 계정을 늘린다. 후보가 아닌 계정: \(if $rs == "" then "없음" else $rs end)";
+      $from; $why);
+# 이관 선택. 후보는 현재 고정 계정이 아니고, 무인 입장 정책을 통과하고, 사용량이 신선하고,
+# 7일 창을 알고, 그 실효 사용량이 발행 예비분 상한 아래인 계정이다. 입장 통과는 후보
+# 조건이 아니다. 후보가 없으면 PARK, 후보 가운데 입장을 통과하고 FIFO 에 막히지 않은
+# 계정이 있으면 7일 창 실효 사용량이 가장 작은(같으면 id 순) 계정의 GRANT, 그런 계정이
+# 없으면 고정 없는 풀이 입장 실패로 기다릴 때와 같은 WAIT 다. GRANT 의 근거는 부른
+# 갈래의 것이고, 재개면 새 세션으로 띄우라는 `fresh` 를 싣는다.
+def rt_mig_pick($p; $from; $why; $basis; $fresh):
+  [$p.accounts[] | select(.id != $from) | select(rt_mig_reject($p; .) == null)] as $cs
+  | if ($cs | length) == 0 then rt_env(rt_park_no_successor($p; $from; $why); "none"; null)
+    else [$cs[] | (.) as $a | rt_admit($p; $a) as $adm | {a: $a, adm: $adm, fifo: rt_fifo_blocked($p; $a.group)}] as $pool
+      | ([$pool[] | select(.adm.admitted and (.fifo | not))]
+         | sort_by([rt_ueff($p.groups[.a.group].windows.seven_day), .a.id]) | .[0]) as $b
+      | if $b == null then rt_nocand($p; $pool)
+        else (rt_grant_new($p; $b.a; $b.adm; $basis) + {migrated: {from: $from, to: $b.a.id, why: $why}}
+              + (if $fresh then {fresh: true} else {} end)) as $e
+          | rt_env($e; "write"; rt_rec_new($p; $e)) end end;
+# 정책 검사에 걸린 이관 고정의 PARK. 계정과 원인을 밝힌다.
+def rt_park_mig_policy($id; $why):
+  rt_park_aw("pinned-lane-ineligible";
+    "이관된 고정 계정 \($id) 이 무인 입장 정책에 맞지 않는다(\($why)) — cc-lane 에서 그 계정의 무인 사용·그룹 예약·설정 디렉터리를 확인하거나 계보를 새로 시작한다";
+    $id; $why);
+# 이관 고정의 보통 입장. 이관 조건이면 이관 선택이고, 아니면 고정 계정 하나를 정책 검사
+# 뒤 보통 무인 계정과 같은 입장 규칙(`rt_admit`, FIFO 미차단)으로 판정한다. 로그인 끊김은
+# 재개와 같은 문면의 PARK, 디렉터리 불일치·무인 켜짐 아님·그룹 예약은 원인을 밝힌 PARK,
+# 차용 중만이면 기다린다. 입장에서 떨어지면 고정 없는 풀과 같은 꼴의 WAIT 다. 고정 요청의
+# 풀 계산과 대여 행 PARK 는 타지 않는다. 이 함수의 WAIT 는 모두 계정 없는 풀 사유다 —
+# `resume-bound-*` 사유는 대기 행 작성기가 재개 구속과 같은 계정을 요구하는데, 새 기동에는
+# 구속이 없고 재개의 구속은 고정 계정과 다른 계정일 수 있다. 차용 중의 대기는 그 그룹의
+# `no-room` 이다.
+def rt_mig_admit($p; $basis; $fresh):
+  rt_av($p; $p.pin) as $a
+  | if rt_mig7($p.groups[$a.group]) then rt_mig_pick($p; $a.id; rt_mig_why($p); $basis; $fresh)
+    elif $a.login_bad then
+      rt_env(rt_park("resume-logged-out"; "묶인 계정의 로그인이 끊겼다 — 그 설정 디렉터리에서 claude /login 을 한다"); "none"; null)
+    elif $a.mismatch then rt_env(rt_park_mig_policy($a.id; "mismatch"); "none"; null)
+    elif $a.unattended != "enabled" then rt_env(rt_park_mig_policy($a.id; "unattended-off"); "none"; null)
+    elif $a.group_reserved then rt_env(rt_park_mig_policy($a.id; "group-reserved"); "none"; null)
+    elif ($a.borrowed // null) != null then rt_env(rt_wait_c($a.group; null; null; "no-room"; null); "none"; null)
+    else rt_admit($p; $a) as $adm
+      | rt_fifo_blocked($p; $a.group) as $fifo
+      | if $adm.admitted and ($fifo | not) then
+          (rt_grant_new($p; $a; $adm; $basis) + (if $fresh then {fresh: true} else {} end)) as $e
+          | rt_env($e; "write"; rt_rec_new($p; $e))
+        else rt_nocand($p; [{a: $a, adm: $adm, fifo: $fifo}]) end end;
+
+# 재개. 이관 고정은 살아 있는 임대가 고정 계정에 있을 때만 그 임대를 잇는다. 임대가 다른
+# 계정에 있거나 살아 있지 않으면 고정 계정을 이관 고정의 보통 입장(`rt_mig_admit`)으로
+# 판정하고, 묶인 계정이 고정 계정과 다르면 그 GRANT 는 새 세션(`fresh`)이다 — 묶인 세션은
+# 다른 설정 디렉터리에 있다.
+def rt_resume($p):
+  $p.own as $o
+  | (rt_migok($p) and $p.pin_source == "run-record") as $mp
+  | if $o != null and $o.kind == "grant" and $o.live == true and (($mp and $o.account != $p.pin) | not) then
+      rt_av($p; $o.account) as $a
+      | $p.groups[rt_group_of($p.orgs; $o.account)] as $G
+      | (if $a != null then $a.class else rt_class_of($G; null) end) as $cls
+      | if $p.pin != null and $o.account != $p.pin then
+          rt_env(rt_park("resume-bound-ineligible"; "대여 좌석에 고정된 런의 재개가 다른 계정에 묶여 있다 — 계보를 새로 시작한다"); "none"; null)
+        # 발행 전용 행이 소진됐으면 기다리지 않는다. 대여 등록 행은 다시 열릴 시각을 알 때만
+        # 기다리고, 모르면 계정과 원인을 밝혀 PARK 한다.
+        elif $cls == "X" and ($a.publish_row? == true) then
+          rt_env(rt_park_publish($p; $a; "exhausted"); "none"; null)
+        elif $cls == "X" then
+          rt_admit_core($p.c; $G; ($a.exhausted_until? // null)) as $adm
+          | if ($a.lend_enrolled? == true) and $adm.ready_at == null then
+              rt_env(rt_park_lend($o.account; "exhausted"; null); "none"; null)
+            else rt_env(rt_wait_c($G.group; $o.account; $adm.ready_at; "resume-bound-exhausted"; $adm.cost); "none"; null) end
+        elif $a != null and $a.login_bad then
+          rt_env(rt_park("resume-logged-out"; "묶인 계정의 로그인이 끊겼다 — 그 설정 디렉터리에서 claude /login 을 한다"); "none"; null)
+        else rt_env(rt_grant_lease($p; $o; "resume-bound"); "hold"; rt_rec_hold($p)) end
+    else
+      (if $o != null and $o.kind == "grant" and $o.live == true then $o.account else $p.c.request.bound_account end) as $b0
+      | (if $mp then $p.pin else $b0 end) as $b
+      | ($mp and $b0 != $p.pin) as $fr
+      | if (($b0 | type) != "string") or $b0 == "" then
+          rt_env(rt_park("resume-unbound"; "재개할 세션의 계정 기록이 없다 — 계보를 새로 시작한다"); "none"; null)
+        else rt_av($p; $b) as $a
+          | if $a == null then
+              rt_env(rt_park("resume-bound-unknown-account"; "묶인 계정이 인벤토리에 없다 — cc-lane account check"); "none"; null)
+            elif $p.pin != null and $b != $p.pin then
+              rt_env(rt_park("resume-bound-ineligible"; "대여 좌석에 고정된 런의 재개가 다른 계정에 묶여 있다 — 계보를 새로 시작한다"); "none"; null)
+            # 이관 고정은 손상 검사 뒤 7일 창 술어에 걸리면 정책 검사보다 먼저 이관 선택이고,
+            # 그 GRANT 는 언제나 새 세션이다. 걸리지 않으면 새 기동과 같은 정책 검사·입장
+            # 규칙·FIFO 로 판정한다 — 아래의 재개 정책 사다리는 타지 않는다.
+            elif $mp then
+              (if $p.table_corrupt then rt_env(rt_park("lease-table-corrupt"; rt_mv(rt_corrupt_path($p))); "none"; null)
+               elif $p.borrow_corrupt then rt_env(rt_park_borrow_corrupt; "none"; null)
+               elif rt_mig7($p.groups[$a.group]) then rt_mig_pick($p; $a.id; rt_mig_why($p); "resume-bound"; true)
+               else rt_mig_admit($p; "resume-bound"; $fr) end)
+            elif ($a.lend_enrolled == true) and ($a.lend.ok != true) then
+              rt_env(rt_park("resume-bound-ineligible"; "묶인 계정의 대여 닫힘(\($a.lend.why)) — 대여가 다시 열린 뒤 같은 세그먼트를 다시 파견하거나 계보를 새로 시작한다"); "none"; null)
+            # 발행 전용 행에 묶인 재개는 새 기동과 같은 발행 예비분 규칙으로 입장한다. 무인
+            # 사용 대상이 아니라는 아래 갈래보다 앞이라, 로그인·임대 표·차용 기록 검사를 여기서
+            # 스스로 되풀이한다.
+            elif $a.publish_row == true then
+              (if $a.login_bad then
+                 rt_env(rt_park("resume-logged-out"; "묶인 계정의 로그인이 끊겼다 — 그 설정 디렉터리에서 claude /login 을 한다"); "none"; null)
+               elif $p.table_corrupt then
+                 rt_env(rt_park("lease-table-corrupt"; rt_mv(rt_corrupt_path($p))); "none"; null)
+               elif $p.borrow_corrupt then rt_env(rt_park_borrow_corrupt; "none"; null)
+               elif $a.publish.why == null then
+                 rt_grant_new($p; $a; rt_publish_admit($p; $a); "resume-bound") as $e | rt_env($e; "write"; rt_rec_new($p; $e))
+               elif rt_migok($p) and rt_mig_due($p) then rt_mig_pick($p; $a.id; $a.publish.why; "resume-bound"; true)
+               elif rt_migok($p) and $a.publish.why == "exhausted" then rt_pub_xwait($p; $a)
+               else rt_env(rt_park_publish($p; $a; $a.publish.why); "none"; null) end)
+            # 무인 사용에서 빠진 이유가 cc 레인의 차용뿐이면 사람을 부르지 않고 기다린다.
+            # 그룹 대표의 대기 기록이 cc-lane 의 체인을 부르고, 차용이 끝나면 다음 질의에서
+            # `borrowed` 가 떨어져 재개가 부여된다. 로그인·임대 표·차용 기록이 깨진 상태는
+            # 사람이 풀어야 하므로 이 갈래에 들지 않고 아래의 PARK 로 간다.
+            elif ($a.lend_enrolled != true) and ($a.unattended == "enabled") and ($a.group_reserved | not)
+                 and ($a.mismatch | not) and (($a.borrowed // null) != null)
+                 and ($a.login_bad | not) and ($p.table_corrupt | not) and ($p.borrow_corrupt | not) then
+              rt_env(rt_wait_c($a.group; $a.id; null; "resume-bound-borrowed"; null); "none"; null)
+            elif (($a.lend_enrolled != true)
+                  and (($a.unattended != "enabled") or $a.group_reserved or (($a.borrowed // null) != null)))
+                 or $a.mismatch then
+              rt_env(rt_park("resume-bound-ineligible"; "묶인 계정이 무인 사용 대상이 아니다 — 계정 정책을 확인하거나 계보를 새로 시작한다"); "none"; null)
+            elif $a.login_bad then
+              rt_env(rt_park("resume-logged-out"; "묶인 계정의 로그인이 끊겼다 — 그 설정 디렉터리에서 claude /login 을 한다"); "none"; null)
+            elif $p.table_corrupt then
+              rt_env(rt_park("lease-table-corrupt"; rt_mv(rt_corrupt_path($p))); "none"; null)
+            elif $p.borrow_corrupt then rt_env(rt_park_borrow_corrupt; "none"; null)
+            else rt_admit($p; $a) as $adm
+              | (if $adm.failed == ["exhausted"] then "resume-bound-exhausted" else "resume-bound-no-room" end) as $why
+              | if $adm.admitted then
+                  rt_grant_new($p; $a; $adm; "resume-bound") as $e
+                  | rt_env($e; "write"; rt_rec_new($p; $e))
+                elif rt_past_deadline($p.c; $adm.ready_at) then
+                  [$a.group] as $gs
+                  | rt_pressed($p; $gs; rt_seen_in($p.c)) as $mem
+                  | (if rt_lend_g($p; $a.group) then null else rt_pass_pick($p.c; $p.groups[$a.group]) end) as $pass
+                  | (if rt_past_deadline($p.c; $p.c.now) or rt_lend_g($p; $a.group) then null
+                     elif $pass != null then rt_wait_reserve($a.group; $a.id; $why; $adm.cost; $pass)
+                     else rt_press_pick_pressed($p; $a.group; $mem) as $q
+                       | if $q == null then null
+                         else rt_wait_reserve($a.group; $a.id; $why; $adm.cost; $q) | .reserve.pressed_at_epoch = $q.pressed_at_epoch end
+                     end) as $w
+                  | if $w != null then rt_env($w + {reserve_seen: rt_seen_out($p; $gs; $mem)}; "none"; null)
+                    else rt_env(rt_park_deadline($adm.ready_at); "none"; null) end
+                # 대여 등록 행에 묶인 재개가 끝 시각 없이 막히면 기다리지 않는다.
+                elif ($a.lend_enrolled == true) and $adm.ready_at == null then
+                  rt_env(rt_park_lend($a.id; ($adm.failed[0] // "room"); null); "none"; null)
+                else rt_env(rt_wait_c($a.group; $a.id; $adm.ready_at; $why; $adm.cost); "none"; null)
+                end
+            end
+        end
+    end;
+
 # 대여 등록 행 고정이 후보를 얻지 못한 원인의 PARK. `$e` 는 그 행의 풀 항목이다. 대여
 # 검사의 사유, 로그인·디렉터리, 입장 판정, FIFO 순으로 첫 원인을 싣는다.
 def rt_lend_block($e):
@@ -1388,13 +1513,18 @@ def rt_new($p; $basis0; $excl):
     elif $p.borrow_corrupt then rt_env(rt_park_borrow_corrupt; "none"; null)
     elif $p.pin != null and (any($p.accounts[]; .id == $p.pin) | not) then rt_env(rt_park_unrouted($p.pin; "valid"); "none"; null)
     # 고정 행은 그 종류의 규칙으로만 입장하고, 막히면 기다리지 않고 계정과 원인을 밝혀
-    # PARK 한다. 발행 전용 행은 발행 예비분 술어만 보고 FIFO 를 보지 않는다.
-    elif $p.pin != null and rt_pin_kind(rt_av($p; $p.pin)) == "publish" then
+    # PARK 한다. 발행 전용 행은 발행 예비분 술어만 보고 FIFO 를 보지 않는다. 이관 판정에
+    # 드는 요청은 7일 창 술어에 걸리면 이관 선택으로 가고, 7일 창 밖의 소진은 기다린다.
+    elif $p.pin != null and rt_pin_kind($p; rt_av($p; $p.pin)) == "publish" then
       rt_av($p; $p.pin) as $a
       | if $a.publish.why == null then
           rt_grant_new($p; $a; rt_publish_admit($p; $a); $basis) as $e | rt_env($e; "write"; rt_rec_new($p; $e))
+        elif rt_migok($p) and rt_mig_due($p) then rt_mig_pick($p; $a.id; $a.publish.why; $basis; false)
+        elif rt_migok($p) and $a.publish.why == "exhausted" then rt_pub_xwait($p; $a)
         else rt_env(rt_park_publish($p; $a; $a.publish.why); "none"; null) end
-    elif $p.pin != null and rt_pin_kind(rt_av($p; $p.pin)) == "other" then rt_env(rt_park_ineligible($p.pin); "none"; null)
+    # 이관 고정은 `other` 의 PARK 로 떨어지지 않고 보통 무인 계정의 입장 규칙을 따른다.
+    elif $p.pin != null and rt_pin_kind($p; rt_av($p; $p.pin)) == "migrated" then rt_mig_admit($p; $basis; false)
+    elif $p.pin != null and rt_pin_kind($p; rt_av($p; $p.pin)) == "other" then rt_env(rt_park_ineligible($p.pin); "none"; null)
     else
       # 대여 등록 행에 고정된 요청은 고정 계정 하나만, 대여 검사로만 입장한다. u 계정으로
       # 대체되지 않고, 후보가 없으면 그 행의 원인을 밝혀 PARK 한다. 한도 뒤 재배정의 제외
@@ -1484,8 +1614,11 @@ def rt_retry($p):
   | ($p.pin == null or ($o != null and $o.account == $p.pin)) as $onpin
   | if $o != null and $o.kind == "grant" and $o.live == true and rt_hold_ok($a) and $onpin then
       rt_env(rt_grant_lease($p; $o; "sticky"); "hold"; rt_rec_hold($p))
+    # 이관 판정에 드는 요청의 고정 계정이 이관 조건이면 재입회하지 않고 새 입장으로 넘겨
+    # 이관 판정을 받게 한다. 살아 있는 임대의 유지는 위 갈래 그대로다.
     elif $o != null and $o.kind == "grant" and ($o.live != true) and rt_new_ok($a) and $onpin and ($p.table_corrupt | not)
          and ($p.borrow_corrupt | not)
+         and ((rt_migok($p) and rt_mig_due($p)) | not)
          and (rt_admit($p; $a) | .admitted) then
       # 질문 가능 스테이지인데 그 계정이 재부착까지 버티지 못하면 새 정렬로 넘긴다. 새
       # 정렬이 그 계정을 벗어나지 못하면 — GRANT 가 아니거나 같은 계정을 고르면 — 그
@@ -2026,6 +2159,16 @@ route__pin_of() {
   printf '%s' "$pin"
 }
 
+route__pin_source_of() {
+  # route__pin_source_of <request-json> — 요청 고정의 출처 한 줄. 요청의 `pin_lane`(모든
+  # 공백 문자를 뺀 값)이 비지 않았고 `pin_source` 가 `host`·`run-record` 가운데 하나일
+  # 때만 그 값이고, 그 밖은 빈 문자열이다. `fleet-lane` 에서 얻은 고정에는 출처가 없다.
+  printf '%s' "${1:-}" | jq -r '
+    if ((.pin_lane | type) == "string") and ((.pin_lane | gsub("\\s"; "")) != "")
+       and (.pin_source == "host" or .pin_source == "run-record")
+    then .pin_source else "" end' 2>/dev/null || true
+}
+
 route_gather_context() {
   # route_gather_context <request-json> <seat-config-dir> — 활성 경로의 문맥.
   # 좌석 디렉터리는 호출자가 이미 얻은 `resolve_account` 의 답이다 — 해석기를
@@ -2033,7 +2176,7 @@ route_gather_context() {
   # 에서 bp 로 옮긴다. 그 변수가 없는 셸에서는 null 이 되고 결정은 rc 2 로 닫힌다.
   # 비용 표본은 원문 그대로 `cost_samples` 에 싣고, 저장소 때문에 rc 2 로 닫지 않는다.
   local req="${1:-}" seat="${2:-}" now inv irc=0 inventory usage table leases frames run_id cap cfg bpath borrow bpj
-  local costs prog out phase lane aff
+  local costs prog out phase lane aff psrc
   now=$(date -u +%s) || return 2
   printf '%s' "$req" | jq -e 'type == "object"' >/dev/null 2>&1 || return 2
   inv="${RUN_DIR:-}/inventory.json"
@@ -2078,6 +2221,9 @@ route_gather_context() {
   # 띄우라는 요청이고(시각 발행 단계가 호스트 파일의 `lane` 으로 싣는다), 있으면
   # 런 단위 `fleet-lane` 기록보다 앞서 `seat.lane` 이 된다. 그 뒤 고정 판정은 같다.
   lane=$(route__pin_of "$req")
+  # 고정의 출처. 요청 단위 고정에 출처가 실렸을 때만 `seat.pin_source` 가 되고, 없으면
+  # `seat` 의 바이트는 그대로다. 이관 판정은 출처가 있는 고정에만 든다.
+  psrc=$(route__pin_source_of "$req")
   # 런의 직전 계정 기록. 없거나 파싱되지 않거나 스키마·형이 틀리면 null 이고, 이 기록
   # 때문에 rc 2 로 닫지 않는다 — 기록이 없을 때와 같은 판정으로 계속된다.
   aff=null
@@ -2090,11 +2236,12 @@ route_gather_context() {
   fi
   prog='{now: $now, request: $req, inventory: $inv, usage: $usage, frames: $frames, leases: $leases,
       sticky: ([$leases.items[] | select(.run_id == $req.run_id and .kind == "grant" and .live == true) | .account] | unique),
-      seat: ({config_dir: $seat} + (if $lane == "" then {} else {lane: $lane} end)), config: $cfg, deadline: ($req.deadline // null),
+      seat: ({config_dir: $seat} + (if $lane == "" then {} else {lane: $lane} end)
+             + (if $lane == "" or $psrc == "" then {} else {pin_source: $psrc} end)), config: $cfg, deadline: ($req.deadline // null),
       borrow: $borrow, borrow_path: $bp, phase: $phase, cost_samples: $cost_samples, affinity: $aff}'
   set -- --argjson now "$now" --argjson req "$req" --argjson inv "$inventory" --argjson usage "$usage" \
     --argjson leases "$leases" --argjson frames "$frames" --argjson cfg "$cfg" --arg seat "$seat" \
-    --argjson borrow "$borrow" --argjson bp "$bpj" --argjson phase "$phase" --arg lane "$lane" --argjson aff "$aff"
+    --argjson borrow "$borrow" --argjson bp "$bpj" --argjson phase "$phase" --arg lane "$lane" --arg psrc "$psrc" --argjson aff "$aff"
   # 판독 사이에 파일이 사라지거나 바뀌어 읽기가 실패하면 표본 없이 한 번 더 조립한다.
   if ! out=$(jq -cn "$@" --rawfile cost_samples "$costs" "$prog" 2>/dev/null); then
     [ "$costs" = /dev/null ] && return 2
