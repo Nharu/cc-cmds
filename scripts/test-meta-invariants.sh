@@ -926,7 +926,9 @@ for lit in \
   '다시 읽기의 기대하는 줄은 Step 1.3 이 받은 줄이 아니라 실패 기록의 `기대 확인=` 조각이고, 그 조각이 없거나 `없음` 이면 다른 문서 키의 `사람 승인` 줄은 모두 기대하는 줄과 다르다' \
   'a reopening is the only one to reach such a line — rows 11 and 12, and row 13 answering the record of a reopening that stopped before its rewrite — and it rewrites it to waiting' \
   'and then removes `**구현 승인**` and rewrites the line to waiting itself before anything else of rows 11 and 12' \
-  '실패 기록에 `다시 열기 단계=남음` 조각이 있으면(다시 열기가 `**구현 승인**` 지움과 `대기` 다시 쓰기 전에 멈춤) 다시 읽기를 지난 뒤 `**구현 승인**` 지움 → 확인 줄을 `대기` 로 → 입력 유무에 따라 11 행 또는 12 행의 나머지' \
+  '실패 기록에 `다시 열기 단계=남음` 조각이 있으면(다시 열기가 `**구현 승인**` 지움과 `대기` 다시 쓰기 전에 멈춤) 다시 읽기를 지난 뒤 `**구현 승인**` 지움 → 확인 줄을 `대기` 로 → 입력 유무에 따라 11 행 또는 12 행의 나머지(입력은 이 `다시 발행` 답의 첨부와 지금의 코멘트·직접 편집값이고' \
+  '`다시 열기 단계=남음` 으로 12 행의 나머지를 거치면 `입력 없음=<run-state 의 시각-판정 기록 파일 이름>` 도' \
+  'on row 13 resuming such a reopening, the `시각-판정 기록` file name `run-state` prints, since the `발행-실패` record it answers is not counted.' \
   'and `다시 열기 단계=남음` too when a reopening — rows 11 and 12, or row 13 answering a record that carries the piece — halts before it removed `**구현 승인**` and rewrote the confirmation line to waiting' \
   '`수정 <n>회`, and `기대 확인=<the line this invocation expected at the halt' \
   '다시 읽은 확인 줄이 이 런이 기대하는 줄과 다르고 다른 문서 키의 `사람 승인` 이다' \
