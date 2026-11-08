@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Move superseded and settled prose of a design document into its archive.
 
-    doc-tidy.py plan    DOC
-    doc-tidy.py apply   DOC --archive ARCHIVE --doc-key KEY --writer NAME [--since BASE]
+    doc-tidy.py plan    DOC [--reviewed FROZEN]
+    doc-tidy.py apply   DOC --archive ARCHIVE --doc-key KEY --writer NAME [--since BASE] [--reviewed FROZEN]
     doc-tidy.py unmark  DOC --archive ARCHIVE --doc-key KEY --writer NAME --since BASE
     doc-tidy.py check   BEFORE AFTER ARCHIVE
-    doc-tidy.py tidy    DOC --archive ARCHIVE --doc-key KEY --writer NAME --below BYTES
+    doc-tidy.py tidy    DOC --archive ARCHIVE --doc-key KEY --writer NAME --below BYTES [--reviewed FROZEN]
 
 Rule T1 moves every superseded-sentence parenthesis ` (대체된 문장: "...")` into
 an `### A<n>` piece and leaves ` (보관 A<n>)` in its place. Rule T3 moves, from a
@@ -19,9 +19,13 @@ space after it from every line that the base document holds byte for byte, and
 keeps the line as it was in a `### C<n>` piece.
 
 Nothing is touched inside a code fence, at a match whose start lies inside a
-backtick code span, on a line carrying the unreviewed marker (T1, and T3 for the
-whole entry), in an entry with `**사유 거둠**` or `**보관**:`, or in an entry
-whose lines to move are not contiguous. `check` uses the same definitions.
+backtick code span, on an unreviewed marker line (T1, and T3 for the whole
+entry), in an entry with `**사유 거둠**` or `**보관**:`, or in an entry whose
+lines to move are not contiguous. `check` uses the same definitions. A marker
+line is unreviewed when `--reviewed FROZEN` (the copy the last audit read) does
+not hold it byte for byte, and every marker line is unreviewed without
+`--reviewed`. A reviewed marker line is moved with its marker; only `unmark`
+removes a marker.
 
 `plan` prints the counts and bytes each rule would move and the expected size.
 `apply` and `unmark` write the archive first and the document second, each by
@@ -153,6 +157,14 @@ def has_marker(line):
     return bool(marker_positions(line))
 
 
+def unreviewed(line, reviewed_lines):
+    """True for a marker line no review has read: with a frozen copy, one the
+    copy does not hold byte for byte; without one, every marker line."""
+    if not has_marker(line):
+        return False
+    return reviewed_lines is None or line not in reviewed_lines
+
+
 def unmark_line(line):
     """Remove every marker outside a code span and the one space after it."""
     positions = marker_positions(line)
@@ -229,7 +241,7 @@ def heading_counts(lines, mask):
     return counts
 
 
-def t3_region(lines, mask, h, end):
+def t3_region(lines, mask, h, end, reviewed_lines=None):
     """(first, last_exclusive, resolution_index) of the run T3 moves, or None."""
     if not entry_is_settled(lines, mask, h, end):
         return None
@@ -258,7 +270,7 @@ def t3_region(lines, mask, h, end):
             m = FIELD_RE.match(lines[k])
             if not (m and m.group(1) in MOVABLE_FIELDS):
                 return None
-        if has_marker(lines[k]):
+        if unreviewed(lines[k], reviewed_lines):
             return None
     return first, res, res
 
@@ -273,10 +285,17 @@ def settled_headings(lines, mask):
 
 # ------------------------------------------------------------- transforms
 
-def transform_apply(text, base_text, next_a, next_b):
+def reviewed_set(reviewed_text):
+    return None if reviewed_text is None else set(split_lines(reviewed_text))
+
+
+def transform_apply(text, base_text, next_a, next_b, reviewed_text=None):
     """Return (new_text, pieces) with pieces [(kind, n, heading, content)].
 
-    content of A is the fragment, of B the moved lines with their newlines."""
+    content of A is the fragment, of B the moved lines with their newlines.
+    reviewed_text is the frozen copy the last audit read; a marker line it
+    holds byte for byte is moved like any other line."""
+    reviewed_lines = reviewed_set(reviewed_text)
     lines = split_lines(text)
     mask = fence_mask(lines)
     pieces = []
@@ -292,7 +311,7 @@ def transform_apply(text, base_text, next_a, next_b):
 
     regions = []
     for h, end in unresolved_entries(lines, mask):
-        r = t3_region(lines, mask, h, end)
+        r = t3_region(lines, mask, h, end, reviewed_lines)
         if r is None:
             continue
         head = lines[h]
@@ -328,7 +347,7 @@ def transform_apply(text, base_text, next_a, next_b):
     out_mask = fence_mask(out)
     final = []
     for idx, line in enumerate(out):
-        if out_mask[idx] or has_marker(line):
+        if out_mask[idx] or unreviewed(line, reviewed_lines):
             final.append(line)
             continue
         matches = t1_matches(line)
@@ -556,9 +575,13 @@ def piece_bytes(pieces, kind):
     return sum(len(c.encode("utf-8")) for k, _, _, c in pieces if k == kind)
 
 
+def read_reviewed(args):
+    return read_text(args.reviewed)[1] if args.reviewed else None
+
+
 def cmd_plan(args):
     data, text = read_text(args.doc)
-    new_text, pieces = transform_apply(text, None, 1, 1)
+    new_text, pieces = transform_apply(text, None, 1, 1, read_reviewed(args))
     print("current=%d" % len(data))
     print("t1_count=%d" % sum(1 for p in pieces if p[0] == "A"))
     print("t1_bytes=%d" % piece_bytes(pieces, "A"))
@@ -584,7 +607,7 @@ def cmd_apply(args):
     base = read_text(args.since)[1] if args.since else None
     existing = load_archive(args.archive, args.doc_key)
     na, nb, _ = next_numbers(existing)
-    new_text, pieces = transform_apply(text, base, na, nb)
+    new_text, pieces = transform_apply(text, base, na, nb, read_reviewed(args))
     print("moved=%d" % len(pieces))
     if not pieces:
         return 0
@@ -619,14 +642,15 @@ def cmd_tidy(args):
     data, text = read_text(args.doc)
     existing = load_archive(args.archive, args.doc_key)
     na, nb, _ = next_numbers(existing)
-    est_text, _ = transform_apply(text, None, 1, 1)
+    reviewed = read_reviewed(args)
+    est_text, _ = transform_apply(text, None, 1, 1, reviewed)
     expected = len(est_text.encode("utf-8"))
     print("current=%d" % len(data))
     print("expected=%d" % expected)
     if expected >= args.below:
         print("doc-tidy tidy: 예상 크기 %d 가 문턱 %d 이상" % (expected, args.below), file=sys.stderr)
         return 1
-    new_text, pieces = transform_apply(text, None, na, nb)
+    new_text, pieces = transform_apply(text, None, na, nb, reviewed)
     if not pieces:
         print("doc-tidy tidy: 옮길 조각이 없음", file=sys.stderr)
         return 1
@@ -654,6 +678,7 @@ def main(argv):
 
     sp = sub.add_parser("plan")
     sp.add_argument("doc")
+    sp.add_argument("--reviewed")
 
     for name in ("apply", "unmark", "tidy"):
         sp = sub.add_parser(name)
@@ -661,6 +686,8 @@ def main(argv):
         sp.add_argument("--archive", required=True)
         sp.add_argument("--doc-key", required=True)
         sp.add_argument("--writer", required=True)
+        if name != "unmark":
+            sp.add_argument("--reviewed")
         if name == "apply":
             sp.add_argument("--since")
         elif name == "unmark":
