@@ -4446,9 +4446,19 @@ check "파견 팔의 stage-result 행마다 바로 다음 문장이 흡수 호�
 # 드라이버의 stage-result 행 전부(S9 셸 적용 넷, 계속 시도 하나, 베이스 분할 하나, 시각 단계 하나, 재수렴 하나, 리드 수정 하나를 포함해 열넷)가 압축
 # 창·레인·기록자 셋을 싣는다. 게이트 쪽 필드표 린트는 gate.sh 만 읽으므로, 드라이버 열의 방어는
 # 이 정적 계수뿐이다 — 한 자리에서 빠지면 그 행은 필드 없는 「실험 이전 행」으로 읽힌다.
+# 시각 단계 자리는 조각을 visual_row_pieces 로 VISUAL_ROW_PIECES 배열에 모은 뒤 그 배열로
+# 행을 쓰므로, 그 자리는 바로 앞 visual_row_pieces 문장이 싣는 조각으로 판정한다. 앞에 그
+# 문장이 없으면 빠진 것으로 센다.
 WIN_SITES=$(awk -v needle="ledger_row 'stage-result'" '
-  index($0, needle) { n++; buf = $0; cont = ($0 ~ /\\$/); if (!cont) { print (index(buf, "압축 창=") && index(buf, "레인=") && index(buf, "기록자=드라이버") ? "OK" : "MISS " NR); buf = "" }; next }
-  cont { buf = buf " " $0; cont = ($0 ~ /\\$/); if (!cont) { print (index(buf, "압축 창=") && index(buf, "레인=") && index(buf, "기록자=드라이버") ? "OK" : "MISS " NR); buf = "" } }
+  function judge(s, ln) { print (index(s, "압축 창=") && index(s, "레인=") && index(s, "기록자=드라이버") ? "OK" : "MISS " ln) }
+  function close_stmt() {
+    if (kind == "row") { n++; if (index(buf, "VISUAL_ROW_PIECES")) { judge(vbuf, start); vbuf = "" } else judge(buf, start) }
+    else vbuf = buf
+    kind = ""; buf = ""
+  }
+  index($0, needle) { kind = "row"; start = NR; buf = $0; if ($0 !~ /\\$/) close_stmt(); next }
+  $0 ~ /^[[:space:]]*visual_row_pieces[[:space:]]/ { kind = "pieces"; buf = $0; if ($0 !~ /\\$/) close_stmt(); next }
+  kind != "" { buf = buf " " $0; if ($0 !~ /\\$/) close_stmt() }
   END { print "N " n+0 }
 ' "$DRIVER")
 check "드라이버의 stage-result 호출부가 열넷이다 (아래 단언이 공허하지 않다)" \
