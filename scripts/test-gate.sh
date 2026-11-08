@@ -7405,6 +7405,7 @@ cdg_self_tot=$(grep -E '^test-gate: [0-9]+ passed, [0-9]+ failed$' "$cdg_dir/sel
 check "밖 복사본의 좁힌 실행은 제자리 실행과 같은 PASS 줄과 합계 줄을 낸다" \
   "$([ -n "$cdg_self_pass" ] && [ "$cdg_copy_pass" = "$cdg_self_pass" ] && echo pass)|$([ -n "$cdg_self_tot" ] && [ "$cdg_copy_tot" = "$cdg_self_tot" ] && echo total)|$(printf '%s' "$cdg_self_tot" | sed -n 's/^test-gate: [0-9]* passed, \([0-9]*\) failed$/\1/p')" \
   "pass|total|0"
+
 rm -rf "$cdg_dir"
 
 # ---------------------------------------------------------------------------
