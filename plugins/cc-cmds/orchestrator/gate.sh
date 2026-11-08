@@ -116,6 +116,11 @@
 #      left a cause row (`stage-wait` with `근거` `lease-hold-busy` or
 #      `lease-hold-lost`) and ended without launching the stage. Dispatch the
 #      same step again: the new attempt is admitted by its own `lease-txn`.
+#  21  from act: a delegated re-attachment the router did not take
+#      (GATE_EXIT_DELEGATE). From `wait`: the waiting supervisor ended on a
+#      grant the launch that opened the wait does not take, handed it back and
+#      launched nothing, leaving a cause row (`stage-wait` with `근거`
+#      `wait-end-refused`) and no park row. Both are read as the act's 21.
 #
 # Usage:
 #   gate.sh snapshot --manifest <path> [--render]
@@ -993,6 +998,10 @@ readonly GATE_EXIT_CARRY_UNTABLED=19
 # here. Not 16: 16 comes with a router park row, and the shift reads that row;
 # here no row stands and the shift goes on as if the delegation did not exist —
 # a reset wait when it can read the clock, a `중단` hand-off otherwise.
+# `gate.sh wait` ends with the same value when the wait such an act opened ends
+# on a grant the delegation does not take, or when a wait's move cannot be made
+# and the wait can no longer ask again with `no_migrate`: the supervisor hands
+# the grant back and leaves the `wait-end-refused` cause row, never a park row.
 readonly GATE_EXIT_DELEGATE=21
 
 # The head of a gate-dispatched lineage. The driver's dispatch ids begin with
@@ -41644,6 +41653,10 @@ gate_reentry_card_write() {
   # keeps its id, so it has several. When the cut session itself started from a
   # card, that card's value goes in front, so the field holds the whole chain
   # and a stage that adopts a witness directory finds the attempt that made it.
+  # The key is the one the attempt's `CC_PIPELINE_STAGE_ID` carried: the
+  # `스테이지` field on the gate's rows, and the `파견 id` on the driver's, whose
+  # `스테이지` holds the kind label (`S4`, `S5`, `S5R`, `S1'`) for the readers
+  # that group on it while the stage was launched under its dispatch id.
   #
   # Written under umask 077 through a temporary file and a rename, before the
   # launch's `stage-lease` row, so a stage that starts never reads half a card.
@@ -41659,7 +41672,9 @@ $mig
 EOF
   while IFS= read -r row; do
     [ -n "$row" ] || continue
-    k=$(gate_row_field "$row" '스테이지'); v=$(gate_row_field "$row" '실행 버전')
+    k=$(gate_row_field "$row" '파견 id')
+    [ -n "$k" ] || k=$(gate_row_field "$row" '스테이지')
+    v=$(gate_row_field "$row" '실행 버전')
     [ -n "$k" ] && [ -n "$v" ] || continue
     orig="${orig:+$orig, }$k#$v"
   done <<EOF
@@ -53667,6 +53682,29 @@ gate_sup_wait_stop() {
   gate_launch_route_park "$GATE_SUP_ALIAS" "$GATE_SUP_ROWSEG" "$GATE_SUP_KEY" "$1" "$GATE_SUP_LINEAGE"
 }
 
+gate_sup_wait_refuse() {
+  # gate_sup_wait_refuse <why> — the end of a wait whose grant the launch that
+  # opened it does not take: a delegated re-attachment's grant that is neither
+  # a move nor a bound-account grant observed after the reset, or a move whose
+  # prompt or card cannot be made when the wait can no longer ask again with
+  # `no_migrate`. The caller has handed the grant back already.
+  #
+  # NO PARK. The shift reads a park row's 16 as "do not dispatch into the same
+  # answer" and a person is called; this end is the delegation not taking, and
+  # the shift goes on as after the act's 21 — a reset wait, or a `중단`
+  # hand-off. So it leaves one `stage-wait` cause row of this attempt's lineage,
+  # which `gate.sh wait` reads as 21. A refused cause row leaves nothing, and
+  # `wait` then reads the attempt as a launch that left no row.
+  local rc=0
+  gate_append 'stage-wait' "계보=$GATE_SUP_LINEAGE" '그룹=-' '계정=-' '까지=-' '비용=-' '비용 출처=-' \
+    '근거=wait-end-refused' || rc=$?
+  if [ "$rc" != "0" ]; then
+    warn "대기 끝 거부 — $GATE_SUP_KEY 의 원인 행이 거부됐다 (rc=$rc) — 기동하지 않는다 ($1)"
+    return 0
+  fi
+  warn "대기 끝 거부 — $GATE_SUP_KEY 는 기동하지 않는다 ($1)"
+}
+
 gate_sup_wait_ended() {
   # The same run-end refusal the act prelude applies to a dispatch, read again
   # because this supervisor passed that prelude once, before its wait began.
@@ -54383,7 +54421,7 @@ gate_verb_supervise_stage() {
         [ -z "$r_nonce" ] || route_lease_release "$(run_pace_root)/leases" "$RUN_ID" "$r_lineage" "$r_nonce" >/dev/null 2>&1 || true
         wnomig=$(cc_waiting_field "$wm" '이관금지' | tr -d '[:space:]')
         if [ "$wnomig" = "1" ] || ! wait_marker_set "$wm" '이관금지' 1; then
-          gate_sup_wait_stop "$wwhy — 이관 새 세션의 프롬프트나 재진입 카드를 마련하지 못했고 묶인 계정 대기로 돌릴 수 없다"
+          gate_sup_wait_refuse "$wwhy — 이관 새 세션의 프롬프트나 재진입 카드를 마련하지 못했고 묶인 계정 대기로 돌릴 수 없다"
           wait_drop "$wm"
           rm -f "$RUN_DIR/$seg.sup" "$RUN_DIR/$seg.sup.start" "$RUN_DIR/$seg.launch.taken"
           return 0
@@ -54393,7 +54431,7 @@ gate_verb_supervise_stage() {
       fi
       if [ "$wdel" = "1" ] && ! gate_sup_delegate_grant_ok "$seg" "$r_bound" "$wenv"; then
         [ -z "$r_nonce" ] || route_lease_release "$(run_pace_root)/leases" "$RUN_ID" "$r_lineage" "$r_nonce" >/dev/null 2>&1 || true
-        gate_sup_wait_stop "위임 불성립 — 대기 끝 부여가 이관 새 세션도, 리셋 뒤 관측으로 한도 해제가 보이는 묶인 계정 부여도 아니다 ($wwhy)"
+        gate_sup_wait_refuse "위임 불성립 — 대기 끝 부여가 이관 새 세션도, 리셋 뒤 관측으로 한도 해제가 보이는 묶인 계정 부여도 아니다 ($wwhy)"
         wait_drop "$wm"
         rm -f "$RUN_DIR/$seg.sup" "$RUN_DIR/$seg.sup.start" "$RUN_DIR/$seg.launch.taken"
         return 0
@@ -56663,7 +56701,7 @@ gate_verb_wait() {
   # gate_verb_wait <segment> <interval-seconds> <timeout-seconds>
   #
   # Block until the segment's dispatched stage terminates, then exit with the
-  # stage's own rc — or 11/12/13/14/16/20 (see the exit-code table at the top).
+  # stage's own rc — or 11/12/13/14/16/20/21 (see the exit-code table at the top).
   #
   # THE AUTHORITY IS THE LEDGER READ IN STEP (3); STEP (1) IS A FAST PATH IN
   # FRONT OF IT. This call's own prelude may have just settled the segment, and
@@ -56692,7 +56730,9 @@ gate_verb_wait() {
   #       of that attempt → 16 (the supervisor parked before spawning)
   #   (3c) pinned, neither row, and a `stage-wait` row of that lineage whose
   #       `근거` is `lease-hold-busy` or `lease-hold-lost` → 20 (the supervisor
-  #       could not hold its lease and launched nothing)
+  #       could not hold its lease and launched nothing); one whose `근거` is
+  #       `wait-end-refused` → 21 (the wait ended on a grant its launch does
+  #       not take, and nothing was launched)
   #   (4) no `<seg>.attempt` → 11
   #   (5) pinned but no row: wait one grace period, re-run (2)/(3); still
   #       nothing → remove `.sup`/`.sup.start`/`.launch`, exit 14
@@ -56769,15 +56809,24 @@ gate_verb_wait() {
     # It is a wait for a resource, read before (5) so the attempt is not taken
     # for a launch that failed: the shift dispatches the step again. A
     # `stage-wait` row of the same lineage with any other cause is a heartbeat
-    # and is not read here.
-    local hold_cause="" hr hc
+    # and is not read here. A waiting supervisor that ended on a grant its launch
+    # does not take leaves the `wait-end-refused` cause row instead: that is the
+    # delegation not taking, read as the act's 21, and never as a park.
+    local hold_cause="" wait_refused=0 hr hc
     while IFS= read -r hr; do
       [ -n "$hr" ] || continue
       hc=$(gate_row_field "$hr" '근거')
-      case "$hc" in lease-hold-busy|lease-hold-lost) hold_cause=$hc ;; esac
+      case "$hc" in
+        lease-hold-busy|lease-hold-lost) hold_cause=$hc ;;
+        wait-end-refused) wait_refused=1 ;;
+      esac
     done <<EOF
 $( { gate_rows 'stage-wait' | cc_rows_naming_lineage "B:$seg#$attempt"; } 2>/dev/null || true )
 EOF
+    if [ "$wait_refused" = "1" ]; then
+      printf '%s [wait] %s 대기 끝 거부 — 시도 %s — rc=%s\n' "$(now_iso)" "$seg" "$attempt" "$GATE_EXIT_DELEGATE"
+      return "$GATE_EXIT_DELEGATE"
+    fi
     if [ -n "$hold_cause" ]; then
       printf '%s [wait] %s 자원 대기 — 원인 %s — 시도 %s — rc=%s\n' "$(now_iso)" "$seg" "$hold_cause" "$attempt" "$GATE_EXIT_WAIT_LEASE_HOLD"
       return "$GATE_EXIT_WAIT_LEASE_HOLD"

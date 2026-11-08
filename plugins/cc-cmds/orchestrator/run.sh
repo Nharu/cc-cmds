@@ -4187,7 +4187,7 @@ run_ledger_series_check() {
   local series="$1"; shift
   local keys want f k v seat=0 bound=0
   local lease_basis=' first sticky resume-bound resume-migrated reassigned-after-limit reassigned-no-room after-wait shift-seat-fallback single-seat failover-shift '
-  local wait_reason=' group-exhausted no-room unknown-concurrency fifo-yield resume-bound-exhausted resume-bound-no-room resume-bound-borrowed lease-lock-busy lease-contention lease-hold-busy lease-hold-lost '
+  local wait_reason=' group-exhausted no-room unknown-concurrency fifo-yield resume-bound-exhausted resume-bound-no-room resume-bound-borrowed lease-lock-busy lease-contention lease-hold-busy lease-hold-lost wait-end-refused '
   local acct="" basis="" cost="" csrc="" phase="" psrc="" thr="" worst n
   local cost_src='(group-kind|kind|default)'
   case "$series" in
@@ -11490,7 +11490,8 @@ review_recover() {
   local om ro re
   om=$(stage_org_moves_of "$rsid"); ro=$(stage_reattach_org_of "$rsid"); re=$(stage_reattach_ctx_of "$rsid")
   ledger_row 'stage-result' "세그먼트=$seg" "스테이지=S5R" "파견 id=$rsid" "종료 코드=$rc" \
-    "아티팩트 술어 결과=$pred" "세션 id=$(stage_session_id "$rsid")" "부모=$(stage_parent_id)" \
+    "아티팩트 술어 결과=$pred" "실행 버전=$(stage_attempt_pinned "$rsid")" \
+    "세션 id=$(stage_session_id "$rsid")" "부모=$(stage_parent_id)" \
     "압축 창=$(stage_window_of "$rsid")" "레인=$(stage_lane_of "$rsid")" ${acct:+"계정=$acct"} \
     ${om:+"조직 이동=$om"} ${ro:+"재부착 조직=$ro"} ${re:+"재기록 추정=$re"} "기록자=드라이버" \
     "effort=$(stage_effort_rec_of "$rsid")" "서빙 모델=$(stage_served_model_of "$(stage_log_path "$rsid")")" \
@@ -12156,7 +12157,8 @@ segment_cycle() {
       # as this segment's `세션 id`, so a stage cut mid-flight could not be
       # re-attached and had to be paid for again.
       ledger_row 'stage-result' "세그먼트=$seg" "스테이지=S5" "파견 id=$sid" "종료 코드=$rc" \
-        "아티팩트 술어 결과=$pred" "세션 id=$(stage_session_id "$sid")" "부모=$(stage_parent_id)" \
+        "아티팩트 술어 결과=$pred" "실행 버전=$(stage_attempt_pinned "$sid")" \
+        "세션 id=$(stage_session_id "$sid")" "부모=$(stage_parent_id)" \
         "압축 창=$(stage_window_of "$sid")" "레인=$(stage_lane_of "$sid")" ${acct:+"계정=$acct"} \
         ${om:+"조직 이동=$om"} ${ro:+"재부착 조직=$ro"} ${re:+"재기록 추정=$re"} "기록자=드라이버" \
         "effort=$(stage_effort_rec_of "$sid")" "서빙 모델=$(stage_served_model_of "$(stage_log_path "$sid")")" \

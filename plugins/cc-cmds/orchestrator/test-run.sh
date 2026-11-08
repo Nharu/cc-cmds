@@ -12059,10 +12059,15 @@ esac
 check "근거가 resume 인 이관 GRANT 의 새 세션은 재진입 카드 변수를 받지 않는다" "$(cat "$SPD/mig.txt.card" 2>/dev/null)" "unset"
 # 소진된 재개의 계정 이관(`resume-migrated`) — 드라이버의 새 세션도 게이트의 기록 함수와
 # 카드 함수를 거친다. 두 함수는 진짜 오케스트레이터에서 sp 원장을 읽고, 나머지 게이트
-# 호출은 대역이다. 끊긴 세션은 원장의 stage-result 행 하나에 실려 있다.
+# 호출은 대역이다. 끊긴 세션은 원장의 stage-result 행 하나에 실려 있고, 그 행은 드라이버의
+# 리뷰 행과 같은 꼴로 드라이버의 행 작성기가 쓴다 — `스테이지` 는 종류 라벨 S5 이고 기동한
+# 스테이지 id 는 `파견 id` 에 있다.
 sp_cut=34343434-5656-7878-9090-121212121212
-printf '%s\n' "- \`stage-result\` 2026-11-08T00:00:00Z | 세그먼트=segR | 스테이지=S5:segR:1 | 종류=review | 종료 코드=0 | 실행 버전=1 | 세션 id=$sp_cut | 계정=u1 | 부모=- | 기록자=게이트 | 종단 부류=한도 종료" \
-  > "$SPD/ledger.md"
+: > "$SPD/ledger.md"
+( LEDGER="$SPD/ledger.md"
+  ledger_row 'stage-result' "세그먼트=segR" "스테이지=S5" "파견 id=S5:segR:1" "종료 코드=0" \
+    "아티팩트 술어 결과=1" "실행 버전=1" "세션 id=$sp_cut" "부모=-" "압축 창=-" "레인=-" "계정=u1" \
+    "기록자=드라이버" "종단 부류=한도 종료" ) >/dev/null 2>&1
 sp_rm_env=$(printf '{"verdict":"GRANT","account":"u2","config_dir":"%s","basis":"resume-migrated","fresh":true,"nonce":"sp-n","migrated":{"from":"u1","to":"u2","why":"resume-bound-exhausted"}}' "$SPD/cfg")
 sp_sid_of() { sed -n 's/.*--session-id \([^ ]*\) .*/\1/p' "$1" 2>/dev/null; }
 sp_rm=$(sp_spawn "S5:segR:1" "$SPD/rm.txt" SP_RESUME=$sp_cut SP_GRANT_ENV="$sp_rm_env" \
@@ -12083,6 +12088,26 @@ check "R3: 카드의 스테이지는 그 기동의 스테이지 id 다" \
   "$(sed -n 's/^\*\*스테이지\*\*: //p' "$sp_rm_card" 2>/dev/null)" "S5:segR:1#$(cat "$SPD/run/S5:segR:1.attempt" 2>/dev/null)"
 check "R3: 드라이버 새 세션의 디스패치 프롬프트가 기록된다" \
   "$(cat "$SPD/run/dispatch-prompt/$sp_rm_sid" 2>/dev/null)" '/cc-cmds:review-unattended docs/d.md "R1"'
+# 카드 작성기의 키 — 드라이버 행은 `파견 id`, 게이트 행은 `스테이지` 다. 드라이버의 구현(S4)과
+# 재수렴(S1') 행, 그리고 게이트 행을 한 원장에 두고 세션마다 카드를 쓴다.
+sp_kd="$SPD/cardkey"; rm -rf "$sp_kd"; mkdir -p "$sp_kd/run"; : > "$sp_kd/ledger.md"
+sp_c4=45454545-6767-8989-0101-232323232323; sp_c1=56565656-7878-9090-1212-343434343434
+sp_cg=67676767-8989-0101-2323-454545454545
+( LEDGER="$sp_kd/ledger.md"
+  ledger_row 'stage-result' "세그먼트=segQ" "스테이지=S4" "파견 id=S4:segQ:2" "종료 코드=0" "실행 버전=2" \
+    "세션 id=$sp_c4" "부모=-" "압축 창=-" "레인=-" "계정=u1" "기록자=드라이버" "종단 부류=한도 종료"
+  ledger_row 'stage-result' "세그먼트=segQ" "스테이지=S1'" "파견 id=S1':segQ:1" "종류=reconverge" "종료 코드=0" \
+    "실행 버전=1" "세션 id=$sp_c1" "부모=-" "압축 창=-" "레인=-" "계정=u1" "기록자=드라이버" "종단 부류=한도 종료"
+  ledger_row 'stage-result' "세그먼트=segG" "스테이지=segG" "종류=review" "종료 코드=0" "실행 버전=3" \
+    "세션 id=$sp_cg" "부모=-" "압축 창=-" "레인=-" "계정=u1" "기록자=게이트" "종단 부류=한도 종료" ) >/dev/null 2>&1
+sp_kgot=""
+for sp_kc in "$sp_c4" "$sp_c1" "$sp_cg"; do
+  sp_kp=$( ORCH_DIR="${DRIVER%/*}"; RUN_DIR="$sp_kd/run"; LEDGER="$sp_kd/ledger.md"
+           run_gate_call gate_reentry_card_write "X#9" review "$sp_kc" "new-$sp_kc" "$sp_rm_env" 2>/dev/null )
+  sp_kgot="$sp_kgot$(sed -n 's/^\*\*원 스테이지\*\*: //p' "$sp_kp" 2>/dev/null);"
+done
+check "R3: 카드의 원 스테이지는 드라이버 행이면 파견 id, 게이트 행이면 스테이지로 만든다" \
+  "$sp_kgot" "S4:segQ:2#2;S1':segQ:1#1;segG#3;"
 # 호출자가 디스패치 프롬프트를 넘기지 않으면 끊긴 세션의 기록을 쓴다.
 mkdir -p "$SPD/run/dispatch-prompt"
 printf '%s' '/cc-cmds:review-unattended docs/d.md "기록"' > "$SPD/run/dispatch-prompt/$sp_cut"

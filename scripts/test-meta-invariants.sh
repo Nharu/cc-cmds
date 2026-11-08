@@ -963,7 +963,7 @@ rd_shift=$(reattach_delegate "$RS_CORPUS")
 check "두 사본의 위임 갈래 문단이 한 줄씩 있다" \
   "$(printf '%s\n' "$rd_lead" | grep -c . || true)/$(printf '%s\n' "$rd_shift" | grep -c . || true)" "1/1"
 check "두 사본의 위임 갈래 문단이 바이트 동일하다" "$rd_shift" "$rd_lead"
-for lit in '--limit-delegate' "'한도 해제 근거=이관 판정 위임'" 'exit `21`' '`resume-unbound`'; do
+for lit in '--limit-delegate' "'한도 해제 근거=이관 판정 위임'" 'exit `21`' '`resume-unbound`' '`wait` returns `21`'; do
   check "위임 갈래 문단이 「${lit}」을 싣는다" "$(printf '%s\n' "$rd_shift" | grep -cF -- "$lit" || true)" "1"
 done
 

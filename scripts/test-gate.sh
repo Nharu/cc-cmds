@@ -63694,7 +63694,7 @@ check "98: 디스패치 시점·운반·대기 끝의 이관 새 세션이 같�
 
 # ---------------------------------------------------------------------------
 # 98m. 소진된 재개의 계정 이관 — 디스패치 프롬프트 기록, 재진입 카드, 이관 금지, 위임
-# --- section: 98m | group: ledger_series | covers: gate_dispatch_prompt_record, gate_migrate_prompt, gate_reentry_card_write, gate_env_migrated, gate_delegate_refuse, gate_route_flags_json, gate_launch_route, gate_launch_stage, gate_launch_wait, gate_sup_delegate_grant_ok, gate_verb_supervise_stage, act | needs: 75,95 | anchors: 98m: 기록이 있는 종류마다 이관 새 세션은 그 기록을 -p 로 받고 카드를 쓴다, 98m: 기록 없는 감사는 채운 재진입 틀로 이관한다, 98m: 기록도 하나뿐인 틀도 없는 종류는 no_migrate 로 묻고 묶인 계정에서 기다린다, 98m: 카드를 쓰지 못한 이관 부여는 돌려주고 no_migrate 로 다시 물어 기다린다, 98m: 위임 행위는 이관이 아닌 부여를 돌려주고 21 로 끝난다, 98m: 위임 행위의 소진 대기는 표지에 위임을 싣는다, 98m: --resume 없는 --limit-delegate 는 인자 오류다, 98m: 대기 끝 위임 거르기는 리셋 뒤 관측한 같은 계정 부여만 받는다, 98m: 대기 끝 이관 기동은 카드 경로를 스테이지 환경에 싣는다 ---
+# --- section: 98m | group: ledger_series | covers: gate_dispatch_prompt_record, gate_migrate_prompt, gate_reentry_card_write, gate_env_migrated, gate_delegate_refuse, gate_route_flags_json, gate_launch_route, gate_launch_stage, gate_launch_wait, gate_sup_delegate_grant_ok, gate_sup_wait_refuse, gate_verb_supervise_stage, gate_verb_wait, act | needs: 75,95 | anchors: 98m: 기록이 있는 종류마다 이관 새 세션은 그 기록을 -p 로 받고 카드를 쓴다, 98m: 기록 없는 감사는 채운 재진입 틀로 이관한다, 98m: 기록도 하나뿐인 틀도 없는 종류는 no_migrate 로 묻고 묶인 계정에서 기다린다, 98m: 카드를 쓰지 못한 이관 부여는 돌려주고 no_migrate 로 다시 물어 기다린다, 98m: 위임 행위는 이관이 아닌 부여를 돌려주고 21 로 끝난다, 98m: 위임 행위의 소진 대기는 표지에 위임을 싣는다, 98m: --resume 없는 --limit-delegate 는 인자 오류다, 98m: 대기 끝 위임 거르기는 리셋 뒤 관측한 같은 계정 부여만 받는다, 98m: 대기 끝 이관 기동은 카드 경로를 스테이지 환경에 싣는다 ---
 #
 # 묶인 계정이 소진된 재개를 라우터가 다른 계정으로 옮기면(`resume-migrated`) 게이트는
 # 끊긴 세션을 재부착하지 않고 새 세션을 띄운다. 새 세션의 `-p` 는 끊긴 세션이 처음 받은
@@ -63891,8 +63891,28 @@ h98m_sup() {
 }
 h98m_wl="$lsr_root/dl-wait/ledger.md"
 for h98m_f in K9.launch K9.waiting; do cp "$lsr_root/dl-wait/$h98m_f" "$lsr_root/dl-wait/$h98m_f.h98m" 2>/dev/null || true; done
-check "98m: 위임 대기 끝의 묶인 계정 부여가 리셋 뒤 관측이 아니면 기동하지 않고 위임 불성립 행을 남긴다" \
-  "$(h98m_sup "$h98m_wl" K9 "$lsr93_BG")|$(lsr93_n "$h98m_wl" '위임 불성립 — 대기 끝')" "-|1"
+# 거르기에 걸린 끝은 라우터 PARK 가 아니다 — 막힘 행 없이 부여를 돌려주고 표지를 내리며,
+# 그 시도의 계보로 `wait-end-refused` 원인 행 하나를 남기고, wait 은 그 시도를 위임 행위의
+# 거부와 같은 21 로 읽는다.
+h98m_wcause='| 계보=B:K9#2 | 그룹=- | 계정=- | 까지=- | 비용=- | 비용 출처=- | 근거=wait-end-refused'
+h98m_wait() {  # h98m_wait <원장> — wait 의 마지막 줄(시각 뺌)과 rc
+  lsr93_in "$1" eval 'r=0; GATE_SETTLED_SEGMENTS=""; o=$(gate_verb_wait K9 300 5 2>/dev/null) || r=$?
+    printf "%s|rc=%s" "$(printf "%s\n" "$o" | tail -1 | sed "s/^[^ ]* //")" "$r"' 2>/dev/null
+}
+check "98m: 위임 대기 끝의 묶인 계정 부여가 리셋 뒤 관측이 아니면 기동하지 않고 막힘 행 없이 원인 행을 남긴다" \
+  "$(h98m_sup "$h98m_wl" K9 "$lsr93_BG")|$(lsr93_n "$h98m_wl" '- `blocked` ')|$(lsr93_n "$h98m_wl" "$h98m_wcause")|$( [ -f "$lsr_root/dl-wait/K9.waiting" ] && printf 표지 || printf -- -)|$(lsr93_rel "$h98m_wl")" \
+  "-|0|1|-|n1"
+check "98m: wait 은 대기 끝 거부를 21 로 읽는다" \
+  "$(h98m_wait "$h98m_wl")" "[wait] K9 대기 끝 거부 — 시도 2 — rc=21|rc=21"
+# 카드 실패 둘째 갈래 — 표지가 이미 `이관금지=1` 인데 이관 부여가 와서 카드를 쓰지 못하면
+# 묶인 계정 대기로 다시 돌릴 수 없다. 이 끝도 막힘 행 없이 같은 원인 행으로 끝난다.
+for h98m_f in K9.launch K9.waiting; do cp "$lsr_root/dl-wait/$h98m_f.h98m" "$lsr_root/dl-wait/$h98m_f" 2>/dev/null || true; done
+lsr93_in "$h98m_wl" eval 'wait_marker_set "$RUN_DIR/K9.waiting" 이관금지 1' >/dev/null 2>&1
+: > "$lsr_root/dl-wait/reentry"
+check "98m: 이관 금지 대기 끝의 카드 실패는 기동하지 않고 막힘 행 없이 원인 행을 남긴다" \
+  "$(h98m_sup "$h98m_wl" K9 "$h98m_mg")|$(lsr93_n "$h98m_wl" '- `blocked` ')|$(lsr93_n "$h98m_wl" "$h98m_wcause")|$( [ -f "$lsr_root/dl-wait/K9.waiting" ] && printf 표지 || printf -- -)" \
+  "-|0|2|-"
+rm -f "$lsr_root/dl-wait/reentry"
 for h98m_f in K9.launch K9.waiting; do cp "$lsr_root/dl-wait/$h98m_f.h98m" "$lsr_root/dl-wait/$h98m_f" 2>/dev/null || true; done
 h98m_sv=$(h98m_sup "$h98m_wl" K9 "$h98m_mg")
 h98m_svc=$(lsr93_in "$h98m_wl" eval 'gate_reentry_card_path "$(session_uuid K9 2)"' 2>/dev/null)
