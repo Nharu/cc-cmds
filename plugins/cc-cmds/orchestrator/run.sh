@@ -14239,7 +14239,10 @@ visual_halt_is_ds_wait() {
   # its `**관측 상세**` carries `경우=디자인 시스템 확인 대기`, the case a plan
   # without the publish stage stops on.
   [ -f "$1" ] || return 1
-  grep -E '^\*\*관측 상세\*\*:' "$1" 2>/dev/null | grep -qF '경우=디자인 시스템 확인 대기'
+  case "$(grep -E '^\*\*관측 상세\*\*:' "$1" 2>/dev/null || true)" in
+    *'경우=디자인 시스템 확인 대기'*) return 0 ;;
+  esac
+  return 1
 }
 
 visual_sidecar_snapshot() {
@@ -14263,12 +14266,17 @@ visual_overwrite_report() {
   local before="$2" after url
   [ -s "$before" ] || return 0
   after=$(visual_sidecar_snapshot "$1")
-  if grep -q '^승인 ' "$before" && ! printf '%s\n' "$after" | grep -q '^승인 '; then
-    report_append "시각" "다시 생성한 시각 단계가 발행된 사이드카를 덮어써 구현 승인 줄이 사라졌다 — 새 화면은 다시 승인을 받아야 한다"
+  if grep -q '^승인 ' "$before"; then
+    case $'\n'"$after" in
+      *$'\n''승인 '*) ;;
+      *) report_append "시각" "다시 생성한 시각 단계가 발행된 사이드카를 덮어써 구현 승인 줄이 사라졌다 — 새 화면은 다시 승인을 받아야 한다" ;;
+    esac
   fi
   while IFS= read -r url; do
     [ -n "$url" ] || continue
-    printf '%s\n' "$after" | grep -qxF "URL $url" && continue
+    case $'\n'"$after"$'\n' in
+      *$'\n'"URL $url"$'\n'*) continue ;;
+    esac
     report_append "시각" "다시 생성한 시각 단계가 사이드카에서 지운 발행 아티팩트 URL 이 고아로 남았다 — $url"
   done <<EOF
 $(sed -n 's/^URL //p' "$before")
