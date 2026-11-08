@@ -27,6 +27,12 @@
 #
 # Usage: bash scripts/test-gate.sh [--list | --sections <id>[,<id>...] | --run-one <id>]
 #        bash scripts/test-gate.sh --digests [--from <file>]
+#        bash scripts/test-gate.sh --sections <id>[,<id>...] --cut-digest
+#
+# `--cut-digest` prints the sha256 of the cut `--sections` would run — the head,
+# the closure of the named sections with their preludes and the tail — with the
+# per-run paths written into the cut replaced by fixed placeholders, so the same
+# tree gives the same value from any scratch directory. It runs nothing.
 #
 # `--digests` prints `<id><TAB><sha256>` for every addressable section of this
 # file, or of `<file>` — the bytes of each range the selector cuts. It runs no
@@ -169,11 +175,13 @@ CC_CMDS_AUTOPILOT_AUTO_RESOLVE=0
 export CC_CMDS_AUTOPILOT_AUTO_RESOLVE
 
 script_dir=$(cd "$(dirname "$0")" && pwd)
-# `CC_TEST_GATE_REPO_ROOT` IS THE SECTION SELECTOR'S HANDOFF, not a general
-# override. The selector runs a cut-down COPY of this file out of a scratch
-# directory, and a copy outside `scripts/` cannot derive the repository root
-# from its own path. A full run never sets the variable, so the derivation
-# below is what it always was.
+# `CC_TEST_GATE_REPO_ROOT` IS A HANDOFF TO A COPY, not a general override. The
+# selector runs a cut-down COPY of this file out of a scratch directory, and a
+# copy outside `scripts/` cannot derive the repository root from its own path.
+# `scripts/test-tree.sh` sets it for the same reason: a check-push lane runs a
+# copy of this file kept outside the lane's own clone, against that clone. A
+# full run from the checkout never sets the variable, so the derivation below
+# is what it always was.
 repo_root=${CC_TEST_GATE_REPO_ROOT:-$(cd "$script_dir/.." && pwd)}
 # EXPORTED, AND THAT IS NOT A STYLE CHOICE. Nothing in any child reads this out
 # of the environment — every use is in this shell, in a subshell, or in a
@@ -315,6 +323,11 @@ rec_add_file=""
 digests_mode=0
 digests_from=""
 digests_from_given=0
+# `--cut-digest` builds the cut `--sections` would run and prints its sha256
+# instead of running it. A caller that remembers which sections passed on one
+# tree uses the value to tell whether the code those sections stand on is still
+# the same on another; it runs no assertion and leaves nothing behind.
+cutdig_mode=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --list)
@@ -332,6 +345,8 @@ while [ "$#" -gt 0 ]; do
       if [ "$#" -ge 2 ]; then shift 2; else shift; fi ;;
     --digests)
       digests_mode=1; shift ;;
+    --cut-digest)
+      cutdig_mode=1; shift ;;
     --from)
       digests_from="${2-}"; digests_from_given=1
       if [ "$#" -ge 2 ]; then shift 2; else shift; fi ;;
@@ -354,7 +369,7 @@ while [ "$#" -gt 0 ]; do
       oracle_mode="wrap"; oracle_arg1="${2-}"; oracle_arg2="${3-}"
       if [ "$#" -ge 3 ]; then shift 3; else shift "$#"; fi ;;
     *)
-      printf 'test-gate: 모르는 인자입니다: %s (쓸 수 있는 것: --list, --sections <id>[,<id>...], --run-one <id>, --estimate [--goals <목표>[,<목표>...]] [--timing-table <path>], --record-add <file>, --digests [--from <file>], 그리고 오라클 시험용 --oracle-judge <dir> / --oracle-probe / --oracle-wrap <script> <map>)\n' "$1" >&2
+      printf 'test-gate: 모르는 인자입니다: %s (쓸 수 있는 것: --list, --sections <id>[,<id>...], --run-one <id>, --estimate [--goals <목표>[,<목표>...]] [--timing-table <path>], --record-add <file>, --digests [--from <file>], --sections <id>[,<id>...] --cut-digest, 그리고 오라클 시험용 --oracle-judge <dir> / --oracle-probe / --oracle-wrap <script> <map>)\n' "$1" >&2
       exit 2 ;;
   esac
 done
@@ -376,6 +391,20 @@ fi
 if [ "$sections_given" = "1" ] && [ -z "$sections_want" ]; then
   printf 'test-gate: --sections 에 빈 값이 왔습니다 — 전량을 원하면 플래그를 주지 마세요\n' >&2
   exit 2
+fi
+# THE CUT DIGEST NAMES ONE CUT OR NONE. It is the digest of what `--sections`
+# would run, so it needs `--sections` and takes no other mode beside it: a
+# value printed for a different shape of cut than the one later run would let
+# a caller reuse a pass for code it never ran.
+if [ "$cutdig_mode" = "1" ]; then
+  if [ "$sections_given" != "1" ] || [ "$sections_strict" = "1" ] \
+     || [ "$sections_list" = "1" ] || [ "$est_mode" = "1" ] \
+     || [ "$est_goals_given" = "1" ] || [ -n "$est_table_out" ] \
+     || [ -n "$rec_add_file" ] || [ "$digests_mode" = "1" ] \
+     || [ "$digests_from_given" = "1" ] || [ -n "$oracle_mode" ]; then
+    printf 'test-gate: --cut-digest 는 --sections <id>[,<id>...] 와만 함께 씁니다\n' >&2
+    exit 2
+  fi
 fi
 
 # THE SECTION-BOUNDARY MARKERS GO TO A FILE, NEVER TO THE TRANSCRIPT. CI weighs
@@ -763,6 +792,12 @@ case "$sec_iso_trace,$sec_iso_overlay" in
 esac
 if [ -n "$sec_iso_trace" ] && [ -z "$sec_iso_out" ]; then
   printf 'test-gate: CC_GATE_ISO_TRACE 는 기록 디렉터리 CC_GATE_ISO_OUT(절대 경로)과 함께 줍니다\n' >&2
+  exit 2
+fi
+# An isolation cut is not the cut a lane runs, so its digest would name a cut
+# nobody reuses.
+if [ "$cutdig_mode" = "1" ] && [ -n "$sec_iso_out$sec_iso_trace$sec_iso_overlay$sec_iso_solo" ]; then
+  printf 'test-gate: --cut-digest 는 CC_GATE_ISO_* 와 함께 쓰지 않습니다\n' >&2
   exit 2
 fi
 # The cut runs under the `bash` on PATH, not under the interpreter reading this
@@ -1410,6 +1445,11 @@ if [ "$sections_list" = "1" ] || [ -n "$sections_want" ] || [ "$est_mode" = "1" 
         printf 'test-gate: 구역 표시를 찾지 못해 절 목록을 낼 수 없습니다 (`# --- preamble-end ---`, `# --- epilogue-begin ---`)\n' >&2
         exit 2
       fi
+      # The full run this falls back to has no cut, so it has no cut digest.
+      if [ "$cutdig_mode" = "1" ]; then
+        printf 'test-gate: 구역 표시를 찾지 못해 컷 다이제스트를 낼 수 없습니다\n' >&2
+        exit 2
+      fi
       printf 'test-gate: 구역 표시를 찾지 못했습니다 — 전량 실행합니다\n' >&2
       sec_idx="" ;;
   esac
@@ -1578,6 +1618,11 @@ FRONTEOF
     printf 'test-gate: --run-one 에 모르는 절 id 입니다: %s — 전량으로 떨어지지 않고 여기서 멈춥니다 (`--list` 로 id 를 확인하세요)\n' "$sec_miss" >&2
     exit 2
   fi
+  # An unknown id makes `--sections` run everything, and the full run is no cut.
+  if [ -n "$sec_miss" ] && [ "$cutdig_mode" = "1" ]; then
+    printf 'test-gate: --cut-digest 에 모르는 절 id 입니다: %s — 실행하면 전량이 돌아 컷이 없습니다\n' "$sec_miss" >&2
+    exit 2
+  fi
   # THE ESTIMATE FOLLOWS THE SAME ESCAPE. An unknown id under `--sections`
   # would run everything, so the estimate says that and gives the maximum
   # limit rather than estimating a run nobody asked for; `--run-one` stopped
@@ -1633,8 +1678,16 @@ FRONTEOF
     # cut as it did before the wrapper existed, so it gets neither the file nor
     # the section names below. The path is written into the cut as a literal,
     # under the timing path's rule: absolute and free of single quotes.
+    #
+    # THE CUT DIGEST HASHES THE CUT THE WRAPPED CALL WOULD RUN, so it takes both
+    # literal paths that call writes in — this file and the marker file a lane
+    # always gives — as fixed placeholders. The real ones differ in every
+    # scratch directory, and the digest must not.
     sec_fail=""
-    if [ -z "${CC_TEST_GATE_ORACLE_INNER:-}" ]; then
+    if [ "$cutdig_mode" = "1" ]; then
+      sec_fail='/cc-cut-digest/fail'
+      sec_timing_out='/cc-cut-digest/marks'
+    elif [ -z "${CC_TEST_GATE_ORACLE_INNER:-}" ]; then
       sec_fail=$(mktemp "$sec_dir/fail.XXXXXX")
       case "$sec_fail" in
         *"'"*) sec_fail="" ;;
@@ -1862,6 +1915,25 @@ SECEOF
       printf 'test-gate: 절 안에 경계 모양(`# ---` 줄 + `# <번호>. ` 줄, 또는 `# --- <번호>. … ---` 한 줄)이 새로 생겼는지 보세요 — 그 절은 id 로는 여전히 해소되지만 끝 줄이 당겨집니다\n' >&2
       rm -rf "$sec_dir"
       exit 2
+    fi
+
+    # The digest is taken after the anchor check, so a truncated section has no
+    # digest either: what is hashed is a cut that would have been run.
+    if [ "$cutdig_mode" = "1" ]; then
+      if command -v sha256sum >/dev/null 2>&1; then
+        sec_dig=$(sha256sum < "$sec_cut") || sec_dig=""
+      else
+        sec_dig=$(shasum -a 256 < "$sec_cut") || sec_dig=""
+      fi
+      sec_dig=${sec_dig%% *}
+      rm -rf "$sec_dir"
+      case "$sec_dig" in
+        *[!0-9a-f]*|'')
+          printf 'test-gate: 컷 다이제스트 계산이 실패했습니다\n' >&2
+          exit 2 ;;
+      esac
+      printf '%s\n' "$sec_dig"
+      exit 0
     fi
 
     # THE TRANSCRIPT CARRIES THE SCOPE IT RAN, not just the count it produced.
@@ -7281,6 +7353,59 @@ else
   skip "추적한 절의 줄 집합이 컷 좌표로 남고 대응표가 있다 — PATH 의 bash 가 4.1 미만"
 fi
 rm -rf "$isf_dir"
+
+# ---------------------------------------------------------------------------
+# 0h. The cut digest, and a copy of this file run against a checkout
+# --- section: 0h | group: static | covers: - | anchors: 컷 다이제스트는 임시 디렉터리가 달라도 같다, 닫힘 안 절의 한 줄은 값을 바꾸고 닫힘 밖 절의 한 줄은 바꾸지 않는다, 밖 복사본의 좁힌 실행은 제자리 실행과 같은 PASS 줄과 합계 줄을 낸다 ---
+# ---------------------------------------------------------------------------
+# check-push reuses a lane's pass on another tree only when this value is the
+# same there, so it must follow the code the cut runs and nothing else: not the
+# scratch directory, not where the file sits, not a section outside the cut.
+# A lane also runs a copy of this file kept outside its own clone, so the copy
+# run is held to the in-place one. `0d` is the cut, as in 0e and 0g; `0e` is the
+# neighbour outside its closure.
+cdg_dir=$(mktemp -d "${TMPDIR:-/tmp}/cc-gate-cutdig.XXXXXX")
+cdg_suite="$repo_root/scripts/test-gate.sh"
+mkdir -p "$cdg_dir/t1" "$cdg_dir/t2" "$cdg_dir/out"
+cdg_a=$(TMPDIR="$cdg_dir/t1" bash "$cdg_suite" --sections 0d --cut-digest 2>/dev/null) || cdg_a="rc=$?"
+cdg_b=$(TMPDIR="$cdg_dir/t2" bash "$cdg_suite" --sections 0d --cut-digest 2>/dev/null) || cdg_b="rc=$?"
+check "컷 다이제스트는 임시 디렉터리가 달라도 같다" \
+  "$(printf '%s' "$cdg_a" | grep -cE '^[0-9a-f]{64}$' || true)|$([ "$cdg_a" = "$cdg_b" ] && echo same)" "1|same"
+check "컷 다이제스트는 임시 디렉터리에 아무것도 남기지 않는다" \
+  "$(find "$cdg_dir/t1" "$cdg_dir/t2" -mindepth 1 | grep -c . || true)" "0"
+cp "$cdg_suite" "$cdg_dir/out/plain.sh"
+awk '{ if ($0 == "# This was the file'"'"'s only silent fallback. An id nobody declared says so and" && !m) { print $0 " x"; m = 1 } else print }' \
+  "$cdg_suite" > "$cdg_dir/out/in.sh"
+awk '{ if (index($0, "# 0e. ") == 1 && !m) { print $0 " x"; m = 1 } else print }' \
+  "$cdg_suite" > "$cdg_dir/out/nb.sh"
+cdg_plain=$(CC_TEST_GATE_REPO_ROOT="$repo_root" bash "$cdg_dir/out/plain.sh" --sections 0d --cut-digest 2>/dev/null) || cdg_plain="rc=$?"
+cdg_in=$(CC_TEST_GATE_REPO_ROOT="$repo_root" bash "$cdg_dir/out/in.sh" --sections 0d --cut-digest 2>/dev/null) || cdg_in="rc=$?"
+cdg_nb=$(CC_TEST_GATE_REPO_ROOT="$repo_root" bash "$cdg_dir/out/nb.sh" --sections 0d --cut-digest 2>/dev/null) || cdg_nb="rc=$?"
+check "같은 내용의 밖 복사본은 같은 컷 다이제스트를 낸다" "$cdg_plain" "$cdg_a"
+check "닫힘 안 절의 한 줄은 값을 바꾸고 닫힘 밖 절의 한 줄은 바꾸지 않는다" \
+  "$(cmp -s "$cdg_dir/out/in.sh" "$cdg_suite" || echo edited)|$(cmp -s "$cdg_dir/out/nb.sh" "$cdg_suite" || echo edited)|$([ "$cdg_in" != "$cdg_a" ] && echo moved)|$([ "$cdg_nb" = "$cdg_a" ] && echo kept)" \
+  "edited|edited|moved|kept"
+cdg_rc_u=0; bash "$cdg_suite" --sections no-such-0h --cut-digest > "$cdg_dir/u.out" 2>/dev/null || cdg_rc_u=$?
+cdg_rc_i=0; CC_GATE_ISO_SOLO=1 bash "$cdg_suite" --sections 0d --cut-digest > "$cdg_dir/i.out" 2>/dev/null || cdg_rc_i=$?
+cdg_rc_n=0; bash "$cdg_suite" --cut-digest > "$cdg_dir/n.out" 2>/dev/null || cdg_rc_n=$?
+cdg_rc_r=0; bash "$cdg_suite" --run-one 0d --cut-digest > "$cdg_dir/r.out" 2>/dev/null || cdg_rc_r=$?
+check "모르는 id·격리 선택지·--sections 없음·--run-one 은 다이제스트 없이 exit 2 다" \
+  "$cdg_rc_u $cdg_rc_i $cdg_rc_n $cdg_rc_r|$(cat "$cdg_dir/u.out" "$cdg_dir/i.out" "$cdg_dir/n.out" "$cdg_dir/r.out" | grep -c . || true)" "2 2 2 2|0"
+# The lane's own form: the wrapper, a copy outside `scripts/`, and the checkout
+# named by the variable. The in-place run is the same wrapper on the file itself.
+mkdir -p "$cdg_dir/t3" "$cdg_dir/t4"
+env -u CC_TEST_GATE_ORACLE_INNER TMPDIR="$cdg_dir/t3" CC_TEST_GATE_REPO_ROOT="$repo_root" \
+  bash "$cdg_dir/out/plain.sh" --sections 0d > "$cdg_dir/copy.out" 2>&1 || true
+env -u CC_TEST_GATE_ORACLE_INNER TMPDIR="$cdg_dir/t4" \
+  bash "$cdg_suite" --sections 0d > "$cdg_dir/self.out" 2>&1 || true
+cdg_copy_pass=$(grep -E '^PASS: ' "$cdg_dir/copy.out" || true)
+cdg_self_pass=$(grep -E '^PASS: ' "$cdg_dir/self.out" || true)
+cdg_copy_tot=$(grep -E '^test-gate: [0-9]+ passed, [0-9]+ failed$' "$cdg_dir/copy.out" || true)
+cdg_self_tot=$(grep -E '^test-gate: [0-9]+ passed, [0-9]+ failed$' "$cdg_dir/self.out" || true)
+check "밖 복사본의 좁힌 실행은 제자리 실행과 같은 PASS 줄과 합계 줄을 낸다" \
+  "$([ -n "$cdg_self_pass" ] && [ "$cdg_copy_pass" = "$cdg_self_pass" ] && echo pass)|$([ -n "$cdg_self_tot" ] && [ "$cdg_copy_tot" = "$cdg_self_tot" ] && echo total)|$(printf '%s' "$cdg_self_tot" | sed -n 's/^test-gate: [0-9]* passed, \([0-9]*\) failed$/\1/p')" \
+  "pass|total|0"
+rm -rf "$cdg_dir"
 
 # ---------------------------------------------------------------------------
 # 1. The snapshot is a JSON object, not a table
@@ -65283,14 +65408,16 @@ unset d104 c104 p104 f104 d104n
 
 # ---------------------------------------------------------------------------
 # 108. 리뷰어 런 — 리뷰 전용 세그먼트의 계획·리뷰 줄·쓰기 거절·게시·대조
-# --- section: 108 | group: sa | covers: snapshot, act, plan, exec, review-line, review-post, gate_review_pr_plan, gate_exec_review_post_form, gate_exec_author_write_form, gate_check_review_post, gate_perform_review_post, gate_clause_review_evidence_check, binding_set_bytes, gate_review_fetch_surface, gate_collaboration_surface, gate_worktree_add_base_mismatch, reach, autopilot-router-shift | anchors: 108: 스냅숏이 리뷰 PR 행마다 리뷰 전용 세그먼트를 낸다, 108: 계획 행이 종류·고정 헤드·베이스 sha 를 싣는다, 108: 원격 헤드가 워크트리 HEAD 와 다른 계획은 rc 3 이다, 108: 리뷰 줄이 PR·베이스·고정 헤드·깊이·게시 항목 요청을 싣는다, 108: 리뷰 전용 세그먼트의 작성자 브랜치 쓰기는 모두 rc 3 이다, 108: 게시가 POST 한 번과 대조 일치 행을 남긴다, 108: 재판독이 한 바이트 다르면 대조 불일치 행과 rc 3 이다, 108: 리뷰를 근거로 한 충족은 대조 일치 리뷰에만 선다, 108: 직접 리뷰 게시는 사전 인가 행이 있어도 rc 3 이다, 108: 렌더는 방식·의사표시로 종류를 정하고 diff 밖 항목을 본문에 둔다, 108: 리뷰어 네 행이 구속 다이제스트를 움직인다, 108: 결과 미상 뒤의 재호출은 POST 없이 올라간 리뷰를 대조한다, 108: 계획하지 못한 리뷰 PR 세그먼트는 park 로만 닫힌다, 108: 리뷰어 런 밖의 세그먼트 행은 호출자의 베이스 sha 를 받는다, 108: 스킬 문면에서 리뷰어 런 호출 일곱 가지를 모두 읽는다, 108: 스킬 문면 그대로의 리뷰어 런 호출이 계획부터 정리까지 통과한다, 108: 스킬 문면의 fetch 는 도달 협업으로 기록되고 게시는 대조 일치다, 108: 헤드가 움직인 재시도는 워크트리를 다시 만들어 새 헤드를 고정하고 메인 체크아웃은 그대로다, 108: 닫힌 PR 은 fetch 가 도달 park 가 아닌 실패이고 park 와 ref 정리는 통과한다, 108: 다른 런 id 목적지의 fetch 는 협업이 아니어서 도달 park 다, 108: 다른 세그먼트의 리뷰 ref 로 뜨는 리뷰 워크트리는 시작점 검사에 rc 2 다, 108: 협업으로 받는 fetch 는 이 런의 리뷰 ref 로만 받는 좁은 형태 하나다 ---
+# --- section: 108 | group: sa | covers: snapshot, act, plan, exec, review-line, review-post, gate_review_pr_plan, gate_exec_review_post_form, gate_exec_author_write_form, gate_check_review_post, gate_perform_review_post, gate_clause_review_evidence_check, binding_set_bytes, gate_review_fetch_surface, gate_collaboration_surface, gate_worktree_add_base_mismatch, reach, autopilot-router-shift | anchors: 108: 스냅숏이 리뷰 PR 행마다 리뷰 전용 세그먼트를 낸다, 108: 계획 행이 종류·고정 헤드·베이스 sha 를 싣는다, 108: 원격 헤드가 워크트리 HEAD 와 다른 계획은 rc 3 이다, 108: 리뷰 줄이 PR·베이스·고정 헤드·깊이·게시 항목 요청을 싣는다, 108: 리뷰 전용 세그먼트의 작성자 브랜치 쓰기는 모두 rc 3 이다, 108: 게시가 POST 한 번과 대조 일치 행을 남긴다, 108: 재판독이 한 바이트 다르면 대조 불일치 행과 rc 3 이다, 108: 리뷰를 근거로 한 충족은 대조 일치 리뷰에만 선다, 108: 직접 리뷰 게시는 사전 인가 행이 있어도 rc 3 이다, 108: 렌더는 방식·의사표시로 종류를 정하고 diff 밖 항목을 본문에 둔다, 108: 리뷰어 네 행이 구속 다이제스트를 움직인다, 108: 결과 미상 뒤의 재호출은 POST 없이 올라간 리뷰를 대조한다, 108: 계획하지 못한 리뷰 PR 세그먼트는 park 로만 닫힌다, 108: 인라인 코멘트가 붙은 게시는 PR 단위 코멘트 목록으로 대조 일치다, 108: 줄이나 면이 렌더와 다른 인라인 코멘트는 대조 불일치와 rc 3 이다, 108: 헤드가 움직여 line 이 옮겨진 뒤의 재판독은 POST 없이 대조 일치다, 108: 대조는 게시 커밋 기준 줄과 면으로 응답 모양을 가른다, 108: 리뷰어 런 밖의 세그먼트 행은 호출자의 베이스 sha 를 받는다, 108: 스킬 문면에서 리뷰어 런 호출 일곱 가지를 모두 읽는다, 108: 스킬 문면 그대로의 리뷰어 런 호출이 계획부터 정리까지 통과한다, 108: 스킬 문면의 fetch 는 도달 협업으로 기록되고 게시는 대조 일치다, 108: 헤드가 움직인 재시도는 워크트리를 다시 만들어 새 헤드를 고정하고 메인 체크아웃은 그대로다, 108: 닫힌 PR 은 fetch 가 도달 park 가 아닌 실패이고 park 와 ref 정리는 통과한다, 108: 다른 런 id 목적지의 fetch 는 협업이 아니어서 도달 park 다, 108: 다른 세그먼트의 리뷰 ref 로 뜨는 리뷰 워크트리는 시작점 검사에 rc 2 다, 108: 협업으로 받는 fetch 는 이 런의 리뷰 ref 로만 받는 좁은 형태 하나다 ---
 #
 # 베어 원격 하나에 다른 작성자의 PR 둘(`refs/pull/7/head`, `refs/pull/8/head`)을 두고,
 # 리뷰어 계획(`run_profile: reviewer`)과 `리뷰 PR`·`리뷰 게시`·`리뷰 깊이` 행을 실은
 # 매니페스트로 라우터가 하는 순서를 그대로 밟는다 — fetch 와 분리 워크트리, `--review-pr`
 # 계획 행, 리뷰 줄, cycle 행, `act --kind review-post`. GitHub 는 함수로 가린 대역이 받고,
 # POST 의 요청 본문을 파일로 남겨 재판독에 그대로 돌려준다. `tamper` 파일이 있으면 재판독
-# 본문에 한 바이트를 더해 돌려준다. 렌더러는 따로 불러 종류·인라인·본문 배치를 잰다.
+# 본문에 한 바이트를 더해 돌려준다. 코멘트 재판독은 GitHub 의 응답 모양을 따른다 — 리뷰 단위
+# 코멘트는 줄·면이 null 이고, PR 단위 목록은 줄·면이 채워지고 다른 리뷰의 코멘트가 섞인다.
+# 렌더러는 따로 불러 종류·인라인·본문 배치를 잰다.
 # ---------------------------------------------------------------------------
 RV106_RP="$repo_root/plugins/cc-cmds/orchestrator/review-post.sh"
 RV106_FMT="$repo_root/plugins/cc-cmds/orchestrator/review-format.default.md"
@@ -65304,6 +65431,10 @@ cat > "$RV106_STUB" <<'RV106EOF'
 # 리뷰 게시 행위의 GitHub 대역. 답은 `$RV106_S` 의 파일이 고른다:
 #   login · head · reviews · rid · tamper(있으면 재판독 본문 끝에 x 를 더한다)
 #   status(있으면 POST 의 답: none 은 상태 줄 없이 실패, 422 는 4xx, 500 은 5xx, noid 는 id 없는 200)
+#   comment-tamper(PR 단위 코멘트 목록의 이 리뷰 코멘트를 바꾼다: line 은 줄을 하나 내리고, side 는 면을 뒤집는다)
+#   comment-moved(있으면 PR 단위 목록의 line 만 새 헤드 기준처럼 옮기고 original_line 은 그대로 둔다)
+# 코멘트 재판독은 GitHub 가 실제로 주는 두 모양을 낸다. 리뷰 단위 엔드포인트는 줄·면을 null 로,
+# 위치만 채워 주고, PR 단위 목록은 줄·면과 리뷰 id 를 채우되 다른 리뷰의 코멘트를 한 페이지 섞는다.
 # 받은 환경에 GH_TOKEN·GITHUB_TOKEN 이 있었는지를 호출마다 env.log 에 한 줄로 남긴다.
 D=${RV106_S:?}
 printf '%s\n' "$*" >> "$D/gh.log"
@@ -65324,7 +65455,21 @@ fi
 if [ "$2" = --paginate ]; then
   case "$3" in
     */reviews) cat "$D/reviews"; exit 0 ;;
-    */comments) jq -c '.comments // []' "$D/posted.json"; exit 0 ;;
+    */reviews/*/comments)
+      jq -c --argjson id "$(cat "$D/rid")" \
+        '[(.comments // [])[] | {pull_request_review_id: $id, path, line: null, original_line: null, side: null,
+                                 position: .line, original_position: .line, body}]' "$D/posted.json"
+      exit 0 ;;
+    */pulls/*/comments)
+      printf '[{"id":9001,"pull_request_review_id":1,"path":"a.txt","line":1,"original_line":1,"side":"RIGHT","position":1,"original_position":1,"body":"앞선 리뷰의 코멘트"}]\n'
+      t=$(cat "$D/comment-tamper" 2>/dev/null || true); m=""; [ -f "$D/comment-moved" ] && m=1
+      jq -c --argjson id "$(cat "$D/rid")" --arg t "$t" --arg m "$m" \
+        '[(.comments // [])[] | {pull_request_review_id: $id, path,
+                                 line: (if $m == "" then .line else .line + 10 end), original_line: .line,
+                                 side: (if $t == "side" then (if .side == "LEFT" then "RIGHT" else "LEFT" end) else .side end),
+                                 position: .line, original_position: .line, body}
+          | if $t == "line" then .line += 1 | .original_line += 1 else . end]' "$D/posted.json"
+      exit 0 ;;
   esac
   exit 1
 fi
@@ -65389,6 +65534,15 @@ rv106_cycle() {
   sag act --manifest "$SA_MANIFEST" --kind cycle --target main --segment "$1" --cutpoint 커밋 \
       --snapshot-digest "$(SAH)" --rationale x \
       -- 사이클=1 P0=0 P1=0 "리뷰 HEAD=$2" "리포트 경로=$(sa_canon "$1" "$RV106_ROOT/rep-$SA_ID-$1.md")"
+}
+rv106_cycle_inline() {
+  # rv106_cycle_inline <세그먼트> <리뷰 HEAD> <파일> <줄> — PR diff 의 hunk 안 RIGHT 줄을 가리키는
+  # P1 게시 항목 하나를 둔 리포트와 그에 맞춘 P1=1 cycle 행.
+  printf '# 코드 리뷰 리포트\n\n- **리뷰 HEAD**: `%s`\n- **발견 요약**: 🔴 P0 0건 | 🟠 P1 1건 | 🟡 P2 0건 | 🟢 P3 0건\n\n## 게시 항목\n\n### G1\n- **등급**: P1\n- **제목**: 더한 줄을 다시 봐야 합니다\n- **파일**: %s\n- **줄**: %s\n- **면**: RIGHT\n- **근거**: 더한 줄의 값이 맞지 않습니다.\n- **제안**: 값을 고치면 됩니다.\n' \
+    "$2" "$3" "$4" > "$RV106_ROOT/rep-$SA_ID-$1.md"
+  sag act --manifest "$SA_MANIFEST" --kind cycle --target main --segment "$1" --cutpoint 커밋 \
+      --snapshot-digest "$(SAH)" --rationale x \
+      -- 사이클=1 P0=0 P1=1 "리뷰 HEAD=$2" "리포트 경로=$(sa_canon "$1" "$RV106_ROOT/rep-$SA_ID-$1.md")"
 }
 rv106_post() {
   sag act --manifest "$SA_MANIFEST" --kind review-post --target main --segment "$1" --cutpoint 커밋 \
@@ -65653,6 +65807,17 @@ jq '.body += "x"' "$RV106_ROOT/rv.json" > "$RV106_ROOT/rv2.json"
 printf 'notjson\n' > "$RV106_ROOT/rv3.json"
 rd106_v() { "$RV106_RP" verify --request "$RV106_ROOT/rq-rc.json" --review "$RV106_ROOT/$1" --comments "$RV106_ROOT/cm.json" 2>/dev/null; }
 check "108: 대조는 일치·불일치·판독불가 셋을 낸다" "$(rd106_v rv.json)|$(rd106_v rv2.json)|$(rd106_v rv3.json)" "일치|불일치|판독불가"
+rd106_cv() {
+  # rd106_cv <코멘트 변형 jq> — rq-rc.json 의 코멘트를 GitHub 응답 모양으로 바꿔 대조한다.
+  jq -c "[.comments[] | {pull_request_review_id: 555, path, line, original_line: .line, side,
+                         position: .line, original_position: .line, body} | $1]" \
+    "$RV106_ROOT/rq-rc.json" > "$RV106_ROOT/cv.json"
+  "$RV106_RP" verify --request "$RV106_ROOT/rq-rc.json" --review "$RV106_ROOT/rv.json" --comments "$RV106_ROOT/cv.json" 2>/dev/null
+}
+rd106_got="$(rd106_cv '.line = null | .original_line = null | .side = null')|$(rd106_cv '.')"
+rd106_got="$rd106_got|$(rd106_cv '.line += 7')|$(rd106_cv '.original_line += 1')"
+rd106_got="$rd106_got|$(rd106_cv '.side = (if .side == "LEFT" then "RIGHT" else "LEFT" end)')"
+check "108: 대조는 게시 커밋 기준 줄과 면으로 응답 모양을 가른다" "$rd106_got" "불일치|일치|일치|불일치|불일치"
 awk '{ print } /^리뷰 결과를 올립니다/ && !done { print "{모름}"; done = 1 }' "$RV106_FMT" > "$RV106_ROOT/badfmt.md"
 "$RV106_RP" render --settle --format "$RV106_ROOT/badfmt.md" --report "$RV106_ROOT/items.md" --head "$rd106_head" \
   --p0 1 --p1 2 --out "$RV106_ROOT/s.json" >/dev/null 2>&1
@@ -65719,6 +65884,37 @@ sag act --manifest "$SA_MANIFEST" --kind segment --target main --segment P3 --cu
     --snapshot-digest "$(SAH)" --rationale x -- 상태=park "워크트리=$rv106_w3"
 check "108: 계획하지 못한 리뷰 PR 세그먼트는 park 로만 닫힌다" \
   "$rv106_got|$rc|$(sa_field "$(sa_seg_last P3)" 상태)" "3|0|park"
+
+# 인라인 게시 — diff 안 줄을 가리키는 게시 항목의 리뷰를 PR 단위 코멘트 목록으로 대조한다 ----------
+rv106_new "인라인 게시" 직접 허용
+rv106_fetch P1 7; rv106_fetch P2 8
+rv106_plan P1; rv106_plan P2
+rv106_h7=$(git --git-dir="$SA_REMOTE" rev-parse refs/pull/7/head)
+rv106_h8=$(git --git-dir="$SA_REMOTE" rev-parse refs/pull/8/head)
+rv106_cycle_inline P1 "$rv106_h7" a.txt 2; rv106_cycle_inline P2 "$rv106_h8" b.txt 1
+printf '%s\n' "$rv106_h7" > "$RV106_S/head"; printf '559\n' > "$RV106_S/rid"
+rv106_post P1
+rv106_pr=$(rv106_last '리뷰 게시')
+check "108: 인라인 코멘트가 붙은 게시는 PR 단위 코멘트 목록으로 대조 일치다" \
+  "$rc|$(rv106_posts)|$(jq -c '[(.comments // [])[] | "\(.path):\(.line):\(.side)"]' "$RV106_S/posted.json" 2>/dev/null)|$(sa_field "$rv106_pr" '리뷰 id')|$(sa_field "$rv106_pr" 대조)" \
+  "0|1|[\"a.txt:2:RIGHT\"]|559|일치"
+printf '%s\n' "$rv106_h8" > "$RV106_S/head"; printf '560\n' > "$RV106_S/rid"; printf 'line\n' > "$RV106_S/comment-tamper"
+rv106_post P2
+rv106_pr=$(rv106_last '리뷰 게시')
+rv106_got="$rc|$(rv106_posts)|$(sa_field "$rv106_pr" '리뷰 id')|$(sa_field "$rv106_pr" 대조)"
+case "$msg" in *"게시 대조"*) rv106_got="$rv106_got|게시 대조" ;; esac
+printf 'side\n' > "$RV106_S/comment-tamper"
+rv106_post P2
+rv106_pr=$(rv106_last '리뷰 게시')
+rv106_got="$rv106_got;$rc|$(rv106_posts)|$(sa_field "$rv106_pr" '리뷰 id')|$(sa_field "$rv106_pr" 대조)"
+case "$msg" in *"게시 대조"*) rv106_got="$rv106_got|게시 대조" ;; esac
+check "108: 줄이나 면이 렌더와 다른 인라인 코멘트는 대조 불일치와 rc 3 이다" \
+  "$rv106_got" "3|2|560|불일치|게시 대조;3|2|560|불일치|게시 대조"
+rm -f "$RV106_S/comment-tamper"; : > "$RV106_S/comment-moved"
+rv106_post P2
+rv106_pr=$(rv106_last '리뷰 게시')
+check "108: 헤드가 움직여 line 이 옮겨진 뒤의 재판독은 POST 없이 대조 일치다" \
+  "$rc|$(rv106_posts)|$(sa_field "$rv106_pr" '리뷰 id')|$(sa_field "$rv106_pr" 대조)" "0|2|560|일치"
 
 # 전용 쓰기 자격 없음 — 이 호스트의 gh 로그인으로 게시하고, 계정 일치 확인은 그대로 건다 -----------
 #
