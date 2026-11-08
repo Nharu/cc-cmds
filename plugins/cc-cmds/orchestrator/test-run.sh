@@ -11663,6 +11663,10 @@ else
 fi
 check "segment_cycle 의 복구 호출이 상한 리포트를 넘긴다" \
   "$(sed -n '/^segment_cycle()/,/^}/p' "$DRIVER" | grep -cF 'review_recover "$seg" "$cycle" "$sid" "$rp" "$seg_repo" "$branch" "$class" "$cap_rp"' || true)" "1"
+# 리뷰(S5) 결과 행도 실행 버전을 싣는다 — 재진입 카드의 원 스테이지는 그 칸이 없는 행을
+# 건너뛴다.
+check "segment_cycle 의 리뷰 결과 행이 파견 id 의 실행 버전을 싣는다" \
+  "$(sed -n '/^segment_cycle()/,/^}/p' "$DRIVER" | grep -A1 -F '"스테이지=S5" "파견 id=$sid"' | grep -cF '"실행 버전=$(stage_attempt_pinned "$sid")"' || true)" "1"
 
 # --- (3b) 압축 창·레인·기록자 — 파견 id 의 `.window` 기록이 행에 옮겨진다 ---------
 # 여기의 `stage_spawn` 은 스파이라 `.window` 를 쓰지 않으므로, 실제 기동이 남겼을
@@ -11678,7 +11682,7 @@ mkdir -p "$(dirname "$REC_STREAM")"
 printf '%s\n' '{"type":"system","subtype":"init","model":"claude-opus-5-5[1m]"}' > "$REC_STREAM"
 rec_reset
 review_recover segR 0 "$SIDR" "$REC_RP" "$REC_DIR" segbranch "크래시" >/dev/null
-for want in '압축 창=200000(런설정)' '레인=~/lane30' '기록자=드라이버' 'effort=medium' '서빙 모델=claude-opus-5-5'; do
+for want in '압축 창=200000(런설정)' '레인=~/lane30' '기록자=드라이버' 'effort=medium' '서빙 모델=claude-opus-5-5' "실행 버전=$ATTR"; do
   if printf '%s' "$REC_ROWS" | grep_all_q -F -- "$want"; then
     ok "stage-result 행이 $want 를 싣는다 (.window 에서)"
   else
@@ -12062,12 +12066,17 @@ check "근거가 resume 인 이관 GRANT 의 새 세션은 재진입 카드 변�
 # 호출은 대역이다. 끊긴 세션은 원장의 stage-result 행 하나에 실려 있고, 그 행은 드라이버의
 # 리뷰 행과 같은 꼴로 드라이버의 행 작성기가 쓴다 — `스테이지` 는 종류 라벨 S5 이고 기동한
 # 스테이지 id 는 `파견 id` 에 있다.
+# 이 셸의 `ledger_row` 는 앞 절(리뷰 복구)이 설치한 스파이라, 행은 드라이버를 새로 소싱한
+# 셸에서 진짜 작성기로 쓴다.
+sp_real() {  # sp_real <원장> <런 디렉터리> <함수> [인자...] — 새로 소싱한 드라이버에서 부른다
+  bash -c '. "$1" >/dev/null 2>&1; set +e; LEDGER=$2; RUN_DIR=$3; ORCH_DIR=${1%/*}; shift 3; "$@"' \
+    _ "$DRIVER" "$@"
+}
 sp_cut=34343434-5656-7878-9090-121212121212
 : > "$SPD/ledger.md"
-( LEDGER="$SPD/ledger.md"
-  ledger_row 'stage-result' "세그먼트=segR" "스테이지=S5" "파견 id=S5:segR:1" "종료 코드=0" \
-    "아티팩트 술어 결과=1" "실행 버전=1" "세션 id=$sp_cut" "부모=-" "압축 창=-" "레인=-" "계정=u1" \
-    "기록자=드라이버" "종단 부류=한도 종료" ) >/dev/null 2>&1
+sp_real "$SPD/ledger.md" "$SPD/run" ledger_row 'stage-result' "세그먼트=segR" "스테이지=S5" "파견 id=S5:segR:1" \
+  "종료 코드=0" "아티팩트 술어 결과=1" "실행 버전=1" "세션 id=$sp_cut" "부모=-" "압축 창=-" "레인=-" "계정=u1" \
+  "기록자=드라이버" "종단 부류=한도 종료" >/dev/null 2>&1
 sp_rm_env=$(printf '{"verdict":"GRANT","account":"u2","config_dir":"%s","basis":"resume-migrated","fresh":true,"nonce":"sp-n","migrated":{"from":"u1","to":"u2","why":"resume-bound-exhausted"}}' "$SPD/cfg")
 sp_sid_of() { sed -n 's/.*--session-id \([^ ]*\) .*/\1/p' "$1" 2>/dev/null; }
 sp_rm=$(sp_spawn "S5:segR:1" "$SPD/rm.txt" SP_RESUME=$sp_cut SP_GRANT_ENV="$sp_rm_env" \
@@ -12093,17 +12102,19 @@ check "R3: 드라이버 새 세션의 디스패치 프롬프트가 기록된다"
 sp_kd="$SPD/cardkey"; rm -rf "$sp_kd"; mkdir -p "$sp_kd/run"; : > "$sp_kd/ledger.md"
 sp_c4=45454545-6767-8989-0101-232323232323; sp_c1=56565656-7878-9090-1212-343434343434
 sp_cg=67676767-8989-0101-2323-454545454545
-( LEDGER="$sp_kd/ledger.md"
-  ledger_row 'stage-result' "세그먼트=segQ" "스테이지=S4" "파견 id=S4:segQ:2" "종료 코드=0" "실행 버전=2" \
-    "세션 id=$sp_c4" "부모=-" "압축 창=-" "레인=-" "계정=u1" "기록자=드라이버" "종단 부류=한도 종료"
-  ledger_row 'stage-result' "세그먼트=segQ" "스테이지=S1'" "파견 id=S1':segQ:1" "종류=reconverge" "종료 코드=0" \
-    "실행 버전=1" "세션 id=$sp_c1" "부모=-" "압축 창=-" "레인=-" "계정=u1" "기록자=드라이버" "종단 부류=한도 종료"
-  ledger_row 'stage-result' "세그먼트=segG" "스테이지=segG" "종류=review" "종료 코드=0" "실행 버전=3" \
-    "세션 id=$sp_cg" "부모=-" "압축 창=-" "레인=-" "계정=u1" "기록자=게이트" "종단 부류=한도 종료" ) >/dev/null 2>&1
+sp_real "$sp_kd/ledger.md" "$sp_kd/run" ledger_row 'stage-result' "세그먼트=segQ" "스테이지=S4" "파견 id=S4:segQ:2" \
+  "종료 코드=0" "실행 버전=2" "세션 id=$sp_c4" "부모=-" "압축 창=-" "레인=-" "계정=u1" "기록자=드라이버" \
+  "종단 부류=한도 종료" >/dev/null 2>&1
+sp_real "$sp_kd/ledger.md" "$sp_kd/run" ledger_row 'stage-result' "세그먼트=segQ" "스테이지=S1'" "파견 id=S1':segQ:1" \
+  "종류=reconverge" "종료 코드=0" "실행 버전=1" "세션 id=$sp_c1" "부모=-" "압축 창=-" "레인=-" "계정=u1" \
+  "기록자=드라이버" "종단 부류=한도 종료" >/dev/null 2>&1
+sp_real "$sp_kd/ledger.md" "$sp_kd/run" ledger_row 'stage-result' "세그먼트=segG" "스테이지=segG" "종류=review" \
+  "종료 코드=0" "실행 버전=3" "세션 id=$sp_cg" "부모=-" "압축 창=-" "레인=-" "계정=u1" "기록자=게이트" \
+  "종단 부류=한도 종료" >/dev/null 2>&1
 sp_kgot=""
 for sp_kc in "$sp_c4" "$sp_c1" "$sp_cg"; do
-  sp_kp=$( ORCH_DIR="${DRIVER%/*}"; RUN_DIR="$sp_kd/run"; LEDGER="$sp_kd/ledger.md"
-           run_gate_call gate_reentry_card_write "X#9" review "$sp_kc" "new-$sp_kc" "$sp_rm_env" 2>/dev/null )
+  sp_kp=$(sp_real "$sp_kd/ledger.md" "$sp_kd/run" run_gate_call gate_reentry_card_write "X#9" review "$sp_kc" \
+            "new-$sp_kc" "$sp_rm_env" 2>/dev/null)
   sp_kgot="$sp_kgot$(sed -n 's/^\*\*원 스테이지\*\*: //p' "$sp_kp" 2>/dev/null);"
 done
 check "R3: 카드의 원 스테이지는 드라이버 행이면 파견 id, 게이트 행이면 스테이지로 만든다" \
