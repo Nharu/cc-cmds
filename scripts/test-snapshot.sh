@@ -2887,8 +2887,8 @@ AU_SKILL="$repo_root/plugins/cc-cmds/skills/design-audit-unattended/SKILL.md"
 AU_ANS="$repo_root/plugins/cc-cmds/skills/_common/pipeline-sidecar.md"
 SEAT_REF="$AP_REFS/act2-seat.md"
 has(){ if grep -qF -- "$2" "$1"; then echo 예; else echo 아니오; fi; }
-check "design-audit-unattended: 재개와 운반 재진입은 사이드카 4.1 을 읽는다" \
-  "$(has "$AU_SKILL" "or started with \`CC_PIPELINE_HALT_ANSWER\` set (a fresh session carrying a person's answer to an earlier attempt's synthesis halt), Reads \`\${CLAUDE_SKILL_DIR}/../_common/pipeline-sidecar.md\` §4.1 before anything else")" 예
+check "design-audit-unattended: 재개와 운반·카드 재진입은 사이드카 4.1 을 읽는다" \
+  "$(has "$AU_SKILL" "or started with \`CC_PIPELINE_HALT_ANSWER\` set (a fresh session carrying a person's answer to an earlier attempt's synthesis halt), or started with \`CC_PIPELINE_REENTRY_CARD\` naming a card whose \`**스테이지**\` equals \`CC_PIPELINE_STAGE_ID\` (a resume moved to a new session on another account), Reads \`\${CLAUDE_SKILL_DIR}/../_common/pipeline-sidecar.md\` §4.1 before anything else")" 예
 check "design-audit-unattended: 종합 정지 전에 사이드카 4.1 의 조정 처분을 쓴다" \
   "$(has "$AU_SKILL" "Read \`\${CLAUDE_SKILL_DIR}/../_common/pipeline-sidecar.md\` §4.1 and write its \`## 조정 처분\` block into the report")" 예
 for f in "$RC_SKILL" "$AU_ANS"; do
