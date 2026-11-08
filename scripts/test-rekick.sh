@@ -3866,6 +3866,25 @@ check "17: 어느 후보와도 다른 의도는 새 런이다" "$(col "$OUT" 판
 has "17: 새 런 고지는 끝나지 않은 다른 런의 id 를 든다" "$OUT" "이 세션의 끝나지 않은 다른 런($MA)과 다른 의도로 보고 새 런으로 시작합니다"
 has "17: 새 런 고지는 「다시 <런 id>」 를 가리킨다" "$OUT" "「다시 <런 id>」 로 부르세요"
 
+# 의도 동점 — a source left waiting and its later follow-up share one intent
+# byte for byte, so that intent matches both. The kickoff then asks, and calls
+# detect again with the chosen id alone: an id after the intent is not a run id
+# argument.
+MQA='20261020-00b0000a'; MQB='20261020-00b0000b'
+IQ='같은 의도를 이어받은 두 런'
+P_KAT='2026-10-30T00:00:00Z' P_INTENT="$IQ" mk_prev "$MQA"
+P_KAT='2026-10-31T00:00:00Z' P_INTENT="$IQ" mk_prev "$MQB"; fx_done
+join_sess "s-$MQA" "$MQB"
+detect_case "17 의도 동점" "$MQA" "$IQ"
+check "17: 두 후보와 축자로 같은 의도는 후보 2 다" "$(col "$OUT" 판정)/$(col "$OUT" 판정 3)/$(cands "$OUT")" \
+  "후보/2/$MQB/최신/끝남 $MQA/-/대기 "
+detect_case "17 의도 동점 뒤 고른 id" "$MQA" "$MQA"
+check "17: 의도 동점에서 고른 앞선 런의 id 만으로 다시 부르면 그 런의 진행 중이다" "$(col "$OUT" 판정)/$(col "$OUT" 판정 3)" "진행 중/$MQA"
+detect_case "17 의도 동점 뒤 고른 최신 id" "$MQA" "$MQB" "$MQB"
+check "17: 의도 동점에서 고른 최신 런의 id 만으로 다시 부르면 그 런의 재킥오프다" "$(col "$OUT" 판정)/$(col "$OUT" 판정 3)/$(col "$OUT" 판정 4)" "재킥오프/$MQB/$BASE"
+detect_case "17 의도 뒤 id" "$MQA" "$IQ $MQA"
+check "17: 의도 문면 뒤에 붙인 id 는 런 id 인자가 아니어서 인자 전체가 의도로 비교된다" "$(col "$OUT" 판정)/$(col "$OUT" 판정 3)" "새 런/$MQB"
+
 # The single-run session keeps its notice byte for byte.
 P_KAT='2026-10-29T00:00:00Z' mk_prev 20261020-00f0000a; fx_done
 out=$(rk_as s-20261020-00f0000a detect --arg '전혀 다른 일을 한다')
