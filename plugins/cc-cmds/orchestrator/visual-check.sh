@@ -847,9 +847,11 @@ cmd_system() {
   [ -f "$sys" ] || { echo "이 문서의 디자인 시스템 아님 — system.md 없음"; exit 1; }
   # A person's approval line that names this document makes the design system
   # this document's whatever its sidecar says; the tokens line is still
-  # compared. A waiting line takes the sidecar judgment below: the generation
-  # stage's confirmation check runs before this call, so no caller reaches a
-  # waiting design system here.
+  # compared. A waiting line has no branch of its own and takes the sidecar
+  # judgment below. The generation stage reaches this call over a waiting line
+  # only on a resumed turn that chose to make screens on the unconfirmed
+  # palette; the halt an exit 1 gives it there carries that earlier answer
+  # forward, so the next turn does not ask the first question again.
   if [ "$(confirm_state "$sys")" = "사람 승인 — 문서 ${DOC_KEY}" ]; then
     system_tokens_match \
       || { echo "이 문서의 디자인 시스템 아님 — tokens.css sha256 줄이 실제 tokens.css 와 다르다"; exit 1; }

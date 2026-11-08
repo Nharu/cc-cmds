@@ -870,14 +870,19 @@ if grep -qF -- "rewrite only the sidecar's \`**기록**\` line" "$VU_SKILL"; the
 else
   bad "visual-unattended 재사용 갈래" "기록 경로를 고쳐 쓰는 문면이 없다"
 fi
-# A resumed turn reruns Step 1 from item 1, and item 6 runs before item 7, so
-# an `output-present` answer is applied only while the following record carries
-# the earlier `system-mismatch` answer and item 6 reads it back for the same
-# case. Without both sentences the two halts alternate without end.
+# A resumed turn reruns Step 1 from item 1, and item 4 runs before item 6 and
+# item 6 before item 7, so a later halt's answer is applied only while its
+# record carries the earlier `system-mismatch` answer and the earlier item reads
+# it back for the same case. That holds for an `output-present` halt and for a
+# second `system-mismatch` case alike (a waiting design system answered with
+# `확인 대기인 채 화면을 만든다`, then `신규·다른 문서` at item 6). Without
+# these sentences the two halts alternate without end.
 for lit in \
   '`앞선 답=<label> · 경우=<key> · 기록=<earlier halt record path>`' \
   'While item 4 or item 6 computes a `system-mismatch` with the same `경우=` as that piece, it does not halt' \
-  'Its record'"'"'s `**관측 상세**` holds the applied answer as an `앞선 답=` piece'; do
+  'Its record'"'"'s `**관측 상세**` holds the applied answer as an `앞선 답=` piece' \
+  'then halts at `output-present`, or at a `system-mismatch` of another case, carries that answer forward' \
+  'An `output-present` record, and a `system-mismatch` record of another case, of an attempt that applied a `system-mismatch` answer also carries that answer'; do
   if grep -qF -- "$lit" "$VU_SKILL"; then
     ok "visual-unattended 재개 턴이 앞선 시스템 불일치 답을 나른다 — 「${lit}」"
   else
