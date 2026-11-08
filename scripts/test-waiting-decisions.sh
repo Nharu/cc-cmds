@@ -69,7 +69,7 @@ side
 # --- 픽스처: 원장 --------------------------------------------------------------------
 : > "$LEDGER"
 row run "run-id=$RUN_ID | RUN_DIR=$RD"
-for s in S1 S2 S4 S6 S11 S12 S14 S15 S16 V1; do row segment "id=$s | 상태=park"; done
+for s in S1 S2 S4 S6 S11 S12 S14 S15 S16 V1 V2; do row segment "id=$s | 상태=park"; done
 row 승인 "승인 id=A-act1 | 상태=대기 | 대상=cc | 절단점=커밋 | 구속 튜플=cc/master/abcdef012345/G3 | 막는 세그먼트=S1 | 질문 문면=사전 인가 밖 행위를 수행할까요"
 row 승인 "승인 id=J-pers | 상태=대기 | 절단점=판단 | 막는 세그먼트=S2 | 판단 부류=사람-결정 | 질문 문면=S2 를 다시 파견할까요 — 대안: park"
 row 승인 "승인 id=J-closed | 상태=대기 | 절단점=판단 | 막는 세그먼트=S2 | 판단 부류=사람-결정 | 질문 문면=닫힌 질문"
@@ -81,7 +81,7 @@ row 승인 "승인 id=J-long | 상태=대기 | 절단점=판단 | 막는 세그�
 
 park() { row stage-result "세그먼트=$1 | 스테이지=$1 | 실행 버전=$2 | 종단 부류=${3:-의도된 park}"; }
 park S1 1; park S2 1; park S3 1; park S4 1; park S6 1; park S7 1; park S8 1; park S9 1; park S10 1
-park V1 1; park S11 3; park S12 1 완료; park S14 1; park S15 1; park S16 1
+park V1 1; park V2 1; park S11 3; park S12 1 완료; park S14 1; park S15 1; park S16 1
 row stage-result "세그먼트=- | 스테이지=D1 | 종류=design | 실행 버전=1 | 종단 부류=의도된 park"
 row '중단 답' "중단 기록=$RD/halt/S3#1.md | 세그먼트=S3 | 선택지=계속"
 row '중단 답' "중단 기록=$RD/halt/S4#1.md | 세그먼트=S4 | 선택지=계속"
@@ -124,6 +124,9 @@ halt 'S10#1.md' 'S10#1' 'Step 3 게이트 도달 좌석 실행' '- `좌석 실�
 halt 'V1#1.md' 'V1#1' '시각-판정 — 캔버스' '- `승인` — 발행합니다
 - `수정 요청` — 고칩니다
 - `거부` — 멈춥니다' '(없음) — 캔버스를 봐야 한다' '(없음)' '`승인` — 발행됩니다 / `수정 요청` — 한 번 더 돕니다 / `거부` — 멈춥니다'
+halt 'V2#1.md' 'V2#1' '디자인-시스템-판정 — 팔레트' '- `승인` — 이 디자인 시스템을 씁니다
+- `수정 요청` — 다시 만듭니다
+- `거부` — 멈춥니다' '(없음) — 디자인 시스템을 봐야 한다' '(없음)' '`승인` — 화면이 이 팔레트로 만들어집니다 / `수정 요청` — 한 번 더 돕니다 / `거부` — 멈춥니다'
 halt 'S11#1.md' 'S11#1' 'Step 3 검사' "$OPTS2" '`계속` — 상시 지침' '상시 지침: 계속한다' '맨 부분 / `계속` — 시간 / `계속` — 중복 / `없음` — 없는 라벨'
 halt 'S11#2.md' 'S11#2' 'Step 3 검사' "$OPTS2" '' '' '-'
 halt 'S11#3.md' 'S11#3' 'Step 3 검사' "$OPTS2" '`없는라벨` — x' 'y' '`계속` — 알려진 위험 없음 — 되돌릴 수 있다 / `중단` — 일이 빠집니다'
@@ -158,7 +161,7 @@ has() { printf '%s\n' "$2" | grep -cF -- "$1" || true; }
 
 # --- C4: 결정 집합 ------------------------------------------------------------------
 got=$(printf '%s\n' "$OUT" | sed -n -E 's/^\[(승인|정지 기록) ([^]]*)\].*/\2/p' | LC_ALL=C sort | tr '\n' ' ')
-want=$(printf '%s\n' A-act1 J-pers J-vis J-free B-b1 J-long 'S1#1.md' 'S2#1.md' 'S4#1.md' 'S6#1.md' 'V1#1.md' 'S11#1.md' 'S11#3.md' 'S14#1.md' 'D1#1.md' 'S15#1.md' 'S16#1.md' \
+want=$(printf '%s\n' A-act1 J-pers J-vis J-free B-b1 J-long 'S1#1.md' 'S2#1.md' 'S4#1.md' 'S6#1.md' 'V1#1.md' 'V2#1.md' 'S11#1.md' 'S11#3.md' 'S14#1.md' 'D1#1.md' 'S15#1.md' 'S16#1.md' \
   | sed -E 's/^([SVD][0-9])/halt\/\1/' | LC_ALL=C sort | tr '\n' ' ')
 check "C4: 목록에 오른 결정 집합이 기대 집합과 같다" "$got" "$want"
 check "C4: 닫힌 승인은 목록에 없다" "$(has 'J-closed' "$OUT")" "0"
@@ -166,9 +169,9 @@ check "C4: 답한 정지 기록은 목록에 없다" "$(has 'halt/S3#1.md' "$OUT
 check "C4: .answer.md 는 결정이 아니다" "$(has 'answer.md' "$OUT")" "0"
 
 # --- C4: 칸 -------------------------------------------------------------------------
-check "C4: 머리줄의 결정 수와 미기재 계수" "$(printf '%s\n' "$OUT" | sed -n '1p')" "기다리는 결정 17건 — 추천 미기재 3건 · 리스크 미기재 5건"
+check "C4: 머리줄의 결정 수와 미기재 계수" "$(printf '%s\n' "$OUT" | sed -n '1p')" "기다리는 결정 18건 — 추천 미기재 3건 · 리스크 미기재 5건"
 for cell in '질문: ' '형식: ' '답하는 곳: ' '추천: ' '근거: '; do
-  check "C4: 결정마다 '${cell}' 줄이 하나" "$(printf '%s\n' "$OUT" | grep -c "^$cell" || true)" "17"
+  check "C4: 결정마다 '${cell}' 줄이 하나" "$(printf '%s\n' "$OUT" | grep -c "^$cell" || true)" "18"
 done
 
 act=$(block '[승인 A-act1]')
@@ -219,6 +222,7 @@ check "C4: 좌석 적용 기록 답하는 곳" "$(has '답하는 곳: 다음 좌
 check "C4: 좌석 적용 기록 근거 고정 문장" "$(has '근거: 없음 — 이 정지 스텝은 추천을 받지 않습니다' "$s6")" "1"
 
 check "C4: 시각-판정 기록은 시각 계열 답하는 곳" "$(has '답하는 곳: 캔버스를 봐야 답하는 결정입니다' "$(block '[정지 기록 halt/V1#1.md]')")" "1"
+check "C4: 디자인-시스템-판정 기록은 시각 계열 답하는 곳" "$(has '답하는 곳: 캔버스를 봐야 답하는 결정입니다' "$(block '[정지 기록 halt/V2#1.md]')")" "1"
 check "C4: 미결 결정 기록은 첨부 답하는 곳" "$(has '라벨 하나로 답하되, `재수렴` 은 질문 문면이 말하는 내용을 첨부로 함께 내야 닫힙니다' "$(block '[정지 기록 halt/S16#1.md]')")" "1"
 
 s11=$(block '[정지 기록 halt/S11#1.md]')

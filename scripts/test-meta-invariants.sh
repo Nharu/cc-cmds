@@ -857,7 +857,7 @@ for lit in \
 done
 # Both halts that refuse an earlier output give a person options, and the
 # labels are the ones a resumed turn reads back.
-for lab in '있는 디자인 시스템을 쓴다' '새로 만들어 덮는다' '신규로 만든다' '재사용으로 진행' '다시 생성'; do
+for lab in '있는 디자인 시스템을 쓴다' '새로 만들어 덮는다' '신규로 만든다' '확인 대기인 채 화면을 만든다' '재사용으로 진행' '다시 생성'; do
   if grep -qF -- "- \`${lab}\` — " "$VU_SKILL"; then
     ok "visual-unattended 문면에 선택지 「${lab}」 줄이 있다"
   else
@@ -876,7 +876,7 @@ fi
 # case. Without both sentences the two halts alternate without end.
 for lit in \
   '`앞선 답=<label> · 경우=<key> · 기록=<earlier halt record path>`' \
-  'While item 6 computes a `system-mismatch` with the same `경우=` as that piece, it does not halt' \
+  'While item 4 or item 6 computes a `system-mismatch` with the same `경우=` as that piece, it does not halt' \
   'Its record'"'"'s `**관측 상세**` holds the applied answer as an `앞선 답=` piece'; do
   if grep -qF -- "$lit" "$VU_SKILL"; then
     ok "visual-unattended 재개 턴이 앞선 시스템 불일치 답을 나른다 — 「${lit}」"
@@ -884,7 +884,25 @@ for lit in \
     bad "visual-unattended 재개 턴의 앞선 답" "「${lit}」가 없다"
   fi
 done
-for old in 'Every site except `review-cap` is a refusal' 'write nothing at all'; do
+# The design system terminal ends on its own fixed line, and a plan with no
+# publish step ends a waiting design system on a halt a person can answer,
+# never on a terminal message without a literal.
+for lit in \
+  '디자인 시스템을 사람 확인으로 넘겼습니다.' \
+  '`system-mismatch` | `디자인 시스템 확인 대기` |'; do
+  if grep -qF -- "$lit" "$VU_SKILL"; then
+    ok "visual-unattended 문면이 디자인 시스템 확인 대기 끝을 고정한다 — 「${lit}」"
+  else
+    bad "visual-unattended 문면의 디자인 시스템 확인 대기 끝" "「${lit}」가 없다"
+  fi
+done
+VP_SKILL="$PLUGIN_ROOT/skills/visual-publish-unattended/SKILL.md"
+if grep -qF -- '정지 자리는 닫힌 다섯이다.' "$VP_SKILL"; then
+  ok "visual-publish-unattended 문면이 정지 자리를 닫힌 다섯으로 적는다"
+else
+  bad "visual-publish-unattended 문면의 정지 자리 수" "「정지 자리는 닫힌 다섯이다.」가 없다"
+fi
+for old in 'Every site except `review-cap` is a refusal' 'write nothing at all' 'with no terminal literal.'; do
   if grep -qF -- "$old" "$VU_SKILL"; then
     bad "visual-unattended 문면의 옛 문장" "「${old}」가 남았다"
   else

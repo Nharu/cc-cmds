@@ -297,6 +297,9 @@ readonly LIT_DESIGN_TERMINAL='설계 문서를 동결했습니다.'
 readonly LIT_SPLIT_TERMINAL='베이스 분할을 마쳤습니다.'
 # The last line of the run-scope visual stage (`visual-unattended`).
 readonly LIT_VISUAL_TERMINAL='시각 디자인을 검토 통과로 확정했습니다.'
+# The last line of the run-scope visual stage when it hands a design system it
+# made, or one waiting for a person, to the publish stage instead of screens.
+readonly LIT_VISUAL_DS_TERMINAL='디자인 시스템을 사람 확인으로 넘겼습니다.'
 # The last line of the run-scope visual publish stage
 # (`visual-publish-unattended`).
 readonly LIT_VISUAL_PUBLISH_TERMINAL='시각 발행 단계를 마쳤습니다.'
@@ -4500,12 +4503,21 @@ run_section_rows() {
   # the whole file is this run's and the headings — if a fresh `ledger_init`
   # wrote any — carry no scoping meaning, so they are not consulted.
   #
+  # An unset scope is resolved here rather than defaulted to `블록`. The driver
+  # resolves it before its first read and the gate's main entry resolves it too,
+  # but a reader the gate reaches on another path, or a test that sources this
+  # file, may run before either, and the gate's ledger is `<run-id>.md` with no
+  # `## 실행 ` heading: a `블록` default there would find no block and return no
+  # rows, and every gate-side reader (the halt answers a person gave, a standing
+  # refusal) would read an empty ledger.
+  #
   # The series prefixes are joined with the unit separator (\037), not a
   # newline: BSD awk refuses a `-v` value holding a newline ("newline in
   # string") and the `2>/dev/null` below would turn that refusal into "no rows"
   # on every call on macOS.
   local ps="" s
   for s in "$@"; do ps="${ps}- \`$s\`"$'\037'; done
+  [ -n "$LEDGER_SCOPE" ] || ledger_scope_resolve
   awk -v h="## 실행 $RUN_ID" -v ps="$ps" -v scope="${LEDGER_SCOPE:-블록}" '
     BEGIN { whole = (scope == "파일"); inblk = whole; np = split(ps, p, "\037") - 1 }
     !whole && $0 == h { inblk = 1; next }
@@ -7689,7 +7701,142 @@ visual_sidecar_complete() {
   grep -qxF -e '**상태**: 검토 통과' -e '**상태**: 발행됨' "$sc" 2>/dev/null
 }
 
-predicate_visual() { grep -qF "$LIT_VISUAL_TERMINAL" "$(stage_log_path "$1")" 2>/dev/null && visual_sidecar_complete "$DOC"; }
+visual_doc_key() {
+  # visual_doc_key <document path> — the document's path below its
+  # repository's top level, the key a sidecar's `owner-doc` and a confirmation
+  # line name.
+  local doc="$1" dir top key
+  [ -n "$doc" ] && [ -f "$doc" ] || return 1
+  dir=$(cd "$(dirname "$doc")" && pwd -P) || return 1
+  top=$(cd "$dir" && git rev-parse --show-toplevel 2>/dev/null) || return 1
+  top=$(cd "$top" && pwd -P) || return 1
+  key="$dir/$(basename "$doc")"
+  printf '%s' "${key#"$top"/}"
+}
+
+visual_confirm_state() {
+  # visual_confirm_state <document path> — the one line `visual-check.sh
+  # confirm` prints for the repository's design system.
+  [ -n "${1:-}" ] && [ -f "$1" ] || return 1
+  bash "$ORCH_DIR/visual-check.sh" confirm "$1" 2>/dev/null
+}
+
+visual_run_state() {
+  # visual_run_state <document path> — the seven lines `visual-check.sh
+  # run-state` prints for this run: the plan's `S2P`, the latest
+  # `디자인-시스템-판정` and `시각-판정` records and a person's last answer to
+  # each, the revision count and the confirmation state. The gate, the driver
+  # and both visual stages read the design system phase through that one
+  # subcommand.
+  [ -n "${1:-}" ] && [ -f "$1" ] && [ -n "${RUN_DIR:-}" ] || return 1
+  bash "$ORCH_DIR/visual-check.sh" run-state "$1" --run-dir "$RUN_DIR" \
+    --ledger "${LEDGER:-}" --manifest "${MANIFEST:-}" 2>/dev/null
+}
+
+visual_run_state_field() {
+  # visual_run_state_field <document path> <line label> — the value after the
+  # label on that line of `visual_run_state`, `없음` included.
+  local st
+  st=$(visual_run_state "$1") || return 1
+  printf '%s\n' "$st" | awk -v k="$2 " 'index($0, k) == 1 { print substr($0, length(k) + 1); exit }'
+}
+
+visual_confirm_waiting() {
+  # visual_confirm_waiting <document path> — 0 when the design system waits
+  # for a person: the confirmation line is a waiting line, whatever document
+  # it names, or it is malformed. The one test every consumer applies.
+  local st
+  st=$(visual_confirm_state "$1") || return 1
+  case "$st" in
+    '확인 대기 — 문서 '*|'확인 형식 오류') return 0 ;;
+  esac
+  return 1
+}
+
+visual_confirm_approved_here() {
+  # visual_confirm_approved_here <document path> — 0 when the confirmation
+  # line is a person's approval naming this document, compared as the whole
+  # line, never split on its dashes.
+  local st key
+  key=$(visual_doc_key "$1") || return 1
+  st=$(visual_confirm_state "$1") || return 1
+  [ "$st" = "사람 승인 — 문서 ${key}" ]
+}
+
+visual_system_unpinned() {
+  # visual_system_unpinned <document path> — 0 when this document's sidecar is
+  # absent, or its `**디자인 시스템 sha256**` equals neither the normalized
+  # digest nor the whole-file hash of the current system.md: the screens, if
+  # any, were made on another palette. A sidecar with no such line reads as
+  # unpinned on purpose: nothing ties its screens to the current palette, and
+  # every caller asks this only after a person's design system approval whose
+  # provenance stands, where generating the screens again is the safe answer.
+  local sc base sys want norm full
+  sc=$(visual_sidecar_path "$1") || return 1
+  [ -f "$sc" ] || return 0
+  base=${sc%/docs/visual/*}
+  sys="$base/docs/visual-system/system.md"
+  want=$(awk -v k='**디자인 시스템 sha256**:' '/^### / { exit } index($0, k) == 1 { v = substr($0, length(k) + 1); gsub(/^[[:space:]]+|[[:space:]]+$/, "", v); print v; exit }' "$sc")
+  [ -f "$sys" ] || { [ "$want" != '(없음)' ]; return; }
+  norm=$(bash "$ORCH_DIR/visual-check.sh" system "$1" 2>/dev/null) || return 1
+  full=$(shasum -a 256 "$sys" 2>/dev/null | awk '{print $1}')
+  [ "$want" != "$norm" ] && [ "$want" != "$full" ]
+}
+
+visual_generate_artifact_complete() {
+  # visual_generate_artifact_complete <stream file> — the visual stage produced
+  # what it owes: its screen terminal literal is in the stream and the sidecar
+  # is `검토 통과` or `발행됨`, or its design system terminal literal is there
+  # and the design system waits for a person (`visual_confirm_waiting`). The
+  # driver's `predicate_visual` and the gate's stage predicate both call this.
+  if grep -qF "$LIT_VISUAL_TERMINAL" "$1" 2>/dev/null && visual_sidecar_complete "${DOC:-}"; then
+    return 0
+  fi
+  grep -qF "$LIT_VISUAL_DS_TERMINAL" "$1" 2>/dev/null && visual_confirm_waiting "${DOC:-}"
+}
+
+predicate_visual() { visual_generate_artifact_complete "$(stage_log_path "$1")"; }
+
+visual_row_pieces() {
+  # visual_row_pieces <kind> <stream file> <piece>... — the pieces of a
+  # `stage-result` row in VISUAL_ROW_PIECES, as given, plus on a visual
+  # generate stage's row (`<kind>` is `visual`) the `시각 종단` piece right
+  # before `종단 부류`. Every writer of such a row (the gate's two and the
+  # driver's `visual_arm`) builds it here, so the value and its place in the
+  # row are decided once. The value is `디자인 시스템` when the stream carries
+  # the design system terminal literal and the design system waits for a person
+  # (`visual_confirm_waiting`), `화면` otherwise: the literal alone is not the
+  # stage's state. A `시각 종단` piece a caller passes is dropped, never
+  # written. The same-run re-dispatch rule reads the field; a row written
+  # before it existed reads as `화면`.
+  local kind="$1" out="$2" p vend='' placed=0
+  shift 2
+  VISUAL_ROW_PIECES=()
+  if [ "$kind" = "visual" ]; then
+    if grep -qF "$LIT_VISUAL_DS_TERMINAL" "$out" 2>/dev/null && visual_confirm_waiting "${DOC:-}"; then
+      vend='디자인 시스템'
+    else
+      vend='화면'
+    fi
+  fi
+  for p in "$@"; do
+    case "$p" in '시각 종단='*) continue ;; esac
+    if [ -n "$vend" ] && [ "$placed" = 0 ]; then
+      case "$p" in '종단 부류='*) VISUAL_ROW_PIECES+=("시각 종단=$vend"); placed=1 ;; esac
+    fi
+    VISUAL_ROW_PIECES+=("$p")
+  done
+  if [ -n "$vend" ] && [ "$placed" = 0 ]; then VISUAL_ROW_PIECES+=("시각 종단=$vend"); fi
+  return 0
+}
+
+visual_row_end() {
+  # visual_row_end <row> — the `시각 종단` value of a `stage-result` row, and
+  # `화면` for a row without the field.
+  local v
+  v=$(printf '%s' "$1" | tr '|' '\n' | sed -n 's/^ *시각 종단=//p' | sed 's/[[:space:]]*$//' | tail -1)
+  printf '%s' "${v:-화면}"
+}
 
 visual_sidecar_published() {
   # visual_sidecar_published <document path> — 0 when the sidecar's state line
@@ -7706,10 +7853,19 @@ visual_publish_artifact_complete() {
   # a `시각-판정`, `발행하지 않음` to a `발행-실패`), which ends the stage with
   # nothing left to publish. The decline is the refusal that still stands
   # (`visual_publish_standing_refusal`): a `거부` the person later replaced
-  # with a `승인` is not one.
+  # with a `승인` is not one. A `거부` to a `디자인-시스템-판정` is such a
+  # decline too. The design system phase ends the stage as well: the
+  # confirmation line is a person's approval naming this document, a person's
+  # `승인` to the run's `디자인-시스템-판정` record stands behind it
+  # (`visual_ds_confirm_provenance`), and this document's sidecar is absent or
+  # pins another palette (`visual_system_unpinned`), so the screens are the
+  # re-dispatched visual stage's work.
   grep -qF "$LIT_VISUAL_PUBLISH_TERMINAL" "$1" 2>/dev/null || return 1
   visual_sidecar_published "${DOC:-}" && return 0
-  visual_publish_standing_refusal >/dev/null
+  visual_publish_standing_refusal >/dev/null && return 0
+  visual_confirm_approved_here "${DOC:-}" \
+    && visual_ds_confirm_provenance "${DOC:-}" >/dev/null \
+    && visual_system_unpinned "${DOC:-}"
 }
 
 predicate_implement_share() {
@@ -13142,7 +13298,7 @@ slice_is_screen() {
 # ---------------------------------------------------------------------------
 # The visual publish stage (`S2P`, kind `visual-publish`). It runs after the
 # visual stage, publishes the screens at the pinned lane and halts on the
-# questions only a person answers. Its four halt sites are named by the step
+# questions only a person answers. Its five halt sites are named by the step
 # prefix of the record, each with the classification the record carries: one
 # `<prefix> <분류>` per line. A step matches a prefix when it equals it or
 # starts with `<prefix> — `.
@@ -13153,7 +13309,8 @@ slice_is_screen() {
 readonly VISUAL_PUBLISH_HALT_STEPS='전제-불일치 precondition-failed
 발행-실패 precondition-failed
 시각-판정 gate-unanswerable
-금지-후보 gate-unanswerable'
+금지-후보 gate-unanswerable
+디자인-시스템-판정 gate-unanswerable'
 
 manifest_has_visual_publish_step() {
   [ -n "${MANIFEST:-}" ] || return 1
@@ -13189,22 +13346,91 @@ EOF
   return 1
 }
 
-visual_publish_latest_verdict_record() {
-  # visual_publish_latest_verdict_record — prints the path of the run's latest
-  # `시각-판정` record: among `S2P#<n>.md` under the run's `halt/`, the one
-  # whose step has that prefix and whose attempt number is largest. 1 when
-  # there is none.
+visual_publish_latest_record() {
+  # visual_publish_latest_record <prefix> — prints the path of the run's latest
+  # record of one publish stage site: among `S2P#<n>.md` under the run's
+  # `halt/`, the one whose step has that prefix and whose attempt number is
+  # largest. 1 when there is none.
   local f b n best='' bestn=-1
   [ -n "${RUN_DIR:-}" ] && [ -d "$RUN_DIR/halt" ] || return 1
   for f in "$RUN_DIR"/halt/S2P#*.md; do
     [ -f "$f" ] || continue
     b=${f##*/}; n=${b#S2P#}; n=${n%.md}
     case "$n" in ''|*[!0-9]*) continue ;; esac
-    halt_step_has_prefix "$f" '시각-판정' || continue
+    halt_step_has_prefix "$f" "$1" || continue
     if [ "$((10#$n))" -gt "$bestn" ]; then bestn=$((10#$n)); best=$f; fi
   done
   [ -n "$best" ] || return 1
   printf '%s' "$best"
+}
+
+visual_publish_latest_verdict_record() {
+  # visual_publish_latest_verdict_record — the run's latest `시각-판정` record
+  # (`visual_publish_latest_record`). Only that site: the screen approval
+  # names it, and a `디자인-시스템-판정` record is never a screen verdict.
+  visual_publish_latest_record '시각-판정'
+}
+
+visual_ds_confirm_provenance() {
+  # visual_ds_confirm_provenance <document path> — 0 when the person's
+  # approval on the confirmation line stands in this run, as
+  # `visual_approval_provenance` reads the screen approval: the line's `런`
+  # value is this run's id; its `사람 답 <file>` names this run's latest
+  # `디자인-시스템-판정` record of `S2P`; a person's last answer to that record
+  # is `승인`; no refusal a person gave at the stage stands
+  # (`visual_publish_standing_refusal`); and the record's
+  # `제시 tokens.css=<hex>` piece is the line's `tokens.css sha256`, the palette
+  # the person was shown. The latest record and its answer come from
+  # `visual-check.sh run-state` (`visual_run_state`), the reader both visual
+  # stages use. A line written by hand names no such record and stands
+  # nowhere. Prints the reason on 1. The driver's publish predicate and the
+  # gate's re-dispatch rule both read it.
+  local sc base sys line src rec rid latest ans tok shown ref
+  sc=$(visual_sidecar_path "$1") || { printf '확인 출처 없음 — 설계 문서의 베이스를 풀 수 없다'; return 1; }
+  base=${sc%/docs/visual/*}
+  sys="$base/docs/visual-system/system.md"
+  line=$(grep -E '^\*\*확인\*\*: 사람 승인 — ' "$sys" 2>/dev/null | sed -n 1p)
+  src=$(printf '%s\n' "$line" | sed -nE 's/^.* — 사람 답 ([A-Za-z0-9._#-]+\.md) — 런 .*$/\1/p')
+  if [ -z "$src" ]; then
+    printf '확인 출처 없음 — system.md 의 확인 줄에 사람 답 기록 이름이 없다'
+    return 1
+  fi
+  case "$src" in S2P#*.md) ;; *)
+    printf '확인 출처 없음 — 확인 줄의 사람 답 %s 가 S2P 의 중단 기록이 아니다' "$src"
+    return 1 ;;
+  esac
+  rid=$(printf '%s\n' "$line" | sed -nE 's/^.* — 런 ([^[:space:]]+) — [0-9TZ:-]+[[:space:]]*$/\1/p')
+  if [ -z "${RUN_ID:-}" ] || [ "$rid" != "${RUN_ID:-}" ]; then
+    printf '확인 출처 없음 — 확인 줄의 런 %s 가 이 런(%s)이 아니다' "${rid:-(없음)}" "${RUN_ID:-(없음)}"
+    return 1
+  fi
+  rec="${RUN_DIR:-}/halt/$src"
+  if [ -z "${RUN_DIR:-}" ] || ! halt_step_has_prefix "$rec" '디자인-시스템-판정'; then
+    printf '확인 출처 없음 — 확인 줄의 사람 답 %s 가 이 런의 디자인-시스템-판정 기록이 아니다' "$src"
+    return 1
+  fi
+  latest=$(visual_run_state_field "$1" '디자인-시스템-판정 기록' || true)
+  if [ "$latest" != "$src" ]; then
+    printf '확인 출처 없음 — 확인 줄의 사람 답 %s 가 가장 마지막 디자인-시스템-판정 기록 %s 이 아니다' "$src" "${latest:-(없음)}"
+    return 1
+  fi
+  ans=$(visual_run_state_field "$1" '디자인-시스템-판정 사람 답' || true)
+  if [ "$ans" != '승인' ]; then
+    printf '확인 출처 없음 — 디자인-시스템-판정 기록 %s 에 대한 사람의 마지막 답이 「승인」 이 아니다 (%s)' "$src" "${ans:-없음}"
+    return 1
+  fi
+  if ref=$(visual_publish_standing_refusal); then
+    ref=${ref#*$'\t'}
+    printf '확인 출처 없음 — 시각 발행 단계 중단 기록 %s 에 사람이 남긴 「%s」 답이 서 있다' "$(basename "${ref%%$'\t'*}")" "${ref#*$'\t'}"
+    return 1
+  fi
+  tok=$(printf '%s\n' "$line" | sed -nE 's/^.* — tokens\.css sha256 ([0-9a-f]{64}) — .*$/\1/p')
+  shown=$(grep -oE '제시 tokens\.css=[0-9a-f]{64}' "$rec" 2>/dev/null | tail -1 | sed 's/^제시 tokens\.css=//')
+  if [ -z "$shown" ] || [ "$shown" != "$tok" ]; then
+    printf '확인 출처 없음 — 디자인-시스템-판정 기록 %s 이 사람에게 보인 tokens.css(%s)가 확인 줄의 값과 다르다' "$src" "${shown:-(없음)}"
+    return 1
+  fi
+  return 0
 }
 
 visual_publish_person_answer() {
@@ -13238,10 +13464,10 @@ EOF
 visual_publish_standing_refusal() {
   # visual_publish_standing_refusal — the run's standing refusal from the
   # visual publish stage, as `<상태>\t<중단 기록>\t<선택지>`: the last `중단 답`
-  # row a person wrote to a `시각-판정` or `발행-실패` record of `S2P`, when it
-  # chose `거부` (state `거부`) or `발행하지 않음` (state `무효`). 1 when the
-  # last such answer was anything else, or there is none: a later `승인`
-  # supersedes an earlier refusal.
+  # row a person wrote to a `시각-판정`, `디자인-시스템-판정` or `발행-실패`
+  # record of `S2P`, when it chose `거부` (state `거부`) or `발행하지 않음`
+  # (state `무효`). 1 when the last such answer was anything else, or there is
+  # none: a later `승인` supersedes an earlier refusal.
   #
   # ONE READER FOR THE GATE AND THE DRIVER. The approval provenance, the publish
   # stage's artifact predicate and the gate's linked close all read the refusal
@@ -13256,7 +13482,7 @@ visual_publish_standing_refusal() {
     [ "$by" = "사람" ] || continue
     rec="$RUN_DIR/halt/${f##*/}"
     opt=$(printf '%s' "$row" | tr '|' '\n' | sed -n 's/^ *선택지=//p' | sed 's/[[:space:]]*$//' | tail -1)
-    if halt_step_has_prefix "$rec" '시각-판정'; then
+    if halt_step_has_prefix "$rec" '시각-판정' || halt_step_has_prefix "$rec" '디자인-시스템-판정'; then
       if [ "$opt" = "거부" ]; then st='거부'; out="$rec"$'\t'"$opt"; else st=''; out=''; fi
     elif halt_step_has_prefix "$rec" '발행-실패'; then
       if [ "$opt" = "발행하지 않음" ]; then st='무효'; out="$rec"$'\t'"$opt"; else st=''; out=''; fi
@@ -13308,8 +13534,24 @@ visual_approval_provenance() {
 visual_approval_route_hint() {
   # visual_approval_route_hint — where a person goes to approve the screens:
   # in a run with the publish stage, the stage's latest `시각-판정` record,
-  # answered `승인`; otherwise the fixed seat's /cc-cmds:visual.
+  # answered `승인`; otherwise the fixed seat's /cc-cmds:visual. While the
+  # design system waits for a person (`visual_confirm_waiting`) the screens
+  # wait on it whatever the plan holds, so that is read first: a run with the
+  # publish stage is pointed at the stage's latest `디자인-시스템-판정`
+  # record, and a run without it gets the morning report sentence
+  # (`VISUAL_DS_WAIT_REPORT`), since a screen approval written at the fixed
+  # seat stays void while the line waits.
   local latest
+  if visual_confirm_waiting "${DOC:-}"; then
+    if ! manifest_has_visual_publish_step; then
+      printf '%s' "$VISUAL_DS_WAIT_REPORT"
+    elif latest=$(visual_publish_latest_record '디자인-시스템-판정'); then
+      printf '디자인 시스템이 사람 확인을 기다린다 — 시각 발행 단계(S2P)의 디자인-시스템-판정 중단 기록 %s 에 사람이 답하세요' "$latest"
+    else
+      printf '디자인 시스템이 사람 확인을 기다린다 — 시각 발행 단계(S2P)가 디자인-시스템-판정 중단 기록을 남길 때까지 기다렸다가, 그 기록에 사람이 답하세요'
+    fi
+    return 0
+  fi
   if manifest_has_visual_publish_step; then
     if latest=$(visual_publish_latest_verdict_record); then
       printf '시각 발행 단계(S2P)의 시각-판정 중단 기록 %s 에 사람이 「승인」 으로 답해 그 단계가 출처 꼬리 달린 구현 승인 줄을 쓰게 하세요' "$latest"
@@ -13324,10 +13566,18 @@ visual_approval_route_hint() {
 visual_approval_verdict() {
   # visual_approval_verdict <orchestrator dir> — the one approval verdict the
   # gate and the driver both print: the helper's first line when the approval
-  # holds and its provenance stands, otherwise the reason it does not.
+  # holds and its provenance stands, otherwise the reason it does not. The
+  # helper's `approval` does not read the design system's confirmation line —
+  # the interactive seat keeps working over a waiting one — so this unattended
+  # verdict reads `confirm` itself and voids a holding approval while the
+  # design system waits for a person (`visual_confirm_waiting`).
   local out rc=0 why
   [ -n "${DOC:-}" ] || { printf '승인 없음 — 이 런에 설계 문서가 없다'; return 1; }
   out=$(bash "$1/visual-check.sh" approval "$DOC" 2>&1) || rc=$?
+  if [ "$rc" = "0" ] && visual_confirm_waiting "$DOC"; then
+    printf '승인 무효 — 디자인 시스템 확인 대기'
+    return 1
+  fi
   if [ "$rc" = "0" ] && ! why=$(visual_approval_provenance "$out"); then
     printf '%s' "$why"
     return 1
@@ -13344,6 +13594,12 @@ visual_approval_why() {
   visual_approval_verdict "$ORCH_DIR"
 }
 
+# The morning report line of a fixed-graph run whose design system waits for a
+# person. Such a run never dispatches the publish stage, so the screen slices
+# stay held; the line names where the answer is given and never tells the
+# person to remove the waiting line.
+readonly VISUAL_DS_WAIT_REPORT='디자인 시스템이 사람 확인을 기다린다 — 라우팅이 켜진 런에서 디자인 시스템 판정에 답한다'
+
 visual_arm() {
   local plugin_dir skill_file cmd src rc pred class acct prior prior_class om ro re
   manifest_has_visual_step || return 0
@@ -13356,6 +13612,10 @@ visual_arm() {
   prior=$(run_section_rows 'stage-result' | { grep -F '| 스테이지=S2V |' || true; } | tail -1)
   if [ -n "$prior" ]; then
     prior_class=$(printf '%s' "$prior" | tr '|' '\n' | sed -n 's/^ *종단 부류=//p' | sed 's/[[:space:]]*$//' | tail -1)
+    if visual_confirm_waiting "$DOC"; then
+      report_append "시각" "$VISUAL_DS_WAIT_REPORT"
+      return 1
+    fi
     if [ "$prior_class" = "정상 완료" ] && visual_sidecar_reviewed "$DOC"; then
       log "S2V 건너뜀 — 이 런의 시각 단계가 이미 끝났고 사이드카가 검토 통과다 ($DOC_KEY)"
       return 0
@@ -13366,6 +13626,7 @@ visual_arm() {
   cmd="/cc-cmds:visual-unattended $DOC"
   src=0
   rm -f "$RUN_DIR/S2V.rc"
+  visual_sidecar_snapshot "$DOC" > "$RUN_DIR/S2V.sidecar-before" 2>/dev/null || : > "$RUN_DIR/S2V.sidecar-before"
   dispatch_stage S2V "$(alias_root "$(home_alias)")" "$cmd" || src=$?
   if [ "$src" = "$STAGE_SPAWN_PARK_RC" ]; then
     report_append "시각" "시각 단계를 띄우지 못했다 — $STAGE_SPAWN_PARK_REASON"
@@ -13377,21 +13638,75 @@ visual_arm() {
   class=$(classify_termination S2V "$rc" "$pred")
   acct=$(stage_account_of S2V)
   om=$(stage_org_moves_of S2V); ro=$(stage_reattach_org_of S2V); re=$(stage_reattach_ctx_of S2V)
-  ledger_row 'stage-result' "세그먼트=-" "스테이지=S2V" "파견 id=S2V" "종류=visual" "종료 코드=$rc" \
+  visual_row_pieces visual "$(stage_log_path S2V)" \
+    "세그먼트=-" "스테이지=S2V" "파견 id=S2V" "종류=visual" "종료 코드=$rc" \
     "아티팩트 술어 결과=$pred" "실행 버전=$(stage_attempt_pinned S2V)" \
     "세션 id=$(stage_session_id "S2V")" "부모=$(stage_parent_id)" \
     "압축 창=$(stage_window_of S2V)" "레인=$(stage_lane_of S2V)" ${acct:+"계정=$acct"} \
     ${om:+"조직 이동=$om"} ${ro:+"재부착 조직=$ro"} ${re:+"재기록 추정=$re"} "기록자=드라이버" \
     "effort=$(stage_effort_rec_of S2V)" "서빙 모델=$(stage_served_model_of "$(stage_log_path S2V)")" \
     "종단 부류=$class" "실패 서명=$(row_signature S2V visual "$class" - -)"
+  ledger_row 'stage-result' "${VISUAL_ROW_PIECES[@]}"
   absorb_stage_judgment S2V S2V "$(home_alias)"
+  visual_overwrite_report "$DOC" "$RUN_DIR/S2V.sidecar-before"
+  if [ "$pred" = "0" ] && [ "$class" = "정상 완료" ] && visual_confirm_waiting "$DOC"; then
+    report_append "시각" "$VISUAL_DS_WAIT_REPORT"
+    spawn_lineage_release S2V
+    return 0
+  fi
   if [ "$pred" = "0" ] && [ "$class" = "정상 완료" ]; then
     report_append "시각" "밤의 시각 단계 완료 — 화면 슬라이스는 고정 좌석의 구현 승인을 기다린다"
     spawn_lineage_release S2V
     return 0
   fi
+  if [ "$class" = "의도된 park" ] && visual_halt_is_ds_wait "$(halt_record_path S2V)"; then
+    report_append "시각" "$VISUAL_DS_WAIT_REPORT"
+    return 1
+  fi
   report_append "시각" "시각 단계가 종단 부류 $class 로 끝났다 — 화면 슬라이스만 기다리고 나머지는 평소대로 간다"
   return 1
+}
+
+visual_halt_is_ds_wait() {
+  # visual_halt_is_ds_wait <halt record> — 0 when the record is the visual
+  # stage's `system-mismatch` halt for a design system waiting for a person:
+  # its `**관측 상세**` carries `경우=디자인 시스템 확인 대기`, the case a plan
+  # without the publish stage stops on.
+  [ -f "$1" ] || return 1
+  grep -E '^\*\*관측 상세\*\*:' "$1" 2>/dev/null | grep -qF '경우=디자인 시스템 확인 대기'
+}
+
+visual_sidecar_snapshot() {
+  # visual_sidecar_snapshot <document path> — the lines of this document's
+  # sidecar a regeneration may erase: its `**구현 승인**` line and each
+  # screen's `**아티팩트**` URL. Nothing when there is no sidecar.
+  local sc
+  sc=$(visual_sidecar_path "$1") || return 0
+  [ -f "$sc" ] || return 0
+  grep -E '^\*\*구현 승인\*\*:' "$sc" 2>/dev/null | sed -n 1p | sed 's/^/승인 /'
+  sed -nE 's/^\*\*아티팩트\*\*:[[:space:]]*(https?:[^[:space:]]+)[[:space:]]*$/URL \1/p' "$sc" 2>/dev/null
+  return 0
+}
+
+visual_overwrite_report() {
+  # visual_overwrite_report <document path> <snapshot before the dispatch> —
+  # the morning report lines for what a regeneration after a person's design
+  # system approval erased from a `발행됨` sidecar: the `**구현 승인**` the
+  # sidecar no longer carries, and each published screen URL it no longer
+  # names, now an orphan artifact. Nothing when nothing was erased.
+  local before="$2" after url
+  [ -s "$before" ] || return 0
+  after=$(visual_sidecar_snapshot "$1")
+  if grep -q '^승인 ' "$before" && ! printf '%s\n' "$after" | grep -q '^승인 '; then
+    report_append "시각" "다시 생성한 시각 단계가 발행된 사이드카를 덮어써 구현 승인 줄이 사라졌다 — 새 화면은 다시 승인을 받아야 한다"
+  fi
+  while IFS= read -r url; do
+    [ -n "$url" ] || continue
+    printf '%s\n' "$after" | grep -qxF "URL $url" && continue
+    report_append "시각" "다시 생성한 시각 단계가 사이드카에서 지운 발행 아티팩트 URL 이 고아로 남았다 — $url"
+  done <<EOF
+$(sed -n 's/^URL //p' "$before")
+EOF
 }
 
 # ---------------------------------------------------------------------------
