@@ -12813,9 +12813,14 @@ gate_undeclared_segments() {
   # admits at most one of those. A row whose worktree is gone, or belongs to no
   # declared target, keeps the home target; `gate_adoption_check` refuses it
   # when the segment is planned.
+  #
+  # A `머지 입양` row counts as an adoption row here too: the step it names is a
+  # segment on the target its `대상` field names. When the same step also
+  # carries a `세그먼트 입양` row, that row's worktree decides, as above — the
+  # segment is planned there, and the planning act compares the two targets.
   local ids id row wt cg a al home
   home=$(home_alias 2>/dev/null || true)
-  if [ -z "$(manifest_adoption_rows)" ]; then
+  if [ -z "$(manifest_adoption_rows)$(manifest_merge_adoption_rows)" ]; then
     id=$(gate_plan_implement_step)
     [ -z "$id" ] || printf '%s\t%s\n' "$id" "$home"
     return 0
@@ -12825,16 +12830,26 @@ gate_undeclared_segments() {
   for id in $ids; do
     al="$home"
     if row=$(gate_adoption_row "$id"); then
-      wt=$(manifest_row_fields "$row" '워크트리')
-      cg=$( { cd "$wt" 2>/dev/null && git rev-parse --path-format=absolute --git-common-dir 2>/dev/null; } || true)
-      if [ -n "$cg" ]; then
-        for a in $(target_aliases); do
-          if [ "$(target_field "$a" '공통 git 디렉터리')" = "$cg" ]; then al="$a"; break; fi
-        done
-      fi
+      al=$(gate_adoption_worktree_alias "$(manifest_row_fields "$row" '워크트리')" "$home")
+    elif row=$(gate_merge_adoption_row "$id"); then
+      al=$(manifest_row_fields "$row" '대상')
     fi
     printf '%s\t%s\n' "$id" "$al"
   done
+}
+
+gate_adoption_worktree_alias() {
+  # gate_adoption_worktree_alias <worktree> <fallback alias> — the declared
+  # target whose common git directory the worktree shares, or the fallback when
+  # the worktree is gone or belongs to no declared target.
+  local wt="$1" al="$2" cg a
+  cg=$( { cd "$wt" 2>/dev/null && git rev-parse --path-format=absolute --git-common-dir 2>/dev/null; } || true)
+  if [ -n "$cg" ]; then
+    for a in $(target_aliases); do
+      if [ "$(target_field "$a" '공통 git 디렉터리')" = "$cg" ]; then al="$a"; break; fi
+    done
+  fi
+  printf '%s' "$al"
 }
 
 gate_decl_worktree() {
@@ -12863,6 +12878,166 @@ gate_adoption_row() {
 $(manifest_adoption_rows)
 EOF
   return 1
+}
+
+gate_merge_adoption_row() {
+  # gate_merge_adoption_row <segment id> — the manifest's `머지 입양` row for
+  # that segment, or nothing and 1. The sibling of `gate_adoption_row`, which
+  # keeps meaning the `세그먼트 입양` row alone. `check_manifest` has already
+  # refused a second `머지 입양` row for one segment.
+  local row
+  while IFS= read -r row; do
+    [ -n "$row" ] || continue
+    if [ "$(manifest_row_fields "$row" '세그먼트')" = "$1" ]; then
+      printf '%s' "$row"
+      return 0
+    fi
+  done <<EOF
+$(manifest_merge_adoption_rows)
+EOF
+  return 1
+}
+
+gate_segment_merge_adopted() {
+  # gate_segment_merge_adopted <segment id> — 0 when the manifest hands this run
+  # the segment as a pull request merged outside it (a `머지 입양` row). The
+  # row is frozen in the binding digest, so the answer cannot move mid-run, and
+  # no ledger column carries it.
+  [ -n "${1:-}" ] || return 1
+  gate_merge_adoption_row "$1" >/dev/null
+}
+
+gate_merge_adoption_plan_check() {
+  # gate_merge_adoption_plan_check <verb> <alias> <segment> <worktree> — 0 when
+  # the `머지 입양` row still describes the pull request and the base as they
+  # stand, with the obligation the planning act owes in GATE_MDOPT_ID,
+  # GATE_MDOPT_MERGE and GATE_MDOPT_FORK; otherwise a warning and
+  # GATE_EXIT_RULE, with nothing written to the ledger.
+  #
+  # THE ROW IS A PERSON'S CLAIM FROZEN AT KICKOFF, AND THE REMOTE IS THE
+  # EVIDENCE. The request is read again: merged, its merge commit and head the
+  # row's, its base the target's base branch, and from this repository rather
+  # than a fork (`isCrossRepository` exactly `false`; an absent field refuses).
+  # A merge commit equal to the head is a fast-forward, which leaves no commit
+  # the base made and no fork point to diff from, so it is refused. The base is
+  # fetched and the merge commit has to stand on its first-parent line with its
+  # own first parent just before it, be an ancestor of the remote base, and be
+  # contained in the segment worktree's HEAD. The request's head is fetched
+  # into `refs/cc-review/<run id>/<segment>`, so the review reads it after the
+  # remote branch is deleted.
+  #
+  # A PAIRED `세그먼트 입양` ROW PLANS IN ITS OWN WORKTREE, and the target that
+  # worktree's common git directory belongs to has to be the `머지 입양` row's
+  # `대상`; two rows naming different repositories describe no one segment.
+  #
+  # A DRY RUN READS ONLY. It compares the request and the paired target, and
+  # leaves the fetches and the fork point to the act.
+  local verb="$1" al="$2" seg="$3" wt="$4" row adrow pr m h tgt slug obs ost omc ohd obr ocr
+  local base rem nxt p1 fork
+  GATE_MDOPT_ID=""; GATE_MDOPT_MERGE=""; GATE_MDOPT_FORK=""
+  row=$(gate_merge_adoption_row "$seg") || return 0
+  pr=$(manifest_row_fields "$row" 'PR')
+  m=$(manifest_row_fields "$row" '머지 커밋')
+  h=$(manifest_row_fields "$row" 'PR 헤드')
+  tgt=$(manifest_row_fields "$row" '대상')
+  if adrow=$(gate_adoption_row "$seg"); then
+    if [ "$(gate_adoption_worktree_alias "$(manifest_row_fields "$adrow" '워크트리')" '')" != "$tgt" ]; then
+      warn "세그먼트 계획 거부: 머지 입양 세그먼트 ${seg} 의 「세그먼트 입양」 행 워크트리는 대상 ${tgt} 의 레포가 아닙니다"
+      return "$GATE_EXIT_RULE"
+    fi
+  fi
+  if [ "$m" = "$h" ]; then
+    warn "세그먼트 계획 거부: 머지 입양 PR #${pr} 의 머지 커밋이 PR 헤드와 같습니다 — 빨리감기 머지는 베이스가 만든 머지 커밋이 없어 입양하지 않습니다"
+    return "$GATE_EXIT_RULE"
+  fi
+  base=$(base_branch "$al" 2>/dev/null) || base=""
+  base=${base#origin/}
+  slug=$(alias_slug "$al" 2>/dev/null) || slug=""
+  if [ -z "$base" ] || [ -z "$slug" ]; then
+    warn "세그먼트 계획 거부: 머지 입양 세그먼트 ${seg} 의 대상 ${al} 의 베이스 브랜치나 원격 슬러그를 알 수 없습니다"
+    return "$GATE_EXIT_RULE"
+  fi
+  if ! obs=$(gh_q "$slug" pr view "$pr" --json state,mergeCommit,headRefOid,baseRefName,isCrossRepository \
+       --jq '(.state // "-") + " " + (.mergeCommit.oid // "-") + " " + (.headRefOid // "-") + " " + (.baseRefName // "-") + " " + (.isCrossRepository | tostring)' 2>/dev/null); then
+    warn "세그먼트 계획 거부: 머지 입양 PR #${pr} 을 원격 ${slug} 에서 읽지 못했습니다"
+    return "$GATE_EXIT_RULE"
+  fi
+  read -r ost omc ohd obr ocr <<EOF
+$obs
+EOF
+  if [ "$ost" != "MERGED" ]; then
+    warn "세그먼트 계획 거부: 머지 입양 PR #${pr} 의 상태가 ${ost:-(없음)} 입니다 — 머지된 PR 만 입양합니다"
+    return "$GATE_EXIT_RULE"
+  fi
+  if [ "$omc" != "$m" ] || [ "$ohd" != "$h" ]; then
+    warn "세그먼트 계획 거부: 머지 입양 PR #${pr} 의 머지 커밋 ${omc} · 헤드 ${ohd} 가 행의 머지 커밋 ${m} · PR 헤드 ${h} 와 다릅니다"
+    return "$GATE_EXIT_RULE"
+  fi
+  if [ "$obr" != "$base" ]; then
+    warn "세그먼트 계획 거부: 머지 입양 PR #${pr} 의 base 브랜치 ${obr} 가 대상 ${al} 의 베이스 브랜치 ${base} 와 다릅니다"
+    return "$GATE_EXIT_RULE"
+  fi
+  if [ "$ocr" != "false" ]; then
+    warn "세그먼트 계획 거부: 머지 입양 PR #${pr} 이 포크에서 온 PR 이거나 그 여부를 읽지 못했습니다 (isCrossRepository=${ocr:-(없음)})"
+    return "$GATE_EXIT_RULE"
+  fi
+  [ "$verb" != "plan" ] || return 0
+  if [ ! -d "$wt" ]; then
+    warn "세그먼트 계획 거부: 머지 입양 세그먼트 ${seg} 의 워크트리가 없습니다: $wt"
+    return "$GATE_EXIT_RULE"
+  fi
+  rem="refs/remotes/origin/$base"
+  if ! ( cd "$wt" && git fetch --no-tags --quiet origin "+refs/heads/$base:$rem" ) >/dev/null 2>&1; then
+    warn "세그먼트 계획 거부: 머지 입양 세그먼트 ${seg} 의 베이스 ${base} 를 원격에서 받지 못했습니다"
+    return "$GATE_EXIT_RULE"
+  fi
+  nxt=$( { cd "$wt" && git rev-list --first-parent "$rem"; } 2>/dev/null | awk -v m="$m" 'f { print; exit } $0 == m { f = 1 }')
+  p1=$( { cd "$wt" && git rev-parse --verify -q "$m^1"; } 2>/dev/null || true)
+  if [ -z "$nxt" ] || [ "$nxt" != "$p1" ]; then
+    warn "세그먼트 계획 거부: 머지 입양 PR #${pr} 의 머지 커밋 ${m} 이 베이스 ${base} 의 첫 부모 선형 위에 없거나 그 첫 부모가 선형에서 바로 앞 커밋이 아닙니다"
+    return "$GATE_EXIT_RULE"
+  fi
+  if ! ( cd "$wt" && git merge-base --is-ancestor "$m" "$rem" ) 2>/dev/null; then
+    warn "세그먼트 계획 거부: 머지 입양 PR #${pr} 의 머지 커밋 ${m} 이 origin/${base} 의 조상이 아닙니다"
+    return "$GATE_EXIT_RULE"
+  fi
+  if ! ( cd "$wt" && git merge-base --is-ancestor "$m" HEAD ) 2>/dev/null; then
+    warn "세그먼트 계획 거부: 머지 입양 세그먼트 ${seg} 의 워크트리 HEAD 가 머지 커밋 ${m} 을 담고 있지 않습니다: $wt"
+    return "$GATE_EXIT_RULE"
+  fi
+  if ! ( cd "$wt" && git fetch --no-tags --quiet origin "+refs/pull/$pr/head:refs/cc-review/$RUN_ID/$seg" ) >/dev/null 2>&1 \
+     || ! ( cd "$wt" && git cat-file -e "$h^{commit}" ) 2>/dev/null; then
+    warn "세그먼트 계획 거부: 머지 입양 PR #${pr} 의 헤드 ${h} 를 refs/cc-review/${RUN_ID}/${seg} 로 들이지 못했습니다"
+    return "$GATE_EXIT_RULE"
+  fi
+  fork=$( { cd "$wt" && git merge-base "$p1" "$h"; } 2>/dev/null || true)
+  case "$fork" in
+    ''|*[!0-9a-f]*)
+      warn "세그먼트 계획 거부: 머지 입양 PR #${pr} 의 분기점(merge-base ${p1} ${h})을 계산하지 못했습니다"
+      return "$GATE_EXIT_RULE" ;;
+  esac
+  GATE_MDOPT_ID="RO-$(printf '%s|%s|%s' "$RUN_ID" "$seg" "$m" | shasum -a 256 | cut -c1-8)"
+  GATE_MDOPT_MERGE=$m
+  GATE_MDOPT_FORK=$fork
+  return 0
+}
+
+gate_merge_adoption_issue() {
+  # gate_merge_adoption_issue <segment> <alias> — writes the review obligation
+  # `gate_merge_adoption_plan_check` prepared, before the planned row, unless a
+  # row of that obligation id stands in any state: a repeated planning act then
+  # writes only the planned row the first one did not reach. `머지 커밋` is the
+  # merge commit the base made and `분기점` is merge-base(its first parent, the
+  # request's head), which is what the adoption review diffs from.
+  local seg="$1" al="$2"
+  [ -n "${GATE_MDOPT_ID:-}" ] || return 0
+  if [ -n "$( { gate_rows '리뷰 의무' || true; } | gate_rows_field_eq '의무 id' "$GATE_MDOPT_ID")" ]; then
+    return 0
+  fi
+  gate_append '리뷰 의무' "의무 id=$GATE_MDOPT_ID" "상태=미이행" "세그먼트=$seg" \
+    "대상=$al" "머지 커밋=$GATE_MDOPT_MERGE" "분기점=$GATE_MDOPT_FORK" "생성 등급=-" \
+    "발행 시각=$(now_iso)" "이행 시각=-"
+  log "리뷰 의무 발행 $GATE_MDOPT_ID — 세그먼트 $seg · 대상 $al · 머지 커밋 $GATE_MDOPT_MERGE (머지 입양)"
 }
 
 gate_adoption_source_key() {
@@ -13742,6 +13917,14 @@ gate_snapshot_slicing_json() {
       wt=$(manifest_row_fields "$ad" '워크트리')
       adx=$(printf ', "입양": "%s", "PR": "%s"' \
         "$(gate_json_escape "$(manifest_row_fields "$ad" '출처 런')")" \
+        "$(gate_json_escape "$(manifest_row_fields "$ad" 'PR')")")
+    fi
+    # A SEGMENT ADOPTED AS A MERGED PULL REQUEST carries `머지 입양=<PR number>`
+    # and keeps the derived branch and worktree: the router cuts them from the
+    # base and the first stage is the post-merge review. Paired with a `세그먼트
+    # 입양` row, the branch and worktree above are that row's.
+    if ad=$(gate_merge_adoption_row "$id"); then
+      adx=$(printf '%s, "머지 입양": "%s"' "$adx" \
         "$(gate_json_escape "$(manifest_row_fields "$ad" 'PR')")")
     fi
     # THE TWO PREDECESSOR LISTS, as normalized ids. The router dispatches a
@@ -14994,6 +15177,13 @@ gate_from_declaration() {
       fi
       GATE_DECL_FIELDS=( "상태=계획됨" "선행=없음" )
       k=""
+      # A SEGMENT ADOPTED AS A MERGED PULL REQUEST IS REVIEWED BEFORE IT ENDS:
+      # its policy is `선리뷰후머지` whatever the target's ceiling allows above
+      # `리뷰없음`, and its first row says so.
+      if gate_segment_merge_adopted "$seg"; then
+        k=선리뷰후머지
+        GATE_DECL_FIELDS+=( "리뷰 정책=$k" )
+      fi
       ;;
   esac
 
@@ -15038,6 +15228,10 @@ gate_from_declaration() {
       warn "세그먼트 ${seg} 의 「워크트리」는 ${want:-(유도 실패)} 여야 합니다 — 받은 값: ${wt:-(없음)}"
       return "$GATE_EXIT_VOCAB"
     fi
+    # A SEGMENT ADOPTED AS A MERGED PULL REQUEST is checked against the remote
+    # here, and the obligation it owes is written just before its planned row
+    # (`gate_merge_adoption_issue`).
+    gate_merge_adoption_plan_check "$verb" "$al" "$seg" "$wt" || return "$?"
   fi
 
   # THE FIRST PLANNING ACT CHECKS THE WHOLE DECLARATION, the two checks the
@@ -16553,6 +16747,14 @@ gate_resolve_review_policy() {
       pol="$apol"
       GATE_REVIEW_POLICY_INDEX="$api"
     fi
+  fi
+  # A SEGMENT ADOPTED AS A MERGED PULL REQUEST resolves to `선리뷰후머지`,
+  # whatever its rows or its target's ceiling say: a policy stricter than the
+  # ceiling is always allowed, and its fix pull request is reviewed before it
+  # merges. So no merge-first obligation is ever issued for its fix merge.
+  if gate_segment_merge_adopted "$seg"; then
+    pol='선리뷰후머지'
+    GATE_REVIEW_POLICY_INDEX=$(review_policy_index "$pol")
   fi
   if [ "$GATE_REVIEW_POLICY_INDEX" -gt "$GATE_REVIEW_CEILING_INDEX" ]; then
     warn "the review policy '$pol' of segment '$seg' exceeds the ceiling '$ceil' of target '$alias' — a ceiling violation is refused, not tightened into place"
@@ -27071,16 +27273,28 @@ gate_segment_review_next() {
   # A MERGE-FIRST SEGMENT PAST ITS MERGE reads `gate_post_merge_next` instead:
   # its review comes after the merge, so neither overlay has a merge left to
   # stand on.
+  #
+  # A SEGMENT ADOPTED AS A MERGED PULL REQUEST is judged before either overlay
+  # (`gate_adoption_review_next`): while its commits ahead of the base are 0 a
+  # passing value reads `입양 종결` — there is nothing to push — and an
+  # unreadable count reads `판정 불가`. With a fix commit it is an ordinary
+  # `선리뷰후머지` segment from the table on.
   local seg=$1 nx
   if gate_segment_review_only "$seg"; then
     gate_segment_review_next_table "$seg"
     return 0
   fi
-  if gate_segment_post_merge "$seg"; then
+  if gate_segment_merge_adopted "$seg"; then
+    nx=$(gate_adoption_review_next "$seg")
+    case "$nx" in
+      사후리뷰|'입양 종결'|'판정 불가') printf '%s' "$nx"; return 0 ;;
+    esac
+  elif gate_segment_post_merge "$seg"; then
     gate_post_merge_next "$seg"
     return 0
+  else
+    nx=$(gate_segment_review_next_table "$seg")
   fi
-  nx=$(gate_segment_review_next_table "$seg")
   case "$nx" in
     머지|'이월 머지') run_routed && { gate_ci_next "$seg" "$nx"; return 0; } ;;
     수정) gate_ci_join_target "$seg" && { gate_ci_fix_next "$seg"; return 0; } ;;
@@ -27192,7 +27406,22 @@ gate_segment_post_merge() {
   # `완료` the apply wrote after it (the row carries the gate's `적용` field; a
   # caller's `완료` does not, and ends the segment). A `머지됨` still owing its
   # apply or handover is the apply's to finish first.
+  #
+  # A SEGMENT ADOPTED AS A MERGED PULL REQUEST takes its own arm: the merge
+  # happened outside the run, so it is due its review once the planning act
+  # issued the obligation, while its last row is `계획됨` or `사후리뷰` and no
+  # `cycle` row stands after the obligation's issuing row. The issuing row is
+  # the reference line, so a fulfilment row appended after it does not move it.
   local seg=$1 last
+  if gate_segment_merge_adopted "$seg"; then
+    [ -n "$(gate_adoption_obligation_line "$seg")" ] || return 1
+    case "$(gate_segment_field "$seg" '상태')" in
+      계획됨|사후리뷰) : ;;
+      *) return 1 ;;
+    esac
+    gate_adoption_cycle_after_obligation "$seg" && return 1
+    return 0
+  fi
   gate_segment_merge_first "$seg" || return 1
   [ -n "$( { gate_rows '리뷰 의무' || true; } | gate_rows_field_eq '세그먼트' "$seg")" ] || return 1
   case "$(gate_segment_field "$seg" '상태')" in
@@ -27204,6 +27433,55 @@ gate_segment_post_merge() {
   esac
 }
 
+gate_adoption_obligation_line() {
+  # gate_adoption_obligation_line <segment> — the ledger line number of the
+  # issuing row (`상태=미이행`) of the review obligation the planning act wrote
+  # for a segment adopted as a merged pull request, empty when there is none.
+  # The planning act writes it once per obligation id, so the first is the one.
+  { grep -n '^- `리뷰 의무` ' "$LEDGER" 2>/dev/null || true; } \
+    | gate_rows_field_eq '세그먼트' "$1" | gate_rows_field_eq '상태' '미이행' | head -1 | cut -d: -f1
+}
+
+gate_adoption_obligation_row() {
+  # gate_adoption_obligation_row <segment> — that issuing row itself.
+  { gate_rows '리뷰 의무' || true; } | gate_rows_field_eq '세그먼트' "$1" \
+    | gate_rows_field_eq '상태' '미이행' | head -1
+}
+
+gate_adoption_cycle_after_obligation() {
+  # gate_adoption_cycle_after_obligation <segment> — 0 when a `cycle` row of the
+  # segment stands after its obligation's issuing row.
+  local ol cl
+  ol=$(gate_adoption_obligation_line "$1")
+  cl=$(gate_apply_line_of 'cycle' '세그먼트' "$1")
+  [ -n "$ol" ] && [ -n "$cl" ] && [ "$cl" -gt "$ol" ]
+}
+
+gate_adoption_review_next() {
+  # gate_adoption_review_next <segment> — `다음` of a segment adopted as a merged
+  # pull request, read before the base overlay and the CI layer:
+  #   no cycle after the obligation's issuing row       사후리뷰
+  #   commits ahead of the base unreadable              판정 불가
+  #   0 ahead, the table reads `머지` or `이월 머지`     입양 종결
+  #   otherwise                                         the table's value, which
+  #                                                     the caller layers as for
+  #                                                     any `선리뷰후머지` segment
+  # The commits ahead are `gate_segment_ahead_count`, the one count every reader
+  # of an adopted segment uses — the merged-tip count would include the base
+  # commits after the merge commit.
+  local seg=$1 nx ahead
+  if gate_segment_post_merge "$seg"; then printf '사후리뷰'; return 0; fi
+  nx=$(gate_segment_review_next_table "$seg")
+  ahead=$(gate_segment_ahead_count "$seg")
+  case "$ahead" in
+    ''|*[!0-9]*) printf '판정 불가'; return 0 ;;
+  esac
+  if [ "$ahead" = 0 ]; then
+    case "$nx" in 머지|'이월 머지') printf '입양 종결'; return 0 ;; esac
+  fi
+  printf '%s' "$nx"
+}
+
 gate_segment_merged_uncovered() {
   # gate_segment_merged_uncovered <segment> — a review-before-merge segment a
   # person merged before a review covered its merged tip: not a merge-first
@@ -27213,7 +27491,12 @@ gate_segment_merged_uncovered() {
   # chooses it — field equality on `id`, the last row carrying the field — so
   # the review line offers the covering review exactly when condition 11 holds
   # on a missing coverage.
+  #
+  # A segment adopted as a merged pull request is never one: the merge it
+  # reviews happened before the run, and its obligation, not condition 11,
+  # holds the run for that review.
   local seg=$1 pol mrow
+  gate_segment_merge_adopted "$seg" && return 1
   gate_segment_post_merge "$seg" && return 1
   pol=$(gate_segment_field "$seg" '리뷰 정책')
   [ "${pol:-선리뷰후머지}" = '선리뷰후머지' ] || return 1
@@ -27235,6 +27518,11 @@ gate_post_merge_next() {
   # the worktree HEAD carries commits past the merged tip: a lead fix the
   # review asked for has not merged yet.
   local seg=$1 nx n=''
+  # An adopted merged pull request is held here only while its review is due.
+  if gate_segment_merge_adopted "$seg"; then
+    printf '사후리뷰'
+    return 0
+  fi
   if [ -z "$(gate_apply_line_of 'cycle' '세그먼트' "$seg")" ] || gate_segment_merged_after_last_cycle "$seg"; then
     printf '사후리뷰'
     return 0
@@ -27914,10 +28202,13 @@ gate_base_review_head() {
   # table's merging values come first and a segment whose `implement_next[]`
   # reads `선머지` before its CI layer takes the tip after them. A segment past
   # its merge-first merge takes the tip too: what it merges next is the lead
-  # fix on top of the merged tip, not the head its last cycle read.
+  # fix on top of the merged tip, not the head its last cycle read. A segment
+  # adopted as a merged pull request takes the tip as well: its merge already
+  # happened, and what the base check judges is the worktree that holds it.
   local seg=$1 v=${2:-} nx row wt
   wt=$(gate_segment_worktree "$seg")
   if [ "$v" = '선머지' ]; then gate_worktree_tip "$wt"; return; fi
+  if gate_segment_merge_adopted "$seg"; then gate_worktree_tip "$wt"; return; fi
   if [ -z "$v" ] && gate_segment_post_merge "$seg"; then gate_worktree_tip "$wt"; return; fi
   nx=$(gate_segment_review_next_table "$seg")
   case "$nx" in
@@ -28715,6 +29006,15 @@ gate_segment_body_source() {
       *) printf 'PR %s' "$pr"; return 0 ;;
     esac
   fi
+  # A segment adopted as a merged pull request names that pull request when no
+  # row above names one.
+  if adopt=$(gate_merge_adoption_row "$seg" 2>/dev/null) && [ -n "$adopt" ]; then
+    pr=$(manifest_row_fields "$adopt" 'PR')
+    case "$pr" in
+      ''|*[!0-9]*) : ;;
+      *) printf 'PR %s' "$pr"; return 0 ;;
+    esac
+  fi
   # A review-only segment names the pull request its `리뷰 PR` row froze; it
   # has no branch to name.
   if gate_segment_review_only "$seg"; then
@@ -29016,7 +29316,59 @@ gate_review_line() {
       "$rpslug" "$rpn" "$rp" "$rpbase" "$rphead" "$(gate_review_depth)"
     return 0
   fi
+  # A SEGMENT ADOPTED AS A MERGED PULL REQUEST is read by the commits its
+  # worktree carries ahead of the base (`gate_segment_ahead_count`). With none,
+  # the review target is the merged pull request itself: the diff runs from the
+  # obligation's fork point, `--merged` names the merge commit the base made,
+  # and `--judge-head` names the worktree HEAD the findings are judged against.
+  # No `--pr-head`: the head is the obligation's, not a pin of this line. With
+  # commits ahead — a fix the review asked for — the ordinary branch line below
+  # reviews the branch, with no fork point taken from the obligation and no
+  # `--post-merge`. An unreadable count prints no line.
+  local adahead=''
+  if gate_segment_merge_adopted "$seg"; then
+    adahead=$(gate_segment_ahead_count "$seg")
+    case "$adahead" in
+      ''|*[!0-9]*)
+        warn "머지 입양 세그먼트 $seg 가 베이스보다 앞선 커밋 수를 읽지 못했습니다 — 리뷰 줄을 내지 않습니다"
+        return "$GATE_EXIT_RULE" ;;
+    esac
+    if [ "$adahead" = 0 ]; then
+      local adrow adslug adorow admg adfork adwt adhead
+      adrow=$(gate_merge_adoption_row "$seg")
+      adslug=$(alias_slug "$(manifest_row_fields "$adrow" '대상')" 2>/dev/null) || adslug=''
+      adorow=$(gate_adoption_obligation_row "$seg")
+      admg=$(gate_row_field "$adorow" '머지 커밋')
+      adfork=$(gate_row_field "$adorow" '분기점')
+      adwt=$(gate_segment_worktree "$seg")
+      adhead=$(gate_worktree_tip "$adwt" 2>/dev/null) || adhead=''
+      case "$adfork" in ''|-) adfork='' ;; esac
+      if [ -z "$adslug" ] || [ -z "$admg" ] || [ -z "$adfork" ] || [ -z "$adhead" ]; then
+        warn "머지 입양 세그먼트 $seg 의 원격 슬러그·의무의 머지 커밋·분기점·워크트리 HEAD 중 하나를 읽지 못했습니다"
+        return "$GATE_EXIT_RULE"
+      fi
+      rp=$(gate_review_report_path "$seg")
+      line="/cc-cmds:review-unattended https://github.com/$adslug/pull/$(manifest_row_fields "$adrow" 'PR') --report-path $rp"
+      if [ "$slice" = "1" ] && [ "$(gate_slicing_branch)" = "선언통치" ]; then line="$line --slice $seg"; fi
+      line="$line --base-sha $adfork --merged $admg --judge-head $adhead"
+      # The same tail as the branch line below.
+      decl=$(gate_segment_decl_whole "$seg")
+      case "$decl" in ''|'없음'|'(없음)') : ;; *) line="$line --declared-files \"$decl\"" ;; esac
+      side=$(gate_segment_seat_commits "$seg")
+      [ "$side" = "없음" ] || line="$line --seat-commits \"$side\""
+      line="$line$(review_expand_flag)"
+      [ "${#extra[@]}" -eq 0 ] || line="$line ${extra[*]}"
+      doc=$(gate_doc_arg_path)
+      [ -z "$doc" ] || line="$line \"설계는 $doc\""
+      printf '%s\n' "$line"
+      return 0
+    fi
+  fi
   br=$(printf '%s\n' "$rows" | gate_rows_field_values '브랜치' | awk 'NF { v = $0 } END { print v }')
+  # An adopted segment's planned row may name no branch; its worktree's does.
+  if [ -z "$br" ] && [ -n "$adahead" ]; then
+    br=$( { cd "$(gate_segment_worktree "$seg")" && git symbolic-ref --quiet --short HEAD; } 2>/dev/null || true)
+  fi
   if [ -z "$br" ]; then
     warn "no segment row of $seg names a branch — there is no branch to review"
     return "$GATE_EXIT_RULE"
@@ -29025,7 +29377,7 @@ gate_review_line() {
   line="/cc-cmds:review-unattended $br --report-path $rp"
   if [ "$slice" = "1" ] && [ "$(gate_slicing_branch)" = "선언통치" ]; then line="$line --slice $seg"; fi
   pmseg=0
-  gate_segment_post_merge "$seg" && pmseg=1
+  [ -n "$adahead" ] || ! gate_segment_post_merge "$seg" || pmseg=1
   base=$(printf '%s\n' "$rows" | gate_rows_field_values '베이스 sha' | awk 'NF { v = $0 } END { print v }')
   # A MERGED BRANCH HAS NO BASE OF ITS OWN TO DERIVE. Its tip is an ancestor of
   # the base after the merge, so a review left to find its base from the pull
@@ -36070,7 +36422,25 @@ gate_record_row() {
       # `머지됨` row and a review obligation the merge issued. Anywhere else the
       # row would reopen a segment nothing is owed on, and condition 1 would hold
       # the run open for a review no rule asked for.
-      if [ "$st" = '사후리뷰' ]; then
+      #
+      # A SEGMENT ADOPTED AS A MERGED PULL REQUEST is reviewed after a merge that
+      # happened outside the run, so it has no `머지됨` row: there `사후리뷰` needs
+      # only the review obligation the planning act issued, and is taken as the
+      # first transition after `계획됨`. Its policy is `선리뷰후머지` whatever the
+      # ceiling says, so the merge-first test does not apply to it.
+      if [ "$st" = '사후리뷰' ] && gate_segment_merge_adopted "$seg"; then
+        local ma_prior_st
+        ma_prior_st=$(gate_row_field "$( { gate_rows 'segment' || true; } | gate_rows_field_eq 'id' "$seg" | tail -1)" '상태')
+        case "$ma_prior_st" in
+          계획됨|사후리뷰) : ;;
+          *) warn "머지 입양 세그먼트 ${seg} 의 마지막 행이 ${ma_prior_st:-없음} 입니다 — 「사후리뷰」 는 계획됨 바로 뒤의 첫 전이로만 씁니다"
+             return "$GATE_EXIT_VOCAB" ;;
+        esac
+        if [ -z "$( { gate_rows '리뷰 의무' || true; } | gate_rows_field_eq '세그먼트' "$seg")" ]; then
+          warn "머지 입양 세그먼트 ${seg} 에 리뷰 의무 행이 없습니다 — 「사후리뷰」 는 계획 act 가 의무를 발행한 뒤에만 씁니다"
+          return "$GATE_EXIT_VOCAB"
+        fi
+      elif [ "$st" = '사후리뷰' ]; then
         if ! gate_segment_merge_first "$seg"; then
           warn "세그먼트 ${seg} 의 리뷰 정책이 선머지후리뷰 가 아닙니다 — 「사후리뷰」 는 머지 먼저 세그먼트의 머지 뒤에만 씁니다"
           return "$GATE_EXIT_VOCAB"
@@ -36186,9 +36556,33 @@ gate_record_row() {
           warn "segment 행의 「적용」은 게이트가 쓰는 필드입니다 — 호출자가 넘길 수 없습니다"
           return "$GATE_EXIT_VOCAB"
         fi
+        # A SEGMENT ADOPTED AS A MERGED PULL REQUEST ENDS WITHOUT A MERGE OF ITS
+        # OWN. Its merge happened outside the run, so it owes no apply here; its
+        # `완료` is accepted once its obligation is fulfilled and its worktree
+        # carries no commit ahead of the base — a fix still unmerged is not an
+        # ending — and carries no `커밋`, since nothing was pushed for it. An
+        # unreadable count is not read as 0.
+        local md_ahead=""
+        if [ "$st" = 완료 ] && gate_segment_merge_adopted "$seg"; then
+          if [ -n "$(gate_unfulfilled_review_obligations "$seg")" ]; then
+            warn "머지 입양 세그먼트 ${seg} 의 리뷰 의무가 아직 이행되지 않았습니다 — 「완료」 는 의무 이행 뒤에만 씁니다"
+            return "$GATE_EXIT_VOCAB"
+          fi
+          md_ahead=$(gate_segment_ahead_count "$seg")
+          if [ "$md_ahead" != 0 ]; then
+            warn "머지 입양 세그먼트 ${seg} 의 워크트리가 베이스보다 앞선 커밋 ${md_ahead} 개를 가집니다 — 「완료」 는 앞선 커밋이 0 일 때만 씁니다"
+            return "$GATE_EXIT_VOCAB"
+          fi
+          if [ -n "$(gate_field_of '커밋' "$@")" ]; then
+            warn "머지 입양 세그먼트 ${seg} 의 「완료」 행은 「커밋」 을 싣지 않습니다 — 이 런이 밀어 올린 커밋이 없습니다"
+            return "$GATE_EXIT_VOCAB"
+          fi
+        fi
         case "$st" in
           '적용 준비'|완료)
-            if gate_segment_owes_apply "$alias" "$seg" "$( [ "$st" = 완료 ] && printf 완료)"; then
+            if [ -n "$md_ahead" ]; then
+              :
+            elif gate_segment_owes_apply "$alias" "$seg" "$( [ "$st" = 완료 ] && printf 완료)"; then
               warn "세그먼트 ${seg} 는 적용이 남은 세그먼트입니다 — 「${st}」 는 act --kind apply 만 씁니다"
               return "$GATE_EXIT_VOCAB"
             fi ;;
@@ -36428,6 +36822,14 @@ gate_record_row() {
       if [ -z "$rpol" ] && [ -n "$prior" ]; then
         rpol=$(gate_row_field "$prior" '리뷰 정책')
         [ -n "$rpol" ] && set -- "$@" "리뷰 정책=$rpol"
+      fi
+      # A SEGMENT ADOPTED AS A MERGED PULL REQUEST RESOLVES TO `선리뷰후머지`
+      # whatever its target's ceiling allows: its fix pull request is reviewed
+      # before it merges. A row carrying another policy is refused rather than
+      # read past, so the first row cannot plant a looser one.
+      if [ -n "$rpol" ] && [ "$rpol" != '선리뷰후머지' ] && gate_segment_merge_adopted "$seg"; then
+        warn "머지 입양 세그먼트 ${seg} 의 「리뷰 정책」 은 선리뷰후머지 입니다 — 받은 값: $rpol"
+        return "$GATE_EXIT_VOCAB"
       fi
       if [ -n "$rpol" ]; then
         # THE CEILING IS COMPARED BEFORE THE APPEND. The ledger is append-only,
@@ -36919,6 +37321,10 @@ gate_record_row() {
           fi
         fi
       fi
+      # A merged pull request's planning act writes its obligation first.
+      if [ "${GATE_FROM_DECLARATION:-}" = "1" ] && [ "$st" = "계획됨" ]; then
+        gate_merge_adoption_issue "$seg" "$alias"
+      fi
       if [ -n "$surf_field" ]; then
         gate_append 'segment' "id=$seg" "$@" "$surf_field"
       else
@@ -36928,6 +37334,15 @@ gate_record_row() {
       # here on the ordinary path, and by `gate_on_exit` when `gate_append`
       # exits the process instead of returning.
       gate_settings_lock_release
+      # The pinned head of a merged pull request is dropped once the segment
+      # ends; a missing ref or worktree leaves nothing to drop.
+      case "$st" in
+        완료|park)
+          if gate_segment_merge_adopted "$seg"; then
+            ( cd "$(gate_segment_worktree "$seg")" 2>/dev/null \
+                && git update-ref -d "refs/cc-review/$RUN_ID/$seg" ) >/dev/null 2>&1 || true
+          fi ;;
+      esac
       if [ "$st" = "park" ]; then
         gate_notify_segment_park "$seg"
         # A PERSON WHO GAVE UP ON AN UNKNOWN APPLY LETS ITS BLOCK GO. The
@@ -48803,6 +49218,36 @@ gate_verb_act() {
           warn "리뷰 파견의 --expand (${rn_xgot:-없음}) 가 매니페스트의 review_expand (${rn_xwant:-없음}) 와 다릅니다 — 스냅숏의 리뷰 줄을 그대로 실어 다시 파견하세요"
           exit "$GATE_EXIT_RULE"
         fi
+        # A SEGMENT ADOPTED AS A MERGED PULL REQUEST is reviewed against the
+        # merge commit its obligation names, from the fork point it recorded,
+        # with the findings judged on the worktree HEAD. Those three flags are
+        # rebuilt from the obligation row and the worktree and compared byte for
+        # byte; with commits ahead of the base the line reviews the branch and
+        # carries neither `--merged` nor `--judge-head`.
+        if gate_segment_merge_adopted "$segment"; then
+          local rn_adahead rn_adorow rn_adwant rn_adgot rn_adkeys
+          rn_adahead=$(gate_segment_ahead_count "$segment")
+          rn_adorow=$(gate_adoption_obligation_row "$segment")
+          case "$rn_adahead" in
+            0)
+              rn_adkeys='--base-sha --merged --judge-head'
+              rn_adwant="--base-sha $(gate_row_field "$rn_adorow" '분기점') --merged $(gate_row_field "$rn_adorow" '머지 커밋') --judge-head $( { cd "$(gate_act_worktree "$alias" "$segment")" 2>/dev/null \
+                           && git --no-optional-locks rev-parse HEAD 2>/dev/null; } || true)" ;;
+            ''|*[!0-9]*)
+              warn "머지 입양 세그먼트 ${segment} 가 베이스보다 앞선 커밋 수를 읽지 못했습니다 — 리뷰를 파견하지 않습니다"
+              exit "$GATE_EXIT_RULE" ;;
+            *)
+              rn_adkeys='--merged --judge-head'
+              rn_adwant='' ;;
+          esac
+          rn_adgot=$(printf '%s\n' "$rn_prompt" | awk -v keys=" $rn_adkeys " '
+            { for (i = 1; i <= NF; i++) if (index(keys, " " $i " ")) { o = o (o == "" ? "" : " ") $i " " (i < NF ? $(i + 1) : "") } }
+            END { printf "%s", o }')
+          if [ "$rn_adgot" != "$rn_adwant" ]; then
+            warn "머지 입양 세그먼트 ${segment} 의 리뷰 파견 플래그 (${rn_adgot:-없음}) 가 의무 행과 워크트리 HEAD 에서 다시 만든 값 (${rn_adwant:-없음}) 과 다릅니다 — 스냅숏의 리뷰 줄을 그대로 실어 다시 파견하세요"
+            exit "$GATE_EXIT_RULE"
+          fi
+        fi
         # A review-only segment's three reviewer flags are rebuilt from its rows
         # and compared byte for byte: a head other than the pinned one reviews a
         # diff the post will not be anchored to, a depth other than the frozen one
@@ -52421,6 +52866,13 @@ gate_issue_review_obligation() {
   # the tip of the segment worktree at issue time. A `cycle` row's `리뷰 HEAD`
   # lives in that same ref space, and the containment test between the two means
   # nothing unless both name commits that exist before the merge does.
+  #
+  # AN OBLIGATION OF A SEGMENT ADOPTED AS A MERGED PULL REQUEST means otherwise,
+  # and is written by its planning act (`gate_merge_adoption_issue`), not here:
+  # the merge already happened, so its `머지 커밋` is the merge commit GitHub
+  # made on the base, and its `분기점` is merge-base(that commit's first parent,
+  # the request's head). The worktree HEAD a review reads contains it, so the
+  # same containment test closes it.
   #
   # THE DUPLICATE GUARD ASKS ABOUT STATE, NOT EXISTENCE. A fulfillment row
   # carries the same `의무 id=`, so an existence test suppressed every issue
@@ -59211,11 +59663,16 @@ EOF
   # a person, which is not a pass and is settled the way every parked segment
   # is. A `판정 불가` of the containment holds — what could not be judged did
   # not close. Not turned off by the rule setting.
+  #
+  # A SEGMENT ADOPTED AS A MERGED PULL REQUEST is read the same way: its merge
+  # happened outside the run, its planning act issued the obligation, and it
+  # closes only when its last `cycle` covers that obligation's `머지 커밋` and
+  # the table reads `머지` or `이월 머지`.
   local orow otip ohead onx
   for sid in $(gate_segment_ids); do
     [ -n "$sid" ] || continue
     ! gate_segment_review_only "$sid" || continue
-    gate_segment_merge_first "$sid" || continue
+    gate_segment_merge_first "$sid" || gate_segment_merge_adopted "$sid" || continue
     [ "$(gate_segment_field "$sid" '상태')" = 'park' ] && continue
     orow=$( { gate_rows '리뷰 의무' || true; } | gate_rows_field_eq '세그먼트' "$sid" | tail -1)
     [ -n "$orow" ] || continue
@@ -60112,6 +60569,9 @@ gate_snapshot_review_next_json() {
           pm=''
           gate_segment_post_merge "$s" && pm=1
           if [ -z "$pm" ] && [ "$(gate_segment_field "$s" '상태')" = "머지됨" ]; then continue; fi
+          # A segment adopted as a merged pull request ends at `완료`, which is
+          # its landing: nothing is left to route.
+          if [ "$(gate_segment_field "$s" '상태')" = "완료" ] && gate_segment_merge_adopted "$s"; then continue; fi
           row=$(gate_segment_last_cycle_row "$s")
           if [ -z "$row" ] && [ -z "$pm" ]; then continue; fi
           nx=$(gate_segment_review_next "$s")
