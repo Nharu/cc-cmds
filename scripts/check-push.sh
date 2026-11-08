@@ -27,13 +27,18 @@
 # every goal of the job pool run in a checkout of their own and leave a record
 # of the tracked files they read (scripts/test-reuse.sh); a later run whose
 # tree gives those files the same contents, under the same doubles and tools,
-# within 24 hours, skips the item and says so. `items` runs the goals and
-# check-cheap only for those records, and leaves every stamp alone.
+# within 24 hours, skips the item and says so. Sections do the same per lane:
+# a lane that passed records the files it read and the digest of the cut it
+# ran, and a later run skips the sections of every record whose files and cut
+# are unchanged, then cuts and runs only the rest. `items` runs the goals,
+# the sections and check-cheap only for those records, and leaves every stamp
+# alone.
 #
 # Usage:
 #   bash scripts/check-push.sh run         check in a clean clone, stamp on pass
-#   bash scripts/check-push.sh items       run the goals and check-cheap the same
-#                                          way to record their passes; no stamp
+#   bash scripts/check-push.sh items       run the goals, the sections and
+#                                          check-cheap the same way to record
+#                                          their passes; no stamp
 #   bash scripts/check-push.sh verify      0 when HEAD's tree carries a stamp
 #   bash scripts/check-push.sh --self-test
 #
@@ -47,7 +52,7 @@
 #   CHECK_PUSH_JOBS         how many of the section lanes and goal jobs run at
 #                           once (default 4; 1 runs the sections in one
 #                           test-gate call and the goals in one make, in turn,
-#                           and the goals are neither recorded nor reused)
+#                           and neither is recorded nor reused)
 #   CHECK_PUSH_REUSE        0 turns the reuse of recorded passes off: run
 #                           neither judges nor records and stamps 재사용=꺼짐,
 #                           items refuses with 2 (default 1)
@@ -63,7 +68,8 @@
 #   CC_CHECK_PUSH_MAKE      the make for lint, readme and check-cheap (default
 #                           make); the self-test swaps in doubles through it,
 #                           as it does through CC_TEST_TREE_GATE,
-#                           CC_TEST_TREE_MAKE and CC_TEST_TREE_GH
+#                           CC_TEST_TREE_SHARD, CC_TEST_TREE_MAKE and
+#                           CC_TEST_TREE_GH
 #
 # Exit codes: 0 passed / stamped, 1 a check failed or no stamp, 2 usage, a
 # base that is not a commit, or an unattended run whose head changed
@@ -71,8 +77,8 @@
 # while CHECK_PUSH_SECTIONS is empty (refused before the clone, so the tree is
 # left without a stamp), 4 no fresh base in FETCH_HEAD. items ends the same
 # way, except that it never refuses for gate.sh and ends 2 when
-# CHECK_PUSH_REUSE is 0, or when CHECK_PUSH_GOALS is given with
-# CHECK_PUSH_JOBS 1.
+# CHECK_PUSH_REUSE is 0, or when CHECK_PUSH_GOALS or CHECK_PUSH_SECTIONS is
+# given with CHECK_PUSH_JOBS 1.
 
 set -uo pipefail
 
@@ -177,8 +183,19 @@ check_push_gate_unchanged() {
   [ -z "$changed" ]
 }
 
-# run (the default) checks and stamps; items runs check-cheap and the goals only
-# so their passes are recorded, and touches no stamp.
+# The sections this run took from lane records, comma-joined; 없음 when none;
+# 꺼짐 when a switch kept lanes from being judged at all (CHECK_PUSH_REUSE=0,
+# or CHECK_PUSH_JOBS=1, which runs every section in one test-gate call).
+check_push_reused_sections() {
+  if [ "$CP_REUSE" = 0 ] || [ "${TT_JOBS:-1}" = 1 ]; then
+    printf '꺼짐'
+  else
+    tt_or_none "$TT_REUSED_SECTIONS"
+  fi
+}
+
+# run (the default) checks and stamps; items runs check-cheap, the sections and
+# the goals only so their passes are recorded, and touches no stamp.
 check_push_run() {
   local verb="${1:-run}" make_bin commit tree gdir stamp_dir stamp mode src base="" fetch="없음" secs goals added="없음" doubles rc stage="" step old got how key steps it rec
   make_bin="${CC_CHECK_PUSH_MAKE:-make}"
@@ -200,9 +217,9 @@ check_push_run() {
       printf 'check-push: CHECK_PUSH_JOBS=1 의 목표는 한 make 로 돌아 기록되지 않는다 — items 는 CHECK_PUSH_JOBS 를 2 이상으로 둔다\n' >&2
       return 2
     fi
-    if [ -n "$secs" ]; then
-      printf 'check-push: items 는 test-gate 절을 돌리지 않는다 — CHECK_PUSH_SECTIONS=%s 는 쓰지 않는다\n' "$secs" >&2
-      secs=""
+    if [ -n "$secs" ] && [ "$CP_JOBS" = 1 ]; then
+      printf 'check-push: CHECK_PUSH_JOBS=1 의 절은 한 test-gate 호출로 돌아 기록되지 않는다 — items 는 CHECK_PUSH_JOBS 를 2 이상으로 둔다\n' >&2
+      return 2
     fi
     steps="check-cheap"
   fi
@@ -376,7 +393,8 @@ check_push_run() {
       printf 'check-push: items 실패 — 단계=%s, 실패한 항목은 기록하지 않았다. 도장은 건드리지 않는다\n' "$stage" >&2
       return 1
     fi
-    printf 'check-push: items 통과 — 커밋 %s (시험 트리 %s) 의 통과를 기록했다 (재사용=%s). 도장은 건드리지 않는다\n' "$commit" "$TT_TREE" "$(tt_or_none "$TT_REUSED")"
+    printf 'check-push: items 통과 — 커밋 %s (시험 트리 %s) 의 통과를 기록했다 (재사용=%s 재사용절=%s). 도장은 건드리지 않는다\n' \
+      "$commit" "$TT_TREE" "$(tt_or_none "$TT_REUSED")" "$(check_push_reused_sections)"
     return 0
   fi
 
@@ -440,6 +458,7 @@ check_push_run() {
     else
       printf '재사용=%s\n' "$(tt_or_none "$TT_REUSED")"
     fi
+    printf '재사용절=%s\n' "$(check_push_reused_sections)"
   } > "$CP_TMP_STAMP" || return 1
   mv -f "$CP_TMP_STAMP" "$stamp" || return 1
   CP_TMP_STAMP=""
@@ -541,6 +560,8 @@ ids=$(sed -n 's/^# --- section: \([^ |]*\) |.*$/\1/p' scripts/test-gate.sh)
 case "$1" in
   --list) for id in $ids; do printf '%s # t\n' "$id"; done ;;
   --sections)
+    # The cut digest: hex that depends only on the ids.
+    if [ "${3:-}" = --cut-digest ]; then printf 'ab%s\n' "$(printf '%s' "$2" | cksum | cut -d' ' -f1)"; exit 0; fi
     printf 'env:TMPDIR=%s|OUT=%s|REC=%s\n' "${TMPDIR:-}" "${CC_GATE_TIMING_OUT:-}" "${CC_GATE_TIMING_RECORD:-}" >> "@T@/env.log"
     [ ! -f "@T@/gate-slow" ] || sleep 3
     rc=0; failed=""
@@ -573,7 +594,16 @@ EOF
 printf 'gh:%s\n' "$*" >> "@T@/gh.log"
 exit 9
 EOF
-  chmod +x "$T/bin/bundle" "$T/bin/bundle-bad" "$T/bin/gate" "$T/bin/make" "$T/bin/gh"
+  # The lane-cut double puts every section in a lane of its own.
+  sed "s|@T@|$T|g" > "$T/bin/shard" <<'EOF'
+#!/usr/bin/env bash
+printf 'shard:%s\n' "$*" >> "@T@/order.log"
+only=""
+while [ "$#" -gt 0 ]; do case "$1" in --only) only="${2-}"; shift 2 ;; *) shift ;; esac; done
+k=0
+for id in $(printf '%s' "$only" | tr ',' ' '); do k=$((k + 1)); printf '%s\t-\t%s\n' "$k" "$id"; done
+EOF
+  chmod +x "$T/bin/bundle" "$T/bin/bundle-bad" "$T/bin/gate" "$T/bin/make" "$T/bin/gh" "$T/bin/shard"
   export CC_CHECK_PUSH_MAKE="$T/bin/bundle" CC_TEST_TREE_GATE="$T/bin/gate" CC_TEST_TREE_MAKE="$T/bin/make" CC_TEST_TREE_GH="$T/bin/gh"
   # Every case but F41 checks a run that neither judges nor records, so reuse
   # is off unless a case turns it on.
@@ -673,8 +703,9 @@ EOF
   has "F12 묶음 단계마다 자리를 잡는다" "$out" "check-push: 자리 잡음 단계 lint (0초 대기)"
   has "F12 마지막 묶음 단계도 자리를 잡는다" "$out" "check-push: 자리 잡음 단계 check-cheap (0초 대기)"
   out=$(sed -n 's/=.*$//p' "$stamp" | tr '\n' ' ')
-  check "F12 도장 v2 필드" "$out" "v commit at bash 합침 base base출처 fetch tested_tree sections goals 절+베이스 충돌경로 대역 병렬 자리대기 재사용 "
+  check "F12 도장 v2 필드" "$out" "v commit at bash 합침 base base출처 fetch tested_tree sections goals 절+베이스 충돌경로 대역 병렬 자리대기 재사용 재사용절 "
   check "F12 재사용을 끈 실행의 도장은 재사용=꺼짐" "$(check_push_field "$stamp" 재사용)" "꺼짐"
+  check "F12 재사용을 끈 실행의 도장은 재사용절=꺼짐" "$(check_push_field "$stamp" 재사용절)" "꺼짐"
   check "F12 사적 저장소에서는 자리를 기다리지 않는다" "$(check_push_field "$stamp" 자리대기)" "0"
   check "F12 자리를 잡은 묶음 단계는 CC_TEST_SLOT_HELD=1 을 받는다" "$(tr '\n' ' ' < "$T/held.log")" "lint:1 readme:1 check-cheap:1 "
   before=$(cksum < "$stamp")
@@ -865,9 +896,9 @@ check-push: CHECK_PUSH_JOBS=1 의 실패 단계는 목록 전체를 이름 댄�
   out=$(cvrun CC_PIPELINE_RUN_ID=t); rc=$?
   check "F18 무인 런의 합침·FETCH_HEAD·대역=없음 → 0" "$rc" "0"
   fh_line "$sm2"
-  out=$(cprun CC_PIPELINE_RUN_ID=t); rc=$?
-  has "F27 기록 줄에 대역 이름들" "$out" "대역=CC_CHECK_PUSH_MAKE,CC_TEST_TREE_GATE,CC_TEST_TREE_MAKE,CC_TEST_TREE_GH"
-  check "F27 도장에 대역 이름들" "$(check_push_field "$stamp" 대역)" "CC_CHECK_PUSH_MAKE,CC_TEST_TREE_GATE,CC_TEST_TREE_MAKE,CC_TEST_TREE_GH"
+  out=$(cprun CC_PIPELINE_RUN_ID=t CC_TEST_TREE_SHARD="$T/bin/shard"); rc=$?
+  has "F27 기록 줄에 대역 이름들" "$out" "대역=CC_CHECK_PUSH_MAKE,CC_TEST_TREE_GATE,CC_TEST_TREE_SHARD,CC_TEST_TREE_MAKE,CC_TEST_TREE_GH"
+  check "F27 도장에 대역 이름들" "$(check_push_field "$stamp" 대역)" "CC_CHECK_PUSH_MAKE,CC_TEST_TREE_GATE,CC_TEST_TREE_SHARD,CC_TEST_TREE_MAKE,CC_TEST_TREE_GH"
   out=$(cvrun CC_PIPELINE_RUN_ID=t); rc=$?
   check "F27 무인 verify 는 대역 도장에 1" "$rc" "1"
   out=$(cvrun); rc=$?
@@ -944,6 +975,7 @@ check-push: CHECK_PUSH_JOBS=1 의 실패 단계는 목록 전체를 이름 댄�
   ve() { if [ "$v" = 1 ]; then printf '%s' "$1"; else printf '%s' "$2"; fi; }
   cur_tree() { (cd "$W" && git rev-parse 'HEAD^{tree}'); }
   cur_reuse() { check_push_field "$W/.git/cc-cmds-check-push/$(cur_tree)" 재사용; }
+  cur_field() { check_push_field "$W/.git/cc-cmds-check-push/$(cur_tree)" "$1"; }
   rw() { (cd "$W" && printf '%b' "$2" > "$1" && sgit add -A && sgit commit -q -m r) > /dev/null 2>&1; }
   crr() { cprun "$@" CHECK_PUSH_REUSE=1 CHECK_PUSH_JOBS=2 CHECK_PUSH_GOALS=g1; }
   cirun() { (cd "$W" && env "$@" bash "$self" items 2>&1); }
@@ -954,6 +986,7 @@ check-push: CHECK_PUSH_JOBS=1 의 실패 단계는 목록 전체를 이름 댄�
   : > "$T/cwd.log"
   out=$(crr); rc=$?
   check "F41 첫 실행은 통과하고 재사용이 없다" "$rc $(cur_reuse)" "0 없음"
+  check "F41 재사용을 켠 실행의 도장은 다시 쓴 절이 없으면 재사용절=없음" "$(cur_field 재사용절)" "없음"
   has "F41 check-cheap 은 자기 항목 체크아웃에서 돈다" "$(cat "$T/cwd.log")" "/items/cc git="
   has "F41 check-cheap 환경의 PATH 맨 앞에 git 감시 꼴" "$(cat "$T/cwd.log")" "/items/cc.shim/git"
   check "F41 통과한 두 항목의 기록" "$(ls "$items_dir" 2>/dev/null | tr '\n' ' ')" "$(ve 'make:check-cheap make:g1 ' '')"
@@ -1039,16 +1072,25 @@ check-push: CHECK_PUSH_JOBS=1 의 실패 단계는 목록 전체를 이름 댄�
   : > "$T/order.log"
   out=$(cirun CC_PIPELINE_RUN_ID=t CHECK_PUSH_REUSE=1 CHECK_PUSH_JOBS=2 CHECK_PUSH_GOALS=g1 CHECK_PUSH_SECTIONS=s1); rc=$?
   check "F41 items 는 통과하고 합친 도장을 그대로 둔다" "$rc $(cksum < "$W/.git/cc-cmds-check-push/$(cur_tree)")" "0 $before"
-  check "F41 items 는 묶음에서 check-cheap 만 부르고 절은 돌리지 않는다" "$(grep -e '^bundle:' -e '^gate:--sections' "$T/order.log" | sed 's/|.*$//' | tr '\n' ' ')" "bundle:check-cheap "
-  has "F41 items 는 절을 쓰지 않는다고 알린다" "$out" "check-push: items 는 test-gate 절을 돌리지 않는다"
+  check "F41 items 는 묶음에서 check-cheap 을 부르고 절을 컷 다이제스트 뒤 레인으로 돌린다" "$(grep -e '^bundle:' -e '^gate:--sections' "$T/order.log" | sed 's/|.*$//' | tr '\n' ' ')" "bundle:check-cheap gate:--sections s1 --cut-digest gate:--sections s1 "
+  has "F41 items 통과 줄은 다시 쓴 절이 없으면 재사용절=없음" "$out" "재사용절=없음). 도장은 건드리지 않는다"
   has "F41 items 통과 줄" "$out" "check-push: items 통과 — 커밋 "
-  check "F41 items 의 통과 기록" "$(ls "$items_dir" 2>/dev/null | tr '\n' ' ')" "$(ve 'make:check-cheap make:g1 ' '')"
+  check "F41 items 의 통과 기록에 레인 기록이 더해진다" "$(ls "$items_dir" 2>/dev/null | tr '\n' ' ')|$(ls "$items_dir/lane" 2>/dev/null | wc -l | tr -d ' ')" "$(ve 'lane make:check-cheap make:g1 |1' '|0')"
+  : > "$T/order.log"
+  out=$(cirun CC_PIPELINE_RUN_ID=t CHECK_PUSH_REUSE=1 CHECK_PUSH_JOBS=2 CHECK_PUSH_GOALS=g1 CHECK_PUSH_SECTIONS=s1); rc=$?
+  check "F41 다음 items 는 레인 기록으로 절을 다시 쓰고 돌리지 않는다" "$rc|$(grep -c '^gate:--sections s1$' "$T/order.log")" "0|$(ve 0 1)"
+  has "F41 다음 items 의 통과 줄에 다시 쓴 절" "$out" "$(ve '재사용절=s1)' '재사용절=없음)')"
+  has "F41 다시 쓴 절마다 재사용 절 줄" "$out" "$(ve 'check-push: 재사용 절 s1 ← ' 'check-push: items 통과')"
+  out=$(cprun CC_PIPELINE_RUN_ID=t CHECK_PUSH_REUSE=1 CHECK_PUSH_JOBS=2 CHECK_PUSH_GOALS=g1 CHECK_PUSH_SECTIONS=s1); rc=$?
+  check "F41 items 가 남긴 레인 기록을 run 이 다시 쓰고 도장에 재사용절=<ids>" "$rc $(cur_field 재사용절)" "0 $(ve s1 없음)"
   out=$(cirun CHECK_PUSH_REUSE=0); rc=$?
   check "F41 CHECK_PUSH_REUSE=0 의 items → 2" "$rc" "2"
   out=$(cirun CHECK_PUSH_REUSE=1 CHECK_PUSH_JOBS=1 CHECK_PUSH_GOALS=g1); rc=$?
   check "F41 CHECK_PUSH_JOBS=1 로 목표를 준 items → 2" "$rc" "2"
+  out=$(cirun CHECK_PUSH_REUSE=1 CHECK_PUSH_JOBS=1 CHECK_PUSH_SECTIONS=s1); rc=$?
+  check "F41 CHECK_PUSH_JOBS=1 로 절만 준 items → 2" "$rc|$(printf '%s' "$out" | grep -c '절은 한 test-gate 호출로 돌아 기록되지 않는다')" "2|1"
   out=$(cprun CC_PIPELINE_RUN_ID=t CHECK_PUSH_REUSE=0 CHECK_PUSH_JOBS=2 CHECK_PUSH_GOALS=g1); rc=$?
-  check "F41 CHECK_PUSH_REUSE=0 은 기록이 있어도 재사용하지 않고 도장에 꺼짐" "$rc $(cur_reuse)" "0 꺼짐"
+  check "F41 CHECK_PUSH_REUSE=0 은 기록이 있어도 재사용하지 않고 도장에 꺼짐" "$rc $(cur_reuse) $(cur_field 재사용절)" "0 꺼짐 꺼짐"
   rm -f "$T/reads-cc" "$T/reads-g1"
   (cd "$W" && sgit checkout -q h) > /dev/null 2>&1
 
@@ -1066,8 +1108,8 @@ check-push: CHECK_PUSH_JOBS=1 의 실패 단계는 목록 전체를 이름 댄�
   rm -rf "$T"
   printf 'check-push self-test: %d passed, %d failed\n' "$passed" "$failed"
   # A floor on the count, so a refactor that silently skips cases cannot pass.
-  if [ "$passed" -lt 157 ]; then
-    printf 'check-push self-test: 통과 수 %d 가 하한 157 에 못 미칩니다\n' "$passed" >&2
+  if [ "$passed" -lt 164 ]; then
+    printf 'check-push self-test: 통과 수 %d 가 하한 164 에 못 미칩니다\n' "$passed" >&2
     return 1
   fi
   [ "$failed" = "0" ]
