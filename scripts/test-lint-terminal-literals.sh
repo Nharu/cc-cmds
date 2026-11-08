@@ -18,8 +18,7 @@
 # router reference carries two design copies on one line. The sidecar, the
 # shift's split-dispatch reference and the autopilot router reference also
 # carry the base split literal once, and the shift's visual-dispatch reference
-# and the autopilot router reference the visual literal once and the design
-# system literal once; the sidecar, the
+# and the autopilot router reference the visual literal once; the sidecar, the
 # shift's visual-dispatch reference and the autopilot router reference also carry
 # the visual publish literal once. `FAIL-consumer-second-copy-same-line`
 # is the case that earns the per-occurrence count its keep: a per-line count
@@ -51,9 +50,8 @@ R=$(real_value LIT_RECONVERGE_TERMINAL)
 S=$(real_value LIT_SPLIT_TERMINAL)
 V=$(real_value LIT_VISUAL_TERMINAL)
 P=$(real_value LIT_VISUAL_PUBLISH_TERMINAL)
-Q=$(real_value LIT_VISUAL_DS_TERMINAL)
-if [[ -z "$D" || -z "$A" || -z "$R" || -z "$S" || -z "$V" || -z "$P" || -z "$Q" ]]; then
-  echo "FAIL: $REAL_RUN_SH 에서 종단 리터럴 일곱 값을 읽지 못했다" >&2
+if [[ -z "$D" || -z "$A" || -z "$R" || -z "$S" || -z "$V" || -z "$P" ]]; then
+  echo "FAIL: $REAL_RUN_SH 에서 종단 리터럴 여섯 값을 읽지 못했다" >&2
   exit 2
 fi
 
@@ -68,7 +66,7 @@ passed=0
 failures=0
 
 write_source() {
-  # write_source <root> <design> <audit> <reconverge> [<split>] [<visual>] [<publish>] [<design system>]
+  # write_source <root> <design> <audit> <reconverge> [<split>] [<visual>] [<publish>]
   local root="$1"
   mkdir -p "$root/orch"
   {
@@ -78,7 +76,6 @@ write_source() {
     printf "readonly LIT_DESIGN_TERMINAL='%s'\n" "$2"
     printf "readonly LIT_SPLIT_TERMINAL='%s'\n" "${5:-$S}"
     printf "readonly LIT_VISUAL_TERMINAL='%s'\n" "${6:-$V}"
-    printf "readonly LIT_VISUAL_DS_TERMINAL='%s'\n" "${8:-$Q}"
     printf "readonly LIT_VISUAL_PUBLISH_TERMINAL='%s'\n" "${7:-$P}"
   } > "$root/orch/run.sh"
 }
@@ -99,7 +96,6 @@ write_emitters() {
   write_emitter "$1" design-audit-unattended "$3"
   write_emitter "$1" design-base-unattended "${5:-$S}"
   write_emitter "$1" visual-unattended "$V"
-  printf '\nor, on the design system terminal, *"%s"*\n' "$Q" >> "$1/skills/visual-unattended/SKILL.md"
   write_emitter "$1" visual-publish-unattended "$P"
 }
 
@@ -116,7 +112,7 @@ write_sidecar() {
 }
 
 write_router_shift() {
-  # write_router_shift <root> <design-1> <design-2> <reconverge> [<split>] [<visual>] [<publish>] [<design system>]
+  # write_router_shift <root> <design-1> <design-2> <reconverge> [<split>] [<visual>] [<publish>]
   # The shift reads each of these branches from its own reference file on
   # entry, so each literal lives in the file of the branch that matches it.
   local refs="$1/skills/autopilot-router-shift/references"
@@ -124,12 +120,11 @@ write_router_shift() {
   printf "5. the freeze literal \`%s\` in the stream (\`grep -rlF '%s' log\`)\n" "$2" "$3" > "$refs/design-dispatch.md"
   printf "6. its terminal literal (\`grep -cF '%s' log\`)\n" "$4" > "$refs/refutation-reconverge.md"
   printf "7. the split literal \`%s\` in its stream\n" "${5:-$S}" > "$refs/split-dispatch.md"
-  printf "8. the visual literal\n\n%s\n\n8a. the design system literal \`%s\`\n\n9. the publish literal \`%s\`\n" \
-    "${6:-$V}" "${8:-$Q}" "${7:-$P}" > "$refs/visual-dispatch.md"
+  printf "8. the visual literal\n\n%s\n\n9. the publish literal \`%s\`\n" "${6:-$V}" "${7:-$P}" > "$refs/visual-dispatch.md"
 }
 
 write_autopilot() {
-  # write_autopilot <root> <design-1> <design-2> [<split>] [<visual>] [<publish>] [<design system>]
+  # write_autopilot <root> <design-1> <design-2> [<split>] [<visual>] [<publish>]
   # The lead's copy of the router loop lives in a reference file, not in the
   # skill's resident body.
   mkdir -p "$1/skills/autopilot/references"
@@ -137,7 +132,6 @@ write_autopilot() {
     printf "5. the freeze literal \`%s\` in the stream (\`grep -rlF '%s' log\`)\n" "$2" "$3"
     printf "7. the split literal \`%s\` in its stream\n" "${4:-$S}"
     printf "8. the visual literal\n\n%s\n" "${5:-$V}"
-    printf "8a. the design system literal \`%s\`\n" "${7:-$Q}"
     printf "9. the publish literal \`%s\`\n" "${6:-$P}"
   } > "$1/skills/autopilot/references/router-lead-copy.md"
 }
@@ -225,21 +219,6 @@ mk_root "$WORK/cons-visual-char"
 write_router_shift "$WORK/cons-visual-char" "$D" "$D" "$R" "$S" "$(one_char "$V")"
 run_case "FAIL-visual-consumer-one-char" 1 "$WORK/cons-visual-char" \
   "autopilot-router-shift/references/visual-dispatch.md" "LIT_VISUAL_TERMINAL"
-
-# FAIL — the visual emitter lost its design system literal and kept the screen
-# one. Without it a stage that left a new design system for a person ends as a
-# vacuous success, and the publish stage is never sent to ask about it.
-mk_root "$WORK/emit-ds-lost"
-write_emitter "$WORK/emit-ds-lost" visual-unattended "$V"
-run_case "FAIL-design-system-emitter-literal-missing" 1 "$WORK/emit-ds-lost" \
-  "visual-unattended/SKILL.md" "LIT_VISUAL_DS_TERMINAL"
-
-# FAIL — the design system copy in the lead's router reference changed by one
-# character.
-mk_root "$WORK/cons-ds-char"
-write_autopilot "$WORK/cons-ds-char" "$D" "$D" "$S" "$V" "$P" "$(one_char "$Q")"
-run_case "FAIL-design-system-consumer-one-char" 1 "$WORK/cons-ds-char" \
-  "autopilot/references/router-lead-copy.md" "LIT_VISUAL_DS_TERMINAL"
 
 # FAIL — the visual publish emitter lost its literal. Without it every publish
 # stage ends as a vacuous success even after the screens were published.
