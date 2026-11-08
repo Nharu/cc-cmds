@@ -4186,7 +4186,7 @@ run_ledger_series_check() {
   # meet only inputs on which both are the identity.
   local series="$1"; shift
   local keys want f k v seat=0 bound=0
-  local lease_basis=' first sticky resume-bound reassigned-after-limit reassigned-no-room after-wait shift-seat-fallback single-seat failover-shift '
+  local lease_basis=' first sticky resume-bound resume-migrated reassigned-after-limit reassigned-no-room after-wait shift-seat-fallback single-seat failover-shift '
   local wait_reason=' group-exhausted no-room unknown-concurrency fifo-yield resume-bound-exhausted resume-bound-no-room resume-bound-borrowed lease-lock-busy lease-contention lease-hold-busy lease-hold-lost '
   local acct="" basis="" cost="" csrc="" phase="" psrc="" thr="" worst n
   local cost_src='(group-kind|kind|default)'
@@ -7450,6 +7450,22 @@ stage_spawn() {
     [ "$routed" = "0" ] || spawn_lease_drop "$stage" "$minted"
     return 78
   fi
+  # AN EXHAUSTED RESUME MOVED TO ANOTHER ACCOUNT (`resume-migrated` with
+  # `fresh`) gets a re-entry card, written by the gate's own function in a
+  # child shell before the `stage-lease` row; the launch below exports the path
+  # that function prints, and every other launch exports none. A card that
+  # cannot be written is warned about and the new session starts without one:
+  # this path asks with no `no_migrate`, and its prompt is the dispatch prompt
+  # the caller named, which a new session can run from the start.
+  local reentry_card="" cut_sid="${STAGE_RESUME:-}" exhausted_move=0
+  if [ -n "$cut_sid" ] && [ "$routed" = "1" ] \
+     && [ "$(printf '%s' "$env" | jq -r 'if .basis == "resume-migrated" and .fresh == true then "1" else "0" end' 2>/dev/null)" = "1" ]; then
+    exhausted_move=1
+    reentry_card=$(run_gate_call gate_reentry_card_write "$stage#$attempt" "$kind" "$cut_sid" \
+                     "$(session_uuid "$stage" "$attempt")" "$env") || reentry_card=""
+    [ -n "$reentry_card" ] \
+      || warn "$stage: 계정 이관의 재진입 카드를 쓰지 못했다 — 새 세션은 카드 없이 디스패치 프롬프트로 뜬다"
+  fi
   # ONE `stage-lease` ROW PER GRANT, BEFORE THE SPAWN, written by the gate's own
   # builder in a child shell so this row and the gate's are the same bytes. A
   # seat or dormant grant gets one too: with routing on, every launch says which
@@ -7543,6 +7559,13 @@ stage_spawn() {
      && [ "$(printf '%s' "$env" | jq -r 'if .fresh == true then "1" else "0" end' 2>/dev/null)" = "1" ]; then
     log "$stage: 이관 GRANT — 세션 $resume_id 을 재부착하지 않고 새 세션으로 띄운다"
     resume_id=""
+    # The caller's dispatch prompt first; for an exhausted resume's move
+    # without one, the prompt the cut session was itself dispatched with, as
+    # the gate recorded it.
+    if [ -z "$resume_dispatch" ] && [ "$exhausted_move" = "1" ] && [ -s "$RUN_DIR/dispatch-prompt/$cut_sid" ]; then
+      resume_dispatch=$(cat "$RUN_DIR/dispatch-prompt/$cut_sid" 2>/dev/null && printf x) || resume_dispatch=""
+      resume_dispatch=${resume_dispatch%x}
+    fi
     if [ -n "$resume_dispatch" ]; then
       prompt=$resume_dispatch
       log "$stage: 이관 GRANT — 새 세션은 재부착 문장이 아니라 디스패치 프롬프트로 뜬다"
@@ -7561,6 +7584,12 @@ stage_spawn() {
   else
     rm -f "$RUN_DIR/$stage.session"
     id_flag=(--session-id "$(session_uuid "$stage" "$attempt")")
+    # A NEW SESSION'S DISPATCH PROMPT IS KEPT by the gate's own recorder, so a
+    # later move of this session to another account can start from it. Kept
+    # before the target-hook paragraph below is appended: that paragraph is
+    # decided again at every launch.
+    run_gate_call gate_dispatch_prompt_record "$(session_uuid "$stage" "$attempt")" -p "$prompt" \
+      || warn "$stage: 디스패치 프롬프트 기록을 남기지 못했다"
   fi
   # The window this launch will run under, read from the same settings file
   # and cwd the wrapper is about to be handed, and recorded before the launch so
@@ -7601,7 +7630,9 @@ stage_spawn() {
   [ -z "$thp_par" ] || prompt="$prompt
 
 $thp_par"
-  ( cd "$cwd" && stage_cache_ttl_env && CLAUDE_CONFIG_DIR="$cfg" CC_PIPELINE_STAGE_ID="$stage#$attempt" \
+  ( cd "$cwd" && stage_cache_ttl_env \
+      && { if [ -n "$reentry_card" ]; then export CC_PIPELINE_REENTRY_CARD="$reentry_card"; else unset CC_PIPELINE_REENTRY_CARD; fi; } \
+      && CLAUDE_CONFIG_DIR="$cfg" CC_PIPELINE_STAGE_ID="$stage#$attempt" \
       CC_PIPELINE_RUN_ID="$RUN_ID" CC_PIPELINE_GRANT="$GRANT" \
       CC_PIPELINE_LEDGER="$LEDGER" CC_PIPELINE_RUN_DIR="$RUN_DIR" \
       CC_PIPELINE_MANIFEST="$MANIFEST" CC_PIPELINE_TARGET="$(seg_alias "$stage" 2>/dev/null || home_alias)" \
@@ -10088,15 +10119,22 @@ stage_wait_loop() {
     seen=$(cc_waiting_field "$m" '예비')
     # THE PIN RIDES EVERY QUESTION, this one included: a wait that asked again
     # without it would let the router grant the visual publish stage a lane
-    # other than the one its first question was pinned to.
+    # other than the one its first question was pinned to. So do the launch's
+    # constraints the marker carries — `이관금지=1` asks with `no_migrate: true`,
+    # `위임=1` with `limit_delegate: true` — read on every turn, so a marker the
+    # waiter sets after a grant it could not use is honoured by the next one.
     req=$(jq -cn --arg run "$RUN_ID" --arg lin "$lin" --arg ev "$ev" --arg kind "$kind" \
             --arg bound "$bound" --argjson pid "${holder:-0}" \
             --argjson dl "$(wait_request_deadline "$kind")" --arg seen "$seen" \
             --argjson pinf "$(kind_pin_request_json "$kind")" \
+            --arg nm "$(cc_waiting_field "$m" '이관금지' | tr -d '[:space:]')" \
+            --arg dg "$(cc_waiting_field "$m" '위임' | tr -d '[:space:]')" \
             '{run_id: $run, lineage: $lin, event: $ev, kind: $kind, holders: [$pid], after_wait: true,
               bound_account: (if $bound == "" then null else $bound end)}
              + (if $dl == null then {} else {deadline: $dl} end)
              + $pinf
+             + (if $nm == "1" then {no_migrate: true} else {} end)
+             + (if $dg == "1" then {limit_delegate: true} else {} end)
              + {reserve_seen: ([$seen | try fromjson catch null]
                                | if length == 1 and (.[0] | type) == "array" then .[0] else [] end)}') || {
       "$stopfn" "라우터 재질의 요청을 만들지 못했다 — $key 는 기동하지 않는다"

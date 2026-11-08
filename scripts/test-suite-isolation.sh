@@ -46,11 +46,13 @@
 # that hook. Its half of this test is the tripwire for the day a section starts
 # calling the hook or a gate path starts reading the variable.
 #
-# WHAT THIS DOES NOT PROVE. Three of the names exported below —
-# `CC_PIPELINE_AUDIT_PASS`, `CC_PIPELINE_HALT_ANSWER`, `CC_PIPELINE_REENTRY` —
-# were missing from the old lists, and they are exported here as a regression
-# guard. But the only things observed are the scratch ledger file and the
-# scratch run directory's `admit`, and none of the three reaches either path:
+# WHAT THIS DOES NOT PROVE. Four of the names exported below —
+# `CC_PIPELINE_AUDIT_PASS`, `CC_PIPELINE_HALT_ANSWER`, `CC_PIPELINE_REENTRY`,
+# `CC_PIPELINE_REENTRY_CARD` — are exported here as a regression guard: the
+# first three were missing from the old lists, and the last is the re-entry
+# card a moved resume's new session gets. But the only things observed are the
+# scratch ledger file and the scratch run directory's `admit`, and none of the
+# four reaches either path:
 # an implementation that left them uncleared passes this file all the same. So
 # this is not behavioural proof that clearing by prefix catches names a list
 # lacked. The meta suite's leak census does not prove it either — it checks
@@ -178,6 +180,7 @@ export CC_PIPELINE_PARENT_SESSION=isolation-parent
 export CC_PIPELINE_AUDIT_PASS=1
 export CC_PIPELINE_HALT_ANSWER="$ROOT/rundir/halt-answer.md"
 export CC_PIPELINE_REENTRY=1
+export CC_PIPELINE_REENTRY_CARD="$ROOT/rundir/reentry-card.md"
 
 # --- test-run.sh through T16 -------------------------------------------------
 TR="$MIRROR/plugins/cc-cmds/orchestrator/test-run.sh"

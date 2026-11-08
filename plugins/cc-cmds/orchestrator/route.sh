@@ -1340,18 +1340,30 @@ def rt_park_no_successor($p; $from; $why):
   | rt_park_aw("pinned-publish-no-successor";
       "고정 계정 \($from) 의 주간 사용량이 막혀(\($why)) 이관할 무인 계정이 없다 — 원 계정의 주간 리셋\(rt_at($at)) 뒤 다시 파견하거나 무인 계정을 늘린다. 후보가 아닌 계정: \(if $rs == "" then "없음" else $rs end)";
       $from; $why);
+# 이관 후보 풀. 후보는 `$from` 이 아니고 `rt_mig_reject` 가 비는 계정이며, 항목마다 입장
+# 판정과 FIFO 차단 여부를 싣는다.
+def rt_mig_pool($p; $from):
+  [$p.accounts[] | select(.id != $from) | select(rt_mig_reject($p; .) == null)
+   | (.) as $a | {a: $a, adm: rt_admit($p; $a), fifo: rt_fifo_blocked($p; $a.group)}];
+# 이관을 받을 최선의 계정 하나. 후보 풀 가운데 입장을 통과하고 FIFO 에 막히지 않은 계정을
+# 7일 창 실효 사용량이 작은 순(같으면 id 순)으로 정렬한 첫 `{a, adm}` 이고, 없으면 null 이다.
+def rt_mig_best_of($p; $pool):
+  ([$pool[] | select(.adm.admitted and (.fifo | not))]
+   | sort_by([rt_ueff($p.groups[.a.group].windows.seven_day), .a.id]) | .[0])
+  | if . == null then null else {a: .a, adm: .adm} end;
+def rt_mig_best($p; $from): rt_mig_best_of($p; rt_mig_pool($p; $from));
 # 이관 선택. 후보는 현재 고정 계정이 아니고, 무인 입장 정책을 통과하고, 사용량이 신선하고,
 # 7일 창을 알고, 그 실효 사용량이 발행 예비분 상한 아래인 계정이다. 입장 통과는 후보
 # 조건이 아니다. 후보가 없으면 PARK, 후보 가운데 입장을 통과하고 FIFO 에 막히지 않은
 # 계정이 있으면 7일 창 실효 사용량이 가장 작은(같으면 id 순) 계정의 GRANT, 그런 계정이
 # 없으면 고정 없는 풀이 입장 실패로 기다릴 때와 같은 WAIT 다. GRANT 의 근거는 부른
-# 갈래의 것이고, 재개면 새 세션으로 띄우라는 `fresh` 를 싣는다.
+# 갈래의 것이고, 재개면 새 세션으로 띄우라는 `fresh` 를 싣는다. 후보 풀은 이 함수가 스스로
+# 계산해 후보 0개의 PARK 와 `rt_nocand` 에 쓰고, 최선 하나를 고르는 일만 `rt_mig_best_of`
+# 에 맡긴다.
 def rt_mig_pick($p; $from; $why; $basis; $fresh):
-  [$p.accounts[] | select(.id != $from) | select(rt_mig_reject($p; .) == null)] as $cs
-  | if ($cs | length) == 0 then rt_env(rt_park_no_successor($p; $from; $why); "none"; null)
-    else [$cs[] | (.) as $a | rt_admit($p; $a) as $adm | {a: $a, adm: $adm, fifo: rt_fifo_blocked($p; $a.group)}] as $pool
-      | ([$pool[] | select(.adm.admitted and (.fifo | not))]
-         | sort_by([rt_ueff($p.groups[.a.group].windows.seven_day), .a.id]) | .[0]) as $b
+  rt_mig_pool($p; $from) as $pool
+  | if ($pool | length) == 0 then rt_env(rt_park_no_successor($p; $from; $why); "none"; null)
+    else rt_mig_best_of($p; $pool) as $b
       | if $b == null then rt_nocand($p; $pool)
         else (rt_grant_new($p; $b.a; $b.adm; $basis) + {migrated: {from: $from, to: $b.a.id, why: $why}}
               + (if $fresh then {fresh: true} else {} end)) as $e
@@ -1385,6 +1397,19 @@ def rt_mig_admit($p; $basis; $fresh):
           | rt_env($e; "write"; rt_rec_new($p; $e))
         else rt_nocand($p; [{a: $a, adm: $adm, fifo: $fifo}]) end end;
 
+# 고정 없는 재개의 소진 이관을 찾아도 되는가. 대여 좌석 고정과 이관 고정이 아니고, 요청에
+# `no_migrate: true` 가 없어야 한다 — 게이트는 새 세션의 프롬프트를 만들 수 없는 기동에
+# 그 칸을 싣는다.
+def rt_resume_mig_on($p; $mp):
+  $p.pin == null and ($mp | not) and ($p.c.request.no_migrate != true);
+# 묶인 계정 `$from` 이 소진된 재개를 다른 계정의 새 세션으로 옮기는 GRANT. 받을 계정은
+# 이관 선택과 같은 규칙으로 고르고, 없으면 null 이라 부른 쪽이 지금의 식을 그대로 낸다.
+def rt_resume_mig($p; $from):
+  rt_mig_best($p; $from) as $b
+  | if $b == null then null
+    else (rt_grant_new($p; $b.a; $b.adm; "resume-migrated")
+          + {migrated: {from: $from, to: $b.a.id, why: "resume-bound-exhausted"}, fresh: true}) as $e
+      | rt_env($e; "write"; rt_rec_new($p; $e)) end;
 # 재개. 이관 고정은 살아 있는 임대가 고정 계정에 있을 때만 그 임대를 잇는다. 임대가 다른
 # 계정에 있거나 살아 있지 않으면 고정 계정을 이관 고정의 보통 입장(`rt_mig_admit`)으로
 # 판정하고, 묶인 계정이 고정 계정과 다르면 그 GRANT 는 새 세션(`fresh`)이다 — 묶인 세션은
@@ -1406,7 +1431,14 @@ def rt_resume($p):
           rt_admit_core($p.c; $G; ($a.exhausted_until? // null)) as $adm
           | if ($a.lend_enrolled? == true) and $adm.ready_at == null then
               rt_env(rt_park_lend($o.account; "exhausted"; null); "none"; null)
-            else rt_env(rt_wait_c($G.group; $o.account; $adm.ready_at; "resume-bound-exhausted"; $adm.cost); "none"; null) end
+            else
+              # 고정 없는 재개는 기다리기 전에 다른 계정의 새 세션으로 옮길 곳을 찾는다.
+              # 대여 등록 행은 반납·재개 계약에 묶여 있어 옮기지 않는다.
+              (if rt_resume_mig_on($p; $mp) and ($a.lend_enrolled? != true) then rt_resume_mig($p; $o.account)
+               else null end) as $m
+              | if $m != null then $m
+                else rt_env(rt_wait_c($G.group; $o.account; $adm.ready_at; "resume-bound-exhausted"; $adm.cost); "none"; null) end
+            end
         elif $a != null and $a.login_bad then
           rt_env(rt_park("resume-logged-out"; "묶인 계정의 로그인이 끊겼다 — 그 설정 디렉터리에서 claude /login 을 한다"); "none"; null)
         else rt_env(rt_grant_lease($p; $o; "resume-bound"); "hold"; rt_rec_hold($p)) end
@@ -1464,9 +1496,14 @@ def rt_resume($p):
             elif $p.borrow_corrupt then rt_env(rt_park_borrow_corrupt; "none"; null)
             else rt_admit($p; $a) as $adm
               | (if $adm.failed == ["exhausted"] then "resume-bound-exhausted" else "resume-bound-no-room" end) as $why
+              # 소진으로 떨어진 고정 없는 재개는 마감 경과 갈래보다 앞에서 옮길 곳을 찾는다.
+              | (if ($adm.admitted | not) and $adm.failed == ["exhausted"] and ($a.lend_enrolled != true)
+                    and rt_resume_mig_on($p; $mp)
+                 then rt_resume_mig($p; $a.id) else null end) as $m
               | if $adm.admitted then
                   rt_grant_new($p; $a; $adm; "resume-bound") as $e
                   | rt_env($e; "write"; rt_rec_new($p; $e))
+                elif $m != null then $m
                 elif rt_past_deadline($p.c; $adm.ready_at) then
                   [$a.group] as $gs
                   | rt_pressed($p; $gs; rt_seen_in($p.c)) as $mem

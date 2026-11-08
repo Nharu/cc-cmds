@@ -5807,13 +5807,13 @@ pre_ledger_series() {
   }
 
   lsr_lease_cases() {
-    # 근거 아홉 × 예약 값/`-` × 관측 값/`none`/`-`. `계정` 은 결합 규칙에 맞는
+    # 근거 열 × 예약 값/`-` × 관측 값/`none`/`-`. `계정` 은 결합 규칙에 맞는
     # 쪽만 — 좌석 근거는 `-`, 그 밖은 계정 id(계정 이전 교대의 `failover-shift`
     # 포함). 어긋난 조합은 거부 사례다.
     # `비용`·`비용 출처` 는 예약과 함께 값이거나 함께 `-` 다. 예약이 값이면 단계 세
     # 칸은 1.0000 을 넘는 문턱을 단 쉼이고, 아니면 셋 다 `-` 다.
     local b acct lane bp obs c cs ph ps th
-    for b in first sticky resume-bound reassigned-after-limit reassigned-no-room \
+    for b in first sticky resume-bound resume-migrated reassigned-after-limit reassigned-no-room \
              after-wait shift-seat-fallback single-seat failover-shift; do
       case "$b" in
         single-seat|shift-seat-fallback) acct='-'; lane='~' ;;
@@ -48885,27 +48885,27 @@ check "61: 대조 — 같은 식이 호출 한 줄은 센다" \
 # 호스트를 Darwin 이 아닌 값으로 주입해 어느 러너에서도 락 없는 갈래를 탄다. 락
 # 걸린 갈래는 63 이 잰다.
 #
-# 사례표는 근거 아홉과 대기 원인 열을 모두 지나고, `교대` 원천 세 조건(표식 없음,
+# 사례표는 근거 열과 대기 원인 열을 모두 지나고, `교대` 원천 세 조건(표식 없음,
 # 한 자리, 두 자리)을 같은 원장 끝에 붙인다.
 # ---------------------------------------------------------------------------
 lsr62_g=$(lsr_ledger w62-gate)
 lsr62_d=$(lsr_ledger w62-driver)
 lsr62_m=$(lsr_ledger w62-mixed)
 { lsr_lease_cases; lsr_wait_cases; } > "$lsr_root/cases62.tsv"
-check "62: 사례표가 임대 54·대기 60 줄이다" "$( { grep -c . "$lsr_root/cases62.tsv" || true; } )" "114"
+check "62: 사례표가 임대 60·대기 60 줄이다" "$( { grep -c . "$lsr_root/cases62.tsv" || true; } )" "120"
 check "62: 주입한 호스트에서 lock_tool 이 비어 있다 (락 없는 갈래)" \
   "$(lsr_in Linux "$lsr62_g" - lock_tool)" ""
 check "62: 게이트 기록자가 사례를 전부 받는다" \
-  "$(lsr_in Linux "$lsr62_g" - lsr_each gate_append < "$lsr_root/cases62.tsv" | sort | uniq -c | tr -s ' ' | sed 's/^ //')" "114 0"
+  "$(lsr_in Linux "$lsr62_g" - lsr_each gate_append < "$lsr_root/cases62.tsv" | sort | uniq -c | tr -s ' ' | sed 's/^ //')" "120 0"
 check "62: 드라이버 기록자가 사례를 전부 받는다" \
-  "$(lsr_in Linux "$lsr62_d" - lsr_each ledger_row < "$lsr_root/cases62.tsv" | sort | uniq -c | tr -s ' ' | sed 's/^ //')" "114 0"
-sed -n '1p;55p' "$lsr_root/cases62.tsv" > "$lsr_root/shift62.tsv"
+  "$(lsr_in Linux "$lsr62_d" - lsr_each ledger_row < "$lsr_root/cases62.tsv" | sort | uniq -c | tr -s ' ' | sed 's/^ //')" "120 0"
+sed -n '1p;61p' "$lsr_root/cases62.tsv" > "$lsr_root/shift62.tsv"
 for lsr62_sh in 'LS#7' 'LS#12'; do
   lsr_in Linux "$lsr62_g" "$lsr62_sh" lsr_each gate_append < "$lsr_root/shift62.tsv" >/dev/null
   lsr_in Linux "$lsr62_d" "$lsr62_sh" lsr_each ledger_row < "$lsr_root/shift62.tsv" >/dev/null
 done
-check "62: 두 원장이 각각 118행이다" \
-  "$( { grep -c '^- `' "$lsr62_g" || true; } )/$( { grep -c '^- `' "$lsr62_d" || true; } )" "118/118"
+check "62: 두 원장이 각각 124행이다" \
+  "$( { grep -c '^- `' "$lsr62_g" || true; } )/$( { grep -c '^- `' "$lsr62_d" || true; } )" "124/124"
 if cmp -s "$lsr62_g" "$lsr62_d"; then
   ok "62: 두 기록자가 같은 바이트와 같은 체인을 쓴다"
 else
@@ -48922,16 +48922,16 @@ check "62: 첫 행이 고정된 문법 그대로다" \
   "- \`stage-lease\` | 교대=0 | 파견 id=S1-impl-1.retry | 계보=S1-impl-1 | 계정=acct-a | 레인=~/.claude-a | 예약=0.2500/0.1000 | 비용=0.0300/0.0080 | 비용 출처=group-kind/kind | 근거=first | 관측=usage-cache@1790000000.5 | 단계=rest | 단계 출처=declared | 문턱=1.2000 | prev=$lsr62_seed"
 check "62: 교대 원천 세 조건 — 표식 없음 0, #7 은 7, #12 는 12" \
   "$( { grep -cF '| 교대=0 |' "$lsr62_d" || true; } )/$( { grep -cF '| 교대=7 |' "$lsr62_d" || true; } )/$( { grep -cF '| 교대=12 |' "$lsr62_d" || true; } )" \
-  "114/2/2"
+  "120/2/2"
 check "62: 락 없는 갈래는 락 파일을 만들지 않는다" \
   "$(ls -A "${lsr62_g%/*}" "${lsr62_d%/*}" | { grep -c 'ledger\.lock' || true; })" "0"
 check "62: 번갈아 쓴 두 기록자도 사례를 전부 받는다" \
-  "$(lsr_in Linux "$lsr62_m" - lsr_each alt < "$lsr_root/cases62.tsv" | sort | uniq -c | tr -s ' ' | sed 's/^ //')" "114 0"
+  "$(lsr_in Linux "$lsr62_m" - lsr_each alt < "$lsr_root/cases62.tsv" | sort | uniq -c | tr -s ' ' | sed 's/^ //')" "120 0"
 rc=0; lsr_in Linux "$lsr62_m" - gate_chain_verify >/dev/null 2>&1 || rc=$?
 check "62: 번갈아 쓴 원장의 사슬이 검증된다" "$rc" "0"
 check "62: 번갈아 쓴 원장이 한 기록자가 쓴 원장과 같은 바이트다" \
   "$( { grep '^- `' "$lsr62_m" || true; } | shasum -a 256 | cut -d' ' -f1)" \
-  "$( { grep '^- `' "$lsr62_g" || true; } | sed -n '1,114p' | shasum -a 256 | cut -d' ' -f1)"
+  "$( { grep '^- `' "$lsr62_g" || true; } | sed -n '1,120p' | shasum -a 256 | cut -d' ' -f1)"
 
 # ---------------------------------------------------------------------------
 # 63. 락 아래 섞어 쓴 두 기록자
@@ -49258,6 +49258,10 @@ lsr65_rb=$(jq -cn '{verdict: "GRANT", basis: "resume-bound", account: "acct-a", 
   reservation_bp: null, observed: "-", dormant: false}')
 lsr65_rw=$(jq -cn '{verdict: "WAIT", reason: "resume-bound-exhausted", group: "acct:acct-a",
   account: "acct-a", until_epoch: 1790000000}')
+# 소진된 구속 계정에서 다른 계정의 새 세션으로 옮긴 재개. 구속은 `migrated.from` 이다.
+lsr65_rm=$(jq -cn '{verdict: "GRANT", basis: "resume-migrated", account: "acct-b", config_dir: "/lanes/b",
+  reservation_bp: null, observed: "-", dormant: false, fresh: true,
+  migrated: {from: "acct-a", to: "acct-b", why: "resume-bound-exhausted"}}')
 lsr65_sh=$(lsr_sha "$lsr65_l")
 lsr65_bad=""
 lsr65_try() {
@@ -49298,6 +49302,9 @@ lsr65_try unbound-account-wait 2 gate_stage_wait_row 'S1-x' \
 lsr65_try rb-none 2 gate_stage_lease_row 'S1-x' "$lsr65_rb"
 lsr65_try rb-other 2 gate_stage_lease_row 'S1-x' "$lsr65_rb" acct-b
 lsr65_try rb-seat 2 gate_stage_lease_row 'S1-x' "$lsr65_rb" -
+lsr65_try rm-none 2 gate_stage_lease_row 'S1-x' "$lsr65_rm"
+lsr65_try rm-other 2 gate_stage_lease_row 'S1-x' "$lsr65_rm" acct-c
+lsr65_try rm-not-fresh 2 gate_stage_lease_row 'S1-x' "$(printf '%s' "$lsr65_rm" | jq -c '.fresh = false')" acct-a
 lsr65_try rw-none 2 gate_stage_wait_row 'S1-x' "$lsr65_rw"
 lsr65_try rw-other 2 gate_stage_wait_row 'S1-x' "$lsr65_rw" acct-b
 check "65: 봉투 거부 사례가 모두 rc 2 다 (GRANT/WAIT 밖·빈 출력·쓰레기 예약·줄바꿈·재개 구속 없음·불일치)" \
@@ -49306,6 +49313,9 @@ check "65: 먼저 담기 — 거부된 봉투는 한 바이트도 남기지 않�
 rc=0; lsr_in Linux "$lsr65_l" - gate_stage_lease_row 'S1-impl-5' "$lsr65_rb" acct-a >/dev/null 2>&1 || rc=$?
 check "65: 맞는 구속을 단 resume-bound GRANT 는 행이 된다" "$rc/$(lsr_body "$lsr65_l")" \
   "0/- \`stage-lease\` | 교대=0 | 파견 id=S1-impl-5 | 계보=S1-impl-5 | 계정=acct-a | 레인=/lanes/a | 예약=- | 비용=- | 비용 출처=- | 근거=resume-bound | 관측=- | 단계=- | 단계 출처=- | 문턱=-"
+rc=0; lsr_in Linux "$lsr65_l" - gate_stage_lease_row 'S1-impl-8' "$lsr65_rm" acct-a >/dev/null 2>&1 || rc=$?
+check "65: 옮겨 온 구속을 단 resume-migrated GRANT 는 새 계정의 행이 된다" "$rc/$(lsr_body "$lsr65_l")" \
+  "0/- \`stage-lease\` | 교대=0 | 파견 id=S1-impl-8 | 계보=S1-impl-8 | 계정=acct-b | 레인=/lanes/b | 예약=- | 비용=- | 비용 출처=- | 근거=resume-migrated | 관측=- | 단계=- | 단계 출처=- | 문턱=-"
 rc=0; lsr_in Linux "$lsr65_l" - gate_stage_wait_row 'S2-impl-3' "$lsr65_rw" acct-a >/dev/null 2>&1 || rc=$?
 check "65: 맞는 구속을 단 resume-bound 대기는 행이 된다" "$rc/$(lsr_body "$lsr65_l")" \
   "0/- \`stage-wait\` | 교대=0 | 계보=S2-impl-3 | 그룹=acct:acct-a | 계정=acct-a | 까지=2026-09-21T14:13:20Z | 비용=- | 비용 출처=- | 근거=resume-bound-exhausted"
@@ -49330,8 +49340,8 @@ rc=0; lsr_in Linux "$lsr65_l" - gate_chain_verify >/dev/null 2>&1 || rc=$?
 check "65: 래퍼가 쓴 원장의 사슬이 검증된다" "$rc" "0"
 
 # 추출기 격리.
-check "65: 이 절이 더한 새 계열 행은 열여섯이다" \
-  "$( { grep -cE '^- `stage-(lease|wait)`' "$lsr65_l" || true; } )" "16"
+check "65: 이 절이 더한 새 계열 행은 열일곱이다" \
+  "$( { grep -cE '^- `stage-(lease|wait)`' "$lsr65_l" || true; } )" "17"
 lsr65_d1=$(lsr_in Linux "$lsr65_l" - lsr_digest "$FX_MANIFEST" 2>/dev/null)
 if [ -n "$lsr65_d0" ] && [ "$lsr65_d1" = "$lsr65_d0" ]; then
   ok "65: 새 계열 행은 진전 해시를 움직이지 않는다"
@@ -49779,6 +49789,65 @@ LC_ALL=C awk '/^## / { skip = ($0 == "## Pipeline variables") } !skip' "$fc67d_p
 check "67d: 절을 지운 사본에서 절 단언이 실패한다" "$(fc67d_heads "$fc67d_cp/no-section.md")" "0"
 
 # ---------------------------------------------------------------------------
+# 67r. 스테이지 스킬의 재진입 카드 절
+# --- section: 67r | group: static | covers: - | anchors: 67r: 종류마다 스킬 본문이 재진입 카드 변수를 이름으로 읽는다, 67r: 재진입 카드 절은 카드의 스테이지를 자기 스테이지 id 와 대조한다, 67r: 스킬 본문은 부팅 재진입 표지 이름을 적지 않는다, 67r: 팀 프로토콜에 이관 재진입의 채택 절이 하나 있다, 67r: 재진입 절마다 끝낸 일을 가리는 내구 입력을 이름으로 적는다, 67r: 절을 지운 사본에서 절 단언이 실패한다 ---
+#
+# 묶인 계정이 소진된 재개를 다른 계정의 새 세션으로 옮기면 게이트는 재진입 카드를 남기고
+# 그 경로를 `CC_PIPELINE_REENTRY_CARD` 로 넘긴다. 새 세션에는 이어 갈 대화가 없으므로,
+# 그 종류의 스킬 본문이 카드를 읽고 내구 상태에서 이어 가는 절을 갖고 있어야 처음부터
+# 다시 하지 않는다. 종류마다 그 절이 있는지와, 절이 끝낸 일을 가리는 입력을 이름으로
+# 적는지를 본문에서 읽는다. 감사의 절은 감사 본문의 바이트 상한 때문에 사이드카에 있다.
+# ---------------------------------------------------------------------------
+fc67r_sk="$repo_root/plugins/cc-cmds/skills"
+fc67r_kinds='implement-unattended design-solo-unattended design-discuss-unattended design-base-unattended design-audit-unattended design-reconverge review-unattended visual-unattended visual-publish-unattended'
+fc67r_body() {  # fc67r_body <스킬> — 그 종류의 재진입 절을 싣는 본문(감사는 본문과 사이드카)
+  cat "$fc67r_sk/$1/SKILL.md"
+  [ "$1" != design-audit-unattended ] || cat "$fc67r_sk/_common/pipeline-sidecar.md"
+}
+fc67r_card() {  # fc67r_card <스킬>... — 변수 이름과 절 표제가 모두 있는 본문이 아니면 그 이름
+  local k out=''
+  for k in "$@"; do
+    case "$(fc67r_body "$k")" in
+      *'`CC_PIPELINE_REENTRY_CARD`'*'Re-entered on a re-entry card'* | *'Re-entered on a re-entry card'*'`CC_PIPELINE_REENTRY_CARD`'*) ;;
+      *) out="$out $k" ;;
+    esac
+  done
+  printf '%s' "${out# }"
+}
+# shellcheck disable=SC2086
+check "67r: 종류마다 스킬 본문이 재진입 카드 변수를 이름으로 읽는다" "$(fc67r_card $fc67r_kinds)" ""
+fc67r_cmp=''
+for k in $fc67r_kinds; do
+  case "$(fc67r_body "$k")" in
+    *'`**스테이지**`'*'CC_PIPELINE_STAGE_ID'*) ;;
+    *) fc67r_cmp="$fc67r_cmp $k" ;;
+  esac
+done
+check "67r: 재진입 카드 절은 카드의 스테이지를 자기 스테이지 id 와 대조한다" "${fc67r_cmp# }" ""
+fc67r_boot=''
+for k in $fc67r_kinds; do
+  grep -qE 'CC_PIPELINE_REENTRY([^_A-Z]|$)' "$fc67r_sk/$k/SKILL.md" && fc67r_boot="$fc67r_boot $k"
+done
+check "67r: 스킬 본문은 부팅 재진입 표지 이름을 적지 않는다" "${fc67r_boot# }" ""
+check "67r: 팀 프로토콜에 이관 재진입의 채택 절이 하나 있다" \
+  "$(grep -cxF '### Adoption across a migrated re-entry' "$fc67r_sk/_common/agent-team-protocol.md" || true)" "1"
+# 끝낸 일을 가리는 내구 입력 — 감사의 `## 감사 개시`, 재수렴의 `**처리 기록**`, 리드 수정의
+# 수정 기록과 세그먼트 커밋, 시각의 `로컬 초안` 사이드카와 `**검토**` 줄.
+fc67r_dur=''
+for pair in 'design-audit-unattended|`## 감사 개시`' 'design-audit-unattended|`frozen-sha256`' \
+  'design-reconverge|`**처리 기록**`' 'review-unattended|A fix record already at the rule'"'"'s path means step 5 ran' \
+  'review-unattended|git log --oneline <that head>..HEAD' 'visual-unattended|**A sidecar at `로컬 초안`**' \
+  'visual-unattended|its `**검토**` count'; do
+  case "$(fc67r_body "${pair%%|*}")" in *"${pair#*|}"*) ;; *) fc67r_dur="$fc67r_dur ${pair%%|*}" ;; esac
+done
+check "67r: 재진입 절마다 끝낸 일을 가리는 내구 입력을 이름으로 적는다" "${fc67r_dur# }" ""
+# 음성 대조 — 절 표제를 지운 사본에서는 같은 단언이 그 종류를 낸다.
+fc67r_cp=$(mktemp -d "$WORK/guard67r.XXXXXX")
+mkdir -p "$fc67r_cp/visual-unattended"
+sed 's/Re-entered on a re-entry card/Re-entered/' "$fc67r_sk/visual-unattended/SKILL.md" > "$fc67r_cp/visual-unattended/SKILL.md"
+check "67r: 절을 지운 사본에서 절 단언이 실패한다" "$(fc67r_sk=$fc67r_cp fc67r_card visual-unattended)" "visual-unattended"
+
+# ---------------------------------------------------------------------------
 # 75. 라우팅된 런의 파견 반쪽 — 라우터 답마다의 처분, 선점, 발행분 반납
 # --- section: 75 | group: ledger_series | covers: act, gate_append | anchors: 75: WAIT 가 계보 B:SW1#1 의 stage-wait 행을 남긴다 ---
 #
@@ -50115,7 +50184,7 @@ esac
 
 # ---------------------------------------------------------------------------
 # 95. 중단 답 운반 — 두 질문과 고르는 순서, 거절 조항, 상한, 답 카드
-# --- section: 95 | group: ledger_series | covers: act, gate_carry_check, gate_launch_route_carry, gate_halt_card_write, handoff, shift-halt, gate_defer_end_due, relay, gate_done_conditions, binding-digest | needs: 75 | anchors: 95: 묶인 GRANT 는 멈춘 세션을 재부착한다, 95: 둘 다 마감 PARK 면 이월 행 하나와 exit 16 이다, 95: 실측 1 — 감사 키의 답이 새 계정 u7 의 세션에 카드로 닿는다, 95: 같은 스텝과 문면으로 다시 멈춘 운반 뒤의 운반은 exit 18 이다, 95: TH1 마감 뒤의 이월 인계는 받고 그 자리에서 런을 마감으로 끝낸다, 95: TN5 진전 축 없는 런의 마감 뒤 운반 act 는 exit 16 이다, 95: TH2 마감 전 이월만 남은 대기는 붙듦 상한에서 좌석에 돌려준다, 95: TD2 이월된 세그먼트는 답 이월 대기이고 대조 세그먼트는 오늘의 줄이다 ---
+# --- section: 95 | group: ledger_series | covers: act, gate_carry_check, gate_launch_route_carry, gate_halt_card_write, handoff, shift-halt, gate_defer_end_due, relay, gate_done_conditions, binding-digest | needs: 75 | anchors: 95: 묶인 GRANT 는 멈춘 세션을 재부착한다, 95: 둘 다 마감 PARK 면 이월 행 하나와 exit 16 이다, 95: 실측 1 — 감사 키의 답이 소진 이관의 새 계정 u2 의 세션에 카드로 닿는다, 95: 같은 스텝과 문면으로 다시 멈춘 운반 뒤의 운반은 exit 18 이다, 95: TH1 마감 뒤의 이월 인계는 받고 그 자리에서 런을 마감으로 끝낸다, 95: TN5 진전 축 없는 런의 마감 뒤 운반 act 는 exit 16 이다, 95: TH2 마감 전 이월만 남은 대기는 붙듦 상한에서 좌석에 돌려준다, 95: TD2 이월된 세그먼트는 답 이월 대기이고 대조 세그먼트는 오늘의 줄이다 ---
 #
 # 운반 act 는 멈춘 시도의 세션에 묶인 질문과 새 세션의 질문을 둘 다 묻고 하나를
 # 고른다. 절 75 의 사본과 같은 방식으로 게이트를 소싱한 자식에서 운반 검사와 파견
@@ -50421,23 +50490,29 @@ jq -cn --argjson now 1800000000 \
   > "$lsr75/ctx93-2.json"
 
 # 실측 1 — 감사 스텝(런 스코프 키 A1)의 종합 요구 질문에 사람이 답했다.
-# 새 질문은 5시간 부하가 가장 낮은 u7 을 받는다 — 라우터의 정렬이 주간 키보다
-# load5 를 먼저 보기 때문이고, 묶인 u1 이 아닌 계정이라는 것이 이 단언의 요점이다.
+# 묶인 u1 의 주간 창이 소진됐고 재개는 고정되지 않았으므로, 묶인 질문에 라우터가
+# 다른 계정으로 옮기는 이관 부여(`resume-migrated`)를 낸다. 운반은 묶인 쪽의 부여를
+# 고르므로 새 질문은 묻지 않고, 묶인 u1 이 아닌 계정의 새 세션이 답 카드와 재진입
+# 카드를 함께 받는다는 것이 이 단언의 요점이다. 감사는 디스패치 프롬프트 기록이
+# 없어도 재진입 틀이 하나뿐이라 그 틀로 옮긴다.
 lsr93_a=$(lsr75_new real93a)
 lsr93_park "$lsr93_a" A1 1 "$lsr93_sid" 'Step 6 CFI-3b — 종합 요구' audit
 lsr93_aln=$(lsr93_ans "$lsr93_a" A1 "${lsr93_a%/*}/halt/A1#1.md" design-audit-unattended 적용)
-check "95: 실측 1 — 감사 키의 답이 새 계정 u7 의 세션에 카드로 닿는다" \
+check "95: 실측 1 — 감사 키의 답이 소진 이관의 새 계정 u2 의 세션에 카드로 닿는다" \
   "$(LSR93_BENV="decide:$lsr75/ctx93-1.json" LSR93_FENV="decide:$lsr75/ctx93-1.json" LSR93_DL=$lsr93_dl \
      lsr93_go "$lsr93_a" "$lsr93_aln" A1 audit "/cc-cmds:design-audit-unattended $lsr93_doc" launch)" \
-  "0|GRANT|first||u7|/h/.claude-u7"
-check "95: 실측 1 — 묶인 질문이 먼저, 새 질문이 그다음이다" \
-  "$(lsr93_events "$lsr93_a")|$(jq -r '.bound_account // "-"' "${lsr93_a%/*}/requests" | paste -sd, -)" "resume,first|u1,-"
+  "0|GRANT|resume||u2|/h/.claude-u2"
+check "95: 실측 1 — 묶인 질문의 이관 부여를 골라 새 질문은 묻지 않는다" \
+  "$(lsr93_events "$lsr93_a")|$(jq -r '.bound_account // "-"' "${lsr93_a%/*}/requests" | paste -sd, -)" "resume|u1"
+check "95: 실측 1 — 이관 새 세션의 재진입 카드가 원 계정 u1 과 새 계정 u2 를 싣는다" \
+  "$(sed -n -E 's/^\*\*(원 계정|새 계정|원인)\*\*: //p' "${lsr93_a%/*}/reentry/$(lsr93_in "$lsr93_a" eval 'session_uuid A1 2' 2>/dev/null).md" 2>/dev/null | paste -sd'|' -)" \
+  "u1|u2|resume-bound-exhausted"
 check "95: 실측 1 — 감독자 argv 가 새 파견 형식의 프롬프트를 그대로 싣는다" \
   "$(sed -n '/^--$/,$p' "${lsr93_a%/*}/argv" | sed -n '2,4p' | paste -sd'|' -)" \
   "audit|-p|/cc-cmds:design-audit-unattended $lsr93_doc"
 lsr93_atk=$(cat "${lsr93_a%/*}/A1.launch" 2>/dev/null)
-check "95: 실측 1 — 시동 토큰이 재부착 id 없이 계정 u7 의 디렉터리를 넘긴다" \
-  "$(printf '%s\n' "$lsr93_atk" | sed -n '2p')|$(printf '%s\n' "$lsr93_atk" | sed -n '6,7p' | paste -sd'|' -)" "|u7|/h/.claude-u7"
+check "95: 실측 1 — 시동 토큰이 재부착 id 없이 계정 u2 의 디렉터리를 넘긴다" \
+  "$(printf '%s\n' "$lsr93_atk" | sed -n '2p')|$(printf '%s\n' "$lsr93_atk" | sed -n '6,7p' | paste -sd'|' -)" "|u2|/h/.claude-u2"
 check "95: 실측 1 — 임대 행 하나, 반납 없음" \
   "$(lsr93_n "$lsr93_a" '- `stage-lease` ')|$(lsr93_rel "$lsr93_a")" "1|-"
 lsr93_card="${lsr93_a%/*}/halt-answer/A1#2.md"
@@ -63616,6 +63691,216 @@ check "98: 재부착 문장을 실은 디스패치 시점 이관 GRANT 의 새 �
 check "98: 디스패치 시점·운반·대기 끝의 이관 새 세션이 같은 프롬프트 함수를 지난다" \
   "$(sed -n '/^gate_launch_route()/,/^}/p' "$GATE" | grep -c 'GATE_RESUME=""; GATE_ROUTE_FRESH=1')/$(sed -n '/^gate_launch_route_carry()/,/^}/p' "$GATE" | grep -c 'GATE_RESUME=""; GATE_ROUTE_FRESH=1')/$(sed -n '/^gate_launch_stage()/,/^}/p' "$GATE" | grep -c 'gate_fresh_session_prompt "$kind" "$GATE_DISPATCH_PROMPT_SET" "$GATE_DISPATCH_PROMPT"')/$(sed -n '/^gate_verb_supervise_stage()/,/^}/p' "$GATE" | grep -c 'gate_fresh_session_prompt "$kind" "$disp_set" "$disp_p"')" \
   "1/1/1/1"
+
+# ---------------------------------------------------------------------------
+# 98m. 소진된 재개의 계정 이관 — 디스패치 프롬프트 기록, 재진입 카드, 이관 금지, 위임
+# --- section: 98m | group: ledger_series | covers: gate_dispatch_prompt_record, gate_migrate_prompt, gate_reentry_card_write, gate_env_migrated, gate_delegate_refuse, gate_route_flags_json, gate_launch_route, gate_launch_stage, gate_launch_wait, gate_sup_delegate_grant_ok, gate_verb_supervise_stage, act | needs: 75,95 | anchors: 98m: 기록이 있는 종류마다 이관 새 세션은 그 기록을 -p 로 받고 카드를 쓴다, 98m: 기록 없는 감사는 채운 재진입 틀로 이관한다, 98m: 기록도 하나뿐인 틀도 없는 종류는 no_migrate 로 묻고 묶인 계정에서 기다린다, 98m: 카드를 쓰지 못한 이관 부여는 돌려주고 no_migrate 로 다시 물어 기다린다, 98m: 위임 행위는 이관이 아닌 부여를 돌려주고 21 로 끝난다, 98m: 위임 행위의 소진 대기는 표지에 위임을 싣는다, 98m: --resume 없는 --limit-delegate 는 인자 오류다, 98m: 대기 끝 위임 거르기는 리셋 뒤 관측한 같은 계정 부여만 받는다, 98m: 대기 끝 이관 기동은 카드 경로를 스테이지 환경에 싣는다 ---
+#
+# 묶인 계정이 소진된 재개를 라우터가 다른 계정으로 옮기면(`resume-migrated`) 게이트는
+# 끊긴 세션을 재부착하지 않고 새 세션을 띄운다. 새 세션의 `-p` 는 끊긴 세션이 처음 받은
+# 디스패치 프롬프트의 기록이고, 기록이 없으면 그 종류의 재진입 틀이 하나뿐이고 칸이 모두
+# 찰 때의 틀이며, 둘 다 없으면 라우터에 묻기 전에 `no_migrate` 를 싣는다. 절 95 의 사본
+# 자식에서 파견 반쪽을 직접 부르고, 감독자는 절 98b 처럼 기동 래퍼 자리를 대역으로 둔다.
+# ---------------------------------------------------------------------------
+pre_ledger_series
+h98m_ra='중단된 지점부터 이어 간다. 같은 일을 처음부터 다시 하지 않는다.'
+h98m_mg='{"verdict":"GRANT","basis":"resume-migrated","account":"u2","config_dir":"/h/.claude-u2","nonce":"n98m","dormant":false,"fresh":true,"observed":"none","migrated":{"from":"u1","to":"u2","why":"resume-bound-exhausted"}}'
+h98m_bw='{"verdict":"WAIT","reason":"resume-bound-exhausted","group":null,"account":"u1","until_epoch":1890000000}'
+h98m_go() {
+  # h98m_go <원장> <키> <종류> [<앞머리 eval>] — 세션 H98M_SID(없으면 lsr93_sid)를
+  # 재개하는 파견 반쪽 한 번. 라우터 대역은 LSR93_BENV. 「rc|판정」 을 내고, 표준
+  # 출력은 원장 옆 h98m.out 에 남긴다.
+  H98M_KEY=$2 H98M_KIND=$3 H98M_PRE=${4:-} H98M_RA=$h98m_ra H98M_SID=${H98M_SID:-$lsr93_sid} \
+  LSR93_DL=1900000000 lsr93_in "$1" eval '
+    gate_visual_lane_commit() { return 0; }
+    eval "$H98M_PRE"
+    GATE_RESUME=$H98M_SID; r=0
+    gate_launch_stage infra "$H98M_KEY" "$H98M_KIND" -p "$H98M_RA" >"$RUN_DIR/h98m.out" 2>"$RUN_DIR/h98m.err" || r=$?
+    printf "%s|%s" "$r" "${GATE_ROUTE_VERDICT:-}"' 2>/dev/null
+}
+h98m_cli() {  # h98m_cli <원장> — 띄운 CLI 의 종류·-p·프롬프트를 | 로 이은 것, 띄우지 않았으면 -
+  if [ -f "${1%/*}/argv" ]; then sed -n '/^--$/,$p' "${1%/*}/argv" | sed -n '2,$p' | paste -sd'|' -; else printf -- -; fi
+}
+h98m_card() {  # h98m_card <원장> <키> <시도> — 그 새 세션의 카드 필드 일곱 줄을 ; 로 이은 것, 없으면 -
+  local sid f
+  sid=$(lsr93_in "$1" eval "session_uuid '$2' '$3'" 2>/dev/null)
+  f="${1%/*}/reentry/$sid.md"
+  if [ -f "$f" ]; then sed -n '2,8p' "$f" | paste -sd';' -; else printf -- -; fi
+}
+h98m_want_card() {  # h98m_want_card <키> <종류> — 시도 1 의 세션 lsr93_sid 를 옮긴 시도 2 의 카드
+  printf '**스테이지**: %s#2;**종류**: %s;**원 세션**: %s;**원 스테이지**: %s#1;**원 계정**: u1;**새 계정**: u2;**원인**: resume-bound-exhausted' \
+    "$1" "$2" "$lsr93_sid" "$1"
+}
+h98m_nm() {  # h98m_nm <원장> — 라우터 요청마다의 no_migrate·limit_delegate, 없으면 -
+  if [ -s "${1%/*}/requests" ]; then
+    jq -r '"\(.no_migrate // "-")/\(.limit_delegate // "-")"' "${1%/*}/requests" | paste -sd, -
+  else printf -- -; fi
+}
+h98m_rec() {  # h98m_rec <원장> <세션> <프롬프트> — 그 세션의 디스패치 프롬프트 기록
+  mkdir -p "${1%/*}/dispatch-prompt"
+  printf '%s' "$3" > "${1%/*}/dispatch-prompt/$2"
+}
+
+# 종류마다 — 기록이 있으면 그 바이트가 새 세션의 -p 이고, 카드가 시도 2 의 세션 id 로
+# 서며, 새 세션의 기록이 다시 남는다. 재부착 문장은 어느 종류에서도 -p 가 되지 않는다.
+# 시각 발행은 고정 레인이 있어야 뜨므로 그 조회만 대역으로 둔다.
+h98m_vp='kind_pin_lane_of() { printf u2; }'
+h98m_kinds_got=""; h98m_kinds_want=""
+for h98m_k in design audit split visual visual-publish implement review reconverge; do
+  h98m_key=K9; [ "$h98m_k" != audit ] || h98m_key=A1
+  h98m_l=$(lsr75_new "mk-$h98m_k")
+  lsr93_park "$h98m_l" "$h98m_key" 1 "$lsr93_sid" 'Step 1 — 질문' "$h98m_k" '한도 종료'
+  h98m_p="/cc-cmds:$h98m_k-rec $lsr93_doc \"기록된 프롬프트\""
+  h98m_rec "$h98m_l" "$lsr93_sid" "$h98m_p"
+  h98m_r=$(LSR93_BENV=$h98m_mg h98m_go "$h98m_l" "$h98m_key" "$h98m_k" "$h98m_vp")
+  h98m_nsid=$(lsr93_in "$h98m_l" eval "session_uuid '$h98m_key' 2" 2>/dev/null)
+  h98m_kinds_got="$h98m_kinds_got[$h98m_k] $h98m_r|$(h98m_cli "$h98m_l")|$(h98m_card "$h98m_l" "$h98m_key" 2)|$(cat "${h98m_l%/*}/dispatch-prompt/$h98m_nsid" 2>/dev/null)|$(h98m_nm "$h98m_l")|$(lsr93_n "${h98m_l%/*}/argv" "$h98m_ra") "
+  h98m_kinds_want="$h98m_kinds_want[$h98m_k] 0|GRANT|$h98m_k|-p|$h98m_p|$(h98m_want_card "$h98m_key" "$h98m_k")|$h98m_p|-/-|0 "
+done
+check "98m: 기록이 있는 종류마다 이관 새 세션은 그 기록을 -p 로 받고 카드를 쓴다" "$h98m_kinds_got" "$h98m_kinds_want"
+check "98m: 이관 기동은 계정 이관 로그 한 줄을 남기고 옛 문구를 쓰지 않는다" \
+  "$(lsr93_n "${h98m_l%/*}/h98m.err" '계정 이관 — K9 는 세션')/$(lsr93_n "${h98m_l%/*}/h98m.err" '시각 발행 이관')" "1/0"
+
+# 기록이 없을 때 — 감사와 시각 발행은 틀이 하나뿐이고 `<문서>` 칸만 있어 채운 틀로 옮긴다.
+h98m_l=$(lsr75_new mk-audit-frame)
+lsr93_park "$h98m_l" A1 1 "$lsr93_sid" 'Step 1 — 질문' audit '한도 종료'
+check "98m: 기록 없는 감사는 채운 재진입 틀로 이관한다" \
+  "$(LSR93_BENV=$h98m_mg h98m_go "$h98m_l" A1 audit)|$(h98m_cli "$h98m_l")|$(h98m_nm "$h98m_l")|$( [ "$(h98m_card "$h98m_l" A1 2)" = - ] && printf 없음 || printf 카드)" \
+  "0|GRANT|audit|-p|/cc-cmds:design-audit-unattended $lsr93_doc|-/-|카드"
+h98m_l=$(lsr75_new mk-vp-frame)
+lsr93_park "$h98m_l" K9 1 "$lsr93_sid" 'Step 1 — 질문' visual-publish '한도 종료'
+check "98m: 기록 없는 시각 발행도 채운 재진입 틀로 이관한다" \
+  "$(LSR93_BENV=$h98m_mg h98m_go "$h98m_l" K9 visual-publish "$h98m_vp")|$(h98m_cli "$h98m_l")|$(h98m_nm "$h98m_l")" \
+  "0|GRANT|visual-publish|-p|/cc-cmds:visual-publish-unattended $lsr93_doc|-/-"
+
+# 기록이 없고 틀도 쓸 수 없는 종류 — 리뷰(틀 없음), 설계(틀 둘), 재수렴(`<범위>` 칸) —
+# 는 라우터에 `no_migrate` 를 싣고, 소진 대기를 받아 묶인 계정에서 기다린다. 막힘 행은
+# 없고, 대기 표지가 `이관금지=1` 을 실어 감독자의 재질의도 같은 칸을 싣는다.
+h98m_nm_got=""; h98m_nm_want=""
+for h98m_k in review design reconverge; do
+  h98m_l=$(lsr75_new "nm-$h98m_k")
+  lsr93_park "$h98m_l" K9 1 "$lsr93_sid" 'Step 1 — 질문' "$h98m_k" '한도 종료'
+  h98m_r=$(LSR93_BENV=$h98m_bw h98m_go "$h98m_l" K9 "$h98m_k")
+  h98m_nm_got="$h98m_nm_got[$h98m_k] $h98m_r|$(h98m_nm "$h98m_l")|$(lsr93_n "$h98m_l" '- `blocked` ')|$(lsr93_n "$h98m_l" '- `stage-wait` ')|$(lsr93_n "${h98m_l%/*}/K9.waiting" '이관금지=1') "
+  h98m_nm_want="$h98m_nm_want[$h98m_k] 0|WAIT|true/-|0|1|1 "
+done
+check "98m: 기록도 하나뿐인 틀도 없는 종류는 no_migrate 로 묻고 묶인 계정에서 기다린다" "$h98m_nm_got" "$h98m_nm_want"
+# 이관이 아닌 첫 기동은 칸을 싣지 않는다.
+h98m_l=$(lsr75_new nm-first)
+check "98m: 재개가 아닌 기동의 요청에는 no_migrate 도 위임도 없다" \
+  "$(LSR93_FENV=$lsr93_FG LSR93_DL=1900000000 H98M_RA=$h98m_ra lsr93_in "$h98m_l" eval '
+      r=0; gate_launch_stage infra K9 review -p "$H98M_RA" >/dev/null 2>&1 || r=$?; printf "%s" "$r"' 2>/dev/null)|$(h98m_nm "$h98m_l")|$(lsr93_n "${h98m_l%/*}/dispatch-prompt/$(lsr93_in "$h98m_l" eval 'session_uuid K9 1' 2>/dev/null)" "$h98m_ra")" \
+  "0|-/-|1"
+
+# 카드를 쓰지 못한 이관 부여 — 부여를 돌려주고 `no_migrate` 로 한 번 더 물어 묶인 계정에서
+# 기다린다. 런 디렉터리의 `reentry` 자리를 일반 파일로 막아 카드 쓰기를 실패시킨다.
+h98m_route='route_resolve() {
+      printf "%s\n" "$1" >> "$LSR93_REQ"
+      if [ "$(printf "%s" "$1" | jq -r ".no_migrate // false")" = true ]; then printf "%s" "$H98M_W"; else printf "%s" "$H98M_G"; fi
+    }'
+h98m_l=$(lsr75_new cf-route)
+lsr93_park "$h98m_l" K9 1 "$lsr93_sid" 'Step 1 — 질문' review '한도 종료'
+h98m_rec "$h98m_l" "$lsr93_sid" "/cc-cmds:review-unattended $lsr93_doc"
+: > "${h98m_l%/*}/reentry"
+check "98m: 카드를 쓰지 못한 이관 부여는 돌려주고 no_migrate 로 다시 물어 기다린다" \
+  "$(H98M_G=$h98m_mg H98M_W=$h98m_bw h98m_go "$h98m_l" K9 review "$h98m_route")|$(h98m_nm "$h98m_l")|$(lsr93_rel "$h98m_l")|$(lsr93_n "$h98m_l" '- `blocked` ')|$(lsr93_n "$h98m_l" '- `stage-lease` ')|$(lsr93_n "${h98m_l%/*}/K9.waiting" '이관금지=1')" \
+  "0|WAIT|-/-,true/-|n98m|0|0|1"
+
+# 위임 행위 — 이관 부여와 묶인 계정의 소진 대기만 받는다. 그 밖은 부여를 돌려주고 행
+# 없이 「위임 불성립」 줄과 21 로 끝난다.
+h98m_dl() {  # h98m_dl <이름> <봉투> [<앞머리 eval>] — 위임 행위 한 번. 「rc|판정|위임 칸|불성립 줄|막힘|임대|대기|반납|기동」
+  local l
+  l=$(lsr75_new "dl-$1")
+  lsr93_park "$l" K9 1 "$lsr93_sid" 'Step 1 — 질문' review '한도 종료'
+  h98m_rec "$l" "$lsr93_sid" "/cc-cmds:review-unattended $lsr93_doc"
+  printf '%s|%s|%s|%s|%s|%s|%s|%s' \
+    "$(LSR93_BENV=$2 h98m_go "$l" K9 review "GATE_LIMIT_DELEGATE=1; ${3:-}")" "$(h98m_nm "$l")" \
+    "$(lsr93_n "${l%/*}/h98m.out" '위임 불성립 — ')" "$(lsr93_n "$l" '- `blocked` ')" \
+    "$(lsr93_n "$l" '- `stage-lease` ')" "$(lsr93_n "$l" '- `stage-wait` ')" "$(lsr93_rel "$l")" \
+    "$( [ -f "${l%/*}/argv" ] && printf 기동 || printf -- -)"
+}
+check "98m: 위임 행위는 이관이 아닌 부여를 돌려주고 21 로 끝난다" \
+  "$(h98m_dl same "$lsr93_BG")" "21|GRANT|-/true|1|0|0|0|n1|-"
+check "98m: 위임 행위의 PARK 는 막힘 행 없이 21 이다" \
+  "$(h98m_dl park "$(lsr93_park_of quota)")" "21|PARK|-/true|1|0|0|0|-|-"
+check "98m: 위임 행위의 다른 사유 대기는 대기 행 없이 21 이다" \
+  "$(h98m_dl grp "$lsr93_FWU")" "21|WAIT|-/true|1|0|0|0|-|-"
+check "98m: 위임 행위의 이관 부여는 새 세션으로 뜬다" \
+  "$(h98m_dl mig "$h98m_mg")" "0|GRANT|-/true|0|0|1|0|-|기동"
+check "98m: 위임 행위의 카드 실패는 부여를 돌려주고 21 이다" \
+  "$(h98m_dl cf "$h98m_mg" ': > "$RUN_DIR/reentry"')" "21|GRANT|-/true|1|0|0|0|n98m|-"
+check "98m: 라우팅이 꺼진 위임 행위는 묻지 않고 21 이다" \
+  "$(h98m_dl off "$h98m_mg" 'run_routed() { return 1; }')" "21||-|1|0|0|0|-|-"
+check "98m: 위임 행위의 소진 대기는 표지에 위임을 싣는다" \
+  "$(h98m_dl wait "$h98m_bw")|$(lsr93_n "$lsr_root/dl-wait/K9.waiting" '위임=1')" "0|WAIT|-/true|0|0|0|1|-|기동|1"
+
+# 인자 — 재부착할 세션이 없으면 위임할 판정도 없다.
+gate act --manifest "$FX_MANIFEST" --kind skill --target infra --segment SNOSUCH --cutpoint 커밋 \
+     --surface 워크트리쓰기 --snapshot-digest "$(HH)" --rationale x --limit-delegate -- review -p x
+check "98m: --resume 없는 --limit-delegate 는 인자 오류다" \
+  "$rc|$(printf '%s' "$msg" | { grep -c 'needs --resume' || true; })" "2|1"
+
+# 대기 끝 거르기 — 위임으로 연 대기의 끝 부여는 이관이거나, 묶인 계정 자신의 새 세션 아닌
+# 부여로 끊긴 시도의 리셋 시각 뒤에 관측한 사용량을 실었을 때만 받는다.
+check "98m: 대기 끝 위임 거르기는 리셋 뒤 관측한 같은 계정 부여만 받는다" \
+  "$(lsr93_in "$lsr75/c93/ledger.md" eval '
+      gate_cut_key_reset_at() { printf "%s" "${H98M_RS-1800000000}"; }
+      for e in "u1|false|usage@1800000001" "u1|false|usage@1800000000.5" "u1|false|usage@1799999999" \
+               "u1|false|none" "u2|false|usage@1800000001" "u1|true|usage@1800000001"; do
+        a=${e%%|*}; r=${e#*|}; f=${r%%|*}; o=${r#*|}
+        env=$(jq -cn --arg a "$a" --argjson f "$f" --arg o "$o" "{verdict:\"GRANT\",account:\$a,fresh:\$f,observed:\$o}")
+        if gate_sup_delegate_grant_ok K9 u1 "$env"; then printf 받음,; else printf 거름,; fi
+      done
+      H98M_RS=""
+      gate_sup_delegate_grant_ok K9 u1 "{\"account\":\"u1\",\"observed\":\"usage@1900000000\"}" && printf 받음 || printf 거름' 2>/dev/null)" \
+  "받음,받음,거름,거름,거름,거름,거름"
+
+# 감독자 — 위임 대기(dl-wait)의 끝. 감독자는 대기 반쪽이 넘긴 argv·토큰을 그대로 받아
+# 돌리고, 대기 고리·임대 확보·임대 행만 대역으로 둔다. 기동 래퍼 자리의 대역은 받은 argv
+# 와 두 재진입 변수를 적고 감독자를 끝낸다.
+h98m_sup() {
+  # h98m_sup <원장> <키> <대기 끝 봉투> — 「기동|카드 변수|부팅 표지 변수」, 기동하지 않았으면 -
+  local l="$1" d="${1%/*}" av nonce cli=() seen=0 ln
+  av="$d/argv"
+  nonce=$(awk 'p { print; exit } $0 == "--nonce" { p = 1 }' "$av" 2>/dev/null)
+  while IFS= read -r ln; do
+    if [ "$seen" = 1 ]; then cli+=("$ln"); elif [ "$ln" = -- ]; then seen=1; fi
+  done < "$av"
+  rm -f "$d/spawn-argv" "$d/spawn-env"
+  RUN_PACE_ROOT="$lsr_root/pace98m" CC_GATE_DISPATCH_PROMPT_SET=1 CC_GATE_DISPATCH_PROMPT="$h98m_ra" \
+    H98M_FENV=$3 H98M_NONCE=$nonce H98M_KEY=$2 H98M_K=${cli[0]:-} H98M_P1=${cli[1]:-} H98M_P2=${cli[2]:-} \
+    lsr93_in "$l" eval '
+      gate_sup_await_dispatch() { :; }
+      eval "h98m_cwf() $(declare -f cc_waiting_field | tail -n +2)"
+      cc_waiting_field() { if [ "$2" = 보유자 ]; then printf "%s" "$$"; else h98m_cwf "$@"; fi; }
+      stage_wait_loop() { WAIT_LOOP_ENV=$H98M_FENV; return 0; }
+      gate_stage_lease_row() { return 0; }
+      gate_visual_lane_commit() { return 0; }
+      gate_sup_wait_ended() { return 0; }
+      gate_sup_lease_secure() { return 0; }
+      bash() {
+        if [ "${1:-}" = "$GATE_DIR/stage-wrapper.sh" ]; then
+          printf "%s\n" "$@" > "$RUN_DIR/spawn-argv"
+          printf "%s|%s\n" "${CC_PIPELINE_REENTRY_CARD-unset}" "${CC_PIPELINE_REENTRY-unset}" > "$RUN_DIR/spawn-env"
+          kill -KILL $$
+        fi
+        command bash "$@"
+      }
+      gate_verb_supervise_stage infra "$H98M_KEY" "$H98M_NONCE" "$H98M_K" "$H98M_P1" "$H98M_P2"' >/dev/null 2>&1
+  if [ -f "$d/spawn-argv" ]; then printf '기동|%s' "$(cat "$d/spawn-env" 2>/dev/null)"; else printf -- '-'; fi
+}
+h98m_wl="$lsr_root/dl-wait/ledger.md"
+for h98m_f in K9.launch K9.waiting; do cp "$lsr_root/dl-wait/$h98m_f" "$lsr_root/dl-wait/$h98m_f.h98m" 2>/dev/null || true; done
+check "98m: 위임 대기 끝의 묶인 계정 부여가 리셋 뒤 관측이 아니면 기동하지 않고 위임 불성립 행을 남긴다" \
+  "$(h98m_sup "$h98m_wl" K9 "$lsr93_BG")|$(lsr93_n "$h98m_wl" '위임 불성립 — 대기 끝')" "-|1"
+for h98m_f in K9.launch K9.waiting; do cp "$lsr_root/dl-wait/$h98m_f.h98m" "$lsr_root/dl-wait/$h98m_f" 2>/dev/null || true; done
+h98m_sv=$(h98m_sup "$h98m_wl" K9 "$h98m_mg")
+h98m_svc=$(lsr93_in "$h98m_wl" eval 'gate_reentry_card_path "$(session_uuid K9 2)"' 2>/dev/null)
+check "98m: 대기 끝 이관 기동은 카드 경로를 스테이지 환경에 싣는다" \
+  "$h98m_sv|$( [ -f "$h98m_svc" ] && printf 카드 || printf 없음)" "기동|$h98m_svc|unset|카드"
+check "98m: 대기 끝 이관 기동의 -p 는 끊긴 세션의 기록이다" \
+  "$(sed -n '/^--$/,$p' "$lsr_root/dl-wait/spawn-argv" 2>/dev/null | sed -n '2,3p' | paste -sd'|' -)" \
+  "-p|/cc-cmds:review-unattended $lsr93_doc"
 
 # ---------------------------------------------------------------------------
 # 98h. 감독자의 임대 확보 — 잠금 경합·잃은 임대의 원인 행, wait 20, 끝난 런의 임대 정리

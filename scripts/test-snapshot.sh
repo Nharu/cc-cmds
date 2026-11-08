@@ -3078,6 +3078,12 @@ check "design-base-unattended: 베이스 설계 흐름은 토론 갈래의 면�
   "$(has "$DB_SKILL" "Its re-entry exemption of the document-present guard and its **Re-entered with a carried answer** do not apply here")" 예
 check "design-base-unattended: 분할 재진입에는 문서 존재 면제가 없다" \
   "$(has "$DB_SKILL" "There is no document-present exemption: this mode saves no document and has no such guard.")" 예
+check "design-solo-unattended: 문서 존재 가드는 자기 스테이지의 재진입 카드도 면제한다" \
+  "$(has "$DS_SKILL" "**A re-entry card is exempt too**: when \`CC_PIPELINE_REENTRY_CARD\` names a card whose \`**스테이지**\` equals this stage's \`CC_PIPELINE_STAGE_ID\`, do not halt")" 예
+check "design-discuss-unattended: 문서 존재 가드는 자기 스테이지의 재진입 카드도 면제한다" \
+  "$(has "$DD_SKILL" "So is a re-entry card whose \`**스테이지**\` equals \`CC_PIPELINE_STAGE_ID\`.")" 예
+check "design-base-unattended: 베이스 설계 흐름은 재진입 카드 갈래만 토론 갈래에서 받는다" \
+  "$(has "$DB_SKILL" "Its **Re-entered on a re-entry card** applies here, with the guard's exemption for that card")" 예
 check "교대 계약: 재진입 표는 일곱 행이다" "$(has "$RS_CORPUS" "The table holds seven halts.")" 예
 check "교대 계약: 시각 발행 정지는 visual-publish 로 운반한다" \
   "$(has "$RS_CORPUS" "is carried as \`visual-publish\` with \`-p \"/cc-cmds:visual-publish-unattended <스냅숏 design_doc>\"\`")" 예
