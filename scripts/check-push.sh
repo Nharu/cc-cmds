@@ -32,7 +32,12 @@
 # ran, and a later run skips the sections of every record whose files and cut
 # are unchanged, then cuts and runs only the rest. `items` runs the goals,
 # the sections and check-cheap only for those records, and leaves every stamp
-# alone.
+# alone. A release commit on top of a recorded pass does not void it: when
+# the only files that differ are CHANGELOG.md, grown by an entry inserted on
+# top, and plugin.json, changed in its version line alone, the record's input
+# commit is an ancestor of HEAD and the base is the same, the pass is reused
+# and its reuse line ends in `릴리스 차이` (scripts/test-reuse.sh states the
+# rule in full).
 #
 # Usage:
 #   bash scripts/check-push.sh run         check in a clean clone, stamp on pass
@@ -1091,6 +1096,37 @@ check-push: CHECK_PUSH_JOBS=1 의 실패 단계는 목록 전체를 이름 댄�
   check "F41 CHECK_PUSH_JOBS=1 로 절만 준 items → 2" "$rc|$(printf '%s' "$out" | grep -c '절은 한 test-gate 호출로 돌아 기록되지 않는다')" "2|1"
   out=$(cprun CC_PIPELINE_RUN_ID=t CHECK_PUSH_REUSE=0 CHECK_PUSH_JOBS=2 CHECK_PUSH_GOALS=g1); rc=$?
   check "F41 CHECK_PUSH_REUSE=0 은 기록이 있어도 재사용하지 않고 도장에 꺼짐" "$rc $(cur_reuse) $(cur_field 재사용절)" "0 꺼짐 꺼짐"
+  # A release commit after items: g1 calls git in its checkout, so items
+  # records it as a whole-tree record, and the release commit on top changes
+  # only the version line and the top of CHANGELOG.md; the last run reuses g1
+  # through the release relation. A release commit that also changes r.txt
+  # runs g1 again.
+  rel_commit() {  # <version> <CHANGELOG top block> [<file> <content>]
+    (
+      cd "$W" || exit 1
+      mkdir -p plugins/cc-cmds/.claude-plugin
+      printf '{\n  "name": "cc-cmds",\n  "version": "%s"\n}\n' "$1" > plugins/cc-cmds/.claude-plugin/plugin.json
+      printf '# Changelog\n\n%b## [0.1.0] - 2026-01-01\n- a\n' "$2" > CHANGELOG.md
+      [ -z "${3:-}" ] || printf '%b' "$4" > "$3"
+      sgit add -A && sgit commit -q -m "release $1"
+    ) > /dev/null 2>&1
+  }
+  rel_commit 0.1.0 ''
+  printf 'git rev-parse HEAD > /dev/null 2>&1\n' > "$T/run-g1"
+  rm -rf "$items_dir"
+  fh_line "$sm2"
+  out=$(cirun CC_PIPELINE_RUN_ID=t CHECK_PUSH_REUSE=1 CHECK_PUSH_JOBS=2 CHECK_PUSH_GOALS=g1); rc=$?
+  check "F41 릴리스 앞 items 는 git 을 부른 g1 을 트리 전체로 기록한다" \
+    "$rc $(cat "$items_dir"/make:g1/* 2>/dev/null | awk -F'\t' '$1 == "트리전체" { print $2; exit }')" "0 $(ve 예 '')"
+  rel_commit 0.1.1 '## [0.1.1] - 2026-01-02\n- b\n\n'
+  out=$(crr CC_PIPELINE_RUN_ID=t); rc=$?
+  check "F41 릴리스 커밋 뒤 마지막 run 은 g1 을 다시 쓰고 도장 재사용= 에 넣는다" "$rc $(cur_reuse)" "0 $(ve make:check-cheap,make:g1 없음)"
+  check "F41 릴리스 관계로 다시 쓴 항목만 재사용 줄 꼬리가 릴리스 차이" \
+    "$(printf '%s\n' "$out" | grep -c '^check-push: 재사용 make:g1 ← .* (.*, 릴리스 차이)$') $(printf '%s\n' "$out" | grep -c '릴리스 차이')" "$(ve '1 1' '0 0')"
+  rel_commit 0.1.2 '## [0.1.2] - 2026-01-03\n- c\n\n## [0.1.1] - 2026-01-02\n- b\n\n' r.txt 'r3\n'
+  out=$(crr CC_PIPELINE_RUN_ID=t); rc=$?
+  check "F41 릴리스 밖 파일도 바꾼 릴리스 커밋 뒤에는 g1 이 다시 돈다" "$rc $(cur_reuse)" "0 $(ve make:check-cheap 없음)"
+  rm -f "$T/run-g1"
   rm -f "$T/reads-cc" "$T/reads-g1"
   (cd "$W" && sgit checkout -q h) > /dev/null 2>&1
 
@@ -1108,8 +1144,8 @@ check-push: CHECK_PUSH_JOBS=1 의 실패 단계는 목록 전체를 이름 댄�
   rm -rf "$T"
   printf 'check-push self-test: %d passed, %d failed\n' "$passed" "$failed"
   # A floor on the count, so a refactor that silently skips cases cannot pass.
-  if [ "$passed" -lt 164 ]; then
-    printf 'check-push self-test: 통과 수 %d 가 하한 164 에 못 미칩니다\n' "$passed" >&2
+  if [ "$passed" -lt 168 ]; then
+    printf 'check-push self-test: 통과 수 %d 가 하한 168 에 못 미칩니다\n' "$passed" >&2
     return 1
   fi
   [ "$failed" = "0" ]
