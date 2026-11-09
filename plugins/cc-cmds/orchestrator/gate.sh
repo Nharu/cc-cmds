@@ -8996,7 +8996,9 @@ surface_of_brew() {
 # EMULATOR. A form that may reach a connected physical device — `xcrun
 # devicectl`, an `adb` with no serial or a non-emulator one, an `xcodebuild`
 # destination that is not a simulator, macOS or a generic platform, a `maestro`
-# with no device or another spelling — stays `등급 미상`, so a person still
+# with no device or another spelling, a `maestro` subcommand other than `test`,
+# and a `maestro` with `--host`, `--port` or an `@file` argument — stays
+# `등급 미상`, so a person still
 # answers it: physical devices are outside what a `사전 인가` row may open.
 # Every `트리밖쓰기` form here lands in the daemon-like state every run on this
 # machine shares (the simulator set, the emulator and its AVDs), so the reach
@@ -9218,7 +9220,8 @@ surface_of_maestro() {
   # any other subcommand (`cloud`, `record`, `login`, `start-device`, `mcp`,
   # `studio` and the rest), is unknown, since those upload, sign in, serve or
   # make a device no run prefix names. `--host`/`--port` anywhere point the
-  # driver at another machine's device, so they are unknown too.
+  # driver at another machine's device, so they are unknown too, and so is an
+  # `@file` argument: the CLI expands it into options this argv does not show.
   case "$#:${1:-}:${2:-}" in
     1:--help:*) printf '읽기'; return 0 ;;
     2:*:--help) case "$1" in -*) ;; *) printf '읽기'; return 0 ;; esac ;;
@@ -9226,7 +9229,7 @@ surface_of_maestro() {
   local a
   for a in "$@"; do
     case "$a" in
-      --host|--host=*|--port|--port=*) printf '등급 미상'; return 0 ;;
+      --host|--host=*|--port|--port=*|@*) printf '등급 미상'; return 0 ;;
     esac
   done
   [ "$(gate_maestro_subcommand "$@")" = test ] || { printf '등급 미상'; return 0; }
