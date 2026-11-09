@@ -19537,16 +19537,81 @@ gate_halt_record_path() {
   printf '%s' "$(gate_halt_root)/runs/$name.json"
 }
 
+gate_halt_is_collect_record() {
+  # gate_halt_is_collect_record <path> — 0 when the file is a decision
+  # collection record the gate wrote: its name is `decision-collect-*.md` and
+  # its header names `writer=gate`. A stage cannot write that name, and a file
+  # that only shares the name is not taken for one. The header is captured
+  # whole before it is matched, so no pipe stage can end early under pipefail.
+  local h
+  case "${1##*/}" in
+    *.answer.md) return 1 ;;
+    decision-collect-*.md) ;;
+    *) return 1 ;;
+  esac
+  [ -f "$1" ] || return 1
+  h=$(sed -n '1p' "$1" 2>/dev/null) || return 1
+  case "$h" in
+    *'writer=gate;'*) return 0 ;;
+  esac
+  return 1
+}
+
+gate_halt_stops_view() {
+  # gate_halt_stops_view <run-dir> — prints the directory the classifier
+  # reads in place of the run directory, or the run directory itself when it
+  # holds no decision collection record. The view is a fresh directory under a
+  # temporary parent with the run directory's own basename, since the
+  # classifier keys a routing shift's records on the run id at the end of the
+  # path; every entry of the run directory and of its `halt/` is a symbolic
+  # link to the original, the gate's collection records left out. Returns 1
+  # when the view cannot be made, and no path is printed then.
+  local rd="${1%/}" base tmpd view e has=0
+  if [ -z "$rd" ] || [ ! -d "$rd/halt" ]; then printf '%s' "$1"; return 0; fi
+  for e in "$rd"/halt/decision-collect-*.md; do
+    gate_halt_is_collect_record "$e" && { has=1; break; }
+  done
+  [ "$has" = "1" ] || { printf '%s' "$1"; return 0; }
+  base="${rd##*/}"
+  tmpd=$(mktemp -d "${TMPDIR:-/tmp}/cc-halt-view.XXXXXX") || return 1
+  view="$tmpd/$base"
+  mkdir -p "$view/halt" || { rm -rf "$tmpd"; return 1; }
+  for e in "$rd"/* "$rd"/.[!.]*; do
+    { [ -e "$e" ] || [ -L "$e" ]; } || continue
+    [ "${e##*/}" = halt ] && continue
+    ln -s "$e" "$view/${e##*/}" || { rm -rf "$tmpd"; return 1; }
+  done
+  for e in "$rd"/halt/* "$rd"/halt/.[!.]*; do
+    { [ -e "$e" ] || [ -L "$e" ]; } || continue
+    gate_halt_is_collect_record "$e" && continue
+    ln -s "$e" "$view/halt/${e##*/}" || { rm -rf "$tmpd"; return 1; }
+  done
+  printf '%s' "$view"
+}
+
 gate_halt_stops() {
   # gate_halt_stops <ledger> <run-dir> <manifest> — the classifier's lines.
   # `CC_HALT_STOPS` names another program for tests; the gate suite exports one
   # that prints nothing, so no fixture run ever reaches GitHub from a host that
   # holds a write credential.
+  #
+  # THE GATE'S DECISION COLLECTION RECORDS ARE NOT STOPS. The record waits on a
+  # person by design and carries no attempt number, so the classifier would
+  # read it as an unintended stop no cause cell binds and the reporter would
+  # write a `[cc-halt]` issue for every run that collected. The classifier is
+  # handed a view of the run directory without them
+  # (`gate_halt_stops_view`); the readers of unanswered halts read the run
+  # directory itself and still count the record. A view that cannot be made
+  # is the classifier failing, never the records passed through.
+  local view rc=0
+  view=$(gate_halt_stops_view "$2") || return 1
   if [ -n "${CC_HALT_STOPS:-}" ]; then
-    "$CC_HALT_STOPS" "$1" "$2" --manifest "$3"
+    "$CC_HALT_STOPS" "$1" "$view" --manifest "$3" || rc=$?
   else
-    bash "$GATE_DIR/run-stops.sh" "$1" "$2" --manifest "$3"
+    bash "$GATE_DIR/run-stops.sh" "$1" "$view" --manifest "$3" || rc=$?
   fi
+  [ "$view" = "$2" ] || rm -rf "${view%/*}"
+  return "$rc"
 }
 
 gate_halt_backlog() {
