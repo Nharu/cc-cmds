@@ -5346,6 +5346,30 @@ check "설계 팔이 셋째 지점에서 문서 부재를 분기한다" \
 # 이 필드만 디스크와 대조되지 않은 채 구속 다이제스트에 얼었다. 그래서 오타나 다른
 # 레포의 브랜치명이 「검증된 값」과 구별되지 않게 고정됐고, 어디서도 그 사실이
 # 드러나지 않았다.
+#
+# 원격이 없는 대상은 원격 추적 ref 가 아니라 로컬 브랜치 ref 로 대조되므로, 원격 추적
+# ref 를 재는 아래 경우들은 픽스처 레포에 원격을 **먼저** 단다. 픽스처가 손수 심어 둔
+# `refs/remotes/origin/main` 만으로는 원격 없는 대상으로 읽혀, 로컬 헤드에만 있는
+# 이름이 통과하고 거부 문면도 달라진다.
+#
+# 원격은 `$MF_REPO` 에서 **클론**한다. 별도 `git init` 으로 만들면 공통 조상이 없는
+# 커밋이 나오고, 바로 아래 `check_base_branches` 가 부르는 `base_fetch` 가 기본
+# refspec 의 강제 갱신으로 픽스처가 맨 처음 손수 심어 둔 `refs/remotes/origin/main`
+# (= 이 레포 자신의 HEAD) 을 그 무관한 커밋으로 갈아 끼운다. 그러면 픽스처의 기본
+# 불변식이 절 중간에서 조용히 뒤집혀, 나중에 여기 단언을 더하는 쪽이 재현하기 어려운
+# 자리에서 막힌다. 클론이면 fetch 뒤에도 같은 커밋이라 불변식이 유지된다.
+#
+# 클론은 대상 디렉터리를 스스로 만들고, HEAD 도 원본의 것을 따라가므로 호스트의
+# `init.defaultBranch` 에 기대지 않는다.
+MF_ORIGIN="$WORK/manifest-origin"
+git clone -q "$MF_REPO" "$MF_ORIGIN" >/dev/null 2>&1
+( cd "$MF_ORIGIN" \
+  && git config user.email t@example.invalid \
+  && git config user.name  T ) >/dev/null 2>&1
+check "픽스처 원격이 이 레포에서 클론돼 같은 커밋을 가리킨다" \
+  "$( cd "$MF_ORIGIN" && git rev-parse --abbrev-ref HEAD )/$( cd "$MF_ORIGIN" && git rev-parse HEAD )" \
+  "main/$( cd "$MF_REPO" && git rev-parse HEAD )"
+( cd "$MF_REPO" && git remote add origin "$MF_ORIGIN" ) >/dev/null 2>&1
 write_manifest "$MF" "" "" "존재하지-않는-브랜치"
 MANIFEST="$MF"
 if ( check_base_branches ) >/dev/null 2>&1; then
@@ -5377,32 +5401,46 @@ if ( check_base_branches ) >/dev/null 2>&1; then
 else
   ok "로컬 헤드에만 있는 베이스 브랜치가 거부된다 (소비 집합과 같은 집합을 받는다)"
 fi
+# 원격이 없는 대상은 반대로 로컬 브랜치 ref 가 소비 집합이다 — `base_sha` 가 그 대상에서
+# `refs/heads/…` 를 해소하므로, 같은 검사가 그 집합을 받아야 원격 없는 레포의 런이
+# 킥오프에서 막히지 않는다. 원격을 단 위 레포와 섞이지 않게 레포를 따로 만든다.
+NR25="$WORK/noremote-repo"
+mkdir -p "$NR25"
+( cd "$NR25" && git init -q . && git config user.email t@example.invalid \
+  && git config user.name T && printf 'a\n' > a.txt && git add -A \
+  && git commit -qm one && git branch -M main ) >/dev/null 2>&1
+NR25_CG=$(cd "$NR25" && git rev-parse --path-format=absolute --git-common-dir)
+check "원격 없는 픽스처 레포다" \
+  "$( cd "$NR25" && git remote | grep -c . )/$( cd "$NR25" && git rev-parse --abbrev-ref HEAD )" "0/main"
+( MF_REPO="$NR25"; MF_CG="$NR25_CG"; write_manifest "$MF" "" "" "main" )
+MANIFEST="$MF"
+if ( check_base_branches ) >/dev/null 2>&1; then
+  ok "원격 없는 대상의 로컬 베이스 브랜치가 통과한다"
+else
+  bad "베이스 브랜치 (원격 없음)" "로컬 브랜치 ref 로 해소되는 베이스가 거부됐다: $( ( check_base_branches ) 2>&1 | tail -1 )"
+fi
+( MF_REPO="$NR25"; MF_CG="$NR25_CG"; write_manifest "$MF" "" "" "존재하지-않는-브랜치" )
+MANIFEST="$MF"
+if ( check_base_branches ) >/dev/null 2>&1; then
+  bad "베이스 브랜치 (원격 없음)" "원격 없는 레포에 없는 브랜치명이 통과했다"
+else
+  BBMSG25N=$( ( check_base_branches ) 2>&1 | tail -1 )
+  case "$BBMSG25N" in
+    *"로컬 브랜치 ref 로 해소되지 않습니다"*) ok "원격 없는 대상의 없는 베이스 브랜치가 로컬 브랜치 ref 를 지명해 거부된다" ;;
+    *) bad "베이스 브랜치 (원격 없음)" "거부는 됐으나 다른 이유였다: $BBMSG25N" ;;
+  esac
+fi
+write_manifest "$MF"
+MANIFEST="$MF"
 # 소비 집합은 fetch **이후**의 원격 추적 ref 집합이다 — 소비 지점이 `base_fetch` 를
 # 먼저 부르고 그다음 `base_sha` 를 부른다. 킥오프가 fetch 이전의 것을 보면 수용 집합이
 # 진부분집합이 되어, 서버에는 있는데 이 클론이 아직 가져오지 않은 베이스 브랜치가
 # 완주하던 자리에서 하드 스톱된다 — 단일 브랜치 클론, 클론 이후 서버에서 만들어진
 # 브랜치, 좁혀진 fetch refspec 이 전부 그 형상이다.
 #
-# 원격은 `$MF_REPO` 에서 **클론**한다. 별도 `git init` 으로 만들면 공통 조상이 없는
-# 커밋이 나오고, 바로 아래 `check_base_branches` 가 부르는 `base_fetch` 가 기본
-# refspec 의 강제 갱신으로 픽스처가 맨 처음 손수 심어 둔 `refs/remotes/origin/main`
-# (= 이 레포 자신의 HEAD) 을 그 무관한 커밋으로 갈아 끼운다. 지금은 그 아래에
-# `base_sha` 를 보는 절이 없어 깨지는 단언이 없지만, 픽스처의 기본 불변식이 절
-# 중간에서 조용히 뒤집히는 것이라 나중에 여기 단언을 더하는 쪽이 재현하기 어려운
-# 자리에서 막힌다. 클론이면 fetch 뒤에도 같은 커밋이라 불변식이 유지된다.
-#
-# 클론은 대상 디렉터리를 스스로 만들고, HEAD 도 원본의 것을 따라가므로 호스트의
-# `init.defaultBranch` 에 기대지 않는다.
-MF_ORIGIN="$WORK/manifest-origin"
-git clone -q "$MF_REPO" "$MF_ORIGIN" >/dev/null 2>&1
-( cd "$MF_ORIGIN" \
-  && git config user.email t@example.invalid \
-  && git config user.name  T \
-  && git branch server-only ) >/dev/null 2>&1
-check "픽스처 원격이 이 레포에서 클론돼 같은 커밋을 가리킨다" \
-  "$( cd "$MF_ORIGIN" && git rev-parse --abbrev-ref HEAD )/$( cd "$MF_ORIGIN" && git rev-parse HEAD )" \
-  "main/$( cd "$MF_REPO" && git rev-parse HEAD )"
-( cd "$MF_REPO" && git remote add origin "$MF_ORIGIN" ) >/dev/null 2>&1
+# 서버 쪽 브랜치는 이 자리에서 만든다. 원격을 절 머리에서 달았으므로 앞의 경우들이
+# 부른 fetch 가 그보다 먼저 만든 브랜치를 이미 가져온다.
+( cd "$MF_ORIGIN" && git branch server-only ) >/dev/null 2>&1
 if ( cd "$MF_REPO" && git rev-parse --verify --quiet refs/remotes/origin/server-only >/dev/null 2>&1 ); then
   bad "베이스 브랜치 검증" "픽스처가 이미 가져온 상태다 — fetch 이전 상태를 재지 못한다"
 else
@@ -5455,20 +5493,19 @@ fi
 # 남기고, 그것이 있으면 유도는 첫 팔에서 해소돼 체크아웃된 이름까지 내려가지 않는다 —
 # 즉 이 절이 재려는 상태가 아예 만들어지지 않는다. 실측: 그 ref 가 남은 채로는
 # 유도가 `main` 으로 해소되고 `refs/remotes/origin/main` 이 실재해 검사가 통과한다.
-# 원격 자체를 잠시 떼어 낸다. ref 만 지우면 `check_base_branches` 가 맨 먼저 부르는
-# `base_fetch` 가 실제 origin 에서 그것을 되살려, 유도가 다시 첫 팔에서 해소된다 —
-# 실측: 지운 직후 `refs/remotes/origin/HEAD` 가 없다가 그 호출 뒤 되살아났다.
-#
-# 원격 제거가 그 원격의 원격 추적 브랜치까지 함께 지우므로 `git update-ref -d` 로
-# `origin/HEAD`·`origin/main` 을 따로 지우던 두 줄은 이미 없는 것을 지우는 죽은 줄이었다.
-# 그 둘이 있어야 전제가 선다고 읽히기 쉬워 지웠고, 전제 자체는 아래 `check` 가 잡는다.
+# ref 만 지우면 `check_base_branches` 가 맨 먼저 부르는 `base_fetch` 가 실제 origin 에서
+# 그것을 되살려, 유도가 다시 첫 팔에서 해소된다 — 실측: 지운 직후
+# `refs/remotes/origin/HEAD` 가 없다가 그 호출 뒤 되살아났다. 그래서 원격의 주소를 없는
+# 경로로 돌려 fetch 를 실패시킨다. 원격을 떼어 내지는 않는다 — 원격이 없는 대상은 로컬
+# 브랜치 ref 로 대조되어, 체크아웃된 `derived-only` 가 그대로 해소돼 버린다.
 ( cd "$MF_REPO" \
-  && git remote remove origin \
+  && git remote set-url origin "$WORK/없는-원격.git" \
+  && git update-ref -d refs/remotes/origin/HEAD \
   && git checkout -q -b derived-only ) >/dev/null 2>&1
 # 전제가 실제로 섰는지 반증 가능하게 확인한다 — 위 체인은 출력을 버리므로 실패해도 조용하다.
 check "유도가 체크아웃된 이름으로 내려가는 상태다" \
-  "$( cd "$MF_REPO" && git rev-parse --abbrev-ref HEAD )/$( cd "$MF_REPO" && git rev-parse --verify --quiet refs/remotes/origin/HEAD >/dev/null 2>&1 && printf 있음 || printf 없음 )/$( cd "$MF_REPO" && git remote | grep -c . )" \
-  "derived-only/없음/0"
+  "$( cd "$MF_REPO" && git rev-parse --abbrev-ref HEAD )/$( cd "$MF_REPO" && git rev-parse --verify --quiet refs/remotes/origin/HEAD >/dev/null 2>&1 && printf 있음 || printf 없음 )/$( cd "$MF_REPO" && git remote | grep -c . )/$( cd "$MF_REPO" && git rev-parse --verify --quiet refs/remotes/origin/derived-only >/dev/null 2>&1 && printf 있음 || printf 없음 )" \
+  "derived-only/없음/1/없음"
 write_manifest "$MF" "" "" "(없음)"
 MANIFEST="$MF"
 # `RUN_DIR` 를 비워 부른다 — 동결된 사본이 있으면 유도 자체가 일어나지 않아 이 절이
@@ -5482,7 +5519,7 @@ fi
 # 로 오프라인·자격 만료·원격 부재·해소 불가 별칭을 전부 같은 침묵으로 만드는데, 킥오프는
 # 그 침묵에 하드 스톱을 거는 유일한 자리다 — 「fetch 이후에도 없음」이라고 단정하면
 # 무인 런에서 아침에 이 줄을 읽는 사람이 브랜치 이름 쪽으로 간다. 이 픽스처는 지금
-# 원격이 떼어진 상태이므로 fetch 는 실패한 쪽이어야 한다.
+# 원격이 없는 경로를 가리키므로 fetch 는 실패한 쪽이어야 한다.
 BBMSG25F=$( ( RUN_DIR=""; BASE_BRANCH=""; check_base_branches ) 2>&1 | tail -1 )
 case "$BBMSG25F" in
   *"fetch 가 실패했습니다"*) ok "하드 스톱 문면이 fetch 의 성패를 관측대로 진술한다" ;;
@@ -5499,7 +5536,7 @@ esac
 # 어느 팔이 답했는지가 호스트마다 갈리는데 두 팔의 답이 같으면 어느 쪽이든 통과해서,
 # 그 갈림이 어디에도 드러나지 않는다.
 ( cd "$MF_REPO" \
-  && git remote add origin "$MF_ORIGIN" \
+  && git remote set-url origin "$MF_ORIGIN" \
   && git fetch -q origin \
   && git remote set-head origin -a ) >/dev/null 2>&1
 # 두 팔이 실제로 다른 값을 내는 상태인지 반증 가능하게 확인한다 — 위 체인도 출력을 버린다.
