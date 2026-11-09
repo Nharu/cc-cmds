@@ -27439,13 +27439,13 @@ gate_adoption_obligation_line() {
   # for a segment adopted as a merged pull request, empty when there is none.
   # The planning act writes it once per obligation id, so the first is the one.
   { grep -n '^- `리뷰 의무` ' "$LEDGER" 2>/dev/null || true; } \
-    | gate_rows_field_eq '세그먼트' "$1" | gate_rows_field_eq '상태' '미이행' | head -1 | cut -d: -f1
+    | gate_rows_field_eq '세그먼트' "$1" | gate_rows_field_eq '상태' '미이행' | sed -n '1s/:.*//p'
 }
 
 gate_adoption_obligation_row() {
   # gate_adoption_obligation_row <segment> — that issuing row itself.
   { gate_rows '리뷰 의무' || true; } | gate_rows_field_eq '세그먼트' "$1" \
-    | gate_rows_field_eq '상태' '미이행' | head -1
+    | gate_rows_field_eq '상태' '미이행' | sed -n 1p
 }
 
 gate_adoption_cycle_after_obligation() {
