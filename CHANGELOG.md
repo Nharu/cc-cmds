@@ -5,7 +5,7 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [3.42.1] - 2026-11-09
+## [3.42.2] - 2026-11-09
 
 베이스 설계 문서의 분할 점검이 감사가 고친 문서를 다시 보지 않아, 감사가 표지를 단 필드 줄이나 임계 경로 값에 덧붙인 문면이 발행 직전에야 위반으로 드러나던 결함을 고쳤습니다. 이제 분할 점검기는 표지를 걷어 낸 뒤 줄을 읽고, 감사는 대상 문서이면 마치기 전에 분할 점검을 돌려 기계적 위반은 고치고 판단 위반에서 멈춥니다.
 
@@ -20,6 +20,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Why
 
 감사가 고친 문서를 분할 점검이 다시 보지 않으면, 감사가 만든 위반이 발행 단계에서야 드러나 런이 그 자리에서 멈춥니다. 감사 안에서 점검해 기계적으로 고칠 수 있는 것은 고치고, 사람이 정해야 하는 것만 남겨 멈추게 합니다.
+
+## [3.42.1] - 2026-11-10
+
+autopilot 킥오프·좌석 대화에서 사람이 직접 친 1인칭 알림 요청을 이제 다른 대화와 같이 `active-notify` 규약대로 처리한다. 지금까지는 스킬의 금지 문구가 런 배너와 사람의 직접 요청을 구분하지 않아, 킥오프에서 사람이 요청한 알림이 거절됐다. 스킬이 스스로 알림 도우미를 켜지 않는다는 금지와 런의 배너 좌석 두 곳, `CC_CMDS_AUTOPILOT_NOTIFY` 규약은 그대로다.
+
+### Fixed
+
+- **CFI-4 와 금지 목록** — 「스스로는 arm·cancel 하지 않는다」로 주어를 좁히고, Act 1 과 사람이 친 Act 2 차례의 1인칭 요청을 `active-notify` 의 arm·fire-now·cancel 규약으로 처리하는 유일한 길로 적는다. 그 요청은 런의 세 번째 배너 좌석이 아니므로 좌석 수 TWO 는 바뀌지 않는다.
+- **채널 차례와 교대 복귀 차례** — 진행 채널이 깨운 차례(CFI-7)와 교대가 끝나 돌아온 차례에서는 반복 모드로 켜 둔 요청이라도 도우미를 부르지 않는다. 요청이 런 자체의 사건(런 종료, 승인 대기 등)을 가리키면 같은 차례에서 그 사건은 런 배너로 온다고 알린다.
+- **act2-seat.md 의 배너 문장** — 「배너는 `CC_CMDS_AUTOPILOT_NOTIFY` 만 다스린다」를 런의 배너로 한정하고, 사람이 자기 차례에서 요청한 배너는 이 변수가 다스리지 않는다고 덧붙인다.
+
+### Why
+
+금지 문구 「No user utterance makes arming correct」가 런 배너를 지키려던 범위를 넘어 사람의 직접 요청까지 막았다. 금지를 없애지 않고 스킬 스스로의 행위로 좁혀, 런 배너 규약은 그대로 두면서 사람이 요청한 알림만 다시 열었다.
 
 ## [3.42.0] - 2026-11-04
 
