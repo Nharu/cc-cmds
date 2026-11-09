@@ -1047,6 +1047,20 @@ readonly GATE_WAIT_GRACE_SECONDS=10
 # this line always declares the value the relation tests read.
 readonly GATE_RELAY_HOLD_SECONDS=3000
 
+# THE RELAY'S CONFIRMATION BRANCH. A halt record with no option that names a
+# confirmation command is checked again every 600 seconds while the relay
+# waits, each run bounded by 60 seconds, 144 runs per record (one day), and the
+# seat answers `원인 해소 후 재개` on a match at most 3 times per key. The
+# command's stdout is read up to 4096 bytes. The test hooks
+# `CC_GATE_CONFIRM_POLL_TEST_SECONDS`, `CC_GATE_CONFIRM_TIMEOUT_TEST_SECONDS`
+# and `CC_GATE_CONFIRM_MAX_TEST` are read only where each value is compared,
+# as the hold's hook is, so these lines always declare the real values.
+readonly GATE_CONFIRM_POLL_SECONDS=600
+readonly GATE_CONFIRM_TIMEOUT_SECONDS=60
+readonly GATE_CONFIRM_MAX=144
+readonly GATE_CONFIRM_KEY_MAX=3
+readonly GATE_CONFIRM_OUT_MAX=4096
+
 # THE FURTHEST RESET CLOCK A WAIT IS TAKEN ON — one five_hour window (18000)
 # plus the grace `CC_RESET_GRACE_SECONDS` (60) the relay adds before it wakes.
 # A relay has no deadline exit, so a clock beyond this — a seven_day window's —
@@ -22476,15 +22490,27 @@ gate_halt_option_lines() {
   # the question, so a check that scanned the whole record for ``- `<label>` ``
   # found an option in a line nobody offered as one. Every reader of a record's
   # options — the option check of `halt-answer`, the recommendation, the
-  # routable labels and the seat-apply frame check — reads them here.
-  LC_ALL=C awk '
-    $0 == "<!-- /cc-pipeline-halt v1 -->" { exit }
-    inb && /^\*\*/ { inb = 0 }
-    /^\*\*선택지\*\*:[ \t]*$/ { inb = 1; next }
-    inb && /^- `[^`]+`$/ { print; next }
-    inb && /^- `[^`]+` — / { print }
-  ' "$1" 2>/dev/null || true
+  # routable labels and the seat-apply frame check — reads them here, and here
+  # reads run.sh's `halt_option_lines`, the rule the morning report and the
+  # format predicate read too.
+  [ -r "$1" ] || return 0
+  halt_option_lines < "$1"
 }
+
+gate_halt_record_no_options() {
+  # gate_halt_record_no_options <record> — 0 when the record is a well-formed
+  # stage halt record that offers no option: no option line, the format
+  # predicate finds no defect, and it is not a routing shift's record
+  # (`halt/shift/`). Such a record is answered with the two fixed labels
+  # `원인 해소 후 재개` and `세그먼트 park`, and with nothing else.
+  case "$1" in */halt/shift/*) return 1 ;; esac
+  [ -f "$1" ] || return 1
+  [ -z "$(gate_halt_option_lines "$1")" ] || return 1
+  halt_record_wellformed "$1" >/dev/null
+}
+
+GATE_HALT_FIXED_RESUME='원인 해소 후 재개'
+GATE_HALT_FIXED_PARK='세그먼트 park'
 
 gate_halt_option_labels() {
   # gate_halt_option_labels <record> — the labels of `gate_halt_option_lines`,
@@ -25462,7 +25488,7 @@ gate_halt_settle() {
 # 「Handing on a person's answer to a halt」 in the routing shift's skill. The
 # skill maps each id to its item; `scripts/test-gate.sh` reads the ids from
 # this line and fails when the skill stops naming one.
-readonly GATE_HALT_ROUTES='재부착 감사-재수렴 구속-재수렴 교대-정지 빈-대상 적용-보류 설계-재수렴 골격급-재수렴 외부-보류 구현-수정 반증-파킹'
+readonly GATE_HALT_ROUTES='재부착 감사-재수렴 구속-재수렴 교대-정지 빈-대상 적용-보류 설계-재수렴 골격급-재수렴 외부-보류 구현-수정 반증-파킹 원인-보류'
 
 gate_row_is_pre_session_death() {
   # gate_row_is_pre_session_death <stage-result row> — whether the row settles
@@ -25745,6 +25771,18 @@ gate_halt_answer_route() {
         fi ;;
       *) why="빈 대상 리뷰 정지에는 \`$opt\` 를 실행할 갈래가 없습니다 — 갈래는 \`구현 재파견\` 과 \`세그먼트 park\` 뿐입니다" ;;
     esac
+  elif [ "$opt" = "$GATE_HALT_FIXED_PARK" ] && gate_halt_record_no_options "$rec"; then
+    # A RECORD WITH NO OPTION IS PARKED BY THE SHIFT, as an external hold is:
+    # the halted session has nothing to do with `세그먼트 park`, so the shift
+    # writes the segment's park row, and the answer's `라우팅` token tells the
+    # park and the readers of remaining stops what kind of hold it is. A
+    # run-scope key has no segment to park.
+    id=원인-보류
+    if gate_run_scope_kind_of_key "$key" >/dev/null 2>&1; then
+      why="런 범위 키 $key 에는 세그먼트가 없어 \`$GATE_HALT_FIXED_PARK\` 을 실행할 갈래가 없습니다 — 이 키의 고정 답은 \`$GATE_HALT_FIXED_RESUME\` 하나입니다"
+    elif gate_segment_terminal "$key"; then
+      why=$terminal
+    fi
   elif [ "$skill" = "implement-unattended" ] && [ "$opt" = "구현 수정" ] \
        && [ "$(gate_refutation_token "$step" || true)" = "Step 3 구현 결함 반증" ]; then
     # AN IMPLEMENTATION DEFECT IS FIXED BY A NEW DISPATCH, NOT A RE-ATTACHMENT.
@@ -25853,9 +25891,271 @@ gate_halt_answer_routable_options() {
     gate_halt_answer_route "$key" "$rec" "$lab" "$by" >/dev/null 2>&1 || continue
     out="$out${out:+, }$lab"
   done <<EOF
-$(gate_halt_option_labels "$rec")
+$(gate_halt_answer_labels "$key" "$rec")
 EOF
   printf '%s' "$out"
+}
+
+gate_halt_answer_labels() {
+  # gate_halt_answer_labels <key> <record> — the labels an answer to the record
+  # may name, one per line: the option lines' labels, or, for a record with no
+  # option (`gate_halt_record_no_options`), the two fixed labels — only
+  # `원인 해소 후 재개` on a run-scope key, which has no segment to park.
+  if gate_halt_record_no_options "$2"; then
+    printf '%s\n' "$GATE_HALT_FIXED_RESUME"
+    gate_run_scope_kind_of_key "$1" >/dev/null 2>&1 || printf '%s\n' "$GATE_HALT_FIXED_PARK"
+    return 0
+  fi
+  gate_halt_option_labels "$2"
+}
+
+# ---------------------------------------------------------------------------
+# THE CONFIRMATION COMMAND OF A RECORD WITH NO OPTION.
+#
+# A `precondition-failed` record with no option may name one read that tells
+# whether its cause is gone — ``**해소 확인 명령**: `<argv>` `` and
+# ``**해소 기대 출력**: `<one line>` ``. The relay's confirmation branch is the
+# one place that runs it (`gate_confirm_run`); `halt-answer` takes the seat's
+# `원인 해소 후 재개` on the relay's match record and never runs it itself, so
+# the working directory, the reach and the count are decided in one place.
+# ---------------------------------------------------------------------------
+
+gate_confirm_test_value() {
+  # gate_confirm_test_value <declared> <hook value> — the value a comparison
+  # reads: the hook when it is a positive integer below the declared value, the
+  # declared value otherwise, so a test can shorten and never lengthen it.
+  local d="$1" t="${2:-}"
+  case "$t" in
+    ''|*[!0-9]*) printf '%s' "$d"; return 0 ;;
+  esac
+  t=$((10#$t))
+  if [ "$t" -gt 0 ] && [ "$t" -lt "$d" ]; then printf '%s' "$t"; else printf '%s' "$d"; fi
+}
+
+gate_halt_confirm_fields() {
+  # gate_halt_confirm_fields <record> — 0 with GATE_CONFIRM_CMD (the argv, one
+  # string of words split by single spaces) and GATE_CONFIRM_WANT (the expected
+  # line) set when the record carries both fields; 1 otherwise. The grammar is
+  # the format predicate's (`halt_record_wellformed`), and a record that breaks
+  # it never gets here, because it is not well formed.
+  local c w
+  GATE_CONFIRM_CMD=''; GATE_CONFIRM_WANT=''
+  c=$(sed -n 's/^\*\*해소 확인 명령\*\*: `\(.*\)`$/\1/p' "$1" 2>/dev/null | sed -n '1p')
+  w=$(sed -n 's/^\*\*해소 기대 출력\*\*: `\(.*\)`$/\1/p' "$1" 2>/dev/null | sed -n '1p')
+  [ -n "$c" ] && [ -n "$w" ] || return 1
+  GATE_CONFIRM_CMD=$c; GATE_CONFIRM_WANT=$w
+}
+
+gate_halt_confirm_record() {
+  # gate_halt_confirm_record <record> — 0 when the record is one the
+  # confirmation branch reads: a well-formed stage record with no option,
+  # classed `precondition-failed`, carrying both confirmation fields. The
+  # fields on any other record are ignored.
+  gate_halt_record_no_options "$1" || return 1
+  [ "$(sed -n 's/^\*\*분류\*\*:[[:space:]]*//p' "$1" 2>/dev/null | sed -n '1s/[[:space:]]*$//p')" = "precondition-failed" ] || return 1
+  gate_halt_confirm_fields "$1"
+}
+
+gate_confirm_name_ok() {
+  # gate_confirm_name_ok <name> — a record name the relay accepts: the halt
+  # record's file name without `.md`, made of letters, digits, `-`, `_`, `.`
+  # and `#`, never starting with a dot.
+  case "$1" in
+    ''|.*|*[!A-Za-z0-9._#-]*) return 1 ;;
+  esac
+  return 0
+}
+
+gate_confirm_count() {
+  # gate_confirm_count <name> — `<count> <epoch of the last run>` from the
+  # record's count file, `0 0` when there is none or it does not read.
+  local l c e
+  l=$(sed -n '1p' "$RUN_DIR/confirm/$1.n" 2>/dev/null || true)
+  c=${l%% *}; e=${l#* }
+  case "$c" in ''|*[!0-9]*) c=0 ;; esac
+  case "$e" in ''|*[!0-9]*) e=0 ;; esac
+  printf '%s %s' "$c" "$e"
+}
+
+gate_confirm_write() {
+  # gate_confirm_write <file name> <line> — one line into `$RUN_DIR/confirm`,
+  # through a temporary file in the same directory and a rename.
+  local d="$RUN_DIR/confirm" t
+  mkdir -p "$d" 2>/dev/null || return 1
+  t=$(mktemp "$d/.tmp.XXXXXX" 2>/dev/null) || return 1
+  printf '%s\n' "$2" > "$t" 2>/dev/null && mv -f "$t" "$d/$1" 2>/dev/null || { rm -f "$t"; return 1; }
+}
+
+gate_confirm_subcommand_ok() {
+  # gate_confirm_subcommand_ok <argv...> — the closed set a confirmation runs:
+  # `gh` and `git`, and for each a closed set of subcommands that read a state
+  # (a pull request's, a release's, a run's, a ref's). A form that returns a
+  # configured or credential value — `gh variable get`, `gh secret`,
+  # `gh config get`, `gh auth`, `gh api`, `git config` — is not in it: a read
+  # grade says nothing changes, not that nothing private comes back, and even
+  # the one bit "matched" would leak a value compared against.
+  case "$1" in
+    gh)
+      case "${2:-} ${3:-}" in
+        'pr view'|'pr list'|'pr checks'|'issue view'|'issue list'|'release view'|'release list'|'run view'|'run list'|'repo view'|'workflow view'|'workflow list') return 0 ;;
+      esac ;;
+    git)
+      case "${2:-}" in
+        rev-parse|ls-remote|merge-base|rev-list|log|tag|describe|branch|status) return 0 ;;
+      esac ;;
+  esac
+  return 1
+}
+
+gate_confirm_precheck() {
+  # gate_confirm_precheck <record> — 0 when the record's confirmation command
+  # may run: the closed program and subcommand set, a `읽기` grade by the same
+  # reading the `grade` verb makes (`surface_of_argv0` and the two write
+  # guards), a reach the grading table proves rather than one it parks — a
+  # runner the table cannot see into, or a destroying or secret-printing mark
+  # — no enforcement-surface word, and no path under the Claude configuration
+  # home. GATE_CONFIRM_REFUSAL holds the reason on a refusal. Run before every
+  # confirmation, and by the handoff check, so a command that would be refused
+  # is never counted.
+  local rec="$1" g w
+  local -a av
+  GATE_CONFIRM_REFUSAL=''
+  gate_halt_confirm_fields "$rec" || { GATE_CONFIRM_REFUSAL='확인 필드 없음'; return 1; }
+  read -r -a av <<< "$GATE_CONFIRM_CMD"
+  [ "${#av[@]}" -gt 0 ] || { GATE_CONFIRM_REFUSAL='빈 명령'; return 1; }
+  gate_confirm_subcommand_ok "${av[@]}" || { GATE_CONFIRM_REFUSAL='허용 하위 명령 밖'; return 1; }
+  for w in "${av[@]}"; do
+    case "$w" in
+      *'.claude'*) GATE_CONFIRM_REFUSAL='설정 디렉터리 경로'; return 1 ;;
+    esac
+  done
+  g=$(surface_of_argv0 "${av[@]}" 2>/dev/null || true)
+  [ "$g" = "읽기" ] || { GATE_CONFIRM_REFUSAL="등급 ${g:-미상}"; return 1; }
+  if ! gate_pace_write_guard "$g" "${av[@]}" 2>/dev/null || ! gate_spool_write_guard "$g" "${av[@]}" 2>/dev/null; then
+    GATE_CONFIRM_REFUSAL='쓰기 가드'; return 1
+  fi
+  [ "$(gate_argv_opaque "${av[@]}" 2>/dev/null)" != "1" ] || { GATE_CONFIRM_REFUSAL='도달 처분 park(불투명)'; return 1; }
+  w=$(gate_act_mark "${av[@]}" 2>/dev/null || true)
+  [ -z "${w%%	*}" ] || { GATE_CONFIRM_REFUSAL="도달 처분 park(${w%%	*})"; return 1; }
+  gate_halt_surface_tokens "$GATE_CONFIRM_CMD" "the confirmation command" "$rec" 2>/dev/null \
+    || { GATE_CONFIRM_REFUSAL='강제 표면 낱말'; return 1; }
+  return 0
+}
+
+gate_confirm_key_answers() {
+  # gate_confirm_key_answers <key> — how many `중단 답` rows of the key rest on
+  # a confirmation (`근거 종류=해소 확인`).
+  { gate_rows '중단 답' || true; } | gate_rows_field_eq '세그먼트' "$1" \
+    | { grep -cF '| 근거 종류=해소 확인 |' || true; }
+}
+
+gate_halt_answered_row() {
+  # gate_halt_answered_row <record> — 0 when a `중단 답` row names the record.
+  # From the file, not the row memo: the relay asks on every poll.
+  { LC_ALL=C grep -F -- "| 중단 기록=$1 |" "$LEDGER" 2>/dev/null || true; } \
+    | { grep -q '^- `중단 답` '; }
+}
+
+gate_halt_confirm_admit() {
+  # gate_halt_confirm_admit <key> <record> — the seat's `원인 해소 후 재개`
+  # resting on a confirmation: the record is one the branch reads, the key has
+  # had fewer than three such answers, and the relay left a match record for
+  # these record bytes within the last poll period. The switch, the automatic
+  # bounds and the routing are the answer's other checks, passed as for any
+  # seat answer. Warns and returns GATE_EXIT_RULE otherwise; nothing is run
+  # and nothing is counted here.
+  local key="$1" rec="$2" name n m mep msha now
+  if ! gate_halt_confirm_record "$rec"; then
+    warn "the seat answers \`$GATE_HALT_FIXED_RESUME\` only on a confirmation match, and this record is not a \`precondition-failed\` record with no option and both confirmation fields — a person answers it: $rec"
+    return "$GATE_EXIT_RULE"
+  fi
+  n=$(gate_confirm_key_answers "$key")
+  if [ "${n:-0}" -ge "$GATE_CONFIRM_KEY_MAX" ]; then
+    warn "$key already has $n answers resting on a confirmation (cap $GATE_CONFIRM_KEY_MAX) — the next one is a person's: $rec"
+    return "$GATE_EXIT_RULE"
+  fi
+  name=${rec##*/}; name=${name%.md}
+  m=$(sed -n '1p' "$RUN_DIR/confirm/$name.match" 2>/dev/null || true)
+  mep=${m%% *}; msha=${m#* }
+  now=$(date -u +%s)
+  case "$mep" in ''|*[!0-9]*) mep=0 ;; esac
+  if [ "$mep" = "0" ] || [ $((now - mep)) -gt "$GATE_CONFIRM_POLL_SECONDS" ] \
+     || [ "$msha" != "$(shasum -a 256 "$rec" | cut -d' ' -f1)" ]; then
+    warn "no recent confirmation match for this record — the relay's confirmation branch leaves one when the command's output matches, and the seat answers only on it: $rec"
+    return "$GATE_EXIT_RULE"
+  fi
+  return 0
+}
+
+gate_confirm_eligible() {
+  # gate_confirm_eligible <name> — 0 when the relay's confirmation branch runs
+  # the record's command at all: the name reads, the record is one the branch
+  # reads, nobody answered it, its count is below the cap, the command passes
+  # the precheck, and the seat's answer on a match would pass every check of
+  # `halt-answer` — the switch, the automatic bounds, the key's latest halt,
+  # the per-key cap and the routing. A record that fails any of these is left
+  # out and never counted. GATE_CONFIRM_OUT says why: `상한` for the count cap,
+  # `답` for an answered record, `거부` for the rest.
+  local name="$1" rec key c max
+  GATE_CONFIRM_OUT='거부'
+  gate_confirm_name_ok "$name" || return 1
+  rec="$RUN_DIR/halt/$name.md"
+  key=${name%#*}
+  gate_halt_confirm_record "$rec" || return 1
+  if gate_halt_answered_row "$rec"; then GATE_CONFIRM_OUT='답'; return 1; fi
+  c=$(gate_confirm_count "$name"); c=${c%% *}
+  max=$(gate_confirm_test_value "$GATE_CONFIRM_MAX" "${CC_GATE_CONFIRM_MAX_TEST:-}")
+  if [ "$c" -ge "$max" ]; then GATE_CONFIRM_OUT='상한'; return 1; fi
+  gate_confirm_precheck "$rec" || return 1
+  gate_auto_resolve_enabled || return 1
+  [ "$(gate_confirm_key_answers "$key")" -lt "$GATE_CONFIRM_KEY_MAX" ] || return 1
+  gate_halt_auto_answer_admit "$key" "$rec" "$GATE_HALT_FIXED_RESUME" >/dev/null 2>&1 || return 1
+  gate_halt_auto_answer_current "$key" "$rec" >/dev/null 2>&1 || return 1
+  gate_halt_answer_route "$key" "$rec" "$GATE_HALT_FIXED_RESUME" 좌석 >/dev/null 2>&1 || return 1
+  return 0
+}
+
+gate_confirm_run() {
+  # gate_confirm_run <name> — run the record's confirmation command once and
+  # count it: 0 on a match, 1 otherwise. Run without a shell, as the argv the
+  # record spells, under the read-scoped credential in the key's worktree
+  # (`gate_act_worktree`; no worktree, no run, and it reads as a mismatch),
+  # with the stdout read into a file up to 4096 bytes and the stderr dropped.
+  # A match is exit 0 and the stdout, trailing whitespace taken off, equal to
+  # the expected line byte for byte; 143 is the time limit. A match leaves
+  # `$RUN_DIR/confirm/<name>.match` — `<epoch> <record sha256>` — which the
+  # seat's answer rests on. One gate log line names the record, the exit
+  # code, the match and the output's length, never its bytes.
+  local name="$1" rec key al wd out rc=0 len=0 v hit=아니오 cnt t
+  local -a av
+  rec="$RUN_DIR/halt/$name.md"
+  key=${name%#*}
+  gate_confirm_precheck "$rec" || return 1
+  read -r -a av <<< "$GATE_CONFIRM_CMD"
+  cnt=$(gate_confirm_count "$name"); cnt=${cnt%% *}
+  gate_confirm_write "$name.n" "$((cnt + 1)) $(date -u +%s)" \
+    || warn "could not write the confirmation count of $name"
+  al=$(gate_segment_target_alias "$key")
+  wd=''
+  [ -z "$al" ] || wd=$(gate_act_worktree "$al" "$key" 2>/dev/null || true)
+  if [ -z "$wd" ] || [ ! -d "$wd" ]; then
+    log "해소 확인 — $name · 종료 코드 - · 일치 아니오 · 길이 0 (작업 디렉터리 없음)"
+    return 1
+  fi
+  out=$(mktemp "${TMPDIR:-/tmp}/gate-confirm.XXXXXX") || return 1
+  t=$(gate_confirm_test_value "$GATE_CONFIRM_TIMEOUT_SECONDS" "${CC_GATE_CONFIRM_TIMEOUT_TEST_SECONDS:-}")
+  GATE_ACT_CWD="$wd" gate_run_readonly gate_metrics_timed "$t" "${av[@]}" > "$out" 2>/dev/null || rc=$?
+  len=$(wc -c < "$out" | tr -d '[:space:]')
+  if [ "$rc" = "0" ] && [ "${len:-0}" -le "$GATE_CONFIRM_OUT_MAX" ]; then
+    v=$(cat "$out")
+    v=${v%"${v##*[![:space:]]}"}
+    [ "$v" != "$GATE_CONFIRM_WANT" ] || hit=예
+  fi
+  rm -f "$out"
+  log "해소 확인 — $name · 종료 코드 $rc · 일치 $hit · 길이 ${len:-0}"
+  [ "$hit" = "예" ] || return 1
+  gate_confirm_write "$name.match" "$(date -u +%s) $(shasum -a 256 "$rec" | cut -d' ' -f1)" || return 1
+  return 0
 }
 
 gate_shift_halt_site_table() {
@@ -38058,15 +38358,42 @@ EOF
           return "$GATE_EXIT_RULE"
         fi
       done
+      # `확인 대기` NAMES THE HALT RECORDS WITH NO OPTION WHOSE CONFIRMATION
+      # COMMAND THE RELAY RUNS while it waits — record names (the file name
+      # without `.md`, `#` included) joined by ',', never narrowed, and taken on
+      # a `대기` handoff only. Each name has to be one the relay's confirmation
+      # branch would run now (`gate_confirm_eligible`): a well-formed
+      # `precondition-failed` record with no option and both confirmation
+      # fields, the key's latest settled halt, unanswered, a command that
+      # passes the precheck, and a count below the cap.
+      local hcw hcn
+      hcw=$(gate_field_of '확인 대기' "$@")
+      hcw=$(printf '%s' "$hcw" | tr -d ' ')
+      [ "$hcw" != "-" ] || hcw=""
+      case "$hcw" in
+        *[!A-Za-z0-9._,#-]*)
+          warn "\`확인 대기\` has to be halt record names joined by ',' (received: $hcw)"
+          return "$GATE_EXIT_VOCAB" ;;
+      esac
+      if [ -n "$hcw" ] && [ "$hwhy" != "대기" ]; then
+        warn "\`확인 대기\` belongs to a \`대기\` handoff only (received with \`사유=$hwhy\`)"
+        return "$GATE_EXIT_VOCAB"
+      fi
+      for hcn in $(printf '%s' "$hcw" | tr ',' ' '); do
+        if ! gate_confirm_eligible "$hcn"; then
+          warn "\`확인 대기\` record $hcn is not one the relay's confirmation branch runs now (${GATE_CONFIRM_OUT}${GATE_CONFIRM_REFUSAL:+ — $GATE_CONFIRM_REFUSAL}) — it needs a person's answer; read the snapshot again"
+          return "$GATE_EXIT_RULE"
+        fi
+      done
       # `대기` HANDS THE WAIT TO THE SEAT CALL'S RELAY, SO IT NEEDS SOMETHING TO
       # WAIT ON. Without a live stage or supervisor, without a `CI 대기` or
-      # `master 대기` segment and without a `리셋 대기` key the relay would wake
-      # at once and the successor would find the same nothing — a shift turn
-      # spent to learn it. Refused without a row; a shift with nothing to wait
-      # on hands off with another reason.
-      if [ "$hwhy" = "대기" ] && [ -z "$hci" ] && [ -z "$hrs" ] && [ -z "$hms" ] \
+      # `master 대기` segment, without a `리셋 대기` key and without a
+      # `확인 대기` record the relay would wake at once and the successor would
+      # find the same nothing — a shift turn spent to learn it. Refused without
+      # a row; a shift with nothing to wait on hands off with another reason.
+      if [ "$hwhy" = "대기" ] && [ -z "$hci" ] && [ -z "$hrs" ] && [ -z "$hms" ] && [ -z "$hcw" ] \
          && [ -z "$(cc_relay_wait_stages "$RUN_DIR")" ]; then
-        warn "nothing to wait on — no live stage or supervisor, no \`CI 대기\` or \`master 대기\` segment and no \`리셋 대기\` key, so a \`대기\` handoff is refused"
+        warn "nothing to wait on — no live stage or supervisor, no \`CI 대기\` or \`master 대기\` segment, no \`리셋 대기\` key and no \`확인 대기\` record, so a \`대기\` handoff is refused"
         return "$GATE_EXIT_RULE"
       fi
       # `종단` SAYS THE RUN HAS ENDED, SO IT IS TAKEN ONLY FROM A RUN THAT HAS.
@@ -38154,6 +38481,7 @@ EOF
       local hrsf=""
       [ -z "$hrs" ] || hrsf=" | 리셋 대기=$hrs"
       [ -z "$hms" ] || hrsf="$hrsf | master 대기=$hms"
+      [ -z "$hcw" ] || hrsf="$hrsf | 확인 대기=$hcw"
       while [ "$hw" -ge 40 ]; do
         hd=$(gate_row_safe "$(gate_field_of '버린 선택지' "$@")" "$hw")
         hb=$(gate_row_safe "$(gate_field_of '막힌 지점' "$@")" "$hw")
@@ -38165,12 +38493,12 @@ EOF
         hw=$((hw - 40))
       done
       if [ "$hlen" -gt "$GATE_ROW_MAX" ]; then
-        warn "the handoff row does not fit in ${GATE_ROW_MAX} bytes even with its free text narrowed to the floor — \`CI 대기\`, \`리셋 대기\` and \`master 대기\` are never cut, so nothing is written"
+        warn "the handoff row does not fit in ${GATE_ROW_MAX} bytes even with its free text narrowed to the floor — \`CI 대기\`, \`리셋 대기\`, \`master 대기\` and \`확인 대기\` are never cut, so nothing is written"
         return "$GATE_EXIT_VOCAB"
       fi
       gate_append 'handoff' "교대=$hn" "사유=$hwhy" \
         "버린 선택지=$hd" "막힌 지점=$hb" "다음 후보=$hc" "CI 대기=${hci:--}" \
-        ${hrs:+"리셋 대기=$hrs"} ${hms:+"master 대기=$hms"} \
+        ${hrs:+"리셋 대기=$hrs"} ${hms:+"master 대기=$hms"} ${hcw:+"확인 대기=$hcw"} \
         "대상=$alias" "기록 시각=$(now_iso)"
       log "교대 $hn 기록 — 사유 $hwhy"
       # PAST THE DEADLINE THERE IS NOTHING FOR THE RELAY TO WAKE FOR, so the
@@ -38672,12 +39000,33 @@ EOF
         warn "이 중단 기록은 종료 절 근거 요청입니다 — 추천이 실려 있어도 답한 주체=사람 의 답만 기록합니다: $hrec"
         return "$GATE_EXIT_RULE"
       fi
-      local hladder=''
+      local hladder='' hconf=''
+      # A FIXED LABEL IS A PERSON'S OR THE SEAT'S CONFIRMATION, NEVER A SHIFT'S.
+      # The two labels answer a record that offers no option; a shift's one
+      # answer is the binding-tier `재수렴`, refused below for anything else,
+      # and this says why in the fixed labels' own terms.
+      if [ "$hby" = "교대" ] \
+         && { [ "$hopt" = "$GATE_HALT_FIXED_RESUME" ] || [ "$hopt" = "$GATE_HALT_FIXED_PARK" ]; } \
+         && gate_halt_record_no_options "$hrec"; then
+        warn "a shift does not answer a record with no option — \`$GATE_HALT_FIXED_RESUME\` and \`$GATE_HALT_FIXED_PARK\` are a person's answers, and the seat's \`$GATE_HALT_FIXED_RESUME\` on a confirmation match: $hrec"
+        return "$GATE_EXIT_RULE"
+      fi
+      # THE SEAT'S CONFIRMATION ANSWER COMES BEFORE THE DRAFT AND THE
+      # RECOMMENDATION. It answers a record with no option and no
+      # recommendation, so neither of those checks has anything to read; what
+      # it rests on is the relay's match record (`gate_halt_confirm_admit`),
+      # and the command is not run here. It still passes the option check below,
+      # whose list for such a record is the two fixed labels.
+      if [ -z "$hdraft" ] && [ "$hby" = "좌석" ] && [ "$hopt" = "$GATE_HALT_FIXED_RESUME" ] \
+         && [ -z "$hseatrun" ] && [ -z "$hsa" ]; then
+        gate_halt_confirm_admit "$seg" "$hrec" || return "$?"
+        hkinds='해소 확인'
+        hconf='일치'
       # A DRAFT ANSWER TAKES THE DRAFT CHECK INSTEAD OF THE RECOMMENDATION'S.
       # The record recommends `(없음)`, which `gate_halt_recommendation` refuses,
       # and its step is closed by `gate_halt_draft_admit`'s record kinds, so the
       # design check that reads step substrings has nothing to read here.
-      if [ -n "$hdraft" ]; then
+      elif [ -n "$hdraft" ]; then
         gate_halt_draft_admit "$hrec" "$seg" "$hby" "$alias" || return "$?"
         if [ "$hopt" != "$GATE_DRAFT_OPT" ]; then
           warn "an answer \`초안 그대로=예\` takes the option the draft names (\`$GATE_DRAFT_OPT\`), not \`$hopt\`"
@@ -38707,8 +39056,19 @@ EOF
       # The label is one of the `**선택지**:` block's, whole: a line elsewhere in
       # the record that starts the same way — a command line, a quoted line —
       # is not an option, and a label is not the prefix of a longer one.
-      if ! gate_halt_option_labels "$hread" | grep -xF -- "$hopt" >/dev/null; then
+      # A RECORD WITH NO OPTION TAKES THE TWO FIXED LABELS (`원인 해소 후 재개`
+      # alone on a run-scope key), and a record with options never does unless
+      # it lists one of them itself (`gate_halt_answer_labels`).
+      if ! gate_halt_answer_labels "$seg" "$hread" | grep -xF -- "$hopt" >/dev/null; then
         warn "\`선택지\` is not one of the options this halt record lists verbatim: $hopt"
+        case "$hopt" in
+          "$GATE_HALT_FIXED_RESUME"|"$GATE_HALT_FIXED_PARK")
+            if gate_halt_record_no_options "$hrec"; then
+              warn "run-scope key $seg has no segment to park — the one fixed answer here is \`$GATE_HALT_FIXED_RESUME\`: $hrec"
+            else
+              warn "\`$hopt\` is a fixed answer for a record that offers no option — this record lists its own options, so answer one of them: $hrec"
+            fi ;;
+        esac
         # A record with no option line at all is the writer's fault, not the
         # answer's: options run inline after `**선택지**:` are read by no one, so
         # every answer to it is refused here with the same line as a typo.
@@ -38850,7 +39210,13 @@ EOF
       fi
       # The route `외부-보류` is stamped on the row: the consumer, the park's
       # copy of the judgment and the hold predicate read the token alone.
-      [ "$GATE_HALT_ROUTE_ID" != "외부-보류" ] || hxr='외부-보류'
+      # `원인-보류` is stamped the same way, and so is the `재부착` of a record
+      # with no option, so the readers of a fixed answer read the route from
+      # the row and never derive it again.
+      case "$GATE_HALT_ROUTE_ID" in
+        외부-보류|원인-보류) hxr=$GATE_HALT_ROUTE_ID ;;
+        재부착) ! gate_halt_record_no_options "$hrec" || hxr='재부착' ;;
+      esac
       # AN ENFORCEMENT-SURFACE APPROVAL IS A PERSON'S, PROVED BY THE FRAME, AND
       # IT COVERS EXACTLY WHAT WAS SHOWN. The route above already refused every
       # answerer but a person. The frame proves the person was asked with the
@@ -38889,6 +39255,8 @@ EOF
           log "자동 채택 — 구속-이탈 ($seg ← 재수렴)"
         elif [ -n "$hdraft" ]; then
           log "자동 답 — 좌석이 기록의 결정 초안을 채택함 ($seg ← $hopt)"
+        elif [ -n "$hconf" ]; then
+          log "자동 답 — 좌석이 해소 확인 일치로 답함 ($seg ← $hopt)"
         else
           log "자동 답 — 좌석이 기록의 추천을 고름 ($seg ← $hopt)"
         fi
@@ -38911,7 +39279,7 @@ EOF
           ${hsafr:+"승인 프레임=$hsafr"} ${hsasn:+"적용 범위 수=$hsasn"} ${hsasd:+"적용 범위 다이제스트=$hsasd"} \
           ${hsacf:+"승계 프레임=$hsacf"} ${hsacr:+"승계 원본=$hsacr"} ${hsanh:+"사람 몫=$hsanh"} \
           ${hladder:+"잔여 판정=$hladder"} ${hxj:+"고칠 곳=$hfix"} ${hxj:+"판정 주체=$hxj"} ${hxs:+"판정 신호=$hxs"} \
-          ${hxe:+"판정 근거=$hxe"} ${hxg:+"측정 등급=$hxg"} ${hxr:+"라우팅=$hxr"} \
+          ${hxe:+"판정 근거=$hxe"} ${hxg:+"측정 등급=$hxg"} ${hxr:+"라우팅=$hxr"} ${hconf:+"해소 확인=$hconf"} \
           "기록 다이제스트=$hdig" ${hatt:+"첨부=$hatt"} ${hatt:+"첨부 다이제스트=$hattdig"} \
           "레인=$hlane" "기록 시각=$hat")
         [ "$hlen" -le "$GATE_ROW_MAX" ] && break
@@ -38991,6 +39359,7 @@ EOF
             ${hsafr:+"승인 프레임=$hsafr"} \
             ${hdm:+"초안 채택=$hdm"} ${hsanh:+"사람 몫=$hsanh"} ${hladder:+"잔여 판정=$hladder"} ${hxj:+"고칠 곳=$hfix"} ${hxj:+"판정 주체=$hxj"} \
             ${hxs:+"판정 신호=$hxs"} ${hxe:+"판정 근거=$hxe"} ${hxg:+"측정 등급=$hxg"} ${hxr:+"라우팅=$hxr"} \
+            ${hconf:+"해소 확인=$hconf"} \
             "기록 다이제스트=$hdig" \
             ${hatt:+"첨부=$hatt"} ${hatt:+"첨부 다이제스트=$hattdig"} \
             "레인=$hlane" "기록 시각=$hat"
@@ -40170,10 +40539,13 @@ gate_done_note() {
   fi
 }
 
-readonly GATE_REKICK_CAUSES="마감 천장 무진전 사이클예산 표면이동 연기마감 결함 판단정지 대상미선언 슬라이싱 시각승인대기 말단상한 P0잔존 해당없음"
+readonly GATE_REKICK_CAUSES="마감 천장 무진전 사이클예산 표면이동 연기마감 결함 외부대기 판단정지 대상미선언 슬라이싱 시각승인대기 말단상한 P0잔존 해당없음"
 
 gate_rekick_cause_ok() {
-  # gate_rekick_cause_ok <토큰> — true when the token is one of the fourteen.
+  # gate_rekick_cause_ok <토큰> — true when the token is one of the fifteen.
+  # `외부대기` is the end of a run stopped on an implement stage's
+  # `Step 1 외부 선행 미충족` halt, which waits on the world rather than on a
+  # defect of the plugin.
   #
   # A CLOSED SET, AND A VALUE OUTSIDE IT IS A CODE DEFECT. Every caller passes
   # a literal or a value chosen from a fixed map, so a stray spelling here is a
@@ -53030,12 +53402,18 @@ gate_continuation_argv() {
   # row with one `실패 서명` whose cause is not `-` would only spend the next
   # continuation on the same wall; the refusal is the cap's, with the reason
   # and the signature named.
-  local fsig_prev fsig_last fsig_same=0
+  # A MALFORMED HALT RECORD IS CONTINUED WITH ITS OWN MESSAGE. The settle moved
+  # the record to `.malformed`, so the attempt's path names it; the message
+  # lists the defects read again from the moved file, and every refusal names
+  # the moved path, so a person finds the stage's original words.
+  local fsig_prev fsig_last fsig_same=0 fmt=''
+  fmt=$(halt_record_malformed_of "$RUN_DIR/halt/$key#$att.md" 2>/dev/null || true)
   fsig_last=$(gate_row_field "$last" '실패 서명')
   fsig_prev=$(gate_row_field "$(gate_stage_result_rows_of "$key" | tail -2 | sed -n '1{$!p;}')" '실패 서명')
   same_failure_reason "$fsig_prev" "$fsig_last" && fsig_same=1
   if [ "$fsig_same" = "1" ] || [ "$(continue_count "$key")" -ge "$CONTINUE_MAX" ]; then
-    [ "$fsig_same" = "0" ] || warn "같은 실패 사유 — 직전 시도와 실패 서명이 같다: $fsig_last ($key)"
+    [ "$fsig_same" = "0" ] || warn "같은 실패 사유 — 직전 시도와 실패 서명이 같다: $fsig_last ($key)${fmt:+ · 중단 기록 형식 결함 — $fmt}"
+    [ "$fsig_same" = "1" ] || [ -z "$fmt" ] || warn "이어가기 예산 소진 · 중단 기록 형식 결함 — $fmt ($key)"
     # A RUN-SCOPE STEP IS NOT TOLD TO RECORD A BLOCK HERE. A cone may be
     # anchored on its step id, but a block would only hold the run on a step
     # that has nothing left to continue. What the design step has is the
@@ -53074,16 +53452,18 @@ gate_continuation_argv() {
     review) unmet="이 사이클의 리뷰 리포트($(gate_review_report_path "$key"))에 \`발견 요약\` 줄이 없고 정지 기록도 없다" ;;
     *)      unmet="게이트를 거친 행위도 정지 기록도 없다" ;;
   esac
+  local cmsg
+  if [ -n "$fmt" ]; then cmsg=$(halt_record_format_message "$fmt"); else cmsg=$(continue_message "$unmet"); fi
   GATE_CONTINUE_ARGV=()
   i=0
   while [ "$#" -gt 0 ]; do
     if [ "$1" = "-p" ] && [ "$#" -ge 2 ]; then
-      GATE_CONTINUE_ARGV+=(-p "$(continue_message "$unmet")"); shift 2; i=1
+      GATE_CONTINUE_ARGV+=(-p "$cmsg"); shift 2; i=1
     else
       GATE_CONTINUE_ARGV+=("$1"); shift
     fi
   done
-  [ "$i" = "1" ] || GATE_CONTINUE_ARGV+=(-p "$(continue_message "$unmet")")
+  [ "$i" = "1" ] || GATE_CONTINUE_ARGV+=(-p "$cmsg")
   GATE_CONTINUED=1
   n=$(continue_spend "$key")
   log "스테이지 계속 — $key ← 세션 $GATE_RESUME, 계속 메시지 ($n/$CONTINUE_MAX)"
@@ -57384,7 +57764,12 @@ gate_record_stage_outcome() {
   # control flow then describe different runs.
   local haltf
   haltf=$(halt_record_path "$seg")
-  if [ "$rc" = "0" ] && [ -s "$haltf" ] \
+  # A MALFORMED HALT RECORD is no stop: the driver's classifier and this one
+  # read it through the same run.sh predicate, right before the halt arm and
+  # ahead of every artifact arm, and both file it `공허한 성공`.
+  if [ "$rc" = "0" ] && halt_record_format_clue "$seg" >/dev/null; then
+    klass='공허한 성공'
+  elif [ "$rc" = "0" ] && [ -s "$haltf" ] \
      && [ "$( { grep -vE '^[[:space:]]*$' "$haltf" 2>/dev/null || true; } | tail -1)" = '<!-- /cc-pipeline-halt v1 -->' ]; then
     klass='의도된 park'
   # A MODEL SAFETY REFUSAL, before the crash arm and at either exit code: the
@@ -57611,8 +57996,13 @@ gate_record_stage_outcome() {
   # id for a halt, the first open decision for a suppressed implementation's
   # hollow success and the unmet residual headings for any other; otherwise the
   # helper reads the stream's last error event.
+  # A malformed halt record's clue is fixed and comes first; this is the
+  # gate's row writer, so the record is moved aside here, idempotently.
   local fsig_clue='' fsig
-  if [ "$klass" = "의도된 park" ]; then
+  if [ "$klass" = "공허한 성공" ] && halt_record_format_clue "$seg" >/dev/null; then
+    halt_record_settle_malformed "$seg" >/dev/null || true
+    fsig_clue='중단 기록 형식 결함'
+  elif [ "$klass" = "의도된 park" ]; then
     fsig_clue="$seg#$attempt"
   elif [ "$kind" = "implement" ] && [ "$klass" = "공허한 성공" ] && [ -n "$uverdict" ]; then
     fsig_clue=${uverdict#*$'\n'}
@@ -61874,8 +62264,10 @@ gate_launch_shift() {
   # or nothing — a shift that has to find that out by trying is a shift that
   # meets a target hook's refusal it could have read. A failed read is `미상`
   # and never holds the launch. A launch from inside the relay loop skips it:
-  # the relay's wait and its reads only read the ledger and call no `gh`, so its
-  # successor reads the rows the last read left, and a stale one reads `미상`.
+  # while it waits the relay never drains the ledger and never writes a row,
+  # and its one call outside is the confirmation branch's confirmation command,
+  # so its successor reads the rows the last read left, and a stale one reads
+  # `미상`.
   # The launch the loop calls appends the CI drain and the `교대 기동` row.
   if [ -z "$GATE_RELAY_INNER" ]; then
     gate_remote_state_refresh "$alias" || true
@@ -62392,15 +62784,27 @@ gate_shift_return_banner() {
 # outlives the relay on purpose: its `handback` line is the watcher's base time
 # for the seat turn that follows a hand-back.
 #
-# THE WAIT AND THE READS ONLY READ THE LEDGER. While it waits the relay never
-# drains `checks.observed`, never appends a row and never calls `gh` — it reads
-# the three sources the poller and the drain already keep, through
-# `cc_ci_records`, which the watcher reads too. A drain in the wait would append
-# rows inside the seat's open call and stale every sibling digest. The shift
-# launch the loop calls is the one writer: it appends the CI drain and the
-# `교대 기동` row.
+# WHILE IT WAITS THE RELAY NEVER DRAINS THE LEDGER AND NEVER WRITES A ROW; THE
+# ONE CALL OUTSIDE IS THE CONFIRMATION BRANCH'S CONFIRMATION COMMAND. It never
+# drains `checks.observed` — it reads the three sources the poller and the drain
+# already keep, through `cc_ci_records`, which the watcher reads too. A drain in
+# the wait would append rows inside the seat's open call and stale every
+# sibling digest. A record's confirmation command (`gate_confirm_run`) is a
+# graded read under the read-scoped credential; its count and match files live
+# under `$RUN_DIR/confirm`, which is not the ledger. The shift launch the loop
+# calls is the one writer: it appends the CI drain and the `교대 기동` row.
 
 GATE_RELAY_SEAT_START=""
+GATE_RELAY_CONFIRM_SET=""
+GATE_RELAY_CONFIRM_SPENT=0
+GATE_RELAY_CONFIRM_HIT=""
+GATE_RELAY_W_STAGES=""
+GATE_RELAY_W_CI=""
+GATE_RELAY_W_RESET=""
+GATE_CONFIRM_CMD=""
+GATE_CONFIRM_WANT=""
+GATE_CONFIRM_REFUSAL=""
+GATE_CONFIRM_OUT=""
 GATE_RELAY_INNER=""
 GATE_RELAY_ENTERED=""
 GATE_RELAY_HANDED_BACK=""
@@ -62573,6 +62977,70 @@ gate_relay_master_segments() {
     }
     END { if (mw != "-") printf "%s", mw }
   ' "$LEDGER" 2>/dev/null || true
+}
+
+gate_relay_confirm_names() {
+  # The `확인 대기` record names of the reference row — the latest `handoff`,
+  # when it is `대기` — comma-joined, or empty; read as
+  # `gate_relay_master_segments` reads its field.
+  [ -n "${LEDGER:-}" ] && [ -f "$LEDGER" ] || return 0
+  LC_ALL=C awk -F'|' '
+    function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
+    /^- `handoff` / {
+      cw = ""
+      if (index($0, " | 사유=대기 | ") == 0) next
+      for (i = 2; i <= NF; i++) {
+        f = trim($i)
+        if (index(f, "확인 대기=") == 1) cw = substr(f, length("확인 대기=") + 1)
+      }
+    }
+    END { if (cw != "-") printf "%s", cw }
+  ' "$LEDGER" 2>/dev/null || true
+}
+
+gate_relay_confirm_set() {
+  # gate_relay_confirm_set <names> — the confirmation branch of the wait set,
+  # derived again on every poll: the names whose record the branch still runs
+  # (`gate_confirm_eligible`), comma-joined, in GATE_RELAY_CONFIRM_SET. A
+  # record at the count cap, one a `중단 답` row now names, and one the seat's
+  # answer would be refused for leave it and are not run.
+  # GATE_RELAY_CONFIRM_SPENT is 1 when the names were not empty and every one
+  # left for the count cap — the branch is exhausted, and the relay hands the
+  # turn back rather than launching a shift that would find the same records.
+  local n out='' spent=1 any=''
+  for n in $(printf '%s' "$1" | tr ',' ' '); do
+    any=1
+    if gate_confirm_eligible "$n"; then
+      out="${out:+$out,}$n"; spent=0
+    elif [ "$GATE_CONFIRM_OUT" != "상한" ]; then
+      spent=0
+    fi
+  done
+  [ -n "$any" ] || spent=0
+  GATE_RELAY_CONFIRM_SET=$out
+  GATE_RELAY_CONFIRM_SPENT=$spent
+}
+
+gate_relay_confirm_due() {
+  # gate_relay_confirm_due <names> — runs the confirmation of each record
+  # whose last run is a poll period behind, refreshing `relay.live` before and
+  # after each command so the watcher never reads the relay as stale while one
+  # runs. 0 on the first match (its match record is written), 1 otherwise.
+  local n c last now poll
+  poll=$(gate_confirm_test_value "$GATE_CONFIRM_POLL_SECONDS" "${CC_GATE_CONFIRM_POLL_TEST_SECONDS:-}")
+  for n in $(printf '%s' "$1" | tr ',' ' '); do
+    c=$(gate_confirm_count "$n"); last=${c#* }
+    now=$(date -u +%s)
+    [ $((now - last)) -ge "$poll" ] || continue
+    gate_relay_write "$GATE_RELAY_W_STAGES" "$GATE_RELAY_W_CI" "$GATE_RELAY_W_RESET"
+    if gate_confirm_run "$n"; then
+      gate_relay_write "$GATE_RELAY_W_STAGES" "$GATE_RELAY_W_CI" "$GATE_RELAY_W_RESET"
+      GATE_RELAY_CONFIRM_HIT=$n
+      return 0
+    fi
+    gate_relay_write "$GATE_RELAY_W_STAGES" "$GATE_RELAY_W_CI" "$GATE_RELAY_W_RESET"
+  done
+  return 1
 }
 
 gate_relay_master_wake() {
@@ -62861,17 +63329,30 @@ gate_relay_wait() {
   # launch at once; the relay wakes at that time (`cc_relay_wake_keys`) and the
   # launch judges again. When it and a reset name the same time, it is read as
   # that time and the launch is tried.
-  local stages ci reset defer resume hold now mw
+  #
+  # A RECORD'S CONFIRMATION IS THE SEVENTH, and the one member the relay acts
+  # on itself. The `확인 대기` records of the reference row hold the set open,
+  # derived again on every poll (`gate_relay_confirm_set`), and each one's
+  # command runs once a poll period after its last run. A match hands the turn
+  # back, `해소 확인 일치`, for the seat to answer — no shift is launched for it.
+  # When the branch is spent by the count cap and nothing else is waited on,
+  # the turn is handed back `확인 소진`; a record that left because a `중단 답`
+  # row now names it empties the set as any other member does, and the
+  # successor routes that answer. The watcher's keys do not carry this member.
+  local stages ci reset defer resume hold now mw cw
   stages=$(cc_relay_wait_stages "$RUN_DIR")
   ci=$(gate_relay_ci_segments)
   reset=$(gate_relay_reset_set)
   defer=$(gate_relay_defer_clock)
   resume=$(gate_relay_resume_clock)
   mw=$(gate_relay_master_segments)
+  cw=$(gate_relay_confirm_names)
+  gate_relay_confirm_set "$cw"
+  GATE_RELAY_W_STAGES=$stages GATE_RELAY_W_CI=$ci GATE_RELAY_W_RESET=$reset
   [ -n "$GATE_RELAY_STARTED" ] || GATE_RELAY_STARTED=$(date -u +%s)
   gate_relay_write "$stages" "$ci" "$reset"
   hold=$(gate_relay_hold)
-  log "교대 대기 — 스테이지·감독자 ${stages:--} · CI ${ci:--} · 리셋 ${reset:--} · 이월 ${defer:--} · 계정 이전 ${resume:--} · master ${mw:--}"
+  log "교대 대기 — 스테이지·감독자 ${stages:--} · CI ${ci:--} · 리셋 ${reset:--} · 이월 ${defer:--} · 계정 이전 ${resume:--} · master ${mw:--} · 확인 ${GATE_RELAY_CONFIRM_SET:--}"
   while :; do
     now=$(date -u +%s)
     if [ -e "$RUN_DIR/done" ]; then
@@ -62886,9 +63367,20 @@ gate_relay_wait() {
       gate_relay_hand_back "$stages" "$ci" "$reset" "CI 를 기다리는데 checks 폴러가 살아 있지 않다"
       return 1
     fi
-    if [ -z "$stages" ] && [ -z "$ci" ] && [ -z "$reset" ] && [ -z "$defer" ] && [ -z "$resume" ] && [ -z "$mw" ]; then
+    [ -z "$cw" ] || gate_relay_confirm_set "$cw"
+    if [ -z "$stages" ] && [ -z "$ci" ] && [ -z "$reset" ] && [ -z "$defer" ] && [ -z "$resume" ] && [ -z "$mw" ] \
+       && [ -z "$GATE_RELAY_CONFIRM_SET" ]; then
+      if [ "$GATE_RELAY_CONFIRM_SPENT" = "1" ]; then
+        gate_relay_hand_back "$stages" "$ci" "$reset" "확인 소진"
+        return 1
+      fi
       log "교대 대기 끝 — 기다리던 것이 이미 끝났다"
       return 0
+    fi
+    if [ -n "$GATE_RELAY_CONFIRM_SET" ] && gate_relay_confirm_due "$GATE_RELAY_CONFIRM_SET"; then
+      log "교대 대기 끝 — 해소 확인이 일치했다 ($GATE_RELAY_CONFIRM_HIT)"
+      gate_relay_hand_back "$stages" "$ci" "$reset" "해소 확인 일치"
+      return 1
     fi
     # BEFORE A FAILOVER WAIT'S RESUME TIME NO OTHER KEY WAKES THE RELAY. A wake
     # key is consumed only by a `교대 기동` row below its evidence, and a wait
@@ -62932,6 +63424,17 @@ gate_relay_hand_back() {
     gate_attention_kick || true
     return 0
   fi
+  # THE CONFIRMATION BRANCH'S TWO ENDS ARE NOT A WAIT THAT GOES ON. A match is
+  # the seat's to answer, and a spent branch is a person's — re-issuing `대기`
+  # would only run the same records again — so each says what the seat does.
+  case "$4" in
+    '해소 확인 일치')
+      printf '%s [relay] 해소 확인 일치 · 좌석이 해소 확인 답을 낸다\n' "$(now_iso)"
+      return 0 ;;
+    '확인 소진')
+      printf '%s [relay] 확인 소진 · 다시 내지 않는다\n' "$(now_iso)"
+      return 0 ;;
+  esac
   printf '%s [relay] 대기가 이어진다 — %s · 같은 호출을 대기 로 다시 낸다\n' "$(now_iso)" "$4"
   return 0
 }
