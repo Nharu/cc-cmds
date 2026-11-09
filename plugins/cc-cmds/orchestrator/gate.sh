@@ -30,6 +30,9 @@
 #   plan       dry run — would this act pass? if not, which rule refuses it
 #   act        check, record, perform a pipeline act
 #   exec       check, record, perform one bash line (the unit B3 counts)
+#   reach-screen
+#              dry run with no run — which `도달 판정` cell would `exec` park
+#              this argv on? reads the manifest only and writes nothing
 #   wait       block until a dispatched stage terminates; writes no row and
 #              evaluates no boundary — its exit status is the stage's own rc,
 #              or one of 11..14 or 20 below. Called by a shift it evaluates the hard
@@ -135,6 +138,17 @@
 #                    --snapshot-digest <hex> --rationale <text>
 #                    [--emit-digest] -- <argv...>
 #   gate.sh wait     --manifest <path> --segment <id> [--interval <sec>] [--timeout <sec>]
+#   gate.sh reach-screen --manifest <path> --target <alias> [--surface <token>]
+#                    [--reach <token>] [--destructive] -- <argv...>
+#                    the `도달 판정` cell `exec` would reach for this argv, read
+#                    from the manifest alone with no run, no row and no
+#                    pre-authorization judgment call; prints one tab-separated
+#                    line `판정 칸 원인 행으로열림 표면 등급출처 도달신고 유도도달`,
+#                    on a park the gate's repair text (first line prefixed
+#                    `수리: `), and last `축: 도달 판정`. Exit 0 on 통과, 11 on
+#                    park, 2 on a vocabulary or argv error (a reach the argv
+#                    needs and did not declare prints a `신고필요` line first),
+#                    6 on a declared grade the table contradicts
 #   gate.sh supervise-stage
 #                    --manifest <path> --target <alias> --segment <id> --nonce <hex>
 #                    -- <stage-kind> <cli args...>          (internal; see above)
@@ -4157,6 +4171,11 @@ gate_park_repair_line() {
   # cell, whatever the stage declares.
   local Bn="this row opens this act and every act that begins with these words in the cell of the reach it names (choose dev, prod or 배포트리거), whatever reach a stage declares; this run's authorization is frozen, so the row takes effect from the next kickoff"
   local msg='' row=0
+  # WHETHER A ROW REPAIRS THIS CELL, left for `reach-screen`, which reports it
+  # as a field instead of parsing the text below. Reset on entry and set once
+  # `row` is final, so every return — the early one for a cell with no repair
+  # included — leaves the value this call decided.
+  GATE_PARK_REPAIR_ROW=0
   case "$cell/$cause" in
     # TWO ROWS SAY DIFFERENT THINGS ABOUT ONE SHAPE, so the repair is to correct
     # or delete one of them — a row printed here would add a third.
@@ -4262,6 +4281,7 @@ gate_park_repair_line() {
   if [ "$row" = "1" ]; then
     case "$sx" in dropped|none|code) msg=''; row=0 ;; esac
   fi
+  GATE_PARK_REPAIR_ROW="$row"
   if [ -z "$msg" ]; then
     case "$sx" in
       dropped) msg="repair: no row can name this spelling — the matcher drops '$sw' (an option written with '='). If the program also accepts that option with a space or as a bare flag, respell it that way and name the respelled act in a row at the next kickoff; if it accepts only the '=' spelling (terraform's -chdir, for one), no row opens this act — leave it to a person" ;;
@@ -20728,7 +20748,7 @@ gate_main() {
   GATE_HOP_ARGV=("$@")
   [ $# -ge 1 ] || { gate_usage >&2; exit 2; }
   local verb="$1"; shift
-  local kind="" alias="" segment="-" cutpoint="" surface="" snapdig="" rationale=""
+  local kind="" alias="" segment="-" segment_seen=0 cutpoint="" surface="" snapdig="" rationale=""
   local approval="" render=0 worktree="" void=0 reject=0
   local emit_digest_seen=0 emit_digest_dir=""
   local reach="" destructive=0
@@ -20825,7 +20845,7 @@ gate_main() {
       --manifest)        MANIFEST="$2"; shift 2 ;;
       --kind)            kind="$2"; shift 2 ;;
       --target)          alias="$2"; shift 2 ;;
-      --segment)         segment="$2"; shift 2 ;;
+      --segment)         segment="$2"; segment_seen=1; shift 2 ;;
       --cutpoint)        cutpoint="$2"; shift 2 ;;
       --surface)         surface="$2"; shift 2 ;;
       --reach)           reach="$2"; shift 2 ;;
@@ -21134,9 +21154,23 @@ gate_main() {
   # reaches nothing, so it is refused here rather than taking a value it would
   # never read: a flag that is silently inert is a flag a caller believes is
   # working.
+  # `reach-screen` TAKES THE CELL'S INPUTS AND NOTHING ELSE. It writes no row,
+  # so the flags that bind, justify or place a row — a kind, a segment, a
+  # cutpoint, a digest, a rationale, an approval, a worktree, a render, a void,
+  # a reject, a resumed session — have nothing to act on, and a caller passing
+  # one believes it decided something.
+  if [ "$verb" = "reach-screen" ]; then
+    if [ -n "$kind" ] || [ "$segment_seen" = "1" ] || [ -n "$cutpoint" ] \
+       || [ -n "$snapdig" ] || [ -n "$rationale" ] || [ -n "$approval" ] \
+       || [ -n "$worktree" ] || [ "$render" = "1" ] || [ "$void" = "1" ] \
+       || [ "$reject" = "1" ] || [ -n "$GATE_RESUME" ]; then
+      printf 'gate: reach-screen takes only --manifest, --target, --surface, --reach, --destructive and the argv after -- (it writes no row)\n' >&2
+      exit 2
+    fi
+  fi
   if [ -n "$reach" ] || [ "$destructive" = "1" ]; then
     case "$verb" in
-      exec|admit) ;;
+      exec|admit|reach-screen) ;;
       # The remote read names where it reaches; it changes nothing there. A
       # clause execution runs a command, so it takes both flags as exec does.
       act) [ "$kind" = "clause-exec" ] || { [ "$kind" = "remote-check" ] && [ "$destructive" = "0" ]; } || {
@@ -21188,6 +21222,15 @@ gate_main() {
   # A missing file leaves the memo empty and `check_manifest` refuses it with
   # the same message it always did.
   manifest_snapshot_take
+
+  # `reach-screen` LEAVES HERE, before the hop, the manifest check, the grant
+  # and the run directory: it is the kickoff's question about a draft manifest
+  # no run owns yet, and every step below either needs a run or writes one.
+  if [ "$verb" = "reach-screen" ]; then
+    [ -f "$MANIFEST" ] || { printf 'gate: manifest not found: %s\n' "$MANIFEST" >&2; exit 2; }
+    gate_verb_reach_screen "$alias" "$surface" "$@"
+    exit $?
+  fi
 
   # HOP (A) — AN ALREADY PINNED RUN, AT THE EARLIEST POINT IT CAN BE DETECTED.
   #
@@ -47194,6 +47237,543 @@ gate_admit_issue() {
     "$GATE_ADMIT_TID" "$GATE_ADMIT_TTL" "$GATE_ADMIT_BYTES"
 }
 
+gate_act_cell_front() {
+  # gate_act_cell_front <verb> <kind> <alias> <segment> <surface> <argv...> —
+  # the front of the cell an act's `도달 판정` is read from: the grading base,
+  # the table grade and its source, the marks and the floor, the surface
+  # comparator, the declaration path of an ungraded command and the required
+  # reach. TWO VERBS CALL IT, `exec`/`act`/`plan` from `gate_verb_act` and
+  # `reach-screen`, so the kickoff's forecast and the night's act cannot grade
+  # one argv two ways.
+  #
+  # THE CALLER OWNS `graded` AND `argv_graded`. Both are locals of the caller
+  # and this function fills them through bash's dynamic scope; every other
+  # value it settles is the global it always was, read by
+  # `gate_act_effective_surface`, `gate_act_reach_cell` and the rest of
+  # `gate_verb_act`. Every exit below is the caller's exit, with the code and
+  # the message `exec` has always given.
+  local verb="$1" kind="$2" alias="$3" segment="$4" surface="$5"; shift 5
+  # THE GRADING BASE IS THE DIRECTORY THE ACT ACTUALLY RUNS IN, and it is handed
+  # over IN-PROCESS rather than through the environment: the exported copy is
+  # visible to children too, and a child must not grade against its parent's
+  # tree. `plan` is not excluded — it forecasts what `act` would do, so it has to
+  # resolve what `act` would resolve.
+  #
+  # THE BASE IS RESOLVED HERE, NOT INHERITED. Reading `GATE_ACT_CWD` at this point
+  # could only ever pick up an EXPORTED value, because `gate_verb_act` does not
+  # assign it until after this function returns — so the two write guards measured their
+  # relative operands against the OUTER run's worktree and a stage reached a
+  # fail-open with ordinary flags: `--segment` defaults to `-`, so a stage running
+  # in a segment worktree that names only a target gets the main worktree as the
+  # act's directory while the operand is absolutized against the segment's, and
+  # `cp /tmp/evil plugins/cc-cmds/orchestrator/gate.sh` then passes both guards
+  # and lands on the live installed gate. The comment on `gate_grade_cwd()`
+  # already claims the value is always one THIS process computed; this line is
+  # what makes that claim true.
+  #
+  # THE SAME RESOLVER, THE SAME ARGUMENTS, so this and `gate_verb_act`'s assignment cannot
+  # disagree — `gate_act_worktree` is a pure resolver and `gate_act_worktree`'s own
+  # comment requires its three readers to resolve identically.
+  #
+  # `grade` KEEPS TODAY'S BEHAVIOUR, and that is the correct base for it rather
+  # than a fallback failure. `grade` answers about the caller, so it leaves
+  # `GATE_GRADE_CWD` empty and falls to `$PWD` in `gate_grade_cwd()`. Refusing
+  # when the value is absent would refuse every `grade` instead, which is a
+  # different decision than this one.
+  #
+  # AN UNDECLARED TARGET IS NO LONGER EXCLUDED. It was, on the reasoning that
+  # its act "stays in the caller's directory because there is no row to read" —
+  # but the act did not stay there: `gate_verb_act`'s assignment put it in the
+  # `--worktree` the caller named, while this block left the base empty and
+  # `gate_grade_cwd()` fell to `$PWD`. So the base and the tree root answered
+  # about the gate's own directory while the act ran elsewhere, and a relative
+  # write under an undeclared target graded `워크트리쓰기` wherever it landed.
+  # `gate_act_worktree` now answers for the undeclared arm too, so the base
+  # takes the same value the act runs in.
+  if [ "$verb" != "grade" ]; then
+    local actwt
+    actwt=$(gate_act_worktree "$alias" "$segment")
+    [ "${GATE_ADMIT:-}" != "1" ] || actwt="$GATE_ADMIT_CWD"
+    if [ -n "$actwt" ]; then
+      GATE_GRADE_CWD=$(gate_real_prefix "$actwt")
+    fi
+  fi
+
+  case "$kind" in
+    propose-done)
+      graded="읽기" ;;
+    skill|router-shift)
+      # A stage dispatch's argv does NOT begin with a command: its first token
+      # is the STAGE KIND that selects a settings variant, and the wrapper is
+      # what eventually runs a binary. Feeding that token to the argv0 table
+      # asked a question the table cannot answer, so every stage dispatch graded
+      # `등급 미상` and fell into the pre-authorization rule's external-state
+      # arm — which made dispatching any stage impossible.
+      #
+      # The grade is `워크트리쓰기`, and it is not a guess: the stage runs under
+      # the read-scoped credential and inside a settings file that denies what
+      # this run does not authorize, so what it can reach on its own is the
+      # tree. Anything it does ABOVE that grade goes back through this gate as
+      # its own act and is graded there.
+      #
+      # A ROUTING SHIFT HAS THE SAME SHAPE AND WAS LEFT OUT OF IT. Its first
+      # token is the handoff reason — `상한`, `승인` — which is no more a command
+      # than a stage kind is, so it graded `등급 미상` and the launcher could not
+      # be reached at all: declared `읽기` the act came back 6, declared not at
+      # all it came back 2. It starts its successor the way a stage dispatch
+      # starts one, under the same read-scoped credential, so it takes the same
+      # grade rather than a second answer to one question.
+      graded="워크트리쓰기" ;;
+    apply)
+      # The argv is a token and not a command, so the table has nothing to say;
+      # what the act performs is the frozen apply command, which changes state
+      # outside the tree by definition.
+      graded="외부상태변경" ;;
+    apply-settle)
+      # `정산` is a token too. What the act performs is the frozen probe, which
+      # reads the deployment the apply touched — at the apply's own rung, so the
+      # settlement is never opened where the apply would not be.
+      graded="외부상태변경" ;;
+    ci-rerun|label-ack|review-post)
+      # The same: `재실행 <sha>`, `라벨 <sha>` and `게시` are tokens, and what
+      # the act performs is the gate's own POST to GitHub, a change of state
+      # outside the tree.
+      graded="외부상태변경" ;;
+    ci-match)
+      # `대조 <sha>` is a token as well; what the act performs is GETs and the
+      # ledger row, so it reads.
+      graded="읽기" ;;
+    *)
+      if gate_kind_is_bookkeeping "$kind"; then
+        # A bookkeeping act: its argv is a list of `키=값` fields, not a command,
+        # and what it performs is the ledger row the gate would write anyway. It
+        # reaches nothing outside the ledger, so it grades `읽기`.
+        #
+        # THE SET IS ASKED FOR HERE, NOT SPELLED AGAIN. This site carried a
+        # private copy of the list and that copy was missing `handoff`, so the
+        # one act whose argv begins with `교대=0` graded `등급 미상` and the
+        # terminal shift's own row came back 6 — refused by the axis that was
+        # never about it.
+        graded="읽기"
+      else
+        graded=$(surface_of_argv0 "$@")
+        argv_graded=1
+      fi ;;
+  esac
+  # 형태 미상 IS REFUSED BEFORE THE DECLARATION IS EVEN READ, and that ordering
+  # is the whole point of the token. This is a tool the table knows, in a form
+  # the parser could not read — so the caller's declaration is a claim about
+  # bytes nobody understood, and admitting it would let `curl --x -X POST` be
+  # declared `읽기` and performed. Unlike `등급 미상`, no declaration rescues it;
+  # the repair is to respell the command so its verb and options are visible.
+  if [ "$graded" = "$GATE_FORM_UNKNOWN" ]; then
+    warn "axis 2 \`형태 미상\` — this is a tool in the table, but what it does cannot be read in this shape: $1 (it cannot be waved through by declaration. Rewrite it so the subcommand and the options are visible)"
+    exit "$GATE_EXIT_VOCAB"
+  fi
+  # --- 부류·표지·하한 -----------------------------------------------------
+  # Three values the grade cannot carry, computed once here so the comparator,
+  # the disposition evaluator and the ledger row all read the same answer.
+  #
+  # `등급 출처` is three-valued rather than a boolean: `표` is a grade the table
+  # proved from argv, `불투명` is a runner whose payload the table cannot see,
+  # and `미상` is a command with no row at all. The three take different
+  # comparators and leave different marks on the row, and collapsing any two of
+  # them loses exactly the distinction the axis was added for.
+  GATE_GRADE_SOURCE='표'; GATE_OPAQUE=0; GATE_FLOOR=''
+  GATE_MARK=''; GATE_MARK_TRIGGER=''
+  export GATE_GRADE_SOURCE GATE_OPAQUE GATE_FLOOR GATE_MARK GATE_MARK_TRIGGER
+  if [ "$argv_graded" = "1" ]; then
+    GATE_OPAQUE=$(gate_argv_opaque "$@")
+    local _mk; _mk=$(gate_act_mark "$@")
+    GATE_MARK="${_mk%%	*}"; GATE_MARK_TRIGGER="${_mk#*	}"
+    if [ "$GATE_OPAQUE" = "1" ] || [ "$graded" = "등급 미상" ]; then
+      local _fl _rest _fmark _ftrig
+      _fl=$(gate_opaque_floor "$@")
+      GATE_FLOOR="${_fl%%	*}"; _rest="${_fl#*	}"
+      _fmark="${_rest%%	*}"; _ftrig="${_rest#*	}"
+      # A mark the OUTER argv could not show. `bash -c 'aws … --with-decryption'`
+      # is a secret print that `gate_act_mark` answers nothing for, because the
+      # name it sees is `bash`. `비밀출력` outranks `파괴` where both appear: the
+      # first is a disclosure that cannot be taken back once printed.
+      if [ -z "$GATE_MARK" ] || { [ "$GATE_MARK" = "파괴" ] && [ "$_fmark" = "비밀출력" ]; }; then
+        [ -n "$_fmark" ] && { GATE_MARK="$_fmark"; GATE_MARK_TRIGGER="$_ftrig"; }
+      fi
+    fi
+    [ "$GATE_OPAQUE" = "1" ] && GATE_GRADE_SOURCE='불투명'
+    [ "$graded" = "등급 미상" ] && GATE_GRADE_SOURCE='미상'
+  fi
+
+  # --- 비교기 -------------------------------------------------------------
+  # OVER-DECLARATION IS ACCEPTED IN BOTH MODES, and it is what makes an honest
+  # declaration possible at all: the table is path-blind, so a caller who knows
+  # their `mkdir` lands outside the worktree had no spelling that was both true
+  # and accepted. Strict equality refused 687 such calls in this corpus.
+  #
+  # UNDER-DECLARATION IS STILL EXIT 6. What it is compared against depends on the
+  # class: a table-graded form against the table, and an opaque one against the
+  # FLOOR — because the table's answer for `sh -c` says only that a shell ran,
+  # and the floor is the part of its payload the gate could actually read.
+  if [ -n "$surface" ]; then
+    surface_index "$surface" >/dev/null || exit "$GATE_EXIT_VOCAB"
+    local _bound="$graded" _bi _si
+    if [ "$GATE_GRADE_SOURCE" = "불투명" ] && gate_auto_resolve_enabled; then
+      _bound="${GATE_FLOOR:-읽기}"
+    elif [ "$GATE_GRADE_SOURCE" = "미상" ]; then
+      _bound="${GATE_FLOOR:-읽기}"
+    fi
+    if [ "$_bound" = "등급 미상" ]; then
+      # Off mode, unknown command: today's answer, unchanged — a declaration
+      # cannot be compared against a grade that does not exist.
+      warn "axis 2 self-declaration mismatch: declared '$surface' vs graded '$graded'"
+      gate_orchestrator_script_hint "$1"
+      exit "$GATE_EXIT_GRADE"
+    fi
+    _bi=$(surface_index "$_bound") || exit "$GATE_EXIT_VOCAB"
+    _si=$(surface_index "$surface") || exit "$GATE_EXIT_VOCAB"
+    if [ "$_si" -lt "$_bi" ]; then
+      warn "axis 2 under-declaration: declared '$surface' is lower than the $( [ "$_bound" = "$graded" ] && printf 'grade' || printf 'floor' ) '$_bound'"
+      if [ "$graded" = "등급 미상" ]; then gate_orchestrator_script_hint "$1"; fi
+      exit "$GATE_EXIT_GRADE"
+    fi
+    GATE_DECLARED="$surface"
+  fi
+  if [ "$graded" = "등급 미상" ] && [ -n "$surface" ] && gate_auto_resolve_enabled; then
+    # THE DECLARATION PATH. A command with no row may still run, and only while
+    # the run is unattended-resolving: the declaration is what the disposition
+    # evaluator then judges, and with the switch off there is no evaluator to
+    # judge it — so off mode keeps today's refusal rather than admitting a claim
+    # nothing will check.
+    #
+    # NOT FOR THE VISUAL HELPERS, WHEREVER THE FILE LIVES AND HOWEVER IT IS
+    # LAUNCHED. The rows of the gate's own copies grade every spelling the gate
+    # admits, by subcommand and by the ledger (`append` only on a person's
+    # unspent `승인` to that candidate), so their `등급 미상` is the table's
+    # refusal and not a tool it has never seen. Any other copy of the same name
+    # runs the same `append`, and a launcher in front of it (`env` setting the
+    # publish stage's marker, say) does not change what runs. Only argv0 itself
+    # was asked here once, so the run's pinned source checkout, a worktree copy
+    # and an `env`-wrapped spelling all took the declaration path and opened an
+    # `append` no person approved. A launcher the table has no row for
+    # (`xargs`, `sudo`) or one it delegates past its own operands (`find -exec`)
+    # names the helper further in, which the word scan reads.
+    { [ -n "$(gate_argv_visual_helper "$@")" ] || gate_argv_visual_helper_write "$@"; } \
+      || GATE_UNKNOWN_DECLARED=1
+  fi
+  if [ "${GATE_OPAQUE:-0}" = "1" ] && [ "$graded" != "등급 미상" ] && gate_argv_visual_helper_write "$@"; then
+    # AN INTERPRETER RUNNING A VISUAL HELPER'S WRITING SUBCOMMAND. `bash <copy>
+    # append …` and `sh -c '<copy> append …'` grade as the runner, and the
+    # opaque cell opens an out-of-tree run-local declaration, so the copy's
+    # marker check would be all that stands before the host forbidden list —
+    # and the caller sets that environment. The gate's own copy is graded only
+    # when it is called directly, so no interpreter spelling is needed for it.
+    warn "axis 2 \`등급 미상\` — a runner in front of \`visual-config.sh account|append|seed\` is not graded, and no declaration opens it; the gate's own copy is graded only when called directly"
+    [ "$verb" = "plan" ] || exit "$GATE_EXIT_VOCAB"
+  fi
+  if gate_argv_visual_account_rundir "$@"; then
+    # THE EXPECTED ACCOUNT COMES FROM THE RUN DIRECTORY. `account` compares the
+    # logged-in account with the one the run-local migration record under
+    # `CC_PIPELINE_RUN_DIR` names, so an act that sets that variable itself
+    # picks the record it is checked against. The stage inherits the run's
+    # value; no spelling that reassigns it is admitted.
+    warn "\`visual-config.sh account\` with \`CC_PIPELINE_RUN_DIR\` reassigned is refused — the expected account is read from the run's own migration record, so the act runs with the inherited value"
+    [ "$verb" = "plan" ] || exit "$GATE_EXIT_VOCAB"
+  fi
+  if [ "$graded" = "등급 미상" ] && [ "${GATE_UNKNOWN_DECLARED:-0}" != "1" ]; then
+    # THE GENERIC MESSAGE COMES FIRST SO THE SPECIFIC ONE IS READ LAST. Both
+    # lines name a repair and the two repairs are opposites: the generic one
+    # says respell the command, the version-skew advisory says do NOT respell it
+    # because both respellings available here are losses. Printed the other way
+    # round the reader's last instruction was the one that does not apply, and
+    # the two spellings it invites are exactly the two the advisory forbids.
+    #
+    # The generic message names WHICH repair, because two different things
+    # arrive here: a tool the table has never listed (widen the table), and a
+    # recognized tool in a form the sub-table could not parse (respell the
+    # command). Without the distinction the router sees one refusal and has no
+    # way to tell which.
+    #
+    # The gate's own visual helper is neither: its row is there and read the
+    # subcommand, and the grade is the row's answer for this spelling and this
+    # ledger, so neither repair, nor the version-skew advisory, applies. Nor do
+    # they to another copy, which no row grades, or to a launcher in front of a
+    # helper: a respelling does not change what runs.
+    if gate_own_visual_helper "$1"; then
+      warn "axis 2 \`등급 미상\` — the gate's own visual helper is graded by its subcommand and the run's ledger, and this spelling has no grade there: ${1##*/} ${2:-} (\`append\` is graded only on a person's unspent \`승인\` to that very candidate at the publish stage's halt; every other ungraded subcommand is the seat's)"
+    elif [ -n "$(gate_argv_visual_helper "$@")" ] || gate_argv_visual_helper_write "$@"; then
+      warn "axis 2 \`등급 미상\` — a visual helper that is not the file beside this gate has no grade, and no declaration opens a visual helper the table left ungraded: $(_vh=$(gate_argv_visual_helper "$@"); printf '%s' "${_vh:-$1}")"
+    else
+      warn "axis 2 \`등급 미상\` — an argv0 that is not in the grade table does not fall through to \`읽기\`: $1 (if that tool has never been entered in the table, the table has to be widened; if it is in the table and the shape could not be read, rewrite it so the subcommand is visible)"
+      gate_orchestrator_script_hint "$1"
+    fi
+    [ "$verb" = "plan" ] || exit "$GATE_EXIT_VOCAB"
+  fi
+
+  # --- 도달 필수 ----------------------------------------------------------
+  # REQUIRED ONLY WHERE THE ANSWER CARRIES INFORMATION. Demanded of every call,
+  # the field becomes a formality on `cat` and stops meaning anything on the one
+  # row the morning actually reads. Demanded of none, an external write lands
+  # with no record of which environment it touched.
+  if gate_auto_resolve_enabled && [ "$argv_graded" = "1" ] && [ -z "${GATE_REACH:-}" ] \
+     && gate_reach_required "$graded" "$@"; then
+    # THE KICKOFF'S FORECAST ASKS THE SAME QUESTION AND NEEDS THE ANSWER. It
+    # does not know the table grade, so it cannot tell on its own whether a
+    # reach is owed; refused here with no line, it could only guess one. So
+    # `reach-screen` alone answers this exit with its verdict line, the verdict
+    # `신고필요` carrying the reach argv derives, and still ends 2. `exec` and
+    # `plan` end here as they always did.
+    if [ "$verb" = "reach-screen" ]; then
+      gate_act_effective_surface "$graded"
+      gate_reach_screen_line '신고필요' '-' '-' '-' '필요' "$(gate_reach_screen_derived "$alias" "$@")"
+    fi
+    warn "--reach is required — the reach of this act carries information (grade '$graded', source '$GATE_GRADE_SOURCE'). Allowed tokens: $REACHES"
+    exit "$GATE_EXIT_VOCAB"
+  fi
+}
+
+gate_act_effective_surface() {
+  # gate_act_effective_surface <graded> — sets and exports `GATE_SURFACE`, the
+  # grade the rules see, from the grade source, the table grade and the
+  # declared surface (`gate_act_cell_front` settles all three). Its own
+  # function so `reach-screen` reports the value `exec` hands the rules; `exec`
+  # still calls it where it always computed it, after the drains and the push
+  # ladder.
+  local graded="$1"
+  case "$GATE_GRADE_SOURCE" in
+    불투명) GATE_SURFACE=$(gate_surface_max "$graded" "${GATE_DECLARED:-읽기}") ;;
+    미상)   GATE_SURFACE=$(gate_surface_max "${GATE_DECLARED:-워크트리쓰기}" '워크트리쓰기') ;;
+    *)      GATE_SURFACE="$graded" ;;
+  esac
+  export GATE_SURFACE
+}
+
+gate_act_reach_cell() {
+  # gate_act_reach_cell <alias> <graded> <argv...> — the `도달 판정` block: the
+  # `GATE_PARK_*` reset, the pull request label write, the call to
+  # `gate_reach_disposition` and its split into cell, cause, judgment and the
+  # facts the repair line reads, and the auto-resolution switch's two arms. It
+  # ends exporting `GATE_PARK_CELL`.
+  #
+  # THE CALLER OWNS `rules_rc` AND `argv_graded`, and this function reads and
+  # rewrites them through bash's dynamic scope: `exec` passes what its rule loop
+  # answered, `reach-screen` runs no rule loop and passes 0. It reads the caller's
+  # `kind` the same way: `reach-screen` takes no `--kind` and holds it empty.
+  local alias="$1" graded="$2"; shift 2
+  GATE_PARK_CELL="" GATE_PARK_CAUSE='-' GATE_PARK_SX='-' GATE_PARK_SW='-' GATE_PARK_REFF='-'
+  GATE_PARK_GEFF='-' GATE_PARK_NEVER='-' GATE_PARK_TRIG='-' GATE_PARK_PROPOSAL='-'
+  GATE_PARK_EV=1 GATE_PREAUTH_JUDGE='-'
+  GATE_PARK_RFROW=0 GATE_PARK_RFN='-' GATE_PARK_RS='-' GATE_PARK_RR='-' GATE_PARK_RPD=0
+  GATE_PARK_DECL_SURF='-' GATE_PARK_DECL_REACH='-' GATE_PARK_CROWS='-' GATE_PARK_SCOPE=0
+  # A plan that carries no act (`--kind propose-done`) has no argv at all.
+  GATE_PARK_ARGV0="${1:-}"
+  GATE_PARK_ARGV0="${GATE_PARK_ARGV0##*/}"
+  # OFF MODE WITH NOTHING DECLARED IS TODAY, EXACTLY. The reach axis is optional
+  # there — the required-check above runs only while the switch is on — so an act
+  # that declared no reach has made no claim for the evaluator to judge, and
+  # judging it anyway would turn `-` into `도달미상` and issue an approval on
+  # every ordinary external act. Measured: a rule switched OFF still refused,
+  # because this evaluator answered in its place.
+  #
+  # A LABEL WRITE ON A PULL REQUEST IS THE EXCEPTION, read ahead of that guard.
+  # Its cell refuses whatever reach is declared and whatever row the manifest
+  # holds, so it cannot wait for the switch or a declaration: with the switch
+  # off and no `--reach`, the evaluator below never runs, and a broad form row
+  # would open the write on the ordinary row path. In both modes it parks — the
+  # off mode's approval would let a person open what the row path never may.
+  local _prlabel=0
+  if [ "$argv_graded" = "1" ] && [ "$rules_rc" != "$GATE_EXIT_RULE" ] \
+     && gate_pr_label_write "$@"; then
+    _prlabel=1
+    GATE_PARK_CELL='PR라벨쓰기'
+    rules_rc=0
+  fi
+  if [ "$_prlabel" = "0" ] && [ "$argv_graded" = "1" ] && [ "$rules_rc" != "$GATE_EXIT_RULE" ] \
+     && { gate_auto_resolve_enabled || [ -n "${GATE_REACH:-}" ]; }; then
+    # The verdict is `<칸>\t<원인>\t<판단>` on the first line; the facts the
+    # repair line reads follow on the second, printed from the same subshell. The
+    # cause and the facts stay here — the ledger's `도달 판정=` takes the cell
+    # alone, and the judgment goes to fields of its own on the row. The row-value
+    # facts ride on the second line too, ahead of the free-text proposal; every
+    # one of them is `-` or a digit when empty, because tab is a whitespace
+    # separator to `read` and an empty field would fold and shift the rest.
+    local _out _cell _pcause _facts _rest _cx_reach=0
+    # The collaboration cell's clause-execution exception is switched on HERE
+    # and nowhere else, by the act kind: the same argv issued as `exec` keeps
+    # today's disposition, and a value in the caller's environment cannot turn
+    # it on because this assignment always names it.
+    [ "$kind" = "clause-exec" ] && _cx_reach=1
+    _out=$(GATE_CLAUSE_EXEC_REACH=$_cx_reach gate_reach_disposition "$alias" "$rules_rc" "$graded" "$@"
+           printf '\n%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' \
+             "$GATE_RF_SX" "$GATE_RF_SW" "$GATE_RF_REFF" \
+             "$GATE_RF_GEFF" "$GATE_RF_NEVER" "$GATE_RF_TRIG" "$GATE_RF_EV" \
+             "$GATE_RF_ROW" "$GATE_RF_RN" "$GATE_RF_RS" "$GATE_RF_RR" "$GATE_RF_RPD" \
+             "$GATE_RF_DECL_SURF" "$GATE_RF_DECL_REACH" "$GATE_RF_CROWS" "$GATE_RF_SCOPE" \
+             "$GATE_RF_PROPOSAL")
+    _cell=${_out%%
+*}
+    _facts=${_out#*
+}
+    _pcause='-'
+    case "$_cell" in
+      *"	"*)
+        _rest=${_cell#*	}; _cell=${_cell%%	*}
+        _pcause=${_rest%%	*}
+        case "$_rest" in *"	"*) GATE_PREAUTH_JUDGE=${_rest#*	} ;; esac ;;
+    esac
+    [ -n "$_pcause" ] || _pcause='-'
+    [ -n "$GATE_PREAUTH_JUDGE" ] || GATE_PREAUTH_JUDGE='-'
+    IFS='	' read -r GATE_PARK_SX GATE_PARK_SW GATE_PARK_REFF GATE_PARK_GEFF GATE_PARK_NEVER \
+      GATE_PARK_TRIG GATE_PARK_EV GATE_PARK_RFROW GATE_PARK_RFN GATE_PARK_RS GATE_PARK_RR \
+      GATE_PARK_RPD GATE_PARK_DECL_SURF GATE_PARK_DECL_REACH GATE_PARK_CROWS GATE_PARK_SCOPE \
+      GATE_PARK_PROPOSAL <<EOF || true
+$_facts
+EOF
+    if gate_auto_resolve_enabled; then
+      GATE_PARK_CELL="$_cell" GATE_PARK_CAUSE="$_pcause"
+      # THE EVALUATOR REPLACES THE PRE-AUTHORIZATION RULE'S QUESTION, and only in
+      # this mode. That rule answers `승인 대기` for an external-state act with no
+      # matching row — the one approval class that is never auto-resolved,
+      # because nobody wrote a recommendation for it. Unattended that is a night
+      # spent waiting, which is the defect this whole axis exists to remove. The
+      # match itself is not lost: `P` is an INPUT to the prod and deploy-trigger
+      # cells, so an act the manifest never named still parks — as a row, with a
+      # cell naming why, and with the run continuing.
+      if [ "$rules_rc" = "$GATE_EXIT_APPROVAL" ]; then
+        rules_rc=0
+        [ -n "$_cell" ] || warn "outside the pre-authorization, but the reach judgment passes — proceeding instead of raising an approval (reach '${GATE_REACH:--}')"
+      fi
+    elif [ -n "$_cell" ] && [ "$GATE_GRADE_SOURCE" = "표" ]; then
+      # OFF MODE: the same table, and its park cells become the approval this
+      # gate has always issued. The switch decides WHO answers, not what the
+      # answer is about — so a run with a person in front of it sees the same
+      # acts stop, as questions rather than as rows. The opaque and unknown
+      # classes keep today's behaviour entirely, which is what "off mode is
+      # unchanged" has to mean for them.
+      if [ "$_pcause" = "-" ]; then
+        warn "reach judgment '$_cell' — auto-resolution is off, so it is issued as an approval"
+      else
+        warn "reach judgment '$_cell' (cause $_pcause) — auto-resolution is off, so it is issued as an approval"
+      fi
+      rules_rc="$GATE_EXIT_APPROVAL"
+    fi
+  fi
+  export GATE_PARK_CELL
+}
+
+gate_reach_screen_derived() {
+  # gate_reach_screen_derived <alias> <argv...> — the reach argv derives, the
+  # first field of `gate_reach_derived_full` and so the value the disposition
+  # puts over a declared reach; `-` when argv derives none.
+  local f
+  f=$(gate_reach_derived_full "$@" 2>/dev/null) || f='-'
+  f=${f%%
+*}
+  f=${f%%	*}
+  [ -n "$f" ] || f='-'
+  printf '%s' "$f"
+}
+
+gate_reach_screen_line() {
+  # gate_reach_screen_line <판정> <칸> <원인> <행으로 열림> <도달 신고> <유도 도달>
+  # — the first line of `reach-screen`, tab-separated, with the effective
+  # surface and the grade source between the fourth field and the fifth.
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" \
+    "${GATE_SURFACE:--}" "${GATE_GRADE_SOURCE:--}" "$5" "$6"
+}
+
+gate_verb_reach_screen() {
+  # gate_verb_reach_screen <alias> <surface> <argv...> — `reach-screen`: the
+  # `도달 판정` cell `exec` would reach for this argv and declaration, read
+  # before any run exists. The kickoff calls it on a draft manifest to learn
+  # whether a residual recipe's command would park overnight.
+  #
+  # IT OPENS NO RUN AND WRITES NOTHING. `gate_main` branches here before the
+  # version hop, `check_manifest`, the grant and `rundir_init`, so there is no
+  # run directory, ledger row, metrics, halt report or attention round, and the
+  # manifest is read from the memo alone: the target row and the `사전 인가`
+  # rows of `## 인가`.
+  #
+  # THE CELL IS `exec`'S OWN CODE: `gate_act_cell_front`, then
+  # `gate_act_effective_surface`, then `gate_act_reach_cell`, called the way
+  # `exec` calls them. The inputs that differ from a stage's call are fixed here
+  # and only here:
+  #   - the run directory and the stage key are empty, so the run-local proof
+  #     is false and the pre-authorization judgment is not called (its cell
+  #     reads `기기전역/judge-failed`, reported as cause `판단`);
+  #   - auto-resolution is on whatever the caller's environment says, so cause
+  #     `off` never appears;
+  #   - relative operands resolve against `gate_act_worktree <alias>` with no
+  #     segment, and `GATE_ACT_CWD` is that same directory;
+  #   - no rule runs, so no rule refuses, and the values only the rule side
+  #     sets (`GATE_KIND`, `GATE_ACT`, the CLAUDE.md slot) are empty.
+  # The output's last line, `축: 도달 판정`, says that this one axis is all it
+  # judged.
+  local alias="$1" surface="$2"; shift 2
+  [ -n "$alias" ] || { printf 'gate: reach-screen needs --target <alias>\n' >&2; exit 2; }
+  [ $# -ge 1 ] || { printf 'gate: an argv is required after --\n' >&2; exit 2; }
+  # A TARGET THE MANIFEST DOES NOT DECLARE IS REFUSED HERE, with nothing written:
+  # `exec` registers such an alias through `gate_undeclared_target`, which
+  # appends a row, and this verb has no ledger to append to.
+  local _a _found=0
+  for _a in $(target_aliases); do
+    [ "$_a" = "$alias" ] && _found=1
+  done
+  [ "$_found" = "1" ] || {
+    printf "gate: reach-screen: target '%s' is not in the manifest's ## 대상\n" "$alias" >&2
+    exit 2
+  }
+  # Function-scoped and exported, so every callee and child sees the switch on
+  # and the caller's value is never overwritten in a shell that sources this.
+  local -x CC_CMDS_AUTOPILOT_AUTO_RESOLVE=1
+  RUN_DIR=''
+  CC_PIPELINE_STAGE_ID=''; CC_PIPELINE_SEGMENT=''
+  export CC_PIPELINE_STAGE_ID CC_PIPELINE_SEGMENT
+  GATE_UNDECLARED=0; GATE_ADMIT=''; GATE_CLAUDEMD_SLOT=''
+  unset GATE_KIND GATE_ACT
+  GATE_ACT_CWD=$(gate_act_worktree "$alias" -)
+  export GATE_ACT_CWD
+
+  local graded argv_graded=0 rules_rc=0 required derived kind=''
+  GATE_DECLARED=""; GATE_UNKNOWN_DECLARED=0
+  export GATE_DECLARED GATE_UNKNOWN_DECLARED
+  gate_act_cell_front reach-screen '' "$alias" - "$surface" "$@"
+  gate_act_effective_surface "$graded"
+  derived=$(gate_reach_screen_derived "$alias" "$@")
+  if gate_reach_required "$graded" "$@"; then required='필요'; else required='불요'; fi
+  gate_act_reach_cell "$alias" "$graded" "$@"
+
+  if [ -z "${GATE_PARK_CELL:-}" ]; then
+    gate_reach_screen_line '통과' '-' '-' '-' "$required" "$derived"
+    printf '축: 도달 판정\n'
+    exit 0
+  fi
+
+  # THE REPAIR IS THE GATE'S OWN TEXT, captured from the one function both
+  # verbs print it with; only the timestamped prefix `warn` puts on every line
+  # is taken off. Whether a row repairs the cell rides out of the same subshell
+  # behind a tab, since the global it is kept in does not.
+  local cell="$GATE_PARK_CELL" cause="${GATE_PARK_CAUSE:--}" shown rep row body
+  rep=$(gate_park_repair_line "$cell" "$cause" 2>&1; printf '\n\t%s' "${GATE_PARK_REPAIR_ROW:-0}")
+  row=${rep##*	}
+  body=${rep%	*}
+  body=$(printf '%s' "$body" | sed -E 's/^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]{8}Z \[run\]\[warn\] //')
+  shown="$cause"
+  # NO JUDGMENT WAS CALLED, so the gate's sentence about a judgment that gave no
+  # verdict describes nothing that happened. The cell is the judgment's to
+  # decide overnight, and the line says what opens it before then. A cell no
+  # row can name (an argument with whitespace) keeps the gate's own repair.
+  if [ "$cause" = "judge-failed" ]; then
+    shown='판단'
+    [ "$row" = "1" ] && body='축자 행이면 판단 없이 열리고, 그 밖은 밤의 판단 호출이 정한다'
+  fi
+  if [ "$row" = "1" ]; then row='예'; else row='아니오'; fi
+  gate_reach_screen_line 'park' "$cell" "$shown" "$row" "$required" "$derived"
+  if [ -n "$body" ]; then
+    printf '%s\n' "$body" | awk 'NR == 1 { print "수리: " $0; next } { print }'
+  fi
+  printf '축: 도달 판정\n'
+  exit "$GATE_EXIT_PARK"
+}
+
 gate_rv_unwrap() {
   # gate_rv_unwrap <argv…> — GATE_RV_ARGV set to the argv with the prefix
   # runners an exec may stand behind (`env` with its assignments and options,
@@ -49166,272 +49746,10 @@ gate_verb_act() {
     esac
   fi
 
-  # THE GRADING BASE IS THE DIRECTORY THE ACT ACTUALLY RUNS IN, and it is handed
-  # over IN-PROCESS rather than through the environment: the exported copy is
-  # visible to children too, and a child must not grade against its parent's
-  # tree. `plan` is not excluded — it forecasts what `act` would do, so it has to
-  # resolve what `act` would resolve.
-  #
-  # THE BASE IS RESOLVED HERE, NOT INHERITED. Reading `GATE_ACT_CWD` at this point
-  # could only ever pick up an EXPORTED value, because this process does not
-  # assign it until 200-odd lines below — so the two write guards measured their
-  # relative operands against the OUTER run's worktree and a stage reached a
-  # fail-open with ordinary flags: `--segment` defaults to `-`, so a stage running
-  # in a segment worktree that names only a target gets the main worktree as the
-  # act's directory while the operand is absolutized against the segment's, and
-  # `cp /tmp/evil plugins/cc-cmds/orchestrator/gate.sh` then passes both guards
-  # and lands on the live installed gate. The comment on `gate_grade_cwd()`
-  # already claims the value is always one THIS process computed; this line is
-  # what makes that claim true.
-  #
-  # THE SAME RESOLVER, THE SAME ARGUMENTS, so this and the assignment below cannot
-  # disagree — `gate_act_worktree` is a pure resolver and `gate_act_worktree`'s own
-  # comment requires its three readers to resolve identically.
-  #
-  # `grade` KEEPS TODAY'S BEHAVIOUR, and that is the correct base for it rather
-  # than a fallback failure. `grade` answers about the caller, so it leaves
-  # `GATE_GRADE_CWD` empty and falls to `$PWD` in `gate_grade_cwd()`. Refusing
-  # when the value is absent would refuse every `grade` instead, which is a
-  # different decision than this one.
-  #
-  # AN UNDECLARED TARGET IS NO LONGER EXCLUDED. It was, on the reasoning that
-  # its act "stays in the caller's directory because there is no row to read" —
-  # but the act did not stay there: the assignment above put it in the
-  # `--worktree` the caller named, while this block left the base empty and
-  # `gate_grade_cwd()` fell to `$PWD`. So the base and the tree root answered
-  # about the gate's own directory while the act ran elsewhere, and a relative
-  # write under an undeclared target graded `워크트리쓰기` wherever it landed.
-  # `gate_act_worktree` now answers for the undeclared arm too, so the base
-  # takes the same value the act runs in.
-  if [ "$verb" != "grade" ]; then
-    local actwt
-    actwt=$(gate_act_worktree "$alias" "$segment")
-    [ "${GATE_ADMIT:-}" != "1" ] || actwt="$GATE_ADMIT_CWD"
-    if [ -n "$actwt" ]; then
-      GATE_GRADE_CWD=$(gate_real_prefix "$actwt")
-    fi
-  fi
-
+  # The grading base, the grade, its source, the marks, the comparator and the
+  # required reach — `gate_act_cell_front`, shared with `reach-screen`.
   local graded
-  case "$kind" in
-    propose-done)
-      graded="읽기" ;;
-    skill|router-shift)
-      # A stage dispatch's argv does NOT begin with a command: its first token
-      # is the STAGE KIND that selects a settings variant, and the wrapper is
-      # what eventually runs a binary. Feeding that token to the argv0 table
-      # asked a question the table cannot answer, so every stage dispatch graded
-      # `등급 미상` and fell into the pre-authorization rule's external-state
-      # arm — which made dispatching any stage impossible.
-      #
-      # The grade is `워크트리쓰기`, and it is not a guess: the stage runs under
-      # the read-scoped credential and inside a settings file that denies what
-      # this run does not authorize, so what it can reach on its own is the
-      # tree. Anything it does ABOVE that grade goes back through this gate as
-      # its own act and is graded there.
-      #
-      # A ROUTING SHIFT HAS THE SAME SHAPE AND WAS LEFT OUT OF IT. Its first
-      # token is the handoff reason — `상한`, `승인` — which is no more a command
-      # than a stage kind is, so it graded `등급 미상` and the launcher could not
-      # be reached at all: declared `읽기` the act came back 6, declared not at
-      # all it came back 2. It starts its successor the way a stage dispatch
-      # starts one, under the same read-scoped credential, so it takes the same
-      # grade rather than a second answer to one question.
-      graded="워크트리쓰기" ;;
-    apply)
-      # The argv is a token and not a command, so the table has nothing to say;
-      # what the act performs is the frozen apply command, which changes state
-      # outside the tree by definition.
-      graded="외부상태변경" ;;
-    apply-settle)
-      # `정산` is a token too. What the act performs is the frozen probe, which
-      # reads the deployment the apply touched — at the apply's own rung, so the
-      # settlement is never opened where the apply would not be.
-      graded="외부상태변경" ;;
-    ci-rerun|label-ack|review-post)
-      # The same: `재실행 <sha>`, `라벨 <sha>` and `게시` are tokens, and what
-      # the act performs is the gate's own POST to GitHub, a change of state
-      # outside the tree.
-      graded="외부상태변경" ;;
-    ci-match)
-      # `대조 <sha>` is a token as well; what the act performs is GETs and the
-      # ledger row, so it reads.
-      graded="읽기" ;;
-    *)
-      if gate_kind_is_bookkeeping "$kind"; then
-        # A bookkeeping act: its argv is a list of `키=값` fields, not a command,
-        # and what it performs is the ledger row the gate would write anyway. It
-        # reaches nothing outside the ledger, so it grades `읽기`.
-        #
-        # THE SET IS ASKED FOR HERE, NOT SPELLED AGAIN. This site carried a
-        # private copy of the list and that copy was missing `handoff`, so the
-        # one act whose argv begins with `교대=0` graded `등급 미상` and the
-        # terminal shift's own row came back 6 — refused by the axis that was
-        # never about it.
-        graded="읽기"
-      else
-        graded=$(surface_of_argv0 "$@")
-        argv_graded=1
-      fi ;;
-  esac
-  # 형태 미상 IS REFUSED BEFORE THE DECLARATION IS EVEN READ, and that ordering
-  # is the whole point of the token. This is a tool the table knows, in a form
-  # the parser could not read — so the caller's declaration is a claim about
-  # bytes nobody understood, and admitting it would let `curl --x -X POST` be
-  # declared `읽기` and performed. Unlike `등급 미상`, no declaration rescues it;
-  # the repair is to respell the command so its verb and options are visible.
-  if [ "$graded" = "$GATE_FORM_UNKNOWN" ]; then
-    warn "axis 2 \`형태 미상\` — this is a tool in the table, but what it does cannot be read in this shape: $1 (it cannot be waved through by declaration. Rewrite it so the subcommand and the options are visible)"
-    exit "$GATE_EXIT_VOCAB"
-  fi
-  # --- 부류·표지·하한 -----------------------------------------------------
-  # Three values the grade cannot carry, computed once here so the comparator,
-  # the disposition evaluator and the ledger row all read the same answer.
-  #
-  # `등급 출처` is three-valued rather than a boolean: `표` is a grade the table
-  # proved from argv, `불투명` is a runner whose payload the table cannot see,
-  # and `미상` is a command with no row at all. The three take different
-  # comparators and leave different marks on the row, and collapsing any two of
-  # them loses exactly the distinction the axis was added for.
-  GATE_GRADE_SOURCE='표'; GATE_OPAQUE=0; GATE_FLOOR=''
-  GATE_MARK=''; GATE_MARK_TRIGGER=''
-  export GATE_GRADE_SOURCE GATE_OPAQUE GATE_FLOOR GATE_MARK GATE_MARK_TRIGGER
-  if [ "$argv_graded" = "1" ]; then
-    GATE_OPAQUE=$(gate_argv_opaque "$@")
-    local _mk; _mk=$(gate_act_mark "$@")
-    GATE_MARK="${_mk%%	*}"; GATE_MARK_TRIGGER="${_mk#*	}"
-    if [ "$GATE_OPAQUE" = "1" ] || [ "$graded" = "등급 미상" ]; then
-      local _fl _rest _fmark _ftrig
-      _fl=$(gate_opaque_floor "$@")
-      GATE_FLOOR="${_fl%%	*}"; _rest="${_fl#*	}"
-      _fmark="${_rest%%	*}"; _ftrig="${_rest#*	}"
-      # A mark the OUTER argv could not show. `bash -c 'aws … --with-decryption'`
-      # is a secret print that `gate_act_mark` answers nothing for, because the
-      # name it sees is `bash`. `비밀출력` outranks `파괴` where both appear: the
-      # first is a disclosure that cannot be taken back once printed.
-      if [ -z "$GATE_MARK" ] || { [ "$GATE_MARK" = "파괴" ] && [ "$_fmark" = "비밀출력" ]; }; then
-        [ -n "$_fmark" ] && { GATE_MARK="$_fmark"; GATE_MARK_TRIGGER="$_ftrig"; }
-      fi
-    fi
-    [ "$GATE_OPAQUE" = "1" ] && GATE_GRADE_SOURCE='불투명'
-    [ "$graded" = "등급 미상" ] && GATE_GRADE_SOURCE='미상'
-  fi
-
-  # --- 비교기 -------------------------------------------------------------
-  # OVER-DECLARATION IS ACCEPTED IN BOTH MODES, and it is what makes an honest
-  # declaration possible at all: the table is path-blind, so a caller who knows
-  # their `mkdir` lands outside the worktree had no spelling that was both true
-  # and accepted. Strict equality refused 687 such calls in this corpus.
-  #
-  # UNDER-DECLARATION IS STILL EXIT 6. What it is compared against depends on the
-  # class: a table-graded form against the table, and an opaque one against the
-  # FLOOR — because the table's answer for `sh -c` says only that a shell ran,
-  # and the floor is the part of its payload the gate could actually read.
-  if [ -n "$surface" ]; then
-    surface_index "$surface" >/dev/null || exit "$GATE_EXIT_VOCAB"
-    local _bound="$graded" _bi _si
-    if [ "$GATE_GRADE_SOURCE" = "불투명" ] && gate_auto_resolve_enabled; then
-      _bound="${GATE_FLOOR:-읽기}"
-    elif [ "$GATE_GRADE_SOURCE" = "미상" ]; then
-      _bound="${GATE_FLOOR:-읽기}"
-    fi
-    if [ "$_bound" = "등급 미상" ]; then
-      # Off mode, unknown command: today's answer, unchanged — a declaration
-      # cannot be compared against a grade that does not exist.
-      warn "axis 2 self-declaration mismatch: declared '$surface' vs graded '$graded'"
-      gate_orchestrator_script_hint "$1"
-      exit "$GATE_EXIT_GRADE"
-    fi
-    _bi=$(surface_index "$_bound") || exit "$GATE_EXIT_VOCAB"
-    _si=$(surface_index "$surface") || exit "$GATE_EXIT_VOCAB"
-    if [ "$_si" -lt "$_bi" ]; then
-      warn "axis 2 under-declaration: declared '$surface' is lower than the $( [ "$_bound" = "$graded" ] && printf 'grade' || printf 'floor' ) '$_bound'"
-      if [ "$graded" = "등급 미상" ]; then gate_orchestrator_script_hint "$1"; fi
-      exit "$GATE_EXIT_GRADE"
-    fi
-    GATE_DECLARED="$surface"
-  fi
-  if [ "$graded" = "등급 미상" ] && [ -n "$surface" ] && gate_auto_resolve_enabled; then
-    # THE DECLARATION PATH. A command with no row may still run, and only while
-    # the run is unattended-resolving: the declaration is what the disposition
-    # evaluator then judges, and with the switch off there is no evaluator to
-    # judge it — so off mode keeps today's refusal rather than admitting a claim
-    # nothing will check.
-    #
-    # NOT FOR THE VISUAL HELPERS, WHEREVER THE FILE LIVES AND HOWEVER IT IS
-    # LAUNCHED. The rows of the gate's own copies grade every spelling the gate
-    # admits, by subcommand and by the ledger (`append` only on a person's
-    # unspent `승인` to that candidate), so their `등급 미상` is the table's
-    # refusal and not a tool it has never seen. Any other copy of the same name
-    # runs the same `append`, and a launcher in front of it (`env` setting the
-    # publish stage's marker, say) does not change what runs. Only argv0 itself
-    # was asked here once, so the run's pinned source checkout, a worktree copy
-    # and an `env`-wrapped spelling all took the declaration path and opened an
-    # `append` no person approved. A launcher the table has no row for
-    # (`xargs`, `sudo`) or one it delegates past its own operands (`find -exec`)
-    # names the helper further in, which the word scan reads.
-    { [ -n "$(gate_argv_visual_helper "$@")" ] || gate_argv_visual_helper_write "$@"; } \
-      || GATE_UNKNOWN_DECLARED=1
-  fi
-  if [ "${GATE_OPAQUE:-0}" = "1" ] && [ "$graded" != "등급 미상" ] && gate_argv_visual_helper_write "$@"; then
-    # AN INTERPRETER RUNNING A VISUAL HELPER'S WRITING SUBCOMMAND. `bash <copy>
-    # append …` and `sh -c '<copy> append …'` grade as the runner, and the
-    # opaque cell opens an out-of-tree run-local declaration, so the copy's
-    # marker check would be all that stands before the host forbidden list —
-    # and the caller sets that environment. The gate's own copy is graded only
-    # when it is called directly, so no interpreter spelling is needed for it.
-    warn "axis 2 \`등급 미상\` — a runner in front of \`visual-config.sh account|append|seed\` is not graded, and no declaration opens it; the gate's own copy is graded only when called directly"
-    [ "$verb" = "plan" ] || exit "$GATE_EXIT_VOCAB"
-  fi
-  if gate_argv_visual_account_rundir "$@"; then
-    # THE EXPECTED ACCOUNT COMES FROM THE RUN DIRECTORY. `account` compares the
-    # logged-in account with the one the run-local migration record under
-    # `CC_PIPELINE_RUN_DIR` names, so an act that sets that variable itself
-    # picks the record it is checked against. The stage inherits the run's
-    # value; no spelling that reassigns it is admitted.
-    warn "\`visual-config.sh account\` with \`CC_PIPELINE_RUN_DIR\` reassigned is refused — the expected account is read from the run's own migration record, so the act runs with the inherited value"
-    [ "$verb" = "plan" ] || exit "$GATE_EXIT_VOCAB"
-  fi
-  if [ "$graded" = "등급 미상" ] && [ "${GATE_UNKNOWN_DECLARED:-0}" != "1" ]; then
-    # THE GENERIC MESSAGE COMES FIRST SO THE SPECIFIC ONE IS READ LAST. Both
-    # lines name a repair and the two repairs are opposites: the generic one
-    # says respell the command, the version-skew advisory says do NOT respell it
-    # because both respellings available here are losses. Printed the other way
-    # round the reader's last instruction was the one that does not apply, and
-    # the two spellings it invites are exactly the two the advisory forbids.
-    #
-    # The generic message names WHICH repair, because two different things
-    # arrive here: a tool the table has never listed (widen the table), and a
-    # recognized tool in a form the sub-table could not parse (respell the
-    # command). Without the distinction the router sees one refusal and has no
-    # way to tell which.
-    #
-    # The gate's own visual helper is neither: its row is there and read the
-    # subcommand, and the grade is the row's answer for this spelling and this
-    # ledger, so neither repair, nor the version-skew advisory, applies. Nor do
-    # they to another copy, which no row grades, or to a launcher in front of a
-    # helper: a respelling does not change what runs.
-    if gate_own_visual_helper "$1"; then
-      warn "axis 2 \`등급 미상\` — the gate's own visual helper is graded by its subcommand and the run's ledger, and this spelling has no grade there: ${1##*/} ${2:-} (\`append\` is graded only on a person's unspent \`승인\` to that very candidate at the publish stage's halt; every other ungraded subcommand is the seat's)"
-    elif [ -n "$(gate_argv_visual_helper "$@")" ] || gate_argv_visual_helper_write "$@"; then
-      warn "axis 2 \`등급 미상\` — a visual helper that is not the file beside this gate has no grade, and no declaration opens a visual helper the table left ungraded: $(_vh=$(gate_argv_visual_helper "$@"); printf '%s' "${_vh:-$1}")"
-    else
-      warn "axis 2 \`등급 미상\` — an argv0 that is not in the grade table does not fall through to \`읽기\`: $1 (if that tool has never been entered in the table, the table has to be widened; if it is in the table and the shape could not be read, rewrite it so the subcommand is visible)"
-      gate_orchestrator_script_hint "$1"
-    fi
-    [ "$verb" = "plan" ] || exit "$GATE_EXIT_VOCAB"
-  fi
-
-  # --- 도달 필수 ----------------------------------------------------------
-  # REQUIRED ONLY WHERE THE ANSWER CARRIES INFORMATION. Demanded of every call,
-  # the field becomes a formality on `cat` and stops meaning anything on the one
-  # row the morning actually reads. Demanded of none, an external write lands
-  # with no record of which environment it touched.
-  if gate_auto_resolve_enabled && [ "$argv_graded" = "1" ] && [ -z "${GATE_REACH:-}" ] \
-     && gate_reach_required "$graded" "$@"; then
-    warn "--reach is required — the reach of this act carries information (grade '$graded', source '$GATE_GRADE_SOURCE'). Allowed tokens: $REACHES"
-    exit "$GATE_EXIT_VOCAB"
-  fi
+  gate_act_cell_front "$verb" "$kind" "$alias" "$segment" "$surface" "$@"
 
   # The watcher's observations, transcribed into properly chained rows. It
   # records them as a file precisely because it is not the ledger's writer; this
@@ -49556,12 +49874,7 @@ gate_verb_act() {
   # floored at `워크트리쓰기` so that declaring `읽기` cannot buy the read
   # exemptions — the review rule returns early on a read, so a `merge-seg.sh`
   # declared as a local read would merge with no review record at all.
-  case "$GATE_GRADE_SOURCE" in
-    불투명) GATE_SURFACE=$(gate_surface_max "$graded" "${GATE_DECLARED:-읽기}") ;;
-    미상)   GATE_SURFACE=$(gate_surface_max "${GATE_DECLARED:-워크트리쓰기}" '워크트리쓰기') ;;
-    *)      GATE_SURFACE="$graded" ;;
-  esac
-  export GATE_SURFACE
+  gate_act_effective_surface "$graded"
 
   # THE CLAUSE EXECUTION'S PRECONDITIONS, once the argv is graded and before the
   # rule catalog, the approval block or any row: a refusal here leaves nothing
@@ -49942,105 +50255,7 @@ gate_verb_act() {
   # check, the segment-row check and the merge anchor have had their say. Those
   # three refuse acts this one would have parked, and a park row written ahead of
   # them would record a disposition the act never actually reached.
-  GATE_PARK_CELL="" GATE_PARK_CAUSE='-' GATE_PARK_SX='-' GATE_PARK_SW='-' GATE_PARK_REFF='-'
-  GATE_PARK_GEFF='-' GATE_PARK_NEVER='-' GATE_PARK_TRIG='-' GATE_PARK_PROPOSAL='-'
-  GATE_PARK_EV=1 GATE_PREAUTH_JUDGE='-'
-  GATE_PARK_RFROW=0 GATE_PARK_RFN='-' GATE_PARK_RS='-' GATE_PARK_RR='-' GATE_PARK_RPD=0
-  GATE_PARK_DECL_SURF='-' GATE_PARK_DECL_REACH='-' GATE_PARK_CROWS='-' GATE_PARK_SCOPE=0
-  # A plan that carries no act (`--kind propose-done`) has no argv at all.
-  GATE_PARK_ARGV0="${1:-}"
-  GATE_PARK_ARGV0="${GATE_PARK_ARGV0##*/}"
-  # OFF MODE WITH NOTHING DECLARED IS TODAY, EXACTLY. The reach axis is optional
-  # there — the required-check above runs only while the switch is on — so an act
-  # that declared no reach has made no claim for the evaluator to judge, and
-  # judging it anyway would turn `-` into `도달미상` and issue an approval on
-  # every ordinary external act. Measured: a rule switched OFF still refused,
-  # because this evaluator answered in its place.
-  #
-  # A LABEL WRITE ON A PULL REQUEST IS THE EXCEPTION, read ahead of that guard.
-  # Its cell refuses whatever reach is declared and whatever row the manifest
-  # holds, so it cannot wait for the switch or a declaration: with the switch
-  # off and no `--reach`, the evaluator below never runs, and a broad form row
-  # would open the write on the ordinary row path. In both modes it parks — the
-  # off mode's approval would let a person open what the row path never may.
-  local _prlabel=0
-  if [ "$argv_graded" = "1" ] && [ "$rules_rc" != "$GATE_EXIT_RULE" ] \
-     && gate_pr_label_write "$@"; then
-    _prlabel=1
-    GATE_PARK_CELL='PR라벨쓰기'
-    rules_rc=0
-  fi
-  if [ "$_prlabel" = "0" ] && [ "$argv_graded" = "1" ] && [ "$rules_rc" != "$GATE_EXIT_RULE" ] \
-     && { gate_auto_resolve_enabled || [ -n "${GATE_REACH:-}" ]; }; then
-    # The verdict is `<칸>\t<원인>\t<판단>` on the first line; the facts the
-    # repair line reads follow on the second, printed from the same subshell. The
-    # cause and the facts stay here — the ledger's `도달 판정=` takes the cell
-    # alone, and the judgment goes to fields of its own on the row. The row-value
-    # facts ride on the second line too, ahead of the free-text proposal; every
-    # one of them is `-` or a digit when empty, because tab is a whitespace
-    # separator to `read` and an empty field would fold and shift the rest.
-    local _out _cell _pcause _facts _rest _cx_reach=0
-    # The collaboration cell's clause-execution exception is switched on HERE
-    # and nowhere else, by the act kind: the same argv issued as `exec` keeps
-    # today's disposition, and a value in the caller's environment cannot turn
-    # it on because this assignment always names it.
-    [ "$kind" = "clause-exec" ] && _cx_reach=1
-    _out=$(GATE_CLAUSE_EXEC_REACH=$_cx_reach gate_reach_disposition "$alias" "$rules_rc" "$graded" "$@"
-           printf '\n%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' \
-             "$GATE_RF_SX" "$GATE_RF_SW" "$GATE_RF_REFF" \
-             "$GATE_RF_GEFF" "$GATE_RF_NEVER" "$GATE_RF_TRIG" "$GATE_RF_EV" \
-             "$GATE_RF_ROW" "$GATE_RF_RN" "$GATE_RF_RS" "$GATE_RF_RR" "$GATE_RF_RPD" \
-             "$GATE_RF_DECL_SURF" "$GATE_RF_DECL_REACH" "$GATE_RF_CROWS" "$GATE_RF_SCOPE" \
-             "$GATE_RF_PROPOSAL")
-    _cell=${_out%%
-*}
-    _facts=${_out#*
-}
-    _pcause='-'
-    case "$_cell" in
-      *"	"*)
-        _rest=${_cell#*	}; _cell=${_cell%%	*}
-        _pcause=${_rest%%	*}
-        case "$_rest" in *"	"*) GATE_PREAUTH_JUDGE=${_rest#*	} ;; esac ;;
-    esac
-    [ -n "$_pcause" ] || _pcause='-'
-    [ -n "$GATE_PREAUTH_JUDGE" ] || GATE_PREAUTH_JUDGE='-'
-    IFS='	' read -r GATE_PARK_SX GATE_PARK_SW GATE_PARK_REFF GATE_PARK_GEFF GATE_PARK_NEVER \
-      GATE_PARK_TRIG GATE_PARK_EV GATE_PARK_RFROW GATE_PARK_RFN GATE_PARK_RS GATE_PARK_RR \
-      GATE_PARK_RPD GATE_PARK_DECL_SURF GATE_PARK_DECL_REACH GATE_PARK_CROWS GATE_PARK_SCOPE \
-      GATE_PARK_PROPOSAL <<EOF || true
-$_facts
-EOF
-    if gate_auto_resolve_enabled; then
-      GATE_PARK_CELL="$_cell" GATE_PARK_CAUSE="$_pcause"
-      # THE EVALUATOR REPLACES THE PRE-AUTHORIZATION RULE'S QUESTION, and only in
-      # this mode. That rule answers `승인 대기` for an external-state act with no
-      # matching row — the one approval class that is never auto-resolved,
-      # because nobody wrote a recommendation for it. Unattended that is a night
-      # spent waiting, which is the defect this whole axis exists to remove. The
-      # match itself is not lost: `P` is an INPUT to the prod and deploy-trigger
-      # cells, so an act the manifest never named still parks — as a row, with a
-      # cell naming why, and with the run continuing.
-      if [ "$rules_rc" = "$GATE_EXIT_APPROVAL" ]; then
-        rules_rc=0
-        [ -n "$_cell" ] || warn "outside the pre-authorization, but the reach judgment passes — proceeding instead of raising an approval (reach '${GATE_REACH:--}')"
-      fi
-    elif [ -n "$_cell" ] && [ "$GATE_GRADE_SOURCE" = "표" ]; then
-      # OFF MODE: the same table, and its park cells become the approval this
-      # gate has always issued. The switch decides WHO answers, not what the
-      # answer is about — so a run with a person in front of it sees the same
-      # acts stop, as questions rather than as rows. The opaque and unknown
-      # classes keep today's behaviour entirely, which is what "off mode is
-      # unchanged" has to mean for them.
-      if [ "$_pcause" = "-" ]; then
-        warn "reach judgment '$_cell' — auto-resolution is off, so it is issued as an approval"
-      else
-        warn "reach judgment '$_cell' (cause $_pcause) — auto-resolution is off, so it is issued as an approval"
-      fi
-      rules_rc="$GATE_EXIT_APPROVAL"
-    fi
-  fi
-  export GATE_PARK_CELL
+  gate_act_reach_cell "$alias" "$graded" "$@"
   # A REPAIR RUN'S PUT IS ITS MERGE AND NOTHING ELSE. After the catalog and
   # the reach evaluator have said what they would let through, a `gh api` PUT
   # of a repair run whose endpoint is not that repository's pull request merge
