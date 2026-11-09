@@ -110,6 +110,11 @@ GLOB_META = "*?{"
 WHOLE_REPO = "./"
 
 FIELD_RE = re.compile(r"^\*\*([^*]+)\*\*:(?: (.*))?$")
+# What an audit puts beside a post-stop edit. Every reader of a field line
+# takes it off the head of the line and of the value, and reads a line that
+# holds nothing else as a blank line; the kind line is still read byte for
+# byte, as its other readers read it.
+MARKER = "**미리뷰(스톱 이후 추가)**"
 FENCE_OPEN_RE = re.compile(r"^(`{3,})(.*)$")
 TICKET_HEAD_RE = re.compile(r"^### 티켓 (T(\d+)) — (.+)$")
 CONTRACT_HEAD_RE = re.compile(r"^### 계약 (C(\d+)) — (.+)$")
@@ -162,6 +167,18 @@ def split_lines(text):
     if lines and lines[-1] == "":
         lines.pop()
     return lines
+
+
+def strip_marker(s):
+    """`s` without the markers at its head, each with the blanks after it."""
+    while s.startswith(MARKER):
+        s = s[len(MARKER):].lstrip()
+    return s
+
+
+def blank_line(line):
+    """Whether a line reads as blank: empty, or markers alone."""
+    return not strip_marker(line.strip())
 
 
 def mark_fences(lines):
@@ -230,10 +247,12 @@ def parse_block(lines, inside, start, end):
     for i in range(start, end):
         if inside[i]:
             continue
-        m = FIELD_RE.match(lines[i])
+        m = FIELD_RE.match(strip_marker(lines[i]))
         if not m:
             continue
-        key, value = m.group(1), (m.group(2) or "")
+        # A marker-only value is empty, so a fenced field reads the fence
+        # under it.
+        key, value = m.group(1), strip_marker(m.group(2) or "")
         if key in fields:
             fields.dups.add(key)
             continue
@@ -243,9 +262,9 @@ def parse_block(lines, inside, start, end):
         else:
             fields[key] = value.strip()
         j = i + 1
-        while j < end and not inside[j] and not lines[j].strip():
+        while j < end and not inside[j] and blank_line(lines[j]):
             j += 1
-        if j < end and not inside[j] and not FIELD_RE.match(lines[j]):
+        if j < end and not inside[j] and not FIELD_RE.match(strip_marker(lines[j])):
             if BULLET_RE.match(lines[j]):
                 fields.bulleted.add(key)
             else:
@@ -857,14 +876,20 @@ def check_p4(g):
         out.append(("P4", "임계 경로 선언 없음"))
     else:
         path = [x.strip() for x in decl.split("→")]
-        ok = len(path) == depth and all(x in g.t for x in path)
-        if ok:
-            ok = lv[path[0]] == 1
-            for prev, nxt in zip(path, path[1:]):
-                if prev not in g.t[nxt]["deps"]:
-                    ok = False
-        if not ok:
-            out.append(("P4", "임계 경로 선언 %s 이 최장 경로가 아님 (최장 길이 %d)" % (decl, depth)))
+        # A note beside the path (a parenthesis, a sentence) is named as the
+        # cause, rather than read as a path that is not the longest.
+        stray = next((x for x in path if x and not TICKET_ID_RE.match(x)), None)
+        if stray is not None:
+            out.append(("P4", "임계 경로 값에 경로 밖 문면: %s" % stray))
+        else:
+            ok = len(path) == depth and all(x in g.t for x in path)
+            if ok:
+                ok = lv[path[0]] == 1
+                for prev, nxt in zip(path, path[1:]):
+                    if prev not in g.t[nxt]["deps"]:
+                        ok = False
+            if not ok:
+                out.append(("P4", "임계 경로 선언 %s 이 최장 경로가 아님 (최장 길이 %d)" % (decl, depth)))
     width = 0
     for k in set(lv.values()):
         width = max(width, sum(1 for u in lv if lv[u] == k))
@@ -1037,9 +1062,9 @@ def open_entries(doc):
         for k in range(i + 1, j):
             if doc.inside[k]:
                 continue
-            m = STATE_LINE_RE.match(doc.lines[k])
+            m = STATE_LINE_RE.match(strip_marker(doc.lines[k]))
             if m:
-                state = m.group(1).replace("**", "").strip()
+                state = strip_marker(m.group(1)).replace("**", "").strip()
                 break
         if state is None or not STATE_CLOSED_RE.match(state):
             entries.append((t[4:], i, j))
@@ -2334,20 +2359,22 @@ def outside_entries(doc, start, end):
     ends at the first blank line after `없음` or after its bullet run, so a
     paragraph that follows it is not part of it."""
     entries, faults = {}, []
+    def field(x):
+        return FIELD_RE.match(strip_marker(doc.lines[x]))
     k = next((x for x in range(start, end) if not doc.inside[x]
-              and FIELD_RE.match(doc.lines[x]) and FIELD_RE.match(doc.lines[x]).group(1) == OUTSIDE_FIELD), None)
+              and field(x) and field(x).group(1) == OUTSIDE_FIELD), None)
     if k is None:
         return entries, faults
-    value = (FIELD_RE.match(doc.lines[k]).group(2) or "").strip()
+    value = strip_marker(field(k).group(2) or "").strip()
     under = []
     x = k + 1
     if not value:
         # Blank lines between the field line and its first bullet, as
         # parse_block reads them.
-        while x < end and not doc.inside[x] and not doc.lines[x].strip():
+        while x < end and not doc.inside[x] and blank_line(doc.lines[x]):
             x += 1
-    while x < end and (doc.inside[x] or not FIELD_RE.match(doc.lines[x])):
-        if not doc.inside[x] and not doc.lines[x].strip():
+    while x < end and (doc.inside[x] or not field(x)):
+        if not doc.inside[x] and blank_line(doc.lines[x]):
             break
         if doc.lines[x].strip():
             under.append(doc.lines[x])
