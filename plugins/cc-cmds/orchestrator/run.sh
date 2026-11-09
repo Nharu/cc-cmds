@@ -6842,7 +6842,7 @@ doc_tidy_reviewed_copy() {
   copy="$BASE/docs/design-audit/audited/$DOC_SLUG.md"
   rep="$BASE/docs/design-audit/$DOC_SLUG.md"
   [ -f "$copy" ] && [ -f "$rep" ] || return 0
-  want=$(grep -oE 'frozen-sha256[^0-9a-f]*[0-9a-f]{64}' "$rep" 2>/dev/null | head -1 | grep -oE '[0-9a-f]{64}$' || true)
+  want=$({ grep -oE 'frozen-sha256[^0-9a-f]*[0-9a-f]{64}' "$rep" 2>/dev/null || true; } | sed -n '1p' | { grep -oE '[0-9a-f]{64}$' || true; })
   [ -n "$want" ] || return 0
   have=$(shasum -a 256 "$copy" 2>/dev/null | cut -d' ' -f1)
   [ "$have" = "$want" ] || return 0
@@ -6858,7 +6858,7 @@ doc_tidy_plan_expected() {
   local rv out
   rv=$(doc_tidy_reviewed_copy "$2")
   out=$("$(doc_tidy_bin)" plan "$1" ${rv:+--reviewed "$rv"} 2>/dev/null) || return 1
-  out=$(printf '%s\n' "$out" | sed -n 's/^expected=\([0-9][0-9]*\)$/\1/p' | head -1)
+  out=$(printf '%s\n' "$out" | sed -n 's/^expected=\([0-9][0-9]*\)$/\1/p' | sed -n '1p')
   [ -n "$out" ] || return 1
   printf '%s' "$out"
 }
@@ -7030,10 +7030,12 @@ doc_size_spawn_gate() {
   head="${stage%%:*}"
   rec=$(doc_size_halt_write "$stage#$attempt" "$kind" "$DOC" "$seg") \
     || warn "$stage: 문서 크기 중단 기록을 쓰지 못했다"
-  ledger_row 'stage-result' "세그먼트=$seg" "스테이지=$head" "파견 id=$stage" \
+  # No session was launched, so no judgment follows this row to absorb.
+  ledger_row 'stage-result' "세그먼트=$seg" "스테이지=$head" "파견 id=$stage" "차단=파견 전" \
     $( [ "$kind" = implement ] || printf '%s' "종류=$kind" ) \
-    "종료 코드=$STAGE_SPAWN_PARK_RC" "실행 버전=$attempt" "기록자=드라이버" \
-    ${b:+"문서 크기=$b/$t"} "차단=파견 전" "종단 부류=의도된 park" \
+    "종료 코드=$STAGE_SPAWN_PARK_RC" "실행 버전=$attempt" \
+    "압축 창=$(stage_window_of "$stage")" "레인=$(stage_lane_of "$stage")" "기록자=드라이버" \
+    ${b:+"문서 크기=$b/$t"} "종단 부류=의도된 park" \
     || warn "$stage: 크기 차단의 stage-result 행을 쓰지 못했다"
   STAGE_SPAWN_PARK_REASON=$(doc_size_reason)
   STAGE_SPAWN_ALREADY_PARKED=0

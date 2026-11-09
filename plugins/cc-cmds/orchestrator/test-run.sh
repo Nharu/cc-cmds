@@ -4427,14 +4427,14 @@ fi
 
 # 흡수는 한 팔이 아니라 파견된 스테이지의 stage-result 행 **전부** 바로 다음에 선다.
 # 한 팔에서 빠지면 그 팔의 판단은 증상 없이 사라진다. S9 는 스테이지를 띄우지 않는
-# 셸 적용이라 대상이 아니다.
+# 셸 적용이고, `차단=파견 전` 행은 세션을 띄우기 전에 크기로 막은 시도라 대상이 아니다.
 AB21_SITES=$(awk -v needle="ledger_row 'stage-result'" '
   pend && !cont {
     if ($0 ~ /^[[:space:]]*$/) next
     if (index($0, "absorb_stage_judgment") == 0) print "MISS " prevln
     pend = 0
   }
-  index($0, needle) && index($0, "스테이지=S9") == 0 { pend = 1; prevln = NR; n++ }
+  index($0, needle) && index($0, "스테이지=S9") == 0 && index($0, "차단=파견 전") == 0 { pend = 1; prevln = NR; n++ }
   pend { cont = ($0 ~ /\\$/) }
   END { print "N " n+0 }
 ' "$DRIVER")
@@ -4443,7 +4443,7 @@ check "파견 팔의 stage-result 행 자리가 열이다 — 계속 시도 하�
 check "파견 팔의 stage-result 행마다 바로 다음 문장이 흡수 호출이다" \
   "$(printf '%s\n' "$AB21_SITES" | grep -c '^MISS' || true)" "0"
 
-# 드라이버의 stage-result 행 전부(S9 셸 적용 넷, 계속 시도 하나, 베이스 분할 하나, 시각 단계 하나, 재수렴 하나, 리드 수정 하나를 포함해 열넷)가 압축
+# 드라이버의 stage-result 행 전부(S9 셸 적용 넷, 계속 시도 하나, 베이스 분할 하나, 시각 단계 하나, 재수렴 하나, 리드 수정 하나, 파견 전 크기 차단 하나를 포함해 열다섯)가 압축
 # 창·레인·기록자 셋을 싣는다. 게이트 쪽 필드표 린트는 gate.sh 만 읽으므로, 드라이버 열의 방어는
 # 이 정적 계수뿐이다 — 한 자리에서 빠지면 그 행은 필드 없는 「실험 이전 행」으로 읽힌다.
 WIN_SITES=$(awk -v needle="ledger_row 'stage-result'" '
@@ -4451,13 +4451,13 @@ WIN_SITES=$(awk -v needle="ledger_row 'stage-result'" '
   cont { buf = buf " " $0; cont = ($0 ~ /\\$/); if (!cont) { print (index(buf, "압축 창=") && index(buf, "레인=") && index(buf, "기록자=드라이버") ? "OK" : "MISS " NR); buf = "" } }
   END { print "N " n+0 }
 ' "$DRIVER")
-check "드라이버의 stage-result 호출부가 열넷이다 (아래 단언이 공허하지 않다)" \
-  "$(printf '%s\n' "$WIN_SITES" | sed -n 's/^N //p')" "14"
-check "열넷 호출부 전부가 압축 창·레인·기록자=드라이버 를 싣는다" \
+check "드라이버의 stage-result 호출부가 열다섯이다 (아래 단언이 공허하지 않다)" \
+  "$(printf '%s\n' "$WIN_SITES" | sed -n 's/^N //p')" "15"
+check "열다섯 호출부 전부가 압축 창·레인·기록자=드라이버 를 싣는다" \
   "$(printf '%s\n' "$WIN_SITES" | grep -c '^MISS' || true)" "0"
 # 대기 표지도 같은 문면의 키를 싣는다 — 그 줄은 보유자의 지문과 함께 쓰이므로 뺀다.
 check "기록자=드라이버 리터럴 수가 호출부 수와 같다" \
-  "$(grep '"기록자=드라이버"' "$DRIVER" | grep -vc '"지문=' || true)" "14"
+  "$(grep '"기록자=드라이버"' "$DRIVER" | grep -vc '"지문=' || true)" "15"
 
 # The driver hands the run id and both sidecar paths down to every stage. The
 # arms re-derived them from the document key, which resolves only for a run
@@ -12443,8 +12443,8 @@ check "크기 차단은 시도를 핀하고 그 시도의 중단 기록을 쓴�
   "1|파견 전 / 문서 크기 초과|(없음)"
 ra_row=$( { grep -F -e '- `stage-result` |' "$RA/ledger.md" || true; } | { grep -F '| 파견 id=S4:segZ:1 |' || true; } | tail -1)
 check "크기 차단은 의도된 park 의 stage-result 행 하나를 쓴다" \
-  "$(printf '%s' "$ra_row" | grep -c -F -e '| 차단=파견 전 | 종단 부류=의도된 park |' || true)|$(printf '%s' "$ra_row" | grep -c -F -e '| 문서 크기=330000/323000 |' || true)|$(printf '%s' "$ra_row" | grep -c -F -e '| 실행 버전=1 |' || true)" \
-  "1|1|1"
+  "$(printf '%s' "$ra_row" | grep -c -F -e '| 차단=파견 전 |' || true)|$(printf '%s' "$ra_row" | grep -c -F -e '| 종단 부류=의도된 park' || true)|$(printf '%s' "$ra_row" | grep -c -F -e '| 문서 크기=330000/323000 |' || true)|$(printf '%s' "$ra_row" | grep -c -F -e '| 실행 버전=1 |' || true)" \
+  "1|1|1|1"
 check "크기 차단은 임대도 창 기록도 남기지 않는다" \
   "$(ra_get "$ra_out" live)/$(ra_get "$ra_out" record)/$(ra_get "$ra_out" window)" "/no/0/"
 ra_out=$(RA_DOC="$ra_small" ra_spawn "S4:segY:1")
