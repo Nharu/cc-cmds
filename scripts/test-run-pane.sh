@@ -875,6 +875,79 @@ check "18 2행의 앞뒤 공백 — 깎지 않는다" "$(brow "$(pane s-st-pad)"
       "${ST_ROW}  앞뒤 공백  "
 
 # ---------------------------------------------------------------------------
+# 19. Finished runs piled up behind a run in flight cost nothing. A session
+# with one run in flight and N dormant finished runs — ledger and `done` two
+# hours old and more, each on its own second, no pid, no heartbeat — makes the
+# helper start the same number of PATH commands at N=1 and N=30, and at N=30
+# the head is still that run, inside the pane's 8-second limit.
+#
+# THE COUNT IS OF COMMANDS FOUND THROUGH PATH. Every executable name in this
+# shell's PATH gets a stand-in at the front of it that appends its name to a
+# count file with builtins only and `exec`s the real command by absolute path.
+# Absolute-path calls, `$(…)` subshells and shell functions are not counted;
+# the status line suite's `cc-sl-derive` count holds the judgements, which is
+# where those multiply. Under load each process costs more, so the two together
+# pin "does not grow with the finished runs" there too.
+# ---------------------------------------------------------------------------
+PC_NOW=$(date -u +%s)
+pc_dormant() {
+  # pc_dormant <run-id> <seconds-ago> — a finished run, quiet that long.
+  fx_mkrun "$1"; fx_ledger_path; fx_segment S1 머지됨; fx_done
+  perl -e 'my $t = shift; utime $t, $t, @ARGV or die "utime: $!";' \
+    "$((PC_NOW - $2))" "$FX_LEDGER" "$FX_RUN_DIR/done"
+}
+pc_all=""
+for k in 01 02 03 04 05 06 07 08 09 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30; do
+  pc_dormant "pr-pc-d$k" $((7200 + (31 - 10#$k) * 10))
+  pc_all="$pc_all pr-pc-d$k"
+done
+fx_mkrun pr-pc-live; fx_ledger_path; fx_segment S1 실행중; fx_stage_live S1; fx_heartbeat 0 5
+fx_session_index s-pc-1 pr-pc-d01 pr-pc-live
+# shellcheck disable=SC2086
+fx_session_index s-pc-30 $pc_all pr-pc-live
+
+PC_BIN="$WORK/pc-bin"; PC_LOG="$WORK/pc-log"
+mkdir -p "$PC_BIN"
+IFS=: read -r -a pc_dirs <<EOF
+$PATH
+EOF
+for d in "${pc_dirs[@]}"; do
+  case "$d" in /*) ;; *) continue ;; esac
+  case "$d" in *"'"*) continue ;; esac
+  [ -d "$d" ] || continue
+  for x in "$d"/*; do
+    n=${x##*/}
+    case "$n" in ''|*[!A-Za-z0-9._+-]*) continue ;; esac
+    [ -f "$x" ] && [ -x "$x" ] || continue
+    # The first directory that has the name is the one PATH would run.
+    [ -e "$PC_BIN/$n" ] && continue
+    {
+      printf '#!%s\n' "$BASH"
+      printf "printf '%%s\\\\n' '%s' >> \"\$PC_LOG\"\n" "$n"
+      printf "exec '%s' \"\$@\"\n" "$x"
+    } > "$PC_BIN/$n"
+  done
+done
+chmod +x "$PC_BIN"/*
+pc_count() {
+  # pc_count <sid> — the PATH commands one helper call started.
+  : > "$PC_LOG"
+  PATH="$PC_BIN:$PATH" PC_LOG="$PC_LOG" "$BASH" "$PANE" "$1" >/dev/null 2>&1
+  grep -c . "$PC_LOG"
+}
+pc_n1=$(pc_count s-pc-1); pc_n30=$(pc_count s-pc-30)
+has "19 프로세스 수 — 대리 명령이 실제로 불렸다" \
+  "$([ "$pc_n1" -gt 0 ] && echo yes || echo "no($pc_n1)")" "yes"
+check "19 프로세스 수 — 진행 중 런 + 휴면 종단 30개가 1개와 같다" "$pc_n30" "$pc_n1"
+
+pc_ms() { perl -MTime::HiRes=time -e 'printf "%d", time() * 1000'; }
+pc_t0=$(pc_ms); out=$(pane s-pc-30); pc_t1=$(pc_ms)
+check "19 진행 중 런 표시 — 부류는 live" "$(hfield "$out" 3)" "live"
+check "19 진행 중 런 표시 — 머리 행의 런 id 가 진행 중 런이다" "$(hfield "$out" 4)" "pr-pc-live"
+has "19 진행 중 런 표시 — 도우미가 8초 안에 끝난다" \
+  "$([ "$((pc_t1 - pc_t0))" -lt 8000 ] && echo yes || echo "no($((pc_t1 - pc_t0))ms)")" "yes"
+
+# ---------------------------------------------------------------------------
 # 6. The contract, over every output this suite produced above.
 # ---------------------------------------------------------------------------
 # Each property is one assertion over the whole set; a breach names the output

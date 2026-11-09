@@ -66,6 +66,10 @@ export XDG_STATE_HOME="$WORK/state"
 # The config root the account inventory is read under is moved off the host's,
 # so the fixture run opens unrouted whatever this machine has.
 export XDG_CONFIG_HOME="$WORK/config"
+# The snapshot's `shift.context` is read from the calling session's transcript.
+# Inherited from a live session it would measure that session while it writes,
+# and two snapshots of one ledger would differ.
+unset CLAUDE_CODE_SESSION_ID
 
 passed=0; failed=0
 ok()   { passed=$((passed + 1)); printf 'PASS: %s\n' "$1"; }
@@ -221,11 +225,15 @@ check "크래시로 끝난 스테이지 결과 행은 진전이 아니다" "$(di
 # `answered_by` says who chose the option, and a row written before `답한 주체`
 # existed is read by its `근거`: the shift's pre-adopted prefix is `교대`, any
 # other row a person's. An answer is not progress, whoever gave it.
-printf -- '- `중단 답` | 세그먼트=S2 | 중단 기록=/x/halt/S2.md | 스킬=design-reconverge | 선택지=reject | 답한 주체=좌석 | 근거=기록의 추천 | 근거 종류=상시 지침\n' >> "$LEDGER"
+# `draft_adopted` is the row's `초안 채택` as written, and empty on a row that
+# carries none.
+printf -- '- `중단 답` | 세그먼트=S2 | 중단 기록=/x/halt/S2.md | 스킬=design-reconverge | 선택지=reject | 답한 주체=좌석 | 근거=기록의 결정 초안 | 근거 종류=설계 문서 | 초안 채택=1/1\n' >> "$LEDGER"
 printf -- '- `중단 답` | 세그먼트=S3 | 중단 기록=/x/halt/S3.md | 스킬=implement-unattended | 선택지=재수렴 | 근거=자동 채택(구속-이탈) — 매니페스트가 미리 정한 답\n' >> "$LEDGER"
 printf -- '- `중단 답` | 세그먼트=S4 | 중단 기록=/x/halt/S4.md | 스킬=design-audit-unattended | 선택지=reject | 근거=사람이 기각\n' >> "$LEDGER"
 ah=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -c '[.answered_halts[] | [.segment, .answered_by]]')
 check "스냅숏의 answered_by 는 답한 주체를 읽고, 옛 행은 근거의 접두로 가른다" "$ah" '[["S2","좌석"],["S3","교대"],["S4","사람"]]'
+ah=$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -c '[.answered_halts[] | [.segment, .draft_adopted]]')
+check "스냅숏의 draft_adopted 는 초안 채택을 읽고, 그 필드가 없는 행은 빈 문자열이다" "$ah" '[["S2","1/1"],["S3",""],["S4",""]]'
 check "중단 답 행은 진전이 아니다" "$(digest)" "$d0"
 
 # `route` and `route_refusal` are the gate's verdict on the answer as it reads
@@ -451,6 +459,9 @@ check "그 부재의 사유가 곁에 실린다" "$(jq -r .pace_absent_reason "$
 check "--fields 의 기본 목록은 라우터가 읽는 열한 필드를 그 순서로 낸다" \
   "$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" --fields 2>/dev/null | jq -r 'keys_unsorted | join(",")')" \
   "H,disposition,unmet_conditions_total,pending_approvals_total,live_stages,waiting_stages,live_applies,apply_unsettled,apply_imported,shift,pace"
+check "계획에 design_delivery 키가 없으면 스냅숏은 slices 로 찍는다" "$(jq -r .design_delivery "$WORK/s1.json")" "slices"
+check "--fields 로 design_delivery 만 골라 읽는다" \
+  "$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" --fields design_delivery 2>/dev/null)" "slices"
 check "적용 감독자도 정산 대상도 없으면 세 적용 목록은 빈 배열이다" \
   "$(jq -c '[.live_applies, .apply_unsettled, .apply_imported]' "$WORK/s1.json")" "[[],[],[]]"
 check "대기자가 없으면 waiting_stages 는 행이 쌓여도 빈 배열이다" "$(jq -c .waiting_stages "$WORK/s1.json")" "[]"
@@ -843,7 +854,7 @@ done
 for pair in "리드:$AP_ROUTER" "교대:$RS_CORPUS"; do
   who=${pair%%:*}; f=${pair#*:}
   check "$who 사본이 리뷰 절 정산을 review-post 로 적는다" \
-    "$(grep -qF -- '--kind review-post --segment <seg> --clause <절 id> --cutpoint 커밋 --surface 외부상태변경 --reach 협업 -- 게시' "$f" && echo 있음)" "있음"
+    "$(grep -qF -- '--kind review-post --segment <seg> --clause <절 id> --cutpoint 커밋 --surface 외부상태변경 -- 게시' "$f" && echo 있음)" "있음"
   check "$who 사본에 손으로 쓴 리뷰 본문 게시가 없다" "$(grep -cF -- '-f body=' "$f" || true)" "0"
 done
 for lit in \
@@ -859,6 +870,19 @@ for lit in \
     bad "교대 사본의 리뷰어 런 리터럴" "없다: $lit"
   fi
 done
+# The enforcement-surface approval site is a person's: the shift's copy names
+# it in the site table, and the lead's copy, which has no shift-halt, parks.
+for lit in \
+  '| `강제 표면 승인` |' \
+  '**At `강제 표면 승인` the gate measures before it writes.**'; do
+  if grep -qF -- "$lit" "$RS_CORPUS"; then
+    ok "교대 사본이 강제 표면 승인 자리를 싣는다: $lit"
+  else
+    bad "교대 사본의 강제 표면 승인 자리" "없다: $lit"
+  fi
+done
+check "리드 사본이 강제 표면 출처 거절을 park 로 적는다" \
+  "$(grep -cF -- '**An enforcement-surface provenance refusal is not answered in this loop either.**' "$AP_ROUTER" || true)" "1"
 check "리드 사본이 리뷰어 런의 갈래를 교대 사본으로 넘긴다" \
   "$(grep -cF -- "the shift's copy gives the fetch, the detached worktree, the \`--review-pr\` planning row" "$AP_ROUTER" || true)" "1"
 
@@ -901,10 +925,12 @@ for pair in "리드:$AP_ROUTER" "교대:$RS_CORPUS"; do
   for lit in \
     '**Settle the termination clauses before you propose done.** Enter this order when no unmerged, unparked segment is left to dispatch, no stage is alive, no `shift_halts[]` element holds a segment, and no segment parked by a `스코프=cone` row reading `사유=시각 승인 대기` still has its `시각-승인` approval open in `pending_approvals[]`.' \
     'While one is open, end with `사유=승인` as item 2 of 「Dispatching the visual stage」 says, and do not propose done.' \
-    '1. Read the snapshot'"'"'s `clauses[]` — one element per termination clause, with its `id`, `문면`, `상태` (`미정산`, `충족`, `불가능` or `보류`), `근거` and `요청`, the evidence request still open on it.' \
+    '1. Read the snapshot'"'"'s `clauses[]` — one element per termination clause, with its `id`, `문면`, `상태` (`미정산`, `충족`, `불가능` or `보류`), `근거`, `요청` (the evidence request still open on it), `근거 실행` (the execution shape the kickoff bound the clause to, or `null`), `실행` (the last `종료 절 실행` row'"'"'s `앵커`, `종료 코드` and `축2`, or `null`) and `실행 이력` (every such row in order — take a write'"'"'s anchor back from here after your context was compacted).' \
     '2. For each element whose `상태` is `미정산`, find by gate reads the evidence its `문면` asks for' \
     '4. Once every clause is settled, check with `plan --kind propose-done` and then take `act --kind propose-done`.' \
-    '- **`충족` cites the ledger or an observable artifact** — a row anchor `A-<8 hex>`, a merge commit'"'"'s full sha, a PR number, a run-directory or document path with its line, or `중단 답 줄 <n> · 첨부 <경로>` — never prose alone. The gate checks that `근거` is not empty and, when it names a posted review, that the review'"'"'s `리뷰 게시` row reads `대조=일치`; the rest of keeping to this is yours.' \
+    '- **`충족` cites the ledger or an observable artifact** — a row anchor `A-<8 hex>`, a merge commit'"'"'s full sha, a PR number, a run-directory or document path with its line, or `중단 답 줄 <n> · 첨부 <경로>` — never prose alone. For grounds that cite no execution the gate checks only that `근거` is not empty and, when they name a posted review, that the review'"'"'s `리뷰 게시` row reads `대조=일치`; the rest of keeping to this is yours.' \
+    'Grounds citing `실행 A-…` are checked by the gate: the row is this clause'"'"'s `종료 절 실행` row and exited 0' \
+    'The gate adds `자체 근거=예` to a row that passed; never pass it yourself (exit 2).' \
     '- **`불가능` cites what decided it** — a residual issue URL, a design step'"'"'s `stage-result` row and halt record path, or the `중단 답 줄 <n>` of a `불가능으로 정산` answer.' \
     '- **`보류` names an open `절단점=판단` approval id**, and one approval holds one clause unless the design step opened it.'; do
     if grep -qF -- "$lit" "$f"; then
@@ -930,11 +956,14 @@ for pair in "리드:$AP_ROUTER" "교대:$RS_CORPUS"; do
   done
 done
 for lit in \
-  '| `종료 절 근거` | 「Settling the termination clauses and proposing done」: a termination clause whose evidence no read of this run can produce | never |' \
+  '| `종료 절 근거` | 「Settling the termination clauses and proposing done」: a termination clause whose evidence neither a read nor a `clause-exec` of this run produced | `근거 제출` only; a person answers |' \
   "--segment - \\" \
   "-- '절=<절 id>'" \
   '**Do not end on `사유=중단` with a clause unsettled unless every unsettled clause has an open evidence request.**' \
-  'Do not run it yourself, and do not settle such a clause `불가능` without a question.' \
+  'Do not settle such a clause `불가능` without a question.' \
+  '1. **Runnable** — the execution is a read the grading table grades `읽기`, or a `사전 인가` row names it whole' \
+  '2. **Ran, and failed or did not match** — ask with `shift-halt -- 절=<id> 실행=A-… 질문=… 관측=…`.' \
+  '3. **Outside the authorization** — ask with `shift-halt -- 절=<id> '"'"'명령 초안=<argv>'"'"' '"'"'기대 결과=<한 줄>'"'"'' \
   '**`근거 제출`** → read the element'"'"'s `attachment` with a gate read' \
   'act --kind clause -- id=<id> 상태=불가능 '"'"'근거=중단 답 줄 <line>'"'"''; do
   if grep -qF -- "$lit" "$RS_CORPUS"; then
@@ -1009,6 +1038,14 @@ hi0=$( ( cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" --fields H 2>/
 check "세그먼트 워크트리에 커밋이 생기면 원소가 움직인다" "$(inx I2)" "리뷰|B|1|1"
 check "implement_next 의 값이 움직여도 H 는 그대로다" \
   "$( ( cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" --fields H 2>/dev/null ) )" "$hi0"
+
+# `refutation_next[]` sits right after `implement_next[]`, outside the default
+# projection and outside `H`. No refutation record binds here, so it is empty;
+# the gate's section 110 drives its elements.
+check "refutation_next 는 implement_next 바로 뒤의 배열이다" \
+  "$(jq -r '[(keys_unsorted | index("refutation_next")) - (keys_unsorted | index("implement_next")), (.refutation_next | type), (.refutation_next | length)] | map(tostring) | join("|")' "$SNAP_I")" "1|array|0"
+check "refutation_next 는 기본 --fields 투영 밖이다" \
+  "$( ( cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" --fields "$GATE_SNAPSHOT_FIELDS_DEFAULT" 2>/dev/null ) | jq -r 'has("refutation_next")')" "false"
 
 # ---------------------------------------------------------------------------
 # 6e-2. `audit_skeleton_due` — the audit that asked for its skeletal re-convergence
@@ -2855,8 +2892,8 @@ AU_SKILL="$repo_root/plugins/cc-cmds/skills/design-audit-unattended/SKILL.md"
 AU_ANS="$repo_root/plugins/cc-cmds/skills/_common/pipeline-sidecar.md"
 SEAT_REF="$AP_REFS/act2-seat.md"
 has(){ if grep -qF -- "$2" "$1"; then echo 예; else echo 아니오; fi; }
-check "design-audit-unattended: 재개와 운반 재진입은 사이드카 4.1 을 읽는다" \
-  "$(has "$AU_SKILL" "or started with \`CC_PIPELINE_HALT_ANSWER\` set (a fresh session carrying a person's answer to an earlier attempt's synthesis halt), Reads \`\${CLAUDE_SKILL_DIR}/../_common/pipeline-sidecar.md\` §4.1 before anything else")" 예
+check "design-audit-unattended: 재개와 운반·카드 재진입은 사이드카 4.1 을 읽는다" \
+  "$(has "$AU_SKILL" "or started with \`CC_PIPELINE_HALT_ANSWER\` set (a fresh session carrying a person's answer to an earlier attempt's synthesis halt), or started with \`CC_PIPELINE_REENTRY_CARD\` naming a card whose \`**스테이지**\` equals \`CC_PIPELINE_STAGE_ID\` (a resume moved to a new session on another account), Reads \`\${CLAUDE_SKILL_DIR}/../_common/pipeline-sidecar.md\` §4.1 before anything else")" 예
 check "design-audit-unattended: 종합 정지 전에 사이드카 4.1 의 조정 처분을 쓴다" \
   "$(has "$AU_SKILL" "Read \`\${CLAUDE_SKILL_DIR}/../_common/pipeline-sidecar.md\` §4.1 and write its \`## 조정 처분\` block into the report")" 예
 for f in "$RC_SKILL" "$AU_ANS"; do
@@ -3046,6 +3083,12 @@ check "design-base-unattended: 베이스 설계 흐름은 토론 갈래의 면�
   "$(has "$DB_SKILL" "Its re-entry exemption of the document-present guard and its **Re-entered with a carried answer** do not apply here")" 예
 check "design-base-unattended: 분할 재진입에는 문서 존재 면제가 없다" \
   "$(has "$DB_SKILL" "There is no document-present exemption: this mode saves no document and has no such guard.")" 예
+check "design-solo-unattended: 문서 존재 가드는 자기 스테이지의 재진입 카드도 면제한다" \
+  "$(has "$DS_SKILL" "**A re-entry card is exempt too**: when \`CC_PIPELINE_REENTRY_CARD\` names a card whose \`**스테이지**\` equals this stage's \`CC_PIPELINE_STAGE_ID\`, do not halt")" 예
+check "design-discuss-unattended: 문서 존재 가드는 자기 스테이지의 재진입 카드도 면제한다" \
+  "$(has "$DD_SKILL" "So is a re-entry card whose \`**스테이지**\` equals \`CC_PIPELINE_STAGE_ID\`.")" 예
+check "design-base-unattended: 베이스 설계 흐름은 재진입 카드 갈래만 토론 갈래에서 받는다" \
+  "$(has "$DB_SKILL" "Its **Re-entered on a re-entry card** applies here, with the guard's exemption for that card")" 예
 check "교대 계약: 재진입 표는 일곱 행이다" "$(has "$RS_CORPUS" "The table holds seven halts.")" 예
 check "교대 계약: 시각 발행 정지는 visual-publish 로 운반한다" \
   "$(has "$RS_CORPUS" "is carried as \`visual-publish\` with \`-p \"/cc-cmds:visual-publish-unattended <스냅숏 design_doc>\"\`")" 예
@@ -3075,7 +3118,7 @@ check "사이드카: 들인 답은 재부착하지 않고 상한 행과 18 로 �
 check "사이드카: answered_halts 원소가 carry_prompt 를 싣는다" \
   "$(has "$AU_ANS" "and \`carry_prompt\`, the \`-p\` text of the carry act for an implement, design or split halt the re-entry table holds")" 예
 check "사이드카: 재진입 표의 일곱 행" \
-  "$(has "$AU_ANS" "an audit's synthesis halt, a re-convergence's Step 3 halt, the visual publish stage's \`시각-판정\`, \`금지-후보\` and \`발행-실패\`, an implement stage's halt, a design discussion's halt, a lead solo design's halt, a base split's halt")" 예
+  "$(has "$AU_ANS" "an audit's synthesis halt, a re-convergence's Step 3 halt, the visual publish stage's \`시각-판정\`, \`금지-후보\`, \`발행-실패\` and \`디자인-시스템-판정\`, an implement stage's halt, a design discussion's halt, a lead solo design's halt, a base split's halt")" 예
 # 앞선 런이 이월한 답은 다음 런(입양·재킥오프 후속)이 운반 act 로 이어받는다 — 사람에게 다시
 # 묻지 않는다는 약속은 이 문장들이 싣고, 아침 보고의 새 절이 그 답을 사람에게 보인다.
 for pair in "autopilot-router-shift:$RS_CORPUS" "references:$AP_ROUTER"; do
@@ -3095,8 +3138,8 @@ check "아침 보고: 이월 절은 게이트가 쓰는 사유 머리와 같다"
   "$(has "$GATE" "'중단 답 이월 — 마감 안에 자리 없음'")" 예
 check "아침 보고: S2P 가 있는 런의 시각 승인 지시는 발행 단계의 중단 기록을 가리킨다" \
   "$(has "$AP_REFS/act3-report.md" "「\`S2P\` 중단 기록 \`<기록 파일>\` 의 캔버스 \`<URL>\` 을 보고 좌석 질문에 \`승인\`·\`수정 요청\`·\`거부\` 로 답하세요」")/$(has "$AP_REFS/act3-report.md" "A closing row reading \`처분 사유=중단 답 연동\` is read as the person's own answer")" "예/예"
-check "좌석 사본: S2P 의 세 자리 기록에는 사람의 답만 받고 좌석은 답하지 않는다" \
-  "$(has "$SEAT_REF" "**The gate takes only a person's answer to these three records: never answer one with \`답한 주체=좌석\`, whatever its \`**추천**\` line says.**")" 예
+check "좌석 사본: S2P 의 네 자리 기록에는 사람의 답만 받고 좌석은 답하지 않는다" \
+  "$(has "$SEAT_REF" "**The gate takes only a person's answer to these four records: never answer one with \`답한 주체=좌석\`, whatever its \`**추천**\` line says.**")" 예
 
 # ---------------------------------------------------------------------------
 # 13. An answer a routing block stamped leaves answered_halts for returned_halts
@@ -3134,6 +3177,43 @@ printf -- '- `중단 답` | 교대=1 | 세그먼트=S8 | 중단 기록=%s | 스�
 check "사람의 새 답이 서면 returned_halts 는 비고 새 답이 answered_halts 에 오른다" \
   "$(ret_read gate_returned_halts_json 'length')/$(ret_read gate_answered_halts_json '[.[] | .option]')" '0/["재시도"]'
 rm -rf "$RET_DIR"
+
+# ---------------------------------------------------------------------------
+# 계정 이전 대기 — 릴레이의 재개 시각 원소와 깨움 키, 게이트·워처가 함께 읽는 대기 판독.
+# 판독은 원장의 행과 relay.live 의 `resume=` 줄만 보므로 게이트 없이 liveness.sh 로 잰다.
+# ---------------------------------------------------------------------------
+FOS_DIR="$WORK/fo-wait"
+mkdir -p "$FOS_DIR"
+FOS_LG="$FOS_DIR/ledger.md"
+fos_read() { ( . "$repo_root/plugins/cc-cmds/orchestrator/liveness.sh"; "$@" ); }
+fos_iso() { fos_read cc_epoch_to_iso "$1"; }
+fos_now=$(date -u +%s)
+fos_row() {  # fos_row <결과> <재개 epoch> — 원장 끝에 계정 이전 행 하나
+  printf -- '- `계정 이전` | 교대=1 | 서수=2 | 좌석 레인=~/.claude | 증거=사용량 | 결과=%s | 레인=- | 계정=- | 재개 시각=%s | 후보=- | 기록 시각=%s | prev=0\n' \
+    "$1" "$(fos_iso "$2")" "$(fos_iso "$fos_now")" >> "$FOS_LG"
+}
+printf -- '- `handoff` | 교대=1 | 대상=t | 사유=대기 | prev=0\n' > "$FOS_LG"
+check "대기 행이 없으면 재개 시각도 대기 판독도 없다" \
+  "[$(fos_read cc_failover_wait_resume "$FOS_LG")]/$(fos_read cc_failover_waiting_now "$FOS_LG" "$fos_now" 0 && printf 예 || printf 아니오)" "[]/아니오"
+fos_row 대기 "$((fos_now + 300))"
+check "최신 인계 뒤의 대기 행이 재개 시각을 낸다" "$(fos_read cc_failover_wait_resume "$FOS_LG")" "$((fos_now + 300))"
+check "재개 시각 전이면 대기로 읽는다" "$(fos_read cc_failover_waiting_now "$FOS_LG" "$fos_now" 0 && printf 예 || printf 아니오)" "예"
+check "여유 0 으로 재개 시각 뒤면 대기가 아니다" "$(fos_read cc_failover_waiting_now "$FOS_LG" "$((fos_now + 301))" 0 && printf 예 || printf 아니오)" "아니오"
+check "여유 안의 재개 시각 뒤는 대기로 읽는다" "$(fos_read cc_failover_waiting_now "$FOS_LG" "$((fos_now + 301))" 1620 && printf 예 || printf 아니오)" "예"
+fos_row 이전 "$((fos_now + 300))"
+check "대기 뒤의 다른 결과 행은 대기를 끝낸다" "$(fos_read cc_failover_waiting_now "$FOS_LG" "$fos_now" 0 && printf 예 || printf 아니오)" "아니오"
+printf -- '- `handoff` | 교대=2 | 대상=t | 사유=대기 | prev=0\n' >> "$FOS_LG"
+fos_row 대기 "$((fos_now - 90))"
+printf 'resume=%s\n' "$((fos_now - 90))" > "$FOS_DIR/relay.live"
+check "재개 시각이 지나면 fr 키가 그 시각을 시계로 선다" \
+  "$(fos_read cc_relay_wake_keys "$FOS_DIR" "$FOS_LG" | grep '^fr:')" "$(printf 'fr:계정 이전\t%s' "$((fos_now - 90))")"
+printf 'resume=%s\n' "$((fos_now + 600))" > "$FOS_DIR/relay.live"
+check "재개 시각 전에는 fr 키가 서지 않는다" \
+  "$( { fos_read cc_relay_wake_keys "$FOS_DIR" "$FOS_LG" | grep -c '^fr:' || true; } | tr -d ' ')" "0"
+check "워처 여유 값은 900·600·120 의 합이다" "$(fos_read eval 'printf %s "$CC_FAILOVER_WATCH_SLACK_SECONDS"')" "1620"
+rm -rf "$FOS_DIR"
+unset -f fos_read fos_iso fos_row
+unset FOS_DIR FOS_LG fos_now
 
 printf '\ntest-snapshot: %d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" = "0" ]

@@ -1514,6 +1514,106 @@ check "--carry plugin-allow: 행도 파일 키도 없으면 원천 없음 한 �
 rm -rf "$PA" "$PA_X"; mkdir -p "$PA"
 
 # ---------------------------------------------------------------------------
+# account-failover — 레인 인벤토리 id 하나씩, 런 전역 줄만. 인벤토리가 그 id 를
+# 아직 켜는지는 기동 때 판정하므로 여기서는 형식만 본다.
+# ---------------------------------------------------------------------------
+# far <output> — `<적용|사유 토큰>|<범위>|<값>|<출처>` for each account-failover row.
+far() { printf '%s\n' "$1" | awk -F'\t' '($1=="적용" || $1=="무시") && $3=="account-failover" { print ($1=="적용" ? "적용" : $6) "|" $2 "|" $4 "|" $5 }'; }
+# fk <file content> — the main mode against the fixture file, on the fixture target.
+fk() { kf "$1" $T; }
+out=$(fk "account-failover = acct-b")
+check "account-failover: 런 전역의 id 는 적용" "$(far "$out")" "적용|런|acct-b|파일:1"
+check "account-failover: 적용 행은 권한 확대 표지를 단다" "$(col "$out" account-failover 6)" "1"
+check "account-failover: 효과 줄" "$(col "$out" account-failover 7)" \
+  "좌석 레인이 사용 한도일 때만 라우터 교대를 이 계정으로 옮겨 띄웁니다 — 이 행이 하나도 없으면 지금처럼 사람을 기다립니다"
+out=$(fk "account-failover = acct-b
+account-failover = acct-c")
+check "account-failover: 다른 두 id 는 둘 다 적용" "$(far "$out" | cut -d'|' -f1,3 | paste -sd' ' -)" "적용|acct-b 적용|acct-c"
+out=$(fk "account-failover = acct-b
+account-failover = acct-b")
+check "account-failover: 같은 id 는 뒤엣것이 중복" "$(far "$out" | cut -d'|' -f1 | paste -sd' ' -)" "적용 중복"
+for v in ACCT a_b 'a b' 'acct@x' '없음'; do
+  check "account-failover '$v' → 형식 오류" "$(st "$(fk "account-failover = $v")" account-failover)" "형식 오류"
+done
+check "account-failover: 값 앞뒤 공백은 뗀다" "$(far "$(fk "account-failover =   acct-b  ")" | cut -d'|' -f1,3)" "적용|acct-b"
+out=$(fk "[Nharu/cc-cmds]
+account-failover = acct-b")
+check "account-failover: 레포 구획 안의 줄은 자리 틀림" "$(st "$out" account-failover)" "자리 틀림"
+
+# 환경변수 — 쉼표 목록이 파일의 런 전역 줄을 통째로 갈아 끼운다.
+AE=CC_CMDS_AUTOPILOT_DEFAULT_ACCOUNT_FAILOVER
+# ae <value> — the main mode with the variable set, against the fixture file $F.
+ae() { env -u CC_PIPELINE_RUN_ID "$AE=$1" CC_CMDS_AUTOPILOT_DEFAULTS_FILE="$F" "$BASH" "$HELPER" --now "$NOW" $T; }
+printf 'account-failover = acct-a\n' > "$F"
+check "ACCOUNT_FAILOVER: 원소마다 적용, 파일의 런 전역 줄은 숨는다" \
+  "$(far "$(ae 'acct-b , acct-c')" | paste -sd' ' -)" "적용|런|acct-b|환경:$AE 적용|런|acct-c|환경:$AE"
+check "ACCOUNT_FAILOVER=없음: 런 전역 줄을 모두 숨긴다" "$(far "$(ae '없음')" | grep -c . || true)" "0"
+for v in 'acct-b,' 'acct-b,,acct-c' 'acct-b,없음' 'acct-b,ACCT' 'acct-b,a_b'; do
+  check "ACCOUNT_FAILOVER '$v' → 변수 형식 오류, 파일 런 전역 줄은 환경변수 무효" \
+    "$(far "$(ae "$v")" | awk -F'|' '$2=="런" { print $1 }' | sort | paste -sd' ' -)" "형식 오류 환경변수 무효"
+done
+check "ACCOUNT_FAILOVER: 같은 원소의 재등장은 뒤엣것이 중복" \
+  "$(far "$(ae 'acct-b,acct-b')" | awk -F'|' '$2=="런" { print $1 }' | paste -sd' ' -)" "적용 중복"
+check "ACCOUNT_FAILOVER 는 읽은 환경변수 수에 든다" \
+  "$(ae 'acct-b' | awk -F'\t' '$1=="원천" { print $4 }')" "1"
+check "ACCOUNT_FAILOVER 와 COST_CEILING 은 따로 알려진 이름이다" \
+  "$(env -u CC_PIPELINE_RUN_ID CC_CMDS_AUTOPILOT_DEFAULT_COST_CEILING=3 CC_CMDS_AUTOPILOT_DEFAULTS_FILE="$F" "$BASH" "$HELPER" --now "$NOW" $T \
+     | awk -F'\t' '$1=="무시" && $6=="모르는 환경변수"' | grep -c . || true)" "0"
+
+# --carry — 앞선 행은 판정 없이 권한 행으로 잇고, 행이 없는 파일 id 는 빈칸이다.
+CW_ROWS_SAVE="$CW_ROWS"
+FA_ROW_A="- \`계정 이전 허용\` | 계정=acct-a | 사유=좌석 한도 대비"
+CW_ROWS="$CW_ROWS
+$FA_ROW_A"
+cw_write "$CW"
+# farc <output> <kind> — `<칸2>|<칸4>` of the account-failover rows of that kind.
+farc() { printf '%s\n' "$1" | awk -F'\t' -v t="$2" '$1==t && $3=="account-failover" { print $2 "|" $4 }'; }
+out=$(kc "account-failover = acct-a
+account-failover = acct-b
+account-failover = BAD")
+check "--carry account-failover: 앞선 행은 권한 행이고 행을 축자로 싣는다" "$(farc "$out" 권한)" "런|$FA_ROW_A"
+check "--carry account-failover: 적용 요약 한 줄이 이어받는 id 를 싣는다" "$(farc "$out" 적용)" "런|acct-a"
+check "--carry account-failover: 앞선 행이 없는 파일 id 는 빈칸" "$(farc "$out" 빈칸)" "런|acct-b"
+check "--carry account-failover: 형식 오류 파일 값은 이어받지 않음 한 줄" \
+  "$(farc "$out" '이어받지 않음' | cut -d'|' -f2)" "형식 오류"
+check "--carry account-failover: 차이 행은 없다" "$(cnt "$out" 차이 account-failover)" "0"
+CW_ROWS="$CW_ROWS_SAVE"; cw_write "$CW"
+out=$(kc "account-failover = acct-b")
+check "--carry account-failover: 행 없는 앞 런에서 파일 id 는 빈칸" "$(farc "$out" 빈칸)" "런|acct-b"
+out=$(kc '')
+check "--carry account-failover: 행도 파일 값도 없으면 원천 없음 한 줄" "$(farc "$out" '이어받지 않음')" "런|원천 없음"
+
+# --failover-candidates — 5v 가 제안하는 계정: 무인이 켜져 있고 사람·발행 전용이 아닌 계정
+FC_X="$WORK/fc-xdg"; mkdir -p "$FC_X/cc-lane"
+fc() { XDG_CONFIG_HOME="$FC_X" kd --failover-candidates "$@"; }
+printf '%s\n' '{"accounts":[
+  {"id":"acct-a","config_dir":"/x/a","unattended":"enabled"},
+  {"id":"acct-off","config_dir":"/x/b","unattended":"disabled"},
+  {"id":"acct-seat","config_dir":"/x/c","unattended":"enabled","interactive_reserved":true},
+  {"id":"acct-pub","config_dir":"/x/d","unattended":"enabled","publish_only":true},
+  {"id":"BAD_ID","config_dir":"/x/e","unattended":"enabled"},
+  {"id":"acct-b","config_dir":"/x/f","unattended":"enabled"}
+]}' > "$FC_X/cc-lane/accounts.json"
+out=$(fc 2>/dev/null); rc=$?
+check "--failover-candidates 는 0 으로 끝난다" "$rc" "0"
+check "--failover-candidates: 무인 켬·사람 전용 아님·발행 전용 아님·id 문법 맞는 계정만 인벤토리 순서로 낸다" \
+  "$out" "$(printf '후보\tacct-a\n후보\tacct-b')"
+check "--failover-candidates 는 다른 인자와 함께 쓰지 않는다" "$(fc $T >/dev/null 2>&1; echo $?)" "2"
+check "--failover-candidates 도 런 안에서는 3" \
+  "$(CC_PIPELINE_RUN_ID=x XDG_CONFIG_HOME="$FC_X" "$BASH" "$HELPER" --failover-candidates >/dev/null 2>&1; echo $?)" "3"
+printf '%s\n' '{"accounts":[{"id":"acct-off","config_dir":"/x/b","unattended":"disabled"}]}' > "$FC_X/cc-lane/accounts.json"
+out=$(fc 2>/dev/null); rc=$?
+check "--failover-candidates: 조건 맞는 계정이 없으면 0 으로 끝난다" "$rc" "0"
+check "--failover-candidates: 조건 맞는 계정이 없으면 행이 없다" "$out" ""
+printf 'not json\n' > "$FC_X/cc-lane/accounts.json"
+out=$(fc 2>/dev/null); rc=$?
+check "--failover-candidates: 읽을 수 없는 인벤토리는 0 이 아니다" "$([ "$rc" -ne 0 ] && echo 비영)" "비영"
+check "--failover-candidates: 읽을 수 없는 인벤토리에서 stdout 은 비어 있다" "$out" ""
+rm -f "$FC_X/cc-lane/accounts.json"
+fc >/dev/null 2>&1; rc=$?
+check "--failover-candidates: 없는 인벤토리는 0 이 아니다" "$([ "$rc" -ne 0 ] && echo 비영)" "비영"
+
+# ---------------------------------------------------------------------------
 # SKILL.md 문면 — 호출 철자와 5n 고지
 # ---------------------------------------------------------------------------
 if grep -F 'bash <plugin root>/orchestrator/kickoff-defaults.sh' "$SKILL" >/dev/null; then

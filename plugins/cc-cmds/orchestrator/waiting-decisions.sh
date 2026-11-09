@@ -336,7 +336,7 @@ $opts
 EOF
   fi
   case "$step" in
-    시각-판정*|금지-후보*|발행-실패*) where=$(wd_where visual) ;;
+    시각-판정*|금지-후보*|발행-실패*|디자인-시스템-판정*) where=$(wd_where visual) ;;
     'Step 3 강제 표면 좌석 적용'*) where=$(wd_where seat-apply) ;;
     *)
       if [ -n "$attach" ]; then where=$(wd_where attach "$attach")
