@@ -14,7 +14,8 @@ THE PREDICATES ARE THEREFORE PORTED, ONE TO ONE. `cc_stage_is_live`,
 `cc__blocked_fold`, `cc_waiting_fresh_count` with the waiting-marker chain it
 calls (`cc_waiting_is_member`, `cc_waiting_field`, `cc_rows_naming_lineage`,
 `cc_waiting_age_base`, `cc_effective_stall`, `wake_epoch`, `platform_supported`),
-`cc_shift_is_live`, `cc_run_ends_on_done`, `cc_run_end_settled`,
+`cc_shift_is_live`, `cc_relay_is_effective` with the relay chain it calls (all
+of `cc_relay_wake_keys` but its two CI keys), `cc_run_ends_on_done`, `cc_run_end_settled`,
 `cc_unanswered_halts` with its `cc__halt_answer_state`, `cc_stage_kind`,
 `cc_display_tz_load` (`display-tz.sh`), `cc_ledger_growth_at` and `cc_mtime`
 each have a function below that reads the
@@ -873,14 +874,236 @@ def waiting_fresh(run_dir, lines, ledger_path, procs, now=None, stall=None):
     return out
 
 
+# ---------------------------------------------------------------------------
+# The effective relay (liveness.sh, `cc_relay_is_effective` and what it calls)
+# ---------------------------------------------------------------------------
+
+_LIVENESS_DECL = {}
+
+
+def liveness_decl(name):
+    """The value of `<name>=<digits>` as liveness.sh declares it, read once from
+    the file beside this module; None when the file holds no single declaration.
+    The relay's two thresholds and the reset grace are declared there once, so
+    this port reads them rather than keeping its own copy."""
+    if name not in _LIVENESS_DECL:
+        t = read_text(os.path.join(os.path.dirname(os.path.abspath(__file__)), "liveness.sh"))
+        decl = re.findall(r"(?m)^" + re.escape(name) + r"=([0-9]+)$", t or "")
+        _LIVENESS_DECL[name] = int(decl[0]) if len(decl) == 1 else None
+    return _LIVENESS_DECL[name]
+
+
+def relay_field(run_dir, name):
+    """cc_relay_field — the last `<name>=` line of `relay.live`, or ""."""
+    return waiting_field(os.path.join(run_dir, "relay.live"), name) if run_dir else ""
+
+
+def relay_is_live(run_dir, procs):
+    """cc_relay_is_live — pid on line 1, its fingerprint on line 2, judged as
+    `cc_holder_is_live` judges them."""
+    f = os.path.join(run_dir, "relay.live")
+    if not os.path.isfile(f):
+        return False
+    pid_text = _strip_blanks(_sed_line(f, 1))
+    rec = _sed_line(f, 2)
+    if not _DIGITS.fullmatch(pid_text) or not rec:
+        return False
+    pid = int(pid_text)
+    return procs.exists(pid) and procs.fingerprint(pid) == rec
+
+
+def _pair_live(pid_f, rec_f, procs):
+    """cc__apply_pair_live — and `cc_supervisor_is_live` on `<seg>.sup`."""
+    if not os.path.isfile(pid_f):
+        return False
+    pid = _pid_of(_strip_blanks(read_text(pid_f) or ""))
+    if pid is None or not procs.exists(pid):
+        return False
+    rec = cmd_subst(rec_f)
+    return not rec or rec == procs.fingerprint(pid)
+
+
+def supervisor_is_live(run_dir, seg, procs):
+    """cc_supervisor_is_live."""
+    return _pair_live(os.path.join(run_dir, seg + ".sup"), os.path.join(run_dir, seg + ".sup.start"), procs)
+
+
+def apply_supervisor_is_live(run_dir, seg, procs, now):
+    """cc_apply_supervisor_is_live — either pair, or a launch token at most 60
+    seconds old."""
+    if not run_dir or not seg:
+        return False
+    d = os.path.join(run_dir, "apply")
+    if _pair_live(os.path.join(d, seg + ".sup"), os.path.join(d, seg + ".sup.start"), procs):
+        return True
+    if _pair_live(os.path.join(d, seg + ".sup.self"), os.path.join(d, seg + ".sup.self.start"), procs):
+        return True
+    mt = mtime_s(os.path.join(d, seg + ".launch"))
+    return mt is not None and now - mt <= 60
+
+
+def shell_iso_epoch(s):
+    """cc_iso_to_epoch — the first fourteen digits as a UTC civil time, which is
+    how the shell reads a stamp: an offset is not applied."""
+    digits = "".join(ch for ch in (s or "") if "0" <= ch <= "9")
+    if len(digits) < 14:
+        return None
+    y, m, d = int(digits[0:4]), int(digits[4:6]), int(digits[6:8])
+    hh, mm, ss = int(digits[8:10]), int(digits[10:12]), int(digits[12:14])
+    if y < 1970 or not 1 <= m <= 12 or not 1 <= d <= 31:
+        return None
+    return calendar.timegm((y, m, 1, hh, mm, ss, 0, 0, 0)) + (d - 1) * 86400
+
+
+def _bar_fields(line):
+    """awk -F'|' fields two onwards, trimmed of blanks and tabs."""
+    return [p.strip(" \t") for p in line.split("|")[1:]]
+
+
+def relay_result_after_ref(all_lines, run_dir):
+    """cc_relay_result_after_ref over every ledger line."""
+    anyref = any(v.startswith("교대#") for v in relay_field(run_dir, "reset").split(","))
+    if not anyref and os.path.isfile(os.path.join(run_dir, "relay.live")):
+        last = ""
+        for ln in all_lines:
+            if ln.startswith("- `handoff` "):
+                last = ln
+        if " | 사유=무기록 | " in last or last.endswith(" | 사유=무기록"):
+            anyref = True
+    ref = after = False
+    for ln in all_lines:
+        if ln.startswith("- `handoff` "):
+            if anyref or " | 사유=대기 | " in ln or " | 사유=이월 | " in ln:
+                ref, after = True, False
+        if ln.startswith("- `stage-result` ") and ref:
+            after = True
+    return after
+
+
+def relay_cut_cleared_at(all_lines, key):
+    """cc_relay_cut_cleared_at — the `기록 시각` of the first `한도 해제` row
+    below the cut row of <key>, as epoch seconds, or None."""
+    if not key:
+        return None
+    shift = key[len("교대#"):] if key.startswith("교대#") else ""
+    cut = False
+    at = ""
+    for ln in all_lines:
+        if ln.startswith("- `stage-result` "):
+            if shift == "" and ("스테이지=" + key) in _bar_fields(ln):
+                cut, at = True, ""
+            continue
+        if ln.startswith("- `handoff` "):
+            fs = _bar_fields(ln)
+            if shift != "" and ("교대=" + shift) in fs and "사유=무기록" in fs:
+                cut, at = True, ""
+            continue
+        if ln.startswith("- `한도 해제` ") and cut and at == "":
+            for f in _bar_fields(ln):
+                if f.startswith("기록 시각="):
+                    at = f[len("기록 시각="):]
+                    break
+    return shell_iso_epoch(at) if at else None
+
+
+def reset_grace():
+    """cc_reset_grace — the declared grace, which the test hook may only shorten."""
+    g = liveness_decl("CC_RESET_GRACE_SECONDS")
+    t = os.environ.get("CC_GATE_RESET_GRACE_TEST_SECONDS", "")
+    if g is not None and _DIGITS.fullmatch(t) and int(t) < g:
+        return int(t)
+    return g
+
+
+def relay_wake_keys(run_dir, ledger_path, procs, now):
+    """cc_relay_wake_keys, as (key, clock or None) pairs.
+
+    THE TWO CI KEYS ARE NOT PORTED. `ci:` and `ce:` stand on the CI poller's
+    verdicts and their wait clocks, which nothing here reads; a live relay
+    launches the shift within one poll of either standing, so a relay this port
+    calls effective while one of them is overdue would be a hung relay that
+    also has a fresh `refreshed`."""
+    if not os.path.isfile(os.path.join(run_dir, "relay.live")):
+        return []
+    all_lines = read_ledger_lines(ledger_path) if ledger_path and os.path.isfile(ledger_path) else []
+    out = []
+    if all_lines and relay_result_after_ref(all_lines, run_dir):
+        out.append(("sr", None))
+    grace = reset_grace()
+    for v in relay_field(run_dir, "reset").replace(",", " ").split():
+        if v == "-" or ":" not in v:
+            continue
+        k, ep = v.rsplit(":", 1)
+        if not _DIGITS.fullmatch(ep) or not k:
+            continue
+        if grace is not None and now >= int(ep) + grace:
+            out.append(("rl:" + k, int(ep) + grace))
+        at = relay_cut_cleared_at(all_lines, k)
+        if at is not None:
+            out.append(("lc:" + k, at))
+    for name, label in (("defer", "dl:이월"), ("resume", "fr:계정 이전")):
+        ep = relay_field(run_dir, name)
+        if _DIGITS.fullmatch(ep) and now >= int(ep):
+            out.append((label, int(ep)))
+    for k in relay_field(run_dir, "stages").replace(",", " ").split():
+        if k == "-":
+            continue
+        if k.startswith("apply:"):
+            if not apply_supervisor_is_live(run_dir, k[len("apply:"):], procs, now):
+                out.append(("st:" + k, None))
+            continue
+        if not stage_is_live(run_dir, k, procs) and not supervisor_is_live(run_dir, k, procs):
+            out.append(("st:" + k, None))
+    return out
+
+
+def relay_seen_at(run_dir, started, key):
+    """cc_relay_seen_at — the watcher's first sighting of <key> for that relay."""
+    t = read_text(os.path.join(run_dir, "watch.relay-seen"))
+    for ln in (t or "").split("\n"):
+        f = ln.split("\t")
+        if len(f) >= 3 and f[0] == started and f[1] == key:
+            return f[2]
+    return ""
+
+
+def relay_is_effective(run_dir, ledger_path, procs, now=None):
+    """cc_relay_is_effective with liveness.sh's declared thresholds: a live
+    relay, a `refreshed` younger than the silence, and no wake condition that
+    has stood longer than the after-stage allowance."""
+    if not run_dir or not relay_is_live(run_dir, procs):
+        return False
+    silence = liveness_decl("CC_RELAY_SILENCE_SECONDS")
+    after = liveness_decl("CC_RELAY_AFTER_STAGE_SECONDS")
+    if silence is None or after is None:
+        return False
+    if now is None:
+        now = int(time.time())
+    ref = relay_field(run_dir, "refreshed")
+    if not _DIGITS.fullmatch(ref) or now - int(ref) >= silence:
+        return False
+    started = relay_field(run_dir, "started")
+    for k, c in relay_wake_keys(run_dir, ledger_path, procs, now):
+        if c is None:
+            seen = relay_seen_at(run_dir, started, k)
+            if not _DIGITS.fullmatch(seen):
+                continue
+            c = int(seen)
+        if now - c > after:
+            return False
+    return True
+
+
 def run_state(run_dir, lines, ledger_path, procs, stall=STALL_S, abandon=ABANDON_S,
               now=None, growth=None, live=None):
     """cc_run_state over a ledger already read into `lines`."""
     if live is None:
         live = live_stages(run_dir, procs)
-    # A fresh waiter is folded into the live count, as the shell folds it; the
-    # names list stays the running stages, which is what the detail shows.
-    if len(live) > 0 or waiting_fresh_count(run_dir, lines, ledger_path, procs, now=now) > 0:
+    # A fresh waiter and an effective relay are folded into the live count, as
+    # the shell folds them; the names list stays the running stages, which is
+    # what the detail shows.
+    if (len(live) > 0 or waiting_fresh_count(run_dir, lines, ledger_path, procs, now=now) > 0
+            or relay_is_effective(run_dir, ledger_path, procs, now=now)):
         return "도는중"
     blocked_n = len(unresolved_blocked(lines))
     pend = open_approvals(lines)
@@ -1305,6 +1528,8 @@ def stamp_key(src):
         # two make a frozen 종단 re-evaluate when a marker or a shift appears.
         os.path.exists(os.path.join(rd, "ends-on-done")) if rd else None,
         mt(os.path.join(rd, "shift.live")) if rd else None,
+        # A relay starting or refreshing can turn a frozen state back into 도는중.
+        mt(os.path.join(rd, "relay.live")) if rd else None,
         # A waiter appearing or refreshing can turn a frozen 종단 back into 도는중.
         waiting_stamp(rd) if rd else None,
         # A halt record or its answer attachment appearing changes `waiting`.
@@ -1597,7 +1822,9 @@ class Model:
             state = run_state(src.run_dir, lines, src.ledger_path, procs, self.stall, self.abandon,
                               now=now, growth=growth, live=live)
             # The shell answers a `done` run before it reads any growth clock,
-            # so the done-tail's 정산중 is not the age ladder's and stays.
+            # so the done-tail's 정산중 is not the age ladder's and stays. A run
+            # held by an effective relay already reads 도는중 and is left alone
+            # here, whatever its growth clock says.
             if (growth is None and state not in ("도는중", "종단", "승인대기")
                     and not os.path.isfile(os.path.join(src.run_dir, "done"))):
                 state = "버려짐"
