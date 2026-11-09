@@ -54500,7 +54500,11 @@ t3v_calls=$(cat "$WORK/vp83v-claude-calls" 2>/dev/null || true)
 if [ "$rc" = 0 ] && [ "$t3v_calls" = "auth status --json" ] && grep -qF '계정 판정: 일치' "$WORK/last-output.txt"; then
   ok "83c: 8v — 연 account 는 PATH 의 claude 스텁만 한 번 부르고 일치로 끝난다"
 else bad "83c: 8v — 연 account 는 PATH 의 claude 스텁만 한 번 부르고 일치로 끝난다" "rc=$rc 스텁 호출=[$t3v_calls]: $msg"; fi
-t3v_row=$( { grep -F '`자율 승인`' "$WT/docs/pipeline-run/R83V.md" 2>/dev/null || true; } | grep -F 'visual-config.sh account' | tail -1)
+# The row is found by its act digest, not by the argv excerpt: the excerpt is
+# clipped at 128 bytes from the end, and under a long checkout path the clip
+# takes `account` off.
+t3v_dig=$(printf '%s' "$CC_ORCH/visual-config.sh account" | shasum -a 256 | cut -d' ' -f1)
+t3v_row=$( { grep -F '`자율 승인`' "$WT/docs/pipeline-run/R83V.md" 2>/dev/null || true; } | grep -F "행위 다이제스트=$t3v_dig" | tail -1)
 case "$t3v_row" in *"| 도달=기기전역 |"*)
   ok "83c: 8v — 자율 승인 행이 그 행위와 기기전역 도달을 담는다" ;;
   *) bad "83c: 8v — 자율 승인 행이 그 행위와 기기전역 도달을 담는다" "$t3v_row" ;; esac
@@ -56404,7 +56408,7 @@ check "83v: 기기 정리 행이 없는 만들기는 no-cleanup 이다" "$(v83_o
 check "83v: 이름 접두가 맞지 않는 만들기는 device-name 이다" "$(v83_open 'xcrun simctl' xcrun simctl create other iPhone)" "device-name/"
 check "83v: 맞는 만들기는 짝 서수를 싣고 열린다" "$(v83_open 'xcrun simctl' xcrun simctl create cc-V83-S1-a iPhone)" "/1"
 check "83v: 기기 정리 값은 런 사본의 정리 스크립트로 펴진다" \
-  "$(v83 "$D83V/run" gate_preauth_pair_argv 1 V83 S1)" "$CC_ORCH/device-cleanup.sh V83 S1"
+  "$(v83 "$D83V/run" gate_preauth_pair_argv 1 V83 S1)" "$(cd "$CC_ORCH" && pwd)/device-cleanup.sh V83 S1"
 printf '6F9619FF-8B86-D011-B42D-00C04FC964FF\n' > "$D83V/simctl.out"
 v83 "$D83V/run" gate_device_record "$D83V/simctl.out" xcrun simctl create cc-V83-S1-a iPhone >/dev/null 2>&1 || true
 check "83v: 만든 기기는 런의 목록에 파견·UDID·이름으로 남는다" \
