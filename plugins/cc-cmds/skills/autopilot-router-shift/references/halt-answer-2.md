@@ -67,16 +67,7 @@
 
    **Item 6's `재시도` is the exception.** When the act it takes is refused the same way, item 6 stops the segment again with a new `shift-halt` rather than this row — that refusal is a new observation and a new question, and the `shift-halt` writes its own cone row.
 
-11. **A pre-dispatch size stop is answered by a new dispatch or a park — no session is re-attached.** (This item sits here, ahead of items 9 and 10.) The gate refused to start an audit, a re-convergence or an implementation because the design document stood at or past that kind's threshold (record step `파견 전 / 문서 크기 초과`) or could not be read (`파견 전 / 문서 읽기 불가`), and wrote the record and a `stage-result` row reading `차단=파견 전` and `종단 부류=의도된 park` before any session existed. Nothing halted, so there is nothing to resume or carry: the gate refuses `--carry-answer` on such a record (exit 3). The seat — and you — may answer a size record only `정리 후 재파견`, and only when the gate's conditions hold; the other two options, and every answer to an unreadable record, are a person's.
-   - **`정리-재파견`** (`정리 후 재파견`) → tidy the document, then issue again the dispatch the gate blocked:
-
-     ```
-     gate.sh act --manifest <매니페스트> --kind doc-tidy --target <alias> --segment <segment> \
-       --cutpoint 커밋 --surface 트리밖쓰기 --snapshot-digest <H> \
-       --rationale '중단 답 줄 <line>; 문서 정리' \
-       -- '중단 기록=<record>'
-     ```
-
-     `<segment>` is the element's `segment` — a segment id or a run-scope step id — and `<record>` its absolute path. The gate reads the answer's conditions again (an audit or re-convergence record; the document still at the record's pre-dispatch sha256; `doc-tidy.py plan` expecting it under the threshold; no other unfinished segment holding a plan), runs one tidy under the document lock and writes a `doc-tidy` row. When that row already stands and the document is at its post-tidy sha256, the act tidies nothing and exits 0. Then issue the blocked dispatch again — same kind, `--segment` and `-p` — with `--rationale '중단 답 줄 <line>'` and without `--carry-answer`; its `stage-result` row takes the answer up. A refused tidy, or one that fails (exit not 0), goes to item 8.
-   - **`큰문맥-재파견`** (`큰 문맥으로 재파견`) → issue the blocked dispatch again with `--large-context` and `--rationale '중단 답 줄 <line>'`. The gate admits the flag only on the key's last `중단 답` row when it is a person's unspent answer of that option to a size record; that one dispatch skips the size check and runs on the large-context model.
-   - **`크기-보류`** (`런 밖에서 처리`) → a segment key takes the park of item 7: write the segment's `park` row (with the plan row's `선행`), dispatch nothing on it, and the later `상태=park` row takes the answer up. A run-scope key holds the run: write `act --kind blocked … -- 스코프=run 원인=막힘 '앵커 세그먼트=<segment>' '사유=크기-보류' '근거=중단 답 줄 <line>'`, which takes the answer up, and dispatch nothing on that step.
+11. **A pre-dispatch size stop takes a new dispatch or a park, never a re-attachment.** The gate blocked the dispatch on the document's size (`파견 전 / 문서 크기 초과`) or readability (`파견 전 / 문서 읽기 불가`) before any session existed, and refuses `--carry-answer` on it (exit 3). Only `정리 후 재파견` is yours or the seat's to answer.
+   - **`정리-재파견`** → `gate.sh act --manifest <매니페스트> --kind doc-tidy --target <alias> --segment <segment> --cutpoint 커밋 --surface 트리밖쓰기 --snapshot-digest <H> --rationale '중단 답 줄 <line>; 문서 정리' -- '중단 기록=<record>'`. It re-checks the conditions, tidies once and writes a `doc-tidy` row; on a document already at that row's post-tidy sha256 it exits 0 untouched. Then issue the blocked dispatch again — same kind, `--segment`, `-p` — with `--rationale '중단 답 줄 <line>'`, no `--carry-answer`. A refused or failed tidy goes to item 8.
+   - **`큰문맥-재파견`** → the blocked dispatch again with `--large-context` and `--rationale '중단 답 줄 <line>'`; only a person's unspent answer admits it, and it skips the size check once.
+   - **`크기-보류`** → a segment key takes item 7's park; a run-scope key takes `act --kind blocked … -- 스코프=run 원인=막힘 '앵커 세그먼트=<segment>' '사유=크기-보류' '근거=중단 답 줄 <line>'`. Dispatch nothing on it.
