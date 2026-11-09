@@ -109,6 +109,45 @@ for case_dir in "$fixtures"/*/; do
   fi
 done
 
+# Rule 11 reads its ceiling from run.sh's size table, which LEAD_READ_SET_CEILING
+# does not lower, so its violation needs a pre-document read past 185000 bytes.
+# That case is built here, on the base tree, rather than kept as a fixture of
+# that size: a re-convergence lead whose Workflow Reads a generated 190000-byte
+# file before `### Step 2`.
+r11="$scratch/FAIL-26-rule11-reconverge-over-ceiling"
+mkdir -p "$r11"
+cp -R "$base/." "$r11/"
+mkdir -p "$r11/plugins/cc-cmds/skills/design-reconverge" "$r11/plugins/cc-cmds/skills/_common"
+awk 'BEGIN { l = sprintf("%099d", 0); for (i = 0; i < 1900; i++) print l }' \
+  > "$r11/plugins/cc-cmds/skills/_common/pad.md"
+cat > "$r11/plugins/cc-cmds/skills/design-reconverge/SKILL.md" <<'EOF'
+# design-reconverge (generated case)
+
+## Workflow
+
+### Step 1: Load
+
+**Read `${CLAUDE_SKILL_DIR}/../_common/pad.md`** before the document.
+
+### Step 2: Re-converge
+
+Nothing below this heading counts toward the sum.
+EOF
+set +e
+out=$(LEAD_READ_SET_CEILING="$(tr -d ' \n' < "$r11/ceiling")" SKILLS_ROOT="$r11/plugins/cc-cmds/skills" \
+  bash "$script_dir/lint-lead-read-set.sh" 2>&1)
+ec=$?
+set -e
+r11_re=$'\n''FAIL: 규칙 11 — reconverge \(design-reconverge\) 의 문서 전 읽기 합 [0-9]+ 바이트가 상한 [0-9]+ 을 넘는다'
+if [[ "$ec" == 1 && $'\n'"$out" =~ $r11_re ]]; then
+  passed=$((passed + 1))
+  echo "PASS: FAIL-26-rule11-reconverge-over-ceiling (exit=$ec, expected=1)"
+else
+  failures=$((failures + 1))
+  echo "FAIL: FAIL-26-rule11-reconverge-over-ceiling (exit=$ec, expected=1 with the rule 11 ceiling line)" >&2
+  printf '%s\n' "$out" >&2
+fi
+
 echo "test-lint-lead-read-set: $passed passed, $failures failed"
 
 if (( failures > 0 )); then

@@ -49338,6 +49338,12 @@ gate_verb_act() {
       exit "$GATE_EXIT_VOCAB"
     fi
     gate_large_context_admit "$stage_key" || exit $?
+    # The large-context dispatch skips the check but is measured at the same
+    # moment, so its stage-result row carries `문서 크기` like any other.
+    gate_lc_v=$(doc_size_verdict "$GATE_DOC_SIZE_KIND" "${DOC:-}")
+    gate_lc_b=$(printf '%s' "$gate_lc_v" | cut -f2)
+    gate_lc_t=$(printf '%s' "$gate_lc_v" | cut -f3)
+    [ -z "$gate_lc_b" ] || GATE_DOC_SIZE_LAST="$gate_lc_b/$gate_lc_t"
   fi
   if [ -n "$GATE_DOC_SIZE_KIND" ] && [ -z "${GATE_LARGE_CONTEXT:-}" ] && [ -z "${GATE_RESUME:-}" ]; then
     gate_doc_size_dispatch_check "$verb" "$stage_key" "$GATE_DOC_SIZE_KIND" "$segment" || exit $?
@@ -57706,6 +57712,9 @@ gate_record_stage_outcome() {
   local dsf dsw=""
   dsf=$(doc_size_field "$seg#$attempt")
   [ "$kind" != "reconverge" ] || dsw=$(doc_size_warn_field "$seg#$attempt")
+  # Both helpers print `<key>=<value>`; the rows below spell each key out so
+  # the field table's lint reads them at the call site.
+  dsf=${dsf#문서 크기=}; dsw=${dsw#크기 경고=}
   if [ -n "$psha" ]; then
     gate_append 'stage-result' "세그먼트=$rowseg" "스테이지=$seg" "종류=$kind" \
       "종료 코드=$rc" "실행 버전=$attempt" "세션 id=${sid:-미상}" \
@@ -57716,7 +57725,7 @@ gate_record_stage_outcome() {
       ${GATE_RA_BASE:+"재부착 기준=$GATE_RA_BASE"} ${GATE_RA_DELAY:+"재부착 지연=$GATE_RA_DELAY"} \
       ${GATE_RA_WIN:+"창 종류=$GATE_RA_WIN"} ${GATE_RA_SLEEP:+"마지막 절전=$GATE_RA_SLEEP"} \
       "plan_sha256=$psha" ${rv:+"재수렴 판정=$rv"} ${sk:+"골격급=$sk"} ${rq:+"재수렴 요청=$rq"} \
-      ${dsf:+"$dsf"} ${dsw:+"$dsw"} "종단 부류=$klass" ${transient:+"일시 원인=$transient"} "실패 서명=$fsig" \
+      ${dsf:+"문서 크기=$dsf"} ${dsw:+"크기 경고=$dsw"} "종단 부류=$klass" ${transient:+"일시 원인=$transient"} "실패 서명=$fsig" \
       ${hacarry:+"답 운반=$hacarry"}
   else
     gate_append 'stage-result' "세그먼트=$rowseg" "스테이지=$seg" "종류=$kind" \
@@ -57728,7 +57737,7 @@ gate_record_stage_outcome() {
       ${GATE_RA_BASE:+"재부착 기준=$GATE_RA_BASE"} ${GATE_RA_DELAY:+"재부착 지연=$GATE_RA_DELAY"} \
       ${GATE_RA_WIN:+"창 종류=$GATE_RA_WIN"} ${GATE_RA_SLEEP:+"마지막 절전=$GATE_RA_SLEEP"} \
       ${rv:+"재수렴 판정=$rv"} ${sk:+"골격급=$sk"} ${rq:+"재수렴 요청=$rq"} \
-      ${dsf:+"$dsf"} ${dsw:+"$dsw"} "종단 부류=$klass" ${transient:+"일시 원인=$transient"} "실패 서명=$fsig" \
+      ${dsf:+"문서 크기=$dsf"} ${dsw:+"크기 경고=$dsw"} "종단 부류=$klass" ${transient:+"일시 원인=$transient"} "실패 서명=$fsig" \
       ${hacarry:+"답 운반=$hacarry"}
   fi
   # Every audit attempt leaves its `감사 공시` row right after its own row.

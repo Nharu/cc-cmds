@@ -79,7 +79,7 @@
 #
 # `judge` is the seat's verdict on a run that just ended, read-only like every
 # other mode and reading neither the terminal nor stdin. It evaluates every
-# prohibition line (L14 L1 L2 L3 L5 L6 L7 L9 L15 L10 L11 L12 L13) and prints
+# prohibition line (L14 L1 L2 L3 L5 L6 L7 L9 L15 L16 L10 L11 L12 L13) and prints
 # each that fires; its only waits are the two questions `verify` asks, and a
 # wait whose key the `--asked` file already holds is not printed — the answer
 # is not read here, `verify-subset` measures what it allows. It never decides
@@ -398,6 +398,7 @@ for rk_f in manifest_field manifest_hdr_field manifest_row_fields manifest_plan_
             manifest_design_roster_rows_anywhere manifest_clause_rows_raw manifest_base_design_rows \
             manifest_design_scope manifest_split_run manifest_design_delivery manifest_source_ticket_rows \
             manifest_apply_code_rows target_field target_aliases canonical_targets binding_set_bytes \
+            doc_size_verdict doc_size_threshold \
             check_manifest rundir_of_run_id deadline_instant cutpoint_index \
             judgment_class_ok judgment_class_forbidden \
             cc_live_stages cc_shift_is_live cc_relay_is_live cc_waiting_fresh_count cc_unanswered_halts cc_halt_answered \
@@ -2103,6 +2104,27 @@ EOF
   # L15 — no progress twice in a row inside the seat chain.
   if [ "$etok" = "무진전" ] && [ "$RK_CH_PREVCAUSE" = "무진전" ]; then
     rk_fire L15 "좌석 연쇄 안에서 무진전이 두 번 연속입니다"
+  fi
+
+  # L16 — the source's design document is at the lowest size threshold or
+  # above, so the re-kicked run's first audit, re-convergence or implement
+  # dispatch would be blocked before it starts. It stands with no halt record,
+  # which L5 needs. An unreadable document does not fire it: that run's first
+  # dispatch blocks on the unreadable document itself.
+  local szdoc szf szb szt szk szv
+  szdoc=$(manifest_field '요소' '설계 문서')
+  case "$szdoc" in ''|'(없음)') szf="" ;; *) szf=$(rk_doc_path "$szdoc") ;; esac
+  if [ -n "$szf" ] && [ -f "$szf" ] && [ -r "$szf" ]; then
+    szt=""
+    for szk in audit reconverge implement; do
+      szv=$(doc_size_threshold "$szk" | cut -f1)
+      [ -n "$szv" ] || continue
+      if [ -z "$szt" ] || [ "$szv" -lt "$szt" ]; then szt=$szv; fi
+    done
+    szb=$(wc -c < "$szf" | tr -d ' ')
+    if [ -n "$szt" ] && [ -n "$szb" ] && [ "$szb" -ge "$szt" ]; then
+      rk_fire L16 "원천 매니페스트의 설계 문서가 $szb 바이트로 문턱 $szt 를 넘습니다"
+    fi
   fi
 
   # L10 · L11 — the end token.

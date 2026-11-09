@@ -45,6 +45,11 @@
 #     `2. **Read the whole document.**`: the deterministic checks take the
 #     whole audited document as their input.
 #   Rule 10 (skip) — a lead whose SKILL.md is absent is SKIPped.
+#   Rule 11 (document size table) — for the audit, the re-convergence and the
+#     implementation, the lead's reads before the design document are at most
+#     run.sh's ceiling for that kind, and the kind's threshold and warning
+#     threshold equal this script's literals. A kind whose SKILL.md is absent
+#     has its first check SKIPped; the other two still run.
 #
 # Text that carries backslashes (parts, fixed sentences) reaches awk through
 # ENVIRON, never `-v`: `-v` expands escape sequences and would compare a
@@ -83,13 +88,38 @@ LEADS=(design-discuss-unattended design-audit-unattended)
 
 # --- constants ---------------------------------------------------------------
 
-# Measured sum + at most 5%, rounded up to the next 1,000.
+# The orchestrator's design document size table, read once from run.sh in a
+# subshell so its shell options and variables stay out of this script. One
+# line per kind: `<kind> <ceiling> <threshold> <warning threshold>`. A failed
+# read leaves it empty, and the lint fails rather than falling back to a
+# constant.
+size_table=$( (
+  CC_ORCH_SOURCE_ONLY=1 . "$repo_root/plugins/cc-cmds/orchestrator/run.sh" >/dev/null 2>&1 || exit 1
+  for k in audit reconverge implement; do
+    c=$(doc_size_ceiling "$k") || exit 1
+    tw=$(doc_size_threshold "$k") || exit 1
+    printf '%s %s %s %s\n' "$k" "$c" "$(printf '%s' "$tw" | cut -f1)" "$(printf '%s' "$tw" | cut -f2)"
+  done
+) 2>/dev/null || true)
+if [[ $(printf '%s\n' "$size_table" | awk 'NF == 4 && $2 ~ /^[0-9]+$/ && $3 ~ /^[0-9]+$/ && $4 ~ /^[0-9]+$/' | wc -l | tr -d ' ') != 3 ]]; then
+  echo "FAIL: run.sh 의 문서 크기 표(doc_size_ceiling·doc_size_threshold)를 읽지 못했다" >&2
+  exit 1
+fi
+size_field() { printf '%s\n' "$size_table" | awk -v k="$1" -v c="$2" '$1 == k { print $c; exit }'; }
+
+# Measured sum + at most 5%, rounded up to the next 1,000. The audit lead's
+# is the size table's audit ceiling.
 lead_ceiling() {
   case "$1" in
     design-discuss-unattended) echo 185000 ;;
-    design-audit-unattended)   echo 162000 ;;
+    design-audit-unattended)   size_field audit 2 ;;
   esac
 }
+
+# Rule 11's kinds, the skill each one dispatches, and the thresholds the size
+# table must give: literals, never recomputed from the table, so a change of
+# the budget, the band or a ceiling fails here until these move with it.
+SIZE_KINDS="audit:design-audit-unattended:323000:299000 reconverge:design-reconverge:300000:276000 implement:implement-unattended:323000:299000"
 
 # The heading below which a Workflow directive is no longer pre-dispatch.
 lead_boundary() {
@@ -377,6 +407,7 @@ checked=0
 skipped=0
 rows_total=0
 banner_sums=""
+audit_read_sum=0
 
 for lead in "${LEADS[@]}"; do
   lf="$skills_root/$lead/SKILL.md"
@@ -589,6 +620,9 @@ for lead in "${LEADS[@]}"; do
     spans=$(awk -F '\t' -v d="$d" '$2 == "파견전" && ($3 == "공통" || $3 == d) { k = $4 "\t" $5 "\t" $6; if (!(k in seen)) { seen[k] = 1; t += $7 } } END { print t + 0 }' "$tmp/resolved")
     total=$((skill_bytes + spans))
     sums="$sums $d=$total"
+    if [[ "$lead" == "design-audit-unattended" ]] && (( total > audit_read_sum )); then
+      audit_read_sum=$total
+    fi
     if (( total > ceiling )); then
       echo "FAIL: $lead — 파견전 합($d) $total 바이트(SKILL.md $skill_bytes + 구간 $spans)가 상한 $ceiling 을 넘는다" >&2
       lead_fail=1
@@ -605,6 +639,86 @@ for lead in "${LEADS[@]}"; do
     echo "OK:   $lead — ${nrows} row(s) resolved, ${ndir} directive(s), ${ntrans} transitive pair(s), 파견전 합${sums} / 상한 $ceiling"
   fi
   banner_sums="$banner_sums $lead(${sums# }/$ceiling)"
+done
+
+# Rule 11 — the design document size table. For each kind the table holds:
+# what the kind's lead reads before the document is at most the kind's
+# ceiling, and the threshold and warning threshold equal the literals above.
+# The audit's sum is Rule 7's; a re-convergence's or an implementation's is
+# its SKILL.md plus what the Read directives inside `## Workflow` above
+# `### Step 2` name — a part resolved to the one line starting with it, else
+# the whole file, so an error lands on the ceiling's side.
+SPAN_AWK='
+{ L[NR] = $0; F[NR] = track($0) }
+END {
+  p = ENVIRON["LRS_P"]; n = NR; tot = 0
+  for (i = 1; i <= n; i++) tot += length(L[i]) + 1
+  if (p == "*") { print tot; exit }
+  m = 0
+  for (i = 1; i <= n; i++) {
+    if (F[i]) continue
+    if (L[i] == p || (index(L[i], p) == 1 && substr(L[i], length(p) + 1, 1) !~ /[A-Za-z0-9]/)) { m++; s = i }
+  }
+  if (m != 1) { print tot; exit }
+  lv = hlevel(p); t = 0
+  for (i = s; i <= n; i++) {
+    if (i > s && !F[i] && hlevel(L[i]) > 0 && hlevel(L[i]) <= lv) break
+    t += length(L[i]) + 1
+  }
+  print t
+}'
+
+pre_step2_sum() {
+  local lf="$skills_root/$1/SKILL.md" total line rel parts p span
+  total=$(wc -c < "$lf" | tr -d ' ')
+  : > "$tmp/r11.seen"
+  awk '$0 == "## Workflow" { w = 1; next } w && index($0, "### Step 2") == 1 { exit } w' "$(blanked "$1/SKILL.md")" \
+    | { grep -E "$DIRECTIVE_RE" || true; } > "$tmp/r11.lines"
+  while IFS= read -r line; do
+    rel=$(printf '%s' "$line" | grep -oE '`\$\{CLAUDE_SKILL_DIR\}/\.\./[^`]+\.md`' | head -1)
+    rel=${rel#\`\$\{CLAUDE_SKILL_DIR\}/../}
+    rel=${rel%\`}
+    [[ -n "$rel" && -f "$skills_root/$rel" ]] || continue
+    parts=$(printf '%s' "${line#*"$rel"}" | { grep -oE '`#+ [^`]+`' || true; } | tr -d '`')
+    [[ -n "$parts" ]] || parts='*'
+    while IFS= read -r p; do
+      grep -qxF -- "$rel|$p" "$tmp/r11.seen" && continue
+      printf '%s|%s\n' "$rel" "$p" >> "$tmp/r11.seen"
+      span=$(LRS_P="$p" awk "$FENCE_AWK$SPAN_AWK" "$skills_root/$rel")
+      total=$((total + span))
+    done <<< "$parts"
+  done < "$tmp/r11.lines"
+  echo "$total"
+}
+
+for entry in $SIZE_KINDS; do
+  IFS=: read -r sk_kind sk_skill sk_t sk_w <<< "$entry"
+  sk_ceil=$(size_field "$sk_kind" 2)
+  have_t=$(size_field "$sk_kind" 3)
+  have_w=$(size_field "$sk_kind" 4)
+  if [[ "$have_t" != "$sk_t" ]]; then
+    echo "FAIL: 규칙 11 — $sk_kind 의 문턱 $have_t 이 기대값 $sk_t 과 다르다(예산·폭·상한을 바꿨으면 기대값도 함께 고친다)" >&2
+    fail=1
+  fi
+  if [[ "$have_w" != "$sk_w" ]]; then
+    echo "FAIL: 규칙 11 — $sk_kind 의 경고 문턱 $have_w 이 기대값 $sk_w 과 다르다" >&2
+    fail=1
+  fi
+  if [[ ! -f "$skills_root/$sk_skill/SKILL.md" ]]; then
+    echo "SKIP: 규칙 11 — $sk_kind ($sk_skill) SKILL.md 없음"
+    continue
+  fi
+  if [[ "$sk_kind" == "audit" ]]; then
+    sk_sum=$audit_read_sum
+  else
+    sk_sum=$(pre_step2_sum "$sk_skill")
+  fi
+  if (( sk_sum > sk_ceil )); then
+    echo "FAIL: 규칙 11 — $sk_kind ($sk_skill) 의 문서 전 읽기 합 $sk_sum 바이트가 상한 $sk_ceil 을 넘는다" >&2
+    fail=1
+  else
+    echo "OK:   규칙 11 — $sk_kind ($sk_skill) 문서 전 읽기 합 $sk_sum / 상한 $sk_ceil, 문턱 $have_t, 경고 문턱 $have_w"
+  fi
 done
 
 if [[ "$fail" -ne 0 ]]; then

@@ -39161,7 +39161,7 @@ for rp_id in $rp_ids; do
   rp_n=$((rp_n + 1))
   grep -qF -- "| \`$rp_id\` |" "$RP_SHIFT" || rp_miss="$rp_miss $rp_id"
 done
-check "34o: 게이트 선언에서 경로 id 열하나를 읽는다 (아래가 공허하지 않다)" "$rp_n" "11"
+check "34o: 게이트 선언에서 경로 id 열넷을 읽는다 (아래가 공허하지 않다)" "$rp_n" "14"
 check "34o: 교대 스킬이 게이트의 경로 id 를 모두 이름 댄다" "${rp_miss:-없음}" "없음"
 rp_lits=0
 grep -qF -- '`**스텝**: Step 6 조정 패스 — CFI-3b 종합 질문`' "$RP_SKILLS/design-audit-unattended/SKILL.md" && rp_lits=$((rp_lits + 1))
@@ -67691,6 +67691,254 @@ check "111: 부여 뒤 기동 디렉터리가 사라지면 감독자는 준비 �
 unset -f s111_in s111_d s111_launch s111_instr s111_ls s111_new s111_left
 unset S111 r111 a111 d111 g111 s111_rb s111_rh s111_aw s111_im s111_ip s111_GRANT s111_WAIT s111_NODIR \
   s111_lg s111_lw s111_lm s111_dm s111_lz s111_dz s111_r
+
+# ---------------------------------------------------------------------------
+# 113. 설계 문서 크기 — 크기 표, 파견 전 차단 기록과 행, 세 답 경로와 좌석 제한, 문서 정리의 되돌림 검사
+# --- section: 113 | group: base | covers: act, halt-answer, doc_size_threshold, doc_size_verdict, doc_size_check, doc_size_halt_write, gate_doc_size_dispatch_check, gate_halt_answer_route, gate_doc_tidy_admissible, doc-tidy | anchors: 113: 크기 표가 세 종류의 문턱과 경고 문턱을 낸다, 113: 문턱 위 문서는 재수렴에 초과이고 감사에 경고다, 113: 크기 초과 기록이 스텝·추천·관측 상세를 싣는다, 113: 좌석의 큰 문맥 답은 거절된다, 113: 사람의 큰 문맥 답은 큰문맥-재파견 이다, 113: 사람의 런 밖 처리 답은 크기-보류 다, 113: 좌석의 정리 답은 정리-재파견 이다, 113: 크기 기록에 다른 선택지는 갈래가 없다, 113: 읽기 불가 기록은 정리 후 재파견을 싣지 않는다, 113: 읽기 불가 기록에 좌석은 답할 수 없고 사람의 런 밖 처리는 크기-보류 다, 113: plan 은 차단을 예보하고 기록을 쓰지 않는다, 113: act 는 시도를 청구해 기록과 의도된 park 행을 쓰고 11 로 끝난다, 113: tidy 가 문서를 문턱 아래로 정리하고 보관 파일을 쓴다, 113: check 가 정리 전후와 보관 파일을 되돌림으로 맞춘다, 113: 정리 행이 있으면 정리 뒤 문서로 조건 둘째가 서고 다시 정리하지 않는다, 113: 정리 행이 없으면 바뀐 문서의 정리 답은 거절된다 ---
+#
+# 크기 차단은 세션 없이 기록 하나와 행 하나로 끝나고, 그 기록의 답은 게이트가 경로 셋으로
+# 가른다. 이 절은 게이트를 소싱한 자식에서 그 함수들을 직접 부른다: 원장은 빈 파일에서
+# 시작하고, 설계 문서는 문턱 300000 을 조금 넘는 픽스처(고정 키 docs/doc-tidy-fixture.md)로,
+# 대체 괄호 하나를 옮기면 문턱 아래로 내려가게 만든다. 파견 행위 전체(인가·임대·감독자)는
+# 다른 절이 재고, 여기서는 크기 판정과 답 경로와 정리 도구만 본다.
+# ---------------------------------------------------------------------------
+S113="$WORK/s113"; rm -rf "$S113"; mkdir -p "$S113/run/halt" "$S113/repo/docs"
+S113=$(cd -P "$S113" && pwd)
+s113_doc="$S113/repo/docs/doc-tidy-fixture.md"
+awk 'BEGIN {
+  print "# 크기 시험 문서"; print ""; print "## 합의된 아키텍처"; print ""
+  l = sprintf("%0199d", 0); for (i = 0; i < 1475; i++) print "- " l
+  p = sprintf("%02000d", 0); printf "결정 문장입니다. (대체된 문장: \"%s\")\n", p
+}' > "$s113_doc"
+cp "$s113_doc" "$S113/pre.md"
+: > "$S113/ledger.md"; : > "$S113/ledger-empty.md"
+# s113_call <원장> <문서> <셸 문> — 게이트를 소싱한 자식에서 셸 문 하나를 이 절의 런
+# 디렉터리·원장·문서 위에서 부른다. 그 종료 코드가 호출의 종료 코드다. 게이트를 소싱하면
+# errexit 가 켜지므로, 0 이 아닌 값을 돌려주는 판정 함수 뒤에 이어 부를 것이 있으면 `|| :` 로 받는다.
+s113_call() {
+  local l="$1" d="$2"; shift 2
+  ( cd "$WT" && bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; RUN_DIR="$2"; LEDGER="$3"; RUN_ID=RT113
+      DOC="$4"; DOC_DIR="${4%/*}"; DOC_KEY=docs/doc-tidy-fixture.md; DOC_SLUG=docs-doc-tidy-fixture; DOC_BASE="$5"
+      shift 5; eval "$1"' _ "$GATE" "$S113/run" "$l" "$d" "$S113/repo" "$@" )
+}
+# s113_route <원장> <문서> <기록> <선택지> <답한 주체> — 경로 id, 거절이면 `거절`.
+s113_route() {
+  local r
+  r=$(s113_call "$1" "$2" 'gate_halt_answer_route S2 "'"$3"'" "'"$4"'" "'"$5"'"' 2>/dev/null) || r=거절
+  printf '%s' "${r:-거절}"
+}
+
+s113_r=$(s113_call "$S113/ledger.md" "$s113_doc" '
+  printf "%s|%s|%s|%s|%s" "$(doc_size_threshold audit | tr "\t" /)" "$(doc_size_threshold reconverge | tr "\t" /)" \
+    "$(doc_size_threshold implement | tr "\t" /)" "$(doc_size_min_threshold 1)" "$(doc_size_min_threshold 2)"' 2>/dev/null)
+check "113: 크기 표가 세 종류의 문턱과 경고 문턱을 낸다" "$s113_r" "323000/299000|300000/276000|323000/299000|300000|276000"
+s113_r=$(s113_call "$S113/ledger.md" "$s113_doc" '
+  printf "%s|%s" "$(doc_size_verdict reconverge "$DOC" | cut -f1)" "$(doc_size_verdict audit "$DOC" | cut -f1)"' 2>/dev/null)
+check "113: 문턱 위 문서는 재수렴에 초과이고 감사에 경고다" "$s113_r" "초과|경고"
+
+# (가) 크기 초과 기록 — 정리 뒤 예상이 문턱 아래이고 형제 계획이 없어 정리 후 재파견을 추천한다.
+s113_rec=$(s113_call "$S113/ledger.md" "$s113_doc" '
+  doc_size_check reconverge "$DOC" || :; doc_size_halt_write "S2#1" reconverge "$DOC" -; doc_size_release' 2>/dev/null)
+s113_sha=$(shasum -a 256 "$s113_doc" | cut -d' ' -f1)
+s113_r="$(sed -n 's/^\*\*스텝\*\*: //p' "$s113_rec" 2>/dev/null)|$(sed -n 's/^\*\*추천\*\*: \(`[^`]*`\).*/\1/p' "$s113_rec" 2>/dev/null)"
+s113_r="$s113_r|$(grep -c -e '^\*\*관측 상세\*\*: .* / 종류=reconverge / 문서 사전 sha256='"$s113_sha"'$' "$s113_rec" 2>/dev/null)"
+check "113: 크기 초과 기록이 스텝·추천·관측 상세를 싣는다" "$s113_r" '파견 전 / 문서 크기 초과|`정리 후 재파견`|1'
+
+# (나) 답 경로 — 좌석은 정리 답만, 사람은 세 갈래 모두.
+check "113: 좌석의 큰 문맥 답은 거절된다" \
+  "$(s113_route "$S113/ledger.md" "$s113_doc" "$s113_rec" '큰 문맥으로 재파견' 좌석)" "거절"
+check "113: 사람의 큰 문맥 답은 큰문맥-재파견 이다" \
+  "$(s113_route "$S113/ledger.md" "$s113_doc" "$s113_rec" '큰 문맥으로 재파견' 사람)" "큰문맥-재파견"
+check "113: 사람의 런 밖 처리 답은 크기-보류 다" \
+  "$(s113_route "$S113/ledger.md" "$s113_doc" "$s113_rec" '런 밖에서 처리' 사람)" "크기-보류"
+check "113: 좌석의 정리 답은 정리-재파견 이다" \
+  "$(s113_route "$S113/ledger.md" "$s113_doc" "$s113_rec" '정리 후 재파견' 좌석)" "정리-재파견"
+check "113: 크기 기록에 다른 선택지는 갈래가 없다" \
+  "$(s113_route "$S113/ledger.md" "$s113_doc" "$s113_rec" '재수렴' 사람)" "거절"
+
+# (다) 읽기 불가 기록 — 선택지는 런 밖 처리 하나이고 사람만 답한다.
+s113_urec=$(s113_call "$S113/ledger.md" "$S113/없는-문서.md" '
+  doc_size_check reconverge "$DOC" || :; doc_size_halt_write "S2#2" reconverge "$DOC" -; doc_size_release' 2>/dev/null)
+check "113: 읽기 불가 기록은 정리 후 재파견을 싣지 않는다" \
+  "$(sed -n 's/^\*\*스텝\*\*: //p' "$s113_urec" 2>/dev/null)|$(grep -c -F '`정리 후 재파견`' "$s113_urec" 2>/dev/null)" \
+  "파견 전 / 문서 읽기 불가|0"
+check "113: 읽기 불가 기록에 좌석은 답할 수 없고 사람의 런 밖 처리는 크기-보류 다" \
+  "$(s113_route "$S113/ledger.md" "$s113_doc" "$s113_urec" '정리 후 재파견' 좌석)|$(s113_route "$S113/ledger.md" "$s113_doc" "$s113_urec" '런 밖에서 처리' 좌석)|$(s113_route "$S113/ledger.md" "$s113_doc" "$s113_urec" '런 밖에서 처리' 사람)" \
+  "거절|거절|크기-보류"
+
+# (라) 파견 전 검사 — plan 은 예보만, act 는 시도를 청구하고 기록과 행을 쓴다.
+s113_r=$(s113_call "$S113/ledger.md" "$s113_doc" 'r=0; gate_doc_size_dispatch_check plan S3 reconverge - || r=$?; printf "%s" "$r"' 2>/dev/null)
+check "113: plan 은 차단을 예보하고 기록을 쓰지 않는다" \
+  "$s113_r|$(ls "$S113/run/halt" | grep -c '^S3#' || true)" "11|0"
+s113_r=$(s113_call "$S113/ledger.md" "$s113_doc" 'r=0; gate_doc_size_dispatch_check act S3 reconverge - || r=$?; printf "%s" "$r"' 2>/dev/null)
+s113_row=$(grep -F -e '- `stage-result` |' "$S113/ledger.md" | grep -F '| 스테이지=S3 |' | tail -1)
+check "113: act 는 시도를 청구해 기록과 의도된 park 행을 쓰고 11 로 끝난다" \
+  "$s113_r|$(sed -n 's/^\*\*스텝\*\*: //p' "$S113/run/halt/S3#1.md" 2>/dev/null)|$(printf '%s' "$s113_row" | grep -c -F -e '| 차단=파견 전 |' || true)|$(printf '%s' "$s113_row" | grep -c -F -e '| 종단 부류=의도된 park |' || true)|$(printf '%s' "$s113_row" | grep -c -F -e '| 문서 크기=' || true)" \
+  "11|파견 전 / 문서 크기 초과|1|1|1"
+
+# (마) 정리 도구 — tidy 가 대체 괄호를 보관 파일로 옮기고, check 가 되돌림으로 맞춘다.
+s113_arch="$S113/repo/docs/design-archive/docs-doc-tidy-fixture.md"
+mkdir -p "${s113_arch%/*}"
+s113_rc=0
+"$repo_root/plugins/cc-cmds/orchestrator/doc-tidy.py" tidy "$s113_doc" --archive "$s113_arch" \
+  --doc-key docs/doc-tidy-fixture.md --writer 게이트 --below 300000 >/dev/null 2>&1 || s113_rc=$?
+s113_sz=$(wc -c < "$s113_doc" | tr -d ' ')
+check "113: tidy 가 문서를 문턱 아래로 정리하고 보관 파일을 쓴다" \
+  "$s113_rc|$([ "$s113_sz" -lt 300000 ] && echo 아래)|$(grep -c -F ' (보관 A1)' "$s113_doc" || true)|$(sed -n '2p' "$s113_arch" 2>/dev/null)" \
+  "0|아래|1|<!-- cc-design-archive v1; writer=doc-tidy; owner-doc=docs/doc-tidy-fixture.md -->"
+s113_rc=0
+"$repo_root/plugins/cc-cmds/orchestrator/doc-tidy.py" check "$S113/pre.md" "$s113_doc" "$s113_arch" >/dev/null 2>&1 || s113_rc=$?
+check "113: check 가 정리 전후와 보관 파일을 되돌림으로 맞춘다" "$s113_rc" "0"
+
+# (바) 정리 뒤 재파견 — 정리 행의 정리 후 sha256 이 조건 둘째를 세운다.
+s113_post=$(shasum -a 256 "$s113_doc" | cut -d' ' -f1)
+printf -- '- `doc-tidy` | 교대=0 | 대상=infra | 세그먼트=S2 | 중단 기록=%s | 정리 전 sha256=%s | 정리 후 sha256=%s | 보관 파일=%s | prev=x\n' \
+  "$s113_rec" "$s113_sha" "$s113_post" "$s113_arch" >> "$S113/ledger.md"
+s113_r=$(s113_call "$S113/ledger.md" "$s113_doc" 'r=0; gate_doc_tidy_admissible S2 "'"$s113_rec"'" || r=$?; printf "%s|%s" "$r" "$GATE_DOC_TIDY_DONE"' 2>/dev/null)
+check "113: 정리 행이 있으면 정리 뒤 문서로 조건 둘째가 서고 다시 정리하지 않는다" "$s113_r" "0|1"
+check "113: 정리 행이 없으면 바뀐 문서의 정리 답은 거절된다" \
+  "$(s113_route "$S113/ledger-empty.md" "$s113_doc" "$s113_rec" '정리 후 재파견' 좌석)" "거절"
+unset -f s113_call s113_route
+unset S113 s113_doc s113_r s113_rec s113_sha s113_urec s113_row s113_arch s113_rc s113_sz s113_post
+
+# ---------------------------------------------------------------------------
+# 114. 재킥오프 판정 L16 — 원천 매니페스트의 설계 문서가 가장 낮은 문턱 이상이면 금지
+# --- section: 114 | group: base | covers: rekick, doc_size_threshold, doc_size_min_threshold | anchors: 114: 문턱 이상인 원천 설계 문서는 L16 으로 금지된다, 114: L16 줄이 바이트와 문턱을 싣는다, 114: 문턱보다 한 바이트 작은 문서에는 L16 이 서지 않는다 ---
+#
+# 원천 런은 매니페스트와 빈 원장뿐이라 계보·종료 행·동의 행에 기대는 다른 금지선도
+# 함께 서지만, 단언은 L16 줄만 읽는다. 문턱은 run.sh 의 크기 표에서 읽어 픽스처
+# 문서의 크기를 정하므로 표가 바뀌어도 경계에서 잰다.
+# ---------------------------------------------------------------------------
+S114="$WORK/s114"; rm -rf "$S114"; mkdir -p "$S114/repo/docs/pipeline-run" "$S114/repo/docs/pipeline-grant"
+S114=$(cd -P "$S114" && pwd)
+s114_t=$( cd "$WT" && CC_ORCH_SOURCE_ONLY=1 bash -c '. "$1" >/dev/null 2>&1; doc_size_min_threshold 1' \
+  _ "$repo_root/plugins/cc-cmds/orchestrator/run.sh" 2>/dev/null )
+awk -v n="$s114_t" 'BEGIN { l = sprintf("%099d", 0); for (i = 0; i * 100 < n; i++) print l }' \
+  | head -c "$s114_t" > "$S114/repo/docs/rk-big.md"
+head -c $((s114_t - 1)) "$S114/repo/docs/rk-big.md" > "$S114/repo/docs/rk-under.md"
+# s114_judge <run id> <설계 문서 키> — 그 문서를 이름 댄 원천 런의 판정 출력.
+s114_judge() {
+  printf '# 파이프라인 런 매니페스트 — %s\n\n## 요소\n**설계 문서**: %s\n' "$1" "$2" \
+    > "$S114/repo/docs/pipeline-run/$1.plan.md"
+  : > "$S114/repo/docs/pipeline-run/$1.md"
+  ( cd "$S114" && CLAUDE_CODE_SESSION_ID="s-$1" bash "$repo_root/plugins/cc-cmds/orchestrator/rekick.sh" \
+      judge --prev "$1" --base "$S114/repo" 2>/dev/null ) || true
+}
+s114_l16() { printf '%s\n' "$1" | awk -F'\t' '$1 == "금지선" && $2 == "L16" { print $3 }'; }
+s114_out=$(s114_judge RT114A docs/rk-big.md)
+check "114: 문턱 이상인 원천 설계 문서는 L16 으로 금지된다" \
+  "$(printf '%s\n' "$s114_out" | awk -F'\t' '$1 == "판정" { print $2; exit }')|$(s114_l16 "$s114_out" | grep -c . || true)" "금지|1"
+check "114: L16 줄이 바이트와 문턱을 싣는다" "$(s114_l16 "$s114_out")" \
+  "원천 매니페스트의 설계 문서가 $s114_t 바이트로 문턱 $s114_t 를 넘습니다"
+s114_out=$(s114_judge RT114B docs/rk-under.md)
+check "114: 문턱보다 한 바이트 작은 문서에는 L16 이 서지 않는다" \
+  "$( { printf '%s\n' "$s114_out" | grep -c '^판정' || true; } )|$(s114_l16 "$s114_out" | grep -c . || true)" "1|0"
+unset -f s114_judge s114_l16
+unset S114 s114_t s114_out
+
+# ---------------------------------------------------------------------------
+# 115. 정리 도구의 완료 기준 — 재현 사본(없으면 합성 문서)이 apply 뒤 300000 미만이고 check 가 0 이다
+# --- section: 115 | group: base | covers: doc-tidy | anchors: 115: 합성 문서가 재현 사본의 크기와 정리 대상 바이트를 그대로 갖는다, 115: apply 가 문서를 300000 아래로 정리한다, 115: check 가 apply 전후와 보관 파일을 되돌림으로 맞춘다, 115: tidy 는 정리 뒤에도 문턱 이상이면 아무것도 쓰지 않고 1 이다, 115: 동결 사본에 같은 바이트로 있는 표지 줄의 항목만 옮긴다, 115: 동결 사본 없이는 표지 줄의 항목을 옮기지 않는다, 115: unmark 가 기준에 있는 표지만 지우고 C 조각을 남긴다 ---
+#
+# 입력은 환경 변수 CC_DOC_SIZE_REPRO 가 가리키는 트리 밖 재현 사본이고, 그 파일이
+# 없으면 같은 꼴의 합성 문서다. 쓴 입력을 `repro=real <경로>` 또는 `repro=synthetic`
+# 한 줄로 내고, 재현 사본이면 CC_DOC_SIZE_REVIEWED 의 감사 동결 사본을 `--reviewed` 로
+# 넘기며 `reviewed=<경로>` 또는 `reviewed=missing` 한 줄을 더 낸다. 재현 사본은 읽기만
+# 하고 정리는 이 절의 임시 디렉터리에 뜬 사본 위에서 한다. 합성 문서는 354324 바이트,
+# 대체 괄호 53개가 10561 바이트, `해결:` 줄을 가진 해결 항목 65개에서 옮길 줄이 56631
+# 바이트, 제자리에 남는 `해결:` 줄이 36166 바이트이고 미리뷰 표지 줄은 없다.
+# ---------------------------------------------------------------------------
+S115="$WORK/s115"; rm -rf "$S115"; mkdir -p "$S115"
+S115=$(cd -P "$S115" && pwd)
+s115_tool="$repo_root/plugins/cc-cmds/orchestrator/doc-tidy.py"
+s115_synth() {
+  LC_ALL=C awk -v total=354324 '
+    function pad(n,   s) { s = sprintf("%" n "s", ""); gsub(/ /, "x", s); return s }
+    function emit(s) { out[++no] = s; used += length(s) + 1 }
+    BEGIN {
+      emit("# 합성 재현 문서"); emit(""); emit("## 합의된 아키텍처"); emit("")
+      for (i = 1; i <= 53; i++) emit("문장 " i " 입니다. (대체된 문장: \"" pad(i < 53 ? 176 : 190) "\")")
+      at = no
+      emit(""); emit("## 미해결 이슈 / 트레이드오프"); emit("")
+      for (i = 1; i <= 65; i++) {
+        mv = (i < 65) ? 871 : 887; st = (i < 65) ? 556 : 582
+        a = "**구현 처분**: 구현"; b = "**닿는 슬라이스**: A"
+        emit("### 항목 " i); emit("**상태**: 해결"); emit(a); emit(b)
+        emit("논의 " pad(mv - length(a) - length(b) - 3 - length("논의 ")))
+        emit("해결: " pad(st - 1 - length("해결: ")))
+      }
+      rem = total - used; nf = int((rem - 3) / 200); last = rem - nf * 200
+      for (k = 1; k <= at; k++) print out[k]
+      for (k = 1; k <= nf; k++) print "- " sprintf("%0197d", 0)
+      print "- " pad(last - 3)
+      for (k = at + 1; k <= no; k++) print out[k]
+    }'
+}
+s115_synth > "$S115/synth.md"
+check "115: 합성 문서가 재현 사본의 크기와 정리 대상 바이트를 그대로 갖는다" \
+  "$("$s115_tool" plan "$S115/synth.md" 2>/dev/null | grep -E '^(current|t1_count|t1_bytes|t3_count|t3_bytes)=' | tr '\n' ' ')" \
+  "current=354324 t1_count=53 t1_bytes=10561 t3_count=65 t3_bytes=56631 "
+
+s115_rev=""
+if [ -n "${CC_DOC_SIZE_REPRO:-}" ] && [ -f "$CC_DOC_SIZE_REPRO" ]; then
+  cp "$CC_DOC_SIZE_REPRO" "$S115/doc.md"
+  printf 'repro=real %s\n' "$CC_DOC_SIZE_REPRO"
+  if [ -n "${CC_DOC_SIZE_REVIEWED:-}" ] && [ -f "$CC_DOC_SIZE_REVIEWED" ]; then
+    s115_rev="$CC_DOC_SIZE_REVIEWED"; printf 'reviewed=%s\n' "$s115_rev"
+  else
+    printf 'reviewed=missing\n'
+  fi
+else
+  cp "$S115/synth.md" "$S115/doc.md"
+  printf 'repro=synthetic\n'
+fi
+cp "$S115/doc.md" "$S115/before.md"
+s115_rc=0
+"$s115_tool" apply "$S115/doc.md" --archive "$S115/archive.md" --doc-key docs/doc-tidy-fixture.md \
+  --writer test-gate ${s115_rev:+--reviewed "$s115_rev"} >/dev/null 2>&1 || s115_rc=$?
+s115_sz=$(wc -c < "$S115/doc.md" | tr -d ' ')
+check "115: apply 가 문서를 300000 아래로 정리한다" \
+  "$s115_rc|$([ "$s115_sz" -lt 300000 ] && echo 아래 || echo "$s115_sz")" "0|아래"
+s115_rc=0
+"$s115_tool" check "$S115/before.md" "$S115/doc.md" "$S115/archive.md" >/dev/null 2>&1 || s115_rc=$?
+check "115: check 가 apply 전후와 보관 파일을 되돌림으로 맞춘다" "$s115_rc" "0"
+
+cp "$S115/synth.md" "$S115/big.md"
+s115_sha=$(shasum -a 256 "$S115/big.md" | cut -d' ' -f1)
+s115_rc=0
+"$s115_tool" tidy "$S115/big.md" --archive "$S115/big-archive.md" --doc-key docs/doc-tidy-fixture.md \
+  --writer test-gate --below 200000 >/dev/null 2>&1 || s115_rc=$?
+check "115: tidy 는 정리 뒤에도 문턱 이상이면 아무것도 쓰지 않고 1 이다" \
+  "$s115_rc|$([ "$(shasum -a 256 "$S115/big.md" | cut -d' ' -f1)" = "$s115_sha" ] && echo 그대로)|$([ -e "$S115/big-archive.md" ] && echo 있음 || echo 없음)" \
+  "1|그대로|없음"
+
+# 표지 줄 — 항목 1 의 논의 줄은 동결 사본에 같은 바이트로 있고, 항목 2 의 것은 없다.
+s115_m='**미리뷰(스톱 이후 추가)**'
+{
+  printf '# 표지 시험\n\n## 미해결 이슈 / 트레이드오프\n\n'
+  printf '### 하나\n**상태**: 해결\n**구현 처분**: 구현\n%s 검토한 논의\n해결: 하나로 정함\n\n' "$s115_m"
+  printf '### 둘\n**상태**: 해결\n**구현 처분**: 구현\n%s 검토하지 않은 논의\n해결: 둘로 정함\n' "$s115_m"
+} > "$S115/mark.md"
+printf '# 동결\n\n%s 검토한 논의\n' "$s115_m" > "$S115/frozen.md"
+cp "$S115/mark.md" "$S115/mark-plain.md"
+"$s115_tool" apply "$S115/mark.md" --archive "$S115/mark-archive.md" --doc-key docs/doc-tidy-fixture.md \
+  --writer test-gate --reviewed "$S115/frozen.md" >/dev/null 2>&1 || :
+check "115: 동결 사본에 같은 바이트로 있는 표지 줄의 항목만 옮긴다" \
+  "$(grep -c -F '**보관**: B1' "$S115/mark.md" || true)|$(grep -c -F "$s115_m 검토한 논의" "$S115/mark.md" || true)|$(grep -c -F "$s115_m 검토하지 않은 논의" "$S115/mark.md" || true)|$(grep -c -F "$s115_m 검토한 논의" "$S115/mark-archive.md" || true)" \
+  "1|0|1|1"
+check "115: 동결 사본 없이는 표지 줄의 항목을 옮기지 않는다" \
+  "$("$s115_tool" plan "$S115/mark-plain.md" 2>/dev/null | grep -E '^t3_count=')" "t3_count=0"
+
+cp "$S115/mark-plain.md" "$S115/unmark.md"
+printf '%s 검토하지 않은 논의\n' "$s115_m" > "$S115/unmark-base.md"
+s115_rc=0
+"$s115_tool" unmark "$S115/unmark.md" --archive "$S115/unmark-archive.md" --doc-key docs/doc-tidy-fixture.md \
+  --writer test-gate --since "$S115/unmark-base.md" >/dev/null 2>&1 || s115_rc=$?
+check "115: unmark 가 기준에 있는 표지만 지우고 C 조각을 남긴다" \
+  "$s115_rc|$(grep -c -x -F '검토하지 않은 논의' "$S115/unmark.md" || true)|$(grep -c -F "$s115_m 검토한 논의" "$S115/unmark.md" || true)|$(grep -c '^### C1$' "$S115/unmark-archive.md" || true)" \
+  "0|1|1|1"
+unset -f s115_synth
+unset S115 s115_tool s115_rev s115_rc s115_sz s115_sha s115_m
 
 # --- epilogue-begin ---
 #
