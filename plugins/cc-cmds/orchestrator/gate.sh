@@ -3313,9 +3313,9 @@ gate_worktree_add_base_mismatch() {
   # experiment worktrees other skills make under `mktemp -d` start at `HEAD` or
   # at a merge commit on purpose and never land under that prefix.
   #
-  # A SYMBOLIC COMPARISON, NOT A SHA ONE. The start point must name
-  # `refs/remotes/origin/<base>` — what `git rev-parse --symbolic-full-name`
-  # reads it as. Concurrent runs in the same repository fetch and move that ref
+  # A SYMBOLIC COMPARISON, NOT A SHA ONE. The start point must name the ref
+  # `base_ref` gives — `refs/remotes/origin/<base>`, or `refs/heads/<base>` for a
+  # target with no `origin` — as `git rev-parse --symbolic-full-name` reads it. Concurrent runs in the same repository fetch and move that ref
   # between the router's fetch and this check, so comparing shas or ancestry
   # would refuse a correct call; a local branch, a bare sha and `HEAD` all read
   # as another name and are refused. Nothing is fetched here.
@@ -3390,7 +3390,8 @@ gate_worktree_add_base_mismatch() {
     printf '받은 시작점: %s, 기대 시작점: 해소되지 않음 — 대상 %s 의 베이스 브랜치를 정하지 못했습니다' "${start:-없음}" "$alias"
     return 0
   fi
-  want="refs/remotes/origin/$br"
+  want=$(base_ref "$alias" 2>/dev/null || true)
+  [ -n "$want" ] || want="refs/remotes/origin/$br"
   if [ "$newb" = 0 ] && [ "$det" = 0 ] && [ -n "$start" ] && [ "$start" != "$br" ] \
      && ( cd "$dir" 2>/dev/null && git rev-parse --verify --quiet "refs/heads/$start" >/dev/null 2>&1 ); then
     return 0
@@ -15673,10 +15674,13 @@ gate_snapshot_slicing_json() {
   # in declaration order. Read-only — the snapshot is a read verb, so the values
   # are written by `act --kind segment --from-declaration`, never from here.
   #
-  # `베이스` IS A REF NAME, NOT A SHA: `refs/remotes/origin/<base_branch>`, the
-  # start point the router's `git worktree add` writes verbatim after its own
-  # fetch. A sha read here would be stale by the time that fetch ran, and this
-  # read verb fetches nothing. Empty when the base branch cannot be resolved.
+  # `베이스` IS A REF NAME, NOT A SHA: the value of `base_ref`, the start point
+  # the router's `git worktree add` writes verbatim. It has two shapes:
+  # `refs/remotes/origin/<base_branch>`, written after the router's own fetch,
+  # and `refs/heads/<base_branch>` for a target with no `origin`, for which the
+  # router fetches nothing. A sha read here would be stale by the time that fetch
+  # ran, and this read verb fetches nothing. Empty when the base branch cannot be
+  # resolved.
   local br="" ids="" id="" al="" wt="" bn="" ad="" adx="" first=1 defects="" dpre="" dmo="" lrow="" bref="" undecl=""
   br=$(gate_slicing_branch)
   case "$br" in
@@ -15694,8 +15698,7 @@ gate_snapshot_slicing_json() {
     [ -z "$al" ] || wt=$(gate_decl_worktree "$al" "$id") || wt=""
     bref=""
     if [ -n "$al" ]; then
-      bref=$(base_branch "$al" 2>/dev/null || true)
-      [ -z "$bref" ] || bref="refs/remotes/origin/$bref"
+      bref=$(base_ref "$al" 2>/dev/null || true)
     fi
     # AN ADOPTED SEGMENT NAMES THE EARLIER RUN'S BRANCH AND WORKTREE, and says
     # so: `입양` carries the run it came from and `PR` the pull request the
@@ -25395,10 +25398,11 @@ gate_draft_code_commit() {
   # gate_draft_code_commit <alias> <segment> — sets GATE_DRAFT_WT and
   # GATE_DRAFT_MB to the segment worktree and the commit `코드` grounds are
   # read from: the merge base of that worktree's HEAD and
-  # `refs/remotes/origin/<base branch>`. The segment branched from that base,
-  # so a later merge into the base moves the tracking ref but not this value.
+  # `refs/remotes/origin/<base branch>`, or `refs/heads/<base branch>` for a
+  # target with no `origin`. The segment branched from that base, so a later
+  # merge into the base moves the tracking ref but not this value.
   # Exit 1 with GATE_DRAFT_WHY otherwise.
-  local al="$1" seg="$2" wt br mb
+  local al="$1" seg="$2" wt br mb bref
   GATE_DRAFT_WT=''; GATE_DRAFT_MB=''
   wt=$(gate_segment_worktree "$seg" 2>/dev/null) || wt=''
   case "$wt" in ''|-) wt=$(gate_decl_worktree "$al" "$seg") || wt='' ;; esac
@@ -25406,8 +25410,9 @@ gate_draft_code_commit() {
   br=$(base_branch "$al" 2>/dev/null) || br=''
   br=${br#origin/}
   [ -n "$br" ] || { GATE_DRAFT_WHY="대상 $al 의 베이스 브랜치를 읽을 수 없어 \`코드\` 근거를 읽을 커밋을 구할 수 없습니다"; return 1; }
-  mb=$(cd "$wt" && git merge-base HEAD "refs/remotes/origin/$br" 2>/dev/null) || mb=''
-  [ -n "$mb" ] || { GATE_DRAFT_WHY="세그먼트 워크트리의 HEAD 와 refs/remotes/origin/$br 의 갈라진 커밋을 구할 수 없습니다"; return 1; }
+  if target_has_origin "$al"; then bref="refs/remotes/origin/$br"; else bref="refs/heads/$br"; fi
+  mb=$(cd "$wt" && git merge-base HEAD "$bref" 2>/dev/null) || mb=''
+  [ -n "$mb" ] || { GATE_DRAFT_WHY="세그먼트 워크트리의 HEAD 와 $bref 의 갈라진 커밋을 구할 수 없습니다"; return 1; }
   GATE_DRAFT_WT=$wt; GATE_DRAFT_MB=$mb
 }
 
@@ -32334,6 +32339,33 @@ gate_review_line() {
       base=$( { cd "$mwt" && git merge-base "$mp" "$mtip"; } 2>/dev/null) || base=''
       if [ -z "$base" ]; then
         warn "no merge-base of the first parent $mp of 머지 커밋 $mg and the worktree tip $mtip of segment $seg — the base of the covering review cannot be derived"
+        return "$GATE_EXIT_RULE"
+      fi
+    fi
+  fi
+  # A SEGMENT OF A TARGET WITH NO `origin` HAS NO PULL REQUEST TO FIND ITS BASE
+  # FROM. A routed run writes no `베이스 sha` on its rows, and the review of a
+  # branch in a repository with no remote stops without `--base-sha`, so the line
+  # takes the merge-base of the recorded worktree's HEAD and the local base
+  # branch ref. A line without it would send a review that can only stop, so a
+  # base that cannot be derived refuses the line instead.
+  if [ -z "$base" ] && [ "$pmseg" = 0 ] && [ "$mgseg" = 0 ]; then
+    local lal lwt lref
+    lal=$(gate_segment_target_alias "$seg") || lal=''
+    if [ -n "$lal" ] && ! target_has_origin "$lal"; then
+      lwt=$(gate_segment_anchor_worktree "$seg" "$lal") || lwt=''
+      if [ -z "$lwt" ] || [ ! -d "$lwt" ]; then
+        warn "segment $seg targets $lal, which has no origin, and has no recorded worktree to derive --base-sha from"
+        return "$GATE_EXIT_RULE"
+      fi
+      lref=$(base_ref "$lal" 2>/dev/null) || lref=''
+      if [ -z "$lref" ]; then
+        warn "segment $seg targets $lal, which has no origin, and its base branch does not resolve — --base-sha cannot be derived"
+        return "$GATE_EXIT_RULE"
+      fi
+      base=$( { cd "$lwt" && git merge-base HEAD "$lref"; } 2>/dev/null) || base=''
+      if [ -z "$base" ]; then
+        warn "no merge-base of HEAD of the recorded worktree $lwt and $lref for segment $seg — --base-sha cannot be derived"
         return "$GATE_EXIT_RULE"
       fi
     fi
@@ -45132,7 +45164,8 @@ gate_audit_worktree_ensure() {
   # the driver's `wt_create` uses), reused when it is already a worktree of this
   # target, and refused when the path is taken by anything else. Then admitted
   # to the stage settings the way a `segment` row admits its worktree, because
-  # no row will name this one.
+  # no row will name this one. A target with no `origin` is not fetched and its
+  # tree starts at `refs/heads/<base_branch>`.
   #
   # A FAILED FETCH IS A WARNING, NOT A REFUSAL. The tree then starts at the
   # tracking ref as it stands, which a local base never runs ahead of; only a
@@ -45142,7 +45175,7 @@ gate_audit_worktree_ensure() {
   # PERFORMED, NOT CHECKED. It runs from the dispatch switch, after the row and
   # every rule, so a refused dispatch leaves no tree behind; and before the
   # launch, so the stage's first act already resolves here.
-  local alias="$1" wt root base lk sha fetched
+  local alias="$1" wt root base lk sha fetched sref slabel slog
   if ! wt=$(gate_audit_worktree_path "$alias"); then
     warn "감사 워크트리 경로를 정하지 못했습니다 — 실행 계획의 감사 단계 하나와 대상 ${alias} 의 메인 워크트리가 있어야 합니다"
     return "$GATE_EXIT_RULE"
@@ -45160,22 +45193,31 @@ gate_audit_worktree_ensure() {
       warn "대상 ${alias} 에 베이스 브랜치 가 없어 감사 워크트리를 만들 수 없습니다"
       return "$GATE_EXIT_RULE"
     fi
-    if base_fetch_ref "$alias" "$base" >/dev/null 2>&1; then
-      fetched='fetch 성공'
+    # A target with no `origin` has nothing to fetch and no tracking ref: the
+    # tree starts at the local base branch head, and no fetch warning is given.
+    if target_has_origin "$alias"; then
+      sref="refs/remotes/origin/${base}"; slabel="origin/${base}"
+      if base_fetch_ref "$alias" "$base" >/dev/null 2>&1; then
+        fetched='fetch 성공'
+      else
+        fetched='fetch 실패'
+        warn "감사 워크트리 — origin/${base} fetch 가 실패했습니다; 지금의 refs/remotes/origin/${base} 에서 뜹니다"
+      fi
+      slog='fetch 뒤'
     else
-      fetched='fetch 실패'
-      warn "감사 워크트리 — origin/${base} fetch 가 실패했습니다; 지금의 refs/remotes/origin/${base} 에서 뜹니다"
+      sref="refs/heads/${base}"; slabel="refs/heads/${base}"
+      fetched='원격 없음'; slog='원격 없음,'
     fi
-    sha=$( cd "$root" && git rev-parse --verify --quiet "refs/remotes/origin/${base}^{commit}" 2>/dev/null ) || sha=""
+    sha=$( cd "$root" && git rev-parse --verify --quiet "${sref}^{commit}" 2>/dev/null ) || sha=""
     if [ -z "$sha" ]; then
-      warn "감사 워크트리의 시작점 refs/remotes/origin/${base} 가 커밋으로 해소되지 않습니다(${fetched}) — 감사 워크트리를 만들 수 없습니다"
+      warn "감사 워크트리의 시작점 ${sref} 가 커밋으로 해소되지 않습니다(${fetched}) — 감사 워크트리를 만들 수 없습니다"
       return "$GATE_EXIT_RULE"
     fi
     if ! ( cd "$root" && git worktree add --detach "$wt" "$sha" >/dev/null 2>&1 ); then
-      warn "감사 워크트리를 origin/${base} 끝 ${sha} 에 분리해 만들지 못했습니다: $wt"
+      warn "감사 워크트리를 ${slabel} 끝 ${sha} 에 분리해 만들지 못했습니다: $wt"
       return "$GATE_EXIT_RULE"
     fi
-    log "감사 워크트리 — $wt (fetch 뒤 origin/${base} 끝 $(printf '%s' "$sha" | cut -c1-12) 에 분리)"
+    log "감사 워크트리 — $wt (${slog} ${slabel} 끝 $(printf '%s' "$sha" | cut -c1-12) 에 분리)"
   fi
   [ -n "${RUN_DIR:-}" ] || return 0
   lk="$RUN_DIR/settings.lock"
