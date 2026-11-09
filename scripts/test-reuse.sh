@@ -19,6 +19,24 @@
 # blob; a whole-tree record also needs the same tree object, the same input
 # commit and the same base.
 #
+# A RELEASE COMMIT DOES NOT VOID A PASS. A record that fails the conditions
+# above is still reused when every path whose blob differs between its listing
+# and today's is CHANGELOG.md or plugins/cc-cmds/.claude-plugin/plugin.json,
+# there is at least one, and the record and today's run stand in the release
+# relation: the same base; the record's input commit an ancestor of today's;
+# the diff between those two commits naming only those two paths, at least
+# one, with unchanged modes; plugin.json, when it differs, the same number of
+# lines with exactly one line changed and that line the version line on both
+# sides (the shape gate.sh's gate_meta_version_of reads); CHANGELOG.md, when it
+# differs, the old bytes up to the old first `## [` line, then a non-empty
+# inserted block that starts with `## [` and ends in a newline, then the old
+# bytes from that line on. The relation is read from the two input commits in
+# the repository's own objects (the common git directory the records live
+# under), never from the tested trees, whose merged commits live only in a
+# thrown-away clone. A missing object, a failing git call or a byte the check
+# cannot place makes the item run again. git is called only for a record whose
+# differing paths are all release paths; the reuse line says `릴리스 차이`.
+#
 # Sourced by scripts/test-tree.sh. Run, it has only its self-test:
 #   bash scripts/test-reuse.sh --self-test
 #
@@ -444,37 +462,149 @@ tr_record_put() {
   return 1
 }
 
+# The two paths a release commit changes.
+TR_REL_LOG="CHANGELOG.md"
+TR_REL_PJ="plugins/cc-cmds/.claude-plugin/plugin.json"
+
+# 0 when commits $2 (the record's input commit) and $3 (today's) in the
+# repository whose common git directory is $1 stand in relations 2 to 5 of the
+# release relation (the head comment; relation 1, the same base, is the
+# judge's). 1 otherwise, a missing object or a failing git call included;
+# nothing is printed.
+tr_release_rel() {
+  local gdir="$1" old="$2" new="$3" tmp rc
+  [ -n "$gdir" ] && [ -d "$gdir" ] || return 1
+  case "$old" in ''|*[!0-9a-f]*) return 1 ;; esac
+  case "$new" in ''|*[!0-9a-f]*) return 1 ;; esac
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/tr-release.XXXXXX") || return 1
+  ( unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_COMMON_DIR
+    tr_release_rel_in "$gdir" "$old" "$new" "$tmp" ) < /dev/null > /dev/null 2>&1
+  rc=$?
+  rm -rf "$tmp"
+  return "$rc"
+}
+
+# The body of tr_release_rel, run in a subshell with scratch directory $4.
+tr_release_rel_in() {
+  local gdir="$1" old="$2" new="$3" tmp="$4" p m1 m2 k psz osz nsz msz rsz
+  local seen_log="" seen_pj=""
+  trg() { git --git-dir="$gdir" "$@"; }
+  trg cat-file -e "$old^{commit}" && trg cat-file -e "$new^{commit}" || return 1
+  trg merge-base --is-ancestor "$old" "$new" || return 1
+  trg diff --no-renames --no-ext-diff --name-only -z "$old" "$new" -- > "$tmp/names" || return 1
+  [ -s "$tmp/names" ] || return 1
+  while IFS= read -r -d '' p; do
+    case "$p" in
+      "$TR_REL_LOG") seen_log=1 ;;
+      "$TR_REL_PJ") seen_pj=1 ;;
+      *) return 1 ;;
+    esac
+    m1=$(trg ls-tree "$old" -- "$p") && m2=$(trg ls-tree "$new" -- "$p") || return 1
+    [ -n "$m1" ] && [ "${m1%% *}" = "${m2%% *}" ] || return 1
+  done < "$tmp/names"
+  [ -n "$seen_log$seen_pj" ] || return 1
+  if [ -n "$seen_pj" ]; then
+    trg cat-file blob "$new:$TR_REL_PJ" > "$tmp/pn" && trg cat-file blob "$old:$TR_REL_PJ" > "$tmp/po" || return 1
+    # The one changed line, when both sides have as many lines and it is the
+    # version line on both; the old side rewritten with it must be the new side
+    # byte for byte, and the old side rewritten as it is must be itself.
+    k=$(awk '
+      function ver(s) { return s ~ /^[ \t]*"version"[ \t]*:[ \t]*"[0-9]+\.[0-9]+\.[0-9]+"[ \t]*,?[ \t]*$/ }
+      FNR == NR { o[FNR] = $0; no = FNR; next }
+      { nn = FNR; if (FNR > no || o[FNR] != $0) { d++; at = FNR; if (!ver(o[FNR]) || !ver($0)) bad = 1 } }
+      END { if (nn == no && d == 1 && !bad) print at }
+    ' "$tmp/po" "$tmp/pn") || return 1
+    [ -n "$k" ] || return 1
+    awk -v k="$k" 'FNR == NR { if (FNR == k) l = $0; next } { print (FNR == k ? l : $0) }' "$tmp/pn" "$tmp/po" > "$tmp/pr" || return 1
+    awk '{ print }' "$tmp/po" > "$tmp/ps" || return 1
+    cmp -s "$tmp/pr" "$tmp/pn" && cmp -s "$tmp/ps" "$tmp/po" || return 1
+  fi
+  if [ -n "$seen_log" ]; then
+    trg cat-file blob "$new:$TR_REL_LOG" > "$tmp/cn" && trg cat-file blob "$old:$TR_REL_LOG" > "$tmp/co" || return 1
+    k=$(awk '/^## \[/ { print NR; exit }' "$tmp/co")
+    [ -n "$k" ] || return 1
+    # Every line before line k ends in a newline, so awk prints them back as
+    # they are.
+    psz=$(( $(awk -v k="$k" 'NR < k' "$tmp/co" | wc -c) ))
+    osz=$(( $(wc -c < "$tmp/co") ))
+    nsz=$(( $(wc -c < "$tmp/cn") ))
+    rsz=$((osz - psz))
+    msz=$((nsz - osz))
+    [ "$msz" -gt 0 ] && [ "$rsz" -gt 0 ] || return 1
+    if [ "$psz" -gt 0 ]; then
+      head -c "$psz" "$tmp/co" > "$tmp/c1" && head -c "$psz" "$tmp/cn" > "$tmp/c2" || return 1
+      cmp -s "$tmp/c1" "$tmp/c2" || return 1
+    fi
+    tail -c "$rsz" "$tmp/co" > "$tmp/c1" && tail -c "$rsz" "$tmp/cn" > "$tmp/c2" || return 1
+    cmp -s "$tmp/c1" "$tmp/c2" || return 1
+    tail -c "+$((psz + 1))" "$tmp/cn" > "$tmp/c3" && head -c "$msz" "$tmp/c3" > "$tmp/cm" || return 1
+    [ "$(( $(wc -c < "$tmp/cm") ))" = "$msz" ] || return 1
+    awk 'NR == 1 { ok = /^## \[/ } END { exit !ok }' "$tmp/cm" || return 1
+    [ -z "$(tail -c 1 "$tmp/cm" | tr -d '\n')" ] || return 1
+  fi
+  return 0
+}
+
 # Judges record $1 against tree $3 (listing $7) for item $2, input commit $4,
-# base $5 (empty: none) and doubles $6. Prints "<tree><TAB><record time>" and 0
-# when the pass may be reused; 1 for any other record, unreadable or malformed
-# ones included.
+# base $5 (empty: none), doubles $6 and common git directory $8 (empty: the
+# release relation is never tried). Prints
+# "<tree><TAB><record time><TAB><같음|릴리스 차이>" and 0 when the pass may be
+# reused — `같음` when the record's own conditions hold, `릴리스 차이` when it
+# passed through the release relation; 1 for any other record, unreadable or
+# malformed ones included.
 tr_judge() {
   tr_judge_ver 1 "" "" "$@"
 }
 
 # Judges lane record $1 against tree $3 (listing $7) for section ids $2, input
-# commit $4, base $5 (empty: none), doubles $6 and cut digest $8. Every
-# condition of tr_judge holds, the record is version 2, its `절` are the ids
-# and its `컷증명` is the digest; an empty $8 leaves the digest unchecked, so a
-# caller can compute it only for a record that met everything else. Prints
-# "<tree><TAB><record time><TAB><record digest>" and 0 when the pass may be
-# reused.
+# commit $4, base $5 (empty: none), doubles $6, cut digest $8 and common git
+# directory $9. Every condition of tr_judge holds, the record is version 2, its
+# `절` are the ids and its `컷증명` is the digest; an empty $8 leaves the
+# digest unchecked, so a caller can compute it only for a record that met
+# everything else. Prints
+# "<tree><TAB><record time><TAB><같음|릴리스 차이><TAB><record digest>" and 0
+# when the pass may be reused.
 tr_lane_judge() {
   local ids
   ids=$(tr_lane_ids "$2")
   [ -n "$ids" ] || return 1
-  tr_judge_ver 2 "$ids" "${8:-}" "$1" "lane:$ids" "$3" "$4" "$5" "$6" "$7"
+  tr_judge_ver 2 "$ids" "${8:-}" "$1" "lane:$ids" "$3" "$4" "$5" "$6" "$7" "${9:-}"
 }
 
 # The judge of both versions: $1 the version, $2 the ids and $3 the digest a
-# version-2 record must carry, then tr_judge's arguments.
+# version-2 record must carry, then tr_judge's arguments. The awk judge prints
+# its verdict for the record's own conditions, or `후보` with the record's
+# input commit when only release paths differ under the same base; only then
+# is git asked about the release relation.
 tr_judge_ver() {
-  local ver="$1" ids="$2" cut="$3" rec="$4" key="$5" tree="$6" commit="$7" base="${8:-없음}" doubles="$9" list="${10}" now
+  local ver="$1" ids="$2" cut="$3" rec="$4" key="$5" tree="$6" commit="$7" base="${8:-없음}" doubles="$9" list="${10}" gdir="${11:-}" now out rest rc_commit
   [ -r "$rec" ] && [ -r "$list" ] || return 1
   now=$(tr_now)
+  out=$(tr_judge_awk "$ver" "$ids" "$cut" "$rec" "$key" "$tree" "$commit" "$base" "$doubles" "$list" "$now" "$gdir") || return 1
+  case "$out" in
+    후보$'\t'*)
+      rest="${out#*$'\t'}"
+      rc_commit="${rest%%$'\t'*}"
+      rest="${rest#*$'\t'}"
+      tr_release_rel "$gdir" "$rc_commit" "$commit" || return 1
+      if [ "$ver" = 2 ]; then
+        printf '%s\t릴리스 차이\t%s\n' "${rest%$'\t'*}" "${rest##*$'\t'}"
+      else
+        printf '%s\t릴리스 차이\n' "$rest"
+      fi ;;
+    *) printf '%s\n' "$out" ;;
+  esac
+  return 0
+}
+
+# The awk part of tr_judge_ver: its ten arguments, then the clock and the
+# common git directory (empty: no `후보` is printed).
+tr_judge_awk() {
+  local ver="$1" ids="$2" cut="$3" rec="$4" key="$5" tree="$6" commit="$7" base="$8" doubles="$9" list="${10}" now="${11}" gdir="${12}"
   awk -v ver="$ver" -v ids="$ids" -v cut="$cut" \
       -v key="$key" -v tree="$tree" -v commit="$commit" -v base="$base" \
-      -v doubles="$doubles" -v fp="$TR_FP" -v now="$now" -v maxage="$TR_MAX_AGE" '
+      -v doubles="$doubles" -v fp="$TR_FP" -v now="$now" -v maxage="$TR_MAX_AGE" \
+      -v rel="$gdir" -v rlog="$TR_REL_LOG" -v rpj="$TR_REL_PJ" '
     function entry(s, which,   t, h, p, e) {
       t = index(s, "\t"); if (!t) return 0
       split(substr(s, 1, t - 1), h, " "); p = substr(s, t + 1)
@@ -507,17 +637,28 @@ tr_judge_ver() {
       age = now - H["시각"]; if (age < 0 || age > maxage) exit 1
       if (n1 != n2) exit 1
       for (p in k1) if (!(p in k2) || k1[p] != k2[p]) exit 1
-      if (H["트리전체"] == "예") {
-        if (H["시험트리"] != tree || H["커밋"] != commit || H["베이스"] != base) exit 1
-      } else if (H["트리전체"] != "아니오") exit 1
-      for (i = 1; i <= nr; i++) if (!(rd[i] in b1) || b1[rd[i]] != b2[rd[i]]) exit 1
+      if (H["트리전체"] != "예" && H["트리전체"] != "아니오") exit 1
+      for (i = 1; i <= nr; i++) if (!(rd[i] in b1)) exit 1
+      tail = ""
       if (ver == 2) {
         if (H["절"] != ids || H["컷증명"] !~ /^[0-9a-f]+$/) exit 1
         if (cut != "" && H["컷증명"] != cut) exit 1
-        printf "%s\t%s\t%s\n", H["시험트리"], H["시각표기"], H["컷증명"]
+        tail = "\t" H["컷증명"]
+      }
+      same = 1
+      if (H["트리전체"] == "예" && (H["시험트리"] != tree || H["커밋"] != commit || H["베이스"] != base)) same = 0
+      for (i = 1; i <= nr; i++) if (b1[rd[i]] != b2[rd[i]]) same = 0
+      if (same) {
+        printf "%s\t%s\t같음%s\n", H["시험트리"], H["시각표기"], tail
         exit 0
       }
-      printf "%s\t%s\n", H["시험트리"], H["시각표기"]
+      # The release branch: the same base, and every differing path, at least
+      # one, a release path.
+      if (rel == "" || H["베이스"] != base || H["커밋"] !~ /^[0-9a-f]+$/) exit 1
+      nd = 0
+      for (p in b1) if (b1[p] != b2[p]) { if (p != rlog && p != rpj) exit 1; nd++ }
+      if (nd == 0) exit 1
+      printf "후보\t%s\t%s\t%s%s\n", H["커밋"], H["시험트리"], H["시각표기"], tail
       exit 0
     }
   ' "$list" "$rec"
@@ -527,7 +668,8 @@ tr_judge_ver() {
 # directory, $4 the input commit, $5 the base (empty: none), $6 the doubles, $7
 # the tracked listing of the tree (empty or missing: the listing failed, so
 # nothing is reused). Prints what tr_judge prints for the first record that
-# passes.
+# passes, "<tree><TAB><record time><TAB><같음|릴리스 차이>"; the release
+# relation is read in $1.
 tr_reuse_find() {
   local gdir="$1" key="$2" tree="$3" list="$7" d rec
   tr_excluded "$key" && return 1
@@ -538,7 +680,7 @@ tr_reuse_find() {
   for rec in "$d"/*; do
     [ -f "$rec" ] || continue
     case "${rec##*/}" in .*) continue ;; esac
-    if tr_judge "$rec" "$key" "$tree" "$4" "$5" "$6" "$list"; then return 0; fi
+    if tr_judge "$rec" "$key" "$tree" "$4" "$5" "$6" "$list" "$gdir"; then return 0; fi
   done
   return 1
 }
@@ -552,7 +694,8 @@ tr_reuse_find() {
 # the request no taken record covers yet, so a record with a section outside
 # the request, or one an earlier record already covers, is left. The digest is
 # computed only for a record that met every other condition, and once per set
-# of sections. Prints "<ids><TAB><tree><TAB><record time>" per record taken.
+# of sections. Prints "<ids><TAB><tree><TAB><record time><TAB><같음|릴리스
+# 차이>" per record taken; the release relation is read in $1.
 tr_lane_pick() {
   local gdir="$1" want="$2" tree="$3" commit="$4" base="$5" doubles="$6" list="$7"
   local d rec name ids left hit dig seen="" digs="" id ok
@@ -575,7 +718,7 @@ tr_lane_pick() {
       case "$left" in *",$id,"*) ;; *) ok=0; break ;; esac
     done
     [ "$ok" = 1 ] || continue
-    hit=$(tr_lane_judge "$rec" "$ids" "$tree" "$commit" "$base" "$doubles" "$list" "") || continue
+    hit=$(tr_lane_judge "$rec" "$ids" "$tree" "$commit" "$base" "$doubles" "$list" "" "$gdir") || continue
     case "$seen" in
       *"|$ids|"*)
         dig=$(printf '%s\n' "$digs" | awk -F '\t' -v k="$ids" '$1 == k { print $2; exit }') ;;
@@ -899,11 +1042,78 @@ tr_self_test() {
   n2=$(find "$LD" -type f | grep -c .)
   check "정리: 24시간 지난 레인 기록도 지운다" "$n1 $n2 $([ -e "$(tr_lane_path "$G" s3 "$tree1")" ] && echo 있음 || echo 없음)" "4 4 없음"
 
+  # --- the release relation ---
+  # A repository of its own whose .git is the store's common git directory:
+  # the relation is read from its objects. Each record was written on commit
+  # c0 under base b1; `w` keys are whole-tree records, `r` keys read
+  # plugin.json only.
+  local R RG r0 c0 cs PJ BUMP
+  R="$T/rel"
+  RG="$R/.git"
+  PJ="plugins/cc-cmds/.claude-plugin/plugin.json"
+  mkdir -p "$R/plugins/cc-cmds/.claude-plugin"
+  pj_ver() { printf '{\n  "name": "%s",\n  "version": "%s",\n  "description": "d"\n}\n' "${2:-x}" "$1" > "$PJ"; }
+  log_top() { printf '# Changelog\n\nintro\n\n%b## [1.0.0] - 2026-01-01\n- %s\n' "$1" "${2:-a}" > CHANGELOG.md; }
+  ( cd "$R" && git init -q . && pj_ver 1.0.0 && log_top '' && printf 'o\n' > o.txt \
+      && sg add -A && sg commit -q -m c0 ) > /dev/null 2>&1 || { bad "릴리스 픽스처" "git"; return 1; }
+  c0=$(cd "$R" && git rev-parse HEAD)
+  r0=$(cd "$R" && git rev-parse 'HEAD^{tree}')
+  cs=$(cd "$R" && sg commit-tree "$r0" -m sibling)
+  tr_list "$R" "$c0" "$T/lr0"
+  printf '아니오\n%s\n' "$PJ" > "$T/rsr"
+  tr_record_write "$RG" make:rw "$r0" "$c0" b1 없음 "$T/lr0" "$T/rsw"
+  tr_record_write "$RG" make:rr "$r0" "$c0" b1 없음 "$T/lr0" "$T/rsr"
+  tr_record_write "$RG" make:sw "$r0" "$cs" b1 없음 "$T/lr0" "$T/rsw"
+  tr_record_write "$RG" make:sr "$r0" "$cs" b1 없음 "$T/lr0" "$T/rsr"
+  tr_record_write "$RG" make:mw "$r0" 0123456789abcdef0123456789abcdef01234567 b1 없음 "$T/lr0" "$T/rsw"
+  tr_record_write "$RG" make:mr "$r0" 0123456789abcdef0123456789abcdef01234567 b1 없음 "$T/lr0" "$T/rsr"
+  # Prints the last field of the verdict for key $1, or 재실행.
+  rj() {  # <key> <tree> <commit> <base> <listing>
+    local o
+    if o=$(tr_reuse_find "$RG" "$1" "$2" "$3" "$4" 없음 "$5"); then printf '%s' "${o##*$'\t'}"; else printf '재실행'; fi
+  }
+  # Commits the commands of $1 on top of c0 and prints "<w key>|<r key>" for
+  # the key letter $2 (default the c0 records) under base $3 (default b1);
+  # the repository goes back to c0 after.
+  rel_after() {
+    local c t p="${2:-r}"
+    ( cd "$R" && eval "$1" && sg add -A && sg commit -q --allow-empty -m rel ) > /dev/null 2>&1
+    c=$(cd "$R" && git rev-parse HEAD)
+    t=$(cd "$R" && git rev-parse 'HEAD^{tree}')
+    tr_list "$R" "$c" "$T/lr"
+    printf '%s|%s' "$(rj "make:${p}w" "$t" "$c" "${3:-b1}" "$T/lr")" "$(rj "make:${p}r" "$t" "$c" "${3:-b1}" "$T/lr")"
+    ( cd "$R" && git reset -q --hard "$c0" ) > /dev/null 2>&1
+  }
+  BUMP="pj_ver 1.0.1 && log_top '## [1.0.1] - 2026-01-02\n- b\n\n'"
+  check "릴리스: 같은 커밋은 지금 조건으로 재사용하고 같음" "$(rj make:rw "$r0" "$c0" b1 "$T/lr0")|$(rj make:rr "$r0" "$c0" b1 "$T/lr0")" "같음|같음"
+  check "릴리스: 버전 줄과 CHANGELOG 맨 위 끼우기만 바꾼 커밋은 둘 다 재사용" "$(rel_after "$BUMP")" "릴리스 차이|릴리스 차이"
+  check "릴리스: 버전 줄만 바꾼 커밋도 재사용" "$(rel_after 'pj_ver 1.0.1')" "릴리스 차이|릴리스 차이"
+  check "릴리스: CHANGELOG 끼우기만 한 커밋은 트리 전체 기록을 재사용" "$(rel_after "log_top '## [1.0.1] - 2026-01-02\n- b\n\n'")" "릴리스 차이|같음"
+  check "릴리스: plugin.json 의 다른 줄도 바꾸면 재실행" "$(rel_after "pj_ver 1.0.1 y && log_top '## [1.0.1] - 2026-01-02\n- b\n\n'")" "재실행|재실행"
+  check "릴리스: CHANGELOG 기존 항목 본문을 고치면 재실행" "$(rel_after "pj_ver 1.0.1 && log_top '' 'a fixed'")" "재실행|재실행"
+  check "릴리스: 끼운 묶음이 ## [ 로 시작하지 않으면 재실행" "$(rel_after "pj_ver 1.0.1 && log_top 'note\n\n'")" "재실행|재실행"
+  check "릴리스: 릴리스 밖 파일도 바꾸면 재실행" "$(rel_after "$BUMP && printf 'o2\n' > o.txt")" "재실행|재실행"
+  check "릴리스: 베이스가 다르면 재실행" "$(rel_after "$BUMP" r b2)" "재실행|재실행"
+  check "릴리스: 기록 커밋이 같은 트리의 형제(조상 아님)면 재실행" "$(rel_after "$BUMP" s)" "재실행|재실행"
+  out=$( ( cd "$R" && eval "$BUMP" && sg add -A && sg commit -q -m rel ) > /dev/null 2>&1
+    c=$(cd "$R" && git rev-parse HEAD); t=$(cd "$R" && git rev-parse 'HEAD^{tree}'); tr_list "$R" "$c" "$T/lr"
+    tr_reuse_find "$RG" make:mw "$t" "$c" b1 없음 "$T/lr" 2>&1; printf 'rc=%s|' "$?"
+    tr_reuse_find "$RG" make:mr "$t" "$c" b1 없음 "$T/lr" 2>&1; printf 'rc=%s' "$?"
+    ( cd "$R" && git reset -q --hard "$c0" ) > /dev/null 2>&1 )
+  check "릴리스: 기록 커밋 객체가 없으면 오류 출력 없이 재실행" "$out" "rc=1|rc=1"
+  tr_lane_write "$RG" s1 "$r0" "$c0" b1 없음 "$T/lr0" "$T/rsw" "$D1"
+  DIGV="$D1"
+  out=$( ( cd "$R" && eval "$BUMP" && sg add -A && sg commit -q -m rel ) > /dev/null 2>&1
+    c=$(cd "$R" && git rev-parse HEAD); t=$(cd "$R" && git rev-parse 'HEAD^{tree}'); tr_list "$R" "$c" "$T/lr"
+    tr_lane_pick "$RG" s1 "$t" "$c" b1 없음 "$T/lr" fake_dig | cut -f1,4
+    ( cd "$R" && git reset -q --hard "$c0" ) > /dev/null 2>&1 )
+  check "릴리스: 레인 기록도 같은 릴리스 커밋에서 재사용하고 넷째 필드가 릴리스 차이" "$out" "s1	릴리스 차이"
+
   rm -rf "$T"
   printf 'test-reuse self-test: %d passed, %d failed\n' "$passed" "$failed"
   # A floor on the count, so a refactor that silently skips cases cannot pass.
-  if [ "$passed" -lt 87 ]; then
-    printf 'test-reuse self-test: 통과 수 %d 가 하한 %d 에 못 미칩니다\n' "$passed" 87 >&2
+  if [ "$passed" -lt 99 ]; then
+    printf 'test-reuse self-test: 통과 수 %d 가 하한 %d 에 못 미칩니다\n' "$passed" 99 >&2
     return 1
   fi
   [ "$failed" = "0" ]
