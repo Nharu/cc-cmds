@@ -52,6 +52,14 @@ Two digests are computed here and **compared at entry**, so they are not decorat
 
 Then run the entry checker on the plan as it will be frozen — `jq -f <plugin root>/orchestrator/prompts/entry-plan.check.jq <plan file>` — and treat any line it prints as a refusal of the same kind: back to Step 4. It is the file `check_manifest` runs on the run's first gate call, so a plan it refuses here would be refused there, with nobody present.
 
+**Screen the local residual recipes once more against the full draft, just before freezing**, whenever 5p screened a command (`references/boundaries.md` 「5p screen」). A run that writes an apply-probe row uses the full draft it hands `--apply-probe-sha`; any other run writes a full draft of the same shape with the file tool under `${TMPDIR:-/tmp}`, not at the manifest's own path. Call the same verb with the same command and the same declarations 5p settled:
+
+```
+bash <plugin root>/orchestrator/gate.sh reach-screen --manifest <full draft> --target <alias> [--surface <표면>] [--reach <도달>] [--destructive] -- <argv...>
+```
+
+This draft carries every row 5p did not see — 5r's, for one — so a verdict can move. When a command's verdict differs from 5p's, go back to 5p once for it. When, after that return, this re-screen differs again, screen it no further: the command is `판정불가`, ask only 5p's last-branch question for it, and go on to freezing. An exit other than 0 and 11, or a refused call, is `판정불가` too. Like 5p's, this screen is a notice and a collection of rows, and it changes nothing the gate decides at night.
+
 The gate already refuses the exemption unless the frozen plan requires a design and names **exactly one** `design` step, so a graph that disagrees with its tier does fail loudly overnight. What checking here buys is not detection, it is **who is present**: the person who chose the tier can settle it in one turn.
 
 **The example in that contract is fenced with four backticks because it contains three-backtick fences of its own.** Any document that explains this grammar has the same shape, which is why the parser reading it skips fenced spans and survives nesting — and why you must not "simplify" the nesting when you copy it.
