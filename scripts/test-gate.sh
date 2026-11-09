@@ -68184,8 +68184,10 @@ for f110e in 머리없음 펜스없음 펜스중복 콜론옵션 확인하나; d
   if [ "$f110e" = 확인하나 ]; then r110e=$(nr_rec 'RF#1' "$f110e" 'git status')
   else r110e=$(nr_rec 'RF#1' "$f110e"); fi
   l110e=$(c110e_settle 1)
+  s110e=""
+  case "$(gate_row_field "$l110e" '실패 서명')" in *"/$h110e"*) s110e=단서 ;; esac
   check "110e: 형식이 깨진 기록은 공허한 성공·형식 결함 단서로 정산되고 옮겨진다 — $f110e" \
-    "$(gate_row_field "$l110e" '종단 부류')|$(gate_row_field "$l110e" '실패 서명' | grep -qF "/$h110e" && printf 단서)|$( [ -e "$r110e" ] && printf 남음 || printf 옮김)|$( [ -e "$r110e.malformed" ] && printf 있음 || printf 없음)" \
+    "$(gate_row_field "$l110e" '종단 부류')|$s110e|$( [ -e "$r110e" ] && printf 남음 || printf 옮김)|$( [ -e "$r110e.malformed" ] && printf 있음 || printf 없음)" \
     "공허한 성공|단서|옮김|있음"
 done
 g110e=""
@@ -68224,7 +68226,7 @@ case "$o110e" in
   *) bad "110e: 이어가기 예산이 다 쓰인 시도의 첫 결함도 거부 사유가 옮긴 경로를 담는다" "$o110e" ;;
 esac
 unset -f c110e_settle c110e_cont
-unset r110e l110e f110e g110e o110e h110e
+unset r110e l110e f110e g110e o110e h110e s110e
 
 # ---------------------------------------------------------------------------
 # 107. 다른 대상 워크트리의 세션 — 검사 3 의 허용 집합, admit 의 이동 거부, 산출물 없는 리뷰의 종단 부류
