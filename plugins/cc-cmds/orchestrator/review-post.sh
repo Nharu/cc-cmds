@@ -43,7 +43,10 @@
 # VERIFY. The review and its comments as GitHub returns them are compared with
 # the request byte for byte: the body, the commit, the state the event implies,
 # and the comment set sorted by path, line, side and body — a comment's line is
-# its `line`, or its `original_line` when GitHub left `line` empty. Stdout is
+# its `original_line`, the line in the commit the comment was made on, or its
+# `line` only when GitHub left `original_line` empty. The render's lines are
+# lines of that commit, while GitHub moves `line` to a newer head or empties it
+# once the pull request's head moves. Stdout is
 # one word, `일치`, `불일치` or `판독불가` (an input that is not the JSON it
 # should be), and the exit status is 0 for all three.
 #
@@ -289,7 +292,7 @@ rp_verify() {
   [ -n "$req" ] && [ -n "$rev" ] && [ -n "$com" ] || rp_die "verify 에는 --request --review --comments 가 필요합니다"
   local v
   v=$(jq -n -r --slurpfile q "$req" --slurpfile r "$rev" --slurpfile c "$com" '
-    def norm: map({path: .path, line: (.line // .original_line), side: .side, body: .body})
+    def norm: map({path: .path, line: (.original_line // .line), side: .side, body: .body})
               | sort_by(.path, .line, .side, .body);
     def state($e): {"COMMENT": "COMMENTED", "APPROVE": "APPROVED", "REQUEST_CHANGES": "CHANGES_REQUESTED"}[$e] // "PENDING";
     if ($q | length) != 1 or ($r | length) != 1 or ($c | length) != 1

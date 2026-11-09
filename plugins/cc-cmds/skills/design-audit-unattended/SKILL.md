@@ -71,7 +71,7 @@ per grade, not one blanket rule.
 
 ### Resumed with a person's answer
 
-A stage of this arm resumed in the same session with an answer to its own halt record, or started with `CC_PIPELINE_HALT_ANSWER` set (a fresh session carrying a person's answer to an earlier attempt's synthesis halt), Reads `${CLAUDE_SKILL_DIR}/../_common/pipeline-sidecar.md` §4.1 before anything else and follows it.
+A stage of this arm resumed in the same session with an answer to its own halt record, or started with `CC_PIPELINE_HALT_ANSWER` set (a fresh session carrying a person's answer to an earlier attempt's synthesis halt), or started with `CC_PIPELINE_REENTRY_CARD` naming a card whose `**스테이지**` equals `CC_PIPELINE_STAGE_ID` (a resume moved to a new session on another account), Reads `${CLAUDE_SKILL_DIR}/../_common/pipeline-sidecar.md` §4.1 before anything else and follows it.
 
 The grades are a marking, not a proof: `scripts/lint-judgment-grade.sh` counts
 marks and matches dispositions, and nothing checks that a point marked `등급 1`

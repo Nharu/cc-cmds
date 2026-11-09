@@ -1,13 +1,14 @@
 # autopilot seat — the morning report (`--report`)
 
 
-Read the manifest, the run ledger and the report for the named run; for the requirement-decision and frozen-residual bullets only, the design document `## 요소` names; and, when the manifest is absent or the run ledger file carries no line beginning ``- `run` |``, the kickoff trace; and the output of the waiting-decisions helper, which reads the run directory's `halt/` and the approval sidecar for 「기다리는 결정」 below. Then render in Korean. **Render only — this mode starts nothing and writes nothing.** Whether the ledger file exists is never the test of whether the run started: the report stub is that same file.
+Read the manifest, the run ledger and the report for the named run; for the requirement-decision, frozen-residual and new-ticket-draft bullets only, the design document `## 요소` names; and, when the manifest is absent or the run ledger file carries no line beginning ``- `run` |``, the kickoff trace; and the output of the waiting-decisions helper, which reads the run directory's `halt/` and the approval sidecar for 「기다리는 결정」 below. Then render in Korean. **Render only — this mode starts nothing and writes nothing.** Whether the ledger file exists is never the test of whether the run started: the report stub is that same file.
 
 Put the dashboard link line at the very top, before every section below: the one line `python3 <plugin root>/orchestrator/dashboard.py url <run-id>` prints, verbatim, or 「대시보드 없음 — python3 를 찾지 못했습니다」 when `command -v python3` finds nothing. This does not break "Render only": `url` reads the server record and `/healthz` and starts nothing, and this seat is outside the gate hook as Step 7's is.
 
 Cover, in this order:
 
 - **결과 요약** — segments planned, merged, **완성-미착지**, parked; where the run stopped against its `종료 지점`; and how the run ended — its end token, the `재킥 원인` of the earliest run-scope row carrying one, and the `종료 부류` of the end row when it has one: `완료` (every termination condition held), `이어받음` (a later run took this one over — name that run from the row's `근거`) or `포기` (a person gave it up). A run with no end token is still open: say so, and do not call it finished because its watchers have gone quiet. Keep 완성-미착지 separate from parked: those segments produced everything they were asked to and had exactly one terminal act blocked, and folding them into "parked" hides the difference between a night that worked and a night that did not.
+- **계정 이전** — what the gate decided about the seat lane's limit before each shift launch: one line per `계정 이전` row of the run ledger, in ledger order, `- <시각> · 좌석 레인 <좌석 레인> · <결과> · 계정 <계정> · 재개 <재개 시각>`, `<시각>` being the row's `기록 시각` and `-` kept where the row has `-`. A `마감 초과` line adds 「— 사람 몫(blocked)」, since that row's run-scope `blocked` row is what the run waits on. Leave the whole section out when the ledger has no such row; a run without `계정 이전 허용` rows never has one.
 - **기다리는 결정** — every decision the run is waiting on a person for, each with its question, its options, the recommendation and its basis, and what each option risks, so the morning person can choose without re-reading the ledger. Find the helper copy the way 「주의」 below finds its reader: (1) the `RUN_DIR=` of the ledger's `run` row; (2) the `plugin-dir` line of `<RUN_DIR>/plugin-pin`; (3) when both exist and `<plugin-dir>/orchestrator/waiting-decisions.sh` can be read, use that file — the pinned copy; (4) otherwise use the installed `<plugin root>/orchestrator/waiting-decisions.sh`. The helper sources the gate beside it for its definitions only, so the verdicts it shows are that gate's. Write first exactly one source line naming the step that found it: 「판정 게이트: 이 런의 고정본」 for (3); 「판정 게이트: 설치본 — 이 런의 고정본에는 도우미가 없었습니다」 when the pinned plugin directory exists but holds no helper (a run pinned before this feature); 「판정 게이트: 설치본 — 이 런의 고정본을 찾지 못했습니다」 when the pinned plugin directory cannot be found. Then run `bash <copy> report <manifest> <ledger> <run-id>`, `<run-id>` being the `run-id=` of the ledger's `run` row, and copy every line it prints verbatim and in order — never summarize, reorder or drop a decision, a cell or a count line, and never add one of your own. When it exits non-zero, write instead the one line 「기다리는 결정을 읽지 못했습니다 — <the first line of its error>」. Call it only when the manifest exists and the ledger has a `run` row carrying `RUN_DIR=`: a run with no manifest is reported from the kickoff trace and gets no section, and a run whose ledger has no such row gets the one line 「이 런은 추적 기록으로만 보고되어 기다리는 결정을 렌더하지 않습니다」. Do not call `gate.sh` for it: entering the gate rewrites the run's reap clock, and the helper never runs the gate's entry. This section begins no line with the heads the stop-report and skipped-metrics lines below use. 「사람 답 대기」, 「시각 승인 대기」 and 「보류 큐」 stay as they are: this section shows what to answer, they show how each decision arose, so a returned answer appears both here and in 「사람 답 대기」, a visual decision both here and in 「시각 승인 대기」, and this section's head count counts this section's list alone.
 - **고칠 곳별 묶음** — every stop of the run that was not an intended wait, grouped by where it is to be fixed, so the morning person sees which stops are the run's own, which are a target repository's and which wait on a service outside the run. Find the reader copy the way 「기다리는 결정」 above finds its helper: (1) the `RUN_DIR=` of the ledger's `run` row; (2) the `plugin-dir` line of `<RUN_DIR>/plugin-pin`; (3) when both exist and `<plugin-dir>/orchestrator/run-stops.sh` can be read, use that file — the pinned copy; (4) otherwise use the installed `<plugin root>/orchestrator/run-stops.sh`. Run `bash <copy> <ledger> <RUN_DIR> --manifest <manifest> --by-fix-site` (leave `--manifest <manifest>` out when the manifest is absent). When the pinned copy exits 2 — a copy pinned before this option, which refuses it as a usage error — run the installed copy once more the same way. Write first exactly one source line: 「판독: 이 런의 고정본」 when the pinned copy answered, 「판독: 설치본 — 이 런의 고정본은 이 묶음을 읽지 못했습니다」 when the installed copy answered after the pinned copy's exit 2, and 「판독: 설치본 — 이 런의 고정본을 찾지 못했습니다」 when there was no pinned copy. Each output line is five tab-separated columns — `<고칠 곳>`, `<판정 주체|->`, `<서명>`, `<신원|->`, `<신호 또는 근거|->`. Render four groups in this order, each under its own head even when empty — 「런」, 「대상 레포」, 「외부 서비스」, 「판정 불가」 — and under each, one line per output line of that `고칠 곳`, in the order printed: `- <서명> · <신원> · 판정 <판정 주체> · <신호 또는 근거>`, a `-` column written as 「없음」. A group with no line gets the one line 「없음」. Copy the columns verbatim — never reclassify a stop, move it to another group, or fill a `-`. When the last copy run exits non-zero, write instead the one line 「고칠 곳별 묶음을 읽지 못했습니다 — <the first line of its error>」. A run whose ledger has no `run` row carrying `RUN_DIR=` gets the one line 「이 런은 추적 기록으로만 보고되어 고칠 곳별 묶음을 렌더하지 않습니다」. Like the helper above, this reads the ledger and writes nothing, and it never enters `gate.sh`.
 - **설계 티어 대조** — the tier the run was planned on, beside what the reviews then found. It reads the run ledger's `설계 티어` row, the manifest's `## 실행 계획`, and the ledger's `segment`, `cycle` and `리뷰 기각` rows. Render in this form:
@@ -44,14 +45,17 @@ Cover, in this order:
   - With no such row, leave the section out.
 - **답했으나 전달하지 못한 중단 답** — every answer this run kept for the next run instead of handing it on: the `blocked` rows whose `사유` begins with `중단 답 이월 — `, one line per distinct `중단 답 줄`. Read the `중단 답` row at that line and write: the run the answer came from (that row's `출처 런` when it carries one — a carry this run imported and could not deliver either — and this run otherwise), its `중단 기록`, its `선택지`, the `blocked` row's `스테이지` (the key) and its `관측` verbatim. Both kinds of `이월` land here: a carry act that found no account with room before the deadline, and a carry issued after the deadline, whose `관측` reads `마감 경과`. End each line with 「다음 런(재킥오프·입양)이 이 답을 운반으로 이어받습니다 — 다시 묻지 않습니다」. When the `중단 답` row at that line is missing, write the `blocked` row's fields alone and say 「원장 <n> 번째 줄에 중단 답 행 없음」. **An answer this run brought over and could not carry lands here too**: the `blocked` rows whose `사유` begins with `중단 답 라우팅 — 들인 답을 이 런에서 운반할 수 없다`, one line per distinct `중단 답 줄`, read the same way — its `출처 런`, `중단 기록` and `선택지` from the `중단 답` row at that line, the `blocked` row's `스테이지` and its `근거` verbatim, which names why this run could not carry it. End such a line instead with 「이 런이 운반 상한으로 닫았습니다 — 사람이 이 정지 기록과 답을 다시 봅니다」. With no row of either kind, leave the section out.
 - **사람 답 대기** — every record the shift handed back to a person because it could not carry the answer out: the snapshot's `returned_halts[]`. One line each: the key (`segment`), the record (`record`), the label that came back (`option`), who chose it (`answered_by`) and why it could not be carried out (`reason`), so the reader sees which choice came back from whom. A record that waits because none of its options could be carried out wrote no row and is not listed here — the seat gives that reason when it asks the record next. With no element, say 「사람 답 대기 없음」.
+- **강제 표면 미승인** — the segments the run left held because their branch changed an enforcement-surface path outside a seat apply and no `강제 표면 승인` row lets it through. The driver writes these entries into the run's report file at the walk's end and on its exit, once the run's `done` file exists (the same guard as the `종료 잔여` line), one `강제 표면 미승인` entry per segment that did not land (or `강제 표면 출처 판정 불가` when the measurement itself failed), from the gate's own function: each names the segment, every refused path with the reason it was refused (with its class, when the entry was drawn from the record), the person's next step for the verdict kind, and the state of the segment's `강제 표면 승인` shift-halt record (`기록 없음`, `미답`, `세그먼트 park`, or the chosen label and 「이행 전」). A segment whose worktree is gone is drawn from its blocked row, its record's `**승인 대상**` lines, or the driver's merge park, in that order, and the entry says which. Copy these entries verbatim, never recompose them from the ledger, and end the section with 「승인하려면 다음 런의 입양 킥오프에서 강제 표면 질문에 `승인` 으로 답하거나, 런이 도는 중이면 좌석이 묻는 `강제 표면 승인` 기록에 답하세요」. With no such entry, leave the section out.
 - **기본 브랜치 수리 대기** — the segments the run left waiting on their base branch's CI: every segment that has not merged or parked and whose snapshot `review_next[]` value reads `master 대기`, or whose newest `CI 처분` row with `처분=대조` reads `결과=부분집합` or `결과=판정 불가`. Do not read the last `handoff` row for it: `master 대기` is carried on a `대기` handoff only, so a run that ended `종단`, at its cap or on a stop would drop every waiting segment. One line each: the segment, the `사건` of its newest `CI 처분` row with `처분=대조`, and for each of those event ids the `처음 커밋` and the repair state read from the same event in the target's last `master 판독` row (`<id>:<처음 커밋>:<해소 커밋>:<수리 상태>`), with that row's `수리 사유` when the state is `띄울 수 없음`. End with 「기본 브랜치가 고쳐지면 다음 런(재킥오프·입양)이 이 세그먼트를 다시 대조합니다」. An event id missing from the last reading is written alone with 「마지막 판독에 없음」. With no such segment, leave the section out.
 - **시각 승인 대기** — the screen slices that wait for a person's approval of their screens. One line per segment that has a `스코프=cone` `blocked` row reading `사유=시각 승인 대기` and whose last `segment` row reads `park`, and per open `pending_approvals[]` element whose `class` is `시각-승인`: the segment, its `선행` followers that wait with it, and the approval id when one is open. Leave out of these lines every segment whose last `시각-승인` judgment — the last `승인` row reading `판단 부류=시각-승인` that names it as `막는 세그먼트` — a person closed as `거부` or `무효`, and whose approval id a `자율 승인` row reading `결정=거절 소비` carries in `해소 승인`: that segment no longer waits, and the gate refuses its implementation dispatch for the rest of the run. The instructions below belong to the waiting lines alone. Then one instruction, by the run's kind:
   - On a router run, 「고정 좌석에서 `/cc-cmds:visual <설계 문서 절대 경로>` 로 화면을 승인한 뒤, 좌석의 질문에 라벨 `승인` 으로 답하세요 — 자유 문면은 질문을 닫지 않습니다」. The run is not over: it dispatches those slices once the answer is consumed.
-  - On a router run whose plan carries an `S2P` step, instead, 「`S2P` 중단 기록 `<기록 파일>` 의 캔버스 `<URL>` 을 보고 좌석 질문에 `승인`·`수정 요청`·`거부` 로 답하세요」, naming the step's latest `시각-판정` record and the URLs it lists. When `S2P` stopped short of that record, write the cause in place of the instruction: a `발행-실패` record → its `**질문 문면**` cause and its options; a `전제-불일치` record → its `**관측 상세**`, and when the cause is the missing host ban list, 「런 밖의 터미널에서 `<플러그인 루트>/orchestrator/visual-config.sh seed` 로 금지 목록을 심으세요 — 이 런에서 화면 승인 질문은 `거부`·`무효` 로만 닫힙니다」; a `park` of the step → the router's verdict and recovery line from that `park` row, and, unless routing is off or the run's deadline has passed, 「원인을 고치면 교대가 `S2P` 를 다시 파견하고, 좌석은 그 `시각-판정` 을 묻습니다 — 그 전에 화면 승인 질문을 `거부`·`무효` 로 닫으면 이 런은 이 화면 구현을 보내지 않습니다」.
+  - On a router run whose plan carries an `S2P` step, instead, 「`S2P` 중단 기록 `<기록 파일>` 의 캔버스 `<URL>` 을 보고 좌석 질문에 `승인`·`수정 요청`·`거부` 로 답하세요」, naming the step's latest `시각-판정` record and the URLs it lists. While the design system waits for a person (`visual-check.sh confirm` prints a waiting line), write instead 「디자인 시스템이 사람 확인을 기다립니다 — `S2P` 중단 기록 `<기록 파일>` 의 디자인 시스템 `<URL>` 을 보고 좌석 질문에 `승인`·`수정 요청`·`거부` 로 답하세요. 화면은 승인 뒤에 만들어집니다」, naming the latest `디자인-시스템-판정` record — or, when there is none yet, 「디자인 시스템이 사람 확인을 기다립니다 — 발행 단계가 디자인 시스템 판정 기록을 남기면 그 기록에 답하세요」. On a fixed-graph run the line is 「디자인 시스템이 사람 확인을 기다린다 — 라우팅이 켜진 런에서 디자인 시스템 판정에 답한다」, and the report never tells the person to remove the waiting line. When `S2P` stopped short of that record, write the cause in place of the instruction: a `발행-실패` record → its `**질문 문면**` cause and its options; a `전제-불일치` record → its `**관측 상세**`, and when the cause is the missing host ban list, 「런 밖의 터미널에서 `<플러그인 루트>/orchestrator/visual-config.sh seed` 로 금지 목록을 심으세요 — 이 런에서 화면 승인 질문은 `거부`·`무효` 로만 닫힙니다」; a `park` of the step → the router's verdict and recovery line from that `park` row, and, unless routing is off or the run's deadline has passed, 「원인을 고치면 교대가 `S2P` 를 다시 파견하고, 좌석은 그 `시각-판정` 을 묻습니다 — 그 전에 화면 승인 질문을 `거부`·`무효` 로 닫으면 이 런은 이 화면 구현을 보내지 않습니다」.
   - On a fixed-graph driver run, whose end row reads `재킥 원인=시각승인대기`, 「고정 좌석에서 `/cc-cmds:visual <설계 문서 절대 경로>` 로 화면을 승인한 뒤 새 킥오프로 화면 슬라이스를 이어 가세요」: that run has ended and does not take the slices up again.
   - When a `segment` row of such a slice was dispatched after its approval was adopted and then parked again, or the shift's last handoff names it with 「고정 좌석에서 `구현 승인` 을 다시 쓸 것」, write that sentence verbatim: the approval line was removed after the adoption.
+  - **덮어쓴 승인과 고아 아티팩트** — when the visual stage, dispatched again after a person approved the new design system, overwrote a `발행됨` sidecar: one line for the `**구현 승인**` the overwrite dropped, 「다시 생성한 시각 단계가 발행된 사이드카를 덮어써 구현 승인 줄이 사라졌다 — 새 화면은 다시 승인을 받아야 한다」, and one line per artifact URL left orphaned, 「다시 생성한 시각 단계가 사이드카에서 지운 발행 아티팩트 URL 이 고아로 남았다 — <URL>」. A fixed-graph run reads them from the driver's 「시각」 report lines; a router run reads them from the visual stage's terminal message, which names both. With neither, write nothing.
+  - On a fixed-graph run whose plan has no `S2P` step and whose visual stage halted at `system-mismatch` with `경우=디자인 시스템 확인 대기`, the waiting line is 「디자인 시스템이 사람 확인을 기다린다 — 라우팅이 켜진 런에서 디자인 시스템 판정에 답한다」 as above; that halt record's option `확인 대기인 채 화면을 만든다` is a person's to answer.
   - A `승인대기` reading of `liveness.sh` on this run means 「시각 승인 대기 때문」 when this section has a waiting line, not that the run stalled.
-  - **거부된 화면** — one line per segment left out above: the segment, its `선행` followers parked with it, the approval id and its state (`거부` or `무효`), and 「이 런은 이 화면 구현을 보내지 않습니다」. Give it no approval instruction: the question is closed, and the gate refuses that segment's implementation dispatch for the rest of the run, so approving again does not open it in this run. A closing row reading `처분 사유=중단 답 연동` is read as the person's own answer — their `거부` to the `S2P` `시각-판정` record or `발행하지 않음` to its `발행-실패` record — never as an automatic one.
+  - **거부된 화면** — one line per segment left out above: the segment, its `선행` followers parked with it, the approval id and its state (`거부` or `무효`), and 「이 런은 이 화면 구현을 보내지 않습니다」. Give it no approval instruction: the question is closed, and the gate refuses that segment's implementation dispatch for the rest of the run, so approving again does not open it in this run. A closing row reading `처분 사유=중단 답 연동` is read as the person's own answer — their `거부` to the `S2P` `시각-판정` or `디자인-시스템-판정` record or `발행하지 않음` to its `발행-실패` record — never as an automatic one.
   With no waiting line and no 거부된 화면 line, leave the section out.
 - **설계 팀이 정한 요구 결정** — read from the design document's `## 팀이 정한 요구 결정` section and nothing else: the interview record is not read, and neither the questions asked nor the `← 추천` options taken are counted.
   - (a) 「팀이 정한 요구 결정 M건 (벗어남 D건)」 — M is the number of `### 요구 결정 <n>.` headings in that section, and D the number of those whose `**기록과의 관계**` is `벗어남 — 문 <n>`. The lines of `### 확인된 요구와의 대응` count toward neither.
@@ -59,6 +63,99 @@ Cover, in this order:
   - (c) when the document's `**상태**` line does not read frozen, 「동결 전 문서에서 읽음」.
   - (d) 「이 목록은 결정한 팀이 직접 적은 것입니다 — 팀이 적지 않은 결정은 여기에 나타나지 않습니다」.
   - With nothing to show, one line of these: 「이 런에는 설계 스테이지가 없었습니다」 · 「lead-solo 런 — 요구 결정은 킥오프 대화에서 물었습니다」(티어가 `lead-solo` 인 옛 계획의 런에서만) · 「문서에 절이 없습니다 — 설계 스테이지가 목록을 남기지 않았습니다」 · 「설계 문서가 없습니다」.
+- **새 티켓 초안** — the tickets a child run set aside for a person to publish: every entry of the design document's `## 미해결 이슈 / 트레이드오프` whose `**사유**` reads `새 티켓 필요 — 앞 티켓 결함`, each with its heading and its `**티켓 초안**` verbatim. End with 「런은 트래커에 쓰지 않았습니다 — 사람이 발행합니다」. With no such entry, leave the section out.
+- **상위 출처 이슈** — only when the manifest carries a `베이스 설계` row whose upper document carries `**문서 종류**: 티켓 배달 설계`. The upper run ends at its split and cannot see its tickets land, so this read belongs to the child run's report. All of it is reading.
+  - `<base>` is what `cd "<manifest directory>/../.." && pwd` prints. For each `착수` row of the registry `<base>/docs/design-base/<slug>.tickets.md`, take the run's ledger `<base>/docs/pipeline-run/<런>.md`. **A ledger file that does not exist is not a failed read**: that run was refused or given up before it began, and its ticket line reads `없음`. For an existing ledger take `<문서>` from the `**설계 문서**` line of the run's `<base>/docs/pipeline-run/<런>.plan.md`: `<base>/<값>` when that is a file, otherwise `/<값>` when that is a file; `/dev/null` when the value is `(없음)` or the plan has no such line. A plan that cannot be read is a failed read. **A value that names no file is not a failed read**: that run's design stage has not written its document yet, and its ticket line reads `없음`. Read the ledger with this program and nothing else, as `LC_ALL=C awk -f <이 프로그램> <문서> <원장>`; any non-zero exit is a failed read, and exit 3 with nothing printed means a fence in `<문서>` never closes, the state the driver also refuses to read. It reads every `segment` row of a segment, because the park, apply and import rows carry no `PR=`, and prints one line `<세그먼트><TAB><종류><TAB><값><TAB><행 레포>` per segment: `머지` when a row carries `머지 커밋`, which only a merged segment's row carries; then `PR` with the last non-empty `PR=`; then `브랜치` with the last non-empty `브랜치=`; then `없음`. `<행 레포>` is the last non-empty `레포=`, or `-` when no row carries one. A slice `## 구현 슬라이싱` of `<문서>` declares with `### 슬라이스 <id>` and no `segment` row has yet, because the router plans a slice only after its predecessor landed, prints `<id><TAB>없음<TAB>-<TAB>-` after them, so a run that landed only part of its slices never reads as merged. `**슬라이스 수**` is not read: it leaves out a slice cut below `PR`, and such a slice is a ticket PR that has not landed. A ledger with no `segment` row and no declared slice, a run that has not planned a segment yet, prints the one line `-<TAB>없음<TAB>-<TAB>-`, so such a run never reads as merged:
+
+  ```awk
+  FILENAME == ARGV[1] {
+    line = $0
+    sub(/^[ \t]+/, "", line)
+    c = substr(line, 1, 1)
+    if (c == "`" || c == "~") {
+      m = 0
+      while (substr(line, m + 1, 1) == c) m++
+      if (m >= 3) {
+        rest = substr(line, m + 1)
+        gsub(/[ \t]/, "", rest)
+        if (!fenced) { fenced = 1; fc = c; fl = m }
+        else if (c == fc && m >= fl && rest == "") fenced = 0
+        next
+      }
+    }
+    if (fenced) next
+    if ($0 == "## 구현 슬라이싱") { body = 1; next }
+    if (index($0, "## ") == 1) { body = 0; next }
+    head = "### 슬라이스 "
+    if (body && index($0, head) == 1) {
+      rest = substr($0, length(head) + 1)
+      if (match(rest, /^[A-Za-z0-9]+/)) declared[++nd] = substr(rest, 1, RLENGTH)
+    }
+    next
+  }
+  /^- `segment` \| / {
+    n = split($0, f, " \\| ")
+    id = pr = mc = br = rp = ""
+    for (i = 2; i <= n; i++) {
+      p = index(f[i], "=")
+      if (!p) continue
+      k = substr(f[i], 1, p - 1)
+      v = substr(f[i], p + 1)
+      if (v == "" || v == "-") continue
+      if (k == "id") id = v
+      else if (k == "PR") pr = v
+      else if (k == "머지 커밋") mc = v
+      else if (k == "브랜치") br = v
+      else if (k == "레포") rp = v
+    }
+    if (id == "") next
+    if (!(id in seen)) { seen[id] = 1; order[++total] = id; repos[id] = "-" }
+    if (pr != "") prs[id] = pr
+    if (mc != "") merges[id] = mc
+    if (br != "") branches[id] = br
+    if (rp != "") repos[id] = rp
+  }
+  END {
+    if (fenced) exit 3
+    for (i = 1; i <= nd; i++) {
+      s = declared[i]
+      if (!(s in seen)) { seen[s] = 1; order[++total] = s; repos[s] = "-" }
+    }
+    if (!total) { print "-\t없음\t-\t-"; exit }
+    for (i = 1; i <= total; i++) {
+      s = order[i]
+      if (s in merges) print s "\t머지\t-\t" repos[s]
+      else if (s in prs) print s "\tPR\t" prs[s] "\t" repos[s]
+      else if (s in branches) print s "\t브랜치\t" branches[s] "\t" repos[s]
+      else print s "\t없음\t-\t" repos[s]
+    }
+  }
+  ```
+
+  - Turn each printed line into a state. `PR` and `브랜치` read `gh pr view <값> -R <레포> --json state` (a read that reaches the collaboration surface), and a `브랜치` whose answer reads `no pull requests found for branch` is `없음`, not a failed read. `머지` is `MERGED`. `없음` is `없음`. `<레포>` is the line's `<행 레포>`; when that is `-`, it is the `**레포**` of that ticket's `### 티켓 T<n> — ` block in the upper document, code span stripped. It is never the manifest's target row, because a ticket or a slice may land in another repository than the run's target. Write one line `<티켓><TAB><상태>` per run into a scratch file under `${TMPDIR:-/tmp}`: `MERGED` only when every printed line of that run is `MERGED`, otherwise the first other state. A ticket with no `착수` row gets no line and does not count as landed.
+  - Judge with this program and nothing else, as `LC_ALL=C awk -f <이 프로그램> <상태 파일> <레지스트리>`. It prints `착지` only when every `티켓` row has a `착수` row and a `MERGED` line, `미착지 <남은 티켓 수>` otherwise, and `판정 못 함` for a registry with no `티켓` row:
+
+  ```awk
+  FILENAME == ARGV[1] {
+    split($0, f, "\t")
+    if (f[2] == "MERGED") merged[f[1]] = 1
+    next
+  }
+  /^- `티켓` \| / {
+    if (match($0, /\| id=[^ |]+/)) tickets[++total] = substr($0, RSTART + 5, RLENGTH - 5)
+    next
+  }
+  /^- `착수` \| / {
+    if (match($0, /\| id=[^ |]+/)) started[substr($0, RSTART + 5, RLENGTH - 5)] = 1
+  }
+  END {
+    if (!total) { print "판정 못 함"; exit }
+    for (i = 1; i <= total; i++) if (!(tickets[i] in merged && tickets[i] in started)) left++
+    print (left ? "미착지 " left : "착지")
+  }
+  ```
+
+  - The upper source issues are the `출처 티켓` rows of the `<base>/docs/pipeline-run/*.plan.md` whose `설계 문서` is the upper document and whose plan reads `design_delivery` `tickets`. On `착지`, list those issues and end with 「모든 티켓이 착지했습니다 — 런은 닫지 않았으니 사람이 닫습니다」. On `미착지 <n>`, one line: 「상위 문서의 티켓 <n>건이 아직 착지하지 않았습니다」. When a read above failed, or on `판정 못 함`, one line: 「상위 출처 이슈 — 판정 못 함: <사유>」, never read as landed.
 - **리뷰 게시** — only on a reviewer run (`run_profile: reviewer`), and before every other section but the stage summary: one line per `리뷰 PR` row, in row order — `<owner>/<name>#<PR>`, the `리뷰 게시` row's `방식`, its `종류` as written (the submitted event, or `제안:<event>` on a pending review, which the review's body does not carry), the P0, P1, P2 and P3 counts of the segment's last `cycle` row, its `리포트 경로`, `대조` and `헤드 변경`. A pull request with no `리뷰 게시` row reads 「게시 안 됨」 with the segment's last state and, when the segment stopped at a shift site, that site. A `대조` other than `일치` is copied as it is and also listed under 「사람 대조 필요」: the review on the pull request is not the one the run rendered, and the run did not edit or delete it. On `방식=보류`, add one line: 「보류 리뷰는 GitHub 의 PR 화면에서 직접 제출해야 작성자에게 보입니다」.
 - **도달 감사** — the acts that PASSED and touched something outside this machine, which no other section reports: every exec row whose `도달` is `dev`, `prod`, `배포트리거` or `협업`, every row whose `등급 출처` is `불투명` or `미상`, every row carrying a `표지`, every `dev` row whose `식별자 대조` is `미선언` or `대조불가`, and every read whose `도달` is `prod`. An exec row carrying `행 값=<표면>/<도달>` — an act a new-form `사전 인가` row decided — is selected and ordered by the reach in its `행 값`, not by its declared `도달`, and its `신고 불일치=` is shown beside it when present. List them prod first. `런로컬` and `-` are reported as a COUNT and not enumerated — they are the bulk and reading them teaches the eye to skip.
 - **남은 외부 상태** — the pair cleanups that did not succeed: an act a `사전 인가` row opened turned something on outside this machine, and the command that turns it off failed, was cut off, or never ran. Find the reader copy the way the stall labels below find theirs: (1) the `RUN_DIR=` of the ledger's `run` row; (2) the `plugin-dir` line of `<RUN_DIR>/plugin-pin`; (3) when both exist and `<plugin-dir>/orchestrator/pair-residue.awk` can be read, use that file; (4) otherwise use the installed `<plugin root>/orchestrator/pair-residue.awk`. Run `LC_ALL=C awk -f <copy> <ledger>` and copy each line it prints — dispatch id, row ordinal, cleanup command and state (`실패 rc=<n|->`, `호출중단`, `미호출`) — as written. Do not call `gate.sh` for it: entering the gate rewrites the run's reap clock. When the reader prints nothing, leave the section out.

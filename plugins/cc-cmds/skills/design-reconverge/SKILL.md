@@ -101,6 +101,14 @@ A fresh session can be handed a person's answer to an earlier attempt's halt: th
 4. **If the question computed there is not the record's**, do not apply the answer: write a new halt record for the question computed now, with the card's path in its `관측 상세`.
 5. **Never rewrite the carried record** — the card's `**중단 기록**` belongs to the earlier attempt, and the answer is bound to its digest.
 
+### Re-entered on a re-entry card
+
+A resume whose bound account ran out can come back as a new session on another account, with `CC_PIPELINE_REENTRY_CARD` naming a card (`${CLAUDE_SKILL_DIR}/../_common/pipeline-sidecar.md` §4.2). Take it as a re-entry only when the card's `**스테이지**` equals `CC_PIPELINE_STAGE_ID`, and read it once, at Step 1. With `CC_PIPELINE_HALT_ANSWER` set too, follow 「Re-entered with a carried answer」 and use this card only to confirm the cut session and the cause. Otherwise the cut session's Step 1 baselines lived only in its context, so what is on disk decides where this pass goes on, and it reads no transcript:
+
+1. **The scope's carrier block is closed** — an `R<n>` scope whose `## 회차 <N>` block already carries a `**처리 기록**` whose `재수렴 sha256` equals the document's `shasum -a 256` now. Steps 3 and 4 are done: go to Step 5 with that line's verdict and `사후 sha256`. Write nothing.
+2. **The document did not move after the cut attempt began** — its modification time (`stat -f %m <document>`) is earlier than the birth time (`stat -f %B`) of the stream file `$CC_PIPELINE_RUN_DIR/log/<the first value of **원 스테이지**>.json`. Nothing was published. Remove a working copy left under the prefix `cc-proto-<run id>-<that value with # as ->.` as response 6 of Step 3 removes one, then run the pass from Step 1 with baselines taken now.
+3. **Otherwise** the cut session, or another writer, may have published an edit whose baseline is lost, and a verdict computed now would measure that edit as the starting point. Write nothing; halt with `분류: precondition-failed`, naming both times and the document's `shasum -a 256` now.
+
 ## Control-Flow Invariants
 
 These rules govern termination and MUST stay near the top of this file. Post-compaction reattaches only the first ~5K tokens with priority, and the model's default behaviour when handed a design defect is to keep improving the design — so a summarized-away rule here does not degrade quality, it **removes the stop**.

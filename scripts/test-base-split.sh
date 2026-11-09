@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Test the base design split tool (`plugins/cc-cmds/orchestrator/base-split.py`)
-# offline: its predicates (`check`), its publication plan (`plan`) and its
-# registry writer (`record`).
+# offline: its predicates (`check`), its publication plan (`plan`), its
+# registry writer (`record`, `record --started`) and the ticket delivery
+# commands (`child-doc`, `fence-check`, `revise`).
 #
 # Fixture documents are generated into one `mktemp -d` directory, under a
 # `docs/` path component that exists only there. No tracker is reached — `plan`
@@ -962,6 +963,621 @@ check "record --doc-only: every row is 문서만" \
 check "record --doc-only: base + tickets + relations" "$(sed -e '1d' -e '$d' "$NREG" | wc -l | tr -d ' ')" "8"
 run_bs record "$DOCS/none.md" --row "$GH_ROW" --doc-only
 check "record --doc-only: refused when the row names a tracker" "$rc" "3"
+
+# ---------------------------------------------------------------------------
+# Ticket delivery designs (`**문서 종류**: 티켓 배달 설계`).
+# `td.py <variant> <path>` writes one. The passing shape is two tickets — T1
+# (계약, provides C1, child design 생략 가능) and T2 (구현, consumes C1 after
+# T1, child design 필요 with a directory entry) — three design subsections,
+# one of them with a comma in its heading, three residual items (two on T1,
+# one on T2) that cite headings with `§` and each other with `R<n>`, two open
+# unresolved entries (the 구현 전 결정 one on T1) and one closed entry.
+# ---------------------------------------------------------------------------
+cat > "$WORK/td.py" <<'PYEOF'
+import sys
+
+variant, out = sys.argv[1], sys.argv[2]
+kind_lines = ["**문서 종류**: 티켓 배달 설계"]
+header = [("티켓 수", "2"), ("임계 경로", "T1 → T2"), ("병렬 폭", "1"),
+          ("분할 사유", "형식과 화면이 다른 시점에 나간다.")]
+history = ["## 개정 이력", "없음"]
+t1 = {"owned": ["src/fmt.py", "README.md"], "shared": ["src/common.py"],
+      "design": ["저장 형식", "읽기, 쓰기 경로"], "sub": "생략 가능",
+      "residual": ["R1. 형식 확인", "R2. 경로 확인"], "open": ["열린 항목 하나"]}
+t2 = {"owned": ["ui/"], "shared": [],
+      "design": ["화면", "읽기, 쓰기 경로"], "sub": "필요",
+      "residual": ["R3. 화면 확인"], "open": ["열린 항목 둘"]}
+raw = {}
+r1_body = "**검증 레시피**: §저장 형식 의 필드를 본다. R2 와 R3 을 함께 본다."
+r3_body = "**검증 레시피**: R1 을 먼저 본다."
+open1_body = []
+open1_head = "열린 항목 하나"
+table = []
+
+if variant == "bothkinds":
+    kind_lines.append("**문서 종류**: 베이스 설계")
+elif variant == "noreason":
+    header = header[:3]
+elif variant == "tworeason":
+    header.append(("분할 사유", "다른 이유."))
+elif variant == "nohist":
+    history = []
+elif variant == "t1missing":
+    t1["design"].append("없는 절")
+elif variant == "t1unnamed":
+    t2["design"] = ["읽기, 쓰기 경로"]
+elif variant == "t1bad":
+    raw[("T1", "설계 절")] = "### 저장 형식"
+elif variant == "t2dir":
+    t1["owned"].append("src/lib/")
+elif variant == "t2glob":
+    t1["owned"].append("src/*.py")
+elif variant.startswith("t2n"):
+    # Owned and shared entries together: README.md, src/fmt.py, src/common.py
+    # and as many more as it takes to reach the number.
+    t1["owned"] += ["src/f%d.py" % k for k in range(int(variant[3:]) - 3)]
+elif variant == "t2skill":
+    t1["owned"] = ["src/fmt.py", "skills/x/SKILL.md"]
+elif variant == "t2value":
+    t1["sub"] = "아마"
+elif variant == "t3unassigned":
+    t2["residual"] = []
+elif variant == "t3twice":
+    t2["residual"].append("R1. 형식 확인")
+elif variant == "t3missing":
+    t2["residual"].append("R9. 없는 항목")
+elif variant == "t4unassigned":
+    t2["open"] = []
+elif variant == "t4closed":
+    t2["open"].append("닫힌 항목")
+elif variant == "t4twice":
+    t2["open"].append("열린 항목 하나")
+elif variant == "t4row":
+    table = ["| 항목 | 상태 |", "|---|---|", "| 표로 적은 항목 | 보류 |", ""]
+elif variant == "t5":
+    r3_body = "**검증 레시피**: §없는 절 을 본다."
+elif variant == "sharedstarted":
+    # T2 shares a file T1 owns, which P3 lets through as covered by the
+    # shared list; a revision may then try to move it to T2's owned list.
+    t2["shared"] = ["src/fmt.py"]
+elif variant == "labels":
+    # Upper ticket and contract labels in the bodies child-doc moves out of
+    # `## 베이스 제약`; T9 and C7 are not labels of this document.
+    r1_body = "**검증 레시피**: §저장 형식 의 필드를 T2 가 C1 으로 읽는다. T9·C7 은 그대로. R2 를 본다."
+    open1_body = ["**사유**: T2 의 화면이 C1 을 읽는다. T9 은 그대로."]
+    # The heading carries an upper label too: it must stay byte for byte.
+    open1_head = "열린 항목 하나 T2"
+    t1["open"] = [open1_head]
+elif variant != "ok":
+    raise SystemExit("unknown variant " + variant)
+
+def qlist(items):
+    return ", ".join("「### %s」" % x for x in items) or "없음"
+
+def files(items):
+    return ", ".join("`%s`" % p for p in items) or "없음"
+
+def tblock(tid, title, kind, deps, prov, cons, t):
+    def v(key, value):
+        return "**%s**: %s" % (key, raw.get((tid, key), value))
+    return ["### 티켓 %s — %s" % (tid, title), v("종류", kind), v("레포", "o/r"), v("선행", deps),
+            v("제공 계약", prov), v("소비 계약", cons), v("소유 파일", files(t["owned"])),
+            v("공유 파일", files(t["shared"])), v("설계 절", qlist(t["design"])),
+            v("하위 설계", t["sub"]), v("잔여 항목", qlist(t["residual"])),
+            v("미해결 항목", qlist(t["open"])),
+            "**범위**: %s 의 범위." % title, "**완료 기준**:", "- 시험이 통과한다.",
+            "**발행 제목**: %s 구현" % title, "**발행 본문**:", "````text",
+            "이 작업은 상태 파일의 %s 을 맡는다." % title, "````", ""]
+
+L = ["# 상태 파일 티켓 배달", ""] + kind_lines + ["**상태**: 초안", "",
+     "## 팀이 정한 요구 결정", "요구 하나: 상태 파일은 하나다.", "",
+     "## 합의된 아키텍처", "상태 파일과 그 위의 소비자.", "",
+     "### 저장 형식", "이름과 크기 두 필드.", "",
+     "### 읽기, 쓰기 경로", "한 번에 하나의 쓰기.", "",
+     "### 화면", "목록 하나.", "",
+     "## 주요 결정사항과 근거", "", "### 읽기", "읽기는 잠그지 않는다.", "",
+     "### 결정 둘", "쓰기는 원자적이다.", "",
+     "## 미해결 이슈 / 트레이드오프", ""] + table + [
+     "### " + open1_head, "**상태**: 보류", "**구현 처분**: 구현 전 결정"] + open1_body + ["",
+     "### 열린 항목 둘", "**상태**: 구현 재량", "",
+     "### 닫힌 항목", "**상태**: 해결 — 정함", "",
+     "## 검증 기록", "V1 관측한 사실.", "",
+     "## 구현 시 검증 항목", "",
+     "### R1. 형식 확인", r1_body, "",
+     "### R2. 경로 확인", "**검증 레시피**: §읽기, 쓰기 경로 아래를 본다.", "",
+     "### R3. 화면 확인", r3_body, "",
+     "## 티켓 간 계약", "",
+     "### 계약 C1 — 형식", "**제공 티켓**: T1", "**소비 티켓**: T2", "**형태**: 파일 형식",
+     "**인터페이스**:", "````text", "name=<이름>", "````", "",
+     "## 티켓 분할"] + ["**%s**: %s" % kv for kv in header] + ["",
+     "### 베이스 티켓", "**발행 제목**: 상태 파일 도입", "**발행 본문**:", "````text",
+     "상태 파일을 들인다.", "````", ""]
+L += tblock("T1", "형식", "계약", "없음", "C1", "없음", t1)
+L += tblock("T2", "화면", "구현", "T1", "없음", "C1", t2)
+L += history
+with open(out, "w", encoding="utf-8") as f:
+    f.write("\n".join(L) + "\n")
+PYEOF
+tdgen() { python3 "$WORK/td.py" "$1" "$DOCS/td-$1.md"; }
+
+tdgen ok
+run_bs check "$DOCS/td-ok.md"
+# Passing also shows that the comma inside 「### 읽기, 쓰기 경로」 does not
+# split the item, and that T2's directory entry is allowed because its child
+# design is not skipped.
+check "td check: passing fixture exits 0" "$rc" "0"
+check "td check: passing fixture prints nothing" "$out" ""
+run_bs check "$DOCS/ok.md"
+check "td check: the base kind fixture still passes" "$rc:$out" "0:"
+
+expect_td() {  # <variant> <needle>
+  tdgen "$1"
+  run_bs check "$DOCS/td-$1.md"
+  check "td check $1: exits 1" "$rc" "1"
+  has "td check $1: reports '$2'" "$out" "$2"
+}
+expect_td bothkinds   "D0 판별자 줄 둘"
+expect_td noreason    "T0 분할 사유 줄 없음"
+expect_td tworeason   "T0 분할 사유 줄이 둘 이상"
+expect_td nohist      "T0 ## 개정 이력 표제 0개"
+expect_td t1missing   "T1 T1 설계 절에 맞는 표제 없음 「### 없는 절」"
+expect_td t1unnamed   "T1 어느 티켓도 이름 부르지 않은 설계 절 소절 「### 화면」"
+expect_td t1bad       "T1 T1 설계 절 목록 형식 오류"
+expect_td t2dir       "T2 T1 생략 가능 티켓의 소유 파일 항목이 파일 경로가 아님 src/lib/"
+expect_td t2glob      "T2 T1 생략 가능 티켓의 소유 파일 항목이 파일 경로가 아님 src/*.py"
+expect_td t2n21       "T2 T1 생략 가능 티켓의 파일 21개 (상한 20)"
+expect_td t2skill     "T2 T1 생략 가능 티켓이 SKILL.md 를 담고 README.md 를 담지 않음"
+expect_td t2value     "T2 T1 하위 설계 값 아마"
+expect_td t3unassigned "T3 잔여 항목 배정 없음 「### R3. 화면 확인」"
+expect_td t3twice     "T3 잔여 항목 두 티켓 이상에 배정 「### R1. 형식 확인」"
+expect_td t3missing   "T3 T2 의 잔여 항목 항목에 맞는 표제 없음 「### R9. 없는 항목」"
+expect_td t4unassigned "T4 미해결 항목 배정 없음 「### 열린 항목 둘」"
+expect_td t4closed    "T4 T2 의 미해결 항목 항목에 맞는 표제 없음 「### 닫힌 항목」"
+expect_td t4twice     "T4 미해결 항목 두 티켓 이상에 배정 「### 열린 항목 하나」"
+expect_td t4row       "T4 표 행으로 적힌 열린 미해결 항목 표로 적은 항목"
+expect_td t5          "T5 R3 의 § 참조에 맞는 표제 없음 §없는 절"
+tdgen t2n20
+run_bs check "$DOCS/td-t2n20.md"
+check "td check t2n20: twenty files pass" "$rc:$out" "0:"
+
+
+# ---------------------------------------------------------------------------
+# child-doc
+# ---------------------------------------------------------------------------
+CHILD="$WORK/child"
+mkdir -p "$CHILD"
+run_bs child-doc "$DOCS/td-ok.md" --ticket T1 --cutpoint 머지 --out "$CHILD/t1.md"
+check "child-doc: exits 0" "$rc" "0"
+C1DOC=$(cat "$CHILD/t1.md")
+check "child-doc: heading order" "$(grep -E '^##? ' "$CHILD/t1.md" | tr '\n' '|')" \
+  "# 형식|## 베이스 제약|## 합의된 아키텍처|## 미해결 이슈 / 트레이드오프|## 구현 시 검증 항목|## 구현 슬라이싱|"
+check "child-doc: third-level headings in order" "$(grep -E '^### ' "$CHILD/t1.md" | tr '\n' '|')" \
+  "### 티켓 T1 — 형식|### 계약 C1 — 형식|### 저장 형식|### 읽기, 쓰기 경로|### 상위 문서의 주요 결정사항과 근거|### 읽기|### 결정 둘|### 열린 항목 하나|### R1. 형식 확인|### R2. 경로 확인|### 슬라이스 A — 형식|"
+has "child-doc: frozen" "$C1DOC" "**상태**: 동결됨"
+has "child-doc: base document field" "$C1DOC" "**베이스 문서**: docs/td-ok.md"
+has "child-doc: ticket field" "$C1DOC" "**티켓**: T1"
+has "child-doc: base sha256 field" "$C1DOC" "**베이스 sha256**: $(shasum -a 256 "$DOCS/td-ok.md" | cut -d' ' -f1)"
+check "child-doc: the ticket block is verbatim" \
+  "$(python3 - "$DOCS/td-ok.md" "$CHILD/t1.md" <<'PYEOF'
+import sys
+def block(path, head):
+    lines = open(path, encoding="utf-8").read().split("\n")
+    i = lines.index(head)
+    j = next(k for k in range(i + 1, len(lines)) if lines[k].startswith("## ") or lines[k].startswith("### "))
+    seg = lines[i:j]
+    while seg and not seg[-1].strip():
+        seg.pop()
+    return seg
+a, b = sys.argv[1], sys.argv[2]
+for head in ("### 티켓 T1 — 형식", "### 계약 C1 — 형식", "### 저장 형식", "### 읽기, 쓰기 경로",
+             "### 읽기", "### 결정 둘", "### 열린 항목 하나"):
+    if block(a, head) != block(b, head):
+        print("differs " + head)
+print("same")
+PYEOF
+)" "same"
+has "child-doc: the linkage sentence" "$C1DOC" '이 문서의 `## 베이스 제약` 절에 옮긴 티켓 블록과 계약 블록은 이 절의 결정과 똑같이 구현을 구속한다.'
+has "child-doc: the child sentence" "$C1DOC" '이 문서의 설계는 `## 베이스 제약` 에 옮긴 상위 티켓 부분이 전부다.'
+check "child-doc: the linkage sentence is the first line of the architecture" \
+  "$(grep -A2 '^## 합의된 아키텍처$' "$CHILD/t1.md" | sed -n 3p)" \
+  '이 문서의 `## 베이스 제약` 절에 옮긴 티켓 블록과 계약 블록은 이 절의 결정과 똑같이 구현을 구속한다.'
+hasnt "child-doc: an entry of another ticket is not copied" "$C1DOC" "### 열린 항목 둘"
+hasnt "child-doc: a closed entry is not copied" "$C1DOC" "### 닫힌 항목"
+has "child-doc: § is rewritten and the words after it stay" "$C1DOC" \
+  "**검증 레시피**: 상위 문서의 「저장 형식」 의 필드를 본다. R2 와 상위 문서의 「### R3. 화면 확인」 을 함께 본다."
+has "child-doc: § takes the longest heading" "$C1DOC" "**검증 레시피**: 상위 문서의 「읽기, 쓰기 경로」 아래를 본다."
+has "child-doc: slice count 1 at 머지" "$C1DOC" "**슬라이스 수**: 1"
+has "child-doc: declared files are owned then shared" "$C1DOC" '**선언 파일**: `src/fmt.py`, `README.md`, `src/common.py`'
+has "child-doc: the slice repository" "$C1DOC" "**레포**: o/r"
+has "child-doc: the cutpoint" "$C1DOC" "**절단점**: 머지"
+has "child-doc: the residual list names the child headings" "$C1DOC" "**잔여 항목**: 「### R1. 형식 확인」, 「### R2. 경로 확인」"
+run_bs fence-check "$CHILD/t1.md"
+check "child-doc: the child document passes fence-check" "$rc:$out" "0:"
+
+run_bs child-doc "$DOCS/td-ok.md" --ticket T1 --cutpoint 커밋 --out "$CHILD/t1-commit.md"
+has "child-doc: slice count 0 at 커밋" "$(cat "$CHILD/t1-commit.md")" "**슬라이스 수**: 0"
+run_bs child-doc "$DOCS/td-ok.md" --ticket T1 --cutpoint PR --out "$CHILD/t1-pr.md"
+has "child-doc: slice count 1 at PR" "$(cat "$CHILD/t1-pr.md")" "**슬라이스 수**: 1"
+run_bs child-doc "$DOCS/td-ok.md" --ticket T1 --cutpoint 머지 --out "$CHILD/t1.md"
+check "child-doc: refused when --out exists" "$rc" "3"
+run_bs child-doc "$DOCS/td-ok.md" --ticket T2 --cutpoint 머지 --out "$CHILD/t2.md"
+check "child-doc: refused for a ticket whose child design is needed" "$rc:$([ -e "$CHILD/t2.md" ] && echo y || echo n)" "3:n"
+run_bs child-doc "$DOCS/td-t5.md" --ticket T1 --cutpoint 머지 --out "$CHILD/t5.md"
+check "child-doc: refused on an unmatched § in the upper document" "$rc:$([ -e "$CHILD/t5.md" ] && echo y || echo n)" "3:n"
+run_bs child-doc "$DOCS/td-t4unassigned.md" --ticket T1 --cutpoint 머지 --out "$CHILD/viol.md"
+check "child-doc: refused on an upper check violation" "$rc:$([ -e "$CHILD/viol.md" ] && echo y || echo n)" "3:n"
+run_bs child-doc "$DOCS/td-ok.md" --ticket T1 --cutpoint 나중 --out "$CHILD/bad.md"
+check "child-doc: refused on a cutpoint outside the vocabulary" "$rc" "3"
+run_bs child-doc "$DOCS/ok.md" --ticket T1 --cutpoint 머지 --out "$CHILD/base.md"
+check "child-doc: refused on a base kind document" "$rc" "3"
+python3 - "$DOCS/td-ok.md" "$DOCS/td-noopen.md" <<'PYEOF'
+import sys
+t = open(sys.argv[1], encoding="utf-8").read()
+t = t.replace("**미해결 항목**: 「### 열린 항목 하나」", "**미해결 항목**: 없음")
+t = t.replace("**미해결 항목**: 「### 열린 항목 둘」", "**미해결 항목**: 「### 열린 항목 둘」, 「### 열린 항목 하나」")
+open(sys.argv[2], "w", encoding="utf-8").write(t)
+PYEOF
+run_bs child-doc "$DOCS/td-noopen.md" --ticket T1 --cutpoint 머지 --out "$CHILD/noopen.md"
+check "child-doc: 없음 when no entry is assigned" \
+  "$(grep -A2 '^## 미해결 이슈 / 트레이드오프$' "$CHILD/noopen.md" | sed -n 3p)" "없음"
+tdgen labels
+run_bs child-doc "$DOCS/td-labels.md" --ticket T1 --cutpoint 머지 --out "$CHILD/labels.md"
+check "child-doc labels: exits 0" "$rc" "0"
+CLDOC=$(cat "$CHILD/labels.md")
+has "child-doc labels: upper labels in a moved residual body gain the document qualifier" "$CLDOC" \
+  "**검증 레시피**: 상위 문서의 「저장 형식」 의 필드를 상위 문서의 T2 가 상위 문서의 C1 으로 읽는다. T9·C7 은 그대로. R2 를 본다."
+has "child-doc labels: upper labels in a moved open entry body gain the document qualifier" "$CLDOC" \
+  "**사유**: 상위 문서의 T2 의 화면이 상위 문서의 C1 을 읽는다. T9 은 그대로."
+check "child-doc labels: the moved open entry heading stays byte for byte" \
+  "$(grep -c '^### 열린 항목 하나 T2$' "$CHILD/labels.md"):$(grep -c '상위 문서의 T2$' "$CHILD/labels.md")" "1:0"
+has "child-doc labels: the ticket block inside 베이스 제약 keeps its labels" "$CLDOC" "**제공 계약**: C1"
+
+# ---------------------------------------------------------------------------
+# fence-check
+# ---------------------------------------------------------------------------
+fence_doc() {  # <name> <python replacement pairs...>: a child document edited from t1.md
+  python3 - "$CHILD/t1.md" "$CHILD/$1.md" "${@:2}" <<'PYEOF'
+import sys
+t = open(sys.argv[1], encoding="utf-8").read()
+pairs = sys.argv[3:]
+for old, new in zip(pairs[::2], pairs[1::2]):
+    assert old in t, old
+    t = t.replace(old, new)
+open(sys.argv[2], "w", encoding="utf-8").write(t)
+PYEOF
+}
+DECL='**선언 파일**: `src/fmt.py`, `README.md`, `src/common.py`'
+fence_doc outside "$DECL" "$DECL, \`src/x.py\`"
+run_bs fence-check "$CHILD/outside.md"
+check "fence-check: a declared file outside the fence fails" "$rc:$out" "1:F1 슬라이스 A 울타리 밖 선언 파일 src/x.py"
+fence_doc listed "$DECL" "$DECL, \`src/x.py\`
+**티켓 밖 파일**:
+- \`src/x.py\` — 앞 티켓 결함 — 읽기 경로가 틀렸다"
+run_bs fence-check "$CHILD/listed.md"
+check "fence-check: an outside file listed with a reason passes" "$rc:$out" "0:"
+fence_doc noreason "$DECL" "$DECL, \`src/x.py\`
+**티켓 밖 파일**:
+- \`src/x.py\` — "
+run_bs fence-check "$CHILD/noreason.md"
+check "fence-check: an empty reason fails" "$rc" "1"
+has "fence-check: names the empty reason" "$out" "F1 슬라이스 A 티켓 밖 파일 사유 없음 src/x.py"
+fence_doc undeclared "$DECL" "$DECL
+**티켓 밖 파일**:
+- \`src/y.py\` — 쓰지 않는 항목"
+run_bs fence-check "$CHILD/undeclared.md"
+check "fence-check: an outside entry that is not declared fails" "$rc:$out" "1:F1 슬라이스 A 선언 파일에 없는 티켓 밖 파일 항목 src/y.py"
+fence_doc dirfence '**소유 파일**: `src/fmt.py`, `README.md`' '**소유 파일**: `src/`, `README.md`' "$DECL" "$DECL, \`src/deep/z.py\`"
+run_bs fence-check "$CHILD/dirfence.md"
+check "fence-check: a directory entry covers by prefix" "$rc:$out" "0:"
+fence_doc noticket '### 티켓 T1 — 형식' '### 티켓 아님'
+run_bs fence-check "$CHILD/noticket.md"
+check "fence-check: a missing ticket block fails" "$rc" "1"
+has "fence-check: names the missing ticket block" "$out" "F1 ## 베이스 제약 의 티켓 블록 0개 (정확히 하나여야 함)"
+fence_doc nonepara "$DECL" "$DECL
+**티켓 밖 파일**: 없음
+
+이 슬라이스는 형식 하나를 구현한다."
+run_bs fence-check "$CHILD/nonepara.md"
+check "fence-check: a paragraph after 없음 is not part of the field" "$rc:$out" "0:"
+fence_doc listpara "$DECL" "$DECL, \`src/x.py\`
+**티켓 밖 파일**:
+- \`src/x.py\` — 앞 티켓 결함 — 읽기 경로가 틀렸다
+
+이 슬라이스는 형식 하나를 구현한다."
+run_bs fence-check "$CHILD/listpara.md"
+check "fence-check: a paragraph after the bullets is not part of the field" "$rc:$out" "0:"
+fence_doc nonewrap "$DECL" "$DECL
+**티켓 밖 파일**: 없음
+이어 쓴 줄"
+run_bs fence-check "$CHILD/nonewrap.md"
+check "fence-check: a line right under 없음 still fails" "$rc:$out" "1:F1 슬라이스 A 티켓 밖 파일 이 없음 인데 아래 줄이 있음"
+
+# ---------------------------------------------------------------------------
+# record --started
+# ---------------------------------------------------------------------------
+cp "$DOCS/td-ok.md" "$DOCS/rs.md"
+RSREG="$DOCS/design-base/rs.tickets.md"
+run_bs record --started "$DOCS/rs.md" --ticket T1 --run r1
+check "record --started: refused without a registry" "$rc:$([ -e "$RSREG" ] && echo y || echo n)" "3:n"
+run_bs record "$DOCS/rs.md" --row "$NONE_ROW" --doc-only
+check "record --started: the registry is made by record --doc-only" "$rc" "0"
+run_bs record --started "$DOCS/rs.md" --ticket T1 --run r1
+check "record --started: exits 0" "$rc" "0"
+has "record --started: writes the row" "$(cat "$RSREG")" '- `착수` | id=T1 | 런=r1'
+cp "$RSREG" "$WORK/rs.once"
+run_bs record --started "$DOCS/rs.md" --ticket T1 --run r1
+check "record --started: a second call for the same run changes nothing" \
+  "$rc:$(cmp -s "$RSREG" "$WORK/rs.once" && echo same || echo differs)" "0:same"
+run_bs record --started "$DOCS/rs.md" --ticket T1 --run r0
+run_bs record --started "$DOCS/rs.md" --ticket T2 --run r0
+check "record --started: rows of other runs stay, by ticket then run" \
+  "$(grep '착수' "$RSREG" | tr '\n' '|')" '- `착수` | id=T1 | 런=r0|- `착수` | id=T1 | 런=r1|- `착수` | id=T2 | 런=r0|'
+check "record --started: started rows sit after ticket rows and before relation rows" \
+  "$(sed -e '1d' -e '$d' "$RSREG" | cut -d'|' -f1 | uniq | tr '\n' '|')" '- `베이스` |- `티켓` |- `착수` |- `관계` |'
+check "record --started: the lock is gone" "$([ -e "$DOCS/rs.md.revise.lock" ] && echo y || echo n)" "n"
+cp "$RSREG" "$WORK/rs.three"
+run_bs check "$DOCS/rs.md"
+run_bs record "$DOCS/rs.md" --row "$NONE_ROW" --doc-only
+check "record --started: record --doc-only keeps the started rows byte for byte" \
+  "$rc:$(cmp -s "$RSREG" "$WORK/rs.three" && echo same || echo differs)" "0:same"
+mkdir "$DOCS/rs.md.revise.lock"
+run_bs record --started "$DOCS/rs.md" --ticket T2 --run r5
+check "record --started: refused while the lock is held" "$rc" "3"
+hasnt "record --started: nothing is written under a held lock" "$(cat "$RSREG")" "런=r5"
+rmdir "$DOCS/rs.md.revise.lock"
+run_bs record --started "$DOCS/rs.md" --ticket T9 --run r1
+check "record --started: refused for a ticket the document lacks" "$rc" "3"
+run_bs record --started "$DOCS/rs.md" --ticket T1 --run 'r 1'
+check "record --started: refused for a run id the registry cannot hold" "$rc" "3"
+run_bs record --started "$DOCS/rs.md" --ticket T1 --run r1 --row "$NONE_ROW"
+check "record --started: --row is a usage error" "$rc" "2"
+run_bs record --started "$DOCS/rs.md" --ticket T1 --run r1 --doc-only
+check "record --started: --doc-only is a usage error" "$rc" "2"
+run_bs record "$DOCS/rs.md" --doc-only
+check "record: --row is still required without --started" "$rc" "2"
+run_bs record --started "$DOCS/none.md" --ticket T1 --run r1
+check "record --started: refused on a base kind document" "$rc" "3"
+OLDSHA=$(head -1 "$RSREG" | sed -E 's/.*doc-sha256=([0-9a-f]+);.*/\1/')
+printf '\n' >> "$DOCS/rs.md"
+run_bs record --started "$DOCS/rs.md" --ticket T2 --run r6
+check "record --started: the head keeps the document sha256 it read" \
+  "$rc:$(head -1 "$RSREG" | sed -E 's/.*doc-sha256=([0-9a-f]+);.*/\1/')" "0:$OLDSHA"
+
+# ---------------------------------------------------------------------------
+# revise
+# ---------------------------------------------------------------------------
+RV="$WORK/rv"
+mkdir -p "$RV/docs"
+cp "$DOCS/td-ok.md" "$RV/pristine.md"
+RVDOC="$RV/docs/up.md"
+RVREG="$RV/docs/design-base/up.tickets.md"
+# reg_with <started rows...>: a registry for up.md holding those `T<n>:<run>` rows.
+reg_with() {
+  cp "$RV/pristine.md" "$RVDOC"
+  rm -rf "$RV/docs/design-base" "$RVDOC.revise.lock"
+  "$BS" record "$RVDOC" --row "$NONE_ROW" --doc-only >/dev/null
+  for x in "$@"; do "$BS" record --started "$RVDOC" --ticket "${x%%:*}" --run "${x#*:}" >/dev/null; done
+  cp "$RVREG" "$RV/reg.before"
+}
+# cand <name> [--changed V] [--run R] [--nohist|--twohist] <old> <new> ...: a
+# candidate edited from the pristine copy, with one revision entry appended.
+cand() {
+  python3 - "$RV/pristine.md" "$RV/$1.md" "${@:2}" <<'PYEOF'
+import sys
+src, dst = sys.argv[1], sys.argv[2]
+args = sys.argv[3:]
+changed, run, hist = "설계 절", "r1", 1
+while args and args[0].startswith("--"):
+    flag = args.pop(0)
+    if flag == "--changed":
+        changed = args.pop(0)
+    elif flag == "--run":
+        run = args.pop(0)
+    elif flag == "--nohist":
+        hist = 0
+    elif flag == "--twohist":
+        hist = 2
+t = open(src, encoding="utf-8").read()
+for old, new in zip(args[::2], args[1::2]):
+    assert old in t, old
+    t = t.replace(old, new, 1)
+entries = []
+for n in range(1, hist + 1):
+    entries += ["### 개정 %d — 2026-11-03 · 런 %s · 티켓 T1" % (n, run), "**바꾼 절**: " + changed,
+                "**영향 티켓**: T1", "**완료 티켓 차이**: 없음", ""]
+if hist:
+    assert t.endswith("## 개정 이력\n없음\n")
+    t = t[:-len("없음\n")] + "\n".join(entries).rstrip("\n") + "\n"
+open(dst, "w", encoding="utf-8").write(t)
+PYEOF
+}
+# run_rv <revise argv...>: run_bs with CC_PIPELINE_RUN_ID set to the argv's
+# --run value, as a pipeline stage carries its own run id. The suite unsets
+# every CC_PIPELINE_ variable at the top; only this call gets the value.
+run_rv() {
+  local a prev="" r=""
+  for a in "$@"; do [ "$prev" = "--run" ] && r=$a; prev=$a; done
+  rc=0; out=$(CC_PIPELINE_RUN_ID="$r" "$BS" "$@" 2>"$WORK/stderr") || rc=$?
+}
+# revise_ok <case> <candidate> [revise args...]
+revise_ok() {
+  run_rv revise "$RVDOC" --from "$RV/pristine.md" --to "$RV/$2.md" --ticket T1 "${@:3}"
+  check "revise $1: exits 0" "$rc" "0"
+  check "revise $1: the document is the candidate" "$(cmp -s "$RVDOC" "$RV/$2.md" && echo same || echo differs)" "same"
+  check "revise $1: the registry head carries the new sha256" \
+    "$(head -1 "$RVREG" | sed -E 's/.*doc-sha256=([0-9a-f]+);.*/\1/')" "$(shasum -a 256 "$RV/$2.md" | cut -d' ' -f1)"
+  check "revise $1: the lock is gone" "$([ -e "$RVDOC.revise.lock" ] && echo y || echo n)" "n"
+}
+# revise_no <case> <candidate> <needle> [revise args...]
+revise_no() {
+  run_rv revise "$RVDOC" --from "$RV/pristine.md" --to "$RV/$2.md" --ticket T1 "${@:4}"
+  check "revise $1: refused" "$rc" "3"
+  has "revise $1: says why" "$(cat "$WORK/stderr")" "$3"
+  check "revise $1: the document and the registry are unchanged" \
+    "$(cmp -s "$RVDOC" "$RV/pristine.md" && cmp -s "$RVREG" "$RV/reg.before" && echo same || echo differs)" "same"
+  check "revise $1: the lock is gone" "$([ -e "$RVDOC.revise.lock" ] && echo y || echo n)" "n"
+}
+T1D='**설계 절**: 「### 저장 형식」, 「### 읽기, 쓰기 경로」'
+
+reg_with T1:r1
+cand design "$T1D" '**설계 절**: 「### 저장 형식」'
+revise_ok "P ticket design sections" design --run r1
+has "revise: prints the old and new sha256" "$out" "개정 $RVDOC $(shasum -a 256 "$RV/pristine.md" | cut -d' ' -f1) → "
+has "revise: the started rows stay" "$(cat "$RVREG")" '- `착수` | id=T1 | 런=r1'
+reg_with T1:r1
+cand t2owned '**소유 파일**: `ui/`' '**소유 파일**: `ui/`, `web/`'
+revise_ok "owned files of an unstarted ticket" t2owned --run r1
+reg_with T1:r1 T2:r0
+cand subsection '이름과 크기 두 필드.' '이름과 크기와 시각 세 필드.'
+revise_ok "a subsection only P tickets name" subsection --run r1
+reg_with T1:r1 T2:r0
+cand decisions --changed '주요 결정사항과 근거' '쓰기는 원자적이다.' '쓰기는 임시 파일을 거쳐 원자적이다.'
+revise_ok "decisions within the changed sections" decisions --run r1
+reg_with T1:r1 T2:r0
+cand openentry --changed '미해결 이슈 / 트레이드오프' '**구현 처분**: 구현 전 결정' '**구현 처분**: 구현 전 결정
+**사유**: 형식이 아직 둘이다.'
+revise_ok "an open entry assigned to P" openentry --run r1
+reg_with T1:r1 T2:r0
+cand residual --changed 'R2. 경로 확인' '아래를 본다.' '아래를 다시 본다.'
+revise_ok "a residual item assigned to P" residual --run r1
+reg_with T1:r1 T1:r2 T2:r0
+cand rekick --run r2 "$T1D" '**설계 절**: 「### 저장 형식」'
+revise_ok "a follow-up run after a re-kickoff" rekick --run r2
+
+reg_with T1:r1 T2:r0
+cand doneticket '**설계 절**: 「### 화면」, 「### 읽기, 쓰기 경로」' '**설계 절**: 「### 화면」'
+revise_no "a started ticket of another run" doneticket "T2 의 바꿀 수 없는 필드가 바뀜 설계 절" --run r1
+cand pubtitle '**발행 제목**: 형식 구현' '**발행 제목**: 형식 새 구현'
+revise_no "a publication title" pubtitle "T1 의 바꿀 수 없는 필드가 바뀜 발행 제목" --run r1
+cand pubbody '이 작업은 상태 파일의 형식 을 맡는다.' '이 작업은 상태 파일의 새 형식 을 맡는다.'
+revise_no "a publication body" pubbody "T1 의 바꿀 수 없는 필드가 바뀜 발행 본문" --run r1
+cand scope '**범위**: 형식 의 범위.' '**범위**: 형식 의 넓은 범위.'
+revise_no "the scope of a P ticket" scope "T1 의 바꿀 수 없는 필드가 바뀜 범위" --run r1
+cand done '**완료 기준**:
+- 시험이 통과한다.' '**완료 기준**:
+- 시험이 모두 통과한다.'
+revise_no "the done criteria of a P ticket" done "T1 의 바꿀 수 없는 필드가 바뀜 완료 기준" --run r1
+cand contract '**형태**: 파일 형식' '**형태**: 새 파일 형식'
+revise_no "a contract block" contract "## 티켓 간 계약 는 바꿀 수 없는 절" --run r1
+cand ownfiles '**소유 파일**: `src/fmt.py`, `README.md`' '**소유 파일**: `src/fmt.py`, `README.md`, `src/more.py`'
+revise_no "the own ticket's owned files" ownfiles "T1 의 바꿀 수 없는 필드가 바뀜 소유 파일" --run r1
+cand ownshared '**공유 파일**: `src/common.py`' '**공유 파일**: `src/common.py`, `src/more.py`'
+revise_no "the own ticket's shared files" ownshared "T1 의 바꿀 수 없는 필드가 바뀜 공유 파일" --run r1
+cand ownnest '**범위**: 형식 의 범위.' '**중첩 사유**: 넓힌다.
+**범위**: 형식 의 범위.'
+revise_no "the own ticket's nesting reason" ownnest "T1 의 바꿀 수 없는 필드가 바뀜 중첩 사유" --run r1
+cand requirements '요구 하나: 상태 파일은 하나다.' '요구 하나: 상태 파일은 둘이다.'
+revise_no "the team requirements" requirements "## 팀이 정한 요구 결정 는 바꿀 수 없는 절" --run r1
+cand record 'V1 관측한 사실.' 'V1 다르게 관측한 사실.'
+revise_no "the verification record" record "## 검증 기록 는 바꿀 수 없는 절" --run r1
+cand decnot '쓰기는 원자적이다.' '쓰기는 임시 파일을 거쳐 원자적이다.'
+revise_no "decisions outside the changed sections" decnot "## 주요 결정사항과 근거 가 바뀌었는데 바꾼 절 이 그 절을 적지 않음" --run r1
+cand otheropen --changed '미해결 이슈 / 트레이드오프' '**상태**: 구현 재량' '**상태**: 구현 재량
+**사유**: 바꿔 본다.'
+revise_no "an open entry assigned to a started ticket" otheropen "항목 「### 열린 항목 둘」 을 배정받은 티켓 T2 가 바꿀 수 있는 티켓이 아님" --run r1
+cand nohist --nohist "$T1D" '**설계 절**: 「### 저장 형식」'
+revise_no "a missing revision entry" nohist "새 개정 항목이 정확히 하나가 아님 (0개)" --run r1
+cand twohist --twohist "$T1D" '**설계 절**: 「### 저장 형식」'
+revise_no "two revision entries" twohist "새 개정 항목이 정확히 하나가 아님 (2개)" --run r1
+revise_no "a run without a started row" design "등록부에 T1 의 런 r9 착수 행이 없음" --run r9
+cand badcheck "$T1D" '**설계 절**: 「### 저장 형식」, 「### 없는 절」'
+revise_no "a candidate that fails check" badcheck "후보 점검 위반" --run r1
+reg_with T1:r1 T2:r0
+rc=0; out=$(CC_PIPELINE_RUN_ID=r7 "$BS" revise "$RVDOC" --from "$RV/pristine.md" --to "$RV/design.md" \
+  --ticket T1 --run r1 2>"$WORK/stderr") || rc=$?
+check "revise: refused when --run is not the run's id" "$rc" "3"
+has "revise: says the run id differs" "$(cat "$WORK/stderr")" "--run 이 이 런의 run id 와 다름"
+for env_case in unset empty; do
+  reg_with T1:r1 T2:r0
+  rc=0
+  if [ "$env_case" = unset ]; then
+    out=$("$BS" revise "$RVDOC" --from "$RV/pristine.md" --to "$RV/design.md" \
+      --ticket T1 --run r1 2>"$WORK/stderr") || rc=$?
+  else
+    out=$(CC_PIPELINE_RUN_ID= "$BS" revise "$RVDOC" --from "$RV/pristine.md" --to "$RV/design.md" \
+      --ticket T1 --run r1 2>"$WORK/stderr") || rc=$?
+  fi
+  check "revise: refused when CC_PIPELINE_RUN_ID is $env_case" "$rc" "3"
+  has "revise: says the run id is missing ($env_case)" "$(cat "$WORK/stderr")" "환경에 이 런의 run id(CC_PIPELINE_RUN_ID)가 없음"
+  check "revise: a missing run id ($env_case) leaves the document and the registry unchanged" \
+    "$(cmp -s "$RVDOC" "$RV/pristine.md" && cmp -s "$RVREG" "$RV/reg.before" && echo same || echo differs)" "same"
+  check "revise: the lock is gone after a missing run id ($env_case)" "$([ -e "$RVDOC.revise.lock" ] && echo y || echo n)" "n"
+done
+
+reg_with T1:r1
+cand addowned '**소유 파일**: `ui/`' '**소유 파일**: `ui/`, `src/fmt.py`'
+revise_no "an unstarted ticket taking a started ticket's file" addowned "T2 에 더한 src/fmt.py 가 착수한 T1 의 소유 파일 src/fmt.py 와 겹침" --run r1
+cand addshared '**공유 파일**: 없음' '**공유 파일**: `src/fmt.py`'
+revise_no "an unstarted ticket sharing a started ticket's file" addshared "T2 에 더한 src/fmt.py 가 착수한 T1 의 소유 파일 src/fmt.py 와 겹침" --run r1
+
+# A file T2 already shares and T1 owns, moved from T2's shared list to its
+# owned list, is a new owned entry: the overlap refusal is per field, not over
+# the union of the two lists.
+tdgen sharedstarted
+run_bs check "$DOCS/td-sharedstarted.md"
+check "td check sharedstarted: a shared entry covering a started ticket's file passes" "$rc:$out" "0:"
+cp "$RV/pristine.md" "$RV/pristine.keep"
+cp "$DOCS/td-sharedstarted.md" "$RV/pristine.md"
+reg_with T1:r1
+cand moveowned '**소유 파일**: `ui/`' '**소유 파일**: `ui/`, `src/fmt.py`' \
+  '**공유 파일**: `src/fmt.py`' '**공유 파일**: 없음' \
+  '**범위**: 화면 의 범위.' '**중첩 사유**: 화면이 형식 파일을 이어 고친다.
+**범위**: 화면 의 범위.'
+revise_no "a started ticket's file moved from shared to owned" moveowned "T2 에 더한 src/fmt.py 가 착수한 T1 의 소유 파일 src/fmt.py 와 겹침" --run r1
+cp "$RV/pristine.keep" "$RV/pristine.md"
+reg_with T1:r1
+
+cp "$RV/design.md" "$RV/other.md"
+printf '\n' >> "$RV/other.md"
+run_rv revise "$RVDOC" --from "$RV/other.md" --to "$RV/design.md" --ticket T1 --run r1
+check "revise: refused when the document is not the --from copy" "$rc" "3"
+has "revise: says the sha256 differs" "$(cat "$WORK/stderr")" "상위 문서의 sha256 이 --from 과 다름"
+mkdir "$RVDOC.revise.lock"
+run_rv revise "$RVDOC" --from "$RV/pristine.md" --to "$RV/design.md" --ticket T1 --run r1
+check "revise: refused while another call holds the lock" "$rc" "3"
+check "revise: a held lock leaves the document unchanged" "$(cmp -s "$RVDOC" "$RV/pristine.md" && echo same || echo differs)" "same"
+check "revise: a lock it did not take stays" "$([ -d "$RVDOC.revise.lock" ] && echo y || echo n)" "y"
+rmdir "$RVDOC.revise.lock"
+
+# race <rival> <argv...>: run the tool in-process with take_lock wrapped so the
+# document becomes <rival> right before the lock is taken — another call that
+# finished between this call's start and its lock.
+race() {
+  rc=0
+  out=$(python3 - "$BS" "$RVDOC" "$@" 2>"$WORK/stderr" <<'PYEOF'
+import importlib.util, shutil, sys
+bs, doc, rival = sys.argv[1], sys.argv[2], sys.argv[3]
+spec = importlib.util.spec_from_file_location("base_split", bs)
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+real = m.take_lock
+def racing(path, run):
+    shutil.copyfile(rival, doc)
+    return real(path, run)
+m.take_lock = racing
+sys.exit(m.main(sys.argv[4:]))
+PYEOF
+  ) || rc=$?
+}
+reg_with T1:r1
+race "$RV/t2owned.md" revise "$RVDOC" --from "$RV/pristine.md" --to "$RV/design.md" --ticket T1 --run r1
+check "revise: a revision that finished before the lock is refused" "$rc" "3"
+has "revise: the document is read under the lock" "$(cat "$WORK/stderr")" "상위 문서의 sha256 이 --from 과 다름"
+check "revise: the finished revision stays and the registry is unchanged" \
+  "$(cmp -s "$RVDOC" "$RV/t2owned.md" && cmp -s "$RVREG" "$RV/reg.before" && echo same || echo differs)" "same"
+check "revise: the lock is gone after a raced refusal" "$([ -e "$RVDOC.revise.lock" ] && echo y || echo n)" "n"
+reg_with T1:r1
+race "$DOCS/none.md" record --started "$RVDOC" --ticket T2 --run r8
+check "record --started: a document that changed before the lock is read under it" "$rc" "3"
+has "record --started: says the raced document is not a ticket delivery design" "$(cat "$WORK/stderr")" "티켓 배달 설계 문서가 아님"
+check "record --started: nothing is written after a raced refusal" \
+  "$(cmp -s "$RVREG" "$RV/reg.before" && echo same || echo differs)" "same"
+check "record --started: the lock is gone after a raced refusal" "$([ -e "$RVDOC.revise.lock" ] && echo y || echo n)" "n"
+run_rv revise "$RV/nodir/up.md" --from "$RV/pristine.md" --to "$RV/design.md" --ticket T1 --run r1
+check "revise: a document in a missing directory is a usage error" "$rc" "2"
+run_bs record --started "$RV/docs/missing.md" --ticket T1 --run r1
+check "record --started: a missing document is a usage error and takes no lock" \
+  "$rc:$([ -e "$RV/docs/missing.md.revise.lock" ] && echo y || echo n)" "2:n"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
