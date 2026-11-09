@@ -3538,6 +3538,72 @@ gh13 '' "$(gh13_view 'OPEN X')"
 check "13 자식: pr-view 는 칸에 공백이 든 출력을 미상 으로 바꾼다" "$(rkg pr-view "$SPM" "$S13" "$SRD" "$SPL" "$SPG" "$WORK/rkg.err" 41 t/rk)" "미상"
 gh13
 check "13 자식: 모르는 모드는 판정불가 다" "$(rkg no-such-mode "$SPM" "$S13" "$SRD" "$SPL" "$SPG" "$WORK/rkg.err")" "판정불가"
+
+# 13 머지 입양 — a source with no design document whose manifest carries a
+# `머지 입양` row per segment, and whose ledger carries the obligation the
+# planning act issued and the `사후리뷰` row after it. The stub's `pr view <n>`
+# answer decides whether the request is still merged at the row's commits.
+PLAN13M='{ "steps": [ { "id": "I1", "skill": "implement", "summary": "구현", "depends_on": [] }, { "id": "I2", "skill": "implement", "summary": "구현", "depends_on": [] }, { "id": "R1", "skill": "review", "summary": "리뷰", "depends_on": ["I1", "I2"] } ] }'
+M13M=$(printf 'c%.0s' $(seq 40)); H13M=$(printf 'd%.0s' $(seq 40)); F13M=$(printf 'e%.0s' $(seq 40))
+# pr13m <seg> — the pull request number the fixture gives that segment.
+pr13m() { case "$1" in I1) printf 7 ;; *) printf 8 ;; esac; }
+# mk13m <src> <open|done> <seg…> — the source run, one `머지 입양` row and one
+# obligation per segment; `done` fulfils each obligation and ends it `완료`.
+mk13m() {
+  local s="$1" how="$2" k rows=''; shift 2
+  for k in "$@"; do
+    rows="$rows$(printf -- '- `머지 입양` | 세그먼트=%s | 대상=rk | PR=%s | 머지 커밋=%s | PR 헤드=%s | 출처 런=-' "$k" "$(pr13m "$k")" "$M13M" "$H13M")
+"
+  done
+  P_DOC='(없음)' P_PLAN="$PLAN13M" P_NOROSTER=1 P_EXTRA="$SEAT_ROW
+${rows%
+}" mk_prev "$s"
+  for k in "$@"; do
+    fx_row '리뷰 의무' "의무 id=RO-$k" "상태=미이행" "세그먼트=$k" "대상=rk" "머지 커밋=$M13M" "분기점=$F13M" "생성 등급=-"
+    fx_row 'segment' "id=$k" "상태=계획됨" "레포=t/rk" "워크트리=$WORK/repo-run-$s-$k" "선행=없음" "리뷰 정책=선리뷰후머지"
+    fx_row 'segment' "id=$k" "상태=사후리뷰" "워크트리=$WORK/repo-run-$s-$k"
+    if [ "$how" = done ]; then
+      fx_row '리뷰 의무' "의무 id=RO-$k" "상태=이행" "세그먼트=$k" "대상=rk" "머지 커밋=$M13M" "분기점=$F13M" "생성 등급=-"
+      fx_row 'segment' "id=$k" "상태=완료" "워크트리=$WORK/repo-run-$s-$k"
+    fi
+  done
+  seat_end 마감
+}
+# view13m <merge commit> — the stub's answer to `pr view` of both requests.
+view13m() {
+  local n
+  for n in 7 8; do
+    printf '{"state":"MERGED","mergeCommit":{"oid":"%s"},"headRefOid":"%s"}\n' "$1" "$H13M" > "$GH13/view.$n"
+  done
+}
+# md13m — the adopt output's lines about merged requests.
+md13m() { printf '%s\n' "$A13" | awk -F'\t' '$1 == "머지입양후보" || ($1 == "입양불가" && $4 ~ /^머지입양/)'; }
+S13M=20261001-a00000m1
+mk13m "$S13M" open I1
+gh13; view13m "$M13M"
+a13 "$S13M"
+check "13 머지 입양: 리뷰가 열린 머지된 PR 은 머지입양후보 한 줄이다" "$(md13m)" \
+  "머지입양후보${TAB}I1${TAB}7${TAB}$M13M${TAB}$H13M"
+view13m "$F13M"
+a13 "$S13M"
+check "13 머지 입양: 머지 커밋이 행과 다르면 머지입양다름 이다" "$(md13m)" "입양불가${TAB}I1${TAB}7${TAB}머지입양다름"
+printf '1\n' > "$GH13/rc"
+a13 "$S13M"
+check "13 머지 입양: PR 을 읽지 못하면 머지입양판독불가 다" "$(md13m)" "입양불가${TAB}I1${TAB}7${TAB}머지입양판독불가"
+gh13; view13m "$M13M"
+S13M2=20261001-a00000m2
+mk13m "$S13M2" done I1
+a13 "$S13M2"
+check "13 머지 입양: 의무를 이행하고 완료 로 끝난 세그먼트는 줄이 없다" "$(md13m)" ""
+S13M3=20261001-a00000m3
+mk13m "$S13M3" open I1 I2
+a13 "$S13M3"
+check "13 머지 입양: 리뷰가 열린 머지 입양 세그먼트마다 후보 한 줄이다" "$(md13m)" \
+  "머지입양후보${TAB}I1${TAB}7${TAB}$M13M${TAB}$H13M
+머지입양후보${TAB}I2${TAB}8${TAB}$M13M${TAB}$H13M"
+rm -f "$GH13/view.7" "$GH13/view.8"
+unset -f pr13m mk13m view13m md13m
+unset PLAN13M M13M H13M F13M S13M S13M2 S13M3
 unset CC_REMOTE_GH
 
 # ---------------------------------------------------------------------------

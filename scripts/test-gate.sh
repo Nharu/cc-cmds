@@ -66244,6 +66244,199 @@ unset -f rv107_row rv107_snap
 unset RV107_P2 RV107_P3 RV107_OUT RV107_JSON RV107_RC
 
 # ---------------------------------------------------------------------------
+# 109m. 머지 입양 — 런 밖에서 머지된 PR 을 문서 없는 계획의 구현 단계로 받아 사후 리뷰한다
+# --- section: 109m | group: mf | covers: check_manifest, snapshot, gate_snapshot_slicing_json, gate_undeclared_segments, gate_from_declaration, gate_merge_adoption_plan_check, gate_merge_adoption_issue, gate_adoption_review_next, gate_segment_review_next, gate_review_line, gate_done_conditions, act | anchors: 109m: 형식이 어긋난 머지 입양 행은 거부된다, 109m: 한 세그먼트의 머지 입양 행 둘은 거부된다, 109m: 리뷰없음 상한 대상의 머지 입양 행은 거부된다,109m: 슬라이싱이 머지 입양 단계의 PR 번호를 낸다, 109m: 원격과 어긋난 계획 act 는 rc 3 이고 행을 남기지 않는다, 109m: 계획 act 가 의무 하나와 선리뷰후머지 계획 행을 쓴다, 109m: 계획 act 가 PR 헤드를 리뷰 참조로 들인다, 109m: 다시 부른 계획 act 는 의무를 더 쓰지 않는다, 109m: 계획 뒤 다음은 사후리뷰 이고 사후리뷰 행이 받아진다, 109m: 리뷰 줄이 PR 과 분기점·머지 커밋·판정 HEAD 를 싣는다, 109m: 통과한 사후 리뷰 뒤 다음은 입양 종결 이다, 109m: 의무 이행 전 완료 는 rc 2 다, 109m: 커밋 을 실은 완료 는 rc 2 다, 109m: 의무 이행 뒤 완료 는 rc 0 이고 조건 12 가 없으며 원격 베이스가 그대로다, 109m: 스쿼시 머지의 분기점은 PR 이 갈라진 커밋이다, 109m: 수정 커밋 뒤 리뷰 줄은 브랜치를 리뷰하고 머지 커밋을 싣지 않는다, 109m: 앞선 커밋이 있는 완료 는 rc 2 다, 109m: 리베이스 머지가 계획되고 park 로 닫힌다 ---
+#
+# 문서 없는 계획의 구현 단계 하나를 `머지 입양` 행이 이름한다. 행의 형식은 스냅숏의
+# 매니페스트 검사로 재고, 계획 act 는 원격의 PR 을 gh 대역으로 다시 읽어 머지 커밋·헤드·
+# base·포크 여부와 베이스의 첫 부모 선형을 대조한 뒤 리뷰 의무 하나를 발행한다. 그 뒤
+# 사후리뷰 → 리뷰 → 의무 이행 → 완료 를 차례로 두되, 이 런은 밀어 올린 것이 없으므로
+# 원격 베이스는 움직이지 않는다. 머지·스쿼시·리베이스 세 방법의 픽스처가 각각의 분기점을
+# 세운다.
+# ---------------------------------------------------------------------------
+pre_ledger_series
+pre_mf
+MD_PLAN='{ "steps": [ { "id": "I1", "skill": "implement", "depends_on": [] }, { "id": "R1", "skill": "review", "depends_on": ["I1"] } ] }'
+md_row() {
+  # md_row <PR> <머지 커밋> <PR 헤드> [세그먼트] [출처 런] — 머지 입양 행 하나.
+  printf -- '- `머지 입양` | 세그먼트=%s | 대상=main | PR=%s | 머지 커밋=%s | PR 헤드=%s | 출처 런=%s' \
+    "${4:-I1}" "$1" "$2" "$3" "${5:--}"
+}
+md_snap() {
+  # md_snap <상한> <행…> — 매니페스트를 다시 쓰고 스냅숏의 rc/출력.
+  local c="$1"; shift
+  SA_PLAN="$MD_PLAN"; SA_AUTH_RAW=$(printf '%s\n' "$@")
+  sa_manifest "$c"
+  MD_JSON=$( cd "$SA_WT" && gate_inproc snapshot --manifest "$SA_MANIFEST" 2>"$WORK/md109.err" ); MD_RC=$?
+  MD_OUT="$(cat "$WORK/md109.err")$MD_JSON"
+}
+md_form() {
+  # md_form <라벨> <기대 문면> — 마지막 md_snap 이 그 문면으로 거부되었는지.
+  case "$MD_RC|$MD_OUT" in
+    0\|*) bad "$1" "통과했다" ;;
+    *"$2"*) ok "$1" ;;
+    *) bad "$1" "rc=$MD_RC $MD_OUT" ;;
+  esac
+}
+sa_new "머지 입양 — 형식" 선리뷰후머지
+md_a=$(printf 'a%.0s' $(seq 40)); md_b=$(printf 'b%.0s' $(seq 40))
+md_snap 선리뷰후머지 "$(md_row 7 "$md_a" "$md_b" | sed 's/PR=7/PR=abc/')"
+md_form "109m: 형식이 어긋난 머지 입양 행은 거부된다" "형식이 어긋났습니다"
+md_snap 선리뷰후머지 "$(md_row 7 "$md_a" "$md_b")" "$(md_row 8 "$md_b" "$md_a")"
+md_form "109m: 한 세그먼트의 머지 입양 행 둘은 거부된다" "세그먼트 I1 에 둘 이상입니다"
+md_snap 리뷰없음 "$(md_row 7 "$md_a" "$md_b")"
+md_form "109m: 리뷰없음 상한 대상의 머지 입양 행은 거부된다" "「리뷰없음」입니다"
+md_snap 선리뷰후머지 "$(md_row 7 "$md_a" "$md_b")"
+case "$(printf '%s' "$MD_JSON" | jq -r '[.["슬라이싱"]["세그먼트"][]? | "\(.id):\(.["머지 입양"] // "-")"] | join(" ")' 2>/dev/null)" in
+  "I1:7") ok "109m: 슬라이싱이 머지 입양 단계의 PR 번호를 낸다" ;;
+  *) bad "109m: 슬라이싱이 머지 입양 단계의 PR 번호를 낸다" \
+       "rc=$MD_RC 슬라이싱=$(printf '%s' "$MD_JSON" | jq -c '.["슬라이싱"]' 2>&1) $MD_OUT" ;;
+esac
+
+md_fx() {
+  # md_fx <merge|squash|rebase> — 새 픽스처 저장소에 커밋 둘의 PR 브랜치를 만들고 베이스에
+  # 커밋 하나를 더한 뒤 그 방법으로 main 에 들인다. main 과 refs/pull/7/head 를 원격에
+  # 밀고, 머지 뒤의 main 에서 이 런이 유도하는 세그먼트 워크트리를 만들고, 머지 입양 행을
+  # 실은 매니페스트를 쓴다. MD_H·MD_M·MD_FORK·MD_WT 를 찍는다.
+  sa_new "머지 입양 — $1" 선리뷰후머지
+  MD_FORK=$(cd "$SA_REPO" && git rev-parse main)
+  ( cd "$SA_REPO" \
+    && git checkout -q -b md-pr main \
+    && echo p1 > p.txt && git add p.txt && git commit -qm p1 \
+    && echo p2 >> p.txt && git add p.txt && git commit -qm p2 \
+    && git checkout -q main \
+    && echo b > b.txt && git add b.txt && git commit -qm base ) >/dev/null 2>&1
+  case "$1" in
+    merge)  ( cd "$SA_REPO" && git merge -q --no-ff -m 'merge pr 7' md-pr ) >/dev/null 2>&1 ;;
+    squash) ( cd "$SA_REPO" && git merge -q --squash md-pr && git commit -qm 'squash pr 7' ) >/dev/null 2>&1 ;;
+    rebase) ( cd "$SA_REPO" && git cherry-pick md-pr~1 md-pr ) >/dev/null 2>&1 ;;
+  esac
+  MD_H=$(cd "$SA_REPO" && git rev-parse md-pr)
+  MD_M=$(cd "$SA_REPO" && git rev-parse main)
+  ( cd "$SA_REPO" && git push -q origin main && git push -q origin md-pr:refs/pull/7/head ) >/dev/null 2>&1
+  # 게이트가 유도하는 경로는 대상 메인 워크트리의 실제 경로에서 나온다 — 임시 디렉터리가
+  # 심볼릭 링크 아래에 있으면 `$SA_ROOT` 그대로는 그 값과 다르다.
+  MD_WT="$(cd "$SA_ROOT" && pwd -P)/repo-run-$SA_ID-I1"
+  ( cd "$SA_REPO" && git worktree add -q -b "seg/$SA_ID-I1" "$MD_WT" main ) >/dev/null 2>&1
+  SA_PLAN="$MD_PLAN"; SA_AUTH_RAW=$(md_row 7 "$MD_M" "$MD_H")
+  sa_manifest 선리뷰후머지
+  mkdir -p "$SA_RUN"; printf '1\n' > "$SA_RUN/routing-guard"
+}
+MD_STUB="$WORK/md109-gh"
+cat > "$MD_STUB" <<'MD109EOF'
+#!/bin/sh
+# 머지 입양 계획 act 의 GitHub 대역 — `gh -R <slug> pr view …` 에 $MD_GH_ANS 를 한 줄로 낸다.
+case "$3 $4" in
+  "pr view") printf '%s\n' "${MD_GH_ANS:?}" ;;
+  *) exit 1 ;;
+esac
+MD109EOF
+chmod +x "$MD_STUB"
+md_plan() {
+  # md_plan [gh 답] — 세그먼트 I1 의 계획 act 하나. 기본 답은 행과 맞는 머지된 PR 이다.
+  gh() { "$MD_STUB" "$@"; }
+  export -f gh
+  export MD_STUB MD_GH_ANS="${1:-MERGED $MD_M $MD_H main false}"
+  sag act --manifest "$SA_MANIFEST" --kind segment --target main --segment I1 --cutpoint 커밋 \
+      --snapshot-digest "$(SAH)" --rationale x --from-declaration -- 상태=계획됨 "워크트리=$MD_WT"
+  unset -f gh
+  unset MD_GH_ANS
+}
+md_seg() {
+  # md_seg <상태> [추가 필드...] — 세그먼트 I1 의 segment 행 하나.
+  local st="$1"; shift
+  sag act --manifest "$SA_MANIFEST" --kind segment --target main --segment I1 --cutpoint 커밋 \
+      --snapshot-digest "$(SAH)" --rationale x -- 상태="$st" 워크트리="$MD_WT" 선행=없음 "$@"
+}
+md_rnext() { mf_snap | jq -r '[.review_next[] | select(.["세그먼트"] == "I1") | .["다음"]] | join(",")'; }
+md_oid() { printf '%s|%s|%s' "$SA_ID" I1 "$1" | shasum -a 256 | cut -c1-8 | sed 's/^/RO-/'; }
+
+md_fx merge
+md_rows0=$(sa_base)
+md_fail=""
+md_try() {
+  # md_try <기대 문면> [gh 답] — 거절 하나: rc 3, 행 수 그대로, 문면.
+  md_plan "${2:-}"
+  case "$rc|$(sa_rows)|$msg" in
+    "3|$md_rows0|"*"$1"*) : ;;
+    *) md_fail="$md_fail[$1 rc=$rc 행=$(sa_rows)/$md_rows0 $msg]" ;;
+  esac
+}
+md_try "상태가 OPEN 입니다" "OPEN $MD_M $MD_H main false"
+md_try "와 다릅니다" "MERGED $MD_H $MD_H main false"
+md_try "base 브랜치 dev 가" "MERGED $MD_M $MD_H dev false"
+md_try "포크에서 온 PR" "MERGED $MD_M $MD_H main true"
+git --git-dir="$SA_REMOTE" update-ref -d refs/pull/7/head
+md_try "refs/cc-review/$SA_ID/I1 로 들이지 못했습니다"
+git --git-dir="$SA_REMOTE" update-ref refs/pull/7/head "$MD_H"
+( cd "$MD_WT" && git reset -q --hard "$MD_FORK" ) >/dev/null 2>&1
+md_try "머지 커밋 $MD_M 을 담고 있지 않습니다"
+( cd "$MD_WT" && git reset -q --hard "$MD_M" ) >/dev/null 2>&1
+check "109m: 원격과 어긋난 계획 act 는 rc 3 이고 행을 남기지 않는다" "$md_fail" ""
+
+md_plan; md_r=$rc
+md_ob=$(sa_ob_last "$(md_oid "$MD_M")")
+check "109m: 계획 act 가 의무 하나와 선리뷰후머지 계획 행을 쓴다" \
+  "$md_r|$(sa_ob_count)|$(sa_field "$md_ob" 상태)|$(sa_field "$md_ob" '머지 커밋')|$(sa_field "$md_ob" 분기점)|$(sa_field "$md_ob" '생성 등급')|$(sa_field "$(sa_seg_last I1)" '리뷰 정책')" \
+  "0|1|미이행|$MD_M|$MD_FORK|-|선리뷰후머지"
+check "109m: 계획 act 가 PR 헤드를 리뷰 참조로 들인다" \
+  "$(cd "$MD_WT" && git rev-parse -q --verify "refs/cc-review/$SA_ID/I1")" "$MD_H"
+md_plan
+check "109m: 다시 부른 계획 act 는 의무를 더 쓰지 않는다" "$(sa_ob_count)" "1"
+md_n1=$(md_rnext)
+md_seg 사후리뷰; md_r=$rc
+check "109m: 계획 뒤 다음은 사후리뷰 이고 사후리뷰 행이 받아진다" "$md_n1|$md_r|$(md_rnext)" "사후리뷰|0|사후리뷰"
+sag review-line --manifest "$SA_MANIFEST" --segment I1
+case "$msg" in
+  *" --pr-head "*) md_got="--pr-head 가 있다: $msg" ;;
+  *"/cc-cmds:review-unattended https://github.com/t/$SA_ID/pull/7 --report-path "*" --base-sha $MD_FORK --merged $MD_M --judge-head $MD_M"*) md_got=맞음 ;;
+  *) md_got="rc=$rc $msg" ;;
+esac
+check "109m: 리뷰 줄이 PR 과 분기점·머지 커밋·판정 HEAD 를 싣는다" "$md_got" "맞음"
+sa_cycle I1 1 0 0 "$MD_M"
+check "109m: 통과한 사후 리뷰 뒤 다음은 입양 종결 이다" "$(md_rnext)" "입양 종결"
+md_seg 완료; md_r=$rc; md_m=$msg
+case "$md_m" in *"리뷰 의무가 아직 이행되지 않았습니다"*) md_m=문면 ;; esac
+check "109m: 의무 이행 전 완료 는 rc 2 다" "$md_r|$md_m" "2|문면"
+sa_fulfil "$(md_oid "$MD_M")" >/dev/null
+md_seg 완료 "커밋=$MD_M"; md_r=$rc; md_m=$msg
+case "$md_m" in *"「커밋」 을 싣지 않습니다"*) md_m=문면 ;; esac
+check "109m: 커밋 을 실은 완료 는 rc 2 다" "$md_r|$md_m" "2|문면"
+md_seg 완료; md_r=$rc
+check "109m: 의무 이행 뒤 완료 는 rc 0 이고 조건 12 가 없으며 원격 베이스가 그대로다" \
+  "$md_r|$(sa_field "$(sa_ob_last "$(md_oid "$MD_M")")" 상태)|$(mf_u12 I1)|$(sp_rbase)" "0|이행|0|$MD_M"
+
+md_fx squash
+md_plan; md_r=$rc
+check "109m: 스쿼시 머지의 분기점은 PR 이 갈라진 커밋이다" \
+  "$md_r|$(sa_field "$(sa_ob_last "$(md_oid "$MD_M")")" 분기점)" "0|$MD_FORK"
+md_seg 사후리뷰
+sa_cycle I1 1 0 1 "$MD_M"
+md_fix=$( cd "$MD_WT" && echo fix >> p.txt && git add p.txt && git commit -qm fix && git rev-parse HEAD )
+sag review-line --manifest "$SA_MANIFEST" --segment I1
+case "$msg" in
+  *" --merged "*|*"/pull/7 "*) md_got="머지 입양 줄이다: $msg" ;;
+  *"/cc-cmds:review-unattended "*) md_got=브랜치 ;;
+  *) md_got="rc=$rc $msg" ;;
+esac
+check "109m: 수정 커밋 뒤 리뷰 줄은 브랜치를 리뷰하고 머지 커밋을 싣지 않는다" "$md_got" "브랜치"
+sa_cycle I1 2 0 0 "$md_fix"
+sa_fulfil "$(md_oid "$MD_M")" >/dev/null
+md_seg 완료; md_r=$rc; md_m=$msg
+case "$md_m" in *"앞선 커밋 1 개를 가집니다"*) md_m=문면 ;; esac
+check "109m: 앞선 커밋이 있는 완료 는 rc 2 다" "$md_r|$md_m" "2|문면"
+
+md_fx rebase
+md_plan; md_r=$rc
+md_seg park; md_rp=$rc
+check "109m: 리베이스 머지가 계획되고 park 로 닫힌다" \
+  "$md_r|$(sa_field "$(sa_ob_last "$(md_oid "$MD_M")")" 분기점)|$md_rp" "0|$MD_FORK|0"
+SA_PLAN=""; SA_AUTH_RAW=""
+unset -f md_row md_snap md_form md_fx md_plan md_seg md_rnext md_oid md_try
+unset MD_PLAN MD_JSON MD_RC MD_OUT MD_H MD_M MD_FORK MD_WT MD_STUB
+unset md_a md_b md_rows0 md_fail md_r md_ob md_n1 md_got md_m md_fix md_rp
+
+# ---------------------------------------------------------------------------
 # 112. 계정 이전 — 판정 함수의 출력, 대기·마감 초과 행과 종료 코드, 좌석 되돌림, 허용 술어
 # --- section: 112 | group: failover | covers: gate_failover_judge, gate_failover_wait, gate_relay_wait, gate_failover_row, gate_shift_launch_drop_claims, run_failover_allowed, resolve_account_seat_reverted, resolve_account, gate_seat_config_dir, gate_append | anchors: 112: 판정이 후보 상태 일곱과 고름·재개 시각을 낸다, 112: 판정불가 여섯 입력은 rc 2 이고 고름이 없다, 112: 대기는 rc 3 과 계정 이전 행 하나를 남기고 이 기동자의 점유만 지운다, 112: 같은 재개 시각의 대기는 다시 쓰지 않는다, 112: 릴레이 안의 대기는 rc 0 으로 릴레이를 잇고 relay.live 를 남긴다, 112: 릴레이는 선 깨움 키가 있어도 계정 이전 대기의 재개 시각 전에는 깨지 않는다, 112: 마감을 넘는 재개 시각은 마감 초과 행과 blocked 행이고 rc 3 이다, 112: 재개 시각 직후의 판정은 유예 대기를 한 번만 쓴다, 112: 아홉 계정이 모두 인벤토리 밖인 행도 행 상한 안이다, 112: 옮긴 교대 안에서만 좌석으로 되돌린다, 112: 계정 이전 허용 행과 라우팅 기록이 함께 있을 때만 이전 런이다 ---
 #
