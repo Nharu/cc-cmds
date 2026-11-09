@@ -3562,10 +3562,16 @@ ${rows%
     fx_row '리뷰 의무' "의무 id=RO-$k" "상태=미이행" "세그먼트=$k" "대상=rk" "머지 커밋=$M13M" "분기점=$F13M" "생성 등급=-"
     fx_row 'segment' "id=$k" "상태=계획됨" "레포=t/rk" "워크트리=$WORK/repo-run-$s-$k" "선행=없음" "리뷰 정책=선리뷰후머지"
     fx_row 'segment' "id=$k" "상태=사후리뷰" "워크트리=$WORK/repo-run-$s-$k"
-    if [ "$how" = done ]; then
-      fx_row '리뷰 의무' "의무 id=RO-$k" "상태=이행" "세그먼트=$k" "대상=rk" "머지 커밋=$M13M" "분기점=$F13M" "생성 등급=-"
-      fx_row 'segment' "id=$k" "상태=완료" "워크트리=$WORK/repo-run-$s-$k"
-    fi
+    case "$how" in
+      done)
+        fx_row '리뷰 의무' "의무 id=RO-$k" "상태=이행" "세그먼트=$k" "대상=rk" "머지 커밋=$M13M" "분기점=$F13M" "생성 등급=-"
+        fx_row 'segment' "id=$k" "상태=완료" "워크트리=$WORK/repo-run-$s-$k" ;;
+      merged)
+        fx_row '리뷰 의무' "의무 id=RO-$k" "상태=이행" "세그먼트=$k" "대상=rk" "머지 커밋=$M13M" "분기점=$F13M" "생성 등급=-"
+        fx_row 'segment' "id=$k" "상태=머지됨" "워크트리=$WORK/repo-run-$s-$k" ;;
+      doneopen)
+        fx_row 'segment' "id=$k" "상태=완료" "워크트리=$WORK/repo-run-$s-$k" ;;
+    esac
   done
   seat_end 마감
 }
@@ -3595,6 +3601,19 @@ S13M2=20261001-a00000m2
 mk13m "$S13M2" done I1
 a13 "$S13M2"
 check "13 머지 입양: 의무를 이행하고 완료 로 끝난 세그먼트는 줄이 없다" "$(md13m)" ""
+# A fix flow that merged its fix ends on `머지됨`, and its fulfilled obligation
+# ends the candidacy as a `완료` does.
+S13M4=20261001-a00000m4
+mk13m "$S13M4" merged I1
+a13 "$S13M4"
+check "13 머지 입양: 의무를 이행하고 머지됨 으로 끝난 세그먼트는 줄이 없다" "$(md13m)" ""
+# The open-obligation count reads the Korean keys whatever awk counts in, so
+# a `완료` whose obligation is still open stays a candidate.
+S13M5=20261001-a00000m5
+mk13m "$S13M5" doneopen I1
+a13 "$S13M5"
+check "13 머지 입양: 의무가 열린 채 완료 로 끝난 세그먼트는 후보 한 줄이다" "$(md13m)" \
+  "머지입양후보${TAB}I1${TAB}7${TAB}$M13M${TAB}$H13M"
 S13M3=20261001-a00000m3
 mk13m "$S13M3" open I1 I2
 a13 "$S13M3"
@@ -3603,7 +3622,7 @@ check "13 머지 입양: 리뷰가 열린 머지 입양 세그먼트마다 후�
 머지입양후보${TAB}I2${TAB}8${TAB}$M13M${TAB}$H13M"
 rm -f "$GH13/view.7" "$GH13/view.8"
 unset -f pr13m mk13m view13m md13m
-unset PLAN13M M13M H13M F13M S13M S13M2 S13M3
+unset PLAN13M M13M H13M F13M S13M S13M2 S13M3 S13M4 S13M5
 unset CC_REMOTE_GH
 
 # ---------------------------------------------------------------------------

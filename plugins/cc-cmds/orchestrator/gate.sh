@@ -12907,6 +12907,17 @@ gate_segment_merge_adopted() {
   gate_merge_adoption_row "$1" >/dev/null
 }
 
+gate_merge_adoption_drop_ref() {
+  # gate_merge_adoption_drop_ref <segment> <state> — the pinned head of a merged
+  # pull request (`refs/cc-review/<run id>/<segment>`) is dropped once the
+  # segment ends with `완료` or `park`. A missing ref or worktree leaves nothing
+  # to drop, so nothing here fails the row that was just written.
+  case "$2" in 완료|park) : ;; *) return 0 ;; esac
+  gate_segment_merge_adopted "$1" || return 0
+  ( cd "$(gate_segment_worktree "$1")" 2>/dev/null \
+      && git update-ref -d "refs/cc-review/$RUN_ID/$1" ) >/dev/null 2>&1 || true
+}
+
 gate_merge_adoption_plan_check() {
   # gate_merge_adoption_plan_check <verb> <alias> <segment> <worktree> — 0 when
   # the `머지 입양` row still describes the pull request and the base as they
@@ -36497,6 +36508,16 @@ gate_record_row() {
         fi
         [ -n "$(gate_field_of '선행' "$@")" ] || set -- "$@" "선행=없음"
       fi
+      # A MERGED PULL REQUEST'S FIRST ROW IS ITS PLANNING ACT. That act is the
+      # one writer of the segment's `리뷰 의무` row, so a first row written any
+      # other way would plan a merged request with no review owed. A `park` is
+      # the one other first row: a segment whose planning act was refused has no
+      # planning row to write.
+      if [ "${GATE_FROM_DECLARATION:-}" != "1" ] && [ "$st" != 'park' ] \
+         && gate_segment_merge_adopted "$seg" && [ -z "$(gate_segment_field "$seg" '상태')" ]; then
+        warn "세그먼트 ${seg} 는 이 런이 머지 입양으로 받은 세그먼트입니다 — 첫 행은 act --kind segment --from-declaration 계획 행위로 쓰고, 계획하지 못한 세그먼트는 「상태=park」 로만 닫습니다"
+        return "$GATE_EXIT_RULE"
+      fi
       # A review-only segment is `완료` once its review is posted and read back
       # as rendered; any other ending is a `park`.
       if [ "$st" = '완료' ] && gate_segment_review_only "$seg"; then
@@ -36556,26 +36577,49 @@ gate_record_row() {
           warn "segment 행의 「적용」은 게이트가 쓰는 필드입니다 — 호출자가 넘길 수 없습니다"
           return "$GATE_EXIT_VOCAB"
         fi
-        # A SEGMENT ADOPTED AS A MERGED PULL REQUEST ENDS WITHOUT A MERGE OF ITS
-        # OWN. Its merge happened outside the run, so it owes no apply here; its
-        # `완료` is accepted once its obligation is fulfilled and its worktree
-        # carries no commit ahead of the base — a fix still unmerged is not an
-        # ending — and carries no `커밋`, since nothing was pushed for it. An
-        # unreadable count is not read as 0.
-        local md_ahead=""
+        # A SEGMENT ADOPTED AS A MERGED PULL REQUEST ENDS ONLY ON ITS ISSUED AND
+        # FULFILLED OBLIGATION. The planning act issues it; a segment with no
+        # issuing row was never put under its review, so an empty list of open
+        # obligations says nothing and is not an ending.
+        #
+        # ITS MERGELESS ENDING IS `입양 종결` AND NOTHING ELSE. Its merge happened
+        # outside the run, so while no fix of its own merged (no `머지됨` row) and
+        # `review_next[]` reads `입양 종결` — the review passed with no commit
+        # ahead of the base — the `완료` owes no apply and carries no `커밋`,
+        # since nothing was pushed for it. Every other `완료` of such a segment
+        # is judged by the rules of any segment: after a fix merged, the apply
+        # check below; with no merge, a below-merge ending with its `커밋`, on a
+        # review the table reads `머지` or `이월 머지`. An unreadable count is
+        # not read as 0.
+        local md_ahead="" md_nx
         if [ "$st" = 완료 ] && gate_segment_merge_adopted "$seg"; then
+          if [ -z "$(gate_adoption_obligation_line "$seg")" ]; then
+            warn "머지 입양 세그먼트 ${seg} 에 발행된 리뷰 의무가 없습니다 — 의무는 --from-declaration 계획 행위가 발행하고, 「완료」 는 그 의무가 이행된 뒤에만 씁니다"
+            return "$GATE_EXIT_VOCAB"
+          fi
           if [ -n "$(gate_unfulfilled_review_obligations "$seg")" ]; then
             warn "머지 입양 세그먼트 ${seg} 의 리뷰 의무가 아직 이행되지 않았습니다 — 「완료」 는 의무 이행 뒤에만 씁니다"
             return "$GATE_EXIT_VOCAB"
           fi
-          md_ahead=$(gate_segment_ahead_count "$seg")
-          if [ "$md_ahead" != 0 ]; then
-            warn "머지 입양 세그먼트 ${seg} 의 워크트리가 베이스보다 앞선 커밋 ${md_ahead} 개를 가집니다 — 「완료」 는 앞선 커밋이 0 일 때만 씁니다"
-            return "$GATE_EXIT_VOCAB"
-          fi
-          if [ -n "$(gate_field_of '커밋' "$@")" ]; then
-            warn "머지 입양 세그먼트 ${seg} 의 「완료」 행은 「커밋」 을 싣지 않습니다 — 이 런이 밀어 올린 커밋이 없습니다"
-            return "$GATE_EXIT_VOCAB"
+          if [ -z "$(gate_segment_merged_line "$seg")" ]; then
+            md_nx=$(gate_adoption_review_next "$seg")
+            case "$md_nx" in
+              '입양 종결')
+                md_ahead=0
+                if [ -n "$(gate_field_of '커밋' "$@")" ]; then
+                  warn "머지 입양 세그먼트 ${seg} 의 「입양 종결」 「완료」 행은 「커밋」 을 싣지 않습니다 — 이 런이 밀어 올린 커밋이 없습니다"
+                  return "$GATE_EXIT_VOCAB"
+                fi ;;
+              '판정 불가')
+                warn "머지 입양 세그먼트 ${seg} 가 베이스보다 앞선 커밋 수를 읽지 못했습니다 — 「완료」 를 쓰지 않습니다"
+                return "$GATE_EXIT_VOCAB" ;;
+              *)
+                case "$(gate_segment_review_next_table "$seg")" in
+                  머지|'이월 머지') : ;;
+                  *) warn "머지 입양 세그먼트 ${seg} 의 다음 처분은 「${md_nx:-(빈 값)}」 입니다 — 머지 없는 「완료」 는 마지막 리뷰의 판정표 값이 「머지」·「이월 머지」 일 때만 씁니다"
+                     return "$GATE_EXIT_VOCAB" ;;
+                esac ;;
+            esac
           fi
         fi
         case "$st" in
@@ -37334,15 +37378,7 @@ gate_record_row() {
       # here on the ordinary path, and by `gate_on_exit` when `gate_append`
       # exits the process instead of returning.
       gate_settings_lock_release
-      # The pinned head of a merged pull request is dropped once the segment
-      # ends; a missing ref or worktree leaves nothing to drop.
-      case "$st" in
-        완료|park)
-          if gate_segment_merge_adopted "$seg"; then
-            ( cd "$(gate_segment_worktree "$seg")" 2>/dev/null \
-                && git update-ref -d "refs/cc-review/$RUN_ID/$seg" ) >/dev/null 2>&1 || true
-          fi ;;
-      esac
+      gate_merge_adoption_drop_ref "$seg" "$st"
       if [ "$st" = "park" ]; then
         gate_notify_segment_park "$seg"
         # A PERSON WHO GAVE UP ON AN UNKNOWN APPLY LETS ITS BLOCK GO. The
@@ -49140,6 +49176,17 @@ gate_verb_act() {
       case "${1:-}" in
         review) : ;;
         *) warn "세그먼트 ${segment} 는 리뷰 전용 세그먼트입니다 — 작성자 브랜치에 쓰는 ${1:-(없음)} 스테이지는 파견하지 않습니다"
+           exit "$GATE_EXIT_RULE" ;;
+      esac
+    fi
+    # A MERGED PULL REQUEST IS REVIEWED BEFORE ITS BRANCH IS WRITTEN. While its
+    # review after the fact is due, a commit ahead of the base would turn the
+    # review line from the merged request's diff to the branch's, and the
+    # obligation would close on a review that never read the merge.
+    if [ -n "$segment" ] && gate_segment_merge_adopted "$segment" && gate_segment_post_merge "$segment"; then
+      case "${1:-}" in
+        review) : ;;
+        *) warn "머지 입양 세그먼트 ${segment} 는 사후 리뷰를 기다립니다 — 그 리뷰의 cycle 행이 서기 전에는 ${1:-(없음)} 스테이지를 파견하지 않습니다"
            exit "$GATE_EXIT_RULE" ;;
       esac
     fi

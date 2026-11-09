@@ -1616,7 +1616,7 @@ for pair in "리드:$AP_ROUTER" "교대:$RS_CORPUS"; do
   who=${pair%%:*}; file=${pair#*:}
   for lit in \
     '**A slice whose `슬라이싱` entry carries `머지 입양` is a pull request merged outside this run**' \
-    'Write `리뷰 정책=선리뷰후머지` on its first row either way; the gate refuses any other policy on it.' \
+    'Pass no `리뷰 정책` on its planning row either way: the planning act resolves the policy to `선리뷰후머지` itself, and the gate refuses any first row of the segment other than that `--from-declaration` act or a `park`.' \
     'the line names the adopted pull request'"'"'s URL instead of a branch and carries `--base-sha <분기점> --merged <머지 커밋> --judge-head <워크트리 HEAD>`' \
     '- **`입양 종결`** → a segment a `머지 입양` row adopted passed its review with no commit over its base.' \
     'A segment a `머지 입양` row adopted carries an element too, with or without a `cycle` row, until its `완료` row.' \

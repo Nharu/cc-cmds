@@ -66245,7 +66245,7 @@ unset RV107_P2 RV107_P3 RV107_OUT RV107_JSON RV107_RC
 
 # ---------------------------------------------------------------------------
 # 109m. 머지 입양 — 런 밖에서 머지된 PR 을 문서 없는 계획의 구현 단계로 받아 사후 리뷰한다
-# --- section: 109m | group: mf | covers: check_manifest, snapshot, gate_snapshot_slicing_json, gate_undeclared_segments, gate_from_declaration, gate_merge_adoption_plan_check, gate_merge_adoption_issue, gate_adoption_review_next, gate_segment_review_next, gate_review_line, gate_done_conditions, act | anchors: 109m: 형식이 어긋난 머지 입양 행은 거부된다, 109m: 한 세그먼트의 머지 입양 행 둘은 거부된다, 109m: 리뷰없음 상한 대상의 머지 입양 행은 거부된다,109m: 슬라이싱이 머지 입양 단계의 PR 번호를 낸다, 109m: 원격과 어긋난 계획 act 는 rc 3 이고 행을 남기지 않는다, 109m: 계획 act 가 의무 하나와 선리뷰후머지 계획 행을 쓴다, 109m: 계획 act 가 PR 헤드를 리뷰 참조로 들인다, 109m: 다시 부른 계획 act 는 의무를 더 쓰지 않는다, 109m: 계획 뒤 다음은 사후리뷰 이고 사후리뷰 행이 받아진다, 109m: 리뷰 줄이 PR 과 분기점·머지 커밋·판정 HEAD 를 싣는다, 109m: 통과한 사후 리뷰 뒤 다음은 입양 종결 이다, 109m: 의무 이행 전 완료 는 rc 2 다, 109m: 커밋 을 실은 완료 는 rc 2 다, 109m: 의무 이행 뒤 완료 는 rc 0 이고 조건 12 가 없으며 원격 베이스가 그대로다, 109m: 스쿼시 머지의 분기점은 PR 이 갈라진 커밋이다, 109m: 수정 커밋 뒤 리뷰 줄은 브랜치를 리뷰하고 머지 커밋을 싣지 않는다, 109m: 앞선 커밋이 있는 완료 는 rc 2 다, 109m: 리베이스 머지가 계획되고 park 로 닫힌다 ---
+# --- section: 109m | group: mf | covers: check_manifest, snapshot, gate_snapshot_slicing_json, gate_undeclared_segments, gate_from_declaration, gate_merge_adoption_plan_check, gate_merge_adoption_issue, gate_adoption_review_next, gate_segment_review_next, gate_review_line, gate_done_conditions, gate_segment_post_merge, gate_segment_merge_adopted, gate_merge_adoption_drop_ref, gate_verb_act, act | anchors: 109m: 형식이 어긋난 머지 입양 행은 거부된다, 109m: 한 세그먼트의 머지 입양 행 둘은 거부된다, 109m: 리뷰없음 상한 대상의 머지 입양 행은 거부된다,109m: 슬라이싱이 머지 입양 단계의 PR 번호를 낸다, 109m: 원격과 어긋난 계획 act 는 rc 3 이고 행을 남기지 않는다, 109m: 계획 act 가 의무 하나와 선리뷰후머지 계획 행을 쓴다, 109m: 계획 act 가 PR 헤드를 리뷰 참조로 들인다, 109m: 다시 부른 계획 act 는 의무를 더 쓰지 않는다, 109m: 계획 뒤 다음은 사후리뷰 이고 사후리뷰 행이 받아진다, 109m: 리뷰 줄이 PR 과 분기점·머지 커밋·판정 HEAD 를 싣는다, 109m: 통과한 사후 리뷰 뒤 다음은 입양 종결 이다, 109m: 의무 이행 전 완료 는 rc 2 다, 109m: 커밋 을 실은 완료 는 rc 2 다, 109m: 의무 이행 뒤 완료 는 rc 0 이고 조건 12 가 없으며 원격 베이스가 그대로다, 109m: 스쿼시 머지의 분기점은 PR 이 갈라진 커밋이다, 109m: 사후 리뷰 전의 구현 파견은 rc 3 이다, 109m: 수정 커밋 뒤 리뷰 줄은 브랜치를 리뷰하고 머지 커밋을 싣지 않는다, 109m: 수정 흐름 — 이행 뒤 수정 PR 머지는 rc 0 이고 의무를 더 쓰지 않으며 조건 12 가 없다, 109m: 수정 흐름 — 머지된 뒤의 완료 는 rc 0 이다, 109m: 적용 대상의 머지된 수정 뒤 호출자 완료 는 적용 검사에 걸린다, 109m: 머지 아래 절단점의 수정 흐름은 커밋 을 실은 완료 로 끝난다, 109m: 계획 행위가 아닌 첫 행은 rc 3 이다, 109m: 실패한 사이클 뒤의 완료 는 rc 2 다, 109m: 리베이스 머지가 계획되고 park 로 닫힌다, 109m: park 가 리뷰 참조를 지운다, 109m: 의무가 발행되지 않은 완료 는 rc 2 다 ---
 #
 # 문서 없는 계획의 구현 단계 하나를 `머지 입양` 행이 이름한다. 행의 형식은 스냅숏의
 # 매니페스트 검사로 재고, 계획 act 는 원격의 PR 을 gh 대역으로 다시 읽어 머지 커밋·헤드·
@@ -66319,8 +66319,28 @@ md_fx() {
   MD_WT="$(cd "$SA_ROOT" && pwd -P)/repo-run-$SA_ID-I1"
   ( cd "$SA_REPO" && git worktree add -q -b "seg/$SA_ID-I1" "$MD_WT" main ) >/dev/null 2>&1
   SA_PLAN="$MD_PLAN"; SA_AUTH_RAW=$(md_row 7 "$MD_M" "$MD_H")
+  # MD_CUT 는 대상의 절단점을, MD_APPLY 는 파이프라인 적용 선언을 바꾼다.
+  [ -z "${MD_CUT:-}" ] || SA_CUT="$MD_CUT"
+  if [ -n "${MD_APPLY:-}" ]; then SA_APPLY=파이프라인; SA_APPLY_PROBE='exit 0'; SA_APPLY_CMD=true; fi
   sa_manifest 선리뷰후머지
   mkdir -p "$SA_RUN"; printf '1\n' > "$SA_RUN/routing-guard"
+}
+md_checks() {
+  # md_checks <head sha> — 세그먼트 I1 의 수정 PR 이 그 head 에서 통과한 회차 0 checks 행.
+  printf -- '- `checks` | PR=t/%s#8 | head sha=%s | 상태=통과 | 필수 집합=- | 실패 체크=gate | 관측=%s | 세그먼트=I1 | 재실행 회차=0 | 진행 중=0\n' \
+    "$SA_ID" "$1" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$SA_LEDGER"
+}
+md_fixflow() {
+  # md_fixflow — 계획 → 사후리뷰 → P1 사이클 → 수정 커밋 → 깨끗한 재리뷰 → 의무 이행.
+  # MD_FIX 에 수정 커밋을, md_ff 에 각 단계의 rc 를 찍는다.
+  local r1 r2 r3
+  md_plan; r1=$rc
+  md_seg 사후리뷰; r2=$rc
+  sa_cycle I1 1 0 1 "$MD_M"
+  MD_FIX=$( cd "$MD_WT" && echo fix >> p.txt && git add p.txt && git commit -qm fix && git rev-parse HEAD )
+  sa_cycle I1 2 0 0 "$MD_FIX"
+  sa_fulfil "$(md_oid "$MD_M")" >/dev/null; r3=$rc
+  md_ff="$r1/$r2/$r3"
 }
 MD_STUB="$WORK/md109-gh"
 cat > "$MD_STUB" <<'MD109EOF'
@@ -66386,6 +66406,15 @@ check "109m: 다시 부른 계획 act 는 의무를 더 쓰지 않는다" "$(sa_
 md_n1=$(md_rnext)
 md_seg 사후리뷰; md_r=$rc
 check "109m: 계획 뒤 다음은 사후리뷰 이고 사후리뷰 행이 받아진다" "$md_n1|$md_r|$(md_rnext)" "사후리뷰|0|사후리뷰"
+# 사후 리뷰가 서기 전에 구현이 커밋을 앞세우면 리뷰 줄이 브랜치 줄로 바뀌어 머지된 PR 의
+# diff 를 읽지 않은 채 의무가 닫힌다 — 그래서 리뷰 아닌 스테이지는 파견하지 않는다.
+sag plan --manifest "$SA_MANIFEST" --kind skill --target main --segment I1 --cutpoint 커밋 \
+    --surface 워크트리쓰기 -- implement -p '/cc-cmds:implement-unattended "세그먼트 I1"'
+case "$rc|$msg" in
+  3\|*"사후 리뷰를 기다립니다"*) md_got=거부 ;;
+  *) md_got="rc=$rc $msg" ;;
+esac
+check "109m: 사후 리뷰 전의 구현 파견은 rc 3 이다" "$md_got" "거부"
 sag review-line --manifest "$SA_MANIFEST" --segment I1
 case "$msg" in
   *" --pr-head "*) md_got="--pr-head 가 있다: $msg" ;;
@@ -66422,19 +66451,67 @@ esac
 check "109m: 수정 커밋 뒤 리뷰 줄은 브랜치를 리뷰하고 머지 커밋을 싣지 않는다" "$md_got" "브랜치"
 sa_cycle I1 2 0 0 "$md_fix"
 sa_fulfil "$(md_oid "$MD_M")" >/dev/null
-md_seg 완료; md_r=$rc; md_m=$msg
-case "$md_m" in *"앞선 커밋 1 개를 가집니다"*) md_m=문면 ;; esac
-check "109m: 앞선 커밋이 있는 완료 는 rc 2 다" "$md_r|$md_m" "2|문면"
+# 수정 PR 은 선리뷰후머지 검사기를 지나 머지된다. 그 머지는 의무를 새로 쓰지 않고,
+# 이행된 의무를 덮은 마지막 사이클로 조건 12 가 풀리며, 머지된 뒤의 「완료」 는 일반
+# 끝맺음 규칙으로 받아진다.
+md_obn=$(sa_ob_count)
+md_checks "$md_fix"
+sa_merge I1 "seg/$SA_ID-I1:main"; md_r=$rc; md_m=$msg
+# 머지 행위는 행을 쓰지 않는다 — 라우터가 머지를 확인한 뒤 「머지됨」 행을 따로 쓴다.
+[ "$md_r" != 0 ] || md_seg 머지됨
+check "109m: 수정 흐름 — 이행 뒤 수정 PR 머지는 rc 0 이고 의무를 더 쓰지 않으며 조건 12 가 없다" \
+  "$md_r|$(sa_ob_count)|$(mf_u12 I1)|$(sa_field "$(sa_seg_last I1)" 상태)" "0|$md_obn|0|머지됨"
+[ "$md_r" = 0 ] || printf '  109m 수정 PR 머지: %s\n' "$md_m"
+md_seg 완료; md_r=$rc
+check "109m: 수정 흐름 — 머지된 뒤의 완료 는 rc 0 이다" "$md_r" "0"
+
+# 적용을 선언한 대상에서 머지된 수정 PR 은 적용이 남는다 — 호출자의 「완료」 는 적용
+# 주체 검사에 걸린다.
+MD_APPLY=1 md_fx squash
+md_fixflow
+md_checks "$MD_FIX"
+sa_merge I1 "seg/$SA_ID-I1:main"; md_r=$rc
+[ "$md_r" != 0 ] || md_seg 머지됨
+md_seg 완료; md_m=$msg
+case "$rc|$md_m" in 2\|*"적용이 남은 세그먼트입니다"*) md_m=문면 ;; esac
+check "109m: 적용 대상의 머지된 수정 뒤 호출자 완료 는 적용 검사에 걸린다" "$md_ff|$md_r|$md_m" "0/0/0|0|문면"
+
+# 머지 아래 절단점의 대상은 수정 흐름을 머지 없이 「커밋=<HEAD>」 로 끝낸다.
+MD_CUT=커밋 md_fx squash
+md_fixflow
+md_seg 완료 "커밋=$MD_FIX"; md_r=$rc; md_m=$msg
+check "109m: 머지 아래 절단점의 수정 흐름은 커밋 을 실은 완료 로 끝난다" "$md_ff|$md_r" "0/0/0|0"
+[ "$md_r" = 0 ] || printf '  109m 머지 아래 완료: %s\n' "$md_m"
 
 md_fx rebase
+md_seg 실행중; md_r0=$rc; md_m=$msg
+case "$md_m" in *"첫 행은 act --kind segment --from-declaration 계획 행위로 쓰고"*) md_m=문면 ;; esac
+check "109m: 계획 행위가 아닌 첫 행은 rc 3 이다" "$md_r0|$md_m|$(sa_ob_count)" "3|문면|0"
 md_plan; md_r=$rc
+# 이행된 의무여도 마지막 사이클이 통과하지 않았으면 머지 없는 「완료」 가 아니다.
+md_seg 사후리뷰
+sa_cycle I1 1 0 1 "$MD_M"
+sa_fulfil "$(md_oid "$MD_M")" >/dev/null; md_rf=$rc
+md_seg 완료; md_m=$msg
+case "$rc|$md_m" in 2\|*"판정표 값이 「머지」·「이월 머지」 일 때만"*) md_m=문면 ;; esac
+check "109m: 실패한 사이클 뒤의 완료 는 rc 2 다" "$md_rf|$md_m" "0|문면"
 md_seg park; md_rp=$rc
 check "109m: 리베이스 머지가 계획되고 park 로 닫힌다" \
   "$md_r|$(sa_field "$(sa_ob_last "$(md_oid "$MD_M")")" 분기점)|$md_rp" "0|$MD_FORK|0"
+check "109m: park 가 리뷰 참조를 지운다" \
+  "$(cd "$MD_WT" && git rev-parse -q --verify "refs/cc-review/$SA_ID/I1" || printf 없음)" "없음"
+
+# 계획 행위 없이 park 로 시작한 세그먼트에는 발행된 의무가 없다 — 그 「완료」 는 리뷰 없이
+# 닫는 것이라 받지 않는다.
+md_fx merge
+md_seg park; md_rp=$rc
+md_seg 완료; md_m=$msg
+case "$rc|$md_m" in 2\|*"발행된 리뷰 의무가 없습니다"*) md_m=문면 ;; esac
+check "109m: 의무가 발행되지 않은 완료 는 rc 2 다" "$md_rp|$md_m" "0|문면"
 SA_PLAN=""; SA_AUTH_RAW=""
-unset -f md_row md_snap md_form md_fx md_plan md_seg md_rnext md_oid md_try
-unset MD_PLAN MD_JSON MD_RC MD_OUT MD_H MD_M MD_FORK MD_WT MD_STUB
-unset md_a md_b md_rows0 md_fail md_r md_ob md_n1 md_got md_m md_fix md_rp
+unset -f md_row md_snap md_form md_fx md_plan md_seg md_rnext md_oid md_try md_checks md_fixflow
+unset MD_PLAN MD_JSON MD_RC MD_OUT MD_H MD_M MD_FORK MD_WT MD_STUB MD_FIX
+unset md_a md_b md_rows0 md_fail md_r md_ob md_n1 md_got md_m md_fix md_rp md_r0 md_rf md_obn md_ff
 
 # ---------------------------------------------------------------------------
 # 112. 계정 이전 — 판정 함수의 출력, 대기·마감 초과 행과 종료 코드, 좌석 되돌림, 허용 술어

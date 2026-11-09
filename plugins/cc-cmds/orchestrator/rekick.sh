@@ -876,22 +876,25 @@ rk_merge_src_row() {
   { grep -E '^- `머지 입양`' "$MANIFEST" 2>/dev/null || true; } | { grep -F -- "| 세그먼트=$1 |" || true; } | head -n 1
 }
 
-# rk_merge_open_obligations <segment> — how many `리뷰 의무` ids of that
-# segment the previous ledger leaves `미이행` (each id read by its last row).
+# rk_merge_open_obligations <segment> [전체] — how many `리뷰 의무` ids of that
+# segment the previous ledger leaves `미이행` (each id read by its last row), or,
+# with `전체`, how many it issued at all. The keys are cut with
+# `length("<key>") + 1`, so a byte-counting awk reads the Korean keys as a
+# character-counting one does.
 rk_merge_open_obligations() {
-  RM_K="$1" awk '
+  RM_K="$1" RM_W="${2:-미이행}" awk '
     index($0, "- `리뷰 의무` | ") != 1 { next }
     {
       n = split($0, a, / \| /); id = ""; sg = ""; st = ""
       for (i = 2; i <= n; i++) {
         s = a[i]; sub(/[[:space:]]+$/, "", s)
-        if (index(s, "의무 id=") == 1) id = substr(s, 7)
-        else if (index(s, "세그먼트=") == 1) sg = substr(s, 6)
-        else if (index(s, "상태=") == 1) st = substr(s, 4)
+        if (index(s, "의무 id=") == 1) id = substr(s, length("의무 id=") + 1)
+        else if (index(s, "세그먼트=") == 1) sg = substr(s, length("세그먼트=") + 1)
+        else if (index(s, "상태=") == 1) st = substr(s, length("상태=") + 1)
       }
       if (sg == ENVIRON["RM_K"] && id != "") last[id] = st
     }
-    END { c = 0; for (k in last) if (last[k] == "미이행") c++; print c }
+    END { c = 0; for (k in last) if (ENVIRON["RM_W"] == "전체" || last[k] == "미이행") c++; print c }
   ' "$RK_PL" 2>/dev/null || printf '0'
 }
 
@@ -1224,7 +1227,8 @@ EOF
 #   머지입양후보<TAB><seg><TAB><PR><TAB><M><TAB><PR 헤드>[<TAB><수정 브랜치 워크트리>]
 #   입양불가<TAB><seg><TAB><PR><TAB><사유>
 # Three cases, from the previous ledger and, in the full layer, the remote:
-#   the obligation is fulfilled and the segment's last row is `완료` — no line;
+#   the segment's issued obligations are all fulfilled — no line, whether its
+#     last row is `완료` or the `머지됨` a merged fix ended on;
 #   the segment's fix branch is itself a candidate above (an open fix pull
 #     request) — the line carries that worktree, and the new run takes both rows;
 #   otherwise — the line alone, and the new run reviews the merged request again
@@ -1236,7 +1240,7 @@ EOF
 # it cannot be read. Run after `rk_adopt_candidates`'s own loop, whose
 # candidate worktrees it reads from RK_CAND_KW.
 rk_merge_adopt_candidates() {
-  local trows="$1" layer="$2" mrow mseg mal mpr mm mh mlast mtok mslug row ids out ms mmc mhd mw
+  local trows="$1" layer="$2" mrow mseg mal mpr mm mh mtok mslug row ids out ms mmc mhd mw
   while IFS= read -r mrow; do
     [ -n "$mrow" ] || continue
     mseg=$(manifest_row_fields "$mrow" '세그먼트' | head -n 1)
@@ -1244,8 +1248,9 @@ rk_merge_adopt_candidates() {
     mpr=$(manifest_row_fields "$mrow" 'PR' | head -n 1)
     mm=$(manifest_row_fields "$mrow" '머지 커밋' | head -n 1)
     mh=$(manifest_row_fields "$mrow" 'PR 헤드' | head -n 1)
-    mlast=$(rk_ledger_seg_rows "$mseg" | tail -n 1)
-    if [ "$(manifest_row_fields "$mlast" '상태' | head -n 1)" = "완료" ] \
+    # A segment whose issued obligations are all fulfilled is not a candidate,
+    # whatever its last row reads: a fix flow that merged ends on `머지됨`.
+    if [ "$(rk_merge_open_obligations "$mseg" 전체)" != "0" ] \
        && [ "$(rk_merge_open_obligations "$mseg")" = "0" ]; then
       continue
     fi
