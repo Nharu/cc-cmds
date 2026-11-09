@@ -3547,8 +3547,10 @@ PLAN13M='{ "steps": [ { "id": "I1", "skill": "implement", "summary": "구현", "
 M13M=$(printf 'c%.0s' $(seq 40)); H13M=$(printf 'd%.0s' $(seq 40)); F13M=$(printf 'e%.0s' $(seq 40))
 # pr13m <seg> — the pull request number the fixture gives that segment.
 pr13m() { case "$1" in I1) printf 7 ;; *) printf 8 ;; esac; }
-# mk13m <src> <open|done> <seg…> — the source run, one `머지 입양` row and one
-# obligation per segment; `done` fulfils each obligation and ends it `완료`.
+# mk13m <src> <open|done|merged|doneopen|fulfilpark> <seg…> — the source run,
+# one `머지 입양` row and one obligation per segment; `done` fulfils each
+# obligation and ends it `완료`, `merged` fulfils it and ends on `머지됨`,
+# `doneopen` ends `완료` with it open, `fulfilpark` fulfils it and ends `park`.
 mk13m() {
   local s="$1" how="$2" k rows=''; shift 2
   for k in "$@"; do
@@ -3571,6 +3573,9 @@ ${rows%
         fx_row 'segment' "id=$k" "상태=머지됨" "워크트리=$WORK/repo-run-$s-$k" ;;
       doneopen)
         fx_row 'segment' "id=$k" "상태=완료" "워크트리=$WORK/repo-run-$s-$k" ;;
+      fulfilpark)
+        fx_row '리뷰 의무' "의무 id=RO-$k" "상태=이행" "세그먼트=$k" "대상=rk" "머지 커밋=$M13M" "분기점=$F13M" "생성 등급=-"
+        fx_row 'segment' "id=$k" "상태=park" "워크트리=$WORK/repo-run-$s-$k" ;;
     esac
   done
   seat_end 마감
@@ -3614,6 +3619,13 @@ mk13m "$S13M5" doneopen I1
 a13 "$S13M5"
 check "13 머지 입양: 의무가 열린 채 완료 로 끝난 세그먼트는 후보 한 줄이다" "$(md13m)" \
   "머지입양후보${TAB}I1${TAB}7${TAB}$M13M${TAB}$H13M"
+# An obligation fulfilled before the fix merged leaves the segment unended when
+# its run stopped on a `park`, so the next run still sees it.
+S13M6=20261001-a00000m6
+mk13m "$S13M6" fulfilpark I1
+a13 "$S13M6"
+check "13 머지 입양: 의무를 이행했어도 park 로 멈춘 세그먼트는 후보 한 줄이다" "$(md13m)" \
+  "머지입양후보${TAB}I1${TAB}7${TAB}$M13M${TAB}$H13M"
 S13M3=20261001-a00000m3
 mk13m "$S13M3" open I1 I2
 a13 "$S13M3"
@@ -3622,7 +3634,7 @@ check "13 머지 입양: 리뷰가 열린 머지 입양 세그먼트마다 후�
 머지입양후보${TAB}I2${TAB}8${TAB}$M13M${TAB}$H13M"
 rm -f "$GH13/view.7" "$GH13/view.8"
 unset -f pr13m mk13m view13m md13m
-unset PLAN13M M13M H13M F13M S13M S13M2 S13M3 S13M4 S13M5
+unset PLAN13M M13M H13M F13M S13M S13M2 S13M3 S13M4 S13M5 S13M6
 unset CC_REMOTE_GH
 
 # ---------------------------------------------------------------------------

@@ -12910,9 +12910,10 @@ gate_segment_merge_adopted() {
 gate_merge_adoption_drop_ref() {
   # gate_merge_adoption_drop_ref <segment> <state> — the pinned head of a merged
   # pull request (`refs/cc-review/<run id>/<segment>`) is dropped once the
-  # segment ends with `완료` or `park`. A missing ref or worktree leaves nothing
-  # to drop, so nothing here fails the row that was just written.
-  case "$2" in 완료|park) : ;; *) return 0 ;; esac
+  # segment ends with `완료` or `park`, or once a fix of its own merged
+  # (`머지됨`): no review reads the merged request after that. A missing ref or
+  # worktree leaves nothing to drop, so nothing here fails the row just written.
+  case "$2" in 완료|park|머지됨) : ;; *) return 0 ;; esac
   gate_segment_merge_adopted "$1" || return 0
   ( cd "$(gate_segment_worktree "$1")" 2>/dev/null \
       && git update-ref -d "refs/cc-review/$RUN_ID/$1" ) >/dev/null 2>&1 || true

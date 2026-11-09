@@ -1227,8 +1227,8 @@ EOF
 #   머지입양후보<TAB><seg><TAB><PR><TAB><M><TAB><PR 헤드>[<TAB><수정 브랜치 워크트리>]
 #   입양불가<TAB><seg><TAB><PR><TAB><사유>
 # Three cases, from the previous ledger and, in the full layer, the remote:
-#   the segment's issued obligations are all fulfilled — no line, whether its
-#     last row is `완료` or the `머지됨` a merged fix ended on;
+#   the segment's last row is `완료`, or the `머지됨` a merged fix ended on, and
+#     its issued obligations are all fulfilled — no line;
 #   the segment's fix branch is itself a candidate above (an open fix pull
 #     request) — the line carries that worktree, and the new run takes both rows;
 #   otherwise — the line alone, and the new run reviews the merged request again
@@ -1248,12 +1248,17 @@ rk_merge_adopt_candidates() {
     mpr=$(manifest_row_fields "$mrow" 'PR' | head -n 1)
     mm=$(manifest_row_fields "$mrow" '머지 커밋' | head -n 1)
     mh=$(manifest_row_fields "$mrow" 'PR 헤드' | head -n 1)
-    # A segment whose issued obligations are all fulfilled is not a candidate,
-    # whatever its last row reads: a fix flow that merged ends on `머지됨`.
-    if [ "$(rk_merge_open_obligations "$mseg" 전체)" != "0" ] \
-       && [ "$(rk_merge_open_obligations "$mseg")" = "0" ]; then
-      continue
-    fi
+    # A segment that ended on its fulfilled obligations is not a candidate: its
+    # last row is `완료`, or the `머지됨` a merged fix ended on. One whose run
+    # stopped elsewhere (a `park`, a fix pull request still open) stays one,
+    # so the next run sees it even when its fix cannot be taken over.
+    case "$(manifest_row_fields "$(rk_ledger_seg_rows "$mseg" | tail -n 1)" '상태' | head -n 1)" in
+      완료|머지됨)
+        if [ "$(rk_merge_open_obligations "$mseg" 전체)" != "0" ] \
+           && [ "$(rk_merge_open_obligations "$mseg")" = "0" ]; then
+          continue
+        fi ;;
+    esac
     mtok=''
     if [ "$layer" = "full" ]; then
       ids=$(printf '%s' "$G_PLAN" | jq -r '.steps[]? | select(type == "object" and .skill == "implement") | .id // empty' 2>/dev/null)
