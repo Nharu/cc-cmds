@@ -1244,8 +1244,10 @@ check "원장은 append 전용" "$((after - before))" "1"
 # ---------------------------------------------------------------------------
 # 머지는 서버에서 일어나므로 로컬 브랜치 ref는 전진하지 않는다. 베이스를 벗겨 낸
 # 로컬 이름에서 해소하면 k+1이 k의 머지 없는 커밋에서 분기하고, 겹치는 선언 파일이
-# 순차 편집이 아니라 동시 편집이 된다.
-if grep -qE 'refs/remotes/origin/\$\(base_branch( "\$[a-z_]+")?\)' "$DRIVER"; then
+# 순차 편집이 아니라 동시 편집이 된다. 원격이 있는 대상의 그 ref 는 `base_ref` 가
+# 내고 `base_sha` 는 그것을 해소한다. 로컬 브랜치 ref 는 원격이 없는 대상의 갈래에만 있다.
+if sed -n '/^base_sha()/,/^}/p' "$DRIVER" | grep_all_q -F '$(base_ref ' \
+   && sed -n '/^base_ref()/,/^}/p' "$DRIVER" | grep_all_q -F "printf 'refs/remotes/origin/%s'"; then
   ok "base_sha 가 원격 추적 ref에서 해소된다"
 else
   bad "base_sha" "벗겨 낸 로컬 이름에서 해소 — 로컬 ref는 전진하지 않는다"
