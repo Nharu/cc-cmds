@@ -5,7 +5,7 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [3.42.0] - 2026-11-09
+## [3.43.0] - 2026-11-10
 
 설계 문서가 커져 감사·재수렴·구현 스테이지의 리드가 문서를 다 읽기 전에 문맥 창을 넘기던 문제를 막는다. 오케스트레이터가 세 종류의 파견 직전에 문서 바이트를 재어 종류별 문턱(감사 323000, 재수렴 300000, 구현 323000) 이상이면 세션을 띄우지 않고 중단 기록을 남긴다. 사람(정리 답은 좌석과 교대도)이 정리 후 재파견·큰 문맥 재파견·런 밖 처리 가운데 하나로 답한다. 정리 도구 `doc-tidy.py` 는 대체된 문장과 해결 항목의 논의 본문을 보관 파일로 옮기고, 되돌림 검사로 보존을 확인한다.
 
@@ -23,7 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **재수렴·감사 스킬** — 재수렴은 대체된 문장을 `(대체된 문장: "…")` 꼴로, 해결 항목 닫는 줄을 `해결:` 로 쓰고, 발행 전에 이번 편집분을 `doc-tidy.py apply` 로 정리한다. 무인 감사는 동결 사본이 맞을 때 발행 전에 `doc-tidy.py unmark` 로 검토한 표지 줄을 옮긴다.
 - **라우터 참조와 사이드카 계약** — 중단 답 경로표와 처리 항목, 좌석이 답할 수 있는 경로 제한, `doc-tidy` 원장 행·크기 필드·크기 중단 기록 꼴을 문서에 더한다.
-- **게이트 등급표** — `doc-tidy.py` 를 신뢰 이름에 더하고 `plan`·`check` 는 읽기, `apply`·`unmark`·`tidy` 는 트리밖쓰기로 등급한다.
+- **게이트 등급표** — `doc-tidy.py` 를 신뢰 이름과 사전 인가 대조의 게이트 헬퍼 이름에 더하고 `plan`·`check` 는 읽기, `apply`·`unmark`·`tidy` 는 트리밖쓰기로 등급한다.
 
 ## [3.42.2] - 2026-11-09
 
