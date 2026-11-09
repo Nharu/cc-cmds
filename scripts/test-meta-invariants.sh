@@ -1718,6 +1718,36 @@ for pair in "리드:$AP_ROUTER" "교대:$RS_CORPUS"; do
   check "$who 사본에 계획 순서 거부를 새 런으로 보내던 옛 문장이 없다" \
     "$(mo_count "$(cat "$file")" "$mo_old")" "0"
 done
+# The dispatch-site comparison of the declared set is consumed by both router
+# copies in the same words: the first implementation dispatch, the three places
+# its exit 3 is read, the byte-for-byte copy of `선언 파일`, the rows that take
+# no set after a declaration-planned row, and the re-attachment's refusal. The
+# sentences are read outside fenced blocks, so a copy that only quotes them in
+# an example does not pass. The template's `'선언 파일 집합=<CSV>'` argument
+# stays: a run without a declaration still passes the set on its planning row.
+unfenced() { awk '/^```/ { f = !f; next } !f' "$1"; }
+dx_first='**A segment'"'"'s first implementation dispatch uses the form 「Re-dispatching the implementation after review findings」 shows, with `사이클 1` and without `· 수정 대상: …`**, and its `· 선언 파일:` value is the segment'"'"'s `segments[]` element'"'"'s `선언 파일` byte for byte.'
+dx_refuse='**An exit 3 whose refusal text names 「파견 자리 대조」 is the dispatch-site comparison, on any implementation dispatch** — the first one, the `구현` branch or the re-dispatch after review findings: write a segment `park` row and a `스코프=cone` block with `'"'"'사유=구현 재파견 거절'"'"'` and the refusal text in `근거`, and dispatch its implementation no more.'
+dx_copy='**`· 선언 파일: <files>` is the segment'"'"'s `segments[]` element'"'"'s `선언 파일`, copied byte for byte**'
+dx_fromdecl='**A segment planned with `--from-declaration` takes no `선언 파일 집합` on any later row either.**'
+dx_resume='**A `--resume` act'"'"'s exit 3 whose refusal text names 「파견 자리 대조」** is handled as the `구현` branch handles a refused implementation'
+check "게이트가 파견 자리 대조 거절 문면을 낸다" \
+  "$( [ "$(mo_count "$(cat "$GATE")" '파견 자리 대조 — ')" -ge 1 ] && printf 있음 || printf 없음)" "있음"
+for pair in "리드:$AP_ROUTER" "교대:$RS_CORPUS"; do
+  who=${pair%%:*}; file=${pair#*:}
+  body=$(unfenced "$file")
+  check "$who 사본에 첫 구현 파견의 형식 문장이 한 번 실린다" "$(mo_count "$body" "$dx_first")" "1"
+  check "$who 사본에 파견 자리 대조 거절 문장이 세 자리에 실린다" "$(mo_count "$body" "$dx_refuse")" "3"
+  check "$who 사본에 선언 파일 값을 바이트 그대로 옮긴다는 문장이 한 번 실린다" "$(mo_count "$body" "$dx_copy")" "1"
+  check "$who 사본에 선언 계획 세그먼트의 뒤 행은 집합을 넘기지 않는다는 문장이 한 번 실린다" "$(mo_count "$body" "$dx_fromdecl")" "1"
+  check "$who 사본에 재부착 행위의 대조 거절 문장이 한 번 실린다" "$(mo_count "$body" "$dx_resume")" "1"
+  check "$who 사본의 세그먼트 행위 틀이 선언 파일 집합 인자를 그대로 싣는다" \
+    "$(mo_count "$(cat "$file")" "'선언 파일 집합=<CSV>'")" "1"
+done
+check "교대 사본에 운반 행위의 대조 거절 문장이 한 번 실린다" \
+  "$(mo_count "$(unfenced "$RS_SKILL")" '**A carry act (`--carry-answer`) refused this way is not the carry table'"'"'s `3` either**: write the same two rows, and do not carry that answer again in this run.')" "1"
+check "리드 사본의 계획 시점 문장이 선언 런과 선언 없는 런을 나눈다" \
+  "$(mo_count "$(unfenced "$AP_ROUTER")" '`선언 파일 집합` is likewise carried at planning time by the router — it is the sole input to "did this segment touch a file outside its declaration", which git cannot answer at all. On a `--from-declaration` run the gate carries it from the document instead, and the router passes none.')" "1"
 
 # ---------------------------------------------------------------------------
 # 6e-5. The review stage checks its own report with `report-check`
