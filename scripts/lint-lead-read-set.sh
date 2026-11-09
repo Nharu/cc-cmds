@@ -675,7 +675,7 @@ pre_step2_sum() {
   awk '$0 == "## Workflow" { w = 1; next } w && index($0, "### Step 2") == 1 { exit } w' "$(blanked "$1/SKILL.md")" \
     | { grep -E "$DIRECTIVE_RE" || true; } > "$tmp/r11.lines"
   while IFS= read -r line; do
-    rel=$(printf '%s' "$line" | grep -oE '`\$\{CLAUDE_SKILL_DIR\}/\.\./[^`]+\.md`' | head -1)
+    rel=$(printf '%s' "$line" | { grep -oE '`\$\{CLAUDE_SKILL_DIR\}/\.\./[^`]+\.md`' || true; } | sed -n '1p')
     rel=${rel#\`\$\{CLAUDE_SKILL_DIR\}/../}
     rel=${rel%\`}
     [[ -n "$rel" && -f "$skills_root/$rel" ]] || continue

@@ -67814,7 +67814,8 @@ S114=$(cd -P "$S114" && pwd)
 s114_t=$( cd "$WT" && CC_ORCH_SOURCE_ONLY=1 bash -c '. "$1" >/dev/null 2>&1; doc_size_min_threshold 1' \
   _ "$repo_root/plugins/cc-cmds/orchestrator/run.sh" 2>/dev/null )
 awk -v n="$s114_t" 'BEGIN { l = sprintf("%099d", 0); for (i = 0; i * 100 < n; i++) print l }' \
-  | head -c "$s114_t" > "$S114/repo/docs/rk-big.md"
+  > "$S114/repo/docs/rk-full.md"
+head -c "$s114_t" "$S114/repo/docs/rk-full.md" > "$S114/repo/docs/rk-big.md"
 head -c $((s114_t - 1)) "$S114/repo/docs/rk-big.md" > "$S114/repo/docs/rk-under.md"
 # s114_judge <run id> <설계 문서 키> — 그 문서를 이름 댄 원천 런의 판정 출력.
 s114_judge() {

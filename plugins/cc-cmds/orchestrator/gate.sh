@@ -22197,7 +22197,7 @@ gate_halt_answer_consumer() {
   if [ "$aopt" = '런 밖에서 처리' ]; then
     case "$(sed -n 's/^\*\*스텝\*\*: //p' "$(gate_row_field "$arow" '중단 기록')" 2>/dev/null | sed -n '1p')" in
       '파견 전 /'*)
-        if { grep -F "| id=$2 |" "$1" 2>/dev/null || true; } | grep -q '^- `segment` '; then
+        if [ -n "$({ grep -F "| id=$2 |" "$1" 2>/dev/null || true; } | { grep '^- `segment` ' || true; })" ]; then
           aopt='세그먼트 park'
         else
           szk=$(LC_ALL=C awk -v l="$3" -v k="$2" '
