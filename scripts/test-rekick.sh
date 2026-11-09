@@ -282,21 +282,23 @@ gate_direct() {
   ' _ "$GATE_SH" "$WORK/gd.plan.md" "$id" "$rd" "$BASE/docs/pipeline-run/$id.md" "$BASE/docs/pipeline-grant/$id.md" 2>/dev/null
 }
 
-# detect_case <label> <id> [arg] — detect for that run's session, with the hash
-# bracket and, when the verdict rests on the gate, the agreement check. Sets OUT.
+# detect_case <label> <id> [arg] [gate id] — detect for that run's session, with
+# the hash bracket and, when the verdict rests on the gate, the agreement check
+# against the gate id's run (the session's run by default: the run the verdict
+# names, when the argument picks another run of the session). Sets OUT.
 detect_case() {
-  local label="$1" id="$2" before after verdict g
+  local label="$1" id="$2" gid="${4:-$2}" before after verdict g
   before=$(src_sum "$id")
   OUT=$(rk_as "s-$id" detect --arg "${3:-}")
   after=$(src_sum "$id")
   check "$label: 판별 앞뒤로 원천 런 파일·런 디렉터리·색인이 같다" "$after" "$before"
   verdict=$(col "$OUT" 판정)
   if [ "$(col "$OUT" 갈래)" = "게이트 종료" ]; then
-    g=$(gate_direct "$id")
+    g=$(gate_direct "$gid")
     check "$label: 게이트를 직접 물은 결과와 같다 (끝남)" "$g" "끝남"
   fi
   if [ "$(col "$OUT" 갈래)" = "대기 이어받기" ]; then
-    g=$(gate_direct "$id")
+    g=$(gate_direct "$gid")
     check "$label: 게이트를 직접 물은 결과와 같다 (안끝남)" "$g" "안끝남"
   fi
   : "$verdict"
@@ -390,7 +392,19 @@ P_KAT='2026-10-06T00:00:00Z' mk_prev RKLIVE2; fx_stage_live I1
 printf '%s\n' s-RKOLD >> "$FX_RUN_DIR/session-lineage"
 fx_session_index s-RKOLD RKLIVE2
 out=$(rk_as s-RKOLD detect --arg '')
-check "2: 최신 후보가 자격이 없으면 더 오래된 후보로 물러서지 않는다" "$(col "$out" 판정)/$(col "$out" 판정 3)" "진행 중/RKLIVE2"
+check "2: 끝난 더 오래된 런은 후보에 오르지 않아 최신 런 하나로 판정한다" "$(col "$out" 판정)/$(col "$out" 판정 3)" "진행 중/RKLIVE2"
+check "2: 끝난 더 오래된 런만 곁에 있으면 후보 줄이 없다" "$(cnt "$out" 후보)" "0"
+
+# The newest candidate is live and an older one did not end: both are offered.
+P_KAT='2026-10-10T00:00:00Z' mk_prev 20261020-00b0000a
+P_KAT='2026-10-11T00:00:00Z' mk_prev 20261020-00b0000b; fx_stage_live I1
+printf '%s\n' s-20261020-00b0000a >> "$FX_RUN_DIR/session-lineage"
+fx_session_index s-20261020-00b0000a 20261020-00b0000b
+out=$(rk_as s-20261020-00b0000a detect --arg '')
+check "2: 최신이 살아 있고 더 오래된 런이 끝나지 않았으면 후보 2 다" "$(col "$out" 판정)/$(col "$out" 판정 3)" "후보/2"
+check "2: 그 후보 줄은 최신·살아 있음, 그다음 대기다" \
+  "$(printf '%s\n' "$out" | awk -F'\t' '$1 == "후보" { printf "%s/%s/%s ", $2, $3, $4 }')" \
+  "20261020-00b0000b/최신/살아 있음 20261020-00b0000a/-/대기 "
 
 # The newest candidate's ledger-path is missing or of another shape.
 P_KAT='2026-09-01T00:00:00Z' mk_prev RKLP1; fx_done
@@ -3749,6 +3763,132 @@ SL_DOC="$DOC13" SL_DOCSHA="$DOC13SHA" SL_AUTO= SL_ASKED="$WORK/a14-mnew" seat_li
 check "16 연쇄: 새로 답한 행이 같은 경로의 매니페스트 행보다 앞선다 (한 줄만 남는다)" \
   "$SL_RC/$SL_VS/$(under14 "$SL_OUT" | grep -c . || true)/$(grep -c '^강제 표면 승인 알림' "$WORK/sl.rerr" || true)" "0/통과/1/0"
 unset CC_REMOTE_GH
+
+# ---------------------------------------------------------------------------
+# 17. 여러 런 세션 — 후보 목록, 런 id 인자, 좌석의 자기 런 지정
+# ---------------------------------------------------------------------------
+# join_sess <sid> <id> — the run mk_prev made last also joins that session's
+# lineage and index.
+join_sess() { printf '%s\n' "$1" >> "$FX_RUN_DIR/session-lineage"; fx_session_index "$1" "$2"; }
+# cands <output> — `<id>/<최신|->/<상태>` of each `후보` line, in order.
+cands() { printf '%s\n' "$1" | awk -F'\t' '$1 == "후보" { printf "%s/%s/%s ", $2, $3, $4 }'; }
+# cand_field <output> <n> <column> — that column of the n-th `후보` line.
+cand_field() { printf '%s\n' "$1" | awk -F'\t' -v n="$2" -v c="$3" '$1 == "후보" && ++i == n { print $c; exit }'; }
+
+# A — an earlier run that did not end; B — a later run that ended.
+MA='20261020-00a0000a'; MB='20261020-00a0000b'
+IA='앞선 대기 런의 의도'; IB='나중에 끝난 런의 의도'
+P_KAT='2026-10-20T00:00:00Z' P_INTENT="$IA" mk_prev "$MA"
+P_KAT='2026-10-21T00:00:00Z' P_INTENT="$IB" mk_prev "$MB"; fx_done
+join_sess "s-$MA" "$MB"
+
+for a in '' '다시' '재개'; do
+  detect_case "17 (C1) 인자 '$a'" "$MA" "$a"
+  check "17 (C1): 인자 '$a' 는 후보 2 다" "$(col "$OUT" 판정)/$(col "$OUT" 판정 3)" "후보/2"
+  check "17 (C1): 인자 '$a' 의 첫 후보는 B·최신·끝남, 둘째는 A·대기다" "$(cands "$OUT")" "$MB/최신/끝남 $MA/-/대기 "
+done
+check "17 (C1): 후보 판정에는 --prev 로 쓸 base 칸이 없다" "$(col "$OUT" 판정 4)" ""
+check "17 (C1): 대기 후보는 대기 원인을 싣는다" "$(cand_field "$OUT" 2 5)" "멈춤"
+check "17 (C1): 끝난 후보의 대기 원인 칸은 - 다" "$(cand_field "$OUT" 1 5)" "-"
+check "17 (C1): 후보 줄은 킥오프 일시를 싣는다" "$(cand_field "$OUT" 2 6)" "2026-10-20T00:00:00Z"
+check "17 (C1): 후보 줄은 의도 첫 줄을 싣는다" "$(cand_field "$OUT" 2 7)" "$IA"
+check "17 (C1): 후보 고지는 한 줄이다" "$(cnt "$OUT" 고지)" "1"
+has "17 (C1): 후보 고지는 런 id 를 붙여 부르는 길을 말한다" "$OUT" "이 세션에 이어받거나 재개할 수 있는 런이 2개 있습니다 — 런 id 를 붙여 다시 부르면 그 런 하나로 판정합니다"
+
+detect_case "17 (C2) 다시 B" "$MA" "다시 $MB" "$MB"
+check "17 (C2): '다시 <B>' 는 B 의 재킥오프다" "$(col "$OUT" 판정)/$(col "$OUT" 판정 3)/$(col "$OUT" 판정 4)" "재킥오프/$MB/$BASE"
+check "17 (C2): '다시 <B>' 에는 후보 줄이 없다" "$(cnt "$OUT" 후보)" "0"
+detect_case "17 (C2) 다시 A" "$MA" "다시 $MA"
+check "17 (C2): '다시 <A>' 는 A 의 대기다" "$(col "$OUT" 판정)/$(col "$OUT" 판정 3)/$(col "$OUT" 판정 4)" "대기/$MA/$BASE"
+detect_case "17 (C2) A" "$MA" "$MA"
+check "17 (C2): '<A>' 는 A 의 진행 중이다" "$(col "$OUT" 판정)/$(col "$OUT" 판정 3)" "진행 중/$MA"
+check "17 (C2): '<A>' 는 대기 원인을 싣는다" "$(col "$OUT" '대기 원인')" "멈춤"
+has "17 (C2): '<A>' 의 고지는 「다시 <A>」 를 가리킨다" "$OUT" "인자 「다시 ${MA}」 로 부르세요"
+detect_case "17 (C2) 재개 A" "$MA" "재개 $MA"
+check "17 (C2): '재개 <A>' 도 A 의 진행 중이다" "$(col "$OUT" 판정)/$(col "$OUT" 판정 3)" "진행 중/$MA"
+
+# C3 — the seat's own run S ended, and the same session holds a later run T.
+MS='20261020-00c0000a'; MT='20261020-00c0000b'
+P_KAT='2026-10-22T00:00:00Z' mk_prev "$MS"; fx_done
+P_KAT='2026-10-23T00:00:00Z' mk_prev "$MT"
+join_sess "s-$MS" "$MT"
+detect_case "17 (C3) 좌석" "$MS" "$MS"
+check "17 (C3): 좌석이 자기 런 id 를 넘기면 그 런의 재킥오프다" "$(col "$OUT" 판정)/$(col "$OUT" 판정 3)/$(col "$OUT" 판정 4)" "재킥오프/$MS/$BASE"
+check "17 (C3): 그 판정에는 후보 줄이 없다" "$(cnt "$OUT" 후보)" "0"
+out=$(rk_as "s-$MS" detect --arg '')
+check "17 (C3): 런 id 없이는 더 늦은 런이 판정을 가져간다" "$(col "$out" 판정)/$(col "$out" 판정 3)" "진행 중/$MT"
+
+# 지정 불가 — an id not in the index, and an id in the index whose lineage
+# lacks the session.
+out=$(rk_as "s-$MA" detect --arg '다시 20261020-00f0000f'); rc=$?
+check "17: 색인에 없는 id 는 지정 불가다" "$(col "$out" 판정)/$(col "$out" 판정 3)" "지정 불가/20261020-00f0000f"
+check "17: 지정 불가는 0 으로 끝난다" "$rc" "0"
+check "17: 지정 불가 고지는 한 줄이다" "$(cnt "$out" 고지)" "1"
+has "17: 지정 불가 고지는 이유를 든다 (색인)" "$out" "이 세션의 색인에 없습니다"
+MX='20261020-00d0000a'
+P_KAT='2026-10-19T00:00:00Z' mk_prev "$MX"
+fx_session_index "s-$MA" "$MX"
+out=$(rk_as "s-$MA" detect --arg "$MX"); rc=$?
+check "17: 계보에 이 세션이 없는 id 는 지정 불가다" "$(col "$out" 판정)/$(col "$out" 판정 3)" "지정 불가/$MX"
+check "17: 그 지정 불가도 0 으로 끝난다" "$rc" "0"
+check "17: 그 지정 불가 고지도 한 줄이다" "$(cnt "$out" 고지)" "1"
+has "17: 지정 불가 고지는 이유를 든다 (계보)" "$out" "계보에 이 세션이 없습니다"
+out=$(rk_as "s-$MA" detect --arg '')
+check "17: 계보에 없는 색인 런은 후보에 오르지 않는다" "$(cands "$out")" "$MB/최신/끝남 $MA/-/대기 "
+
+# 빼기 — an ended run, a run that met every termination clause and a reviewer
+# run are not offered when they are not the latest.
+ML='20261020-00e0000f'; MU='20261020-00e0000a'
+P_KAT='2026-10-24T00:00:00Z' mk_prev "$MU"
+P_KAT='2026-10-25T00:00:00Z' mk_prev 20261020-00e0000b; fx_done
+join_sess "s-$MU" 20261020-00e0000b
+P_KAT='2026-10-26T00:00:00Z' mk_prev 20261020-00e0000c
+fx_row '종료 절' "id=C1" "상태=충족" "근거=픽스처"
+join_sess "s-$MU" 20261020-00e0000c
+P_KAT='2026-10-27T00:00:00Z' \
+  P_PLAN='{ "run_profile": "reviewer", "steps": [ { "id": "R1", "skill": "review", "summary": "리뷰", "depends_on": [] } ] }' \
+  mk_prev 20261020-00e0000d
+join_sess "s-$MU" 20261020-00e0000d
+P_KAT='2026-10-28T00:00:00Z' mk_prev "$ML"
+join_sess "s-$MU" "$ML"
+detect_case "17 빼기" "$MU" ''
+check "17: 끝난 런·종료 절을 채운 런·리뷰어 런은 후보에 오르지 않는다" "$(col "$OUT" 판정)/$(col "$OUT" 판정 3)/$(cands "$OUT")" \
+  "후보/2/$ML/최신/대기 $MU/-/대기 "
+
+# 의도 — A's intent verbatim picks A; an intent no candidate holds is a new run.
+detect_case "17 의도 A" "$MA" "$IA"
+check "17: A 의 의도를 축자로 넘기면 A 가 골라진다" "$(col "$OUT" 판정)/$(col "$OUT" 판정 3)" "진행 중/$MA"
+has "17: 의도로 고른 런의 고지는 「다시 <A>」 를 가리킨다" "$OUT" "인자 「다시 ${MA}」 로 부르세요"
+detect_case "17 의도 B" "$MA" "$IB" "$MB"
+check "17: B 의 의도를 축자로 넘기면 B 가 골라진다" "$(col "$OUT" 판정)/$(col "$OUT" 판정 3)" "재킥오프/$MB"
+detect_case "17 다른 의도" "$MA" '어느 런과도 다른 일을 한다'
+check "17: 어느 후보와도 다른 의도는 새 런이다" "$(col "$OUT" 판정)/$(col "$OUT" 판정 3)" "새 런/$MB"
+has "17: 새 런 고지는 끝나지 않은 다른 런의 id 를 든다" "$OUT" "이 세션의 끝나지 않은 다른 런($MA)과 다른 의도로 보고 새 런으로 시작합니다"
+has "17: 새 런 고지는 「다시 <런 id>」 를 가리킨다" "$OUT" "「다시 <런 id>」 로 부르세요"
+
+# 의도 동점 — a source left waiting and its later follow-up share one intent
+# byte for byte, so that intent matches both. The kickoff then asks, and calls
+# detect again with the chosen id alone: an id after the intent is not a run id
+# argument.
+MQA='20261020-00b1000a'; MQB='20261020-00b1000b'
+IQ='같은 의도를 이어받은 두 런'
+P_KAT='2026-10-30T00:00:00Z' P_INTENT="$IQ" mk_prev "$MQA"
+P_KAT='2026-10-31T00:00:00Z' P_INTENT="$IQ" mk_prev "$MQB"; fx_done
+join_sess "s-$MQA" "$MQB"
+detect_case "17 의도 동점" "$MQA" "$IQ"
+check "17: 두 후보와 축자로 같은 의도는 후보 2 다" "$(col "$OUT" 판정)/$(col "$OUT" 판정 3)/$(cands "$OUT")" \
+  "후보/2/$MQB/최신/끝남 $MQA/-/대기 "
+detect_case "17 의도 동점 뒤 고른 id" "$MQA" "$MQA"
+check "17: 의도 동점에서 고른 앞선 런의 id 만으로 다시 부르면 그 런의 진행 중이다" "$(col "$OUT" 판정)/$(col "$OUT" 판정 3)" "진행 중/$MQA"
+detect_case "17 의도 동점 뒤 고른 최신 id" "$MQA" "$MQB" "$MQB"
+check "17: 의도 동점에서 고른 최신 런의 id 만으로 다시 부르면 그 런의 재킥오프다" "$(col "$OUT" 판정)/$(col "$OUT" 판정 3)/$(col "$OUT" 판정 4)" "재킥오프/$MQB/$BASE"
+detect_case "17 의도 뒤 id" "$MQA" "$IQ $MQA"
+check "17: 의도 문면 뒤에 붙인 id 는 런 id 인자가 아니어서 인자 전체가 의도로 비교된다" "$(col "$OUT" 판정)/$(col "$OUT" 판정 3)" "새 런/$MQB"
+
+# The single-run session keeps its notice byte for byte.
+P_KAT='2026-10-29T00:00:00Z' mk_prev 20261020-00f0000a; fx_done
+out=$(rk_as s-20261020-00f0000a detect --arg '전혀 다른 일을 한다')
+check "17: 후보가 하나인 세션의 새 런 고지는 그대로다" "$(col "$out" 고지)" "이 세션이 연 런(20261020-00f0000a)과 다른 의도로 보고 새 런으로 시작합니다 — 이어받으려면 인자 없이 다시 부르세요"
 
 printf '\n%d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" -eq 0 ]

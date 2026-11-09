@@ -22,6 +22,13 @@
 #                      `--lane-root`. A session with no transcript is shown as
 #                      `기록 없음`, left out of the sums and not counted by
 #                      `--first`.
+#   idle sessions      a session whose transcript holds no test command and no
+#                      `git commit` call is shown with `제외` in the share
+#                      column, left out of the sums and not counted by
+#                      `--first`. Such a stage stopped before writing code —
+#                      on a halt record, or after producing only a plan — so
+#                      its time says nothing about how much of the work went
+#                      to tests.
 #
 # The lane root is REQUIRED and has NO default pointing at a real home
 # directory: with a default, a fixture test that forgot the argument would read
@@ -62,8 +69,8 @@
 # Output: a header, one row per session
 #   run  segment  session  stage_min  test_min  share  bg_launches  same_set_relaunch  unclosed
 # then two lines: `시험 몫 = <Σ test>/<Σ stage> = <percent>` and
-# `판정: 달성|미달|표본 부족`. Below 30% is 달성. Fewer sessions with a
-# transcript than `--first n` asked for is 표본 부족.
+# `판정: 달성|미달|표본 부족`. Below 30% is 달성. Fewer counted sessions
+# (with a transcript and not idle) than `--first n` asked for is 표본 부족.
 #
 # How the release check is run. The sessions live under the Claude
 # configuration home, which an unattended stage cannot read, so a person runs
@@ -262,7 +269,7 @@ events_of() {
 }
 
 # measure_events — reads the event stream, prints
-# stage_sec test_sec bg_launches same_set_relaunch unclosed
+# stage_sec test_sec bg_launches same_set_relaunch unclosed test_launches commits
 measure_events() {
   # The list goes through the environment: BSD awk refuses a newline inside a
   # `-v` value.
@@ -357,6 +364,7 @@ measure_events() {
         prevNorm = NORM; havePrev = 1; mod = 0
       } else if (cmd ~ /(^|[^A-Za-z0-9_-])git +commit([^A-Za-z0-9_-]|$)/) {
         mod = 1
+        commits++
       }
       next
     }
@@ -400,7 +408,7 @@ measure_events() {
         if (g <= 900) { stage += g; continue }
         for (j = 1; j <= nu; j++) if (US[j] <= ev[i - 1] && UF[j] >= ev[i]) { stage += g; break }
       }
-      printf "%d\t%d\t%d\t%d\t%d\n", stage, test, bg + 0, same + 0, unclosed + 0
+      printf "%d\t%d\t%d\t%d\t%d\t%d\t%d\n", stage, test, bg + 0, same + 0, unclosed + 0, nt + 0, commits + 0
     }
   '
 }
@@ -434,9 +442,14 @@ while IFS="$(printf '\t')" read -r start run_id _order seg sid lane; do
     continue
   fi
 
-  IFS="$(printf '\t')" read -r stage_s test_s bg same unclosed <<EOF
+  IFS="$(printf '\t')" read -r stage_s test_s bg same unclosed launches commits <<EOF
 $(events_of "$transcript" | measure_events)
 EOF
+  if (( launches == 0 && commits == 0 )); then
+    printf '%s\t%s\t%s\t%s\t%s\t제외\t%s\t%s\t%s\n' "$run_id" "$seg" "$sid" \
+      "$(minutes "$stage_s")" "$(minutes "$test_s")" "$bg" "$same" "$unclosed"
+    continue
+  fi
   printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$run_id" "$seg" "$sid" \
     "$(minutes "$stage_s")" "$(minutes "$test_s")" "$(percent "$test_s" "$stage_s")" \
     "$bg" "$same" "$unclosed"
