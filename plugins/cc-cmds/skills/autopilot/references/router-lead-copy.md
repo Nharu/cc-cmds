@@ -390,8 +390,8 @@ Segment planning starts only after the audit has ended as above, or straight aft
 
 The snapshot's `슬라이싱` field is the read: its branch (`미통치`, `선언통치`, `선언불완전`), the slice ids in declaration order, and each id's branch name, worktree path and base ref. A slice the planning rule below defers gets none of the three calls — no `git fetch` and no `git worktree add -b` either — until that rule plans it. **For each slice, in declaration order, three calls:**
 
-1. `gate.sh exec … --surface 읽기 -- git fetch origin` against the slice's target.
-2. `gate.sh exec … --surface 워크트리쓰기 -- git worktree add -b <슬라이싱 의 브랜치> <슬라이싱 의 워크트리> <슬라이싱 의 베이스>`. `<슬라이싱 의 베이스>` is the `베이스` of the slice's `슬라이싱` entry written verbatim — a remote-tracking ref such as `refs/remotes/origin/master` — and never a local branch name (`main`, `master`) or `HEAD` in its place; when call 1's fetch fails, call 2 still uses that same value. When the gate refuses call 2 because its start point is not the remote-tracking base, call 2 once more with the remote-tracking ref the refusal names.
+1. `gate.sh exec … --surface 읽기 -- git fetch origin` against the slice's target. When the slice's `슬라이싱` `베이스` begins with `refs/heads/`, that target has no remote: skip this call and fetch nothing.
+2. `gate.sh exec … --surface 워크트리쓰기 -- git worktree add -b <슬라이싱 의 브랜치> <슬라이싱 의 워크트리> <슬라이싱 의 베이스>`. `<슬라이싱 의 베이스>` is the `베이스` of the slice's `슬라이싱` entry written verbatim — a remote-tracking ref such as `refs/remotes/origin/master`, or `refs/heads/<base>` for a target with no remote — and never a local branch name (`main`, `master`) or `HEAD` in its place; when call 1's fetch fails, call 2 still uses that same value. When the gate refuses call 2 because its start point is not the base ref it expects, call 2 once more with the ref the refusal names.
 3. The plan row, which the gate fills from the frozen document rather than from this loop:
 
    ```
