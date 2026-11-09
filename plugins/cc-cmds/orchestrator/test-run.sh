@@ -5411,7 +5411,7 @@ mkdir -p "$NR25"
   && git commit -qm one && git branch -M main ) >/dev/null 2>&1
 NR25_CG=$(cd "$NR25" && git rev-parse --path-format=absolute --git-common-dir)
 check "원격 없는 픽스처 레포다" \
-  "$( cd "$NR25" && git remote | grep -c . )/$( cd "$NR25" && git rev-parse --abbrev-ref HEAD )" "0/main"
+  "$( cd "$NR25" && git remote get-url origin >/dev/null 2>&1 && printf 원격있음 || printf 원격없음 )/$( cd "$NR25" && git rev-parse --abbrev-ref HEAD )" "원격없음/main"
 ( MF_REPO="$NR25"; MF_CG="$NR25_CG"; write_manifest "$MF" "" "" "main" )
 MANIFEST="$MF"
 if ( check_base_branches ) >/dev/null 2>&1; then
@@ -5504,8 +5504,8 @@ fi
   && git checkout -q -b derived-only ) >/dev/null 2>&1
 # 전제가 실제로 섰는지 반증 가능하게 확인한다 — 위 체인은 출력을 버리므로 실패해도 조용하다.
 check "유도가 체크아웃된 이름으로 내려가는 상태다" \
-  "$( cd "$MF_REPO" && git rev-parse --abbrev-ref HEAD )/$( cd "$MF_REPO" && git rev-parse --verify --quiet refs/remotes/origin/HEAD >/dev/null 2>&1 && printf 있음 || printf 없음 )/$( cd "$MF_REPO" && git remote | grep -c . )/$( cd "$MF_REPO" && git rev-parse --verify --quiet refs/remotes/origin/derived-only >/dev/null 2>&1 && printf 있음 || printf 없음 )" \
-  "derived-only/없음/1/없음"
+  "$( cd "$MF_REPO" && git rev-parse --abbrev-ref HEAD )/$( cd "$MF_REPO" && git rev-parse --verify --quiet refs/remotes/origin/HEAD >/dev/null 2>&1 && printf 있음 || printf 없음 )/$( cd "$MF_REPO" && git remote get-url origin >/dev/null 2>&1 && printf 원격있음 || printf 원격없음 )/$( cd "$MF_REPO" && git rev-parse --verify --quiet refs/remotes/origin/derived-only >/dev/null 2>&1 && printf 있음 || printf 없음 )" \
+  "derived-only/없음/원격있음/없음"
 write_manifest "$MF" "" "" "(없음)"
 MANIFEST="$MF"
 # `RUN_DIR` 를 비워 부른다 — 동결된 사본이 있으면 유도 자체가 일어나지 않아 이 절이
