@@ -8997,7 +8997,9 @@ surface_of_brew() {
 # devicectl`, an `adb` with no serial or a non-emulator one, an `xcodebuild`
 # destination that is not a simulator, macOS or a generic platform, a `maestro`
 # with no device or another spelling, a `maestro` subcommand other than `test`,
-# and a `maestro` with `--host`, `--port` or an `@file` argument — stays
+# a `maestro test` option outside its known local list (the AI analysis upload
+# and the sharding options among them), and a `maestro` with `--host`,
+# `--port` or an `@file` argument — stays
 # `등급 미상`, so a person still
 # answers it: physical devices are outside what a `사전 인가` row may open.
 # Every `트리밖쓰기` form here lands in the daemon-like state every run on this
@@ -9210,6 +9212,40 @@ gate_maestro_subcommand() {
   done
 }
 
+gate_maestro_test_options_ok() {
+  # gate_maestro_test_options_ok <argv after `maestro`...> — 0 when every
+  # option after the `test` subcommand is a known local one of maestro 2.11's
+  # `maestro test` (a value option may take its value as the next word or
+  # after `=`), 1 on any other option, on `--` and on a value option with no
+  # value. `--analyze`, `--api-url` and `--api-key` send the test output and
+  # screenshots to a remote analysis API, and `-s`/`--shards`, `--shard-all`
+  # and `--shard-split` spread the run over connected devices the argv does not
+  # name, so none of them is in the list.
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --device|--udid) [ "$#" -ge 2 ] || return 1; shift 2 ;;
+      --device=*|--udid=*) shift ;;
+      *) shift; break ;;
+    esac
+  done
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --device|--udid|--config|--debug-output|-e|--env|--exclude-tags|\
+      --include-tags|--format|--output|-p|--platform|--test-output-dir|\
+      --test-suite-name|--screen-size)
+        [ "$#" -ge 2 ] || return 1; shift 2; continue ;;
+      --device=*|--udid=*|--config=*|--debug-output=*|-e=*|--env=*|\
+      --exclude-tags=*|--include-tags=*|--format=*|--output=*|-p=*|\
+      --platform=*|--test-output-dir=*|--test-suite-name=*|--screen-size=*|\
+      -c|--continuous|--flatten-debug-output|--headless|--ansi|--no-ansi|\
+      --color|--no-color|--reinstall-driver|--no-reinstall-driver) ;;
+      -*) return 1 ;;
+    esac
+    shift
+  done
+  return 0
+}
+
 surface_of_maestro() {
   # surface_of_maestro <argv after `maestro`...>. `--help`, alone or after one
   # subcommand, is a read. Every other form writes outside the tree only when
@@ -9219,7 +9255,10 @@ surface_of_maestro() {
   # `--device`/`--udid` option or its value: any other option before it, and
   # any other subcommand (`cloud`, `record`, `login`, `start-device`, `mcp`,
   # `studio` and the rest), is unknown, since those upload, sign in, serve or
-  # make a device no run prefix names. `--host`/`--port` anywhere point the
+  # make a device no run prefix names. After `test`, an option outside the
+  # known local list (`gate_maestro_test_options_ok`) is unknown, so the AI
+  # analysis upload (`--analyze`, `--api-url`, `--api-key`) and the sharding
+  # options stay with a person. `--host`/`--port` anywhere point the
   # driver at another machine's device, so they are unknown too, and so is an
   # `@file` argument: the CLI expands it into options this argv does not show.
   case "$#:${1:-}:${2:-}" in
@@ -9233,6 +9272,7 @@ surface_of_maestro() {
     esac
   done
   [ "$(gate_maestro_subcommand "$@")" = test ] || { printf '등급 미상'; return 0; }
+  gate_maestro_test_options_ok "$@" || { printf '등급 미상'; return 0; }
   local d n=0
   while IFS= read -r d; do
     [ -n "$d" ] || continue

@@ -52692,6 +52692,15 @@ graded_as '등급 미상'  '83v: 하위 명령 뒤에 --port 를 둔 maestro tes
 graded_as '등급 미상'  '83v: = 꼴 --host 를 둔 maestro test 는 미상이다' -- maestro --device emulator-5554 test --host=h flow.yaml
 graded_as '등급 미상'  '83v: 하위 명령 앞에 다른 옵션을 둔 maestro test 는 미상이다' -- maestro -p android --device emulator-5554 test flow.yaml
 graded_as '등급 미상'  '83v: @파일 인자를 둔 maestro test 는 미상이다' -- maestro --device emulator-5554 test @opts flow.yaml
+# test 뒤의 옵션은 알려진 로컬 옵션만 연다. 시험 출력을 원격 분석 API 로 보내는 옵션과
+# 이름 붙지 않은 연결 기기로 퍼지는 샤드 옵션, 모르는 옵션은 기기를 지정해도 미상이다.
+for x83o in --analyze --api-url=https://h --api-key=k --shard-all=2 --shard-split=2 --shards=2 --unknown-opt --; do
+  graded_as '등급 미상' "83v: test 뒤에 $x83o 를 둔 maestro test 는 미상이다" -- maestro --device emulator-5554 test "$x83o" flow.yaml
+done
+graded_as '등급 미상'  '83v: 공백 꼴 --api-url 을 둔 maestro test 는 미상이다' -- maestro test --device emulator-5554 --api-url https://h flow.yaml
+graded_as '등급 미상'  '83v: 공백 꼴 -s 를 둔 maestro test 는 미상이다' -- maestro --device emulator-5554 test -s 2 flow.yaml
+graded_as '등급 미상'  '83v: 값이 빠진 로컬 값 옵션은 미상이다' -- maestro --device emulator-5554 test flow.yaml --config
+graded_as '트리밖쓰기' '83v: 로컬 옵션만 둔 maestro test 는 트리밖쓰기다' -- maestro --device emulator-5554 test --format JUNIT --output=r.xml -e K=V --no-ansi --debug-output d flow.yaml
 # 프로비저닝 플래그는 Apple 개발자 계정에 인증서·프로파일·기기를 만드는 외부 쓰기라
 # 무해 플래그 목록에 없고, 그 형태는 미상으로 남는다.
 graded_as '등급 미상'  '83v: -allowProvisioningUpdates 를 단 xcodebuild build 는 미상이다' -- xcodebuild build -scheme X -destination generic/platform=iOS -allowProvisioningUpdates
