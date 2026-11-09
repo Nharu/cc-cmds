@@ -9194,15 +9194,42 @@ gate_maestro_devices() {
   done
 }
 
+gate_maestro_subcommand() {
+  # gate_maestro_subcommand <argv after `maestro`...> — prints the first word
+  # that is neither a root `--device`/`--udid` option nor its value, or
+  # nothing when another option comes first or no such word is left.
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --device|--udid) [ "$#" -ge 2 ] || return 0; shift 2 ;;
+      --device=*|--udid=*) shift ;;
+      -*) return 0 ;;
+      *) printf '%s' "$1"; return 0 ;;
+    esac
+  done
+}
+
 surface_of_maestro() {
   # surface_of_maestro <argv after `maestro`...>. `--help`, alone or after one
   # subcommand, is a read. Every other form writes outside the tree only when
-  # it names its device and every device it names is `emulator-<port>` or a
-  # simulator UDID; with no device or another spelling it is unknown.
+  # its subcommand is `test`, it names its device and every device it names is
+  # `emulator-<port>` or a simulator UDID; with no device or another spelling
+  # it is unknown. The subcommand is the first word that is not a root
+  # `--device`/`--udid` option or its value: any other option before it, and
+  # any other subcommand (`cloud`, `record`, `login`, `start-device`, `mcp`,
+  # `studio` and the rest), is unknown, since those upload, sign in, serve or
+  # make a device no run prefix names. `--host`/`--port` anywhere point the
+  # driver at another machine's device, so they are unknown too.
   case "$#:${1:-}:${2:-}" in
     1:--help:*) printf '읽기'; return 0 ;;
     2:*:--help) case "$1" in -*) ;; *) printf '읽기'; return 0 ;; esac ;;
   esac
+  local a
+  for a in "$@"; do
+    case "$a" in
+      --host|--host=*|--port|--port=*) printf '등급 미상'; return 0 ;;
+    esac
+  done
+  [ "$(gate_maestro_subcommand "$@")" = test ] || { printf '등급 미상'; return 0; }
   local d n=0
   while IFS= read -r d; do
     [ -n "$d" ] || continue
