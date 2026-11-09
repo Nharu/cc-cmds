@@ -31196,6 +31196,69 @@ sa_fulfil "$OID20B"
 check "20(ii): M 이 로컬 베이스에 들어갔는데 cycle 행이 없으면 거절된다" "$rc" "2"
 check "20(ii): 그 거절이 원장을 늘리지 않는다" "$(sa_rows)" "$nb"
 
+# --- 15p. 원격이 없는 대상의 세그먼트는 로컬 베이스 브랜치 ref 에서 끊긴다 -------
+# --- section: 15p | group: sa | covers: exec, snapshot, act, gate_review_line | anchors: 15p: 원격 없는 대상의 스냅숏 베이스는 로컬 브랜치 ref 다, 15p: 원격 추적 ref 시작점은 거부되고 아무것도 만들어지지 않는다, 15p: 그 거부는 로컬 브랜치 ref 를 기대 시작점으로 이름 댄다, 15p: 로컬 브랜치 ref 시작점은 통과하고 워크트리가 생긴다, 15p: 계획 행이 통과한다, 15p: 세그먼트 워크트리의 커밋이 통과한다, 15p: review-line 의 --base-sha 는 워크트리 HEAD 와 로컬 베이스의 merge-base 다 ---
+#
+# A target with no `origin` has no remote-tracking base to cut from and no pull
+# request a review can find its base from. The snapshot names the local branch
+# ref instead, the gate's worktree check expects that ref and refuses the
+# remote-tracking one, and the review line carries the base the gate derived
+# from the segment worktree. The fixture is a repository of its own whose remote
+# is removed after it is built, on a plan whose one implementation step is the
+# run's one undeclared segment. `sa_new` clears the cutpoint and the plan, so
+# the manifest is written again with both once the remote is gone.
+sa_new '원격 없는 세그먼트' ''
+( cd "$SA_REPO" && git remote remove origin ) >/dev/null 2>&1
+SA_CUT=커밋
+SA_PLAN='{ "steps": [ { "id": "S1", "skill": "implement", "summary": "구현", "depends_on": [] }, { "id": "V2", "skill": "review", "summary": "리뷰", "depends_on": ["S1"] } ] }'
+sa_manifest ''
+WT15P="$(dirname "$SA_WT")/$(basename "$SA_WT")-run-$SA_ID-S1"
+BR15P="seg/$SA_ID-S1"
+snap15p=$( cd "$SA_WT" && gate_inproc snapshot --manifest "$SA_MANIFEST" 2>/dev/null )
+check "15p: 원격 없는 대상의 스냅숏 베이스는 로컬 브랜치 ref 다" \
+  "$(printf '%s' "$snap15p" | jq -r '.["슬라이싱"]["세그먼트"][0] | "\(.id)|\(.["베이스"])|\(.["워크트리"])"')" \
+  "S1|refs/heads/main|$WT15P"
+p15_add() {  # p15_add <git worktree add args...> — the router's call 2 through the gate; sets rc, msg
+  sag exec --manifest "$SA_MANIFEST" --target main --segment - --cutpoint 커밋 --surface 워크트리쓰기 \
+    --snapshot-digest "$(SAH)" --rationale x -- git worktree add "$@"
+}
+p15_state() {  # p15_state — whether the worktree or the branch was made
+  printf '%s/%s' \
+    "$( [ -e "$WT15P" ] && printf 워크트리 || printf - )" \
+    "$( cd "$SA_WT" && git rev-parse --verify --quiet "refs/heads/$BR15P" >/dev/null && printf 브랜치 || printf - )"
+}
+p15_add -b "$BR15P" "$WT15P" refs/remotes/origin/main
+check "15p: 원격 추적 ref 시작점은 거부되고 아무것도 만들어지지 않는다" "$rc/$(p15_state)" "2/-/-"
+case "$msg" in
+  *"기대 시작점: refs/heads/main"*) ok "15p: 그 거부는 로컬 브랜치 ref 를 기대 시작점으로 이름 댄다" ;;
+  *) bad "15p: 그 거부는 로컬 브랜치 ref 를 기대 시작점으로 이름 댄다" "$msg" ;;
+esac
+p15_add -b "$BR15P" "$WT15P" refs/heads/main
+check "15p: 로컬 브랜치 ref 시작점은 통과하고 워크트리가 생긴다" \
+  "$rc/$(p15_state)/$( cd "$WT15P" 2>/dev/null && git rev-parse HEAD )" \
+  "0/워크트리/브랜치/$( cd "$SA_WT" && git rev-parse refs/heads/main )"
+[ "$rc" = 0 ] || bad "15p 로컬 브랜치 ref 통과 문면" "$msg"
+sag act --manifest "$SA_MANIFEST" --kind segment --target main --segment S1 --cutpoint 커밋 \
+  --surface 읽기 --snapshot-digest "$(SAH)" --rationale x --from-declaration \
+  -- 상태=계획됨 "워크트리=$WT15P" "브랜치=$BR15P"
+check "15p: 계획 행이 통과한다" "$rc" "0"
+[ "$rc" = 0 ] || bad "15p 계획 행 문면" "$msg"
+( cd "$WT15P" && printf 'p\n' > p15.txt && git add p15.txt ) >/dev/null 2>&1
+sag exec --manifest "$SA_MANIFEST" --target main --segment S1 --cutpoint 커밋 --surface 워크트리쓰기 \
+  --snapshot-digest "$(SAH)" --rationale x -- git commit -qm 작업-15p
+check "15p: 세그먼트 워크트리의 커밋이 통과한다" \
+  "$rc/$( cd "$WT15P" && git log -1 --format=%s )" "0/작업-15p"
+[ "$rc" = 0 ] || bad "15p 커밋 문면" "$msg"
+mb15p=$( cd "$WT15P" && git merge-base HEAD refs/heads/main )
+sag review-line --manifest "$SA_MANIFEST" --segment S1
+case "$rc|$msg" in
+  "0|/cc-cmds:review-unattended $BR15P "*" --base-sha $mb15p "*)
+    ok "15p: review-line 의 --base-sha 는 워크트리 HEAD 와 로컬 베이스의 merge-base 다" ;;
+  *) bad "15p: review-line 의 --base-sha 는 워크트리 HEAD 와 로컬 베이스의 merge-base 다" "rc=$rc $msg (기대 base $mb15p)" ;;
+esac
+( cd "$SA_WT" && git worktree remove --force "$WT15P" && git branch -D "$BR15P" ) >/dev/null 2>&1 || true
+SA_CUT=""; SA_PLAN=""
+
 # --- 35-21. fetch 는 성공했는데 베이스의 원격 추적 ref 가 없으면 거절이다 -------
 # --- section: 35-21 | group: sa | covers: act | anchors: 21: 머지가 통과해 의무를 남긴다 ---
 #
