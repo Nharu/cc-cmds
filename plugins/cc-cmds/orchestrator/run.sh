@@ -7653,6 +7653,13 @@ stage_model_of() {
     esac
     return 0
   fi
+  # One dispatch carrying out a person's `큰 문맥으로 재파견` answer to a size
+  # record runs on the large-context window; the gate sets the switch in that
+  # act's own process only, so no other dispatch inherits it.
+  if [ "${CC_ORCH_LARGE_CONTEXT_ONCE:-}" = "1" ]; then
+    printf 'opus[1m]'
+    return 0
+  fi
   printf 'opus'
 }
 
