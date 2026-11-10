@@ -30988,7 +30988,7 @@ check "20(ii): M 이 로컬 베이스에 들어갔는데 cycle 행이 없으면 
 check "20(ii): 그 거절이 원장을 늘리지 않는다" "$(sa_rows)" "$nb"
 
 # --- 15p. 원격이 없는 대상의 세그먼트는 로컬 베이스 브랜치 ref 에서 끊긴다 -------
-# --- section: 15p | group: sa | covers: exec, snapshot, act, gate_review_line | anchors: 15p: 원격 없는 대상의 스냅숏 베이스는 로컬 브랜치 ref 다, 15p: 원격 추적 ref 시작점은 거부되고 아무것도 만들어지지 않는다, 15p: 그 거부는 로컬 브랜치 ref 를 기대 시작점으로 이름 댄다, 15p: 새 브랜치 없이 베이스 브랜치 자체를 체크아웃하는 시작은 거부되고 아무것도 만들어지지 않는다, 15p: 그 거부는 베이스 브랜치 자체의 체크아웃을 이유로 댄다, 15p: 베이스 브랜치 이름을 -B 로 주는 시작은 거부되고 아무것도 만들어지지 않는다, 15p: 대소문자만 다른 베이스 브랜치 이름의 시작은 거부되고 아무것도 만들어지지 않는다, 15p: 로컬 브랜치 ref 시작점은 통과하고 워크트리가 생긴다, 15p: 계획 행이 통과한다, 15p: 세그먼트 워크트리의 커밋이 통과한다, 15p: 런 도중 원격을 달아도 원격 판정은 런의 첫 판정 그대로다, 15p: review-line 의 --base-sha 는 워크트리 HEAD 와 로컬 베이스의 merge-base 다, 15p: 첫 게이트 진입 뒤 origin 이름을 바꿔도 스냅숏 베이스는 원격 추적 ref 다 ---
+# --- section: 15p | group: sa | covers: exec, snapshot, act, gate_review_line | anchors: 15p: 원격 없는 대상의 스냅숏 베이스는 로컬 브랜치 ref 다, 15p: 원격 추적 ref 시작점은 거부되고 아무것도 만들어지지 않는다, 15p: 그 거부는 로컬 브랜치 ref 를 기대 시작점으로 이름 댄다, 15p: 새 브랜치 없이 베이스 브랜치 자체를 체크아웃하는 시작은 거부되고 아무것도 만들어지지 않는다, 15p: 그 거부는 베이스 브랜치 자체의 체크아웃을 이유로 댄다, 15p: 베이스 브랜치 이름을 -B 로 주는 시작은 거부되고 아무것도 만들어지지 않는다, 15p: 대소문자만 다른 베이스 브랜치 이름의 시작은 거부되고 아무것도 만들어지지 않는다, 15p: 묶은 짧은 옵션 -qB 로 베이스 브랜치를 주는 시작은 거부되고 베이스가 그대로다, 15p: 그 거부는 알아보지 못한 옵션 낱말을 이름 댄다, 15p: 줄인 긴 옵션 --reas 를 쓴 베이스 브랜치 체크아웃은 거부되고 아무것도 만들어지지 않는다, 15p: 메인 워크트리 기준 상대 경로로 쓴 베이스 브랜치 체크아웃은 거부되고 아무것도 만들어지지 않는다, 15p: // 와 /./ 가 섞인 경로로 쓴 베이스 브랜치 체크아웃은 거부되고 아무것도 만들어지지 않는다, 15p: 로컬 브랜치 ref 시작점은 통과하고 워크트리가 생긴다, 15p: 계획 행이 통과한다, 15p: 세그먼트 워크트리의 커밋이 통과한다, 15p: 세그먼트 워크트리가 베이스로 옮겨 간 뒤의 커밋은 거부되고 베이스가 그대로다, 15p: 그 거부는 HEAD 가 베이스 브랜치임을 이유로 댄다, 15p: 세그먼트 워크트리에서 베이스 브랜치를 이름으로 강제 이동하는 행위는 거부되고 베이스가 그대로다, 15p: 런 도중 원격을 달아도 원격 판정은 런의 첫 판정 그대로다, 15p: review-line 의 --base-sha 는 워크트리 HEAD 와 로컬 베이스의 merge-base 다, 15p: 첫 게이트 진입 뒤 origin 이름을 바꿔도 스냅숏 베이스는 원격 추적 ref 다 ---
 #
 # A target with no `origin` has no remote-tracking base to cut from and no pull
 # request a review can find its base from. The snapshot names the local branch
@@ -31046,6 +31046,27 @@ check "15p: 베이스 브랜치 이름을 -B 로 주는 시작은 거부되고 �
 p15_add "$WT15P" Main
 check "15p: 대소문자만 다른 베이스 브랜치 이름의 시작은 거부되고 아무것도 만들어지지 않는다" \
   "$rc/$(p15_state)" "2/-/-"
+# Spellings git reads one way and a word-by-word scan another: a short-option
+# bundle carrying `-B`, a long option git expands from its prefix, a path
+# relative to the main worktree and a path with `//` in it. Each reached the
+# base branch with exit 0 in git while the scan read another path.
+main15p=$( cd "$SA_WT" && git rev-parse refs/heads/main )
+p15_add -qB main "$WT15P" refs/heads/main
+check "15p: 묶은 짧은 옵션 -qB 로 베이스 브랜치를 주는 시작은 거부되고 베이스가 그대로다" \
+  "$rc/$(p15_state)/$( cd "$SA_WT" && git rev-parse refs/heads/main )" "2/-/-/$main15p"
+case "$msg" in
+  *"받은 옵션 낱말: -qB"*) ok "15p: 그 거부는 알아보지 못한 옵션 낱말을 이름 댄다" ;;
+  *) bad "15p: 그 거부는 알아보지 못한 옵션 낱말을 이름 댄다" "$msg" ;;
+esac
+p15_add -f --lock --reas x "$WT15P" main
+check "15p: 줄인 긴 옵션 --reas 를 쓴 베이스 브랜치 체크아웃은 거부되고 아무것도 만들어지지 않는다" \
+  "$rc/$(p15_state)" "2/-/-"
+p15_add -f "../$(basename "$WT15P")" main
+check "15p: 메인 워크트리 기준 상대 경로로 쓴 베이스 브랜치 체크아웃은 거부되고 아무것도 만들어지지 않는다" \
+  "$rc/$(p15_state)" "2/-/-"
+p15_add -f "$(dirname "$WT15P")//./$(basename "$WT15P")" main
+check "15p: // 와 /./ 가 섞인 경로로 쓴 베이스 브랜치 체크아웃은 거부되고 아무것도 만들어지지 않는다" \
+  "$rc/$(p15_state)" "2/-/-"
 ( cd "$SA_WT" && git checkout -q main && git branch -D p15-side ) >/dev/null 2>&1
 p15_add -b "$BR15P" "$WT15P" refs/heads/main
 check "15p: 로컬 브랜치 ref 시작점은 통과하고 워크트리가 생긴다" \
@@ -31063,6 +31084,26 @@ sag exec --manifest "$SA_MANIFEST" --target main --segment S1 --cutpoint 커밋 
 check "15p: 세그먼트 워크트리의 커밋이 통과한다" \
   "$rc/$( cd "$WT15P" && git log -1 --format=%s )" "0/작업-15p"
 [ "$rc" = 0 ] || bad "15p 커밋 문면" "$msg"
+# A worktree made right can still be moved onto the base afterwards: git lets
+# `--ignore-other-worktrees` check out the branch the main worktree holds. The
+# switch is not refused, so the stage can switch back; the commit on the base
+# and the forced move of the base by name are.
+main15p=$( cd "$SA_WT" && git rev-parse refs/heads/main )
+( cd "$WT15P" && git switch -q --ignore-other-worktrees main && printf 'q\n' > p15b.txt && git add p15b.txt ) >/dev/null 2>&1
+sag exec --manifest "$SA_MANIFEST" --target main --segment S1 --cutpoint 커밋 --surface 워크트리쓰기 \
+  --snapshot-digest "$(SAH)" --rationale x -- git commit -qm 베이스-위-15p
+check "15p: 세그먼트 워크트리가 베이스로 옮겨 간 뒤의 커밋은 거부되고 베이스가 그대로다" \
+  "$rc/$( cd "$SA_WT" && git rev-parse refs/heads/main )" "2/$main15p"
+case "$msg" in
+  *"HEAD 가 베이스 브랜치를 가리키는"*) ok "15p: 그 거부는 HEAD 가 베이스 브랜치임을 이유로 댄다" ;;
+  *) bad "15p: 그 거부는 HEAD 가 베이스 브랜치임을 이유로 댄다" "$msg" ;;
+esac
+( cd "$WT15P" && git reset -q && rm -f p15b.txt && git switch -q "$BR15P" ) >/dev/null 2>&1
+sag exec --manifest "$SA_MANIFEST" --target main --segment S1 --cutpoint 커밋 --surface 워크트리쓰기 \
+  --snapshot-digest "$(SAH)" --rationale x -- git branch -f main HEAD
+check "15p: 세그먼트 워크트리에서 베이스 브랜치를 이름으로 강제 이동하는 행위는 거부되고 베이스가 그대로다" \
+  "$rc/$( cd "$SA_WT" && git rev-parse refs/heads/main )/$( cd "$WT15P" && git rev-parse --abbrev-ref HEAD )" \
+  "2/$main15p/$BR15P"
 mb15p=$( cd "$WT15P" && git merge-base HEAD refs/heads/main )
 # The remote judgement was frozen by the acts above, so giving the repository an
 # `origin` now must not move the review line to the remote-tracking path — the

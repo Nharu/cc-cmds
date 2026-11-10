@@ -3250,6 +3250,16 @@ gate_worktree_add_base_mismatch() {
   # base branch only in letter case, which a case-insensitive file system
   # resolves to the base's own ref file. On a target with `origin` none of these
   # arms runs, so its accepted set is what it was.
+  #
+  # ON A TARGET WITH NO `origin` THE SCAN FAILS CLOSED. The scan knows git
+  # worktree add's own option words one by one; a word it does not know — a
+  # bundle such as `-qB`, an abbreviation such as `--reas` that git expands —
+  # would push an option's value into the path slot, the path would fall
+  # outside the prefix and the call would pass unread. On such a target any
+  # `git worktree add` carrying an unknown option word is refused, whatever its
+  # path. Its path is also compared after `..`, `//` and `/./` are folded
+  # physically and letter case is folded, so `../<segment worktree>` typed from
+  # the main worktree is read like the absolute spelling.
   local alias="$1" cmd
   shift
   [ "$#" -ge 1 ] || return 0
@@ -3260,7 +3270,7 @@ gate_worktree_add_base_mismatch() {
   [ "$GATE_GIT_SUB" = worktree ] || return 0
   local -a rest=("${@:$((GATE_GIT_SUBIDX + 1))}")
   [ "${rest[0]:-}" = add ] || return 0
-  local dir="${GATE_ACT_CWD:-$PWD}" i=0 n="${#rest[@]}" w newb=0 det=0 endopt=0 nbname=""
+  local dir="${GATE_ACT_CWD:-$PWD}" i=0 n="${#rest[@]}" w newb=0 det=0 endopt=0 nbname="" unk=""
   local -a pos=()
   # `-C <dir>` moves where git resolves the path and the start point.
   while [ "$i" -lt "${#GATE_GIT_LOCFLAGS[@]}" ]; do
@@ -3282,20 +3292,42 @@ gate_worktree_add_base_mismatch() {
       -b?*|-B?*) newb=1; nbname="${w#-?}" ;;
       # git worktree's own flag, quoted: test-run.sh's scan for a session
       # detach mode reads an unquoted case arm of this word as one.
-      "--detach") det=1 ;;
+      "--detach"|-d) det=1 ;;
+      --no-detach) det=0 ;;
       --reason) i=$((i + 1)) ;;
-      -*) : ;;
+      -f|--force|--no-force|--checkout|--no-checkout|--lock|--no-lock|--reason=*|--no-reason) : ;;
+      -q|--quiet|--no-quiet|--track|--no-track|--guess-remote|--no-guess-remote) : ;;
+      --orphan|--no-orphan|--relative-paths|--no-relative-paths) : ;;
+      -*) [ -n "$unk" ] || unk="$w" ;;
       *) pos+=("$w") ;;
     esac
     i=$((i + 1))
   done
-  [ "${#pos[@]}" -ge 1 ] || return 0
-  local path="${pos[0]}" start="${pos[1]:-}" prefix br want got
-  case "$path" in /*) : ;; *) path="$dir/$path" ;; esac
-  while [ "${#path}" -gt 1 ] && [ "${path%/}" != "$path" ]; do path="${path%/}"; done
+  local prefix br want got lwant
   prefix=$(gate_decl_worktree "$alias" "") || return 0
   [ -n "$prefix" ] || return 0
-  case "$path" in "$prefix"*) : ;; *) return 0 ;; esac
+  lwant=$(base_ref "$alias" 2>/dev/null || true)
+  if [ -n "$unk" ]; then
+    case "$lwant" in
+      refs/heads/*)
+        printf '받은 옵션 낱말: %s, 기대 시작점: %s — 원격 없는 대상에서는 git worktree add 의 옵션을 묶거나 줄이지 않고 하나씩 온전히 적어야 시작점을 읽을 수 있습니다' "$unk" "$lwant"
+        return 0 ;;
+    esac
+  fi
+  [ "${#pos[@]}" -ge 1 ] || return 0
+  local path="${pos[0]}" start="${pos[1]:-}" pphys pfxphys
+  case "$path" in /*) : ;; *) path="$dir/$path" ;; esac
+  while [ "${#path}" -gt 1 ] && [ "${path%/}" != "$path" ]; do path="${path%/}"; done
+  case "$path" in
+    "$prefix"*) : ;;
+    *)
+      case "$lwant" in refs/heads/*) : ;; *) return 0 ;; esac
+      pphys=$(gate_real_prefix "$(gate_physical_dotdot "$path" /)")
+      pfxphys=$(gate_real_prefix "$prefix")
+      pphys=$(printf '%s' "$pphys" | tr '[:upper:]' '[:lower:]')
+      pfxphys=$(printf '%s' "$pfxphys" | tr '[:upper:]' '[:lower:]')
+      case "$pphys" in "$pfxphys"*) path="$prefix${pphys#"$pfxphys"}" ;; *) return 0 ;; esac ;;
+  esac
   # A REVIEW-ONLY SEGMENT'S WORKTREE IS NOT CUT FROM THE BASE. On a reviewer
   # run the `P<k>` worktree shares this prefix, but it is the pull request's
   # head checked out detached for reading, not a branch this run builds on:
@@ -3316,7 +3348,7 @@ gate_worktree_add_base_mismatch() {
     printf '받은 시작점: %s, 기대 시작점: 해소되지 않음 — 대상 %s 의 베이스 브랜치를 정하지 못했습니다' "${start:-없음}" "$alias"
     return 0
   fi
-  want=$(base_ref "$alias" 2>/dev/null || true)
+  want="$lwant"
   [ -n "$want" ] || want="refs/remotes/origin/$br"
   # The local-base arms compare names with letter case folded: on a
   # case-insensitive file system `Main` opens the loose ref file of `main`.
@@ -3349,6 +3381,149 @@ gate_worktree_add_base_mismatch() {
     return 0
   fi
   printf '받은 시작점: %s (%s), 기대 시작점: %s' "$start" "${got:-이름 없는 커밋}" "$want"
+  return 0
+}
+
+gate_word_names_base() {
+  # gate_word_names_base <word> <base, lower case> — true when the word is a
+  # spelling of the base branch: a leading `+`, `refs/heads/` and `heads/` are
+  # dropped and letter case is folded, as `gate_push_dst_is_base` and the
+  # case-insensitive arms of `gate_worktree_add_base_mismatch` read it.
+  local d="${1#+}"
+  d="${d#refs/heads/}"
+  d="${d#heads/}"
+  d=$(printf '%s' "$d" | tr '[:upper:]' '[:lower:]')
+  [ -n "$2" ] && [ "$d" = "$2" ]
+}
+
+gate_segment_base_move() {
+  # gate_segment_base_move <alias> <argv...> — prints why a git act run in one
+  # of this run's segment worktrees would move the base branch of a target with
+  # no `origin`, nothing when it would not or when the act is no such call. The
+  # caller refuses with `GATE_EXIT_VOCAB` on output.
+  #
+  # THE START CHECK GUARDS ONE MOMENT AND THIS ONE GUARDS THE REST. On such a
+  # target the local base branch is where integration lands, and a segment
+  # worktree made correctly with `-b <segment branch>` can still be moved onto
+  # it later: a plain `git switch <base>` succeeds when the main worktree holds
+  # another branch, and `--ignore-other-worktrees` succeeds when it does not.
+  # The switch itself is not refused, so the stage can switch back; what is
+  # refused is every act that moves a branch while HEAD names the base
+  # (`commit`, `merge`, `rebase`, `cherry-pick`, `revert`, `am`, `pull`,
+  # `reset`), and from any HEAD the acts that move or delete the base by name:
+  # `branch` with a force, move, copy or delete option, `checkout -B` /
+  # `switch -C`, `rebase <upstream> <base>`, `update-ref`, and a `fetch` or
+  # `push` refspec whose destination is the base. The worktree is the act's
+  # directory after `-C`, folded physically and by letter case and compared
+  # with the prefix `gate_decl_worktree` gives; the main worktree is not under
+  # it, so the landing merge there is not read. On a target with `origin` this
+  # returns at once.
+  local alias="$1" cmd
+  shift
+  [ "$#" -ge 1 ] || return 0
+  cmd="${1##*/}"
+  [ "$cmd" = git ] || return 0
+  shift
+  gate_git_subcommand "$@" >/dev/null
+  case "$GATE_GIT_SUB" in
+    branch|checkout|switch|rebase|update-ref|fetch|push) : ;;
+    commit|merge|cherry-pick|revert|am|pull|reset) : ;;
+    *) return 0 ;;
+  esac
+  local want br brf prefix dir="${GATE_ACT_CWD:-$PWD}" i=0 p pfx w head
+  want=$(base_ref "$alias" 2>/dev/null || true)
+  case "$want" in refs/heads/*) : ;; *) return 0 ;; esac
+  br="${want#refs/heads/}"
+  brf=$(printf '%s' "$br" | tr '[:upper:]' '[:lower:]')
+  prefix=$(gate_decl_worktree "$alias" "") || return 0
+  [ -n "$prefix" ] || return 0
+  while [ "$i" -lt "${#GATE_GIT_LOCFLAGS[@]}" ]; do
+    if [ "${GATE_GIT_LOCFLAGS[$i]}" = -C ]; then
+      case "${GATE_GIT_LOCFLAGS[$((i + 1))]}" in
+        /*) dir="${GATE_GIT_LOCFLAGS[$((i + 1))]}" ;;
+        *)  dir="$dir/${GATE_GIT_LOCFLAGS[$((i + 1))]}" ;;
+      esac
+    fi
+    i=$((i + 2))
+  done
+  p=$(gate_real_prefix "$(gate_physical_dotdot "$dir" /)" | tr '[:upper:]' '[:lower:]')
+  pfx=$(gate_real_prefix "$prefix" | tr '[:upper:]' '[:lower:]')
+  case "$p" in "$pfx"?*) : ;; *) return 0 ;; esac
+  # Which word names the moved branch differs per subcommand, so a start
+  # point or an upstream that names the base (`git rebase <base>`,
+  # `git switch -C <segment branch> <base>`) is not read as moving it.
+  local -a rest=("${@:$((GATE_GIT_SUBIDX + 1))}") pos=()
+  local named=0 force=0 movey=0 k=0
+  [ "${#rest[@]}" -ge 1 ] || rest=("")
+  case "$GATE_GIT_SUB" in
+    branch)
+      for w in "${rest[@]}"; do
+        case "$w" in
+          --force) force=1 ;;
+          --move|--copy|--delete) movey=1 ;;
+          --*) : ;;
+          -*)
+            case "$w" in *f*) force=1 ;; esac
+            case "$w" in *[mMcCdD]*) movey=1 ;; esac ;;
+          '') : ;;
+          *) pos+=("$w") ;;
+        esac
+      done
+      if [ "$force" = 1 ] && [ "${#pos[@]}" -ge 1 ] && gate_word_names_base "${pos[0]}" "$brf"; then named=1; fi
+      if [ "$movey" = 1 ] && [ "${#pos[@]}" -ge 1 ]; then
+        for w in "${pos[@]}"; do ! gate_word_names_base "$w" "$brf" || named=1; done
+      fi ;;
+    checkout|switch)
+      while [ "$k" -lt "${#rest[@]}" ]; do
+        w="${rest[$k]}"
+        case "$w" in
+          --) break ;;
+          --force-create=*) ! gate_word_names_base "${w#*=}" "$brf" || named=1 ;;
+          --force-create) ! gate_word_names_base "${rest[$((k + 1))]:-}" "$brf" || named=1; k=$((k + 1)) ;;
+          --*) : ;;
+          -*[BC]*)
+            if [ -n "${w#*[BC]}" ]; then
+              ! gate_word_names_base "${w#*[BC]}" "$brf" || named=1
+            else
+              ! gate_word_names_base "${rest[$((k + 1))]:-}" "$brf" || named=1; k=$((k + 1))
+            fi ;;
+        esac
+        k=$((k + 1))
+      done ;;
+    rebase)
+      while [ "$k" -lt "${#rest[@]}" ]; do
+        w="${rest[$k]}"
+        case "$w" in
+          --onto|--strategy|--strategy-option|--exec|-s|-X|-x) k=$((k + 1)) ;;
+          -*) : ;;
+          *) pos+=("$w") ;;
+        esac
+        k=$((k + 1))
+      done
+      if [ "${#pos[@]}" -ge 2 ] && gate_word_names_base "${pos[1]}" "$brf"; then named=1; fi ;;
+    update-ref)
+      for w in "${rest[@]}"; do
+        case "$w" in -*) : ;; *) pos+=("$w") ;; esac
+      done
+      if [ "${#pos[@]}" -ge 1 ] && gate_word_names_base "${pos[0]}" "$brf"; then named=1; fi ;;
+    fetch|push)
+      for w in "${rest[@]}"; do
+        case "$w" in -*) : ;; *:*) ! gate_word_names_base "${w##*:}" "$brf" || named=1 ;; esac
+      done ;;
+  esac
+  if [ "$named" = 1 ]; then
+    printf '받은 행위: git %s, 베이스 브랜치: %s — 세그먼트 워크트리에서 베이스 브랜치를 이름으로 옮기거나 지우는 행위는 리뷰 전에 사람의 베이스 브랜치를 바꿉니다' "$GATE_GIT_SUB" "$want"
+    return 0
+  fi
+  case "$GATE_GIT_SUB" in
+    commit|merge|rebase|cherry-pick|revert|am|pull|reset) : ;;
+    *) return 0 ;;
+  esac
+  head=$(cd "$dir" 2>/dev/null && git symbolic-ref -q HEAD 2>/dev/null) || head=""
+  [ -n "$head" ] || return 0
+  head=$(printf '%s' "$head" | tr '[:upper:]' '[:lower:]')
+  [ "$head" = "refs/heads/$brf" ] || return 0
+  printf '받은 행위: git %s, 세그먼트 워크트리의 HEAD: %s — HEAD 가 베이스 브랜치를 가리키는 동안의 커밋·기록 행위는 리뷰 전에 사람의 베이스 브랜치를 옮깁니다' "$GATE_GIT_SUB" "$want"
   return 0
 }
 
@@ -48151,6 +48326,14 @@ gate_verb_act() {
           warn "이 런의 세그먼트 워크트리 경로로 가는 git worktree add 의 시작점이 원격 추적 베이스가 아닙니다 — ${_wtb}"
           warn "스냅숏 \`슬라이싱\` 의 \`베이스\` 값으로 다시 부릅니다 — 로컬 브랜치 이름이나 HEAD 가 아니라 원격 추적 ref 를 시작점으로 적습니다" ;;
       esac
+      exit "$GATE_EXIT_VOCAB"
+    fi
+    # A SEGMENT WORKTREE OF A TARGET WITH NO `origin` STAYS OFF THE BASE after
+    # it is made. See `gate_segment_base_move`.
+    _wtb=$(gate_segment_base_move "$alias" "$@")
+    if [ -n "$_wtb" ]; then
+      warn "원격 없는 대상의 세그먼트 워크트리에서 베이스 브랜치를 옮기는 git 행위입니다 — ${_wtb}"
+      warn "세그먼트 브랜치로 돌아가(\`git switch <세그먼트 브랜치>\`) 그 브랜치 위에서 다시 부릅니다 — 베이스 브랜치는 이름으로 옮기거나 지우지 않습니다"
       exit "$GATE_EXIT_VOCAB"
     fi
   fi
