@@ -6288,7 +6288,7 @@ BSXSTUBEOF
     printf '%s' "$2" > "$1.result"
     if [ -n "${3:-}" ]; then printf '%s\n' "$3" > "$1.sh"; else rm -f "$1.sh"; fi
   }
-  BSX_HALT='mkdir -p "$CC_PIPELINE_RUN_DIR/halt"; printf "# 중단 기록\n\n픽스처\n\n<!-- /cc-pipeline-halt v1 -->\n" > "$CC_PIPELINE_RUN_DIR/halt/$CC_PIPELINE_STAGE_ID.md"'
+  BSX_HALT='mkdir -p "$CC_PIPELINE_RUN_DIR/halt"; printf "<!-- cc-pipeline-halt v1; writer=design-base-unattended; reader=orchestrator; stage=%s -->\n**스텝**: 픽스처\n<!-- /cc-pipeline-halt v1 -->\n" "$CC_PIPELINE_STAGE_ID" > "$CC_PIPELINE_RUN_DIR/halt/$CC_PIPELINE_STAGE_ID.md"'
   bsx_stub "$WORK/bin/bsx-design" "$BSX_LIT_DESIGN"
   bsx_stub "$WORK/bin/bsx-audit" "$BSX_LIT_AUDIT" 'bash "$(dirname "$0")/claude-stub-au-artifact" "$@"'
   bsx_stub "$WORK/bin/bsx-split" "$BSX_LIT_SPLIT"
@@ -10231,7 +10231,7 @@ printf '%s\n' "$L_INIT" "$L_REJ" \
 printf '%s\n' "$L_INIT" "$L_ALLOWED" "$L_REJ" > "$LIM14/noenv.json"
 printf '%s\n' "$L_INIT" "$L_ALLOWED" "$L_OK" > "$LIM14/ok.json"
 printf '%s\n' '<!-- cc-pipeline-halt v1; writer=implement-unattended; reader=orchestrator; stage=LH; run=x -->' \
-  '**분류**: gate-unanswerable' '<!-- /cc-pipeline-halt v1 -->' > "$LIM14/halt.md"
+  '**분류**: gate-unanswerable' '**스텝**: Step 3 — 픽스처' '<!-- /cc-pipeline-halt v1 -->' > "$LIM14/halt.md"
 limit_probe() {
   # limit_probe <seg> <attempt> <rc> <stream-file> <hand-down: 1|0> [halt]
   cd "$WT" && CC_GATE_SOURCE_ONLY=1 bash -c '
@@ -24371,7 +24371,7 @@ r7_probe() {
       printf "2\n" > "$RUN_DIR/$seg.attempt"
       cp "$7" "$RUN_DIR/log/$seg#2.json"
       printf "%s\n" "<!-- cc-pipeline-halt v1; writer=implement-unattended; reader=orchestrator; stage=$seg#$8; run=$RUN_ID -->" \
-        "**분류**: gate-unanswerable" "<!-- /cc-pipeline-halt v1 -->" > "$RUN_DIR/halt/$seg#$8.md"
+        "**분류**: gate-unanswerable" "**스텝**: Step 3 — 픽스처" "<!-- /cc-pipeline-halt v1 -->" > "$RUN_DIR/halt/$seg#$8.md"
       p=$(halt_record_path "$seg"); c=$(classify_termination "$seg" 0 0)
       # The attempt wrote a row of its own, as a stage that worked does; without
       # one the gate files a clean exit as `공허한 성공`.
@@ -51646,9 +51646,9 @@ case "$(lsr93_hand "$lsr93_l" "$FX_MANIFEST" 이월 '다음 런의 답')" in
   "3|"*"이월 인계를 쓸 수 없습니다 — 런이 이미 끝났습니다"*) ok "95: TH1 끝난 런의 이월 인계는 exit 3 이다" ;;
   *) bad "95 TH1 끝난 런" "$(lsr93_hand "$lsr93_l" "$FX_MANIFEST" 이월 '다음 런의 답')" ;;
 esac
-# 기다릴 것 없는 대기 인계는 이월이 생겨도 거절되고, 문면은 기다릴 수 있는 대상(`CI 대기`·`master 대기` 세그먼트, `리셋 대기` 키)을 모두 적는다.
+# 기다릴 것 없는 대기 인계는 이월이 생겨도 거절되고, 문면은 기다릴 수 있는 대상(`CI 대기`·`master 대기` 세그먼트, `리셋 대기` 키, `확인 대기` 기록)을 모두 적는다.
 case "$(lsr93_hand "$lsr_root/th1/ledger.md" "$FX_MANIFEST" 대기 '기다릴 것')" in
-  "3|"*"nothing to wait on — no live stage or supervisor, no \`CI 대기\` or \`master 대기\` segment and no \`리셋 대기\` key, so a \`대기\` handoff is refused"*)
+  "3|"*"nothing to wait on — no live stage or supervisor, no \`CI 대기\` or \`master 대기\` segment, no \`리셋 대기\` key and no \`확인 대기\` record, so a \`대기\` handoff is refused"*)
     ok "95: TH1 기다릴 것 없는 대기 인계는 기다릴 대상을 모두 적은 문면으로 거절된다" ;;
   *) bad "95 TH1 대기 문면" "$(lsr93_hand "$lsr_root/th1/ledger.md" "$FX_MANIFEST" 대기 '기다릴 것')" ;;
 esac
