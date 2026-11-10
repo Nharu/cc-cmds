@@ -68265,7 +68265,7 @@ unset S111 r111 a111 d111 g111 s111_rb s111_rh s111_aw s111_im s111_ip s111_GRAN
 
 # ---------------------------------------------------------------------------
 # 113. 설계 문서 크기 — 크기 표, 파견 전 차단 기록과 행, 세 답 경로와 좌석 제한, 문서 정리의 되돌림 검사
-# --- section: 113 | group: base | covers: act, halt-answer, doc_size_threshold, doc_size_verdict, doc_size_check, doc_size_halt_write, gate_doc_size_dispatch_check, gate_halt_answer_route, gate_doc_tidy_admissible, doc-tidy, gate_doc_tidy_archive_path | anchors: 113: 크기 표가 세 종류의 문턱과 경고 문턱을 낸다, 113: 문턱 위 문서는 재수렴에 초과이고 감사에 경고다, 113: 크기 초과 기록이 스텝·추천·관측 상세를 싣는다, 113: 좌석의 큰 문맥 답은 거절된다, 113: 사람의 큰 문맥 답은 큰문맥-재파견 이다, 113: 사람의 런 밖 처리 답은 크기-보류 다, 113: 좌석의 정리 답은 정리-재파견 이다, 113: 크기 기록에 다른 선택지는 갈래가 없다, 113: 읽기 불가 기록은 정리 후 재파견을 싣지 않는다, 113: 읽기 불가 기록에 좌석은 답할 수 없고 사람의 런 밖 처리는 크기-보류 다, 113: plan 은 차단을 예보하고 기록을 쓰지 않는다, 113: act 는 시도를 청구해 기록과 의도된 park 행을 쓰고 11 로 끝난다, 113: tidy 가 문서를 문턱 아래로 정리하고 보관 파일을 쓴다, 113: check 가 정리 전후와 보관 파일을 되돌림으로 맞춘다, 113: 정리 행이 있으면 정리 뒤 문서로 조건 둘째가 서고 다시 정리하지 않는다, 113: 정리 행이 없으면 바뀐 문서의 정리 답은 거절된다, 113: 저장소 밖 문서의 보관 파일은 DOC_BASE 아래 docs/design-archive 다 ---
+# --- section: 113 | group: base | covers: act, halt-answer, doc_size_threshold, doc_size_verdict, doc_size_check, doc_size_halt_write, gate_doc_size_dispatch_check, gate_halt_answer_route, gate_doc_tidy_admissible, doc-tidy, gate_doc_tidy_archive_path, gate_audit_reconverge_keyable, gate_size_block_redispatch_row, gate_size_block_reconverge_routable, audit_key_reconverge_rows | anchors: 113: 크기 표가 세 종류의 문턱과 경고 문턱을 낸다, 113: 문턱 위 문서는 재수렴에 초과이고 감사에 경고다, 113: 크기 초과 기록이 스텝·추천·관측 상세를 싣는다, 113: 좌석의 큰 문맥 답은 거절된다, 113: 사람의 큰 문맥 답은 큰문맥-재파견 이다, 113: 사람의 런 밖 처리 답은 크기-보류 다, 113: 좌석의 정리 답은 정리-재파견 이다, 113: 크기 기록에 다른 선택지는 갈래가 없다, 113: 읽기 불가 기록은 정리 후 재파견을 싣지 않는다, 113: 읽기 불가 기록에 좌석은 답할 수 없고 사람의 런 밖 처리는 크기-보류 다, 113: plan 은 차단을 예보하고 기록을 쓰지 않는다, 113: act 는 시도를 청구해 기록과 의도된 park 행을 쓰고 11 로 끝난다, 113: tidy 가 문서를 문턱 아래로 정리하고 보관 파일을 쓴다, 113: check 가 정리 전후와 보관 파일을 되돌림으로 맞춘다, 113: 정리 행이 있으면 정리 뒤 문서로 조건 둘째가 서고 다시 정리하지 않는다, 113: 정리 행이 없으면 바뀐 문서의 정리 답은 거절된다, 113: 저장소 밖 문서의 보관 파일은 DOC_BASE 아래 docs/design-archive 다, 113: 크기 차단 뒤 답이 없으면 런 범위 재수렴을 다시 받지 않는다, 113: 크기 차단 뒤 열린 정리 답이면 같은 재수렴을 다시 받는다, 113: 크기 차단 뒤 큰 문맥 답은 사람의 것만 재수렴을 다시 받는다, 113: 재수렴 계수기는 크기 차단 행을 세지 않는다, 113: 받지 않을 재수렴 재파견은 답 경로가 정리 전에 거절한다 ---
 #
 # 크기 차단은 세션 없이 기록 하나와 행 하나로 끝나고, 그 기록의 답은 게이트가 경로 셋으로
 # 가른다. 이 절은 게이트를 소싱한 자식에서 그 함수들을 직접 부른다: 원장은 빈 파일에서
@@ -68375,8 +68375,46 @@ check "113: 정리 행이 없으면 바뀐 문서의 정리 답은 거절된다"
 check "113: 저장소 밖 문서의 보관 파일은 DOC_BASE 아래 docs/design-archive 다" \
   "$(s113_call "$S113/ledger.md" "$s113_doc" 'DOC_BASE="$DOC_DIR"; gate_doc_tidy_archive_path' 2>/dev/null)" \
   "$S113/repo/docs/docs/design-archive/docs-doc-tidy-fixture.md"
-unset -f s113_call s113_route
-unset S113 s113_doc s113_r s113_rec s113_sha s113_urec s113_row s113_arch s113_rc s113_sz s113_post
+
+# (아) 런 범위 재수렴의 크기 차단 — 감사 단계 키 S4 의 의도된 park 감사 뒤 재수렴이 크기로
+# 막혔다. 차단 행은 재수렴 수로 세지 않고, 그 기록의 열린 재파견 답이 있을 때만 같은
+# 재수렴을 다시 받으며, 받지 않을 재파견은 답 경로가 정리 전에 거절한다.
+s113_srec="$S113/run/halt/S4#2.md"
+printf '**스킬**: design-reconverge\n**스텝**: 파견 전 / 문서 크기 초과\n**관측 상세**: 문서=%s / 종류=reconverge\n' \
+  "$s113_doc" > "$s113_srec"
+s113_block='- `stage-result` | 교대=0 | 세그먼트=- | 스테이지=S4 | 종류=reconverge | 종료 코드=- | 실행 버전=2 | 세션 id=- | 부모=- | 기록자=게이트 | 차단=파견 전 | 종단 부류=의도된 park | 관측=파견 전 차단 | prev=x'
+# s113_rs <원장> <첫 행의 종단 부류> [<답 행의 선택지> <답한 주체>] — S4 의 감사 행, 차단 행,
+# 그리고 선택지가 있으면 그 기록의 중단 답 행을 쓴다.
+s113_rs() {
+  {
+    printf -- '- `stage-result` | 교대=0 | 세그먼트=- | 스테이지=S4 | 종류=audit | 종료 코드=0 | 실행 버전=1 | 세션 id=s1 | 종단 부류=%s | prev=x\n' "$2"
+    printf '%s\n' "$s113_block"
+    [ -z "${3:-}" ] || printf -- '- `중단 답` | 교대=0 | 세그먼트=S4 | 중단 기록=%s | 선택지=%s | 답한 주체=%s | prev=x\n' \
+      "$s113_srec" "$3" "$4"
+  } > "$1"
+}
+s113_stub='gate_run_scope_step() { [ "$1" = audit ] && printf S4; }; '
+s113_keyable() {
+  s113_call "$1" "$s113_doc" "$s113_stub"'r=0; gate_audit_reconverge_keyable S4 || r=$?; printf "%s" "$r"' 2>/dev/null
+}
+s113_rs "$S113/ledger-rs.md" '의도된 park'
+check "113: 크기 차단 뒤 답이 없으면 런 범위 재수렴을 다시 받지 않는다" "$(s113_keyable "$S113/ledger-rs.md")" "1"
+s113_rs "$S113/ledger-rs.md" '의도된 park' '정리 후 재파견' 좌석
+check "113: 크기 차단 뒤 열린 정리 답이면 같은 재수렴을 다시 받는다" "$(s113_keyable "$S113/ledger-rs.md")" "0"
+s113_rs "$S113/ledger-rs.md" '의도된 park' '큰 문맥으로 재파견' 좌석
+s113_r=$(s113_keyable "$S113/ledger-rs.md")
+s113_rs "$S113/ledger-rs.md" '의도된 park' '큰 문맥으로 재파견' 사람
+check "113: 크기 차단 뒤 큰 문맥 답은 사람의 것만 재수렴을 다시 받는다" "$s113_r|$(s113_keyable "$S113/ledger-rs.md")" "1|0"
+printf -- '- `stage-result` | 교대=0 | 세그먼트=- | 스테이지=S4 | 종류=reconverge | 종료 코드=0 | 실행 버전=3 | 세션 id=s3 | 종단 부류=정상 완료 | prev=x\n' \
+  >> "$S113/ledger-rs.md"
+check "113: 재수렴 계수기는 크기 차단 행을 세지 않는다" \
+  "$(s113_call "$S113/ledger-rs.md" "$s113_doc" 'audit_key_reconverge_rows S4 "$LEDGER" | wc -l | tr -d " "' 2>/dev/null)" "1"
+s113_rs "$S113/ledger-rs.md" '정상 완료'
+s113_r=$(s113_call "$S113/ledger-rs.md" "$s113_doc" "$s113_stub"'gate_halt_answer_route S4 "'"$s113_srec"'" "정리 후 재파견" 좌석 >/dev/null 2>&1 || :; printf "%s" "$GATE_HALT_ROUTE_REASON"' 2>/dev/null)
+check "113: 받지 않을 재수렴 재파견은 답 경로가 정리 전에 거절한다" \
+  "$(case "$s113_r" in '재파견할 - reconverge 를 게이트가 받지 않습니다 — '*) echo 거절 ;; *) printf '%s' "$s113_r" ;; esac)" "거절"
+unset -f s113_call s113_route s113_rs s113_keyable
+unset S113 s113_doc s113_r s113_rec s113_sha s113_urec s113_row s113_arch s113_rc s113_sz s113_post s113_srec s113_block s113_stub
 
 # ---------------------------------------------------------------------------
 # 114. 재킥오프 판정 L16 — 원천 매니페스트의 설계 문서가 가장 낮은 문턱 이상이면 금지

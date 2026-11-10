@@ -12686,10 +12686,19 @@ gate_design_reconverge_entry() {
   # open a second one. A `--resume` of the review is admitted the way the
   # audit's is — the key's last row is a re-convergence of the session being
   # resumed.
+  #
+  # A SIZE BLOCK BEFORE DISPATCH IS PASSED OVER. When the review's dispatch was
+  # blocked on the document's size (`차단=파견 전`), the key's answers to that
+  # pre-dispatch size record (`정리 후 재파견`, `큰 문맥으로 재파견`) are not
+  # the ladder's answers, and the block row did not take up the `골격 재검토`
+  # answer: no session read it. The ladder answer before them is read, and the
+  # once-per-record count below leaves block rows out, so the re-dispatch the
+  # size answer asks for is the same review admitted again.
   local dstep="$1" lines last ln row rec first c prev pln dr lrow
   GATE_DRC_RECORD=''; GATE_DRC_WHY=''
   lines=$( { grep -n -F "| 세그먼트=$dstep |" "$LEDGER" 2>/dev/null || true; } \
-           | { grep "^[0-9]*:- \`중단 답\` " || true; })
+           | { grep "^[0-9]*:- \`중단 답\` " || true; } \
+           | gate_drop_size_record_answers)
   last=$(printf '%s\n' "$lines" | sed -n '$p')
   if [ -z "$last" ]; then
     GATE_DRC_WHY="설계 단계($dstep)에 중단 답 행이 없습니다"
@@ -12725,6 +12734,7 @@ gate_design_reconverge_entry() {
     return 1
   fi
   c=$(gate_halt_answer_consumer "$LEDGER" "$dstep" "$ln")
+  case "$c" in *'| 차단=파견 전 |'*|*'| 차단=파견 전') c='' ;; esac
   if [ -n "$c" ]; then
     if [ "$(gate_row_field "${c#*:}" '종류')" != "design" ] \
        || [ "$(gate_row_field "${c#*:}" '종단 부류')" != "정상 완료" ]; then
@@ -25610,6 +25620,135 @@ EOF
   printf '%s' "$last"
 }
 
+gate_row_is_size_block() {
+  # gate_row_is_size_block <stage-result row> — whether the row is a size block
+  # before dispatch (`차단=파견 전`): no session started and nothing moved.
+  [ "$(gate_row_field "$1" '차단')" = "파견 전" ]
+}
+
+gate_stage_row_before_size_block() {
+  # gate_stage_row_before_size_block <key> — the key's last `stage-result` row
+  # that is neither a pre-session death nor a size block before dispatch, or
+  # nothing: where the key stood when the blocked dispatch was admitted.
+  local r last=''
+  while IFS= read -r r; do
+    [ -n "$r" ] || continue
+    gate_row_is_pre_session_death "$r" && continue
+    gate_row_is_size_block "$r" && continue
+    last=$r
+  done <<EOF
+$( { gate_stage_result_rows_of "$1" || true; } | { grep -F -- '- `stage-result`' || true; })
+EOF
+  printf '%s' "$last"
+}
+
+gate_size_block_of_record() {
+  # gate_size_block_of_record <key> <record> — whether the key's last settled
+  # `stage-result` row is the size block before dispatch that wrote <record>
+  # (`$RUN_DIR/halt/<key>#<실행 버전>.md`) for a re-convergence.
+  local last
+  last=$(gate_stage_last_settled_row "$1")
+  gate_row_is_size_block "$last" \
+    && [ "$(gate_row_field "$last" '종류')" = "reconverge" ] \
+    && [ "$RUN_DIR/halt/$1#$(gate_row_field "$last" '실행 버전').md" = "$2" ]
+}
+
+gate_size_block_redispatch_row() {
+  # gate_size_block_redispatch_row <key> — the row before the key's size block
+  # (`gate_stage_row_before_size_block`), with 0, when the key's last settled
+  # row is a re-convergence's size block before dispatch and the key's last
+  # `중단 답` answers that block's record with a redispatch not yet taken up:
+  # `정리 후 재파견`, or a person's `큰 문맥으로 재파견`. 1 otherwise.
+  #
+  # THE BLOCKED DISPATCH IS ADMITTED AGAIN ON THE ROW IT WAS ADMITTED ON. A
+  # size block writes the key's last row, so a test that reads that row would
+  # refuse the very redispatch the answer asks for; the run-scope
+  # re-convergence's admission tests read the row before the block instead,
+  # only while such an answer is open.
+  local key="$1" last row ln r rec
+  last=$(gate_stage_last_settled_row "$key")
+  rec="$RUN_DIR/halt/$key#$(gate_row_field "$last" '실행 버전').md"
+  gate_size_block_of_record "$key" "$rec" || return 1
+  row=$( { grep -n "^- \`중단 답\` " "$LEDGER" 2>/dev/null || true; } \
+         | { grep -F "| 세그먼트=$key |" || true; } | tail -1)
+  [ -n "$row" ] || return 1
+  ln=${row%%:*}; r=${row#*:}
+  [ "$(gate_row_field "$r" '중단 기록')" = "$rec" ] || return 1
+  ! gate_halt_answer_spent "$LEDGER" "$key" "$ln" || return 1
+  case "$(gate_row_field "$r" '선택지')" in
+    '정리 후 재파견') ;;
+    '큰 문맥으로 재파견') [ "$(gate_halt_answered_by "$r")" = '사람' ] || return 1 ;;
+    *) return 1 ;;
+  esac
+  [ "$(sed -n 's/^\*\*스텝\*\*: //p' "$rec" 2>/dev/null | sed -n '1p')" = '파견 전 / 문서 크기 초과' ] \
+    || return 1
+  r=$(gate_stage_row_before_size_block "$key")
+  [ -n "$r" ] || return 1
+  printf '%s' "$r"
+}
+
+gate_audit_reconverge_row_admits() {
+  # gate_audit_reconverge_row_admits <row> — whether the row standing before a
+  # run-scope re-convergence's size block is one the audit step's re-convergence
+  # admissions accept: an audit that parked on purpose, a re-convergence that
+  # parked on purpose (whose answer the blocked dispatch carried), or an audit
+  # that ended `정상 완료` with `재수렴 요청=예`.
+  case "$(gate_row_field "$1" '종류')|$(gate_row_field "$1" '종단 부류')" in
+    'audit|의도된 park'|'reconverge|의도된 park') return 0 ;;
+    'audit|정상 완료') [ "$(gate_row_field "$1" '재수렴 요청')" = "예" ] ;;
+    *) return 1 ;;
+  esac
+}
+
+gate_size_block_reconverge_routable() {
+  # gate_size_block_reconverge_routable <key> <record> — for an answer that
+  # redispatches a run-scope re-convergence blocked on the document's size:
+  # 0 when the `- reconverge` it asks for would be admitted once the answer
+  # stands, 1 with GATE_SBR_WHY otherwise. Asked before the document is
+  # tidied, so a redispatch the gate would refuse is refused before anything
+  # changes the document.
+  local key="$1" rec="$2" prior ast dst
+  GATE_SBR_WHY=''
+  if ! gate_size_block_of_record "$key" "$rec"; then
+    GATE_SBR_WHY="$key 의 마지막 행이 이 기록을 쓴 재수렴의 크기 차단 행이 아니어서 다시 파견할 차단이 없습니다"
+    return 1
+  fi
+  ast=$(gate_run_scope_step audit 2>/dev/null || true)
+  dst=$(gate_run_scope_step design 2>/dev/null || true)
+  if [ -n "$ast" ] && [ "$key" = "$ast" ]; then
+    prior=$(gate_stage_row_before_size_block "$key")
+    if [ -n "$(gate_segment_field "$key" '상태')" ] || ! gate_audit_reconverge_row_admits "$prior"; then
+      GATE_SBR_WHY="감사 단계 $key 의 차단 앞 행이 재수렴을 받는 행이 아닙니다(종류=$(gate_row_field "$prior" '종류') · 종단 부류=$(gate_row_field "$prior" '종단 부류'))"
+      return 1
+    fi
+    return 0
+  fi
+  if [ -n "$dst" ] && [ "$key" = "$dst" ]; then
+    if ! gate_design_reconverge_entry "$key"; then
+      GATE_SBR_WHY=$GATE_DRC_WHY
+      return 1
+    fi
+    return 0
+  fi
+  GATE_SBR_WHY="$key 는 감사 단계도 설계 단계도 아니어서 런 범위 재수렴을 다시 파견할 갈래가 없습니다"
+  return 1
+}
+
+gate_drop_size_record_answers() {
+  # gate_drop_size_record_answers — filter of line-numbered `중단 답` rows:
+  # drops each answer to a pre-dispatch size record (its record's `**스텝**`
+  # opens with `파견 전 /`), which answers the dispatch's size and not the
+  # stage's question.
+  local l
+  while IFS= read -r l; do
+    [ -n "$l" ] || continue
+    case "$(sed -n 's/^\*\*스텝\*\*: //p' "$(gate_row_field "${l#*:}" '중단 기록')" 2>/dev/null | sed -n '1p')" in
+      '파견 전 /'*) continue ;;
+    esac
+    printf '%s\n' "$l"
+  done
+}
+
 gate_audit_reconverge_keyable() {
   # gate_audit_reconverge_keyable <audit step id> [<resumed session>] — whether
   # a `- reconverge` dispatch is admitted on the run-scope audit step: the step
@@ -25648,8 +25787,18 @@ gate_audit_reconverge_keyable() {
   GATE_AUDIT_RECONVERGE_LAST=$last
   # A size block before dispatch is not an audit that parked on purpose: no
   # session read the document. Its row carries `차단=파견 전`, which only the
-  # attempt whose record's `**스텝**` opens with `파견 전 /` writes.
-  [ "$(gate_row_field "$last" '차단')" != "파견 전" ] || return 1
+  # attempt whose record's `**스텝**` opens with `파견 전 /` writes. A
+  # re-convergence's block with an open redispatch answer
+  # (`gate_size_block_redispatch_row`) is read past: the redispatch stands
+  # where the blocked dispatch was admitted.
+  if gate_row_is_size_block "$last"; then
+    last=$(gate_size_block_redispatch_row "$k") || return 1
+    GATE_AUDIT_RECONVERGE_LAST=$last
+    [ -z "$res" ] || return 1
+    gate_audit_reconverge_row_admits "$last" \
+      && [ "$(gate_row_field "$last" '종단 부류')" = "의도된 park" ]
+    return
+  fi
   case "$(gate_row_field "$last" '종류')|$(gate_row_field "$last" '종단 부류')" in
     'audit|의도된 park') return 0 ;;
     'reconverge|'*)
@@ -25676,6 +25825,13 @@ gate_audit_skeleton_reconverge_keyable() {
   [ -z "$(gate_segment_field "$k" '상태')" ] || return 1
   last=$( { gate_stage_result_rows_of "$k" || true; } | { grep -vF '| 관측=스폰 전 대기 중' || true; } | tail -1)
   GATE_AUDIT_RECONVERGE_LAST=$last
+  # The skeletal re-convergence blocked on the document's size is admitted
+  # again on an open redispatch answer, read past its block row as
+  # `gate_audit_reconverge_keyable` does.
+  if gate_row_is_size_block "$last"; then
+    last=$(gate_size_block_redispatch_row "$k") || return 1
+    GATE_AUDIT_RECONVERGE_LAST=$last
+  fi
   [ "$(gate_row_field "$last" '종류')" = "audit" ] \
     && [ "$(gate_row_field "$last" '종단 부류')" = "정상 완료" ] \
     && [ "$(gate_row_field "$last" '재수렴 요청')" = "예" ]
@@ -25821,6 +25977,15 @@ gate_halt_answer_route() {
       elif [ "$id" != 정리-재파견 ]; then
         why="「${opt}」 는 사람의 답으로만 집행됩니다 — 답한 주체=${by:-(없음)} 인 답은 교대가 실행할 갈래가 없습니다"
       fi
+    fi
+    # A RUN-SCOPE RE-CONVERGENCE IS REDISPATCHED ONLY WHERE ITS ADMISSION WOULD
+    # TAKE IT. Asked before the tidy act can touch the document, so an answer
+    # whose redispatch the gate would refuse leaves the document as it was.
+    if [ -z "$why" ] && { [ "$id" = 정리-재파견 ] || [ "$id" = 큰문맥-재파견 ]; } \
+       && [ "$(gate_doc_size_detail "$rec" '종류')" = reconverge ] \
+       && gate_run_scope_kind_of_key "$key" >/dev/null 2>&1 \
+       && ! gate_size_block_reconverge_routable "$key" "$rec"; then
+      why="재파견할 - reconverge 를 게이트가 받지 않습니다 — $GATE_SBR_WHY"
     fi
     if [ -z "$why" ] && [ "$id" = 정리-재파견 ]; then
       if [ "$hstep" != '파견 전 / 문서 크기 초과' ]; then
@@ -46381,7 +46546,7 @@ gate_perform_doc_tidy() {
   # matches. Success writes the `doc-tidy` row with the record and the
   # document's sha256 before and after; a failure writes nothing to the
   # document and leaves a `blocked` row, and the record goes back to a person.
-  local al="$1" seg="$2" rec kind t rv arch pre post rc=0 why=''
+  local al="$1" seg="$2" rec rkey kind t rv arch pre post rc=0 why=''
   rec=${3#중단 기록=}
   case "$rec" in
     "$RUN_DIR"/halt/*) ;;
@@ -46396,6 +46561,11 @@ gate_perform_doc_tidy() {
     why="런의 설계 문서를 읽을 수 없습니다: ${DOC:-(없음)}"
   elif ! gate_doc_tidy_admissible "$seg" "$rec"; then
     why=$GATE_DOC_TIDY_WHY
+  elif rkey=${rec##*/} && rkey=${rkey%%#*} \
+       && [ "$(gate_doc_size_detail "$rec" '종류')" = reconverge ] \
+       && gate_run_scope_kind_of_key "$rkey" >/dev/null 2>&1 \
+       && ! gate_size_block_reconverge_routable "$rkey" "$rec"; then
+    why="정리 뒤 재파견할 - reconverge 를 게이트가 받지 않습니다 — $GATE_SBR_WHY"
   elif [ "$GATE_DOC_TIDY_DONE" = 1 ]; then
     log "문서가 이미 이 기록의 정리 뒤 sha256 에 있습니다 — 정리하지 않고 재파견만 합니다: $rec"
     return 0
@@ -49196,7 +49366,10 @@ gate_verb_act() {
     if [ "$rs_kind" = "audit" ]; then
       local au_dstep="" au_rows au_last
       if au_dstep=$(gate_run_scope_step design); then
-        au_rows=$(gate_stage_result_rows_of "$au_dstep")
+        # A size block before dispatch on the design step's key started no
+        # session and changed no result of the design, so it is not read as one.
+        au_rows=$( { gate_stage_result_rows_of "$au_dstep" || true; } \
+                   | { grep -vE '\| 차단=파견 전( \||$)' || true; })
         au_last=$(gate_row_field "$(printf '%s\n' "$au_rows" | tail -1)" '종단 부류')
         if { [ -n "$au_rows" ] && [ "$au_last" != "정상 완료" ]; } \
            || { [ -z "$au_rows" ] && ! doc_is_frozen "${DOC:-}"; }; then
