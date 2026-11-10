@@ -368,6 +368,34 @@ if [ "$TR_PART" != 2 ]; then
 check "절단점 인덱스 커밋" "$(cutpoint_index 커밋)" "1"
 check "절단점 인덱스 머지" "$(cutpoint_index 머지)" "5"
 
+# 사전 인가 새 형식 행 — 도달 기기전역 은 표면 트리밖쓰기 에서만, 예약 값 `기기 정리` 는
+# 도달 기기전역 행에서만 받는다. 예약 값은 단일 argv 검사 전에 알아본다(공백이 든 두 낱말).
+pr_rc() { preauth_row_refusal "$1" >/dev/null 2>&1; printf '%s' "$?"; }
+check "기기전역·트리밖쓰기 행에 기기 정리 짝을 받는다" \
+  "$(pr_rc '형태=xcrun simctl | 표면=트리밖쓰기 | 도달=기기전역 | 짝 정리=기기 정리 | 사유=시험')" "0"
+check "기기전역 행은 트리밖쓰기 밖의 표면을 받지 않는다" \
+  "$(pr_rc '형태=xcrun simctl | 표면=외부상태변경 | 도달=기기전역 | 사유=시험')" "1"
+check "기기 정리 짝은 기기전역 밖의 도달에서 받지 않는다" \
+  "$(pr_rc '형태=bash scripts/p.sh | 표면=외부상태변경 | 도달=dev | 짝 정리=기기 정리 | 사유=시험')" "1"
+check "기기 정리 아닌 짝은 여전히 단일 argv 검사를 받는다" \
+  "$(pr_rc '형태=bash /opt/x/p.sh | 표면=외부상태변경 | 도달=dev | 짝 정리=rm -rf ~/x; true | 사유=시험')" "1"
+# 기기전역 칸은 예약 값의 정리 서수만 싣는다 — 깨끗한 일반 argv 짝도 받으면 행위만 열리고
+# 정리는 끝내 돌지 않으므로, 행 검사가 그 행을 거절한다.
+check "기기전역 행은 기기 정리 아닌 일반 짝 정리를 받지 않는다" \
+  "$(pr_rc '형태=brew services start postgresql | 표면=트리밖쓰기 | 도달=기기전역 | 짝 정리=brew services stop postgresql | 사유=시험')" "1"
+case "$(preauth_row_refusal '형태=brew services start postgresql | 표면=트리밖쓰기 | 도달=기기전역 | 짝 정리=brew services stop postgresql | 사유=시험' 2>&1)" in
+  *'예약 값 기기 정리 만 받습니다'*) pr_why=예약값 ;;
+  *) pr_why=다른사유 ;;
+esac
+check "기기전역 행의 일반 짝 정리 거절 사유는 예약 값만 받는다는 것" "$pr_why" "예약값"
+check "같은 깨끗한 일반 짝 정리는 도달=dev 행에서 받는다" \
+  "$(pr_rc '형태=bash /opt/x/start.sh | 표면=외부상태변경 | 도달=dev | 짝 정리=bash /opt/x/stop.sh | 사유=시험')" "0"
+# 드라이버는 구현 파견 직전에 게이트의 결정 수거를 부르고, 실패나 보류면 그 세그먼트를
+# 게이트 park 로 막는다.
+if grep -qF 'run_gate_call gate_decision_collect_holds "$DOC"' "$DRIVER"; then
+  ok "드라이버가 구현 파견 전에 결정 수거를 게이트에 묻는다"
+else bad "드라이버가 구현 파견 전에 결정 수거를 게이트에 묻는다" "호출 줄이 없다"; fi
+
 # 미인식 토큰은 조용한 0이 아니라 실패다. 0을 돌려주면 authorized()가 그것을
 # 「인가 없음」으로 읽어 조용히 전부 거부하고, 오타 하나가 밤 전체의 산출을
 # 착지시키지 못한 채 아무 원인도 보고하지 않는다.
