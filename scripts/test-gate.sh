@@ -68417,8 +68417,8 @@ check "113: 재수렴 계수기는 크기 차단 행을 세지 않는다" \
   "$(s113_call "$S113/ledger-rs.md" "$s113_doc" 'audit_key_reconverge_rows S4 "$LEDGER" | wc -l | tr -d " "' 2>/dev/null)" "1"
 s113_rs "$S113/ledger-rs.md" '정상 완료'
 s113_r=$(s113_call "$S113/ledger-rs.md" "$s113_doc" "$s113_stub"'gate_halt_answer_route S4 "'"$s113_srec"'" "정리 후 재파견" 좌석 >/dev/null 2>&1 || :; printf "%s" "$GATE_HALT_ROUTE_REASON"' 2>/dev/null)
-check "113: 받지 않을 재수렴 재파견은 답 경로가 정리 전에 거절한다" \
-  "$(case "$s113_r" in '재파견할 - reconverge 를 게이트가 받지 않습니다 — '*) echo 거절 ;; *) printf '%s' "$s113_r" ;; esac)" "거절"
+case "$s113_r" in '재파견할 - reconverge 를 게이트가 받지 않습니다 — '*) s113_r=거절 ;; esac
+check "113: 받지 않을 재수렴 재파견은 답 경로가 정리 전에 거절한다" "$s113_r" "거절"
 unset -f s113_call s113_route s113_rs s113_keyable
 unset S113 s113_doc s113_r s113_rec s113_sha s113_urec s113_row s113_arch s113_rc s113_sz s113_post s113_srec s113_block s113_stub
 
