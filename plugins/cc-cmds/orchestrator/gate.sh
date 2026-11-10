@@ -3314,6 +3314,16 @@ gate_worktree_add_base_mismatch() {
         return 0 ;;
     esac
   fi
+  # `-B <base>` resets the base wherever the new worktree goes, so on such a
+  # target it is refused before the path is read.
+  case "$lwant" in
+    refs/heads/*)
+      if [ -n "$nbname" ] && gate_word_names_base "$nbname" \
+           "$(printf '%s' "${lwant#refs/heads/}" | tr '[:upper:]' '[:lower:]')"; then
+        printf '받은 새 브랜치 이름: %s, 기대 시작점: %s — 새 브랜치 이름으로 베이스 브랜치 자체를 주면 워크트리 경로와 상관없이 베이스 브랜치를 옮깁니다' "$nbname" "$lwant"
+        return 0
+      fi ;;
+  esac
   [ "${#pos[@]}" -ge 1 ] || return 0
   local path="${pos[0]}" start="${pos[1]:-}" pphys pfxphys
   case "$path" in /*) : ;; *) path="$dir/$path" ;; esac
@@ -3412,8 +3422,9 @@ gate_segment_base_move() {
   # (`commit`, `merge`, `rebase`, `cherry-pick`, `revert`, `am`, `pull`,
   # `reset`), and from any HEAD the acts that move or delete the base by name:
   # `branch` with a force, move, copy or delete option, `checkout -B` /
-  # `switch -C`, `rebase <upstream> <base>`, `update-ref`, and a `fetch` or
-  # `push` refspec whose destination is the base. The worktree is the act's
+  # `switch -C`, `rebase <upstream> <base>`, `update-ref`, and a `fetch`,
+  # `push` or `pull` refspec whose destination is the base; any of these
+  # behind `--git-dir` or `--work-tree` is refused too. The worktree is the act's
   # directory after `-C`, folded physically and by letter case and compared
   # with the prefix `gate_decl_worktree` gives; the main worktree is not under
   # it, so the landing merge there is not read. On a target with `origin` this
@@ -3449,19 +3460,38 @@ gate_segment_base_move() {
   p=$(gate_real_prefix "$(gate_physical_dotdot "$dir" /)" | tr '[:upper:]' '[:lower:]')
   pfx=$(gate_real_prefix "$prefix" | tr '[:upper:]' '[:lower:]')
   case "$p" in "$pfx"?*) : ;; *) return 0 ;; esac
+  # `--git-dir` and `--work-tree` point git at another worktree's HEAD — the
+  # main worktree's, which holds the base — so from a segment worktree every
+  # act read here is refused when either stands in front of it.
+  i=0
+  while [ "$i" -lt "${#GATE_GIT_LOCFLAGS[@]}" ]; do
+    case "${GATE_GIT_LOCFLAGS[$i]}" in
+      --git-dir|--work-tree)
+        printf '받은 행위: git %s %s, 베이스 브랜치: %s — 세그먼트 워크트리에서 다른 저장소 위치를 가리키면 어느 브랜치가 움직이는지 읽을 수 없어 거부합니다' "${GATE_GIT_LOCFLAGS[$i]}" "$GATE_GIT_SUB" "$want"
+        return 0 ;;
+    esac
+    i=$((i + 2))
+  done
   # Which word names the moved branch differs per subcommand, so a start
   # point or an upstream that names the base (`git rebase <base>`,
-  # `git switch -C <segment branch> <base>`) is not read as moving it.
+  # `git switch -C <segment branch> <base>`) is not read as moving it. A long
+  # option is read by the prefix git expands, so `--forc` is `--force`.
   local -a rest=("${@:$((GATE_GIT_SUBIDX + 1))}") pos=()
-  local named=0 force=0 movey=0 k=0
+  local named=0 force=0 movey=0 root=0 k=0 lw
   [ "${#rest[@]}" -ge 1 ] || rest=("")
   case "$GATE_GIT_SUB" in
     branch)
       for w in "${rest[@]}"; do
+        lw="${w%%=*}"
         case "$w" in
-          --force) force=1 ;;
-          --move|--copy|--delete) movey=1 ;;
-          --*) : ;;
+          --) : ;;
+          --*)
+            if [ "${#lw}" -ge 4 ]; then
+              case "--force" in "$lw"*) force=1 ;; esac
+              case "--move" in "$lw"*) movey=1 ;; esac
+              case "--copy" in "$lw"*) movey=1 ;; esac
+              case "--delete" in "$lw"*) movey=1 ;; esac
+            fi ;;
           -*)
             case "$w" in *f*) force=1 ;; esac
             case "$w" in *[mMcCdD]*) movey=1 ;; esac ;;
@@ -3476,10 +3506,17 @@ gate_segment_base_move() {
     checkout|switch)
       while [ "$k" -lt "${#rest[@]}" ]; do
         w="${rest[$k]}"
+        lw="${w%%=*}"
         case "$w" in
           --) break ;;
-          --force-create=*) ! gate_word_names_base "${w#*=}" "$brf" || named=1 ;;
-          --force-create) ! gate_word_names_base "${rest[$((k + 1))]:-}" "$brf" || named=1; k=$((k + 1)) ;;
+          --force-?*)
+            case "--force-create" in
+              "$lw"*)
+                case "$w" in
+                  *=*) ! gate_word_names_base "${w#*=}" "$brf" || named=1 ;;
+                  *) ! gate_word_names_base "${rest[$((k + 1))]:-}" "$brf" || named=1; k=$((k + 1)) ;;
+                esac ;;
+            esac ;;
           --*) : ;;
           -*[BC]*)
             if [ -n "${w#*[BC]}" ]; then
@@ -3491,22 +3528,36 @@ gate_segment_base_move() {
         k=$((k + 1))
       done ;;
     rebase)
+      # `rebase <upstream> <branch>` and `--root <branch>` check the branch out
+      # first. Value-taking options and their abbreviations can shift which
+      # word is the branch, so with two positional words or `--root` any word
+      # naming the base is read as the branch — closed, at the price of
+      # refusing a rare `rebase -C <n> <base>`.
       while [ "$k" -lt "${#rest[@]}" ]; do
         w="${rest[$k]}"
         case "$w" in
-          --onto|--strategy|--strategy-option|--exec|-s|-X|-x) k=$((k + 1)) ;;
+          --onto|--strategy|--strategy-option|--exec|--trailer|--whitespace|-s|-X|-x|-C) k=$((k + 1)) ;;
+          --root) root=1 ;;
           -*) : ;;
+          '') : ;;
           *) pos+=("$w") ;;
         esac
         k=$((k + 1))
       done
-      if [ "${#pos[@]}" -ge 2 ] && gate_word_names_base "${pos[1]}" "$brf"; then named=1; fi ;;
+      if [ "${#pos[@]}" -ge 2 ] || [ "$root" = 1 ]; then
+        for w in ${pos[@]+"${pos[@]}"}; do ! gate_word_names_base "$w" "$brf" || named=1; done
+      fi ;;
     update-ref)
+      # `--stdin` takes its refs from input no word here shows, so it is
+      # refused; otherwise any word naming the base is read as the ref.
       for w in "${rest[@]}"; do
-        case "$w" in -*) : ;; *) pos+=("$w") ;; esac
-      done
-      if [ "${#pos[@]}" -ge 1 ] && gate_word_names_base "${pos[0]}" "$brf"; then named=1; fi ;;
-    fetch|push)
+        case "$w" in
+          --stdin) named=1 ;;
+          -*) : ;;
+          *) ! gate_word_names_base "$w" "$brf" || named=1 ;;
+        esac
+      done ;;
+    fetch|push|pull)
       for w in "${rest[@]}"; do
         case "$w" in -*) : ;; *:*) ! gate_word_names_base "${w##*:}" "$brf" || named=1 ;; esac
       done ;;
