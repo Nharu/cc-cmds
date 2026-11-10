@@ -13,14 +13,19 @@ settled entry of `## 미해결 이슈 / 트레이드오프` (a `**상태**: 해�
 line starting with `해결:`), the field lines `**구현 처분**`, `**닿는 슬라이스**`
 and `**재량 기준**` together with the discussion between the field block and the
 `해결:` line into a `### B<n>` piece, and leaves `**보관**: B<n>` right above the
-`해결:` line. T3 takes an entry only when those lines form one contiguous run.
-`unmark` removes the unreviewed marker `**미리뷰(스톱 이후 추가)**` and the one
+`해결:` line. The field block starts at the first line after the heading that is
+not empty, not a line holding only the unreviewed marker and not a `> ` line
+that keeps an old heading. T3 takes an entry only when those lines form one
+contiguous run and no field line outside the three (`**상태**`, `**사유**` and
+the rest) lies inside it. Every verb that transforms refuses, writing nothing,
+when an entry holding `**상태**: 해결` before the transform would hold none
+after it. `unmark` removes the unreviewed marker `**미리뷰(스톱 이후 추가)**` and the one
 space after it from every line that the base document holds byte for byte, and
 keeps the line as it was in a `### C<n>` piece.
 
 Nothing is touched inside a code fence, at a match whose start lies inside a
-backtick code span, on an unreviewed marker line (T1, and T3 for the whole
-entry), in an entry with `**사유 거둠**` or `**보관**:`, or in an entry whose
+backtick code span, on an unreviewed marker line (T1, and T3 for the run it
+would move), in an entry with `**사유 거둠**` or `**보관**:`, or in an entry whose
 lines to move are not contiguous. `check` uses the same definitions. A marker
 line is unreviewed when `--reviewed FROZEN` (the copy the last audit read) does
 not hold it byte for byte, and every marker line is unreviewed without
@@ -252,11 +257,14 @@ def t3_region(lines, mask, h, end, reviewed_lines=None):
         if lines[k].startswith("**보관**:") or lines[k].startswith("**사유 거둠**"):
             return None
     res = next(k for k in body if not mask[k] and lines[k].startswith("해결:"))
-    chunk_end = h + 1
+    block_start = h + 1
+    while block_start < res and is_field_block_lead(lines[block_start]):
+        block_start += 1
+    chunk_end = block_start
     while chunk_end < res and FIELD_RE.match(lines[chunk_end]):
         chunk_end += 1
     first = None
-    for k in range(h + 1, chunk_end):
+    for k in range(block_start, chunk_end):
         m = FIELD_RE.match(lines[k])
         if m and m.group(1) in MOVABLE_FIELDS:
             first = k
@@ -266,13 +274,29 @@ def t3_region(lines, mask, h, end, reviewed_lines=None):
     if first >= res:
         return None
     for k in range(first, res):
-        if k < chunk_end:
-            m = FIELD_RE.match(lines[k])
-            if not (m and m.group(1) in MOVABLE_FIELDS):
-                return None
+        m = FIELD_RE.match(lines[k])
+        if m and m.group(1) not in MOVABLE_FIELDS:
+            return None
         if unreviewed(lines[k], reviewed_lines):
             return None
     return first, res, res
+
+
+def is_field_block_lead(line):
+    """True for a line that may stand between an entry heading and its field
+    block: an empty line, a line holding only the unreviewed marker, or a
+    `> ` line that keeps an old heading."""
+    return line.strip() == "" or line.strip() == MARKER or line.startswith("> ")
+
+
+def settled_state_headings(lines, mask):
+    """Sorted headings of the unresolved entries that hold a `**상태**: 해결`
+    line, one element per entry."""
+    out = []
+    for h, end in unresolved_entries(lines, mask):
+        if any(lines[k] == STATE_SETTLED for k in range(h + 1, end) if not mask[k]):
+            out.append(lines[h])
+    return sorted(out)
 
 
 def settled_headings(lines, mask):
@@ -369,6 +393,8 @@ def transform_apply(text, base_text, next_a, next_b, reviewed_text=None):
         buf.append(line[last:])
         final.append("".join(buf))
     pieces.sort(key=lambda p: (p[0], p[1]))
+    if settled_state_headings(final, fence_mask(final)) != settled_state_headings(lines, mask):
+        raise Refused("정리 뒤 문서에서 `**상태**: 해결` 줄이 빠진 항목이 생김")
     return join_lines(final), pieces
 
 

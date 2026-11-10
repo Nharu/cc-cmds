@@ -68410,7 +68410,7 @@ unset S114 s114_t s114_out
 
 # ---------------------------------------------------------------------------
 # 115. 정리 도구의 완료 기준 — 재현 사본(없으면 합성 문서)이 apply 뒤 300000 미만이고 check 가 0 이다
-# --- section: 115 | group: base | covers: doc-tidy | anchors: 115: 합성 문서가 재현 사본의 크기와 정리 대상 바이트를 그대로 갖는다, 115: apply 가 문서를 300000 아래로 정리한다, 115: check 가 apply 전후와 보관 파일을 되돌림으로 맞춘다, 115: tidy 는 정리 뒤에도 문턱 이상이면 아무것도 쓰지 않고 1 이다, 115: 동결 사본에 같은 바이트로 있는 표지 줄의 항목만 옮긴다, 115: 동결 사본 없이는 표지 줄의 항목을 옮기지 않는다, 115: unmark 가 기준에 있는 표지만 지우고 C 조각을 남긴다 ---
+# --- section: 115 | group: base | covers: doc-tidy | anchors: 115: 합성 문서가 재현 사본의 크기와 정리 대상 바이트를 그대로 갖는다, 115: apply 가 문서를 300000 아래로 정리한다, 115: check 가 apply 전후와 보관 파일을 되돌림으로 맞춘다, 115: tidy 는 정리 뒤에도 문턱 이상이면 아무것도 쓰지 않고 1 이다, 115: 동결 사본에 같은 바이트로 있는 표지 줄의 항목만 옮긴다, 115: 동결 사본 없이는 표지 줄의 항목을 옮기지 않는다, 115: unmark 가 기준에 있는 표지만 지우고 C 조각을 남긴다, 115: 머리 아래가 빈 줄·표지 줄·옛 머리 줄이어도 상태 줄은 문서에 남는다, 115: 옮길 범위에 이동 필드가 아닌 필드 줄이 있으면 항목을 옮기지 않는다 ---
 #
 # 입력은 환경 변수 CC_DOC_SIZE_REPRO 가 가리키는 트리 밖 재현 사본이고, 그 파일이
 # 없으면 같은 꼴의 합성 문서다. 쓴 입력을 `repro=real <경로>` 또는 `repro=synthetic`
@@ -68509,8 +68509,32 @@ s115_rc=0
 check "115: unmark 가 기준에 있는 표지만 지우고 C 조각을 남긴다" \
   "$s115_rc|$(grep -c -x -F '검토하지 않은 논의' "$S115/unmark.md" || true)|$(grep -c -F "$s115_m 검토한 논의" "$S115/unmark.md" || true)|$(grep -c '^### C1$' "$S115/unmark-archive.md" || true)" \
   "0|1|1|1"
+
+# 머리 바로 아래가 필드가 아닌 항목 — 빈 줄, 표지만 있는 줄, 옛 머리 줄. 옮기는 것은 이동
+# 필드와 논의뿐이고, 상태·사유 줄은 문서에 남는다.
+{
+  printf '# 머리 아래 시험\n\n## 미해결 이슈 / 트레이드오프\n\n'
+  printf '### 빈 줄\n\n**상태**: 해결\n**사유**: 구현 판단\n**구현 처분**: 구현 전 결정\n**닿는 슬라이스**: 전체\n\n재시도 논의.\n해결: 세 번으로 정함\n\n'
+  printf '### 표지 줄\n%s\n**상태**: 해결\n**구현 처분**: 구현 전 결정\n\n논의 둘.\n해결: 정함\n\n' "$s115_m"
+  printf '### 옛 머리\n> **Old heading** (for re-deriving citations): "옛" - 바꿈\n**상태**: 해결\n**구현 처분**: 구현 전 결정\n\n논의 셋.\n해결: 정함\n'
+} > "$S115/lead.md"
+cp "$S115/lead.md" "$S115/lead-before.md"
+s115_rc=0
+"$s115_tool" apply "$S115/lead.md" --archive "$S115/lead-archive.md" --doc-key docs/doc-tidy-fixture.md \
+  --writer test-gate >/dev/null 2>&1 || s115_rc=$?
+s115_ck=0
+"$s115_tool" check "$S115/lead-before.md" "$S115/lead.md" "$S115/lead-archive.md" >/dev/null 2>&1 || s115_ck=$?
+check "115: 머리 아래가 빈 줄·표지 줄·옛 머리 줄이어도 상태 줄은 문서에 남는다" \
+  "$s115_rc|$s115_ck|$(grep -c -x -F '**상태**: 해결' "$S115/lead.md" || true)|$(grep -c -F '**사유**: 구현 판단' "$S115/lead.md" || true)|$(grep -c -F '**구현 처분**' "$S115/lead.md" || true)|$(grep -c '^\*\*보관\*\*: B[0-9]*$' "$S115/lead.md" || true)|$(grep -c -F '**상태**' "$S115/lead-archive.md" || true)" \
+  "0|0|3|1|0|3|0"
+
+# 논의 사이에 이동 필드가 아닌 필드 줄이 낀 항목은 옮기지 않는다.
+printf '# 끼인 필드\n\n## 미해결 이슈 / 트레이드오프\n\n### 섞임\n**상태**: 해결\n**구현 처분**: 구현\n\n논의.\n**사유**: 끼어든 필드\n해결: 정함\n' \
+  > "$S115/mixed.md"
+check "115: 옮길 범위에 이동 필드가 아닌 필드 줄이 있으면 항목을 옮기지 않는다" \
+  "$("$s115_tool" plan "$S115/mixed.md" 2>/dev/null | grep -E '^t3_count=')" "t3_count=0"
 unset -f s115_synth
-unset S115 s115_tool s115_rev s115_rc s115_sz s115_sha s115_m
+unset S115 s115_tool s115_rev s115_rc s115_sz s115_sha s115_m s115_ck
 
 # --- epilogue-begin ---
 #
