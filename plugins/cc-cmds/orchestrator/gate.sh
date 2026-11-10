@@ -3244,8 +3244,12 @@ gate_worktree_add_base_mismatch() {
   # the expected ref is a local branch, so the same call with none of `-b`, `-B`
   # and `--detach` would check the base branch itself out in the segment
   # worktree, and every segment commit would move the person's base branch
-  # before any review. That shape is refused; with `origin` the expected ref is a
-  # remote-tracking one, which git never checks out as a branch.
+  # before any review. Three spellings reach it and all three are refused on
+  # such a target: that call itself, `-b`/`-B` naming the base branch (`-B`
+  # resets the base and checks it out), and a start point that differs from the
+  # base branch only in letter case, which a case-insensitive file system
+  # resolves to the base's own ref file. On a target with `origin` none of these
+  # arms runs, so its accepted set is what it was.
   local alias="$1" cmd
   shift
   [ "$#" -ge 1 ] || return 0
@@ -3256,7 +3260,7 @@ gate_worktree_add_base_mismatch() {
   [ "$GATE_GIT_SUB" = worktree ] || return 0
   local -a rest=("${@:$((GATE_GIT_SUBIDX + 1))}")
   [ "${rest[0]:-}" = add ] || return 0
-  local dir="${GATE_ACT_CWD:-$PWD}" i=0 n="${#rest[@]}" w newb=0 det=0 endopt=0
+  local dir="${GATE_ACT_CWD:-$PWD}" i=0 n="${#rest[@]}" w newb=0 det=0 endopt=0 nbname=""
   local -a pos=()
   # `-C <dir>` moves where git resolves the path and the start point.
   while [ "$i" -lt "${#GATE_GIT_LOCFLAGS[@]}" ]; do
@@ -3274,8 +3278,8 @@ gate_worktree_add_base_mismatch() {
     if [ "$endopt" = 1 ]; then pos+=("$w"); i=$((i + 1)); continue; fi
     case "$w" in
       --) endopt=1 ;;
-      -b|-B) newb=1; i=$((i + 1)) ;;
-      -b?*|-B?*) newb=1 ;;
+      -b|-B) newb=1; nbname="${rest[$((i + 1))]:-}"; i=$((i + 1)) ;;
+      -b?*|-B?*) newb=1; nbname="${w#-?}" ;;
       # git worktree's own flag, quoted: test-run.sh's scan for a session
       # detach mode reads an unquoted case arm of this word as one.
       "--detach") det=1 ;;
@@ -3314,7 +3318,18 @@ gate_worktree_add_base_mismatch() {
   fi
   want=$(base_ref "$alias" 2>/dev/null || true)
   [ -n "$want" ] || want="refs/remotes/origin/$br"
+  # The local-base arms compare names with letter case folded: on a
+  # case-insensitive file system `Main` opens the loose ref file of `main`.
+  local lbase=0 brf
+  case "$want" in refs/heads/*) lbase=1 ;; esac
+  brf=$(printf '%s' "$br" | tr '[:upper:]' '[:lower:]')
+  if [ "$lbase" = 1 ] && [ -n "$nbname" ] \
+     && [ "$(printf '%s' "$nbname" | tr '[:upper:]' '[:lower:]')" = "$brf" ]; then
+    printf '받은 새 브랜치 이름: %s, 기대 시작점: %s — 세그먼트 브랜치 이름으로 베이스 브랜치 자체를 주면 세그먼트 커밋이 베이스 브랜치를 옮깁니다' "$nbname" "$want"
+    return 0
+  fi
   if [ "$newb" = 0 ] && [ "$det" = 0 ] && [ -n "$start" ] && [ "$start" != "$br" ] \
+     && { [ "$lbase" = 0 ] || [ "$(printf '%s' "$start" | tr '[:upper:]' '[:lower:]')" != "$brf" ]; } \
      && ( cd "$dir" 2>/dev/null && git rev-parse --verify --quiet "refs/heads/$start" >/dev/null 2>&1 ); then
     return 0
   fi
@@ -21385,6 +21400,19 @@ gate_main() {
   # a status line, anything outside the driver — do not know the manifest. The
   # gate does. Idempotent overwrite.
   printf '%s\n' "$LEDGER" > "$RUN_DIR/ledger-path"
+
+  # THE REMOTE JUDGEMENT IS FROZEN ON THE RUN'S FIRST GATE ENTRY, before the
+  # act of that entry runs. `target_has_origin` keeps its first answer in the
+  # run directory, and its readers are lazy — the slicing snapshot, the
+  # worktree start check, the review line — so a stage that runs before any of
+  # them could rename `origin` first and have the frozen answer read "no
+  # remote". Every act of every stage passes here, so measuring each target now
+  # puts the first answer ahead of every stage's first act. Once frozen this is
+  # a file read per target.
+  local _oal
+  for _oal in $(target_aliases 2>/dev/null || true); do
+    target_has_origin "$_oal" >/dev/null 2>&1 || true
+  done
 
   # The FORWARD index: session id → run ids. `session-lineage` runs the other
   # way (run → its session ids) and answering "which run belongs to this
@@ -48113,8 +48141,16 @@ gate_verb_act() {
     local _wtb
     _wtb=$(gate_worktree_add_base_mismatch "$alias" "$@")
     if [ -n "$_wtb" ]; then
-      warn "이 런의 세그먼트 워크트리 경로로 가는 git worktree add 의 시작점이 원격 추적 베이스가 아닙니다 — ${_wtb}"
-      warn "스냅숏 \`슬라이싱\` 의 \`베이스\` 값으로 다시 부릅니다 — 로컬 브랜치 이름이나 HEAD 가 아니라 원격 추적 ref 를 시작점으로 적습니다"
+      # A target with no `origin` expects a local branch ref, so the
+      # remote-tracking prescription would send the caller the wrong way.
+      case "$_wtb" in
+        *"기대 시작점: refs/heads/"*)
+          warn "이 런의 세그먼트 워크트리 경로로 가는 git worktree add 가 원격 없는 대상의 시작점 규칙에 맞지 않습니다 — ${_wtb}"
+          warn "스냅숏 \`슬라이싱\` 의 \`베이스\` 값을 시작점으로 적고, \`-b <세그먼트 브랜치>\` 로 베이스가 아닌 새 브랜치를 만들어 다시 부릅니다" ;;
+        *)
+          warn "이 런의 세그먼트 워크트리 경로로 가는 git worktree add 의 시작점이 원격 추적 베이스가 아닙니다 — ${_wtb}"
+          warn "스냅숏 \`슬라이싱\` 의 \`베이스\` 값으로 다시 부릅니다 — 로컬 브랜치 이름이나 HEAD 가 아니라 원격 추적 ref 를 시작점으로 적습니다" ;;
+      esac
       exit "$GATE_EXIT_VOCAB"
     fi
   fi

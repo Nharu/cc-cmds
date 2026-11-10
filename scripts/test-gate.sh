@@ -30988,7 +30988,7 @@ check "20(ii): M 이 로컬 베이스에 들어갔는데 cycle 행이 없으면 
 check "20(ii): 그 거절이 원장을 늘리지 않는다" "$(sa_rows)" "$nb"
 
 # --- 15p. 원격이 없는 대상의 세그먼트는 로컬 베이스 브랜치 ref 에서 끊긴다 -------
-# --- section: 15p | group: sa | covers: exec, snapshot, act, gate_review_line | anchors: 15p: 원격 없는 대상의 스냅숏 베이스는 로컬 브랜치 ref 다, 15p: 원격 추적 ref 시작점은 거부되고 아무것도 만들어지지 않는다, 15p: 그 거부는 로컬 브랜치 ref 를 기대 시작점으로 이름 댄다, 15p: 새 브랜치 없이 베이스 브랜치 자체를 체크아웃하는 시작은 거부되고 아무것도 만들어지지 않는다, 15p: 그 거부는 베이스 브랜치 자체의 체크아웃을 이유로 댄다, 15p: 로컬 브랜치 ref 시작점은 통과하고 워크트리가 생긴다, 15p: 계획 행이 통과한다, 15p: 세그먼트 워크트리의 커밋이 통과한다, 15p: 런 도중 원격을 달아도 원격 판정은 런의 첫 판정 그대로다, 15p: review-line 의 --base-sha 는 워크트리 HEAD 와 로컬 베이스의 merge-base 다 ---
+# --- section: 15p | group: sa | covers: exec, snapshot, act, gate_review_line | anchors: 15p: 원격 없는 대상의 스냅숏 베이스는 로컬 브랜치 ref 다, 15p: 원격 추적 ref 시작점은 거부되고 아무것도 만들어지지 않는다, 15p: 그 거부는 로컬 브랜치 ref 를 기대 시작점으로 이름 댄다, 15p: 새 브랜치 없이 베이스 브랜치 자체를 체크아웃하는 시작은 거부되고 아무것도 만들어지지 않는다, 15p: 그 거부는 베이스 브랜치 자체의 체크아웃을 이유로 댄다, 15p: 베이스 브랜치 이름을 -B 로 주는 시작은 거부되고 아무것도 만들어지지 않는다, 15p: 대소문자만 다른 베이스 브랜치 이름의 시작은 거부되고 아무것도 만들어지지 않는다, 15p: 로컬 브랜치 ref 시작점은 통과하고 워크트리가 생긴다, 15p: 계획 행이 통과한다, 15p: 세그먼트 워크트리의 커밋이 통과한다, 15p: 런 도중 원격을 달아도 원격 판정은 런의 첫 판정 그대로다, 15p: review-line 의 --base-sha 는 워크트리 HEAD 와 로컬 베이스의 merge-base 다, 15p: 첫 게이트 진입 뒤 origin 이름을 바꿔도 스냅숏 베이스는 원격 추적 ref 다 ---
 #
 # A target with no `origin` has no remote-tracking base to cut from and no pull
 # request a review can find its base from. The snapshot names the local branch
@@ -31035,6 +31035,18 @@ case "$msg" in
   *"베이스 브랜치 자체"*) ok "15p: 그 거부는 베이스 브랜치 자체의 체크아웃을 이유로 댄다" ;;
   *) bad "15p: 그 거부는 베이스 브랜치 자체의 체크아웃을 이유로 댄다" "$msg" ;;
 esac
+# `-B main` resets the base branch and checks it out wherever the main worktree
+# is not holding it, so the main worktree is moved off `main` for this call.
+( cd "$SA_WT" && git checkout -q -b p15-side ) >/dev/null 2>&1
+p15_add -B main "$WT15P" refs/heads/main
+check "15p: 베이스 브랜치 이름을 -B 로 주는 시작은 거부되고 아무것도 만들어지지 않는다" \
+  "$rc/$(p15_state)/$( cd "$SA_WT" && git rev-parse --abbrev-ref HEAD )" "2/-/-/p15-side"
+# On a case-insensitive file system `Main` opens the loose ref file of `main`;
+# on a case-sensitive one it names nothing. Both must refuse.
+p15_add "$WT15P" Main
+check "15p: 대소문자만 다른 베이스 브랜치 이름의 시작은 거부되고 아무것도 만들어지지 않는다" \
+  "$rc/$(p15_state)" "2/-/-"
+( cd "$SA_WT" && git checkout -q main && git branch -D p15-side ) >/dev/null 2>&1
 p15_add -b "$BR15P" "$WT15P" refs/heads/main
 check "15p: 로컬 브랜치 ref 시작점은 통과하고 워크트리가 생긴다" \
   "$rc/$(p15_state)/$( cd "$WT15P" 2>/dev/null && git rev-parse HEAD )" \
@@ -31068,6 +31080,20 @@ case "$rc|$msg" in
   *) bad "15p: review-line 의 --base-sha 는 워크트리 HEAD 와 로컬 베이스의 merge-base 다" "rc=$rc $msg (기대 base $mb15p)" ;;
 esac
 ( cd "$SA_WT" && git worktree remove --force "$WT15P" && git branch -D "$BR15P" ) >/dev/null 2>&1 || true
+# The other direction, on a run of its own whose target keeps its remote: the
+# gate's first entry freezes "has origin", so a stage that renames `origin`
+# afterwards does not turn on the local-base arms.
+sa_new '원격 있는 대상의 이름 바꾸기' ''
+SA_CUT=커밋
+SA_PLAN='{ "steps": [ { "id": "S1", "skill": "implement", "summary": "구현", "depends_on": [] }, { "id": "V2", "skill": "review", "summary": "리뷰", "depends_on": ["S1"] } ] }'
+sa_manifest ''
+sag exec --manifest "$SA_MANIFEST" --target main --segment - --cutpoint 커밋 --surface 읽기 \
+  --snapshot-digest "$(SAH)" --rationale x -- git status --short
+( cd "$SA_WT" && git remote rename origin p15-renamed ) >/dev/null 2>&1
+check "15p: 첫 게이트 진입 뒤 origin 이름을 바꿔도 스냅숏 베이스는 원격 추적 ref 다" \
+  "$( cd "$SA_WT" && git remote get-url origin >/dev/null 2>&1 && printf 원격있음 || printf 원격없음 )/$( cd "$SA_WT" && gate_inproc snapshot --manifest "$SA_MANIFEST" 2>/dev/null | jq -r '.["슬라이싱"]["세그먼트"][0]["베이스"]' )" \
+  "원격없음/refs/remotes/origin/main"
+( cd "$SA_WT" && git remote rename p15-renamed origin ) >/dev/null 2>&1
 SA_CUT=""; SA_PLAN=""
 
 # --- 35-21. fetch 는 성공했는데 베이스의 원격 추적 ref 가 없으면 거절이다 -------
