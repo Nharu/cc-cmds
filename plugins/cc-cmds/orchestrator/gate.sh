@@ -7890,9 +7890,11 @@ surface_of_git_fetch() {
   # `--upload-pack` names a program to run, and git takes any unambiguous
   # prefix of it (`--upl…`; `--u` and `--up` are shared with `--update-…`
   # and refused by git itself) and `--exec` as a second name for it.
+  # The scan does not stop at a bare `--`: a value-taking option (`-o`) takes
+  # that `--` as its value, so git goes on reading options after it, and fetch
+  # takes no pathspec that a dash word after `--` could be.
   local fw
   for fw in "$@"; do
-    [ "$fw" = '--' ] && break
     if gate_git_long_prefix "$fw" --upload-pack 5 || gate_git_long_prefix "$fw" --exec 3; then
       printf '%s' "$GATE_FORM_UNKNOWN"; return 0
     fi
@@ -7981,10 +7983,11 @@ surface_of_git() {
       # runs a program. Every prefix of either is refused here: `--u…` belongs
       # to `--upload-pack` alone, and `--e`/`--ex` are refused with `--exe…`
       # because `--exit-code` shares them and git refuses those as ambiguous.
+      # The whole argv is scanned, past a bare `--` too: `-o` takes that `--`
+      # as its value and git reads the options after it.
       if [ "${1:-}" = ls-remote ]; then
         local la
         for la in "$@"; do
-          [ "$la" = '--' ] && break
           case "${la%%=*}" in
             --e|--ex|--exe|--exec|--u|--up|--upl|--uplo|--uploa|--upload|--upload-|--upload-p|--upload-pa|--upload-pac|--upload-pack)
               printf '%s' "$GATE_FORM_UNKNOWN"; return 0 ;;
@@ -7994,10 +7997,12 @@ surface_of_git() {
       # `grep -O` takes its program attached as well (`-O<prog>`, or inside a
       # bundle of short options), and `--open-files-in-pager` is taken from
       # `--op` on (`--o` is shared with `--only-matching` and `--or`).
+      # The scan goes past a bare `--` as well: `-e` takes that `--` as its
+      # pattern and git reads the options after it, so a pathspec after a real
+      # `--` that looks like one of these is refused too.
       if [ "${1:-}" = grep ]; then
         local ga
         for ga in "$@"; do
-          [ "$ga" = '--' ] && break
           case "$ga" in
             --*) gate_git_long_prefix "$ga" --open-files-in-pager 4 && { printf '%s' "$GATE_FORM_UNKNOWN"; return 0; } ;;
             -*O*) printf '%s' "$GATE_FORM_UNKNOWN"; return 0 ;;
@@ -8063,12 +8068,12 @@ surface_of_git() {
     # and `--rec…` of `--receive-pack` from the first letter that is not also
     # `--recurse-submodules`'s or `--repo`'s (`--rec` and shorter are ambiguous
     # and git refuses them itself). This holds for a push to any target, with a
-    # base branch or without.
+    # base branch or without. The scan goes past a bare `--`: `-o` takes that
+    # `--` as its value and git reads the options after it.
     push)
       local pa po
       shift
       for pa in "$@"; do
-        [ "$pa" = '--' ] && break
         po="${pa%%=*}"
         case "$po" in
           --e|--ex|--exe|--exec|--rece|--recei|--receiv|--receive|--receive-|--receive-p|--receive-pa|--receive-pac|--receive-pack)
@@ -26112,9 +26117,15 @@ gate_confirm_subcommand_ok() {
 # check starts the signing program — asked for by `log.showSignature`, or by a
 # `%G` placeholder that a `pretty.<name>` alias or `format.pretty` from the
 # repository's own configuration brings in, which the word check above cannot
-# see — so each signing program is set to `false`. The other keys of
-# `gate_git_config_key_execs` are out of reach of that set — no transport, no
-# patch output, no checkout — and the option set is what keeps it so.
+# see — so each signing program is set to `false`. No subcommand of the set
+# names a remote, but a read of an object the repository lacks makes git fetch
+# it from a promisor remote when the gitdir is a partial clone, and that fetch
+# starts the transport's program (`remote.<name>.uploadpack`,
+# `core.sshCommand`, an `ext::` url). `GATE_CONFIRM_GIT_ENV` turns that fetch
+# off and allows no transport at all; a `-c protocol.allow=never` would not
+# do, because a `protocol.<name>.allow` in the repository's own configuration
+# outranks it, while `GIT_ALLOW_PROTOCOL` outranks every configured policy.
+readonly GATE_CONFIRM_GIT_ENV='GIT_NO_LAZY_FETCH=1 GIT_ALLOW_PROTOCOL='
 readonly GATE_CONFIRM_GIT_CONFIG='-c core.fsmonitor=false -c core.hooksPath=/dev/null -c log.showSignature=false -c gpg.program=false -c gpg.openpgp.program=false -c gpg.ssh.program=false -c gpg.x509.program=false'
 
 gate_confirm_precheck() {
@@ -26228,8 +26239,8 @@ gate_confirm_eligible() {
 gate_confirm_run() {
   # gate_confirm_run <name> — run the record's confirmation command once and
   # count it: 0 on a match, 1 otherwise. Run without a shell, as the argv the
-  # record spells (a git one with `GATE_CONFIRM_GIT_CONFIG` before its
-  # subcommand), under the read-scoped credential in the key's worktree
+  # record spells (a git one under `env` with `GATE_CONFIRM_GIT_ENV`, and with
+  # `GATE_CONFIRM_GIT_CONFIG` before its subcommand), under the read-scoped credential in the key's worktree
   # (`gate_act_worktree`; no worktree, no run, and it reads as a mismatch),
   # with the stdout read into a file up to 4096 bytes and the stderr dropped.
   # A match is exit 0 and the stdout, trailing whitespace taken off, equal to
@@ -26244,11 +26255,13 @@ gate_confirm_run() {
   gate_confirm_precheck "$rec" || return 1
   read -r -a av <<< "$GATE_CONFIRM_CMD"
   # git runs with the program-starting keys switched off, so a value the
-  # repository's own configuration holds for one of them is not run either.
+  # repository's own configuration holds for one of them is not run either,
+  # and under `env` with the lazy fetch and every transport turned off.
   if [ "${av[0]}" = git ]; then
-    local -a gc
+    local -a gc ge
     read -r -a gc <<< "$GATE_CONFIRM_GIT_CONFIG"
-    av=(git "${gc[@]}" "${av[@]:1}")
+    read -r -a ge <<< "$GATE_CONFIRM_GIT_ENV"
+    av=(env "${ge[@]}" git "${gc[@]}" "${av[@]:1}")
   fi
   cnt=$(gate_confirm_count "$name"); cnt=${cnt%% *}
   gate_confirm_write "$name.n" "$((cnt + 1)) $(date -u +%s)" \

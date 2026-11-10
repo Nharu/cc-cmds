@@ -20213,6 +20213,10 @@ graded_as '형태 미상'    'fetch 의 --upload-pack 줄임 접두도 같다'  
 graded_as '읽기'         '프로그램을 고르지 않는 fetch 는 그대로다'  -- git fetch origin
 graded_as '형태 미상'    'grep 의 --open-files-in-pager 줄임 접두는 프로그램을 고른다' -- git grep --open-files-in=x -e y
 graded_as '형태 미상'    'grep 의 -O 는 프로그램을 고른다'           -- git grep -Ox -e y
+graded_as '형태 미상'    '-o 가 값으로 삼킨 -- 뒤의 fetch 옵션도 본다' -- git fetch -o -- --upload-pack=x .
+graded_as '형태 미상'    '-o 가 값으로 삼킨 -- 뒤의 ls-remote 옵션도 본다' -- git ls-remote -o -- --exec=x .
+graded_as '형태 미상'    '-e 가 값으로 삼킨 -- 뒤의 grep 옵션도 본다' -- git grep -e -- -Ox
+graded_as '형태 미상'    '-o 가 값으로 삼킨 -- 뒤의 push 옵션도 본다' -- git push -o -- --receive-pack=x origin
 
 # The grade table alone does not cover what was observed: the refusal arrived as
 # an exit 6 on the ACT path, so the repair has to be measured there too.
@@ -68090,7 +68094,7 @@ check "110d: 확인의 git 은 실행 키를 끈 설정으로 돈다" \
     gate_metrics_timed() {
       shift
       case " $* " in
-        *" git -c core.fsmonitor=false -c core.hooksPath=/dev/null -c log.showSignature=false -c gpg.program=false -c gpg.openpgp.program=false -c gpg.ssh.program=false -c gpg.x509.program=false rev-parse --is-inside-work-tree "*) echo 덮어씀 ;;
+        *" env GIT_NO_LAZY_FETCH=1 GIT_ALLOW_PROTOCOL= git -c core.fsmonitor=false -c core.hooksPath=/dev/null -c log.showSignature=false -c gpg.program=false -c gpg.openpgp.program=false -c gpg.ssh.program=false -c gpg.x509.program=false rev-parse --is-inside-work-tree "*) echo 덮어씀 ;;
         *) echo 없음 ;;
       esac
     }
