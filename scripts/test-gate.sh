@@ -20202,6 +20202,13 @@ graded_as '읽기'         'git config --get 은 조회다'              -- git 
 graded_as '읽기'         '--global 이어도 --get 은 조회다'         -- git config --global --get user.name
 graded_as '워크트리쓰기' '로컬 config 쓰기는 트리 안이다'          -- git config user.name x
 graded_as '트리밖쓰기'   'git config --global 은 홈을 고친다'      -- git config --global user.name x
+graded_as '형태 미상'    '명령을 담는 키의 로컬 쓰기는 형태로 거부된다' -- git config core.fsmonitor x
+graded_as '형태 미상'    '키 이름의 대소문자를 바꿔도 같다'          -- git config --local core.HooksPath x
+graded_as '읽기'         '명령을 담는 키도 조회는 조회다'            -- git config --get core.fsmonitor
+graded_as '형태 미상'    'ls-remote 의 --exec 는 프로그램을 고른다'   -- git ls-remote --exec=x origin
+graded_as '형태 미상'    '--upload-pack 의 줄임 접두도 같다'         -- git ls-remote --upload-p=x origin
+graded_as '형태 미상'    '값을 띄어 쓴 줄임 접두도 같다'             -- git ls-remote --u x origin
+graded_as '읽기'         '--exit-code 는 그대로 읽기다'              -- git ls-remote --exit-code origin
 
 # The grade table alone does not cover what was observed: the refusal arrived as
 # an exit 6 on the ACT path, so the repair has to be measured there too.
@@ -68060,7 +68067,9 @@ case "$rc|$msg" in
 esac
 
 g110d=""
-for c110d in 'git commit --allow-empty -m x' 'git config --get user.name'; do
+for c110d in 'git commit --allow-empty -m x' 'git config --get user.name' 'git ls-remote --exec=sh x' \
+    'git ls-remote --upload-p=sh x' 'git status' 'git log -1 --format=%GS' 'gh pr view 1 --web' 'gh pr view 1 --web=true' \
+    'git rev-parse --is-inside-work-tree --output=x'; do
   c110d_new "확인 거부 명령 $c110d" "x" "$c110d"
   o110d=$(c110d_run 'RF#1')
   case "$o110d" in 1'|0|') ;; *) g110d="$g110d [$c110d → $o110d]" ;; esac
@@ -68068,6 +68077,20 @@ for c110d in 'git commit --allow-empty -m x' 'git config --get user.name'; do
   [ "$rc" = 3 ] || g110d="$g110d [$c110d 좌석 답 rc=$rc]"
 done
 check "110d: 쓰기 명령과 값 조회형 명령은 돌지 않고 세지 않는다" "${g110d:-없음}" "없음"
+
+# 확인의 git 은 프로그램을 띄우는 설정 키를 끈 채 돈다. 시간 제한 실행기를 이 하위 셸에서만
+# 인자를 보는 함수로 바꿔, 확인 명령이 실제로 받는 argv 를 잰다.
+c110d_new "확인 git 설정 덮어쓰기" "덮어씀"
+check "110d: 확인의 git 은 실행 키를 끈 설정으로 돈다" \
+  "$(C110D_N='RF#1' sb_in eval '
+    gate_metrics_timed() {
+      shift
+      case " $* " in
+        *" git -c core.fsmonitor=false -c core.hooksPath=/dev/null -c log.showSignature=false rev-parse --is-inside-work-tree "*) echo 덮어씀 ;;
+        *) echo 없음 ;;
+      esac
+    }
+    r=0; gate_confirm_run "$C110D_N" >/dev/null 2>&1 || r=$?; printf "%s" "$r"')" "0"
 
 c110d_new "자동 답 스위치" true
 check "110d: 스위치를 끄기 전에는 일치한다 (아래 단언이 공허하지 않다)" "$(c110d_run 'RF#1')" "0|1|0"

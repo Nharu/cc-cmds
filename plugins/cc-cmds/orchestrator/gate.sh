@@ -7953,6 +7953,22 @@ surface_of_git() {
         *" --output "*|*" --output="*)
           printf '트리밖쓰기'; return 0 ;;
       esac
+      # `ls-remote` takes `--exec` as a second name for `--upload-pack`, and git
+      # takes any unambiguous prefix of a long option, so the literal match above
+      # let `--exec=<program>` and `--upload-p=<program>` through as a read that
+      # runs a program. Every prefix of either is refused here: `--u…` belongs
+      # to `--upload-pack` alone, and `--e`/`--ex` are refused with `--exe…`
+      # because `--exit-code` shares them and git refuses those as ambiguous.
+      if [ "${1:-}" = ls-remote ]; then
+        local la
+        for la in "$@"; do
+          [ "$la" = '--' ] && break
+          case "${la%%=*}" in
+            --e|--ex|--exe|--exec|--u|--up|--upl|--uplo|--uploa|--upload|--upload-|--upload-p|--upload-pa|--upload-pac|--upload-pack)
+              printf '%s' "$GATE_FORM_UNKNOWN"; return 0 ;;
+          esac
+        done
+      fi
       printf '읽기' ;;
     # `archive` writes only where told to; with no `-o` it goes to stdout. Its
     # `--remote`/`--exec` pair runs a program on another machine.
@@ -8137,7 +8153,15 @@ surface_of_git_config() {
   # while letting a rewrite of $HOME through as a read is the hole this repair
   # exists to close. A query spelled with `--get` still grades exactly `읽기`,
   # so the form the pipeline actually runs loses nothing.
-  local a skip=1 want=0 scope='' query=0
+  #
+  # A write of a key that names a command (`gate_git_config_key_execs`) inside
+  # the tree is refused as a form. Graded `워크트리쓰기`, `git config
+  # core.fsmonitor <command>` passed as an ordinary worktree write, and every
+  # later `git status` in that repository ran the command — a program set up by
+  # one act and run by another that reads as a read. A write outside the tree
+  # keeps its grade: it already lands as `트리밖쓰기` with a machine-wide reach,
+  # which does not pass on its own.
+  local a skip=1 want=0 scope='' query=0 execkey=0
   for a in "$@"; do
     # The first word is `config` itself.
     if [ "$skip" = 1 ]; then skip=0; continue; fi
@@ -8150,13 +8174,16 @@ surface_of_git_config() {
       --file=*)           scope='트리밖쓰기' ;;
       --local|--worktree) : ;;
       -*) printf '등급 미상'; return 0 ;;
-      # A key or a value. Neither decides anything on its own — the options
-      # above already did.
-      *) : ;;
+      # A key or a value. Only a key that names a command decides anything;
+      # the options above decide the rest.
+      *) gate_git_config_key_execs "$a" && execkey=1 ;;
     esac
   done
   [ "$want" = 1 ] && { printf '등급 미상'; return 0; }
   [ "$query" = 1 ] && { printf '읽기'; return 0; }
+  if [ "$execkey" = 1 ] && [ -z "$scope" ]; then
+    printf '%s' "$GATE_FORM_UNKNOWN"; return 0
+  fi
   printf '%s' "${scope:-워크트리쓰기}"
 }
 
@@ -25994,22 +26021,61 @@ gate_confirm_subcommand_ok() {
   # `gh config get`, `gh auth`, `gh api`, `git config` — is not in it: a read
   # grade says nothing changes, not that nothing private comes back, and even
   # the one bit "matched" would leak a value compared against.
+  #
+  # THE OPTIONS ARE A CLOSED SET TOO, per program and subcommand. The `읽기`
+  # grade alone let `git ls-remote --exec=<program>` through, and this command
+  # runs after the stage has ended, from the relay, with no row naming its
+  # argv — so a dash word the set below does not name is refused, whatever the
+  # grading table says of it. A value spelled `--opt=<value>` is matched by its
+  # name; a word with no leading dash is a value or an operand and is left to
+  # the grade. Left out on purpose: `ls-remote` (its options name the program
+  # run on the other side), `status` and `describe --dirty` (both refresh the
+  # index, which starts `core.fsmonitor`), `tag` (graded a write, so never
+  # run), `gh … --web` (opens a browser) and `gh … --watch` (never returns).
+  # A `%G` placeholder asks git to verify a signature, which starts the
+  # configured signing program, so a word carrying one is refused as well.
+  local opts w
   case "$1" in
     gh)
       case "${2:-} ${3:-}" in
-        'pr view'|'pr list'|'pr checks'|'issue view'|'issue list'|'release view'|'release list'|'run view'|'run list'|'repo view'|'workflow view'|'workflow list') return 0 ;;
-      esac ;;
+        'pr view'|'pr list'|'pr checks'|'issue view'|'issue list'|'release view'|'release list'|'run view'|'run list'|'repo view'|'workflow view'|'workflow list') ;;
+        *) return 1 ;;
+      esac
+      opts=' --repo -R --json --jq -q --state -s --limit -L --head --base --label --author --required --exit-status --workflow --branch --event --status --commit '
+      shift 3 ;;
     git)
       case "${2:-}" in
-        rev-parse|ls-remote|merge-base|rev-list|log|tag|describe|branch|status) return 0 ;;
-      esac ;;
+        rev-parse)  opts=' --abbrev-ref --short --verify --quiet -q --symbolic-full-name --is-inside-work-tree --show-toplevel ' ;;
+        merge-base) opts=' --is-ancestor ' ;;
+        rev-list)   opts=' --count --max-count --first-parent --merges --no-merges ' ;;
+        log)        opts=' --oneline --format --max-count --first-parent --merges --no-merges ' ;;
+        describe)   opts=' --tags --abbrev --exact-match --always --long ' ;;
+        branch)     opts=' --show-current --list --contains --merged --no-merged --all --remotes ' ;;
+        *) return 1 ;;
+      esac
+      shift 2 ;;
+    *) return 1 ;;
   esac
-  return 1
+  for w in "$@"; do
+    case "$w" in
+      *%G*) return 1 ;;
+      -*) case "$opts" in *" ${w%%=*} "*) ;; *) return 1 ;; esac ;;
+    esac
+  done
+  return 0
 }
+
+# The configuration a confirmation's git runs under. Each key here is one a
+# read of the set above could reach and that starts a program: an index refresh
+# starts `core.fsmonitor`, a hook starts from `core.hooksPath`, and
+# `log.showSignature` asks for a signature check. The rest of
+# `gate_git_config_key_execs` is out of reach of that set — no transport, no
+# patch output, no checkout — and the option set is what keeps it so.
+readonly GATE_CONFIRM_GIT_CONFIG='-c core.fsmonitor=false -c core.hooksPath=/dev/null -c log.showSignature=false'
 
 gate_confirm_precheck() {
   # gate_confirm_precheck <record> — 0 when the record's confirmation command
-  # may run: the closed program and subcommand set, a `읽기` grade by the same
+  # may run: the closed program, subcommand and option set, a `읽기` grade by the same
   # reading the `grade` verb makes (`surface_of_argv0` and the two write
   # guards), a reach the grading table proves rather than one it parks — a
   # runner the table cannot see into, or a destroying or secret-printing mark
@@ -26118,7 +26184,8 @@ gate_confirm_eligible() {
 gate_confirm_run() {
   # gate_confirm_run <name> — run the record's confirmation command once and
   # count it: 0 on a match, 1 otherwise. Run without a shell, as the argv the
-  # record spells, under the read-scoped credential in the key's worktree
+  # record spells (a git one with `GATE_CONFIRM_GIT_CONFIG` before its
+  # subcommand), under the read-scoped credential in the key's worktree
   # (`gate_act_worktree`; no worktree, no run, and it reads as a mismatch),
   # with the stdout read into a file up to 4096 bytes and the stderr dropped.
   # A match is exit 0 and the stdout, trailing whitespace taken off, equal to
@@ -26132,6 +26199,13 @@ gate_confirm_run() {
   key=${name%#*}
   gate_confirm_precheck "$rec" || return 1
   read -r -a av <<< "$GATE_CONFIRM_CMD"
+  # git runs with the program-starting keys switched off, so a value the
+  # repository's own configuration holds for one of them is not run either.
+  if [ "${av[0]}" = git ]; then
+    local -a gc
+    read -r -a gc <<< "$GATE_CONFIRM_GIT_CONFIG"
+    av=(git "${gc[@]}" "${av[@]:1}")
+  fi
   cnt=$(gate_confirm_count "$name"); cnt=${cnt%% *}
   gate_confirm_write "$name.n" "$((cnt + 1)) $(date -u +%s)" \
     || warn "could not write the confirmation count of $name"
