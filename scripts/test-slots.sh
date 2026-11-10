@@ -1198,8 +1198,24 @@ proc $pb $(ts_fp "$pb")
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
   set -uo pipefail
   case "${1:-}" in
-    --self-test) ts_self_test; exit $? ;;
-    --self-test-inner) ts_self_test inner; exit $? ;;
+    --self-test|--self-test-inner)
+      # The self-test runs scripts/test-gate.sh, so it turns the banner channel
+      # and the dashboard off and clears what a pipeline stage exported to it,
+      # the same way every gate-family suite does. These lines sit in this
+      # branch and nowhere else: scripts/test-gate.sh, scripts/test-tree.sh and
+      # scripts/check-push.sh source this file and then read
+      # `CC_PIPELINE_RUN_ID`, and `--run` reads it itself to choose the
+      # unattended default. They stay unindented because the meta suite's leak
+      # census matches the whole lines and asserts the clearing line sits after
+      # the direct-run guard.
+CC_CMDS_AUTOPILOT_NOTIFY=0
+export CC_CMDS_AUTOPILOT_NOTIFY
+CC_CMDS_DASHBOARD=off
+export CC_CMDS_DASHBOARD
+for v in $(compgen -e | grep '^CC_PIPELINE_' || true); do unset "$v"; done
+      if [ "$1" = --self-test-inner ]; then ts_self_test inner; else ts_self_test; fi
+      exit $?
+      ;;
     --run)
       if [ "$#" -lt 3 ]; then
         printf 'test-slots: 사용법 — --run <무게 키> <이름> -- <명령…>\n' >&2
