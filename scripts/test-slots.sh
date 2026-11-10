@@ -629,8 +629,13 @@ ts_release_mine() {
 # the shell waits for it; on TERM it sends the child TERM and waits again,
 # which is how cleanup's TERM still reaches the job. With $1 `fg` (a job shell
 # run in the foreground, as check-push's serial steps are) an INT is sent on as
-# TERM the same way; a job shell started with `&` begins with INT ignored and
-# can set no INT trap, so `bg` sets none. With a weight key in $2, the shell
+# TERM the same way, and the child is started through perl with INT back at its
+# default: bash starts a background child with INT ignored, and a command that
+# starts with INT ignored can neither trap it nor die of it, so without the
+# reset a held command would answer INT differently from the same command run
+# unheld. Without perl the child starts as `&` leaves it. A job shell started
+# with `&` begins with INT ignored and can set no INT trap, so `bg` sets none
+# and leaves its child as `&` starts it. With a weight key in $2, the shell
 # reads the children's CPU from `times` after the last wait — a file, because
 # `times` inside a command substitution reports a fresh process — and records
 # the job's weight. The job's processes are added to the owners of the slots
@@ -645,7 +650,11 @@ ts_job_shell() {
     trap 'TS_JS_SIG=1; [ -z "$TS_JS_CPID" ] || kill -TERM "$TS_JS_CPID" 2>/dev/null' INT
   fi
   t0=$(ts_now)
-  "$@" &
+  if [ "$how" = fg ] && command -v perl >/dev/null 2>&1; then
+    perl -e '$SIG{INT} = "DEFAULT"; exec { $ARGV[0] } @ARGV or exit 127;' -- "$@" &
+  else
+    "$@" &
+  fi
   TS_JS_CPID=$!
   [ "$TS_JS_SIG" = 0 ] || kill -TERM "$TS_JS_CPID" 2>/dev/null
   if [ -n "$TS_GOT" ]; then
@@ -1056,6 +1065,8 @@ proc $pb $(ts_fp "$pb")
   wait "$w"
   rc=$?
   check "잡 셸: TERM 을 자식에게 넘기고 자식의 종료 코드로 끝난다" "$rc $(cat "$T/js.log" 2>/dev/null)" "9 got-term"
+  (ts_job_shell fg "" bash -c 'trap "exit 7" INT; kill -INT $$; sleep 1; exit 0')
+  check "잡 셸: 앞쪽 잡의 자식은 INT 를 받을 수 있게 시작한다" "$?" "7"
   ts_slot_take "목표 o" "" 2>/dev/null
   (ts_job_shell bg "" sh -c 'exit 0')
   has "잡 셸: 잡의 프로세스를 자리 owner 에 더한다" "$(cat "$T/s/$TS_GOT/owner")" "proc "
