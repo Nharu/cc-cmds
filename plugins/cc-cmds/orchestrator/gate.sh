@@ -3239,16 +3239,17 @@ gate_base_check_front() {
   # WHAT CANNOT BE READ IS REFUSED ON A TARGET WITH NO `origin`. An option a
   # wrapper does not know (`env -S`, `env -C`), a `GIT_DIR`, `GIT_WORK_TREE` or
   # `GIT_COMMON_DIR` assignment ahead of the command, `find -execdir`, and a
-  # shell `-c` string holding `git` and one of the subcommands the checks read
-  # as words leave the git act or the repository it reaches unread. The string
-  # is scanned quote-blind, as the floor scan scans it, so a read such as
+  # shell `-c` string, an interpreter's argv or an opaque runner's argv
+  # (`gate_argv_opaque`) holding `git` and one of the subcommands the checks
+  # read as words leave the git act or the repository it reaches unread. The
+  # text is scanned quote-blind, as the floor scan scans it, so a read such as
   # `git status` inside one passes and a string merely naming those words is
   # refused. On such a target, with the act's directory in any
   # worktree of its repository, they are refused. Only the call whose
   # <report-unread> is 1 prints that refusal, so the two checks never both
   # print it. A script file a shell runs is not read, as the floor scan does
   # not read one.
-  local check="$1" report="$2" alias="$3" cmd out="" a w want re
+  local check="$1" report="$2" alias="$3" cmd out="" a w want
   shift 3
   [ "$#" -ge 1 ] || return 0
   GATE_BASECHK_FN="$check"; GATE_BASECHK_REPORT="$report"; GATE_BASECHK_ALIAS="$alias"
@@ -3305,20 +3306,23 @@ gate_base_check_front() {
       out=$(gate_base_check_inner "$@") ;;
     bash|sh|zsh|dash|ksh|python|python3|perl|ruby|node)
       shift
-      # A shell's `-c` string, and an interpreter's whole argv, with quotes,
-      # backslashes and `$IFS` removed the way the floor scan removes them, so
-      # `'git' commit`, `\git commit` and `git${IFS}commit` read as `git commit`.
+      # A shell's `-c` string, and an interpreter's whole argv.
       case "$cmd" in
         python|python3|perl|ruby|node) a="$*" ;;
         *) a=$(gate_push_shell_payload "$@") ;;
       esac
-      a=$(printf '%s' "$a" | sed 's/\$[{]IFS[^}]*[}]/ /g; s/\$IFS/ /g' | tr -d '\\"'"'")
-      re='(^|[^[:alnum:]_.-])git([^[:alnum:]_.-]|$)'
-      [[ "$a" =~ $re ]] || return 0
-      re='(^|[^[:alnum:]_-])(branch|checkout|switch|rebase|update-ref|symbolic-ref|fetch|push|commit|merge|cherry-pick|revert|am|pull|reset|worktree)([^[:alnum:]_-]|$)'
-      [[ "$a" =~ $re ]] || return 0
+      gate_base_text_moves_git "$a" || return 0
       out="$GATE_BASECHK_UNREAD" ;;
-    *) return 0 ;;
+    *)
+      # Every other runner the opaque axis knows (`npx -c`, `npm exec`,
+      # `pnpm exec`, `yarn exec`, `make`, `docker run` …) runs a command its
+      # argv names and the grading table passes it as a worktree write, so its
+      # whole argv is scanned as an interpreter's is. A name the axis does not
+      # know is graded unknown elsewhere and is not read here.
+      [ "$(gate_argv_opaque "$@")" = 1 ] || return 0
+      shift
+      gate_base_text_moves_git "$*" || return 0
+      out="$GATE_BASECHK_UNREAD" ;;
   esac
   if [ "$out" = "$GATE_BASECHK_UNREAD" ]; then
     [ "$report" = 1 ] || return 0
@@ -3329,6 +3333,20 @@ gate_base_check_front() {
     return 0
   fi
   printf '%s' "$out"
+}
+
+gate_base_text_moves_git() {
+  # gate_base_text_moves_git <text> — true when <text> names `git` and one of
+  # the subcommands the two base checks read. Quotes, backslashes and `$IFS`
+  # are removed first, the way the floor scan removes them, so `'git' commit`,
+  # `\git commit` and `git${IFS}commit` read as `git commit`. The scan is
+  # quote-blind, so a string merely naming those words also answers true.
+  local a re
+  a=$(printf '%s' "$1" | sed 's/\$[{]IFS[^}]*[}]/ /g; s/\$IFS/ /g' | tr -d '\\"'"'")
+  re='(^|[^[:alnum:]_.-])git([^[:alnum:]_.-]|$)'
+  [[ "$a" =~ $re ]] || return 1
+  re='(^|[^[:alnum:]_-])(branch|checkout|switch|rebase|update-ref|symbolic-ref|fetch|push|commit|merge|cherry-pick|revert|am|pull|reset|worktree)([^[:alnum:]_-]|$)'
+  [[ "$a" =~ $re ]]
 }
 
 gate_base_check_inner() {
@@ -3584,7 +3602,8 @@ gate_segment_base_move() {
   # `update-ref`, `symbolic-ref <base>`, and a `fetch`, `push` or `pull`
   # refspec whose destination is the base; any of these behind `--git-dir` or
   # `--work-tree` is refused too, and so is `rebase --update-refs`, which moves
-  # branches no word of the act names. A long option is read the way git reads
+  # branches no word of the act names, and a `rebase -x` / `--exec` whose
+  # command holds a git act. A long option is read the way git reads
   # it, by any prefix of three or more characters.
   #
   # EVERY WORKTREE OF THE TARGET, THE MAIN ONE INCLUDED. The act's directory
@@ -3654,7 +3673,7 @@ gate_segment_base_move() {
   # `--force-create`. A prefix git would refuse as ambiguous is read as each
   # option it could be, which can only refuse an act git refuses anyway.
   local -a rest=("${@:$((GATE_GIT_SUBIDX + 1))}") pos=()
-  local named=0 force=0 movey=0 rename=0 root=0 upd=0 headref=0 noderef=0 headmove=0 k=0 lw
+  local named=0 force=0 movey=0 rename=0 root=0 upd=0 headref=0 noderef=0 headmove=0 xmove=0 k=0 lw
   [ "${#rest[@]}" -ge 1 ] || rest=("")
   case "$GATE_GIT_SUB" in
     branch)
@@ -3736,23 +3755,61 @@ gate_segment_base_move() {
           i=$((i + 1))
         fi
       done
+      # `-x` / `--exec` hand git a shell command it runs after each picked
+      # commit, so a value naming a git act is read like a shell `-c` string
+      # (`gate_base_text_moves_git`) and refused: `-x 'git update-ref
+      # refs/heads/<base> HEAD'` moves the base from a worktree on the segment
+      # branch. The value is found in every spelling git takes: `-x <cmd>`,
+      # `-x<cmd>`, bundled after other short options (`-ix <cmd>`), `--exec
+      # <cmd>`, `--exec=<cmd>` and a prefix of three or more characters.
       while [ "$k" -lt "${#rest[@]}" ]; do
         w="${rest[$k]}"
         lw="${w%%=*}"
         case "$w" in
-          --onto|--strategy|--strategy-option|--exec|--trailer|--whitespace|-s|-X|-x|-C) k=$((k + 1)) ;;
+          --exec|-x)
+            ! gate_base_text_moves_git "${rest[$((k + 1))]:-}" || xmove=1
+            k=$((k + 1)) ;;
+          --onto|--strategy|--strategy-option|--trailer|--whitespace|-s|-X|-C) k=$((k + 1)) ;;
           --root) root=1 ;;
           --no-update-refs) upd=0 ;;
           --*)
             if [ "${#lw}" -ge 3 ]; then
               case "--update-refs" in "$lw"*) upd=1; updsrc=옵션 ;; esac
+              case "--exec" in
+                "$lw"*)
+                  case "$w" in
+                    *=*) v="${w#*=}" ;;
+                    *) v="${rest[$((k + 1))]:-}"; k=$((k + 1)) ;;
+                  esac
+                  ! gate_base_text_moves_git "$v" || xmove=1 ;;
+              esac
             fi ;;
-          -*) : ;;
+          -*)
+            # A bundle of short options: `x`, `s`, `X` and `C` take a value,
+            # the rest of the word or else the next word.
+            v="${w#-}"
+            while [ -n "$v" ]; do
+              case "$v" in
+                x*)
+                  v="${v#x}"
+                  [ -n "$v" ] || { v="${rest[$((k + 1))]:-}"; k=$((k + 1)); }
+                  ! gate_base_text_moves_git "$v" || xmove=1
+                  break ;;
+                [sXC]*)
+                  [ -n "${v#?}" ] || k=$((k + 1))
+                  break ;;
+              esac
+              v="${v#?}"
+            done ;;
           '') : ;;
           *) pos+=("$w") ;;
         esac
         k=$((k + 1))
       done
+      if [ "$xmove" = 1 ]; then
+        printf '받은 행위: git rebase --exec, 베이스 브랜치: %s — 원격 없는 대상의 워크트리에서 --exec 가 실행하는 셸 명령 안의 git 행위는 어느 브랜치를 옮기는지 읽을 수 없어 거부합니다' "$want"
+        return 0
+      fi
       if [ "${#pos[@]}" -ge 2 ] || [ "$root" = 1 ]; then
         for w in ${pos[@]+"${pos[@]}"}; do ! gate_word_names_base "$w" "$brf" || named=1; done
       fi
@@ -3810,9 +3867,14 @@ gate_segment_base_move() {
   esac
   # `--abort` and `--quit` put a stopped sequence back without moving a
   # branch, and a `reset` with no commit or path word resets to HEAD itself.
-  for w in "${rest[@]}"; do
-    case "$w" in --abort|--quit) headmove=0 ;; esac
-  done
+  # They are read only as the first word after a subcommand that defines them;
+  # git takes no other operand beside them, and anywhere else they are a
+  # value (`commit -m --abort`, `merge -m --quit <branch>`) that commits or
+  # merges all the same.
+  case "$GATE_GIT_SUB:${rest[0]}" in
+    merge:--abort|merge:--quit|rebase:--abort|rebase:--quit|cherry-pick:--abort|cherry-pick:--quit|revert:--abort|revert:--quit|am:--abort|am:--quit)
+      headmove=0 ;;
+  esac
   if [ "$GATE_GIT_SUB" = reset ]; then
     k=0
     for w in "${rest[@]}"; do case "$w" in -*|'') : ;; *) k=1 ;; esac; done
