@@ -3523,6 +3523,115 @@ STUBEOF
     { grep -F '`segment`' "$WT/docs/pipeline-run/$1.md" 2>/dev/null || true; } | { grep -F "| id=$2 " || true; } | tail -1
   }
 
+  # THE RE-DECLARATION FIXTURES. A routed run of a two-slice document whose two
+  # slices are planned from the declaration, the re-convergence attempts the
+  # gate's own stage-result writer records on it, and the readers the checks
+  # use. Definitions, so a cut of the section that uses them stands alone.
+  #
+  # f113_doc <run id> — that run's document, repo-relative.
+  f113_doc() { printf 'docs/fx113-%s.md' "$1"; }
+  # f113_set <run id> <슬라이스> <필드> <값> — that slice's `**<필드>**:` line rewritten
+  f113_set() {
+    local f="$WT/$(f113_doc "$1")"
+    awk -v s="$2" -v k="**$3**: " -v v="$4" '
+      /^### 슬라이스 / { cur = $3 }
+      cur == s && index($0, k) == 1 { print k v; next }
+      { print }' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+  }
+  # f113_routed <run id> — the run's routing record and the inventory baseline
+  # a routed launch is checked against.
+  f113_routed() {
+    mkdir -p "$STATE_LATE/cc-cmds/run/$1"
+    printf '1\n' > "$STATE_LATE/cc-cmds/run/$1/routing-guard"
+    rm -f "$STATE_LATE/cc-cmds/run/$1/inventory.json"
+    printf '{"schema": "cc-lane-accounts v1", "accounts": []}\n' > "$STATE_LATE/cc-cmds/run/$1/inventory.json"
+  }
+  # f113_new <run id> <SA 선언 파일> <SB 선언 파일> [베이스 브랜치] — the run, its
+  # two worktrees cut from the base branch, and both planning acts. 0 when both
+  # planning acts were taken; rc and msg are the last act's.
+  f113_new() {
+    local r="$1" base="${4:-main}" row s
+    two_slice_doc "$WT/$(f113_doc "$r")" t/infra 머지 '**리뷰 정책**: 리뷰없음'
+    f113_set "$r" SA '선언 파일' "$2"
+    f113_set "$r" SB '선언 파일' "$3"
+    row=$(printf '%s' "$row15c" | sed "s/베이스 브랜치=main/베이스 브랜치=$base/")
+    row15c="$row" g15_run "$r" "$(f113_doc "$r")" "$plan15c" 리뷰없음
+    f113_routed "$r"
+    for s in SA SB; do
+      ( cd "$WT" && git worktree add -q -b "seg/$r-$s" "$(g15_wt "$r" "$s")" "$([ "$base" = main ] && printf HEAD || printf '%s' "$base")" ) >/dev/null 2>&1
+      g15_plan act "$r" "$s" 상태=계획됨 "워크트리=$(g15_wt "$r" "$s")"
+      [ "$rc" = 0 ] || return 1
+    done
+  }
+  # f113_in <run id> <bash 본문> [인자…] — the body in a fresh process with the
+  # gate sourced against that run, its positional arguments the ones given.
+  f113_in() {
+    local r="$1" body="$2"; shift 2
+    ( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" CC_GATE_SOURCE_ONLY=1 F113_BODY="$body" bash -c '
+        . "$1" </dev/null
+        MANIFEST="$2"; shift 2
+        check_manifest >/dev/null 2>&1
+        derive_paths_from_manifest
+        rundir_init >/dev/null 2>&1 || true
+        eval "$F113_BODY"' _ "$GATE" "$WORK/plan-$r.md" "$@" )
+  }
+  # f113_rcrow <run id> <세그먼트|-> <스테이지> <실행 버전> <종단 부류> — a
+  # re-convergence row appended by the gate's writer, then the re-declaration
+  # the stage-result recorder runs right after a `reconverge` row; output and
+  # warnings in $WORK/f113-rc.out. The recorder itself classifies a fixture
+  # stream that left no ledger row of its own as hollow, so the row is written
+  # here and the recorder's call is asserted on its source.
+  f113_rcrow() {
+    f113_in "$1" '
+      gate_append stage-result "세그먼트=$1" "스테이지=$2" "종류=reconverge" "종료 코드=0" \
+        "실행 버전=$3" "세션 id=s-113" "종단 부류=$4"
+      gate_redeclare_after_reconverge "$1" "$2#$3"' "$2" "$3" "$4" "$5" > "$WORK/f113-rc.out" 2>&1
+  }
+  # f113_rc <run id> <세그먼트> <실행 버전> — one segment re-convergence ending
+  # `정상 완료`.
+  f113_rc() { f113_rcrow "$1" "$2" "$2" "$3" '정상 완료'; }
+  # f113_rows <run id> <계열> <세그먼트> — that segment's rows of the series
+  f113_rows() {
+    { grep -F -e "- \`$2\` " "$WT/docs/pipeline-run/$1.md" 2>/dev/null || true; } \
+      | { grep -E "\| (id|세그먼트)=$3 " || true; }
+  }
+  f113_redecl() { f113_rows "$1" segment "$2" | { grep -F -e '| 재선언=' || true; } | grep -c . || true; }
+  f113_blocks() { f113_rows "$1" blocked "$2" | grep -c . || true; }
+  f113_snapdecl() {  # f113_snapdecl <run id> <세그먼트> — the snapshot's `선언 파일` of it
+    au15_snap "$WORK/plan-$1.md" | jq -r --arg s "$2" '.segments[] | select(.id == $s) | .["선언 파일"]'
+  }
+  # f113_seg <run id> <세그먼트> <필드…> — a router segment row; sets rc, msg
+  f113_seg() {
+    local r="$1" s="$2"; shift 2
+    gateL act --manifest "$WORK/plan-$r.md" --kind segment --target infra --segment "$s" --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(au15_H "$r")" --rationale x -- "$@"
+  }
+  # f113_prompt <run id> <세그먼트> <선언 파일 구절|-> — the router's first implementation prompt
+  f113_prompt() {
+    local da
+    da=$(au15_snap "$WORK/plan-$1.md" | jq -r '.["문서 인자"]')
+    if [ "$3" = "-" ]; then
+      printf '/cc-cmds:implement-unattended %s "세그먼트 %s (사이클 1)"' "$da" "$2"
+    else
+      printf '/cc-cmds:implement-unattended %s "세그먼트 %s (사이클 1) · 선언 파일: %s"' "$da" "$2" "$3"
+    fi
+  }
+  # f113_dispatch <plan|act> <run id> <세그먼트> <프롬프트> — the implementation
+  # dispatch; sets rc, msg. An act forks the gate with the stub CLI, so one that
+  # passes every check launches nothing real.
+  f113_dispatch() {
+    local out
+    if [ "$1" = act ]; then
+      out=$(cd "$WT" && XDG_STATE_HOME="$STATE_LATE" CC_CLAUDE_BIN="$STUB" bash "$GATE" act --manifest "$WORK/plan-$2.md" \
+        --kind skill --target infra --segment "$3" --cutpoint 커밋 --surface 워크트리쓰기 \
+        --snapshot-digest "$(au15_H "$2")" --rationale x -- implement -p "$4" 2>&1); rc=$?
+      msg=$(printf '%s' "$out" | grep -vE '\[run\] ' | tr '\n' ' ' | sed 's/[[:space:]]*$//')
+    else
+      gateL plan --manifest "$WORK/plan-$2.md" --kind skill --target infra --segment "$3" --cutpoint 커밋 \
+        --surface 워크트리쓰기 -- implement -p "$4"
+    fi
+  }
+
   # 15g runs as four pieces (15g, 15g-2, 15g-3, 15g-4) so the plan can place
   # them on different rows, and the helpers more than one piece calls are
   # definitions here for the same reason as the ones above: a cut of one piece
@@ -63827,6 +63936,359 @@ check "102: 분류기를 읽지 못하면 판정불가다 (드라이버)" \
 gs102() { bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; shift; gate_surface_stamp "$@"' _ "$@" 2>/dev/null; }
 check "102: 분류기를 읽지 못하면 판정불가다 (게이트)" \
   "$(gs102 "$d102/nolib/orchestrator/gate.sh" SB.txt)/$(gs102 "$GATE" SB.txt CLAUDE.md)" "판정불가/1건 지침파일"
+
+# ---------------------------------------------------------------------------
+# 113. 재수렴이 선언을 바꾸면 게이트가 세그먼트 행을 다시 선언한다
+# --- section: 113 | group: base | covers: act, plan, snapshot, gate_segment_redeclare, gate_redeclare_after_reconverge, gate_decl_dispatch_check, gate_decl_phrase_check, gate_segment_decl_snapshot, gate_record_stage_outcome, gate_halt_settle, gate_record_row | anchors: 113: 넓힌 재수렴 뒤 재선언 행이 하나 생긴다, 113: 재선언 행의 다이제스트는 지금 문서의 것이다, 113: 스냅숏 선언 파일이 새 집합이다, 113: 같은 문서의 둘째 재수렴은 행을 더하지 않는다, 113: 라우터가 넘긴 옛 집합은 게이트의 집합으로 덮이고 경고가 남는다, 113: 구절이 스냅숏과 다르면 종료 2 로 두 값을 함께 든다, 113: 같은 값에 세 번째 구절 거절은 종료 3 이다, 113: 브랜치가 바꾼 경로를 빼는 좁힘은 park 재선언 행과 cone 막힘을 쓴다, 113: 커밋 안 된 한글 경로의 변경도 좁힘을 park 로 만든다, 113: 베이스 끝을 읽지 못하면 판정 불가 막힘이다, 113: 파견 자리 대조가 어긋난 집합을 종료 3 으로 막는다, 113: 파견 자리가 미룬 재선언을 쓰고 통과한다, 113: 파견 자리 재선언이 park 로 만든 세그먼트는 같은 act 가 파견하지 않는다, 113: 파견 자리 재선언 뒤 옛 구절은 새 값을 든 종료 2 로 거절된다, 113: 런 범위 재수렴은 허용 상태의 세그먼트를 모두 재선언한다, 113: 선언 없는 런의 호출자 집합은 덮지 않는다 ---
+#
+# A re-convergence inside a run can move the frozen document's `선언 파일` for
+# a slice, and the segment row used to keep the set it was planned with: the
+# review line, the re-entry frame and the snapshot then went on naming the old
+# set, and the implementation stopped on a binding-tier collision with its own
+# document. After such a re-convergence the gate writes the segment row again,
+# marked `재선언=<키>#<버전>`, parks a segment whose branch already changed a
+# path the narrowing removed, and compares the two sets once more at every
+# implementation dispatch.
+# ---------------------------------------------------------------------------
+d8_113='`sa/p1.txt`, `sa/p2.txt`, `sa/p3.txt`, `sa/p4.txt`, `sa/p5.txt`, `sa/p6.txt`, `sa/p7.txt`, `sa/p8.txt`'
+d9_113="$d8_113, \`sa/p9.txt\`"
+n8_113='sa/p1.txt, sa/p2.txt, sa/p3.txt, sa/p4.txt, sa/p5.txt, sa/p6.txt, sa/p7.txt, sa/p8.txt'
+n9_113="$n8_113, sa/p9.txt"
+
+# --- 넓힘: 재선언 행 하나, 그 값을 읽는 자리, 같은 문서의 둘째 재수렴 --------
+if f113_new R113A "$d8_113" '`SB.txt`'; then
+  ok "113: 여덟 경로를 선언한 두 슬라이스가 문서에서 계획된다"
+else
+  bad "113: 여덟 경로를 선언한 두 슬라이스가 문서에서 계획된다" "rc=$rc $msg"
+fi
+D8_113=$(seg_field "$(g15_row R113A SA)" '선언 다이제스트')
+wt113a=$(g15_wt R113A SA)
+check "113: 계획 행이 여덟 경로를 싣는다" "$(seg_field "$(g15_row R113A SA)" '선언 파일 집합')" "$d8_113"
+# 기록기는 재수렴 행을 쓴 바로 뒤에 재선언을 부른다 — 아래 행들은 그 호출을
+# 픽스처가 같은 순서로 대신 부른 결과다.
+check "113: 기록기가 재수렴 행 뒤에 재선언을 부른다" \
+  "$(sed -n '/^gate_record_stage_outcome()/,/^}/p' "$GATE" | grep -cE '\[ "\$kind" = "reconverge" \]; then gate_redeclare_after_reconverge "\$rowseg" "\$seg#\$attempt"; fi' || true)" "1"
+f113_set R113A SA '선언 파일' "$d9_113"
+f113_rc R113A SA 1
+check "113: 재수렴 행이 정상 완료로 기록된다 (아래가 공허하지 않다)" \
+  "$(f113_rows R113A stage-result SA | { grep -F -e '| 종류=reconverge |' || true; } | tail -1 | tr '|' '\n' | sed -n 's/^ *종단 부류=//p' | sed 's/[[:space:]]*$//')" "정상 완료"
+check "113: 넓힌 재수렴 뒤 재선언 행이 하나 생긴다" "$(f113_redecl R113A SA)" "1"
+r113=$(g15_row R113A SA)
+check "113: 재선언 행이 아홉 경로를 싣는다" "$(seg_field "$r113" '선언 파일 집합')" "$d9_113"
+check "113: 재선언 행의 다이제스트는 지금 문서의 것이다" \
+  "$(seg_field "$r113" '선언 다이제스트')" "$(f113_in R113A 'slice_decl_digest "$DOC" SA')"
+if [ "$(seg_field "$r113" '선언 다이제스트')" != "$D8_113" ] && [ -n "$D8_113" ]; then
+  ok "113: 재선언 행의 다이제스트는 계획 행의 것과 다르다"
+else
+  bad "113: 재선언 행의 다이제스트는 계획 행의 것과 다르다" "D8=$D8_113 row=$r113"
+fi
+check "113: 재선언 행이 재수렴의 스테이지와 실행 버전을 싣는다" "$(seg_field "$r113" '재선언')" "SA#1"
+check "113: 재선언 행이 상태·워크트리·선행을 잇는다" \
+  "$(seg_field "$r113" '상태')|$(seg_field "$r113" '워크트리')|$(seg_field "$r113" '선행')" "계획됨|$wt113a|없음"
+check "113: 스냅숏 선언 파일이 새 집합이다" "$(f113_snapdecl R113A SA)" "$n9_113"
+check "113: 넓힘은 막힘 행을 쓰지 않는다" "$(f113_blocks R113A SA)" "0"
+f113_rc R113A SA 2
+check "113: 같은 문서의 둘째 재수렴은 행을 더하지 않는다" "$(f113_redecl R113A SA)" "1"
+
+# --- 표지 없는 행위와 라우터의 옛 집합 ----------------------------------------
+f113_seg R113A SA 상태=실행중 "워크트리=$wt113a" 선행=없음 "재선언=SA#1"
+check "113: 표지 없는 행위의 재선언 필드는 거부된다" "$rc" "2"
+f113_seg R113A SA 상태=실행중 "워크트리=$wt113a" 선행=없음 "선언 다이제스트=$D8_113"
+check "113: 표지 없는 행위의 선언 다이제스트는 거부된다" "$rc" "2"
+f113_seg R113A SA 상태=실행중 "워크트리=$wt113a" 선행=없음 "선언 파일 집합=$n8_113"
+case "$rc/$msg" in
+  0/*"게이트가 마지막으로 쓴"*) ok "113: 라우터가 넘긴 옛 집합은 게이트의 집합으로 덮이고 경고가 남는다" ;;
+  *) bad "113: 라우터가 넘긴 옛 집합은 게이트의 집합으로 덮이고 경고가 남는다" "rc=$rc $msg" ;;
+esac
+check "113: 덮인 실행중 행이 새 집합을 싣는다" \
+  "$(seg_field "$(g15_row R113A SA)" '상태')|$(seg_field "$(g15_row R113A SA)" '선언 파일 집합')" "실행중|$d9_113"
+check "113: 덮인 뒤에도 스냅숏 선언 파일이 새 집합이다" "$(f113_snapdecl R113A SA)" "$n9_113"
+
+# --- 구현 프롬프트의 선언 파일 구절 -------------------------------------------
+n113=$(grep -c '' "$WT/docs/pipeline-run/R113A.md")
+f113_dispatch plan R113A SA "$(f113_prompt R113A SA "$n9_113")"
+case "$msg" in
+  *"「· 선언 파일:」 구절"*|*"파견 자리 대조"*) bad "113: 스냅숏 값을 그대로 실은 구절은 대조를 지난다" "rc=$rc $msg" ;;
+  *) ok "113: 스냅숏 값을 그대로 실은 구절은 대조를 지난다" ;;
+esac
+f113_dispatch plan R113A SA "$(f113_prompt R113A SA "$n8_113")"
+case "$rc/$msg" in
+  2/*"프롬프트 $n8_113, 스냅숏 $n9_113"*) ok "113: 구절이 스냅숏과 다르면 종료 2 로 두 값을 함께 든다" ;;
+  *) bad "113: 구절이 스냅숏과 다르면 종료 2 로 두 값을 함께 든다" "rc=$rc $msg" ;;
+esac
+f113_dispatch plan R113A SA "$(f113_prompt R113A SA -)"
+case "$rc/$msg" in
+  2/*"프롬프트 (구절 없음), 스냅숏 $n9_113"*) ok "113: 구절이 없는 구현 프롬프트도 종료 2 다" ;;
+  *) bad "113: 구절이 없는 구현 프롬프트도 종료 2 다" "rc=$rc $msg" ;;
+esac
+check "113: plan 의 구절 대조는 원장 행을 쓰지 않는다" "$(grep -c '' "$WT/docs/pipeline-run/R113A.md")" "$n113"
+r113s=""
+for i113 in 1 2 3; do
+  f113_dispatch act R113A SA "$(f113_prompt R113A SA "$n8_113")"
+  r113s="$r113s$rc "
+done
+check "113: 같은 값에 세 번째 구절 거절은 종료 3 이다" "$r113s" "2 2 3 "
+case "$msg" in
+  *"파견 자리 대조"*) ok "113: 세 번째 구절 거절은 파견 자리 대조를 든다" ;;
+  *) bad "113: 세 번째 구절 거절은 파견 자리 대조를 든다" "$msg" ;;
+esac
+check "113: act 의 구절 거절마다 자율 승인 행이 남는다" \
+  "$(f113_rows R113A '자율 승인' SA | { grep -F -e '| kind=decl-phrase |' || true; } | grep -c . || true)" "3"
+
+# --- 좁힘: 브랜치 변경이 없는 경로, 미추적 파일, 새 원소가 덮는 경로 -------
+dn113='`sa/p1.txt`, `sa/p2.txt`, `sa/u.txt`, `sa/sub/x.txt`'
+f113_new R113B "$dn113" '`SB.txt`, `sb/y.txt`' || bad "113: R113B 픽스처 계획" "rc=$rc $msg"
+wt113b=$(g15_wt R113B SA); wt113bb=$(g15_wt R113B SB)
+f113_seg R113B SA 상태=실행중 "워크트리=$wt113b" 선행=없음
+f113_seg R113B SB 상태=실행중 "워크트리=$wt113bb" 선행=SA
+check "113: R113B 의 두 세그먼트가 실행중이다 (아래가 공허하지 않다)" \
+  "$(seg_field "$(g15_row R113B SA)" '상태')/$(seg_field "$(g15_row R113B SB)" '상태')" "실행중/실행중"
+f113_set R113B SA '선언 파일' '`sa/p1.txt`, `sa/u.txt`, `sa/sub/x.txt`'
+f113_rc R113B SA 1
+check "113: 아무것도 바꾸지 않은 경로를 빼는 좁힘은 재선언 행을 쓴다" \
+  "$(f113_redecl R113B SA)/$(seg_field "$(g15_row R113B SA)" '상태')/$(seg_field "$(g15_row R113B SA)" '선언 파일 집합')" \
+  "1/실행중/\`sa/p1.txt\`, \`sa/u.txt\`, \`sa/sub/x.txt\`"
+mkdir -p "$wt113b/sa"; printf 'u\n' > "$wt113b/sa/u.txt"
+f113_set R113B SA '선언 파일' '`sa/p1.txt`, `sa/sub/x.txt`'
+f113_rc R113B SA 2
+check "113: 미추적 파일만 있는 경로를 빼는 좁힘은 park 하지 않는다" \
+  "$(f113_redecl R113B SA)/$(seg_field "$(g15_row R113B SA)" '상태')/$(f113_blocks R113B SA)" "2/실행중/0"
+( cd "$wt113b" && mkdir -p sa/sub && printf 'x\n' > sa/sub/x.txt && git add sa/sub/x.txt && git commit -q -m fx113 ) >/dev/null 2>&1
+f113_set R113B SA '선언 파일' '`sa/p1.txt`, `sa/sub/`'
+f113_rc R113B SA 3
+check "113: 빠진 원소의 경로를 새 원소가 덮으면 park 하지 않는다" \
+  "$(f113_redecl R113B SA)/$(seg_field "$(g15_row R113B SA)" '상태')/$(f113_blocks R113B SA)" "3/실행중/0"
+
+# --- 좁힘: 브랜치가 바꾼 경로 -------------------------------------------------
+( cd "$wt113bb" && mkdir -p sb && printf 'y\n' > sb/y.txt && git add sb/y.txt && git commit -q -m fx113 ) >/dev/null 2>&1
+f113_set R113B SB '선언 파일' '`SB.txt`'
+f113_rc R113B SB 1
+rb113=$(g15_row R113B SB)
+bk113=$(f113_rows R113B blocked SB | tail -1)
+if [ "$(seg_field "$rb113" '상태')" = park ] && [ "$(seg_field "$rb113" '재선언')" = "SB#1" ] \
+   && [ "$(seg_field "$bk113" '스코프')" = cone ] && [ "$(seg_field "$bk113" '재킥 원인')" = 슬라이싱 ] \
+   && [ "$(seg_field "$bk113" '앵커 세그먼트')" = SB ]; then
+  case "$(seg_field "$bk113" '사유')" in
+    *sb/y.txt*) ok "113: 브랜치가 바꾼 경로를 빼는 좁힘은 park 재선언 행과 cone 막힘을 쓴다" ;;
+    *) bad "113: 브랜치가 바꾼 경로를 빼는 좁힘은 park 재선언 행과 cone 막힘을 쓴다" "사유에 경로가 없다: $bk113" ;;
+  esac
+else
+  bad "113: 브랜치가 바꾼 경로를 빼는 좁힘은 park 재선언 행과 cone 막힘을 쓴다" "row=$rb113 block=$bk113"
+fi
+check "113: 좁힘의 park 는 act 범위 막힘 행을 쓰지 않는다" \
+  "$( { grep -F -e '- `blocked` ' "$WT/docs/pipeline-run/R113B.md" || true; } | { grep -F -e '| 스코프=act |' || true; } | grep -c . || true)" "0"
+f113_set R113B SB '선언 파일' '`SB.txt`, `sb/y.txt`, `sb/z.txt`'
+f113_rc R113B SB 2
+check "113: park 재선언 행 뒤의 넓힘은 행을 더하지 않는다" "$(f113_redecl R113B SB)/$(f113_blocks R113B SB)" "1/1"
+f113_in R113B 'gate_redeclare_block SB 막힘 "같은 사유 113"; gate_redeclare_block SB 막힘 "같은 사유 113"' >/dev/null 2>&1
+check "113: 같은 사유의 막힘은 한 번만 쓴다" \
+  "$(f113_rows R113B blocked SB | { grep -F -e '| 사유=같은 사유 113 |' || true; } | grep -c . || true)" "1"
+
+# --- 재선언하지 않는 경우: 정상 완료가 아닌 재수렴, 선행도 바뀐 재수렴 -------
+f113_set R113B SA '선언 파일' '`sa/p1.txt`, `sa/sub/`, `sa/w.txt`'
+f113_rcrow R113B SA SA 4 크래시
+check "113: 정상 완료가 아닌 재수렴 뒤에는 재선언 행이 없다" "$(f113_redecl R113B SA)" "3"
+f113_set R113B SA '선행' 'SB'
+f113_rc R113B SA 5
+check "113: 선행도 바뀐 재수렴은 재선언 행을 쓰지 않는다" "$(f113_redecl R113B SA)" "3"
+case "$(cat "$WORK/f113-rc.out")" in
+  *"선언 파일 밖의 필드(선행)"*) ok "113: 선행도 바뀐 재수렴은 그 필드를 경고로 든다" ;;
+  *) bad "113: 선행도 바뀐 재수렴은 그 필드를 경고로 든다" "$(tr '\n' ' ' < "$WORK/f113-rc.out")" ;;
+esac
+
+# --- 파견 자리 대조와 파견측 재선언, 칸의 거부, 판독 불가 --------------------
+long113=$(i=1; while [ "$i" -le 30 ]; do printf '`sb/long-path-number-%02d.txt`, ' "$i"; i=$((i + 1)); done)
+long113="${long113%, }"
+f113_new R113C '`sa/a.txt`' "$long113" || bad "113: R113C 픽스처 계획" "rc=$rc $msg"
+f113_set R113C SA '선언 파일' '`sa/a.txt`, `sa/b.txt`'
+f113_dispatch plan R113C SA "$(f113_prompt R113C SA 'sa/a.txt')"
+case "$rc/$msg" in
+  3/*"파견 자리 대조"*"세그먼트 행 {sa/a.txt}, 문서 {sa/a.txt, sa/b.txt}"*) ok "113: plan 의 파견 자리 대조가 두 집합을 들고 종료 3 이다" ;;
+  *) bad "113: plan 의 파견 자리 대조가 두 집합을 들고 종료 3 이다" "rc=$rc $msg" ;;
+esac
+check "113: plan 의 대조는 막힘 행을 쓰지 않는다" "$(f113_blocks R113C SA)" "0"
+f113_dispatch act R113C SA "$(f113_prompt R113C SA 'sa/a.txt')"
+case "$rc/$msg" in
+  3/*"파견 자리 대조"*) ok "113: 파견 자리 대조가 어긋난 집합을 종료 3 으로 막는다" ;;
+  *) bad "113: 파견 자리 대조가 어긋난 집합을 종료 3 으로 막는다" "rc=$rc $msg" ;;
+esac
+check "113: 대조 거절은 원인=막힘 cone 막힘 행 하나를 남긴다" \
+  "$(f113_blocks R113C SA)/$(seg_field "$(f113_rows R113C blocked SA | tail -1)" '원인')/$(seg_field "$(f113_rows R113C blocked SA | tail -1)" '스코프')" "1/막힘/cone"
+# 재수렴 행은 있지만 그 뒤의 재선언이 없었던 세그먼트 — 파견 자리가 같은 락
+# 안에서 재선언하고 다시 대조한다. 대조 함수를 직접 부르면 행위 전체가 스텁
+# 스테이지를 띄우지 않고 그 갈래만 잰다.
+f113_in R113C 'gate_append stage-result "세그먼트=SA" "스테이지=SA" "종류=reconverge" "종료 코드=0" "실행 버전=1" "세션 id=s-113" "종단 부류=정상 완료"' >/dev/null 2>&1
+check "113: 파견 자리가 미룬 재선언을 쓰고 통과한다" \
+  "$(f113_in R113C '( gate_decl_dispatch_check act SA >/dev/null 2>&1; printf 반환 ); printf "/%s" "$?"')" "반환/0"
+check "113: 파견측 재선언 행이 새 집합과 재수렴 참조를 싣는다" \
+  "$(f113_redecl R113C SA)/$(seg_field "$(g15_row R113C SA)" '선언 파일 집합')/$(seg_field "$(g15_row R113C SA)" '재선언')/$(seg_field "$(g15_row R113C SA)" '상태')" \
+  "1/\`sa/a.txt\`, \`sa/b.txt\`/SA#1/계획됨"
+check "113: 파견측 재선언은 막힘 행을 더하지 않는다" "$(f113_blocks R113C SA)" "1"
+f113_dispatch plan R113C SA "$(f113_prompt R113C SA 'sa/a.txt, sa/b.txt')"
+case "$msg" in
+  *"파견 자리 대조"*|*"「· 선언 파일:」 구절"*) bad "113: 두 집합이 같으면 대조를 지난다" "rc=$rc $msg" ;;
+  *) ok "113: 두 집합이 같으면 대조를 지난다" ;;
+esac
+# 칸의 거부 — 앞 행이 긴 필드를 실어 재선언 행의 투영이 행 상한을 넘는다.
+br113=$(printf 'b%.0s' $(seq 1 640))
+f113_seg R113C SA 상태=실행중 "워크트리=$(g15_wt R113C SA)" 선행=없음 "브랜치=$br113"
+check "113: 긴 브랜치 필드를 실은 실행중 행이 받힌다 (아래가 공허하지 않다)" "$rc" "0"
+f113_set R113C SA '선언 파일' '`sa/a.txt`, `sa/b.txt`, `sa/c.txt`'
+f113_rcrow R113C SA SA 2 '정상 완료'
+check "113: 칸이 거부한 재선언은 행 없이 막힘 행을 남긴다" \
+  "$(f113_redecl R113C SA)/$(f113_rows R113C blocked SA | { grep -F -e '세그먼트 칸이 거부했습니다' || true; } | grep -c . || true)" "1/1"
+f113_dispatch plan R113C SA "$(f113_prompt R113C SA 'sa/a.txt, sa/b.txt')"
+case "$rc/$msg" in
+  3/*"파견 자리 대조"*) ok "113: 칸이 거부한 재선언 뒤의 파견은 대조에 멈춘다" ;;
+  *) bad "113: 칸이 거부한 재선언 뒤의 파견은 대조에 멈춘다" "rc=$rc $msg" ;;
+esac
+# 긴 선언 — 계획 행과 재선언 행이 각자의 사이드카를 가리킨다.
+nl113=$(printf '%s' "$long113" | tr -d '`')
+check "113: 긴 선언의 스냅숏 선언 파일은 전체 집합이다" "$(f113_snapdecl R113C SB)" "$nl113"
+side113p=$(seg_field "$(g15_row R113C SB)" '선언 파일 집합'); side113p=${side113p##*"(전체: "}; side113p=${side113p%)}
+cp "$side113p" "$WORK/f113-plan-side" 2>/dev/null || bad "113: 계획 행의 사이드카를 읽는다" "$side113p"
+f113_set R113C SB '선언 파일' "$long113, \`sb/extra.txt\`"
+f113_rc R113C SB 1
+side113r=$(seg_field "$(g15_row R113C SB)" '선언 파일 집합'); side113r=${side113r##*"(전체: "}; side113r=${side113r%)}
+check "113: 긴 선언의 재선언 행이 런 디렉터리 안의 사이드카를 가리킨다" \
+  "$(f113_redecl R113C SB)/$(case "$side113r" in ("$STATE_LATE/cc-cmds/run/R113C/"*) printf 안 ;; (*) printf '밖:%s' "$side113r" ;; esac)" "1/안"
+check "113: 재선언 뒤에도 계획 행의 사이드카 바이트는 그대로다" \
+  "$(cmp -s "$side113p" "$WORK/f113-plan-side" && printf 같음 || printf 다름)" "같음"
+check "113: 재선언 뒤의 스냅숏이 새 긴 집합이다" "$(f113_snapdecl R113C SB)" "$nl113, sb/extra.txt"
+rm -f "$side113r"
+check "113: 사이드카를 읽지 못하면 스냅숏 선언 파일이 판정불가다" "$(f113_snapdecl R113C SB)" "판정불가"
+# 대조 함수를 직접 부른다 — 행위 전체는 선행 SA 가 아직 착지하지 않아 대조에
+# 닿기 전에 거절된다.
+rc=0; msg=$(f113_in R113C 'gate_decl_dispatch_check act SB' 2>&1) || rc=$?
+case "$rc/$msg" in
+  3/*"파견 자리 대조"*"읽을 수 없습니다"*) ok "113: 판독할 수 없는 집합도 대조가 종료 3 으로 막는다" ;;
+  *) bad "113: 판독할 수 없는 집합도 대조가 종료 3 으로 막는다" "rc=$rc $msg" ;;
+esac
+check "113: 판독 불가의 막힘 행은 원인=판정 불가 다" \
+  "$(seg_field "$(f113_rows R113C blocked SB | tail -1)" '원인')" "판정 불가"
+huge113=$(i=1; while [ "$i" -le 3500 ]; do printf '`sb/huge-%04d.txt`, ' "$i"; i=$((i + 1)); done)
+f113_set R113C SB '선언 파일' "${huge113%, }"
+check "113: 큰 선언이 65536 바이트를 넘는다 (아래가 공허하지 않다)" \
+  "$(f113_in R113C 'n=$(slice_field "$DOC" SB "선언 파일" | wc -c | tr -d " "); [ "$n" -gt 65536 ] && printf 넘음 || printf "%s" "$n"')" "넘음"
+f113_rc R113C SB 2
+check "113: 65536 바이트를 넘는 선언은 행 없이 막힘 행을 남긴다" \
+  "$(f113_redecl R113C SB)/$(f113_rows R113C blocked SB | { grep -F -e '65536 바이트를 넘어' || true; } | grep -c . || true)" "1/1"
+check "113: 재선언 행은 앞 행의 prev 를 잇지 않는다" \
+  "$(f113_rows R113C segment SB | { grep -F -e '| 재선언=' || true; } | tail -1 | grep -o ' | prev=' | grep -c . || true)" "1"
+# 잘린 값을 실은 재선언 행이 상한을 넘으면 사이드카 경로만 실어 다시 쓴다 —
+# 앞 행의 긴 브랜치 필드가 잘린 값 300 바이트보다 길게 행을 넘기되, 잘린 값을
+# 뺀 행은 이 호스트의 경로 길이와 무관하게 상한 안에 든다.
+br113b=$(printf 'b%.0s' $(seq 1 250))
+f113_seg R113C SB 상태=계획됨 "워크트리=$(g15_wt R113C SB)" 선행=SA "브랜치=$br113b"
+check "113: 긴 브랜치 필드를 실은 SB 행이 받힌다 (아래가 공허하지 않다)" "$rc" "0"
+f113_set R113C SB '선언 파일' "$long113, \`sb/extra2.txt\`"
+f113_rc R113C SB 3
+check "113: 잘린 값을 실은 첫 재선언 행이 상한에 걸린다 (아래가 공허하지 않다)" \
+  "$(grep -c -F -e 'the segment row is over the cap' "$WORK/f113-rc.out" || true)" "1"
+side113s=$(seg_field "$(g15_row R113C SB)" '선언 파일 집합')
+check "113: 넘친 재선언 행은 사이드카 경로만 싣는다" \
+  "$(f113_redecl R113C SB)/$(case "$side113s" in ("(전체: $STATE_LATE/cc-cmds/run/R113C/"*")") printf 경로만 ;; (*) printf '다름:%s' "$side113s" ;; esac)/$([ "$(seg_field "$(g15_row R113C SB)" '브랜치')" = "$br113b" ] && printf 이음 || printf 다름)" \
+  "2/경로만/이음"
+check "113: 경로만 실은 재선언 뒤의 스냅숏이 새 긴 집합이다" "$(f113_snapdecl R113C SB)" "$nl113, sb/extra2.txt"
+
+# --- 좁힘: 커밋 안 된 추적 변경(한글 경로), 베이스 끝을 읽지 못함 ------------
+bwt113="$WORK/fx113-basewt"
+( cd "$WT" && git worktree add -q -b fx113base "$bwt113" HEAD && cd "$bwt113" && mkdir -p sa sb \
+    && printf 'k\n' > 'sa/한글 경로.txt' && printf 'x\n' > sb/x.txt && git add sa sb && git commit -q -m fx113 \
+    && cd "$WT" && git worktree remove --force "$bwt113" ) >/dev/null 2>&1
+check "113: 한글 경로를 추적하는 베이스 브랜치가 있다 (아래가 공허하지 않다)" \
+  "$(cd "$WT" && git -c core.quotePath=false ls-tree -r --name-only fx113base 2>/dev/null | grep -c '^sa/한글 경로.txt$' || true)" "1"
+f113_new R113E '`sa/한글 경로.txt`, `sa/keep.txt`' '`SB.txt`, `sb/x.txt`' fx113base || bad "113: R113E 픽스처 계획" "rc=$rc $msg"
+f113_seg R113E SA 상태=실행중 "워크트리=$(g15_wt R113E SA)" 선행=없음
+f113_seg R113E SB 상태=실행중 "워크트리=$(g15_wt R113E SB)" 선행=SA
+printf 'changed\n' > "$(g15_wt R113E SA)/sa/한글 경로.txt"
+f113_set R113E SA '선언 파일' '`sa/keep.txt`'
+f113_rc R113E SA 1
+case "$(seg_field "$(g15_row R113E SA)" '상태')|$(seg_field "$(f113_rows R113E blocked SA | tail -1)" '사유')" in
+  'park|'*'sa/한글 경로.txt'*) ok "113: 커밋 안 된 한글 경로의 변경도 좁힘을 park 로 만든다" ;;
+  *) bad "113: 커밋 안 된 한글 경로의 변경도 좁힘을 park 로 만든다" "$(g15_row R113E SA) / $(f113_rows R113E blocked SA | tail -1)" ;;
+esac
+( cd "$WT" && git branch -D fx113base ) >/dev/null 2>&1
+f113_set R113E SB '선언 파일' '`SB.txt`'
+f113_rc R113E SB 1
+check "113: 베이스 끝을 읽지 못하면 판정 불가 막힘이다" \
+  "$(seg_field "$(g15_row R113E SB)" '상태')/$(seg_field "$(f113_rows R113E blocked SB | tail -1)" '원인')" "park/판정 불가"
+
+# --- 런 범위 재수렴, 동결 줄 없음 ---------------------------------------------
+f113_new R113F '`sa/f.txt`' '`SB.txt`' || bad "113: R113F 픽스처 계획" "rc=$rc $msg"
+f113_set R113F SA '선언 파일' '`sa/f.txt`, `sa/g.txt`'
+f113_set R113F SB '선언 파일' '`SB.txt`, `sb/g.txt`'
+f113_rcrow R113F - D1 1 '정상 완료'
+check "113: 런 범위 재수렴은 허용 상태의 세그먼트를 모두 재선언한다" \
+  "$(f113_redecl R113F SA)/$(f113_redecl R113F SB)/$(seg_field "$(g15_row R113F SB)" '재선언')" "1/1/D1#1"
+f113_set R113F SA '선언 파일' '`sa/f.txt`, `sa/g.txt`, `sa/h.txt`'
+sed 's/^\*\*상태\*\*: 동결됨$/**상태**: 초안/' "$WT/$(f113_doc R113F)" > "$WT/$(f113_doc R113F).tmp" \
+  && mv "$WT/$(f113_doc R113F).tmp" "$WT/$(f113_doc R113F)"
+f113_rcrow R113F SA SA 1 '정상 완료'
+case "$(f113_redecl R113F SA)/$(tr '\n' ' ' < "$WORK/f113-rc.out")" in
+  1/*"동결 상태가 아니거나"*) ok "113: 동결 줄이 없으면 재선언 없이 경고 한 줄만 남는다" ;;
+  *) bad "113: 동결 줄이 없으면 재선언 없이 경고 한 줄만 남는다" "$(f113_redecl R113F SA) $(tr '\n' ' ' < "$WORK/f113-rc.out")" ;;
+esac
+
+# --- 선언 없는 런 -------------------------------------------------------------
+f113_new R113G '`sa/n.txt`' '`SB.txt`' || bad "113: R113G 픽스처 계획" "rc=$rc $msg"
+# The declaration-free run is the same document's run with SA planned by the
+# router's own act: a fresh run whose SA row carries no `선언 다이제스트`.
+g15_run R113H "$(f113_doc R113G)" "$plan15c" 리뷰없음
+f113_routed R113H
+f113_seg R113H SA 상태=계획됨 "워크트리=$(g15_wt R113G SA)" 선행=없음 레포=t/infra 절단점=머지 '선언 파일 집합=x.txt, y.txt'
+case "$rc/$msg" in
+  0/*"게이트가 마지막으로 쓴"*) bad "113: 선언 없는 런의 호출자 집합은 덮지 않는다" "경고가 났다: $msg" ;;
+  0/*) check "113: 선언 없는 런의 호출자 집합은 덮지 않는다" \
+         "$(seg_field "$(g15_row R113H SA)" '선언 파일 집합')/$(f113_snapdecl R113H SA)" "x.txt, y.txt/x.txt, y.txt" ;;
+  *) bad "113: 선언 없는 런의 호출자 집합은 덮지 않는다" "rc=$rc $msg" ;;
+esac
+
+# --- 파견 자리 재선언 뒤의 전체 act: 좁힘 park, 옛 구절 ---------------------
+# 재수렴 행만 있고 재선언 행이 없는 세그먼트를 구현 act 로 파견한다. 대조
+# 함수만 부르면 재선언 뒤 act 가 무엇을 하는지는 재지 못하므로 act 전체를
+# 스텁 CLI 로 돌린다.
+f113_new R113J '`sa/q.txt`, `sa/r.txt`' '`SB.txt`' || bad "113: R113J 픽스처 계획" "rc=$rc $msg"
+wt113j=$(g15_wt R113J SA)
+f113_seg R113J SA 상태=실행중 "워크트리=$wt113j" 선행=없음
+( cd "$wt113j" && mkdir -p sa && printf 'r\n' > sa/r.txt && git add sa/r.txt && git commit -q -m fx113 ) >/dev/null 2>&1
+f113_set R113J SA '선언 파일' '`sa/q.txt`'
+f113_in R113J 'gate_append stage-result "세그먼트=SA" "스테이지=SA" "종류=reconverge" "종료 코드=0" "실행 버전=1" "세션 id=s-113" "종단 부류=정상 완료"' >/dev/null 2>&1
+check "113: 재선언을 미룬 세그먼트가 실행중이고 옛 집합을 싣는다 (아래가 공허하지 않다)" \
+  "$(f113_redecl R113J SA)/$(seg_field "$(g15_row R113J SA)" '상태')/$(f113_snapdecl R113J SA)" "0/실행중/sa/q.txt, sa/r.txt"
+f113_dispatch act R113J SA "$(f113_prompt R113J SA 'sa/q.txt, sa/r.txt')"
+case "$rc/$msg" in
+  3/*"파견 자리 대조"*"재선언으로 상태가 park"*) ok "113: 파견 자리 재선언이 park 로 만든 세그먼트는 같은 act 가 파견하지 않는다" ;;
+  *) bad "113: 파견 자리 재선언이 park 로 만든 세그먼트는 같은 act 가 파견하지 않는다" "rc=$rc $msg" ;;
+esac
+check "113: 그 park 는 재선언 행 하나와 막힘 행 하나만 남긴다" \
+  "$(f113_redecl R113J SA)/$(seg_field "$(g15_row R113J SA)" '상태')/$(f113_blocks R113J SA)" "1/park/1"
+f113_new R113K '`sa/a.txt`' '`SB.txt`' || bad "113: R113K 픽스처 계획" "rc=$rc $msg"
+f113_set R113K SA '선언 파일' '`sa/a.txt`, `sa/b.txt`'
+f113_in R113K 'gate_append stage-result "세그먼트=SA" "스테이지=SA" "종류=reconverge" "종료 코드=0" "실행 버전=1" "세션 id=s-113" "종단 부류=정상 완료"' >/dev/null 2>&1
+check "113: 재선언을 미룬 동안 스냅숏은 옛 집합이다 (아래가 공허하지 않다)" "$(f113_snapdecl R113K SA)" "sa/a.txt"
+f113_dispatch act R113K SA "$(f113_prompt R113K SA 'sa/a.txt')"
+case "$rc/$msg" in
+  2/*"프롬프트 sa/a.txt, 스냅숏 sa/a.txt, sa/b.txt"*) ok "113: 파견 자리 재선언 뒤 옛 구절은 새 값을 든 종료 2 로 거절된다" ;;
+  *) bad "113: 파견 자리 재선언 뒤 옛 구절은 새 값을 든 종료 2 로 거절된다" "rc=$rc $msg" ;;
+esac
+check "113: 그 거절 앞에 파견측 재선언 행이 쓰이고 막힘 행은 없다" \
+  "$(f113_redecl R113K SA)/$(f113_snapdecl R113K SA)/$(f113_blocks R113K SA)" "1/sa/a.txt, sa/b.txt/0"
+check "113: 재대조의 거절은 새 값에 대한 첫 거절로 센다" \
+  "$(f113_rows R113K '자율 승인' SA | { grep -F -e '| kind=decl-phrase |' || true; } | { grep -F -e '| 거절 횟수=1 |' || true; } | grep -c . || true)" "1"
+f113_dispatch plan R113K SA "$(f113_prompt R113K SA 'sa/a.txt, sa/b.txt')"
+case "$msg" in
+  *"파견 자리 대조"*|*"「· 선언 파일:」 구절"*) bad "113: 새 값을 실어 다시 낸 파견은 두 대조를 지난다" "rc=$rc $msg" ;;
+  *) ok "113: 새 값을 실어 다시 낸 파견은 두 대조를 지난다" ;;
+esac
+
+# --- 중단 답 정산의 락 순서 ---------------------------------------------------
+# 정산 act 는 재수렴 행을 쓴 뒤 재선언을 마칠 때까지 그 키의 디스패치 락을
+# 쥔다. 락을 푸는 줄이 재선언 호출보다 뒤에 있어야, 그 사이 같은 키의 구현
+# 파견이 대조가 아니라 진행 중 거절(GATE_EXIT_INFLIGHT)을 받는다.
+check "113: 중단 답 정산은 재선언을 마친 뒤 디스패치 락을 푼다" \
+  "$(sed -n '/^gate_halt_settle()/,/^}/p' "$GATE" | awk '/gate_redeclare_after_reconverge/ { r = NR } /gate_dispatch_lock_release/ { l = NR } END { print ((r > 0 && l > r) ? "뒤" : "앞") }')" "뒤"
+for r113 in R113A R113B R113C R113E R113F R113G R113J R113K; do g15_drop "$r113:SA" "$r113:SB"; done
 
 # ---------------------------------------------------------------------------
 # 99. 탐지 도구와 게이트의 읽기 동사는 같은 것을 낸다
