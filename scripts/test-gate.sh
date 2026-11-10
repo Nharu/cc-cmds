@@ -63015,6 +63015,23 @@ check "113: 큰 선언이 65536 바이트를 넘는다 (아래가 공허하지 �
 f113_rc R113C SB 2
 check "113: 65536 바이트를 넘는 선언은 행 없이 막힘 행을 남긴다" \
   "$(f113_redecl R113C SB)/$(f113_rows R113C blocked SB | { grep -F -e '65536 바이트를 넘어' || true; } | grep -c . || true)" "1/1"
+check "113: 재선언 행은 앞 행의 prev 를 잇지 않는다" \
+  "$(f113_rows R113C segment SB | { grep -F -e '| 재선언=' || true; } | tail -1 | grep -o ' | prev=' | grep -c . || true)" "1"
+# 잘린 값을 실은 재선언 행이 상한을 넘으면 사이드카 경로만 실어 다시 쓴다 —
+# 앞 행의 긴 브랜치 필드가 잘린 값 300 바이트보다 길게 행을 넘기되, 잘린 값을
+# 뺀 행은 이 호스트의 경로 길이와 무관하게 상한 안에 든다.
+br113b=$(printf 'b%.0s' $(seq 1 250))
+f113_seg R113C SB 상태=계획됨 "워크트리=$(g15_wt R113C SB)" 선행=SA "브랜치=$br113b"
+check "113: 긴 브랜치 필드를 실은 SB 행이 받힌다 (아래가 공허하지 않다)" "$rc" "0"
+f113_set R113C SB '선언 파일' "$long113, \`sb/extra2.txt\`"
+f113_rc R113C SB 3
+check "113: 잘린 값을 실은 첫 재선언 행이 상한에 걸린다 (아래가 공허하지 않다)" \
+  "$(grep -c -F -e 'the segment row is over the cap' "$WORK/f113-rc.out" || true)" "1"
+side113s=$(seg_field "$(g15_row R113C SB)" '선언 파일 집합')
+check "113: 넘친 재선언 행은 사이드카 경로만 싣는다" \
+  "$(f113_redecl R113C SB)/$(case "$side113s" in ("(전체: $STATE_LATE/cc-cmds/run/R113C/"*")") printf 경로만 ;; (*) printf '다름:%s' "$side113s" ;; esac)/$([ "$(seg_field "$(g15_row R113C SB)" '브랜치')" = "$br113b" ] && printf 이음 || printf 다름)" \
+  "2/경로만/이음"
+check "113: 경로만 실은 재선언 뒤의 스냅숏이 새 긴 집합이다" "$(f113_snapdecl R113C SB)" "$nl113, sb/extra2.txt"
 
 # --- 좁힘: 커밋 안 된 추적 변경(한글 경로), 베이스 끝을 읽지 못함 ------------
 bwt113="$WORK/fx113-basewt"

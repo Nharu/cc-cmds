@@ -14581,7 +14581,9 @@ gate_segment_redeclare_locked() {
   [ -z "$cause" ] || st=park
   # The previous row's fields are carried, so a reader of the last row alone
   # never reads an empty value; the gate's own fields are not — the arm
-  # carries `머지 순서` and `리뷰 정책` and re-derives `인가면` itself.
+  # carries `머지 순서` and `리뷰 정책` and re-derives `인가면` itself, and the
+  # writer appends this row's own `prev`, so the previous row's chain hash is
+  # dropped rather than written a second time mid-row.
   local prow pf pk
   prow=$( { gate_rows 'segment' || true; } | gate_rows_field_eq 'id' "$seg" | tail -1)
   row=("상태=$st")
@@ -14589,7 +14591,7 @@ gate_segment_redeclare_locked() {
     [ -n "$pf" ] || continue
     pk=${pf%%=*}
     case "$pk" in
-      id|교대|상태|'선언 파일 집합'|'선언 다이제스트'|'강제 표면'|재선언|'머지 순서'|'리뷰 정책'|출처|적용|인가면|'머지 대조'|'최종 사이클'|종류|'고정 헤드'|'베이스 sha'|'고칠 곳'|'판정 주체'|'판정 신호'|'판정 근거') continue ;;
+      id|교대|상태|'선언 파일 집합'|'선언 다이제스트'|'강제 표면'|재선언|'머지 순서'|'리뷰 정책'|출처|적용|인가면|'머지 대조'|'최종 사이클'|종류|'고정 헤드'|'베이스 sha'|'고칠 곳'|'판정 주체'|'판정 신호'|'판정 근거'|prev) continue ;;
     esac
     row+=("$pf")
   done <<<"$(printf '%s\n' "$prow" | awk '
@@ -14602,9 +14604,21 @@ gate_segment_redeclare_locked() {
     gate_redeclare_block "$seg" "${cause:-막힘}" "재수렴 ${ref} 뒤 세그먼트 ${seg} 의 앞 행에 워크트리가 없어 재선언하지 못했습니다${why:+; $why}"
     return 0
   fi
-  local wrc=0
+  local wrc=0 i
   GATE_REDECLARE=1
   gate_record_row 'segment' "$seg" "$al" "${row[@]}" || wrc=$?
+  # A clipped set that leaves the row over the cap is written once more as the
+  # sidecar path alone, the form the readers already take for a value whose
+  # whole row spilled: the clip is never what they compare, so dropping it
+  # loses nothing a reader uses, and the long worktree and run paths of one
+  # host no longer decide whether the row can be written at all.
+  if [ "$wrc" != 0 ] && [ "$nv" = "${nv%" (전체: $side)"} (전체: $side)" ]; then
+    for i in "${!row[@]}"; do
+      [ "${row[$i]}" = "선언 파일 집합=$nv" ] && row[$i]="선언 파일 집합=(전체: $side)"
+    done
+    wrc=0
+    gate_record_row 'segment' "$seg" "$al" "${row[@]}" || wrc=$?
+  fi
   GATE_REDECLARE=""
   if [ "$wrc" != 0 ]; then
     if [ -n "$cause" ]; then
