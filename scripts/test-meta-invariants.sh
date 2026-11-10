@@ -1880,6 +1880,10 @@ check "교대 색인의 할트 답 행이 차단=파견 전 행을 진입 조건
   "$(printf '%s\n' "$rs_halt_row" | grep -cF -- 'A last row carrying `차단=파견 전` meets none of these row conditions')" "1"
 check "교대 색인 아래 문단이 차단=파견 전 행을 끝난 스테이지로 읽지 않는다" \
   "$(printf '%s\n' "$rs_index" | grep -cF -- '**A `stage-result` row carrying `차단=파견 전` is no stage that ended.**')" "1"
+check "교대 색인 아래 문단이 차단 행에 재수렴 종단 술어 거짓도 두 번째 재수렴 금지도 내지 않는다" \
+  "$(printf '%s\n' "$rs_index" | grep -cF -- 'so it never yields `사유=중단 답 라우팅 — 재수렴 종단 술어 거짓` or `재수렴 라우팅 — 재수렴 종단 술어 거짓`, and it never forbids a second re-convergence. The key waits on that size record')" "1"
+check "교대 골격급 재수렴과 설계 스텝 재수렴의 끝 처분이 차단=파견 전 행을 뺀다" \
+  "$(grep -cF -- 'a row carrying `차단=파견 전` ended nothing and waits on its size record' "$RS_SKILL" "$RS_REFS/halt-answer-3.md" | awk -F: '{s+=$NF} END{print s}')" "2"
 check "반증 재수렴 6번이 차단=파견 전 행을 읽지 않는다" \
   "$(grep -cF -- 'A row carrying `차단=파견 전` is no re-convergence at all' "$RS_REFS/refutation-reconverge.md")" "1"
 
