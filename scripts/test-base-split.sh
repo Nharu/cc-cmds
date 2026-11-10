@@ -74,6 +74,10 @@ contracts = [dict(n=1, providers=["T2"], consumers=["T3"], lines={})]
 tickets = [ticket(1, "구현"), ticket(2, "계약", provides=["C1"]),
            ticket(3, "구현", deps=["T2"], consumes=["C1"])]
 kind_line, split_heading, slicing = True, True, False
+# The marker an audit puts beside a post-stop edit, and the lines put right
+# under the `## 티켓 분할` heading.
+M = "**미리뷰(스톱 이후 추가)**"
+split_lead = []
 base_body = "여러 저장 단위를 하나의 상태 파일로 묶는다.\n계약을 먼저 정하고 구현을 나란히 진행한다.\n"
 
 if variant == "cycle":
@@ -279,6 +283,27 @@ elif variant in ("depth3", "depth3reason"):
     header = {"티켓 수": "4", "임계 경로": "T2 → T3 → T4", "병렬 폭": "2"}
     if variant == "depth3reason":
         header["깊이 사유"] = "상태 파일 위에 색인이 놓이고 그 위에 화면이 놓인다."
+elif variant == "markhead":
+    # A marker at the head of every header value is read off.
+    header = {k: M + " " + v for k, v in header.items()}
+elif variant == "markdouble":
+    header["임계 경로"] = M + " " + M + " T2 → T3"
+elif variant == "markdep":
+    tickets[2]["lines"]["선행"] = ["**선행**: " + M + " T2"]
+elif variant == "markline":
+    tickets[0]["lines"]["레포"] = [M + " **레포**: o/r"]
+elif variant == "markabove":
+    # A marker-only line over a list field reads as blank, so the field
+    # above it does not take it as a wrapped line.
+    tickets[0]["lines"]["소유 파일"] = [M, "**소유 파일**: `src/t1/main.py`"]
+elif variant == "markunder":
+    tickets[0]["lines"]["종류"] = [M, "**종류**: 구현"]
+    split_lead = [M]
+elif variant == "critnote":
+    # A note beside the path, with an arrow inside it, is named as the cause.
+    header["임계 경로"] = "T2 → T3 (T1 → T3 보다 김)"
+elif variant == "markkind":
+    kind_line = M + " **문서 종류**: 베이스 설계"
 elif variant == "d0kind":
     kind_line = False
 elif variant == "d0slicing":
@@ -302,7 +327,7 @@ def fields(lines, raw):
 
 L = ["# 상태 파일 베이스", ""]
 if kind_line:
-    L.append("**문서 종류**: 베이스 설계")
+    L.append(kind_line if isinstance(kind_line, str) else "**문서 종류**: 베이스 설계")
 L += ["**상태**: 초안", "", "## 합의된 아키텍처", "상태 파일과 그 위의 소비자.", "",
       "## 티켓 간 계약", ""]
 for c in contracts:
@@ -314,7 +339,7 @@ for c in contracts:
 if slicing:
     L += ["## 구현 슬라이싱", "없음", ""]
 if split_heading:
-    L += ["## 티켓 분할"] + ["**%s**: %s" % kv for kv in header.items()] + [""]
+    L += ["## 티켓 분할"] + split_lead + ["**%s**: %s" % kv for kv in header.items()] + [""]
 L += ["### 베이스 티켓", "**발행 제목**: 상태 파일 도입", "**발행 본문**:", "````text"]
 L += base_body.rstrip("\n").split("\n") + ["````", ""]
 for t in tickets:
@@ -409,6 +434,13 @@ expect_check consumerside "P2 T1 가 소비하는 C1 의 제공 티켓 T2 에 �
 expect_check critpath   "P4 임계 경로 선언 T1 → T3"
 expect_check depth3     "P4 깊이 3 에 깊이 사유 없음"
 expect_check d0kind     "D0 판별자 줄 없음"
+# The kind line is read byte for byte, so a marker in front of it is no kind
+# line.
+expect_check markkind   "D0 판별자 줄 없음"
+# A note beside the critical path is named as the cause, and the value is
+# not also read as a path that is not the longest.
+expect_check critnote   "P4 임계 경로 값에 경로 밖 문면: T3 (T1"
+hasnt "check critnote: the path is not judged as the longest" "$out" "최장 경로가 아님"
 expect_check d0slicing  "D0 베이스 문서에 ## 구현 슬라이싱 가 있음"
 expect_check b1docs     "B1 T1 본문에 문서 경로 docs/"
 expect_check b1label    "B1 T2 본문에 라벨 T3"
@@ -454,7 +486,8 @@ run_bs check "$DOCS/cycle.md"
 hasnt "check cycle: graph predicates after a cycle are skipped" "$out" "P4"
 
 for v in globneg braceneg dirneg repodiff sharedok shareddir depth3reason fenceok \
-         routeneg routeshared spancomma routegroup spacepath sharedt2 sharedboth sharedglob-py; do
+         routeneg routeshared spancomma routegroup spacepath sharedt2 sharedboth sharedglob-py \
+         markhead markdouble markdep markline markabove markunder; do
   gen "$v"
   run_bs check "$DOCS/$v.md"
   check "check $v: exits 0" "$rc" "0"

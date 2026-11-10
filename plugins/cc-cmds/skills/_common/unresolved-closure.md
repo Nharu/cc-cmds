@@ -28,7 +28,11 @@ closed set:
 - `구현 전 결정` — a person (or an audit, or a re-convergence) closes it before
   any implementation plans over it. It is followed by
   `**닿는 슬라이스**: <id>, <id> | 전체` — the slices of `## 구현 슬라이싱` whose
-  work the decision changes, or `전체`.
+  work the decision changes, or `전체` — and then by two more lines,
+  `**추천 답**: <한 줄>`, the answer the writer recommends, and
+  `**추천 근거**: <한 줄>`, why. The run collects every such entry before
+  implementation and shows a person each one with its recommendation, so the
+  person can confirm them all at once.
 - `구현 무관` — the entry decides nothing the code writes: a later measurement,
   another ticket, an operational judgment outside the repository. The
   implementation does not read it.
@@ -59,6 +63,20 @@ An entry whose `사유` starts with `베이스 계약 변경 필요` ends only b
 whose `사유` starts with `감사 합성 요구` is closed as before, by the
 re-convergence's `감사 골격급` scope.
 
+**A writer closes on its own what a record already answers.** An entry whose
+answer one of the repository's facts, the interview record or a written rule
+decides is closed by the writer: written `해결`, or `구현 재량` when the four
+conditions above hold. This does not narrow the rules above — the two
+always-`구현 전 결정` cases stay, and so does condition 3 of `구현 재량` — so an
+entry a fact answers but whose answer changes a contract another side reads is
+closed as `해결` or left `구현 전 결정`, never written `구현 재량`. Outside those
+two cases a writer leaves `구현 전 결정` only for four kinds of entry:
+
+- a value judgment no written standard decides;
+- a risk acceptance;
+- a requirement beyond the record;
+- an external resource a person has to prepare.
+
 ## 작성자 꼴
 
 - A writer writes every entry that carries these fields as a `### ` sub-heading
@@ -86,10 +104,14 @@ the run, when the person keeps the base as it is. The base design document,
 its ticket and the document's own `## 베이스 제약` section stay byte for byte;
 the closing is recorded in this document only.
 
-- **The one writer.** The `구속 티어 이탈 <halt record>` scope of
-  `/cc-cmds:design-reconverge`, in its sub-case whose record's `**스텝**` is
-  exactly `Step 1 CFI-U3 BT-STOP — 미결 결정`, and that sub-case's re-entry on a
-  person's answer to its own base contract check stop. A design stage, an
+- **The one writer.** The base contract check of the `구속 티어 이탈 <halt
+  record>` scope of `/cc-cmds:design-reconverge`, in its two sub-cases whose
+  record's `**스텝**` is exactly `Step 1 CFI-U3 BT-STOP — 미결 결정` (an
+  implement stage's open-decision stop) or exactly `결정 수거 — 구현 전 결정`
+  (the gate's decision collection), and each sub-case's re-entry on a person's
+  answer to its own base contract check stop. The two sub-cases run one check
+  and write one form; they differ only in where the decision comes from. A
+  design stage, an
   audit, a walkthrough and every other re-convergence scope — `감사 골격급`
   among them — neither closes such an entry nor writes it `해결`.
 - **When it closes.** The re-convergence checks the person's decision against
@@ -116,8 +138,10 @@ the closing is recorded in this document only.
     session's `CC_PIPELINE_STAGE_ID` as it is, `#` kept — not the `#`→`-` form
     the re-convergence uses in a temporary directory name.
   - `중단 기록` names the file of the halt record: for `대조 무충돌`, the
-    implement stage's open-decision stop that carried the attachment; for a
-    `사람 수용(…)` value, the base contract check stop the person answered.
+    record the re-convergence's scope names — the implement stage's
+    open-decision stop that carried the attachment, or the gate's
+    decision-collection record; for a `사람 수용(…)` value, the base contract
+    check stop the person answered.
   - `**대조 기록**` gives one part per block. When several lines of one block
     conflict, `「<블록 제목>」 충돌: 「<어긋난 줄 축자>」` repeats once per line,
     so each part names one line. Its value is the single word
@@ -189,12 +213,27 @@ document order, and nothing when none does. It reads **fail closed**:
   each is a `### 슬라이스 <id>` of the document, whatever that slice's
   `**스킬**`; an id the document does not have reads `전체`. A document with no
   `## 구현 슬라이싱` reaches every segment with every entry.
+- `**추천 답**` and `**추천 근거**` are read from the entry's block, in the
+  same key forms as `**구현 처분**`; an entry without them reads both as
+  `(없음)`, as an entry of an older document and an entry forced to
+  `구현 전 결정` (`골격급: 예`, or a `사유` starting with `감사 합성 요구` or
+  `베이스 계약 변경 필요`) usually do, and every table row does. The headings the reader prints
+  do not change: `unresolved_closure_fields <doc> <heading>` in
+  `orchestrator/run.sh` reads the two values and `**닿는 슬라이스**` of one
+  printed heading, for the gate's `decision-collect`.
 - An entry closed by `## 사유 거둠` reads `해결` by its `상태` and drops out.
   A `**사유 거둠**` line on an entry whose `상태` is not `해결` changes nothing,
   wherever in the entry it stands: the reader's code does not read that key.
 
 ## 읽는 쪽
 
+- The gate's `decision-collect` collects every entry of a document before any
+  process A implement dispatch of it, writes one halt record that lists each
+  with its recommendation, and holds the segments the entries reach until a
+  re-convergence closes them (`_common/pipeline-sidecar.md` §4). While the
+  re-convergence an answered record opened has not ended `정상 완료` — it
+  stopped at its base contract check and waits for the person, among others —
+  the hold stays under that record whatever the document's digest now is.
 - The unattended implement stage asks `gate.sh unclosed-decisions` before it
   plans (process A) and halts on a non-empty answer with the
   `Step 1 CFI-U3 BT-STOP — 미결 결정` record of `_common/pipeline-sidecar.md`

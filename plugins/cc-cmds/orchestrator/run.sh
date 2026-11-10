@@ -933,7 +933,10 @@ PREAUTH_CODE_STRING_OPTS='-c -e -E --eval -p --print -r --command'
 PREAUTH_INTERPRETERS='bash sh zsh python3 node'
 # The two closed vocabularies of a new-form row.
 PREAUTH_ROW_SURFACES='읽기 워크트리쓰기 트리밖쓰기 외부상태변경'
-PREAUTH_ROW_REACHES='dev prod 배포트리거'
+PREAUTH_ROW_REACHES='dev prod 배포트리거 기기전역'
+# The reserved `짝 정리=` value of a machine-global row: the gate spells it out
+# as this run's device cleanup for the dispatch that opened the act.
+PREAUTH_DEVICE_PAIR='기기 정리'
 
 preauth_row_refusal() {
   # preauth_row_refusal <row> — print why a `사전 인가` row is refused and
@@ -980,6 +983,10 @@ EOF
     || { printf '표면 값이 어휘 밖입니다: %s — 허용: %s' "$surf" "$PREAUTH_ROW_SURFACES"; return 1; }
   case " $PREAUTH_ROW_REACHES " in *" $reach "*) [ -n "$reach" ] ;; *) false ;; esac \
     || { printf '도달 값이 어휘 밖입니다: %s — 허용: %s' "$reach" "$PREAUTH_ROW_REACHES"; return 1; }
+  if [ "$reach" = "기기전역" ] && [ "$surf" != "트리밖쓰기" ]; then
+    printf '도달=기기전역 행은 표면=트리밖쓰기 일 때만 받습니다: 표면=%s' "$surf"
+    return 1
+  fi
   [ -n "$shape" ] || { printf '새 형식 행에 형태= 가 없습니다'; return 1; }
   case "$shape" in
     *'	'*|*'  '*|' '*) printf '형태= 값에 탭이나 연속 공백이 있습니다'; return 1 ;;
@@ -1006,7 +1013,22 @@ EOF
           fi ;;
       esac ;;
   esac
-  if [ "$has_p" = "1" ]; then
+  # THE RESERVED VALUE IS RECOGNISED BEFORE THE ONE-ARGV CHECKS: it is not an
+  # argv but a word the gate spells out, and only a machine-global row has a
+  # device cleanup to spell.
+  if [ "$has_p" = "1" ] && [ "$pair" = "$PREAUTH_DEVICE_PAIR" ]; then
+    [ "$reach" = "기기전역" ] || {
+      printf '짝 정리=%s 는 도달=기기전역 행에서만 받습니다: 도달=%s' "$PREAUTH_DEVICE_PAIR" "$reach"
+      return 1
+    }
+  elif [ "$has_p" = "1" ]; then
+    # A machine-global row opens its act through the machine-global cell,
+    # which carries a cleanup ordinal only for the reserved value: a plain
+    # argv here would be accepted and then never run, so it is refused.
+    if [ "$reach" = "기기전역" ]; then
+      printf '도달=기기전역 행의 짝 정리= 는 예약 값 %s 만 받습니다 — 그 밖의 정리 명령은 게이트가 열지 않습니다: 짝 정리=%s' "$PREAUTH_DEVICE_PAIR" "$pair"
+      return 1
+    fi
     [ -n "$pair" ] || { printf '짝 정리= 가 비었습니다'; return 1; }
     case "$pair" in
       *'	'*|*'  '*|' '*) printf '짝 정리= 값에 탭이나 연속 공백이 있습니다'; return 1 ;;
@@ -3136,6 +3158,57 @@ unresolved_closure_pending() {
     END {
       if (inr) flush()
       for (i = 1; i <= nout; i++) print out[i]
+    }
+  '
+}
+
+# unresolved_closure_fields <doc> <heading> — one TAB-separated line
+# `<추천 답>\t<추천 근거>\t<닿는 슬라이스>` for one heading
+# `unresolved_closure_pending` printed, read from that entry's block in the same
+# section and with the same key forms. A missing recommendation reads
+# `(없음)`, a missing `**닿는 슬라이스**` reads `전체`, and a table row (whose
+# heading is its first cell) reads `(없음)\t(없음)\t전체`. A tab inside a value
+# becomes a space. Prints nothing for an empty document argument.
+unresolved_closure_fields() {
+  local doc="${1:-}" want="${2:-}"
+  [ -n "$doc" ] && [ -r "$doc" ] || return 0
+  defenced "$doc" | UCF_WANT="$want" awk '
+    function trim(s) { sub(/^[ \t\r]+/, "", s); sub(/[ \t\r]+$/, "", s); return s }
+    function field(line, key,   s, v) {
+      s = line; sub(/^- /, "", s)
+      if (index(s, "**" key "**:") == 1) return "\001" trim(substr(s, length(key) + 6))
+      if (index(s, "**" key ":") == 1) { v = trim(substr(s, length(key) + 4)); sub(/\*\*/, "", v); return "\001" trim(v) }
+      if (index(s, key ":") == 1) return "\001" trim(substr(s, length(key) + 2))
+      return ""
+    }
+    function flush() {
+      if (cur) { ra = a; rb = b; rc = c; found = 1 }
+      cur = 0
+    }
+    /^## / {
+      if (inr) flush()
+      inr = ($0 ~ /미해결[ \t]+이슈/)
+      if (inr) { found = 0; ra = rb = rc = "" }
+      next
+    }
+    !inr { next }
+    /^### / {
+      flush()
+      cur = (trim($0) == ENVIRON["UCF_WANT"])
+      a = b = c = ""
+      next
+    }
+    !cur { next }
+    {
+      v = field($0, "추천 답");       if (v != "" && a == "") { a = substr(v, 2); next }
+      v = field($0, "추천 근거");     if (v != "" && b == "") { b = substr(v, 2); next }
+      v = field($0, "닿는 슬라이스"); if (v != "" && c == "") { c = substr(v, 2); next }
+    }
+    END {
+      if (inr) flush()
+      if (!found) { ra = rb = rc = "" }
+      gsub(/\t/, " ", ra); gsub(/\t/, " ", rb); gsub(/\t/, " ", rc)
+      printf "%s\t%s\t%s\n", (ra == "" ? "(없음)" : ra), (rb == "" ? "(없음)" : rb), (rc == "" ? "전체" : rc)
     }
   '
 }
@@ -7891,8 +7964,54 @@ audit_artifact_complete() {
 
 # 감사 키당 자동 재수렴 수. An audit's key is audited once and re-audited after
 # each of at most this many re-convergences; `audit_row_request` counts them
-# with `audit_key_reconverge_rows`, whatever wrote them.
+# with `audit_key_reconverge_rows`, whatever wrote them except a decision
+# collection's answer.
 AUDIT_SKELETAL_RECONVERGE_CAP=2
+
+audit_key_collect_reconverge_lines() {
+  # audit_key_collect_reconverge_lines <step id> <ledger> — the ledger lines,
+  # each followed by a space, of the re-convergences a person's answer to a
+  # decision-collection record opened on the key: for each record a `결정 수거`
+  # row names, the first `세그먼트=- | 스테이지=<id> | 종류=reconverge` row not
+  # still waiting to spawn after the record's first `중단 답` on the key, and
+  # every later such row up to the key's next `종류=audit` row — the attempts
+  # that carry the same re-convergence on, by `--resume` or, after a halt the
+  # person answered, in a fresh session. No other re-convergence of the key
+  # stands there: every other one follows an audit. The gate admits one such re-convergence
+  # per record and reads it by the same rule (`gate_decision_reconverge_open`,
+  # `gate_decision_reconverge_entry`). It closes the collected decisions in the
+  # document and audits nothing, so the audit's key does not wait on it.
+  local id="$1" lg="$2"
+  [ -f "$lg" ] || return 0
+  LC_ALL=C awk -v id="$id" '
+    function fieldof(s, k,   i, v) {
+      i = index(s, "| " k "=")
+      if (i == 0) return ""
+      v = substr(s, i + length("| " k "="))
+      i = index(v, " |")
+      if (i > 0) v = substr(v, 1, i - 1)
+      sub(/[ \t\r]+$/, "", v)
+      return v
+    }
+    index($0, "- `결정 수거` ") == 1 { r = fieldof($0, "중단 기록"); if (r != "") dc[r] = 1; next }
+    index($0, "- `중단 답` ") == 1 && index($0, "| 세그먼트=" id " | 중단 기록=") > 0 {
+      r = fieldof($0, "중단 기록"); if (r != "" && !(r in first)) first[r] = NR; next
+    }
+    index($0, "- `stage-result` ") == 1 && index($0, "세그먼트=- | 스테이지=" id " | 종류=reconverge ") > 0 \
+      && index($0, "| 관측=스폰 전 대기 중") == 0 { rv[++n] = NR; next }
+    index($0, "- `stage-result` ") == 1 && index($0, "세그먼트=- | 스테이지=" id " | 종류=audit ") > 0 { au[++na] = NR }
+    END {
+      for (r in first) {
+        if (!(r in dc)) continue
+        for (j = 1; j <= n; j++) if (rv[j] > first[r]) break
+        if (j > n) continue
+        stop = 0
+        for (a = 1; a <= na; a++) if (au[a] > rv[j]) { stop = au[a]; break }
+        for (m = j; m <= n; m++) if (stop == 0 || rv[m] < stop) out[rv[m]] = 1
+      }
+      for (l in out) printf "%s ", l
+    }' "$lg"
+}
 
 audit_key_reconverge_rows() {
   # audit_key_reconverge_rows <audit step id> <ledger> — the run-scope
@@ -7900,13 +8019,19 @@ audit_key_reconverge_rows() {
   # ledger order, each prefixed with its line number: the router's
   # (`세그먼트=- | 스테이지=<id> | 종류=reconverge`) and the driver's, which
   # writes its skeletal re-convergence as `스테이지=S1'` under dispatch id `S2R`.
-  # A re-convergence still waiting to spawn edited nothing and is left out.
-  local id="$1" lg="$2"
+  # A re-convergence still waiting to spawn edited nothing and is left out, and
+  # so is a decision collection's (`audit_key_collect_reconverge_lines`): it
+  # closes decisions the audit already let through, so no fresh audit follows
+  # it, and counting it would hold every later reader of the audit's end —
+  # segment planning first — until the run ended.
+  local id="$1" lg="$2" skip
   [ -f "$lg" ] || return 0
+  skip=" $(audit_key_collect_reconverge_lines "$id" "$lg")"
   { grep -n -F -e "세그먼트=- | 스테이지=$id | 종류=reconverge " \
                -e "세그먼트=- | 스테이지=S1' | 파견 id=S2R | 종류=reconverge " "$lg" 2>/dev/null || true; } \
     | { grep "^[0-9]*:- \`stage-result\` " || true; } \
-    | { grep -vF '| 관측=스폰 전 대기 중' || true; }
+    | { grep -vF '| 관측=스폰 전 대기 중' || true; } \
+    | LC_ALL=C awk -v skip="$skip" '{ l = substr($0, 1, index($0, ":") - 1); if (index(skip, " " l " ") == 0) print }'
 }
 
 audit_row_request() {
@@ -11940,6 +12065,25 @@ segment_cycle() {
         park "$seg" cone 무효화 "게이트 park" "설계 문서 잠금 경합 — 두 세그먼트가 같은 문서를 쓰려 한다"
         return 1
       }
+      # THE DECISIONS ARE COLLECTED BEFORE A PROCESS A PLANS, by the gate's own
+      # collection (`gate_decision_collect`), so this traversal parks the same
+      # segments a routed dispatch is refused for and goes on with the others.
+      if [ -n "${DOC:-}" ] && ! segment_process_b "$seg"; then
+        local dcl dcrc dch dcr
+        dcl=$(run_gate_call gate_decision_collect_holds "$DOC" 2>/dev/null) || dcl=""
+        dcrc=$(printf '%s' "$dcl" | cut -f1)
+        dch=$(printf '%s' "$dcl" | cut -f2)
+        dcr=$(printf '%s' "$dcl" | cut -f3)
+        if [ "${dcrc:-1}" != "0" ]; then
+          park "$seg" act 막힘 "게이트 park" "결정 수거 실패 — 설계 문서의 구현 전 결정을 수거하지 못했다"
+          return 1
+        fi
+        case " $dch " in
+          *" $seg "*|*" 전체 "*)
+            park "$seg" act 막힘 "게이트 park" "결정 수거 보류 — 기록 $dcr 에 대한 사람의 답과 재수렴을 기다린다"
+            return 1 ;;
+        esac
+      fi
       # THIS RELAY BELONGS TO THE FIXED-GRAPH TRAVERSAL, and it is not the only
       # consumer of an answered judgment. A run driven by the router never
       # enters this loop at all; there the live consumer is the snapshot's

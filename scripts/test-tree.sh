@@ -635,14 +635,23 @@ tt_item_checkout() {
   )
 }
 
+# The tail of a reuse line for how $1 the judge let the pass through: empty
+# for `같음`, `, 릴리스 차이` for the release relation.
+tt_reuse_how() {
+  case "$1" in 릴리스\ 차이) printf ', 릴리스 차이' ;; esac
+}
+
 # 0 when item key $1 may skip its run: prints the reuse line and adds the key
 # to TT_REUSED.
 tt_item_reuse() {
-  local key="$1" hit
+  local key="$1" hit h e how
   tt_reuse_on || return 1
   tt_reuse_list
   hit=$(tr_reuse_find "$TT_REUSE_GDIR" "$key" "$TT_TREE" "$TT_REUSE_COMMIT" "$TT_REUSE_BASE" "$(tt_doubles)" "$TT_REUSE_LIST") || return 1
-  printf '%s: 재사용 %s ← %s (%s)\n' "$TT_PREFIX" "$key" "${hit%%$'\t'*}" "${hit#*$'\t'}" >&2
+  IFS=$'\t' read -r h e how <<EOF
+$hit
+EOF
+  printf '%s: 재사용 %s ← %s (%s%s)\n' "$TT_PREFIX" "$key" "$h" "$e" "$(tt_reuse_how "$how")" >&2
   TT_REUSED="${TT_REUSED:+$TT_REUSED,}$key"
   return 0
 }
@@ -929,9 +938,9 @@ tt_pool_run() {
     picks=$(tr_lane_pick "$TT_REUSE_GDIR" "$secs" "$TT_TREE" "$TT_REUSE_COMMIT" "$TT_REUSE_BASE" \
       "$(tt_doubles)" "$TT_REUSE_LIST" tt_lane_digest)
     took=","
-    while IFS="$tab" read -r ids h e; do
+    while IFS="$tab" read -r ids h e how; do
       [ -n "$ids" ] || continue
-      printf '%s: 재사용 절 %s ← %s (%s)\n' "$TT_PREFIX" "$ids" "$h" "$e" >&2
+      printf '%s: 재사용 절 %s ← %s (%s%s)\n' "$TT_PREFIX" "$ids" "$h" "$e" "$(tt_reuse_how "$how")" >&2
       TT_REUSED_SECTIONS="${TT_REUSED_SECTIONS:+$TT_REUSED_SECTIONS,}$ids"
       took="$took$ids,"
     done <<EOF
@@ -2555,9 +2564,11 @@ EOF
     check "F40 다음 실행은 통과 기록으로 재사용한다" "$out|$(wc -l < "$T/rmake.log" | tr -d ' ')" "rc=0 reused=make:r1|0"
     has "F40 재사용 줄" "$(cat "$T/rp.err")" "test-tree: 재사용 make:r1 ← "
     hasnt "F40 재사용한 목표는 자리를 잡거나 끝 줄을 남기지 않는다" "$(cat "$T/rp.err")" "끝 — 목표 r1"
+    hasnt "F40 같은 트리로 다시 쓴 재사용 줄에는 릴리스 차이 꼬리가 없다" "$(cat "$T/rp.err")" "릴리스 차이"
   else
     check "F40 카나리아 정지 볼륨: 다음 실행도 돈다" "$out|$(wc -l < "$T/rmake.log" | tr -d ' ')" "rc=0 reused=|1"
     hasnt "F40 카나리아 정지 볼륨: 재사용 줄이 없다" "$(cat "$T/rp.err")" "재사용 make:r1"
+    hasnt "F40 카나리아 정지 볼륨: 릴리스 차이 꼬리도 없다" "$(cat "$T/rp.err")" "릴리스 차이"
     has "F40 카나리아 정지 볼륨: 기록하지 않는다는 줄" "$(cat "$T/rp.err")" "기록하지 않는다"
   fi
   rm -rf "$T/rg"
@@ -2678,10 +2689,12 @@ EOF
     check "F42 두 번째 실행은 절을 돌리지 않고 셋 모두 다시 쓴다" "$(lres B)" "rc=0|l1,l2,l3|0"
     has "F42 재사용 절 줄" "$(cat "$T/lr-B.err")" "test-tree: 재사용 절 l1 ← "
     has "F42 다시 쓴 절 수 요약" "$(cat "$T/lr-B.err")" "test-tree: 다시 쓴 절 3개 — 남은 절 없음"
+    hasnt "F42 같은 트리로 다시 쓴 재사용 절 줄에는 릴리스 차이 꼬리가 없다" "$(cat "$T/lr-B.err")" "릴리스 차이"
   else
     check "F42 카나리아 정지 볼륨: 두 번째 실행도 돈다" "$(lres B)" "rc=0||3"
     has "F42 카나리아 정지 볼륨: 기록하지 않는다는 줄" "$(cat "$T/lr-B.err")" "기록하지 않는다"
     hasnt "F42 카나리아 정지 볼륨: 다시 쓴 절이 없다" "$(cat "$T/lr-B.err")" "다시 쓴 절"
+    hasnt "F42 카나리아 정지 볼륨: 릴리스 차이 꼬리도 없다" "$(cat "$T/lr-B.err")" "릴리스 차이"
   fi
   check "F42 컷 다이제스트는 절 집합마다 한 번 계산한다" "$(grep -c '^dig:' "$T/lgate.log")" "3"
 
@@ -2793,8 +2806,8 @@ EOF
   rm -rf "$T"
   printf 'test-tree self-test: %d passed, %d failed\n' "$passed" "$failed"
   # A floor on the count, so a refactor that silently skips cases cannot pass.
-  if [ "$passed" -lt 198 ]; then
-    printf 'test-tree self-test: 통과 수 %d 가 하한 198 에 못 미칩니다\n' "$passed" >&2
+  if [ "$passed" -lt 200 ]; then
+    printf 'test-tree self-test: 통과 수 %d 가 하한 200 에 못 미칩니다\n' "$passed" >&2
     return 1
   fi
   [ "$failed" = "0" ]
