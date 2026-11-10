@@ -3341,9 +3341,12 @@ gate_base_text_moves_git() {
   # are removed first, the way the floor scan removes them, so `'git' commit`,
   # `\git commit` and `git${IFS}commit` read as `git commit`. The scan is
   # quote-blind, so a string merely naming those words also answers true.
+  # `git` must end at a space, a shell separator or the end of the text, so a
+  # path or name that only contains it (`tests/git/merge.py`, `git::commit`)
+  # is not read as the command, while `/usr/bin/git commit` still is.
   local a re
   a=$(printf '%s' "$1" | sed 's/\$[{]IFS[^}]*[}]/ /g; s/\$IFS/ /g' | tr -d '\\"'"'")
-  re='(^|[^[:alnum:]_.-])git([^[:alnum:]_.-]|$)'
+  re='(^|[^[:alnum:]_.-])git([[:space:];&|()<>]|$)'
   [[ "$a" =~ $re ]] || return 1
   re='(^|[^[:alnum:]_-])(branch|checkout|switch|rebase|update-ref|symbolic-ref|fetch|push|commit|merge|cherry-pick|revert|am|pull|reset|worktree)([^[:alnum:]_-]|$)'
   [[ "$a" =~ $re ]]
@@ -3867,13 +3870,22 @@ gate_segment_base_move() {
   esac
   # `--abort` and `--quit` put a stopped sequence back without moving a
   # branch, and a `reset` with no commit or path word resets to HEAD itself.
-  # They are read only as the first word after a subcommand that defines them;
-  # git takes no other operand beside them, and anywhere else they are a
-  # value (`commit -m --abort`, `merge -m --quit <branch>`) that commits or
-  # merges all the same.
-  case "$GATE_GIT_SUB:${rest[0]}" in
-    merge:--abort|merge:--quit|rebase:--abort|rebase:--quit|cherry-pick:--abort|cherry-pick:--quit|revert:--abort|revert:--quit|am:--abort|am:--quit)
-      headmove=0 ;;
+  # They are read only under a subcommand that defines them, and only when
+  # every other word is a flag that takes no value; git takes no operand
+  # beside them, and after a value-taking option they are that value
+  # (`commit -m --abort`, `merge -m --quit <branch>`), which commits or merges
+  # all the same.
+  case "$GATE_GIT_SUB" in
+    merge|rebase|cherry-pick|revert|am)
+      k=0
+      for w in "${rest[@]}"; do
+        case "$w" in
+          --abort|--quit) [ "$k" = 2 ] || k=1 ;;
+          -q|--quiet|-v|--verbose|--allow-empty|--keep-redundant-commits) : ;;
+          *) k=2 ;;
+        esac
+      done
+      [ "$k" != 1 ] || headmove=0 ;;
   esac
   if [ "$GATE_GIT_SUB" = reset ]; then
     k=0
