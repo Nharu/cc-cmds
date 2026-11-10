@@ -25690,11 +25690,14 @@ gate_size_block_redispatch_row() {
 gate_audit_reconverge_row_admits() {
   # gate_audit_reconverge_row_admits <row> — whether the row standing before a
   # run-scope re-convergence's size block is one the audit step's re-convergence
-  # admissions accept: an audit that parked on purpose, a re-convergence that
-  # parked on purpose (whose answer the blocked dispatch carried), or an audit
-  # that ended `정상 완료` with `재수렴 요청=예`.
+  # admissions accept: an audit that parked on purpose, or an audit that ended
+  # `정상 완료` with `재수렴 요청=예`. A re-convergence that parked on purpose
+  # is not one: it is admitted again only with its answer carried, and the
+  # block row of a carrying dispatch took that answer up, so a redispatch
+  # without a carry would start the session without the person's answer — that
+  # answer goes back to a person instead.
   case "$(gate_row_field "$1" '종류')|$(gate_row_field "$1" '종단 부류')" in
-    'audit|의도된 park'|'reconverge|의도된 park') return 0 ;;
+    'audit|의도된 park') return 0 ;;
     'audit|정상 완료') [ "$(gate_row_field "$1" '재수렴 요청')" = "예" ] ;;
     *) return 1 ;;
   esac
