@@ -30988,7 +30988,7 @@ check "20(ii): M 이 로컬 베이스에 들어갔는데 cycle 행이 없으면 
 check "20(ii): 그 거절이 원장을 늘리지 않는다" "$(sa_rows)" "$nb"
 
 # --- 15p. 원격이 없는 대상의 세그먼트는 로컬 베이스 브랜치 ref 에서 끊긴다 -------
-# --- section: 15p | group: sa | covers: exec, snapshot, act, gate_review_line | anchors: 15p: 원격 없는 대상의 스냅숏 베이스는 로컬 브랜치 ref 다, 15p: 원격 추적 ref 시작점은 거부되고 아무것도 만들어지지 않는다, 15p: 그 거부는 로컬 브랜치 ref 를 기대 시작점으로 이름 댄다, 15p: 새 브랜치 없이 베이스 브랜치 자체를 체크아웃하는 시작은 거부되고 아무것도 만들어지지 않는다, 15p: 그 거부는 베이스 브랜치 자체의 체크아웃을 이유로 댄다, 15p: 베이스 브랜치 이름을 -B 로 주는 시작은 거부되고 아무것도 만들어지지 않는다, 15p: 대소문자만 다른 베이스 브랜치 이름의 시작은 거부되고 아무것도 만들어지지 않는다, 15p: 묶은 짧은 옵션 -qB 로 베이스 브랜치를 주는 시작은 거부되고 베이스가 그대로다, 15p: 그 거부는 알아보지 못한 옵션 낱말을 이름 댄다, 15p: 줄인 긴 옵션 --reas 를 쓴 베이스 브랜치 체크아웃은 거부되고 아무것도 만들어지지 않는다, 15p: 메인 워크트리 기준 상대 경로로 쓴 베이스 브랜치 체크아웃은 거부되고 아무것도 만들어지지 않는다, 15p: // 와 /./ 가 섞인 경로로 쓴 베이스 브랜치 체크아웃은 거부되고 아무것도 만들어지지 않는다, 15p: 세그먼트 접두사 밖 경로로 -B 베이스를 주는 시작도 거부되고 베이스가 그대로다, 15p: 로컬 브랜치 ref 시작점은 통과하고 워크트리가 생긴다, 15p: 계획 행이 통과한다, 15p: 세그먼트 워크트리의 커밋이 통과한다, 15p: 세그먼트 워크트리가 베이스로 옮겨 간 뒤의 커밋은 거부되고 베이스가 그대로다, 15p: 그 거부는 HEAD 가 베이스 브랜치임을 이유로 댄다, 15p: 세그먼트 워크트리에서 베이스 브랜치를 이름으로 강제 이동하는 행위는 거부되고 베이스가 그대로다, 15p: 그 거부는 베이스 브랜치를 이름으로 옮기는 행위임을 이유로 댄다, 15p: 세그먼트 워크트리에서 update-ref 로 베이스 브랜치를 옮기는 행위는 거부되고 베이스가 그대로다, 15p: 세그먼트 워크트리에서 --git-dir 로 메인 저장소를 가리킨 커밋은 거부되고 베이스가 그대로다, 15p: 런 도중 원격을 달아도 원격 판정은 런의 첫 판정 그대로다, 15p: review-line 의 --base-sha 는 워크트리 HEAD 와 로컬 베이스의 merge-base 다, 15p: 첫 게이트 진입 뒤 origin 이름을 바꿔도 스냅숏 베이스는 원격 추적 ref 다 ---
+# --- section: 15p | group: sa | covers: exec, snapshot, act, gate_review_line | anchors: 15p: 원격 없는 대상의 스냅숏 베이스는 로컬 브랜치 ref 다, 15p: 원격 추적 ref 시작점은 거부되고 아무것도 만들어지지 않는다, 15p: 그 거부는 로컬 브랜치 ref 를 기대 시작점으로 이름 댄다, 15p: 새 브랜치 없이 베이스 브랜치 자체를 체크아웃하는 시작은 거부되고 아무것도 만들어지지 않는다, 15p: 그 거부는 베이스 브랜치 자체의 체크아웃을 이유로 댄다, 15p: 베이스 브랜치 이름을 -B 로 주는 시작은 거부되고 아무것도 만들어지지 않는다, 15p: 대소문자만 다른 베이스 브랜치 이름의 시작은 거부되고 아무것도 만들어지지 않는다, 15p: 묶은 짧은 옵션 -qB 로 베이스 브랜치를 주는 시작은 거부되고 베이스가 그대로다, 15p: 그 거부는 알아보지 못한 옵션 낱말을 이름 댄다, 15p: 줄인 긴 옵션 --reas 를 쓴 베이스 브랜치 체크아웃은 거부되고 아무것도 만들어지지 않는다, 15p: 메인 워크트리 기준 상대 경로로 쓴 베이스 브랜치 체크아웃은 거부되고 아무것도 만들어지지 않는다, 15p: // 와 /./ 가 섞인 경로로 쓴 베이스 브랜치 체크아웃은 거부되고 아무것도 만들어지지 않는다, 15p: 세그먼트 접두사 밖 경로로 -B 베이스를 주는 시작도 거부되고 베이스가 그대로다, 15p: env 로 감싼 베이스 브랜치 체크아웃은 거부되고 아무것도 만들어지지 않는다, 15p: nice 와 command 를 겹쳐 감싼 베이스 브랜치 체크아웃도 거부되고 아무것도 만들어지지 않는다, 15p: 로컬 브랜치 ref 시작점은 통과하고 워크트리가 생긴다, 15p: 계획 행이 통과한다, 15p: 세그먼트 워크트리의 커밋이 통과한다, 15p: 세그먼트 워크트리가 베이스로 옮겨 간 뒤의 커밋은 거부되고 베이스가 그대로다, 15p: 그 거부는 HEAD 가 베이스 브랜치임을 이유로 댄다, 15p: env 로 감싼 베이스 위 커밋은 거부되고 베이스가 그대로다, 15p: 셸 -c 문자열 안의 베이스 위 커밋은 거부되고 베이스가 그대로다, 15p: HEAD 가 베이스일 때 이름 하나짜리 branch -m 은 거부되고 베이스가 그대로다, 15p: HEAD 가 베이스일 때 update-ref HEAD 는 거부되고 베이스가 그대로다, 15p: 세그먼트 워크트리에서 베이스 브랜치를 이름으로 강제 이동하는 행위는 거부되고 베이스가 그대로다, 15p: 그 거부는 베이스 브랜치를 이름으로 옮기는 행위임을 이유로 댄다, 15p: switch --force- 로 베이스 브랜치를 다시 만드는 행위는 거부되고 베이스가 그대로다, 15p: 줄인 긴 옵션 --d 로 베이스 브랜치를 지우는 행위는 거부되고 베이스가 그대로다, 15p: symbolic-ref 로 베이스 브랜치를 바꾸는 행위는 거부되고 베이스가 그대로다, 15p: rebase --update-refs 는 거부되고 베이스가 그대로다, 15p: 세그먼트 스테이지가 메인 워크트리에서 베이스 위에 하는 커밋은 거부되고 베이스가 그대로다, 15p: 메인 워크트리에서 세그먼트 브랜치를 베이스로 머지하는 행위는 거부되고 베이스가 그대로다, 15p: --segment 없이 메인 워크트리에서 하는 베이스 위 커밋도 거부되고 베이스가 그대로다, 15p: 세그먼트 브랜치 위에서 env 로 감싼 커밋은 통과한다,15p: 세그먼트 워크트리에서 update-ref 로 베이스 브랜치를 옮기는 행위는 거부되고 베이스가 그대로다, 15p: 세그먼트 워크트리에서 --git-dir 로 메인 저장소를 가리킨 커밋은 거부되고 베이스가 그대로다, 15p: 런 도중 원격을 달아도 원격 판정은 런의 첫 판정 그대로다, 15p: review-line 의 --base-sha 는 워크트리 HEAD 와 로컬 베이스의 merge-base 다, 15p: 첫 게이트 진입 뒤 origin 이름을 바꿔도 스냅숏 베이스는 원격 추적 ref 다 ---
 #
 # A target with no `origin` has no remote-tracking base to cut from and no pull
 # request a review can find its base from. The snapshot names the local branch
@@ -31073,6 +31073,17 @@ p15_add -B main "$(dirname "$WT15P")/p15-outside" HEAD
 check "15p: 세그먼트 접두사 밖 경로로 -B 베이스를 주는 시작도 거부되고 베이스가 그대로다" \
   "$rc/$( [ -e "$(dirname "$WT15P")/p15-outside" ] && printf 워크트리 || printf - )/$( cd "$SA_WT" && git rev-parse refs/heads/main )" \
   "2/-/$main15p"
+# The grading table unwraps `env`, `nice` and `command` and grades the git act
+# inside, so the check reads through them too. With the main worktree off
+# `main`, git itself would check the base out here.
+sag exec --manifest "$SA_MANIFEST" --target main --segment - --cutpoint 커밋 --surface 워크트리쓰기 \
+  --snapshot-digest "$(SAH)" --rationale x -- env P15=1 git worktree add "$WT15P" main
+check "15p: env 로 감싼 베이스 브랜치 체크아웃은 거부되고 아무것도 만들어지지 않는다" \
+  "$rc/$(p15_state)" "2/-/-"
+sag exec --manifest "$SA_MANIFEST" --target main --segment - --cutpoint 커밋 --surface 워크트리쓰기 \
+  --snapshot-digest "$(SAH)" --rationale x -- nice -n 1 command git worktree add "$WT15P" main
+check "15p: nice 와 command 를 겹쳐 감싼 베이스 브랜치 체크아웃도 거부되고 아무것도 만들어지지 않는다" \
+  "$rc/$(p15_state)" "2/-/-"
 ( cd "$SA_WT" && git checkout -q main && git branch -D p15-side ) >/dev/null 2>&1
 p15_add -b "$BR15P" "$WT15P" refs/heads/main
 check "15p: 로컬 브랜치 ref 시작점은 통과하고 워크트리가 생긴다" \
@@ -31104,6 +31115,24 @@ case "$msg" in
   *"HEAD 가 베이스 브랜치를 가리키는"*) ok "15p: 그 거부는 HEAD 가 베이스 브랜치임을 이유로 댄다" ;;
   *) bad "15p: 그 거부는 HEAD 가 베이스 브랜치임을 이유로 댄다" "$msg" ;;
 esac
+sag exec --manifest "$SA_MANIFEST" --target main --segment S1 --cutpoint 커밋 --surface 워크트리쓰기 \
+  --snapshot-digest "$(SAH)" --rationale x -- env P15=1 git commit -qm 베이스-위-env-15p
+check "15p: env 로 감싼 베이스 위 커밋은 거부되고 베이스가 그대로다" \
+  "$rc/$( cd "$SA_WT" && git rev-parse refs/heads/main )" "2/$main15p"
+sag exec --manifest "$SA_MANIFEST" --target main --segment S1 --cutpoint 커밋 --surface 워크트리쓰기 \
+  --snapshot-digest "$(SAH)" --rationale x -- bash -c 'git commit -qm 베이스-위-셸-15p'
+check "15p: 셸 -c 문자열 안의 베이스 위 커밋은 거부되고 베이스가 그대로다" \
+  "$rc/$( cd "$SA_WT" && git rev-parse refs/heads/main )" "2/$main15p"
+# With one name `branch -m` renames the branch HEAD is on, and `update-ref HEAD`
+# moves it; neither word names the base.
+sag exec --manifest "$SA_MANIFEST" --target main --segment S1 --cutpoint 커밋 --surface 워크트리쓰기 \
+  --snapshot-digest "$(SAH)" --rationale x -- git branch -m p15-renamed
+check "15p: HEAD 가 베이스일 때 이름 하나짜리 branch -m 은 거부되고 베이스가 그대로다" \
+  "$rc/$( cd "$SA_WT" && git rev-parse refs/heads/main )" "2/$main15p"
+sag exec --manifest "$SA_MANIFEST" --target main --segment S1 --cutpoint 커밋 --surface 워크트리쓰기 \
+  --snapshot-digest "$(SAH)" --rationale x -- git update-ref HEAD "$( cd "$WT15P" && git rev-parse "$BR15P" )"
+check "15p: HEAD 가 베이스일 때 update-ref HEAD 는 거부되고 베이스가 그대로다" \
+  "$rc/$( cd "$SA_WT" && git rev-parse refs/heads/main )" "2/$main15p"
 ( cd "$WT15P" && git reset -q && rm -f p15b.txt && git switch -q "$BR15P" ) >/dev/null 2>&1
 # With the main worktree off `main` git itself would move it, so the refusal
 # measured here is the gate's.
@@ -31117,7 +31146,49 @@ case "$msg" in
   *"이름으로 옮기거나 지우는"*) ok "15p: 그 거부는 베이스 브랜치를 이름으로 옮기는 행위임을 이유로 댄다" ;;
   *) bad "15p: 그 거부는 베이스 브랜치를 이름으로 옮기는 행위임을 이유로 댄다" "$msg" ;;
 esac
+# git expands `--force-` to `--force-create` and `--d` to `--delete`;
+# `symbolic-ref` with the base first rewrites the base ref, and
+# `--update-refs` moves branches no word of the act names.
+sag exec --manifest "$SA_MANIFEST" --target main --segment S1 --cutpoint 커밋 --surface 워크트리쓰기 \
+  --snapshot-digest "$(SAH)" --rationale x -- git switch --force- main
+check "15p: switch --force- 로 베이스 브랜치를 다시 만드는 행위는 거부되고 베이스가 그대로다" \
+  "$rc/$( cd "$SA_WT" && git rev-parse refs/heads/main )/$( cd "$WT15P" && git rev-parse --abbrev-ref HEAD )" \
+  "2/$main15p/$BR15P"
+sag exec --manifest "$SA_MANIFEST" --target main --segment S1 --cutpoint 커밋 --surface 워크트리쓰기 \
+  --snapshot-digest "$(SAH)" --rationale x -- git branch --d main
+check "15p: 줄인 긴 옵션 --d 로 베이스 브랜치를 지우는 행위는 거부되고 베이스가 그대로다" \
+  "$rc/$( cd "$SA_WT" && git rev-parse refs/heads/main )" "2/$main15p"
+sag exec --manifest "$SA_MANIFEST" --target main --segment S1 --cutpoint 커밋 --surface 워크트리쓰기 \
+  --snapshot-digest "$(SAH)" --rationale x -- git symbolic-ref refs/heads/main refs/heads/p15-side2
+check "15p: symbolic-ref 로 베이스 브랜치를 바꾸는 행위는 거부되고 베이스가 그대로다" \
+  "$rc/$( cd "$SA_WT" && git rev-parse refs/heads/main )" "2/$main15p"
+sag exec --manifest "$SA_MANIFEST" --target main --segment S1 --cutpoint 커밋 --surface 워크트리쓰기 \
+  --snapshot-digest "$(SAH)" --rationale x -- git rebase --update-refs refs/heads/main
+check "15p: rebase --update-refs 는 거부되고 베이스가 그대로다" \
+  "$rc/$( cd "$SA_WT" && git rev-parse refs/heads/main )/$( cd "$WT15P" && git rev-parse --abbrev-ref HEAD )" \
+  "2/$main15p/$BR15P"
 ( cd "$SA_WT" && git checkout -q main && git branch -D p15-side2 ) >/dev/null 2>&1
+# The main worktree holds the base. A segment stage acting there, by `-C` or
+# with its `--segment` left out, would commit or merge onto the person's base
+# at the `커밋` cutpoint, where no landing merge exists on such a target.
+sag exec --manifest "$SA_MANIFEST" --target main --segment S1 --cutpoint 커밋 --surface 워크트리쓰기 \
+  --snapshot-digest "$(SAH)" --rationale x -- git -C "$SA_WT" commit -q --allow-empty -m p15-main
+check "15p: 세그먼트 스테이지가 메인 워크트리에서 베이스 위에 하는 커밋은 거부되고 베이스가 그대로다" \
+  "$rc/$( cd "$SA_WT" && git rev-parse refs/heads/main )" "2/$main15p"
+sag exec --manifest "$SA_MANIFEST" --target main --segment S1 --cutpoint 커밋 --surface 워크트리쓰기 \
+  --snapshot-digest "$(SAH)" --rationale x -- git -C "$SA_WT" merge -q --no-edit "$BR15P"
+check "15p: 메인 워크트리에서 세그먼트 브랜치를 베이스로 머지하는 행위는 거부되고 베이스가 그대로다" \
+  "$rc/$( cd "$SA_WT" && git rev-parse refs/heads/main )" "2/$main15p"
+sag exec --manifest "$SA_MANIFEST" --target main --segment - --cutpoint 커밋 --surface 워크트리쓰기 \
+  --snapshot-digest "$(SAH)" --rationale x -- git commit -q --allow-empty -m p15-main2
+check "15p: --segment 없이 메인 워크트리에서 하는 베이스 위 커밋도 거부되고 베이스가 그대로다" \
+  "$rc/$( cd "$SA_WT" && git rev-parse refs/heads/main )" "2/$main15p"
+# The unwrap does not over-refuse: on the segment branch a wrapped commit passes.
+sag exec --manifest "$SA_MANIFEST" --target main --segment S1 --cutpoint 커밋 --surface 워크트리쓰기 \
+  --snapshot-digest "$(SAH)" --rationale x -- env P15=1 git commit -q --allow-empty -m 작업-env-15p
+check "15p: 세그먼트 브랜치 위에서 env 로 감싼 커밋은 통과한다" \
+  "$rc/$( cd "$WT15P" && git log -1 --format=%s )" "0/작업-env-15p"
+[ "$rc" = 0 ] || bad "15p env 커밋 문면" "$msg"
 # `update-ref` moves a ref whichever worktree holds it, and `-m` takes a value
 # a positional reading would take for the ref.
 sag exec --manifest "$SA_MANIFEST" --target main --segment S1 --cutpoint 커밋 --surface 워크트리쓰기 \
