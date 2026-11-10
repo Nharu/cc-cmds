@@ -62781,7 +62781,7 @@ check "102: 분류기를 읽지 못하면 판정불가다 (게이트)" \
 
 # ---------------------------------------------------------------------------
 # 113. 재수렴이 선언을 바꾸면 게이트가 세그먼트 행을 다시 선언한다
-# --- section: 113 | group: base | covers: act, plan, snapshot, gate_segment_redeclare, gate_redeclare_after_reconverge, gate_decl_dispatch_check, gate_decl_phrase_check, gate_segment_decl_snapshot, gate_record_stage_outcome, gate_halt_settle, gate_record_row | anchors: 113: 넓힌 재수렴 뒤 재선언 행이 하나 생긴다, 113: 재선언 행의 다이제스트는 지금 문서의 것이다, 113: 스냅숏 선언 파일이 새 집합이다, 113: 같은 문서의 둘째 재수렴은 행을 더하지 않는다, 113: 라우터가 넘긴 옛 집합은 게이트의 집합으로 덮이고 경고가 남는다, 113: 구절이 스냅숏과 다르면 종료 2 로 두 값을 함께 든다, 113: 같은 값에 세 번째 구절 거절은 종료 3 이다, 113: 브랜치가 바꾼 경로를 빼는 좁힘은 park 재선언 행과 cone 막힘을 쓴다, 113: 커밋 안 된 한글 경로의 변경도 좁힘을 park 로 만든다, 113: 베이스 끝을 읽지 못하면 판정 불가 막힘이다, 113: 파견 자리 대조가 어긋난 집합을 종료 3 으로 막는다, 113: 파견 자리가 미룬 재선언을 쓰고 통과한다, 113: 런 범위 재수렴은 허용 상태의 세그먼트를 모두 재선언한다, 113: 선언 없는 런의 호출자 집합은 덮지 않는다 ---
+# --- section: 113 | group: base | covers: act, plan, snapshot, gate_segment_redeclare, gate_redeclare_after_reconverge, gate_decl_dispatch_check, gate_decl_phrase_check, gate_segment_decl_snapshot, gate_record_stage_outcome, gate_halt_settle, gate_record_row | anchors: 113: 넓힌 재수렴 뒤 재선언 행이 하나 생긴다, 113: 재선언 행의 다이제스트는 지금 문서의 것이다, 113: 스냅숏 선언 파일이 새 집합이다, 113: 같은 문서의 둘째 재수렴은 행을 더하지 않는다, 113: 라우터가 넘긴 옛 집합은 게이트의 집합으로 덮이고 경고가 남는다, 113: 구절이 스냅숏과 다르면 종료 2 로 두 값을 함께 든다, 113: 같은 값에 세 번째 구절 거절은 종료 3 이다, 113: 브랜치가 바꾼 경로를 빼는 좁힘은 park 재선언 행과 cone 막힘을 쓴다, 113: 커밋 안 된 한글 경로의 변경도 좁힘을 park 로 만든다, 113: 베이스 끝을 읽지 못하면 판정 불가 막힘이다, 113: 파견 자리 대조가 어긋난 집합을 종료 3 으로 막는다, 113: 파견 자리가 미룬 재선언을 쓰고 통과한다, 113: 파견 자리 재선언이 park 로 만든 세그먼트는 같은 act 가 파견하지 않는다, 113: 파견 자리 재선언 뒤 옛 구절은 새 값을 든 종료 2 로 거절된다, 113: 런 범위 재수렴은 허용 상태의 세그먼트를 모두 재선언한다, 113: 선언 없는 런의 호출자 집합은 덮지 않는다 ---
 #
 # A re-convergence inside a run can move the frozen document's `선언 파일` for
 # a slice, and the segment row used to keep the set it was planned with: the
@@ -63086,13 +63086,51 @@ case "$rc/$msg" in
   *) bad "113: 선언 없는 런의 호출자 집합은 덮지 않는다" "rc=$rc $msg" ;;
 esac
 
+# --- 파견 자리 재선언 뒤의 전체 act: 좁힘 park, 옛 구절 ---------------------
+# 재수렴 행만 있고 재선언 행이 없는 세그먼트를 구현 act 로 파견한다. 대조
+# 함수만 부르면 재선언 뒤 act 가 무엇을 하는지는 재지 못하므로 act 전체를
+# 스텁 CLI 로 돌린다.
+f113_new R113J '`sa/q.txt`, `sa/r.txt`' '`SB.txt`' || bad "113: R113J 픽스처 계획" "rc=$rc $msg"
+wt113j=$(g15_wt R113J SA)
+f113_seg R113J SA 상태=실행중 "워크트리=$wt113j" 선행=없음
+( cd "$wt113j" && mkdir -p sa && printf 'r\n' > sa/r.txt && git add sa/r.txt && git commit -q -m fx113 ) >/dev/null 2>&1
+f113_set R113J SA '선언 파일' '`sa/q.txt`'
+f113_in R113J 'gate_append stage-result "세그먼트=SA" "스테이지=SA" "종류=reconverge" "종료 코드=0" "실행 버전=1" "세션 id=s-113" "종단 부류=정상 완료"' >/dev/null 2>&1
+check "113: 재선언을 미룬 세그먼트가 실행중이고 옛 집합을 싣는다 (아래가 공허하지 않다)" \
+  "$(f113_redecl R113J SA)/$(seg_field "$(g15_row R113J SA)" '상태')/$(f113_snapdecl R113J SA)" "0/실행중/sa/q.txt, sa/r.txt"
+f113_dispatch act R113J SA "$(f113_prompt R113J SA 'sa/q.txt, sa/r.txt')"
+case "$rc/$msg" in
+  3/*"파견 자리 대조"*"재선언으로 상태가 park"*) ok "113: 파견 자리 재선언이 park 로 만든 세그먼트는 같은 act 가 파견하지 않는다" ;;
+  *) bad "113: 파견 자리 재선언이 park 로 만든 세그먼트는 같은 act 가 파견하지 않는다" "rc=$rc $msg" ;;
+esac
+check "113: 그 park 는 재선언 행 하나와 막힘 행 하나만 남긴다" \
+  "$(f113_redecl R113J SA)/$(seg_field "$(g15_row R113J SA)" '상태')/$(f113_blocks R113J SA)" "1/park/1"
+f113_new R113K '`sa/a.txt`' '`SB.txt`' || bad "113: R113K 픽스처 계획" "rc=$rc $msg"
+f113_set R113K SA '선언 파일' '`sa/a.txt`, `sa/b.txt`'
+f113_in R113K 'gate_append stage-result "세그먼트=SA" "스테이지=SA" "종류=reconverge" "종료 코드=0" "실행 버전=1" "세션 id=s-113" "종단 부류=정상 완료"' >/dev/null 2>&1
+check "113: 재선언을 미룬 동안 스냅숏은 옛 집합이다 (아래가 공허하지 않다)" "$(f113_snapdecl R113K SA)" "sa/a.txt"
+f113_dispatch act R113K SA "$(f113_prompt R113K SA 'sa/a.txt')"
+case "$rc/$msg" in
+  2/*"프롬프트 sa/a.txt, 스냅숏 sa/a.txt, sa/b.txt"*) ok "113: 파견 자리 재선언 뒤 옛 구절은 새 값을 든 종료 2 로 거절된다" ;;
+  *) bad "113: 파견 자리 재선언 뒤 옛 구절은 새 값을 든 종료 2 로 거절된다" "rc=$rc $msg" ;;
+esac
+check "113: 그 거절 앞에 파견측 재선언 행이 쓰이고 막힘 행은 없다" \
+  "$(f113_redecl R113K SA)/$(f113_snapdecl R113K SA)/$(f113_blocks R113K SA)" "1/sa/a.txt, sa/b.txt/0"
+check "113: 재대조의 거절은 새 값에 대한 첫 거절로 센다" \
+  "$(f113_rows R113K '자율 승인' SA | { grep -F -e '| kind=decl-phrase |' || true; } | { grep -F -e '| 거절 횟수=1 |' || true; } | grep -c . || true)" "1"
+f113_dispatch plan R113K SA "$(f113_prompt R113K SA 'sa/a.txt, sa/b.txt')"
+case "$msg" in
+  *"파견 자리 대조"*|*"「· 선언 파일:」 구절"*) bad "113: 새 값을 실어 다시 낸 파견은 두 대조를 지난다" "rc=$rc $msg" ;;
+  *) ok "113: 새 값을 실어 다시 낸 파견은 두 대조를 지난다" ;;
+esac
+
 # --- 중단 답 정산의 락 순서 ---------------------------------------------------
 # 정산 act 는 재수렴 행을 쓴 뒤 재선언을 마칠 때까지 그 키의 디스패치 락을
 # 쥔다. 락을 푸는 줄이 재선언 호출보다 뒤에 있어야, 그 사이 같은 키의 구현
 # 파견이 대조가 아니라 진행 중 거절(GATE_EXIT_INFLIGHT)을 받는다.
 check "113: 중단 답 정산은 재선언을 마친 뒤 디스패치 락을 푼다" \
   "$(sed -n '/^gate_halt_settle()/,/^}/p' "$GATE" | awk '/gate_redeclare_after_reconverge/ { r = NR } /gate_dispatch_lock_release/ { l = NR } END { print ((r > 0 && l > r) ? "뒤" : "앞") }')" "뒤"
-for r113 in R113A R113B R113C R113E R113F R113G; do g15_drop "$r113:SA" "$r113:SB"; done
+for r113 in R113A R113B R113C R113E R113F R113G R113J R113K; do g15_drop "$r113:SA" "$r113:SB"; done
 
 # ---------------------------------------------------------------------------
 # 99. 탐지 도구와 게이트의 읽기 동사는 같은 것을 낸다

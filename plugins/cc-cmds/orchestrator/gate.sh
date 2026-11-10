@@ -14736,7 +14736,18 @@ gate_decl_dispatch_check() {
   # 「파견 자리 대조」 — the refusal the router already parks a segment on.
   # Exit 11 would read as a reach park, which a `재시도` answer would meet again.
   # `plan` writes nothing and re-declares nothing: it reports what an act would.
-  local verb=$1 seg=$2 msg rc=0 ref
+  #
+  # THE STATE IS READ AGAIN AFTER THAT RE-DECLARATION. A narrowing that hits a
+  # path the branch changed, or one it cannot judge, writes a `park` row that
+  # carries the new set, so the second comparison agrees: the act ends here with
+  # exit 3 under the same name rather than dispatch onto a segment it has just
+  # parked, and writes no second block, the re-declaration having written one.
+  # A re-declaration that moved the set sets GATE_DECL_REDECLARED, so the caller
+  # compares the prompt's `· 선언 파일:` phrase once more against the new
+  # snapshot value: the phrase was compared before the lock, against the set
+  # the router read before this re-declaration.
+  local verb=$1 seg=$2 msg rc=0 ref st
+  GATE_DECL_REDECLARED=''
   gate_decl_governed "$seg" || return 0
   case "$(gate_segment_field "$seg" '상태')" in 계획됨|실행중|리뷰중) : ;; *) return 0 ;; esac
   msg=$(gate_decl_dispatch_compare "$seg") || rc=$?
@@ -14745,8 +14756,20 @@ gate_decl_dispatch_check() {
     ref=$(gate_decl_reconverge_after "$seg")
     if [ -n "$ref" ]; then
       gate_segment_redeclare_isolated "$seg" "$ref"
+      st=$(gate_segment_field "$seg" '상태')
+      case "$st" in
+        계획됨|실행중|리뷰중) : ;;
+        *)
+          warn "파견 자리 대조 — 세그먼트 ${seg} 는 파견 자리의 재선언으로 상태가 ${st:-(없음)} 가 되었습니다"
+          warn "이 세그먼트는 구현을 다시 파견하지 않습니다 — 사람이 선언을 정리한 뒤 다시 킥오프합니다"
+          exit "$GATE_EXIT_RULE"
+          ;;
+      esac
       rc=0; msg=$(gate_decl_dispatch_compare "$seg") || rc=$?
-      [ "$rc" != 0 ] || return 0
+      if [ "$rc" = 0 ]; then
+        GATE_DECL_REDECLARED=1
+        return 0
+      fi
     fi
     if [ "$rc" = 2 ]; then
       gate_redeclare_block "$seg" '판정 불가' "파견 자리 대조 — $msg"
@@ -48320,7 +48343,7 @@ gate_verb_act() {
     esac
     [ $# -ge 1 ] || { warn "act --kind clause-exec 는 「절=<id>」 뒤에 실행할 명령이 있어야 합니다"; exit "$GATE_EXIT_VOCAB"; }
   fi
-  local argv="$*" impl_budget_out='' impl_cj_out=''
+  local argv="$*" impl_budget_out='' impl_cj_out='' decl_phrase_due=''
 
   [ -n "$alias" ]    || { printf 'gate: --target is required\n' >&2; exit 2; }
   [ -n "$cutpoint" ] || { printf 'gate: --cutpoint is required\n' >&2; exit 2; }
@@ -49333,13 +49356,16 @@ gate_verb_act() {
     # implementation session is compared next to the document argument. A
     # resume sends a fixed sentence, a carry act the gate's own re-entry frame,
     # and a base resolution or a CI fix a directive of its own: none of those is
-    # a prompt the router spells the set into.
+    # a prompt the router spells the set into. The dispatch-site comparison
+    # below compares the phrase once more when it re-declared the segment, and
+    # only when this one ran.
     if [ "${1:-}" = "implement" ] && [ -z "$GATE_RESUME" ] && [ -z "$GATE_CARRY_ANSWER" ] \
        && { [ "$verb" = "act" ] || [ "$verb" = "plan" ]; } \
        && [ -n "$segment" ] && [ "$segment" != "-" ] && gate_decl_governed "$segment"; then
       case "$(gate_skill_prompt_of "$@")" in
         *'베이스 해소:'*|*'CI 수정:'*) : ;;
-        *) gate_decl_phrase_check "$verb" "$segment" "$alias" "$(gate_skill_prompt_of "$@")" ;;
+        *) decl_phrase_due=1
+           gate_decl_phrase_check "$verb" "$segment" "$alias" "$(gate_skill_prompt_of "$@")" ;;
       esac
     fi
     # A BASE RESOLUTION IS AN IMPLEMENT DISPATCH WHOSE PROMPT CARRIES
@@ -49842,9 +49868,16 @@ gate_verb_act() {
     # The declared set an implementation is dispatched on, compared with the
     # frozen document while the key's lock is held: every implement dispatch —
     # a first one, a re-dispatch, a carry act and a resume — meets it here.
+    # When it re-declared the segment, a prompt whose phrase was compared above
+    # is compared again against the snapshot value the re-declaration made:
+    # the router spelled the phrase from the set before it, and a match here
+    # would send the implementation out on the set the document no longer names.
     if [ "${1:-}" = "implement" ] && [ -n "$segment" ] && [ "$segment" != "-" ] \
        && { [ "$verb" = "act" ] || [ "$verb" = "plan" ]; }; then
       gate_decl_dispatch_check "$verb" "$segment"
+      if [ -n "${GATE_DECL_REDECLARED:-}" ] && [ -n "$decl_phrase_due" ]; then
+        gate_decl_phrase_check "$verb" "$segment" "$alias" "$(gate_skill_prompt_of "$@")"
+      fi
     fi
   fi
 
