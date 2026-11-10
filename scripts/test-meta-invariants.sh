@@ -1746,6 +1746,14 @@ for pair in "리드:$AP_ROUTER" "교대:$RS_CORPUS"; do
 done
 check "교대 사본에 운반 행위의 대조 거절 문장이 한 번 실린다" \
   "$(mo_count "$(unfenced "$RS_SKILL")" '**A carry act (`--carry-answer`) refused this way is not the carry table'"'"'s `3` either**: write the same two rows, and do not carry that answer again in this run.')" "1"
+# The carry table's own file says it too, in a paragraph right after the table,
+# because item 8 of the halt-answer files hands every carry exit to that table.
+ha1_file="$PLUGIN_ROOT/skills/autopilot-router-shift/references/halt-answer-1.md"
+ha1_carry='**A carry act'"'"'s exit 3 naming 「파견 자리 대조」** is not the table'"'"'s `3`: write the `구현` branch'"'"'s segment `park` row and cone block, and do not carry that answer again in this run.'
+check "운반 종료 표 파일에 운반 행위의 대조 거절 문장이 한 번 실린다" \
+  "$(mo_count "$(unfenced "$ha1_file")" "$ha1_carry")" "1"
+check "운반 대조 거절 문단은 운반 종료 표 바로 뒤에 있다" \
+  "$(awk '/^ *\| `18` \|/ { t = NR } t && NR == t + 2 { print (index($0, "**A carry act'"'"'s exit 3 naming") ? "표 뒤" : "다른 자리"); exit }' "$ha1_file")" "표 뒤"
 check "리드 사본의 계획 시점 문장이 선언 런과 선언 없는 런을 나눈다" \
   "$(mo_count "$(unfenced "$AP_ROUTER")" '`선언 파일 집합` is likewise carried at planning time by the router — it is the sole input to "did this segment touch a file outside its declaration", which git cannot answer at all. On a `--from-declaration` run the gate carries it from the document instead, and the router passes none.')" "1"
 
