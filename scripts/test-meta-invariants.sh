@@ -1871,6 +1871,17 @@ check "교대 색인의 할트 답 행이 세그먼트의 재수렴 행 진입 �
   "$(printf '%s\n' "$rs_halt_row" | grep -cF -- 'the last `stage-result` row of a segment reads `종류=reconverge` — a settled row carrying `정산=` and a re-convergence dispatched for a binding-tier answer alike')" "1"
 check "반증 재수렴 6번이 정산= 행을 할트 답 절의 몫으로 넘긴다" \
   "$(grep -cF -- 'So is a re-convergence row carrying `정산=`: the gate wrote it when item 3 of that subsection settled an answer' "$RS_REFS/refutation-reconverge.md")" "1"
+# A pre-dispatch size block writes a `stage-result` row of the blocked kind
+# (`종류=reconverge` included) with `차단=파견 전` and no session. Read by its
+# shape alone it opens the halt-answer and refutation files, whose
+# after-the-re-convergence dispositions would call its missing literal a failed
+# re-convergence and forbid the redispatch the size record's answer asks for.
+check "교대 색인의 할트 답 행이 차단=파견 전 행을 진입 조건에서 뺀다" \
+  "$(printf '%s\n' "$rs_halt_row" | grep -cF -- 'A last row carrying `차단=파견 전` meets none of these row conditions')" "1"
+check "교대 색인 아래 문단이 차단=파견 전 행을 끝난 스테이지로 읽지 않는다" \
+  "$(printf '%s\n' "$rs_index" | grep -cF -- '**A `stage-result` row carrying `차단=파견 전` is no stage that ended.**')" "1"
+check "반증 재수렴 6번이 차단=파견 전 행을 읽지 않는다" \
+  "$(grep -cF -- 'A row carrying `차단=파견 전` is no re-convergence at all' "$RS_REFS/refutation-reconverge.md")" "1"
 
 printf '\n통과 %s · 실패 %s\n' "$passed" "$failed"
 [ "$failed" -eq 0 ]
