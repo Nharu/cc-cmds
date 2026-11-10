@@ -3259,31 +3259,63 @@ gate_base_check_front() {
     command) shift; out=$(gate_unwrap_command gate_base_check_inner '' "$GATE_BASECHK_UNREAD" "$@") ;;
     env)
       shift
+      # Only the words env itself consumes are scanned — assignments and
+      # options, up to the first word that is neither — so a value such as
+      # `X=/a/git` does not end the scan early. The `GIT_CONFIG_*` family sets
+      # configuration (`rebase.updateRefs` among it) that no word of the git
+      # act shows.
+      w=0
       for a in "$@"; do
+        if [ "$w" = 1 ]; then w=0; continue; fi
         case "$a" in
-          GIT_DIR=*|GIT_WORK_TREE=*|GIT_COMMON_DIR=*) out="$GATE_BASECHK_UNREAD"; break ;;
+          GIT_DIR=*|GIT_WORK_TREE=*|GIT_COMMON_DIR=*|GIT_CONFIG_*=*|GIT_CONFIG=*)
+            out="$GATE_BASECHK_UNREAD"; break ;;
+          -u) w=1 ;;
+          -*|*=*) : ;;
+          *) break ;;
         esac
-        [ "${a##*/}" != git ] || break
       done
       [ -n "$out" ] || out=$(gate_unwrap_env gate_base_check_inner '' "$GATE_BASECHK_UNREAD" "$@") ;;
     timeout|nice|nohup|stdbuf)
       w="$cmd"; shift
       out=$(gate_unwrap_wrapper "$w" gate_base_check_inner '' "$GATE_BASECHK_UNREAD" "$@") ;;
     time) shift; out=$(gate_unwrap_time gate_base_check_inner '' "$GATE_BASECHK_UNREAD" "$@") ;;
+    rg) shift; out=$(gate_unwrap_rg gate_base_check_inner '' "$GATE_BASECHK_UNREAD" "$@") ;;
     find)
       shift
-      out=$(gate_unwrap_find gate_base_check_inner '' '' "$GATE_BASECHK_UNREAD" gate_base_check_or "$@") ;;
-    xargs|sudo)
+      # find puts the match's path in place of `{}` inside any word, so a git
+      # command carrying one is not run as written (`-exec git branch -f
+      # ma{} HEAD ';'` on a match `in`), the reading `gate_find_exec_substitutes`
+      # already gives the push reader.
+      if gate_find_exec_substitutes git "$@"; then
+        out="$GATE_BASECHK_UNREAD"
+      else
+        out=$(gate_unwrap_find gate_base_check_inner '' '' "$GATE_BASECHK_UNREAD" gate_base_check_or "$@")
+      fi ;;
+    # xargs appends words from its input or fills `-I` placeholders, so the git
+    # call it makes is never the one its argv shows.
+    xargs)
+      shift
+      for a in "$@"; do [ "${a##*/}" != git ] || { out="$GATE_BASECHK_UNREAD"; break; }; done
+      [ -n "$out" ] || return 0 ;;
+    sudo)
       shift
       while [ "$#" -gt 0 ] && [ "${1##*/}" != git ]; do shift; done
       [ "$#" -ge 1 ] || return 0
       out=$(gate_base_check_inner "$@") ;;
-    bash|sh|zsh|dash|ksh)
+    bash|sh|zsh|dash|ksh|python|python3|perl|ruby|node)
       shift
-      a=$(gate_push_shell_payload "$@")
-      re='(^|[[:space:];&|(`/])git([[:space:]]|$)'
+      # A shell's `-c` string, and an interpreter's whole argv, with quotes,
+      # backslashes and `$IFS` removed the way the floor scan removes them, so
+      # `'git' commit`, `\git commit` and `git${IFS}commit` read as `git commit`.
+      case "$cmd" in
+        python|python3|perl|ruby|node) a="$*" ;;
+        *) a=$(gate_push_shell_payload "$@") ;;
+      esac
+      a=$(printf '%s' "$a" | sed 's/\$[{]IFS[^}]*[}]/ /g; s/\$IFS/ /g' | tr -d '\\"'"'")
+      re='(^|[^[:alnum:]_.-])git([^[:alnum:]_.-]|$)'
       [[ "$a" =~ $re ]] || return 0
-      re='(^|[[:space:];&|(`])(branch|checkout|switch|rebase|update-ref|symbolic-ref|fetch|push|commit|merge|cherry-pick|revert|am|pull|reset|worktree)([[:space:];&|)`]|$)'
+      re='(^|[^[:alnum:]_-])(branch|checkout|switch|rebase|update-ref|symbolic-ref|fetch|push|commit|merge|cherry-pick|revert|am|pull|reset|worktree)([^[:alnum:]_-]|$)'
       [[ "$a" =~ $re ]] || return 0
       out="$GATE_BASECHK_UNREAD" ;;
     *) return 0 ;;
@@ -3314,16 +3346,26 @@ gate_base_check_or() {
 gate_dir_in_target_repo() {
   # gate_dir_in_target_repo <alias> <dir> — true when <dir> lies in a worktree
   # of the target's repository: its main worktree, a segment worktree or any
-  # other linked worktree. Both sides are compared by the directory holding the
-  # git common directory, folded physically and by letter case.
-  local alias="$1" dir="$2" acd root
-  acd=$(cd "$dir" 2>/dev/null && git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || return 1
-  [ -n "$acd" ] || return 1
+  # other linked worktree. Both sides are compared by their git common
+  # directory itself, resolved physically and folded by letter case, so a git
+  # directory kept apart from its worktree (`--separate-git-dir`, a `.git`
+  # file) is read like any other. The relative answer `--git-common-dir`
+  # gives is entered with `cd`, which needs no `--path-format` (git 2.31).
+  local alias="$1" dir="$2" acd tcd root
+  acd=$(gate_git_common_dir_of "$dir") || return 1
   root=$(alias_root "$alias" 2>/dev/null) || return 1
   [ -n "$root" ] || return 1
-  acd=$(gate_real_prefix "$(dirname "$acd")" | tr '[:upper:]' '[:lower:]')
-  root=$(gate_real_prefix "$root" | tr '[:upper:]' '[:lower:]')
-  [ "$acd" = "$root" ]
+  tcd=$(gate_git_common_dir_of "$root") || return 1
+  [ "$(printf '%s' "$acd" | tr '[:upper:]' '[:lower:]')" = "$(printf '%s' "$tcd" | tr '[:upper:]' '[:lower:]')" ]
+}
+
+gate_git_common_dir_of() {
+  # gate_git_common_dir_of <dir> — the physical path of <dir>'s git common
+  # directory; fails when <dir> is in no repository.
+  local c
+  c=$(cd "$1" 2>/dev/null && c=$(git rev-parse --git-common-dir 2>/dev/null) && [ -n "$c" ] && cd "$c" 2>/dev/null && pwd -P) || return 1
+  [ -n "$c" ] || return 1
+  printf '%s' "$c"
 }
 
 gate_worktree_add_base_mismatch() {
@@ -3677,6 +3719,7 @@ gate_segment_base_move() {
       # the words — from the option, from `-c rebase.updateRefs` and from the
       # repository's own `rebase.updateRefs` setting, with `--no-update-refs`
       # taking it back as git does.
+      local updsrc=설정
       v=$(cd "$dir" 2>/dev/null && git config --type=bool --get rebase.updateRefs 2>/dev/null) || v=""
       [ "$v" != true ] || upd=1
       i=0
@@ -3702,7 +3745,7 @@ gate_segment_base_move() {
           --no-update-refs) upd=0 ;;
           --*)
             if [ "${#lw}" -ge 3 ]; then
-              case "--update-refs" in "$lw"*) upd=1 ;; esac
+              case "--update-refs" in "$lw"*) upd=1; updsrc=옵션 ;; esac
             fi ;;
           -*) : ;;
           '') : ;;
@@ -3714,7 +3757,11 @@ gate_segment_base_move() {
         for w in ${pos[@]+"${pos[@]}"}; do ! gate_word_names_base "$w" "$brf" || named=1; done
       fi
       if [ "$upd" = 1 ]; then
-        printf '받은 행위: git rebase --update-refs, 베이스 브랜치: %s — 원격 없는 대상의 워크트리에서 --update-refs 는 행위가 이름 짓지 않은 브랜치까지 옮겨 베이스 브랜치가 움직일 수 있으므로 거부합니다' "$want"
+        if [ "$updsrc" = 옵션 ]; then
+          printf '받은 행위: git rebase --update-refs, 베이스 브랜치: %s — 원격 없는 대상의 워크트리에서 --update-refs 는 행위가 이름 짓지 않은 브랜치까지 옮겨 베이스 브랜치가 움직일 수 있으므로 거부합니다' "$want"
+        else
+          printf '받은 행위: git rebase (rebase.updateRefs 설정이 켜져 있음), 베이스 브랜치: %s — 원격 없는 대상의 워크트리에서 이 설정은 행위가 이름 짓지 않은 브랜치까지 옮겨 베이스 브랜치가 움직일 수 있으므로 거부합니다. --no-update-refs 를 붙이면 통과합니다' "$want"
+        fi
         return 0
       fi ;;
     update-ref)
@@ -3734,18 +3781,21 @@ gate_segment_base_move() {
     symbolic-ref)
       # The first name is the ref that is set or deleted; a later one is only
       # what it is set to, so `symbolic-ref HEAD refs/heads/<base>` reads like
-      # a switch and is not refused here.
+      # a switch and is not refused here. With one name and no delete option it
+      # only reads that ref.
       while [ "$k" -lt "${#rest[@]}" ]; do
         w="${rest[$k]}"
         case "$w" in
           -m) k=$((k + 1)) ;;
+          -d|--delete|--d|--de|--del|--dele|--delet) movey=1 ;;
           -*) : ;;
           '') : ;;
           *) pos+=("$w") ;;
         esac
         k=$((k + 1))
       done
-      if [ "${#pos[@]}" -ge 1 ] && gate_word_names_base "${pos[0]}" "$brf"; then named=1; fi ;;
+      if [ "${#pos[@]}" -ge 1 ] && { [ "${#pos[@]}" -ge 2 ] || [ "$movey" = 1 ]; } \
+         && gate_word_names_base "${pos[0]}" "$brf"; then named=1; fi ;;
     fetch|push|pull)
       for w in "${rest[@]}"; do
         case "$w" in -*) : ;; *:*) ! gate_word_names_base "${w##*:}" "$brf" || named=1 ;; esac
@@ -3758,6 +3808,16 @@ gate_segment_base_move() {
   case "$GATE_GIT_SUB" in
     commit|merge|rebase|cherry-pick|revert|am|pull|reset) headmove=1 ;;
   esac
+  # `--abort` and `--quit` put a stopped sequence back without moving a
+  # branch, and a `reset` with no commit or path word resets to HEAD itself.
+  for w in "${rest[@]}"; do
+    case "$w" in --abort|--quit) headmove=0 ;; esac
+  done
+  if [ "$GATE_GIT_SUB" = reset ]; then
+    k=0
+    for w in "${rest[@]}"; do case "$w" in -*|'') : ;; *) k=1 ;; esac; done
+    [ "$k" = 1 ] || headmove=0
+  fi
   [ "$headmove" = 1 ] || return 0
   head=$(cd "$dir" 2>/dev/null && git symbolic-ref -q HEAD 2>/dev/null) || head=""
   [ -n "$head" ] || return 0
