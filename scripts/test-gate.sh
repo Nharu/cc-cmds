@@ -328,6 +328,8 @@ digests_from_given=0
 # tree uses the value to tell whether the code those sections stand on is still
 # the same on another; it runs no assertion and leaves nothing behind.
 cutdig_mode=0
+# The arguments as given, for the slot re-exec below.
+tg_orig_args=("$@")
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --list)
@@ -404,6 +406,33 @@ if [ "$cutdig_mode" = "1" ]; then
      || [ "$digests_from_given" = "1" ] || [ -n "$oracle_mode" ]; then
     printf 'test-gate: --cut-digest 는 --sections <id>[,<id>...] 와만 함께 씁니다\n' >&2
     exit 2
+  fi
+fi
+
+# A RUN THAT EXECUTES SECTIONS ASKS FOR A HOST TEST SLOT, ONCE, HERE. The point
+# sits after the arguments are checked and before the caller's timing, progress
+# and isolation variables below are read and dropped, so the process that comes
+# back through `scripts/test-slots.sh --run` still sees them. The modes that run
+# no section (the oracle modes, `--list`, `--estimate`, `--digests`,
+# `--cut-digest`, `--record-add`) never ask. The decision is taken in a subshell
+# so the slot helper's names stay out of this file's; a helper that is missing
+# or does not source reads as off. The process that comes back carries
+# CC_TEST_SLOT_HELD=1, and so do the cut and every nested run below it, so none
+# of them asks again. Off, nothing is re-executed.
+if [ -z "$oracle_mode" ] && [ "$sections_list" != "1" ] && [ "$est_mode" != "1" ] \
+   && [ "$digests_mode" != "1" ] && [ "$cutdig_mode" != "1" ] && [ -z "$rec_add_file" ] \
+   && [ "${CC_TEST_SLOT_HELD:-}" != "1" ] && [ -f "$repo_root/scripts/test-slots.sh" ]; then
+  tg_slots_on=$(. "$repo_root/scripts/test-slots.sh" 2>/dev/null && ts_init "" && printf '%s' "$TS_ON") || tg_slots_on=0
+  if [ "$tg_slots_on" = "1" ]; then
+    if [ -n "$sections_want" ]; then
+      tg_slot_key="lane:$sections_want"
+      tg_slot_name="절 $sections_want"
+    else
+      tg_slot_key="gate:all"
+      tg_slot_name="test-gate 전량"
+    fi
+    exec bash "$repo_root/scripts/test-slots.sh" --run "$tg_slot_key" "$tg_slot_name" -- \
+      bash "$SELF" ${tg_orig_args[@]+"${tg_orig_args[@]}"}
   fi
 fi
 

@@ -189,9 +189,13 @@ check-cheap:
 #   CHECK_PUSH_REUSE        0 turns off the reuse of recorded passes (default 1)
 #   CC_TEST_SLOTS           host-wide test slots, one CPU's share each: a
 #                           positive whole number, or auto for max(4, CPUs);
-#                           unset, empty or 0 (the default) turns them off
-#   CC_TEST_SLOTS_DIR       where the slots live (default the common git
-#                           directory's cc-cmds-test-slots/)
+#                           0 turns them off. Unset or empty, an unattended
+#                           run (CC_PIPELINE_RUN_ID set) takes the default in
+#                           scripts/test-slots.sh and any other run is off.
+#                           A `run/...` goal waits for one the same way
+#   CC_TEST_SLOTS_DIR       where the slots live (default
+#                           $XDG_STATE_HOME/cc-cmds/test-slots, else
+#                           ~/.local/state/cc-cmds/test-slots)
 # CHECK_PUSH_JOBS reaches check-push.sh the way CHECK_PUSH_SECTIONS does, as a
 # command-line variable or from the environment; the recipe stays as it is.
 # An unattended run whose head changed plugins/cc-cmds/orchestrator/gate.sh
@@ -565,7 +569,7 @@ TEST_GOALS := $(ALL_TESTS:%=run/%)
 # make's jobserver pipe open and make does not return while it lives; the
 # wrapper's header says how it decides what is the suite's.
 $(TEST_GOALS): run/%:
-	bash scripts/suite-guard.sh $*
+	bash scripts/test-slots.sh --run 'make:run/$*' '목표 run/$*' -- bash scripts/suite-guard.sh $*
 
 test: $(NOTIFY_TESTS:%=run/%) $(LINT_TESTS:%=run/%) $(ORCH_TESTS:%=run/%) \
 	run-gate-shard-selftest run-check-gate-selftest \
