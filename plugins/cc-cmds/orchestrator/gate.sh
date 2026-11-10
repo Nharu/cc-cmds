@@ -14742,12 +14742,7 @@ gate_decl_dispatch_check() {
   # carries the new set, so the second comparison agrees: the act ends here with
   # exit 3 under the same name rather than dispatch onto a segment it has just
   # parked, and writes no second block, the re-declaration having written one.
-  # A re-declaration that moved the set sets GATE_DECL_REDECLARED, so the caller
-  # compares the prompt's `· 선언 파일:` phrase once more against the new
-  # snapshot value: the phrase was compared before the lock, against the set
-  # the router read before this re-declaration.
   local verb=$1 seg=$2 msg rc=0 ref st
-  GATE_DECL_REDECLARED=''
   gate_decl_governed "$seg" || return 0
   case "$(gate_segment_field "$seg" '상태')" in 계획됨|실행중|리뷰중) : ;; *) return 0 ;; esac
   msg=$(gate_decl_dispatch_compare "$seg") || rc=$?
@@ -14766,10 +14761,7 @@ gate_decl_dispatch_check() {
           ;;
       esac
       rc=0; msg=$(gate_decl_dispatch_compare "$seg") || rc=$?
-      if [ "$rc" = 0 ]; then
-        GATE_DECL_REDECLARED=1
-        return 0
-      fi
+      [ "$rc" != 0 ] || return 0
     fi
     if [ "$rc" = 2 ]; then
       gate_redeclare_block "$seg" '판정 불가' "파견 자리 대조 — $msg"
@@ -49356,9 +49348,8 @@ gate_verb_act() {
     # implementation session is compared next to the document argument. A
     # resume sends a fixed sentence, a carry act the gate's own re-entry frame,
     # and a base resolution or a CI fix a directive of its own: none of those is
-    # a prompt the router spells the set into. The dispatch-site comparison
-    # below compares the phrase once more when it re-declared the segment, and
-    # only when this one ran.
+    # a prompt the router spells the set into. The phrase is compared once
+    # more inside the dispatch lock, and only when this one ran.
     if [ "${1:-}" = "implement" ] && [ -z "$GATE_RESUME" ] && [ -z "$GATE_CARRY_ANSWER" ] \
        && { [ "$verb" = "act" ] || [ "$verb" = "plan" ]; } \
        && [ -n "$segment" ] && [ "$segment" != "-" ] && gate_decl_governed "$segment"; then
@@ -49868,14 +49859,15 @@ gate_verb_act() {
     # The declared set an implementation is dispatched on, compared with the
     # frozen document while the key's lock is held: every implement dispatch —
     # a first one, a re-dispatch, a carry act and a resume — meets it here.
-    # When it re-declared the segment, a prompt whose phrase was compared above
-    # is compared again against the snapshot value the re-declaration made:
-    # the router spelled the phrase from the set before it, and a match here
-    # would send the implementation out on the set the document no longer names.
+    # A prompt whose phrase was compared before the lock is compared again
+    # here, after the set comparison: a re-declaration made by this act or by
+    # another process between the two moves the snapshot value, the router
+    # spelled the phrase from the set before it, and a match here would send
+    # the implementation out on a set the document no longer names.
     if [ "${1:-}" = "implement" ] && [ -n "$segment" ] && [ "$segment" != "-" ] \
        && { [ "$verb" = "act" ] || [ "$verb" = "plan" ]; }; then
       gate_decl_dispatch_check "$verb" "$segment"
-      if [ -n "${GATE_DECL_REDECLARED:-}" ] && [ -n "$decl_phrase_due" ]; then
+      if [ -n "$decl_phrase_due" ]; then
         gate_decl_phrase_check "$verb" "$segment" "$alias" "$(gate_skill_prompt_of "$@")"
       fi
     fi
