@@ -33,8 +33,10 @@ not hold it byte for byte, and every marker line is unreviewed without
 removes a marker.
 
 `plan` prints the counts and bytes each rule would move and the expected size.
-`apply` and `unmark` write the archive first and the document second, each by
-an atomic rename; with nothing to move they write nothing. `--since BASE`
+`apply` and `unmark` run the `check` comparison in memory and write only when
+it passes, the archive first and the document second, each by an atomic
+rename; with nothing to move they write nothing. New A and B numbers start past
+both the archive's numbers and the markers the document already shows. `--since BASE`
 narrows T1 to parentheses BASE does not hold byte for byte and T3 to entries
 whose heading BASE does not show settled; a heading that appears twice in
 either document is left alone. `check` expands the markers of the archive's
@@ -478,12 +480,24 @@ def parse_archive(text):
     return blocks
 
 
-def next_numbers(archive_text):
+DOC_MARK_A_RE = re.compile(r" \(보관 A([0-9]+)\)")
+DOC_MARK_B_RE = re.compile(r"^\*\*보관\*\*: B([0-9]+)$", re.M)
+
+
+def next_numbers(archive_text, doc_text=None):
+    """Next A, B and C numbers: past every number the archive holds and every
+    A or B marker the document already shows, so a marker the document took
+    from another archive file is never written a second time."""
     nums = {"A": 0, "B": 0, "C": 0}
     if archive_text:
         for block in parse_archive(archive_text):
             for kind, n, _, _ in block:
                 nums[kind] = max(nums[kind], n)
+    if doc_text:
+        for m in DOC_MARK_A_RE.finditer(doc_text):
+            nums["A"] = max(nums["A"], int(m.group(1)))
+        for m in DOC_MARK_B_RE.finditer(doc_text):
+            nums["B"] = max(nums["B"], int(m.group(1)))
     return nums["A"] + 1, nums["B"] + 1, nums["C"] + 1
 
 
@@ -617,6 +631,16 @@ def cmd_plan(args):
     return 0
 
 
+def checked_write_pair(args, pieces, text, new_text, existing):
+    """Run the `check` comparison in memory and write only when it passes."""
+    arch = new_archive_text(existing, pieces, args.writer, args.doc_key)
+    why = check_texts(text, new_text, arch)
+    if why:
+        print("doc-tidy %s: 되돌림 검사 실패 — %s" % (args.verb, why), file=sys.stderr)
+        return 1
+    return write_pair(args, pieces, new_text, existing)
+
+
 def write_pair(args, pieces, new_text, existing):
     arch = new_archive_text(existing, pieces, args.writer, args.doc_key)
     atomic_write(args.archive, arch.encode("utf-8"))
@@ -632,24 +656,24 @@ def cmd_apply(args):
     _, text = read_text(args.doc)
     base = read_text(args.since)[1] if args.since else None
     existing = load_archive(args.archive, args.doc_key)
-    na, nb, _ = next_numbers(existing)
+    na, nb, _ = next_numbers(existing, text)
     new_text, pieces = transform_apply(text, base, na, nb, read_reviewed(args))
     print("moved=%d" % len(pieces))
     if not pieces:
         return 0
-    return write_pair(args, pieces, new_text, existing)
+    return checked_write_pair(args, pieces, text, new_text, existing)
 
 
 def cmd_unmark(args):
     _, text = read_text(args.doc)
     _, base = read_text(args.since)
     existing = load_archive(args.archive, args.doc_key)
-    _, _, nc = next_numbers(existing)
+    _, _, nc = next_numbers(existing, text)
     new_text, pieces = transform_unmark(text, base, nc)
     print("unmarked=%d" % len(pieces))
     if not pieces:
         return 0
-    return write_pair(args, pieces, new_text, existing)
+    return checked_write_pair(args, pieces, text, new_text, existing)
 
 
 def cmd_check(args):
@@ -667,7 +691,7 @@ def cmd_check(args):
 def cmd_tidy(args):
     data, text = read_text(args.doc)
     existing = load_archive(args.archive, args.doc_key)
-    na, nb, _ = next_numbers(existing)
+    na, nb, _ = next_numbers(existing, text)
     reviewed = read_reviewed(args)
     est_text, _ = transform_apply(text, None, 1, 1, reviewed)
     expected = len(est_text.encode("utf-8"))

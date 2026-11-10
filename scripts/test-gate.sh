@@ -68265,7 +68265,7 @@ unset S111 r111 a111 d111 g111 s111_rb s111_rh s111_aw s111_im s111_ip s111_GRAN
 
 # ---------------------------------------------------------------------------
 # 113. 설계 문서 크기 — 크기 표, 파견 전 차단 기록과 행, 세 답 경로와 좌석 제한, 문서 정리의 되돌림 검사
-# --- section: 113 | group: base | covers: act, halt-answer, doc_size_threshold, doc_size_verdict, doc_size_check, doc_size_halt_write, gate_doc_size_dispatch_check, gate_halt_answer_route, gate_doc_tidy_admissible, doc-tidy | anchors: 113: 크기 표가 세 종류의 문턱과 경고 문턱을 낸다, 113: 문턱 위 문서는 재수렴에 초과이고 감사에 경고다, 113: 크기 초과 기록이 스텝·추천·관측 상세를 싣는다, 113: 좌석의 큰 문맥 답은 거절된다, 113: 사람의 큰 문맥 답은 큰문맥-재파견 이다, 113: 사람의 런 밖 처리 답은 크기-보류 다, 113: 좌석의 정리 답은 정리-재파견 이다, 113: 크기 기록에 다른 선택지는 갈래가 없다, 113: 읽기 불가 기록은 정리 후 재파견을 싣지 않는다, 113: 읽기 불가 기록에 좌석은 답할 수 없고 사람의 런 밖 처리는 크기-보류 다, 113: plan 은 차단을 예보하고 기록을 쓰지 않는다, 113: act 는 시도를 청구해 기록과 의도된 park 행을 쓰고 11 로 끝난다, 113: tidy 가 문서를 문턱 아래로 정리하고 보관 파일을 쓴다, 113: check 가 정리 전후와 보관 파일을 되돌림으로 맞춘다, 113: 정리 행이 있으면 정리 뒤 문서로 조건 둘째가 서고 다시 정리하지 않는다, 113: 정리 행이 없으면 바뀐 문서의 정리 답은 거절된다 ---
+# --- section: 113 | group: base | covers: act, halt-answer, doc_size_threshold, doc_size_verdict, doc_size_check, doc_size_halt_write, gate_doc_size_dispatch_check, gate_halt_answer_route, gate_doc_tidy_admissible, doc-tidy, gate_doc_tidy_archive_path | anchors: 113: 크기 표가 세 종류의 문턱과 경고 문턱을 낸다, 113: 문턱 위 문서는 재수렴에 초과이고 감사에 경고다, 113: 크기 초과 기록이 스텝·추천·관측 상세를 싣는다, 113: 좌석의 큰 문맥 답은 거절된다, 113: 사람의 큰 문맥 답은 큰문맥-재파견 이다, 113: 사람의 런 밖 처리 답은 크기-보류 다, 113: 좌석의 정리 답은 정리-재파견 이다, 113: 크기 기록에 다른 선택지는 갈래가 없다, 113: 읽기 불가 기록은 정리 후 재파견을 싣지 않는다, 113: 읽기 불가 기록에 좌석은 답할 수 없고 사람의 런 밖 처리는 크기-보류 다, 113: plan 은 차단을 예보하고 기록을 쓰지 않는다, 113: act 는 시도를 청구해 기록과 의도된 park 행을 쓰고 11 로 끝난다, 113: tidy 가 문서를 문턱 아래로 정리하고 보관 파일을 쓴다, 113: check 가 정리 전후와 보관 파일을 되돌림으로 맞춘다, 113: 정리 행이 있으면 정리 뒤 문서로 조건 둘째가 서고 다시 정리하지 않는다, 113: 정리 행이 없으면 바뀐 문서의 정리 답은 거절된다, 113: 저장소 밖 문서의 보관 파일은 DOC_BASE 아래 docs/design-archive 다 ---
 #
 # 크기 차단은 세션 없이 기록 하나와 행 하나로 끝나고, 그 기록의 답은 게이트가 경로 셋으로
 # 가른다. 이 절은 게이트를 소싱한 자식에서 그 함수들을 직접 부른다: 원장은 빈 파일에서
@@ -68369,6 +68369,12 @@ s113_r=$(s113_call "$S113/ledger.md" "$s113_doc" 'r=0; gate_doc_tidy_admissible 
 check "113: 정리 행이 있으면 정리 뒤 문서로 조건 둘째가 서고 다시 정리하지 않는다" "$s113_r" "0|1"
 check "113: 정리 행이 없으면 바뀐 문서의 정리 답은 거절된다" \
   "$(s113_route "$S113/ledger-empty.md" "$s113_doc" "$s113_rec" '정리 후 재파견' 좌석)" "거절"
+
+# (사) 보관 파일 경로 — 저장소 밖 문서의 DOC_BASE 는 문서 디렉터리이고, 게이트도 스킬처럼
+# <DOC_BASE>/docs/design-archive/<slug>.md 를 쓴다.
+check "113: 저장소 밖 문서의 보관 파일은 DOC_BASE 아래 docs/design-archive 다" \
+  "$(s113_call "$S113/ledger.md" "$s113_doc" 'DOC_BASE="$DOC_DIR"; gate_doc_tidy_archive_path' 2>/dev/null)" \
+  "$S113/repo/docs/docs/design-archive/docs-doc-tidy-fixture.md"
 unset -f s113_call s113_route
 unset S113 s113_doc s113_r s113_rec s113_sha s113_urec s113_row s113_arch s113_rc s113_sz s113_post
 
@@ -68410,7 +68416,7 @@ unset S114 s114_t s114_out
 
 # ---------------------------------------------------------------------------
 # 115. 정리 도구의 완료 기준 — 재현 사본(없으면 합성 문서)이 apply 뒤 300000 미만이고 check 가 0 이다
-# --- section: 115 | group: base | covers: doc-tidy | anchors: 115: 합성 문서가 재현 사본의 크기와 정리 대상 바이트를 그대로 갖는다, 115: apply 가 문서를 300000 아래로 정리한다, 115: check 가 apply 전후와 보관 파일을 되돌림으로 맞춘다, 115: tidy 는 정리 뒤에도 문턱 이상이면 아무것도 쓰지 않고 1 이다, 115: 동결 사본에 같은 바이트로 있는 표지 줄의 항목만 옮긴다, 115: 동결 사본 없이는 표지 줄의 항목을 옮기지 않는다, 115: unmark 가 기준에 있는 표지만 지우고 C 조각을 남긴다, 115: 머리 아래가 빈 줄·표지 줄·옛 머리 줄이어도 상태 줄은 문서에 남는다, 115: 옮길 범위에 이동 필드가 아닌 필드 줄이 있으면 항목을 옮기지 않는다 ---
+# --- section: 115 | group: base | covers: doc-tidy | anchors: 115: 합성 문서가 재현 사본의 크기와 정리 대상 바이트를 그대로 갖는다, 115: apply 가 문서를 300000 아래로 정리한다, 115: check 가 apply 전후와 보관 파일을 되돌림으로 맞춘다, 115: tidy 는 정리 뒤에도 문턱 이상이면 아무것도 쓰지 않고 1 이다, 115: 동결 사본에 같은 바이트로 있는 표지 줄의 항목만 옮긴다, 115: 동결 사본 없이는 표지 줄의 항목을 옮기지 않는다, 115: unmark 가 기준에 있는 표지만 지우고 C 조각을 남긴다, 115: 머리 아래가 빈 줄·표지 줄·옛 머리 줄이어도 상태 줄은 문서에 남는다, 115: 옮길 범위에 이동 필드가 아닌 필드 줄이 있으면 항목을 옮기지 않는다, 115: 문서에 이미 있는 보관 표지 번호는 다시 쓰지 않는다 ---
 #
 # 입력은 환경 변수 CC_DOC_SIZE_REPRO 가 가리키는 트리 밖 재현 사본이고, 그 파일이
 # 없으면 같은 꼴의 합성 문서다. 쓴 입력을 `repro=real <경로>` 또는 `repro=synthetic`
@@ -68533,6 +68539,16 @@ printf '# 끼인 필드\n\n## 미해결 이슈 / 트레이드오프\n\n### 섞�
   > "$S115/mixed.md"
 check "115: 옮길 범위에 이동 필드가 아닌 필드 줄이 있으면 항목을 옮기지 않는다" \
   "$("$s115_tool" plan "$S115/mixed.md" 2>/dev/null | grep -E '^t3_count=')" "t3_count=0"
+
+# 다른 보관 파일에서 온 표지가 이미 있는 문서 — 빈 보관 파일로 apply 해도 새 번호는 그 뒤다.
+printf '# 번호\n\n## 합의된 아키텍처\n\n옛 결정. (보관 A1)\n새 결정. (대체된 문장: "바뀐 문장")\n' > "$S115/num.md"
+cp "$S115/num.md" "$S115/num-before.md"
+s115_rc=0
+"$s115_tool" apply "$S115/num.md" --archive "$S115/num-archive.md" --doc-key docs/doc-tidy-fixture.md \
+  --writer test-gate >/dev/null 2>&1 || s115_rc=$?
+check "115: 문서에 이미 있는 보관 표지 번호는 다시 쓰지 않는다" \
+  "$s115_rc|$(grep -c -F '(보관 A1)' "$S115/num.md" || true)|$(grep -c -F '새 결정. (보관 A2)' "$S115/num.md" || true)|$(grep -c '^### A2$' "$S115/num-archive.md" || true)" \
+  "0|1|1|1"
 unset -f s115_synth
 unset S115 s115_tool s115_rev s115_rc s115_sz s115_sha s115_m s115_ck
 

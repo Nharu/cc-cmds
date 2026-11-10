@@ -46361,17 +46361,12 @@ gate_doc_size_dispatch_check() {
 
 gate_doc_tidy_archive_path() {
   # gate_doc_tidy_archive_path — where the tidy act moves what it takes out of
-  # the run's design document: `docs/design-archive/{slug}.md` under the
-  # document's repository, or `design-archive/{slug}.md` beside the document
-  # when no repository contains it.
-  local root
-  root=$( { cd "$DOC_DIR" 2>/dev/null && git rev-parse --show-toplevel 2>/dev/null; } || true)
-  if [ -n "$root" ]; then
-    case "$DOC" in
-      "$root"/*) printf '%s/docs/design-archive/%s.md' "$DOC_BASE" "$DOC_SLUG"; return 0 ;;
-    esac
-  fi
-  printf '%s/design-archive/%s.md' "$DOC_DIR" "$DOC_SLUG"
+  # the run's design document: `<base>/docs/design-archive/{slug}.md`, with
+  # `<base>` the document's own base (`DOC_BASE`: its repository's main
+  # worktree root, or its own directory when no repository contains it). The
+  # re-convergence and audit skills pass the same path as `--archive`, so the
+  # gate and the skills number their pieces in one archive file.
+  printf '%s/docs/design-archive/%s.md' "$DOC_BASE" "$DOC_SLUG"
 }
 
 gate_perform_doc_tidy() {
