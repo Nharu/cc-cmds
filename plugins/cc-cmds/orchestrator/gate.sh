@@ -24315,6 +24315,30 @@ gate_halt_card_crash_line() {
   esac
 }
 
+gate_size_block_card_capped() {
+  # gate_size_block_card_capped <key> <line> — true when a size block row of the
+  # key carries the card of the `중단 답` row at <line> and the key's attempts
+  # carrying that card died before their session GATE_CARRY_DEATH_MAX times.
+  # GATE_SBC_DEATHS holds the count.
+  #
+  # THE CARRY'S DEATH CAP, FOR THE CARD A SIZE BLOCK HANDS ON. A redispatch
+  # that dies before its session leaves the block row the key's last settled
+  # row and the size record's answer open, so the same redispatch is admitted
+  # and handed the card again. The carry check caps a carried answer's
+  # pre-session deaths; this caps the same answer when the gate hands it on.
+  local r blocked=''
+  GATE_SBC_DEATHS=0
+  while IFS= read -r r; do
+    [ -n "$r" ] || continue
+    [ "$(gate_row_field "$r" '답 운반')" = "$2" ] || continue
+    if gate_row_is_size_block "$r"; then blocked=1; continue; fi
+    gate_row_is_pre_session_death "$r" && GATE_SBC_DEATHS=$((GATE_SBC_DEATHS + 1))
+  done <<EOF
+$( { gate_stage_result_rows_of "$1" || true; } )
+EOF
+  [ -n "$blocked" ] && [ "$GATE_SBC_DEATHS" -ge "$GATE_CARRY_DEATH_MAX" ]
+}
+
 gate_halt_answer_deferred() {
   # gate_halt_answer_deferred <ledger> <line> — true when <ledger> holds an
   # `이월` row naming the `중단 답` row at <line>: the answer found no room
@@ -25647,15 +25671,23 @@ gate_stage_row_before_size_block() {
   # gate_stage_row_before_size_block <key> — the key's last `stage-result` row
   # that is neither a pre-session death nor a size block before dispatch, or
   # nothing: where the key stood when the blocked dispatch was admitted.
-  local r last=''
+  #
+  # A BLOCKED CARRY OF AN ANSWER BROUGHT OVER FROM AN EARLIER RUN may be the
+  # key's first row in this run. Its block row's `답 운반` names this run's copy
+  # of that answer, and the key stood where the earlier run's attempt halted
+  # (`gate_carry_source_last_row`), the row the carry was admitted on.
+  local r last='' blk=''
   while IFS= read -r r; do
     [ -n "$r" ] || continue
     gate_row_is_pre_session_death "$r" && continue
-    gate_row_is_size_block "$r" && continue
+    if gate_row_is_size_block "$r"; then blk=$r; continue; fi
     last=$r
   done <<EOF
 $( { gate_stage_result_rows_of "$1" || true; } | { grep -F -- '- `stage-result`' || true; })
 EOF
+  if [ -z "$last" ] && [ -n "$(gate_row_field "$blk" '답 운반')" ]; then
+    last=$(gate_carry_source_last_row "$(gate_row_field "$blk" '답 운반')")
+  fi
   printf '%s' "$last"
 }
 
@@ -54838,8 +54870,15 @@ gate_launch_stage() {
   # THE ANSWER CARD THIS ATTEMPT GETS: the carried answer's, or — when the key's
   # last attempt carried one and crashed, ran into a limit or was ended from
   # outside — that answer's again, since the attempt may have died holding it.
+  # A card a size block hands on is refused at the carry's death cap.
   GATE_HA_CARD_LINE=${GATE_HA_LINE:-}
   [ -n "$GATE_HA_CARD_LINE" ] || GATE_HA_CARD_LINE=$(gate_halt_card_crash_line "$seg")
+  if [ -z "${GATE_HA_LINE:-}" ] && [ -n "$GATE_HA_CARD_LINE" ] \
+     && gate_size_block_card_capped "$seg" "$GATE_HA_CARD_LINE"; then
+    gate_carry_cap_row "$alias" "$seg" "$kind" "중단 답 라우팅 — 세션 전에 세 번 죽었다" "$GATE_HA_CARD_LINE" \
+      "크기 차단 행이 넘긴 원장 ${GATE_HA_CARD_LINE} 번째 줄의 답을 실은 시도가 세션이 생기기 전에 ${GATE_SBC_DEATHS} 번 죽었다"
+    return "$GATE_EXIT_CARRY_CAP"
+  fi
   # THE VISUAL PUBLISH STAGE RUNS ON ITS PINNED LANE OR NOT AT ALL. Routing off
   # asks nothing and inherits the environment, which is whatever config
   # directory the dispatching session runs under — not the lane logged in to
