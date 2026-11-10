@@ -11344,11 +11344,31 @@ BASE_BRANCH=""
 # does not resolve reads as having a remote, because every consumer's behaviour
 # before this function existed assumed a remote-tracking ref and an unknown target
 # keeps that behaviour.
+#
+# THE JUDGEMENT IS FROZEN PER RUN, as `base_branch` is. The first answer for a
+# target is written to `$RUN_DIR/target-origin.<alias>` beside the root it was
+# measured at, and every later call of the run reads it back. Renaming or removing
+# `origin` is a worktree write a stage may make, and a judgement read afresh on
+# every act would let that one write turn a target with a remote into one without:
+# the review line would then carry a base derived from a local branch the same
+# stage can move, and the review would read only part of the change. A cached
+# answer for another root is measured again, so a run whose alias resolves
+# somewhere else is not handed the old repository's answer.
 target_has_origin() {
-  local al="${1:-$(home_alias)}" root
+  local al="${1:-$(home_alias)}" root f v
   root=$(alias_root "$al" 2>/dev/null) || return 0
   [ -n "$root" ] || return 0
-  ( cd "$root" && git remote get-url origin >/dev/null 2>&1 )
+  f="${RUN_DIR:-}/target-origin.$al"
+  if [ -n "${RUN_DIR:-}" ] && [ -f "$f" ]; then
+    v=$(cat "$f")
+    if [ "${v%%$'\t'*}" = "$root" ]; then
+      [ "${v#*$'\t'}" = 있음 ]
+      return
+    fi
+  fi
+  if ( cd "$root" && git remote get-url origin >/dev/null 2>&1 ); then v=있음; else v=없음; fi
+  [ -n "${RUN_DIR:-}" ] && [ -d "$RUN_DIR" ] && printf '%s\t%s' "$root" "$v" > "$f"
+  [ "$v" = 있음 ]
 }
 
 # The full ref name of a target's base: `refs/remotes/origin/<base>` when the

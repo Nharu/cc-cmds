@@ -5372,6 +5372,10 @@ check "픽스처 원격이 이 레포에서 클론돼 같은 커밋을 가리킨
   "$( cd "$MF_ORIGIN" && git rev-parse --abbrev-ref HEAD )/$( cd "$MF_ORIGIN" && git rev-parse HEAD )" \
   "main/$( cd "$MF_REPO" && git rev-parse HEAD )"
 ( cd "$MF_REPO" && git remote add origin "$MF_ORIGIN" ) >/dev/null 2>&1
+# 원격 판정은 런마다 `$RUN_DIR/target-origin.<별칭>` 에 고정되므로, 앞 절이 원격 없던
+# 이 레포를 이미 잰 사본이 있으면 방금 단 원격이 읽히지 않는다. 같은 런 디렉터리에서
+# 원격을 바꾸는 것은 픽스처뿐이므로 그 사본을 지운다.
+rm -f "$RUN_DIR"/target-origin.*
 write_manifest "$MF" "" "" "존재하지-않는-브랜치"
 MANIFEST="$MF"
 if ( check_base_branches ) >/dev/null 2>&1; then

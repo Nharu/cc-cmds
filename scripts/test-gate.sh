@@ -30988,15 +30988,17 @@ check "20(ii): M 이 로컬 베이스에 들어갔는데 cycle 행이 없으면 
 check "20(ii): 그 거절이 원장을 늘리지 않는다" "$(sa_rows)" "$nb"
 
 # --- 15p. 원격이 없는 대상의 세그먼트는 로컬 베이스 브랜치 ref 에서 끊긴다 -------
-# --- section: 15p | group: sa | covers: exec, snapshot, act, gate_review_line | anchors: 15p: 원격 없는 대상의 스냅숏 베이스는 로컬 브랜치 ref 다, 15p: 원격 추적 ref 시작점은 거부되고 아무것도 만들어지지 않는다, 15p: 그 거부는 로컬 브랜치 ref 를 기대 시작점으로 이름 댄다, 15p: 로컬 브랜치 ref 시작점은 통과하고 워크트리가 생긴다, 15p: 계획 행이 통과한다, 15p: 세그먼트 워크트리의 커밋이 통과한다, 15p: review-line 의 --base-sha 는 워크트리 HEAD 와 로컬 베이스의 merge-base 다 ---
+# --- section: 15p | group: sa | covers: exec, snapshot, act, gate_review_line | anchors: 15p: 원격 없는 대상의 스냅숏 베이스는 로컬 브랜치 ref 다, 15p: 원격 추적 ref 시작점은 거부되고 아무것도 만들어지지 않는다, 15p: 그 거부는 로컬 브랜치 ref 를 기대 시작점으로 이름 댄다, 15p: 새 브랜치 없이 베이스 브랜치 자체를 체크아웃하는 시작은 거부되고 아무것도 만들어지지 않는다, 15p: 그 거부는 베이스 브랜치 자체의 체크아웃을 이유로 댄다, 15p: 로컬 브랜치 ref 시작점은 통과하고 워크트리가 생긴다, 15p: 계획 행이 통과한다, 15p: 세그먼트 워크트리의 커밋이 통과한다, 15p: 런 도중 원격을 달아도 원격 판정은 런의 첫 판정 그대로다, 15p: review-line 의 --base-sha 는 워크트리 HEAD 와 로컬 베이스의 merge-base 다 ---
 #
 # A target with no `origin` has no remote-tracking base to cut from and no pull
 # request a review can find its base from. The snapshot names the local branch
 # ref instead, the gate's worktree check expects that ref and refuses the
-# remote-tracking one, and the review line carries the base the gate derived
-# from the segment worktree. The fixture is a repository of its own whose remote
-# is removed after it is built, on a plan whose one implementation step is the
-# run's one undeclared segment. `sa_new` clears the cutpoint and the plan, so
+# remote-tracking one as well as a call that would check the base branch itself
+# out, and the review line carries the base the gate derived from the segment
+# worktree, on the run's first remote judgement even after a remote appears.
+# The fixture is a repository of its own whose remote is removed after it is
+# built, on a plan whose one implementation step is the run's one undeclared
+# segment. `sa_new` clears the cutpoint and the plan, so
 # the manifest is written again with both once the remote is gone.
 sa_new '원격 없는 세그먼트' ''
 ( cd "$SA_REPO" && git remote remove origin ) >/dev/null 2>&1
@@ -31024,6 +31026,15 @@ case "$msg" in
   *"기대 시작점: refs/heads/main"*) ok "15p: 그 거부는 로컬 브랜치 ref 를 기대 시작점으로 이름 댄다" ;;
   *) bad "15p: 그 거부는 로컬 브랜치 ref 를 기대 시작점으로 이름 댄다" "$msg" ;;
 esac
+# `-f` lifts git's own refusal to check out a branch the main worktree already
+# holds, so the refusal measured here is the gate's.
+p15_add -f "$WT15P" main
+check "15p: 새 브랜치 없이 베이스 브랜치 자체를 체크아웃하는 시작은 거부되고 아무것도 만들어지지 않는다" \
+  "$rc/$(p15_state)" "2/-/-"
+case "$msg" in
+  *"베이스 브랜치 자체"*) ok "15p: 그 거부는 베이스 브랜치 자체의 체크아웃을 이유로 댄다" ;;
+  *) bad "15p: 그 거부는 베이스 브랜치 자체의 체크아웃을 이유로 댄다" "$msg" ;;
+esac
 p15_add -b "$BR15P" "$WT15P" refs/heads/main
 check "15p: 로컬 브랜치 ref 시작점은 통과하고 워크트리가 생긴다" \
   "$rc/$(p15_state)/$( cd "$WT15P" 2>/dev/null && git rev-parse HEAD )" \
@@ -31041,7 +31052,16 @@ check "15p: 세그먼트 워크트리의 커밋이 통과한다" \
   "$rc/$( cd "$WT15P" && git log -1 --format=%s )" "0/작업-15p"
 [ "$rc" = 0 ] || bad "15p 커밋 문면" "$msg"
 mb15p=$( cd "$WT15P" && git merge-base HEAD refs/heads/main )
+# The remote judgement was frozen by the acts above, so giving the repository an
+# `origin` now must not move the review line to the remote-tracking path — the
+# same freeze is what keeps a stage that renames `origin` on a target with a
+# remote from turning on the local-base path.
+( cd "$SA_WT" && git remote add origin "$SA_REMOTE" ) >/dev/null 2>&1
+check "15p: 런 도중 원격을 달아도 원격 판정은 런의 첫 판정 그대로다" \
+  "$( cd "$SA_WT" && git remote get-url origin >/dev/null 2>&1 && printf 원격있음 || printf 원격없음 )/$( cd "$SA_WT" && gate_inproc snapshot --manifest "$SA_MANIFEST" 2>/dev/null | jq -r '.["슬라이싱"]["세그먼트"][0]["베이스"]' )" \
+  "원격있음/refs/heads/main"
 sag review-line --manifest "$SA_MANIFEST" --segment S1
+( cd "$SA_WT" && git remote remove origin ) >/dev/null 2>&1
 case "$rc|$msg" in
   "0|/cc-cmds:review-unattended $BR15P "*" --base-sha $mb15p "*)
     ok "15p: review-line 의 --base-sha 는 워크트리 HEAD 와 로컬 베이스의 merge-base 다" ;;

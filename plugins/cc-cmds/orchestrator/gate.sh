@@ -3229,15 +3229,23 @@ gate_worktree_add_base_mismatch() {
   #
   # A SYMBOLIC COMPARISON, NOT A SHA ONE. The start point must name the ref
   # `base_ref` gives — `refs/remotes/origin/<base>`, or `refs/heads/<base>` for a
-  # target with no `origin` — as `git rev-parse --symbolic-full-name` reads it. Concurrent runs in the same repository fetch and move that ref
-  # between the router's fetch and this check, so comparing shas or ancestry
-  # would refuse a correct call; a local branch, a bare sha and `HEAD` all read
-  # as another name and are refused. Nothing is fetched here.
+  # target with no `origin` — as `git rev-parse --symbolic-full-name` reads it.
+  # Concurrent runs in the same repository fetch and move that ref between the
+  # router's fetch and this check, so comparing shas or ancestry would refuse a
+  # correct call; a local branch, a bare sha and `HEAD` all read as another name
+  # and are refused. Nothing is fetched here.
   #
   # THE REUSE FORM PASSES. With none of `-b`, `-B` and `--detach`, a start point
   # naming an existing local branch other than the base creates no new start
   # point, so it is not read. Without a start point git cuts a new branch from
   # `HEAD`, which is refused like any other wrong start.
+  #
+  # THE BASE BRANCH ITSELF IS NOT A START POINT. For a target with no `origin`
+  # the expected ref is a local branch, so the same call with none of `-b`, `-B`
+  # and `--detach` would check the base branch itself out in the segment
+  # worktree, and every segment commit would move the person's base branch
+  # before any review. That shape is refused; with `origin` the expected ref is a
+  # remote-tracking one, which git never checks out as a branch.
   local alias="$1" cmd
   shift
   [ "$#" -ge 1 ] || return 0
@@ -3316,7 +3324,15 @@ gate_worktree_add_base_mismatch() {
   fi
   got=$(cd "$dir" 2>/dev/null && git rev-parse --symbolic-full-name "$start" 2>/dev/null) || got=""
   got="${got%%$'\n'*}"
-  [ "$got" = "$want" ] && return 0
+  if [ "$got" = "$want" ]; then
+    case "$want" in
+      refs/heads/*)
+        if [ "$newb" = 0 ] && [ "$det" = 0 ]; then
+          printf '받은 시작점: %s (%s), 기대 시작점: %s — 새 브랜치(-b/-B)나 분리 체크아웃 없이 베이스 브랜치 자체를 세그먼트 워크트리에 체크아웃하면 세그먼트 커밋이 베이스 브랜치를 옮깁니다' "$start" "$got" "$want"
+        fi ;;
+    esac
+    return 0
+  fi
   printf '받은 시작점: %s (%s), 기대 시작점: %s' "$start" "${got:-이름 없는 커밋}" "$want"
   return 0
 }
