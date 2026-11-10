@@ -13784,7 +13784,8 @@ rekick_branch_input() {
     ni=$(printf '%s\n' "$sec" | grep -cE '^    - \*\*결함 수준\*\*: 구현 — .' || true)
     if [ "${nd:-0}" = "0" ] && [ "${ni:-0}" = "0" ]; then lv="없음"; else lv="설계 ${nd} · 구현 ${ni}"; fi
     done_rv=$(awk -v s="| 세그먼트=$sid |" '
-      index($0, "- `stage-result` ") == 1 && index($0, s) && index($0, "| 종류=reconverge |") { f = 1 }
+      index($0, "- `stage-result` ") == 1 && index($0, s) && index($0, "| 종류=reconverge |") \
+        && !/\| 차단=파견 전( \||$)/ { f = 1 }
       END { print (f ? "있음" : "없음") }' "$pled" 2>/dev/null || printf '없음')
     printf '## segment %s\n\n리포트: %s\n결함 수준별 수: %s\n앞 런의 재수렴: %s\n\n%s\n\n' "$sid" "$rep" "$lv" "$done_rv" "$sec"
   done <<EOF
