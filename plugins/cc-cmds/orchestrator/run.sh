@@ -8318,13 +8318,15 @@ audit_key_reconverge_rows() {
   # ledger order, each prefixed with its line number: the router's
   # (`세그먼트=- | 스테이지=<id> | 종류=reconverge`) and the driver's, which
   # writes its skeletal re-convergence as `스테이지=S1'` under dispatch id `S2R`.
-  # A re-convergence still waiting to spawn edited nothing and is left out.
+  # A re-convergence still waiting to spawn edited nothing and is left out, and
+  # so is a size block before dispatch (`차단=파견 전`): no session started.
   local id="$1" lg="$2"
   [ -f "$lg" ] || return 0
   { grep -n -F -e "세그먼트=- | 스테이지=$id | 종류=reconverge " \
                -e "세그먼트=- | 스테이지=S1' | 파견 id=S2R | 종류=reconverge " "$lg" 2>/dev/null || true; } \
     | { grep "^[0-9]*:- \`stage-result\` " || true; } \
-    | { grep -vF '| 관측=스폰 전 대기 중' || true; }
+    | { grep -vF '| 관측=스폰 전 대기 중' || true; } \
+    | { grep -vE '\| 차단=파견 전( \||$)' || true; }
 }
 
 audit_row_request() {

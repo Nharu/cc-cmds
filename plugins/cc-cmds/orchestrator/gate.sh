@@ -12641,12 +12641,14 @@ gate_design_reconverge_after_audit() {
   # step's key carries a re-convergence on a later ledger line than the audit
   # step's last `종류=audit` row, or the audit has no row yet: the document has
   # been edited since anything audited it, so a fresh audit comes first. A
-  # re-convergence that never spawned edited nothing and does not count.
+  # re-convergence that never spawned edited nothing and does not count, nor
+  # does a size block before dispatch (`차단=파견 전`).
   local dstep rl arow al
   dstep=$(gate_run_scope_step design 2>/dev/null) || return 1
   rl=$( { grep -n -F "세그먼트=- | 스테이지=$dstep | 종류=reconverge " "$LEDGER" 2>/dev/null || true; } \
         | { grep "^[0-9]*:- \`stage-result\` " || true; } \
-        | { grep -vF '| 관측=스폰 전 대기 중' || true; } | tail -1 | cut -d: -f1)
+        | { grep -vF '| 관측=스폰 전 대기 중' || true; } \
+        | { grep -vE '\| 차단=파견 전( \||$)' || true; } | tail -1 | cut -d: -f1)
   [ -n "$rl" ] || return 1
   arow=$(gate_audit_result_rows_of "$1" | tail -1)
   [ -n "$arow" ] || return 0
@@ -12717,6 +12719,7 @@ gate_design_reconverge_entry() {
   if [ -n "$( { grep -n -F "세그먼트=- | 스테이지=$dstep | 종류=reconverge " "$LEDGER" 2>/dev/null || true; } \
                | { grep "^[0-9]*:- \`stage-result\` " || true; } \
                | { grep -vF '| 관측=스폰 전 대기 중' || true; } \
+               | { grep -vE '\| 차단=파견 전( \||$)' || true; } \
                | awk -F: -v l="$first" '$1 > l')" ]; then
     GATE_DRC_WHY="이 잔여 사다리 기록은 이미 재수렴을 한 번 열었습니다 — 같은 기록으로 두 번 열지 않습니다: $rec"
     return 1
