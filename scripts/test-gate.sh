@@ -20209,6 +20209,10 @@ graded_as '형태 미상'    'ls-remote 의 --exec 는 프로그램을 고른다
 graded_as '형태 미상'    '--upload-pack 의 줄임 접두도 같다'         -- git ls-remote --upload-p=x origin
 graded_as '형태 미상'    '값을 띄어 쓴 줄임 접두도 같다'             -- git ls-remote --u x origin
 graded_as '읽기'         '--exit-code 는 그대로 읽기다'              -- git ls-remote --exit-code origin
+graded_as '형태 미상'    'fetch 의 --upload-pack 줄임 접두도 같다'   -- git fetch --upl=x origin
+graded_as '읽기'         '프로그램을 고르지 않는 fetch 는 그대로다'  -- git fetch origin
+graded_as '형태 미상'    'grep 의 --open-files-in-pager 줄임 접두는 프로그램을 고른다' -- git grep --open-files-in=x -e y
+graded_as '형태 미상'    'grep 의 -O 는 프로그램을 고른다'           -- git grep -Ox -e y
 
 # The grade table alone does not cover what was observed: the refusal arrived as
 # an exit 6 on the ACT path, so the repair has to be measured there too.
@@ -68068,8 +68072,8 @@ esac
 
 g110d=""
 for c110d in 'git commit --allow-empty -m x' 'git config --get user.name' 'git ls-remote --exec=sh x' \
-    'git ls-remote --upload-p=sh x' 'git status' 'git log -1 --format=%GS' 'gh pr view 1 --web' 'gh pr view 1 --web=true' \
-    'git rev-parse --is-inside-work-tree --output=x'; do
+    'git ls-remote --upload-p=sh x' 'git status' 'git log --max-count=1 --format=%GS' 'gh pr view 1 --web' 'gh pr view 1 --web=true' \
+    'git rev-parse --is-inside-work-tree --output=x' 'gh pr view 1 --json title --jq env.X'; do
   c110d_new "확인 거부 명령 $c110d" "x" "$c110d"
   o110d=$(c110d_run 'RF#1')
   case "$o110d" in 1'|0|') ;; *) g110d="$g110d [$c110d → $o110d]" ;; esac
@@ -68086,7 +68090,7 @@ check "110d: 확인의 git 은 실행 키를 끈 설정으로 돈다" \
     gate_metrics_timed() {
       shift
       case " $* " in
-        *" git -c core.fsmonitor=false -c core.hooksPath=/dev/null -c log.showSignature=false rev-parse --is-inside-work-tree "*) echo 덮어씀 ;;
+        *" git -c core.fsmonitor=false -c core.hooksPath=/dev/null -c log.showSignature=false -c gpg.program=false -c gpg.openpgp.program=false -c gpg.ssh.program=false -c gpg.x509.program=false rev-parse --is-inside-work-tree "*) echo 덮어씀 ;;
         *) echo 없음 ;;
       esac
     }

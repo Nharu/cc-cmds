@@ -7868,14 +7868,36 @@ gate_git_config_key_execs() {
   esac
 }
 
+gate_git_long_prefix() {
+  # gate_git_long_prefix <word> <long option> <shortest length> — 0 when the
+  # word, its `=<value>` taken off, is a prefix of the long option at least
+  # that many bytes long. git takes any unambiguous prefix of a long option,
+  # so a literal match on the full name lets the shorter spellings through.
+  local n="${1%%=*}"
+  [ "${#n}" -ge "$3" ] || return 1
+  case "$2" in
+    "$n"*) return 0 ;;
+  esac
+  return 1
+}
+
 surface_of_git_fetch() {
   # A fetch that only moves REMOTE-TRACKING refs changes nothing a later act
   # reads as its own state, so it is a read — and it is the single most common
   # act approval this pipeline ever issued. What makes a fetch a write is a
   # refspec whose DESTINATION is a local ref, or an option that rewrites the
   # local repository's own shape.
+  # `--upload-pack` names a program to run, and git takes any unambiguous
+  # prefix of it (`--upl…`; `--u` and `--up` are shared with `--update-…`
+  # and refused by git itself) and `--exec` as a second name for it.
+  local fw
+  for fw in "$@"; do
+    [ "$fw" = '--' ] && break
+    if gate_git_long_prefix "$fw" --upload-pack 5 || gate_git_long_prefix "$fw" --exec 3; then
+      printf '%s' "$GATE_FORM_UNKNOWN"; return 0
+    fi
+  done
   case " $* " in
-    *" --upload-pack "*|*" --upload-pack="*) printf '%s' "$GATE_FORM_UNKNOWN"; return 0 ;;
     *" --depth "*|*" --depth="*|*" --deepen "*|*" --deepen="*|*" --shallow-since"*|*" --shallow-exclude"*|*" --unshallow "*|*" --update-shallow "*|*" --prune-tags "*|*" -P "*|*" --set-upstream "*|*" --update-head-ok "*|*" --refetch "*)
       printf '워크트리쓰기'; return 0 ;;
   esac
@@ -7966,6 +7988,19 @@ surface_of_git() {
           case "${la%%=*}" in
             --e|--ex|--exe|--exec|--u|--up|--upl|--uplo|--uploa|--upload|--upload-|--upload-p|--upload-pa|--upload-pac|--upload-pack)
               printf '%s' "$GATE_FORM_UNKNOWN"; return 0 ;;
+          esac
+        done
+      fi
+      # `grep -O` takes its program attached as well (`-O<prog>`, or inside a
+      # bundle of short options), and `--open-files-in-pager` is taken from
+      # `--op` on (`--o` is shared with `--only-matching` and `--or`).
+      if [ "${1:-}" = grep ]; then
+        local ga
+        for ga in "$@"; do
+          [ "$ga" = '--' ] && break
+          case "$ga" in
+            --*) gate_git_long_prefix "$ga" --open-files-in-pager 4 && { printf '%s' "$GATE_FORM_UNKNOWN"; return 0; } ;;
+            -*O*) printf '%s' "$GATE_FORM_UNKNOWN"; return 0 ;;
           esac
         done
       fi
@@ -26034,7 +26069,10 @@ gate_confirm_subcommand_ok() {
   # run), `gh … --web` (opens a browser) and `gh … --watch` (never returns).
   # A `%G` placeholder asks git to verify a signature, which starts the
   # configured signing program, so a word carrying one is refused as well.
-  local opts w
+  # A gh word naming `env` is refused too: a `--jq` filter can read the
+  # environment the command runs in, which holds the read credential, and a
+  # match against the expected line would tell one bit of it.
+  local opts w prog="$1"
   case "$1" in
     gh)
       case "${2:-} ${3:-}" in
@@ -26057,6 +26095,9 @@ gate_confirm_subcommand_ok() {
     *) return 1 ;;
   esac
   for w in "$@"; do
+    case "$prog:$w" in
+      gh:*[Ee][Nn][Vv]*) return 1 ;;
+    esac
     case "$w" in
       *%G*) return 1 ;;
       -*) case "$opts" in *" ${w%%=*} "*) ;; *) return 1 ;; esac ;;
@@ -26067,11 +26108,14 @@ gate_confirm_subcommand_ok() {
 
 # The configuration a confirmation's git runs under. Each key here is one a
 # read of the set above could reach and that starts a program: an index refresh
-# starts `core.fsmonitor`, a hook starts from `core.hooksPath`, and
-# `log.showSignature` asks for a signature check. The rest of
-# `gate_git_config_key_execs` is out of reach of that set — no transport, no
+# starts `core.fsmonitor`, a hook starts from `core.hooksPath`, and a signature
+# check starts the signing program — asked for by `log.showSignature`, or by a
+# `%G` placeholder that a `pretty.<name>` alias or `format.pretty` from the
+# repository's own configuration brings in, which the word check above cannot
+# see — so each signing program is set to `false`. The other keys of
+# `gate_git_config_key_execs` are out of reach of that set — no transport, no
 # patch output, no checkout — and the option set is what keeps it so.
-readonly GATE_CONFIRM_GIT_CONFIG='-c core.fsmonitor=false -c core.hooksPath=/dev/null -c log.showSignature=false'
+readonly GATE_CONFIRM_GIT_CONFIG='-c core.fsmonitor=false -c core.hooksPath=/dev/null -c log.showSignature=false -c gpg.program=false -c gpg.openpgp.program=false -c gpg.ssh.program=false -c gpg.x509.program=false'
 
 gate_confirm_precheck() {
   # gate_confirm_precheck <record> — 0 when the record's confirmation command
