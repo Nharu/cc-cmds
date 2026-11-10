@@ -22299,12 +22299,6 @@ gate_halt_answer_consumer() {
   # read, and the answer is still the one to carry. The two filters below are
   # `gate_row_is_pre_session_death` spelled for a line-numbered stream, so the
   # routing that reads the key's last row sees the same rows passed over.
-  #
-  # A SIZE BLOCK OF A CARRYING DISPATCH (`차단=파견 전` with `답 운반`) does take
-  # the answer up for the shift: the shift does not carry it again, and the
-  # gate hands the row's card to the key's next dispatch itself
-  # (`gate_halt_card_crash_line`), which is the redispatch the size record's
-  # answer asks for.
   local sr st pk arow aopt astep
   arow=$(sed -n "${3}p" "$1" 2>/dev/null)
   aopt=$(gate_row_field "$arow" '선택지')
@@ -24295,48 +24289,13 @@ gate_halt_card_crash_line() {
   # `외부 종료`: that attempt may have died holding the answer, so the next
   # dispatch of the key — a re-attachment or a fresh one — gets the same card
   # under its own attempt. Nothing otherwise.
-  #
-  # A SIZE BLOCK BEFORE DISPATCH HANDS IT ON TOO. The gate refused to start an
-  # attempt that would have carried a card (`차단=파견 전` with `답 운반`): no
-  # session read it, and the redispatch the size record's answer asks for —
-  # the same dispatch, without `--carry-answer` — is the dispatch that has to
-  # read it. That block row stands as the answer's consumer, so the shift does
-  # not carry it a second time; the gate hands the card on here instead.
   local last c
   last=$( { gate_stage_result_rows_of "$1" || true; } | tail -1)
   c=$(gate_row_field "$last" '답 운반')
   [ -n "$c" ] || return 0
-  if gate_row_is_size_block "$last"; then
-    printf '%s' "$c"
-    return 0
-  fi
   case "$(gate_row_field "$last" '종단 부류')" in
     크래시|'한도 종료'|'외부 종료') printf '%s' "$c" ;;
   esac
-}
-
-gate_size_block_card_capped() {
-  # gate_size_block_card_capped <key> <line> — true when a size block row of the
-  # key carries the card of the `중단 답` row at <line> and the key's attempts
-  # carrying that card died before their session GATE_CARRY_DEATH_MAX times.
-  # GATE_SBC_DEATHS holds the count.
-  #
-  # THE CARRY'S DEATH CAP, FOR THE CARD A SIZE BLOCK HANDS ON. A redispatch
-  # that dies before its session leaves the block row the key's last settled
-  # row and the size record's answer open, so the same redispatch is admitted
-  # and handed the card again. The carry check caps a carried answer's
-  # pre-session deaths; this caps the same answer when the gate hands it on.
-  local r blocked=''
-  GATE_SBC_DEATHS=0
-  while IFS= read -r r; do
-    [ -n "$r" ] || continue
-    [ "$(gate_row_field "$r" '답 운반')" = "$2" ] || continue
-    if gate_row_is_size_block "$r"; then blocked=1; continue; fi
-    gate_row_is_pre_session_death "$r" && GATE_SBC_DEATHS=$((GATE_SBC_DEATHS + 1))
-  done <<EOF
-$( { gate_stage_result_rows_of "$1" || true; } )
-EOF
-  [ -n "$blocked" ] && [ "$GATE_SBC_DEATHS" -ge "$GATE_CARRY_DEATH_MAX" ]
 }
 
 gate_halt_answer_deferred() {
@@ -25671,23 +25630,15 @@ gate_stage_row_before_size_block() {
   # gate_stage_row_before_size_block <key> — the key's last `stage-result` row
   # that is neither a pre-session death nor a size block before dispatch, or
   # nothing: where the key stood when the blocked dispatch was admitted.
-  #
-  # A BLOCKED CARRY OF AN ANSWER BROUGHT OVER FROM AN EARLIER RUN may be the
-  # key's first row in this run. Its block row's `답 운반` names this run's copy
-  # of that answer, and the key stood where the earlier run's attempt halted
-  # (`gate_carry_source_last_row`), the row the carry was admitted on.
-  local r last='' blk=''
+  local r last=''
   while IFS= read -r r; do
     [ -n "$r" ] || continue
     gate_row_is_pre_session_death "$r" && continue
-    if gate_row_is_size_block "$r"; then blk=$r; continue; fi
+    gate_row_is_size_block "$r" && continue
     last=$r
   done <<EOF
 $( { gate_stage_result_rows_of "$1" || true; } | { grep -F -- '- `stage-result`' || true; })
 EOF
-  if [ -z "$last" ] && [ -n "$(gate_row_field "$blk" '답 운반')" ]; then
-    last=$(gate_carry_source_last_row "$(gate_row_field "$blk" '답 운반')")
-  fi
   printf '%s' "$last"
 }
 
@@ -25737,20 +25688,17 @@ gate_size_block_redispatch_row() {
 }
 
 gate_audit_reconverge_row_admits() {
-  # gate_audit_reconverge_row_admits <row> <block row> — whether the row
-  # standing before a run-scope re-convergence's size block is one the audit
-  # step's re-convergence admissions accept: an audit that parked on purpose,
-  # an audit that ended `정상 완료` with `재수렴 요청=예`, or a re-convergence
-  # that parked on purpose when the block row carries the answer card
-  # (`답 운반`). That re-convergence is admitted again only with its answer
-  # carried; the gate hands the block row's card to the redispatch
-  # (`gate_halt_card_crash_line`), so the redispatch without `--carry-answer`
-  # starts with the person's answer. A block row with no card has no answer to
-  # hand on, and that redispatch is refused.
+  # gate_audit_reconverge_row_admits <row> — whether the row standing before a
+  # run-scope re-convergence's size block is one the audit step's re-convergence
+  # admissions accept: an audit that parked on purpose, or an audit that ended
+  # `정상 완료` with `재수렴 요청=예`. A re-convergence that parked on purpose
+  # is not one: it is admitted again only with its answer carried, and the
+  # block row of a carrying dispatch took that answer up, so a redispatch
+  # without a carry would start the session without the person's answer — that
+  # answer goes back to a person instead.
   case "$(gate_row_field "$1" '종류')|$(gate_row_field "$1" '종단 부류')" in
     'audit|의도된 park') return 0 ;;
     'audit|정상 완료') [ "$(gate_row_field "$1" '재수렴 요청')" = "예" ] ;;
-    'reconverge|의도된 park') [ -n "$(gate_row_field "${2:-}" '답 운반')" ] ;;
     *) return 1 ;;
   esac
 }
@@ -25772,8 +25720,7 @@ gate_size_block_reconverge_routable() {
   dst=$(gate_run_scope_step design 2>/dev/null || true)
   if [ -n "$ast" ] && [ "$key" = "$ast" ]; then
     prior=$(gate_stage_row_before_size_block "$key")
-    if [ -n "$(gate_segment_field "$key" '상태')" ] \
-       || ! gate_audit_reconverge_row_admits "$prior" "$(gate_stage_last_settled_row "$key")"; then
+    if [ -n "$(gate_segment_field "$key" '상태')" ] || ! gate_audit_reconverge_row_admits "$prior"; then
       GATE_SBR_WHY="감사 단계 $key 의 차단 앞 행이 재수렴을 받는 행이 아닙니다(종류=$(gate_row_field "$prior" '종류') · 종단 부류=$(gate_row_field "$prior" '종단 부류'))"
       return 1
     fi
@@ -25848,11 +25795,10 @@ gate_audit_reconverge_keyable() {
   # (`gate_size_block_redispatch_row`) is read past: the redispatch stands
   # where the blocked dispatch was admitted.
   if gate_row_is_size_block "$last"; then
-    local blk=$last
     last=$(gate_size_block_redispatch_row "$k") || return 1
     GATE_AUDIT_RECONVERGE_LAST=$last
     [ -z "$res" ] || return 1
-    gate_audit_reconverge_row_admits "$last" "$blk" \
+    gate_audit_reconverge_row_admits "$last" \
       && [ "$(gate_row_field "$last" '종단 부류')" = "의도된 park" ]
     return
   fi
@@ -46547,13 +46493,7 @@ gate_doc_size_dispatch_check() {
   # GATE_EXIT_PARK. No park row: the record waits for its answer.
   # A fifth argument names an attempt the dispatch already claimed — the
   # re-check after an account lease turned a re-attachment fresh.
-  #
-  # THE CARD THE BLOCKED ATTEMPT WOULD HAVE READ goes on its row as `답 운반`:
-  # the carried answer's line, or the line a dead attempt left to hand again
-  # (`gate_halt_card_crash_line`). The key's next dispatch is handed that card
-  # again, so the redispatch a size record's answer asks for starts with the
-  # person's answer the blocked dispatch was carrying.
-  local verb="$1" key="$2" kind="$3" pre_att="${5:-}" rc=0 b t attempt rec rowseg hcl
+  local verb="$1" key="$2" kind="$3" pre_att="${5:-}" rc=0 b t attempt rec rowseg
   doc_size_check "$kind" "${DOC:-}" || rc=$?
   b=$(printf '%s' "$DOC_SIZE_VERDICT" | cut -f2); t=$(printf '%s' "$DOC_SIZE_VERDICT" | cut -f3)
   if [ "$rc" != 1 ]; then
@@ -46577,14 +46517,12 @@ gate_doc_size_dispatch_check() {
     fi
   fi
   rowseg=$(gate_stage_row_segment "$key" "$kind")
-  hcl=${GATE_HA_LINE:-}
-  [ -n "$hcl" ] || hcl=$(gate_halt_card_crash_line "$key")
   rec=$(doc_size_halt_write "$key#$attempt" "$kind" "$DOC" "$rowseg") \
     || warn "$key: 문서 크기 중단 기록을 쓰지 못했습니다"
   gate_append 'stage-result' "세그먼트=$rowseg" "스테이지=$key" "종류=$kind" \
     "종료 코드=-" "실행 버전=$attempt" "세션 id=-" "부모=-" "기록자=게이트" \
     "effort=(미상)" "서빙 모델=(미상)" ${b:+"문서 크기=$b/$t"} "차단=파견 전" \
-    ${hcl:+"답 운반=$hcl"} "종단 부류=의도된 park" "관측=파견 전 차단" \
+    "종단 부류=의도된 park" "관측=파견 전 차단" \
     || warn "$key: 크기 차단의 stage-result 행을 쓰지 못했습니다"
   doc_size_release
   gate_dispatch_lock_release
@@ -54870,15 +54808,8 @@ gate_launch_stage() {
   # THE ANSWER CARD THIS ATTEMPT GETS: the carried answer's, or — when the key's
   # last attempt carried one and crashed, ran into a limit or was ended from
   # outside — that answer's again, since the attempt may have died holding it.
-  # A card a size block hands on is refused at the carry's death cap.
   GATE_HA_CARD_LINE=${GATE_HA_LINE:-}
   [ -n "$GATE_HA_CARD_LINE" ] || GATE_HA_CARD_LINE=$(gate_halt_card_crash_line "$seg")
-  if [ -z "${GATE_HA_LINE:-}" ] && [ -n "$GATE_HA_CARD_LINE" ] \
-     && gate_size_block_card_capped "$seg" "$GATE_HA_CARD_LINE"; then
-    gate_carry_cap_row "$alias" "$seg" "$kind" "중단 답 라우팅 — 세션 전에 세 번 죽었다" "$GATE_HA_CARD_LINE" \
-      "크기 차단 행이 넘긴 원장 ${GATE_HA_CARD_LINE} 번째 줄의 답을 실은 시도가 세션이 생기기 전에 ${GATE_SBC_DEATHS} 번 죽었다"
-    return "$GATE_EXIT_CARRY_CAP"
-  fi
   # THE VISUAL PUBLISH STAGE RUNS ON ITS PINNED LANE OR NOT AT ALL. Routing off
   # asks nothing and inherits the environment, which is whatever config
   # directory the dispatching session runs under — not the lane logged in to
