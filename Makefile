@@ -981,16 +981,34 @@ run-test-run-part1:
 run-test-run-part2:
 	bash scripts/suite-guard.sh plugins/cc-cmds/orchestrator/test-run.sh --part 2
 
+# The suites below run as `darwin-run/<path>`, not `run/<path>`: the `run/%`
+# recipe goes through scripts/test-slots.sh --run, and the keepset lint reads
+# that line as running scripts/test-slots.sh alone, losing the suite behind it.
+# The macOS runner sets neither CC_PIPELINE_RUN_ID nor CC_TEST_SLOTS, so the
+# wrapper would only exec the same command there; this recipe is that command.
+DARWIN_NARROW_SUITES := $(sort $(NOTIFY_TESTS) \
+	scripts/test-notify-focus-ax.sh \
+	scripts/test-liveness-agreement.sh \
+	scripts/test-gate-chain-equiv.sh \
+	scripts/test-suite-guard.sh \
+	scripts/test-lint-bash-portability.sh \
+	$(DARWIN_TESTS))
+
+.PHONY: $(DARWIN_NARROW_SUITES:%=darwin-run/%)
+
+$(DARWIN_NARROW_SUITES:%=darwin-run/%): darwin-run/%:
+	bash scripts/suite-guard.sh $*
+
 # The heaviest go first, so `make -j` starts them before the short ones; the two
 # test-run.sh parts are by far the longest. `$(DARWIN_TESTS)` stays at the end so
 # a suite added to it is still run here — make runs a prerequisite named twice
 # once.
 test-darwin-narrow: run-test-run-part1 run-test-run-part2 \
-	test-active-notify \
+	$(NOTIFY_TESTS:%=darwin-run/%) \
 	run-gate-darwin-sections \
-	run/scripts/test-notify-focus-ax.sh \
-	run/scripts/test-liveness-agreement.sh \
-	run/scripts/test-gate-chain-equiv.sh \
-	run/scripts/test-suite-guard.sh \
-	run/scripts/test-lint-bash-portability.sh \
-	$(DARWIN_TESTS:%=run/%)
+	darwin-run/scripts/test-notify-focus-ax.sh \
+	darwin-run/scripts/test-liveness-agreement.sh \
+	darwin-run/scripts/test-gate-chain-equiv.sh \
+	darwin-run/scripts/test-suite-guard.sh \
+	darwin-run/scripts/test-lint-bash-portability.sh \
+	$(DARWIN_TESTS:%=darwin-run/%)
