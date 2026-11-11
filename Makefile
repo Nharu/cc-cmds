@@ -511,6 +511,7 @@ ORCH_TESTS := \
 	scripts/test-base-split.sh \
 	scripts/test-gate-chain-equiv.sh \
 	scripts/test-measure-gate-cost.sh \
+	scripts/test-measure-spawn-count.sh \
 	scripts/test-snapshot.sh \
 	scripts/test-orchestrator-pretool-hook.sh \
 	scripts/test-session-notify-hook.sh \

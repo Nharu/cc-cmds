@@ -1,0 +1,2 @@
+- `segment` | id=S1 | 상태=실행중 | 워크트리=@ROOT@/state/cc-cmds/run/Q1 | prev=@PREV@
+- `승인` | 승인 id=A1 | 상태=대기 | 대상=- | 절단점=경계 | 질문 문면=픽스처 | 답변 문면=- | 해소 시각=- | prev=@PREV@
