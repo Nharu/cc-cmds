@@ -542,6 +542,7 @@ ORCH_TESTS := \
 	scripts/test-measure-cycle-causes.sh \
 	scripts/test-run-issue-filing.sh \
 	scripts/test-waiting-decisions.sh \
+	scripts/test-halt-question.sh \
 	scripts/test-visual-config.sh \
 	scripts/test-visual-check.sh \
 	scripts/test-visual-capture.sh \
