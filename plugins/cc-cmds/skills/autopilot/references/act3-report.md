@@ -27,6 +27,23 @@ Cover, in this order:
   - `<m>` is the size of the union of the `선언 파일 집합` of this run's `segment` rows — files, not rows, so a file two segments declare counts once. With no `segment` row, write `미통치`: no slice was planned, so nothing governs a count to set beside the estimate. A clipped set — `<clip> (전체: <path>)`, or `(전체: <path>)` alone — is counted from the whole value in that file, never from the clip. When that file is gone or unreadable, write `미상(전체 파일 없음)` and do not set the estimate against it.
   - One line per segment that has a `cycle` row: `첫 리뷰` is the `P0`/`P1` of its first `cycle` row, `누적 P0` the sum of `P0` over all of them, and `리뷰 기각` the number of its `리뷰 기각` rows with the sum of their `기각 P0`. A segment with no `cycle` row gets no line.
   - When the plan carries `design_tier_judged` and the ledger holds no `설계 티어` row, write the one line 「설계 티어 — 행 없음(계획에는 판정 <판정>·확정 <확정>)」 from the plan's `design_tier_judged` and `design_tier`, and nothing else in this section. A run whose plan carries neither the row nor the key predates the tier keys: leave the section out.
+- **킥오프 추천 대조** — what the kickoff judged beside what the run confirmed, for the three questions whose recommendation the kickoff takes from a judged key. It reads the manifest's `## 실행 계획` and its `베이스 설계` and `베이스 발행` rows. Render in this form:
+
+  ```
+  배달 — 판정 <design_delivery_judged> · 확정 <design_delivery>[ (베이스 하위 런이라 묻지 않음)| (판정과 다름)]
+  근거: <design_delivery_rationale 축자>
+  경로 — 판정 <design_path_judged> · 확정 <design_path>[ (판정 없음 — 티어나 배달을 사람이 올려 물음)| (판정과 다름)]
+  근거: <design_path_rationale 축자>
+  발행 — 판정 <ticket_publish_judged> · 확정 <트래커>[ (판정과 다름)]
+  근거: <ticket_publish_rationale 축자>
+  ```
+
+  - Every value comes from the plan, the confirmed ones from `design_delivery` and `design_path`. Copy each rationale verbatim from the plan.
+  - On the delivery line, add 「 (베이스 하위 런이라 묻지 않음)」 when the manifest carries a `베이스 설계` row, since such a run never asks the delivery question; otherwise add 「 (판정과 다름)」 when the two values differ.
+  - On the path line, add 「 (판정 없음 — 티어나 배달을 사람이 올려 물음)」 when the judgment is `none` and the confirmed value differs, since the question is asked only after a raise; otherwise add 「 (판정과 다름)」 when the two values differ.
+  - Write the publish line and its `근거` line only when the manifest carries a `베이스 발행` row. `<트래커>` is that row's `트래커=` value, `없음` read as `none`; add 「 (판정과 다름)」 when it differs from the judgment.
+  - Do not say who moved a value off its judgment: the plan records the confirmed value, not the hand that chose it.
+  - A plan that carries none of the six judged keys predates them: leave the section out.
 - **주의** — what a separate seat pointed at after the run ended, having re-read the run's decision ledger, its stop records and its stages' prose: decisions whose basis looks thin, checks that were owed and skipped, risky choices, and decisions a stage made in its prose that no row records. Find the reader copy the way 「남은 외부 상태」 below finds its own: (1) the `RUN_DIR=` of the ledger's `run` row; (2) the `plugin-dir` line of `<RUN_DIR>/plugin-pin`; (3) when both exist and `<plugin-dir>/orchestrator/attention-round.sh` can be read, use that file; (4) otherwise use the installed `<plugin root>/orchestrator/attention-round.sh`. Run `bash <copy> report <ledger> <run-id>`, `<run-id>` being the `run-id=` of the ledger's `run` row, and copy every line it prints verbatim and in order — never summarize, reorder or drop an item, and never add one of your own. It prints one of these:
   - a finished seat: 「주의 좌석 — 재독 <n>건 · 대조 <m>건 · 세션 읽음 <a/b> · 서빙 모델 <모델> · 비용 $<usd>」, then the item lines as the result file holds them (quoted `> - [...]` lines; one ending 「(출처 확인 안 됨)」 named a source the seat's input did not carry) or 「주의 항목 없음」, then the `범위: …` line, then 「이 절은 런이 끝난 뒤 별도 좌석이 원장·정지 기록·스테이지 트랜스크립트를 다시 읽고 쓴 것입니다 — 런의 판단·머지·승인을 바꾸지 않았습니다」;
   - 「주의 절 생성 실패 — <사유>」;

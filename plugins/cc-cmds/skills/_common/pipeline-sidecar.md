@@ -836,7 +836,7 @@ never compared.
 21. **The entry judgment's structure.** A plan carrying `design_tier_judged` is
     run through `orchestrator/prompts/entry-plan.check.jq`, the same file the
     kickoff runs on its own output and the gate's tests run on their fixtures,
-    so the three callers cannot assert different rules. Seven assertions:
+    so the three callers cannot assert different rules. Nine assertions:
     (a) a `team-4` judgment carries at least one non-blank entry in
     `design_heavy_reasons`, and a `solo` judgment carries `[]`; (b)
     `design_tier_judged` and `design_tier` are each `solo` or `team-4`, and the
@@ -850,18 +850,44 @@ never compared.
     `enforcement_surface` judgment, when the plan carries one, has its shape —
     a judgment from the closed four, every path's class listed under
     `classes`, at least one path on `확인됨` and none on `없음`; (f)
-    `run_profile` reads `hotfix` or `standard` (absent reads `standard`), and a
-    `hotfix` plan is the fixed frame — the `solo` tier, the `single` scope,
-    steps `design` → `implement` → `review`, an `enforcement_surface` whose
-    judgment bounds the count of `unresolved`, and a `review_expand`, when the
-    plan carries one, that reads `[]`; (g) a `review_expand`, when the plan
-    carries one, is an array of `요구` · `문서표현` with no value twice, and a
-    non-empty one has a non-blank `review_expand_rationale`. A `team-4` graph
-    is asserted on by (d) alone. Any violation is a **hard stop** naming each
-    one. **A plan without `design_tier_judged` is asserted on (f) alone** —
-    every plan frozen before the key existed lacks it, and its tier (`team-2`,
-    `lead-solo`, `null`) is outside the two values above; (f) still runs there
-    so a hotfix plan that dropped the key keeps its frame.
+    `run_profile` reads `hotfix`, `reviewer` or `standard` (absent reads
+    `standard`); a `reviewer` plan is the review-only fixed frame — no design,
+    the `solo` tier on both tier keys with no heavy reason, `design_path`
+    `none`, the `single` scope, `estimated_files` 0, `work_class` `other`,
+    exactly one step `R1` `review` with no prerequisite, `entry_skill`
+    `review`, `anchor_kind` `intent` and an `enforcement_surface` of `없음`
+    with no class, no path and the `의도` source; a `hotfix` plan is the fixed
+    frame — the `solo` tier, the `single` scope, steps `design` → `implement`
+    → `review`, an `enforcement_surface` whose judgment bounds the count of
+    `unresolved`, and a `review_expand`, when the plan carries one, that reads
+    `[]`; on both frames a `design_delivery_judged`, when present, reads
+    `slices` and a `design_path_judged`, when present, reads `none`; (g) a
+    `review_expand`, when the plan carries one, is an array of `요구` ·
+    `문서표현` with no value twice, and a non-empty one has a non-blank
+    `review_expand_rationale`; (h) a `design_delivery`, when the plan carries
+    one, is `slices` or `tickets`, and a `tickets` plan has the `single`
+    scope, `design_required=true`, the `team-4` tier, a `design_path` of
+    `solo-audit` or `discuss-audit` and the `standard` profile; (i) the six
+    judged keys (`design_delivery_judged`, `design_path_judged`,
+    `ticket_publish_judged` and their `_rationale` keys) are all present or all
+    absent; when present, each judged key holds a value of its enum and each
+    rationale is not blank, a `design_path_judged` other than `none` goes with
+    a `design_tier_judged` of `team-4`, and a `design_delivery_judged` of
+    `tickets` goes with a `design_tier_judged` of `team-4` and a
+    `design_path_judged` other than `none`. These four relations of (i) are
+    the column relations of the judged-key table the entry judgment, the two
+    fixed frames, the kickoff's rewrites, a person's raise, a rekick's
+    follow-up and an adopted plan all hold to; (i) binds the keys neither to
+    `design_required`, which a rekick's follow-up turns false while keeping
+    them, nor to any confirmed key a person changes. A plan with none of the
+    six reads as one frozen before the keys existed and passes (i). A `team-4`
+    graph is asserted on by (d) alone. Any violation is a **hard stop** naming
+    each one. **A plan without `design_tier_judged` is asserted on (f), (h)
+    and (i) alone** — every plan frozen before the key existed lacks it, and
+    its tier (`team-2`, `lead-solo`, `null`) is outside the two values above;
+    the three still run there so a hotfix plan that dropped the key keeps its
+    frame, a `tickets` plan its fields and a plan carrying judged keys their
+    relations.
     `estimated_files` and `design_tier_rationale` are carried for the `설계 티어`
     row (§3.2) and asserted on by nothing. The plan's scope, tier and path
     pick the design step's skill through one selection function,
@@ -1074,7 +1100,8 @@ tells the two apart, the form's question following a `단계=문답(질문지)` 
 
 **A question-form answer is written as the bundle carries it.** The `### 답 n`
 body equals the bundle's `answer` for that question: a single-select answer is
-the chosen label exactly as authored, with no `← 추천` suffix (the bundle carries
+the chosen label exactly as authored, with no `← 추천`, `← 에이전트 추천` or
+`← 기본값` suffix (the bundle carries
 recommendations apart, in each answer's `recommended`); a multi-select answer is
 the chosen labels, one per line; free text given instead of an option is that
 text verbatim; free text beside multi-select labels is a last line
@@ -1087,7 +1114,8 @@ that would make that reading ambiguous (`미답`, `해당 없음`, and labels be
 `메모:` or `자유 입력:`).
 
 **A derived section carries the substance of the answer.** The values of
-`## 배포 형상` are what the answer meant: a suffix such as `← 추천` stays in
+`## 배포 형상` are what the answer meant: a suffix such as `← 추천` or
+`← 기본값` — cut from the label's normal form alike — stays in
 `## 요구사항 문답` only, and a derived value is not copied so that its normal form
 equals an offered label.
 
@@ -1965,6 +1993,7 @@ RUN_DIR = ${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/run/<run-id>
 **스킬**: <skill name>
 **스텝**: <step identifier>
 **분류**: tool-unavailable | gate-unanswerable | freeze-mismatch | precondition-failed
+**판정 요지**: <한 줄, 선택>
 **질문 문면**: <the Korean question that would have been asked, verbatim, never summarized>
 **선택지**:
 - `<label>` — <description, verbatim>
@@ -2042,6 +2071,13 @@ RUN_DIR = ${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/run/<run-id>
   - **Not a basis for any answer.** The seat's automatic answer, the gate's recommendation check and its risk-acceptance check are unchanged. The four risk-acceptance shapes (`위험 수용`, `게이트 비활성`, `그대로 진행`, `범위 축소`) stay in the option's description; moving them into the risk line and out of the description hides them from the check that reads the description.
   - **How the question is written.** `**질문 문면**` says what is being decided and the facts already known; a question that can only be answered by reading the ledger, a report or the tree again is not raised — the facts the answer needs go into `**질문 문면**` or `**관측 상세**`. Each option's description says what the run does next on that answer. An option answered with content — a measurement, a command's output, an instruction longer than a summary — says `첨부: <what is attached>` in its description. A risk names what can go wrong or what is given up on that option; with none, it reads 「알려진 위험 없음 — <why>」, never blank. When only a person holds the fact the decision needs, write `**추천**: (없음) — <that fact>`, naming it, never an empty phrase such as 「사람이 판단」.
   - **Who reads it.** The morning report's helper `orchestrator/waiting-decisions.sh` reads the line, so each waiting decision shows its recommendation, its basis and each option's risk.
+- **`**판정 요지**` is the one line a person reads first, and every stage that writes a halt record may write it.** It is optional and binds every writer of this section alike. The rules:
+  - **Form.** `**판정 요지**: <one line>` — no line break, at most 180 code points — right before `**질문 문면**`. The seat's question field holds 200; the 20 left over are the `[<record name>] ` prefix a stage key such as `S2P#5` takes.
+  - **What it holds.** What is being decided, the findings that decide it, and the address or file a person has to look at.
+  - **When to write it.** When `**질문 문면**` runs past two sentences, or holds a list, several addresses or several findings. Writing it on a short record does no harm.
+  - **Its relation to the question.** `**질문 문면**` stays the whole verbatim question; the gist never replaces it, and nothing is cut from the question because a gist exists. A `**…**:` shape quoted inside `**질문 문면**` is never put at a line head: a field shape at a line head ends the question block.
+  - **Who reads it.** The seat's render helper `orchestrator/halt-question.sh` puts it in the dialog's question field when the folded question is over the field's limit, and the morning report's `요지:` line shows what that helper chose. The gate does not read it, and the carry guard compares `**질문 문면**` alone, so a gist changes no comparison and no answer binding. A record without the line — an older record, or one the gate writes — gets the helper's fallback sentence instead.
+  - **The seat shows a long question as a message body, not in the question field.** The helper's body — the gist, the recommendation and its basis, the whole question split into paragraphs by white space alone, and each option's risk — is shown right before the dialog, and the question field carries only the line that fits.
 - **`**잔여 판정**`** is carried by a `/ ladder-unsettled` record only, one line; its grammar is the ladder's writing rules', and the gate checks a seat answer to it as `중단 답` (§3.2) says.
 - **Written with the atomic form of `sidecar.md` §1.3** (temp file in the same directory, then rename), so a partial record is never observed. The closing fence is the terminator: a record whose last non-empty line is not `<!-- /cc-pipeline-halt v1 -->` is **a crash mid-write, not a halt**.
 - **`관측 상세` is where measurement values go, and `질문 문면` is not.** A `freeze-mismatch` halt owes which assertion diverged, the baseline value, the observed value, `FROZEN_SHA256`, and — on an assertion 1 mismatch — the intersecting paths, which `verification.md` §6.0 calls the only thing telling a later reader what ended the window. **On a 2b mismatch it owes three more**, because that assertion compares a subset of the own-entry: the diverging **component** as one of the closed three `worktree` | `branch` | `HEAD-tree`; on a `HEAD-tree` divergence the two **tree** shas as the compared pair plus the changed path count and up to five names from a tree-to-tree `git diff --name-only`; and the two `HEAD` commit shas as **reported-never-compared diagnostics**, which keep the forensic trail of an empty commit. `질문 문면` is the verbatim question a human uses to audit a forged halt, so these values never go there. It is **one line like every other field line in this block**, parts joined with ` / `, and every field line sits above the closing fence because that fence is the terminator. A class with no measurement values of its own writes `(없음)`.

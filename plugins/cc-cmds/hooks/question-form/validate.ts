@@ -119,11 +119,11 @@ export function validateForm(input: unknown, openId: string | undefined): string
         if (labels.includes(o.label)) return bad(`${oat}.label`, `「${o.label}」가 겹칩니다`)
         labels.push(o.label)
         if (o.recommended !== undefined) {
-          if (o.recommended !== '추천' && o.recommended !== '에이전트 추천') return bad(`${oat}.recommended`, '「추천」이나 「에이전트 추천」이어야 합니다')
+          if (o.recommended !== '추천' && o.recommended !== '에이전트 추천' && o.recommended !== '기본값') return bad(`${oat}.recommended`, '「추천」·「에이전트 추천」·「기본값」 중 하나여야 합니다')
           recommended++
         }
       }
-      if (q.kind === 'single' && recommended > 1) return bad(`${at}.options`, 'single 질문에 추천이 둘 이상입니다')
+      if (q.kind === 'single' && recommended > 1) return bad(`${at}.options`, 'single 질문에 추천·기본값 표시가 둘 이상입니다')
     }
 
     if (q.when !== undefined) {

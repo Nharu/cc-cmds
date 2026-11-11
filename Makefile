@@ -72,6 +72,7 @@ lint:
 	bash scripts/lint-interview-record-sections.sh
 	bash scripts/lint-interview-convention-refs.sh
 	bash scripts/lint-kickoff-defaults.sh
+	bash scripts/lint-kickoff-recommendations.sh
 	@jq empty plugins/cc-cmds/hooks/hooks.json
 # Every command path in hooks.json must exist and be executable. This REPLACES a
 # hard-coded assertion that named one hook, which had already stopped covering a
@@ -497,7 +498,8 @@ LINT_TESTS := \
 	scripts/test-lint-terminal-literals.sh \
 	scripts/test-lint-interview-record-sections.sh \
 	scripts/test-lint-interview-convention-refs.sh \
-	scripts/test-lint-kickoff-defaults.sh
+	scripts/test-lint-kickoff-defaults.sh \
+	scripts/test-lint-kickoff-recommendations.sh
 
 ORCH_TESTS := \
 	plugins/cc-cmds/orchestrator/test-run.sh \
@@ -542,6 +544,7 @@ ORCH_TESTS := \
 	scripts/test-measure-cycle-causes.sh \
 	scripts/test-run-issue-filing.sh \
 	scripts/test-waiting-decisions.sh \
+	scripts/test-halt-question.sh \
 	scripts/test-visual-config.sh \
 	scripts/test-visual-check.sh \
 	scripts/test-visual-capture.sh \
