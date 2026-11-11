@@ -1314,6 +1314,8 @@ if ( cd "$repo_root" && git cat-file -e "$JX_BASE:plugins/cc-cmds/hooks/gate-pre
 
   # The block sits ahead of the first tool branch, so a tool other than Bash
   # must not start more `jq` than it did: a shim counts the calls on each side.
+  # The hook puts its own PATH ahead of the caller's unless told not to, and the
+  # shim is reached only when it is not.
   jx_real_jq=$(command -v jq)
   mkdir -p "$JX_DIR/shim"
   printf '#!/bin/sh\nprintf x >> "%s/jq.count"\nexec "%s" "$@"\n' "$JX_DIR" "$jx_real_jq" > "$JX_DIR/shim/jq"
@@ -1322,7 +1324,7 @@ if ( cd "$repo_root" && git cat-file -e "$JX_BASE:plugins/cc-cmds/hooks/gate-pre
   for i in $(cd "$JX_DIR/p" && grep -l -e '"Read"' -e '"Write"' -e '"Edit"' -- *.json); do
     for side in old new; do
       : > "$JX_DIR/jq.count"
-      PATH="$JX_DIR/shim:$PATH" bash "$JX_DIR/hk/$side/gate-pretool.sh" --run-dir "$RUN_DIR" --gate "$GATE" \
+      PATH="$JX_DIR/shim:$PATH" CC_CMDS_GATE_PATH_DISABLE_PREPEND=1 bash "$JX_DIR/hk/$side/gate-pretool.sh" --run-dir "$RUN_DIR" --gate "$GATE" \
         --ledger "$LEDGER" --grant "$GRANT" --manifest "$MANIFEST" \
         < "$JX_DIR/p/$i" > /dev/null 2>&1
       eval "jx_c_$side=\$(wc -c < \"\$JX_DIR/jq.count\" | tr -d ' ')"
