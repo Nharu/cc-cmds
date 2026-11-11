@@ -14702,6 +14702,123 @@ check "15d-4: T4 와 미해결 판독기가 같은 항목을 연다" "$td15r_ver
   "[표 열림 열림/열림][표 닫힘 닫힘/닫힘][열린 보류 열림/열림][해결 대기 열림/열림][메모 해결 닫힘/닫힘][해결됨 항목 닫힘/닫힘][앞 절 항목 닫힘/닫힘]"
 
 # ---------------------------------------------------------------------------
+# 15d-5. 사유 거둠이 선언 파일을 넓혀 닫는 꼴을 판독기와 슬라이싱 함수가 받는다
+# --- section: 15d-5 | group: base | covers: unresolved_closure_pending, unclosed-decisions, slice_decl_files, slicing_order_defects | anchors: 15d-5: 선언 확장 줄을 가진 대조 무충돌 거둠 뒤 슬라이스 A 판독이 빈다, 15d-5: 선언 확장 줄을 가진 대조 무충돌 거둠 뒤 unclosed-decisions 가 빈다, 15d-5: 보류 항목에 선언 확장 줄만 붙으면 계속 나온다, 15d-5: 넓힌 선언 파일을 slice_decl_files 가 새 원소까지 낸다, 15d-5: 넓힌 문서의 slicing_order_defects 가 빈다, 15d-5: 넓히기 전 머지 순서 픽스처는 결함이 없다, 15d-5: 뒤 슬라이스를 넓혀 앞 슬라이스와 겹치면 결함이다, 15d-5: 앞 슬라이스를 넓혀 뒤 슬라이스와 겹치면 결함이다, 15d-5: 재수렴 문면이 슬라이싱 축 세 값과 선언 확장 줄 꼴을 싣는다, 15d-5: 재수렴 문면이 옛 문장을 싣지 않는다, 15d-5: 재수렴 문면이 재진입 분기와 기록 다이제스트 대조를 싣는다, 15d-5: 사유 거둠 절이 선언 확장 닫기를 싣는다 ---
+#
+# The re-convergence can now close a base-reason entry by appending paths to a
+# slice's `**선언 파일**` and recording them on a `**선언 확장**` line. The skill
+# does not run here, so its write is applied to fixture documents in the form
+# `_common/unresolved-closure.md` `## 사유 거둠` fixes, and the readers that
+# meet the result are asked directly: the open-decision reader, the gate's
+# `unclosed-decisions` verb, and the two slicing functions the gate's
+# re-declaration and the slicing checks read. The gate's re-declaration flow
+# itself is section 113's. Every helper this section calls is in the preamble
+# or defined here.
+# ---------------------------------------------------------------------------
+rc15d5_dir="$WT/docs"
+mkdir -p "$rc15d5_dir" "$WT/docs/pipeline-grant"
+rc15d5_doc() {  # rc15d5_doc <name> <entry block> <slice A files> <slice B files> [B 머지 순서]
+  {
+    printf '# 픽스처 설계\n\n**상태**: 동결됨\n\n'
+    printf '## 베이스 제약\n\n**베이스 문서**: docs/base.md\n**티켓**: T1\n**베이스 sha256**: 0000\n\n'
+    printf '### 계약 C2 — 값\n\n**값 상한**: 10\n\n'
+    printf '## 합의된 아키텍처\n\n값 상한 10 을 그대로 쓴다.\n'
+    printf '\n## 미해결 이슈 / 트레이드오프\n\n%s\n' "$2"
+    printf '\n## 구현 슬라이싱\n\n**슬라이스 수**: 2\n'
+    printf '\n### 슬라이스 A — 픽스처\n\n**스킬**: implement\n**레포**: t/infra\n**선언 파일**: %s\n**선행**: 없음\n**절단점**: 커밋\n' "$3"
+    if [ -n "${5:-}" ]; then
+      printf '\n### 슬라이스 B — 픽스처\n\n**스킬**: implement\n**레포**: t/infra\n**선언 파일**: %s\n**선행**: 없음\n**머지 순서**: %s\n**머지 순서 사유**: 픽스처\n**절단점**: 커밋\n' "$4" "$5"
+    else
+      printf '\n### 슬라이스 B — 픽스처\n\n**스킬**: implement\n**레포**: t/infra\n**선언 파일**: %s\n**선행**: A\n**절단점**: 커밋\n' "$4"
+    fi
+  } > "$rc15d5_dir/fixture-15d5-$1.md"
+}
+rc15d5_closed='### 미결 1. 선언을 넓히는 베이스 사유 결정
+
+**상태**: 해결
+**사유 거둠**: 베이스 개정 없이 — 대조 무충돌 · 런 R15D5 · A#3 · 중단 기록 A#1.md
+**대조 기록**: 「계약 C2 — 값」 무충돌
+**선언 확장**: 슬라이스 A + `extra/new.txt`
+**사유**: 베이스 계약 변경 필요 — 계약 C2
+**구현 처분**: 구현 무관
+**닿는 슬라이스**: A'
+rc15d5_open='### 미결 2. 보류에 선언 확장 줄
+
+**상태**: 보류
+**선언 확장**: 슬라이스 A + `extra/new.txt`
+**사유**: 베이스 계약 변경 필요 — 계약 C2
+**구현 처분**: 구현 무관
+**닿는 슬라이스**: A'
+rc15d5_doc wide "$rc15d5_closed" '`A.txt`, `extra/new.txt`' '`B.txt`'
+rc15d5_doc open "$rc15d5_open" '`A.txt`' '`B.txt`'
+rc15d5_doc mo-base "$rc15d5_open" '`A.txt`' '`B.txt`' A
+rc15d5_doc mo-late "$rc15d5_open" '`A.txt`' '`B.txt`, `A.txt`' A
+rc15d5_doc mo-early "$rc15d5_open" '`A.txt`, `B.txt`' '`B.txt`' A
+rc15d5_src() {  # rc15d5_src <function> <args...> — a function of the gate, run by sourcing it
+  ( cd "$WT" && bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null >/dev/null 2>&1; set +eu; shift; "$@"' _ "$GATE" "$@" )
+}
+rc15d5_verb() {  # rc15d5_verb <name> <seg> — `gate unclosed-decisions` on a manifest naming the fixture
+  local rid="R15D5$(printf '%s' "$1" | tr '[:lower:]' '[:upper:]')"
+  write15c "$WORK/plan-$rid.md" "$plan15c" "docs/fixture-15d5-$1.md" "$rid"
+  grant15c "$rid" "docs/fixture-15d5-$1.md"
+  local o r=0
+  o=$(cd "$WT" && gate_inproc unclosed-decisions --manifest "$WORK/plan-$rid.md" --segment "$2" 2>/dev/null) || r=$?
+  printf '%s|%s' "$r" "$(printf '%s\n' "$o" | { grep -vE '\[run\] ' || true; })"
+}
+rc15d5_f() { printf '%s/fixture-15d5-%s.md' "$rc15d5_dir" "$1"; }
+
+check "15d-5: 선언 확장 줄을 가진 대조 무충돌 거둠 뒤 슬라이스 A 판독이 빈다" \
+  "$(rc15d5_src unresolved_closure_pending "$(rc15d5_f wide)" A)" ""
+check "15d-5: 선언 확장 줄을 가진 대조 무충돌 거둠 뒤 unclosed-decisions 가 빈다" "$(rc15d5_verb wide A)" "0|"
+check "15d-5: 보류 항목에 선언 확장 줄만 붙으면 계속 나온다" \
+  "$(rc15d5_src unresolved_closure_pending "$(rc15d5_f open)" A)/$(rc15d5_verb open A)" \
+  "### 미결 2. 보류에 선언 확장 줄/0|### 미결 2. 보류에 선언 확장 줄"
+check "15d-5: 넓힌 선언 파일을 slice_decl_files 가 새 원소까지 낸다" \
+  "$(rc15d5_src slice_decl_files "$(rc15d5_f wide)" A | tr '\n' ' ')" "A.txt extra/new.txt "
+check "15d-5: 넓힌 문서의 slicing_order_defects 가 빈다" \
+  "$(rc15d5_src slicing_order_defects "$(rc15d5_f wide)")" ""
+
+# Closure disjointness both ways: B carries `머지 순서: A`, so A lands after B
+# is cut and before B merges. An added path of B overlapping A, and an added
+# path of A overlapping B, are both the defect; the unwidened pair is not, so
+# the two defect assertions do not pass on a fixture that always fails.
+check "15d-5: 넓히기 전 머지 순서 픽스처는 결함이 없다" \
+  "$(rc15d5_src slicing_order_defects "$(rc15d5_f mo-base)")" ""
+check "15d-5: 뒤 슬라이스를 넓혀 앞 슬라이스와 겹치면 결함이다" \
+  "$(rc15d5_src slicing_order_defects "$(rc15d5_f mo-late)")" "슬라이스 B: 머지 순서 선언 파일 겹침 「A.txt」 — 슬라이스 A"
+check "15d-5: 앞 슬라이스를 넓혀 뒤 슬라이스와 겹치면 결함이다" \
+  "$(rc15d5_src slicing_order_defects "$(rc15d5_f mo-early)")" "슬라이스 B: 머지 순서 선언 파일 겹침 「B.txt」 — 슬라이스 A"
+
+# The texts that state the rule.
+rc15d5_sk="$repo_root/plugins/cc-cmds/skills"
+rc15d5_rc="$rc15d5_sk/design-reconverge/SKILL.md"
+rc15d5_n=0
+for rc15d5_l in '**The slicing axis**' '- `없음` — ' '- `선언 확장` — ' '- `선언 파일 밖` — ' \
+  '**선언 확장**: 슬라이스 <id> + `<경로>`, `<경로>`[; 슬라이스 <id> + …]' \
+  '선언 파일에 경로를 더하는 것 밖의 슬라이싱 변경은 이 런에서 닫지 않는다 — 슬라이싱을 다시 세운 새 런이 필요하다'; do
+  grep -qF -- "$rc15d5_l" "$rc15d5_rc" && rc15d5_n=$((rc15d5_n + 1))
+done
+check "15d-5: 재수렴 문면이 슬라이싱 축 세 값과 선언 확장 줄 꼴을 싣는다" "$rc15d5_n" "6"
+rc15d5_n=0
+for rc15d5_l in '선언 파일을 바꾸는 결정은 이 런에서 닫지 않는다' 'gets neither a card nor'; do
+  grep -qF -- "$rc15d5_l" "$rc15d5_rc" && rc15d5_n=$((rc15d5_n + 1))
+done
+check "15d-5: 재수렴 문면이 옛 문장을 싣지 않는다" "$rc15d5_n" "0"
+rc15d5_n=0
+for rc15d5_l in 'The branch is whether `CC_PIPELINE_HALT_ANSWER` is set, not how the session was started' \
+  '- **Not set** — ' '`$CC_PIPELINE_LEDGER`' "its \`기록 다이제스트\` equals the record's \`shasum -a 256\`"; do
+  grep -qF -- "$rc15d5_l" "$rc15d5_rc" && rc15d5_n=$((rc15d5_n + 1))
+done
+check "15d-5: 재수렴 문면이 재진입 분기와 기록 다이제스트 대조를 싣는다" "$rc15d5_n" "4"
+rc15d5_sec=$(LC_ALL=C awk '/^## 사유 거둠$/ { on = 1; next } on && /^## / { exit } on { print }' \
+  "$rc15d5_sk/_common/unresolved-closure.md")
+rc15d5_n=0
+for rc15d5_l in '`선언 확장`' '**선언 확장**: 슬라이스 <id>' 'three with a' 'never closes in the run'; do
+  grep -qF -- "$rc15d5_l" <<<"$rc15d5_sec" && rc15d5_n=$((rc15d5_n + 1))
+done
+check "15d-5: 사유 거둠 절이 선언 확장 닫기를 싣는다" "$rc15d5_n" "4"
+
+# ---------------------------------------------------------------------------
 # 15e. The audit is dispatched as a run-scope step, on preconditions the gate checks
 # --- section: 15e | group: base | covers: act, plan, wait, supervise, done-conditions | anchors: 15e: 동결된 설계 뒤 --segment - 감사 파견의 plan 이 통과한다, 15e: 감사 단계의 stage-result 행이 세그먼트=- · 스테이지=A1 · 종류=audit 이다, 15e: 설계가 끝나기 전의 감사 파견은 승인 행 없이 거부된다, 15e: 감사 단계가 없는 계획에서는 감사 면제가 서지 않는다, 15e: 미동결 문서에는 감사가 뜨지 않는다, 15e: 설계 시도가 살아 있으면 감사가 뜨지 않는다, 15e: - reconverge 와 - implement 는 여전히 거부된다, 15e: 감사 단계의 재개가 받힌다, 15e: 감사 파견이 fetch 뒤 원격 베이스 끝에 분리된 감사 워크트리를 만든다, 15e: 그 감사 워크트리는 로컬 main 끝에서 뜨지 않는다,15e: 감사 스테이지 자신의 --segment - 행위가 감사 워크트리에서 돈다, 15e: 같은 감사 단계의 재파견은 감사 워크트리를 다시 쓴다, 15e: 설계 단계가 없는 계획의 감사 파견 plan 이 동결된 문서에서 통과한다, 15e: 설계 단계가 없는 계획의 감사 행이 세그먼트=- · 스테이지=A1 · 종류=audit 로 정상 완료다, 15e: 감사 뒤 구현 단계가 남은 계획은 조건 1 이 그 단계를 든다, 15e: 감사만 있는 계획은 감사가 정상 완료로 끝나면 조건 1 이 선다 ---
 #
