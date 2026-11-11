@@ -543,16 +543,17 @@ tt_slots_init() {
   ts_init "$priv"
 }
 
-# Runs "$@" in a slot of weight 1 named $1, unmeasured. Holding a slot, the
-# command runs in a subshell that passes CC_TEST_SLOT_HELD=1 on; otherwise it
-# runs as it did before slots.
+# Runs "$@" in a slot of weight 1 named $1, unmeasured. Holding a slot, or
+# started without one at the wait cap, the command runs in a subshell that
+# passes CC_TEST_SLOT_HELD=1 on; with slots off or nested it runs as it did
+# before slots.
 tt_slot_run() {
   local name="$1" got rc
   shift
   tt_slots_init
   ts_slot_wait "$name" ""
   got="$TS_GOT"
-  if [ "$TS_MODE" = held ]; then
+  if [ "$TS_MODE" = held ] || [ "$TS_MODE" = free ]; then
     (
       CC_TEST_SLOT_HELD=1
       export CC_TEST_SLOT_HELD
@@ -838,8 +839,9 @@ tt_pool_cut() {
 # its times into TT_RECORD; a goal runs as tt_make does and records nothing.
 # Call it right after ts_slot_take let the job start: with slots off or nested
 # the job execs as it always did; otherwise it runs under the job shell of
-# scripts/test-slots.sh, which measures its weight when it holds slots and
-# passes CC_TEST_SLOT_HELD=1 on to it.
+# scripts/test-slots.sh, which measures its weight when it holds slots, and
+# CC_TEST_SLOT_HELD=1 is passed on to it whether it holds slots or started
+# without one at the wait cap.
 tt_pool_start() {
   local i="$1" jd gate="${CC_TEST_TREE_GATE:-}" mk="${CC_TEST_TREE_MAKE:-make}" how="$TS_MODE" key
   key=$(ts_job_key "${TT_PJ_KEY[$i]}")
@@ -868,7 +870,8 @@ tt_pool_start() {
       TMPDIR="$jd/tmp" XDG_STATE_HOME="$jd/state" CC_GATE_TIMING_OUT="$jd/marks.tsv" CC_GATE_TIMING_RECORD="${TT_RECORD:-off}"
       export TMPDIR XDG_STATE_HOME CC_GATE_TIMING_OUT CC_GATE_TIMING_RECORD
       if [ "$how" = exec ]; then exec "${suite[@]}" --sections "${TT_PJ_ARG[$i]}"; fi
-      if [ "$how" = held ]; then CC_TEST_SLOT_HELD=1; export CC_TEST_SLOT_HELD; fi
+      CC_TEST_SLOT_HELD=1
+      export CC_TEST_SLOT_HELD
       ts_job_shell bg "$key" "${suite[@]}" --sections "${TT_PJ_ARG[$i]}"
       exit $?
     ) < /dev/null > "$jd/out" 2>&1 &
@@ -885,7 +888,8 @@ tt_pool_start() {
       CC_GATE_TIMING_RECORD=off
       export CC_GATE_TIMING_RECORD
       if [ "$how" = exec ]; then exec "$mk" --no-print-directory "${TT_PJ_ARG[$i]}"; fi
-      if [ "$how" = held ]; then CC_TEST_SLOT_HELD=1; export CC_TEST_SLOT_HELD; fi
+      CC_TEST_SLOT_HELD=1
+      export CC_TEST_SLOT_HELD
       ts_job_shell bg "$key" "$mk" --no-print-directory "${TT_PJ_ARG[$i]}"
       exit $?
     ) < /dev/null > "$jd/out" 2>&1 &
@@ -2523,6 +2527,26 @@ EOF
   sp A o2 CC_TEST_SLOT_HELD=1 CC_TEST_SLOTS_DIR="$T/slots" &
   wait $!
   check "F38 자리 안에서 뜬 풀은 자리를 잡지 않는다" "$([ -e "$T/slots" ] && echo 있음 || echo 없음)|$(cat "$T/sp-A.out")" "없음|rc=0"
+  # An unattended run with CC_TEST_SLOTS unset follows the default constant of
+  # scripts/test-slots.sh, so the expected outcome is derived from it.
+  v=$(CC_PIPELINE_RUN_ID=f38 && unset CC_TEST_SLOTS && ts_set_count 2>/dev/null && printf '%s' "$TS_N")
+  if [ "${v:-0}" -gt 0 ]; then v="있음|rc=0|held=1"; else v="없음|rc=0|held=unset"; fi
+  : > "$T/slot.log"
+  rm -rf "$T/slots"
+  sp A u1 CC_PIPELINE_RUN_ID=f38 CC_TEST_SLOTS_DIR="$T/slots" &
+  wait $!
+  check "F38 CC_TEST_SLOTS 가 없는 무인 기본 실행은 무인 기본값을 따른다" "$([ -e "$T/slots" ] && echo 있음 || echo 없음)|$(cat "$T/sp-A.out")|$(grep '^S u1 ' "$T/slot.log" | cut -d' ' -f4)" "$v"
+  # A job started without a slot at the wait cap passes CC_TEST_SLOT_HELD=1 on
+  # too: the only slot is held by a live process that is not the pool.
+  : > "$T/slot.log"
+  rm -rf "$T/slots"
+  mkdir -p "$T/slots/slot-1"
+  printf 'pool %s %s\n' "$$" "$(ts_fp "$$")" > "$T/slots/slot-1/owner"
+  sp A f1 CC_TEST_SLOTS=1 CC_TEST_SLOTS_DIR="$T/slots" CC_TEST_SLOTS_WAIT_MAX=0 &
+  wait $!
+  check "F38 상한에 닿아 자리 없이 띄운 잡도 CC_TEST_SLOT_HELD=1 을 받는다" "$(cat "$T/sp-A.out")|$(grep '^S f1 ' "$T/slot.log" | cut -d' ' -f4)" "rc=0|held=1"
+  has "F38 자리 없이 띄운 잡은 상한 경고를 남긴다" "$(cat "$T/sp-A.err")" "상한 0초에 닿았다, 자리 없이 띄운다"
+  rm -rf "$T/slots"
 
   check "F38 무게 계산: CPU 25초 / 벽시계 10초 → 올림(2.25) = 3" "$(ts_weight_calc "0m20.000s 0m5.000s" 10)" "3"
   check "F38 무게 계산: CPU/벽시계 2.25 경계 → 2" "$(ts_weight_calc "0m22.500s 0m0.000s" 10)" "2"
@@ -2806,8 +2830,8 @@ EOF
   rm -rf "$T"
   printf 'test-tree self-test: %d passed, %d failed\n' "$passed" "$failed"
   # A floor on the count, so a refactor that silently skips cases cannot pass.
-  if [ "$passed" -lt 200 ]; then
-    printf 'test-tree self-test: 통과 수 %d 가 하한 200 에 못 미칩니다\n' "$passed" >&2
+  if [ "$passed" -lt 203 ]; then
+    printf 'test-tree self-test: 통과 수 %d 가 하한 203 에 못 미칩니다\n' "$passed" >&2
     return 1
   fi
   [ "$failed" = "0" ]
