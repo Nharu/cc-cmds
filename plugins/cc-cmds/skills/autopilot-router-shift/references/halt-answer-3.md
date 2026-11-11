@@ -24,4 +24,8 @@
 
    - **After it ends**, take the audit afresh as 「Routing a skeleton-grade audit to re-convergence」 says, with `blocked` and `사유=중단 답 라우팅 — 재수렴 종단 술어 거짓` when the literal is absent. A last row carrying `차단=파견 전` is not that end: it waits on its size record.
    - **No new record follows.** The fresh audit asks again under the key's cap, which this answer's re-convergence counts toward. On exit 3 go to item 8.
+11. **A pre-dispatch size stop takes a new dispatch or a park, never a re-attachment.** The gate blocked the dispatch on the document's size (`파견 전 / 문서 크기 초과`) or readability (`파견 전 / 문서 읽기 불가`) before any session existed, and refuses `--carry-answer` on it (exit 3); it hands a blocked carry's card (`답 운반`) to the redispatch. Only `정리 후 재파견` is yours or the seat's to answer.
+   - **`정리-재파견`** → `gate.sh act --manifest <매니페스트> --kind doc-tidy --target <alias> --segment <segment> --cutpoint 커밋 --surface 트리밖쓰기 --snapshot-digest <H> --rationale '중단 답 줄 <line>; 문서 정리' -- '중단 기록=<record>'`. It re-checks, tidies once and writes a `doc-tidy` row; a document already at that row's post-tidy sha256 exits 0 untouched. Then issue the blocked dispatch again — same kind, `--segment`, `-p` — with `--rationale '중단 답 줄 <line>'`, no `--carry-answer`. A refused or failed tidy goes to item 8.
+   - **`큰문맥-재파견`** → the blocked dispatch again with `--large-context` and `--rationale '중단 답 줄 <line>'`; only a person's unspent answer admits it.
+   - **`크기-보류`** → a segment key takes item 7's park; a run-scope key takes `act --kind blocked … -- 스코프=run 원인=막힘 '앵커 세그먼트=<segment>' '사유=크기-보류' '근거=중단 답 줄 <line>'`. Dispatch nothing on it.
 

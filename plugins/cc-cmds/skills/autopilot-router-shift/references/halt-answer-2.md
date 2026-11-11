@@ -70,8 +70,3 @@
    - **A segment anchor** neither holds the run nor refuses a dispatch, and the gate refuses `원인=해소` for it: write no release row and route the new element directly. The cone leaves `cone_blocks[]` once the segment's next `segment` row that is not `park` lands.
 
    **Item 6's `재시도` is the exception.** When the act it takes is refused the same way, item 6 stops the segment again with a new `shift-halt` rather than this row — that refusal is a new observation and a new question, and the `shift-halt` writes its own cone row.
-
-11. **A pre-dispatch size stop takes a new dispatch or a park, never a re-attachment.** The gate blocked the dispatch on the document's size (`파견 전 / 문서 크기 초과`) or readability (`파견 전 / 문서 읽기 불가`) before any session existed, and refuses `--carry-answer` on it (exit 3); it hands a blocked carry's card (`답 운반`) to the redispatch. Only `정리 후 재파견` is yours or the seat's to answer.
-   - **`정리-재파견`** → `gate.sh act --manifest <매니페스트> --kind doc-tidy --target <alias> --segment <segment> --cutpoint 커밋 --surface 트리밖쓰기 --snapshot-digest <H> --rationale '중단 답 줄 <line>; 문서 정리' -- '중단 기록=<record>'`. It re-checks, tidies once and writes a `doc-tidy` row; a document already at that row's post-tidy sha256 exits 0 untouched. Then issue the blocked dispatch again — same kind, `--segment`, `-p` — with `--rationale '중단 답 줄 <line>'`, no `--carry-answer`. A refused or failed tidy goes to item 8.
-   - **`큰문맥-재파견`** → the blocked dispatch again with `--large-context` and `--rationale '중단 답 줄 <line>'`; only a person's unspent answer admits it.
-   - **`크기-보류`** → a segment key takes item 7's park; a run-scope key takes `act --kind blocked … -- 스코프=run 원인=막힘 '앵커 세그먼트=<segment>' '사유=크기-보류' '근거=중단 답 줄 <line>'`. Dispatch nothing on it.

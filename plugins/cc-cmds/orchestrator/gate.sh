@@ -13764,7 +13764,10 @@ gate_decision_reconverge_open() {
   # names the record; the record's header names this key, and the key is the
   # plan's design or audit step; the collection row did not reach the loop
   # cap; and no re-convergence of the key has a row after the record's first
-  # `중단 답` — a record opens its re-convergence once.
+  # `중단 답` — a record opens its re-convergence once. A row carrying
+  # `차단=파견 전` is not counted: the dispatch was blocked on the document's
+  # size before any session read the answer, so the redispatch the size
+  # answer asks for is the same re-convergence admitted again.
   local key="$1" rec="$2" hk first
   GATE_DCR_WHY=''
   if ! gate_decision_collect_named "$rec"; then
@@ -13791,6 +13794,7 @@ gate_decision_reconverge_open() {
      && [ -n "$( { grep -n -F "세그먼트=- | 스테이지=$key | 종류=reconverge " "$LEDGER" 2>/dev/null || true; } \
                  | { grep "^[0-9]*:- \`stage-result\` " || true; } \
                  | { grep -vF '| 관측=스폰 전 대기 중' || true; } \
+                 | { grep -vE '\| 차단=파견 전( \||$)' || true; } \
                  | awk -F: -v l="$first" '$1 > l')" ]; then
     GATE_DCR_WHY="이 결정 수거 기록은 이미 재수렴을 한 번 열었습니다 — 같은 기록으로 두 번 열지 않고, 새 다이제스트의 수거가 보류를 다시 정합니다: $rec"
     return 1
@@ -13809,10 +13813,17 @@ gate_decision_reconverge_entry() {
   # that re-convergence is admitted the way the audit's is: the key's last row
   # is a re-convergence of the session being resumed, and the record is the
   # one the key's last collection answer names.
+  #
+  # AN ANSWER TO A PRE-DISPATCH SIZE RECORD IS PASSED OVER. When the
+  # re-convergence's dispatch was blocked on the document's size, the key's
+  # answer to that size record (`정리 후 재파견`, `큰 문맥으로 재파견`) answers
+  # the dispatch's size and not the collection record, so the collection
+  # answer before it is the one read.
   local key="$1" last row rec lrow
   GATE_DCR_RECORD=''; GATE_DCR_WHY=''
   last=$( { grep -n -F "| 세그먼트=$key |" "$LEDGER" 2>/dev/null || true; } \
-          | { grep "^[0-9]*:- \`중단 답\` " || true; } | sed -n '$p')
+          | { grep "^[0-9]*:- \`중단 답\` " || true; } \
+          | gate_drop_size_record_answers | sed -n '$p')
   if [ -z "$last" ]; then
     GATE_DCR_WHY="${key} 에 중단 답 행이 없습니다"
     return 1
@@ -28518,11 +28529,18 @@ gate_size_block_reconverge_routable() {
   # stands, 1 with GATE_SBR_WHY otherwise. Asked before the document is
   # tidied, so a redispatch the gate would refuse is refused before anything
   # changes the document.
-  local key="$1" rec="$2" prior ast dst
+  local key="$1" rec="$2" prior ast dst ckey
   GATE_SBR_WHY=''
   if ! gate_size_block_of_record "$key" "$rec"; then
     GATE_SBR_WHY="$key 의 마지막 행이 이 기록을 쓴 재수렴의 크기 차단 행이 아니어서 다시 파견할 차단이 없습니다"
     return 1
+  fi
+  # A RE-CONVERGENCE A DECISION-COLLECTION ANSWER OPENED rides on the
+  # collection's key, the audit step or else the design step, and is admitted
+  # by its own test rather than by the audit's or the ladder's.
+  ckey=$(gate_decision_collect_key 2>/dev/null || true)
+  if [ -n "$ckey" ] && [ "$key" = "$ckey" ] && gate_decision_reconverge_entry "$key"; then
+    return 0
   fi
   ast=$(gate_run_scope_step audit 2>/dev/null || true)
   dst=$(gate_run_scope_step design 2>/dev/null || true)
