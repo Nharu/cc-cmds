@@ -1186,7 +1186,7 @@ printf 'a\000b' > "$JX_DIR/nul.want"
 if cmp -s "$JX_DIR/nul.out" "$JX_DIR/nul.want"; then
   ok "한 번의 jq: 이 호스트의 jq 가 \\u0000 을 NUL 바이트로 낸다"
 else
-  bad "한 번의 jq: NUL 출력" "$(od -c "$JX_DIR/nul.out" | head -n 2)"
+  bad "한 번의 jq: NUL 출력" "$(od -c "$JX_DIR/nul.out")"
 fi
 
 # The block runs from the filter to the strip of the five fields; the two
