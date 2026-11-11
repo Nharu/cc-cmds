@@ -8,14 +8,17 @@
 # TWO KINDS OF ASSERTION, because only one of them is host independent.
 #
 #   - The STATIC count reads source, not a run, so it holds on every host: for
-#     each of the eight target scripts, the exec sites by absolute path (which no
-#     PATH stub can see) are no more than the baseline's, and every name a target
-#     runs through PATH is on the stub list. A name off the list would be a
-#     process the run count cannot see.
+#     each of the eight target scripts, the exec sites by absolute path and the
+#     pipeline elements whose first word is a builtin (neither of which the run
+#     count sees) are no more than the baseline's, and every name a target runs
+#     through PATH is on the stub list. A name off the list would be a process
+#     the run count cannot see.
 #   - The RUN count depends on the host. It is asserted only when the six
 #     measuring conditions the baseline records (`uname -s`, the bash version,
 #     the digests of the stub list, the unit specs and the fixtures, and the U8
 #     caller) all equal the present ones. Then: the calibration target counts 6,
+#     the builtin pipeline line counts 1 and the function pipeline line counts 2
+#     (the omission the tool's head comment states, measured as it states it),
 #     every unit counts the same twice, no command the trap saw run by name went
 #     around its stub, and a unit with a target file meets it. When any condition
 #     differs nothing is measured and one line per differing condition goes to
@@ -84,6 +87,17 @@ check "정적 셈이 성공한다" "$?" "0"
 
 rows=$(awk -F '\t' '$1 == "abspath"' "$BASELINE" | wc -l | tr -d ' ')
 check "기준선에 절대 경로 실행 행이 여덟 있다" "$rows" "8"
+rows=$(awk -F '\t' '$1 == "pipeline"' "$BASELINE" | wc -l | tr -d ' ')
+check "기준선에 빌트인 파이프라인 요소 행이 여덟 있다" "$rows" "8"
+while IFS="$(printf '\t')" read -r kind key want; do
+  [ "$kind" = pipeline ] || continue
+  got=$(field "$WORK/static.txt" "pipeline.$key")
+  if is_int "$got" && is_int "$want" && [ "$got" -le "$want" ]; then
+    ok "빌트인 파이프라인 요소 자리 수가 기준선 이하다 ($key: $got ≤ $want)"
+  else
+    bad "빌트인 파이프라인 요소 자리 수 ($key)" "지금 '$got', 기준선 '$want' — 이 자리의 포크는 실행 셈에 들지 않아, 늘면 실행 셈이 그만큼 덜 센다"
+  fi
+done < "$BASELINE"
 while IFS="$(printf '\t')" read -r kind key want; do
   [ "$kind" = abspath ] || continue
   got=$(field "$WORK/static.txt" "abspath.$key")
@@ -126,6 +140,10 @@ bash "$MEASURE" --calibrate > "$WORK/cal.txt" 2>"$WORK/cal.err"
 check "교정 대상의 셈이 6 이다" "$(field "$WORK/cal.txt" calibrate)" "6"
 check "교정 대상의 제자리 exec 표시가 하나다 (sed)" "$(field "$WORK/cal.txt" calibrate.self)" "1"
 check "교정 대상의 스텁 줄이 모두 귀속된다" "$(field "$WORK/cal.txt" calibrate.unattributed)" "0"
+check "빌트인 파이프라인 교정 줄의 셈이 1 이다 (프로세스 둘 중 printf 요소가 빠진다)" \
+  "$(field "$WORK/cal.txt" calibrate.pipeline-builtin)" "1"
+check "함수 파이프라인 교정 줄의 셈이 2 이다 (함수 요소는 하위 셸로 센다)" \
+  "$(field "$WORK/cal.txt" calibrate.pipeline-function)" "2"
 
 for u in $UNITS; do
   bash "$MEASURE" --unit "$u" > "$WORK/$u.1" 2>"$WORK/$u.1.err"

@@ -47,6 +47,19 @@
 # absolute path from a traced shell is not counted either, which is what the
 # static count below is for.
 #
+# NOR IS A PIPELINE ELEMENT WHOSE FIRST WORD IS A BUILTIN — the `printf` of
+# `printf '%s' "$input" | jq …`, or the `read` of a last element `… | read -r v`.
+# bash 3.2 runs that element's DEBUG trap in the parent and then forks, the trap
+# does not run in the child, and a builtin execs nothing, so the child leaves
+# no line. An element that is a function or a compound command (`while`, `{ }`,
+# `( )`) is counted: its trap runs in the child with `BASH_SUBSHELL` at 1. No
+# instrument counts the builtin element, because the trap that does run, in the
+# parent, cannot tell a builtin in a pipeline from one standing alone; the
+# static count reports those sites instead, and `--calibrate` measures one line
+# of each kind (`calibrate.pipeline-builtin` counts 1, for two processes, and
+# `calibrate.pipeline-function` counts 2) so the omission is held to what this
+# paragraph says.
+#
 # ATTRIBUTION. For each command whose first word (after `exec`, `command` and
 # assignment words) is a stub name that `type -t` reports as `file`, the trap
 # writes `<pid> call <name> <FUNCNAME…>`. An assignment word that holds a
@@ -85,6 +98,26 @@
 #                        so does the command they wrap.
 #   pathrewrite.<script> — the lines that assign `PATH`, `none` when there is
 #                        none.
+#   pipeline.<script>  — pipeline elements the run count misses: in a pipeline
+#                        of two or more elements joined by `|` or `|&`, each
+#                        simple command element whose first word, read by the
+#                        `abspath` rule, is one of the builtins below. An element
+#                        that is a subshell, an arithmetic command, a compound
+#                        command ending in `}`, `done`, `fi` or `esac`, or one
+#                        opened by `while`, `until`, `if`, `case`, `for`,
+#                        `select`, `{` or `[[` right after a `|`, is not one.
+#
+# The builtins are those of bash 3.2, the bash the targets run on, fixed here
+# rather than asked of the host's bash, so the static count is the same on the
+# Linux CI's bash. The code reads them from these lines, and the `outside`
+# count uses the same list:
+#
+#   builtins: . : [ alias bg bind break builtin caller cd command compgen
+#   builtins: complete compopt continue declare dirs disown echo enable eval
+#   builtins: exec exit export false fc fg getopts hash help history jobs kill
+#   builtins: let local logout popd printf pushd pwd read readonly return set
+#   builtins: shift shopt source suspend test times trap true type typeset
+#   builtins: ulimit umask unalias unset wait
 #
 # UNITS ARE DRIVEN BY SPEC FILES, `tests/fixtures/measure-spawn-count/runs/spec/U1`
 # … `U8`, three tab-separated columns `kind key value`:
@@ -141,6 +174,7 @@
 #   bash scripts/measure-spawn-count.sh --static        static counts only
 #   bash scripts/measure-spawn-count.sh --names         every PATH name the targets run
 #   bash scripts/measure-spawn-count.sh --calibrate     the six-process calibration
+#                                                      and the two pipeline lines
 #   bash scripts/measure-spawn-count.sh --cond          the six measuring conditions
 #   bash scripts/measure-spawn-count.sh --baseline      the baseline table on stdout
 #   bash scripts/measure-spawn-count.sh --reproduce     re-measure and compare with
@@ -172,10 +206,12 @@ plugins/cc-cmds/orchestrator/run-pane.sh
 plugins/cc-cmds/orchestrator/gate.sh
 plugins/cc-cmds/hooks/gate-pretool.sh
 plugins/cc-cmds/orchestrator/liveness.sh"
-# Builtins of bash 3.2, the bash the targets run on, so the static count does
-# not move with the host's bash. The targets pass the portability lint, so no
-# builtin that only later versions have appears in them.
-BUILTINS=" . : [ alias bg bind break builtin caller cd command compgen complete compopt continue declare dirs disown echo enable eval exec exit export false fc fg getopts hash help history jobs kill let local logout popd printf pushd pwd read readonly return set shift shopt source suspend test times trap true type typeset ulimit umask unalias unset wait "
+# The builtins of bash 3.2, read from the `builtins:` lines of the head comment
+# so the list the comment states is the list the code uses. The targets pass
+# the portability lint, so no builtin that only later versions have appears in
+# them.
+BUILTINS=" $(sed -n 's/^#   builtins: //p' "$0" | tr '\n' ' ')"
+case "$BUILTINS" in *" printf "*" wait "*) ;; *) die2 "머리 주석에서 빌트인 목록을 읽지 못했습니다" ;; esac
 UNIT_TIMEOUT=900
 
 MODE=all ONE=""
@@ -256,26 +292,46 @@ cond_rows() {
 #   U <line> <word>            the previous C was a function name after all
 #   D <line> <name>            a function definition
 #   P <line> <word>            an assignment to PATH, in any position
+#   E <line> <word> <quoted>   a simple command element of a pipeline of two or
+#                              more elements, with its first word
+#
+# A pipeline is followed per frame: `PL` counts the elements a `|` or `|&` has
+# closed, and the open element keeps its first word (`EH`, `EW`) or a mark that
+# it is compound (`EC`). The pipeline ends at `;`, `;;`, `;&`, a newline, `&`,
+# `&&`, `||` and the frame's close, except that a newline right after a `|`
+# (`PJ`) continues it. `then`, `else`, `elif`, `do`, `!` and `time` pass through
+# without being an element's first word, and so does an opening word that does
+# not follow a `|`: in `while printf x | grep -q y; do` the element is `printf`.
 cat > "$WORK/extract.awk" <<'AWK'
 function push(m) {
   sp++; M[sp] = m; AD[sp] = 0; BD[sp] = 0; KT[sp] = 0
   W[sp] = ""; IW[sp] = 0; Q[sp] = 0; QS[sp] = -1; CP[sp] = 1; RD[sp] = 0; FOR[sp] = 0
   PAT[sp] = 0; CD[sp] = 0; CW[sp] = 0; XB[sp] = 0; FN[sp] = 0; CO[sp] = 0
   WR[sp] = ""; WA[sp] = 0; TD[sp] = 0; ARR[sp] = 0; LW[sp] = ""; LL[sp] = 0
+  PL[sp] = 0; PJ[sp] = 0; pelem(sp)
 }
-function pop() { if (M[sp] == "c") fin(sp); if (sp > 1) sp-- }
+function pop() { if (M[sp] == "c") { fin(sp); pend(sp) } if (sp > 1) sp-- }
+function pelem(k) { EH[k] = 0; EC[k] = 0; EW[k] = ""; EL[k] = 0; EQ[k] = 0 }
+function pclose(k) { if (EH[k] && !EC[k]) print "E\t" EL[k] "\t" EW[k] "\t" EQ[k]; pelem(k) }
+function ppipe(k) { pclose(k); PL[k]++; PJ[k] = 1 }
+function pend(k) { if (PL[k] > 0) pclose(k); else pelem(k); PL[k] = 0; PJ[k] = 0 }
+function pcomp(k) { if (!EH[k]) EC[k] = 1 }
 function cidx(   k) { for (k = sp; k > 1; k--) if (M[k] == "c") return k; return 1 }
 function addc(t,   k) { k = cidx(); W[k] = W[k] t; IW[k] = 1 }
 function qmark(k) { if (QS[k] < 0) QS[k] = length(W[k]); Q[k] = 1; IW[k] = 1 }
-function emit(k, w, q) { print "C\t" NR "\t" w "\t" q; LW[k] = w; LL[k] = NR }
+function emit(k, w, q) {
+  print "C\t" NR "\t" w "\t" q; LW[k] = w; LL[k] = NR
+  if (!EH[k] && !EC[k]) { EH[k] = 1; EW[k] = w; EL[k] = NR; EQ[k] = q }
+}
 function cmdword(k, w, q, pre) {
   if (pre ~ /^[A-Za-z_][A-Za-z0-9_]*(\[[^]]*\])?\+?=/) return
   if (!q) {
     if (w == "exec") return
     if (w == "command") { CO[k] = 1; return }
     if (CO[k] && w ~ /^-/) { if (w ~ /[vV]/) { CO[k] = 0; CP[k] = 0 } return }
+    if (PL[k] > 0 && w ~ /^(while|until|if|\{|case|for|select|\[\[)$/) pcomp(k)
     if (w ~ /^(if|then|else|elif|do|while|until|!|\{|time)$/) return
-    if (w ~ /^(fi|done|\}|esac)$/) { CP[k] = 0; CO[k] = 0; return }
+    if (w ~ /^(fi|done|\}|esac)$/) { EC[k] = 1; CP[k] = 0; CO[k] = 0; return }
     if (w == "case") { CW[k] = 1; CP[k] = 0; return }
     if (w == "for" || w == "select") { FOR[k] = 1; CP[k] = 0; return }
     if (w == "function") { FN[k] = 1; CP[k] = 0; return }
@@ -298,7 +354,7 @@ function fin(k,   w, q, pre) {
   if (FOR[k]) { if (!q && w == "do") { FOR[k] = 0; CP[k] = 1 } return }
   if (CW[k] == 1) { CW[k] = 2; return }
   if (CW[k] == 2) { if (!q && w == "in") { CW[k] = 0; PAT[k] = 1; CD[k]++ } return }
-  if (PAT[k]) { if (!q && w == "esac") { CD[k]--; PAT[k] = 0; CP[k] = 0 } return }
+  if (PAT[k]) { if (!q && w == "esac") { CD[k]--; PAT[k] = 0; CP[k] = 0; EC[k] = 1 } return }
   if (XB[k]) { if (!q && w == "]]") XB[k] = 0; return }
   if (!CP[k]) return
   if (WR[k] != "") {
@@ -373,8 +429,9 @@ BEGIN { sp = 0; push("c"); HN = 0; HI = 0; INHD = 0 }
     }
     if (XB[i] && W[i] != "]]" && ch ~ /[()|&<>]/) { addc(ch); j++; continue }
     if (ch == " " || ch == "\t") { fin(i); j++; continue }
-    if (ch == "\n") { sep(i); j++; continue }
+    if (ch == "\n") { if (PJ[i]) { fin(i); j++; continue } sep(i); pend(i); j++; continue }
     if (ch == "#" && !IW[i]) { j = n; continue }
+    PJ[i] = 0
     if (ch == "'") { qmark(i); push("s"); j++; continue }
     if (ch == "$" && nx == "'") { qmark(i); push("e"); j += 2; continue }
     if (ch == "\"") { qmark(i); push("d"); j++; continue }
@@ -392,20 +449,20 @@ BEGIN { sp = 0; push("c"); HN = 0; HI = 0; INHD = 0 }
         if (IW[i]) { nm = W[i]; W[i] = ""; IW[i] = 0; Q[i] = 0 }
         else { nm = LW[i]; print "U\t" NR "\t" nm }
         print "D\t" NR "\t" nm
-        FN[i] = 0; CP[i] = 1
+        FN[i] = 0; CP[i] = 1; EC[i] = 1
         j = j + index(rest, ")") + 1; continue
       }
       if (PAT[i]) { j++; continue }
-      if (!IW[i] && CP[i] && nx == "(") { push("a"); j += 2; continue }
-      if (!IW[i] && CP[i]) { push("c"); j++; continue }
+      if (!IW[i] && CP[i] && nx == "(") { pcomp(i); push("a"); j += 2; continue }
+      if (!IW[i] && CP[i]) { pcomp(i); push("c"); j++; continue }
       addc(ch); j++; continue
     }
     if (ch == ")") {
-      if (PAT[i]) { fin(i); PAT[i] = 0; CP[i] = 1; j++; continue }
+      if (PAT[i]) { fin(i); PAT[i] = 0; CP[i] = 1; pelem(i); j++; continue }
       pop(); j++; continue
     }
     if (ch == ";") {
-      fin(i)
+      fin(i); pend(i)
       if (nx == ";") { j += 2; if (substr(s, j, 1) == "&") j++; if (CD[i] > 0) PAT[i] = 1; CP[i] = 0; continue }
       if (nx == "&") { j += 2; if (CD[i] > 0) PAT[i] = 1; CP[i] = 0; continue }
       if (!FOR[i]) CP[i] = 1
@@ -413,11 +470,12 @@ BEGIN { sp = 0; push("c"); HN = 0; HI = 0; INHD = 0 }
     }
     if (ch == "&") {
       if (nx == ">") { fin(i); RD[i] = 1; j += 2; if (substr(s, j, 1) == ">") j++; continue }
-      sep(i); j += (nx == "&") ? 2 : 1; continue
+      sep(i); pend(i); j += (nx == "&") ? 2 : 1; continue
     }
     if (ch == "|") {
       if (PAT[i]) { fin(i); j++; continue }
-      sep(i); j += (nx == "|" || nx == "&") ? 2 : 1; continue
+      if (nx == "|") { sep(i); pend(i); j += 2; continue }
+      sep(i); ppipe(i); j += (nx == "&") ? 2 : 1; continue
     }
     if (ch == "<" || ch == ">") {
       if (IW[i] && !Q[i] && W[i] ~ /^[0-9]+$/) { W[i] = ""; IW[i] = 0 } else fin(i)
@@ -479,10 +537,17 @@ abspath_count() {
   commands "$1" | awk -F'\t' '$2 ~ /^\// || $2 ~ /^\$\{[A-Za-z_][A-Za-z0-9_]*:?[-=]\// { n++ } END { print n + 0 }'
 }
 
+# pipeline_count <file> — the pipeline elements whose first word is a builtin,
+# the processes the run count misses.
+pipeline_count() {
+  extract "$1" | awk -F'\t' -v b="$BUILTINS" '$2 == "E" && index(b, " " $4 " ") > 0 { n++ } END { print n + 0 }'
+}
+
 static_report() {
   local t out lines
   for t in $TARGETS; do
     printf 'abspath.%s=%s\n' "$t" "$(abspath_count "$t")"
+    printf 'pipeline.%s=%s\n' "$t" "$(pipeline_count "$t")"
     out=$(path_names "$t" | LC_ALL=C comm -23 - <(LC_ALL=C sort -u "$SPECD/stubs") | tr '\n' ',' | sed 's/,$//')
     if [ -n "$out" ]; then
       printf 'outside.%s=%s\n' "$t" "$(printf '%s' "$out" | tr ',' '\n' | awk 'END { print NR }')"
@@ -596,6 +661,17 @@ tally() {
 
 lines_of() { awk 'END { print NR }' "$1" 2>/dev/null || echo 0; }
 
+# calibrate_run <dir> <script> — one traced run of a calibration script with
+# the stubs of <dir>, into a log emptied first: the stubs write `<dir>/log`.
+calibrate_run() {
+  local d=$1 log="$1/log"
+  : > "$log"
+  ( unset CC_SPAWN_SELF CC_SPAWN_SLEEP_CYCLE
+    export BASH_ENV="$ENVF" CC_SPAWN_LOG="$log" CC_SPAWN_T="$d/t" CC_SPAWN_NAMES="grep sed tr" \
+      CC_SPAWN_STUBS="$d/stubs"
+    PATH="$d/stubs:$ORIG_PATH"; exec "$REAL_BASH" "$2" )
+}
+
 calibrate() {
   local d="$WORK/calibrate" log
   mkdir -p "$d"
@@ -612,13 +688,21 @@ f
 n=0; while [ $n -lt 3 ]; do n=$((n+1)); done
 /usr/bin/true
 EOF
-  ( unset CC_SPAWN_SELF CC_SPAWN_SLEEP_CYCLE
-    export BASH_ENV="$ENVF" CC_SPAWN_LOG="$log" CC_SPAWN_T="$d/t" CC_SPAWN_NAMES="grep sed tr" \
-      CC_SPAWN_STUBS="$d/stubs"
-    PATH="$d/stubs:$ORIG_PATH"; exec "$REAL_BASH" "$d/target.sh" ) || die2 "교정 대상이 실패했습니다"
+  calibrate_run "$d" "$d/target.sh" || die2 "교정 대상이 실패했습니다"
   set -- $(tally "$log" "$(lines_of "$log")")
   printf 'calibrate=%s\ncalibrate.fork=%s\ncalibrate.exec=%s\ncalibrate.self=%s\ncalibrate.unattributed=%s\ncalibrate.distinct=%s\n' \
     "$1" "$2" "$3" "$4" "$5" "$7"
+  # The pipeline omission, apart from the target above: a builtin element forks
+  # a process the count misses, so two processes count 1; a function element's
+  # child runs the trap as a subshell, so its two processes count 2.
+  printf '%s\n' "printf 'x\\n' | tr x y >/dev/null" > "$d/pipeline-builtin.sh"
+  printf '%s\n' "f() { printf 'y\\n'; }" "f | tr y z >/dev/null" > "$d/pipeline-function.sh"
+  calibrate_run "$d" "$d/pipeline-builtin.sh" || die2 "빌트인 파이프라인 교정 줄이 실패했습니다"
+  set -- $(tally "$log" "$(lines_of "$log")")
+  printf 'calibrate.pipeline-builtin=%s\n' "$1"
+  calibrate_run "$d" "$d/pipeline-function.sh" || die2 "함수 파이프라인 교정 줄이 실패했습니다"
+  set -- $(tally "$log" "$(lines_of "$log")")
+  printf 'calibrate.pipeline-function=%s\n' "$1"
 }
 
 # ---------------------------------------------------------------------------
@@ -959,6 +1043,9 @@ baseline_table() {
   done
   for t in $TARGETS; do
     printf 'abspath\t%s\t%s\n' "$t" "$(abspath_count "$t")"
+  done
+  for t in $TARGETS; do
+    printf 'pipeline\t%s\t%s\n' "$t" "$(pipeline_count "$t")"
   done
   cond_rows
 }
