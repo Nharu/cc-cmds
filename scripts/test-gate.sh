@@ -69406,7 +69406,7 @@ unset r110c n110c f110c a110c o110c
 # 확인 명령은 릴레이의 확인 갈래 한 곳에서만 돈다. 일치하면 `$RUN_DIR/confirm/<이름>.match`
 # 가 남고, 좌석의 `원인 해소 후 재개` 는 그 일치 기록에 기대어서만 선다. `halt-answer` 는
 # 명령을 돌리지도 세지도 않는다. 시험의 확인 명령은 이 픽스처의 세그먼트 워크트리에서
-# 브랜치 이름을 읽는 로컬 읽기이고, 시간 제한은 잠드는 가짜 gh 로 잰다.
+# 브랜치 이름을 읽는 로컬 읽기이고, 시간 제한은 loose ref 자리의 FIFO 에서 멈추는 git 으로 잰다.
 # ---------------------------------------------------------------------------
 c110d_seat() {
   # c110d_seat <기록> — 좌석의 해소 확인 답.
@@ -69472,11 +69472,19 @@ n110d=$(rfa_n '중단 답')
 c110d_seat "$r110d"
 check "110d: 기대 출력이 다르면 일치가 아니고 좌석 답은 거부된다" "$rc|$(rfa_n '중단 답')" "3|$n110d"
 
-c110d_new "확인 시간 제한" "MERGED" "gh pr view 1"
-mkdir -p "$SA_ROOT/bin"
-printf '#!/bin/sh\nsleep 5\necho MERGED\n' > "$SA_ROOT/bin/gh"; chmod +x "$SA_ROOT/bin/gh"
+# 멈추는 명령은 PATH 앞에 둔 가짜 프로그램이 아니라, loose ref 자리에 둔 FIFO 를 그 ref 로
+# 읽는 git 이다. 게이트가 소싱하는 run.sh 가 시스템 디렉터리를 상속한 PATH 앞에 붙이므로,
+# gh 가 /usr/bin/gh 인 호스트에서는 PATH 앞의 가짜가 진짜에 가려 곧바로 실패하고 시간
+# 제한에 닿지 않는다. 환경 변수로 거는 멈춤(전역 설정 파일 자리의 FIFO 등)은 게이트가 소싱할
+# 때 시간 제한 밖에서 부르는 git 까지 멈추게 하므로 쓰지 않는다. 쓰는 쪽이 없는 FIFO 는 그
+# ref 를 이름으로 읽는 확인 명령만 멈추게 하고, ref 를 나열하는 다른 경우가 걸리지 않도록
+# 단언 바로 뒤에 지운다.
+c110d_new "확인 시간 제한" "true" "git rev-parse --verify -q refs/heads/c110d-slow"
+f110d="$(cd "$SA_WT" && git rev-parse --path-format=absolute --git-common-dir)/refs/heads/c110d-slow"
+mkfifo "$f110d"
 check "110d: 시간 제한을 넘긴 명령은 일치가 아니다" \
-  "$(PATH="$SA_ROOT/bin:$PATH" CC_GATE_CONFIRM_TIMEOUT_TEST_SECONDS=1 c110d_run 'RF#1')" "1|1|143"
+  "$(CC_GATE_CONFIRM_TIMEOUT_TEST_SECONDS=1 c110d_run 'RF#1')" "1|1|143"
+rm -f "$f110d"
 
 c110d_new "확인 필드 없음" "-"
 r110d=$(nr_rec 'RF#1' 빈)
