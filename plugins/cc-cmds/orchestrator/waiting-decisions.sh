@@ -30,7 +30,7 @@
 WD_SELF_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
 # The gate functions this file calls, and no other.
-WD_GATE_FUNCTIONS='gate_pending_approvals_json gate_prompt gate_approval_sidecar_path gate_approval_sidecar_ok gate_approval_sidecar_aid gate_returned_halts_json gate_halt_auto_answer_current gate_halt_recommendation gate_halt_option_lines gate_halt_record_tail gate_shift_halt_row_of gate_rows gate_row_field gate_text_names_file cc_cone_blocked cc_halt_answered cc_halt_returned'
+WD_GATE_FUNCTIONS='gate_pending_approvals_json gate_prompt gate_approval_sidecar_path gate_approval_sidecar_ok gate_approval_sidecar_aid gate_returned_halts_json gate_halt_auto_answer_current gate_halt_recommendation gate_halt_option_lines gate_halt_record_tail gate_halt_record_question gate_shift_halt_row_of gate_rows gate_row_field gate_text_names_file cc_cone_blocked cc_halt_answered cc_halt_returned'
 
 # ---------------------------------------------------------------------------
 # Fixed sentences. Every `답하는 곳:` line comes from this one table.
@@ -40,10 +40,10 @@ wd_where() {
   case "$1" in
     judgment) printf '%s' '다음 좌석 실행(`/cc-cmds:autopilot`)이 이 질문을 그대로 묻습니다 — 아래 라벨 하나로 답합니다' ;;
     yesno) printf '%s' '다음 좌석 실행이 이 질문을 메뉴 없이 예/아니오로 묻습니다 — 예는 `승인`, 아니오는 `거부` 로 닫힙니다' ;;
-    unanswered) printf '%s' '다음 좌석 실행이 이 기록의 질문 문면과 선택지를 그대로 묻습니다 — 아래 라벨 하나로 답합니다' ;;
+    unanswered) printf '%s' '다음 좌석 실행이 이 기록의 요지와 원문을 보여 주고 선택지를 그대로 묻습니다 — 아래 라벨 하나로 답합니다' ;;
     returned) printf '%s' '다음 좌석 실행이 되돌아온 답과 그 답을 실행하지 못한 이유를 먼저 보이고 같은 질문을 다시 묻습니다 — 아래 라벨 하나로 다시 답합니다' ;;
     seat-apply) printf '%s' '다음 좌석 실행이 적용 미리보기의 차이를 보인 뒤 이 기록의 선택지로 묻습니다 — 아래 라벨 하나로 답합니다. 같은 세그먼트의 앞선 사람 답이 덮으면 좌석이 그 답을 이어받아 답합니다' ;;
-    attach) printf '다음 좌석 실행이 이 기록의 질문 문면과 선택지를 그대로 묻습니다 — 라벨 하나로 답하되, `%s` 은 질문 문면이 말하는 내용을 첨부로 함께 내야 닫힙니다' "$2" ;;
+    attach) printf '다음 좌석 실행이 이 기록의 요지와 원문을 보여 주고 선택지를 그대로 묻습니다 — 라벨 하나로 답하되, `%s` 은 질문 문면이 말하는 내용을 첨부로 함께 내야 닫힙니다' "$2" ;;
     visual) printf '%s' '캔버스를 봐야 답하는 결정입니다 — 이 보고의 「시각 승인 대기」 절이 적은 캔버스를 연 뒤 그 절이 적은 대로 다음 좌석 실행의 질문에 라벨 하나로 답합니다' ;;
   esac
 }
@@ -199,6 +199,21 @@ wd_indent_rest() {
   sed '2,$s/^/  /'
 }
 
+wd_halt_gist() {
+  # wd_halt_gist <record> — the `요지:` line: the question the seat's render
+  # helper beside this file puts in the dialog for the record. Nothing when
+  # the helper is absent (a copy pinned before it existed), exits non-zero, or
+  # chose the folded question itself, which the `질문:` line already shows.
+  local out src
+  [ -f "$WD_SELF_DIR/halt-question.sh" ] || return 0
+  out=$(bash "$WD_SELF_DIR/halt-question.sh" render --record "$1" 2>/dev/null) || return 0
+  src=$(printf '%s' "$out" | jq -r '.source' 2>/dev/null)
+  case "$src" in
+    요지|대체) printf '요지: %s\n' "$(printf '%s' "$out" | jq -r '.question')" ;;
+  esac
+  return 0
+}
+
 # ---------------------------------------------------------------------------
 # Inside the sourced gate.
 # ---------------------------------------------------------------------------
@@ -320,7 +335,8 @@ wd_one_halt() {
   skill=$(sed -n 's/^\*\*스킬\*\*: //p' "$rec" | sed -n '1p' | sed 's/[[:space:]]*$//')
   labels=$(wd_labels_of "$opts")
   printf '[정지 기록 %s] 스킬 %s · 스텝 %s\n' "$rel" "${skill:-미기재}" "${step:-미기재}"
-  printf '질문: %s\n' "$(sed -n 's/^\*\*질문 문면\*\*: //p' "$rec" | sed -n '1p')" | wd_indent_rest
+  wd_halt_gist "$rec"
+  printf '질문: %s\n' "$(gate_halt_record_question "$rec")" | wd_indent_rest
   printf '형식: %s\n' "$WD_FORM_MENU"
   case "$step" in
     'Step 1 CFI-U3 BT-STOP — 미결 결정'*) wd_has_label "$labels" '재수렴' && attach='재수렴' ;;
