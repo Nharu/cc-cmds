@@ -1,0 +1,1 @@
+- an untagged fixture rule

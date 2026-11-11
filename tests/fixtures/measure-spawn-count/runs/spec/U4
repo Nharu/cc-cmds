@@ -1,0 +1,24 @@
+env	CC_CMDS_NOTIFY_PATH_DISABLE_PREPEND	1
+env	CC_CMDS_ATTENTION_ROOT	@ROOT@/attention-absent
+env	CC_CMDS_DASHBOARD	off
+env	FLEET_PACE_ROOT	@ROOT@/pace
+env	XDG_STATE_HOME	@ROOT@/state
+env	XDG_CONFIG_HOME	@ROOT@/config
+env	TMUX	@UNSET@
+env	TMUX_PANE	@UNSET@
+env	CLAUDE_CODE_SESSION_ID	@UNSET@
+env	GH_HOST	invalid.invalid
+env	GH_TOKEN
+fixture	copy	quiet .
+fixture	chain	ledger.md R1
+mtime	ledger.md	-600
+mtime	R1/.feed.readmark	-5
+argv	main	@ORCH@/feed.sh
+argv	main	--run-dir
+argv	main	@ROOT@/R1
+argv	main	--ledger
+argv	main	@ROOT@/ledger.md
+argv	main	--interval
+argv	main	1
+stop	stub-count	sleep 4
+stop	rewrite	R1/watch.mode

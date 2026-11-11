@@ -339,7 +339,7 @@ esac
 # Spelling the set out means a suite added to this tree that calls the gate
 # family has to be added here as well. That edit is the point rather than a cost:
 # it is the one moment somebody looks at whether the new suite kills the channel.
-_selected_want="test-attention-funnel.sh test-fleet.sh test-gate-chain-equiv.sh test-gate-oracle.sh test-gate.sh test-kickoff-defaults.sh test-kickoff-hook-probe.sh test-liveness-agreement.sh test-local-bundle.sh test-lost-dispatch.sh test-measure-test-share.sh test-meta-invariants.sh test-orchestrator-pretool-hook.sh test-reader-model-pair-audit.sh test-rekick.sh test-repair.sh test-run-issue-filing.sh test-run.sh test-snapshot.sh test-solo-audit-experiment.sh test-stage-supervisor.sh test-suite-isolation.sh test-tree.sh test-visual-check.sh test-waiting-decisions.sh"
+_selected_want="test-attention-funnel.sh test-fleet.sh test-gate-chain-equiv.sh test-gate-oracle.sh test-gate.sh test-kickoff-defaults.sh test-kickoff-hook-probe.sh test-liveness-agreement.sh test-local-bundle.sh test-lost-dispatch.sh test-measure-test-share.sh test-meta-invariants.sh test-orchestrator-pretool-hook.sh test-reader-model-pair-audit.sh test-rekick.sh test-repair.sh test-run-issue-filing.sh test-run.sh test-slots.sh test-snapshot.sh test-solo-audit-experiment.sh test-stage-supervisor.sh test-suite-isolation.sh test-tree.sh test-visual-check.sh test-waiting-decisions.sh"
 _selected_got=$(printf '%s\n' $_selected_names | sort | tr '\n' ' ' \
                   | sed -e 's/  */ /g' -e 's/^ //' -e 's/ $//')
 check "누출 술어가 고르는 스위트 집합이 그대로다" "$_selected_got" "$_selected_want"
@@ -1718,6 +1718,44 @@ for pair in "리드:$AP_ROUTER" "교대:$RS_CORPUS"; do
   check "$who 사본에 계획 순서 거부를 새 런으로 보내던 옛 문장이 없다" \
     "$(mo_count "$(cat "$file")" "$mo_old")" "0"
 done
+# The dispatch-site comparison of the declared set is consumed by both router
+# copies in the same words: the first implementation dispatch, the three places
+# its exit 3 is read, the byte-for-byte copy of `선언 파일`, the rows that take
+# no set after a declaration-planned row, and the re-attachment's refusal. The
+# sentences are read outside fenced blocks, so a copy that only quotes them in
+# an example does not pass. The template's `'선언 파일 집합=<CSV>'` argument
+# stays: a run without a declaration still passes the set on its planning row.
+unfenced() { awk '/^```/ { f = !f; next } !f' "$1"; }
+dx_first='**A segment'"'"'s first implementation dispatch uses the form 「Re-dispatching the implementation after review findings」 shows, with `사이클 1` and without `· 수정 대상: …`**, and its `· 선언 파일:` value is the segment'"'"'s `segments[]` element'"'"'s `선언 파일` byte for byte.'
+dx_refuse='**An exit 3 whose refusal text names 「파견 자리 대조」 is the dispatch-site comparison, on any implementation dispatch** — the first one, the `구현` branch or the re-dispatch after review findings: write a segment `park` row and a `스코프=cone` block with `'"'"'사유=구현 재파견 거절'"'"'` and the refusal text in `근거`, and dispatch its implementation no more.'
+dx_copy='**`· 선언 파일: <files>` is the segment'"'"'s `segments[]` element'"'"'s `선언 파일`, copied byte for byte**'
+dx_fromdecl='**A segment planned with `--from-declaration` takes no `선언 파일 집합` on any later row either.**'
+dx_resume='**A `--resume` act'"'"'s exit 3 whose refusal text names 「파견 자리 대조」** is handled as the `구현` branch handles a refused implementation'
+check "게이트가 파견 자리 대조 거절 문면을 낸다" \
+  "$( [ "$(mo_count "$(cat "$GATE")" '파견 자리 대조 — ')" -ge 1 ] && printf 있음 || printf 없음)" "있음"
+for pair in "리드:$AP_ROUTER" "교대:$RS_CORPUS"; do
+  who=${pair%%:*}; file=${pair#*:}
+  body=$(unfenced "$file")
+  check "$who 사본에 첫 구현 파견의 형식 문장이 한 번 실린다" "$(mo_count "$body" "$dx_first")" "1"
+  check "$who 사본에 파견 자리 대조 거절 문장이 세 자리에 실린다" "$(mo_count "$body" "$dx_refuse")" "3"
+  check "$who 사본에 선언 파일 값을 바이트 그대로 옮긴다는 문장이 한 번 실린다" "$(mo_count "$body" "$dx_copy")" "1"
+  check "$who 사본에 선언 계획 세그먼트의 뒤 행은 집합을 넘기지 않는다는 문장이 한 번 실린다" "$(mo_count "$body" "$dx_fromdecl")" "1"
+  check "$who 사본에 재부착 행위의 대조 거절 문장이 한 번 실린다" "$(mo_count "$body" "$dx_resume")" "1"
+  check "$who 사본의 세그먼트 행위 틀이 선언 파일 집합 인자를 그대로 싣는다" \
+    "$(mo_count "$(cat "$file")" "'선언 파일 집합=<CSV>'")" "1"
+done
+check "교대 사본에 운반 행위의 대조 거절 문장이 한 번 실린다" \
+  "$(mo_count "$(unfenced "$RS_SKILL")" '**A carry act (`--carry-answer`) refused this way is not the carry table'"'"'s `3` either**: write the same two rows, and do not carry that answer again in this run.')" "1"
+# The carry table's own file says it too, in a paragraph right after the table,
+# because item 8 of the halt-answer files hands every carry exit to that table.
+ha1_file="$PLUGIN_ROOT/skills/autopilot-router-shift/references/halt-answer-1.md"
+ha1_carry='**A carry act'"'"'s exit 3 naming 「파견 자리 대조」** is not the table'"'"'s `3`: write the `구현` branch'"'"'s segment `park` row and cone block, and do not carry that answer again in this run.'
+check "운반 종료 표 파일에 운반 행위의 대조 거절 문장이 한 번 실린다" \
+  "$(mo_count "$(unfenced "$ha1_file")" "$ha1_carry")" "1"
+check "운반 대조 거절 문단은 운반 종료 표 바로 뒤에 있다" \
+  "$(awk '/^ *\| `18` \|/ { t = NR } t && NR == t + 2 { print (index($0, "**A carry act'"'"'s exit 3 naming") ? "표 뒤" : "다른 자리"); exit }' "$ha1_file")" "표 뒤"
+check "리드 사본의 계획 시점 문장이 선언 런과 선언 없는 런을 나눈다" \
+  "$(mo_count "$(unfenced "$AP_ROUTER")" '`선언 파일 집합` is likewise carried at planning time by the router — it is the sole input to "did this segment touch a file outside its declaration", which git cannot answer at all. On a `--from-declaration` run the gate carries it from the document instead, and the router passes none.')" "1"
 
 # ---------------------------------------------------------------------------
 # 6e-5. The review stage checks its own report with `report-check`

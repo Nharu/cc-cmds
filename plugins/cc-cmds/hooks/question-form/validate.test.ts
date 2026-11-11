@@ -71,6 +71,21 @@ describe('validateForm', () => {
     expect(validateForm(b, undefined)).toBeUndefined()
   })
 
+  test('기본값 표시는 통과하고, single 에서 추천과 함께 달면 거절', () => {
+    const a = good()
+    a.questions[0].options = [opt('좁게', { recommended: '기본값' }), opt('넓게')]
+    expect(validateForm(a, undefined)).toBeUndefined()
+    const b = good()
+    b.questions[0].options = [opt('좁게', { recommended: '추천' }), opt('넓게', { recommended: '기본값' })]
+    expect(field(validateForm(b, undefined))).toBe('questions[0].options')
+  })
+
+  test('열거 밖의 recommended 는 거절', () => {
+    const a = good()
+    a.questions[0].options![0] = opt('좁게', { recommended: '권장' })
+    expect(field(validateForm(a, undefined))).toBe('questions[0].options[0].recommended')
+  })
+
   test('when 이 뒤쪽 질문이나 없는 라벨을 가리키면 거절', () => {
     const a = good()
     ;(a.questions[0] as Record<string, unknown>).when = { id: 'parts', selected: ['가'] }

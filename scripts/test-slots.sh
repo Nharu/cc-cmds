@@ -1,34 +1,41 @@
 #!/usr/bin/env bash
-# Host-wide test slots for the job pool of scripts/test-tree.sh and the serial
-# bundle of scripts/check-push.sh.
+# Host-wide test slots for the job pool of scripts/test-tree.sh, the serial
+# bundle of scripts/check-push.sh, and the direct entry points (`make run/…`
+# and a narrowed scripts/test-gate.sh) that run through `--run` below.
 #
-# A SLOT IS ONE CPU'S SHARE. Every run of every worktree of this repository
-# sees the same store under the common git directory, so the runs that share
-# this host take turns through it instead of piling their jobs onto the CPUs at
-# once. A job takes as many slots as the CPU share it used the last time it ran
+# A SLOT IS ONE CPU'S SHARE. Every run of every checkout of this repository on
+# this host sees the same store under the host state root, so the runs that
+# share this host take turns through it instead of piling their jobs onto the
+# CPUs at once. A job takes as many slots as the CPU share it used the last time it ran
 # (its weight), all at once, and gives them back when it ends. The pools queue
 # in first-come order: a pool keeps the first two cells of its ticket name for
 # its whole life, so its next ticket always stands before a later pool's. Slots
 # only schedule; they never change a verdict.
 #
-# Sourced by scripts/test-tree.sh. Run, it has only its self-test:
+# Sourced by scripts/test-tree.sh and scripts/test-gate.sh. Run, it wraps one
+# command in a slot, or runs its self-test:
+#   bash scripts/test-slots.sh --run <weight key> <name> -- <command...>
 #   bash scripts/test-slots.sh --self-test
 #
 # Variables:
 #   CC_TEST_SLOTS           how many slots: a positive whole number is that
-#                           many, auto is max(4, CPUs). Unset, empty or 0
-#                           (the default) turns slots off: nothing waits,
-#                           nothing is measured and a job runs as it did
-#                           before slots. Anything else is warned about and
-#                           read as unset (off)
+#                           many, auto is max(4, CPUs), 0 is off. Unset or
+#                           empty, an unattended run (CC_PIPELINE_RUN_ID not
+#                           empty) reads TS_UNATTENDED_SLOTS below in the same
+#                           grammar and any other run is off. Off means
+#                           nothing waits, nothing is measured and a job runs
+#                           as it did before slots. Anything else is warned
+#                           about and read as off
 #   CC_TEST_SLOTS_DIR       the store; without it the private store the caller
 #                           names (a self-test whose doubles stand), else
-#                           <common git directory>/cc-cmds-test-slots
+#                           ${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/test-slots
 #   CC_TEST_SLOTS_WAIT_MAX  seconds a job waits, counted from its ticket,
-#                           before it starts without a slot (default 3600)
-#   CC_TEST_SLOT_HELD       1 in the environment of a job that holds slots; a
-#                           pool that sees it takes none, so a self-test run
-#                           inside a slot does not wait for a slot again
+#                           before it starts without a slot (default 3600 for
+#                           the pool and the serial bundle, 300 for --run)
+#   CC_TEST_SLOT_HELD       1 in the environment of a job started under slots,
+#                           held or started without one at the cap; an entry
+#                           point that sees it takes none, so a run nested in
+#                           a slot does not wait for a slot again
 #
 # The store: slot-<k>/owner (the pool, the job and every process of it with
 # its start time), queue/<first-ticket epoch, 10 digits>-<pool pid, 10
@@ -38,6 +45,19 @@
 # An entry whose processes are all gone, or whose pid now belongs to a process
 # started at another time, is anybody's to remove; a slot that has no owner
 # file yet is left alone for 30 seconds after it was first seen.
+
+# The unattended default: what an unattended run reads when CC_TEST_SLOTS is
+# unset or empty, in its grammar. Off, as measured by
+# scripts/measure-test-slots.sh on 2026-11-11 at commit 066af5c3: a host with
+# 18 CPUs, bursts of 8 and 24 concurrent mock runs, 3 repetitions each, one mock
+# run being `scripts/test-gate.sh --sections 2,3` then `scripts/check-push.sh
+# run` with sections 4,5,7,9 and no goals. Median makespan in seconds, at 8 and
+# at 24 runs: off 566 / 1274, auto 631 / 1376, 27 slots 626 / 1325. Neither on
+# form ended the burst sooner at either level, so the verdict was off.
+TS_UNATTENDED_SLOTS=0
+# The host CPU count the default was measured on, set only when the default is
+# a whole number; on a host with another count that number is read as auto.
+TS_UNATTENDED_CPUS=""
 
 TS_DIR=""
 TS_N=0
@@ -57,6 +77,9 @@ TS_WAIT_TOTAL=0
 TS_SEEN=""
 TS_JS_SIG=0
 TS_JS_CPID=""
+# The wait cap when CC_TEST_SLOTS_WAIT_MAX does not set one: 3600 for the pool
+# and the serial bundle, 300 for --run.
+TS_WAIT_DEFAULT=3600
 # A file holding the epoch the self-tests read instead of the clock; empty in
 # every real run.
 TS_CLOCK=""
@@ -143,19 +166,34 @@ ts_cpus() {
   printf '%s' "$((10#$c))"
 }
 
+# The wait cap in seconds: CC_TEST_SLOTS_WAIT_MAX when it is a whole number,
+# else $1 (3600 when not given).
 ts_wait_max() {
-  local v="${CC_TEST_SLOTS_WAIT_MAX:-}"
-  case "$v" in ''|*[!0-9]*) v=3600 ;; esac
-  [ "${#v}" -le 7 ] || v=3600
+  local v="${CC_TEST_SLOTS_WAIT_MAX:-}" d="${1:-3600}"
+  case "$v" in ''|*[!0-9]*) v="$d" ;; esac
+  [ "${#v}" -le 7 ] || v="$d"
   printf '%s' "$((10#$v))"
 }
 
-# Sets TS_N from CC_TEST_SLOTS: 0 (slots off) when it is unset, empty or 0,
-# max(4, CPUs) for auto, the number itself for a positive whole number, and 0
-# with a warning for anything else.
+# Sets TS_N from CC_TEST_SLOTS, or, when it is unset or empty in an
+# unattended run (CC_PIPELINE_RUN_ID not empty), from TS_UNATTENDED_SLOTS: 0
+# (slots off) when the value read is empty or 0, max(4, CPUs) for auto, the
+# number itself for a positive whole number, and 0 with a warning naming the
+# variable read for anything else. A whole-number default measured on a host
+# with another CPU count is read as auto.
 ts_set_count() {
-  local v="${CC_TEST_SLOTS:-}" c
+  local v="${CC_TEST_SLOTS:-}" name=CC_TEST_SLOTS c
   TS_N=0
+  if [ -z "$v" ] && [ -n "${CC_PIPELINE_RUN_ID:-}" ]; then
+    v="$TS_UNATTENDED_SLOTS"
+    name=TS_UNATTENDED_SLOTS
+    case "$v" in
+      ''|*[!0-9]*) ;;
+      *)
+        if [ -n "$TS_UNATTENDED_CPUS" ] && [ "$TS_UNATTENDED_CPUS" != "$(ts_cpus)" ]; then v=auto; fi
+        ;;
+    esac
+  fi
   case "$v" in
     '') return 0 ;;
     auto)
@@ -172,14 +210,14 @@ ts_set_count() {
       fi
       ;;
   esac
-  ts_msg "경고 — CC_TEST_SLOTS=$(printf %q "$v") 는 양의 정수·auto·0 이 아니다, 없는 것(꺼짐)으로 본다"
+  ts_msg "경고 — $name=$(printf %q "$v") 는 양의 정수·auto·0 이 아니다, 없는 것(꺼짐)으로 본다"
 }
 
 # Decides the store and the slot count for this process. $1 is the private
 # store the caller uses when a self-test double stands (empty: none). A
 # process keeps its ticket cells, its wait total and its ticket across calls.
 ts_init() {
-  local priv="${1:-}" me gd key
+  local priv="${1:-}" me key unatt=0
   ts_self_pid
   me="$TS_ME"
   if [ "$TS_POOL_PID" != "$me" ]; then
@@ -192,7 +230,8 @@ ts_init() {
     TS_SEEN=""
     TS_INIT_KEY=""
   fi
-  key="$priv|${CC_TEST_SLOTS:-}|${CC_TEST_SLOTS_DIR:-}|${CC_TEST_SLOT_HELD:-}"
+  [ -z "${CC_PIPELINE_RUN_ID:-}" ] || unatt=1
+  key="$priv|${CC_TEST_SLOTS:-}|${CC_TEST_SLOTS_DIR:-}|${CC_TEST_SLOT_HELD:-}|$unatt|${XDG_STATE_HOME:-}"
   [ "$key" != "$TS_INIT_KEY" ] || return 0
   TS_INIT_KEY="$key"
   TS_ON=0
@@ -206,8 +245,8 @@ ts_init() {
     TS_DIR="$CC_TEST_SLOTS_DIR"
   elif [ -n "$priv" ]; then
     TS_DIR="$priv"
-  else
-    gd=$(git rev-parse --git-common-dir 2>/dev/null) && gd=$(cd "$gd" 2>/dev/null && pwd) && TS_DIR="$gd/cc-cmds-test-slots"
+  elif [ -n "${XDG_STATE_HOME:-}" ] || [ -n "${HOME:-}" ]; then
+    TS_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/test-slots"
   fi
   if [ -z "$TS_DIR" ] || ! mkdir -p "$TS_DIR/queue" "$TS_DIR/weights" 2>/dev/null || [ -z "$TS_POOL_FP" ]; then
     TS_BROKEN=1
@@ -538,7 +577,7 @@ ts_slot_take() {
     ts_msg "자리 잡음 $job (${waited}초 대기)"
     return 0
   fi
-  max=$(ts_wait_max)
+  max=$(ts_wait_max "$TS_WAIT_DEFAULT")
   if [ "$waited" -ge "$max" ]; then
     ts_rm "$TS_TICKET"
     TS_TICKET=""
@@ -596,8 +635,13 @@ ts_release_mine() {
 # the shell waits for it; on TERM it sends the child TERM and waits again,
 # which is how cleanup's TERM still reaches the job. With $1 `fg` (a job shell
 # run in the foreground, as check-push's serial steps are) an INT is sent on as
-# TERM the same way; a job shell started with `&` begins with INT ignored and
-# can set no INT trap, so `bg` sets none. With a weight key in $2, the shell
+# TERM the same way, and the child is started through perl with INT back at its
+# default: bash starts a background child with INT ignored, and a command that
+# starts with INT ignored can neither trap it nor die of it, so without the
+# reset a held command would answer INT differently from the same command run
+# unheld. Without perl the child starts as `&` leaves it. A job shell started
+# with `&` begins with INT ignored and can set no INT trap, so `bg` sets none
+# and leaves its child as `&` starts it. With a weight key in $2, the shell
 # reads the children's CPU from `times` after the last wait — a file, because
 # `times` inside a command substitution reports a fresh process — and records
 # the job's weight. The job's processes are added to the owners of the slots
@@ -612,7 +656,11 @@ ts_job_shell() {
     trap 'TS_JS_SIG=1; [ -z "$TS_JS_CPID" ] || kill -TERM "$TS_JS_CPID" 2>/dev/null' INT
   fi
   t0=$(ts_now)
-  "$@" &
+  if [ "$how" = fg ] && command -v perl >/dev/null 2>&1; then
+    perl -e '$SIG{INT} = "DEFAULT"; exec { $ARGV[0] } @ARGV or exit 127;' -- "$@" &
+  else
+    "$@" &
+  fi
   TS_JS_CPID=$!
   [ "$TS_JS_SIG" = 0 ] || kill -TERM "$TS_JS_CPID" 2>/dev/null
   if [ -n "$TS_GOT" ]; then
@@ -643,6 +691,45 @@ ts_job_shell() {
   return "$rc"
 }
 
+# --- the wrapper ---------------------------------------------------------------------
+#
+# Runs "$@" after $1 (weight key) and $2 (name) under a slot: as it is when an
+# outer entry point already decided (CC_TEST_SLOT_HELD=1) or slots are off,
+# else after waiting for a slot (capped at 300 seconds unless
+# CC_TEST_SLOTS_WAIT_MAX says otherwise) with CC_TEST_SLOT_HELD=1 passed on.
+# A held command runs in the job shell, which measures its weight and runs it
+# with its standard input on /dev/null; a command started without a slot at the
+# cap runs in the foreground, unmeasured. Ends with the command's exit status.
+ts_run_wrap() {
+  local key="$1" name="$2" rc
+  shift 2
+  [ "${1:-}" = "--" ] && shift
+  if [ "$#" -eq 0 ]; then
+    printf 'test-slots: 사용법 — --run <무게 키> <이름> -- <명령…>\n' >&2
+    return 2
+  fi
+  if [ "${CC_TEST_SLOT_HELD:-}" = 1 ]; then exec "$@"; fi
+  ts_init ""
+  if [ "$TS_ON" != 1 ]; then exec "$@"; fi
+  trap 'ts_release_mine' EXIT
+  trap 'ts_release_mine; trap - EXIT; exit 130' INT
+  trap 'ts_release_mine; trap - EXIT; exit 143' TERM
+  TS_WAIT_DEFAULT=300
+  ts_slot_wait "$name" "$key"
+  CC_TEST_SLOT_HELD=1
+  export CC_TEST_SLOT_HELD
+  if [ "$TS_MODE" = held ]; then
+    ts_job_shell fg "$key" "$@"
+    rc=$?
+    ts_release_mine
+    trap - EXIT INT TERM
+    return "$rc"
+  fi
+  trap - EXIT INT TERM
+  ts_release_mine
+  exec "$@"
+}
+
 # --- self-test ---------------------------------------------------------------------
 
 ts_self_test() {
@@ -656,6 +743,7 @@ ts_self_test() {
   for v in $(compgen -e); do
     case "$v" in CC_TEST_SLOT*) unset "$v" ;; esac
   done
+  unset CC_PIPELINE_RUN_ID XDG_STATE_HOME
   T=$(mktemp -d "${TMPDIR:-/tmp}/test-slots-selftest.XXXXXX") || return 1
   T=$(cd "$T" && pwd)
   TMPDIR="$T/tmp"
@@ -715,12 +803,48 @@ EOF
   # --- the store and the count ---------------------------------------------------
   mkdir -p "$T/repo"
   (cd "$T/repo" && git init -q) > /dev/null 2>&1
-  out=$(cd "$T/repo" && unset CC_TEST_SLOTS_DIR && CC_TEST_SLOTS=auto && export CC_TEST_SLOTS && ts_init "" && printf '%s' "$TS_DIR")
-  check "저장소: 아무것도 없으면 공통 git 디렉터리 아래" "$out" "$T/repo/.git/cc-cmds-test-slots"
+  out=$(cd "$T/repo" && unset CC_TEST_SLOTS_DIR && XDG_STATE_HOME="$T/xdg" && CC_TEST_SLOTS=auto && export XDG_STATE_HOME CC_TEST_SLOTS && ts_init "" && printf '%s' "$TS_DIR")
+  check "저장소: 아무것도 없으면 XDG 상태 루트 아래 cc-cmds/test-slots" "$out" "$T/xdg/cc-cmds/test-slots"
+  out=$(cd "$T/repo" && unset CC_TEST_SLOTS_DIR XDG_STATE_HOME && HOME="$T/home" && CC_TEST_SLOTS=auto && export HOME CC_TEST_SLOTS && ts_init "" && printf '%s' "$TS_DIR")
+  check "저장소: XDG_STATE_HOME 이 없으면 ~/.local/state/cc-cmds/test-slots" "$out" "$T/home/.local/state/cc-cmds/test-slots"
+  check "저장소: 공통 git 디렉터리 아래에는 만들지 않는다" "$([ -e "$T/repo/.git/cc-cmds-test-slots" ] && echo 있음 || echo 없음)" "없음"
   out=$(cd "$T/repo" && unset CC_TEST_SLOTS_DIR && CC_TEST_SLOTS=auto && export CC_TEST_SLOTS && ts_init "$T/priv" && printf '%s' "$TS_DIR")
   check "저장소: 대역이 서면 사적 저장소" "$out" "$T/priv"
   out=$(cd "$T/repo" && CC_TEST_SLOTS_DIR="$T/named" && CC_TEST_SLOTS=auto && export CC_TEST_SLOTS_DIR CC_TEST_SLOTS && ts_init "$T/priv" && printf '%s' "$TS_DIR")
   check "저장소: CC_TEST_SLOTS_DIR 이 사적 저장소보다 앞선다" "$out" "$T/named"
+
+  # --- the unattended default ---------------------------------------------------------
+  # What the constant above gives an unattended run, derived from it so the
+  # assertions hold whatever the measurement set it to.
+  case "$TS_UNATTENDED_SLOTS" in
+    ''|0) v="0 0" ;;
+    auto) v="1 $cpus" ;;
+    *[!0-9]*) v="0 0" ;;
+    *)
+      if [ -n "$TS_UNATTENDED_CPUS" ] && [ "$TS_UNATTENDED_CPUS" != "$(ts_cpus)" ]; then v="1 $cpus"; else v="1 $((10#$TS_UNATTENDED_SLOTS))"; fi
+      ;;
+  esac
+  out=$(unset CC_TEST_SLOTS && CC_PIPELINE_RUN_ID=r && export CC_PIPELINE_RUN_ID && ts_init "$T/priv" 2>&1 && printf '|%s %s' "$TS_ON" "$TS_N")
+  check "무인: CC_TEST_SLOTS 가 없으면 TS_UNATTENDED_SLOTS 를 따른다" "$out" "|$v"
+  out=$(TS_UNATTENDED_SLOTS=auto && unset CC_TEST_SLOTS && CC_PIPELINE_RUN_ID=r && export CC_PIPELINE_RUN_ID && ts_init "$T/priv" 2>&1 && printf '|%s %s' "$TS_ON" "$TS_N")
+  check "무인: 기본값 auto 면 max(4, CPU 수)" "$out" "|1 $cpus"
+  out=$(TS_UNATTENDED_SLOTS=auto && CC_TEST_SLOTS= && export CC_TEST_SLOTS && unset CC_PIPELINE_RUN_ID && ts_init "$T/priv" 2>&1 && printf '|%s %s' "$TS_ON" "$TS_N")
+  check "대화형: 기본값이 켜져 있어도 CC_TEST_SLOTS 가 없으면 꺼짐" "$out" "|0 0"
+  out=$(TS_UNATTENDED_SLOTS=auto && CC_TEST_SLOTS=0 && CC_PIPELINE_RUN_ID=r && export CC_TEST_SLOTS CC_PIPELINE_RUN_ID && ts_init "$T/priv" 2>&1 && printf '|%s %s' "$TS_ON" "$TS_N")
+  check "무인: 명시한 CC_TEST_SLOTS=0 이 기본값보다 앞서 끈다" "$out" "|0 0"
+  out=$(TS_UNATTENDED_SLOTS=auto && CC_TEST_SLOTS=3 && CC_PIPELINE_RUN_ID=r && export CC_TEST_SLOTS CC_PIPELINE_RUN_ID && ts_init "$T/priv" 2>&1 && printf '|%s %s' "$TS_ON" "$TS_N")
+  check "무인: 명시한 CC_TEST_SLOTS=3 이 기본값보다 앞선다" "$out" "|1 3"
+  out=$(TS_UNATTENDED_SLOTS=auto && unset CC_TEST_SLOTS CC_PIPELINE_RUN_ID && TS_POOL_PID="" && ts_init "$T/priv" && a="$TS_ON" \
+    && CC_PIPELINE_RUN_ID=r && export CC_PIPELINE_RUN_ID && ts_init "$T/priv" && b="$TS_ON" \
+    && unset CC_PIPELINE_RUN_ID && ts_init "$T/priv" && printf '%s %s %s' "$a" "$b" "$TS_ON")
+  check "무인: 한 프로세스 안에서 무인 판별이 바뀌면 ts_init 이 다시 정한다" "$out" "0 1 0"
+  out=$(TS_UNATTENDED_SLOTS=7 && TS_UNATTENDED_CPUS=$(($(ts_cpus) + 1)) && unset CC_TEST_SLOTS && CC_PIPELINE_RUN_ID=r && export CC_PIPELINE_RUN_ID && ts_init "$T/priv" 2>&1 && printf '|%s %s' "$TS_ON" "$TS_N")
+  check "무인: 정수 기본값은 잰 CPU 수와 다른 호스트에서 auto 로 읽힌다" "$out" "|1 $cpus"
+  out=$(TS_UNATTENDED_SLOTS=7 && TS_UNATTENDED_CPUS=$(ts_cpus) && unset CC_TEST_SLOTS && CC_PIPELINE_RUN_ID=r && export CC_PIPELINE_RUN_ID && ts_init "$T/priv" 2>&1 && printf '|%s %s' "$TS_ON" "$TS_N")
+  check "무인: 정수 기본값은 잰 CPU 수와 같은 호스트에서 그 정수" "$out" "|1 7"
+  out=$(TS_UNATTENDED_SLOTS=abc && unset CC_TEST_SLOTS && CC_PIPELINE_RUN_ID=r && export CC_PIPELINE_RUN_ID && ts_init "$T/priv" 2>&1 && printf '|%s %s' "$TS_ON" "$TS_N")
+  has "무인: 문법 밖 기본값은 TS_UNATTENDED_SLOTS 를 말해 경고한다" "$out" "TS_UNATTENDED_SLOTS=abc 는 양의 정수·auto·0 이 아니다"
+  has "무인: 문법 밖 기본값은 꺼짐" "$out" "|0 0"
   out=$(unset CC_TEST_SLOTS && ts_init "$T/priv" 2>&1 && printf '|%s %s' "$TS_ON" "$TS_N")
   check "자리 수: 없으면 경고 없이 꺼짐" "$out" "|0 0"
   out=$(CC_TEST_SLOTS= && export CC_TEST_SLOTS && ts_init "$T/priv" 2>&1 && printf '|%s %s' "$TS_ON" "$TS_N")
@@ -947,6 +1071,8 @@ proc $pb $(ts_fp "$pb")
   wait "$w"
   rc=$?
   check "잡 셸: TERM 을 자식에게 넘기고 자식의 종료 코드로 끝난다" "$rc $(cat "$T/js.log" 2>/dev/null)" "9 got-term"
+  (ts_job_shell fg "" bash -c 'trap "exit 7" INT; kill -INT $$; sleep 1; exit 0')
+  check "잡 셸: 앞쪽 잡의 자식은 INT 를 받을 수 있게 시작한다" "$?" "7"
   ts_slot_take "목표 o" "" 2>/dev/null
   (ts_job_shell bg "" sh -c 'exit 0')
   has "잡 셸: 잡의 프로세스를 자리 owner 에 더한다" "$(cat "$T/s/$TS_GOT/owner")" "proc "
@@ -962,14 +1088,102 @@ proc $pb $(ts_fp "$pb")
   ts_release_mine
   check "정리: 자기 자리와 표를 모두 지우고 남의 표는 남긴다" "$(ts_used) $(queue_n)" "0 1"
 
+  # --- the wrapper ------------------------------------------------------------------------
+  # Each branch runs in a subshell of this one, so the clock file still stands
+  # in for the clock; the command prints what it saw of CC_TEST_SLOT_HELD and of
+  # its standard input. slots_n counts the slots and tickets left in a store.
+  slots_n() { find "$1" \( -name 'slot-*' -o -path '*/queue/[0-9]*' \) 2>/dev/null | wc -l | tr -d ' '; }
+  probe="echo \"held=\${CC_TEST_SLOT_HELD:-unset}\"; read -r l || l=none; echo \"in=\$l\""
+  unset CC_TEST_SLOTS CC_TEST_SLOTS_DIR
+  rm -rf "$T/w"
+  out=$(printf 'line\n' | (CC_TEST_SLOTS=0 CC_TEST_SLOTS_DIR="$T/w" && export CC_TEST_SLOTS CC_TEST_SLOTS_DIR && ts_run_wrap "make:w" "목표 w" -- sh -c "$probe; exit 3") 2>&1; printf '|%s' "$?")
+  check "감싸기 끔: 환경과 표준 입력을 바꾸지 않고 명령의 종료 코드로 끝난다" "$(printf '%s' "$out" | tr '\n' ' ')" "held=unset in=line |3"
+  check "감싸기 끔: 저장소를 만들지 않는다" "$([ -e "$T/w" ] && echo 있음 || echo 없음)" "없음"
+  out=$(printf 'line\n' | (CC_TEST_SLOT_HELD=1 CC_TEST_SLOTS=2 CC_TEST_SLOTS_DIR="$T/w" && export CC_TEST_SLOT_HELD CC_TEST_SLOTS CC_TEST_SLOTS_DIR && ts_run_wrap "make:w" "목표 w" -- sh -c "$probe; exit 4") 2>&1; printf '|%s' "$?")
+  check "감싸기 중첩: 바깥이 정했으면 묻지 않고 그대로 띄운다" "$(printf '%s' "$out" | tr '\n' ' ')" "held=1 in=line |4"
+  check "감싸기 중첩: 저장소를 만들지 않는다" "$([ -e "$T/w" ] && echo 있음 || echo 없음)" "없음"
+  clock 1000
+  out=$(printf 'line\n' | (CC_TEST_SLOTS=2 CC_TEST_SLOTS_DIR="$T/w" && export CC_TEST_SLOTS CC_TEST_SLOTS_DIR && ts_run_wrap "make:held" "목표 held" -- sh -c "$probe; printf '1020\n' > '$TS_CLOCK'; exit 5") 2>&1; printf '|%s' "$?")
+  has "감싸기 held: 자리를 잡는다" "$out" "test-slots: 자리 잡음 목표 held (0초 대기)"
+  has "감싸기 held: CC_TEST_SLOT_HELD=1 을 넘기고 표준 입력은 /dev/null" "$(printf '%s' "$out" | tr '\n' ' ')" "held=1 in=none "
+  has "감싸기 held: 명령의 종료 코드로 끝난다" "$out" "|5"
+  check "감싸기 held: 무게를 잰다" "$(cat "$T/w/weights/make:held" 2>/dev/null)" "1"
+  check "감싸기 held: 자리와 표를 돌려준다" "$(slots_n "$T/w")" "0"
+  clock 1000
+  rm -rf "$T/w"
+  mkdir -p "$T/w/slot-1"
+  printf 'pool %s %s\n' "$pa" "$(ts_fp "$pa")" > "$T/w/slot-1/owner"
+  out=$(printf 'line\n' | (CC_TEST_SLOTS=1 CC_TEST_SLOTS_DIR="$T/w" CC_TEST_SLOTS_WAIT_MAX=0 && export CC_TEST_SLOTS CC_TEST_SLOTS_DIR CC_TEST_SLOTS_WAIT_MAX && ts_run_wrap "make:free" "목표 free" -- sh -c "$probe; printf '1020\n' > '$TS_CLOCK'; exit 6") 2>&1; printf '|%s' "$?")
+  has "감싸기 free: 상한 경고를 남긴다" "$out" "자리 대기 0초가 상한 0초에 닿았다, 자리 없이 띄운다 — 목표 free"
+  has "감싸기 free: CC_TEST_SLOT_HELD=1 을 넘기고 표준 입력은 그대로" "$(printf '%s' "$out" | tr '\n' ' ')" "held=1 in=line "
+  has "감싸기 free: 명령의 종료 코드로 끝난다" "$out" "|6"
+  check "감싸기 free: 무게를 재지 않는다" "$([ -f "$T/w/weights/make:free" ] && echo 있음 || echo 없음)" "없음"
+  check "감싸기 free: 자기 표를 남기지 않는다" "$(slots_n "$T/w")" "1"
+  clock 1000
+  check "감싸기: 대기 상한 기본은 300초" "$(TS_WAIT_DEFAULT=300 && ts_wait_max "$TS_WAIT_DEFAULT")" "300"
+  check "감싸기: 풀과 직렬 단계의 대기 상한 기본은 3600초 그대로" "$(ts_wait_max "$TS_WAIT_DEFAULT")" "3600"
+  # A TERM while waiting gives the ticket back; the only slot stays someone
+  # else's, so the wrapper waits until the signal comes.
+  : > "$T/err"
+  (CC_TEST_SLOTS=1 CC_TEST_SLOTS_DIR="$T/w" && export CC_TEST_SLOTS CC_TEST_SLOTS_DIR && ts_run_wrap "make:wt" "목표 wt" -- sh -c 'exit 0' 2>> "$T/err") &
+  w=$!
+  for f in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+    [ "$(slots_n "$T/w")" -ge 2 ] && break
+    sleep 1
+  done
+  kill -TERM "$w" 2>/dev/null
+  wait "$w"
+  rc=$?
+  check "감싸기: 기다리는 중에 받은 TERM 은 표를 돌려주고 143 으로 끝난다" "$rc $(slots_n "$T/w")" "143 1"
+  # A TERM while the command runs reaches the command, and the slot comes back.
+  rm -rf "$T/w" "$T/child.pid" "$T/js.log"
+  (CC_TEST_SLOTS=2 CC_TEST_SLOTS_DIR="$T/w" && export CC_TEST_SLOTS CC_TEST_SLOTS_DIR && ts_run_wrap "make:rt" "목표 rt" -- sh -c "echo \$\$ > '$T/child.pid'; trap 'echo got-term >> \"$T/js.log\"; kill \$sp 2>/dev/null; exit 9' TERM; sleep 60 & sp=\$!; wait \$sp" 2>/dev/null) &
+  w=$!
+  for f in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+    [ -s "$T/child.pid" ] && break
+    sleep 1
+  done
+  sleep 1
+  kill -TERM "$w" 2>/dev/null
+  wait "$w"
+  rc=$?
+  check "감싸기: 명령이 도는 중에 받은 TERM 을 명령에 넘기고 그 종료 코드로 끝난다" "$rc $(cat "$T/js.log" 2>/dev/null)" "9 got-term"
+  check "감싸기: 명령이 도는 중에 받은 TERM 뒤에도 자리를 돌려준다" "$(slots_n "$T/w")" "0"
+  rm -rf "$T/w"
+  out=$(env -u CC_TEST_SLOTS -u CC_PIPELINE_RUN_ID bash "$self" --run "make:x" "목표 x" -- sh -c 'echo "held=${CC_TEST_SLOT_HELD:-unset}"; exit 7' 2>&1; printf '|%s' "$?")
+  check "감싸기: 스크립트로 부른 꺼진 감싸기는 명령을 그대로 띄운다" "$(printf '%s' "$out" | tr '\n' ' ')" "held=unset |7"
+  out=$(bash "$self" --run "make:x" 2>&1; printf '|%s' "$?")
+  has "감싸기: 명령이 없으면 사용법을 말하고 2 로 끝난다" "$out" "|2"
+
+  # --- the test-gate entry point -----------------------------------------------------------
+  # The suite next to this file asks for a slot once when it runs sections and
+  # never when it runs none, from its own path or from a copy kept elsewhere.
+  f="$(cd "$(dirname "$self")/.." && pwd)"
+  if [ -f "$f/scripts/test-gate.sh" ] && [ "$mode" != inner ]; then
+    rm -rf "$T/g"
+    mkdir -p "$T/g"
+    env -u CC_TEST_SLOT_HELD CC_TEST_SLOTS=1 CC_TEST_SLOTS_DIR="$T/g/store" bash "$f/scripts/test-gate.sh" --list > /dev/null 2>&1
+    env -u CC_TEST_SLOT_HELD CC_TEST_SLOTS=1 CC_TEST_SLOTS_DIR="$T/g/store" bash "$f/scripts/test-gate.sh" --sections 0a --cut-digest > /dev/null 2>&1
+    check "test-gate 진입: --list·--cut-digest 는 저장소를 건드리지 않는다" "$(ls -A "$T/g" | wc -l | tr -d ' ')" "0"
+    (cd "$f" && env -u CC_TEST_SLOT_HELD CC_TEST_SLOTS=1 CC_TEST_SLOTS_DIR="$T/g/store" bash scripts/test-gate.sh --sections 0a > /dev/null 2> "$T/g/err")
+    rc=$?
+    check "test-gate 진입: --sections 실행은 통과하고 자리를 한 번만 잡는다" "$rc $(grep -c '자리 잡음' "$T/g/err")" "0 1"
+    mkdir "$T/g/copy" && cp "$f/scripts/test-gate.sh" "$T/g/copy/test-gate.sh"
+    (cd "$f" && env -u CC_TEST_SLOT_HELD CC_TEST_SLOTS=1 CC_TEST_SLOTS_DIR="$T/g/store" CC_TEST_GATE_REPO_ROOT="$f" bash "$T/g/copy/test-gate.sh" --sections 0a > /dev/null 2> "$T/g/err2")
+    rc=$?
+    check "test-gate 진입: 저장소 밖 사본도 통과하고 자리를 한 번만 잡는다" "$rc $(grep -c '자리 잡음' "$T/g/err2")" "0 1"
+    check "test-gate 진입: 끝나면 자리와 표가 남지 않는다" "$(slots_n "$T/g/store")" "0"
+    rm -rf "$T/g"
+  fi
+
   # --- inherited variables do not change the results -----------------------------------------
   if [ "$mode" != inner ]; then
-    out=$(env CC_TEST_SLOT_HELD=1 CC_TEST_SLOTS_DIR="$T/inherited" CC_TEST_SLOTS=abc bash "$self" --self-test-inner 2>&1)
+    out=$(env CC_TEST_SLOT_HELD=1 CC_TEST_SLOTS_DIR="$T/inherited" CC_TEST_SLOTS=abc CC_PIPELINE_RUN_ID=inherited XDG_STATE_HOME="$T/inherited-state" bash "$self" --self-test-inner 2>&1)
     rc=$?
-    has "물려받음: CC_TEST_SLOT_HELD=1·CC_TEST_SLOTS_DIR 을 물려받고 띄워도 같은 결과" "$rc $out" "0 "
+    has "물려받음: CC_TEST_SLOT_HELD=1·CC_TEST_SLOTS_DIR·CC_PIPELINE_RUN_ID 를 물려받고 띄워도 같은 결과" "$rc $out" "0 "
     has "물려받음: 실패 0" "$out" " passed, 0 failed"
     hasnt "물려받음: FAIL 줄이 없다" "$out" "FAIL:"
-    check "물려받음: 물려받은 저장소를 건드리지 않는다" "$([ -e "$T/inherited" ] && echo 있음 || echo 없음)" "없음"
+    check "물려받음: 물려받은 저장소를 건드리지 않는다" "$([ -e "$T/inherited" ] || [ -e "$T/inherited-state" ] && echo 있음 || echo 없음)" "없음"
   fi
 
   kill "$pa" "$pb" "$pc" 2>/dev/null
@@ -977,7 +1191,7 @@ proc $pb $(ts_fp "$pb")
   rm -rf "$T"
   printf 'test-slots self-test: %d passed, %d failed\n' "$passed" "$failed"
   # A floor on the count, so a refactor that silently skips cases cannot pass.
-  if [ "$mode" = inner ]; then w=72; else w=76; fi
+  if [ "$mode" = inner ]; then w=105; else w=113; fi
   if [ "$passed" -lt "$w" ]; then
     printf 'test-slots self-test: 통과 수 %d 가 하한 %d 에 못 미칩니다\n' "$passed" "$w" >&2
     return 1
@@ -990,8 +1204,33 @@ proc $pb $(ts_fp "$pb")
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
   set -uo pipefail
   case "${1:-}" in
-    --self-test) ts_self_test; exit $? ;;
-    --self-test-inner) ts_self_test inner; exit $? ;;
-    *) printf 'test-slots: 사용법 — --self-test\n' >&2; exit 2 ;;
+    --self-test|--self-test-inner)
+      # The self-test runs scripts/test-gate.sh, so it turns the banner channel
+      # and the dashboard off and clears what a pipeline stage exported to it,
+      # the same way every gate-family suite does. These lines sit in this
+      # branch and nowhere else: scripts/test-gate.sh, scripts/test-tree.sh and
+      # scripts/check-push.sh source this file and then read
+      # `CC_PIPELINE_RUN_ID`, and `--run` reads it itself to choose the
+      # unattended default. They stay unindented because the meta suite's leak
+      # census matches the whole lines and asserts the clearing line sits after
+      # the direct-run guard.
+CC_CMDS_AUTOPILOT_NOTIFY=0
+export CC_CMDS_AUTOPILOT_NOTIFY
+CC_CMDS_DASHBOARD=off
+export CC_CMDS_DASHBOARD
+for v in $(compgen -e | grep '^CC_PIPELINE_' || true); do unset "$v"; done
+      if [ "$1" = --self-test-inner ]; then ts_self_test inner; else ts_self_test; fi
+      exit $?
+      ;;
+    --run)
+      if [ "$#" -lt 3 ]; then
+        printf 'test-slots: 사용법 — --run <무게 키> <이름> -- <명령…>\n' >&2
+        exit 2
+      fi
+      shift
+      ts_run_wrap "$@"
+      exit $?
+      ;;
+    *) printf 'test-slots: 사용법 — --self-test | --run <무게 키> <이름> -- <명령…>\n' >&2; exit 2 ;;
   esac
 fi

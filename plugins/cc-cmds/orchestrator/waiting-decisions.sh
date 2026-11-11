@@ -30,7 +30,7 @@
 WD_SELF_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
 # The gate functions this file calls, and no other.
-WD_GATE_FUNCTIONS='gate_pending_approvals_json gate_prompt gate_approval_sidecar_path gate_approval_sidecar_ok gate_approval_sidecar_aid gate_returned_halts_json gate_halt_auto_answer_current gate_halt_recommendation gate_halt_option_lines gate_halt_record_tail gate_shift_halt_row_of gate_rows gate_row_field gate_text_names_file cc_cone_blocked cc_halt_answered cc_halt_returned'
+WD_GATE_FUNCTIONS='gate_pending_approvals_json gate_prompt gate_approval_sidecar_path gate_approval_sidecar_ok gate_approval_sidecar_aid gate_returned_halts_json gate_halt_auto_answer_current gate_halt_recommendation gate_halt_option_lines gate_halt_record_no_options gate_halt_answer_labels gate_halt_confirm_record gate_halt_record_tail gate_halt_record_question gate_shift_halt_row_of gate_rows gate_row_field gate_text_names_file cc_cone_blocked cc_halt_answered cc_halt_returned halt_option_lines'
 
 # ---------------------------------------------------------------------------
 # Fixed sentences. Every `답하는 곳:` line comes from this one table.
@@ -40,13 +40,24 @@ wd_where() {
   case "$1" in
     judgment) printf '%s' '다음 좌석 실행(`/cc-cmds:autopilot`)이 이 질문을 그대로 묻습니다 — 아래 라벨 하나로 답합니다' ;;
     yesno) printf '%s' '다음 좌석 실행이 이 질문을 메뉴 없이 예/아니오로 묻습니다 — 예는 `승인`, 아니오는 `거부` 로 닫힙니다' ;;
-    unanswered) printf '%s' '다음 좌석 실행이 이 기록의 질문 문면과 선택지를 그대로 묻습니다 — 아래 라벨 하나로 답합니다' ;;
+    unanswered) printf '%s' '다음 좌석 실행이 이 기록의 요지와 원문을 보여 주고 선택지를 그대로 묻습니다 — 아래 라벨 하나로 답합니다' ;;
     returned) printf '%s' '다음 좌석 실행이 되돌아온 답과 그 답을 실행하지 못한 이유를 먼저 보이고 같은 질문을 다시 묻습니다 — 아래 라벨 하나로 다시 답합니다' ;;
     seat-apply) printf '%s' '다음 좌석 실행이 적용 미리보기의 차이를 보인 뒤 이 기록의 선택지로 묻습니다 — 아래 라벨 하나로 답합니다. 같은 세그먼트의 앞선 사람 답이 덮으면 좌석이 그 답을 이어받아 답합니다' ;;
-    attach) printf '다음 좌석 실행이 이 기록의 질문 문면과 선택지를 그대로 묻습니다 — 라벨 하나로 답하되, `%s` 은 질문 문면이 말하는 내용을 첨부로 함께 내야 닫힙니다' "$2" ;;
+    attach) printf '다음 좌석 실행이 이 기록의 요지와 원문을 보여 주고 선택지를 그대로 묻습니다 — 라벨 하나로 답하되, `%s` 은 질문 문면이 말하는 내용을 첨부로 함께 내야 닫힙니다' "$2" ;;
     visual) printf '%s' '캔버스를 봐야 답하는 결정입니다 — 이 보고의 「시각 승인 대기」 절이 적은 캔버스를 연 뒤 그 절이 적은 대로 다음 좌석 실행의 질문에 라벨 하나로 답합니다' ;;
+    fixed) printf '%s' '다음 좌석 실행이 이 기록의 질문 문면을 보이고 선택지 없는 기록의 고정 라벨로 묻습니다 — 아래 라벨 하나로 답합니다' ;;
   esac
 }
+
+# A record that offers no options is answered with fixed labels, each with its
+# fixed description and risk.
+WD_FIXED_RESUME_DESC='원인이 사라졌으면 세그먼트를 같은 계획으로 다시 잇습니다'
+WD_FIXED_RESUME_RISK='원인이 남아 있으면 같은 정지가 다시 납니다'
+WD_FIXED_PARK_DESC='원인이 사라질 때까지 세그먼트를 외부 보류로 park 합니다'
+WD_FIXED_PARK_RISK='원인이 사라져도 사람이 다시 답할 때까지 세그먼트가 멈춰 있습니다'
+WD_FIXED_REC='(없음) — 선택지 없는 기록은 원인이 사라졌는지를 사람이나 해소 확인이 가립니다'
+WD_FIXED_BASIS='없음 — 선택지 없는 기록은 추천을 싣지 않습니다'
+WD_CONFIRM_NOTE='해소 확인 — 이 명령의 출력이 기대 출력과 같아지면 기다리는 릴레이가 좌석을 깨워 `원인 해소 후 재개` 로 답합니다'
 
 WD_FORM_MENU='라벨 메뉴'
 WD_FORM_YESNO='예/아니오 — 예는 `승인`, 아니오는 `거부` 로 닫힙니다. `무효` 는 좌석 질문에 없습니다'
@@ -68,12 +79,9 @@ wd_field_line() {
 
 wd_option_block() {
   # wd_option_block <text> — the option lines of a `**선택지**:` block in an
-  # approval's decision aid, the same block shape a halt record uses.
-  printf '%s\n' "$1" | LC_ALL=C awk '
-    inb && /^\*\*/ { inb = 0 }
-    /^\*\*선택지\*\*:[ \t]*$/ { inb = 1; next }
-    inb && /^- `[^`]+`$/ { print; next }
-    inb && /^- `[^`]+` — / { print }'
+  # approval's decision aid, read by the one rule a halt record's options are
+  # read by (`halt_option_lines`, which takes the text on stdin).
+  printf '%s\n' "$1" | halt_option_lines
 }
 
 wd_labels_of() {
@@ -193,10 +201,38 @@ wd_fixed_options() {
   for l in $1; do printf -- '- `%s`\n' "$l"; done
 }
 
+wd_fixed_option_lines() {
+  # wd_fixed_option_lines — the fixed labels on stdin as option lines with
+  # their fixed descriptions. A function rather than an inline loop: bash 3.2
+  # cannot parse a `case` arm's `)` inside a command substitution.
+  local lab
+  while IFS= read -r lab; do
+    case "$lab" in
+      "$GATE_HALT_FIXED_RESUME") printf -- '- `%s` — %s\n' "$lab" "$WD_FIXED_RESUME_DESC" ;;
+      "$GATE_HALT_FIXED_PARK") printf -- '- `%s` — %s\n' "$lab" "$WD_FIXED_PARK_DESC" ;;
+    esac
+  done
+}
+
 wd_indent_rest() {
   # wd_indent_rest — continuation lines of a multi-line value, indented so the
   # value stays one item.
   sed '2,$s/^/  /'
+}
+
+wd_halt_gist() {
+  # wd_halt_gist <record> — the `요지:` line: the question the seat's render
+  # helper beside this file puts in the dialog for the record. Nothing when
+  # the helper is absent (a copy pinned before it existed), exits non-zero, or
+  # chose the folded question itself, which the `질문:` line already shows.
+  local out src
+  [ -f "$WD_SELF_DIR/halt-question.sh" ] || return 0
+  out=$(bash "$WD_SELF_DIR/halt-question.sh" render --record "$1" 2>/dev/null) || return 0
+  src=$(printf '%s' "$out" | jq -r '.source' 2>/dev/null)
+  case "$src" in
+    요지|대체) printf '요지: %s\n' "$(printf '%s' "$out" | jq -r '.question')" ;;
+  esac
+  return 0
 }
 
 # ---------------------------------------------------------------------------
@@ -290,13 +326,18 @@ EOF
 
 wd_one_halt() {
   # wd_one_halt <record> <relative path> <pointer texts file>
-  local rec="$1" rel="$2" ptrf="$3" tail returned=0 opts step skill labels t pointed=0 key='' srow auto=1 mark=0 hdr where attach='' ol lab desc rec_l basis risk
+  local rec="$1" rel="$2" ptrf="$3" tail returned=0 opts step skill labels t pointed=0 key='' srow auto=1 mark=0 hdr where attach='' ol lab desc rec_l basis risk fixed=0
   tail=$(gate_halt_record_tail "$rec")
   if cc_halt_answered "$LEDGER" "$tail"; then printf '@@SKIP answered\n'; exit 0; fi
   grep -qxF '<!-- /cc-pipeline-halt v1 -->' "$rec" 2>/dev/null || { printf '@@SKIP nofence\n'; exit 0; }
   cc_halt_returned "$LEDGER" "$tail" && returned=1
   opts=$(gate_halt_option_lines "$rec")
-  [ -n "$opts" ] || { printf '@@SKIP noopt\n'; exit 0; }
+  # A record without options is a decision with the fixed labels when it is
+  # well formed; one that is not is counted only.
+  if [ -z "$opts" ]; then
+    gate_halt_record_no_options "$rec" || { printf '@@SKIP noopt\n'; exit 0; }
+    fixed=1
+  fi
   step=$(sed -n 's/^\*\*스텝\*\*: //p' "$rec" | sed -n '1p' | sed 's/[[:space:]]*$//')
   case "$step" in
     'Step 3 잔여 검증 좌석 실행'*|'Step 3 게이트 도달 좌석 실행'*) printf '@@SKIP seatrun\n'; exit 0 ;;
@@ -316,11 +357,17 @@ wd_one_halt() {
   fi
   if [ -n "$key" ]; then gate_halt_auto_answer_current "$key" "$rec" && auto=0; fi
   if [ "$pointed" = "0" ] && [ "$auto" != "0" ]; then printf '@@SKIP unpointed\n'; exit 0; fi
+  # The fixed labels are the gate's, which offers only the resume on a
+  # run-scope key; each carries its fixed description.
+  if [ "$fixed" = "1" ]; then
+    opts=$(gate_halt_answer_labels "$key" "$rec" | wd_fixed_option_lines)
+  fi
   if [ "$returned" = "0" ] && [ "$auto" = "0" ] && gate_halt_recommendation "$rec"; then mark=1; fi
   skill=$(sed -n 's/^\*\*스킬\*\*: //p' "$rec" | sed -n '1p' | sed 's/[[:space:]]*$//')
   labels=$(wd_labels_of "$opts")
   printf '[정지 기록 %s] 스킬 %s · 스텝 %s\n' "$rel" "${skill:-미기재}" "${step:-미기재}"
-  printf '질문: %s\n' "$(sed -n 's/^\*\*질문 문면\*\*: //p' "$rec" | sed -n '1p')" | wd_indent_rest
+  wd_halt_gist "$rec"
+  printf '질문: %s\n' "$(gate_halt_record_question "$rec")" | wd_indent_rest
   printf '형식: %s\n' "$WD_FORM_MENU"
   case "$step" in
     'Step 1 CFI-U3 BT-STOP — 미결 결정'*) wd_has_label "$labels" '재수렴' && attach='재수렴' ;;
@@ -339,7 +386,8 @@ EOF
     시각-판정*|금지-후보*|발행-실패*|디자인-시스템-판정*) where=$(wd_where visual) ;;
     'Step 3 강제 표면 좌석 적용'*) where=$(wd_where seat-apply) ;;
     *)
-      if [ -n "$attach" ]; then where=$(wd_where attach "$attach")
+      if [ "$fixed" = "1" ]; then where=$(wd_where fixed)
+      elif [ -n "$attach" ]; then where=$(wd_where attach "$attach")
       elif [ "$returned" = "1" ]; then where=$(wd_where returned)
       else where=$(wd_where unanswered); fi ;;
   esac
@@ -350,12 +398,27 @@ EOF
       printf '추천: %s\n근거: %s\n' "$WD_SEAT_APPLY_REC" "$WD_SEAT_APPLY_BASIS"
       WD_REC_MISSING=0 ;;
     *)
-      rec_l=$(sed -n 's/^\*\*추천\*\*: //p' "$rec" | sed -n '1p' | sed 's/[[:space:]]*$//')
-      basis=$(sed -n 's/^\*\*추천 근거\*\*: //p' "$rec" | sed -n '1p' | sed 's/[[:space:]]*$//')
-      wd_render_rec "$rec_l" "$basis" "$labels" ;;
+      if [ "$fixed" = "1" ]; then
+        printf '추천: %s\n근거: %s\n' "$WD_FIXED_REC" "$WD_FIXED_BASIS"
+        WD_REC_MISSING=0
+      else
+        rec_l=$(sed -n 's/^\*\*추천\*\*: //p' "$rec" | sed -n '1p' | sed 's/[[:space:]]*$//')
+        basis=$(sed -n 's/^\*\*추천 근거\*\*: //p' "$rec" | sed -n '1p' | sed 's/[[:space:]]*$//')
+        wd_render_rec "$rec_l" "$basis" "$labels"
+      fi ;;
   esac
-  risk=$(sed -n 's/^\*\*선택지 리스크\*\*: //p' "$rec" | sed -n '1p' | sed 's/[[:space:]]*$//')
+  if [ "$fixed" = "1" ]; then
+    risk="\`$GATE_HALT_FIXED_RESUME\` — $WD_FIXED_RESUME_RISK / \`$GATE_HALT_FIXED_PARK\` — $WD_FIXED_PARK_RISK"
+    wd_has_label "$labels" "$GATE_HALT_FIXED_PARK" || risk="\`$GATE_HALT_FIXED_RESUME\` — $WD_FIXED_RESUME_RISK"
+  else
+    risk=$(sed -n 's/^\*\*선택지 리스크\*\*: //p' "$rec" | sed -n '1p' | sed 's/[[:space:]]*$//')
+  fi
   wd_render_options "$opts" "$risk" 0
+  # The confirmation command and its expected line, when the record carries
+  # them on the shape the relay reads.
+  if [ "$fixed" = "1" ] && gate_halt_confirm_record "$rec"; then
+    printf '%s\n해소 확인 명령: `%s`\n해소 기대 출력: `%s`\n' "$WD_CONFIRM_NOTE" "$GATE_CONFIRM_CMD" "$GATE_CONFIRM_WANT"
+  fi
   wd_count_line "$WD_REC_MISSING" "$WD_RISK_MISSING"
   exit 0
 }
@@ -443,7 +506,7 @@ EOF
   [ "$rundir_gone" = "0" ] || printf '런 디렉터리가 회수돼 정지 기록을 읽지 못했습니다\n'
   [ "$seatrun" = "0" ] || printf '다음 좌석 실행이 직접 실행할 정지 %s건\n' "$seatrun"
   [ "$unpointed" = "0" ] || printf '좌석이 이번 런에서 가리키지 않은 정지 기록 %s건\n' "$unpointed"
-  [ "$noopt" = "0" ] || printf '선택지가 없는 정지 기록 %s건\n' "$noopt"
+  [ "$noopt" = "0" ] || printf '선택지가 없고 형식이 어긋난 정지 기록 %s건\n' "$noopt"
   [ "$nofence" = "0" ] || printf '닫는 펜스가 없는 기록 %s건\n' "$nofence"
   return 0
 }

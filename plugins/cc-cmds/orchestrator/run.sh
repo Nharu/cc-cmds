@@ -933,7 +933,10 @@ PREAUTH_CODE_STRING_OPTS='-c -e -E --eval -p --print -r --command'
 PREAUTH_INTERPRETERS='bash sh zsh python3 node'
 # The two closed vocabularies of a new-form row.
 PREAUTH_ROW_SURFACES='읽기 워크트리쓰기 트리밖쓰기 외부상태변경'
-PREAUTH_ROW_REACHES='dev prod 배포트리거'
+PREAUTH_ROW_REACHES='dev prod 배포트리거 기기전역'
+# The reserved `짝 정리=` value of a machine-global row: the gate spells it out
+# as this run's device cleanup for the dispatch that opened the act.
+PREAUTH_DEVICE_PAIR='기기 정리'
 
 preauth_row_refusal() {
   # preauth_row_refusal <row> — print why a `사전 인가` row is refused and
@@ -980,6 +983,10 @@ EOF
     || { printf '표면 값이 어휘 밖입니다: %s — 허용: %s' "$surf" "$PREAUTH_ROW_SURFACES"; return 1; }
   case " $PREAUTH_ROW_REACHES " in *" $reach "*) [ -n "$reach" ] ;; *) false ;; esac \
     || { printf '도달 값이 어휘 밖입니다: %s — 허용: %s' "$reach" "$PREAUTH_ROW_REACHES"; return 1; }
+  if [ "$reach" = "기기전역" ] && [ "$surf" != "트리밖쓰기" ]; then
+    printf '도달=기기전역 행은 표면=트리밖쓰기 일 때만 받습니다: 표면=%s' "$surf"
+    return 1
+  fi
   [ -n "$shape" ] || { printf '새 형식 행에 형태= 가 없습니다'; return 1; }
   case "$shape" in
     *'	'*|*'  '*|' '*) printf '형태= 값에 탭이나 연속 공백이 있습니다'; return 1 ;;
@@ -1006,7 +1013,22 @@ EOF
           fi ;;
       esac ;;
   esac
-  if [ "$has_p" = "1" ]; then
+  # THE RESERVED VALUE IS RECOGNISED BEFORE THE ONE-ARGV CHECKS: it is not an
+  # argv but a word the gate spells out, and only a machine-global row has a
+  # device cleanup to spell.
+  if [ "$has_p" = "1" ] && [ "$pair" = "$PREAUTH_DEVICE_PAIR" ]; then
+    [ "$reach" = "기기전역" ] || {
+      printf '짝 정리=%s 는 도달=기기전역 행에서만 받습니다: 도달=%s' "$PREAUTH_DEVICE_PAIR" "$reach"
+      return 1
+    }
+  elif [ "$has_p" = "1" ]; then
+    # A machine-global row opens its act through the machine-global cell,
+    # which carries a cleanup ordinal only for the reserved value: a plain
+    # argv here would be accepted and then never run, so it is refused.
+    if [ "$reach" = "기기전역" ]; then
+      printf '도달=기기전역 행의 짝 정리= 는 예약 값 %s 만 받습니다 — 그 밖의 정리 명령은 게이트가 열지 않습니다: 짝 정리=%s' "$PREAUTH_DEVICE_PAIR" "$pair"
+      return 1
+    fi
     [ -n "$pair" ] || { printf '짝 정리= 가 비었습니다'; return 1; }
     case "$pair" in
       *'	'*|*'  '*|' '*) printf '짝 정리= 값에 탭이나 연속 공백이 있습니다'; return 1 ;;
@@ -3142,6 +3164,57 @@ unresolved_closure_pending() {
   '
 }
 
+# unresolved_closure_fields <doc> <heading> — one TAB-separated line
+# `<추천 답>\t<추천 근거>\t<닿는 슬라이스>` for one heading
+# `unresolved_closure_pending` printed, read from that entry's block in the same
+# section and with the same key forms. A missing recommendation reads
+# `(없음)`, a missing `**닿는 슬라이스**` reads `전체`, and a table row (whose
+# heading is its first cell) reads `(없음)\t(없음)\t전체`. A tab inside a value
+# becomes a space. Prints nothing for an empty document argument.
+unresolved_closure_fields() {
+  local doc="${1:-}" want="${2:-}"
+  [ -n "$doc" ] && [ -r "$doc" ] || return 0
+  defenced "$doc" | UCF_WANT="$want" awk '
+    function trim(s) { sub(/^[ \t\r]+/, "", s); sub(/[ \t\r]+$/, "", s); return s }
+    function field(line, key,   s, v) {
+      s = line; sub(/^- /, "", s)
+      if (index(s, "**" key "**:") == 1) return "\001" trim(substr(s, length(key) + 6))
+      if (index(s, "**" key ":") == 1) { v = trim(substr(s, length(key) + 4)); sub(/\*\*/, "", v); return "\001" trim(v) }
+      if (index(s, key ":") == 1) return "\001" trim(substr(s, length(key) + 2))
+      return ""
+    }
+    function flush() {
+      if (cur) { ra = a; rb = b; rc = c; found = 1 }
+      cur = 0
+    }
+    /^## / {
+      if (inr) flush()
+      inr = ($0 ~ /미해결[ \t]+이슈/)
+      if (inr) { found = 0; ra = rb = rc = "" }
+      next
+    }
+    !inr { next }
+    /^### / {
+      flush()
+      cur = (trim($0) == ENVIRON["UCF_WANT"])
+      a = b = c = ""
+      next
+    }
+    !cur { next }
+    {
+      v = field($0, "추천 답");       if (v != "" && a == "") { a = substr(v, 2); next }
+      v = field($0, "추천 근거");     if (v != "" && b == "") { b = substr(v, 2); next }
+      v = field($0, "닿는 슬라이스"); if (v != "" && c == "") { c = substr(v, 2); next }
+    }
+    END {
+      if (inr) flush()
+      if (!found) { ra = rb = rc = "" }
+      gsub(/\t/, " ", ra); gsub(/\t/, " ", rb); gsub(/\t/, " ", rc)
+      printf "%s\t%s\t%s\n", (ra == "" ? "(없음)" : ra), (rb == "" ? "(없음)" : rb), (rc == "" ? "전체" : rc)
+    }
+  '
+}
+
 # unclosed_unmet_message <pending headings> — the unmet predicate a
 # continuation names when open decisions are what block the plan. The headings
 # go in verbatim, so the stage can name each entry in its halt record.
@@ -4385,9 +4458,23 @@ failure_signature() {
 same_failure_reason() {
   # same_failure_reason <signature> <signature> — true when both are set, equal
   # in all four parts, and the cause is not `-`.
-  [ -n "$1" ] && [ "$1" = "$2" ] || return 1
+  #
+  # A MALFORMED HALT RECORD TWICE IS THE SAME FAILURE whatever the stage did in
+  # between: when both causes are the hash of the fixed clue
+  # `중단 기록 형식 결함`, only `<종류>/<종단 부류>/<원인>` is compared and the
+  # progress is left out. The driver's `same_failure_rows` and the gate's
+  # `gate_continuation_argv` both call this, so the two paths compare alike.
+  [ -n "$1" ] && [ -n "$2" ] || return 1
   local rest=${1#*/}; rest=${rest#*/}
-  [ "${rest%%/*}" != "-" ]
+  local cause=${rest%%/*} fmt a b
+  fmt=$(printf '%s\n' '중단 기록 형식 결함' | sig_sha12)
+  if [ "$cause" = "$fmt" ]; then
+    a=${1%/*}; b=${2%/*}
+    [ "$a" = "$b" ]
+    return $?
+  fi
+  [ "$1" = "$2" ] || return 1
+  [ "$cause" != "-" ]
 }
 
 row_signature() {
@@ -4395,7 +4482,17 @@ row_signature() {
   # — `실패 서명` for a row this driver writes about that dispatch: its own
   # stream, the progress of its kind, and the halt record's id as the clue of
   # a halt when the caller passes none.
+  #
+  # EVERY `stage-result` ROW THIS DRIVER WRITES ABOUT A CLASSIFIED ATTEMPT TAKES
+  # ITS SIGNATURE HERE, so this is also where the driver settles a malformed
+  # halt record: the record is moved aside (`halt_record_settle_malformed`) and
+  # the clue is the fixed `중단 기록 형식 결함`, ahead of every clue a caller
+  # passes.
   local clue="${6:-}"
+  if [ "$3" = "공허한 성공" ] && halt_record_format_clue "$1" >/dev/null; then
+    halt_record_settle_malformed "$1" >/dev/null || true
+    clue='중단 기록 형식 결함'
+  fi
   [ -n "$clue" ] || [ "$3" != "의도된 park" ] || clue="$1#$(stage_attempt_pinned "$1" 2>/dev/null || true)"
   failure_signature "$2" "$3" "$(stage_log_path "$1" 2>/dev/null || printf -)" "$(stage_progress_of "$2" "$4" "$5")" "$clue"
 }
@@ -8309,8 +8406,54 @@ audit_artifact_complete() {
 
 # 감사 키당 자동 재수렴 수. An audit's key is audited once and re-audited after
 # each of at most this many re-convergences; `audit_row_request` counts them
-# with `audit_key_reconverge_rows`, whatever wrote them.
+# with `audit_key_reconverge_rows`, whatever wrote them except a decision
+# collection's answer.
 AUDIT_SKELETAL_RECONVERGE_CAP=2
+
+audit_key_collect_reconverge_lines() {
+  # audit_key_collect_reconverge_lines <step id> <ledger> — the ledger lines,
+  # each followed by a space, of the re-convergences a person's answer to a
+  # decision-collection record opened on the key: for each record a `결정 수거`
+  # row names, the first `세그먼트=- | 스테이지=<id> | 종류=reconverge` row not
+  # still waiting to spawn after the record's first `중단 답` on the key, and
+  # every later such row up to the key's next `종류=audit` row — the attempts
+  # that carry the same re-convergence on, by `--resume` or, after a halt the
+  # person answered, in a fresh session. No other re-convergence of the key
+  # stands there: every other one follows an audit. The gate admits one such re-convergence
+  # per record and reads it by the same rule (`gate_decision_reconverge_open`,
+  # `gate_decision_reconverge_entry`). It closes the collected decisions in the
+  # document and audits nothing, so the audit's key does not wait on it.
+  local id="$1" lg="$2"
+  [ -f "$lg" ] || return 0
+  LC_ALL=C awk -v id="$id" '
+    function fieldof(s, k,   i, v) {
+      i = index(s, "| " k "=")
+      if (i == 0) return ""
+      v = substr(s, i + length("| " k "="))
+      i = index(v, " |")
+      if (i > 0) v = substr(v, 1, i - 1)
+      sub(/[ \t\r]+$/, "", v)
+      return v
+    }
+    index($0, "- `결정 수거` ") == 1 { r = fieldof($0, "중단 기록"); if (r != "") dc[r] = 1; next }
+    index($0, "- `중단 답` ") == 1 && index($0, "| 세그먼트=" id " | 중단 기록=") > 0 {
+      r = fieldof($0, "중단 기록"); if (r != "" && !(r in first)) first[r] = NR; next
+    }
+    index($0, "- `stage-result` ") == 1 && index($0, "세그먼트=- | 스테이지=" id " | 종류=reconverge ") > 0 \
+      && index($0, "| 관측=스폰 전 대기 중") == 0 { rv[++n] = NR; next }
+    index($0, "- `stage-result` ") == 1 && index($0, "세그먼트=- | 스테이지=" id " | 종류=audit ") > 0 { au[++na] = NR }
+    END {
+      for (r in first) {
+        if (!(r in dc)) continue
+        for (j = 1; j <= n; j++) if (rv[j] > first[r]) break
+        if (j > n) continue
+        stop = 0
+        for (a = 1; a <= na; a++) if (au[a] > rv[j]) { stop = au[a]; break }
+        for (m = j; m <= n; m++) if (stop == 0 || rv[m] < stop) out[rv[m]] = 1
+      }
+      for (l in out) printf "%s ", l
+    }' "$lg"
+}
 
 audit_key_reconverge_rows() {
   # audit_key_reconverge_rows <audit step id> <ledger> — the run-scope
@@ -8320,13 +8463,19 @@ audit_key_reconverge_rows() {
   # writes its skeletal re-convergence as `스테이지=S1'` under dispatch id `S2R`.
   # A re-convergence still waiting to spawn edited nothing and is left out, and
   # so is a size block before dispatch (`차단=파견 전`): no session started.
-  local id="$1" lg="$2"
+  # So is a decision collection's (`audit_key_collect_reconverge_lines`): it
+  # closes decisions the audit already let through, so no fresh audit follows
+  # it, and counting it would hold every later reader of the audit's end —
+  # segment planning first — until the run ended.
+  local id="$1" lg="$2" skip
   [ -f "$lg" ] || return 0
+  skip=" $(audit_key_collect_reconverge_lines "$id" "$lg")"
   { grep -n -F -e "세그먼트=- | 스테이지=$id | 종류=reconverge " \
                -e "세그먼트=- | 스테이지=S1' | 파견 id=S2R | 종류=reconverge " "$lg" 2>/dev/null || true; } \
     | { grep "^[0-9]*:- \`stage-result\` " || true; } \
     | { grep -vF '| 관측=스폰 전 대기 중' || true; } \
-    | { grep -vE '\| 차단=파견 전( \||$)' || true; }
+    | { grep -vE '\| 차단=파견 전( \||$)' || true; } \
+    | LC_ALL=C awk -v skip="$skip" '{ l = substr($0, 1, index($0, ":") - 1); if (index(skip, " " l " ") == 0) print }'
 }
 
 audit_row_request() {
@@ -8791,6 +8940,168 @@ halt_record_present() {
   [ "$(grep -v '^[[:space:]]*$' "$f" | tail -1)" = "<!-- /cc-pipeline-halt v1 -->" ]
 }
 
+# ---------------------------------------------------------------------------
+# THE HALT RECORD'S SHAPE, READ IN ONE PLACE. The gate sources this file, so the
+# option-line rule below is the one the gate's option check, the morning
+# report's option block and the format predicate all read; three copies of it
+# drifted apart once already.
+# ---------------------------------------------------------------------------
+halt_option_lines() {
+  # halt_option_lines — the option lines of the halt record text on stdin,
+  # verbatim: the lines of its `**선택지**:` block — opened only by a
+  # `**선택지**:` line with nothing after the colon, closed by the next line
+  # that starts with `**` or by the closing fence — that read `` - `<label>` ``
+  # alone or followed by ` — <description>`. A line of that shape outside the
+  # block (a command halt's command line, a line quoted into the question) is
+  # not an option.
+  LC_ALL=C awk '
+    $0 == "<!-- /cc-pipeline-halt v1 -->" { exit }
+    inb && /^\*\*/ { inb = 0 }
+    /^\*\*선택지\*\*:[ \t]*$/ { inb = 1; next }
+    inb && /^- `[^`]+`$/ { print; next }
+    inb && /^- `[^`]+` — / { print }
+  ' 2>/dev/null || true
+}
+
+halt_record_wellformed() {
+  # halt_record_wellformed <file> — one defect word per line on stdout, from a
+  # closed set of six, and 0 when there is none, 1 otherwise:
+  #   머리줄 없음      the first line does not start `<!-- cc-pipeline-halt v1;`
+  #   닫는 펜스 없음   the last non-empty line is not the closing fence
+  #   닫는 펜스 중복   the closing fence appears more than once
+  #   스텝 없음        no line starts `**스텝**: `
+  #   선택지 줄 밖     a `**선택지**:` line carries text after the colon that is
+  #                    not `(없음)`-led — the options were written on that line
+  #   해소 확인 문법   the two confirmation fields break their grammar, or only
+  #                    one of them is there
+  # NOTHING ELSE IS A DEFECT. An option-shaped line outside the option block is
+  # a shape the contract allows, and `**선택지**: (없음)` with option-shaped
+  # lines under it reads as a record without options. `**스킬**`, `**분류**`
+  # and `**질문 문면**` are not asked for. The confirmation fields are judged by
+  # their grammar only, not by where they stand or which record carries them.
+  #
+  # THE GRAMMAR: ``**해소 확인 명령**: `<argv>` `` — one pair of backticks
+  # around words split by single ASCII spaces, no leading or trailing space and
+  # none of `' " `` ` `` $ ; | & < > ( ) * ?` or a tab — and
+  # ``**해소 기대 출력**: `<one line>` `` with no backtick inside.
+  local f="$1" out
+  if [ ! -f "$f" ]; then
+    printf '머리줄 없음\n닫는 펜스 없음\n스텝 없음\n'
+    return 1
+  fi
+  out=$(LC_ALL=C awk -v bad="'\"\`\$;|&<>()*?" '
+    function argv_ok(v,   a, i) {
+      if (v !~ /^ `[^`]+`$/) return 0
+      a = substr(v, 3, length(v) - 3)
+      if (a ~ /^ / || a ~ / $/ || index(a, "  ") || index(a, "\t")) return 0
+      for (i = 1; i <= length(bad); i++) if (index(a, substr(bad, i, 1))) return 0
+      return 1
+    }
+    NR == 1 && index($0, "<!-- cc-pipeline-halt v1;") != 1 { hd = 1 }
+    $0 == "<!-- /cc-pipeline-halt v1 -->" { nf++ }
+    $0 !~ /^[ \t]*$/ { last = $0 }
+    index($0, "**스텝**: ") == 1 { st = 1 }
+    index($0, "**선택지**:") == 1 {
+      r = substr($0, length("**선택지**:") + 1); sub(/^[ \t]+/, "", r)
+      if (r != "" && index(r, "(없음)") != 1) ob = 1
+    }
+    index($0, "**해소 확인 명령**:") == 1 { nc++; if (!argv_ok(substr($0, length("**해소 확인 명령**:") + 1))) gb = 1 }
+    index($0, "**해소 기대 출력**:") == 1 { ne++; if (substr($0, length("**해소 기대 출력**:") + 1) !~ /^ `[^`]+`$/) gb = 1 }
+    END {
+      if (NR == 0) hd = 1
+      if (hd) print "머리줄 없음"
+      if (last != "<!-- /cc-pipeline-halt v1 -->") print "닫는 펜스 없음"
+      if (nf > 1) print "닫는 펜스 중복"
+      if (!st) print "스텝 없음"
+      if (ob) print "선택지 줄 밖"
+      if (nc + ne > 0 && (nc != 1 || ne != 1 || gb)) print "해소 확인 문법"
+    }' "$f" 2>/dev/null) || true
+  [ -n "$out" ] || return 0
+  printf '%s\n' "$out"
+  return 1
+}
+
+halt_record_malformed_of() {
+  # halt_record_malformed_of <record path> — the last file the record was moved
+  # to by `halt_record_settle_malformed` (`<path>.malformed`, then `-2`, `-3`
+  # …); 1 when there is none.
+  local p="$1" m k=2
+  [ -f "$p.malformed" ] || return 1
+  m="$p.malformed"
+  while [ -f "$p.malformed-$k" ]; do m="$p.malformed-$k"; k=$((k + 1)); done
+  printf '%s' "$m"
+}
+
+halt_record_format_clue() {
+  # halt_record_format_clue <stage> — prints the fixed clue `중단 기록 형식 결함`
+  # and returns 0 when this attempt's halt record is a non-empty file the format
+  # predicate finds a defect in, or when it is gone and this attempt's
+  # `.malformed` is there (a settler moved it, so classifying the attempt again
+  # gives the same answer). Returns 1 otherwise.
+  #
+  # ONLY ON AN ATTEMPT-SCOPED PATH. Without `<stage>.attempt` the path is the
+  # legacy unsuffixed fallback of `halt_record_path`, a record nobody can tie to
+  # this attempt, and it is not judged.
+  local stage="$1" p
+  [ -n "${RUN_DIR:-}" ] && [ -f "$RUN_DIR/$stage.attempt" ] || return 1
+  p=$(halt_record_path "$stage")
+  if [ -e "$p" ]; then
+    [ -s "$p" ] || return 1
+    ! halt_record_wellformed "$p" >/dev/null || return 1
+  else
+    halt_record_malformed_of "$p" >/dev/null || return 1
+  fi
+  printf '%s' '중단 기록 형식 결함'
+}
+
+halt_record_settle_malformed() {
+  # halt_record_settle_malformed <stage> — the move a row writer makes once it
+  # has settled an attempt whose halt record is malformed: the record goes to
+  # `<name>.md.malformed` in the same directory (`-2`, `-3` … when that name is
+  # taken; nothing is overwritten), so no reader of `halt/*.md` counts it as a
+  # stop. Prints the path it now has and returns 0; returns 1 when the attempt
+  # has no malformed record. IDEMPOTENT: when the record is gone and this
+  # attempt's `.malformed` is there, another settler already moved it, and that
+  # path is printed without moving anything. The classifier never moves: it is
+  # called inside command substitutions and must stay a pure reading.
+  local stage="$1" p dst k=2
+  halt_record_format_clue "$stage" >/dev/null || return 1
+  p=$(halt_record_path "$stage")
+  if [ ! -e "$p" ]; then
+    halt_record_malformed_of "$p"
+    return $?
+  fi
+  dst="$p.malformed"
+  while [ -e "$dst" ]; do dst="$p.malformed-$k"; k=$((k + 1)); done
+  mv -n "$p" "$dst" 2>/dev/null || true
+  [ -e "$dst" ] && [ ! -e "$p" ] || return 1
+  printf '%s' "$dst"
+}
+
+halt_record_format_message() {
+  # halt_record_format_message <moved record> — the whole message that continues
+  # a stage whose halt record was malformed, for the driver's `continue_or_park`
+  # and the gate's `gate_continuation_argv` alike. The defects are read again
+  # from the moved file, so the message names what the stage actually wrote.
+  local m="$1" defects
+  defects=$( { halt_record_wellformed "$m" || true; } | awk 'NF { printf "%s%s", (n++ ? ", " : ""), $0 }')
+  printf '%s' "이 스테이지가 쓴 중단 기록의 형식이 공유 계약 v1 과 맞지 않아 중단으로 받지 않았다 — 결함: ${defects:-판독 불가}. 그 기록은 $m 로 옮겼다. 같은 질문을 공유 계약(_common/pipeline-sidecar.md §4)의 v1 형식으로 다시 써라: 첫 줄은 머리줄, 마지막 비지 않은 줄에 닫는 펜스 한 번, \`**스텝**\` 줄, 옵션은 콜론 뒤가 빈 \`**선택지**:\` 줄 아래에 한 줄씩. 기록의 경로는 지금 \`printenv CC_PIPELINE_STAGE_ID\` 로 다시 읽은 값으로 정하고, 앞서 읽은 값을 쓰지 마라. 턴은 셋 중 하나로만 끝난다 — 지시가 지목한 산출물을 쓴다, 정지 기록을 쓴다, 판단 표지를 게이트에 낸다."
+}
+
+halt_step_is_external_wait() {
+  # halt_step_is_external_wait <halt record> — 0 when the record is a
+  # `precondition-failed` halt whose `**스텝**` starts with
+  # `Step 1 외부 선행 미충족`: the segment waits on something outside the run
+  # (another pull request's merge, another repository's release), which is not
+  # a defect of the plugin.
+  [ -f "$1" ] || return 1
+  [ "$(sed -n 's/^\*\*분류\*\*:[[:space:]]*//p' "$1" 2>/dev/null | sed -n '1s/[[:space:]]*$//p')" = "precondition-failed" ] || return 1
+  case "$(sed -n 's/^\*\*스텝\*\*: //p' "$1" 2>/dev/null | sed -n '1p')" in
+    'Step 1 외부 선행 미충족'*) return 0 ;;
+  esac
+  return 1
+}
+
 stage_session_id() {
   # The id the HARNESS assigned, read back from the stage's own stream, with the
   # derived value as the fallback. This is what makes the implementation/review
@@ -9182,6 +9493,14 @@ stage_parent_id() {
 classify_termination() {
   # classify_termination <stage> <exit-rc> <predicate-rc>
   local stage="$1" exit_rc="$2" pred_rc="$3" lx why stream
+  # A HALT RECORD THE STAGE WROTE MALFORMED is not a stop. Before the halt arm
+  # and before the predicate, as the halt axis already stands before both: a
+  # record nobody can answer is a turn that ended without its terminal, so it
+  # is `공허한 성공` and its continuation asks for the record again. The moved
+  # `.malformed` keeps the answer the same on a second reading.
+  if [ "$exit_rc" = "0" ] && halt_record_format_clue "$stage" >/dev/null; then
+    printf '공허한 성공'; return 0
+  fi
   if halt_record_present "$stage"; then printf '의도된 park'; return 0; fi
   # A stage the driver signalled from the limit-shape arm never reaches
   # `stage_collect`, so its `.rc` is the consumer's default and not an
@@ -12363,6 +12682,25 @@ segment_cycle() {
         park "$seg" cone 무효화 "게이트 park" "설계 문서 잠금 경합 — 두 세그먼트가 같은 문서를 쓰려 한다"
         return 1
       }
+      # THE DECISIONS ARE COLLECTED BEFORE A PROCESS A PLANS, by the gate's own
+      # collection (`gate_decision_collect`), so this traversal parks the same
+      # segments a routed dispatch is refused for and goes on with the others.
+      if [ -n "${DOC:-}" ] && ! segment_process_b "$seg"; then
+        local dcl dcrc dch dcr
+        dcl=$(run_gate_call gate_decision_collect_holds "$DOC" 2>/dev/null) || dcl=""
+        dcrc=$(printf '%s' "$dcl" | cut -f1)
+        dch=$(printf '%s' "$dcl" | cut -f2)
+        dcr=$(printf '%s' "$dcl" | cut -f3)
+        if [ "${dcrc:-1}" != "0" ]; then
+          park "$seg" act 막힘 "게이트 park" "결정 수거 실패 — 설계 문서의 구현 전 결정을 수거하지 못했다"
+          return 1
+        fi
+        case " $dch " in
+          *" $seg "*|*" 전체 "*)
+            park "$seg" act 막힘 "게이트 park" "결정 수거 보류 — 기록 $dcr 에 대한 사람의 답과 재수렴을 기다린다"
+            return 1 ;;
+        esac
+      fi
       # THIS RELAY BELONGS TO THE FIXED-GRAPH TRAVERSAL, and it is not the only
       # consumer of an answered judgment. A run driven by the router never
       # enters this loop at all; there the live consumer is the snapshot's
@@ -13120,6 +13458,11 @@ continue_or_park() {
     fi
     sess=$(stage_session_id_strict "$sid")
     turns=$(stream_last_num_turns "$(stage_log_path "$sid")")
+    # A MALFORMED HALT RECORD is what this attempt left unmet when it left one:
+    # the moved record's path, which every message and reason below carries
+    # instead of the kind's unmet predicate, so a person can find the original.
+    local fmt=""
+    fmt=$(halt_record_settle_malformed "$sid" 2>/dev/null || true)
     if [ -z "$sess" ] || ! transcript_of_session "$sess" "$sid" >/dev/null || [ "${turns:-0}" = "0" ]; then
       # The base-defect shape: nothing to resume into. One fresh process, then
       # a park under its own reason.
@@ -13127,7 +13470,9 @@ continue_or_park() {
       STAGE_RESUME=""
       CONTINUE_MISSING=""
       CONTINUE_UNCLOSED=""
-      CC_SPAWN_EVENT=hollow-retry continue_attempt "$sid.retry" "$jkey" "$rseg" "$rkind" "$cwd" "$retry_prompt" "$alias" -- "$@"
+      local rprompt="$retry_prompt"
+      [ -z "$fmt" ] || rprompt="$retry_prompt"$'\n\n'"$(halt_record_format_message "$fmt")"
+      CC_SPAWN_EVENT=hollow-retry continue_attempt "$sid.retry" "$jkey" "$rseg" "$rkind" "$cwd" "$rprompt" "$alias" -- "$@"
       case "$CONTINUE_CLASS" in
         '정상 완료') return 0 ;;
         '의도된 park') return 1 ;;
@@ -13142,11 +13487,11 @@ continue_or_park() {
     # stops as it does at the cap, with the reason and the signature named.
     local fsig
     if fsig=$(same_failure_rows "| 파견 id=$sid |"); then
-      CONTINUE_PARK_REASON="계속 소진 — 같은 실패 사유: 직전 시도와 실패 서명이 같다 ($fsig)"
+      CONTINUE_PARK_REASON="계속 소진 — 같은 실패 사유: 직전 시도와 실패 서명이 같다 ($fsig)${fmt:+ · 중단 기록 형식 결함 — $fmt}"
       return 1
     fi
     if [ "$(continue_count "$sid")" -ge "$CONTINUE_MAX" ]; then
-      CONTINUE_PARK_REASON="계속 소진 — 같은 세션을 계속 메시지로 ${CONTINUE_MAX}회 재개했으나 산출물이 없다"
+      CONTINUE_PARK_REASON="계속 소진 — 같은 세션을 계속 메시지로 ${CONTINUE_MAX}회 재개했으나 산출물이 없다${fmt:+ · 중단 기록 형식 결함 — $fmt}"
       return 1
     fi
     n=$(continue_spend "$sid")
@@ -13154,7 +13499,9 @@ continue_or_park() {
     STAGE_RESUME="$sess"
     CONTINUE_MISSING=""
     CONTINUE_UNCLOSED=""
-    STAGE_RESUME_DISPATCH=$retry_prompt CC_SPAWN_EVENT=resume continue_attempt "$sid" "$jkey" "$rseg" "$rkind" "$cwd" "$(continue_message "$unmet")" "$alias" -- "$@"
+    local cmsg
+    if [ -n "$fmt" ]; then cmsg=$(halt_record_format_message "$fmt"); else cmsg=$(continue_message "$unmet"); fi
+    STAGE_RESUME_DISPATCH=$retry_prompt CC_SPAWN_EVENT=resume continue_attempt "$sid" "$jkey" "$rseg" "$rkind" "$cwd" "$cmsg" "$alias" -- "$@"
     # The next message says what THIS attempt left unmet: the open decisions
     # when those block the plan, the residual headings when those are what is
     # missing, otherwise the caller's own text.
@@ -15390,8 +15737,15 @@ run_end_record() {
     # record and a missing field all stay `해당없음`.
     p=$(halt_record_path "$RUN_END_HALT_STAGE")
     cls=$(sed -n 's/^\*\*분류\*\*:[[:space:]]*//p' "$p" 2>/dev/null | sed -n '1s/[[:space:]]*$//p')
+    # A stage that waits on a precondition outside the run — another pull
+    # request's merge, another repository's release — stopped on the world,
+    # not on a defect of this plugin, and its end is not counted as one.
     case "$cls" in
-      tool-unavailable|precondition-failed)
+      precondition-failed)
+        if halt_step_is_external_wait "$p"; then cause=외부대기
+        else cause=결함; fp="$(stage_kind_of "$RUN_END_HALT_STAGE")/$RUN_END_HALT_STAGE/$(run_plugin_pin_id)"
+        fi ;;
+      tool-unavailable)
         cause=결함
         fp="$(stage_kind_of "$RUN_END_HALT_STAGE")/$RUN_END_HALT_STAGE/$(run_plugin_pin_id)" ;;
       gate-unanswerable) cause=판단정지 ;;

@@ -691,6 +691,59 @@ else
   st_case "B:W1#10 은 B:W1#1 을 이름 대지 않는다" "도는중"
   if [ -n "$ag_host_saved" ]; then ORCH_HOST_OS=$ag_host_saved; else unset ORCH_HOST_OS; fi
 
+  # A RELAY WAITING ON A CONFIRMATION RUNS NO STAGE AND GROWS NO LEDGER, so
+  # every case below sits past the abandon threshold: a port that skips the
+  # relay answers 버려짐 where the shell answers 도는중. The no-clock case has
+  # no heartbeat and no ledger, so the server path's post-hoc 버려짐 override is
+  # crossed too. The stopped, the dead and the overdue relay are the controls.
+  ag_relay() {
+    # ag_relay <refreshed age> <stages> [fingerprint override] — a relay record
+    # held by a live process, in the gate's line order.
+    local pid fp now
+    sleep 120 &
+    pid=$!
+    FX_PIDS="${FX_PIDS:-}$pid "
+    fp=$(LC_ALL=C ps -o lstart= -p "$pid" 2>/dev/null | sed 's/[[:space:]]\{1,\}/ /g;s/^ //;s/ $//')
+    [ -z "${3:-}" ] || fp=$3
+    now=$(date -u +%s)
+    printf '%s\n%s\nrefreshed=%s\nstarted=%s\nstages=%s\nci=-\nreset=-\ndefer=\nresume=\n' \
+      "$pid" "$fp" "$((now - $1))" "$((now - 4000))" "$2" > "$FX_RUN_DIR/relay.live"
+  }
+  fx_mkrun st-relay-live; fx_segment S1 실행중; fx_heartbeat 0 7200
+  ag_relay 5 -
+  st_case "신선한 릴레이" "도는중"
+  fx_mkrun st-relay-stale; fx_segment S1 실행중; fx_heartbeat 0 7200
+  ag_relay 1000 -
+  st_case "갱신이 멈춘 릴레이는 유효하지 않다" "버려짐"
+  fx_mkrun st-relay-dead; fx_segment S1 실행중; fx_heartbeat 0 7200
+  ag_relay 5 - "Mon Jan  1 00:00:00 2001"
+  st_case "지문이 어긋난 릴레이는 유효하지 않다" "버려짐"
+  fx_mkrun st-relay-unseen; fx_segment S1 실행중; fx_heartbeat 0 7200
+  ag_relay 5 S9
+  st_case "아직 보지 못한 깨움 조건은 기한을 넘지 않았다" "도는중"
+  fx_mkrun st-relay-overdue; fx_segment S1 실행중; fx_heartbeat 0 7200
+  ag_relay 5 S9
+  printf '%s\tst:S9\t%s\n' "$(sed -n 's/^started=//p' "$FX_RUN_DIR/relay.live")" \
+    "$(( $(date -u +%s) - 1000 ))" > "$FX_RUN_DIR/watch.relay-seen"
+  st_case "후속 없이 오래 선 깨움 조건이 있으면 유효하지 않다" "버려짐"
+  fx_mkrun st-relay-noclock; fx_segment S1 실행중; ag_relay 5 -
+  rm -f "$FX_LEDGER"
+  st_case "시계가 없어도 유효한 릴레이는 덮어쓰기를 지난다" "도는중"
+
+  # THE WATCHER KEEPS ITS OWN DEFAULTS for the two relay thresholds, and the
+  # shell and the port read liveness.sh's declarations. Read off the watcher's
+  # default assignment line, never sourced or run.
+  for _rv in SILENCE:CC_RELAY_SILENCE_SECONDS AFTER_STAGE:CC_RELAY_AFTER_STAGE_SECONDS; do
+    _wn=${_rv%%:*}; _ln=${_rv#*:}
+    _wv=$(grep -E '^RUN_DIR=""; ' "$WATCH" | sed -n -E "s/.*[; ]${_wn}=([0-9]+).*/\\1/p" | sed -n '1p')
+    _lv=$(sed -n -E "s/^${_ln}=([0-9]+)\$/\\1/p" "$LIVENESS")
+    if [ -n "$_wv" ] && [ "$_wv" = "$_lv" ]; then
+      ok "워처의 $_wn 기본값이 liveness.sh 의 $_ln 과 같다 ($_wv)"
+    else
+      bad "릴레이 임계 동기" "워처 $_wn='$_wv' · liveness.sh $_ln='$_lv'"
+    fi
+  done
+
   # THE BLOCKED FOLD'S INPUT SHAPES. A design step has no segment row, so a cone
   # row anchored on one holds the whole run; a later attempt of the same key is
   # what releases it, and an equal attempt is not. A `스코프=run` quoted inside

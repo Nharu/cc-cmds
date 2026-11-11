@@ -590,6 +590,47 @@ row '중단 답' '세그먼트=f1' "중단 기록=$RD/halt/f1#1.md" '선택지=�
 row segment 'id=f1' '상태=park'
 row '중단 답' '세그먼트=f1' "중단 기록=$RD/halt/f1#1.md" '선택지=재시도' '답한 주체=사람'
 check "external-hold: a person's answer to the record releases it" "$(pred external-hold "$LG" f1; echo "rc=$?")" "rc=1"
+
+# A record that offers no options is answered with one of two fixed labels.
+# `세그먼트 park` is routed `원인-보류` and holds the segment as `외부-보류`
+# does; the seat's `원인 해소 후 재개`, admitted by a matching confirmation,
+# releases it.
+newcase
+row '중단 답' '세그먼트=g1' "중단 기록=$RD/halt/g1#1.md" '선택지=세그먼트 park' '답한 주체=사람' '라우팅=원인-보류'
+check "external-hold: a 원인-보류 answer alone holds nothing" "$(pred external-hold "$LG" g1; echo "rc=$?")" "rc=1"
+row segment 'id=g1' '상태=park'
+check "external-hold: the park after a 원인-보류 answer holds" "$(pred external-hold "$LG" g1 >/dev/null; echo "rc=$?")" "rc=0"
+row '중단 답' '세그먼트=g1' "중단 기록=$RD/halt/g1#2.md" '선택지=원인 해소 후 재개' '답한 주체=좌석' '근거 종류=해소 확인' '해소 확인=일치'
+check "external-hold: a confirmed answer to another record does not release it" "$(pred external-hold "$LG" g1 >/dev/null; echo "rc=$?")" "rc=0"
+row '중단 답' '세그먼트=g1' "중단 기록=$RD/halt/g1#1.md" '선택지=원인 해소 후 재개' '답한 주체=좌석' '근거 종류=해소 확인' '해소 확인=일치'
+check "external-hold: the seat's confirmed answer to the record releases it" "$(pred external-hold "$LG" g1; echo "rc=$?")" "rc=1"
+newcase
+row '중단 답' '세그먼트=g2' "중단 기록=$RD/halt/g2#1.md" '선택지=재시도' '답한 주체=사람' '라우팅=재부착'
+row segment 'id=g2' '상태=park'
+check "external-hold: another route's park holds nothing" "$(pred external-hold "$LG" g2; echo "rc=$?")" "rc=1"
+
+newcase
+row segment 'id=b2' '상태=park' '적용=불명' '고칠 곳=대상 레포' '판정 주체=게이트' "판정 신호=$SIG" '대상=al'
+row '중단 답' '세그먼트=b2' "중단 기록=$RD/halt/b2#1.md" '선택지=세그먼트 park' '답한 주체=사람' '라우팅=원인-보류'
+check "target-stop: the fixed 세그먼트 park answer releases it" "$(pred target-stop "$LG" al; echo "rc=$?")" "rc=1"
+
+# The halt scan: a record with no option lines is a stop like any other, and
+# a `Step 1 외부 선행 미충족` record is the intended wait `외부 대기`.
+newcase
+printf '<!-- cc-pipeline-halt v1 -->\n**분류**: gate-unanswerable\n**스텝**: Step 3 원인 대기\n**질문 문면**: 선택지 없는 정지\n**관측 상세**: 자유 문면\n<!-- /cc-pipeline-halt v1 -->\n' > "$RD/halt/n1#1.md"
+has "halt: a record without options is a remaining stop" "$(stops)" "$(ev 'halt/gate-unanswerable/미분류' 비의도 - '원인 셀 미결합')"
+newcase
+printf '<!-- cc-pipeline-halt v1 -->\n**분류**: precondition-failed\n**스텝**: Step 1 외부 선행 미충족 — 다른 PR 의 머지\n**해소 확인 명령**: `gh pr view 12 --json state -q .state`\n**해소 기대 출력**: `MERGED`\n<!-- /cc-pipeline-halt v1 -->\n' > "$RD/halt/x1#1.md"
+out=$(stops)
+has "halt: an external precondition is the intended wait 외부 대기" "$out" "$(ev 'halt/precondition-failed/미분류' 의도 '외부 대기')"
+hasnt "halt: an external precondition is not a defect" "$out" "비의도"
+newcase
+printf '<!-- cc-pipeline-halt v1 -->\n**분류**: precondition-failed\n**스텝**: Step 1 전제 확인 — Step 1 외부 선행 미충족 아님\n<!-- /cc-pipeline-halt v1 -->\n' > "$RD/halt/x2#1.md"
+printf '<!-- cc-pipeline-halt v1 -->\n**분류**: tool-unavailable\n**스텝**: Step 1 외부 선행 미충족\n<!-- /cc-pipeline-halt v1 -->\n' > "$RD/halt/x3#1.md"
+out=$(stops)
+has "halt: another precondition step stays a defect" "$out" "$(ev 'halt/precondition-failed/미분류' 비의도)"
+has "halt: the external step under another class stays a defect" "$out" "$(ev 'halt/tool-unavailable/미분류' 비의도)"
+hasnt "halt: neither reads as 외부 대기" "$out" "외부 대기"
 check "predicate: an unknown kind is a usage error" "$(pred nope "$LG" x; echo "rc=$?")" "rc=2"
 
 # --- vocabulary pins ----------------------------------------------------------

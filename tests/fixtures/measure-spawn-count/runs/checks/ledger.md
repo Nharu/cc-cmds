@@ -1,0 +1,5 @@
+- `run` | run-id=R1 | prev=@PREV@
+- `segment` | id=S1 | 상태=실행중 | 브랜치=seg/S1 | 워크트리=- | prev=@PREV@
+- `segment` | id=S2 | 상태=실행중 | 브랜치=seg/S2 | 워크트리=- | prev=@PREV@
+- `checks` | 세그먼트=S1 | PR=fx/repo#11 | head sha=1111111111111111111111111111111111111111 | 상태=통과 | 재실행 회차=0 | 진행 중=0 | 필수 집합=build | prev=@PREV@
+- `checks` | 세그먼트=S2 | PR=fx/repo#12 | head sha=2222222222222222222222222222222222222222 | 상태=대기 | 재실행 회차=0 | 진행 중=0 | 필수 집합=없음 | prev=@PREV@

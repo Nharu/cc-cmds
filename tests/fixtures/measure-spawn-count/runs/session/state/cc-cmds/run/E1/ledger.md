@@ -1,0 +1,1 @@
+- `segment` | id=S1 | 상태=머지됨 | 워크트리=@ROOT@/state/cc-cmds/run/E1 | prev=@PREV@

@@ -1277,6 +1277,16 @@ cc_relay_seen_at() {
     "$1/watch.relay-seen" 2>/dev/null || true
 }
 
+# THE TWO VALUES A RELAY IS JUDGED EFFECTIVE ON, declared once: `refreshed` has
+# to be younger than CC_RELAY_SILENCE_SECONDS, and no wake condition may stand
+# longer than CC_RELAY_AFTER_STAGE_SECONDS without a successor. `cc_run_state`
+# and every reader of it read these, and the dashboard's port reads them from
+# this file. The watcher keeps its own defaults with the same values
+# (`SILENCE`, `AFTER_STAGE`), and `scripts/test-liveness-agreement.sh` fails
+# when the two drift apart.
+CC_RELAY_SILENCE_SECONDS=300
+CC_RELAY_AFTER_STAGE_SECONDS=120
+
 cc_relay_is_effective() {
   # cc_relay_is_effective <run-dir> <ledger> <silence> <after-stage> — succeeds
   # when a relay is live AND doing its job: pid and fingerprint, a `refreshed`
@@ -2305,6 +2315,15 @@ cc_run_state() {
   # that one.
   live=$(cc_live_stages "$run_dir")
   live=$(( ${live:-0} + $(cc_waiting_fresh_count "$run_dir" "$ledger") ))
+  # AN EFFECTIVE RELAY IS FOLDED IN THE SAME WAY. A run whose relay waits on a
+  # halt record's confirmation runs no stage and grows no ledger for hours, and
+  # it is not abandoned while that relay refreshes `relay.live` and has no
+  # overdue wake. Judged before the idle tests, so the window between the stall
+  # and the abandon thresholds reads 도는중 too; a stopped relay (a stale
+  # `refreshed`) is not effective, and its run falls to the idle tests as before.
+  if cc_relay_is_effective "$run_dir" "$ledger" "$CC_RELAY_SILENCE_SECONDS" "$CC_RELAY_AFTER_STAGE_SECONDS"; then
+    live=$((live + 1))
+  fi
   [ "$live" -gt 0 ] 2>/dev/null && { printf '도는중'; return 0; }
 
   blocked_n=$(cc_unresolved_blocked "$ledger" | grep -c . || true)

@@ -69,7 +69,7 @@ side
 # --- 픽스처: 원장 --------------------------------------------------------------------
 : > "$LEDGER"
 row run "run-id=$RUN_ID | RUN_DIR=$RD"
-for s in S1 S2 S4 S6 S11 S12 S14 S15 S16 V1 V2; do row segment "id=$s | 상태=park"; done
+for s in S1 S2 S4 S6 S11 S12 S14 S15 S16 S17 V1 V2; do row segment "id=$s | 상태=park"; done
 row 승인 "승인 id=A-act1 | 상태=대기 | 대상=cc | 절단점=커밋 | 구속 튜플=cc/master/abcdef012345/G3 | 막는 세그먼트=S1 | 질문 문면=사전 인가 밖 행위를 수행할까요"
 row 승인 "승인 id=J-pers | 상태=대기 | 절단점=판단 | 막는 세그먼트=S2 | 판단 부류=사람-결정 | 질문 문면=S2 를 다시 파견할까요 — 대안: park"
 row 승인 "승인 id=J-closed | 상태=대기 | 절단점=판단 | 막는 세그먼트=S2 | 판단 부류=사람-결정 | 질문 문면=닫힌 질문"
@@ -81,7 +81,8 @@ row 승인 "승인 id=J-long | 상태=대기 | 절단점=판단 | 막는 세그�
 
 park() { row stage-result "세그먼트=$1 | 스테이지=$1 | 실행 버전=$2 | 종단 부류=${3:-의도된 park}"; }
 park S1 1; park S2 1; park S3 1; park S4 1; park S6 1; park S7 1; park S8 1; park S9 1; park S10 1
-park V1 1; park V2 1; park S11 3; park S12 1 완료; park S14 1; park S15 1; park S16 1
+park V1 1; park V2 1; park S11 3; park S12 1 완료; park S14 1; park S15 1; park S16 1; park S17 1; park S18 1
+park L1 1; park L2 1
 row stage-result "세그먼트=- | 스테이지=D1 | 종류=design | 실행 버전=1 | 종단 부류=의도된 park"
 row '중단 답' "중단 기록=$RD/halt/S3#1.md | 세그먼트=S3 | 선택지=계속"
 row '중단 답' "중단 기록=$RD/halt/S4#1.md | 세그먼트=S4 | 선택지=계속"
@@ -89,16 +90,17 @@ row blocked "대상=cc | 스코프=cone | 원인=막힘 | 앵커 세그먼트=S4
 row blocked "대상=cc | 스코프=cone | 원인=막힘 | 앵커 세그먼트=S11 | 사유=낡은 정지 | 근거=S11#1.md 를 사람이 봐야 한다"
 row blocked "대상=cc | 스코프=cone | 원인=막힘 | 앵커 세그먼트=S12 | 사유=덮인 정지 | 근거=S12#1.md 를 사람이 봐야 한다"
 row segment "id=S12 | 상태=실행중"
-row handoff "사유=승인 | 막힌 지점=없음"
+row blocked "대상=cc | 스코프=cone | 원인=막힘 | 앵커 세그먼트=S17 | 사유=외부 선행 | 근거=S17#1.md 를 사람이 봐야 한다"
+row handoff "사유=승인 | 막힌 지점=L1#1.md 와 L2#1.md 를 사람이 봐야 한다"
 
 # --- 픽스처: 정지 기록 --------------------------------------------------------------
 halt() {
-  # halt <file> <stage> <step> <options> <추천> <추천 근거> <리스크|-> [nofence]
+  # halt <file> <stage> <step> <options> <추천> <추천 근거> <리스크|-> [nofence|''] [질문 문면]
   local f="$RD/halt/$1"
   {
     printf '<!-- cc-pipeline-halt v1; writer=stage; reader=orchestrator; stage=%s; run=%s -->\n' "$2" "$RUN_ID"
     printf '**스킬**: implement-unattended\n**스텝**: %s\n**분류**: gate-unanswerable\n' "$3"
-    printf '**질문 문면**: %s 의 질문\n' "$1"
+    printf '**질문 문면**: %s\n' "${9:-$1 의 질문}"
     printf '**선택지**:\n'
     [ -z "$4" ] || printf '%s\n' "$4"
     [ -z "$5" ] || printf '**추천**: %s\n' "$5"
@@ -138,6 +140,24 @@ halt 'D1#1.md' 'D1#1' 'Step 2 설계' "$OPTS2" '(없음) — 사람만 안다' '
 halt 'S15#1.md' 'S15#1' 'Step 3 검사' '- `축소` — 범위 축소 후 진행합니다
 - `중단` — 멈춥니다' '`축소` — 상시 지침' '상시 지침: 축소한다' '`축소` — 범위가 줄어듭니다 / `중단` — 멈춥니다'
 halt 'S16#1.md' 'S16#1' 'Step 1 CFI-U3 BT-STOP — 미결 결정' '- `재수렴` — 첨부한 결정으로 다시 수렴합니다' '(없음) — 항목마다 사람의 결정이 필요하다' '(없음)' '`재수렴` — 표제가 맞지 않으면 같은 정지가 다시 납니다'
+# A well-formed record without options, carrying the confirmation fields: a
+# decision with the two fixed labels. One whose options sit on the `**선택지**:`
+# line itself is not well formed and is counted only.
+printf '%s\n' "<!-- cc-pipeline-halt v1; writer=stage; reader=orchestrator; stage=S17#1; run=$RUN_ID -->" \
+  '**스킬**: implement-unattended' '**스텝**: Step 1 외부 선행 미충족 — 다른 PR 의 머지' '**분류**: precondition-failed' \
+  '**질문 문면**: S17#1.md 의 질문' '**선택지**: (없음) — 원인이 사라지면 잇는다' \
+  '**해소 확인 명령**: `gh pr view 12 --json state -q .state`' '**해소 기대 출력**: `MERGED`' \
+  '**하네스 오류**: (없음)' '<!-- /cc-pipeline-halt v1 -->' > "$RD/halt/S17#1.md"
+printf '%s\n' "<!-- cc-pipeline-halt v1; writer=stage; reader=orchestrator; stage=S18#1; run=$RUN_ID -->" \
+  '**스킬**: implement-unattended' '**스텝**: Step 3 검사' '**분류**: gate-unanswerable' \
+  '**질문 문면**: S18#1.md 의 질문' '**선택지**: 계속, 중단' '<!-- /cc-pipeline-halt v1 -->' > "$RD/halt/S18#1.md"
+# 좌석 질문 렌더 도우미가 질문 칸에 요지를 넣는 긴 한 줄 기록과, 질문 문면이 여러 줄인 짧은 기록.
+LQ=$(printf '긴 정지 질문 문장입니다. %.0s' $(seq 1 30))
+LQ=${LQ% }
+halt 'L1#1.md' 'L1#1' 'Step 3 검사' "$OPTS2" '(없음) — 사람만 안다' '(없음)' '`계속` — 시간이 듭니다 / `중단` — 일이 빠집니다' '' "$LQ"
+halt 'L2#1.md' 'L2#1' 'Step 3 검사' "$OPTS2" '(없음) — 사람만 안다' '(없음)' '`계속` — 시간이 듭니다 / `중단` — 일이 빠집니다' '' '첫 줄 질문입니다.
+- 「갑」 — 추천 답: 하나
+둘째   단락입니다.'
 
 # --- 렌더 전용: 실행 전 파일 목록·sha256·수정 시각 -------------------------------------
 fileset() {
@@ -161,18 +181,34 @@ has() { printf '%s\n' "$2" | grep -cF -- "$1" || true; }
 
 # --- C4: 결정 집합 ------------------------------------------------------------------
 got=$(printf '%s\n' "$OUT" | sed -n -E 's/^\[(승인|정지 기록) ([^]]*)\].*/\2/p' | LC_ALL=C sort | tr '\n' ' ')
-want=$(printf '%s\n' A-act1 J-pers J-vis J-free B-b1 J-long 'S1#1.md' 'S2#1.md' 'S4#1.md' 'S6#1.md' 'V1#1.md' 'V2#1.md' 'S11#1.md' 'S11#3.md' 'S14#1.md' 'D1#1.md' 'S15#1.md' 'S16#1.md' \
-  | sed -E 's/^([SVD][0-9])/halt\/\1/' | LC_ALL=C sort | tr '\n' ' ')
+want=$(printf '%s\n' A-act1 J-pers J-vis J-free B-b1 J-long 'S1#1.md' 'S2#1.md' 'S4#1.md' 'S6#1.md' 'V1#1.md' 'V2#1.md' 'S11#1.md' 'S11#3.md' 'S14#1.md' 'D1#1.md' 'S15#1.md' 'S16#1.md' 'S17#1.md' 'S7#1.md' 'L1#1.md' 'L2#1.md' \
+  | sed -E 's/^([SVDL][0-9])/halt\/\1/' | LC_ALL=C sort | tr '\n' ' ')
 check "C4: 목록에 오른 결정 집합이 기대 집합과 같다" "$got" "$want"
 check "C4: 닫힌 승인은 목록에 없다" "$(has 'J-closed' "$OUT")" "0"
 check "C4: 답한 정지 기록은 목록에 없다" "$(has 'halt/S3#1.md' "$OUT")" "0"
 check "C4: .answer.md 는 결정이 아니다" "$(has 'answer.md' "$OUT")" "0"
 
 # --- C4: 칸 -------------------------------------------------------------------------
-check "C4: 머리줄의 결정 수와 미기재 계수" "$(printf '%s\n' "$OUT" | sed -n '1p')" "기다리는 결정 18건 — 추천 미기재 3건 · 리스크 미기재 5건"
+check "C4: 머리줄의 결정 수와 미기재 계수" "$(printf '%s\n' "$OUT" | sed -n '1p')" "기다리는 결정 22건 — 추천 미기재 3건 · 리스크 미기재 5건"
 for cell in '질문: ' '형식: ' '답하는 곳: ' '추천: ' '근거: '; do
-  check "C4: 결정마다 '${cell}' 줄이 하나" "$(printf '%s\n' "$OUT" | grep -c "^$cell" || true)" "18"
+  check "C4: 결정마다 '${cell}' 줄이 하나" "$(printf '%s\n' "$OUT" | grep -c "^$cell" || true)" "22"
 done
+
+# S7#1 is a well-formed record without options and without the confirmation
+# fields: the fixed labels, and no confirmation lines.
+s7=$(block '[정지 기록 halt/S7#1.md]')
+check "선택지 없는 기록: 확인 필드가 없으면 확인 줄이 없다" "$(has '해소 확인 명령: ' "$s7")" "0"
+check "선택지 없는 기록: 확인 필드가 없어도 두 고정 라벨" "$(printf '%s\n' "$s7" | grep -c -e '^- `원인 해소 후 재개` — ' -e '^- `세그먼트 park` — ' || true)" "2"
+
+s17=$(block '[정지 기록 halt/S17#1.md]')
+check "선택지 없는 기록: 고정 라벨 답하는 곳" "$(has '답하는 곳: 다음 좌석 실행이 이 기록의 질문 문면을 보이고 선택지 없는 기록의 고정 라벨로 묻습니다' "$s17")" "1"
+check "선택지 없는 기록: 두 고정 라벨이 설명과 리스크를 싣고 오른다" \
+  "$(printf '%s\n' "$s17" | grep -c -e '^- `원인 해소 후 재개` — 원인이 사라졌으면 세그먼트를 같은 계획으로 다시 잇습니다 · 리스크: 원인이 남아 있으면 같은 정지가 다시 납니다$' \
+      -e '^- `세그먼트 park` — 원인이 사라질 때까지 세그먼트를 외부 보류로 park 합니다 · 리스크: 원인이 사라져도 사람이 다시 답할 때까지 세그먼트가 멈춰 있습니다$' || true)" "2"
+check "선택지 없는 기록: 추천은 고정 (없음) 문장" "$(has '추천: (없음) — 선택지 없는 기록은 원인이 사라졌는지를 사람이나 해소 확인이 가립니다' "$s17")" "1"
+check "선택지 없는 기록: 확인 명령과 기대 출력을 보인다" \
+  "$(printf '%s\n' "$s17" | grep -c -e '^해소 확인 명령: `gh pr view 12 --json state -q .state`$' -e '^해소 기대 출력: `MERGED`$' || true)" "2"
+check "선택지 없는 기록: (없음) 줄 아래 문면은 라벨이 아니다" "$(has '원인이 사라지면 잇는다' "$s17")" "0"
 
 act=$(block '[승인 A-act1]')
 check "C4: 행위 승인 머리에 행위 줄과 절단점·등급이 붙는다" "$(has '행위 승인 · git · 대상 cc · 막는 세그먼트 S1 · 절단점 커밋 · 등급 G3' "$act")" "1"
@@ -206,7 +242,35 @@ jl=$(block '[승인 J-long]')
 check "C4: 긴 질문은 사이드카 전문이다" "$(has "질문: 승인 J-long — $LONGQ" "$jl")" "1"
 
 s1=$(block '[정지 기록 halt/S1#1.md]')
-check "C4: 새 형식 정지 기록 답하는 곳" "$(has '답하는 곳: 다음 좌석 실행이 이 기록의 질문 문면과 선택지를 그대로 묻습니다' "$s1")" "1"
+check "C4: 새 형식 정지 기록 답하는 곳" "$(has '답하는 곳: 다음 좌석 실행이 이 기록의 요지와 원문을 보여 주고 선택지를 그대로 묻습니다 — 아래 라벨 하나로 답합니다' "$s1")" "1"
+check "C4: 옛 답하는 곳 문장은 남지 않았다" "$(has '이 기록의 질문 문면과 선택지를 그대로 묻습니다' "$OUT")" "0"
+check "요지: 짧은 기록(질문 칸에 원문이 드는 기록)에는 요지 줄이 없다" "$(has '요지: ' "$s1")" "0"
+
+# --- 요지 줄과 원문 전체 질문 줄 ---------------------------------------------------------
+HQ="$ORCH/halt-question.sh"
+l1=$(block '[정지 기록 halt/L1#1.md]')
+hq1=$(bash "$HQ" render --record "$RD/halt/L1#1.md")
+check "요지: 긴 한 줄 기록의 요지 줄이 도우미의 question 과 같다" "$(printf '%s\n' "$l1" | sed -n 's/^요지: //p')" "$(printf '%s' "$hq1" | jq -r '.question')"
+check "요지: 요지 줄은 질문 줄 바로 앞" "$(printf '%s\n' "$l1" | grep -A1 '^요지: ' | sed -n '2p' | grep -c '^질문: ' || true)" "1"
+check "요지: 긴 한 줄 기록의 질문 줄은 원문 전체" "$(printf '%s\n' "$l1" | sed -n 's/^질문: //p')" "$LQ"
+l2=$(block '[정지 기록 halt/L2#1.md]')
+check "질문: 여러 줄 질문 기록의 질문 줄은 접은 원문 전체" "$(printf '%s\n' "$l2" | sed -n 's/^질문: //p')" "첫 줄 질문입니다. - 「갑」 — 추천 답: 하나 둘째 단락입니다."
+check "요지: 여러 줄이어도 질문 칸에 드는 기록에는 요지 줄이 없다" "$(has '요지: ' "$l2")" "0"
+# 도우미 본문의 원문 부분을 게이트의 접기 규칙으로 접은 값이 게이트의 질문 판독과 같다.
+gq1=$( ( CC_GATE_SOURCE_ONLY=1 . "$GATE" >/dev/null 2>&1; set +e; gate_halt_record_question "$RD/halt/L1#1.md" ) )
+hp1=$(printf '%s' "$hq1" | jq -r '.body' | awk '
+  $0 == "**질문 원문**" { on = 1; next }
+  on && (index($0, "**선택지 리스크**") == 1 || $0 == "**질문 뒤 인용 줄**" || index($0, "기록: ") == 1) { exit }
+  on { print }' | tr '\n' ' ' | sed -e 's/[[:space:]][[:space:]]*/ /g' -e 's/^ //' -e 's/ $//')
+check "요지: 도우미 본문의 원문 부분을 접은 값이 gate_halt_record_question 과 같다" "$hp1" "$gq1"
+truthy() { if [ "$2" = "1" ]; then ok "$1"; else bad "$1" "${3:-}"; fi; }
+truthy "요지: 그 비교가 빈 값끼리의 비교가 아니다" "$([ -n "$gq1" ] && [ "${#gq1}" -gt 200 ] && echo 1)" "길이 ${#gq1}"
+gq2=$( ( CC_GATE_SOURCE_ONLY=1 . "$GATE" >/dev/null 2>&1; set +e; gate_halt_record_question "$RD/halt/L2#1.md" ) )
+hp2=$(bash "$HQ" render --record "$RD/halt/L2#1.md" | jq -r '.body' | awk '
+  $0 == "**질문 원문**" { on = 1; next }
+  on && (index($0, "**선택지 리스크**") == 1 || $0 == "**질문 뒤 인용 줄**" || index($0, "기록: ") == 1) { exit }
+  on { print }' | tr '\n' ' ' | sed -e 's/[[:space:]][[:space:]]*/ /g' -e 's/^ //' -e 's/ $//')
+check "요지: 여러 줄 기록에서도 접은 원문 부분이 gate_halt_record_question 과 같다" "$hp2" "$gq2"
 check "C4: 새 형식 정지 기록의 라벨마다 리스크" "$(printf '%s\n' "$s1" | grep -c -e '^- `계속` — 다음 단계로 갑니다 · 리스크: 시간이 듭니다$' -e '^- `중단` — 세그먼트를 park 합니다 · 리스크: 일이 빠집니다$' || true)" "2"
 
 s2=$(block '[정지 기록 halt/S2#1.md]')
@@ -241,7 +305,7 @@ check "범위 축소 추천 기록에는 표지가 없다" "$(has '자동 답 �
 # --- 건수 줄 ------------------------------------------------------------------------
 check "건수: 직접 실행할 정지" "$(has '다음 좌석 실행이 직접 실행할 정지 2건' "$OUT")" "1"
 check "건수: 가리키지 않은 정지 기록" "$(has '좌석이 이번 런에서 가리키지 않은 정지 기록 3건' "$OUT")" "1"
-check "건수: 선택지 없는 기록" "$(has '선택지가 없는 정지 기록 1건' "$OUT")" "1"
+check "건수: 선택지 없고 형식이 어긋난 기록" "$(has '선택지가 없고 형식이 어긋난 정지 기록 1건' "$OUT")" "1"
 check "건수: 닫는 펜스 없는 기록" "$(has '닫는 펜스가 없는 기록 1건' "$OUT")" "1"
 
 # --- 라벨 되읽기 --------------------------------------------------------------------
@@ -271,6 +335,9 @@ OUT=$(bash "$WORK/stub/waiting-decisions.sh" report "$MANIFEST" "$LEDGER" "$RUN_
 check "실행 문맥: 한 결정이 실패해도 exit 0" "$rc" "0"
 check "실행 문맥: 실패한 결정의 칸은 읽기 실패" "$(has '질문: 미기재(읽기 실패 — 강제 실패)' "$(block '[승인 J-pers]')")" "1"
 check "실행 문맥: 나머지 결정은 렌더된다" "$(has '추천: (없음) — 사전 인가 밖 행위는 사람만 엽니다' "$(block '[승인 A-act1]')")" "1"
+# 이 사본 디렉터리에는 렌더 도우미가 없다 — 도우미 전에 고정된 런의 사본과 같다.
+check "실행 문맥: 도우미 없는 사본에서도 긴 기록이 렌더된다" "$(has '질문: 긴 정지 질문 문장입니다.' "$(block '[정지 기록 halt/L1#1.md]')")" "1"
+check "실행 문맥: 도우미 없는 사본에서는 요지 줄이 없다" "$(has '요지: ' "$OUT")" "0"
 
 # 런 디렉터리가 회수되면 그 사실 한 줄.
 mv "$RD" "$RD.gone"
