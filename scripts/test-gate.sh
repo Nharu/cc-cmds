@@ -4089,7 +4089,10 @@ pre_cone() {
   NCFG="$WORK/ncfg"; NTX="$NCFG/projects/proj"; mkdir -p "$NTX"
   frame_probe() {
     # frame_probe <세션 uuid> <기준> — open one grade-2 judgment and leave its id
-    # in `$pid`, its question in `$pq` and its row count in `$pcount`.
+    # in `$pid`, its question in `$pq` and its row count in `$pcount`. When no new
+    # judgment opens, all three are left empty: the caller's assertions then fail
+    # as FAIL lines instead of dying on an unbound name under `set -u`, and an
+    # earlier probe's values cannot satisfy them.
     local sid="$1" std="$2" prev
     prev=$(row_field "$(last_judgment_approval)" '승인 id')
     gateN act --manifest "$NM" --kind judgment --target infra --segment SD --cutpoint 커밋 \
@@ -4097,8 +4100,8 @@ pre_cone() {
           -- 등급=2 기준="$std" 근거="프레임 승인 실험"
     pid=$(row_field "$(last_judgment_approval)" '승인 id')
     if [ -z "$pid" ] || [ "$pid" = "$prev" ]; then
-      bad "프레임 픽스처" "판단 승인이 새로 열리지 않았다 ($std, rc=$rc, $msg)"
-      pid=""; return 0
+      bad "프레임 픽스처" "판단 승인이 새로 열리지 않았다 ($std, rc=${rc:-}, ${msg:-})"
+      pid=""; pq=""; pcount=""; return 0
     fi
     pq=$(row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F "승인 id=$pid " | tail -1)" '질문 문면')
     pcount=$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -cF "승인 id=$pid " || true)
