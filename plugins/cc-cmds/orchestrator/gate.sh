@@ -27585,6 +27585,31 @@ gate_segment_merged_uncovered() {
   esac
 }
 
+gate_segment_uncovered_merge_commit() {
+  # gate_segment_uncovered_merge_commit <segment> — the `머지 커밋` of the
+  # segment's last `머지됨` row: the merge a covering review names with
+  # `--merged` while `gate_segment_merged_uncovered` holds. Empty when that row
+  # carries none. The review line and the review-dispatch check of an adopted
+  # segment both read it here, so the flag the line prints is the flag the
+  # check expects.
+  { gate_rows 'segment' || true; } | gate_rows_field_eq 'id' "$1" \
+    | gate_rows_field_eq '상태' '머지됨' | tail -1 \
+    | gate_rows_field_values '머지 커밋' | awk 'NF { v = $0 } END { print v }'
+}
+
+gate_adoption_branch_review_want() {
+  # gate_adoption_branch_review_want <segment> — the `--merged`/`--judge-head`
+  # flags the review dispatch of an adopted segment must carry when the review
+  # line takes its ordinary branch form (commits ahead of the base, or a fix
+  # carried): `--merged <머지 커밋>` while a person merged the fix before a
+  # review covered it, the way `gate_review_line` adds it, and nothing
+  # otherwise. Printed in the shape the dispatch check rebuilds from the prompt.
+  local mg
+  gate_segment_merged_uncovered "$1" || return 0
+  mg=$(gate_segment_uncovered_merge_commit "$1")
+  printf -- '--merged %s' "$mg"
+}
+
 gate_post_merge_next() {
   # gate_post_merge_next <segment> — `다음` of a segment `gate_segment_post_merge`
   # holds. `사후리뷰` while no `cycle` row follows its last `머지됨` row: the
@@ -29477,8 +29502,7 @@ gate_review_line() {
   mgseg=0
   if [ "$pmseg" = 0 ] && gate_segment_merged_uncovered "$seg"; then
     mgseg=1
-    mg=$(printf '%s\n' "$rows" | gate_rows_field_eq '상태' '머지됨' | tail -1 \
-           | gate_rows_field_values '머지 커밋' | awk 'NF { v = $0 } END { print v }')
+    mg=$(gate_segment_uncovered_merge_commit "$seg")
     if [ -z "$mg" ]; then
       warn "segment $seg was merged before a review covered it, but its last 머지됨 row carries no 머지 커밋 — there is no merged pull request to name for the covering review"
       return "$GATE_EXIT_RULE"
@@ -49344,7 +49368,9 @@ gate_verb_act() {
         # rebuilt from the obligation row and the worktree and compared byte for
         # byte; with commits ahead of the base, or once a fix of its own merged
         # outside the run (`gate_adoption_unfixed` false), the line reviews the
-        # branch and carries neither `--merged` nor `--judge-head`.
+        # branch, carries no `--judge-head`, and carries `--merged` only for the
+        # covering review of a fix a person merged first
+        # (`gate_adoption_branch_review_want`).
         if gate_segment_merge_adopted "$segment"; then
           local rn_adahead rn_adorow rn_adwant rn_adgot rn_adkeys
           rn_adahead=$(gate_segment_ahead_count "$segment")
@@ -49353,7 +49379,7 @@ gate_verb_act() {
           case "$rn_adahead" in
             fixed)
               rn_adkeys='--merged --judge-head'
-              rn_adwant='' ;;
+              rn_adwant=$(gate_adoption_branch_review_want "$segment") ;;
             0)
               rn_adkeys='--base-sha --merged --judge-head'
               rn_adwant="--base-sha $(gate_row_field "$rn_adorow" '분기점') --merged $(gate_row_field "$rn_adorow" '머지 커밋') --judge-head $( { cd "$(gate_act_worktree "$alias" "$segment")" 2>/dev/null \
@@ -49363,7 +49389,7 @@ gate_verb_act() {
               exit "$GATE_EXIT_RULE" ;;
             *)
               rn_adkeys='--merged --judge-head'
-              rn_adwant='' ;;
+              rn_adwant=$(gate_adoption_branch_review_want "$segment") ;;
           esac
           rn_adgot=$(printf '%s\n' "$rn_prompt" | awk -v keys=" $rn_adkeys " '
             { for (i = 1; i <= NF; i++) if (index(keys, " " $i " ")) { o = o (o == "" ? "" : " ") $i " " (i < NF ? $(i + 1) : "") } }
