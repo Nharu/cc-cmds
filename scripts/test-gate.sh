@@ -24169,7 +24169,8 @@ gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
       --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
       -- touch "$RD3/settings/impl.json"
 check "음성 대조군: 강제 표면인 settings/ 는 여전히 거부" "$rc" "3"
-# 설계 문서 락. 문서를 고치는 스테이지가 모두 이 이름으로 `lockf` 를 잡는데 목록이
+# 설계 문서 락. 문서를 고치는 스테이지가 모두 이 이름의 잠금을 잡는데(구현 팔은
+# `lockf` 로, 감사의 조정 패스와 재수렴 패스는 `doc-tidy.py --lock` 으로) 목록이
 # 몰라서 재수렴 스테이지가 편집을 준비해 놓고 락에서 멈췄다. 가드는 명령이 아니라
 # 경로 인자로 판정하므로, 리눅스 러너에 없는 `lockf` 대신 `touch` 로 같은 이름을 건다.
 gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
