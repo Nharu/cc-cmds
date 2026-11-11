@@ -47,7 +47,13 @@
 # file yet is left alone for 30 seconds after it was first seen.
 
 # The unattended default: what an unattended run reads when CC_TEST_SLOTS is
-# unset or empty, in its grammar. Not measured yet, so off.
+# unset or empty, in its grammar. Off, as measured by
+# scripts/measure-test-slots.sh on 2026-11-11 at commit 066af5c3: a host with
+# 18 CPUs, bursts of 8 and 24 concurrent mock runs, 3 repetitions each, one mock
+# run being `scripts/test-gate.sh --sections 2,3` then `scripts/check-push.sh
+# run` with sections 4,5,7,9 and no goals. Median makespan in seconds, at 8 and
+# at 24 runs: off 566 / 1274, auto 631 / 1376, 27 slots 626 / 1325. Neither on
+# form ended the burst sooner at either level, so the verdict was off.
 TS_UNATTENDED_SLOTS=0
 # The host CPU count the default was measured on, set only when the default is
 # a whole number; on a host with another count that number is read as auto.
