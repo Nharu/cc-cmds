@@ -54,7 +54,12 @@
 
 set -uo pipefail
 
-FEED_DIR=$(cd "$(dirname "$0")" && pwd)
+feed_src=$0
+case "$feed_src" in
+  */*) feed_src=${feed_src%/*}; [ -n "$feed_src" ] || feed_src=/ ;;
+  *) feed_src=. ;;
+esac
+FEED_DIR=$(cd "$feed_src" && pwd)
 # shellcheck source=/dev/null
 . "$FEED_DIR/liveness.sh"
 # The run's version pin, for the same hop the gate and the watcher take.
@@ -115,13 +120,31 @@ HEARTBEAT="$RUN_DIR/feed.heartbeat"
 LOCKD="$RUN_DIR/feed.lock.d"
 LOCK_OWNED=0
 
-now_epoch() { date +%s; }
-now_stamp() { printf '%s %s' "$(cc_display_hhmm "$(date -u +%s)")" "$CC_DTZ_LABEL"; }
+# THE MEMORY CLOCK. One `date` at startup and the shell's `SECONDS` after it, so
+# a cycle reads the time without forking; `cc_clock_start` says why that is the
+# same wall clock `date` reads.
+cc_clock_start
+now_epoch() { local now; cc_clock_now_into now; printf '%s\n' "$now"; }
+now_stamp() {
+  local now
+  cc_clock_now_into now
+  printf '%s %s' "$(cc_display_hhmm "$now")" "$CC_DTZ_LABEL"
+}
 
 # The separator in `feed.state`, spelled once. A literal tab inside a `sed` or
 # `grep` expression is invisible in a diff and survives being turned into spaces
 # by an editor, which makes the state file silently stop matching itself.
-TAB=$(printf '\t')
+TAB=$'\t'
+
+# The epoch of this channel's last beat, kept in memory once this process has
+# written or read one, so the keepalive's age needs no `stat` of its own file.
+FEED_HB_AT=""
+# The ledger's row count at the last read, for the cycles that skip the read.
+FEED_ROWS=0
+# This process's start fingerprint, taken once: the lock record carries it, and
+# the pid it describes does not change.
+FEED_FP=""
+cc__proc_fingerprint_into FEED_FP "$$"
 
 file_mtime() {
   # file_mtime <path> — epoch seconds, or empty. `stat` takes a different flag on
@@ -138,14 +161,39 @@ clip() {
     | awk -v n="$2" '{ if (length($0) > n) printf "%s…", substr($0, 1, n); else printf "%s", $0 }'
 }
 
-row_series() {
-  printf '%s' "$1" | sed -n 's/^- `\([^`]*\)`.*/\1/p'
+row_series_into() {
+  # row_series_into <var> <row> — the series name between the row's leading
+  # "- `" and the next backtick, or empty when the row has no such pair. The
+  # backtick sits in a variable so no quoted backtick appears inside a
+  # double-quoted expansion, which the static spawn count reads as a command
+  # substitution.
+  local __r="$2" __bt='`'
+  printf -v "$1" '%s' ""
+  case "$__r" in "- $__bt"*) __r=${__r#"- $__bt"} ;; *) return 0 ;; esac
+  case "$__r" in *"$__bt"*) printf -v "$1" '%s' "${__r%%"$__bt"*}" ;; esac
 }
 
-row_field() {
-  # row_field <row> <key> — the row grammar guarantees no field value contains a
-  # `|` or a newline, so splitting on `|` and taking the first match is exact.
-  printf '%s' "$1" | tr '|' '\n' | sed -n "s/^ *$2=//p" | sed 's/[[:space:]]*$//' | head -1
+row_field_into() {
+  # row_field_into <var> <row> <key> — the row grammar guarantees no field value
+  # contains a `|` or a newline, so splitting on `|` and taking the first match
+  # is exact. The first `|`-separated piece that, past its leading spaces, starts
+  # with `<key>=` gives the value, its trailing whitespace taken off; <var> is
+  # set empty when no piece does. Builtins only, so a row read field by field
+  # forks for none of them.
+  local __rest="$2" __p __v
+  printf -v "$1" '%s' ""
+  while :; do
+    __p=${__rest%%|*}
+    __p=${__p#"${__p%%[! ]*}"}
+    case "$__p" in
+      "$3="*)
+        __v=${__p#"$3="}
+        __v=${__v%"${__v##*[![:space:]]}"}
+        printf -v "$1" '%s' "$__v"
+        return 0 ;;
+    esac
+    case "$__rest" in *'|'*) __rest=${__rest#*|} ;; *) return 0 ;; esac
+  done
 }
 
 # ---------------------------------------------------------------------------
@@ -193,14 +241,15 @@ lock_holder_alive() {
   # holder that turns out to be dead costs one re-arm cycle, while reclaiming
   # from a holder that is alive puts two feeds on one run.
   [ -f "$holder" ] || return 0
-  pid=$(sed -n '1p' "$holder" 2>/dev/null | tr -dc '0-9')
-  rec=$(sed -n '2p' "$holder" 2>/dev/null)
+  pid=""; rec=""
+  { IFS= read -r pid; IFS= read -r rec; } 2>/dev/null < "$holder" || :
+  pid=${pid//[!0123456789]/}
   [ -n "$pid" ] || return 1
   kill -0 "$pid" 2>/dev/null || return 1
   # A record written before fingerprints existed has nothing to compare, and the
   # `kill -0` above is then all there is. That is weaker, not absent.
   [ -n "$rec" ] || return 0
-  fp=$(cc_proc_fingerprint "$pid")
+  cc__proc_fingerprint_into fp "$pid"
   [ -n "$fp" ] || return 1
   [ "$rec" = "$fp" ]
 }
@@ -230,7 +279,7 @@ take_lock() {
   while [ "$tries" -lt 3 ]; do
     tries=$((tries + 1))
     if mkdir "$LOCKD" 2>/dev/null; then
-      printf '%s\n%s\n' "$$" "$(cc_proc_fingerprint "$$")" > "$LOCKD/holder"
+      printf '%s\n%s\n' "$$" "$FEED_FP" > "$LOCKD/holder"
       LOCK_OWNED=1
       return 0
     fi
@@ -290,8 +339,11 @@ release_lock() {
 # line to say what the envelope already says.
 # ---------------------------------------------------------------------------
 emit() {
-  printf '[%s] %s\n' "$(now_stamp)" "$1"
-  printf '%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$HEARTBEAT"
+  local now iso
+  cc_clock_now_into now
+  cc_epoch_to_iso_into iso "$now"
+  printf '[%s %s] %s\n' "$(cc_display_hhmm "$now")" "$CC_DTZ_LABEL" "$1"
+  printf '%s\n' "$iso" > "$HEARTBEAT" && FEED_HB_AT=$now
 }
 
 # ---------------------------------------------------------------------------
@@ -327,84 +379,105 @@ emit() {
 # call, and a projected verdict is an invitation for the woken lead to make it
 # again.
 # ---------------------------------------------------------------------------
-project() {
-  # project <row> — prints a line body, or nothing at all.
-  local row="$1" series
-  series=$(row_series "$row")
+project_into() {
+  # project_into <var> <row> — sets <var> to a line body, or to nothing at all.
+  # Run in the caller's shell, so a projected row forks only where a value is
+  # clipped.
+  local row="$2" series a b c d
+  printf -v "$1" '%s' ""
+  row_series_into series "$row"
   case "$series" in
     run)
-      printf '런 시작 · 설계 문서 %s' "$(row_field "$row" '설계 문서')"
+      row_field_into a "$row" '설계 문서'
+      b="런 시작 · 설계 문서 $a"
       # Only when it is there. The field arrives with the audit layer and a run
       # opened before that has no such value, so interpolating it unconditionally
       # would print a dangling label on every line this projector writes.
-      local code
-      code=$(row_field "$row" '강제 코드')
-      case "$code" in ''|-|없음) : ;; *) printf ' · 강제 코드 %s' "$(clip "$code" 12)" ;; esac
+      row_field_into c "$row" '강제 코드'
+      case "$c" in ''|-|없음) : ;; *) b="$b · 강제 코드 $(clip "$c" 12)" ;; esac
+      printf -v "$1" '%s' "$b"
       ;;
     segment)
       # State transitions only, and the previous state is on the line. `계획됨 →
       # 실행중` says what a bare `실행중` does not: whether anything moved.
-      local sid st prev
-      sid=$(row_field "$row" 'id')
-      st=$(row_field "$row" '상태')
+      local sid st prev="" keep="" l
+      row_field_into sid "$row" 'id'
+      row_field_into st "$row" '상태'
       [ -n "$sid" ] && [ -n "$st" ] || return 0
-      prev=$(sed -n "s/^$sid$TAB//p" "$STATEF" 2>/dev/null | tail -1)
+      # The last line for this segment is its previous state; every other line is
+      # kept as it was.
+      while IFS= read -r l; do
+        case "$l" in
+          "$sid$TAB"*) prev=${l#"$sid$TAB"} ;;
+          *) keep="$keep$l
+" ;;
+        esac
+      done 2>/dev/null < "$STATEF"
       [ "$prev" = "$st" ] && return 0
-      { grep -v "^$sid$TAB" "$STATEF" 2>/dev/null || true; printf '%s\t%s\n' "$sid" "$st"; } \
-        > "$STATEF.tmp" && mv "$STATEF.tmp" "$STATEF"
-      printf '세그먼트 %s %s → %s' "$sid" "${prev:-없음}" "$st"
-      local pr cm
-      pr=$(row_field "$row" 'PR'); cm=$(row_field "$row" '커밋')
-      case "$pr" in ''|-|없음) : ;; *) printf ' · PR %s' "$pr" ;; esac
-      case "$cm" in ''|-|없음) : ;; *) printf ' · 커밋 %s' "$(clip "$cm" 7)" ;; esac
+      { printf '%s%s\t%s\n' "$keep" "$sid" "$st"; } > "$STATEF.tmp" && mv "$STATEF.tmp" "$STATEF"
+      b="세그먼트 $sid ${prev:-없음} → $st"
+      row_field_into a "$row" 'PR'; row_field_into c "$row" '커밋'
+      case "$a" in ''|-|없음) : ;; *) b="$b · PR $a" ;; esac
+      case "$c" in ''|-|없음) : ;; *) b="$b · 커밋 $(clip "$c" 7)" ;; esac
+      printf -v "$1" '%s' "$b"
       ;;
     cycle)
-      printf '리뷰 %s %s회차 · P0 %s · P1 %s' \
-        "$(row_field "$row" '세그먼트')" "$(row_field "$row" '사이클')" \
-        "$(row_field "$row" 'P0')" "$(row_field "$row" 'P1')"
+      row_field_into a "$row" '세그먼트'; row_field_into b "$row" '사이클'
+      row_field_into c "$row" 'P0'; row_field_into d "$row" 'P1'
+      printf -v "$1" '리뷰 %s %s회차 · P0 %s · P1 %s' "$a" "$b" "$c" "$d"
       ;;
     stage-result)
-      printf '스테이지 %s 종단 · 종류 %s · 종료 코드 %s · 부류 %s' \
-        "$(row_field "$row" '스테이지')" "$(row_field "$row" '종류')" \
-        "$(row_field "$row" '종료 코드')" "$(row_field "$row" '종단 부류')"
+      row_field_into a "$row" '스테이지'; row_field_into b "$row" '종류'
+      row_field_into c "$row" '종료 코드'; row_field_into d "$row" '종단 부류'
+      printf -v "$1" '스테이지 %s 종단 · 종류 %s · 종료 코드 %s · 부류 %s' "$a" "$b" "$c" "$d"
       ;;
     blocked)
-      printf '막힘 관측 · 스코프 %s · 사유 %s · 원인 %s' \
-        "$(row_field "$row" '스코프')" "$(row_field "$row" '사유')" \
-        "$(row_field "$row" '원인')"
+      row_field_into a "$row" '스코프'; row_field_into b "$row" '사유'
+      row_field_into c "$row" '원인'
+      printf -v "$1" '막힘 관측 · 스코프 %s · 사유 %s · 원인 %s' "$a" "$b" "$c"
       ;;
     승인)
-      printf '승인 %s %s · 절단점 %s · 막는 세그먼트 %s' \
-        "$(clip "$(row_field "$row" '승인 id')" 12)" "$(row_field "$row" '상태')" \
-        "$(row_field "$row" '절단점')" "$(row_field "$row" '막는 세그먼트')"
+      row_field_into a "$row" '승인 id'; a=$(clip "$a" 12)
+      row_field_into b "$row" '상태'
+      row_field_into c "$row" '절단점'; row_field_into d "$row" '막는 세그먼트'
+      printf -v "$1" '승인 %s %s · 절단점 %s · 막는 세그먼트 %s' "$a" "$b" "$c" "$d"
       ;;
     handoff)
-      printf '교대 %s 종료 · 사유 %s · 막힌 지점 %s' \
-        "$(row_field "$row" '교대')" "$(row_field "$row" '사유')" \
-        "$(clip "$(row_field "$row" '막힌 지점')" 80)"
+      row_field_into a "$row" '교대'; row_field_into b "$row" '사유'
+      row_field_into c "$row" '막힌 지점'; c=$(clip "$c" 80)
+      printf -v "$1" '교대 %s 종료 · 사유 %s · 막힌 지점 %s' "$a" "$b" "$c"
       ;;
     '종료 절')
-      printf '종료 절 %s %s' "$(row_field "$row" 'id')" "$(row_field "$row" '상태')"
+      row_field_into a "$row" 'id'; row_field_into b "$row" '상태'
+      row_field_into c "$row" '자체 근거'
       # A clause the run settled on its own execution says so on the feed.
-      if [ "$(row_field "$row" '자체 근거')" = "예" ]; then printf ' · 자체 근거'; fi
+      if [ "$c" = "예" ]; then
+        printf -v "$1" '종료 절 %s %s · 자체 근거' "$a" "$b"
+      else
+        printf -v "$1" '종료 절 %s %s' "$a" "$b"
+      fi
       ;;
     problem)
-      printf '문제 %s · 현재 단 %s' \
-        "$(clip "$(row_field "$row" '동일성')" 60)" "$(row_field "$row" '현재 단')"
+      row_field_into a "$row" '동일성'; a=$(clip "$a" 60)
+      row_field_into b "$row" '현재 단'
+      printf -v "$1" '문제 %s · 현재 단 %s' "$a" "$b"
       ;;
     '대상 추가')
-      printf '대상 추가 %s · 슬러그 %s · 층 %s' \
-        "$(row_field "$row" '별칭')" "$(row_field "$row" '원격 슬러그')" \
-        "$(row_field "$row" '층')"
+      row_field_into a "$row" '별칭'; row_field_into b "$row" '원격 슬러그'
+      row_field_into c "$row" '층'
+      printf -v "$1" '대상 추가 %s · 슬러그 %s · 층 %s' "$a" "$b" "$c"
       ;;
     '자율 승인')
-      [ "$(row_field "$row" 'kind')" = "judgment" ] || return 0
-      [ "$(row_field "$row" '등급')" = "2" ] || return 0
-      printf '판단 등급 2 · 부류 %s · 세그먼트 %s · 대상 %s' \
-        "$(row_field "$row" '판단 부류')" "$(row_field "$row" '세그먼트')" \
-        "$(row_field "$row" '대상')"
+      row_field_into a "$row" 'kind'
+      [ "$a" = "judgment" ] || return 0
+      row_field_into a "$row" '등급'
+      [ "$a" = "2" ] || return 0
+      row_field_into a "$row" '판단 부류'; row_field_into b "$row" '세그먼트'
+      row_field_into c "$row" '대상'
+      printf -v "$1" '판단 등급 2 · 부류 %s · 세그먼트 %s · 대상 %s' "$a" "$b" "$c"
       ;;
   esac
+  return 0
 }
 
 # ---------------------------------------------------------------------------
@@ -422,10 +495,12 @@ project() {
 # reading as a death.
 # ---------------------------------------------------------------------------
 watcher_silence_check() {
-  local mt age
+  local mt age now
+  [ -f "$RUN_DIR/feed.announced-watch-silence" ] && return 0
   mt=$(file_mtime "$RUN_DIR/watch.heartbeat")
   [ -n "$mt" ] || return 0
-  age=$(( $(now_epoch) - mt ))
+  cc_clock_now_into now
+  age=$(( now - mt ))
   [ "$age" -ge "$STALL" ] || return 0
   [ -f "$RUN_DIR/feed.announced-watch-silence" ] && return 0
   : > "$RUN_DIR/feed.announced-watch-silence"
@@ -433,41 +508,65 @@ watcher_silence_check() {
 }
 
 pass() {
-  local n_rows cursor row body i=0 emitted=0 hb_age
-  n_rows=$( { grep -c '^- `' "$LEDGER" 2>/dev/null || true; } )
-  n_rows=${n_rows:-0}
-  cursor=$(sed -n '1p' "$CURSOR" 2>/dev/null | tr -dc '0-9')
-  cursor=${cursor:-0}
-  # A ledger that shrank is a ledger that was replaced. Restarting from zero
-  # would replay a whole night into the lead's conversation, so the cursor is
-  # clamped instead and the discrepancy is left to the morning's damage count.
-  [ "$cursor" -gt "$n_rows" ] && cursor="$n_rows"
+  # pass <read> <silence> — <read> 1 reads the ledger whatever its age, 0 reads
+  # it only when it may have changed since the last read; <silence> 1 runs the
+  # watcher-silence check this cycle.
+  local n_rows cursor="" row body emitted=0 rows now nl=$'\n'
+  # A LEDGER STRICTLY OLDER THAN THE LAST READ HAS NOTHING NEW. The mark is
+  # touched before the rows are counted, so a row appended after the count —
+  # in the same second or later — leaves the ledger no older than the mark and
+  # the next cycle reads it. The cursor file's own time is not consulted.
+  if [ "$1" = "0" ] && [ -f "$LEDGER" ] && [ "$LEDGER" -ot "$RUN_DIR/.feed.readmark" ]; then
+    n_rows=$FEED_ROWS
+  else
+    { : > "$RUN_DIR/.feed.readmark"; } 2>/dev/null
+    { IFS= read -r cursor; } 2>/dev/null < "$CURSOR" || :
+    cursor=${cursor//[!0123456789]/}
+    cursor=${cursor:-0}
+    # ONE READ OF THE LEDGER: the count of its rows first, then the rows past the
+    # cursor.
+    rows=$( { awk -v c="$cursor" '
+      index($0, "- `") == 1 { n++; if (n > c) r[n] = $0 }
+      END { print n + 0; for (i = c + 1; i <= n; i++) print r[i] }
+    ' "$LEDGER" 2>/dev/null || printf '0\n'; } )
+    n_rows=${rows%%"$nl"*}
+    case "$rows" in *"$nl"*) rows=${rows#*"$nl"} ;; *) rows="" ;; esac
+    case "$n_rows" in ''|*[!0-9]*) n_rows=0 ;; esac
+    FEED_ROWS=$n_rows
+    # A ledger that shrank is a ledger that was replaced. Restarting from zero
+    # would replay a whole night into the lead's conversation, so the cursor is
+    # clamped instead and the discrepancy is left to the morning's damage count.
+    [ "$cursor" -gt "$n_rows" ] && cursor="$n_rows"
 
-  if [ "$n_rows" -gt "$cursor" ]; then
-    while IFS= read -r row; do
-      i=$((i + 1))
-      [ -n "$row" ] || continue
-      body=$(project "$row")
-      [ -n "$body" ] || continue
-      emit "$body"
-      emitted=1
-    done <<EOF
-$( { grep '^- `' "$LEDGER" 2>/dev/null || true; } | tail -n "$(( n_rows - cursor ))")
+    if [ "$n_rows" -gt "$cursor" ]; then
+      while IFS= read -r row; do
+        [ -n "$row" ] || continue
+        project_into body "$row"
+        [ -n "$body" ] || continue
+        emit "$body"
+        emitted=1
+      done <<EOF
+$rows
 EOF
-    printf '%s\n' "$n_rows" > "$CURSOR"
+      printf '%s\n' "$n_rows" > "$CURSOR"
+    fi
   fi
 
-  watcher_silence_check
+  [ "$2" = "1" ] && watcher_silence_check
 
   # THE KEEPALIVE IS THE BEAT THE WATCHER COUNTS, and it is also the only line a
   # quiet hour produces. Without it the channel and a dead channel look the same
   # from outside, which is the property the sixth watcher arm needs in order to
-  # mean anything.
+  # mean anything. Its age is this process's memory of its last beat; a beat
+  # left by an earlier channel is read from the file once.
   if [ "$emitted" = "0" ]; then
-    hb_age=$(file_mtime "$HEARTBEAT")
-    if [ -z "$hb_age" ]; then
+    if [ -f "$HEARTBEAT" ] && [ -z "$FEED_HB_AT" ]; then
+      FEED_HB_AT=$(file_mtime "$HEARTBEAT")
+    fi
+    cc_clock_now_into now
+    if [ ! -f "$HEARTBEAT" ] || [ -z "$FEED_HB_AT" ]; then
       emit "채널 시작 · 원장 ${n_rows}행부터 잇습니다"
-    elif [ "$(( $(now_epoch) - hb_age ))" -ge "$STALL" ]; then
+    elif [ "$(( now - FEED_HB_AT ))" -ge "$STALL" ]; then
       emit "변화 없음 · 원장 ${n_rows}행 · 채널 살아 있음"
     fi
   fi
@@ -504,8 +603,22 @@ trap '[ -z "$sp" ] || kill "$sp" 2>/dev/null; release_lock' EXIT
 trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM
 take_lock
 
+# QUIET RUNS ARE READ ON A MULTIPLE. While the watcher reports the run quiet
+# (`cc_watch_mode_quiet`), every `CC_QUIET_PASS_EVERY`-th cycle reads the ledger
+# whatever its age and runs the watcher-silence check; the cycles between skip
+# a ledger older than the last read and skip the check. Both counts start at
+# this process's first cycle, which always reads. A working run checks the
+# watcher's silence every cycle.
+feed_cycle=0
 while :; do
-  pass
+  feed_read=0; feed_silence=1
+  if [ $((feed_cycle % ${CC_QUIET_PASS_EVERY:-4})) -eq 0 ]; then
+    feed_read=1
+  elif cc_watch_mode_quiet "$RUN_DIR" "$INTERVAL"; then
+    feed_silence=0
+  fi
+  feed_cycle=$((feed_cycle + 1))
+  pass "$feed_read" "$feed_silence"
   [ "$ONCE" = "1" ] && break
   run_is_over && break
   sleep "$INTERVAL" & sp=$!; wait "$sp"; sp=""
