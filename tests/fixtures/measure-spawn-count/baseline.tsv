@@ -18,6 +18,6 @@ abspath	plugins/cc-cmds/orchestrator/liveness.sh	0
 cond	os	Darwin
 cond	bash	3.2.57(1)-release
 cond	stubs	dcfacc7a91eae110c9585ab6c825d011c1c20eaa70f79a18b7171232ce019dc3
-cond	spec	05ea2a7e0db431c8c18f8ad1f42e3143a9041e37e256dc93ecb005f22309f85e
-cond	fixture	a2e587298f59925bc1f09c59c64bbeb7250111c1bdb0a552c217e5e26d95e2df
+cond	spec	9599f3b3efaeff26be67b0f4838de5350f05249260c4616676512674f5d82e90
+cond	fixture	816e81f7dd6bf9b0627ab4e4741cc68abbbad4a76552fc59eb8628eae31460cd
 cond	u8-caller	stage

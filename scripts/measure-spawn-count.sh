@@ -962,6 +962,21 @@ baseline_table() {
   cond_rows
 }
 
+# A fixture file git ignores is hashed into `fixture` and copied by a spec
+# here, but never reaches a commit: every other tree then measures without it
+# and its test skips every run assertion. Refuse such a file wherever the
+# fixtures are read. A tree outside git (an archive) has nothing to compare.
+ignored_fixtures() {
+  ( cd "$REPO" || exit 0
+    git rev-parse --is-inside-work-tree >/dev/null 2>&1 || exit 0
+    git ls-files --others --ignored --exclude-standard --directory -- tests/fixtures/measure-spawn-count/runs )
+}
+case "$MODE" in
+  cond|unit|all|baseline|reproduce)
+    IGN=$(ignored_fixtures)
+    [ -z "$IGN" ] || die2 "git 이 무시하는 픽스처가 있어 커밋된 트리에서 재현되지 않습니다 — $(printf '%s' "$IGN" | tr '\n' ' ')" ;;
+esac
+
 FP0=$(fixture_bytes all | sha256)
 check_fixture() {
   [ "$(fixture_bytes all | sha256)" = "$FP0" ] || die2 "측정 뒤 커밋된 픽스처가 바뀌었습니다"

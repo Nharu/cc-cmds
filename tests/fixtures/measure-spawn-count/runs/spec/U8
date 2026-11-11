@@ -29,7 +29,7 @@ env	CC_PIPELINE_STAGE_ID	S1#1
 env	CC_PIPELINE_SEGMENT	S1
 fixture	copy	gate/u8/repo u8/wt
 fixture	git	u8/wt
-fixture	copy	gate/u8/docs u8/wt/docs
+fixture	copy	gate/u8/wt-docs u8/wt/docs
 fixture	mkdir	u8/wt/docs/pipeline-run
 fixture	copy	gate/u8/bin u8/bin
 fixture	chmod	u8/bin/noop
