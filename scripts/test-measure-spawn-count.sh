@@ -87,6 +87,21 @@ check "정적 셈이 성공한다" "$?" "0"
 
 rows=$(awk -F '\t' '$1 == "abspath"' "$BASELINE" | wc -l | tr -d ' ')
 check "기준선에 절대 경로 실행 행이 여덟 있다" "$rows" "8"
+# The pipeline count on a known input, so a tokenizer that records nothing
+# cannot pass the at-most-baseline assertions below. Counted: the builtin
+# element of the first line, the one in a one-line function body, and the one
+# inside a compound command that follows a `|`. Not counted: a function
+# element, a function body's lone builtin, and a builtin standing alone.
+cat > "$WORK/pipeline-known.sh" <<'EOF'
+printf 'x\n' | tr x y >/dev/null
+f() { printf 'y\n'; }
+f | tr y z >/dev/null
+g() { printf '%s' "$1" | cut -f1; }
+x | { printf a | tr a b; }
+echo alone
+EOF
+check "알려진 입력의 빌트인 파이프라인 요소 자리 수가 3 이다" \
+  "$(bash "$MEASURE" --pipeline "$WORK/pipeline-known.sh" 2>&1)" "3"
 rows=$(awk -F '\t' '$1 == "pipeline"' "$BASELINE" | wc -l | tr -d ' ')
 check "기준선에 빌트인 파이프라인 요소 행이 여덟 있다" "$rows" "8"
 while IFS="$(printf '\t')" read -r kind key want; do

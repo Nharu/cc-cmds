@@ -113,7 +113,7 @@
 # count uses the same list:
 #
 #   builtins: . : [ alias bg bind break builtin caller cd command compgen
-#   builtins: complete compopt continue declare dirs disown echo enable eval
+#   builtins: complete continue declare dirs disown echo enable eval
 #   builtins: exec exit export false fc fg getopts hash help history jobs kill
 #   builtins: let local logout popd printf pushd pwd read readonly return set
 #   builtins: shift shopt source suspend test times trap true type typeset
@@ -173,6 +173,7 @@
 #   bash scripts/measure-spawn-count.sh --unit U3       one unit
 #   bash scripts/measure-spawn-count.sh --static        static counts only
 #   bash scripts/measure-spawn-count.sh --names         every PATH name the targets run
+#   bash scripts/measure-spawn-count.sh --pipeline F    the `pipeline` count of one file
 #   bash scripts/measure-spawn-count.sh --calibrate     the six-process calibration
 #                                                      and the two pipeline lines
 #   bash scripts/measure-spawn-count.sh --cond          the six measuring conditions
@@ -221,6 +222,7 @@ while [ "$#" -gt 0 ]; do
     --static) MODE=static; shift ;;
     --names) MODE=names; shift ;;
     --extract) [ "$#" -ge 2 ] || die2 "--extract 에 파일이 없습니다"; MODE=extract; ONE=$2; shift 2 ;;
+    --pipeline) [ "$#" -ge 2 ] || die2 "--pipeline 에 파일이 없습니다"; MODE=pipeline; ONE=$2; shift 2 ;;
     --calibrate) MODE=calibrate; shift ;;
     --cond) MODE=cond; shift ;;
     --baseline) MODE=baseline; shift ;;
@@ -302,6 +304,9 @@ cond_rows() {
 # (`PJ`) continues it. `then`, `else`, `elif`, `do`, `!` and `time` pass through
 # without being an element's first word, and so does an opening word that does
 # not follow a `|`: in `while printf x | grep -q y; do` the element is `printf`.
+# An opening word right after a `|` ends that pipeline, so in `x | { printf a |
+# tr a b; }` the inner `printf` is an element too; and a function definition's
+# `name()` starts a fresh element, so `f() { printf … | cut …; }` counts.
 cat > "$WORK/extract.awk" <<'AWK'
 function push(m) {
   sp++; M[sp] = m; AD[sp] = 0; BD[sp] = 0; KT[sp] = 0
@@ -329,7 +334,10 @@ function cmdword(k, w, q, pre) {
     if (w == "exec") return
     if (w == "command") { CO[k] = 1; return }
     if (CO[k] && w ~ /^-/) { if (w ~ /[vV]/) { CO[k] = 0; CP[k] = 0 } return }
-    if (PL[k] > 0 && w ~ /^(while|until|if|\{|case|for|select|\[\[)$/) pcomp(k)
+    # A compound command right after a `|` is that pipeline's last element and
+    # holds no simple command of its own; the commands inside it start afresh,
+    # so a pipeline inside it is counted as any other.
+    if (PL[k] > 0 && !EH[k] && w ~ /^(while|until|if|\{|case|for|select|\[\[)$/) { pelem(k); PL[k] = 0; PJ[k] = 0 }
     if (w ~ /^(if|then|else|elif|do|while|until|!|\{|time)$/) return
     if (w ~ /^(fi|done|\}|esac)$/) { EC[k] = 1; CP[k] = 0; CO[k] = 0; return }
     if (w == "case") { CW[k] = 1; CP[k] = 0; return }
@@ -449,7 +457,7 @@ BEGIN { sp = 0; push("c"); HN = 0; HI = 0; INHD = 0 }
         if (IW[i]) { nm = W[i]; W[i] = ""; IW[i] = 0; Q[i] = 0 }
         else { nm = LW[i]; print "U\t" NR "\t" nm }
         print "D\t" NR "\t" nm
-        FN[i] = 0; CP[i] = 1; EC[i] = 1
+        FN[i] = 0; CP[i] = 1; pelem(i)
         j = j + index(rest, ")") + 1; continue
       }
       if (PAT[i]) { j++; continue }
@@ -496,10 +504,13 @@ BEGIN { sp = 0; push("c"); HN = 0; HI = 0; INHD = 0 }
 }
 AWK
 
-# extract <repo-relative file> — the tokenizer's records, prefixed with the file.
+# extract <file> — the tokenizer's records, prefixed with the file. A relative
+# path is read from the repository root, an absolute one as it is.
 extract() {
+  local p=$REPO/$1
+  case "$1" in /*) p=$1 ;; esac
   awk -v f="$1" -F'\t' 'BEGIN { OFS = "\t" } { print f, $0 }' \
-    <(awk -f "$WORK/extract.awk" "$REPO/$1")
+    <(awk -f "$WORK/extract.awk" "$p")
 }
 
 # The function names every orchestrator and hook file defines: a word that is
@@ -1076,6 +1087,7 @@ case "$MODE" in
   static) static_report ;;
   names) all_names ;;
   extract) extract "$ONE" ;;
+  pipeline) pipeline_count "$ONE" ;;
   calibrate) calibrate ;;
   cond) cond_rows ;;
   unit) run_units "$ONE" || exit 2; check_fixture ;;

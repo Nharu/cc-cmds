@@ -19,7 +19,7 @@ pipeline	plugins/cc-cmds/orchestrator/watch.sh	4
 pipeline	plugins/cc-cmds/orchestrator/checks.sh	14
 pipeline	plugins/cc-cmds/orchestrator/feed.sh	3
 pipeline	plugins/cc-cmds/orchestrator/statusline.sh	2
-pipeline	plugins/cc-cmds/orchestrator/run-pane.sh	11
+pipeline	plugins/cc-cmds/orchestrator/run-pane.sh	12
 pipeline	plugins/cc-cmds/orchestrator/gate.sh	655
 pipeline	plugins/cc-cmds/hooks/gate-pretool.sh	19
 pipeline	plugins/cc-cmds/orchestrator/liveness.sh	34
