@@ -1,0 +1,10 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "design_scope": { "type": "string" },
+    "design_delivery_judged": { "enum": ["slices", "tickets"] },
+    "design_path_judged": { "enum": ["solo-audit", "discuss-audit", "none"] },
+    "ticket_publish_judged": { "enum": ["none", "github", "clickup"] }
+  }
+}
