@@ -37,12 +37,12 @@ export type PaneControl = {
   refreshMs: number
 }
 
-/** 질문지 선택지. 추천 표시는 라벨이 아니라 recommended 로만 한다. */
+/** 질문지 선택지. 추천 표시는 라벨이 아니라 recommended 로만 한다. '기본값' 은 판단이 아닌 스킬의 고정 기본값이다. */
 export type FormOption = {
   label: string
   description: string
   preview?: string
-  recommended?: '추천' | '에이전트 추천'
+  recommended?: '추천' | '에이전트 추천' | '기본값'
 }
 
 /** 질문지 질문 하나. when 은 앞쪽 single·multi 질문의 라벨에 건다. */

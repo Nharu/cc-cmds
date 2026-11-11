@@ -48,7 +48,7 @@ const OPTION_SCHEMA = {
     label: { type: 'string', description: `선택지 라벨. 「 ← 」를 넣지 않는다. 추천은 recommended 로만 표시한다. ${LINE_RULE}` },
     description: { type: 'string', description: `선택지 설명. ${PROSE_RULE}` },
     preview: { type: 'string', description: `포커스가 이 선택지에 있을 때 질문 아래에 보일 미리보기. ${PROSE_RULE}` },
-    recommended: { type: 'string', enum: ['추천', '에이전트 추천'], description: 'single 질문에는 하나까지' },
+    recommended: { type: 'string', enum: ['추천', '에이전트 추천', '기본값'], description: 'single 질문에는 세 값을 합쳐 하나까지. 기본값은 판단이 아닌 스킬의 고정 기본값' },
   },
   required: ['label', 'description'],
   additionalProperties: false,

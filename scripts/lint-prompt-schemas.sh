@@ -59,6 +59,18 @@
 #      is delivered, `manifest_split_run` and `gate_split_run` branch on it and
 #      the checker's (h) asserts on it, so a value cannot appear or vanish
 #      without this lint noticing.
+#  10. `entry-plan.schema.json` carries the three judged keys and their
+#      reasons: `design_delivery_judged`, `design_path_judged`,
+#      `ticket_publish_judged` and each one's `_rationale` key are in both
+#      sets. The `design_delivery_judged` enum equals the `design_delivery`
+#      enum and the `design_path_judged` enum equals the `design_path` enum,
+#      because a judged value the confirmed key cannot hold is one the kickoff
+#      could never adopt. `ticket_publish_judged` has no confirmed key in the
+#      schema (the confirmed tracker is the manifest's publish row), so its
+#      enum is pinned to exactly `none` / `github` / `clickup`. The kickoff
+#      shows these values as its recommendations and the checker's (i)
+#      asserts on them, so a key or a value cannot appear or vanish without
+#      this lint noticing.
 #
 # Usage:
 #   bash scripts/lint-prompt-schemas.sh
@@ -387,6 +399,45 @@ if [[ -f "$ENTRY" ]] && jq empty "$ENTRY" 2>/dev/null; then
   fi
   if [[ "$delivery_ok" == "1" ]]; then
     echo "OK:   $rel — design_delivery present on both sides, enum pinned"
+  else
+    fail=1
+  fi
+fi
+
+# ---------- Rule 10: the judged keys and their reasons in entry-plan ----------
+
+if [[ -f "$ENTRY" ]] && jq empty "$ENTRY" 2>/dev/null; then
+  rel=${ENTRY#"$repo_root/"}
+  judged_ok=1
+  for key in design_delivery_judged design_delivery_rationale design_path_judged design_path_rationale ticket_publish_judged ticket_publish_rationale; do
+    in_props=$(jq -r --arg k "$key" '(.properties // {}) | has($k)' "$ENTRY")
+    in_req=$(jq -r --arg k "$key" '(.required // []) | index($k) != null' "$ENTRY")
+    if [[ "$in_props" != "true" ]]; then
+      echo "FAIL: $rel — '$key' is missing from .properties" >&2
+      judged_ok=0
+    fi
+    if [[ "$in_req" != "true" ]]; then
+      echo "FAIL: $rel — '$key' is missing from .required" >&2
+      judged_ok=0
+    fi
+  done
+  for pair in design_delivery_judged:design_delivery design_path_judged:design_path; do
+    jk=${pair%%:*}
+    ck=${pair#*:}
+    judged_enum=$(jq -c --arg k "$jk" '.properties[$k].enum // []' "$ENTRY")
+    confirmed_enum=$(jq -c --arg k "$ck" '.properties[$k].enum // []' "$ENTRY")
+    if [[ "$judged_enum" != "$confirmed_enum" || "$judged_enum" == "[]" ]]; then
+      echo "FAIL: $rel — $jk enum must equal the $ck enum $confirmed_enum, found $judged_enum" >&2
+      judged_ok=0
+    fi
+  done
+  publish_enum=$(jq -c '.properties.ticket_publish_judged.enum // []' "$ENTRY")
+  if [[ "$publish_enum" != '["none","github","clickup"]' ]]; then
+    echo "FAIL: $rel — ticket_publish_judged enum must be exactly [\"none\",\"github\",\"clickup\"], found $publish_enum" >&2
+    judged_ok=0
+  fi
+  if [[ "$judged_ok" == "1" ]]; then
+    echo "OK:   $rel — judged keys and their reasons present on both sides, enums pinned"
   else
     fail=1
   fi

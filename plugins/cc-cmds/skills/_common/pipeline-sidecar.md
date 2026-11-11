@@ -836,7 +836,7 @@ never compared.
 21. **The entry judgment's structure.** A plan carrying `design_tier_judged` is
     run through `orchestrator/prompts/entry-plan.check.jq`, the same file the
     kickoff runs on its own output and the gate's tests run on their fixtures,
-    so the three callers cannot assert different rules. Seven assertions:
+    so the three callers cannot assert different rules. Nine assertions:
     (a) a `team-4` judgment carries at least one non-blank entry in
     `design_heavy_reasons`, and a `solo` judgment carries `[]`; (b)
     `design_tier_judged` and `design_tier` are each `solo` or `team-4`, and the
@@ -850,18 +850,44 @@ never compared.
     `enforcement_surface` judgment, when the plan carries one, has its shape —
     a judgment from the closed four, every path's class listed under
     `classes`, at least one path on `확인됨` and none on `없음`; (f)
-    `run_profile` reads `hotfix` or `standard` (absent reads `standard`), and a
-    `hotfix` plan is the fixed frame — the `solo` tier, the `single` scope,
-    steps `design` → `implement` → `review`, an `enforcement_surface` whose
-    judgment bounds the count of `unresolved`, and a `review_expand`, when the
-    plan carries one, that reads `[]`; (g) a `review_expand`, when the plan
-    carries one, is an array of `요구` · `문서표현` with no value twice, and a
-    non-empty one has a non-blank `review_expand_rationale`. A `team-4` graph
-    is asserted on by (d) alone. Any violation is a **hard stop** naming each
-    one. **A plan without `design_tier_judged` is asserted on (f) alone** —
-    every plan frozen before the key existed lacks it, and its tier (`team-2`,
-    `lead-solo`, `null`) is outside the two values above; (f) still runs there
-    so a hotfix plan that dropped the key keeps its frame.
+    `run_profile` reads `hotfix`, `reviewer` or `standard` (absent reads
+    `standard`); a `reviewer` plan is the review-only fixed frame — no design,
+    the `solo` tier on both tier keys with no heavy reason, `design_path`
+    `none`, the `single` scope, `estimated_files` 0, `work_class` `other`,
+    exactly one step `R1` `review` with no prerequisite, `entry_skill`
+    `review`, `anchor_kind` `intent` and an `enforcement_surface` of `없음`
+    with no class, no path and the `의도` source; a `hotfix` plan is the fixed
+    frame — the `solo` tier, the `single` scope, steps `design` → `implement`
+    → `review`, an `enforcement_surface` whose judgment bounds the count of
+    `unresolved`, and a `review_expand`, when the plan carries one, that reads
+    `[]`; on both frames a `design_delivery_judged`, when present, reads
+    `slices` and a `design_path_judged`, when present, reads `none`; (g) a
+    `review_expand`, when the plan carries one, is an array of `요구` ·
+    `문서표현` with no value twice, and a non-empty one has a non-blank
+    `review_expand_rationale`; (h) a `design_delivery`, when the plan carries
+    one, is `slices` or `tickets`, and a `tickets` plan has the `single`
+    scope, `design_required=true`, the `team-4` tier, a `design_path` of
+    `solo-audit` or `discuss-audit` and the `standard` profile; (i) the six
+    judged keys (`design_delivery_judged`, `design_path_judged`,
+    `ticket_publish_judged` and their `_rationale` keys) are all present or all
+    absent; when present, each judged key holds a value of its enum and each
+    rationale is not blank, a `design_path_judged` other than `none` goes with
+    a `design_tier_judged` of `team-4`, and a `design_delivery_judged` of
+    `tickets` goes with a `design_tier_judged` of `team-4` and a
+    `design_path_judged` other than `none`. These four relations of (i) are
+    the column relations of the judged-key table the entry judgment, the two
+    fixed frames, the kickoff's rewrites, a person's raise, a rekick's
+    follow-up and an adopted plan all hold to; (i) binds the keys neither to
+    `design_required`, which a rekick's follow-up turns false while keeping
+    them, nor to any confirmed key a person changes. A plan with none of the
+    six reads as one frozen before the keys existed and passes (i). A `team-4`
+    graph is asserted on by (d) alone. Any violation is a **hard stop** naming
+    each one. **A plan without `design_tier_judged` is asserted on (f), (h)
+    and (i) alone** — every plan frozen before the key existed lacks it, and
+    its tier (`team-2`, `lead-solo`, `null`) is outside the two values above;
+    the three still run there so a hotfix plan that dropped the key keeps its
+    frame, a `tickets` plan its fields and a plan carrying judged keys their
+    relations.
     `estimated_files` and `design_tier_rationale` are carried for the `설계 티어`
     row (§3.2) and asserted on by nothing. The plan's scope, tier and path
     pick the design step's skill through one selection function,
@@ -1074,7 +1100,8 @@ tells the two apart, the form's question following a `단계=문답(질문지)` 
 
 **A question-form answer is written as the bundle carries it.** The `### 답 n`
 body equals the bundle's `answer` for that question: a single-select answer is
-the chosen label exactly as authored, with no `← 추천` suffix (the bundle carries
+the chosen label exactly as authored, with no `← 추천`, `← 에이전트 추천` or
+`← 기본값` suffix (the bundle carries
 recommendations apart, in each answer's `recommended`); a multi-select answer is
 the chosen labels, one per line; free text given instead of an option is that
 text verbatim; free text beside multi-select labels is a last line
@@ -1087,7 +1114,8 @@ that would make that reading ambiguous (`미답`, `해당 없음`, and labels be
 `메모:` or `자유 입력:`).
 
 **A derived section carries the substance of the answer.** The values of
-`## 배포 형상` are what the answer meant: a suffix such as `← 추천` stays in
+`## 배포 형상` are what the answer meant: a suffix such as `← 추천` or
+`← 기본값` — cut from the label's normal form alike — stays in
 `## 요구사항 문답` only, and a derived value is not copied so that its normal form
 equals an offered label.
 
