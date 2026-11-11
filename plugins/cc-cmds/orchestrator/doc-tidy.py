@@ -740,8 +740,7 @@ def take_lock(path):
     """Open PATH (created when absent, never removed) and take an exclusive
     lock without waiting. Returns the descriptor, or None when another
     process holds the lock. The lock is flock(2), the one `/usr/bin/lockf`
-    on macOS and `flock(1)` on Linux take, so it excludes the other writers
-    of the same lock file on both platforms."""
+    takes, so it excludes the `lockf -k -t 0` writers of the same file."""
     fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o644)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)

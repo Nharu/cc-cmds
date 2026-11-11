@@ -34182,10 +34182,11 @@ gate_rundir_write_guard() {
           fi
           continue ;;
         visual-migration) continue ;;
-        # THE DESIGN DOCUMENT LOCK. Every stage that edits the design document —
-        # the implementation arm's token writes, the audit's reconciliation pass
-        # and the re-convergence pass — wraps the write in `lockf -k -t 0
-        # "$RUN_DIR/designdoc.lock"`, and this list did not know the name, so a
+        # THE DESIGN DOCUMENT LOCK. Every stage that edits the design document
+        # takes `"$RUN_DIR/designdoc.lock"` before the write — the implementation
+        # arm's token writes wrap it in `lockf -k -t 0`, and the audit's
+        # reconciliation pass and the re-convergence pass take the same flock(2)
+        # lock through `doc-tidy.py --lock` — and this list did not know the name, so a
         # re-convergence stage stopped at the lock before its one edit. Measured:
         # the stage halted `gate-unanswerable` with its edit prepared and unapplied.
         # Safe on the witness exception's terms: the file does not exist when the
