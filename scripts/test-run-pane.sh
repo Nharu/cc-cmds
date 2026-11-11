@@ -1037,5 +1037,48 @@ check "8 쓰기 없음 — 실행 전후 상태 트리의 파일 목록과 mtime
 [ "$(printf '%s\n' "$before" | grep -c .)" -gt 20 ] \
   && ok "8 비교한 트리가 비어 있지 않다" || bad "8 쓰기 없음" "스냅숏이 비었다"
 
+# ---------------------------------------------------------------------------
+# 20. The shell shape check and the TAB field reader give what the replaced
+# `printf | LC_ALL=C grep -qE` and `printf | cut -f` gave. The old pipelines
+# are the oracles, written out here; the two functions under test are lifted
+# out of the script by their own lines, so nothing else of the script runs.
+# ---------------------------------------------------------------------------
+sh_def=$(sed -n '/^pane_id_shape_ok() {/,/^}/p' "$PANE")
+fc_def=$(sed -n '/^fact_col() {/,/^}/p' "$PANE")
+sid_letters=$(sed -n "s/^PANE_ID_SID='\(.*\)'\$/\1/p" "$PANE")
+title_letters=$(sed -n "s/^PANE_ID_TITLE='\(.*\)'\$/\1/p" "$PANE")
+if [ -n "$sh_def" ] && [ -n "$fc_def" ] && [ -n "$sid_letters" ] && [ -n "$title_letters" ]; then
+  eval "$sh_def"; eval "$fc_def"
+  TAB=$'\t'
+  shape_inputs=(
+    abc 'a.b-c_D9' . .. 'a/b' 'a b' '세션' 'é' $'a\nb!' $'!\nok' $'x\n' $'\n' ''
+    'a*' '[a]' 'a-' - 'a\b' $'a\tb' 'Z9' 'n.b' 'n_b'
+  )
+  for shape in "sid|$sid_letters|^[A-Za-z0-9._-]+\$" "title|$title_letters|^[A-Za-z0-9-]+\$"; do
+    sh_name=${shape%%|*}; sh_rest=${shape#*|}; sh_letters=${sh_rest%%|*}; sh_re=${sh_rest#*|}
+    for loc in C en_US.UTF-8; do
+      sh_ok=1; sh_bad=""
+      for v in "${shape_inputs[@]}"; do
+        want=0; printf '%s' "$v" | LC_ALL=C grep -qE "$sh_re" && want=1
+        got=$(export LC_ALL="$loc"; if pane_id_shape_ok "$v" "$sh_letters"; then echo 1; else echo 0; fi)
+        [ "$got" = "$want" ] || { sh_ok=0; sh_bad="$sh_bad ['$v': $got != $want]"; }
+      done
+      check "20 $sh_name 모양 검사가 옛 grep 과 같다 (LC_ALL=$loc, 입력 ${#shape_inputs[@]}개)$sh_bad" "$sh_ok" 1
+    done
+  done
+  fc_ok=1; fc_bad=""; fc_n=0
+  for v in "a${TAB}b${TAB}c" abc "" "${TAB}b" "a${TAB}" "a${TAB}${TAB}c" "가${TAB}나 다"; do
+    for n in 1 2 3 4; do
+      want=$(printf '%s' "$v" | cut -f"$n")
+      fact_col "$v" "$n"; got=$PANE_COL
+      fc_n=$((fc_n + 1))
+      [ "$got" = "$want" ] || { fc_ok=0; fc_bad="$fc_bad ['$v' f$n: '$got' != '$want']"; }
+    done
+  done
+  check "20 fact_col 이 옛 cut -f 와 같다 (${fc_n}경우)$fc_bad" "$fc_ok" 1
+else
+  bad "20 동치 단언" "pane_id_shape_ok·fact_col·글자 목록을 run-pane.sh 에서 찾지 못했다"
+fi
+
 printf '\n통과 %s · 실패 %s · 건너뜀 %s\n' "$passed" "$failed" "$skipped"
 [ "$failed" -eq 0 ]
