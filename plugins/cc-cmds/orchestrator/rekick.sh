@@ -403,7 +403,7 @@ for rk_f in manifest_field manifest_hdr_field manifest_row_fields manifest_plan_
             manifest_design_roster_rows_anywhere manifest_clause_rows_raw manifest_base_design_rows \
             manifest_design_scope manifest_split_run manifest_design_delivery manifest_source_ticket_rows \
             manifest_apply_code_rows target_field target_aliases canonical_targets binding_set_bytes \
-            check_manifest rundir_of_run_id deadline_instant cutpoint_index \
+            check_manifest rundir_of_run_id deadline_instant cutpoint_index cutpoint_token \
             judgment_class_ok judgment_class_forbidden \
             cc_live_stages cc_shift_is_live cc_relay_is_live cc_waiting_fresh_count cc_unanswered_halts cc_halt_answered \
             cc_unresolved_blocked cc_open_approval_rows cc_segment_states \
@@ -3870,8 +3870,12 @@ EOF
   # segment, naming the previous run, and each the row a `머지입양후보` line
   # derived again here makes. One whose candidate carries a fix worktree
   # stands only beside that segment's `세그먼트 입양` row, and one whose
-  # candidate carries none stands only without it.
-  local mrows min mrow mkey mline mpr mm mh mw
+  # candidate carries none stands only without it. The target it names keeps,
+  # in the draft, a cutpoint the driver's manifest check takes for such a row
+  # (`머지`, `배포` or `머지후착수`): a person's re-kickoff may lower a carried
+  # cutpoint at the hook check, and this check is the last one before the
+  # source is closed in favour of a run that check would refuse.
+  local mrows min mrow mkey mline mpr mm mh mw mt mcut
   mrows=$(MANIFEST="$draft" manifest_merge_adoption_rows)
   min=$(awk '/^## / { sec = $0; next } sec == "## 인가" && /^- `머지 입양`/' "$draft")
   [ "$mrows" = "$min" ] || why="${why:+$why; }## 인가 밖에 머지 입양 행이 있습니다"
@@ -3882,6 +3886,12 @@ EOF
       || why="${why:+$why; }세그먼트 $mkey 의 머지 입양 행이 하나가 아닙니다"
     [ "$(manifest_row_fields "$mrow" '출처 런' | head -n 1)" = "$pid" ] \
       || why="${why:+$why; }세그먼트 $mkey 의 머지 입양 행이 원천 런 $pid 를 출처로 적지 않습니다"
+    mt=$(manifest_row_fields "$mrow" '대상' | head -n 1)
+    mcut=$(MANIFEST="$draft" target_field "$mt" '절단점')
+    case "$(cutpoint_token "$mcut" 2>/dev/null || true)" in
+      머지|배포|머지후착수) : ;;
+      *) why="${why:+$why; }세그먼트 $mkey 의 머지 입양 대상 $mt 의 절단점이 「${mcut}」입니다 — 머지 입양은 절단점이 「머지」·「배포」·「머지후착수」 인 대상에만 둡니다" ;;
+    esac
     mline=$(printf '%s\n' "$cands" | awk -F '\t' -v k="$mkey" '$1 == "머지입양후보" && $2 == k')
     if [ -z "$mline" ]; then why="${why:+$why; }세그먼트 $mkey 는 지금 다시 유도한 머지 입양 후보가 아닙니다"; continue; fi
     IFS="$TAB" read -r _ _ mpr mm mh mw <<EOF

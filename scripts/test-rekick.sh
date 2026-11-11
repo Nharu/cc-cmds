@@ -3632,6 +3632,24 @@ a13 "$S13M3"
 check "13 머지 입양: 리뷰가 열린 머지 입양 세그먼트마다 후보 한 줄이다" "$(md13m)" \
   "머지입양후보${TAB}I1${TAB}7${TAB}$M13M${TAB}$H13M
 머지입양후보${TAB}I2${TAB}8${TAB}$M13M${TAB}$H13M"
+# A person's re-kickoff that takes the merged request over keeps the target's
+# `머지` cutpoint and passes; one whose hook check lowered that cutpoint to `PR`
+# (the `7.7 절단점` answer with the rewritten target row) fails `입양` here,
+# before 7.8 would close the source in favour of a run the driver refuses.
+printf '입양 I1\t이어받기 — I1 · PR #7 · 머지됨 · %s\n' "$(printf '%s' "$M13M" | cut -c1-12)" > "$WORK/a13m-take"
+SL_DOC='(없음)' SL_DOCSHA='(해당 없음)' SL_AUTO= SL_ASKED="$WORK/a13m-take" seat_link "$S13M" 20261002-b00000m1
+out=$(rk verify-subset "$SL_OUT" "$BASE/docs/pipeline-run/$S13M.plan.md" --expect-sha256 "$SL_PMS" --expect-grant-sha256 "$SL_PGS" --asked "$WORK/a13m-take")
+check "13 머지 입양 사람: 절단점을 그대로 두고 이어받으면 render-manifest 가 0, verify-subset 이 통과하고 머지 입양 행이 하나다" \
+  "$SL_RC/$(col "$out" 판정)/$(printf '%s\n' "$out" | awk -F'\t' '$1 == "검사" && $2 == "입양" { print $3 }')/$(grep -c '^- `머지 입양` | 세그먼트=I1 |' "$SL_OUT" || true)" "0/통과/통과/1"
+grep -E '^- `target`' "$BASE/docs/pipeline-run/$S13M.plan.md" | sed 's/| 절단점=머지 |/| 절단점=PR |/' > "$WORK/targets-13m-pr"
+cp "$WORK/a13m-take" "$WORK/a13m-low"; printf '7.7 절단점 rk\tPR\n' >> "$WORK/a13m-low"
+SL_DOC='(없음)' SL_DOCSHA='(해당 없음)' P_GCUT=PR SL_AUTO= SL_ASKED="$WORK/a13m-low" seat_link "$S13M" 20261002-b00000m2 --targets "$WORK/targets-13m-pr"
+out=$(rk verify-subset "$SL_OUT" "$BASE/docs/pipeline-run/$S13M.plan.md" --expect-sha256 "$SL_PMS" --expect-grant-sha256 "$SL_PGS" --asked "$WORK/a13m-low")
+check "13 머지 입양 사람: 훅 점검이 절단점을 PR 로 낮춘 초안은 render-manifest 가 0 이고 verify-subset 이 실패한다" \
+  "$SL_RC/$(col "$out" 판정)/$(grep -c '| 절단점=PR |' "$SL_OUT" || true)" "0/실패/1"
+check "13 머지 입양 사람: 실패한 검사는 입양 하나다" "$(printf '%s\n' "$out" | awk -F'\t' '$1 == "검사" && $3 == "실패" { print $2 }')" "입양"
+has "13 머지 입양 사람: 입양 검사의 사유가 머지 입양 대상의 절단점을 든다" \
+  "$(printf '%s\n' "$out" | awk -F'\t' '$1 == "검사" && $2 == "입양" { print $4 }')" "세그먼트 I1 의 머지 입양 대상 rk 의 절단점이 「PR」입니다"
 rm -f "$GH13/view.7" "$GH13/view.8"
 unset -f pr13m mk13m view13m md13m
 unset PLAN13M M13M H13M F13M S13M S13M2 S13M3 S13M4 S13M5 S13M6
