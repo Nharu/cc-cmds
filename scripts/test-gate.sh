@@ -6338,6 +6338,12 @@ pre_tier() {
   TIER_PLAN_PATHNOAUDIT="{ $TIER_TEAM4_HEAD, \"design_path\": \"solo-audit\", $TIER_STEPS_SOLO }"
   # 재킥오프의 후속 계획 — 동결된 설계와 끝난 감사를 떨구고 키는 그대로 둔다.
   TIER_PLAN_REKICK="{ \"design_required\": false, \"design_tier_judged\": \"team-4\", \"design_tier\": \"team-4\", \"design_heavy_reasons\": [\"세 레포의 계약을 함께 바꾼다\"], \"design_scope\": \"single\", \"design_path\": \"solo-audit\", \"steps\": [ { \"id\": \"I1\", \"skill\": \"implement\", \"summary\": \"구현\", \"depends_on\": [] } ] }"
+  # 핫픽스 고정 틀 — solo 티어, 단일 범위, design → implement → review, 강제 표면 없음.
+  TIER_PLAN_HOTFIX="{ \"design_required\": true, \"design_tier_judged\": \"solo\", \"design_tier\": \"solo\", \"design_heavy_reasons\": [], \"estimated_files\": 2, \"design_scope\": \"single\", \"design_path\": \"none\", \"run_profile\": \"hotfix\", \"unresolved\": [], \"enforcement_surface\": { \"judgment\": \"없음\", \"classes\": [], \"paths\": [], \"source\": \"의도\", \"rationale\": \"강제 표면을 가리키는 입력이 없다\" }, \"steps\": [ { \"id\": \"D1\", \"skill\": \"design\", \"summary\": \"설계\", \"depends_on\": [] }, { \"id\": \"I1\", \"skill\": \"implement\", \"summary\": \"구현\", \"depends_on\": [\"D1\"] }, { \"id\": \"R1\", \"skill\": \"review\", \"summary\": \"리뷰\", \"depends_on\": [\"I1\"] } ] }"
+  # 판정 키 여섯 — team-4 단일 설계 계획이 기본값으로 내는 값과 근거.
+  TIER_JUDGED_KEYS='{ "design_delivery_judged": "slices", "design_delivery_rationale": "한 런의 슬라이스로 착지할 크기다", "design_path_judged": "solo-audit", "design_path_rationale": "맞세울 구조안이 없다", "ticket_publish_judged": "none", "ticket_publish_rationale": "의도에 출처 트래커가 없다" }'
+  # tier_judged <계획 json> <jq 식> — 계획에 판정 키 여섯을 얹은 뒤 식으로 고친 계획을 낸다.
+  tier_judged() { jq -c --argjson k "$TIER_JUDGED_KEYS" ". + \$k | $2" <<<"$1"; }
   TIER_P_AUDIT='/cc-cmds:design-audit-unattended @DOC@'
   # 설계 로스터 행 하나 — 토론 경로에서만 승인되는 행.
   TIER_ROSTER_ROW='- `설계 로스터` | 역할=x | 범위=y | 모델=opus'
@@ -62305,7 +62311,7 @@ check "88f-4: 두 번째 머지의 대상 증명은 앞 머지의 cycle 이 아�
 
 # ---------------------------------------------------------------------------
 # 89. 설계 티어 — 진입 판정의 검사기, 런 개시의 티어 행, 스킬 선택과 그 강제
-# --- section: 89 | group: tier | covers: tier, snapshot, check_manifest, act, plan, audit_disclosure | anchors: 89: 검사기가 solo-audit 계획을 통과시킨다, 89: solo-audit 계획의 solo 설계 명령은 통과한다, 89: 매니페스트 검사가 로스터를 지닌 solo-audit 계획을 거부한다, 89: 감사 하나가 감사 공시 행 하나를 쓴다, 89: 조정 패스 지침이 바뀌면 감사 판이 바뀐다, 89: 판독자 모델 행이 바뀌면 감사 판이 바뀐다, 89: 검사기가 solo 판정 계획을 통과시킨다, 89: 검사기가 내린 계획을 거부한다, 89: 매니페스트 검사가 내린 계획을 거부한다, 89: 첫 진입이 설계 티어 행 하나를 쓴다, 89: 둘째 진입은 설계 티어 행을 더 쓰지 않는다, 89: 키 이전 계획의 런에는 설계 티어 행이 없다, 89: solo 계획의 스냅숏 design_skill 은 design-solo-unattended 다, 89: solo 계획의 팀 설계 명령은 룰 거절이다, 89: solo 계획의 모르는 설계 명령은 룰 거절이다, 89: team-4 계획의 solo 설계 명령은 룰 거절이다, 89: 의도가 토론 명령을 인용한 solo 계획의 solo 설계 명령은 통과한다, 89: 토론 명령을 인용한 solo 설계 명령은 team-4 계획에서 룰 거절이다, 89: solo 설계 스테이지의 재부착은 거부되지 않는다, 89: solo 런의 동결 뒤 다음 스텝은 구현이다 ---
+# --- section: 89 | group: tier | covers: tier, snapshot, check_manifest, act, plan, audit_disclosure | anchors: 89: 검사기가 solo-audit 계획을 통과시킨다, 89: 검사기가 판정 키를 지닌 team-4 단일 설계 계획을 통과시킨다, 89: 검사기가 EARLY 판정 키 계획을 거부한다,89: solo-audit 계획의 solo 설계 명령은 통과한다, 89: 매니페스트 검사가 로스터를 지닌 solo-audit 계획을 거부한다, 89: 감사 하나가 감사 공시 행 하나를 쓴다, 89: 조정 패스 지침이 바뀌면 감사 판이 바뀐다, 89: 판독자 모델 행이 바뀌면 감사 판이 바뀐다, 89: 검사기가 solo 판정 계획을 통과시킨다, 89: 검사기가 내린 계획을 거부한다, 89: 매니페스트 검사가 내린 계획을 거부한다, 89: 첫 진입이 설계 티어 행 하나를 쓴다, 89: 둘째 진입은 설계 티어 행을 더 쓰지 않는다, 89: 키 이전 계획의 런에는 설계 티어 행이 없다, 89: solo 계획의 스냅숏 design_skill 은 design-solo-unattended 다, 89: solo 계획의 팀 설계 명령은 룰 거절이다, 89: solo 계획의 모르는 설계 명령은 룰 거절이다, 89: team-4 계획의 solo 설계 명령은 룰 거절이다, 89: 의도가 토론 명령을 인용한 solo 계획의 solo 설계 명령은 통과한다, 89: 토론 명령을 인용한 solo 설계 명령은 team-4 계획에서 룰 거절이다, 89: solo 설계 스테이지의 재부착은 거부되지 않는다, 89: solo 런의 동결 뒤 다음 스텝은 구현이다 ---
 #
 # 진입 판정은 킥오프 모델 자신의 행위라 CI 가 그 선택을 결정적으로 돌릴 수 없다. 이
 # 절은 그 대신 판정이 놓인 뒤의 사슬 — 검사기, 매니페스트 검사, 런 개시의 행, 스냅숏,
@@ -62373,6 +62379,47 @@ for tier_d in "PATHBAD|(d) design_path 가 solo-audit · discuss-audit · none �
     0/*) bad "89: 검사기가 ${tier_d%%|*} 계획을 (d) 로 거부한다" "통과했다" ;;
     *"${tier_d#*|}"*) ok "89: 검사기가 ${tier_d%%|*} 계획을 (d) 로 거부한다" ;;
     *) bad "89: 검사기가 ${tier_d%%|*} 계획을 (d) 로 거부한다" "$TIER_OUT" ;;
+  esac
+done
+# 단언 (i) — 판정 키 여섯. 키가 하나도 없는 계획은 위의 계획들이 모두 이미 통과했다.
+TIER_J_SOLOPATH=$(tier_judged "$TIER_PLAN_SOLOPATH" '.')
+TIER_J_TICKETS=$(tier_judged "$TIER_PLAN_SOLOPATH" '.design_delivery_judged = "tickets" | .design_path_judged = "discuss-audit"')
+TIER_J_REKICK=$(tier_judged "$TIER_PLAN_REKICK" '.')
+TIER_J_HOTFIX=$(tier_judged "$TIER_PLAN_HOTFIX" '.design_path_judged = "none" | .design_delivery_rationale = "핫픽스 고정 틀이라 판단하지 않았다" | .design_path_rationale = "핫픽스 고정 틀이라 판단하지 않았다"')
+TIER_J_EARLYOK=$(tier_judged "$TIER_PLAN_OLD" '.design_path_judged = "none"')
+for tier_i in "SOLOPATH|판정 키를 지닌 team-4 단일 설계 계획" \
+              "TICKETS|tickets · discuss-audit 판정 계획" \
+              "REKICK|판정 키를 지닌 재킥오프 후속 계획" \
+              "HOTFIX|고정 틀 값의 판정 키를 지닌 핫픽스 계획" \
+              "EARLYOK|티어 판정 없이 none 경로 판정을 지닌 계획"; do
+  eval "tier_plan=\$TIER_J_${tier_i%%|*}"
+  tier_check "$tier_plan"
+  check "89: 검사기가 ${tier_i#*|}을 통과시킨다" "$TIER_RC/$TIER_OUT" "0/"
+done
+check "89: 판정 키가 없는 옛 계획은 (i) 가 단언하지 않는다" \
+  "$(tier_check "$TIER_PLAN_SOLOPATH"; printf '%s/%s' "$TIER_RC" "$TIER_OUT")" "0/"
+TIER_J_PARTIAL=$(tier_judged "$TIER_PLAN_SOLOPATH" 'del(.ticket_publish_rationale)')
+TIER_J_ENUM=$(tier_judged "$TIER_PLAN_SOLOPATH" '.ticket_publish_judged = "jira"')
+TIER_J_BLANK=$(tier_judged "$TIER_PLAN_SOLOPATH" '.design_path_rationale = "  "')
+TIER_J_PATHTIER=$(tier_judged "$TIER_PLAN_SOLO" '.')
+TIER_J_TICKETNONE=$(tier_judged "$TIER_PLAN_SOLOPATH" '.design_delivery_judged = "tickets" | .design_path_judged = "none"')
+TIER_J_TICKETTIER=$(tier_judged "$TIER_PLAN_SOLO" '.design_delivery_judged = "tickets" | .design_path_judged = "none"')
+TIER_J_EARLY=$(tier_judged "$TIER_PLAN_OLD" '.')
+TIER_J_FRAME=$(tier_judged "$TIER_PLAN_HOTFIX" '.design_path_judged = "none" | .design_delivery_judged = "tickets"')
+for tier_i in "PARTIAL|(i) 판정 키 여섯 중 일부만 있습니다" \
+              "ENUM|(i) ticket_publish_judged 가 none · github · clickup 중 하나가 아닙니다" \
+              "BLANK|(i) design_path_rationale 가 비어 있습니다" \
+              "PATHTIER|(i) design_path_judged 가 \"solo-audit\" 인데 design_tier_judged 가 team-4 가 아닙니다" \
+              "TICKETNONE|(i) design_delivery_judged 가 tickets 인데 design_path_judged 가 none 입니다" \
+              "TICKETTIER|(i) design_delivery_judged 가 tickets 인데 design_tier_judged 가 team-4 가 아닙니다" \
+              "EARLY|(i) design_path_judged 가 \"solo-audit\" 인데 design_tier_judged 가 team-4 가 아닙니다: null" \
+              "FRAME|(f) 핫픽스 계획의 design_delivery_judged 가 slices 가 아닙니다"; do
+  eval "tier_plan=\$TIER_J_${tier_i%%|*}"
+  tier_check "$tier_plan"
+  case "$TIER_RC/$TIER_OUT" in
+    0/*) bad "89: 검사기가 ${tier_i%%|*} 판정 키 계획을 거부한다" "통과했다" ;;
+    *"${tier_i#*|}"*) ok "89: 검사기가 ${tier_i%%|*} 판정 키 계획을 거부한다" ;;
+    *) bad "89: 검사기가 ${tier_i%%|*} 판정 키 계획을 거부한다" "$TIER_OUT" ;;
   esac
 done
 

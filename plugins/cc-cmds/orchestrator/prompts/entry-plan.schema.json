@@ -16,6 +16,12 @@
     "design_scope_rationale": { "type": "string" },
     "design_path": { "type": "string", "enum": ["solo-audit", "discuss-audit", "none"] },
     "design_delivery": { "type": "string", "enum": ["slices", "tickets"] },
+    "design_delivery_judged": { "type": "string", "enum": ["slices", "tickets"] },
+    "design_delivery_rationale": { "type": "string" },
+    "design_path_judged": { "type": "string", "enum": ["solo-audit", "discuss-audit", "none"] },
+    "design_path_rationale": { "type": "string" },
+    "ticket_publish_judged": { "type": "string", "enum": ["none", "github", "clickup"] },
+    "ticket_publish_rationale": { "type": "string" },
     "visual_design_rationale": { "type": "string" },
     "work_class": { "type": "string", "enum": ["fix", "feat", "docs", "other", "unknown"] },
     "work_class_rationale": { "type": "string" },
@@ -77,6 +83,6 @@
     "review_expand_rationale": { "type": "string" },
     "notes": { "type": "string" }
   },
-  "required": ["anchor_kind", "anchor_key", "entry_skill", "entry_rationale", "design_required", "design_rationale", "design_tier", "design_tier_judged", "design_heavy_reasons", "estimated_files", "design_tier_rationale", "design_scope", "design_scope_rationale", "design_path", "design_delivery", "visual_design_rationale", "work_class", "work_class_rationale", "targets", "steps", "unresolved", "enforcement_surface", "run_profile", "review_expand", "review_expand_rationale", "notes"],
+  "required": ["anchor_kind", "anchor_key", "entry_skill", "entry_rationale", "design_required", "design_rationale", "design_tier", "design_tier_judged", "design_heavy_reasons", "estimated_files", "design_tier_rationale", "design_scope", "design_scope_rationale", "design_path", "design_delivery", "design_delivery_judged", "design_delivery_rationale", "design_path_judged", "design_path_rationale", "ticket_publish_judged", "ticket_publish_rationale", "visual_design_rationale", "work_class", "work_class_rationale", "targets", "steps", "unresolved", "enforcement_surface", "run_profile", "review_expand", "review_expand_rationale", "notes"],
   "additionalProperties": false
 }
