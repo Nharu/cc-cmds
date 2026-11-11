@@ -3650,6 +3650,22 @@ check "13 머지 입양 사람: 훅 점검이 절단점을 PR 로 낮춘 초안�
 check "13 머지 입양 사람: 실패한 검사는 입양 하나다" "$(printf '%s\n' "$out" | awk -F'\t' '$1 == "검사" && $3 == "실패" { print $2 }')" "입양"
 has "13 머지 입양 사람: 입양 검사의 사유가 머지 입양 대상의 절단점을 든다" \
   "$(printf '%s\n' "$out" | awk -F'\t' '$1 == "검사" && $2 == "입양" { print $4 }')" "세그먼트 I1 의 머지 입양 대상 rk 의 절단점이 「PR」입니다"
+# The source's target row carries no `리뷰 정책 상한`, so a carried blank
+# `review-ceiling` row confirmed at `리뷰없음` reaches the draft through `--set`
+# and passes the target check; the `입양` check refuses that ceiling on a
+# merge-adopted target, as the driver's manifest check would on the run's first
+# gate call.
+cp "$WORK/a13m-take" "$WORK/a13m-ceil"; printf '5o rk:review-ceiling\t이대로\n' >> "$WORK/a13m-ceil"
+blanks "$WORK/blanks-13m-ceil" "t/rk${TAB}review-ceiling${TAB}리뷰없음"
+SL_DOC='(없음)' SL_DOCSHA='(해당 없음)' SL_AUTO= SL_ASKED="$WORK/a13m-ceil" seat_link "$S13M" 20261002-b00000m3 --set 'rk:review-ceiling=리뷰없음'
+out=$(rk verify-subset "$SL_OUT" "$BASE/docs/pipeline-run/$S13M.plan.md" --expect-sha256 "$SL_PMS" --expect-grant-sha256 "$SL_PGS" --asked "$WORK/a13m-ceil" \
+  --set 'rk:review-ceiling=리뷰없음' --blank-rows "$WORK/blanks-13m-ceil")
+check "13 머지 입양 사람: 빈 상한을 리뷰없음 으로 확정한 초안은 render-manifest 가 0 이고 verify-subset 이 실패한다" \
+  "$SL_RC/$(col "$out" 판정)/$(grep -E '^- `target`' "$SL_OUT" | grep -c '| 리뷰 정책 상한=리뷰없음' || true)" "0/실패/1"
+check "13 머지 입양 사람: 빈 상한을 리뷰없음 으로 확정한 초안에서 실패한 검사는 입양 하나다" \
+  "$(printf '%s\n' "$out" | awk -F'\t' '$1 == "검사" && $3 == "실패" { print $2 }')" "입양"
+has "13 머지 입양 사람: 입양 검사의 사유가 머지 입양 대상의 리뷰없음 상한을 든다" \
+  "$(printf '%s\n' "$out" | awk -F'\t' '$1 == "검사" && $2 == "입양" { print $4 }')" "세그먼트 I1 의 머지 입양 대상 rk 의 리뷰 정책 상한이 「리뷰없음」입니다"
 rm -f "$GH13/view.7" "$GH13/view.8"
 unset -f pr13m mk13m view13m md13m
 unset PLAN13M M13M H13M F13M S13M S13M2 S13M3 S13M4 S13M5 S13M6

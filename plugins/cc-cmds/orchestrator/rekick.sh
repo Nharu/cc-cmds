@@ -3871,11 +3871,13 @@ EOF
   # derived again here makes. One whose candidate carries a fix worktree
   # stands only beside that segment's `세그먼트 입양` row, and one whose
   # candidate carries none stands only without it. The target it names keeps,
-  # in the draft, a cutpoint the driver's manifest check takes for such a row
-  # (`머지`, `배포` or `머지후착수`): a person's re-kickoff may lower a carried
-  # cutpoint at the hook check, and this check is the last one before the
-  # source is closed in favour of a run that check would refuse.
-  local mrows min mrow mkey mline mpr mm mh mw mt mcut
+  # in the draft, what the driver's manifest check takes for such a row: a
+  # `리뷰 정책 상한` other than `리뷰없음`, and a cutpoint of `머지`, `배포` or
+  # `머지후착수`. A person's re-kickoff may lower a carried cutpoint at the hook
+  # check, or fill a ceiling the source left empty with `리뷰없음` from a
+  # confirmed blank row, and this check is the last one before the source is
+  # closed in favour of a run that check would refuse.
+  local mrows min mrow mkey mline mpr mm mh mw mt mcut mceil
   mrows=$(MANIFEST="$draft" manifest_merge_adoption_rows)
   min=$(awk '/^## / { sec = $0; next } sec == "## 인가" && /^- `머지 입양`/' "$draft")
   [ "$mrows" = "$min" ] || why="${why:+$why; }## 인가 밖에 머지 입양 행이 있습니다"
@@ -3887,6 +3889,9 @@ EOF
     [ "$(manifest_row_fields "$mrow" '출처 런' | head -n 1)" = "$pid" ] \
       || why="${why:+$why; }세그먼트 $mkey 의 머지 입양 행이 원천 런 $pid 를 출처로 적지 않습니다"
     mt=$(manifest_row_fields "$mrow" '대상' | head -n 1)
+    mceil=$(MANIFEST="$draft" target_field "$mt" '리뷰 정책 상한')
+    [ "$mceil" != "리뷰없음" ] \
+      || why="${why:+$why; }세그먼트 $mkey 의 머지 입양 대상 $mt 의 리뷰 정책 상한이 「리뷰없음」입니다 — 입양 세그먼트는 선리뷰후머지로 풀리므로 그 대상에는 둘 수 없습니다"
     mcut=$(MANIFEST="$draft" target_field "$mt" '절단점')
     case "$(cutpoint_token "$mcut" 2>/dev/null || true)" in
       머지|배포|머지후착수) : ;;
