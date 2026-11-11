@@ -1,0 +1,20 @@
+env	CC_CMDS_NOTIFY_PATH_DISABLE_PREPEND	1
+env	CC_CMDS_ATTENTION_ROOT	@ROOT@/attention-absent
+env	CC_CMDS_DASHBOARD	off
+env	FLEET_PACE_ROOT	@ROOT@/pace
+env	XDG_STATE_HOME	@ROOT@/state
+env	XDG_CONFIG_HOME	@ROOT@/config
+env	CLAUDE_CONFIG_DIR	@UNSET@
+env	TMUX	@UNSET@
+env	TMUX_PANE	@UNSET@
+env	CLAUDE_CODE_SESSION_ID	@UNSET@
+env	GH_HOST	invalid.invalid
+env	GH_TOKEN
+fixture	copy	session .
+fixture	chain	state/cc-cmds/run/W1/ledger.md W1
+fixture	chain	state/cc-cmds/run/Q1/ledger.md Q1
+fixture	chain	state/cc-cmds/run/E1/ledger.md E1
+fixture	live	state/cc-cmds/run/W1/S1
+argv	main	@ORCH@/run-pane.sh
+argv	main	SID1
+stop	exit	-
