@@ -5,7 +5,7 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [3.43.2] - 2026-11-11
+## [3.43.3] - 2026-11-11
 
 autopilot 킥오프 질문의 추천이 판단이 아닌 고정 기본값까지 「추천」 으로 보이던 결함을 고쳤습니다. 이제 진입 판정이 배달 방식·설계 경로·티켓 발행 트래커를 확정 키와 따로 판정 키로 남기고, 킥오프는 그 판정 키에서만 ` ← 추천` 을 달며, 판정이 없는 질문과 스킬의 고정 기본값에는 ` ← 기본값` 을 답니다. 게이트(`gate.sh`)와 원장은 바뀌지 않았습니다.
 
