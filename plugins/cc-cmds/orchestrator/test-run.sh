@@ -496,6 +496,85 @@ printf '%s\n' "$DP_READ" '{"type":"result","num_turns":3,"permission_denials":[{
 if decision_point_reached Sden; then ok "결정 지점 탐지기는 질문 도구의 권한 거부에서 참"; else bad "결정 지점 탐지기" "질문 도구 권한 거부를 보지 않았다"; fi
 check "종단: 질문 도구 권한 거부는 산출물 없는 정지" "$(classify_termination Sden 0 1)" "산출물 없는 정지"
 
+# 중단 기록의 모양. 옵션 줄 규칙은 run.sh 한 곳에 있고, 형식 술어는 닫힌 결함
+# 낱말 여섯만 낸다. 형식이 어긋난 기록은 정지가 아니라 공허한 성공이고, 옮겨
+# 둔 `.malformed` 가 있으면 다시 분류해도 같은 답이 나온다.
+HF="$WORK/hf"; mkdir -p "$HF"
+hf_rec() {  # hf_rec <이름> <줄>... — 머리줄과 닫는 펜스 사이에 줄을 둔 기록
+  local n="$1"; shift
+  { printf '%s\n' '<!-- cc-pipeline-halt v1; writer=implement-unattended; reader=orchestrator; stage=X; run=R -->'
+    printf '%s\n' "$@"
+    printf '%s\n' '<!-- /cc-pipeline-halt v1 -->'; } > "$HF/$n.md"
+}
+hf_def() { halt_record_wellformed "$HF/$1.md" | awk 'NF { printf "%s%s", (n++ ? "," : ""), $0 }'; }
+hf_rec ok '**스텝**: Step 1 — 픽스처' '**선택지**:' '- `계속` — 이어서 한다' '- `중단`'
+check "옵션 줄은 선택지 블록의 두 꼴만 센다" \
+  "$(halt_option_lines < "$HF/ok.md" | awk 'END { print NR }')" "2"
+hf_rec quoted '**스텝**: Step 3 — 픽스처' '**질문 문면**: 다음 줄을 보라' '- `인용` — 블록 밖' '**선택지**:' '- `계속`' '**추천**: `계속`' '- `추천 뒤` — 블록 밖'
+check "블록 밖의 옵션 모양 줄은 옵션이 아니다" "$(halt_option_lines < "$HF/quoted.md")" '- `계속`'
+check "올바른 기록에는 결함이 없다" "$(hf_def ok)" ""
+hf_rec none '**스텝**: Step 1 외부 선행 미충족 — 픽스처' '**선택지**: (없음) — 원인이 풀리면 다시 띄운다' '- `옵션 모양` — 없음 아래'
+check "(없음) 꼴과 그 아래 옵션 모양 줄은 결함이 아니다" "$(hf_def none)$(halt_option_lines < "$HF/none.md")" ""
+hf_rec inline '**스텝**: Step 1 — 픽스처' '**선택지**: 계속, 중단'
+check "선택지를 콜론 뒤에 적으면 선택지 줄 밖" "$(hf_def inline)" "선택지 줄 밖"
+printf '%s\n' '**스텝**: Step 1' '<!-- /cc-pipeline-halt v1 -->' > "$HF/nohead.md"
+check "머리줄이 없으면 머리줄 없음" "$(hf_def nohead)" "머리줄 없음"
+printf '%s\n' '<!-- cc-pipeline-halt v1; writer=x -->' '**스텝**: Step 1' > "$HF/nofence.md"
+check "닫는 펜스가 없으면 닫는 펜스 없음" "$(hf_def nofence)" "닫는 펜스 없음"
+hf_rec twofence '**스텝**: Step 1' '<!-- /cc-pipeline-halt v1 -->'
+check "닫는 펜스가 두 번이면 닫는 펜스 중복" "$(hf_def twofence)" "닫는 펜스 중복"
+hf_rec nostep '**분류**: gate-unanswerable' '**선택지**:' '- `계속`'
+check "스텝 줄이 없으면 스텝 없음" "$(hf_def nostep)" "스텝 없음"
+hf_rec conf '**스텝**: Step 1 외부 선행 미충족 — 픽스처' '**선택지**: (없음) — x' \
+  '**해소 확인 명령**: `gh pr view 259 --repo Nharu/cc-cmds --json state --jq .state`' '**해소 기대 출력**: `MERGED`'
+check "문법에 맞는 해소 확인 두 줄은 결함이 아니다" "$(hf_def conf)" ""
+hf_rec conf1 '**스텝**: Step 1' '**선택지**: (없음) — x' '**해소 확인 명령**: `git status`'
+check "해소 확인 한 줄만 있으면 해소 확인 문법" "$(hf_def conf1)" "해소 확인 문법"
+hf_rec confpipe '**스텝**: Step 1' '**선택지**: (없음) — x' '**해소 확인 명령**: `git log | head`' '**해소 기대 출력**: `x`'
+check "확인 명령의 금지 문자는 해소 확인 문법" "$(hf_def confpipe)" "해소 확인 문법"
+hf_rec confsp '**스텝**: Step 1' '**선택지**: (없음) — x' '**해소 확인 명령**: `git  status`' '**해소 기대 출력**: `x`'
+check "확인 명령의 연속 공백은 해소 확인 문법" "$(hf_def confsp)" "해소 확인 문법"
+if halt_record_wellformed "$HF/missing.md" >/dev/null; then bad "없는 기록" "없는 파일을 올바르다고 읽음"; else ok "없는 기록 파일은 형식 술어를 통과하지 못한다"; fi
+
+# 분류: 시도 번호가 붙은 경로의 결함 있는 기록은 의도된 park 보다 앞서 공허한
+# 성공이다. 옛 경로(시도 표지 없음)의 기록은 판정하지 않는다.
+printf '1\n' > "$RUN_DIR/Smf.attempt"
+cp "$HF/inline.md" "$RUN_DIR/halt/Smf#1.md"
+check "종단: 형식이 어긋난 기록은 공허한 성공" "$(classify_termination Smf 0 1)" "공허한 성공"
+check "형식 결함 단서는 고정 문구다" "$(halt_record_format_clue Smf)" "중단 기록 형식 결함"
+check "분류기는 기록을 옮기지 않는다" "$( [ -f "$RUN_DIR/halt/Smf#1.md" ] && printf 그대로)" "그대로"
+check "옮기기는 .malformed 경로를 낸다" "$(halt_record_settle_malformed Smf)" "$RUN_DIR/halt/Smf#1.md.malformed"
+check "옮긴 뒤에도 같은 분류가 나온다(동치 규칙)" "$(classify_termination Smf 0 1)" "공허한 성공"
+check "옮기기는 멱등이다" "$(halt_record_settle_malformed Smf)" "$RUN_DIR/halt/Smf#1.md.malformed"
+cp "$HF/inline.md" "$RUN_DIR/halt/Smf#1.md"
+check "이름이 차 있으면 -2 를 붙이고 덮어쓰지 않는다" "$(halt_record_settle_malformed Smf)" "$RUN_DIR/halt/Smf#1.md.malformed-2"
+check "옮긴 마지막 파일을 읽는다" "$(halt_record_malformed_of "$RUN_DIR/halt/Smf#1.md")" "$RUN_DIR/halt/Smf#1.md.malformed-2"
+case "$(halt_record_format_message "$RUN_DIR/halt/Smf#1.md.malformed-2")" in
+  *'결함: 선택지 줄 밖'*"$RUN_DIR/halt/Smf#1.md.malformed-2"*'printenv CC_PIPELINE_STAGE_ID'*) ok "이어가기 문구는 결함·옮긴 경로·경로 다시 읽기를 싣는다" ;;
+  *) bad "이어가기 문구" "결함·옮긴 경로·경로 다시 읽기 중 빠진 것이 있다" ;;
+esac
+cp "$HF/ok.md" "$RUN_DIR/halt/Smf#1.md"
+check "올바른 기록은 다시 의도된 park" "$(classify_termination Smf 0 1)" "의도된 park"
+cp "$HF/inline.md" "$RUN_DIR/halt/Sleg.md"
+if halt_record_format_clue Sleg >/dev/null; then bad "옛 경로" "시도 표지 없는 기록을 판정했다"; else ok "시도 표지 없는 옛 경로의 기록은 형식 판정을 하지 않는다"; fi
+check "형식 결함은 rc 0 에서만 공허한 성공으로 바꾼다" "$(printf '1\n' > "$RUN_DIR/Smr.attempt"; cp "$HF/inline.md" "$RUN_DIR/halt/Smr#1.md"; classify_termination Smr 1 1)" "의도된 park"
+
+# 실패 서명: 두 원인이 모두 형식 결함 단서이면 진척을 빼고 비교한다.
+FMTH=$(printf '%s\n' '중단 기록 형식 결함' | sig_sha12)
+check "형식 결함 서명은 진척이 달라도 같은 실패" \
+  "$(same_failure_reason "implement/공허한 성공/$FMTH/a1" "implement/공허한 성공/$FMTH/b2" && printf 1 || printf 0)" "1"
+check "다른 원인은 지금처럼 넷을 비교" \
+  "$(same_failure_reason "implement/공허한 성공/abc/a1" "implement/공허한 성공/abc/b2" && printf 1 || printf 0)" "0"
+check "형식 결함과 다른 원인은 같은 실패가 아니다" \
+  "$(same_failure_reason "implement/공허한 성공/$FMTH/a1" "implement/공허한 성공/abc/a1" && printf 1 || printf 0)" "0"
+
+# 외부 대기 정지: precondition-failed 이고 스텝이 `Step 1 외부 선행 미충족` 으로 시작할 때만.
+hf_rec ext '**분류**: precondition-failed' '**스텝**: Step 1 외부 선행 미충족 — PR 259 머지 대기' '**선택지**: (없음) — x'
+hf_rec extg '**분류**: gate-unanswerable' '**스텝**: Step 1 외부 선행 미충족 — x' '**선택지**: (없음) — x'
+hf_rec pre '**분류**: precondition-failed' '**스텝**: Step 1 — 설계 문서 없음' '**선택지**: (없음) — x'
+check "외부 선행 미충족만 외부 대기다" \
+  "$(halt_step_is_external_wait "$HF/ext.md" && printf 1 || printf 0)$(halt_step_is_external_wait "$HF/extg.md" && printf 1 || printf 0)$(halt_step_is_external_wait "$HF/pre.md" && printf 1 || printf 0)" "100"
+
 # 한도 종료 판정. 스테이지가 사용량 한도로 스스로 끝났는지는 그 시도 자신의
 # 스트림에서 타입이 있는 필드로만 읽는다. 최소 한도 스트림은 init · allowed
 # 프레임 · rejected 프레임 · 429 봉투 네 줄이고, 아래 변형은 그중 적힌 부분만

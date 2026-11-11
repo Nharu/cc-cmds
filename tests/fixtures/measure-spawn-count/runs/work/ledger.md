@@ -1,0 +1,2 @@
+- `run` | run-id=R1 | prev=@PREV@
+- `segment` | id=S1 | 상태=실행중 | 워크트리=@ROOT@/R1 | prev=@PREV@

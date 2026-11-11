@@ -98,6 +98,7 @@ Load no deferred tool: this arm uses neither `Agent` nor `SendMessage`, and the 
 2. **Enter at the step the record names**, from what is on disk — the document at the document path and the record — and apply the card's option there as the answer to the record's `**질문 문면**`, as **Resumed turns** below says for that option. Do not ask that question again.
 3. **If the question computed there is not the record's**, do not apply the answer: write a new halt record for the question computed now, with the card's path in its `관측 상세`.
 4. **Never rewrite the carried record** — the card's `**중단 기록**` belongs to the earlier attempt, and the answer is bound to its digest.
+5. **A fixed answer is not an option.** When the card's label is `원인 해소 후 재개` and the carried record has no option line in its `**선택지**:` block, do not apply it as an option: follow the sentence on that fixed answer in the resume paragraph of `${CLAUDE_SKILL_DIR}/../_common/pipeline-sidecar.md` §4, which comes before items 2 and 3.
 
 **Re-entered on a re-entry card.** The gate moved a resume whose bound account ran out to this new session on another account and left a card (`${CLAUDE_SKILL_DIR}/../_common/pipeline-sidecar.md` §4.2). Read it once, at entry, and only when its `**스테이지**` equals `CC_PIPELINE_STAGE_ID`; otherwise this is an ordinary dispatch. An answer card set too comes first, and the re-entry card only confirms the cut session and the cause. Read nothing but the document, the run directory and the tree — no transcript. Where to go on follows the document:
 

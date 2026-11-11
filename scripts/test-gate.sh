@@ -328,6 +328,8 @@ digests_from_given=0
 # tree uses the value to tell whether the code those sections stand on is still
 # the same on another; it runs no assertion and leaves nothing behind.
 cutdig_mode=0
+# The arguments as given, for the slot re-exec below.
+tg_orig_args=("$@")
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --list)
@@ -404,6 +406,33 @@ if [ "$cutdig_mode" = "1" ]; then
      || [ "$digests_from_given" = "1" ] || [ -n "$oracle_mode" ]; then
     printf 'test-gate: --cut-digest 는 --sections <id>[,<id>...] 와만 함께 씁니다\n' >&2
     exit 2
+  fi
+fi
+
+# A RUN THAT EXECUTES SECTIONS ASKS FOR A HOST TEST SLOT, ONCE, HERE. The point
+# sits after the arguments are checked and before the caller's timing, progress
+# and isolation variables below are read and dropped, so the process that comes
+# back through `scripts/test-slots.sh --run` still sees them. The modes that run
+# no section (the oracle modes, `--list`, `--estimate`, `--digests`,
+# `--cut-digest`, `--record-add`) never ask. The decision is taken in a subshell
+# so the slot helper's names stay out of this file's; a helper that is missing
+# or does not source reads as off. The process that comes back carries
+# CC_TEST_SLOT_HELD=1, and so do the cut and every nested run below it, so none
+# of them asks again. Off, nothing is re-executed.
+if [ -z "$oracle_mode" ] && [ "$sections_list" != "1" ] && [ "$est_mode" != "1" ] \
+   && [ "$digests_mode" != "1" ] && [ "$cutdig_mode" != "1" ] && [ -z "$rec_add_file" ] \
+   && [ "${CC_TEST_SLOT_HELD:-}" != "1" ] && [ -f "$repo_root/scripts/test-slots.sh" ]; then
+  tg_slots_on=$(. "$repo_root/scripts/test-slots.sh" 2>/dev/null && ts_init "" && printf '%s' "$TS_ON") || tg_slots_on=0
+  if [ "$tg_slots_on" = "1" ]; then
+    if [ -n "$sections_want" ]; then
+      tg_slot_key="lane:$sections_want"
+      tg_slot_name="절 $sections_want"
+    else
+      tg_slot_key="gate:all"
+      tg_slot_name="test-gate 전량"
+    fi
+    exec bash "$repo_root/scripts/test-slots.sh" --run "$tg_slot_key" "$tg_slot_name" -- \
+      bash "$SELF" ${tg_orig_args[@]+"${tg_orig_args[@]}"}
   fi
 fi
 
@@ -4169,7 +4198,10 @@ pre_cone() {
   NCFG="$WORK/ncfg"; NTX="$NCFG/projects/proj"; mkdir -p "$NTX"
   frame_probe() {
     # frame_probe <세션 uuid> <기준> — open one grade-2 judgment and leave its id
-    # in `$pid`, its question in `$pq` and its row count in `$pcount`.
+    # in `$pid`, its question in `$pq` and its row count in `$pcount`. When no new
+    # judgment opens, all three are left empty: the caller's assertions then fail
+    # as FAIL lines instead of dying on an unbound name under `set -u`, and an
+    # earlier probe's values cannot satisfy them.
     local sid="$1" std="$2" prev
     prev=$(row_field "$(last_judgment_approval)" '승인 id')
     gateN act --manifest "$NM" --kind judgment --target infra --segment SD --cutpoint 커밋 \
@@ -4177,8 +4209,8 @@ pre_cone() {
           -- 등급=2 기준="$std" 근거="프레임 승인 실험"
     pid=$(row_field "$(last_judgment_approval)" '승인 id')
     if [ -z "$pid" ] || [ "$pid" = "$prev" ]; then
-      bad "프레임 픽스처" "판단 승인이 새로 열리지 않았다 ($std, rc=$rc, $msg)"
-      pid=""; return 0
+      bad "프레임 픽스처" "판단 승인이 새로 열리지 않았다 ($std, rc=${rc:-}, ${msg:-})"
+      pid=""; pq=""; pcount=""; return 0
     fi
     pq=$(row_field "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F "승인 id=$pid " | tail -1)" '질문 문면')
     pcount=$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -cF "승인 id=$pid " || true)
@@ -5334,6 +5366,62 @@ CB60EOF
     } > "$f"
     printf '%s' "$f"
   }
+  nr_rec() {
+    # nr_rec <stage id> <꼴> [확인 명령] [기대 출력] — 세그먼트 RF 의 외부 선행 미충족 기록을
+    # halt/<stage id>.md 로 둔다. 경로를 찍는다. 꼴은 선택지 블록과 봉투의 모양이다:
+    #   빈       콜론 뒤가 빈 `**선택지**:` 줄과 옵션 줄 없는 블록 — 선택지 없는 기록
+    #   없음     `**선택지**: (없음) — …` — 선택지 없는 기록
+    #   없음옵션 `(없음)` 줄 아래에 옵션 모양 줄 — 여전히 선택지 없는 기록
+    #   밖옵션   빈 블록, 질문 문면에 인용한 옵션 모양 줄 — 선택지 없는 기록
+    #   옵션     옵션 줄 하나가 있는 기록
+    #   콜론옵션 옵션을 콜론 뒤에 이어 적은 기록 — 형식 결함
+    #   머리없음·펜스없음·펜스중복 — 봉투의 형식 결함
+    #   확인하나 확인 명령 필드만 있는 기록 — 형식 결함
+    local f="$SA_RUN/halt/$1.md" form="$2"
+    mkdir -p "$SA_RUN/halt"
+    {
+      [ "$form" = 머리없음 ] \
+        || printf '<!-- cc-pipeline-halt v1; writer=implement-unattended; reader=orchestrator; stage=%s; run=%s -->\n' "$1" "$SA_ID"
+      printf '**중단 시각**: 2026-11-04T00:00:00Z\n**스킬**: implement-unattended\n**스텝**: Step 1 외부 선행 미충족 — 다른 PR 의 머지\n**분류**: precondition-failed\n**질문 문면**: 픽스처의 질문\n'
+      [ "$form" != 밖옵션 ] || printf '%s\n' '- `git pull` — 질문에 인용한 줄'
+      case "$form" in
+        없음) printf '**선택지**: (없음) — 사람만 아는 것\n' ;;
+        없음옵션) printf '**선택지**: (없음) — 사람만 아는 것\n%s\n' '- `재시도` — 옵션 모양 줄' ;;
+        옵션) printf '**선택지**:\n%s\n' '- `재시도` — 세션을 다시 붙인다' ;;
+        콜론옵션) printf '**선택지**: %s\n' '`재시도` — 콜론 뒤에 이어 적음' ;;
+        *) printf '**선택지**:\n' ;;
+      esac
+      if [ -n "${3:-}" ]; then
+        printf '**해소 확인 명령**: `%s`\n' "$3"
+        [ "$form" = 확인하나 ] || printf '**해소 기대 출력**: `%s`\n' "$4"
+      fi
+      printf '**하네스 오류**: (없음)\n**재호출 명령**: (없음)\n**후속**: 보류 큐\n'
+      [ "$form" = 펜스없음 ] || printf '<!-- /cc-pipeline-halt v1 -->\n'
+      [ "$form" != 펜스중복 ] || printf '<!-- /cc-pipeline-halt v1 -->\n'
+    } > "$f"
+    printf '%s' "$f"
+  }
+  nr_tok() {
+    # nr_tok <필드> — 원장의 마지막 `중단 답` 행에서 그 필드의 값.
+    gate_row_field "$( { grep '^- `중단 답` ' "$SA_LEDGER" || true; } | tail -1)" "$1"
+  }
+  sb_run_state() {
+    # sb_run_state — 공유 런 상태 술어의 토큰. 새 프로세스에서 liveness.sh 만 싣는다.
+    bash -c '. "$1" >/dev/null 2>&1; cc_run_state "$2" "$3"' _ \
+      "$repo_root/plugins/cc-cmds/orchestrator/liveness.sh" "$SA_RUN" "$SA_LEDGER"
+  }
+  sb_in() {
+    # sb_in <명령…> — 게이트를 소싱한 새 프로세스에서 한 명령. 이 픽스처의 매니페스트·
+    # 원장·런 디렉터리·런 id 를 세운다. 교대만 쓰는 행은 CC_PIPELINE_SHIFT_ID 를 앞에
+    # 붙여 부른다.
+    ( cd "$SA_WT" && bash -c '
+        g=$1; m=$2; l=$3; d=$4; i=$5; shift 5
+        CC_GATE_SOURCE_ONLY=1 . "$g" </dev/null >/dev/null 2>&1 || exit 97
+        set +e
+        unset CC_GATE_SOURCE_ONLY
+        MANIFEST=$m; LEDGER=$l; RUN_DIR=$d; RUN_ID=$i
+        "$@"' _ "$GATE" "$SA_MANIFEST" "$SA_LEDGER" "$SA_RUN" "$SA_ID" "$@" )
+  }
   rfa_ans_line() { grep -n '^- `중단 답` ' "$SA_LEDGER" | tail -1 | cut -d: -f1; }
   rfa_carry() {
     # rfa_carry <답 줄> <프롬프트> — 그 답을 운반하는 구현 act.
@@ -5718,25 +5806,10 @@ pre_sb() {
         --surface 읽기 --snapshot-digest "$(SAH)" --rationale '적용 종료 도달성' -- 절=x 근거=y
   }
 
-  sb_run_state() {
-    # sb_run_state — 공유 런 상태 술어의 토큰. 새 프로세스에서 liveness.sh 만 싣는다.
-    bash -c '. "$1" >/dev/null 2>&1; cc_run_state "$2" "$3"' _ \
-      "$repo_root/plugins/cc-cmds/orchestrator/liveness.sh" "$SA_RUN" "$SA_LEDGER"
-  }
+  # sb_run_state 는 sa 그룹의 절도 부르므로 pre_sa 에 있다.
 
   # ---- 적용 정산(38-15 ~ 38-19)의 픽스처 -----------------------------------
-  sb_in() {
-    # sb_in <명령…> — 게이트를 소싱한 새 프로세스에서 한 명령. 이 픽스처의 매니페스트·
-    # 원장·런 디렉터리·런 id 를 세운다. 교대만 쓰는 행은 CC_PIPELINE_SHIFT_ID 를 앞에
-    # 붙여 부른다.
-    ( cd "$SA_WT" && bash -c '
-        g=$1; m=$2; l=$3; d=$4; i=$5; shift 5
-        CC_GATE_SOURCE_ONLY=1 . "$g" </dev/null >/dev/null 2>&1 || exit 97
-        set +e
-        unset CC_GATE_SOURCE_ONLY
-        MANIFEST=$m; LEDGER=$l; RUN_DIR=$d; RUN_ID=$i
-        "$@"' _ "$GATE" "$SA_MANIFEST" "$SA_LEDGER" "$SA_RUN" "$SA_ID" "$@" )
-  }
+  # sb_in 은 sa 그룹의 절도 부르므로 pre_sa 에 있다.
   sb_row_put() {
     # sb_row_put <행 계열> <필드…> — 게이트의 저수준 기록기로 행 하나를 쓴다. 게이트가
     # 그 행을 스스로 쓰는 경로(끊긴 감독자, 이전 셸의 정산)를 거치지 않고 원장 모양만
@@ -6356,7 +6429,7 @@ BSXSTUBEOF
     printf '%s' "$2" > "$1.result"
     if [ -n "${3:-}" ]; then printf '%s\n' "$3" > "$1.sh"; else rm -f "$1.sh"; fi
   }
-  BSX_HALT='mkdir -p "$CC_PIPELINE_RUN_DIR/halt"; printf "# 중단 기록\n\n픽스처\n\n<!-- /cc-pipeline-halt v1 -->\n" > "$CC_PIPELINE_RUN_DIR/halt/$CC_PIPELINE_STAGE_ID.md"'
+  BSX_HALT='mkdir -p "$CC_PIPELINE_RUN_DIR/halt"; printf "<!-- cc-pipeline-halt v1; writer=design-base-unattended; reader=orchestrator; stage=%s -->\n**스텝**: 픽스처\n<!-- /cc-pipeline-halt v1 -->\n" "$CC_PIPELINE_STAGE_ID" > "$CC_PIPELINE_RUN_DIR/halt/$CC_PIPELINE_STAGE_ID.md"'
   bsx_stub "$WORK/bin/bsx-design" "$BSX_LIT_DESIGN"
   bsx_stub "$WORK/bin/bsx-audit" "$BSX_LIT_AUDIT" 'bash "$(dirname "$0")/claude-stub-au-artifact" "$@"'
   bsx_stub "$WORK/bin/bsx-split" "$BSX_LIT_SPLIT"
@@ -10305,7 +10378,7 @@ printf '%s\n' "$L_INIT" "$L_REJ" \
 printf '%s\n' "$L_INIT" "$L_ALLOWED" "$L_REJ" > "$LIM14/noenv.json"
 printf '%s\n' "$L_INIT" "$L_ALLOWED" "$L_OK" > "$LIM14/ok.json"
 printf '%s\n' '<!-- cc-pipeline-halt v1; writer=implement-unattended; reader=orchestrator; stage=LH; run=x -->' \
-  '**분류**: gate-unanswerable' '<!-- /cc-pipeline-halt v1 -->' > "$LIM14/halt.md"
+  '**분류**: gate-unanswerable' '**스텝**: Step 3 — 픽스처' '<!-- /cc-pipeline-halt v1 -->' > "$LIM14/halt.md"
 limit_probe() {
   # limit_probe <seg> <attempt> <rc> <stream-file> <hand-down: 1|0> [halt]
   cd "$WT" && CC_GATE_SOURCE_ONLY=1 bash -c '
@@ -20413,6 +20486,21 @@ graded_as '읽기'         'git config --get 은 조회다'              -- git 
 graded_as '읽기'         '--global 이어도 --get 은 조회다'         -- git config --global --get user.name
 graded_as '워크트리쓰기' '로컬 config 쓰기는 트리 안이다'          -- git config user.name x
 graded_as '트리밖쓰기'   'git config --global 은 홈을 고친다'      -- git config --global user.name x
+graded_as '형태 미상'    '명령을 담는 키의 로컬 쓰기는 형태로 거부된다' -- git config core.fsmonitor x
+graded_as '형태 미상'    '키 이름의 대소문자를 바꿔도 같다'          -- git config --local core.HooksPath x
+graded_as '읽기'         '명령을 담는 키도 조회는 조회다'            -- git config --get core.fsmonitor
+graded_as '형태 미상'    'ls-remote 의 --exec 는 프로그램을 고른다'   -- git ls-remote --exec=x origin
+graded_as '형태 미상'    '--upload-pack 의 줄임 접두도 같다'         -- git ls-remote --upload-p=x origin
+graded_as '형태 미상'    '값을 띄어 쓴 줄임 접두도 같다'             -- git ls-remote --u x origin
+graded_as '읽기'         '--exit-code 는 그대로 읽기다'              -- git ls-remote --exit-code origin
+graded_as '형태 미상'    'fetch 의 --upload-pack 줄임 접두도 같다'   -- git fetch --upl=x origin
+graded_as '읽기'         '프로그램을 고르지 않는 fetch 는 그대로다'  -- git fetch origin
+graded_as '형태 미상'    'grep 의 --open-files-in-pager 줄임 접두는 프로그램을 고른다' -- git grep --open-files-in=x -e y
+graded_as '형태 미상'    'grep 의 -O 는 프로그램을 고른다'           -- git grep -Ox -e y
+graded_as '형태 미상'    '-o 가 값으로 삼킨 -- 뒤의 fetch 옵션도 본다' -- git fetch -o -- --upload-pack=x .
+graded_as '형태 미상'    '-o 가 값으로 삼킨 -- 뒤의 ls-remote 옵션도 본다' -- git ls-remote -o -- --exec=x .
+graded_as '형태 미상'    '-e 가 값으로 삼킨 -- 뒤의 grep 옵션도 본다' -- git grep -e -- -Ox
+graded_as '형태 미상'    '-o 가 값으로 삼킨 -- 뒤의 push 옵션도 본다' -- git push -o -- --receive-pack=x origin
 
 # The grade table alone does not cover what was observed: the refusal arrived as
 # an exit 6 on the ACT path, so the repair has to be measured there too.
@@ -24561,7 +24649,7 @@ r7_probe() {
       printf "2\n" > "$RUN_DIR/$seg.attempt"
       cp "$7" "$RUN_DIR/log/$seg#2.json"
       printf "%s\n" "<!-- cc-pipeline-halt v1; writer=implement-unattended; reader=orchestrator; stage=$seg#$8; run=$RUN_ID -->" \
-        "**분류**: gate-unanswerable" "<!-- /cc-pipeline-halt v1 -->" > "$RUN_DIR/halt/$seg#$8.md"
+        "**분류**: gate-unanswerable" "**스텝**: Step 3 — 픽스처" "<!-- /cc-pipeline-halt v1 -->" > "$RUN_DIR/halt/$seg#$8.md"
       p=$(halt_record_path "$seg"); c=$(classify_termination "$seg" 0 0)
       # The attempt wrote a row of its own, as a stage that worked does; without
       # one the gate files a clean exit as `공허한 성공`.
@@ -39776,7 +39864,7 @@ for rp_id in $rp_ids; do
   rp_n=$((rp_n + 1))
   grep -qF -- "| \`$rp_id\` |" "$RP_SHIFT" || rp_miss="$rp_miss $rp_id"
 done
-check "34o: 게이트 선언에서 경로 id 열하나를 읽는다 (아래가 공허하지 않다)" "$rp_n" "11"
+check "34o: 게이트 선언에서 경로 id 열둘을 읽는다 (아래가 공허하지 않다)" "$rp_n" "12"
 check "34o: 교대 스킬이 게이트의 경로 id 를 모두 이름 댄다" "${rp_miss:-없음}" "없음"
 rp_lits=0
 grep -qF -- '`**스텝**: Step 6 조정 패스 — CFI-3b 종합 질문`' "$RP_SKILLS/design-audit-unattended/SKILL.md" && rp_lits=$((rp_lits + 1))
@@ -51836,9 +51924,9 @@ case "$(lsr93_hand "$lsr93_l" "$FX_MANIFEST" 이월 '다음 런의 답')" in
   "3|"*"이월 인계를 쓸 수 없습니다 — 런이 이미 끝났습니다"*) ok "95: TH1 끝난 런의 이월 인계는 exit 3 이다" ;;
   *) bad "95 TH1 끝난 런" "$(lsr93_hand "$lsr93_l" "$FX_MANIFEST" 이월 '다음 런의 답')" ;;
 esac
-# 기다릴 것 없는 대기 인계는 이월이 생겨도 거절되고, 문면은 기다릴 수 있는 대상(`CI 대기`·`master 대기` 세그먼트, `리셋 대기` 키)을 모두 적는다.
+# 기다릴 것 없는 대기 인계는 이월이 생겨도 거절되고, 문면은 기다릴 수 있는 대상(`CI 대기`·`master 대기` 세그먼트, `리셋 대기` 키, `확인 대기` 기록)을 모두 적는다.
 case "$(lsr93_hand "$lsr_root/th1/ledger.md" "$FX_MANIFEST" 대기 '기다릴 것')" in
-  "3|"*"nothing to wait on — no live stage or supervisor, no \`CI 대기\` or \`master 대기\` segment and no \`리셋 대기\` key, so a \`대기\` handoff is refused"*)
+  "3|"*"nothing to wait on — no live stage or supervisor, no \`CI 대기\` or \`master 대기\` segment, no \`리셋 대기\` key and no \`확인 대기\` record, so a \`대기\` handoff is refused"*)
     ok "95: TH1 기다릴 것 없는 대기 인계는 기다릴 대상을 모두 적은 문면으로 거절된다" ;;
   *) bad "95 TH1 대기 문면" "$(lsr93_hand "$lsr_root/th1/ledger.md" "$FX_MANIFEST" 대기 '기다릴 것')" ;;
 esac
@@ -69447,6 +69535,359 @@ check "110b: 결함 기록 없는 앞 시도 뒤의 시도는 수정 시도가 �
 rfa_carry "$(rfa_ans_line)" "$(rfa_ans_field "$f110b" carry_prompt)"
 check "110b: 그 틀 운반은 게이트를 지난다" "$(cb60_pass)" "통과"
 unset r110b n110b h110b f110b p110b s110b a110b
+
+# ---------------------------------------------------------------------------
+# 110c. 선택지 없는 기록의 사람 답 — 두 고정 라벨, 라우팅 도장, park 의 소진, 런 범위 키와 옵션 기록의 거절
+# --- section: 110c | group: sa | covers: act, halt-answer, snapshot, gate_halt_record_no_options, gate_halt_answer_labels, gate_halt_answer_route, gate_halt_answer_consumer | anchors: 110c: 원인 해소 후 재개 답은 라우팅=재부착 으로 적힌다, 110c: 세그먼트 park 답은 라우팅=원인-보류 로 적힌다, 110c: park 행이 원인-보류 답을 소진한다, 110c: (없음) 꼴 기록도 고정 답을 받는다, 110c: 옵션 줄이 있는 기록에 고정 라벨은 거부된다, 110c: 런 범위 키의 세그먼트 park 는 거부된다 ---
+#
+# 옵션 줄이 하나도 없는 기록 — 콜론 뒤가 빈 블록이든 `(없음)` 꼴이든 — 에는 사람이
+# `원인 해소 후 재개` 와 `세그먼트 park` 두 고정 라벨로 답한다. 앞의 답은 세션을 다시
+# 붙이고(`라우팅=재부착`), 뒤의 답은 교대가 세그먼트의 park 행을 쓰는 보류다
+# (`라우팅=원인-보류`). 두 도장 모두 답 행에 찍혀, 읽는 쪽이 갈래를 다시 유도하지 않는다.
+# ---------------------------------------------------------------------------
+rfa_new "선택지 없는 기록 재개 답"
+rfa_sr implement 1 '의도된 park'
+r110c=$(nr_rec 'RF#1' 빈)
+check "110c: 옵션 줄 없는 기록은 선택지 없는 기록이다" \
+  "$( ( LEDGER="$SA_LEDGER" RUN_DIR="$SA_RUN" gate_halt_record_no_options "$r110c" ); printf '%s' "$?")" "0"
+rfa_ans "$r110c" '원인 해소 후 재개'
+check "110c: 원인 해소 후 재개 답은 라우팅=재부착 으로 적힌다" \
+  "$rc|$(nr_tok 라우팅)|$(rfa_ans_field "$r110c" route)" "0|재부착|재부착"
+
+rfa_new "선택지 없는 기록 park 답"
+rfa_sr implement 1 '의도된 park'
+r110c=$(nr_rec 'RF#1' 빈)
+rfa_ans "$r110c" '세그먼트 park'
+check "110c: 세그먼트 park 답은 라우팅=원인-보류 로 적힌다" \
+  "$rc|$(nr_tok 라우팅)|$(rfa_ans_field "$r110c" route)" "0|원인-보류|원인-보류"
+sag act --manifest "$SA_MANIFEST" --kind segment --target main --segment RF --cutpoint 커밋 \
+    --snapshot-digest "$(SAH)" --rationale x -- 상태=park 워크트리="$SA_SEGWT" 선행=없음 '선언 파일 집합=work.txt'
+check "110c: park 행이 원인-보류 답을 소진한다" "$rc|$(rfa_ans_field "$r110c" route)" "0|"
+
+for f110c in 없음 없음옵션 밖옵션; do
+  rfa_new "선택지 없는 기록 $f110c"
+  rfa_sr implement 1 '의도된 park'
+  r110c=$(nr_rec 'RF#1' "$f110c")
+  rfa_ans "$r110c" '원인 해소 후 재개'
+  if [ "$f110c" = 없음 ]; then
+    check "110c: (없음) 꼴 기록도 고정 답을 받는다" "$rc|$(nr_tok 라우팅)" "0|재부착"
+  else
+    check "110c: $f110c 꼴 기록도 선택지 없는 기록이라 고정 답을 받는다" "$rc|$(nr_tok 라우팅)" "0|재부착"
+  fi
+done
+
+rfa_new "옵션 기록의 고정 라벨"
+rfa_sr implement 1 '의도된 park'
+r110c=$(nr_rec 'RF#1' 옵션)
+n110c=$(rfa_n '중단 답')
+for a110c in '원인 해소 후 재개' '세그먼트 park'; do
+  rfa_ans "$r110c" "$a110c"
+  case "$rc|$msg" in
+    2'|'*'is a fixed answer for a record that offers no option'*) ok "110c: 옵션 줄이 있는 기록에 고정 라벨은 거부된다 — $a110c" ;;
+    *) bad "110c: 옵션 줄이 있는 기록에 고정 라벨은 거부된다 — $a110c" "$rc|$msg" ;;
+  esac
+done
+check "110c: 그 거절은 중단 답 행을 남기지 않는다" "$(rfa_n '중단 답')" "$n110c"
+rfa_ans "$r110c" '재시도'
+check "110c: 그 기록은 자기 옵션으로는 답을 받는다" "$rc|$(nr_tok 라우팅)" "0|"
+
+# 런 범위 키에는 park 할 세그먼트가 없다. 이 픽스처의 매니페스트에는 런 범위 단계가
+# 없으므로, 키를 런 범위 단계로 읽는 술어만 바꿔 끼워 라벨 목록과 라우팅을 잰다.
+rfa_new "런 범위 키의 고정 라벨"
+r110c=$(nr_rec 'S2#1' 빈)
+check "110c: 런 범위 키의 고정 라벨은 원인 해소 후 재개 하나다" \
+  "$(R110C="$r110c" sb_in eval 'gate_run_scope_kind_of_key() { printf design; }
+       gate_halt_answer_labels S2 "$R110C" | tr "\n" ","')" "원인 해소 후 재개,"
+check "110c: 세그먼트 키의 고정 라벨은 둘이다" \
+  "$(R110C="$r110c" sb_in eval 'gate_halt_answer_labels RF "$R110C" | tr "\n" ","')" "원인 해소 후 재개,세그먼트 park,"
+o110c=$(R110C="$r110c" sb_in eval 'gate_run_scope_kind_of_key() { printf design; }
+           r=0; gate_halt_answer_route S2 "$R110C" "세그먼트 park" 사람 >/dev/null 2>&1 || r=$?
+           printf "%s|%s" "$r" "$GATE_HALT_ROUTE_REASON"')
+case "$o110c" in
+  3'|'*'런 범위 키 S2 에는 세그먼트가 없어'*) ok "110c: 런 범위 키의 세그먼트 park 는 거부된다" ;;
+  *) bad "110c: 런 범위 키의 세그먼트 park 는 거부된다" "$o110c" ;;
+esac
+unset r110c n110c f110c a110c o110c
+
+# ---------------------------------------------------------------------------
+# 110d. 확인 명령과 좌석 답 — 일치 기록, 좌석 답의 수용과 거절, 릴레이의 확인 갈래, 돌려줌 줄, 확인 대기 런의 상태
+# --- section: 110d | group: sa | covers: act, halt-answer, relay, gate_halt_confirm_admit, gate_confirm_precheck, gate_confirm_run, gate_confirm_eligible, gate_relay_confirm_set, gate_relay_confirm_due, gate_relay_wait, gate_relay_hand_back, cc_run_state, gate_master_claim_run_ended | anchors: 110d: 일치 기록 없는 좌석 답은 거부되고 횟수 파일을 늘리지 않는다, 110d: 기대 출력과 같은 출력은 일치 기록을 남긴다, 110d: 일치 뒤 좌석 답은 해소 확인 근거로 적힌다, 110d: 기대 출력이 다르면 일치가 아니고 좌석 답은 거부된다, 110d: 시간 제한을 넘긴 명령은 일치가 아니다, 110d: 쓰기 명령과 값 조회형 명령은 돌지 않고 세지 않는다, 110d: 자동 답 스위치가 꺼지면 좌석 답도 확인 갈래도 닫힌다, 110d: 같은 키의 넷째 해소 확인 답은 거부된다, 110d: 릴레이는 일치에서 해소 확인 일치 로 돌려준다, 110d: 상한에 닿은 기록만 남은 대기는 확인 소진 으로 돌려준다, 110d: 다른 갈래가 남으면 소진 뒤에도 기다린다, 110d: 돌려줌 줄은 런 끝·확인 소진·해소 확인 일치·이어지는 대기가 서로 다르다, 110d: 살아 있는 릴레이의 확인 대기 런은 도는중 이고 끝난 런이 아니다 ---
+#
+# 확인 명령은 릴레이의 확인 갈래 한 곳에서만 돈다. 일치하면 `$RUN_DIR/confirm/<이름>.match`
+# 가 남고, 좌석의 `원인 해소 후 재개` 는 그 일치 기록에 기대어서만 선다. `halt-answer` 는
+# 명령을 돌리지도 세지도 않는다. 시험의 확인 명령은 이 픽스처의 세그먼트 워크트리에서
+# 브랜치 이름을 읽는 로컬 읽기이고, 시간 제한은 loose ref 자리의 FIFO 에서 멈추는 git 으로 잰다.
+# ---------------------------------------------------------------------------
+c110d_seat() {
+  # c110d_seat <기록> — 좌석의 해소 확인 답.
+  sag act --manifest "$SA_MANIFEST" --kind halt-answer --target main --segment RF --cutpoint 커밋 \
+      --surface 읽기 --snapshot-digest "$(SAH)" --rationale "픽스처 — 좌석의 해소 확인 답" \
+      -- "중단 기록=$1" '선택지=원인 해소 후 재개' '답한 주체=좌석' "근거=해소 확인 — $(basename "$1" .md)"
+}
+c110d_run() {
+  # c110d_run <이름> — 확인 갈래의 한 번 실행. 「rc|횟수|종료 코드」, 종료 코드는 게이트 로그 줄의 값.
+  C110D_N="$1" sb_in eval '
+    r=0; o=$(gate_confirm_run "$C110D_N" 2>&1) || r=$?
+    printf "%s|%s|%s" "$r" "$(gate_confirm_count "$C110D_N" | cut -d" " -f1)" \
+      "$(printf "%s\n" "$o" | sed -n "s/.*해소 확인 — .* · 종료 코드 \([^ ]*\) · .*/\1/p" | tail -1)"'
+}
+c110d_elig() {
+  # c110d_elig <이름> — 「rc|빠진 까닭」
+  C110D_N="$1" sb_in eval 'r=0; gate_confirm_eligible "$C110D_N" >/dev/null 2>&1 || r=$?; printf "%s|%s" "$r" "$GATE_CONFIRM_OUT"'
+}
+c110d_wait() {
+  # c110d_wait — 확인 대기 핸드오프 뒤의 릴레이 대기. 「rc|마지막 relay 줄」
+  sb_in eval '
+    GATE_RELAY_FP=fp; GATE_RELAY_STARTED=""; GATE_RELAY_SEAT_START=$(date -u +%s)
+    r=0; o=$(gate_relay_wait 2>/dev/null) || r=$?
+    printf "%s|%s" "$r" "$(printf "%s\n" "$o" | sed -n "s/.*\[relay\] //p" | tail -1)"'
+}
+c110d_handoff() {
+  # c110d_handoff <이름> — 교대의 대기 인계 행. 릴레이가 확인 대기 칸을 이 행에서 읽는다.
+  printf -- '- `handoff` | 교대=1 | 사유=대기 | 확인 대기=%s | prev=x\n' "$1" >> "$SA_LEDGER"
+}
+c110d_new() {
+  # c110d_new <라벨> <기대 출력> [명령] — 확인 필드를 실은 선택지 없는 기록 RF#1 의 픽스처. 경로를 r110d 에 둔다.
+  rfa_new "$1"
+  rfa_sr implement 1 '의도된 park'
+  r110d=$(nr_rec 'RF#1' 빈 "${3:-git rev-parse --is-inside-work-tree}" "$2")
+}
+
+# 좌석 답은 자동 답 스위치가 켜져 있어야 받아진다. 스위트 머리가 끈 값을 절 끝에서 되돌린다.
+q110d=${CC_CMDS_AUTOPILOT_AUTO_RESOLVE-}
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=1
+c110d_new "확인 일치" true
+n110d=$(rfa_n '중단 답')
+c110d_seat "$r110d"
+case "$rc|$msg" in
+  3'|'*'no recent confirmation match'*) ok "110d: 일치 기록 없는 좌석 답은 거부되고 횟수 파일을 늘리지 않는다 — 거절" ;;
+  *) bad "110d: 일치 기록 없는 좌석 답은 거부되고 횟수 파일을 늘리지 않는다 — 거절" "$rc|$msg" ;;
+esac
+check "110d: 일치 기록 없는 좌석 답은 거부되고 횟수 파일을 늘리지 않는다" \
+  "$(rfa_n '중단 답')|$( [ -e "$SA_RUN/confirm/RF#1.n" ] && printf 있음 || printf 없음)" "$n110d|없음"
+check "110d: 확인 갈래가 그 기록을 돌린다" "$(c110d_elig 'RF#1')" "0|거부"
+check "110d: 기대 출력과 같은 출력은 일치 기록을 남긴다" \
+  "$(c110d_run 'RF#1')|$( [ -s "$SA_RUN/confirm/RF#1.match" ] && printf 있음 || printf 없음)" "0|1|0|있음"
+c110d_seat "$r110d"
+l110d=$( { grep '^- `중단 답` ' "$SA_LEDGER" || true; } | tail -1)
+check "110d: 일치 뒤 좌석 답은 해소 확인 근거로 적힌다" \
+  "$rc|$(gate_row_field "$l110d" '근거 종류')|$(gate_row_field "$l110d" '해소 확인')|$(gate_row_field "$l110d" '라우팅')" \
+  "0|해소 확인|일치|재부착"
+check "110d: 답한 기록은 확인 갈래에서 빠진다" "$(c110d_elig 'RF#1')" "1|답"
+
+c110d_new "확인 불일치" "x-다른-브랜치"
+check "110d: 기대 출력이 다르면 일치가 아니고 좌석 답은 거부된다 — 실행" \
+  "$(c110d_run 'RF#1')|$( [ -e "$SA_RUN/confirm/RF#1.match" ] && printf 있음 || printf 없음)" "1|1|0|없음"
+n110d=$(rfa_n '중단 답')
+c110d_seat "$r110d"
+check "110d: 기대 출력이 다르면 일치가 아니고 좌석 답은 거부된다" "$rc|$(rfa_n '중단 답')" "3|$n110d"
+
+# 멈추는 명령은 PATH 앞에 둔 가짜 프로그램이 아니라, loose ref 자리에 둔 FIFO 를 그 ref 로
+# 읽는 git 이다. 게이트가 소싱하는 run.sh 가 시스템 디렉터리를 상속한 PATH 앞에 붙이므로,
+# gh 가 /usr/bin/gh 인 호스트에서는 PATH 앞의 가짜가 진짜에 가려 곧바로 실패하고 시간
+# 제한에 닿지 않는다. 환경 변수로 거는 멈춤(전역 설정 파일 자리의 FIFO 등)은 게이트가 소싱할
+# 때 시간 제한 밖에서 부르는 git 까지 멈추게 하므로 쓰지 않는다. 쓰는 쪽이 없는 FIFO 는 그
+# ref 를 이름으로 읽는 확인 명령만 멈추게 하고, ref 를 나열하는 다른 경우가 걸리지 않도록
+# 단언 바로 뒤에 지운다.
+c110d_new "확인 시간 제한" "true" "git rev-parse --verify -q refs/heads/c110d-slow"
+f110d="$(cd "$SA_WT" && git rev-parse --path-format=absolute --git-common-dir)/refs/heads/c110d-slow"
+mkfifo "$f110d"
+check "110d: 시간 제한을 넘긴 명령은 일치가 아니다" \
+  "$(CC_GATE_CONFIRM_TIMEOUT_TEST_SECONDS=1 c110d_run 'RF#1')" "1|1|143"
+rm -f "$f110d"
+
+c110d_new "확인 필드 없음" "-"
+r110d=$(nr_rec 'RF#1' 빈)
+c110d_seat "$r110d"
+case "$rc|$msg" in
+  3'|'*'a person answers it'*) ok "110d: 확인 필드 없는 기록의 좌석 답은 거부된다" ;;
+  *) bad "110d: 확인 필드 없는 기록의 좌석 답은 거부된다" "$rc|$msg" ;;
+esac
+
+g110d=""
+for c110d in 'git commit --allow-empty -m x' 'git config --get user.name' 'git ls-remote --exec=sh x' \
+    'git ls-remote --upload-p=sh x' 'git status' 'git log --max-count=1 --format=%GS' 'gh pr view 1 --web' 'gh pr view 1 --web=true' \
+    'git rev-parse --is-inside-work-tree --output=x' 'gh pr view 1 --json title --jq env.X'; do
+  c110d_new "확인 거부 명령 $c110d" "x" "$c110d"
+  o110d=$(c110d_run 'RF#1')
+  case "$o110d" in 1'|0|') ;; *) g110d="$g110d [$c110d → $o110d]" ;; esac
+  c110d_seat "$r110d"
+  [ "$rc" = 3 ] || g110d="$g110d [$c110d 좌석 답 rc=$rc]"
+done
+check "110d: 쓰기 명령과 값 조회형 명령은 돌지 않고 세지 않는다" "${g110d:-없음}" "없음"
+
+# 확인의 git 은 프로그램을 띄우는 설정 키를 끈 채 돈다. 시간 제한 실행기를 이 하위 셸에서만
+# 인자를 보는 함수로 바꿔, 확인 명령이 실제로 받는 argv 를 잰다.
+c110d_new "확인 git 설정 덮어쓰기" "덮어씀"
+check "110d: 확인의 git 은 실행 키를 끈 설정으로 돈다" \
+  "$(C110D_N='RF#1' sb_in eval '
+    gate_metrics_timed() {
+      shift
+      case " $* " in
+        *" env GIT_NO_LAZY_FETCH=1 GIT_ALLOW_PROTOCOL= git -c core.fsmonitor=false -c core.hooksPath=/dev/null -c log.showSignature=false -c gpg.program=false -c gpg.openpgp.program=false -c gpg.ssh.program=false -c gpg.x509.program=false rev-parse --is-inside-work-tree "*) echo 덮어씀 ;;
+        *) echo 없음 ;;
+      esac
+    }
+    r=0; gate_confirm_run "$C110D_N" >/dev/null 2>&1 || r=$?; printf "%s" "$r"')" "0"
+
+c110d_new "자동 답 스위치" true
+check "110d: 스위치를 끄기 전에는 일치한다 (아래 단언이 공허하지 않다)" "$(c110d_run 'RF#1')" "0|1|0"
+p110d=${CC_CMDS_AUTOPILOT_AUTO_RESOLVE-}
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=0
+c110d_seat "$r110d"
+s110d=$rc
+e110d=$(CC_CMDS_AUTOPILOT_AUTO_RESOLVE=0 c110d_elig 'RF#1')
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=$p110d
+check "110d: 자동 답 스위치가 꺼지면 좌석 답도 확인 갈래도 닫힌다" \
+  "$s110d|$e110d|$(cut -d' ' -f1 "$SA_RUN/confirm/RF#1.n")" "3|1|거부|1"
+
+c110d_new "키의 해소 확인 답 상한" true
+c110d_run 'RF#1' >/dev/null
+for i110d in 1 2 3; do
+  printf -- '- `중단 답` | 세그먼트=RF | 중단 기록=%s/halt/old%s.md | 선택지=원인 해소 후 재개 | 답한 주체=좌석 | 근거 종류=해소 확인 | 해소 확인=일치 | prev=x\n' \
+    "$SA_RUN" "$i110d" >> "$SA_LEDGER"
+done
+o110d=$(C110D_R="$r110d" sb_in eval 'r=0; gate_halt_confirm_admit RF "$C110D_R" 2>&1 || r=$?; printf "|%s" "$r"')
+case "$o110d" in
+  *'answers resting on a confirmation (cap 3)'*'|3') ok "110d: 같은 키의 넷째 해소 확인 답은 거부된다" ;;
+  *) bad "110d: 같은 키의 넷째 해소 확인 답은 거부된다" "$o110d" ;;
+esac
+
+# 릴레이 — 확인 대기 인계 뒤의 대기. 교대 기동 행은 어느 끝에서도 서지 않는다.
+c110d_new "릴레이 일치" true
+c110d_handoff 'RF#1'
+check "110d: 릴레이는 일치에서 해소 확인 일치 로 돌려준다" \
+  "$(CC_GATE_CONFIRM_POLL_TEST_SECONDS=1 CC_GATE_RELAY_HOLD_TEST_SECONDS=60 c110d_wait)|$(rfa_n '교대 기동')" \
+  "1|해소 확인 일치 · 좌석이 해소 확인 답을 낸다|0"
+
+c110d_new "릴레이 소진" "x-다른-브랜치"
+c110d_handoff 'RF#1'
+check "110d: 상한에 닿은 기록만 남은 대기는 확인 소진 으로 돌려준다" \
+  "$(CC_GATE_CONFIRM_MAX_TEST=1 CC_GATE_RELAY_HOLD_TEST_SECONDS=60 c110d_wait)|$(rfa_n '교대 기동')" \
+  "1|확인 소진 · 다시 내지 않는다|0"
+check "110d: 같은 대기를 다시 내도 곧바로 같은 돌려줌이고 명령은 다시 돌지 않는다" \
+  "$(CC_GATE_CONFIRM_MAX_TEST=1 CC_GATE_RELAY_HOLD_TEST_SECONDS=60 c110d_wait)|$(cut -d' ' -f1 "$SA_RUN/confirm/RF#1.n")" \
+  "1|확인 소진 · 다시 내지 않는다|1"
+printf '%s\n' "$$" > "$SA_RUN/RF.pid"
+cc_proc_fingerprint "$$" > "$SA_RUN/RF.start"
+o110d=$(CC_GATE_CONFIRM_MAX_TEST=1 CC_GATE_RELAY_HOLD_TEST_SECONDS=2 c110d_wait)
+rm -f "$SA_RUN/RF.pid" "$SA_RUN/RF.start"
+case "$o110d" in
+  1'|대기가 이어진다 — 좌석 호출의 대기 상한 2초가 지났다'*) ok "110d: 다른 갈래가 남으면 소진 뒤에도 기다린다" ;;
+  *) bad "110d: 다른 갈래가 남으면 소진 뒤에도 기다린다" "$o110d" ;;
+esac
+
+c110d_hb() {
+  # c110d_hb <사유> [done] — 빈 런 디렉터리에서 돌려줌 한 번. relay 줄의 본문.
+  C110D_WHY="$1" C110D_DONE="${2:-}" CC_CMDS_ATTENTION=off sb_in eval '
+    RUN_DIR=$(mktemp -d); [ -z "$C110D_DONE" ] || : > "$RUN_DIR/done"
+    GATE_RELAY_FP=x; GATE_RELAY_STARTED=0
+    gate_relay_hand_back "" "" "" "$C110D_WHY" 2>/dev/null | sed -n "s/.*\[relay\] //p" | sed -n 1p
+    rm -rf "$RUN_DIR"'
+}
+h110d="$(c110d_hb x 1)#$(c110d_hb '확인 소진')#$(c110d_hb '해소 확인 일치')#$(c110d_hb x)"
+check "110d: 돌려줌 줄은 런 끝·확인 소진·해소 확인 일치·이어지는 대기가 서로 다르다" "$h110d" \
+  "대기를 거둔다 — x · 다시 내지 않는다#확인 소진 · 다시 내지 않는다#해소 확인 일치 · 좌석이 해소 확인 답을 낸다#대기가 이어진다 — x · 같은 호출을 대기 로 다시 낸다"
+
+# 확인 대기로 오래 조용한 런. 원장이 한 시간 넘게 움직이지 않아도 살아 있는 릴레이가
+# relay.live 를 새로 쓰는 동안은 도는 런이고, 릴레이 없이 사람의 답을 기다리는 런은
+# 지금처럼 버려진 런이다.
+c110d_new "확인 대기 런 상태" true
+c110d_handoff 'RF#1'
+SAH >/dev/null
+printf '%s\n' "$SA_LEDGER" > "$SA_RUN/ledger-path"
+touch -t 202001010000 "$SA_LEDGER"
+c110d_ended() { sb_in eval 'r=0; gate_master_claim_run_ended "$RUN_DIR" || r=$?; printf "%s" "$r"'; }
+printf '%s\n%s\nrefreshed=%s\n' "$$" "$(cc_proc_fingerprint "$$")" "$(date -u +%s)" > "$SA_RUN/relay.live"
+touch -t 202001010000 "$SA_LEDGER"
+check "110d: 살아 있는 릴레이의 확인 대기 런은 도는중 이고 끝난 런이 아니다" "$(sb_run_state)|$(c110d_ended)" "도는중|1"
+printf '%s\n%s\nrefreshed=1\n' "$$" "$(cc_proc_fingerprint "$$")" > "$SA_RUN/relay.live"
+touch -t 202001010000 "$SA_LEDGER"
+check "110d: 멈춘 릴레이의 런은 도는중 이 아니다" "$( [ "$(sb_run_state)" = 도는중 ] && printf 도는중 || printf 아님)" "아님"
+rm -f "$SA_RUN/relay.live"
+touch -t 202001010000 "$SA_LEDGER"
+check "110d: 릴레이 없이 사람의 답을 기다리는 런은 버려짐 이고 끝난 런이다" "$(sb_run_state)|$(c110d_ended)" "버려짐|0"
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=$q110d
+unset -f c110d_seat c110d_run c110d_elig c110d_wait c110d_handoff c110d_new c110d_hb c110d_ended
+unset r110d n110d l110d g110d c110d o110d p110d s110d e110d i110d h110d q110d
+
+# ---------------------------------------------------------------------------
+# 110e. 종료 시 형식 검사 — 깨진 기록은 공허한 성공으로 정산되어 옮겨지고, 이어가기가 결함을 말한다
+# --- section: 110e | group: sa | covers: gate_record_stage_outcome, gate_continuation_argv, halt_record_wellformed, halt_record_format_clue, halt_record_settle_malformed, halt_record_format_message | anchors: 110e: 형식이 깨진 기록은 공허한 성공·형식 결함 단서로 정산되고 옮겨진다, 110e: 결함 아닌 꼴은 의도된 park 로 남는다, 110e: 이어가기 메시지에 결함 줄과 옮긴 경로가 실린다, 110e: 같은 결함이 두 번째 나면 이어가기가 거부되고 그 사유가 옮긴 경로를 담는다, 110e: 이어가기 예산이 다 쓰인 시도의 첫 결함도 거부 사유가 옮긴 경로를 담는다 ---
+#
+# 스테이지가 쓴 중단 기록의 형식이 공유 계약과 맞지 않으면 그 시도는 정지가 아니다.
+# 게이트의 행 기록기가 `공허한 성공` 으로 정산하고 기록을 `.malformed` 로 옮겨, `halt/*.md`
+# 를 읽는 쪽이 정지로 세지 않는다. 이어가기는 결함과 옮긴 경로를 실은 고정 메시지다.
+# ---------------------------------------------------------------------------
+c110e_settle() {
+  # c110e_settle <시도> — 그 시도를 종료 코드 0 으로 정산한다. 그 시도의 stage-result 행을 찍는다.
+  C110E_A="$1" sb_in eval '
+    mkdir -p "$RUN_DIR/log"; printf "%s\n" "$C110E_A" > "$RUN_DIR/RF.attempt"
+    printf "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"total_cost_usd\":0.1,\"session_id\":\"s-110e\",\"num_turns\":5}\n" \
+      > "$RUN_DIR/log/RF#$C110E_A.json"
+    nb=$(wc -l < "$LEDGER" | tr -d " ")
+    gate_record_stage_outcome main RF implement "$C110E_A" 0 "$nb" "$RUN_DIR/log/RF#$C110E_A.json" >/dev/null 2>&1' >/dev/null
+  { grep '^- `stage-result` ' "$SA_LEDGER" || true; } | { grep -F '세그먼트=RF ' || true; } | tail -1
+}
+c110e_cont() {
+  # c110e_cont — 그 세션의 이어가기. 「rc|경고와 계속 메시지」
+  sb_in eval '
+    GATE_RESUME=s-110e; GATE_CONTINUE_ARGV=()
+    r=0; gate_continuation_argv RF implement implement -p "원래 프롬프트" >/dev/null 2>"$RUN_DIR/c110e.err" || r=$?
+    printf "%s|%s %s" "$r" "$(cat "$RUN_DIR/c110e.err")" "${GATE_CONTINUE_ARGV[*]-}"' | tr '\n' ' '
+}
+# 형식 결함 단서는 행의 `실패 서명` 원인 칸에 그 고정 문구의 해시로 실린다.
+rfa_new "형식 결함 단서 해시"
+h110e=$(sb_in eval 'printf "%s\n" "중단 기록 형식 결함" | sig_sha12')
+check "110e: 형식 결함 단서의 해시를 읽는다 (아래가 공허하지 않다)" "$( [ -n "$h110e" ] && printf 있음 || printf 없음)" "있음"
+for f110e in 머리없음 펜스없음 펜스중복 콜론옵션 확인하나; do
+  rfa_new "형식 결함 $f110e"
+  if [ "$f110e" = 확인하나 ]; then r110e=$(nr_rec 'RF#1' "$f110e" 'git status')
+  else r110e=$(nr_rec 'RF#1' "$f110e"); fi
+  l110e=$(c110e_settle 1)
+  s110e=""
+  case "$(gate_row_field "$l110e" '실패 서명')" in *"/$h110e"*) s110e=단서 ;; esac
+  check "110e: 형식이 깨진 기록은 공허한 성공·형식 결함 단서로 정산되고 옮겨진다 — $f110e" \
+    "$(gate_row_field "$l110e" '종단 부류')|$s110e|$( [ -e "$r110e" ] && printf 남음 || printf 옮김)|$( [ -e "$r110e.malformed" ] && printf 있음 || printf 없음)" \
+    "공허한 성공|단서|옮김|있음"
+done
+g110e=""
+for f110e in 빈 없음 없음옵션 밖옵션; do
+  rfa_new "형식 결함 아님 $f110e"
+  r110e=$(nr_rec 'RF#1' "$f110e")
+  l110e=$(c110e_settle 1)
+  o110e="$(gate_row_field "$l110e" '종단 부류')|$( [ -e "$r110e" ] && printf 남음 || printf 옮김)"
+  [ "$o110e" = '의도된 park|남음' ] || g110e="$g110e [$f110e → $o110e]"
+done
+check "110e: 결함 아닌 꼴은 의도된 park 로 남는다" "${g110e:-없음}" "없음"
+
+rfa_new "형식 결함 이어가기"
+r110e=$(nr_rec 'RF#1' 펜스없음)
+c110e_settle 1 >/dev/null
+o110e=$(c110e_cont)
+case "$o110e" in
+  0'|'*'결함: 닫는 펜스 없음'*"$r110e.malformed"*) ok "110e: 이어가기 메시지에 결함 줄과 옮긴 경로가 실린다" ;;
+  *) bad "110e: 이어가기 메시지에 결함 줄과 옮긴 경로가 실린다" "$o110e" ;;
+esac
+r110e=$(nr_rec 'RF#2' 펜스없음)
+c110e_settle 2 >/dev/null
+o110e=$(c110e_cont)
+case "$o110e" in
+  3'|'*'같은 실패 사유'*"중단 기록 형식 결함 — $r110e.malformed"*) ok "110e: 같은 결함이 두 번째 나면 이어가기가 거부되고 그 사유가 옮긴 경로를 담는다" ;;
+  *) bad "110e: 같은 결함이 두 번째 나면 이어가기가 거부되고 그 사유가 옮긴 경로를 담는다" "$o110e" ;;
+esac
+
+rfa_new "형식 결함 예산 소진"
+sb_in eval 'continue_spend RF >/dev/null; continue_spend RF >/dev/null' >/dev/null 2>&1
+r110e=$(nr_rec 'RF#1' 머리없음)
+c110e_settle 1 >/dev/null
+o110e=$(c110e_cont)
+case "$o110e" in
+  3'|'*'이어가기 예산 소진 · 중단 기록 형식 결함 — '"$r110e.malformed"*) ok "110e: 이어가기 예산이 다 쓰인 시도의 첫 결함도 거부 사유가 옮긴 경로를 담는다" ;;
+  *) bad "110e: 이어가기 예산이 다 쓰인 시도의 첫 결함도 거부 사유가 옮긴 경로를 담는다" "$o110e" ;;
+esac
+unset -f c110e_settle c110e_cont
+unset r110e l110e f110e g110e o110e h110e s110e
 
 # ---------------------------------------------------------------------------
 # 107. 다른 대상 워크트리의 세션 — 검사 3 의 허용 집합, admit 의 이동 거부, 산출물 없는 리뷰의 종단 부류
