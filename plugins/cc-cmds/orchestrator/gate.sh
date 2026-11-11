@@ -27424,8 +27424,24 @@ gate_segment_post_merge() {
   # issued the obligation, while its last row is `계획됨` or `사후리뷰` and no
   # `cycle` row stands after the obligation's issuing row. The issuing row is
   # the reference line, so a fulfilment row appended after it does not move it.
-  local seg=$1 last
+  # A segment that also has a `세그먼트 입양` row comes in on the source run's
+  # fix branch, one commit or more ahead, and its first review is an ordinary
+  # `선리뷰후머지` review of that branch — no `사후리뷰` row, ordinary
+  # `review_next[]` values, and no wait that would hold back the dispatch
+  # carrying its imported answer. Such a pair is never due while it carries a
+  # commit ahead of the base; an unreadable count keeps the wait, which blocks
+  # rather than lets through. A segment with no such row stays due whatever
+  # its count, so a commit that reached its worktree some other way does not
+  # lift the wait.
+  local seg=$1 last ahead
   if gate_segment_merge_adopted "$seg"; then
+    if gate_adoption_row "$seg" >/dev/null; then
+      ahead=$(gate_segment_ahead_count "$seg")
+      case "$ahead" in
+        ''|*[!0-9]*|0) : ;;
+        *) return 1 ;;
+      esac
+    fi
     [ -n "$(gate_adoption_obligation_line "$seg")" ] || return 1
     case "$(gate_segment_field "$seg" '상태')" in
       계획됨|사후리뷰) : ;;
@@ -49181,9 +49197,11 @@ gate_verb_act() {
       esac
     fi
     # A MERGED PULL REQUEST IS REVIEWED BEFORE ITS BRANCH IS WRITTEN. While its
-    # review after the fact is due, a commit ahead of the base would turn the
-    # review line from the merged request's diff to the branch's, and the
-    # obligation would close on a review that never read the merge.
+    # review after the fact is due — no commit ahead of the base yet, so a
+    # segment paired with a `세그먼트 입양` row is never held here — a commit
+    # ahead of the base would turn the review line from the merged request's
+    # diff to the branch's, and the obligation would close on a review that
+    # never read the merge.
     if [ -n "$segment" ] && gate_segment_merge_adopted "$segment" && gate_segment_post_merge "$segment"; then
       case "${1:-}" in
         review) : ;;
