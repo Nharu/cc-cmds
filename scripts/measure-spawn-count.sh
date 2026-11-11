@@ -132,7 +132,7 @@
 # Values may carry `@ROOT@` (the copy root), `@REPO@`, `@ORCH@`, `@HOOKS@`,
 # `@EMPTY@` (a fresh empty directory), `@NOW@` (the unit's start epoch) and
 # `@H@` (the digest `snapshot` obtained). The tool chooses fixtures only through
-# `fixture copy`; it never lists `runs/`. Each measurement copies into a fresh
+# `fixture copy`; it never lists `runs/` to choose one. Each measurement copies into a fresh
 # `mktemp -d` root holding nothing else, so no sibling run is visible.
 #
 # Usage:
@@ -150,7 +150,8 @@
 #   0  measured (for --reproduce: identical to baseline.tsv)
 #   1  --reproduce measured something different from baseline.tsv
 #   2  usage error, a unit that did not run as its spec says, a measurement
-#      longer than its spec's wall-clock limit, or a fixture changed by measuring
+#      longer than its spec's wall-clock limit, a fixture changed by measuring,
+#      or a fixture file git ignores (one no commit carries)
 set -uo pipefail
 
 die2() { printf 'measure-spawn-count: %s\n' "$1" >&2; exit 2; }
@@ -965,15 +966,17 @@ baseline_table() {
 # A fixture file git ignores is hashed into `fixture` and copied by a spec
 # here, but never reaches a commit: every other tree then measures without it
 # and its test skips every run assertion. Refuse such a file wherever the
-# fixtures are read. A tree outside git (an archive) has nothing to compare.
+# fixtures are read. A tree with no `.git` (an archive) has nothing to
+# compare; a git that fails inside a repository stops the tool, since an empty
+# answer from it would read as "nothing ignored".
 ignored_fixtures() {
-  ( cd "$REPO" || exit 0
-    git rev-parse --is-inside-work-tree >/dev/null 2>&1 || exit 0
+  ( cd "$REPO" || exit 1
+    [ -e .git ] || exit 0
     git ls-files --others --ignored --exclude-standard --directory -- tests/fixtures/measure-spawn-count/runs )
 }
 case "$MODE" in
   cond|unit|all|baseline|reproduce)
-    IGN=$(ignored_fixtures)
+    IGN=$(ignored_fixtures) || die2 "무시된 픽스처를 git 으로 확인하지 못했습니다"
     [ -z "$IGN" ] || die2 "git 이 무시하는 픽스처가 있어 커밋된 트리에서 재현되지 않습니다 — $(printf '%s' "$IGN" | tr '\n' ' ')" ;;
 esac
 
