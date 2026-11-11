@@ -23991,62 +23991,6 @@ case "$msg" in
   *"$RD3"/cc-team-witness-review-beta*) ok "게이트 경유 생성이 런 디렉터리 아래 위트니스 경로를 낸다" ;;
   *) bad "게이트 경유 위트니스 생성" "런 디렉터리 아래 경로가 출력에 없다: $msg" ;;
 esac
-# 재수렴·감사 스킬의 문서 정리 호출도 같은 면제 모양으로 잰다. 스킬은 정리 도구를
-# `<plugin root>/orchestrator/doc-tidy.py apply|unmark … --lock "$RUN_DIR/designdoc.lock"`
-# 로 부르고, 잠금은 도구가 스스로 잡는다. 앞서 스킬이 쓰던 `lockf … doc-tidy.py`
-# 철자는 등급과 도달 칸은 지났지만, 도구 경로가 `lockf` 의 피연산자라 두 쓰기
-# 가드가 플러그인 안으로의 쓰기로 보고 rc 3 으로 막았고, 그 철자를 게이트 경유로
-# 돌리는 행이 없어 스위트는 초록이었다. 그래서 두 철자를 모두 게이트 경유로 돌린다.
-DT31=$(mktemp -d "${TMPDIR:-/tmp}/doc-tidy-31ac.XXXXXX")
-printf '# 문서\n\n결정 문장 (대체된 문장: "옛 결정 문장")\n' > "$DT31/doc.md"
-cp "$DT31/doc.md" "$DT31/pre.md"
-DT31_TOOL="$repo_root/plugins/cc-cmds/orchestrator/doc-tidy.py"
-gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
-      --surface 트리밖쓰기 --reach 런로컬 --snapshot-digest "$(HN)" --rationale x \
-      -- "$DT31_TOOL" apply "$DT31/doc.md" --archive "$DT31/arch.md" --doc-key k \
-         --writer design-reconverge --lock "$RD3/designdoc.lock"
-check "스킬 철자의 doc-tidy.py apply --lock 을 게이트 경유로 실행하면 통과한다" "$rc" "0"
-case "$(cat "$DT31/doc.md" 2>/dev/null)" in
-  *'(보관 A1)'*) ok "게이트 경유 apply 가 실제로 돌아 대체 괄호를 보관 표지로 옮겼다" ;;
-  *) bad "게이트 경유 doc-tidy apply" "문서가 정리되지 않았다: $msg" ;;
-esac
-check "도구가 잡은 잠금 파일이 런 디렉터리에 남는다 (lockf -k 와 같다)" \
-  "$( [ -f "$RD3/designdoc.lock" ] && printf 'yes' || printf 'no' )" "yes"
-gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
-      --surface 트리밖쓰기 --reach 런로컬 --snapshot-digest "$(HN)" --rationale x \
-      -- "$DT31_TOOL" unmark "$DT31/doc.md" --archive "$DT31/arch.md" --doc-key k \
-         --writer design-audit-unattended --since "$DT31/pre.md" --lock "$RD3/designdoc.lock"
-check "스킬 철자의 doc-tidy.py unmark --lock 을 게이트 경유로 실행하면 통과한다" "$rc" "0"
-# 대조군 — 옛 철자는 여전히 막힌다. 이 단언이 없으면 위 통과가 가드의 면제를
-# 잰 것인지, 가드가 아예 돌지 않은 것인지 가릴 수 없다.
-gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
-      --surface 트리밖쓰기 --reach 런로컬 --snapshot-digest "$(HN)" --rationale x \
-      -- /usr/bin/lockf -k -t 0 "$RD3/designdoc.lock" \
-         "$repo_root/plugins/cc-cmds/skills/design-reconverge/../../orchestrator/doc-tidy.py" \
-         apply "$DT31/doc.md" --archive "$DT31/arch.md" --doc-key k --writer design-reconverge
-check "대조군: lockf 피연산자로 이름 붙은 doc-tidy.py 는 쓰기 가드가 거절한다" "$rc" "3"
-case "$msg" in
-  *"orchestrator or hook script"*) ok "대조군 거절이 플러그인 루트 쓰기 가드의 것이다" ;;
-  *) bad "대조군 거절 원인" "플러그인 루트 가드 문면이 없다: $msg" ;;
-esac
-# 다른 프로세스가 잠금을 쥐고 있으면 도구는 아무것도 읽거나 쓰지 않고 75 로 끝난다
-# — `lockf -t 0` 의 EX_TEMPFAIL 과 같은 값이라 스킬의 75 갈래가 그대로 맞는다.
-# 잠금은 flock(2) 이고, 붙잡는 쪽도 같은 호출로 잡아 두 플랫폼에서 같게 잰다.
-printf '# 문서\n\n둘째 문장 (대체된 문장: "옛 둘째 문장")\n' > "$DT31/held.md"
-DT31_SHA=$(shasum -a 256 "$DT31/held.md" | cut -d' ' -f1)
-DT31_RC=0
-python3 -c 'import fcntl, os, subprocess, sys
-fd = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT, 0o644)
-fcntl.flock(fd, fcntl.LOCK_EX)
-sys.exit(subprocess.call(sys.argv[2:], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))' \
-  "$RD3/designdoc.lock" "$DT31_TOOL" apply "$DT31/held.md" --archive "$DT31/held-arch.md" \
-  --doc-key k --writer design-reconverge --lock "$RD3/designdoc.lock" || DT31_RC=$?
-check "잠금을 다른 프로세스가 쥐면 doc-tidy.py --lock 은 75 로 끝난다" "$DT31_RC" "75"
-check "잠금에 막힌 doc-tidy.py 는 문서를 바꾸지 않는다" \
-  "$(shasum -a 256 "$DT31/held.md" | cut -d' ' -f1)" "$DT31_SHA"
-check "잠금에 막힌 doc-tidy.py 는 보관 파일을 만들지 않는다" \
-  "$( [ -e "$DT31/held-arch.md" ] && printf 'yes' || printf 'no' )" "no"
-rm -rf "$DT31"
 # 대조군 — 아무도 만들지 않는 이름은 예외가 아니다. 예외를 넓게 적어 두면 가드가
 # 지키는 범위가 조용히 줄고, 그 넓힘은 실제 발행 경로를 하나도 통과시키지 못하면서
 # 기준선 파일 하나를 더 열어 준다.

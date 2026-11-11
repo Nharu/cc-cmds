@@ -2,10 +2,10 @@
 """Move superseded and settled prose of a design document into its archive.
 
     doc-tidy.py plan    DOC [--reviewed FROZEN]
-    doc-tidy.py apply   DOC --archive ARCHIVE --doc-key KEY --writer NAME [--since BASE] [--reviewed FROZEN] [--lock FILE]
-    doc-tidy.py unmark  DOC --archive ARCHIVE --doc-key KEY --writer NAME --since BASE [--lock FILE]
+    doc-tidy.py apply   DOC --archive ARCHIVE --doc-key KEY --writer NAME [--since BASE] [--reviewed FROZEN]
+    doc-tidy.py unmark  DOC --archive ARCHIVE --doc-key KEY --writer NAME --since BASE
     doc-tidy.py check   BEFORE AFTER ARCHIVE
-    doc-tidy.py tidy    DOC --archive ARCHIVE --doc-key KEY --writer NAME --below BYTES [--reviewed FROZEN] [--lock FILE]
+    doc-tidy.py tidy    DOC --archive ARCHIVE --doc-key KEY --writer NAME --below BYTES [--reviewed FROZEN]
 
 Rule T1 moves every superseded-sentence parenthesis ` (대체된 문장: "...")` into
 an `### A<n>` piece and leaves ` (보관 A<n>)` in its place. Rule T3 moves, from a
@@ -48,30 +48,19 @@ sha256 of the document before and after.
 
 The archive is a file of its own kind: line 1 is an H1, line 2 is
 `<!-- cc-design-archive v1; writer=doc-tidy; owner-doc=<KEY> -->`. An existing
-archive whose line 2 is not that form or names another KEY is refused.
+archive whose line 2 is not that form or names another KEY is refused. The
+caller holds the document lock; this script takes none.
 
-`--lock FILE` takes the document lock here: FILE is created when absent and
-never removed (as `lockf -k`), an exclusive lock is tried without waiting (as
-`lockf -t 0`), and it is held until the verb ends. When another process holds
-it, nothing is read or written and the exit code is 75, the EX_TEMPFAIL that
-`lockf -t 0` returns. Without `--lock` the caller holds the document lock.
+Exit codes: 0 success, 1 check failed or refused (nothing written), 2 usage.
 
-Exit codes: 0 success, 1 check failed or refused (nothing written), 2 usage,
-75 the `--lock` file is held by another process (nothing read or written).
-
-Run it by path, with no interpreter and no `lockf` in front: the gate grades
-the basename and the subcommand, and an interpreter prefix is graded as an
-opaque write. The gate's write guards treat only argv0 spelled as
-`<plugin root>/orchestrator/doc-tidy.py` as code being run; behind `lockf` the
-same path is an operand, which the guards refuse as a write into the plugin.
+Run it by path, with no interpreter in front: the gate grades the basename
+and the subcommand, and an interpreter prefix is graded as an opaque write.
 """
 import sys
 
 sys.dont_write_bytecode = True
 
 import argparse  # noqa: E402
-import errno  # noqa: E402
-import fcntl  # noqa: E402
 import hashlib  # noqa: E402
 import os  # noqa: E402
 import re  # noqa: E402
@@ -733,25 +722,6 @@ def cmd_tidy(args):
     return rc
 
 
-EX_TEMPFAIL = 75
-
-
-def take_lock(path):
-    """Open PATH (created when absent, never removed) and take an exclusive
-    lock without waiting. Returns the descriptor, or None when another
-    process holds the lock. The lock is flock(2), the one `/usr/bin/lockf`
-    takes, so it excludes the `lockf -k -t 0` writers of the same file."""
-    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o644)
-    try:
-        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError as e:
-        os.close(fd)
-        if e.errno in (errno.EAGAIN, errno.EACCES, errno.EWOULDBLOCK):
-            return None
-        raise
-    return fd
-
-
 def main(argv):
     p = argparse.ArgumentParser(prog="doc-tidy.py")
     sub = p.add_subparsers(dest="verb", required=True)
@@ -766,7 +736,6 @@ def main(argv):
         sp.add_argument("--archive", required=True)
         sp.add_argument("--doc-key", required=True)
         sp.add_argument("--writer", required=True)
-        sp.add_argument("--lock")
         if name != "unmark":
             sp.add_argument("--reviewed")
         if name == "apply":
@@ -784,14 +753,7 @@ def main(argv):
     args = p.parse_args(argv)
     handler = {"plan": cmd_plan, "apply": cmd_apply, "unmark": cmd_unmark,
                "check": cmd_check, "tidy": cmd_tidy}[args.verb]
-    lock_fd = None
     try:
-        if getattr(args, "lock", None):
-            lock_fd = take_lock(args.lock)
-            if lock_fd is None:
-                print("doc-tidy %s: 잠금 %s 을 다른 프로세스가 쥐고 있음" % (args.verb, args.lock),
-                      file=sys.stderr)
-                return EX_TEMPFAIL
         return handler(args)
     except Refused as e:
         print("doc-tidy %s: %s" % (args.verb, e), file=sys.stderr)
@@ -799,9 +761,6 @@ def main(argv):
     except (OSError, UnicodeDecodeError) as e:
         print("doc-tidy %s: %s" % (args.verb, e), file=sys.stderr)
         return 1
-    finally:
-        if lock_fd is not None:
-            os.close(lock_fd)
 
 
 if __name__ == "__main__":
