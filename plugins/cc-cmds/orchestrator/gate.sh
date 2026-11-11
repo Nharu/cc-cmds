@@ -27429,20 +27429,14 @@ gate_segment_post_merge() {
   # fix branch, one commit or more ahead, and its first review is an ordinary
   # `선리뷰후머지` review of that branch — no `사후리뷰` row, ordinary
   # `review_next[]` values, and no wait that would hold back the dispatch
-  # carrying its imported answer. Such a pair is never due while it carries a
-  # commit ahead of the base; an unreadable count keeps the wait, which blocks
-  # rather than lets through. A segment with no such row stays due whatever
-  # its count, so a commit that reached its worktree some other way does not
-  # lift the wait.
-  local seg=$1 last ahead
+  # carrying its imported answer. Such a pair is never due, whatever its count:
+  # a fix pull request merged outside the run before the first review brings
+  # the count to 0 without making the merge the review's subject. A segment
+  # with no such row stays due whatever its count, so a commit that reached
+  # its worktree some other way does not lift the wait.
+  local seg=$1 last
   if gate_segment_merge_adopted "$seg"; then
-    if gate_adoption_row "$seg" >/dev/null; then
-      ahead=$(gate_segment_ahead_count "$seg")
-      case "$ahead" in
-        ''|*[!0-9]*|0) : ;;
-        *) return 1 ;;
-      esac
-    fi
+    gate_adoption_row "$seg" >/dev/null && return 1
     [ -n "$(gate_adoption_obligation_line "$seg")" ] || return 1
     case "$(gate_segment_field "$seg" '상태')" in
       계획됨|사후리뷰) : ;;
@@ -27505,7 +27499,10 @@ gate_adoption_unfixed() {
   # the merged fix never compared with any review, so every field that cannot
   # be read answers 1 and sends the segment down the ordinary
   # review-before-merge path.
-  local seg=$1 ol heads wt head
+  # The `cycle` writer pins `리뷰 HEAD` to a full sha, but its argument takes 7
+  # to 40 characters, so each head is resolved in the worktree before it is
+  # compared, as every other reader of that field does.
+  local seg=$1 ol heads wt head h r
   gate_adoption_row "$seg" >/dev/null && return 1
   ol=$(gate_adoption_obligation_line "$seg")
   [ -n "$ol" ] || return 1
@@ -27513,10 +27510,16 @@ gate_adoption_unfixed() {
            | gate_rows_field_eq '세그먼트' "$seg" | awk -F: -v ol="$ol" '$1 + 0 > ol + 0' \
            | gate_rows_field_values '리뷰 HEAD' | sort -u)
   if [ -n "$heads" ]; then
-    [ "$(printf '%s\n' "$heads" | wc -l | tr -d ' ')" = 1 ] || return 1
     wt=$(gate_segment_worktree "$seg")
     head=$(gate_worktree_tip "$wt" 2>/dev/null) || return 1
-    [ "$head" = "$heads" ] || return 1
+    [ -n "$head" ] || return 1
+    while IFS= read -r h; do
+      [ -n "$h" ] || continue
+      r=$( { cd "$wt" 2>/dev/null && git rev-parse --verify -q "$h^{commit}"; } 2>/dev/null) || return 1
+      [ "$r" = "$head" ] || return 1
+    done <<EOF
+$heads
+EOF
   fi
   [ -z "$( { grep -n '^- `stage-result` ' "$LEDGER" 2>/dev/null || true; } \
            | gate_rows_field_eq '세그먼트' "$seg" | awk -F: -v ol="$ol" '$1 + 0 > ol + 0' \
@@ -49248,8 +49251,8 @@ gate_verb_act() {
       esac
     fi
     # A MERGED PULL REQUEST IS REVIEWED BEFORE ITS BRANCH IS WRITTEN. While its
-    # review after the fact is due — no commit ahead of the base yet, so a
-    # segment paired with a `세그먼트 입양` row is never held here — a commit
+    # review after the fact is due — never on a segment paired with a
+    # `세그먼트 입양` row, which comes in on its fix branch — a commit
     # ahead of the base would turn the review line from the merged request's
     # diff to the branch's, and the obligation would close on a review that
     # never read the merge.

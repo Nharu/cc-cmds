@@ -66295,14 +66295,14 @@ esac
 # 대상의 절단점이 머지 아래이면 사후 리뷰가 찾은 결함의 수정이 베이스에 착지하지 못하므로
 # 매니페스트 검사가 행을 거부한다. 머지 이상은 받는다.
 md_cut_got=""
-for md_c in PR push 커밋 머지 배포 머지후착수; do
+for md_c in 브랜치 PR push 커밋 머지 배포 머지후착수; do
   SA_CUT=$md_c
   md_snap 선리뷰후머지 "$(md_row 7 "$md_a" "$md_b")"
   case "$md_c|$MD_RC|$MD_OUT" in
     머지\|0\|*|배포\|0\|*|머지후착수\|0\|*) : ;;
     머지\|*|배포\|*|머지후착수\|*) md_cut_got="$md_cut_got[$md_c 거부 rc=$MD_RC $MD_OUT]" ;;
     *\|0\|*) md_cut_got="$md_cut_got[$md_c 통과]" ;;
-    *"절단점이 「$md_c」입니다"*) : ;;
+    *"절단점이 「${md_c}」입니다"*) : ;;
     *) md_cut_got="$md_cut_got[$md_c rc=$MD_RC $MD_OUT]" ;;
   esac
 done
