@@ -28,14 +28,16 @@
 # holds the stop when the predicate is true, and exits 1 when it is false:
 #   target-stop        the segment whose `park 적용=불명` row carries the target
 #                      defect signal for <alias> and is not yet settled
-#   external-hold      the line of the `라우팅=외부-보류` answer whose segment
-#                      park still holds
+#   external-hold      the line of the `라우팅=외부-보류` or `라우팅=원인-보류`
+#                      answer whose segment park still holds
 #   remeasure-refused  that line, when the answer's `측정 등급` names <R number>
 #
 # `서명` is `<부류>/<사유>[/<종류>]` and every slot comes from a closed table
 # below; a value outside its table folds to `미분류` rather than being copied.
-# `제외 사유` names which of the four intended waits an `의도` line is
-# (`비용 천장` · `사전 인가 밖` · `설계 판단` · `자유 입력`). `표지` is
+# `제외 사유` names which of the five intended waits an `의도` line is
+# (`비용 천장` · `사전 인가 밖` · `설계 판단` · `자유 입력` · `외부 대기`, the
+# last a `precondition-failed` halt whose `**스텝**` starts with
+# `Step 1 외부 선행 미충족`: a wait on another pull request or release). `표지` is
 # `원인 셀 미결합` on a gate-unanswerable halt no reach park binds to, and
 # `열린 대기 아님` on an intended event that was a decision rather than a wait,
 # for which no skip row is written. Resolved events are not printed at all.
@@ -194,7 +196,9 @@ run_stops_target_stop() {
   # defect signal sets the stop for that segment. A later `완료` row of the
   # same segment — the settlement's `완료 적용=정산`, or the completion after a
   # rerun or a person's settlement — releases it, and so does a person's
-  # `세그먼트 park` answer for that segment. Prints the segments still holding
+  # `세그먼트 park` answer for that segment, whether it picked an option of the
+  # record or the fixed label a record without options is answered with. Prints
+  # the segments still holding
   # it, in the order they were stopped; 0 when there is one, 1 when none.
   local ledger="$1" alias="$2"
   [ -n "$ledger" ] && [ -f "$ledger" ] && [ -n "$alias" ] || return 1
@@ -222,9 +226,13 @@ run_stops_target_stop() {
 
 run_stops_external_hold() {
   # run_stops_external_hold <ledger> <segment> [<R number>] — the segment is
-  # parked on an answer the gate routed `외부-보류`. The hold is set by the
+  # parked on an answer the gate routed `외부-보류`, or `원인-보류` — the fixed
+  # `세그먼트 park` answer to a halt record that offers no options, which holds
+  # the segment until its cause outside the run is gone. The hold is set by the
   # segment's `park` row after such an answer, and released by a person's
-  # answer to the same halt record or by a `한도 해제` row after that park.
+  # answer to the same halt record, by the seat's answer to it that a matching
+  # confirmation admitted (`해소 확인=일치`), or by a `한도 해제` row after that
+  # park.
   # Prints the ledger line of the answer and exits 0 while it holds. With an R
   # number it holds only when that answer's `측정 등급` names the item.
   local ledger="$1" seg="$2" rn="${3:-}"
@@ -235,9 +243,9 @@ run_stops_external_hold() {
       sr = series_of()
       if (sr == "중단 답") {
         if (fld("세그먼트") != seg) next
-        if (fld("라우팅") == "외부-보류") {
+        if (fld("라우팅") == "외부-보류" || fld("라우팅") == "원인-보류") {
           al = NR; arec = fld("중단 기록"); agr = fld("측정 등급"); held = 0
-        } else if (al && fld("답한 주체") == "사람" && fld("중단 기록") == arec) {
+        } else if (al && fld("중단 기록") == arec && (fld("답한 주체") == "사람" || fld("해소 확인") == "일치")) {
           al = 0; held = 0
         }
       } else if (sr == "segment") {
@@ -296,7 +304,7 @@ run_stops_detail_fix() {
 }
 
 run_stops_main() {
-  local ledger="" run_dir="" manifest="" halts shalts ceiling blocked f id cls tail byfix="" tstop="" a
+  local ledger="" run_dir="" manifest="" halts shalts ceiling blocked f id cls ext tail byfix="" tstop="" a
   if [ "${1:-}" = "--vocab" ]; then
     run_stops_vocab "${2:-}"; return $?
   fi
@@ -319,7 +327,11 @@ run_stops_main() {
   # shellcheck source=liveness.sh
   . "$RUN_STOPS_DIR/liveness.sh"
 
-  # HALT RECORDS: only the file name and the `**분류**` line are read. Two names
+  # HALT RECORDS: only the file name, the `**분류**` line and the head of the
+  # `**스텝**` line are read, so a record that offers no options is a stop like
+  # any other. A `precondition-failed` record whose step starts with
+  # `Step 1 외부 선행 미충족` carries `외부` in the third column, every other
+  # record `-`. Two names
   # in that directory are not this run's halt records: the copy an adopted
   # segment carries over from the run that wrote it (`<seg>#adopted-<run>.md`),
   # which that run reports under its own kind, and an attachment — the answer
@@ -334,7 +346,13 @@ run_stops_main() {
       cls=$( { grep -m1 -E '^\*\*분류\*\*: ' "$f" 2>/dev/null || true; } \
              | sed 's/^\*\*분류\*\*: //; s/[[:space:]]*$//')
       [ -n "$cls" ] || continue
-      halts="${halts}$(printf '%s\t%s\t%s' "$id" "$cls" "$(run_stops_detail_fix "$f")")
+      ext=-
+      if [ "$cls" = "precondition-failed" ]; then
+        case "$( { grep -m1 -E '^\*\*스텝\*\*: ' "$f" 2>/dev/null || true; } | sed 's/^\*\*스텝\*\*: //')" in
+          'Step 1 외부 선행 미충족'*) ext=외부 ;;
+        esac
+      fi
+      halts="${halts}$(printf '%s\t%s\t%s\t%s' "$id" "$cls" "$ext" "$(run_stops_detail_fix "$f")")
 "
     done
   fi
@@ -572,8 +590,11 @@ $(cut -f2 "$run_dir/stall" 2>/dev/null || true)"
         sig = "halt/" (inv("HA", cls) ? cls : "미분류") "/" k
         seg = (base in STGSEG) ? STGSEG[base] : base
         EV[seg] = 1; EV[base] = 1
-        RF[hid] = hp[3]; RX[hid] = hp[4]
-        if (cls == "gate-unanswerable") {
+        RF[hid] = hp[4]; RX[hid] = hp[5]
+        # A wait on something outside the run — the merge of another pull
+        # request, a release of another repository — is not a plugin defect.
+        if (cls == "precondition-failed" && hp[3] == "외부") emit(sig, "의도", "외부 대기")
+        else if (cls == "gate-unanswerable") {
           if (!(hid in PARKCELL)) emit(sig, "비의도", "", "원인 셀 미결합", hid, seg, hid)
           else if (inv("CE", PARKCELL[hid])) emit(sig, "의도", "사전 인가 밖")
           else emit(sig, "비의도", "", "", hid, seg, hid)
