@@ -14703,7 +14703,7 @@ check "15d-4: T4 와 미해결 판독기가 같은 항목을 연다" "$td15r_ver
 
 # ---------------------------------------------------------------------------
 # 15d-5. 사유 거둠이 선언 파일을 넓혀 닫는 꼴을 판독기와 슬라이싱 함수가 받는다
-# --- section: 15d-5 | group: base | covers: unresolved_closure_pending, unclosed-decisions, slice_decl_files, slicing_order_defects | anchors: 15d-5: 선언 확장 줄을 가진 대조 무충돌 거둠 뒤 슬라이스 A 판독이 빈다, 15d-5: 선언 확장 줄을 가진 대조 무충돌 거둠 뒤 unclosed-decisions 가 빈다, 15d-5: 보류 항목에 선언 확장 줄만 붙으면 계속 나온다, 15d-5: 넓힌 선언 파일을 slice_decl_files 가 새 원소까지 낸다, 15d-5: 넓힌 문서의 slicing_order_defects 가 빈다, 15d-5: 넓히기 전 머지 순서 픽스처는 결함이 없다, 15d-5: 뒤 슬라이스를 넓혀 앞 슬라이스와 겹치면 결함이다, 15d-5: 앞 슬라이스를 넓혀 뒤 슬라이스와 겹치면 결함이다, 15d-5: 재수렴 문면이 슬라이싱 축 세 값과 선언 확장 줄 꼴을 싣는다, 15d-5: 재수렴 문면이 옛 문장을 싣지 않는다, 15d-5: 재수렴 문면이 재진입 분기와 기록 다이제스트 대조를 싣는다, 15d-5: 사유 거둠 절이 선언 확장 닫기를 싣는다 ---
+# --- section: 15d-5 | group: base | covers: unresolved_closure_pending, unclosed-decisions, slice_decl_files, slicing_order_defects | anchors: 15d-5: 선언 확장 줄을 가진 대조 무충돌 거둠 뒤 슬라이스 A 판독이 빈다, 15d-5: 선언 확장 줄을 가진 대조 무충돌 거둠 뒤 unclosed-decisions 가 빈다, 15d-5: 보류 항목에 선언 확장 줄만 붙으면 계속 나온다, 15d-5: 넓힌 선언 파일을 slice_decl_files 가 새 원소까지 낸다, 15d-5: 넓힌 문서의 slicing_order_defects 가 빈다, 15d-5: 넓히기 전 머지 순서 픽스처는 결함이 없다, 15d-5: 뒤 슬라이스를 넓혀 앞 슬라이스와 겹치면 결함이다, 15d-5: 앞 슬라이스를 넓혀 뒤 슬라이스와 겹치면 결함이다, 15d-5: 재수렴 문면이 슬라이싱 축 세 값과 선언 확장 줄 꼴을 싣는다, 15d-5: 재수렴 문면이 옛 문장을 싣지 않는다, 15d-5: 재수렴 문면이 재진입 분기와 기록 다이제스트 대조를 싣는다, 15d-5: 사유 거둠 절이 선언 확장 닫기를 싣는다, 15d-5: 대조 운반 줄의 선언 확장 부분이 base64 로 적힌다, 15d-5: 원장 읽기 금지의 예외가 마지막 상태 규칙의 segment 행을 싣는다 ---
 #
 # The re-convergence can now close a base-reason entry by appending paths to a
 # slice's `**선언 파일**` and recording them on a `**선언 확장**` line. The skill
@@ -14817,6 +14817,20 @@ for rc15d5_l in '`선언 확장`' '**선언 확장**: 슬라이스 <id>' 'three 
   grep -qF -- "$rc15d5_l" <<<"$rc15d5_sec" && rc15d5_n=$((rc15d5_n + 1))
 done
 check "15d-5: 사유 거둠 절이 선언 확장 닫기를 싣는다" "$rc15d5_n" "4"
+# The carrier's `선언 확장` part is base64 like every other value: the re-entry decodes it, so a raw
+# value would decode to nothing and stop the widening as a carrier read failure.
+rc15d5_n=0
+grep -qF -- 'Every other `<…>` value, the `선언 확장` value included, is its UTF-8 bytes as one base64 line' \
+  "$rc15d5_rc" && rc15d5_n=$((rc15d5_n + 1))
+grep -qF -- 'of the line the closing writes, byte for byte. Every other' "$rc15d5_rc" || rc15d5_n=$((rc15d5_n + 1))
+check "15d-5: 대조 운반 줄의 선언 확장 부분이 base64 로 적힌다" "$rc15d5_n" "2"
+# The open-decision sub-case forbids ledger reads; the slicing axis's state rule reads a `segment` row,
+# so the ban, the re-entry's restatement and the state rule all name that read as an exception.
+rc15d5_n=$(grep -cF -- "the last \`segment\` row the slicing axis's state rule reads" "$rc15d5_rc")
+grep -qF -- 'This read is one of the two exceptions to the 「Do not read the ledger」' "$rc15d5_rc" \
+  && rc15d5_n=$((rc15d5_n + 1))
+grep -qF -- 'Reading this one ledger line is the only exception' "$rc15d5_rc" || rc15d5_n=$((rc15d5_n + 1))
+check "15d-5: 원장 읽기 금지의 예외가 마지막 상태 규칙의 segment 행을 싣는다" "$rc15d5_n" "4"
 
 # ---------------------------------------------------------------------------
 # 15e. The audit is dispatched as a run-scope step, on preconditions the gate checks
