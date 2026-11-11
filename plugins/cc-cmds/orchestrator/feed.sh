@@ -163,11 +163,14 @@ clip() {
 
 row_series_into() {
   # row_series_into <var> <row> — the series name between the row's leading
-  # "- `" and the next backtick, or empty when the row has no such pair.
-  local __r="$2"
+  # "- `" and the next backtick, or empty when the row has no such pair. The
+  # backtick sits in a variable so no quoted backtick appears inside a
+  # double-quoted expansion, which the static spawn count reads as a command
+  # substitution.
+  local __r="$2" __bt='`'
   printf -v "$1" '%s' ""
-  case "$__r" in '- `'*) __r=${__r#'- `'} ;; *) return 0 ;; esac
-  case "$__r" in *'`'*) printf -v "$1" '%s' "${__r%%'`'*}" ;; esac
+  case "$__r" in "- $__bt"*) __r=${__r#"- $__bt"} ;; *) return 0 ;; esac
+  case "$__r" in *"$__bt"*) printf -v "$1" '%s' "${__r%%"$__bt"*}" ;; esac
 }
 
 row_field_into() {
