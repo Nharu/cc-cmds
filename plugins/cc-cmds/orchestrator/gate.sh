@@ -27287,9 +27287,10 @@ gate_segment_review_next() {
   # stand on.
   #
   # A SEGMENT ADOPTED AS A MERGED PULL REQUEST is judged before either overlay
-  # (`gate_adoption_review_next`): while its commits ahead of the base are 0 a
-  # passing value reads `입양 종결` — there is nothing to push — and an
-  # unreadable count reads `판정 불가`. With a fix commit it is an ordinary
+  # (`gate_adoption_review_next`): while its commits ahead of the base are 0 and
+  # it never carried a fix (`gate_adoption_unfixed`) a passing value reads
+  # `입양 종결` — there is nothing to push — and an unreadable count reads
+  # `판정 불가`. With a fix commit, merged or not, it is an ordinary
   # `선리뷰후머지` segment from the table on.
   local seg=$1 nx
   if gate_segment_review_only "$seg"; then
@@ -27485,18 +27486,60 @@ gate_adoption_cycle_after_obligation() {
   [ -n "$ol" ] && [ -n "$cl" ] && [ "$cl" -gt "$ol" ]
 }
 
+gate_adoption_unfixed() {
+  # gate_adoption_unfixed <segment> — 0 while a segment adopted as a merged pull
+  # request has carried no fix of this run, so its 0 commits ahead of the base
+  # still mean the run committed nothing for it. All of:
+  #   - no `세그먼트 입양` row pairs it: a paired segment comes in carrying the
+  #     source run's fix commits;
+  #   - its obligation's issuing row exists, every `cycle` row after it reads
+  #     one `리뷰 HEAD`, and the worktree HEAD is still that commit: the review
+  #     after the fact reads the HEAD the planning act left, and a review after
+  #     a fix reads another;
+  #   - no implement or lead-fix `stage-result` row of the segment stands after
+  #     the issuing row;
+  #   - no `원격 판독` row of the segment shows a branch tip or a pull request
+  #     number: the run never pushed its branch.
+  # A fix merged outside the run brings the count back to 0 as well. Read as
+  # unfixed it would close the segment on `입양 종결`, with no `머지됨` row and
+  # the merged fix never compared with any review, so every field that cannot
+  # be read answers 1 and sends the segment down the ordinary
+  # review-before-merge path.
+  local seg=$1 ol heads wt head
+  gate_adoption_row "$seg" >/dev/null && return 1
+  ol=$(gate_adoption_obligation_line "$seg")
+  [ -n "$ol" ] || return 1
+  heads=$( { grep -n '^- `cycle` ' "$LEDGER" 2>/dev/null || true; } \
+           | gate_rows_field_eq '세그먼트' "$seg" | awk -F: -v ol="$ol" '$1 + 0 > ol + 0' \
+           | gate_rows_field_values '리뷰 HEAD' | sort -u)
+  if [ -n "$heads" ]; then
+    [ "$(printf '%s\n' "$heads" | wc -l | tr -d ' ')" = 1 ] || return 1
+    wt=$(gate_segment_worktree "$seg")
+    head=$(gate_worktree_tip "$wt" 2>/dev/null) || return 1
+    [ "$head" = "$heads" ] || return 1
+  fi
+  [ -z "$( { grep -n '^- `stage-result` ' "$LEDGER" 2>/dev/null || true; } \
+           | gate_rows_field_eq '세그먼트' "$seg" | awk -F: -v ol="$ol" '$1 + 0 > ol + 0' \
+           | grep -E '\| (종류=(implement|lead-fix)|스테이지=(S4|S5F)) (\||$)' )" ] || return 1
+  [ -z "$( { gate_rows '원격 판독' || true; } | gate_rows_field_eq '세그먼트' "$seg" \
+           | grep -E '\| (원격 팁=[0-9a-f]{7,}|PR=[0-9]+) (\||$)' )" ]
+}
+
 gate_adoption_review_next() {
   # gate_adoption_review_next <segment> — `다음` of a segment adopted as a merged
   # pull request, read before the base overlay and the CI layer:
   #   no cycle after the obligation's issuing row       사후리뷰
   #   commits ahead of the base unreadable              판정 불가
-  #   0 ahead, the table reads `머지` or `이월 머지`     입양 종결
+  #   0 ahead, never fixed (`gate_adoption_unfixed`),
+  #   the table reads `머지` or `이월 머지`             입양 종결
   #   otherwise                                         the table's value, which
   #                                                     the caller layers as for
   #                                                     any `선리뷰후머지` segment
   # The commits ahead are `gate_segment_ahead_count`, the one count every reader
   # of an adopted segment uses — the merged-tip count would include the base
-  # commits after the merge commit.
+  # commits after the merge commit. A segment that carried a fix and reads 0
+  # ahead had that fix merged outside the run: it takes the table's value, so
+  # the CI layer and the merge check judge that merge as any segment's.
   local seg=$1 nx ahead
   if gate_segment_post_merge "$seg"; then printf '사후리뷰'; return 0; fi
   nx=$(gate_segment_review_next_table "$seg")
@@ -27504,7 +27547,7 @@ gate_adoption_review_next() {
   case "$ahead" in
     ''|*[!0-9]*) printf '판정 불가'; return 0 ;;
   esac
-  if [ "$ahead" = 0 ]; then
+  if [ "$ahead" = 0 ] && gate_adoption_unfixed "$seg"; then
     case "$nx" in 머지|'이월 머지') printf '입양 종결'; return 0 ;; esac
   fi
   printf '%s' "$nx"
@@ -27520,11 +27563,13 @@ gate_segment_merged_uncovered() {
   # the review line offers the covering review exactly when condition 11 holds
   # on a missing coverage.
   #
-  # A segment adopted as a merged pull request is never one: the merge it
-  # reviews happened before the run, and its obligation, not condition 11,
-  # holds the run for that review.
+  # A segment adopted as a merged pull request is not one while it never
+  # carried a fix (`gate_adoption_unfixed`): the merge it reviews happened
+  # before the run, and its obligation, not condition 11, holds the run for
+  # that review. Once it carried a fix, a merge of that fix is judged as any
+  # review-before-merge segment's.
   local seg=$1 pol mrow
-  gate_segment_merge_adopted "$seg" && return 1
+  gate_segment_merge_adopted "$seg" && gate_adoption_unfixed "$seg" && return 1
   gate_segment_post_merge "$seg" && return 1
   pol=$(gate_segment_field "$seg" '리뷰 정책')
   [ "${pol:-선리뷰후머지}" = '선리뷰후머지' ] || return 1
@@ -29345,14 +29390,16 @@ gate_review_line() {
     return 0
   fi
   # A SEGMENT ADOPTED AS A MERGED PULL REQUEST is read by the commits its
-  # worktree carries ahead of the base (`gate_segment_ahead_count`). With none,
-  # the review target is the merged pull request itself: the diff runs from the
-  # obligation's fork point, `--merged` names the merge commit the base made,
-  # and `--judge-head` names the worktree HEAD the findings are judged against.
-  # No `--pr-head`: the head is the obligation's, not a pin of this line. With
-  # commits ahead — a fix the review asked for — the ordinary branch line below
-  # reviews the branch, with no fork point taken from the obligation and no
-  # `--post-merge`. An unreadable count prints no line.
+  # worktree carries ahead of the base (`gate_segment_ahead_count`). With none
+  # and no fix ever carried (`gate_adoption_unfixed`), the review target is the
+  # merged pull request itself: the diff runs from the obligation's fork point,
+  # `--merged` names the merge commit the base made, and `--judge-head` names
+  # the worktree HEAD the findings are judged against. No `--pr-head`: the head
+  # is the obligation's, not a pin of this line. With commits ahead — a fix the
+  # review asked for — or with a fix that has since merged outside the run, the
+  # ordinary branch line below reviews the branch, with no fork point taken
+  # from the obligation and no `--post-merge`. An unreadable count prints no
+  # line.
   local adahead=''
   if gate_segment_merge_adopted "$seg"; then
     adahead=$(gate_segment_ahead_count "$seg")
@@ -29361,7 +29408,7 @@ gate_review_line() {
         warn "머지 입양 세그먼트 $seg 가 베이스보다 앞선 커밋 수를 읽지 못했습니다 — 리뷰 줄을 내지 않습니다"
         return "$GATE_EXIT_RULE" ;;
     esac
-    if [ "$adahead" = 0 ]; then
+    if [ "$adahead" = 0 ] && gate_adoption_unfixed "$seg"; then
       local adrow adslug adorow admg adfork adwt adhead
       adrow=$(gate_merge_adoption_row "$seg")
       adslug=$(alias_slug "$(manifest_row_fields "$adrow" '대상')" 2>/dev/null) || adslug=''
@@ -36602,12 +36649,14 @@ gate_record_row() {
         # ITS MERGELESS ENDING IS `입양 종결` AND NOTHING ELSE. Its merge happened
         # outside the run, so while no fix of its own merged (no `머지됨` row) and
         # `review_next[]` reads `입양 종결` — the review passed with no commit
-        # ahead of the base — the `완료` owes no apply and carries no `커밋`,
-        # since nothing was pushed for it. Every other `완료` of such a segment
-        # is judged by the rules of any segment: after a fix merged, the apply
-        # check below; with no merge, a below-merge ending with its `커밋`, on a
-        # review the table reads `머지` or `이월 머지`. An unreadable count is
-        # not read as 0.
+        # ahead of the base and no fix ever carried — the `완료` owes no apply
+        # and carries no `커밋`, since nothing was pushed for it. A segment that
+        # carried a fix ends only after that fix's `머지됨` row, through the
+        # apply check below; with no `머지됨` row its `완료` is refused whatever
+        # the table reads, since a fix merged outside the run has been compared
+        # with no review. The manifest check accepts a `머지 입양` row only on
+        # a target whose cutpoint is `머지` or past it, so no below-merge ending
+        # is left to accept here. An unreadable count is not read as 0.
         local md_ahead="" md_nx
         if [ "$st" = 완료 ] && gate_segment_merge_adopted "$seg"; then
           if [ -z "$(gate_adoption_obligation_line "$seg")" ]; then
@@ -36632,8 +36681,10 @@ gate_record_row() {
                 return "$GATE_EXIT_VOCAB" ;;
               *)
                 case "$(gate_segment_review_next_table "$seg")" in
-                  머지|'이월 머지') : ;;
-                  *) warn "머지 입양 세그먼트 ${seg} 의 다음 처분은 「${md_nx:-(빈 값)}」 입니다 — 머지 없는 「완료」 는 마지막 리뷰의 판정표 값이 「머지」·「이월 머지」 일 때만 씁니다"
+                  머지|'이월 머지')
+                    warn "머지 입양 세그먼트 ${seg} 의 다음 처분은 「${md_nx:-(빈 값)}」 입니다 — 수정 커밋을 지닌 머지 입양 세그먼트는 머지된 뒤에만 「완료」 를 씁니다"
+                    return "$GATE_EXIT_VOCAB" ;;
+                  *) warn "머지 입양 세그먼트 ${seg} 의 다음 처분은 「${md_nx:-(빈 값)}」 입니다 — 머지 없는 「완료」 는 다음 처분이 「입양 종결」 일 때만 씁니다"
                      return "$GATE_EXIT_VOCAB" ;;
                 esac ;;
             esac
@@ -49288,13 +49339,18 @@ gate_verb_act() {
         # merge commit its obligation names, from the fork point it recorded,
         # with the findings judged on the worktree HEAD. Those three flags are
         # rebuilt from the obligation row and the worktree and compared byte for
-        # byte; with commits ahead of the base the line reviews the branch and
-        # carries neither `--merged` nor `--judge-head`.
+        # byte; with commits ahead of the base, or once a fix of its own merged
+        # outside the run (`gate_adoption_unfixed` false), the line reviews the
+        # branch and carries neither `--merged` nor `--judge-head`.
         if gate_segment_merge_adopted "$segment"; then
           local rn_adahead rn_adorow rn_adwant rn_adgot rn_adkeys
           rn_adahead=$(gate_segment_ahead_count "$segment")
           rn_adorow=$(gate_adoption_obligation_row "$segment")
+          if [ "$rn_adahead" = 0 ] && ! gate_adoption_unfixed "$segment"; then rn_adahead=fixed; fi
           case "$rn_adahead" in
+            fixed)
+              rn_adkeys='--merged --judge-head'
+              rn_adwant='' ;;
             0)
               rn_adkeys='--base-sha --merged --judge-head'
               rn_adwant="--base-sha $(gate_row_field "$rn_adorow" '분기점') --merged $(gate_row_field "$rn_adorow" '머지 커밋') --judge-head $( { cd "$(gate_act_worktree "$alias" "$segment")" 2>/dev/null \
