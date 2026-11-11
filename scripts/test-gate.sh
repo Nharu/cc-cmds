@@ -68470,7 +68470,23 @@ s113_r=$(s113_call "$S113/ledger-seg.md" "$s113_doc" 'gate_segment_review_walk A
 check "113: 세그먼트 리뷰 계수는 세그먼트 키의 크기 차단 행을 재수렴으로 세지 않는다" \
   "$s113_r|$(s113_call "$S113/ledger-segc.md" "$s113_doc" 'gate_segment_review_walk A1 | grep -E "^(재수렴 뒤|마지막 뒤 재수렴)=" | tr "\n" " "' 2>/dev/null)" \
   "저작 뒤=0 재수렴 뒤=0 마지막 뒤 재수렴=없음 |재수렴 뒤=1 마지막 뒤 재수렴=실패 "
-unset -f s113_call s113_route s113_rs s113_keyable
+# 키의 마지막 결과 행이 크기 차단인지 — 교대 정지의 도달 거부 거절과 감사 입장 거절이 이것으로
+# 가른다. 세그먼트 키는 마지막 행이 차단이면 참이고 뒤에 세션 행이 붙으면 거짓이다. 설계 단계
+# 키의 골격 재검토 재수렴이 막힌 채 마지막이면 참이고, 그 뒤 재수렴이 돌았으면 거짓이다.
+s113_lb() {
+  s113_call "$1" "$s113_doc" 'r=0; gate_key_last_row_is_size_block '"$2"' || r=$?; printf "%s" "$r"' 2>/dev/null
+}
+{
+  printf -- '- `stage-result` | 교대=0 | 세그먼트=- | 스테이지=D1 | 종류=design | 종료 코드=0 | 실행 버전=1 | 세션 id=s1 | 종단 부류=정상 완료 | prev=x\n'
+  printf -- '- `stage-result` | 교대=0 | 세그먼트=- | 스테이지=D1 | 종류=reconverge | 종료 코드=- | 실행 버전=2 | 세션 id=- | 부모=- | 기록자=게이트 | 차단=파견 전 | 종단 부류=의도된 park | 관측=파견 전 차단 | prev=x\n'
+} > "$S113/ledger-dsz.md"
+cp "$S113/ledger-dsz.md" "$S113/ledger-dszr.md"
+printf -- '- `stage-result` | 교대=0 | 세그먼트=- | 스테이지=D1 | 종류=reconverge | 종료 코드=0 | 실행 버전=3 | 세션 id=s3 | 종단 부류=정상 완료 | prev=x\n' \
+  >> "$S113/ledger-dszr.md"
+check "113: 마지막 결과 행이 크기 차단인 키만 그 차단을 기다린다" \
+  "$(s113_lb "$S113/ledger-seg.md" A1)|$(s113_lb "$S113/ledger-segc.md" A1)|$(s113_lb "$S113/ledger-dsz.md" D1)|$(s113_lb "$S113/ledger-dszr.md" D1)|$(s113_lb "$S113/ledger-empty.md" A1)" \
+  "0|1|0|1|1"
+unset -f s113_call s113_route s113_rs s113_keyable s113_lb
 unset S113 s113_doc s113_r s113_rec s113_sha s113_urec s113_row s113_arch s113_rc s113_sz s113_post s113_srec s113_block s113_stub s113_orec s113_n
 
 # ---------------------------------------------------------------------------

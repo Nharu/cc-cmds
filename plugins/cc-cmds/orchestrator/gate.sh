@@ -25670,6 +25670,16 @@ gate_row_is_size_block() {
   [ "$(gate_row_field "$1" '차단')" = "파견 전" ]
 }
 
+gate_key_last_row_is_size_block() {
+  # gate_key_last_row_is_size_block <key> — 0 when the key's last `stage-result`
+  # row is a size block before dispatch: the dispatch the key is waiting on has
+  # not run, and only the size record's answer dispatches it again. A block
+  # row with a later row behind it is history and answers 1.
+  local last
+  last=$( { gate_stage_result_rows_of "$1" || true; } | tail -1)
+  [ -n "$last" ] && gate_row_is_size_block "$last"
+}
+
 gate_stage_row_before_size_block() {
   # gate_stage_row_before_size_block <key> — the key's last `stage-result` row
   # that is neither a pre-session death nor a size block before dispatch, or
@@ -39414,6 +39424,16 @@ EOF
       srow=$(gate_shift_halt_site_row "$ssite") || {
         warn "\`${ssite:-(none)}\` is not a site of the shift-halt table — a run-scope stop stays a \`handoff\` with \`사유=중단\`"
         return "$GATE_EXIT_VOCAB"; }
+      # A SIZE BLOCK IS NO REACH PARK. A dispatch the document's size refused
+      # exits 11 like a reach park, but it wrote a size record and a
+      # `차단=파견 전` row, not a `blocked` row. A `도달 거부` stop on it would
+      # hold the segment behind a second question and keep the size record's
+      # answer from redispatching, so the segment's last row decides.
+      if [ "$ssite" = "도달 거부" ] && [ -n "$seg" ] && [ "$seg" != "-" ] \
+         && gate_key_last_row_is_size_block "$seg"; then
+        warn "세그먼트 $seg 의 마지막 결과 행은 파견 전 크기 차단(차단=파견 전)입니다 — 그 11 은 도달 park 가 아니므로 도달 거부 로 멈추지 않고 크기 기록의 답을 기다립니다"
+        return "$GATE_EXIT_RULE"
+      fi
       sq=$(gate_field_of '질문' "$@")
       sobs=$(gate_field_of '관측' "$@")
       [ -n "$sq" ] && [ -n "$sobs" ] || {
@@ -49446,6 +49466,14 @@ gate_verb_act() {
         au_rows=$( { gate_stage_result_rows_of "$au_dstep" || true; } \
                    | { grep -vE '\| 차단=파견 전( \||$)' || true; })
         au_last=$(gate_row_field "$(printf '%s\n' "$au_rows" | tail -1)" '종단 부류')
+        # But a size block that is still the key's LAST row is a re-convergence
+        # a person asked for (`골격 재검토`) that has not run yet: the audit
+        # waits until the size record's answer dispatches it again. A block row
+        # with a later row behind it is passed over, as above.
+        if gate_key_last_row_is_size_block "$au_dstep"; then
+          warn "감사 스테이지는 설계 단계($au_dstep)의 마지막 결과 행이 파견 전 크기 차단(차단=파견 전)인 동안 뜨지 않습니다 — 막힌 재수렴이 크기 기록의 답으로 다시 파견된 뒤에 감사를 내세요"
+          exit "$GATE_EXIT_RULE"
+        fi
         if { [ -n "$au_rows" ] && [ "$au_last" != "정상 완료" ]; } \
            || { [ -z "$au_rows" ] && ! doc_is_frozen "${DOC:-}"; }; then
           warn "감사 스테이지는 설계 단계($au_dstep)의 마지막 결과가 정상 완료일 때만 뜹니다 — 지금은 ${au_last:-결과 행 없음} 입니다"
