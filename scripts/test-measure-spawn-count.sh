@@ -59,7 +59,9 @@ ok()   { passed=$((passed + 1)); printf 'PASS: %s\n' "$1"; }
 bad()  { failed=$((failed + 1)); printf 'FAIL: %s — %s\n' "$1" "${2:-}" >&2; }
 check(){ if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "got '$2', want '$3'"; fi; }
 
-field() { sed -n "s/^$2=//p" "$1" | sed -n 1p; }
+# field <file> <key> — the value of the first `<key>=` line. The key is compared
+# as a string, not a pattern: keys carry repo paths with `/` and `.`.
+field() { awk -v k="$2=" 'index($0, k) == 1 { print substr($0, length(k) + 1); exit }' "$1"; }
 # base <kind> <key> — the baseline's value for that row.
 base() { awk -F '\t' -v k="$1" -v n="$2" '$1 == k && $2 == n { print $3; exit }' "$BASELINE"; }
 is_int() { case "$1" in ''|*[!0-9]*) return 1 ;; *) return 0 ;; esac; }
