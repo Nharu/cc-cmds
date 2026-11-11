@@ -2087,13 +2087,18 @@ EOF
   # the head object can be fetched are the planning act's to check — this
   # conjunction runs on every gate entry and reads nothing from disk or remote.
   #
+  # The row's target must have a cutpoint of `머지`, `배포` or `머지후착수`: a
+  # fix the review after the merge asks for has to land on the base before the
+  # segment ends, and a target that stops below the merge would close the
+  # segment with the defect still on the base.
+  #
   # The rows are counted per kind: two `머지 입양` rows on one segment are
   # refused, and a `머지 입양` row beside a `세그먼트 입양` row of the same
   # segment is the pair a re-kickoff writes for a fix branch with an open pull
   # request. Which target the paired adoption row's worktree belongs to is not
   # compared here: that needs the worktree's common git directory, read by the
   # planning act.
-  local md_row md_seg md_t md_src md_ceil md_segs=" "
+  local md_row md_seg md_t md_src md_ceil md_cut md_segs=" "
   while IFS= read -r md_row; do
     [ -n "$md_row" ] || continue
     grep -qE '^- `머지 입양` \| 세그먼트=[A-Za-z0-9_.-]+ \| 대상=[^ |]+ \| PR=[1-9][0-9]* \| 머지 커밋=[0-9a-f]{40} \| PR 헤드=[0-9a-f]{40} \| 출처 런=([0-9]{8}-[0-9a-f]{8}|[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9a-f]{8}|-)$' <<<"$md_row" \
@@ -2109,6 +2114,12 @@ EOF
     md_ceil=$(target_field "$md_t" '리뷰 정책 상한')
     [ "$md_ceil" != "리뷰없음" ] \
       || die "「머지 입양」 행의 대상 '${md_t}' 의 리뷰 정책 상한이 「리뷰없음」입니다 — 입양 세그먼트는 선리뷰후머지로 풀리므로 그 대상에는 둘 수 없습니다: $md_row"
+    md_cut=$(target_field "$md_t" '절단점')
+    md_cut=$(cutpoint_token "$md_cut" 2>/dev/null) || md_cut=''
+    case "$md_cut" in
+      머지|배포|머지후착수) : ;;
+      *) die "「머지 입양」 행의 대상 '${md_t}' 의 절단점이 「$(target_field "$md_t" '절단점')」입니다 — 머지 입양은 절단점이 「머지」·「배포」·「머지후착수」 인 대상에만 둡니다(사후 리뷰가 찾은 결함의 수정이 베이스에 착지해야 세그먼트가 끝납니다): $md_row" ;;
+    esac
     case "$md_segs" in
       *" $md_seg "*) die "「머지 입양」 행이 세그먼트 ${md_seg} 에 둘 이상입니다" ;;
     esac

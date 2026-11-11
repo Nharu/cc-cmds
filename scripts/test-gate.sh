@@ -66292,6 +66292,22 @@ case "$(printf '%s' "$MD_JSON" | jq -r '[.["슬라이싱"]["세그먼트"][]? | 
   *) bad "109m: 슬라이싱이 머지 입양 단계의 PR 번호를 낸다" \
        "rc=$MD_RC 슬라이싱=$(printf '%s' "$MD_JSON" | jq -c '.["슬라이싱"]' 2>&1) $MD_OUT" ;;
 esac
+# 대상의 절단점이 머지 아래이면 사후 리뷰가 찾은 결함의 수정이 베이스에 착지하지 못하므로
+# 매니페스트 검사가 행을 거부한다. 머지 이상은 받는다.
+md_cut_got=""
+for md_c in PR push 커밋 머지 배포 머지후착수; do
+  SA_CUT=$md_c
+  md_snap 선리뷰후머지 "$(md_row 7 "$md_a" "$md_b")"
+  case "$md_c|$MD_RC|$MD_OUT" in
+    머지\|0\|*|배포\|0\|*|머지후착수\|0\|*) : ;;
+    머지\|*|배포\|*|머지후착수\|*) md_cut_got="$md_cut_got[$md_c 거부 rc=$MD_RC $MD_OUT]" ;;
+    *\|0\|*) md_cut_got="$md_cut_got[$md_c 통과]" ;;
+    *"절단점이 「$md_c」입니다"*) : ;;
+    *) md_cut_got="$md_cut_got[$md_c rc=$MD_RC $MD_OUT]" ;;
+  esac
+done
+SA_CUT=""
+check "109m: 머지 아래 절단점 대상의 머지 입양 행은 거부되고 머지 이상은 받아진다" "$md_cut_got" ""
 
 md_fx() {
   # md_fx <merge|squash|rebase> — 새 픽스처 저장소에 커밋 둘의 PR 브랜치를 만들고 베이스에
