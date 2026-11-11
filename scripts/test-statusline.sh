@@ -3127,9 +3127,13 @@ bclear
 jx_def=$(sed -n '/^sl_json_str_into() {/,/^}/p' "$SL")
 if [ -n "$jx_def" ]; then
   eval "$jx_def"
+  # The old pipeline ended in `| head -1`; its first line is taken here by
+  # expansion instead, so the oracle reads every line sed prints.
   jx_oracle() {
-    printf '%s' "$stdin_json" \
-      | sed -n "s/.*\"$1\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" | head -1
+    local jx_all
+    jx_all=$(printf '%s' "$stdin_json" \
+      | sed -n "s/.*\"$1\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p")
+    printf '%s\n' "${jx_all%%$'\n'*}"
   }
   jx_inputs=(
     '{"K":"a","x":{"K":"b"}}'
