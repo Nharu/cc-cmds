@@ -1268,7 +1268,7 @@ check "동치 — 비교가 공허하지 않다 (원장 9 × 로캘 × 판독 6 
 check "동치 — 여섯 판독이 쓸 답을 실제로 냈다 (A1·A10·B2·Q1·D4 가 열림)" \
   "$(tr '\n' ' ' < "$EQ_DIR/out/appr.C.open_approval_ids.new")" "A1 A10 B2 D4 Q1 "
 
-eq_tbl() { ( cd "$EQ_DIR/cwd" && bash -c '. "$1"; "$2" "$3" | head -1' eq "$LIVENESS" "$1" "$2" ); }
+eq_tbl() { ( cd "$EQ_DIR/cwd" && bash -c '. "$1"; "$2" "$3" | { IFS= read -r l; printf "%s" "$l"; cat >/dev/null; }' eq "$LIVENESS" "$1" "$2" ); }
 check "동치 — 안전한 원장에서는 승인 표가 실제로 쓰인다" \
   "$( [ "$(eq_tbl cc__approval_table "$EQ_L/appr")" != F ] && printf 표 || printf 물러남 )" "표"
 check "동치 — 안전한 원장에서는 세그먼트 표가 실제로 쓰인다" \
