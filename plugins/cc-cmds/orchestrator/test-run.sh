@@ -12751,7 +12751,7 @@ check "그 사유가 어긋남을 말한다" "$(ra_get "$ra_out" reason)" "라�
 check "가드 어긋남은 임대를 묻지도 않는다" "$(ra_get "$ra_out" live)/$(ra_get "$ra_out" record)" "/no"
 printf '1\n' > "$RA/run/routing-guard"
 
-# 설계 문서 크기 — 구현 파견은 문턱(구현 323000) 이상인 문서로 띄우지 않는다. 시도를
+# 설계 문서 크기 — 구현 파견은 문턱(구현 313000) 이상인 문서로 띄우지 않는다. 시도를
 # 핀하고, 중단 기록과 그 시도의 `stage-result` 행(`차단=파견 전`, `종단 부류=의도된
 # park`)을 쓰고, park 코드로 돌아와 호출자가 park 행을 쓰게 한다. 임대도 창 기록도 없다.
 # 문턱 아래 문서는 띄우고, 그 파견의 `<바이트>/<문턱>` 을 `.docsize` 로 남긴다.
@@ -12761,7 +12761,7 @@ awk 'BEGIN { l = sprintf("%0199d", 0); for (i = 0; i < 10; i++) print l }' > "$r
 ra_out=$(RA_DOC="$ra_big" ra_spawn "S4:segZ:1")
 check "문턱 이상 문서의 구현 파견은 park 코드 79 다" "$(ra_get "$ra_out" rc)" "79"
 case "$(ra_get "$ra_out" reason)" in
-  "파견 전 / 문서 크기 초과 — 설계 문서 330000 바이트가 문턱 323000 이상이라 띄우지 않았다") ok "크기 차단 사유가 바이트와 문턱을 싣는다" ;;
+  "파견 전 / 문서 크기 초과 — 설계 문서 330000 바이트가 문턱 313000 이상이라 띄우지 않았다") ok "크기 차단 사유가 바이트와 문턱을 싣는다" ;;
   *) bad "크기 차단 사유" "$(ra_get "$ra_out" reason)" ;;
 esac
 check "크기 차단은 시도를 핀하고 그 시도의 중단 기록을 쓴다" \
@@ -12769,13 +12769,13 @@ check "크기 차단은 시도를 핀하고 그 시도의 중단 기록을 쓴�
   "1|파견 전 / 문서 크기 초과|(없음)"
 ra_row=$( { grep -F -e '- `stage-result` |' "$RA/ledger.md" || true; } | { grep -F '| 파견 id=S4:segZ:1 |' || true; } | tail -1)
 check "크기 차단은 의도된 park 의 stage-result 행 하나를 쓴다" \
-  "$(printf '%s' "$ra_row" | grep -c -F -e '| 차단=파견 전 |' || true)|$(printf '%s' "$ra_row" | grep -c -F -e '| 종단 부류=의도된 park' || true)|$(printf '%s' "$ra_row" | grep -c -F -e '| 문서 크기=330000/323000 |' || true)|$(printf '%s' "$ra_row" | grep -c -F -e '| 실행 버전=1 |' || true)" \
+  "$(printf '%s' "$ra_row" | grep -c -F -e '| 차단=파견 전 |' || true)|$(printf '%s' "$ra_row" | grep -c -F -e '| 종단 부류=의도된 park' || true)|$(printf '%s' "$ra_row" | grep -c -F -e '| 문서 크기=330000/313000 |' || true)|$(printf '%s' "$ra_row" | grep -c -F -e '| 실행 버전=1 |' || true)" \
   "1|1|1|1"
 check "크기 차단은 임대도 창 기록도 남기지 않는다" \
   "$(ra_get "$ra_out" live)/$(ra_get "$ra_out" record)/$(ra_get "$ra_out" window)" "/no/0/"
 ra_out=$(RA_DOC="$ra_small" ra_spawn "S4:segY:1")
 check "문턱 아래 문서의 구현 파견은 띄우고 그 크기를 남긴다" \
-  "$(ra_get "$ra_out" rc)/$(ra_get "$ra_out" docsize)" "0/2000/323000"
+  "$(ra_get "$ra_out" rc)/$(ra_get "$ra_out" docsize)" "0/2000/313000"
 ra_out=$(RA_DOC="$ra_big" ra_spawn "S5:segX:1")
 check "크기 표 밖의 단계(리뷰)는 문서 크기로 막지 않는다" "$(ra_get "$ra_out" rc)/$(ra_get "$ra_out" docsize)" "78/"
 

@@ -6797,7 +6797,7 @@ doc_size_ceiling() {
   case "$1" in
     audit)      printf '162000' ;;
     reconverge) printf '185000' ;;
-    implement)  printf '162000' ;;
+    implement)  printf '172000' ;;
   esac
 }
 
@@ -7766,7 +7766,10 @@ stage_model_of() {
   fi
   # One dispatch carrying out a person's `큰 문맥으로 재파견` answer to a size
   # record runs on the large-context window; the gate sets the switch in that
-  # act's own process only, so no other dispatch inherits it.
+  # act's own process only, so no other dispatch inherits it — save a
+  # re-attachment of that same session, or the new session an account move
+  # starts in its place, which the gate finds through the session's
+  # large-context record.
   if [ "${CC_ORCH_LARGE_CONTEXT_ONCE:-}" = "1" ]; then
     printf 'opus[1m]'
     return 0

@@ -49860,6 +49860,39 @@ gate_large_context_admit() {
   return 0
 }
 
+gate_large_context_record() {
+  # gate_large_context_record <session-id> — remember that a NEW session was
+  # launched on the large-context window, at `$RUN_DIR/large-context/<id>`, so
+  # a later `--resume` of that session, or the new session an account move
+  # starts in its place, runs on the same window. The switch lives in one
+  # process only; without this record a re-attachment would carry a
+  # conversation that already holds the whole oversized document into the
+  # standard window. Same umask and atomic publish as the launch directory
+  # record; a failure only warns.
+  local sid="$1" tmp
+  [ -n "$sid" ] || return 0
+  (
+    umask 077
+    mkdir -p "$RUN_DIR/large-context" || exit 1
+    tmp=$(mktemp "$RUN_DIR/large-context/.rec.XXXXXX") || exit 1
+    printf '%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$tmp" || { rm -f "$tmp"; exit 1; }
+    mv "$tmp" "$RUN_DIR/large-context/$sid"
+  ) || warn "stage launch: could not record the large-context window for session $sid"
+}
+
+gate_large_context_inherit() {
+  # gate_large_context_inherit <session-id> — when the session being resumed
+  # was launched on the large-context window, set the switch for this process
+  # too, so the re-attachment (or the new session an account move starts in
+  # its place) runs on that window and skips the size check its session has
+  # already been let past. 0 when the switch is set, 1 otherwise.
+  local sid="$1"
+  [ -n "$sid" ] && [ -f "$RUN_DIR/large-context/$sid" ] || return 1
+  CC_ORCH_LARGE_CONTEXT_ONCE=1
+  export CC_ORCH_LARGE_CONTEXT_ONCE
+  return 0
+}
+
 gate_doc_size_dispatch_check() {
   # gate_doc_size_dispatch_check <act|plan> <key> <kind> <segment> — the
   # pre-dispatch size check of an `act --kind skill`. 0 to dispatch, with
@@ -53705,6 +53738,11 @@ gate_verb_act() {
   fi
   if [ -n "$GATE_DOC_SIZE_KIND" ] && [ -z "${GATE_LARGE_CONTEXT:-}" ] && [ -z "${GATE_RESUME:-}" ]; then
     gate_doc_size_dispatch_check "$verb" "$stage_key" "$GATE_DOC_SIZE_KIND" "$segment" || exit $?
+  fi
+  # A re-attachment of a session that was launched on the large-context window
+  # stays on it: the conversation already holds the whole document.
+  if [ "$kind" = "skill" ] && [ -n "${GATE_RESUME:-}" ]; then
+    gate_large_context_inherit "$GATE_RESUME" || true
   fi
 
   # WHERE THIS ACT WILL RUN, AND NO SILENT FALLBACK. A segment row naming a
@@ -57575,8 +57613,10 @@ gate_launch_route() {
     GATE_RESUME=""; GATE_ROUTE_FRESH=1
     # The re-attachment skipped the size check; the new session reads the
     # document from the start, so it is checked now, and a block hands the
-    # lease back.
-    if [ -n "${GATE_DOC_SIZE_KIND:-}" ] && [ -z "${GATE_LARGE_CONTEXT:-}" ]; then
+    # lease back. A session that was launched on the large-context window is
+    # not checked: the new session takes the same window in its place.
+    if [ -n "${GATE_DOC_SIZE_KIND:-}" ] && [ -z "${GATE_LARGE_CONTEXT:-}" ] \
+       && [ "${CC_ORCH_LARGE_CONTEXT_ONCE:-}" != "1" ]; then
       local szrc=0
       gate_doc_size_dispatch_check act "$seg" "$GATE_DOC_SIZE_KIND" - "$GATE_ROUTE_ATTEMPT" || szrc=$?
       if [ "$szrc" != 0 ]; then
@@ -58663,6 +58703,10 @@ gate_verb_supervise_stage() {
     return "$GATE_EXIT_RULE"
   fi
   resume=$(sed -n '2p' "$taken" 2>/dev/null | tr -d '[:space:]')
+  # A session launched on the large-context window keeps it on a re-attachment
+  # and on the new session an account move starts in its place, read before
+  # either move can empty `resume`.
+  [ -z "$resume" ] || gate_large_context_inherit "$resume" || true
   # The instructions file rides on the token's third line: the dispatch half
   # synthesized it (and refused before pinning an attempt if it could not), so
   # the supervisor passes it through rather than deriving it again. It is a
@@ -58896,6 +58940,8 @@ gate_verb_supervise_stage() {
     log "스테이지 재부착 — $seg ← 세션 $resume"
   else
     id_flag="--session-id $(session_uuid "$seg" "$attempt")"
+    [ "${CC_ORCH_LARGE_CONTEXT_ONCE:-}" != "1" ] \
+      || gate_large_context_record "$(session_uuid "$seg" "$attempt")"
   fi
 
   # THE LINE OF THIS ATTEMPT'S DISPATCH ROW, for the outcome recorder's fourth

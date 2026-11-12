@@ -119,7 +119,7 @@ lead_ceiling() {
 # Rule 11's kinds, the skill each one dispatches, and the thresholds the size
 # table must give: literals, never recomputed from the table, so a change of
 # the budget, the band or a ceiling fails here until these move with it.
-SIZE_KINDS="audit:design-audit-unattended:323000:299000 reconverge:design-reconverge:300000:276000 implement:implement-unattended:323000:299000"
+SIZE_KINDS="audit:design-audit-unattended:323000:299000 reconverge:design-reconverge:300000:276000 implement:implement-unattended:313000:289000"
 
 # The heading below which a Workflow directive is no longer pre-dispatch.
 lead_boundary() {
