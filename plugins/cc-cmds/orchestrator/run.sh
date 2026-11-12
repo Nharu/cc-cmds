@@ -11663,11 +11663,45 @@ BASE_BRANCH=""
 # does not resolve reads as having a remote, because every consumer's behaviour
 # before this function existed assumed a remote-tracking ref and an unknown target
 # keeps that behaviour.
+#
+# THE JUDGEMENT IS FROZEN PER RUN, as `base_branch` is. The first answer for a
+# target is written to `$RUN_DIR/target-origin.<alias>` as `<root>\t있음|없음`,
+# and every later call of the run whose root is the same reads it back. Adding,
+# renaming or removing `origin` is a worktree write a stage may make, and a
+# judgement read afresh on every act would let that one write switch the gate's
+# base-move check off, or move the review line's base onto a local branch the
+# same stage can move. A cached answer for another root is measured again, so a
+# run whose alias resolves somewhere else is not handed the old repository's
+# answer. With no run directory (before kickoff, `--preflight`) nothing is
+# written; a root that does not resolve reads as having a remote and is not
+# written either. The write is a temporary file in the same directory renamed
+# over the answer, so a reader never sees half a line.
 target_has_origin() {
-  local al="${1:-$(home_alias)}" root
+  local al="${1:-$(home_alias)}" root f v tmp
   root=$(alias_root "$al" 2>/dev/null) || return 0
   [ -n "$root" ] || return 0
-  ( cd "$root" && git remote get-url origin >/dev/null 2>&1 )
+  f="${RUN_DIR:-}/target-origin.$al"
+  if [ -n "${RUN_DIR:-}" ] && [ -f "$f" ]; then
+    v=$(cat "$f" 2>/dev/null) || v=''
+    if [ "${v%%$'\t'*}" = "$root" ]; then
+      case "${v#*$'\t'}" in
+        있음) return 0 ;;
+        없음) return 1 ;;
+      esac
+    fi
+  fi
+  if ( cd "$root" && git remote get-url origin >/dev/null 2>&1 ); then v=있음; else v=없음; fi
+  if [ -n "${RUN_DIR:-}" ] && [ -d "$RUN_DIR" ]; then
+    tmp=$(mktemp "$RUN_DIR/.target-origin.$al.XXXXXX" 2>/dev/null) || tmp=''
+    if [ -n "$tmp" ]; then
+      if printf '%s\t%s' "$root" "$v" > "$tmp" 2>/dev/null; then
+        mv -f "$tmp" "$f" 2>/dev/null || rm -f "$tmp"
+      else
+        rm -f "$tmp"
+      fi
+    fi
+  fi
+  [ "$v" = 있음 ]
 }
 
 # The full ref name of a target's base: `refs/remotes/origin/<base>` when the

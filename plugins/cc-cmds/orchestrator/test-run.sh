@@ -5479,6 +5479,10 @@ check "픽스처 원격이 이 레포에서 클론돼 같은 커밋을 가리킨
   "$( cd "$MF_ORIGIN" && git rev-parse --abbrev-ref HEAD )/$( cd "$MF_ORIGIN" && git rev-parse HEAD )" \
   "main/$( cd "$MF_REPO" && git rev-parse HEAD )"
 ( cd "$MF_REPO" && git remote add origin "$MF_ORIGIN" ) >/dev/null 2>&1
+# 원격 판정은 런마다 `$RUN_DIR/target-origin.<별칭>` 에 고정되므로, 앞 절이 원격 없던
+# 이 레포를 이미 잰 사본이 있으면 방금 단 원격이 읽히지 않는다. 같은 런 디렉터리에서
+# 원격을 바꾸는 것은 픽스처뿐이므로 그 사본을 지운다.
+rm -f "$RUN_DIR"/target-origin.*
 write_manifest "$MF" "" "" "존재하지-않는-브랜치"
 MANIFEST="$MF"
 if ( check_base_branches ) >/dev/null 2>&1; then
@@ -5541,6 +5545,41 @@ else
 fi
 write_manifest "$MF"
 MANIFEST="$MF"
+# 원격 판정은 한 런 안에서 처음 잰 값으로 고정된다. 판정을 행위마다 다시 재면 스테이지가
+# `git remote add origin` 한 번으로 원격 없는 대상을 원격 있음으로 바꿔 게이트의 베이스
+# 이동 검사를 끌 수 있다. 같은 루트에서는 동결이 이기고, 루트가 바뀌면 다시 재며, 실행
+# 디렉터리가 없으면 아무것도 적지 않는다. 위 레포들과 섞이지 않게 레포를 따로 만든다.
+NR5="$WORK/freeze-repo"; NR5B="$WORK/freeze-repo-b"
+for r5d in "$NR5" "$NR5B"; do
+  mkdir -p "$r5d"
+  ( cd "$r5d" && git init -q . && git config user.email t@example.invalid \
+    && git config user.name T && printf 'a\n' > a.txt && git add -A \
+    && git commit -qm one && git branch -M main ) >/dev/null 2>&1
+done
+( cd "$NR5B" && git remote add origin "$MF_ORIGIN" ) >/dev/null 2>&1
+NR5_CG=$(cd "$NR5" && git rev-parse --path-format=absolute --git-common-dir)
+NR5B_CG=$(cd "$NR5B" && git rev-parse --path-format=absolute --git-common-dir)
+MF5="$WORK/freeze.plan.md"; MF5B="$WORK/freeze-b.plan.md"
+( MF_REPO="$NR5"; MF_CG="$NR5_CG"; write_manifest "$MF5" "" "" "main" )
+( MF_REPO="$NR5B"; MF_CG="$NR5B_CG"; write_manifest "$MF5B" "" "" "main" )
+R5RUN="$WORK/freeze-run"; mkdir -p "$R5RUN"
+r5_judge() { # <run dir> <manifest> → 있음|없음
+  ( RUN_DIR="$1"; MANIFEST="$2"; target_has_origin "$(home_alias)" && printf 있음 || printf 없음 )
+}
+check "원격 판정 동결 — 원격 없는 대상의 첫 판정은 없음이다" "$(r5_judge "$R5RUN" "$MF5")" "없음"
+R5F=$(ls "$R5RUN"/target-origin.* 2>/dev/null | sed -n '1p')
+check "원격 판정 동결 — 첫 판정이 루트와 함께 실행 디렉터리에 적힌다" \
+  "$( [ -n "$R5F" ] && cat "$R5F" )" "$(dirname "$NR5_CG")	없음"
+( cd "$NR5" && git remote add origin "$MF_ORIGIN" ) >/dev/null 2>&1
+check "원격 판정 동결 — 같은 루트에서 origin 을 더해도 판정은 그대로 없음이다" \
+  "$(r5_judge "$R5RUN" "$MF5")" "없음"
+check "원격 판정 동결 — 대상 루트가 바뀌면 다시 잰다" "$(r5_judge "$R5RUN" "$MF5B")" "있음"
+check "원격 판정 동결 — 다시 잰 값이 새 루트로 적힌다" \
+  "$( [ -n "$R5F" ] && cat "$R5F" )" "$(dirname "$NR5B_CG")	있음"
+R5NONE="$WORK/freeze-run-absent"
+check "원격 판정 동결 — 실행 디렉터리가 없으면 잰 값을 돌려준다" "$(r5_judge "$R5NONE" "$MF5")" "있음"
+check "원격 판정 동결 — 실행 디렉터리가 없으면 아무것도 적지 않는다" \
+  "$( [ -e "$R5NONE" ] && printf 있음 || printf 없음 )/$(r5_judge "" "$MF5")" "없음/있음"
 # 소비 집합은 fetch **이후**의 원격 추적 ref 집합이다 — 소비 지점이 `base_fetch` 를
 # 먼저 부르고 그다음 `base_sha` 를 부른다. 킥오프가 fetch 이전의 것을 보면 수용 집합이
 # 진부분집합이 되어, 서버에는 있는데 이 클론이 아직 가져오지 않은 베이스 브랜치가
