@@ -26,8 +26,11 @@
 # two assignments and in the common file's start condition, the set of files
 # pointing at that file, its missing question and notification surfaces, its
 # missing copies, the phase sentence, and the start disposition and end
-# obligation with their two spellings. Every other assertion here is one a
-# source suite used to make.
+# obligation with their two spellings. The approved-screen reflection block
+# (6e-7) adds seventeen: ten sentences of the writers and readers of the
+# approval, three in each router copy's reflection paragraph, and that
+# paragraph's identity across the two copies. Every other assertion here is one
+# a source suite used to make.
 #
 # Usage: bash scripts/test-meta-invariants.sh
 
@@ -1940,6 +1943,57 @@ check "교대 색인의 할트 답 행이 세그먼트의 재수렴 행 진입 �
   "$(printf '%s\n' "$rs_halt_row" | grep -cF -- 'the last `stage-result` row of a segment reads `종류=reconverge` — a settled row carrying `정산=` and a re-convergence dispatched for a binding-tier answer alike')" "1"
 check "반증 재수렴 6번이 정산= 행을 할트 답 절의 몫으로 넘긴다" \
   "$(grep -cF -- 'So is a re-convergence row carrying `정산=`: the gate wrote it when item 3 of that subsection settled an answer' "$RS_REFS/refutation-reconverge.md")" "1"
+
+# ---------------------------------------------------------------------------
+# 6e-7. An approved screen's wording reaches the design document
+#
+# A person who approves screens whose wording differs from the frozen design
+# document approves that wording; the implementation then follows the document.
+# So every writer of the approval line hands the difference to a reflection,
+# the implementation stops rather than move the screens back to the document,
+# a failed reflection stops on a record only a person answers, and both router
+# copies dispatch the reflection the same way. Each pin below is the sentence
+# that says so; a copy that loses one builds the document's older wording over
+# what the person approved, and stays green.
+# ---------------------------------------------------------------------------
+SK="$PLUGIN_ROOT/skills"
+while IFS='|' read -r who file lit; do
+  [ -n "$file" ] || continue
+  n=$(grep -cF -- "$lit" "$SK/$file" || true)
+  check "$who ${file} 가 「${lit}」 을 싣는다" "$([ "${n:-0}" -ge 1 ] && echo 예 || echo 아니오)" "예"
+done <<'EOF'
+대화형 승인|visual/SKILL.md|Read `${CLAUDE_SKILL_DIR}/../_common/approval-reflection.md` and edit the design document by it
+대화형 승인|visual/SKILL.md|`**문서 반영**: 대기 — 어긋남 <n>건`
+대화형 구현|implement/SKILL.md|the `중단 ← 추천` description says to run `/cc-cmds:visual <문서> 구현 승인` again
+대화형 구현|implement/SKILL.md|AskUserQuestion with options `승인 화면대로 구현 ← 추천` / `중단`
+무인 구현|implement-unattended/SKILL.md|is a **CFI-U3 BT-STOP**: halt before the plan is written
+무인 구현|implement-unattended/SKILL.md|**Never put in the plan a list that moves the screens' wording or structure back to the binding tier**
+무인 발행|visual-publish-unattended/SKILL.md|**Every `시각-판정` record is preceded by the drift block.**
+무인 발행|visual-publish-unattended/SKILL.md|`**문서 반영**: 대기 — 어긋남 <n>건 — 사람 답 <the same name>`
+반영 실패|design-reconverge/SKILL.md|`**스텝**: Step 3 승인 화면 반영 — 충돌`
+반영 실패|design-reconverge/SKILL.md|- `결정 첨부 후 다시 반영` — 사람이 충돌을 푸는 결정을 첨부에 붙이면
+EOF
+reflect_para() {
+  # reflect_para <file> — the reflection-dispatch paragraph of the visual wait,
+  # from its bold head up to the next bold paragraph head.
+  awk '/^\*\*A predicate held for the design document\.\*\*/ { f = 1 }
+       f && /^\*\*The fixed judgment\.\*\*/ { exit } f' "$1"
+}
+for pair in "리드:$AP_ROUTER" "교대:$RS_REFS/visual-dispatch.md"; do
+  who=${pair%%:*}
+  para=$(reflect_para "${pair#*:}")
+  for lit in \
+    'When the predicate'"'"'s first line is `승인 보류 — 설계 문서 반영 대기`' \
+    '-- reconverge -p "/cc-cmds:design-reconverge <스냅숏 design_doc> 승인 화면 반영 <시각-판정 기록 절대 경로>"' \
+    '**The reflection'"'"'s end is not a re-plan signal.**'
+  do
+    check "$who 사본의 반영 파견 문단이 「${lit}」 을 싣는다" "$(mo_count "$para" "$lit")" "1"
+  done
+done
+lead_para=$(reflect_para "$AP_ROUTER")
+shift_para=$(reflect_para "$RS_REFS/visual-dispatch.md")
+check "반영 파견 문단이 리드·교대 사본에서 바이트까지 같다" \
+  "$([ -n "$lead_para" ] && [ "$lead_para" = "$shift_para" ] && echo 예 || echo 아니오)" "예"
 
 printf '\n통과 %s · 실패 %s\n' "$passed" "$failed"
 [ "$failed" -eq 0 ]
