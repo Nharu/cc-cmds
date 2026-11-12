@@ -1860,6 +1860,37 @@ do
 done
 
 # ---------------------------------------------------------------------------
+# CFI-7 — a channel-event turn fires a person's notification on a state-change
+# line only
+#
+# Under a repeat-mode arm the seat tells a state-change line from the lines the
+# progress channel writes on its own by the line's head alone, and the seat's
+# text names those heads. The channel writes every ledger row through one
+# `emit "$body"` call, so each `emit "` call followed by anything but `$` is a
+# line of its own; the block counts them and requires each one's first two
+# words in backticks in the resident body, so a line added to or reworded in
+# `feed.sh` fails here until the seat's boundary sentence follows it. The CFI-7
+# sentence that lets the turn fire is pinned once, and the old wording that
+# barred every fire in a channel wake is pinned absent.
+# ---------------------------------------------------------------------------
+FEED="$PLUGIN_ROOT/orchestrator/feed.sh"
+feed_own=$(grep -oE 'emit "[^$][^"]*"' "$FEED" | sed -E 's/^emit "//')
+check "진행 채널이 원장 행 없이 스스로 쓰는 줄은 셋이다" \
+  "$(printf '%s\n' "$feed_own" | grep -c .)" "3"
+while IFS= read -r line; do
+  [ -n "$line" ] || continue
+  head2=$(printf '%s\n' "$line" | awk '{print $1" "$2}')
+  check "CFI-7 이 채널 스스로 쓰는 줄의 첫머리 「${head2}」 를 백틱 안에 적는다" \
+    "$([ "$(mo_count "$(cat "$AP_SKILL")" "\`$head2")" -ge 1 ] && echo 예 || echo 아니오)" "예"
+done <<EOF
+$feed_own
+EOF
+check "CFI-7 이 채널 이벤트 차례에 중계와 빚진 fire-now 하나를 허락하는 문장을 한 번 싣는다" \
+  "$(mo_count "$(cat "$AP_SKILL")" '**On a wake caused by a channel event, relay the line, make the one `fire-now` CFI-4 and CFI-7 owe, and stop.**')" "1"
+check "autopilot 본문에 채널 이벤트 차례의 fire-now 를 막던 옛 문구가 없다" \
+  "$(mo_count "$(cat "$AP_SKILL")" 'not even `fire-now` under a repeat-mode arm')" "0"
+
+# ---------------------------------------------------------------------------
 # 6e-6. The shift's branch index and its reference files agree
 #
 # The shift reads a reference file only through the table of
