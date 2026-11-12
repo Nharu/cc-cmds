@@ -615,6 +615,29 @@ at most one missed banner, which the user can recover by re-ARMing or
 re-stating the request. Cancel is safe-directional: the model may end
 on judgment; it may not start on judgment.
 
+### 4.7 Turns the person did not type (host-defined observation points)
+
+A host skill may define the observation points of the turns a session
+wakes into without the person typing — and the `autopilot` seat does:
+its shift-return turn (the return of a `router-shift` call the seat
+issued) and its channel-event turn (a line of the run's progress
+channel). The ARM itself is still only the person's, placed in a turn
+they typed; the host's text says only when an ARM already placed is
+fired in those turns.
+
+In such a turn, the per-turn tool-call self-check of this skill (the
+frontmatter's repeat self-check, "a user-task tool call ≥1 this turn")
+does **not** decide whether a fire-now is owed — the host's rule does.
+A turn that only relays a line can owe one with no user-task tool call,
+and a turn that only re-arms a monitor owes none although it made a
+tool call. §4.4's fire-first order and §4.5's defensive fire-now apply
+there only as the host's rule carries them over.
+
+**No self-cancel in such a turn.** §4.6 does not apply there: the
+session neither cancels nor arms on its own judgment in a turn the
+person did not type, including when the host's run ends. Ending the
+cycle stays with the person.
+
 ## 5. Worked examples
 
 ### (s1) Single armCount=1 happy path

@@ -3104,5 +3104,331 @@ check "런 개시: 재개 시각에 여유를 더한 시각이 지나면 세그�
   "$(grep -c . "$RD/stall" 2>/dev/null || true):$(grep -c '세그먼트 미개시' "$RD/stall" 2>/dev/null || true)" "1:1"
 unset -f sil_jump sil_held sil_const sil_open_quiet
 
+# ---------------------------------------------------------------------------
+# 조용한 런의 탐침 집합 — 판정 입력에서 자기 쓰기를 뺀 것.
+#
+# 조용한 런에서 감시자는 전체 패스 사이의 주기에 탐침만 돈다. 탐침이 보는 이름은
+# `WATCH_PROBES` 한 변수이고, 그 집합은 손으로 고른 목록이 아니라 두 표의 차다 —
+# `liveness.sh` 가 런 상태를 판정하려고 읽는 런 디렉터리 이름(판정 입력)에서 세
+# 상주 스크립트가 주기마다 스스로 쓰는 이름(자기 쓰기)을 뺀 것. 판정 입력이 빠지면
+# 그 파일의 변화가 다음 4주기 전체 패스까지 묻히고, 자기 쓰기가 들어가면 조용한
+# 런도 거의 매 주기 전체 패스를 돌아 탐침이 있으나 마나가 된다. 두 표는 여기 자료로
+# 두고 세 가지를 단언한다. `liveness.sh` 에 런 디렉터리 이름이 새로 적히면 첫 단언이
+# 그 이름을 어느 한 표에 올리게 한다.
+#
+# 판정 입력 표의 둘째 칸은 그 이름을 덮는 탐침 원소이고, `-` 는 탐침에 넣지 않는
+# 이름이다. 넣지 않는 이름은 자기 쓰기이거나, `routing-guard`·`checks.observed`
+# 처럼 릴레이 경로만 읽어 탐침에서 뺀 이름(qp_relay_only)이다 — 살아 있는 릴레이는
+# 그것만으로 런을 일하는 런으로 만들므로 그 경로는 조용한 런의 탐침에 닿지 않는다.
+# 디렉터리 원소(`halt/`)는 직접 자식이 생기거나 이름이 바뀌어 들어올 때 시각이
+# 움직인다.
+# ---------------------------------------------------------------------------
+QP_LIST=$(sed -n "s/^WATCH_PROBES='\(.*\)'\$/\1/p" "$WATCH")
+qp_inputs='*.pid *.pid
+*.pid.settling* *.pid.settling*
+*.sup *.sup
+*.sup.start *.sup.start
+apply apply/*.launch
+apply/*.launch apply/*.launch
+apply/*.sup apply/*.sup
+apply/*.sup.start apply/*.sup.start
+apply/*.sup.self apply/*.sup.self
+apply/*.sup.self.start apply/*.sup.self.start
+*.waiting *.waiting
+shift.live shift.live
+relay.live relay.live
+halt halt/
+halt/*.md halt/
+halt/shift/* halt/shift/
+halt/shift/*.md halt/shift/
+done done
+ends-on-done ends-on-done
+routing-guard -
+checks.observed -
+checks.observed.draining.* -
+watch.heartbeat -
+watch.relay-seen -
+watch.stall -
+watch.mode -'
+qp_self='watch.pid checks.pid watch.heartbeat watch.stall .watch.stall.* watch.state host-load.jsonl watch.failover-clock watch.relay-seen watch.mode .watch.fullpass .checks.pollmark .feed.readmark feed.state feed.cursor feed.heartbeat feed.lock.d'
+qp_relay_only='routing-guard checks.observed checks.observed.draining.*'
+qp_in() { case " $2 " in *" $1 "*) return 0 ;; esac; return 1; }  # qp_in <낱말> <공백 목록>
+
+check "탐침 집합: 감시자가 탐침 집합을 한 변수(WATCH_PROBES)에 선언한다" \
+  "$( [ -n "$QP_LIST" ] && printf 있음 || printf 없음 )" "있음"
+
+# 1. liveness.sh 의 런 디렉터리 참조는 모두 두 표 가운데 하나에 있다. 주석 줄은 빼고,
+#    경로를 글자 그대로 적은 꼴(`$run_dir/…`, `"$run_dir"/…`, `$1/…`, `${1:-}/…`)만 읽는다.
+qp_refs=$( { grep -v '^[[:space:]]*#' "$LIVENESS_SH" || true; } \
+  | { grep -oE '(\$run_dir|"\$run_dir"|\$\{run_dir\}|\$1|\$\{1:-\})/[A-Za-z0-9_.*/-]+' || true; } \
+  | sed -E 's|^[^/]*/||; s|/+$||' | sort -u)
+qp_input_names=$(printf '%s\n' "$qp_inputs" | while read -r qp_n _; do printf '%s ' "$qp_n"; done)
+qp_miss=""
+while IFS= read -r qp_r; do
+  [ -n "$qp_r" ] || continue
+  qp_in "$qp_r" "$qp_input_names" || qp_in "$qp_r" "$qp_self" || qp_miss="$qp_miss $qp_r"
+done <<EOF
+$qp_refs
+EOF
+check "탐침 집합: liveness.sh 가 런 디렉터리에서 읽는 이름은 모두 판정 입력이나 자기 쓰기 표에 있다" \
+  "${qp_miss:-없음}" "없음"
+check "탐침 집합: 그 참조를 실제로 뽑았다 (전제)" \
+  "$( [ "$(printf '%s\n' "$qp_refs" | grep -c .)" -ge 10 ] && printf 예 || printf 아니오 )" "예"
+
+# 2. 판정 입력에서 자기 쓰기와 릴레이 전용을 뺀 이름은 모두 탐침 집합의 원소가 덮는다.
+#    빼는 이름은 탐침 칸이 `-` 이고, `-` 인 이름은 반드시 둘 가운데 하나다.
+qp_bad=""
+while read -r qp_n qp_p; do
+  [ -n "$qp_n" ] || continue
+  if qp_in "$qp_n" "$qp_self" || qp_in "$qp_n" "$qp_relay_only"; then
+    [ "$qp_p" = "-" ] || qp_bad="$qp_bad $qp_n(뺄 이름에 원소 $qp_p)"
+  elif [ "$qp_p" = "-" ]; then
+    qp_bad="$qp_bad $qp_n(덮는 원소 없음)"
+  else
+    qp_in "$qp_p" "$QP_LIST" || qp_bad="$qp_bad $qp_n($qp_p 가 집합에 없음)"
+  fi
+done <<EOF
+$qp_inputs
+EOF
+check "탐침 집합: 판정 입력에서 자기 쓰기를 뺀 이름은 모두 탐침 집합에 있다" "${qp_bad:-없음}" "없음"
+
+# 3. 탐침 집합은 자기 쓰기와 겹치지 않는다. 글롭 원소는 자기 쓰기 이름(`*` 자리에
+#    글자를 넣은 표본)과 맞춰 보고, 맞는 것은 `*.pid` 의 `watch.pid`·`checks.pid` 뿐이며
+#    그 둘은 탐침이 이름으로 건너뛴다.
+qp_overlap=""
+for qp_s in $(set -f; printf '%s ' $qp_self); do
+  qp_sample=${qp_s//\*/x}
+  qp_in "$qp_s" "$QP_LIST" && qp_overlap="$qp_overlap $qp_s"
+  set -f
+  for qp_p in $QP_LIST; do
+    case "$qp_p" in *'*'*) ;; *) continue ;; esac
+    # shellcheck disable=SC2254
+    case "$qp_sample" in
+      $qp_p)
+        case "$qp_s" in watch.pid|checks.pid) ;; *) qp_overlap="$qp_overlap $qp_s~$qp_p" ;; esac ;;
+    esac
+  done
+  set +f
+done
+check "탐침 집합: 자기 쓰기와 겹치는 원소가 없다 (*.pid 의 두 이름은 건너뛴다)" "${qp_overlap:-없음}" "없음"
+
+# 그리고 그 건너뛰기는 문면이 아니라 동작으로 잰다. 감시자의 실제 `watch_probe_changed`
+# 를 뽑아, 기준 파일을 옛 시각으로 둔 런 디렉터리에서 부른다. 자기 쓰기만 새로우면
+# 변화가 없고(rc 1), 판정 입력 표본 하나가 새로우면 변화다(rc 0).
+qp_fn=$(sed -n '/^watch_probe_changed() {/,/^}/p' "$WATCH")
+qp_probe() {  # qp_probe — 그 함수의 판정, `변화` 또는 `없음`
+  [ -n "$qp_fn" ] || { printf 'EXTRACT-FAILED'; return 0; }
+  RUN_DIR="$RD" LEDGER="$LG" QP_LIST="$QP_LIST" CC_FN="$qp_fn" bash -c '
+    read -r -a WATCH_PROBE_LIST <<< "$QP_LIST"; eval "$CC_FN"
+    if watch_probe_changed; then printf 변화; else printf 없음; fi'
+}
+qp_mark_old() { : > "$RD/.watch.fullpass"; touch -t 202001010000 "$RD/.watch.fullpass" "$LG"; }
+fresh
+mkdir -p "$RD/halt/shift" "$RD/apply"
+touch -t 202001010000 "$RD/halt/shift" "$RD/halt" "$RD/started-at"
+qp_mark_old
+for qp_s in watch.pid checks.pid watch.heartbeat watch.stall .watch.stall.1 watch.state host-load.jsonl \
+            watch.failover-clock watch.relay-seen watch.mode .checks.pollmark .feed.readmark \
+            feed.state feed.cursor feed.heartbeat; do
+  printf 'x\n' > "$RD/$qp_s"
+done
+mkdir -p "$RD/feed.lock.d"
+check "탐침: 자기 쓰기만 새로운 런 디렉터리에는 변화가 없다" "$(qp_probe)" "없음"
+qp_fail=""
+for qp_s in S1.pid S1.pid.settling S1.sup S1.sup.start S1.waiting shift.live relay.live done ends-on-done \
+            apply/S1.launch apply/S1.sup apply/S1.sup.start apply/S1.sup.self apply/S1.sup.self.start \
+            halt/S1.md halt/shift/1.md LEDGER; do
+  if [ "$qp_s" = LEDGER ]; then printf 'x\n' >> "$LG"; else printf 'x\n' > "$RD/$qp_s"; fi
+  [ "$(qp_probe)" = "변화" ] || qp_fail="$qp_fail $qp_s"
+  if [ "$qp_s" = LEDGER ]; then touch -t 202001010000 "$LG"; else rm -f "$RD/$qp_s"; fi
+  touch -t 202001010000 "$RD/halt/shift" "$RD/halt" "$RD/apply"
+done
+check "탐침: 판정 입력 표본은 하나하나가 변화로 잡힌다" "${qp_fail:-없음}" "없음"
+unset -f qp_in qp_probe qp_mark_old
+
+# ---------------------------------------------------------------------------
+# 조용한 런의 주기 — 전체 패스가 언제 도는지와 그 사이에 늦지 않는 것.
+#
+# 진짜 루프를 `--interval 1` 로 띄우고, 주기마다 무엇이 돌았는지를 PATH 스텁으로
+# 센다. 전체 패스는 원장 표를 awk 로 읽고 탐침 주기는 awk 를 부르지 않으므로, `awk`
+# 스텁은 부를 때마다 `A` 를, 주 루프 끝의 `sleep` 스텁은 주기마다 `S` 줄을 남긴다.
+# 두 줄은 감시자의 동기 자식이 쓰므로 순서가 정확하다. 그래서 `S` 하나 앞의 `A` 유무가
+# 그 주기가 전체 패스였는지를 말한다. `S` 줄은 그 순간의 epoch 과 after-stage 한 번
+# 표지가 있었는지도 싣는다.
+#
+# 조용한 런 픽스처는 답 없는 중단 기록 하나로 만든다. 열린 승인은 after-stage 팔을
+# 막으므로 쓰지 않는다. 문턱은 시험이 재는 팔 말고는 닿지 않는 값으로 둔다.
+# ---------------------------------------------------------------------------
+qp_bin="$WORK/qp-bin"; mkdir -p "$qp_bin"
+qp_awk=$(command -v awk); qp_sleep=$(command -v sleep)
+cat > "$qp_bin/awk" <<STUB
+#!/usr/bin/env bash
+printf 'A\n' >> "\$QP_LOG"
+exec "$qp_awk" "\$@"
+STUB
+cat > "$qp_bin/sleep" <<STUB
+#!/usr/bin/env bash
+qp_m=0; [ -f "\$QP_MARK" ] && qp_m=1
+printf 'S %s %s %s\n' "\$(date -u +%s)" "\$qp_m" "\$1" >> "\$QP_LOG"
+exec "$qp_sleep" "\$@"
+STUB
+chmod +x "$qp_bin/awk" "$qp_bin/sleep"
+QP_LOG="$WORK/qp.log"
+qp_quiet() {  # qp_quiet — 비종단 세그먼트 하나와 답 없는 중단 기록 하나
+  fresh
+  printf -- '- `segment` | id=S1 | 상태=실행중\n' > "$LG"
+  mkdir -p "$RD/halt"
+  printf '# 중단 기록\n' > "$RD/halt/S1.md"
+}
+qp_loop() {  # qp_loop <인자…> — 진짜 루프를 띄운다. pid 는 QP_PID, 출력은 QP_OUT
+  : > "$QP_LOG"
+  QP_OUT="$WORK/qp$case_n.out"
+  QP_LOG="$QP_LOG" QP_MARK="$RD/watch.announced-after-stage" PATH="$qp_bin:$PATH" \
+    CC_CMDS_NOTIFY_HOST_OS=Darwin bash "$WATCH" --run-dir "$RD" --ledger "$LG" --interval 1 \
+    --stall 99999 --silence 99999 --run-open 99999 "$@" > "$QP_OUT" 2>&1 &
+  QP_PID=$!
+  FX_PIDS="${FX_PIDS:-}$QP_PID "
+}
+qp_stop() { kill "$QP_PID" 2>/dev/null; wait "$QP_PID" 2>/dev/null; }
+qp_int() { case "${1:-}" in ''|*[!0-9]*) printf 아님 ;; *) printf 수 ;; esac; }
+qp_done() { { grep -c '^S [0-9]* [01] 1$' "$QP_LOG" 2>/dev/null || true; } | tr -d ' '; }  # 끝난 주기 수
+qp_wait() {  # qp_wait <주기 수> — 그만큼 끝날 때까지, 최대 60초
+  local i=0
+  while [ "$i" -lt 600 ]; do
+    [ "$(qp_done)" -ge "$1" ] && return 0
+    sleep 0.1; i=$((i + 1))
+  done
+  return 0
+}
+qp_seq() {  # 끝난 주기마다 F(전체 패스)·P(탐침 주기)
+  "$qp_awk" '$1 == "A" { f = 1 } $1 == "S" && $4 == "1" { printf "%s", (f ? "F" : "P"); f = 0 }' "$QP_LOG"
+}
+qp_first_full_from() {  # qp_first_full_from <주기 번호> — 그 번호 이후 첫 전체 패스까지 센 주기 수
+  qp_seq | "$qp_awk" -v c="$1" '{ for (i = c + 1; i <= length($0); i++) if (substr($0, i, 1) == "F") { print i - c; exit } print "없음" }'
+}
+
+# 자기 쓰기만 있는 조용한 런 — 다른 두 상주 스크립트의 쓰기를 흉내 내며 9주기를 센다.
+qp_quiet
+qp_loop --after-stage 99999
+( while kill -0 "$QP_PID" 2>/dev/null; do
+    printf '%s' "$$" > "$RD/checks.pid"; : > "$RD/.checks.pollmark"; : > "$RD/.feed.readmark"
+    printf 'S1\t실행중\n' > "$RD/feed.state"; printf '3\n' > "$RD/feed.cursor"; : > "$RD/feed.heartbeat"
+    sleep 0.3
+  done ) &
+qp_toucher=$!
+# Cycles 6 and 7 (indexes 5 and 6) are probe cycles; the heartbeat file the
+# status line reads has to move between them, not only the stdout line.
+qp_wait 6; qp_hb1=$(cat "$RD/watch.heartbeat" 2>/dev/null || true)
+qp_wait 7; qp_hb2=$(cat "$RD/watch.heartbeat" 2>/dev/null || true)
+check "조용한 런: 탐침 주기에도 watch.heartbeat 파일이 다시 쓰인다 (상태줄이 읽는 파일)" \
+  "$( [ -n "$qp_hb1" ] && [ "$qp_hb1" != "$qp_hb2" ] && printf 예 || printf "아니오 ($qp_hb1 / $qp_hb2)" )" "예"
+qp_wait 9
+check "조용한 런: 자기 쓰기만 있으면 전체 패스는 4주기마다만 돈다" "$(qp_seq | cut -c1-9)" "FPPPFPPPF"
+read -r qp_m qp_e < "$RD/watch.mode" 2>/dev/null || qp_m=""
+check "조용한 런: watch.mode 는 quiet 와 epoch 한 줄이다" "$qp_m:$(qp_int "${qp_e:-}")" "quiet:수"
+check "조용한 런: 탐침 주기에도 watch.stall 이 살아 있는 필자의 값으로 읽힌다 (정지 판정의 문턱이 기본값으로 무너지지 않는다)" \
+  "$( . "$LIVENESS_SH"; cc_effective_stall "$RD" )" "99999"
+qp_feed=$(bash "$repo_root/plugins/cc-cmds/orchestrator/feed.sh" --run-dir "$RD" --ledger "$LG" --once 2>&1 || true)
+case "$qp_feed" in
+  *"감시자 침묵"*) bad "조용한 런의 진행 채널" "탐침 주기 동안 감시자 침묵 줄을 냈다: $qp_feed" ;;
+  *) ok "조용한 런: 진행 채널이 감시자 침묵을 말하지 않는다" ;;
+esac
+kill "$qp_toucher" 2>/dev/null; wait "$qp_toucher" 2>/dev/null
+qp_stop
+qp_alive=$(grep -c '\[watch\] 살아 있음' "$QP_OUT" 2>/dev/null || true)
+check "조용한 런: 하트비트 줄은 주기마다 하나다 (상태줄의 워처 표시가 낡지 않는다)" \
+  "$( [ "${qp_alive:-0}" -ge "$(qp_done)" ] && printf 예 || printf "아니오 ($qp_alive/$(qp_done))" )" "예"
+check "조용한 런: 탐침 주기의 하트비트 줄은 전체 패스와 같은 필드 순서다" \
+  "$(grep '\[watch\] 살아 있음' "$QP_OUT" | sed 's/[0-9][0-9]*/N/g' | sort -u | grep -c .)" "1"
+check "조용한 런: 그 동안 정지 관측도 한 번 표지도 남지 않는다" \
+  "$( [ -e "$RD/stall" ] || [ -n "$(ls "$RD"/watch.announced-* 2>/dev/null || true)" ] && printf 남음 || printf 없음 )" "없음"
+
+# 바깥 변화 다섯 가지를 같은 초와 다음 초에 만든다. 같은 초는 전체 패스가 기준 파일을
+# 찍은 직후라 `-nt` 가 놓칠 수 있고, 그때도 4주기 전체 패스가 잡아 다섯 주기 안이다. 다음
+# 초는 탐침이 잡으므로 바로 다음 주기다.
+qp_change() {  # qp_change <종류>
+  case "$1" in
+    원장) printf -- '- `segment` | id=S1 | 상태=실행중\n' >> "$LG" ;;
+    중단) printf '# 중단 기록\n' > "$RD/halt/S$RANDOM.md" ;;
+    대기갱신)
+      qp_w=""
+      while IFS= read -r qp_l; do
+        case "$qp_l" in 갱신=*) qp_w="${qp_w}갱신=$(( ${qp_l#갱신=} + 1 ))"$'\n' ;; *) qp_w="${qp_w}${qp_l}"$'\n' ;; esac
+      done < "$RD/S9.waiting"
+      printf '%s' "$qp_w" > "$RD/S9.waiting" ;;
+    릴레이) printf 'x\n' >> "$RD/relay.live" ;;
+    정지행) printf -- '- `blocked` | 스코프=run | 사유=라이브니스 침묵 | prev=x\n' >> "$LG" ;;
+  esac
+}
+for qp_when in 같은초 다음초; do
+  qp_quiet
+  seed_waiter S9 200000
+  qp_loop --after-stage 99999
+  qp_res=""
+  for qp_k in 원장 중단 대기갱신 릴레이 정지행; do
+    # 직전 주기가 전체 패스로 끝날 때까지 기다린 뒤 바꾼다.
+    qp_i=0
+    while [ "$qp_i" -lt 600 ]; do
+      case "$(qp_seq)" in *F) break ;; esac
+      sleep 0.1; qp_i=$((qp_i + 1))
+    done
+    [ "$qp_when" = 다음초 ] && sleep 1.2
+    qp_c0=$(qp_done)
+    qp_change "$qp_k"
+    qp_wait $((qp_c0 + 6))
+    qp_res="$qp_res $qp_k=$(qp_first_full_from "$qp_c0")"
+  done
+  qp_stop
+  kill "$WAITER_PID" 2>/dev/null
+  qp_over=""
+  for qp_r in $qp_res; do
+    qp_v=${qp_r#*=}
+    case "$qp_v" in
+      ''|*[!0-9]*) qp_over="$qp_over $qp_r" ;;
+      *)
+        if [ "$qp_when" = 다음초 ]; then [ "$qp_v" -le 2 ] || qp_over="$qp_over $qp_r"
+        else [ "$qp_v" -le 5 ] || qp_over="$qp_over $qp_r"; fi ;;
+    esac
+  done
+  if [ "$qp_when" = 다음초 ]; then
+    check "조용한 런: 기준 파일 다음 초의 바깥 변화는 바로 다음 주기의 전체 패스가 판정한다 ($qp_res)" "${qp_over:-없음}" "없음"
+  else
+    check "조용한 런: 기준 파일과 같은 초의 바깥 변화도 다섯 주기 안에 판정된다 ($qp_res)" "${qp_over:-없음}" "없음"
+  fi
+done
+
+# 시간 기반 팔 — after-stage 문턱이 4주기 전체 패스 사이에 떨어지는 경우(6초)와 전체
+# 패스와 같은 주기에 떨어지는 경우(4초). 문턱 시각은 감시자가 원장을 처음 본 시각
+# (`watch.state` 둘째 줄)에 문턱을 더한 값이고, 그 시각 뒤에 시작한 첫 주기가 기준이다.
+# 배너는 그 주기나 바로 다음 주기에 나야 한다 — 4주기 간격에 묶이면 둘 넘게 늦는다.
+for qp_as in 6 4; do
+  qp_quiet
+  printf -- '- `stage-result` | 세그먼트=S1 | 스테이지=S1#1 | 종류=implement | 종료 코드=0 | 종단 부류=정상 | prev=0\n' >> "$LG"
+  qp_loop --after-stage "$qp_as"
+  qp_wait 11
+  qp_stop
+  qp_grew=$(sed -n '2p' "$RD/watch.state" 2>/dev/null)
+  qp_lag=$("$qp_awk" -v t="$(( ${qp_grew:-0} + qp_as ))" '
+    $1 == "S" && $4 == "1" {
+      if (j == "" && n >= 1 && prev + 1 >= t) j = n
+      if (k == "" && $3 == 1) k = n
+      prev = $2; n++
+    }
+    END { if (j == "" || k == "") print "없음"; else print k - j }' "$QP_LOG")
+  case "$qp_lag" in
+    -*|0|1) ok "조용한 런: after-stage 문턱 ${qp_as}초 — 문턱 뒤 한 주기 안에 배너가 난다 (지연 $qp_lag 주기, $(qp_seq))" ;;
+    *) bad "조용한 런의 after-stage 만기" "문턱 ${qp_as}초에서 지연 $qp_lag 주기 ($(qp_seq))" ;;
+  esac
+done
+unset -f qp_quiet qp_loop qp_stop qp_done qp_wait qp_seq qp_first_full_from qp_change
+
+# 일하는 런의 `watch.mode` — 원장이 방금 자랐고 아무도 기다리지 않으면 work 다.
+fresh
+printf -- '- `segment` | id=S1 | 상태=실행중\n' > "$LG"
+run >/dev/null
+read -r qp_m qp_e < "$RD/watch.mode" 2>/dev/null || qp_m=""
+check "일하는 런: watch.mode 는 work 와 epoch 한 줄이다" "$qp_m:$(qp_int "${qp_e:-}")" "work:수"
+unset -f qp_int
+
 printf '\ntest-watch: %d passed, %d failed, %d skipped\n' "$passed" "$failed" "$skipped"
 [ "$failed" = "0" ]
