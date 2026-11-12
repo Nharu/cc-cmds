@@ -903,6 +903,15 @@ readonly GATE_EXIT_ANCHOR=10
 # one thing this must not say — the repair is not to re-declare and try again.
 # 5 means a person was asked and the run is waiting; here no approval row exists
 # and nobody will answer, so a caller treating it as 5 waits out the night.
+#
+# A SECOND MEANING, ON A TARGET WITH NO `origin`: the act was performed (or was
+# held at its entry), and a record waits for a person's answer. The base-move
+# check exits 11 when the target's base moved — before the act, after it, or
+# while an earlier move's latch still stands — having written a shift halt
+# record at site `베이스 이동` and its cone row. The caller tells the two
+# meanings apart by stderr: this one always carries a `[run][warn] 베이스 이동 — `
+# line, which names the record and says whether the act was performed. Never
+# the first line — every call prints its manifest line before it.
 readonly GATE_EXIT_PARK=11
 
 # THE `wait` VERB'S OWN CODES. A stage's rc passes through `wait` the way an
@@ -29472,6 +29481,415 @@ EOF
   log "교대 정지 기록 — $seg ($ssite) → $sdst"
 }
 
+# ---------------------------------------------------------------------------
+# The base-move check — a target with no `origin`.
+#
+# A TARGET WITH NO REMOTE HAS NO MERGE BUT THE PERSON'S, so its local base
+# branch is the truth of its base, and nothing outside this host would notice
+# an act of the run moving it. The check compares the base ref's commit with a
+# known value kept in the run directory, at the entry of every act on such a
+# target and again after the act, whatever the act's exit code. A move stops
+# the act's segment with a shift halt record at site `베이스 이동` and exit 11;
+# the segment's later acts end 11 at the entry until a person answers it.
+#
+# A known value, not a local variable: an act that runs for a long time may
+# hold a nested gate act that catches the same move first, and the outer act
+# then reads the value that act already put right rather than reporting the
+# move twice. A move between two acts is caught at the next entry, so an act
+# outside the gate cannot slip one past either.
+#
+# Files under `$RUN_DIR/base-guard/`:
+#   <별칭>                — the known value, one line `<ref>\t<sha>`
+#   <별칭>.latch.<세그먼트> — the absolute path of the record that stops it
+#   <별칭>.latch          — the same for the whole target: a record on the
+#                           target's key `베이스-<별칭>`, or `기록 없음`
+#   <별칭>.writing        — `<기지값 sha>\t<지금 sha>\t<시각>`, then
+#                           `\t<기록>\t<걸쇠>` once the record is written
+# They are read and changed under `gate_index_lock "<dir>/<별칭>"` only, and the
+# lock is never held while an act runs or a record is written.
+
+gate_base_guard_applies() {
+  # gate_base_guard_applies <alias> <verb> <kind> — whether the check runs for
+  # this act: a declared target with no `origin`, on an act that is not one of
+  # the row-only kinds. A target with a remote never reaches a line below.
+  local al="$1" verb="$2" kind="$3"
+  [ -n "${RUN_DIR:-}" ] || return 1
+  case "$al" in ''|-) return 1 ;; esac
+  case " $(target_aliases 2>/dev/null | tr '\n' ' ') " in *" $al "*) ;; *) return 1 ;; esac
+  if [ "$verb" != "exec" ] && [ -n "$kind" ] && gate_kind_is_bookkeeping "$kind"; then
+    return 1
+  fi
+  target_has_origin "$al" && return 1
+  return 0
+}
+
+gate_base_guard_now() {
+  # gate_base_guard_now <alias> — `<ref>\t<sha>` of the base as it stands. A
+  # ref that does not resolve reads `없음`: a base ref that disappeared is a
+  # move too. A base the target cannot name at all reads `-\t없음`, which stays
+  # equal to itself.
+  local al="$1" ref root sha=''
+  ref=$(base_ref "$al" 2>/dev/null) || ref=''
+  root=$(alias_root "$al" 2>/dev/null) || root=''
+  if [ -n "$ref" ] && [ -n "$root" ]; then
+    sha=$( (cd "$root" 2>/dev/null && git rev-parse --verify --quiet "$ref^{commit}") 2>/dev/null) || sha=''
+  fi
+  [ -n "$ref" ] || ref=-
+  [ -n "$sha" ] || sha=없음
+  printf '%s\t%s' "$ref" "$sha"
+}
+
+gate_base_guard_put() {
+  # gate_base_guard_put <file> <line> — replace <file> with one line, by a
+  # rename from a temporary file beside it.
+  local tmp
+  tmp=$(mktemp "$1.XXXXXX" 2>/dev/null) || return 1
+  if printf '%s\n' "$2" > "$tmp" 2>/dev/null && mv -f "$tmp" "$1" 2>/dev/null; then
+    return 0
+  fi
+  rm -f "$tmp" 2>/dev/null || true
+  return 1
+}
+
+gate_base_guard_read() {
+  # gate_base_guard_read <file> — the file's first line; exit 1 when it exists
+  # and cannot be read. An absent file prints nothing and succeeds; the caller
+  # tells the two apart with `-e`.
+  [ -e "$1" ] || return 0
+  [ -f "$1" ] && [ -r "$1" ] || return 1
+  sed -n '1p' "$1" 2>/dev/null || return 1
+}
+
+gate_base_guard_last_answer() {
+  # gate_base_guard_last_answer <record> — the `선택지` of the last `중단 답`
+  # row naming <record> as its `중단 기록`, or nothing when none does. Exit 1
+  # when the ledger cannot be read: that is not "no answer".
+  local rows r=0
+  [ -n "${LEDGER:-}" ] && [ -r "$LEDGER" ] || return 1
+  rows=$(grep "^- \`중단 답\` " "$LEDGER" 2>/dev/null) || r=$?
+  [ "$r" -le 1 ] || return 1
+  rows=$(printf '%s\n' "$rows" | LC_ALL=C awk -v k="| 중단 기록=$1 |" 'index($0, k) { l = $0 } END { if (l != "") print l }')
+  [ -n "$rows" ] || return 0
+  gate_row_field "$rows" '선택지'
+}
+
+gate_base_guard_act_row() {
+  # gate_base_guard_act_row <alias> <segment> <사유> <근거> — the act-scope
+  # `blocked` row of a base-move stop that no cone could carry.
+  local f=("대상=$1")
+  case "$2" in ''|-) ;; *) f+=("세그먼트=$2") ;; esac
+  gate_append 'blocked' "${f[@]}" "스코프=act" "원인=막힘" "사유=$3" \
+    "근거=$(gate_row_safe "$4" 200)" "관측=$(now_iso)"
+}
+
+gate_base_guard_target_stop() {
+  # gate_base_guard_target_stop <alias> <segment> <질문> <관측> <경고> — stop the
+  # act on the target's own key when the check could not compare at all (the
+  # lock was not taken, or a file or the ledger could not be read). A target
+  # latch already standing is that stop, and nothing new is written. Always
+  # exit 11.
+  local al="$1" seg="$2" q="$3" obs="$4" msg="$5" d="$RUN_DIR/base-guard" tl
+  tl="$d/$al.latch"
+  if [ -e "$tl" ]; then
+    warn "베이스 이동 — ${msg} — 대상 걸쇠 $tl 가 이미 서 있어 새 기록을 쓰지 않습니다 · 행위 수행 안 함"
+    return "$GATE_EXIT_PARK"
+  fi
+  mkdir -p "$d" 2>/dev/null || true
+  if gate_shift_halt_write "$al" "베이스-$al" '베이스 이동' "$q" "$obs" 2>/dev/null \
+     && gate_base_guard_put "$tl" "$GATE_SHW_DST"; then
+    warn "베이스 이동 — ${msg} — 기록 $GATE_SHW_DST · 행위 수행 안 함"
+    return "$GATE_EXIT_PARK"
+  fi
+  gate_base_guard_put "$tl" '기록 없음' || true
+  gate_base_guard_act_row "$al" "$seg" '베이스 이동 — 기록 작성 실패' "$msg" || true
+  warn "베이스 이동 — ${msg} — 기록을 쓰지 못해 대상 걸쇠 $tl 에 기록 없음을 둡니다 · 행위 수행 안 함"
+  return "$GATE_EXIT_PARK"
+}
+
+gate_base_guard_release() {
+  # gate_base_guard_release <alias> <latch> <record> <now> — lift a latch whose
+  # record's last answer is `재시도`: the known value becomes the base as it
+  # stands now, a `원인=해소` block on the record's anchor spends the answer,
+  # and the latch goes. Called under the lock. Exit 1, the latch left, when
+  # any of the three fails.
+  local al="$1" lf="$2" rec="$3" now="$4" anchor
+  anchor=$(gate_row_field "$(gate_shift_halt_row_of "$rec" | cut -d: -f2-)" '앵커 세그먼트')
+  [ -n "$anchor" ] || anchor="베이스-$al"
+  gate_base_guard_put "$RUN_DIR/base-guard/$al" "$now" || return 1
+  gate_append 'blocked' "대상=$al" '스코프=cone' '원인=해소' "앵커 세그먼트=$anchor" \
+    '사유=베이스 이동 — 재시도 답으로 걸쇠 해제' "근거=기지값을 지금 값 ${now#*$'\t'} 로 다시 적음" \
+    "중단 기록=$rec" || return 1
+  rm -f "$lf" 2>/dev/null || return 1
+  [ ! -e "$lf" ] || return 1
+  log "베이스 이동 걸쇠 해제 — $anchor ($rec)"
+}
+
+gate_base_guard_record_move() {
+  # gate_base_guard_record_move <alias> <segment> <기지값> <지금> <자리> <rc> <argv...>
+  # — stop on a move the check caught, with the `.writing` marker already up.
+  # The record goes on the act's segment, or on the target's key when the
+  # segment cannot carry one (or the act has none), and only once the record
+  # and its cone row stand is the known value moved on. Always exit 11.
+  local al="$1" seg="$2" old="$3" now="$4" site="$5" rc="$6"; shift 6
+  local d="$RUN_DIR/base-guard" kf wf tl lf rec='' q obs did words cur
+  kf="$d/$al"; wf="$kf.writing"; tl="$kf.latch"
+  if [ "$rc" = "수행 안 함" ]; then did="행위 수행 안 함"; else did="행위는 수행됨"; fi
+  words=$(printf '%s ' "${@:1:6}"); words=${words% }
+  q="대상 $al 의 베이스 ${now%%$'\t'*} 가 ${old#*$'\t'} 에서 ${now#*$'\t'} 로 옮겨졌습니다. ${site}에서 잡았고 ${did}. 행위: ${words:-(argv 없음)}. 이 이동이 런의 행위인지 사람의 커밋인지, 옮겨진 베이스를 그대로 둘지 되돌릴지 정해 주십시오."
+  obs="기지값=${old#*$'\t'} / 지금=${now#*$'\t'} / 자리=${site} / 행위 종료 코드=${rc} / 동시 행위·사람 커밋 구분 안 함"
+  case "$seg" in
+    ''|-)
+      gate_base_guard_act_row "$al" "$seg" '베이스 이동 — 세그먼트 없는 행위' "$obs" || true
+      if gate_shift_halt_write "$al" "베이스-$al" '베이스 이동' "$q" "$obs"; then
+        rec=$GATE_SHW_DST; lf=$tl
+      fi ;;
+    *)
+      if gate_shift_halt_write "$al" "$seg" '베이스 이동' "$q" "$obs"; then
+        rec=$GATE_SHW_DST
+      elif gate_shift_halt_write "$al" "베이스-$al" '베이스 이동' "$q" "$obs"; then
+        rec=$GATE_SHW_DST
+      fi
+      lf="$kf.latch.$seg" ;;
+  esac
+  if [ -z "$rec" ]; then
+    gate_base_guard_put "$tl" '기록 없음' || true
+    gate_base_guard_act_row "$al" "$seg" '베이스 이동 — 기록 작성 실패' "$obs" || true
+    rm -f "$wf" 2>/dev/null || true
+    warn "베이스 이동 — 대상 $al 의 베이스가 ${old#*$'\t'} 에서 ${now#*$'\t'} 로 옮겨졌으나 기록을 쓰지 못해 대상 걸쇠 $tl 에 기록 없음을 둡니다 · ${did}"
+    return "$GATE_EXIT_PARK"
+  fi
+  # The record stands; the marker names it, so an entry that finds the marker
+  # after this act died finishes what is left.
+  gate_base_guard_put "$wf" "${old#*$'\t'}	${now#*$'\t'}	$(date -u +%s)	$rec	$lf" || true
+  if gate_index_lock "$kf"; then
+    cur=$(gate_base_guard_read "$kf") || cur=''
+    if [ "$cur" = "$old" ]; then
+      gate_base_guard_put "$kf" "$now" || true
+    fi
+    gate_base_guard_put "$lf" "$rec" && rm -f "$wf" 2>/dev/null
+    gate_index_unlock "$kf"
+  fi
+  warn "베이스 이동 — 대상 $al 의 베이스가 ${old#*$'\t'} 에서 ${now#*$'\t'} 로 옮겨졌습니다(${site}) — 기록 $rec · ${did}"
+  return "$GATE_EXIT_PARK"
+}
+
+gate_base_guard_latch_wait() {
+  # gate_base_guard_latch_wait <alias> <latch> <now> <대상|세그먼트> — called under
+  # the lock with a latch standing. Exit 0 when the latch was lifted by a
+  # `재시도` answer and the entry goes on; otherwise unlocks, warns and exits 11.
+  local al="$1" lf="$2" now="$3" who="$4" kf="$RUN_DIR/base-guard/$1" v ans
+  if ! v=$(gate_base_guard_read "$lf"); then
+    gate_index_unlock "$kf"
+    gate_base_guard_target_stop "$al" "${GATE_BG_SEG:--}" \
+      "대상 $al 의 베이스 이동 걸쇠 $lf 를 읽지 못해 대조하지 못했습니다." \
+      "기지값=대조 안 함 / 지금=대조 안 함 / 자리=들머리 / 행위 종료 코드=수행 안 함 / 동시 행위·사람 커밋 구분 안 함" \
+      "걸쇠 $lf 를 읽지 못함"
+    return "$?"
+  fi
+  if ! ans=$(gate_base_guard_last_answer "$v"); then
+    gate_index_unlock "$kf"
+    gate_base_guard_target_stop "$al" "${GATE_BG_SEG:--}" \
+      "대상 $al 의 베이스 이동 기록 $v 의 중단 답을 원장에서 찾지 못해 대조하지 못했습니다." \
+      "기지값=대조 안 함 / 지금=대조 안 함 / 자리=들머리 / 행위 종료 코드=수행 안 함 / 동시 행위·사람 커밋 구분 안 함" \
+      "원장에서 중단 답을 조회하지 못함"
+    return "$?"
+  fi
+  if [ "$ans" = "재시도" ]; then
+    if gate_base_guard_release "$al" "$lf" "$v" "$now"; then
+      return 0
+    fi
+    gate_index_unlock "$kf"
+    warn "베이스 이동 — 기록 $v 의 재시도 답으로 걸쇠를 풀지 못해 그대로 둡니다 · 행위 수행 안 함"
+    return "$GATE_EXIT_PARK"
+  fi
+  gate_index_unlock "$kf"
+  warn "베이스 이동 — 이 ${who}는 베이스 이동 기록 $v 에 답이 달릴 때까지 멈춰 있습니다 · 행위 수행 안 함"
+  return "$GATE_EXIT_PARK"
+}
+
+gate_base_guard_plan() {
+  # gate_base_guard_plan <alias> <segment> <kind> — the dry run's reading:
+  # nothing is written, and a latch that stands or a base that moved answers
+  # with the line and code the act would meet.
+  local al="$1" seg="$2" kind="$3" kf="$RUN_DIR/base-guard/$1" why='' v lf known now
+  now=$(gate_base_guard_now "$al")
+  for lf in "$kf.latch" ${seg:+"$kf.latch.$seg"}; do
+    [ "$lf" = "$kf.latch.-" ] && continue
+    [ -e "$lf" ] || continue
+    v=$(gate_base_guard_read "$lf" 2>/dev/null) || v=''
+    if [ -n "$v" ] && [ "$v" != "기록 없음" ] \
+       && [ "$(gate_base_guard_last_answer "$v" 2>/dev/null || true)" = "재시도" ]; then
+      continue
+    fi
+    why="걸쇠 $lf (${v:-읽지 못함})"; break
+  done
+  if [ -z "$why" ] && [ -e "$kf.writing" ]; then
+    why="작성 중 표지 $kf.writing"
+  fi
+  if [ -z "$why" ] && [ -e "$kf" ]; then
+    known=$(gate_base_guard_read "$kf" 2>/dev/null) || known=''
+    [ "$known" = "$now" ] || why="기지값 ${known#*$'\t'} · 지금 ${now#*$'\t'}"
+  fi
+  [ -n "$why" ] || return 0
+  printf 'park 예상: 도달 판정=베이스 이동 kind=%s target=%s 근거=%s\n' "$kind" "$al" "$why"
+  return "$GATE_EXIT_PARK"
+}
+
+gate_base_guard_entry() {
+  # gate_base_guard_entry <alias> <segment> <verb> <kind> <argv...> — the check
+  # at the act's entry, before any row is written. Exit 0 to go on, 3 for the
+  # bare `admit` form, 11 to stop without performing.
+  local al="$1" seg="$2" verb="$3" kind="$4"; shift 4
+  GATE_BG_ON=''; GATE_BG_AL=''; GATE_BG_SEG=''
+  gate_base_guard_applies "$al" "$verb" "$kind" || return 0
+  # THE BARE `admit` FORM RUNS ITS COMMAND OUTSIDE THE GATE, so the act would
+  # have no "after" to compare, and a move it made would be caught at some
+  # other act's entry and pinned on that act's segment. Refused before any
+  # file of the check is touched.
+  if [ "${GATE_ADMIT:-}" = "1" ]; then
+    warn "원격 없는 대상의 행위는 게이트가 수행해야 베이스 이동을 대조할 수 있습니다 — exec 로 부르십시오"
+    return "$GATE_EXIT_RULE"
+  fi
+  if [ "$verb" = "plan" ]; then
+    gate_base_guard_plan "$al" "$seg" "$kind"
+    return "$?"
+  fi
+  GATE_BG_SEG=$seg
+  local d="$RUN_DIR/base-guard" kf tl wf lf now known v w_old w_new w_at w_rec w_lf age
+  local nolock="기지값=대조 안 함 / 지금=대조 안 함 / 자리=들머리 / 행위 종료 코드=수행 안 함 / 동시 행위·사람 커밋 구분 안 함"
+  kf="$d/$al"; tl="$kf.latch"; wf="$kf.writing"
+  now=$(gate_base_guard_now "$al")
+  mkdir -p "$d" 2>/dev/null || true
+  if ! gate_index_lock "$kf"; then
+    gate_base_guard_target_stop "$al" "$seg" \
+      "대상 $al 의 베이스 이동 대조 잠금을 잡지 못해 대조하지 못했습니다(대조 잠금을 잡지 못함). 행위: $(printf '%s ' "${@:1:6}")" \
+      "$nolock" "대조 잠금을 잡지 못해 행위를 수행하지 않습니다"
+    return "$?"
+  fi
+  # 1. The target's latch, ahead of the act's own: it holds every act on the
+  #    target. `기록 없음` is a stop no record could be written for yet, and
+  #    the entry tries the record again before anything else.
+  if [ -e "$tl" ]; then
+    if ! v=$(gate_base_guard_read "$tl"); then
+      gate_index_unlock "$kf"
+      warn "베이스 이동 — 대상 걸쇠 $tl 를 읽지 못합니다 · 행위 수행 안 함"
+      return "$GATE_EXIT_PARK"
+    fi
+    if [ "$v" = "기록 없음" ]; then
+      gate_index_unlock "$kf"
+      if gate_shift_halt_write "$al" "베이스-$al" '베이스 이동' \
+           "대상 $al 의 베이스 이동 정지에 기록을 쓰지 못한 채 대상 걸쇠가 서 있었습니다. 지금 베이스는 ${now#*$'\t'} 입니다. 베이스를 확인하고 정리해 주십시오." \
+           "기지값=$( { gate_base_guard_read "$kf" 2>/dev/null || true; } | cut -f2) / 지금=${now#*$'\t'} / 자리=들머리 / 행위 종료 코드=수행 안 함 / 동시 행위·사람 커밋 구분 안 함" \
+         && gate_base_guard_put "$tl" "$GATE_SHW_DST"; then
+        warn "베이스 이동 — 대상 걸쇠의 기록을 이제 썼습니다 — 기록 $GATE_SHW_DST · 행위 수행 안 함"
+      else
+        warn "베이스 이동 — 대상 걸쇠 $tl 의 기록을 아직 쓰지 못합니다(기록 없음) · 행위 수행 안 함"
+      fi
+      return "$GATE_EXIT_PARK"
+    fi
+    gate_base_guard_latch_wait "$al" "$tl" "$now" '대상' || return "$?"
+  fi
+  # 2. A marker left by an act that caught a move: one that names its record
+  #    is finished here, one still being written holds this act, and one with
+  #    no record older than sixty seconds belongs to an act that died and is
+  #    cleared so the move is caught again.
+  if [ -e "$wf" ]; then
+    if ! v=$(gate_base_guard_read "$wf"); then
+      gate_index_unlock "$kf"
+      gate_base_guard_target_stop "$al" "$seg" \
+        "대상 $al 의 베이스 이동 작성 중 표지 $wf 를 읽지 못해 대조하지 못했습니다." \
+        "$nolock" "작성 중 표지 $wf 를 읽지 못함"
+      return "$?"
+    fi
+    IFS=$'\t' read -r w_old w_new w_at w_rec w_lf <<EOF
+$v
+EOF
+    if [ -n "$w_rec" ] && [ -n "$w_lf" ]; then
+      known=$(gate_base_guard_read "$kf" 2>/dev/null) || known=''
+      [ "${known#*$'\t'}" != "$w_old" ] || gate_base_guard_put "$kf" "${known%%$'\t'*}	$w_new" || true
+      if gate_base_guard_put "$w_lf" "$w_rec"; then rm -f "$wf" 2>/dev/null || true; fi
+    else
+      case "$w_at" in ''|*[!0-9]*) w_at=0 ;; esac
+      age=$(( $(date -u +%s) - w_at ))
+      if [ "$age" -le 60 ]; then
+        gate_index_unlock "$kf"
+        warn "베이스 이동 — 다른 행위가 이 대상의 베이스 이동(${w_old} → ${w_new}) 기록을 쓰는 중입니다 · 행위 수행 안 함"
+        return "$GATE_EXIT_PARK"
+      fi
+      rm -f "$wf" 2>/dev/null || true
+    fi
+  fi
+  # 3. The act's own latch.
+  case "$seg" in ''|-) lf='' ;; *) lf="$kf.latch.$seg" ;; esac
+  if [ -n "$lf" ] && [ -e "$lf" ]; then
+    gate_base_guard_latch_wait "$al" "$lf" "$now" '세그먼트' || return "$?"
+  fi
+  # 4. The comparison. No known value yet is the first observation.
+  if [ ! -e "$kf" ]; then
+    gate_base_guard_put "$kf" "$now" || {
+      gate_index_unlock "$kf"
+      gate_base_guard_target_stop "$al" "$seg" \
+        "대상 $al 의 베이스 기지값 $kf 를 적지 못해 대조하지 못했습니다." \
+        "$nolock" "기지값 $kf 를 적지 못함"
+      return "$?"; }
+    gate_index_unlock "$kf"
+    GATE_BG_ON=1; GATE_BG_AL=$al
+    return 0
+  fi
+  if ! known=$(gate_base_guard_read "$kf"); then
+    gate_index_unlock "$kf"
+    gate_base_guard_target_stop "$al" "$seg" \
+      "대상 $al 의 베이스 기지값 $kf 를 읽지 못해 대조하지 못했습니다." \
+      "$nolock" "기지값 $kf 를 읽지 못함"
+    return "$?"
+  fi
+  if [ "$known" = "$now" ]; then
+    gate_index_unlock "$kf"
+    GATE_BG_ON=1; GATE_BG_AL=$al
+    return 0
+  fi
+  gate_base_guard_put "$wf" "${known#*$'\t'}	${now#*$'\t'}	$(date -u +%s)" || true
+  gate_index_unlock "$kf"
+  gate_base_guard_record_move "$al" "$seg" "$known" "$now" '들머리' '수행 안 함' "$@"
+}
+
+gate_base_guard_after() {
+  # gate_base_guard_after <rc> <argv...> — the check after the act, whatever
+  # its exit code. Exit 0 to pass the act's own code on, 11 when the act moved
+  # the base (the act was performed; its record waits for an answer).
+  local rc="$1"; shift
+  [ "${GATE_BG_ON:-}" = "1" ] || return 0
+  local al="$GATE_BG_AL" kf now known
+  kf="$RUN_DIR/base-guard/$al"
+  now=$(gate_base_guard_now "$al")
+  if ! gate_index_lock "$kf"; then
+    warn "베이스 이동 — 대조 잠금을 잡지 못해 행위 뒤 대조를 건너뜁니다 — 다음 행위의 들머리가 대조합니다 · 행위는 수행됨"
+    return 0
+  fi
+  if [ ! -e "$kf" ]; then
+    gate_base_guard_put "$kf" "$now" || true
+    gate_index_unlock "$kf"
+    return 0
+  fi
+  # Another act is writing a record for a move: it is that act's to report.
+  if [ -e "$kf.writing" ]; then
+    gate_index_unlock "$kf"
+    return 0
+  fi
+  if ! known=$(gate_base_guard_read "$kf"); then
+    gate_index_unlock "$kf"
+    warn "베이스 이동 — 기지값 $kf 를 읽지 못해 행위 뒤 대조를 건너뜁니다 — 다음 행위의 들머리가 대조합니다 · 행위는 수행됨"
+    return 0
+  fi
+  if [ "$known" = "$now" ]; then
+    gate_index_unlock "$kf"
+    return 0
+  fi
+  gate_base_guard_put "$kf.writing" "${known#*$'\t'}	${now#*$'\t'}	$(date -u +%s)" || true
+  gate_index_unlock "$kf"
+  gate_base_guard_record_move "$al" "${GATE_BG_SEG:--}" "$known" "$now" '행위 뒤' "$rc" "$@"
+}
+
 gate_shift_halt_record_intact() {
   # gate_shift_halt_record_intact <key> <record> <line:row> — whether a shift's
   # halt record is still the one its row vouches for: the row is anchored on
@@ -52091,6 +52509,13 @@ gate_verb_act() {
     fi
   fi
 
+  # THE BASE-MOVE CHECK'S ENTRY, on exec, act and plan alike and before any
+  # row: a target with no `origin` has its base compared with the known value
+  # here, a latch from an earlier move holds the act, and the bare `admit` form
+  # is refused. A target with a remote returns at once. The check runs again
+  # after the act, at the two returns of the perform block below.
+  gate_base_guard_entry "$alias" "$segment" "$verb" "${kind:-}" "$@" || exit $?
+
   # A STAGE MAY NOT BE DISPATCHED INTO A SEGMENT THAT HAS NO `segment` ROW.
   #
   # The progress vector is built from the goal digest, the target rows, the
@@ -54716,6 +55141,7 @@ gate_verb_act() {
         # it. The arm writes its own failure row, so it returns past the shared
         # failure tail below rather than through it.
         clause-exec) gate_perform_clause_exec "$alias" "$graded" "$@" || rc=$?
+                     gate_base_guard_after "$rc" "$@" || rc=$?
                      return "$rc" ;;
         # The review POST, its re-read and its row, never the argv.
         review-post) gate_perform_review_post "$alias" "$segment" || rc=$? ;;
@@ -54742,6 +55168,9 @@ gate_verb_act() {
       "절단점=$GATE_ACT_EFFECTIVE" "유도 절단점=${GATE_ACT_DERIVED:--}" \
       "축2=$graded" "근거=rc=$rc"
   fi
+  # The base-move check after the act, once the act's own failure row is
+  # written: a move turns the code into 11, with no second failure row.
+  gate_base_guard_after "$rc" "$@" || rc=$?
   return "$rc"
 }
 
