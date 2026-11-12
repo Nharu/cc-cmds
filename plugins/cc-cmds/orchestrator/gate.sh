@@ -49905,7 +49905,8 @@ gate_dispatch_doc_size_gate() {
   [ -n "${GATE_DOC_SIZE_KIND:-}" ] || return 0
   if [ -n "${GATE_CARRY_ANSWER:-}" ] && [ -n "${GATE_HA_BOUND:-}" ] \
      && gate_large_context_inherit "$GATE_HA_BOUND"; then
-    # `<verdict>\t<bytes>\t<threshold>`, split without a pipeline.
+    # `<verdict>\t<bytes>\t<threshold>\t<warn>`, split without a pipeline;
+    # an unreadable document leaves the bytes field empty and no size row.
     tab=$(printf '\t')
     v=$(doc_size_verdict "$GATE_DOC_SIZE_KIND" "${DOC:-}")
     case "$v" in
