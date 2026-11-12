@@ -16,7 +16,9 @@ pre-implementation gate.
 
 The one exception: an entry closed by `## 사유 거둠` keeps its `**사유**`,
 `**구현 처분**` and `**닿는 슬라이스**` lines byte for byte, as history of
-why it was forced. They are no longer read — the entry's `상태` is `해결`.
+why it was forced, and its `**선언 확장**` line, when it has one, as history
+of the declaration it widened. They are no longer read — the entry's `상태` is
+`해결`.
 
 ## 필드
 
@@ -114,20 +116,29 @@ the closing is recorded in this document only.
   design stage, an
   audit, a walkthrough and every other re-convergence scope — `감사 골격급`
   among them — neither closes such an entry nor writes it `해결`.
-- **When it closes.** The re-convergence checks the person's decision against
-  the ticket and contract blocks of the document's `## 베이스 제약` section.
-  The result `무충돌` closes the entry in the same pass. The results `충돌`,
-  `대조 문면 없음` and `지명할 줄 없음` stop and ask the person; the answer
-  `베이스 개정 없이 계속` closes the entry. The result `선언 파일 밖` never
-  closes in the run.
+- **When it closes.** The re-convergence checks the person's decision on two
+  axes. The base axis compares it with the ticket and contract blocks of the
+  document's `## 베이스 제약` section: `무충돌`, `충돌`, `대조 문면 없음` or
+  `지명할 줄 없음`. The slicing axis asks what it needs of
+  `## 구현 슬라이싱`: `없음`, `선언 확장` (it holds by appending paths to the
+  `**선언 파일**` of a slice already declared, and by nothing else) or
+  `선언 파일 밖`. A base axis of `무충돌` with a slicing axis of `없음` or
+  `선언 확장` closes the entry in the same pass, widening the declaration in
+  the second case. With a slicing axis of `없음` or `선언 확장`, the base
+  results `충돌`, `대조 문면 없음` and `지명할 줄 없음` stop and ask the
+  person, and the answer `베이스 개정 없이 계속` closes the entry, widening
+  the declaration when the stop carried one. A slicing axis of `선언 파일 밖`
+  never closes in the run, whatever the base axis reads.
 - **Write form.** The decision is written as a decision sentence of
   `## 합의된 아키텍처` or `## 주요 결정사항과 근거`. The entry's `상태` line
   becomes the bare `**상태**: 해결`. `**사유**` and every other field stay byte
-  for byte. Right after the `**상태**` line come two lines, in this order:
+  for byte. Right after the `**상태**` line come two lines, three with a
+  declaration widening, in this order:
 
   ```text
   **사유 거둠**: 베이스 개정 없이 — <대조 무충돌 | 사람 수용(충돌) | 사람 수용(대조 문면 없음) | 사람 수용(지명할 줄 없음)> · 런 <run id> · <stage id 축자> · 중단 기록 <기록 파일 이름>
   **대조 기록**: 「<블록 제목>」 무충돌; 「<블록 제목>」 충돌: 「<어긋난 줄 축자>」
+  **선언 확장**: 슬라이스 <id> + `<경로>`, `<경로>`[; 슬라이스 <id> + …]
   ```
 
   - The four marker values are `대조 무충돌` (the check found no conflict),
@@ -146,8 +157,14 @@ the closing is recorded in this document only.
     conflict, `「<블록 제목>」 충돌: 「<어긋난 줄 축자>」` repeats once per line,
     so each part names one line. Its value is the single word
     `대조 문면 없음` for that result and `지명할 줄 없음` for that one.
-  - Neither key matches any form of a key the reader reads (`상태`,
-    `구현 처분`, `재량 기준`, `닿는 슬라이스`, `골격급`, `사유`).
+  - `**선언 확장**` is written only when the decision widened a
+    declaration, one part per slice, the paths in the order they were
+    appended. The same closing appends each of those paths, in backticks and
+    joined with `, `, to the end of that slice's `**선언 파일**` line, keeping
+    every element already there byte for byte. The marker value says nothing
+    about the widening: a widened `무충돌` closing is still `대조 무충돌`.
+  - None of the three keys matches any form of a key the reader reads
+    (`상태`, `구현 처분`, `재량 기준`, `닿는 슬라이스`, `골격급`, `사유`).
 - **Quotation bounds.** A block title or a line inside 「」 in
   `**대조 기록**` or in the precedence phrase below equals, byte for byte, a
   block title or a block line of the document's `## 베이스 제약` section, so a
@@ -221,9 +238,10 @@ document order, and nothing when none does. It reads **fail closed**:
   do not change: `unresolved_closure_fields <doc> <heading>` in
   `orchestrator/run.sh` reads the two values and `**닿는 슬라이스**` of one
   printed heading, for the gate's `decision-collect`.
-- An entry closed by `## 사유 거둠` reads `해결` by its `상태` and drops out.
-  A `**사유 거둠**` line on an entry whose `상태` is not `해결` changes nothing,
-  wherever in the entry it stands: the reader's code does not read that key.
+- An entry closed by `## 사유 거둠` reads `해결` by its `상태` and drops out;
+  its `**선언 확장**` line stays as history. A `**사유 거둠**` or
+  `**선언 확장**` line on an entry whose `상태` is not `해결` changes nothing,
+  wherever in the entry it stands: the reader's code reads neither key.
 
 ## 읽는 쪽
 

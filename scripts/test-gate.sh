@@ -14775,6 +14775,137 @@ check "15d-4: T4 와 미해결 판독기가 같은 항목을 연다" "$td15r_ver
   "[표 열림 열림/열림][표 닫힘 닫힘/닫힘][열린 보류 열림/열림][해결 대기 열림/열림][메모 해결 닫힘/닫힘][해결됨 항목 닫힘/닫힘][앞 절 항목 닫힘/닫힘]"
 
 # ---------------------------------------------------------------------------
+# 15d-5. 사유 거둠이 선언 파일을 넓혀 닫는 꼴을 판독기와 슬라이싱 함수가 받는다
+# --- section: 15d-5 | group: base | covers: unresolved_closure_pending, unclosed-decisions, slice_decl_files, slicing_order_defects | anchors: 15d-5: 선언 확장 줄을 가진 대조 무충돌 거둠 뒤 슬라이스 A 판독이 빈다, 15d-5: 선언 확장 줄을 가진 대조 무충돌 거둠 뒤 unclosed-decisions 가 빈다, 15d-5: 보류 항목에 선언 확장 줄만 붙으면 계속 나온다, 15d-5: 넓힌 선언 파일을 slice_decl_files 가 새 원소까지 낸다, 15d-5: 넓힌 문서의 slicing_order_defects 가 빈다, 15d-5: 넓히기 전 머지 순서 픽스처는 결함이 없다, 15d-5: 뒤 슬라이스를 넓혀 앞 슬라이스와 겹치면 결함이다, 15d-5: 앞 슬라이스를 넓혀 뒤 슬라이스와 겹치면 결함이다, 15d-5: 재수렴 문면이 슬라이싱 축 세 값과 선언 확장 줄 꼴을 싣는다, 15d-5: 재수렴 문면이 옛 문장을 싣지 않는다, 15d-5: 재수렴 문면이 재진입 분기와 기록 다이제스트 대조를 싣는다, 15d-5: 사유 거둠 절이 선언 확장 닫기를 싣는다, 15d-5: 대조 운반 줄의 선언 확장 부분이 base64 로 적힌다, 15d-5: 원장 읽기 금지의 예외가 마지막 상태 규칙의 segment 행을 싣는다 ---
+#
+# The re-convergence can now close a base-reason entry by appending paths to a
+# slice's `**선언 파일**` and recording them on a `**선언 확장**` line. The skill
+# does not run here, so its write is applied to fixture documents in the form
+# `_common/unresolved-closure.md` `## 사유 거둠` fixes, and the readers that
+# meet the result are asked directly: the open-decision reader, the gate's
+# `unclosed-decisions` verb, and the two slicing functions the gate's
+# re-declaration and the slicing checks read. The gate's re-declaration flow
+# itself is section 113's. Every helper this section calls is in the preamble
+# or defined here.
+# ---------------------------------------------------------------------------
+rc15d5_dir="$WT/docs"
+mkdir -p "$rc15d5_dir" "$WT/docs/pipeline-grant"
+rc15d5_doc() {  # rc15d5_doc <name> <entry block> <slice A files> <slice B files> [B 머지 순서]
+  {
+    printf '# 픽스처 설계\n\n**상태**: 동결됨\n\n'
+    printf '## 베이스 제약\n\n**베이스 문서**: docs/base.md\n**티켓**: T1\n**베이스 sha256**: 0000\n\n'
+    printf '### 계약 C2 — 값\n\n**값 상한**: 10\n\n'
+    printf '## 합의된 아키텍처\n\n값 상한 10 을 그대로 쓴다.\n'
+    printf '\n## 미해결 이슈 / 트레이드오프\n\n%s\n' "$2"
+    printf '\n## 구현 슬라이싱\n\n**슬라이스 수**: 2\n'
+    printf '\n### 슬라이스 A — 픽스처\n\n**스킬**: implement\n**레포**: t/infra\n**선언 파일**: %s\n**선행**: 없음\n**절단점**: 커밋\n' "$3"
+    if [ -n "${5:-}" ]; then
+      printf '\n### 슬라이스 B — 픽스처\n\n**스킬**: implement\n**레포**: t/infra\n**선언 파일**: %s\n**선행**: 없음\n**머지 순서**: %s\n**머지 순서 사유**: 픽스처\n**절단점**: 커밋\n' "$4" "$5"
+    else
+      printf '\n### 슬라이스 B — 픽스처\n\n**스킬**: implement\n**레포**: t/infra\n**선언 파일**: %s\n**선행**: A\n**절단점**: 커밋\n' "$4"
+    fi
+  } > "$rc15d5_dir/fixture-15d5-$1.md"
+}
+rc15d5_closed='### 미결 1. 선언을 넓히는 베이스 사유 결정
+
+**상태**: 해결
+**사유 거둠**: 베이스 개정 없이 — 대조 무충돌 · 런 R15D5 · A#3 · 중단 기록 A#1.md
+**대조 기록**: 「계약 C2 — 값」 무충돌
+**선언 확장**: 슬라이스 A + `extra/new.txt`
+**사유**: 베이스 계약 변경 필요 — 계약 C2
+**구현 처분**: 구현 무관
+**닿는 슬라이스**: A'
+rc15d5_open='### 미결 2. 보류에 선언 확장 줄
+
+**상태**: 보류
+**선언 확장**: 슬라이스 A + `extra/new.txt`
+**사유**: 베이스 계약 변경 필요 — 계약 C2
+**구현 처분**: 구현 무관
+**닿는 슬라이스**: A'
+rc15d5_doc wide "$rc15d5_closed" '`A.txt`, `extra/new.txt`' '`B.txt`'
+rc15d5_doc open "$rc15d5_open" '`A.txt`' '`B.txt`'
+rc15d5_doc mo-base "$rc15d5_open" '`A.txt`' '`B.txt`' A
+rc15d5_doc mo-late "$rc15d5_open" '`A.txt`' '`B.txt`, `A.txt`' A
+rc15d5_doc mo-early "$rc15d5_open" '`A.txt`, `B.txt`' '`B.txt`' A
+rc15d5_src() {  # rc15d5_src <function> <args...> — a function of the gate, run by sourcing it
+  ( cd "$WT" && bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null >/dev/null 2>&1; set +eu; shift; "$@"' _ "$GATE" "$@" )
+}
+rc15d5_verb() {  # rc15d5_verb <name> <seg> — `gate unclosed-decisions` on a manifest naming the fixture
+  local rid="R15D5$(printf '%s' "$1" | tr '[:lower:]' '[:upper:]')"
+  write15c "$WORK/plan-$rid.md" "$plan15c" "docs/fixture-15d5-$1.md" "$rid"
+  grant15c "$rid" "docs/fixture-15d5-$1.md"
+  local o r=0
+  o=$(cd "$WT" && gate_inproc unclosed-decisions --manifest "$WORK/plan-$rid.md" --segment "$2" 2>/dev/null) || r=$?
+  printf '%s|%s' "$r" "$(printf '%s\n' "$o" | { grep -vE '\[run\] ' || true; })"
+}
+rc15d5_f() { printf '%s/fixture-15d5-%s.md' "$rc15d5_dir" "$1"; }
+
+check "15d-5: 선언 확장 줄을 가진 대조 무충돌 거둠 뒤 슬라이스 A 판독이 빈다" \
+  "$(rc15d5_src unresolved_closure_pending "$(rc15d5_f wide)" A)" ""
+check "15d-5: 선언 확장 줄을 가진 대조 무충돌 거둠 뒤 unclosed-decisions 가 빈다" "$(rc15d5_verb wide A)" "0|"
+check "15d-5: 보류 항목에 선언 확장 줄만 붙으면 계속 나온다" \
+  "$(rc15d5_src unresolved_closure_pending "$(rc15d5_f open)" A)/$(rc15d5_verb open A)" \
+  "### 미결 2. 보류에 선언 확장 줄/0|### 미결 2. 보류에 선언 확장 줄"
+check "15d-5: 넓힌 선언 파일을 slice_decl_files 가 새 원소까지 낸다" \
+  "$(rc15d5_src slice_decl_files "$(rc15d5_f wide)" A | tr '\n' ' ')" "A.txt extra/new.txt "
+check "15d-5: 넓힌 문서의 slicing_order_defects 가 빈다" \
+  "$(rc15d5_src slicing_order_defects "$(rc15d5_f wide)")" ""
+
+# Closure disjointness both ways: B carries `머지 순서: A`, so A lands after B
+# is cut and before B merges. An added path of B overlapping A, and an added
+# path of A overlapping B, are both the defect; the unwidened pair is not, so
+# the two defect assertions do not pass on a fixture that always fails.
+check "15d-5: 넓히기 전 머지 순서 픽스처는 결함이 없다" \
+  "$(rc15d5_src slicing_order_defects "$(rc15d5_f mo-base)")" ""
+check "15d-5: 뒤 슬라이스를 넓혀 앞 슬라이스와 겹치면 결함이다" \
+  "$(rc15d5_src slicing_order_defects "$(rc15d5_f mo-late)")" "슬라이스 B: 머지 순서 선언 파일 겹침 「A.txt」 — 슬라이스 A"
+check "15d-5: 앞 슬라이스를 넓혀 뒤 슬라이스와 겹치면 결함이다" \
+  "$(rc15d5_src slicing_order_defects "$(rc15d5_f mo-early)")" "슬라이스 B: 머지 순서 선언 파일 겹침 「B.txt」 — 슬라이스 A"
+
+# The texts that state the rule.
+rc15d5_sk="$repo_root/plugins/cc-cmds/skills"
+rc15d5_rc="$rc15d5_sk/design-reconverge/SKILL.md"
+rc15d5_n=0
+for rc15d5_l in '**The slicing axis**' '- `없음` — ' '- `선언 확장` — ' '- `선언 파일 밖` — ' \
+  '**선언 확장**: 슬라이스 <id> + `<경로>`, `<경로>`[; 슬라이스 <id> + …]' \
+  '선언 파일에 경로를 더하는 것 밖의 슬라이싱 변경은 이 런에서 닫지 않는다 — 슬라이싱을 다시 세운 새 런이 필요하다'; do
+  grep -qF -- "$rc15d5_l" "$rc15d5_rc" && rc15d5_n=$((rc15d5_n + 1))
+done
+check "15d-5: 재수렴 문면이 슬라이싱 축 세 값과 선언 확장 줄 꼴을 싣는다" "$rc15d5_n" "6"
+rc15d5_n=0
+for rc15d5_l in '선언 파일을 바꾸는 결정은 이 런에서 닫지 않는다' 'gets neither a card nor'; do
+  grep -qF -- "$rc15d5_l" "$rc15d5_rc" && rc15d5_n=$((rc15d5_n + 1))
+done
+check "15d-5: 재수렴 문면이 옛 문장을 싣지 않는다" "$rc15d5_n" "0"
+rc15d5_n=0
+for rc15d5_l in 'The branch is whether `CC_PIPELINE_HALT_ANSWER` is set, not how the session was started' \
+  '- **Not set** — ' '`$CC_PIPELINE_LEDGER`' "its \`기록 다이제스트\` equals the record's \`shasum -a 256\`"; do
+  grep -qF -- "$rc15d5_l" "$rc15d5_rc" && rc15d5_n=$((rc15d5_n + 1))
+done
+check "15d-5: 재수렴 문면이 재진입 분기와 기록 다이제스트 대조를 싣는다" "$rc15d5_n" "4"
+rc15d5_sec=$(LC_ALL=C awk '/^## 사유 거둠$/ { on = 1; next } on && /^## / { exit } on { print }' \
+  "$rc15d5_sk/_common/unresolved-closure.md")
+rc15d5_n=0
+for rc15d5_l in '`선언 확장`' '**선언 확장**: 슬라이스 <id>' 'three with a' 'never closes in the run'; do
+  grep -qF -- "$rc15d5_l" <<<"$rc15d5_sec" && rc15d5_n=$((rc15d5_n + 1))
+done
+check "15d-5: 사유 거둠 절이 선언 확장 닫기를 싣는다" "$rc15d5_n" "4"
+# The carrier's `선언 확장` part is base64 like every other value: the re-entry decodes it, so a raw
+# value would decode to nothing and stop the widening as a carrier read failure.
+rc15d5_n=0
+grep -qF -- 'Every other `<…>` value, the `선언 확장` value included, is its UTF-8 bytes as one base64 line' \
+  "$rc15d5_rc" && rc15d5_n=$((rc15d5_n + 1))
+grep -qF -- 'of the line the closing writes, byte for byte. Every other' "$rc15d5_rc" || rc15d5_n=$((rc15d5_n + 1))
+check "15d-5: 대조 운반 줄의 선언 확장 부분이 base64 로 적힌다" "$rc15d5_n" "2"
+# The open-decision sub-case forbids ledger reads; the slicing axis's state rule reads a `segment` row,
+# so the ban, the re-entry's restatement and the state rule all name that read as an exception.
+rc15d5_n=$(grep -cF -- "the last \`segment\` row the slicing axis's state rule reads" "$rc15d5_rc")
+grep -qF -- 'This read is one of the two exceptions to the 「Do not read the ledger」' "$rc15d5_rc" \
+  && rc15d5_n=$((rc15d5_n + 1))
+grep -qF -- 'Reading this one ledger line is the only exception' "$rc15d5_rc" || rc15d5_n=$((rc15d5_n + 1))
+check "15d-5: 원장 읽기 금지의 예외가 마지막 상태 규칙의 segment 행을 싣는다" "$rc15d5_n" "4"
+
+# ---------------------------------------------------------------------------
 # 15e. The audit is dispatched as a run-scope step, on preconditions the gate checks
 # --- section: 15e | group: base | covers: act, plan, wait, supervise, done-conditions | anchors: 15e: 동결된 설계 뒤 --segment - 감사 파견의 plan 이 통과한다, 15e: 감사 단계의 stage-result 행이 세그먼트=- · 스테이지=A1 · 종류=audit 이다, 15e: 설계가 끝나기 전의 감사 파견은 승인 행 없이 거부된다, 15e: 감사 단계가 없는 계획에서는 감사 면제가 서지 않는다, 15e: 미동결 문서에는 감사가 뜨지 않는다, 15e: 설계 시도가 살아 있으면 감사가 뜨지 않는다, 15e: - reconverge 와 - implement 는 여전히 거부된다, 15e: 감사 단계의 재개가 받힌다, 15e: 감사 파견이 fetch 뒤 원격 베이스 끝에 분리된 감사 워크트리를 만든다, 15e: 그 감사 워크트리는 로컬 main 끝에서 뜨지 않는다,15e: 감사 스테이지 자신의 --segment - 행위가 감사 워크트리에서 돈다, 15e: 같은 감사 단계의 재파견은 감사 워크트리를 다시 쓴다, 15e: 설계 단계가 없는 계획의 감사 파견 plan 이 동결된 문서에서 통과한다, 15e: 설계 단계가 없는 계획의 감사 행이 세그먼트=- · 스테이지=A1 · 종류=audit 로 정상 완료다, 15e: 감사 뒤 구현 단계가 남은 계획은 조건 1 이 그 단계를 든다, 15e: 감사만 있는 계획은 감사가 정상 완료로 끝나면 조건 1 이 선다 ---
 #
@@ -16789,6 +16920,294 @@ check "15vm: 운반·일반 기동·대기 재질의가 fresh GRANT 에서 재�
 check "15vm: 고정 레인 없음 문면이 세 출처를 모두 이름 댄다" \
   "$(grep -c "고정 레인 없음 — 호스트 파일 .* 런 지역 이관 기록 \$RUN_DIR/visual-lane 도 문서 단위 이관 기록 " "$GATE")" "1"
 rm -rf "$VM15"
+
+# ---------------------------------------------------------------------------
+# 15vq. The approved-screen reflection: one re-convergence per person's answer
+# --- section: 15vq | group: base | covers: act, plan, snapshot, halt-answer, gate_approval_reflection_entry, gate_approval_reflection_live, gate_approval_reflection_retry_ok, gate_approval_reflection_scope_of, gate_caller_is_visual_publish_stage, gate_stage_last_settled_row, gate_stage_row_segment, gate_stage_result_rows_of, gate_redeclare_after_reconverge, gate_replan_due_json, gate_halt_detail_scope, visual_approval_route_hint, visual_approval_verdict | anchors: 15vq: 사람의 답이 없으면 반영 재수렴은 거부된다, 15vq: 반영 대기 동안 승인 판정은 보류다, 15vq: 반영 대기 안내는 사람이 할 일이 없다고 말한다, 15vq: 발행 단계가 없는 런의 반영 대기 안내는 구현 승인을 다시 실행하라고 한다, 15vq: 범위가 다른 프롬프트는 거부된다, 15vq: 가장 마지막 시각-판정 기록이 아니면 거부된다, 15vq: 감사 단계에 살아 있는 시도가 있으면 거부된다, 15vq: 사람의 승인 답 하나로 반영 재수렴 plan 이 통과한다, 15vq: 반영 행이 세그먼트=- · 스테이지=S2P · 종류=reconverge 로 정상 완료다, 15vq: 같은 답의 두 번째 반영은 거부된다, 15vq: 마지막 반영 세션을 잇는 --resume 은 통과한다, 15vq: 다른 세션의 --resume 은 거부된다, 15vq: 반영 행은 재계획 후보가 아니다, 15vq: 반영 행 뒤에는 재선언하지 않는다, 15vq: 반영 시도가 살아 있는 동안 감사 파견은 거부된다, 15vq: 반영 시도가 살아 있는 동안 시각 발행 파견은 거부된다, 15vq: 반영 세션은 시각 발행 단계로 읽히지 않는다, 15vq: 시각 발행 정지의 재부착은 반영 행을 건너뛴다, 15vq: 반영 실패 동안 승인 판정은 보류다, 15vq: 반영 실패 안내는 반영 정지 기록을 든다, 15vq: 반영 정지 기록의 좌석 답은 거부된다, 15vq: 결정 첨부 후 다시 반영 답으로 반영 plan 이 통과한다, 15vq: 비정상 종료 뒤 같은 답으로 한 번 더 들인다, 15vq: 세 번째 시도는 거부된다, 15vq: precondition-failed 정지는 한 번 더 들이는 종단이다, 15vq: 앞선 런에서 들인 승인 답이 반영을 연다, 15vq: 반영 범위 세 낱말을 범위로 읽는다 ---
+#
+# A person's `승인` to the publish stage's `시각-판정` record leaves the
+# implementation approval with `**문서 반영**: 대기`, and the approval holds the
+# screens back until the approved screens are written into the design document.
+# That writing is a re-convergence on the publish step's key, scoped
+# `승인 화면 반영 <record>` and let in once per answer. A reflection that stops on
+# a collision writes a `Step 3 승인 화면 반영` record only a person answers, and
+# `결정 첨부 후 다시 반영` lets one more in. The publish row and the rows after
+# the first reflection are the fixture's, appended as the gate writes them; the
+# first reflection runs for real.
+# ---------------------------------------------------------------------------
+DOC15VQ='docs/fixture-design-15vq.md'
+plan15vq='{ "design_required": true, "steps": [ { "id": "D1", "skill": "design", "summary": "설계", "depends_on": [] }, { "id": "A1", "skill": "design-audit", "summary": "감사", "depends_on": ["D1"] }, { "id": "S2V", "skill": "visual", "summary": "시각", "depends_on": ["A1"] }, { "id": "S2P", "skill": "visual-publish", "summary": "발행", "depends_on": ["S2V"] }, { "id": "S2", "skill": "implement", "summary": "구현", "depends_on": ["S2V"] } ] }'
+au15_run R15VQ "$DOC15VQ" "$plan15vq"
+write15c "$WORK/plan-R15VQN.md" '{ "design_required": true, "steps": [ { "id": "D1", "skill": "design", "summary": "설계", "depends_on": [] }, { "id": "A1", "skill": "design-audit", "summary": "감사", "depends_on": ["D1"] }, { "id": "S2V", "skill": "visual", "summary": "시각", "depends_on": ["A1"] }, { "id": "S2", "skill": "implement", "summary": "구현", "depends_on": ["S2V"] } ] }' "$DOC15VQ" R15VQ
+RD15VQ="$STATE_LATE/cc-cmds/run/R15VQ"
+LED15VQ="$WT/docs/pipeline-run/R15VQ.md"
+REC15VQ="$RD15VQ/halt/S2P#1.md"
+reflect15vq="/cc-cmds:design-reconverge $WT/$DOC15VQ 승인 화면 반영 $REC15VQ"
+vq15_base=$(dirname "$(cd "$WT" && git rev-parse --path-format=absolute --git-common-dir)")
+SC15VQ="$vq15_base/docs/visual/docs-fixture-design-15vq.md"
+mkdir -p "$vq15_base/docs/visual" "$RD15VQ/halt"
+vq15() {  # vq15 <snippet> [args...] — a snippet in the sourced gate over R15VQ's files; VQ_M, VQ_L and VQ_RD override them
+  local snip="$1"; shift
+  ( cd "$WT" && CC_GATE_SOURCE_ONLY=1 VQ_M="${VQ_M:-$WORK/plan-R15VQ.md}" VQ_L="${VQ_L:-$LED15VQ}" \
+      VQ_RD="${VQ_RD:-$RD15VQ}" VQ_DOC="$DOC15VQ" VQ_SNIP="$snip" bash -c '
+    . "'"$GATE"'" >/dev/null 2>&1
+    set +e
+    MANIFEST="$VQ_M"; LEDGER="$VQ_L"; RUN_ID=$(basename "$VQ_RD"); RUN_DIR="$VQ_RD"; DOC="$VQ_DOC"
+    unset CC_PIPELINE_STAGE_ID GATE_RESUME
+    eval "$VQ_SNIP"' _ "$@" 2>/dev/null )
+}
+vq15_plan() {  # vq15_plan <prompt> [plan flags...] — a `- reconverge` as plan; sets rc, msg
+  local p="$1"
+  shift
+  gateL plan --manifest "$WORK/plan-R15VQ.md" --kind skill --target infra --segment - --cutpoint 커밋 \
+       --surface 워크트리쓰기 "$@" -- reconverge -p "$p"
+}
+vq15_answer() {  # vq15_answer <record> <answered by> <option> — a halt-answer act on S2P; sets rc, msg
+  gateL act --manifest "$WORK/plan-R15VQ.md" --kind halt-answer --target infra --segment S2P --cutpoint 커밋 --surface 읽기 \
+        --snapshot-digest "$(au15_H R15VQ)" --rationale x \
+        -- "중단 기록=$1" "선택지=$3" "답한 주체=$2" "근거=픽스처의 $2 가 $3 을 고름"
+}
+vq15_vrec() {  # vq15_vrec <n> — a `시각-판정` record S2P#<n>.md of the publish stage
+  printf '%s\n' "<!-- cc-pipeline-halt v1; writer=visual-publish-unattended; reader=orchestrator; stage=S2P#$1; run=R15VQ -->" \
+    '**스킬**: visual-publish-unattended' '**스텝**: 시각-판정 — 화면 하나' \
+    '**분류**: gate-unanswerable' '**질문 문면**: 픽스처' '**선택지**:' \
+    '- `승인` — 이 화면으로 구현한다' '- `수정 요청` — 고친 뒤 다시 묻는다' '- `거부` — 화면을 만들지 않는다' \
+    '**선택지 리스크**: 픽스처' '<!-- /cc-pipeline-halt v1 -->' > "$RD15VQ/halt/S2P#$1.md"
+}
+vq15_rrec() {  # vq15_rrec <n> <분류> — a reflection stop record S2P#<n>.md scoped to S2P#1.md
+  printf '%s\n' "<!-- cc-pipeline-halt v1; writer=visual-publish-unattended; reader=orchestrator; stage=S2P#$1; run=R15VQ -->" \
+    '**스킬**: visual-publish-unattended' '**스텝**: Step 3 승인 화면 반영 — 다른 구속 결정과 충돌' \
+    "**분류**: $2" '**질문 문면**: 픽스처' '**선택지**:' \
+    '- `결정 첨부 후 다시 반영` — 첨부한 결정으로 다시 반영한다' '- `보류` — 반영하지 않고 둔다' \
+    '**선택지 리스크**: 픽스처' "**관측 상세**: 범위=승인 화면 반영 $REC15VQ" \
+    '<!-- /cc-pipeline-halt v1 -->' > "$RD15VQ/halt/S2P#$1.md"
+}
+vq15_row() {  # vq15_row <종류> <실행 버전> <세션 id> <종단 부류> — an S2P stage-result row
+  printf -- '- `stage-result` | 세그먼트=- | 스테이지=S2P | 종류=%s | 종료 코드=0 | 실행 버전=%s | 세션 id=%s | 종단 부류=%s | 실패 서명=x\n' \
+    "$1" "$2" "$3" "$4" >> "$LED15VQ"
+}
+vq15_sidecar() {  # vq15_sidecar <문서 반영 줄> — the published sidecar, its approval tailed S2P#1.md and that line under it
+  printf '# 시각 사이드카\n<!-- cc-visual v1; owner-doc=%s; -->\n\n**상태**: 발행됨\n**구현 승인**: 2026-11-11 — 입력 묶음 %s — 금지 목록 %s — 기계 검사 수용 없음 — 사람 답 S2P#1.md\n%s\n\n### 화면 home\n' \
+    "$DOC15VQ" "$VQ15_B" "$(printf 'bans' | shasum -a 256 | cut -d' ' -f1)" "$1" > "$SC15VQ"
+}
+STUB_VQ_REFL="$WORK/bin/claude-stub-vq15-refl"
+cat > "$STUB_VQ_REFL" <<'STUBVQREOF'
+#!/usr/bin/env bash
+h=$(bash "$CC_PIPELINE_GATE" snapshot --manifest "$CC_PIPELINE_MANIFEST" --fields H 2>/dev/null)
+bash "$CC_PIPELINE_GATE" exec --manifest "$CC_PIPELINE_MANIFEST" --target "$CC_PIPELINE_TARGET" \
+  --segment "$CC_PIPELINE_SEGMENT" --cutpoint 커밋 --surface 읽기 --snapshot-digest "$h" \
+  --rationale "픽스처 — 반영 재수렴 자신의 게이트 호출" -- ls "$CC_PIPELINE_RUN_DIR" >/dev/null 2>&1
+printf '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.1,"session_id":"svq-refl","num_turns":1,"result":"판정: 재설계 필요\\n재수렴을 종료합니다. 판정은 여기까지이며 추가 패스는 없습니다."}\n'
+exit 0
+STUBVQREOF
+chmod +x "$STUB_VQ_REFL"
+
+au15_freeze "$DOC15VQ"
+au15_dispatch R15VQ "$STUB_AU_DESIGN" design "/cc-cmds:design-discuss-unattended $WT/$DOC15VQ \"테스트\""
+au15_wait R15VQ D1
+au15_dispatch R15VQ "$STUB_AU_AUDIT" audit "/cc-cmds:design-audit-unattended $WT/$DOC15VQ"
+au15_wait R15VQ A1
+check "15vq 픽스처의 감사 단계가 정상 완료다 (아래가 공허하지 않다)" "$(au15_class R15VQ A1 audit)" "정상 완료"
+printf '<div>home</div>\n' > "$vq15_base/docs/visual/docs-fixture-design-15vq.home.html"
+printf '# 시각 사이드카\n<!-- cc-visual v1; owner-doc=%s; -->\n\n**상태**: 발행됨\n\n### 화면 home\n' "$DOC15VQ" > "$SC15VQ"
+VQ15_B=$(bash "$CC_ORCH/visual-check.sh" bundle "$WT/$DOC15VQ")
+vq15_sidecar '**문서 반영**: 대기 — 어긋남 1건 — 사람 답 S2P#1.md'
+check "15vq 픽스처: 승인 술어가 반영 대기 보류다 (아래가 공허하지 않다)" \
+  "$(bash "$CC_ORCH/visual-check.sh" approval "$WT/$DOC15VQ" 2>/dev/null | sed -n 1p)" "승인 보류 — 설계 문서 반영 대기"
+vq15_row visual-publish 1 spub1 '의도된 park'
+vq15_vrec 1
+# The publish attempt's stream, as its dispatch leaves it: the next attempt on
+# the key is pinned past it, so the reflection's own record is not S2P#1.md.
+mkdir -p "$RD15VQ/log"
+printf '{}\n' > "$RD15VQ/log/S2P#1.json"
+
+# C1 — the unattended reflection path.
+vq15_plan "$reflect15vq"
+case "$rc/$msg" in
+  3/*"승인 화면 반영 재수렴으로도 받지 않습니다"*"중단 답 행이 없습니다"*) ok "15vq: 사람의 답이 없으면 반영 재수렴은 거부된다" ;;
+  *) bad "15vq: 사람의 답이 없으면 반영 재수렴은 거부된다" "rc=$rc $msg" ;;
+esac
+vq15_answer "$REC15VQ" 사람 승인
+if [ "$rc" = 0 ]; then ok "15vq 픽스처: 시각-판정 의 사람 승인 답이 기록된다 (아래가 공허하지 않다)"
+else bad "15vq 픽스처: 시각-판정 의 사람 승인 답이 기록된다 (아래가 공허하지 않다)" "rc=$rc $msg"; fi
+check "15vq: 반영 대기 동안 승인 판정은 보류다" \
+  "$(vq15 'visual_approval_verdict "$ORCH_DIR"; printf " rc=%s" "$?"')" "승인 보류 — 설계 문서 반영 대기 rc=1"
+case "$(vq15 'visual_approval_route_hint')" in
+  *"사람이 할 일은 없습니다"*"승인 화면 반영 재수렴이 끝날 때까지"*) ok "15vq: 반영 대기 안내는 사람이 할 일이 없다고 말한다" ;;
+  *) bad "15vq: 반영 대기 안내는 사람이 할 일이 없다고 말한다" "$(vq15 'visual_approval_route_hint')" ;;
+esac
+case "$(VQ_M="$WORK/plan-R15VQN.md" vq15 'visual_approval_route_hint')" in
+  *"/cc-cmds:visual $DOC15VQ 구현 승인 을 다시 실행해"*) ok "15vq: 발행 단계가 없는 런의 반영 대기 안내는 구현 승인을 다시 실행하라고 한다" ;;
+  *) bad "15vq: 발행 단계가 없는 런의 반영 대기 안내는 구현 승인을 다시 실행하라고 한다" "$(VQ_M="$WORK/plan-R15VQN.md" vq15 'visual_approval_route_hint')" ;;
+esac
+vq15_plan "/cc-cmds:design-reconverge $WT/$DOC15VQ 승인 화면 반영 $RD15VQ/halt/other.md"
+case "$rc/$msg" in
+  3/*"프롬프트의 범위가 「승인 화면 반영 ${REC15VQ}」 가 아닙니다"*) ok "15vq: 범위가 다른 프롬프트는 거부된다" ;;
+  *) bad "15vq: 범위가 다른 프롬프트는 거부된다" "rc=$rc $msg" ;;
+esac
+vq15_vrec 2
+vq15_plan "$reflect15vq"
+case "$rc/$msg" in
+  3/*"가장 마지막 시각-판정 기록(S2P#2.md)이 아닙니다"*) ok "15vq: 가장 마지막 시각-판정 기록이 아니면 거부된다" ;;
+  *) bad "15vq: 가장 마지막 시각-판정 기록이 아니면 거부된다" "rc=$rc $msg" ;;
+esac
+rm -f "$RD15VQ/halt/S2P#2.md"
+fx_rd15vq="$FX_RUN_DIR"; FX_RUN_DIR="$RD15VQ"
+fx_stage_live A1
+FX_RUN_DIR="$fx_rd15vq"
+vq15_plan "$reflect15vq"
+case "$rc/$msg" in
+  3/*"A1 에 살아 있는 시도가 있습니다"*) ok "15vq: 감사 단계에 살아 있는 시도가 있으면 거부된다" ;;
+  *) bad "15vq: 감사 단계에 살아 있는 시도가 있으면 거부된다" "rc=$rc $msg" ;;
+esac
+kill "$FX_LAST_PID" 2>/dev/null || true
+wait "$FX_LAST_PID" 2>/dev/null || true
+rm -f "$RD15VQ/A1.pid" "$RD15VQ/A1.start"
+vq15_plan "$reflect15vq"
+check "15vq: 사람의 승인 답 하나로 반영 재수렴 plan 이 통과한다" "$rc" "0"
+[ "$rc" = 0 ] || bad "15vq 반영 plan 문면" "$msg"
+au15_dispatch R15VQ "$STUB_VQ_REFL" reconverge "$reflect15vq"
+check "15vq: 반영 재수렴이 기동한다" "$rc" "0"
+[ "$rc" = 0 ] || bad "15vq 반영 기동 문면" "$out"
+au15_wait R15VQ S2P
+check "15vq: 반영 행이 세그먼트=- · 스테이지=S2P · 종류=reconverge 로 정상 완료다" \
+  "$(au15_rows R15VQ '| 세그먼트=- | 스테이지=S2P | 종류=reconverge |' | grep -c . || true)/$(au15_class R15VQ S2P reconverge)" "1/정상 완료"
+check "15vq: 단계 id 를 세그먼트로 쓴 반영 행은 없다" "$(au15_rows R15VQ '세그먼트=S2P ' | grep -c . || true)" "0"
+att15vq=$(au15_rows R15VQ '| 세그먼트=- | 스테이지=S2P | 종류=reconverge |' | tail -1 \
+  | tr '|' '\n' | sed -n 's/^ *실행 버전=//p' | sed 's/[[:space:]]*$//')
+vq15_plan "$reflect15vq"
+case "$rc/$msg" in
+  3/*"승인 화면 반영을 이미 1번 들였습니다"*) ok "15vq: 같은 답의 두 번째 반영은 거부된다" ;;
+  *) bad "15vq: 같은 답의 두 번째 반영은 거부된다" "rc=$rc $msg" ;;
+esac
+vq15_plan "중단된 지점부터 이어 간다." --resume svq-refl
+check "15vq: 마지막 반영 세션을 잇는 --resume 은 통과한다" "$rc" "0"
+[ "$rc" = 0 ] || bad "15vq 반영 재개 문면" "$msg"
+vq15_plan "중단된 지점부터 이어 간다." --resume spub1
+case "$rc/$msg" in
+  3/*"재개하는 세션(spub1)의 재수렴이 아닙니다"*) ok "15vq: 다른 세션의 --resume 은 거부된다" ;;
+  *) bad "15vq: 다른 세션의 --resume 은 거부된다" "rc=$rc $msg" ;;
+esac
+
+# The reflection moves no slice: its row is no re-plan's cite, and no segment is
+# re-declared after it. The replan readers are stubbed to the state in which
+# every clause holds, so only the row filter decides; with the publish step
+# read as absent the same row is a candidate (the control).
+check "15vq 픽스처: 반영 행이 게이트가 쓴 재설계 필요 행이다 (아래가 공허하지 않다)" \
+  "$(au15_rows R15VQ '| 세그먼트=- | 스테이지=S2P | 종류=reconverge |' | grep -F '| 기록자=게이트 |' | grep -cF '| 재수렴 판정=재설계 필요 |' || true)" "1"
+vq15_rp='gate_segment_ids() { printf "S2\n"; }
+  gate_replan_eval() { GATE_REPLAN_C1=1 GATE_REPLAN_C2=1 GATE_REPLAN_C3=1 GATE_REPLAN_C4=1 GATE_REPLAN_C5=1 GATE_REPLAN_C6=1 GATE_REPLAN_C7=1; }'
+check "15vq: 반영 행은 재계획 후보가 아니다" "$(vq15 "$vq15_rp"'
+  gate_replan_due_json | grep -c "\"segment\"" || true')" "0"
+check "15vq: 시각 발행 단계가 없으면 같은 행이 후보다 (위가 공허하지 않다)" "$(vq15 "$vq15_rp"'
+  gate_run_scope_step() { return 1; }
+  gate_replan_due_json | grep -c "\"reconverge\": \"S2P#" || true')" "1"
+f113_new R15VQD '`sa/vq.txt`' '`SB.txt`' || bad "15vq: R15VQD 픽스처 계획" "rc=$rc $msg"
+f113_set R15VQD SB '선언 파일' '`SB.txt`, `sb/vq.txt`'
+f113_in R15VQD '
+  gate_run_scope_step() { [ "$1" = visual-publish ] && { printf S2P; return 0; }; return 1; }
+  gate_append stage-result "세그먼트=-" "스테이지=S2P" "종류=reconverge" "종료 코드=0" \
+    "실행 버전=1" "세션 id=s-vq" "종단 부류=정상 완료"
+  gate_redeclare_after_reconverge - S2P#1' > "$WORK/vq15-rc.out" 2>&1
+check "15vq: 반영 행 뒤에는 재선언하지 않는다" "$(f113_redecl R15VQD SB)" "0"
+f113_rcrow R15VQD - D1 2 '정상 완료'
+check "15vq: 같은 문서의 설계 키 재수렴 뒤에는 재선언한다 (위가 공허하지 않다)" "$(f113_redecl R15VQD SB)" "1"
+for s in SA SB; do
+  ( cd "$WT" && git worktree remove --force "$(g15_wt R15VQD "$s")" ) >/dev/null 2>&1 || true
+done
+( cd "$WT" && git worktree prune ) >/dev/null 2>&1 || true
+rm -f "$WT/$(f113_doc R15VQD)"
+
+# While a reflection attempt is up, nothing else that writes the document is let
+# in, and the reflection's session is not the publish stage.
+fx_rd15vq="$FX_RUN_DIR"; FX_RUN_DIR="$RD15VQ"
+fx_stage_live S2P
+FX_RUN_DIR="$fx_rd15vq"
+printf 'reconverge\n' > "$RD15VQ/S2P.kind"
+gateL plan --manifest "$WORK/plan-R15VQ.md" --kind skill --target infra --segment - --cutpoint 커밋 \
+     --surface 워크트리쓰기 -- audit -p "/cc-cmds:design-audit-unattended $WT/$DOC15VQ"
+case "$rc/$msg" in
+  3/*"승인 화면 반영이 아직 돌고 있습니다"*) ok "15vq: 반영 시도가 살아 있는 동안 감사 파견은 거부된다" ;;
+  *) bad "15vq: 반영 시도가 살아 있는 동안 감사 파견은 거부된다" "rc=$rc $msg" ;;
+esac
+gateL plan --manifest "$WORK/plan-R15VQ.md" --kind skill --target infra --segment - --cutpoint 커밋 \
+     --surface 워크트리쓰기 -- visual-publish -p "/cc-cmds:visual-publish-unattended $WT/$DOC15VQ"
+case "$rc/$msg" in
+  3/*"승인 화면 반영이 아직 돌고 있습니다"*) ok "15vq: 반영 시도가 살아 있는 동안 시각 발행 파견은 거부된다" ;;
+  *) bad "15vq: 반영 시도가 살아 있는 동안 시각 발행 파견은 거부된다" "rc=$rc $msg" ;;
+esac
+check "15vq: 반영 세션은 시각 발행 단계로 읽히지 않는다" \
+  "$(vq15 'CC_PIPELINE_STAGE_ID="S2P#$1"; gate_caller_is_visual_publish_stage && printf 발행 || printf 아님
+    printf "visual-publish\n" > "$RUN_DIR/S2P.kind"; gate_caller_is_visual_publish_stage && printf /발행 || printf /아님' "$att15vq")" "아님/발행"
+kill "$FX_LAST_PID" 2>/dev/null || true
+wait "$FX_LAST_PID" 2>/dev/null || true
+rm -f "$RD15VQ/S2P.pid" "$RD15VQ/S2P.start" "$RD15VQ/S2P.kind"
+
+# An answer to the publish stage's own halt re-attaches the publish session: the
+# reflection's later row on the same key is passed over.
+check "15vq: 시각 발행 정지의 재부착은 반영 행을 건너뛴다" \
+  "$(vq15 'printf "%s/%s" "$(gate_row_field "$(gate_stage_last_settled_row S2P)" "세션 id")" \
+    "$(gate_row_field "$(gate_stage_last_settled_row S2P reconverge)" "세션 id")"')" "svq-refl/spub1"
+
+# C3 — the reflection stopped on a collision, and a person attached a decision.
+r15vq=$((att15vq + 1))
+vq15_row reconverge "$r15vq" svq-stop '의도된 park'
+vq15_rrec "$r15vq" gate-unanswerable
+vq15_sidecar '**문서 반영**: 실패 — 다른 구속 결정과 충돌 — 사람 답 S2P#1.md'
+check "15vq: 반영 실패 동안 승인 판정은 보류다" \
+  "$(vq15 'visual_approval_verdict "$ORCH_DIR"; printf " rc=%s" "$?"')" "승인 보류 — 설계 문서 반영 실패 — 다른 구속 결정과 충돌 rc=1"
+case "$(vq15 'visual_approval_route_hint')" in
+  *"승인 화면 반영 중단 기록 $RD15VQ/halt/S2P#$r15vq.md 에 사람이 답하세요"*) ok "15vq: 반영 실패 안내는 반영 정지 기록을 든다" ;;
+  *) bad "15vq: 반영 실패 안내는 반영 정지 기록을 든다" "$(vq15 'visual_approval_route_hint')" ;;
+esac
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=1 vq15_answer "$RD15VQ/halt/S2P#$r15vq.md" 좌석 '결정 첨부 후 다시 반영'
+case "$rc/$msg" in
+  3/*"승인 화면 반영 정지입니다"*) ok "15vq: 반영 정지 기록의 좌석 답은 거부된다" ;;
+  *) bad "15vq: 반영 정지 기록의 좌석 답은 거부된다" "rc=$rc $msg" ;;
+esac
+vq15_answer "$RD15VQ/halt/S2P#$r15vq.md" 사람 '결정 첨부 후 다시 반영'
+if [ "$rc" = 0 ]; then ok "15vq 픽스처: 반영 정지 기록의 사람 답이 기록된다 (아래가 공허하지 않다)"
+else bad "15vq 픽스처: 반영 정지 기록의 사람 답이 기록된다 (아래가 공허하지 않다)" "rc=$rc $msg"; fi
+vq15_plan "$reflect15vq"
+check "15vq: 결정 첨부 후 다시 반영 답으로 반영 plan 이 통과한다" "$rc" "0"
+[ "$rc" = 0 ] || bad "15vq 결정 첨부 반영 plan 문면" "$msg"
+vq15_row reconverge "$((r15vq + 1))" svq-crash1 '크래시'
+vq15_plan "$reflect15vq"
+check "15vq: 비정상 종료 뒤 같은 답으로 한 번 더 들인다" "$rc" "0"
+[ "$rc" = 0 ] || bad "15vq 재시도 plan 문면" "$msg"
+vq15_row reconverge "$((r15vq + 2))" svq-crash2 '크래시'
+vq15_plan "$reflect15vq"
+case "$rc/$msg" in
+  3/*"승인 화면 반영을 이미 2번 들였습니다"*) ok "15vq: 세 번째 시도는 거부된다" ;;
+  *) bad "15vq: 세 번째 시도는 거부된다" "rc=$rc $msg" ;;
+esac
+check "15vq: precondition-failed 정지는 한 번 더 들이는 종단이다" \
+  "$(vq15 'vq15_rr() { gate_approval_reflection_retry_ok S2P "- \`stage-result\` | 실행 버전=$1 | 종단 부류=$2"; printf "%s" "$?"; }
+    printf "**분류**: precondition-failed\n" > "$RUN_DIR/halt/S2P#90.md"
+    printf "**분류**: gate-unanswerable\n" > "$RUN_DIR/halt/S2P#91.md"
+    vq15_rr 90 "의도된 park"; vq15_rr 91 "의도된 park"; vq15_rr 92 "크래시"; vq15_rr 93 "정상 완료"
+    rm -f "$RUN_DIR/halt/S2P#90.md" "$RUN_DIR/halt/S2P#91.md"')" "0101"
+
+# An answer brought over from an earlier run reads that run's records: the copy
+# under this run's `halt/` is the scope, and the earlier run's latest verdict
+# record and the sidecar's tail are compared by the earlier name.
+vq15_sidecar '**문서 반영**: 대기 — 어긋남 1건 — 사람 답 S2P#1.md'
+RD15VQC="$STATE_LATE/cc-cmds/run/R15VQC"
+LED15VQC="$WT/docs/pipeline-run/R15VQC.md"
+mkdir -p "$RD15VQC/halt"
+cp "$REC15VQ" "$RD15VQC/halt/S2P#chained-R15VQ.md"
+{ printf '# 원장\n\n## 실행 R15VQC\n'
+  printf -- '- `중단 답` | 세그먼트=S2P | 중단 기록=%s | 답한 주체=사람 | 선택지=승인 | 출처 런=R15VQ | 출처 기록=%s\n' \
+    "$RD15VQC/halt/S2P#chained-R15VQ.md" "$REC15VQ"; } > "$LED15VQC"
+check "15vq: 앞선 런에서 들인 승인 답이 반영을 연다" \
+  "$(VQ_L="$LED15VQC" VQ_RD="$RD15VQC" vq15 'gate_approval_reflection_entry S2P; printf "%s|%s" "$?" "$GATE_ARE_RECORD$GATE_ARE_WHY"')" \
+  "0|$RD15VQC/halt/S2P#chained-R15VQ.md"
+rm -rf "$RD15VQC" "$LED15VQC"
+check "15vq: 반영 범위 세 낱말을 범위로 읽는다" \
+  "$(vq15 'gate_halt_detail_scope "범위=승인 화면 반영 /r/halt/S2P#1.md / 사전 sha256=x"')" "승인 화면 반영 /r/halt/S2P#1.md"
+rm -f "$SC15VQ" "$vq15_base/docs/visual/docs-fixture-design-15vq.home.html" "$WT/$DOC15VQ"
+( cd "$WT" && git worktree remove --force "$WT-run-R15VQ-A1" ) >/dev/null 2>&1 || true
+( cd "$WT" && git worktree prune ) >/dev/null 2>&1 || true
 
 # ---------------------------------------------------------------------------
 # 15w. A screen slice is not dispatched before its screens are approved
@@ -70230,8 +70649,8 @@ unset S111 r111 a111 d111 g111 s111_rb s111_rh s111_aw s111_im s111_ip s111_GRAN
 #
 # 크기 차단은 세션 없이 기록 하나와 행 하나로 끝나고, 그 기록의 답은 게이트가 경로 셋으로
 # 가른다. 이 절은 게이트를 소싱한 자식에서 그 함수들을 직접 부른다: 원장은 빈 파일에서
-# 시작하고, 설계 문서는 문턱 300000 을 조금 넘는 픽스처(고정 키 docs/doc-tidy-fixture.md)로,
-# 대체 괄호 하나를 옮기면 문턱 아래로 내려가게 만든다. 파견 행위 전체(인가·임대·감독자)는
+# 시작하고, 설계 문서는 재수렴 문턱 289000 을 넘고 감사 경고 문턱 299000 도 넘는 픽스처(고정 키
+# docs/doc-tidy-fixture.md)로, 대체 괄호 하나를 옮기면 재수렴 문턱 아래로 내려가게 만든다. 파견 행위 전체(인가·임대·감독자)는
 # 다른 절이 재고, 여기서는 크기 판정과 답 경로와 정리 도구만 본다.
 # ---------------------------------------------------------------------------
 S113="$WORK/s113"; rm -rf "$S113"; mkdir -p "$S113/run/halt" "$S113/repo/docs"
@@ -70239,8 +70658,8 @@ S113=$(cd -P "$S113" && pwd)
 s113_doc="$S113/repo/docs/doc-tidy-fixture.md"
 awk 'BEGIN {
   print "# 크기 시험 문서"; print ""; print "## 합의된 아키텍처"; print ""
-  l = sprintf("%0199d", 0); for (i = 0; i < 1475; i++) print "- " l
-  p = sprintf("%02000d", 0); printf "결정 문장입니다. (대체된 문장: \"%s\")\n", p
+  l = sprintf("%0199d", 0); for (i = 0; i < 1425; i++) print "- " l
+  p = sprintf("%012000d", 0); printf "결정 문장입니다. (대체된 문장: \"%s\")\n", p
 }' > "$s113_doc"
 cp "$s113_doc" "$S113/pre.md"
 : > "$S113/ledger.md"; : > "$S113/ledger-empty.md"
@@ -70263,7 +70682,7 @@ s113_route() {
 s113_r=$(s113_call "$S113/ledger.md" "$s113_doc" '
   printf "%s|%s|%s|%s|%s" "$(doc_size_threshold audit | tr "\t" /)" "$(doc_size_threshold reconverge | tr "\t" /)" \
     "$(doc_size_threshold implement | tr "\t" /)" "$(doc_size_min_threshold 1)" "$(doc_size_min_threshold 2)"' 2>/dev/null)
-check "113b: 크기 표가 세 종류의 문턱과 경고 문턱을 낸다" "$s113_r" "323000/299000|300000/276000|313000/289000|300000|276000"
+check "113b: 크기 표가 세 종류의 문턱과 경고 문턱을 낸다" "$s113_r" "323000/299000|289000/265000|313000/289000|289000|265000"
 s113_r=$(s113_call "$S113/ledger.md" "$s113_doc" '
   printf "%s|%s" "$(doc_size_verdict reconverge "$DOC" | cut -f1)" "$(doc_size_verdict audit "$DOC" | cut -f1)"' 2>/dev/null)
 check "113b: 문턱 위 문서는 재수렴에 초과이고 감사에 경고다" "$s113_r" "초과|경고"
@@ -70321,10 +70740,10 @@ s113_arch="$S113/repo/docs/design-archive/docs-doc-tidy-fixture.md"
 mkdir -p "${s113_arch%/*}"
 s113_rc=0
 "$repo_root/plugins/cc-cmds/orchestrator/doc-tidy.py" tidy "$s113_doc" --archive "$s113_arch" \
-  --doc-key docs/doc-tidy-fixture.md --writer 게이트 --below 300000 >/dev/null 2>&1 || s113_rc=$?
+  --doc-key docs/doc-tidy-fixture.md --writer 게이트 --below 289000 >/dev/null 2>&1 || s113_rc=$?
 s113_sz=$(wc -c < "$s113_doc" | tr -d ' ')
 check "113b: tidy 가 문서를 문턱 아래로 정리하고 보관 파일을 쓴다" \
-  "$s113_rc|$([ "$s113_sz" -lt 300000 ] && echo 아래)|$(grep -c -F ' (보관 A1)' "$s113_doc" || true)|$(sed -n '2p' "$s113_arch" 2>/dev/null)" \
+  "$s113_rc|$([ "$s113_sz" -lt 289000 ] && echo 아래)|$(grep -c -F ' (보관 A1)' "$s113_doc" || true)|$(sed -n '2p' "$s113_arch" 2>/dev/null)" \
   "0|아래|1|<!-- cc-design-archive v1; writer=doc-tidy; owner-doc=docs/doc-tidy-fixture.md -->"
 s113_rc=0
 "$repo_root/plugins/cc-cmds/orchestrator/doc-tidy.py" check "$S113/pre.md" "$s113_doc" "$s113_arch" >/dev/null 2>&1 || s113_rc=$?

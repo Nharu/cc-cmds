@@ -110,15 +110,15 @@ for case_dir in "$fixtures"/*/; do
 done
 
 # Rule 11 reads its ceiling from run.sh's size table, which LEAD_READ_SET_CEILING
-# does not lower, so its violation needs a pre-document read past 185000 bytes.
+# does not lower, so its violation needs a pre-document read past 196000 bytes.
 # That case is built here, on the base tree, rather than kept as a fixture of
-# that size: a re-convergence lead whose Workflow Reads a generated 190000-byte
+# that size: a re-convergence lead whose Workflow Reads a generated 205000-byte
 # file before `### Step 2`.
 r11="$scratch/FAIL-26-rule11-reconverge-over-ceiling"
 mkdir -p "$r11"
 cp -R "$base/." "$r11/"
 mkdir -p "$r11/plugins/cc-cmds/skills/design-reconverge" "$r11/plugins/cc-cmds/skills/_common"
-awk 'BEGIN { l = sprintf("%099d", 0); for (i = 0; i < 1900; i++) print l }' \
+awk 'BEGIN { l = sprintf("%099d", 0); for (i = 0; i < 2050; i++) print l }' \
   > "$r11/plugins/cc-cmds/skills/_common/pad.md"
 cat > "$r11/plugins/cc-cmds/skills/design-reconverge/SKILL.md" <<'EOF'
 # design-reconverge (generated case)
