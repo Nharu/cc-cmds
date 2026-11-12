@@ -3876,7 +3876,9 @@ EOF
   # `머지후착수`. A person's re-kickoff may lower a carried cutpoint at the hook
   # check, or fill a ceiling the source left empty with `리뷰없음` from a
   # confirmed blank row, and this check is the last one before the source is
-  # closed in favour of a run that check would refuse.
+  # closed in favour of a run that check would refuse. The rest of what that
+  # check reads off adoption rows is left to the check itself, run over the
+  # whole draft below.
   local mrows min mrow mkey mline mpr mm mh mw mt mcut mceil
   mrows=$(MANIFEST="$draft" manifest_merge_adoption_rows)
   min=$(awk '/^## / { sec = $0; next } sec == "## 인가" && /^- `머지 입양`/' "$draft")
@@ -3979,6 +3981,18 @@ EOF
     done <<EOF
 $(awk -F '\t' '$1 ~ /^입양 / { print substr($1, length("입양 ") + 1) }' "$RK_ASKED" | awk '!seen[$0]++')
 EOF
+  fi
+  # A draft that carries an adoption row goes through the driver's own manifest
+  # check as a whole, on both paths. The clauses above only name the common
+  # refusals; the driver reads adoption rows against the rest of the manifest
+  # too — with no design document, every implementation step but one must be
+  # named by an adoption row — and a draft that loses a row here, because its
+  # segment derived no candidate or was answered `다시 하기`, would otherwise
+  # pass this last check before 7.8 and be refused on the new run's first gate
+  # call.
+  if [ -n "$arows$mrows" ]; then
+    rk_check_manifest "$draft" \
+      || why="${why:+$why; }입양 행을 실은 초안이 드라이버의 매니페스트 검사를 통과하지 않습니다 — $(sed -n 's/^.*\[run\]\[stop\] //p' "$RK_TMP/check.err" | tail -n 1)"
   fi
   vs_check 입양 "$why"
 
