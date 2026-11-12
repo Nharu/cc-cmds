@@ -8000,9 +8000,13 @@ stage_spawn() {
   # A MIGRATION GRANT TURNS A RE-ATTACHMENT INTO A NEW SESSION (`fresh`, the
   # resume id is dropped below), and a new session reads the document from the
   # start: that dispatch alone is checked again here, and a block hands the
-  # lease back.
-  if [ -n "$dsk" ] && [ -n "${DOC:-}" ] && [ -n "${STAGE_RESUME:-}" ] && [ "$routed" = "1" ] \
-     && [ "$(printf '%s' "$env" | jq -r 'if .fresh == true then "1" else "0" end' 2>/dev/null)" = "1" ]; then
+  # lease back. Whether the grant is a migration is read once, here, and the
+  # re-attachment drop below reads the same value.
+  local env_fresh=0
+  if [ "$routed" = "1" ]; then
+    env_fresh=$(printf '%s' "$env" | jq -r 'if .fresh == true then "1" else "0" end' 2>/dev/null) || env_fresh=0
+  fi
+  if [ -n "$dsk" ] && [ -n "${DOC:-}" ] && [ -n "${STAGE_RESUME:-}" ] && [ "$env_fresh" = "1" ]; then
     if ! doc_size_spawn_gate "$stage" "$dsk" 1; then
       spawn_lease_drop "$stage" "$minted"
       return "$STAGE_SPAWN_PARK_RC"
@@ -8085,8 +8089,7 @@ stage_spawn() {
   # nothing to a new session, so it gets the dispatch prompt the caller named
   # in STAGE_RESUME_DISPATCH, the one a new process of the same dispatch runs.
   local resume_id="${STAGE_RESUME:-}"
-  if [ -n "$resume_id" ] && [ "$routed" = "1" ] \
-     && [ "$(printf '%s' "$env" | jq -r 'if .fresh == true then "1" else "0" end' 2>/dev/null)" = "1" ]; then
+  if [ -n "$resume_id" ] && [ "$routed" = "1" ] && [ "$env_fresh" = "1" ]; then
     log "$stage: 이관 GRANT — 세션 $resume_id 을 재부착하지 않고 새 세션으로 띄운다"
     resume_id=""
     # The caller's dispatch prompt first; for an exhausted resume's move
