@@ -14748,7 +14748,7 @@ gate_approval_reflection_entry() {
   fi
   lines=$( { grep -n -F "| 세그먼트=$pstep |" "$LEDGER" 2>/dev/null || true; } \
            | { grep "^[0-9]*:- \`중단 답\` " || true; })
-  last=$(printf '%s\n' "$lines" | sed -n '$p')
+  last=${lines##*$'\n'}
   if [ -z "$last" ]; then
     GATE_ARE_WHY="시각 발행 단계(${pstep})에 중단 답 행이 없습니다"
     return 1
@@ -14846,7 +14846,7 @@ gate_approval_reflection_entry() {
           | { grep "^[0-9]*:- \`stage-result\` " || true; } \
           | { grep -vF '| 관측=스폰 전 대기 중' || true; } \
           | awk -F: -v l="$ln" '$1 > l')
-  k=$(printf '%s' "$rows" | grep -c . || true)
+  k=$(grep -c . <<< "$rows" || true)
   if [ "$k" -ge 2 ] \
      || { [ "$k" = "1" ] && ! gate_approval_reflection_retry_ok "$pstep" "${rows#*:}"; }; then
     GATE_ARE_WHY="이 답(원장 ${ln}번째 줄)으로 승인 화면 반영을 이미 ${k}번 들였습니다 — 같은 답으로 다시 들이는 것은 첫 시도가 게시 전 precondition-failed 나 정지 기록 없는 비정상 종료로 끝났을 때 한 번뿐입니다"
