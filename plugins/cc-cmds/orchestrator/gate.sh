@@ -52408,7 +52408,7 @@ gate_verb_act() {
       warn "- reconverge 가 감사 단계(${rs_astep})의 재수렴과 설계 단계(${rs_dstep})의 잔여 동결 재검토 양쪽에 다 맞습니다 — 게이트는 둘 중 하나를 고르지 않습니다"
       exit "$GATE_EXIT_RULE"
     elif [ "$(( ${rs_aok:-0} + ${rs_dok:-0} + ${rs_cok:-0} + ${rs_pok:-0} ))" -gt 1 ]; then
-      warn "- reconverge 가 감사 단계(${rs_astep:-없음})의 재수렴, 설계 단계(${rs_dstep:-없음})의 잔여 동결 재검토, 결정 수거 답의 재수렴(${rs_ckey}) 가운데 둘 이상에 맞습니다 — 게이트는 그 가운데 하나를 고르지 않습니다"
+      warn "- reconverge 가 감사 단계(${rs_astep:-없음})의 재수렴, 설계 단계(${rs_dstep:-없음})의 잔여 동결 재검토, 결정 수거 답의 재수렴(${rs_ckey:-없음}), 승인 화면 반영(${rs_pstep:-없음}) 가운데 둘 이상에 맞습니다 — 게이트는 그 가운데 하나를 고르지 않습니다"
       exit "$GATE_EXIT_RULE"
     elif [ -n "$rs_aok" ]; then
       rs_table=audit
