@@ -1622,7 +1622,7 @@ for pair in "리드:$AP_ROUTER" "교대:$RS_CORPUS"; do
     'A segment a `머지 입양` row adopted carries an element too, with or without a `cycle` row, until its `완료` row.' \
     '**A segment a `머지 입양` row adopted is held the same way, whatever its review policy, from the moment it is planned**' \
     '**Its refusal (exit 3) parks the segment, not the shift**, and its text ends with the refusal'"'"'s class.' \
-    'When the entry carries `입양` too, its branch and worktree are the earlier run'"'"'s and may hold that run'"'"'s uncommitted or unpushed fix, so the refusal removes and deletes nothing: on `거절 부류: 재시도 가능` issue call 3 alone once more, and a refusal with no class is the paragraph above'"'"'s and ends the shift as that paragraph says.' \
+    'When the entry carries `입양` too, its branch and worktree are the earlier run'"'"'s and may hold that run'"'"'s uncommitted or unpushed fix, so the refusal removes and deletes nothing: on `거절 부류: 재시도 가능` issue call 3 alone once more, and a refusal with no class, first or second, is the paragraph above'"'"'s and ends the shift as that paragraph says.' \
     'Otherwise, on `거절 부류: 재시도 가능` take call 1,' \
     '`gate.sh exec … --target <대상> --surface 워크트리쓰기 --destructive -- git branch -D <슬라이싱 의 브랜치>`, call 2 and call 3 again once, in that order — the removal leaves the branch the first call 2 cut' \
     'Either way, on a second refusal, on `거절 부류: 영구`, or when call 1 or 2 fails, write `act --kind segment --target <대상> --segment <id> -- 상태=park 워크트리=<워크트리> 선행=없음` and a `blocked` row saying why, and go on with the shift.'

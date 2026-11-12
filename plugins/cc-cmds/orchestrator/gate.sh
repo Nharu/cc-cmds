@@ -12951,7 +12951,9 @@ gate_merge_adoption_plan_check() {
   # not be fetched into the pinned ref, or the worktree's HEAD does not contain
   # the merge commit (the worktree was cut from a stale `origin/<base>`). The
   # router removes the worktree and the branch it cut, cuts both again and
-  # plans once more, then parks. `거절 부류: 영구`
+  # plans once more, then parks; on a segment a `세그먼트 입양` row pairs with
+  # the merge, whose branch and worktree are an earlier run's, it removes and
+  # deletes nothing and only plans once more. `거절 부류: 영구`
   # is every other refusal — the row and the evidence disagree, and no retry
   # changes that — and the router parks the segment at once.
   local verb="$1" al="$2" seg="$3" wt="$4" row adrow pr m h tgt slug obs ost omc ohd obr ocr
