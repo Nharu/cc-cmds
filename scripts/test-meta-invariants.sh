@@ -1637,6 +1637,18 @@ check "게이트가 머지 입양 계획 거절에 재시도 가능 부류를 �
   "$(mo_count "$(cat "$GATE")" '— 거절 부류: 재시도 가능"')" "3"
 check "게이트가 머지 입양 계획 거절에 영구 부류를 낸다" \
   "$(mo_count "$(cat "$GATE")" '— 거절 부류: 영구"')" "12"
+# The kickoff reads a named pull request's state before the entry judgment and
+# takes a `reviewer` judgment again when a merged one can be adopted: without
+# both, a request to review a merged pull request after the fact lands on the
+# reviewer path, which writes no `머지 입양` row.
+for lit in \
+  '**A merged pull request the intent names is read before the judgment, not after it.**' \
+  'A judgment that still writes `reviewer` is taken again like a schema violation, compared with `jq -e '"'"'.run_profile != "reviewer"'"'"' <plan file>` as the delivery key is.' \
+  'take the state Step 1 item 3 read before the entry judgment'
+do
+  check "autopilot SKILL 에 머지된 PR 엔트리 판정 문장이 한 번 실린다 — 「${lit:0:50}」" \
+    "$(mo_count "$(cat "$AP_SKILL")" "$lit")" "1"
+done
 # The planning-order refusal is consumed by the router, not only written by the
 # gate: the copies quote the gate's own words, so a gate rewording that leaves
 # the router text behind fails here, and the broad sentence that sent this
