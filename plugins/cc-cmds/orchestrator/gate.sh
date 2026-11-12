@@ -27499,10 +27499,14 @@ gate_adoption_unfixed() {
   #     one `리뷰 HEAD`, and the worktree HEAD is still that commit: the review
   #     after the fact reads the HEAD the planning act left, and a review after
   #     a fix reads another;
-  #   - no implement or lead-fix `stage-result` row of the segment stands after
-  #     the issuing row;
   #   - no `원격 판독` row of the segment shows a branch tip or a pull request
   #     number: the run never pushed its branch.
+  # A fix is judged by the commits it leaves alone — a moved HEAD or a pushed
+  # branch. An implement or lead-fix stage that ended with nothing to commit
+  # (a lead fix's documented normal ending) carried no fix, so its
+  # `stage-result` row does not count: read as fixed, it would send the
+  # segment's next review to an empty branch line and leave `입양 종결`
+  # unreachable.
   # A fix merged outside the run brings the count back to 0 as well. Read as
   # unfixed it would close the segment on `입양 종결`, with no `머지됨` row and
   # the merged fix never compared with any review, so every field that cannot
@@ -27530,9 +27534,6 @@ gate_adoption_unfixed() {
 $heads
 EOF
   fi
-  [ -z "$( { grep -n '^- `stage-result` ' "$LEDGER" 2>/dev/null || true; } \
-           | gate_rows_field_eq '세그먼트' "$seg" | awk -F: -v ol="$ol" '$1 + 0 > ol + 0' \
-           | grep -E '\| (종류=(implement|lead-fix)|스테이지=(S4|S5F)) (\||$)' )" ] || return 1
   [ -z "$( { gate_rows '원격 판독' || true; } | gate_rows_field_eq '세그먼트' "$seg" \
            | grep -E '\| (원격 팁=[0-9a-f]{7,}|PR=[0-9]+) (\||$)' )" ]
 }
@@ -37595,6 +37596,29 @@ gate_record_row() {
       if [ "$rh_bad" = 1 ] || [ "${#rh}" -lt 7 ] || [ "${#rh}" -gt 40 ]; then
         warn "the \`리뷰 HEAD\` of a cycle row has to be a resolved commit sha — only 7 to 40 lowercase hex characters are accepted: '$rh'"
         return "$GATE_EXIT_VOCAB"
+      fi
+      # A REVIEW OF A MERGED PULL REQUEST IS RECORDED AT ITS JUDGE HEAD. While a
+      # segment a `머지 입양` row adopted (with no `세그먼트 입양` row pairing it)
+      # is still on its adoption review line — 0 commits ahead of the base and
+      # no fix carried (`gate_adoption_unfixed`), the predicate `gate_review_line`
+      # picks that line with — the review read the worktree's HEAD as its
+      # `--judge-head`, and its `리뷰 HEAD` has to be that commit. The pull
+      # request's own head is the commit a report wrongly names there: it does
+      # not contain the merge commit, so the obligation could never be fulfilled
+      # by it. Refused here, at write time, because once such a row stands
+      # `gate_adoption_unfixed` reads every later `cycle` head against the
+      # worktree's HEAD and stays false for good, and the segment can no longer
+      # reach `입양 종결`.
+      if gate_segment_merge_adopted "$seg" && ! gate_adoption_row "$seg" >/dev/null \
+         && [ "$(gate_segment_ahead_count "$seg")" = 0 ] && gate_adoption_unfixed "$seg"; then
+        local adj_wt adj_tip adj_rh
+        adj_wt=$(gate_segment_worktree "$seg")
+        adj_tip=$(gate_worktree_tip "$adj_wt" 2>/dev/null) || adj_tip=''
+        adj_rh=$( { cd "$adj_wt" 2>/dev/null && git rev-parse --verify -q "$rh^{commit}"; } 2>/dev/null) || adj_rh=''
+        if [ -z "$adj_tip" ] || [ "$adj_rh" != "$adj_tip" ]; then
+          warn "머지 입양 세그먼트 ${seg} 의 사후 리뷰 cycle 행은 판정 헤드(워크트리 HEAD ${adj_tip:-(읽지 못함)})를 「리뷰 HEAD」 로 싣습니다 — 받은 값 ${rh} 는 그 커밋이 아닙니다"
+          return "$GATE_EXIT_RULE"
+        fi
       fi
       # --- DELTA MODE: the basis conditions are refused HERE, at write time ---
       #

@@ -66245,7 +66245,7 @@ unset RV107_P2 RV107_P3 RV107_OUT RV107_JSON RV107_RC
 
 # ---------------------------------------------------------------------------
 # 109m. 머지 입양 — 런 밖에서 머지된 PR 을 문서 없는 계획의 구현 단계로 받아 사후 리뷰한다
-# --- section: 109m | group: mf | covers: check_manifest, snapshot, gate_snapshot_slicing_json, gate_undeclared_segments, gate_from_declaration, gate_merge_adoption_plan_check, gate_merge_adoption_issue, gate_adoption_review_next, gate_segment_review_next, gate_review_line, gate_done_conditions, gate_segment_post_merge, gate_segment_merge_adopted, gate_merge_adoption_drop_ref, gate_adoption_unfixed, gate_segment_merged_uncovered, gate_segment_uncovered_merge_commit, gate_adoption_branch_review_want, gate_verb_act, act | anchors: 109m: 형식이 어긋난 머지 입양 행은 거부된다, 109m: 한 세그먼트의 머지 입양 행 둘은 거부된다, 109m: 리뷰없음 상한 대상의 머지 입양 행은 거부된다,109m: 슬라이싱이 머지 입양 단계의 PR 번호를 낸다, 109m: 머지 아래 절단점 대상의 머지 입양 행은 거부되고 머지 이상은 받아진다, 109m: 원격과 어긋난 계획 act 는 rc 3 이고 행을 남기지 않는다, 109m: 계획 거절 문면이 재시도 가능·영구 부류를 낸다, 109m: 계획 act 가 의무 하나와 선리뷰후머지 계획 행을 쓴다, 109m: 계획 act 가 PR 헤드를 리뷰 참조로 들인다, 109m: 다시 부른 계획 act 는 의무를 더 쓰지 않는다, 109m: 계획 직후의 구현 파견은 rc 3 이다, 109m: 계획 뒤 다음은 사후리뷰 이고 사후리뷰 행이 받아진다, 109m: 리뷰 줄이 PR 과 분기점·머지 커밋·판정 HEAD 를 싣는다, 109m: 통과한 사후 리뷰 뒤 다음은 입양 종결 이다, 109m: 의무 이행 전 완료 는 rc 2 다, 109m: 커밋 을 실은 완료 는 rc 2 다, 109m: 의무 이행 뒤 완료 는 rc 0 이고 조건 12 가 없으며 원격 베이스가 그대로다, 109m: 스쿼시 머지의 분기점은 PR 이 갈라진 커밋이다, 109m: 사후 리뷰 전의 구현 파견은 rc 3 이다, 109m: 사후 리뷰의 cycle 행 뒤 구현 파견은 사후 리뷰 대기로 막히지 않는다, 109m: 수정 커밋 뒤 리뷰 줄은 브랜치를 리뷰하고 머지 커밋을 싣지 않는다, 109m: 수정 흐름 — 이행 뒤 수정 PR 머지는 rc 0 이고 의무를 더 쓰지 않으며 조건 12 가 없다, 109m: 수정 흐름 — 머지됨 행이 리뷰 참조를 지운다, 109m: 수정 흐름 — 머지된 뒤의 완료 는 rc 0 이다, 109m: 적용 대상의 머지된 수정 뒤 호출자 완료 는 적용 검사에 걸린다, 109m: 런 밖에서 머지된 수정은 입양 종결 이 아니고 머지 없는 완료 를 받지 않는다, 109m: 사람이 먼저 머지한 수정(앞선 커밋 0)의 덮는 리뷰 줄이 머지 커밋을 싣고 파견된다, 109m: 사람이 먼저 스쿼시 머지한 수정(앞선 커밋 있음)의 덮는 리뷰 줄이 머지 커밋을 싣고 파견된다, 109m: 짝 입양 세그먼트의 먼저 머지된 수정의 덮는 리뷰 줄이 머지 커밋을 싣고 파견된다, 109m: 짝 입양 세그먼트는 사후 리뷰 대기에 들지 않는다, 109m: 계획 행위가 아닌 첫 행은 rc 3 이다, 109m: 실패한 사이클 뒤의 완료 는 rc 2 다, 109m: 리베이스 머지가 계획되고 park 로 닫힌다, 109m: park 가 리뷰 참조를 지운다, 109m: 계획 행이 없는 머지 입양 세그먼트의 첫 행 park 는 rc 0 이고 의무 행이 없다, 109m: 의무가 발행되지 않은 완료 는 rc 2 다 ---
+# --- section: 109m | group: mf | covers: check_manifest, snapshot, gate_snapshot_slicing_json, gate_undeclared_segments, gate_from_declaration, gate_merge_adoption_plan_check, gate_merge_adoption_issue, gate_adoption_review_next, gate_segment_review_next, gate_review_line, gate_done_conditions, gate_segment_post_merge, gate_segment_merge_adopted, gate_merge_adoption_drop_ref, gate_adoption_unfixed, gate_segment_merged_uncovered, gate_segment_uncovered_merge_commit, gate_adoption_branch_review_want, gate_verb_act, act | anchors: 109m: 형식이 어긋난 머지 입양 행은 거부된다, 109m: 한 세그먼트의 머지 입양 행 둘은 거부된다, 109m: 리뷰없음 상한 대상의 머지 입양 행은 거부된다,109m: 슬라이싱이 머지 입양 단계의 PR 번호를 낸다, 109m: 머지 아래 절단점 대상의 머지 입양 행은 거부되고 머지 이상은 받아진다, 109m: 원격과 어긋난 계획 act 는 rc 3 이고 행을 남기지 않는다, 109m: 계획 거절 문면이 재시도 가능·영구 부류를 낸다, 109m: 계획 act 가 의무 하나와 선리뷰후머지 계획 행을 쓴다, 109m: 계획 act 가 PR 헤드를 리뷰 참조로 들인다, 109m: 다시 부른 계획 act 는 의무를 더 쓰지 않는다, 109m: 계획 직후의 구현 파견은 rc 3 이다, 109m: 계획 뒤 다음은 사후리뷰 이고 사후리뷰 행이 받아진다, 109m: 리뷰 줄이 PR 과 분기점·머지 커밋·판정 HEAD 를 싣는다, 109m: 사후 리뷰의 cycle 행이 PR 헤드를 리뷰 HEAD 로 실으면 rc 3 이고 행이 없다, 109m: 통과한 사후 리뷰 뒤 다음은 입양 종결 이다, 109m: 의무 이행 전 완료 는 rc 2 다, 109m: 커밋 을 실은 완료 는 rc 2 다, 109m: 의무 이행 뒤 완료 는 rc 0 이고 조건 12 가 없으며 원격 베이스가 그대로다, 109m: 스쿼시 머지의 분기점은 PR 이 갈라진 커밋이다, 109m: 사후 리뷰 전의 구현 파견은 rc 3 이다, 109m: 사후 리뷰의 cycle 행 뒤 구현 파견은 사후 리뷰 대기로 막히지 않는다, 109m: 수정 커밋 뒤 리뷰 줄은 브랜치를 리뷰하고 머지 커밋을 싣지 않는다, 109m: 수정 흐름 — 이행 뒤 수정 PR 머지는 rc 0 이고 의무를 더 쓰지 않으며 조건 12 가 없다, 109m: 수정 흐름 — 머지됨 행이 리뷰 참조를 지운다, 109m: 수정 흐름 — 머지된 뒤의 완료 는 rc 0 이다, 109m: 적용 대상의 머지된 수정 뒤 호출자 완료 는 적용 검사에 걸린다, 109m: 런 밖에서 머지된 수정은 입양 종결 이 아니고 머지 없는 완료 를 받지 않는다, 109m: 사람이 먼저 머지한 수정(앞선 커밋 0)의 덮는 리뷰 줄이 머지 커밋을 싣고 파견된다, 109m: 사람이 먼저 스쿼시 머지한 수정(앞선 커밋 있음)의 덮는 리뷰 줄이 머지 커밋을 싣고 파견된다, 109m: 짝 입양 세그먼트의 먼저 머지된 수정의 덮는 리뷰 줄이 머지 커밋을 싣고 파견된다, 109m: 짝 입양 세그먼트는 사후 리뷰 대기에 들지 않는다, 109m: 계획 행위가 아닌 첫 행은 rc 3 이다, 109m: 실패한 사이클 뒤의 완료 는 rc 2 다, 109m: 리베이스 머지가 계획되고 park 로 닫힌다, 109m: park 가 리뷰 참조를 지운다, 109m: 커밋 없는 리드 수정 뒤 통과 재리뷰는 입양 종결 이고 리뷰 줄은 입양 줄이다, 109m: 계획 행이 없는 머지 입양 세그먼트의 첫 행 park 는 rc 0 이고 의무 행이 없다, 109m: 의무가 발행되지 않은 완료 는 rc 2 다 ---
 #
 # 문서 없는 계획의 구현 단계 하나를 `머지 입양` 행이 이름한다. 행의 형식은 스냅숏의
 # 매니페스트 검사로 재고, 계획 act 는 원격의 PR 을 gh 대역으로 다시 읽어 머지 커밋·헤드·
@@ -66460,6 +66460,13 @@ case "$msg" in
   *) md_got="rc=$rc $msg" ;;
 esac
 check "109m: 리뷰 줄이 PR 과 분기점·머지 커밋·판정 HEAD 를 싣는다" "$md_got" "맞음"
+# 리포트가 판정 헤드 대신 PR 헤드를 리뷰 HEAD 로 적으면 그 행이 남는 순간 입양 종결 에 다시
+# 닿지 못한다 — 게이트가 쓰는 시점에 거절한다.
+md_rows1=$(sa_rows)
+sa_cycle I1 1 0 0 "$MD_H"; md_r=$rc; md_m=$msg
+case "$md_m" in *"판정 헤드(워크트리 HEAD"*"받은 값 $MD_H 는 그 커밋이 아닙니다"*) md_m=문면 ;; esac
+check "109m: 사후 리뷰의 cycle 행이 PR 헤드를 리뷰 HEAD 로 실으면 rc 3 이고 행이 없다" \
+  "$md_r|$md_m|$(sa_rows)" "3|문면|$md_rows1"
 sa_cycle I1 1 0 0 "$MD_M"
 check "109m: 통과한 사후 리뷰 뒤 다음은 입양 종결 이다" "$(md_rnext)" "입양 종결"
 md_seg 완료; md_r=$rc; md_m=$msg
@@ -66614,6 +66621,24 @@ check "109m: 리베이스 머지가 계획되고 park 로 닫힌다" \
 check "109m: park 가 리뷰 참조를 지운다" \
   "$(cd "$MD_WT" && git rev-parse -q --verify "refs/cc-review/$SA_ID/I1" || printf 없음)" "없음"
 
+# 사후 리뷰가 P1 을 낸 뒤 리드 수정이 커밋할 것 없이 끝나도(리드 수정의 정상 결과) 그 세그먼트는
+# 수정을 거친 것이 아니다 — 같은 HEAD 의 통과 재리뷰 뒤 다음은 입양 종결 이고 리뷰 줄은 여전히
+# 머지된 PR 을 판정 헤드로 읽는다.
+md_fx merge
+md_plan; md_r=$rc
+md_seg 사후리뷰
+sa_cycle I1 1 0 1 "$MD_M"
+printf -- '- `stage-result` | 세그먼트=I1 | 스테이지=I1 | 종류=lead-fix | 종료 코드=0 | 종단 부류=정상 완료\n' >> "$SA_LEDGER"
+sa_cycle I1 2 0 0 "$MD_M"; md_rc2=$rc
+md_n1=$(md_rnext)
+sag review-line --manifest "$SA_MANIFEST" --segment I1
+case "$msg" in
+  *"/pull/7 "*" --merged $MD_M --judge-head $MD_M"*) md_got=입양줄 ;;
+  *) md_got="rc=$rc $msg" ;;
+esac
+check "109m: 커밋 없는 리드 수정 뒤 통과 재리뷰는 입양 종결 이고 리뷰 줄은 입양 줄이다" \
+  "$md_r|$md_rc2|$md_n1|$md_got" "0|0|입양 종결|입양줄"
+
 # 계획 행위 없이 park 로 시작한 세그먼트에는 발행된 의무가 없다 — 그 「완료」 는 리뷰 없이
 # 닫는 것이라 받지 않는다.
 md_fx merge
@@ -66628,7 +66653,7 @@ SA_PLAN=""; SA_AUTH_RAW=""
 unset -f md_row md_snap md_form md_fx md_plan md_seg md_rnext md_oid md_try md_cls md_checks md_fixflow md_impl md_uncov
 unset md_uc md_cls_got
 unset MD_PLAN MD_JSON MD_RC MD_OUT MD_H MD_M MD_FORK MD_WT MD_STUB MD_FIX
-unset md_a md_b md_rows0 md_fail md_r md_ob md_n1 md_got md_m md_fix md_rp md_r0 md_rf md_obn md_ff md_cut_got md_c
+unset md_a md_b md_rows0 md_rows1 md_rc2 md_fail md_r md_ob md_n1 md_got md_m md_fix md_rp md_r0 md_rf md_obn md_ff md_cut_got md_c
 
 # ---------------------------------------------------------------------------
 # 112. 계정 이전 — 판정 함수의 출력, 대기·마감 초과 행과 종료 코드, 좌석 되돌림, 허용 술어

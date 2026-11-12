@@ -548,7 +548,7 @@ Directly after the overview's `리뷰 대상` line, in every report, full or del
 
 The line states **what actually happened**. Whatever the flags requested, if any 1b′ check failed the line says `전체`, and if any 1b″ check failed it says `전체` too. The router copies this line onto the ledger's `cycle` row and the gate compares the two on every write, so the format is load-bearing.
 
-Directly after it, in every report, full or delta, one line naming the commit this review actually read — the target head the diff was taken to, as a full sha:
+Directly after it, in every report, full or delta, one line naming the commit this review actually read — the target head the diff was taken to, or, when 1a read `--judge-head`, the judge head, as a full sha:
 
 ```
 - **리뷰 HEAD**: `<sha>`
