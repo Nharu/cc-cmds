@@ -66503,6 +66503,12 @@ md_checks "$md_fix"
 sa_merge I1 "seg/$SA_ID-I1:main"; md_r=$rc; md_m=$msg
 case "$md_m" in *"리뷰 의무"*"아직 이행되지 않았습니다"*) md_m=문면 ;; esac
 check "109m: 수정 흐름 — 의무 이행 전 수정 PR 머지는 rc 3 이고 의무 문면을 낸다" "$md_r|$md_m" "3|문면"
+# 라우터는 모든 행위에 대상의 절단점을 단다. 의무가 열린 채 머지 절단점으로 단
+# 리뷰 파견은 이력을 통합하지 않는 워크트리 쓰기라, 의무를 이행할 리뷰를 막지 않는다.
+sag plan --manifest "$SA_MANIFEST" --kind skill --target main --segment I1 --cutpoint 머지 \
+    --surface 워크트리쓰기 -- review -p '/cc-cmds:review-unattended "세그먼트 I1"'
+case "$msg" in *"리뷰 의무"*"아직 이행되지 않았습니다"*) md_got="막힘 rc=$rc" ;; *) md_got=안막힘 ;; esac
+check "109m: 수정 흐름 — 의무가 열린 채 머지 절단점으로 단 리뷰 파견은 의무 문면으로 막히지 않는다" "$md_got" "안막힘"
 sa_fulfil "$(md_oid "$MD_M")" >/dev/null
 # 수정 PR 은 선리뷰후머지 검사기를 지나 머지된다. 그 머지는 의무를 새로 쓰지 않고,
 # 이행된 의무를 덮은 마지막 사이클로 조건 12 가 풀리며, 머지된 뒤의 「완료」 는 일반

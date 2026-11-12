@@ -50451,8 +50451,14 @@ gate_verb_act() {
   # obligation is the one that covers the fix about to merge, so a merge or an
   # apply while it is still open would put the fix on the base with the merged
   # pull request's review unrecorded — and, on a target that applies, leave the
-  # `완료` the apply writes refused after the command already ran.
+  # `완료` the apply writes refused after the command already ran. It lets
+  # through what the review-before-merge rule lets through by surface — a read,
+  # and a worktree write that integrates no history — because the router labels
+  # every act with its target's cutpoint, so the review, the lead fix and the CI
+  # acts that fulfil the obligation reach this point at `머지` too.
   if [ "$_mbi" -ge "$_mmi" ] && ! gate_kind_is_bookkeeping "$kind" \
+     && [ "$GATE_SURFACE" != '읽기' ] \
+     && { [ "$GATE_SURFACE" != '워크트리쓰기' ] || [ "$GATE_HISTORY_INTEGRATION" != '0' ]; } \
      && [ -n "$segment" ] && [ "$segment" != '-' ] \
      && gate_segment_merge_adopted "$segment" && [ -n "$_open" ]; then
     warn "머지 입양 세그먼트 ${segment} 의 리뷰 의무(${_open})가 아직 이행되지 않았습니다 — 머지·적용 전에 act --kind obligation 으로 의무를 이행하고, 그 행위가 거절되면 머지하지 않습니다"
