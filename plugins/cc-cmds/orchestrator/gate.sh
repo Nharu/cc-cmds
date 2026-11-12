@@ -515,7 +515,16 @@
 # `$BASH_SOURCE` and not `$0`: under the source-only seam below `$0` is the
 # SOURCING script, so the run.sh path and the rule catalog would both resolve
 # relative to whoever sourced this file.
-GATE_DIR=$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)
+#
+# The parent is taken with a parameter expansion rather than `dirname`, with
+# `dirname`'s answers for a name with no slash (`.`) and for a name directly
+# under the root (`/`); `cd … && pwd` then resolves it as it always did.
+GATE_DIR=${BASH_SOURCE[0]:-$0}
+case "$GATE_DIR" in
+  */*) GATE_DIR=${GATE_DIR%/*}; [ -n "$GATE_DIR" ] || GATE_DIR=/ ;;
+  *) GATE_DIR=. ;;
+esac
+GATE_DIR=$(cd "$GATE_DIR" && pwd)
 
 # Source the driver for its definitions only. This must happen before `set -e`
 # considerations below: run.sh sets `-euo pipefail` itself and we keep it.
@@ -5805,9 +5814,11 @@ gate_tree_root() {
 # empty goes through `${A[@]+"${A[@]}"}`, because the unguarded form aborts under
 # `set -u` on 3.2. Everything here also runs under the driver's `set -euo
 # pipefail`, so no function ends on a test that may be false.
-_GP_TAB=$(printf '\t')
-_GP_CR=$(printf '\r')
-_GP_US=$(printf '\037')
+# ANSI-C quoting rather than `$(printf …)`: the same bytes, without a subshell
+# on every gate start.
+_GP_TAB=$'\t'
+_GP_CR=$'\r'
+_GP_US=$'\037'
 _GP_LF='
 '
 
@@ -9778,9 +9789,9 @@ EOF
 # word is not authorization for this one.
 # ---------------------------------------------------------------------------
 
-# The answer with no mark, for the unwrap terminals below. Built with `printf`
-# for the reason `GATE_FLOOR_NONE` gives.
-GATE_MARK_NONE=$(printf '\t')
+# The answer with no mark, for the unwrap terminals below. Written with an
+# escape for the reason `GATE_FLOOR_NONE` gives.
+GATE_MARK_NONE=$'\t'
 readonly GATE_MARK_NONE
 
 gate_answer_mark_max() {
@@ -10167,9 +10178,10 @@ gate_argv_opaque() {
 # Output is `<하한>\t<표지>\t<트리거>`.
 # ---------------------------------------------------------------------------
 
-# That shape with nothing in it. Built with `printf` rather than written with
-# two literal tabs so the two empty fields stay visible to a reader.
-GATE_FLOOR_NONE=$(printf '읽기\t\t')
+# That shape with nothing in it. Written with ANSI-C escapes rather than two
+# literal tabs so the two empty fields stay visible to a reader, and without a
+# `$(printf …)` subshell on every gate start.
+GATE_FLOOR_NONE='읽기'$'\t\t'
 readonly GATE_FLOOR_NONE
 
 gate_answer_floor_max() {
@@ -12069,18 +12081,39 @@ gate_append() {
     stage-lease|stage-wait)
       run_ledger_series_check "$series" "$@" || return "$GATE_EXIT_VOCAB" ;;
   esac
-  local n_args=$# i=0
-  while [ "$i" -lt "$n_args" ]; do
-    f="$1"; shift; i=$((i + 1))
-    f=$(printf '%s' "$f" | tr '|' '/' | tr '\n\r' '  ')
-    case "$f" in
-      *=*) k="${f%%=*}"; v="${f#*=}"
-           k=$(printf '%s' "$k" | tr '|' '/' | tr '\n\r' '  ')
-           v=$(printf '%s' "$v" | tr '|' '/' | tr '\n\r' '  ')
-           f="$k=$v" ;;
-    esac
-    set -- "$@" "$f"
-  done
+  #
+  # ONE `tr` DECIDES WHICH OF TWO EQUAL LOOPS RUNS. On text `tr` reads as valid,
+  # the three maps are plain character substitutions, and the parameter
+  # expansions of the first loop make them with no process per field; the key
+  # and value halves need no second pass there, because the whole argument has
+  # already been mapped and `=` is not one of the mapped characters. On text it
+  # does not — macOS `tr` under the UTF-8 locale `run.sh` selects stops at an
+  # invalid byte, says so, and fails — the second loop runs the per-field `tr`
+  # it always ran, so what such a value turns into, and what its failure does
+  # under `set -e`, stay as they were. The one `tr` reads every argument at
+  # once, joined by newlines: a separator is ASCII and cannot complete a
+  # sequence, so the joined text is valid exactly when every argument is.
+  local n_args=$# i=0 ga_all=""
+  for f in "$@"; do ga_all="$ga_all$f$_GP_LF"; done
+  if tr '|' '/' <<<"$ga_all" >/dev/null 2>&1; then
+    while [ "$i" -lt "$n_args" ]; do
+      f="$1"; shift; i=$((i + 1))
+      f=${f//|//}; f=${f//$_GP_LF/ }; f=${f//$_GP_CR/ }
+      set -- "$@" "$f"
+    done
+  else
+    while [ "$i" -lt "$n_args" ]; do
+      f="$1"; shift; i=$((i + 1))
+      f=$(printf '%s' "$f" | tr '|' '/' | tr '\n\r' '  ')
+      case "$f" in
+        *=*) k="${f%%=*}"; v="${f#*=}"
+             k=$(printf '%s' "$k" | tr '|' '/' | tr '\n\r' '  ')
+             v=$(printf '%s' "$v" | tr '|' '/' | tr '\n\r' '  ')
+             f="$k=$v" ;;
+      esac
+      set -- "$@" "$f"
+    done
+  fi
 
   # THE SCOPE CHECK SITS HERE AND NOT AT THE CALL SITES. Cone rows are appended
   # through this function rather than through `park()`, and the four literal
