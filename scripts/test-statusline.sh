@@ -3119,5 +3119,52 @@ done
 check "SB17 렌더는 상태 루트와 설정 디렉터리에 아무것도 쓰지 않고 모두 rc 0" "$sb17_ok" "1"
 bclear
 
+# JX. The shell match that reads `session_id` and `transcript_path` out of stdin
+# gives the value the replaced `sed -n 's/…/\1/p' | head -1` gave, on every
+# input below and in two locales. The old pipeline is the oracle, written out
+# here; the function under test is lifted out of the script by its own lines,
+# so nothing else of the script runs.
+jx_def=$(sed -n '/^sl_json_str_into() {/,/^}/p' "$SL")
+if [ -n "$jx_def" ]; then
+  eval "$jx_def"
+  # The old pipeline ended in `| head -1`; its first line is taken here by
+  # expansion instead, so the oracle reads every line sed prints.
+  jx_oracle() {
+    local jx_all
+    jx_all=$(printf '%s' "$stdin_json" \
+      | sed -n "s/.*\"$1\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p")
+    printf '%s\n' "${jx_all%%$'\n'*}"
+  }
+  jx_inputs=(
+    '{"K":"a","x":{"K":"b"}}'
+    $'{\n  "other": 1,\n  "K": "first",\n  "K":"second"\n}'
+    $'{"K" \t: \t"spaced"}'
+    '{"K":""}'
+    '{"other":"K"}'
+    ''
+    '{"K":"세션-é값"}'
+    '{"K":"a\"b","y":2}'
+    $'{"K":"x"}\n{"K":"y"}\n'
+    '{"K":"*"}'
+    '{"K":1,"K":"late"}'
+  )
+  for jx_loc in C en_US.UTF-8; do
+    for jx_key in session_id transcript_path; do
+      jx_ok=1; jx_n=0; jx_bad=""
+      for stdin_json in "${jx_inputs[@]}"; do
+        stdin_json=${stdin_json//\"K\"/\"$jx_key\"}
+        jx_want=$(export LC_ALL="$jx_loc"; jx_oracle "$jx_key")
+        jx_got=$(export LC_ALL="$jx_loc"; sl_json_str_into "$jx_key" jx_v; printf '%s' "$jx_v")
+        jx_n=$((jx_n + 1))
+        [ "$jx_got" = "$jx_want" ] || { jx_ok=0; jx_bad="$jx_bad [$jx_n: '$jx_got' != '$jx_want']"; }
+      done
+      check "JX $jx_key 추출이 옛 sed|head 와 같다 (LC_ALL=$jx_loc, 입력 ${jx_n}개)${jx_bad}" "$jx_ok" 1
+    done
+  done
+  unset stdin_json
+else
+  bad "JX sl_json_str_into 정의를 statusline.sh 에서 찾지 못했다"
+fi
+
 printf '\n통과 %s · 실패 %s · 건너뜀 %s\n' "$passed" "$failed" "$skipped"
 [ "$failed" -eq 0 ]
