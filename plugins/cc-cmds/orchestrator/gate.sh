@@ -12944,6 +12944,15 @@ gate_merge_adoption_plan_check() {
   #
   # A DRY RUN READS ONLY. It compares the request and the paired target, and
   # leaves the fetches and the fork point to the act.
+  #
+  # EVERY REFUSAL ENDS WITH ITS CLASS, because the router answers the two
+  # classes differently. `거절 부류: 재시도 가능` is a read that may succeed on
+  # the next try: the request could not be read from the remote, its head could
+  # not be fetched into the pinned ref, or the worktree's HEAD does not contain
+  # the merge commit (the worktree was cut from a stale `origin/<base>`). The
+  # router removes the worktree and plans once more, then parks. `거절 부류: 영구`
+  # is every other refusal — the row and the evidence disagree, and no retry
+  # changes that — and the router parks the segment at once.
   local verb="$1" al="$2" seg="$3" wt="$4" row adrow pr m h tgt slug obs ost omc ohd obr ocr
   local base rem nxt p1 fork
   GATE_MDOPT_ID=""; GATE_MDOPT_MERGE=""; GATE_MDOPT_FORK=""
@@ -12954,78 +12963,78 @@ gate_merge_adoption_plan_check() {
   tgt=$(manifest_row_fields "$row" '대상')
   if adrow=$(gate_adoption_row "$seg"); then
     if [ "$(gate_adoption_worktree_alias "$(manifest_row_fields "$adrow" '워크트리')" '')" != "$tgt" ]; then
-      warn "세그먼트 계획 거부: 머지 입양 세그먼트 ${seg} 의 「세그먼트 입양」 행 워크트리는 대상 ${tgt} 의 레포가 아닙니다"
+      warn "세그먼트 계획 거부: 머지 입양 세그먼트 ${seg} 의 「세그먼트 입양」 행 워크트리는 대상 ${tgt} 의 레포가 아닙니다 — 거절 부류: 영구"
       return "$GATE_EXIT_RULE"
     fi
   fi
   if [ "$m" = "$h" ]; then
-    warn "세그먼트 계획 거부: 머지 입양 PR #${pr} 의 머지 커밋이 PR 헤드와 같습니다 — 빨리감기 머지는 베이스가 만든 머지 커밋이 없어 입양하지 않습니다"
+    warn "세그먼트 계획 거부: 머지 입양 PR #${pr} 의 머지 커밋이 PR 헤드와 같습니다 — 빨리감기 머지는 베이스가 만든 머지 커밋이 없어 입양하지 않습니다 — 거절 부류: 영구"
     return "$GATE_EXIT_RULE"
   fi
   base=$(base_branch "$al" 2>/dev/null) || base=""
   base=${base#origin/}
   slug=$(alias_slug "$al" 2>/dev/null) || slug=""
   if [ -z "$base" ] || [ -z "$slug" ]; then
-    warn "세그먼트 계획 거부: 머지 입양 세그먼트 ${seg} 의 대상 ${al} 의 베이스 브랜치나 원격 슬러그를 알 수 없습니다"
+    warn "세그먼트 계획 거부: 머지 입양 세그먼트 ${seg} 의 대상 ${al} 의 베이스 브랜치나 원격 슬러그를 알 수 없습니다 — 거절 부류: 영구"
     return "$GATE_EXIT_RULE"
   fi
   if ! obs=$(gh_q "$slug" pr view "$pr" --json state,mergeCommit,headRefOid,baseRefName,isCrossRepository \
        --jq '(.state // "-") + " " + (.mergeCommit.oid // "-") + " " + (.headRefOid // "-") + " " + (.baseRefName // "-") + " " + (.isCrossRepository | tostring)' 2>/dev/null); then
-    warn "세그먼트 계획 거부: 머지 입양 PR #${pr} 을 원격 ${slug} 에서 읽지 못했습니다"
+    warn "세그먼트 계획 거부: 머지 입양 PR #${pr} 을 원격 ${slug} 에서 읽지 못했습니다 — 거절 부류: 재시도 가능"
     return "$GATE_EXIT_RULE"
   fi
   read -r ost omc ohd obr ocr <<EOF
 $obs
 EOF
   if [ "$ost" != "MERGED" ]; then
-    warn "세그먼트 계획 거부: 머지 입양 PR #${pr} 의 상태가 ${ost:-(없음)} 입니다 — 머지된 PR 만 입양합니다"
+    warn "세그먼트 계획 거부: 머지 입양 PR #${pr} 의 상태가 ${ost:-(없음)} 입니다 — 머지된 PR 만 입양합니다 — 거절 부류: 영구"
     return "$GATE_EXIT_RULE"
   fi
   if [ "$omc" != "$m" ] || [ "$ohd" != "$h" ]; then
-    warn "세그먼트 계획 거부: 머지 입양 PR #${pr} 의 머지 커밋 ${omc} · 헤드 ${ohd} 가 행의 머지 커밋 ${m} · PR 헤드 ${h} 와 다릅니다"
+    warn "세그먼트 계획 거부: 머지 입양 PR #${pr} 의 머지 커밋 ${omc} · 헤드 ${ohd} 가 행의 머지 커밋 ${m} · PR 헤드 ${h} 와 다릅니다 — 거절 부류: 영구"
     return "$GATE_EXIT_RULE"
   fi
   if [ "$obr" != "$base" ]; then
-    warn "세그먼트 계획 거부: 머지 입양 PR #${pr} 의 base 브랜치 ${obr} 가 대상 ${al} 의 베이스 브랜치 ${base} 와 다릅니다"
+    warn "세그먼트 계획 거부: 머지 입양 PR #${pr} 의 base 브랜치 ${obr} 가 대상 ${al} 의 베이스 브랜치 ${base} 와 다릅니다 — 거절 부류: 영구"
     return "$GATE_EXIT_RULE"
   fi
   if [ "$ocr" != "false" ]; then
-    warn "세그먼트 계획 거부: 머지 입양 PR #${pr} 이 포크에서 온 PR 이거나 그 여부를 읽지 못했습니다 (isCrossRepository=${ocr:-(없음)})"
+    warn "세그먼트 계획 거부: 머지 입양 PR #${pr} 이 포크에서 온 PR 이거나 그 여부를 읽지 못했습니다 (isCrossRepository=${ocr:-(없음)}) — 거절 부류: 영구"
     return "$GATE_EXIT_RULE"
   fi
   [ "$verb" != "plan" ] || return 0
   if [ ! -d "$wt" ]; then
-    warn "세그먼트 계획 거부: 머지 입양 세그먼트 ${seg} 의 워크트리가 없습니다: $wt"
+    warn "세그먼트 계획 거부: 머지 입양 세그먼트 ${seg} 의 워크트리가 없습니다: $wt — 거절 부류: 영구"
     return "$GATE_EXIT_RULE"
   fi
   rem="refs/remotes/origin/$base"
   if ! ( cd "$wt" && git fetch --no-tags --quiet origin "+refs/heads/$base:$rem" ) >/dev/null 2>&1; then
-    warn "세그먼트 계획 거부: 머지 입양 세그먼트 ${seg} 의 베이스 ${base} 를 원격에서 받지 못했습니다"
+    warn "세그먼트 계획 거부: 머지 입양 세그먼트 ${seg} 의 베이스 ${base} 를 원격에서 받지 못했습니다 — 거절 부류: 영구"
     return "$GATE_EXIT_RULE"
   fi
   nxt=$( { cd "$wt" && git rev-list --first-parent "$rem"; } 2>/dev/null | awk -v m="$m" 'f { print; exit } $0 == m { f = 1 }')
   p1=$( { cd "$wt" && git rev-parse --verify -q "$m^1"; } 2>/dev/null || true)
   if [ -z "$nxt" ] || [ "$nxt" != "$p1" ]; then
-    warn "세그먼트 계획 거부: 머지 입양 PR #${pr} 의 머지 커밋 ${m} 이 베이스 ${base} 의 첫 부모 선형 위에 없거나 그 첫 부모가 선형에서 바로 앞 커밋이 아닙니다"
+    warn "세그먼트 계획 거부: 머지 입양 PR #${pr} 의 머지 커밋 ${m} 이 베이스 ${base} 의 첫 부모 선형 위에 없거나 그 첫 부모가 선형에서 바로 앞 커밋이 아닙니다 — 거절 부류: 영구"
     return "$GATE_EXIT_RULE"
   fi
   if ! ( cd "$wt" && git merge-base --is-ancestor "$m" "$rem" ) 2>/dev/null; then
-    warn "세그먼트 계획 거부: 머지 입양 PR #${pr} 의 머지 커밋 ${m} 이 origin/${base} 의 조상이 아닙니다"
+    warn "세그먼트 계획 거부: 머지 입양 PR #${pr} 의 머지 커밋 ${m} 이 origin/${base} 의 조상이 아닙니다 — 거절 부류: 영구"
     return "$GATE_EXIT_RULE"
   fi
   if ! ( cd "$wt" && git merge-base --is-ancestor "$m" HEAD ) 2>/dev/null; then
-    warn "세그먼트 계획 거부: 머지 입양 세그먼트 ${seg} 의 워크트리 HEAD 가 머지 커밋 ${m} 을 담고 있지 않습니다: $wt"
+    warn "세그먼트 계획 거부: 머지 입양 세그먼트 ${seg} 의 워크트리 HEAD 가 머지 커밋 ${m} 을 담고 있지 않습니다: $wt — 거절 부류: 재시도 가능"
     return "$GATE_EXIT_RULE"
   fi
   if ! ( cd "$wt" && git fetch --no-tags --quiet origin "+refs/pull/$pr/head:refs/cc-review/$RUN_ID/$seg" ) >/dev/null 2>&1 \
      || ! ( cd "$wt" && git cat-file -e "$h^{commit}" ) 2>/dev/null; then
-    warn "세그먼트 계획 거부: 머지 입양 PR #${pr} 의 헤드 ${h} 를 refs/cc-review/${RUN_ID}/${seg} 로 들이지 못했습니다"
+    warn "세그먼트 계획 거부: 머지 입양 PR #${pr} 의 헤드 ${h} 를 refs/cc-review/${RUN_ID}/${seg} 로 들이지 못했습니다 — 거절 부류: 재시도 가능"
     return "$GATE_EXIT_RULE"
   fi
   fork=$( { cd "$wt" && git merge-base "$p1" "$h"; } 2>/dev/null || true)
   case "$fork" in
     ''|*[!0-9a-f]*)
-      warn "세그먼트 계획 거부: 머지 입양 PR #${pr} 의 분기점(merge-base ${p1} ${h})을 계산하지 못했습니다"
+      warn "세그먼트 계획 거부: 머지 입양 PR #${pr} 의 분기점(merge-base ${p1} ${h})을 계산하지 못했습니다 — 거절 부류: 영구"
       return "$GATE_EXIT_RULE" ;;
   esac
   GATE_MDOPT_ID="RO-$(printf '%s|%s|%s' "$RUN_ID" "$seg" "$m" | shasum -a 256 | cut -c1-8)"

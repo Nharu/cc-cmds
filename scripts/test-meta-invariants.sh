@@ -1620,11 +1620,23 @@ for pair in "리드:$AP_ROUTER" "교대:$RS_CORPUS"; do
     'the line names the adopted pull request'"'"'s URL instead of a branch and carries `--base-sha <분기점> --merged <머지 커밋> --judge-head <워크트리 HEAD>`' \
     '- **`입양 종결`** → a segment a `머지 입양` row adopted passed its review with no commit over its base.' \
     'A segment a `머지 입양` row adopted carries an element too, with or without a `cycle` row, until its `완료` row.' \
-    '**A segment a `머지 입양` row adopted is held the same way, whatever its review policy, from the moment it is planned**'
+    '**A segment a `머지 입양` row adopted is held the same way, whatever its review policy, from the moment it is planned**' \
+    '**Its refusal (exit 3) parks the segment, not the shift**, and its text ends with the refusal'"'"'s class: on `거절 부류: 재시도 가능` take call 1,' \
+    'on a second refusal, on `거절 부류: 영구`, or when call 1 or 2 fails, write `act --kind segment --target <대상> --segment <id> -- 상태=park 워크트리=<워크트리> 선행=없음` and a `blocked` row saying why, and go on with the shift.'
   do
     check "$who 사본에 머지 입양 문장이 한 번 실린다 — 「${lit:0:50}」" "$(mo_count "$(cat "$file")" "$lit")" "1"
   done
+  # The merged-request refusal parks the one segment; the sentence that ended
+  # the whole shift on it must not come back in either copy.
+  check "$who 사본에 머지 입양 계획 거절로 시프트를 끝내던 옛 문장이 없다" \
+    "$(mo_count "$(cat "$file")" 'before its planned row; on its refusal (exit 3) write nothing more and end the shift with a `사유=중단` handoff.')" "0"
 done
+# The two refusal classes the router branches on are the gate's own words: a
+# gate that drops or rewords a class token leaves the router reading nothing.
+check "게이트가 머지 입양 계획 거절에 재시도 가능 부류를 낸다" \
+  "$(mo_count "$(cat "$GATE")" '— 거절 부류: 재시도 가능"')" "3"
+check "게이트가 머지 입양 계획 거절에 영구 부류를 낸다" \
+  "$(mo_count "$(cat "$GATE")" '— 거절 부류: 영구"')" "12"
 # The planning-order refusal is consumed by the router, not only written by the
 # gate: the copies quote the gate's own words, so a gate rewording that leaves
 # the router text behind fails here, and the broad sentence that sent this

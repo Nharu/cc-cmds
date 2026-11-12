@@ -66245,7 +66245,7 @@ unset RV107_P2 RV107_P3 RV107_OUT RV107_JSON RV107_RC
 
 # ---------------------------------------------------------------------------
 # 109m. 머지 입양 — 런 밖에서 머지된 PR 을 문서 없는 계획의 구현 단계로 받아 사후 리뷰한다
-# --- section: 109m | group: mf | covers: check_manifest, snapshot, gate_snapshot_slicing_json, gate_undeclared_segments, gate_from_declaration, gate_merge_adoption_plan_check, gate_merge_adoption_issue, gate_adoption_review_next, gate_segment_review_next, gate_review_line, gate_done_conditions, gate_segment_post_merge, gate_segment_merge_adopted, gate_merge_adoption_drop_ref, gate_adoption_unfixed, gate_segment_merged_uncovered, gate_segment_uncovered_merge_commit, gate_adoption_branch_review_want, gate_verb_act, act | anchors: 109m: 형식이 어긋난 머지 입양 행은 거부된다, 109m: 한 세그먼트의 머지 입양 행 둘은 거부된다, 109m: 리뷰없음 상한 대상의 머지 입양 행은 거부된다,109m: 슬라이싱이 머지 입양 단계의 PR 번호를 낸다, 109m: 머지 아래 절단점 대상의 머지 입양 행은 거부되고 머지 이상은 받아진다, 109m: 원격과 어긋난 계획 act 는 rc 3 이고 행을 남기지 않는다, 109m: 계획 act 가 의무 하나와 선리뷰후머지 계획 행을 쓴다, 109m: 계획 act 가 PR 헤드를 리뷰 참조로 들인다, 109m: 다시 부른 계획 act 는 의무를 더 쓰지 않는다, 109m: 계획 직후의 구현 파견은 rc 3 이다, 109m: 계획 뒤 다음은 사후리뷰 이고 사후리뷰 행이 받아진다, 109m: 리뷰 줄이 PR 과 분기점·머지 커밋·판정 HEAD 를 싣는다, 109m: 통과한 사후 리뷰 뒤 다음은 입양 종결 이다, 109m: 의무 이행 전 완료 는 rc 2 다, 109m: 커밋 을 실은 완료 는 rc 2 다, 109m: 의무 이행 뒤 완료 는 rc 0 이고 조건 12 가 없으며 원격 베이스가 그대로다, 109m: 스쿼시 머지의 분기점은 PR 이 갈라진 커밋이다, 109m: 사후 리뷰 전의 구현 파견은 rc 3 이다, 109m: 사후 리뷰의 cycle 행 뒤 구현 파견은 사후 리뷰 대기로 막히지 않는다, 109m: 수정 커밋 뒤 리뷰 줄은 브랜치를 리뷰하고 머지 커밋을 싣지 않는다, 109m: 수정 흐름 — 이행 뒤 수정 PR 머지는 rc 0 이고 의무를 더 쓰지 않으며 조건 12 가 없다, 109m: 수정 흐름 — 머지됨 행이 리뷰 참조를 지운다, 109m: 수정 흐름 — 머지된 뒤의 완료 는 rc 0 이다, 109m: 적용 대상의 머지된 수정 뒤 호출자 완료 는 적용 검사에 걸린다, 109m: 런 밖에서 머지된 수정은 입양 종결 이 아니고 머지 없는 완료 를 받지 않는다, 109m: 사람이 먼저 머지한 수정(앞선 커밋 0)의 덮는 리뷰 줄이 머지 커밋을 싣고 파견된다, 109m: 사람이 먼저 스쿼시 머지한 수정(앞선 커밋 있음)의 덮는 리뷰 줄이 머지 커밋을 싣고 파견된다, 109m: 짝 입양 세그먼트의 먼저 머지된 수정의 덮는 리뷰 줄이 머지 커밋을 싣고 파견된다, 109m: 짝 입양 세그먼트는 사후 리뷰 대기에 들지 않는다, 109m: 계획 행위가 아닌 첫 행은 rc 3 이다, 109m: 실패한 사이클 뒤의 완료 는 rc 2 다, 109m: 리베이스 머지가 계획되고 park 로 닫힌다, 109m: park 가 리뷰 참조를 지운다, 109m: 의무가 발행되지 않은 완료 는 rc 2 다 ---
+# --- section: 109m | group: mf | covers: check_manifest, snapshot, gate_snapshot_slicing_json, gate_undeclared_segments, gate_from_declaration, gate_merge_adoption_plan_check, gate_merge_adoption_issue, gate_adoption_review_next, gate_segment_review_next, gate_review_line, gate_done_conditions, gate_segment_post_merge, gate_segment_merge_adopted, gate_merge_adoption_drop_ref, gate_adoption_unfixed, gate_segment_merged_uncovered, gate_segment_uncovered_merge_commit, gate_adoption_branch_review_want, gate_verb_act, act | anchors: 109m: 형식이 어긋난 머지 입양 행은 거부된다, 109m: 한 세그먼트의 머지 입양 행 둘은 거부된다, 109m: 리뷰없음 상한 대상의 머지 입양 행은 거부된다,109m: 슬라이싱이 머지 입양 단계의 PR 번호를 낸다, 109m: 머지 아래 절단점 대상의 머지 입양 행은 거부되고 머지 이상은 받아진다, 109m: 원격과 어긋난 계획 act 는 rc 3 이고 행을 남기지 않는다, 109m: 계획 거절 문면이 재시도 가능·영구 부류를 낸다, 109m: 계획 act 가 의무 하나와 선리뷰후머지 계획 행을 쓴다, 109m: 계획 act 가 PR 헤드를 리뷰 참조로 들인다, 109m: 다시 부른 계획 act 는 의무를 더 쓰지 않는다, 109m: 계획 직후의 구현 파견은 rc 3 이다, 109m: 계획 뒤 다음은 사후리뷰 이고 사후리뷰 행이 받아진다, 109m: 리뷰 줄이 PR 과 분기점·머지 커밋·판정 HEAD 를 싣는다, 109m: 통과한 사후 리뷰 뒤 다음은 입양 종결 이다, 109m: 의무 이행 전 완료 는 rc 2 다, 109m: 커밋 을 실은 완료 는 rc 2 다, 109m: 의무 이행 뒤 완료 는 rc 0 이고 조건 12 가 없으며 원격 베이스가 그대로다, 109m: 스쿼시 머지의 분기점은 PR 이 갈라진 커밋이다, 109m: 사후 리뷰 전의 구현 파견은 rc 3 이다, 109m: 사후 리뷰의 cycle 행 뒤 구현 파견은 사후 리뷰 대기로 막히지 않는다, 109m: 수정 커밋 뒤 리뷰 줄은 브랜치를 리뷰하고 머지 커밋을 싣지 않는다, 109m: 수정 흐름 — 이행 뒤 수정 PR 머지는 rc 0 이고 의무를 더 쓰지 않으며 조건 12 가 없다, 109m: 수정 흐름 — 머지됨 행이 리뷰 참조를 지운다, 109m: 수정 흐름 — 머지된 뒤의 완료 는 rc 0 이다, 109m: 적용 대상의 머지된 수정 뒤 호출자 완료 는 적용 검사에 걸린다, 109m: 런 밖에서 머지된 수정은 입양 종결 이 아니고 머지 없는 완료 를 받지 않는다, 109m: 사람이 먼저 머지한 수정(앞선 커밋 0)의 덮는 리뷰 줄이 머지 커밋을 싣고 파견된다, 109m: 사람이 먼저 스쿼시 머지한 수정(앞선 커밋 있음)의 덮는 리뷰 줄이 머지 커밋을 싣고 파견된다, 109m: 짝 입양 세그먼트의 먼저 머지된 수정의 덮는 리뷰 줄이 머지 커밋을 싣고 파견된다, 109m: 짝 입양 세그먼트는 사후 리뷰 대기에 들지 않는다, 109m: 계획 행위가 아닌 첫 행은 rc 3 이다, 109m: 실패한 사이클 뒤의 완료 는 rc 2 다, 109m: 리베이스 머지가 계획되고 park 로 닫힌다, 109m: park 가 리뷰 참조를 지운다, 109m: 계획 행이 없는 머지 입양 세그먼트의 첫 행 park 는 rc 0 이고 의무 행이 없다, 109m: 의무가 발행되지 않은 완료 는 rc 2 다 ---
 #
 # 문서 없는 계획의 구현 단계 하나를 `머지 입양` 행이 이름한다. 행의 형식은 스냅숏의
 # 매니페스트 검사로 재고, 계획 act 는 원격의 PR 을 gh 대역으로 다시 읽어 머지 커밋·헤드·
@@ -66361,8 +66361,9 @@ MD_STUB="$WORK/md109-gh"
 cat > "$MD_STUB" <<'MD109EOF'
 #!/bin/sh
 # 머지 입양 계획 act 의 GitHub 대역 — `gh -R <slug> pr view …` 에 $MD_GH_ANS 를 한 줄로 낸다.
+# 답이 FAIL 이면 원격 판독 실패로 exit 1 이다.
 case "$3 $4" in
-  "pr view") printf '%s\n' "${MD_GH_ANS:?}" ;;
+  "pr view") [ "${MD_GH_ANS:?}" != FAIL ] || exit 1; printf '%s\n' "$MD_GH_ANS" ;;
   *) exit 1 ;;
 esac
 MD109EOF
@@ -66397,17 +66398,32 @@ md_try() {
     *) md_fail="$md_fail[$1 rc=$rc 행=$(sa_rows)/$md_rows0 $msg]" ;;
   esac
 }
+md_cls_got=""
+md_cls() {
+  # md_cls <라벨> <기대 부류> [gh 답] — 거절 하나: rc 3, 행 수 그대로, 문면 끝의 부류 표지.
+  # 라우터는 이 표지 하나로 한 번 다시 계획할지 곧바로 park 할지를 가른다.
+  md_plan "${3:-}"
+  case "$rc|$(sa_rows)|$msg" in
+    "3|$md_rows0|"*"— 거절 부류: $2"*) : ;;
+    *) md_cls_got="$md_cls_got[$1 rc=$rc 행=$(sa_rows)/$md_rows0 $msg]" ;;
+  esac
+}
 md_try "상태가 OPEN 입니다" "OPEN $MD_M $MD_H main false"
 md_try "와 다릅니다" "MERGED $MD_H $MD_H main false"
+md_cls 원격값불일치 영구 "MERGED $MD_H $MD_H main false"
+md_cls 원격판독실패 "재시도 가능" FAIL
 md_try "base 브랜치 dev 가" "MERGED $MD_M $MD_H dev false"
 md_try "포크에서 온 PR" "MERGED $MD_M $MD_H main true"
 git --git-dir="$SA_REMOTE" update-ref -d refs/pull/7/head
 md_try "refs/cc-review/$SA_ID/I1 로 들이지 못했습니다"
+md_cls 헤드들이기실패 "재시도 가능"
 git --git-dir="$SA_REMOTE" update-ref refs/pull/7/head "$MD_H"
 ( cd "$MD_WT" && git reset -q --hard "$MD_FORK" ) >/dev/null 2>&1
 md_try "머지 커밋 $MD_M 을 담고 있지 않습니다"
+md_cls 워크트리HEAD미포함 "재시도 가능"
 ( cd "$MD_WT" && git reset -q --hard "$MD_M" ) >/dev/null 2>&1
 check "109m: 원격과 어긋난 계획 act 는 rc 3 이고 행을 남기지 않는다" "$md_fail" ""
+check "109m: 계획 거절 문면이 재시도 가능·영구 부류를 낸다" "$md_cls_got" ""
 
 md_plan; md_r=$rc
 md_ob=$(sa_ob_last "$(md_oid "$MD_M")")
@@ -66602,12 +66618,15 @@ check "109m: park 가 리뷰 참조를 지운다" \
 # 닫는 것이라 받지 않는다.
 md_fx merge
 md_seg park; md_rp=$rc
+# 거절된 계획 act 뒤 라우터가 쓰는 첫 행이다 — 의무 행이 없어 종료 조건 9 가 붙잡지 않는다.
+check "109m: 계획 행이 없는 머지 입양 세그먼트의 첫 행 park 는 rc 0 이고 의무 행이 없다" \
+  "$md_rp|$(sa_ob_count)" "0|0"
 md_seg 완료; md_m=$msg
 case "$rc|$md_m" in 2\|*"발행된 리뷰 의무가 없습니다"*) md_m=문면 ;; esac
 check "109m: 의무가 발행되지 않은 완료 는 rc 2 다" "$md_rp|$md_m" "0|문면"
 SA_PLAN=""; SA_AUTH_RAW=""
-unset -f md_row md_snap md_form md_fx md_plan md_seg md_rnext md_oid md_try md_checks md_fixflow md_impl md_uncov
-unset md_uc
+unset -f md_row md_snap md_form md_fx md_plan md_seg md_rnext md_oid md_try md_cls md_checks md_fixflow md_impl md_uncov
+unset md_uc md_cls_got
 unset MD_PLAN MD_JSON MD_RC MD_OUT MD_H MD_M MD_FORK MD_WT MD_STUB MD_FIX
 unset md_a md_b md_rows0 md_fail md_r md_ob md_n1 md_got md_m md_fix md_rp md_r0 md_rf md_obn md_ff md_cut_got md_c
 
