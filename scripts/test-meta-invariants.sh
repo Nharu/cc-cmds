@@ -1622,6 +1622,7 @@ for pair in "리드:$AP_ROUTER" "교대:$RS_CORPUS"; do
     'A segment a `머지 입양` row adopted carries an element too, with or without a `cycle` row, until its `완료` row.' \
     '**A segment a `머지 입양` row adopted is held the same way, whatever its review policy, from the moment it is planned**' \
     '**Its refusal (exit 3) parks the segment, not the shift**, and its text ends with the refusal'"'"'s class: on `거절 부류: 재시도 가능` take call 1,' \
+    '`gate.sh exec … --target <대상> --surface 워크트리쓰기 --destructive -- git branch -D <슬라이싱 의 브랜치>`, call 2 and call 3 again once, in that order — the removal leaves the branch the first call 2 cut' \
     'on a second refusal, on `거절 부류: 영구`, or when call 1 or 2 fails, write `act --kind segment --target <대상> --segment <id> -- 상태=park 워크트리=<워크트리> 선행=없음` and a `blocked` row saying why, and go on with the shift.'
   do
     check "$who 사본에 머지 입양 문장이 한 번 실린다 — 「${lit:0:50}」" "$(mo_count "$(cat "$file")" "$lit")" "1"

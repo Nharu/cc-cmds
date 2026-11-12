@@ -12950,7 +12950,8 @@ gate_merge_adoption_plan_check() {
   # the next try: the request could not be read from the remote, its head could
   # not be fetched into the pinned ref, or the worktree's HEAD does not contain
   # the merge commit (the worktree was cut from a stale `origin/<base>`). The
-  # router removes the worktree and plans once more, then parks. `거절 부류: 영구`
+  # router removes the worktree and the branch it cut, cuts both again and
+  # plans once more, then parks. `거절 부류: 영구`
   # is every other refusal — the row and the evidence disagree, and no retry
   # changes that — and the router parks the segment at once.
   local verb="$1" al="$2" seg="$3" wt="$4" row adrow pr m h tgt slug obs ost omc ohd obr ocr
