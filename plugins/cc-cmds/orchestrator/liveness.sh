@@ -2718,12 +2718,50 @@ cc_run_state() {
 CC_RUN_IDLE_EXIT_SECONDS=86400
 
 cc__halt_answer_state() {
-  # cc__halt_answer_state <ledger> <tail> — `없음` when no `중단 답` row names
-  # the record whose `중단 기록=` ends in <tail>, `되돌림` when its last such row
-  # is named by a later block's `막힌 답 줄`, and `답함` otherwise.
+  # cc__halt_answer_state <ledger> <tail> [<record>] — `없음` when no `중단 답`
+  # row names the record whose `중단 기록=` ends in <tail>, `되돌림` when its
+  # last such row is named by a later block's `막힌 답 줄`, and `답함` otherwise.
   #
   # Fields are matched whole between ` | ` separators, the record on its tail
   # for the reason `cc_unanswered_halts` gives.
+  #
+  # A STAGE RECORD THAT POINTS AT THE GATE'S RECORD IS ANSWERED WITH IT. A stage
+  # whose act the base-move check stopped writes a record with no options and
+  # names the gate's record in its `**관측 상세**` as `게이트 기록=<경로>`: the
+  # one decision is the gate's, and a person answers that record only. So a
+  # stage record no answer names takes the state of the record it points at.
+  # The record file is <record> when given, and otherwise the tail resolved
+  # under this run's directory or the state home's run directory of the same
+  # name. One step only: the gate's record points nowhere further.
+  local st f g pre rest leaf
+  st=$(cc__halt_answer_state_of "$1" "$2")
+  if [ "$st" = "없음" ]; then
+    f="${3:-}"
+    if [ -z "$f" ]; then
+      leaf=${2#/}; leaf=${leaf%%/*}
+      rest=${2#/"$leaf"/}
+      if [ -n "${RUN_DIR:-}" ] && [ "${RUN_DIR##*/}" = "$leaf" ]; then
+        f="${RUN_DIR%/}/$rest"
+      else
+        f="${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/run/$leaf/$rest"
+      fi
+    fi
+    if [ -f "$f" ]; then
+      g=$(sed -n 's/^\*\*관측 상세\*\*:.*게이트 기록=\([^ ]*\).*$/\1/p' "$f" 2>/dev/null | sed -n '1p')
+      case "$g" in
+        */halt/*)
+          pre=${g%/halt/*}; rest=${g#"$pre"/halt/}
+          g="/${pre##*/}/halt/$rest"
+          [ "$g" = "$2" ] || st=$(cc__halt_answer_state_of "$1" "$g") ;;
+      esac
+    fi
+  fi
+  printf '%s' "$st"
+}
+
+cc__halt_answer_state_of() {
+  # cc__halt_answer_state_of <ledger> <tail> — `cc__halt_answer_state` of the
+  # record <tail> names alone, with no pointer followed.
   [ -n "$1" ] && [ -f "$1" ] || { printf '없음'; return 0; }
   awk -v t="$2" '
     { nf = split($0, f, / \| /) }
@@ -2761,13 +2799,14 @@ cc_halt_returned() {
   # read the record as answered while another reads it as waiting. A person's
   # new `중단 답` ends the state, because the new row is the last one and no
   # block names it.
-  [ "$(cc__halt_answer_state "$1" "$2")" = "되돌림" ]
+  [ "$(cc__halt_answer_state "$1" "$2" "${3:-}")" = "되돌림" ]
 }
 
 cc_halt_answered() {
-  # cc_halt_answered <ledger> <tail> — succeeds when a `중단 답` row names the
-  # record and its answer was not returned (`cc_halt_returned`).
-  [ "$(cc__halt_answer_state "$1" "$2")" = "답함" ]
+  # cc_halt_answered <ledger> <tail> [<record>] — succeeds when a `중단 답` row
+  # names the record and its answer was not returned (`cc_halt_returned`), or
+  # when the record points at a gate record that is answered so.
+  [ "$(cc__halt_answer_state "$1" "$2" "${3:-}")" = "답함" ]
 }
 
 cc_unanswered_halts() {
@@ -2800,7 +2839,7 @@ cc_unanswered_halts() {
       "$run_dir"/halt/shift/*) tail="/${run_dir##*/}/halt/shift/$name" ;;
       *) tail="/${run_dir##*/}/halt/$name" ;;
     esac
-    if [ -n "$ledger" ] && cc_halt_answered "$ledger" "$tail"; then
+    if [ -n "$ledger" ] && cc_halt_answered "$ledger" "$tail" "$f"; then
       continue
     fi
     n=$((n + 1))

@@ -34,10 +34,13 @@
 #
 # `서명` is `<부류>/<사유>[/<종류>]` and every slot comes from a closed table
 # below; a value outside its table folds to `미분류` rather than being copied.
-# `제외 사유` names which of the five intended waits an `의도` line is
-# (`비용 천장` · `사전 인가 밖` · `설계 판단` · `자유 입력` · `외부 대기`, the
-# last a `precondition-failed` halt whose `**스텝**` starts with
-# `Step 1 외부 선행 미충족`: a wait on another pull request or release). `표지` is
+# `제외 사유` names which of the six intended waits an `의도` line is
+# (`비용 천장` · `사전 인가 밖` · `설계 판단` · `자유 입력` · `외부 대기` ·
+# `사람 판단 대기`; `외부 대기` is a `precondition-failed` halt whose `**스텝**`
+# starts with `Step 1 외부 선행 미충족`: a wait on another pull request or
+# release; `사람 판단 대기` is a routing shift's stop record whose `**스텝**` is
+# `교대 정지 — 베이스 이동`: the base move check stopped a target with no
+# remote, and only a person can tell the run's act from their own commit). `표지` is
 # `원인 셀 미결합` on a gate-unanswerable halt no reach park binds to, and
 # `열린 대기 아님` on an intended event that was a decision rather than a wait,
 # for which no skip row is written. Resolved events are not printed at all.
@@ -304,7 +307,7 @@ run_stops_detail_fix() {
 }
 
 run_stops_main() {
-  local ledger="" run_dir="" manifest="" halts shalts ceiling blocked f id cls ext tail byfix="" tstop="" a
+  local ledger="" run_dir="" manifest="" halts shalts ceiling blocked f id cls ext tail site byfix="" tstop="" a
   if [ "${1:-}" = "--vocab" ]; then
     run_stops_vocab "${2:-}"; return $?
   fi
@@ -377,7 +380,11 @@ run_stops_main() {
       cls=$( { grep -m1 -E '^\*\*분류\*\*: ' "$f" 2>/dev/null || true; } \
              | sed 's/^\*\*분류\*\*: //; s/[[:space:]]*$//')
       [ -n "$cls" ] || continue
-      shalts="${shalts}$(printf '%s\t%s\t%s' "$id" "$cls" "$(run_stops_detail_fix "$f")")
+      # The site the record was written at, from the step line the gate's
+      # record writer prints: `**스텝**: 교대 정지 — <자리>`.
+      site=$( { grep -m1 -F '**스텝**: 교대 정지 — ' "$f" 2>/dev/null || true; } \
+              | sed 's/^\*\*스텝\*\*: 교대 정지 — //; s/[[:space:]]*$//')
+      shalts="${shalts}$(printf '%s\t%s\t%s\t%s' "$id" "$cls" "$site" "$(run_stops_detail_fix "$f")")
 "
     done
   fi
@@ -602,7 +609,10 @@ $(cut -f2 "$run_dir/stall" 2>/dev/null || true)"
       }
       # shift halt: an unanswered one, of the segment it names. A record the
       # gate wrote at `도달 거부` is bound to the shift reach park before it,
-      # and judged by that cell as a stage halt is; every other one is unbound.
+      # and judged by that cell as a stage halt is. A record at `베이스 이동` is
+      # the stop the base move check wrote by design, on a segment key or on
+      # the target key `베이스-<별칭>`, and waits on the judgment of a person with no
+      # reach park to bind; every other one is unbound.
       n = split(shalts, H, "\n")
       for (i = 1; i <= n; i++) {
         if (H[i] == "") continue
@@ -610,8 +620,9 @@ $(cut -f2 "$run_dir/stall" 2>/dev/null || true)"
         seg = hid; sub(/#[0-9]+$/, "", seg)
         sig = "halt/" (inv("HA", cls) ? cls : "미분류") "/" ((seg in SEGKIND) ? kindof(SEGKIND[seg]) : "미분류")
         EV[seg] = 1
-        rk = "shift/" hid; RF[rk] = hp[3]; RX[rk] = hp[4]
-        if (cls == "gate-unanswerable") {
+        rk = "shift/" hid; RF[rk] = hp[4]; RX[rk] = hp[5]
+        if (hp[3] == "베이스 이동") emit(sig, "의도", "사람 판단 대기")
+        else if (cls == "gate-unanswerable") {
           if (!(hid in SHCELL)) emit(sig, "비의도", "", "원인 셀 미결합", seg, seg, rk, "S" SUBSEP rk)
           else if (inv("CE", SHCELL[hid])) emit(sig, "의도", "사전 인가 밖")
           else emit(sig, "비의도", "", "", seg, seg, rk, "S" SUBSEP rk)
