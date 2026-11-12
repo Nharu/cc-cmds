@@ -11,7 +11,7 @@
 # predicate, which is a thing that cannot stay consistent.
 #
 # NOTHING HERE WRITES. That is the property that lets a status line call these
-# on every render. `ledger_idle_seconds` is deliberately absent: computing an
+# on every render. The watcher's `ledger_idle_read` is deliberately absent: computing an
 # elapsed-since-last-growth needs somewhere to remember the previous size, the
 # watcher remembers it in `watch.state`, and a write is exactly what a status
 # line may not do.
@@ -30,7 +30,13 @@
 
 # Sibling resolution uses `$BASH_SOURCE` and not `$0`, because under a
 # source-only seam `$0` is the SOURCING script.
-CC_LIVENESS_DIR=$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)
+cc_liveness_src=${BASH_SOURCE[0]:-$0}
+case "$cc_liveness_src" in
+  */*) cc_liveness_src=${cc_liveness_src%/*}; [ -n "$cc_liveness_src" ] || cc_liveness_src=/ ;;
+  *) cc_liveness_src=. ;;
+esac
+CC_LIVENESS_DIR=$(cd "$cc_liveness_src" && pwd)
+unset cc_liveness_src
 export CC_LIVENESS_DIR
 
 cc_stage_is_live() {
@@ -76,7 +82,7 @@ cc_stage_is_live() {
   # carries only `.pgid`, so requiring `.start` would silently undercount every
   # stage in it.
   [ -f "$run_dir/$seg.start" ] || [ -f "$run_dir/$seg.pgid" ] || return 1
-  pid=$(cat "$f" 2>/dev/null)
+  cc__file_bytes pid "$f"
   [ -n "$pid" ] || return 1
   kill -0 "$pid" 2>/dev/null || return 1
   # IDENTITY IS VERIFIED, NEVER ASSUMED. The two spawners leave the SAME
@@ -85,9 +91,9 @@ cc_stage_is_live() {
   # Skipping the check whenever that handle was missing is what left the
   # driver's stages on a bare `kill -0`, which is the pid-reuse hole this
   # file exists to close.
-  rec=$(cat "$run_dir/$seg.start" 2>/dev/null || true)
+  cc__file_bytes rec "$run_dir/$seg.start"
   if [ -n "$rec" ]; then
-    now=$(cc_proc_fingerprint "$pid")
+    cc__proc_fingerprint_into now "$pid"
     [ "$rec" = "$now" ] || return 1
     return 0
   fi
@@ -101,7 +107,8 @@ cc_stage_is_live() {
   # the same way. Not counting is the safe direction: the run's termination
   # condition has no resolving verb, so an over-count ends the run's ability to
   # finish permanently, while an under-count costs one render.
-  rec=$( { cat "$run_dir/$seg.pgid" 2>/dev/null || true; } | tr -d '[:space:]')
+  cc__file_bytes rec "$run_dir/$seg.pgid"
+  rec=${rec//[[:space:]]/}
   [ -n "$rec" ] || return 1
   now=$(cc_proc_pgid "$pid")
   [ -n "$now" ] || return 1
@@ -191,7 +198,7 @@ cc_orphan_stages() {
     # leads to deleting this line on the grounds that the structural check
     # already covers it, and then the alarm returns.
     case "$seg" in watch|checks) continue ;; esac
-    pid=$(cat "$f" 2>/dev/null)
+    cc__file_bytes pid "$f"
     [ -n "$pid" ] || continue
     if ! kill -0 "$pid" 2>/dev/null; then
       cc_supervisor_is_live "$run_dir" "$seg" || printf '%s\n' "$seg"
@@ -199,21 +206,23 @@ cc_orphan_stages() {
     fi
     # Alive, so the only remaining orphan is pid reuse — that pid is a different
     # process now. Judged only where a fingerprint was recorded to judge against.
-    rec=$(cat "$run_dir/$seg.start" 2>/dev/null || true)
+    cc__file_bytes rec "$run_dir/$seg.start"
     if [ -n "$rec" ]; then
-      now=$(cc_proc_fingerprint "$pid")
+      cc__proc_fingerprint_into now "$pid"
       if [ "$rec" != "$now" ]; then
         cc_supervisor_is_live "$run_dir" "$seg" || printf '%s\n' "$seg"
       fi
     fi
   done
-  nowts=$(date -u +%s)
+  # The clock is read at the first marker, so a run with none reads no clock.
+  nowts=""
   for f in "$run_dir"/*.pid.settling*; do
     [ -f "$f" ] || continue
     seg=${f##*/}; seg=${seg%%.pid.settling*}
     [ -n "$seg" ] || continue
     mt=$(cc_mtime "$f")
     [ -n "$mt" ] || continue
+    [ -n "$nowts" ] || nowts=$(date -u +%s)
     [ $((nowts - mt)) -gt 60 ] || continue
     printf '%s\n' "$seg"
   done
@@ -232,12 +241,13 @@ cc_supervisor_is_live() {
   # the file empty, and that is a recorded fact rather than a defect to hide.
   local run_dir="$1" seg="$2" sup rec now
   [ -f "$run_dir/$seg.sup" ] || return 1
-  sup=$( { cat "$run_dir/$seg.sup" 2>/dev/null || true; } | tr -d '[:space:]')
+  cc__file_bytes sup "$run_dir/$seg.sup"
+  sup=${sup//[[:space:]]/}
   [ -n "$sup" ] || return 1
   kill -0 "$sup" 2>/dev/null || return 1
-  rec=$(cat "$run_dir/$seg.sup.start" 2>/dev/null || true)
+  cc__file_bytes rec "$run_dir/$seg.sup.start"
   [ -n "$rec" ] || return 0
-  now=$(cc_proc_fingerprint "$sup")
+  cc__proc_fingerprint_into now "$sup"
   [ "$rec" = "$now" ]
 }
 
@@ -245,14 +255,16 @@ cc__apply_pair_live() {
   # cc__apply_pair_live <pid file> <fingerprint file> — the judgement
   # `cc_supervisor_is_live` makes, on one named pair: a pid that is alive and,
   # where a fingerprint was recorded, still the process it names.
-  local pid rec
+  local pid rec now
   [ -f "$1" ] || return 1
-  pid=$( { cat "$1" 2>/dev/null || true; } | tr -d '[:space:]')
+  cc__file_bytes pid "$1"
+  pid=${pid//[[:space:]]/}
   [ -n "$pid" ] || return 1
   kill -0 "$pid" 2>/dev/null || return 1
-  rec=$(cat "$2" 2>/dev/null || true)
+  cc__file_bytes rec "$2"
   [ -n "$rec" ] || return 0
-  [ "$rec" = "$(cc_proc_fingerprint "$pid")" ]
+  cc__proc_fingerprint_into now "$pid"
+  [ "$rec" = "$now" ]
 }
 
 cc_apply_supervisor_is_live() {
@@ -1331,6 +1343,11 @@ cc_iso_to_epoch() {
   # non-negative for years at or after 1970, which is what lets `$(( ))`'s
   # truncating division stand in for floor. `10#` on every field because `08` and
   # `09` are invalid octal and would abort the expansion.
+  #
+  # A SELF-CONTAINED BODY, because a test lifts this function on its own source
+  # text. `cc_iso_to_epoch_into` below is the same conversion set into a
+  # variable with no fork, and `scripts/test-liveness-agreement.sh` holds the two
+  # to one answer.
   local s="$1" digits y m d hh mm ss era yoe doy doe days
   digits=$(printf '%s' "$s" | tr -cd '0-9')
   [ ${#digits} -ge 14 ] || return 0
@@ -1358,27 +1375,101 @@ cc_iso_to_epoch() {
   printf '%s' $(( days * 86400 + hh * 3600 + mm * 60 + ss ))
 }
 
+cc_iso_to_epoch_into() {
+  # cc_iso_to_epoch_into <var> <iso> — `cc_iso_to_epoch`, set into <var> rather
+  # than printed, and with the digits taken out by expansions instead of `tr` and
+  # `cut`, so a cycle that converts a stamp forks for none of it. <var> is set
+  # empty when <iso> does not parse. The digit class is spelled out rather than
+  # written as a range, so no locale's collation can widen it.
+  local __s="${2:-}" __dg __y __m __d __hh __mm __ss __era __yoe __doy __doe __days
+  printf -v "$1" '%s' ""
+  __dg=${__s//[!0123456789]/}
+  [ ${#__dg} -ge 14 ] || return 0
+  __y=$((10#${__dg:0:4}))
+  __m=$((10#${__dg:4:2}))
+  __d=$((10#${__dg:6:2}))
+  __hh=$((10#${__dg:8:2}))
+  __mm=$((10#${__dg:10:2}))
+  __ss=$((10#${__dg:12:2}))
+  [ "$__y" -ge 1970 ] || return 0
+  [ "$__m" -ge 1 ] && [ "$__m" -le 12 ] || return 0
+  [ "$__d" -ge 1 ] && [ "$__d" -le 31 ] || return 0
+  # March-based year: January and February belong to the preceding one, which is
+  # what removes the leap day from the middle of the count.
+  if [ "$__m" -le 2 ]; then __y=$((__y - 1)); fi
+  __era=$((__y / 400))
+  __yoe=$((__y - __era * 400))
+  if [ "$__m" -gt 2 ]; then
+    __doy=$(( (153 * (__m - 3) + 2) / 5 + __d - 1 ))
+  else
+    __doy=$(( (153 * (__m + 9) + 2) / 5 + __d - 1 ))
+  fi
+  __doe=$(( __yoe * 365 + __yoe / 4 - __yoe / 100 + __doy ))
+  __days=$(( __era * 146097 + __doe - 719468 ))
+  printf -v "$1" '%s' $(( __days * 86400 + __hh * 3600 + __mm * 60 + __ss ))
+}
+
 cc_epoch_to_iso() {
   # Epoch seconds → `YYYY-MM-DDTHH:MM:SSZ`, or empty when it is not a
   # non-negative integer. The inverse of `cc_iso_to_epoch`, in the shell for the
   # same reason: `date -r` is BSD, `date -d @` is GNU, and the portability lint
   # denies both.
-  local e="${1:-}" days secs z era doe yoe y doy mp d m
-  case "$e" in ''|*[!0-9]*) return 0 ;; esac
-  e=$((10#$e))
-  days=$((e / 86400)); secs=$((e % 86400))
-  z=$((days + 719468))
-  era=$((z / 146097))
-  doe=$((z - era * 146097))
-  yoe=$(( (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365 ))
-  y=$((yoe + era * 400))
-  doy=$((doe - (365 * yoe + yoe / 4 - yoe / 100)))
-  mp=$(( (5 * doy + 2) / 153 ))
-  d=$((doy - (153 * mp + 2) / 5 + 1))
-  if [ "$mp" -lt 10 ]; then m=$((mp + 3)); else m=$((mp - 9)); fi
-  if [ "$m" -le 2 ]; then y=$((y + 1)); fi
-  printf '%04d-%02d-%02dT%02d:%02d:%02dZ' "$y" "$m" "$d" \
-    $((secs / 3600)) $((secs % 3600 / 60)) $((secs % 60))
+  local __cc_iso
+  cc_epoch_to_iso_into __cc_iso "${1:-}"
+  printf '%s' "$__cc_iso"
+}
+
+cc_epoch_to_iso_into() {
+  # cc_epoch_to_iso_into <var> <epoch> — `cc_epoch_to_iso`, set into <var>
+  # rather than printed, so a loop that stamps every cycle forks for none of
+  # them. <var> is set empty when <epoch> is not a non-negative integer.
+  local __e="${2:-}" __days __secs __z __era __doe __yoe __y __doy __mp __d __m
+  case "$__e" in ''|*[!0-9]*) printf -v "$1" '%s' ""; return 0 ;; esac
+  __e=$((10#$__e))
+  __days=$((__e / 86400)); __secs=$((__e % 86400))
+  __z=$((__days + 719468))
+  __era=$((__z / 146097))
+  __doe=$((__z - __era * 146097))
+  __yoe=$(( (__doe - __doe / 1460 + __doe / 36524 - __doe / 146096) / 365 ))
+  __y=$((__yoe + __era * 400))
+  __doy=$((__doe - (365 * __yoe + __yoe / 4 - __yoe / 100)))
+  __mp=$(( (5 * __doy + 2) / 153 ))
+  __d=$((__doy - (153 * __mp + 2) / 5 + 1))
+  if [ "$__mp" -lt 10 ]; then __m=$((__mp + 3)); else __m=$((__mp - 9)); fi
+  if [ "$__m" -le 2 ]; then __y=$((__y + 1)); fi
+  printf -v "$1" '%04d-%02d-%02dT%02d:%02d:%02dZ' "$__y" "$__m" "$__d" \
+    $((__secs / 3600)) $((__secs % 3600 / 60)) $((__secs % 60))
+}
+
+cc_clock_start() {
+  # cc_clock_start — anchors the memory clock: one `date` now, and the shell's
+  # own `SECONDS` from here on. `SECONDS` counts wall-clock seconds, so a host
+  # sleep or a clock step moves it the same way it moves `date`. The anchor
+  # records the value `SECONDS` has now rather than resetting it, so a caller
+  # that times itself with `SECONDS` keeps its count. A loop that reads the
+  # time every cycle calls this once and `cc_clock_now_into` after, and forks
+  # for no reading.
+  CC_CLOCK_EPOCH0=$(date -u +%s)
+  CC_CLOCK_SECONDS0=$SECONDS
+}
+
+cc_clock_now_into() {
+  # cc_clock_now_into <var> — the current epoch from the memory clock, which
+  # `cc_clock_start` must have anchored first.
+  printf -v "$1" '%s' $((CC_CLOCK_EPOCH0 + SECONDS - CC_CLOCK_SECONDS0))
+}
+
+cc__file_bytes() {
+  # cc__file_bytes <var> <path> — sets <var> to what `$(cat <path>)` prints: the
+  # file's bytes less their trailing newlines, or empty when the file cannot be
+  # read. A builtin read, so a probe that walks every record of a run forks
+  # nothing per file.
+  local __cc_fb=""
+  { IFS= read -r -d '' __cc_fb < "$2"; } 2>/dev/null || :
+  while :; do
+    case "$__cc_fb" in *$'\n') __cc_fb=${__cc_fb%$'\n'} ;; *) break ;; esac
+  done
+  printf -v "$1" '%s' "$__cc_fb"
 }
 
 cc_pid_exists() {
@@ -1422,18 +1513,34 @@ cc_proc_fingerprint() {
   # live process. The reader then called it dead. `LC_ALL` as a command prefix
   # outranks every other locale variable and does not leak past this line.
   #
-  # A DEAD PID IS AN ANSWER, NOT A FAILURE, and the `|| true` is what says so to
+  # A DEAD PID IS AN ANSWER, NOT A FAILURE, and this always succeeds to say so to
   # the caller's shell. `ps` exits 1 when the pid is gone, and under the
-  # `set -euo pipefail` this file is sourced into, `pipefail` raises that status
-  # out of the pipeline and `errexit` ends the caller on the spot. The callers
-  # are supervisors and liveness probes, and asking about a process that has
-  # already been reaped is their ordinary case — measured: a stage that exited
-  # before its supervisor reached this line took the supervisor down with it,
-  # leaving no terminal row, no cleanup and a record nothing could settle. The
-  # empty string this returns for a dead pid is what every caller already treats
-  # as "no fingerprint"; swallowing the status here covers all of them at once.
-  { LC_ALL=C ps -o lstart= -p "$1" 2>/dev/null || true; } \
-    | sed 's/[[:space:]]\{1,\}/ /g;s/^ //;s/ $//'
+  # `set -euo pipefail` this file is sourced into, a status raised here ends the
+  # caller on the spot. The callers are supervisors and liveness probes, and
+  # asking about a process that has already been reaped is their ordinary case —
+  # measured: a stage that exited before its supervisor reached this line took
+  # the supervisor down with it, leaving no terminal row, no cleanup and a
+  # record nothing could settle. The empty string this returns for a dead pid is
+  # what every caller already treats as "no fingerprint".
+  local __cc_fp
+  cc__proc_fingerprint_into __cc_fp "$1"
+  if [ -n "$__cc_fp" ]; then printf '%s\n' "$__cc_fp"; fi
+}
+
+cc__proc_fingerprint_into() {
+  # cc__proc_fingerprint_into <var> <pid> — `cc_proc_fingerprint`, set into
+  # <var>: the `ps` line with each run of blanks made one space and the ends
+  # trimmed, by word splitting rather than a `sed`, so a probe pays for `ps`
+  # alone. <var> is empty for a dead pid, and this always succeeds.
+  local __cc_ps="" IFS=$' \t\n'
+  local -a __cc_w=()
+  __cc_ps=$(LC_ALL=C ps -o lstart= -p "$2" 2>/dev/null) || __cc_ps=""
+  read -r -a __cc_w <<< "$__cc_ps" || :
+  if [ "${#__cc_w[@]}" -gt 0 ]; then
+    printf -v "$1" '%s' "${__cc_w[*]}"
+  else
+    printf -v "$1" '%s' ""
+  fi
 }
 
 cc_proc_pgid() {
@@ -1526,9 +1633,10 @@ machine_slept_since() {
 # The effective stall threshold, for a stage that waits for an account.
 #
 # A WAITER PACES ITS HEARTBEAT ON THE WATCHER'S THRESHOLD, so it has to read the
-# value the watcher is actually using. The watcher rewrites `watch.stall` every
-# pass — line 1 the threshold in seconds, line 2 its own pid, line 3 that pid's
-# fingerprint — and the value counts only while that writer is still the same
+# value the watcher is actually using. The watcher keeps `watch.stall` on every
+# cycle and does not rewrite it when its contents are unchanged — line 1 the
+# threshold in seconds, line 2 its own pid, line 3 that pid's fingerprint — and
+# the value counts only while that writer is still the same
 # live process: a dead watcher's test value must not pull every wait down to it.
 #
 # WITHOUT A LIVE WRITER, THE SHIPPED DEFAULT IS READ FROM THE WATCHER ITSELF —
@@ -1688,9 +1796,145 @@ cc_waiting_records() {
 cc_waiting_fresh_count() {
   # cc_waiting_fresh_count <run-dir> <ledger> [stall] — how many waiting stages
   # are fresh. The readers that count a live stage count these beside it.
-  local n
+  # A run with no marker counts none without starting the pipeline.
+  local n f any=""
+  if [ -n "${1:-}" ]; then
+    for f in "$1"/*.waiting; do
+      if [ -f "$f" ]; then any=1; break; fi
+    done
+  fi
+  [ -n "$any" ] || { printf '0'; return 0; }
   n=$(cc_waiting_records "$@" | awk -F'\t' '$8 == "true"' | grep -c . || true)
   printf '%s' "${n:-0}"
+}
+
+# ---------------------------------------------------------------------------
+# The approval and segment tables — one `awk` pass in place of a pipeline per id.
+#
+# The four readers below (`cc_open_approvals`, `cc_open_approval_rows`,
+# `cc_nonterminal_segments`, `cc_segment_states`) and `cc_segment_count` asked
+# the ledger once per id, through `grep`, `tr`, `sed` and `tail`, and a watcher
+# pass paid that for every approval and segment the run ever opened. A table
+# prints, in one pass, one line per distinct id in first-seen order, its fields
+# split by the unit separator (`\037`; a tab would collapse an empty field
+# under a whitespace `IFS`):
+#
+#   approvals   `<id>\037<상태>\037<절단점>`
+#   segments    `<id>\037<상태>`
+#
+# Each field is what the per-id pipeline it replaces reads: the id collection,
+# the row it looks up (the last row holding `| 승인 id=<id> |`, or `id=<id> `
+# for a segment) and the last `상태=`/`절단점=` field of that row with its
+# trailing blanks cut.
+#
+# SAME BYTES OR NO TABLE. The pipeline ran in the caller's locale and split its
+# ids with the shell's `IFS` and glob expansion; the table runs in the C locale.
+# Where the two could read a row differently the table prints the single line
+# `F`, and the reader runs the per-id pipeline, which stays beside it verbatim:
+# an id outside `[A-Za-z0-9_.:#@%+,=/-]` (a blank, a glob character, a
+# non-ASCII byte), a field value holding anything but printable ASCII and Hangul
+# syllables (a tab, `\037`, or a Unicode blank a UTF-8 `sed` would trim), a row
+# that is not valid UTF-8, or an `IFS` other than the default.
+# `scripts/test-liveness-agreement.sh` compares each reader with the pipeline
+# on ledgers built to land on each of these edges.
+# ---------------------------------------------------------------------------
+cc__table_awk_lib='
+  function rtrim(s) { sub(/[[:space:]]+$/, "", s); return s }
+  function bad_utf8(s,   c) {
+    c = s
+    gsub(/[\302-\337][\200-\277]|[\340-\357][\200-\277][\200-\277]|[\360-\364][\200-\277][\200-\277][\200-\277]/, "", c)
+    return c ~ /[\200-\377]/
+  }
+  function plain(s,   c) {
+    c = s
+    gsub(/[\352-\354][\200-\277][\200-\277]|\355[\200-\237][\200-\277]/, "", c)
+    return c !~ /[^ -~]/
+  }
+  function safe_id(s) { return s ~ /^[A-Za-z0-9_.:#@%+,=\/-]+$/ }
+  function last_field(row, key,   n, i, f, v, a) {
+    v = ""
+    n = split(row, a, "|")
+    for (i = 1; i <= n; i++) {
+      f = a[i]; sub(/^ */, "", f)
+      if (index(f, key) == 1) v = substr(f, length(key) + 1)
+    }
+    return rtrim(v)
+  }
+'
+
+cc__approval_table() {
+  # cc__approval_table <ledger> — the approval table described above, or `F`.
+  LC_ALL=C awk "$cc__table_awk_lib"'
+    index($0, "- `승인`") == 1 {
+      if (bad_utf8($0)) bad = 1
+      rows[++nr] = $0
+      n = split($0, a, "|")
+      for (i = 1; i <= n; i++) {
+        f = a[i]; sub(/^ */, "", f)
+        if (index(f, "승인 id=") != 1) continue
+        id = rtrim(substr(f, length("승인 id=") + 1))
+        if (id == "") continue
+        if (!safe_id(id)) bad = 1
+        if (!(id in seen)) { seen[id] = 1; ids[++ni] = id }
+      }
+    }
+    END {
+      if (bad) { print "F"; exit }
+      out = ""
+      for (j = 1; j <= ni; j++) {
+        id = ids[j]; pat = "| 승인 id=" id " |"; row = ""
+        for (r = nr; r >= 1; r--) if (index(rows[r], pat)) { row = rows[r]; break }
+        st = last_field(row, "상태="); cp = last_field(row, "절단점=")
+        if (!plain(st) || !plain(cp)) { print "F"; exit }
+        out = out id "\037" st "\037" cp "\n"
+      }
+      printf "%s", out
+    }
+  ' "$1" 2>/dev/null || true
+}
+
+cc__segment_table() {
+  # cc__segment_table <ledger> — the segment table described above, or `F`.
+  # The id is what `sed 's/.*id=\([^|]*\).*/\1/'` takes: the text after the
+  # row's last `id=`, up to the next `|`.
+  LC_ALL=C awk "$cc__table_awk_lib"'
+    index($0, "- `segment`") == 1 {
+      if (bad_utf8($0)) bad = 1
+      rows[++nr] = $0
+      s = $0; p = 0
+      while ((i = index(s, "id=")) > 0) { p = 1; s = substr(s, i + 3) }
+      if (!p) next
+      i = index(s, "|"); if (i > 0) s = substr(s, 1, i - 1)
+      id = rtrim(s)
+      if (id == "") next
+      if (!safe_id(id)) bad = 1
+      if (!(id in seen)) { seen[id] = 1; ids[++ni] = id }
+    }
+    END {
+      if (bad) { print "F"; exit }
+      out = ""
+      for (j = 1; j <= ni; j++) {
+        id = ids[j]; pat = "id=" id " "; row = ""
+        for (r = nr; r >= 1; r--) if (index(rows[r], pat)) { row = rows[r]; break }
+        st = last_field(row, "상태=")
+        if (!plain(st)) { print "F"; exit }
+        out = out id "\037" st "\n"
+      }
+      printf "%s", out
+    }
+  ' "$1" 2>/dev/null || true
+}
+
+cc__table_into() {
+  # cc__table_into <var> <table function> <ledger> — sets <var> to that table
+  # behind a leading newline, so `${var#*"<newline><id><US>"}` finds an id's
+  # line, and succeeds; fails, setting nothing, when the table answered `F` or
+  # the shell's `IFS` is not the default one the per-id pipeline was split by.
+  local __cc_t
+  case "${IFS-$' \t\n'}" in $' \t\n') ;; *) return 1 ;; esac
+  __cc_t=$("$2" "$3")
+  [ "$__cc_t" != F ] || return 1
+  printf -v "$1" '\n%s' "$__cc_t"
 }
 
 cc_open_approvals() {
@@ -1701,8 +1945,18 @@ cc_open_approvals() {
   # The id is matched as a whole field, `| 승인 id=<id> |`. A later row that
   # quotes a waiting id in its question text belongs to another approval, and
   # read as a substring it became the waiting id's last row and hid it.
-  local ledger="$1" id st n=0
+  local ledger="$1" id st n=0 tbl cp
   [ -n "$ledger" ] || { printf '0'; return 0; }
+  if cc__table_into tbl cc__approval_table "$ledger"; then
+    while IFS=$'\037' read -r id st cp; do
+      [ -n "$id" ] || continue
+      if [ "$st" = "대기" ]; then n=$((n + 1)); fi
+    done <<EOF
+$tbl
+EOF
+    printf '%s' "$n"
+    return 0
+  fi
   for id in $( { grep -E '^- `승인`' "$ledger" 2>/dev/null || true; } \
                | tr '|' '\n' | sed -n 's/^ *승인 id=//p' | sed 's/[[:space:]]*$//' | sort -u); do
     [ -n "$id" ] || continue
@@ -1745,8 +1999,26 @@ cc_nonterminal_segments() {
   # its apply — a fact derived from the manifest, which this reader does not
   # open) or `미정산` (a merge carried in from an earlier run whose apply did
   # not finish). That word is how the gate's condition 1 and this count agree.
-  local ledger="$1" sid row st n=0
+  local ledger="$1" sid row st n=0 tbl
   [ -n "$ledger" ] || { printf '0'; return 0; }
+  # From the table, the apply phase is read only for a terminal 상태: a
+  # segment whose 상태 is not terminal is in flight whatever that phase says.
+  if cc__table_into tbl cc__segment_table "$ledger"; then
+    while IFS=$'\037' read -r sid st; do
+      [ -n "$sid" ] || continue
+      case " $TERMINAL_SEGMENT_STATES " in
+        *" $st "*)
+          case "$(cc_segment_apply_phase "$ledger" "$sid")" in
+            대기|미정산) n=$((n + 1)) ;;
+          esac ;;
+        *) n=$((n + 1)) ;;
+      esac
+    done <<EOF
+$tbl
+EOF
+    printf '%s' "$n"
+    return 0
+  fi
   for sid in $( { grep -E '^- `segment`' "$ledger" 2>/dev/null || true; } \
                 | sed -n 's/.*id=\([^|]*\).*/\1/p' | sed 's/[[:space:]]*$//' | sort -u); do
     [ -n "$sid" ] || continue
@@ -1768,8 +2040,18 @@ cc_segment_count() {
   # The terminal predicate needs this as a guard: with no segments at all,
   # "every segment is terminal" is vacuously true and a run that has not begun
   # would render as finished.
-  local ledger="$1"
+  local ledger="$1" tbl sid st n=0
   [ -n "$ledger" ] || { printf '0'; return 0; }
+  if cc__table_into tbl cc__segment_table "$ledger"; then
+    while IFS=$'\037' read -r sid st; do
+      [ -n "$sid" ] || continue
+      n=$((n + 1))
+    done <<EOF
+$tbl
+EOF
+    printf '%s\n' "$n"
+    return 0
+  fi
   { grep -E '^- `segment`' "$ledger" 2>/dev/null || true; } \
     | sed -n 's/.*id=\([^|]*\).*/\1/p' | sed 's/[[:space:]]*$//' | sort -u \
     | grep -c . || true
@@ -1922,8 +2204,30 @@ cc_open_approval_rows() {
   # `scripts/test-liveness-agreement.sh` holds the two together. The count stays
   # where it is rather than becoming `| wc -l` over this, because the run state
   # and the status line read it and are not to move.
-  local ledger="$1" id row st cp
+  local ledger="$1" id row st cp tbl open sorted rest nl=$'\n' us=$'\037'
   [ -n "$ledger" ] || return 0
+  if cc__table_into tbl cc__approval_table "$ledger"; then
+    open=""
+    while IFS=$'\037' read -r id st cp; do
+      [ -n "$id" ] && [ "$st" = "대기" ] || continue
+      open="$open$id$nl"
+    done <<EOF
+$tbl
+EOF
+    [ -n "$open" ] || return 0
+    sorted=$(sort -u <<EOF
+$open
+EOF
+)
+    while IFS= read -r id; do
+      [ -n "$id" ] || continue
+      rest=${tbl#*"$nl$id$us"}; rest=${rest%%"$nl"*}; cp=${rest#*"$us"}
+      printf '%s\t%s\n' "$id" "${cp:--}"
+    done <<EOF
+$sorted
+EOF
+    return 0
+  fi
   for id in $( { grep -E '^- `승인`' "$ledger" 2>/dev/null || true; } \
                | tr '|' '\n' | sed -n 's/^ *승인 id=//p' | sed 's/[[:space:]]*$//' | sort -u); do
     [ -n "$id" ] || continue
@@ -1947,8 +2251,38 @@ cc_segment_states() {
   # re-applied `TERMINAL_SEGMENT_STATES` to the second field would be the
   # second copy that function's comment says split two readers before.
   # The `open` lines number exactly what that function counts.
-  local ledger="$1" sid row st verdict
+  local ledger="$1" sid row st verdict tbl sorted rest nl=$'\n' us=$'\037'
   [ -n "$ledger" ] || return 0
+  if cc__table_into tbl cc__segment_table "$ledger"; then
+    sorted=""
+    while IFS=$'\037' read -r sid st; do
+      [ -n "$sid" ] || continue
+      sorted="$sorted$sid$nl"
+    done <<EOF
+$tbl
+EOF
+    [ -n "$sorted" ] || return 0
+    sorted=$(sort -u <<EOF
+$sorted
+EOF
+)
+    while IFS= read -r sid; do
+      [ -n "$sid" ] || continue
+      rest=${tbl#*"$nl$sid$us"}; st=${rest%%"$nl"*}
+      verdict=open
+      case " $TERMINAL_SEGMENT_STATES " in
+        *" $st "*)
+          case "$(cc_segment_apply_phase "$ledger" "$sid")" in
+            대기|미정산) ;;
+            *) verdict=done ;;
+          esac ;;
+      esac
+      printf '%s\t%s\t%s\n' "$sid" "${st:--}" "$verdict"
+    done <<EOF
+$sorted
+EOF
+    return 0
+  fi
   for sid in $( { grep -E '^- `segment`' "$ledger" 2>/dev/null || true; } \
                 | sed -n 's/.*id=\([^|]*\).*/\1/p' | sed 's/[[:space:]]*$//' | sort -u); do
     [ -n "$sid" ] || continue
@@ -2531,4 +2865,71 @@ cc_run_idle_exit() {
   idle=$((now - grew))
   [ "$idle" -lt 0 ] && idle=0
   [ "$idle" -ge "$t" ]
+}
+
+# How many watcher cycles a quiet run goes between two full passes. The watcher
+# runs a full pass on every cycle of a working run; on a quiet one it runs one
+# every this many cycles, and on the cycles between only when a probe of the
+# run directory saw something new. `checks.sh` polls and `feed.sh` re-reads on
+# the same multiple. Declared here and nowhere else.
+CC_QUIET_PASS_EVERY=4
+
+cc_watch_mode_quiet() {
+  # cc_watch_mode_quiet <run-dir> <interval> — succeeds when the watcher's last
+  # full pass judged the run quiet and that verdict is fresh. `watch.mode` holds
+  # `quiet <epoch>` or `work <epoch>`, rewritten by the watcher every cycle; a
+  # missing or unreadable file, any other word, or an epoch older than three of
+  # the caller's <interval> is a working run, so a watcher that died or stalled
+  # never leaves a companion polling slowly. The time comes from the memory clock
+  # when the caller anchored one.
+  local run_dir="${1:-}" iv="${2:-}" m="" e="" now
+  { read -r m e; } 2>/dev/null < "$run_dir/watch.mode" || :
+  [ "$m" = "quiet" ] || return 1
+  case "$e" in ''|*[!0-9]*) return 1 ;; esac
+  iv=${iv%%.*}
+  case "$iv" in ''|*[!0-9]*) iv=1 ;; esac
+  [ "$iv" -ge 1 ] || iv=1
+  if [ -n "${CC_CLOCK_EPOCH0:-}" ]; then cc_clock_now_into now; else now=$(date -u +%s); fi
+  [ $((now - e)) -le $((3 * iv)) ]
+}
+
+cc_run_quiet() {
+  # cc_run_quiet <run-dir> <ledger> [<live> <approvals> <halts> <idle> <stall>]
+  # — succeeds when the run is QUIET: it waits for a person or does no work.
+  # No live shift, no live relay, and no live stage or fresh waiter (<live>,
+  # their sum); and besides, an open approval (<approvals>), an unanswered halt
+  # record (<halts>), or a ledger that has not grown for the stall threshold
+  # (<idle> seconds against <stall>). Every other run is a working run.
+  #
+  # THE VALUES ARE TAKEN WHEN GIVEN. The watcher decides this on each full pass
+  # from the counts that pass has already read, so it passes them and nothing
+  # is read twice; an argument left empty is read here. With no readable growth
+  # clock the ledger is not idle, so such a run is quiet only on an approval or
+  # a halt.
+  local run_dir="${1:-}" ledger="${2:-}" live="${3:-}" appr="${4:-}" halts="${5:-}" idle="${6:-}" stall="${7:-}" grew v now
+  [ -n "$run_dir" ] && [ -d "$run_dir" ] || return 1
+  if cc_shift_is_live "$run_dir"; then return 1; fi
+  if cc_relay_is_live "$run_dir"; then return 1; fi
+  case "$live" in
+    ''|*[!0-9]*) live=$(( $(cc_live_stages "$run_dir") + $(cc_waiting_fresh_count "$run_dir" "$ledger") )) ;;
+  esac
+  [ "$live" -eq 0 ] || return 1
+  case "$appr" in ''|*[!0-9]*) appr=$(cc_open_approvals "$ledger") ;; esac
+  if [ "${appr:-0}" -gt 0 ] 2>/dev/null; then return 0; fi
+  case "$halts" in ''|*[!0-9]*) halts=$(cc_unanswered_halts "$run_dir" "$ledger") ;; esac
+  if [ "${halts:-0}" -gt 0 ] 2>/dev/null; then return 0; fi
+  case "$stall" in ''|*[!0-9]*) stall=$(cc_effective_stall "$run_dir" || true) ;; esac
+  case "$stall" in ''|*[!0-9]*) return 1 ;; esac
+  case "$idle" in
+    ''|*[!0-9]*)
+      grew=$(cc_ledger_growth_at "$run_dir" "$ledger")
+      v=$(cc_mtime "$ledger")
+      case "$grew" in ''|*[!0-9]*) grew="" ;; esac
+      case "$v" in ''|*[!0-9]*) : ;; *) if [ -z "$grew" ] || [ "$v" -gt "$grew" ]; then grew=$v; fi ;; esac
+      [ -n "$grew" ] || return 1
+      now=$(date -u +%s)
+      idle=$((now - grew))
+      ;;
+  esac
+  [ "$idle" -ge "$stall" ]
 }
