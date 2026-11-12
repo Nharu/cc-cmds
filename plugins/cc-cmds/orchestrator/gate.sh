@@ -59177,7 +59177,8 @@ gate_verb_supervise_stage() {
   CC_PIPELINE_SEGMENT="$rowseg" \
   CC_PIPELINE_STAGE_ID="$seg#$attempt" \
   CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$(gate_auto_resolve_enabled && printf 1 || printf 0)" \
-  env -u CC_ORCH_LARGE_CONTEXT_ONCE bash "$wrapper" \
+  CC_ORCH_LARGE_CONTEXT_ONCE= \
+  bash "$wrapper" \
     --settings "$(gate_settings_file "$kind")" \
     --plugin-dir "$plugin_dir" \
     ${instr:+--instructions "$instr"} \
@@ -59186,9 +59187,11 @@ gate_verb_supervise_stage() {
     $ac_flags \
     $launch_flags \
     -- "$@" >> "$out" 2>> "$err" < /dev/null &
-  # `$!` IS CORRECT HERE — no fork sits between this shell and the wrapper
-  # (`env` execs it in place, dropping the large-context switch the model flag
-  # above has already read, so the stage does not inherit it), and the wrapper
+  # The empty large-context switch above reaches only the stage: the model flag
+  # has already read it, every reader tests for `1`, and this shell keeps its
+  # own value.
+  # `$!` IS CORRECT HERE — no fork sits between this shell and the wrapper,
+  # and the wrapper
   # `exec`s into the CLI, so this pid is the stage's own. This is
   # the one place the dispatch path may use it; the dispatch half must not.
   spid=$!
