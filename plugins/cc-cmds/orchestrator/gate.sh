@@ -43253,7 +43253,7 @@ EOF
     gate_apply_supervisor_row "$alias" "$seg" "$tok" "상태=park" "워크트리=$wt" "고정 커밋=$m" "적용=불명" || wrc=$?
   fi
   if [ "$wrc" != "0" ]; then
-    log "적용 불명을 기록하지 않았습니다 — $seg 의 마지막 행이 이 감독 토큰의 적용 준비가 아닙니다 (rc=$wrc, 사전 $pre → 명령 $rc → 사후 $post, $map, 워크트리 $wt)"
+    log "적용 불명을 기록하지 않았습니다 — $(gate_apply_row_unwritten_why "$seg" "$wrc") (rc=$wrc, 사전 $pre → 명령 $rc → 사후 $post, $map, 워크트리 $wt)"
     return 0
   fi
   if [ -n "$tonly" ]; then
