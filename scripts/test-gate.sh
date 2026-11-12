@@ -66497,12 +66497,17 @@ case "$msg" in
 esac
 check "109m: 수정 커밋 뒤 리뷰 줄은 브랜치를 리뷰하고 머지 커밋을 싣지 않는다" "$md_got" "브랜치"
 sa_cycle I1 2 0 0 "$md_fix"
+md_checks "$md_fix"
+# 의무가 열린 채로는 수정 PR 을 머지하지 않는다 — 리뷰가 통과했어도 게이트가 먼저
+# 의무 이행을 요구한다.
+sa_merge I1 "seg/$SA_ID-I1:main"; md_r=$rc; md_m=$msg
+case "$md_m" in *"리뷰 의무"*"아직 이행되지 않았습니다"*) md_m=문면 ;; esac
+check "109m: 수정 흐름 — 의무 이행 전 수정 PR 머지는 rc 3 이고 의무 문면을 낸다" "$md_r|$md_m" "3|문면"
 sa_fulfil "$(md_oid "$MD_M")" >/dev/null
 # 수정 PR 은 선리뷰후머지 검사기를 지나 머지된다. 그 머지는 의무를 새로 쓰지 않고,
 # 이행된 의무를 덮은 마지막 사이클로 조건 12 가 풀리며, 머지된 뒤의 「완료」 는 일반
 # 끝맺음 규칙으로 받아진다.
 md_obn=$(sa_ob_count)
-md_checks "$md_fix"
 sa_merge I1 "seg/$SA_ID-I1:main"; md_r=$rc; md_m=$msg
 # 머지 행위는 행을 쓰지 않는다 — 라우터가 머지를 확인한 뒤 「머지됨」 행을 따로 쓴다.
 [ "$md_r" != 0 ] || md_seg 머지됨
@@ -66513,6 +66518,14 @@ check "109m: 수정 흐름 — 머지됨 행이 리뷰 참조를 지운다" \
 [ "$md_r" = 0 ] || printf '  109m 수정 PR 머지: %s\n' "$md_m"
 md_seg 완료; md_r=$rc
 check "109m: 수정 흐름 — 머지된 뒤의 완료 는 rc 0 이다" "$md_r" "0"
+
+# 수정을 지닌 입양 세그먼트의 리뷰 기준은 마지막 cycle 의 리뷰 HEAD 다 — 리뷰한 헤드
+# 위에 커밋(베이스 해소가 올린 커밋)이 더해지면 베이스 층이 해소 리뷰를 낸다.
+md_fx squash
+md_fixflow
+md_checks "$MD_FIX"
+( cd "$MD_WT" && echo resolve >> q.txt && git add q.txt && git commit -qm resolve ) >/dev/null 2>&1
+check "109m: 수정 흐름 — 리뷰한 헤드 위에 커밋이 더해지면 다음은 해소 리뷰 다" "$md_ff|$(md_rnext)" "0/0/0|해소 리뷰"
 
 # 적용을 선언한 대상에서 머지된 수정 PR 은 적용이 남는다 — 호출자의 「완료」 는 적용
 # 주체 검사에 걸린다.

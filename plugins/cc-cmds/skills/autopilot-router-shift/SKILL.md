@@ -330,6 +330,8 @@ with no `--cutpoint` (the gate derives it from the recorded words) and nothing a
 
 **Whatever the review policy, merge a segment only when its snapshot `머지 대기` is empty.** A non-empty `머지 대기` names the predecessors, by `선행` or `머지 순서`, that have not landed yet: do other work, or wait as 「Waiting on a stage」 chooses. A refusal with exit 3 that names such a predecessor and its `상태` means the same — wait — whether the refused act was the merge or another act leaving the worktree whose grade the gate could not read; it is not **Any other cause** below, and nothing is written for it. A predecessor that was parked has already parked this segment through its cone.
 
+**A segment a `머지 입양` row adopted records `act --kind obligation` before it merges, and does not merge when that act is refused.** The obligation is the one its planning act issued, and the passing review that covers the fix fulfils it; record it before the base check, the merge and any apply. The gate refuses a merge or an apply of such a segment while that obligation is open (exit 3).
+
 **Below the `머지` cutpoint nothing is merged.** `다음` does not read the target's cutpoint, so a segment whose target stops at `커밋`, `브랜치`, `push` or `PR` reads `머지` or `이월 머지` once its review passes all the same — at `PR` only once the pull request's CI has a verdict, so such a segment goes through `CI 대기` first and ends on `완료` after it. For it, check no base, merge nothing and apply nothing — the gate refuses the merge above the cutpoint, and a `머지됨` for a tip that has not landed. End the segment instead with its `완료` row, carrying the worktree HEAD the review read as its full 40-character sha, and at `PR` the pull request's number as `PR=<n>` as well:
 
 ```

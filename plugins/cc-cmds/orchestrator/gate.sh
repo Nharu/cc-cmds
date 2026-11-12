@@ -28317,12 +28317,17 @@ gate_base_review_head() {
   # reads `선머지` before its CI layer takes the tip after them. A segment past
   # its merge-first merge takes the tip too: what it merges next is the lead
   # fix on top of the merged tip, not the head its last cycle read. A segment
-  # adopted as a merged pull request takes the tip as well: its merge already
+  # adopted as a merged pull request takes the tip as well while its review
+  # after the fact is still due (`gate_segment_post_merge`): its merge already
   # happened, and what the base check judges is the worktree that holds it.
+  # Once that review is in, the adopted segment — one carrying a fix, or one
+  # paired with a `세그먼트 입양` row — reads R like any review-before-merge
+  # segment, the last cycle's `리뷰 HEAD`, so a base resolution stacked on the
+  # reviewed head is seen and sent to its own review.
   local seg=$1 v=${2:-} nx row wt
   wt=$(gate_segment_worktree "$seg")
   if [ "$v" = '선머지' ]; then gate_worktree_tip "$wt"; return; fi
-  if gate_segment_merge_adopted "$seg"; then gate_worktree_tip "$wt"; return; fi
+  if gate_segment_merge_adopted "$seg" && gate_segment_post_merge "$seg"; then gate_worktree_tip "$wt"; return; fi
   if [ -z "$v" ] && gate_segment_post_merge "$seg"; then gate_worktree_tip "$wt"; return; fi
   nx=$(gate_segment_review_next_table "$seg")
   case "$nx" in
@@ -42674,6 +42679,16 @@ gate_apply_preconditions() {
   fi
   fi
 
+  # A segment adopted as a merged pull request applies only once the review
+  # obligation the planning act issued is fulfilled. Run with it open, the
+  # command would change the target and the `완료` the supervisor writes after
+  # it would then be refused for that same open obligation, leaving the ledger
+  # on `적용 준비` after an apply that ran.
+  if gate_segment_merge_adopted "$seg" && [ -n "$(gate_unfulfilled_review_obligations "$seg")" ]; then
+    gate_apply_refuse 2 "머지 입양 세그먼트 ${seg} 의 리뷰 의무가 아직 이행되지 않았습니다 — 적용 전에 act --kind obligation 으로 의무를 이행합니다"
+    return $?
+  fi
+
   # 2 — the resolved policy reviews before it merges, or merges first through
   # the gate. Resolved the way `gate_resolve_review_policy` resolves it: the
   # row, and absence is strict.
@@ -43038,6 +43053,17 @@ gate_apply_supervisor_row() {
   gate_apply_segment_row "$alias" "$seg" "$@"
 }
 
+gate_apply_row_unwritten_why() {
+  # gate_apply_row_unwritten_why <segment> <rc> — why `gate_apply_supervisor_row`
+  # wrote no row, for the supervisor's log: 3 is the token check, anything else
+  # is the row writer refusing the row (its reason is on stderr above).
+  if [ "$2" = "3" ]; then
+    printf '%s 의 마지막 행이 이 감독 토큰의 적용 준비가 아닙니다' "$1"
+  else
+    printf '원장이 %s 의 종결 행을 거절했습니다 — 마지막 행은 적용 준비 그대로입니다' "$1"
+  fi
+}
+
 gate_apply_rerun_closed() {
   # gate_apply_rerun_closed <alias> <segment> <answer line> <verdict> — a rerun
   # a person answered ended in `완료`: every apply worktree the segment's
@@ -43149,7 +43175,7 @@ gate_apply_supervise() {
       gate_apply_supervisor_row "$alias" "$seg" "$tok" "상태=완료" "워크트리=$wt" "고정 커밋=$m" \
         "머지 커밋=$m" "적용=건너뜀" || wrc=$?
       if [ "$wrc" != "0" ]; then
-        log "적용 건너뜀을 기록하지 않았습니다 — $seg 의 마지막 행이 이 감독 토큰의 적용 준비가 아닙니다 (rc=$wrc, 사전 프로브 $pre, $map)"
+        log "적용 건너뜀을 기록하지 않았습니다 — $(gate_apply_row_unwritten_why "$seg" "$wrc") (rc=$wrc, 사전 프로브 $pre, $map)"
         return 0
       fi
       if [ -n "$rerun" ]; then gate_apply_rerun_closed "$alias" "$seg" "$rerun" 건너뜀
@@ -43166,7 +43192,7 @@ gate_apply_supervise() {
       wrc=0
       gate_apply_supervisor_row "$alias" "$seg" "$tok" "상태=park" "워크트리=$wt" "고정 커밋=$m" "적용=사전 실패" || wrc=$?
       if [ "$wrc" != "0" ]; then
-        log "적용 사전 실패를 기록하지 않았습니다 — $seg 의 마지막 행이 이 감독 토큰의 적용 준비가 아닙니다 (rc=$wrc, 사전 프로브 $pre, $map)"
+        log "적용 사전 실패를 기록하지 않았습니다 — $(gate_apply_row_unwritten_why "$seg" "$wrc") (rc=$wrc, 사전 프로브 $pre, $map)"
         return 0
       fi
       gate_append 'blocked' "대상=$seg" "스코프=act" "원인=막힘" "사유=적용 사전 실패(exit $pre)" \
@@ -43186,7 +43212,7 @@ gate_apply_supervise() {
     gate_apply_supervisor_row "$alias" "$seg" "$tok" "상태=완료" "워크트리=$wt" "고정 커밋=$m" \
       "머지 커밋=$m" "적용=수렴" || wrc=$?
     if [ "$wrc" != "0" ]; then
-      log "적용 수렴을 기록하지 않았습니다 — $seg 의 마지막 행이 이 감독 토큰의 적용 준비가 아닙니다 (rc=$wrc, 사전 $pre → 명령 $rc → 사후 $post, $map)"
+      log "적용 수렴을 기록하지 않았습니다 — $(gate_apply_row_unwritten_why "$seg" "$wrc") (rc=$wrc, 사전 $pre → 명령 $rc → 사후 $post, $map)"
       return 0
     fi
     if [ -n "$rerun" ]; then gate_apply_rerun_closed "$alias" "$seg" "$rerun" 수렴
@@ -50419,6 +50445,19 @@ gate_verb_act() {
   done
   GATE_SEGMENT_OPEN_OBLIGATIONS=$_open
   export GATE_SEGMENT_OPEN_OBLIGATIONS
+  # A SEGMENT ADOPTED AS A MERGED PULL REQUEST FULFILS ITS OBLIGATION BEFORE IT
+  # MERGES OR APPLIES ANYTHING. It resolves to `선리뷰후머지`, so the rule reads
+  # its cycle row and never the open set above. The review that fulfils the
+  # obligation is the one that covers the fix about to merge, so a merge or an
+  # apply while it is still open would put the fix on the base with the merged
+  # pull request's review unrecorded — and, on a target that applies, leave the
+  # `완료` the apply writes refused after the command already ran.
+  if [ "$_mbi" -ge "$_mmi" ] && ! gate_kind_is_bookkeeping "$kind" \
+     && [ -n "$segment" ] && [ "$segment" != '-' ] \
+     && gate_segment_merge_adopted "$segment" && [ -n "$_open" ]; then
+    warn "머지 입양 세그먼트 ${segment} 의 리뷰 의무(${_open})가 아직 이행되지 않았습니다 — 머지·적용 전에 act --kind obligation 으로 의무를 이행하고, 그 행위가 거절되면 머지하지 않습니다"
+    exit "$GATE_EXIT_RULE"
+  fi
   # The segment's last cycle row, its last segment row, a person's dismissal of
   # that cycle and its carry-over to issues, all folded here for the same
   # reason: the checkers read no ledger rows themselves. A checker that picked

@@ -1609,8 +1609,8 @@ check "리드 사본에는 포그라운드 대기 문장 전체가 없다" "$(mo
 
 # A merged pull request a `머지 입양` row hands the run is routed by the same
 # sentences in BOTH router copies: how its slice is planned and first reviewed,
-# what its review line carries, how `입양 종결` closes it, and how termination
-# condition 12 holds it. Each is counted once over the whole copy, so a copy
+# what its review line carries, how `입양 종결` closes it, how a fix records the
+# obligation before it merges, and how termination condition 12 holds it. Each is counted once over the whole copy, so a copy
 # that drops or rewords one of them fails here.
 for pair in "리드:$AP_ROUTER" "교대:$RS_CORPUS"; do
   who=${pair%%:*}; file=${pair#*:}
@@ -1619,6 +1619,8 @@ for pair in "리드:$AP_ROUTER" "교대:$RS_CORPUS"; do
     'Pass no `리뷰 정책` on its planning row either way: the planning act resolves the policy to `선리뷰후머지` itself, and the gate refuses any first row of the segment other than that `--from-declaration` act or a `park`.' \
     'the line names the adopted pull request'"'"'s URL instead of a branch and carries `--base-sha <분기점> --merged <머지 커밋> --judge-head <워크트리 HEAD>`' \
     '- **`입양 종결`** → a segment a `머지 입양` row adopted passed its review with no commit over its base.' \
+    '**A segment a `머지 입양` row adopted records `act --kind obligation` before it merges, and does not merge when that act is refused.**' \
+    '→ 「Merging and applying a segment」. On a segment a `머지 입양` row adopted, record `act --kind obligation` before the merge, and do not merge when that act is refused.' \
     'A segment a `머지 입양` row adopted carries an element too, with or without a `cycle` row, until its `완료` row.' \
     '**A segment a `머지 입양` row adopted is held the same way, whatever its review policy, from the moment it is planned**' \
     '**Its refusal (exit 3) parks the segment, not the shift**, and its text ends with the refusal'"'"'s class.' \

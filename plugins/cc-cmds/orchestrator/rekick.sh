@@ -240,6 +240,11 @@
 # and such a row that cannot be adopted gives an `입양불가` line with
 # 머지입양다름 (the request is no longer merged at the row's merge commit and
 # head), 머지입양판독불가 (the request could not be read) or 슬라이스다름.
+# A segment with a `머지 입양` row whose fix branch fails the checks above gives
+# that branch's `입양불가` line only when the previous run recorded a pull
+# request of its own for the fix (`rk_merge_fix_silent`); the line then stands
+# beside the segment's `머지입양후보` line, naming the fix pull request and why
+# it is not taken over.
 #
 # The `--asked` file lists the questions this re-kickoff actually asked, one
 # `<키><TAB><답 축자>` per line. The keys the checks read: `대상확인 <별칭>`,
@@ -876,6 +881,23 @@ rk_merge_src_row() {
   { grep -E '^- `머지 입양`' "$MANIFEST" 2>/dev/null || true; } | { grep -F -- "| 세그먼트=$1 |" || true; } | head -n 1
 }
 
+# rk_merge_fix_silent <segment> <PR|-> — 0 when the fix-branch check's
+# `입양불가` line of a segment is left out: the segment has a `머지 입양` row and
+# the previous run recorded no pull request of its own for it (no number, or
+# the merged request's own number). Such a line would only say there is no fix
+# to take over, and the segment's `머지입양후보` line speaks for it. A fix branch
+# that carries a pull request of its own keeps its `입양불가` line with its
+# cause, so a fix pull request the new run does not take over — left open on
+# the remote — is reported beside the merged request's line.
+rk_merge_fix_silent() {
+  local mrow mpr
+  mrow=$(rk_merge_src_row "$1")
+  [ -n "$mrow" ] || return 1
+  rk_num "$2" || return 0
+  mpr=$(manifest_row_fields "$mrow" 'PR' | head -n 1)
+  [ "$2" = "$mpr" ]
+}
+
 # rk_merge_open_obligations <segment> [전체] — how many `리뷰 의무` ids of that
 # segment the previous ledger leaves `미이행` (each id read by its last row), or,
 # with `전체`, how many it issued at all. The keys are cut with
@@ -1085,7 +1107,7 @@ EOF
       fi
     fi
     h=$wh
-    if [ -n "$tok" ]; then [ -n "$(rk_merge_src_row "$key")" ] || printf '입양불가\t%s\t%s\t%s%s\n' "$key" "$n" "$tok" "$pim"; continue; fi
+    if [ -n "$tok" ]; then rk_merge_fix_silent "$key" "$n" || printf '입양불가\t%s\t%s\t%s%s\n' "$key" "$n" "$tok" "$pim"; continue; fi
     cim=$pim
     { [ "$pip" = "$n" ] && [ "$pic" = "$h" ]; } || cim=''
     if [ "$layer" != "full" ]; then
@@ -1188,7 +1210,7 @@ EOF
       esac
     fi
     rm -f "$mcopy"
-    if [ -n "$tok" ]; then [ -n "$(rk_merge_src_row "$key")" ] || printf '입양불가\t%s\t%s\t%s%s\n' "$key" "$n" "$tok" "$pim"; continue; fi
+    if [ -n "$tok" ]; then rk_merge_fix_silent "$key" "$n" || printf '입양불가\t%s\t%s\t%s%s\n' "$key" "$n" "$tok" "$pim"; continue; fi
     pre=''
     if [ "$RK_AUTO" != "1" ] && [ "$(manifest_row_fields "$last" '상태' | head -n 1)" = "park" ]; then
       pre="${TAB}마지막행=park$(rk_adopt_causes "$key")"

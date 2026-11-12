@@ -3599,6 +3599,8 @@ gh13; view13m "$M13M"
 a13 "$S13M"
 check "13 머지 입양: 리뷰가 열린 머지된 PR 은 머지입양후보 한 줄이다" "$(md13m)" \
   "머지입양후보${TAB}I1${TAB}7${TAB}$M13M${TAB}$H13M"
+check "13 머지 입양: 수정 PR 이 없는 세그먼트는 다른 입양불가 줄을 내지 않는다" \
+  "$(printf '%s\n' "$A13" | awk -F'\t' '$1 == "입양불가"')" ""
 view13m "$F13M"
 a13 "$S13M"
 check "13 머지 입양: 머지 커밋이 행과 다르면 머지입양다름 이다" "$(md13m)" "입양불가${TAB}I1${TAB}7${TAB}머지입양다름"
@@ -3630,6 +3632,17 @@ mk13m "$S13M6" fulfilpark I1
 a13 "$S13M6"
 check "13 머지 입양: 의무를 이행했어도 park 로 멈춘 세그먼트는 후보 한 줄이다" "$(md13m)" \
   "머지입양후보${TAB}I1${TAB}7${TAB}$M13M${TAB}$H13M"
+# A merge-adopted segment whose fix branch carries a request of its own (9, not
+# the row's 7) that fails the fix-branch checks reports that request beside its
+# candidate line, while the one with no such request above printed nothing more.
+S13M8=20261001-a00000d8
+mk13m "$S13M8" open I1
+fx_row '원격 판독' "세그먼트=I1" "브랜치=seg/rk-fix-I1" "워크트리 HEAD=$H13M" "원격 팁=$H13M" "PR=9" "PR 상태=CLOSED" "PR HEAD=$H13M"
+a13 "$S13M8"
+check "13 머지 입양: 자기 수정 PR 이 검사에 걸린 세그먼트는 후보 줄 곁에 그 PR 의 입양불가 줄이 선다" \
+  "$(printf '%s\n' "$A13" | awk -F'\t' '$1 == "머지입양후보" || $1 == "입양불가"')" \
+  "입양불가${TAB}I1${TAB}9${TAB}PR닫힘
+머지입양후보${TAB}I1${TAB}7${TAB}$M13M${TAB}$H13M"
 S13M3=20261001-a00000d3
 mk13m "$S13M3" open I1 I2
 a13 "$S13M3"
@@ -3696,7 +3709,7 @@ SL_DOC='(없음)' SL_DOCSHA='(해당 없음)' SL_ASKED= seat_link "$S13M7" 20261
 check "13 머지 입양 셋 좌석: 같은 초안을 좌석 경로도 verify-subset 에서 거절한다" "$SL_RC/$SL_VS" "0/실패"
 rm -f "$GH13/view.7" "$GH13/view.8"
 unset -f pr13m mk13m view13m md13m
-unset PLAN13M M13M H13M F13M S13M S13M2 S13M3 S13M4 S13M5 S13M6 S13M7 PLAN13M_SAVE
+unset PLAN13M M13M H13M F13M S13M S13M2 S13M3 S13M4 S13M5 S13M6 S13M7 S13M8 PLAN13M_SAVE
 unset CC_REMOTE_GH
 
 # ---------------------------------------------------------------------------
