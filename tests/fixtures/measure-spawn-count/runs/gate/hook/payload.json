@@ -1,0 +1,1 @@
+{"tool_name":"Bash","tool_use_id":"tu-measure-1","cwd":"@ROOT@","tool_input":{"command":"@ORCH@/gate.sh exec --manifest @ROOT@/hook/plan.md -- ls"}}

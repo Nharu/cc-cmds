@@ -7814,10 +7814,21 @@ gate_caller_is_visual_publish_stage() {
   # launcher hands it `CC_PIPELINE_STAGE_ID=<step>#<attempt>` and the step is
   # the plan's single `visual-publish` step. The router and the driver carry no
   # stage id, so they never match.
-  local sid="${CC_PIPELINE_STAGE_ID:-}" step
+  #
+  # THE STEP ID ALONE DOES NOT SAY WHICH STAGE IS UP. The approved-screen
+  # reflection is a re-convergence on that same step's key, so its session
+  # carries the same `<step>#<attempt>`. The kind the gate wrote when it
+  # launched the attempt (`<step>.kind`) tells them apart: a recorded kind other
+  # than `visual-publish` is not the publish stage. A stage the driver started
+  # leaves no such record, and the driver never starts a re-convergence on the
+  # step, so that attempt still reads as the publish stage.
+  local sid="${CC_PIPELINE_STAGE_ID:-}" step k=''
   [ -n "$sid" ] || return 1
   step=$(gate_run_scope_step visual-publish 2>/dev/null) || return 1
-  [ "${sid%#*}" = "$step" ]
+  [ "${sid%#*}" = "$step" ] || return 1
+  [ -n "${RUN_DIR:-}" ] && [ -f "$RUN_DIR/$step.kind" ] \
+    && k=$( { sed -n '1p' "$RUN_DIR/$step.kind" 2>/dev/null || true; } | tr -d '[:space:]')
+  [ -z "$k" ] || [ "$k" = "visual-publish" ]
 }
 
 gate_ban_line_id() {
@@ -8053,8 +8064,8 @@ surface_of_argv0() {
       esac ;;
     visual-check.sh)
       case "${1:-}" in
-        scan|size|approval|bundle|binding|system|confirm|system-users|run-state|reuse) printf '읽기' ;;
-        *)                                                                            printf '등급 미상' ;;
+        scan|size|approval|drift|bundle|binding|system|confirm|system-users|run-state|reuse) printf '읽기' ;;
+        *)                                                                                  printf '등급 미상' ;;
       esac ;;
     visual-capture.sh)
       case "${1:-}" in
@@ -13113,10 +13124,12 @@ gate_stage_row_segment() {
   local key="$1" skind="$2" rk
   # A re-convergence on the audit step's key is that step's stage too, and so
   # is one on the design step's key — the review a person opens on a design
-  # stage's residual ladder.
+  # stage's residual ladder — and so is one on the visual publish step's key,
+  # the approved-screen reflection a person's `승인` to its `시각-판정` opens.
   if rk=$(gate_run_scope_kind_of_key "$key") \
      && { [ "$rk" = "$skind" ] \
-          || { { [ "$rk" = "audit" ] || [ "$rk" = "design" ]; } && [ "$skind" = "reconverge" ]; }; }; then
+          || { { [ "$rk" = "audit" ] || [ "$rk" = "design" ] || [ "$rk" = "visual-publish" ]; } \
+               && [ "$skind" = "reconverge" ]; }; }; then
     printf '%s' '-'
   else
     printf '%s' "$key"
@@ -13131,11 +13144,13 @@ gate_stage_result_rows_of() {
   # run-scope stage, which carries no `종류`, is never read as this one. The
   # audit step's key also carries the re-convergence an adopted requirement
   # sends there, and the design step's key the one a person's `골격 재검토`
-  # opens on its residual ladder (`gate_design_reconverge_entry`).
+  # opens on its residual ladder (`gate_design_reconverge_entry`), and the
+  # visual publish step's key the approved-screen reflection
+  # (`gate_approval_reflection_entry`).
   local rk rk2
   rk=$(gate_run_scope_kind_of_key "$1" 2>/dev/null) || rk=design
   rk2=$rk
-  { [ "$rk" = "audit" ] || [ "$rk" = "design" ]; } && rk2=reconverge
+  { [ "$rk" = "audit" ] || [ "$rk" = "design" ] || [ "$rk" = "visual-publish" ]; } && rk2=reconverge
   { gate_rows 'stage-result' || true; } \
     | { grep -F -e "세그먼트=$1 " -e "세그먼트=- | 스테이지=$1 | 종류=$rk " \
                -e "세그먼트=- | 스테이지=$1 | 종류=$rk2 " || true; }
@@ -13260,14 +13275,20 @@ gate_replan_eval() {
   # Clauses 3 to 6 in one pass over the ledger, so the order clause 3 asks
   # about is the ledger's own. Whole-field matches on the row padded with a
   # trailing separator, the way `gate_has_row` reads a field.
-  out=$(awk -v sib="$sib" -v st="$st" -v at="$at" '
+  # A row on the visual publish step's key is the approved-screen reflection:
+  # it carries `재설계 필요` because it edits decision sentences, but it moves
+  # no slice, so it is never the cited reason to plan a sibling again.
+  local vp=''
+  vp=$(gate_run_scope_step visual-publish 2>/dev/null) || vp=''
+  out=$(awk -v sib="$sib" -v st="$st" -v at="$at" -v vp="$vp" '
     BEGIN { n4 = 0; ok4 = 0; cl = 0; minplan = 0; dup = 0; nrep = 0 }
     { r = $0 " | " }
     index($0, "- `stage-result`") == 1 {
       if (st != "" && index(r, " | 스테이지=" st " | ") && index(r, " | 실행 버전=" at " | ")) {
         n4++; cl = NR
         ok4 = (index(r, " | 기록자=게이트 | ") && index(r, " | 종류=reconverge | ") \
-               && index(r, " | 재수렴 판정=재설계 필요 | ") && !index(r, " | 세그먼트=" sib " | "))
+               && index(r, " | 재수렴 판정=재설계 필요 | ") && !index(r, " | 세그먼트=" sib " | ") \
+               && !(vp != "" && index(r, " | 세그먼트=- | 스테이지=" vp " | ")))
       }
       # An implement row is `종류=implement`, or the driver`s `스테이지=S4` row,
       # which carries no `종류` — the reading `implement_process_b` makes.
@@ -14131,14 +14152,18 @@ gate_replan_due_json() {
   # whose state is `가능` is an act the gate admits. A capped sibling a person
   # has decided since the re-convergence (`gate_replan_person_decided`) is left
   # out: the question its `상한` asked for has been answered and carried out.
+  # A row on the visual publish step's key — the approved-screen reflection —
+  # names no sibling at all: it moves no slice (clause 4 refuses citing it).
   local LC_CTYPE=C; export LC_CTYPE
-  local row rs st at cite sib state first=1
+  local row rs st at cite sib state first=1 vp=''
+  vp=$(gate_run_scope_step visual-publish 2>/dev/null) || vp=''
   while IFS= read -r row; do
     [ -n "$row" ] || continue
     rs=$(gate_row_field "$row" '세그먼트')
     st=$(gate_row_field "$row" '스테이지')
     at=$(gate_row_field "$row" '실행 버전')
     [ -n "$st" ] && [ -n "$at" ] || continue
+    [ -z "$vp" ] || [ "$rs" != "-" ] || [ "$st" != "$vp" ] || continue
     cite="$st#$at"
     for sib in $(gate_segment_ids); do
       [ -n "$sib" ] && [ "$sib" != "$rs" ] || continue
@@ -14630,6 +14655,214 @@ gate_design_reconverge_entry() {
     fi
   fi
   GATE_DRC_RECORD=$rec
+}
+
+gate_approval_reflection_live() {
+  # gate_approval_reflection_live <visual publish step id> — 0 while an attempt
+  # on that step's key is running and the gate launched it as a
+  # re-convergence: the approved-screen reflection, which writes the design
+  # document and the visual sidecar.
+  local k=''
+  gate_stage_live_attempt "$1" || return 1
+  [ -f "$RUN_DIR/$1.kind" ] \
+    && k=$( { sed -n '1p' "$RUN_DIR/$1.kind" 2>/dev/null || true; } | tr -d '[:space:]')
+  [ "$k" = "reconverge" ]
+}
+
+gate_approval_reflection_scope_of() {
+  # gate_approval_reflection_scope_of <reflection halt record> — the record
+  # path the `범위=승인 화면 반영 <path>` piece of its `**관측 상세**` names,
+  # or nothing.
+  sed -n 's/^\*\*관측 상세\*\*: //p' "$1" 2>/dev/null \
+    | sed -nE 's/^.*범위=승인 화면 반영 (\/[^[:space:]]*\.md).*$/\1/p' | sed -n '1p'
+}
+
+gate_approval_reflection_retry_ok() {
+  # gate_approval_reflection_retry_ok <step id> <stage-result row> — 0 when that
+  # reflection attempt ended in one of the two ends the same answer is let in
+  # again for: a `precondition-failed` stop (the document moved, or its lock
+  # was busy, before anything was published), or an end with no halt record
+  # that is not a normal completion (a timeout, a spent budget, a crash).
+  local cls att rec
+  cls=$(gate_row_field "$2" '종단 부류')
+  [ "$cls" != "정상 완료" ] || return 1
+  att=$(gate_row_field "$2" '실행 버전')
+  rec="$RUN_DIR/halt/$1#$att.md"
+  if [ -n "$att" ] && [ -f "$rec" ]; then
+    [ "$(sed -n 's/^\*\*분류\*\*:[[:space:]]*//p' "$rec" 2>/dev/null | sed -n '1s/[[:space:]]*$//p')" = "precondition-failed" ]
+    return
+  fi
+  [ "$cls" != "의도된 park" ]
+}
+
+gate_approval_reflection_entry() {
+  # gate_approval_reflection_entry <visual publish step id> — 0 when a
+  # `- reconverge` on that step's key is the approved-screen reflection a
+  # person's answer opened, with GATE_ARE_RECORD the `시각-판정` record the
+  # dispatch's scope `승인 화면 반영 <record>` has to name; 1 otherwise, with
+  # GATE_ARE_WHY saying which fact is missing.
+  #
+  # ONE PERSON'S ANSWER OPENS ONE REFLECTION, read from the ledger and the
+  # run's `halt/` alone, the way `gate_design_reconverge_entry` admits its
+  # review — without that function's residual-ladder record or its reading of
+  # the state after a freeze. All five must hold:
+  #
+  # 1. The record is the answering run's latest `시각-판정` record of the step
+  #    (`visual-check.sh run-state`), named `<step>#<n>.md`, and the sidecar's
+  #    `**구현 승인**` line names it in its `사람 답` tail.
+  # 2. The key's last `중단 답` is a person's: `승인` to that record, or
+  #    `결정 첨부 후 다시 반영` to a reflection stop record
+  #    (`**스텝**: Step 3 승인 화면 반영 …`) whose scope names that record.
+  # 3. The approval predicate's first line is `승인 보류 — 설계 문서 반영 대기`,
+  #    or, for the second kind of answer, also `승인 보류 — 설계 문서 반영 실패 …`.
+  # 4. No re-convergence of the key lands after that answer. One that ended
+  #    before publishing on `precondition-failed`, or with no halt record and
+  #    not normally (`gate_approval_reflection_retry_ok`), lets the same answer
+  #    in once more; a third attempt is refused.
+  # 5. No attempt is running on the design, audit or visual publish step's key:
+  #    the reflection writes the document those stages write.
+  #
+  # A `--resume` IS ADMITTED ONLY AS A RE-ATTACHMENT. The key's last row is a
+  # re-convergence whose session is the one being resumed; nothing else lets a
+  # resume in, since a person's answer to a reflection stop is carried to a
+  # fresh session with its scope, never resumed.
+  #
+  # AN ANSWER BROUGHT IN FROM AN EARLIER RUN (`출처 런`) is read through the
+  # copy the gate made under this run's `halt/` and the row's `출처 기록`: the
+  # earlier run is the answering run of condition 1, its latest `시각-판정`
+  # record is read from its own directory, ledger and manifest, and the
+  # sidecar's tail names that earlier record. A `승인` answer's scope is the
+  # copy; a reflection stop's scope is the path its `범위` piece names. The
+  # approval predicate's verdict is the sidecar's own, so a tail naming an
+  # earlier run's record holds the screens back in this run exactly as one
+  # naming this run's record does.
+  local pstep="$1" lines last ln row rec opt by src sdir sledger sman orec vrec scope name latest
+  local sc tail pred k s lrow rows n
+  GATE_ARE_RECORD=''; GATE_ARE_WHY=''
+  for s in "$(gate_run_scope_step design 2>/dev/null || true)" \
+           "$(gate_run_scope_step audit 2>/dev/null || true)" "$pstep"; do
+    [ -n "$s" ] || continue
+    if gate_stage_live_attempt "$s"; then
+      GATE_ARE_WHY="${s} 에 살아 있는 시도가 있습니다 — 승인 화면 반영은 설계·감사·시각 발행 단계 어느 쪽에도 살아 있는 시도가 없을 때만 뜹니다"
+      return 1
+    fi
+  done
+  if [ -n "${GATE_RESUME:-}" ]; then
+    lrow=$(gate_stage_result_rows_of "$pstep" | tail -1)
+    if [ "$(gate_row_field "$lrow" '종류')" = "reconverge" ] \
+       && [ "$(gate_row_field "$lrow" '세션 id')" = "$GATE_RESUME" ]; then
+      return 0
+    fi
+    GATE_ARE_WHY="시각 발행 단계(${pstep})의 마지막 행이 재개하는 세션(${GATE_RESUME})의 재수렴이 아닙니다"
+    return 1
+  fi
+  lines=$( { grep -n -F "| 세그먼트=$pstep |" "$LEDGER" 2>/dev/null || true; } \
+           | { grep "^[0-9]*:- \`중단 답\` " || true; })
+  last=${lines##*$'\n'}
+  if [ -z "$last" ]; then
+    GATE_ARE_WHY="시각 발행 단계(${pstep})에 중단 답 행이 없습니다"
+    return 1
+  fi
+  ln=${last%%:*}; row=${last#*:}
+  rec=$(gate_row_field "$row" '중단 기록')
+  opt=$(gate_row_field "$row" '선택지')
+  by=$(gate_halt_answered_by "$row")
+  if [ "$by" != '사람' ]; then
+    GATE_ARE_WHY="시각 발행 단계(${pstep})의 마지막 중단 답(원장 ${ln}번째 줄)을 사람이 하지 않았습니다(답한 주체=${by})"
+    return 1
+  fi
+  case "$rec" in
+    "$RUN_DIR"/halt/*/*|*/../*|*/./*) rec='' ;;
+    "$RUN_DIR"/halt/*.md) ;;
+    *) rec='' ;;
+  esac
+  if [ -z "$rec" ] || [ ! -f "$rec" ]; then
+    GATE_ARE_WHY="마지막 중단 답(원장 ${ln}번째 줄)의 중단 기록이 이 런의 halt 바로 아래에 없습니다"
+    return 1
+  fi
+  src=$(gate_row_field "$row" '출처 런')
+  if [ -n "$src" ]; then
+    sdir="$(dirname "$RUN_DIR")/$src"
+    sledger="$(dirname "$LEDGER")/$src.md"
+    sman="$(dirname "$LEDGER")/$src.plan.md"
+    orec=$(gate_carry_abs "$(gate_row_field "$row" '출처 기록')")
+    case "$orec" in
+      "$sdir"/halt/*.md) ;;
+      *) GATE_ARE_WHY="앞선 런에서 들인 답의 출처 기록이 그 런의 halt 아래에 없습니다: ${orec:-(없음)}"
+         return 1 ;;
+    esac
+  else
+    sdir=$RUN_DIR; sledger=$LEDGER; sman=${MANIFEST:-}; orec=$rec
+  fi
+  case "$opt" in
+    승인)
+      if ! halt_step_has_prefix "$rec" '시각-판정'; then
+        GATE_ARE_WHY="「승인」 답의 기록이 시각-판정 기록이 아닙니다: $rec"
+        return 1
+      fi
+      vrec=$orec; scope=$rec ;;
+    '결정 첨부 후 다시 반영')
+      if ! halt_step_has_prefix "$rec" 'Step 3 승인 화면 반영'; then
+        GATE_ARE_WHY="「결정 첨부 후 다시 반영」 답의 기록이 승인 화면 반영 정지 기록이 아닙니다: $rec"
+        return 1
+      fi
+      vrec=$(gate_approval_reflection_scope_of "$rec")
+      case "$vrec" in
+        "$sdir"/halt/*.md) ;;
+        *) GATE_ARE_WHY="반영 정지 기록의 범위가 답한 런의 시각-판정 기록을 가리키지 않습니다: ${vrec:-(범위 없음)}"
+           return 1 ;;
+      esac
+      if ! halt_step_has_prefix "$vrec" '시각-판정'; then
+        GATE_ARE_WHY="반영 정지 기록의 범위가 가리키는 기록이 시각-판정 기록이 아닙니다: $vrec"
+        return 1
+      fi
+      scope=$vrec ;;
+    *)
+      GATE_ARE_WHY="시각 발행 단계(${pstep})의 마지막 중단 답(원장 ${ln}번째 줄)이 사람의 「승인」 이나 「결정 첨부 후 다시 반영」 이 아닙니다(선택지=${opt})"
+      return 1 ;;
+  esac
+  name=${vrec##*/}
+  case "$name" in
+    "$pstep#"*.md) n=${name#"$pstep#"}; n=${n%.md} ;;
+    *) n='' ;;
+  esac
+  case "$n" in
+    ''|*[!0-9]*)
+      GATE_ARE_WHY="시각-판정 기록 이름이 ${pstep}#<n>.md 가 아닙니다: $name"
+      return 1 ;;
+  esac
+  latest=$(bash "$GATE_DIR/visual-check.sh" run-state "${DOC:-}" --run-dir "$sdir" \
+             --ledger "$sledger" --manifest "$sman" 2>/dev/null \
+           | awk -v k='시각-판정 기록 ' 'index($0, k) == 1 { print substr($0, length(k) + 1); exit }')
+  if [ "$latest" != "$name" ]; then
+    GATE_ARE_WHY="기록 ${name} 이 답한 런의 가장 마지막 시각-판정 기록(${latest:-없음})이 아닙니다"
+    return 1
+  fi
+  sc=$(visual_sidecar_path "${DOC:-}" 2>/dev/null || true)
+  tail=$( { grep -E '^\*\*구현 승인\*\*:' "$sc" 2>/dev/null || true; } | sed -n '1p' \
+          | sed -nE 's/^.* — 사람 답 ([A-Za-z0-9._#-]+\.md)[[:space:]]*$/\1/p')
+  if [ "$tail" != "$name" ]; then
+    GATE_ARE_WHY="사이드카의 구현 승인 줄이 기록 ${name} 을 사람 답 꼬리로 달고 있지 않습니다(꼬리=${tail:-없음})"
+    return 1
+  fi
+  pred=$(bash "$GATE_DIR/visual-check.sh" approval "${DOC:-}" 2>/dev/null | sed -n '1p')
+  case "$opt:$pred" in
+    *':승인 보류 — 설계 문서 반영 대기') ;;
+    '결정 첨부 후 다시 반영:승인 보류 — 설계 문서 반영 실패'*) ;;
+    *) GATE_ARE_WHY="승인 술어가 반영을 기다리는 보류가 아닙니다(${pred:-출력 없음})"
+       return 1 ;;
+  esac
+  rows=$( { grep -n -F "세그먼트=- | 스테이지=$pstep | 종류=reconverge " "$LEDGER" 2>/dev/null || true; } \
+          | { grep "^[0-9]*:- \`stage-result\` " || true; } \
+          | { grep -vF '| 관측=스폰 전 대기 중' || true; } \
+          | awk -F: -v l="$ln" '$1 > l')
+  k=$(grep -c . <<< "$rows" || true)
+  if [ "$k" -ge 2 ] \
+     || { [ "$k" = "1" ] && ! gate_approval_reflection_retry_ok "$pstep" "${rows#*:}"; }; then
+    GATE_ARE_WHY="이 답(원장 ${ln}번째 줄)으로 승인 화면 반영을 이미 ${k}번 들였습니다 — 같은 답으로 다시 들이는 것은 첫 시도가 게시 전 precondition-failed 나 정지 기록 없는 비정상 종료로 끝났을 때 한 번뿐입니다"
+    return 1
+  fi
+  GATE_ARE_RECORD=$scope
 }
 
 gate_stage_live_attempt() {
@@ -16564,7 +16797,17 @@ gate_redeclare_after_reconverge() {
   # key's row re-declares that segment; a run-scope row (`세그먼트=-`, a
   # design or audit key) re-declares every segment whose last state is one a
   # re-declaration is made in, one isolated call each. Always 0.
-  local rs="$1" ref="$2" sid
+  #
+  # A ROW ON THE VISUAL PUBLISH STEP'S KEY RE-DECLARES NOTHING. The only
+  # re-convergence that key carries is the approved-screen reflection, which
+  # may not edit `## 구현 슬라이싱`, so no segment's declaration moves with it;
+  # its `재설계 필요` verdict is not a signal to plan again. The stream path
+  # and the halt-answer settlement both come through here, so both skip it.
+  local rs="$1" ref="$2" sid vp
+  if [ "$rs" = "-" ] && vp=$(gate_run_scope_step visual-publish 2>/dev/null) \
+     && [ "${ref%#*}" = "$vp" ]; then
+    return 0
+  fi
   if [ "$rs" != "-" ]; then
     [ -z "$rs" ] || gate_segment_redeclare_isolated "$rs" "$ref"
     return 0
@@ -16582,8 +16825,11 @@ gate_decl_reconverge_after() {
   # normally ended re-convergence row written below the segment's last
   # declaration row (its planning row or a re-declaration row); empty when
   # there is none. Any key's re-convergence counts: a run-scope one and a
-  # sibling segment's can move this segment's declaration as well.
-  local dl rr
+  # sibling segment's can move this segment's declaration as well — except one
+  # on the visual publish step's key, the approved-screen reflection, which
+  # cannot edit `## 구현 슬라이싱` and so moves no declaration.
+  local dl rr vp=''
+  vp=$(gate_run_scope_step visual-publish 2>/dev/null) || vp=''
   dl=$( { LC_ALL=C awk 'index($0, "- `segment` ") == 1 { print NR " " $0 }' "$LEDGER" 2>/dev/null || true; } \
         | gate_rows_field_eq 'id' "$1" | awk '
           { n = split($0, f, "|"); st = ""; dd = 0; rd = 0
@@ -16598,7 +16844,8 @@ gate_decl_reconverge_after() {
             if ((st == "계획됨" && dd) || rd) { split($0, w, " "); l = w[1] } }
           END { print l + 0 }')
   rr=$( { LC_ALL=C awk 'index($0, "- `stage-result` ") == 1 { print NR " " $0 }' "$LEDGER" 2>/dev/null || true; } \
-        | gate_rows_field_eq '종류' 'reconverge' | gate_rows_field_eq '종단 부류' '정상 완료' | tail -1)
+        | gate_rows_field_eq '종류' 'reconverge' | gate_rows_field_eq '종단 부류' '정상 완료' \
+        | { if [ -n "$vp" ]; then grep -vF "| 세그먼트=- | 스테이지=$vp |" || true; else cat; fi; } | tail -1)
   [ -n "$rr" ] || return 0
   [ "${rr%% *}" -gt "${dl:-0}" ] || return 0
   printf '%s#%s' "$(gate_row_field "$rr" '스테이지')" "$(gate_row_field "$rr" '실행 버전')"
@@ -27965,7 +28212,9 @@ gate_carry_scope_ok() {
   # past the answers handed to re-convergence attempts, the first answer a stage
   # took up whose skill is not `design-reconverge` is the one that started this
   # re-convergence, and its record is the scope's record. `감사 종합 요구` is an
-  # audit's answer and `구속 티어 이탈` an implement stage's.
+  # audit's answer, `구속 티어 이탈` an implement stage's, and
+  # `승인 화면 반영` the visual publish stage's: a person's `승인` to its
+  # `시각-판정` record, which that stage took up before the reflection ran.
   #
   # `R<n>` is checked against the carrier and the record: the block naming the
   # item is still `대기` (a finished re-convergence closes it), and the record
@@ -27980,9 +28229,10 @@ gate_carry_scope_ok() {
     return 1
   fi
   case "$scope" in
-    '감사 종합 요구 /'*|'구속 티어 이탈 /'*)
+    '감사 종합 요구 /'*|'구속 티어 이탈 /'*|'승인 화면 반영 /'*)
       case "$scope" in
         '감사 종합 요구 '*) want=design-audit-unattended ;;
+        '승인 화면 반영 '*) want=visual-publish-unattended ;;
         *) want=implement-unattended ;;
       esac
       lim=999999999
@@ -28066,9 +28316,10 @@ gate_halt_settle_line_parse() {
 
 gate_halt_detail_scope() {
   # gate_halt_detail_scope <관측 상세> — the scope a re-convergence halt says it
-  # was handed (`범위=<scope>`), or nothing. The two shapes with a record are
-  # three words and the record's path; anything else is its first token, which
-  # is enough for a caller that refuses every other shape.
+  # was handed (`범위=<scope>`), or nothing. The three shapes with a record
+  # (`구속 티어 이탈`, `감사 종합 요구`, `승인 화면 반영`) are three words and the
+  # record's path; anything else is its first token, which is enough for a
+  # caller that refuses every other shape.
   # Only the parts before the first one starting `고칠 곳 근거=` are read: from
   # there to the end is a stage's excerpt of a command's output, and a
   # ` 범위=` inside it is not this record's scope.
@@ -28083,7 +28334,8 @@ gate_halt_detail_scope() {
       v = substr(s, i + length(" 범위="))
       n = split(v, w, " ")
       if (n >= 4 && ((w[1] == "구속" && w[2] == "티어" && w[3] == "이탈") \
-                     || (w[1] == "감사" && w[2] == "종합" && w[3] == "요구"))) {
+                     || (w[1] == "감사" && w[2] == "종합" && w[3] == "요구") \
+                     || (w[1] == "승인" && w[2] == "화면" && w[3] == "반영"))) {
         print w[1] " " w[2] " " w[3] " " w[4]; exit
       }
       if (n >= 1) print w[1]
@@ -28268,12 +28520,17 @@ gate_row_is_pre_session_death() {
 }
 
 gate_stage_last_settled_row() {
-  # gate_stage_last_settled_row <key> — the key's last `stage-result` row that
-  # is not a pre-session death (`gate_row_is_pre_session_death`), or nothing.
-  local r last=''
+  # gate_stage_last_settled_row <key> [<kind to skip>] — the key's last
+  # `stage-result` row that is not a pre-session death
+  # (`gate_row_is_pre_session_death`), or nothing. With a second argument, rows
+  # whose `종류` is that kind are passed over too: the visual publish key also
+  # holds the approval-reflection re-convergence's rows, and an answer to the
+  # publish stage's own halt re-attaches the publish session, not that one.
+  local r last='' skip="${2:-}"
   while IFS= read -r r; do
     [ -n "$r" ] || continue
     gate_row_is_pre_session_death "$r" && continue
+    [ -z "$skip" ] || [ "$(gate_row_field "$r" '종류')" != "$skip" ] || continue
     last=$r
   done <<EOF
 $( { gate_stage_result_rows_of "$1" || true; } | { grep -F -- '- `stage-result`' || true; })
@@ -28638,8 +28895,17 @@ gate_halt_answer_route() {
     # `gate_audit_reconverge_keyable` reads it: this run holds no attempt of
     # the key before the carry act takes the answer up, so the last row is the
     # earlier run's, and the shift hands the answer on by that act.
+    #
+    # On the visual publish key, an answer to a record that is not an
+    # approval-reflection halt re-attaches the publish session, so the
+    # reflection re-convergence's rows on the same key are passed over.
     id=재부착
-    last=$(gate_stage_last_settled_row "$key")
+    local skipk=''
+    if [ "$key" = "$(gate_run_scope_step visual-publish 2>/dev/null || true)" ] \
+       && ! halt_step_has_prefix "$rec" 'Step 3 승인 화면 반영'; then
+      skipk=reconverge
+    fi
+    last=$(gate_stage_last_settled_row "$key" "$skipk")
     if [ -z "$last" ]; then
       cl=$(gate_key_imported_deferred_answer "$key")
       [ -z "$cl" ] || last=$(gate_carry_source_last_row "$cl")
@@ -42512,6 +42778,15 @@ EOF
         warn "이 중단 기록은 시각 발행 단계의 사람 전용 질문입니다(시각-판정·금지-후보·발행-실패·디자인-시스템-판정) — 답한 주체=사람 의 답만 기록합니다: $hrec"
         return "$GATE_EXIT_RULE"
       fi
+      # SO IS THE APPROVED-SCREEN REFLECTION'S STOP. The decision that settles a
+      # collision between the approved screens and the design document is one
+      # only a person knows, and the record is no site of the publish stage's
+      # table, so the step is compared by its own prefix: the step itself, or
+      # the step followed by ` — `.
+      if [ "$hby" != "사람" ] && halt_step_has_prefix "$hrec" 'Step 3 승인 화면 반영'; then
+        warn "이 중단 기록은 승인 화면 반영 정지입니다 — 충돌을 푸는 결정은 사람만 알므로 답한 주체=사람 의 답만 기록합니다: $hrec"
+        return "$GATE_EXIT_RULE"
+      fi
       # A CLAUSE'S EVIDENCE REQUEST IS A PERSON'S TOO, recommendation or not:
       # the run already ran what it could and judged what it ran, so an answer
       # from the seat would be the run settling its own clause a second time.
@@ -52612,6 +52887,7 @@ gate_verb_act() {
   local stage_key="$segment" stage_is_run_scope_step=0 rs_kind="${1:-}" rs_table="${1:-}" rs_skill rs_astep="" rs_alast=""
   local rs_dstep="" rs_drec="" rs_aok="" rs_dok="" rs_dwhy=""
   local rs_ckey="" rs_crec="" rs_cok="" rs_cwhy=""
+  local rs_pstep="" rs_prec="" rs_pok="" rs_pwhy=""
   if [ "$kind" = "skill" ] && [ "$segment" = "-" ] && [ "$rs_kind" = "reconverge" ]; then
     rs_table=""
     if rs_astep=$(gate_run_scope_step audit); then
@@ -52662,6 +52938,40 @@ gate_verb_act() {
       [ "$rs_ckey" != "$rs_astep" ] || rs_aok=""
       [ "$rs_ckey" != "$rs_dstep" ] || rs_dok=""
     fi
+    # AND ON THE VISUAL PUBLISH STEP'S KEY, THE APPROVED-SCREEN REFLECTION a
+    # person's answer opens (`gate_approval_reflection_entry`). Its scope
+    # `승인 화면 반영 <record>` is carried by no other branch, so when another
+    # branch is open as well the prompt decides, as it does for the
+    # collection: that exact scope is this branch and the others do not
+    # match, any other scope is not this branch. A `--resume` carries no
+    # scope; the entry admits it only as a re-attachment of the reflection's
+    # own last session, and then the others do not match.
+    if rs_pstep=$(gate_run_scope_step visual-publish 2>/dev/null); then
+      if gate_approval_reflection_entry "$rs_pstep"; then
+        rs_pok=1
+        rs_prec=$GATE_ARE_RECORD
+      else
+        rs_pwhy=$GATE_ARE_WHY
+      fi
+    else
+      rs_pstep=""
+    fi
+    if [ -n "$rs_pok" ]; then
+      if [ -n "${GATE_RESUME:-}" ]; then
+        rs_aok="" rs_dok="" rs_cok=""
+      else
+        local rs_pp rs_prest
+        rs_pp=$(gate_skill_prompt_of "$@")
+        rs_prest=${rs_pp#'/cc-cmds:design-reconverge '}
+        rs_prest=${rs_prest#* }
+        if [ "$rs_prest" = "승인 화면 반영 $rs_prec" ]; then
+          rs_aok="" rs_dok="" rs_cok=""
+        else
+          rs_pok=""
+          rs_pwhy="프롬프트의 범위가 「승인 화면 반영 ${rs_prec}」 가 아닙니다 — 지금 범위는 「${rs_prest}」 입니다"
+        fi
+      fi
+    fi
     # THE COLLECTION'S SCOPE IS ITS OWN. Its prompt names `구속 티어 이탈` and
     # the record's absolute path, which no other branch's scope carries, so when
     # another branch is open as well the prompt decides: that exact scope is
@@ -52681,8 +52991,8 @@ gate_verb_act() {
     if [ -n "$rs_aok" ] && [ -n "$rs_dok" ] && [ -z "$rs_cok" ]; then
       warn "- reconverge 가 감사 단계(${rs_astep})의 재수렴과 설계 단계(${rs_dstep})의 잔여 동결 재검토 양쪽에 다 맞습니다 — 게이트는 둘 중 하나를 고르지 않습니다"
       exit "$GATE_EXIT_RULE"
-    elif [ "$(( ${rs_aok:-0} + ${rs_dok:-0} + ${rs_cok:-0} ))" -gt 1 ]; then
-      warn "- reconverge 가 감사 단계(${rs_astep:-없음})의 재수렴, 설계 단계(${rs_dstep:-없음})의 잔여 동결 재검토, 결정 수거 답의 재수렴(${rs_ckey}) 가운데 둘 이상에 맞습니다 — 게이트는 그 가운데 하나를 고르지 않습니다"
+    elif [ "$(( ${rs_aok:-0} + ${rs_dok:-0} + ${rs_cok:-0} + ${rs_pok:-0} ))" -gt 1 ]; then
+      warn "- reconverge 가 감사 단계(${rs_astep:-없음})의 재수렴, 설계 단계(${rs_dstep:-없음})의 잔여 동결 재검토, 결정 수거 답의 재수렴(${rs_ckey:-없음}), 승인 화면 반영(${rs_pstep:-없음}) 가운데 둘 이상에 맞습니다 — 게이트는 그 가운데 하나를 고르지 않습니다"
       exit "$GATE_EXIT_RULE"
     elif [ -n "$rs_aok" ]; then
       rs_table=audit
@@ -52690,10 +53000,13 @@ gate_verb_act() {
       rs_table=design
     elif [ -n "$rs_cok" ]; then
       rs_table=$(gate_run_scope_kind_of_key "$rs_ckey")
+    elif [ -n "$rs_pok" ]; then
+      rs_table=visual-publish
     else
       warn "- reconverge 는 감사 단계(${rs_astep:-없음})의 마지막 행이 의도된 park 로 끝난 감사이거나, 재수렴 요청=예 로 정상 완료된 감사에 범위 감사 골격급 을 실었거나, --resume 이 그 마지막 재수렴 행의 세션일 때만 받습니다 — 지금 마지막 행은 종류=$(gate_row_field "$rs_alast" '종류') · 종단 부류=$(gate_row_field "$rs_alast" '종단 부류') 입니다"
       [ -z "$rs_dwhy" ] || warn "설계 단계의 잔여 동결 재검토로도 받지 않습니다 — $rs_dwhy"
       [ -z "$rs_cwhy" ] || warn "결정 수거 답의 재수렴으로도 받지 않습니다 — $rs_cwhy"
+      [ -z "$rs_pwhy" ] || warn "승인 화면 반영 재수렴으로도 받지 않습니다 — $rs_pwhy"
     fi
   fi
   if [ "$kind" = "skill" ] && [ "$segment" = "-" ] \
@@ -52715,6 +53028,24 @@ gate_verb_act() {
       exit "$GATE_EXIT_RULE"
     fi
     stage_is_run_scope_step=1
+
+    # NOTHING ELSE WRITES THE DOCUMENT WHILE THE REFLECTION RUNS. The
+    # approved-screen reflection edits the design document and the visual
+    # sidecar, so while its attempt is up no visual publish dispatch on its key
+    # (a revision round and a reopening included) and no dispatch on the design
+    # or audit step's key is let in — the reflection's own entry refuses the
+    # other way round. The publish step's re-dispatch rule reads only
+    # `종류=visual-publish` rows, so it cannot see a reflection in progress;
+    # this refusal stands apart from it.
+    local rs_lp
+    if rs_lp=$(gate_run_scope_step visual-publish 2>/dev/null) \
+       && gate_approval_reflection_live "$rs_lp" \
+       && { [ "$stage_key" = "$rs_lp" ] \
+            || [ "$stage_key" = "$(gate_run_scope_step design 2>/dev/null || true)" ] \
+            || [ "$stage_key" = "$(gate_run_scope_step audit 2>/dev/null || true)" ]; }; then
+      warn "시각 발행 단계(${rs_lp})에서 승인 화면 반영이 아직 돌고 있습니다 — 그 시도가 끝나기 전에는 ${stage_key} 에 ${rs_kind} 를 보내지 않습니다"
+      exit "$GATE_EXIT_RULE"
+    fi
 
     # AND THE DOCUMENT MUST ALREADY HAVE A NAME. `## 요소` → `설계 문서` is what
     # the dispatch, every guard standing around it and the later audit all

@@ -1176,5 +1176,159 @@ check "유휴 F″ — 같은 런이라도 방금 지켜보기 시작한 호출�
 check "유휴 F‴ — 임계보다 오래 지켜본 호출자에게는 유휴다" \
   "$(cc_run_idle_exit "$FX_RUN_DIR" "" "$FX_LEDGER" "$(( $(date -u +%s) - 90000 ))" && printf '유휴' || printf '유휴 아님')" "유휴"
 
+# ---------------------------------------------------------------------------
+# The ledger readers' one-pass tables against the per-id pipelines they replaced.
+#
+# THE ORACLE IS THE OLD CODE, RUN. The approval and segment readers, and the
+# watcher's `open_approval_ids`, answer from one `awk` table now; their output
+# bytes and exit codes have to be the old pipelines', because the gate sources
+# the same readers. The oracle is the base commit's own `liveness.sh` and
+# `watch.sh` when this clone holds that commit; a shallow clone does not, and
+# there the oracle is the current file with the table turned off, which runs
+# the per-id pipeline each reader keeps beside its table. The label names which
+# oracle ran.
+#
+# EACH LEDGER LANDS ON AN EDGE: ids that overlap as prefixes and substrings, an
+# id quoted inside another approval's question, an id in the last field, one
+# with trailing blanks, a reopened id, segment ids after a later `id=`, merged
+# segments whose apply is still owed, an empty and a missing ledger, a last line
+# without a newline — and the ledgers the table must decline: glob characters
+# and blanks in an id, a Unicode blank after a value, a row that is not UTF-8.
+# Each is read in the C locale, a UTF-8 one and the ambient one, from a
+# directory where a glob id has something to expand to.
+# ---------------------------------------------------------------------------
+EQ_BASE=6968d458990d51326d7094dc20747f16562e8315
+EQ_DIR="$WORK/eq"
+mkdir -p "$EQ_DIR/cwd" "$EQ_DIR/out"
+: > "$EQ_DIR/cwd/G1"; : > "$EQ_DIR/cwd/Gx"
+if ( cd "$repo_root" && git cat-file -e "$EQ_BASE:plugins/cc-cmds/orchestrator/liveness.sh" ) 2>/dev/null; then
+  ( cd "$repo_root" && git show "$EQ_BASE:plugins/cc-cmds/orchestrator/liveness.sh" ) > "$EQ_DIR/oracle-liveness.sh"
+  ( cd "$repo_root" && git show "$EQ_BASE:plugins/cc-cmds/orchestrator/watch.sh" ) \
+    | sed -n '/^open_approval_ids() {/,/^}/p' > "$EQ_DIR/oracle-oai.sh"
+  EQ_KIND="베이스 ${EQ_BASE%"${EQ_BASE#????????}"}"
+  EQ_OFF=":"
+else
+  cp "$LIVENESS" "$EQ_DIR/oracle-liveness.sh"
+  sed -n '/^open_approval_ids() {/,/^}/p' "$WATCH" > "$EQ_DIR/oracle-oai.sh"
+  EQ_KIND="표를 끈 현재 판"
+  EQ_OFF='cc__table_into() { return 1; }'
+fi
+sed -n '/^open_approval_ids() {/,/^}/p' "$WATCH" > "$EQ_DIR/new-oai.sh"
+check "동치 — 오라클의 open_approval_ids 를 꺼냈다" "$( [ -s "$EQ_DIR/oracle-oai.sh" ] && printf 있음 || printf 없음 )" "있음"
+check "동치 — 새 open_approval_ids 를 꺼냈다" "$( [ -s "$EQ_DIR/new-oai.sh" ] && printf 있음 || printf 없음 )" "있음"
+
+eq_run() {
+  # eq_run <liveness> <prelude> <oai file> <function> <ledger> <locale> <out>
+  # — runs one reader under `set -euo pipefail` and prints its exit code.
+  local rc=0
+  ( cd "$EQ_DIR/cwd" || exit 97
+    if [ -n "$6" ]; then LC_ALL=$6; export LC_ALL; fi
+    CC_EQ_L="$1" CC_EQ_P="$2" CC_EQ_O="$3" LEDGER="$5" \
+      bash -c 'set -euo pipefail; . "$CC_EQ_L"; eval "$(cat "$CC_EQ_O")"; eval "$CC_EQ_P"; "$1" "$2"' eq "$4" "$5"
+  ) > "$7" 2>/dev/null || rc=$?
+  printf '%s' "$rc"
+}
+
+EQ_L="$EQ_DIR/ledgers"; mkdir -p "$EQ_L"
+printf '%s\n' \
+  '- `run` | 시작=2026-11-10T00:00:00Z' \
+  '- `승인` | 승인 id=A1 | 상태=대기 | 절단점=경계 | 질문=첫째' \
+  '- `승인` | 승인 id=A10 | 상태=대기 | 절단점=커밋' \
+  '- `승인` | 승인 id=A10x | 상태=대기' \
+  '- `승인` | 승인 id=A1 | 상태=승인' \
+  '- `승인` | 승인 id=B2 | 상태=대기 | 질문=승인 id=A10 을 보고 | 절단점=-' \
+  '- `승인` | 승인 id=C3 | 상태=승인 | 질문=앞서 | 승인 id=A10x | 를 다시' \
+  '- `승인` | 승인 id=Z9  | 상태=대기 ' \
+  '- `승인` | 승인 id=Q1 | 상태=대기 | 상태=거부 | 상태=대기 |' \
+  '- `승인` | 승인 id=A1 | 상태=대기 | 절단점=경계  ' \
+  '- `blocked` | 승인 id=X1 | 상태=대기 |' \
+  '- `승인`  | 승인 id=D4 | 상태=대기 |' > "$EQ_L/appr"
+printf '%s' '- `승인` | 상태=대기 | 승인 id=L1' >> "$EQ_L/appr"
+printf '%s\n' \
+  '- `segment` | id=S1 | 상태=실행중' \
+  '- `segment` | id=S10 | 상태=머지됨' \
+  '- `segment` | id=S1 | 상태=머지됨 | 적용=대기' \
+  '- `segment` | id=S2 | 상태=머지됨 | 적용=미정산' \
+  '- `segment` | id=S3 | 상태=머지됨 | 적용=대기' \
+  '- `segment` | id=S3 | 상태=park | 적용=불명' \
+  '- `segment` | id=S4 | 상태=완료 | 메모=xid=S9 ' \
+  '- `segment` | id=S5  | 상태=실행중' \
+  '- `segment` | 앵커 id=S6|상태=완료' \
+  '- `segment` | id=S7 | 상태=머지됨 | 상태=park ' \
+  '- `segment` | id=S8 | 상태=' > "$EQ_L/seg"
+printf '%s' '- `segment` | id=S11 | 상태=완료' >> "$EQ_L/seg"
+cat "$EQ_L/appr" > "$EQ_L/both"; printf '\n' >> "$EQ_L/both"; cat "$EQ_L/seg" >> "$EQ_L/both"
+: > "$EQ_L/empty"
+printf '%s\n' '- `run` | 시작=2026-11-10T00:00:00Z' > "$EQ_L/norows"
+printf '%s\n' '- `승인` | 승인 id=G* | 상태=대기 |' '- `승인` | 승인 id=a b | 상태=대기 |' \
+  '- `승인` | 승인 id=[x] | 상태=대기 |' > "$EQ_L/glob"
+printf '%s\n' '- `segment` | id=G* | 상태=실행중' >> "$EQ_L/glob"
+printf '%s\n' '- `승인` | 승인 id=U1 | 상태=대기　|' '- `승인` | 승인 id=U2 | 상태=대기'$'\xc2\xa0''|' > "$EQ_L/ublank"
+printf '%s\n' '- `segment` | id=U3 | 상태=완료'$'\xe3\x80\x80' >> "$EQ_L/ublank"
+printf '%s\n' '- `승인` | 승인 id=V1 | 상태=대기 | 질문='$'\xff''x |' > "$EQ_L/badutf8"
+printf '%s\n' '- `segment` | id=V2 | 상태=완료 | '$'\xfe' >> "$EQ_L/badutf8"
+
+eq_utf8=$(locale -a 2>/dev/null | grep -i -m1 -E '^(en_US|C|ko_KR)\.utf-?8$' || true)
+eq_n=0; eq_bad=0; eq_detail=""
+for eq_led in appr seg both empty norows glob ublank badutf8 missing; do
+  eq_path="$EQ_L/$eq_led"
+  for eq_loc in "" C ${eq_utf8:+"$eq_utf8"}; do
+    for eq_fn in cc_open_approvals cc_open_approval_rows cc_nonterminal_segments cc_segment_states cc_segment_count open_approval_ids; do
+      eq_tag="$eq_led.${eq_loc:-ambient}.$eq_fn"
+      eq_ro=$(eq_run "$EQ_DIR/oracle-liveness.sh" "$EQ_OFF" "$EQ_DIR/oracle-oai.sh" "$eq_fn" "$eq_path" "$eq_loc" "$EQ_DIR/out/$eq_tag.old")
+      eq_rn=$(eq_run "$LIVENESS" ":" "$EQ_DIR/new-oai.sh" "$eq_fn" "$eq_path" "$eq_loc" "$EQ_DIR/out/$eq_tag.new")
+      eq_n=$((eq_n + 1))
+      if [ "$eq_ro" != "$eq_rn" ] || ! cmp -s "$EQ_DIR/out/$eq_tag.old" "$EQ_DIR/out/$eq_tag.new"; then
+        eq_bad=$((eq_bad + 1)); eq_detail="$eq_detail $eq_tag(rc $eq_ro/$eq_rn)"
+      fi
+    done
+  done
+done
+check "동치 ($EQ_KIND) — 원장 판독 여섯 개가 옛 파이프라인과 출력·종료 코드가 다른 경우의 수${eq_detail:+ —$eq_detail}" "$eq_bad" "0"
+check "동치 — 비교가 공허하지 않다 (원장 9 × 로캘 × 판독 6 이상)" "$( [ "$eq_n" -ge 108 ] && printf 예 || printf "아니오 ($eq_n)" )" "예"
+check "동치 — 여섯 판독이 쓸 답을 실제로 냈다 (A1·A10·B2·Q1·D4 가 열림)" \
+  "$(tr '\n' ' ' < "$EQ_DIR/out/appr.C.open_approval_ids.new")" "A1 A10 B2 D4 Q1 "
+
+eq_tbl() { ( cd "$EQ_DIR/cwd" && bash -c '. "$1"; "$2" "$3" | { IFS= read -r l; printf "%s" "$l"; cat >/dev/null; }' eq "$LIVENESS" "$1" "$2" ); }
+check "동치 — 안전한 원장에서는 승인 표가 실제로 쓰인다" \
+  "$( [ "$(eq_tbl cc__approval_table "$EQ_L/appr")" != F ] && printf 표 || printf 물러남 )" "표"
+check "동치 — 안전한 원장에서는 세그먼트 표가 실제로 쓰인다" \
+  "$( [ "$(eq_tbl cc__segment_table "$EQ_L/seg")" != F ] && printf 표 || printf 물러남 )" "표"
+for eq_led in glob ublank badutf8; do
+  check "동치 — $eq_led 원장에서는 승인 표가 물러난다" "$(eq_tbl cc__approval_table "$EQ_L/$eq_led")" "F"
+  check "동치 — $eq_led 원장에서는 세그먼트 표가 물러난다" "$(eq_tbl cc__segment_table "$EQ_L/$eq_led")" "F"
+done
+check "동치 — 기본이 아닌 IFS 에서는 표를 쓰지 않는다" \
+  "$(bash -c '. "$1"; IFS=$'"'"'\n'"'"'; if cc__table_into t cc__approval_table "$2"; then printf 표; else printf 물러남; fi' eq "$LIVENESS" "$EQ_L/appr")" "물러남"
+
+# The fingerprint and the epoch conversion now set a variable rather than
+# print; the printing forms wrap them and must print what they printed.
+eq_dead=$(bash -c 'echo $$')
+for eq_pid in "$$" "$eq_dead"; do
+  eq_old=$( { LC_ALL=C ps -o lstart= -p "$eq_pid" 2>/dev/null || true; } | sed 's/[[:space:]]\{1,\}/ /g;s/^ //;s/ $//' | od -c)
+  eq_new=$(bash -c '. "$1"; cc_proc_fingerprint "$2"' eq "$LIVENESS" "$eq_pid" | od -c)
+  check "지문 — 감싼 cc_proc_fingerprint 가 옛 ps|sed 와 같은 바이트를 낸다 (pid $eq_pid)" "$eq_new" "$eq_old"
+done
+check "지문 — 살아 있는 pid 의 지문이 비어 있지 않다" \
+  "$( [ -n "$(bash -c '. "$1"; cc_proc_fingerprint $$' eq "$LIVENESS")" ] && printf 있음 || printf 없음 )" "있음"
+for eq_iso in 1970-01-01T00:00:00Z 2000-02-29T23:59:59Z 2026-11-10T12:34:56Z; do
+  check "시각 — cc_epoch_to_iso 가 cc_iso_to_epoch 의 역이다 ($eq_iso)" \
+    "$(bash -c '. "$1"; cc_epoch_to_iso "$(cc_iso_to_epoch "$2")"' eq "$LIVENESS" "$eq_iso")" "$eq_iso"
+done
+check "시각 — 정수가 아닌 epoch 은 빈 답이다" "$(bash -c '. "$1"; cc_epoch_to_iso 1x' eq "$LIVENESS")" ""
+
+# The two forms of the ISO-to-epoch conversion are two bodies, not a wrapper
+# and its core: the printing one stays self-contained because a test lifts it
+# on its own source text. So they are held to one answer over stamps that parse,
+# stamps that do not, and the edges where the digit extraction differs — extra
+# digits, digits outside the ASCII range, a leading-zero month and an empty input.
+for eq_iso in 1970-01-01T00:00:00Z 2000-02-29T23:59:59Z 2026-11-10T12:34:56Z 2099-12-31T23:59:59Z \
+              2024-01-08T09:08:07Z 20261110T123456Z 2026-11-10T12:34:56.789Z 1969-12-31T23:59:59Z \
+              2026-13-01T00:00:00Z 2026-11-32T00:00:00Z 2026-11-10 '' 'x' '２０２６-11-10T12:34:56Z'; do
+  check "시각 — cc_iso_to_epoch_into 가 cc_iso_to_epoch 와 같은 답을 낸다 ('$eq_iso')" \
+    "$(bash -c '. "$1"; cc_iso_to_epoch_into v "$2"; printf "%s" "$v"' eq "$LIVENESS" "$eq_iso")" \
+    "$(bash -c '. "$1"; cc_iso_to_epoch "$2"' eq "$LIVENESS" "$eq_iso")"
+done
+
 printf '\n통과 %s · 실패 %s\n' "$passed" "$failed"
 [ "$failed" -eq 0 ]

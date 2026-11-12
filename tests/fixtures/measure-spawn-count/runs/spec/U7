@@ -1,0 +1,27 @@
+env	CC_CMDS_GATE_PATH_DISABLE_PREPEND	1
+env	CC_CMDS_NOTIFY_PATH_DISABLE_PREPEND	1
+env	CC_CMDS_ATTENTION_ROOT	@ROOT@/attention-absent
+env	CC_CMDS_DASHBOARD	off
+env	XDG_STATE_HOME	@ROOT@/state
+env	XDG_CONFIG_HOME	@ROOT@/config
+env	CLAUDE_PROJECT_DIR	@EMPTY@
+env	TMUX	@UNSET@
+env	TMUX_PANE	@UNSET@
+env	GH_HOST	invalid.invalid
+env	GH_TOKEN
+fixture	copy	gate/hook hook
+fixture	mkdir	hook/settings
+fixture	stdin	hook/payload.json
+argv	main	@HOOKS@/gate-pretool.sh
+argv	main	--run-dir
+argv	main	@ROOT@/hook
+argv	main	--gate
+argv	main	@ORCH@/gate.sh
+argv	main	--ledger
+argv	main	@ROOT@/hook/ledger.md
+argv	main	--grant
+argv	main	@ROOT@/hook/grant.md
+argv	main	--manifest
+argv	main	@ROOT@/hook/plan.md
+stop	exit	-
+stop	expect	main "permissionDecision":"allow"

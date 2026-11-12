@@ -83,7 +83,12 @@
 
 set -uo pipefail
 
-CHECKS_DIR=$(cd "$(dirname "$0")" && pwd)
+checks_src=$0
+case "$checks_src" in
+  */*) checks_src=${checks_src%/*}; [ -n "$checks_src" ] || checks_src=/ ;;
+  *) checks_src=. ;;
+esac
+CHECKS_DIR=$(cd "$checks_src" && pwd)
 # shellcheck source=/dev/null
 . "$CHECKS_DIR/liveness.sh"
 # The run's version pin, for the same hop the gate, the watcher and the feed take.
@@ -124,10 +129,16 @@ esac
 
 OBSERVED="$RUN_DIR/checks.observed"
 PIDF="$RUN_DIR/checks.pid"
+# The stderr capture of the two `gh pr checks` calls: one file for the life of
+# this process, overwritten by each call and removed with the pid record, so a
+# poll makes no temporary of its own.
+CHECKS_ERR=$(mktemp 2>/dev/null || true)
 # When this poller started watching. The idle exit counts from no earlier than
 # this, so a poller started on a run that has been quiet for a day does not
-# leave on its first pass.
-CHECKS_STARTED=$(date -u +%s)
+# leave on its first pass. It is also the anchor of the memory clock
+# (`cc_clock_start`) the observed lines are stamped from.
+cc_clock_start
+CHECKS_STARTED=$CC_CLOCK_EPOCH0
 
 # The clip ceilings, spelled here because the poller is the one that cuts. The
 # drain re-applies `gate_row_safe` at the same widths, and that is a second line
@@ -135,9 +146,14 @@ CHECKS_STARTED=$(date -u +%s)
 REQ_MAX=200
 FAIL_MAX=300
 
-TAB=$(printf '\t')
+TAB=$'\t'
 
-now_iso() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+now_iso() {
+  local now s
+  cc_clock_now_into now
+  cc_epoch_to_iso_into s "$now"
+  printf '%s\n' "$s"
+}
 
 clip_bytes() {
   # clip_bytes <text> <max-bytes> — BYTES, and never mid-character.
@@ -178,14 +194,46 @@ field_safe() {
   clip_bytes "$(printf '%s' "$1" | tr '\t' ' ' | tr '|' '/' | tr '\n\r' '  ' | tr -s ' ')" "$2"
 }
 
-row_series() {
-  printf '%s' "$1" | sed -n 's/^- `\([^`]*\)`.*/\1/p'
+row_series_into() {
+  # row_series_into <var> <row> — the series name between the row's leading
+  # "- `" and the next backtick, or empty when the row has no such pair. The
+  # backtick sits in a variable so no quoted backtick appears inside a
+  # double-quoted expansion, which the static spawn count reads as a command
+  # substitution.
+  local __r="$2" __bt='`'
+  printf -v "$1" '%s' ""
+  case "$__r" in "- $__bt"*) __r=${__r#"- $__bt"} ;; *) return 0 ;; esac
+  case "$__r" in *"$__bt"*) printf -v "$1" '%s' "${__r%%"$__bt"*}" ;; esac
+}
+
+row_field_into() {
+  # row_field_into <var> <row> <key> — the row grammar guarantees no field value
+  # carries a `|` or a newline, so splitting on `|` and taking the first match is
+  # exact. The first `|`-separated piece that, past its leading spaces, starts
+  # with `<key>=` gives the value, its trailing whitespace taken off; <var> is
+  # set empty when no piece does. Builtins only, so a row read field by field
+  # forks for none of them.
+  local __rest="$2" __p __v
+  printf -v "$1" '%s' ""
+  while :; do
+    __p=${__rest%%|*}
+    __p=${__p#"${__p%%[! ]*}"}
+    case "$__p" in
+      "$3="*)
+        __v=${__p#"$3="}
+        __v=${__v%"${__v##*[![:space:]]}"}
+        printf -v "$1" '%s' "$__v"
+        return 0 ;;
+    esac
+    case "$__rest" in *'|'*) __rest=${__rest#*|} ;; *) return 0 ;; esac
+  done
 }
 
 row_field() {
-  # row_field <row> <key> — the row grammar guarantees no field value carries a
-  # `|` or a newline, so splitting on `|` and taking the first match is exact.
-  printf '%s' "$1" | tr '|' '\n' | sed -n "s/^ *$2=//p" | sed 's/[[:space:]]*$//' | head -1
+  # row_field <row> <key> — `row_field_into`, printed.
+  local v
+  row_field_into v "$1" "$2"
+  printf '%s' "$v"
 }
 
 # ---------------------------------------------------------------------------
@@ -216,13 +264,23 @@ row_field() {
 STATE_TBL=""
 SEEDED=0
 
-tbl_key_re() {
-  printf '%s' "$1" | sed 's/[][\.*^$\/&]/\\&/g'
+tbl_get_into() {
+  # tbl_get_into <var> <pr> <sha> <g> — the last recorded state for that key, or
+  # empty. The key is matched as a literal prefix of the line, with builtins.
+  local __k="$2$TAB$3$TAB$4$TAB" __l __v=""
+  while IFS= read -r __l; do
+    case "$__l" in "$__k"*) __v=${__l#"$__k"} ;; esac
+  done <<EOF
+$STATE_TBL
+EOF
+  printf -v "$1" '%s' "$__v"
 }
 
 tbl_get() {
-  # tbl_get <pr> <sha> <g> — the last recorded state for that key, or empty.
-  printf '%s' "$STATE_TBL" | sed -n "s/^$(tbl_key_re "$1")$TAB$(tbl_key_re "$2")$TAB$(tbl_key_re "$3")$TAB//p" | tail -1
+  # tbl_get <pr> <sha> <g> — `tbl_get_into`, printed.
+  local v
+  tbl_get_into v "$1" "$2" "$3"
+  printf '%s' "$v"
 }
 
 tbl_put() {
@@ -242,6 +300,19 @@ tbl_state() {
 
 num_or_zero() {
   case "$1" in ''|*[!0-9]*) printf '0' ;; *) printf '%s' "$1" ;; esac
+}
+
+tbl_state_into() {
+  # tbl_state_into <var> <상태> <진행 중> — `tbl_state`, set into <var>.
+  case "$3" in
+    ''|*[!0-9]*|0) printf -v "$1" '%s/0' "$2" ;;
+    *) printf -v "$1" '%s/1' "$2" ;;
+  esac
+}
+
+num_or_zero_into() {
+  # num_or_zero_into <var> <value> — `num_or_zero`, set into <var>.
+  case "$2" in ''|*[!0-9]*) printf -v "$1" '0' ;; *) printf -v "$1" '%s' "$2" ;; esac
 }
 
 seed_table() {
@@ -267,19 +338,21 @@ seed_table() {
   #
   # A ROW OR LINE WITHOUT THE ROUND COLUMNS seeds round 0 with nothing running:
   # it was written before the round existed, and round 0 is what it observed.
-  local row f line ts seg pr sha st req fail g pend
+  local row f line ts seg pr sha st req fail g pend series v cur
   [ "$SEEDED" = "0" ] || return 0
   SEEDED=1
   while IFS= read -r row; do
     [ -n "$row" ] || continue
-    [ "$(row_series "$row")" = "checks" ] || continue
-    pr=$(row_field "$row" 'PR')
-    sha=$(row_field "$row" 'head sha')
-    st=$(row_field "$row" '상태')
-    g=$(num_or_zero "$(row_field "$row" '재실행 회차')")
-    pend=$(num_or_zero "$(row_field "$row" '진행 중')")
+    row_series_into series "$row"
+    [ "$series" = "checks" ] || continue
+    row_field_into pr "$row" 'PR'
+    row_field_into sha "$row" 'head sha'
+    row_field_into st "$row" '상태'
+    row_field_into v "$row" '재실행 회차'; num_or_zero_into g "$v"
+    row_field_into v "$row" '진행 중'; num_or_zero_into pend "$v"
     [ -n "$pr" ] && [ -n "$sha" ] && [ -n "$st" ] || continue
-    tbl_put "$pr" "$sha" "$g" "$(tbl_state "$st" "$pend")"
+    tbl_state_into cur "$st" "$pend"
+    tbl_put "$pr" "$sha" "$g" "$cur"
   done <<EOF
 $( { grep '^- `checks`' "$LEDGER" 2>/dev/null || true; } )
 EOF
@@ -301,7 +374,8 @@ $line
 LINE
       fi
       [ -n "$pr" ] && [ -n "$sha" ] && [ -n "$st" ] || continue
-      tbl_put "$pr" "$sha" "$g" "$(tbl_state "$st" "$pend")"
+      tbl_state_into cur "$st" "$pend"
+      tbl_put "$pr" "$sha" "$g" "$cur"
     done < "$f"
   done <<EOF
 $( { ls -tr "$RUN_DIR"/checks.observed.draining.* 2>/dev/null || true; } )
@@ -320,28 +394,93 @@ EOF
 # row there is — so the poller reads the row's branch when it is there and
 # derives it from the worktree when it is not, and serves both paths.
 # ---------------------------------------------------------------------------
+# The ledger's `segment` rows, read ONCE A PASS into `SEG_ROWS` by `pass_once`,
+# so the id list and each segment's last row come from one read rather than a
+# pipeline per segment.
+SEG_ROWS=""
+
 segment_ids() {
-  { grep '^- `segment`' "$LEDGER" 2>/dev/null || true; } \
-    | sed -n 's/^- `segment` .*| *id=\([^|]*\).*/\1/p' \
-    | sed 's/[[:space:]]*$//' | awk '!seen[$0]++'
+  # The id after the LAST `|` whose piece starts, past its spaces, with `id=`, up
+  # to the next `|`, trailing whitespace off, first occurrence order — what the
+  # greedy `s/^- `segment` .*| *id=\([^|]*\).*/\1/p` and `awk '!seen[$0]++'`
+  # pipeline gave.
+  [ -n "$SEG_ROWS" ] || return 0
+  awk '
+    index($0, "- `segment` ") == 1 {
+      s = substr($0, 13); n = split(s, p, "|"); got = 0
+      for (i = n; i >= 2; i--) {
+        t = p[i]; sub(/^ */, "", t)
+        if (index(t, "id=") == 1) { v = substr(t, 4); got = 1; break }
+      }
+      if (!got) next
+      sub(/[[:space:]]*$/, "", v)
+      if (!seen[v]++) print v
+    }' <<EOF
+$SEG_ROWS
+EOF
 }
 
-segment_last_row() {
-  # EVERY GREP IN THE PIPELINE CARRIES `|| true`. This file runs under `pipefail`,
-  # so an unmatched filter in the middle makes the whole substitution report
-  # failure — and the segment this poller has nothing recorded for is the ordinary
-  # case, not the exceptional one.
-  { grep '^- `segment`' "$LEDGER" 2>/dev/null || true; } \
-    | { grep -F "id=$1 " || true; } | tail -1
+segment_last_row_into() {
+  # segment_last_row_into <var> <seg> — the last `segment` row whose text
+  # contains `id=<seg> `, the substring `grep -F` matched, read from `SEG_ROWS`
+  # with builtins; <var> is set empty when no row does.
+  local __l __r=""
+  while IFS= read -r __l; do
+    case "$__l" in *"id=$2 "*) __r=$__l ;; esac
+  done <<EOF
+$SEG_ROWS
+EOF
+  printf -v "$1" '%s' "$__r"
 }
 
-manifest_home_slug() {
+json_first_into() {
+  # json_first_into <var> <text> <prefix> <chars> <terminator> — what
+  # `sed -n 's/.*<prefix>\([<chars>]*\)<terminator>.*/\1/p' | head -1` prints:
+  # on the first line where the pattern matches, the run of <chars> after the
+  # LAST <prefix> that the run and <terminator> follow (the greedy `.*` takes the
+  # rightmost one that fits). An empty <terminator> matches anything. <var> is
+  # set empty when no line matches.
+  local __l __s __a __h
+  printf -v "$1" '%s' ""
+  while IFS= read -r __l; do
+    __s=$__l
+    while :; do
+      case "$__s" in *"$3"*) ;; *) break ;; esac
+      __a=${__s##*"$3"}
+      __h=${__a%%[!$4]*}
+      if [ -z "$5" ] || [ "${__a:${#__h}:${#5}}" = "$5" ]; then
+        printf -v "$1" '%s' "$__h"
+        return 0
+      fi
+      __s=${__s%"$3"*}
+    done
+  done <<EOF
+$2
+EOF
+  return 0
+}
+
+manifest_home_slug_into() {
   # The `홈=예` target row of the MANIFEST. `홈=` is a manifest field; the
   # ledger's nearest series is `대상 추가` and it has no such field at all —
   # reading the ledger for it lands on a row that does not exist.
-  { grep '^- `target`' "$MANIFEST" 2>/dev/null || true; } \
-    | { grep -F '홈=예' || true; } | tail -1 | tr '|' '\n' \
-    | sed -n 's/^ *원격 슬러그=//p' | sed 's/[[:space:]]*$//' | head -1
+  #
+  # Read once a pass: `pass_once` empties `HOME_SLUG_READ` and the first segment
+  # that needs it fills `HOME_SLUG`.
+  #
+  # manifest_home_slug_into <var>. Read once a pass: `pass_once` sets
+  # `HOME_SLUG_READ=0` and the first segment that needs the slug fills
+  # `HOME_SLUG`.
+  local l r=""
+  if [ "${HOME_SLUG_READ:-0}" != 1 ]; then
+    while IFS= read -r l || [ -n "$l" ]; do
+      case "$l" in '- `target`'*'홈=예'*) r=$l ;; esac
+    done 2>/dev/null < "$MANIFEST"
+    HOME_SLUG=""
+    if [ -n "$r" ]; then row_field_into HOME_SLUG "$r" '원격 슬러그'; fi
+    HOME_SLUG_READ=1
+  fi
+  printf -v "$1" '%s' "$HOME_SLUG"
 }
 
 branch_of() {
@@ -376,6 +515,32 @@ slug_of() {
   printf '%s' "$out" | sed 's#.*[:/]\([^/]*/[^/]*\)$#\1#'
 }
 
+# A worktree's branch and slug, MEMOISED FOR THE LIFE OF THIS PROCESS: one line
+# `<kind>\t<worktree>\t<value>` per answer, the first answer kept. Only an
+# answer that is not empty is kept, so a worktree that has no branch or remote
+# yet is asked again on the next pass.
+WT_MEMO=""
+
+wt_memo_into() {
+  # wt_memo_into <var> <branch|slug> <worktree> — `branch_of`/`slug_of` of the
+  # worktree, from the memo when it holds one.
+  local k="$2$TAB$3$TAB" l v=""
+  while IFS= read -r l; do
+    case "$l" in "$k"*) v=${l#"$k"}; break ;; esac
+  done <<EOF
+$WT_MEMO
+EOF
+  if [ -z "$v" ]; then
+    case "$2" in
+      branch) v=$(branch_of "$3") ;;
+      slug) v=$(slug_of "$3") ;;
+    esac
+    if [ -n "$v" ]; then WT_MEMO="${WT_MEMO}$k$v
+"; fi
+  fi
+  printf -v "$1" '%s' "$v"
+}
+
 # ---------------------------------------------------------------------------
 # The two questions, and the fifth status value that keeps them honest.
 #
@@ -406,25 +571,27 @@ poll_status() {
   # quickly failing shard beside running ones answers rc=1 like a settled
   # failure. The `pending` rows of that same output are what tell the two apart;
   # every other answer carries 0.
-  local slug="$1" n="$2" out err rc fails pend
-  err=$(mktemp)
+  #
+  # The stderr goes to `CHECKS_ERR`, the process's one capture file, and is read
+  # back with a builtin.
+  local slug="$1" n="$2" out err="${CHECKS_ERR:-/dev/null}" rc fails pend msg
   out=$(gh -R "$slug" pr checks "$n" 2>"$err"); rc=$?
   case "$rc" in
-    0) printf '통과\t0\t-'; rm -f "$err"; return 0 ;;
-    8) printf '대기\t0\t-'; rm -f "$err"; return 0 ;;
+    0) printf '통과\t0\t-'; return 0 ;;
+    8) printf '대기\t0\t-'; return 0 ;;
   esac
   if [ "$rc" = "1" ]; then
     fails=$(printf '%s' "$out" | awk -F'\t' '$2 == "fail" { printf "%s%s", sep, $1; sep = ", " }')
     if [ -n "$fails" ]; then
       pend=$(printf '%s\n' "$out" | awk -F'\t' '$2 == "pending" { c++ } END { print c + 0 }')
-      printf '실패\t%s\t%s' "${pend:-0}" "$fails"; rm -f "$err"; return 0
+      printf '실패\t%s\t%s' "${pend:-0}" "$fails"; return 0
     fi
-    if no_checks_reply "$(cat "$err" 2>/dev/null || true)"; then
-      printf '미등록\t0\t-'; rm -f "$err"; return 0
+    cc__file_bytes msg "$err"
+    if no_checks_reply "$msg"; then
+      printf '미등록\t0\t-'; return 0
     fi
   fi
   printf '판정 불가\t0\t-'
-  rm -f "$err"
   return 0
 }
 
@@ -436,21 +603,20 @@ poll_required() {
   # count is a local variable that is gone the moment the merge returns, and by
   # morning only the ledger is left to tell "nothing was required" from "a
   # required check broke".
-  local slug="$1" n="$2" out err rc names
-  err=$(mktemp)
+  local slug="$1" n="$2" out err="${CHECKS_ERR:-/dev/null}" rc names msg
   out=$(gh -R "$slug" pr checks "$n" --required 2>"$err"); rc=$?
   names=$(names_of "$out")
   if [ -n "$names" ]; then
-    printf '%s' "$names"; rm -f "$err"; return 0
+    printf '%s' "$names"; return 0
   fi
-  if no_checks_reply "$(cat "$err" 2>/dev/null || true)"; then
-    printf '없음'; rm -f "$err"; return 0
+  cc__file_bytes msg "$err"
+  if no_checks_reply "$msg"; then
+    printf '없음'; return 0
   fi
   case "$rc" in
     0|8) printf '없음' ;;
     *)   printf '판정 불가' ;;
   esac
-  rm -f "$err"
   return 0
 }
 
@@ -464,24 +630,26 @@ pass_once() {
   [ -d "$RUN_DIR" ] && printf '%s' "$$" > "$PIDF"
   [ -f "$LEDGER" ] || return 0
   seed_table
+  SEG_ROWS=$( { grep '^- `segment`' "$LEDGER" 2>/dev/null || true; } )
+  HOME_SLUG_READ=0
 
   for seg in $(segment_ids); do
-    row=$(segment_last_row "$seg")
+    segment_last_row_into row "$seg"
     [ -n "$row" ] || continue
-    st=$(row_field "$row" '상태')
+    row_field_into st "$row" '상태'
     case "$st" in 머지됨|완료|park) continue ;; esac
 
-    branch=$(row_field "$row" '브랜치')
-    wt=$(row_field "$row" '워크트리')
+    row_field_into branch "$row" '브랜치'
+    row_field_into wt "$row" '워크트리'
     if [ -z "$branch" ] || [ "$branch" = "-" ] || [ "$branch" = "없음" ]; then
       [ -n "$wt" ] && [ -d "$wt" ] || continue
-      branch=$(branch_of "$wt")
+      wt_memo_into branch branch "$wt"
     fi
     [ -n "$branch" ] || continue
 
     slug=""
-    [ -n "$wt" ] && [ -d "$wt" ] && slug=$(slug_of "$wt")
-    [ -n "$slug" ] || slug=$(manifest_home_slug)
+    if [ -n "$wt" ] && [ -d "$wt" ]; then wt_memo_into slug slug "$wt"; fi
+    [ -n "$slug" ] || manifest_home_slug_into slug
     [ -n "$slug" ] || continue
 
     # ONE CALL FOR BOTH HALVES OF THE IDENTITY. An empty result is NOT an error
@@ -489,9 +657,9 @@ pass_once() {
     # poll targets and not one line written". `미등록` is only ever written when
     # a PR EXISTS and carries no checks.
     listed=$(gh -R "$slug" pr list --head "$branch" --json number,headRefOid 2>/dev/null) || continue
-    n=$(printf '%s' "$listed" | sed -n 's/.*"number":\([0-9]*\).*/\1/p' | head -1)
+    json_first_into n "$listed" '"number":' '0123456789' ''
     [ -n "$n" ] || continue
-    sha=$(printf '%s' "$listed" | sed -n 's/.*"headRefOid":"\([0-9a-f]*\)".*/\1/p' | head -1)
+    json_first_into sha "$listed" '"headRefOid":"' '0123456789abcdef' '"'
     case "$sha" in
       ????????????????????????????????????????) : ;;
       *) sha="미상" ;;
@@ -502,17 +670,20 @@ pass_once() {
     # key must be a `gh pr checks` answer asked after that row was read. Read
     # the other way round, a pass straddling the row files the screen from
     # before the rerun — its `실패` — as round g's first line.
-    g=$(num_or_zero "$(cc_ci_round_get "$(cc_ci_round "$LEDGER" "$seg" "$sha")" g)")
+    num_or_zero_into g "$(cc_ci_round_get "$(cc_ci_round "$LEDGER" "$seg" "$sha")" g)"
     line=$(poll_status "$slug" "$n")
     status=${line%%"$TAB"*}
     line=${line#*"$TAB"}
-    pend=$(num_or_zero "${line%%"$TAB"*}")
+    num_or_zero_into pend "${line%%"$TAB"*}"
     fails=${line#*"$TAB"}
-    req=$(poll_required "$slug" "$n")
 
-    cur=$(tbl_state "$status" "$pend")
-    prev=$(tbl_get "$slug#$n" "$sha" "$g")
+    tbl_state_into cur "$status" "$pend"
+    tbl_get_into prev "$slug#$n" "$sha" "$g"
     [ "$prev" = "$cur" ] && continue
+    # `필수 집합` is asked only for an observation that is a transition: the
+    # columns of an unchanged state are never written, so asking for them on
+    # every pass was a `gh` call whose answer nothing read.
+    req=$(poll_required "$slug" "$n")
     # A `실패` IS COMMITTED ONLY WITH A SETTLED `필수 집합`. The two columns come
     # from two different `gh` calls, and the transition key is `상태` alone — so a
     # `실패` whose second call broke once was written as `필수 집합=판정 불가`,
@@ -550,7 +721,7 @@ pass_once() {
 }
 
 release_pid() {
-  rm -f "$PIDF" 2>/dev/null || true
+  rm -f "$PIDF" ${CHECKS_ERR:+"$CHECKS_ERR"} 2>/dev/null || true
 }
 
 run_is_over() {
@@ -596,10 +767,35 @@ run_is_over() {
 # going away is one of the ordinary ways a detached process ends.
 trap 'release_pid' EXIT HUP INT TERM
 
+# QUIET RUNS ARE POLLED EVERY `CC_QUIET_PASS_EVERY` CYCLES. While the watcher
+# reports the run quiet (`cc_watch_mode_quiet`), nothing on the ledger is moving and a PR's checks are
+# asked about once every few cycles instead of every one; a ledger written since
+# the last poll (`.checks.pollmark`) is polled at once. The first cycle always
+# polls. A cycle that does not poll still rewrites the pid record and still
+# leaves on `done` or a vanished run directory at once; the rest of the exits are
+# judged on polling cycles.
+checks_since_poll=0
+checks_cycle=0
 while :; do
-  pass_once
-  [ "$ONCE" = "1" ] && break
-  run_is_over && break
+  checks_poll=1
+  if [ "$checks_cycle" -gt 0 ] && [ -d "$RUN_DIR" ] && cc_watch_mode_quiet "$RUN_DIR" "$INTERVAL" \
+     && [ "$checks_since_poll" -lt $(( ${CC_QUIET_PASS_EVERY:-4} - 1 )) ] \
+     && ! [ "$LEDGER" -nt "$RUN_DIR/.checks.pollmark" ]; then
+    checks_poll=0
+  fi
+  checks_cycle=$((checks_cycle + 1))
+  if [ "$checks_poll" = "1" ]; then
+    checks_since_poll=0
+    [ -d "$RUN_DIR" ] && { : > "$RUN_DIR/.checks.pollmark"; } 2>/dev/null
+    pass_once
+    [ "$ONCE" = "1" ] && break
+    run_is_over && break
+  else
+    checks_since_poll=$((checks_since_poll + 1))
+    printf '%s' "$$" > "$PIDF"
+    [ -f "$RUN_DIR/done" ] && break
+    [ -d "$RUN_DIR" ] || { run_is_over && break; }
+  fi
   sleep "$INTERVAL"
 done
 exit 0

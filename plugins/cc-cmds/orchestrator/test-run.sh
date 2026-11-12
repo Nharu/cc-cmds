@@ -7356,6 +7356,215 @@ if [ -f "$FEED_SH" ]; then
 fi
 
 # ---------------------------------------------------------------------------
+# 29b. The progress channel and the poller on a quiet run.
+#
+# 감시자가 런을 조용하다고 적어 두는 동안(`watch.mode` 의 `quiet <epoch>`, 그 epoch 이
+# 간격 세 번 안) 진행 채널은 마지막 읽기보다 오래된 원장을 건너뛰고 감시자 침묵 판정도
+# 건너뛰며, 폴러는 PR 을 묻지 않는다. 둘 다 `CC_QUIET_PASS_EVERY` 주기마다는 건너뛰지
+# 않는다. 진짜 루프를 `--interval 1` 로 띄우고 주기마다 무엇이 돌았는지를 PATH 스텁으로
+# 센다 — 채널의 원장 읽기는 `awk` 한 번(`A`), 침묵 판정은 감시자 하트비트의 `date -r`
+# (`M`), 폴러의 폴링은 `gh` 호출(`G`), 주기의 끝은 `sleep`(`S`). 이 줄들은 루프의 자식이
+# 차례로 쓰므로 `S` 하나 앞에 무엇이 있었는지가 그 주기를 말한다. 글자는 주기마다
+# 하나다: 읽기와 판정 둘 다 `X`, 읽기(폴러는 폴링)만 `R`, 판정만 `C`, 둘 다 아님 `-`.
+#
+# `watch.mode` 는 시험이 대신 쓰며, 그 epoch 을 반 초마다 새로 적어 간격 세 번의 신선도
+# 안에 둔다. 낡은 epoch 과 없는 파일은 일하는 런이다 — 감시자가 죽거나 멎었을 때
+# 동반 프로세스가 느린 주기에 남지 않게 하는 쪽이다.
+# ---------------------------------------------------------------------------
+if [ -f "$FEED_SH" ] && [ -f "$CHECKS_SH" ] && command -v git >/dev/null 2>&1; then
+  QR_RD=$(mktemp -d "${TMPDIR:-/tmp}/cc-quiet-run.XXXXXX")
+  QR_FBIN="$QR_RD/fbin"; QR_CBIN="$QR_RD/cbin"; mkdir -p "$QR_FBIN" "$QR_CBIN"
+  QR_LOG="$QR_RD/cycles.log"
+  qr_awk=$(command -v awk); qr_sleep=$(command -v sleep); qr_date=$(command -v date)
+  # The ledger read's `awk` also appends the rows waiting in `QR_INJECT` once it
+  # has counted — a row that lands after the count, in the same pass.
+  cat > "$QR_FBIN/awk" <<STUB
+#!/usr/bin/env bash
+printf 'A\n' >> "\$QR_LOG"
+"$qr_awk" "\$@"; qr_rc=\$?
+if [ -n "\${QR_INJECT:-}" ] && [ -f "\$QR_INJECT" ]; then
+  cat "\$QR_INJECT" >> "\$QR_LEDGER"; rm -f "\$QR_INJECT"
+fi
+exit \$qr_rc
+STUB
+  cat > "$QR_FBIN/date" <<STUB
+#!/usr/bin/env bash
+case " \$* " in *" -r "*) printf 'M\n' >> "\$QR_LOG" ;; esac
+exec "$qr_date" "\$@"
+STUB
+  for qr_b in "$QR_FBIN" "$QR_CBIN"; do
+    cat > "$qr_b/sleep" <<STUB
+#!/usr/bin/env bash
+printf 'S\n' >> "\$QR_LOG"
+exec "$qr_sleep" "\$@"
+STUB
+  done
+  cat > "$QR_CBIN/gh" <<'STUB'
+#!/usr/bin/env bash
+printf 'G\n' >> "$QR_LOG"
+[ "$1" = "-R" ] || exit 2
+shift 2
+[ "$1" = "pr" ] || exit 2
+case "$2" in list) printf '[]\n'; exit 0 ;; esac
+exit 2
+STUB
+  chmod +x "$QR_FBIN"/* "$QR_CBIN"/*
+
+  QR_WT="$QR_RD/wt"; mkdir -p "$QR_WT"
+  ( cd "$QR_WT" \
+    && git init -q . >/dev/null 2>&1 \
+    && git config user.email 't@example.invalid' \
+    && git config user.name 'quiet test' \
+    && git config remote.origin.url 'https://github.com/Nharu/cc-cmds.git' \
+    && git commit -q --allow-empty -m 'x' \
+    && git checkout -q -b 'seg/qr' ) >/dev/null 2>&1
+  QR_MF="$QR_RD/manifest.md"
+  printf -- '- `target` | 별칭=home | 홈=예 | 원격 슬러그=Nharu/cc-cmds | 베이스 브랜치=master\n' > "$QR_MF"
+
+  qr_n=0
+  qr_fresh() {  # qr_fresh <mode: quiet|work|stale|none> — a new run directory and ledger
+    qr_n=$((qr_n + 1))
+    QR_D="$QR_RD/run$qr_n"; mkdir -p "$QR_D"
+    QR_LG="$QR_D/ledger.md"
+    printf -- '- `run` | 교대=0 | run-id=qr | prev=aaaa\n' > "$QR_LG"
+    printf -- '- `segment` | 교대=0 | id=S1 | 상태=실행중 | 워크트리=%s | prev=bbbb\n' "$QR_WT" >> "$QR_LG"
+    # Older than any mark a pass leaves, so the only reason to read it again is a
+    # forced cycle or a row written by the case.
+    touch -t 202001010000 "$QR_LG"
+    : > "$QR_D/watch.heartbeat"
+    : > "$QR_LOG"
+    QR_MODE="$1"
+  }
+  qr_mode_loop() {  # keeps watch.mode at the case's mode, every half second
+    while :; do
+      case "$QR_MODE" in
+        quiet) printf 'quiet %s\n' "$("$qr_date" -u +%s)" > "$QR_D/watch.mode" ;;
+        work)  printf 'work %s\n' "$("$qr_date" -u +%s)" > "$QR_D/watch.mode" ;;
+        stale) printf 'quiet %s\n' "$(( $("$qr_date" -u +%s) - 600 ))" > "$QR_D/watch.mode" ;;
+        none)  rm -f "$QR_D/watch.mode" ;;
+      esac
+      : > "$QR_D/watch.heartbeat"
+      "$qr_sleep" 0.5
+    done
+  }
+  qr_start() {  # qr_start feed|checks — the real loop, pid in QR_PID, mode keeper in QR_KEEP
+    qr_mode_loop & QR_KEEP=$!
+    "$qr_sleep" 0.2
+    if [ "$1" = feed ]; then
+      QR_LOG="$QR_LOG" QR_LEDGER="$QR_LG" QR_INJECT="$QR_D/inject" PATH="$QR_FBIN:$PATH" \
+        bash "$FEED_SH" --run-dir "$QR_D" --ledger "$QR_LG" --interval 1 \
+        > "$QR_D/out" 2> "$QR_D/err" &
+    else
+      QR_LOG="$QR_LOG" PATH="$QR_CBIN:$PATH" \
+        bash "$CHECKS_SH" --run-dir "$QR_D" --ledger "$QR_LG" --manifest "$QR_MF" --interval 1 \
+        > "$QR_D/out" 2> "$QR_D/err" &
+    fi
+    QR_PID=$!
+  }
+  # KILL, not TERM: the poller's TERM trap releases its pid record and returns
+  # to the loop, so a TERM leaves it running and the `wait` below never ends.
+  qr_stop() {
+    kill -KILL "$QR_PID" 2>/dev/null; wait "$QR_PID" 2>/dev/null
+    kill "$QR_KEEP" 2>/dev/null; wait "$QR_KEEP" 2>/dev/null
+    return 0
+  }
+  qr_done() { { grep -c '^S$' "$QR_LOG" 2>/dev/null || true; } | tr -d ' '; }
+  qr_wait() {  # qr_wait <cycles> — until that many have ended, at most 60 seconds
+    local i=0
+    while [ "$i" -lt 600 ]; do
+      [ "$(qr_done)" -ge "$1" ] && return 0
+      "$qr_sleep" 0.1; i=$((i + 1))
+    done
+    return 0
+  }
+  qr_seq() {
+    "$qr_awk" '$1 == "A" || $1 == "G" { a = 1 } $1 == "M" { m = 1 }
+      $1 == "S" { printf "%s", (a && m ? "X" : (a ? "R" : (m ? "C" : "-"))); a = 0; m = 0 }' "$QR_LOG"
+  }
+  qr_first_read_from() {  # qr_first_read_from <cycle> — index of the first reading cycle at or after it
+    qr_seq | "$qr_awk" -v c="$1" '{ for (i = c + 1; i <= length($0); i++) { ch = substr($0, i, 1); if (ch == "R" || ch == "X") { print i - 1; exit } } print "없음" }'
+  }
+
+  # --- the progress channel ------------------------------------------------
+  qr_fresh quiet
+  qr_start feed
+  qr_wait 9
+  qr_stop
+  check "진행 채널: 조용한 런은 4주기마다만 원장을 읽고 감시자 침묵을 판정한다" "$(qr_seq | cut -c1-9)" "X---X---X"
+  check "진행 채널: 그 동안 감시자 침묵 줄을 내지 않는다" \
+    "$( { grep -c '감시자 침묵' "$QR_D/out" || true; } | tr -d ' ')" "0"
+
+  for qr_m in work stale none; do
+    qr_fresh "$qr_m"
+    qr_start feed
+    qr_wait 5
+    qr_stop
+    # The forced read every `CC_QUIET_PASS_EVERY` cycles does not depend on the
+    # mode, so a working run also reads an unchanged ledger on cycle 4.
+    check "진행 채널: watch.mode 가 ${qr_m} 이면 지금처럼 주기마다 침묵을 판정하고, 바뀌지 않은 원장은 4주기마다만 읽는다" \
+      "$(qr_seq | cut -c1-5)" "XCCCX"
+  done
+
+  # A row written the next second after a read is read on the next cycle, not on
+  # the forced one; a row that lands after the count in the same pass — the same
+  # second as the mark — is read on the cycle after that pass, and once.
+  qr_fresh quiet
+  qr_start feed
+  qr_wait 1
+  "$qr_sleep" 1.2
+  qr_c0=$(qr_done)
+  printf -- '- `segment` | 교대=0 | id=S3 | 상태=실행중 | prev=cccc\n' >> "$QR_LG"
+  qr_wait $((qr_c0 + 2))
+  qr_j=$(qr_first_read_from "$qr_c0")
+  if [ "$qr_j" = "$qr_c0" ] || [ "$qr_j" = "$((qr_c0 + 1))" ]; then
+    ok "진행 채널: 마지막 읽기 다음 초에 붙은 행은 다음 주기에 읽힌다 (주기 $qr_j, $(qr_seq))"
+  else
+    bad "진행 채널의 조용한 주기" "다음 초에 붙은 행을 주기 $qr_j 에 읽었다 — 붙인 뒤 첫 주기는 $qr_c0 ($(qr_seq))"
+  fi
+  printf -- '- `segment` | 교대=0 | id=S2 | 상태=실행중 | prev=dddd\n' > "$QR_D/inject"
+  qr_wait 7
+  qr_stop
+  check "진행 채널: 읽은 패스 안에서 센 뒤에 붙은 행은 바로 다음 주기에 읽힌다 (강제 읽기 4주기 다음)" \
+    "$(qr_seq | cut -c5-6)" "XR"
+  check "진행 채널: 그 행은 한 번만 방송된다" \
+    "$( { grep -c '세그먼트 S2 없음 → 실행중' "$QR_D/out" || true; } | tr -d ' ')" "1"
+  check "진행 채널: 다음 초의 행도 한 번만 방송된다" \
+    "$( { grep -c '세그먼트 S3 없음 → 실행중' "$QR_D/out" || true; } | tr -d ' ')" "1"
+
+  # --- the poller ----------------------------------------------------------
+  qr_fresh quiet
+  qr_start checks
+  qr_wait 9
+  qr_stop
+  check "폴러: 조용한 런은 4주기마다만 PR 을 묻는다" "$(qr_seq | cut -c1-9)" "R---R---R"
+
+  for qr_m in work stale; do
+    qr_fresh "$qr_m"
+    qr_start checks
+    qr_wait 4
+    qr_stop
+    check "폴러: watch.mode 가 ${qr_m} 이면 주기마다 PR 을 묻는다" "$(qr_seq | cut -c1-4)" "RRRR"
+  done
+
+  qr_fresh quiet
+  qr_start checks
+  qr_wait 1
+  "$qr_sleep" 1.2
+  qr_c0=$(qr_done)
+  printf -- '- `segment` | 교대=0 | id=S1 | 상태=실행중 | 워크트리=%s | prev=eeee\n' "$QR_WT" >> "$QR_LG"
+  qr_wait $((qr_c0 + 2))
+  qr_stop
+  qr_j=$(qr_first_read_from "$qr_c0")
+  if [ "$qr_j" = "$qr_c0" ] || [ "$qr_j" = "$((qr_c0 + 1))" ]; then
+    ok "폴러: 마지막 폴링보다 새 원장은 곧바로 폴링한다 (주기 $qr_j, $(qr_seq))"
+  else
+    bad "폴러의 조용한 주기" "새 원장을 주기 $qr_j 에 폴링했다 — 원장을 쓴 뒤 첫 주기는 $qr_c0 ($(qr_seq))"
+  fi
+  unset -f qr_fresh qr_mode_loop qr_start qr_stop qr_done qr_wait qr_seq qr_first_read_from
+  rm -rf "$QR_RD"
+fi
+
+# ---------------------------------------------------------------------------
 # 크래시 갈래도 1회 재시도한다 — 인접한 「공허한 성공」 갈래와 같은 패턴으로.
 #
 # 두 갈래는 세 줄 떨어져 있고 오래 서로 다른 재시도 의미를 가졌다: 깨끗한 종료에

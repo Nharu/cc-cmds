@@ -1,0 +1,63 @@
+env	CC_CMDS_NOTIFY_PATH_DISABLE_PREPEND	1
+env	CC_CMDS_GATE_PATH_DISABLE_PREPEND	1
+env	CC_CMDS_SESSION_NOTIFY	0
+env	CC_CMDS_ATTENTION	off
+env	CC_CMDS_ATTENTION_ROOT	@ROOT@/attention-absent
+env	CC_CMDS_DASHBOARD	off
+env	CC_GATE_PIN_DISABLE	1
+env	CC_GATE_PIN_SYNC_DISABLE	1
+env	CC_CMDS_AUTOPILOT_AUTO_RESOLVE	0
+env	CC_CLAUDE_BIN	@ROOT@/u8/bin/noop
+env	CC_GATE_STAGE_POLICY_SOURCES	@ROOT@/no-such-map
+env	CC_GATE_PERSONAL_RULES_SOURCE	@ROOT@/u8/personal-untagged.md
+env	CC_METRICS_COLLECTOR	@ROOT@/u8/bin/metrics-noop
+env	CC_METRICS_FILING_FILE	@ROOT@/no-such-metrics-filing
+env	CC_HALT_STOPS	@ROOT@/u8/bin/noop
+env	CC_HALT_BACKLOG
+env	GATE_PACE_ROOT	@UNSET@
+env	GATE_ACT_CWD	@UNSET@
+env	XDG_STATE_HOME	@ROOT@/state
+env	XDG_CONFIG_HOME	@ROOT@/config
+env	GH_CONFIG_DIR	@ROOT@/gh-offline
+env	GH_HOST	invalid.invalid
+env	GH_TOKEN
+env	GITHUB_TOKEN
+env	TMUX	@UNSET@
+env	TMUX_PANE	@UNSET@
+env	CLAUDE_CODE_SESSION_ID	@UNSET@
+env	CC_PIPELINE_STAGE_ID	S1#1
+env	CC_PIPELINE_SEGMENT	S1
+fixture	copy	gate/u8/repo u8/wt
+fixture	git	u8/wt
+fixture	copy	gate/u8/wt-docs u8/wt/docs
+fixture	mkdir	u8/wt/docs/pipeline-run
+fixture	copy	gate/u8/bin u8/bin
+fixture	chmod	u8/bin/noop
+fixture	chmod	u8/bin/metrics-noop
+fixture	copy	gate/u8/top u8
+fixture	mkdir	gh-offline
+fixture	manifest	u8/plan.md
+fixture	cwd	u8/wt
+fixture	snapshot	u8/plan.md
+fixture	gate	act --manifest @ROOT@/u8/plan.md --kind segment --target front --segment S1 --cutpoint 커밋 --surface 읽기 --snapshot-digest @H@ --rationale 측정픽스처 -- 워크트리=@ROOT@/u8/wt 상태=실행중 선행=없음
+fixture	live	state/cc-cmds/run/R1/S1
+fixture	snapshot	u8/plan.md
+argv	main	@ORCH@/gate.sh
+argv	main	exec
+argv	main	--manifest
+argv	main	@ROOT@/u8/plan.md
+argv	main	--target
+argv	main	front
+argv	main	--segment
+argv	main	S1
+argv	main	--cutpoint
+argv	main	커밋
+argv	main	--surface
+argv	main	읽기
+argv	main	--snapshot-digest
+argv	main	@H@
+argv	main	--rationale
+argv	main	측정
+argv	main	--
+argv	main	true
+stop	exit	-
