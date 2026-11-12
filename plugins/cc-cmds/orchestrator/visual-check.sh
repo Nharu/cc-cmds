@@ -71,7 +71,23 @@
 #       that record and its answer stand is the gate's to check, not this one's.
 #       The `**확인**` line of `system.md` is not read here: an unattended
 #       consumer reads `confirm` beside this verdict, an interactive one does
-#       not.
+#       not. After those checks the `**문서 반영**` line is read (see
+#       `reflection_verdict`): none, `불요` or `완료` keeps the approval valid,
+#       `대기` prints `승인 보류 — 설계 문서 반영 대기`, `실패` prints
+#       `승인 보류 — 설계 문서 반영 실패 — <사유>`, and a misplaced, repeated
+#       or malformed line prints `승인 무효 — 문서 반영 줄 형식 오류`; those
+#       three exit 1.
+#   drift <design doc>
+#       Print `어긋남 <n>건 · sha256 <hex>` for the sidecar's
+#       `### 설계 문서 어긋남` block: n is 0 for a body of the one line `없음`,
+#       else the number of `- ` lines; the sha256 is over the body (the line
+#       after the heading up to the next `### ` heading or the end of the file)
+#       normalized as the binding digest is. Exit 1 when there is no block.
+#       Each line `- <id> · <section title> · 「<document text>」 → 「…」` is
+#       split at the first ` · `, the first ` · 「` and the first `」 → `; its
+#       title must be a heading of the document exactly once and its document
+#       text (not `(없음)`) must be inside that heading's section verbatim.
+#       Lines that fail are printed and the exit code is 2.
 #   bundle <design doc> [--lines]
 #       Print the input bundle sha256 (with --lines, the bundle text itself):
 #       `<screen id> <sha256>` per screen in screen-id order, then
@@ -156,14 +172,16 @@
 # Exit codes:
 #   0 — scan: no finding; approval: valid; reuse: reusable; system --owner:
 #       this document's; other subcommands: success
-#   1 — scan: at least one finding; approval: none or void; bundle: no sidecar;
+#   1 — scan: at least one finding; approval: none, void or held; drift: no
+#       block; bundle: no sidecar;
 #       reuse: not reusable; system --owner: not this document's
 #   2 — usage error, an unreadable file, a malformed ban list or pattern, a
 #       --tokens file that is missing or contains `</style` (any case), a
 #       screen that ends inside a comment, a tag, a template string or an
 #       unclosed <style>/<script>, or whose CSS or script block comment is
 #       still open at its </style>/</script> or closing attribute quote
-#       (scan and size)
+#       (scan and size); drift: a block line whose document side was not
+#       found
 #
 # Compatibility: bash 3.2 (macOS) — no associative arrays, no `mapfile`; BSD
 # and GNU userland alike; `grep -E` only.
@@ -171,7 +189,7 @@
 set -euo pipefail
 
 usage() {
-  echo "사용법: visual-check.sh scan <화면>... [--bans <파일>] [--lifts <system.md>] [--tokens <tokens.css>] | size <화면> | approval <설계 문서> | bundle <설계 문서> [--lines] | binding <설계 문서> | system <설계 문서> [--owner] | confirm <설계 문서> | system-users <설계 문서> [--also <hex>] | run-state <설계 문서> --run-dir <런 디렉터리> --ledger <원장> --manifest <매니페스트> | reuse <설계 문서> --record <기록>" >&2
+  echo "사용법: visual-check.sh scan <화면>... [--bans <파일>] [--lifts <system.md>] [--tokens <tokens.css>] | size <화면> | approval <설계 문서> | drift <설계 문서> | bundle <설계 문서> [--lines] | binding <설계 문서> | system <설계 문서> [--owner] | confirm <설계 문서> | system-users <설계 문서> [--also <hex>] | run-state <설계 문서> --run-dir <런 디렉터리> --ledger <원장> --manifest <매니페스트> | reuse <설계 문서> --record <기록>" >&2
   exit 2
 }
 
@@ -702,8 +720,146 @@ cmd_approval() {
   done
   now=$(bundle_text | sha256_stdin)
   [ "$now" = "$want" ] || { echo "승인 무효 — 입력 묶음이 달라졌다 (줄 ${want:0:12}, 지금 ${now:0:12})"; exit 1; }
+  reflection_verdict || exit 1
   echo "승인 유효 ${now:0:12}"
   [ -z "$src" ] || echo "출처 사람 답 ${src}"
+}
+
+# reflection_verdict — read the sidecar's `**문서 반영**` line once the six
+# approval checks have passed. No line, `불요` or `완료 — 문서 sha256 <hex>`
+# returns 0 and prints nothing (the `완료` hash is not compared: a later
+# re-convergence may edit the document again, as the input bundle does not hold
+# the document either). `대기 — 어긋남 <n>건` prints
+# `승인 보류 — 설계 문서 반영 대기`, `실패 — <사유>` prints
+# `승인 보류 — 설계 문서 반영 실패 — <사유>`; two or more lines, a line that is
+# not directly under the `**구현 승인**` line, or any other value prints
+# `승인 무효 — 문서 반영 줄 형식 오류`; all three return 1. Each value may end in
+# the tail ` — 사람 답 <file name>`, read from the line's last ` — 사람 답 `; its
+# file name is checked for shape only, never against the approval line's tail.
+reflection_verdict() {
+  local n prev value body tail
+  n=$({ grep -E '^\*\*문서 반영\*\*:' "$SIDECAR" || true; } | grep -c . || true)
+  [ "$n" != 0 ] || return 0
+  [ "$n" = 1 ] || { echo "승인 무효 — 문서 반영 줄 형식 오류"; return 1; }
+  prev=$(LC_ALL=C awk 'index($0, "**문서 반영**:") == 1 { print p; exit } { p = $0 }' "$SIDECAR")
+  case "$prev" in '**구현 승인**:'*) ;; *) echo "승인 무효 — 문서 반영 줄 형식 오류"; return 1 ;; esac
+  value=$(grep -E '^\*\*문서 반영\*\*:' "$SIDECAR" | sed -e 's/^\*\*문서 반영\*\*: //' -e 's/[[:space:]]*$//')
+  body=$value
+  case "$value" in
+    *' — 사람 답 '*)
+      body=${value%' — 사람 답 '*}
+      tail=${value##*' — 사람 답 '}
+      printf '%s\n' "$tail" | grep -qE '^[A-Za-z0-9._#-]+\.md$' \
+        || { echo "승인 무효 — 문서 반영 줄 형식 오류"; return 1; }
+      ;;
+  esac
+  case "$body" in *' — 사람 답 '*) echo "승인 무효 — 문서 반영 줄 형식 오류"; return 1 ;; esac
+  if [ "$body" = 불요 ] || printf '%s\n' "$body" | grep -qE '^완료 — 문서 sha256 [0-9a-f]{64}$'; then
+    return 0
+  fi
+  if printf '%s\n' "$body" | grep -qE '^대기 — 어긋남 [0-9]+건$'; then
+    echo "승인 보류 — 설계 문서 반영 대기"; return 1
+  fi
+  case "$body" in
+    '실패 — '?*) echo "승인 보류 — 설계 문서 반영 실패 — ${body#'실패 — '}"; return 1 ;;
+  esac
+  echo "승인 무효 — 문서 반영 줄 형식 오류"
+  return 1
+}
+
+# norm_lines — the line-end normalization the binding digest uses: CR and
+# trailing blanks removed, repeated blank lines collapsed to one, leading and
+# trailing blank lines dropped.
+norm_lines() {
+  tr -d '\r' \
+    | sed 's/[[:space:]]*$//' \
+    | awk '{ if ($0 == "") { blank = 1; next } if (blank && seen) print ""; blank = 0; seen = 1; print }'
+}
+
+# drift_block — the body of the sidecar's first `### 설계 문서 어긋남` block:
+# from the line after that heading up to the next `### ` heading, or the end of
+# the file. Prints nothing and returns 1 when there is no such heading.
+drift_block() {
+  LC_ALL=C awk '
+    on && /^### / { exit }
+    on { print; next }
+    /^### 설계 문서 어긋남[[:space:]]*$/ { on = 1; found = 1 }
+    END { exit found ? 0 : 1 }
+  ' "$SIDECAR"
+}
+
+# doc_heading_count <doc> / doc_section <doc> — headings are lines of one or
+# more `#` and a space outside code fences, their title the rest of the line
+# without trailing blanks, compared with $DRIFT_TITLE byte for byte. The
+# section runs from the line after the heading to the next heading of the same
+# or a higher level, fenced lines and lower headings' bodies included.
+doc_heading_count() {
+  LC_ALL=C awk '
+    BEGIN { t = ENVIRON["DRIFT_TITLE"] }
+    /^ *(```|~~~)/ { fence = !fence; next }
+    fence { next }
+    match($0, /^#+ /) { h = substr($0, RLENGTH + 1); sub(/[ \t]+$/, "", h); if (h == t) n++ }
+    END { print n + 0 }
+  ' "$1"
+}
+
+doc_section() {
+  LC_ALL=C awk '
+    BEGIN { t = ENVIRON["DRIFT_TITLE"] }
+    /^ *(```|~~~)/ { fence = !fence; if (on) print; next }
+    fence { if (on) print; next }
+    match($0, /^#+ /) {
+      lv = RLENGTH - 1
+      if (on && lv <= onlv) exit
+      h = substr($0, RLENGTH + 1); sub(/[ \t]+$/, "", h)
+      if (!on && h == t) { on = 1; onlv = lv; next }
+    }
+    on { print }
+  ' "$1"
+}
+
+# cmd_drift <design doc> — the count and digest of the sidecar's
+# `### 설계 문서 어긋남` block, after checking that every line's document side
+# is really in the document.
+cmd_drift() {
+  [ $# -eq 1 ] || usage
+  local doc=$1 why body n=0 bad='' l rest after title t2 text sha
+  [ -f "$doc" ] || { echo "visual-check.sh drift: 설계 문서가 없다: $doc" >&2; exit 2; }
+  if ! why=$(locate_sidecar "$doc"); then
+    echo "어긋남 블록 없음 — ${why}"; exit 1
+  fi
+  locate_sidecar "$doc" >/dev/null
+  [ -f "$SIDECAR" ] || { echo "어긋남 블록 없음 — 사이드카 없음 (${SIDECAR})"; exit 1; }
+  body=$(drift_block) || { echo "어긋남 블록 없음 — 사이드카에 ### 설계 문서 어긋남 이 없다"; exit 1; }
+  body=$(printf '%s\n' "$body" | norm_lines)
+  if [ -n "$body" ]; then sha=$(printf '%s\n' "$body" | sha256_stdin); else sha=$(printf '' | sha256_stdin); fi
+  if [ "$body" != 없음 ]; then
+    while IFS= read -r l; do
+      case "$l" in '- '*) ;; *) continue ;; esac
+      n=$((n + 1))
+      rest=${l#- }
+      case "$rest" in *' · '*) ;; *) bad="${bad}${l}"$'\n'; continue ;; esac
+      after=${rest#*' · '}
+      case "$after" in *' · 「'*) ;; *) bad="${bad}${l}"$'\n'; continue ;; esac
+      title=${after%%' · 「'*}
+      t2=${after#*' · 「'}
+      case "$t2" in *'」 → '*) ;; *) bad="${bad}${l}"$'\n'; continue ;; esac
+      text=${t2%%'」 → '*}
+      if [ -z "$title" ] || [ "$(DRIFT_TITLE=$title doc_heading_count "$doc")" != 1 ]; then
+        bad="${bad}${l}"$'\n'; continue
+      fi
+      [ "$text" = '(없음)' ] && continue
+      DRIFT_TITLE=$title doc_section "$doc" | LC_ALL=C grep -qF -e "$text" \
+        || bad="${bad}${l}"$'\n'
+    done <<EOF
+$body
+EOF
+  fi
+  if [ -n "$bad" ]; then
+    printf '%s' "$bad"
+    exit 2
+  fi
+  echo "어긋남 ${n}건 · sha256 ${sha}"
 }
 
 # binding_text <design doc> — the document the binding digest hashes: the
@@ -720,10 +876,7 @@ binding_text() {
     insec && /^(- )?(\*\*검증 등급\*\*|검증 등급): / { next }
     insec && /^(- )?(\*\*구현 시 검증 기록\*\*|구현 시 검증 기록): / { next }
     { print }
-  ' "$1" \
-    | tr -d '\r' \
-    | sed 's/[[:space:]]*$//' \
-    | awk '{ if ($0 == "") { blank = 1; next } if (blank && seen) print ""; blank = 0; seen = 1; print }'
+  ' "$1" | norm_lines
 }
 
 cmd_binding() {
@@ -1160,6 +1313,7 @@ case "$sub" in
   scan) cmd_scan "$@" ;;
   size) cmd_size "$@" ;;
   approval) cmd_approval "$@" ;;
+  drift) cmd_drift "$@" ;;
   bundle) cmd_bundle "$@" ;;
   binding) cmd_binding "$@" ;;
   system) cmd_system "$@" ;;

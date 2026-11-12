@@ -53,7 +53,13 @@
 #              finding text keeps its bytes; size is exit 0
 #   size      the start-tag count leaves comments and script out
 #   approval   no sidecar, state not 발행됨, no approval line, one screen byte
-#              changed, valid — and bundle --lines prints the bundle text
+#              changed, valid — and bundle --lines prints the bundle text; the
+#              `**문서 반영**` line in each of its values with and without the
+#              tail, repeated, misplaced or malformed
+#   drift      count and digest of the block up to the next `### ` heading and
+#              up to the end of the file, `없음`, no block (1), and lines whose
+#              title or document text is not found (2); the sidecar placed by
+#              hand through `대기` → `완료` and `대기` → `실패`
 #   binding    equal to the driver's binding_digest on a document without a
 #              `## 시각 정합 기준` section, blind to that section where it is
 #   reuse      a 검토 통과 and a 발행됨 sidecar where every condition holds
@@ -509,6 +515,108 @@ case "$got" in "1 승인 무효 — 입력 묶음이 달라졌다"*) pass "appro
 write_sidecar 발행됨 "**구현 승인**: 2026-10-12T09:00:00Z — 입력 묶음 ${B} — 금지 목록 ${BANSHA}"
 got=$(approval)
 case "$got" in "1 승인 무효 — 구현 승인 줄의 형식이 틀렸다"*) pass "approval: 형식이 틀린 줄은 무효" ;; *) fail "approval 형식 = ${got}" ;; esac
+
+# --- approval: the `**문서 반영**` line ----------------------------------------
+# Read only after the six checks pass: no line, `불요` and `완료` keep the
+# approval valid, `대기` and `실패` hold it, and a repeated, misplaced or
+# malformed line voids it — each value with and without the provenance tail.
+printf '%s\n' '<!doctype html><p>home</p>' > "$R/docs/visual/docs-feature.home.html"
+SHA64=$(printf 'x' | shasum -a 256 | awk '{print $1}')
+refl_case() { # <label> <want: "rc first line"> <lines under the approval line>
+  write_sidecar 발행됨 "$(printf '%s\n%s' "$APL" "$3")"
+  got=$(approval)
+  [ "$got" = "$2" ] && pass "approval 문서 반영: $1" || fail "approval 문서 반영 $1 = ${got} (기대 $2)"
+}
+VALID="0 승인 유효 ${B:0:12}"
+write_sidecar 발행됨 "$APL"
+got=$(approval)
+[ "$got" = "$VALID" ] && pass "approval 문서 반영: 줄이 없으면 기존대로 유효" || fail "approval 문서 반영 줄 없음 = ${got}"
+refl_case "불요" "$VALID" "**문서 반영**: 불요"
+refl_case "불요 + 꼬리" "$VALID" "**문서 반영**: 불요 — 사람 답 S2P#3.md"
+refl_case "완료" "$VALID" "**문서 반영**: 완료 — 문서 sha256 ${SHA64}"
+refl_case "완료 + 꼬리" "$VALID" "**문서 반영**: 완료 — 문서 sha256 ${SHA64} — 사람 답 S2P#3.md"
+refl_case "대기" "1 승인 보류 — 설계 문서 반영 대기" "**문서 반영**: 대기 — 어긋남 2건"
+refl_case "대기 + 꼬리" "1 승인 보류 — 설계 문서 반영 대기" "**문서 반영**: 대기 — 어긋남 2건 — 사람 답 S2P#3.md"
+refl_case "실패" "1 승인 보류 — 설계 문서 반영 실패 — 다른 구속 결정과 충돌" "**문서 반영**: 실패 — 다른 구속 결정과 충돌"
+refl_case "실패 + 꼬리" "1 승인 보류 — 설계 문서 반영 실패 — 다른 구속 결정과 충돌" "**문서 반영**: 실패 — 다른 구속 결정과 충돌 — 사람 답 S2P#3.md"
+BADFORM="1 승인 무효 — 문서 반영 줄 형식 오류"
+refl_case "두 줄은 형식 오류" "$BADFORM" "$(printf '%s\n%s' '**문서 반영**: 불요' '**문서 반영**: 불요')"
+refl_case "승인 줄 바로 아래가 아니면 형식 오류" "$BADFORM" "$(printf '%s\n%s' '' '**문서 반영**: 불요')"
+refl_case "모르는 값은 형식 오류" "$BADFORM" "**문서 반영**: 보류 — 사람 답 S2P#3.md"
+refl_case "완료의 해시가 64 hex 가 아니면 형식 오류" "$BADFORM" "**문서 반영**: 완료 — 문서 sha256 abc"
+refl_case "대기의 건수가 없으면 형식 오류" "$BADFORM" "**문서 반영**: 대기 — 어긋남 건"
+refl_case "꼬리의 파일 이름에 경로가 있으면 형식 오류" "$BADFORM" "**문서 반영**: 불요 — 사람 답 halt/S2P#3.md"
+refl_case "실패 사유가 꼬리를 담으면 형식 오류" "$BADFORM" "**문서 반영**: 실패 — 충돌 — 사람 답 S2P#2.md — 사람 답 S2P#3.md"
+refl_case "실패 사유가 비면 형식 오류" "$BADFORM" "**문서 반영**: 실패 — "
+printf '%s\n' '<!doctype html><p>home!</p>' > "$R/docs/visual/docs-feature.home.html"
+refl_case "기존 검사가 먼저 — 묶음이 다르면 반영 줄보다 묶음 불일치" "1 승인 무효 — 입력 묶음이 달라졌다 (줄 ${B:0:12}, 지금 $(bash "$CHECK" bundle "$DOC" | cut -c1-12))" "**문서 반영**: 대기 — 어긋남 1건"
+printf '%s\n' '<!doctype html><p>home</p>' > "$R/docs/visual/docs-feature.home.html"
+
+# --- drift --------------------------------------------------------------------
+# The block's count and digest (the body up to the next `### ` heading or the
+# end of the file, normalized as the binding digest is), its absence (exit 1),
+# and the check that each line's document side is in the document (exit 2).
+DFEAT=$(cat "$DOC")
+{
+  printf '# 설계\n\n## 합의된 아키텍처\n\n### 흐름\n\n첫 화면은 목록을 보인다.\n\n#### 세부\n\n세부 문장 하나.\n\n'
+  printf '```text\n울타리 안 문장\n# 울타리 안 제목\n```\n\n### 다른 절\n\n다른 문장.\n\n### 중복\n\n하나\n\n## 주요 결정사항과 근거\n\n### 중복\n\n둘\n'
+} > "$DOC"
+drift_sidecar() { # <block body> <end|mid>
+  write_sidecar 발행됨 "$APL"
+  if [ "$2" = mid ]; then
+    { echo; echo "### 설계 문서 어긋남"; printf '%s\n' "$1"; echo "### 금지 후보"; echo "- \`x\` | 판단 | y | - — 1회 home"; } >> "$SC"
+  else
+    { echo; echo "### 설계 문서 어긋남"; printf '%s' "$1"; } >> "$SC"
+  fi
+}
+drift() { local rc=0; bash "$CHECK" drift "$DOC" > "$T/dr.out" 2>&1 || rc=$?; echo "$rc"; }
+GOODL1='- home · 흐름 · 「첫 화면은 목록을 보인다.」 → 「첫 화면은 카드를 보인다.」'
+GOODL2='- home · 흐름 · 「세부 문장 하나.」 → (삭제)'
+GOODL3='- list · 흐름 · 「울타리 안 문장」 → 「울타리 밖 문장」'
+GOODL4='- list · 다른 절 · 「(없음)」 → 「새 문장」'
+GOOD=$(printf '%s\n%s\n%s\n%s' "$GOODL1" "$GOODL2" "$GOODL3" "$GOODL4")
+GOODSHA=$(printf '%s\n' "$GOOD" | shasum -a 256 | awk '{print $1}')
+drift_sidecar "$(printf '\n\n%s   \n%s\n%s\n%s\n\n' "$GOODL1" "$GOODL2" "$GOODL3" "$GOODL4")" mid
+rc=$(drift)
+[ "$rc:$(cat "$T/dr.out")" = "0:어긋남 4건 · sha256 ${GOODSHA}" ] && pass "drift: 하위 제목 본문·코드 울타리 안 문면·「(없음)」 을 지나 건수와 정규화한 본문의 해시" || fail "drift 통과 = ${rc} $(cat "$T/dr.out")"
+drift_sidecar "$(printf '%s\r\n\n' "$GOOD")" end
+rc=$(drift)
+[ "$rc:$(cat "$T/dr.out")" = "0:어긋남 4건 · sha256 ${GOODSHA}" ] && pass "drift: 파일 끝에서 끝나는 블록도 같은 해시 (CR·끝 빈 줄 정규화)" || fail "drift 파일 끝 = ${rc} $(cat "$T/dr.out")"
+drift_sidecar "없음" mid
+rc=$(drift)
+[ "$rc:$(cat "$T/dr.out")" = "0:어긋남 0건 · sha256 $(printf '없음\n' | shasum -a 256 | awk '{print $1}')" ] && pass "drift: 본문이 없음 한 줄이면 0건" || fail "drift 없음 = ${rc} $(cat "$T/dr.out")"
+write_sidecar 발행됨 "$APL"
+rc=$(drift)
+[ "$rc" = 1 ] && pass "drift: 블록이 없으면 종료 1" || fail "drift 블록 없음 = ${rc} $(cat "$T/dr.out")"
+for badl in '- list · 없는 절 · 「다른 문장.」 → 「b」' '- list · 중복 · 「하나」 → 「b」' \
+  '- list · 다른 절 · 「첫 화면은 목록을 보인다.」 → 「b」' '- home · 흐름 · 「다른 문장.」 → 「b」' \
+  '- list · 울타리 안 제목 · 「(없음)」 → 「b」' '- list · 흐름 「세부 문장 하나.」 → 「b」'; do
+  drift_sidecar "$(printf '%s\n%s' "$GOODL1" "$badl")" mid
+  rc=$(drift)
+  [ "$rc:$(cat "$T/dr.out")" = "2:${badl}" ] && pass "drift: 「${badl}」 는 찾지 못해 그 줄을 찍고 종료 2" || fail "drift 「${badl}」 = ${rc} $(cat "$T/dr.out")"
+done
+
+# --- reflection transitions ---------------------------------------------------
+# The sidecar placed by hand through `대기` → `완료` and `대기` → `실패`: the
+# predicate holds while waiting and after a failure, and is valid again once
+# the edited document's hash is on the `완료` line.
+drift_sidecar "$GOOD" mid
+cp "$SC" "$T/sc.wait"
+DSHA0=$(shasum -a 256 "$DOC" | awk '{print $1}')
+awk -v l="**문서 반영**: 대기 — 어긋남 4건 — 사람 답 S2P#3.md" '{ print } index($0, "**구현 승인**:") == 1 { print l }' "$T/sc.wait" > "$SC"
+got=$(approval)
+[ "$got" = "1 승인 보류 — 설계 문서 반영 대기" ] && pass "전이: 대기 동안 승인 보류" || fail "전이 대기 = ${got}"
+cp "$SC" "$T/sc.wait2"
+awk '{ sub(/첫 화면은 목록을 보인다\./, "첫 화면은 카드를 보인다.") } { print }' "$DOC" > "$T/doc.new" && mv "$T/doc.new" "$DOC"
+DSHA1=$(shasum -a 256 "$DOC" | awk '{print $1}')
+[ "$DSHA0" != "$DSHA1" ] && pass "전이: 반영 뒤 문서 해시가 바뀐다" || fail "전이: 반영 뒤에도 문서 해시가 같다"
+awk -v l="**문서 반영**: 완료 — 문서 sha256 ${DSHA1} — 사람 답 S2P#3.md" 'index($0, "**문서 반영**:") == 1 { print l; next } { print }' "$T/sc.wait2" > "$SC"
+got=$(approval)
+[ "$got" = "$VALID" ] && pass "전이: 대기 → 완료 뒤 승인 유효" || fail "전이 완료 = ${got}"
+awk -v l="**문서 반영**: 실패 — 다른 구속 결정과 충돌 — 사람 답 S2P#3.md" 'index($0, "**문서 반영**:") == 1 { print l; next } { print }' "$T/sc.wait2" > "$SC"
+got=$(approval)
+[ "$got" = "1 승인 보류 — 설계 문서 반영 실패 — 다른 구속 결정과 충돌" ] && pass "전이: 대기 → 실패 뒤 승인 보류" || fail "전이 실패 = ${got}"
+printf '%s\n' "$DFEAT" > "$DOC"
 
 # --- binding ------------------------------------------------------------------
 # The digest the sidecar carries is the driver's `binding_digest` with the

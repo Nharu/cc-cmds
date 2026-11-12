@@ -14494,7 +14494,16 @@ visual_approval_route_hint() {
   # record, and a run without it gets the morning report sentence
   # (`VISUAL_DS_WAIT_REPORT`), since a screen approval written at the fixed
   # seat stays void while the line waits.
-  local latest
+  #
+  # AN APPROVAL THAT WAITS ON THE DESIGN DOCUMENT IS NOT A PERSON'S TO GIVE
+  # AGAIN. The predicate's first line `승인 보류 — 설계 문서 반영 대기` says the
+  # approved screens are still being written into the document; in a run with
+  # the publish stage that is the approval-reflection re-convergence's work, so
+  # the person is told to wait, and in a run without it the fixed seat's
+  # `/cc-cmds:visual <문서> 구현 승인` is run again to write them. A first line
+  # `승인 보류 — 설계 문서 반영 실패` says that writing stopped, and the
+  # reflection's halt record is what a person answers.
+  local latest pl
   if visual_confirm_waiting "${DOC:-}"; then
     if ! manifest_has_visual_publish_step; then
       printf '%s' "$VISUAL_DS_WAIT_REPORT"
@@ -14505,6 +14514,24 @@ visual_approval_route_hint() {
     fi
     return 0
   fi
+  pl=''
+  [ -z "${DOC:-}" ] || pl=$(bash "$ORCH_DIR/visual-check.sh" approval "$DOC" 2>/dev/null | sed -n 1p)
+  case "$pl" in
+    '승인 보류 — 설계 문서 반영 대기'*)
+      if manifest_has_visual_publish_step; then
+        printf '승인한 화면을 설계 문서에 반영하는 중이라 사람이 할 일은 없습니다 — 시각 발행 단계(S2P)의 승인 화면 반영 재수렴이 끝날 때까지 기다리세요'
+      else
+        printf '승인한 화면이 아직 설계 문서에 반영되지 않았습니다 — 고정 좌석에서 /cc-cmds:visual %s 구현 승인 을 다시 실행해 반영하세요' "${DOC:-<문서>}"
+      fi
+      return 0 ;;
+    '승인 보류 — 설계 문서 반영 실패'*)
+      if latest=$(visual_publish_latest_record 'Step 3 승인 화면 반영'); then
+        printf '승인한 화면을 설계 문서에 반영하다 멈췄습니다 — 승인 화면 반영 중단 기록 %s 에 사람이 답하세요' "$latest"
+      else
+        printf '승인한 화면을 설계 문서에 반영하다 멈췄습니다 — 승인 화면 반영 중단 기록에 사람이 답하세요'
+      fi
+      return 0 ;;
+  esac
   if manifest_has_visual_publish_step; then
     if latest=$(visual_publish_latest_verdict_record); then
       printf '시각 발행 단계(S2P)의 시각-판정 중단 기록 %s 에 사람이 「승인」 으로 답해 그 단계가 출처 꼬리 달린 구현 승인 줄을 쓰게 하세요' "$latest"
