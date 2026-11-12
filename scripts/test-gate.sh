@@ -50410,7 +50410,7 @@ check "67c: 게이트의 경로 판정이 사다리 기록의 골격 재검토 �
 
 fc67c_i5=$(fc67c_item "$fc67c_rs" '5. **`정상 완료` on the row is not the freeze.**')
 check "67c: 라우터 항목 5 가 골격 재검토 표지를 항목 9 로 보낸다" \
-  "$(printf '%s\n' "$fc67c_i5" | { grep -cF '`**잔여 동결**: 사람 · 골격 재검토 — 런 <this run'"'"'s id> ·` (`grep -nF` through the gate) and the step has no `stage-result` row reading `종류=reconverge` yet, the next step is item 9 of' || true; })" "1"
+  "$(printf '%s\n' "$fc67c_i5" | { grep -cF '`**잔여 동결**: 사람 · 골격 재검토 — 런 <this run'"'"'s id> ·` (`grep -nF` through the gate) and the step has no `stage-result` row reading `종류=reconverge` without `차단=파견 전` yet, the next step is item 9 of' || true; })" "1"
 
 fc67c_i8=$(fc67c_item "$fc67c_rs" '9. **A residual-ladder halt answered `골격 재검토` goes to re-convergence, then to a fresh audit.**')
 fc67c_n8=0
@@ -70226,7 +70226,7 @@ unset S111 r111 a111 d111 g111 s111_rb s111_rh s111_aw s111_im s111_ip s111_GRAN
 
 # ---------------------------------------------------------------------------
 # 113b. 설계 문서 크기 — 크기 표, 파견 전 차단 기록과 행, 세 답 경로와 좌석 제한, 문서 정리의 되돌림 검사
-# --- section: 113b | group: base | covers: act, halt-answer, doc_size_threshold, doc_size_verdict, doc_size_check, doc_size_halt_write, gate_doc_size_dispatch_check, gate_halt_answer_route, gate_doc_tidy_admissible, doc-tidy, gate_doc_tidy_archive_path, gate_audit_reconverge_keyable, gate_size_block_redispatch_row, gate_size_block_reconverge_routable, audit_key_reconverge_rows, gate_halt_card_crash_line, gate_audit_reconverge_row_admits, gate_size_block_card_capped, gate_stage_row_before_size_block, gate_segment_review_walk, gate_decision_reconverge_entry, gate_decision_reconverge_open, gate_large_context_record, gate_large_context_inherit, stage_model_of | anchors: 113b: 크기 표가 세 종류의 문턱과 경고 문턱을 낸다, 113b: 문턱 위 문서는 재수렴에 초과이고 감사에 경고다, 113b: 크기 초과 기록이 스텝·추천·관측 상세를 싣는다, 113b: 좌석의 큰 문맥 답은 거절된다, 113b: 사람의 큰 문맥 답은 큰문맥-재파견 이다, 113b: 사람의 런 밖 처리 답은 크기-보류 다, 113b: 좌석의 정리 답은 정리-재파견 이다, 113b: 크기 기록에 다른 선택지는 갈래가 없다, 113b: 읽기 불가 기록은 정리 후 재파견을 싣지 않는다, 113b: 읽기 불가 기록에 좌석은 답할 수 없고 사람의 런 밖 처리는 크기-보류 다, 113b: plan 은 차단을 예보하고 기록을 쓰지 않는다, 113b: act 는 시도를 청구해 기록과 의도된 park 행을 쓰고 11 로 끝난다, 113b: 답 카드를 실을 파견의 차단 행은 그 줄을 답 운반으로 싣는다, 113b: tidy 가 문서를 문턱 아래로 정리하고 보관 파일을 쓴다, 113b: check 가 정리 전후와 보관 파일을 되돌림으로 맞춘다, 113b: 정리 행이 있으면 정리 뒤 문서로 조건 둘째가 서고 다시 정리하지 않는다, 113b: 정리 행이 없으면 바뀐 문서의 정리 답은 거절된다, 113b: 저장소 밖 문서의 보관 파일은 DOC_BASE 아래 docs/design-archive 다, 113b: 크기 차단 뒤 답이 없으면 런 범위 재수렴을 다시 받지 않는다, 113b: 크기 차단 뒤 열린 정리 답이면 같은 재수렴을 다시 받는다, 113b: 크기 차단 뒤 큰 문맥 답은 사람의 것만 재수렴을 다시 받는다, 113b: 답 카드가 없는 차단 행 뒤에는 의도된 park 재수렴을 다시 받지 않는다, 113b: 답 카드를 실은 차단 행 뒤에는 운반하던 재수렴을 운반 없이 다시 받는다, 113b: 답 카드를 실은 차단 행 뒤의 다음 파견은 그 카드를 다시 받는다, 113b: 크기 차단 행이 넘긴 카드는 세션 전 사망 세 번에서 막힌다, 113b: 답 카드가 없는 차단 행 뒤의 다음 파견은 카드를 받지 않는다, 113b: 답 카드를 실은 차단 행이면 재수렴 재파견 답 경로가 정리 전에 받는다, 113b: 재수렴 계수기는 크기 차단 행을 세지 않는다, 113b: 받지 않을 재수렴 재파견은 답 경로가 정리 전에 거절한다, 113b: 크기 차단 뒤 정리 답이 있어도 결정 수거 답의 재수렴을 다시 받는다, 113b: 결정 수거 답의 재수렴이 막히면 재파견 답 경로가 정리 전에 받는다, 113b: 세션이 돈 재수렴 뒤에는 같은 결정 수거 기록으로 다시 열지 않는다, 113b: 세그먼트 리뷰 계수는 세그먼트 키의 크기 차단 행을 재수렴으로 세지 않는다, 113b: 큰 문맥 세션의 재부착만 큰 문맥 창으로 돈다 ---
+# --- section: 113b | group: base | covers: act, halt-answer, doc_size_threshold, doc_size_verdict, doc_size_check, doc_size_halt_write, gate_doc_size_dispatch_check, gate_halt_answer_route, gate_doc_tidy_admissible, doc-tidy, gate_doc_tidy_archive_path, gate_audit_reconverge_keyable, gate_size_block_redispatch_row, gate_size_block_reconverge_routable, audit_key_reconverge_rows, gate_halt_card_crash_line, gate_audit_reconverge_row_admits, gate_size_block_card_capped, gate_stage_row_before_size_block, gate_segment_review_walk, gate_decision_reconverge_entry, gate_decision_reconverge_open, gate_large_context_record, gate_large_context_inherit, stage_model_of, gate_dispatch_doc_size_gate | anchors: 113b: 크기 표가 세 종류의 문턱과 경고 문턱을 낸다, 113b: 문턱 위 문서는 재수렴에 초과이고 감사에 경고다, 113b: 크기 초과 기록이 스텝·추천·관측 상세를 싣는다, 113b: 좌석의 큰 문맥 답은 거절된다, 113b: 사람의 큰 문맥 답은 큰문맥-재파견 이다, 113b: 사람의 런 밖 처리 답은 크기-보류 다, 113b: 좌석의 정리 답은 정리-재파견 이다, 113b: 크기 기록에 다른 선택지는 갈래가 없다, 113b: 읽기 불가 기록은 정리 후 재파견을 싣지 않는다, 113b: 읽기 불가 기록에 좌석은 답할 수 없고 사람의 런 밖 처리는 크기-보류 다, 113b: plan 은 차단을 예보하고 기록을 쓰지 않는다, 113b: act 는 시도를 청구해 기록과 의도된 park 행을 쓰고 11 로 끝난다, 113b: 답 카드를 실을 파견의 차단 행은 그 줄을 답 운반으로 싣는다, 113b: tidy 가 문서를 문턱 아래로 정리하고 보관 파일을 쓴다, 113b: check 가 정리 전후와 보관 파일을 되돌림으로 맞춘다, 113b: 정리 행이 있으면 정리 뒤 문서로 조건 둘째가 서고 다시 정리하지 않는다, 113b: 정리 행이 없으면 바뀐 문서의 정리 답은 거절된다, 113b: 저장소 밖 문서의 보관 파일은 DOC_BASE 아래 docs/design-archive 다, 113b: 크기 차단 뒤 답이 없으면 런 범위 재수렴을 다시 받지 않는다, 113b: 크기 차단 뒤 열린 정리 답이면 같은 재수렴을 다시 받는다, 113b: 크기 차단 뒤 큰 문맥 답은 사람의 것만 재수렴을 다시 받는다, 113b: 답 카드가 없는 차단 행 뒤에는 의도된 park 재수렴을 다시 받지 않는다, 113b: 답 카드를 실은 차단 행 뒤에는 운반하던 재수렴을 운반 없이 다시 받는다, 113b: 답 카드를 실은 차단 행 뒤의 다음 파견은 그 카드를 다시 받는다, 113b: 크기 차단 행이 넘긴 카드는 세션 전 사망 세 번에서 막힌다, 113b: 답 카드가 없는 차단 행 뒤의 다음 파견은 카드를 받지 않는다, 113b: 답 카드를 실은 차단 행이면 재수렴 재파견 답 경로가 정리 전에 받는다, 113b: 재수렴 계수기는 크기 차단 행을 세지 않는다, 113b: 받지 않을 재수렴 재파견은 답 경로가 정리 전에 거절한다, 113b: 크기 차단 뒤 정리 답이 있어도 결정 수거 답의 재수렴을 다시 받는다, 113b: 결정 수거 답의 재수렴이 막히면 재파견 답 경로가 정리 전에 받는다, 113b: 세션이 돈 재수렴 뒤에는 같은 결정 수거 기록으로 다시 열지 않는다, 113b: 세그먼트 리뷰 계수는 세그먼트 키의 크기 차단 행을 재수렴으로 세지 않는다, 113b: 큰 문맥 세션의 재부착만 큰 문맥 창으로 돈다, 113b: 큰 문맥 세션에 묶인 답 운반은 크기 차단 없이 큰 창으로 돈다, 113b: 큰 문맥 기록이 없는 세션에 묶인 답 운반은 여전히 크기 차단된다 ---
 #
 # 크기 차단은 세션 없이 기록 하나와 행 하나로 끝나고, 그 기록의 답은 게이트가 경로 셋으로
 # 가른다. 이 절은 게이트를 소싱한 자식에서 그 함수들을 직접 부른다: 원장은 빈 파일에서
@@ -70479,6 +70479,24 @@ s113_r=$(s113_call "$S113/ledger-empty.md" "$s113_doc" 'unset CC_ORCH_LARGE_CONT
   a=$(stage_model_of implement); r=0; gate_large_context_inherit lc-2 || r=$?; b=$(stage_model_of implement)
   gate_large_context_inherit lc-1; printf "%s|%s|%s|%s" "$a" "$r" "$b" "$(stage_model_of implement)"' 2>/dev/null)
 check "113b: 큰 문맥 세션의 재부착만 큰 문맥 창으로 돈다" "$s113_r" "opus|1|opus|opus[1m]"
+# 답 운반의 크기 단계 — act 가 부르는 그 함수를 운반 act 의 값(GATE_CARRY_ANSWER 와 묶인 세션
+# GATE_HA_BOUND)으로 부른다. 큰 문맥 기록이 있는 묶인 세션의 운반은 문턱 위 문서에서도 막히지
+# 않고 큰 창으로 돌며 문서 크기는 잰다. 기록이 없는 묶인 세션의 운반은 그대로 막힌다. 앞의 정리가
+# 픽스처 문서를 문턱 아래로 내렸으므로, 정리 전 사본(문턱 위)을 문서로 쓴다.
+: > "$S113/ledger-lc.md"
+s113_r=$(s113_call "$S113/ledger-lc.md" "$S113/pre.md" 'unset CC_ORCH_LARGE_CONTEXT_ONCE GATE_LARGE_CONTEXT GATE_RESUME
+  gate_large_context_record lc-3; GATE_DOC_SIZE_KIND=reconverge; GATE_DOC_SIZE_LAST=; GATE_CARRY_ANSWER=7; GATE_HA_BOUND=lc-3
+  r=0; gate_dispatch_doc_size_gate act S6 - || r=$?
+  printf "%s|%s|%s|%s" "$(doc_size_verdict reconverge "$DOC" | cut -f1)" "$r" "${GATE_DOC_SIZE_LAST:+있음}" "$(stage_model_of implement)"' 2>/dev/null)
+check "113b: 큰 문맥 세션에 묶인 답 운반은 크기 차단 없이 큰 창으로 돈다" \
+  "$s113_r|$(grep -c -F '| 스테이지=S6 |' "$S113/ledger-lc.md" || true)|$(ls "$S113/run/halt" | grep -c '^S6#' || true)" \
+  "초과|0|있음|opus[1m]|0|0"
+s113_r=$(s113_call "$S113/ledger-lc.md" "$S113/pre.md" 'unset CC_ORCH_LARGE_CONTEXT_ONCE GATE_LARGE_CONTEXT GATE_RESUME
+  GATE_DOC_SIZE_KIND=reconverge; GATE_DOC_SIZE_LAST=; GATE_CARRY_ANSWER=7; GATE_HA_BOUND=lc-4
+  r=0; gate_dispatch_doc_size_gate act S7 - || r=$?; printf "%s|%s" "$r" "$(stage_model_of implement)"' 2>/dev/null)
+check "113b: 큰 문맥 기록이 없는 세션에 묶인 답 운반은 여전히 크기 차단된다" \
+  "$s113_r|$(grep -F '| 스테이지=S7 |' "$S113/ledger-lc.md" | grep -c -F '| 차단=파견 전 |' || true)" \
+  "11|opus|1"
 unset -f s113_call s113_route s113_rs s113_keyable s113_lb
 unset S113 s113_doc s113_r s113_rec s113_sha s113_urec s113_row s113_arch s113_rc s113_sz s113_post s113_srec s113_block s113_stub s113_orec s113_n s113_dcrec
 

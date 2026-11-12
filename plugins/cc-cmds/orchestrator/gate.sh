@@ -49893,6 +49893,32 @@ gate_large_context_inherit() {
   return 0
 }
 
+gate_dispatch_doc_size_gate() {
+  # gate_dispatch_doc_size_gate <act|plan> <key> <segment> — the size step of an
+  # `act --kind skill` after `--large-context` was admitted, reading
+  # GATE_DOC_SIZE_KIND, GATE_LARGE_CONTEXT, GATE_RESUME, GATE_CARRY_ANSWER and
+  # GATE_HA_BOUND as the act set them. A carry bound to a session launched on
+  # the large-context window sets the switch, is measured for its row and is
+  # not checked; a new dispatch, and any other carry, goes through
+  # `gate_doc_size_dispatch_check`, whose status this returns.
+  local verb="$1" key="$2" seg="$3" v b t tab
+  [ -n "${GATE_DOC_SIZE_KIND:-}" ] || return 0
+  if [ -n "${GATE_CARRY_ANSWER:-}" ] && [ -n "${GATE_HA_BOUND:-}" ] \
+     && gate_large_context_inherit "$GATE_HA_BOUND"; then
+    # `<verdict>\t<bytes>\t<threshold>`, split without a pipeline.
+    tab=$(printf '\t')
+    v=$(doc_size_verdict "$GATE_DOC_SIZE_KIND" "${DOC:-}")
+    case "$v" in
+      *"$tab"*"$tab"*) v=${v#*"$tab"}; b=${v%%"$tab"*}; v=${v#*"$tab"}; t=${v%%"$tab"*} ;;
+      *) b='' ;;
+    esac
+    [ -z "$b" ] || GATE_DOC_SIZE_LAST="$b/$t"
+    return 0
+  fi
+  [ -z "${GATE_LARGE_CONTEXT:-}" ] && [ -z "${GATE_RESUME:-}" ] || return 0
+  gate_doc_size_dispatch_check "$verb" "$key" "$GATE_DOC_SIZE_KIND" "$seg"
+}
+
 gate_doc_size_dispatch_check() {
   # gate_doc_size_dispatch_check <act|plan> <key> <kind> <segment> — the
   # pre-dispatch size check of an `act --kind skill`. 0 to dispatch, with
@@ -53718,7 +53744,10 @@ gate_verb_act() {
   # dispatch and a carry are checked; a re-attachment is not (its session has
   # read the document already) unless the account lease turns it fresh, which
   # is checked again there. A person's `큰 문맥으로 재파견` answer skips the
-  # check for the one dispatch that carries it out.
+  # check for the one dispatch that carries it out. A carry bound to a session
+  # that was launched on the large-context window is a re-attachment of that
+  # session: it takes the same window and skips the check the way `--resume`
+  # does, and is measured for its row all the same.
   GATE_DOC_SIZE_KIND=''; GATE_DOC_SIZE_LAST=''
   if [ "$kind" = "skill" ] && run_routed; then
     GATE_DOC_SIZE_KIND=$(gate_doc_size_kind_of_dispatch "$segment" "${1:-}")
@@ -53736,9 +53765,7 @@ gate_verb_act() {
     gate_lc_t=$(printf '%s' "$gate_lc_v" | cut -f3)
     [ -z "$gate_lc_b" ] || GATE_DOC_SIZE_LAST="$gate_lc_b/$gate_lc_t"
   fi
-  if [ -n "$GATE_DOC_SIZE_KIND" ] && [ -z "${GATE_LARGE_CONTEXT:-}" ] && [ -z "${GATE_RESUME:-}" ]; then
-    gate_doc_size_dispatch_check "$verb" "$stage_key" "$GATE_DOC_SIZE_KIND" "$segment" || exit $?
-  fi
+  gate_dispatch_doc_size_gate "$verb" "$stage_key" "$segment" || exit $?
   # A re-attachment of a session that was launched on the large-context window
   # stays on it: the conversation already holds the whole document.
   if [ "$kind" = "skill" ] && [ -n "${GATE_RESUME:-}" ]; then
@@ -57879,7 +57906,11 @@ gate_launch_route_carry() {
     # router already moved the pin, and asking `first` would only ask the same
     # blocked account again. The bound session is not re-attached — it lives in
     # the old account's config directory — so the stage starts as a new session
-    # and takes the answer from the card the dispatch writes.
+    # and takes the answer from the card the dispatch writes. A bound session
+    # launched on the large-context window left the switch set at the act's
+    # size check, so the new session takes that window and the launch records
+    # it: the document is still past its threshold, and the standard window
+    # would run out mid-read again.
     if gate_route_env_fresh "$benv"; then
       GATE_RESUME=""; GATE_ROUTE_FRESH=1
       log "계정 이관 — $seg 는 세션 $bound 을 재부착하지 않고 새 세션으로 뜬다"
@@ -57928,6 +57959,10 @@ gate_launch_route_carry() {
       log "중단 답 운반 — $seg 는 묶인 세션 $bound 의 계정을 기다린다"
       return 0 ;;
     fresh)
+      # The bound account is out of reach, so the answer goes to a new session.
+      # When the bound session ran on the large-context window, the switch the
+      # act's size check set stays, and the new session is launched and
+      # recorded on that window for the same reason an account move keeps it.
       GATE_RESUME=""; GATE_ROUTE_EVENT=first; GATE_ROUTE_BIND=-
       GATE_ROUTE_VERDICT=$fv; GATE_ROUTE_WHY=$(gate_launch_route_why "$fenv")
       if [ "$fv" = "GRANT" ]; then
@@ -59141,7 +59176,7 @@ gate_verb_supervise_stage() {
   CC_PIPELINE_SEGMENT="$rowseg" \
   CC_PIPELINE_STAGE_ID="$seg#$attempt" \
   CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$(gate_auto_resolve_enabled && printf 1 || printf 0)" \
-  bash "$wrapper" \
+  env -u CC_ORCH_LARGE_CONTEXT_ONCE bash "$wrapper" \
     --settings "$(gate_settings_file "$kind")" \
     --plugin-dir "$plugin_dir" \
     ${instr:+--instructions "$instr"} \
@@ -59150,8 +59185,10 @@ gate_verb_supervise_stage() {
     $ac_flags \
     $launch_flags \
     -- "$@" >> "$out" 2>> "$err" < /dev/null &
-  # `$!` IS CORRECT HERE — no fork sits between this shell and the wrapper, and
-  # the wrapper `exec`s into the CLI, so this pid is the stage's own. This is
+  # `$!` IS CORRECT HERE — no fork sits between this shell and the wrapper
+  # (`env` execs it in place, dropping the large-context switch the model flag
+  # above has already read, so the stage does not inherit it), and the wrapper
+  # `exec`s into the CLI, so this pid is the stage's own. This is
   # the one place the dispatch path may use it; the dispatch half must not.
   spid=$!
   # ONE BLOCK WRITES ALL THREE. `.pid`, `.start` and `.kind` have one lifetime,
