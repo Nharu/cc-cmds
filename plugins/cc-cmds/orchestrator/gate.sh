@@ -7894,7 +7894,7 @@ surface_of_argv0() {
   # the worktree is an arbitrary program, so it takes `등급 미상` like any other
   # command the table has no row for, and the refusal that grade carries.
   case "$cmd" in
-    clickup-create.py|clickup-relate.py|base-split.py|similar-items.py)
+    clickup-create.py|clickup-relate.py|base-split.py|similar-items.py|doc-tidy.py)
       gate_own_helper "$1" || { printf '등급 미상'; return 0; } ;;
     visual-config.sh|visual-check.sh|visual-capture.sh)
       gate_own_helper "$1" || { printf '등급 미상'; return 0; } ;;
@@ -8039,6 +8039,15 @@ surface_of_argv0() {
         check|fence-check) printf '읽기' ;;
         plan)              printf '트리밖쓰기' ;;
         *)                 printf '워크트리쓰기' ;;
+      esac ;;
+    # The design document tidy helper, graded by its subcommand. `plan` and
+    # `check` only read. `apply`, `unmark` and `tidy` write the design document
+    # and its archive, which sit outside every segment worktree. Any other
+    # spelling is one the helper refuses, and it takes the write grade.
+    doc-tidy.py)
+      case "${1:-}" in
+        plan|check) printf '읽기' ;;
+        *)          printf '트리밖쓰기' ;;
       esac ;;
     # The stage rules helper. `status` only reads the instruction file it is
     # given and prints counts. `extract --out-dir` writes the run's snapshot and
@@ -13819,7 +13828,10 @@ gate_decision_reconverge_open() {
   # names the record; the record's header names this key, and the key is the
   # plan's design or audit step; the collection row did not reach the loop
   # cap; and no re-convergence of the key has a row after the record's first
-  # `중단 답` — a record opens its re-convergence once.
+  # `중단 답` — a record opens its re-convergence once. A row carrying
+  # `차단=파견 전` is not counted: the dispatch was blocked on the document's
+  # size before any session read the answer, so the redispatch the size
+  # answer asks for is the same re-convergence admitted again.
   local key="$1" rec="$2" hk first
   GATE_DCR_WHY=''
   if ! gate_decision_collect_named "$rec"; then
@@ -13846,6 +13858,7 @@ gate_decision_reconverge_open() {
      && [ -n "$( { grep -n -F "세그먼트=- | 스테이지=$key | 종류=reconverge " "$LEDGER" 2>/dev/null || true; } \
                  | { grep "^[0-9]*:- \`stage-result\` " || true; } \
                  | { grep -vF '| 관측=스폰 전 대기 중' || true; } \
+                 | { grep -vE '\| 차단=파견 전( \||$)' || true; } \
                  | awk -F: -v l="$first" '$1 > l')" ]; then
     GATE_DCR_WHY="이 결정 수거 기록은 이미 재수렴을 한 번 열었습니다 — 같은 기록으로 두 번 열지 않고, 새 다이제스트의 수거가 보류를 다시 정합니다: $rec"
     return 1
@@ -13864,10 +13877,17 @@ gate_decision_reconverge_entry() {
   # that re-convergence is admitted the way the audit's is: the key's last row
   # is a re-convergence of the session being resumed, and the record is the
   # one the key's last collection answer names.
+  #
+  # AN ANSWER TO A PRE-DISPATCH SIZE RECORD IS PASSED OVER. When the
+  # re-convergence's dispatch was blocked on the document's size, the key's
+  # answer to that size record (`정리 후 재파견`, `큰 문맥으로 재파견`) answers
+  # the dispatch's size and not the collection record, so the collection
+  # answer before it is the one read.
   local key="$1" last row rec lrow
   GATE_DCR_RECORD=''; GATE_DCR_WHY=''
   last=$( { grep -n -F "| 세그먼트=$key |" "$LEDGER" 2>/dev/null || true; } \
-          | { grep "^[0-9]*:- \`중단 답\` " || true; } | sed -n '$p')
+          | { grep "^[0-9]*:- \`중단 답\` " || true; } \
+          | gate_drop_size_record_answers | sed -n '$p')
   if [ -z "$last" ]; then
     GATE_DCR_WHY="${key} 에 중단 답 행이 없습니다"
     return 1
@@ -14571,12 +14591,14 @@ gate_design_reconverge_after_audit() {
   # step's key carries a re-convergence on a later ledger line than the audit
   # step's last `종류=audit` row, or the audit has no row yet: the document has
   # been edited since anything audited it, so a fresh audit comes first. A
-  # re-convergence that never spawned edited nothing and does not count.
+  # re-convergence that never spawned edited nothing and does not count, nor
+  # does a size block before dispatch (`차단=파견 전`).
   local dstep rl arow al
   dstep=$(gate_run_scope_step design 2>/dev/null) || return 1
   rl=$( { grep -n -F "세그먼트=- | 스테이지=$dstep | 종류=reconverge " "$LEDGER" 2>/dev/null || true; } \
         | { grep "^[0-9]*:- \`stage-result\` " || true; } \
-        | { grep -vF '| 관측=스폰 전 대기 중' || true; } | tail -1 | cut -d: -f1)
+        | { grep -vF '| 관측=스폰 전 대기 중' || true; } \
+        | { grep -vE '\| 차단=파견 전( \||$)' || true; } | tail -1 | cut -d: -f1)
   [ -n "$rl" ] || return 1
   arow=$(gate_audit_result_rows_of "$1" | tail -1)
   [ -n "$arow" ] || return 0
@@ -14614,10 +14636,19 @@ gate_design_reconverge_entry() {
   # open a second one. A `--resume` of the review is admitted the way the
   # audit's is — the key's last row is a re-convergence of the session being
   # resumed.
+  #
+  # A SIZE BLOCK BEFORE DISPATCH IS PASSED OVER. When the review's dispatch was
+  # blocked on the document's size (`차단=파견 전`), the key's answers to that
+  # pre-dispatch size record (`정리 후 재파견`, `큰 문맥으로 재파견`) are not
+  # the ladder's answers, and the block row did not take up the `골격 재검토`
+  # answer: no session read it. The ladder answer before them is read, and the
+  # once-per-record count below leaves block rows out, so the re-dispatch the
+  # size answer asks for is the same review admitted again.
   local dstep="$1" lines last ln row rec first c prev pln dr lrow
   GATE_DRC_RECORD=''; GATE_DRC_WHY=''
   lines=$( { grep -n -F "| 세그먼트=$dstep |" "$LEDGER" 2>/dev/null || true; } \
-           | { grep "^[0-9]*:- \`중단 답\` " || true; })
+           | { grep "^[0-9]*:- \`중단 답\` " || true; } \
+           | gate_drop_size_record_answers)
   last=$(printf '%s\n' "$lines" | sed -n '$p')
   if [ -z "$last" ]; then
     GATE_DRC_WHY="설계 단계($dstep)에 중단 답 행이 없습니다"
@@ -14647,11 +14678,13 @@ gate_design_reconverge_entry() {
   if [ -n "$( { grep -n -F "세그먼트=- | 스테이지=$dstep | 종류=reconverge " "$LEDGER" 2>/dev/null || true; } \
                | { grep "^[0-9]*:- \`stage-result\` " || true; } \
                | { grep -vF '| 관측=스폰 전 대기 중' || true; } \
+               | { grep -vE '\| 차단=파견 전( \||$)' || true; } \
                | awk -F: -v l="$first" '$1 > l')" ]; then
     GATE_DRC_WHY="이 잔여 사다리 기록은 이미 재수렴을 한 번 열었습니다 — 같은 기록으로 두 번 열지 않습니다: $rec"
     return 1
   fi
   c=$(gate_halt_answer_consumer "$LEDGER" "$dstep" "$ln")
+  case "$c" in *'| 차단=파견 전 |'*|*'| 차단=파견 전') c='' ;; esac
   if [ -n "$c" ]; then
     if [ "$(gate_row_field "${c#*:}" '종류')" != "design" ] \
        || [ "$(gate_row_field "${c#*:}" '종단 부류')" != "정상 완료" ]; then
@@ -15326,6 +15359,7 @@ gate_adoption_halt_source() {
     [ "$e" -lt "$ln" ] || continue
     if { grep -n -F "세그먼트=$skey " "$sledger" 2>/dev/null || true; } \
          | { grep "^[0-9]*:- \`stage-result\` " || true; } | { grep -F '| 종류=reconverge |' || true; } \
+         | { grep -vE '\| 차단=파견 전( \||$)' || true; } \
          | awk -F: -v l="$e" '$1 > l { n++ } END { exit n ? 0 : 1 }'; then
       GATE_CARRY_WHY="출처 런이 그 기록으로 이미 한 번 재수렴했습니다 — 두 번째는 사람에게 갑니다"
       return 2
@@ -23735,6 +23769,10 @@ gate_main() {
       --reject)          reject=1; shift ;;
       --resume)          GATE_RESUME="$2"; shift 2 ;;
       --carry-answer)    GATE_CARRY_ANSWER="$2"; shift 2 ;;
+      # A BOOLEAN: this one dispatch carries out a person's `큰 문맥으로 재파견`
+      # answer to a size record, so it skips the size check and runs on the
+      # large-context model. Checked against the key's open answer at the act.
+      --large-context)   GATE_LARGE_CONTEXT=1; shift ;;
       --limit-delegate)  GATE_LIMIT_DELEGATE=1; shift ;;
       --site)          GATE_SHIFT_HALT_SITE="$2"; shift 2 ;;
       --rerun-answer)    GATE_APPLY_RERUN_ANSWER="$2"; shift 2 ;;
@@ -23934,7 +23972,8 @@ gate_main() {
   fi
   # `ci-match` too: the gate reads the failing logs and writes the match row.
   # `clause-exec` too: the gate runs the command and writes its result row.
-  if [ "$kind" = "ci-match" ] || [ "$kind" = "clause-exec" ]; then
+  # `doc-tidy` too: the gate tidies the run's design document and writes its row.
+  if [ "$kind" = "ci-match" ] || [ "$kind" = "clause-exec" ] || [ "$kind" = "doc-tidy" ]; then
     case "$verb" in
       act|plan) ;;
       *) printf 'gate: --kind %s is used only with act/plan (verb received: %s)\n' "$kind" "$verb" >&2
@@ -25220,6 +25259,12 @@ gate_halt_answer_consumer() {
   # read, and the answer is still the one to carry. The two filters below are
   # `gate_row_is_pre_session_death` spelled for a line-numbered stream, so the
   # routing that reads the key's last row sees the same rows passed over.
+  #
+  # A SIZE BLOCK OF A CARRYING DISPATCH (`차단=파견 전` with `답 운반`) does take
+  # the answer up for the shift: the shift does not carry it again, and the
+  # gate hands the row's card to the key's next dispatch itself
+  # (`gate_halt_card_crash_line`), which is the redispatch the size record's
+  # answer asks for.
   local sr st pk arow aopt astep
   arow=$(sed -n "${3}p" "$1" 2>/dev/null)
   aopt=$(gate_row_field "$arow" '선택지')
@@ -25237,6 +25282,24 @@ gate_halt_answer_consumer() {
   # ledger or an earlier one — and the shift carries it out with the segment's
   # park row, as it does `보류` above.
   [ "$(gate_row_field "$arow" '라우팅')" = '외부-보류' ] && aopt='세그먼트 park'
+  # AN ANSWER `런 밖에서 처리` TO A PRE-DISPATCH SIZE RECORD (route `크기-보류`)
+  # is carried out by a park as well: on a segment key the segment's
+  # `상태=park` row, on a run-scope key the run-scope `blocked` row
+  # (`사유=크기-보류`) the shift anchors on the key. Either, on a later line,
+  # spends it.
+  local szk=''
+  if [ "$aopt" = '런 밖에서 처리' ]; then
+    case "$(sed -n 's/^\*\*스텝\*\*: //p' "$(gate_row_field "$arow" '중단 기록')" 2>/dev/null | sed -n '1p')" in
+      '파견 전 /'*)
+        if [ -n "$({ grep -F "| id=$2 |" "$1" 2>/dev/null || true; } | { grep '^- `segment` ' || true; })" ]; then
+          aopt='세그먼트 park'
+        else
+          szk=$(LC_ALL=C awk -v l="$3" -v k="$2" '
+            NR > l && !p && index($0, "- `blocked` ") == 1 && index($0, "| 스코프=run |") \
+              && index($0, "| 사유=크기-보류 |") && index($0, "| 앵커 세그먼트=" k " |") { print NR ":" $0; p = 1 }' "$1" 2>/dev/null)
+        fi ;;
+    esac
+  fi
   sr=$( { grep -n -F -e "세그먼트=$2 " -e "세그먼트=- | 스테이지=$2 | 종류=" "$1" 2>/dev/null || true; } \
     | { grep "^[0-9]*:- \`stage-result\` " || true; } \
     | { grep -vF '| 관측=스폰 전 대기 중' || true; } \
@@ -25270,6 +25333,9 @@ gate_halt_answer_consumer() {
       && index($0, "| 원인=막힘 |") && index($0, "| 막힌 답 줄=" l " |") { print NR ":" $0; p = 1 }' "$1" 2>/dev/null)
   if [ -n "$bk" ] && { [ -z "$sr" ] || [ "${bk%%:*}" -lt "${sr%%:*}" ]; }; then
     sr=$bk
+  fi
+  if [ -n "$szk" ] && { [ -z "$sr" ] || [ "${szk%%:*}" -lt "${sr%%:*}" ]; }; then
+    sr=$szk
   fi
   if [ "$aopt" = '세그먼트 park' ]; then
     pk=$(LC_ALL=C awk -v l="$3" -v k="$2" '
@@ -26851,7 +26917,8 @@ gate_halt_auto_answer_admit() {
     [ "$rrec" = "$rec" ] || continue
     if [ "$opt" = "재수렴" ] && [ "$(gate_row_field "$row" '선택지')" = "재수렴" ] && [ -n "$c" ]; then
       cls=$(gate_row_field "${c#*:}" '종단 부류')
-      if [ "$(gate_row_field "${c#*:}" '종류')" = "reconverge" ]; then
+      if [ "$(gate_row_field "${c#*:}" '종류')" = "reconverge" ] \
+         && ! gate_row_is_size_block "${c#*:}"; then
         case "$cls" in
           크래시|'한도 종료'|'외부 종료') ;;
           *) warn "같은 정지 기록을 두 번 재수렴하려면 사람의 답이 필요합니다 — 원장 ${ln} 번째 줄의 \`재수렴\` 답을 ${c%%:*} 번째 줄의 재수렴이 이미 받았습니다: $rec"
@@ -26889,15 +26956,16 @@ EOF
   # answered `adopt as a requirement` re-converges the document and audits it
   # again; when the key already ran a re-convergence and the audit parked on
   # the synthesis again, the automatic answer would loop the same repair. A
-  # re-convergence that ended `크래시`, `한도 종료` or `외부 종료` did nothing
-  # with the answer and is not counted — the same exclusion as the record
-  # bound above. A person's adoption takes none of this and is routed like the
+  # re-convergence that ended `크래시`, `한도 종료` or `외부 종료`, or a size
+  # block before dispatch (`차단=파견 전`), did nothing with the answer and is
+  # not counted — the same exclusion as the record bound above. A person's adoption takes none of this and is routed like the
   # first.
   if [ "$opt" = "adopt as a requirement" ] \
      && [ "$(sed -n 's/^\*\*스킬\*\*: //p' "$rec" 2>/dev/null | sed -n '1p' | sed 's/[[:space:]]*$//')" = "design-audit-unattended" ]; then
     while IFS= read -r r; do
       [ -n "$r" ] || continue
       [ "$(gate_row_field "$r" '종류')" = "reconverge" ] || continue
+      ! gate_row_is_size_block "$r" || continue
       cls=$(gate_row_field "$r" '종단 부류')
       case "$cls" in
         크래시|'한도 종료'|'외부 종료') continue ;;
@@ -27201,13 +27269,48 @@ gate_halt_card_crash_line() {
   # `외부 종료`: that attempt may have died holding the answer, so the next
   # dispatch of the key — a re-attachment or a fresh one — gets the same card
   # under its own attempt. Nothing otherwise.
+  #
+  # A SIZE BLOCK BEFORE DISPATCH HANDS IT ON TOO. The gate refused to start an
+  # attempt that would have carried a card (`차단=파견 전` with `답 운반`): no
+  # session read it, and the redispatch the size record's answer asks for —
+  # the same dispatch, without `--carry-answer` — is the dispatch that has to
+  # read it. That block row stands as the answer's consumer, so the shift does
+  # not carry it a second time; the gate hands the card on here instead.
   local last c
   last=$( { gate_stage_result_rows_of "$1" || true; } | tail -1)
   c=$(gate_row_field "$last" '답 운반')
   [ -n "$c" ] || return 0
+  if gate_row_is_size_block "$last"; then
+    printf '%s' "$c"
+    return 0
+  fi
   case "$(gate_row_field "$last" '종단 부류')" in
     크래시|'한도 종료'|'외부 종료') printf '%s' "$c" ;;
   esac
+}
+
+gate_size_block_card_capped() {
+  # gate_size_block_card_capped <key> <line> — true when a size block row of the
+  # key carries the card of the `중단 답` row at <line> and the key's attempts
+  # carrying that card died before their session GATE_CARRY_DEATH_MAX times.
+  # GATE_SBC_DEATHS holds the count.
+  #
+  # THE CARRY'S DEATH CAP, FOR THE CARD A SIZE BLOCK HANDS ON. A redispatch
+  # that dies before its session leaves the block row the key's last settled
+  # row and the size record's answer open, so the same redispatch is admitted
+  # and handed the card again. The carry check caps a carried answer's
+  # pre-session deaths; this caps the same answer when the gate hands it on.
+  local r blocked=''
+  GATE_SBC_DEATHS=0
+  while IFS= read -r r; do
+    [ -n "$r" ] || continue
+    [ "$(gate_row_field "$r" '답 운반')" = "$2" ] || continue
+    if gate_row_is_size_block "$r"; then blocked=1; continue; fi
+    gate_row_is_pre_session_death "$r" && GATE_SBC_DEATHS=$((GATE_SBC_DEATHS + 1))
+  done <<EOF
+$( { gate_stage_result_rows_of "$1" || true; } )
+EOF
+  [ -n "$blocked" ] && [ "$GATE_SBC_DEATHS" -ge "$GATE_CARRY_DEATH_MAX" ]
 }
 
 gate_halt_answer_deferred() {
@@ -27669,6 +27772,11 @@ gate_carry_routed_elsewhere() {
     # `보류` answer parks the segment.
     'Step 3 강제 표면 좌석 적용'*)
       printf '강제 표면 좌석 적용 정지의 답은 그 세션에 재부착하거나 세그먼트를 park 합니다 — 운반하지 않습니다: %s' "$rec"; return 0 ;;
+    # A pre-dispatch size block started no session, so nothing carries its
+    # answer: a tidy or a large-context answer is a new dispatch on the key,
+    # and an answer to keep it out of the run parks the key.
+    '파견 전 / 문서 크기 초과'*|'파견 전 / 문서 읽기 불가'*)
+      printf '파견 전 크기 차단 기록의 답은 같은 키의 새 파견이나 보류로 처리합니다 — 운반하지 않습니다: %s' "$rec"; return 0 ;;
   esac
   if [ "$skill" = "design-audit-unattended" ] && [ "${step#*CFI-3b}" != "$step" ] \
      && [ "$opt" = "adopt as a requirement" ]; then
@@ -28558,7 +28666,73 @@ gate_halt_settle() {
 # 「Handing on a person's answer to a halt」 in the routing shift's skill. The
 # skill maps each id to its item; `scripts/test-gate.sh` reads the ids from
 # this line and fails when the skill stops naming one.
-readonly GATE_HALT_ROUTES='재부착 감사-재수렴 구속-재수렴 교대-정지 빈-대상 적용-보류 설계-재수렴 골격급-재수렴 외부-보류 구현-수정 반증-파킹 원인-보류'
+readonly GATE_HALT_ROUTES='재부착 감사-재수렴 구속-재수렴 교대-정지 빈-대상 적용-보류 설계-재수렴 골격급-재수렴 외부-보류 구현-수정 반증-파킹 원인-보류 정리-재파견 큰문맥-재파견 크기-보류'
+
+gate_doc_size_detail() {
+  # gate_doc_size_detail <record> <field> — one field of a pre-dispatch size
+  # record's `**관측 상세**` line (`문서=… / 바이트=… / … / 문서 사전 sha256=…`),
+  # or nothing.
+  sed -n 's/^\*\*관측 상세\*\*: //p' "$1" 2>/dev/null | sed -n '1p' \
+    | awk -v k="$2" 'BEGIN { RS = " / " } { sub(/\n$/, "") } index($0, k "=") == 1 { print substr($0, length(k) + 2); exit }'
+}
+
+gate_doc_tidy_row_of() {
+  # gate_doc_tidy_row_of <record> — the last `doc-tidy` row that tidied the
+  # document for this halt record, or nothing.
+  gate_rows 'doc-tidy' | { grep -F "| 중단 기록=$1 |" || true; } | tail -1
+}
+
+gate_doc_size_doc() {
+  # gate_doc_size_doc <record> — the design document a size record was written
+  # for: the run's own document, else the record's `문서=` field.
+  local d="${DOC:-}"
+  [ -n "$d" ] || d=$(gate_doc_size_detail "$1" '문서')
+  printf '%s' "$d"
+}
+
+gate_doc_tidy_admissible() {
+  # gate_doc_tidy_admissible <key> <record> — the four structural conditions of
+  # `정리 후 재파견`, all read from what stands now: the record's kind is an
+  # audit or a re-convergence; the document's sha256 equals the record's
+  # pre-dispatch sha256 or the post-tidy sha256 of a `doc-tidy` row for this
+  # record; `doc-tidy.py plan` expects the document under that kind's
+  # threshold; and no other unfinished segment holds a plan. 0 when they hold,
+  # 1 with GATE_DOC_TIDY_WHY filled otherwise. GATE_DOC_TIDY_DONE is 1 when the
+  # document already stands at the tidy row's post-tidy sha256, so the shift
+  # dispatches again without tidying.
+  local key="$1" rec="$2" kind doc have pre post t exp seg
+  GATE_DOC_TIDY_WHY=''; GATE_DOC_TIDY_DONE=0
+  kind=$(gate_doc_size_detail "$rec" '종류')
+  case "$kind" in
+    audit|reconverge) ;;
+    *) GATE_DOC_TIDY_WHY="기록의 종류가 ${kind:-(없음)} 라 정리하지 않습니다 — 정리는 감사·재수렴 기록에만 합니다"; return 1 ;;
+  esac
+  doc=$(gate_doc_size_doc "$rec")
+  have=$(shasum -a 256 "$doc" 2>/dev/null | cut -d' ' -f1)
+  pre=$(gate_doc_size_detail "$rec" '문서 사전 sha256')
+  post=$(gate_row_field "$(gate_doc_tidy_row_of "$rec")" '정리 후 sha256')
+  if [ -n "$have" ] && [ -n "$post" ] && [ "$have" = "$post" ]; then
+    GATE_DOC_TIDY_DONE=1
+  elif [ -z "$have" ] || [ "$have" != "$pre" ]; then
+    GATE_DOC_TIDY_WHY="문서 ${doc:-(없음)} 가 기록을 쓴 뒤 바뀌어(현재 sha256=${have:-읽기 불가}) 기록의 예상으로 정리할 수 없습니다"
+    return 1
+  fi
+  t=$(doc_size_threshold "$kind" | cut -f1)
+  if [ "$GATE_DOC_TIDY_DONE" = 0 ]; then
+    exp=$(doc_tidy_plan_expected "$doc" "$doc") || exp=''
+    if [ -z "$exp" ] || [ "$exp" -ge "$t" ]; then
+      GATE_DOC_TIDY_WHY="doc-tidy plan 의 예상 크기(${exp:-잴 수 없음})가 문턱 $t 아래가 아닙니다"
+      return 1
+    fi
+  fi
+  seg=$key
+  ! gate_run_scope_kind_of_key "$key" >/dev/null 2>&1 || seg=-
+  if segment_other_live_plan "$seg"; then
+    GATE_DOC_TIDY_WHY="계획을 가진 다른 세그먼트가 있어 정리하면 그 계획이 무효가 됩니다"
+    return 1
+  fi
+  return 0
+}
 
 gate_row_is_pre_session_death() {
   # gate_row_is_pre_session_death <stage-result row> — whether the row settles
@@ -28602,6 +28776,167 @@ EOF
   printf '%s' "$last"
 }
 
+gate_row_is_size_block() {
+  # gate_row_is_size_block <stage-result row> — whether the row is a size block
+  # before dispatch (`차단=파견 전`): no session started and nothing moved.
+  [ "$(gate_row_field "$1" '차단')" = "파견 전" ]
+}
+
+gate_key_last_row_is_size_block() {
+  # gate_key_last_row_is_size_block <key> — 0 when the key's last `stage-result`
+  # row is a size block before dispatch: the dispatch the key is waiting on has
+  # not run, and only the size record's answer dispatches it again. A block
+  # row with a later row behind it is history and answers 1.
+  local last
+  last=$( { gate_stage_result_rows_of "$1" || true; } | tail -1)
+  [ -n "$last" ] && gate_row_is_size_block "$last"
+}
+
+gate_stage_row_before_size_block() {
+  # gate_stage_row_before_size_block <key> — the key's last `stage-result` row
+  # that is neither a pre-session death nor a size block before dispatch, or
+  # nothing: where the key stood when the blocked dispatch was admitted.
+  #
+  # A BLOCKED CARRY OF AN ANSWER BROUGHT OVER FROM AN EARLIER RUN may be the
+  # key's first row in this run. Its block row's `답 운반` names this run's copy
+  # of that answer, and the key stood where the earlier run's attempt halted
+  # (`gate_carry_source_last_row`), the row the carry was admitted on.
+  local r last='' blk=''
+  while IFS= read -r r; do
+    [ -n "$r" ] || continue
+    gate_row_is_pre_session_death "$r" && continue
+    if gate_row_is_size_block "$r"; then blk=$r; continue; fi
+    last=$r
+  done <<EOF
+$( { gate_stage_result_rows_of "$1" || true; } | { grep -F -- '- `stage-result`' || true; })
+EOF
+  if [ -z "$last" ] && [ -n "$(gate_row_field "$blk" '답 운반')" ]; then
+    last=$(gate_carry_source_last_row "$(gate_row_field "$blk" '답 운반')")
+  fi
+  printf '%s' "$last"
+}
+
+gate_size_block_of_record() {
+  # gate_size_block_of_record <key> <record> — whether the key's last settled
+  # `stage-result` row is the size block before dispatch that wrote <record>
+  # (`$RUN_DIR/halt/<key>#<실행 버전>.md`) for a re-convergence.
+  local last
+  last=$(gate_stage_last_settled_row "$1")
+  gate_row_is_size_block "$last" \
+    && [ "$(gate_row_field "$last" '종류')" = "reconverge" ] \
+    && [ "$RUN_DIR/halt/$1#$(gate_row_field "$last" '실행 버전').md" = "$2" ]
+}
+
+gate_size_block_redispatch_row() {
+  # gate_size_block_redispatch_row <key> — the row before the key's size block
+  # (`gate_stage_row_before_size_block`), with 0, when the key's last settled
+  # row is a re-convergence's size block before dispatch and the key's last
+  # `중단 답` answers that block's record with a redispatch not yet taken up:
+  # `정리 후 재파견`, or a person's `큰 문맥으로 재파견`. 1 otherwise.
+  #
+  # THE BLOCKED DISPATCH IS ADMITTED AGAIN ON THE ROW IT WAS ADMITTED ON. A
+  # size block writes the key's last row, so a test that reads that row would
+  # refuse the very redispatch the answer asks for; the run-scope
+  # re-convergence's admission tests read the row before the block instead,
+  # only while such an answer is open.
+  local key="$1" last row ln r rec
+  last=$(gate_stage_last_settled_row "$key")
+  rec="$RUN_DIR/halt/$key#$(gate_row_field "$last" '실행 버전').md"
+  gate_size_block_of_record "$key" "$rec" || return 1
+  row=$( { grep -n "^- \`중단 답\` " "$LEDGER" 2>/dev/null || true; } \
+         | { grep -F "| 세그먼트=$key |" || true; } | tail -1)
+  [ -n "$row" ] || return 1
+  ln=${row%%:*}; r=${row#*:}
+  [ "$(gate_row_field "$r" '중단 기록')" = "$rec" ] || return 1
+  ! gate_halt_answer_spent "$LEDGER" "$key" "$ln" || return 1
+  case "$(gate_row_field "$r" '선택지')" in
+    '정리 후 재파견') ;;
+    '큰 문맥으로 재파견') [ "$(gate_halt_answered_by "$r")" = '사람' ] || return 1 ;;
+    *) return 1 ;;
+  esac
+  [ "$(sed -n 's/^\*\*스텝\*\*: //p' "$rec" 2>/dev/null | sed -n '1p')" = '파견 전 / 문서 크기 초과' ] \
+    || return 1
+  r=$(gate_stage_row_before_size_block "$key")
+  [ -n "$r" ] || return 1
+  printf '%s' "$r"
+}
+
+gate_audit_reconverge_row_admits() {
+  # gate_audit_reconverge_row_admits <row> <block row> — whether the row
+  # standing before a run-scope re-convergence's size block is one the audit
+  # step's re-convergence admissions accept: an audit that parked on purpose,
+  # an audit that ended `정상 완료` with `재수렴 요청=예`, or a re-convergence
+  # that parked on purpose when the block row carries the answer card
+  # (`답 운반`). That re-convergence is admitted again only with its answer
+  # carried; the gate hands the block row's card to the redispatch
+  # (`gate_halt_card_crash_line`), so the redispatch without `--carry-answer`
+  # starts with the person's answer. A block row with no card has no answer to
+  # hand on, and that redispatch is refused.
+  case "$(gate_row_field "$1" '종류')|$(gate_row_field "$1" '종단 부류')" in
+    'audit|의도된 park') return 0 ;;
+    'audit|정상 완료') [ "$(gate_row_field "$1" '재수렴 요청')" = "예" ] ;;
+    'reconverge|의도된 park') [ -n "$(gate_row_field "${2:-}" '답 운반')" ] ;;
+    *) return 1 ;;
+  esac
+}
+
+gate_size_block_reconverge_routable() {
+  # gate_size_block_reconverge_routable <key> <record> — for an answer that
+  # redispatches a run-scope re-convergence blocked on the document's size:
+  # 0 when the `- reconverge` it asks for would be admitted once the answer
+  # stands, 1 with GATE_SBR_WHY otherwise. Asked before the document is
+  # tidied, so a redispatch the gate would refuse is refused before anything
+  # changes the document.
+  local key="$1" rec="$2" prior ast dst ckey
+  GATE_SBR_WHY=''
+  if ! gate_size_block_of_record "$key" "$rec"; then
+    GATE_SBR_WHY="$key 의 마지막 행이 이 기록을 쓴 재수렴의 크기 차단 행이 아니어서 다시 파견할 차단이 없습니다"
+    return 1
+  fi
+  # A RE-CONVERGENCE A DECISION-COLLECTION ANSWER OPENED rides on the
+  # collection's key, the audit step or else the design step, and is admitted
+  # by its own test rather than by the audit's or the ladder's.
+  ckey=$(gate_decision_collect_key 2>/dev/null || true)
+  if [ -n "$ckey" ] && [ "$key" = "$ckey" ] && gate_decision_reconverge_entry "$key"; then
+    return 0
+  fi
+  ast=$(gate_run_scope_step audit 2>/dev/null || true)
+  dst=$(gate_run_scope_step design 2>/dev/null || true)
+  if [ -n "$ast" ] && [ "$key" = "$ast" ]; then
+    prior=$(gate_stage_row_before_size_block "$key")
+    if [ -n "$(gate_segment_field "$key" '상태')" ] \
+       || ! gate_audit_reconverge_row_admits "$prior" "$(gate_stage_last_settled_row "$key")"; then
+      GATE_SBR_WHY="감사 단계 $key 의 차단 앞 행이 재수렴을 받는 행이 아닙니다(종류=$(gate_row_field "$prior" '종류') · 종단 부류=$(gate_row_field "$prior" '종단 부류'))"
+      return 1
+    fi
+    return 0
+  fi
+  if [ -n "$dst" ] && [ "$key" = "$dst" ]; then
+    if ! gate_design_reconverge_entry "$key"; then
+      GATE_SBR_WHY=$GATE_DRC_WHY
+      return 1
+    fi
+    return 0
+  fi
+  GATE_SBR_WHY="$key 는 감사 단계도 설계 단계도 아니어서 런 범위 재수렴을 다시 파견할 갈래가 없습니다"
+  return 1
+}
+
+gate_drop_size_record_answers() {
+  # gate_drop_size_record_answers — filter of line-numbered `중단 답` rows:
+  # drops each answer to a pre-dispatch size record (its record's `**스텝**`
+  # opens with `파견 전 /`), which answers the dispatch's size and not the
+  # stage's question.
+  local l
+  while IFS= read -r l; do
+    [ -n "$l" ] || continue
+    case "$(sed -n 's/^\*\*스텝\*\*: //p' "$(gate_row_field "${l#*:}" '중단 기록')" 2>/dev/null | sed -n '1p')" in
+      '파견 전 /'*) continue ;;
+    esac
+    printf '%s\n' "$l"
+  done
+}
+
 gate_audit_reconverge_keyable() {
   # gate_audit_reconverge_keyable <audit step id> [<resumed session>] — whether
   # a `- reconverge` dispatch is admitted on the run-scope audit step: the step
@@ -28638,6 +28973,21 @@ gate_audit_reconverge_keyable() {
     [ -z "$cl" ] || last=$(gate_carry_source_last_row "$cl")
   fi
   GATE_AUDIT_RECONVERGE_LAST=$last
+  # A size block before dispatch is not an audit that parked on purpose: no
+  # session read the document. Its row carries `차단=파견 전`, which only the
+  # attempt whose record's `**스텝**` opens with `파견 전 /` writes. A
+  # re-convergence's block with an open redispatch answer
+  # (`gate_size_block_redispatch_row`) is read past: the redispatch stands
+  # where the blocked dispatch was admitted.
+  if gate_row_is_size_block "$last"; then
+    local blk=$last
+    last=$(gate_size_block_redispatch_row "$k") || return 1
+    GATE_AUDIT_RECONVERGE_LAST=$last
+    [ -z "$res" ] || return 1
+    gate_audit_reconverge_row_admits "$last" "$blk" \
+      && [ "$(gate_row_field "$last" '종단 부류')" = "의도된 park" ]
+    return
+  fi
   case "$(gate_row_field "$last" '종류')|$(gate_row_field "$last" '종단 부류')" in
     'audit|의도된 park') return 0 ;;
     'reconverge|'*)
@@ -28664,6 +29014,13 @@ gate_audit_skeleton_reconverge_keyable() {
   [ -z "$(gate_segment_field "$k" '상태')" ] || return 1
   last=$( { gate_stage_result_rows_of "$k" || true; } | { grep -vF '| 관측=스폰 전 대기 중' || true; } | tail -1)
   GATE_AUDIT_RECONVERGE_LAST=$last
+  # The skeletal re-convergence blocked on the document's size is admitted
+  # again on an open redispatch answer, read past its block row as
+  # `gate_audit_reconverge_keyable` does.
+  if gate_row_is_size_block "$last"; then
+    last=$(gate_size_block_redispatch_row "$k") || return 1
+    GATE_AUDIT_RECONVERGE_LAST=$last
+  fi
   [ "$(gate_row_field "$last" '종류')" = "audit" ] \
     && [ "$(gate_row_field "$last" '종단 부류')" = "정상 완료" ] \
     && [ "$(gate_row_field "$last" '재수렴 요청')" = "예" ]
@@ -28792,7 +29149,44 @@ gate_halt_answer_route() {
   skill=$(sed -n 's/^\*\*스킬\*\*: //p' "$rec" 2>/dev/null | sed -n '1p' | sed 's/[[:space:]]*$//')
   step=$(sed -n 's/^\*\*스텝\*\*: //p' "$rec" 2>/dev/null | sed -n '1p')
   hstep=${step%% — *}
-  if [ -n "$(gate_shift_halt_row_of "$rec")" ]; then
+  if [ "$hstep" = '파견 전 / 문서 크기 초과' ] || [ "$hstep" = '파견 전 / 문서 읽기 불가' ]; then
+    # A PRE-DISPATCH SIZE RECORD IS ANSWERED BY ONE OF ITS THREE ROUTES ONLY.
+    # No session was started, so there is nothing to re-attach. On a size
+    # record the seat and a shift may answer `정리 후 재파견` and nothing else;
+    # an unreadable-document record only a person answers.
+    case "$opt" in
+      '정리 후 재파견') id=정리-재파견 ;;
+      '큰 문맥으로 재파견') id=큰문맥-재파견 ;;
+      '런 밖에서 처리') id=크기-보류 ;;
+      *) why="파견 전 크기 차단 기록에는 \`$opt\` 를 실행할 갈래가 없습니다 — 갈래는 \`정리 후 재파견\`·\`큰 문맥으로 재파견\`·\`런 밖에서 처리\` 뿐입니다" ;;
+    esac
+    if [ -z "$why" ] && [ "$by" != "사람" ]; then
+      if [ "$hstep" = '파견 전 / 문서 읽기 불가' ]; then
+        why="문서 읽기 불가 기록에는 사람만 답합니다 — 답한 주체=${by:-(없음)} 인 답은 교대가 실행할 갈래가 없습니다"
+      elif [ "$id" != 정리-재파견 ]; then
+        why="「${opt}」 는 사람의 답으로만 집행됩니다 — 답한 주체=${by:-(없음)} 인 답은 교대가 실행할 갈래가 없습니다"
+      fi
+    fi
+    # A RUN-SCOPE RE-CONVERGENCE IS REDISPATCHED ONLY WHERE ITS ADMISSION WOULD
+    # TAKE IT. Asked before the tidy act can touch the document, so an answer
+    # whose redispatch the gate would refuse leaves the document as it was.
+    if [ -z "$why" ] && { [ "$id" = 정리-재파견 ] || [ "$id" = 큰문맥-재파견 ]; } \
+       && [ "$(gate_doc_size_detail "$rec" '종류')" = reconverge ] \
+       && gate_run_scope_kind_of_key "$key" >/dev/null 2>&1 \
+       && ! gate_size_block_reconverge_routable "$key" "$rec"; then
+      why="재파견할 - reconverge 를 게이트가 받지 않습니다 — $GATE_SBR_WHY"
+    fi
+    if [ -z "$why" ] && [ "$id" = 정리-재파견 ]; then
+      if [ "$hstep" != '파견 전 / 문서 크기 초과' ]; then
+        why="문서 읽기 불가 기록은 정리할 수 없습니다"
+      elif ! gate_doc_tidy_admissible "$key" "$rec"; then
+        why=$GATE_DOC_TIDY_WHY
+      fi
+    fi
+    if [ -z "$why" ] && [ -n "$st" ] && gate_segment_terminal "$key"; then
+      why=$terminal
+    fi
+  elif [ -n "$(gate_shift_halt_row_of "$rec")" ]; then
     # No terminal condition: two of the shift's stop sites arise on a segment
     # that already has its `머지됨` row, and their `재시도` writes a second one.
     id=교대-정지
@@ -30428,6 +30822,12 @@ gate_segment_review_walk() {
   # still have committed, and a failed re-convergence still spent the
   # segment's one re-convergence.
   #
+  # A SIZE BLOCK BEFORE DISPATCH (`차단=파견 전`) IS NO ATTEMPT. The gate refused
+  # to start it on the document's size, no session ran and nothing moved, so it
+  # spends no re-convergence and authors nothing: `다음` stays where the blocked
+  # dispatch was admitted, and the redispatch the size record's answer asks for
+  # passes the same `다음` check.
+  #
   # THE RE-CHECK IS EVERY CYCLE AFTER THE FIRST LEAD FIX, not only the one a
   # lead-fix row directly precedes: the review after a re-implementation is a
   # re-check too, and the ladder's outer cap counts them all.
@@ -30450,6 +30850,7 @@ gate_segment_review_walk() {
           if (lf) kr++
           next
         }
+        if (fld("차단") == "파견 전") next
         k = fld("종류"); st = fld("스테이지"); sub(/:.*/, "", st)
         if (k == "reconverge") {
           if (lf) rcv = 1
@@ -31102,7 +31503,7 @@ gate_ci_fix_attempt() {
     index(row, "- `재계획`") == 1 { split("", seen); next }
     index(row, "- `stage-result`") == 1 {
       k = fld(row, "종류")
-      if (k == "reconverge") { split("", seen); next }
+      if (k == "reconverge" && fld(row, "차단") != "파견 전") { split("", seen); next }
       if (k != "implement") next
       d = fld(row, "plan_sha256")
       first = (d != "" && !(d in seen))
@@ -37266,10 +37667,11 @@ gate_rundir_write_guard() {
           fi
           continue ;;
         visual-migration) continue ;;
-        # THE DESIGN DOCUMENT LOCK. Every stage that edits the design document —
-        # the implementation arm's token writes, the audit's reconciliation pass
-        # and the re-convergence pass — wraps the write in `lockf -k -t 0
-        # "$RUN_DIR/designdoc.lock"`, and this list did not know the name, so a
+        # THE DESIGN DOCUMENT LOCK. Every stage that edits the design document
+        # takes `"$RUN_DIR/designdoc.lock"` before the write — the implementation
+        # arm's token writes wrap it in `lockf -k -t 0`, and the audit's
+        # reconciliation pass and the re-convergence pass take the same flock(2)
+        # lock through `doc-tidy.py --lock` — and this list did not know the name, so a
         # re-convergence stage stopped at the lock before its one edit. Measured:
         # the stage halted `gate-unanswerable` with its edit prepared and unapplied.
         # Safe on the witness exception's terms: the file does not exist when the
@@ -42675,6 +43077,16 @@ EOF
       srow=$(gate_shift_halt_site_row "$ssite") || {
         warn "\`${ssite:-(none)}\` is not a site of the shift-halt table — a run-scope stop stays a \`handoff\` with \`사유=중단\`"
         return "$GATE_EXIT_VOCAB"; }
+      # A SIZE BLOCK IS NO REACH PARK. A dispatch the document's size refused
+      # exits 11 like a reach park, but it wrote a size record and a
+      # `차단=파견 전` row, not a `blocked` row. A `도달 거부` stop on it would
+      # hold the segment behind a second question and keep the size record's
+      # answer from redispatching, so the segment's last row decides.
+      if [ "$ssite" = "도달 거부" ] && [ -n "$seg" ] && [ "$seg" != "-" ] \
+         && gate_key_last_row_is_size_block "$seg"; then
+        warn "세그먼트 $seg 의 마지막 결과 행은 파견 전 크기 차단(차단=파견 전)입니다 — 그 11 은 도달 park 가 아니므로 도달 거부 로 멈추지 않고 크기 기록의 답을 기다립니다"
+        return "$GATE_EXIT_RULE"
+      fi
       sq=$(gate_field_of '질문' "$@")
       sobs=$(gate_field_of '관측' "$@")
       [ -n "$sq" ] && [ -n "$sobs" ] || {
@@ -49782,6 +50194,235 @@ gate_check_review_post() {
   return 0
 }
 
+gate_doc_size_kind_of_dispatch() {
+  # gate_doc_size_kind_of_dispatch <segment> <stage kind> — the size-table kind
+  # of an `act --kind skill` dispatch: an audit, a re-convergence (run-scope or
+  # in-segment) and a segment's implementation. Nothing for every other stage.
+  case "$2" in
+    audit|reconverge) printf '%s' "$2" ;;
+    implement) [ "$1" = "-" ] || printf 'implement' ;;
+  esac
+}
+
+gate_large_context_admit() {
+  # gate_large_context_admit <key> — whether this dispatch carries out a
+  # person's `큰 문맥으로 재파견` answer to the key's pre-dispatch size record:
+  # the key's last `중단 답` row picks that option, a person wrote it, it is
+  # not spent yet (the consumer passes over a pre-session death, so such a
+  # death leaves it open), and it answers a `파견 전 / 문서 크기 초과` record.
+  # On success the dispatch runs on the large-context model; otherwise
+  # GATE_EXIT_RULE with the reason.
+  local key="$1" row ln r why=''
+  row=$( { grep -n "^- \`중단 답\` " "$LEDGER" 2>/dev/null || true; } \
+         | { grep -F "| 세그먼트=$key |" || true; } | tail -1)
+  ln=${row%%:*}; r=${row#*:}
+  if [ -z "$row" ]; then
+    why="$key 에 중단 답이 없습니다"
+  elif gate_halt_answer_spent "$LEDGER" "$key" "$ln"; then
+    why="$key 의 마지막 중단 답(원장 ${ln} 번째 줄)은 이미 쓰였습니다 — 큰 문맥 파견은 답 하나에 한 번입니다"
+  elif [ "$(gate_row_field "$r" '선택지')" != '큰 문맥으로 재파견' ]; then
+    why="$key 의 마지막 중단 답이 「큰 문맥으로 재파견」 이 아닙니다"
+  elif [ "$(gate_halt_answered_by "$r")" != '사람' ]; then
+    why="「큰 문맥으로 재파견」 은 사람의 답으로만 집행됩니다"
+  elif [ "$(sed -n 's/^\*\*스텝\*\*: //p' "$(gate_row_field "$r" '중단 기록')" 2>/dev/null | sed -n '1p')" != '파견 전 / 문서 크기 초과' ]; then
+    why="그 답이 파견 전 문서 크기 초과 기록의 답이 아닙니다"
+  fi
+  if [ -n "$why" ]; then
+    warn "--large-context 거절 — $why"
+    return "$GATE_EXIT_RULE"
+  fi
+  CC_ORCH_LARGE_CONTEXT_ONCE=1
+  export CC_ORCH_LARGE_CONTEXT_ONCE
+  return 0
+}
+
+gate_large_context_record() {
+  # gate_large_context_record <session-id> — remember that a NEW session was
+  # launched on the large-context window, at `$RUN_DIR/large-context/<id>`, so
+  # a later `--resume` of that session, or the new session an account move
+  # starts in its place, runs on the same window. The switch lives in one
+  # process only; without this record a re-attachment would carry a
+  # conversation that already holds the whole oversized document into the
+  # standard window. Same umask and atomic publish as the launch directory
+  # record; a failure only warns.
+  local sid="$1" tmp
+  [ -n "$sid" ] || return 0
+  (
+    umask 077
+    mkdir -p "$RUN_DIR/large-context" || exit 1
+    tmp=$(mktemp "$RUN_DIR/large-context/.rec.XXXXXX") || exit 1
+    printf '%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$tmp" || { rm -f "$tmp"; exit 1; }
+    mv "$tmp" "$RUN_DIR/large-context/$sid"
+  ) || warn "stage launch: could not record the large-context window for session $sid"
+}
+
+gate_large_context_inherit() {
+  # gate_large_context_inherit <session-id> — when the session being resumed
+  # was launched on the large-context window, set the switch for this process
+  # too, so the re-attachment (or the new session an account move starts in
+  # its place) runs on that window and skips the size check its session has
+  # already been let past. 0 when the switch is set, 1 otherwise.
+  local sid="$1"
+  [ -n "$sid" ] && [ -f "$RUN_DIR/large-context/$sid" ] || return 1
+  CC_ORCH_LARGE_CONTEXT_ONCE=1
+  export CC_ORCH_LARGE_CONTEXT_ONCE
+  return 0
+}
+
+gate_dispatch_doc_size_gate() {
+  # gate_dispatch_doc_size_gate <act|plan> <key> <segment> — the size step of an
+  # `act --kind skill` after `--large-context` was admitted, reading
+  # GATE_DOC_SIZE_KIND, GATE_LARGE_CONTEXT, GATE_RESUME, GATE_CARRY_ANSWER and
+  # GATE_HA_BOUND as the act set them. A carry bound to a session launched on
+  # the large-context window sets the switch, is measured for its row and is
+  # not checked; a new dispatch, and any other carry, goes through
+  # `gate_doc_size_dispatch_check`, whose status this returns.
+  local verb="$1" key="$2" seg="$3" v b t tab
+  [ -n "${GATE_DOC_SIZE_KIND:-}" ] || return 0
+  if [ -n "${GATE_CARRY_ANSWER:-}" ] && [ -n "${GATE_HA_BOUND:-}" ] \
+     && gate_large_context_inherit "$GATE_HA_BOUND"; then
+    # `<verdict>\t<bytes>\t<threshold>\t<warn>`, split without a pipeline;
+    # an unreadable document leaves the bytes field empty and no size row.
+    tab=$(printf '\t')
+    v=$(doc_size_verdict "$GATE_DOC_SIZE_KIND" "${DOC:-}")
+    case "$v" in
+      *"$tab"*"$tab"*) v=${v#*"$tab"}; b=${v%%"$tab"*}; v=${v#*"$tab"}; t=${v%%"$tab"*} ;;
+      *) b='' ;;
+    esac
+    [ -z "$b" ] || GATE_DOC_SIZE_LAST="$b/$t"
+    return 0
+  fi
+  [ -z "${GATE_LARGE_CONTEXT:-}" ] && [ -z "${GATE_RESUME:-}" ] || return 0
+  gate_doc_size_dispatch_check "$verb" "$key" "$GATE_DOC_SIZE_KIND" "$seg"
+}
+
+gate_doc_size_dispatch_check() {
+  # gate_doc_size_dispatch_check <act|plan> <key> <kind> <segment> — the
+  # pre-dispatch size check of an `act --kind skill`. 0 to dispatch, with
+  # GATE_DOC_SIZE_LAST holding `<bytes>/<threshold>`. Past the threshold, or
+  # with the document unreadable: a plan forecasts the block; an act claims the
+  # key's next attempt under the dispatch lock it holds, writes that attempt's
+  # halt record and its `stage-result` row (`종단 부류=의도된 park`,
+  # `차단=파견 전`, the kind's usual `종류=`), launches nothing and exits
+  # GATE_EXIT_PARK. No park row: the record waits for its answer.
+  # A fifth argument names an attempt the dispatch already claimed — the
+  # re-check after an account lease turned a re-attachment fresh.
+  #
+  # THE CARD THE BLOCKED ATTEMPT WOULD HAVE READ goes on its row as `답 운반`:
+  # the carried answer's line, or the line a dead attempt left to hand again
+  # (`gate_halt_card_crash_line`). The key's next dispatch is handed that card
+  # again, so the redispatch a size record's answer asks for starts with the
+  # person's answer the blocked dispatch was carrying.
+  local verb="$1" key="$2" kind="$3" pre_att="${5:-}" rc=0 b t attempt rec rowseg hcl
+  doc_size_check "$kind" "${DOC:-}" || rc=$?
+  b=$(printf '%s' "$DOC_SIZE_VERDICT" | cut -f2); t=$(printf '%s' "$DOC_SIZE_VERDICT" | cut -f3)
+  if [ "$rc" != 1 ]; then
+    [ -z "$b" ] || GATE_DOC_SIZE_LAST="$b/$t"
+    doc_size_release
+    return 0
+  fi
+  if [ "$verb" != "act" ]; then
+    warn "차단 예상: $(doc_size_reason) — act 로 내면 중단 기록을 쓰고 띄우지 않습니다"
+    doc_size_release
+    return "$GATE_EXIT_PARK"
+  fi
+  if [ -n "$pre_att" ]; then
+    attempt=$pre_att
+  else
+    attempt=$(gate_derive_attempt "$key")
+    if ! ( set -C; : > "$RUN_DIR/$key.attempt.$attempt" ) 2>/dev/null; then
+      doc_size_release
+      warn "시도 번호 $attempt 를 다른 파견이 이미 청구했습니다 — 크기 차단 기록을 쓰지 않습니다"
+      return "$GATE_EXIT_INFLIGHT"
+    fi
+  fi
+  rowseg=$(gate_stage_row_segment "$key" "$kind")
+  hcl=${GATE_HA_LINE:-}
+  [ -n "$hcl" ] || hcl=$(gate_halt_card_crash_line "$key")
+  rec=$(doc_size_halt_write "$key#$attempt" "$kind" "$DOC" "$rowseg") \
+    || warn "$key: 문서 크기 중단 기록을 쓰지 못했습니다"
+  gate_append 'stage-result' "세그먼트=$rowseg" "스테이지=$key" "종류=$kind" \
+    "종료 코드=-" "실행 버전=$attempt" "세션 id=-" "부모=-" "기록자=게이트" \
+    "effort=(미상)" "서빙 모델=(미상)" ${b:+"문서 크기=$b/$t"} "차단=파견 전" \
+    ${hcl:+"답 운반=$hcl"} "종단 부류=의도된 park" "관측=파견 전 차단" \
+    || warn "$key: 크기 차단의 stage-result 행을 쓰지 못했습니다"
+  doc_size_release
+  gate_dispatch_lock_release
+  warn "$key#$attempt: $(doc_size_reason)${rec:+ — 기록 $rec}"
+  return "$GATE_EXIT_PARK"
+}
+
+gate_doc_tidy_archive_path() {
+  # gate_doc_tidy_archive_path — where the tidy act moves what it takes out of
+  # the run's design document: `<base>/docs/design-archive/{slug}.md`, with
+  # `<base>` the document's own base (`DOC_BASE`: its repository's main
+  # worktree root, or its own directory when no repository contains it). The
+  # re-convergence and audit skills pass the same path as `--archive`, so the
+  # gate and the skills number their pieces in one archive file.
+  printf '%s/docs/design-archive/%s.md' "$DOC_BASE" "$DOC_SLUG"
+}
+
+gate_perform_doc_tidy() {
+  # gate_perform_doc_tidy <alias> <key|-> <`중단 기록=<path>`> — the tidy act a
+  # shift takes for an answer `정리 후 재파견`: the answer's structural
+  # conditions are read again, then one `doc-tidy.py tidy` runs on the run's
+  # design document under the document lock, below the record kind's
+  # threshold, with the last audit's frozen copy as `--reviewed` when it still
+  # matches. Success writes the `doc-tidy` row with the record and the
+  # document's sha256 before and after; a failure writes nothing to the
+  # document and leaves a `blocked` row, and the record goes back to a person.
+  local al="$1" seg="$2" rec rkey kind t rv arch pre post rc=0 why=''
+  rec=${3#중단 기록=}
+  case "$rec" in
+    "$RUN_DIR"/halt/*) ;;
+    *) why="이 런의 중단 기록이 아닙니다: $rec" ;;
+  esac
+  if [ -n "$why" ]; then :
+  elif [ ! -f "$rec" ]; then
+    why="중단 기록을 읽을 수 없습니다: $rec"
+  elif [ "$(sed -n 's/^\*\*스텝\*\*: //p' "$rec" 2>/dev/null | sed -n '1p')" != '파견 전 / 문서 크기 초과' ]; then
+    why="파견 전 문서 크기 초과 기록이 아닙니다: $rec"
+  elif [ -z "${DOC:-}" ] || [ ! -f "$DOC" ]; then
+    why="런의 설계 문서를 읽을 수 없습니다: ${DOC:-(없음)}"
+  elif ! gate_doc_tidy_admissible "$seg" "$rec"; then
+    why=$GATE_DOC_TIDY_WHY
+  elif rkey=${rec##*/} && rkey=${rkey%%#*} \
+       && [ "$(gate_doc_size_detail "$rec" '종류')" = reconverge ] \
+       && gate_run_scope_kind_of_key "$rkey" >/dev/null 2>&1 \
+       && ! gate_size_block_reconverge_routable "$rkey" "$rec"; then
+    why="정리 뒤 재파견할 - reconverge 를 게이트가 받지 않습니다 — $GATE_SBR_WHY"
+  elif [ "$GATE_DOC_TIDY_DONE" = 1 ]; then
+    log "문서가 이미 이 기록의 정리 뒤 sha256 에 있습니다 — 정리하지 않고 재파견만 합니다: $rec"
+    return 0
+  fi
+  if [ -n "$why" ]; then
+    warn "문서 정리 거절 — $why"
+    return "$GATE_EXIT_RULE"
+  fi
+  kind=$(gate_doc_size_detail "$rec" '종류')
+  t=$(doc_size_threshold "$kind" | cut -f1)
+  rv=$(doc_tidy_reviewed_copy "$DOC")
+  arch=$(gate_doc_tidy_archive_path)
+  pre=$(shasum -a 256 "$DOC" 2>/dev/null | cut -d' ' -f1)
+  if ! mkdir -p "$(dirname "$arch")"; then
+    rc=1
+  else
+    with_doc_lock "$(doc_tidy_bin)" tidy "$DOC" --archive "$arch" --doc-key "$DOC_KEY" \
+      --writer 게이트 --below "$t" ${rv:+--reviewed "$rv"} || rc=$?
+  fi
+  if [ "$rc" != 0 ]; then
+    gate_append 'blocked' "대상=$al" "세그먼트=$seg" "스코프=act" "원인=막힘" \
+      "사유=문서 정리 실패(exit $rc)" "중단 기록=$rec" "관측=$(now_iso)" || true
+    warn "doc-tidy.py tidy 가 exit $rc 로 끝났습니다 — 문서는 그대로이고, 기록은 사람에게 돌아갑니다: $rec"
+    return "$rc"
+  fi
+  post=$(shasum -a 256 "$DOC" 2>/dev/null | cut -d' ' -f1)
+  gate_append 'doc-tidy' "대상=$al" "세그먼트=$seg" "중단 기록=$rec" \
+    "정리 전 sha256=$pre" "정리 후 sha256=$post" "보관 파일=$arch" "관측=$(now_iso)" \
+    || return $?
+  log "문서 정리 — $DOC ($pre → $post), 보관 파일 $arch"
+}
+
 gate_perform_review_post() {
   # gate_perform_review_post <alias> <segment> — render, the attempt row, one
   # POST, the re-read, the comparison and the `리뷰 게시` row. A POST refused
@@ -50990,6 +51631,11 @@ gate_act_cell_front() {
       # the act performs is the gate's own POST to GitHub, a change of state
       # outside the tree.
       graded="외부상태변경" ;;
+    doc-tidy)
+      # `중단 기록=<path>` is a token too. What the act performs is one
+      # `doc-tidy.py tidy` on the run's design document and its archive, files
+      # outside the segment's tree.
+      graded="트리밖쓰기" ;;
     ci-match)
       # `대조 <sha>` is a token as well; what the act performs is GETs and the
       # ledger row, so it reads.
@@ -51959,6 +52605,19 @@ gate_verb_act() {
     { [ -n "$segment" ] && [ "$segment" != "-" ]; } \
       || { warn "act --kind review-post 는 --segment <세그먼트 id> 가 필요합니다"; exit "$GATE_EXIT_VOCAB"; }
   fi
+  # THE TIDY ACT'S ONE SPELLING: `중단 기록=<absolute path>`, the `커밋` rung,
+  # the record's key or `-`. The document, the archive and the frozen copy are
+  # the gate's — resolved from the manifest and the audit report — never the
+  # router's.
+  if [ "$kind" = "doc-tidy" ]; then
+    if [ $# -ne 1 ] || [ "${1#중단 기록=/}" = "$1" ]; then
+      warn "act --kind doc-tidy 의 argv 는 「중단 기록=<절대 경로>」 하나입니다 — 문서·보관 파일·동결 사본은 게이트가 매니페스트에서 풉니다"
+      exit "$GATE_EXIT_VOCAB"
+    fi
+    [ "$cutpoint" = "커밋" ] || { warn "act --kind doc-tidy 는 --cutpoint 커밋 으로만 냅니다 (받은 값: ${cutpoint})"; exit "$GATE_EXIT_VOCAB"; }
+    [ -n "$segment" ] \
+      || { warn "act --kind doc-tidy 는 --segment <중단 기록의 키, 런 범위면 -> 가 필요합니다"; exit "$GATE_EXIT_VOCAB"; }
+  fi
 
   # ---- the argv ladder, derived and compared against the declaration --------
   #
@@ -51984,7 +52643,7 @@ gate_verb_act() {
   GATE_ACT_DERIVED=""
   GATE_ACT_ARGV_LADDER=""
   case "$kind" in
-    propose-done|skill|router-shift|apply|apply-settle|ci-rerun|ci-match|label-ack|review-post) : ;;
+    propose-done|skill|router-shift|apply|apply-settle|ci-rerun|ci-match|label-ack|review-post|doc-tidy) : ;;
     *) if ! gate_kind_is_bookkeeping "$kind"; then
          GATE_ACT_ARGV_LADDER=1
          GATE_ACT_DERIVED=$(ladder_of_argv0 "$@")
@@ -52667,8 +53326,19 @@ gate_verb_act() {
     if [ "$rs_kind" = "audit" ]; then
       local au_dstep="" au_rows au_last
       if au_dstep=$(gate_run_scope_step design); then
-        au_rows=$(gate_stage_result_rows_of "$au_dstep")
+        # A size block before dispatch on the design step's key started no
+        # session and changed no result of the design, so it is not read as one.
+        au_rows=$( { gate_stage_result_rows_of "$au_dstep" || true; } \
+                   | { grep -vE '\| 차단=파견 전( \||$)' || true; })
         au_last=$(gate_row_field "$(printf '%s\n' "$au_rows" | tail -1)" '종단 부류')
+        # But a size block that is still the key's LAST row is a re-convergence
+        # a person asked for (`골격 재검토`) that has not run yet: the audit
+        # waits until the size record's answer dispatches it again. A block row
+        # with a later row behind it is passed over, as above.
+        if gate_key_last_row_is_size_block "$au_dstep"; then
+          warn "감사 스테이지는 설계 단계($au_dstep)의 마지막 결과 행이 파견 전 크기 차단(차단=파견 전)인 동안 뜨지 않습니다 — 막힌 재수렴이 크기 기록의 답으로 다시 파견된 뒤에 감사를 내세요"
+          exit "$GATE_EXIT_RULE"
+        fi
         if { [ -n "$au_rows" ] && [ "$au_last" != "정상 완료" ]; } \
            || { [ -z "$au_rows" ] && ! doc_is_frozen "${DOC:-}"; }; then
           warn "감사 스테이지는 설계 단계($au_dstep)의 마지막 결과가 정상 완료일 때만 뜹니다 — 지금은 ${au_last:-결과 행 없음} 입니다"
@@ -53501,6 +54171,40 @@ gate_verb_act() {
     fi
   fi
 
+  # THE DESIGN DOCUMENT'S SIZE, BEFORE ANY ROW ABOUT THIS DISPATCH. An audit, a
+  # re-convergence or a segment's implementation reads the whole document, and
+  # past its kind's threshold the session runs out of context mid-read. A new
+  # dispatch and a carry are checked; a re-attachment is not (its session has
+  # read the document already) unless the account lease turns it fresh, which
+  # is checked again there. A person's `큰 문맥으로 재파견` answer skips the
+  # check for the one dispatch that carries it out. A carry bound to a session
+  # that was launched on the large-context window is a re-attachment of that
+  # session: it takes the same window and skips the check the way `--resume`
+  # does, and is measured for its row all the same.
+  GATE_DOC_SIZE_KIND=''; GATE_DOC_SIZE_LAST=''
+  if [ "$kind" = "skill" ] && run_routed; then
+    GATE_DOC_SIZE_KIND=$(gate_doc_size_kind_of_dispatch "$segment" "${1:-}")
+  fi
+  if [ -n "${GATE_LARGE_CONTEXT:-}" ]; then
+    if [ "$kind" != "skill" ] || [ -z "$GATE_DOC_SIZE_KIND" ] || [ -n "$GATE_CARRY_ANSWER" ] || [ -n "${GATE_RESUME:-}" ]; then
+      warn "--large-context 는 감사·재수렴·구현의 새 act --kind skill 파견에만 씁니다 (--carry-answer·--resume 없이)"
+      exit "$GATE_EXIT_VOCAB"
+    fi
+    gate_large_context_admit "$stage_key" || exit $?
+    # The large-context dispatch skips the check but is measured at the same
+    # moment, so its stage-result row carries `문서 크기` like any other.
+    gate_lc_v=$(doc_size_verdict "$GATE_DOC_SIZE_KIND" "${DOC:-}")
+    gate_lc_b=$(printf '%s' "$gate_lc_v" | cut -f2)
+    gate_lc_t=$(printf '%s' "$gate_lc_v" | cut -f3)
+    [ -z "$gate_lc_b" ] || GATE_DOC_SIZE_LAST="$gate_lc_b/$gate_lc_t"
+  fi
+  gate_dispatch_doc_size_gate "$verb" "$stage_key" "$segment" || exit $?
+  # A re-attachment of a session that was launched on the large-context window
+  # stays on it: the conversation already holds the whole document.
+  if [ "$kind" = "skill" ] && [ -n "${GATE_RESUME:-}" ]; then
+    gate_large_context_inherit "$GATE_RESUME" || true
+  fi
+
   # WHERE THIS ACT WILL RUN, AND NO SILENT FALLBACK. A segment row naming a
   # worktree that is not this target's would send the act to the target's own
   # tree instead — which is exactly how every stage ended up in the shared main
@@ -53722,7 +54426,7 @@ gate_verb_act() {
   # has no answer, and 0 is the honest one: no history is being integrated.
   GATE_HISTORY_INTEGRATION=0
   case "$kind" in
-    propose-done|skill|router-shift|apply|apply-settle|ci-rerun|ci-match|label-ack|review-post) : ;;
+    propose-done|skill|router-shift|apply|apply-settle|ci-rerun|ci-match|label-ack|review-post|doc-tidy) : ;;
     *) gate_kind_is_bookkeeping "$kind" \
          || GATE_HISTORY_INTEGRATION=$(gate_history_integration "$@") ;;
   esac
@@ -53874,7 +54578,7 @@ gate_verb_act() {
      && [ -n "$segment" ] && [ "$segment" != '-' ] \
      && [ -n "$(gate_segment_field "$segment" '상태')" ]; then
     case "$kind" in
-      propose-done|skill|router-shift|apply|apply-settle|ci-rerun|ci-match|label-ack|review-post) : ;;
+      propose-done|skill|router-shift|apply|apply-settle|ci-rerun|ci-match|label-ack|review-post|doc-tidy) : ;;
       *)
         [ "$(gate_merge_binding_of_argv0 "$@")" = '해당없음' ] || _mo_land=1
         if [ "$_mo_land" = 0 ]; then
@@ -54640,7 +55344,7 @@ gate_verb_act() {
     # The pair the same argv would open as an act, forecast and never written:
     # the dry run writes no row. Only the kinds that run their argv open one.
     case "$kind" in
-      skill|router-shift|apply|apply-settle|ci-rerun|ci-match|label-ack|review-post|propose-done) ;;
+      skill|router-shift|apply|apply-settle|ci-rerun|ci-match|label-ack|review-post|doc-tidy|propose-done) ;;
       *)
         local _fn='-'
         case "${GATE_PARK_PAIRN:--}" in
@@ -54851,7 +55555,7 @@ gate_verb_act() {
     # left off and the exec row is the only one that records them. A router's
     # own kinds never reach a row value — their argv is the table's to grade.
     case "$kind" in
-      skill|router-shift|apply|apply-settle|ci-rerun|ci-match|label-ack|review-post) ;;
+      skill|router-shift|apply|apply-settle|ci-rerun|ci-match|label-ack|review-post|doc-tidy) ;;
       *)
         gate_row_value_fields
         gate_kind_is_bookkeeping "$kind" && GATE_RV_FIELDS=()
@@ -54992,6 +55696,8 @@ gate_verb_act() {
                      return "$rc" ;;
         # The review POST, its re-read and its row, never the argv.
         review-post) gate_perform_review_post "$alias" "$segment" || rc=$? ;;
+        # The tidy under the document lock and its row, never the argv.
+        doc-tidy) gate_perform_doc_tidy "$alias" "$segment" "$@" || rc=$? ;;
         # The argv itself runs here, so the pair opens here as it does on exec.
         *)     gate_pair_open || die "could not write the 짝 정리 open row — an act whose cleanup is not recorded is not performed"
                gate_run_device_aware "$@" || rc=$? ;;
@@ -57386,6 +58092,9 @@ gate_launch_route() {
     warn "attempt $GATE_ROUTE_ATTEMPT of $seg is already claimed by another dispatch — this one is refused"
     return "$GATE_EXIT_RULE"
   fi
+  # The size the pre-dispatch check measured, for this attempt's row.
+  [ -z "${GATE_DOC_SIZE_LAST:-}" ] \
+    || printf '%s' "$GATE_DOC_SIZE_LAST" > "$RUN_DIR/$seg#$GATE_ROUTE_ATTEMPT.docsize" 2>/dev/null || true
   GATE_ROUTE_LINEAGE="$GATE_ROUTE_LINEAGE_HEAD$seg#$GATE_ROUTE_ATTEMPT"
   # A CARRY ASKS TWICE AND PICKS ONE, in a function of its own, so every other
   # dispatch below asks exactly as it did.
@@ -57529,6 +58238,19 @@ gate_launch_route() {
   if [ "$event" = "resume" ] && gate_route_env_fresh "$GATE_ROUTE_ENV"; then
     log "계정 이관 — $seg 는 세션 $GATE_RESUME 을 재부착하지 않고 새 세션으로 뜬다"
     GATE_RESUME=""; GATE_ROUTE_FRESH=1
+    # The re-attachment skipped the size check; the new session reads the
+    # document from the start, so it is checked now, and a block hands the
+    # lease back. A session that was launched on the large-context window is
+    # not checked: the new session takes the same window in its place.
+    if [ -n "${GATE_DOC_SIZE_KIND:-}" ] && [ -z "${GATE_LARGE_CONTEXT:-}" ] \
+       && [ "${CC_ORCH_LARGE_CONTEXT_ONCE:-}" != "1" ]; then
+      local szrc=0
+      gate_doc_size_dispatch_check act "$seg" "$GATE_DOC_SIZE_KIND" - "$GATE_ROUTE_ATTEMPT" || szrc=$?
+      if [ "$szrc" != 0 ]; then
+        gate_launch_route_drop
+        return "$szrc"
+      fi
+    fi
   fi
   return 0
 }
@@ -57784,7 +58506,11 @@ gate_launch_route_carry() {
     # router already moved the pin, and asking `first` would only ask the same
     # blocked account again. The bound session is not re-attached — it lives in
     # the old account's config directory — so the stage starts as a new session
-    # and takes the answer from the card the dispatch writes.
+    # and takes the answer from the card the dispatch writes. A bound session
+    # launched on the large-context window left the switch set at the act's
+    # size check, so the new session takes that window and the launch records
+    # it: the document is still past its threshold, and the standard window
+    # would run out mid-read again.
     if gate_route_env_fresh "$benv"; then
       GATE_RESUME=""; GATE_ROUTE_FRESH=1
       log "계정 이관 — $seg 는 세션 $bound 을 재부착하지 않고 새 세션으로 뜬다"
@@ -57833,6 +58559,10 @@ gate_launch_route_carry() {
       log "중단 답 운반 — $seg 는 묶인 세션 $bound 의 계정을 기다린다"
       return 0 ;;
     fresh)
+      # The bound account is out of reach, so the answer goes to a new session.
+      # When the bound session ran on the large-context window, the switch the
+      # act's size check set stays, and the new session is launched and
+      # recorded on that window for the same reason an account move keeps it.
       GATE_RESUME=""; GATE_ROUTE_EVENT=first; GATE_ROUTE_BIND=-
       GATE_ROUTE_VERDICT=$fv; GATE_ROUTE_WHY=$(gate_launch_route_why "$fenv")
       if [ "$fv" = "GRANT" ]; then
@@ -58279,8 +59009,15 @@ gate_launch_stage() {
   # THE ANSWER CARD THIS ATTEMPT GETS: the carried answer's, or — when the key's
   # last attempt carried one and crashed, ran into a limit or was ended from
   # outside — that answer's again, since the attempt may have died holding it.
+  # A card a size block hands on is refused at the carry's death cap.
   GATE_HA_CARD_LINE=${GATE_HA_LINE:-}
   [ -n "$GATE_HA_CARD_LINE" ] || GATE_HA_CARD_LINE=$(gate_halt_card_crash_line "$seg")
+  if [ -z "${GATE_HA_LINE:-}" ] && [ -n "$GATE_HA_CARD_LINE" ] \
+     && gate_size_block_card_capped "$seg" "$GATE_HA_CARD_LINE"; then
+    gate_carry_cap_row "$alias" "$seg" "$kind" "중단 답 라우팅 — 세션 전에 세 번 죽었다" "$GATE_HA_CARD_LINE" \
+      "크기 차단 행이 넘긴 원장 ${GATE_HA_CARD_LINE} 번째 줄의 답을 실은 시도가 세션이 생기기 전에 ${GATE_SBC_DEATHS} 번 죽었다"
+    return "$GATE_EXIT_CARRY_CAP"
+  fi
   # THE VISUAL PUBLISH STAGE RUNS ON ITS PINNED LANE OR NOT AT ALL. Routing off
   # asks nothing and inherits the environment, which is whatever config
   # directory the dispatching session runs under — not the lane logged in to
@@ -58601,6 +59338,10 @@ gate_verb_supervise_stage() {
     return "$GATE_EXIT_RULE"
   fi
   resume=$(sed -n '2p' "$taken" 2>/dev/null | tr -d '[:space:]')
+  # A session launched on the large-context window keeps it on a re-attachment
+  # and on the new session an account move starts in its place, read before
+  # either move can empty `resume`.
+  [ -z "$resume" ] || gate_large_context_inherit "$resume" || true
   # The instructions file rides on the token's third line: the dispatch half
   # synthesized it (and refused before pinning an attempt if it could not), so
   # the supervisor passes it through rather than deriving it again. It is a
@@ -58834,6 +59575,8 @@ gate_verb_supervise_stage() {
     log "스테이지 재부착 — $seg ← 세션 $resume"
   else
     id_flag="--session-id $(session_uuid "$seg" "$attempt")"
+    [ "${CC_ORCH_LARGE_CONTEXT_ONCE:-}" != "1" ] \
+      || gate_large_context_record "$(session_uuid "$seg" "$attempt")"
   fi
 
   # THE LINE OF THIS ATTEMPT'S DISPATCH ROW, for the outcome recorder's fourth
@@ -59033,6 +59776,7 @@ gate_verb_supervise_stage() {
   CC_PIPELINE_SEGMENT="$rowseg" \
   CC_PIPELINE_STAGE_ID="$seg#$attempt" \
   CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$(gate_auto_resolve_enabled && printf 1 || printf 0)" \
+  CC_ORCH_LARGE_CONTEXT_ONCE= \
   bash "$wrapper" \
     --settings "$(gate_settings_file "$kind")" \
     --plugin-dir "$plugin_dir" \
@@ -59042,8 +59786,12 @@ gate_verb_supervise_stage() {
     $ac_flags \
     $launch_flags \
     -- "$@" >> "$out" 2>> "$err" < /dev/null &
-  # `$!` IS CORRECT HERE — no fork sits between this shell and the wrapper, and
-  # the wrapper `exec`s into the CLI, so this pid is the stage's own. This is
+  # The empty large-context switch above reaches only the stage: the model flag
+  # has already read it, every reader tests for `1`, and this shell keeps its
+  # own value.
+  # `$!` IS CORRECT HERE — no fork sits between this shell and the wrapper,
+  # and the wrapper
+  # `exec`s into the CLI, so this pid is the stage's own. This is
   # the one place the dispatch path may use it; the dispatch half must not.
   spid=$!
   # ONE BLOCK WRITES ALL THREE. `.pid`, `.start` and `.kind` have one lifetime,
@@ -61679,6 +62427,15 @@ gate_record_stage_outcome() {
   # session is told apart by it from a stage that read the answer.
   local hacarry
   hacarry=$(gate_halt_card_line "$seg#$attempt")
+  # `문서 크기`, the size the dispatch measured right before launching this
+  # attempt, and after a re-convergence `크기 경고` when the document now
+  # stands at the lowest warning threshold or above.
+  local dsf dsw=""
+  dsf=$(doc_size_field "$seg#$attempt")
+  [ "$kind" != "reconverge" ] || dsw=$(doc_size_warn_field "$seg#$attempt")
+  # Both helpers print `<key>=<value>`; the rows below spell each key out so
+  # the field table's lint reads them at the call site.
+  dsf=${dsf#문서 크기=}; dsw=${dsw#크기 경고=}
   if [ -n "$psha" ]; then
     visual_row_pieces "$kind" "$out" "세그먼트=$rowseg" "스테이지=$seg" "종류=$kind" \
       "종료 코드=$rc" "실행 버전=$attempt" "세션 id=${sid:-미상}" \
@@ -61689,7 +62446,7 @@ gate_record_stage_outcome() {
       ${GATE_RA_BASE:+"재부착 기준=$GATE_RA_BASE"} ${GATE_RA_DELAY:+"재부착 지연=$GATE_RA_DELAY"} \
       ${GATE_RA_WIN:+"창 종류=$GATE_RA_WIN"} ${GATE_RA_SLEEP:+"마지막 절전=$GATE_RA_SLEEP"} \
       "plan_sha256=$psha" ${rv:+"재수렴 판정=$rv"} ${sk:+"골격급=$sk"} ${rq:+"재수렴 요청=$rq"} \
-      "시각 종단=-" "종단 부류=$klass" ${transient:+"일시 원인=$transient"} "실패 서명=$fsig" \
+      ${dsf:+"문서 크기=$dsf"} ${dsw:+"크기 경고=$dsw"} "시각 종단=-" "종단 부류=$klass" ${transient:+"일시 원인=$transient"} "실패 서명=$fsig" \
       ${hacarry:+"답 운반=$hacarry"}; \
       gate_append 'stage-result' "${VISUAL_ROW_PIECES[@]}"
   else
@@ -61702,7 +62459,7 @@ gate_record_stage_outcome() {
       ${GATE_RA_BASE:+"재부착 기준=$GATE_RA_BASE"} ${GATE_RA_DELAY:+"재부착 지연=$GATE_RA_DELAY"} \
       ${GATE_RA_WIN:+"창 종류=$GATE_RA_WIN"} ${GATE_RA_SLEEP:+"마지막 절전=$GATE_RA_SLEEP"} \
       ${rv:+"재수렴 판정=$rv"} ${sk:+"골격급=$sk"} ${rq:+"재수렴 요청=$rq"} \
-      "시각 종단=-" "종단 부류=$klass" ${transient:+"일시 원인=$transient"} "실패 서명=$fsig" \
+      ${dsf:+"문서 크기=$dsf"} ${dsw:+"크기 경고=$dsw"} "시각 종단=-" "종단 부류=$klass" ${transient:+"일시 원인=$transient"} "실패 서명=$fsig" \
       ${hacarry:+"답 운반=$hacarry"}; \
       gate_append 'stage-result' "${VISUAL_ROW_PIECES[@]}"
   fi
@@ -64565,8 +65322,9 @@ gate_implement_next_raw() {
   # <plan_sha256 or -> <다음>` on one line, `다음` before the CI layer, or 1
   # when its last `stage-result` row is not an implement stage that ended
   # `정상 완료`. A digest is a plan EMISSION the first time it
-  # appears after the void boundary — the last `종류=reconverge` row or `재계획`
-  # row, the boundary `implement_process_b` resets on — and a plan EXECUTION
+  # appears after the void boundary — the last `종류=reconverge` row that is no
+  # size block before dispatch (`차단=파견 전`), or `재계획` row, the boundary
+  # `implement_process_b` resets on — and a plan EXECUTION
   # when it repeats: process B carries process A's digest. `무커밋 구현` counts
   # the `정상 완료` implement rows after the boundary that left no commit: every
   # one of them when the branch is not ahead of its base, only the emissions
@@ -64607,7 +65365,7 @@ gate_implement_next_raw() {
   index($0, "- `재계획`") == 1 { split("", seen); all = 0; emit = 0; next }
   index($0, "- `stage-result`") == 1 {
     k = fld($0, "종류")
-    if (k == "reconverge") { split("", seen); all = 0; emit = 0; next }
+    if (k == "reconverge" && fld($0, "차단") != "파견 전") { split("", seen); all = 0; emit = 0; next }
     if (k != "implement") next
     d = fld($0, "plan_sha256")
     first = (d != "" && !(d in seen))
