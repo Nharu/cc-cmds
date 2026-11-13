@@ -47063,14 +47063,16 @@ p59_snap() {
 }
 p59_h() { p59_snap | jq -r .H; }
 p59_state() {
-  # p59_state <판정> <사유> [computed_at 오프셋 초] [schema] [tracker] — 센서가 쓰는
-  # 모양의 state.json. 키 이름은 센서의 것과 같고, 이 절이 읽는 것만 채운다.
-  local verdict="$1" reason="$2" off="${3:-0}" schema="${4:-cc-pace-state v1}" tracker="${5:-ok}" now
+  # p59_state <판정> <사유> [computed_at 오프셋 초] [schema] [tracker] [호스트 블록 JSON]
+  # — 센서가 쓰는 모양의 state.json. 키 이름은 센서의 것과 같고, 이 절이 읽는 것만
+  # 채운다. 호스트 블록은 주어졌을 때만 싣는다.
+  local verdict="$1" reason="$2" off="${3:-0}" schema="${4:-cc-pace-state v1}" tracker="${5:-ok}" host="${6:-null}" now
   now=$(( $(date -u +%s) - off ))
   jq -cn --arg schema "$schema" --arg v "$verdict" --arg r "$reason" --arg t "$tracker" \
-     --argjson now "$now" \
+     --argjson now "$now" --argjson h "$host" \
      '{schema: $schema, tick_seq: 7, computed_at: ($now | todate), computed_at_epoch: $now,
-       tracker: $t, verdict: $v, verdict_reason: $r, seats: []}' > "$P59_PACE/state.json"
+       tracker: $t, verdict: $v, verdict_reason: $r, seats: []}
+      + (if $h == null then {} else {host: $h} end)' > "$P59_PACE/state.json"
 }
 p59_rows() { { grep -cF "\`$1\`" "$P59_LEDGER" || true; }; }
 p59_last() { { grep -F "\`$1\`" "$P59_LEDGER" || true; } | tail -1; }
@@ -47162,6 +47164,7 @@ check "59: 첫 행의 이전도 (미상) 이다" "$(p59_field "$p59_row" 이전)
 check "59: 부재 행의 기준 틱은 - 다" "$(p59_field "$p59_row" '기준 틱')" "-"
 check "59: 부재 행의 관측도 - 다" "$(p59_field "$p59_row" 관측)" "-"
 check "59: 부재 행의 사유는 (미상) 이다" "$(p59_field "$p59_row" 사유)" "(미상)"
+check "59: 부재 행의 호스트는 - 다" "$(p59_field "$p59_row" 호스트)" "-"
 p59_act
 check "59: 판정이 그대로면(여전히 부재) 행이 늘지 않는다" "$(p59_rows pace)" "1"
 p59_state 가속 idle
@@ -47174,10 +47177,11 @@ check "59: 기준 틱은 센서의 tick_seq 다" "$(p59_field "$p59_row" '기준
 check "59: 관측은 센서의 computed_at 이다" \
   "$(p59_field "$p59_row" 관측)" "$(jq -r .computed_at "$P59_PACE/state.json")"
 check "59: 사유는 센서의 verdict_reason 이다" "$(p59_field "$p59_row" 사유)" "idle"
-# 비교 기준은 판정 하나다 — 사유만 바뀐 틱은 행을 만들지 않는다.
+check "59: 호스트 블록이 없는 state.json 의 호스트는 - 다" "$(p59_field "$p59_row" 호스트)" "-"
+# 호스트와 무관한 사유끼리만 바뀐 틱은 판정이 같으면 행을 만들지 않는다.
 p59_state 가속 lanes-below-target
 p59_act
-check "59: 사유만 바뀌고 판정이 같으면 행이 늘지 않는다" "$(p59_rows pace)" "2"
+check "59: 호스트와 무관한 사유만 바뀌고 판정이 같으면 행이 늘지 않는다" "$(p59_rows pace)" "2"
 # snapshot 은 읽기이므로 판정이 바뀌어도 쓰지 않는다 — 다음 act 가 쓴다.
 p59_state 제동 brake
 p59_snap >/dev/null
@@ -47185,10 +47189,52 @@ check "59: snapshot 은 판정이 바뀌어도 pace 행을 쓰지 않는다" "$(
 p59_act
 check "59: 그다음 act 가 그 변화를 쓴다" "$(p59_rows pace)" "3"
 check "59: 이전 필드가 직전 행의 판정을 잇는다" "$(p59_field "$(p59_last pace)" 이전)" "가속"
+# 같은 판정 안에서도 호스트 사유가 들고 나거나 바뀌면 행을 쓴다.
+p59_hblk() {
+  # p59_hblk <state> [<ratio> <saturated>] — 센서가 싣는 모양의 호스트 블록.
+  jq -cn --arg s "$1" --argjson r "${2:-null}" --argjson sat "${3:-false}" '
+    {state: $s, load1: (if $r == null then null else $r * 18 / 1000 end), load5: null,
+     ncpu: (if $r == null then null else 18 end), ratio_permille: $r, saturated: $sat,
+     since_epoch: 0, enter_permille: 2000, leave_permille: 1500, sampled_at_epoch: 0}'
+}
+p59_state 제동 host 0 'cc-pace-state v1' ok "$(p59_hblk ok 2000 true)"
+p59_act
+check "59: 같은 판정 제동 안에서 brake 가 host 로 바뀌면 행이 는다" "$(p59_rows pace)" "4"
+p59_row=$(p59_last pace)
+check "59: 그 행의 사유는 host 이고 이전은 제동이다" \
+  "$(p59_field "$p59_row" 사유)/$(p59_field "$p59_row" 이전)" "host/제동"
+check "59: 포화 호스트의 호스트 칸은 판독값을 싣는다" "$(p59_field "$p59_row" 호스트)" "포화 ratio=2000 ncpu=18"
+p59_state 제동 host 0 'cc-pace-state v1' ok "$(p59_hblk ok 2100 true)"
+p59_act
+check "59: 판정과 사유가 그대로면 호스트 판독값이 바뀌어도 행이 늘지 않는다" "$(p59_rows pace)" "4"
+p59_state 제동 brake-host 0 'cc-pace-state v1' ok "$(p59_hblk ok 2000 true)"
+p59_act
+check "59: host 에서 brake-host 로 바뀌어도 행이 는다" \
+  "$(p59_rows pace)/$(p59_field "$(p59_last pace)" 사유)" "5/brake-host"
+p59_state 제동 brake
+p59_act
+check "59: 호스트 사유에서 brake 로 돌아가도 행이 는다" \
+  "$(p59_rows pace)/$(p59_field "$(p59_last pace)" 사유)/$(p59_field "$(p59_last pace)" 호스트)" "6/brake/-"
+# 호스트 칸의 나머지 세 꼴 — 판정이 바뀌는 틱마다 하나씩.
+p59_state 가속 idle 0 'cc-pace-state v1' ok "$(p59_hblk off)"
+p59_act
+check "59: off 블록의 호스트 칸은 꺼짐이다" \
+  "$(p59_rows pace)/$(p59_field "$(p59_last pace)" 호스트)" "7/꺼짐"
+p59_state 유지 default 0 'cc-pace-state v1' ok "$(p59_hblk unread)"
+p59_act
+check "59: unread 블록의 호스트 칸은 미상이다" \
+  "$(p59_rows pace)/$(p59_field "$(p59_last pace)" 호스트)" "8/미상"
+p59_state 가속 idle 0 'cc-pace-state v1' ok "$(p59_hblk ok 55 false)"
+p59_act
+check "59: 포화가 아닌 ok 블록의 호스트 칸은 정상과 판독값이다" \
+  "$(p59_rows pace)/$(p59_field "$(p59_last pace)" 호스트)" "9/정상 ratio=55 ncpu=18"
+p59_state 제동 brake
+p59_act
+check "59: 다시 제동으로 바뀐 행이 남는다" "$(p59_rows pace)" "10"
 # 낡음도 변화다 — 센서가 멈추면 다음 act 가 (미상) 으로 돌아간 것을 적는다.
 p59_state 제동 brake 400
 p59_act
-check "59: 센서가 낡으면 (미상) 으로 돌아간 행이 남는다" "$(p59_rows pace)" "4"
+check "59: 센서가 낡으면 (미상) 으로 돌아간 행이 남는다" "$(p59_rows pace)" "11"
 check "59: 그 행의 판정은 (미상) 이고 이전은 제동이다" \
   "$(p59_field "$(p59_last pace)" 판정)/$(p59_field "$(p59_last pace)" 이전)" "(미상)/제동"
 rm -f "$P59_PACE/state.json"
