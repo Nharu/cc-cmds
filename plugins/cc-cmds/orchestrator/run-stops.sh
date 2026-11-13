@@ -40,7 +40,10 @@
 # starts with `Step 1 외부 선행 미충족`: a wait on another pull request or
 # release; `사람 판단 대기` is a routing shift's stop record whose `**스텝**` is
 # `교대 정지 — 베이스 이동`: the base move check stopped a target with no
-# remote, and only a person can tell the run's act from their own commit). `표지` is
+# remote, and only a person can tell the run's act from their own commit — or a
+# `precondition-failed` stage halt whose `**관측 상세**` points at such a record
+# with `게이트 기록=<경로>`, the record the stage wrote when that check stopped
+# its act). `표지` is
 # `원인 셀 미결합` on a gate-unanswerable halt no reach park binds to, and
 # `열린 대기 아님` on an intended event that was a decision rather than a wait,
 # for which no skip row is written. Resolved events are not printed at all.
@@ -307,7 +310,7 @@ run_stops_detail_fix() {
 }
 
 run_stops_main() {
-  local ledger="" run_dir="" manifest="" halts shalts ceiling blocked f id cls ext tail site byfix="" tstop="" a
+  local ledger="" run_dir="" manifest="" halts shalts ceiling blocked f id cls ext gp gf tail site byfix="" tstop="" a
   if [ "${1:-}" = "--vocab" ]; then
     run_stops_vocab "${2:-}"; return $?
   fi
@@ -333,8 +336,16 @@ run_stops_main() {
   # HALT RECORDS: only the file name, the `**분류**` line and the head of the
   # `**스텝**` line are read, so a record that offers no options is a stop like
   # any other. A `precondition-failed` record whose step starts with
-  # `Step 1 외부 선행 미충족` carries `외부` in the third column, every other
-  # record `-`. Two names
+  # `Step 1 외부 선행 미충족` carries `외부` in the third column. One whose
+  # `**관측 상세**` names, as `게이트 기록=<경로>`, a record under this run's
+  # `halt/shift/` that the base move check wrote (its step line reads
+  # `교대 정지 — 베이스 이동`) carries `베이스 이동`: the stage stopped on that
+  # move, and the gate's record is the one decision a person answers. The
+  # pointer is read by the grammar `cc__halt_answer_state` reads it with —
+  # one backtick allowed before it, the path up to its `.md` — and only its
+  # file name under `halt/shift/` is used, so a pointer elsewhere, or one at a
+  # record of another site, leaves the column `-`. Every other record carries
+  # `-`. Two names
   # in that directory are not this run's halt records: the copy an adopted
   # segment carries over from the run that wrote it (`<seg>#adopted-<run>.md`),
   # which that run reports under its own kind, and an attachment — the answer
@@ -354,6 +365,22 @@ run_stops_main() {
         case "$( { grep -m1 -E '^\*\*스텝\*\*: ' "$f" 2>/dev/null || true; } | sed 's/^\*\*스텝\*\*: //')" in
           'Step 1 외부 선행 미충족'*) ext=외부 ;;
         esac
+        if [ "$ext" = "-" ]; then
+          gp=$(sed -n 's/^\*\*관측 상세\*\*:.*게이트 기록=`\{0,1\}\([^ `]*\.md\).*$/\1/p' "$f" 2>/dev/null | sed -n '1p')
+          case "$gp" in
+            */halt/shift/*.md)
+              gp=${gp##*/halt/shift/}
+              case "$gp" in
+                */*|*.answer.md) ;;
+                *)
+                  gf="$run_dir/halt/shift/$gp"
+                  if [ -f "$gf" ] && [ "$( { grep -m1 -F '**스텝**: 교대 정지 — ' "$gf" 2>/dev/null || true; } \
+                         | sed 's/^\*\*스텝\*\*: 교대 정지 — //; s/[[:space:]]*$//')" = "베이스 이동" ]; then
+                    ext='베이스 이동'
+                  fi ;;
+              esac ;;
+          esac
+        fi
       fi
       halts="${halts}$(printf '%s\t%s\t%s\t%s' "$id" "$cls" "$ext" "$(run_stops_detail_fix "$f")")
 "
@@ -601,6 +628,10 @@ $(cut -f2 "$run_dir/stall" 2>/dev/null || true)"
         # A wait on something outside the run — the merge of another pull
         # request, a release of another repository — is not a plugin defect.
         if (cls == "precondition-failed" && hp[3] == "외부") emit(sig, "의도", "외부 대기")
+        # A stage that stopped on a base move points at the record the gate
+        # wrote, which waits on the judgment of a person as the shift halt
+        # below does.
+        else if (cls == "precondition-failed" && hp[3] == "베이스 이동") emit(sig, "의도", "사람 판단 대기")
         else if (cls == "gate-unanswerable") {
           if (!(hid in PARKCELL)) emit(sig, "비의도", "", "원인 셀 미결합", hid, seg, hid)
           else if (inv("CE", PARKCELL[hid])) emit(sig, "의도", "사전 인가 밖")

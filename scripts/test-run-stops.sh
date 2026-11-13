@@ -336,6 +336,36 @@ row '중단 답' "중단 기록=$RD/halt/shift/b1#1.md" '선택지=재시도'
 row '중단 답' "중단 기록=$RD/halt/shift/베이스-cc-cmds#1.md" '선택지=재시도'
 check "shift halt: an answered base move stop is no event" "$(stops | grep -c '사람 판단 대기')" "0"
 
+# A stage whose act the base move check stopped writes a `precondition-failed`
+# record with no option beside the gate's record, pointing at it with
+# `게이트 기록=<경로>` in `**관측 상세**` — the backtick before the path and the
+# sentence's closing `.` are no part of it. That stage record is the same
+# intended wait, not a defect the halt reporter files; a pointer at a record of
+# another site, or at a path outside `halt/shift/`, does not make it one.
+phalt() {
+  printf '<!-- cc-pipeline-halt v1 -->\n**분류**: precondition-failed\n**스텝**: Step 3 — 베이스 이동 정지\n**관측 상세**: 게이트 기록=%s\n<!-- /cc-pipeline-halt v1 -->\n' "$2" > "$RD/halt/$1.md"
+}
+newcase
+for sk in p1:implement p2:review p3:audit p4:design; do
+  row stage-result "세그먼트=${sk%%:*}" "스테이지=${sk%%:*}" "종류=${sk#*:}" '실행 버전=1' '종단 부류=의도된 park'
+  row segment "id=${sk%%:*}" '상태=실행중'
+done
+bhalt 'p1#1' '베이스 이동'
+phalt 'p1#1' "\`$RD/halt/shift/p1#1.md\`."
+bhalt 'p2#1' '병합 거절'
+phalt 'p2#1' "$RD/halt/shift/p2#1.md"
+phalt 'p3#1' "$RD/halt/p1#1.md"
+bhalt '베이스-cc-cmds#1' '베이스 이동'
+phalt 'p4#1' "$RD/halt/shift/베이스-cc-cmds#1.md"
+out=$(stops)
+has "stage halt: a pointer at the base move record is an intended wait" "$out" "$(ev 'halt/precondition-failed/implement' 의도 '사람 판단 대기')"
+has "stage halt: a pointer at a target key base move record is an intended wait" "$out" "$(ev 'halt/precondition-failed/design' 의도 '사람 판단 대기')"
+has "stage halt: a pointer at another site's record stays a defect" "$out" "$(ev 'halt/precondition-failed/review' 비의도)"
+has "stage halt: a pointer outside halt/shift stays a defect" "$out" "$(ev 'halt/precondition-failed/audit' 비의도)"
+check "stage halt: only the two stage records off the base move fold as defects" \
+  "$(printf '%s\n' "$out" | grep -c '^halt/precondition-failed/.*비의도')" "2"
+hasnt "stage halt: an intended base move stage halt is no fix-site line" "$(stops --by-fix-site)" "halt/precondition-failed/implement"
+
 # --- cone ---------------------------------------------------------------------
 
 # The row `gate_record_undecidable` writes: no anchor, the two segments in
