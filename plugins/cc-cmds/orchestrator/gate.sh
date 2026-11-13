@@ -108,6 +108,12 @@
 #      from `wait`: no dispatch record for that segment (never dispatched).
 #      The value is shared and the VERB tells the two apart: `wait` performs
 #      no act so it cannot park, and act/exec never answer "no dispatch".
+#      From act/exec it has a second meaning on a target with no `origin`,
+#      which the verb does not tell apart: the base-move check stopped the
+#      segment, the act may already have been performed, and a `베이스 이동`
+#      record waits for a person's answer. Its stderr carries a line holding
+#      `[run][warn] 베이스 이동 — ` (never the first line); an 11 without that
+#      line is 도달 park. See the comment on `GATE_EXIT_PARK`.
 #  12  `wait` only: the stage was an orphan and the prelude settled it as
 #      `외부 종료` — there is no rc to pass through.
 #  13  `wait` only: `--timeout` elapsed with the stage still alive.
