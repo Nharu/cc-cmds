@@ -1968,6 +1968,9 @@ done <<'EOF'
 대화형 구현|implement/SKILL.md|AskUserQuestion with options `승인 화면대로 구현 ← 추천` / `중단`
 무인 구현|implement-unattended/SKILL.md|is a **CFI-U3 BT-STOP**: halt before the plan is written
 무인 구현|implement-unattended/SKILL.md|**Never put in the plan a list that moves the screens' wording or structure back to the binding tier**
+무인 구현|implement-unattended/SKILL.md|**A difference a line of the block points at is a person-only stop.**
+무인 구현|implement-unattended/SKILL.md|such a line is one the person left `문서대로 둠` at the reflection stop. Write `**선택지**: (없음)` with no `재수렴` option
+무인 구현|implement-unattended/SKILL.md|**One BT-STOP never offers `재수렴`:**
 무인 발행|visual-publish-unattended/SKILL.md|**Every `시각-판정` record is preceded by the drift block.**
 무인 발행|visual-publish-unattended/SKILL.md|`**문서 반영**: 대기 — 어긋남 <n>건 — 사람 답 <the same name>`
 반영 실패|design-reconverge/SKILL.md|`**스텝**: Step 3 승인 화면 반영 — 충돌`
