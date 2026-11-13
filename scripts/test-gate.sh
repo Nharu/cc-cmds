@@ -51331,10 +51331,10 @@ check "94: adopt-preview 는 세그먼트마다 로컬 판정의 토큰을 같�
 불가${TAB}B${TAB}워크트리없음"
 rm -f "$lsr94_r/dirty.txt"
 check "94: 원격에 브랜치가 없고 PR 도 없으면 PR 없는 세그먼트는 가능이고 PR 칸은 - 다" \
-  "$(lsr94_pv 없음 '없음\t없음\t없음' | head -n 1)" "가능${TAB}A${TAB}seg/pv94-A${TAB}-${TAB}$(printf '%s' "$lsr94_h" | cut -c1-12)"
+  "$(lsr94_pv 없음 '없음\t없음\t없음' | awk 'NR == 1')" "가능${TAB}A${TAB}seg/pv94-A${TAB}-${TAB}$(printf '%s' "$lsr94_h" | cut -c1-12)"
 check "94: 앵커 뒤에 열린 PR 이 생겼으면 PR불일치다" \
-  "$(lsr94_pv "$lsr94_h" "50\\tOPEN\\t$lsr94_h" | head -n 1)" "불가${TAB}A${TAB}PR불일치"
-check "94: 원격 판독이 실패하면 PR판독불가다" "$(lsr94_pv 미상 '없음\t없음\t없음' | head -n 1)" "불가${TAB}A${TAB}PR판독불가"
+  "$(lsr94_pv "$lsr94_h" "50\\tOPEN\\t$lsr94_h" | awk 'NR == 1')" "불가${TAB}A${TAB}PR불일치"
+check "94: 원격 판독이 실패하면 PR판독불가다" "$(lsr94_pv 미상 '없음\t없음\t없음' | awk 'NR == 1')" "불가${TAB}A${TAB}PR판독불가"
 check "94: 머지된 세그먼트는 adopt-preview 에 줄이 없다" \
   "$(printf -- '- `segment` | id=B | 상태=머지됨 | 워크트리=-\n' >> "$lsr94_l"; lsr94_pv 없음 '없음\t없음\t없음' | cut -f2 | tr '\n' ' ')" "A "
 # 재개 명령 칸의 상한(360 바이트) 안에 가장 긴 문장과 다시 파견 명령이 통째로 든다.
