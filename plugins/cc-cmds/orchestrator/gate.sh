@@ -19476,26 +19476,31 @@ gate_rule_order() {
   # Declaration paths, ascending by `순서:`. A declaration with no `순서:` sorts
   # last rather than being dropped — a rule missing one field is still a rule,
   # and silently unloading it is the "declared but unenforceable" state this
-  # catalog is shaped to make impossible.
-  local d f n
-  d=$(gate_rules_dir)
-  for f in "$d"/*.rule; do
-    [ -f "$f" ] || continue
-    # Quit AFTER a match, not on the first line: `/./q` tests the pattern
-    # space, which is never empty, so it ends the script before the address
-    # that matters is ever reached.
-    n=$(sed -n '/^순서:/{s/^순서: *\([0-9][0-9]*\).*/\1/p;q;}' "$f")
-    [ -n "$n" ] || n=999
-    printf '%s\t%s\n' "$n" "$f"
-  done | sort -n | cut -f2
+  # catalog is shaped to make impossible. The ordering lives in `rule_catalog`,
+  # which the rule loop reads directly for the canonical names beside the paths.
+  rule_catalog "$(gate_rules_dir)" | cut -f1
 }
 
 gate_rule_enabled() {
+  # gate_rule_enabled <canonical name> [<declaration path>]
+  #
   # A rule is on unless the manifest turns it off. FOUR ignore the setting, and
   # the `case` below is the list: `절단점-준수`, `사전-인가-대조`,
   # `인가-자기확장-금지` and `리뷰-후-적용`. This comment named three of them
   # while the code exempted four, which is the shape that makes an operator
   # believe a rule can be switched off when it cannot.
+  #
+  # THE NAME IS THE CANONICAL (NFC) ONE. The list below and the manifest keys
+  # are compared in that form (`rule_setting_value` normalises the keys), so a
+  # rule whose file name arrived decomposed is still on this list and still
+  # answers to its key.
+  #
+  # WITH A DECLARATION PATH, THE DECLARATION IS ASKED TOO. A declaration that
+  # does not say `끌 수 있는가: 예…` keeps its rule on whatever the manifest says,
+  # and when the name is not on the list below that disagreement is said once:
+  # the list and the declarations are two records of one fact, and the manifest
+  # check already tells the operator that such a key is inert. The two call
+  # sites that pass a literal name and no path read the setting only.
   #
   # The authorization record means nothing if the first two can be switched off;
   # a self-widening ban that can be switched off is not a ban at all — after the
@@ -19508,13 +19513,22 @@ gate_rule_enabled() {
   # the review axis a manifest may NOT relax — the ceiling comparison and the
   # anchor check — already live outside the catalog, where `끔` cannot reach
   # them.
-  local name="$1"
+  local name="$1" decl="${2:-}"
   case "$name" in
     절단점-준수|사전-인가-대조|인가-자기확장-금지|리뷰-후-적용) return 0 ;;
   esac
-  local setting
-  setting=$(manifest_field '룰 설정' "$name")
-  [ "$setting" = "끔" ] && return 1
+  if [ -n "$decl" ]; then
+    case "$(rule_switchable_value "$decl")" in
+      예*) ;;
+      *)
+        warn_once "rule-unswitchable-unlisted-$name" \
+          "룰 '$name' 의 선언은 끌 수 없다고 하는데 게이트의 끌 수 없는 목록에 그 이름이 없습니다 — 선언을 따라 켠 채 둡니다"
+        return 0
+        ;;
+    esac
+  fi
+  rule_setting_load
+  [ "$(rule_setting_value "$name")" = "끔" ] && return 1
   return 0
 }
 
@@ -19575,15 +19589,30 @@ gate_run_rules() {
   # "the ledger is unreadable", which sends a 3am reader to the wrong repair.
   # The cheapest and most fundamental checks go first so the reported reason is
   # the most fundamental one that holds.
-  for decl in $(gate_rule_order); do
+  #
+  # Each line carries the declaration's path in the disk's bytes and the rule's
+  # canonical name. The checker is opened by path; every comparison and every
+  # warning uses the name, so a catalog whose file names arrived decomposed is
+  # judged exactly as a composed one.
+  local catalog crc=0 cline nl='
+' tab='	'
+  catalog=$(rule_catalog "$dir") || crc=$?
+  if [ "$crc" != 0 ]; then
+    warn_once 'rule-name-canon-unavailable' \
+      "룰 이름을 정규화할 수 없어 바이트 그대로 비교합니다 — perl 과 Unicode::Normalize 가 있어야 분해형 파일 이름의 룰이 제 이름으로 읽힙니다"
+  fi
+  while [ -n "$catalog" ]; do
+    cline=${catalog%%"$nl"*}
+    case "$catalog" in *"$nl"*) catalog=${catalog#*"$nl"} ;; *) catalog="" ;; esac
+    decl=${cline%%"$tab"*}
+    name=${cline#*"$tab"}
     [ -f "$decl" ] || continue
-    name=$(basename "$decl" .rule)
-    checker="$dir/$name.sh"
+    checker="${decl%.rule}.sh"
     if [ ! -f "$checker" ]; then
       warn "rule '$name' has no checker, so it is not loaded — a declaration on its own enforces nothing"
       continue
     fi
-    gate_rule_enabled "$name" || continue
+    gate_rule_enabled "$name" "$decl" || continue
     local rc=0 cargv="$argv"
     [ "$name" = "사전-인가-대조" ] && cargv="$pargv"
     GATE_ACT="$act" GATE_ALIAS="$alias" GATE_SEGMENT="$seg" GATE_ARGV="$cargv" \
