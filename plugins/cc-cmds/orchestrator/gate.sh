@@ -20911,8 +20911,8 @@ gate_pace_row_if_changed() {
     reason=$(printf '%s' "$state" | jq -r '.verdict_reason // "(미상)"')
     tick=$(printf '%s' "$state" | jq -r '.tick_seq // "-"')
     obs=$(printf '%s' "$state" | jq -r '.computed_at // "-"')
-    host=$(printf '%s' "$state" | jq -r '
-      .host | if type != "object" then "-"
+    host=$(jq -rn --argjson s "$state" '
+      $s.host | if type != "object" then "-"
               elif .state == "off" then "꺼짐"
               elif .state == "unread" then "미상"
               elif .state == "ok" then "\(if .saturated == true then "포화" else "정상" end) ratio=\(.ratio_permille // "-") ncpu=\(.ncpu // "-")"
