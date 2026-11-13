@@ -4920,6 +4920,12 @@ SAPEOF
     SA_LEDGER="$SA_WT/docs/pipeline-run/$SA_ID.md"
     SA_GRANT="$SA_WT/docs/pipeline-grant/$SA_ID.md"
     SA_RUN="$XDG_STATE_HOME/cc-cmds/run/$SA_ID"
+    # 하니스의 설정 루트에는 레인 인벤토리가 없어, 첫 게이트 호출이 부재 기준선을 잡으며 CI 층
+    # 기록을 배타 생성으로 쓴다. 그대로 두면 모든 sa 런이 CI 층 런이 되어 머지가 회차 0 의 통과
+    # 판정을 요구받는다. 그래서 기록을 `0` 으로 먼저 둔다 — 배타 생성은 있는 파일을 덮지 않고,
+    # 판독기는 첫 줄이 `1` 일 때만 CI 층을 세우므로, 기본 픽스처는 CI 층이 서지 않는 미라우팅
+    # 런으로 남고 기준선 채택과 그 원장 행은 그대로 일어난다. CI 층 런은 `cb60_ci_layer` 가 만든다.
+    mkdir -p "$SA_RUN" && printf '0\n' > "$SA_RUN/ci-layer"
     sa_manifest "$ceil" "$@"
     SA_LABEL="$label"
   }
@@ -5140,10 +5146,6 @@ SAPEOF
     sa_new "CI 체크 ($1)" 리뷰없음
     CK60_SHA=$(sa_commit '작업')
     sa_seg_row CK "$1"
-    # 이 절의 런은 라우팅 기록도 CI 층 기록도 없는 런이다. 픽스처의 설정 루트에는 인벤토리가
-    # 없어 첫 게이트 호출(위 segment 행)이 부재 기준선을 잡으며 CI 층 기록을 쓰므로, 그 기록을
-    # 지워 CI 층이 서지 않는 런으로 둔다. 기준선은 이미 잡혔으니 뒤의 호출이 다시 쓰지 않는다.
-    rm -f "$SA_RUN/ci-layer"
     # `선리뷰후머지` 만 머지 앞에 기록을 요구한다. 없으면 머지가 룰 루프에서 먼저
     # 거절되고, 그 거절은 이 절이 재려는 CI 거절과 구별되지 않는다.
     if [ "$1" = "선리뷰후머지" ]; then
@@ -48507,10 +48509,8 @@ case "$rc|$cb60_sh" in
 esac
 
 # C2 7 — 라우팅 기록 없는 쌍둥이. 같은 실패 행에서 다음은 머지 이고 머지는 CI실패 park 다.
-# CI 층 기록도 지운다 — 부재 기준선을 잡은 픽스처의 첫 호출이 그 기록을 썼고, 두 기록이 다
-# 없어야 CI 층이 서지 않는 런이다. CI 층 기록만 있는 런은 60b-6 이 잰다.
 cb60_new "CI 재실행 — 라우팅 기록 없음"
-rm -f "$SA_RUN/routing-guard" "$SA_RUN/ci-layer"
+rm -f "$SA_RUN/routing-guard"
 check "60b: 라우팅 기록 없는 런의 실패 행에서 다음은 머지 다" "$(cb60_next)" "머지"
 ck60_plan
 case "$rc|$msg" in
@@ -48930,8 +48930,7 @@ cb60_checks pre pass 777 1; cb60_refuse "살아 있는 실패 집합이 빔" "no
 cb60_checks pre cancel 777 1; cb60_refuse "취소 버킷뿐인 화면" "no failing check"
 cb60_checks pre fail 777 1
 cb60_refuse "tip 이 아닌 argv sha" "worktree's tip is" 1111111111111111111111111111111111111111
-# 두 기록이 다 없어야 CI 층이 서지 않는다 — 픽스처의 첫 호출이 부재 기준선과 함께 쓴 CI 층 기록도 지운다.
-rm -f "$SA_RUN/routing-guard" "$SA_RUN/ci-layer"; cb60_refuse "라우팅 기록 없는 런" "no routing record"
+rm -f "$SA_RUN/routing-guard"; cb60_refuse "라우팅 기록 없는 런" "no routing record"
 printf '1\n' > "$SA_RUN/routing-guard"
 mkdir -p "$SA_RUN/ci-rerun.CK.lock"; printf '%s %s\n' "$$" "$(date -u +%s)" > "$SA_RUN/ci-rerun.CK.lock/owner"
 cb60_refuse "바쁜 잠금" "holds its lock"
