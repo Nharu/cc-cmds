@@ -1988,6 +1988,7 @@ done <<'EOF'
 운반 답|design-reconverge/SKILL.md|**A carried answer on the `승인 화면 반영` scope follows the carried-answer re-entry procedure of `${CLAUDE_SKILL_DIR}/../_common/approval-reflection.md` (`## 운반 답 재진입`) instead of items 1–5 below.**
 반영 성공|_common/approval-reflection.md|`visual-check.sh binding <설계 문서>` measures over the published document
 반영 성공|visual/SKILL.md|visual-check.sh binding
+반영 종단|_common/approval-reflection.md|사람에게 묻는 기록으로 보고하지 않는다 — 라우터 교대의 반영 분기가 이 기록을 재파견으로 처리한다
 EOF
 # The second same end keeps the sidecar at `대기`; a copy that writes
 # `실패 — <종단>` there stops the automatic retry and asks a person.
@@ -2011,7 +2012,10 @@ for pair in "리드:$AP_ROUTER" "교대:$RS_REFS/visual-dispatch.md"; do
     '**The reflection'"'"'s end is not a re-plan signal.**' \
     'is the `중단 기록` of the visual publish step'"'"'s last `중단 답` row' \
     'Dispatch it once more, with the same scope,' \
-    '「반영 두 번째 시도도 <종단> 으로 끝남'
+    '「반영 두 번째 시도도 <종단> 으로 끝남' \
+    'carries no option: do not report it as a question for a person — this re-dispatch handles it' \
+    'A `대기` with no tail is an interactive reflection that stopped between its approval write and its sidecar write: never dispatch it' \
+    'for an answer of this run the tail equals the latest `시각-판정 기록` that `visual-check.sh run-state` prints'
   do
     check "$who 사본의 반영 파견 문단이 「${lit}」 을 싣는다" "$(mo_count "$para" "$lit")" "1"
   done
