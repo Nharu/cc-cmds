@@ -3117,8 +3117,8 @@ unset -f sil_jump sil_held sil_const sil_open_quiet
 # 그 이름을 어느 한 표에 올리게 한다.
 #
 # 판정 입력 표의 둘째 칸은 그 이름을 덮는 탐침 원소이고, `-` 는 탐침에 넣지 않는
-# 이름이다. 넣지 않는 이름은 자기 쓰기이거나, `routing-guard`·`checks.observed`
-# 처럼 릴레이 경로만 읽어 탐침에서 뺀 이름(qp_relay_only)이다 — 살아 있는 릴레이는
+# 이름이다. 넣지 않는 이름은 자기 쓰기이거나, `routing-guard`·`ci-layer`·`fixed-graph`·
+# `checks.observed` 처럼 릴레이 경로만 읽어 탐침에서 뺀 이름(qp_relay_only)이다 — 살아 있는 릴레이는
 # 그것만으로 런을 일하는 런으로 만들므로 그 경로는 조용한 런의 탐침에 닿지 않는다.
 # 디렉터리 원소(`halt/`)는 직접 자식이 생기거나 이름이 바뀌어 들어올 때 시각이
 # 움직인다.
@@ -3144,6 +3144,8 @@ halt/shift/*.md halt/shift/
 done done
 ends-on-done ends-on-done
 routing-guard -
+ci-layer -
+fixed-graph -
 checks.observed -
 checks.observed.draining.* -
 watch.heartbeat -
@@ -3151,7 +3153,7 @@ watch.relay-seen -
 watch.stall -
 watch.mode -'
 qp_self='watch.pid checks.pid watch.heartbeat watch.stall .watch.stall.* watch.state host-load.jsonl watch.failover-clock watch.relay-seen watch.mode .watch.fullpass .checks.pollmark .feed.readmark feed.state feed.cursor feed.heartbeat feed.lock.d'
-qp_relay_only='routing-guard checks.observed checks.observed.draining.*'
+qp_relay_only='routing-guard ci-layer fixed-graph checks.observed checks.observed.draining.*'
 qp_in() { case " $2 " in *" $1 "*) return 0 ;; esac; return 1; }  # qp_in <낱말> <공백 목록>
 
 check "탐침 집합: 감시자가 탐침 집합을 한 변수(WATCH_PROBES)에 선언한다" \
