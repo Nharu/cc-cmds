@@ -1708,7 +1708,8 @@ check "리드 사본에는 포그라운드 대기 문장 전체가 없다" "$(mo
 # A merged pull request a `머지 입양` row hands the run is routed by the same
 # sentences in BOTH router copies: how its slice is planned and first reviewed,
 # what its review line carries, how `입양 종결` closes it, how a fix records the
-# obligation before it merges, and how termination condition 12 holds it. Each is counted once over the whole copy, so a copy
+# obligation before it merges and goes on to merge when a base resolution brings
+# it back with the obligation already closed, and how termination condition 12 holds it. Each is counted once over the whole copy, so a copy
 # that drops or rewords one of them fails here.
 for pair in "리드:$AP_ROUTER" "교대:$RS_CORPUS"; do
   who=${pair%%:*}; file=${pair#*:}
@@ -1718,7 +1719,8 @@ for pair in "리드:$AP_ROUTER" "교대:$RS_CORPUS"; do
     'the line names the adopted pull request'"'"'s URL instead of a branch and carries `--base-sha <분기점> --merged <머지 커밋> --judge-head <워크트리 HEAD>`' \
     '- **`입양 종결`** → a segment a `머지 입양` row adopted passed its review with no commit over its base.' \
     '**A segment a `머지 입양` row adopted records `act --kind obligation` before it merges, and does not merge when that act is refused.**' \
-    '→ 「Merging and applying a segment」. On a segment a `머지 입양` row adopted, record `act --kind obligation` before the merge, and do not merge when that act is refused.' \
+    '**A refusal that says the obligation is already closed (`this review obligation is already closed`) is not a refusal to merge on**: the segment fulfilled it on an earlier arrival at `머지` and came back after a base resolution' \
+    '→ 「Merging and applying a segment」. On a segment a `머지 입양` row adopted, record `act --kind obligation` before the merge, and do not merge when that act is refused — except a refusal that says the obligation is already closed, which means an earlier arrival at `머지` fulfilled it before a base resolution: then merge without recording it again.' \
     'A segment a `머지 입양` row adopted carries an element too, with or without a `cycle` row, until its `완료` row.' \
     '**A segment a `머지 입양` row adopted is held the same way, whatever its review policy, from the moment it is planned**' \
     '**Its refusal (exit 3) parks the segment, not the shift**, and its text ends with the refusal'"'"'s class.' \
