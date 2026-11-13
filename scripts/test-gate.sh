@@ -46759,6 +46759,14 @@ p57n_repo() {  # p57n_repo <이름> — 한글 룰 파일 둘을 NFC 이름으�
 p57n_ls() {  # p57n_ls <dir> — 디렉터리 항목의 이름 바이트, 정렬
   ls -A "$1" 2>/dev/null | LC_ALL=C sort
 }
+p57n_has() {  # p57n_has <dir> <이름> — 그 바이트 그대로의 항목이 디렉터리에 있으면 참
+  local nl='
+'
+  case "$nl$(p57n_ls "$1")$nl" in
+    *"$nl$2$nl"*) return 0 ;;
+  esac
+  return 1
+}
 
 # (1) 추적되지 않는 항목만 있는 하위 트리 → archive -----------------------------------
 P57N_U=$(p57n_repo untracked)
@@ -46787,7 +46795,7 @@ P57N_MEMO=$(p57n_form NFD 규칙-메모.txt)
 printf 'memo\n' > "$P57N_RULES/$P57N_MEMO"
 printf '{ "version": "1.0.1" }\n' > "$P57N_N/plugins/cc-cmds/.claude-plugin/plugin.json"
 check "57n: 픽스처 — 디스크 이름이 NFD 이고 NFC 와 다르다 (아래 단언이 공허하지 않다)" \
-  "$( p57n_ls "$P57N_RULES" | grep -qxF "$(p57n_form NFD 절단점-준수.rule)" \
+  "$( p57n_has "$P57N_RULES" "$(p57n_form NFD 절단점-준수.rule)" \
       && [ "$(p57n_form NFD 절단점-준수.rule)" != "$(p57n_form NFC 절단점-준수.rule)" ] && printf yes || printf no )" "yes"
 p57n_take "$P57N/rd-n" "$P57N_N/plugins/cc-cmds"
 check "57n: 추적 파일 변경은 copy 와 dirty 예로 고정된다" \
