@@ -8820,6 +8820,8 @@ iv_new
 iv_init >/dev/null 2>&1; rc=$?
 check "T7f-1 인벤토리가 없으면 진입은 성공한다" "$rc" "0"
 check "T7f-1 이름은 표지이고 대상은 상수 + 설정 루트다" "$(readlink "$IVINV" 2>/dev/null)" "$IV_MARK$IVC"
+check "T7f-1 표지 기준선을 채택한 진입은 CI 층 기록 1 을 쓴다" "$(head -1 "$IVRD/ci-layer" 2>/dev/null)" "1"
+check "T7f-1 표지 기준선을 채택한 진입은 라우팅 기록을 쓰지 않는다" "$(iv_is '[ -e "$IVRD/routing-guard" ]')" "no"
 IV1D="$IVD"; IV1C="$IVC"; IV1INV="$IVINV"
 
 # 2. 살아 있는 파일 유효 → 사본
@@ -8830,6 +8832,8 @@ check "T7f-2 이름은 심볼릭 링크가 아닌 정규 파일이다" \
   "$(iv_is '[ -f "$IVINV" ] && [ ! -L "$IVINV" ]')" "yes"
 check "T7f-2 사본의 바이트가 살아 있는 파일과 같다" "$(iv_is 'cmp -s "$IVINV" "$IVLIVE"')" "yes"
 check "T7f-2 사본의 모드는 600 이다" "$(iv_mode_of "$IVINV")" "600"
+check "T7f-2 정규 파일 기준선을 채택한 진입은 라우팅 기록 1 을 쓴다" "$(head -1 "$IVRD/routing-guard" 2>/dev/null)" "1"
+check "T7f-2 정규 파일 기준선을 채택한 진입은 CI 층 기록을 쓰지 않는다" "$(iv_is '[ -e "$IVRD/ci-layer" ]')" "no"
 IV2D="$IVD"
 
 # 3. 표지 뒤 같은 루트에 인벤토리가 생겨도 표지 그대로
@@ -8837,23 +8841,68 @@ IVD="$IV1D"; IVH="$IVD/home"; IVS="$IVD/state"; IVC="$IV1C"; IVB="$IVD/base"
 IVRD="$IVS/cc-cmds/run/iv-run"; IVINV="$IV1INV"; IVLIVE="$IVC/cc-lane/accounts.json"
 IVL="$IVB/docs/pipeline-run/iv-run.md"
 iv_live valid
+rm -f "$IVRD/ci-layer"
 iv_init >/dev/null 2>&1; rc=$?
 check "T7f-3 표지 뒤 인벤토리가 생긴 재진입도 성공한다" "$rc" "0"
 check "T7f-3 표지는 그대로다" "$(readlink "$IVINV" 2>/dev/null)" "$IV_MARK$IVC"
+check "T7f-3 기준선이 이미 있는 재진입은 CI 층 기록을 쓰지 않는다" "$(iv_is '[ -e "$IVRD/ci-layer" ]')" "no"
+check "T7f-3 기준선이 이미 있는 재진입은 라우팅 기록을 쓰지 않는다" "$(iv_is '[ -e "$IVRD/routing-guard" ]')" "no"
 
 # 4. 사본 뒤 살아 있는 파일이 깨지거나 사라져도 사본 그대로
 iv_new; iv_live valid
 iv_init >/dev/null 2>&1
 cp -p "$IVINV" "$IVD/copy.saved"
 iv_live torn
+rm -f "$IVRD/routing-guard"
 iv_init >/dev/null 2>&1; rc=$?
 check "T7f-4 살아 있는 파일이 깨진 뒤의 재진입도 성공한다" "$rc" "0"
+check "T7f-4 사본이 이미 있는 재진입은 라우팅 기록을 다시 쓰지 않는다" "$(iv_is '[ -e "$IVRD/routing-guard" ]')" "no"
+check "T7f-4 사본이 이미 있는 재진입은 CI 층 기록을 쓰지 않는다" "$(iv_is '[ -e "$IVRD/ci-layer" ]')" "no"
 check "T7f-4 사본의 바이트가 그대로다 (깨짐)" "$(iv_is 'cmp -s "$IVINV" "$IVD/copy.saved"')" "yes"
 rm -f "$IVLIVE"
 iv_init >/dev/null 2>&1; rc=$?
 check "T7f-4 살아 있는 파일이 사라진 뒤의 재진입도 성공한다" "$rc" "0"
 check "T7f-4 사본의 바이트가 그대로다 (사라짐)" "$(iv_is 'cmp -s "$IVINV" "$IVD/copy.saved"')" "yes"
 check "T7f-4 사본의 모드가 그대로다" "$(iv_mode_of "$IVINV")" "600"
+
+# 4b. CI 층 술어와 고정 그래프 표지. `run_ci_layer` 는 라우팅 기록이 1 이면 참,
+# 아니면 CI 층 기록이 1 이고 고정 그래프 표지가 없을 때만 참이다. 표지는 드라이버
+# 본 경로가 `rundir_init` 바로 뒤에서 쓰고, 소싱 전용 진입(위 T7f 의 모든 진입)은
+# 그 줄에 닿지 않는다.
+ivc_dir=$(mktemp -d /tmp/cciv-ci.XXXXXX)
+ivc() {
+  # ivc <routing-guard|-> <ci-layer|-> <fixed-graph 있음|없음> — run_ci_layer 의 yes/no
+  rm -f "$ivc_dir/routing-guard" "$ivc_dir/ci-layer" "$ivc_dir/fixed-graph"
+  [ "$1" = "-" ] || printf '%s\n' "$1" > "$ivc_dir/routing-guard"
+  [ "$2" = "-" ] || printf '%s\n' "$2" > "$ivc_dir/ci-layer"
+  [ "$3" = "없음" ] || : > "$ivc_dir/fixed-graph"
+  if ( RUN_DIR="$ivc_dir"; run_ci_layer ); then printf yes; else printf no; fi
+}
+check "T7f-4b 라우팅 기록 1 이면 CI 층이 선다" "$(ivc 1 - 없음)" "yes"
+check "T7f-4b 라우팅 기록 1 이면 고정 그래프 표지가 있어도 선다" "$(ivc 1 - 있음)" "yes"
+check "T7f-4b CI 층 기록 1 이고 표지가 없으면 선다" "$(ivc - 1 없음)" "yes"
+check "T7f-4b CI 층 기록 1 이어도 표지가 있으면 서지 않는다" "$(ivc - 1 있음)" "no"
+check "T7f-4b 라우팅 기록 0 과 CI 층 기록 1 이면 선다" "$(ivc 0 1 없음)" "yes"
+check "T7f-4b CI 층 기록 0 이면 서지 않는다" "$(ivc - 0 없음)" "no"
+check "T7f-4b 기록이 둘 다 없으면 서지 않는다" "$(ivc - - 없음)" "no"
+check "T7f-4b RUN_DIR 이 비면 서지 않는다" \
+  "$(if ( RUN_DIR=""; run_ci_layer ); then printf yes; else printf no; fi)" "no"
+check "T7f-4b 소싱 전용 진입은 고정 그래프 표지를 남기지 않는다" \
+  "$(iv_is '[ -e "$IV1D/state/cc-cmds/run/iv-run/fixed-graph" ] || [ -e "$IV2D/state/cc-cmds/run/iv-run/fixed-graph" ]')" "no"
+# 드라이버 본 경로: 소싱 전용 분기 뒤 맨 윗단의 `rundir_init` 와 핫픽스 검사 사이에
+# 표지 줄이 있고, 그 줄은 표지를 만들며 이미 있는 표지는 그대로 둔다.
+ivc_main=$(awk '/^if \[ "\$\{CC_ORCH_SOURCE_ONLY:-0\}" = "1" \]; then$/ {on=1} on' "$script_dir/run.sh")
+ivc_order=$(printf '%s\n' "$ivc_main" | grep -n -E '^rundir_init$|^\[ -e "\$RUN_DIR/fixed-graph" \]|^hotfix_refusal=' \
+  | sed 's/^[0-9]*://' | sed -E 's/^(rundir_init|hotfix_refusal).*/\1/; s/^\[ -e.*/mark/' | tr '\n' ' ')
+check "T7f-4b 드라이버 본 경로는 rundir_init 뒤 핫픽스 검사 앞에서 표지를 쓴다" "$ivc_order" "rundir_init mark hotfix_refusal "
+ivc_line=$(printf '%s\n' "$ivc_main" | grep -E '^\[ -e "\$RUN_DIR/fixed-graph" \]' | head -1)
+rm -f "$ivc_dir/fixed-graph"
+( RUN_DIR="$ivc_dir"; eval "$ivc_line" )
+check "T7f-4b 본 경로의 표지 줄이 표지를 만든다" "$(iv_is '[ -f "$ivc_dir/fixed-graph" ]')" "yes"
+printf 'x\n' > "$ivc_dir/fixed-graph"
+( RUN_DIR="$ivc_dir"; eval "$ivc_line" )
+check "T7f-4b 이미 있는 표지는 그대로 둔다" "$(cat "$ivc_dir/fixed-graph" 2>/dev/null)" "x"
+rm -rf "$ivc_dir"
 
 # 5. 찢어진 사본 + ledger-path + BASE → SNAPSHOT park
 iv_new; iv_ledger_on

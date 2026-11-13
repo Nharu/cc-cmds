@@ -5140,6 +5140,10 @@ SAPEOF
     sa_new "CI 체크 ($1)" 리뷰없음
     CK60_SHA=$(sa_commit '작업')
     sa_seg_row CK "$1"
+    # 이 절의 런은 라우팅 기록도 CI 층 기록도 없는 런이다. 픽스처의 설정 루트에는 인벤토리가
+    # 없어 첫 게이트 호출(위 segment 행)이 부재 기준선을 잡으며 CI 층 기록을 쓰므로, 그 기록을
+    # 지워 CI 층이 서지 않는 런으로 둔다. 기준선은 이미 잡혔으니 뒤의 호출이 다시 쓰지 않는다.
+    rm -f "$SA_RUN/ci-layer"
     # `선리뷰후머지` 만 머지 앞에 기록을 요구한다. 없으면 머지가 룰 루프에서 먼저
     # 거절되고, 그 거절은 이 절이 재려는 CI 거절과 구별되지 않는다.
     if [ "$1" = "선리뷰후머지" ]; then
@@ -5256,6 +5260,18 @@ CB60EOF
     cb60_run 777 post
     printf 'gate\tsuccess\n' > "$CB60_S/base"
     cb60_line 실패 0 0
+  }
+  cb60_ci_layer() {
+    # cb60_ci_layer — 방금 만든 CK 픽스처를 인벤토리 부재 기준선으로 열린 런으로 바꾼다.
+    # 라우팅 기록과 고정 그래프 표지를 지우고, 기준선을 이 셸의 설정 루트를 가리키는 부재
+    # 표지 링크로 두고, CI 층 기록 `1` 을 쓴다. 표지 상수는 run.sh 의 정의 줄에서 읽는다 —
+    # 값을 여기 베껴 두면 상수가 바뀌어도 이 픽스처는 옛 표지로 남는다.
+    local mark
+    mark=$(sed -n "s/^readonly RUN_INVENTORY_ABSENT_MARK='\(.*\)'\$/\1/p" "$repo_root/plugins/cc-cmds/orchestrator/run.sh")
+    [ -n "$mark" ] || { printf 'cb60_ci_layer: run.sh 에서 부재 표지 상수를 읽지 못했다\n' >&2; exit 1; }
+    rm -f "$SA_RUN/routing-guard" "$SA_RUN/fixed-graph" "$SA_RUN/inventory.json"
+    ln -s "$mark$XDG_CONFIG_HOME" "$SA_RUN/inventory.json"
+    printf '1\n' > "$SA_RUN/ci-layer"
   }
   cb60_checks() {
     # cb60_checks <pre|post> <버킷> <실행 id> <잡 번호> [이름] — 체크 화면 한 항목.
@@ -48491,8 +48507,10 @@ case "$rc|$cb60_sh" in
 esac
 
 # C2 7 — 라우팅 기록 없는 쌍둥이. 같은 실패 행에서 다음은 머지 이고 머지는 CI실패 park 다.
+# CI 층 기록도 지운다 — 부재 기준선을 잡은 픽스처의 첫 호출이 그 기록을 썼고, 두 기록이 다
+# 없어야 CI 층이 서지 않는 런이다. CI 층 기록만 있는 런은 60b-6 이 잰다.
 cb60_new "CI 재실행 — 라우팅 기록 없음"
-rm -f "$SA_RUN/routing-guard"
+rm -f "$SA_RUN/routing-guard" "$SA_RUN/ci-layer"
 check "60b: 라우팅 기록 없는 런의 실패 행에서 다음은 머지 다" "$(cb60_next)" "머지"
 ck60_plan
 case "$rc|$msg" in
@@ -48912,7 +48930,8 @@ cb60_checks pre pass 777 1; cb60_refuse "살아 있는 실패 집합이 빔" "no
 cb60_checks pre cancel 777 1; cb60_refuse "취소 버킷뿐인 화면" "no failing check"
 cb60_checks pre fail 777 1
 cb60_refuse "tip 이 아닌 argv sha" "worktree's tip is" 1111111111111111111111111111111111111111
-rm -f "$SA_RUN/routing-guard"; cb60_refuse "라우팅 기록 없는 런" "no routing record"
+# 두 기록이 다 없어야 CI 층이 서지 않는다 — 픽스처의 첫 호출이 부재 기준선과 함께 쓴 CI 층 기록도 지운다.
+rm -f "$SA_RUN/routing-guard" "$SA_RUN/ci-layer"; cb60_refuse "라우팅 기록 없는 런" "no routing record"
 printf '1\n' > "$SA_RUN/routing-guard"
 mkdir -p "$SA_RUN/ci-rerun.CK.lock"; printf '%s %s\n' "$$" "$(date -u +%s)" > "$SA_RUN/ci-rerun.CK.lock/owner"
 cb60_refuse "바쁜 잠금" "holds its lock"
@@ -49149,6 +49168,59 @@ cb65_new "CI 수정 — 크래시"
 cb65_sr 크래시 2 "$D65"
 cb65_fix plan; cb65_r1=$rc
 check "60b-5: 크래시로 끝난 CI 수정은 같은 head 로 다시 파견된다" "$(cb60_next)|$cb65_r1" "CI 수정|0"
+cb60_foot
+
+# ---------------------------------------------------------------------------
+# 60b-6. 라우팅 기록 없이 인벤토리 부재 기준선으로 열린 런의 CI 실패 — 재실행으로 간다
+# --- section: 60b-6 | group: sa | covers: act, plan, snapshot, gate_check_merge_checks | anchors: 60b-6: CI 층 기록만 있는 런의 실패 행에서 다음은 CI 재실행 이다, 60b-6: 그 런의 머지는 CI실패 park 가 아니라 다음을 가리키는 rc 3 이다, 60b-6: 그 런의 재실행은 POST 하나를 내고 수락 행을 쓴다, 60b-6: 그 런의 회차 1 실패 뒤 다음은 CI 수정 이고 파견이 통과한다, 60b-6: 그 갈래 전체에서 blocked 행과 halt 기록이 없다, 60b-6: 고정 그래프 표지가 있으면 다음은 머지 이고 머지는 CI실패 park 다 ---
+#
+# 라우터가 아닌 드라이버로 열렸어도 계정 인벤토리가 없는 기기에서 기준선을 부재 표지로 잡은
+# 런은 CI 층 기록을 갖고, 고정 그래프 드라이버가 들어오지 않았으면 라우팅 런처럼 CI 실패를
+# 재실행·CI 수정으로 넘긴다. 픽스처는 60b 의 것(`cb60_head`·`cb60_new`)에 `cb60_ci_layer` 로
+# 라우팅 기록을 걷고 부재 표지 기준선과 CI 층 기록을 둔다. 마지막 사례는 같은 픽스처에 고정
+# 그래프 표지를 더해, CI 값을 처분할 길이 없는 드라이버의 런은 예전처럼 머지로 남는 것을 잰다.
+# ---------------------------------------------------------------------------
+cb60_head
+
+cb60_new "CI 층 — 부재 기준선의 런"
+cb60_ci_layer
+cb66_b0=$(cb60_n blocked)
+check "60b-6: 픽스처에 라우팅 기록이 없고 CI 층 기록과 부재 표지 기준선이 있다" \
+  "$([ -e "$SA_RUN/routing-guard" ] && printf 있음 || printf 없음)|$(cat "$SA_RUN/ci-layer" 2>/dev/null)|$([ -L "$SA_RUN/inventory.json" ] && printf 링크 || printf 아님)" \
+  "없음|1|링크"
+check "60b-6: CI 층 기록만 있는 런의 실패 행에서 다음은 CI 재실행 이다" "$(cb60_next)" "CI 재실행"
+cb60_np=$(cb60_posts)
+sa_merge CK
+check "60b-6: 그 런의 머지는 CI실패 park 가 아니라 다음을 가리키는 rc 3 이다" \
+  "$rc|$(cb60_n blocked)|$(cb60_posts)" "3|$cb66_b0|$cb60_np"
+case "$msg" in *'다음=CI 재실행'*) ok "60b-6: 그 거부 문면이 다음=CI 재실행 을 든다" ;; *) bad "60b-6: 그 거부 문면이 다음=CI 재실행 을 든다" "$msg" ;; esac
+cb60_act
+check "60b-6: 그 런의 재실행은 POST 하나를 내고 수락 행을 쓴다" \
+  "$rc|$(cb60_posts)|$(sa_field "$(cb60_last 'CI 처분')" 상태)|$(sa_field "$(cb60_last 'CI 처분')" 회차)" "0|1|수락|1"
+check "60b-6: 재실행 뒤 다음은 CI 대기 다" "$(cb60_next)" "CI 대기"
+cb60_line 실패 1 0
+cb60_nx=$(cb60_next)
+cb60_impl plan "/cc-cmds:implement-unattended \"세그먼트 CK · CI 수정: $CK60_SHA\""
+check "60b-6: 그 런의 회차 1 실패 뒤 다음은 CI 수정 이고 파견이 통과한다" "$cb60_nx|$rc" "CI 수정|0"
+check "60b-6: 그 갈래 전체에서 blocked 행과 halt 기록이 없다" \
+  "$(( $(cb60_n blocked) - cb66_b0 ))|$(find "$SA_RUN/halt" -type f 2>/dev/null | wc -l | tr -d ' ')" "0|0"
+
+# 고정 그래프 쌍둥이 — 같은 기록 위에 드라이버의 표지가 있으면 CI 층이 서지 않는다.
+cb60_new "CI 층 — 고정 그래프 드라이버의 런"
+cb60_ci_layer
+: > "$SA_RUN/fixed-graph"
+check "60b-6: 고정 그래프 표지가 있으면 실패 행에서도 다음은 머지 다" "$(cb60_next)" "머지"
+ck60_plan
+case "$rc|$msg" in
+  "11|"*'park 예상: 도달 판정=CI실패'*) ok "60b-6: 고정 그래프 런의 머지 plan 은 CI실패 로 예보한다" ;;
+  *) bad "60b-6: 고정 그래프 런의 머지 plan 은 CI실패 로 예보한다" "rc=$rc $msg" ;;
+esac
+sa_merge CK
+check "60b-6: 고정 그래프 표지가 있으면 다음은 머지 이고 머지는 CI실패 park 다" \
+  "$rc|$(sa_field "$(cb60_last blocked)" '도달 판정')" "11|CI실패"
+cb60_np=$(cb60_posts)
+cb60_act
+check "60b-6: 고정 그래프 런의 재실행은 rc 3 이고 POST 가 없다" "$rc|$(cb60_posts)" "3|$cb60_np"
 cb60_foot
 
 # ---------------------------------------------------------------------------

@@ -5205,12 +5205,55 @@ routing_guard_record() {
   return 0
 }
 
+# ---------------------------------------------------------------------------
+# The run's CI layer record. The CI layer of the gate (the master reading, the
+# rerun, match and label-ack acts, the CI values of `다음` and the CI refusal of
+# a merge) needs only the ledger and the read credential, not the account
+# inventory; it stands on every run the routing shift drives. A routed run has it
+# through `routing-guard`. A run opened on a machine with no lane inventory takes
+# an absent-mark baseline, gets no routing record, and gets this record instead,
+# so its CI failures go to the rerun and the CI fix rather than to a park.
+#
+# WRITTEN ONCE, BY THE SAME TAKE BRANCH AND FOR THE SAME REASON AS THE ROUTING
+# RECORD ABOVE: a run opened before this code existed reaches the judge with a
+# baseline already in place and never enters the take branch, so it keeps the
+# behaviour it was opened with. ONLY ON AN ABSENT-MARK BASELINE: a regular-file
+# baseline already writes `routing-guard`, which stands the CI layer by itself.
+# Exclusive create under noclobber; a failed create leaves the run without the
+# CI layer, which is how such a run behaved before — the safe side.
+# ---------------------------------------------------------------------------
+ci_layer_record() {
+  # ci_layer_record <inventory path> — called from the take branch of
+  # `rundir_inventory_snapshot` only, right after `routing_guard_record`.
+  local tgt=""
+  [ -n "${RUN_DIR:-}" ] || return 0
+  [ -L "$1" ] || return 0
+  tgt=$(readlink "$1" 2>/dev/null) || return 0
+  case "$tgt" in
+    "$RUN_INVENTORY_ABSENT_MARK"*) ;;
+    *) return 0 ;;
+  esac
+  ( set -C; printf '1\n' > "$RUN_DIR/ci-layer" ) 2>/dev/null || true
+  return 0
+}
+
 run_routed() {
   # run_routed — true when this run's record says `1`. Every reader that used to
   # ask the build switch asks this instead; a run with no record is unrouted.
   local rec=""
   [ -n "${RUN_DIR:-}" ] && [ -f "$RUN_DIR/routing-guard" ] || return 1
   rec=$( { head -1 "$RUN_DIR/routing-guard" 2>/dev/null || true; } | tr -d '[:space:]')
+  [ "$rec" = "1" ]
+}
+
+run_ci_layer() {
+  # run_ci_layer — true when the CI layer stands on this run: every routed run,
+  # and an unrouted run whose inventory baseline was absent at its take and that
+  # no fixed-graph driver has entered.
+  local rec=""
+  run_routed && return 0
+  [ -n "${RUN_DIR:-}" ] && [ -f "$RUN_DIR/ci-layer" ] && [ ! -e "$RUN_DIR/fixed-graph" ] || return 1
+  rec=$( { head -1 "$RUN_DIR/ci-layer" 2>/dev/null || true; } | tr -d '[:space:]')
   [ "$rec" = "1" ]
 }
 
@@ -5744,6 +5787,7 @@ rundir_inventory_snapshot() {
     rc=0; rundir_inventory_judge "$inv" || rc=$?
     if [ "$rc" = "0" ]; then
       routing_guard_record "$inv"
+      ci_layer_record "$inv"
       if [ -n "$tpub" ]; then
         rundir_inventory_record "$inv" "$tpub" "$troot"
       else
@@ -15919,6 +15963,14 @@ else
 fi
 
 rundir_init
+
+# The fixed-graph mark. This driver has no path for the CI values of `다음`: its
+# merge step parks a failed check and asserts `머지` right before the merge, so
+# `run_ci_layer` reads this file and keeps the CI layer off a run it drives. Only
+# this main path writes it — a gate or tool that sources this file with
+# `CC_ORCH_SOURCE_ONLY=1` stops above — so a run the routing shift drives never
+# carries it. Its content is not read; an existing mark stays as it is.
+[ -e "$RUN_DIR/fixed-graph" ] || { : > "$RUN_DIR/fixed-graph"; } 2>/dev/null || :
 
 # BEFORE THE EXIT TRAP AND THE LEDGER: a hotfix plan on an unrouted run does not
 # start at all, so it leaves no end row and no ledger behind.
