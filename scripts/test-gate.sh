@@ -16909,7 +16909,10 @@ case "$(VQ_M="$WORK/plan-R15VQN.md" vq15 'visual_approval_route_hint')" in
   *"/cc-cmds:visual $DOC15VQ 구현 승인 을 다시 실행해"*) ok "15vq: 발행 단계가 없는 런의 반영 대기 안내는 구현 승인을 다시 실행하라고 한다" ;;
   *) bad "15vq: 발행 단계가 없는 런의 반영 대기 안내는 구현 승인을 다시 실행하라고 한다" "$(VQ_M="$WORK/plan-R15VQN.md" vq15 'visual_approval_route_hint')" ;;
 esac
-vq15_sidecar '**문서 반영**: 대기 — 어긋남 1건'
+printf '# 시각 사이드카\n<!-- cc-visual v1; owner-doc=%s; -->\n\n**상태**: 발행됨\n**구현 승인**: 2026-11-11 — 입력 묶음 %s — 금지 목록 %s — 기계 검사 수용 없음\n**문서 반영**: 대기 — 어긋남 1건\n\n### 화면 home\n' \
+  "$DOC15VQ" "$VQ15_B" "$(printf 'bans' | shasum -a 256 | cut -d' ' -f1)" > "$SC15VQ"
+check "15vq 픽스처: 꼬리 없는 승인도 승인 술어가 반영 대기 보류다 (아래가 공허하지 않다)" \
+  "$(bash "$CC_ORCH/visual-check.sh" approval "$WT/$DOC15VQ" 2>/dev/null | sed -n 1p)" "승인 보류 — 설계 문서 반영 대기"
 case "$(vq15 'visual_approval_route_hint')" in
   *"대화형 실행이 멈췄고"*"/cc-cmds:visual $DOC15VQ 구현 승인 을 다시 실행해"*) ok "15vq: 꼬리 없는 반영 대기 안내는 발행 단계가 있어도 구현 승인을 다시 실행하라고 한다" ;;
   *) bad "15vq: 꼬리 없는 반영 대기 안내는 발행 단계가 있어도 구현 승인을 다시 실행하라고 한다" "$(vq15 'visual_approval_route_hint')" ;;

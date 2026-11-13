@@ -14501,8 +14501,9 @@ visual_approval_route_hint() {
   # the publish stage that is the approval-reflection re-convergence's work, so
   # the person is told to wait, and in a run without it the fixed seat's
   # `/cc-cmds:visual <문서> 구현 승인` is run again to write them. The wait
-  # holds only while the sidecar's `**문서 반영**` line carries the
-  # ` — 사람 답 <record>` tail the publish stage writes: a `대기` with no tail
+  # holds only while the sidecar's `**구현 승인**` line carries the
+  # ` — 사람 답 <record>` tail the publish stage writes — the line the gate's
+  # entry predicate reads too: an approval with no tail
   # is an interactive reflection that stopped before its sidecar write, which
   # neither the router nor the gate's entry predicate dispatches, so even a run
   # with the publish stage points the person at that command again. A first
@@ -14524,7 +14525,7 @@ visual_approval_route_hint() {
   case "$pl" in
     '승인 보류 — 설계 문서 반영 대기'*)
       dl=''
-      sc=$(visual_sidecar_path "${DOC:-}" 2>/dev/null) && dl=$(grep -m1 '^\*\*문서 반영\*\*: ' "$sc" 2>/dev/null)
+      sc=$(visual_sidecar_path "${DOC:-}" 2>/dev/null) && dl=$(grep -m1 '^\*\*구현 승인\*\*: ' "$sc" 2>/dev/null)
       if manifest_has_visual_publish_step; then
         case "$dl" in
           *' — 사람 답 '*) ;;

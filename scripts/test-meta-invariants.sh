@@ -27,8 +27,9 @@
 # pointing at that file, its missing question and notification surfaces, its
 # missing copies, the phase sentence, and the start disposition and end
 # obligation with their two spellings. The approved-screen reflection block
-# (6e-7) adds seventeen and the fix cycle more: ten sentences of the writers and readers of the
-# approval, three in each router copy's reflection paragraph, and that
+# (6e-7) adds the fixed sentences of the writers and readers of the
+# approval and of the reflection's ends, the sentences of each router copy's
+# reflection paragraph, and that
 # paragraph's identity across the two copies. Every other assertion here is one
 # a source suite used to make.
 #
@@ -1979,7 +1980,9 @@ done <<'EOF'
 대화형 승인|visual/SKILL.md|the latest `## 인가 <run-id>` block names the run, and that run is alive while its run directory `${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/run/<run-id>` holds no `done` file yet
 대화형 승인|visual/SKILL.md|a difference stops the reflection with the sidecar as it is and writes no `실패`
 대화형 승인|_common/approval-reflection.md|key, take the latest `## 인가 <run-id>` block; its run is alive while its
-대화형 승인|_common/approval-reflection.md|An abandoned run with
+대화형 승인|_common/approval-reflection.md|no `done` reads as alive too; whether to end it is a person's call
+대화형 승인|_common/approval-reflection.md|show the run id and stop before taking the working copy
+대화형 승인|visual/SKILL.md|stop before this step edits anything, with the sidecar as step 6 left it
 반영 실패|_common/approval-reflection.md|and the lines `drift` prints are lines that cannot be applied
 대화형 승인|visual/SKILL.md|The sidecar's ` — 사람 답` tail is not this test
 반영 종단|_common/approval-reflection.md|위 두 종단의 두 번째 | `대기` 그대로
@@ -2018,7 +2021,9 @@ for pair in "리드:$AP_ROUTER" "교대:$RS_REFS/visual-dispatch.md"; do
     '「반영 두 번째 시도도 <종단> 으로 끝남' \
     'carries no option: do not report it as a question for a person — this re-dispatch handles it' \
     'A `대기` with no tail is an interactive reflection that stopped between its approval write and its sidecar write: never dispatch it' \
-    'for an answer of this run the tail equals the latest `시각-판정 기록` that `visual-check.sh run-state` prints'
+    'for an answer of this run the tail equals the latest `시각-판정 기록` that `visual-check.sh run-state` prints' \
+    'it equals the file name of that row'"'"'s `출처 기록` (`<run id>/halt/<file>.md`)' \
+    'a second `precondition-failed` stop record carries no option either'
   do
     check "$who 사본의 반영 파견 문단이 「${lit}」 을 싣는다" "$(mo_count "$para" "$lit")" "1"
   done
