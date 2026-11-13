@@ -1972,6 +1972,9 @@ done <<'EOF'
 무인 발행|visual-publish-unattended/SKILL.md|`**문서 반영**: 대기 — 어긋남 <n>건 — 사람 답 <the same name>`
 반영 실패|design-reconverge/SKILL.md|`**스텝**: Step 3 승인 화면 반영 — 충돌`
 반영 실패|design-reconverge/SKILL.md|- `결정 첨부 후 다시 반영` — 사람이 충돌을 푸는 결정을 첨부에 붙이면
+반영 실패|design-reconverge/SKILL.md|An exit 2 whose count and sha256 equal the piece is not that halt
+반영 실패|_common/approval-reflection.md|and the lines `drift` prints are lines that cannot be applied
+대화형 승인|visual/SKILL.md|The sidecar's ` — 사람 답` tail is not this test
 EOF
 reflect_para() {
   # reflect_para <file> — the reflection-dispatch paragraph of the visual wait,
@@ -1985,7 +1988,9 @@ for pair in "리드:$AP_ROUTER" "교대:$RS_REFS/visual-dispatch.md"; do
   for lit in \
     'When the predicate'"'"'s first line is `승인 보류 — 설계 문서 반영 대기`' \
     '-- reconverge -p "/cc-cmds:design-reconverge <스냅숏 design_doc> 승인 화면 반영 <시각-판정 기록 절대 경로>"' \
-    '**The reflection'"'"'s end is not a re-plan signal.**'
+    '**The reflection'"'"'s end is not a re-plan signal.**' \
+    'is the `중단 기록` of the visual publish step'"'"'s last `중단 답` row' \
+    'Dispatch it once more, with the same scope,'
   do
     check "$who 사본의 반영 파견 문단이 「${lit}」 을 싣는다" "$(mo_count "$para" "$lit")" "1"
   done
