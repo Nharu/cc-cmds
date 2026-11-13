@@ -36,7 +36,9 @@ with the approved screens as a second truth.
   the same sha256 now. A difference is a halt with `분류: precondition-failed`
   naming both values: the list the person approved is not the list on disk, and
   a reflection that read it would edit outside what the person approved. An
-  exit 2 with the same count and sha256 is not that halt: the block is the
+  exit 2 prints no count line, so it is read against the block: when the
+  block's lines are, in number and verbatim, the lines the record quotes, and
+  every printed line is one of them, it is not that halt — the block is the
   approved one, and the lines `drift` prints are lines that cannot be applied
   (`## 실패로 보는 경우`), which stop on the reflection's own record. The
   interactive path computes the block, shows it and asks in the same call, so
@@ -118,8 +120,10 @@ the attachment does not name is reflected as before; a line it names with
      While an unattended run on the same document is alive, do not reflect
      interactively at all — the run's re-convergence is that document's
      reflection. Alive is read from the run's own record — a manifest naming
-     the document whose ledger carries no end token yet — never from the
-     sidecar's ` — 사람 답` tail, which an ended run leaves behind. The comparison is the one the unattended path makes, so it adds
+     the document, whose plan carries a visual publish step and whose ledger
+     exists and carries no end token yet — never from the sidecar's
+     ` — 사람 답` tail, which an ended run leaves behind. A run with no visual
+     publish step dispatches no reflection, so it does not hold this one back. The comparison is the one the unattended path makes, so it adds
      no new rule and keeps one writer from overwriting another.
 3. **Sidecar, once.** Rewrite `**문서 반영**` to
    `완료 — 문서 sha256 <사후 64 hex>` — unattended with the tail
