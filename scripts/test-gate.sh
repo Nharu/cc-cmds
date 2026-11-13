@@ -4879,6 +4879,18 @@ SAPEOF
     sa_bd "$SA_MANIFEST" "$SA_WT"
   }
 
+  sa_run_reset() {
+    # sa_run_reset — 이 픽스처의 런 디렉터리를 비우고, CI 층이 서지 않는 미라우팅 런으로 다시
+    # 연다. 하니스의 설정 루트에는 레인 인벤토리가 없어, 첫 게이트 호출이 부재 기준선을 잡으며
+    # CI 층 기록을 배타 생성으로 쓴다. 그대로 두면 모든 sa 런이 CI 층 런이 되어 머지가 회차 0 의
+    # 통과 판정을 요구받는다. 그래서 기록을 `0` 으로 먼저 둔다 — 배타 생성은 있는 파일을 덮지
+    # 않고, 판독기는 첫 줄이 `1` 일 때만 CI 층을 세우므로, 기준선 채택과 그 원장 행은 그대로
+    # 일어난다. 런 디렉터리를 지우는 픽스처는 모두 이 헬퍼로 지운다 — `rm -rf` 만 하면 첫 호출이
+    # 다시 `1` 을 쓴다. CI 층 런은 `cb60_ci_layer` 가 기록을 `1` 로 덮어 만든다.
+    rm -rf "$SA_RUN"
+    mkdir -p "$SA_RUN" && printf '0\n' > "$SA_RUN/ci-layer"
+  }
+
   sa_new() {
     # sa_new <라벨> [상한] [룰설정 줄...] — 자기 저장소·베어 원격·세그먼트
     # 워크트리를 만들고 매니페스트와 인가 기록을 쓴다.
@@ -4920,12 +4932,7 @@ SAPEOF
     SA_LEDGER="$SA_WT/docs/pipeline-run/$SA_ID.md"
     SA_GRANT="$SA_WT/docs/pipeline-grant/$SA_ID.md"
     SA_RUN="$XDG_STATE_HOME/cc-cmds/run/$SA_ID"
-    # 하니스의 설정 루트에는 레인 인벤토리가 없어, 첫 게이트 호출이 부재 기준선을 잡으며 CI 층
-    # 기록을 배타 생성으로 쓴다. 그대로 두면 모든 sa 런이 CI 층 런이 되어 머지가 회차 0 의 통과
-    # 판정을 요구받는다. 그래서 기록을 `0` 으로 먼저 둔다 — 배타 생성은 있는 파일을 덮지 않고,
-    # 판독기는 첫 줄이 `1` 일 때만 CI 층을 세우므로, 기본 픽스처는 CI 층이 서지 않는 미라우팅
-    # 런으로 남고 기준선 채택과 그 원장 행은 그대로 일어난다. CI 층 런은 `cb60_ci_layer` 가 만든다.
-    mkdir -p "$SA_RUN" && printf '0\n' > "$SA_RUN/ci-layer"
+    sa_run_reset
     sa_manifest "$ceil" "$@"
     SA_LABEL="$label"
   }
@@ -5619,7 +5626,7 @@ pre_sb() {
     sa_new "$@"
     SA_PREAUTH_EXTRA=$'gh pr\ngh api'
     sa_manifest "${2-선머지후리뷰}"
-    rm -rf "$SA_RUN"
+    sa_run_reset
   }
 
   sc_ends() {
@@ -5644,7 +5651,7 @@ pre_sb() {
       { print }
     ' "$SA_MANIFEST" > "$SA_MANIFEST.c" && mv "$SA_MANIFEST.c" "$SA_MANIFEST"
     sa_bd "$SA_MANIFEST" "$SA_WT"
-    rm -rf "$SA_RUN"
+    sa_run_reset
   }
 
   sb_grant_max() {
@@ -5664,7 +5671,7 @@ pre_sb() {
     sed "s/^\*\*런 최대 절단점\*\*: .*/**런 최대 절단점**: $1/" "$SA_MANIFEST" > "$SA_MANIFEST.g" \
       && mv "$SA_MANIFEST.g" "$SA_MANIFEST"
     sa_bd "$SA_MANIFEST" "$SA_WT"
-    rm -rf "$SA_RUN"
+    sa_run_reset
   }
 
   sb_act() {
@@ -5723,7 +5730,7 @@ pre_sb() {
       SA_OWNER_DOC="${SA_ROOT#/}/slice-doc.md"
     fi
     sa_manifest "$ceil" "$@"
-    rm -rf "$SA_RUN"
+    sa_run_reset
     SB_STATE="$SA_ROOT/apply-state"; mkdir -p "$SB_STATE"
   }
 
@@ -5906,7 +5913,7 @@ pre_sb() {
     SA_GRANT="$SA_WT/docs/pipeline-grant/$SA_ID.md"
     SA_RUN="$XDG_STATE_HOME/cc-cmds/run/$SA_ID"
     sa_manifest 선리뷰후머지
-    rm -rf "$SA_RUN"
+    sa_run_reset
   }
   sd_import() {
     # sd_import <라벨> <증거 런 id> <이 런 id> <프로브> [P1] — 증거 런이 세그먼트 SD 를
@@ -30722,7 +30729,7 @@ newtd=$(printf '%s\n' "$newrow" | sed 's/[[:space:]]\{1,\}/ /g' | sort | shasum 
 sed "s/^\*\*대상 맵 다이제스트\*\*: .*/**대상 맵 다이제스트**: $newtd/" "$SA_MANIFEST" > "$SA_MANIFEST.b" \
   && mv "$SA_MANIFEST.b" "$SA_MANIFEST"
 sa_bd "$SA_MANIFEST" "$SA_WT"
-rm -rf "$SA_RUN"
+sa_run_reset
 sag snapshot --manifest "$SA_MANIFEST"
 check "10(b): 절단점이 머지 미만인 대상의 상한 선언은 런을 멈추지 않는다" "$rc" "0"
 case "$msg" in
@@ -30765,7 +30772,7 @@ sa_new '해소기 상한' 리뷰없음
 sa_seg_row S11 리뷰없음
 check "11: 상한이 허용하는 창에서는 그 행이 통과한다" "$rc" "0"
 sa_manifest 선리뷰후머지
-rm -rf "$SA_RUN"
+sa_run_reset
 sa_commit '작업' >/dev/null
 sa_merge S11
 check "11: 상한을 조인 뒤의 머지는 해소기가 거절한다" "$rc" "2"
@@ -31045,7 +31052,7 @@ awk -v a="$rowA" -v b="$rowB" -v td="$td15" '
   { skip=0; print }
 ' "$SA_MANIFEST" > "$SA_MANIFEST.15" && mv "$SA_MANIFEST.15" "$SA_MANIFEST"
 sa_bd "$SA_MANIFEST" "$SA_WT"
-rm -rf "$SA_RUN"
+sa_run_reset
 sag snapshot --manifest "$SA_MANIFEST"
 check "15: 대상 둘을 선언한 매니페스트가 검사를 통과한다" "$rc" "0"
 sa_seg_row S15 선머지후리뷰
@@ -31641,7 +31648,7 @@ check "20(ii): 그 거절이 원장을 늘리지 않는다" "$(sa_rows)" "$nb"
 sa_new '없는 베이스 ref' 선머지후리뷰
 SA_BASE=원격에없는이름
 sa_manifest 선머지후리뷰
-rm -rf "$SA_RUN"
+sa_run_reset
 sa_seg_row S21 선머지후리뷰
 sa_commit '작업' >/dev/null
 sag act --manifest "$SA_MANIFEST" --kind merge --target main --segment S21 \
@@ -32961,7 +32968,7 @@ if sb_bound; then ok "29: 머지 먼저 세그먼트의 머지도 워크트리 H
 sb_new '결속 (끔)' 선머지후리뷰
 SA_PREAUTH_EXTRA='gh pr'
 sa_manifest 선머지후리뷰 '**리뷰-후-머지**: 끔'
-rm -rf "$SA_RUN"
+sa_run_reset
 sa_seg_row S29O ""
 sa_commit '작업' >/dev/null
 sb_plan S29O gh pr merge 1
@@ -34634,7 +34641,7 @@ sa_new '상한 조인 뒤 수리' 리뷰없음
 sa_seg_row S34 리뷰없음
 check "34: 느슨한 상한 아래에서는 그 행이 통과한다" "$rc" "0"
 sa_manifest 선리뷰후머지
-rm -rf "$SA_RUN"
+sa_run_reset
 sa_commit '작업' >/dev/null
 sa_merge S34
 check "34: 상한을 조인 뒤 그 세그먼트의 머지는 해소기가 거절한다" "$rc" "2"
@@ -41796,7 +41803,7 @@ sb_new '5 마감' 선머지후리뷰
 sed 's/^\*\*벽시계 마감\*\*: .*/**벽시계 마감**: 2020-01-01T00:00:00Z/' \
     "$SA_MANIFEST" > "$SA_MANIFEST.d" && mv "$SA_MANIFEST.d" "$SA_MANIFEST"
 sa_bd "$SA_MANIFEST" "$SA_WT"
-rm -rf "$SA_RUN"
+sa_run_reset
 sa_seg_row SB5 선머지후리뷰
 check "5: 마감이 지나도 세그먼트 행은 기록된다 (마감은 디스패치와 머지만 막는다)" "$rc" "0"
 sa_commit '작업' >/dev/null
@@ -41867,7 +41874,7 @@ awk '
 check "5b: 픽스처가 지난 마감과 천장을 함께 싣는다" \
   "$({ grep -cE '^\*\*(벽시계 마감\*\*: 2020|비용 천장\*\*: 100)' "$SA_MANIFEST" || true; })" "2"
 sa_bd "$SA_MANIFEST" "$SA_WT"
-rm -rf "$SA_RUN"
+sa_run_reset
 sa_seg_row SB5B 선머지후리뷰
 check "5b: 세그먼트 행은 기록된다" "$rc" "0"
 sa_commit '작업' >/dev/null
@@ -41950,7 +41957,7 @@ sc_new() {
     { print }
   ' "$SA_MANIFEST" > "$SA_MANIFEST.c" && mv "$SA_MANIFEST.c" "$SA_MANIFEST"
   sa_bd "$SA_MANIFEST" "$SA_WT"
-  rm -rf "$SA_RUN"
+  sa_run_reset
   SAH >/dev/null
   mkdir -p "$SA_RUN"
   SC_PACE="$SA_ROOT/pace"
@@ -42016,7 +42023,7 @@ check "5c: 그 런의 원장에는 표면이동 막힘 행만 있다" \
 sed 's/^\*\*벽시계 마감\*\*: .*/**벽시계 마감**: 2020-01-01T00:00:00Z/' \
     "$SA_MANIFEST" > "$SA_MANIFEST.d" && mv "$SA_MANIFEST.d" "$SA_MANIFEST"
 sa_bd "$SA_MANIFEST" "$SA_WT"
-rm -rf "$SA_RUN"
+sa_run_reset
 SC_PACE="$SA_ROOT/pace"; mkdir -p "$SC_PACE/busy"
 sc_overdue
 check "5c: 표면 이동 행만 있는 런에는 아무것도 쓰지 않는다" "$rc/$(sc_ends)" "0/0"
@@ -43833,7 +43840,7 @@ sd4_merge() {
   awk -v m="$SD_M" -v t="$SD_TIP" '/^- `segment` / && index($0, "출처=") { sub("머지 커밋=" m, "머지 커밋=" t) } { print }' \
     "$SA_LEDGER" > "$SA_LEDGER.c" && mv "$SA_LEDGER.c" "$SA_LEDGER"
 }
-sd4_human() { SA_APPLY=사람; sa_manifest 선리뷰후머지; rm -rf "$SA_RUN"; }
+sd4_human() { SA_APPLY=사람; sa_manifest 선리뷰후머지; sa_run_reset; }
 sd4_case 1 "증거 원장 20260901-00000d41.md 가 없다" sd4_noled
 sd4_case 2 "해시 연쇄가 온전하지 않다" sd4_chain
 sd4_case 3 "발견 요약 이 없다" sd4_report
@@ -53395,7 +53402,7 @@ c61_new() {
   sa_new "$1" 리뷰없음
   SA_PREAUTH_EXTRA=$'gh pr\ngh api'
   sa_manifest 리뷰없음
-  rm -rf "$SA_RUN"
+  sa_run_reset
   mkdir -p "$SA_WT/plugins" "$SA_WT/scripts"
   cp -R "$repo_root/plugins/cc-cmds" "$SA_WT/plugins/"
   cp "$repo_root/scripts/grade-regression-probe.sh" "$SA_WT/scripts/"
