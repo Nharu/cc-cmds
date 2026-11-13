@@ -1979,7 +1979,18 @@ done <<'EOF'
 대화형 승인|visual/SKILL.md|its plan carries a visual publish step (a `steps[]` entry whose `skill` is `visual-publish`)
 반영 실패|_common/approval-reflection.md|and the lines `drift` prints are lines that cannot be applied
 대화형 승인|visual/SKILL.md|The sidecar's ` — 사람 답` tail is not this test
+반영 종단|_common/approval-reflection.md|위 두 종단의 두 번째 | `대기` 그대로
+반영 종단|_common/approval-reflection.md|`대기 — 반영 재시도 소진`, 다시 실행 안내
+반영 종단|design-reconverge/SKILL.md|The same end the second time changes nothing this session writes
+아침 보고|autopilot/references/act3-report.md|write `대기 — 반영 재시도 소진`
 EOF
+# The second same end keeps the sidecar at `대기`; a copy that writes
+# `실패 — <종단>` there stops the automatic retry and asks a person.
+for f in _common/approval-reflection.md design-reconverge/SKILL.md; do
+  n=$(grep -cF -- '실패 — <종단>' "$SK/$f" || true)
+  n2=$(grep -cF -- '실패 — <the end>' "$SK/$f" || true)
+  check "반영 종단 ${f} 가 두 번째 같은 종단에 실패 줄을 쓰지 않는다" "$(( ${n:-0} + ${n2:-0} ))" "0"
+done
 reflect_para() {
   # reflect_para <file> — the reflection-dispatch paragraph of the visual wait,
   # from its bold head up to the next bold paragraph head.

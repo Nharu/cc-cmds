@@ -172,19 +172,34 @@ Writes of the record and of the sidecar are declared like the document publish,
 ## 종단
 
 How a reflection attempt ends, and what each end leaves, is a closed table: the
-sidecar value, the stop record and its option, the way the attempt is let in
-again, and the morning report line. The writers, the gate, the routers and the
-morning report follow it; an end the table does not hold is not made.
+sidecar value, the stop record and its option, who writes them, the way the
+attempt is let in again and who dispatches that attempt, the document hash the
+next attempt starts from, and the morning report line. The writers, the gate,
+the routers and the morning report follow it; an end the table does not hold is
+not made. A value that is not empty or 「없음」 always names its writer.
 
-| 종단 | `**문서 반영**` | 정지 기록 | 다시 들이는 길 | 아침 보고 |
-| --- | --- | --- | --- | --- |
-| 정상 완료 | `완료 — 문서 sha256 <사후>` | 없음 | 들이지 않는다 — 술어가 `승인 유효` 로 돌아와 화면 슬라이스가 계획·파견된다 | `완료`, 어긋남 건수, 반영 기록 경로 |
-| 실패 넷, 적용할 수 없는 줄 | `실패 — <사유>` | `Step 3 승인 화면 반영 — 충돌`, 선택지 `결정 첨부 후 다시 반영` | 사람 답 — 같은 런은 `재부착` 라우트의 운반, 앞선 런은 진입 술어의 운반 답 갈래 | `실패 — <사유>`, 정지 기록, 선택지, 답이 없으면 화면 슬라이스가 보류로 서 있음 |
-| 게시 전 `precondition-failed`(문서 해시 다름·`lockf` 75), 첫 번째 | `대기` 그대로 | 재수렴의 `precondition-failed` 정지(선택지 없음) | 같은 답으로 한 번 더 | `대기`, 다시 들임 |
-| 정지 기록 없는 비정상 종료, 첫 번째 | `대기` 그대로 | 없음 | 같은 답으로 한 번 더 | `대기`, 다시 들임 |
-| 위 두 종단의 두 번째 | `실패 — <종단>` | 실패 정지와 같은 사람 전용 정지 | 사람 답 | `실패 — <종단>`, 정지 기록, 선택지 |
-| 반영을 파견할 자리가 없는 런 | `대기` 그대로 | 없음 | `/cc-cmds:visual <문서> 구현 승인` 을 다시 실행하면 대화형 반영이 문서 고침부터 이어진다 | `대기 — 반영 미파견`, 다시 실행 안내 |
-| 앞선 런에서 가져온 답 | 앞선 런이 남긴 값 | 게이트가 이 런 `halt/` 로 복사한 기록 | 진입 술어의 운반 답 갈래 | 그 시도의 종단에 맞는 위 행 |
+「지금 문서로 다시 잰 값」 is the baseline of `## 운반 답 재진입` step 2: the
+recovery comparison first, then the document's sha256 and the gate's
+`binding-digest` measured now. 「대화형 기준」 is the document sha256 the
+interactive reflection measures before it takes its working copy.
+
+| 종단 | `**문서 반영**` | 정지 기록 | 쓰는 쪽 | 다시 들이는 길 | 다시 파견하는 쪽 | 다음 시도의 기준 해시 | 아침 보고 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 정상 완료 | `완료 — 문서 sha256 <사후>` | 없음 | 반영 재수렴 세션(사이드카 두 줄) | 들이지 않는다 — 술어가 `승인 유효` 로 돌아와 화면 슬라이스가 계획·파견된다 | 없음 | 해당 없음 | `완료`, 어긋남 건수, 반영 기록 경로 |
+| 실패 넷, 적용할 수 없는 줄 | `실패 — <사유>` | `Step 3 승인 화면 반영 — 충돌`, 선택지 `결정 첨부 후 다시 반영` | 반영 재수렴 세션(사이드카 `실패` 줄을 쓴 뒤 정지 기록) | 사람 답 — 같은 런은 `재부착` 라우트의 운반, 앞선 런은 진입 술어의 운반 답 갈래 | 라우터 교대 — 사람 답의 운반(`--carry-answer`) | 지금 문서로 다시 잰 값 | `실패 — <사유>`, 정지 기록, 선택지 `결정 첨부 후 다시 반영`, 답이 없으면 화면 슬라이스가 보류로 서 있음 |
+| 게시 전 `precondition-failed`(원인과 관계없이 분류만 본다 — 문서 해시 다름, `lockf` 75, 카드 다이제스트 다름 등), 첫 번째 | `대기` 그대로(운반 답의 시도면 `실패` 그대로) | 재수렴의 `precondition-failed` 정지(선택지 없음). 사람에게 묻는 기록으로 보고하지 않는다 — 라우터 교대의 반영 분기가 이 기록을 재파견으로 처리한다 | 반영 재수렴 세션(정지 기록만, 사이드카 줄은 쓰지 않음) | 진입 술어 조건 4 를 이 종단에서만 풀어 같은 답으로 한 번 더 | 라우터 교대 — 반영 분기. 운반 답의 시도였으면 같은 답의 운반 | 지금 문서로 다시 잰 값 | `대기`, 다시 들임 |
+| 정지 기록 없는 비정상 종료(시간 초과·예산 소진 등), 첫 번째 | `대기` 그대로(운반 답의 시도면 `실패` 그대로) | 없음 | 없음 — 쓰는 세션이 없다 | 위와 같음 | 위와 같음 | 위와 같음 | `대기`, 다시 들임 |
+| 위 두 종단의 두 번째 | `대기` 그대로 | 게시 전 `precondition-failed` 이면 재수렴의 그 정지(선택지 없음), 비정상 종료면 없음. 사이드카 줄과 사람 전용 정지를 새로 쓰는 쪽은 없다 | 게시 전 `precondition-failed` 이면 반영 재수렴 세션(정지 기록만), 비정상 종료면 없음 | 들이지 않는다 — 진입 술어가 세 번째 시도를 거절한다. 런이 끝난 뒤 `/cc-cmds:visual <문서> 구현 승인` 을 다시 실행하면 대화형 반영이 문서 고침부터 이어진다 | 없음 — 사람의 대화형 다시 실행 | 대화형 기준 | `대기 — 반영 재시도 소진`, 다시 실행 안내 |
+| 다른 분류의 정지 기록(반영 정지·`precondition-failed` 밖, 예: `tool-unavailable`) | 직전 값(`대기` 또는 `실패`) 그대로 | 반영 재수렴 세션이 남긴 그 기록 | 반영 재수렴 세션(정지 기록만, 사이드카 줄은 쓰지 않음) | 들이지 않는다 — 진입 술어의 재시도 판정이 분류가 `precondition-failed` 가 아닌 기록에 열리지 않는다. 런이 끝난 뒤 대화형 다시 실행 | 없음 — 사람의 대화형 다시 실행 | 대화형 기준 | `대기 — 반영 중단(<분류>)`, 정지 기록 경로, 다시 실행 안내 |
+| 정상 완료인데 사이드카가 `완료` 가 아님 | 직전 값 그대로 | 없음 | 없음 — 세션은 끝났고 게이트는 거절만 한다 | 들이지 않는다 — 진입 술어의 재시도 판정은 정상 종료에 열리지 않는다. 런이 끝난 뒤 대화형 다시 실행 | 없음 — 사람의 대화형 다시 실행 | 대화형 기준 | `대기 — 반영 완료 미기록`, 반영 기록 경로와 그 `사후 sha256`, 지금 문서 sha256, 다시 실행 안내. 두 해시가 같으면 반영은 이미 게시되었으므로 대화형 다시 실행의 `drift` 가 그 줄을 적용할 수 없는 줄로 읽을 수 있다는 것도 적는다 |
+| 대화형 반영이 2 와 4 사이에서 멈춤 | `대기 — 어긋남 <n>건`(꼬리 없음) | 없음 | 대화형 세션이 2 에서 쓴 `대기` 뿐이고, 그 뒤 쓰는 쪽은 없다 | 무인 쪽은 들이지 않는다 — 진입 술어 조건 1 과 라우터 반영 분기의 꼬리 조건이 꼬리 없는 `대기` 를 거른다. `/cc-cmds:visual <문서> 구현 승인` 을 다시 실행하면 대화형 반영이 문서 고침부터 이어진다 | 없음 — 사람의 대화형 다시 실행 | 대화형 기준 | 라우터 교대가 있는 런은 `대기 — 대화형 반영 중단`, 라우터 교대가 없거나 계획에 시각 발행 스텝이 없는 런은 `대기 — 반영 미파견`. 어느 쪽이든 다시 실행 안내 |
+| 반영을 파견할 자리가 없는 런(라우터 교대가 없는 런, 계획에 시각 발행 스텝이 없는 런) | `대기` 그대로 | 없음 | 없음 | `/cc-cmds:visual <문서> 구현 승인` 을 다시 실행하면 대화형 반영이 문서 고침부터 이어진다 | 없음 — 사람의 대화형 다시 실행 | 대화형 기준 | `대기 — 반영 미파견`, 다시 실행 안내 |
+| 앞선 런에서 가져온 답 | 앞선 런이 남긴 값(`대기` 또는 `실패`) | 게이트가 이 런 `halt/` 로 복사한 앞선 런의 기록 | 게이트(기록 복사와 이 런의 `중단 답` 행). 사이드카는 쓰지 않는다 | 진입 술어의 운반 답 갈래 | 라우터 교대 — 거절된 첫 런 범위 파견이 내준 `--carry-answer <line>` 으로 운반 | 지금 문서로 다시 잰 값 | 그 시도의 종단에 맞는 위 행 |
+| 앞선 런에서 가져온 답, 운반 거절(종료 코드 18) | 앞선 런이 남긴 값 그대로 | 게이트가 복사한 앞선 런의 기록(답한 채 남음) | 게이트(`blocked` 행). 사이드카와 새 정지 기록은 없다 | 들이지 않는다 — 이 런에서는 시도가 없고, 교대는 `handoff 사유=중단` 으로 끝난다. 화면 슬라이스는 서 있다 | 없음 | 해당 없음 | `blocked` 행의 사유와 그 기록, 화면 슬라이스가 서 있음 |
+
+A second end of the same kind is not a failure of `## 실패로 보는 경우` and is
+not asked of a person: the sidecar stays `대기`, nobody writes a `실패` line or a
+person-only stop for it, and the morning report shows the spent retry.
 
 The stop record of a reflection never offers a `보류` option: a record left
 unanswered is the hold — the screen slices stand in this run, and the record
