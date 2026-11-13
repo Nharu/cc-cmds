@@ -3505,6 +3505,118 @@ gate_plan_direct "$SD13NEW" "$SW"
 check "13 계획: 좌석 갈래 매니페스트로 입양 세그먼트의 계획 행위가 0 이다" "$GP_RC" "0"
 check "13 계획: 그 스냅샷의 슬라이싱 항목이 입양과 PR 을 싣는다 (좌석)" "$GP_SNAP" "$S13|41"
 
+# 8b — a segment the source stopped before its pull request. Its last `원격
+# 판독` row reads `없음` in all three pull-request cells, the worktree is clean
+# at that row's HEAD, and the stub `gh` lists no pull request for the branch.
+# K13N_NOPUSH leaves the branch off the remote (the anchor's tip is then
+# `없음`), K13N_SEGPR gives the segment a `PR` on an earlier `segment` row the
+# anchor no longer carries. Leaves S13_W, S13_B, S13_H and S13_RD.
+mk13n() {
+  local s="$1" w="$WORK/repo-run-$1-I1" b="seg/$1-I1" h tip
+  P_DOC="${P_DOC:-$DOC13}" P_EXTRA="${P_EXTRA-$SEAT_ROW}" mk_prev "$s"
+  fx_row 'stage-result' "세그먼트=-" "스테이지=D1" "종류=design" "종단 부류=정상 완료"
+  fx_row '문서 해시' "스테이지=A1 이후" "sha256=$DOC13SHA" "동결값=-" "관측=-"
+  fx_row 'stage-result' "세그먼트=-" "스테이지=A1" "종류=audit" "종단 부류=정상 완료"
+  ( cd "$WT" && git worktree add -q -b "$b" "$w" main && cd "$w" && printf '%s\n' "$s" > seg.txt \
+      && git add seg.txt && git commit -qm "$s" ) >/dev/null 2>&1
+  h=$(cd "$w" && git rev-parse HEAD); tip=$h
+  if [ -n "${K13N_NOPUSH:-}" ]; then tip='없음'; else ( cd "$w" && git push -q origin "$b" ) >/dev/null 2>&1; fi
+  fx_row 'segment' "id=I1" "상태=계획됨" "레포=t/rk" "워크트리=$w" "브랜치=$b" "선행=없음"
+  [ -z "${K13N_SEGPR:-}" ] || fx_row 'segment' "id=I1" "상태=리뷰중" "워크트리=$w" "PR=$K13N_SEGPR"
+  fx_row '원격 판독' "세그먼트=I1" "브랜치=$b" "워크트리 HEAD=$h" "원격 팁=$tip" "PR=없음" "PR 상태=없음" "PR HEAD=없음"
+  seat_end 마감
+  printf '[]\n' > "$GH13/list.$(printf '%s' "$b" | tr '/' '_')"
+  S13_W=$w; S13_B=$b; S13_H=$h; S13_RD=$FX_RUN_DIR
+}
+NP13=20261001-a0000018
+mk13n "$NP13"; gh13
+NPW=$S13_W; NPB=$S13_B; NPH=$S13_H; NPRD=$S13_RD
+NPLIST="$GH13/list.$(printf '%s' "$NPB" | tr '/' '_')"
+NPCAND="입양후보${TAB}I1${TAB}$NPB${TAB}$NPW${TAB}-${TAB}$NPH"
+NPROW="- \`세그먼트 입양\` | 세그먼트=I1 | 브랜치=$NPB | 워크트리=$NPW | 출처 런=$NP13 | PR=-"
+: > "$GH13/log"
+a13 "$NP13"
+check "13 PR 없음: PR 칸이 없음 인 앵커의 세그먼트는 PR 칸 - 의 입양후보 줄이다" "$(printf '%s\n' "$A13" | sed 1d)" "$NPCAND"
+check "13 PR 없음: PR 없는 앵커에는 PR 하나의 판독(pr view)을 하지 않는다" "$(grep -c '^pr view' "$GH13/log" || true)" "0"
+a13 "$NP13" --auto
+check "13 PR 없음: 좌석(--auto)도 같은 후보 줄을 낸다" "$(printf '%s\n' "$A13" | sed 1d)" "$NPCAND"
+NN13=20261001-a0000019
+K13N_NOPUSH=1 mk13n "$NN13"; gh13
+tok13 "원격에 브랜치가 없고 앵커의 원격 팁도 없음이면" 후보 "$NN13"
+check "13 PR 없음: 그 후보 줄의 PR 칸도 - 이다" "$(printf '%s\n' "$A13" | sed 1d | cut -f5)" "-"
+use13 "$NPW" "$NPB" "$NPH"
+# The rejections, each put back after.
+( cd "$NPW" && git commit -q --allow-empty -m 원격만 && git push -q origin "$NPB" && git reset -q --hard "$NPH" ) >/dev/null 2>&1
+tok13 "원격 팁이 앵커의 HEAD 와 다른 sha 면" HEAD불일치 "$NP13"
+( cd "$NPW" && git push -q -f origin "$NPH:refs/heads/$NPB" ) >/dev/null 2>&1
+printf 'x\n' > "$NPW/untracked.txt"
+tok13 "커밋되지 않은 변경이 있으면" 작업트리변경 "$NP13"
+rm -f "$NPW/untracked.txt"
+printf '[{"number":50,"state":"OPEN","headRefOid":"%s"}]\n' "$NPH" > "$NPLIST"
+tok13 "앵커 뒤에 열린 PR 이 생겼으면" PR불일치 "$NP13"
+printf '[{"number":50,"state":"MERGED","headRefOid":"%s"}]\n' "$NPH" > "$NPLIST"
+tok13 "앵커 뒤에 그 HEAD 로 머지된 PR 이 있으면" PR닫힘 "$NP13"
+printf '[{"number":50,"state":"CLOSED","headRefOid":"%s"}]\n' "$NPH" > "$NPLIST"
+tok13 "닫히고 머지되지 않은 PR 만 있으면 그대로" 후보 "$NP13"
+printf '[]\n' > "$NPLIST"
+a13 "$NP13"
+check "13 PR 없음: 변형을 다 되돌리면 다시 후보다" "$(printf '%s\n' "$A13" | sed 1d)" "$NPCAND"
+NQ13=20261001-a000001a
+K13N_SEGPR=41 mk13n "$NQ13"; gh13
+a13 "$NQ13"
+check "13 PR 없음: 앞선 segment 행이 PR 번호를 실어도 PR 없는 앵커의 후보 줄 PR 칸은 - 다" \
+  "$(printf '%s\n' "$A13" | sed 1d | cut -f1,5)" "입양후보${TAB}-"
+# The person's path: the label, the row, the manifest check and the gate's
+# planning act; the seat's path renders and verifies the same row.
+use13 "$NPW" "$NPB" "$NPH"
+NPTAKE="이어받기 — I1 · PR 없음 · $NPB · $(printf '%s' "$NPH" | cut -c1-12)"
+printf '입양 I1\t%s\n' "$NPTAKE" > "$WORK/a13-nptake"
+SL_DOC="$DOC13" SL_DOCSHA="$DOC13SHA" SL_AUTO= SL_ASKED="$WORK/a13-nptake" seat_link "$NP13" 20261002-b0000011
+NPD13="$WORK/npd13.md"; cp "$SL_OUT" "$NPD13"
+check "13 PR 없음 사람: PR 없음 라벨의 이어받기 답이면 render-manifest 와 verify-subset 이 통과한다" "$SL_RC/$SL_VS" "0/통과"
+check "13 PR 없음 사람: 입양 행은 PR=- 이다" "$(grep '^- `세그먼트 입양`' "$NPD13")" "$NPROW"
+mf_check "$NPD13"; rc=$?
+check "13 PR 없음 사람: PR=- 입양 행을 실은 초안이 check_manifest 를 통과한다" "$rc" "0"
+[ "$rc" = 0 ] || tail -1 "$WORK/check.err" >&2
+printf '입양 I1\t다시 하기 — I1 · PR 없음\n' > "$WORK/a13-npredo"
+SL_DOC="$DOC13" SL_DOCSHA="$DOC13SHA" SL_AUTO= SL_ASKED="$WORK/a13-npredo" seat_link "$NP13" 20261002-b0000012
+check "13 PR 없음 사람: 다시 하기 답이면 행이 없고 검증을 통과한다" "$SL_RC/$SL_VS/$(grep -c '^- `세그먼트 입양`' "$SL_OUT" || true)" "0/통과/0"
+SL_DOC="$DOC13" SL_DOCSHA="$DOC13SHA" SL_ASKED="" seat_link "$NP13" 20261002-b0000013
+check "13 PR 없음 좌석: --auto 렌더와 검증이 통과하고 같은 PR=- 행을 쓴다" "$SL_RC/$SL_VS/$(grep '^- `세그먼트 입양`' "$SL_OUT")" "0/통과/$NPROW"
+gate_plan_direct 20261002-b0000011 "$NPW"
+check "13 PR 없음 계획: PR=- 입양 세그먼트의 계획 행위가 0 이다" "$GP_RC" "0"
+check "13 PR 없음 계획: 스냅샷의 슬라이싱 항목이 입양과 PR - 를 싣는다" "$GP_SNAP" "$NP13|-"
+# The run the reproduction describes: the stage halted for a seat run, the seat
+# answered `좌석 실행`, the deadline parked the stage before any session took
+# the answer, and the ledger holds no `이월` row. The planning act would carry
+# that answer, so the candidate line says `이월=재수렴`.
+NC13=20261001-a000001b
+mk13n "$NC13"; gh13
+fx_row 'stage-result' "세그먼트=I1" "스테이지=I1#1" "종류=implement" "종단 부류=의도된 park"
+mkdir -p "$S13_RD/halt"
+{ printf '<!-- cc-pipeline-halt v1; 픽스처 -->\n# 중단\n\n**스킬**: implement-unattended\n**분류**: gate-unanswerable\n**스텝**: Step 3 잔여 검증 좌석 실행 — 픽스처\n**좌석 실행 항목**: R1\n'
+  printf '**선택지**:\n- `좌석 실행` — 좌석이 R1 의 레시피를 이 호스트에서 돌린다\n<!-- /cc-pipeline-halt v1 -->\n'; } > "$S13_RD/halt/I1#1.md"
+NC13_REC="$S13_RD/halt/I1#1.md"
+fx_row '중단 답' "세그먼트=I1" "중단 기록=$S13_RD/halt/I1#1.md" "스킬=implement-unattended" "선택지=좌석 실행" \
+  "기록 다이제스트=$(sha "$S13_RD/halt/I1#1.md")" "답한 주체=좌석" "근거 종류=좌석 실행" "근거=좌석 실행 — R1 검증됨(통과)"
+fx_row 'blocked' "대상=rk" "스코프=cone" "원인=막힘" "사유=마감 초과 — I1" "앵커 세그먼트=I1" "세그먼트=I1" "스테이지=I1"
+a13 "$NC13"
+check "13 재현: 이월 행 없이 마감 cone 행이 뒤따른 좌석 실행 답은 이월=재수렴 꼬리의 입양후보 줄이 된다" \
+  "$(printf '%s\n' "$A13" | sed 1d)" "입양후보${TAB}I1${TAB}$S13_B${TAB}$S13_W${TAB}-${TAB}$S13_H${TAB}이월=재수렴"
+# The same answer with no deadline cone row after it is one the halted session
+# was to take up: it does not carry.
+ND13=20261001-a000001c
+mk13n "$ND13"; gh13
+fx_row 'stage-result' "세그먼트=I1" "스테이지=I1#1" "종류=implement" "종단 부류=의도된 park"
+mkdir -p "$S13_RD/halt"
+cp "$NC13_REC" "$S13_RD/halt/I1#1.md"
+fx_row '중단 답' "세그먼트=I1" "중단 기록=$S13_RD/halt/I1#1.md" "스킬=implement-unattended" "선택지=좌석 실행" \
+  "기록 다이제스트=$(sha "$S13_RD/halt/I1#1.md")" "답한 주체=좌석" "근거 종류=좌석 실행" "근거=좌석 실행 — R1 검증됨(통과)"
+a13 "$ND13"
+check "13 재현: 마감 cone 행이 없는 좌석 실행 답은 이월=불가 꼬리다" \
+  "$(printf '%s\n' "$A13" | sed 1d | cut -f7-)" "이월=불가"
+use13 "$SW" "$SB" "$SH"
+
 # 9 — the gate child's modes, called through the helper's own definitions: the
 # tokens, the source files' hashes before and after, the stub's arguments, a
 # wrong context, and the shapes a value mode refuses.
