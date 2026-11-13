@@ -232,10 +232,14 @@ answer let in again carries no card and no attachment and does not.
    and the
    `sha256 <hex>` that `visual-check.sh drift <설계 문서>` prints for the sidecar
    block now equals the one in that `시각-판정` record's
-   `설계 문서 어긋남=<n>건 · sha256 <hex>` piece. Then apply the answer, even when
-   a recomputed reason or line list reads otherwise than the stop record's
-   `**질문 문면**`. Otherwise do not apply it: write a new reflection stop with
-   the card's path in its `관측 상세`.
+   `설계 문서 어긋남=<n>건 · sha256 <hex>` piece. When `drift` exits 2 it prints
+   no sha256, so compare the block as `## 입력` reads an exit 2:
+   an exit 2 is the same question when the block's lines are, in number and verbatim, the drift lines that record's `**질문 문면**` quotes and the piece's `<n>`, and every printed line is one of them.
+   A line another write removed from the document after the approval exits 2 this
+   way, and its only answer, `문서대로 둠`, must still apply. When the question is
+   the same, apply the answer, even when a recomputed reason or line list reads otherwise than the
+   stop record's `**질문 문면**`. Otherwise do not apply it: write a new
+   reflection stop with the card's path in its `관측 상세`.
 4. **Attachment.** Read `첨부=<기록>.answer.md` and take each line's
    `문서대로 둠` or `화면대로 고침` (`## 첨부 결정`). With no attachment, every
    line is `화면대로 고침`.

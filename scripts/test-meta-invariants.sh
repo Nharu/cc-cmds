@@ -1991,6 +1991,7 @@ done <<'EOF'
 아침 보고|autopilot/references/act3-report.md|write `대기 — 반영 재시도 소진`
 운반 답|_common/approval-reflection.md|measure the document's `shasum -a 256` and the gate's
 운반 답|_common/approval-reflection.md|Never take the stop record's baselines
+운반 답|_common/approval-reflection.md|an exit 2 is the same question when the block's lines are, in number and verbatim, the drift lines that record's `**질문 문면**` quotes and the piece's `<n>`, and every printed line is one of them.
 운반 답|design-reconverge/SKILL.md|**A carried answer on the `승인 화면 반영` scope follows the carried-answer re-entry procedure of `${CLAUDE_SKILL_DIR}/../_common/approval-reflection.md` (`## 운반 답 재진입`) instead of items 1–5 below.**
 반영 성공|_common/approval-reflection.md|`visual-check.sh binding <설계 문서>` measures over the published document
 반영 성공|visual/SKILL.md|visual-check.sh binding
