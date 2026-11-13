@@ -8895,7 +8895,7 @@ ivc_main=$(awk '/^if \[ "\$\{CC_ORCH_SOURCE_ONLY:-0\}" = "1" \]; then$/ {on=1} o
 ivc_order=$(printf '%s\n' "$ivc_main" | grep -n -E '^rundir_init$|^\[ -e "\$RUN_DIR/fixed-graph" \]|^hotfix_refusal=' \
   | sed 's/^[0-9]*://' | sed -E 's/^(rundir_init|hotfix_refusal).*/\1/; s/^\[ -e.*/mark/' | tr '\n' ' ')
 check "T7f-4b 드라이버 본 경로는 rundir_init 뒤 핫픽스 검사 앞에서 표지를 쓴다" "$ivc_order" "rundir_init mark hotfix_refusal "
-ivc_line=$(printf '%s\n' "$ivc_main" | grep -E '^\[ -e "\$RUN_DIR/fixed-graph" \]' | head -1)
+ivc_line=$(awk '/^\[ -e "\$RUN_DIR\/fixed-graph" \]/ { print; exit }' <<<"$ivc_main")
 rm -f "$ivc_dir/fixed-graph"
 ( RUN_DIR="$ivc_dir"; eval "$ivc_line" )
 check "T7f-4b 본 경로의 표지 줄이 표지를 만든다" "$(iv_is '[ -f "$ivc_dir/fixed-graph" ]')" "yes"
