@@ -16792,7 +16792,7 @@ rm -rf "$VM15"
 
 # ---------------------------------------------------------------------------
 # 15vq. The approved-screen reflection: one re-convergence per person's answer
-# --- section: 15vq | group: base | covers: act, plan, snapshot, halt-answer, gate_approval_reflection_entry, gate_approval_reflection_live, gate_approval_reflection_retry_ok, gate_approval_reflection_scope_of, gate_caller_is_visual_publish_stage, gate_stage_last_settled_row, gate_stage_row_segment, gate_stage_result_rows_of, gate_redeclare_after_reconverge, gate_replan_due_json, gate_halt_detail_scope, visual_approval_route_hint, visual_approval_verdict | anchors: 15vq: 사람의 답이 없으면 반영 재수렴은 거부된다, 15vq: 반영 대기 동안 승인 판정은 보류다, 15vq: 반영 대기 안내는 사람이 할 일이 없다고 말한다, 15vq: 발행 단계가 없는 런의 반영 대기 안내는 구현 승인을 다시 실행하라고 한다, 15vq: 범위가 다른 프롬프트는 거부된다, 15vq: 가장 마지막 시각-판정 기록이 아니면 거부된다, 15vq: 감사 단계에 살아 있는 시도가 있으면 거부된다, 15vq: 사람의 승인 답 하나로 반영 재수렴 plan 이 통과한다, 15vq: 반영 행이 세그먼트=- · 스테이지=S2P · 종류=reconverge 로 정상 완료다, 15vq: 같은 답의 두 번째 반영은 거부된다, 15vq: 마지막 반영 세션을 잇는 --resume 은 통과한다, 15vq: 다른 세션의 --resume 은 거부된다, 15vq: 반영 행은 재계획 후보가 아니다, 15vq: 반영 행 뒤에는 재선언하지 않는다, 15vq: 반영 시도가 살아 있는 동안 감사 파견은 거부된다, 15vq: 반영 시도가 살아 있는 동안 시각 발행 파견은 거부된다, 15vq: 반영 세션은 시각 발행 단계로 읽히지 않는다, 15vq: 시각 발행 정지의 재부착은 반영 행을 건너뛴다, 15vq: 반영 실패 동안 승인 판정은 보류다, 15vq: 반영 실패 안내는 반영 정지 기록을 든다, 15vq: 반영 정지 기록의 좌석 답은 거부된다, 15vq: 결정 첨부 후 다시 반영 답으로 반영 plan 이 통과한다, 15vq: 비정상 종료 뒤 같은 답으로 한 번 더 들인다, 15vq: 세 번째 시도는 거부된다, 15vq: precondition-failed 정지는 한 번 더 들이는 종단이다, 15vq: 앞선 런에서 들인 승인 답이 반영을 연다, 15vq: 반영 범위 세 낱말을 범위로 읽는다 ---
+# --- section: 15vq | group: base | covers: act, plan, snapshot, halt-answer, gate_approval_reflection_entry, gate_approval_reflection_live, gate_approval_reflection_retry_ok, gate_approval_reflection_scope_of, gate_caller_is_visual_publish_stage, gate_stage_last_settled_row, gate_stage_row_segment, gate_stage_result_rows_of, gate_redeclare_after_reconverge, gate_replan_due_json, gate_halt_detail_scope, visual_approval_route_hint, visual_approval_verdict | anchors: 15vq: 사람의 답이 없으면 반영 재수렴은 거부된다, 15vq: 반영 대기 동안 승인 판정은 보류다, 15vq: 반영 대기 안내는 사람이 할 일이 없다고 말한다, 15vq: 발행 단계가 없는 런의 반영 대기 안내는 구현 승인을 다시 실행하라고 한다, 15vq: 꼬리 없는 반영 대기 안내는 발행 단계가 있어도 구현 승인을 다시 실행하라고 한다, 15vq: 범위가 다른 프롬프트는 거부된다, 15vq: 가장 마지막 시각-판정 기록이 아니면 거부된다, 15vq: 감사 단계에 살아 있는 시도가 있으면 거부된다, 15vq: 사람의 승인 답 하나로 반영 재수렴 plan 이 통과한다, 15vq: 반영 행이 세그먼트=- · 스테이지=S2P · 종류=reconverge 로 정상 완료다, 15vq: 같은 답의 두 번째 반영은 거부된다, 15vq: 마지막 반영 세션을 잇는 --resume 은 통과한다, 15vq: 다른 세션의 --resume 은 거부된다, 15vq: 반영 행은 재계획 후보가 아니다, 15vq: 반영 행 뒤에는 재선언하지 않는다, 15vq: 반영 시도가 살아 있는 동안 감사 파견은 거부된다, 15vq: 반영 시도가 살아 있는 동안 시각 발행 파견은 거부된다, 15vq: 반영 세션은 시각 발행 단계로 읽히지 않는다, 15vq: 시각 발행 정지의 재부착은 반영 행을 건너뛴다, 15vq: 반영 실패 동안 승인 판정은 보류다, 15vq: 반영 실패 안내는 반영 정지 기록을 든다, 15vq: 반영 정지 기록의 좌석 답은 거부된다, 15vq: 결정 첨부 후 다시 반영 답으로 반영 plan 이 통과한다, 15vq: 비정상 종료 뒤 같은 답으로 한 번 더 들인다, 15vq: 세 번째 시도는 거부된다, 15vq: precondition-failed 정지는 한 번 더 들이는 종단이다, 15vq: 앞선 런에서 들인 승인 답이 반영을 연다, 15vq: 반영 범위 세 낱말을 범위로 읽는다 ---
 #
 # A person's `승인` to the publish stage's `시각-판정` record leaves the
 # implementation approval with `**문서 반영**: 대기`, and the approval holds the
@@ -16909,6 +16909,12 @@ case "$(VQ_M="$WORK/plan-R15VQN.md" vq15 'visual_approval_route_hint')" in
   *"/cc-cmds:visual $DOC15VQ 구현 승인 을 다시 실행해"*) ok "15vq: 발행 단계가 없는 런의 반영 대기 안내는 구현 승인을 다시 실행하라고 한다" ;;
   *) bad "15vq: 발행 단계가 없는 런의 반영 대기 안내는 구현 승인을 다시 실행하라고 한다" "$(VQ_M="$WORK/plan-R15VQN.md" vq15 'visual_approval_route_hint')" ;;
 esac
+vq15_sidecar '**문서 반영**: 대기 — 어긋남 1건'
+case "$(vq15 'visual_approval_route_hint')" in
+  *"대화형 실행이 멈췄고"*"/cc-cmds:visual $DOC15VQ 구현 승인 을 다시 실행해"*) ok "15vq: 꼬리 없는 반영 대기 안내는 발행 단계가 있어도 구현 승인을 다시 실행하라고 한다" ;;
+  *) bad "15vq: 꼬리 없는 반영 대기 안내는 발행 단계가 있어도 구현 승인을 다시 실행하라고 한다" "$(vq15 'visual_approval_route_hint')" ;;
+esac
+vq15_sidecar '**문서 반영**: 대기 — 어긋남 1건 — 사람 답 S2P#1.md'
 vq15_plan "/cc-cmds:design-reconverge $WT/$DOC15VQ 승인 화면 반영 $RD15VQ/halt/other.md"
 case "$rc/$msg" in
   3/*"프롬프트의 범위가 「승인 화면 반영 ${REC15VQ}」 가 아닙니다"*) ok "15vq: 범위가 다른 프롬프트는 거부된다" ;;
