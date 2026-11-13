@@ -2483,7 +2483,9 @@ rule_switchable_value() {
 # this clone — a single-branch clone, a branch created after the clone, a narrowed
 # `remote.origin.fetch` — went from completing normally to a hard stop at kickoff.
 # Fetching here is what makes the two sets the same set rather than widening the
-# check back out.
+# check back out. A target with no `origin` has no remote-tracking set: `base_ref`
+# hands its consumers `refs/heads/…`, so for that target the consumed set is the
+# local head set and the check reads the same set.
 check_base_branches() {
   local a wt bb
   for a in $(target_aliases); do
@@ -2500,15 +2502,25 @@ check_base_branches() {
     # `BASE_BRANCH` assignment from leaking into a run that has not started yet.
     case "$bb" in
       ''|'(없음)')
-        ( base_branch "$a" >/dev/null ) \
-          || die "대상 '$a' 은 베이스 브랜치를 선언하지 않았고 유도값도 그 레포의 원격 추적 ref 로 해소되지 않습니다 ($(base_fetch_note); refs/remotes/origin/<유도값> 없음 — base_sha 가 소비할 수 있는 형태여야 합니다)"
+        if target_has_origin "$a"; then
+          ( base_branch "$a" >/dev/null ) \
+            || die "대상 '$a' 은 베이스 브랜치를 선언하지 않았고 유도값도 그 레포의 원격 추적 ref 로 해소되지 않습니다 ($(base_fetch_note); refs/remotes/origin/<유도값> 없음 — base_sha 가 소비할 수 있는 형태여야 합니다)"
+        else
+          ( base_branch "$a" >/dev/null ) \
+            || die "대상 '$a' 은 베이스 브랜치를 선언하지 않았고 유도값도 그 레포의 로컬 브랜치 ref 로 해소되지 않습니다 ($(base_fetch_note); refs/heads/<유도값> 없음 — base_sha 가 소비할 수 있는 형태여야 합니다)"
+        fi
         continue ;;
     esac
     wt=$(target_field "$a" '메인 워크트리')
     # Verified in the MAIN worktree because refs are shared across every linked
     # worktree of one repository.
-    ( cd "$wt" && git rev-parse --verify --quiet "refs/remotes/origin/$bb" >/dev/null 2>&1 ) \
-      || die "대상 '$a' 의 베이스 브랜치가 그 레포의 원격 추적 ref 로 해소되지 않습니다: $bb ($(base_fetch_note); refs/remotes/origin/$bb 없음 — base_sha 가 소비할 수 있는 형태여야 합니다)"
+    if target_has_origin "$a"; then
+      ( cd "$wt" && git rev-parse --verify --quiet "refs/remotes/origin/$bb" >/dev/null 2>&1 ) \
+        || die "대상 '$a' 의 베이스 브랜치가 그 레포의 원격 추적 ref 로 해소되지 않습니다: $bb ($(base_fetch_note); refs/remotes/origin/$bb 없음 — base_sha 가 소비할 수 있는 형태여야 합니다)"
+    else
+      ( cd "$wt" && git rev-parse --verify --quiet "refs/heads/$bb" >/dev/null 2>&1 ) \
+        || die "대상 '$a' 의 베이스 브랜치가 그 레포의 로컬 브랜치 ref 로 해소되지 않습니다: $bb ($(base_fetch_note); refs/heads/$bb 없음 — base_sha 가 소비할 수 있는 형태여야 합니다)"
+    fi
   done
 }
 
@@ -12074,6 +12086,68 @@ ladder_bump() {
 # ---------------------------------------------------------------------------
 BASE_BRANCH=""
 
+# Whether a target has a remote named `origin`, read from the disk. This is the one
+# judgement every base-ref consumer below shares: a target with no `origin` has no
+# remote-tracking refs at all, so its base is its local branch head. A root that
+# does not resolve reads as having a remote, because every consumer's behaviour
+# before this function existed assumed a remote-tracking ref and an unknown target
+# keeps that behaviour.
+#
+# THE JUDGEMENT IS FROZEN PER RUN, as `base_branch` is. The first answer for a
+# target is written to `$RUN_DIR/target-origin.<alias>` as `<root>\t있음|없음`,
+# and every later call of the run whose root is the same reads it back. Adding,
+# renaming or removing `origin` is a worktree write a stage may make, and a
+# judgement read afresh on every act would let that one write switch the gate's
+# base-move check off, or move the review line's base onto a local branch the
+# same stage can move. A cached answer for another root is measured again, so a
+# run whose alias resolves somewhere else is not handed the old repository's
+# answer. With no run directory (before kickoff, `--preflight`) nothing is
+# written; a root that does not resolve reads as having a remote and is not
+# written either. The write is a temporary file in the same directory renamed
+# over the answer, so a reader never sees half a line.
+target_has_origin() {
+  local al="${1:-$(home_alias)}" root f v tmp
+  root=$(alias_root "$al" 2>/dev/null) || return 0
+  [ -n "$root" ] || return 0
+  f="${RUN_DIR:-}/target-origin.$al"
+  if [ -n "${RUN_DIR:-}" ] && [ -f "$f" ]; then
+    v=$(cat "$f" 2>/dev/null) || v=''
+    if [ "${v%%$'\t'*}" = "$root" ]; then
+      case "${v#*$'\t'}" in
+        있음) return 0 ;;
+        없음) return 1 ;;
+      esac
+    fi
+  fi
+  if ( cd "$root" && git remote get-url origin >/dev/null 2>&1 ); then v=있음; else v=없음; fi
+  if [ -n "${RUN_DIR:-}" ] && [ -d "$RUN_DIR" ]; then
+    tmp=$(mktemp "$RUN_DIR/.target-origin.$al.XXXXXX" 2>/dev/null) || tmp=''
+    if [ -n "$tmp" ]; then
+      if printf '%s\t%s' "$root" "$v" > "$tmp" 2>/dev/null; then
+        mv -f "$tmp" "$f" 2>/dev/null || rm -f "$tmp"
+      else
+        rm -f "$tmp"
+      fi
+    fi
+  fi
+  [ "$v" = 있음 ]
+}
+
+# The full ref name of a target's base: `refs/remotes/origin/<base>` when the
+# target has `origin`, `refs/heads/<base>` when it does not. A target with no
+# remote is merged by nobody but the person who owns it, so its local branch is
+# the truth of its base. Fails when `base_branch` fails.
+base_ref() {
+  local al="${1:-$(home_alias)}" b
+  b=$(base_branch "$al") || return 1
+  [ -n "$b" ] || return 1
+  if target_has_origin "$al"; then
+    printf 'refs/remotes/origin/%s' "$b"
+  else
+    printf 'refs/heads/%s' "$b"
+  fi
+}
+
 # Per-alias, and cached per alias on disk rather than in one global — a shell
 # without associative arrays is the floor here, and a single global would hand
 # the second repository the first one's base branch.
@@ -12106,10 +12180,19 @@ base_branch() {
   # then reached the worktree branch point, the ledger, the drift comparison and
   # the rebase target. Before the sentinel fell through here the same input failed
   # loudly at `base_sha`; refusing here keeps that loudness and moves it earlier.
-  { [ -n "$b" ] && ( cd "$root" && git rev-parse --verify --quiet "refs/remotes/origin/$b" >/dev/null 2>&1 ); } || {
-    warn "대상 '$al' 의 베이스 브랜치를 유도했으나 원격 추적 ref 로 해소되지 않습니다: ${b:-(유도 실패)}"
-    return 1
-  }
+  # A target with no `origin` is verified against the local branch ref, which is
+  # the ref `base_ref` hands its consumers.
+  if target_has_origin "$al"; then
+    { [ -n "$b" ] && ( cd "$root" && git rev-parse --verify --quiet "refs/remotes/origin/$b" >/dev/null 2>&1 ); } || {
+      warn "대상 '$al' 의 베이스 브랜치를 유도했으나 원격 추적 ref 로 해소되지 않습니다: ${b:-(유도 실패)}"
+      return 1
+    }
+  else
+    { [ -n "$b" ] && ( cd "$root" && git rev-parse --verify --quiet "refs/heads/$b" >/dev/null 2>&1 ); } || {
+      warn "대상 '$al' 의 베이스 브랜치를 유도했으나 로컬 브랜치 ref 로 해소되지 않습니다: ${b:-(유도 실패)}"
+      return 1
+    }
+  fi
   BASE_BRANCH="$b"
   [ -n "${RUN_DIR:-}" ] && [ -d "$RUN_DIR" ] && printf '%s' "$b" > "$f"
   printf '%s' "$b"
@@ -12143,6 +12226,8 @@ base_fetch() {
   BASE_FETCH_RC=0
   root=$(alias_root "$al") || { BASE_FETCH_RC=2; return 0; }
   [ -n "$root" ] || { BASE_FETCH_RC=2; return 0; }
+  # A target with no `origin` has nothing to fetch; status 3 says so.
+  target_has_origin "$al" || { BASE_FETCH_RC=3; return 0; }
   ( cd "$root" && git fetch --quiet origin 2>/dev/null ) || BASE_FETCH_RC=1
   return 0
 }
@@ -12153,6 +12238,7 @@ base_fetch_note() {
   case "${BASE_FETCH_RC:-0}" in
     1) printf 'fetch 가 실패했습니다 — 오프라인·자격 만료·원격 이름이 origin 이 아님 중 하나일 수 있습니다' ;;
     2) printf '대상 루트를 해소하지 못해 fetch 를 시도하지도 못했습니다' ;;
+    3) printf '원격이 없어 fetch 하지 않았습니다' ;;
     *) printf 'fetch 는 성공했습니다' ;;
   esac
 }
@@ -12186,10 +12272,11 @@ base_fetch_ref() {
 # case the design excludes by assuming sequentiality. Two more things break from
 # the same root: external-drift detection compares against this value and would
 # never fire, and the apply worktree pins a merge commit that exists only on the
-# remote.
+# remote. A target with no `origin` has no server merging into it, so `base_ref`
+# hands it the local branch ref instead.
 base_sha() {
   local al="${1:-$(home_alias)}"
-  ( cd "$(alias_root "$al")" && git rev-parse "refs/remotes/origin/$(base_branch "$al")" )
+  ( cd "$(alias_root "$al")" && git rev-parse "$(base_ref "$al")" )
 }
 
 # Rebase onto the segment's own base after external drift. There is exactly one

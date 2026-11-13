@@ -311,6 +311,31 @@ has "shift halt: a park after the stop binds nothing" "$out" "$(ev 'halt/gate-un
 has "shift halt: the last shift park before the stop decides" "$out" "$(ev 'halt/gate-unanswerable/split' 비의도)"
 check "shift halt: one line per record of the reach case" "$(printf '%s\n' "$out" | grep -c '^halt/')" "6"
 
+# A stop the base move check wrote, on a segment key or on the target key
+# `베이스-<별칭>`: the record carries the step line the gate's record writer
+# prints, and no reach park precedes it. It is the intended wait on a person's
+# judgment, not an unbound one.
+bhalt() {
+  mkdir -p "$RD/halt/shift"
+  printf '<!-- cc-pipeline-halt v1 -->\n**분류**: gate-unanswerable\n**스텝**: 교대 정지 — %s\n**관측 상세**: 기지값=aaa / 지금=bbb\n<!-- /cc-pipeline-halt v1 -->\n' "$2" > "$RD/halt/shift/$1.md"
+}
+newcase
+row stage-result '세그먼트=b1' '스테이지=b1' '종류=implement' '실행 버전=1' '종단 부류=정상 완료'
+row segment 'id=b1' '상태=실행중'
+bhalt 'b1#1' '베이스 이동'
+bhalt '베이스-cc-cmds#1' '베이스 이동'
+row stage-result '세그먼트=b2' '스테이지=b2' '종류=review' '실행 버전=1' '종단 부류=정상 완료'
+bhalt 'b2#1' '병합 거절'
+out=$(stops)
+has "shift halt: a base move stop of a segment is an intended wait" "$out" "$(ev 'halt/gate-unanswerable/implement' 의도 '사람 판단 대기')"
+has "shift halt: a base move stop on the target key is an intended wait" "$out" "$(ev 'halt/gate-unanswerable/미분류' 의도 '사람 판단 대기')"
+check "shift halt: only the other site's stop carries the unbound marker" "$(printf '%s\n' "$out" | grep -c '원인 셀 미결합')" "1"
+has "shift halt: another site's step line stays unbound" "$out" "$(ev 'halt/gate-unanswerable/review' 비의도 - '원인 셀 미결합')"
+hasnt "shift halt: an intended base move stop is no fix-site line" "$(stops --by-fix-site)" "halt/gate-unanswerable/implement"
+row '중단 답' "중단 기록=$RD/halt/shift/b1#1.md" '선택지=재시도'
+row '중단 답' "중단 기록=$RD/halt/shift/베이스-cc-cmds#1.md" '선택지=재시도'
+check "shift halt: an answered base move stop is no event" "$(stops | grep -c '사람 판단 대기')" "0"
+
 # --- cone ---------------------------------------------------------------------
 
 # The row `gate_record_undecidable` writes: no anchor, the two segments in
@@ -363,6 +388,12 @@ check "pin: the shift halt cone row names its record and its site" \
   "$( { grep -cF '"앵커 세그먼트=$seg" "사유=교대 정지 — $ssite" "근거=$sline" "중단 기록=$sdst" \' "$GATE" || true; } )" "3"
 check "pin: the shift halt cone row carries the site field" \
   "$( { grep -cF '"기록 다이제스트=$sdig" "자리=$ssite" ${sord:+"교대=$sord"} ${sfx[@]+"${sfx[@]}"} || r=$?' "$GATE" || true; } )" "1"
+check "pin: the shift halt record writer prints the site on the step line" \
+  "$(sed -n '/^gate_shift_halt_write() {/,/^}/p' "$GATE" | grep -cF "printf '**스텝**: 교대 정지 — %s\n' \"\$ssite\"")" "1"
+check "pin: the base move check writes its stops at site 베이스 이동" \
+  "$( { grep -cF '"베이스-$al" '"'"'베이스 이동'"'" "$GATE" || true; } )" "4"
+check "pin: the gate shift halt site table has the base move site" \
+  "$(sed -n '/^gate_shift_halt_site_table() {/,/^}/p' "$GATE" | grep -c '^베이스 이동|없음|')" "1"
 check "pin: the gate launches a shift with no stage id" \
   "$( { grep -cxF '  CC_PIPELINE_STAGE_ID= \' "$GATE" || true; } )" "1"
 check "pin: a reach park with no stage id writes 스테이지=-" \

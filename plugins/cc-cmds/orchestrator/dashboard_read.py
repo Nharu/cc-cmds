@@ -331,8 +331,45 @@ def open_approvals(lines):
     return len(open_approval_rows(lines))
 
 
-def _halt_answer_state(numbered, tail):
-    """cc__halt_answer_state over (line number, row) pairs in ledger order."""
+# The path up to its `.md`, with no backtick and no closing punctuation, the
+# same bytes liveness.sh's sed takes: a stage may wrap the token in backticks
+# or end the sentence right after it.
+_GATE_RECORD = re.compile(r"게이트 기록=`?([^ `]*\.md)")
+
+
+def _halt_answer_state(numbered, tail, record=None):
+    """cc__halt_answer_state over (line number, row) pairs in ledger order.
+
+    A record no `중단 답` names takes the state of the gate record its
+    `**관측 상세**` points at as `게이트 기록=<경로>`, one step only.
+    """
+    st = _halt_answer_state_of(numbered, tail)
+    if st != "없음" or not record:
+        return st
+    try:
+        with open(record, encoding="utf-8", errors="replace") as fh:
+            text = fh.read()
+    except OSError:
+        return st
+    for line in text.splitlines():
+        if not line.startswith("**관측 상세**:"):
+            continue
+        found = _GATE_RECORD.findall(line)
+        if not found:
+            continue
+        g = found[-1]
+        if "/halt/" not in g:
+            break
+        pre, rest = g.rsplit("/halt/", 1)
+        gtail = "/%s/halt/%s" % (pre.rsplit("/", 1)[-1], rest)
+        if gtail != tail:
+            st = _halt_answer_state_of(numbered, gtail)
+        break
+    return st
+
+
+def _halt_answer_state_of(numbered, tail):
+    """The state of the record `tail` names alone."""
     last = None
     stamped = set()
     for no, ln in numbered:
@@ -373,7 +410,7 @@ def unanswered_halt_records(run_dir, numbered):
                 continue
             state = "없음"
             if numbered is not None:
-                state = _halt_answer_state(numbered, "/%s/%s/%s" % (leaf, sub, name))
+                state = _halt_answer_state(numbered, "/%s/%s/%s" % (leaf, sub, name), f)
                 if state == "답함":
                     continue
             out.append((f, state))

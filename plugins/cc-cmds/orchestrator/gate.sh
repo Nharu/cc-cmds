@@ -912,6 +912,15 @@ readonly GATE_EXIT_ANCHOR=10
 # one thing this must not say — the repair is not to re-declare and try again.
 # 5 means a person was asked and the run is waiting; here no approval row exists
 # and nobody will answer, so a caller treating it as 5 waits out the night.
+#
+# A SECOND MEANING, ON A TARGET WITH NO `origin`: the act was performed (or was
+# held at its entry), and a record waits for a person's answer. The base-move
+# check exits 11 when the target's base moved — before the act, after it, or
+# while an earlier move's latch still stands — having written a shift halt
+# record at site `베이스 이동` and its cone row. The caller tells the two
+# meanings apart by stderr: this one always carries a `[run][warn] 베이스 이동 — `
+# line, which names the record and says whether the act was performed. Never
+# the first line — every call prints its manifest line before it.
 readonly GATE_EXIT_PARK=11
 
 # THE `wait` VERB'S OWN CODES. A stage's rc passes through `wait` the way an
@@ -3322,9 +3331,9 @@ gate_worktree_add_base_mismatch() {
   # experiment worktrees other skills make under `mktemp -d` start at `HEAD` or
   # at a merge commit on purpose and never land under that prefix.
   #
-  # A SYMBOLIC COMPARISON, NOT A SHA ONE. The start point must name
-  # `refs/remotes/origin/<base>` — what `git rev-parse --symbolic-full-name`
-  # reads it as. Concurrent runs in the same repository fetch and move that ref
+  # A SYMBOLIC COMPARISON, NOT A SHA ONE. The start point must name the ref
+  # `base_ref` gives — `refs/remotes/origin/<base>`, or `refs/heads/<base>` for a
+  # target with no `origin` — as `git rev-parse --symbolic-full-name` reads it. Concurrent runs in the same repository fetch and move that ref
   # between the router's fetch and this check, so comparing shas or ancestry
   # would refuse a correct call; a local branch, a bare sha and `HEAD` all read
   # as another name and are refused. Nothing is fetched here.
@@ -3399,7 +3408,8 @@ gate_worktree_add_base_mismatch() {
     printf '받은 시작점: %s, 기대 시작점: 해소되지 않음 — 대상 %s 의 베이스 브랜치를 정하지 못했습니다' "${start:-없음}" "$alias"
     return 0
   fi
-  want="refs/remotes/origin/$br"
+  want=$(base_ref "$alias" 2>/dev/null || true)
+  [ -n "$want" ] || want="refs/remotes/origin/$br"
   if [ "$newb" = 0 ] && [ "$det" = 0 ] && [ -n "$start" ] && [ "$start" != "$br" ] \
      && ( cd "$dir" 2>/dev/null && git rev-parse --verify --quiet "refs/heads/$start" >/dev/null 2>&1 ); then
     return 0
@@ -15973,10 +15983,13 @@ gate_snapshot_slicing_json() {
   # in declaration order. Read-only — the snapshot is a read verb, so the values
   # are written by `act --kind segment --from-declaration`, never from here.
   #
-  # `베이스` IS A REF NAME, NOT A SHA: `refs/remotes/origin/<base_branch>`, the
-  # start point the router's `git worktree add` writes verbatim after its own
-  # fetch. A sha read here would be stale by the time that fetch ran, and this
-  # read verb fetches nothing. Empty when the base branch cannot be resolved.
+  # `베이스` IS A REF NAME, NOT A SHA: the value of `base_ref`, the start point
+  # the router's `git worktree add` writes verbatim. It has two shapes:
+  # `refs/remotes/origin/<base_branch>`, written after the router's own fetch,
+  # and `refs/heads/<base_branch>` for a target with no `origin`, for which the
+  # router fetches nothing. A sha read here would be stale by the time that fetch
+  # ran, and this read verb fetches nothing. Empty when the base branch cannot be
+  # resolved.
   local br="" ids="" id="" al="" wt="" bn="" ad="" adx="" first=1 defects="" dpre="" dmo="" lrow="" bref="" undecl=""
   br=$(gate_slicing_branch)
   case "$br" in
@@ -15994,8 +16007,7 @@ gate_snapshot_slicing_json() {
     [ -z "$al" ] || wt=$(gate_decl_worktree "$al" "$id") || wt=""
     bref=""
     if [ -n "$al" ]; then
-      bref=$(base_branch "$al" 2>/dev/null || true)
-      [ -z "$bref" ] || bref="refs/remotes/origin/$bref"
+      bref=$(base_ref "$al" 2>/dev/null || true)
     fi
     # AN ADOPTED SEGMENT NAMES THE EARLIER RUN'S BRANCH AND WORKTREE, and says
     # so: `입양` carries the run it came from and `PR` the pull request the
@@ -25013,8 +25025,9 @@ gate_shift_halts_json() {
     fi
     # TWO STOPS SIT ON A SEGMENT WHOSE LAST ROW READS AS ENDED. A settlement
     # that parked with its verdict and an import left `머지됨 적용=미정산` are
-    # both waiting for the person this stop asks, so they stay listed.
-    if gate_segment_terminal "$seg"; then
+    # both waiting for the person this stop asks, so they stay listed. A
+    # target's `베이스-<별칭>` key has no segment row to have ended.
+    if ! gate_base_guard_key_alias "$seg" >/dev/null && gate_segment_terminal "$seg"; then
       case "$site:$(gate_segment_field "$seg" '상태'):$(gate_segment_field "$seg" '적용')" in
         '적용 정산:park:불명')
           [ -n "$(gate_segment_field "$seg" '정산 판정')" ] || continue ;;
@@ -25035,6 +25048,25 @@ gate_shift_halts_json() {
   done <<EOF
 $( { grep -n "^- \`blocked\` " "${LEDGER:-/dev/null}" 2>/dev/null || true; } )
 EOF
+  # A BASE MOVE NO RECORD COULD BE WRITTEN FOR is held by the target's latch,
+  # not by a cone row: the latch reads `기록 없음` and every act on that target
+  # stops until a record is written. It is listed the way a stop the gate could
+  # not write a record for is, under the target's own key, with the line of the
+  # act's `베이스 이동 — 기록 작성 실패` row (0 when none is found).
+  local lf lal lln
+  for lf in "${RUN_DIR:-/nonexistent}"/base-guard/*.latch; do
+    [ -f "$lf" ] || continue
+    [ "$(cat "$lf" 2>/dev/null)" = "기록 없음" ] || continue
+    lal=${lf##*/}; lal=${lal%.latch}
+    gate_base_guard_key_alias "베이스-$lal" >/dev/null || continue
+    lln=$( { grep -n "^- \`blocked\` " "${LEDGER:-/dev/null}" 2>/dev/null || true; } \
+           | { grep -F "| 대상=$lal |" || true; } \
+           | { grep -F '| 사유=베이스 이동 — 기록 작성 실패' || true; } | tail -1 | cut -d: -f1)
+    [ "$first" = "1" ] || printf ',\n'
+    first=0
+    printf '    {"세그먼트": "%s", "자리": "%s", "기록": "", "줄": %s, "보류": []}' \
+      "$(gate_json_escape "베이스-$lal")" "$(gate_json_escape "베이스 이동")" "${lln:-0}"
+  done
   [ "$first" = "1" ] || printf '\n'
 }
 
@@ -25216,7 +25248,10 @@ gate_halt_answer_consumer() {
   # first is the consumer. A termination clause's evidence request
   # (`clause-<id>`) has no segment to act on: the shift carries its answer out
   # by writing that clause's `종료 절` row, or by asking again on the same key
-  # when the attachment falls short, so either of those spends it too.
+  # when the attachment falls short, so either of those spends it too. A base
+  # move's record is carried out by the gate itself: the `원인=해소` block it
+  # writes on the record's anchor (a segment or `베이스-<별칭>`) when it lifts
+  # the latch is the resolution that spends the answer.
   #
   # AN ANSWER `세그먼트 park` TO A STAGE'S RECORD IS TAKEN UP BY THE PARK. The
   # shift carries it out by writing the segment's `상태=park` row and dispatches
@@ -25741,10 +25776,11 @@ gate_draft_code_commit() {
   # gate_draft_code_commit <alias> <segment> — sets GATE_DRAFT_WT and
   # GATE_DRAFT_MB to the segment worktree and the commit `코드` grounds are
   # read from: the merge base of that worktree's HEAD and
-  # `refs/remotes/origin/<base branch>`. The segment branched from that base,
-  # so a later merge into the base moves the tracking ref but not this value.
+  # `refs/remotes/origin/<base branch>`, or `refs/heads/<base branch>` for a
+  # target with no `origin`. The segment branched from that base, so a later
+  # merge into the base moves the tracking ref but not this value.
   # Exit 1 with GATE_DRAFT_WHY otherwise.
-  local al="$1" seg="$2" wt br mb
+  local al="$1" seg="$2" wt br mb bref
   GATE_DRAFT_WT=''; GATE_DRAFT_MB=''
   wt=$(gate_segment_worktree "$seg" 2>/dev/null) || wt=''
   case "$wt" in ''|-) wt=$(gate_decl_worktree "$al" "$seg") || wt='' ;; esac
@@ -25752,8 +25788,9 @@ gate_draft_code_commit() {
   br=$(base_branch "$al" 2>/dev/null) || br=''
   br=${br#origin/}
   [ -n "$br" ] || { GATE_DRAFT_WHY="대상 $al 의 베이스 브랜치를 읽을 수 없어 \`코드\` 근거를 읽을 커밋을 구할 수 없습니다"; return 1; }
-  mb=$(cd "$wt" && git merge-base HEAD "refs/remotes/origin/$br" 2>/dev/null) || mb=''
-  [ -n "$mb" ] || { GATE_DRAFT_WHY="세그먼트 워크트리의 HEAD 와 refs/remotes/origin/$br 의 갈라진 커밋을 구할 수 없습니다"; return 1; }
+  if target_has_origin "$al"; then bref="refs/remotes/origin/$br"; else bref="refs/heads/$br"; fi
+  mb=$(cd "$wt" && git merge-base HEAD "$bref" 2>/dev/null) || mb=''
+  [ -n "$mb" ] || { GATE_DRAFT_WHY="세그먼트 워크트리의 HEAD 와 $bref 의 갈라진 커밋을 구할 수 없습니다"; return 1; }
   GATE_DRAFT_WT=$wt; GATE_DRAFT_MB=$mb
 }
 
@@ -29130,6 +29167,12 @@ gate_halt_answer_route() {
         충족|불가능)
           why="종료 절 $cl 이 이미 $(gate_clause_last_state "$cl") 로 정산돼 교대가 이 답을 실행할 갈래가 없습니다" ;;
       esac
+    elif cl=$(gate_base_guard_key_alias "$key"); then
+      # A base move recorded on the target's own key has no segment row either.
+      # The gate itself carries a `재시도` out, at the next act on that target:
+      # it lifts the latch and takes the base as it stands as the known value.
+      [ "$opt" = "재시도" ] \
+        || why="대상 $cl 의 베이스 이동 기록에는 \`재시도\` 밖의 선택지가 없습니다 — 「${opt}」 는 교대가 실행할 갈래가 없습니다"
     else
       [ -n "$st" ] || why="$key 에 segment 행이 없어 교대가 교대 정지 기록의 답을 실행할 세그먼트가 없습니다"
       hsite=$(gate_row_field "$(gate_shift_halt_row_of "$rec" | cut -d: -f2-)" '자리')
@@ -29704,6 +29747,7 @@ master 수리 불가|없음|수리 런을 띄울 수 없게 한 원인(끄는 �
 리뷰 게시 거절|없음|전용 쓰기 자격이 없고 이 호스트의 gh 로그인도 읽히지 않았거나, 실행 계정이 동결한 계정과 다르거나, GitHub 가 게시를 4xx 로 거절했거나, 게시의 결과를 모른다 — 그중 어느 것인지는 관측에 실린 게이트 거절 줄이 말한다|사람이 원인을 고친 뒤, 다음 교대가 review-post 를 처음부터 한 번 더 낸다
 보류 리뷰 선점|없음|이 계정의 보류 리뷰가 이미 있다 — 그 보류 리뷰를 제출할지 지울지는 그것을 쓴 사람만 정한다|사람이 그 보류 리뷰를 제출하거나 지운 뒤, 다음 교대가 review-post 를 처음부터 한 번 더 낸다
 강제 표면 승인|없음|세그먼트가 바꾼 강제 표면 경로를 보인 내용 그대로 받아들일지는 그 diff 를 본 사람만 정한다|다음 교대가 승인 없이 출처 검사를 다시 잰다 — 사람이 브랜치를 고쳤으면 리뷰를 다시 파견하고, 그대로면 같은 거절에 닿아 이 자리에 다시 선다|승인:사람이 기록의 승인 대상 경로와 항목을 그대로 승인하면 게이트가 경로마다 강제 표면 승인 원장 행을 쓰고, 다음 교대가 이 세그먼트의 리뷰를 다시 파견한다(선머지후리뷰 세그먼트는 거절된 머지 행위를 다시 낸다)
+베이스 이동|없음|베이스를 옮긴 것이 런의 행위인지 사람의 커밋인지와, 옮겨진 베이스를 그대로 둘지 되돌릴지|사람이 베이스를 확인하고 정리한 뒤 이 세그먼트를 멈춘 자리에서 다시 진행한다
 EOF
 }
 
@@ -29717,12 +29761,19 @@ gate_shift_halt_site_row() {
 }
 
 gate_shift_halt_options() {
-  # gate_shift_halt_options <자리> — the option lines of that site's record,
-  # each `- \`<라벨>\` — <설명>`, the form the seat's answer is matched against.
-  # The site's extra options from the fifth field follow the two fixed ones,
-  # in the same form.
+  # gate_shift_halt_options <자리> [<앵커>] — the option lines of that site's
+  # record, each `- \`<라벨>\` — <설명>`, the form the seat's answer is matched
+  # against. The site's extra options from the fifth field follow the two fixed
+  # ones, in the same form.
   local row retry extra item
   row=$(gate_shift_halt_site_row "$1") || return 1
+  # A base move recorded on the target's own key `베이스-<별칭>` stops no
+  # segment, so `세그먼트 park` names nothing there: the one answer is that a
+  # person has put the base right and the gate may lift the target's latch.
+  if [ "$1" = "베이스 이동" ] && [ -n "$(gate_base_guard_key_alias "${2:-}")" ]; then
+    printf '%s\n' "- \`재시도\` — 사람이 베이스를 확인하고 정리한 뒤, 게이트가 이 대상의 걸쇠를 풀고 지금 베이스를 기지값으로 다시 적는다"
+    return 0
+  fi
   # A clause's evidence request settles a termination clause, not a segment,
   # so neither `재시도` nor `세그먼트 park` names anything a shift could do.
   if [ "$1" = "종료 절 근거" ]; then
@@ -29791,17 +29842,20 @@ master 수리 불가|세그먼트 park|이 세그먼트가 깨진 베이스 위�
 리뷰 게시 거절|세그먼트 park|이 PR 의 리뷰가 이번 런에서 게시되지 않은 채 빠지고, 리뷰 리포트는 런 기록에만 남습니다
 보류 리뷰 선점|재시도|사람이 보류 리뷰를 제출하거나 지우기 전에 고르면 같은 보류 리뷰를 다시 만나 이 자리에 다시 섭니다
 보류 리뷰 선점|세그먼트 park|이 PR 의 리뷰가 이번 런에서 게시되지 않은 채 빠지고, 이 계정의 보류 리뷰는 그대로 남습니다
+베이스 이동|재시도|옮겨진 베이스가 런의 실수였다면 정리하지 않은 채 다시 진행할 때 그 위에 세그먼트가 쌓인다
+베이스 이동|세그먼트 park|이 세그먼트와 그것에 기대는 슬라이스가 이 런에서 착지하지 않는다
 EOF
 }
 
 gate_shift_halt_risks() {
-  # gate_shift_halt_risks <자리> — the `**선택지 리스크**` value of that site's
-  # record: one part per option, in the order `gate_shift_halt_options` prints
-  # them, each `` `<라벨>` — <리스크> ``, joined with ` / `. Nothing (exit 1)
-  # when the site is not in the table; a label the risk table lacks is written
-  # `미기재`, which the morning report counts.
+  # gate_shift_halt_risks <자리> [<앵커>] — the `**선택지 리스크**` value of
+  # that site's record: one part per option, in the order
+  # `gate_shift_halt_options` prints them for the same anchor, each
+  # `` `<라벨>` — <리스크> ``, joined with ` / `. Nothing (exit 1) when the site
+  # is not in the table; a label the risk table lacks is written `미기재`, which
+  # the morning report counts.
   local site="$1" opts line label risk out=''
-  opts=$(gate_shift_halt_options "$site") || return 1
+  opts=$(gate_shift_halt_options "$site" "${2:-}") || return 1
   while IFS= read -r line; do
     case "$line" in
       '- `'*'` — '*) label=${line#'- `'}; label=${label%%'` — '*} ;;
@@ -29825,6 +29879,20 @@ gate_clause_key_id() {
   case "$1" in clause-?*) id="${1#clause-}" ;; *) return 1 ;; esac
   case " $(gate_clause_ids | tr '\n' ' ') " in
     *" $id "*) printf '%s' "$id" ;;
+    *) return 1 ;;
+  esac
+}
+
+gate_base_guard_key_alias() {
+  # gate_base_guard_key_alias <key> — the target alias a `베이스-<별칭>` key
+  # names, or nothing (exit 1) when the key has another shape or the manifest
+  # declares no such target. The base-move check makes this key itself when a
+  # base move cannot be recorded on the act's own segment, so like a
+  # `clause-<id>` key it is never a segment id and stands on no segment row.
+  local al
+  case "${1:-}" in 베이스-?*) al="${1#베이스-}" ;; *) return 1 ;; esac
+  case " $(target_aliases 2>/dev/null | tr '\n' ' ') " in
+    *" $al "*) printf '%s' "$al" ;;
     *) return 1 ;;
   esac
 }
@@ -29953,6 +30021,566 @@ gate_shift_halt_row_of() {
 $( { grep -n "^- \`blocked\` " "$LEDGER" 2>/dev/null || true; } | { grep -F "중단 기록=$rec " || true; } )
 EOF
   [ -z "$hit" ] || printf '%s\n' "$hit"
+}
+
+gate_shift_halt_write() {
+  # gate_shift_halt_write <별칭> <앵커> <자리> <질문> <관측> [<키=값>...] — write a
+  # shift halt record for <앵커> at <자리> under the run's `halt/shift`, and the
+  # cone `blocked` row that vouches for it. The optional fields are `추천`,
+  # `추천 근거` (already checked by the caller), `정산` (a line copied to the end
+  # of the question and the observation and to the front of `근거`), `실행 결과`,
+  # `명령 초안`, `기대 결과`, `승인 대상` (one target per line) and `교대` (the
+  # writing shift's ordinal; a caller that is not a shift leaves it off). The
+  # record's path is left in GATE_SHW_DST.
+  #
+  # ONE WRITER FOR TWO CALLERS. The routing shift's `shift-halt` and the gate's
+  # own base-move check both stop on a question only a person answers, and both
+  # need the same record a seat can answer and the same row the readers count.
+  # Every refusal comes before anything is written and writes no row: the
+  # anchor has to be a segment the ledger knows (a `clause-<id>` or
+  # `베이스-<별칭>` key stands on none), a segment whose answer is carried over to
+  # the next run is not stopped again, the site has to be in the table, and the
+  # directory has to be the run's own.
+  local alias="$1" seg="$2" ssite="$3" sq="$4" sobs="$5"
+  shift 5
+  local srow sinfo srec sgr sverd sresult sdraft sexpect stg sord
+  local sdir sn sdst sopts stmp sdig r sw=300 slen sline sexp
+  GATE_SHW_DST=''
+  srow=$(gate_shift_halt_site_row "$ssite") || {
+    warn "\`${ssite:-(none)}\` is not a site of the shift-halt table — the record is not written"
+    return "$GATE_EXIT_VOCAB"; }
+  if ! gate_clause_key_id "$seg" >/dev/null && ! gate_base_guard_key_alias "$seg" >/dev/null; then
+    [ -n "$(gate_segment_field "$seg" '상태')" ] || {
+      warn "there is no segment row for $seg — a shift stops a segment the ledger knows"
+      return "$GATE_EXIT_VOCAB"; }
+  fi
+  if ! gate_base_guard_key_alias "$seg" >/dev/null; then
+    sline=$(gate_key_deferred_answer "$seg")
+    if [ -n "$sline" ]; then
+      warn "$seg 의 중단 답(원장 ${sline} 번째 줄)은 다음 런으로 넘겼습니다 — 이 세그먼트에 교대 정지 기록을 쓰지 않습니다"
+      return "$GATE_EXIT_RULE"
+    fi
+  fi
+  srec=$(gate_field_of '추천' "$@")
+  sgr=$(gate_field_of '추천 근거' "$@")
+  sverd=$(gate_field_of '정산' "$@")
+  sresult=$(gate_field_of '실행 결과' "$@")
+  sdraft=$(gate_field_of '명령 초안' "$@")
+  sexpect=$(gate_field_of '기대 결과' "$@")
+  stg=$(gate_field_of '승인 대상' "$@")
+  sord=$(gate_field_of '교대' "$@")
+  sinfo=$(printf '%s' "$srow" | cut -d'|' -f3)
+  sdir=$(gate_shift_halt_dir) || {
+    warn "this run's halt/shift is not a real directory at $RUN_DIR/halt/shift — the record is not written"
+    return "$GATE_EXIT_RULE"; }
+  sn=1
+  while IFS= read -r r; do
+    [ -n "$r" ] || continue
+    [ "$(gate_row_field "$r" '스코프')" = "cone" ] || continue
+    [ "$(gate_row_field "$r" '앵커 세그먼트')" = "$seg" ] || continue
+    [ -n "$(gate_row_field "$r" '중단 기록')" ] || continue
+    [ -n "$(gate_row_field "$r" '기록 다이제스트')" ] || continue
+    sn=$((sn + 1))
+  done <<EOF
+$(gate_rows 'blocked')
+EOF
+  sdst="$sdir/$seg#$sn.md"
+  sopts=$(gate_shift_halt_options "$ssite" "$seg")
+  stmp=$(mktemp "$sdir/.shift-halt.XXXXXX") || {
+    warn "could not make a temporary file under $sdir"
+    return "$GATE_EXIT_RULE"; }
+  {
+    printf '<!-- cc-pipeline-halt v1; writer=gate; reader=orchestrator; stage=%s#%s; run=%s -->\n' "$seg" "$sn" "$RUN_ID"
+    printf '**중단 시각**: %s\n' "$(now_iso)"
+    printf '**스킬**: autopilot-router-shift\n'
+    printf '**스텝**: 교대 정지 — %s\n' "$ssite"
+    printf '**분류**: gate-unanswerable\n'
+    printf '**질문 문면**: %s%s\n' "$(printf '%s' "$sq" | tr '\n\r' '  ')" "${sverd:+ $sverd}"
+    [ -z "$sresult" ] || printf '**실행 결과**: %s\n' "$sresult"
+    [ -z "$sdraft" ] || printf '**명령 초안**: %s\n' "$(printf '%s' "$sdraft" | tr '\n\r' '  ')"
+    [ -z "$sexpect" ] || printf '**기대 결과**: %s\n' "$(printf '%s' "$sexpect" | tr '\n\r' '  ')"
+    [ -z "$stg" ] || printf '%s\n' "$stg" | sed '/^$/d;s/^/**승인 대상**: /'
+    printf '**선택지**:\n%s\n' "$sopts"
+    if [ -n "$srec" ]; then
+      printf '**추천**: `%s` — 추천 근거의 인용이 이 선택지를 정한다\n' "$srec"
+      printf '**추천 근거**: %s\n' "$(printf '%s' "$sgr" | tr '\n\r' '  ')"
+    else
+      printf '**추천**: (없음) — %s\n' "$sinfo"
+      printf '**추천 근거**: (없음)\n'
+    fi
+    printf '**선택지 리스크**: %s\n' "$(gate_shift_halt_risks "$ssite" "$seg")"
+    printf '**하네스 오류**: (없음)\n'
+    printf '**관측 상세**: %s%s\n' "$(printf '%s' "$sobs" | tr '\n\r' '  ')" "${sverd:+ $sverd}"
+    printf '**재호출 명령**: (없음)\n'
+    printf '**후속**: 보류 큐\n'
+    printf '<!-- /cc-pipeline-halt v1 -->\n'
+  } > "$stmp" || { rm -f "$stmp"; warn "could not write the halt record"; return "$GATE_EXIT_RULE"; }
+  sdig=$(shasum -a 256 "$stmp" | cut -d' ' -f1)
+  # `mv -n` NEVER REPLACES. A file already at the name is either an earlier
+  # record this count missed or something placed there to be answered in
+  # this record's stead, and both are refused with no row written.
+  mv -n "$stmp" "$sdst" 2>/dev/null || true
+  if [ -e "$stmp" ]; then
+    rm -f "$stmp"
+    warn "a file is already at $sdst — the record is not written and no row is added"
+    return "$GATE_EXIT_RULE"
+  fi
+  sexp=$(printf '%*s' "$GATE_CONE_LIST_MAX" '' | tr ' ' 'x')
+  # A MERGE REFUSAL OVER A FAILURE THE BASE SHARES IS THE TARGET'S TO FIX.
+  # At `병합 거절` alone the gate derives `다음` again the way the CI acts
+  # read it (`gate_segment_ci_next`, from the worktree tip) inside this act;
+  # when it is `CI 기존 실패` and the round's
+  # reading found every check that failed on the head failing on the base
+  # too, the cone row carries the judgment. A derivation that fails or reads
+  # another value, a partial overlap and a skipped base reading all leave
+  # the fields off, and a reader takes the stop as `판정 불가`.
+  local sfx=() snx sh
+  if [ "$ssite" = "병합 거절" ]; then
+    snx=$(gate_segment_ci_next "$seg" 2>/dev/null || true)
+    sh=$(gate_worktree_tip "$(gate_segment_worktree "$seg")" 2>/dev/null || true)
+    if [ "$snx" = "CI 기존 실패" ] && [ -n "$sh" ] && gate_ci_base_all_match "$seg" "$sh"; then
+      sfx=('고칠 곳=대상 레포' '판정 주체=게이트' '판정 신호=베이스 동일 실패')
+    fi
+  fi
+  while [ "$sw" -ge 40 ]; do
+    sline="${sverd:+$sverd · }$(gate_row_safe "$sobs" "$sw")"
+    slen=$(gate_row_projected_bytes 'blocked' "대상=$alias" '스코프=cone' '원인=막힘' \
+      "앵커 세그먼트=$seg" "사유=교대 정지 — $ssite" "근거=$sline" "중단 기록=$sdst" \
+      "기록 다이제스트=$sdig" "자리=$ssite" ${sord:+"교대=$sord"} \
+      '의존 세그먼트 수=999' "의존 세그먼트=$sexp")
+    [ "$slen" -le "$GATE_ROW_MAX" ] && break
+    sw=$((sw - 40))
+  done
+  # The judgment rides only when the row still fits with it; a row near the
+  # cap is written without it, as every gate-stamped stop row is.
+  if [ "${#sfx[@]}" -gt 0 ] && ! gate_fix_fits 'blocked' "대상=$alias" '스코프=cone' '원인=막힘' \
+       "앵커 세그먼트=$seg" "사유=교대 정지 — $ssite" "근거=$sline" "중단 기록=$sdst" \
+       "기록 다이제스트=$sdig" "자리=$ssite" ${sord:+"교대=$sord"} "${sfx[@]}" \
+       '의존 세그먼트 수=999' "의존 세그먼트=$sexp"; then
+    warn "$seg 의 교대 정지 행이 상한에 닿아 고칠 곳 판정 필드를 싣지 않습니다"
+    sfx=()
+  fi
+  r=0
+  GATE_SHIFT_HALT_WRITING=1 gate_record_cone "$alias" '스코프=cone' '원인=막힘' \
+    "앵커 세그먼트=$seg" "사유=교대 정지 — $ssite" "근거=$sline" "중단 기록=$sdst" \
+    "기록 다이제스트=$sdig" "자리=$ssite" ${sord:+"교대=$sord"} ${sfx[@]+"${sfx[@]}"} || r=$?
+  if [ "$r" != "0" ]; then
+    # A record with no row is one nothing vouches for and every halt scan
+    # would still count, so it goes with the row that failed.
+    rm -f "$sdst"
+    return "$r"
+  fi
+  GATE_SHW_DST=$sdst
+  log "교대 정지 기록 — $seg ($ssite) → $sdst"
+}
+
+# ---------------------------------------------------------------------------
+# The base-move check — a target with no `origin`.
+#
+# A TARGET WITH NO REMOTE HAS NO MERGE BUT THE PERSON'S, so its local base
+# branch is the truth of its base, and nothing outside this host would notice
+# an act of the run moving it. The check compares the base ref's commit with a
+# known value kept in the run directory, at the entry of every act on such a
+# target and again after the act, whatever the act's exit code. A move stops
+# the act's segment with a shift halt record at site `베이스 이동` and exit 11;
+# the segment's later acts end 11 at the entry until a person answers it.
+#
+# A known value, not a local variable: an act that runs for a long time may
+# hold a nested gate act that catches the same move first, and the outer act
+# then reads the value that act already put right rather than reporting the
+# move twice. A move between two acts is caught at the next entry, so an act
+# outside the gate cannot slip one past either.
+#
+# Files under `$RUN_DIR/base-guard/`:
+#   <별칭>                — the known value, one line `<ref>\t<sha>`
+#   <별칭>.latch.<세그먼트> — the absolute path of the record that stops it
+#   <별칭>.latch          — the same for the whole target: a record on the
+#                           target's key `베이스-<별칭>`, or `기록 없음`
+#   <별칭>.writing        — `<기지값 sha>\t<지금 sha>\t<시각>`, then
+#                           `\t<기록>\t<걸쇠>` once the record is written
+# They are read and changed under `gate_index_lock "<dir>/<별칭>"` only, and the
+# lock is never held while an act runs or a record is written.
+
+gate_base_guard_applies() {
+  # gate_base_guard_applies <alias> <verb> <kind> — whether the check runs for
+  # this act: a declared target with no `origin`, on an act that is not one of
+  # the row-only kinds. A target with a remote never reaches a line below.
+  local al="$1" verb="$2" kind="$3"
+  [ -n "${RUN_DIR:-}" ] || return 1
+  case "$al" in ''|-) return 1 ;; esac
+  case " $(target_aliases 2>/dev/null | tr '\n' ' ') " in *" $al "*) ;; *) return 1 ;; esac
+  if [ "$verb" != "exec" ] && [ -n "$kind" ] && gate_kind_is_bookkeeping "$kind"; then
+    return 1
+  fi
+  target_has_origin "$al" && return 1
+  return 0
+}
+
+gate_base_guard_now() {
+  # gate_base_guard_now <alias> — `<ref>\t<sha>` of the base as it stands. A
+  # ref that does not resolve reads `없음`: a base ref that disappeared is a
+  # move too. A base the target cannot name at all reads `-\t없음`, which stays
+  # equal to itself.
+  local al="$1" ref root sha=''
+  ref=$(base_ref "$al" 2>/dev/null) || ref=''
+  root=$(alias_root "$al" 2>/dev/null) || root=''
+  if [ -n "$ref" ] && [ -n "$root" ]; then
+    sha=$( (cd "$root" 2>/dev/null && git rev-parse --verify --quiet "$ref^{commit}") 2>/dev/null) || sha=''
+  fi
+  [ -n "$ref" ] || ref=-
+  [ -n "$sha" ] || sha=없음
+  printf '%s\t%s' "$ref" "$sha"
+}
+
+gate_base_guard_put() {
+  # gate_base_guard_put <file> <line> — replace <file> with one line, by a
+  # rename from a temporary file beside it.
+  local tmp
+  tmp=$(mktemp "$1.XXXXXX" 2>/dev/null) || return 1
+  if printf '%s\n' "$2" > "$tmp" 2>/dev/null && mv -f "$tmp" "$1" 2>/dev/null; then
+    return 0
+  fi
+  rm -f "$tmp" 2>/dev/null || true
+  return 1
+}
+
+gate_base_guard_read() {
+  # gate_base_guard_read <file> — the file's first line; exit 1 when it exists
+  # and cannot be read. An absent file prints nothing and succeeds; the caller
+  # tells the two apart with `-e`.
+  [ -e "$1" ] || return 0
+  [ -f "$1" ] && [ -r "$1" ] || return 1
+  sed -n '1p' "$1" 2>/dev/null || return 1
+}
+
+gate_base_guard_last_answer() {
+  # gate_base_guard_last_answer <record> — the `선택지` of the last `중단 답`
+  # row naming <record> as its `중단 기록`, or nothing when none does. Exit 1
+  # when the ledger cannot be read: that is not "no answer".
+  local rows r=0
+  [ -n "${LEDGER:-}" ] && [ -r "$LEDGER" ] || return 1
+  rows=$(grep "^- \`중단 답\` " "$LEDGER" 2>/dev/null) || r=$?
+  [ "$r" -le 1 ] || return 1
+  rows=$(printf '%s\n' "$rows" | LC_ALL=C awk -v k="| 중단 기록=$1 |" 'index($0, k) { l = $0 } END { if (l != "") print l }')
+  [ -n "$rows" ] || return 0
+  gate_row_field "$rows" '선택지'
+}
+
+gate_base_guard_act_row() {
+  # gate_base_guard_act_row <alias> <segment> <사유> <근거> — the act-scope
+  # `blocked` row of a base-move stop that no cone could carry.
+  local f=("대상=$1")
+  case "$2" in ''|-) ;; *) f+=("세그먼트=$2") ;; esac
+  gate_append 'blocked' "${f[@]}" "스코프=act" "원인=막힘" "사유=$3" \
+    "근거=$(gate_row_safe "$4" 200)" "관측=$(now_iso)"
+}
+
+gate_base_guard_target_stop() {
+  # gate_base_guard_target_stop <alias> <segment> <질문> <관측> <경고> — stop the
+  # act on the target's own key when the check could not compare at all (the
+  # lock was not taken, or a file or the ledger could not be read). A target
+  # latch already standing is that stop, and nothing new is written. Always
+  # exit 11.
+  local al="$1" seg="$2" q="$3" obs="$4" msg="$5" d="$RUN_DIR/base-guard" tl
+  tl="$d/$al.latch"
+  if [ -e "$tl" ]; then
+    warn "베이스 이동 — ${msg} — 대상 걸쇠 $tl 가 이미 서 있어 새 기록을 쓰지 않습니다 · 행위 수행 안 함"
+    return "$GATE_EXIT_PARK"
+  fi
+  mkdir -p "$d" 2>/dev/null || true
+  if gate_shift_halt_write "$al" "베이스-$al" '베이스 이동' "$q" "$obs" 2>/dev/null \
+     && gate_base_guard_put "$tl" "$GATE_SHW_DST"; then
+    warn "베이스 이동 — ${msg} — 기록 $GATE_SHW_DST · 행위 수행 안 함"
+    return "$GATE_EXIT_PARK"
+  fi
+  gate_base_guard_put "$tl" '기록 없음' || true
+  gate_base_guard_act_row "$al" "$seg" '베이스 이동 — 기록 작성 실패' "$msg" || true
+  warn "베이스 이동 — ${msg} — 기록을 쓰지 못해 대상 걸쇠 $tl 에 기록 없음을 둡니다 · 행위 수행 안 함"
+  return "$GATE_EXIT_PARK"
+}
+
+gate_base_guard_release() {
+  # gate_base_guard_release <alias> <latch> <record> <now> — lift a latch whose
+  # record's last answer is `재시도`: the known value becomes the base as it
+  # stands now, a `원인=해소` block on the record's anchor spends the answer,
+  # and the latch goes. Called under the lock. Exit 1, the latch left, when
+  # any of the three fails.
+  local al="$1" lf="$2" rec="$3" now="$4" anchor
+  anchor=$(gate_row_field "$(gate_shift_halt_row_of "$rec" | cut -d: -f2-)" '앵커 세그먼트')
+  [ -n "$anchor" ] || anchor="베이스-$al"
+  gate_base_guard_put "$RUN_DIR/base-guard/$al" "$now" || return 1
+  gate_append 'blocked' "대상=$al" '스코프=cone' '원인=해소' "앵커 세그먼트=$anchor" \
+    '사유=베이스 이동 — 재시도 답으로 걸쇠 해제' "근거=기지값을 지금 값 ${now#*$'\t'} 로 다시 적음" \
+    "중단 기록=$rec" || return 1
+  rm -f "$lf" 2>/dev/null || return 1
+  [ ! -e "$lf" ] || return 1
+  log "베이스 이동 걸쇠 해제 — $anchor ($rec)"
+}
+
+gate_base_guard_record_move() {
+  # gate_base_guard_record_move <alias> <segment> <기지값> <지금> <자리> <rc> <argv...>
+  # — stop on a move the check caught, with the `.writing` marker already up.
+  # The record goes on the act's segment, or on the target's key when the
+  # segment cannot carry one (or the act has none), and only once the record
+  # and its cone row stand is the known value moved on. Always exit 11.
+  local al="$1" seg="$2" old="$3" now="$4" site="$5" rc="$6"; shift 6
+  local d="$RUN_DIR/base-guard" kf wf tl lf rec='' q obs did words cur
+  kf="$d/$al"; wf="$kf.writing"; tl="$kf.latch"
+  if [ "$rc" = "수행 안 함" ]; then did="행위 수행 안 함"; else did="행위는 수행됨"; fi
+  words=$(printf '%s ' "${@:1:6}"); words=${words% }
+  q="대상 $al 의 베이스 ${now%%$'\t'*} 가 ${old#*$'\t'} 에서 ${now#*$'\t'} 로 옮겨졌습니다. ${site}에서 잡았고 ${did}. 행위: ${words:-(argv 없음)}. 이 이동이 런의 행위인지 사람의 커밋인지, 옮겨진 베이스를 그대로 둘지 되돌릴지 정해 주십시오."
+  obs="기지값=${old#*$'\t'} / 지금=${now#*$'\t'} / 자리=${site} / 행위 종료 코드=${rc} / 동시 행위·사람 커밋 구분 안 함"
+  case "$seg" in
+    ''|-)
+      gate_base_guard_act_row "$al" "$seg" '베이스 이동 — 세그먼트 없는 행위' "$obs" || true
+      if gate_shift_halt_write "$al" "베이스-$al" '베이스 이동' "$q" "$obs"; then
+        rec=$GATE_SHW_DST; lf=$tl
+      fi ;;
+    *)
+      if gate_shift_halt_write "$al" "$seg" '베이스 이동' "$q" "$obs"; then
+        rec=$GATE_SHW_DST
+      elif gate_shift_halt_write "$al" "베이스-$al" '베이스 이동' "$q" "$obs"; then
+        rec=$GATE_SHW_DST
+      fi
+      lf="$kf.latch.$seg" ;;
+  esac
+  if [ -z "$rec" ]; then
+    gate_base_guard_put "$tl" '기록 없음' || true
+    gate_base_guard_act_row "$al" "$seg" '베이스 이동 — 기록 작성 실패' "$obs" || true
+    rm -f "$wf" 2>/dev/null || true
+    warn "베이스 이동 — 대상 $al 의 베이스가 ${old#*$'\t'} 에서 ${now#*$'\t'} 로 옮겨졌으나 기록을 쓰지 못해 대상 걸쇠 $tl 에 기록 없음을 둡니다 · ${did}"
+    return "$GATE_EXIT_PARK"
+  fi
+  # The record stands; the marker names it, so an entry that finds the marker
+  # after this act died finishes what is left.
+  gate_base_guard_put "$wf" "${old#*$'\t'}	${now#*$'\t'}	$(date -u +%s)	$rec	$lf" || true
+  if gate_index_lock "$kf"; then
+    cur=$(gate_base_guard_read "$kf") || cur=''
+    if [ "$cur" = "$old" ]; then
+      gate_base_guard_put "$kf" "$now" || true
+    fi
+    gate_base_guard_put "$lf" "$rec" && rm -f "$wf" 2>/dev/null
+    gate_index_unlock "$kf"
+  fi
+  warn "베이스 이동 — 대상 $al 의 베이스가 ${old#*$'\t'} 에서 ${now#*$'\t'} 로 옮겨졌습니다(${site}) — 기록 $rec · ${did}"
+  return "$GATE_EXIT_PARK"
+}
+
+gate_base_guard_latch_wait() {
+  # gate_base_guard_latch_wait <alias> <latch> <now> <대상|세그먼트> — called under
+  # the lock with a latch standing. Exit 0 when the latch was lifted by a
+  # `재시도` answer and the entry goes on; otherwise unlocks, warns and exits 11.
+  local al="$1" lf="$2" now="$3" who="$4" kf="$RUN_DIR/base-guard/$1" v ans
+  if ! v=$(gate_base_guard_read "$lf"); then
+    gate_index_unlock "$kf"
+    gate_base_guard_target_stop "$al" "${GATE_BG_SEG:--}" \
+      "대상 $al 의 베이스 이동 걸쇠 $lf 를 읽지 못해 대조하지 못했습니다." \
+      "기지값=대조 안 함 / 지금=대조 안 함 / 자리=들머리 / 행위 종료 코드=수행 안 함 / 동시 행위·사람 커밋 구분 안 함" \
+      "걸쇠 $lf 를 읽지 못함"
+    return "$?"
+  fi
+  if ! ans=$(gate_base_guard_last_answer "$v"); then
+    gate_index_unlock "$kf"
+    gate_base_guard_target_stop "$al" "${GATE_BG_SEG:--}" \
+      "대상 $al 의 베이스 이동 기록 $v 의 중단 답을 원장에서 찾지 못해 대조하지 못했습니다." \
+      "기지값=대조 안 함 / 지금=대조 안 함 / 자리=들머리 / 행위 종료 코드=수행 안 함 / 동시 행위·사람 커밋 구분 안 함" \
+      "원장에서 중단 답을 조회하지 못함"
+    return "$?"
+  fi
+  if [ "$ans" = "재시도" ]; then
+    if gate_base_guard_release "$al" "$lf" "$v" "$now"; then
+      return 0
+    fi
+    gate_index_unlock "$kf"
+    warn "베이스 이동 — 기록 $v 의 재시도 답으로 걸쇠를 풀지 못해 그대로 둡니다 · 행위 수행 안 함"
+    return "$GATE_EXIT_PARK"
+  fi
+  gate_index_unlock "$kf"
+  warn "베이스 이동 — 이 ${who}는 베이스 이동 기록 $v 에 답이 달릴 때까지 멈춰 있습니다 · 행위 수행 안 함"
+  return "$GATE_EXIT_PARK"
+}
+
+gate_base_guard_plan() {
+  # gate_base_guard_plan <alias> <segment> <kind> — the dry run's reading:
+  # nothing is written, and a latch that stands or a base that moved answers
+  # with the line and code the act would meet.
+  local al="$1" seg="$2" kind="$3" kf="$RUN_DIR/base-guard/$1" why='' v lf known now
+  now=$(gate_base_guard_now "$al")
+  for lf in "$kf.latch" ${seg:+"$kf.latch.$seg"}; do
+    [ "$lf" = "$kf.latch.-" ] && continue
+    [ -e "$lf" ] || continue
+    v=$(gate_base_guard_read "$lf" 2>/dev/null) || v=''
+    if [ -n "$v" ] && [ "$v" != "기록 없음" ] \
+       && [ "$(gate_base_guard_last_answer "$v" 2>/dev/null || true)" = "재시도" ]; then
+      continue
+    fi
+    why="걸쇠 $lf (${v:-읽지 못함})"; break
+  done
+  if [ -z "$why" ] && [ -e "$kf.writing" ]; then
+    why="작성 중 표지 $kf.writing"
+  fi
+  if [ -z "$why" ] && [ -e "$kf" ]; then
+    known=$(gate_base_guard_read "$kf" 2>/dev/null) || known=''
+    [ "$known" = "$now" ] || why="기지값 ${known#*$'\t'} · 지금 ${now#*$'\t'}"
+  fi
+  [ -n "$why" ] || return 0
+  printf 'park 예상: 도달 판정=베이스 이동 kind=%s target=%s 근거=%s\n' "$kind" "$al" "$why"
+  return "$GATE_EXIT_PARK"
+}
+
+gate_base_guard_entry() {
+  # gate_base_guard_entry <alias> <segment> <verb> <kind> <argv...> — the check
+  # at the act's entry, before any row is written. Exit 0 to go on, 3 for the
+  # bare `admit` form, 11 to stop without performing.
+  local al="$1" seg="$2" verb="$3" kind="$4"; shift 4
+  GATE_BG_ON=''; GATE_BG_AL=''; GATE_BG_SEG=''
+  gate_base_guard_applies "$al" "$verb" "$kind" || return 0
+  # THE BARE `admit` FORM RUNS ITS COMMAND OUTSIDE THE GATE, so the act would
+  # have no "after" to compare, and a move it made would be caught at some
+  # other act's entry and pinned on that act's segment. Refused before any
+  # file of the check is touched.
+  if [ "${GATE_ADMIT:-}" = "1" ]; then
+    warn "원격 없는 대상의 행위는 게이트가 수행해야 베이스 이동을 대조할 수 있습니다 — exec 로 부르십시오"
+    return "$GATE_EXIT_RULE"
+  fi
+  if [ "$verb" = "plan" ]; then
+    gate_base_guard_plan "$al" "$seg" "$kind"
+    return "$?"
+  fi
+  GATE_BG_SEG=$seg
+  local d="$RUN_DIR/base-guard" kf tl wf lf now known v w_old w_new w_at w_rec w_lf age
+  local nolock="기지값=대조 안 함 / 지금=대조 안 함 / 자리=들머리 / 행위 종료 코드=수행 안 함 / 동시 행위·사람 커밋 구분 안 함"
+  kf="$d/$al"; tl="$kf.latch"; wf="$kf.writing"
+  now=$(gate_base_guard_now "$al")
+  mkdir -p "$d" 2>/dev/null || true
+  if ! gate_index_lock "$kf"; then
+    gate_base_guard_target_stop "$al" "$seg" \
+      "대상 $al 의 베이스 이동 대조 잠금을 잡지 못해 대조하지 못했습니다(대조 잠금을 잡지 못함). 행위: $(printf '%s ' "${@:1:6}")" \
+      "$nolock" "대조 잠금을 잡지 못해 행위를 수행하지 않습니다"
+    return "$?"
+  fi
+  # 1. The target's latch, ahead of the act's own: it holds every act on the
+  #    target. `기록 없음` is a stop no record could be written for yet, and
+  #    the entry tries the record again before anything else.
+  if [ -e "$tl" ]; then
+    if ! v=$(gate_base_guard_read "$tl"); then
+      gate_index_unlock "$kf"
+      warn "베이스 이동 — 대상 걸쇠 $tl 를 읽지 못합니다 · 행위 수행 안 함"
+      return "$GATE_EXIT_PARK"
+    fi
+    if [ "$v" = "기록 없음" ]; then
+      gate_index_unlock "$kf"
+      if gate_shift_halt_write "$al" "베이스-$al" '베이스 이동' \
+           "대상 $al 의 베이스 이동 정지에 기록을 쓰지 못한 채 대상 걸쇠가 서 있었습니다. 지금 베이스는 ${now#*$'\t'} 입니다. 베이스를 확인하고 정리해 주십시오." \
+           "기지값=$( { gate_base_guard_read "$kf" 2>/dev/null || true; } | cut -f2) / 지금=${now#*$'\t'} / 자리=들머리 / 행위 종료 코드=수행 안 함 / 동시 행위·사람 커밋 구분 안 함" \
+         && gate_base_guard_put "$tl" "$GATE_SHW_DST"; then
+        warn "베이스 이동 — 대상 걸쇠의 기록을 이제 썼습니다 — 기록 $GATE_SHW_DST · 행위 수행 안 함"
+      else
+        warn "베이스 이동 — 대상 걸쇠 $tl 의 기록을 아직 쓰지 못합니다(기록 없음) · 행위 수행 안 함"
+      fi
+      return "$GATE_EXIT_PARK"
+    fi
+    gate_base_guard_latch_wait "$al" "$tl" "$now" '대상' || return "$?"
+  fi
+  # 2. A marker left by an act that caught a move: one that names its record
+  #    is finished here, one still being written holds this act, and one with
+  #    no record older than sixty seconds belongs to an act that died and is
+  #    cleared so the move is caught again.
+  if [ -e "$wf" ]; then
+    if ! v=$(gate_base_guard_read "$wf"); then
+      gate_index_unlock "$kf"
+      gate_base_guard_target_stop "$al" "$seg" \
+        "대상 $al 의 베이스 이동 작성 중 표지 $wf 를 읽지 못해 대조하지 못했습니다." \
+        "$nolock" "작성 중 표지 $wf 를 읽지 못함"
+      return "$?"
+    fi
+    IFS=$'\t' read -r w_old w_new w_at w_rec w_lf <<EOF
+$v
+EOF
+    if [ -n "$w_rec" ] && [ -n "$w_lf" ]; then
+      known=$(gate_base_guard_read "$kf" 2>/dev/null) || known=''
+      [ "${known#*$'\t'}" != "$w_old" ] || gate_base_guard_put "$kf" "${known%%$'\t'*}	$w_new" || true
+      if gate_base_guard_put "$w_lf" "$w_rec"; then rm -f "$wf" 2>/dev/null || true; fi
+    else
+      case "$w_at" in ''|*[!0-9]*) w_at=0 ;; esac
+      age=$(( $(date -u +%s) - w_at ))
+      if [ "$age" -le 60 ]; then
+        gate_index_unlock "$kf"
+        warn "베이스 이동 — 다른 행위가 이 대상의 베이스 이동(${w_old} → ${w_new}) 기록을 쓰는 중입니다 · 행위 수행 안 함"
+        return "$GATE_EXIT_PARK"
+      fi
+      rm -f "$wf" 2>/dev/null || true
+    fi
+  fi
+  # 3. The act's own latch.
+  case "$seg" in ''|-) lf='' ;; *) lf="$kf.latch.$seg" ;; esac
+  if [ -n "$lf" ] && [ -e "$lf" ]; then
+    gate_base_guard_latch_wait "$al" "$lf" "$now" '세그먼트' || return "$?"
+  fi
+  # 4. The comparison. No known value yet is the first observation.
+  if [ ! -e "$kf" ]; then
+    gate_base_guard_put "$kf" "$now" || {
+      gate_index_unlock "$kf"
+      gate_base_guard_target_stop "$al" "$seg" \
+        "대상 $al 의 베이스 기지값 $kf 를 적지 못해 대조하지 못했습니다." \
+        "$nolock" "기지값 $kf 를 적지 못함"
+      return "$?"; }
+    gate_index_unlock "$kf"
+    GATE_BG_ON=1; GATE_BG_AL=$al
+    return 0
+  fi
+  if ! known=$(gate_base_guard_read "$kf"); then
+    gate_index_unlock "$kf"
+    gate_base_guard_target_stop "$al" "$seg" \
+      "대상 $al 의 베이스 기지값 $kf 를 읽지 못해 대조하지 못했습니다." \
+      "$nolock" "기지값 $kf 를 읽지 못함"
+    return "$?"
+  fi
+  if [ "$known" = "$now" ]; then
+    gate_index_unlock "$kf"
+    GATE_BG_ON=1; GATE_BG_AL=$al
+    return 0
+  fi
+  gate_base_guard_put "$wf" "${known#*$'\t'}	${now#*$'\t'}	$(date -u +%s)" || true
+  gate_index_unlock "$kf"
+  gate_base_guard_record_move "$al" "$seg" "$known" "$now" '들머리' '수행 안 함' "$@"
+}
+
+gate_base_guard_after() {
+  # gate_base_guard_after <rc> <argv...> — the check after the act, whatever
+  # its exit code. Exit 0 to pass the act's own code on, 11 when the act moved
+  # the base (the act was performed; its record waits for an answer).
+  local rc="$1"; shift
+  [ "${GATE_BG_ON:-}" = "1" ] || return 0
+  local al="$GATE_BG_AL" kf now known
+  kf="$RUN_DIR/base-guard/$al"
+  now=$(gate_base_guard_now "$al")
+  if ! gate_index_lock "$kf"; then
+    warn "베이스 이동 — 대조 잠금을 잡지 못해 행위 뒤 대조를 건너뜁니다 — 다음 행위의 들머리가 대조합니다 · 행위는 수행됨"
+    return 0
+  fi
+  if [ ! -e "$kf" ]; then
+    gate_base_guard_put "$kf" "$now" || true
+    gate_index_unlock "$kf"
+    return 0
+  fi
+  # Another act is writing a record for a move: it is that act's to report.
+  if [ -e "$kf.writing" ]; then
+    gate_index_unlock "$kf"
+    return 0
+  fi
+  if ! known=$(gate_base_guard_read "$kf"); then
+    gate_index_unlock "$kf"
+    warn "베이스 이동 — 기지값 $kf 를 읽지 못해 행위 뒤 대조를 건너뜁니다 — 다음 행위의 들머리가 대조합니다 · 행위는 수행됨"
+    return 0
+  fi
+  if [ "$known" = "$now" ]; then
+    gate_index_unlock "$kf"
+    return 0
+  fi
+  gate_base_guard_put "$kf.writing" "${known#*$'\t'}	${now#*$'\t'}	$(date -u +%s)" || true
+  gate_index_unlock "$kf"
+  gate_base_guard_record_move "$al" "${GATE_BG_SEG:--}" "$known" "$now" '행위 뒤' "$rc" "$@"
 }
 
 gate_shift_halt_record_intact() {
@@ -33038,6 +33666,33 @@ gate_review_line() {
       fi
     fi
   fi
+  # A SEGMENT OF A TARGET WITH NO `origin` HAS NO PULL REQUEST TO FIND ITS BASE
+  # FROM. A routed run writes no `베이스 sha` on its rows, and the review of a
+  # branch in a repository with no remote stops without `--base-sha`, so the line
+  # takes the merge-base of the recorded worktree's HEAD and the local base
+  # branch ref. A line without it would send a review that can only stop, so a
+  # base that cannot be derived refuses the line instead.
+  if [ -z "$base" ] && [ "$pmseg" = 0 ] && [ "$mgseg" = 0 ]; then
+    local lal lwt lref
+    lal=$(gate_segment_target_alias "$seg") || lal=''
+    if [ -n "$lal" ] && ! target_has_origin "$lal"; then
+      lwt=$(gate_segment_anchor_worktree "$seg" "$lal") || lwt=''
+      if [ -z "$lwt" ] || [ ! -d "$lwt" ]; then
+        warn "segment $seg targets $lal, which has no origin, and has no recorded worktree to derive --base-sha from"
+        return "$GATE_EXIT_RULE"
+      fi
+      lref=$(base_ref "$lal" 2>/dev/null) || lref=''
+      if [ -z "$lref" ]; then
+        warn "segment $seg targets $lal, which has no origin, and its base branch does not resolve — --base-sha cannot be derived"
+        return "$GATE_EXIT_RULE"
+      fi
+      base=$( { cd "$lwt" && git merge-base HEAD "$lref"; } 2>/dev/null) || base=''
+      if [ -z "$base" ]; then
+        warn "no merge-base of HEAD of the recorded worktree $lwt and $lref for segment $seg — --base-sha cannot be derived"
+        return "$GATE_EXIT_RULE"
+      fi
+    fi
+  fi
   [ -z "$base" ] || line="$line --base-sha $base"
   # A MERGE-FIRST SEGMENT PAST ITS MERGE is reviewed after it landed, so the
   # line names the merge commit its last `머지됨` row recorded: the review
@@ -34900,8 +35555,9 @@ gate_cone_members() {
     return 0
   fi
   # A termination clause's key stands in front of no segment, so its cone is
-  # the key alone.
-  if gate_clause_key_id "$anchor" >/dev/null; then
+  # the key alone; so does a target's `베이스-<별칭>` key, whose latch holds
+  # that target's acts by itself rather than through a cone.
+  if gate_clause_key_id "$anchor" >/dev/null || gate_base_guard_key_alias "$anchor" >/dev/null; then
     printf '%s\n' "$anchor"
     return 0
   fi
@@ -34994,10 +35650,12 @@ gate_record_cone() {
   # segment row: a stage of it that cannot finish inside the deadline, or an
   # answer to its halt the shift cannot carry out, holds every segment.
   # A termination clause's `clause-<id>` key has none either: its evidence
-  # request holds that clause alone.
+  # request holds that clause alone. A target's `베이스-<별칭>` key, the
+  # base-move check's record when no segment can carry it, has none either.
   if [ -z "$(gate_segment_field "$anchor" '상태')" ] \
      && ! gate_run_scope_kind_of_key "$anchor" >/dev/null 2>&1 \
-     && ! gate_clause_key_id "$anchor" >/dev/null; then
+     && ! gate_clause_key_id "$anchor" >/dev/null \
+     && ! gate_base_guard_key_alias "$anchor" >/dev/null; then
     warn "there is no segment row for the anchor segment: $anchor — a cone is not stood up on an anchor the ledger does not resolve"
     return "$GATE_EXIT_VOCAB"
   fi
@@ -42992,8 +43650,7 @@ EOF
         warn "\`shift-halt\` is written by the routing shift only — a stage halts with its own record, and the seat asks a person directly"
         return "$GATE_EXIT_RULE"
       fi
-      local sf sk ssite sq sobs srec sgr srow sinfo sopts sdir sn sdst stmp sdig sord r
-      local sw=300 slen sline sexp
+      local sf sk ssite sq sobs srec sgr srow sline
       for sf in "$@"; do
         sk="${sf%%=*}"
         case "$sk" in 자리|질문|관측|추천|추천\ 근거|절|실행|명령\ 초안|기대\ 결과) continue ;; esac
@@ -43009,6 +43666,14 @@ EOF
       srow=$(gate_shift_halt_site_row "$ssite") || {
         warn "\`${ssite:-(none)}\` is not a site of the shift-halt table — a run-scope stop stays a \`handoff\` with \`사유=중단\`"
         return "$GATE_EXIT_VOCAB"; }
+      # A BASE MOVE IS THE GATE'S OWN STOP. Only the base-move check measures
+      # whether the base moved between two acts, and it writes that record
+      # itself; a shift's record at that site would ask a person about a move
+      # the gate never measured.
+      if [ "$ssite" = "베이스 이동" ]; then
+        warn "\`베이스 이동\` is written by the gate's base-move check only — a shift does not stop a segment at that site"
+        return "$GATE_EXIT_VOCAB"
+      fi
       # A SIZE BLOCK IS NO REACH PARK. A dispatch the document's size refused
       # exits 11 like a reach park, but it wrote a size record and a
       # `차단=파견 전` row, not a `blocked` row. A `도달 거부` stop on it would
@@ -43110,7 +43775,6 @@ EOF
       fi
       srec=$(gate_field_of '추천' "$@")
       sgr=$(gate_field_of '추천 근거' "$@")
-      sinfo=$(printf '%s' "$srow" | cut -d'|' -f3)
       if [ "$ssite" = "종료 절 근거" ] && [ -n "$srec" ]; then
         # THE ONE RECOMMENDATION THIS SITE TAKES, while its table cell stays
         # `없음`: a shift whose evidence is of the kind the clause asks for may
@@ -43150,108 +43814,11 @@ EOF
         [ -z "$svrow" ] \
           || sverd="게이트 정산 판정: $(gate_row_field "${svrow#*:}" '정산 판정') — $(gate_row_field "${svrow#*:}" '정산 근거')"
       fi
-      sdir=$(gate_shift_halt_dir) || {
-        warn "this run's halt/shift is not a real directory at $RUN_DIR/halt/shift — the record is not written"
-        return "$GATE_EXIT_RULE"; }
-      sn=1
-      while IFS= read -r r; do
-        [ -n "$r" ] || continue
-        [ "$(gate_row_field "$r" '스코프')" = "cone" ] || continue
-        [ "$(gate_row_field "$r" '앵커 세그먼트')" = "$seg" ] || continue
-        [ -n "$(gate_row_field "$r" '중단 기록')" ] || continue
-        [ -n "$(gate_row_field "$r" '기록 다이제스트')" ] || continue
-        sn=$((sn + 1))
-      done <<EOF
-$(gate_rows 'blocked')
-EOF
-      sdst="$sdir/$seg#$sn.md"
-      sopts=$(gate_shift_halt_options "$ssite")
-      stmp=$(mktemp "$sdir/.shift-halt.XXXXXX") || {
-        warn "could not make a temporary file under $sdir"
-        return "$GATE_EXIT_RULE"; }
-      {
-        printf '<!-- cc-pipeline-halt v1; writer=gate; reader=orchestrator; stage=%s#%s; run=%s -->\n' "$seg" "$sn" "$RUN_ID"
-        printf '**중단 시각**: %s\n' "$(now_iso)"
-        printf '**스킬**: autopilot-router-shift\n'
-        printf '**스텝**: 교대 정지 — %s\n' "$ssite"
-        printf '**분류**: gate-unanswerable\n'
-        printf '**질문 문면**: %s%s\n' "$(printf '%s' "$sq" | tr '\n\r' '  ')" "${sverd:+ $sverd}"
-        [ -z "$sresult" ] || printf '**실행 결과**: %s\n' "$sresult"
-        [ -z "$sdraft" ] || printf '**명령 초안**: %s\n' "$(printf '%s' "$sdraft" | tr '\n\r' '  ')"
-        [ -z "$sexpect" ] || printf '**기대 결과**: %s\n' "$(printf '%s' "$sexpect" | tr '\n\r' '  ')"
-        [ -z "$stg" ] || printf '%s\n' "$stg" | sed '/^$/d;s/^/**승인 대상**: /'
-        printf '**선택지**:\n%s\n' "$sopts"
-        if [ -n "$srec" ]; then
-          printf '**추천**: `%s` — 추천 근거의 인용이 이 선택지를 정한다\n' "$srec"
-          printf '**추천 근거**: %s\n' "$(printf '%s' "$sgr" | tr '\n\r' '  ')"
-        else
-          printf '**추천**: (없음) — %s\n' "$sinfo"
-          printf '**추천 근거**: (없음)\n'
-        fi
-        printf '**선택지 리스크**: %s\n' "$(gate_shift_halt_risks "$ssite")"
-        printf '**하네스 오류**: (없음)\n'
-        printf '**관측 상세**: %s%s\n' "$(printf '%s' "$sobs" | tr '\n\r' '  ')" "${sverd:+ $sverd}"
-        printf '**재호출 명령**: (없음)\n'
-        printf '**후속**: 보류 큐\n'
-        printf '<!-- /cc-pipeline-halt v1 -->\n'
-      } > "$stmp" || { rm -f "$stmp"; warn "could not write the halt record"; return "$GATE_EXIT_RULE"; }
-      sdig=$(shasum -a 256 "$stmp" | cut -d' ' -f1)
-      # `mv -n` NEVER REPLACES. A file already at the name is either an earlier
-      # record this count missed or something placed there to be answered in
-      # this record's stead, and both are refused with no row written.
-      mv -n "$stmp" "$sdst" 2>/dev/null || true
-      if [ -e "$stmp" ]; then
-        rm -f "$stmp"
-        warn "a file is already at $sdst — the record is not written and no row is added"
-        return "$GATE_EXIT_RULE"
-      fi
-      sord=$(gate_shift_self_ordinal)
-      sexp=$(printf '%*s' "$GATE_CONE_LIST_MAX" '' | tr ' ' 'x')
-      # A MERGE REFUSAL OVER A FAILURE THE BASE SHARES IS THE TARGET'S TO FIX.
-      # At `병합 거절` alone the gate derives `다음` again the way the CI acts
-      # read it (`gate_segment_ci_next`, from the worktree tip) inside this act;
-      # when it is `CI 기존 실패` and the round's
-      # reading found every check that failed on the head failing on the base
-      # too, the cone row carries the judgment. A derivation that fails or reads
-      # another value, a partial overlap and a skipped base reading all leave
-      # the fields off, and a reader takes the stop as `판정 불가`.
-      local sfx=() snx sh
-      if [ "$ssite" = "병합 거절" ]; then
-        snx=$(gate_segment_ci_next "$seg" 2>/dev/null || true)
-        sh=$(gate_worktree_tip "$(gate_segment_worktree "$seg")" 2>/dev/null || true)
-        if [ "$snx" = "CI 기존 실패" ] && [ -n "$sh" ] && gate_ci_base_all_match "$seg" "$sh"; then
-          sfx=('고칠 곳=대상 레포' '판정 주체=게이트' '판정 신호=베이스 동일 실패')
-        fi
-      fi
-      while [ "$sw" -ge 40 ]; do
-        sline="${sverd:+$sverd · }$(gate_row_safe "$sobs" "$sw")"
-        slen=$(gate_row_projected_bytes 'blocked' "대상=$alias" '스코프=cone' '원인=막힘' \
-          "앵커 세그먼트=$seg" "사유=교대 정지 — $ssite" "근거=$sline" "중단 기록=$sdst" \
-          "기록 다이제스트=$sdig" "자리=$ssite" ${sord:+"교대=$sord"} \
-          '의존 세그먼트 수=999' "의존 세그먼트=$sexp")
-        [ "$slen" -le "$GATE_ROW_MAX" ] && break
-        sw=$((sw - 40))
-      done
-      # The judgment rides only when the row still fits with it; a row near the
-      # cap is written without it, as every gate-stamped stop row is.
-      if [ "${#sfx[@]}" -gt 0 ] && ! gate_fix_fits 'blocked' "대상=$alias" '스코프=cone' '원인=막힘' \
-           "앵커 세그먼트=$seg" "사유=교대 정지 — $ssite" "근거=$sline" "중단 기록=$sdst" \
-           "기록 다이제스트=$sdig" "자리=$ssite" ${sord:+"교대=$sord"} "${sfx[@]}" \
-           '의존 세그먼트 수=999' "의존 세그먼트=$sexp"; then
-        warn "$seg 의 교대 정지 행이 상한에 닿아 고칠 곳 판정 필드를 싣지 않습니다"
-        sfx=()
-      fi
-      r=0
-      GATE_SHIFT_HALT_WRITING=1 gate_record_cone "$alias" '스코프=cone' '원인=막힘' \
-        "앵커 세그먼트=$seg" "사유=교대 정지 — $ssite" "근거=$sline" "중단 기록=$sdst" \
-        "기록 다이제스트=$sdig" "자리=$ssite" ${sord:+"교대=$sord"} ${sfx[@]+"${sfx[@]}"} || r=$?
-      if [ "$r" != "0" ]; then
-        # A record with no row is one nothing vouches for and every halt scan
-        # would still count, so it goes with the row that failed.
-        rm -f "$sdst"
-        return "$r"
-      fi
-      log "교대 정지 기록 — $seg ($ssite) → $sdst"
+      gate_shift_halt_write "$alias" "$seg" "$ssite" "$sq" "$sobs" \
+        ${srec:+"추천=$srec"} ${sgr:+"추천 근거=$sgr"} ${sverd:+"정산=$sverd"} \
+        ${sresult:+"실행 결과=$sresult"} ${sdraft:+"명령 초안=$sdraft"} \
+        ${sexpect:+"기대 결과=$sexpect"} ${stg:+"승인 대상=$stg"} \
+        "교대=$(gate_shift_self_ordinal)" || return "$?"
       ;;
     review-dismiss)
       # THE SEAT'S WAY TO CARRY A PERSON'S DISMISSAL OF REVIEW FINDINGS TO THE
@@ -45852,7 +46419,8 @@ gate_audit_worktree_ensure() {
   # the driver's `wt_create` uses), reused when it is already a worktree of this
   # target, and refused when the path is taken by anything else. Then admitted
   # to the stage settings the way a `segment` row admits its worktree, because
-  # no row will name this one.
+  # no row will name this one. A target with no `origin` is not fetched and its
+  # tree starts at `refs/heads/<base_branch>`.
   #
   # A FAILED FETCH IS A WARNING, NOT A REFUSAL. The tree then starts at the
   # tracking ref as it stands, which a local base never runs ahead of; only a
@@ -45862,7 +46430,7 @@ gate_audit_worktree_ensure() {
   # PERFORMED, NOT CHECKED. It runs from the dispatch switch, after the row and
   # every rule, so a refused dispatch leaves no tree behind; and before the
   # launch, so the stage's first act already resolves here.
-  local alias="$1" wt root base lk sha fetched
+  local alias="$1" wt root base lk sha fetched sref slabel slog
   if ! wt=$(gate_audit_worktree_path "$alias"); then
     warn "감사 워크트리 경로를 정하지 못했습니다 — 실행 계획의 감사 단계 하나와 대상 ${alias} 의 메인 워크트리가 있어야 합니다"
     return "$GATE_EXIT_RULE"
@@ -45880,22 +46448,31 @@ gate_audit_worktree_ensure() {
       warn "대상 ${alias} 에 베이스 브랜치 가 없어 감사 워크트리를 만들 수 없습니다"
       return "$GATE_EXIT_RULE"
     fi
-    if base_fetch_ref "$alias" "$base" >/dev/null 2>&1; then
-      fetched='fetch 성공'
+    # A target with no `origin` has nothing to fetch and no tracking ref: the
+    # tree starts at the local base branch head, and no fetch warning is given.
+    if target_has_origin "$alias"; then
+      sref="refs/remotes/origin/${base}"; slabel="origin/${base}"
+      if base_fetch_ref "$alias" "$base" >/dev/null 2>&1; then
+        fetched='fetch 성공'
+      else
+        fetched='fetch 실패'
+        warn "감사 워크트리 — origin/${base} fetch 가 실패했습니다; 지금의 refs/remotes/origin/${base} 에서 뜹니다"
+      fi
+      slog='fetch 뒤'
     else
-      fetched='fetch 실패'
-      warn "감사 워크트리 — origin/${base} fetch 가 실패했습니다; 지금의 refs/remotes/origin/${base} 에서 뜹니다"
+      sref="refs/heads/${base}"; slabel="refs/heads/${base}"
+      fetched='원격 없음'; slog='원격 없음,'
     fi
-    sha=$( cd "$root" && git rev-parse --verify --quiet "refs/remotes/origin/${base}^{commit}" 2>/dev/null ) || sha=""
+    sha=$( cd "$root" && git rev-parse --verify --quiet "${sref}^{commit}" 2>/dev/null ) || sha=""
     if [ -z "$sha" ]; then
-      warn "감사 워크트리의 시작점 refs/remotes/origin/${base} 가 커밋으로 해소되지 않습니다(${fetched}) — 감사 워크트리를 만들 수 없습니다"
+      warn "감사 워크트리의 시작점 ${sref} 가 커밋으로 해소되지 않습니다(${fetched}) — 감사 워크트리를 만들 수 없습니다"
       return "$GATE_EXIT_RULE"
     fi
     if ! ( cd "$root" && git worktree add --detach "$wt" "$sha" >/dev/null 2>&1 ); then
-      warn "감사 워크트리를 origin/${base} 끝 ${sha} 에 분리해 만들지 못했습니다: $wt"
+      warn "감사 워크트리를 ${slabel} 끝 ${sha} 에 분리해 만들지 못했습니다: $wt"
       return "$GATE_EXIT_RULE"
     fi
-    log "감사 워크트리 — $wt (fetch 뒤 origin/${base} 끝 $(printf '%s' "$sha" | cut -c1-12) 에 분리)"
+    log "감사 워크트리 — $wt (${slog} ${slabel} 끝 $(printf '%s' "$sha" | cut -c1-12) 에 분리)"
   fi
   [ -n "${RUN_DIR:-}" ] || return 0
   lk="$RUN_DIR/settings.lock"
@@ -52899,6 +53476,13 @@ gate_verb_act() {
     fi
   fi
 
+  # THE BASE-MOVE CHECK'S ENTRY, on exec, act and plan alike and before any
+  # row: a target with no `origin` has its base compared with the known value
+  # here, a latch from an earlier move holds the act, and the bare `admit` form
+  # is refused. A target with a remote returns at once. The check runs again
+  # after the act, at the two returns of the perform block below.
+  gate_base_guard_entry "$alias" "$segment" "$verb" "${kind:-}" "$@" || exit $?
+
   # A STAGE MAY NOT BE DISPATCHED INTO A SEGMENT THAT HAS NO `segment` ROW.
   #
   # The progress vector is built from the goal digest, the target rows, the
@@ -55625,6 +56209,7 @@ gate_verb_act() {
         # it. The arm writes its own failure row, so it returns past the shared
         # failure tail below rather than through it.
         clause-exec) gate_perform_clause_exec "$alias" "$graded" "$@" || rc=$?
+                     gate_base_guard_after "$rc" "$@" || rc=$?
                      return "$rc" ;;
         # The review POST, its re-read and its row, never the argv.
         review-post) gate_perform_review_post "$alias" "$segment" || rc=$? ;;
@@ -55653,6 +56238,9 @@ gate_verb_act() {
       "절단점=$GATE_ACT_EFFECTIVE" "유도 절단점=${GATE_ACT_DERIVED:--}" \
       "축2=$graded" "근거=rc=$rc"
   fi
+  # The base-move check after the act, once the act's own failure row is
+  # written: a move turns the code into 11, with no second failure row.
+  gate_base_guard_after "$rc" "$@" || rc=$?
   return "$rc"
 }
 
