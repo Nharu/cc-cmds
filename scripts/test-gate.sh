@@ -5572,7 +5572,13 @@ pre_review() {
   # done proposal taken and a terminal handoff written. Inherited, that ledger
   # turns this run's merges into acts after the end, so the ledger starts empty
   # here the way the run directory does.
+  # The run directory reopens as an unrouted run the CI layer does not stand on,
+  # as `sa_run_reset` does for the sa run: left to the first gate call, the
+  # absent inventory baseline writes `1` and the 선머지후리뷰 merge below is
+  # refused for want of a round-0 pass.
   rm -rf "$XDG_STATE_HOME/cc-cmds/run/$SH_ID"
+  mkdir -p "$XDG_STATE_HOME/cc-cmds/run/$SH_ID" \
+    && printf '0\n' > "$XDG_STATE_HOME/cc-cmds/run/$SH_ID/ci-layer"
   rm -f "$SH_LEDGER"
   fx_rid_copy R1 "$SH_ID" "$WORK/manifest-clean.md" "$SH_MANIFEST"
   awk '/^- `target`/ { print $0 " | 리뷰 정책 상한=선머지후리뷰"; next } { print }' \
