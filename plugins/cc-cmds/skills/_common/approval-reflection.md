@@ -129,14 +129,20 @@ never dropped silently. The attachment is read at step 4 of
    - Unattended: the re-convergence's working copy and its `lockf` publish
      (`design-reconverge` Step 3), its hash checks included.
    - Interactive: compare the document's `shasum -a 256` before taking the copy
-     and again right before publishing; a difference stops the reflection.
-     While an unattended run on the same document is alive, do not reflect
-     interactively at all — the run's re-convergence is that document's
-     reflection. Alive is read from the run's own record — a manifest naming
-     the document, whose plan carries a visual publish step and whose ledger
-     exists and carries no end token yet — never from the sidecar's
-     ` — 사람 답` tail, which an ended run leaves behind. A run with no visual
-     publish step dispatches no reflection, so it does not hold this one back. The comparison is the one the unattended path makes, so it adds
+     and again right before publishing; a difference stops the reflection
+     without writing `실패` — only a collision (step 4) writes it — and leaves
+     the sidecar as it is. While an unattended run on the same document is
+     alive, do not reflect interactively at all — the run's re-convergence is
+     that document's reflection: show the run id and stop before step 3. Alive
+     is one signal: among the authorization records under
+     `<base>/docs/pipeline-grant/` whose header `owner-doc=` is this document's
+     key, take the latest `## 인가 <run-id>` block; its run is alive while its
+     run directory `${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/run/<run-id>`
+     holds no `done` file yet. Never read it from the sidecar's
+     ` — 사람 답` tail, which an ended run leaves behind. An abandoned run with
+     no `done` reads as alive too; whether to end it is a person's call. The
+     interactive publish takes no `lockf` of the unattended side — a known
+     limit. The comparison is the one the unattended path makes, so it adds
      no new rule and keeps one writer from overwriting another.
 3. **Sidecar, once.** Rewrite `**문서 반영**` to
    `완료 — 문서 sha256 <사후 64 hex>` — unattended with the tail

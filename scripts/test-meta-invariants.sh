@@ -27,7 +27,7 @@
 # pointing at that file, its missing question and notification surfaces, its
 # missing copies, the phase sentence, and the start disposition and end
 # obligation with their two spellings. The approved-screen reflection block
-# (6e-7) adds seventeen: ten sentences of the writers and readers of the
+# (6e-7) adds seventeen and the fix cycle more: ten sentences of the writers and readers of the
 # approval, three in each router copy's reflection paragraph, and that
 # paragraph's identity across the two copies. Every other assertion here is one
 # a source suite used to make.
@@ -1976,7 +1976,10 @@ done <<'EOF'
 반영 실패|design-reconverge/SKILL.md|`**스텝**: Step 3 승인 화면 반영 — 충돌`
 반영 실패|design-reconverge/SKILL.md|- `결정 첨부 후 다시 반영` — 사람이 충돌을 푸는 결정을 첨부에 붙이면
 반영 실패|design-reconverge/SKILL.md|An exit 2 prints only the lines it could not find and no count line, so read the block instead
-대화형 승인|visual/SKILL.md|its plan carries a visual publish step (a `steps[]` entry whose `skill` is `visual-publish`)
+대화형 승인|visual/SKILL.md|the latest `## 인가 <run-id>` block names the run, and that run is alive while its run directory `${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/run/<run-id>` holds no `done` file yet
+대화형 승인|visual/SKILL.md|a difference stops the reflection with the sidecar as it is and writes no `실패`
+대화형 승인|_common/approval-reflection.md|key, take the latest `## 인가 <run-id>` block; its run is alive while its
+대화형 승인|_common/approval-reflection.md|An abandoned run with
 반영 실패|_common/approval-reflection.md|and the lines `drift` prints are lines that cannot be applied
 대화형 승인|visual/SKILL.md|The sidecar's ` — 사람 답` tail is not this test
 반영 종단|_common/approval-reflection.md|위 두 종단의 두 번째 | `대기` 그대로
