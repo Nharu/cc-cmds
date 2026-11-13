@@ -72,6 +72,7 @@ lint:
 	bash scripts/lint-interview-record-sections.sh
 	bash scripts/lint-interview-convention-refs.sh
 	bash scripts/lint-kickoff-defaults.sh
+	bash scripts/lint-kickoff-recommendations.sh
 	@jq empty plugins/cc-cmds/hooks/hooks.json
 # Every command path in hooks.json must exist and be executable. This REPLACES a
 # hard-coded assertion that named one hook, which had already stopped covering a
@@ -189,9 +190,13 @@ check-cheap:
 #   CHECK_PUSH_REUSE        0 turns off the reuse of recorded passes (default 1)
 #   CC_TEST_SLOTS           host-wide test slots, one CPU's share each: a
 #                           positive whole number, or auto for max(4, CPUs);
-#                           unset, empty or 0 (the default) turns them off
-#   CC_TEST_SLOTS_DIR       where the slots live (default the common git
-#                           directory's cc-cmds-test-slots/)
+#                           0 turns them off. Unset or empty, an unattended
+#                           run (CC_PIPELINE_RUN_ID set) takes the default in
+#                           scripts/test-slots.sh and any other run is off.
+#                           A `run/...` goal waits for one the same way
+#   CC_TEST_SLOTS_DIR       where the slots live (default
+#                           $XDG_STATE_HOME/cc-cmds/test-slots, else
+#                           ~/.local/state/cc-cmds/test-slots)
 # CHECK_PUSH_JOBS reaches check-push.sh the way CHECK_PUSH_SECTIONS does, as a
 # command-line variable or from the environment; the recipe stays as it is.
 # An unattended run whose head changed plugins/cc-cmds/orchestrator/gate.sh
@@ -484,6 +489,7 @@ LINT_TESTS := \
 	scripts/test-measure-team-cost.sh \
 	scripts/test-measure-lead-context.sh \
 	scripts/test-measure-test-share.sh \
+	scripts/test-measure-test-slots.sh \
 	scripts/test-measure-discussion-passes.sh \
 	scripts/test-solo-audit-experiment.sh \
 	scripts/test-reader-model-compare.sh \
@@ -497,7 +503,8 @@ LINT_TESTS := \
 	scripts/test-lint-terminal-literals.sh \
 	scripts/test-lint-interview-record-sections.sh \
 	scripts/test-lint-interview-convention-refs.sh \
-	scripts/test-lint-kickoff-defaults.sh
+	scripts/test-lint-kickoff-defaults.sh \
+	scripts/test-lint-kickoff-recommendations.sh
 
 ORCH_TESTS := \
 	plugins/cc-cmds/orchestrator/test-run.sh \
@@ -511,6 +518,7 @@ ORCH_TESTS := \
 	scripts/test-base-split.sh \
 	scripts/test-gate-chain-equiv.sh \
 	scripts/test-measure-gate-cost.sh \
+	scripts/test-measure-spawn-count.sh \
 	scripts/test-snapshot.sh \
 	scripts/test-orchestrator-pretool-hook.sh \
 	scripts/test-session-notify-hook.sh \
@@ -542,6 +550,7 @@ ORCH_TESTS := \
 	scripts/test-measure-cycle-causes.sh \
 	scripts/test-run-issue-filing.sh \
 	scripts/test-waiting-decisions.sh \
+	scripts/test-halt-question.sh \
 	scripts/test-visual-config.sh \
 	scripts/test-visual-check.sh \
 	scripts/test-visual-capture.sh \
@@ -565,7 +574,7 @@ TEST_GOALS := $(ALL_TESTS:%=run/%)
 # make's jobserver pipe open and make does not return while it lives; the
 # wrapper's header says how it decides what is the suite's.
 $(TEST_GOALS): run/%:
-	bash scripts/suite-guard.sh $*
+	bash scripts/test-slots.sh --run 'make:run/$*' '목표 run/$*' -- bash scripts/suite-guard.sh $*
 
 test: $(NOTIFY_TESTS:%=run/%) $(LINT_TESTS:%=run/%) $(ORCH_TESTS:%=run/%) \
 	run-gate-shard-selftest run-check-gate-selftest \
@@ -977,16 +986,34 @@ run-test-run-part1:
 run-test-run-part2:
 	bash scripts/suite-guard.sh plugins/cc-cmds/orchestrator/test-run.sh --part 2
 
+# The suites below run as `darwin-run/<path>`, not `run/<path>`: the `run/%`
+# recipe goes through scripts/test-slots.sh --run, and the keepset lint reads
+# that line as running scripts/test-slots.sh alone, losing the suite behind it.
+# The macOS runner sets neither CC_PIPELINE_RUN_ID nor CC_TEST_SLOTS, so the
+# wrapper would only exec the same command there; this recipe is that command.
+DARWIN_NARROW_SUITES := $(sort $(NOTIFY_TESTS) \
+	scripts/test-notify-focus-ax.sh \
+	scripts/test-liveness-agreement.sh \
+	scripts/test-gate-chain-equiv.sh \
+	scripts/test-suite-guard.sh \
+	scripts/test-lint-bash-portability.sh \
+	$(DARWIN_TESTS))
+
+.PHONY: $(DARWIN_NARROW_SUITES:%=darwin-run/%)
+
+$(DARWIN_NARROW_SUITES:%=darwin-run/%): darwin-run/%:
+	bash scripts/suite-guard.sh $*
+
 # The heaviest go first, so `make -j` starts them before the short ones; the two
 # test-run.sh parts are by far the longest. `$(DARWIN_TESTS)` stays at the end so
 # a suite added to it is still run here — make runs a prerequisite named twice
 # once.
 test-darwin-narrow: run-test-run-part1 run-test-run-part2 \
-	test-active-notify \
+	$(NOTIFY_TESTS:%=darwin-run/%) \
 	run-gate-darwin-sections \
-	run/scripts/test-notify-focus-ax.sh \
-	run/scripts/test-liveness-agreement.sh \
-	run/scripts/test-gate-chain-equiv.sh \
-	run/scripts/test-suite-guard.sh \
-	run/scripts/test-lint-bash-portability.sh \
-	$(DARWIN_TESTS:%=run/%)
+	darwin-run/scripts/test-notify-focus-ax.sh \
+	darwin-run/scripts/test-liveness-agreement.sh \
+	darwin-run/scripts/test-gate-chain-equiv.sh \
+	darwin-run/scripts/test-suite-guard.sh \
+	darwin-run/scripts/test-lint-bash-portability.sh \
+	$(DARWIN_TESTS:%=darwin-run/%)

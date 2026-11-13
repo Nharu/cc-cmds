@@ -60,9 +60,33 @@
 # on, and only `다시`, `재킥오프`, `다시 킥오프`, `rekick`, `again` or `retry`
 # report it `대기`. A run the gate ended is a re-kickoff whatever the argument.
 #
+# A RUN ID ARGUMENT JUDGES THAT RUN ALONE. When the argument's last
+# whitespace-separated token has the run id shape `<8 digits>-<8 hex>` and what
+# stands before it is empty, a resume word or a re-kickoff word, `detect` reads
+# that one run: it must be in this session's index, have its run directory,
+# carry this session in its `session-lineage`, hold a `ledger-path` of that id's
+# shape and a readable manifest, or the verdict is `지정 불가 <id>` with the
+# reason on one `고지` line. The run passes on to the eligibility below with no
+# intent comparison, so `새 런` never comes of it; the word before the id is
+# what decides `대기` against `진행 중`. The seat passes its own run id this way.
+#
+# SEVERAL UN-ENDED RUNS ARE OFFERED, NOT FOLDED. Without a run id, the latest
+# run of the session's lineage is always a candidate, and each other run the
+# lineage loop accepts is one unless it is ended: a non-empty `done` (read
+# before any gate child), a `run_profile: reviewer` manifest, every termination
+# clause met, a forced surface move's invalidation, or the gate's own `끝남`. A
+# live run is `살아 있음`, a quiet run the gate has not ended whose ledger is a
+# regular file is `대기` with its wait cause, and any other is `판정불가` — shown,
+# not hidden. With the latest run alone, every verdict and notice is the one a
+# single-run session has always had. With more, an empty argument or a word is
+# the `후보 <n>` verdict; any other text that equals exactly one candidate's
+# intent picks that run, more than one is `후보 <n>`, and none is `새 런` with
+# the other candidates named. A run picked by id or by intent ends its `진행 중`
+# wait notice with the id form 「다시 <id>」.
+#
 # Usage
 #
-#   rekick.sh detect --arg <인자>
+#   rekick.sh detect --arg <인자>            (<인자> may end in a run id: `[다시|재개|…] <런 id>`)
 #   rekick.sh judge --prev <id> --base <base> [--asked <파일>]
 #   rekick.sh verify --prev <id> --base <base>
 #   rekick.sh graph --prev <id> --base <base> [--expect-sha256 <hex>] [--accepted <별칭,…>]
@@ -188,7 +212,9 @@
 # `render-manifest` (the draft's bytes) and `render-interview` (the record's
 # bytes), which print nothing else.
 #
-#   detect         판정  재킥오프|대기|새 런|없음|진행 중|완료  [<id>  [<base>]]
+#   detect         판정  재킥오프|대기|새 런|없음|진행 중|완료|지정 불가  [<id>  [<base>]]
+#                  판정  후보  <n>
+#                  후보  <id>  최신|-  살아 있음|대기|끝남|완료|무효화|판정불가  <대기 원인|->  <킥오프 일시>  <의도 첫 줄>
 #                  갈래  게이트 종료|강제 표면 이동 무효화|대기 이어받기|완료 런 입양
 #                  대기 원인  승인 대기|사람 대기|한도 대기|무기록|멈춤
 #                  킥오프  <이전 킥오프 일시>
@@ -1471,11 +1497,210 @@ EOF
 # ---------------------------------------------------------------------------
 # detect
 # ---------------------------------------------------------------------------
+# rk_arg_norm <text> — the argument as the word comparison reads it: trimmed,
+# lower-cased, ASCII punctuation removed, one polite tail dropped, trimmed again.
+rk_arg_norm() {
+  local n t
+  n=$(rk_trim "$1")
+  n=$(printf '%s' "$n" | LC_ALL=C tr 'A-Z' 'a-z' | LC_ALL=C tr -d '[:punct:]')
+  for t in '해 주세요' '해줘' '하자' 'please'; do
+    case "$n" in *"$t") n=${n%"$t"}; break ;; esac
+  done
+  rk_trim "$n"
+}
+
+# rk_arg_word <normalized> — rekick (a re-kickoff word), resume (empty or a
+# resume word) or other.
+rk_arg_word() {
+  case "$1" in
+    다시|재킥오프|'다시 킥오프'|rekick|again|retry) printf 'rekick' ;;
+    ''|이어서|재개|계속|resume) printf 'resume' ;;
+    *) printf 'other' ;;
+  esac
+}
+
+# rk_arg_run_id <trimmed argument> — 0, with RK_ARG_ID and RK_ARG_WORD set, when
+# the last whitespace-separated token is a run id (`<8 digits>-<8 hex>`) and
+# what stands before it normalizes to empty, a resume word or a re-kickoff word.
+# The id is taken from the argument before normalizing, which would drop its `-`.
+rk_arg_run_id() {
+  local tok head re='^[0-9]{8}-[0-9a-f]{8}$'
+  RK_ARG_ID=""; RK_ARG_WORD=""
+  tok=${1##*[[:space:]]}
+  [[ $tok =~ $re ]] || return 1
+  head=${1%"$tok"}
+  RK_ARG_WORD=$(rk_arg_word "$(rk_arg_norm "$head")")
+  [ "$RK_ARG_WORD" != "other" ] || return 1
+  RK_ARG_ID=$tok
+}
+
+# rk_detect_pick <session> <index> <id> — set RK_PREV, RK_BASE, the paths and
+# MANIFEST for the run a run id argument names, with the checks the candidate
+# loop applies to every run. A run that fails one is `지정 불가`, and the
+# program ends there.
+rk_detect_pick() {
+  local sid="$1" idx="$2" id="$3" rd lp b="" why=""
+  if [ ! -f "$idx" ] || ! grep -qxF -- "$id" "$idx" 2>/dev/null; then
+    why='이 세션의 색인에 없습니다'
+  elif ! rd=$(rundir_of_run_id "$id" 2>/dev/null) || [ ! -d "$rd" ]; then
+    why='런 디렉터리가 없습니다'
+  elif ! grep -qxF -- "$sid" "$rd/session-lineage" 2>/dev/null; then
+    why='계보에 이 세션이 없습니다'
+  else
+    lp=$(head -n 1 "$rd/ledger-path" 2>/dev/null) || lp=""
+    case "$lp" in
+      /*/docs/pipeline-run/"$id".md) b=${lp%/docs/pipeline-run/"$id".md} ;;
+      *) why='ledger-path 가 이 런 id 의 꼴이 아닙니다' ;;
+    esac
+    if [ -z "$why" ]; then
+      RK_PREV=$id; RK_BASE=$b
+      rk_prev_paths
+      MANIFEST=$(rk_copy "$RK_PM" prev.plan.md) || why='매니페스트를 읽지 못했습니다'
+    fi
+  fi
+  [ -n "$why" ] || return 0
+  printf '판정\t지정 불가\t%s\n' "$id"
+  printf '고지\t런 %s 은 이 세션에서 고를 수 없습니다(%s) — 이 세션이 연 런의 id 인지 확인하세요\n' "$id" "$why"
+  exit 0
+}
+
+# rk_cand_state <id> <base> <latest 0|1> — a candidate's state as
+# `<상태><TAB><대기 원인|->`, or `제외` for a run that is not the latest and is
+# not offered. Called inside `$( … )`: the candidate's globals are set in that
+# subshell only, and its private copy is `cand-<id>.plan.md`. A non-empty
+# `done` is read first, so a run the gate ended on a chain costs no gate child.
+rk_cand_state() {
+  local id="$1" latest="$3" states ub cause
+  RK_PREV=$id; RK_BASE=$2
+  rk_prev_paths
+  MANIFEST=$(rk_copy "$RK_PM" "cand-$id.plan.md") || { printf '판정불가\t-'; return 0; }
+  if [ -n "$RK_PRD" ] && [ -s "$RK_PRD/done" ]; then
+    if [ "$latest" = "1" ]; then printf '끝남\t-'; else printf '제외'; fi
+    return 0
+  fi
+  if [ "$latest" = "0" ] && [ "$(manifest_plan_field '.run_profile // "standard"' 2>/dev/null || true)" = 'reviewer' ]; then
+    printf '제외'; return 0
+  fi
+  if rk_is_live; then printf '살아 있음\t-'; return 0; fi
+  states=$(rk_clause_states "$RK_PL")
+  if rk_clauses_all_met "$states"; then
+    if [ "$latest" = "1" ]; then printf '완료\t-'; else printf '제외'; fi
+    return 0
+  fi
+  ub=$(cc_unresolved_blocked "$RK_PL" 2>/dev/null) || ub=""
+  if rk_invalidated "$ub"; then
+    if [ "$latest" = "1" ]; then printf '무효화\t-'; else printf '제외'; fi
+    return 0
+  fi
+  case "$(rk_gate_ended "$RK_TMP/cand-$id.err")" in
+    끝남)
+      if [ "$latest" = "1" ]; then printf '끝남\t-'; else printf '제외'; fi ;;
+    안끝남)
+      if [ -f "$RK_PL" ] && [ -r "$RK_PL" ]; then
+        rk_open_approvals "$RK_PL"
+        rk_unanswered_halt_names "$RK_PRD" "$RK_PL"
+        cause=$(rk_wait_cause "$RK_PL")
+        printf '대기\t%s' "${cause:--}"
+      else
+        printf '판정불가\t-'
+      fi ;;
+    *) printf '판정불가\t-' ;;
+  esac
+  return 0
+}
+
+# rk_cand_intent <manifest copy> — the candidate's intent, trimmed.
+rk_cand_intent() {
+  ( MANIFEST=$1; rk_trim "$(rk_intent 2>/dev/null)" )
+}
+
+# rk_cand_line <id> <최신|-> <state> <kickoff> <intent> — one `후보` line.
+rk_cand_line() {
+  local first
+  first=$(printf '%s\n' "$5" | head -n 1 | tr '\t' ' ')
+  printf '후보\t%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "${4:--}" "${first:--}"
+}
+
+# rk_detect_choose <accepted runs> <raw argument> <word> — after the latest run
+# is set, the session's other runs: each one the loop accepted is given a state,
+# and those not `제외` are candidates beside the latest. With no such run this
+# returns and the single-run flow goes on unchanged. Otherwise an empty
+# argument or a word is the `후보` verdict, and any other text is compared with
+# every candidate's intent verbatim: one match is the run picked (RK_PICKED=1,
+# its globals set), several are the `후보` verdict, none is `새 런`.
+rk_detect_choose() {
+  local accepted="$1" raw="$2" word="$3" others ce cid cb ckat st lines="" nk=0 kept_ids=""
+  local lkat lst cin nmatch=0 mid="" mbase="" mcopy=""
+  others=$(printf '%s\n' "$accepted" | awk -F '\t' -v best="$RK_PREV" 'NF >= 3 && $2 != best' | sort -t "$TAB" -s -k1,1nr)
+  while IFS="$TAB" read -r ce cid cb ckat; do
+    [ -n "$cid" ] || continue
+    st=$(rk_cand_state "$cid" "$cb" 0)
+    [ "$st" != "제외" ] || continue
+    nk=$((nk + 1))
+    kept_ids="${kept_ids:+$kept_ids, }$cid"
+    cin=$(rk_cand_intent "$RK_TMP/cand-$cid.plan.md")
+    lines="$lines$(rk_cand_line "$cid" - "$st" "$ckat" "$cin")
+"
+    if [ -n "$cin" ] && [ "$raw" = "$cin" ]; then
+      nmatch=$((nmatch + 1)); mid=$cid; mbase=$cb; mcopy="$RK_TMP/cand-$cid.plan.md"
+    fi
+  done <<EOF
+$others
+EOF
+  [ "$nk" -gt 0 ] || return 0
+
+  lkat=$(printf '%s\n' "$accepted" | awk -F '\t' -v best="$RK_PREV" '$2 == best { print $4; exit }')
+  lst=$(rk_cand_state "$RK_PREV" "$RK_BASE" 1)
+  cin=$(rk_cand_intent "$MANIFEST")
+  lines="$(rk_cand_line "$RK_PREV" 최신 "$lst" "$lkat" "$cin")
+$lines"
+  if [ "$word" = "other" ]; then
+    if [ -n "$cin" ] && [ "$raw" = "$cin" ]; then
+      nmatch=$((nmatch + 1)); mid=$RK_PREV; mbase=$RK_BASE; mcopy=$MANIFEST
+    fi
+    if [ "$nmatch" -eq 0 ]; then
+      printf '판정\t새 런\t%s\n' "$RK_PREV"
+      printf '고지\t이 세션이 연 런(%s)과 이 세션의 끝나지 않은 다른 런(%s)과 다른 의도로 보고 새 런으로 시작합니다 — 이어받으려면 인자 없이 다시 불러 런을 고르거나 「다시 <런 id>」 로 부르세요\n' \
+        "$RK_PREV" "$kept_ids"
+      exit 0
+    fi
+    if [ "$nmatch" -eq 1 ]; then
+      RK_PREV=$mid; RK_BASE=$mbase
+      rk_prev_paths
+      MANIFEST=$mcopy
+      rk_not_reviewer
+      RK_PICKED=1
+      return 0
+    fi
+  fi
+  printf '판정\t후보\t%s\n' "$((nk + 1))"
+  printf '%s' "$lines"
+  printf '고지\t이 세션에 이어받거나 재개할 수 있는 런이 %s개 있습니다 — 런 id 를 붙여 다시 부르면 그 런 하나로 판정합니다(「다시 <런 id>」 는 이어받기, 「<런 id>」 는 재개)\n' "$((nk + 1))"
+  exit 0
+}
+
 rk_detect() {
-  local sid="${CLAUDE_CODE_SESSION_ID:-}" idx id rd lp b kat e best_id="" best_e="" best_base=""
+  local sid="${CLAUDE_CODE_SESSION_ID:-}" idx id rd lp b kat e best_id="" best_e="" best_base="" accepted=""
   printf 'cc-rekick v1\n'
   case "$sid" in ''|.|..|*/*) rk_detect_none ;; esac
   idx="${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/session/$sid"
+
+  # The argument.
+  local raw n intent word rekick_word=0
+  RK_PICKED=0
+  raw=$(rk_trim "$RK_ARG")
+  n=$(rk_arg_norm "$raw")
+  word=$(rk_arg_word "$n")
+
+  # A run id argument judges that run alone: no candidates, no intent.
+  if rk_arg_run_id "$raw"; then
+    rk_detect_pick "$sid" "$idx" "$RK_ARG_ID"
+    rk_not_reviewer
+    [ "$RK_ARG_WORD" != "rekick" ] || rekick_word=1
+    RK_PICKED=1
+    rk_detect_judge "$rekick_word"
+  fi
+
   [ -f "$idx" ] || rk_detect_none
   while IFS= read -r id; do
     rk_id_ok "$id" || continue
@@ -1496,6 +1721,8 @@ rk_detect() {
     if [ -z "$best_e" ] || [ "$e" -ge "$best_e" ]; then
       best_id=$id; best_e=$e; best_base=$b
     fi
+    accepted="$accepted$e$TAB$id$TAB$b$TAB$kat
+"
   done <<EOF
 $(awk '!seen[$0]++' "$idx" 2>/dev/null)
 EOF
@@ -1505,26 +1732,29 @@ EOF
   MANIFEST=$(rk_copy "$RK_PM" prev.plan.md) || rk_detect_none
   rk_not_reviewer
 
-  # The argument.
-  local raw n t intent rekick_word=0
-  raw=$(rk_trim "$RK_ARG")
-  n=$(printf '%s' "$raw" | LC_ALL=C tr 'A-Z' 'a-z' | LC_ALL=C tr -d '[:punct:]')
-  for t in '해 주세요' '해줘' '하자' 'please'; do
-    case "$n" in *"$t") n=${n%"$t"}; break ;; esac
-  done
-  n=$(rk_trim "$n")
-  intent=$(rk_trim "$(rk_intent)")
-  case "$n" in
-    다시|재킥오프|'다시 킥오프'|rekick|again|retry) rekick_word=1 ;;
-    ''|이어서|재개|계속|resume) ;;
-    *)
-      if [ -z "$intent" ] || [ "$raw" != "$intent" ]; then
-        printf '판정\t새 런\t%s\n' "$RK_PREV"
-        printf '고지\t이 세션이 연 런(%s)과 다른 의도로 보고 새 런으로 시작합니다 — 이어받으려면 인자 없이 다시 부르세요\n' "$RK_PREV"
-        exit 0
-      fi ;;
-  esac
+  # The session's other un-ended runs, when there are any.
+  rk_detect_choose "$accepted" "$raw" "$word"
+  if [ "$RK_PICKED" = "0" ]; then
+    intent=$(rk_trim "$(rk_intent)")
+    case "$word" in
+      rekick) rekick_word=1 ;;
+      resume) ;;
+      *)
+        if [ -z "$intent" ] || [ "$raw" != "$intent" ]; then
+          printf '판정\t새 런\t%s\n' "$RK_PREV"
+          printf '고지\t이 세션이 연 런(%s)과 다른 의도로 보고 새 런으로 시작합니다 — 이어받으려면 인자 없이 다시 부르세요\n' "$RK_PREV"
+          exit 0
+        fi ;;
+    esac
+  fi
+  rk_detect_judge "$rekick_word"
+}
 
+# rk_detect_judge <rekick word 0|1> — the eligibility of the run RK_PREV,
+# RK_BASE and MANIFEST name, once one run is decided; every branch ends the
+# program.
+rk_detect_judge() {
+  local rekick_word="$1"
   # Eligibility, in order; the first branch that applies decides.
   local ub inv=0 gate_tok mark err states
   if rk_is_live; then rk_detect_open running; fi
@@ -1712,13 +1942,16 @@ rk_detect_open() {
 # called with an argument that is not a re-kickoff word: what it waits on is
 # named, nothing is adopted, and the way to adopt it is said.
 rk_detect_held() {
-  local cause
+  local cause way='다시'
+  # A run picked by its id or by its intent among several is reached again only
+  # by the id form; a bare `다시` would land on the candidate question.
+  [ "${RK_PICKED:-0}" = "0" ] || way="다시 $RK_PREV"
   rk_open_approvals "$RK_PL"
   rk_unanswered_halt_names "$RK_PRD" "$RK_PL"
   cause=$(rk_wait_cause "$RK_PL")
   printf '판정\t진행 중\t%s\n' "$RK_PREV"
   printf '대기 원인\t%s\n' "$cause"
-  printf '고지\t이전 런 %s 은 끝나지 않은 채 멈춰 있습니다(%s) — 이 호출은 재개로 보고 이어받지 않습니다. 그 런을 재개해 끝내거나, 새 런이 이어받고 원천을 이어받음으로 닫게 하려면 인자 「다시」 로 부르세요\n' "$RK_PREV" "$cause"
+  printf '고지\t이전 런 %s 은 끝나지 않은 채 멈춰 있습니다(%s) — 이 호출은 재개로 보고 이어받지 않습니다. 그 런을 재개해 끝내거나, 새 런이 이어받고 원천을 이어받음으로 닫게 하려면 인자 「%s」 로 부르세요\n' "$RK_PREV" "$cause" "$way"
   [ "$RK_AP_N" -eq 0 ] || printf '고지\t이전 런 %s 의 열린 승인 %s건(%s)에 답하면 그 런이 이어집니다\n' \
     "$RK_PREV" "$RK_AP_N" "$RK_AP_LIST"
   [ "$RK_HALT_N" -eq 0 ] || printf '고지\t이전 런 %s 의 답 없는 정지 기록 %s건(%s)에 답하면 그 런이 이어집니다\n' \

@@ -339,7 +339,7 @@ esac
 # Spelling the set out means a suite added to this tree that calls the gate
 # family has to be added here as well. That edit is the point rather than a cost:
 # it is the one moment somebody looks at whether the new suite kills the channel.
-_selected_want="test-attention-funnel.sh test-fleet.sh test-gate-chain-equiv.sh test-gate-oracle.sh test-gate.sh test-kickoff-defaults.sh test-kickoff-hook-probe.sh test-liveness-agreement.sh test-local-bundle.sh test-lost-dispatch.sh test-measure-test-share.sh test-meta-invariants.sh test-orchestrator-pretool-hook.sh test-reader-model-pair-audit.sh test-rekick.sh test-repair.sh test-run-issue-filing.sh test-run.sh test-snapshot.sh test-solo-audit-experiment.sh test-stage-supervisor.sh test-suite-isolation.sh test-tree.sh test-visual-check.sh test-waiting-decisions.sh"
+_selected_want="test-attention-funnel.sh test-fleet.sh test-gate-chain-equiv.sh test-gate-oracle.sh test-gate.sh test-kickoff-defaults.sh test-kickoff-hook-probe.sh test-liveness-agreement.sh test-local-bundle.sh test-lost-dispatch.sh test-measure-test-share.sh test-meta-invariants.sh test-orchestrator-pretool-hook.sh test-reader-model-pair-audit.sh test-rekick.sh test-repair.sh test-run-issue-filing.sh test-run.sh test-slots.sh test-snapshot.sh test-solo-audit-experiment.sh test-stage-supervisor.sh test-suite-isolation.sh test-tree.sh test-visual-check.sh test-waiting-decisions.sh"
 _selected_got=$(printf '%s\n' $_selected_names | sort | tr '\n' ' ' \
                   | sed -e 's/  */ /g' -e 's/^ //' -e 's/ $//')
 check "누출 술어가 고르는 스위트 집합이 그대로다" "$_selected_got" "$_selected_want"
@@ -857,7 +857,7 @@ for lit in \
 done
 # Both halts that refuse an earlier output give a person options, and the
 # labels are the ones a resumed turn reads back.
-for lab in '있는 디자인 시스템을 쓴다' '새로 만들어 덮는다' '신규로 만든다' '재사용으로 진행' '다시 생성'; do
+for lab in '있는 디자인 시스템을 쓴다' '새로 만들어 덮는다' '신규로 만든다' '확인 대기인 채 화면을 만든다' '재사용으로 진행' '다시 생성'; do
   if grep -qF -- "- \`${lab}\` — " "$VU_SKILL"; then
     ok "visual-unattended 문면에 선택지 「${lab}」 줄이 있다"
   else
@@ -870,21 +870,119 @@ if grep -qF -- "rewrite only the sidecar's \`**기록**\` line" "$VU_SKILL"; the
 else
   bad "visual-unattended 재사용 갈래" "기록 경로를 고쳐 쓰는 문면이 없다"
 fi
-# A resumed turn reruns Step 1 from item 1, and item 6 runs before item 7, so
-# an `output-present` answer is applied only while the following record carries
-# the earlier `system-mismatch` answer and item 6 reads it back for the same
-# case. Without both sentences the two halts alternate without end.
+# A resumed turn reruns Step 1 from item 1, and item 4 runs before item 6 and
+# item 6 before item 7, so a later halt's answer is applied only while its
+# record carries the earlier `system-mismatch` answer and the earlier item reads
+# it back for the same case. That holds for an `output-present` halt and for a
+# second `system-mismatch` case alike (a waiting design system answered with
+# `확인 대기인 채 화면을 만든다`, then `신규·다른 문서` at item 6). Without
+# these sentences the two halts alternate without end.
 for lit in \
   '`앞선 답=<label> · 경우=<key> · 기록=<earlier halt record path>`' \
-  'While item 6 computes a `system-mismatch` with the same `경우=` as that piece, it does not halt' \
-  'Its record'"'"'s `**관측 상세**` holds the applied answer as an `앞선 답=` piece'; do
+  'While item 4 or item 6 computes a `system-mismatch` with the same `경우=` as that piece, it does not halt' \
+  'Its record'"'"'s `**관측 상세**` holds the applied answer as an `앞선 답=` piece' \
+  'then halts at `output-present`, or at a `system-mismatch` of another case, carries that answer forward' \
+  'An `output-present` record, and a `system-mismatch` record of another case, of an attempt that applied a `system-mismatch` answer also carries that answer'; do
   if grep -qF -- "$lit" "$VU_SKILL"; then
     ok "visual-unattended 재개 턴이 앞선 시스템 불일치 답을 나른다 — 「${lit}」"
   else
     bad "visual-unattended 재개 턴의 앞선 답" "「${lit}」가 없다"
   fi
 done
-for old in 'Every site except `review-cap` is a refusal' 'write nothing at all'; do
+# The design system terminal ends on its own fixed line, and a plan with no
+# publish step ends a waiting design system on a halt a person can answer,
+# never on a terminal message without a literal.
+for lit in \
+  '디자인 시스템을 사람 확인으로 넘겼습니다.' \
+  '`system-mismatch` | `디자인 시스템 확인 대기` |'; do
+  if grep -qF -- "$lit" "$VU_SKILL"; then
+    ok "visual-unattended 문면이 디자인 시스템 확인 대기 끝을 고정한다 — 「${lit}」"
+  else
+    bad "visual-unattended 문면의 디자인 시스템 확인 대기 끝" "「${lit}」가 없다"
+  fi
+done
+VP_SKILL="$PLUGIN_ROOT/skills/visual-publish-unattended/SKILL.md"
+if grep -qF -- '정지 자리는 닫힌 다섯이다.' "$VP_SKILL"; then
+  ok "visual-publish-unattended 문면이 정지 자리를 닫힌 다섯으로 적는다"
+else
+  bad "visual-publish-unattended 문면의 정지 자리 수" "「정지 자리는 닫힌 다섯이다.」가 없다"
+fi
+# Two documents' runs can wait on one design system confirmation line. The
+# gate and the driver compare the whole line with the document's expected
+# line, so the run answered second must not overwrite the first run's
+# approval: row 14 halts on the kept line, and the writes re-read it first.
+# The re-read halts only on a line that changed from the one the run expects,
+# so a reopening over an approval it expects still proceeds, and a re-publish
+# of a reopening that halted before its rewrite does that rewrite itself.
+VP_SIDECAR="$PLUGIN_ROOT/skills/visual/references/sidecar.md"
+for lit in \
+  '| 14 | `디자인-시스템-판정` `승인` 또는 `수정 요청` — Step 1.3 이 받은 줄이 이 문서 키가 아닌 `사람 승인 — 문서 <키>` 줄' \
+  '**Another document'"'"'s approval written during this run'"'"'s phase is never overwritten.**' \
+  'reads the line again with `visual-check.sh confirm <document>` right before the Claude Design publish (K1 of a new version or of the first publish) and right before its first local write.' \
+  'When the re-read now prints a line that differs from the line this run expects and is a `사람 승인 — 문서 <key>` line whose key is not this document'"'"'s' \
+  'another document'"'"'s approval that is the line this run expects included' \
+  'The line this run expects is the line Step 1.3 kept — on row 13, the `기대 확인=` piece of the failed record it answers instead' \
+  'a failed record without the piece, or whose piece reads `없음`, expects no other document'"'"'s `사람 승인` line, and a failure record such an invocation writes before it rewrites the confirmation line itself carries `기대 확인=없음` — and, once this run has rewritten the confirmation line itself (a reopening'"'"'s waiting line), the line `confirm` prints for what it wrote.' \
+  '다시 읽기의 기대하는 줄은 Step 1.3 이 받은 줄이 아니라 실패 기록의 `기대 확인=` 조각이고, 그 조각이 없거나 `없음` 이면 다른 문서 키의 `사람 승인` 줄은 모두 기대하는 줄과 다르다' \
+  'a reopening is the only one to reach such a line — rows 11 and 12, and row 13 answering the record of a reopening that stopped before its rewrite — and it rewrites it to waiting' \
+  'and then removes `**구현 승인**` and rewrites the line to waiting itself before anything else of rows 11 and 12' \
+  '실패 기록에 `다시 열기 단계=남음` 조각이 있으면(다시 열기가 `**구현 승인**` 지움과 `대기` 다시 쓰기 전에 멈춤) 다시 읽기를 지난 뒤 `**구현 승인**` 지움 → 확인 줄을 `대기` 로 → 입력 유무에 따라 11 행 또는 12 행의 나머지(입력은 이 `다시 발행` 답의 첨부와 지금의 코멘트·직접 편집값이고' \
+  '`다시 열기 단계=남음` 으로 12 행의 나머지를 거치면 `입력 없음=<run-state 의 시각-판정 기록 파일 이름>` 도' \
+  'on row 13 resuming such a reopening, the `시각-판정 기록` file name `run-state` prints, since the `발행-실패` record it answers is not counted.' \
+  'and `다시 열기 단계=남음` too when a reopening — rows 11 and 12, or row 13 answering a record that carries the piece — halts before it removed `**구현 승인**` and rewrote the confirmation line to waiting' \
+  '`수정 <n>회`, and `기대 확인=<the line this invocation expected at the halt' \
+  '다시 읽은 확인 줄이 이 런이 기대하는 줄과 다르고 다른 문서 키의 `사람 승인` 이다' \
+  '`디자인-시스템-판정` `승인` 또는 `수정 요청` 으로 들어왔는데 확인 줄이 이미 다른 문서 키의 `사람 승인` 이다(Step 2a 14 행)' \
+  'every row but 7 and 14, which halt first'; do
+  if grep -qF -- "$lit" "$VP_SKILL"; then
+    ok "visual-publish-unattended 문면이 다른 문서의 승인 줄을 덮지 않는다 — 「${lit}」"
+  else
+    bad "visual-publish-unattended 문면의 다른 문서 승인 줄" "「${lit}」가 없다"
+  fi
+done
+if grep -qF -- '그 런이 기대하는 줄(진입 때 읽은 줄 — 디자인 시스템 국면의 `발행-실패` 에 대한 `다시 발행` 이면 실패 기록의 `기대 확인=` 조각, 그 조각이 없거나 `없음` 이면 다른 문서 키의 `사람 승인` 은 모두 다른 줄 — 또는 그 런이 스스로 고쳐 쓴 줄)과 다르고 다른 문서 키의 `사람 승인` 이면 줄을 지우지도 쓰지도 않고 멈춘다' "$VP_SIDECAR"; then
+  ok "visual sidecar 계약이 다른 문서의 승인 줄을 덮지 않는다"
+else
+  bad "visual sidecar 계약의 다른 문서 승인 줄" "「그 런이 기대하는 줄(…)과 다르고 다른 문서 키의 \`사람 승인\` 이면 줄을 지우지도 쓰지도 않고 멈춘다」가 없다"
+fi
+# A re-publish after a design system publish failure runs in a new session
+# whose kept line may already be another document's approval written while
+# the failure halt waited, so its expected line comes from the failed record.
+for old in '쓰는 쪽이 진입 때 받은 `confirm` 출력이고' '그 런이 기대하는 줄(진입 때 읽은 줄, 또는 그 런이 스스로 고쳐 쓴 줄)'; do
+  if grep -qF -- "$old" "$VP_SIDECAR"; then
+    bad "visual sidecar 계약의 옛 기대하는 줄 정의" "「${old}」가 남았다"
+  else
+    ok "visual sidecar 계약에 옛 기대하는 줄 정의 「${old}」가 없다"
+  fi
+done
+if grep -qF -- '그 런이 기대하는 줄인 다른 문서의 승인은 이 정지에 걸리지 않고, 디자인 시스템 다시 열기가 그 줄을 `대기` 로 고쳐 써' "$VP_SIDECAR"; then
+  ok "visual sidecar 계약이 기대하는 승인 위의 다시 열기를 막지 않는다"
+else
+  bad "visual sidecar 계약의 기대하는 승인 위 다시 열기" "「그 런이 기대하는 줄인 다른 문서의 승인은 이 정지에 걸리지 않고, …」가 없다"
+fi
+if grep -qF -- '다시 열기가 그 고쳐 쓰기 전에 멈췄으면 실패 기록이 `다시 열기 단계=남음` 조각을 싣고, 그 기록에 대한 `다시 발행` 이 `**구현 승인**` 지움과 고쳐 쓰기를 대신 한다' "$VP_SIDECAR"; then
+  ok "visual sidecar 계약이 멈춘 다시 열기의 고쳐 쓰기를 다시 발행에 맡긴다"
+else
+  bad "visual sidecar 계약의 멈춘 다시 열기" "「다시 열기가 그 고쳐 쓰기 전에 멈췄으면 …」가 없다"
+fi
+if grep -qF -- '진입 때 이미 서 있던 다른 문서의 승인은 이 정지에 걸리지 않고' "$VP_SIDECAR"; then
+  bad "visual sidecar 계약의 옛 무조건 면제" "「진입 때 이미 서 있던 다른 문서의 승인은 이 정지에 걸리지 않고」가 남았다"
+else
+  ok "visual sidecar 계약에 옛 무조건 면제 문장이 없다"
+fi
+for old in 'no consumer refuses a key mismatch' 'the key of the run answered first remains' 'the confirmation line stays as it is — waiting.' 'the confirmation line stays waiting and the screen slices stay parked' 'When it now prints a `사람 승인 — 문서 <key>` line whose key is not this document' 'Another document'"'"'s approval is never overwritten.' 'The line this run expects is the line Step 1.3 kept, and,' 'the only row that reaches such a line' 'a reopening (rows 11 and 12) is the only row to reach such a line' 'approval that already stood when Step 1.3 kept the line included' 'finds the line as its `기대 확인=` piece and passes it the same way.'; do
+  if grep -qF -- "$old" "$VP_SKILL"; then
+    bad "visual-publish-unattended 문면의 옛 문장" "「${old}」가 남았다"
+  else
+    ok "visual-publish-unattended 문면에 옛 문장 「${old}」가 없다"
+  fi
+done
+if grep -qF -- '소비처는 키 불일치를 거부하지 않는다' "$VP_SIDECAR"; then
+  bad "visual sidecar 계약의 옛 문장" "「소비처는 키 불일치를 거부하지 않는다」가 남았다"
+else
+  ok "visual sidecar 계약에 옛 문장 「소비처는 키 불일치를 거부하지 않는다」가 없다"
+fi
+for old in 'Every site except `review-cap` is a refusal' 'write nothing at all' 'with no terminal literal.'; do
   if grep -qF -- "$old" "$VU_SKILL"; then
     bad "visual-unattended 문면의 옛 문장" "「${old}」가 남았다"
   else
@@ -1673,6 +1771,44 @@ for pair in "리드:$AP_ROUTER" "교대:$RS_CORPUS"; do
   check "$who 사본에 계획 순서 거부를 새 런으로 보내던 옛 문장이 없다" \
     "$(mo_count "$(cat "$file")" "$mo_old")" "0"
 done
+# The dispatch-site comparison of the declared set is consumed by both router
+# copies in the same words: the first implementation dispatch, the three places
+# its exit 3 is read, the byte-for-byte copy of `선언 파일`, the rows that take
+# no set after a declaration-planned row, and the re-attachment's refusal. The
+# sentences are read outside fenced blocks, so a copy that only quotes them in
+# an example does not pass. The template's `'선언 파일 집합=<CSV>'` argument
+# stays: a run without a declaration still passes the set on its planning row.
+unfenced() { awk '/^```/ { f = !f; next } !f' "$1"; }
+dx_first='**A segment'"'"'s first implementation dispatch uses the form 「Re-dispatching the implementation after review findings」 shows, with `사이클 1` and without `· 수정 대상: …`**, and its `· 선언 파일:` value is the segment'"'"'s `segments[]` element'"'"'s `선언 파일` byte for byte.'
+dx_refuse='**An exit 3 whose refusal text names 「파견 자리 대조」 is the dispatch-site comparison, on any implementation dispatch** — the first one, the `구현` branch or the re-dispatch after review findings: write a segment `park` row and a `스코프=cone` block with `'"'"'사유=구현 재파견 거절'"'"'` and the refusal text in `근거`, and dispatch its implementation no more.'
+dx_copy='**`· 선언 파일: <files>` is the segment'"'"'s `segments[]` element'"'"'s `선언 파일`, copied byte for byte**'
+dx_fromdecl='**A segment planned with `--from-declaration` takes no `선언 파일 집합` on any later row either.**'
+dx_resume='**A `--resume` act'"'"'s exit 3 whose refusal text names 「파견 자리 대조」** is handled as the `구현` branch handles a refused implementation'
+check "게이트가 파견 자리 대조 거절 문면을 낸다" \
+  "$( [ "$(mo_count "$(cat "$GATE")" '파견 자리 대조 — ')" -ge 1 ] && printf 있음 || printf 없음)" "있음"
+for pair in "리드:$AP_ROUTER" "교대:$RS_CORPUS"; do
+  who=${pair%%:*}; file=${pair#*:}
+  body=$(unfenced "$file")
+  check "$who 사본에 첫 구현 파견의 형식 문장이 한 번 실린다" "$(mo_count "$body" "$dx_first")" "1"
+  check "$who 사본에 파견 자리 대조 거절 문장이 세 자리에 실린다" "$(mo_count "$body" "$dx_refuse")" "3"
+  check "$who 사본에 선언 파일 값을 바이트 그대로 옮긴다는 문장이 한 번 실린다" "$(mo_count "$body" "$dx_copy")" "1"
+  check "$who 사본에 선언 계획 세그먼트의 뒤 행은 집합을 넘기지 않는다는 문장이 한 번 실린다" "$(mo_count "$body" "$dx_fromdecl")" "1"
+  check "$who 사본에 재부착 행위의 대조 거절 문장이 한 번 실린다" "$(mo_count "$body" "$dx_resume")" "1"
+  check "$who 사본의 세그먼트 행위 틀이 선언 파일 집합 인자를 그대로 싣는다" \
+    "$(mo_count "$(cat "$file")" "'선언 파일 집합=<CSV>'")" "1"
+done
+check "교대 사본에 운반 행위의 대조 거절 문장이 한 번 실린다" \
+  "$(mo_count "$(unfenced "$RS_SKILL")" '**A carry act (`--carry-answer`) refused this way is not the carry table'"'"'s `3` either**: write the same two rows, and do not carry that answer again in this run.')" "1"
+# The carry table's own file says it too, in a paragraph right after the table,
+# because item 8 of the halt-answer files hands every carry exit to that table.
+ha1_file="$PLUGIN_ROOT/skills/autopilot-router-shift/references/halt-answer-1.md"
+ha1_carry='**A carry act'"'"'s exit 3 naming 「파견 자리 대조」** is not the table'"'"'s `3`: write the `구현` branch'"'"'s segment `park` row and cone block, and do not carry that answer again in this run.'
+check "운반 종료 표 파일에 운반 행위의 대조 거절 문장이 한 번 실린다" \
+  "$(mo_count "$(unfenced "$ha1_file")" "$ha1_carry")" "1"
+check "운반 대조 거절 문단은 운반 종료 표 바로 뒤에 있다" \
+  "$(awk '/^ *\| `18` \|/ { t = NR } t && NR == t + 2 { print (index($0, "**A carry act'"'"'s exit 3 naming") ? "표 뒤" : "다른 자리"); exit }' "$ha1_file")" "표 뒤"
+check "리드 사본의 계획 시점 문장이 선언 런과 선언 없는 런을 나눈다" \
+  "$(mo_count "$(unfenced "$AP_ROUTER")" '`선언 파일 집합` is likewise carried at planning time by the router — it is the sole input to "did this segment touch a file outside its declaration", which git cannot answer at all. On a `--from-declaration` run the gate carries it from the document instead, and the router passes none.')" "1"
 
 # ---------------------------------------------------------------------------
 # 6e-5. The review stage checks its own report with `report-check`
@@ -1775,6 +1911,37 @@ for lit in \
 do
   check "CFI-11 이 「${lit:0:50}」 을 싣는다" "$(mo_count "$(cat "$AP_SKILL")" "$lit")" "1"
 done
+
+# ---------------------------------------------------------------------------
+# CFI-7 — a channel-event turn fires a person's notification on a state-change
+# line only
+#
+# Under a repeat-mode arm the seat tells a state-change line from the lines the
+# progress channel writes on its own by the line's head alone, and the seat's
+# text names those heads. The channel writes every ledger row through one
+# `emit "$body"` call, so each `emit "` call followed by anything but `$` is a
+# line of its own; the block counts them and requires each one's first two
+# words in backticks in the resident body, so a line added to or reworded in
+# `feed.sh` fails here until the seat's boundary sentence follows it. The CFI-7
+# sentence that lets the turn fire is pinned once, and the old wording that
+# barred every fire in a channel wake is pinned absent.
+# ---------------------------------------------------------------------------
+FEED="$PLUGIN_ROOT/orchestrator/feed.sh"
+feed_own=$(grep -oE 'emit "[^$][^"]*"' "$FEED" | sed -E 's/^emit "//')
+check "진행 채널이 원장 행 없이 스스로 쓰는 줄은 셋이다" \
+  "$(printf '%s\n' "$feed_own" | grep -c .)" "3"
+while IFS= read -r line; do
+  [ -n "$line" ] || continue
+  head2=$(printf '%s\n' "$line" | awk '{print $1" "$2}')
+  check "CFI-7 이 채널 스스로 쓰는 줄의 첫머리 「${head2}」 를 백틱 안에 적는다" \
+    "$([ "$(mo_count "$(cat "$AP_SKILL")" "\`$head2")" -ge 1 ] && echo 예 || echo 아니오)" "예"
+done <<EOF
+$feed_own
+EOF
+check "CFI-7 이 채널 이벤트 차례에 중계와 빚진 fire-now 하나를 허락하는 문장을 한 번 싣는다" \
+  "$(mo_count "$(cat "$AP_SKILL")" '**On a wake caused by a channel event, relay the line, make the one `fire-now` CFI-4 and CFI-7 owe, and stop.**')" "1"
+check "autopilot 본문에 채널 이벤트 차례의 fire-now 를 막던 옛 문구가 없다" \
+  "$(mo_count "$(cat "$AP_SKILL")" 'not even `fire-now` under a repeat-mode arm')" "0"
 
 # ---------------------------------------------------------------------------
 # 6e-6. The shift's branch index and its reference files agree

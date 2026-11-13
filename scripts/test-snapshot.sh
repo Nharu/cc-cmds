@@ -265,6 +265,20 @@ check "answered_halts 원소는 carry_prompt 를 싣고, 멈춘 시도가 없으
       | jq -r '[.answered_halts[] | select(.segment == "S9") | (has("carry_prompt") | tostring) + "|" + .carry_prompt] | last // "없음"')" \
   "true|"
 check "carry_prompt 를 실어도 H 는 움직이지 않는다" "$(snapdigest)" "$rt_h1"
+# A record that offers no option is answered with the two fixed labels; the
+# shift parks the segment on `세그먼트 park` itself, so the element's route is
+# the cause hold, while a record with an option block reads no such route.
+NO_REC="$WORK/halt/S10#1.md"
+printf '%s\n' '<!-- cc-pipeline-halt v1; writer=implement-unattended; reader=orchestrator; stage=S10#1; run=R1 -->' \
+  '**스킬**: implement-unattended' '**분류**: precondition-failed' '**스텝**: Step 1 외부 선행 미충족 — 픽스처' \
+  '**선택지**: (없음) — 원인이 풀리면 다시 띄운다' '<!-- /cc-pipeline-halt v1 -->' > "$NO_REC"
+printf -- '- `중단 답` | 세그먼트=S10 | 중단 기록=%s | 스킬=implement-unattended | 선택지=세그먼트 park | 답한 주체=사람 | 근거=사람이 세그먼트를 내림\n' "$NO_REC" >> "$LEDGER"
+check "선택지 없는 기록의 세그먼트 park 답은 route 가 원인-보류다" \
+  "$( (cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null) \
+      | jq -r '[.answered_halts[] | select(.segment == "S10") | "\(.route)|\(.route_refusal)"] | last // "없음"')" \
+  "원인-보류|"
+check "원인-보류 판정을 실어도 H 는 직접 잰 스냅숏 다이제스트다" \
+  "$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null | jq -r .H)" "$(snapdigest)"
 
 # ---------------------------------------------------------------------------
 # 3. THE REGRESSION — issuing an approval must not move the digest
@@ -488,6 +502,11 @@ check "cone_blocks 와 replan_due 가 blocked 바로 뒤에 그 순서로 온다
   "$(jq -r 'keys_unsorted | "\(index("cone_blocks") - index("blocked")),\(index("replan_due") - index("blocked"))"' "$WORK/s1.json")" "1,2"
 check "막힘·재계획이 없으면 둘 다 빈 배열이다" \
   "$(jq -c '[.cone_blocks, .replan_due]' "$WORK/s1.json")" "[[],[]]"
+# The decision holds come right after them, under the same rule: always an
+# array, empty when no collection holds a segment.
+check "decision_holds 는 replan_due 바로 뒤에 온다" \
+  "$(jq -r 'keys_unsorted | "\(index("decision_holds") - index("replan_due"))"' "$WORK/s1.json")" "1"
+check "결정 수거가 없으면 decision_holds 는 빈 배열이다" "$(jq -c .decision_holds "$WORK/s1.json")" "[]"
 check "--fields H 는 스냅숏의 H 를 날값 한 줄로 낸다" \
   "$(cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" --fields H 2>/dev/null)" \
   "$(jq -r .H "$WORK/s1.json")"
@@ -829,6 +848,7 @@ for pair in "리드:$AP_ROUTER" "교대:$RS_CORPUS"; do
     '--kind ci-match' \
     '-- 대조 <head sha>' \
     "'master 대기=<id>'" \
+    "'확인 대기=<record>'" \
     '부류=master 재합류' \
     "the snapshot's \`master 재합류\` element carries it as \`베이스\`, beside \`판정\`, both read from the latest \`베이스 판정\` row" \
     "\`일치\` → dispatch nothing; read \`다음\` again — a HEAD whose last check reads \`일치\` has nothing to take in"; do
@@ -3113,7 +3133,7 @@ check "사이드카: 들인 답은 재부착하지 않고 상한 행과 18 로 �
 check "사이드카: answered_halts 원소가 carry_prompt 를 싣는다" \
   "$(has "$AU_ANS" "and \`carry_prompt\`, the \`-p\` text of the carry act for an implement, design or split halt the re-entry table holds")" 예
 check "사이드카: 재진입 표의 일곱 행" \
-  "$(has "$AU_ANS" "an audit's synthesis halt, a re-convergence's Step 3 halt, the visual publish stage's \`시각-판정\`, \`금지-후보\` and \`발행-실패\`, an implement stage's halt, a design discussion's halt, a lead solo design's halt, a base split's halt")" 예
+  "$(has "$AU_ANS" "an audit's synthesis halt, a re-convergence's Step 3 halt, the visual publish stage's \`시각-판정\`, \`금지-후보\`, \`발행-실패\` and \`디자인-시스템-판정\`, an implement stage's halt, a design discussion's halt, a lead solo design's halt, a base split's halt")" 예
 # 앞선 런이 이월한 답은 다음 런(입양·재킥오프 후속)이 운반 act 로 이어받는다 — 사람에게 다시
 # 묻지 않는다는 약속은 이 문장들이 싣고, 아침 보고의 새 절이 그 답을 사람에게 보인다.
 for pair in "autopilot-router-shift:$RS_CORPUS" "references:$AP_ROUTER"; do
@@ -3133,8 +3153,8 @@ check "아침 보고: 이월 절은 게이트가 쓰는 사유 머리와 같다"
   "$(has "$GATE" "'중단 답 이월 — 마감 안에 자리 없음'")" 예
 check "아침 보고: S2P 가 있는 런의 시각 승인 지시는 발행 단계의 중단 기록을 가리킨다" \
   "$(has "$AP_REFS/act3-report.md" "「\`S2P\` 중단 기록 \`<기록 파일>\` 의 캔버스 \`<URL>\` 을 보고 좌석 질문에 \`승인\`·\`수정 요청\`·\`거부\` 로 답하세요」")/$(has "$AP_REFS/act3-report.md" "A closing row reading \`처분 사유=중단 답 연동\` is read as the person's own answer")" "예/예"
-check "좌석 사본: S2P 의 세 자리 기록에는 사람의 답만 받고 좌석은 답하지 않는다" \
-  "$(has "$SEAT_REF" "**The gate takes only a person's answer to these three records: never answer one with \`답한 주체=좌석\`, whatever its \`**추천**\` line says.**")" 예
+check "좌석 사본: S2P 의 네 자리 기록에는 사람의 답만 받고 좌석은 답하지 않는다" \
+  "$(has "$SEAT_REF" "**The gate takes only a person's answer to these four records: never answer one with \`답한 주체=좌석\`, whatever its \`**추천**\` line says.**")" 예
 
 # ---------------------------------------------------------------------------
 # 13. An answer a routing block stamped leaves answered_halts for returned_halts

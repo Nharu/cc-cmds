@@ -83,20 +83,21 @@ PANE_LIVE_GLYPHS="⟳ ⏸ ⚠"
 PANE_ENDED_GLYPHS="✓ ⊘"
 
 pane_glyph_class() {
-  # pane_glyph_class <glyph> — `live` or `ended`.
+  # pane_glyph_class <glyph> — PANE_CLASS is `live` or `ended`.
   case " $PANE_LIVE_GLYPHS " in
-    *" $1 "*) printf 'live' ;;
-    *)        printf 'ended' ;;
+    *" $1 "*) PANE_CLASS=live ;;
+    *)        PANE_CLASS=ended ;;
   esac
 }
 
 pane_glyph_tone() {
-  # pane_glyph_tone <glyph> — the tone the title and the head word take.
+  # pane_glyph_tone <glyph> — PANE_TONE is the tone the title and the head word
+  # take.
   case "$1" in
-    "⟳"|"⏸") printf 'accent' ;;
-    "⚠")     printf 'warn' ;;
-    "✓")     printf 'ok' ;;
-    *)       printf 'dim' ;;
+    "⟳"|"⏸") PANE_TONE=accent ;;
+    "⚠")     PANE_TONE=warn ;;
+    "✓")     PANE_TONE=ok ;;
+    *)       PANE_TONE=dim ;;
   esac
 }
 
@@ -129,7 +130,8 @@ pane_posint() {
 
 if [ "${1:-}" = "--glyphs" ]; then
   for g in $PANE_LIVE_GLYPHS $PANE_ENDED_GLYPHS; do
-    printf '%s\t%s\n' "$g" "$(pane_glyph_class "$g")"
+    pane_glyph_class "$g"
+    printf '%s\t%s\n' "$g" "$PANE_CLASS"
   done
   exit 0
 fi
@@ -152,14 +154,55 @@ done
 cap=$PANE_CAP_MAX
 [ "$rows" -lt "$cap" ] && cap=$rows
 
+pane_dirname_into() {
+  # pane_dirname_into <path> <var> — sets <var> to what `dirname <path>` prints:
+  # trailing slashes go, then the last component and the slashes before it; a
+  # path with no slash is `.`, and one that leaves nothing is `/`.
+  local p="$1"
+  while [ "${p%/}" != "$p" ] && [ -n "${p%/}" ]; do p=${p%/}; done
+  case "$p" in
+    */*)
+      p=${p%/*}
+      while [ "${p%/}" != "$p" ] && [ -n "${p%/}" ]; do p=${p%/}; done
+      [ -n "$p" ] || p=/
+      ;;
+    *) p=. ;;
+  esac
+  printf -v "$2" '%s' "$p"
+}
+
 PANE_STATE="${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds"
-PANE_DIR=$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd) || PANE_DIR=""
-TAB=$(printf '\t')
+# The outer `$( )` stays: `cd` inside it leaves this shell's `PWD` alone.
+pane_dirname_into "${BASH_SOURCE[0]:-$0}" pane_src_dir
+PANE_DIR=$(cd "$pane_src_dir" 2>/dev/null && pwd) || PANE_DIR=""
+TAB=$'\t'
 NL='
 '
 
+pane_id_shape_ok() {
+  # pane_id_shape_ok <value> <letters> — succeeds when some line of the value
+  # is non-empty and made only of the given letters: the answer
+  # `printf '%s' <value> | LC_ALL=C grep -qE '^[<class>]+$'` gives, without
+  # its two processes. The letters are spelled out rather than ranged, since a
+  # range in a UTF-8 locale follows collation and can admit other letters, and
+  # any byte outside ASCII is outside them as it is under `LC_ALL=C`.
+  local line IFS=$'\n'
+  set -f
+  for line in $1; do
+    case "$line" in
+      *[!"$2"]*) ;;
+      *) set +f; return 0 ;;
+    esac
+  done
+  set +f
+  return 1
+}
+PANE_ID_SID='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-'
+PANE_ID_TITLE='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-'
+
 pane_session_title() {
-  # pane_session_title <session-id> — the session's current title, or nothing.
+  # pane_session_title <session-id> — PANE_TITLE is the session's current
+  # title, or empty.
   #
   # The file is the one `hooks/session-title.sh` keeps at
   # `session-title-now/<id>`: a schema line `cc-session-title-now v1`, then the
@@ -170,12 +213,13 @@ pane_session_title() {
   # without its newline still counts, and lines past the second are ignored. A
   # TAB in the title becomes a space, because text never holds a TAB.
   local f l1="" l2=""
-  printf '%s' "$1" | LC_ALL=C grep -qE '^[A-Za-z0-9-]+$' || return 0
+  PANE_TITLE=""
+  pane_id_shape_ok "$1" "$PANE_ID_TITLE" || return 0
   f="$PANE_STATE/session-title-now/$1"
   [ -f "$f" ] && [ -r "$f" ] || return 0
   { IFS= read -r l1; IFS= read -r l2; } < "$f" 2>/dev/null
   [ "$l1" = "cc-session-title-now v1" ] && [ -n "$l2" ] || return 0
-  printf '%s' "${l2//$TAB/ }"
+  PANE_TITLE=${l2//$TAB/ }
 }
 
 pane_none() {
@@ -185,7 +229,7 @@ pane_none() {
   local st=""
   printf 'cc-pane\t%s\tnone\t-\t%s\t%s\n' "$PANE_SCHEMA" "$1" "$PANE_REFRESH_OTHER"
   printf 'none\tcut\tdim\t연결된 런 없음\n'
-  [ "$1" = "-" ] || st=$(pane_session_title "$sid")
+  [ "$1" = "-" ] || { pane_session_title "$sid"; st=$PANE_TITLE; }
   [ -z "$st" ] || printf 'session-title\tcut\tdim\t세션 \tnormal\t%s\n' "$st"
   exit 0
 }
@@ -194,7 +238,7 @@ pane_none() {
 # before it becomes either. A value made only of dots passes the character
 # class and names the index directory itself or its parent. The check is on the
 # session id alone; run ids are taken as the index lists them.
-if [ -z "$sid" ] || ! printf '%s' "$sid" | LC_ALL=C grep -qE '^[A-Za-z0-9._-]+$'; then
+if [ -z "$sid" ] || ! pane_id_shape_ok "$sid" "$PANE_ID_SID"; then
   pane_none -
 fi
 case "$sid" in *[!.]*) ;; *) pane_none - ;; esac
@@ -210,12 +254,12 @@ sl_out=$(printf '{"session_id":"%s"}' "$sid" \
 # index check below would reject it on its own, and the ESC test says why in
 # one comparison.
 human=${sl_out%%"$NL"*}
-human=$(printf '%s' "$human" | tr '\t' ' ')
+human=${human//$TAB/ }
 fields=""
 case "$sl_out" in
   *"$NL"*) fields=${sl_out#*"$NL"}; fields=${fields%%"$NL"*} ;;
 esac
-esc=$(printf '\033')
+esc=$'\033'
 case "$human" in
   ""|"$esc"*) pane_none "$idx" ;;
 esac
@@ -248,8 +292,8 @@ fi
 [ -n "$rid" ] || pane_none "$idx"
 grep -qxF -- "$rid" "$idx" 2>/dev/null || pane_none "$idx"
 
-kind=$(pane_glyph_class "$glyph")
-gtone=$(pane_glyph_tone "$glyph")
+pane_glyph_class "$glyph"; kind=$PANE_CLASS
+pane_glyph_tone "$glyph"; gtone=$PANE_TONE
 refresh=$PANE_REFRESH_OTHER
 [ "$kind" = "live" ] && refresh=$PANE_REFRESH_LIVE
 
@@ -258,7 +302,22 @@ ledger=""
 rd_ok=0
 if [ -d "$rd" ] && [ -r "$rd" ] && [ -x "$rd" ]; then
   rd_ok=1
-  ledger=$(cat "$rd/ledger-path" 2>/dev/null || true)
+  # Read with the `read` builtin, as the status line's first pass reads it:
+  # for a one-line file, with or without its final newline, that is the value
+  # `$(cat …)` gives, and a file with a second line keeps the `cat` value.
+  l1=""; l2=""
+  if [ -f "$rd/ledger-path" ] && [ -r "$rd/ledger-path" ]; then
+    { if IFS= read -r l1; then
+        if IFS= read -r l2 || [ -n "$l2" ]; then l2=more; fi
+      fi; } 2>/dev/null < "$rd/ledger-path"
+  else
+    l2=more
+  fi
+  if [ -n "$l2" ]; then
+    ledger=$(cat "$rd/ledger-path" 2>/dev/null || true)
+  else
+    ledger=$l1
+  fi
 fi
 [ -n "$ledger" ] && [ -f "$ledger" ] && [ -r "$ledger" ] || ledger=""
 
@@ -315,19 +374,21 @@ row_off() { [ "${RON[$1]}" = 1 ] && { RON[$1]=0; TOTAL=$((TOTAL - RN[$1])); }; r
 row_on()  { [ "${RON[$1]}" = 1 ] || { RON[$1]=1; TOTAL=$((TOTAL + RN[$1])); }; return 0; }
 
 pane_age() {
-  # pane_age <seconds> — minutes, never seconds; a negative difference is 0.
+  # pane_age <seconds> — PANE_AGE in minutes, never seconds; a negative
+  # difference is 0.
   local a="$1"
   [ "$a" -lt 0 ] && a=0
-  if [ "$a" -lt 60 ]; then printf '1분 안'
-  elif [ "$a" -lt 3600 ]; then printf '%s분 전' $((a / 60))
-  else printf '%s시간 전' $((a / 3600)); fi
+  if [ "$a" -lt 60 ]; then PANE_AGE='1분 안'
+  elif [ "$a" -lt 3600 ]; then printf -v PANE_AGE '%s분 전' $((a / 60))
+  else printf -v PANE_AGE '%s시간 전' $((a / 3600)); fi
 }
 
 pane_etime_secs() {
-  # pane_etime_secs <etime> — `MM:SS`, `HH:MM:SS` or `D-HH:MM:SS` as seconds,
-  # or empty. Every field is forced decimal with `10#`, so `08` and `09` are
-  # numbers and not invalid octal.
+  # pane_etime_secs <etime> — PANE_SECS is `MM:SS`, `HH:MM:SS` or
+  # `D-HH:MM:SS` as seconds, or empty. Every field is forced decimal with
+  # `10#`, so `08` and `09` are numbers and not invalid octal.
   local e="$1" d=0 rest a b c v
+  PANE_SECS=""
   case "$e" in
     *-*) d=${e%%-*}; rest=${e#*-} ;;
     *)   rest=$e ;;
@@ -339,16 +400,17 @@ EOF
   for v in "$d" "$a" "$b" "$c"; do
     case "$v" in ""|*[!0-9]*) return 0 ;; esac
   done
-  printf '%s' $(( 10#$d * 86400 + 10#$a * 3600 + 10#$b * 60 + 10#$c ))
+  PANE_SECS=$(( 10#$d * 86400 + 10#$a * 3600 + 10#$b * 60 + 10#$c ))
 }
 
 pane_hhmm() {
-  # pane_hhmm <epoch> — `HH:MM` in the display zone by arithmetic, so neither
-  # date dialect is needed; UTC when the helper did not load.
+  # pane_hhmm <epoch> — PANE_HM is `HH:MM` in the display zone by arithmetic,
+  # so neither date dialect is needed; UTC when the helper did not load. The
+  # helper prints, so it costs the one command substitution and no second.
   if [ "$have_dtz" = 1 ]; then
-    printf '%s' "$(cc_display_hhmm "$1")"
+    PANE_HM=$(cc_display_hhmm "$1")
   else
-    printf '%02d:%02d' $(( ($1 % 86400) / 3600 )) $(( ($1 % 3600) / 60 ))
+    printf -v PANE_HM '%02d:%02d' $(( ($1 % 86400) / 3600 )) $(( ($1 % 3600) / 60 ))
   fi
 }
 
@@ -482,28 +544,78 @@ if [ "$full" = 1 ]; then
   ' "$ledger" 2>/dev/null || true)
 fi
 
-fact() {
-  # fact <kind> [<key>] — the first facts line of that kind (and key), fields
-  # after the kind.
-  printf '%s\n' "$facts" | awk -F'\t' -v k="$1" -v s="${2:-}" \
-    '$1 == k && (s == "" || $2 == s) { sub(/^[^\t]*\t/, ""); print; exit }'
+# THE FACTS ARE INDEXED ONCE, and every reader below takes them from three
+# arrays instead of running the facts back through `awk` or `cut`: FK is a
+# line's kind (its first TAB field), FS its second field, FR the line after
+# its kind. The `ev` lines, in order and without their kind, are `events`.
+FK=(); FS=(); FR=(); events=""
+pane_index_facts() {
+  local line rest IFS=$'\n'
+  set -f
+  for line in $facts; do
+    case "$line" in
+      *"$TAB"*) rest=${line#*"$TAB"} ;;
+      *)        rest=$line ;;
+    esac
+    FK[${#FK[@]}]=${line%%"$TAB"*}
+    case "$line" in
+      *"$TAB"*) FS[${#FS[@]}]=${rest%%"$TAB"*} ;;
+      *)        FS[${#FS[@]}]="" ;;
+    esac
+    FR[${#FR[@]}]=$rest
+    [ "${line%%"$TAB"*}" = ev ] && events="$events${events:+$NL}$rest"
+  done
+  set +f
 }
-fact_col() { printf '%s' "$1" | cut -f"$2"; }
+pane_index_facts
+
+fact() {
+  # fact <kind> [<key>] — PANE_FACT is the first facts line of that kind (and
+  # key), fields after the kind; empty when there is none.
+  local j=0
+  PANE_FACT=""
+  while [ "$j" -lt "${#FK[@]}" ]; do
+    if [ "${FK[$j]}" = "$1" ] && { [ -z "${2:-}" ] || [ "${FS[$j]}" = "$2" ]; }; then
+      PANE_FACT=${FR[$j]}
+      return 0
+    fi
+    j=$((j + 1))
+  done
+}
+fact_col() {
+  # fact_col <line> <n> — PANE_COL is the n-th TAB field of the line, as
+  # `cut -f<n>` prints it: a line with no TAB is printed whole, and a field
+  # past the last one is empty.
+  local v="$1" i=1
+  case "$v" in
+    *"$TAB"*) ;;
+    *) PANE_COL=$v; return 0 ;;
+  esac
+  while [ "$i" -lt "$2" ]; do
+    case "$v" in
+      *"$TAB"*) v=${v#*"$TAB"} ;;
+      *) PANE_COL=""; return 0 ;;
+    esac
+    i=$((i + 1))
+  done
+  PANE_COL=${v%%"$TAB"*}
+}
 
 # ---------------------------------------------------------------------------
 # title and head
 # ---------------------------------------------------------------------------
 
 add_row title cut - 1 1 "$gtone.b" "autopilot $rid"
-session_title=$(pane_session_title "$sid")
+pane_session_title "$sid"; session_title=$PANE_TITLE
 [ -z "$session_title" ] || add_row session-title cut - 1 1 dim "세션 " normal "$session_title"
 
 if [ -n "$fields" ]; then
   tail_parts=""
   if [ "$full" = 1 ]; then
-    shift_n=$(fact_col "$(fact shift)" 1)
+    fact shift; fact_col "$PANE_FACT" 1; shift_n=$PANE_COL
     [ -n "$shift_n" ] && tail_parts="교대 $shift_n"
-    manifest="$(dirname "$ledger")/$rid.plan.md"
+    pane_dirname_into "$ledger" ledger_dir
+    manifest="$ledger_dir/$rid.plan.md"
     if [ -f "$manifest" ] && [ -r "$manifest" ]; then
       target_part=$(LC_ALL=C awk -F'|' '
         function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
@@ -549,13 +661,14 @@ fi
 # the status line's words — so the two screens cannot disagree, and without a
 # fields row both slots are dropped rather than filled from another clock.
 hd=()
-cost_usd=$(fact_col "$(fact cost)" 1)
+fact cost; fact_col "$PANE_FACT" 1; cost_usd=$PANE_COL
 if [ -n "$fields" ]; then
   if [ "$f_grew" != "-" ]; then
-    hd[${#hd[@]}]=dim; hd[${#hd[@]}]="원장 $(pane_age $((f_now - f_grew)))"
+    pane_age $((f_now - f_grew))
+    hd[${#hd[@]}]=dim; hd[${#hd[@]}]="원장 $PANE_AGE"
   fi
   hb_age=""
-  [ "$f_hb" != "-" ] && hb_age=$(pane_age $((f_now - f_hb)))
+  [ "$f_hb" != "-" ] && { pane_age $((f_now - f_hb)); hb_age=$PANE_AGE; }
   case "$f_watch" in
     ok)        hd[${#hd[@]}]=dim;  hd[${#hd[@]}]="워처 ♥${hb_age:+ $hb_age}" ;;
     stale)     hd[${#hd[@]}]=warn; hd[${#hd[@]}]="워처 없음${hb_age:+ $hb_age}" ;;
@@ -579,29 +692,78 @@ fi
 
 seg_states=$(cc_segment_states "$ledger" 2>/dev/null || true)
 cone=$(cc_cone_blocked "$ledger" 2>/dev/null || true)
-held_subjects=$(printf '%s\n' "$cone" | awk -F'\t' '$1 == "held" { print $2 }')
+pane_lines_into() {
+  # pane_lines_into <text> — PANE_LINES holds the text's non-empty lines, split
+  # on newlines with globbing off rather than read from a here-document, which
+  # bash 3.2 backs with a temporary file.
+  local x IFS=$'\n'
+  PANE_LINES=()
+  set -f
+  for x in $1; do PANE_LINES[${#PANE_LINES[@]}]=$x; done
+  set +f
+}
+
+# The second field of every `held` line of the cone reader, and the live stage
+# records, each kept as lines in an array for the segment loop below.
+held_subjects=()
+pane_lines_into "$cone"
+j=0
+while [ "$j" -lt "${#PANE_LINES[@]}" ]; do
+  x=${PANE_LINES[$j]}
+  if [ "${x%%"$TAB"*}" = held ]; then
+    case "$x" in
+      *"$TAB"*) x=${x#*"$TAB"}; held_subjects[${#held_subjects[@]}]=${x%%"$TAB"*} ;;
+      *)        held_subjects[${#held_subjects[@]}]="" ;;
+    esac
+  fi
+  j=$((j + 1))
+done
 live_recs=""
 [ "$rd_ok" = 1 ] && live_recs=$(cc_live_stage_records "$rd" 2>/dev/null || true)
+pane_lines_into "$live_recs"
+live_rec_lines=()
+[ "${#PANE_LINES[@]}" -gt 0 ] && live_rec_lines=("${PANE_LINES[@]}")
+PANE_DISPATCH_RE='^S[0123456789]+:[^:]+:'
+
+pane_is_held() {
+  # pane_is_held <segment> — succeeds when it is one of the held subjects,
+  # compared as whole lines.
+  local j=0
+  while [ "$j" -lt "${#held_subjects[@]}" ]; do
+    [ "${held_subjects[$j]}" = "$1" ] && return 0
+    j=$((j + 1))
+  done
+  return 1
+}
 
 live_rec_for() {
-  # live_rec_for <segment> — the first live stage record of that segment. A
-  # gate-launched stage's pid file is named after the segment; a driver's is
-  # its dispatch id `S<n>:<seg>:<cycle>`, whose second field is the segment.
-  printf '%s\n' "$live_recs" | awk -F'\t' -v s="$1" '
-    { n = $1; if (n ~ /^S[0-9]+:[^:]+:/) { split(n, p, ":"); n = p[2] } }
-    n == s { print; exit }'
+  # live_rec_for <segment> — PANE_REC is the first live stage record of that
+  # segment, or empty. A gate-launched stage's pid file is named after the
+  # segment; a driver's is its dispatch id `S<n>:<seg>:<cycle>`, whose second
+  # field is the segment.
+  local j=0 n
+  PANE_REC=""
+  while [ "$j" -lt "${#live_rec_lines[@]}" ]; do
+    n=${live_rec_lines[$j]%%"$TAB"*}
+    if [[ $n =~ $PANE_DISPATCH_RE ]]; then n=${n#*:}; n=${n%%:*}; fi
+    if [ "$n" = "$1" ]; then PANE_REC=${live_rec_lines[$j]}; return 0; fi
+    j=$((j + 1))
+  done
 }
 
 sr_text() {
-  # sr_text <segment> — `<kind> <version>회차 · <terminal class>` of its last
-  # stage-result, missing parts dropped.
+  # sr_text <segment> — PANE_SR is `<kind> <version>회차 · <terminal class>` of
+  # its last stage-result, missing parts dropped.
   local r k v c out=""
-  r=$(fact sr "$1"); [ -n "$r" ] || return 0
-  k=$(fact_col "$r" 2); v=$(fact_col "$r" 3); c=$(fact_col "$r" 4)
+  PANE_SR=""
+  fact sr "$1"; r=$PANE_FACT; [ -n "$r" ] || return 0
+  fact_col "$r" 2; k=$PANE_COL
+  fact_col "$r" 3; v=$PANE_COL
+  fact_col "$r" 4; c=$PANE_COL
   [ -n "$k" ] && out=$k
   [ -n "$v" ] && out="$out${out:+ }${v}회차"
   [ -n "$c" ] && out="$out${out:+ · }$c"
-  printf '%s' "$out"
+  PANE_SR=$out
 }
 
 n_segs=0
@@ -612,13 +774,15 @@ if [ -n "$seg_states" ]; then
     [ -n "$s_id" ] || continue
     n_segs=$((n_segs + 1))
     held=0
-    printf '%s\n' "$held_subjects" | grep -qxF -- "$s_id" && held=1
-    rec=$(live_rec_for "$s_id")
-    pre_v=$(fact_col "$(fact pre "$s_id")" 2)
+    pane_is_held "$s_id" && held=1
+    live_rec_for "$s_id"; rec=$PANE_REC
+    fact pre "$s_id"; fact_col "$PANE_FACT" 2; pre_v=$PANE_COL
     detail=""
     if [ -n "$rec" ]; then
       cls=run; g="⟳"; gt=accent; word="실행중"
-      r_file=$(fact_col "$rec" 1); r_stage=$(fact_col "$rec" 2); r_pid=$(fact_col "$rec" 3)
+      fact_col "$rec" 1; r_file=$PANE_COL
+      fact_col "$rec" 2; r_stage=$PANE_COL
+      fact_col "$rec" 3; r_pid=$PANE_COL
       r_kind=$(cc_stage_kind "$rd" "$ledger" "$r_file" 2>/dev/null || true)
       r_att=""
       case "$r_stage" in *"#"*) r_att=${r_stage##*#} ;; esac
@@ -626,33 +790,39 @@ if [ -n "$seg_states" ]; then
       [ -n "$r_att" ] && part="$part${part:+ }${r_att}회차"
       detail=$part
       if [ -n "$fields" ] && [ -n "$r_pid" ]; then
-        et=$(ps -o etime= -p "$r_pid" 2>/dev/null | tr -d ' ')
-        secs=$(pane_etime_secs "$et")
+        et=$(ps -o etime= -p "$r_pid" 2>/dev/null); et=${et// /}
+        pane_etime_secs "$et"; secs=$PANE_SECS
         if [ -n "$secs" ]; then
-          detail="$detail${detail:+ · }$(pane_hhmm $((f_now - secs))) 시작"
+          pane_hhmm $((f_now - secs))
+          detail="$detail${detail:+ · }$PANE_HM 시작"
         fi
       fi
       [ -n "$pre_v" ] && [ "$pre_v" != "없음" ] && detail="$detail${detail:+ · }선행 $pre_v"
     elif [ "$held" = 1 ]; then
       cls=held; g="▲"; gt=error; word=$s_st
-      detail=$(sr_text "$s_id")
+      sr_text "$s_id"; detail=$PANE_SR
     elif [ "$s_v" = "done" ] && [ "$s_st" != "park" ]; then
       cls=done; g="✓"; gt=ok; word=$s_st
-      cy=$(fact cyc "$s_id"); ck=$(fact chk "$s_id")
+      fact cyc "$s_id"; cy=$PANE_FACT
+      fact chk "$s_id"; ck=$PANE_FACT
       if [ -n "$cy" ]; then
-        detail="리뷰 $(fact_col "$cy" 2)회차 P0 $(fact_col "$cy" 3) · P1 $(fact_col "$cy" 4)"
+        fact_col "$cy" 2; cy_c=$PANE_COL
+        fact_col "$cy" 3; cy_p0=$PANE_COL
+        fact_col "$cy" 4; cy_p1=$PANE_COL
+        detail="리뷰 ${cy_c}회차 P0 ${cy_p0} · P1 ${cy_p1}"
       fi
       if [ -n "$ck" ]; then
-        ck_pr=$(fact_col "$ck" 2); ck_st=$(fact_col "$ck" 3)
+        fact_col "$ck" 2; ck_pr=$PANE_COL
+        fact_col "$ck" 3; ck_st=$PANE_COL
         if [ -n "$ck_pr" ]; then ck_t="PR #$ck_pr${ck_st:+ $ck_st}"; else ck_t="체크 $ck_st"; fi
         detail="$detail${detail:+ · }$ck_t"
       fi
     elif [ "$s_v" = "done" ]; then
       cls=park; g="⊘"; gt=dim; word=park
-      detail=$(sr_text "$s_id")
+      sr_text "$s_id"; detail=$PANE_SR
     else
       cls=open; g="·"; gt=dim; word=$s_st
-      detail=$(sr_text "$s_id")
+      sr_text "$s_id"; detail=$PANE_SR
       if [ -z "$detail" ] && [ -n "$pre_v" ] && [ "$pre_v" != "없음" ]; then
         detail="선행 $pre_v"
       fi
@@ -670,7 +840,10 @@ fi
 # Gate: what is waiting for a person. Every row here is protected.
 # ---------------------------------------------------------------------------
 
-cause_word() { if [ "$1" = "막힘" ]; then printf '사람 결정 필요'; else printf '%s' "$1"; fi; }
+cause_word() {
+  # cause_word <cause> — PANE_CAUSE is the word the block heading shows.
+  if [ "$1" = "막힘" ]; then PANE_CAUSE='사람 결정 필요'; else PANE_CAUSE=$1; fi
+}
 
 add_row gap cut - 0 1 normal ""
 gate_start=$NROWS
@@ -682,7 +855,8 @@ $(cc_open_approval_rows "$ledger" 2>/dev/null || true)
 EOF
 while IFS="$TAB" read -r b_cause b_reason; do
   [ -n "$b_reason" ] || continue
-  add_row block-heading cut - 1 1 error.b "▲ 막힘 · run · $(cause_word "$b_cause")"
+  cause_word "$b_cause"
+  add_row block-heading cut - 1 1 error.b "▲ 막힘 · run · $PANE_CAUSE"
   add_row block-reason wrap - 1 1 normal "$b_reason"
 done <<EOF
 $(cc_unresolved_blocked "$ledger" 2>/dev/null || true)
@@ -693,7 +867,8 @@ while IFS="$TAB" read -r c_kind c_subj c_cause c_reason c_obs; do
   if [ "$c_kind" = "held" ]; then
     t=$c_reason
     [ -n "$c_obs" ] && [ "$c_obs" != "-" ] && t="$t · $c_obs"
-    add_row block-heading cut - 1 1 error.b "▲ 막힘 · cone $c_subj · $(cause_word "$c_cause")"
+    cause_word "$c_cause"
+    add_row block-heading cut - 1 1 error.b "▲ 막힘 · cone $c_subj · $PANE_CAUSE"
     add_row block-reason wrap - 1 1 normal "$t"
   else
     n_unres=$((n_unres + 1))
@@ -718,7 +893,6 @@ fi
 # Recent events
 # ---------------------------------------------------------------------------
 
-events=$(printf '%s\n' "$facts" | awk -F'\t' '$1 == "ev" { sub(/^ev\t/, ""); print }')
 EV_GAP=-1; EV_HEAD=-1
 if [ -n "$events" ]; then
   EV_GAP=$NROWS; add_row gap cut - 0 1 normal ""

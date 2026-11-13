@@ -377,6 +377,29 @@ sl_borrow_clock() {
   esac
 }
 
+sl_json_str_into() {
+  # sl_json_str_into <key> <var> — sets <var> to the string value of "<key>" in
+  # `stdin_json`, or to empty. It is the value
+  # `sed -n 's/.*"<key>"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1`
+  # gives, without its three processes: the first line that matches, and on that
+  # line the last occurrence, because the leading `.*` is the longest one and
+  # the trailing `.*` makes the whole line the match, as it is for sed. The
+  # lines are split on newlines with globbing off, not read from a here-document,
+  # which bash 3.2 backs with a temporary file. The pattern sits in a variable
+  # and is used unquoted, the one spelling bash 3.2 and later read alike.
+  local re line IFS=$'\n'
+  re='^.*"'"$1"'"[[:space:]]*:[[:space:]]*"([^"]*)".*$'
+  printf -v "$2" '%s' ''
+  set -f
+  for line in $stdin_json; do
+    if [[ $line =~ $re ]]; then
+      printf -v "$2" '%s' "${BASH_REMATCH[1]}"
+      break
+    fi
+  done
+  set +f
+}
+
 sl_borrow_compute() {
   # sl_borrow_compute — SL_BORROW_SEG (the full segment) and SL_BORROW_SHORT (the
   # same with its detail dropped), both empty when there is nothing to show.
@@ -405,8 +428,7 @@ sl_borrow_compute() {
     # exact compare below would accept.
     grep -qF -- "$cfg" "$f" 2>/dev/null || return 0
   else
-    tp=$(printf '%s' "$stdin_json" \
-         | sed -n 's/.*"transcript_path"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)
+    sl_json_str_into transcript_path tp
     [ -n "$tp" ] || return 0
   fi
   sl_borrow_read "$f" || return 0
@@ -468,7 +490,26 @@ sl_exit_fallback() {
 stdin_json=$(cat 2>/dev/null || true)
 sl_borrow_compute
 
-CC_SL_DIR=$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd) \
+sl_dirname_into() {
+  # sl_dirname_into <path> <var> — sets <var> to what `dirname <path>` prints:
+  # trailing slashes go, then the last component and the slashes before it; a
+  # path with no slash is `.`, and one that leaves nothing is `/`.
+  local p="$1"
+  while [ "${p%/}" != "$p" ] && [ -n "${p%/}" ]; do p=${p%/}; done
+  case "$p" in
+    */*)
+      p=${p%/*}
+      while [ "${p%/}" != "$p" ] && [ -n "${p%/}" ]; do p=${p%/}; done
+      [ -n "$p" ] || p=/
+      ;;
+    *) p=. ;;
+  esac
+  printf -v "$2" '%s' "$p"
+}
+
+# The outer `$( )` stays: `cd` inside it leaves this shell's `PWD` alone.
+sl_dirname_into "${BASH_SOURCE[0]:-$0}" sl_src_dir
+CC_SL_DIR=$(cd "$sl_src_dir" 2>/dev/null && pwd) \
   || sl_exit_fallback
 # The display zone for the borrow clock, sourced beside `liveness.sh` and ahead
 # of it so that its fallback exit still carries the clock. A failed source
@@ -520,17 +561,36 @@ CC_SL_ABANDON=3600
 CC_SL_HEARTBEAT_STALE=120
 
 age_phrase() {
-  # age_phrase <seconds> — a short human duration.
+  # age_phrase <seconds> — SL_AGE is a short human duration.
   local s="$1"
-  if   [ "$s" -lt 60 ];   then printf '%s초 전' "$s"
-  elif [ "$s" -lt 3600 ]; then printf '%s분 전' "$((s / 60))"
-  else                         printf '%s시간 전' "$((s / 3600))"
+  if   [ "$s" -lt 60 ];   then printf -v SL_AGE '%s초 전' "$s"
+  elif [ "$s" -lt 3600 ]; then printf -v SL_AGE '%s분 전' "$((s / 60))"
+  else                         printf -v SL_AGE '%s시간 전' "$((s / 3600))"
   fi
 }
 
+sl_read_value_into() {
+  # sl_read_value_into <file> <var> — sets <var> to the value `$(cat <file>)`
+  # gives, read with the `read` builtin when the file is one line, with or
+  # without its final newline. A file with a second line, or one that cannot be
+  # opened as a regular readable file, keeps the `cat` value.
+  local l1="" l2=""
+  if [ -f "$1" ] && [ -r "$1" ]; then
+    { if IFS= read -r l1; then
+        if IFS= read -r l2 || [ -n "$l2" ]; then l2=more; fi
+      fi; } 2>/dev/null < "$1"
+  else
+    l2=more
+  fi
+  if [ -n "$l2" ]; then
+    l1=$(cat "$1" 2>/dev/null || true)
+  fi
+  printf -v "$2" '%s' "$l1"
+}
+
 newest_stage_pid() {
-  # newest_stage_pid <run-dir> — echoes "<segment> <pid>" for the most recently
-  # recorded stage that is STILL RUNNING, or nothing.
+  # newest_stage_pid <run-dir> — SL_SLOT is "<segment> <pid>" for the most
+  # recently recorded stage that is STILL RUNNING, or empty.
   #
   # A LABEL IS STILL A CLAIM. Picking on mtime alone was defended as "only a
   # name, not a judgement", but a name beside a spinning glyph reads as "this
@@ -543,7 +603,8 @@ newest_stage_pid() {
   # what `cc_live_stages` counts with, asked about one pid instead of all of
   # them, so the name on the line and the count behind it come from one
   # implementation rather than two that agree today.
-  local run_dir="$1" f seg t best_t=-1 best=""
+  local run_dir="$1" f seg t best_t=-1 best="" p
+  SL_SLOT=""
   for f in "$run_dir"/*.pid; do
     [ -f "$f" ] || continue
     seg=${f##*/}; seg=${seg%.pid}
@@ -554,19 +615,19 @@ newest_stage_pid() {
     if [ "$t" -gt "$best_t" ]; then best_t=$t; best=$seg; fi
   done
   [ -n "$best" ] || return 0
-  printf '%s %s' "$best" "$(cat "$run_dir/$best.pid" 2>/dev/null || true)"
+  sl_read_value_into "$run_dir/$best.pid" p
+  SL_SLOT="$best $p"
 }
 
 # ---------------------------------------------------------------------------
 # Resolve this session's run.
 # ---------------------------------------------------------------------------
 
-# `sed`, not `jq`. The field is one flat string, this runs every ten seconds,
-# and a scenario in which `jq` is absent must still resolve the run rather than
-# merely avoid crashing — spending a process on a lookup a substring answers
-# would buy nothing and lose that.
-sid=$(printf '%s' "$stdin_json" \
-      | sed -n 's/.*"session_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)
+# A shell match, not `jq`. The field is one flat string, this runs every ten
+# seconds, and a scenario in which `jq` is absent must still resolve the run
+# rather than merely avoid crashing — spending a process on a lookup a
+# substring answers would buy nothing and lose that.
+sl_json_str_into session_id sid
 [ -n "$sid" ] || sl_exit_fallback
 
 CC_SL_STATE="${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds"
@@ -631,6 +692,48 @@ sl_trace=0; [ "${CC_SL_TRACE:-}" = "1" ] && sl_trace=1
 best_rd=""; best_rid=""; best_state=""; best_ledger=""; best_t=-1; best_rank=9; best_i=-1
 now=$(date -u +%s)
 
+# WHAT ONE RENDER ASKS TWICE IT ASKS ONCE. The grade of a token, the mtime of a
+# path and the ledger growth of an index position are kept in indexed arrays
+# for the rest of this process and nowhere else, so nothing outlives the
+# render and the contract above stands. The grade table itself stays in
+# `liveness.sh`; these arrays hold its answers, not a copy of it.
+sl_gk=(); sl_gv=(); sl_mk=(); sl_mv=(); sl_gw=(); sl_gws=()
+
+sl_grade_into() {
+  # sl_grade_into <token> <var> — sets <var> to `cc_run_grade <token>`.
+  local j=0 v
+  while [ "$j" -lt "${#sl_gk[@]}" ]; do
+    if [ "${sl_gk[$j]}" = "$1" ]; then printf -v "$2" '%s' "${sl_gv[$j]}"; return 0; fi
+    j=$((j + 1))
+  done
+  v=$(cc_run_grade "$1" 2>/dev/null || true)
+  sl_gk[${#sl_gk[@]}]=$1; sl_gv[${#sl_gv[@]}]=$v
+  printf -v "$2" '%s' "$v"
+}
+
+sl_mtime_into() {
+  # sl_mtime_into <path> <var> — sets <var> to `cc_mtime <path>`. A path that
+  # is not a regular file is empty without a fork, as `cc_mtime` answers it.
+  local j=0 v=""
+  while [ "$j" -lt "${#sl_mk[@]}" ]; do
+    if [ "${sl_mk[$j]}" = "$1" ]; then printf -v "$2" '%s' "${sl_mv[$j]}"; return 0; fi
+    j=$((j + 1))
+  done
+  [ -f "$1" ] && v=$(cc_mtime "$1")
+  sl_mk[${#sl_mk[@]}]=$1; sl_mv[${#sl_mv[@]}]=$v
+  printf -v "$2" '%s' "$v"
+}
+
+sl_growth_into() {
+  # sl_growth_into <index position> <var> — sets <var> to
+  # `cc_ledger_growth_at` of that run, computed once per position.
+  local i="$1" v
+  if [ "${sl_gws[$i]-}" = 1 ]; then printf -v "$2" '%s' "${sl_gw[$i]-}"; return 0; fi
+  v=$(cc_ledger_growth_at "${sl_rd[$i]}" "${sl_led[$i]}")
+  sl_gw[$i]=$v; sl_gws[$i]=1
+  printf -v "$2" '%s' "$v"
+}
+
 sl_judge() {
   # sl_judge <index position> — judges that run and keeps it if it beats the
   # best so far: a lower rank, else a later time, else an earlier index line.
@@ -641,7 +744,7 @@ sl_judge() {
   [ "$sl_trace" = 1 ] && printf 'cc-sl-derive %s\n' "$rid" >&2
   st=$(cc_run_state "$rd" "$ledger" "$CC_SL_STALL" "$CC_SL_ABANDON" 2>/dev/null || true)
   [ -n "$st" ] || return 0
-  rank=$(cc_run_grade "$st" 2>/dev/null || true)
+  sl_grade_into "$st" rank
   [ -n "$rank" ] || rank=9
   # A WAITING APPROVAL HOLDS ITS RANK ONLY WHILE A WATCHER CAN STILL DELIVER IT.
   # `cc_run_state` returns 승인대기 for any open approval however long the ledger
@@ -654,13 +757,13 @@ sl_judge() {
   # same idle ladder as a run without one. The token, and so the glyph when it
   # is still the only run, stays 승인대기; only the order changes.
   if [ "$st" = "승인대기" ]; then
-    hb_t=$(cc_mtime "$rd/watch.heartbeat")
+    sl_mtime_into "$rd/watch.heartbeat" hb_t
     if [ -z "$hb_t" ] || [ "$((now - hb_t))" -gt "$CC_SL_HEARTBEAT_STALE" ]; then
-      g=$(cc_ledger_growth_at "$rd" "$ledger")
+      sl_growth_into "$i" g
       if [ -z "$g" ] || [ "$((now - g))" -ge "$CC_SL_ABANDON" ]; then
-        rank=$(cc_run_grade 버려짐)
+        sl_grade_into 버려짐 rank
       elif [ "$((now - g))" -ge "$CC_SL_STALL" ]; then
-        rank=$(cc_run_grade 정지경고)
+        sl_grade_into 정지경고 rank
       fi
     fi
   fi
@@ -670,9 +773,9 @@ sl_judge() {
     # and a derived termination has no stamp at all — so ordering on the stamp
     # would order two populations by two different clocks. The file mtime is one
     # clock: `done`'s when it exists, the ledger's last movement otherwise.
-    t=$(cc_mtime "$rd/done"); [ -n "$t" ] || t=$(cc_mtime "$ledger")
+    sl_mtime_into "$rd/done" t; [ -n "$t" ] || sl_mtime_into "$ledger" t
   else
-    t=$(cc_mtime "$ledger")
+    sl_mtime_into "$ledger" t
   fi
   [ -n "$t" ] || t=0
   if [ -z "$best_rd" ] || [ "$rank" -lt "$best_rank" ] \
@@ -879,7 +982,7 @@ if [ "$best_rank" -gt 4 ]; then
     i=${sl_order[$k]}
     if [ "$sl_walk_stops" = 1 ] && [ -n "$best_rd" ] && [ "$best_rank" -le 5 ]; then
       c=""
-      [ -n "${sl_clk[$i]}" ] && c=$(cc_mtime "${sl_clk[$i]}")
+      [ -n "${sl_clk[$i]}" ] && sl_mtime_into "${sl_clk[$i]}" c
       [ -n "$c" ] || c=0
       [ "$c" -lt "$best_t" ] && break
     fi
@@ -905,7 +1008,7 @@ fi
 # still not a write, so the property this file rests on is untouched. An absent
 # value on BOTH means nothing has been recorded at all, which is why every use
 # below is guarded rather than defaulted to zero.
-grew=$(cc_ledger_growth_at "$best_rd" "$best_ledger")
+sl_growth_into "$best_i" grew
 age_slot=""
 if [ -n "$grew" ]; then
   # CLAMPED, AND CLAMPED HERE RATHER THAN AT THE SOURCE. A ledger mtime in the
@@ -921,7 +1024,8 @@ if [ -n "$grew" ]; then
   # them on a twelve-run session. Measure that before moving it.
   a=$((now - grew))
   [ "$a" -lt 0 ] && a=0
-  age_slot=" · 원장 $(age_phrase "$a")"
+  age_phrase "$a"
+  age_slot=" · 원장 $SL_AGE"
 fi
 
 # `watch.pid` is what keeps "has not come up yet" from collapsing into "died".
@@ -931,7 +1035,7 @@ fi
 # `watch_v` is the same verdict as a word for the pane's field row, set beside
 # each slot so the two cannot be judged twice.
 watch_slot=""; watch_v=ok
-hb=$(cc_mtime "$best_rd/watch.heartbeat")
+sl_mtime_into "$best_rd/watch.heartbeat" hb
 if [ -z "$hb" ]; then
   if [ -f "$best_rd/watch.pid" ]; then watch_slot=" · 워처 없음"; watch_v=stale
   else                                 watch_slot=" · 워처 미기동"; watch_v=unstarted; fi
@@ -1000,21 +1104,24 @@ case "$best_state" in
     # different claims, and a longer id would expose this arm first. Dropping
     # the borrow detail is not a run slot and applies to every arm, this one
     # included.
-    blocked_n=$(cc_unresolved_blocked "$best_ledger" 2>/dev/null | grep -c . || true)
-    if [ "${blocked_n:-0}" -gt 0 ] 2>/dev/null; then w=차단; else w=방치; fi
+    # Any non-empty line of the reader's output is a standing block, which is
+    # what counting them used to decide; the command substitution drops the
+    # trailing empty lines, so a non-empty value holds at least one.
+    blocked_out=$(cc_unresolved_blocked "$best_ledger" 2>/dev/null || true)
+    if [ -n "$blocked_out" ]; then w=차단; else w=방치; fi
     line="⊘ ${best_rid} ${w}${age_slot}"
     watch_slot=""; watch_v=none
     arm=$w
     ;;
   도는중)
-    slot=$(newest_stage_pid "$best_rd")
+    newest_stage_pid "$best_rd"; slot=$SL_SLOT
     seg=${slot%% *}; pid=${slot#* }
     if [ -n "$slot" ] && [ -n "$seg" ]; then
       line="⟳ ${best_rid} ${seg}"
       # The kind comes from `liveness.sh`, the source the pane reads too. A
       # segment on its first driver attempt has none and the slot is dropped.
       kind=$(cc_stage_kind "$best_rd" "$best_ledger" "$seg")
-      elapsed=$(ps -o etime= -p "$pid" 2>/dev/null | tr -d ' ')
+      elapsed=$(ps -o etime= -p "$pid" 2>/dev/null); elapsed=${elapsed// /}
       # THE PID IS ALREADY IDENTITY-CHECKED by the time it reaches here, and
       # that is what makes this number meaningful: measured on an unfiltered
       # pid, `ps` answers empty for a dead one and — after a reuse — the elapsed

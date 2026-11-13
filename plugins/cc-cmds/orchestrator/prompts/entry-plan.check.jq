@@ -9,7 +9,7 @@
 # and the C4 section of `scripts/test-gate.sh`. One file is what keeps the three
 # from asserting different rules.
 #
-# A PLAN WITHOUT `design_tier_judged` IS ASSERTED ON (f) AND (h) ALONE. Every
+# A PLAN WITHOUT `design_tier_judged` IS ASSERTED ON (f), (h) AND (i) ALONE. Every
 # plan frozen before the key existed lacks it, and its tier (`team-2`,
 # `lead-solo`, `null`) is outside the two values below; refusing it here would
 # stop runs that are already frozen.
@@ -26,7 +26,7 @@
 #   > a writer (a team-4 single-scope design) and `none` elsewhere. Only
 #   > `manifest_design_skill` turns scope, tier and path into the design skill.
 #
-# EIGHT ASSERTIONS AND NO MORE. A `team-4` graph is asserted on only through
+# NINE ASSERTIONS AND NO MORE. A `team-4` graph is asserted on only through
 # `design_path`, and only when the key is present:
 #
 #   (a) a `team-4` judgment carries at least one heavy reason that is not blank,
@@ -60,7 +60,10 @@
 #       `anchor_kind` `intent`, and an `enforcement_surface` of `없음` with no
 #       class, no path and the `의도` source. A `hotfix` plan is the fixed frame the `--hotfix`
 #       kickoff fills: the `solo` tier, the `single` scope, and its steps'
-#       skills exactly `design` → `implement` → `review`. Its `unresolved`
+#       skills exactly `design` → `implement` → `review`. On both frames a
+#       `design_delivery_judged` key, when present, reads `slices` and a
+#       `design_path_judged` key, when present, reads `none`: neither frame
+#       judges a delivery or a path. Its `unresolved`
 #       carries only the stop notices of the enforcement surface: empty when
 #       the judgment is `없음` or `판정불가`, and when it is `확인됨` or
 #       `가능성`, at least one item and no more items than the judgment's paths
@@ -85,11 +88,33 @@
 #       itself always writes `slices` is not asserted here: the kickoff rewrites
 #       the key to `tickets` on a person's answer and this file runs on that
 #       plan too, so the kickoff compares the judgment output right after it.
+#   (i) the six judged keys — `design_delivery_judged`, `design_path_judged`,
+#       `ticket_publish_judged` and their `_rationale` keys — are all present
+#       or all absent; when present, each judged key holds a value of its
+#       enum and each rationale is not blank; a `design_path_judged` other
+#       than `none` goes with a `design_tier_judged` of `team-4`; and a
+#       `design_delivery_judged` of `tickets` goes with a `design_tier_judged`
+#       of `team-4` and a `design_path_judged` other than `none`. A plan with
+#       none of the six was frozen before the keys existed and passes (i).
+#       These four relations are the ones that hold on every form of plan the
+#       keys can take — the entry judgment's own, the two fixed frames, the
+#       kickoff's rewrites when the design is skipped and when a `base` scope
+#       is judged `single` again, a person's raise, a rekick's follow-up and an
+#       adopted plan — because the keys that judge a path or a ticket
+#       delivery are only ever written beside a `team-4` tier judgment, and
+#       every rewrite that moves one rewrites the tier judgment with it.
+#       (i) does not bind the keys to `design_required`: a rekick's follow-up
+#       keeps the judged keys and the tier judgment and turns only
+#       `design_required` false. Nor to the confirmed keys a person changes
+#       (`design_scope`, `design_tier`, `design_delivery`, `design_path`).
 #
-# (f) AND (h) RUN ON THE EARLY RETURN TOO. A hotfix plan that dropped
+# (f), (h) AND (i) RUN ON THE EARLY RETURN TOO. A hotfix plan that dropped
 # `design_tier_judged` would otherwise skip the one assertion that pins its
-# frame, and a `tickets` plan the one that pins its fields. A plan frozen before
-# `design_tier_judged` existed has neither `run_profile` nor `design_delivery`,
+# frame, a `tickets` plan the one that pins its fields, and a plan carrying
+# judged keys the one that binds them. On that branch a plan that carries the
+# judged keys fails (i) whenever it judges a path or a ticket delivery, since
+# its tier judgment is missing. A plan frozen before `design_tier_judged`
+# existed has neither `run_profile` nor `design_delivery` nor a judged key,
 # so on that branch nothing is still asserted on it.
 
 def tier_rank:
@@ -108,6 +133,52 @@ def blank:
 
 def report:
   if length > 0 then (join("\n") + "\n") | halt_error(1) else empty end;
+
+# (f), on both fixed frames: a judged key present reads the frame's value.
+def frame_judged_violations($frame):
+  . as $p
+  | ( if ($p | has("design_delivery_judged")) and $p.design_delivery_judged != "slices" then
+        "(f) \($frame) 계획의 design_delivery_judged 가 slices 가 아닙니다: \($p.design_delivery_judged | tojson)"
+      else empty end ),
+    ( if ($p | has("design_path_judged")) and $p.design_path_judged != "none" then
+        "(f) \($frame) 계획의 design_path_judged 가 none 이 아닙니다: \($p.design_path_judged | tojson)"
+      else empty end );
+
+def judged_keys:
+  ["design_delivery_judged", "design_delivery_rationale",
+   "design_path_judged", "design_path_rationale",
+   "ticket_publish_judged", "ticket_publish_rationale"];
+
+# (i), as a list of violations: the six judged keys and their relations.
+def judged_violations:
+  . as $p
+  | [judged_keys[] | select(. as $k | $p | has($k))] as $have
+  | if ($have | length) == 0 then empty
+    elif ($have | length) != (judged_keys | length) then
+      "(i) 판정 키 여섯 중 일부만 있습니다 — 모두 있거나 모두 없어야 합니다: \($have | tojson)"
+    else
+      ( [ ["design_delivery_judged", ["slices", "tickets"]],
+          ["design_path_judged", ["solo-audit", "discuss-audit", "none"]],
+          ["ticket_publish_judged", ["none", "github", "clickup"]] ][] as [$k, $enum]
+        | if ($p[$k] | IN($enum[])) | not then
+            "(i) \($k) 가 \($enum | join(" · ")) 중 하나가 아닙니다: \($p[$k] | tojson)"
+          else empty end ),
+      ( ["design_delivery_rationale", "design_path_rationale", "ticket_publish_rationale"][] as $k
+        | if $p[$k] | blank then
+            "(i) \($k) 가 비어 있습니다"
+          else empty end ),
+      ( if $p.design_path_judged != "none" and $p.design_tier_judged != "team-4" then
+          "(i) design_path_judged 가 \($p.design_path_judged | tojson) 인데 design_tier_judged 가 team-4 가 아닙니다: \($p.design_tier_judged | tojson)"
+        else empty end ),
+      ( if $p.design_delivery_judged == "tickets" then
+          ( if $p.design_tier_judged != "team-4" then
+              "(i) design_delivery_judged 가 tickets 인데 design_tier_judged 가 team-4 가 아닙니다: \($p.design_tier_judged | tojson)"
+            else empty end ),
+          ( if $p.design_path_judged == "none" then
+              "(i) design_delivery_judged 가 tickets 인데 design_path_judged 가 none 입니다"
+            else empty end )
+        else empty end )
+    end;
 
 # (f), the reviewer frame: every key the frame fixes, one violation each.
 def reviewer_violations:
@@ -147,7 +218,8 @@ def reviewer_violations:
     ( ($p.enforcement_surface // {}) as $es
       | if ($es | type) != "object" or $es.judgment != "없음" or $es.classes != [] or $es.paths != [] or $es.source != "의도" then
           "(f) 리뷰어 계획의 enforcement_surface 가 판정 없음 · classes [] · paths [] · source 의도 가 아닙니다: \($p.enforcement_surface | tojson)"
-        else empty end );
+        else empty end ),
+    ( $p | frame_judged_violations("리뷰어") );
 
 # (f), as a list of violations: the fixed frame of the run profile.
 def profile_violations:
@@ -189,7 +261,8 @@ def profile_violations:
           end ),
       ( if ($p | has("review_expand")) and $p.review_expand != [] then
           "(f) 핫픽스 계획의 review_expand 가 [] 가 아닙니다: \($p.review_expand | tojson)"
-        else empty end )
+        else empty end ),
+      ( $p | frame_judged_violations("핫픽스") )
     end;
 
 # (h), as a list of violations: the fields a ticket-delivery plan fixes.
@@ -220,7 +293,7 @@ def delivery_violations:
 if type != "object" then
   "계획이 JSON 객체가 아닙니다\n" | halt_error(1)
 elif has("design_tier_judged") | not then
-  [profile_violations, delivery_violations] | report
+  [profile_violations, delivery_violations, judged_violations] | report
 else
   . as $p
   | ($p.design_tier_judged) as $judged
@@ -329,7 +402,9 @@ else
             end
         else empty end ),
       # (h)
-      ( $p | delivery_violations )
+      ( $p | delivery_violations ),
+      # (i)
+      ( $p | judged_violations )
     ]
   | report
 end

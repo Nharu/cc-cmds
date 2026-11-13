@@ -1,0 +1,23 @@
+env	CC_CMDS_NOTIFY_PATH_DISABLE_PREPEND	1
+env	CC_CMDS_ATTENTION_ROOT	@ROOT@/attention-absent
+env	CC_CMDS_DASHBOARD	off
+env	FLEET_PACE_ROOT	@ROOT@/pace
+env	XDG_STATE_HOME	@ROOT@/state
+env	XDG_CONFIG_HOME	@ROOT@/config
+env	TMUX	@UNSET@
+env	TMUX_PANE	@UNSET@
+env	CLAUDE_CODE_SESSION_ID	@UNSET@
+env	GH_HOST	invalid.invalid
+env	GH_TOKEN
+fixture	copy	checks .
+fixture	chain	ledger.md R1
+argv	main	@ORCH@/checks.sh
+argv	main	--run-dir
+argv	main	@ROOT@/R1
+argv	main	--ledger
+argv	main	@ROOT@/ledger.md
+argv	main	--manifest
+argv	main	@ROOT@/manifest.md
+argv	main	--once
+stop	exit	-
+stop	no-file	R1/checks.observed

@@ -11,6 +11,8 @@
 #   - sessions: implement rows only, the segment's repo must match, a repeated
 #     session id is one session, a missing transcript is `기록 없음` and leaves
 #     the sums;
+#   - idle sessions: no test command and no `git commit` call is `제외`, out
+#     of the sums and of `--first`; a commit alone or a test alone counts;
 #   - order and windows: run start is the first `run` row's `시작=`, sessions
 #     sort by it, `--since`/`--until`/`--first`/`--session` cut the list;
 #   - time: foreground and background intervals, their union, the 15-minute
@@ -357,9 +359,61 @@ for q in 1 2 3 4; do
   fi
 done
 
+# ---- idle sessions: no test command and no commit -----------------------------
+L6="$LEDGERS/20261008-fffffff6.md"
+row_run "$L6" 0 20261008-fffffff6 2026-10-08T00:00:00Z
+row_seg "$L6" A Nharu/cc-cmds
+mkdir -p "$LANES/.lane6/projects/f"
+b=$(jq -n '"2026-10-08T01:00:00Z" | fromdateiso8601')
+I1=44444444-0000-4000-8000-000000000001
+I2=44444444-0000-4000-8000-000000000002
+I3=44444444-0000-4000-8000-000000000003
+for sid in "$I1" "$I2" "$I3"; do row_res "$L6" A implement "$sid" '~/.lane6'; done
+T="$LANES/.lane6/projects/f/$I1.jsonl"
+j_bash "$T" "$b" i1 false "git status"
+j_res  "$T" $((b + 1)) i1 "clean"
+j_edit "$T" $((b + 60))
+j_text "$T" $((b + 300))
+T="$LANES/.lane6/projects/f/$I2.jsonl"
+j_bash "$T" "$b" i2 false "$GATE_ABS exec --surface 워크트리쓰기 -- git commit -q -m x"
+j_res  "$T" $((b + 1)) i2 "done"
+j_text "$T" $((b + 600))
+T="$LANES/.lane6/projects/f/$I3.jsonl"
+j_bash "$T" "$b" i3 false "make check"
+j_res  "$T" $((b + 60)) i3 "ok"
+j_text "$T" $((b + 600))
+want=$(cat <<EOF
+run${TAB}segment${TAB}session${TAB}stage_min${TAB}test_min${TAB}share${TAB}bg_launches${TAB}same_set_relaunch${TAB}unclosed
+20261008-fffffff6${TAB}A${TAB}$I1${TAB}5.0${TAB}0.0${TAB}제외${TAB}0${TAB}0${TAB}0
+20261008-fffffff6${TAB}A${TAB}$I2${TAB}10.0${TAB}0.0${TAB}0.0%${TAB}0${TAB}0${TAB}0
+20261008-fffffff6${TAB}A${TAB}$I3${TAB}10.0${TAB}1.0${TAB}10.0%${TAB}0${TAB}0${TAB}0
+시험 몫 = 1.0분/20.0분 = 5.0%
+판정: 달성
+EOF
+)
+got=$(bash "$measure" --ledger-dir "$LEDGERS" --lane-root "$LANES" --since 2026-10-08 --until 2026-10-08 2>/dev/null)
+if [[ "$got" == "$want" ]]; then
+  pass "시험도 커밋도 없는 세션은 제외로 보이고 합에서 빠진다 (커밋만 있거나 시험만 있으면 센다)"
+else
+  fail "제외 세션 골든"
+  diff <(printf '%s\n' "$want") <(printf '%s\n' "$got") >&2 || true
+fi
+got=$(bash "$measure" --ledger-dir "$LEDGERS" --lane-root "$LANES" --since 2026-10-08 --until 2026-10-08 --first 2 2>/dev/null)
+if [[ "$(printf '%s\n' "$got" | tail -n 1)" == "판정: 달성" && "$got" == *"$I3"* ]]; then
+  pass "--first 2: 제외한 세션은 개수에 들지 않는다"
+else
+  fail "--first 2: 제외한 세션이 개수에 들었다"
+fi
+got=$(bash "$measure" --ledger-dir "$LEDGERS" --lane-root "$LANES" --since 2026-10-08 --until 2026-10-08 --first 3 2>/dev/null)
+if [[ "$(printf '%s\n' "$got" | tail -n 1)" == "판정: 표본 부족" ]]; then
+  pass "--first 3: 센 세션이 둘뿐이면 표본 부족이다"
+else
+  fail "--first 3: 표본 부족이 아니다"
+fi
+
 # A floor on the pass count, so a case that silently stops running fails here.
-if (( failures == 0 && passed < 19 )); then
-  fail "통과 수 $passed 가 하한 19 보다 적다 — 경우가 조용히 빠졌다"
+if (( failures == 0 && passed < 22 )); then
+  fail "통과 수 $passed 가 하한 22 보다 적다 — 경우가 조용히 빠졌다"
 fi
 
 echo "test-measure-test-share: $passed passed, $failures failed"

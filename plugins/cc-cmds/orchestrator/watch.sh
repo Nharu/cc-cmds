@@ -80,7 +80,12 @@ export LC_TIME
 
 # Sourced ONCE at startup, deliberately not inside the loop: a plugin edit
 # landing mid-run must not change the predicate a watcher is already using.
-WATCH_DIR=$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)
+watch_src=${BASH_SOURCE[0]:-$0}
+case "$watch_src" in
+  */*) watch_src=${watch_src%/*}; [ -n "$watch_src" ] || watch_src=/ ;;
+  *) watch_src=. ;;
+esac
+WATCH_DIR=$(cd "$watch_src" && pwd)
 # shellcheck source=/dev/null
 . "$WATCH_DIR/liveness.sh"
 # The banner emitter, sourced here for the same reason and on the same terms.
@@ -181,16 +186,69 @@ esac
 
 # The run id is the run directory's own name — the driver names it that way and
 # nothing else has to be read to get it. The banner group below is keyed on it.
-RUN_ID=$(basename "$RUN_DIR")
+#
+# WHAT DOES NOT CHANGE FOR THE LIFE OF THIS PROCESS IS READ ONCE, HERE: the run
+# id, the run root that holds every run's directory (the host-load sample counts
+# its siblings), the host's OS name, and this watcher's own start fingerprint.
+# The id and the root are taken apart with expansions, the way `basename` and
+# `dirname` would, so no cycle forks for them.
+#
+# The OS name is read twice over. `WATCH_OS` honours the `CC_WATCH_HOST_OS`
+# seam, which lets a test on any host drive the Darwin branch whose commands a
+# PATH stub can make fail. `WATCH_HOST_UNAME` is the host's own answer and picks
+# the `ls` time format, because that flag is the `ls` binary's and a seamed name
+# would hand a BSD flag to a GNU `ls`.
+watch_rd=$RUN_DIR
+while :; do case "$watch_rd" in ?*/) watch_rd=${watch_rd%/} ;; *) break ;; esac; done
+case "$watch_rd" in
+  */*) WATCH_RUN_ROOT=${watch_rd%/*}; [ -n "$WATCH_RUN_ROOT" ] || WATCH_RUN_ROOT=/ ;;
+  *) WATCH_RUN_ROOT=. ;;
+esac
+RUN_ID=${watch_rd##*/}
+WATCH_HOST_UNAME=$(uname -s 2>/dev/null || true)
+WATCH_OS=${CC_WATCH_HOST_OS:-$WATCH_HOST_UNAME}
+WATCH_FP=""
+cc__proc_fingerprint_into WATCH_FP "$$"
 
-now_epoch() { date +%s; }
-now_iso()   { date -u +%Y-%m-%dT%H:%M:%SZ; }
+# THE MEMORY CLOCK. One `date` here and the shell's own `SECONDS` after it
+# (`cc_clock_start`): every reading of the time below comes from it, so a cycle
+# forks for none. `SECONDS` counts wall-clock seconds, so a host sleep moves it
+# as it moves `date`. `now_epoch` falls back to `date` when the clock was never
+# anchored — a test that lifts this function on its own source text has not run
+# the line below.
+cc_clock_start
+
+now_epoch() {
+  if [ -n "${CC_CLOCK_EPOCH0:-}" ]; then
+    printf '%s\n' $((CC_CLOCK_EPOCH0 + SECONDS - ${CC_CLOCK_SECONDS0:-0}))
+  else
+    date +%s
+  fi
+}
+
+now_iso() {
+  local s
+  watch_iso_into s
+  printf '%s\n' "$s"
+}
+
+watch_now_into() {
+  # watch_now_into <var> — now, in epoch seconds, from the memory clock.
+  cc_clock_now_into "$1"
+}
+
+watch_iso_into() {
+  # watch_iso_into <var> — now as `YYYY-MM-DDTHH:MM:SSZ`, from the memory clock.
+  local __w_now
+  cc_clock_now_into __w_now
+  cc_epoch_to_iso_into "$1" "$__w_now"
+}
 
 # When this watcher started watching. The idle exit counts from no earlier than
 # this: a watcher the seat starts again on a run that has been quiet for a day
 # reads the day-old `마지막성장` its predecessor left, and without this it would
 # leave on its first iteration, before writing a heartbeat of its own.
-WATCH_STARTED=$(now_epoch)
+WATCH_STARTED=$CC_CLOCK_EPOCH0
 
 # Delegated for the same reason the three predicates below are: the status line
 # has to measure the SAME quantity this watcher does, and two spellings of
@@ -199,7 +257,13 @@ WATCH_STARTED=$(now_epoch)
 # shared function answers empty for a file that is not there.
 ledger_size() { local n; n=$(cc_ledger_size "$1"); printf '%s' "${n:-0}"; }
 
-ledger_idle_seconds() {
+ledger_idle_read() {
+  # ledger_idle_read — sets the caller's `size` (the ledger's size in bytes, 0
+  # when it cannot be read), `age` (seconds since that size was first seen) and
+  # `grew` (the epoch it was first seen, or empty when `watch.state` could not be
+  # written). Set rather than printed, so the full pass reads all three with one
+  # `wc` and no subshell of its own; `size` is the value `ledger_size` gives.
+  #
   # SIZE, not mtime. `stat` takes a different flag on each platform, and the
   # portable alternative is better here anyway: the ledger is append-only, so
   # its size strictly increases when it grows — while an mtime can move without
@@ -221,18 +285,25 @@ ledger_idle_seconds() {
   # reads as an empty path, mismatches, and resets. A reset reports zero idle
   # seconds, which is the safe direction: it can delay a true stall by one
   # interval, never invent one.
-  local size prev_size prev_at prev_ledger now
-  size=$(ledger_size "$LEDGER")
-  now=$(now_epoch)
-  prev_size=$(sed -n '1p' "$RUN_DIR/watch.state" 2>/dev/null || true)
-  prev_at=$(sed -n '2p' "$RUN_DIR/watch.state" 2>/dev/null || true)
-  prev_ledger=$(sed -n '3p' "$RUN_DIR/watch.state" 2>/dev/null || true)
+  local n="" prev_size="" prev_at="" prev_ledger="" now
+  if [ -f "$LEDGER" ]; then
+    n=$(wc -c < "$LEDGER" 2>/dev/null) || n=""
+    n=${n// /}
+  fi
+  size=${n:-0}
+  watch_now_into now
+  { IFS= read -r prev_size; IFS= read -r prev_at; IFS= read -r prev_ledger; } 2>/dev/null < "$RUN_DIR/watch.state" || :
   if [ -z "$prev_size" ] || [ "$size" != "$prev_size" ] || [ "$prev_ledger" != "$LEDGER" ]; then
-    printf '%s\n%s\n%s\n' "$size" "$now" "$LEDGER" > "$RUN_DIR/watch.state"
-    printf '0'
+    age=0
+    if printf '%s\n%s\n%s\n' "$size" "$now" "$LEDGER" > "$RUN_DIR/watch.state"; then
+      grew=$now
+    else
+      grew=""
+    fi
     return 0
   fi
-  printf '%s' $(( now - prev_at ))
+  age=$(( now - prev_at ))
+  grew=$prev_at
 }
 
 # These three were the reference implementations; the predicate moved to
@@ -254,8 +325,24 @@ open_approval_ids() {
   # of a shared predicate; it is a different question about the same rows, and
   # it applies that predicate's fold verbatim — the ledger is append-only, so a
   # resolution is a later row and the LAST row per id is the one that counts.
-  local id st
+  #
+  # The approval table of `liveness.sh` gives the same set in one pass; where
+  # that table declines (`cc__table_into` fails) the per-id pipeline below runs.
+  local id st cp tbl open="" nl=$'\n'
   [ -n "$LEDGER" ] || return 0
+  if declare -F cc__table_into >/dev/null && cc__table_into tbl cc__approval_table "$LEDGER"; then
+    while IFS=$'\037' read -r id st cp; do
+      [ -n "$id" ] && [ "$st" = "대기" ] || continue
+      open="${open:+$open$nl}$id"
+    done <<EOF
+$tbl
+EOF
+    [ -n "$open" ] || return 0
+    sort -u <<EOF
+$open
+EOF
+    return 0
+  fi
   for id in $( { grep -E '^- `승인`' "$LEDGER" 2>/dev/null || true; } \
                | tr '|' '\n' | sed -n 's/^ *승인 id=//p' | sed 's/[[:space:]]*$//' | sort -u); do
     [ -n "$id" ] || continue
@@ -329,10 +416,11 @@ nonterminal_segments() { cc_nonterminal_segments "$LEDGER"; }
 # timestamp as two times.
 iso_to_epoch() { cc_iso_to_epoch "$1"; }
 
-run_open_seconds() {
-  # Seconds since the gate opened this run, read from the `run` row's own
-  # `시작=` stamp — or empty when there is no such row or its stamp does not
-  # parse.
+run_open_into() {
+  # run_open_into <var> — sets <var> to the seconds since the gate opened this
+  # run, read from the `run` row's own `시작=` stamp — or empty when there is no
+  # such row or its stamp does not parse. The last `run` row's last `시작=` field
+  # is found by one awk, and the stamp is converted in the shell.
   #
   # THE ROW'S STAMP, NOT A CLOCK THIS PROCESS KEEPS. A watcher restarted
   # mid-run remembers nothing, and an elapsed count that restarted with it would
@@ -341,19 +429,30 @@ run_open_seconds() {
   #
   # Empty means "cannot judge", and the caller treats it as such rather than as
   # zero. That direction can only delay a report; the other one invents them.
-  local at ep
+  local at="" ep="" now
+  printf -v "$1" '%s' ""
   [ -n "$LEDGER" ] || return 0
-  at=$( { grep -E '^- `run`' "$LEDGER" 2>/dev/null || true; } | tail -1 \
-        | tr '|' '\n' | sed -n 's/^ *시작=//p' | sed 's/[[:space:]]*$//' | tail -1)
+  at=$(LC_ALL=C awk '
+    index($0, "- `run`") == 1 { last = $0; seen = 1 }
+    END {
+      if (!seen) exit
+      n = split(last, f, "|"); got = 0
+      for (i = 1; i <= n; i++) {
+        s = f[i]; sub(/^ */, "", s)
+        if (index(s, "시작=") == 1) { v = substr(s, length("시작=") + 1); got = 1 }
+      }
+      if (got) { sub(/[[:space:]]+$/, "", v); print v }
+    }' "$LEDGER" 2>/dev/null) || at=""
   [ -n "$at" ] || return 0
-  ep=$(iso_to_epoch "$at")
+  cc_iso_to_epoch_into ep "$at"
   [ -n "$ep" ] || return 0
-  printf '%s' $(( $(now_epoch) - ep ))
+  watch_now_into now
+  printf -v "$1" '%s' $(( now - ep ))
 }
 
-gate_idle_seconds() {
-  # Seconds since the gate was last entered — or empty when there is no such
-  # record or it does not hold an epoch.
+gate_idle_into() {
+  # gate_idle_into <var> — sets <var> to the seconds since the gate was last
+  # entered, or empty when there is no such record or it does not hold an epoch.
   #
   # WHY THE GATE AND NOT THE LEDGER. A ledger that has not grown is not a router
   # that has not worked, and the gap between those two is wide precisely where
@@ -367,15 +466,17 @@ gate_idle_seconds() {
   # strictly finer activity signal than the size this file already measures, not
   # a second spelling of it.
   #
-  # Empty means "cannot judge", the same direction `run_open_seconds` takes. A
+  # Empty means "cannot judge", the same direction `run_open_into` takes. A
   # run directory the gate never made carries no such file, and reading its
   # absence as "nobody has called the gate" would accuse a router on the
   # strength of a file nobody wrote.
-  local at
+  local at="" now
+  printf -v "$1" '%s' ""
   [ -n "$RUN_DIR" ] || return 0
-  at=$(sed -n '1p' "$RUN_DIR/started-at" 2>/dev/null || true)
+  { IFS= read -r at; } 2>/dev/null < "$RUN_DIR/started-at" || :
   case "${at:-}" in ''|*[!0-9]*) return 0 ;; esac
-  printf '%s' $(( $(now_epoch) - at ))
+  watch_now_into now
+  printf -v "$1" '%s' $(( now - at ))
 }
 
 # There is no local `banner()` any more. The whole of what it did — the fixed
@@ -408,14 +509,24 @@ file_mtime() {
   date -u -r "$1" +%s 2>/dev/null || true
 }
 
-host_load_num() {
-  # host_load_num <value> — the value itself when it is a JSON number (an integer
-  # or a decimal with no leading zero), else `null`. Every field of the host-load
-  # sample goes through this, so a command that printed nothing, an error text or
-  # a locale's decimal comma lands as `null` rather than as a line no JSON reader
-  # can parse.
-  local re='^(0|[1-9][0-9]*)(\.[0-9]+)?$'
-  if [[ "$1" =~ $re ]]; then printf '%s' "$1"; else printf 'null'; fi
+done_empty() {
+  # done_empty — succeeds when `done` holds nothing but newlines or cannot be
+  # read: what `[ -z "$(cat done)" ]` answers, read with a builtin. Each arm
+  # asks at its own moment, so a `done` the gate writes during a pass still
+  # silences the arms after it.
+  local d
+  cc__file_bytes d "$RUN_DIR/done"
+  [ -z "$d" ]
+}
+
+host_load_num_into() {
+  # host_load_num_into <var> <value> — sets <var> to the value itself when it is
+  # a JSON number (an integer or a decimal with no leading zero), else to `null`.
+  # Every field of the host-load sample goes through this, so a command that
+  # printed nothing, an error text or a locale's decimal comma lands as `null`
+  # rather than as a line no JSON reader can parse.
+  local __hl_re='^(0|[1-9][0-9]*)(\.[0-9]+)?$'
+  if [[ "${2:-}" =~ $__hl_re ]]; then printf -v "$1" '%s' "$2"; else printf -v "$1" '%s' null; fi
 }
 
 host_load_sample() {
@@ -427,11 +538,11 @@ host_load_sample() {
   # going takes the last complete line and treats the load as unknown when its
   # `at` is older than three intervals.
   #
-  # `load*` and `ncpu` come from `sysctl` on Darwin and from `/proc/loadavg` and
-  # `getconf` elsewhere. `claude_procs` counts `pgrep -x claude` across the host:
-  # no match is 0, and a missing or failing `pgrep` is `null`. `runs` counts the
-  # sibling run directories whose `watch.heartbeat` was rewritten within three
-  # intervals, this one included — measured in seconds through `file_mtime`,
+  # `load*` and `ncpu` come from one `sysctl` naming both keys on Darwin and from
+  # `/proc/loadavg` and `getconf` elsewhere. `claude_procs` counts `pgrep -x
+  # claude` across the host: no match is 0, and a missing or failing `pgrep` is
+  # `null`. `runs` counts the sibling run directories whose `watch.heartbeat` was
+  # rewritten within three intervals, this one included — measured in seconds,
   # since `find -mmin` rounds to minutes and `stat` flags differ by platform.
   # `stages` is the count this pass's heartbeat line carries.
   #
@@ -440,16 +551,26 @@ host_load_sample() {
   # the exit status are the same with or without this file. Nothing rotates or
   # deletes it: one line is about 150 bytes, a day of them about 0.2MB.
   #
-  # The host check is SEAMED (`CC_WATCH_HOST_OS`) so a test on any host can drive
-  # the Darwin branch, the one whose commands a PATH stub can make fail.
-  local os la l1="" l5="" l15="" _rest nc procs out rc runs=0 hb mt now
-  os=${CC_WATCH_HOST_OS:-$(uname -s 2>/dev/null || true)}
-  if [ "$os" = Darwin ]; then
-    la=$(sysctl -n vm.loadavg 2>/dev/null || true)
-    la=$(printf '%s' "$la" | tr -d '{}')
-    nc=$(sysctl -n hw.ncpu 2>/dev/null || true)
+  # The host check is SEAMED (`WATCH_OS`, from `CC_WATCH_HOST_OS`) so a test on
+  # any host can drive the Darwin branch, the one whose commands a PATH stub can
+  # make fail.
+  local out="" line la="" l1="" l5="" l15="" _rest nc="" procs rc runs=0 now pre mt fmt at
+  local j1 j5 j15 jn jp jr js
+  if [ "$WATCH_OS" = Darwin ]; then
+    # One `sysctl` for both keys: the load line first, in braces, then the CPU
+    # count. A line in braces or with more than one word is the load; the first
+    # other line is the count.
+    out=$(sysctl -n vm.loadavg hw.ncpu 2>/dev/null || true)
+    while IFS= read -r line; do
+      case "$line" in
+        '{'*|*' '*) [ -n "$la" ] || la=${line//[\{\}]/} ;;
+        ?*) [ -n "$nc" ] || nc=$line ;;
+      esac
+    done <<EOF
+$out
+EOF
   else
-    la=$(cut -d' ' -f1-3 /proc/loadavg 2>/dev/null || true)
+    { IFS= read -r la < /proc/loadavg; } 2>/dev/null || la=""
     nc=$(getconf _NPROCESSORS_ONLN 2>/dev/null || true)
   fi
   read -r l1 l5 l15 _rest <<EOF
@@ -459,28 +580,53 @@ EOF
   if command -v pgrep >/dev/null 2>&1; then
     out=$(pgrep -x claude 2>/dev/null); rc=$?
     case "$rc" in
-      0) procs=$(printf '%s\n' "$out" | grep -c . || true) ;;
+      0) procs=0
+         while IFS= read -r line; do
+           if [ -n "$line" ]; then procs=$((procs + 1)); fi
+         done <<EOF
+$out
+EOF
+         ;;
       1) procs=0 ;;
     esac
   fi
-  # The run root keeps every finished run's directory and its last heartbeat, so
-  # reading each mtime would fork once per run ever made on this host, every
-  # pass. `ls -t` lists them newest first in one process, and the walk stops at
-  # the first one outside the window: the forks are the fresh heartbeats plus one.
-  now=$(now_epoch)
-  while IFS= read -r hb; do
-    [ -n "$hb" ] || continue
-    mt=$(file_mtime "$hb")
-    [ -n "$mt" ] || continue
+  # The run root keeps every finished run's directory and its last heartbeat.
+  # ONE `ls` LISTS THEM NEWEST FIRST AND PRINTS EACH ONE'S MTIME IN EPOCH
+  # SECONDS, so the walk forks for none of them and stops at the first one
+  # outside the window. The time format is a flag of the `ls` binary, picked by
+  # the host's own name: BSD spells it `-D %s`, GNU `--time-style=+%s`. `-d`
+  # keeps a directory that happens to carry the name from being listed by its
+  # contents, and a line whose mode is not a regular file's is passed over the
+  # way the per-file reading passed it over. The path is taken off the end of
+  # each line by the run root it starts with, so an owner or group name with a
+  # space in it cannot shift the time field.
+  case "$WATCH_HOST_UNAME" in
+    Darwin|*BSD|DragonFly) fmt=-D ;;
+    *) fmt=--time-style=+%s ;;
+  esac
+  if [ "$fmt" = -D ]; then
+    out=$(ls -l -d -t -D %s "$WATCH_RUN_ROOT"/*/watch.heartbeat 2>/dev/null)
+  else
+    out=$(ls -l -d -t "$fmt" "$WATCH_RUN_ROOT"/*/watch.heartbeat 2>/dev/null)
+  fi
+  watch_now_into now
+  while IFS= read -r line; do
+    case "$line" in -*) ;; *) continue ;; esac
+    pre=${line% "$WATCH_RUN_ROOT"/*}
+    [ "$pre" != "$line" ] || continue
+    mt=${pre##* }
+    case "$mt" in ''|*[!0-9]*) continue ;; esac
     [ $(( now - mt )) -le $(( 3 * INTERVAL )) ] || break
     runs=$((runs + 1))
   done <<EOF
-$(ls -t "$(dirname "$RUN_DIR")"/*/watch.heartbeat 2>/dev/null)
+$out
 EOF
+  watch_iso_into at
+  host_load_num_into j1 "$l1"; host_load_num_into j5 "$l5"; host_load_num_into j15 "$l15"
+  host_load_num_into jn "$nc"; host_load_num_into jp "$procs"; host_load_num_into jr "$runs"
+  host_load_num_into js "${1:-}"
   { printf '{"schema":1,"at":"%s","load1":%s,"load5":%s,"load15":%s,"ncpu":%s,"claude_procs":%s,"runs":%s,"stages":%s}\n' \
-      "$(now_iso)" "$(host_load_num "$l1")" "$(host_load_num "$l5")" "$(host_load_num "$l15")" \
-      "$(host_load_num "$nc")" "$(host_load_num "$procs")" "$(host_load_num "$runs")" \
-      "$(host_load_num "$1")" >> "$RUN_DIR/host-load.jsonl"; } 2>/dev/null || true
+      "$at" "$j1" "$j5" "$j15" "$jn" "$jp" "$jr" "$js" >> "$RUN_DIR/host-load.jsonl"; } 2>/dev/null || true
 }
 
 shift_active() {
@@ -509,9 +655,10 @@ shift_active() {
   # cannot; the fingerprint is what keeps a reused pid from disarming the arm
   # for good. Lengthening the expiry instead would reopen a hole of that length,
   # and a shift's real length is unbounded so no number is right.
-  local f="$RUN_DIR/shift.in-progress" exp
+  local f="$RUN_DIR/shift.in-progress" exp=""
   if [ -f "$f" ]; then
-    exp=$(sed -n '1p' "$f" 2>/dev/null | tr -dc '0-9')
+    { IFS= read -r exp; } 2>/dev/null < "$f" || :
+    exp=${exp//[!0123456789]/}
     if [ -n "$exp" ] && [ "$(now_epoch)" -lt "$exp" ]; then return 0; fi
   fi
   cc_shift_is_live "$RUN_DIR"
@@ -560,7 +707,7 @@ fleet_run_marker_live() {
 }
 
 failover_clock_note() {
-  # Called once per pass. Keeps `watch.failover-clock`: this pass's epoch, the
+  # Called once per cycle. Keeps `watch.failover-clock`: this cycle's epoch, the
   # current account-failover wait's resume time (`-` with none), and the seconds
   # of clock jump this watcher saw after that resume time.
   #
@@ -574,12 +721,21 @@ failover_clock_note() {
   # the resume time is taken off the clock the slack is measured on: the tick
   # gets its own awake slack, and with no jump nothing is taken off. A new
   # resume time starts from zero.
-  local f="$RUN_DIR/watch.failover-clock" now at last prev_at held iv from
-  now=$(now_epoch)
-  at=$(cc_failover_wait_resume "$LEDGER" 2>/dev/null || true)
-  last=$(sed -n '1p' "$f" 2>/dev/null || true)
-  prev_at=$(sed -n '2p' "$f" 2>/dev/null || true)
-  held=$(sed -n '3p' "$f" 2>/dev/null || true)
+  #
+  # `failover_clock_note probe` is the probe cycle's call, and it reads no file:
+  # the resume time is the one the last full pass read from the ledger, and the
+  # previous pass's epoch and the jump so far are the ones this process wrote
+  # last. The file is written with a plain redirect, not a rename: a reader can
+  # catch it empty between the truncation and the one short write, and an empty
+  # file reads as no jump, which is the direction a host that stayed awake has.
+  local f="$RUN_DIR/watch.failover-clock" now at last="" prev_at="" held="" iv from
+  watch_now_into now
+  if [ "${1:-}" = probe ]; then
+    at=$W_FO_AT; last=$W_FO_LAST; prev_at=$W_FO_PREV; held=$W_FO_HELD
+  else
+    at=$(cc_failover_wait_resume "$LEDGER" 2>/dev/null || true)
+    { IFS= read -r last; IFS= read -r prev_at; IFS= read -r held; } 2>/dev/null < "$f" || :
+  fi
   case "$last" in ''|*[!0-9]*) last=$now ;; esac
   case "$held" in ''|*[!0-9]*) held=0 ;; esac
   [ "$prev_at" = "${at:--}" ] || held=0
@@ -592,8 +748,8 @@ failover_clock_note() {
       [ "$now" -le "$from" ] || held=$((held + now - from))
     fi
   fi
-  printf '%s\n%s\n%s\n' "$now" "${at:--}" "$held" > "$f.tmp.$$" 2>/dev/null \
-    && mv -f "$f.tmp.$$" "$f" 2>/dev/null || rm -f "$f.tmp.$$" 2>/dev/null
+  { printf '%s\n%s\n%s\n' "$now" "${at:--}" "$held" > "$f"; } 2>/dev/null || :
+  W_FO_AT=$at; W_FO_LAST=$now; W_FO_PREV=${at:--}; W_FO_HELD=$held
   return 0
 }
 
@@ -604,13 +760,27 @@ failover_waiting() {
   # (`CC_FAILOVER_WATCH_SLACK_SECONDS`), has not come. Read by the shared
   # helper the gate and the fleet tick use, on this watcher's clock less the
   # jump `failover_clock_note` kept, which is none on a host that stayed awake.
-  local held
-  held=$(sed -n '3p' "$RUN_DIR/watch.failover-clock" 2>/dev/null || true)
+  #
+  # ONCE PER PASS. `pass` declares `fo_wait` empty and the first call fills it,
+  # so the several arms that ask in one pass read one answer and one ledger
+  # read; a caller without that variable asks afresh every time.
+  local held="" _l1 _l2 now rc
+  case "${fo_wait-}" in
+    0) return 1 ;;
+    1) return 0 ;;
+  esac
+  { IFS= read -r _l1; IFS= read -r _l2; IFS= read -r held; } 2>/dev/null < "$RUN_DIR/watch.failover-clock" || :
   case "$held" in ''|*[!0-9]*) held=0 ;; esac
-  cc_failover_waiting_now "$LEDGER" "$(( $(now_epoch) - held ))" "$CC_FAILOVER_WATCH_SLACK_SECONDS"
+  watch_now_into now
+  rc=0
+  cc_failover_waiting_now "$LEDGER" "$(( now - held ))" "$CC_FAILOVER_WATCH_SLACK_SECONDS" || rc=$?
+  if [ "${fo_wait-unset}" != unset ]; then
+    if [ "$rc" = 0 ]; then fo_wait=1; else fo_wait=0; fi
+  fi
+  return "$rc"
 }
 
-stall_threshold() {
+stall_threshold_into() {
   # The threshold T of the general and settle-stall arms. `STALL` while a seat
   # turn is open or a halt record waits for a person's answer — neither is a
   # router that stopped, and both are as long as the measured seat-turn gaps or
@@ -629,13 +799,18 @@ stall_threshold() {
   # then, so the quiet is the wait itself. The silence, after-stage, run-open
   # and settle arms also read the same judgment as a conjunct and raise nothing
   # before that time; past it they judge as before.
+  #
+  # `stall_threshold_into <var>` sets <var> rather than printing, so the pass
+  # forks no subshell for it; the unanswered-halt count it read, when it read
+  # one, is left in the caller's `halts` for the quiet judgment.
   local h
-  if seat_turn_open; then printf '%s' "$STALL"; return 0; fi
-  if failover_waiting; then printf '%s' "$STALL"; return 0; fi
+  if seat_turn_open; then printf -v "$1" '%s' "$STALL"; return 0; fi
+  if failover_waiting; then printf -v "$1" '%s' "$STALL"; return 0; fi
   h=$(cc_unanswered_halts "$RUN_DIR" "$LEDGER" 2>/dev/null || printf 0)
-  if [ "${h:-0}" -ge 1 ] 2>/dev/null; then printf '%s' "$STALL"; return 0; fi
-  if fleet_run_marker_live; then printf '%s' "$STALL"; return 0; fi
-  if [ "$SILENCE" -lt "$STALL" ]; then printf '%s' "$SILENCE"; else printf '%s' "$STALL"; fi
+  halts=$h
+  if [ "${h:-0}" -ge 1 ] 2>/dev/null; then printf -v "$1" '%s' "$STALL"; return 0; fi
+  if fleet_run_marker_live; then printf -v "$1" '%s' "$STALL"; return 0; fi
+  if [ "$SILENCE" -lt "$STALL" ]; then printf -v "$1" '%s' "$SILENCE"; else printf -v "$1" '%s' "$STALL"; fi
 }
 
 quiet_seconds() {
@@ -651,7 +826,7 @@ quiet_seconds() {
   # without the shift's own signal its silence would be measured on the two that
   # a working shift may well leave quiet.
   local now base b lg
-  now=$(now_epoch)
+  watch_now_into now
   base=$((now - ${age:-0}))
   if [ -n "${gate_idle:-}" ]; then
     b=$((now - gate_idle)); [ "$b" -le "$base" ] || base=$b
@@ -680,8 +855,8 @@ relay_seen_note() {
   [ -d "$RUN_DIR" ] && [ -f "$RUN_DIR/relay.live" ] || return 0
   started=$(cc_relay_field "$RUN_DIR" started)
   [ -n "$started" ] || return 0
-  now=$(now_epoch)
-  tab=$(printf '\t')
+  watch_now_into now
+  tab=$'\t'
   while IFS="$tab" read -r k c; do
     [ -n "$k" ] && [ -z "$c" ] || continue
     [ -z "$(cc_relay_seen_at "$RUN_DIR" "$started" "$k")" ] || continue
@@ -716,7 +891,9 @@ record_blocked() {
   # into a properly chained row on its next invocation. If the router never
   # calls the gate again — which is the very condition this detector reports —
   # the file is still on disk for the render and for the morning.
-  printf '%s\t%s\t%s\n' "$(now_iso)" "$1" "$2" >> "$RUN_DIR/stall"
+  local at
+  watch_iso_into at
+  printf '%s\t%s\t%s\n' "$at" "$1" "$2" >> "$RUN_DIR/stall"
 }
 
 beat() {
@@ -734,31 +911,10 @@ beat() {
   # what this assigned. Called from the loop they are plain globals nothing else
   # reads.
   #
-  local stall_tmp
-  # The watcher's own pid, so a person (and the status line) can tell a live
-  # watcher from a finished run's. The directory is NOT created here: the
-  # watcher legitimately runs in the window before the router's first gate call
-  # makes it, and `run_is_over()` already owns that window. `cc_live_stages`
-  # does not count this file — it has no `.start`/`.pgid` sibling.
-  [ -d "$RUN_DIR" ] && printf '%s' "$$" > "$RUN_DIR/watch.pid"
-  # THE THRESHOLD THIS PROCESS IS USING, for a stage that waits for an account:
-  # it paces its heartbeat rows on half of it. Three lines — the threshold in
-  # seconds, this pid, this pid's fingerprint — rewritten every pass, so a
-  # restarted watcher's value replaces the old one, and written to a temporary
-  # name first so a reader never sees half a record. The name does not end in
-  # `.pid`, so no census reads it as a stage.
-  if [ -d "$RUN_DIR" ]; then
-    stall_tmp=$(mktemp "$RUN_DIR/.watch.stall.XXXXXX" 2>/dev/null || true)
-    if [ -n "$stall_tmp" ]; then
-      if printf '%s\n%s\n%s\n' "$STALL" "$$" "$(cc_proc_fingerprint "$$")" > "$stall_tmp" 2>/dev/null \
-         && mv -f "$stall_tmp" "$RUN_DIR/watch.stall" 2>/dev/null; then
-        :
-      else
-        rm -f "$stall_tmp"
-      fi
-    fi
-  fi
-  age=$(ledger_idle_seconds)
+  # The judgment reads are also kept in `W_*`, the memory the probe cycle
+  # publishes from (`probe_beat`).
+  watch_self_marks
+  ledger_idle_read
   live=$(live_stages)
   # A STAGE WAITING FOR AN ACCOUNT HAS NO PROCESS YET, so `live` does not see
   # it, and a run whose only work is that wait is not silent: its supervisor or
@@ -786,7 +942,7 @@ beat() {
   # nobody opens that log overnight, so a heartbeat printed there reaches no one
   # and the property "a live watcher's silence differs from a dead one's" was
   # stated and then not obtainable. The file's own mtime is what makes the
-  # watcher's liveness measurable, and it is rewritten every pass even when
+  # watcher's liveness measurable, and it is rewritten every cycle even when
   # nothing changed, which is exactly the case `watch.state` cannot cover: that
   # file only moves when the ledger's size moves.
   #
@@ -794,22 +950,79 @@ beat() {
   # line has to judge whether the ledger is stale, and it may not write — so it
   # cannot own an elapsed-since-last-growth clock of its own. This file is where
   # that value is published, and it comes from the clock that already exists:
-  # `ledger_idle_seconds` records "when I first saw this size" on line 2 of
+  # `ledger_idle_read` records "when I first saw this size" on line 2 of
   # `watch.state`, and for an append-only ledger that IS the last growth. A
   # second clock would be a second answer to one question.
   #
   # The four existing fields keep their positions and their wording verbatim —
   # they are read from this file by name.
-  size=$(ledger_size "$LEDGER")
-  grew=$(sed -n '2p' "$RUN_DIR/watch.state" 2>/dev/null || true)
+  W_AGE=$age; W_LIVE=$live; W_PEND=$pend; W_NONTERM=$nonterm; W_SIZE=$size; W_GREW=$grew
+  watch_publish
+}
+
+watch_self_marks() {
+  # The watcher's own pid, so a person (and the status line) can tell a live
+  # watcher from a finished run's. The directory is NOT created here: the
+  # watcher legitimately runs in the window before the router's first gate call
+  # makes it, and `run_is_over()` already owns that window. `cc_live_stages`
+  # does not count this file — it has no `.start`/`.pgid` sibling.
+  [ -d "$RUN_DIR" ] && printf '%s' "$$" > "$RUN_DIR/watch.pid"
+  # THE THRESHOLD THIS PROCESS IS USING, for a stage that waits for an account:
+  # it paces its heartbeat rows on half of it. Three lines — the threshold in
+  # seconds, this pid, this pid's fingerprint — written to a temporary name first
+  # so a reader never sees half a record, and renamed into place. The name does
+  # not end in `.pid`, so no census reads it as a stage.
+  #
+  # NOT REWRITTEN WHEN NOTHING IN IT CHANGED. The content is the same for the
+  # life of this process, so it is written on the first pass, and again only if
+  # the file is gone; a restarted watcher's first pass replaces the old one's.
+  local body
+  [ -d "$RUN_DIR" ] || return 0
+  body="$STALL"$'\n'"$$"$'\n'"$WATCH_FP"$'\n'
+  if [ "$body" = "${WATCH_STALL_LAST:-}" ] && [ -f "$RUN_DIR/watch.stall" ]; then
+    return 0
+  fi
+  if { printf '%s' "$body" > "$RUN_DIR/.watch.stall.$$"; } 2>/dev/null \
+     && mv -f "$RUN_DIR/.watch.stall.$$" "$RUN_DIR/watch.stall" 2>/dev/null; then
+    WATCH_STALL_LAST=$body
+  else
+    rm -f "$RUN_DIR/.watch.stall.$$"
+  fi
+  return 0
+}
+
+watch_publish() {
+  # Writes the heartbeat line, the host-load sample and the alive line from the
+  # caller's `age`, `live`, `pend`, `nonterm`, `size` and `grew`, stamped by the
+  # memory clock. The full pass and the probe cycle both end their beat here, so
+  # the two lines keep one field order whichever cycle wrote them.
+  local at
+  watch_iso_into at
   printf '%s 원장 %s초 전 갱신 · 스테이지 %s개 · 대기 승인 %s건 · 비종단 세그먼트 %s개 · 원장크기=%s · 마지막성장=%s\n' \
-    "$(now_iso)" "$age" "$live" "$pend" "$nonterm" "$size" "$grew" > "$RUN_DIR/watch.heartbeat"
+    "$at" "$age" "$live" "$pend" "$nonterm" "$size" "$grew" > "$RUN_DIR/watch.heartbeat"
   # The host-load sample rides the same cadence, after the heartbeat so its own
   # file already counts toward `runs`. `beat` also runs in the `done` tail, so the
   # last heartbeat leaves a sample too.
   [ -d "$RUN_DIR" ] && host_load_sample "$live"
   printf '%s [watch] 살아 있음 — 원장 %s초 전 갱신, 스테이지 %s개, 대기 승인 %s건, 비종단 세그먼트 %s개\n' \
-    "$(now_iso)" "$age" "$live" "$pend" "$nonterm"
+    "$at" "$age" "$live" "$pend" "$nonterm"
+}
+
+probe_beat() {
+  # The probe cycle's beat: the watcher's own marks, then the heartbeat and the
+  # alive line from the values the last full pass read (`W_*`), with the ledger
+  # age carried forward on the memory clock. Nothing the arms judge on is read
+  # here — a probe cycle runs only when the probe saw nothing new.
+  local age live pend nonterm size grew now
+  watch_self_marks
+  watch_now_into now
+  live=$W_LIVE; pend=$W_PEND; nonterm=$W_NONTERM; size=$W_SIZE; grew=$W_GREW
+  case "$grew" in
+    ''|*[!0-9]*) age=$W_AGE ;;
+    *) age=$((now - grew)) ;;
+  esac
+  watch_publish
+  failover_clock_note probe
 }
 
 settle_stall_arm() {
@@ -868,13 +1081,13 @@ pass() {
   # so no arm can skip it; each arm still carries its own once-marker, so two
   # firing in one pass is harmless.
   local age live live_w pend nonterm run_age gate_idle size grew silent id newly stale
-  local cause reason slug mk thr quiet relay_eff
+  local cause reason slug mk thr quiet relay_eff halts="" fo_wait="" ub line expiry="" now
   beat
   failover_clock_note
   # THE GATE'S IDLE TIME SITS BESIDE `age` because two arms read it: the
   # run-open arm, and the quiet base of the general and settle-stall arms.
-  gate_idle=$(gate_idle_seconds)
-  thr=$(stall_threshold)
+  gate_idle_into gate_idle
+  stall_threshold_into thr
   quiet=$(quiet_seconds)
   relay_eff=0
   if relay_effective; then relay_eff=1; fi
@@ -963,7 +1176,7 @@ pass() {
   # `shift_active`.
   if [ "$live_w" = "0" ] && [ "$pend" = "0" ] && [ "$age" -ge "$AFTER_STAGE" ] \
      && [ "$nonterm" -ge 1 ] && ! shift_active && ! failover_waiting \
-     && [ -z "$(cat "$RUN_DIR/done" 2>/dev/null || true)" ] \
+     && done_empty \
      && [ "$( { grep -E '^- `' "$LEDGER" 2>/dev/null || true; } | tail -1 \
              | grep -cE '^- `(stage-result|cost)`' || true)" != "0" ] \
      && [ ! -f "$RUN_DIR/watch.announced-after-stage" ]; then
@@ -1022,7 +1235,7 @@ pass() {
   # above use one: the gate empties `stall` on every act, so a guard reading that
   # file would come back to life and this arm would re-fire every pass.
   local sf sseg sstart snow sage smk
-  snow=$(date -u +%s)
+  watch_now_into snow
   for sf in "$RUN_DIR"/*.pid; do
     [ -f "$sf" ] || continue
     sseg=${sf##*/}; sseg=${sseg%.pid}
@@ -1052,6 +1265,7 @@ pass() {
                "걸렸을 수 있습니다 — 스트림 로그를 보고 판단하세요. 이 팔은 막힘 행을 쓰지 않으므로 런의 종료를 막지 않습니다"
       cc_notify_fire hands "스테이지 ${sseg} 이 ${sage}초째 살아 있습니다 — 걸렸는지 확인하세요" || true
     fi
+    if [ ! -f "$smk" ]; then watch_expiry_offer $((sstart + STAGE_AGE)); fi
   done
 
   # THE RUN OPENED AND NO SEGMENT EVER DID. Its own arm, keyed on the age of the
@@ -1104,14 +1318,14 @@ pass() {
   # The once-guard is a dedicated marker for the same reason the arm above's is:
   # the gate empties `stall` on every act, so a guard that read that file would
   # come back to life and this arm would re-fire every pass.
-  run_age=$(run_open_seconds)
+  run_open_into run_age
   if [ "$live_w" = "0" ] && [ "$pend" = "0" ] \
      && [ "$(cc_segment_count "$LEDGER")" = "0" ] \
      && [ -n "$run_age" ] && [ "$run_age" -ge "$RUN_OPEN" ] \
      && [ "$age" -ge "$AFTER_STAGE" ] \
      && [ -n "$gate_idle" ] && [ "$gate_idle" -ge "$AFTER_STAGE" ] \
      && ! failover_waiting \
-     && [ -z "$(cat "$RUN_DIR/done" 2>/dev/null || true)" ] \
+     && done_empty \
      && [ ! -f "$RUN_DIR/watch.announced-run-open" ]; then
     : > "$RUN_DIR/watch.announced-run-open"
     announce "런이 열린 지 ${run_age}초인데 세그먼트가 하나도 열리지 않았습니다" \
@@ -1145,7 +1359,7 @@ pass() {
   # the same test in prose and cannot reach it, which is why the copy there came
   # back out.
   #
-  # THE THRESHOLD IS T AND THE CLOCK IS THE QUIET BASE (`stall_threshold`,
+  # THE THRESHOLD IS T AND THE CLOCK IS THE QUIET BASE (`stall_threshold_into`,
   # `quiet_seconds`): `min(STALL, SILENCE)` measured from the latest activity on
   # any signal, `STALL` while a seat turn is open or a halt record is unanswered.
   # An empty quiet reading — a live shift with no stream log — does not fire. An
@@ -1156,14 +1370,24 @@ pass() {
   # The loop runs no pass while `done` is on disk, but a `done` written during
   # this pass would otherwise be followed by a `라이브니스 침묵` block row on a
   # run that has ended.
-  silent=$(cc_unresolved_blocked "$LEDGER" | grep -cF '라이브니스 침묵' || true)
+  #
+  # The unresolved set is read once here, and the anchored arm below walks the
+  # same copy; the count is of its lines that carry the reason, as `grep -cF`
+  # counted them.
+  ub=$(cc_unresolved_blocked "$LEDGER")
+  silent=0
+  while IFS= read -r line; do
+    case "$line" in *'라이브니스 침묵'*) silent=$((silent + 1)) ;; esac
+  done <<EOF
+$ub
+EOF
   if [ "$live_w" = "0" ] && [ "$pend" = "0" ] \
      && [ -n "$quiet" ] && [ "$quiet" -ge "$thr" ] \
      && [ "$relay_eff" = "0" ] && ! failover_waiting \
      && { [ "$nonterm" -ge 1 ] \
           || { [ "$(cc_segment_count "$LEDGER")" = "0" ] \
                && [ ! -f "$RUN_DIR/watch.announced-run-open" ]; }; } \
-     && [ -z "$(cat "$RUN_DIR/done" 2>/dev/null || true)" ] \
+     && done_empty \
      && ! grep -q '라이브니스 침묵' "$RUN_DIR/stall" 2>/dev/null \
      && [ "${silent:-0}" = "0" ]; then
     # A waiter whose refresh stopped while its holder lives is never dispatched
@@ -1268,10 +1492,10 @@ pass() {
   # `cc_unresolved_blocked` has already dropped anything whose last row resolves
   # it, so "resolvable" and "resolved" stay different things: the first raises a
   # banner and the second does not.
-  cc_unresolved_blocked "$LEDGER" | while IFS="$(printf '\t')" read -r cause reason; do
+  while IFS=$'\t' read -r cause reason; do
     [ -n "$reason" ] || continue
     [ "$cause" = "불명" ] && continue
-    slug=$(printf '%s' "$reason" | tr ' /' '--')
+    slug=${reason// /-}; slug=${slug//\//-}
     mk="$RUN_DIR/watch.announced-stall-$slug"
     [ -f "$mk" ] && continue
     : > "$mk"
@@ -1286,7 +1510,9 @@ pass() {
       cc_notify_fire hands \
         "런이 정박했습니다 — 아침 보고서의 보류 큐를 보세요 ($reason)" "run-$slug" || true
     fi
-  done
+  done <<EOF
+$ub
+EOF
 
   # THE SIXTH ARM — THE PROGRESS CHANNEL HAS GONE QUIET.
   #
@@ -1316,10 +1542,12 @@ pass() {
   local feed_hb feed_mt feed_age
   feed_hb="$RUN_DIR/feed.heartbeat"
   feed_age=""
-  feed_mt=$(file_mtime "$feed_hb")
-  [ -n "$feed_mt" ] && feed_age=$(( $(now_epoch) - feed_mt ))
+  feed_mt=""
+  watch_now_into now
+  if [ -f "$feed_hb" ]; then feed_mt=$(file_mtime "$feed_hb"); fi
+  [ -n "$feed_mt" ] && feed_age=$(( now - feed_mt ))
   if [ -n "$feed_age" ] && [ "$feed_age" -ge "$(( STALL * 2 ))" ] \
-     && [ -z "$(cat "$RUN_DIR/done" 2>/dev/null || true)" ] \
+     && done_empty \
      && [ ! -f "$RUN_DIR/watch.announced-feed-silence" ]; then
     : > "$RUN_DIR/watch.announced-feed-silence"
     announce "진행 채널이 ${feed_age}초 동안 아무 박동도 내지 않았습니다" \
@@ -1351,12 +1579,117 @@ pass() {
   # died too — a machine-level event, listed without choosing among its
   # branches. The settlement token `외부 종료` is spelled out so a person who
   # saw the banner at 3am has the string to grep the ledger for at 9.
-  local orphans
-  orphans=$( { cc_orphan_stages "$RUN_DIR" || true; } | paste -sd' ' -)
-  [ -n "$orphans" ] && \
+  local orphans at
+  orphans=$( { cc_orphan_stages "$RUN_DIR" || true; } )
+  orphans=${orphans//$'\n'/ }
+  if [ -n "$orphans" ]; then
+    watch_iso_into at
     printf '%s [watch] 잃어버린 파견 — %s · 파견 기록이 남았는데 그 프로세스가 없습니다. 스테이지 결과가 기록되지 않았습니다 — 원인은 이 술어의 입력에 없습니다. 감독자까지 사라졌다는 뜻이므로 기계 재부팅·절전·OOM, 사람이 보낸 종료가 감독자에 닿은 것, 또는 정산이 도중에 멈춘 것일 수 있습니다. 다음 게이트 호출이 이를 `외부 종료` 로 정산합니다\n' \
-      "$(now_iso)" "$orphans"
+      "$at" "$orphans"
+  fi
+
+  # THE NEXT MOMENT A TIME-BASED ARM CAN FIRE, for the probe cycles of a quiet
+  # run (the main loop runs a full pass once the memory clock reaches it). Each
+  # arm offers the time its clock conditions would all hold — the latest of its
+  # thresholds — when the conditions that are not about time hold now; a time
+  # already past offers nothing, so an arm that fired or cannot fire does not
+  # keep forcing full passes. The offers err early, never late: an early full
+  # pass costs one pass, a late one delays a banner.
+  local t sx=""
+  watch_now_into now
+  if [ "$live_w" = "0" ] && [ "$pend" = "0" ] && [ "$nonterm" -ge 1 ] 2>/dev/null \
+     && [ ! -f "$RUN_DIR/watch.announced-after-stage" ] && done_empty; then
+    case "$grew" in ''|*[!0-9]*) t=$((now - age + AFTER_STAGE)) ;; *) t=$((grew + AFTER_STAGE)) ;; esac
+    if [ -f "$RUN_DIR/shift.in-progress" ]; then
+      { IFS= read -r sx; } 2>/dev/null < "$RUN_DIR/shift.in-progress" || :
+      sx=${sx//[!0123456789]/}
+      if [ -n "$sx" ] && [ "$sx" -gt "$t" ] 2>/dev/null; then t=$sx; fi
+    fi
+    watch_expiry_offer "$t"
+  fi
+  if [ "$live_w" = "0" ] && [ "$pend" = "0" ] && [ -n "$run_age" ] && [ -n "$gate_idle" ] \
+     && [ ! -f "$RUN_DIR/watch.announced-run-open" ]; then
+    t=$((now - age + AFTER_STAGE))
+    [ $((now - run_age + RUN_OPEN)) -le "$t" ] || t=$((now - run_age + RUN_OPEN))
+    [ $((now - gate_idle + AFTER_STAGE)) -le "$t" ] || t=$((now - gate_idle + AFTER_STAGE))
+    watch_expiry_offer "$t"
+  fi
+  if [ "$live_w" = "0" ] && [ "$pend" = "0" ] && [ -n "$quiet" ] && [ "$relay_eff" = "0" ]; then
+    watch_expiry_offer $((now - quiet + thr))
+  fi
+  if [ -n "$feed_mt" ] && [ ! -f "$RUN_DIR/watch.announced-feed-silence" ]; then
+    watch_expiry_offer $((feed_mt + STALL * 2))
+  fi
+
+  # QUIET OR WORKING, decided once per full pass by the shared predicate on the
+  # counts this pass already read, and kept for the main loop and `watch.mode`.
+  W_QUIET=0
+  if cc_run_quiet "$RUN_DIR" "$LEDGER" "$live_w" "$pend" "$halts" "$age" "$STALL"; then
+    W_QUIET=1
+  fi
+  WATCH_EXPIRY=$expiry
+  # The probe's reference, touched after this pass's last write to the run
+  # directory, so nothing this pass wrote reads as new on the next cycle.
+  if [ -d "$RUN_DIR" ]; then : > "$RUN_DIR/.watch.fullpass"; fi
   return 0
+}
+
+watch_expiry_offer() {
+  # watch_expiry_offer <epoch> — lowers the calling pass's `expiry` to <epoch>
+  # when <epoch> is still ahead of the memory clock.
+  local t="${1:-}" n
+  case "$t" in ''|*[!0-9]*) return 0 ;; esac
+  watch_now_into n
+  [ "$t" -gt "$n" ] || return 0
+  if [ -z "${expiry:-}" ] || [ "$t" -lt "$expiry" ]; then expiry=$t; fi
+  return 0
+}
+
+# THE PROBE SET: every run-directory name a full pass judges on that is not one
+# of the three resident scripts' own writes, plus the ledger (`LEDGER`). On a
+# quiet run a cycle between two full passes compares each member against
+# `.watch.fullpass` with `-nt` and runs a full pass when any is newer — builtins
+# and globs, no fork. A trailing `/` names a directory, whose mtime moves when a
+# record is added to it or renamed into it. The run directory's own mtime is
+# not a member: the watcher's own writes move it every cycle. `watch.pid` and
+# `checks.pid` match `*.pid` and are passed over by name, because the watcher and
+# `checks.sh` rewrite them every cycle. `routing-guard` and `checks.observed`
+# are not members: only a relay path reads them, and a live relay already makes
+# the run a working one.
+WATCH_PROBES='LEDGER halt/ halt/shift/ started-at done ends-on-done shift.live relay.live *.pid *.sup *.waiting *.sup.start *.pid.settling* apply/*.launch apply/*.sup apply/*.sup.start apply/*.sup.self apply/*.sup.self.start'
+read -r -a WATCH_PROBE_LIST <<< "$WATCH_PROBES"
+
+watch_probe_changed() {
+  # rc 0 when some member of the probe set is newer than `.watch.fullpass`, or
+  # when there is no such reference yet; rc 1 when nothing is.
+  local mark="$RUN_DIR/.watch.fullpass" p f
+  [ -f "$mark" ] || return 0
+  for p in "${WATCH_PROBE_LIST[@]}"; do
+    case "$p" in
+      LEDGER)
+        if [ "$LEDGER" -nt "$mark" ]; then return 0; fi ;;
+      *'*'*)
+        for f in "$RUN_DIR"/$p; do
+          case "${f##*/}" in watch.pid|checks.pid) continue ;; esac
+          if [ "$f" -nt "$mark" ]; then return 0; fi
+        done ;;
+      *)
+        if [ "$RUN_DIR/$p" -nt "$mark" ]; then return 0; fi ;;
+    esac
+  done
+  return 1
+}
+
+watch_mode_write() {
+  # One line, `quiet <epoch>` or `work <epoch>`, rewritten every cycle: the full
+  # pass's verdict, or on a probe cycle the last one, stamped with this cycle's
+  # memory clock. `checks.sh` and `feed.sh` read it, and read a missing, unreadable
+  # or stale line as a working run.
+  local now m=work
+  [ -d "$RUN_DIR" ] || return 0
+  [ "$W_QUIET" = 1 ] && m=quiet
+  watch_now_into now
+  { printf '%s %s\n' "$m" "$now" > "$RUN_DIR/watch.mode"; } 2>/dev/null || :
 }
 
 run_is_over() {
@@ -1405,8 +1738,16 @@ run_is_over() {
   return 1
 }
 
+# The memory a probe cycle publishes from and the main loop decides on, filled
+# by each full pass. The first cycle is always a full pass, so none of these is
+# read before a pass has written it.
+W_AGE=0; W_LIVE=0; W_PEND=0; W_NONTERM=0; W_SIZE=0; W_GREW=""
+W_FO_AT=""; W_FO_LAST=""; W_FO_PREV=""; W_FO_HELD=""
+W_QUIET=0; WATCH_EXPIRY=""; WATCH_STALL_LAST=""
+
 if [ "$ONCE" = "1" ]; then
   pass
+  watch_mode_write
   exit 0
 fi
 
@@ -1426,6 +1767,19 @@ wait_ended_fired() {
   return 0
 }
 
+# WORKING AND QUIET CYCLES. A working run gets a full pass every cycle, as it
+# always did. A quiet one (`cc_run_quiet`, decided by each full pass) gets one
+# every `CC_QUIET_PASS_EVERY` cycles, and between them a probe cycle — the
+# watcher's own marks, the heartbeat from the last full pass's values, the
+# host-load sample and the failover clock — unless the probe set shows
+# something newer than the last full pass, or the memory clock has reached the
+# next moment a time-based arm can fire, or the run directory is not there;
+# any of those makes the cycle a full one. The first cycle is always full.
+# `run_is_over` runs on full cycles only: its exits are a `done` the loop
+# already reads every cycle, a directory that went away, and an idle threshold
+# of a day.
+watch_cycle=0
+watch_since_full=0
 while :; do
   # `done` IS JUDGED FIRST, AND WHILE IT IS ON DISK NO PASS RUNS. On a run that
   # ends on `done`, a shift can still be settling after `done` is written, and
@@ -1446,8 +1800,9 @@ while :; do
     # once rather than waiting out the startup bound.
     RUN_DIR_SEEN=1
     done_mt=$(file_mtime "$RUN_DIR/done")
+    watch_now_into watch_now
     if cc_run_end_settled "$RUN_DIR" \
-       || { [ -n "$done_mt" ] && [ $(( $(now_epoch) - done_mt )) -ge "$STALL" ]; }; then
+       || { [ -n "$done_mt" ] && [ $(( watch_now - done_mt )) -ge "$STALL" ]; }; then
       announce "런이 종단했습니다 — 감시를 멈춥니다" "$(cat "$RUN_DIR/done" 2>/dev/null || printf '종단 표시 있음')"
       # A BACKSTOP, NOT THE OWNER. The gate's sites take the claim first in the
       # ordinary case and this raises nothing then; it speaks when no gate site
@@ -1478,13 +1833,33 @@ while :; do
       exit 0
     fi
     beat
+    watch_mode_write
     sleep "$INTERVAL"
     continue
   fi
-  # The directory went away, or never appeared.
-  if run_is_over; then
-    exit 0
+  watch_full=1
+  if [ "$watch_cycle" -gt 0 ] && [ "$W_QUIET" = 1 ] && [ -d "$RUN_DIR" ] \
+     && [ "$watch_since_full" -lt $((CC_QUIET_PASS_EVERY - 1)) ]; then
+    watch_full=0
+    watch_now_into watch_now
+    if [ -n "$WATCH_EXPIRY" ] && [ "$watch_now" -ge "$WATCH_EXPIRY" ]; then
+      watch_full=1
+    elif watch_probe_changed; then
+      watch_full=1
+    fi
   fi
-  pass
+  watch_cycle=$((watch_cycle + 1))
+  if [ "$watch_full" = 1 ]; then
+    # The directory went away, or never appeared.
+    if run_is_over; then
+      exit 0
+    fi
+    pass
+    watch_since_full=0
+  else
+    probe_beat
+    watch_since_full=$((watch_since_full + 1))
+  fi
+  watch_mode_write
   sleep "$INTERVAL"
 done

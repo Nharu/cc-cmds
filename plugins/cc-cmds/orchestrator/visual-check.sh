@@ -69,6 +69,25 @@
 #       (`[A-Za-z0-9._#-]+\.md`: no path separator, no space). When it does, a
 #       valid approval prints a second line `출처 사람 답 <file name>`; whether
 #       that record and its answer stand is the gate's to check, not this one's.
+#       The `**확인**` line of `system.md` is not read here: an unattended
+#       consumer reads `confirm` beside this verdict, an interactive one does
+#       not. After those checks the `**문서 반영**` line is read (see
+#       `reflection_verdict`): none, `불요` or `완료` keeps the approval valid,
+#       `대기` prints `승인 보류 — 설계 문서 반영 대기`, `실패` prints
+#       `승인 보류 — 설계 문서 반영 실패 — <사유>`, and a misplaced, repeated
+#       or malformed line prints `승인 무효 — 문서 반영 줄 형식 오류`; those
+#       three exit 1.
+#   drift <design doc>
+#       Print `어긋남 <n>건 · sha256 <hex>` for the sidecar's
+#       `### 설계 문서 어긋남` block: n is 0 for a body of the one line `없음`,
+#       else the number of `- ` lines; the sha256 is over the body (the line
+#       after the heading up to the next `### ` heading or the end of the file)
+#       normalized as the binding digest is. Exit 1 when there is no block.
+#       Each line `- <id> · <section title> · 「<document text>」 → 「…」` is
+#       split at the first ` · `, the first ` · 「` and the first `」 → `; its
+#       title must be a heading of the document exactly once and its document
+#       text (not `(없음)`) must be inside that heading's section verbatim.
+#       Lines that fail are printed and the exit code is 2.
 #   bundle <design doc> [--lines]
 #       Print the input bundle sha256 (with --lines, the bundle text itself):
 #       `<screen id> <sha256>` per screen in screen-id order, then
@@ -81,13 +100,20 @@
 #   system <design doc> [--owner]
 #       Without --owner, print the normalized digest of the repository's
 #       `system.md` — the sha256 of the file with every line that starts with
-#       `**아티팩트**: ` replaced by `**아티팩트**: (미발행)` and every other
-#       byte kept, the final newline or its absence included — or `(없음)`
-#       when there is no `system.md`. A file without an artifact line has the
-#       same normalized digest as its whole-file hash. This is the value a
-#       sidecar's `**디자인 시스템 sha256**` carries.
-#       With --owner, decide whether `system.md` is this document's: print
-#       `이 문서의 디자인 시스템` and exit 0 when `system.md` exists, the
+#       `**아티팩트**: ` replaced by `**아티팩트**: (미발행)`, every line that
+#       starts with `**확인**: ` removed, and every other byte kept, the final
+#       newline or its absence included — or `(없음)` when there is no
+#       `system.md`. A file without an artifact or confirmation line has the
+#       same normalized digest as its whole-file hash, and removing a
+#       confirmation line leaves the bytes of the same file without it. This
+#       is the value a sidecar's `**디자인 시스템 sha256**` carries.
+#       With --owner, decide whether `system.md` is this document's. When
+#       `confirm` reads `사람 승인 — 문서 <this document>`, print
+#       `이 문서의 디자인 시스템 — 사람 확인` and exit 0 whatever the sidecar
+#       holds, as long as the `**tokens.css sha256**` line equals the current
+#       `tokens.css`. Otherwise (no line, a waiting or malformed line, another
+#       document's key) print `이 문서의 디자인 시스템` and exit 0 when `system.md`
+#       exists, the
 #       document's sidecar exists with a `cc-visual v1` header whose
 #       `owner-doc` is this document (any state, any `**기록**`), its
 #       `**디자인 시스템 sha256**` equals the normalized digest or the
@@ -95,6 +121,31 @@
 #       equals the current `tokens.css`; otherwise print
 #       `이 문서의 디자인 시스템 아님 — <reason>` for the first that fails and
 #       exit 1. `owner-repo` is not compared here.
+#   confirm <design doc>
+#       Print the confirmation state of `system.md`: `확인 없음` (no file or
+#       no `**확인**: ` line), `확인 대기 — 문서 <key>` for
+#       `**확인**: 대기 — 문서 <key> — 런 <run id>`, `사람 승인 — 문서 <key>` for
+#       `**확인**: 사람 승인 — 문서 <key> — tokens.css sha256 <hex> — 사람 답
+#       <file name> — 런 <run id> — <ISO8601 UTC>` whose hash equals the
+#       current `tokens.css` (`확인 대기 — 문서 <key>` when it differs), and
+#       `확인 형식 오류` for two or more confirmation lines or one that fits
+#       neither form. A consumer
+#       reads a stop as output starting with `확인 대기 — 문서 ` or equal to
+#       `확인 형식 오류`, and an approval by comparing the whole line with
+#       `사람 승인 — 문서 <its key>`; it never splits the line on `—`. Exits 0.
+#   system-users <design doc> [--also <hex>]
+#       Print one line `<document key> — 상태 <state> — 구현 승인 있음|없음`
+#       for every other document's sidecar under the same `docs/visual/`
+#       whose `**디자인 시스템 sha256**` equals the current normalized digest
+#       or whole-file hash of `system.md`, or the --also digest; `없음` when
+#       there is none. Exits 0.
+#   run-state <design doc> --run-dir <dir> --ledger <file> --manifest <file>
+#       Print the run's design system phase state on seven fixed lines —
+#       whether the plan has `S2P`, the latest `디자인-시스템-판정` and
+#       `시각-판정` records with a person's last answer to each, the revision
+#       count, and the `confirm` line (see `cmd_run_state`). The generation and
+#       publish stages and the gate read the phase state here and nowhere
+#       else. Exits 0.
 #   reuse <design doc> --record <interview record>
 #       Decide whether a run may take the document's sidecar as its visual
 #       stage's finished work. Conditions in order: the sidecar exists, its
@@ -121,14 +172,16 @@
 # Exit codes:
 #   0 — scan: no finding; approval: valid; reuse: reusable; system --owner:
 #       this document's; other subcommands: success
-#   1 — scan: at least one finding; approval: none or void; bundle: no sidecar;
+#   1 — scan: at least one finding; approval: none, void or held; drift: no
+#       block; bundle: no sidecar;
 #       reuse: not reusable; system --owner: not this document's
 #   2 — usage error, an unreadable file, a malformed ban list or pattern, a
 #       --tokens file that is missing or contains `</style` (any case), a
 #       screen that ends inside a comment, a tag, a template string or an
 #       unclosed <style>/<script>, or whose CSS or script block comment is
 #       still open at its </style>/</script> or closing attribute quote
-#       (scan and size)
+#       (scan and size); drift: a block line whose document side was not
+#       found
 #
 # Compatibility: bash 3.2 (macOS) — no associative arrays, no `mapfile`; BSD
 # and GNU userland alike; `grep -E` only.
@@ -136,7 +189,7 @@
 set -euo pipefail
 
 usage() {
-  echo "사용법: visual-check.sh scan <화면>... [--bans <파일>] [--lifts <system.md>] [--tokens <tokens.css>] | size <화면> | approval <설계 문서> | bundle <설계 문서> [--lines] | binding <설계 문서> | system <설계 문서> [--owner] | reuse <설계 문서> --record <기록>" >&2
+  echo "사용법: visual-check.sh scan <화면>... [--bans <파일>] [--lifts <system.md>] [--tokens <tokens.css>] | size <화면> | approval <설계 문서> | drift <설계 문서> | bundle <설계 문서> [--lines] | binding <설계 문서> | system <설계 문서> [--owner] | confirm <설계 문서> | system-users <설계 문서> [--also <hex>] | run-state <설계 문서> --run-dir <런 디렉터리> --ledger <원장> --manifest <매니페스트> | reuse <설계 문서> --record <기록>" >&2
   exit 2
 }
 
@@ -667,8 +720,146 @@ cmd_approval() {
   done
   now=$(bundle_text | sha256_stdin)
   [ "$now" = "$want" ] || { echo "승인 무효 — 입력 묶음이 달라졌다 (줄 ${want:0:12}, 지금 ${now:0:12})"; exit 1; }
+  reflection_verdict || exit 1
   echo "승인 유효 ${now:0:12}"
   [ -z "$src" ] || echo "출처 사람 답 ${src}"
+}
+
+# reflection_verdict — read the sidecar's `**문서 반영**` line once the six
+# approval checks have passed. No line, `불요` or `완료 — 문서 sha256 <hex>`
+# returns 0 and prints nothing (the `완료` hash is not compared: a later
+# re-convergence may edit the document again, as the input bundle does not hold
+# the document either). `대기 — 어긋남 <n>건` prints
+# `승인 보류 — 설계 문서 반영 대기`, `실패 — <사유>` prints
+# `승인 보류 — 설계 문서 반영 실패 — <사유>`; two or more lines, a line that is
+# not directly under the `**구현 승인**` line, or any other value prints
+# `승인 무효 — 문서 반영 줄 형식 오류`; all three return 1. Each value may end in
+# the tail ` — 사람 답 <file name>`, read from the line's last ` — 사람 답 `; its
+# file name is checked for shape only, never against the approval line's tail.
+reflection_verdict() {
+  local n prev value body tail
+  n=$({ grep -E '^\*\*문서 반영\*\*:' "$SIDECAR" || true; } | grep -c . || true)
+  [ "$n" != 0 ] || return 0
+  [ "$n" = 1 ] || { echo "승인 무효 — 문서 반영 줄 형식 오류"; return 1; }
+  prev=$(LC_ALL=C awk 'index($0, "**문서 반영**:") == 1 { print p; exit } { p = $0 }' "$SIDECAR")
+  case "$prev" in '**구현 승인**:'*) ;; *) echo "승인 무효 — 문서 반영 줄 형식 오류"; return 1 ;; esac
+  value=$(grep -E '^\*\*문서 반영\*\*:' "$SIDECAR" | sed -e 's/^\*\*문서 반영\*\*: //' -e 's/[[:space:]]*$//')
+  body=$value
+  case "$value" in
+    *' — 사람 답 '*)
+      body=${value%' — 사람 답 '*}
+      tail=${value##*' — 사람 답 '}
+      printf '%s\n' "$tail" | grep -qE '^[A-Za-z0-9._#-]+\.md$' \
+        || { echo "승인 무효 — 문서 반영 줄 형식 오류"; return 1; }
+      ;;
+  esac
+  case "$body" in *' — 사람 답 '*) echo "승인 무효 — 문서 반영 줄 형식 오류"; return 1 ;; esac
+  if [ "$body" = 불요 ] || printf '%s\n' "$body" | grep -qE '^완료 — 문서 sha256 [0-9a-f]{64}$'; then
+    return 0
+  fi
+  if printf '%s\n' "$body" | grep -qE '^대기 — 어긋남 [0-9]+건$'; then
+    echo "승인 보류 — 설계 문서 반영 대기"; return 1
+  fi
+  case "$body" in
+    '실패 — '?*) echo "승인 보류 — 설계 문서 반영 실패 — ${body#'실패 — '}"; return 1 ;;
+  esac
+  echo "승인 무효 — 문서 반영 줄 형식 오류"
+  return 1
+}
+
+# norm_lines — the line-end normalization the binding digest uses: CR and
+# trailing blanks removed, repeated blank lines collapsed to one, leading and
+# trailing blank lines dropped.
+norm_lines() {
+  tr -d '\r' \
+    | sed 's/[[:space:]]*$//' \
+    | awk '{ if ($0 == "") { blank = 1; next } if (blank && seen) print ""; blank = 0; seen = 1; print }'
+}
+
+# drift_block — the body of the sidecar's first `### 설계 문서 어긋남` block:
+# from the line after that heading up to the next `### ` heading, or the end of
+# the file. Prints nothing and returns 1 when there is no such heading.
+drift_block() {
+  LC_ALL=C awk '
+    on && /^### / { exit }
+    on { print; next }
+    /^### 설계 문서 어긋남[[:space:]]*$/ { on = 1; found = 1 }
+    END { exit found ? 0 : 1 }
+  ' "$SIDECAR"
+}
+
+# doc_heading_count <doc> / doc_section <doc> — headings are lines of one or
+# more `#` and a space outside code fences, their title the rest of the line
+# without trailing blanks, compared with $DRIFT_TITLE byte for byte. The
+# section runs from the line after the heading to the next heading of the same
+# or a higher level, fenced lines and lower headings' bodies included.
+doc_heading_count() {
+  LC_ALL=C awk '
+    BEGIN { t = ENVIRON["DRIFT_TITLE"] }
+    /^ *(```|~~~)/ { fence = !fence; next }
+    fence { next }
+    match($0, /^#+ /) { h = substr($0, RLENGTH + 1); sub(/[ \t]+$/, "", h); if (h == t) n++ }
+    END { print n + 0 }
+  ' "$1"
+}
+
+doc_section() {
+  LC_ALL=C awk '
+    BEGIN { t = ENVIRON["DRIFT_TITLE"] }
+    /^ *(```|~~~)/ { fence = !fence; if (on) print; next }
+    fence { if (on) print; next }
+    match($0, /^#+ /) {
+      lv = RLENGTH - 1
+      if (on && lv <= onlv) exit
+      h = substr($0, RLENGTH + 1); sub(/[ \t]+$/, "", h)
+      if (!on && h == t) { on = 1; onlv = lv; next }
+    }
+    on { print }
+  ' "$1"
+}
+
+# cmd_drift <design doc> — the count and digest of the sidecar's
+# `### 설계 문서 어긋남` block, after checking that every line's document side
+# is really in the document.
+cmd_drift() {
+  [ $# -eq 1 ] || usage
+  local doc=$1 why body n=0 bad='' l rest after title t2 text sha
+  [ -f "$doc" ] || { echo "visual-check.sh drift: 설계 문서가 없다: $doc" >&2; exit 2; }
+  if ! why=$(locate_sidecar "$doc"); then
+    echo "어긋남 블록 없음 — ${why}"; exit 1
+  fi
+  locate_sidecar "$doc" >/dev/null
+  [ -f "$SIDECAR" ] || { echo "어긋남 블록 없음 — 사이드카 없음 (${SIDECAR})"; exit 1; }
+  body=$(drift_block) || { echo "어긋남 블록 없음 — 사이드카에 ### 설계 문서 어긋남 이 없다"; exit 1; }
+  body=$(printf '%s\n' "$body" | norm_lines)
+  if [ -n "$body" ]; then sha=$(printf '%s\n' "$body" | sha256_stdin); else sha=$(printf '' | sha256_stdin); fi
+  if [ "$body" != 없음 ]; then
+    while IFS= read -r l; do
+      case "$l" in '- '*) ;; *) continue ;; esac
+      n=$((n + 1))
+      rest=${l#- }
+      case "$rest" in *' · '*) ;; *) bad="${bad}${l}"$'\n'; continue ;; esac
+      after=${rest#*' · '}
+      case "$after" in *' · 「'*) ;; *) bad="${bad}${l}"$'\n'; continue ;; esac
+      title=${after%%' · 「'*}
+      t2=${after#*' · 「'}
+      case "$t2" in *'」 → '*) ;; *) bad="${bad}${l}"$'\n'; continue ;; esac
+      text=${t2%%'」 → '*}
+      if [ -z "$title" ] || [ "$(DRIFT_TITLE=$title doc_heading_count "$doc")" != 1 ]; then
+        bad="${bad}${l}"$'\n'; continue
+      fi
+      [ "$text" = '(없음)' ] && continue
+      DRIFT_TITLE=$title doc_section "$doc" | LC_ALL=C grep -qF -e "$text" \
+        || bad="${bad}${l}"$'\n'
+    done <<EOF
+$body
+EOF
+  fi
+  if [ -n "$bad" ]; then
+    printf '%s' "$bad"
+    exit 2
+  fi
+  echo "어긋남 ${n}건 · sha256 ${sha}"
 }
 
 # binding_text <design doc> — the document the binding digest hashes: the
@@ -685,10 +876,7 @@ binding_text() {
     insec && /^(- )?(\*\*검증 등급\*\*|검증 등급): / { next }
     insec && /^(- )?(\*\*구현 시 검증 기록\*\*|구현 시 검증 기록): / { next }
     { print }
-  ' "$1" \
-    | tr -d '\r' \
-    | sed 's/[[:space:]]*$//' \
-    | awk '{ if ($0 == "") { blank = 1; next } if (blank && seen) print ""; blank = 0; seen = 1; print }'
+  ' "$1" | norm_lines
 }
 
 cmd_binding() {
@@ -707,18 +895,69 @@ sidecar_field() {
 }
 
 # system_norm_sha <system.md> — the sha256 of the file with every line that
-# starts with `**아티팩트**: ` replaced by `**아티팩트**: (미발행)` and every
-# other byte kept. The final newline is reproduced only when the file has one,
-# so BSD and GNU hosts hash the same bytes; awk runs under the C locale so the
-# Hangul prefix is compared byte for byte.
+# starts with `**아티팩트**: ` replaced by `**아티팩트**: (미발행)`, every line
+# that starts with `**확인**: ` removed, and every other byte kept. Lines are
+# joined by the count of lines written, not the input line number, so a
+# removed line leaves the same bytes as a file that never had it. The final
+# newline is reproduced only when the file has one, so BSD and GNU hosts hash
+# the same bytes; awk runs under the C locale so the Hangul prefixes are
+# compared byte for byte.
 system_norm_sha() {
   local nl=1
   [ -z "$(tail -c 1 "$1")" ] || nl=0
   LC_ALL=C awk -v nl="$nl" '
+    index($0, "**확인**: ") == 1 { next }
     index($0, "**아티팩트**: ") == 1 { $0 = "**아티팩트**: (미발행)" }
-    { if (NR > 1) printf "\n"; printf "%s", $0 }
-    END { if (NR > 0 && nl) printf "\n" }
+    { if (w > 0) printf "\n"; printf "%s", $0; w++ }
+    END { if (w > 0 && nl) printf "\n" }
   ' "$1" | sha256_stdin
+}
+
+# confirm_state <system.md> — the confirmation state of the design system:
+# `확인 없음` when the file is absent or carries no confirmation line,
+# `확인 대기 — 문서 <key>` for one waiting line, `사람 승인 — 문서 <key>` for one
+# approval line whose `tokens.css sha256` equals the sha256 of the
+# `tokens.css` beside the file, `확인 대기 — 문서 <key>` for an approval line
+# whose hash differs (or whose `tokens.css` is gone): the approval was given
+# to other tokens, so it does not stand. `확인 형식 오류` for two or more
+# confirmation lines or one that fits neither form. A confirmation line is
+# any line whose key is `**확인**:`, a bullet or leading space before it or
+# no space after the colon included, so a variant spelling surfaces as
+# `확인 형식 오류` instead of passing as `확인 없음`. Every consumer reads
+# `확인 형식 오류` as `확인 대기`.
+confirm_state() {
+  local lines n key want tf now
+  [ -f "$1" ] || { echo '확인 없음'; return 0; }
+  lines=$(LC_ALL=C grep -E '^[[:space:]]*(-[[:space:]]+)?\*\*확인\*\*:' "$1" || true)
+  n=$(printf '%s' "$lines" | grep -c . || true)
+  [ "$n" != 0 ] || { echo '확인 없음'; return 0; }
+  [ "$n" = 1 ] || { echo '확인 형식 오류'; return 0; }
+  if printf '%s\n' "$lines" | grep -qE '^\*\*확인\*\*: 대기 — 문서 [^[:space:]]+ — 런 [^[:space:]]+[[:space:]]*$'; then
+    key=$(printf '%s\n' "$lines" | sed -E 's/^\*\*확인\*\*: 대기 — 문서 ([^[:space:]]+) — 런 .*$/\1/')
+    echo "확인 대기 — 문서 ${key}"
+  elif printf '%s\n' "$lines" | grep -qE '^\*\*확인\*\*: 사람 승인 — 문서 [^[:space:]]+ — tokens\.css sha256 [0-9a-f]{64} — 사람 답 [A-Za-z0-9._#-]+\.md — 런 [^[:space:]]+ — [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z[[:space:]]*$'; then
+    key=$(printf '%s\n' "$lines" | sed -E 's/^\*\*확인\*\*: 사람 승인 — 문서 ([^[:space:]]+) — tokens\.css sha256 .*$/\1/')
+    want=$(printf '%s\n' "$lines" | sed -E 's/^.* — tokens\.css sha256 ([0-9a-f]{64}) — .*$/\1/')
+    tf="$(dirname "$1")/tokens.css"
+    now=''
+    [ ! -f "$tf" ] || now=$(sha256_of "$tf")
+    if [ -n "$now" ] && [ "$now" = "$want" ]; then
+      echo "사람 승인 — 문서 ${key}"
+    else
+      echo "확인 대기 — 문서 ${key}"
+    fi
+  else
+    echo '확인 형식 오류'
+  fi
+}
+
+# confirm_waiting <state> — succeed when the state stops screen work: a
+# waiting line whatever document it names, or a malformed one.
+confirm_waiting() {
+  case "$1" in
+    '확인 대기 — 문서 '*|'확인 형식 오류') return 0 ;;
+  esac
+  return 1
 }
 
 # system_tokens_line <system.md> — the value of its first
@@ -759,6 +998,19 @@ cmd_system() {
     return 0
   fi
   [ -f "$sys" ] || { echo "이 문서의 디자인 시스템 아님 — system.md 없음"; exit 1; }
+  # A person's approval line that names this document makes the design system
+  # this document's whatever its sidecar says; the tokens line is still
+  # compared. A waiting line has no branch of its own and takes the sidecar
+  # judgment below. The generation stage reaches this call over a waiting line
+  # only on a resumed turn that chose to make screens on the unconfirmed
+  # palette; the halt an exit 1 gives it there carries that earlier answer
+  # forward, so the next turn does not ask the first question again.
+  if [ "$(confirm_state "$sys")" = "사람 승인 — 문서 ${DOC_KEY}" ]; then
+    system_tokens_match \
+      || { echo "이 문서의 디자인 시스템 아님 — tokens.css sha256 줄이 실제 tokens.css 와 다르다"; exit 1; }
+    echo "이 문서의 디자인 시스템 — 사람 확인"
+    return 0
+  fi
   [ -f "$SIDECAR" ] || { echo "이 문서의 디자인 시스템 아님 — 사이드카 없음"; exit 1; }
   owner=$(sidecar_owner)
   [ -n "$owner" ] || { echo "이 문서의 디자인 시스템 아님 — 사이드카 머리가 cc-visual v1 이 아니다"; exit 1; }
@@ -771,6 +1023,213 @@ cmd_system() {
   system_tokens_match \
     || { echo "이 문서의 디자인 시스템 아님 — tokens.css sha256 줄이 실제 tokens.css 와 다르다"; exit 1; }
   echo "이 문서의 디자인 시스템"
+}
+
+cmd_confirm() {
+  [ $# -eq 1 ] || usage
+  local why
+  [ -f "$1" ] || { echo "visual-check.sh confirm: 설계 문서가 없다: $1" >&2; exit 2; }
+  if ! why=$(locate_sidecar "$1"); then
+    echo "visual-check.sh confirm: ${why}" >&2; exit 2
+  fi
+  locate_sidecar "$1" >/dev/null
+  confirm_state "$BASE/docs/visual-system/system.md"
+}
+
+cmd_system_users() {
+  local doc='' also='' why sys norm='' full='' f owner want state appr any=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --also) [ $# -ge 2 ] || usage; also=$2; shift 2 ;;
+      --*) usage ;;
+      *) [ -z "$doc" ] || usage; doc=$1; shift ;;
+    esac
+  done
+  [ -n "$doc" ] || usage
+  [ -z "$also" ] || printf '%s' "$also" | grep -qE '^[0-9a-f]{64}$' \
+    || { echo "visual-check.sh system-users: --also 값이 64자리 16진수가 아니다: $also" >&2; exit 2; }
+  [ -f "$doc" ] || { echo "visual-check.sh system-users: 설계 문서가 없다: $doc" >&2; exit 2; }
+  if ! why=$(locate_sidecar "$doc"); then
+    echo "visual-check.sh system-users: ${why}" >&2; exit 2
+  fi
+  locate_sidecar "$doc" >/dev/null
+  sys="$BASE/docs/visual-system/system.md"
+  if [ -f "$sys" ]; then norm=$(system_norm_sha "$sys"); full=$(sha256_of "$sys"); fi
+  for f in "$BASE"/docs/visual/*.md; do
+    [ -f "$f" ] || continue
+    SIDECAR=$f
+    owner=$(sidecar_owner)
+    [ -n "$owner" ] && [ "$owner" != "$DOC_KEY" ] || continue
+    want=$(sidecar_field '디자인 시스템 sha256')
+    [ -n "$want" ] || continue
+    { [ -n "$norm" ] && { [ "$want" = "$norm" ] || [ "$want" = "$full" ]; }; } \
+      || { [ -n "$also" ] && [ "$want" = "$also" ]; } || continue
+    state=$(sed -nE 's/^\*\*상태\*\*:[[:space:]]*(.*[^[:space:]])[[:space:]]*$/\1/p' "$f" | head -n 1)
+    if grep -qE '^\*\*구현 승인\*\*:' "$f"; then appr='구현 승인 있음'; else appr='구현 승인 없음'; fi
+    printf '%s — 상태 %s — %s\n' "$owner" "${state:-없음}" "$appr"
+    any=1
+  done
+  [ "$any" = 1 ] || echo '없음'
+}
+
+# halt_step_has_prefix <halt record> <prefix> — the record's first `**스텝**`
+# value is the prefix, or starts with `<prefix> — `. The driver's function of
+# the same name reads the same field the same way.
+halt_step_has_prefix() {
+  local step
+  [ -f "$1" ] || return 1
+  step=$(sed -n 's/^\*\*스텝\*\*: //p' "$1" 2>/dev/null | sed -n 1p | sed 's/[[:space:]]*$//')
+  [ "$step" = "$2" ] && return 0
+  case "$step" in "$2 — "*) return 0 ;; esac
+  return 1
+}
+
+# run_answer_rows <ledger> <run id> — this run's `중단 답` rows, scoped as the
+# driver's `run_section_rows` scopes them: the block under `## 실행 <run id>`
+# when the ledger carries such headings, the whole file when it carries none
+# and is named `<run id>.md`, and nothing otherwise.
+run_answer_rows() {
+  local scope
+  [ -f "$1" ] || return 0
+  if grep -qE '^## 실행 ' "$1" 2>/dev/null; then
+    scope=블록
+  elif [ "$(basename "$1")" = "$2.md" ]; then
+    scope=파일
+  else
+    return 0
+  fi
+  awk -v h="## 실행 $2" -v scope="$scope" '
+    BEGIN { whole = (scope == "파일"); inblk = whole }
+    !whole && $0 == h { inblk = 1; next }
+    !whole && substr($0, 1, 3) == "## " { inblk = 0 }
+    inblk && index($0, "- `중단 답`") == 1 { print }
+  ' "$1"
+}
+
+# row_field <row> <key> — the last `<key>=` value of a ledger row.
+row_field() {
+  printf '%s' "$1" | tr '|' '\n' | sed -n "s/^ *$2=//p" | sed 's/[[:space:]]*$//' | tail -1
+}
+
+# person_answer <rows file> <halt record> — the option of the last row that
+# answers the record (its `중단 기록` names the same file) and was given by a
+# person; nothing when there is none. The driver's
+# `visual_publish_person_answer` reads the same rows the same way.
+person_answer() {
+  local row f by opt=''
+  while IFS= read -r row; do
+    [ -n "$row" ] || continue
+    f=$(row_field "$row" '중단 기록')
+    [ "${f##*/}" = "${2##*/}" ] || continue
+    by=$(row_field "$row" '답한 주체')
+    [ "$by" = 사람 ] || continue
+    opt=$(row_field "$row" '선택지')
+  done < "$1"
+  printf '%s' "$opt"
+}
+
+# latest_record <halt dir> <prefix> — the `S2P#<n>.md` record under the halt
+# directory whose step has the prefix and whose attempt number is largest.
+latest_record() {
+  local f b n best='' bestn=-1
+  [ -d "$1" ] || return 0
+  for f in "$1"/S2P#*.md; do
+    [ -f "$f" ] || continue
+    b=${f##*/}; n=${b#S2P#}; n=${n%.md}
+    case "$n" in ''|*[!0-9]*) continue ;; esac
+    halt_step_has_prefix "$f" "$2" || continue
+    if [ "$((10#$n))" -gt "$bestn" ]; then bestn=$((10#$n)); best=$f; fi
+  done
+  printf '%s' "$best"
+}
+
+# cmd_run_state <design doc> --run-dir <dir> --ledger <file> --manifest <file>
+# — the design system phase state of one run, on seven fixed lines:
+#   S2P 있음|없음
+#   디자인-시스템-판정 기록 <file name>|없음
+#   디자인-시스템-판정 사람 답 <option>|없음
+#   시각-판정 기록 <file name>|없음
+#   시각-판정 사람 답 <option>|없음
+#   수정 횟수 <n>
+#   확인 <the line `confirm` prints>
+# `S2P` is the plan's step whose `skill` is `visual-publish`, read from the
+# fenced JSON block under `## 실행 계획`. The two records are the latest of
+# each site in the run's `halt/`, and an answer is a person's last `중단 답`
+# row for that record. The revision count is the number of `S2P` records whose
+# person's last answer is `수정 요청` (a `디자인-시스템-판정` record) or
+# `디자인 시스템 다시 열기` (a `시각-판정` record), less those a
+# `디자인-시스템-판정` record names with `입력 없음=<file name>`. The run id is
+# the run directory's base name. Exits 0; 2 on a usage error or an unreadable
+# document, like `confirm`.
+cmd_run_state() {
+  local doc='' rdir='' ledger='' manifest='' why rid halt rows s2p ds dsa vv vva f a n=0 skip
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --run-dir) [ $# -ge 2 ] || usage; rdir=$2; shift 2 ;;
+      --ledger) [ $# -ge 2 ] || usage; ledger=$2; shift 2 ;;
+      --manifest) [ $# -ge 2 ] || usage; manifest=$2; shift 2 ;;
+      --*) usage ;;
+      *) [ -z "$doc" ] || usage; doc=$1; shift ;;
+    esac
+  done
+  [ -n "$doc" ] && [ -n "$rdir" ] && [ -n "$ledger" ] && [ -n "$manifest" ] || usage
+  [ -f "$doc" ] || { echo "visual-check.sh run-state: 설계 문서가 없다: $doc" >&2; exit 2; }
+  if ! why=$(locate_sidecar "$doc"); then
+    echo "visual-check.sh run-state: ${why}" >&2; exit 2
+  fi
+  locate_sidecar "$doc" >/dev/null
+  rid=$(basename "$rdir")
+  halt="$rdir/halt"
+  s2p=없음
+  if [ -f "$manifest" ] && command -v jq >/dev/null 2>&1; then
+    if [ "$(awk '
+          $0 == "## 실행 계획" { inb=1; next }
+          inb && /^## / { exit }
+          inb && !fence && /^```json/ { fence=1; next }
+          inb && fence && /^```/ { exit }
+          inb && fence { print }
+        ' "$manifest" \
+        | jq -r '[.steps[]? | select(type == "object" and .skill == "visual-publish")] | length' 2>/dev/null \
+        || true)" = 1 ]; then
+      s2p=있음
+    fi
+  fi
+  WORK=$(mktemp -d "${TMPDIR:-/tmp}/visual-check.XXXXXX")
+  trap 'rm -rf "$WORK"' EXIT
+  rows="$WORK/rows"
+  run_answer_rows "$ledger" "$rid" > "$rows"
+  ds=$(latest_record "$halt" '디자인-시스템-판정')
+  vv=$(latest_record "$halt" '시각-판정')
+  dsa=''; vva=''
+  [ -z "$ds" ] || dsa=$(person_answer "$rows" "$ds")
+  [ -z "$vv" ] || vva=$(person_answer "$rows" "$vv")
+  : > "$WORK/skip"
+  for f in "$halt"/S2P#*.md; do
+    [ -f "$f" ] || continue
+    halt_step_has_prefix "$f" '디자인-시스템-판정' || continue
+    { grep -oE '입력 없음=[A-Za-z0-9._#-]+\.md' "$f" || true; } | sed 's/^입력 없음=//' >> "$WORK/skip"
+  done
+  for f in "$halt"/S2P#*.md; do
+    [ -f "$f" ] || continue
+    skip=0
+    grep -qxF -- "${f##*/}" "$WORK/skip" && skip=1
+    [ "$skip" = 0 ] || continue
+    a=$(person_answer "$rows" "$f")
+    if halt_step_has_prefix "$f" '디자인-시스템-판정'; then
+      [ "$a" != '수정 요청' ] || n=$((n + 1))
+    elif halt_step_has_prefix "$f" '시각-판정'; then
+      [ "$a" != '디자인 시스템 다시 열기' ] || n=$((n + 1))
+    fi
+  done
+  [ -z "$ds" ] || ds=${ds##*/}
+  [ -z "$vv" ] || vv=${vv##*/}
+  echo "S2P ${s2p}"
+  echo "디자인-시스템-판정 기록 ${ds:-없음}"
+  echo "디자인-시스템-판정 사람 답 ${dsa:-없음}"
+  echo "시각-판정 기록 ${vv:-없음}"
+  echo "시각-판정 사람 답 ${vva:-없음}"
+  echo "수정 횟수 ${n}"
+  echo "확인 $(confirm_state "$BASE/docs/visual-system/system.md")"
 }
 
 cmd_reuse() {
@@ -854,9 +1313,13 @@ case "$sub" in
   scan) cmd_scan "$@" ;;
   size) cmd_size "$@" ;;
   approval) cmd_approval "$@" ;;
+  drift) cmd_drift "$@" ;;
   bundle) cmd_bundle "$@" ;;
   binding) cmd_binding "$@" ;;
   system) cmd_system "$@" ;;
+  confirm) cmd_confirm "$@" ;;
+  system-users) cmd_system_users "$@" ;;
+  run-state) cmd_run_state "$@" ;;
   reuse) cmd_reuse "$@" ;;
   *) usage ;;
 esac

@@ -229,16 +229,19 @@ t1=$(date +%s)
 printf '%s %s\n' "$rc" "$((t1 - t0))" > "$6.done"
 sleep 120
 LEOF
-CC_STUB_SLEEP=10 bash "$LAUNCH" "$WT" "$GATE" "$MANIFEST" A "$(HH)" "$WORK/launch-A.out" "$(rv_trig A)" "$(rv_p A)" &
+# The stub runs for 30 seconds. The dispatch act itself takes about 10 seconds
+# on a loaded CI runner, so a 10-second stub could not tell a dispatch that
+# returned early from one that waited for the stage to end.
+CC_STUB_SLEEP=30 bash "$LAUNCH" "$WT" "$GATE" "$MANIFEST" A "$(HH)" "$WORK/launch-A.out" "$(rv_trig A)" "$(rv_p A)" &
 LA=$!; KILL_LIST="$KILL_LIST $LA"
-if ! wait_file "$WORK/launch-A.out.done" 200; then
-  bad "(1) 파견 반환" "20초 안에 파견 act 가 돌아오지 않았다: $(cat "$WORK/launch-A.out" 2>/dev/null)"
+if ! wait_file "$WORK/launch-A.out.done" 300; then
+  bad "(1) 파견 반환" "30초 안에 파견 act 가 돌아오지 않았다: $(cat "$WORK/launch-A.out" 2>/dev/null)"
 fi
 a_rc=""; a_el=""
 read -r a_rc a_el < "$WORK/launch-A.out.done" 2>/dev/null || true
 check "(1) 파견 act 가 성공으로 반환한다" "${a_rc:-none}" "0"
-if [ -n "$a_el" ] && [ "$a_el" -lt 10 ]; then
-  ok "(1) 파견이 스테이지 종단 전에 반환한다 (${a_el}초 < 스텁 10초)"
+if [ -n "$a_el" ] && [ "$a_el" -lt 30 ]; then
+  ok "(1) 파견이 스테이지 종단 전에 반환한다 (${a_el}초 < 스텁 30초)"
 else
   bad "(1) 파견이 스테이지 종단 전에 반환한다" "경과 ${a_el:-없음}초 — 파견이 스테이지를 막고 있다"
 fi
@@ -297,7 +300,7 @@ check "(4) 대조군 — 혈통을 남긴 자식은 같은 적에 죽는다" "$(
 # re-read after the pid is seen gone, because the append can land between the
 # two reads of one sample.
 seen_pid=0; order_bad=""; n=0
-while [ "$n" -lt 400 ]; do
+while [ "$n" -lt 900 ]; do
   r=$(rows_of A)
   if [ -f "$RD/A.pid" ]; then
     seen_pid=1

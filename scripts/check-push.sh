@@ -32,7 +32,12 @@
 # ran, and a later run skips the sections of every record whose files and cut
 # are unchanged, then cuts and runs only the rest. `items` runs the goals,
 # the sections and check-cheap only for those records, and leaves every stamp
-# alone.
+# alone. A release commit on top of a recorded pass does not void it: when
+# the only files that differ are CHANGELOG.md, grown by an entry inserted on
+# top, and plugin.json, changed in its version line alone, the record's input
+# commit is an ancestor of HEAD and the base is the same, the pass is reused
+# and its reuse line ends in `릴리스 차이` (scripts/test-reuse.sh states the
+# rule in full).
 #
 # Usage:
 #   bash scripts/check-push.sh run         check in a clean clone, stamp on pass
@@ -60,11 +65,13 @@
 #                           (scripts/test-slots.sh): every step and job waits
 #                           for as many as its weight before it starts; a
 #                           positive whole number is that many, auto is
-#                           max(4, CPUs), and unset, empty or 0 (the default)
-#                           turns them off. The stamp's 자리대기= is the
+#                           max(4, CPUs), and 0 turns them off. Unset or
+#                           empty, an unattended run (CC_PIPELINE_RUN_ID set)
+#                           takes the default in scripts/test-slots.sh and any
+#                           other run is off. The stamp's 자리대기= is the
 #                           seconds waited
-#   CC_TEST_SLOTS_DIR       the slot store (default: cc-cmds-test-slots under
-#                           the common git directory)
+#   CC_TEST_SLOTS_DIR       the slot store (default: cc-cmds/test-slots under
+#                           ${XDG_STATE_HOME:-$HOME/.local/state})
 #   CC_CHECK_PUSH_MAKE      the make for lint, readme and check-cheap (default
 #                           make); the self-test swaps in doubles through it,
 #                           as it does through CC_TEST_TREE_GATE,
@@ -343,7 +350,9 @@ check_push_run() {
 
   # Each step of the serial bundle waits for as many host-wide test slots as
   # its weight and runs under a foreground job shell, which measures it and
-  # sends an interrupt on to make as TERM. The slots go back when it ends.
+  # sends an interrupt on to make as TERM. The slots go back when it ends. A
+  # step that holds slots, or started without one at the wait cap, passes
+  # CC_TEST_SLOT_HELD=1 on, so nothing under it asks for a slot again.
   # check-cheap is an item like a goal: a recorded pass whose inputs this tree
   # keeps is reused, and otherwise it runs in a checkout of its own, made
   # before it waits for its slots, and its pass is recorded.
@@ -368,7 +377,8 @@ check_push_run() {
         unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_COMMON_DIR
       fi
       if [ "$how" = exec ]; then exec "$make_bin" "$step"; fi
-      if [ "$how" = held ]; then CC_TEST_SLOT_HELD=1; export CC_TEST_SLOT_HELD; fi
+      CC_TEST_SLOT_HELD=1
+      export CC_TEST_SLOT_HELD
       ts_job_shell fg "$key" "$make_bin" "$step"
     )
     rc=$?
@@ -721,11 +731,32 @@ EOF
   check "F39 자리를 끄면 묶음 단계에 CC_TEST_SLOT_HELD 가 없다" "$(tr '\n' ' ' < "$T/held.log")" "lint:unset readme:unset check-cheap:unset "
   rm -f "$stamp"
   : > "$T/held.log"
+  # The run is unattended and CC_TEST_SLOTS is unset, so it follows the default
+  # constant of scripts/test-slots.sh: the expected outcome is derived from it.
+  v=$(CC_PIPELINE_RUN_ID=t && unset CC_TEST_SLOTS && ts_set_count 2>/dev/null && printf '%s' "$TS_N")
   out=$(cprun CC_PIPELINE_RUN_ID=t CC_TEST_SLOTS_DIR="$T/dflt-slots"); rc=$?
   check "F39 CC_TEST_SLOTS 가 없는 기본 실행은 통과하고 자리대기=0" "$rc $(check_push_field "$stamp" 자리대기)" "0 0"
-  hasnt "F39 기본 실행은 자리 잡음 줄이 없다" "$out" "자리 잡음"
-  check "F39 기본 실행은 묶음 단계에 CC_TEST_SLOT_HELD 가 없다" "$(tr '\n' ' ' < "$T/held.log")" "lint:unset readme:unset check-cheap:unset "
-  check "F39 기본 실행은 준 저장소를 만들지 않는다" "$([ -e "$T/dflt-slots" ] && echo 있음 || echo 없음)" "없음"
+  if [ "${v:-0}" -gt 0 ]; then
+    has "F39 무인 기본값이 켜졌으면 기본 실행도 자리를 잡는다" "$out" "자리 잡음 단계 lint"
+    check "F39 무인 기본값이 켜졌으면 묶음 단계가 CC_TEST_SLOT_HELD=1 을 받는다" "$(tr '\n' ' ' < "$T/held.log")" "lint:1 readme:1 check-cheap:1 "
+    check "F39 무인 기본값이 켜졌으면 준 저장소를 쓴다" "$([ -e "$T/dflt-slots" ] && echo 있음 || echo 없음)" "있음"
+  else
+    hasnt "F39 기본 실행은 자리 잡음 줄이 없다" "$out" "자리 잡음"
+    check "F39 기본 실행은 묶음 단계에 CC_TEST_SLOT_HELD 가 없다" "$(tr '\n' ' ' < "$T/held.log")" "lint:unset readme:unset check-cheap:unset "
+    check "F39 기본 실행은 준 저장소를 만들지 않는다" "$([ -e "$T/dflt-slots" ] && echo 있음 || echo 없음)" "없음"
+  fi
+  # A step started without a slot at the wait cap passes CC_TEST_SLOT_HELD=1
+  # on too: the only slot is held by a live process that is not this run.
+  rm -f "$stamp"
+  : > "$T/held.log"
+  rm -rf "$T/free-slots"
+  mkdir -p "$T/free-slots/slot-1"
+  printf 'pool %s %s\n' "$$" "$(ts_fp "$$")" > "$T/free-slots/slot-1/owner"
+  out=$(cprun CC_PIPELINE_RUN_ID=t CC_TEST_SLOTS=1 CC_TEST_SLOTS_DIR="$T/free-slots" CC_TEST_SLOTS_WAIT_MAX=0); rc=$?
+  check "F39 상한에 닿아 자리 없이 띄운 묶음 단계는 통과한다" "$rc" "0"
+  has "F39 자리 없이 띄운 묶음 단계는 상한 경고를 남긴다" "$out" "상한 0초에 닿았다, 자리 없이 띄운다 — 단계 lint"
+  check "F39 자리 없이 띄운 묶음 단계도 CC_TEST_SLOT_HELD=1 을 받는다" "$(tr '\n' ' ' < "$T/held.log")" "lint:1 readme:1 check-cheap:1 "
+  rm -rf "$T/free-slots"
   mv -f "$stamp_keep" "$stamp"
 
   # --- F19 head 모드는 합친 도장을 바꾸지 않는다 ------------------------------------
@@ -1091,6 +1122,37 @@ check-push: CHECK_PUSH_JOBS=1 의 실패 단계는 목록 전체를 이름 댄�
   check "F41 CHECK_PUSH_JOBS=1 로 절만 준 items → 2" "$rc|$(printf '%s' "$out" | grep -c '절은 한 test-gate 호출로 돌아 기록되지 않는다')" "2|1"
   out=$(cprun CC_PIPELINE_RUN_ID=t CHECK_PUSH_REUSE=0 CHECK_PUSH_JOBS=2 CHECK_PUSH_GOALS=g1); rc=$?
   check "F41 CHECK_PUSH_REUSE=0 은 기록이 있어도 재사용하지 않고 도장에 꺼짐" "$rc $(cur_reuse) $(cur_field 재사용절)" "0 꺼짐 꺼짐"
+  # A release commit after items: g1 calls git in its checkout, so items
+  # records it as a whole-tree record, and the release commit on top changes
+  # only the version line and the top of CHANGELOG.md; the last run reuses g1
+  # through the release relation. A release commit that also changes r.txt
+  # runs g1 again.
+  rel_commit() {  # <version> <CHANGELOG top block> [<file> <content>]
+    (
+      cd "$W" || exit 1
+      mkdir -p plugins/cc-cmds/.claude-plugin
+      printf '{\n  "name": "cc-cmds",\n  "version": "%s"\n}\n' "$1" > plugins/cc-cmds/.claude-plugin/plugin.json
+      printf '# Changelog\n\n%b## [0.1.0] - 2026-01-01\n- a\n' "$2" > CHANGELOG.md
+      [ -z "${3:-}" ] || printf '%b' "$4" > "$3"
+      sgit add -A && sgit commit -q -m "release $1"
+    ) > /dev/null 2>&1
+  }
+  rel_commit 0.1.0 ''
+  printf 'git rev-parse HEAD > /dev/null 2>&1\n' > "$T/run-g1"
+  rm -rf "$items_dir"
+  fh_line "$sm2"
+  out=$(cirun CC_PIPELINE_RUN_ID=t CHECK_PUSH_REUSE=1 CHECK_PUSH_JOBS=2 CHECK_PUSH_GOALS=g1); rc=$?
+  check "F41 릴리스 앞 items 는 git 을 부른 g1 을 트리 전체로 기록한다" \
+    "$rc $(cat "$items_dir"/make:g1/* 2>/dev/null | awk -F'\t' '$1 == "트리전체" { print $2; exit }')" "0 $(ve 예 '')"
+  rel_commit 0.1.1 '## [0.1.1] - 2026-01-02\n- b\n\n'
+  out=$(crr CC_PIPELINE_RUN_ID=t); rc=$?
+  check "F41 릴리스 커밋 뒤 마지막 run 은 g1 을 다시 쓰고 도장 재사용= 에 넣는다" "$rc $(cur_reuse)" "0 $(ve make:check-cheap,make:g1 없음)"
+  check "F41 릴리스 관계로 다시 쓴 항목만 재사용 줄 꼬리가 릴리스 차이" \
+    "$(printf '%s\n' "$out" | grep -c '^check-push: 재사용 make:g1 ← .* (.*, 릴리스 차이)$') $(printf '%s\n' "$out" | grep -c '릴리스 차이')" "$(ve '1 1' '0 0')"
+  rel_commit 0.1.2 '## [0.1.2] - 2026-01-03\n- c\n\n## [0.1.1] - 2026-01-02\n- b\n\n' r.txt 'r3\n'
+  out=$(crr CC_PIPELINE_RUN_ID=t); rc=$?
+  check "F41 릴리스 밖 파일도 바꾼 릴리스 커밋 뒤에는 g1 이 다시 돈다" "$rc $(cur_reuse)" "0 $(ve make:check-cheap 없음)"
+  rm -f "$T/run-g1"
   rm -f "$T/reads-cc" "$T/reads-g1"
   (cd "$W" && sgit checkout -q h) > /dev/null 2>&1
 
@@ -1108,8 +1170,8 @@ check-push: CHECK_PUSH_JOBS=1 의 실패 단계는 목록 전체를 이름 댄�
   rm -rf "$T"
   printf 'check-push self-test: %d passed, %d failed\n' "$passed" "$failed"
   # A floor on the count, so a refactor that silently skips cases cannot pass.
-  if [ "$passed" -lt 164 ]; then
-    printf 'check-push self-test: 통과 수 %d 가 하한 164 에 못 미칩니다\n' "$passed" >&2
+  if [ "$passed" -lt 171 ]; then
+    printf 'check-push self-test: 통과 수 %d 가 하한 171 에 못 미칩니다\n' "$passed" >&2
     return 1
   fi
   [ "$failed" = "0" ]

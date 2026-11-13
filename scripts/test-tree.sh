@@ -543,16 +543,17 @@ tt_slots_init() {
   ts_init "$priv"
 }
 
-# Runs "$@" in a slot of weight 1 named $1, unmeasured. Holding a slot, the
-# command runs in a subshell that passes CC_TEST_SLOT_HELD=1 on; otherwise it
-# runs as it did before slots.
+# Runs "$@" in a slot of weight 1 named $1, unmeasured. Holding a slot, or
+# started without one at the wait cap, the command runs in a subshell that
+# passes CC_TEST_SLOT_HELD=1 on; with slots off or nested it runs as it did
+# before slots.
 tt_slot_run() {
   local name="$1" got rc
   shift
   tt_slots_init
   ts_slot_wait "$name" ""
   got="$TS_GOT"
-  if [ "$TS_MODE" = held ]; then
+  if [ "$TS_MODE" = held ] || [ "$TS_MODE" = free ]; then
     (
       CC_TEST_SLOT_HELD=1
       export CC_TEST_SLOT_HELD
@@ -635,14 +636,23 @@ tt_item_checkout() {
   )
 }
 
+# The tail of a reuse line for how $1 the judge let the pass through: empty
+# for `같음`, `, 릴리스 차이` for the release relation.
+tt_reuse_how() {
+  case "$1" in 릴리스\ 차이) printf ', 릴리스 차이' ;; esac
+}
+
 # 0 when item key $1 may skip its run: prints the reuse line and adds the key
 # to TT_REUSED.
 tt_item_reuse() {
-  local key="$1" hit
+  local key="$1" hit h e how
   tt_reuse_on || return 1
   tt_reuse_list
   hit=$(tr_reuse_find "$TT_REUSE_GDIR" "$key" "$TT_TREE" "$TT_REUSE_COMMIT" "$TT_REUSE_BASE" "$(tt_doubles)" "$TT_REUSE_LIST") || return 1
-  printf '%s: 재사용 %s ← %s (%s)\n' "$TT_PREFIX" "$key" "${hit%%$'\t'*}" "${hit#*$'\t'}" >&2
+  IFS=$'\t' read -r h e how <<EOF
+$hit
+EOF
+  printf '%s: 재사용 %s ← %s (%s%s)\n' "$TT_PREFIX" "$key" "$h" "$e" "$(tt_reuse_how "$how")" >&2
   TT_REUSED="${TT_REUSED:+$TT_REUSED,}$key"
   return 0
 }
@@ -829,8 +839,9 @@ tt_pool_cut() {
 # its times into TT_RECORD; a goal runs as tt_make does and records nothing.
 # Call it right after ts_slot_take let the job start: with slots off or nested
 # the job execs as it always did; otherwise it runs under the job shell of
-# scripts/test-slots.sh, which measures its weight when it holds slots and
-# passes CC_TEST_SLOT_HELD=1 on to it.
+# scripts/test-slots.sh, which measures its weight when it holds slots, and
+# CC_TEST_SLOT_HELD=1 is passed on to it whether it holds slots or started
+# without one at the wait cap.
 tt_pool_start() {
   local i="$1" jd gate="${CC_TEST_TREE_GATE:-}" mk="${CC_TEST_TREE_MAKE:-make}" how="$TS_MODE" key
   key=$(ts_job_key "${TT_PJ_KEY[$i]}")
@@ -859,7 +870,8 @@ tt_pool_start() {
       TMPDIR="$jd/tmp" XDG_STATE_HOME="$jd/state" CC_GATE_TIMING_OUT="$jd/marks.tsv" CC_GATE_TIMING_RECORD="${TT_RECORD:-off}"
       export TMPDIR XDG_STATE_HOME CC_GATE_TIMING_OUT CC_GATE_TIMING_RECORD
       if [ "$how" = exec ]; then exec "${suite[@]}" --sections "${TT_PJ_ARG[$i]}"; fi
-      if [ "$how" = held ]; then CC_TEST_SLOT_HELD=1; export CC_TEST_SLOT_HELD; fi
+      CC_TEST_SLOT_HELD=1
+      export CC_TEST_SLOT_HELD
       ts_job_shell bg "$key" "${suite[@]}" --sections "${TT_PJ_ARG[$i]}"
       exit $?
     ) < /dev/null > "$jd/out" 2>&1 &
@@ -876,7 +888,8 @@ tt_pool_start() {
       CC_GATE_TIMING_RECORD=off
       export CC_GATE_TIMING_RECORD
       if [ "$how" = exec ]; then exec "$mk" --no-print-directory "${TT_PJ_ARG[$i]}"; fi
-      if [ "$how" = held ]; then CC_TEST_SLOT_HELD=1; export CC_TEST_SLOT_HELD; fi
+      CC_TEST_SLOT_HELD=1
+      export CC_TEST_SLOT_HELD
       ts_job_shell bg "$key" "$mk" --no-print-directory "${TT_PJ_ARG[$i]}"
       exit $?
     ) < /dev/null > "$jd/out" 2>&1 &
@@ -929,9 +942,9 @@ tt_pool_run() {
     picks=$(tr_lane_pick "$TT_REUSE_GDIR" "$secs" "$TT_TREE" "$TT_REUSE_COMMIT" "$TT_REUSE_BASE" \
       "$(tt_doubles)" "$TT_REUSE_LIST" tt_lane_digest)
     took=","
-    while IFS="$tab" read -r ids h e; do
+    while IFS="$tab" read -r ids h e how; do
       [ -n "$ids" ] || continue
-      printf '%s: 재사용 절 %s ← %s (%s)\n' "$TT_PREFIX" "$ids" "$h" "$e" >&2
+      printf '%s: 재사용 절 %s ← %s (%s%s)\n' "$TT_PREFIX" "$ids" "$h" "$e" "$(tt_reuse_how "$how")" >&2
       TT_REUSED_SECTIONS="${TT_REUSED_SECTIONS:+$TT_REUSED_SECTIONS,}$ids"
       took="$took$ids,"
     done <<EOF
@@ -2514,6 +2527,26 @@ EOF
   sp A o2 CC_TEST_SLOT_HELD=1 CC_TEST_SLOTS_DIR="$T/slots" &
   wait $!
   check "F38 자리 안에서 뜬 풀은 자리를 잡지 않는다" "$([ -e "$T/slots" ] && echo 있음 || echo 없음)|$(cat "$T/sp-A.out")" "없음|rc=0"
+  # An unattended run with CC_TEST_SLOTS unset follows the default constant of
+  # scripts/test-slots.sh, so the expected outcome is derived from it.
+  v=$(CC_PIPELINE_RUN_ID=f38 && unset CC_TEST_SLOTS && ts_set_count 2>/dev/null && printf '%s' "$TS_N")
+  if [ "${v:-0}" -gt 0 ]; then v="있음|rc=0|held=1"; else v="없음|rc=0|held=unset"; fi
+  : > "$T/slot.log"
+  rm -rf "$T/slots"
+  sp A u1 CC_PIPELINE_RUN_ID=f38 CC_TEST_SLOTS_DIR="$T/slots" &
+  wait $!
+  check "F38 CC_TEST_SLOTS 가 없는 무인 기본 실행은 무인 기본값을 따른다" "$([ -e "$T/slots" ] && echo 있음 || echo 없음)|$(cat "$T/sp-A.out")|$(grep '^S u1 ' "$T/slot.log" | cut -d' ' -f4)" "$v"
+  # A job started without a slot at the wait cap passes CC_TEST_SLOT_HELD=1 on
+  # too: the only slot is held by a live process that is not the pool.
+  : > "$T/slot.log"
+  rm -rf "$T/slots"
+  mkdir -p "$T/slots/slot-1"
+  printf 'pool %s %s\n' "$$" "$(ts_fp "$$")" > "$T/slots/slot-1/owner"
+  sp A f1 CC_TEST_SLOTS=1 CC_TEST_SLOTS_DIR="$T/slots" CC_TEST_SLOTS_WAIT_MAX=0 &
+  wait $!
+  check "F38 상한에 닿아 자리 없이 띄운 잡도 CC_TEST_SLOT_HELD=1 을 받는다" "$(cat "$T/sp-A.out")|$(grep '^S f1 ' "$T/slot.log" | cut -d' ' -f4)" "rc=0|held=1"
+  has "F38 자리 없이 띄운 잡은 상한 경고를 남긴다" "$(cat "$T/sp-A.err")" "상한 0초에 닿았다, 자리 없이 띄운다"
+  rm -rf "$T/slots"
 
   check "F38 무게 계산: CPU 25초 / 벽시계 10초 → 올림(2.25) = 3" "$(ts_weight_calc "0m20.000s 0m5.000s" 10)" "3"
   check "F38 무게 계산: CPU/벽시계 2.25 경계 → 2" "$(ts_weight_calc "0m22.500s 0m0.000s" 10)" "2"
@@ -2555,9 +2588,11 @@ EOF
     check "F40 다음 실행은 통과 기록으로 재사용한다" "$out|$(wc -l < "$T/rmake.log" | tr -d ' ')" "rc=0 reused=make:r1|0"
     has "F40 재사용 줄" "$(cat "$T/rp.err")" "test-tree: 재사용 make:r1 ← "
     hasnt "F40 재사용한 목표는 자리를 잡거나 끝 줄을 남기지 않는다" "$(cat "$T/rp.err")" "끝 — 목표 r1"
+    hasnt "F40 같은 트리로 다시 쓴 재사용 줄에는 릴리스 차이 꼬리가 없다" "$(cat "$T/rp.err")" "릴리스 차이"
   else
     check "F40 카나리아 정지 볼륨: 다음 실행도 돈다" "$out|$(wc -l < "$T/rmake.log" | tr -d ' ')" "rc=0 reused=|1"
     hasnt "F40 카나리아 정지 볼륨: 재사용 줄이 없다" "$(cat "$T/rp.err")" "재사용 make:r1"
+    hasnt "F40 카나리아 정지 볼륨: 릴리스 차이 꼬리도 없다" "$(cat "$T/rp.err")" "릴리스 차이"
     has "F40 카나리아 정지 볼륨: 기록하지 않는다는 줄" "$(cat "$T/rp.err")" "기록하지 않는다"
   fi
   rm -rf "$T/rg"
@@ -2678,10 +2713,12 @@ EOF
     check "F42 두 번째 실행은 절을 돌리지 않고 셋 모두 다시 쓴다" "$(lres B)" "rc=0|l1,l2,l3|0"
     has "F42 재사용 절 줄" "$(cat "$T/lr-B.err")" "test-tree: 재사용 절 l1 ← "
     has "F42 다시 쓴 절 수 요약" "$(cat "$T/lr-B.err")" "test-tree: 다시 쓴 절 3개 — 남은 절 없음"
+    hasnt "F42 같은 트리로 다시 쓴 재사용 절 줄에는 릴리스 차이 꼬리가 없다" "$(cat "$T/lr-B.err")" "릴리스 차이"
   else
     check "F42 카나리아 정지 볼륨: 두 번째 실행도 돈다" "$(lres B)" "rc=0||3"
     has "F42 카나리아 정지 볼륨: 기록하지 않는다는 줄" "$(cat "$T/lr-B.err")" "기록하지 않는다"
     hasnt "F42 카나리아 정지 볼륨: 다시 쓴 절이 없다" "$(cat "$T/lr-B.err")" "다시 쓴 절"
+    hasnt "F42 카나리아 정지 볼륨: 릴리스 차이 꼬리도 없다" "$(cat "$T/lr-B.err")" "릴리스 차이"
   fi
   check "F42 컷 다이제스트는 절 집합마다 한 번 계산한다" "$(grep -c '^dig:' "$T/lgate.log")" "3"
 
@@ -2793,8 +2830,8 @@ EOF
   rm -rf "$T"
   printf 'test-tree self-test: %d passed, %d failed\n' "$passed" "$failed"
   # A floor on the count, so a refactor that silently skips cases cannot pass.
-  if [ "$passed" -lt 198 ]; then
-    printf 'test-tree self-test: 통과 수 %d 가 하한 198 에 못 미칩니다\n' "$passed" >&2
+  if [ "$passed" -lt 203 ]; then
+    printf 'test-tree self-test: 통과 수 %d 가 하한 203 에 못 미칩니다\n' "$passed" >&2
     return 1
   fi
   [ "$failed" = "0" ]

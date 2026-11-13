@@ -368,6 +368,34 @@ if [ "$TR_PART" != 2 ]; then
 check "절단점 인덱스 커밋" "$(cutpoint_index 커밋)" "1"
 check "절단점 인덱스 머지" "$(cutpoint_index 머지)" "5"
 
+# 사전 인가 새 형식 행 — 도달 기기전역 은 표면 트리밖쓰기 에서만, 예약 값 `기기 정리` 는
+# 도달 기기전역 행에서만 받는다. 예약 값은 단일 argv 검사 전에 알아본다(공백이 든 두 낱말).
+pr_rc() { preauth_row_refusal "$1" >/dev/null 2>&1; printf '%s' "$?"; }
+check "기기전역·트리밖쓰기 행에 기기 정리 짝을 받는다" \
+  "$(pr_rc '형태=xcrun simctl | 표면=트리밖쓰기 | 도달=기기전역 | 짝 정리=기기 정리 | 사유=시험')" "0"
+check "기기전역 행은 트리밖쓰기 밖의 표면을 받지 않는다" \
+  "$(pr_rc '형태=xcrun simctl | 표면=외부상태변경 | 도달=기기전역 | 사유=시험')" "1"
+check "기기 정리 짝은 기기전역 밖의 도달에서 받지 않는다" \
+  "$(pr_rc '형태=bash scripts/p.sh | 표면=외부상태변경 | 도달=dev | 짝 정리=기기 정리 | 사유=시험')" "1"
+check "기기 정리 아닌 짝은 여전히 단일 argv 검사를 받는다" \
+  "$(pr_rc '형태=bash /opt/x/p.sh | 표면=외부상태변경 | 도달=dev | 짝 정리=rm -rf ~/x; true | 사유=시험')" "1"
+# 기기전역 칸은 예약 값의 정리 서수만 싣는다 — 깨끗한 일반 argv 짝도 받으면 행위만 열리고
+# 정리는 끝내 돌지 않으므로, 행 검사가 그 행을 거절한다.
+check "기기전역 행은 기기 정리 아닌 일반 짝 정리를 받지 않는다" \
+  "$(pr_rc '형태=brew services start postgresql | 표면=트리밖쓰기 | 도달=기기전역 | 짝 정리=brew services stop postgresql | 사유=시험')" "1"
+case "$(preauth_row_refusal '형태=brew services start postgresql | 표면=트리밖쓰기 | 도달=기기전역 | 짝 정리=brew services stop postgresql | 사유=시험' 2>&1)" in
+  *'예약 값 기기 정리 만 받습니다'*) pr_why=예약값 ;;
+  *) pr_why=다른사유 ;;
+esac
+check "기기전역 행의 일반 짝 정리 거절 사유는 예약 값만 받는다는 것" "$pr_why" "예약값"
+check "같은 깨끗한 일반 짝 정리는 도달=dev 행에서 받는다" \
+  "$(pr_rc '형태=bash /opt/x/start.sh | 표면=외부상태변경 | 도달=dev | 짝 정리=bash /opt/x/stop.sh | 사유=시험')" "0"
+# 드라이버는 구현 파견 직전에 게이트의 결정 수거를 부르고, 실패나 보류면 그 세그먼트를
+# 게이트 park 로 막는다.
+if grep -qF 'run_gate_call gate_decision_collect_holds "$DOC"' "$DRIVER"; then
+  ok "드라이버가 구현 파견 전에 결정 수거를 게이트에 묻는다"
+else bad "드라이버가 구현 파견 전에 결정 수거를 게이트에 묻는다" "호출 줄이 없다"; fi
+
 # 미인식 토큰은 조용한 0이 아니라 실패다. 0을 돌려주면 authorized()가 그것을
 # 「인가 없음」으로 읽어 조용히 전부 거부하고, 오타 하나가 밤 전체의 산출을
 # 착지시키지 못한 채 아무 원인도 보고하지 않는다.
@@ -467,6 +495,85 @@ printf '%s\n' "$DP_READ" '{"type":"result","num_turns":3,"permission_denials":[{
   > "$RUN_DIR/log/Sden.json"
 if decision_point_reached Sden; then ok "결정 지점 탐지기는 질문 도구의 권한 거부에서 참"; else bad "결정 지점 탐지기" "질문 도구 권한 거부를 보지 않았다"; fi
 check "종단: 질문 도구 권한 거부는 산출물 없는 정지" "$(classify_termination Sden 0 1)" "산출물 없는 정지"
+
+# 중단 기록의 모양. 옵션 줄 규칙은 run.sh 한 곳에 있고, 형식 술어는 닫힌 결함
+# 낱말 여섯만 낸다. 형식이 어긋난 기록은 정지가 아니라 공허한 성공이고, 옮겨
+# 둔 `.malformed` 가 있으면 다시 분류해도 같은 답이 나온다.
+HF="$WORK/hf"; mkdir -p "$HF"
+hf_rec() {  # hf_rec <이름> <줄>... — 머리줄과 닫는 펜스 사이에 줄을 둔 기록
+  local n="$1"; shift
+  { printf '%s\n' '<!-- cc-pipeline-halt v1; writer=implement-unattended; reader=orchestrator; stage=X; run=R -->'
+    printf '%s\n' "$@"
+    printf '%s\n' '<!-- /cc-pipeline-halt v1 -->'; } > "$HF/$n.md"
+}
+hf_def() { halt_record_wellformed "$HF/$1.md" | awk 'NF { printf "%s%s", (n++ ? "," : ""), $0 }'; }
+hf_rec ok '**스텝**: Step 1 — 픽스처' '**선택지**:' '- `계속` — 이어서 한다' '- `중단`'
+check "옵션 줄은 선택지 블록의 두 꼴만 센다" \
+  "$(halt_option_lines < "$HF/ok.md" | awk 'END { print NR }')" "2"
+hf_rec quoted '**스텝**: Step 3 — 픽스처' '**질문 문면**: 다음 줄을 보라' '- `인용` — 블록 밖' '**선택지**:' '- `계속`' '**추천**: `계속`' '- `추천 뒤` — 블록 밖'
+check "블록 밖의 옵션 모양 줄은 옵션이 아니다" "$(halt_option_lines < "$HF/quoted.md")" '- `계속`'
+check "올바른 기록에는 결함이 없다" "$(hf_def ok)" ""
+hf_rec none '**스텝**: Step 1 외부 선행 미충족 — 픽스처' '**선택지**: (없음) — 원인이 풀리면 다시 띄운다' '- `옵션 모양` — 없음 아래'
+check "(없음) 꼴과 그 아래 옵션 모양 줄은 결함이 아니다" "$(hf_def none)$(halt_option_lines < "$HF/none.md")" ""
+hf_rec inline '**스텝**: Step 1 — 픽스처' '**선택지**: 계속, 중단'
+check "선택지를 콜론 뒤에 적으면 선택지 줄 밖" "$(hf_def inline)" "선택지 줄 밖"
+printf '%s\n' '**스텝**: Step 1' '<!-- /cc-pipeline-halt v1 -->' > "$HF/nohead.md"
+check "머리줄이 없으면 머리줄 없음" "$(hf_def nohead)" "머리줄 없음"
+printf '%s\n' '<!-- cc-pipeline-halt v1; writer=x -->' '**스텝**: Step 1' > "$HF/nofence.md"
+check "닫는 펜스가 없으면 닫는 펜스 없음" "$(hf_def nofence)" "닫는 펜스 없음"
+hf_rec twofence '**스텝**: Step 1' '<!-- /cc-pipeline-halt v1 -->'
+check "닫는 펜스가 두 번이면 닫는 펜스 중복" "$(hf_def twofence)" "닫는 펜스 중복"
+hf_rec nostep '**분류**: gate-unanswerable' '**선택지**:' '- `계속`'
+check "스텝 줄이 없으면 스텝 없음" "$(hf_def nostep)" "스텝 없음"
+hf_rec conf '**스텝**: Step 1 외부 선행 미충족 — 픽스처' '**선택지**: (없음) — x' \
+  '**해소 확인 명령**: `gh pr view 259 --repo Nharu/cc-cmds --json state --jq .state`' '**해소 기대 출력**: `MERGED`'
+check "문법에 맞는 해소 확인 두 줄은 결함이 아니다" "$(hf_def conf)" ""
+hf_rec conf1 '**스텝**: Step 1' '**선택지**: (없음) — x' '**해소 확인 명령**: `git status`'
+check "해소 확인 한 줄만 있으면 해소 확인 문법" "$(hf_def conf1)" "해소 확인 문법"
+hf_rec confpipe '**스텝**: Step 1' '**선택지**: (없음) — x' '**해소 확인 명령**: `git log | head`' '**해소 기대 출력**: `x`'
+check "확인 명령의 금지 문자는 해소 확인 문법" "$(hf_def confpipe)" "해소 확인 문법"
+hf_rec confsp '**스텝**: Step 1' '**선택지**: (없음) — x' '**해소 확인 명령**: `git  status`' '**해소 기대 출력**: `x`'
+check "확인 명령의 연속 공백은 해소 확인 문법" "$(hf_def confsp)" "해소 확인 문법"
+if halt_record_wellformed "$HF/missing.md" >/dev/null; then bad "없는 기록" "없는 파일을 올바르다고 읽음"; else ok "없는 기록 파일은 형식 술어를 통과하지 못한다"; fi
+
+# 분류: 시도 번호가 붙은 경로의 결함 있는 기록은 의도된 park 보다 앞서 공허한
+# 성공이다. 옛 경로(시도 표지 없음)의 기록은 판정하지 않는다.
+printf '1\n' > "$RUN_DIR/Smf.attempt"
+cp "$HF/inline.md" "$RUN_DIR/halt/Smf#1.md"
+check "종단: 형식이 어긋난 기록은 공허한 성공" "$(classify_termination Smf 0 1)" "공허한 성공"
+check "형식 결함 단서는 고정 문구다" "$(halt_record_format_clue Smf)" "중단 기록 형식 결함"
+check "분류기는 기록을 옮기지 않는다" "$( [ -f "$RUN_DIR/halt/Smf#1.md" ] && printf 그대로)" "그대로"
+check "옮기기는 .malformed 경로를 낸다" "$(halt_record_settle_malformed Smf)" "$RUN_DIR/halt/Smf#1.md.malformed"
+check "옮긴 뒤에도 같은 분류가 나온다(동치 규칙)" "$(classify_termination Smf 0 1)" "공허한 성공"
+check "옮기기는 멱등이다" "$(halt_record_settle_malformed Smf)" "$RUN_DIR/halt/Smf#1.md.malformed"
+cp "$HF/inline.md" "$RUN_DIR/halt/Smf#1.md"
+check "이름이 차 있으면 -2 를 붙이고 덮어쓰지 않는다" "$(halt_record_settle_malformed Smf)" "$RUN_DIR/halt/Smf#1.md.malformed-2"
+check "옮긴 마지막 파일을 읽는다" "$(halt_record_malformed_of "$RUN_DIR/halt/Smf#1.md")" "$RUN_DIR/halt/Smf#1.md.malformed-2"
+case "$(halt_record_format_message "$RUN_DIR/halt/Smf#1.md.malformed-2")" in
+  *'결함: 선택지 줄 밖'*"$RUN_DIR/halt/Smf#1.md.malformed-2"*'printenv CC_PIPELINE_STAGE_ID'*) ok "이어가기 문구는 결함·옮긴 경로·경로 다시 읽기를 싣는다" ;;
+  *) bad "이어가기 문구" "결함·옮긴 경로·경로 다시 읽기 중 빠진 것이 있다" ;;
+esac
+cp "$HF/ok.md" "$RUN_DIR/halt/Smf#1.md"
+check "올바른 기록은 다시 의도된 park" "$(classify_termination Smf 0 1)" "의도된 park"
+cp "$HF/inline.md" "$RUN_DIR/halt/Sleg.md"
+if halt_record_format_clue Sleg >/dev/null; then bad "옛 경로" "시도 표지 없는 기록을 판정했다"; else ok "시도 표지 없는 옛 경로의 기록은 형식 판정을 하지 않는다"; fi
+check "형식 결함은 rc 0 에서만 공허한 성공으로 바꾼다" "$(printf '1\n' > "$RUN_DIR/Smr.attempt"; cp "$HF/inline.md" "$RUN_DIR/halt/Smr#1.md"; classify_termination Smr 1 1)" "의도된 park"
+
+# 실패 서명: 두 원인이 모두 형식 결함 단서이면 진척을 빼고 비교한다.
+FMTH=$(printf '%s\n' '중단 기록 형식 결함' | sig_sha12)
+check "형식 결함 서명은 진척이 달라도 같은 실패" \
+  "$(same_failure_reason "implement/공허한 성공/$FMTH/a1" "implement/공허한 성공/$FMTH/b2" && printf 1 || printf 0)" "1"
+check "다른 원인은 지금처럼 넷을 비교" \
+  "$(same_failure_reason "implement/공허한 성공/abc/a1" "implement/공허한 성공/abc/b2" && printf 1 || printf 0)" "0"
+check "형식 결함과 다른 원인은 같은 실패가 아니다" \
+  "$(same_failure_reason "implement/공허한 성공/$FMTH/a1" "implement/공허한 성공/abc/a1" && printf 1 || printf 0)" "0"
+
+# 외부 대기 정지: precondition-failed 이고 스텝이 `Step 1 외부 선행 미충족` 으로 시작할 때만.
+hf_rec ext '**분류**: precondition-failed' '**스텝**: Step 1 외부 선행 미충족 — PR 259 머지 대기' '**선택지**: (없음) — x'
+hf_rec extg '**분류**: gate-unanswerable' '**스텝**: Step 1 외부 선행 미충족 — x' '**선택지**: (없음) — x'
+hf_rec pre '**분류**: precondition-failed' '**스텝**: Step 1 — 설계 문서 없음' '**선택지**: (없음) — x'
+check "외부 선행 미충족만 외부 대기다" \
+  "$(halt_step_is_external_wait "$HF/ext.md" && printf 1 || printf 0)$(halt_step_is_external_wait "$HF/extg.md" && printf 1 || printf 0)$(halt_step_is_external_wait "$HF/pre.md" && printf 1 || printf 0)" "100"
 
 # 한도 종료 판정. 스테이지가 사용량 한도로 스스로 끝났는지는 그 시도 자신의
 # 스트림에서 타입이 있는 필드로만 읽는다. 최소 한도 스트림은 init · allowed
@@ -4469,9 +4576,19 @@ check "파견 팔의 stage-result 행마다 바로 다음 문장이 흡수 호�
 # 드라이버의 stage-result 행 전부(S9 셸 적용 넷, 계속 시도 하나, 베이스 분할 하나, 시각 단계 하나, 재수렴 하나, 리드 수정 하나를 포함해 열넷)가 압축
 # 창·레인·기록자 셋을 싣는다. 게이트 쪽 필드표 린트는 gate.sh 만 읽으므로, 드라이버 열의 방어는
 # 이 정적 계수뿐이다 — 한 자리에서 빠지면 그 행은 필드 없는 「실험 이전 행」으로 읽힌다.
+# 시각 단계 자리는 조각을 visual_row_pieces 로 VISUAL_ROW_PIECES 배열에 모은 뒤 그 배열로
+# 행을 쓰므로, 그 자리는 바로 앞 visual_row_pieces 문장이 싣는 조각으로 판정한다. 앞에 그
+# 문장이 없으면 빠진 것으로 센다.
 WIN_SITES=$(awk -v needle="ledger_row 'stage-result'" '
-  index($0, needle) { n++; buf = $0; cont = ($0 ~ /\\$/); if (!cont) { print (index(buf, "압축 창=") && index(buf, "레인=") && index(buf, "기록자=드라이버") ? "OK" : "MISS " NR); buf = "" }; next }
-  cont { buf = buf " " $0; cont = ($0 ~ /\\$/); if (!cont) { print (index(buf, "압축 창=") && index(buf, "레인=") && index(buf, "기록자=드라이버") ? "OK" : "MISS " NR); buf = "" } }
+  function judge(s, ln) { print (index(s, "압축 창=") && index(s, "레인=") && index(s, "기록자=드라이버") ? "OK" : "MISS " ln) }
+  function close_stmt() {
+    if (kind == "row") { n++; if (index(buf, "VISUAL_ROW_PIECES")) { judge(vbuf, start); vbuf = "" } else judge(buf, start) }
+    else vbuf = buf
+    kind = ""; buf = ""
+  }
+  index($0, needle) { kind = "row"; start = NR; buf = $0; if ($0 !~ /\\$/) close_stmt(); next }
+  $0 ~ /^[[:space:]]*visual_row_pieces[[:space:]]/ { kind = "pieces"; buf = $0; if ($0 !~ /\\$/) close_stmt(); next }
+  kind != "" { buf = buf " " $0; if ($0 !~ /\\$/) close_stmt() }
   END { print "N " n+0 }
 ' "$DRIVER")
 check "드라이버의 stage-result 호출부가 열넷이다 (아래 단언이 공허하지 않다)" \
@@ -7181,6 +7298,215 @@ if [ -f "$FEED_SH" ]; then
   feed_second_clean "런 종료"
   rm -f "$FEED_RD/done"
   rm -rf "$FEED_RD"
+fi
+
+# ---------------------------------------------------------------------------
+# 29b. The progress channel and the poller on a quiet run.
+#
+# 감시자가 런을 조용하다고 적어 두는 동안(`watch.mode` 의 `quiet <epoch>`, 그 epoch 이
+# 간격 세 번 안) 진행 채널은 마지막 읽기보다 오래된 원장을 건너뛰고 감시자 침묵 판정도
+# 건너뛰며, 폴러는 PR 을 묻지 않는다. 둘 다 `CC_QUIET_PASS_EVERY` 주기마다는 건너뛰지
+# 않는다. 진짜 루프를 `--interval 1` 로 띄우고 주기마다 무엇이 돌았는지를 PATH 스텁으로
+# 센다 — 채널의 원장 읽기는 `awk` 한 번(`A`), 침묵 판정은 감시자 하트비트의 `date -r`
+# (`M`), 폴러의 폴링은 `gh` 호출(`G`), 주기의 끝은 `sleep`(`S`). 이 줄들은 루프의 자식이
+# 차례로 쓰므로 `S` 하나 앞에 무엇이 있었는지가 그 주기를 말한다. 글자는 주기마다
+# 하나다: 읽기와 판정 둘 다 `X`, 읽기(폴러는 폴링)만 `R`, 판정만 `C`, 둘 다 아님 `-`.
+#
+# `watch.mode` 는 시험이 대신 쓰며, 그 epoch 을 반 초마다 새로 적어 간격 세 번의 신선도
+# 안에 둔다. 낡은 epoch 과 없는 파일은 일하는 런이다 — 감시자가 죽거나 멎었을 때
+# 동반 프로세스가 느린 주기에 남지 않게 하는 쪽이다.
+# ---------------------------------------------------------------------------
+if [ -f "$FEED_SH" ] && [ -f "$CHECKS_SH" ] && command -v git >/dev/null 2>&1; then
+  QR_RD=$(mktemp -d "${TMPDIR:-/tmp}/cc-quiet-run.XXXXXX")
+  QR_FBIN="$QR_RD/fbin"; QR_CBIN="$QR_RD/cbin"; mkdir -p "$QR_FBIN" "$QR_CBIN"
+  QR_LOG="$QR_RD/cycles.log"
+  qr_awk=$(command -v awk); qr_sleep=$(command -v sleep); qr_date=$(command -v date)
+  # The ledger read's `awk` also appends the rows waiting in `QR_INJECT` once it
+  # has counted — a row that lands after the count, in the same pass.
+  cat > "$QR_FBIN/awk" <<STUB
+#!/usr/bin/env bash
+printf 'A\n' >> "\$QR_LOG"
+"$qr_awk" "\$@"; qr_rc=\$?
+if [ -n "\${QR_INJECT:-}" ] && [ -f "\$QR_INJECT" ]; then
+  cat "\$QR_INJECT" >> "\$QR_LEDGER"; rm -f "\$QR_INJECT"
+fi
+exit \$qr_rc
+STUB
+  cat > "$QR_FBIN/date" <<STUB
+#!/usr/bin/env bash
+case " \$* " in *" -r "*) printf 'M\n' >> "\$QR_LOG" ;; esac
+exec "$qr_date" "\$@"
+STUB
+  for qr_b in "$QR_FBIN" "$QR_CBIN"; do
+    cat > "$qr_b/sleep" <<STUB
+#!/usr/bin/env bash
+printf 'S\n' >> "\$QR_LOG"
+exec "$qr_sleep" "\$@"
+STUB
+  done
+  cat > "$QR_CBIN/gh" <<'STUB'
+#!/usr/bin/env bash
+printf 'G\n' >> "$QR_LOG"
+[ "$1" = "-R" ] || exit 2
+shift 2
+[ "$1" = "pr" ] || exit 2
+case "$2" in list) printf '[]\n'; exit 0 ;; esac
+exit 2
+STUB
+  chmod +x "$QR_FBIN"/* "$QR_CBIN"/*
+
+  QR_WT="$QR_RD/wt"; mkdir -p "$QR_WT"
+  ( cd "$QR_WT" \
+    && git init -q . >/dev/null 2>&1 \
+    && git config user.email 't@example.invalid' \
+    && git config user.name 'quiet test' \
+    && git config remote.origin.url 'https://github.com/Nharu/cc-cmds.git' \
+    && git commit -q --allow-empty -m 'x' \
+    && git checkout -q -b 'seg/qr' ) >/dev/null 2>&1
+  QR_MF="$QR_RD/manifest.md"
+  printf -- '- `target` | 별칭=home | 홈=예 | 원격 슬러그=Nharu/cc-cmds | 베이스 브랜치=master\n' > "$QR_MF"
+
+  qr_n=0
+  qr_fresh() {  # qr_fresh <mode: quiet|work|stale|none> — a new run directory and ledger
+    qr_n=$((qr_n + 1))
+    QR_D="$QR_RD/run$qr_n"; mkdir -p "$QR_D"
+    QR_LG="$QR_D/ledger.md"
+    printf -- '- `run` | 교대=0 | run-id=qr | prev=aaaa\n' > "$QR_LG"
+    printf -- '- `segment` | 교대=0 | id=S1 | 상태=실행중 | 워크트리=%s | prev=bbbb\n' "$QR_WT" >> "$QR_LG"
+    # Older than any mark a pass leaves, so the only reason to read it again is a
+    # forced cycle or a row written by the case.
+    touch -t 202001010000 "$QR_LG"
+    : > "$QR_D/watch.heartbeat"
+    : > "$QR_LOG"
+    QR_MODE="$1"
+  }
+  qr_mode_loop() {  # keeps watch.mode at the case's mode, every half second
+    while :; do
+      case "$QR_MODE" in
+        quiet) printf 'quiet %s\n' "$("$qr_date" -u +%s)" > "$QR_D/watch.mode" ;;
+        work)  printf 'work %s\n' "$("$qr_date" -u +%s)" > "$QR_D/watch.mode" ;;
+        stale) printf 'quiet %s\n' "$(( $("$qr_date" -u +%s) - 600 ))" > "$QR_D/watch.mode" ;;
+        none)  rm -f "$QR_D/watch.mode" ;;
+      esac
+      : > "$QR_D/watch.heartbeat"
+      "$qr_sleep" 0.5
+    done
+  }
+  qr_start() {  # qr_start feed|checks — the real loop, pid in QR_PID, mode keeper in QR_KEEP
+    qr_mode_loop & QR_KEEP=$!
+    "$qr_sleep" 0.2
+    if [ "$1" = feed ]; then
+      QR_LOG="$QR_LOG" QR_LEDGER="$QR_LG" QR_INJECT="$QR_D/inject" PATH="$QR_FBIN:$PATH" \
+        bash "$FEED_SH" --run-dir "$QR_D" --ledger "$QR_LG" --interval 1 \
+        > "$QR_D/out" 2> "$QR_D/err" &
+    else
+      QR_LOG="$QR_LOG" PATH="$QR_CBIN:$PATH" \
+        bash "$CHECKS_SH" --run-dir "$QR_D" --ledger "$QR_LG" --manifest "$QR_MF" --interval 1 \
+        > "$QR_D/out" 2> "$QR_D/err" &
+    fi
+    QR_PID=$!
+  }
+  # KILL, not TERM: the poller's TERM trap releases its pid record and returns
+  # to the loop, so a TERM leaves it running and the `wait` below never ends.
+  qr_stop() {
+    kill -KILL "$QR_PID" 2>/dev/null; wait "$QR_PID" 2>/dev/null
+    kill "$QR_KEEP" 2>/dev/null; wait "$QR_KEEP" 2>/dev/null
+    return 0
+  }
+  qr_done() { { grep -c '^S$' "$QR_LOG" 2>/dev/null || true; } | tr -d ' '; }
+  qr_wait() {  # qr_wait <cycles> — until that many have ended, at most 60 seconds
+    local i=0
+    while [ "$i" -lt 600 ]; do
+      [ "$(qr_done)" -ge "$1" ] && return 0
+      "$qr_sleep" 0.1; i=$((i + 1))
+    done
+    return 0
+  }
+  qr_seq() {
+    "$qr_awk" '$1 == "A" || $1 == "G" { a = 1 } $1 == "M" { m = 1 }
+      $1 == "S" { printf "%s", (a && m ? "X" : (a ? "R" : (m ? "C" : "-"))); a = 0; m = 0 }' "$QR_LOG"
+  }
+  qr_first_read_from() {  # qr_first_read_from <cycle> — index of the first reading cycle at or after it
+    qr_seq | "$qr_awk" -v c="$1" '{ for (i = c + 1; i <= length($0); i++) { ch = substr($0, i, 1); if (ch == "R" || ch == "X") { print i - 1; exit } } print "없음" }'
+  }
+
+  # --- the progress channel ------------------------------------------------
+  qr_fresh quiet
+  qr_start feed
+  qr_wait 9
+  qr_stop
+  check "진행 채널: 조용한 런은 4주기마다만 원장을 읽고 감시자 침묵을 판정한다" "$(qr_seq | cut -c1-9)" "X---X---X"
+  check "진행 채널: 그 동안 감시자 침묵 줄을 내지 않는다" \
+    "$( { grep -c '감시자 침묵' "$QR_D/out" || true; } | tr -d ' ')" "0"
+
+  for qr_m in work stale none; do
+    qr_fresh "$qr_m"
+    qr_start feed
+    qr_wait 5
+    qr_stop
+    # The forced read every `CC_QUIET_PASS_EVERY` cycles does not depend on the
+    # mode, so a working run also reads an unchanged ledger on cycle 4.
+    check "진행 채널: watch.mode 가 ${qr_m} 이면 지금처럼 주기마다 침묵을 판정하고, 바뀌지 않은 원장은 4주기마다만 읽는다" \
+      "$(qr_seq | cut -c1-5)" "XCCCX"
+  done
+
+  # A row written the next second after a read is read on the next cycle, not on
+  # the forced one; a row that lands after the count in the same pass — the same
+  # second as the mark — is read on the cycle after that pass, and once.
+  qr_fresh quiet
+  qr_start feed
+  qr_wait 1
+  "$qr_sleep" 1.2
+  qr_c0=$(qr_done)
+  printf -- '- `segment` | 교대=0 | id=S3 | 상태=실행중 | prev=cccc\n' >> "$QR_LG"
+  qr_wait $((qr_c0 + 2))
+  qr_j=$(qr_first_read_from "$qr_c0")
+  if [ "$qr_j" = "$qr_c0" ] || [ "$qr_j" = "$((qr_c0 + 1))" ]; then
+    ok "진행 채널: 마지막 읽기 다음 초에 붙은 행은 다음 주기에 읽힌다 (주기 $qr_j, $(qr_seq))"
+  else
+    bad "진행 채널의 조용한 주기" "다음 초에 붙은 행을 주기 $qr_j 에 읽었다 — 붙인 뒤 첫 주기는 $qr_c0 ($(qr_seq))"
+  fi
+  printf -- '- `segment` | 교대=0 | id=S2 | 상태=실행중 | prev=dddd\n' > "$QR_D/inject"
+  qr_wait 7
+  qr_stop
+  check "진행 채널: 읽은 패스 안에서 센 뒤에 붙은 행은 바로 다음 주기에 읽힌다 (강제 읽기 4주기 다음)" \
+    "$(qr_seq | cut -c5-6)" "XR"
+  check "진행 채널: 그 행은 한 번만 방송된다" \
+    "$( { grep -c '세그먼트 S2 없음 → 실행중' "$QR_D/out" || true; } | tr -d ' ')" "1"
+  check "진행 채널: 다음 초의 행도 한 번만 방송된다" \
+    "$( { grep -c '세그먼트 S3 없음 → 실행중' "$QR_D/out" || true; } | tr -d ' ')" "1"
+
+  # --- the poller ----------------------------------------------------------
+  qr_fresh quiet
+  qr_start checks
+  qr_wait 9
+  qr_stop
+  check "폴러: 조용한 런은 4주기마다만 PR 을 묻는다" "$(qr_seq | cut -c1-9)" "R---R---R"
+
+  for qr_m in work stale; do
+    qr_fresh "$qr_m"
+    qr_start checks
+    qr_wait 4
+    qr_stop
+    check "폴러: watch.mode 가 ${qr_m} 이면 주기마다 PR 을 묻는다" "$(qr_seq | cut -c1-4)" "RRRR"
+  done
+
+  qr_fresh quiet
+  qr_start checks
+  qr_wait 1
+  "$qr_sleep" 1.2
+  qr_c0=$(qr_done)
+  printf -- '- `segment` | 교대=0 | id=S1 | 상태=실행중 | 워크트리=%s | prev=eeee\n' "$QR_WT" >> "$QR_LG"
+  qr_wait $((qr_c0 + 2))
+  qr_stop
+  qr_j=$(qr_first_read_from "$qr_c0")
+  if [ "$qr_j" = "$qr_c0" ] || [ "$qr_j" = "$((qr_c0 + 1))" ]; then
+    ok "폴러: 마지막 폴링보다 새 원장은 곧바로 폴링한다 (주기 $qr_j, $(qr_seq))"
+  else
+    bad "폴러의 조용한 주기" "새 원장을 주기 $qr_j 에 폴링했다 — 원장을 쓴 뒤 첫 주기는 $qr_c0 ($(qr_seq))"
+  fi
+  unset -f qr_fresh qr_mode_loop qr_start qr_stop qr_done qr_wait qr_seq qr_first_read_from
+  rm -rf "$QR_RD"
 fi
 
 # ---------------------------------------------------------------------------

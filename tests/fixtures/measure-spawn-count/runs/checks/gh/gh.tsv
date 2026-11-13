@@ -1,0 +1,6 @@
+-R fx/repo pr list --head seg/S1 --json number,headRefOid	0	list-S1.json
+-R fx/repo pr checks 11	0	checks-11.txt
+-R fx/repo pr checks 11 --required	0	checks-11.txt
+-R fx/repo pr list --head seg/S2 --json number,headRefOid	0	list-S2.json
+-R fx/repo pr checks 12	8	checks-12.txt
+-R fx/repo pr checks 12 --required	0	-
