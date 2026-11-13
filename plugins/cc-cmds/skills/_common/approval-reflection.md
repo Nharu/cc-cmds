@@ -69,8 +69,10 @@ section the line names. Never touch `## 팀이 정한 요구 결정`, `## 시각
 ## 실패로 보는 경우
 
 Every one of these is judged on the working copy, before anything is published.
-A failed reflection changes no byte of the document, so the next attempt starts
-from the same `사전 sha256`.
+A failed reflection changes no byte of the document. The next attempt still does
+not start from the stop record's `사전 sha256`: before a person answers, a
+screen-less slice's implementation stage may write the same document, so a
+carried answer measures its baselines again (`## 운반 답 재진입`, step 2).
 
 1. **S1–S4 unmet** — the adoption criteria of `design-reconverge` Step 3.
 2. **A collision with another binding decision** — the screen wording would make
@@ -109,6 +111,17 @@ an answer, so the only answer that ends the stop is to take the line out. A line
 the attachment does not name is reflected as before; a line it names with
 `화면대로 고침` that still fails stops again in the same form.
 
+**The attachment's form.** The answer carries the decisions the way a
+`구속 티어 이탈` stop's answer does, as `첨부=<기록>.answer.md` — the answered
+record's path with `.md` replaced by `.answer.md`. The file holds the block's
+lines, each copied verbatim on a line of its own, and under each one
+`문서대로 둠` or `화면대로 고침`. The gate does not require the attachment: an
+answer with none, or one that leaves a line out, is let in all the same. A line
+the attachment does not name reads `화면대로 고침`, and when that line fails
+again the reflection stops in the same form — a line of the approved list is
+never dropped silently. The attachment is read at step 4 of
+`## 운반 답 재진입`.
+
 ## 쓰기 순서
 
 1. **Working copy.** Every edit rides one working copy of the document.
@@ -140,9 +153,10 @@ the attachment does not name is reflected as before; a line it names with
 
 **A cut after the publish is not a failure.** When the session ends after the
 document was published and before the sidecar was written, or the sidecar write
-fails, the session that comes back — a re-attached one or one started on a
-re-entry card — compares the reflection record's `사후 sha256` with the document
-now. Equal → write only step 3 to the sidecar. Different → it is not this
+fails, every session that comes back on this scope — a re-attached one, one
+started on a re-entry card, a new session the gate let in again under its entry
+predicate's condition 4, and one carrying an answer — compares the reflection
+record's `사후 sha256` with the document now before it reflects anything. Equal → write only step 3 to the sidecar. Different → it is not this
 reflection's document any more; follow the re-convergence's ordinary re-entry
 rules. This comparison comes before the re-convergence's re-entry rule that stops
 when the document moved after the attempt began.
@@ -158,6 +172,13 @@ One record per reflection, one line per drift line:
 with a line `문서대로 둠` in place of the arrow for a line the attachment took out,
 and two lines at the end, `사전 sha256: <64 hex>` and `사후 sha256: <64 hex>`.
 
+The record is written once the working copy's checks have passed, right before
+the publish, and its `사후 sha256` is the working copy's: the publish copies the
+working copy as it is, so that value is the published document's hash. An
+attempt that stops before the publish leaves its record behind, but the hash
+does not match the document, so the recovery comparison does not hold and the
+next attempt reflects from the start and overwrites the record.
+
 - Unattended: `${CC_PIPELINE_RUN_DIR}/design/{slug}/approval-reflection-<기록 파일 이름>.md`,
   `<기록 파일 이름>` the `시각-판정` record's file name. The morning report reads
   this file.
@@ -168,6 +189,47 @@ and two lines at the end, `사전 sha256: <64 hex>` and `사후 sha256: <64 hex>
 
 Writes of the record and of the sidecar are declared like the document publish,
 `--surface 트리밖쓰기 --reach 런로컬`.
+
+## 운반 답 재진입
+
+A reflection that comes back to the re-convergence on a carried
+`결정 첨부 후 다시 반영` follows this one procedure, in order. It takes the place
+of the re-convergence's 「Re-entered with a carried answer」 items, of the
+expected hash of its working-copy response 2 and of the before side of its
+Step 4 digest comparison, on this scope only. An answer the gate lets in again
+under its entry predicate's condition 4 follows it too.
+
+1. **Card check.** Compare the card's `**기록 다이제스트**` with the sha256 of its
+   `**중단 기록**`; a difference is a halt with `분류: precondition-failed`
+   naming both values.
+2. **Baselines.** Run the recovery comparison of `## 쓰기 순서` first (the
+   reflection record's `사후 sha256` against the document now). When it does
+   not hold, measure the document's `shasum -a 256` and the gate's
+   `binding-digest` now and take them as this attempt's `사전 sha256` and
+   `사전 구속 표면 다이제스트`. Never take the stop record's baselines, and never
+   refuse the answer because the document moved after the stop: a screen-less
+   slice writing the same document meanwhile is the ordinary flow. The hash the
+   working-copy response 2 expects, the digest Step 4 compares and the
+   baselines a stop record of this attempt carries are all these values. What
+   keeps another write from overwriting a line the person saw is not the whole
+   document's hash but the per-line verbatim check (`## 실패로 보는 경우`, a line
+   that cannot be applied) and the working copy's hash checks and `lockf`
+   publish.
+3. **Question comparison.** The question is the same when the `시각-판정` record
+   that the stop record's `범위=승인 화면 반영 <기록>` names is still the latest
+   `시각-판정 기록` that `visual-check.sh run-state` prints, and the
+   `sha256 <hex>` that `visual-check.sh drift <설계 문서>` prints for the sidecar
+   block now equals the one in that `시각-판정` record's
+   `설계 문서 어긋남=<n>건 · sha256 <hex>` piece. Then apply the answer, even when
+   a recomputed reason or line list reads otherwise than the stop record's
+   `**질문 문면**`. Otherwise do not apply it: write a new reflection stop with
+   the card's path in its `관측 상세`.
+4. **Attachment.** Read `첨부=<기록>.answer.md` and take each line's
+   `문서대로 둠` or `화면대로 고침` (`## 첨부 결정`). With no attachment, every
+   line is `화면대로 고침`.
+5. **Reflection.** At the step the record names (`Step 3 승인 화면 반영`), run
+   working copy → publish → sidecar in the order of `## 쓰기 순서`. Never rewrite
+   the carried record.
 
 ## 종단
 

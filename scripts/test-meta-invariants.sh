@@ -1983,6 +1983,11 @@ done <<'EOF'
 반영 종단|_common/approval-reflection.md|`대기 — 반영 재시도 소진`, 다시 실행 안내
 반영 종단|design-reconverge/SKILL.md|The same end the second time changes nothing this session writes
 아침 보고|autopilot/references/act3-report.md|write `대기 — 반영 재시도 소진`
+운반 답|_common/approval-reflection.md|measure the document's `shasum -a 256` and the gate's
+운반 답|_common/approval-reflection.md|Never take the stop record's baselines
+운반 답|design-reconverge/SKILL.md|**A carried answer on the `승인 화면 반영` scope follows the carried-answer re-entry procedure of `${CLAUDE_SKILL_DIR}/../_common/approval-reflection.md` (`## 운반 답 재진입`) instead of items 1–5 below.**
+반영 성공|_common/approval-reflection.md|`visual-check.sh binding <설계 문서>` measures over the published document
+반영 성공|visual/SKILL.md|visual-check.sh binding
 EOF
 # The second same end keeps the sidecar at `대기`; a copy that writes
 # `실패 — <종단>` there stops the automatic retry and asks a person.
