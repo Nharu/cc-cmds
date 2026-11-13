@@ -2733,6 +2733,11 @@ cc__halt_answer_state() {
   # The record file is <record> when given, and otherwise the tail resolved
   # under this run's directory or the state home's run directory of the same
   # name. One step only: the gate's record points nowhere further.
+  #
+  # The value is the path up to its `.md`, with no backtick: a stage writes the
+  # token the way its instructions show it, so `` `게이트 기록=<경로>` `` and a
+  # sentence's closing `.` or `,` must not become part of the path. The reader
+  # in dashboard_read.py takes the same bytes.
   local st f g pre rest leaf
   st=$(cc__halt_answer_state_of "$1" "$2")
   if [ "$st" = "없음" ]; then
@@ -2747,7 +2752,7 @@ cc__halt_answer_state() {
       fi
     fi
     if [ -f "$f" ]; then
-      g=$(sed -n 's/^\*\*관측 상세\*\*:.*게이트 기록=\([^ ]*\).*$/\1/p' "$f" 2>/dev/null | sed -n '1p')
+      g=$(sed -n 's/^\*\*관측 상세\*\*:.*게이트 기록=`\{0,1\}\([^ `]*\.md\).*$/\1/p' "$f" 2>/dev/null | sed -n '1p')
       case "$g" in
         */halt/*)
           pre=${g%/halt/*}; rest=${g#"$pre"/halt/}

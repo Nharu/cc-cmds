@@ -331,7 +331,10 @@ def open_approvals(lines):
     return len(open_approval_rows(lines))
 
 
-_GATE_RECORD = re.compile(r"게이트 기록=(\S+)")
+# The path up to its `.md`, with no backtick and no closing punctuation, the
+# same bytes liveness.sh's sed takes: a stage may wrap the token in backticks
+# or end the sentence right after it.
+_GATE_RECORD = re.compile(r"게이트 기록=`?([^ `]*\.md)")
 
 
 def _halt_answer_state(numbered, tail, record=None):

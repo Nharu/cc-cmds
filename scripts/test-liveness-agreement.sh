@@ -1136,6 +1136,14 @@ check "유휴 I′ — 게이트 기록에 답이 서면 그것을 가리키는 
 ua_case "유휴 I′ 이식 (게이트 기록의 답 하나로 둘 다)" 0
 printf '# 중단 기록\n**관측 상세**: 게이트 기록=%s\n' "$FX_RUN_DIR/halt/S1#2.md" > "$FX_RUN_DIR/halt/S1#3.md"
 ua_case "유휴 I″ 이식 (가리키는 것은 한 단계뿐 — 스테이지 기록을 가리키는 기록은 답 없음)" 1
+# The stage writes the token as its instructions show it: wrapped in backticks,
+# or closing the sentence. Neither the backtick nor the `.`/`,` after the path
+# is part of the path, so both records are answered with the gate's.
+printf '# 중단 기록\n**분류**: precondition-failed\n**관측 상세**: 게이트가 베이스 이동으로 멈춤 / `게이트 기록=%s`.\n' \
+  "$FX_RUN_DIR/halt/shift/S1#1.md" > "$FX_RUN_DIR/halt/S1#4.md"
+printf '# 중단 기록\n**분류**: precondition-failed\n**관측 상세**: 게이트 기록=%s, 그 기록에 답한다.\n' \
+  "$FX_RUN_DIR/halt/shift/S1#1.md" > "$FX_RUN_DIR/halt/S1#5.md"
+ua_case "유휴 I‴ 이식 (백틱으로 감싼 포인터와 쉼표로 끝나는 포인터도 게이트 기록의 답으로 닫힘)" 1
 
 id_mkrun 20261012-0000000c 90000
 fx_approval A1 대기
