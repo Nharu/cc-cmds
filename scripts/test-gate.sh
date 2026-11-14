@@ -50580,11 +50580,13 @@ check "65: 예비 공급 대기 행은 정확히 하나다" \
   "$( { grep -cF '계보=S1-impl-6 |' "$lsr65_l" || true; } )" "1"
 # 같은 대기가 리셋권을 누른 뒤의 봉투. 대기가 본 리셋권의 기억 `reserve_seen` 과 눌린
 # 시각 `reserve.pressed_at_epoch` 가 덧붙어도 행 작성기는 그 키를 읽지 않으므로, 계보
-# 칸만 빼면 위의 예비 공급 행과 바이트가 같아야 한다.
+# 칸만 빼면 위의 예비 공급 행과 바이트가 같아야 한다. 쓰는 순간의 `기록 시각` 은 두 행 사이에
+# 초가 넘어갈 수 있어 양쪽 모두 `T` 로 바꿔 비교한다.
 lsr65_rp='{"verdict":"WAIT","group":"org:4444444444444444","account":"full","until_epoch":null,"reason":"resume-bound-no-room","cost":{"five_hour":{"bp":3000,"source":"default"},"seven_day":{"bp":800,"source":"default"}},"reserve":{"group":"org:4444444444444444","account":"full","pass_id":"rp-0000000e","kind":"seven_day","expires_at_epoch":1800864000,"pressed_at_epoch":1800000000},"reserve_seen":[{"group":"org:4444444444444444","account":"full","id":"rp-0000000e","kind":"seven_day","expires_at_epoch":1800864000,"pressed_at_epoch":1800000000}],"txn":{"op":"none","record":null}}'
-lsr65_rv_body=$( { grep -F '계보=S1-impl-6 |' "$lsr65_l" || true; } | sed -e 's/ | prev=[0-9a-f]*$//' -e 's/ | 계보=S1-impl-6 | / | 계보=S1-impl-7 | /')
+lsr65_rv_body=$( { grep -F '계보=S1-impl-6 |' "$lsr65_l" || true; } | sed -E -e 's/ \| prev=[0-9a-f]*$//' -e 's/ \| 계보=S1-impl-6 \| / | 계보=S1-impl-7 | /' \
+  -e 's/\| 기록 시각=[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$/| 기록 시각=T/')
 rc=0; lsr_in Linux "$lsr65_l" - gate_stage_wait_row 'S1-impl-7' "$lsr65_rp" full >/dev/null 2>&1 || rc=$?
-check "65: 눌린 리셋권의 기억을 단 대기 봉투는 계보 칸만 다른 같은 행이 된다" "$rc/$(lsr_body "$lsr65_l")" \
+check "65: 눌린 리셋권의 기억을 단 대기 봉투는 계보 칸만 다른 같은 행이 된다" "$rc/$(lsr65_wbody "$lsr65_l")" \
   "0/${lsr65_rv_body:-예비 공급 행 없음}"
 rc=0; lsr_in Linux "$lsr65_l" - gate_chain_verify >/dev/null 2>&1 || rc=$?
 check "65: 래퍼가 쓴 원장의 사슬이 검증된다" "$rc" "0"
