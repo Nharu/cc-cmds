@@ -30418,6 +30418,50 @@ gate_base_guard_latch_wait() {
   return "$GATE_EXIT_PARK"
 }
 
+gate_base_guard_done_unmet() {
+  # gate_base_guard_done_unmet — one condition-5 line per base-move latch that
+  # keeps the run from ending: a latch naming a record no `중단 답` row answers
+  # yet, a latch with no record (`기록 없음`, empty or unreadable), and a latch
+  # whose record's answer the ledger cannot be read for.
+  #
+  # THE LATCH FILES ARE READ, NOT THE `blocked` ROWS. The fold of
+  # `cc_unresolved_blocked` leaves a `베이스-<별칭>` cone out, and a segment
+  # latch can name a record on that key (the segment's own record was refused),
+  # so the rows alone let a run end over an unanswered base-move record — a
+  # target latch is read only by acts that name its target, and `propose-done`
+  # may name another one. Any answer clears the line: `재시도` lifts the latch at
+  # the next act, and a segment the answer parks or carries over is condition
+  # 1's to judge. Read without the lock: a latch is written by a rename, so a
+  # read sees the old line or the new one.
+  local d al lf rest v ans who
+  [ -n "${RUN_DIR:-}" ] || return 0
+  d="$RUN_DIR/base-guard"
+  [ -d "$d" ] || return 0
+  for al in $(target_aliases 2>/dev/null); do
+    for lf in "$d/$al.latch" "$d/$al.latch."*; do
+      [ -e "$lf" ] || continue
+      rest=${lf#"$d/$al.latch"}
+      case "$rest" in
+        '') who='대상' ;;
+        # A second dot is the temporary file of a segment latch being renamed
+        # into place, not a latch.
+        .*.*) continue ;;
+        *) who="세그먼트 ${rest#.}" ;;
+      esac
+      if ! v=$(gate_base_guard_read "$lf") || [ -z "$v" ] || [ "$v" = "기록 없음" ]; then
+        printf '5 베이스 이동 정지에 답할 기록이 없습니다 — %s 걸쇠 %s (%s)\n' "$who" "$lf" "${v:-읽지 못함}"
+        continue
+      fi
+      if ! ans=$(gate_base_guard_last_answer "$v"); then
+        printf '5 베이스 이동 기록의 답을 원장에서 읽지 못합니다 — %s 걸쇠 %s · 기록 %s\n' "$who" "$lf" "$v"
+        continue
+      fi
+      [ -n "$ans" ] || printf '5 베이스 이동 기록에 답이 없습니다 — %s 걸쇠 %s · 기록 %s\n' "$who" "$lf" "$v"
+    done
+  done
+  return 0
+}
+
 gate_base_guard_marker_wait() {
   # gate_base_guard_marker_wait <alias> <marker line> — called off the lock
   # after the entry found a `.writing` marker that names no record and is not
@@ -30584,8 +30628,11 @@ EOF
         # it leaves a halt record no answer reaches. So the act waits, off the
         # lock, until the marker names its record (the act ends 11 naming it),
         # or is gone or older than sixty seconds (the entry starts again, and
-        # finds the move recorded or catches it itself).
+        # finds the move recorded or catches it itself). The log line says the
+        # act is waiting, so a caller can tell a wait from an act that never
+        # reached the marker.
         gate_index_unlock "$kf"
+        log "베이스 이동 — 작성 중 표지 $wf 가 기록을 이을 때까지 기다립니다"
         local w_wr w_rc=0
         w_wr=$(gate_base_guard_marker_wait "$al" "$v") || w_rc=$?
         case "$w_rc" in
@@ -64623,6 +64670,10 @@ EOF
           printf '5 런을 막는 blocked(런 스코프 또는 런 범위 스텝 앵커 cone)가 미해소입니다 (%s) — 해소했다면 act --kind blocked 로 원인=해소 행을 쓰세요; 런 범위 스텝의 마감 파킹은 그 재개 명령으로 다시 파견해도 풀립니다(사유가 중단 답 라우팅 — 으로 시작하는 라우팅 막힘은 계보가 없어 다시 파견해도 풀리지 않고 원인=해소 로만 풀립니다)\n' "$reason"
         fi
       done
+  # A base-move stop on a target with no remote holds the run until its record
+  # is answered, whichever target the proposal names. The fold above leaves its
+  # `베이스-<별칭>` cone out, so the latch files are read here instead.
+  gate_base_guard_done_unmet
 
   # 6 — terminal-act cap
   gate_terminal_cap_ok || printf '6 말단 행위 상한을 넘었습니다\n'

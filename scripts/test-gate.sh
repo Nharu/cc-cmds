@@ -31746,7 +31746,7 @@ esac
 SA_CUT=""; SA_PLAN=""
 
 # --- 15q. 원격 없는 대상에서 베이스를 옮긴 게이트 행위는 세그먼트를 멈추고 기록을 남긴다 ---
-# --- section: 15q | group: sa | covers: exec, act, plan, snapshot, shift-halt, halt-answer, clause-exec, gate_base_guard_entry, gate_base_guard_after, gate_base_guard_record_move, gate_base_guard_latch_wait, gate_base_guard_marker_wait, gate_base_guard_release, gate_base_guard_target_stop, gate_base_guard_plan, gate_base_guard_last_answer, gate_shift_halt_write, gate_shift_halts_json | anchors: 15q: 기지값이 없을 때 plan 은 기지값도 디렉터리도 쓰지 않는다, 15q: base-guard 디렉터리가 없던 런의 첫 보호 행위가 디렉터리를 만든다, 15q: 첫 관측은 기지값을 적을 뿐 정지하지 않는다, 15q: 베이스를 옮긴 exec 는 수행된 뒤 11 이고 수행됨 경고를 낸다, 15q: 그 정지의 기록은 세그먼트의 베이스 이동 교대 정지 기록이다, 15q: 그 기록을 실은 cone 행이 경로와 다이제스트를 싣는다, 15q: 세그먼트 걸쇠가 그 기록을 가리키고 기지값은 옮겨진 베이스다, 15q: 성공한 행위가 옮긴 베이스에는 실패 행이 없다, 15q: 정지한 세그먼트의 다음 행위는 수행 없이 11 이고 새 기록도 행도 없다, 15q: 다른 세그먼트의 행위는 통과한다, 15q: 걸쇠가 선 세그먼트의 plan 은 park 예상 머리 꼴로 베이스 이동을 낸다, 15q: 그 plan 은 행을 쓰지 않는다, 15q: 세그먼트 park 답 뒤의 행위는 여전히 수행 없이 11 이다, 15q: 재시도 답 뒤의 행위는 통과하고 세그먼트 걸쇠가 없어진다, 15q: 걸쇠를 풀기 전 그 답은 answered_halts 에 있다 (아래 소비가 공허하지 않다), 15q: 걸쇠를 푼 행위는 그 기록의 앵커로 해소 행 하나를 쓰고 답은 answered_halts 에서 빠진다, 15q: 재시도 답 뒤 두 번째 이동은 새 기록 #2 를 만든다, 15q: 베이스를 옮기고 0 아닌 코드로 끝난 행위도 11 이고 같은 꼴의 기록을 남긴다, 15q: 그 행위의 실패 행은 원래 코드의 것 하나이고 11 의 실패 행은 없다, 15q: 베이스가 옮겨진 뒤의 plan 은 park 예상 머리 꼴로 베이스 이동을 낸다, 15q: 게이트 밖의 이동 뒤 다음 exec 는 수행되지 않고 11 이며 같은 꼴의 기록을 남긴다, 15q: 60 초보다 오래된 대조 잠금은 걷어 내고 행위를 대조한다, 15q: 세그먼트 행 없는 앵커의 이동은 대상 키 기록과 그 앵커의 cone 행을 남기고 11 이다, 15q: 그 앵커의 다음 행위는 수행 없이 11 이고 blocked 행을 더 쓰지 않는다, 15q: 그 기록에 재시도 답이 달린 뒤 그 앵커의 행위는 통과한다, 15q: 대조 잠금을 잡지 못한 들머리는 수행 없이 11 이고 대상 키 기록과 대상 걸쇠를 남긴다, 15q: 그 기록에 재시도 답이 달린 뒤 그 대상의 행위는 통과한다, 15q: 행위 뒤 자리에서 잠금을 잡지 못하면 경고를 남기고 행위의 코드를 낸다, 15q: 대상 키 쓰기까지 거부되면 대상 걸쇠에 기록 없음과 작성 실패 행 하나를 두고 11 이며 기지값은 그대로다, 15q: 스냅숏 shift_halts 에 대상 키의 기록 불가 정지가 보인다, 15q: 거부되는 동안 그 대상의 다음 보호 행위는 수행 없이 11 이고 행을 더 쓰지 않는다, 15q: 디렉터리를 되돌린 뒤의 보호 행위는 대상 키 기록을 쓰고 걸쇠를 그 경로로 바꾼 채 11 이다, 15q: 그 대상 키 기록에 재시도 답이 달린 뒤 행위가 통과하고 해소 행 하나가 그 답을 소비한다, 15q: 세그먼트 없는 행위의 이동은 대상 키 기록·대상 걸쇠·행위 범위 행을 남기고 런 범위 cone 행은 없다, 15q: 대상 키 정지의 cone 행은 런을 막는 미해소 막힘 집계에 들지 않는다, 15q: 대상 키 기록의 선택지는 재시도 하나다, 15q: 대상 걸쇠가 서 있어도 다른 대상의 행위는 통과한다, 15q: 그 기록에 재시도 답이 달린 뒤 그 대상의 세그먼트 없는 행위는 통과한다, 15q: 대상 키 걸쇠를 재시도 답으로 푼 뒤 런을 막는 미해소 막힘에 베이스 이동 정지가 없다, 15q: 기지값을 읽지 못하면 수행 없이 11 이고 기지값은 그대로이며 대상 키 기록과 대상 걸쇠가 생긴다, 15q: 걸쇠를 읽지 못하면 수행 없이 11 이고 걸쇠는 남으며 대상 키 기록과 대상 걸쇠가 생긴다, 15q: 원장의 중단 답 조회가 실패하면 11 이고 걸쇠는 남으며 대상 걸쇠가 선다, 15q: 기록 없는 작성 중 표지는 바로 11 로 끝내지 않고 기다렸다가 표지가 걷히면 다시 대조해 통과한다, 15q: 다른 행위가 같은 이동의 기록을 쓰는 중이면 새 기록 없이 11 이다, 15q: 작성 중 표지를 기다린 11 의 경고는 그 표지가 덧적은 기록 경로를 말한다, 15q: 기록 경로 없이 60 초보다 오래된 표지는 걷어 내고 그 이동을 다시 잡는다, 15q: 기록이 선 표지는 다음 들머리가 기지값 고침과 걸쇠 적기를 마저 하고 지운다, 15q: 중첩 행위가 이동을 먼저 잡으면 바깥 행위 뒤 자리는 기록을 더 쓰지 않는다, 15q: 라우터의 베이스 이동 shift-halt 는 2 로 거부되고 기록도 행도 생기지 않는다, 15q: clause-exec 갈래로 베이스를 옮긴 행위도 11 과 기록을 남긴다, 15q: 원격 있는 대상에서 베이스를 옮긴 행위는 행위의 코드를 내고 행도 기록도 쓰지 않는다 ---
+# --- section: 15q | group: sa | covers: exec, act, plan, snapshot, shift-halt, halt-answer, clause-exec, gate_base_guard_entry, gate_base_guard_after, gate_base_guard_record_move, gate_base_guard_latch_wait, gate_base_guard_marker_wait, gate_base_guard_release, gate_base_guard_target_stop, gate_base_guard_plan, gate_base_guard_last_answer, gate_base_guard_done_unmet, gate_shift_halt_write, gate_shift_halts_json | anchors: 15q: 기지값이 없을 때 plan 은 기지값도 디렉터리도 쓰지 않는다, 15q: base-guard 디렉터리가 없던 런의 첫 보호 행위가 디렉터리를 만든다, 15q: 첫 관측은 기지값을 적을 뿐 정지하지 않는다, 15q: 베이스를 옮긴 exec 는 수행된 뒤 11 이고 수행됨 경고를 낸다, 15q: 그 정지의 기록은 세그먼트의 베이스 이동 교대 정지 기록이다, 15q: 그 기록을 실은 cone 행이 경로와 다이제스트를 싣는다, 15q: 세그먼트 걸쇠가 그 기록을 가리키고 기지값은 옮겨진 베이스다, 15q: 성공한 행위가 옮긴 베이스에는 실패 행이 없다, 15q: 정지한 세그먼트의 다음 행위는 수행 없이 11 이고 새 기록도 행도 없다, 15q: 다른 세그먼트의 행위는 통과한다, 15q: 걸쇠가 선 세그먼트의 plan 은 park 예상 머리 꼴로 베이스 이동을 낸다, 15q: 그 plan 은 행을 쓰지 않는다, 15q: 세그먼트 park 답 뒤의 행위는 여전히 수행 없이 11 이다, 15q: 재시도 답 뒤의 행위는 통과하고 세그먼트 걸쇠가 없어진다, 15q: 걸쇠를 풀기 전 그 답은 answered_halts 에 있다 (아래 소비가 공허하지 않다), 15q: 걸쇠를 푼 행위는 그 기록의 앵커로 해소 행 하나를 쓰고 답은 answered_halts 에서 빠진다, 15q: 재시도 답 뒤 두 번째 이동은 새 기록 #2 를 만든다, 15q: 베이스를 옮기고 0 아닌 코드로 끝난 행위도 11 이고 같은 꼴의 기록을 남긴다, 15q: 그 행위의 실패 행은 원래 코드의 것 하나이고 11 의 실패 행은 없다, 15q: 베이스가 옮겨진 뒤의 plan 은 park 예상 머리 꼴로 베이스 이동을 낸다, 15q: 게이트 밖의 이동 뒤 다음 exec 는 수행되지 않고 11 이며 같은 꼴의 기록을 남긴다, 15q: 60 초보다 오래된 대조 잠금은 걷어 내고 행위를 대조한다, 15q: 세그먼트 행 없는 앵커의 이동은 대상 키 기록과 그 앵커의 cone 행을 남기고 11 이다, 15q: 그 앵커의 다음 행위는 수행 없이 11 이고 blocked 행을 더 쓰지 않는다, 15q: 그 기록에 재시도 답이 달린 뒤 그 앵커의 행위는 통과한다, 15q: 대조 잠금을 잡지 못한 들머리는 수행 없이 11 이고 대상 키 기록과 대상 걸쇠를 남긴다, 15q: 그 기록에 재시도 답이 달린 뒤 그 대상의 행위는 통과한다, 15q: 행위 뒤 자리에서 잠금을 잡지 못하면 경고를 남기고 행위의 코드를 낸다, 15q: 대상 키 쓰기까지 거부되면 대상 걸쇠에 기록 없음과 작성 실패 행 하나를 두고 11 이며 기지값은 그대로다, 15q: 스냅숏 shift_halts 에 대상 키의 기록 불가 정지가 보인다, 15q: 거부되는 동안 그 대상의 다음 보호 행위는 수행 없이 11 이고 행을 더 쓰지 않는다, 15q: 디렉터리를 되돌린 뒤의 보호 행위는 대상 키 기록을 쓰고 걸쇠를 그 경로로 바꾼 채 11 이다, 15q: 그 대상 키 기록에 재시도 답이 달린 뒤 행위가 통과하고 해소 행 하나가 그 답을 소비한다, 15q: 세그먼트 없는 행위의 이동은 대상 키 기록·대상 걸쇠·행위 범위 행을 남기고 런 범위 cone 행은 없다, 15q: 대상 키 정지의 cone 행은 런을 막는 미해소 막힘 집계에 들지 않는다, 15q: 대상 걸쇠의 기록에 답이 없는 동안 다른 대상으로 낸 종료 제안도 그 걸쇠를 조건 5 로 든다, 15q: 세그먼트 걸쇠가 답 없는 기록을 가리키는 동안 종료 제안이 그 걸쇠를 조건 5 로 든다, 15q: 대상 키 기록의 선택지는 재시도 하나다, 15q: 대상 걸쇠가 서 있어도 다른 대상의 행위는 통과한다, 15q: 그 기록에 답이 달리면 대상 걸쇠가 아직 서 있어도 종료 조건에서 빠진다, 15q: 그 기록에 재시도 답이 달린 뒤 그 대상의 세그먼트 없는 행위는 통과한다, 15q: 대상 키 걸쇠를 재시도 답으로 푼 뒤 런을 막는 미해소 막힘에 베이스 이동 정지가 없다, 15q: 기지값을 읽지 못하면 수행 없이 11 이고 기지값은 그대로이며 대상 키 기록과 대상 걸쇠가 생긴다, 15q: 걸쇠를 읽지 못하면 수행 없이 11 이고 걸쇠는 남으며 대상 키 기록과 대상 걸쇠가 생긴다, 15q: 원장의 중단 답 조회가 실패하면 11 이고 걸쇠는 남으며 대상 걸쇠가 선다, 15q: 기록 없는 작성 중 표지는 바로 11 로 끝내지 않고 기다렸다가 표지가 걷히면 다시 대조해 통과한다, 15q: 다른 행위가 같은 이동의 기록을 쓰는 중이면 새 기록 없이 11 이다, 15q: 작성 중 표지를 기다린 11 의 경고는 그 표지가 덧적은 기록 경로를 말한다, 15q: 기록 경로 없이 60 초보다 오래된 표지는 걷어 내고 그 이동을 다시 잡는다, 15q: 기록이 선 표지는 다음 들머리가 기지값 고침과 걸쇠 적기를 마저 하고 지운다, 15q: 중첩 행위가 이동을 먼저 잡으면 바깥 행위 뒤 자리는 기록을 더 쓰지 않는다, 15q: 라우터의 베이스 이동 shift-halt 는 2 로 거부되고 기록도 행도 생기지 않는다, 15q: clause-exec 갈래로 베이스를 옮긴 행위도 11 과 기록을 남긴다, 15q: 원격 있는 대상에서 베이스를 옮긴 행위는 행위의 코드를 내고 행도 기록도 쓰지 않는다 ---
 #
 # A target with no `origin` has nothing outside this host that would notice an
 # act of the run moving its local base branch, so the gate compares the base
@@ -31990,6 +31990,19 @@ check "15q: 세그먼트 없는 행위의 이동은 대상 키 기록·대상 �
   "$rc|$(qb_tk "$QB_RT")|$(( $(qb_n '사유=베이스 이동 — 세그먼트 없는 행위') - qb_g0 ))|$(( $(qb_n '앵커 세그먼트=- ') - qb_d0 ))" \
   "11|대상키기록|1|0"
 check "15q: 대상 키 정지의 cone 행은 런을 막는 미해소 막힘 집계에 들지 않는다" "$(qb_runblk)" "0"
+# 그래도 런은 그 정지 위로 끝나지 않는다: 종료 조건 5 가 걸쇠 파일을 읽는다. 종료 제안은 걸쇠가 없는
+# 다른 대상(side)으로 낸다 — 대상 걸쇠는 그 대상을 지목한 행위만 읽으므로, 이것이 걸쇠를 비켜 가던
+# 길이다. 조건 10(종료 절 C1 미정산)을 함께 보아 예측이 실제로 조건을 셌음을 보인다.
+qb_done() {  # qb_done <걸쇠> — side 로 낸 종료 제안 예측이 그 걸쇠를 조건 5 로 드는가 | 조건을 셌는가
+  sag plan --manifest "$SA_MANIFEST" --kind propose-done --target side --segment - --cutpoint 커밋 --rationale x
+  printf '%s|%s' \
+    "$(case "$raw" in *"5 베이스 이동 기록에 답이 없습니다 — "*"걸쇠 $1 · 기록 "*) printf 걸쇠 ;; *) printf - ;; esac)" \
+    "$(case "$raw" in *"종료 절 C1 미정산"*) printf 조건 ;; *) printf - ;; esac)"
+}
+check "15q: 대상 걸쇠의 기록에 답이 없는 동안 다른 대상으로 낸 종료 제안도 그 걸쇠를 조건 5 로 든다" \
+  "$(qb_done "$QG/main.latch")" "걸쇠|조건"
+check "15q: 세그먼트 걸쇠가 답 없는 기록을 가리키는 동안 종료 제안이 그 걸쇠를 조건 5 로 든다" \
+  "$(qb_done "$QG/main.latch.Q1")|$(cat "$QG/main.latch.Q1" 2>/dev/null)" "걸쇠|조건|$SA_RUN/halt/shift/Q1#2.md"
 check "15q: 대상 키 기록의 선택지는 재시도 하나다" \
   "$(awk '/^\*\*선택지\*\*:/ { on = 1; next } /^\*\*/ { on = 0 } on && /^- / { n++; l = $0 } END { printf "%d|%s", n, (index(l, "`재시도`") ? "재시도" : l) }' "$QB_RT" 2>/dev/null)" \
   "1|재시도"
@@ -31997,6 +32010,8 @@ sag exec --manifest "$SA_MANIFEST" --target side --segment - --cutpoint 커밋 -
   --snapshot-digest "$(SAH)" --rationale x -- touch qb-side
 check "15q: 대상 걸쇠가 서 있어도 다른 대상의 행위는 통과한다" "$rc|$(qb_did "$QB_SIDE/qb-side")" "0|수행"
 qb_ans 베이스-main "$QB_RT" 재시도
+check "15q: 그 기록에 답이 달리면 대상 걸쇠가 아직 서 있어도 종료 조건에서 빠진다" \
+  "$(qb_done "$QG/main.latch")|$( [ -e "$QG/main.latch" ] && printf 걸쇠섬 )" "-|조건|걸쇠섬"
 qb_x - touch qb-g1b
 check "15q: 그 기록에 재시도 답이 달린 뒤 그 대상의 세그먼트 없는 행위는 통과한다" "$rc|$(qb_did "$SA_WT/qb-g1b")" "0|수행"
 check "15q: 대상 키 걸쇠를 재시도 답으로 푼 뒤 런을 막는 미해소 막힘에 베이스 이동 정지가 없다" "$(qb_runblk)" "0"
@@ -32040,29 +32055,68 @@ check "15q: 원장의 중단 답 조회가 실패하면 11 이고 걸쇠는 남�
   "11|$QB_R4|대상걸쇠"
 
 # (거5) 작성 중 표지 -------------------------------------------------------------------
-# 기록을 쓰는 다른 행위는 뒤에서 흉내 낸다: 8 초 뒤 표지를 지우면(작성을 마침) 기다린 행위는 다시
-# 대조해 통과하고, 8 초 뒤 표지에 기록 경로를 덧적으면 기다린 행위는 그 기록을 말하며 11 로 끝난다.
-# 8 초는 게이트 호출이 들머리 2단계에 닿기까지(수 초)보다 길게 잡은 값이다. 기다리지 않고 바로 11 로
-# 끝내는 게이트는 두 경우 모두 그 앞에 끝나므로 아래 단언에 걸린다.
+# 기록을 쓰는 다른 행위는 뒤에서 흉내 낸다. 게이트 호출을 뒤에서 띄우고, 그 호출이 표지를 기다린다는
+# 로그 줄을 낸 뒤에야 표지를 바꾼다: 표지를 지우면(작성을 마침) 기다린 행위는 다시 대조해 통과하고,
+# 표지에 기록 경로를 덧적으면 기다린 행위는 그 기록을 말하며 11 로 끝난다. 표지를 바꾸는 쪽은 게이트의
+# 작성기처럼 임시 파일에 쓴 뒤 이름 바꾸기로 놓으므로, 게이트의 폴링이 반쯤 쓰인 표지를 읽지 않는다.
+# 기다림 줄을 단언하므로 기다리지 않고 지나가는 게이트도, 바로 11 로 끝내는 게이트도 아래 단언에 걸린다.
+QB_WAITLINE="베이스 이동 — 작성 중 표지 $QG/main.writing 가 기록을 이을 때까지 기다립니다"
+qb_bgx() {  # qb_bgx <출력 파일> <argv…> — Q8 의 exec 하나를 뒤에서 띄운다. 끝나면 <출력 파일>.rc 에 코드를 남긴다
+  local f="$1" h; shift
+  h=$(SAH)
+  rm -f "$f" "$f.rc"
+  ( cd "$SA_WT" || exit 0; r=0
+    gate_inproc exec --manifest "$SA_MANIFEST" --target main --segment Q8 --cutpoint 커밋 --surface 워크트리쓰기 \
+      --snapshot-digest "$h" --rationale x -- "$@" > "$f" 2>&1 || r=$?
+    printf '%s' "$r" > "$f.rc" ) &
+  qb_bg=$!
+}
+qb_await() {  # qb_await <출력 파일> — 기다림 줄이 보이면 0, 그 전에 뒤의 호출이 끝나거나 60 초가 지나면 1
+  local i=0
+  while [ "$i" -lt 600 ]; do
+    grep -qF -- "$QB_WAITLINE" "$1" 2>/dev/null && return 0
+    kill -0 "$qb_bg" 2>/dev/null || { grep -qF -- "$QB_WAITLINE" "$1" 2>/dev/null; return "$?"; }
+    sleep 0.1; i=$((i + 1))
+  done
+  return 1
+}
+qb_bgend() {  # qb_bgend <출력 파일> — 뒤의 호출을 기다려 sag 처럼 rc·msg·raw 를 채운다
+  local out
+  wait "$qb_bg" 2>/dev/null || true
+  rc=$(cat "$1.rc" 2>/dev/null); rc=${rc:-없음}
+  out=$(cat "$1" 2>/dev/null)
+  msg=$(printf '%s' "$out" | grep -vE '\[run\] ' | tr '\n' ' ' | sed 's/[[:space:]]*$//')
+  raw=$(printf '%s' "$out" | tr '\n' ' ' | sed 's/[[:space:]]*$//')
+}
+qb_wput() {  # qb_wput <줄> — 표지를 임시 파일에 쓴 뒤 이름 바꾸기로 놓는다
+  printf '%s\n' "$1" > "$QG/main.writing.qb" && mv -f "$QG/main.writing.qb" "$QG/main.writing"
+}
+QB_WOUT="$SA_ROOT/qb-wait.out"
 qb_at=$(date -u +%s)
-printf 'a\tb\t%s\n' "$qb_at" > "$QG/main.writing"
-( sleep 8; rm -f "$QG/main.writing" ) & qb_bg=$!
+qb_wput "$(printf 'a\tb\t%s' "$qb_at")"
 qb_n0=$(qb_recs)
-qb_x Q8 touch qb-w0
-wait "$qb_bg" 2>/dev/null || true
+qb_bgx "$QB_WOUT" touch qb-w0
+if qb_await "$QB_WOUT"; then qb_wsaw=예; else qb_wsaw=아니오; fi
+rm -f "$QG/main.writing"
+qb_bgend "$QB_WOUT"
 check "15q: 기록 없는 작성 중 표지는 바로 11 로 끝내지 않고 기다렸다가 표지가 걷히면 다시 대조해 통과한다" \
-  "$rc|$(qb_did "$SA_SEGWT/qb-w0")|$(( $(qb_recs) - qb_n0 ))" "0|수행|0"
-QB_WREC="$SA_RUN/halt/shift/Q9#7.md"
+  "$qb_wsaw|$rc|$(qb_did "$SA_SEGWT/qb-w0")|$(( $(qb_recs) - qb_n0 ))" "예|0|수행|0"
+qb_say 0 '표지가 걷힌 뒤'
+# 덧적는 걸쇠는 기다리는 행위 자신의 세그먼트 걸쇠다: 다른 세그먼트의 걸쇠를 가리키는 표지 뒤의
+# 11 은 이 시험이 정답으로 박을 동작이 아니다.
+QB_WREC="$SA_RUN/halt/shift/Q8#7.md"
 qb_at=$(date -u +%s)
-printf 'a\tb\t%s\n' "$qb_at" > "$QG/main.writing"
-( sleep 8; printf 'a\tb\t%s\t%s\t%s\n' "$qb_at" "$QB_WREC" "$QG/main.latch.Q9" > "$QG/main.writing" ) & qb_bg=$!
+qb_wput "$(printf 'a\tb\t%s' "$qb_at")"
 qb_n0=$(qb_recs)
-qb_x Q8 touch qb-w1
-wait "$qb_bg" 2>/dev/null || true
+qb_bgx "$QB_WOUT" touch qb-w1
+if qb_await "$QB_WOUT"; then qb_wsaw=예; else qb_wsaw=아니오; fi
+qb_wput "$(printf 'a\tb\t%s\t%s\t%s' "$qb_at" "$QB_WREC" "$QG/main.latch.Q8")"
+qb_bgend "$QB_WOUT"
 check "15q: 다른 행위가 같은 이동의 기록을 쓰는 중이면 새 기록 없이 11 이다" \
-  "$rc|$(qb_did "$SA_SEGWT/qb-w1")|$(( $(qb_recs) - qb_n0 ))|$( [ -e "$QG/main.writing" ] && printf 표지 )" "11|-|0|표지"
+  "$qb_wsaw|$rc|$(qb_did "$SA_SEGWT/qb-w1")|$(( $(qb_recs) - qb_n0 ))|$( [ -e "$QG/main.writing" ] && printf 표지 )" "예|11|-|0|표지"
 check "15q: 작성 중 표지를 기다린 11 의 경고는 그 표지가 덧적은 기록 경로를 말한다" \
   "$(qb_warn "기록 $QB_WREC")|$(qb_warn '행위 수행 안 함')" "예|예"
+rm -f "$QB_WOUT" "$QB_WOUT.rc"
 qb_move qb-w2
 printf 'a\tb\t%s\n' "$(( $(date -u +%s) - 120 ))" > "$QG/main.writing"
 qb_x Q8 touch qb-w2

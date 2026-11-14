@@ -2115,9 +2115,12 @@ cc__blocked_fold() {
   #
   # A `베이스-<별칭>` anchor is not a step either. The base-move check makes that
   # key when a move cannot be recorded on a segment, and its cone stands on that
-  # target's acts: the run is held by the target latch and by the unanswered
-  # record under `halt/shift/`, and a `재시도` answer lifts both. So the row
-  # stays out of the set, as a `clause-<id>` anchor does.
+  # target's acts, so the row stays out of the set, as a `clause-<id>` anchor
+  # does. Leaving it out does not let the run end over the stop: the gate's
+  # condition 5 also reads the base-move latch files (`gate_base_guard_done_unmet`)
+  # and refuses the end while a target or segment latch names a record with no
+  # answer, whichever target the proposal names. This set alone does not hold
+  # the run on that stop.
   #
   # The fold — last row per `사유` — runs inside that set, so an act-scope row
   # that reuses a run block's `사유` neither hides it nor stands in for it.

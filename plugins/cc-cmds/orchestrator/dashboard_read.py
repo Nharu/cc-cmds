@@ -532,7 +532,9 @@ def _blocked_fold(lines):
             # A `clause-<id>` anchor is a termination clause's evidence
             # request: it holds that clause alone, not the run. A
             # `베이스-<별칭>` anchor is the base-move check's target key: the
-            # target latch and its unanswered record hold the run instead.
+            # gate's condition 5 reads the base-move latch files and refuses
+            # the end while one names an unanswered record, so this set does
+            # not hold the run on that stop.
             step = True
         else:
             continue
