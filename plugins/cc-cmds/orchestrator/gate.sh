@@ -50494,7 +50494,7 @@ gate_perform_review_post() {
     post|verify:*) ;;
     *) warn "the post act reached its performer without a verdict — nothing was posted"; return "$GATE_EXIT_RULE" ;;
   esac
-  local dir tag req sum kind="" hc rsha raw code body rid rev com verdict creds="$GATE_RVP_CREDS" rc=0
+  local dir tag req sum kind="" hc rsha raw code body rid rev rst gq gql com verdict creds="$GATE_RVP_CREDS" rc=0
   local credsrc="${GATE_RVP_CREDSRC:--}" trow
   dir="$RUN_DIR/review-post"
   mkdir -p "$dir" || return "$GATE_EXIT_RULE"
@@ -50557,20 +50557,53 @@ gate_perform_review_post() {
   case "$rid" in
     ''|*[!0-9]*) ;;
     *)
-      # The comments are read from the pull request's comment list, not from
-      # the review's own comment endpoint: that endpoint returns an inline
+      # The review's own comment endpoint is never read: it returns an inline
       # comment's `line`, `original_line` and `side` as null, so a correct post
-      # could never compare equal to the render. The pull request's list also
-      # carries every earlier review's comments, so it is narrowed to this
-      # review id, which the case arm above has already proved numeric.
+      # could never compare equal to the render. Where the comments come from
+      # depends on the state the review read reports.
+      #
+      # A submitted review's comments are read from the pull request's comment
+      # list. That list carries every earlier review's comments too, so it is
+      # narrowed to this review id, which the case arm above has already proved
+      # numeric.
+      #
+      # A PENDING review's comments are not in that list at all, so they are
+      # read from the pull request's review threads over GraphQL. The side lives
+      # on the thread (`diffSide`), not on the comment, and every inline comment
+      # of a pending review opens its own thread, so the thread's side is the
+      # comment's. The review is matched by `fullDatabaseId`, because
+      # `databaseId` is a 32-bit integer and a review id can exceed it. Both
+      # reads are reshaped into the same array, so the comparison sees one shape.
+      # A GraphQL read that fails or reports errors leaves the comments unread
+      # rather than empty: an empty list would compare equal to a render with no
+      # inline comment.
       if [ -n "$req" ] \
          && rev=$(gate_label_ack_gh_write "$creds" api "repos/$GATE_RVP_SLUG/pulls/$GATE_RVP_PR/reviews/$rid" 2>/dev/null) \
-         && com=$(gate_label_ack_gh_write "$creds" api --paginate "repos/$GATE_RVP_SLUG/pulls/$GATE_RVP_PR/comments" 2>/dev/null \
-                  | jq -s -c --argjson rid "$rid" 'add // [] | map(select(.pull_request_review_id == $rid))' 2>/dev/null); then
-        printf '%s' "$rev" > "$dir/$tag.review.json"
-        printf '%s' "$com" > "$dir/$tag.comments.json"
-        verdict=$("$GATE_DIR/review-post.sh" verify --request "$req" --review "$dir/$tag.review.json" \
-                    --comments "$dir/$tag.comments.json" 2>/dev/null || echo '판독불가')
+         && rst=$(jq -r '.state // empty' <<<"$rev" 2>/dev/null) && [ -n "$rst" ]; then
+        com=""
+        if [ "$rst" = "PENDING" ]; then
+          gq='query($owner: String!, $name: String!, $number: Int!, $endCursor: String) { repository(owner: $owner, name: $name) { pullRequest(number: $number) { reviewThreads(first: 100, after: $endCursor) { pageInfo { hasNextPage endCursor } nodes { diffSide comments(first: 100) { nodes { path line originalLine body pullRequestReview { fullDatabaseId } } } } } } } }'
+          if gql=$(gate_label_ack_gh_write "$creds" api graphql --paginate -f "query=$gq" \
+                     -f "owner=${GATE_RVP_SLUG%%/*}" -f "name=${GATE_RVP_SLUG#*/}" -F "number=$GATE_RVP_PR" 2>/dev/null); then
+            com=$(jq -s -c --arg rid "$rid" '
+                    if length == 0 or any(.[]; (.errors // null) != null or (.data.repository.pullRequest // null) == null)
+                    then error("review thread read failed") else . end
+                    | [ .[] | .data.repository.pullRequest.reviewThreads.nodes[]? | .diffSide as $s
+                        | .comments.nodes[]?
+                        | select((.pullRequestReview.fullDatabaseId | tostring) == $rid)
+                        | {pull_request_review_id: ($rid | tonumber), path, line, original_line: .originalLine, side: $s, body} ]' \
+                  <<<"$gql" 2>/dev/null) || com=""
+          fi
+        else
+          com=$(gate_label_ack_gh_write "$creds" api --paginate "repos/$GATE_RVP_SLUG/pulls/$GATE_RVP_PR/comments" 2>/dev/null \
+                  | jq -s -c --argjson rid "$rid" 'add // [] | map(select(.pull_request_review_id == $rid))' 2>/dev/null) || com=""
+        fi
+        if [ -n "$com" ]; then
+          printf '%s' "$rev" > "$dir/$tag.review.json"
+          printf '%s' "$com" > "$dir/$tag.comments.json"
+          verdict=$("$GATE_DIR/review-post.sh" verify --request "$req" --review "$dir/$tag.review.json" \
+                      --comments "$dir/$tag.comments.json" 2>/dev/null || echo '판독불가')
+        fi
       fi ;;
   esac
   case "$verdict" in 일치|불일치|판독불가) ;; *) verdict='판독불가' ;; esac

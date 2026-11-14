@@ -5,6 +5,21 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.45.6] - 2026-11-15
+
+보류(PENDING) 방식으로 게시한 리뷰에 인라인 코멘트가 있어도, 게시 후 대조가 이제 렌더와 같은 게시물을 일치로 읽는다. 지금까지는 GitHub 의 PR 단위 코멘트 목록이 제출되지 않은 리뷰의 코멘트를 돌려주지 않아, 그런 게시는 늘 `대조=불일치` 로 멈췄다.
+
+### Fixed
+
+- **보류 리뷰의 재판독 갈래** — 게이트의 게시 후 재판독이 리뷰 단위 조회의 상태를 먼저 읽고, `PENDING` 이면 코멘트를 GraphQL 의 PR 리뷰 스레드(`reviewThreads`, `--paginate`)로 읽는다. 면은 스레드의 `diffSide` 에서, 리뷰는 64비트 id 를 담는 `fullDatabaseId` 로 맞추고, 결과를 PR 단위 목록과 같은 모양으로 옮겨 비교기에 넘긴다. 제출된 리뷰는 지금처럼 PR 단위 목록을 리뷰 id 로 거른다. GraphQL 판독이 실패하거나 오류를 실으면 빈 목록이 아니라 `대조=판독불가` 로 남는다.
+- **시험의 가짜 gh** — `scripts/test-gate.sh` 108 절의 가짜 gh 가 보류 리뷰의 코멘트를 PR 단위 목록에서 빼고, GraphQL 리뷰 스레드를 두 페이지로 낸다. 보류 방식 인라인 게시의 대조 일치, 줄·면이 다른 보류 게시의 대조 불일치, 직접 방식 재판독이 GraphQL 을 부르지 않음을 새 단언으로 잰다.
+
+### Why
+
+가짜 gh 가 보류 리뷰의 코멘트도 PR 단위 목록에 넣고 인라인 게시 시험이 모두 직접 방식이라, 실제 보류 리뷰어 런에서만 드러나는 불일치가 시험을 빠져나갔다. 이미 불일치로 멈춘 지난 런은 다시 대조하지 않고, 앞으로의 게시만 고친다.
+
+포함 커밋: 95fe7280.
+
 ## [3.45.5] - 2026-11-14
 
 런 배너를 클릭하면 좌석이 마지막으로 게이트를 부른 창으로 간다. 킥오프 뒤 tmux 서버가 다시 떴거나 좌석이 다른 창에서 이어 가도, 좌석의 다음 게이트 호출이 클릭 좌석 기록(`notify.seat`)을 그 창으로 옮긴다. 클릭이 기록된 창을 찾지 못하면 캐시 루트의 `focus.log` 에 한 줄을 남긴다.
