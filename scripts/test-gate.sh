@@ -69244,7 +69244,7 @@ check "109m: 단계 밖 커밋 뒤 브랜치 리뷰의 cycle 행은 입양 줄=�
   "$md_r|$md_rc1|$md_al|$md_rf|$md_m|$(sa_field "$(sa_ob_last "$(md_oid "$MD_M")")" 상태)" "0|0|아니오|2|문면|미이행"
 SA_PLAN=""; SA_AUTH_RAW=""
 unset -f md_row md_snap md_form md_fx md_plan md_seg md_rnext md_cyc_last md_oid md_try md_cls md_checks md_fixflow md_impl md_uncov
-unset md_uc md_cls_got md_base_tip
+unset md_uc md_cls_got md_base_tip md_rows2 md_rows3 md_r2 md_m2 md_rc1 md_al
 unset MD_PLAN MD_JSON MD_RC MD_OUT MD_H MD_M MD_FORK MD_WT MD_STUB MD_FIX
 unset md_a md_b md_rows0 md_rows1 md_rc2 md_fail md_r md_ob md_n1 md_got md_m md_fix md_rp md_r0 md_rf md_obn md_ff md_cut_got md_c
 
