@@ -1708,6 +1708,61 @@ check "교대 사본의 「Waiting on a stage」 절에 고르지 않고 대기�
   "$(mo_count "$(router_section "$RS_CORPUS" '### Waiting on a stage')" "$mo_none")" "1"
 check "교대 사본에는 포그라운드 스테이지 대기 문장 전체가 없다" "$(mo_count "$(cat "$RS_CORPUS")" "$mo_wait")" "0"
 check "리드 사본에는 포그라운드 대기 문장 전체가 없다" "$(mo_count "$(cat "$AP_ROUTER")" "$mo_wait")" "0"
+
+# A merged pull request a `머지 입양` row hands the run is routed by the same
+# sentences in BOTH router copies: how its slice is planned and first reviewed,
+# what its review line carries, how `입양 종결` closes it, how a fix records the
+# obligation before it merges and goes on to merge when a base resolution brings
+# it back with the obligation already closed, and how termination condition 12 holds it. Each is counted once over the whole copy, so a copy
+# that drops or rewords one of them fails here.
+for pair in "리드:$AP_ROUTER" "교대:$RS_CORPUS"; do
+  who=${pair%%:*}; file=${pair#*:}
+  for lit in \
+    '**A slice whose `슬라이싱` entry carries `머지 입양` is a pull request merged outside this run**' \
+    'Pass no `리뷰 정책` on its planning row either way: the planning act resolves the policy to `선리뷰후머지` itself, and the gate refuses any first row of the segment other than that `--from-declaration` act or a `park`.' \
+    'the line names the adopted pull request'"'"'s URL instead of a branch and carries `--base-sha <분기점> --merged <머지 커밋> --judge-head <워크트리 HEAD>`' \
+    '- **`입양 종결`** → a segment a `머지 입양` row adopted passed its review with no commit over its base.' \
+    '**A segment a `머지 입양` row adopted records `act --kind obligation` before it merges, and does not merge when that act is refused.**' \
+    '**A refusal that says the obligation is already closed (`this review obligation is already closed`) is not a refusal to merge on**: the segment fulfilled it on an earlier arrival at `머지` and came back after a base resolution' \
+    '→ 「Merging and applying a segment」. On a segment a `머지 입양` row adopted, record `act --kind obligation` before the merge, and do not merge when that act is refused — except a refusal that says the obligation is already closed, which means an earlier arrival at `머지` fulfilled it before a base resolution: then merge without recording it again.' \
+    'A segment a `머지 입양` row adopted carries an element too, with or without a `cycle` row, until its `완료` row.' \
+    '**A segment a `머지 입양` row adopted is held the same way, whatever its review policy, from the moment it is planned**' \
+    '**Its refusal (exit 3) parks the segment, not the shift**, and its text ends with the refusal'"'"'s class.' \
+    'When the entry carries `입양` too, its branch and worktree are the earlier run'"'"'s and may hold that run'"'"'s uncommitted or unpushed fix, so the refusal removes and deletes nothing: on `거절 부류: 재시도 가능` issue call 3 alone once more, and a refusal with no class, first or second, is the paragraph above'"'"'s and ends the shift as that paragraph says.' \
+    'Otherwise, on `거절 부류: 재시도 가능` take call 1,' \
+    '`gate.sh exec … --target <대상> --surface 워크트리쓰기 --destructive -- git branch -D <슬라이싱 의 브랜치>`, call 2 and call 3 again once, in that order — the removal leaves the branch the first call 2 cut' \
+    'Either way, on a second refusal, on `거절 부류: 영구`, or when call 1 or 2 fails, write `act --kind segment --target <대상> --segment <id> -- 상태=park 워크트리=<워크트리> 선행=없음` and a `blocked` row saying why, and go on with the shift.'
+  do
+    check "$who 사본에 머지 입양 문장이 한 번 실린다 — 「${lit:0:50}」" "$(mo_count "$(cat "$file")" "$lit")" "1"
+  done
+  # The merged-request refusal parks the one segment; the sentence that ended
+  # the whole shift on it must not come back in either copy.
+  check "$who 사본에 머지 입양 계획 거절로 시프트를 끝내던 옛 문장이 없다" \
+    "$(mo_count "$(cat "$file")" 'before its planned row; on its refusal (exit 3) write nothing more and end the shift with a `사유=중단` handoff.')" "0"
+  # The removal and branch deletion of the retry belong to a branch this run's
+  # call 2 cut; a refusal sentence that applies them to a paired segment, whose
+  # branch and worktree are an earlier run's, must not come back.
+  check "$who 사본에 짝 세그먼트에도 제거 재시도를 걸던 옛 문장이 없다" \
+    "$(mo_count "$(cat "$file")" 'its text ends with the refusal'"'"'s class: on `거절 부류: 재시도 가능` take call 1,')" "0"
+done
+# The two refusal classes the router branches on are the gate's own words: a
+# gate that drops or rewords a class token leaves the router reading nothing.
+check "게이트가 머지 입양 계획 거절에 재시도 가능 부류를 낸다" \
+  "$(mo_count "$(cat "$GATE")" '— 거절 부류: 재시도 가능"')" "4"
+check "게이트가 머지 입양 계획 거절에 영구 부류를 낸다" \
+  "$(mo_count "$(cat "$GATE")" '— 거절 부류: 영구"')" "11"
+# The kickoff reads a named pull request's state before the entry judgment and
+# takes a `reviewer` judgment again when a merged one can be adopted: without
+# both, a request to review a merged pull request after the fact lands on the
+# reviewer path, which writes no `머지 입양` row.
+for lit in \
+  '**A merged pull request the intent names is read before the judgment, not after it.**' \
+  'A judgment that still writes `reviewer` is taken again like a schema violation, compared with `jq -e '"'"'.run_profile != "reviewer"'"'"' <plan file>` as the delivery key is.' \
+  'take the state Step 1 item 3 read before the entry judgment'
+do
+  check "autopilot SKILL 에 머지된 PR 엔트리 판정 문장이 한 번 실린다 — 「${lit:0:50}」" \
+    "$(mo_count "$(cat "$AP_SKILL")" "$lit")" "1"
+done
 # The planning-order refusal is consumed by the router, not only written by the
 # gate: the copies quote the gate's own words, so a gate rewording that leaves
 # the router text behind fails here, and the broad sentence that sent this
@@ -1848,15 +1903,15 @@ done
 # re-derived exception
 #
 # The clause that keeps the re-kickoff from carrying a ledger row now names the
-# one row it derives again instead, the `세그먼트 입양` row, and says what
-# happens to every segment that fails the derivation. Both halves are pinned in
+# two rows it derives again instead, the `세그먼트 입양` and `머지 입양` rows,
+# and says what happens to every segment that fails the derivation. Both halves are pinned in
 # the resident body, so a rewording that keeps the exception and drops the
 # report of what was not adopted fails here. The third phrase pins the lineage
 # walk for an interview record: a broken link stops the re-kickoff and is never
 # bridged by a farther ancestor.
 # ---------------------------------------------------------------------------
 for lit in \
-  'a ledger row only triggers a question — or, for a `세그먼트 입양` row alone, a re-derivation' \
+  'a ledger row only triggers a question — or, for a `세그먼트 입양` or `머지 입양` row alone, a re-derivation' \
   'anything else is not adopted and is reported with its cause' \
   'and it never skips to a farther ancestor'
 do

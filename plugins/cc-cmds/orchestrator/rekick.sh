@@ -242,6 +242,7 @@
 #                  (`-` when the anchor recorded no pull request: the segment
 #                  stopped before one, and the new run starts it with an
 #                  implement stage)
+#                  머지입양후보  <세그먼트>  <PR 번호>  <머지 커밋 40자>  <PR 헤드 40자>  [<수정 브랜치 워크트리>]
 #                  입양불가  <세그먼트>  <PR 번호|->  <사유 토큰>  [미입양=PR들여오기]
 #
 # An `입양후보` line's tail cells, each only when it applies and in this order:
@@ -264,8 +265,20 @@
 # an `입양후보` line the cell followed by `들여올PR=<번호>`. The reason tokens: park,
 # 설계재실행, 문서바뀜, 슬라이스다름, 워크트리없음, PR기록없음, PR닫힘, HEAD불일치,
 # 브랜치다름, 작업트리변경, PR판독불가, PR불일치, 포크PR, 베이스다름, 착지됨,
-# 라이브, 원장없음, 중단답이월불가 (the seat's only), and 판정불가 when the gate child could
-# not answer.
+# 라이브, 원장없음, 중단답이월불가 (the seat's only), 머지입양미리뷰 (the fix branch of
+# a merged request no review of the source read on the adoption line — its
+# obligation open or never issued, and the first `cycle` row after the
+# obligation not carrying `입양 줄=예`), and 판정불가 when the gate child could
+# not answer. A `머지입양후보` line comes from a `머지 입양` row of the previous
+# manifest whose review the previous run left open (`rk_merge_adopt_candidates`),
+# and such a row that cannot be adopted gives an `입양불가` line with
+# 머지입양다름 (the request is no longer merged at the row's merge commit and
+# head), 머지입양판독불가 (the request could not be read) or 슬라이스다름.
+# A segment with a `머지 입양` row whose fix branch fails the checks above gives
+# that branch's `입양불가` line only when the previous run recorded a pull
+# request of its own for the fix (`rk_merge_fix_silent`); the line then stands
+# beside the segment's `머지입양후보` line, naming the fix pull request and why
+# it is not taken over.
 #
 # The `--asked` file lists the questions this re-kickoff actually asked, one
 # `<키><TAB><답 축자>` per line. The keys the checks read: `대상확인 <별칭>`,
@@ -430,7 +443,7 @@ for rk_f in manifest_field manifest_hdr_field manifest_row_fields manifest_plan_
             manifest_design_scope manifest_split_run manifest_design_delivery manifest_source_ticket_rows \
             manifest_apply_code_rows target_field target_aliases canonical_targets binding_set_bytes \
             doc_size_verdict doc_size_threshold \
-            check_manifest rundir_of_run_id deadline_instant cutpoint_index \
+            check_manifest rundir_of_run_id deadline_instant cutpoint_index cutpoint_token \
             judgment_class_ok judgment_class_forbidden \
             cc_live_stages cc_shift_is_live cc_relay_is_live cc_waiting_fresh_count cc_unanswered_halts cc_halt_answered \
             cc_unresolved_blocked cc_open_approval_rows cc_segment_states \
@@ -676,6 +689,14 @@ ROWS
               (.headRepositoryOwner | if type == \"object\" then (.login // \"\") else (. // \"\" | tostring) end),
               (.baseRefName // \"\" | tostring) ] | join(\"\t\")
           end" 2>/dev/null || printf "미상" ;;
+      pr-merge)
+        gh=$(gate_remote_gh)
+        json=$(GH_PROMPT_DISABLED=1 "$gh" pr view "$a1" -R "$a2" --json state,mergeCommit,headRefOid 2>"$err") \
+          || { printf "미상"; exit 0; }
+        printf "%s" "$json" | jq -r "
+          if type != \"object\" then \"미상\" else
+            [ (.state // \"\" | tostring), (.mergeCommit.oid // \"-\" | tostring), (.headRefOid // \"\" | tostring) ] | join(\"\t\")
+          end" 2>/dev/null || printf "미상" ;;
       sa-ledger)
         printf "sa-ledger\n"
         [ -f "$led" ] || exit 0
@@ -716,6 +737,13 @@ EOF
       else out="미상${TAB}미상${TAB}미상"; fi ;;
     pr-view)
       rk_prview_ok "$out" || out='미상' ;;
+    pr-merge)
+      # A state word, a merge commit (`-` when none) and a 40-hex head.
+      IFS="$TAB" read -r a b c x <<EOF
+$out
+EOF
+      if [ -n "$x" ] || ! rk_sha40 "$c" || { [ "$b" != "-" ] && ! rk_sha40 "$b"; }; then out='미상'
+      else case "$a" in ''|*[!A-Z]*) out='미상' ;; esac; fi ;;
     sa-ledger)
       # The header proves the child ran to the reader; every line after it is
       # one row of that segment, or the whole answer is refused — a row half
@@ -873,6 +901,95 @@ rk_adopt_take_label() { printf '이어받기 — %s · %s · %s · %s' "$1" "$(r
 rk_adopt_redo_label() { printf '다시 하기 — %s · %s' "$1" "$(rk_adopt_pr_label "$2")"; }
 rk_adopt_keep_label() { printf '그대로 두기 — %s · %s' "$1" "$(rk_adopt_pr_label "$2")"; }
 
+# rk_merge_adopt_row <segment> <alias> <PR> <merge commit> <PR head> — the
+# `머지 입양` row, naming the previous run as its source.
+rk_merge_adopt_row() {
+  printf -- '- `머지 입양` | 세그먼트=%s | 대상=%s | PR=%s | 머지 커밋=%s | PR 헤드=%s | 출처 런=%s' "$1" "$2" "$3" "$4" "$5" "$RK_PREV"
+}
+
+# rk_merge_adopt_take_label <segment> <PR> <merge commit> — the take answer of
+# a merged pull request with no fix pull request of its own: the adoption
+# question's take label with `머지됨` where the branch stands.
+rk_merge_adopt_take_label() { rk_adopt_take_label "$1" "$2" '머지됨' "$3"; }
+
+# rk_merge_src_row <segment> — the MANIFEST's `머지 입양` row of that segment.
+rk_merge_src_row() {
+  { grep -E '^- `머지 입양`' "$MANIFEST" 2>/dev/null || true; } | { grep -F -- "| 세그먼트=$1 |" || true; } | head -n 1
+}
+
+# rk_merge_fix_silent <segment> <PR|-> — 0 when the fix-branch check's
+# `입양불가` line of a segment is left out: the segment has a `머지 입양` row and
+# the previous run recorded no pull request of its own for it (no number, or
+# the merged request's own number). Such a line would only say there is no fix
+# to take over, and the segment's `머지입양후보` line speaks for it. A fix branch
+# that carries a pull request of its own keeps its `입양불가` line with its
+# cause, so a fix pull request the new run does not take over — left open on
+# the remote — is reported beside the merged request's line.
+rk_merge_fix_silent() {
+  local mrow mpr
+  mrow=$(rk_merge_src_row "$1")
+  [ -n "$mrow" ] || return 1
+  rk_num "$2" || return 0
+  mpr=$(manifest_row_fields "$mrow" 'PR' | head -n 1)
+  [ "$2" = "$mpr" ]
+}
+
+# rk_merge_open_obligations <segment> [전체] — how many `리뷰 의무` ids of that
+# segment the previous ledger leaves `미이행` (each id read by its last row), or,
+# with `전체`, how many it issued at all. The keys are cut with
+# `length("<key>") + 1`, so a byte-counting awk reads the Korean keys as a
+# character-counting one does.
+rk_merge_open_obligations() {
+  RM_K="$1" RM_W="${2:-미이행}" awk '
+    index($0, "- `리뷰 의무` | ") != 1 { next }
+    {
+      n = split($0, a, / \| /); id = ""; sg = ""; st = ""
+      for (i = 2; i <= n; i++) {
+        s = a[i]; sub(/[[:space:]]+$/, "", s)
+        if (index(s, "의무 id=") == 1) id = substr(s, length("의무 id=") + 1)
+        else if (index(s, "세그먼트=") == 1) sg = substr(s, length("세그먼트=") + 1)
+        else if (index(s, "상태=") == 1) st = substr(s, length("상태=") + 1)
+      }
+      if (sg == ENVIRON["RM_K"] && id != "") last[id] = st
+    }
+    END { c = 0; for (k in last) if (ENVIRON["RM_W"] == "전체" || last[k] == "미이행") c++; print c }
+  ' "$RK_PL" 2>/dev/null || printf '0'
+}
+
+# rk_merge_unread <segment> — 0 when the segment has a `머지 입양` row and the
+# previous run left no evidence that any review read the merged request: its
+# issued obligations are not all fulfilled, and the first `cycle` row of the
+# segment after the obligation's issuing row (`상태=미이행`, the first one) is
+# missing or does not carry `입양 줄=예`. The new run's gate exempts a segment
+# paired with a `세그먼트 입양` row from that very check, and its first review
+# of the fix branch reads base...fix branch, which leaves the merge commit's
+# own changes out — so such a segment's fix branch is never paired, and the
+# new run reviews the merged request again on the adoption line. A source that
+# was itself paired records no `입양 줄`, so unless its obligation was
+# fulfilled it is not paired again either: a second review of the merged
+# request is the cost, never a merge nobody read.
+rk_merge_unread() {
+  [ -n "$(rk_merge_src_row "$1")" ] || return 1
+  if [ "$(rk_merge_open_obligations "$1" 전체)" != "0" ] && [ "$(rk_merge_open_obligations "$1")" = "0" ]; then
+    return 1
+  fi
+  # A ledger awk cannot read prints nothing, which reads as unread.
+  [ "$(RM_K="$1" awk '
+    # The last field of a key wins, as the gate reads a row.
+    function fld(name,   n, i, a, s, v) {
+      n = split($0, a, / \| /); v = ""
+      for (i = 2; i <= n; i++) {
+        s = a[i]; sub(/[[:space:]]+$/, "", s)
+        if (index(s, name "=") == 1) v = substr(s, length(name "=") + 1)
+      }
+      return v
+    }
+    !iss && index($0, "- `리뷰 의무` | ") == 1 && fld("세그먼트") == ENVIRON["RM_K"] && fld("상태") == "미이행" { iss = 1; next }
+    iss && index($0, "- `cycle` | ") == 1 && fld("세그먼트") == ENVIRON["RM_K"] { seen = (fld("입양 줄") == "예"); exit }
+    END { print (seen ? "읽음" : "안읽음") }
+  ' "$RK_PL" 2>/dev/null)" != "읽음" ]
+}
+
 # rk_ledger_seg_rows <key> — the ledger's `segment` rows of that id, in order.
 rk_ledger_seg_rows() {
   { grep -E '^- `segment` ' "$RK_PL" 2>/dev/null || true; } | { grep -F "| id=$1 |" || true; }
@@ -901,6 +1018,7 @@ rk_adopt_manifest() {
   ( umask 077; RA_ROW="$1" awk '
       function put() { if (!done && sec == "## 인가") { print ENVIRON["RA_ROW"]; done = 1 } }
       /^- `세그먼트 입양`/ { next }
+      /^- `머지 입양`/ { next }
       /^- `강제 표면 승인`/ { next }
       /^## / { put(); for (i = 1; i <= nb; i++) print ""; nb = 0; sec = $0; print; next }
       /^$/ { nb++; next }
@@ -966,6 +1084,7 @@ rk_adopt_candidates() {
   local trows="$1" layer="$2" key keys rows last W B anchor n h wh rt ph ab slug al row tal
   local cg tcg tbase cur hd st tip prl pn ps ph2 pv vs vb vh vc vo vbase tail tok mcopy err doc docf dcopy first pre halts
   local pdoc pim pip pic pibr cim nopr
+  RK_CAND_KW=''
   keys=$( { grep -E '^- `segment` ' "$RK_PL" 2>/dev/null || true; } | while IFS= read -r row; do manifest_row_fields "$row" 'id' | head -n 1; printf '\n'; done | awk 'NF && !seen[$0]++')
   err="$RK_TMP/adopt.err"
   pdoc=$(rk_copy "$(rk_doc_path "$(manifest_field '요소' '설계 문서')")" adopt-prdoc.md) || pdoc=''
@@ -1012,6 +1131,11 @@ EOF
       rk_num "$n" || n='-'
     fi
     tok=''
+    # 0 — the fix branch of a merged request carries no pull request of its
+    # own: it is not taken over, and `rk_merge_fix_silent` leaves its line
+    # out. The new run reviews the merged request again from a worktree of
+    # its own, and the old commits stay where they are.
+    if [ "$nopr" = "1" ] && [ -n "$(rk_merge_src_row "$key")" ]; then tok='PR기록없음'; fi
     # 1 — the seat does not adopt a segment it last parked.
     if [ "$layer" = "full" ] && [ "$RK_AUTO" = "1" ] && [ "$(manifest_row_fields "$last" '상태' | head -n 1)" = "park" ]; then
       tok='park'
@@ -1075,11 +1199,20 @@ EOF
       elif [ "$ab" != "$B" ]; then tok='브랜치다름'
       fi
     fi
+    # 4b — the fix branch of a merged request no review of the previous run
+    # read on the adoption line is not taken over (`rk_merge_unread`): its
+    # segment's `머지입양후보` line then carries no worktree, and the new run
+    # reviews the merged request again.
+    if [ -z "$tok" ] && rk_merge_unread "$key"; then tok='머지입양미리뷰'; fi
     h=$wh
-    if [ -n "$tok" ]; then printf '입양불가\t%s\t%s\t%s%s\n' "$key" "$n" "$tok" "$pim"; continue; fi
+    if [ -n "$tok" ]; then rk_merge_fix_silent "$key" "$n" || printf '입양불가\t%s\t%s\t%s%s\n' "$key" "$n" "$tok" "$pim"; continue; fi
     cim=$pim
     { [ "$pip" = "$n" ] && [ "$pic" = "$h" ]; } || cim=''
-    if [ "$layer" != "full" ]; then printf '입양후보\t%s\t%s\t%s\t%s\t%s%s\n' "$key" "$B" "$W" "$n" "$h" "$cim"; continue; fi
+    if [ "$layer" != "full" ]; then
+      printf '입양후보\t%s\t%s\t%s\t%s\t%s%s\n' "$key" "$B" "$W" "$n" "$h" "$cim"
+      RK_CAND_KW="${RK_CAND_KW}${key}${TAB}${W}"$'\n'
+      continue
+    fi
 
     # 5 — the worktree belongs to the segment's target and has B checked out.
     slug=$(rk_rows_last_field "$rows" '레포')
@@ -1188,7 +1321,7 @@ EOF
       esac
     fi
     rm -f "$mcopy"
-    if [ -n "$tok" ]; then printf '입양불가\t%s\t%s\t%s%s\n' "$key" "$n" "$tok" "$pim"; continue; fi
+    if [ -n "$tok" ]; then rk_merge_fix_silent "$key" "$n" || printf '입양불가\t%s\t%s\t%s%s\n' "$key" "$n" "$tok" "$pim"; continue; fi
     pre=''
     if [ "$RK_AUTO" != "1" ] && [ "$(manifest_row_fields "$last" '상태' | head -n 1)" = "park" ]; then
       pre="${TAB}마지막행=park$(rk_adopt_causes "$key")"
@@ -1213,8 +1346,85 @@ EOF
       fi
     fi
     printf '입양후보\t%s\t%s\t%s\t%s\t%s%s%s%s\n' "$key" "$B" "$W" "$n" "$h" "$pre" "$tail" "$cim"
+    RK_CAND_KW="${RK_CAND_KW}${key}${TAB}${W}"$'\n'
   done <<EOF
 $keys
+EOF
+  rk_merge_adopt_candidates "$trows" "$layer"
+  return 0
+}
+
+# rk_merge_adopt_candidates <target rows> <full|offline> — one line per
+# `머지 입양` row of the previous manifest whose review the previous run left
+# open:
+#   머지입양후보<TAB><seg><TAB><PR><TAB><M><TAB><PR 헤드>[<TAB><수정 브랜치 워크트리>]
+#   입양불가<TAB><seg><TAB><PR><TAB><사유>
+# Three cases, from the previous ledger and, in the full layer, the remote:
+#   the segment's last row is `완료`, or the `머지됨` a merged fix ended on, and
+#     its issued obligations are all fulfilled — no line;
+#   the segment's fix branch is itself a candidate above (an open fix pull
+#     request) — the line carries that worktree, and the new run takes both rows;
+#     a fix branch whose merged request no review of the source read on the
+#     adoption line is never such a candidate (`rk_merge_unread`), so its
+#     segment falls to the next case;
+#   otherwise — the line alone, and the new run reviews the merged request again
+#     from its own derived worktree; fix commits with no open pull request stay
+#     in the old worktree.
+# The full layer also asks that the key be one of the plan's implement steps
+# (a run with no design document), and that the request still be merged at the
+# row's merge commit and head: `머지입양다름` otherwise, `머지입양판독불가` when
+# it cannot be read. Run after `rk_adopt_candidates`'s own loop, whose
+# candidate worktrees it reads from RK_CAND_KW.
+rk_merge_adopt_candidates() {
+  local trows="$1" layer="$2" mrow mseg mal mpr mm mh mtok mslug row ids out ms mmc mhd mw
+  while IFS= read -r mrow; do
+    [ -n "$mrow" ] || continue
+    mseg=$(manifest_row_fields "$mrow" '세그먼트' | head -n 1)
+    mal=$(manifest_row_fields "$mrow" '대상' | head -n 1)
+    mpr=$(manifest_row_fields "$mrow" 'PR' | head -n 1)
+    mm=$(manifest_row_fields "$mrow" '머지 커밋' | head -n 1)
+    mh=$(manifest_row_fields "$mrow" 'PR 헤드' | head -n 1)
+    # A segment that ended on its fulfilled obligations is not a candidate: its
+    # last row is `완료`, or the `머지됨` a merged fix ended on. One whose run
+    # stopped elsewhere (a `park`, a fix pull request still open) stays one,
+    # so the next run sees it even when its fix cannot be taken over.
+    case "$(manifest_row_fields "$(rk_ledger_seg_rows "$mseg" | tail -n 1)" '상태' | head -n 1)" in
+      완료|머지됨)
+        if [ "$(rk_merge_open_obligations "$mseg" 전체)" != "0" ] \
+           && [ "$(rk_merge_open_obligations "$mseg")" = "0" ]; then
+          continue
+        fi ;;
+    esac
+    mtok=''
+    if [ "$layer" = "full" ]; then
+      ids=$(printf '%s' "$G_PLAN" | jq -r '.steps[]? | select(type == "object" and .skill == "implement") | .id // empty' 2>/dev/null)
+      printf '%s\n' "$ids" | grep -qxF -- "$mseg" || mtok='슬라이스다름'
+      if [ -z "$mtok" ]; then
+        mslug=''
+        while IFS= read -r row; do
+          [ -n "$row" ] || continue
+          [ "$(manifest_row_fields "$row" '별칭' | head -n 1)" = "$mal" ] || continue
+          mslug=$(manifest_row_fields "$row" '원격 슬러그' | head -n 1)
+          break
+        done <<EOF
+$trows
+EOF
+        out=''
+        [ -z "$mslug" ] || out=$(rk_gate pr-merge "$MANIFEST" "$RK_PREV" "$RK_PRD" "$RK_PL" "$RK_PG" "$RK_TMP/adopt.err" "$mpr" "$mslug")
+        if [ -z "$out" ] || [ "$out" = "미상" ]; then mtok='머지입양판독불가'
+        else
+          IFS="$TAB" read -r ms mmc mhd <<EOF
+$out
+EOF
+          { [ "$ms" = "MERGED" ] && [ "$mmc" = "$mm" ] && [ "$mhd" = "$mh" ]; } || mtok='머지입양다름'
+        fi
+      fi
+    fi
+    if [ -n "$mtok" ]; then printf '입양불가\t%s\t%s\t%s\n' "$mseg" "$mpr" "$mtok"; continue; fi
+    mw=$(printf '%s' "$RK_CAND_KW" | awk -F '\t' -v k="$mseg" '$1 == k { print $2; exit }')
+    printf '머지입양후보\t%s\t%s\t%s\t%s%s\n' "$mseg" "$mpr" "$mm" "$mh" "${mw:+$TAB$mw}"
+  done <<EOF
+$( { grep -E '^- `머지 입양`' "$MANIFEST" 2>/dev/null || true; } )
 EOF
   return 0
 }
@@ -1646,11 +1856,16 @@ rk_detect_judge() {
   states=$(rk_clause_states "$RK_PL")
   if rk_clauses_all_met "$states"; then
     dcands=$(rk_adopt_candidates "$(manifest_targets)" offline)
-    # A candidate with no pull request (PR cell `-`) does not reopen a run
-    # that met every clause: there is no open request to review from.
-    while IFS="$TAB" read -r dkind dseg df3 df4 dn _; do
-      [ "$dkind" = "입양후보" ] || continue
-      [ "$dn" != "-" ] || continue
+    # A `머지입양후보` line counts once: one carrying a fix worktree shares its
+    # segment with an `입양후보` line already counted. A candidate with no
+    # pull request (PR cell `-`) does not reopen a run that met every clause:
+    # there is no open request to review from.
+    while IFS="$TAB" read -r dkind dseg df3 df4 df5 dn; do
+      case "$dkind" in
+        입양후보) [ "$df5" != "-" ] || continue ;;
+        머지입양후보) [ -z "$dn" ] || continue ;;
+        *) continue ;;
+      esac
       nadopt=$((nadopt + 1)); adopt_segs="${adopt_segs:+$adopt_segs, }$dseg"
     done <<EOF
 $dcands
@@ -1775,6 +1990,8 @@ rk_detect_tail() {
       입양후보)
         n=$f5; [ "$n" != "-" ] || n='없음'
         printf '고지\t이전 런의 머지되지 않은 작업(%s PR %s)은 입양 후보입니다 — 재킥오프가 디스크와 원격을 다시 확인합니다\n' "$seg" "$n" ;;
+      머지입양후보)
+        printf '고지\t이전 런이 사후 리뷰를 끝내지 않은 머지된 PR(%s PR %s)은 입양 후보입니다 — 재킥오프가 원격을 다시 확인합니다\n' "$seg" "$f3" ;;
       입양불가)
         n=$f3; [ "$n" != "-" ] || n='없음'
         if [ "$f5" = "미입양=PR들여오기" ]; then
@@ -3079,6 +3296,7 @@ rk_render() {
     # closes. The `강제 표면 승인` rows go with them and are written again under
     # the adoption rows they belong to, so a segment not adopted keeps none.
     /^- `세그먼트 입양`/ { next }
+    /^- `머지 입양`/ { next }
     /^- `강제 표면 승인`/ { next }
     # The plugin rows of the previous run are carried in place, byte for byte,
     # except a row whose key is now in the seed or judged not installed.
@@ -3332,15 +3550,37 @@ rk_render_manifest() {
     if [ -n "$RK_TARGETS" ]; then trows=$(grep -E '^- `target`' "$RK_TARGETS" 2>/dev/null || true); else trows=$(manifest_targets); fi
     RK_ADOPT_ROWS="$RK_TMP/adopt.rows"
     : > "$RK_ADOPT_ROWS"
+    # A `머지 입양` row goes right after the `세그먼트 입양` row of its segment
+    # when its fix branch is adopted too, and before that segment's
+    # `강제 표면 승인` rows; one with no fix branch is taken on its own answer,
+    # after every pair.
+    local acands mline mpr mm mh
+    acands=$(rk_adopt_candidates "$trows" full)
     while IFS="$TAB" read -r kind seg cb cw cn ch _; do
       [ "$kind" = "입양후보" ] || continue
       if [ "$RK_AUTO" != "1" ] && [ "$(rk_asked_answer "입양 $seg")" != "$(rk_adopt_take_label "$seg" "$cn" "$cb" "$ch")" ]; then
         continue
       fi
       { rk_adopt_row "$seg" "$cb" "$cw" "$cn"; printf '\n'; } >> "$RK_ADOPT_ROWS"
+      mline=$(printf '%s\n' "$acands" | awk -F '\t' -v k="$seg" '$1 == "머지입양후보" && $2 == k && NF == 6')
+      if [ -n "$mline" ]; then
+        IFS="$TAB" read -r _ _ mpr mm mh _ <<EOF
+$mline
+EOF
+        { rk_merge_adopt_row "$seg" "$(manifest_row_fields "$(rk_merge_src_row "$seg")" '대상' | head -n 1)" "$mpr" "$mm" "$mh"; printf '\n'; } >> "$RK_ADOPT_ROWS"
+      fi
       rk_sa_rows "$seg" "$cb" "$cw" "$ch" "$trows" "$RK_ADOPT_ROWS" "$RK_TMP/sa.notes" || rk_fail "$RK_SA_WHY"
     done <<EOF
-$(rk_adopt_candidates "$trows" full)
+$acands
+EOF
+    while IFS="$TAB" read -r kind seg mpr mm mh cw; do
+      [ "$kind" = "머지입양후보" ] && [ -z "$cw" ] || continue
+      if [ "$RK_AUTO" != "1" ] && [ "$(rk_asked_answer "입양 $seg")" != "$(rk_merge_adopt_take_label "$seg" "$mpr" "$mm")" ]; then
+        continue
+      fi
+      { rk_merge_adopt_row "$seg" "$(manifest_row_fields "$(rk_merge_src_row "$seg")" '대상' | head -n 1)" "$mpr" "$mm" "$mh"; printf '\n'; } >> "$RK_ADOPT_ROWS"
+    done <<EOF
+$acands
 EOF
   fi
   RK_RENDER_WHY=''
@@ -3993,11 +4233,71 @@ EOF
   done <<EOF
 $arows
 EOF
+  # The `머지 입양` rows, on the same terms by kind: inside `## 인가`, one per
+  # segment, naming the previous run, and each the row a `머지입양후보` line
+  # derived again here makes. One whose candidate carries a fix worktree
+  # stands only beside that segment's `세그먼트 입양` row, and one whose
+  # candidate carries none stands only without it. The target it names keeps,
+  # in the draft, what the driver's manifest check takes for such a row: a
+  # `리뷰 정책 상한` other than `리뷰없음`, and a cutpoint of `머지`, `배포` or
+  # `머지후착수`. A person's re-kickoff may lower a carried cutpoint at the hook
+  # check, or fill a ceiling the source left empty with `리뷰없음` from a
+  # confirmed blank row, and this check is the last one before the source is
+  # closed in favour of a run that check would refuse. The rest of what that
+  # check reads off adoption rows is left to the check itself, run over the
+  # whole draft below.
+  local mrows min mrow mkey mline mpr mm mh mw mt mcut mceil
+  mrows=$(MANIFEST="$draft" manifest_merge_adoption_rows)
+  min=$(awk '/^## / { sec = $0; next } sec == "## 인가" && /^- `머지 입양`/' "$draft")
+  [ "$mrows" = "$min" ] || why="${why:+$why; }## 인가 밖에 머지 입양 행이 있습니다"
+  while IFS= read -r mrow; do
+    [ -n "$mrow" ] || continue
+    mkey=$(manifest_row_fields "$mrow" '세그먼트' | head -n 1)
+    [ "$(printf '%s\n' "$mrows" | { grep -F -- "| 세그먼트=$mkey |" || true; } | grep -c .)" = "1" ] \
+      || why="${why:+$why; }세그먼트 $mkey 의 머지 입양 행이 하나가 아닙니다"
+    [ "$(manifest_row_fields "$mrow" '출처 런' | head -n 1)" = "$pid" ] \
+      || why="${why:+$why; }세그먼트 $mkey 의 머지 입양 행이 원천 런 $pid 를 출처로 적지 않습니다"
+    mt=$(manifest_row_fields "$mrow" '대상' | head -n 1)
+    mceil=$(MANIFEST="$draft" target_field "$mt" '리뷰 정책 상한')
+    [ "$mceil" != "리뷰없음" ] \
+      || why="${why:+$why; }세그먼트 $mkey 의 머지 입양 대상 $mt 의 리뷰 정책 상한이 「리뷰없음」입니다 — 입양 세그먼트는 선리뷰후머지로 풀리므로 그 대상에는 둘 수 없습니다"
+    mcut=$(MANIFEST="$draft" target_field "$mt" '절단점')
+    case "$(cutpoint_token "$mcut" 2>/dev/null || true)" in
+      머지|배포|머지후착수) : ;;
+      *) why="${why:+$why; }세그먼트 $mkey 의 머지 입양 대상 $mt 의 절단점이 「${mcut}」입니다 — 머지 입양은 절단점이 「머지」·「배포」·「머지후착수」 인 대상에만 둡니다" ;;
+    esac
+    mline=$(printf '%s\n' "$cands" | awk -F '\t' -v k="$mkey" '$1 == "머지입양후보" && $2 == k')
+    if [ -z "$mline" ]; then why="${why:+$why; }세그먼트 $mkey 는 지금 다시 유도한 머지 입양 후보가 아닙니다"; continue; fi
+    IFS="$TAB" read -r _ _ mpr mm mh mw <<EOF
+$mline
+EOF
+    [ "$mrow" = "$(RK_PREV=$pid MANIFEST="$prev" rk_merge_adopt_row "$mkey" "$(MANIFEST="$prev" manifest_row_fields "$(MANIFEST="$prev" rk_merge_src_row "$mkey")" '대상' | head -n 1)" "$mpr" "$mm" "$mh")" ] \
+      || why="${why:+$why; }세그먼트 $mkey 의 머지 입양 행이 다시 유도한 행과 다릅니다"
+    if [ -n "$mw" ]; then
+      printf '%s\n' "$arows" | { grep -F -- "| 세그먼트=$mkey |" || true; } | grep -q . \
+        || why="${why:+$why; }세그먼트 $mkey 의 머지 입양 행은 수정 브랜치 입양 행 없이 설 수 없습니다"
+    else
+      ! printf '%s\n' "$arows" | { grep -F -- "| 세그먼트=$mkey |" || true; } | grep -q . \
+        || why="${why:+$why; }세그먼트 $mkey 의 머지 입양 후보에는 수정 브랜치가 없는데 세그먼트 입양 행이 있습니다"
+    fi
+  done <<EOF
+$mrows
+EOF
+  # A fix branch taken over beside a merged request carries its `머지 입양` row.
+  while IFS="$TAB" read -r _ mkey _ _ _ mw; do
+    [ -n "$mkey" ] && [ -n "$mw" ] || continue
+    if printf '%s\n' "$arows" | { grep -F -- "| 세그먼트=$mkey |" || true; } | grep -q . \
+       && ! printf '%s\n' "$mrows" | { grep -F -- "| 세그먼트=$mkey |" || true; } | grep -q .; then
+      why="${why:+$why; }세그먼트 $mkey 의 수정 브랜치 입양 행 옆에 머지 입양 행이 없습니다"
+    fi
+  done <<EOF
+$(printf '%s\n' "$cands" | awk -F '\t' '$1 == "머지입양후보"')
+EOF
   # A source that met every termination clause is re-kicked only to adopt a
   # segment it left unmerged: a draft that adopts none of its segments would
   # run the remaining graph of a finished run again.
   if rk_clauses_all_met "$(MANIFEST="$prev" rk_clause_states "$RK_PL")" \
-    && ! printf '%s\n' "$arows" | awk -v p="$pid" '
+    && ! printf '%s\n%s\n' "$arows" "$mrows" | awk -v p="$pid" '
         { n = split($0, a, / [|] /); for (i = 2; i <= n; i++) if (a[i] == "출처 런=" p) f = 1 }
         END { exit !f }'; then
     why="${why:+$why; }원천 런 $pid 은 완료 기준을 모두 채웠습니다 — 이어받는 세그먼트가 없는 초안은 받지 않습니다"
@@ -4026,13 +4326,40 @@ EOF
     done <<EOF
 $(printf '%s\n' "$cands" | awk -F '\t' '$1 == "입양후보"')
 EOF
+    # A merged request with no fix branch is asked on its own: take or redo.
+    # One with a fix branch rides the answer to that branch's question above.
+    while IFS="$TAB" read -r _ akey cn mm _ mw; do
+      [ -n "$akey" ] && [ -z "$mw" ] || continue
+      take=$(rk_merge_adopt_take_label "$akey" "$cn" "$mm"); redo=$(rk_adopt_redo_label "$akey" "$cn")
+      aans=$(rk_asked_answer "입양 $akey")
+      arow=$(printf '%s\n' "$mrows" | { grep -F -- "| 세그먼트=$akey |" || true; } | head -n 1)
+      if [ -z "$aans" ]; then why="${why:+$why; }입양 후보 $akey 에 답이 없습니다"
+      elif [ "$aans" = "$take" ]; then [ -n "$arow" ] || why="${why:+$why; }입양 $akey 의 답이 이어받기인데 머지 입양 행이 없습니다"
+      elif [ "$aans" = "$redo" ]; then [ -z "$arow" ] || why="${why:+$why; }입양 $akey 의 답이 다시 하기인데 머지 입양 행이 있습니다"
+      else why="${why:+$why; }입양 $akey 의 답이 두 라벨 어느 것과도 같지 않습니다"
+      fi
+    done <<EOF
+$(printf '%s\n' "$cands" | awk -F '\t' '$1 == "머지입양후보"')
+EOF
     while IFS= read -r akey; do
       [ -n "$akey" ] || continue
-      printf '%s\n' "$cands" | awk -F '\t' -v k="$akey" '$1 == "입양후보" && $2 == k { f = 1 } END { exit !f }' \
+      printf '%s\n' "$cands" | awk -F '\t' -v k="$akey" '($1 == "입양후보" || $1 == "머지입양후보") && $2 == k { f = 1 } END { exit !f }' \
         || why="${why:+$why; }입양 $akey 는 입양 후보가 아닌 세그먼트의 키입니다"
     done <<EOF
 $(awk -F '\t' '$1 ~ /^입양 / { print substr($1, length("입양 ") + 1) }' "$RK_ASKED" | awk '!seen[$0]++')
 EOF
+  fi
+  # A draft that carries an adoption row goes through the driver's own manifest
+  # check as a whole, on both paths. The clauses above only name the common
+  # refusals; the driver reads adoption rows against the rest of the manifest
+  # too — with no design document, every implementation step but one must be
+  # named by an adoption row — and a draft that loses a row here, because its
+  # segment derived no candidate or was answered `다시 하기`, would otherwise
+  # pass this last check before 7.8 and be refused on the new run's first gate
+  # call.
+  if [ -n "$arows$mrows" ]; then
+    rk_check_manifest "$draft" \
+      || why="${why:+$why; }입양 행을 실은 초안이 드라이버의 매니페스트 검사를 통과하지 않습니다 — $(sed -n 's/^.*\[run\]\[stop\] //p' "$RK_TMP/check.err" | tail -n 1)"
   fi
   vs_check 입양 "$why"
 
@@ -4057,9 +4384,11 @@ $(awk -F '\t' '$1 ~ /^강제 표면 / { print substr($1, length("강제 표면 "
 EOF
   fi
   sa_all=$(MANIFEST="$draft" manifest_surface_approval_rows)
+  # A `머지 입양` row between an adoption row and its approvals keeps the block.
   sa_blk=$(awk '
       /^## / { sec = $0; inb = 0; next }
       sec == "## 인가" && /^- `세그먼트 입양`/ { inb = 1; next }
+      sec == "## 인가" && inb && /^- `머지 입양`/ { next }
       sec == "## 인가" && inb && /^- `강제 표면 승인`/ { print; next }
       { inb = 0 }' "$draft")
   [ "$sa_all" = "$sa_blk" ] || why="${why:+$why; }입양 행 바로 아래가 아닌 강제 표면 승인 행이 있습니다"
@@ -4082,6 +4411,7 @@ EOF
     sa_act=$(RA_ROW="$arow" awk '
         /^## / { sec = $0; inb = 0; next }
         sec == "## 인가" && $0 == ENVIRON["RA_ROW"] { inb = 1; next }
+        sec == "## 인가" && inb && /^- `머지 입양`/ { next }
         sec == "## 인가" && inb && /^- `강제 표면 승인`/ { print; next }
         { inb = 0 }' "$draft")
     [ "$sa_act" = "$sa_exp" ] \
