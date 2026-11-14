@@ -21485,9 +21485,14 @@ gate_reap_eligible() {
   # when `cc_run_settle_stuck` holds. That keeps its fate what it was before the
   # marker existed, when the same run read 종단 by derivation and was reclaimed
   # after the same retention.
+  # A base-move latch condition 5 holds the end on is a question to a person,
+  # not a run nobody settles, so such a run is no candidate either.
   ledger=$(cat "$rd/ledger-path" 2>/dev/null || true)
   state=$(cc_run_state "$rd" "$ledger" 180 3600 2>/dev/null || true)
-  [ "$state" = "종단" ] || cc_run_settle_stuck "$rd" "$ledger" || return 1
+  if [ "$state" != "종단" ]; then
+    cc_run_settle_stuck "$rd" "$ledger" || return 1
+    [ "$(gate_base_guard_open_latches "$rd" "$ledger")" = 0 ] || return 1
+  fi
   # 5 — an id that parses as a date must not be NEWER than the retention clock it
   # is paired with. An id that does not parse passes: the clause is a conditional
   # and its antecedent is "parses as a date".
@@ -30459,6 +30464,32 @@ gate_base_guard_done_unmet() {
     done
   done
   return 0
+}
+
+gate_base_guard_open_latches() {
+  # gate_base_guard_open_latches <run-dir> <ledger> — count of base-move latch
+  # files under `<run-dir>/base-guard/` that hold the run's end in condition 5
+  # (`gate_base_guard_done_unmet`): a latch naming no record (`기록 없음`, empty
+  # or unreadable), or one naming a record no `중단 답` row names. The reaper
+  # reads it for a run that is not its own, so it takes the run directory and
+  # ledger as arguments and needs no manifest. Each latch is written by a rename
+  # from a dot-prefixed temporary name, so the globs below never read a
+  # temporary file.
+  local run_dir="${1%/}" ledger="$2" f v n=0
+  [ -n "$run_dir" ] && [ -d "$run_dir/base-guard" ] || { printf '0'; return 0; }
+  for f in "$run_dir"/base-guard/*.latch "$run_dir"/base-guard/*.latch.*; do
+    [ -e "$f" ] || continue
+    v=''
+    [ -f "$f" ] && v=$(sed -n '1p' "$f" 2>/dev/null)
+    case "$v" in
+      /*.md)
+        LC_ALL=C awk -v k="| 중단 기록=$v |" \
+          'index($0, "- `중단 답` ") == 1 && index($0, k) { f = 1 } END { exit !f }' \
+          "$ledger" 2>/dev/null || n=$((n + 1)) ;;
+      *) n=$((n + 1)) ;;
+    esac
+  done
+  printf '%s' "$n"
 }
 
 gate_base_guard_marker_wait() {
@@ -64653,8 +64684,8 @@ EOF
   # that had just refused it.
   # The fold itself lives in `liveness.sh` so that this condition and the status
   # line read one rule rather than two copies of it. The base-move latches read
-  # after the fold are the one addition, and `cc_run_settle_stuck` reads them
-  # too (`cc_base_guard_open_latches`). What stays here is the
+  # after the fold are the one addition, and the reaper's settle-stuck clause
+  # reads them too (`gate_base_guard_open_latches`). What stays here is the
   # RENDERING: these two sentences are the only place a person is told how to
   # clear the block, so they are not the shared function's business. The first
   # of them is also read as a value: `gate_done_disposition` anchors on the

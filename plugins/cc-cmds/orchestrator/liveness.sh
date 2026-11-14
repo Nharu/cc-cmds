@@ -2484,35 +2484,7 @@ cc_run_settle_stuck() {
   [ "${n:-0}" -ge 1 ] 2>/dev/null || return 1
   n=$(cc_unresolved_blocked "$ledger" | grep -c . || true)
   [ "${n:-0}" -eq 0 ] 2>/dev/null || return 1
-  # A base-move latch the gate's condition 5 holds the end on is a question to
-  # a person, not a run nobody settles.
-  n=$(cc_base_guard_open_latches "$run_dir" "$ledger")
-  [ "${n:-0}" -eq 0 ] 2>/dev/null || return 1
   ! cc_shift_is_live "$run_dir"
-}
-
-cc_base_guard_open_latches() {
-  # cc_base_guard_open_latches <run-dir> <ledger> — count of base-move latch
-  # files under `<run-dir>/base-guard/` that hold the run's end in the gate's
-  # condition 5 (`gate_base_guard_done_unmet`): a latch naming no record
-  # (`기록 없음`, empty or unreadable), or one naming a record no `중단 답` row
-  # names. The gate writes each latch by a rename from a dot-prefixed temporary
-  # name, so the globs below never read a temporary file.
-  local run_dir="${1%/}" ledger="$2" f v n=0
-  [ -n "$run_dir" ] && [ -d "$run_dir/base-guard" ] || { printf '0'; return 0; }
-  for f in "$run_dir"/base-guard/*.latch "$run_dir"/base-guard/*.latch.*; do
-    [ -e "$f" ] || continue
-    v=''
-    [ -f "$f" ] && v=$(sed -n '1p' "$f" 2>/dev/null)
-    case "$v" in
-      /*.md)
-        LC_ALL=C awk -v k="| 중단 기록=$v |" \
-          'index($0, "- `중단 답` ") == 1 && index($0, k) { f = 1 } END { exit !f }' \
-          "$ledger" 2>/dev/null || n=$((n + 1)) ;;
-      *) n=$((n + 1)) ;;
-    esac
-  done
-  printf '%s' "$n"
 }
 
 cc_run_idle_seconds() {
