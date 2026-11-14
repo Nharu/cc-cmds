@@ -3939,7 +3939,10 @@ tr_host_case() {
   # 부여 기록은 요청 종류를 stage_kind 로 싣는다 — (라) 가 세는 칸이다.
   t="$b/leases"
   txn "$t" 'REQ({kind: "review"})' >/dev/null 2>&1
-  lf=$(ls "$t"/*.lease 2>/dev/null | head -1)
+  lf=""
+  for tr_hf in "$t"/*.lease; do
+    if [ -f "$tr_hf" ]; then lf=$tr_hf; break; fi
+  done
   check "임대 기록: 부여 기록은 요청 종류를 stage_kind 로 싣는다" "$(jq -r '.stage_kind' "$lf" 2>/dev/null)" review
 }
 tr_in_run "$TR_RUN_SH" tr_host_case

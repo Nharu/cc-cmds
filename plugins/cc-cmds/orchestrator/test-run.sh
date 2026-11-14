@@ -12903,7 +12903,7 @@ check "반납이 계속 실패하면 쓸기 뒤에도 둘 다 남는다" "$(ra_g
 check "계보 끝의 반납이 남은 표지의 임대를 다시 내놓는다" "$(ra_get "$lr_out" swept)" "-/-"
 check "라우터 질의 직전에 실패한 반납을 다시 내놓는다" "$(lr_run grant)" "resolve=-/-"
 check "런 끝 회수는 남은 표지도 지운다" "$(ra_get "$(lr_run run-end)" end)" "-/-"
-if sed -n '/^stage_wait_loop()/,/^}/p' "$DRIVER" | grep -q -F 'spawn_lease_retry_sweep'; then
+if [ "$( { sed -n '/^stage_wait_loop()/,/^}/p' "$DRIVER" || true; } | { grep -c -F 'spawn_lease_retry_sweep' || true; } )" != "0" ]; then
   ok "대기 루프는 재질의 직전에 반납 재시도를 쓴다"
 else
   bad "대기 루프 반납 재시도" "stage_wait_loop 에 spawn_lease_retry_sweep 이 없다"
