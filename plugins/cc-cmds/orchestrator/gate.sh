@@ -31016,7 +31016,7 @@ gate_adoption_first_cycle() {
   ol=$(gate_adoption_obligation_line "$1")
   [ -n "$ol" ] || return 0
   { grep -n '^- `cycle` ' "$LEDGER" 2>/dev/null || true; } \
-    | gate_rows_field_eq '세그먼트' "$1" | awk -F: -v ol="$ol" '$1 + 0 > ol + 0 { sub(/^[0-9]+:/, ""); print; exit }'
+    | gate_rows_field_eq '세그먼트' "$1" | awk -F: -v ol="$ol" '!d && $1 + 0 > ol + 0 { d = 1; sub(/^[0-9]+:/, ""); print }'
 }
 
 gate_adoption_unfixed() {
@@ -41141,9 +41141,10 @@ gate_record_row() {
       # time. So: a key whose spelling changes when its surrounding spaces and
       # tabs are trimmed is refused; `세그먼트` is refused whatever its value,
       # because the gate writes it from `--segment`; and `발견 지문` is refused
-      # because it is a field only the gate writes, as are the eleven cause
-      # fields beside it — the trigger, the fix path, the previous head, the
-      # pinned ref and the seven report-format fields. A refusal writes nothing.
+      # because it is a field only the gate writes, as are `리뷰 종결`,
+      # `입양 줄` and the eleven cause fields — the trigger, the fix path, the
+      # previous head, the pinned ref and the seven report-format fields. A
+      # refusal writes nothing.
       local ca ck ckt cnl cr ctb
       cnl=$'\n'; cr=$'\r'; ctb=$'\t'
       for ca in "$@"; do
@@ -41219,10 +41220,21 @@ gate_record_row() {
       # head is the judge head, `아니오` otherwise. The obligation act reads it
       # off the first `cycle` row after the issuing row, so a review of the
       # branch line cannot be the one that fulfils the obligation.
-      local adj_line=''
+      # A count the gate cannot read (`미상`) is not an answer: while this row
+      # would be the first after the issuing row it decides the obligation for
+      # good, so it is refused with exit 3 and the review records again.
+      local adj_line='' adj_ahead
       if gate_segment_merge_adopted "$seg" && ! gate_adoption_row "$seg" >/dev/null; then
         adj_line='아니오'
-        if [ "$(gate_segment_ahead_count "$seg")" = 0 ] && gate_adoption_unfixed "$seg"; then
+        adj_ahead=$(gate_segment_ahead_count "$seg")
+        case "$adj_ahead" in
+          ''|*[!0-9]*)
+            if [ -n "$(gate_adoption_obligation_line "$seg")" ] && ! gate_adoption_cycle_after_obligation "$seg"; then
+              warn "머지 입양 세그먼트 ${seg} 의 앞선 커밋 수를 읽지 못했습니다(${adj_ahead:-(빈 값)}) — 의무 발행 뒤 첫 cycle 행의 입양 줄을 정할 수 없어 행을 쓰지 않습니다. 다시 기록합니다"
+              return "$GATE_EXIT_RULE"
+            fi ;;
+        esac
+        if [ "$adj_ahead" = 0 ] && gate_adoption_unfixed "$seg"; then
           local adj_wt adj_tip adj_rh
           adj_wt=$(gate_segment_worktree "$seg")
           adj_tip=$(gate_worktree_tip "$adj_wt" 2>/dev/null) || adj_tip=''
