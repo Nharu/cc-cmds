@@ -18262,7 +18262,13 @@ gate_stage_wait_row() {
   # `resume-bound` grant does. An attempt that waits with a halt answer's card
   # names the answer's ledger line in `답 운반`, so the ledger tells a wait that
   # holds an answer from one that does not.
-  local did="${1:-}" env="${2:-}" bind="${3:-}" carry="${4:-}" verdict vals lineage grp acct upto cost csrc reason
+  #
+  # `호스트` is the host reading the router's host hold put on the envelope —
+  # `포화 ratio=<천분율> ncpu=<n> 표본=<sampled_at_epoch as floor|todate>` — and
+  # `-` on an envelope without one (every account wait). `기록 시각` is
+  # `now_iso`, the moment the row is written, so a wait's rows carry their own
+  # time and the run-end report can measure how long a wait lasted.
+  local did="${1:-}" env="${2:-}" bind="${3:-}" carry="${4:-}" verdict vals lineage grp acct upto cost csrc reason host
   verdict=$(printf '%s' "$env" | jq -r 'if type == "object" then (.verdict // "") else "" end' 2>/dev/null) || return 2
   [ "$verdict" = "WAIT" ] || return 2
   vals=$(printf '%s' "$env" | jq -r "$(gate_route_bp_jq)"'
@@ -18270,11 +18276,15 @@ gate_stage_wait_row() {
       (.account | s),
       (if .until_epoch == null then "-" else (.until_epoch | floor | todate) end),
       cost_cells,
-      (.reason | s) ]
+      (.reason | s),
+      (if ((.host | type) == "object") and ((.host.ratio_permille | type) == "number")
+          and ((.host.ncpu | type) == "number") and ((.host.sampled_at_epoch | type) == "number")
+       then "포화 ratio=\(.host.ratio_permille | floor) ncpu=\(.host.ncpu | floor) 표본=\(.host.sampled_at_epoch | floor | todate)"
+       else "-" end) ]
     | if any(.[]; test("[\r\n]")) then error("line break") else .[] end' 2>/dev/null) || return 2
   [ -n "$vals" ] || return 2
   { IFS= read -r grp; IFS= read -r acct; IFS= read -r upto; IFS= read -r cost; IFS= read -r csrc
-    IFS= read -r reason; } <<EOF
+    IFS= read -r reason; IFS= read -r host; } <<EOF
 $vals
 EOF
   lineage=$(route_lineage_of "$did")
@@ -18284,7 +18294,7 @@ EOF
       gate_resume_grant_ok "$bind" "$env" || return 2 ;;
   esac
   gate_append 'stage-wait' "계보=$lineage" "그룹=$grp" "계정=$acct" "까지=$upto" \
-    "비용=$cost" "비용 출처=$csrc" "근거=$reason" ${carry:+"답 운반=$carry"}
+    "비용=$cost" "비용 출처=$csrc" "근거=$reason" "호스트=$host" "기록 시각=$(now_iso)" ${carry:+"답 운반=$carry"}
 }
 
 gate_lease_of() {
@@ -58824,7 +58834,7 @@ gate_sup_wait_refuse() {
   # `wait` then reads the attempt as a launch that left no row.
   local rc=0
   gate_append 'stage-wait' "계보=$GATE_SUP_LINEAGE" '그룹=-' '계정=-' '까지=-' '비용=-' '비용 출처=-' \
-    '근거=wait-end-refused' || rc=$?
+    '근거=wait-end-refused' '호스트=-' "기록 시각=$(now_iso)" || rc=$?
   if [ "$rc" != "0" ]; then
     warn "대기 끝 거부 — $GATE_SUP_KEY 의 원인 행이 거부됐다 (rc=$rc) — 기동하지 않는다 ($1)"
     return 0
@@ -58936,7 +58946,8 @@ gate_sup_lease_fail() {
     *) why="" ;;
   esac
   if [ -n "$why" ]; then
-    gate_append 'stage-wait' "계보=$lin" '그룹=-' '계정=-' '까지=-' '비용=-' '비용 출처=-' "근거=$why" || rc=$?
+    gate_append 'stage-wait' "계보=$lin" '그룹=-' '계정=-' '까지=-' '비용=-' '비용 출처=-' "근거=$why" \
+      '호스트=-' "기록 시각=$(now_iso)" || rc=$?
   else
     gate_launch_route_park "$alias" "$(gate_stage_row_segment "$seg" "$kind")" "$seg" \
       "보유 오류 rc=$hrc — 감독자가 임대를 보유하지 못했다" "$lin"
