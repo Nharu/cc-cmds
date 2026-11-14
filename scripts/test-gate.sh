@@ -17172,8 +17172,10 @@ esac
 check "15vq 픽스처: 반영 실패 사이드카의 꼬리가 이 런의 최신 시각-판정 기록이다 (위가 공허하지 않다)" \
   "$(vq15 'r=$(visual_publish_latest_verdict_record) && printf "%s" "${r##*/}"')" "S2P#1.md"
 # A failed attempt the carried-answer branch let in: the approval's tail names
-# the gate's copy, which no entry predicate takes an answer to.
-printf '# 시각 사이드카\n<!-- cc-visual v1; owner-doc=%s; -->\n\n**상태**: 발행됨\n**구현 승인**: 2026-11-11 — 입력 묶음 %s — 금지 목록 %s — 기계 검사 수용 없음 — 사람 답 S2P#chained-R15VQP.md\n**문서 반영**: 실패 — 다른 구속 결정과 충돌 — 사람 답 S2P#chained-R15VQP.md\n\n### 화면 home\n' \
+# an earlier run's verdict record, which is not this run's latest, and the
+# reflection's tail names the gate's copy; no entry predicate takes an answer
+# to its stop record.
+printf '# 시각 사이드카\n<!-- cc-visual v1; owner-doc=%s; -->\n\n**상태**: 발행됨\n**구현 승인**: 2026-11-11 — 입력 묶음 %s — 금지 목록 %s — 기계 검사 수용 없음 — 사람 답 S2P#7.md\n**문서 반영**: 실패 — 다른 구속 결정과 충돌 — 사람 답 S2P#chained-R15VQP.md\n\n### 화면 home\n' \
   "$DOC15VQ" "$VQ15_B" "$(printf 'bans' | shasum -a 256 | cut -d' ' -f1)" > "$SC15VQ"
 check "15vq 픽스처: 사본 꼬리의 반영 실패도 승인 술어가 반영 실패 보류다 (아래가 공허하지 않다)" \
   "$(bash "$CC_ORCH/visual-check.sh" approval "$WT/$DOC15VQ" 2>/dev/null | sed -n 1p)" "승인 보류 — 설계 문서 반영 실패 — 다른 구속 결정과 충돌"

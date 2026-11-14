@@ -98,7 +98,8 @@ list may not change to make a line fit.
 ## 첨부 결정
 
 A failed reflection stops on a record only a person answers, with the one option
-`결정 첨부 후 다시 반영`. The answer's attachment chooses, per drift line, quoting
+`결정 첨부 후 다시 반영` — except an attempt the carried-answer branch let in,
+whose record reads `**선택지**: (없음)` and is not answered. The answer's attachment chooses, per drift line, quoting
 the line verbatim:
 
 - `문서대로 둠` — the line leaves the reflection; the remaining difference is
