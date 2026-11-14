@@ -15176,8 +15176,9 @@ gate_merge_adoption_plan_check() {
   #
   # EVERY REFUSAL ENDS WITH ITS CLASS, because the router answers the two
   # classes differently. `거절 부류: 재시도 가능` is a read that may succeed on
-  # the next try: the request could not be read from the remote, its head could
-  # not be fetched into the pinned ref, or the worktree's HEAD does not contain
+  # the next try: the request could not be read from the remote, the base could
+  # not be fetched from the remote, the request's head could not be fetched
+  # into the pinned ref, or the worktree's HEAD does not contain
   # the merge commit (the worktree was cut from a stale `origin/<base>`). The
   # router removes the worktree and the branch it cut, cuts both again and
   # plans once more, then parks; on a segment a `세그먼트 입양` row pairs with
@@ -15241,7 +15242,7 @@ EOF
   fi
   rem="refs/remotes/origin/$base"
   if ! ( cd "$wt" && git fetch --no-tags --quiet origin "+refs/heads/$base:$rem" ) >/dev/null 2>&1; then
-    warn "세그먼트 계획 거부: 머지 입양 세그먼트 ${seg} 의 베이스 ${base} 를 원격에서 받지 못했습니다 — 거절 부류: 영구"
+    warn "세그먼트 계획 거부: 머지 입양 세그먼트 ${seg} 의 베이스 ${base} 를 원격에서 받지 못했습니다 — 거절 부류: 재시도 가능"
     return "$GATE_EXIT_RULE"
   fi
   nxt=$( { cd "$wt" && git rev-list --first-parent "$rem"; } 2>/dev/null | awk -v m="$m" 'f { print; exit } $0 == m { f = 1 }')

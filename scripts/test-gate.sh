@@ -68956,6 +68956,11 @@ git --git-dir="$SA_REMOTE" update-ref -d refs/pull/7/head
 md_try "refs/cc-review/$SA_ID/I1 로 들이지 못했습니다"
 md_cls 헤드들이기실패 "재시도 가능"
 git --git-dir="$SA_REMOTE" update-ref refs/pull/7/head "$MD_H"
+md_base_tip=$(git --git-dir="$SA_REMOTE" rev-parse refs/heads/main)
+git --git-dir="$SA_REMOTE" update-ref -d refs/heads/main
+md_try "베이스 main 를 원격에서 받지 못했습니다"
+md_cls 베이스받기실패 "재시도 가능"
+git --git-dir="$SA_REMOTE" update-ref refs/heads/main "$md_base_tip"
 ( cd "$MD_WT" && git reset -q --hard "$MD_FORK" ) >/dev/null 2>&1
 md_try "머지 커밋 $MD_M 을 담고 있지 않습니다"
 md_cls 워크트리HEAD미포함 "재시도 가능"
@@ -69239,7 +69244,7 @@ check "109m: 단계 밖 커밋 뒤 브랜치 리뷰의 cycle 행은 입양 줄=�
   "$md_r|$md_rc1|$md_al|$md_rf|$md_m|$(sa_field "$(sa_ob_last "$(md_oid "$MD_M")")" 상태)" "0|0|아니오|2|문면|미이행"
 SA_PLAN=""; SA_AUTH_RAW=""
 unset -f md_row md_snap md_form md_fx md_plan md_seg md_rnext md_cyc_last md_oid md_try md_cls md_checks md_fixflow md_impl md_uncov
-unset md_uc md_cls_got
+unset md_uc md_cls_got md_base_tip
 unset MD_PLAN MD_JSON MD_RC MD_OUT MD_H MD_M MD_FORK MD_WT MD_STUB MD_FIX
 unset md_a md_b md_rows0 md_rows1 md_rc2 md_fail md_r md_ob md_n1 md_got md_m md_fix md_rp md_r0 md_rf md_obn md_ff md_cut_got md_c
 

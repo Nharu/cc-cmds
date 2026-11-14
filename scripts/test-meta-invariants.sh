@@ -1744,9 +1744,9 @@ done
 # The two refusal classes the router branches on are the gate's own words: a
 # gate that drops or rewords a class token leaves the router reading nothing.
 check "게이트가 머지 입양 계획 거절에 재시도 가능 부류를 낸다" \
-  "$(mo_count "$(cat "$GATE")" '— 거절 부류: 재시도 가능"')" "3"
+  "$(mo_count "$(cat "$GATE")" '— 거절 부류: 재시도 가능"')" "4"
 check "게이트가 머지 입양 계획 거절에 영구 부류를 낸다" \
-  "$(mo_count "$(cat "$GATE")" '— 거절 부류: 영구"')" "12"
+  "$(mo_count "$(cat "$GATE")" '— 거절 부류: 영구"')" "11"
 # The kickoff reads a named pull request's state before the entry judgment and
 # takes a `reviewer` judgment again when a merged one can be adopted: without
 # both, a request to review a merged pull request after the fact lands on the
