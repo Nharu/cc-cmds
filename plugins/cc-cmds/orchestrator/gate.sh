@@ -57979,7 +57979,7 @@ EOF
       fi
     fi
     if [ "$tok" = "가능" ]; then
-      printf '가능\t%s\t%s\t%s\t%s\n' "$seg" "$GATE_AP_BRANCH" "$GATE_AP_PR" "$(printf '%s' "$GATE_AP_HEAD" | cut -c1-12)"
+      printf '가능\t%s\t%s\t%s\t%s\n' "$seg" "$GATE_AP_BRANCH" "$GATE_AP_PR" "${GATE_AP_HEAD:0:12}"
     else
       printf '불가\t%s\t%s\n' "$seg" "$tok"
     fi
