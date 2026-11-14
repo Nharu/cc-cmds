@@ -16,15 +16,22 @@
 # stages it enforces. Its lifetime is the run's, so the existing reaper collects
 # it with everything else.
 #
-# TWO WAYS TO TAKE THE COPY, AND THE CHOICE IS NOT STYLISTIC. A clean subtree is
-# taken with `git archive <tree>`: a tree object is atomic, so a concurrent
-# checkout in the source cannot hand back a half-updated copy. A dirty subtree
-# has no tree object to name, so it is taken with `cp -R` inside a bracket that
-# checks `index.lock` absence and HEAD stability on both sides and throws the
-# copy away when either moved. `tar -c` IS NEVER USED: on this host it rewrites
-# Korean rule file names into NFD, and rule names are compared as bytes, so a
-# `tar -c` copy silently stops matching its own exemption rules. `tar -x` on the
-# receiving end of `git archive` is fine — it only writes the names it was given.
+# TWO WAYS TO TAKE THE COPY, AND THE CHOICE IS NOT STYLISTIC. A subtree whose
+# tracked files match HEAD is taken with `git archive <tree>`: a tree object is
+# atomic, so a concurrent checkout in the source cannot hand back a
+# half-updated copy. Untracked entries do not make a subtree dirty — they are in
+# no tree and no archive. A subtree with changed tracked files has no tree
+# object to name, so it is taken with `cp -R` inside a bracket that checks
+# `index.lock` absence and HEAD stability on both sides and throws the copy away
+# when either moved; the copy's tracked entries are then renamed to the index's
+# spelling (`pin__copy_index_names`), because `cp -R` carries the disk's name
+# bytes and a Korean name on this host is stored decomposed (NFD) while the
+# index holds it composed (NFC). The gate normalises rule names before it
+# compares them, so a name that still arrives decomposed is not a silent
+# mismatch either; the rename keeps the two ways of taking a copy byte-equal in
+# names. `tar -c` IS NEVER USED: on this host it rewrites Korean file names into
+# NFD on its own. `tar -x` on the receiving end of `git archive` is fine — it
+# only writes the names it was given.
 #
 # EVERY GIT READ CARRIES `--no-optional-locks`. A plain `git status` rewrites the
 # index and holds `index.lock` for a quarter of a second, and the command this
@@ -194,6 +201,117 @@ pin__copy_bracket() {
     rm -rf "$dst"
   done
   return 1
+}
+
+pin__tracked_dirty() {
+  # pin__tracked_dirty <src> — how many tracked paths under the subtree differ
+  # from HEAD (staged or not), as one number; empty when <src> is not inside a
+  # git work tree or git fails.
+  #
+  # UNTRACKED ENTRIES DO NOT COUNT. A tool's output directory left in the
+  # subtree (`.playwright-cli/` from a browser session is the observed one) is
+  # not part of any commit, and `git archive` would leave it out anyway, so it
+  # says nothing about whether the committed tree names the bytes being pinned.
+  # Counting it sent every pin down the copy path for as long as the directory
+  # existed.
+  #
+  # Kept free of `run.sh` helpers: this file is sourced on its own by entry
+  # points that never load `run.sh`.
+  local out
+  command -v git >/dev/null 2>&1 || return 0
+  out=$(cd "$1" 2>/dev/null && git --no-optional-locks status --porcelain --untracked-files=no -- . 2>/dev/null) || return 0
+  if [ -z "$out" ]; then
+    printf '0'
+  else
+    printf '%s\n' "$out" | awk 'END { printf "%d", NR }'
+  fi
+}
+
+pin__copy_index_names() {
+  # pin__copy_index_names <src> <dst> — rename every entry of the copy <dst> whose
+  # name differs from the index's spelling of the same path only in Unicode
+  # normalisation, so the copy carries the names `git archive` would have
+  # written. Prints `<renamed> <unmatched>`, or `미상 미상` when the names could
+  # not be read or compared.
+  #
+  # WHY THE COPY NEEDS THIS. `cp -R` writes the names it reads from disk, and a
+  # Korean file name created on this host is stored decomposed (NFD) while the
+  # index — and every tree object — holds it composed (NFC). A pin taken by
+  # `cp -R` therefore differed in name bytes from a pin of the same commit taken
+  # by `git archive`, and the copy's file names disagreed with every NFC literal
+  # that refers to them.
+  #
+  # The map is keyed by the NFC form of each path, built from the index paths
+  # and every parent directory of them. The walk goes top down and renames a
+  # directory before it descends, so a child is looked up under its parent's
+  # final name. A rename goes through a temporary name in the same directory,
+  # because on a normalisation-insensitive file system the target name already
+  # resolves to the entry being renamed and a direct `rename(2)` does nothing.
+  # A name that is not valid UTF-8 is keyed by its own bytes. An entry the map
+  # does not hold (an untracked file) is never touched. When the target name is
+  # already taken by a different entry, or a rename fails, the entry keeps its
+  # name and counts as unmatched. Nothing here fails the pin.
+  local src="$1" dst="$2" res
+  command -v perl >/dev/null 2>&1 || { printf '미상 미상'; return 0; }
+  res=$(cd "$src" 2>/dev/null && perl -MUnicode::Normalize -MEncode -e '
+    use strict; use warnings;
+    my $dst = shift @ARGV;
+    sub canon {
+      my $b = shift;
+      my $s = eval { Encode::decode("UTF-8", $b, Encode::FB_CROAK() | Encode::LEAVE_SRC()) };
+      return $b unless defined $s;
+      return Encode::encode("UTF-8", Unicode::Normalize::NFC($s));
+    }
+    open(my $ls, "-|", "git", "--no-optional-locks", "ls-files", "-z", "--", ".") or exit 0;
+    local $/; my $all = <$ls>; close($ls) or exit 0;
+    $all = "" unless defined $all;
+    my %want;
+    for my $p (split /\0/, $all) {
+      next if $p eq "";
+      my @parts = split m{/}, $p;
+      my $k = "";
+      for my $c (@parts) {
+        $k = $k eq "" ? canon($c) : "$k/" . canon($c);
+        $want{$k} = $c unless exists $want{$k};
+      }
+    }
+    my ($renamed, $unmatched, $seq) = (0, 0, 0);
+    my $walk;
+    $walk = sub {
+      my ($abs, $key) = @_;
+      opendir(my $dh, $abs) or return;
+      my @names = grep { $_ ne "." && $_ ne ".." } readdir($dh);
+      closedir($dh);
+      for my $n (@names) {
+        my $k = $key eq "" ? canon($n) : "$key/" . canon($n);
+        next unless exists $want{$k};
+        my $name = $n;
+        my $w = $want{$k};
+        if ($w ne $n) {
+          my @from = lstat("$abs/$n");
+          my @to = lstat("$abs/$w");
+          if (@to && (!@from || $to[0] != $from[0] || $to[1] != $from[1])) {
+            $unmatched++;
+          } else {
+            my $tmp = "$abs/.cc-pin-rename.$$." . $seq++;
+            if (rename("$abs/$n", $tmp)) {
+              if (rename($tmp, "$abs/$w")) { $renamed++; $name = $w; }
+              else { rename($tmp, "$abs/$n"); $unmatched++; }
+            } else {
+              $unmatched++;
+            }
+          }
+        }
+        $walk->("$abs/$name", $k) if -d "$abs/$name" && !-l "$abs/$name";
+      }
+    };
+    $walk->($dst, "");
+    print "$renamed $unmatched";
+  ' "$dst" 2>/dev/null) || res=""
+  case "$res" in
+    [0-9]*' '[0-9]*) printf '%s' "$res" ;;
+    *) printf '미상 미상' ;;
+  esac
 }
 
 pin__fetch_bounded() {
@@ -398,12 +516,14 @@ pin_take() {
   local rd="$1" src="$2" targets="${3:-}"
   local tmpdir="$rd/plugin.$$" tmppin="$rd/plugin-pin.$$" dst
   local method commit tree dirty digest ver onorigin top prefix ref waited
+  local dirtyn irenamed iunmatched inames
   dst="$tmpdir/cc-cmds"
 
   mkdir -p "$rd" || return 1
   rm -rf "$tmpdir" "$tmppin"
 
   method=copy; commit='(미상)'; tree='(미상)'; dirty='미상'; onorigin='미상'
+  dirtyn='-'; irenamed='-'; iunmatched='-'
   top=""; prefix=""
   if command -v git >/dev/null 2>&1; then
     top=$(cd "$src" 2>/dev/null && git --no-optional-locks rev-parse --show-toplevel 2>/dev/null) || top=""
@@ -444,11 +564,15 @@ pin_take() {
     # `-- .` SCOPES THE QUESTION TO THE SUBTREE BEING COPIED. A dirty file
     # elsewhere in the repository says nothing about the bytes going into the
     # copy, and treating it as dirty would push every pin onto the slower path.
-    if [ -z "$(cd "$src" 2>/dev/null && git --no-optional-locks status --porcelain -- . 2>/dev/null)" ]; then
-      dirty='아니오'
-    else
-      dirty='예'
-    fi
+    # `--untracked-files=no` (inside `pin__tracked_dirty`) scopes it to tracked
+    # files for the same reason: an untracked entry is in no commit and no
+    # archive, so it cannot make the committed tree the wrong answer.
+    dirtyn=$(pin__tracked_dirty "$src")
+    case "$dirtyn" in
+      0) dirty='아니오' ;;
+      '') dirty='미상'; dirtyn='미상' ;;
+      *) dirty='예' ;;
+    esac
     if [ "$commit" != '(미상)' ]; then
       if [ -n "$(cd "$src" 2>/dev/null && git --no-optional-locks branch -r --contains HEAD 2>/dev/null)" ]; then
         onorigin='예'
@@ -488,6 +612,15 @@ pin_take() {
       rm -rf "$tmpdir"
       return 1
     fi
+    # The copy carries the disk's name bytes; give its tracked entries the
+    # index's spelling before the digest is taken, so the digest and every name
+    # comparison see what `git archive` of the same commit would have written.
+    if [ -n "$top" ]; then
+      inames=$(pin__copy_index_names "$src" "$dst")
+      irenamed="${inames%% *}"; iunmatched="${inames#* }"
+    else
+      dirtyn='-'
+    fi
   fi
 
   digest=$(pin_digest "$dst")
@@ -511,6 +644,9 @@ pin_take() {
     printf 'origin-commit\t%s\n' "$PIN_SYNC_OCOMMIT"
     printf 'ff-refused\t%s\n' "$PIN_SYNC_REFUSED"
     printf 'subtree-differs\t%s\n' "$PIN_SYNC_DIFFERS"
+    printf 'dirty-paths\t%s\n' "$dirtyn"
+    printf 'index-renamed\t%s\n' "$irenamed"
+    printf 'index-unmatched\t%s\n' "$iunmatched"
   } > "$tmppin" || { rm -rf "$tmpdir" "$tmppin"; return 1; }
 
   # THE PUBLICATION. A single `link(2)` — the same idiom `gate_end_run` uses to
