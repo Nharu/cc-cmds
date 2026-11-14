@@ -2938,20 +2938,21 @@ check "design-audit-unattended: 종합 정지 전에 조정 처분과 조정 뒤
   "$(has "$AU_ANS" "then \`**조정 뒤 문서 sha256**: <64 hex>\`")" 예
 check "교대 계약: 정지 답은 운반 act 로 낸다" \
   "$(has "$RS_CORPUS" "--carry-answer <line> \\")" 예
-check "교대 계약: --resume 재부착은 19 뒤와 좌석 실행·좌석 적용 정지의 답에만" \
-  "$(has "$RS_CORPUS" "**Re-attach with \`--resume\` only after exit 19 on an answer of this run, or for an answer to a \`좌석 실행\` or \`좌석 적용\` stop item 2 sent here.**")" 예
-# 게이트는 좌석 실행·좌석 적용 정지의 운반을 스텝 문면만으로 거절하므로, 계약도 답한
-# 주체나 선택지가 아닌 스텝으로 갈라야 사람이 한 답이 exit 3 으로 빠지지 않는다.
-check "교대 계약: 좌석 실행·좌석 적용 정지의 답은 답한 주체와 무관하게 운반 act 없이 --resume 으로 간다" \
-  "$(has "$RS_CORPUS" "When the step begins with \`Step 3 잔여 검증 좌석 실행\`, \`Step 3 게이트 도달 좌석 실행\` or \`Step 3 강제 표면 좌석 적용\`, whoever answered and whatever the option, the halted session reads the answer")" 예
-check "교대 계약: 좌석 실행 정지 갈래가 게이트가 거절하는 두 스텝 접두와 같다" \
+check "교대 계약: --resume 재부착은 19 뒤와 좌석 적용 정지의 답에만" \
+  "$(has "$RS_CORPUS" "**Re-attach with \`--resume\` only after exit 19 on an answer of this run, or for an answer to a \`좌석 적용\` stop item 2 sent here.**")" 예
+# 게이트는 좌석 적용 정지의 운반만 스텝 문면으로 거절하므로, 계약도 답한 주체나 선택지가
+# 아닌 스텝으로 갈라야 사람이 한 답이 exit 3 으로 빠지지 않는다. 좌석 실행 정지는 다른
+# 구현 정지처럼 운반 act 로 간다.
+check "교대 계약: 좌석 적용 정지의 답은 답한 주체와 무관하게 운반 act 없이 --resume 으로 간다" \
+  "$(has "$RS_CORPUS" "When the step begins with \`Step 3 강제 표면 좌석 적용\`, whoever answered and whatever the option, the halted session reads the answer")" 예
+check "교대 계약: 좌석 실행 정지 갈래가 게이트가 좌석 실행 기록으로 읽는 두 스텝 접두와 같다" \
   "$(has "$GATE" "'Step 3 잔여 검증 좌석 실행'*|'Step 3 게이트 도달 좌석 실행'*)")" 예
 check "교대 계약: 좌석 적용 정지 갈래가 게이트가 운반을 거절하는 스텝 접두와 같다" \
   "$(has "$GATE" "printf '강제 표면 좌석 적용 정지의 답은 그 세션에 재부착하거나 세그먼트를 park 합니다 — 운반하지 않습니다: %s'")" 예
-check "교대 계약: 좌석 실행 답 갈래가 운반 act 로 넘기는 문장보다 앞선다" \
-  "$(awk '/When the step begins with `Step 3 잔여 검증 좌석 실행`/{a=NR} /Every other `재부착` answer goes to item 3\./{b=NR} END{print (a && b && a<=b) ? "예" : "아니오"}' "$RS_CORPUS")" 예
-check "사이드카: 좌석 실행 정지는 사람이 답해도 --resume 으로 재부착한다" \
-  "$(has "$AU_ANS" "whether the seat ran the record or a person answered it: the carry act refuses an answer to it on its step alone")" 예
+check "교대 계약: 좌석 적용 직접 재부착 갈래가 좌석 실행 정지를 운반 act 로 넘기는 문장보다 앞선다" \
+  "$(awk '{ia=index($0, "When the step begins with `Step 3 강제 표면 좌석 적용`"); ib=index($0, "A `좌석 실행` stop goes to item 3")} ia && !a {a=NR; pa=ia} ib && !b {b=NR; pb=ib} END{print (a && b && (a<b || (a==b && pa<pb))) ? "예" : "아니오"}' "$RS_CORPUS")" 예
+check "사이드카: 좌석 실행 정지는 사람이 답해도 다른 구현 정지처럼 운반 act 로 간다" \
+  "$(has "$AU_ANS" "whether the seat ran the record or a person answered it, goes through the carry act like any implement halt")" 예
 check "교대 계약: 운반 act 의 16 은 답이 이월일 때 이월이고 종료 행이 있으면 종단" \
   "$(has "$RS_CORPUS" "\`이월\`: when the run has no run-scope end row, end with \`handoff 사유=이월\` once nothing else is dispatchable; when it has one (the carry came after the deadline closed the run), end with \`handoff 사유=종단\`")" 예
 # 게이트는 이월 행 없이도 운반 act 를 16 으로 돌려준다 — 설정 park, stage-wait 행 기록 거부,
@@ -3079,8 +3080,8 @@ check "design-base-unattended: 분할 재진입은 처음 실패한 자리가 �
   "$(has "$DB_SKILL" "do not apply the answer: write a new halt record for the site reached now, with the card's path in its \`관측 상세\`.")" 예
 check "implement-unattended: 재진입은 디스크의 계획 행·워크트리·설계 문서에서 멈춘 스텝으로 들어간다" \
   "$(has "$IM_SKILL" "from what is on disk — the ledger's plan row that decided the phase above, the segment worktree and the design document — and apply the card's option there")" 예
-check "implement-unattended: 구속 티어 재수렴 답과 좌석 실행·좌석 적용 정지는 카드로 오지 않는다" \
-  "$(has "$IM_SKILL" "Three halts of this stage never come back as a card: a \`CFI-U3 BT-STOP\` halt answered \`재수렴\` goes to re-convergence, a \`좌석 실행\` halt re-attaches the halted session after the seat's run, and a \`Step 3 강제 표면 좌석 적용\` halt re-attaches it")" 예
+check "implement-unattended: 구속 티어 재수렴 답과 좌석 적용 정지는 카드로 오지 않는다" \
+  "$(has "$IM_SKILL" "Two halts of this stage never come back as a card: a \`CFI-U3 BT-STOP\` halt answered \`재수렴\` goes to re-convergence, and a \`Step 3 강제 표면 좌석 적용\` halt re-attaches the halted session")" 예
 check "implement-unattended: diff 게이트 단언은 스냅숏에서 아직 구현 시 검증 인 표 행에만" \
   "$(has "$IM_SKILL" "every R-item the verdict table marked as a flip target, and whose grade line in the snapshot \`\$SNAP\` still reads \`구현 시 검증\`, must appear as a changed line")" 예
 check "design-solo-unattended: 문서 존재 가드는 카드의 문서 사전 sha256 이 같을 때만 면제한다" \
@@ -3110,7 +3111,7 @@ check "교대 계약: 시각 발행 정지는 visual-publish 로 운반한다" \
 check "교대 계약: 표 행은 멈춘 시도의 종류로 고른다" \
   "$(has "$RS_CORPUS" "on the halted attempt's own stage kind — the \`종류\` of its \`stage-result\` row, never the kind you are about to dispatch")" 예
 check "교대 계약: 구현·토론·단독·분할 행은 종류로 운반한다" \
-  "$(has "$RS_CORPUS" "any step) is carried as \`implement\`.")/$(has "$RS_CORPUS" "any step, are carried as \`design\`.")/$(has "$RS_CORPUS" "any step) is carried as \`split\`.")" "예/예/예"
+  "$(has "$RS_CORPUS" "any step) is carried as \`implement\`, a \`좌석 실행\` stop among them.")/$(has "$RS_CORPUS" "any step, are carried as \`design\`.")/$(has "$RS_CORPUS" "any step) is carried as \`split\`.")" "예/예/예"
 check "교대 계약: 네 행은 원소의 carry_prompt 를 바이트 그대로 낸다" \
   "$(has "$RS_CORPUS" "**In these last four rows send the element's \`carry_prompt\` as \`-p\`, byte for byte.**")/$(has "$RS_CORPUS" "Never build those slots from other snapshot fields.")" "예/예"
 check "교대 계약: 베이스 설계 정지는 표 밖이다" "$(has "$RS_CORPUS" "**The same skill's base-design stop is not in the table**")" 예
