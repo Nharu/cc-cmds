@@ -68471,7 +68471,7 @@ unset d104 c104 p104 f104 d104n
 
 # ---------------------------------------------------------------------------
 # 108. 리뷰어 런 — 리뷰 전용 세그먼트의 계획·리뷰 줄·쓰기 거절·게시·대조
-# --- section: 108 | group: sa | covers: snapshot, act, plan, exec, review-line, review-post, gate_review_pr_plan, gate_exec_review_post_form, gate_exec_author_write_form, gate_check_review_post, gate_perform_review_post, gate_clause_review_evidence_check, binding_set_bytes, gate_review_fetch_surface, gate_collaboration_surface, gate_worktree_add_base_mismatch, reach, autopilot-router-shift | anchors: 108: 스냅숏이 리뷰 PR 행마다 리뷰 전용 세그먼트를 낸다, 108: 계획 행이 종류·고정 헤드·베이스 sha 를 싣는다, 108: 원격 헤드가 워크트리 HEAD 와 다른 계획은 rc 3 이다, 108: 리뷰 줄이 PR·베이스·고정 헤드·깊이·게시 항목 요청을 싣는다, 108: 리뷰 전용 세그먼트의 작성자 브랜치 쓰기는 모두 rc 3 이다, 108: 게시가 POST 한 번과 대조 일치 행을 남긴다, 108: 재판독이 한 바이트 다르면 대조 불일치 행과 rc 3 이다, 108: 리뷰를 근거로 한 충족은 대조 일치 리뷰에만 선다, 108: 직접 리뷰 게시는 사전 인가 행이 있어도 rc 3 이다, 108: 렌더는 방식·의사표시로 종류를 정하고 diff 밖 항목을 본문에 둔다, 108: 리뷰어 네 행이 구속 다이제스트를 움직인다, 108: 결과 미상 뒤의 재호출은 POST 없이 올라간 리뷰를 대조한다, 108: 계획하지 못한 리뷰 PR 세그먼트는 park 로만 닫힌다, 108: 인라인 코멘트가 붙은 게시는 PR 단위 코멘트 목록으로 대조 일치다, 108: 줄이나 면이 렌더와 다른 인라인 코멘트는 대조 불일치와 rc 3 이다, 108: 헤드가 움직여 line 이 옮겨진 뒤의 재판독은 POST 없이 대조 일치다, 108: 대조는 게시 커밋 기준 줄과 면으로 응답 모양을 가른다, 108: 리뷰어 런 밖의 세그먼트 행은 호출자의 베이스 sha 를 받는다, 108: 스킬 문면에서 리뷰어 런 호출 일곱 가지를 모두 읽는다, 108: 스킬 문면 그대로의 리뷰어 런 호출이 계획부터 정리까지 통과한다, 108: 스킬 문면의 fetch 는 도달 협업으로 기록되고 게시는 대조 일치다, 108: 헤드가 움직인 재시도는 워크트리를 다시 만들어 새 헤드를 고정하고 메인 체크아웃은 그대로다, 108: 닫힌 PR 은 fetch 가 도달 park 가 아닌 실패이고 park 와 ref 정리는 통과한다, 108: 다른 런 id 목적지의 fetch 는 협업이 아니어서 도달 park 다, 108: 다른 세그먼트의 리뷰 ref 로 뜨는 리뷰 워크트리는 시작점 검사에 rc 2 다, 108: 협업으로 받는 fetch 는 이 런의 리뷰 ref 로만 받는 좁은 형태 하나다 ---
+# --- section: 108 | group: sa | covers: snapshot, act, plan, exec, review-line, review-post, gate_review_pr_plan, gate_exec_review_post_form, gate_exec_author_write_form, gate_check_review_post, gate_perform_review_post, gate_clause_review_evidence_check, binding_set_bytes, gate_review_fetch_surface, gate_collaboration_surface, gate_worktree_add_base_mismatch, reach, autopilot-router-shift | anchors: 108: 스냅숏이 리뷰 PR 행마다 리뷰 전용 세그먼트를 낸다, 108: 계획 행이 종류·고정 헤드·베이스 sha 를 싣는다, 108: 원격 헤드가 워크트리 HEAD 와 다른 계획은 rc 3 이다, 108: 리뷰 줄이 PR·베이스·고정 헤드·깊이·게시 항목 요청을 싣는다, 108: 리뷰 전용 세그먼트의 작성자 브랜치 쓰기는 모두 rc 3 이다, 108: 게시가 POST 한 번과 대조 일치 행을 남긴다, 108: 재판독이 한 바이트 다르면 대조 불일치 행과 rc 3 이다, 108: 리뷰를 근거로 한 충족은 대조 일치 리뷰에만 선다, 108: 직접 리뷰 게시는 사전 인가 행이 있어도 rc 3 이다, 108: 렌더는 방식·의사표시로 종류를 정하고 diff 밖 항목을 본문에 둔다, 108: 리뷰어 네 행이 구속 다이제스트를 움직인다, 108: 결과 미상 뒤의 재호출은 POST 없이 올라간 리뷰를 대조한다, 108: 계획하지 못한 리뷰 PR 세그먼트는 park 로만 닫힌다, 108: 인라인 코멘트가 붙은 게시는 PR 단위 코멘트 목록으로 대조 일치다, 108: 줄이나 면이 렌더와 다른 인라인 코멘트는 대조 불일치와 rc 3 이다, 108: 가짜 gh 는 보류 리뷰의 코멘트를 PR 단위 목록에서 빼고 리뷰 단위 조회의 줄·면을 null 로 낸다, 108: 보류 방식에 인라인 코멘트가 붙은 게시는 GraphQL 판독으로 대조 일치다, 108: 줄이나 면이 렌더와 다른 보류 리뷰의 인라인 코멘트는 대조 불일치와 rc 3 이다, 108: 직접 방식의 재판독은 GraphQL 을 부르지 않는다, 108: 헤드가 움직여 line 이 옮겨진 뒤의 재판독은 POST 없이 대조 일치다, 108: 대조는 게시 커밋 기준 줄과 면으로 응답 모양을 가른다, 108: 리뷰어 런 밖의 세그먼트 행은 호출자의 베이스 sha 를 받는다, 108: 스킬 문면에서 리뷰어 런 호출 일곱 가지를 모두 읽는다, 108: 스킬 문면 그대로의 리뷰어 런 호출이 계획부터 정리까지 통과한다, 108: 스킬 문면의 fetch 는 도달 협업으로 기록되고 게시는 대조 일치다, 108: 헤드가 움직인 재시도는 워크트리를 다시 만들어 새 헤드를 고정하고 메인 체크아웃은 그대로다, 108: 닫힌 PR 은 fetch 가 도달 park 가 아닌 실패이고 park 와 ref 정리는 통과한다, 108: 다른 런 id 목적지의 fetch 는 협업이 아니어서 도달 park 다, 108: 다른 세그먼트의 리뷰 ref 로 뜨는 리뷰 워크트리는 시작점 검사에 rc 2 다, 108: 협업으로 받는 fetch 는 이 런의 리뷰 ref 로만 받는 좁은 형태 하나다 ---
 #
 # 베어 원격 하나에 다른 작성자의 PR 둘(`refs/pull/7/head`, `refs/pull/8/head`)을 두고,
 # 리뷰어 계획(`run_profile: reviewer`)과 `리뷰 PR`·`리뷰 게시`·`리뷰 깊이` 행을 실은
@@ -68496,8 +68496,12 @@ cat > "$RV106_STUB" <<'RV106EOF'
 #   status(있으면 POST 의 답: none 은 상태 줄 없이 실패, 422 는 4xx, 500 은 5xx, noid 는 id 없는 200)
 #   comment-tamper(PR 단위 코멘트 목록의 이 리뷰 코멘트를 바꾼다: line 은 줄을 하나 내리고, side 는 면을 뒤집는다)
 #   comment-moved(있으면 PR 단위 목록의 line 만 새 헤드 기준처럼 옮기고 original_line 은 그대로 둔다)
-# 코멘트 재판독은 GitHub 가 실제로 주는 두 모양을 낸다. 리뷰 단위 엔드포인트는 줄·면을 null 로,
+# 코멘트 재판독은 GitHub 가 실제로 주는 세 모양을 낸다. 리뷰 단위 엔드포인트는 줄·면을 null 로,
 # 위치만 채워 주고, PR 단위 목록은 줄·면과 리뷰 id 를 채우되 다른 리뷰의 코멘트를 한 페이지 섞는다.
+# 게시 요청에 event 가 없으면(보류 리뷰) PR 단위 목록은 그 리뷰의 코멘트를 내지 않는다.
+# `api graphql --paginate` 는 PR 의 reviewThreads 를 두 페이지로 낸다 — 첫 페이지는 다른 리뷰
+# (fullDatabaseId "1")의 스레드 하나, 둘째 페이지는 게시한 코멘트마다 스레드 하나(diffSide 가 면,
+# fullDatabaseId 가 rid 문자열). comment-tamper 는 이 경로에도 같은 뜻으로 걸린다.
 # 받은 환경에 GH_TOKEN·GITHUB_TOKEN 이 있었는지를 호출마다 env.log 에 한 줄로 남긴다.
 D=${RV106_S:?}
 printf '%s\n' "$*" >> "$D/gh.log"
@@ -68515,6 +68519,17 @@ if [ "$2 $3" = "-X POST" ]; then
   printf 'HTTP/2.0 200 OK\r\n\r\n{"id":%s}\n' "$(cat "$D/rid")"
   exit 0
 fi
+if [ "$2 $3" = "graphql --paginate" ]; then
+  printf '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":true,"endCursor":"c1"},"nodes":[{"diffSide":"RIGHT","comments":{"nodes":[{"path":"a.txt","line":1,"originalLine":1,"body":"앞선 리뷰의 코멘트","pullRequestReview":{"fullDatabaseId":"1"}}]}}]}}}}}\n'
+  t=$(cat "$D/comment-tamper" 2>/dev/null || true)
+  jq -c --arg id "$(cat "$D/rid")" --arg t "$t" \
+    '{data: {repository: {pullRequest: {reviewThreads: {pageInfo: {hasNextPage: false, endCursor: "c2"},
+      nodes: [(.comments // [])[]
+        | {diffSide: (if $t == "side" then (if .side == "LEFT" then "RIGHT" else "LEFT" end) else .side end),
+           comments: {nodes: [{path, line, originalLine: .line, body, pullRequestReview: {fullDatabaseId: $id}}
+             | if $t == "line" then .line += 1 | .originalLine += 1 else . end]}}]}}}}}' "$D/posted.json"
+  exit 0
+fi
 if [ "$2" = --paginate ]; then
   case "$3" in
     */reviews) cat "$D/reviews"; exit 0 ;;
@@ -68527,7 +68542,7 @@ if [ "$2" = --paginate ]; then
       printf '[{"id":9001,"pull_request_review_id":1,"path":"a.txt","line":1,"original_line":1,"side":"RIGHT","position":1,"original_position":1,"body":"앞선 리뷰의 코멘트"}]\n'
       t=$(cat "$D/comment-tamper" 2>/dev/null || true); m=""; [ -f "$D/comment-moved" ] && m=1
       jq -c --argjson id "$(cat "$D/rid")" --arg t "$t" --arg m "$m" \
-        '[(.comments // [])[] | {pull_request_review_id: $id, path,
+        '[if (.event // null) == null then empty else (.comments // [])[] end | {pull_request_review_id: $id, path,
                                  line: (if $m == "" then .line else .line + 10 end), original_line: .line,
                                  side: (if $t == "side" then (if .side == "LEFT" then "RIGHT" else "LEFT" end) else .side end),
                                  position: .line, original_position: .line, body}
@@ -68978,6 +68993,39 @@ rv106_post P2
 rv106_pr=$(rv106_last '리뷰 게시')
 check "108: 헤드가 움직여 line 이 옮겨진 뒤의 재판독은 POST 없이 대조 일치다" \
   "$rc|$(rv106_posts)|$(sa_field "$rv106_pr" '리뷰 id')|$(sa_field "$rv106_pr" 대조)" "0|2|560|일치"
+rv106_direct_s="$RV106_S"
+
+# 보류 인라인 게시 — event 없이 올라간 리뷰의 인라인 코멘트를 GraphQL 리뷰 스레드로 대조한다 --------
+rv106_new "보류 인라인 게시" 보류 허용
+rv106_fetch P1 7; rv106_fetch P2 8
+rv106_plan P1; rv106_plan P2
+rv106_h7=$(git --git-dir="$SA_REMOTE" rev-parse refs/pull/7/head)
+rv106_h8=$(git --git-dir="$SA_REMOTE" rev-parse refs/pull/8/head)
+rv106_cycle_inline P1 "$rv106_h7" a.txt 2; rv106_cycle_inline P2 "$rv106_h8" b.txt 1
+printf '%s\n' "$rv106_h7" > "$RV106_S/head"; printf '561\n' > "$RV106_S/rid"
+rv106_post P1
+rv106_pr=$(rv106_last '리뷰 게시')
+rv106_pend="$rc|$(rv106_posts)|$(jq -r 'has("event")' "$RV106_S/posted.json" 2>/dev/null)|$(sa_field "$rv106_pr" '리뷰 id')|$(sa_field "$rv106_pr" 대조)|$({ grep -c '^api graphql --paginate ' "$RV106_S/gh.log" || true; })"
+check "108: 가짜 gh 는 보류 리뷰의 코멘트를 PR 단위 목록에서 빼고 리뷰 단위 조회의 줄·면을 null 로 낸다" \
+  "$("$RV106_STUB" api --paginate repos/t/x/pulls/7/comments | jq -s '[add[] | select(.pull_request_review_id == 561)] | length')|$("$RV106_STUB" api --paginate repos/t/x/pulls/7/reviews/561/comments | jq -c '[.[] | "\(.line):\(.side)"]')" \
+  "0|[\"null:null\"]"
+check "108: 보류 방식에 인라인 코멘트가 붙은 게시는 GraphQL 판독으로 대조 일치다" \
+  "$rv106_pend" "0|1|false|561|일치|1"
+printf '%s\n' "$rv106_h8" > "$RV106_S/head"; printf '562\n' > "$RV106_S/rid"; printf 'line\n' > "$RV106_S/comment-tamper"
+rv106_post P2
+rv106_pr=$(rv106_last '리뷰 게시')
+rv106_got="$rc|$(sa_field "$rv106_pr" '리뷰 id')|$(sa_field "$rv106_pr" 대조)"
+case "$msg" in *"게시 대조"*) rv106_got="$rv106_got|게시 대조" ;; esac
+printf 'side\n' > "$RV106_S/comment-tamper"
+rv106_post P2
+rv106_pr=$(rv106_last '리뷰 게시')
+rv106_got="$rv106_got;$rc|$(sa_field "$rv106_pr" '리뷰 id')|$(sa_field "$rv106_pr" 대조)"
+case "$msg" in *"게시 대조"*) rv106_got="$rv106_got|게시 대조" ;; esac
+rm -f "$RV106_S/comment-tamper"
+check "108: 줄이나 면이 렌더와 다른 보류 리뷰의 인라인 코멘트는 대조 불일치와 rc 3 이다" \
+  "$rv106_got" "3|562|불일치|게시 대조;3|562|불일치|게시 대조"
+check "108: 직접 방식의 재판독은 GraphQL 을 부르지 않는다" \
+  "$({ grep -c ' graphql ' "$rv106_direct_s/gh.log" || true; })|$({ grep -c -- '--paginate repos/.*/pulls/.*/comments' "$rv106_direct_s/gh.log" || true; })" "0|4"
 
 # 전용 쓰기 자격 없음 — 이 호스트의 gh 로그인으로 게시하고, 계정 일치 확인은 그대로 건다 -----------
 #
@@ -69186,7 +69234,7 @@ unset rv108_prev_ar rv108_tpl rv108_fetch_t rv108_add_t rv108_rm_t rv108_plan_t 
   rv108_have rv108_x rv108_w1 rv108_w2 rv108_w3 rv108_h7 rv108_h8 rv108_got rv108_fr rv108_l1 rv108_pv rv108_ok rv108_okb
 
 unset -f gh rv106_new rv106_done rv106_wt rv106_fetch rv106_plan rv106_cycle rv106_post rv106_post_amb rv106_next rv106_posts rv106_n rv106_last rv106_ev rv106_rp rv106_bsb rd106 rd106_ev rd106_v
-unset RV106_STUB RV106_S
+unset RV106_STUB RV106_S rv106_direct_s rv106_pend
 if [ -n "$RV106_HAD_RW" ]; then export CC_GATE_TOKEN_RW="$RV106_PREV_RW"; else unset CC_GATE_TOKEN_RW; fi
 
 # ---------------------------------------------------------------------------
