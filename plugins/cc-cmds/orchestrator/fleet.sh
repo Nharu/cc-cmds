@@ -108,7 +108,16 @@
 #   fleet.sh agent install|uninstall|status
 #
 # Files (all under PACE_ROOT = ${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/pace):
-#   state.json             the last published tick (schema `cc-pace-state v1`)
+#   state.json             the last published tick (schema `cc-pace-state v1`);
+#                          its `host` block is the tick's host load reading —
+#                          `state` ok/unread/off, load1, load5, ncpu,
+#                          ratio_permille (load1 x 1000 / ncpu, floored),
+#                          `saturated` with hysteresis (enter at
+#                          FLEET_HOST_ENTER_PERMILLE, leave below
+#                          FLEET_HOST_LEAVE_PERMILLE), since_epoch,
+#                          enter_permille, leave_permille, sampled_at_epoch
+#   host-brake.off         present: the host block is published `off` and the
+#                          host load brakes nothing
 #   verdict-history.jsonl  one record per verdict change (`cc-pace-verdict v1`)
 #   seat-bindings.jsonl    one record per observed re-binding of a seat
 #   backlog.jsonl          deferred launches (`cc-pace-backlog v1`); two writers
@@ -122,7 +131,9 @@
 #   sensor.heartbeat       one UTC timestamp line, rewritten every tick
 #   burn.cache             the per-home 4h burn scan, reused for FLEET_BURN_CACHE_TTL_SECONDS
 #   refusals.tsv           dispatcher-written refusal log the night summary counts:
-#                          iso, lane, clause, verdict, id, detail (six columns)
+#                          iso, lane, clause, verdict, id, detail (six columns);
+#                          a host clause (`host`, `brake-host`) carries
+#                          `ratio=<ratio_permille> ncpu=<ncpu>` as its detail
 #   night-summary.md       rewritten once a day from the files above
 #   lanes-streak           start tick of the current unavailable-census streak
 #   busy/<id>.<pid>        one run marker per dispatch job that claimed a head:
@@ -151,6 +162,8 @@
 #   FLEET_PACE_ROOT        pace directory
 #   FLEET_LANE_PROBE       lane-probe.sh path
 #   FLEET_LAUNCHCTL / FLEET_PLUTIL   command paths (default: found on PATH)
+#   FLEET_SYSCTL           the `sysctl` the sensor reads the host load with
+#                          (default: found on PATH, else /usr/sbin/sysctl)
 #   FLEET_LAUNCH_AGENTS_DIR          ~/Library/LaunchAgents
 #   FLEET_NOW_EPOCH        fixed "now" in epoch seconds
 #   FLEET_CC_SWAP_MARK     file whose first line is the epoch of the last cc-swap
@@ -210,6 +223,8 @@ readonly FLEET_MASTER_GH_SECONDS=20             # one `gh api` read is abandoned
 readonly FLEET_MASTER_SETTLED_MAX_SECONDS=3600  # no settled reading for this long -> the reading stops being rewritten
 readonly FLEET_REPAIR_SEATS=1                   # repair runs alive at once, beside the ceiling and lane occupancy
 readonly FLEET_REPAIR_WAIT_MAX_SECONDS=22200    # a job waits on its repair run at most this long (the run's deadline + 600)
+readonly FLEET_HOST_ENTER_PERMILLE=2000         # load1 per core x 1000 at or above this -> the host is saturated
+readonly FLEET_HOST_LEAVE_PERMILLE=1500         # a saturated host is released only below this
 # The burn calibration is a literal by decision, and it is not an integer, so the
 # threshold lint does not own it: 0.104 %p of weekly quota per million weighted
 # tokens over a 4h window.
@@ -238,6 +253,10 @@ LAUNCH_AGENTS_DIR="${FLEET_LAUNCH_AGENTS_DIR:-$HOME/Library/LaunchAgents}"
 # so a fixture can shadow them on PATH or name a stub outright.
 LAUNCHCTL="${FLEET_LAUNCHCTL:-$(command -v launchctl 2>/dev/null || true)}"
 PLUTIL="${FLEET_PLUTIL:-$(command -v plutil 2>/dev/null || true)}"
+# `sysctl` lives in /usr/sbin, which a launchd job's PATH may lack (run.sh puts
+# /usr/sbin in front of PATH for the same command), so that path is the
+# fallback when PATH has none.
+SYSCTL="${FLEET_SYSCTL:-$(command -v sysctl 2>/dev/null || printf '/usr/sbin/sysctl')}"
 
 # ---------------------------------------------------------------------------
 # Small helpers. Everything time-shaped goes through jq: `date -d`, `date -j`
@@ -400,6 +419,58 @@ fleet_state_read() {
     [ "$age" -le "$max" ] 2>/dev/null || return 0
   fi
   printf '%s' "$s"
+}
+
+fleet_host_block() {
+  # fleet_host_block <now> — the tick's `host` block, one compact JSON object.
+  # `off` when `host-brake.off` is in the pace root; `unread` when `sysctl` is
+  # missing, fails, prints another shape, or reports no core. Both are not
+  # saturated and carry null load figures. The hysteresis reads the previous
+  # host block only from a state no older than FLEET_STATE_STALE_SECONDS whose
+  # block was `ok`; anything else starts from not saturated. `since_epoch`
+  # moves to <now> only on a tick whose `saturated` differs from the previous
+  # block's (no usable previous block counts as a change).
+  local now="$1" st=ok out="" prev
+  if [ -e "$PACE_ROOT/host-brake.off" ]; then
+    st=off
+  elif [ -z "$SYSCTL" ]; then
+    st=unread
+  else
+    out=$("$SYSCTL" -n vm.loadavg hw.ncpu 2>/dev/null) || st=unread
+  fi
+  prev=$(fleet_state_read "$FLEET_STATE_STALE_SECONDS" || true)
+  [ -n "$prev" ] || prev=null
+  jq -nc --arg st "$st" --arg out "$out" --argjson now "$now" --argjson prev "$prev" \
+     --argjson enter "$FLEET_HOST_ENTER_PERMILLE" --argjson leave "$FLEET_HOST_LEAVE_PERMILLE" '
+    def num_re: "[0-9]+(\\.[0-9]+)?";
+    ($prev | if type == "object" and (.host | type) == "object" then .host else null end) as $ph
+    | ($ph != null and $ph.state == "ok" and $ph.saturated == true) as $was
+    | (if $st != "ok" then null
+       else [$out | split("\n")[] | select(test("\\S"))] as $ln
+            | if ($ln | length) == 2 and ($ln[1] | test("^\\s*[0-9]+\\s*$")) then
+                ([$ln[0] | capture("^\\s*\\{\\s*(?<a>" + num_re + ")\\s+(?<b>" + num_re + ")\\s+" + num_re + "\\s*\\}\\s*$")] | .[0]) as $m
+                | ($ln[1] | gsub("\\s"; "") | tonumber) as $n
+                | if $m != null and $n > 0
+                  then {l1: (($m.a | tonumber) + 0), l5: (($m.b | tonumber) + 0), n: $n} else null end
+              else null end
+       end) as $r
+    | (if $st == "ok" and $r == null then "unread" else $st end) as $s
+    # load1 is printed to two decimals, so load1 x 1000 is an integer once the
+    # float noise is rounded away; the floor is then the exact quotient.
+    | (if $s == "ok" then ((($r.l1 * 1000) | round) / $r.n | floor) else null end) as $ratio
+    | (if $s != "ok" then false
+       elif $was then $ratio >= $leave
+       else $ratio >= $enter end) as $sat
+    | {state: $s,
+       load1: (if $s == "ok" then $r.l1 else null end),
+       load5: (if $s == "ok" then $r.l5 else null end),
+       ncpu: (if $s == "ok" then $r.n else null end),
+       ratio_permille: $ratio,
+       saturated: $sat,
+       since_epoch: (if $ph == null or (($ph.saturated == true) != $sat) then $now
+                     else ($ph.since_epoch // $now) end),
+       enter_permille: $enter, leave_permille: $leave,
+       sampled_at_epoch: $now}'
 }
 
 # ===========================================================================
@@ -831,6 +902,9 @@ fleet_seat_bindings_poll() {
 #   3. fleet idle 20 min     -> 가속
 #   4. active lanes < target -> 가속 (degraded target while usage.json unusable)
 #   5. otherwise             -> 유지
+# Then the host: a `host` block with `saturated` true makes the verdict 제동
+# whatever the rungs gave — reason `brake-host` when rung 2's brake condition
+# holds too, else `host`. Any other host block leaves the verdict as it was.
 # A truncated burn scan blocks rungs 3 and 4 from producing 가속. `allow` is
 # min(rem/ttr, 100/168) per account; the cap is what keeps the fleet capacity
 # bounded by groups x 100/168 when a reset is hours away.
@@ -902,16 +976,22 @@ readonly FLEET_LADDER_JQ='
      elif $trunc and ($idle or $below) then {verdict: "유지", reason: "truncated"}
      elif ($tok | not) then {verdict: "유지", reason: "tracker-skip"}
      else {verdict: "유지", reason: "default"} end) as $v
+  # A saturated host turns any verdict into 제동, 가속 included; the reason says
+  # whether the token brake would have held as well.
+  | (if ($host | type) == "object" and $host.saturated == true
+     then {verdict: "제동",
+           reason: (if $cap != null and $b4 != null and $cap < $b4 and $cempty then "brake-host" else "host" end)}
+     else $v end) as $v
   | {schema: $schema, tick_seq: $tick_seq, computed_at: $computed_at, computed_at_epoch: $now,
      tick_ms: $tick_ms, tick_overrun: $overrun, slept: $slept, tracker: $tracker,
      burn_4h: $b4, burn_truncated: $trunc, burn_per_stage_4h: $bps, live_4h_avg: $live,
      fleet_capacity: $cap, candidates_empty: $cempty, seats: $seats, reseat_candidates: $cands,
-     lanes: $lanes, lane_census: $census, verdict: $v.verdict, verdict_reason: $v.reason}'
+     lanes: $lanes, lane_census: $census, verdict: $v.verdict, verdict_reason: $v.reason, host: $host}'
 
 fleet_sensor() {
   local start_ms now iso prev_state prev_seq tick_seq slept=false hb_prev hb_age
   local tracker inv dirs ctx scan burn lanes census census_why elapsed budget_ms overrun=false tick_ms state
-  local inplace_seq prev_verdict streak_f streak_start streak_written record
+  local inplace_seq prev_verdict streak_f streak_start streak_written record host
   command -v jq >/dev/null 2>&1 || fleet_die "jq 가 없습니다 — 센서는 jq 없이 아무것도 계산하지 않습니다"
   mkdir -p "$PACE_ROOT"
   start_ms=$(fleet_now_ms)
@@ -943,6 +1023,8 @@ fleet_sensor() {
   scan=$(fleet_scan_homes_json "$inv")
   burn=$(fleet_burn_cached "$scan")
   [ -n "$burn" ] || burn=null
+  host=$(fleet_host_block "$now" || true)
+  [ -n "$host" ] || host=null
 
   # LANE CENSUS LAST, inside what is left of the budget. The credential-shaped
   # inputs above are always published; only this one is droppable.
@@ -957,7 +1039,7 @@ EOF
   [ "$tick_ms" -ge $(( FLEET_TICK_BUDGET_SECONDS * 1000 )) ] && overrun=true
 
   state=$(fleet_jq "$ctx" "$dirs" "$FLEET_LADDER_JQ" --argjson now "$now" --arg computed_at "$iso" \
-      --argjson burn "$burn" --argjson scan "$scan" \
+      --argjson burn "$burn" --argjson scan "$scan" --argjson host "$host" \
       --arg lanes "$lanes" --argjson census "$census" --argjson target "$FLEET_TARGET_CONCURRENCY" \
       --argjson target_degraded "$FLEET_TARGET_CONCURRENCY_DEGRADED" --argjson idle_s "$FLEET_IDLE_SECONDS" \
       --argjson tick_seq "$tick_seq" \
@@ -2919,8 +3001,18 @@ fleet_dispatch() {
   # ADMISSION. Three clauses fail closed — lane occupancy, the fleet ceiling
   # and the 5h window — because none of them may open on a machine whose state
   # cannot be read.
-  # (5) the sensor's brake.
-  if [ -z "$clause" ] && [ "$verdict" = "제동" ]; then clause=brake; fi
+  # (5) the sensor's brake. Its reason names the clause: a host brake records
+  #     the host reading it braked on in the detail column.
+  if [ -z "$clause" ] && [ "$verdict" = "제동" ]; then
+    case "$(printf '%s' "$state" | jq -r '.verdict_reason // ""')" in
+      host) clause=host ;;
+      brake-host) clause=brake-host ;;
+      *) clause=brake ;;
+    esac
+    if [ "$clause" != brake ]; then
+      detail=$(printf '%s' "$state" | jq -r '"ratio=\(.host.ratio_permille // "-") ncpu=\(.host.ncpu // "-")"')
+    fi
+  fi
   if [ -z "$clause" ]; then
     # (6) ONE probe for this dispatch; an enumeration failure closes the lane.
     #     Then the markers: a live marker of this lane, or as many live markers

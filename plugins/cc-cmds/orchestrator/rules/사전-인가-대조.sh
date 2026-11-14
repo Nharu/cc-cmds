@@ -299,7 +299,7 @@ declared_only=0
 # 대조해 표 등급을 준 경우(`GATE_GRADE_SOURCE=표`)에만 그 이름의 형태가 맞는다.
 own_ok=1
 case "$argv0" in
-  clickup-create.py|clickup-relate.py|base-split.py|similar-items.py)
+  clickup-create.py|clickup-relate.py|base-split.py|similar-items.py|doc-tidy.py)
     [ "${GATE_GRADE_SOURCE:-}" = "표" ] || own_ok=0 ;;
 esac
 

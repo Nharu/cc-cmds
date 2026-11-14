@@ -453,7 +453,7 @@ MANIFEST=""; ANCHOR_KIND=""; ANCHOR_KEY=""
 # in its own shell; readers running inside a `$( … )` inherit the memo, which
 # is why the snapshot has to precede the first such call.
 # ---------------------------------------------------------------------------
-MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""
+MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""; MANIFEST_MEMO_GEN=0
 
 manifest_snapshot_take() {
   # One pass. Record tags:
@@ -484,7 +484,11 @@ manifest_snapshot_take() {
   #   VF <row>     every `- \`리뷰 문면\`` row anywhere, in order
   #   ST <row>     every `- \`출처 티켓\`` row anywhere, in order
   #   SA <row>     every `- \`강제 표면 승인\`` row anywhere, in order
+  #
+  # Each take moves `MANIFEST_MEMO_GEN`, so a value derived from the memo and
+  # kept in this process (`rule_setting_load`) knows it is stale.
   MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""
+  MANIFEST_MEMO_GEN=$(( ${MANIFEST_MEMO_GEN:-0} + 1 ))
   [ -n "$MANIFEST" ] && [ -f "$MANIFEST" ] || return 0
   MANIFEST_MEMO="
 $(LC_ALL=C awk '
@@ -1834,15 +1838,44 @@ EOF
   # joins the un-switchable set, and the operator is told the setting is inert
   # while the gate is in fact reading it. That misinforms in the direction that
   # leaves a merge gate believed to be on after it was switched off.
-  local rf rname
-  for rf in "$ORCH_DIR"/rules/*.rule; do
-    [ -f "$rf" ] || continue
-    case "$(rule_switchable_value "$rf")" in 예*) continue ;; esac
-    rname=$(basename "$rf" .rule)
-    [ -n "$(manifest_field '룰 설정' "$rname")" ] || continue
-    warn_once 'rule-setting-inert' \
-      "「룰 설정」에 끌 수 없는 룰 '$rname' 의 키가 있습니다 — 그 줄은 게이트에 읽히지 않으면서 구속 다이제스트에는 들어갑니다"
-  done
+  #
+  # NAMES ARE COMPARED NORMALISED on both sides (`rule_catalog`,
+  # `rule_setting_value`), so a key typed in either Unicode form and a catalog
+  # whose file names arrived decomposed still meet. A key that meets no rule at
+  # all is said once as well: it switches nothing, and a person who typed it
+  # believes it switched something.
+  #
+  # THE SECTION IS READ BEFORE THE CATALOG. Both warnings need at least one key,
+  # and this check runs on every gate call, so a manifest with no `## 룰 설정`
+  # key lines builds no catalog here and starts no normalisation process.
+  local rcat rline rf rname rkeys rk rnames nl='
+' tab='	'
+  rule_setting_load
+  if [ -n "$RULE_SETTING_TAB" ]; then
+    rcat=$(rule_catalog "$ORCH_DIR/rules")
+    rnames="$nl"
+    rkeys="$rcat"
+    while [ -n "$rkeys" ]; do
+      rline=${rkeys%%"$nl"*}
+      case "$rkeys" in *"$nl"*) rkeys=${rkeys#*"$nl"} ;; *) rkeys="" ;; esac
+      rf=${rline%%"$tab"*}; rname=${rline#*"$tab"}
+      rnames="$rnames$rname$nl"
+      [ -f "$rf" ] || continue
+      case "$(rule_switchable_value "$rf")" in 예*) continue ;; esac
+      [ -n "$(rule_setting_value "$rname")" ] || continue
+      warn_once 'rule-setting-inert' \
+        "「룰 설정」에 끌 수 없는 룰 '$rname' 의 키가 있습니다 — 그 줄은 게이트에 읽히지 않으면서 구속 다이제스트에는 들어갑니다"
+    done
+    rkeys="$RULE_SETTING_TAB"
+    while [ -n "$rkeys" ]; do
+      rline=${rkeys%%"$nl"*}
+      case "$rkeys" in *"$nl"*) rkeys=${rkeys#*"$nl"} ;; *) rkeys="" ;; esac
+      rk=${rline%%"$tab"*}
+      case "$rnames" in *"$nl$rk$nl"*) continue ;; esac
+      warn_once 'rule-setting-unknown' \
+        "「룰 설정」의 키 '$rk' 는 룰 카탈로그의 어느 룰과도 맞지 않습니다 — 그 줄은 아무 룰도 끄거나 켜지 않습니다"
+    done
+  fi
 
   # 14 — `dev 식별자` on the target rows.
   #
@@ -2449,6 +2482,160 @@ rule_switchable_value() {
   ' "$1"
 }
 
+# RULE NAMES ARE COMPARED IN ONE NORMAL FORM. A rule's name is its file name, and
+# a Korean file name created on macOS is stored decomposed (NFD) while every
+# literal in this code, every manifest key typed by a person and every tree
+# object holds it composed (NFC). Compared as bytes, a decomposed catalog
+# matched none of the names the gate special-cases — measured: a pre-authorized
+# review post fell into an approval wait because `사전-인가-대조` was not
+# recognised and read the wrong argv. So every rule name, from a file or from a
+# manifest key, goes through `rule_name_canon` before it is compared, and the
+# file's own bytes are kept only to open the file.
+
+# rule_name_canon — read lines on stdin and print each in NFC, in one process.
+# A line that is not valid UTF-8 passes through as it came. Without perl or its
+# normalisation module the input passes through unchanged and the status is 1,
+# so a caller can say that names are being compared as bytes.
+rule_name_canon() {
+  if ! command -v perl >/dev/null 2>&1; then
+    cat
+    return 1
+  fi
+  perl -e '
+    my $ok = eval { require Unicode::Normalize; require Encode; 1 };
+    while (my $l = <STDIN>) {
+      chomp $l;
+      if ($ok) {
+        my $s = eval { Encode::decode("UTF-8", $l, Encode::FB_CROAK() | Encode::LEAVE_SRC()) };
+        $l = Encode::encode("UTF-8", Unicode::Normalize::NFC($s)) if defined $s;
+      }
+      print "$l\n";
+    }
+    exit($ok ? 0 : 1);
+  '
+}
+
+# rule_catalog <rules-dir> — one line per declaration, `<declaration path><TAB>
+# <canonical name>`, ascending by the declaration's `순서:` field. A declaration
+# with no `순서:` sorts last (999) rather than being dropped — a rule missing one
+# field is still a rule. The path keeps the disk's bytes, so it and the checker
+# beside it (`${path%.rule}.sh`) open whatever form the file system holds; only
+# the name is normalised, once for the whole catalog. The status is
+# `rule_name_canon`'s.
+rule_catalog() {
+  local d="$1" f n decls names canon rc=0 nl='
+' tab='	' b c
+  decls=$(for f in "$d"/*.rule; do
+            [ -f "$f" ] || continue
+            # Quit AFTER a match, not on the first line: `/./q` tests the pattern
+            # space, which is never empty, so it ends the script before the
+            # address that matters is ever reached.
+            n=$(sed -n '/^순서:/{s/^순서: *\([0-9][0-9]*\).*/\1/p;q;}' "$f")
+            [ -n "$n" ] || n=999
+            printf '%s\t%s\n' "$n" "$f"
+          done | sort -n | cut -f2)
+  [ -n "$decls" ] || return 0
+  names=""
+  b="$decls"
+  while [ -n "$b" ]; do
+    f=${b%%"$nl"*}
+    case "$b" in *"$nl"*) b=${b#*"$nl"} ;; *) b="" ;; esac
+    f=${f##*/}
+    names="$names${f%.rule}$nl"
+  done
+  canon=$(printf '%s' "$names" | rule_name_canon) || rc=$?
+  b="$decls"; c="$canon"
+  while [ -n "$b" ]; do
+    f=${b%%"$nl"*}
+    case "$b" in *"$nl"*) b=${b#*"$nl"} ;; *) b="" ;; esac
+    n=${c%%"$nl"*}
+    case "$c" in *"$nl"*) c=${c#*"$nl"} ;; *) c="" ;; esac
+    printf '%s%s%s\n' "$f" "$tab" "$n"
+  done
+  return "$rc"
+}
+
+# The `## 룰 설정` section with every key normalised: one `<canonical key><TAB>
+# <value>` line per key, the first occurrence of a canonical key winning, as the
+# section reader's first match does. Filled once per manifest snapshot and kept
+# in this process, so the caller that fills it must not be inside a command
+# substitution — `rule_setting_load` is that caller. A manifest with no such
+# section, or a section with no key lines, starts no normalisation process.
+#
+# ONLY THE KEY COLUMN IS NORMALISED; the value keeps the manifest's bytes. The
+# binding digest freezes a rule line only when its value is the composed `켬` or
+# `끔` byte for byte (the `R` record of the manifest memo and
+# `manifest_rule_lines`), so a decomposed `끔` normalised here would switch a
+# rule off through a line the digest never froze, and a later edit of that line
+# would pass the digest comparison unseen. A value in any other form therefore
+# reads as itself and switches nothing.
+RULE_SETTING_FOR=""; RULE_SETTING_TAB=""; RULE_SETTING_CANON_RC=0
+rule_setting_load() {
+  local for raw keys canon b c line k out nl='
+' tab='	'
+  if manifest_memo_on; then for="memo:${MANIFEST_MEMO_GEN:-0}:$MANIFEST"; else for=""; fi
+  if [ -n "$for" ] && [ "$for" = "$RULE_SETTING_FOR" ]; then return 0; fi
+  if manifest_memo_on; then
+    raw=$(manifest_memo_all "F	룰 설정	")
+  else
+    raw=$(awk '
+      $0 == "## 룰 설정" { inb=1; next }
+      inb && /^## / { exit }
+      inb {
+        p = index($0, "**: ")
+        if (substr($0, 1, 2) == "**" && p > 3) print substr($0, 3, p - 3) "\t" substr($0, p + 4)
+      }
+    ' "$MANIFEST" 2>/dev/null)
+  fi
+  RULE_SETTING_CANON_RC=0
+  if [ -z "$raw" ]; then
+    RULE_SETTING_TAB=""
+  else
+    keys=""; b="$raw"
+    while [ -n "$b" ]; do
+      line=${b%%"$nl"*}
+      case "$b" in *"$nl"*) b=${b#*"$nl"} ;; *) b="" ;; esac
+      keys="$keys${line%%"$tab"*}$nl"
+    done
+    canon=$(printf '%s' "$keys" | rule_name_canon) || RULE_SETTING_CANON_RC=$?
+    # Pair each normalised key with its own line's value bytes. A key the
+    # normaliser printed no line for keeps its raw bytes.
+    out=""; b="$raw"; c="$canon"
+    while [ -n "$b" ]; do
+      line=${b%%"$nl"*}
+      case "$b" in *"$nl"*) b=${b#*"$nl"} ;; *) b="" ;; esac
+      if [ -n "$c" ]; then
+        k=${c%%"$nl"*}
+        case "$c" in *"$nl"*) c=${c#*"$nl"} ;; *) c="" ;; esac
+      else
+        k=${line%%"$tab"*}
+      fi
+      case "$line" in
+        *"$tab"*) out="$out$k$tab${line#*"$tab"}$nl" ;;
+        *) out="$out$k$nl" ;;
+      esac
+    done
+    RULE_SETTING_TAB=${out%"$nl"}
+  fi
+  RULE_SETTING_FOR="$for"
+  return 0
+}
+
+# rule_setting_value <canonical name> — the value of that rule's key in
+# `## 룰 설정`, whichever normal form the key was typed in; empty when absent.
+rule_setting_value() {
+  rule_setting_load
+  local nl='
+' rest
+  case "$nl$RULE_SETTING_TAB" in
+    *"$nl$1	"*)
+      rest="$nl$RULE_SETTING_TAB"
+      rest="${rest#*"$nl$1	"}"
+      printf '%s' "${rest%%"$nl"*}"
+      ;;
+  esac
+}
+
 # The BASE BRANCH, which the binding digest freezes and nothing verified. Every
 # other target field is compared against the disk before it is frozen; this one
 # was consumed straight out of the manifest by `base_branch` and returned
@@ -3006,8 +3193,10 @@ implement_process_b() {
   # row is a sibling's re-convergence carried onto this key: the document moved
   # under a plan another segment's re-convergence did not touch.
   # The driver's own rows carry no `종류`; an `S4` row is its implement row.
+  # A re-convergence row carrying `차단=파견 전` is a size block written before
+  # any session read the document: nothing was edited, so it voids no plan.
   awk '
-    /종류=reconverge( |$)/ { b = 0; next }
+    /종류=reconverge( |$)/ && !/\| 차단=파견 전( |$)/ { b = 0; next }
     index($0, "- `재계획`") == 1 { b = 0; next }
     /plan_sha256=/ && (/종류=implement( |$)/ || /\| 스테이지=S4 \|/) { b = 1 }
     END { exit (b ? 0 : 1) }
@@ -6818,6 +7007,384 @@ with_doc_lock() {
 }
 
 # ---------------------------------------------------------------------------
+# Design document size contract — one table, read by the driver, the gate and
+# the re-kickoff judgment (the last two source this file).
+#
+# A stage that reads the whole design document has a byte budget for what it
+# reads before the document plus the document itself. `doc_size_ceiling` is
+# what each kind's lead reads before the document; the document's threshold is
+# the budget minus that, and the warning threshold is the threshold minus the
+# warning band. Kinds outside the table have no threshold and are not checked.
+#
+# THE DOCUMENT IS THE MANIFEST'S, resolved against the main worktree (`DOC`). A
+# segment worktree holds no copy of an untracked `docs/`, so its path is never
+# the one measured. A run with no document (`DOC` empty) is not checked; a
+# document that is named but cannot be read blocks as `읽기 불가`.
+# ---------------------------------------------------------------------------
+DOC_SIZE_BUDGET=485000
+DOC_SIZE_WARN_BAND=24000
+
+doc_size_ceiling() {
+  case "$1" in
+    audit)      printf '162000' ;;
+    reconverge) printf '196000' ;;
+    implement)  printf '172000' ;;
+  esac
+}
+
+doc_size_threshold() {
+  # doc_size_threshold <kind> — `<threshold>\t<warning threshold>`, empty for a
+  # kind outside the table.
+  local c
+  c=$(doc_size_ceiling "$1")
+  [ -n "$c" ] || return 0
+  printf '%s\t%s' "$((DOC_SIZE_BUDGET - c))" "$((DOC_SIZE_BUDGET - c - DOC_SIZE_WARN_BAND))"
+}
+
+doc_size_bytes() {
+  # doc_size_bytes <doc> — the byte count, empty when the file is absent or
+  # unreadable.
+  [ -f "$1" ] && [ -r "$1" ] || return 0
+  LC_ALL=C wc -c < "$1" 2>/dev/null | tr -d ' ' || true
+}
+
+doc_size_verdict() {
+  # doc_size_verdict <kind> <doc> — one line `<verdict>\t<bytes>\t<threshold>\t<warning>`,
+  # the verdict one of `통과`·`경고`·`초과`·`읽기 불가`. Nothing for a kind
+  # outside the table.
+  local th t w b v
+  th=$(doc_size_threshold "$1")
+  [ -n "$th" ] || return 0
+  t=${th%%	*}; w=${th#*	}
+  b=$(doc_size_bytes "$2")
+  if [ -z "$b" ]; then v='읽기 불가'
+  elif [ "$b" -ge "$t" ]; then v='초과'
+  elif [ "$b" -ge "$w" ]; then v='경고'
+  else v='통과'
+  fi
+  printf '%s\t%s\t%s\t%s' "$v" "$b" "$t" "$w"
+}
+
+doc_size_min_threshold() {
+  # doc_size_min_threshold <field 1|2> — the lowest threshold (1) or warning
+  # threshold (2) over the three kinds.
+  local k th m="" v
+  for k in audit reconverge implement; do
+    th=$(doc_size_threshold "$k")
+    [ "$1" = 1 ] && v=${th%%	*} || v=${th#*	}
+    if [ -z "$m" ] || [ "$v" -lt "$m" ]; then m=$v; fi
+  done
+  printf '%s' "$m"
+}
+
+doc_size_kind_of() {
+  # doc_size_kind_of <stage id> — the size-table kind of a driver dispatch:
+  # the audit, every re-convergence (the in-segment `S1R:<seg>:<cycle>` too)
+  # and the implementation. Empty for every other stage. `stage_kind_of`, which
+  # chooses the settings variant, is a different reading and stays as it is.
+  local head="${1%%:*}"
+  head=${head%%#*}
+  case "$head" in
+    S2)                   printf 'audit' ;;
+    S4)                   printf 'implement' ;;
+    "S1'"|S1R|S0R|S2R)    printf 'reconverge' ;;
+  esac
+}
+
+doc_size_skill_of() {
+  case "$1" in
+    audit)      printf 'design-audit-unattended' ;;
+    reconverge) printf 'design-reconverge' ;;
+    implement)  printf 'implement-unattended' ;;
+  esac
+}
+
+doc_size_check() {
+  # doc_size_check <kind> <doc> — reads the document ONCE into a private copy and
+  # judges that copy, so the verdict, the byte count and the digest a halt record
+  # carries all come from the same bytes. Sets DOC_SIZE_VERDICT (the
+  # `doc_size_verdict` line) and DOC_SIZE_COPY (the copy's path, empty when the
+  # document could not be read); the caller removes the copy with
+  # `doc_size_release`. Returns 0 to dispatch, 1 to block, 2 when nothing was
+  # checked (no document, or a kind outside the table).
+  local th
+  DOC_SIZE_VERDICT=""; DOC_SIZE_COPY=""
+  [ -n "$2" ] || return 2
+  th=$(doc_size_threshold "$1")
+  [ -n "$th" ] || return 2
+  if [ -f "$2" ] && [ -r "$2" ]; then
+    DOC_SIZE_COPY=$(mktemp "${TMPDIR:-/tmp}/cc-docsize.XXXXXX" 2>/dev/null) || DOC_SIZE_COPY=""
+    if [ -n "$DOC_SIZE_COPY" ] && ! cat "$2" > "$DOC_SIZE_COPY" 2>/dev/null; then
+      rm -f "$DOC_SIZE_COPY"; DOC_SIZE_COPY=""
+    fi
+  fi
+  if [ -n "$DOC_SIZE_COPY" ]; then
+    DOC_SIZE_VERDICT=$(doc_size_verdict "$1" "$DOC_SIZE_COPY")
+  else
+    DOC_SIZE_VERDICT=$(printf '읽기 불가\t\t%s' "$th")
+  fi
+  case "${DOC_SIZE_VERDICT%%	*}" in
+    초과|'읽기 불가') return 1 ;;
+  esac
+  return 0
+}
+
+doc_size_release() {
+  [ -z "${DOC_SIZE_COPY:-}" ] || rm -f "$DOC_SIZE_COPY"
+  DOC_SIZE_COPY=""
+}
+
+doc_size_measure() {
+  # doc_size_measure <kind> <doc> — `<bytes>/<threshold>` for the `문서 크기`
+  # field, empty when the kind has no threshold or the document cannot be read.
+  local v b t
+  v=$(doc_size_verdict "$1" "$2")
+  [ -n "$v" ] || return 0
+  b=$(printf '%s' "$v" | cut -f2); t=$(printf '%s' "$v" | cut -f3)
+  [ -n "$b" ] || return 0
+  printf '%s/%s' "$b" "$t"
+}
+
+doc_size_field() {
+  # doc_size_field <dispatch id> — `문서 크기=<bytes>/<threshold>` from the value
+  # `stage_spawn` recorded right before it launched this attempt, empty when it
+  # recorded none.
+  local v=""
+  [ -f "$RUN_DIR/$1.docsize" ] && v=$(cat "$RUN_DIR/$1.docsize" 2>/dev/null || true)
+  [ -n "$v" ] || return 0
+  printf '문서 크기=%s' "$v"
+}
+
+doc_size_warn_field() {
+  # doc_size_warn_field <dispatch id> — after a re-convergence: when the document
+  # now stands at or above the lowest warning threshold, print the
+  # `크기 경고=<bytes>/<warning threshold>` field and add one line to the morning
+  # report. Nothing otherwise.
+  local b w
+  [ -n "${DOC:-}" ] || return 0
+  b=$(doc_size_bytes "$DOC")
+  [ -n "$b" ] || return 0
+  w=$(doc_size_min_threshold 2)
+  [ "$b" -ge "$w" ] || return 0
+  report_append '문서 크기 경고' "$1 뒤 설계 문서 $DOC 가 $b 바이트로 경고 문턱 $w 이상입니다 — 다음 감사·재수렴·구현 파견이 막히기 전에 정리를 검토하십시오" >/dev/null 2>&1 || true
+  printf '크기 경고=%s/%s' "$b" "$w"
+}
+
+doc_tidy_reviewed_copy() {
+  # doc_tidy_reviewed_copy <doc> — the frozen copy the last audit read
+  # (`<base>/docs/design-audit/audited/{slug}.md`), printed only when it exists
+  # and its sha256 equals the `frozen-sha256` of the audit report
+  # `<base>/docs/design-audit/{slug}.md`. Empty otherwise. Every caller that
+  # plans or tidies passes it as `--reviewed` exactly when it is not empty, so
+  # the record's estimate, the answer's estimate and the tidy itself agree.
+  local copy rep want have
+  [ -n "$1" ] && [ -n "${BASE:-}" ] && [ -n "${DOC_SLUG:-}" ] || return 0
+  copy="$BASE/docs/design-audit/audited/$DOC_SLUG.md"
+  rep="$BASE/docs/design-audit/$DOC_SLUG.md"
+  [ -f "$copy" ] && [ -f "$rep" ] || return 0
+  want=$({ grep -oE 'frozen-sha256[^0-9a-f]*[0-9a-f]{64}' "$rep" 2>/dev/null || true; } | sed -n '1p' | { grep -oE '[0-9a-f]{64}$' || true; })
+  [ -n "$want" ] || return 0
+  have=$(shasum -a 256 "$copy" 2>/dev/null | cut -d' ' -f1)
+  [ "$have" = "$want" ] || return 0
+  printf '%s' "$copy"
+}
+
+doc_tidy_bin() { printf '%s/doc-tidy.py' "$ORCH_DIR"; }
+
+doc_tidy_plan_expected() {
+  # doc_tidy_plan_expected <file> <doc> — the size `doc-tidy.py plan` expects for
+  # <file> once tidied, with the frozen copy of <doc> as `--reviewed` when there
+  # is one. Fails (prints nothing) when the tool fails or does not run.
+  local rv out
+  rv=$(doc_tidy_reviewed_copy "$2")
+  out=$("$(doc_tidy_bin)" plan "$1" ${rv:+--reviewed "$rv"} 2>/dev/null) || return 1
+  out=$(printf '%s\n' "$out" | sed -n 's/^expected=\([0-9][0-9]*\)$/\1/p' | sed -n '1p')
+  [ -n "$out" ] || return 1
+  printf '%s' "$out"
+}
+
+segment_other_live_plan() {
+  # segment_other_live_plan <segment|-> — 0 when some segment of this run other
+  # than <segment>, not finished, holds a live plan (`segment_process_b`), 1
+  # otherwise. A run-scope key passes `-` and every segment is looked at. Order
+  # does not matter. A driver run reads `plan.tsv`, `done.txt` and
+  # `skipped.txt`; a router run (no `plan.tsv`) reads the ledger's `segment`
+  # rows, a segment being finished when its last row's state is 머지됨, 완료 or
+  # 건너뜀. With no segment yet the answer is 1. Read whenever called, so the
+  # record writer and the answer's structural check each see the rows standing
+  # at their own moment.
+  local s="$1" seg rest
+  if [ -f "$RUN_DIR/plan.tsv" ]; then
+    while IFS="$(printf '\t')" read -r seg rest; do
+      [ -n "$seg" ] || continue
+      [ "$seg" = "$s" ] && continue
+      grep -qxF "$seg" "$RUN_DIR/done.txt" 2>/dev/null && continue
+      grep -qxF "$seg" "$RUN_DIR/skipped.txt" 2>/dev/null && continue
+      segment_process_b "$seg" && return 0
+    done < "$RUN_DIR/plan.tsv"
+    return 1
+  fi
+  while IFS= read -r seg; do
+    [ -n "$seg" ] || continue
+    [ "$seg" = "$s" ] && continue
+    segment_process_b "$seg" && return 0
+  done <<EOF
+$({ run_section_rows 'segment' || true; } | awk '
+  {
+    id = ""; st = ""
+    n = split($0, f, / \| /)
+    for (i = 1; i <= n; i++) {
+      if (f[i] ~ /^id=/) { id = f[i]; sub(/^id=/, "", id) }
+      else if (f[i] ~ /^상태=/) { st = f[i]; sub(/^상태=/, "", st) }
+    }
+    if (id == "") next
+    if (!(id in last)) order[++k] = id
+    last[id] = st
+  }
+  END {
+    for (i = 1; i <= k; i++) {
+      id = order[i]
+      if (last[id] != "머지됨" && last[id] != "완료" && last[id] != "건너뜀") print id
+    }
+  }')
+EOF
+  return 1
+}
+
+doc_size_halt_write() {
+  # doc_size_halt_write <stage id with attempt> <kind> <doc> <segment|-> — write
+  # the pre-dispatch size halt record at `${RUN_DIR}/halt/<stage id>.md`,
+  # atomically, from DOC_SIZE_VERDICT and DOC_SIZE_COPY as `doc_size_check` left
+  # them. The caller has already claimed the attempt; this function claims
+  # nothing. `**재호출 명령**` is `(없음)`: the answer routes dispatch again.
+  local sid="$1" kind="$2" doc="$3" seg="$4"
+  local v b t w skill sha="(없음)" exp="" tidy=0 rec_none="" dir tmp
+  v=$(printf '%s' "$DOC_SIZE_VERDICT" | cut -f1)
+  b=$(printf '%s' "$DOC_SIZE_VERDICT" | cut -f2)
+  t=$(printf '%s' "$DOC_SIZE_VERDICT" | cut -f3)
+  w=$(printf '%s' "$DOC_SIZE_VERDICT" | cut -f4)
+  skill=$(doc_size_skill_of "$kind")
+  dir="$RUN_DIR/halt"
+  mkdir -p "$dir" || return 1
+  if [ "$v" != '읽기 불가' ]; then
+    sha=$(shasum -a 256 "$DOC_SIZE_COPY" 2>/dev/null | cut -d' ' -f1)
+    [ -n "$sha" ] || sha="(없음)"
+    case "$kind" in
+      audit|reconverge)
+        exp=$(doc_tidy_plan_expected "$DOC_SIZE_COPY" "$doc") || exp=""
+        if [ -z "$exp" ]; then
+          rec_none='정리 예상 크기를 잴 수 없어(doc-tidy plan 실패), 큰 문맥 재파견과 런 밖 처리 가운데 사람이 골라야 합니다'
+        elif [ "$exp" -ge "$t" ]; then
+          rec_none='정리만으로는 문턱 아래로 내려가지 않아, 큰 문맥 재파견과 런 밖 처리 가운데 사람이 골라야 합니다'
+        elif segment_other_live_plan "$seg"; then
+          rec_none='계획을 가진 다른 세그먼트가 있어 정리하면 그 계획이 무효가 되므로, 큰 문맥 재파견과 런 밖 처리 가운데 사람이 골라야 합니다'
+        else
+          tidy=1
+        fi
+        ;;
+      *)
+        rec_none='구현 파견 앞에서는 문서를 정리하지 않으므로, 큰 문맥 재파견과 런 밖 처리 가운데 사람이 골라야 합니다'
+        ;;
+    esac
+  fi
+  tmp=$(mktemp "$dir/.doc-size-halt.XXXXXX") || return 1
+  {
+    printf '<!-- cc-pipeline-halt v1; writer=gate; reader=orchestrator; stage=%s; run=%s -->\n' "$sid" "$RUN_ID"
+    printf '**중단 시각**: %s\n' "$(now_iso)"
+    printf '**스킬**: %s\n' "$skill"
+    if [ "$v" = '읽기 불가' ]; then
+      printf '**스텝**: 파견 전 / 문서 읽기 불가\n'
+      printf '**분류**: gate-unanswerable\n'
+      printf '**질문 문면**: 문서 %s 를 읽을 수 없어 %s 을 띄우지 않았습니다. 어떻게 할까요?\n' "$doc" "$skill"
+      printf '**선택지**:\n'
+      printf -- '- `런 밖에서 처리` — 이 키를 보류로 두고, 사람이 런 밖에서 문서를 줄이거나 처리합니다.\n'
+      printf '**추천**: (없음) — 문서를 되살릴지는 사람이 정합니다\n'
+      printf '**추천 근거**: (없음)\n'
+      printf '**선택지 리스크**: `런 밖에서 처리` — 이 키와 거기에 기대는 단계가 아침까지 멈춥니다\n'
+      printf '**하네스 오류**: (없음)\n'
+      printf '**관측 상세**: 문서=%s / 바이트=(없음) / 문턱=%s / 경고 문턱=%s / 정리 예상=(없음) / 종류=%s / 문서 사전 sha256=(없음)\n' \
+        "$doc" "$t" "$w" "$kind"
+    else
+      printf '**스텝**: 파견 전 / 문서 크기 초과\n'
+      printf '**분류**: gate-unanswerable\n'
+      printf '**질문 문면**: 문서 %s 가 %s 바이트로 %s 의 문턱 %s 을 넘어 스테이지를 띄우지 않았습니다. 어떻게 할까요?\n' \
+        "$doc" "$b" "$skill" "$t"
+      printf '**선택지**:\n'
+      [ "$tidy" = 0 ] || printf -- '- `정리 후 재파견` — 결정·계약 문장을 바꾸지 않고 대체된 문장 괄호와 해결된 보류 항목의 논의 본문을 보관 파일로 옮긴 뒤 같은 스테이지를 다시 띄웁니다. 정리 뒤 예상 크기는 %s 바이트입니다.\n' "$exp"
+      printf -- '- `큰 문맥으로 재파견` — 큰 문맥 창 모델로 같은 스테이지를 이번 한 번 다시 띄웁니다. 비용이 크고, 계정 레인에 따라 쓰지 못할 수 있습니다.\n'
+      printf -- '- `런 밖에서 처리` — 이 키를 보류로 두고, 사람이 런 밖에서 문서를 줄이거나 처리합니다.\n'
+      if [ "$tidy" = 1 ]; then
+        printf '**추천**: `정리 후 재파견` — 정리 뒤 %s 바이트로 문턱 %s 아래로 내려갑니다\n' "$exp" "$t"
+        printf '**추천 근거**: 기기 사실:doc-tidy plan 예상 크기=%s 문턱=%s\n' "$exp" "$t"
+        printf '**선택지 리스크**: `정리 후 재파견` — 옮긴 논의 본문을 감사가 더는 보지 못합니다 / '
+      else
+        printf '**추천**: (없음) — %s\n' "$rec_none"
+        printf '**추천 근거**: (없음)\n'
+        printf '**선택지 리스크**: '
+      fi
+      printf '`큰 문맥으로 재파견` — 비용이 크고, 레인이 거부하면 크래시로 끝나 키가 파킹됩니다 / `런 밖에서 처리` — 이 키와 거기에 기대는 단계가 아침까지 멈춥니다\n'
+      printf '**하네스 오류**: (없음)\n'
+      printf '**관측 상세**: 문서=%s / 바이트=%s / 문턱=%s / 경고 문턱=%s / 정리 예상=%s / 종류=%s / 문서 사전 sha256=%s\n' \
+        "$doc" "$b" "$t" "$w" "${exp:-(없음)}" "$kind" "$sha"
+    fi
+    printf '**재호출 명령**: (없음)\n'
+    printf '**후속**: 보류 큐\n'
+    printf '<!-- /cc-pipeline-halt v1 -->\n'
+  } > "$tmp" || { rm -f "$tmp"; return 1; }
+  mv -f "$tmp" "$dir/$sid.md" || { rm -f "$tmp"; return 1; }
+  printf '%s' "$dir/$sid.md"
+}
+
+doc_size_reason() {
+  # doc_size_reason — the park reason a size block hands the driver's callers.
+  case "$(printf '%s' "$DOC_SIZE_VERDICT" | cut -f1)" in
+    '읽기 불가') printf '파견 전 / 문서 읽기 불가 — 설계 문서를 읽을 수 없어 띄우지 않았다' ;;
+    *) printf '파견 전 / 문서 크기 초과 — 설계 문서 %s 바이트가 문턱 %s 이상이라 띄우지 않았다' \
+         "$(printf '%s' "$DOC_SIZE_VERDICT" | cut -f2)" "$(printf '%s' "$DOC_SIZE_VERDICT" | cut -f3)" ;;
+  esac
+}
+
+doc_size_spawn_gate() {
+  # doc_size_spawn_gate <dispatch id> <kind> <pinned 0|1> — the driver's
+  # pre-dispatch size check. 0 to launch, with DOC_SIZE_LAST holding
+  # `<bytes>/<threshold>` for the row (empty when nothing was checked). 1 when
+  # blocked: the attempt is pinned (unless the caller already pinned it), the
+  # halt record and this attempt's `stage-result` row (`종단 부류=의도된 park`,
+  # `차단=파견 전`, the kind's usual `종류=`) are written, and
+  # STAGE_SPAWN_PARK_REASON carries the cause for the caller's park row.
+  local stage="$1" kind="$2" pinned="$3" rc=0 attempt seg head b t rec
+  DOC_SIZE_LAST=""
+  doc_size_check "$kind" "${DOC:-}" || rc=$?
+  b=$(printf '%s' "$DOC_SIZE_VERDICT" | cut -f2); t=$(printf '%s' "$DOC_SIZE_VERDICT" | cut -f3)
+  if [ "$rc" != 1 ]; then
+    [ -z "$b" ] || DOC_SIZE_LAST="$b/$t"
+    doc_size_release
+    return 0
+  fi
+  if [ "$pinned" = 1 ] && [ -f "$RUN_DIR/$stage.attempt" ]; then
+    attempt=$(cat "$RUN_DIR/$stage.attempt")
+  else
+    attempt=$(stage_pin_attempt "$stage")
+  fi
+  case "$stage" in *:*) seg=$(printf '%s' "$stage" | cut -d: -f2) ;; *) seg=- ;; esac
+  head="${stage%%:*}"
+  rec=$(doc_size_halt_write "$stage#$attempt" "$kind" "$DOC" "$seg") \
+    || warn "$stage: 문서 크기 중단 기록을 쓰지 못했다"
+  # No session was launched, so no judgment follows this row to absorb.
+  ledger_row 'stage-result' "세그먼트=$seg" "스테이지=$head" "파견 id=$stage" "차단=파견 전" \
+    $( [ "$kind" = implement ] || printf '%s' "종류=$kind" ) \
+    "종료 코드=$STAGE_SPAWN_PARK_RC" "실행 버전=$attempt" \
+    "압축 창=$(stage_window_of "$stage")" "레인=$(stage_lane_of "$stage")" "기록자=드라이버" \
+    ${b:+"문서 크기=$b/$t"} "종단 부류=의도된 park" \
+    || warn "$stage: 크기 차단의 stage-result 행을 쓰지 못했다"
+  STAGE_SPAWN_PARK_REASON=$(doc_size_reason)
+  STAGE_SPAWN_ALREADY_PARKED=0
+  warn "$stage: $STAGE_SPAWN_PARK_REASON${rec:+ — 기록 $rec}"
+  doc_size_release
+  return 1
+}
+
+# ---------------------------------------------------------------------------
 # Run worktrees. Every segment runs in its own, serial or parallel alike: two
 # concurrent stages in one worktree share HEAD and the index and would walk on
 # each other's commits.
@@ -7428,6 +7995,16 @@ stage_model_of() {
     esac
     return 0
   fi
+  # One dispatch carrying out a person's `큰 문맥으로 재파견` answer to a size
+  # record runs on the large-context window; the gate sets the switch in that
+  # act's own process only, so no other dispatch inherits it — save a
+  # re-attachment of that same session, or the new session an account move
+  # starts in its place, which the gate finds through the session's
+  # large-context record.
+  if [ "${CC_ORCH_LARGE_CONTEXT_ONCE:-}" = "1" ]; then
+    printf 'opus[1m]'
+    return 0
+  fi
   printf 'opus'
 }
 
@@ -7525,6 +8102,24 @@ stage_spawn() {
     STAGE_SPAWN_PARK_REASON="$why"
     return "$STAGE_SPAWN_PARK_RC"
   fi
+  # THE DESIGN DOCUMENT'S SIZE IS CHECKED AFTER THE ROUTING GUARD AND BEFORE THE
+  # LEASE, for the audit, every re-convergence and the implementation. A
+  # re-attachment (`STAGE_RESUME` set) continues a session that already read the
+  # document and is only measured; a migration that turns it into a new session
+  # is checked again after the lease, below. A block pins the attempt, writes
+  # its halt record and `stage-result` row, and returns the park code with the
+  # reason set, so every caller's `park_router` writes the park row it already
+  # writes.
+  local dsk dsz=""
+  dsk=$(doc_size_kind_of "$stage")
+  if [ -n "$dsk" ] && [ -n "${DOC:-}" ]; then
+    if [ -z "${STAGE_RESUME:-}" ]; then
+      doc_size_spawn_gate "$stage" "$dsk" 0 || return "$STAGE_SPAWN_PARK_RC"
+      dsz=$DOC_SIZE_LAST
+    else
+      dsz=$(doc_size_measure "$dsk" "$DOC")
+    fi
+  fi
   # A stage is never launched on an unresolved lane. The resolver refuses only
   # when a recorded path is broken rather than absent, and launching anyway
   # would put this stage on whichever lane the empty string happens to name.
@@ -7573,7 +8168,7 @@ stage_spawn() {
   # `.org-reattach` is the previous attempt's re-attachment comparison; a fresh
   # session must not carry it onto its own row.
   rm -f "$RUN_DIR/$stage.rc" "$RUN_DIR/$stage.window" "$RUN_DIR/$stage.reap-cause" "$RUN_DIR/$stage.backoff" \
-        "$RUN_DIR/$stage.org-reattach"
+        "$RUN_DIR/$stage.org-reattach" "$RUN_DIR/$stage.docsize"
   # Pin this dispatch's attempt number before anything derives a path from it,
   # and READ THE PIN BACK for everything else this dispatch derives. Recomputing
   # it per derivation is how the session uuid and the stream path came from two
@@ -7633,6 +8228,23 @@ stage_spawn() {
       return "$STAGE_SPAWN_PARK_RC"
     fi
   fi
+  # A MIGRATION GRANT TURNS A RE-ATTACHMENT INTO A NEW SESSION (`fresh`, the
+  # resume id is dropped below), and a new session reads the document from the
+  # start: that dispatch alone is checked again here, and a block hands the
+  # lease back. Whether the grant is a migration is read once, here, and the
+  # re-attachment drop below reads the same value.
+  local env_fresh=0
+  if [ "$routed" = "1" ]; then
+    env_fresh=$(printf '%s' "$env" | jq -r 'if .fresh == true then "1" else "0" end' 2>/dev/null) || env_fresh=0
+  fi
+  if [ -n "$dsk" ] && [ -n "${DOC:-}" ] && [ -n "${STAGE_RESUME:-}" ] && [ "$env_fresh" = "1" ]; then
+    if ! doc_size_spawn_gate "$stage" "$dsk" 1; then
+      spawn_lease_drop "$stage" "$minted"
+      return "$STAGE_SPAWN_PARK_RC"
+    fi
+    dsz=$DOC_SIZE_LAST
+  fi
+  [ -z "$dsz" ] || printf '%s\n' "$dsz" > "$RUN_DIR/$stage.docsize"
 
   # BOTH STREAMS ARE OPENED FOR APPEND, NEVER FOR TRUNCATION. Truncation is a
   # second, independent loss on top of an overwritten path, and it is the one
@@ -7708,8 +8320,7 @@ stage_spawn() {
   # nothing to a new session, so it gets the dispatch prompt the caller named
   # in STAGE_RESUME_DISPATCH, the one a new process of the same dispatch runs.
   local resume_id="${STAGE_RESUME:-}"
-  if [ -n "$resume_id" ] && [ "$routed" = "1" ] \
-     && [ "$(printf '%s' "$env" | jq -r 'if .fresh == true then "1" else "0" end' 2>/dev/null)" = "1" ]; then
+  if [ -n "$resume_id" ] && [ "$routed" = "1" ] && [ "$env_fresh" = "1" ]; then
     log "$stage: 이관 GRANT — 세션 $resume_id 을 재부착하지 않고 새 세션으로 띄운다"
     resume_id=""
     # The caller's dispatch prompt first; for an exhausted resume's move
@@ -8088,7 +8699,8 @@ audit_key_reconverge_rows() {
   # (`세그먼트=- | 스테이지=<id> | 종류=reconverge`) and the driver's, which
   # writes its skeletal re-convergence as `스테이지=S1'` under dispatch id `S2R`.
   # A re-convergence still waiting to spawn edited nothing and is left out, and
-  # so is a decision collection's (`audit_key_collect_reconverge_lines`): it
+  # so is a size block before dispatch (`차단=파견 전`): no session started.
+  # So is a decision collection's (`audit_key_collect_reconverge_lines`): it
   # closes decisions the audit already let through, so no fresh audit follows
   # it, and counting it would hold every later reader of the audit's end —
   # segment planning first — until the run ended.
@@ -8099,6 +8711,7 @@ audit_key_reconverge_rows() {
                -e "세그먼트=- | 스테이지=S1' | 파견 id=S2R | 종류=reconverge " "$lg" 2>/dev/null || true; } \
     | { grep "^[0-9]*:- \`stage-result\` " || true; } \
     | { grep -vF '| 관측=스폰 전 대기 중' || true; } \
+    | { grep -vE '\| 차단=파견 전( \||$)' || true; } \
     | LC_ALL=C awk -v skip="$skip" '{ l = substr($0, 1, index($0, ":") - 1); if (index(skip, " " l " ") == 0) print }'
 }
 
@@ -9413,10 +10026,13 @@ reconverge_row() {
   local seg="$1" sid="$2" class="${3:-정상 완료}" rseg
   rseg=$(run_gate_call gate_stage_row_segment "$seg" reconverge 2>/dev/null) || rseg=""
   [ -n "$rseg" ] || rseg="$seg"
+  local dsf dsw
+  dsf=$(doc_size_field "$sid"); dsw=$(doc_size_warn_field "$sid")
   ledger_row 'stage-result' "세그먼트=$rseg" "스테이지=S1'" "파견 id=$sid" "종류=reconverge" \
     "종료 코드=$(cat "$RUN_DIR/$sid.rc" 2>/dev/null || printf '1')" \
     "실행 버전=$(stage_attempt_pinned "$sid")" "세션 id=$(stage_session_id "$sid")" \
     "부모=$(stage_parent_id)" "압축 창=$(stage_window_of "$sid")" "레인=$(stage_lane_of "$sid")" \
+    ${dsf:+"$dsf"} ${dsw:+"$dsw"} \
     "기록자=드라이버" "종단 부류=$class" "실패 서명=$(row_signature "$sid" reconverge "$class" - -)"
   absorb_stage_judgment "$sid" "$sid" "$(seg_alias "$seg")"
   void_segment_plan "$seg"
@@ -12449,8 +13065,9 @@ segment_cycle() {
       # stays the kind because the gate's readers group on it; the attempt
       # counter needs the id it actually dispatched, and nothing else in the
       # row carries it.
+      local dsf; dsf=$(doc_size_field "$sid")
       ledger_row 'stage-result' "세그먼트=$seg" "스테이지=S4" "파견 id=$sid" "종료 코드=$rc" \
-        "아티팩트 술어 결과=$pred" "실행 버전=$(stage_attempt_pinned "$sid")" \
+        ${dsf:+"$dsf"} "아티팩트 술어 결과=$pred" "실행 버전=$(stage_attempt_pinned "$sid")" \
         "세션 id=$(stage_session_id "$sid")" "부모=$(stage_parent_id)" \
         "압축 창=$(stage_window_of "$sid")" "레인=$(stage_lane_of "$sid")" ${acct:+"계정=$acct"} \
         ${om:+"조직 이동=$om"} ${ro:+"재부착 조직=$ro"} ${re:+"재기록 추정=$re"} "기록자=드라이버" \
@@ -13224,8 +13841,9 @@ continue_attempt() {
     ask=$(audit_skeleton_fence_skeletal); ask=${ask:-미상}
     arq=$(audit_row_request "$ask" "$CONTINUE_CLASS" S2)
   fi
+  local dsf; dsf=$(doc_size_field "$did")
   ledger_row 'stage-result' "세그먼트=$rseg" "스테이지=$rkind" "파견 id=$did" ${akind:+"종류=$akind"} "종료 코드=$rc" \
-    "아티팩트 술어 결과=$pred" "실행 버전=$(stage_attempt_pinned "$did")" \
+    ${dsf:+"$dsf"} "아티팩트 술어 결과=$pred" "실행 버전=$(stage_attempt_pinned "$did")" \
     "세션 id=$(stage_session_id "$did")" "부모=$(stage_parent_id)" \
     "압축 창=$(stage_window_of "$did")" "레인=$(stage_lane_of "$did")" ${acct:+"계정=$acct"} \
     ${om:+"조직 이동=$om"} ${ro:+"재부착 조직=$ro"} ${re:+"재기록 추정=$re"} "기록자=드라이버" \
@@ -13750,7 +14368,8 @@ rekick_branch_input() {
     ni=$(printf '%s\n' "$sec" | grep -cE '^    - \*\*결함 수준\*\*: 구현 — .' || true)
     if [ "${nd:-0}" = "0" ] && [ "${ni:-0}" = "0" ]; then lv="없음"; else lv="설계 ${nd} · 구현 ${ni}"; fi
     done_rv=$(awk -v s="| 세그먼트=$sid |" '
-      index($0, "- `stage-result` ") == 1 && index($0, s) && index($0, "| 종류=reconverge |") { f = 1 }
+      index($0, "- `stage-result` ") == 1 && index($0, s) && index($0, "| 종류=reconverge |") \
+        && !/\| 차단=파견 전( \||$)/ { f = 1 }
       END { print (f ? "있음" : "없음") }' "$pled" 2>/dev/null || printf '없음')
     printf '## segment %s\n\n리포트: %s\n결함 수준별 수: %s\n앞 런의 재수렴: %s\n\n%s\n\n' "$sid" "$rep" "$lv" "$done_rv" "$sec"
   done <<EOF
@@ -14782,8 +15401,9 @@ s2_audit_attempt() {
   rq2=$(audit_row_request "$sk2" "$class2" S2)
   local om2 ro2 re2
   om2=$(stage_org_moves_of S2); ro2=$(stage_reattach_org_of S2); re2=$(stage_reattach_ctx_of S2)
+  local dsf2; dsf2=$(doc_size_field S2)
   ledger_row 'stage-result' "세그먼트=-" "스테이지=S2" "파견 id=S2" "종류=audit" "종료 코드=$rc2" \
-    "아티팩트 술어 결과=$pred2" "실행 버전=$(stage_attempt_pinned S2)" \
+    ${dsf2:+"$dsf2"} "아티팩트 술어 결과=$pred2" "실행 버전=$(stage_attempt_pinned S2)" \
       "세션 id=$(stage_session_id "S2")" "부모=$(stage_parent_id)" \
       "압축 창=$(stage_window_of S2)" "레인=$(stage_lane_of S2)" ${acct2:+"계정=$acct2"} \
       ${om2:+"조직 이동=$om2"} ${ro2:+"재부착 조직=$ro2"} ${re2:+"재기록 추정=$re2"} "기록자=드라이버" \

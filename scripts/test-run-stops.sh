@@ -232,6 +232,18 @@ row stage-result '세그먼트=impl' '스테이지=impl' '종류=implement' '실
 halt 'impl#1' gate-unanswerable
 has "halt: an unbound gate-unanswerable is reported with its marker" "$(stops)" "$(ev 'halt/gate-unanswerable/implement' 비의도 - '원인 셀 미결합')"
 
+# A pre-dispatch size stop, in the shape the gate and the driver write it: no
+# session ran, so the attempt has one `의도된 park` row carrying `차단=파견 전`
+# and the record names its step `파견 전 / 문서 크기 초과`. The classifier reads
+# only `**분류**`, so it is an unbound gate-unanswerable like any other until a
+# later attempt of the same stage completes.
+newcase
+row stage-result '세그먼트=rc' '스테이지=rc' '종류=reconverge' '실행 버전=1' '세션 id=-' '문서 크기=300048/300000' '차단=파견 전' '종단 부류=의도된 park'
+printf '<!-- cc-pipeline-halt v1; writer=gate; reader=orchestrator; stage=rc#1; run=fx -->\n**스킬**: design-reconverge\n**스텝**: 파견 전 / 문서 크기 초과\n**분류**: gate-unanswerable\n**재호출 명령**: (없음)\n<!-- /cc-pipeline-halt v1 -->\n' > "$RD/halt/rc#1.md"
+has "halt: a pre-dispatch size record is an unbound gate-unanswerable" "$(stops)" "$(ev 'halt/gate-unanswerable/reconverge' 비의도 - '원인 셀 미결합')"
+row stage-result '세그먼트=rc' '스테이지=rc' '종류=reconverge' '실행 버전=2' '종단 부류=정상 완료'
+check "halt: a completed attempt after the size stop resolves it" "$(stops)" ""
+
 # The copy `gate_adoption_halt_carry` makes of an earlier run's record and its
 # attachment, and the answer a seat writes beside a record, are not this run's
 # halt records — even when the answer body quotes a `**분류**` line.

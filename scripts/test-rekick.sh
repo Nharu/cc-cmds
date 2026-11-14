@@ -1862,6 +1862,20 @@ $(prov7 RKJROOT0 1 RKJROOT 마감)" mk_seat RKJ-L15X 무진전
 out=$(jdg RKJ-L15X)
 check "12: L15 — 앞 링크가 마감이면 무진전 한 번은 허용" "$(col "$out" 판정)/$(fired "$out")" "허용/"
 
+# L16 — the source's design document at the lowest size threshold or above.
+# The threshold is read from run.sh's table, so the fixture document is sized
+# from it rather than from a literal; one byte under it does not fire.
+L16_T=$( ( CC_ORCH_SOURCE_ONLY=1 . "$ORCH/run.sh" >/dev/null 2>&1; doc_size_min_threshold 1 ) )
+awk -v n="$L16_T" 'BEGIN { l = sprintf("%099d", 0); for (i = 0; i * 100 < n; i++) print l }' > "$BASE/docs/rk-big.md"
+P_DOC='docs/rk-big.md' mk_seat RKJ-L16 마감
+out=$(jdg RKJ-L16)
+check "12: L16 — 문턱 이상인 원천 설계 문서는 L16 하나로 금지" "$(col "$out" 판정)/$(fired "$out")" "금지/L16 "
+has "12: L16 — 금지선 줄이 바이트와 문턱을 싣는다" "$out" "문턱 $L16_T 를 넘습니다"
+head -c $((L16_T - 1)) "$BASE/docs/rk-big.md" > "$BASE/docs/rk-big-under.md"
+P_DOC='docs/rk-big-under.md' mk_seat RKJ-L16U 마감
+out=$(jdg RKJ-L16U)
+check "12: L16 — 문턱보다 한 바이트 작으면 허용" "$(col "$out" 판정)/$(fired "$out")" "허용/"
+
 mk_seat RKJ-L10 마감; fx_blocked '강제 표면 이동' 무효화
 out=$(jdg RKJ-L10)
 has "12: L10 — 무효화 갈래는 금지" "$(fired "$out")" "L10 "
