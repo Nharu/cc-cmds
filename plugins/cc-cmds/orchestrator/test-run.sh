@@ -11966,6 +11966,24 @@ for want in "복구 scratch=$RUN_DIR/cc-team-witness-hit" '원회수=dead' '종�
   fi
 done
 
+# 원 리뷰 계보의 임대는 재파견이 라우터에 묻기 전에 반납된다 — 구현 반증 수정
+# 재파견과 같은 순서다. 라우팅된 런처럼 임대 기록을 깔고, 재파견 스파이가 자기가
+# 불린 순간 그 기록이 남아 있는지 적는다. 반납 경로는 진짜 함수를 태우고 반납
+# 자체만 스텁으로 둔다. 서브셸이라 스텁이 뒤 절로 새지 않는다.
+REC_ORDER=$(
+  run_routed()         { return 0; }
+  route_lease_release() { printf '%s\n' "$3" >> "$RUN_DIR/released"; return 0; }
+  spawn_cost_samples() { :; }
+  stage_alive()        { return 1; }
+  stage_spawn()        { { [ -f "$RUN_DIR/$SIDR.lease" ] && printf 'present' || printf 'gone'; } > "$RUN_DIR/at-spawn"; return 0; }
+  rm -f "$RUN_DIR/released" "$RUN_DIR/at-spawn" "$RUN_DIR"/*.lease-retry
+  printf '%s\nN1\n' "$SIDR" > "$RUN_DIR/$SIDR.lease"
+  review_recover segR 0 "$SIDR" "$REC_RP" "$REC_DIR" segbranch "크래시" >/dev/null 2>&1
+  printf '%s/%s' "$(cat "$RUN_DIR/at-spawn" 2>/dev/null)" "$(cat "$RUN_DIR/released" 2>/dev/null)"
+)
+check "review --recover 는 재파견을 묻기 전에 원 리뷰 계보의 임대를 반납한다" "$REC_ORDER" "gone/$SIDR"
+rm -f "$RUN_DIR/released" "$RUN_DIR/at-spawn" "$RUN_DIR/$SIDR.lease"
+
 # 스탬프가 없으면 행은 `미상` 을 싣는다 — 「모른다」가 원장에 남아야 한다.
 rm -f "$RUN_DIR/$SIDR.reaped"
 rec_reset
@@ -12800,6 +12818,10 @@ check "표지의 보유자는 살아 있는 기다리는 프로세스다" \
 check "기다리는 동안 창 기록이 없다" "$( [ -e "$RA/run/S4:segW:1.window" ] && printf yes || printf no)" "no"
 n=0; while [ "$(ra_waits)" -lt 2 ] && [ "$n" -lt 100 ]; do sleep 0.1; n=$((n + 1)); done
 check "대기 중에는 덩어리마다 stage-wait 행이 쌓인다" "$( [ "$(ra_waits)" -ge 2 ] && printf yes || printf no)" "yes"
+case "$( { grep -F '`stage-wait`' "$RA/ledger.md" || true; } | { grep -F '계보=S4:segW:1 ' || true; } | tail -1)" in
+  *"| 호스트=- | 기록 시각=20"*"Z | "*) ok "대기 행은 호스트 칸과 자기 기록 시각을 싣는다" ;;
+  *) bad "stage-wait 행의 새 두 칸" "$( { grep -F '`stage-wait`' "$RA/ledger.md" || true; } | tail -1)" ;;
+esac
 kill -TERM "$RA_BLOCK" 2>/dev/null; wait "$RA_BLOCK" 2>/dev/null || true
 wait "$ra_wpid" 2>/dev/null || true
 ra_out=$(cat "$RA/wait.out")
@@ -12808,6 +12830,125 @@ check "기동 뒤 대기 표지가 남지 않는다" "$( [ -e "$RA/run/segW.wait
 check "대기는 파킹 행을 쓰지 않는다" "$( { grep -F '`blocked`' "$RA/ledger.md" || true; } | { grep -cF 'S4:segW:1' || true; })" "0"
 kill -TERM "$RA_WRITER" 2>/dev/null; wait "$RA_WRITER" 2>/dev/null || true
 rm -f "$RA/run/watch.stall"
+
+# 드라이버 반납 실패의 재시도 — 반납이 0 이 아니게 끝나면 기록과 `.lease-retry`
+# 표지가 남고, 다음 라우터 질의 직전(`spawn_route_grant`)과 대기 루프의 재질의
+# 직전, 계보 끝에서 다시 내놓아 0 이면 둘 다 사라진다. 표지 없는 기록은 그대로다.
+# 반납은 `LR_FAIL` 파일이 있는 동안 rc 3 으로 덮는다.
+LR="$WORK/lease-retry"; rm -rf "$LR"; mkdir -p "$LR/run"
+cat > "$LR/probe.sh" <<'LREOF'
+lr_drv="$1"; LR_ROOT="$2"; lr_case="$3"; set --
+. "$lr_drv"
+set +e
+RUN_DIR="$LR_ROOT/run"; RUN_ID=lr-run
+log() { :; }; warn() { :; }
+run_routed() { return 0; }
+stage_alive() { return 1; }
+spawn_cost_samples() { :; }
+route_lease_release() {
+  printf '%s\n' "$3" >> "$LR_ROOT/calls"
+  [ ! -f "$LR_ROOT/LR_FAIL" ] || return 3
+  return 0
+}
+lr_state() {  # lr_state <did> — 기록/표지
+  printf '%s/%s' "$( [ -f "$RUN_DIR/$1.lease" ] && printf rec || printf - )" \
+    "$( [ -f "$RUN_DIR/$1.lease-retry" ] && printf mark || printf - )"
+}
+lr_note() { printf '%s\nN-%s\n' "$1" "$1" > "$RUN_DIR/$1.lease"; }
+case "$lr_case" in
+  release)
+    lr_note S4:a:1; : > "$LR_ROOT/LR_FAIL"
+    spawn_lease_release S4:a:1; printf 'fail=%s\n' "$(lr_state S4:a:1)"
+    lr_note S4:b:1
+    rm -f "$LR_ROOT/LR_FAIL"
+    spawn_lease_retry_sweep
+    printf 'swept=%s\n' "$(lr_state S4:a:1)"
+    printf 'untouched=%s\n' "$(lr_state S4:b:1)"
+    printf 'calls=%s\n' "$(tr '\n' ',' < "$LR_ROOT/calls")" ;;
+  drop)
+    lr_note S4:c:1; : > "$LR_ROOT/LR_FAIL"
+    spawn_lease_drop S4:c:1 1; printf 'fail=%s\n' "$(lr_state S4:c:1)"
+    spawn_lease_retry_sweep; printf 'still=%s\n' "$(lr_state S4:c:1)"
+    rm -f "$LR_ROOT/LR_FAIL"
+    spawn_lineage_release S4:z:1; printf 'swept=%s\n' "$(lr_state S4:c:1)" ;;
+  grant)
+    lr_note S4:d:1; : > "$LR_ROOT/LR_FAIL"
+    spawn_lease_release S4:d:1; rm -f "$LR_ROOT/LR_FAIL"
+    route_lineage_of() { printf '%s' "$1"; }
+    stage_kind_of() { printf implement; }
+    spawn_route_request() { printf '{}'; }
+    route_lease_of() { return 1; }
+    route_resolve() { printf 'resolve=%s\n' "$(lr_state S4:d:1)" >> "$LR_ROOT/seen"; printf '{"verdict":"PARK"}'; }
+    wait_router_why() { printf why; }
+    spawn_route_grant S4:e:1 >/dev/null 2>&1
+    cat "$LR_ROOT/seen" ;;
+  run-end)
+    lr_note S4:f:1; : > "$RUN_DIR/S4:f:1.lease-retry"
+    route_lease_release_run() { return 0; }
+    spawn_lease_release_run
+    printf 'end=%s\n' "$(lr_state S4:f:1)" ;;
+esac
+LREOF
+lr_run() {  # lr_run <case>
+  rm -rf "$LR/run" "$LR/calls" "$LR/seen" "$LR/LR_FAIL"; mkdir -p "$LR/run"
+  bash "$LR/probe.sh" "$DRIVER" "$LR" "$1" 2>/dev/null
+}
+lr_out=$(lr_run release)
+check "반납이 실패하면 기록과 재시도 표지가 남는다" "$(ra_get "$lr_out" fail)" "rec/mark"
+check "다음 쓸기에서 반납이 0 이면 기록과 표지가 함께 사라진다" "$(ra_get "$lr_out" swept)" "-/-"
+check "표지 없는 기록은 쓸기가 건드리지 않는다" "$(ra_get "$lr_out" untouched)/$(ra_get "$lr_out" calls)" "rec/-/S4:a:1,S4:a:1,"
+lr_out=$(lr_run drop)
+check "기동 전 반납이 실패하면 기록을 지우지 않고 표지를 쓴다" "$(ra_get "$lr_out" fail)" "rec/mark"
+check "반납이 계속 실패하면 쓸기 뒤에도 둘 다 남는다" "$(ra_get "$lr_out" still)" "rec/mark"
+check "계보 끝의 반납이 남은 표지의 임대를 다시 내놓는다" "$(ra_get "$lr_out" swept)" "-/-"
+check "라우터 질의 직전에 실패한 반납을 다시 내놓는다" "$(lr_run grant)" "resolve=-/-"
+check "런 끝 회수는 남은 표지도 지운다" "$(ra_get "$(lr_run run-end)" end)" "-/-"
+if sed -n '/^stage_wait_loop()/,/^}/p' "$DRIVER" | grep -q -F 'spawn_lease_retry_sweep'; then
+  ok "대기 루프는 재질의 직전에 반납 재시도를 쓴다"
+else
+  bad "대기 루프 반납 재시도" "stage_wait_loop 에 spawn_lease_retry_sweep 이 없다"
+fi
+
+# 런 끝 `파견 대기` 줄 — 계보마다 연속 stage-wait 묶음을 건수로, 같은 계보 이웃
+# 행의 `기록 시각` 차이를 앞 행의 부류에 더해 분으로 내린다. 세지 않는 근거의 행은
+# 묶음을 끊지도 들지도 않고, stage-lease 가 묶음을 끝낸다.
+DW="$WORK/dispatch-wait"; rm -rf "$DW"; mkdir -p "$DW"
+dw_row() {  # dw_row <계열> <계보> <근거> <기록 시각>
+  if [ "$1" = "stage-lease" ]; then
+    printf -- '- `stage-lease` | 파견 id=%s | 계보=%s | 근거=first | prev=x\n' "$2" "$2"
+  else
+    printf -- '- `stage-wait` | 계보=%s | 근거=%s | 기록 시각=%s | prev=x\n' "$2" "$3" "$4"
+  fi
+}
+dw_sum() {  # dw_sum <원장> — 그 원장의 run_dispatch_wait_summary
+  bash -c 'd="$1"; l="$2"; set --; . "$d"; set +e; LEDGER="$l"; RUN_ID=dw-run; LEDGER_SCOPE=블록
+           run_dispatch_wait_summary' _ "$DRIVER" "$1" 2>/dev/null
+}
+{
+  printf '# 원장\n\n## 실행 dw-run\n\n'
+  dw_row stage-wait L1 host-saturated 2026-11-14T00:00:00Z
+  dw_row stage-wait L2 no-room 2026-11-14T00:00:30Z
+  dw_row stage-wait L1 host-saturated 2026-11-14T00:02:00Z
+  dw_row stage-wait L1 router-stop 2026-11-14T00:02:30Z
+  dw_row stage-wait L1 group-exhausted 2026-11-14T00:03:30Z
+  dw_row stage-wait L2 resume-bound-full 2026-11-14T00:05:30Z
+  dw_row stage-lease L1
+  dw_row stage-wait L1 host-saturated 2026-11-14T00:10:00Z
+  dw_row stage-lease L2
+} > "$DW/mixed.md"
+check "파견 대기는 부류별 건수와 내린 분을 싣는다" "$(dw_sum "$DW/mixed.md")" "호스트 2건 3분 이상 · 계정 2건 5분 이상"
+{
+  printf '# 원장\n\n## 실행 dw-run\n\n'
+  dw_row stage-wait L1 host-saturated 2026-11-14T00:00:00Z
+  dw_row stage-wait L1 host-saturated 2026-11-14T00:00:50Z
+} > "$DW/host.md"
+check "0 건 부류의 조각은 빠지고 1 분이 안 되면 0 분이다" "$(dw_sum "$DW/host.md")" "호스트 1건 0분 이상"
+{
+  printf '# 원장\n\n## 실행 dw-run\n\n'
+  dw_row stage-wait L1 router-stop 2026-11-14T00:00:00Z
+  dw_row stage-lease L1
+} > "$DW/none.md"
+check "센 행이 없으면 값이 비어 줄을 쓰지 않는다" "$(dw_sum "$DW/none.md")" ""
 
 # ---------------------------------------------------------------------------
 # 34. 남은 일 이어받기 — 이전 런이 착지시킨 슬라이스는 다시 하지 않는다
