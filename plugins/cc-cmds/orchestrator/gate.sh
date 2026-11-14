@@ -30075,7 +30075,7 @@ gate_shift_halt_write() {
   sexpect=$(gate_field_of '기대 결과' "$@")
   stg=$(gate_field_of '승인 대상' "$@")
   sord=$(gate_field_of '교대' "$@")
-  sinfo=$(printf '%s' "$srow" | cut -d'|' -f3)
+  sinfo=${srow#*|}; sinfo=${sinfo#*|}; sinfo=${sinfo%%|*}
   sdir=$(gate_shift_halt_dir) || {
     warn "this run's halt/shift is not a real directory at $RUN_DIR/halt/shift — the record is not written"
     return "$GATE_EXIT_RULE"; }
