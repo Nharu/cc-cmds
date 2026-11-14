@@ -1,3 +1,4 @@
 /docs/
 CLAUDE.md
 plugins/cc-cmds/tsconfig.json
+.playwright-cli/
