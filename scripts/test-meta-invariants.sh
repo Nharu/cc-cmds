@@ -2032,6 +2032,13 @@ done <<'EOF'
 반영 성공|_common/approval-reflection.md|`visual-check.sh binding <설계 문서>` measures over the published document
 반영 성공|visual/SKILL.md|visual-check.sh binding
 반영 종단|_common/approval-reflection.md|사람에게 묻는 기록으로 보고하지 않는다 — 라우터 교대의 반영 분기가 이 기록을 재파견으로 처리한다
+반영 실패|_common/approval-reflection.md|but writes `**선택지**: (없음)` and no `**추천**`, `**추천 근거**` or `**선택지 리스크**` line
+반영 실패|_common/approval-reflection.md|once the run has ended, running `/cc-cmds:visual <문서> 구현 승인` again continues the interactive reflection from the document edit
+반영 종단|_common/approval-reflection.md|운반 답 갈래로 들인 시도의 실패(위 실패 행의 경우) | `실패 — <사유>` | `Step 3 승인 화면 반영 — 충돌`, `**선택지**: (없음)`
+반영 종단|_common/approval-reflection.md|`실패 — <사유>`, 정지 기록, 그 기록에 답하지 말고 런이 끝난 뒤 다시 실행하라는 안내, 화면 슬라이스가 이 런에서 서 있음
+반영 실패|autopilot-router-shift/references/visual-dispatch.md|the seat does not ask the person to answer it, but to run `/cc-cmds:visual <설계 문서> 구현 승인` again once the run has ended
+아침 보고|autopilot/references/act3-report.md|adds its stop record but not the option `결정 첨부 후 다시 반영`
+아침 보고|autopilot/references/act3-report.md|이 기록에는 답을 받을 수 없으니 답하지 말고, 런이 끝난 뒤 `/cc-cmds:visual <설계 문서 절대 경로> 구현 승인` 을 다시 실행하면
 EOF
 # The second same end keeps the sidecar at `대기`; a copy that writes
 # `실패 — <종단>` there stops the automatic retry and asks a person.
