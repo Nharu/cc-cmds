@@ -30245,9 +30245,11 @@ gate_base_guard_now() {
 
 gate_base_guard_put() {
   # gate_base_guard_put <file> <line> — replace <file> with one line, by a
-  # rename from a temporary file beside it.
+  # rename from a temporary file beside it. The temporary name starts with a
+  # dot, so a glob over the latch names (`<별칭>.latch.*`) never reads a
+  # temporary file — or one an act left when it died — as a segment latch.
   local tmp
-  tmp=$(mktemp "$1.XXXXXX" 2>/dev/null) || return 1
+  tmp=$(mktemp "${1%/*}/.${1##*/}.XXXXXX" 2>/dev/null) || return 1
   if printf '%s\n' "$2" > "$tmp" 2>/dev/null && mv -f "$tmp" "$1" 2>/dev/null; then
     return 0
   fi
@@ -30443,13 +30445,10 @@ gate_base_guard_done_unmet() {
       rest=${lf#"$d/$al.latch"}
       case "$rest" in
         '') who='대상' ;;
-        # A second dot is the temporary file of a segment latch being renamed
-        # into place, not a latch.
-        .*.*) continue ;;
         *) who="세그먼트 ${rest#.}" ;;
       esac
       if ! v=$(gate_base_guard_read "$lf") || [ -z "$v" ] || [ "$v" = "기록 없음" ]; then
-        printf '5 베이스 이동 정지에 답할 기록이 없습니다 — %s 걸쇠 %s (%s)\n' "$who" "$lf" "${v:-읽지 못함}"
+        printf '5 베이스 이동 정지에 답할 기록이 없습니다 — %s 걸쇠 %s (%s) — 그 대상의 다음 보호 행위가 기록을 다시 씁니다\n' "$who" "$lf" "${v:-읽지 못함}"
         continue
       fi
       if ! ans=$(gate_base_guard_last_answer "$v"); then
@@ -64653,7 +64652,9 @@ EOF
   # run that could clear it would be re-authorizing itself past the boundary
   # that had just refused it.
   # The fold itself lives in `liveness.sh` so that this condition and the status
-  # line read one rule rather than two copies of it. What stays here is the
+  # line read one rule rather than two copies of it. The base-move latches read
+  # after the fold are the one addition, and `cc_run_settle_stuck` reads them
+  # too (`cc_base_guard_open_latches`). What stays here is the
   # RENDERING: these two sentences are the only place a person is told how to
   # clear the block, so they are not the shared function's business. The first
   # of them is also read as a value: `gate_done_disposition` anchors on the
