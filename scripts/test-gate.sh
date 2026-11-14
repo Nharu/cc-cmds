@@ -6090,15 +6090,18 @@ pre_ledger_series() {
   lsr_wait_cases() {
     # 대기 원인 열 × `그룹` 세 모양 × `까지` 값/`-`. `계정` 은 재개 구속
     # 원인에만 값이다. `비용`·`비용 출처` 는 `까지` 와 함께 값이거나 함께 `-` 다.
-    local r acct g u c cs
+    # `호스트` 는 호스트 보류 원인에만 포화 표본이고, `기록 시각` 은 늘 값이다.
+    local r acct g u c cs h
     for r in group-exhausted no-room unknown-concurrency fifo-yield \
              resume-bound-exhausted resume-bound-no-room lease-lock-busy lease-contention \
-             lease-hold-busy lease-hold-lost wait-end-refused; do
+             lease-hold-busy lease-hold-lost wait-end-refused host-saturated; do
       case "$r" in resume-bound-*) acct='acct-a' ;; *) acct='-' ;; esac
+      case "$r" in host-saturated) h='포화 ratio=1350 ncpu=8 표본=2026-09-27T01:00:00Z' ;; *) h='-' ;; esac
       for g in - org:0123456789abcdef acct:acct-b; do
         for u in 2026-09-27T01:02:03Z -; do
           case "$u" in -) c='-'; cs='-' ;; *) c='1.0000/0.0000'; cs='default/default' ;; esac
-          lsr_row stage-wait '계보=S2-impl-1' "그룹=$g" "계정=$acct" "까지=$u" "비용=$c" "비용 출처=$cs" "근거=$r"
+          lsr_row stage-wait '계보=S2-impl-1' "그룹=$g" "계정=$acct" "까지=$u" "비용=$c" "비용 출처=$cs" "근거=$r" \
+            "호스트=$h" '기록 시각=2026-09-27T01:00:05Z'
         done
       done
     done
@@ -6108,8 +6111,8 @@ pre_ledger_series() {
     # 두 기록자를 넷씩 동시에 띄워 한 원장에 섞어 쓴다.
     local i
     for i in 1 2 3 4; do
-      gate_append 'stage-wait' "계보=G$i" '그룹=-' '계정=-' '까지=-' '비용=-' '비용 출처=-' '근거=lease-lock-busy' &
-      ledger_row 'stage-wait' "계보=D$i" '그룹=-' '계정=-' '까지=-' '비용=-' '비용 출처=-' '근거=lease-contention' &
+      gate_append 'stage-wait' "계보=G$i" '그룹=-' '계정=-' '까지=-' '비용=-' '비용 출처=-' '근거=lease-lock-busy' '호스트=-' '기록 시각=2026-09-27T01:00:05Z' &
+      ledger_row 'stage-wait' "계보=D$i" '그룹=-' '계정=-' '까지=-' '비용=-' '비용 출처=-' '근거=lease-contention' '호스트=-' '기록 시각=2026-09-27T01:00:05Z' &
     done
     wait
   }
@@ -16923,7 +16926,7 @@ rm -rf "$VM15"
 
 # ---------------------------------------------------------------------------
 # 15vq. The approved-screen reflection: one re-convergence per person's answer
-# --- section: 15vq | group: base | covers: act, plan, snapshot, halt-answer, gate_approval_reflection_entry, gate_approval_reflection_live, gate_approval_reflection_retry_ok, gate_approval_reflection_scope_of, gate_caller_is_visual_publish_stage, gate_stage_last_settled_row, gate_stage_row_segment, gate_stage_result_rows_of, gate_redeclare_after_reconverge, gate_replan_due_json, gate_halt_detail_scope, visual_approval_route_hint, visual_approval_verdict | anchors: 15vq: 사람의 답이 없으면 반영 재수렴은 거부된다, 15vq: 반영 대기 동안 승인 판정은 보류다, 15vq: 반영 대기 안내는 사람이 할 일이 없다고 말한다, 15vq: 발행 단계가 없는 런의 반영 대기 안내는 구현 승인을 다시 실행하라고 한다, 15vq: 범위가 다른 프롬프트는 거부된다, 15vq: 가장 마지막 시각-판정 기록이 아니면 거부된다, 15vq: 감사 단계에 살아 있는 시도가 있으면 거부된다, 15vq: 사람의 승인 답 하나로 반영 재수렴 plan 이 통과한다, 15vq: 반영 행이 세그먼트=- · 스테이지=S2P · 종류=reconverge 로 정상 완료다, 15vq: 같은 답의 두 번째 반영은 거부된다, 15vq: 마지막 반영 세션을 잇는 --resume 은 통과한다, 15vq: 다른 세션의 --resume 은 거부된다, 15vq: 반영 행은 재계획 후보가 아니다, 15vq: 반영 행 뒤에는 재선언하지 않는다, 15vq: 반영 시도가 살아 있는 동안 감사 파견은 거부된다, 15vq: 반영 시도가 살아 있는 동안 시각 발행 파견은 거부된다, 15vq: 반영 세션은 시각 발행 단계로 읽히지 않는다, 15vq: 시각 발행 정지의 재부착은 반영 행을 건너뛴다, 15vq: 반영 실패 동안 승인 판정은 보류다, 15vq: 반영 실패 안내는 반영 정지 기록을 든다, 15vq: 반영 정지 기록의 좌석 답은 거부된다, 15vq: 결정 첨부 후 다시 반영 답으로 반영 plan 이 통과한다, 15vq: 비정상 종료 뒤 같은 답으로 한 번 더 들인다, 15vq: 세 번째 시도는 거부된다, 15vq: precondition-failed 정지는 한 번 더 들이는 종단이다, 15vq: 앞선 런에서 들인 승인 답이 반영을 연다, 15vq: 반영 범위 세 낱말을 범위로 읽는다 ---
+# --- section: 15vq | group: base | covers: act, plan, snapshot, halt-answer, gate_approval_reflection_entry, gate_approval_reflection_live, gate_approval_reflection_retry_ok, gate_approval_reflection_scope_of, gate_caller_is_visual_publish_stage, gate_stage_last_settled_row, gate_stage_row_segment, gate_stage_result_rows_of, gate_redeclare_after_reconverge, gate_replan_due_json, gate_halt_detail_scope, visual_approval_route_hint, visual_approval_verdict | anchors: 15vq: 사람의 답이 없으면 반영 재수렴은 거부된다, 15vq: 반영 대기 동안 승인 판정은 보류다, 15vq: 반영 대기 안내는 사람이 할 일이 없다고 말한다, 15vq: 발행 단계가 없는 런의 반영 대기 안내는 구현 승인을 다시 실행하라고 한다, 15vq: 꼬리 없는 반영 대기 안내는 발행 단계가 있어도 구현 승인을 다시 실행하라고 한다, 15vq: 범위가 다른 프롬프트는 거부된다, 15vq: 가장 마지막 시각-판정 기록이 아니면 거부된다, 15vq: 감사 단계에 살아 있는 시도가 있으면 거부된다, 15vq: 사람의 승인 답 하나로 반영 재수렴 plan 이 통과한다, 15vq: 반영 행이 세그먼트=- · 스테이지=S2P · 종류=reconverge 로 정상 완료다, 15vq: 같은 답의 두 번째 반영은 거부된다, 15vq: 마지막 반영 세션을 잇는 --resume 은 통과한다, 15vq: 다른 세션의 --resume 은 거부된다, 15vq: 반영 행은 재계획 후보가 아니다, 15vq: 반영 행 뒤에는 재선언하지 않는다, 15vq: 반영 시도가 살아 있는 동안 감사 파견은 거부된다, 15vq: 반영 시도가 살아 있는 동안 시각 발행 파견은 거부된다, 15vq: 반영 세션은 시각 발행 단계로 읽히지 않는다, 15vq: 시각 발행 정지의 재부착은 반영 행을 건너뛴다, 15vq: 반영 실패 동안 승인 판정은 보류다, 15vq: 반영 실패 안내는 반영 정지 기록을 든다, 15vq: 운반 답 갈래로 들인 반영의 실패 안내는 정지 기록에 답하라고 하지 않고 런이 끝난 뒤 다시 실행하라고 한다, 15vq: 반영 정지 기록의 좌석 답은 거부된다, 15vq: 결정 첨부 후 다시 반영 답으로 반영 plan 이 통과한다, 15vq: 비정상 종료 뒤 같은 답으로 한 번 더 들인다, 15vq: 세 번째 시도는 거부된다, 15vq: precondition-failed 정지는 한 번 더 들이는 종단이다, 15vq: 앞선 런에서 들인 승인 답이 반영을 연다, 15vq: 반영 범위 세 낱말을 범위로 읽는다 ---
 #
 # A person's `승인` to the publish stage's `시각-판정` record leaves the
 # implementation approval with `**문서 반영**: 대기`, and the approval holds the
@@ -17040,6 +17043,15 @@ case "$(VQ_M="$WORK/plan-R15VQN.md" vq15 'visual_approval_route_hint')" in
   *"/cc-cmds:visual $DOC15VQ 구현 승인 을 다시 실행해"*) ok "15vq: 발행 단계가 없는 런의 반영 대기 안내는 구현 승인을 다시 실행하라고 한다" ;;
   *) bad "15vq: 발행 단계가 없는 런의 반영 대기 안내는 구현 승인을 다시 실행하라고 한다" "$(VQ_M="$WORK/plan-R15VQN.md" vq15 'visual_approval_route_hint')" ;;
 esac
+printf '# 시각 사이드카\n<!-- cc-visual v1; owner-doc=%s; -->\n\n**상태**: 발행됨\n**구현 승인**: 2026-11-11 — 입력 묶음 %s — 금지 목록 %s — 기계 검사 수용 없음\n**문서 반영**: 대기 — 어긋남 1건\n\n### 화면 home\n' \
+  "$DOC15VQ" "$VQ15_B" "$(printf 'bans' | shasum -a 256 | cut -d' ' -f1)" > "$SC15VQ"
+check "15vq 픽스처: 꼬리 없는 승인도 승인 술어가 반영 대기 보류다 (아래가 공허하지 않다)" \
+  "$(bash "$CC_ORCH/visual-check.sh" approval "$WT/$DOC15VQ" 2>/dev/null | sed -n 1p)" "승인 보류 — 설계 문서 반영 대기"
+case "$(vq15 'visual_approval_route_hint')" in
+  *"대화형 실행이 멈췄고"*"/cc-cmds:visual $DOC15VQ 구현 승인 을 다시 실행해"*) ok "15vq: 꼬리 없는 반영 대기 안내는 발행 단계가 있어도 구현 승인을 다시 실행하라고 한다" ;;
+  *) bad "15vq: 꼬리 없는 반영 대기 안내는 발행 단계가 있어도 구현 승인을 다시 실행하라고 한다" "$(vq15 'visual_approval_route_hint')" ;;
+esac
+vq15_sidecar '**문서 반영**: 대기 — 어긋남 1건 — 사람 답 S2P#1.md'
 vq15_plan "/cc-cmds:design-reconverge $WT/$DOC15VQ 승인 화면 반영 $RD15VQ/halt/other.md"
 case "$rc/$msg" in
   3/*"프롬프트의 범위가 「승인 화면 반영 ${REC15VQ}」 가 아닙니다"*) ok "15vq: 범위가 다른 프롬프트는 거부된다" ;;
@@ -17160,6 +17172,23 @@ case "$(vq15 'visual_approval_route_hint')" in
   *"승인 화면 반영 중단 기록 $RD15VQ/halt/S2P#$r15vq.md 에 사람이 답하세요"*) ok "15vq: 반영 실패 안내는 반영 정지 기록을 든다" ;;
   *) bad "15vq: 반영 실패 안내는 반영 정지 기록을 든다" "$(vq15 'visual_approval_route_hint')" ;;
 esac
+check "15vq 픽스처: 반영 실패 사이드카의 꼬리가 이 런의 최신 시각-판정 기록이다 (위가 공허하지 않다)" \
+  "$(vq15 'r=$(visual_publish_latest_verdict_record) && printf "%s" "${r##*/}"')" "S2P#1.md"
+# A failed attempt the carried-answer branch let in: the approval's tail names
+# an earlier run's verdict record, which is not this run's latest, and the
+# reflection's tail names the gate's copy; no entry predicate takes an answer
+# to its stop record.
+printf '# 시각 사이드카\n<!-- cc-visual v1; owner-doc=%s; -->\n\n**상태**: 발행됨\n**구현 승인**: 2026-11-11 — 입력 묶음 %s — 금지 목록 %s — 기계 검사 수용 없음 — 사람 답 S2P#7.md\n**문서 반영**: 실패 — 다른 구속 결정과 충돌 — 사람 답 S2P#chained-R15VQP.md\n\n### 화면 home\n' \
+  "$DOC15VQ" "$VQ15_B" "$(printf 'bans' | shasum -a 256 | cut -d' ' -f1)" > "$SC15VQ"
+check "15vq 픽스처: 사본 꼬리의 반영 실패도 승인 술어가 반영 실패 보류다 (아래가 공허하지 않다)" \
+  "$(bash "$CC_ORCH/visual-check.sh" approval "$WT/$DOC15VQ" 2>/dev/null | sed -n 1p)" "승인 보류 — 설계 문서 반영 실패 — 다른 구속 결정과 충돌"
+vq15_cp=$(vq15 'visual_approval_route_hint')
+case "$vq15_cp" in
+  *"에 사람이 답하세요"*) bad "15vq: 운반 답 갈래로 들인 반영의 실패 안내는 정지 기록에 답하라고 하지 않고 런이 끝난 뒤 다시 실행하라고 한다" "$vq15_cp" ;;
+  *"그 기록에 답하지 말고, 런이 끝난 뒤 고정 좌석에서 /cc-cmds:visual $DOC15VQ 구현 승인 을 다시 실행해"*) ok "15vq: 운반 답 갈래로 들인 반영의 실패 안내는 정지 기록에 답하라고 하지 않고 런이 끝난 뒤 다시 실행하라고 한다" ;;
+  *) bad "15vq: 운반 답 갈래로 들인 반영의 실패 안내는 정지 기록에 답하라고 하지 않고 런이 끝난 뒤 다시 실행하라고 한다" "$vq15_cp" ;;
+esac
+vq15_sidecar '**문서 반영**: 실패 — 다른 구속 결정과 충돌 — 사람 답 S2P#1.md'
 CC_CMDS_AUTOPILOT_AUTO_RESOLVE=1 vq15_answer "$RD15VQ/halt/S2P#$r15vq.md" 좌석 '결정 첨부 후 다시 반영'
 case "$rc/$msg" in
   3/*"승인 화면 반영 정지입니다"*) ok "15vq: 반영 정지 기록의 좌석 답은 거부된다" ;;
@@ -50471,20 +50500,20 @@ lsr62_g=$(lsr_ledger w62-gate)
 lsr62_d=$(lsr_ledger w62-driver)
 lsr62_m=$(lsr_ledger w62-mixed)
 { lsr_lease_cases; lsr_wait_cases; } > "$lsr_root/cases62.tsv"
-check "62: 사례표가 임대 60·대기 66 줄이다" "$( { grep -c . "$lsr_root/cases62.tsv" || true; } )" "126"
+check "62: 사례표가 임대 60·대기 72 줄이다" "$( { grep -c . "$lsr_root/cases62.tsv" || true; } )" "132"
 check "62: 주입한 호스트에서 lock_tool 이 비어 있다 (락 없는 갈래)" \
   "$(lsr_in Linux "$lsr62_g" - lock_tool)" ""
 check "62: 게이트 기록자가 사례를 전부 받는다" \
-  "$(lsr_in Linux "$lsr62_g" - lsr_each gate_append < "$lsr_root/cases62.tsv" | sort | uniq -c | tr -s ' ' | sed 's/^ //')" "126 0"
+  "$(lsr_in Linux "$lsr62_g" - lsr_each gate_append < "$lsr_root/cases62.tsv" | sort | uniq -c | tr -s ' ' | sed 's/^ //')" "132 0"
 check "62: 드라이버 기록자가 사례를 전부 받는다" \
-  "$(lsr_in Linux "$lsr62_d" - lsr_each ledger_row < "$lsr_root/cases62.tsv" | sort | uniq -c | tr -s ' ' | sed 's/^ //')" "126 0"
+  "$(lsr_in Linux "$lsr62_d" - lsr_each ledger_row < "$lsr_root/cases62.tsv" | sort | uniq -c | tr -s ' ' | sed 's/^ //')" "132 0"
 sed -n '1p;61p' "$lsr_root/cases62.tsv" > "$lsr_root/shift62.tsv"
 for lsr62_sh in 'LS#7' 'LS#12'; do
   lsr_in Linux "$lsr62_g" "$lsr62_sh" lsr_each gate_append < "$lsr_root/shift62.tsv" >/dev/null
   lsr_in Linux "$lsr62_d" "$lsr62_sh" lsr_each ledger_row < "$lsr_root/shift62.tsv" >/dev/null
 done
-check "62: 두 원장이 각각 130행이다" \
-  "$( { grep -c '^- `' "$lsr62_g" || true; } )/$( { grep -c '^- `' "$lsr62_d" || true; } )" "130/130"
+check "62: 두 원장이 각각 136행이다" \
+  "$( { grep -c '^- `' "$lsr62_g" || true; } )/$( { grep -c '^- `' "$lsr62_d" || true; } )" "136/136"
 if cmp -s "$lsr62_g" "$lsr62_d"; then
   ok "62: 두 기록자가 같은 바이트와 같은 체인을 쓴다"
 else
@@ -50501,16 +50530,16 @@ check "62: 첫 행이 고정된 문법 그대로다" \
   "- \`stage-lease\` | 교대=0 | 파견 id=S1-impl-1.retry | 계보=S1-impl-1 | 계정=acct-a | 레인=~/.claude-a | 예약=0.2500/0.1000 | 비용=0.0300/0.0080 | 비용 출처=group-kind/kind | 근거=first | 관측=usage-cache@1790000000.5 | 단계=rest | 단계 출처=declared | 문턱=1.2000 | prev=$lsr62_seed"
 check "62: 교대 원천 세 조건 — 표식 없음 0, #7 은 7, #12 는 12" \
   "$( { grep -cF '| 교대=0 |' "$lsr62_d" || true; } )/$( { grep -cF '| 교대=7 |' "$lsr62_d" || true; } )/$( { grep -cF '| 교대=12 |' "$lsr62_d" || true; } )" \
-  "126/2/2"
+  "132/2/2"
 check "62: 락 없는 갈래는 락 파일을 만들지 않는다" \
   "$(ls -A "${lsr62_g%/*}" "${lsr62_d%/*}" | { grep -c 'ledger\.lock' || true; })" "0"
 check "62: 번갈아 쓴 두 기록자도 사례를 전부 받는다" \
-  "$(lsr_in Linux "$lsr62_m" - lsr_each alt < "$lsr_root/cases62.tsv" | sort | uniq -c | tr -s ' ' | sed 's/^ //')" "126 0"
+  "$(lsr_in Linux "$lsr62_m" - lsr_each alt < "$lsr_root/cases62.tsv" | sort | uniq -c | tr -s ' ' | sed 's/^ //')" "132 0"
 rc=0; lsr_in Linux "$lsr62_m" - gate_chain_verify >/dev/null 2>&1 || rc=$?
 check "62: 번갈아 쓴 원장의 사슬이 검증된다" "$rc" "0"
 check "62: 번갈아 쓴 원장이 한 기록자가 쓴 원장과 같은 바이트다" \
   "$( { grep '^- `' "$lsr62_m" || true; } | shasum -a 256 | cut -d' ' -f1)" \
-  "$( { grep '^- `' "$lsr62_g" || true; } | sed -n '1,126p' | shasum -a 256 | cut -d' ' -f1)"
+  "$( { grep '^- `' "$lsr62_g" || true; } | sed -n '1,132p' | shasum -a 256 | cut -d' ' -f1)"
 
 # ---------------------------------------------------------------------------
 # 63. 락 아래 섞어 쓴 두 기록자
@@ -50559,6 +50588,8 @@ lsr64_g=$(lsr_ledger r64-gate)
 lsr64_d=$(lsr_ledger r64-driver)
 check "64: 두 기록자의 행 상한이 같다 (RUN_ROW_MAX == GATE_ROW_MAX)" \
   "$(lsr_in - "$lsr64_g" - printf '%s' "$RUN_ROW_MAX")" "$(lsr_in - "$lsr64_g" - printf '%s' "$GATE_ROW_MAX")"
+# 대기 사례의 끝 두 칸. 어긋나는 필드 하나만 남도록 정상 값으로 채운다.
+lsr64_wt=('호스트=-' '기록 시각=2026-09-27T01:00:05Z')
 {
   lsr_row stage-lease '파견 id=S1-impl-1' '계보=S1-impl-1' '계정=a|b' '레인=~/.claude-a' '예약=-' '비용=-' '비용 출처=-' '근거=first' '관측=-' '단계=-' '단계 출처=-' '문턱=-'
   lsr_row stage-lease '파견 id=S1-impl-1' '계보=S1-impl-1' '계정=123e4567-e89b-12d3-a456-426614174000' '레인=~/.claude-a' '예약=-' '비용=-' '비용 출처=-' '근거=first' '관측=-' '단계=-' '단계 출처=-' '문턱=-'
@@ -50583,16 +50614,18 @@ check "64: 두 기록자의 행 상한이 같다 (RUN_ROW_MAX == GATE_ROW_MAX)" 
   lsr_row stage-lease '파견 id=S1-impl-1' '계보=S1-impl-1' '계정=acct-a' '레인=~/.claude-a' '예약=-' '비용=-' '비용 출처=-' '근거=first' '관측=-' '단계=-' '단계 출처=-' '문턱=-' '비고=x'
   lsr_row stage-lease '교대=3' '파견 id=S1-impl-1' '계보=S1-impl-1' '계정=acct-a' '레인=~/.claude-a' '예약=-' '비용=-' '비용 출처=-' '근거=first' '관측=-' '단계=-' '단계 출처=-' '문턱=-'
   lsr_row stage-lease oops '파견 id=S1-impl-1' '계보=S1-impl-1' '계정=acct-a' '레인=~/.claude-a' '예약=-' '비용=-' '비용 출처=-' '근거=first' '관측=-' '단계=-' '단계 출처=-' '문턱=-'
-  lsr_row stage-wait '계보=S2-impl-1' '그룹=org:ABCDEF0123456789' '계정=-' '까지=-' '비용=-' '비용 출처=-' '근거=no-room'
-  lsr_row stage-wait '계보=S2-impl-1' '그룹=org:0123' '계정=-' '까지=-' '비용=-' '비용 출처=-' '근거=no-room'
-  lsr_row stage-wait '계보=S2-impl-1' '그룹=acct:0123456789abcdef0123' '계정=-' '까지=-' '비용=-' '비용 출처=-' '근거=no-room'
-  lsr_row stage-wait '계보=S2-impl-1' '그룹=bogus' '계정=-' '까지=-' '비용=-' '비용 출처=-' '근거=no-room'
-  lsr_row stage-wait '계보=S2-impl-1' '그룹=-' '계정=-' '까지=2026-09-27 01:02:03' '비용=-' '비용 출처=-' '근거=no-room'
-  lsr_row stage-wait '계보=S2-impl-1' '그룹=-' '계정=-' '까지=1790000000' '비용=-' '비용 출처=-' '근거=no-room'
-  lsr_row stage-wait '계보=S2-impl-1' '그룹=-' '계정=-' '까지=-' '비용=-' '비용 출처=-' '근거=bogus'
-  lsr_row stage-wait '계보=S2-impl-1' '그룹=-' '계정=acct-a' '까지=-' '비용=-' '비용 출처=-' '근거=no-room'
-  lsr_row stage-wait '계보=S2-impl-1' '그룹=-' '계정=-' '까지=-' '비용=-' '비용 출처=-' '근거=resume-bound-no-room'
-  lsr_row stage-wait '계보=(미상)' '그룹=-' '계정=-' '까지=-' '비용=-' '비용 출처=-' '근거=no-room'
+  lsr_row stage-wait '계보=S2-impl-1' '그룹=org:ABCDEF0123456789' '계정=-' '까지=-' '비용=-' '비용 출처=-' '근거=no-room' "${lsr64_wt[@]}"
+  lsr_row stage-wait '계보=S2-impl-1' '그룹=org:0123' '계정=-' '까지=-' '비용=-' '비용 출처=-' '근거=no-room' "${lsr64_wt[@]}"
+  lsr_row stage-wait '계보=S2-impl-1' '그룹=acct:0123456789abcdef0123' '계정=-' '까지=-' '비용=-' '비용 출처=-' '근거=no-room' "${lsr64_wt[@]}"
+  lsr_row stage-wait '계보=S2-impl-1' '그룹=bogus' '계정=-' '까지=-' '비용=-' '비용 출처=-' '근거=no-room' "${lsr64_wt[@]}"
+  lsr_row stage-wait '계보=S2-impl-1' '그룹=-' '계정=-' '까지=2026-09-27 01:02:03' '비용=-' '비용 출처=-' '근거=no-room' "${lsr64_wt[@]}"
+  lsr_row stage-wait '계보=S2-impl-1' '그룹=-' '계정=-' '까지=1790000000' '비용=-' '비용 출처=-' '근거=no-room' "${lsr64_wt[@]}"
+  lsr_row stage-wait '계보=S2-impl-1' '그룹=-' '계정=-' '까지=-' '비용=-' '비용 출처=-' '근거=bogus' "${lsr64_wt[@]}"
+  lsr_row stage-wait '계보=S2-impl-1' '그룹=-' '계정=acct-a' '까지=-' '비용=-' '비용 출처=-' '근거=no-room' "${lsr64_wt[@]}"
+  lsr_row stage-wait '계보=S2-impl-1' '그룹=-' '계정=-' '까지=-' '비용=-' '비용 출처=-' '근거=resume-bound-no-room' "${lsr64_wt[@]}"
+  lsr_row stage-wait '계보=(미상)' '그룹=-' '계정=-' '까지=-' '비용=-' '비용 출처=-' '근거=no-room' "${lsr64_wt[@]}"
+  lsr_row stage-wait '계보=S2-impl-1' '그룹=-' '계정=-' '까지=-' '비용=-' '비용 출처=-' '근거=host-saturated' '호스트=포화 1350' '기록 시각=2026-09-27T01:00:05Z'
+  lsr_row stage-wait '계보=S2-impl-1' '그룹=-' '계정=-' '까지=-' '비용=-' '비용 출처=-' '근거=no-room' '호스트=-' '기록 시각=1790000000'
   lsr_row stage-lease '파견 id=S1-impl-1' '계보=S1-impl-1' '계정=acct-a' '레인=~/.claude-a' '예약=-' '비용=0.03/0.008' '비용 출처=kind/kind' '근거=first' '관측=-' '단계=-' '단계 출처=-' '문턱=-'
   lsr_row stage-lease '파견 id=S1-impl-1' '계보=S1-impl-1' '계정=acct-a' '레인=~/.claude-a' '예약=-' '비용=0.0300/0.0080' '비용 출처=group/kind' '근거=first' '관측=-' '단계=-' '단계 출처=-' '문턱=-'
   lsr_row stage-lease '파견 id=S1-impl-1' '계보=S1-impl-1' '계정=acct-a' '레인=~/.claude-a' '예약=-' '비용=0.0300/0.0080' '비용 출처=-' '근거=first' '관측=-' '단계=-' '단계 출처=-' '문턱=-'
@@ -50603,14 +50636,15 @@ check "64: 두 기록자의 행 상한이 같다 (RUN_ROW_MAX == GATE_ROW_MAX)" 
   lsr_row stage-lease '파견 id=S1-impl-1' '계보=S1-impl-1' '계정=acct-a' '레인=~/.claude-a' '예약=-' '비용=-' '비용 출처=-' '근거=first' '관측=-' '단계=-' '단계 출처=declared' '문턱=-'
   lsr_row stage-lease '파견 id=S1-impl-1' '계보=S1-impl-1' '계정=acct-a' '레인=~/.claude-a' '예약=-' '비용=-' '비용 출처=-' '근거=first' '관측=-' '단계=rest' '단계 출처=-' '문턱=-'
   lsr_row stage-lease '파견 id=S1-impl-1' '계보=S1-impl-1' '계정=acct-a' '레인=~/.claude-a' '예약=-' '비용=-' '비용 출처=-' '근거=first' '관측=-' '단계=burst' '단계 출처=declared' '문턱=1.2000'
-  lsr_row stage-wait '계보=S2-impl-1' '그룹=-' '계정=-' '까지=-' '비용=-' '비용 출처=default/default' '근거=no-room'
-  lsr_row stage-wait '계보=S2-impl-1' '그룹=-' '계정=-' '까지=-' '근거=no-room'
+  lsr_row stage-wait '계보=S2-impl-1' '그룹=-' '계정=-' '까지=-' '비용=-' '비용 출처=default/default' '근거=no-room' "${lsr64_wt[@]}"
+  lsr_row stage-wait '계보=S2-impl-1' '그룹=-' '계정=-' '까지=-' '근거=no-room' "${lsr64_wt[@]}"
+  lsr_row stage-wait '계보=S2-impl-1' '그룹=-' '계정=-' '까지=-' '비용=-' '비용 출처=-' '근거=no-room'
 } > "$lsr_root/bad64.tsv"
 lsr64_sg=$(lsr_sha "$lsr64_g"); lsr64_sd=$(lsr_sha "$lsr64_d")
-check "64: 게이트 기록자가 거부 사례 45개를 모두 rc 2 로 거부한다" \
-  "$(lsr_in Linux "$lsr64_g" - lsr_each gate_append < "$lsr_root/bad64.tsv" | sort | uniq -c | tr -s ' ' | sed 's/^ //')" "45 2"
+check "64: 게이트 기록자가 거부 사례 48개를 모두 rc 2 로 거부한다" \
+  "$(lsr_in Linux "$lsr64_g" - lsr_each gate_append < "$lsr_root/bad64.tsv" | sort | uniq -c | tr -s ' ' | sed 's/^ //')" "48 2"
 check "64: 드라이버 기록자가 같은 사례를 모두 rc 2 로 거부한다" \
-  "$(lsr_in Linux "$lsr64_d" - lsr_each ledger_row < "$lsr_root/bad64.tsv" | sort | uniq -c | tr -s ' ' | sed 's/^ //')" "45 2"
+  "$(lsr_in Linux "$lsr64_d" - lsr_each ledger_row < "$lsr_root/bad64.tsv" | sort | uniq -c | tr -s ' ' | sed 's/^ //')" "48 2"
 # 거부 사유. 키를 늘리면 키 목록 대조가 사례마다 먼저 거부해 rc 만으로는 통과하므로,
 # 임대 사례마다 거부 줄이 지목한 필드를 본다.
 lsr64_why() {
@@ -50634,6 +50668,9 @@ lsr64_why() {
 check "64: 임대 거부 사례마다 겨냥한 필드로 거부된다" \
   "$(grep '^stage-lease' "$lsr_root/bad64.tsv" | lsr_in Linux "$lsr64_d" - lsr64_why ledger_row | paste -sd, -)" \
   "계정,계정,계정,계정,계정,계정,계정,레인,레인,레인,예약,예약,근거,관측,관측,관측,파견 id,계보,키 목록,키 목록,키 목록,교대,키=값,비용,비용 출처,비용 출처,단계,단계 출처,문턱,문턱,단계 출처,단계 출처,문턱"
+check "64: 대기 거부 사례마다 겨냥한 필드로 거부된다" \
+  "$(grep '^stage-wait' "$lsr_root/bad64.tsv" | lsr_in Linux "$lsr64_d" - lsr64_why ledger_row | paste -sd, -)" \
+  "그룹,그룹,그룹,그룹,까지,까지,근거,계정,계정,계보,호스트,기록 시각,비용 출처,키 목록,키 목록"
 check "64: 거부된 행은 한 바이트도 남기지 않는다" \
   "$(lsr_sha "$lsr64_g")/$(lsr_sha "$lsr64_d")" "$lsr64_sg/$lsr64_sd"
 check "64: 거부는 곁파일도 남기지 않는다" \
@@ -50661,18 +50698,18 @@ lsr64_adv() {
     lsr64_try "$w" stage-lease "파견 id=$v" '계보=S1-impl-1' '계정=acct-a' '레인=~/.claude-a' '예약=-' '비용=-' '비용 출처=-' '근거=first' '관측=-' '단계=-' '단계 출처=-' '문턱=-'
     lsr64_try "$w" stage-lease '파견 id=S1-impl-1' "계보=$v" '계정=acct-a' '레인=~/.claude-a' '예약=-' '비용=-' '비용 출처=-' '근거=first' '관측=-' '단계=-' '단계 출처=-' '문턱=-'
     lsr64_try "$w" stage-lease '파견 id=S1-impl-1' '계보=S1-impl-1' "계정=$v" '레인=~/.claude-a' '예약=-' '비용=-' '비용 출처=-' '근거=first' '관측=-' '단계=-' '단계 출처=-' '문턱=-'
-    lsr64_try "$w" stage-wait "계보=$v" '그룹=-' '계정=-' '까지=-' '비용=-' '비용 출처=-' '근거=no-room'
-    lsr64_try "$w" stage-wait '계보=S2-impl-1' '그룹=-' "계정=$v" '까지=-' '비용=-' '비용 출처=-' '근거=resume-bound-no-room'
-    lsr64_try "$w" stage-wait '계보=S2-impl-1' "그룹=acct:$v" '계정=-' '까지=-' '비용=-' '비용 출처=-' '근거=no-room'
+    lsr64_try "$w" stage-wait "계보=$v" '그룹=-' '계정=-' '까지=-' '비용=-' '비용 출처=-' '근거=no-room' "${lsr64_wt[@]}"
+    lsr64_try "$w" stage-wait '계보=S2-impl-1' '그룹=-' "계정=$v" '까지=-' '비용=-' '비용 출처=-' '근거=resume-bound-no-room' "${lsr64_wt[@]}"
+    lsr64_try "$w" stage-wait '계보=S2-impl-1' "그룹=acct:$v" '계정=-' '까지=-' '비용=-' '비용 출처=-' '근거=no-room' "${lsr64_wt[@]}"
   done
   for v in "${hexes[@]}"; do
     lsr64_try "$w" stage-lease '파견 id=S1-impl-1' '계보=S1-impl-1' "계정=$v" '레인=~/.claude-a' '예약=-' '비용=-' '비용 출처=-' '근거=first' '관측=-' '단계=-' '단계 출처=-' '문턱=-'
-    lsr64_try "$w" stage-wait '계보=S2-impl-1' '그룹=-' "계정=$v" '까지=-' '비용=-' '비용 출처=-' '근거=resume-bound-exhausted'
-    lsr64_try "$w" stage-wait '계보=S2-impl-1' "그룹=acct:$v" '계정=-' '까지=-' '비용=-' '비용 출처=-' '근거=group-exhausted'
+    lsr64_try "$w" stage-wait '계보=S2-impl-1' '그룹=-' "계정=$v" '까지=-' '비용=-' '비용 출처=-' '근거=resume-bound-exhausted' "${lsr64_wt[@]}"
+    lsr64_try "$w" stage-wait '계보=S2-impl-1' "그룹=acct:$v" '계정=-' '까지=-' '비용=-' '비용 출처=-' '근거=group-exhausted' "${lsr64_wt[@]}"
   done
   for v in 'org:123e4567-e89b-12d3-a456-426614174000' 'org:0123456789abcde' 'org:0123456789abcdef0' \
            'org:0123456789ABCDEF'; do
-    lsr64_try "$w" stage-wait '계보=S2-impl-1' "그룹=$v" '계정=-' '까지=-' '비용=-' '비용 출처=-' '근거=group-exhausted'
+    lsr64_try "$w" stage-wait '계보=S2-impl-1' "그룹=$v" '계정=-' '까지=-' '비용=-' '비용 출처=-' '근거=group-exhausted' "${lsr64_wt[@]}"
   done
   for v in '~/a@b' '~/a|b' '~/.claude-a/' '.claude-a'; do
     lsr64_try "$w" stage-lease '파견 id=S1-impl-1' '계보=S1-impl-1' '계정=acct-a' "레인=$v" '예약=-' '비용=-' '비용 출처=-' '근거=first' '관측=-' '단계=-' '단계 출처=-' '문턱=-'
@@ -50684,16 +50721,16 @@ lsr64_adv() {
     lsr64_try "$w" stage-lease '파견 id=S1-impl-1' '계보=S1-impl-1' '계정=acct-a' '레인=~/.claude-a' '예약=-' "비용=$v" '비용 출처=kind/kind' '근거=first' '관측=-' '단계=-' '단계 출처=-' '문턱=-'
   done
   for v in 'kind' 'kind/kind/kind' 'Kind/kind' 'group-kind/-'; do
-    lsr64_try "$w" stage-wait '계보=S2-impl-1' '그룹=-' '계정=-' '까지=-' '비용=0.0300/0.0080' "비용 출처=$v" '근거=no-room'
+    lsr64_try "$w" stage-wait '계보=S2-impl-1' '그룹=-' '계정=-' '까지=-' '비용=0.0300/0.0080' "비용 출처=$v" '근거=no-room' "${lsr64_wt[@]}"
   done
   for v in 'a|b@1' 'x@y@1' 'us age@1' $'us\rage@1' $'us\nage@1' 'usage-cache' 'usage-cache@' '@1' \
            'me@example.com@1'; do
     lsr64_try "$w" stage-lease '파견 id=S1-impl-1' '계보=S1-impl-1' '계정=acct-a' '레인=~/.claude-a' '예약=-' '비용=-' '비용 출처=-' '근거=first' "관측=$v" '단계=-' '단계 출처=-' '문턱=-'
   done
-  lsr64_try "$w" stage-wait '그룹=-' '계보=S2-impl-1' '계정=-' '까지=-' '비용=-' '비용 출처=-' '근거=no-room'
-  lsr64_try "$w" stage-wait '계보=S2-impl-1' '그룹=-' '계정=-' '비용=-' '비용 출처=-' '근거=no-room'
-  lsr64_try "$w" stage-wait '계보=S2-impl-1' '그룹=-' '계정=-' '까지=-' '비용=-' '비용 출처=-' '근거=no-room' '비고=x'
-  lsr64_try "$w" stage-wait '교대=3' '계보=S2-impl-1' '그룹=-' '계정=-' '까지=-' '비용=-' '비용 출처=-' '근거=no-room'
+  lsr64_try "$w" stage-wait '그룹=-' '계보=S2-impl-1' '계정=-' '까지=-' '비용=-' '비용 출처=-' '근거=no-room' "${lsr64_wt[@]}"
+  lsr64_try "$w" stage-wait '계보=S2-impl-1' '그룹=-' '계정=-' '비용=-' '비용 출처=-' '근거=no-room' "${lsr64_wt[@]}"
+  lsr64_try "$w" stage-wait '계보=S2-impl-1' '그룹=-' '계정=-' '까지=-' '비용=-' '비용 출처=-' '근거=no-room' "${lsr64_wt[@]}" '비고=x'
+  lsr64_try "$w" stage-wait '교대=3' '계보=S2-impl-1' '그룹=-' '계정=-' '까지=-' '비용=-' '비용 출처=-' '근거=no-room' "${lsr64_wt[@]}"
 }
 check "64: 게이트 기록자가 적대 입력 133개를 모두 rc 2 로 거부한다" \
   "$(lsr_in Linux "$lsr64_g" - lsr64_adv gate_append | sort | uniq -c | tr -s ' ' | sed 's/^ //')" "133 2"
@@ -50772,6 +50809,10 @@ lsr_in Linux "$lsr65_l" - gate_append 'segment' 'id=S1' '상태=실행중' >/dev
 lsr_in Linux "$lsr65_l" - gate_append 'cycle' '세그먼트=S1' '사이클=1' 'P0=0' 'P1=0' >/dev/null 2>&1
 cp "$lsr65_l" "$lsr_root/e65.base"
 lsr65_d0=$(lsr_in Linux "$lsr65_l" - lsr_digest "$FX_MANIFEST" 2>/dev/null)
+# 대기 행의 `기록 시각` 은 쓰는 순간의 시각이라, 모양을 확인한 뒤 `T` 로 바꿔 비교한다.
+lsr65_wbody() {
+  lsr_body "$1" | sed -E 's/\| 기록 시각=[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$/| 기록 시각=T/'
+}
 
 lsr65_e1=$(jq -cn --arg d "$HOME/.claude-a" '{verdict: "GRANT", basis: "first", account: "acct-a",
   config_dir: $d, group: null, reservation_bp: {five_hour: 2500, seven_day: 7}, admitted_as: null,
@@ -50825,12 +50866,18 @@ lsr65_w1=$(jq -cn '{verdict: "WAIT", reason: "no-room", group: "org:0123456789ab
   until_epoch: 1790000000.9, cost: {five_hour: {bp: 10000, source: "default"}, seven_day: {bp: 0, source: "kind"}}}')
 rc=0; lsr_in Linux "$lsr65_l" - gate_stage_wait_row 'S2-impl-1.retry' "$lsr65_w1" >/dev/null 2>&1 || rc=$?
 check "65: WAIT 봉투는 대기 행이 된다" "$rc" "0"
-check "65: 대기 행의 까지 는 floor|todate 다" "$(lsr_body "$lsr65_l")" \
-  "- \`stage-wait\` | 교대=0 | 계보=S2-impl-1 | 그룹=org:0123456789abcdef | 계정=- | 까지=2026-09-21T14:13:20Z | 비용=1.0000/0.0000 | 비용 출처=default/kind | 근거=no-room"
+check "65: 대기 행의 까지 는 floor|todate 다" "$(lsr65_wbody "$lsr65_l")" \
+  "- \`stage-wait\` | 교대=0 | 계보=S2-impl-1 | 그룹=org:0123456789abcdef | 계정=- | 까지=2026-09-21T14:13:20Z | 비용=1.0000/0.0000 | 비용 출처=default/kind | 근거=no-room | 호스트=- | 기록 시각=T"
 lsr65_w2=$(jq -cn '{verdict: "WAIT", reason: "fifo-yield", group: null, account: null, until_epoch: null}')
 lsr_in Linux "$lsr65_l" - gate_stage_wait_row 'S2-impl-2' "$lsr65_w2" >/dev/null 2>&1 || true
-check "65: 그룹과 까지 가 없는 대기는 - 로 쓴다" "$(lsr_body "$lsr65_l")" \
-  "- \`stage-wait\` | 교대=0 | 계보=S2-impl-2 | 그룹=- | 계정=- | 까지=- | 비용=- | 비용 출처=- | 근거=fifo-yield"
+check "65: 그룹과 까지 가 없는 대기는 - 로 쓴다" "$(lsr65_wbody "$lsr65_l")" \
+  "- \`stage-wait\` | 교대=0 | 계보=S2-impl-2 | 그룹=- | 계정=- | 까지=- | 비용=- | 비용 출처=- | 근거=fifo-yield | 호스트=- | 기록 시각=T"
+# 호스트 보류 대기. 봉투의 `host` 표본을 호스트 칸에 정수와 표본 시각으로 쓴다.
+lsr65_wh=$(jq -cn '{verdict: "WAIT", reason: "host-saturated", group: null, account: null, until_epoch: null, cost: null,
+  host: {ratio_permille: 1350.7, ncpu: 8, sampled_at_epoch: 1790000000.4}}')
+rc=0; lsr_in Linux "$lsr65_l" - gate_stage_wait_row 'S2-impl-4' "$lsr65_wh" >/dev/null 2>&1 || rc=$?
+check "65: 호스트 보류 대기는 호스트 칸에 포화 표본을 쓴다" "$rc/$(lsr65_wbody "$lsr65_l")" \
+  "0/- \`stage-wait\` | 교대=0 | 계보=S2-impl-4 | 그룹=- | 계정=- | 까지=- | 비용=- | 비용 출처=- | 근거=host-saturated | 호스트=포화 ratio=1350 ncpu=8 표본=2026-09-21T14:13:20Z | 기록 시각=T"
 
 # 재개 구속. 구속이 없거나 봉투의 계정과 다르면 행을 쓰지 않는다.
 lsr65_rb=$(jq -cn '{verdict: "GRANT", basis: "resume-bound", account: "acct-a", config_dir: "/lanes/a",
@@ -50896,31 +50943,33 @@ rc=0; lsr_in Linux "$lsr65_l" - gate_stage_lease_row 'S1-impl-8' "$lsr65_rm" acc
 check "65: 옮겨 온 구속을 단 resume-migrated GRANT 는 새 계정의 행이 된다" "$rc/$(lsr_body "$lsr65_l")" \
   "0/- \`stage-lease\` | 교대=0 | 파견 id=S1-impl-8 | 계보=S1-impl-8 | 계정=acct-b | 레인=/lanes/b | 예약=- | 비용=- | 비용 출처=- | 근거=resume-migrated | 관측=- | 단계=- | 단계 출처=- | 문턱=-"
 rc=0; lsr_in Linux "$lsr65_l" - gate_stage_wait_row 'S2-impl-3' "$lsr65_rw" acct-a >/dev/null 2>&1 || rc=$?
-check "65: 맞는 구속을 단 resume-bound 대기는 행이 된다" "$rc/$(lsr_body "$lsr65_l")" \
-  "0/- \`stage-wait\` | 교대=0 | 계보=S2-impl-3 | 그룹=acct:acct-a | 계정=acct-a | 까지=2026-09-21T14:13:20Z | 비용=- | 비용 출처=- | 근거=resume-bound-exhausted"
+check "65: 맞는 구속을 단 resume-bound 대기는 행이 된다" "$rc/$(lsr65_wbody "$lsr65_l")" \
+  "0/- \`stage-wait\` | 교대=0 | 계보=S2-impl-3 | 그룹=acct:acct-a | 계정=acct-a | 까지=2026-09-21T14:13:20Z | 비용=- | 비용 출처=- | 근거=resume-bound-exhausted | 호스트=- | 기록 시각=T"
 # 리셋권을 기다리는 예비 공급 대기. 라우터가 리셋권 고정 입력에서 내는 봉투를 그대로
 # 적었다 — 마감이 없고 비용 칸이 있으며 `reserve` 가 덧붙는다. 행 작성기는 덧붙은
 # 키를 읽지 않고, 추가 작성기 안의 계열 검사가 이 모양을 받아야 행이 남는다.
 lsr65_rv='{"verdict":"WAIT","group":"org:4444444444444444","account":"full","until_epoch":null,"reason":"resume-bound-no-room","cost":{"five_hour":{"bp":3000,"source":"default"},"seven_day":{"bp":800,"source":"default"}},"reserve":{"group":"org:4444444444444444","account":"full","pass_id":"rp-0000000e","kind":"seven_day","expires_at_epoch":1800864000},"txn":{"op":"none","record":null}}'
 rc=0; lsr_in Linux "$lsr65_l" - gate_stage_wait_row 'S1-impl-6' "$lsr65_rv" full >/dev/null 2>&1 || rc=$?
-check "65: 리셋권 예비 공급 대기는 까지 - 에 비용을 단 행 하나가 된다" "$rc/$(lsr_body "$lsr65_l")" \
-  "0/- \`stage-wait\` | 교대=0 | 계보=S1-impl-6 | 그룹=org:4444444444444444 | 계정=full | 까지=- | 비용=0.3000/0.0800 | 비용 출처=default/default | 근거=resume-bound-no-room"
+check "65: 리셋권 예비 공급 대기는 까지 - 에 비용을 단 행 하나가 된다" "$rc/$(lsr65_wbody "$lsr65_l")" \
+  "0/- \`stage-wait\` | 교대=0 | 계보=S1-impl-6 | 그룹=org:4444444444444444 | 계정=full | 까지=- | 비용=0.3000/0.0800 | 비용 출처=default/default | 근거=resume-bound-no-room | 호스트=- | 기록 시각=T"
 check "65: 예비 공급 대기 행은 정확히 하나다" \
   "$( { grep -cF '계보=S1-impl-6 |' "$lsr65_l" || true; } )" "1"
 # 같은 대기가 리셋권을 누른 뒤의 봉투. 대기가 본 리셋권의 기억 `reserve_seen` 과 눌린
 # 시각 `reserve.pressed_at_epoch` 가 덧붙어도 행 작성기는 그 키를 읽지 않으므로, 계보
-# 칸만 빼면 위의 예비 공급 행과 바이트가 같아야 한다.
+# 칸만 빼면 위의 예비 공급 행과 바이트가 같아야 한다. 쓰는 순간의 `기록 시각` 은 두 행 사이에
+# 초가 넘어갈 수 있어 양쪽 모두 `T` 로 바꿔 비교한다.
 lsr65_rp='{"verdict":"WAIT","group":"org:4444444444444444","account":"full","until_epoch":null,"reason":"resume-bound-no-room","cost":{"five_hour":{"bp":3000,"source":"default"},"seven_day":{"bp":800,"source":"default"}},"reserve":{"group":"org:4444444444444444","account":"full","pass_id":"rp-0000000e","kind":"seven_day","expires_at_epoch":1800864000,"pressed_at_epoch":1800000000},"reserve_seen":[{"group":"org:4444444444444444","account":"full","id":"rp-0000000e","kind":"seven_day","expires_at_epoch":1800864000,"pressed_at_epoch":1800000000}],"txn":{"op":"none","record":null}}'
-lsr65_rv_body=$( { grep -F '계보=S1-impl-6 |' "$lsr65_l" || true; } | sed -e 's/ | prev=[0-9a-f]*$//' -e 's/ | 계보=S1-impl-6 | / | 계보=S1-impl-7 | /')
+lsr65_rv_body=$( { grep -F '계보=S1-impl-6 |' "$lsr65_l" || true; } | sed -E -e 's/ \| prev=[0-9a-f]*$//' -e 's/ \| 계보=S1-impl-6 \| / | 계보=S1-impl-7 | /' \
+  -e 's/\| 기록 시각=[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$/| 기록 시각=T/')
 rc=0; lsr_in Linux "$lsr65_l" - gate_stage_wait_row 'S1-impl-7' "$lsr65_rp" full >/dev/null 2>&1 || rc=$?
-check "65: 눌린 리셋권의 기억을 단 대기 봉투는 계보 칸만 다른 같은 행이 된다" "$rc/$(lsr_body "$lsr65_l")" \
+check "65: 눌린 리셋권의 기억을 단 대기 봉투는 계보 칸만 다른 같은 행이 된다" "$rc/$(lsr65_wbody "$lsr65_l")" \
   "0/${lsr65_rv_body:-예비 공급 행 없음}"
 rc=0; lsr_in Linux "$lsr65_l" - gate_chain_verify >/dev/null 2>&1 || rc=$?
 check "65: 래퍼가 쓴 원장의 사슬이 검증된다" "$rc" "0"
 
 # 추출기 격리.
-check "65: 이 절이 더한 새 계열 행은 열일곱이다" \
-  "$( { grep -cE '^- `stage-(lease|wait)`' "$lsr65_l" || true; } )" "17"
+check "65: 이 절이 더한 새 계열 행은 열여덟이다" \
+  "$( { grep -cE '^- `stage-(lease|wait)`' "$lsr65_l" || true; } )" "18"
 lsr65_d1=$(lsr_in Linux "$lsr65_l" - lsr_digest "$FX_MANIFEST" 2>/dev/null)
 if [ -n "$lsr65_d0" ] && [ "$lsr65_d1" = "$lsr65_d0" ]; then
   ok "65: 새 계열 행은 진전 해시를 움직이지 않는다"
@@ -51483,7 +51532,7 @@ lsr75_w=$(lsr75_new w75)
 check "75: WAIT 의 라우터 반쪽은 0 이다" \
   "$(lsr75_route "$lsr75_w" '{"verdict":"WAIT","reason":"no-room","group":null,"account":null,"until_epoch":null}' SW1)" "0 B:SW1#1"
 case "$(lsr_body "$lsr75_w")" in
-  '- `stage-wait` | '*' | 계보=B:SW1#1 | 그룹=- | 계정=- | 까지=- | 비용=- | 비용 출처=- | 근거=no-room')
+  '- `stage-wait` | '*' | 계보=B:SW1#1 | 그룹=- | 계정=- | 까지=- | 비용=- | 비용 출처=- | 근거=no-room | 호스트=- | 기록 시각=20'*Z)
     ok "75: WAIT 가 계보 B:SW1#1 의 stage-wait 행을 남긴다" ;;
   *) bad "75 WAIT 행" "$(lsr_body "$lsr75_w")" ;;
 esac
@@ -51500,7 +51549,7 @@ check "75: 마감 PARK 는 exit 16 이다" \
   "$(lsr75_rc "$lsr75_dl" '{"verdict":"PARK","reason":"deadline","ready_at":1900000000,"recovery":"마감을 늘린다"}' '' SD2)" "16"
 check "75: 마감 PARK 의 blocked 행은 하나다" "$( { grep -c '^- `blocked`' "$lsr75_dl" || true; } )" "1"
 case "$( { grep '^- `blocked`' "$lsr75_dl" || true; } | tail -1)" in
-  *"스코프=act"*"세그먼트=SD2"*"근거=계보=B:SD2#1 마감 초과 — ready_at $(jq -rn '1900000000 | todate') (마감을 늘린다) |"*)
+  *"스코프=act"*"세그먼트=SD2"*"근거=계보=B:SD2#1 마감 초과 — ready_at $(jq -rn '1900000000 | todate') (마감을 늘린다. 다음 런은 이 세그먼트를 이어받지 못한다(워크트리없음) — 다시 한다) |"*)
     ok "75: cone 행이 거절되면 계보와 ready_at 을 실은 act 행이 대신 선다" ;;
   *) bad "75 마감 PARK 행" "$(tail -1 "$lsr75_dl")" ;;
 esac
@@ -51745,7 +51794,7 @@ check "75: 스냅숏이 좌석 파일의 무인 불릿을 담는다" \
 # 를 비운 봉투로 돈다 — 절 75 의 픽스처 원장에는 세그먼트 행이 없어 cone 행이
 # 거절되므로, act 스코프 대체 행에 실린 문면을 읽는다.
 # ---------------------------------------------------------------------------
-lsr92_want='마감 안에 끝낼 수 없다 — 이 런에서는 기동하지 않는다. 다음 런(재킥오프·입양)에서 이어 갈 수 있다'
+lsr92_want='마감 안에 끝낼 수 없다 — 이 런에서는 기동하지 않는다'
 lsr92_route=$(sed -n '/^def rt_park_deadline(/,/};$/s/.*recovery: "\([^"]*\)".*/\1/p' "$repo_root/plugins/cc-cmds/orchestrator/route.sh")
 lsr92_loop=$(sed -n 's/^readonly WAIT_LOOP_DEADLINE_RECOVERY="\([^"]*\)"$/\1/p' "$repo_root/plugins/cc-cmds/orchestrator/run.sh")
 check "94: 라우터와 대기 루프의 복구 문면이 바이트 단위로 같다" \
@@ -51756,10 +51805,49 @@ lsr92_l=$(lsr75_new dl92)
 check "94: 복구를 비운 마감 PARK 도 exit 16 이다" \
   "$(lsr75_rc "$lsr92_l" '{"verdict":"PARK","reason":"deadline","ready_at":1900000000,"recovery":""}' '' SW92)" "16"
 case "$( { grep '^- `blocked`' "$lsr92_l" || true; } | tail -1)" in
-  *"스코프=act"*"세그먼트=SW92"*"근거=계보=B:SW92#1 마감 초과 — ready_at $(jq -rn '1900000000 | todate') ($lsr92_want) |"*)
+  *"스코프=act"*"세그먼트=SW92"*"근거=계보=B:SW92#1 마감 초과 — ready_at $(jq -rn '1900000000 | todate') ($lsr92_want. 다음 런은 이 세그먼트를 이어받지 못한다(워크트리없음) — 다시 한다) |"*)
     ok "94: 복구를 비운 마감 PARK 는 대기 루프의 문면을 행에 싣는다" ;;
   *) bad "94 대체값 행" "$(tail -1 "$lsr92_l")" ;;
 esac
+
+# 복구 문면 뒤의 문장은 다음 런이 그 키를 이어 갈 수 있는지를 원장과 로컬 워크트리로
+# 가린다. 런 스코프 단계는 다시 계획되고, 세그먼트는 재킥오프 도우미의 로컬 조건을
+# 모두 지날 때만 「이어 갈 수 있다」이다. 같은 원장을 `adopt-preview` 도 읽는다 —
+# 원격 판독 두 자리는 대역으로 고정한다.
+TAB=${TAB:-$(printf '\t')}
+lsr94_l=$(lsr75_new pv94)
+lsr94_r="${lsr94_l%/*}/repo"
+( git init -q -b main "$lsr94_r" && cd "$lsr94_r" && git config user.email t@t && git config user.name t \
+    && printf 'a\n' > a.txt && git add a.txt && git commit -qm a && git checkout -q -b seg/pv94-A ) >/dev/null 2>&1
+lsr94_h=$(cd "$lsr94_r" && git rev-parse HEAD)
+{ printf -- '- `segment` | id=A | 상태=계획됨 | 레포=t/pv | 워크트리=%s | 브랜치=seg/pv94-A | 선행=없음\n' "$lsr94_r"
+  printf -- '- `원격 판독` | 세그먼트=A | 브랜치=seg/pv94-A | 워크트리 HEAD=%s | 원격 팁=없음 | PR=없음 | PR 상태=없음 | PR HEAD=없음\n' "$lsr94_h"
+  printf -- '- `segment` | id=B | 상태=계획됨 | 레포=t/pv | 워크트리=- | 브랜치=seg/pv94-B | 선행=없음\n'; } >> "$lsr94_l"
+lsr94_s() { lsr75_in "$lsr94_l" '' '' gate_adoption_prospect_sentence "$1" "$2" 2>/dev/null; }
+check "94: 런 스코프 단계의 마감 문장은 다음 런의 재계획이다" "$(lsr94_s - D1)" "다음 런(재킥오프)이 이 단계를 다시 계획한다"
+check "94: 이어받을 수 있는 PR 없는 세그먼트의 마감 문장은 이어 갈 수 있다이다" "$(lsr94_s A A)" "다음 런(재킥오프·입양)에서 이어 갈 수 있다"
+check "94: 워크트리가 없는 세그먼트의 마감 문장은 이어받지 못한다와 그 토큰이다" "$(lsr94_s B B)" "다음 런은 이 세그먼트를 이어받지 못한다(워크트리없음) — 다시 한다"
+printf 'x\n' > "$lsr94_r/dirty.txt"
+check "94: 커밋되지 않은 변경이 있으면 작업트리변경이다" "$(lsr94_s A A)" "다음 런은 이 세그먼트를 이어받지 못한다(작업트리변경) — 다시 한다"
+lsr94_pv() {  # lsr94_pv <원격 팁> <PR 판독 줄> — adopt-preview 의 출력
+  lsr75_in "$lsr94_l" '' '' eval "gate_remote_tip_of() { printf '%s' '$1'; }; gate_remote_pr_of() { printf '$2'; }; gate_adopt_preview" 2>/dev/null
+}
+check "94: adopt-preview 는 세그먼트마다 로컬 판정의 토큰을 같은 줄에 싣는다" \
+  "$(lsr94_pv "$lsr94_h" '없음\t없음\t없음')" "불가${TAB}A${TAB}작업트리변경
+불가${TAB}B${TAB}워크트리없음"
+rm -f "$lsr94_r/dirty.txt"
+check "94: 원격에 브랜치가 없고 PR 도 없으면 PR 없는 세그먼트는 가능이고 PR 칸은 - 다" \
+  "$(lsr94_pv 없음 '없음\t없음\t없음' | awk 'NR == 1')" "가능${TAB}A${TAB}seg/pv94-A${TAB}-${TAB}$(printf '%s' "$lsr94_h" | cut -c1-12)"
+check "94: 앵커 뒤에 열린 PR 이 생겼으면 PR불일치다" \
+  "$(lsr94_pv "$lsr94_h" "50\\tOPEN\\t$lsr94_h" | awk 'NR == 1')" "불가${TAB}A${TAB}PR불일치"
+check "94: 원격 판독이 실패하면 PR판독불가다" "$(lsr94_pv 미상 '없음\t없음\t없음' | awk 'NR == 1')" "불가${TAB}A${TAB}PR판독불가"
+check "94: 머지된 세그먼트는 adopt-preview 에 줄이 없다" \
+  "$(printf -- '- `segment` | id=B | 상태=머지됨 | 워크트리=-\n' >> "$lsr94_l"; lsr94_pv 없음 '없음\t없음\t없음' | cut -f2 | tr '\n' ' ')" "A "
+# 재개 명령 칸의 상한(360 바이트) 안에 가장 긴 문장과 다시 파견 명령이 통째로 든다.
+lsr94_len=$(lsr75_in "$lsr94_l" '' '' eval 'printf "%s" "$WAIT_LOOP_DEADLINE_RECOVERY. 다음 런은 이 세그먼트를 이어받지 못한다(작업트리변경) — 다시 한다 — $(gate_redispatch_line cc-cmds A)"' 2>/dev/null | wc -c | tr -d ' ')
+if [ "${lsr94_len:-999}" -gt 0 ] && [ "${lsr94_len:-999}" -le 360 ]; then
+  ok "94: 가장 긴 마감 복구 문면과 다시 파견 명령이 360 바이트 안에 든다"
+else bad "94 재개 명령 길이" "$lsr94_len"; fi
 
 # ---------------------------------------------------------------------------
 # 95. 중단 답 운반 — 두 질문과 고르는 순서, 거절 조항, 상한, 답 카드
@@ -51947,7 +52035,7 @@ check "95: 기다리는 묶인 WAIT 와 새 WAIT 면 묶인 대기다" \
   "$(lsr93_row t5 "$lsr93_BWU" "$lsr93_FWU")" "0|WAIT|resume|bound|-||resume,first|0|1|0|-"
 lsr93_t5=$( { grep '^- `stage-wait` ' "$lsr_root/t5/ledger.md" || true; } )
 case "$lsr93_t5" in
-  *"| 계보=B:S9#2 | 그룹=- | 계정=u1 | "*"| 근거=resume-bound-exhausted | 답 운반="[0-9]*) ok "95: 묶인 대기의 stage-wait 행이 묶인 계정과 답 운반을 싣는다" ;;
+  *"| 계보=B:S9#2 | 그룹=- | 계정=u1 | "*"| 근거=resume-bound-exhausted | 호스트=- | 기록 시각="*" | 답 운반="[0-9]*) ok "95: 묶인 대기의 stage-wait 행이 묶인 계정과 답 운반을 싣는다" ;;
   *) bad "95 묶인 대기 행" "$lsr93_t5" ;;
 esac
 # 묶인 소진 대기의 마감 대조는 예상 소요를 더한다 — 라우터가 다른 WAIT 를 마감에 견주는
@@ -51980,7 +52068,7 @@ check "95: binding-digest 는 없는 문서를 exit 2 로 거부한다" "$lsr93_
 check "95: 예비 묶인 WAIT 와 언제인지 아는 새 WAIT 면 새 대기다" \
   "$(lsr93_row t6 "$lsr93_BWR" "$lsr93_FWU")" "0|WAIT|first||-||resume,first|0|1|0|-"
 case "$( { grep '^- `stage-wait` ' "$lsr_root/t6/ledger.md" || true; } )" in
-  *"| 계정=- | "*"| 근거=group-exhausted | 답 운반="[0-9]*) ok "95: 새 대기의 stage-wait 행도 답 운반을 싣는다" ;;
+  *"| 계정=- | "*"| 근거=group-exhausted | 호스트=- | 기록 시각="*" | 답 운반="[0-9]*) ok "95: 새 대기의 stage-wait 행도 답 운반을 싣는다" ;;
   *) bad "95 새 대기 행" "$(grep '^- `stage-wait` ' "$lsr_root/t6/ledger.md")" ;;
 esac
 check "95: 묶인 마감 PARK 와 예비 새 WAIT 면 새 예비 대기다" \
@@ -52223,8 +52311,10 @@ check "95: TA4 감사 종합 요구를 채택한 답은 exit 3·행 없음" \
   "$(lsr93_refused ta4 "$lsr93_ln" "/cc-cmds:design-audit-unattended $lsr93_doc" audit)" "3|same|0"
 lsr93_ln=$(lsr93_base ta5 implement-unattended 'Step 3 CFI-U3 BT-STOP — 충돌' 재수렴 implement)
 check "95: TA4 구속 티어 정지의 재수렴 답은 exit 3·행 없음" "$(lsr93_refused ta5 "$lsr93_ln" "$lsr93_rp")" "3|same|0"
-lsr93_ln=$(lsr93_base ta6 implement-unattended 'Step 3 잔여 검증 좌석 실행 — R2' '좌석 실행' implement)
-check "95: TA4 좌석 실행 정지의 답은 exit 3·행 없음" "$(lsr93_refused ta6 "$lsr93_ln" "$lsr93_rp")" "3|same|0"
+lsr93_ln=$(lsr93_base ta6 implement-unattended 'Step 3 강제 표면 좌석 적용 — 적용' '좌석 적용' implement)
+check "95: TA4 좌석 적용 정지의 답은 exit 3·행 없음" "$(lsr93_refused ta6 "$lsr93_ln" "$lsr93_rp")" "3|same|0"
+check "95: TA4 좌석 실행 정지의 답은 운반 거절 조항에 걸리지 않는다" \
+  "$(lsr93_in "$lsr_root/ta6/ledger.md" gate_carry_routed_elsewhere "${lsr_root}/ta6/halt/S3#1.md" implement-unattended 'Step 3 잔여 검증 좌석 실행 — R2' '좌석 실행' 2>/dev/null)/$(lsr93_in "$lsr_root/ta6/ledger.md" gate_carry_routed_elsewhere "${lsr_root}/ta6/halt/S3#1.md" implement-unattended 'Step 3 게이트 도달 좌석 실행 — 설치' '좌석 실행' 2>/dev/null)" "/"
 lsr93_ln=$(lsr93_base ta7 review-unattended 'Step 1b 빈 대상 — 리뷰할 것이 없다' 적용 review)
 check "95: TA4 리뷰의 빈 대상 정지 답은 exit 3·행 없음" "$(lsr93_refused ta7 "$lsr93_ln" "$lsr93_rp")" "3|same|0"
 lsr93_l=$(lsr75_new ta8)
@@ -52488,7 +52578,7 @@ check "95: TC6 필드표 린트가 답 운반·중단 답 줄과 함께 통과�
 lsr93_wck() {  # lsr93_wck [<덧붙일 인자> [<둘째>]] — stage-wait 계열 검사의 rc
   LSR93_W1=${1:-} LSR93_W2=${2:-} lsr93_in "$lsr_root/t5/ledger.md" eval '
     set --; [ -z "$LSR93_W1" ] || set -- "$LSR93_W1"; [ -z "$LSR93_W2" ] || set -- "$@" "$LSR93_W2"
-    r=0; run_ledger_series_check stage-wait 계보=B:S9#3 그룹=- 계정=- 까지=- 비용=- "비용 출처=-" 근거=no-room "$@" >/dev/null 2>&1 || r=$?
+    r=0; run_ledger_series_check stage-wait 계보=B:S9#3 그룹=- 계정=- 까지=- 비용=- "비용 출처=-" 근거=no-room 호스트=- "기록 시각=2026-09-27T01:00:05Z" "$@" >/dev/null 2>&1 || r=$?
     printf %s "$r"' 2>/dev/null
 }
 check "95: TC6 stage-wait 계열 검사는 끝의 답 운반만 받고 줄 번호가 아닌 값은 거부한다" \
@@ -52626,7 +52716,7 @@ case "$( { grep -F '| 사유=중단 답 이월 — ' "$lsr93_l" || true; } )" in
     ok "95: TN5 그 이월 행이 두 판정을 싣는다" ;;
   *) bad "95 TN5 진전 축 이월 행" "$(grep -F '| 사유=중단 답 이월 — ' "$lsr93_l"; cat "$lsr_root/tn5b/act.err")" ;;
 esac
-# 대조 — 운반 검사에 걸리는 답은 마감 뒤에도 이월되지 않는다. 라우팅 예외(좌석 실행
+# 대조 — 운반 검사에 걸리는 답은 마감 뒤에도 이월되지 않는다. 라우팅 예외(좌석 적용
 # 정지)와 표 밖 쌍이 각각 그 검사의 코드로 끝나고 원장은 그대로다.
 lsr93_tn5c() {  # lsr93_tn5c <이름> <답 줄> — 지난 마감 매니페스트로 낸 운반 act 의 「rc|원장 그대로|이월 행 수」
   local l="$lsr_root/$1/ledger.md" sha
@@ -52634,8 +52724,8 @@ lsr93_tn5c() {  # lsr93_tn5c <이름> <답 줄> — 지난 마감 매니페스�
   printf '%s|%s|%s' "$(LSR93_BENV=$lsr93_BG LSR93_FENV=$lsr93_FG lsr93_act "$l" "$lsr93_mfp" "$2" "$lsr93_rp")" \
     "$( [ "$(lsr_sha "$l")" = "$sha" ] && printf same || printf changed)" "$(lsr93_n "$l" '| 사유=중단 답 이월 — ')"
 }
-lsr93_ln=$(lsr93_tn5f tn5s implement-unattended 'Step 3 잔여 검증 좌석 실행 — R2' '좌석 실행' implement)
-check "95: TN5 대조 — 마감 뒤에도 좌석 실행 정지의 답은 exit 3·원장 그대로·이월 없음" \
+lsr93_ln=$(lsr93_tn5f tn5s implement-unattended 'Step 3 강제 표면 좌석 적용 — 적용' '좌석 적용' implement)
+check "95: TN5 대조 — 마감 뒤에도 좌석 적용 정지의 답은 exit 3·원장 그대로·이월 없음" \
   "$(lsr93_tn5c tn5s "$lsr93_ln")" "3|same|0"
 lsr93_ln=$(lsr93_tn5f tn5u review-unattended 'Step 2 리뷰 — 질문' 적용 review)
 check "95: TN5 대조 — 마감 뒤에도 표 밖 정지의 답은 exit 19·원장 그대로·이월 없음" \
@@ -56964,7 +57054,7 @@ fi
 
 # ---------------------------------------------------------------------------
 # 85. A segment an earlier run cut is adopted through the manifest
-# --- section: 85 | group: base | covers: snapshot, plan, act, check_manifest, gate_carry_tail | anchors: 85: 입양 세그먼트의 슬라이싱 은 출처 런의 브랜치와 워크트리를 낸다, 85: 입양 세그먼트는 유도 경로로 계획되지 않는다, 85: 입양 세그먼트는 입양 워크트리로 계획된다, 85: 출처 런 원장이 없으면 입양 계획이 거부된다, 85: 출처 런이 착지시킨 세그먼트는 입양하지 않는다, 85: 선언과 다른 브랜치의 워크트리는 입양하지 않는다, 85: 출처 런의 스테이지가 살아 있으면 입양 계획이 거부된다, 85: 한 세그먼트의 입양 행 둘은 거부된다, 85: 입양 행을 바꾸면 구속 다이제스트가 깨진다, 85: 사람의 재수렴 답은 입양 계획 act 가 이 런으로 들여온다, 85: 들여온 답이 스냅숏의 answered_halts 에 출처 런과 함께 오른다, 85: 한 런이 들여온 답은 다른 런이 다시 들여오지 않는다, 85: 출처 런 키의 스테이지가 살아 있으면 입양 계획이 거부된다, 85: 런 밖 브랜치는 출처 런 - 로 입양 계획된다, 85: 런 밖 입양도 선언과 다른 브랜치의 워크트리는 거부한다, 85: 머지 커밋 없는 완료 세그먼트는 입양 계획된다, 85: 머지 커밋을 지닌 완료 세그먼트는 입양하지 않는다, 85: 고정 커밋을 지닌 적용 완료 세그먼트는 입양하지 않는다, 85: PR 과 커밋만 지닌 PR 절단점 완료 세그먼트는 입양 계획된다, 85: 대시 표기 출처 런의 입양 행은 매니페스트 검사를 통과한다, 85: 대시 표기 출처 런의 세그먼트는 입양 계획된다, 85: 입양 행에 맞는 강제 표면 승인 행은 매니페스트 검사를 통과한다, 85: 승인 행을 바꾸면 구속 다이제스트가 깨진다 ---
+# --- section: 85 | group: base | covers: snapshot, plan, act, check_manifest, gate_carry_tail | anchors: 85: 입양 세그먼트의 슬라이싱 은 출처 런의 브랜치와 워크트리를 낸다, 85: 입양 세그먼트는 유도 경로로 계획되지 않는다, 85: 입양 세그먼트는 입양 워크트리로 계획된다, 85: 출처 런 원장이 없으면 입양 계획이 거부된다, 85: 출처 런이 착지시킨 세그먼트는 입양하지 않는다, 85: 선언과 다른 브랜치의 워크트리는 입양하지 않는다, 85: 출처 런의 스테이지가 살아 있으면 입양 계획이 거부된다, 85: 한 세그먼트의 입양 행 둘은 거부된다, 85: 입양 행을 바꾸면 구속 다이제스트가 깨진다, 85: 사람의 재수렴 답은 입양 계획 act 가 이 런으로 들여온다, 85: 들여온 답이 스냅숏의 answered_halts 에 출처 런과 함께 오른다, 85: 한 런이 들여온 답은 다른 런이 다시 들여오지 않는다, 85: 출처 런 키의 스테이지가 살아 있으면 입양 계획이 거부된다, 85: 런 밖 브랜치는 출처 런 - 로 입양 계획된다, 85: 런 밖 입양도 선언과 다른 브랜치의 워크트리는 거부한다, 85: 머지 커밋 없는 완료 세그먼트는 입양 계획된다, 85: 머지 커밋을 지닌 완료 세그먼트는 입양하지 않는다, 85: 고정 커밋을 지닌 적용 완료 세그먼트는 입양하지 않는다, 85: PR 과 커밋만 지닌 PR 절단점 완료 세그먼트는 입양 계획된다, 85: 대시 표기 출처 런의 입양 행은 매니페스트 검사를 통과한다, 85: 대시 표기 출처 런의 세그먼트는 입양 계획된다, 85: 입양 행에 맞는 강제 표면 승인 행은 매니페스트 검사를 통과한다, 85: 승인 행을 바꾸면 구속 다이제스트가 깨진다, 85: PR=- 입양 행은 매니페스트 검사를 통과한다, 85: 출처 런도 PR 도 - 인 입양 행은 매니페스트 검사에서 거부된다 ---
 #
 # Segment names derive from the run id, so a run could not continue a segment
 # an earlier run left unmerged: its branch, worktree and pull request were out
@@ -57114,6 +57204,23 @@ check "85: 런 밖 입양 계획은 중단 답을 들여오지 않는다" \
 run85 R85Y "- \`세그먼트 입양\` | 세그먼트=SA | 브랜치=feat/other-85 | 워크트리=$WT85X | 출처 런=- | PR=81"
 g15_plan act R85Y SA 상태=계획됨 "워크트리=$WT85X"
 check "85: 런 밖 입양도 선언과 다른 브랜치의 워크트리는 거부한다" "$rc" "3"
+
+# A SEGMENT ITS RUN STOPPED BEFORE A PULL REQUEST is adopted with `PR=-`: the
+# manifest check takes the dash, the slicing carries it, and the planning act
+# plans the segment on the adopted worktree. A row naming neither an earlier
+# run nor a pull request names nothing to continue and is refused.
+src85_ledger 리뷰중
+run85 R85N "- \`세그먼트 입양\` | 세그먼트=SA | 브랜치=seg/$SRC85-SA | 워크트리=$WT85 | 출처 런=$SRC85 | PR=-"
+snap85 R85N
+check "85: PR=- 입양 행은 매니페스트 검사를 통과한다" "$rc" "0"
+check "85: PR=- 입양 세그먼트의 슬라이싱 은 PR - 를 낸다" \
+  "$( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" gate_inproc snapshot --manifest "$WORK/plan-R85N.md" 2>/dev/null \
+     | jq -r '.["슬라이싱"]["세그먼트"][0] | [.["입양"], .["PR"]] | join("|")' 2>/dev/null)" "$SRC85|-"
+g15_plan act R85N SA 상태=계획됨 "워크트리=$WT85"
+check "85: PR=- 입양 세그먼트는 입양 워크트리로 계획된다" "$rc" "0"
+run85 R85M "- \`세그먼트 입양\` | 세그먼트=SA | 브랜치=feat/outside-85 | 워크트리=$WT85X | 출처 런=- | PR=-"
+snap85 R85M
+check "85: 출처 런도 PR 도 - 인 입양 행은 매니페스트 검사에서 거부된다" "$( [ "$rc" != 0 ] && printf 거부 || printf 통과)" "거부"
 
 n85=0
 for bad85 in \
@@ -58667,6 +58774,43 @@ check "95d: 그 재수렴 행이 답 운반 줄을 싣는다" \
   "$( { grep -F '`stage-result`' "$LED96/R96A.md" 2>/dev/null || true; } | { grep -F '| 세그먼트=SA |' || true; } | tail -1 \
       | tr '|' '\n' | sed -n 's/^ *답 운반=//p' | sed 's/[[:space:]]*$//')" "$la96"
 check "95d: 운반된 입양 답은 answered_halts 에서 빠진다" "$(halts96 R96A)" ""
+
+# 마감에 걸린 좌석 실행 답 — 앞선 런의 구현이 좌석 실행 정지에서 멈추고 좌석이
+# `좌석 실행` 으로 답했지만, 그 재부착을 마감이 막아 같은 키의 마감 초과 cone 행이
+# 섰고 그 뒤 그 키의 stage-result 행은 없다. 이월 행이 없어도 입양 계획 act 가 그
+# 답을 들이고, 들인 답이 쓰이지 않은 키의 일반 파견은 운반 act 로 가라며 거절된다.
+SRC96R='20260302-aaaaaaaa'
+RDS96R="$STATE_LATE/cc-cmds/run/$SRC96R"
+WT96R="$(dirname "$WT")/$(basename "$WT")-run-$SRC96R-S9"
+( cd "$WT" && git worktree add -q -b "seg/$SRC96R-S9" "$WT96R" HEAD ) >/dev/null 2>&1
+ROW96R="- \`세그먼트 입양\` | 세그먼트=SA | 브랜치=seg/$SRC96R-S9 | 워크트리=$WT96R | 출처 런=$SRC96R | PR=-"
+g15_run "$SRC96R" "$DOC96A" "$plan15c" 리뷰없음
+src96 "$SRC96R"
+mkdir -p "$RDS96R/halt"
+REC96R="$RDS96R/halt/S9#1.md"
+printf '%s\n' "<!-- cc-pipeline-halt v1; writer=implement-unattended; reader=orchestrator; stage=S9#1; run=$SRC96R -->" \
+  '**스킬**: implement-unattended' '**스텝**: Step 3 잔여 검증 좌석 실행 — R1' \
+  '**분류**: gate-unanswerable' '**좌석 실행 항목**: R1' '**질문 문면**: R1 의 레시피를 좌석이 돌린다' '**선택지**:' \
+  '- `좌석 실행` — 좌석이 R1 의 레시피를 이 호스트에서 돌리고 결과를 설계 문서에 적는다' '<!-- /cc-pipeline-halt v1 -->' > "$REC96R"
+{ printf '# 픽스처 출처 런\n\n- `segment` | id=S9 | 상태=계획됨 | 워크트리=%s | 선행=없음\n' "$WT96R"
+  printf -- '- `stage-result` | 교대=0 | 세그먼트=S9 | 스테이지=S9 | 종류=implement | 실행 버전=1 | 세션 id=s-impl-1 | 종단 부류=의도된 park | prev=x\n'
+  printf -- '- `중단 답` | 세그먼트=S9 | 중단 기록=%s | 스킬=implement-unattended | 선택지=좌석 실행 | 답한 주체=좌석 | 근거 종류=좌석 실행 | 근거=좌석 실행 — R1 검증됨(통과) | 기록 다이제스트=%s | 레인=좌석 | 기록 시각=2026-03-02T01:00:00Z\n' \
+    "$REC96R" "$(shasum -a 256 "$REC96R" | cut -d' ' -f1)"
+  printf -- '- `blocked` | 교대=1 | 대상=infra | 스코프=cone | 원인=막힘 | 사유=마감 초과 — S9 | 앵커 세그먼트=S9 | 세그먼트=S9 | 스테이지=S9 | prev=x\n'; } > "$LED96/$SRC96R.md"
+g15_run R96R "$DOC96A" "$plan15c" 리뷰없음
+printf '%s\n' "$ROW96R" >> "$WORK/plan-R96R.md"
+g15_plan act R96R SA 상태=계획됨 "워크트리=$WT96R"
+check "95d: 마감 cone 행이 뒤따른 좌석 실행 답은 이월 행 없이도 입양 계획 act 가 들인다" "$rc/$(carried96 R96R)" "0/1"
+lr96=$(ln96 R96R)
+out=$(cd "$WT" && XDG_STATE_HOME="$STATE_LATE" CC_CLAUDE_BIN="$STUB_AU_RECONV" \
+  bash "$GATE" act --manifest "$WORK/plan-R96R.md" --kind skill --target infra --segment SA --cutpoint 커밋 \
+  --surface 워크트리쓰기 --snapshot-digest "$(au15_H R96R)" --rationale x -- implement -p "/cc-cmds:implement-unattended $WT/$DOC96A" 2>&1); rc=$?
+check "95d: 들인 좌석 실행 답이 쓰이지 않은 입양 키의 일반 구현 파견은 exit 3 이다" "$rc/$(carried96 R96R)" "3/1"
+case "$out" in
+  *"원장 $lr96 번째 줄"*) ok "95d: 그 거절은 들인 좌석 실행 답의 줄을 이름 댄다" ;;
+  *) bad "95d: 그 거절은 들인 좌석 실행 답의 줄을 이름 댄다" "$out" ;;
+esac
+( cd "$WT" && git worktree remove --force "$WT96R" && git branch -D "seg/$SRC96R-S9" ) >/dev/null 2>&1
 
 gfn96() {  # gfn96 <run id> <셸 문면> [인자…] — 그 런의 원장과 런 디렉터리로 게이트 함수를 부른다. 문면은 인자를 "$@" 로 읽는다
   local r="$1"
@@ -66653,7 +66797,7 @@ h98_lv=$(lsr_ledger v98)
 h98_wr() {  # h98_wr <기록자> <계정> — 차용 중 재개 대기 행 하나를 서브셸에서 쓰고 rc 를 낸다
   local rc=0
   ( lsr_in - "$h98_lv" - "$1" stage-wait '계보=S2-impl-1' '그룹=org:0123456789abcdef' "계정=$2" \
-      '까지=-' '비용=-' '비용 출처=-' '근거=resume-bound-borrowed' ) >/dev/null 2>&1 || rc=$?
+      '까지=-' '비용=-' '비용 출처=-' '근거=resume-bound-borrowed' '호스트=-' '기록 시각=2026-09-27T01:00:05Z' ) >/dev/null 2>&1 || rc=$?
   printf '%s' "$rc"
 }
 check "98: 차용 중 재개 대기는 계정과 함께 받고 비용 두 칸은 - 다" \
@@ -66668,7 +66812,7 @@ h98_BRW='{"verdict":"WAIT","reason":"resume-bound-borrowed","group":"org:0123456
 check "98: 차용된 묶인 대기와 새 열린 대기면 묶인 대기다" \
   "$(lsr93_row t98a "$h98_BRW" "$lsr93_FWO")" "0|WAIT|resume|bound|-||resume,first|0|1|0|-"
 case "$( { grep '^- `stage-wait` ' "$lsr_root/t98a/ledger.md" || true; } )" in
-  *"| 계보=B:S9#2 | 그룹=org:0123456789abcdef | 계정=u1 | 까지=- | 비용=- | 비용 출처=- | 근거=resume-bound-borrowed | 답 운반="[0-9]*)
+  *"| 계보=B:S9#2 | 그룹=org:0123456789abcdef | 계정=u1 | 까지=- | 비용=- | 비용 출처=- | 근거=resume-bound-borrowed | 호스트=- | 기록 시각="*" | 답 운반="[0-9]*)
     ok "98: 그 stage-wait 행이 기증자 그룹·묶인 계정·답 운반을 싣는다" ;;
   *) bad "98 차용 묶인 대기 행" "$( { grep '^- `stage-wait` ' "$lsr_root/t98a/ledger.md" || true; } )" ;;
 esac
@@ -69231,6 +69375,14 @@ esac
 case "$(printf '%s' "$RV107_JSON" | jq -r '[.["슬라이싱"]["세그먼트"][]? | "\(.id):\(.["입양"] // "-")"] | sort | join(" ")' 2>/dev/null)" in
   "I1:20260101-0000abcd I2:-") ok "109: 문서 없는 계획의 슬라이싱은 입양 단계와 입양 행 없는 단계를 함께 낸다" ;;
   *) bad "109: 문서 없는 계획의 슬라이싱은 입양 단계와 입양 행 없는 단계를 함께 낸다" \
+       "rc=$RV107_RC 슬라이싱=$(printf '%s' "$RV107_JSON" | jq -c '.["슬라이싱"]' 2>&1) $RV107_OUT" ;;
+esac
+# PR 을 열기 전에 멈춘 세그먼트의 입양 행(`PR=-`)도 문서 없는 계획에서 같은 처분을
+# 받고, 그 단계의 슬라이싱은 PR 칸에 - 를 싣는다.
+rv107_snap "$RV107_P2" "$(rv107_row I1 | sed 's/| PR=7$/| PR=-/')"
+case "$(printf '%s' "$RV107_JSON" | jq -r '[.["슬라이싱"]["세그먼트"][]? | select(.id == "I1") | "\(.["입양"]):\(.["PR"])"] | join(" ")' 2>/dev/null)" in
+  "20260101-0000abcd:-") ok "109: 문서 없는 계획의 PR=- 입양 단계는 검사를 지나고 슬라이싱에 PR - 를 싣는다" ;;
+  *) bad "109: 문서 없는 계획의 PR=- 입양 단계는 검사를 지나고 슬라이싱에 PR - 를 싣는다" \
        "rc=$RV107_RC 슬라이싱=$(printf '%s' "$RV107_JSON" | jq -c '.["슬라이싱"]' 2>&1) $RV107_OUT" ;;
 esac
 SA_PLAN=""; SA_AUTH_RAW=""

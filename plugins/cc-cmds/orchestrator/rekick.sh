@@ -238,7 +238,10 @@
 #                  그래프  순수 | 바뀜  <사유>
 #   verify-subset  검사  <이름>  통과|실패  <사유>
 #                  판정  통과|실패  [<실패한 검사, …>]
-#   adopt          입양후보  <세그먼트>  <브랜치>  <워크트리>  <PR 번호>  <HEAD 40자>  [<꼬리 칸>…]
+#   adopt          입양후보  <세그먼트>  <브랜치>  <워크트리>  <PR 번호|->  <HEAD 40자>  [<꼬리 칸>…]
+#                  (`-` when the anchor recorded no pull request: the segment
+#                  stopped before one, and the new run starts it with an
+#                  implement stage)
 #                  머지입양후보  <세그먼트>  <PR 번호>  <머지 커밋 40자>  <PR 헤드 40자>  [<수정 브랜치 워크트리>]
 #                  입양불가  <세그먼트>  <PR 번호|->  <사유 토큰>  [미입양=PR들여오기]
 #
@@ -247,7 +250,9 @@
 # one `원인=<행 종류>:<원장 줄>` per cause row the ledger holds for that park
 # (`원인=없음` when none), `중단기록=<기록 이름,…>` (the previous run's
 # unanswered halt records of that segment) and `이월=재수렴` (the gate would
-# carry a `재수렴` answer into the new run) or `이월=불가` (the source holds an
+# carry the source's open answer into the new run — a `재수렴`, an answer an
+# `이월` row names, or a seat-run answer a later deadline row left unspent;
+# the token keeps its first name) or `이월=불가` (the source holds an
 # open answer the gate would not carry, which stays with the source), then `미입양=PR들여오기` — on an
 # `입양불가` line too, after its reason — when the frozen document declares the
 # slice `절단점: PR` and the latest landing any run of the document left for it
@@ -890,10 +895,11 @@ rk_adopt_row() {
 # rk_adopt_take_label / rk_adopt_redo_label / rk_adopt_keep_label <segment>
 # <PR> [<branch> <head>] — the answers a person may give to the adoption
 # question: take, and either redo or, for a candidate carrying
-# `미입양=PR들여오기`, keep.
-rk_adopt_take_label() { printf '이어받기 — %s · PR #%s · %s · %s' "$1" "$2" "$3" "$(printf '%s' "$4" | cut -c1-12)"; }
-rk_adopt_redo_label() { printf '다시 하기 — %s · PR #%s' "$1" "$2"; }
-rk_adopt_keep_label() { printf '그대로 두기 — %s · PR #%s' "$1" "$2"; }
+# `미입양=PR들여오기`, keep. A PR cell of `-` reads `PR 없음`.
+rk_adopt_pr_label() { if [ "$1" = "-" ]; then printf 'PR 없음'; else printf 'PR #%s' "$1"; fi; }
+rk_adopt_take_label() { printf '이어받기 — %s · %s · %s · %s' "$1" "$(rk_adopt_pr_label "$2")" "$3" "$(printf '%s' "$4" | cut -c1-12)"; }
+rk_adopt_redo_label() { printf '다시 하기 — %s · %s' "$1" "$(rk_adopt_pr_label "$2")"; }
+rk_adopt_keep_label() { printf '그대로 두기 — %s · %s' "$1" "$(rk_adopt_pr_label "$2")"; }
 
 # rk_merge_adopt_row <segment> <alias> <PR> <merge commit> <PR head> — the
 # `머지 입양` row, naming the previous run as its source.
@@ -1077,7 +1083,7 @@ rk_adopt_halts() {
 rk_adopt_candidates() {
   local trows="$1" layer="$2" key keys rows last W B anchor n h wh rt ph ab slug al row tal
   local cg tcg tbase cur hd st tip prl pn ps ph2 pv vs vb vh vc vo vbase tail tok mcopy err doc docf dcopy first pre halts
-  local pdoc pim pip pic pibr cim
+  local pdoc pim pip pic pibr cim nopr
   RK_CAND_KW=''
   keys=$( { grep -E '^- `segment` ' "$RK_PL" 2>/dev/null || true; } | while IFS= read -r row; do manifest_row_fields "$row" 'id' | head -n 1; printf '\n'; done | awk 'NF && !seen[$0]++')
   err="$RK_TMP/adopt.err"
@@ -1109,10 +1115,27 @@ EOF
     last=$(printf '%s\n' "$rows" | tail -n 1)
     anchor=$( { grep -E '^- `원격 판독` ' "$RK_PL" 2>/dev/null || true; } | { grep -F "| 세그먼트=$key |" || true; } \
               | { grep -vF '| 원격 팁=미상 |' || true; } | tail -n 1)
+    # An anchor whose `PR`, `PR 상태` and `PR HEAD` all read `없음` is a
+    # segment stopped before its pull request: its PR cell is `-`, never the
+    # number an earlier `segment` row may carry.
+    nopr=0
+    if [ -n "$anchor" ] && [ "$(manifest_row_fields "$anchor" 'PR' | head -n 1)" = "없음" ] \
+       && [ "$(manifest_row_fields "$anchor" 'PR 상태' | head -n 1)" = "없음" ] \
+       && [ "$(manifest_row_fields "$anchor" 'PR HEAD' | head -n 1)" = "없음" ]; then
+      nopr=1
+    fi
     n=$(manifest_row_fields "$anchor" 'PR' | head -n 1)
-    rk_num "$n" || n=$(rk_rows_last_field "$rows" 'PR')
-    rk_num "$n" || n='-'
+    if [ "$nopr" = "1" ]; then n='-'
+    else
+      rk_num "$n" || n=$(rk_rows_last_field "$rows" 'PR')
+      rk_num "$n" || n='-'
+    fi
     tok=''
+    # 0 — the fix branch of a merged request carries no pull request of its
+    # own: it is not taken over, and `rk_merge_fix_silent` leaves its line
+    # out. The new run reviews the merged request again from a worktree of
+    # its own, and the old commits stay where they are.
+    if [ "$nopr" = "1" ] && [ -n "$(rk_merge_src_row "$key")" ]; then tok='PR기록없음'; fi
     # 1 — the seat does not adopt a segment it last parked.
     if [ "$layer" = "full" ] && [ "$RK_AUTO" = "1" ] && [ "$(manifest_row_fields "$last" '상태' | head -n 1)" = "park" ]; then
       tok='park'
@@ -1164,7 +1187,13 @@ EOF
       wh=$(manifest_row_fields "$anchor" '워크트리 HEAD' | head -n 1)
       rt=$(manifest_row_fields "$anchor" '원격 팁' | head -n 1)
       ph=$(manifest_row_fields "$anchor" 'PR HEAD' | head -n 1)
-      if [ -z "$anchor" ] || ! rk_num "$(manifest_row_fields "$anchor" 'PR' | head -n 1)"; then tok='PR기록없음'
+      # A pull-request-less anchor: its worktree HEAD is a full sha and the
+      # remote tip is absent or that HEAD.
+      if [ "$nopr" = "1" ]; then
+        if ! rk_sha40 "$wh" || { [ "$rt" != "없음" ] && [ "$rt" != "$wh" ]; }; then tok='HEAD불일치'
+        elif [ "$ab" != "$B" ]; then tok='브랜치다름'
+        fi
+      elif [ -z "$anchor" ] || ! rk_num "$(manifest_row_fields "$anchor" 'PR' | head -n 1)"; then tok='PR기록없음'
       elif [ "$(manifest_row_fields "$anchor" 'PR 상태' | head -n 1)" != "OPEN" ]; then tok='PR닫힘'
       elif ! rk_sha40 "$wh" || [ "$wh" != "$rt" ] || [ "$wh" != "$ph" ]; then tok='HEAD불일치'
       elif [ "$ab" != "$B" ]; then tok='브랜치다름'
@@ -1217,25 +1246,38 @@ EOF
       case "$tip" in
         미상) tok='PR판독불가' ;;
         "$h") ;;
+        없음) [ "$nopr" = "1" ] || tok='HEAD불일치' ;;
         *) tok='HEAD불일치' ;;
       esac
     fi
-    # 8 — the gate's pull request of B: one open, the anchor's number.
+    # 8 — the gate's pull request of B: one open, the anchor's number; none at
+    # all for a pull-request-less anchor, where a request opened after it is
+    # one this check did not compare.
     if [ -z "$tok" ]; then
       prl=$(rk_gate pr-of "$MANIFEST" "$RK_PREV" "$RK_PRD" "$RK_PL" "$RK_PG" "$err" "$W" "$slug" "$B" "$h")
       IFS="$TAB" read -r pn ps ph2 <<EOF
 $prl
 EOF
-      case "$pn" in
-        미상) tok='PR판독불가' ;;
-        불일치) tok='PR불일치' ;;
-        없음) tok='PR닫힘' ;;
-        *) if [ "$ps" = "MERGED" ]; then tok='PR닫힘'; elif [ "$pn" != "$n" ]; then tok='PR불일치'; fi ;;
-      esac
+      if [ "$nopr" = "1" ]; then
+        case "$pn" in
+          미상) tok='PR판독불가' ;;
+          없음) ;;
+          불일치) tok='PR불일치' ;;
+          *) if [ "$ps" = "MERGED" ]; then tok='PR닫힘'; else tok='PR불일치'; fi ;;
+        esac
+      else
+        case "$pn" in
+          미상) tok='PR판독불가' ;;
+          불일치) tok='PR불일치' ;;
+          없음) tok='PR닫힘' ;;
+          *) if [ "$ps" = "MERGED" ]; then tok='PR닫힘'; elif [ "$pn" != "$n" ]; then tok='PR불일치'; fi ;;
+        esac
+      fi
     fi
     # 9 — the pull request itself: open, from the target's own repository, on
-    # B at h, against the target's base branch.
-    if [ -z "$tok" ]; then
+    # B at h, against the target's base branch. A pull-request-less anchor has
+    # none to view.
+    if [ -z "$tok" ] && [ "$nopr" != "1" ]; then
       pv=$(rk_gate pr-view "$MANIFEST" "$RK_PREV" "$RK_PRD" "$RK_PL" "$RK_PG" "$err" "$n" "$slug")
       if [ "$pv" = "미상" ]; then tok='PR판독불가'
       else
@@ -1815,10 +1857,12 @@ rk_detect_judge() {
   if rk_clauses_all_met "$states"; then
     dcands=$(rk_adopt_candidates "$(manifest_targets)" offline)
     # A `머지입양후보` line counts once: one carrying a fix worktree shares its
-    # segment with an `입양후보` line already counted.
+    # segment with an `입양후보` line already counted. A candidate with no
+    # pull request (PR cell `-`) does not reopen a run that met every clause:
+    # there is no open request to review from.
     while IFS="$TAB" read -r dkind dseg df3 df4 df5 dn; do
       case "$dkind" in
-        입양후보) : ;;
+        입양후보) [ "$df5" != "-" ] || continue ;;
         머지입양후보) [ -z "$dn" ] || continue ;;
         *) continue ;;
       esac
@@ -1944,7 +1988,8 @@ rk_detect_tail() {
   while IFS="$TAB" read -r kind seg f3 f4 f5 _; do
     case "$kind" in
       입양후보)
-        printf '고지\t이전 런의 머지되지 않은 작업(%s PR %s)은 입양 후보입니다 — 재킥오프가 디스크와 원격을 다시 확인합니다\n' "$seg" "$f5" ;;
+        n=$f5; [ "$n" != "-" ] || n='없음'
+        printf '고지\t이전 런의 머지되지 않은 작업(%s PR %s)은 입양 후보입니다 — 재킥오프가 디스크와 원격을 다시 확인합니다\n' "$seg" "$n" ;;
       머지입양후보)
         printf '고지\t이전 런이 사후 리뷰를 끝내지 않은 머지된 PR(%s PR %s)은 입양 후보입니다 — 재킥오프가 원격을 다시 확인합니다\n' "$seg" "$f3" ;;
       입양불가)
