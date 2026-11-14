@@ -3665,6 +3665,29 @@ esac
 grep -v '^- `출처 티켓`' "$MFROS" > "$MFROS.t" && mv "$MFROS.t" "$MFROS"
 check "출처 티켓 행이 없으면 그 행을 얼리기 전과 같은 바이트다" \
   "$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)" "$bd_noros"
+
+# 구속 집합의 머지 입양 행. 행의 머지 커밋과 PR 헤드가 계획 act 의 리뷰 의무가 되므로,
+# 런 도중 행을 고쳐 쓸 수 있으면 사람이 지목하지 않은 머지를 리뷰하고 그 의무를 닫는다.
+md_a=$(printf 'a%.0s' $(seq 40)); md_b=$(printf 'b%.0s' $(seq 40))
+printf -- '- `머지 입양` | 세그먼트=I1 | 대상=main | PR=7 | 머지 커밋=%s | PR 헤드=%s | 출처 런=-\n' "$md_a" "$md_b" >> "$MFROS"
+check "픽스처가 실제로 머지 입양 행을 얻었다 (아래가 공허하지 않다)" \
+  "$(manifest_merge_adoption_rows | grep -c .)" "1"
+bd_md=$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)
+if [ "$bd_md" = "$bd_noros" ]; then
+  bad "구속 집합 감도" "머지 입양 행을 더했는데 다이제스트가 그대로다 — 런 도중 리뷰할 머지를 바꿀 수 있다"
+else
+  ok "머지 입양 행이 생기면 구속 다이제스트가 움직인다"
+fi
+check "구속 집합이 머지 입양 행을 자기 접두로 싣는다" \
+  "$( { binding_set_bytes | grep -c '^mergeadopt' || true; } )" "1"
+manifest_snapshot_take
+check "메모 판독기가 파일 판독기와 같은 머지 입양 행을 낸다" \
+  "$(manifest_merge_adoption_rows)" "$(grep -E '^- `머지 입양`' "$MFROS")"
+MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""
+grep -v '^- `머지 입양`' "$MFROS" > "$MFROS.t" && mv "$MFROS.t" "$MFROS"
+check "머지 입양 행이 없으면 그 행을 얼리기 전과 같은 바이트다" \
+  "$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)" "$bd_noros"
+unset md_a md_b bd_md
 MANIFEST="$MANIFEST_SAVE21r"
 
 # --- 21c 설계 팔의 발화 조건과 재개 판별 — 팔을 태운다 ------------------------

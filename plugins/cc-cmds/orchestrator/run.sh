@@ -519,6 +519,7 @@ $(LC_ALL=C awk '
     index($0, "- `베이스 발행`") == 1 { print "BP\t" $0 }
     index($0, "- `베이스 설계`") == 1 { print "BD\t" $0 }
     index($0, "- `세그먼트 입양`") == 1 { print "AD\t" $0 }
+    index($0, "- `머지 입양`") == 1 { print "MD\t" $0 }
     index($0, "- `선행 착지`") == 1 { print "PL\t" $0 }
     index($0, "- `재킥오프`") == 1 { print "RK\t" $0 }
     index($0, "- `적용 프로브 코드`") == 1 { print "AC\t" $0 }
@@ -771,6 +772,15 @@ manifest_source_ticket_rows() {
 manifest_adoption_rows() {
   if manifest_memo_on; then manifest_memo_all "AD	"; return 0; fi
   grep -E '^- `세그먼트 입양`' "$MANIFEST" 2>/dev/null || true
+}
+
+manifest_merge_adoption_rows() {
+  # The kickoff's `머지 입양` rows: one pull request merged outside the run, its
+  # merge commit and head as the kickoff read them, handed to this run for a
+  # post-merge review. `manifest_adoption_rows` keeps returning `세그먼트 입양`
+  # rows only; a reader that means "any adoption row" reads both.
+  if manifest_memo_on; then manifest_memo_all "MD	"; return 0; fi
+  grep -E '^- `머지 입양`' "$MANIFEST" 2>/dev/null || true
 }
 
 manifest_surface_approval_rows() {
@@ -1244,6 +1254,12 @@ binding_set_bytes() {
     # cut, so a row any act could append mid-run would hand the run a tree a
     # person never named. Whole-file scan, zero bytes when absent.
     manifest_adoption_rows | sed 's/[[:space:]]\{1,\}/ /g;s/^/adopt\t/'
+    # THE `머지 입양` ROWS ARE IN THE FROZEN SET, on the same terms. A row names
+    # a merge commit and a pull request head the planning act turns into a
+    # review obligation of this run, so a row any act could rewrite mid-run would
+    # let the run review, and close the obligation on, a merge nobody named.
+    # Whole-file scan, zero bytes when absent.
+    manifest_merge_adoption_rows | sed 's/[[:space:]]\{1,\}/ /g;s/^/mergeadopt\t/'
     # THE `강제 표면 승인` ROWS ARE IN THE FROZEN SET, on the same terms. Each
     # one is a person's approval of one enforcement-surface path's bytes on an
     # adopted branch, and the merge-time provenance check lets that path
@@ -1681,7 +1697,7 @@ check_manifest() {
   bd=$(manifest_field '인가' '구속 다이제스트')
   if [ -n "$bd" ]; then
     [ "$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)" = "$bd" ] \
-      || die "구속 다이제스트가 얼린 집합과 일치하지 않습니다 — 목표·종료 절·대상·룰 설정·사전 인가·수리 사건·설계 로스터·베이스 발행·베이스 설계·출처 티켓·세그먼트 입양·강제 표면 승인·선행 착지·재킥오프·적용 프로브 코드·라벨 인정·플러그인 허용·계정 이전 허용·리뷰 PR·리뷰 게시·리뷰 깊이·리뷰 문면·마감 중 하나가 움직였습니다"
+      || die "구속 다이제스트가 얼린 집합과 일치하지 않습니다 — 목표·종료 절·대상·룰 설정·사전 인가·수리 사건·설계 로스터·베이스 발행·베이스 설계·출처 티켓·세그먼트 입양·머지 입양·강제 표면 승인·선행 착지·재킥오프·적용 프로브 코드·라벨 인정·플러그인 허용·계정 이전 허용·리뷰 PR·리뷰 게시·리뷰 깊이·리뷰 문면·마감 중 하나가 움직였습니다"
   else
     warn "매니페스트에 구속 다이제스트가 없습니다 — 얼린 집합을 대조하지 않고 진행합니다"
   fi
@@ -2127,15 +2143,74 @@ EOF
   done <<EOF
 $(manifest_adoption_rows)
 EOF
+  # 17a — `머지 입양` rows, FORM ONLY. A row hands this run a pull request a
+  # person merged outside it, for a post-merge review: the merge commit and the
+  # pull request head the kickoff read from GitHub. Whether the remote still
+  # says so, whether the merge sits on the base's first-parent line and whether
+  # the head object can be fetched are the planning act's to check — this
+  # conjunction runs on every gate entry and reads nothing from disk or remote.
+  #
+  # The row's target must have a cutpoint of `머지`, `배포` or `머지후착수`: a
+  # fix the review after the merge asks for has to land on the base before the
+  # segment ends, and a target that stops below the merge would close the
+  # segment with the defect still on the base.
+  #
+  # The rows are counted per kind: two `머지 입양` rows on one segment are
+  # refused, and a `머지 입양` row beside a `세그먼트 입양` row of the same
+  # segment is the pair a re-kickoff writes for a fix branch with an open pull
+  # request. Which target the paired adoption row's worktree belongs to is not
+  # compared here: that needs the worktree's common git directory, read by the
+  # planning act.
+  local md_row md_seg md_t md_src md_ceil md_cut md_segs=" "
+  while IFS= read -r md_row; do
+    [ -n "$md_row" ] || continue
+    grep -qE '^- `머지 입양` \| 세그먼트=[A-Za-z0-9_.-]+ \| 대상=[^ |]+ \| PR=[1-9][0-9]* \| 머지 커밋=[0-9a-f]{40} \| PR 헤드=[0-9a-f]{40} \| 출처 런=([0-9]{8}-[0-9a-f]{8}|[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9a-f]{8}|-)$' <<<"$md_row" \
+      || die "「머지 입양」 행의 형식이 어긋났습니다 — 받는 형태는 \`- \`머지 입양\` | 세그먼트=<id> | 대상=<별칭> | PR=<번호> | 머지 커밋=<40hex> | PR 헤드=<40hex> | 출처 런=<런 id 또는 ->\` 입니다: $md_row"
+    md_seg=$(manifest_row_fields "$md_row" '세그먼트')
+    md_t=$(manifest_row_fields "$md_row" '대상')
+    md_src=$(manifest_row_fields "$md_row" '출처 런')
+    case " $(target_aliases | tr '\n' ' ') " in
+      *" $md_t "*) : ;;
+      *) die "「머지 입양」 행의 대상 '${md_t}' 이 선언된 대상이 아닙니다: $md_row" ;;
+    esac
+    [ "$md_src" != "$RUN_ID" ] || die "「머지 입양」 행의 출처 런이 이 런 자신입니다: $md_src"
+    md_ceil=$(target_field "$md_t" '리뷰 정책 상한')
+    [ "$md_ceil" != "리뷰없음" ] \
+      || die "「머지 입양」 행의 대상 '${md_t}' 의 리뷰 정책 상한이 「리뷰없음」입니다 — 입양 세그먼트는 선리뷰후머지로 풀리므로 그 대상에는 둘 수 없습니다: $md_row"
+    md_cut=$(target_field "$md_t" '절단점')
+    md_cut=$(cutpoint_token "$md_cut" 2>/dev/null) || md_cut=''
+    case "$md_cut" in
+      머지|배포|머지후착수) : ;;
+      *) die "「머지 입양」 행의 대상 '${md_t}' 의 절단점이 「$(target_field "$md_t" '절단점')」입니다 — 머지 입양은 절단점이 「머지」·「배포」·「머지후착수」 인 대상에만 둡니다(사후 리뷰가 찾은 결함의 수정이 베이스에 착지해야 세그먼트가 끝납니다): $md_row" ;;
+    esac
+    case "$md_segs" in
+      *" $md_seg "*) die "「머지 입양」 행이 세그먼트 ${md_seg} 에 둘 이상입니다" ;;
+    esac
+    md_segs="$md_segs$md_seg "
+  done <<EOF
+$(manifest_merge_adoption_rows)
+EOF
+  if [ "$md_segs" != " " ]; then
+    [ -z "$(manifest_review_pr_rows)" ] \
+      || die "「머지 입양」 행과 「리뷰 PR」 행이 한 매니페스트에 함께 있습니다 — 리뷰어 계획에는 머지 입양을 둘 수 없습니다"
+    [ "$b_owner" = "(없음)" ] \
+      || die "설계 문서가 있는 런에 「머지 입양」 행이 있습니다 — 머지 입양은 설계 문서 없는 계획에서만 받습니다"
+  fi
   # 17b — adoption rows on a manifest with no design document. There the
   # routing shift plans one segment per implementation step an adoption row
   # names, bound to the target whose common git directory the row's worktree
-  # shares, and at most one more for an implementation step no row names, on
-  # the home target. So every row must name one of the plan's implementation
-  # steps, and with any row present at most one step may be left without one —
-  # a second would be planned nowhere. A manifest without adoption rows keeps
-  # the old reading: the first implementation step, on the home target.
-  if [ "$ad_segs" != " " ] && [ "$b_owner" = "(없음)" ]; then
+  # shares (a `머지 입양` row: the target its `대상` names), and at most one
+  # more for an implementation step no row names, on the home target. So every
+  # row must name one of the plan's implementation steps, and with any row
+  # present at most one step may be left without one — a second would be
+  # planned nowhere. Both kinds count, and a segment two rows of different
+  # kinds name counts once. A manifest without adoption rows keeps the old
+  # reading: the first implementation step, on the home target.
+  local any_segs="$ad_segs"
+  for md_seg in $md_segs; do
+    case "$any_segs" in *" $md_seg "*) : ;; *) any_segs="$any_segs$md_seg " ;; esac
+  done
+  if [ "$any_segs" != " " ] && [ "$b_owner" = "(없음)" ]; then
     local impl_ids impl_id impl_free=0
     impl_ids=" $(manifest_plan_json | jq -r '[.steps[]? | select(type == "object" and .skill == "implement") | .id] | join(" ")' 2>/dev/null || true) "
     for ad_seg in $ad_segs; do
@@ -2144,8 +2219,14 @@ EOF
         *) die "「세그먼트 입양」 행의 세그먼트 ${ad_seg} 가 설계 문서 없는 계획의 구현 단계 id 가 아닙니다 — 구현 단계:${impl_ids}" ;;
       esac
     done
+    for md_seg in $md_segs; do
+      case "$impl_ids" in
+        *" $md_seg "*) : ;;
+        *) die "「머지 입양」 행의 세그먼트 ${md_seg} 가 설계 문서 없는 계획의 구현 단계 id 가 아닙니다 — 구현 단계:${impl_ids}" ;;
+      esac
+    done
     for impl_id in $impl_ids; do
-      case "$ad_segs" in *" $impl_id "*) : ;; *) impl_free=$((impl_free + 1)) ;; esac
+      case "$any_segs" in *" $impl_id "*) : ;; *) impl_free=$((impl_free + 1)) ;; esac
     done
     [ "$impl_free" -le 1 ] \
       || die "설계 문서 없는 계획에 입양 행이 있는데 입양 행 없는 구현 단계가 ${impl_free}개입니다 — 많아야 하나입니다"
@@ -5481,14 +5562,16 @@ hotfix_routing_check() {
   # enforcement-surface change a person makes on the adopted branch during the
   # run is approved only at the shift halt `강제 표면 승인`, and the fixed
   # driver has no shift to stand it: its merge would park the segment with no
-  # place to answer.
+  # place to answer. A `머지 입양` row is refused on the same terms: its review
+  # obligation is issued by the gate's planning act, which only the routing
+  # shift calls.
   local profile rec="없음" what=""
   [ -n "${MANIFEST:-}" ] && [ -f "$MANIFEST" ] || return 0
   profile=$(manifest_plan_field '.run_profile // "standard"')
   case "$profile" in
     hotfix) what="핫픽스 계획은" ;;
     reviewer) what="리뷰어 계획은" ;;
-    *) [ -n "$(manifest_adoption_rows)" ] && what="입양 매니페스트는" ;;
+    *) [ -n "$(manifest_adoption_rows)$(manifest_merge_adoption_rows)" ] && what="입양 매니페스트는" ;;
   esac
   [ -n "$what" ] || return 0
   run_routed && return 0
