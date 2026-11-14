@@ -1165,7 +1165,7 @@ def rt_park_lend($id; $why; $at):
 def rt_park_ineligible($id):
   rt_park_aw("pinned-lane-ineligible"; "고정 계정 \($id) 은 발행 전용 행도 대여 등록 행도 아니다 — claude-design 의 lane 이나 인벤토리를 고친다"; $id; null);
 def rt_park_deadline($until):
-  {verdict: "PARK", reason: "deadline", ready_at: $until, recovery: "마감 안에 끝낼 수 없다 — 이 런에서는 기동하지 않는다. 다음 런(재킥오프·입양)에서 이어 갈 수 있다"};
+  {verdict: "PARK", reason: "deadline", ready_at: $until, recovery: "마감 안에 끝낼 수 없다 — 이 런에서는 기동하지 않는다"};
 # 대기 봉투의 `cost` 는 그 대기를 정한 입장 판정의 창별 비용이고, 그런 판정이 없는
 # 대기(FIFO 양보·미상 동시성·후보 없음·거래 실패)는 null 이다.
 def rt_wait_c($g; $acct; $until; $reason; $cost):
