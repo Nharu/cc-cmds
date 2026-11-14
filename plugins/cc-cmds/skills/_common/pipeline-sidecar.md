@@ -2324,7 +2324,7 @@ RUN_DIR = ${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/run/<run-id>
 | `notify.ended` · `notify.ended/fired` | gate (`gate.sh`) or watcher (`watch.sh`), whichever claims first | the run's one `ended` banner: `mkdir` of the directory is the claim, so the gate's sites and the watcher raise it once between them; `fired` is written after the fire returns, and the watcher's loop exit waits on it, bounded by its interval, before a `rekick` that would otherwise replace `ended` in the shared slot |
 | `notify/park-<segment>` | gate (`gate.sh`) | per-segment park markers |
 | `notify.state` | notifier (`notify-run.sh`), drained by the gate | pending notification events |
-| `notify.seat` | notifier (`notify-run.sh`) | the kickoff seat's tmux socket, server pid and pane on one tab-separated line — where a run banner's click lands; written once by the first router caller with a pane, never replaced |
+| `notify.seat` | notifier (`notify-run.sh`) | the seat's tmux socket, server pid and pane on one tab-separated line — where a run banner's click lands; created by the first router caller with a pane, and moved to the pane of a router gate call whose pane differs; the watcher and the banner path only create it and never replace it |
 | `notify.stack` | notifier (`notify-run.sh`) | the notification stack's admitted slots |
 | `notify.reported` · `notify.announced-void` | gate (`gate.sh`) | which events already reached the report |
 | `watch.pid` | watcher (`watch.sh`) | the watcher's own pid — **not a stage**, and a census that counts it answers a different question than its name |

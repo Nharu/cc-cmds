@@ -5,6 +5,7 @@
 #
 #   exec-arg [--seat-file <file>]    print the `-execute` value for one banner
 #   record <RUN_DIR>                 write <RUN_DIR>/notify.seat, once
+#   follow <RUN_DIR>                 move <RUN_DIR>/notify.seat to this pane
 #   focus <socket> <pid> <%pane>     bring that tmux pane forward in iTerm2,
 #                                    across Spaces
 #   prime <socket> <pid> <%pane>     resolve that pane ahead of the click and
@@ -26,13 +27,13 @@
 # click lands exists once.
 #
 # EVERY PATH EXITS 0. `exec-arg` reports failure only by printing `:`, `record`
-# by writing nothing, and `focus` by changing nothing. A banner sits on the
-# critical path of the caller, and a click has nobody to report to.
+# and `follow` by writing nothing, and `focus` by changing nothing. A banner
+# sits on the critical path of the caller, and a click has nobody to report to.
 #
 # THE CLICK DETACHES ITSELF. `focus` checks its arguments, sends 0, 1 and 2 to
 # /dev/null and runs its body as a separate process, so the notifier gets its
-# command back at once. `prime` does the same. `exec-arg` and `record` start a
-# prime that way when the value they produced points at a pane.
+# command back at once. `prime` does the same. `exec-arg`, `record` and `follow`
+# start a prime that way when the value they produced points at a pane.
 #
 # NOTHING IN TMUX IS CHANGED UNTIL THE TARGET IS DECIDED. `focus` runs every
 # check that can say "no" — the pane is alive on the same server, a client is
@@ -441,8 +442,9 @@ nf_exec_arg() {
 # WRITE ONCE, AND ONLY A LINE THAT PASSED. A broken first line would pin every
 # run banner of this run to `:` for good, so a refused environment writes
 # nothing and leaves the next caller — the watcher's next pass, the seat's next
-# call — free to try again. A record that exists is never replaced: a resumed
-# seat or an old watcher must not move the target the run was kicked off from.
+# call — free to try again. `record` only ever creates the record: an old
+# watcher carrying the environment it was started with must not move it. Moving
+# it is `follow`'s alone, which only the seat's gate call asks for.
 nf_record() {
   local dir="${1:-}" f tmp
   [ -n "$dir" ] && [ -d "$dir" ] || return 0
@@ -461,6 +463,31 @@ nf_record() {
     return 0
   fi
   rm -f "$tmp" || true
+  return 0
+}
+
+# MOVE THE RECORD TO THIS PANE. The seat may come back on another tmux server
+# (a reboot) or in another pane (a resume while the old one lives), and the
+# record has to follow it there. The environment passes the same checks
+# `record` applies, and a refused one writes nothing. A record whose first line
+# is already this line is left alone and starts no prime. Otherwise the line is
+# written to a temporary file in the same directory and renamed over the
+# record, so a reader sees the old line or the new one, never half of one. Only
+# a record that actually changed starts the new pane's prime.
+nf_seat_follow() {
+  local dir="${1:-}" f tmp line old=""
+  [ -n "$dir" ] && [ -d "$dir" ] || return 0
+  nf_from_env || return 0
+  f="$dir/notify.seat"
+  line=$(printf '%s\t%s\t%s' "$NF_SOCK" "$NF_PID" "$NF_PANE")
+  if [ -f "$f" ]; then
+    IFS= read -r old < "$f" 2>/dev/null || true
+    [ "$old" = "$line" ] && return 0
+  fi
+  tmp="$f.tmp.$$"
+  printf '%s\n' "$line" > "$tmp" || { rm -f "$tmp"; return 0; }
+  mv -f "$tmp" "$f" 2>/dev/null || { rm -f "$tmp"; return 0; }
+  nf_prime_spawn
   return 0
 }
 
@@ -1538,7 +1565,10 @@ nf_focus_body() {
   NF_DIR=$(dirname "$(nf_self)")
 
   nf_tmux || return 0
-  nf_pane_check || return 0
+  # A pane that is gone is the one give-up a person may want to trace later: a
+  # seat that moved before its banner was raised lands here, and so does a pane
+  # that was closed.
+  nf_pane_check || { nf_log "pane-gone $NF_SOCK $NF_PID $NF_PANE"; return 0; }
   nf_clients || return 0
   NF_IPID=$(nf_iterm_pid) || NF_IPID=""
 
@@ -1698,6 +1728,10 @@ case "${1:-}" in
   record)
     shift
     nf_record "$@" >/dev/null 2>&1
+    ;;
+  follow)
+    shift
+    nf_seat_follow "$@" >/dev/null 2>&1
     ;;
   focus)
     shift
