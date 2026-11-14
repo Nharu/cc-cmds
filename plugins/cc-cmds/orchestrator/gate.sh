@@ -20895,23 +20895,45 @@ gate_pace_row_if_changed() {
   # tick and observation fields `-`: the row says the gate looked and found no
   # verdict, which the morning reader needs to tell apart from "the gate never
   # looked". Only `snapshot` never reaches here — it is a read and stays one.
-  local state verdict reason tick obs last prev
+  #
+  # A HOST REASON ENTERING, LEAVING OR CHANGING IS A CHANGE TOO. Under one
+  # verdict the row is written again when the last row's reason and this one
+  # differ and either is `host` or `brake-host`, so a move between the token
+  # brake and the host brake reaches the ledger. Reasons that have nothing to do
+  # with the host (`idle`, `lanes-below-target`, `default`, ...) flip under one
+  # verdict without a row, as before. The `호스트` field is the host block the
+  # sensor published: `-` with no state or no block, `꺼짐` for `off`, `미상`
+  # for `unread`, else `포화`/`정상` with the ratio and the core count.
+  local state verdict reason tick obs host last prev prev_reason
   state=$(gate_pace_state)
   if [ -n "$state" ]; then
     verdict=$(printf '%s' "$state" | jq -r '.verdict // "(미상)"')
     reason=$(printf '%s' "$state" | jq -r '.verdict_reason // "(미상)"')
     tick=$(printf '%s' "$state" | jq -r '.tick_seq // "-"')
     obs=$(printf '%s' "$state" | jq -r '.computed_at // "-"')
+    host=$(jq -rn --argjson s "$state" '
+      $s.host | if type != "object" then "-"
+              elif .state == "off" then "꺼짐"
+              elif .state == "unread" then "미상"
+              elif .state == "ok" then "\(if .saturated == true then "포화" else "정상" end) ratio=\(.ratio_permille // "-") ncpu=\(.ncpu // "-")"
+              else "-" end' 2>/dev/null || true)
+    [ -n "$host" ] || host='-'
   else
-    verdict='(미상)'; reason='(미상)'; tick='-'; obs='-'
+    verdict='(미상)'; reason='(미상)'; tick='-'; obs='-'; host='-'
   fi
   last=$(gate_rows pace | tail -1)
   prev='(미상)'
   if [ -n "$last" ]; then
     prev=$(gate_row_field "$last" '판정')
-    [ "$prev" = "$verdict" ] && return 0
+    if [ "$prev" = "$verdict" ]; then
+      prev_reason=$(gate_row_field "$last" '사유')
+      [ "$prev_reason" = "$reason" ] && return 0
+      case "$prev_reason" in host|brake-host) ;; *)
+        case "$reason" in host|brake-host) ;; *) return 0 ;; esac ;;
+      esac
+    fi
   fi
-  gate_append 'pace' "판정=$verdict" "이전=$prev" "기준 틱=$tick" "관측=$obs" "사유=$reason"
+  gate_append 'pace' "판정=$verdict" "이전=$prev" "기준 틱=$tick" "관측=$obs" "사유=$reason" "호스트=$host"
 }
 
 # ---------------------------------------------------------------------------

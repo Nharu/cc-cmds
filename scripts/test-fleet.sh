@@ -32,7 +32,11 @@
 #   burn scan                 — per home, eligible sum vs scanned sample, a
 #                               truncated home, a v1 cache ignored
 #   census join               — trailing `/`, placeholder rows, short rows
-#   dispatch: id and eligibility, brake / lane / window / burn clauses with
+#   host block                — the stubbed `sysctl` reading, saturation with
+#                               hysteresis, a stale previous state, unread and
+#                               off, the host reasons `host` and `brake-host`
+#   dispatch: id and eligibility, brake / host / brake-host / lane / window /
+#             burn clauses with
 #             their six-column refusal rows, the window input stage by stage,
 #             run markers and the fleet ceiling (three heads, three lanes,
 #             two started), lane mismatch, parks, launch shape, the claim race
@@ -214,6 +218,15 @@ case "$1" in
 esac
 exit 1
 EOF
+# sysctl stub: the host load the sensor reads. It prints $TEST_SYSCTL_OUT
+# (default an unsaturated 18-core host) and exits $TEST_SYSCTL_RC, logging its
+# arguments, so no scenario's verdict turns on the real host's load.
+cat > "$WORK/bin/sysctl" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$TEST_LOG_DIR/sysctl.log"
+printf '%s\n' "${TEST_SYSCTL_OUT-$(printf '{ 1.00 1.00 1.00 }\n18')}"
+exit "${TEST_SYSCTL_RC:-0}"
+EOF
 chmod +x "$FX"/*.sh "$WORK/bin"/*
 
 # The seats. `cc` is the interactive seat: disabled for unattended work and
@@ -271,7 +284,7 @@ fleet() {
   # always the stub; FLEET_NOW_PIN set and empty runs on the real clock.
   FLEET_PACE_ROOT="$PACE" FLEET_PLUTIL="$WORK/bin/plutil" FLEET_LAUNCHCTL="$WORK/bin/launchctl" \
   FLEET_LAUNCH_AGENTS_DIR="$WORK/agents" FLEET_LANE_PROBE="$WORK/bin/lane-probe.sh" FLEET_NOW_EPOCH="${FLEET_NOW_PIN-$NOW}" \
-  FLEET_GH="$WORK/bin/gh" \
+  FLEET_GH="$WORK/bin/gh" FLEET_SYSCTL="$WORK/bin/sysctl" \
   HOME="$HOMEX" XDG_CONFIG_HOME="$WORK/cfg" XDG_STATE_HOME="$WORK/xdg" \
   bash "${FLEET_UNDER_TEST:-$FLEET}" "$@"
 }
@@ -324,8 +337,10 @@ check "state.json 은 스키마를 축자로 싣는다" "$(state_field .schema)"
 check "computed_at 은 고정한 시계와 같다" "$(state_field .computed_at)" "$(iso "$NOW")"
 
 # --- record fields, exhaustive ------------------------------------------------
-want_state='schema,tick_seq,computed_at,computed_at_epoch,tick_ms,tick_overrun,slept,tracker,burn_4h,burn_truncated,burn_per_stage_4h,live_4h_avg,fleet_capacity,candidates_empty,seats,reseat_candidates,lanes,lane_census,verdict,verdict_reason'
-check "state.json 의 키 집합은 정확히 문서화된 20개다" "$(jq -r 'keys_unsorted | join(",")' "$PACE/state.json")" "$want_state"
+want_state='schema,tick_seq,computed_at,computed_at_epoch,tick_ms,tick_overrun,slept,tracker,burn_4h,burn_truncated,burn_per_stage_4h,live_4h_avg,fleet_capacity,candidates_empty,seats,reseat_candidates,lanes,lane_census,verdict,verdict_reason,host'
+check "state.json 의 키 집합은 정확히 문서화된 21개다" "$(jq -r 'keys_unsorted | join(",")' "$PACE/state.json")" "$want_state"
+check "host 블록의 키 집합은 정확히 열이다" "$(jq -r '.host | keys_unsorted | join(",")' "$PACE/state.json")" \
+  "state,load1,load5,ncpu,ratio_permille,saturated,since_epoch,enter_permille,leave_permille,sampled_at_epoch"
 check "seats[] 의 키 집합은 정확히 아홉이다" "$(jq -r '.seats[0] | keys_unsorted | join(",")' "$PACE/state.json")" "id,home,org,eligible,reason,allow,session_pct,ttr,burn_4h"
 check "인벤토리의 모든 계정이 좌석이다 (예약 계정 포함, 인벤토리 순서)" "$(jq -r '[.seats[].id] | join(",")' "$PACE/state.json")" "cc,u1,u2"
 check "좌석 home 은 인벤토리 config_dir 글자 그대로다" "$(seat u1 .home)" "$H1"
@@ -336,7 +351,7 @@ check "판정이 같으면 둘째 틱은 레코드를 더하지 않는다" "$(co
 
 # --- two token sets, never mixed ----------------------------------------------
 tokens_ok() {
-  jq -e '(.verdict | IN("가속","유지","제동")) and (.verdict_reason | IN("brake","idle","lanes-below-target","default","tracker-skip","truncated"))' "$1" >/dev/null 2>&1
+  jq -e '(.verdict | IN("가속","유지","제동")) and (.verdict_reason | IN("brake","host","brake-host","idle","lanes-below-target","default","tracker-skip","truncated"))' "$1" >/dev/null 2>&1
 }
 tokens_ok "$PACE/state.json" && ok "판정과 사유가 각자의 토큰 집합에서 온다" || bad "판정과 사유가 각자의 토큰 집합에서 온다" "$(jq -c '{verdict,verdict_reason}' "$PACE/state.json")"
 printf '{"verdict":"idle","verdict_reason":"가속"}\n' > "$WORK/cross.json"
@@ -477,6 +492,63 @@ check "seat-bindings 레코드는 정확히 아홉 필드다" "$(sed -n '1p' "$P
 check "seat-bindings 의 label 은 인벤토리 id, org 는 org_hash 다" "$(jq -r --arg h "$H1" 'select(.home == $h) | "\(.label) \(.org) \(.login_at)"' "$PACE/seat-bindings.jsonl" | sed -n '1p')" "u1 org-u1 2026-09-19T00:00:00Z"
 [ -s "$PACE/night-summary.md" ] && ok "야간 요약이 쓰인다" || bad "야간 요약이 쓰인다" "absent"
 
+# --- the host block: saturation with hysteresis --------------------------------
+#   18 cores throughout: load1 36.00 is ratio 2000 (enter), 28.80 is 1600 and
+#   32.40 is 1800 (inside the band), 26.98 is 1498 (below leave).
+SAT=$(printf '{ 36.00 30.00 20.00 }\n18')
+host_load() { printf '{ %s 1.00 1.00 }\n18' "$1"; }
+fresh_pace host; burn_none
+TEST_SYSCTL_OUT="$SAT" fleet sensor >/dev/null 2>&1
+check "호스트: 센서는 sysctl 을 한 번, 두 이름으로 읽는다" "$(cat "$TEST_LOG_DIR/sysctl.log" 2>/dev/null | tail -1)" "-n vm.loadavg hw.ncpu"
+check "호스트: 진입 문턱의 표본은 포화이고 판정은 제동(host)이다" "$(state_field '.verdict + " " + .verdict_reason')" "제동 host"
+check "호스트: 블록은 판독값과 문턱을 싣는다" \
+  "$(state_field '.host | "\(.state) \(.load1) \(.load5) \(.ncpu) \(.ratio_permille) \(.saturated) \(.enter_permille) \(.leave_permille)"')" \
+  "ok 36 30 18 2000 true 2000 1500"
+check "호스트: since_epoch 와 sampled_at_epoch 는 그 틱의 시각이다" "$(state_field '"\(.host.since_epoch) \(.host.sampled_at_epoch)"')" "$NOW $NOW"
+check "호스트: 판정 이력의 사유는 합성 뒤 사유다" "$(tail -1 "$PACE/verdict-history.jsonl" | jq -r '.verdict + " " + .reason')" "제동 host"
+TEST_SYSCTL_OUT="$(host_load 28.80)" FLEET_NOW_PIN=$(( NOW + 60 )) fleet sensor >/dev/null 2>&1
+check "호스트: 포화 뒤 띠 안의 표본은 포화를 잇는다" "$(state_field '"\(.host.ratio_permille) \(.host.saturated) \(.verdict)"')" "1600 true 제동"
+check "호스트: 포화가 이어지면 since_epoch 는 움직이지 않는다" "$(state_field .host.since_epoch)" "$NOW"
+TEST_SYSCTL_OUT="$(host_load 26.98)" FLEET_NOW_PIN=$(( NOW + 120 )) fleet sensor >/dev/null 2>&1
+check "호스트: 해제 문턱 아래면 풀리고 판정이 돌아온다" "$(state_field '"\(.host.ratio_permille) \(.host.saturated) \(.verdict) \(.verdict_reason)"')" "1498 false 가속 idle"
+check "호스트: 풀린 틱에서 since_epoch 가 그 틱으로 바뀐다" "$(state_field .host.since_epoch)" "$(( NOW + 120 ))"
+check "호스트: 판정이 바뀐 두 번만 이력에 남는다" "$(count_lines "$PACE/verdict-history.jsonl")" "2"
+TEST_SYSCTL_OUT="$(host_load 32.40)" FLEET_NOW_PIN=$(( NOW + 180 )) fleet sensor >/dev/null 2>&1
+check "호스트: 비포화 뒤 띠 안의 표본은 비포화를 잇는다" "$(state_field '"\(.host.ratio_permille) \(.host.saturated) \(.verdict)"')" "1800 false 가속"
+check "호스트: 비포화가 이어지면 since_epoch 는 움직이지 않는다" "$(state_field .host.since_epoch)" "$(( NOW + 120 ))"
+
+fresh_pace host-stale; burn_none
+TEST_SYSCTL_OUT="$SAT" fleet sensor >/dev/null 2>&1
+TEST_SYSCTL_OUT="$(host_load 28.80)" FLEET_NOW_PIN=$(( NOW + 200 )) fleet sensor >/dev/null 2>&1
+check "호스트: 180초보다 낡은 직전 상태는 잇지 않고 비포화에서 출발한다" "$(state_field '"\(.host.saturated) \(.verdict != "제동") \(.host.since_epoch)"')" "false true $(( NOW + 200 ))"
+
+fresh_pace host-unread; burn_none
+TEST_SYSCTL_OUT="$SAT" fleet sensor >/dev/null 2>&1
+TEST_SYSCTL_OUT="$SAT" TEST_SYSCTL_RC=1 FLEET_NOW_PIN=$(( NOW + 60 )) fleet sensor >/dev/null 2>&1
+check "호스트: sysctl 실패는 unread, 값 칸 null, 제동 없음" \
+  "$(state_field '.host | "\(.state) \(.load1) \(.load5) \(.ncpu) \(.ratio_permille) \(.saturated)"') $(state_field .verdict)" \
+  "unread null null null null false 가속"
+check "호스트: 포화에서 unread 로 거짓이 된 틱에 since_epoch 가 바뀐다" "$(state_field '"\(.host.since_epoch) \(.host.enter_permille) \(.host.leave_permille)"')" "$(( NOW + 60 )) 2000 1500"
+TEST_SYSCTL_OUT='garbage' FLEET_NOW_PIN=$(( NOW + 120 )) fleet sensor >/dev/null 2>&1
+check "호스트: 형식이 다른 출력은 unread" "$(state_field '"\(.host.state) \(.host.saturated)"')" "unread false"
+TEST_SYSCTL_OUT="$(printf '{ 36.00 30.00 20.00 }\n0')" FLEET_NOW_PIN=$(( NOW + 180 )) fleet sensor >/dev/null 2>&1
+check "호스트: 코어 0 은 unread" "$(state_field '"\(.host.state) \(.host.ncpu) \(.verdict)"')" "unread null 가속"
+
+fresh_pace host-off; burn_none
+: > "$PACE/host-brake.off"
+TEST_SYSCTL_OUT="$SAT" fleet sensor >/dev/null 2>&1
+check "호스트: host-brake.off 가 있으면 off, 값 칸 null, 제동 없음" \
+  "$(state_field '.host | "\(.state) \(.load1) \(.ratio_permille) \(.saturated)"') $(state_field .verdict)" "off null null false 가속"
+
+fresh_pace host-both
+inv_write '.accounts[2].unattended = "draining"'
+usage_write "$LADDER_USAGE"
+burn_heavy "$H1" 1000000
+TEST_SYSCTL_OUT="$SAT" fleet sensor >/dev/null 2>&1
+check "호스트: 토큰 제동과 겹치면 사유는 brake-host" "$(state_field '.verdict + " " + .verdict_reason')" "제동 brake-host"
+tokens_ok "$PACE/state.json" && ok "호스트 사유도 사유 토큰 집합에서 온다" || bad "호스트 사유도 사유 토큰 집합에서 온다" "$(jq -c '{verdict,verdict_reason}' "$PACE/state.json")"
+burn_none
+
 # --- burn scan: per home ------------------------------------------------------
 fresh_pace burn
 inv_write '.accounts[2].unattended = "draining"'
@@ -539,10 +611,14 @@ backlog_record() {
 }
 set_backlog() { printf '%s\n' "$@" > "$PACE/backlog.jsonl"; }
 write_state() {
-  # write_state <verdict> <capacity|null> <burn|null> <candidates_empty>
-  jq -cn --argjson now "$NOW" --arg v "$1" --argjson cap "$2" --argjson b "$3" --argjson ce "$4" '
+  # write_state <verdict> <capacity|null> <burn|null> <candidates_empty> [<reason> [<host-json>]]
+  #   — a reason or a host block is written only when given.
+  jq -cn --argjson now "$NOW" --arg v "$1" --argjson cap "$2" --argjson b "$3" --argjson ce "$4" \
+     --arg r "${5:-}" --argjson h "${6:-null}" '
     {schema: "cc-pace-state v1", tick_seq: 7, computed_at: ($now | todate), computed_at_epoch: $now,
-     verdict: $v, fleet_capacity: $cap, burn_4h: $b, candidates_empty: $ce, seats: []}' > "$PACE/state.json"
+     verdict: $v, fleet_capacity: $cap, burn_4h: $b, candidates_empty: $ce, seats: []}
+    + (if $r == "" then {} else {verdict_reason: $r} end)
+    + (if $h == null then {} else {host: $h} end)' > "$PACE/state.json"
 }
 backlog_status() { jq -r --arg id "$1" 'select(.id == $id) | .status' "$PACE/backlog.jsonl"; }
 backlog_field() { jq -r --arg id "$1" "select(.id == \$id) | $2" "$PACE/backlog.jsonl"; }
@@ -583,6 +659,24 @@ check "제동 판정은 절 brake 로 거부한다" "$(backlog_field b1 .last_re
 check "거부는 레코드를 pending 으로 둔다" "$(backlog_status b1)" "pending"
 check "거부 행은 여섯 열이다" "$(awk -F'\t' '{print NF}' "$PACE/refusals.tsv")" "6"
 check "거부 행: 레인·절·판정·id·세부" "$(cut -f2-6 "$PACE/refusals.tsv")" "$(printf 'u1\tbrake\t제동\tb1\t-')"
+
+# --- clauses host and brake-host: the brake's reason names the clause ----------
+HOST_SAT='{"state":"ok","load1":36,"load5":30,"ncpu":18,"ratio_permille":2000,"saturated":true,"since_epoch":0,"enter_permille":2000,"leave_permille":1500,"sampled_at_epoch":0}'
+HOST_OK='{"state":"ok","load1":1,"load5":1,"ncpu":18,"ratio_permille":55,"saturated":false,"since_epoch":0,"enter_permille":2000,"leave_permille":1500,"sampled_at_epoch":0}'
+d_fresh dh-host h1; write_state 제동 null null true host "$HOST_SAT"
+fleet dispatch u1 >/dev/null 2>&1
+check "사유 host 의 제동은 절 host 로 거부한다" "$(backlog_field h1 .last_refusal_clause)/$(backlog_status h1)" "host/pending"
+check "호스트 절의 거부 행은 상세 칸에 호스트 판독값을 싣는다" "$(cut -f2-6 "$PACE/refusals.tsv")" "$(printf 'u1\thost\t제동\th1\tratio=2000 ncpu=18')"
+check "호스트 절도 아무것도 띄우지 않는다" "$(count_lines "$TEST_LOG_DIR/run.log")" "0"
+d_fresh dh-both h2; write_state 제동 null null true brake-host "$HOST_SAT"
+fleet dispatch u1 >/dev/null 2>&1
+check "사유 brake-host 의 제동은 절 brake-host 로 거부한다" "$(cut -f3,6 "$PACE/refusals.tsv")" "$(printf 'brake-host\tratio=2000 ncpu=18')"
+d_fresh dh-brake h3; write_state 제동 null null true brake "$HOST_OK"
+fleet dispatch u1 >/dev/null 2>&1
+check "사유 brake 의 제동은 호스트 블록이 있어도 절 brake, 상세 -" "$(cut -f3,6 "$PACE/refusals.tsv")" "$(printf 'brake\t-')"
+d_fresh dh-released h4; write_state 가속 null null true idle "$HOST_OK"
+fleet dispatch u1 >/dev/null 2>&1
+check "호스트가 풀린 상태(가속)면 입장해 런을 띄운다" "$(count_lines "$TEST_LOG_DIR/run.log")/$(count_lines "$PACE/refusals.tsv")" "1/0"
 
 # --- clause lane: the probe ------------------------------------------------------
 d_fresh d-lane l1
