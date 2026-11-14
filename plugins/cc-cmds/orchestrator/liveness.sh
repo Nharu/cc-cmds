@@ -1043,7 +1043,10 @@ cc_ci_relay_condition() {
 cc_ci_early_condition() {
   # cc_ci_early_condition <run-dir> <ledger> <segment> — the relay's reading of
   # the early rerun predicate E, as `<wake epoch>\t<evidence line>`, or nothing:
-  # a routed run (`<run-dir>/routing-guard` reads `1`), the segment neither
+  # a run the CI layer stands on — `<run-dir>/routing-guard` reads `1`, or
+  # `<run-dir>/ci-layer` reads `1` and `<run-dir>/fixed-graph` is absent, the
+  # same judgment as `run_ci_layer` of `run.sh`, inlined because this file does
+  # not source that one — the segment neither
   # `머지됨` nor `park`, a live review stage on it, its worktree tip resolves,
   # no round of either kind on that head (max = 0, so an accepted label round,
   # which never raises u, ends it too), round 0's verdict a failure with
@@ -1061,7 +1064,10 @@ cc_ci_early_condition() {
   # copy never misses a wake the gate's would give.
   local run_dir="$1" ledger="$2" seg="$3" st wt h mx recs v
   [ -n "$run_dir" ] && [ -n "$seg" ] || return 0
-  [ "$( { sed -n '1p' "$run_dir/routing-guard" 2>/dev/null || true; } | tr -d '[:space:]')" = "1" ] || return 0
+  if [ "$( { sed -n '1p' "$run_dir/routing-guard" 2>/dev/null || true; } | tr -d '[:space:]')" != "1" ]; then
+    [ ! -e "$run_dir/fixed-graph" ] || return 0
+    [ "$( { sed -n '1p' "$run_dir/ci-layer" 2>/dev/null || true; } | tr -d '[:space:]')" = "1" ] || return 0
+  fi
   st=$(cc_ci_segment_row_field "$ledger" "$seg" '상태')
   case "$st" in 머지됨|park) return 0 ;; esac
   cc_stage_is_live "$run_dir" "$seg" || return 0

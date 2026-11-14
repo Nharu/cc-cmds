@@ -4879,6 +4879,18 @@ SAPEOF
     sa_bd "$SA_MANIFEST" "$SA_WT"
   }
 
+  sa_run_reset() {
+    # sa_run_reset — 이 픽스처의 런 디렉터리를 비우고, CI 층이 서지 않는 미라우팅 런으로 다시
+    # 연다. 하니스의 설정 루트에는 레인 인벤토리가 없어, 첫 게이트 호출이 부재 기준선을 잡으며
+    # CI 층 기록을 배타 생성으로 쓴다. 그대로 두면 모든 sa 런이 CI 층 런이 되어 머지가 회차 0 의
+    # 통과 판정을 요구받는다. 그래서 기록을 `0` 으로 먼저 둔다 — 배타 생성은 있는 파일을 덮지
+    # 않고, 판독기는 첫 줄이 `1` 일 때만 CI 층을 세우므로, 기준선 채택과 그 원장 행은 그대로
+    # 일어난다. 런 디렉터리를 지우는 픽스처는 모두 이 헬퍼로 지운다 — `rm -rf` 만 하면 첫 호출이
+    # 다시 `1` 을 쓴다. CI 층 런은 `cb60_ci_layer` 가 기록을 `1` 로 덮어 만든다.
+    rm -rf "$SA_RUN"
+    mkdir -p "$SA_RUN" && printf '0\n' > "$SA_RUN/ci-layer"
+  }
+
   sa_new() {
     # sa_new <라벨> [상한] [룰설정 줄...] — 자기 저장소·베어 원격·세그먼트
     # 워크트리를 만들고 매니페스트와 인가 기록을 쓴다.
@@ -4920,6 +4932,7 @@ SAPEOF
     SA_LEDGER="$SA_WT/docs/pipeline-run/$SA_ID.md"
     SA_GRANT="$SA_WT/docs/pipeline-grant/$SA_ID.md"
     SA_RUN="$XDG_STATE_HOME/cc-cmds/run/$SA_ID"
+    sa_run_reset
     sa_manifest "$ceil" "$@"
     SA_LABEL="$label"
   }
@@ -5257,6 +5270,18 @@ CB60EOF
     printf 'gate\tsuccess\n' > "$CB60_S/base"
     cb60_line 실패 0 0
   }
+  cb60_ci_layer() {
+    # cb60_ci_layer — 방금 만든 CK 픽스처를 인벤토리 부재 기준선으로 열린 런으로 바꾼다.
+    # 라우팅 기록과 고정 그래프 표지를 지우고, 기준선을 이 셸의 설정 루트를 가리키는 부재
+    # 표지 링크로 두고, CI 층 기록 `1` 을 쓴다. 표지 상수는 run.sh 의 정의 줄에서 읽는다 —
+    # 값을 여기 베껴 두면 상수가 바뀌어도 이 픽스처는 옛 표지로 남는다.
+    local mark
+    mark=$(sed -n "s/^readonly RUN_INVENTORY_ABSENT_MARK='\(.*\)'\$/\1/p" "$repo_root/plugins/cc-cmds/orchestrator/run.sh")
+    [ -n "$mark" ] || { printf 'cb60_ci_layer: run.sh 에서 부재 표지 상수를 읽지 못했다\n' >&2; exit 1; }
+    rm -f "$SA_RUN/routing-guard" "$SA_RUN/fixed-graph" "$SA_RUN/inventory.json"
+    ln -s "$mark$XDG_CONFIG_HOME" "$SA_RUN/inventory.json"
+    printf '1\n' > "$SA_RUN/ci-layer"
+  }
   cb60_checks() {
     # cb60_checks <pre|post> <버킷> <실행 id> <잡 번호> [이름] — 체크 화면 한 항목.
     printf '[{"name":"%s","bucket":"%s","link":"https://github.com/%s/actions/runs/%s/job/%s","workflow":"gate","event":"pull_request"}]\n' \
@@ -5547,7 +5572,13 @@ pre_review() {
   # done proposal taken and a terminal handoff written. Inherited, that ledger
   # turns this run's merges into acts after the end, so the ledger starts empty
   # here the way the run directory does.
+  # The run directory reopens as an unrouted run the CI layer does not stand on,
+  # as `sa_run_reset` does for the sa run: left to the first gate call, the
+  # absent inventory baseline writes `1` and the 선머지후리뷰 merge below is
+  # refused for want of a round-0 pass.
   rm -rf "$XDG_STATE_HOME/cc-cmds/run/$SH_ID"
+  mkdir -p "$XDG_STATE_HOME/cc-cmds/run/$SH_ID" \
+    && printf '0\n' > "$XDG_STATE_HOME/cc-cmds/run/$SH_ID/ci-layer"
   rm -f "$SH_LEDGER"
   fx_rid_copy R1 "$SH_ID" "$WORK/manifest-clean.md" "$SH_MANIFEST"
   awk '/^- `target`/ { print $0 " | 리뷰 정책 상한=선머지후리뷰"; next } { print }' \
@@ -5601,7 +5632,7 @@ pre_sb() {
     sa_new "$@"
     SA_PREAUTH_EXTRA=$'gh pr\ngh api'
     sa_manifest "${2-선머지후리뷰}"
-    rm -rf "$SA_RUN"
+    sa_run_reset
   }
 
   sc_ends() {
@@ -5626,7 +5657,7 @@ pre_sb() {
       { print }
     ' "$SA_MANIFEST" > "$SA_MANIFEST.c" && mv "$SA_MANIFEST.c" "$SA_MANIFEST"
     sa_bd "$SA_MANIFEST" "$SA_WT"
-    rm -rf "$SA_RUN"
+    sa_run_reset
   }
 
   sb_grant_max() {
@@ -5646,7 +5677,7 @@ pre_sb() {
     sed "s/^\*\*런 최대 절단점\*\*: .*/**런 최대 절단점**: $1/" "$SA_MANIFEST" > "$SA_MANIFEST.g" \
       && mv "$SA_MANIFEST.g" "$SA_MANIFEST"
     sa_bd "$SA_MANIFEST" "$SA_WT"
-    rm -rf "$SA_RUN"
+    sa_run_reset
   }
 
   sb_act() {
@@ -5705,7 +5736,7 @@ pre_sb() {
       SA_OWNER_DOC="${SA_ROOT#/}/slice-doc.md"
     fi
     sa_manifest "$ceil" "$@"
-    rm -rf "$SA_RUN"
+    sa_run_reset
     SB_STATE="$SA_ROOT/apply-state"; mkdir -p "$SB_STATE"
   }
 
@@ -5888,7 +5919,7 @@ pre_sb() {
     SA_GRANT="$SA_WT/docs/pipeline-grant/$SA_ID.md"
     SA_RUN="$XDG_STATE_HOME/cc-cmds/run/$SA_ID"
     sa_manifest 선리뷰후머지
-    rm -rf "$SA_RUN"
+    sa_run_reset
   }
   sd_import() {
     # sd_import <라벨> <증거 런 id> <이 런 id> <프로브> [P1] — 증거 런이 세그먼트 SD 를
@@ -30765,7 +30796,7 @@ newtd=$(printf '%s\n' "$newrow" | sed 's/[[:space:]]\{1,\}/ /g' | sort | shasum 
 sed "s/^\*\*대상 맵 다이제스트\*\*: .*/**대상 맵 다이제스트**: $newtd/" "$SA_MANIFEST" > "$SA_MANIFEST.b" \
   && mv "$SA_MANIFEST.b" "$SA_MANIFEST"
 sa_bd "$SA_MANIFEST" "$SA_WT"
-rm -rf "$SA_RUN"
+sa_run_reset
 sag snapshot --manifest "$SA_MANIFEST"
 check "10(b): 절단점이 머지 미만인 대상의 상한 선언은 런을 멈추지 않는다" "$rc" "0"
 case "$msg" in
@@ -30808,7 +30839,7 @@ sa_new '해소기 상한' 리뷰없음
 sa_seg_row S11 리뷰없음
 check "11: 상한이 허용하는 창에서는 그 행이 통과한다" "$rc" "0"
 sa_manifest 선리뷰후머지
-rm -rf "$SA_RUN"
+sa_run_reset
 sa_commit '작업' >/dev/null
 sa_merge S11
 check "11: 상한을 조인 뒤의 머지는 해소기가 거절한다" "$rc" "2"
@@ -31088,7 +31119,7 @@ awk -v a="$rowA" -v b="$rowB" -v td="$td15" '
   { skip=0; print }
 ' "$SA_MANIFEST" > "$SA_MANIFEST.15" && mv "$SA_MANIFEST.15" "$SA_MANIFEST"
 sa_bd "$SA_MANIFEST" "$SA_WT"
-rm -rf "$SA_RUN"
+sa_run_reset
 sag snapshot --manifest "$SA_MANIFEST"
 check "15: 대상 둘을 선언한 매니페스트가 검사를 통과한다" "$rc" "0"
 sa_seg_row S15 선머지후리뷰
@@ -31684,7 +31715,7 @@ check "20(ii): 그 거절이 원장을 늘리지 않는다" "$(sa_rows)" "$nb"
 sa_new '없는 베이스 ref' 선머지후리뷰
 SA_BASE=원격에없는이름
 sa_manifest 선머지후리뷰
-rm -rf "$SA_RUN"
+sa_run_reset
 sa_seg_row S21 선머지후리뷰
 sa_commit '작업' >/dev/null
 sag act --manifest "$SA_MANIFEST" --kind merge --target main --segment S21 \
@@ -33004,7 +33035,7 @@ if sb_bound; then ok "29: 머지 먼저 세그먼트의 머지도 워크트리 H
 sb_new '결속 (끔)' 선머지후리뷰
 SA_PREAUTH_EXTRA='gh pr'
 sa_manifest 선머지후리뷰 '**리뷰-후-머지**: 끔'
-rm -rf "$SA_RUN"
+sa_run_reset
 sa_seg_row S29O ""
 sa_commit '작업' >/dev/null
 sb_plan S29O gh pr merge 1
@@ -34677,7 +34708,7 @@ sa_new '상한 조인 뒤 수리' 리뷰없음
 sa_seg_row S34 리뷰없음
 check "34: 느슨한 상한 아래에서는 그 행이 통과한다" "$rc" "0"
 sa_manifest 선리뷰후머지
-rm -rf "$SA_RUN"
+sa_run_reset
 sa_commit '작업' >/dev/null
 sa_merge S34
 check "34: 상한을 조인 뒤 그 세그먼트의 머지는 해소기가 거절한다" "$rc" "2"
@@ -39252,6 +39283,12 @@ SPV_PREV_AR="${CC_CMDS_AUTOPILOT_AUTO_RESOLVE:-}"
 CC_CMDS_AUTOPILOT_AUTO_RESOLVE=0
 sap_fx RSPV1 SPV "6b6b6b6b-1111-2222-3333-444444444444"
 check "34r: 픽스처의 세그먼트 행이 섰다" "$SAP_SEG_RC" "0"
+# The run stays an unrouted run the CI layer does not stand on, as `sa_run_reset`
+# leaves the sa run: the fixture's first gate call took the absent inventory
+# baseline and wrote the CI layer record `1`, and with it every merge below is
+# refused for want of a round-0 pass before the provenance check is reached.
+# The reader raises the layer only on a first line `1`, so `0` lowers it.
+printf '0\n' > "$CAP_DIR/ci-layer"
 # The cone manifest is copied from the shared one, which section 9 leaves with
 # `리뷰-후-머지` off; the merge cases below need it on, and the copy carries no
 # binding digest for the edit to move.
@@ -41839,7 +41876,7 @@ sb_new '5 마감' 선머지후리뷰
 sed 's/^\*\*벽시계 마감\*\*: .*/**벽시계 마감**: 2020-01-01T00:00:00Z/' \
     "$SA_MANIFEST" > "$SA_MANIFEST.d" && mv "$SA_MANIFEST.d" "$SA_MANIFEST"
 sa_bd "$SA_MANIFEST" "$SA_WT"
-rm -rf "$SA_RUN"
+sa_run_reset
 sa_seg_row SB5 선머지후리뷰
 check "5: 마감이 지나도 세그먼트 행은 기록된다 (마감은 디스패치와 머지만 막는다)" "$rc" "0"
 sa_commit '작업' >/dev/null
@@ -41910,7 +41947,7 @@ awk '
 check "5b: 픽스처가 지난 마감과 천장을 함께 싣는다" \
   "$({ grep -cE '^\*\*(벽시계 마감\*\*: 2020|비용 천장\*\*: 100)' "$SA_MANIFEST" || true; })" "2"
 sa_bd "$SA_MANIFEST" "$SA_WT"
-rm -rf "$SA_RUN"
+sa_run_reset
 sa_seg_row SB5B 선머지후리뷰
 check "5b: 세그먼트 행은 기록된다" "$rc" "0"
 sa_commit '작업' >/dev/null
@@ -41993,7 +42030,7 @@ sc_new() {
     { print }
   ' "$SA_MANIFEST" > "$SA_MANIFEST.c" && mv "$SA_MANIFEST.c" "$SA_MANIFEST"
   sa_bd "$SA_MANIFEST" "$SA_WT"
-  rm -rf "$SA_RUN"
+  sa_run_reset
   SAH >/dev/null
   mkdir -p "$SA_RUN"
   SC_PACE="$SA_ROOT/pace"
@@ -42059,7 +42096,7 @@ check "5c: 그 런의 원장에는 표면이동 막힘 행만 있다" \
 sed 's/^\*\*벽시계 마감\*\*: .*/**벽시계 마감**: 2020-01-01T00:00:00Z/' \
     "$SA_MANIFEST" > "$SA_MANIFEST.d" && mv "$SA_MANIFEST.d" "$SA_MANIFEST"
 sa_bd "$SA_MANIFEST" "$SA_WT"
-rm -rf "$SA_RUN"
+sa_run_reset
 SC_PACE="$SA_ROOT/pace"; mkdir -p "$SC_PACE/busy"
 sc_overdue
 check "5c: 표면 이동 행만 있는 런에는 아무것도 쓰지 않는다" "$rc/$(sc_ends)" "0/0"
@@ -43876,7 +43913,7 @@ sd4_merge() {
   awk -v m="$SD_M" -v t="$SD_TIP" '/^- `segment` / && index($0, "출처=") { sub("머지 커밋=" m, "머지 커밋=" t) } { print }' \
     "$SA_LEDGER" > "$SA_LEDGER.c" && mv "$SA_LEDGER.c" "$SA_LEDGER"
 }
-sd4_human() { SA_APPLY=사람; sa_manifest 선리뷰후머지; rm -rf "$SA_RUN"; }
+sd4_human() { SA_APPLY=사람; sa_manifest 선리뷰후머지; sa_run_reset; }
 sd4_case 1 "증거 원장 20260901-00000d41.md 가 없다" sd4_noled
 sd4_case 2 "해시 연쇄가 온전하지 않다" sd4_chain
 sd4_case 3 "발견 요약 이 없다" sd4_report
@@ -49609,6 +49646,59 @@ check "60b-5: 크래시로 끝난 CI 수정은 같은 head 로 다시 파견된�
 cb60_foot
 
 # ---------------------------------------------------------------------------
+# 60b-6. 라우팅 기록 없이 인벤토리 부재 기준선으로 열린 런의 CI 실패 — 재실행으로 간다
+# --- section: 60b-6 | group: sa | covers: act, plan, snapshot, gate_check_merge_checks | anchors: 60b-6: CI 층 기록만 있는 런의 실패 행에서 다음은 CI 재실행 이다, 60b-6: 그 런의 머지는 CI실패 park 가 아니라 다음을 가리키는 rc 3 이다, 60b-6: 그 런의 재실행은 POST 하나를 내고 수락 행을 쓴다, 60b-6: 그 런의 회차 1 실패 뒤 다음은 CI 수정 이고 파견이 통과한다, 60b-6: 그 갈래 전체에서 blocked 행과 halt 기록이 없다, 60b-6: 고정 그래프 표지가 있으면 다음은 머지 이고 머지는 CI실패 park 다 ---
+#
+# 라우터가 아닌 드라이버로 열렸어도 계정 인벤토리가 없는 기기에서 기준선을 부재 표지로 잡은
+# 런은 CI 층 기록을 갖고, 고정 그래프 드라이버가 들어오지 않았으면 라우팅 런처럼 CI 실패를
+# 재실행·CI 수정으로 넘긴다. 픽스처는 60b 의 것(`cb60_head`·`cb60_new`)에 `cb60_ci_layer` 로
+# 라우팅 기록을 걷고 부재 표지 기준선과 CI 층 기록을 둔다. 마지막 사례는 같은 픽스처에 고정
+# 그래프 표지를 더해, CI 값을 처분할 길이 없는 드라이버의 런은 예전처럼 머지로 남는 것을 잰다.
+# ---------------------------------------------------------------------------
+cb60_head
+
+cb60_new "CI 층 — 부재 기준선의 런"
+cb60_ci_layer
+cb66_b0=$(cb60_n blocked)
+check "60b-6: 픽스처에 라우팅 기록이 없고 CI 층 기록과 부재 표지 기준선이 있다" \
+  "$([ -e "$SA_RUN/routing-guard" ] && printf 있음 || printf 없음)|$(cat "$SA_RUN/ci-layer" 2>/dev/null)|$([ -L "$SA_RUN/inventory.json" ] && printf 링크 || printf 아님)" \
+  "없음|1|링크"
+check "60b-6: CI 층 기록만 있는 런의 실패 행에서 다음은 CI 재실행 이다" "$(cb60_next)" "CI 재실행"
+cb60_np=$(cb60_posts)
+sa_merge CK
+check "60b-6: 그 런의 머지는 CI실패 park 가 아니라 다음을 가리키는 rc 3 이다" \
+  "$rc|$(cb60_n blocked)|$(cb60_posts)" "3|$cb66_b0|$cb60_np"
+case "$msg" in *'다음=CI 재실행'*) ok "60b-6: 그 거부 문면이 다음=CI 재실행 을 든다" ;; *) bad "60b-6: 그 거부 문면이 다음=CI 재실행 을 든다" "$msg" ;; esac
+cb60_act
+check "60b-6: 그 런의 재실행은 POST 하나를 내고 수락 행을 쓴다" \
+  "$rc|$(cb60_posts)|$(sa_field "$(cb60_last 'CI 처분')" 상태)|$(sa_field "$(cb60_last 'CI 처분')" 회차)" "0|1|수락|1"
+check "60b-6: 재실행 뒤 다음은 CI 대기 다" "$(cb60_next)" "CI 대기"
+cb60_line 실패 1 0
+cb60_nx=$(cb60_next)
+cb60_impl plan "/cc-cmds:implement-unattended \"세그먼트 CK · CI 수정: $CK60_SHA\""
+check "60b-6: 그 런의 회차 1 실패 뒤 다음은 CI 수정 이고 파견이 통과한다" "$cb60_nx|$rc" "CI 수정|0"
+check "60b-6: 그 갈래 전체에서 blocked 행과 halt 기록이 없다" \
+  "$(( $(cb60_n blocked) - cb66_b0 ))|$(find "$SA_RUN/halt" -type f 2>/dev/null | wc -l | tr -d ' ')" "0|0"
+
+# 고정 그래프 쌍둥이 — 같은 기록 위에 드라이버의 표지가 있으면 CI 층이 서지 않는다.
+cb60_new "CI 층 — 고정 그래프 드라이버의 런"
+cb60_ci_layer
+: > "$SA_RUN/fixed-graph"
+check "60b-6: 고정 그래프 표지가 있으면 실패 행에서도 다음은 머지 다" "$(cb60_next)" "머지"
+ck60_plan
+case "$rc|$msg" in
+  "11|"*'park 예상: 도달 판정=CI실패'*) ok "60b-6: 고정 그래프 런의 머지 plan 은 CI실패 로 예보한다" ;;
+  *) bad "60b-6: 고정 그래프 런의 머지 plan 은 CI실패 로 예보한다" "rc=$rc $msg" ;;
+esac
+sa_merge CK
+check "60b-6: 고정 그래프 표지가 있으면 다음은 머지 이고 머지는 CI실패 park 다" \
+  "$rc|$(sa_field "$(cb60_last blocked)" '도달 판정')" "11|CI실패"
+cb60_np=$(cb60_posts)
+cb60_act
+check "60b-6: 고정 그래프 런의 재실행은 rc 3 이고 POST 가 없다" "$rc|$(cb60_posts)" "3|$cb60_np"
+cb60_foot
+
+# ---------------------------------------------------------------------------
 # 60c. 재실행·재요청 실행 철자 — 두 모드에서 도달·행과 무관하게 막힌다
 # --- section: 60c | group: sa | covers: plan, exec | anchors: 60c: 무인 모드에서 재실행 철자는 도달·행과 무관하게 rc 3 이다, 60c: 사람이 있는 모드에서 재실행 철자는 행이 있어도 승인 rc 5 다, 60c: 재실행 철자는 가짜 gh 를 부르지 않는다, 60c: 읽기 철자는 막히지 않는다 ---
 #
@@ -53822,7 +53912,7 @@ c61_new() {
   sa_new "$1" 리뷰없음
   SA_PREAUTH_EXTRA=$'gh pr\ngh api'
   sa_manifest 리뷰없음
-  rm -rf "$SA_RUN"
+  sa_run_reset
   mkdir -p "$SA_WT/plugins" "$SA_WT/scripts"
   cp -R "$repo_root/plugins/cc-cmds" "$SA_WT/plugins/"
   cp "$repo_root/scripts/grade-regression-probe.sh" "$SA_WT/scripts/"
@@ -59719,6 +59809,12 @@ W87="$WORK/wt87"
 check "87b 전제 — 세그먼트 트리가 베이스보다 앞서지 않는다" \
   "$(cd "$W87" 2>/dev/null && git rev-list --count HEAD --not refs/heads/main refs/remotes/origin/main 2>/dev/null)" "0"
 head87=$(cd "$W87" && git rev-parse HEAD)
+# The run opens as an unrouted run the CI layer does not stand on, as
+# `sa_run_reset` opens the sa run: left to the first gate call, the absent
+# inventory baseline writes the CI layer record `1`, and the reviews below that
+# end at `머지` read `CI 대기` instead. The exclusive create does not overwrite
+# a record already there, and the reader raises the layer only on a first line `1`.
+mkdir -p "$STATE_LATE/cc-cmds/run/R87" && printf '0\n' > "$STATE_LATE/cc-cmds/run/R87/ci-layer"
 rp87() {  # rp87 <파일> <P0> <P1> <몫 줄 수|-> [배정…]
   local f=$1 p0=$2 p1=$3 ns=$4 a; shift 4
   {

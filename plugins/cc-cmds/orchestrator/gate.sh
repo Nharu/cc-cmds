@@ -21186,9 +21186,10 @@ gate_master_row_one() {
 
 gate_master_row_if_changed() {
   # gate_master_row_if_changed — the `master 판독` rows of every target, on a
-  # routed run. Called where the `pace` row is, and at a routing shift's start.
+  # run the CI layer stands on (`run_ci_layer`). Called where the `pace` row is,
+  # and at a routing shift's start.
   local al slug br
-  run_routed || return 0
+  run_ci_layer || return 0
   while IFS= read -r al; do
     [ -n "$al" ] || continue
     slug=$(target_field "$al" '원격 슬러그' 2>/dev/null || true)
@@ -31091,10 +31092,12 @@ gate_cycle_review_closure() {
 
 gate_segment_review_next() {
   # gate_segment_review_next <segment> — `다음`: the review table below, and on a
-  # routed run the base overlay and the CI layer on top of its two merging
-  # values.
+  # run the routing shift drives the base overlay and the CI layer on top of its
+  # two merging values. The CI layer asks `run_ci_layer`: a routed run, or an
+  # unrouted run opened on an absent inventory baseline.
   #
-  # THE OVERLAYS STAND ONLY ON A ROUTED RUN. The fixed-graph driver rebases onto
+  # THE OVERLAYS STAND ONLY ON A RUN THE ROUTING SHIFT DRIVES, never on one the
+  # fixed-graph driver entered (`run_ci_layer` reads its mark). The driver rebases onto
   # its base and parks a conflict of its own, and it never calls `base-check` or
   # the rerun act, so the values the overlays add would reach a loop that has no
   # branch for them.
@@ -31118,7 +31121,7 @@ gate_segment_review_next() {
   fi
   nx=$(gate_segment_review_next_table "$seg")
   case "$nx" in
-    머지|'이월 머지') run_routed && { gate_ci_next "$seg" "$nx"; return 0; } ;;
+    머지|'이월 머지') run_ci_layer && { gate_ci_next "$seg" "$nx"; return 0; } ;;
     수정) gate_ci_join_target "$seg" && { gate_ci_fix_next "$seg"; return 0; } ;;
   esac
   printf '%s' "$nx"
@@ -31158,10 +31161,11 @@ gate_segment_ci_next() {
 
 gate_merge_first_next() {
   # gate_merge_first_next <segment> — `선머지` with the CI layer `머지` and
-  # `이월 머지` carry on a routed run (`gate_ci_next`), so the merge-first
-  # value waits for the same verdict and takes the same way back as a merge
-  # after review. Off a routed run the value stands alone.
-  if run_routed; then
+  # `이월 머지` carry on a run the CI layer stands on (`gate_ci_next`,
+  # `run_ci_layer`), so the merge-first value waits for the same verdict and
+  # takes the same way back as a merge after review. Off such a run the value
+  # stands alone.
+  if run_ci_layer; then
     gate_ci_next "$1" '선머지'
   else
     printf '선머지'
@@ -31287,7 +31291,9 @@ gate_post_merge_next() {
 }
 
 gate_ci_join_target() {
-  # gate_ci_join_target <segment> — a CI join target: a routed run, and a
+  # gate_ci_join_target <segment> — a CI join target: a run the CI layer
+  # stands on (`run_ci_layer` — a routed run, or an unrouted run opened on an
+  # absent inventory baseline that no fixed-graph driver entered), and a
   # segment whose cutpoint is `PR`, `머지` or `배포`. Every changed CI reading
   # stands on this predicate alone — the merge rule, the two layers of `다음`,
   # the snapshot and the rerun act — so none judges one segment two ways.
@@ -31297,7 +31303,7 @@ gate_ci_join_target() {
   # target and keeps today's behaviour. Below `PR` no pull request is opened,
   # so no `checks` row ever comes, and a wait for one would never end.
   local seg=$1 al
-  run_routed || return 1
+  run_ci_layer || return 1
   al=$(gate_segment_target_alias "$seg")
   [ -n "$al" ] || return 1
   case "$(gate_segment_cutpoint "$al" "$seg")" in PR|머지|배포) return 0 ;; esac
@@ -31749,7 +31755,7 @@ gate_ci_match_row() {
 gate_ci_master_next() {
   # gate_ci_master_next <segment> <head sha> <round> <다음 of the table> — the
   # LM rows of `gate_ci_next`, read on a settled failure after the rerun rows.
-  # They stand only on a routed run whose target has a fresh `master 판독` row
+  # They stand only on a run the CI layer stands on whose target has a fresh `master 판독` row
   # that is red, that lists an event with no resolving commit yet, or that
   # lists an event resolved after the segment's base:
   #   LM0  no match row for this head and round                  CI 대조
@@ -31789,7 +31795,7 @@ gate_ci_master_next() {
   # stands, a missing one or a pass included, and the match and the merge wait
   # for a red or green reading.
   local seg=$1 h=$2 g=$3 nx=$4 al mrow mst m res e settled=0
-  run_routed || return 0
+  run_ci_layer || return 0
   al=$(gate_segment_target_alias "$seg")
   [ -n "$al" ] || return 0
   gate_master_fresh "$al" || return 0
@@ -47649,12 +47655,13 @@ GATE_CI_RERUN_CONFIRM_SLEEP=3
 
 gate_ci_rerun_preconditions() {
   # gate_ci_rerun_preconditions <segment> <sha> — the refusals that need neither
-  # the ledger nor GitHub: a run the routing shift does not drive, or an argv
-  # sha that is not the worktree's tip. Passing sets the marker the rule branch
-  # opens on, exported because the rule files run as processes of their own.
+  # the ledger nor GitHub: a run the CI layer does not stand on
+  # (`run_ci_layer`), or an argv sha that is not the worktree's tip. Passing
+  # sets the marker the rule branch opens on, exported because the rule files
+  # run as processes of their own.
   local seg="$1" sha="$2" tip
-  if ! run_routed; then
-    warn "the rerun act runs only on a routed run — this run has no routing record"
+  if ! run_ci_layer; then
+    warn "the rerun act runs only on a run the CI layer stands on — this run has no routing record and no CI layer record"
     return "$GATE_EXIT_RULE"
   fi
   tip=$(gate_segment_tip "$seg") || tip=""
@@ -48769,8 +48776,8 @@ gate_ci_match_preconditions() {
   # gate_ci_match_preconditions <segment> <sha> — the refusals that need
   # neither the ledger nor GitHub, as for the rerun act.
   local seg="$1" sha="$2" tip
-  if ! run_routed; then
-    warn "the match act runs only on a routed run — this run has no routing record"
+  if ! run_ci_layer; then
+    warn "the match act runs only on a run the CI layer stands on — this run has no routing record and no CI layer record"
     return "$GATE_EXIT_RULE"
   fi
   tip=$(gate_segment_tip "$seg") || tip=""
@@ -49246,12 +49253,12 @@ GATE_LABEL_ACK_CONFIRM_SLEEP=3
 
 gate_label_ack_preconditions() {
   # gate_label_ack_preconditions <segment> <sha> — the rerun act's two
-  # refusals, for the label act: a run the routing shift does not drive, or an
-  # argv sha that is not the worktree's tip. Passing sets the marker the rule
-  # branch opens on.
+  # refusals, for the label act: a run the CI layer does not stand on
+  # (`run_ci_layer`), or an argv sha that is not the worktree's tip. Passing
+  # sets the marker the rule branch opens on.
   local seg="$1" sha="$2" tip
-  if ! run_routed; then
-    warn "the label act runs only on a routed run — this run has no routing record"
+  if ! run_ci_layer; then
+    warn "the label act runs only on a run the CI layer stands on — this run has no routing record and no CI layer record"
     return "$GATE_EXIT_RULE"
   fi
   tip=$(gate_segment_tip "$seg") || tip=""
@@ -56665,7 +56672,7 @@ gate_check_merge_checks() {
 
   tip=$(gate_segment_tip "$seg") || tip=""
   [ -n "$tip" ] || return 0
-  # THE READING IS BROUGHT UP TO DATE FIRST, on a routed run and on an act
+  # THE READING IS BROUGHT UP TO DATE FIRST, on a run the CI layer stands on and on an act
   # that may write (a forecast stays a read). The seat that writes it runs
   # after this check, so after an idle spell the ledger's reading would be
   # stale here while the file is fresh: the repair pass would fail and `다음`
@@ -56732,12 +56739,13 @@ gate_check_merge_checks() {
     why="CI failed at this very head ($tip) — 필수 집합 '$req', 실패 체크 '$(gate_row_field "$row" '실패 체크')'"
   fi
 
-  # A ROUTED RUN HAS A WAY ON, SO THE REFUSAL POINTS AT IT. `다음` reads the
-  # same round and sends the segment to the rerun act, to the wait, or back to
-  # the implement stage; a park cell here would stop on a person a segment the
-  # router can move. A run with no routing record, and the fixed-graph driver,
-  # have no branch for those values and keep today's park.
-  if run_routed; then
+  # A RUN THE CI LAYER STANDS ON HAS A WAY ON, SO THE REFUSAL POINTS AT IT.
+  # `다음` reads the same round and sends the segment to the rerun act, to the
+  # wait, or back to the implement stage; a park cell here would stop on a
+  # person a segment the router can move. A run with neither the routing record
+  # nor the CI layer record, and a run the fixed-graph driver entered, have no
+  # branch for those values and keep today's park.
+  if run_ci_layer; then
     warn "the merge of segment '$seg' is refused: $why"
     warn "다음=$(gate_segment_ci_next "$seg") — read review_next[] in the snapshot, or implement_next[] for a merge-first segment, and take that disposition instead of merging"
     exit "$GATE_EXIT_RULE"
@@ -56765,7 +56773,7 @@ gate_ci_repair_pass() {
   # router act between the match and the merge would otherwise void the match
   # and send the segment back to matching. Freshness is gate_master_fresh's.
   local seg=$1 h=$2 g=$3 al m last
-  run_routed || return 1
+  run_ci_layer || return 1
   al=$(gate_segment_target_alias "$seg")
   [ -n "$al" ] || return 1
   m=$(gate_ci_match_row "$seg" "$h" "$g")
