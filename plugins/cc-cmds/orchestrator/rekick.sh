@@ -262,8 +262,8 @@
 # 브랜치다름, 작업트리변경, PR판독불가, PR불일치, 포크PR, 베이스다름, 착지됨,
 # 라이브, 원장없음, 중단답이월불가 (the seat's only), 머지입양미리뷰 (the fix branch of
 # a merged request no review of the source read on the adoption line — its
-# obligation open and the first `cycle` row after the obligation not carrying
-# `입양 줄=예`), and 판정불가 when the gate child could
+# obligation open or never issued, and the first `cycle` row after the
+# obligation not carrying `입양 줄=예`), and 판정불가 when the gate child could
 # not answer. A `머지입양후보` line comes from a `머지 입양` row of the previous
 # manifest whose review the previous run left open (`rk_merge_adopt_candidates`),
 # and such a row that cannot be adopted gives an `입양불가` line with
@@ -969,13 +969,14 @@ rk_merge_unread() {
   fi
   # A ledger awk cannot read prints nothing, which reads as unread.
   [ "$(RM_K="$1" awk '
-    function fld(name,   n, i, a, s) {
-      n = split($0, a, / \| /)
+    # The last field of a key wins, as the gate reads a row.
+    function fld(name,   n, i, a, s, v) {
+      n = split($0, a, / \| /); v = ""
       for (i = 2; i <= n; i++) {
         s = a[i]; sub(/[[:space:]]+$/, "", s)
-        if (index(s, name "=") == 1) return substr(s, length(name "=") + 1)
+        if (index(s, name "=") == 1) v = substr(s, length(name "=") + 1)
       }
-      return ""
+      return v
     }
     !iss && index($0, "- `리뷰 의무` | ") == 1 && fld("세그먼트") == ENVIRON["RM_K"] && fld("상태") == "미이행" { iss = 1; next }
     iss && index($0, "- `cycle` | ") == 1 && fld("세그먼트") == ENVIRON["RM_K"] { seen = (fld("입양 줄") == "예"); exit }

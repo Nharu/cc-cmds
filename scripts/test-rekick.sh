@@ -3679,11 +3679,12 @@ check "13 머지 입양: 자기 수정 PR 이 검사에 걸린 세그먼트는 �
 # whose first review was not on the adoption line (`아니오`), or that never
 # reviewed (no `cycle` row), gives the fix branch `머지입양미리뷰` and a
 # `머지입양후보` line with no worktree.
-# mk13mfix <src> <예|아니오|없음> — that source, with the fix branch pushed and
-# its pull request open at the branch's head.
+# mk13mfix <src> <예|아니오|없음> [how] — that source, with the fix branch
+# pushed and its pull request open at the branch's head; `how` is mk13m's
+# ending of the merged request (`open` when left out).
 mk13mfix() {
   local s="$1" line="$2" w="$WORK/repo-run-$1-I1" b="seg/$1-I1" h
-  mk13m "$s" open I1
+  mk13m "$s" "${3:-open}" I1
   ( cd "$WT" && git worktree add -q -b "$b" "$w" main && cd "$w" && printf '%s\n' "$s" > seg.txt \
       && git add seg.txt && git commit -qm "$s" && git push -q origin "$b" ) >/dev/null 2>&1
   h=$(cd "$w" && git rev-parse HEAD)
@@ -3723,6 +3724,14 @@ a13 "$S13MC"
 check "13 머지 입양: 의무 뒤 cycle 행이 없는 원천의 수정 브랜치도 머지입양미리뷰 다" "$(mfix13m)" \
   "입양불가${TAB}I1${TAB}41${TAB}머지입양미리뷰
 머지입양후보${TAB}I1${TAB}7${TAB}$M13M${TAB}$H13M"
+# An obligation the source fulfilled was closed by a review the gate accepted,
+# so its fix branch still pairs whatever `입양 줄` the later cycle carries.
+S13MD=20261001-a00000dd
+mk13mfix "$S13MD" 아니오 fulfilpark
+a13 "$S13MD"
+check "13 머지 입양: 의무를 이행한 원천의 열린 수정 PR 은 입양 줄=아니오 여도 머지입양후보와 짝을 이룬다" "$(mfix13m)" \
+  "입양후보${TAB}I1${TAB}$S13_W${TAB}41
+머지입양후보${TAB}I1${TAB}7${TAB}$M13M${TAB}$H13M${TAB}$S13_W"
 # shellcheck disable=SC2086
 use13 $SAVE13
 S13M3=20261001-a00000d3
