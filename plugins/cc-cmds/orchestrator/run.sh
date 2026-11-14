@@ -2104,11 +2104,16 @@ EOF
   while IFS= read -r ad_row; do
     [ -n "$ad_row" ] || continue
     # A here-string, not a pipe, for the reason the `베이스 설계` check gives.
-    grep -qE '^- `세그먼트 입양` \| 세그먼트=[A-Za-z0-9_.-]+ \| 브랜치=[^ |]+ \| 워크트리=/[^|]*[^ |] \| 출처 런=([0-9]{8}-[0-9a-f]{8}|[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9a-f]{8}|-) \| PR=[0-9]+$' <<<"$ad_row" \
-      || die "「세그먼트 입양」 행의 형식이 어긋났습니다 — 받는 형태는 \`- \`세그먼트 입양\` | 세그먼트=<id> | 브랜치=<브랜치> | 워크트리=<절대 경로> | 출처 런=<런 id 또는 -> | PR=<번호>\` 입니다: $ad_row"
+    grep -qE '^- `세그먼트 입양` \| 세그먼트=[A-Za-z0-9_.-]+ \| 브랜치=[^ |]+ \| 워크트리=/[^|]*[^ |] \| 출처 런=([0-9]{8}-[0-9a-f]{8}|[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9a-f]{8}|-) \| PR=([0-9]+|-)$' <<<"$ad_row" \
+      || die "「세그먼트 입양」 행의 형식이 어긋났습니다 — 받는 형태는 \`- \`세그먼트 입양\` | 세그먼트=<id> | 브랜치=<브랜치> | 워크트리=<절대 경로> | 출처 런=<런 id 또는 -> | PR=<번호 또는 ->\` 입니다: $ad_row"
     ad_seg=$(manifest_row_fields "$ad_row" '세그먼트')
     ad_wt=$(manifest_row_fields "$ad_row" '워크트리')
     ad_src=$(manifest_row_fields "$ad_row" '출처 런')
+    # `PR=-` is a segment an earlier run cut and stopped before its pull
+    # request: its evidence is that run's ledger, so a branch no run cut has none.
+    if [ "$ad_src" = "-" ] && [ "$(manifest_row_fields "$ad_row" 'PR')" = "-" ]; then
+      die "「세그먼트 입양」 행이 출처 런=- 와 PR=- 를 함께 적었습니다 — 런 밖 브랜치는 열린 PR 번호가 있어야 입양합니다: $ad_row"
+    fi
     case "$ad_wt" in
       *'"'*|*'\'*|*[[:cntrl:]]*) die "「세그먼트 입양」 행의 워크트리에 큰따옴표·역슬래시·제어 문자가 있습니다: $ad_wt" ;;
       *"$WORKTREE_INFIX"*) : ;;
@@ -11050,7 +11055,7 @@ kind_pin_request_json() {
 # waiting process, and readers in `liveness.sh` treat a key whose holder lives
 # as not to be dispatched again.
 # ---------------------------------------------------------------------------
-readonly WAIT_LOOP_DEADLINE_RECOVERY="마감 안에 끝낼 수 없다 — 이 런에서는 기동하지 않는다. 다음 런(재킥오프·입양)에서 이어 갈 수 있다"
+readonly WAIT_LOOP_DEADLINE_RECOVERY="마감 안에 끝낼 수 없다 — 이 런에서는 기동하지 않는다"
 
 wait_epoch_iso() {
   # wait_epoch_iso <epoch> — the instant in `now_iso`'s byte shape, `-` for none.

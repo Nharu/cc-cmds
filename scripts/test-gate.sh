@@ -51500,7 +51500,7 @@ check "75: 마감 PARK 는 exit 16 이다" \
   "$(lsr75_rc "$lsr75_dl" '{"verdict":"PARK","reason":"deadline","ready_at":1900000000,"recovery":"마감을 늘린다"}' '' SD2)" "16"
 check "75: 마감 PARK 의 blocked 행은 하나다" "$( { grep -c '^- `blocked`' "$lsr75_dl" || true; } )" "1"
 case "$( { grep '^- `blocked`' "$lsr75_dl" || true; } | tail -1)" in
-  *"스코프=act"*"세그먼트=SD2"*"근거=계보=B:SD2#1 마감 초과 — ready_at $(jq -rn '1900000000 | todate') (마감을 늘린다) |"*)
+  *"스코프=act"*"세그먼트=SD2"*"근거=계보=B:SD2#1 마감 초과 — ready_at $(jq -rn '1900000000 | todate') (마감을 늘린다. 다음 런은 이 세그먼트를 이어받지 못한다(워크트리없음) — 다시 한다) |"*)
     ok "75: cone 행이 거절되면 계보와 ready_at 을 실은 act 행이 대신 선다" ;;
   *) bad "75 마감 PARK 행" "$(tail -1 "$lsr75_dl")" ;;
 esac
@@ -51745,7 +51745,7 @@ check "75: 스냅숏이 좌석 파일의 무인 불릿을 담는다" \
 # 를 비운 봉투로 돈다 — 절 75 의 픽스처 원장에는 세그먼트 행이 없어 cone 행이
 # 거절되므로, act 스코프 대체 행에 실린 문면을 읽는다.
 # ---------------------------------------------------------------------------
-lsr92_want='마감 안에 끝낼 수 없다 — 이 런에서는 기동하지 않는다. 다음 런(재킥오프·입양)에서 이어 갈 수 있다'
+lsr92_want='마감 안에 끝낼 수 없다 — 이 런에서는 기동하지 않는다'
 lsr92_route=$(sed -n '/^def rt_park_deadline(/,/};$/s/.*recovery: "\([^"]*\)".*/\1/p' "$repo_root/plugins/cc-cmds/orchestrator/route.sh")
 lsr92_loop=$(sed -n 's/^readonly WAIT_LOOP_DEADLINE_RECOVERY="\([^"]*\)"$/\1/p' "$repo_root/plugins/cc-cmds/orchestrator/run.sh")
 check "94: 라우터와 대기 루프의 복구 문면이 바이트 단위로 같다" \
@@ -51756,10 +51756,49 @@ lsr92_l=$(lsr75_new dl92)
 check "94: 복구를 비운 마감 PARK 도 exit 16 이다" \
   "$(lsr75_rc "$lsr92_l" '{"verdict":"PARK","reason":"deadline","ready_at":1900000000,"recovery":""}' '' SW92)" "16"
 case "$( { grep '^- `blocked`' "$lsr92_l" || true; } | tail -1)" in
-  *"스코프=act"*"세그먼트=SW92"*"근거=계보=B:SW92#1 마감 초과 — ready_at $(jq -rn '1900000000 | todate') ($lsr92_want) |"*)
+  *"스코프=act"*"세그먼트=SW92"*"근거=계보=B:SW92#1 마감 초과 — ready_at $(jq -rn '1900000000 | todate') ($lsr92_want. 다음 런은 이 세그먼트를 이어받지 못한다(워크트리없음) — 다시 한다) |"*)
     ok "94: 복구를 비운 마감 PARK 는 대기 루프의 문면을 행에 싣는다" ;;
   *) bad "94 대체값 행" "$(tail -1 "$lsr92_l")" ;;
 esac
+
+# 복구 문면 뒤의 문장은 다음 런이 그 키를 이어 갈 수 있는지를 원장과 로컬 워크트리로
+# 가린다. 런 스코프 단계는 다시 계획되고, 세그먼트는 재킥오프 도우미의 로컬 조건을
+# 모두 지날 때만 「이어 갈 수 있다」이다. 같은 원장을 `adopt-preview` 도 읽는다 —
+# 원격 판독 두 자리는 대역으로 고정한다.
+TAB=${TAB:-$(printf '\t')}
+lsr94_l=$(lsr75_new pv94)
+lsr94_r="${lsr94_l%/*}/repo"
+( git init -q -b main "$lsr94_r" && cd "$lsr94_r" && git config user.email t@t && git config user.name t \
+    && printf 'a\n' > a.txt && git add a.txt && git commit -qm a && git checkout -q -b seg/pv94-A ) >/dev/null 2>&1
+lsr94_h=$(cd "$lsr94_r" && git rev-parse HEAD)
+{ printf -- '- `segment` | id=A | 상태=계획됨 | 레포=t/pv | 워크트리=%s | 브랜치=seg/pv94-A | 선행=없음\n' "$lsr94_r"
+  printf -- '- `원격 판독` | 세그먼트=A | 브랜치=seg/pv94-A | 워크트리 HEAD=%s | 원격 팁=없음 | PR=없음 | PR 상태=없음 | PR HEAD=없음\n' "$lsr94_h"
+  printf -- '- `segment` | id=B | 상태=계획됨 | 레포=t/pv | 워크트리=- | 브랜치=seg/pv94-B | 선행=없음\n'; } >> "$lsr94_l"
+lsr94_s() { lsr75_in "$lsr94_l" '' '' gate_adoption_prospect_sentence "$1" "$2" 2>/dev/null; }
+check "94: 런 스코프 단계의 마감 문장은 다음 런의 재계획이다" "$(lsr94_s - D1)" "다음 런(재킥오프)이 이 단계를 다시 계획한다"
+check "94: 이어받을 수 있는 PR 없는 세그먼트의 마감 문장은 이어 갈 수 있다이다" "$(lsr94_s A A)" "다음 런(재킥오프·입양)에서 이어 갈 수 있다"
+check "94: 워크트리가 없는 세그먼트의 마감 문장은 이어받지 못한다와 그 토큰이다" "$(lsr94_s B B)" "다음 런은 이 세그먼트를 이어받지 못한다(워크트리없음) — 다시 한다"
+printf 'x\n' > "$lsr94_r/dirty.txt"
+check "94: 커밋되지 않은 변경이 있으면 작업트리변경이다" "$(lsr94_s A A)" "다음 런은 이 세그먼트를 이어받지 못한다(작업트리변경) — 다시 한다"
+lsr94_pv() {  # lsr94_pv <원격 팁> <PR 판독 줄> — adopt-preview 의 출력
+  lsr75_in "$lsr94_l" '' '' eval "gate_remote_tip_of() { printf '%s' '$1'; }; gate_remote_pr_of() { printf '$2'; }; gate_adopt_preview" 2>/dev/null
+}
+check "94: adopt-preview 는 세그먼트마다 로컬 판정의 토큰을 같은 줄에 싣는다" \
+  "$(lsr94_pv "$lsr94_h" '없음\t없음\t없음')" "불가${TAB}A${TAB}작업트리변경
+불가${TAB}B${TAB}워크트리없음"
+rm -f "$lsr94_r/dirty.txt"
+check "94: 원격에 브랜치가 없고 PR 도 없으면 PR 없는 세그먼트는 가능이고 PR 칸은 - 다" \
+  "$(lsr94_pv 없음 '없음\t없음\t없음' | awk 'NR == 1')" "가능${TAB}A${TAB}seg/pv94-A${TAB}-${TAB}$(printf '%s' "$lsr94_h" | cut -c1-12)"
+check "94: 앵커 뒤에 열린 PR 이 생겼으면 PR불일치다" \
+  "$(lsr94_pv "$lsr94_h" "50\\tOPEN\\t$lsr94_h" | awk 'NR == 1')" "불가${TAB}A${TAB}PR불일치"
+check "94: 원격 판독이 실패하면 PR판독불가다" "$(lsr94_pv 미상 '없음\t없음\t없음' | awk 'NR == 1')" "불가${TAB}A${TAB}PR판독불가"
+check "94: 머지된 세그먼트는 adopt-preview 에 줄이 없다" \
+  "$(printf -- '- `segment` | id=B | 상태=머지됨 | 워크트리=-\n' >> "$lsr94_l"; lsr94_pv 없음 '없음\t없음\t없음' | cut -f2 | tr '\n' ' ')" "A "
+# 재개 명령 칸의 상한(360 바이트) 안에 가장 긴 문장과 다시 파견 명령이 통째로 든다.
+lsr94_len=$(lsr75_in "$lsr94_l" '' '' eval 'printf "%s" "$WAIT_LOOP_DEADLINE_RECOVERY. 다음 런은 이 세그먼트를 이어받지 못한다(작업트리변경) — 다시 한다 — $(gate_redispatch_line cc-cmds A)"' 2>/dev/null | wc -c | tr -d ' ')
+if [ "${lsr94_len:-999}" -gt 0 ] && [ "${lsr94_len:-999}" -le 360 ]; then
+  ok "94: 가장 긴 마감 복구 문면과 다시 파견 명령이 360 바이트 안에 든다"
+else bad "94 재개 명령 길이" "$lsr94_len"; fi
 
 # ---------------------------------------------------------------------------
 # 95. 중단 답 운반 — 두 질문과 고르는 순서, 거절 조항, 상한, 답 카드
@@ -52223,8 +52262,10 @@ check "95: TA4 감사 종합 요구를 채택한 답은 exit 3·행 없음" \
   "$(lsr93_refused ta4 "$lsr93_ln" "/cc-cmds:design-audit-unattended $lsr93_doc" audit)" "3|same|0"
 lsr93_ln=$(lsr93_base ta5 implement-unattended 'Step 3 CFI-U3 BT-STOP — 충돌' 재수렴 implement)
 check "95: TA4 구속 티어 정지의 재수렴 답은 exit 3·행 없음" "$(lsr93_refused ta5 "$lsr93_ln" "$lsr93_rp")" "3|same|0"
-lsr93_ln=$(lsr93_base ta6 implement-unattended 'Step 3 잔여 검증 좌석 실행 — R2' '좌석 실행' implement)
-check "95: TA4 좌석 실행 정지의 답은 exit 3·행 없음" "$(lsr93_refused ta6 "$lsr93_ln" "$lsr93_rp")" "3|same|0"
+lsr93_ln=$(lsr93_base ta6 implement-unattended 'Step 3 강제 표면 좌석 적용 — 적용' '좌석 적용' implement)
+check "95: TA4 좌석 적용 정지의 답은 exit 3·행 없음" "$(lsr93_refused ta6 "$lsr93_ln" "$lsr93_rp")" "3|same|0"
+check "95: TA4 좌석 실행 정지의 답은 운반 거절 조항에 걸리지 않는다" \
+  "$(lsr93_in "$lsr_root/ta6/ledger.md" gate_carry_routed_elsewhere "${lsr_root}/ta6/halt/S3#1.md" implement-unattended 'Step 3 잔여 검증 좌석 실행 — R2' '좌석 실행' 2>/dev/null)/$(lsr93_in "$lsr_root/ta6/ledger.md" gate_carry_routed_elsewhere "${lsr_root}/ta6/halt/S3#1.md" implement-unattended 'Step 3 게이트 도달 좌석 실행 — 설치' '좌석 실행' 2>/dev/null)" "/"
 lsr93_ln=$(lsr93_base ta7 review-unattended 'Step 1b 빈 대상 — 리뷰할 것이 없다' 적용 review)
 check "95: TA4 리뷰의 빈 대상 정지 답은 exit 3·행 없음" "$(lsr93_refused ta7 "$lsr93_ln" "$lsr93_rp")" "3|same|0"
 lsr93_l=$(lsr75_new ta8)
@@ -52626,7 +52667,7 @@ case "$( { grep -F '| 사유=중단 답 이월 — ' "$lsr93_l" || true; } )" in
     ok "95: TN5 그 이월 행이 두 판정을 싣는다" ;;
   *) bad "95 TN5 진전 축 이월 행" "$(grep -F '| 사유=중단 답 이월 — ' "$lsr93_l"; cat "$lsr_root/tn5b/act.err")" ;;
 esac
-# 대조 — 운반 검사에 걸리는 답은 마감 뒤에도 이월되지 않는다. 라우팅 예외(좌석 실행
+# 대조 — 운반 검사에 걸리는 답은 마감 뒤에도 이월되지 않는다. 라우팅 예외(좌석 적용
 # 정지)와 표 밖 쌍이 각각 그 검사의 코드로 끝나고 원장은 그대로다.
 lsr93_tn5c() {  # lsr93_tn5c <이름> <답 줄> — 지난 마감 매니페스트로 낸 운반 act 의 「rc|원장 그대로|이월 행 수」
   local l="$lsr_root/$1/ledger.md" sha
@@ -52634,8 +52675,8 @@ lsr93_tn5c() {  # lsr93_tn5c <이름> <답 줄> — 지난 마감 매니페스�
   printf '%s|%s|%s' "$(LSR93_BENV=$lsr93_BG LSR93_FENV=$lsr93_FG lsr93_act "$l" "$lsr93_mfp" "$2" "$lsr93_rp")" \
     "$( [ "$(lsr_sha "$l")" = "$sha" ] && printf same || printf changed)" "$(lsr93_n "$l" '| 사유=중단 답 이월 — ')"
 }
-lsr93_ln=$(lsr93_tn5f tn5s implement-unattended 'Step 3 잔여 검증 좌석 실행 — R2' '좌석 실행' implement)
-check "95: TN5 대조 — 마감 뒤에도 좌석 실행 정지의 답은 exit 3·원장 그대로·이월 없음" \
+lsr93_ln=$(lsr93_tn5f tn5s implement-unattended 'Step 3 강제 표면 좌석 적용 — 적용' '좌석 적용' implement)
+check "95: TN5 대조 — 마감 뒤에도 좌석 적용 정지의 답은 exit 3·원장 그대로·이월 없음" \
   "$(lsr93_tn5c tn5s "$lsr93_ln")" "3|same|0"
 lsr93_ln=$(lsr93_tn5f tn5u review-unattended 'Step 2 리뷰 — 질문' 적용 review)
 check "95: TN5 대조 — 마감 뒤에도 표 밖 정지의 답은 exit 19·원장 그대로·이월 없음" \
@@ -56964,7 +57005,7 @@ fi
 
 # ---------------------------------------------------------------------------
 # 85. A segment an earlier run cut is adopted through the manifest
-# --- section: 85 | group: base | covers: snapshot, plan, act, check_manifest, gate_carry_tail | anchors: 85: 입양 세그먼트의 슬라이싱 은 출처 런의 브랜치와 워크트리를 낸다, 85: 입양 세그먼트는 유도 경로로 계획되지 않는다, 85: 입양 세그먼트는 입양 워크트리로 계획된다, 85: 출처 런 원장이 없으면 입양 계획이 거부된다, 85: 출처 런이 착지시킨 세그먼트는 입양하지 않는다, 85: 선언과 다른 브랜치의 워크트리는 입양하지 않는다, 85: 출처 런의 스테이지가 살아 있으면 입양 계획이 거부된다, 85: 한 세그먼트의 입양 행 둘은 거부된다, 85: 입양 행을 바꾸면 구속 다이제스트가 깨진다, 85: 사람의 재수렴 답은 입양 계획 act 가 이 런으로 들여온다, 85: 들여온 답이 스냅숏의 answered_halts 에 출처 런과 함께 오른다, 85: 한 런이 들여온 답은 다른 런이 다시 들여오지 않는다, 85: 출처 런 키의 스테이지가 살아 있으면 입양 계획이 거부된다, 85: 런 밖 브랜치는 출처 런 - 로 입양 계획된다, 85: 런 밖 입양도 선언과 다른 브랜치의 워크트리는 거부한다, 85: 머지 커밋 없는 완료 세그먼트는 입양 계획된다, 85: 머지 커밋을 지닌 완료 세그먼트는 입양하지 않는다, 85: 고정 커밋을 지닌 적용 완료 세그먼트는 입양하지 않는다, 85: PR 과 커밋만 지닌 PR 절단점 완료 세그먼트는 입양 계획된다, 85: 대시 표기 출처 런의 입양 행은 매니페스트 검사를 통과한다, 85: 대시 표기 출처 런의 세그먼트는 입양 계획된다, 85: 입양 행에 맞는 강제 표면 승인 행은 매니페스트 검사를 통과한다, 85: 승인 행을 바꾸면 구속 다이제스트가 깨진다 ---
+# --- section: 85 | group: base | covers: snapshot, plan, act, check_manifest, gate_carry_tail | anchors: 85: 입양 세그먼트의 슬라이싱 은 출처 런의 브랜치와 워크트리를 낸다, 85: 입양 세그먼트는 유도 경로로 계획되지 않는다, 85: 입양 세그먼트는 입양 워크트리로 계획된다, 85: 출처 런 원장이 없으면 입양 계획이 거부된다, 85: 출처 런이 착지시킨 세그먼트는 입양하지 않는다, 85: 선언과 다른 브랜치의 워크트리는 입양하지 않는다, 85: 출처 런의 스테이지가 살아 있으면 입양 계획이 거부된다, 85: 한 세그먼트의 입양 행 둘은 거부된다, 85: 입양 행을 바꾸면 구속 다이제스트가 깨진다, 85: 사람의 재수렴 답은 입양 계획 act 가 이 런으로 들여온다, 85: 들여온 답이 스냅숏의 answered_halts 에 출처 런과 함께 오른다, 85: 한 런이 들여온 답은 다른 런이 다시 들여오지 않는다, 85: 출처 런 키의 스테이지가 살아 있으면 입양 계획이 거부된다, 85: 런 밖 브랜치는 출처 런 - 로 입양 계획된다, 85: 런 밖 입양도 선언과 다른 브랜치의 워크트리는 거부한다, 85: 머지 커밋 없는 완료 세그먼트는 입양 계획된다, 85: 머지 커밋을 지닌 완료 세그먼트는 입양하지 않는다, 85: 고정 커밋을 지닌 적용 완료 세그먼트는 입양하지 않는다, 85: PR 과 커밋만 지닌 PR 절단점 완료 세그먼트는 입양 계획된다, 85: 대시 표기 출처 런의 입양 행은 매니페스트 검사를 통과한다, 85: 대시 표기 출처 런의 세그먼트는 입양 계획된다, 85: 입양 행에 맞는 강제 표면 승인 행은 매니페스트 검사를 통과한다, 85: 승인 행을 바꾸면 구속 다이제스트가 깨진다, 85: PR=- 입양 행은 매니페스트 검사를 통과한다, 85: 출처 런도 PR 도 - 인 입양 행은 매니페스트 검사에서 거부된다 ---
 #
 # Segment names derive from the run id, so a run could not continue a segment
 # an earlier run left unmerged: its branch, worktree and pull request were out
@@ -57114,6 +57155,23 @@ check "85: 런 밖 입양 계획은 중단 답을 들여오지 않는다" \
 run85 R85Y "- \`세그먼트 입양\` | 세그먼트=SA | 브랜치=feat/other-85 | 워크트리=$WT85X | 출처 런=- | PR=81"
 g15_plan act R85Y SA 상태=계획됨 "워크트리=$WT85X"
 check "85: 런 밖 입양도 선언과 다른 브랜치의 워크트리는 거부한다" "$rc" "3"
+
+# A SEGMENT ITS RUN STOPPED BEFORE A PULL REQUEST is adopted with `PR=-`: the
+# manifest check takes the dash, the slicing carries it, and the planning act
+# plans the segment on the adopted worktree. A row naming neither an earlier
+# run nor a pull request names nothing to continue and is refused.
+src85_ledger 리뷰중
+run85 R85N "- \`세그먼트 입양\` | 세그먼트=SA | 브랜치=seg/$SRC85-SA | 워크트리=$WT85 | 출처 런=$SRC85 | PR=-"
+snap85 R85N
+check "85: PR=- 입양 행은 매니페스트 검사를 통과한다" "$rc" "0"
+check "85: PR=- 입양 세그먼트의 슬라이싱 은 PR - 를 낸다" \
+  "$( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" gate_inproc snapshot --manifest "$WORK/plan-R85N.md" 2>/dev/null \
+     | jq -r '.["슬라이싱"]["세그먼트"][0] | [.["입양"], .["PR"]] | join("|")' 2>/dev/null)" "$SRC85|-"
+g15_plan act R85N SA 상태=계획됨 "워크트리=$WT85"
+check "85: PR=- 입양 세그먼트는 입양 워크트리로 계획된다" "$rc" "0"
+run85 R85M "- \`세그먼트 입양\` | 세그먼트=SA | 브랜치=feat/outside-85 | 워크트리=$WT85X | 출처 런=- | PR=-"
+snap85 R85M
+check "85: 출처 런도 PR 도 - 인 입양 행은 매니페스트 검사에서 거부된다" "$( [ "$rc" != 0 ] && printf 거부 || printf 통과)" "거부"
 
 n85=0
 for bad85 in \
@@ -58667,6 +58725,43 @@ check "95d: 그 재수렴 행이 답 운반 줄을 싣는다" \
   "$( { grep -F '`stage-result`' "$LED96/R96A.md" 2>/dev/null || true; } | { grep -F '| 세그먼트=SA |' || true; } | tail -1 \
       | tr '|' '\n' | sed -n 's/^ *답 운반=//p' | sed 's/[[:space:]]*$//')" "$la96"
 check "95d: 운반된 입양 답은 answered_halts 에서 빠진다" "$(halts96 R96A)" ""
+
+# 마감에 걸린 좌석 실행 답 — 앞선 런의 구현이 좌석 실행 정지에서 멈추고 좌석이
+# `좌석 실행` 으로 답했지만, 그 재부착을 마감이 막아 같은 키의 마감 초과 cone 행이
+# 섰고 그 뒤 그 키의 stage-result 행은 없다. 이월 행이 없어도 입양 계획 act 가 그
+# 답을 들이고, 들인 답이 쓰이지 않은 키의 일반 파견은 운반 act 로 가라며 거절된다.
+SRC96R='20260302-aaaaaaaa'
+RDS96R="$STATE_LATE/cc-cmds/run/$SRC96R"
+WT96R="$(dirname "$WT")/$(basename "$WT")-run-$SRC96R-S9"
+( cd "$WT" && git worktree add -q -b "seg/$SRC96R-S9" "$WT96R" HEAD ) >/dev/null 2>&1
+ROW96R="- \`세그먼트 입양\` | 세그먼트=SA | 브랜치=seg/$SRC96R-S9 | 워크트리=$WT96R | 출처 런=$SRC96R | PR=-"
+g15_run "$SRC96R" "$DOC96A" "$plan15c" 리뷰없음
+src96 "$SRC96R"
+mkdir -p "$RDS96R/halt"
+REC96R="$RDS96R/halt/S9#1.md"
+printf '%s\n' "<!-- cc-pipeline-halt v1; writer=implement-unattended; reader=orchestrator; stage=S9#1; run=$SRC96R -->" \
+  '**스킬**: implement-unattended' '**스텝**: Step 3 잔여 검증 좌석 실행 — R1' \
+  '**분류**: gate-unanswerable' '**좌석 실행 항목**: R1' '**질문 문면**: R1 의 레시피를 좌석이 돌린다' '**선택지**:' \
+  '- `좌석 실행` — 좌석이 R1 의 레시피를 이 호스트에서 돌리고 결과를 설계 문서에 적는다' '<!-- /cc-pipeline-halt v1 -->' > "$REC96R"
+{ printf '# 픽스처 출처 런\n\n- `segment` | id=S9 | 상태=계획됨 | 워크트리=%s | 선행=없음\n' "$WT96R"
+  printf -- '- `stage-result` | 교대=0 | 세그먼트=S9 | 스테이지=S9 | 종류=implement | 실행 버전=1 | 세션 id=s-impl-1 | 종단 부류=의도된 park | prev=x\n'
+  printf -- '- `중단 답` | 세그먼트=S9 | 중단 기록=%s | 스킬=implement-unattended | 선택지=좌석 실행 | 답한 주체=좌석 | 근거 종류=좌석 실행 | 근거=좌석 실행 — R1 검증됨(통과) | 기록 다이제스트=%s | 레인=좌석 | 기록 시각=2026-03-02T01:00:00Z\n' \
+    "$REC96R" "$(shasum -a 256 "$REC96R" | cut -d' ' -f1)"
+  printf -- '- `blocked` | 교대=1 | 대상=infra | 스코프=cone | 원인=막힘 | 사유=마감 초과 — S9 | 앵커 세그먼트=S9 | 세그먼트=S9 | 스테이지=S9 | prev=x\n'; } > "$LED96/$SRC96R.md"
+g15_run R96R "$DOC96A" "$plan15c" 리뷰없음
+printf '%s\n' "$ROW96R" >> "$WORK/plan-R96R.md"
+g15_plan act R96R SA 상태=계획됨 "워크트리=$WT96R"
+check "95d: 마감 cone 행이 뒤따른 좌석 실행 답은 이월 행 없이도 입양 계획 act 가 들인다" "$rc/$(carried96 R96R)" "0/1"
+lr96=$(ln96 R96R)
+out=$(cd "$WT" && XDG_STATE_HOME="$STATE_LATE" CC_CLAUDE_BIN="$STUB_AU_RECONV" \
+  bash "$GATE" act --manifest "$WORK/plan-R96R.md" --kind skill --target infra --segment SA --cutpoint 커밋 \
+  --surface 워크트리쓰기 --snapshot-digest "$(au15_H R96R)" --rationale x -- implement -p "/cc-cmds:implement-unattended $WT/$DOC96A" 2>&1); rc=$?
+check "95d: 들인 좌석 실행 답이 쓰이지 않은 입양 키의 일반 구현 파견은 exit 3 이다" "$rc/$(carried96 R96R)" "3/1"
+case "$out" in
+  *"원장 $lr96 번째 줄"*) ok "95d: 그 거절은 들인 좌석 실행 답의 줄을 이름 댄다" ;;
+  *) bad "95d: 그 거절은 들인 좌석 실행 답의 줄을 이름 댄다" "$out" ;;
+esac
+( cd "$WT" && git worktree remove --force "$WT96R" && git branch -D "seg/$SRC96R-S9" ) >/dev/null 2>&1
 
 gfn96() {  # gfn96 <run id> <셸 문면> [인자…] — 그 런의 원장과 런 디렉터리로 게이트 함수를 부른다. 문면은 인자를 "$@" 로 읽는다
   local r="$1"
@@ -69231,6 +69326,14 @@ esac
 case "$(printf '%s' "$RV107_JSON" | jq -r '[.["슬라이싱"]["세그먼트"][]? | "\(.id):\(.["입양"] // "-")"] | sort | join(" ")' 2>/dev/null)" in
   "I1:20260101-0000abcd I2:-") ok "109: 문서 없는 계획의 슬라이싱은 입양 단계와 입양 행 없는 단계를 함께 낸다" ;;
   *) bad "109: 문서 없는 계획의 슬라이싱은 입양 단계와 입양 행 없는 단계를 함께 낸다" \
+       "rc=$RV107_RC 슬라이싱=$(printf '%s' "$RV107_JSON" | jq -c '.["슬라이싱"]' 2>&1) $RV107_OUT" ;;
+esac
+# PR 을 열기 전에 멈춘 세그먼트의 입양 행(`PR=-`)도 문서 없는 계획에서 같은 처분을
+# 받고, 그 단계의 슬라이싱은 PR 칸에 - 를 싣는다.
+rv107_snap "$RV107_P2" "$(rv107_row I1 | sed 's/| PR=7$/| PR=-/')"
+case "$(printf '%s' "$RV107_JSON" | jq -r '[.["슬라이싱"]["세그먼트"][]? | select(.id == "I1") | "\(.["입양"]):\(.["PR"])"] | join(" ")' 2>/dev/null)" in
+  "20260101-0000abcd:-") ok "109: 문서 없는 계획의 PR=- 입양 단계는 검사를 지나고 슬라이싱에 PR - 를 싣는다" ;;
+  *) bad "109: 문서 없는 계획의 PR=- 입양 단계는 검사를 지나고 슬라이싱에 PR - 를 싣는다" \
        "rc=$RV107_RC 슬라이싱=$(printf '%s' "$RV107_JSON" | jq -c '.["슬라이싱"]' 2>&1) $RV107_OUT" ;;
 esac
 SA_PLAN=""; SA_AUTH_RAW=""
