@@ -45985,9 +45985,11 @@ p57_fold() {
 # 이 트리의 플러그인 서브트리가 깨끗한지에 따라 고정 방식이 갈린다 — 깨끗하면
 # `archive`(트리 객체 단위라 동시 체크아웃이 찢지 못한다), 더러우면 잠금·HEAD
 # 브래킷 안의 `copy` 다. 단언을 한쪽으로 고정하면 이 파일을 고치는 동안에는 늘
-# 붉고 커밋한 뒤에는 늘 초록인, 트리 상태를 재는 테스트가 된다.
+# 붉고 커밋한 뒤에는 늘 초록인, 트리 상태를 재는 테스트가 된다. 깨끗함은 고정이
+# 쓰는 판정 그대로(`pin__tracked_dirty`, 추적 파일 변경만 센다) 재므로, 추적되지
+# 않는 도구 산출물이 서브트리에 있어도 이 판정과 고정의 판정이 갈리지 않는다.
 P57_CLEAN=0
-if [ -z "$(cd "$repo_root" && git --no-optional-locks status --porcelain -- plugins/cc-cmds 2>/dev/null)" ]; then
+if [ "$( . "$repo_root/plugins/cc-cmds/orchestrator/pin.sh"; pin__tracked_dirty "$repo_root/plugins/cc-cmds" )" = 0 ]; then
   P57_CLEAN=1
 fi
 
@@ -46003,7 +46005,7 @@ check "57: plugin-pin 의 plugin-dir 이 사본을 가리킨다" \
   "$(p57_pin "$P57_RD" 'plugin-dir')" "$P57_RD/plugin/cc-cmds"
 check "57: plugin-pin 의 다이제스트가 사본을 다시 재도 같다" \
   "$(p57_pin "$P57_RD" digest)" \
-  "$( . "$P57_RD/plugin/cc-cmds/orchestrator/pin.sh"; pin_digest "$P57_RD/plugin/cc-cmds" )"
+  "$( . "$repo_root/plugins/cc-cmds/orchestrator/pin.sh"; pin_digest "$P57_RD/plugin/cc-cmds" )"
 check "57: plugin-pin 이 version 을 싣는다" \
   "$( [ -n "$(p57_pin "$P57_RD" version)" ] && printf yes || printf no )" "yes"
 check "57: plugin-pin 이 pinned-at 을 싣는다" \
@@ -46541,8 +46543,12 @@ p57p_clone() {  # p57p_clone <이름> — 지금의 원격 끝에 선 클론
   printf '%s' "$P57P/$1"
 }
 P57P_BEHIND=$(p57p_clone behind)
+# 더러움은 추적 파일 변경이다 — C2 가 건드리지 않는 추적 파일에 한 줄을 덧붙인다.
+# 추적되지 않는 파일만 있는 클론은 따로 떠서 깨끗하게 고정되는지 본다.
 P57P_DIRTY=$(p57p_clone dirty)
-printf 'mine\n' > "$P57P_DIRTY/plugins/cc-cmds/orchestrator/local.txt"
+printf '\n' >> "$P57P_DIRTY/plugins/cc-cmds/.claude-plugin/plugin.json"
+P57P_UNTR=$(p57p_clone untracked)
+printf 'mine\n' > "$P57P_UNTR/plugins/cc-cmds/orchestrator/local.txt"
 P57P_OVER=$(p57p_clone overlap)
 printf 'my edit\n' >> "$P57P_OVER/plugins/cc-cmds/orchestrator/gate.sh"
 P57P_DIV=$(p57p_clone diverged)
@@ -46603,6 +46609,13 @@ check "57p: 겹치지 않는 더러운 변경은 ff 뒤 copy 와 dirty=예 로 �
   "ff/copy/예/$P57P_C3"
 check "57p: 그 로컬 변경은 그대로 남는다" \
   "$(p57p_g "$P57P_DIRTY" --no-optional-locks status --porcelain)" "$p57p_dirty_before"
+p57p_take "$P57P/rd-untracked" "$P57P_UNTR/plugins/cc-cmds"
+check "57p: 추적되지 않는 파일만 있는 클론은 ff 뒤 archive 와 dirty=아니오 로 고정된다" \
+  "$(p57p_pin "$P57P/rd-untracked" origin-sync)/$(p57p_pin "$P57P/rd-untracked" method)/$(p57p_pin "$P57P/rd-untracked" dirty)/$(p57p_head "$P57P_UNTR")" \
+  "ff/archive/아니오/$P57P_C3"
+check "57p: 그 추적되지 않는 파일은 원천에 남고 사본에는 없다" \
+  "$(cat "$P57P_UNTR/plugins/cc-cmds/orchestrator/local.txt" 2>/dev/null)/$( [ -e "$P57P/rd-untracked/plugin/cc-cmds/orchestrator/local.txt" ] && printf 있음 || printf 없음 )" \
+  "mine/없음"
 
 # (3)–(6) 빨리감지 못하는 원천 → 체크아웃 불변, 원격 끝 고정 ------------------------
 p57p_remote_case() {  # p57p_remote_case <이름> <클론> <원천> <기대 ff-refused>
@@ -46699,6 +46712,343 @@ check "57p: 봉합 아래에서 HEAD 와 원격 추적 참조가 그대로다" "
 check "57p: 봉합 아래에서는 동기화 키가 비어 있다" \
   "$(p57p_pin "$P57P/rd-seam" base-branch)|$(p57p_pin "$P57P/rd-seam" origin-commit)|$(p57p_pin "$P57P/rd-seam" ff-refused)|$(p57p_pin "$P57P/rd-seam" subtree-differs)" \
   "-|-|-|-"
+
+# ---------------------------------------------------------------------------
+# 57n. 고정의 dirty 판정과 복사 사본의 이름 — 추적되지 않는 파일은 dirty 가 아니고, 복사 사본은 인덱스 철자를 든다
+# --- section: 57n | group: base | covers: pin | anchors: 57n: 추적되지 않는 파일만 있는 하위 트리는 archive 와 dirty 아니오로 고정된다, 57n: 복사 사본의 룰 디렉터리 이름 바이트가 인덱스와 같다, 57n: 인덱스에 없는 NFD 이름은 사본에서 바이트 그대로다, 57n: 브래킷 없는 단순 cp -R 사본에는 NFD 이름이 있다 (위 단언이 공허하지 않다) ---
+#
+# 도구 산출물 디렉터리(`.playwright-cli/`) 하나가 플러그인 하위 트리에 생기면, 추적되지
+# 않는 항목까지 세던 dirty 판정이 고정을 복사 경로로 보냈고, 복사는 디스크의 이름
+# 바이트를 그대로 들고 갔다. macOS 에서 디스크 이름이 NFD 인 한글 룰 파일은 그래서
+# 사본에서도 NFD 였고, 같은 커밋이 `git archive` 로 떠지면 NFC 였다. 이 절은 두 층을
+# 함께 잰다: 추적되지 않는 항목만 있으면 `archive` 와 `dirty 아니오` 이고, 추적 파일
+# 변경으로 복사 경로를 타도 사본의 이름은 인덱스 바이트와 같다.
+#
+# 합성 저장소만 쓰고 pin.sh 를 소싱해 `pin_take` 를 직접 구동하므로 `--sections 57n`
+# 으로 홀로 돈다. 원격은 없고 동기화 봉합을 세운 채 고정한다.
+# ---------------------------------------------------------------------------
+P57N=$(mktemp -d "$WORK/pin57n.XXXXXX")
+p57n_g() {  # p57n_g <dir> <git 인자…> — 사용자 설정의 서명·훅에 기대지 않는 git
+  local d="$1"; shift
+  ( cd "$d" && GIT_AUTHOR_NAME=T GIT_AUTHOR_EMAIL=t@example.invalid \
+      GIT_COMMITTER_NAME=T GIT_COMMITTER_EMAIL=t@example.invalid \
+      git -c commit.gpgsign=false -c core.hooksPath=/dev/null "$@" )
+}
+p57n_take() {  # p57n_take <run-dir> <src> — 동기화 봉합을 세운 채 고정한다
+  ( CC_GATE_PIN_SYNC_DISABLE=1; export CC_GATE_PIN_SYNC_DISABLE
+    . "$repo_root/plugins/cc-cmds/orchestrator/pin.sh"
+    pin_take "$@" ) >/dev/null 2>&1
+}
+p57n_pin() {  # p57n_pin <run-dir> <키>
+  awk -F'\t' -v k="$2" '$1 == k { print $2; exit }' "$1/plugin-pin" 2>/dev/null
+}
+p57n_form() {  # p57n_form <NFC|NFD> <문자열> — 그 정규형의 UTF-8 바이트
+  printf '%s' "$2" | perl -CS -MUnicode::Normalize -ne "print $1(\$_)"
+}
+p57n_repo() {  # p57n_repo <이름> — 한글 룰 파일 둘을 NFC 이름으로 커밋한 저장소
+  local r="$P57N/$1" n
+  mkdir -p "$r/plugins/cc-cmds/orchestrator/rules" "$r/plugins/cc-cmds/.claude-plugin"
+  printf 'gate\n' > "$r/plugins/cc-cmds/orchestrator/gate.sh"
+  printf '{ "version": "1.0.0" }\n' > "$r/plugins/cc-cmds/.claude-plugin/plugin.json"
+  for n in 절단점-준수.rule 절단점-준수.sh; do
+    printf 'rule\n' > "$r/plugins/cc-cmds/orchestrator/rules/$(p57n_form NFC "$n")"
+  done
+  { p57n_g "$r" init -q . && p57n_g "$r" add -A && p57n_g "$r" commit -qm init; } >/dev/null 2>&1
+  printf '%s' "$r"
+}
+p57n_ls() {  # p57n_ls <dir> — 디렉터리 항목의 이름 바이트, 정렬
+  ls -A "$1" 2>/dev/null | LC_ALL=C sort
+}
+p57n_has() {  # p57n_has <dir> <이름> — 그 바이트 그대로의 항목이 디렉터리에 있으면 참
+  local nl='
+'
+  case "$nl$(p57n_ls "$1")$nl" in
+    *"$nl$2$nl"*) return 0 ;;
+  esac
+  return 1
+}
+
+# (1) 추적되지 않는 항목만 있는 하위 트리 → archive -----------------------------------
+P57N_U=$(p57n_repo untracked)
+mkdir -p "$P57N_U/plugins/cc-cmds/.playwright-cli"
+printf 'log\n' > "$P57N_U/plugins/cc-cmds/.playwright-cli/console.log"
+printf 'note\n' > "$P57N_U/plugins/cc-cmds/orchestrator/scratch.txt"
+check "57n: 픽스처 — 추적되지 않는 항목이 status 에 보인다 (아래 단언이 공허하지 않다)" \
+  "$( [ -n "$(p57n_g "$P57N_U/plugins/cc-cmds" --no-optional-locks status --porcelain -- .)" ] && printf yes || printf no )" "yes"
+p57n_take "$P57N/rd-u" "$P57N_U/plugins/cc-cmds"
+check "57n: 추적되지 않는 파일만 있는 하위 트리는 archive 와 dirty 아니오로 고정된다" \
+  "$(p57n_pin "$P57N/rd-u" method)/$(p57n_pin "$P57N/rd-u" dirty)" "archive/아니오"
+check "57n: archive 갈래의 새 키는 0·-·- 다" \
+  "$(p57n_pin "$P57N/rd-u" dirty-paths)|$(p57n_pin "$P57N/rd-u" index-renamed)|$(p57n_pin "$P57N/rd-u" index-unmatched)" "0|-|-"
+check "57n: archive 사본에는 추적되지 않는 항목이 없다" \
+  "$( [ -e "$P57N/rd-u/plugin/cc-cmds/.playwright-cli" ] || [ -e "$P57N/rd-u/plugin/cc-cmds/orchestrator/scratch.txt" ] \
+      && printf 있음 || printf 없음 )" "없음"
+
+# (2) 디스크 이름이 NFD 인 룰 파일 + 추적 파일 변경 → copy, 사본 이름은 인덱스 철자 -------
+P57N_N=$(p57n_repo nfd)
+P57N_RULES="$P57N_N/plugins/cc-cmds/orchestrator/rules"
+for p57n_f in 절단점-준수.rule 절단점-준수.sh; do
+  mv "$P57N_RULES/$(p57n_form NFC "$p57n_f")" "$P57N_RULES/.p57n-tmp"
+  mv "$P57N_RULES/.p57n-tmp" "$P57N_RULES/$(p57n_form NFD "$p57n_f")"
+done
+P57N_MEMO=$(p57n_form NFD 규칙-메모.txt)
+printf 'memo\n' > "$P57N_RULES/$P57N_MEMO"
+printf '{ "version": "1.0.1" }\n' > "$P57N_N/plugins/cc-cmds/.claude-plugin/plugin.json"
+check "57n: 픽스처 — 디스크 이름이 NFD 이고 NFC 와 다르다 (아래 단언이 공허하지 않다)" \
+  "$( p57n_has "$P57N_RULES" "$(p57n_form NFD 절단점-준수.rule)" \
+      && [ "$(p57n_form NFD 절단점-준수.rule)" != "$(p57n_form NFC 절단점-준수.rule)" ] && printf yes || printf no )" "yes"
+p57n_take "$P57N/rd-n" "$P57N_N/plugins/cc-cmds"
+check "57n: 추적 파일 변경은 copy 와 dirty 예로 고정된다" \
+  "$(p57n_pin "$P57N/rd-n" method)/$(p57n_pin "$P57N/rd-n" dirty)" "copy/예"
+check "57n: dirty-paths 가 1 이상이다" \
+  "$(p57n_pin "$P57N/rd-n" dirty-paths | grep -cE '^[1-9][0-9]*$' || true)" "1"
+p57n_want=$( { p57n_g "$P57N_RULES" ls-files -z -- . | tr '\0' '\n'; printf '%s\n' "$P57N_MEMO"; } | LC_ALL=C sort)
+check "57n: 복사 사본의 룰 디렉터리 이름 바이트가 인덱스와 같다" \
+  "$(p57n_ls "$P57N/rd-n/plugin/cc-cmds/orchestrator/rules")" "$p57n_want"
+check "57n: 인덱스에 없는 NFD 이름은 사본에서 바이트 그대로다" \
+  "$(p57n_ls "$P57N/rd-n/plugin/cc-cmds/orchestrator/rules" | grep -cxF "$P57N_MEMO" || true)" "1"
+check "57n: index-renamed 가 1 이상이고 index-unmatched 가 0 이다" \
+  "$(p57n_pin "$P57N/rd-n" index-renamed | grep -cE '^[1-9][0-9]*$' || true)/$(p57n_pin "$P57N/rd-n" index-unmatched)" "1/0"
+check "57n: copy 사본의 digest 가 사본을 다시 재도 같다" \
+  "$(p57n_pin "$P57N/rd-n" digest)" \
+  "$( . "$repo_root/plugins/cc-cmds/orchestrator/pin.sh"; pin_digest "$P57N/rd-n/plugin/cc-cmds" )"
+mkdir -p "$P57N/plain"
+cp -R "$P57N_N/plugins/cc-cmds/." "$P57N/plain/"
+check "57n: 브래킷 없는 단순 cp -R 사본에는 NFD 이름이 있다 (위 단언이 공허하지 않다)" \
+  "$(p57n_ls "$P57N/plain/orchestrator/rules" | grep -cxF "$(p57n_form NFD 절단점-준수.rule)" || true)" "1"
+
+# ---------------------------------------------------------------------------
+# 9n. NFD 카탈로그 — 룰 파일 이름이 어느 정규형으로 와도 게이트의 판정이 같다
+# --- section: 9n | group: base | covers: act, exec, gate_run_rules, gate_rule_enabled, check_manifest | anchors: 9n: NFD 카탈로그의 사전 인가된 행위는 승인 대기가 아니고 NFC 카탈로그와 같다, 9n: 대조군 — 설정이 없으면 NFD 카탈로그의 리뷰 룰이 머지를 거부한다, 9n: NFD 키의 리뷰-후-머지 끔이 두 카탈로그에서 먹힌다, 9n: 카탈로그에 없는 룰 설정 키는 경고된다, 9n: 모든 룰을 끄면 켜진 채 남는 룰이 선언의 끌 수 없는 룰과 같다 ---
+#
+# 게이트는 룰 이름을 룰 파일 이름에서 유도하고 코드 안의 NFC 리터럴과 비교한다.
+# macOS 의 원천 체크아웃이나 그것을 `cp -R` 로 뜬 고정 사본에서는 그 이름이 NFD 로
+# 왔고, 그러면 `사전-인가-대조` 특별 처리·끌 수 없는 목록·「룰 설정」 조회가 모두
+# 빗나갔다 — 사전 인가된 리뷰 게시가 승인 대기(exit 5)로 떨어진 것이 관측된 증상이다.
+#
+# 시험 중인 트리의 `plugins/cc-cmds` 를 두 벌 떠서 한 벌은 룰 파일 이름을 NFC 로,
+# 다른 한 벌은 NFD 로 맞추고, 같은 행위를 두 카탈로그의 게이트에 건다. 스위트의
+# `gate_inproc` 는 소싱 시점의 `GATE_DIR` 을 쓰므로 다른 카탈로그는 새 bash 프로세스로만
+# 잴 수 있다. 런마다 매니페스트·인가·원장·상태 루트를 따로 뜨고, 공유 매니페스트는
+# 읽지 않는다 — 절 9 의 오염 창 밖이다.
+# ---------------------------------------------------------------------------
+P9N=$(mktemp -d "$WORK/rules9n.XXXXXX")
+mkdir -p "$P9N/bin"
+printf '#!/bin/sh\nexit 0\n' > "$P9N/bin/gh"
+chmod +x "$P9N/bin/gh"
+p9n_catalog() {  # p9n_catalog <NFC|NFD> — 시험 중인 플러그인을 떠서 룰 파일 이름을 그 정규형으로
+  local form="$1" d="$P9N/$1/cc-cmds"
+  mkdir -p "$d"
+  cp -R "$repo_root/plugins/cc-cmds/." "$d/"
+  perl -MUnicode::Normalize -MEncode=decode,encode -e '
+    my ($d, $f) = @ARGV; my $i = 0;
+    opendir(my $h, $d) or die "opendir $d"; my @e = grep { !/^\.\.?$/ } readdir $h; closedir $h;
+    for my $n (@e) {
+      my $t = decode("UTF-8", $n); my $w = encode("UTF-8", $f eq "NFD" ? NFD($t) : NFC($t));
+      next if $w eq $n;
+      rename("$d/$n", "$d/.p9n.$i") or die "rename $n"; rename("$d/.p9n.$i", "$d/$w") or die "rename $w"; $i++;
+    }' "$d/orchestrator/rules" "$form"
+}
+p9n_catalog NFC
+p9n_catalog NFD
+p9n_nfd() { printf '%s' "$1" | perl -CS -MUnicode::Normalize -ne 'print NFD($_)'; }
+p9n_fixture() {  # p9n_fixture <run-id> [<룰 설정 줄>…] — 이 절의 런 하나
+  local rid="$1" l; shift
+  P9N_MAN="$P9N/$rid.plan.md"
+  P9N_STATE="$P9N/state-$rid"
+  fx_rid_copy R1 "$rid" "$MBAK" "$P9N_MAN"
+  if [ "$#" -gt 0 ]; then
+    printf '\n## 룰 설정\n' >> "$P9N_MAN"
+    for l in "$@"; do printf '%s\n' "$l" >> "$P9N_MAN"; done
+  fi
+  refresh_bd "$P9N_MAN"
+  fx_rid_copy R1 "$rid" "$GBAK" "$WT/docs/pipeline-grant/$rid.md"
+  printf '# 파이프라인 런 보고서 — %s\n\n런 id %s · NFD 카탈로그 픽스처\n' "$rid" "$rid" > "$WT/docs/pipeline-run/$rid.md"
+  rm -rf "$P9N_STATE"; mkdir -p "$P9N_STATE"
+}
+p9n_gate() {  # p9n_gate <NFC|NFD> <게이트 인자…> — 그 카탈로그의 게이트를 새 프로세스로
+  local form="$1" out; shift
+  out=$(cd "$WT" && XDG_STATE_HOME="$P9N_STATE" CC_REMOTE_GH="$P9N/bin/gh" PATH="$P9N/bin:$PATH" \
+        bash "$P9N/$form/cc-cmds/orchestrator/gate.sh" "$@" 2>&1); rc=$?
+  msg=$(printf '%s' "$out" | grep -vE '\[run\] ' | tr '\n' ' ' | sed 's/[[:space:]]*$//')
+  printf '%s' "$out" > "$WORK/last-output.txt"
+}
+p9n_names() {  # p9n_names <문면> — 직전 게이트 출력에 그 문면이 있으면 「이름」, 없으면 「없음」
+  case "$msg" in
+    *"$1"*) printf 이름 ;;
+    *) printf 없음 ;;
+  esac
+}
+p9n_h() {  # p9n_h <NFC|NFD> — 그 카탈로그 게이트의 새 스냅숏 다이제스트
+  ( cd "$WT" && XDG_STATE_HOME="$P9N_STATE" bash "$P9N/$1/cc-cmds/orchestrator/gate.sh" snapshot --manifest "$P9N_MAN" 2>/dev/null | jq -r .H )
+}
+check "9n: 픽스처 — NFD 카탈로그의 룰 파일 이름 가운데 NFC 와 다른 것이 있다 (아래 단언이 공허하지 않다)" \
+  "$(ls -A "$P9N/NFD/cc-cmds/orchestrator/rules" | perl -CS -MUnicode::Normalize -ne 'chomp; $c++ if NFC($_) ne $_; END { print $c ? "yes" : "no" }')" "yes"
+check "9n: 픽스처 — NFC 카탈로그의 룰 파일 이름은 모두 NFC 다" \
+  "$(ls -A "$P9N/NFC/cc-cmds/orchestrator/rules" | perl -CS -MUnicode::Normalize -ne 'chomp; $c++ if NFC($_) ne $_; END { print $c ? "no" : "yes" }')" "yes"
+
+# (1) 사전 인가된 행위 — 승인 대기가 아니다 --------------------------------------------
+# 사전 인가 룰만 행위 argv 대신 `gate_preauth_argv` 가 다시 쓴 문자열을 읽는다. 그
+# 둘이 갈리는 행위여야 룰 이름을 알아보지 못한 카탈로그가 드러난다 — 저장소 플래그가
+# `api` 앞에 선 `gh -R <슬러그> api …` 는 `gh api -X POST …` 로 다시 쓰여 `gh api`
+# 행에 맞고, 쓰인 그대로는 어느 행에도 맞지 않는다.
+p9n_rc=""; p9n_msgs=""
+for p9n_f in NFC NFD; do
+  p9n_fixture "R9NA$p9n_f"
+  p9n_gate "$p9n_f" plan --manifest "$P9N_MAN" --target infra --cutpoint PR --surface 외부상태변경 --reach 협업 \
+    -- gh -R t/infra api -X POST repos/t/infra/issues/1/comments -f body=x
+  p9n_rc="$p9n_rc$p9n_f=$rc "
+  p9n_msgs="$p9n_msgs[$p9n_f] $msg "
+done
+if [ "$p9n_rc" = "NFC=0 NFD=0 " ]; then
+  ok "9n: NFD 카탈로그의 사전 인가된 행위는 승인 대기가 아니고 NFC 카탈로그와 같다"
+else
+  bad "9n: NFD 카탈로그의 사전 인가된 행위는 승인 대기가 아니고 NFC 카탈로그와 같다" "$p9n_rc — $p9n_msgs"
+fi
+
+# (2) 끌 수 없는 네 룰 — 키를 NFC 로 한 번, NFD 로 한 번 ----------------------------------
+# 절 9 처럼 리뷰 룰도 끈다. 그렇지 않으면 리뷰 기록이 없는 이 런에서 승인 대기 뒤에
+# 리뷰 룰이 거부해 5 가 3 으로 바뀐다.
+for p9n_k in NFC NFD; do
+  p9n_l="**리뷰-후-머지**: 끔
+"
+  for p9n_r in 절단점-준수 사전-인가-대조 인가-자기확장-금지 리뷰-후-적용; do
+    [ "$p9n_k" = NFD ] && p9n_r=$(p9n_nfd "$p9n_r")
+    p9n_l="$p9n_l**$p9n_r**: 끔
+"
+  done
+  # 여러 줄을 한 인자로 넘긴다 — `p9n_fixture` 가 인자를 그대로 한 줄씩 덧붙인다.
+  p9n_fixture "R9NB$p9n_k" "${p9n_l%
+}"
+  # 종료 코드만으로는 어느 룰이 막았는지 모른다 — 리뷰 기록이 없는 이 런에서는 리뷰
+  # 룰도 머지를 3 으로 막는다. 그래서 그 행위를 막아야 할 룰의 이름이 문면에 있는지 함께 본다.
+  p9n_gate NFD act --manifest "$P9N_MAN" --kind merge --target front --segment S9N --cutpoint 머지 \
+    --snapshot-digest "$(p9n_h NFD)" --rationale x -- gh pr merge 1
+  p9n_a="$rc:$(p9n_names "rule refused: 절단점-준수")"
+  p9n_gate NFD act --manifest "$P9N_MAN" --kind x --target infra --cutpoint 배포 \
+    --snapshot-digest "$(p9n_h NFD)" --rationale x -- curl -X POST https://example.invalid
+  p9n_b="$rc:$(p9n_names "rule '사전-인가-대조' requires an approval wait")"
+  p9n_gate NFD act --manifest "$P9N_MAN" --kind merge --target infra --segment S9N --cutpoint 배포 \
+    --snapshot-digest "$(p9n_h NFD)" --rationale x -- gh pr merge 1 --admin
+  p9n_c="$rc:$(p9n_names "rule refused: 인가-자기확장-금지")"
+  check "9n: NFD 카탈로그에서도 끌 수 없는 룰은 $p9n_k 키의 「끔」을 무시한다" \
+    "$p9n_a/$p9n_b/$p9n_c" "3:이름/5:이름/3:이름"
+done
+
+# (3) 리뷰-후-머지 — 키를 NFD 로 적은 「끔」 ----------------------------------------------
+p9n_res=""
+for p9n_f in NFC NFD; do
+  p9n_fixture "R9NC$p9n_f" "**$(p9n_nfd 리뷰-후-머지)**: 끔"
+  p9n_gate "$p9n_f" act --manifest "$P9N_MAN" --kind merge --target infra --segment S9N --cutpoint 머지 \
+    --snapshot-digest "$(p9n_h "$p9n_f")" --rationale x -- gh api -X PUT repos/o/r/pulls/1/merge -f "sha=$(wt_head)"
+  if passes_review; then p9n_res="$p9n_res$p9n_f=통과 "; else p9n_res="$p9n_res$p9n_f=거부 "; fi
+done
+check "9n: NFD 키의 리뷰-후-머지 끔이 두 카탈로그에서 먹힌다" "$p9n_res" "NFC=통과 NFD=통과 "
+# 대조군 — 설정이 없으면 같은 머지가 리뷰 룰에 거부된다.
+p9n_fixture R9NC0
+p9n_gate NFD act --manifest "$P9N_MAN" --kind merge --target infra --segment S9N --cutpoint 머지 \
+  --snapshot-digest "$(p9n_h NFD)" --rationale x -- gh api -X PUT repos/o/r/pulls/1/merge -f "sha=$(wt_head)"
+if passes_review; then
+  bad "9n: 대조군 — 설정이 없으면 NFD 카탈로그의 리뷰 룰이 머지를 거부한다" "$msg"
+else
+  ok "9n: 대조군 — 설정이 없으면 NFD 카탈로그의 리뷰 룰이 머지를 거부한다"
+fi
+
+# (4) 카탈로그에 없는 키 — 시끄럽게 ------------------------------------------------------
+p9n_fixture R9ND '**없는-룰**: 끔'
+p9n_gate NFD snapshot --manifest "$P9N_MAN"
+case "$(cat "$WORK/last-output.txt")" in
+  *"'없는-룰' 는 룰 카탈로그의 어느 룰과도 맞지 않습니다"*) ok "9n: 카탈로그에 없는 룰 설정 키는 경고된다" ;;
+  *) bad "9n: 카탈로그에 없는 룰 설정 키는 경고된다" "rc=$rc $msg" ;;
+esac
+p9n_fixture R9ND2 "**$(p9n_nfd 리뷰-후-머지)**: 끔"
+p9n_gate NFD snapshot --manifest "$P9N_MAN"
+case "$(cat "$WORK/last-output.txt")" in
+  *"룰 카탈로그의 어느 룰과도 맞지 않습니다"*) bad "9n: 철자만 다른 키는 경고하지 않는다" "$msg" ;;
+  *) ok "9n: 철자만 다른 키는 경고하지 않는다" ;;
+esac
+
+# (5) 모든 룰 끔 — 켜진 채 남는 룰과 선언 ------------------------------------------------
+# 게이트를 소싱한 셸에서 카탈로그의 선언마다 `gate_rule_enabled <정규 이름> <선언 경로>`
+# 를 부른다. 기대 집합은 선언의 「끌 수 있는가」 를 매니페스트 검사와 같은 리더로 읽어 얻는다.
+p9n_all=""
+for p9n_d in "$P9N/NFD/cc-cmds/orchestrator/rules"/*.rule; do
+  p9n_all="$p9n_all**$(basename "$p9n_d" .rule)**: 끔
+"
+done
+p9n_fixture R9NE "${p9n_all%
+}"
+p9n_src() {  # p9n_src <본문> — NFD 카탈로그 게이트를 소싱한 셸
+  ( cd "$WT" && CC_GATE_SOURCE_ONLY=1 P9N_GATE="$P9N/NFD/cc-cmds/orchestrator/gate.sh" P9N_M="$P9N_MAN" P9N_BODY="$1" bash -c '
+      . "$P9N_GATE" </dev/null
+      unset CC_GATE_SOURCE_ONLY
+      trap - EXIT ERR INT TERM
+      set +e
+      MANIFEST="$P9N_M"; RUN_ID=""
+      eval "$P9N_BODY"' )
+}
+p9n_on=$(p9n_src '
+  for d in "$(gate_rules_dir)"/*.rule; do
+    n=$(basename "$d" .rule | perl -CS -MUnicode::Normalize -ne "print NFC(\$_)")
+    gate_rule_enabled "$n" "$d" && printf "%s\n" "$n"
+  done | LC_ALL=C sort' 2>"$P9N/e-on.txt")
+p9n_want=$(p9n_src '
+  for d in "$(gate_rules_dir)"/*.rule; do
+    case "$(rule_switchable_value "$d")" in 예*) continue ;; esac
+    basename "$d" .rule | perl -CS -MUnicode::Normalize -ne "chomp; print NFC(\$_), qq(\n)"
+  done | LC_ALL=C sort' 2>/dev/null)
+check "9n: 픽스처 — 선언이 끌 수 없다고 하는 룰이 있다 (아래 단언이 공허하지 않다)" \
+  "$( [ -n "$p9n_want" ] && printf yes || printf no )" "yes"
+check "9n: 모든 룰을 끄면 켜진 채 남는 룰이 선언의 끌 수 없는 룰과 같다" "$p9n_on" "$p9n_want"
+check "9n: 게이트 목록과 선언이 어긋난다는 경고가 나오지 않는다" \
+  "$(grep -c '끌 수 없는 목록에 그 이름이 없습니다' "$P9N/e-on.txt" || true)" "0"
+# 대조군 — 선언은 끌 수 없다고 하는데 게이트 목록에 없는 이름은 켜지고 경고된다.
+mkdir -p "$P9N/extra"
+printf '이름: 가짜-룰\n끌 수 있는가: 아니오\n' > "$P9N/extra/가짜-룰.rule"
+p9n_fixture R9NF '**가짜-룰**: 끔'
+p9n_x=$(p9n_src 'gate_rule_enabled 가짜-룰 "'"$P9N"'/extra/가짜-룰.rule" && printf 켬 || printf 끔' 2>"$P9N/e-x.txt")
+check "9n: 선언이 끌 수 없다고 하는 룰은 게이트 목록에 없어도 켜지고 경고된다" \
+  "$p9n_x/$(grep -c '끌 수 없는 목록에 그 이름이 없습니다' "$P9N/e-x.txt" || true)" "켬/1"
+
+# (6) 매니페스트 검사 — 「룰 설정」 키가 없으면 정규화하지 않는다 ---------------------------
+# 매니페스트 검사는 게이트 호출마다 돈다. 키가 없는 매니페스트에서 카탈로그를 만들면
+# 호출마다 정규화 프로세스가 뜬다. 소싱한 셸에서 정규화 도우미를 호출 수를 적는 대역으로
+# 바꾸고 `check_manifest` 만 부른다. 키가 있는 매니페스트가 대조군이다 — 키를 한 번,
+# 카탈로그를 한 번 정규화하므로 2 이상이고, 검사가 카탈로그에 닿기 전에 끝나면 드러난다.
+p9n_canon_calls() {  # p9n_canon_calls — 현재 픽스처에서 check_manifest 가 정규화 도우미를 부른 횟수
+  : > "$P9N/canon-calls.txt"
+  p9n_src 'rule_name_canon() { printf "x\n" >> "'"$P9N"'/canon-calls.txt"; cat; }
+    ( check_manifest ) >/dev/null 2>&1' >/dev/null 2>&1
+  wc -l < "$P9N/canon-calls.txt" | tr -d ' '
+}
+p9n_fixture R9NG
+p9n_n0=$(p9n_canon_calls)
+p9n_fixture R9NG2 "**$(p9n_nfd 리뷰-후-머지)**: 끔"
+p9n_n1=$(p9n_canon_calls)
+check "9n: 대조군 — 「룰 설정」 키가 있으면 매니페스트 검사가 정규화한다 (아래 단언이 공허하지 않다)" \
+  "$( [ "${p9n_n1:-0}" -ge 2 ] && printf yes || printf "no($p9n_n1)" )" "yes"
+check "9n: 「룰 설정」 키가 없는 매니페스트 검사는 정규화 프로세스를 띄우지 않는다" "$p9n_n0" "0"
+
+# (7) 값을 NFD 로 적은 「끔」 — 아무 룰도 끄지 않는다 ---------------------------------------
+# 구속 다이제스트는 값이 조합형 `켬`·`끔` 인 룰 줄만 얼린다. 값까지 정규화하면 얼려지지
+# 않은 줄이 룰을 끈다. 게이트 호출(스냅숏 메모를 거치는 읽기)과 소싱한 셸(메모가 꺼진
+# awk 읽기)의 두 경로를 다 본다. 값이 조합형인 같은 줄은 끈다는 것이 대조군이다.
+p9n_res=""
+for p9n_f in NFC NFD; do
+  p9n_fixture "R9NH$p9n_f" "**리뷰-후-머지**: $(p9n_nfd 끔)"
+  p9n_gate "$p9n_f" act --manifest "$P9N_MAN" --kind merge --target infra --segment S9N --cutpoint 머지 \
+    --snapshot-digest "$(p9n_h "$p9n_f")" --rationale x -- gh api -X PUT repos/o/r/pulls/1/merge -f "sha=$(wt_head)"
+  if passes_review; then p9n_res="$p9n_res$p9n_f=통과 "; else p9n_res="$p9n_res$p9n_f=거부 "; fi
+done
+check "9n: NFD 값의 리뷰-후-머지 끔은 두 카탈로그에서 머지를 풀지 않는다" "$p9n_res" "NFC=거부 NFD=거부 "
+check "9n: 픽스처 — NFD 값 「끔」 은 조합형 「끔」 과 바이트가 다르다 (위 단언이 공허하지 않다)" \
+  "$( [ "$(p9n_nfd 끔)" != "끔" ] && printf yes || printf no )" "yes"
+p9n_v=""
+for p9n_val in "끔" "$(p9n_nfd 끔)"; do
+  p9n_fixture R9NH2 "**리뷰-후-머지**: $p9n_val"
+  p9n_v="$p9n_v$(p9n_src 'gate_rule_enabled 리뷰-후-머지 && printf 켬 || printf 끔' 2>/dev/null)/"
+done
+check "9n: 메모가 꺼진 읽기에서도 조합형 값만 리뷰-후-머지를 끈다" "$p9n_v" "끔/켬/"
 
 # ---------------------------------------------------------------------------
 # 58. argv 정규 파싱 층 — 한 번 파싱하고, 실제 도구의 문법대로 읽는다
@@ -47063,14 +47413,16 @@ p59_snap() {
 }
 p59_h() { p59_snap | jq -r .H; }
 p59_state() {
-  # p59_state <판정> <사유> [computed_at 오프셋 초] [schema] [tracker] — 센서가 쓰는
-  # 모양의 state.json. 키 이름은 센서의 것과 같고, 이 절이 읽는 것만 채운다.
-  local verdict="$1" reason="$2" off="${3:-0}" schema="${4:-cc-pace-state v1}" tracker="${5:-ok}" now
+  # p59_state <판정> <사유> [computed_at 오프셋 초] [schema] [tracker] [호스트 블록 JSON]
+  # — 센서가 쓰는 모양의 state.json. 키 이름은 센서의 것과 같고, 이 절이 읽는 것만
+  # 채운다. 호스트 블록은 주어졌을 때만 싣는다.
+  local verdict="$1" reason="$2" off="${3:-0}" schema="${4:-cc-pace-state v1}" tracker="${5:-ok}" host="${6:-null}" now
   now=$(( $(date -u +%s) - off ))
   jq -cn --arg schema "$schema" --arg v "$verdict" --arg r "$reason" --arg t "$tracker" \
-     --argjson now "$now" \
+     --argjson now "$now" --argjson h "$host" \
      '{schema: $schema, tick_seq: 7, computed_at: ($now | todate), computed_at_epoch: $now,
-       tracker: $t, verdict: $v, verdict_reason: $r, seats: []}' > "$P59_PACE/state.json"
+       tracker: $t, verdict: $v, verdict_reason: $r, seats: []}
+      + (if $h == null then {} else {host: $h} end)' > "$P59_PACE/state.json"
 }
 p59_rows() { { grep -cF "\`$1\`" "$P59_LEDGER" || true; }; }
 p59_last() { { grep -F "\`$1\`" "$P59_LEDGER" || true; } | tail -1; }
@@ -47162,6 +47514,7 @@ check "59: 첫 행의 이전도 (미상) 이다" "$(p59_field "$p59_row" 이전)
 check "59: 부재 행의 기준 틱은 - 다" "$(p59_field "$p59_row" '기준 틱')" "-"
 check "59: 부재 행의 관측도 - 다" "$(p59_field "$p59_row" 관측)" "-"
 check "59: 부재 행의 사유는 (미상) 이다" "$(p59_field "$p59_row" 사유)" "(미상)"
+check "59: 부재 행의 호스트는 - 다" "$(p59_field "$p59_row" 호스트)" "-"
 p59_act
 check "59: 판정이 그대로면(여전히 부재) 행이 늘지 않는다" "$(p59_rows pace)" "1"
 p59_state 가속 idle
@@ -47174,10 +47527,11 @@ check "59: 기준 틱은 센서의 tick_seq 다" "$(p59_field "$p59_row" '기준
 check "59: 관측은 센서의 computed_at 이다" \
   "$(p59_field "$p59_row" 관측)" "$(jq -r .computed_at "$P59_PACE/state.json")"
 check "59: 사유는 센서의 verdict_reason 이다" "$(p59_field "$p59_row" 사유)" "idle"
-# 비교 기준은 판정 하나다 — 사유만 바뀐 틱은 행을 만들지 않는다.
+check "59: 호스트 블록이 없는 state.json 의 호스트는 - 다" "$(p59_field "$p59_row" 호스트)" "-"
+# 호스트와 무관한 사유끼리만 바뀐 틱은 판정이 같으면 행을 만들지 않는다.
 p59_state 가속 lanes-below-target
 p59_act
-check "59: 사유만 바뀌고 판정이 같으면 행이 늘지 않는다" "$(p59_rows pace)" "2"
+check "59: 호스트와 무관한 사유만 바뀌고 판정이 같으면 행이 늘지 않는다" "$(p59_rows pace)" "2"
 # snapshot 은 읽기이므로 판정이 바뀌어도 쓰지 않는다 — 다음 act 가 쓴다.
 p59_state 제동 brake
 p59_snap >/dev/null
@@ -47185,10 +47539,52 @@ check "59: snapshot 은 판정이 바뀌어도 pace 행을 쓰지 않는다" "$(
 p59_act
 check "59: 그다음 act 가 그 변화를 쓴다" "$(p59_rows pace)" "3"
 check "59: 이전 필드가 직전 행의 판정을 잇는다" "$(p59_field "$(p59_last pace)" 이전)" "가속"
+# 같은 판정 안에서도 호스트 사유가 들고 나거나 바뀌면 행을 쓴다.
+p59_hblk() {
+  # p59_hblk <state> [<ratio> <saturated>] — 센서가 싣는 모양의 호스트 블록.
+  jq -cn --arg s "$1" --argjson r "${2:-null}" --argjson sat "${3:-false}" '
+    {state: $s, load1: (if $r == null then null else $r * 18 / 1000 end), load5: null,
+     ncpu: (if $r == null then null else 18 end), ratio_permille: $r, saturated: $sat,
+     since_epoch: 0, enter_permille: 2000, leave_permille: 1500, sampled_at_epoch: 0}'
+}
+p59_state 제동 host 0 'cc-pace-state v1' ok "$(p59_hblk ok 2000 true)"
+p59_act
+check "59: 같은 판정 제동 안에서 brake 가 host 로 바뀌면 행이 는다" "$(p59_rows pace)" "4"
+p59_row=$(p59_last pace)
+check "59: 그 행의 사유는 host 이고 이전은 제동이다" \
+  "$(p59_field "$p59_row" 사유)/$(p59_field "$p59_row" 이전)" "host/제동"
+check "59: 포화 호스트의 호스트 칸은 판독값을 싣는다" "$(p59_field "$p59_row" 호스트)" "포화 ratio=2000 ncpu=18"
+p59_state 제동 host 0 'cc-pace-state v1' ok "$(p59_hblk ok 2100 true)"
+p59_act
+check "59: 판정과 사유가 그대로면 호스트 판독값이 바뀌어도 행이 늘지 않는다" "$(p59_rows pace)" "4"
+p59_state 제동 brake-host 0 'cc-pace-state v1' ok "$(p59_hblk ok 2000 true)"
+p59_act
+check "59: host 에서 brake-host 로 바뀌어도 행이 는다" \
+  "$(p59_rows pace)/$(p59_field "$(p59_last pace)" 사유)" "5/brake-host"
+p59_state 제동 brake
+p59_act
+check "59: 호스트 사유에서 brake 로 돌아가도 행이 는다" \
+  "$(p59_rows pace)/$(p59_field "$(p59_last pace)" 사유)/$(p59_field "$(p59_last pace)" 호스트)" "6/brake/-"
+# 호스트 칸의 나머지 세 꼴 — 판정이 바뀌는 틱마다 하나씩.
+p59_state 가속 idle 0 'cc-pace-state v1' ok "$(p59_hblk off)"
+p59_act
+check "59: off 블록의 호스트 칸은 꺼짐이다" \
+  "$(p59_rows pace)/$(p59_field "$(p59_last pace)" 호스트)" "7/꺼짐"
+p59_state 유지 default 0 'cc-pace-state v1' ok "$(p59_hblk unread)"
+p59_act
+check "59: unread 블록의 호스트 칸은 미상이다" \
+  "$(p59_rows pace)/$(p59_field "$(p59_last pace)" 호스트)" "8/미상"
+p59_state 가속 idle 0 'cc-pace-state v1' ok "$(p59_hblk ok 55 false)"
+p59_act
+check "59: 포화가 아닌 ok 블록의 호스트 칸은 정상과 판독값이다" \
+  "$(p59_rows pace)/$(p59_field "$(p59_last pace)" 호스트)" "9/정상 ratio=55 ncpu=18"
+p59_state 제동 brake
+p59_act
+check "59: 다시 제동으로 바뀐 행이 남는다" "$(p59_rows pace)" "10"
 # 낡음도 변화다 — 센서가 멈추면 다음 act 가 (미상) 으로 돌아간 것을 적는다.
 p59_state 제동 brake 400
 p59_act
-check "59: 센서가 낡으면 (미상) 으로 돌아간 행이 남는다" "$(p59_rows pace)" "4"
+check "59: 센서가 낡으면 (미상) 으로 돌아간 행이 남는다" "$(p59_rows pace)" "11"
 check "59: 그 행의 판정은 (미상) 이고 이전은 제동이다" \
   "$(p59_field "$(p59_last pace)" 판정)/$(p59_field "$(p59_last pace)" 이전)" "(미상)/제동"
 rm -f "$P59_PACE/state.json"

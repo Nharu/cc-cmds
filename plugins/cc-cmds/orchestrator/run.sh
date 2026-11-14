@@ -453,7 +453,7 @@ MANIFEST=""; ANCHOR_KIND=""; ANCHOR_KEY=""
 # in its own shell; readers running inside a `$( … )` inherit the memo, which
 # is why the snapshot has to precede the first such call.
 # ---------------------------------------------------------------------------
-MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""
+MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""; MANIFEST_MEMO_GEN=0
 
 manifest_snapshot_take() {
   # One pass. Record tags:
@@ -484,7 +484,11 @@ manifest_snapshot_take() {
   #   VF <row>     every `- \`리뷰 문면\`` row anywhere, in order
   #   ST <row>     every `- \`출처 티켓\`` row anywhere, in order
   #   SA <row>     every `- \`강제 표면 승인\`` row anywhere, in order
+  #
+  # Each take moves `MANIFEST_MEMO_GEN`, so a value derived from the memo and
+  # kept in this process (`rule_setting_load`) knows it is stale.
   MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""
+  MANIFEST_MEMO_GEN=$(( ${MANIFEST_MEMO_GEN:-0} + 1 ))
   [ -n "$MANIFEST" ] && [ -f "$MANIFEST" ] || return 0
   MANIFEST_MEMO="
 $(LC_ALL=C awk '
@@ -1834,15 +1838,44 @@ EOF
   # joins the un-switchable set, and the operator is told the setting is inert
   # while the gate is in fact reading it. That misinforms in the direction that
   # leaves a merge gate believed to be on after it was switched off.
-  local rf rname
-  for rf in "$ORCH_DIR"/rules/*.rule; do
-    [ -f "$rf" ] || continue
-    case "$(rule_switchable_value "$rf")" in 예*) continue ;; esac
-    rname=$(basename "$rf" .rule)
-    [ -n "$(manifest_field '룰 설정' "$rname")" ] || continue
-    warn_once 'rule-setting-inert' \
-      "「룰 설정」에 끌 수 없는 룰 '$rname' 의 키가 있습니다 — 그 줄은 게이트에 읽히지 않으면서 구속 다이제스트에는 들어갑니다"
-  done
+  #
+  # NAMES ARE COMPARED NORMALISED on both sides (`rule_catalog`,
+  # `rule_setting_value`), so a key typed in either Unicode form and a catalog
+  # whose file names arrived decomposed still meet. A key that meets no rule at
+  # all is said once as well: it switches nothing, and a person who typed it
+  # believes it switched something.
+  #
+  # THE SECTION IS READ BEFORE THE CATALOG. Both warnings need at least one key,
+  # and this check runs on every gate call, so a manifest with no `## 룰 설정`
+  # key lines builds no catalog here and starts no normalisation process.
+  local rcat rline rf rname rkeys rk rnames nl='
+' tab='	'
+  rule_setting_load
+  if [ -n "$RULE_SETTING_TAB" ]; then
+    rcat=$(rule_catalog "$ORCH_DIR/rules")
+    rnames="$nl"
+    rkeys="$rcat"
+    while [ -n "$rkeys" ]; do
+      rline=${rkeys%%"$nl"*}
+      case "$rkeys" in *"$nl"*) rkeys=${rkeys#*"$nl"} ;; *) rkeys="" ;; esac
+      rf=${rline%%"$tab"*}; rname=${rline#*"$tab"}
+      rnames="$rnames$rname$nl"
+      [ -f "$rf" ] || continue
+      case "$(rule_switchable_value "$rf")" in 예*) continue ;; esac
+      [ -n "$(rule_setting_value "$rname")" ] || continue
+      warn_once 'rule-setting-inert' \
+        "「룰 설정」에 끌 수 없는 룰 '$rname' 의 키가 있습니다 — 그 줄은 게이트에 읽히지 않으면서 구속 다이제스트에는 들어갑니다"
+    done
+    rkeys="$RULE_SETTING_TAB"
+    while [ -n "$rkeys" ]; do
+      rline=${rkeys%%"$nl"*}
+      case "$rkeys" in *"$nl"*) rkeys=${rkeys#*"$nl"} ;; *) rkeys="" ;; esac
+      rk=${rline%%"$tab"*}
+      case "$rnames" in *"$nl$rk$nl"*) continue ;; esac
+      warn_once 'rule-setting-unknown' \
+        "「룰 설정」의 키 '$rk' 는 룰 카탈로그의 어느 룰과도 맞지 않습니다 — 그 줄은 아무 룰도 끄거나 켜지 않습니다"
+    done
+  fi
 
   # 14 — `dev 식별자` on the target rows.
   #
@@ -2452,6 +2485,160 @@ rule_switchable_value() {
       if ($0 ~ /[^[:space:]]/) { print; exit }
     }
   ' "$1"
+}
+
+# RULE NAMES ARE COMPARED IN ONE NORMAL FORM. A rule's name is its file name, and
+# a Korean file name created on macOS is stored decomposed (NFD) while every
+# literal in this code, every manifest key typed by a person and every tree
+# object holds it composed (NFC). Compared as bytes, a decomposed catalog
+# matched none of the names the gate special-cases — measured: a pre-authorized
+# review post fell into an approval wait because `사전-인가-대조` was not
+# recognised and read the wrong argv. So every rule name, from a file or from a
+# manifest key, goes through `rule_name_canon` before it is compared, and the
+# file's own bytes are kept only to open the file.
+
+# rule_name_canon — read lines on stdin and print each in NFC, in one process.
+# A line that is not valid UTF-8 passes through as it came. Without perl or its
+# normalisation module the input passes through unchanged and the status is 1,
+# so a caller can say that names are being compared as bytes.
+rule_name_canon() {
+  if ! command -v perl >/dev/null 2>&1; then
+    cat
+    return 1
+  fi
+  perl -e '
+    my $ok = eval { require Unicode::Normalize; require Encode; 1 };
+    while (my $l = <STDIN>) {
+      chomp $l;
+      if ($ok) {
+        my $s = eval { Encode::decode("UTF-8", $l, Encode::FB_CROAK() | Encode::LEAVE_SRC()) };
+        $l = Encode::encode("UTF-8", Unicode::Normalize::NFC($s)) if defined $s;
+      }
+      print "$l\n";
+    }
+    exit($ok ? 0 : 1);
+  '
+}
+
+# rule_catalog <rules-dir> — one line per declaration, `<declaration path><TAB>
+# <canonical name>`, ascending by the declaration's `순서:` field. A declaration
+# with no `순서:` sorts last (999) rather than being dropped — a rule missing one
+# field is still a rule. The path keeps the disk's bytes, so it and the checker
+# beside it (`${path%.rule}.sh`) open whatever form the file system holds; only
+# the name is normalised, once for the whole catalog. The status is
+# `rule_name_canon`'s.
+rule_catalog() {
+  local d="$1" f n decls names canon rc=0 nl='
+' tab='	' b c
+  decls=$(for f in "$d"/*.rule; do
+            [ -f "$f" ] || continue
+            # Quit AFTER a match, not on the first line: `/./q` tests the pattern
+            # space, which is never empty, so it ends the script before the
+            # address that matters is ever reached.
+            n=$(sed -n '/^순서:/{s/^순서: *\([0-9][0-9]*\).*/\1/p;q;}' "$f")
+            [ -n "$n" ] || n=999
+            printf '%s\t%s\n' "$n" "$f"
+          done | sort -n | cut -f2)
+  [ -n "$decls" ] || return 0
+  names=""
+  b="$decls"
+  while [ -n "$b" ]; do
+    f=${b%%"$nl"*}
+    case "$b" in *"$nl"*) b=${b#*"$nl"} ;; *) b="" ;; esac
+    f=${f##*/}
+    names="$names${f%.rule}$nl"
+  done
+  canon=$(printf '%s' "$names" | rule_name_canon) || rc=$?
+  b="$decls"; c="$canon"
+  while [ -n "$b" ]; do
+    f=${b%%"$nl"*}
+    case "$b" in *"$nl"*) b=${b#*"$nl"} ;; *) b="" ;; esac
+    n=${c%%"$nl"*}
+    case "$c" in *"$nl"*) c=${c#*"$nl"} ;; *) c="" ;; esac
+    printf '%s%s%s\n' "$f" "$tab" "$n"
+  done
+  return "$rc"
+}
+
+# The `## 룰 설정` section with every key normalised: one `<canonical key><TAB>
+# <value>` line per key, the first occurrence of a canonical key winning, as the
+# section reader's first match does. Filled once per manifest snapshot and kept
+# in this process, so the caller that fills it must not be inside a command
+# substitution — `rule_setting_load` is that caller. A manifest with no such
+# section, or a section with no key lines, starts no normalisation process.
+#
+# ONLY THE KEY COLUMN IS NORMALISED; the value keeps the manifest's bytes. The
+# binding digest freezes a rule line only when its value is the composed `켬` or
+# `끔` byte for byte (the `R` record of the manifest memo and
+# `manifest_rule_lines`), so a decomposed `끔` normalised here would switch a
+# rule off through a line the digest never froze, and a later edit of that line
+# would pass the digest comparison unseen. A value in any other form therefore
+# reads as itself and switches nothing.
+RULE_SETTING_FOR=""; RULE_SETTING_TAB=""; RULE_SETTING_CANON_RC=0
+rule_setting_load() {
+  local for raw keys canon b c line k out nl='
+' tab='	'
+  if manifest_memo_on; then for="memo:${MANIFEST_MEMO_GEN:-0}:$MANIFEST"; else for=""; fi
+  if [ -n "$for" ] && [ "$for" = "$RULE_SETTING_FOR" ]; then return 0; fi
+  if manifest_memo_on; then
+    raw=$(manifest_memo_all "F	룰 설정	")
+  else
+    raw=$(awk '
+      $0 == "## 룰 설정" { inb=1; next }
+      inb && /^## / { exit }
+      inb {
+        p = index($0, "**: ")
+        if (substr($0, 1, 2) == "**" && p > 3) print substr($0, 3, p - 3) "\t" substr($0, p + 4)
+      }
+    ' "$MANIFEST" 2>/dev/null)
+  fi
+  RULE_SETTING_CANON_RC=0
+  if [ -z "$raw" ]; then
+    RULE_SETTING_TAB=""
+  else
+    keys=""; b="$raw"
+    while [ -n "$b" ]; do
+      line=${b%%"$nl"*}
+      case "$b" in *"$nl"*) b=${b#*"$nl"} ;; *) b="" ;; esac
+      keys="$keys${line%%"$tab"*}$nl"
+    done
+    canon=$(printf '%s' "$keys" | rule_name_canon) || RULE_SETTING_CANON_RC=$?
+    # Pair each normalised key with its own line's value bytes. A key the
+    # normaliser printed no line for keeps its raw bytes.
+    out=""; b="$raw"; c="$canon"
+    while [ -n "$b" ]; do
+      line=${b%%"$nl"*}
+      case "$b" in *"$nl"*) b=${b#*"$nl"} ;; *) b="" ;; esac
+      if [ -n "$c" ]; then
+        k=${c%%"$nl"*}
+        case "$c" in *"$nl"*) c=${c#*"$nl"} ;; *) c="" ;; esac
+      else
+        k=${line%%"$tab"*}
+      fi
+      case "$line" in
+        *"$tab"*) out="$out$k$tab${line#*"$tab"}$nl" ;;
+        *) out="$out$k$nl" ;;
+      esac
+    done
+    RULE_SETTING_TAB=${out%"$nl"}
+  fi
+  RULE_SETTING_FOR="$for"
+  return 0
+}
+
+# rule_setting_value <canonical name> — the value of that rule's key in
+# `## 룰 설정`, whichever normal form the key was typed in; empty when absent.
+rule_setting_value() {
+  rule_setting_load
+  local nl='
+' rest
+  case "$nl$RULE_SETTING_TAB" in
+    *"$nl$1	"*)
+      rest="$nl$RULE_SETTING_TAB"
+      rest="${rest#*"$nl$1	"}"
+      printf '%s' "${rest%%"$nl"*}"
+      ;;
+  esac
 }
 
 # The BASE BRANCH, which the binding digest freezes and nothing verified. Every
