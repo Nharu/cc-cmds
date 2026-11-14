@@ -102,6 +102,13 @@ PATH="$WORK/bin:$PATH"
 CC_CMDS_NOTIFY_PATH_DISABLE_PREPEND=1
 CC_TEST_NOTIFY_LOG="$NOTIFY_LOG"
 export PATH CC_CMDS_NOTIFY_PATH_DISABLE_PREPEND CC_TEST_NOTIFY_LOG
+# The banner assertions read what the stub above recorded, so the run-banner
+# switch has to be at its default (unset, which reads as on) for them. A caller
+# can hand it down as 0 — the test tree that check-push runs exports it so the
+# OTHER suites stay off the screen — and then every banner assertion here saw an
+# empty log and failed. The stub already keeps this suite off the screen, and
+# the cases that test the switch itself set it on their own command line.
+unset CC_CMDS_AUTOPILOT_NOTIFY
 # The suite run from inside tmux would hand the watcher its own pane, and the
 # watcher — judged the router here — would then write `notify.seat` and give
 # every banner below a click value nobody asked for. A case that wants a pane
