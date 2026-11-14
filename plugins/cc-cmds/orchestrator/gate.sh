@@ -31008,6 +31008,17 @@ gate_adoption_cycle_after_obligation() {
   [ -n "$ol" ] && [ -n "$cl" ] && [ "$cl" -gt "$ol" ]
 }
 
+gate_adoption_first_cycle() {
+  # gate_adoption_first_cycle <segment> — the first `cycle` row of the segment
+  # that stands after its obligation's issuing row, empty when there is none.
+  # That row is the review after the fact; later rows review the fix.
+  local ol
+  ol=$(gate_adoption_obligation_line "$1")
+  [ -n "$ol" ] || return 0
+  { grep -n '^- `cycle` ' "$LEDGER" 2>/dev/null || true; } \
+    | gate_rows_field_eq '세그먼트' "$1" | awk -F: -v ol="$ol" '$1 + 0 > ol + 0 { sub(/^[0-9]+:/, ""); print; exit }'
+}
+
 gate_adoption_unfixed() {
   # gate_adoption_unfixed <segment> — 0 while a segment adopted as a merged pull
   # request has carried no fix of this run, so its 0 commits ahead of the base
@@ -40087,6 +40098,22 @@ gate_record_row() {
           return "$GATE_EXIT_VOCAB"
         fi
       fi
+      # A SEGMENT ADOPTED AS A MERGED PULL REQUEST STAYS ON ITS REVIEW until the
+      # review after the fact stands. `gate_segment_post_merge` holds every
+      # stage but the review back only while the last row is `계획됨` or
+      # `사후리뷰`, so one `실행중` or `리뷰중` row would lift that wait, an
+      # implementation could commit first, and the review line would turn into
+      # the branch line that never reads the merged pull request. A state that
+      # moves the segment on is refused while the predicate holds; `사후리뷰`,
+      # `park` and the `완료` checked below are not. A paired segment reads the
+      # predicate as false and is not reached.
+      if gate_segment_merge_adopted "$seg" && gate_segment_post_merge "$seg"; then
+        case "$st" in
+          실행중|리뷰중|머지됨|'적용 준비')
+            warn "머지 입양 세그먼트 ${seg} 는 사후 리뷰를 기다립니다 — 의무 발행 뒤 cycle 행이 서기 전에는 「${st}」 행을 쓰지 않습니다(「사후리뷰」 를 쓰고 gate.sh review-line 의 줄을 보냅니다)"
+            return "$GATE_EXIT_RULE" ;;
+        esac
+      fi
       # `리뷰-후-머지` resolves the branch's current HEAD by entering this value,
       # so a segment row without it turns a merge refusal into one that names a
       # missing worktree instead of the review — the wrong repair at 3am.
@@ -41134,7 +41161,7 @@ gate_record_row() {
           세그먼트)
             warn "\`세그먼트\` 는 게이트가 --segment 로 쓴다 — 이 필드를 빼고 다시 부른다"
             return "$GATE_EXIT_VOCAB" ;;
-          '발견 지문'|'리뷰 종결'|계기|'수정 경로'|'앞 HEAD'|'리뷰 HEAD 고정'|'리포트 형식'|항목|비불릿|'앵커 없음'|'태그 밖'|요약|'HEAD 줄')
+          '발견 지문'|'리뷰 종결'|계기|'수정 경로'|'앞 HEAD'|'리뷰 HEAD 고정'|'리포트 형식'|항목|비불릿|'앵커 없음'|'태그 밖'|요약|'HEAD 줄'|'입양 줄')
             warn "\`${ckt}\` 은 게이트만 쓰는 필드다 — 이 필드를 빼고 다시 부른다"
             return "$GATE_EXIT_VOCAB" ;;
         esac
@@ -41185,15 +41212,26 @@ gate_record_row() {
       # `gate_adoption_unfixed` reads every later `cycle` head against the
       # worktree's HEAD and stays false for good, and the segment can no longer
       # reach `입양 종결`.
-      if gate_segment_merge_adopted "$seg" && ! gate_adoption_row "$seg" >/dev/null \
-         && [ "$(gate_segment_ahead_count "$seg")" = 0 ] && gate_adoption_unfixed "$seg"; then
-        local adj_wt adj_tip adj_rh
-        adj_wt=$(gate_segment_worktree "$seg")
-        adj_tip=$(gate_worktree_tip "$adj_wt" 2>/dev/null) || adj_tip=''
-        adj_rh=$( { cd "$adj_wt" 2>/dev/null && git rev-parse --verify -q "$rh^{commit}"; } 2>/dev/null) || adj_rh=''
-        if [ -z "$adj_tip" ] || [ "$adj_rh" != "$adj_tip" ]; then
-          warn "머지 입양 세그먼트 ${seg} 의 사후 리뷰 cycle 행은 판정 헤드(워크트리 HEAD ${adj_tip:-(읽지 못함)})를 「리뷰 HEAD」 로 싣습니다 — 받은 값 ${rh} 는 그 커밋이 아닙니다"
-          return "$GATE_EXIT_RULE"
+      #
+      # The same predicate also answers whether this review was dispatched on
+      # the adoption line, and the gate records the answer as `입양 줄` on the
+      # rows of such an unpaired segment: `예` when the predicate held and the
+      # head is the judge head, `아니오` otherwise. The obligation act reads it
+      # off the first `cycle` row after the issuing row, so a review of the
+      # branch line cannot be the one that fulfils the obligation.
+      local adj_line=''
+      if gate_segment_merge_adopted "$seg" && ! gate_adoption_row "$seg" >/dev/null; then
+        adj_line='아니오'
+        if [ "$(gate_segment_ahead_count "$seg")" = 0 ] && gate_adoption_unfixed "$seg"; then
+          local adj_wt adj_tip adj_rh
+          adj_wt=$(gate_segment_worktree "$seg")
+          adj_tip=$(gate_worktree_tip "$adj_wt" 2>/dev/null) || adj_tip=''
+          adj_rh=$( { cd "$adj_wt" 2>/dev/null && git rev-parse --verify -q "$rh^{commit}"; } 2>/dev/null) || adj_rh=''
+          if [ -z "$adj_tip" ] || [ "$adj_rh" != "$adj_tip" ]; then
+            warn "머지 입양 세그먼트 ${seg} 의 사후 리뷰 cycle 행은 판정 헤드(워크트리 HEAD ${adj_tip:-(읽지 못함)})를 「리뷰 HEAD」 로 싣습니다 — 받은 값 ${rh} 는 그 커밋이 아닙니다"
+            return "$GATE_EXIT_RULE"
+          fi
+          adj_line='예'
         fi
       fi
       # --- DELTA MODE: the basis conditions are refused HERE, at write time ---
@@ -41625,6 +41663,7 @@ EOF
       done <<EOF
 $c_fmt
 EOF
+      [ -z "$adj_line" ] || c_fx+=("입양 줄=$adj_line")
       local fp rc_end crow_new
       fp=$(gate_cycle_fingerprint "$rep" "$(gate_field_of 'P0' "$@")" "$(gate_field_of 'P1' "$@")")
       crow_new="- \`cycle\` | 세그먼트=$seg$(printf ' | %s' "$@")"
@@ -43651,6 +43690,22 @@ EOF
         warn "the target of obligation ${oid} is '$oalias', but --target says '$alias'"
         warn "call again with the target that row names — the repository the landing judgment runs in differs per target"
         return "$GATE_EXIT_VOCAB"
+      fi
+
+      # A SEGMENT ADOPTED AS A MERGED PULL REQUEST owes the review of that pull
+      # request, and landing and containment cannot tell it from a review of the
+      # branch: a branch head after a fix contains the merge commit as well. So
+      # the first `cycle` row after the issuing row has to be the one the gate
+      # recorded as read on the adoption line (`입양 줄=예`). A segment paired
+      # with a `세그먼트 입양` row reviews the source run's fix branch first,
+      # and that cycle covers the obligation as before.
+      if [ -n "$oseg" ] && gate_segment_merge_adopted "$oseg" && ! gate_adoption_row "$oseg" >/dev/null; then
+        local ofirst
+        ofirst=$(gate_adoption_first_cycle "$oseg")
+        if [ "$(gate_row_field "$ofirst" '입양 줄')" != '예' ]; then
+          warn "머지 입양 세그먼트 ${oseg} 의 의무 ${oid} 를 이행하지 않습니다 — 머지된 PR 을 입양 줄로 읽은 사후 리뷰가 의무 발행 뒤 첫 리뷰가 아닙니다(첫 cycle 행의 입양 줄=$(_f=$(gate_row_field "$ofirst" '입양 줄'); printf '%s' "${_f:-(없음)}"))"
+          return "$GATE_EXIT_VOCAB"
+        fi
       fi
 
       # LANDING FIRST, CONTAINMENT SECOND. Reversed, a merge that never landed is
