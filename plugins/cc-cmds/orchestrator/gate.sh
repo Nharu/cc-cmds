@@ -30450,7 +30450,10 @@ EOF
     fi
     [ "$v" = "$first" ] || return 1
     case "$w_at" in ''|*[!0-9]*) w_at=0 ;; esac
-    [ "$(( $(date -u +%s) - w_at ))" -le 60 ] || return 1
+    # A stamp ahead of the clock (the clock stepped back) is as stale as an
+    # old one; otherwise the wait would outlast the writer by that step.
+    w_at=$(( $(date -u +%s) - w_at ))
+    [ "$w_at" -ge 0 ] && [ "$w_at" -le 60 ] || return 1
   done
 }
 
@@ -30459,6 +30462,7 @@ gate_base_guard_plan() {
   # nothing is written, and a latch that stands or a base that moved answers
   # with the line and code the act would meet.
   local al="$1" seg="$2" kind="$3" kf="$RUN_DIR/base-guard/$1" why='' v lf known now
+  local p_old='' p_new='' p_at p_rec='' p_lf p_age
   now=$(gate_base_guard_now "$al")
   for lf in "$kf.latch" ${seg:+"$kf.latch.$seg"}; do
     [ "$lf" = "$kf.latch.-" ] && continue
@@ -30470,11 +30474,27 @@ gate_base_guard_plan() {
     fi
     why="걸쇠 $lf (${v:-읽지 못함})"; break
   done
+  # A marker holds an act only while it names no record and is not older than
+  # sixty seconds (the entry waits that one out); a marker that names its
+  # record is finished by the entry, which moves the known value on first.
   if [ -z "$why" ] && [ -e "$kf.writing" ]; then
-    why="작성 중 표지 $kf.writing"
+    v=$(gate_base_guard_read "$kf.writing" 2>/dev/null) || v=''
+    IFS=$'\t' read -r p_old p_new p_at p_rec p_lf <<EOF
+$v
+EOF
+    case "$p_at" in ''|*[!0-9]*) p_at=0 ;; esac
+    p_age=$(( $(date -u +%s) - p_at ))
+    if [ -z "$p_rec" ] && [ "$p_age" -ge 0 ] && [ "$p_age" -le 60 ]; then
+      why="작성 중 표지 $kf.writing"
+    elif [ -n "$p_rec" ] && { [ "$p_lf" = "$kf.latch" ] || { [ -n "$seg" ] && [ "$p_lf" = "$kf.latch.$seg" ]; }; }; then
+      why="걸쇠 $p_lf ($p_rec)"
+    fi
   fi
   if [ -z "$why" ] && [ -e "$kf" ]; then
     known=$(gate_base_guard_read "$kf" 2>/dev/null) || known=''
+    if [ -n "$p_rec" ] && [ -n "$p_lf" ] && [ "${known#*$'\t'}" = "$p_old" ]; then
+      known="${known%%$'\t'*}	$p_new"
+    fi
     [ "$known" = "$now" ] || why="기지값 ${known#*$'\t'} · 지금 ${now#*$'\t'}"
   fi
   [ -n "$why" ] || return 0
@@ -30558,7 +30578,7 @@ EOF
     else
       case "$w_at" in ''|*[!0-9]*) w_at=0 ;; esac
       age=$(( $(date -u +%s) - w_at ))
-      if [ "$age" -le 60 ]; then
+      if [ "$age" -ge 0 ] && [ "$age" -le 60 ]; then
         # A MARKER WITH NO RECORD YET IS WAITED OUT, NOT ANSWERED WITH 11 AT
         # ONCE: a bare 11 here would name no record, and a stage that stops on
         # it leaves a halt record no answer reaches. So the act waits, off the
