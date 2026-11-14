@@ -11006,36 +11006,46 @@ wait_drop() {
 }
 
 wait_fifo_follow() {
-  # wait_fifo_follow <marker> <lineage> <holder> <group> — keep this wait's
-  # FIFO entry in step with the group of the WAIT it was just given.
+  # wait_fifo_follow <marker> <lineage> <holder> <group> <reason> — keep this
+  # wait's FIFO entry in step with the WAIT it was just given.
   #
-  # A WAIT WITH NO GROUP TAKES THE ENTRY DOWN. The host hold answers a waiter
-  # whose account found room with a group-less `host-saturated` WAIT, and the
-  # host wait uses no FIFO: an entry left behind would keep every new request
-  # of the same group yielding with `fifo-yield` — the stages the host hold lets
-  # through included — for as long as the hold lasts.
+  # THE HOST HOLD TAKES THE ENTRY DOWN. It answers a waiter whose account found
+  # room with a group-less `host-saturated` WAIT, and the host wait uses no
+  # FIFO: an entry left behind would keep every new request of the same group
+  # yielding with `fifo-yield` — the stages the host hold lets through included
+  # — for as long as the hold lasts. Any other group-less WAIT (a busy lease
+  # lock, an empty candidate pool) keeps the entry, so a waiter at the head of
+  # its queue is not sent to the back by a passing failure.
   #
-  # A WAIT WITH A GROUP AND NO ENTRY PUTS ONE BACK, at the end of the queue: a
-  # waiter that came back from the host hold to an account wait, or whose first
-  # put failed, would otherwise yield to every entry of that group for good.
-  local m="$1" lin="$2" holder="$3" grp="$4" nonce rec
+  # A WAIT WITH A GROUP AND NO ENTRY OF ITS OWN PUTS ONE BACK, at the end of the
+  # queue: a waiter that came back from the host hold to an account wait, or
+  # whose first put failed, would otherwise yield to every entry of that group
+  # for good. The lease table, not the marker, says whether the entry is there,
+  # so a marker that kept a nonce after its entry came down does not stop it.
+  local m="$1" lin="$2" holder="$3" grp="$4" why="$5" nonce rec t
   [ -f "$m" ] || return 0
+  t="$(run_pace_root)/leases"
   nonce=$(cc_waiting_field "$m" '논스' | tr -d '[:space:]')
   if [ "$grp" = "-" ]; then
+    [ "$why" = "host-saturated" ] || return 0
     [ -n "$nonce" ] && [ "$nonce" != "-" ] || return 0
-    route_lease_wait_drop "$(run_pace_root)/leases" "$RUN_ID" "$lin" "$nonce" >/dev/null 2>&1 || return 0
+    route_lease_wait_drop "$t" "$RUN_ID" "$lin" "$nonce" >/dev/null 2>&1 || return 0
     wait_marker_set "$m" '논스' '-' || true
     return 0
   fi
-  [ -z "$nonce" ] || [ "$nonce" = "-" ] || return 0
-  rec=$(route_lease_wait_put --table "$(run_pace_root)/leases" --now "$(now_epoch)" --run-id "$RUN_ID" \
+  if [ -n "$nonce" ] && [ "$nonce" != "-" ] \
+     && route_lease_of "$t" "$RUN_ID" "$lin" 2>/dev/null \
+          | jq -e --arg n "$nonce" '.kind == "wait" and .nonce == $n' >/dev/null 2>&1; then
+    return 0
+  fi
+  rec=$(route_lease_wait_put --table "$t" --now "$(now_epoch)" --run-id "$RUN_ID" \
           --lineage "$lin" --group "$grp" --inventory "$RUN_DIR/inventory.json" \
           --holder "${holder:-0}" 2>/dev/null) || return 0
   nonce=$(printf '%s' "$rec" | jq -r '.nonce // "-"' 2>/dev/null || printf '%s' '-')
   [ "$nonce" != "-" ] || return 0
   # An entry the marker does not name is one no drop could find again.
   wait_marker_set "$m" '논스' "$nonce" \
-    || route_lease_wait_drop "$(run_pace_root)/leases" "$RUN_ID" "$lin" "$nonce" >/dev/null 2>&1 || true
+    || route_lease_wait_drop "$t" "$RUN_ID" "$lin" "$nonce" >/dev/null 2>&1 || true
   return 0
 }
 
@@ -11198,7 +11208,8 @@ stage_wait_loop() {
         upto=$(printf '%s' "$env" | jq -r '.until_epoch | if type == "number" then floor | tostring else "-" end' 2>/dev/null || printf '%s' '-')
         wgrp=$(printf '%s' "$env" | jq -r '.group // "-"' 2>/dev/null || printf '%s' '-')
         wait_marker_set "$m" '갱신' "$(now_epoch)" '까지' "$upto" '그룹' "$wgrp" || true
-        wait_fifo_follow "$m" "$lin" "$holder" "$wgrp"
+        wait_fifo_follow "$m" "$lin" "$holder" "$wgrp" \
+          "$(printf '%s' "$env" | jq -r '.reason // ""' 2>/dev/null || true)"
         # A WAIT without `reserve_seen` keeps the memory the marker already has.
         if printf '%s' "$env" | jq -e '(.reserve_seen | type) == "array"' >/dev/null 2>&1; then
           wait_marker_set "$m" '예비' "$(printf '%s' "$env" | jq -c '.reserve_seen' 2>/dev/null || printf '%s' '[]')" || true

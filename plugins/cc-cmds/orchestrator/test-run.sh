@@ -12909,10 +12909,11 @@ else
   bad "대기 루프 반납 재시도" "stage_wait_loop 에 spawn_lease_retry_sweep 이 없다"
 fi
 
-# 대기 중 그룹 없는 WAIT(호스트 보류)로 바뀐 대기자는 자기 그룹 FIFO 대기 항목을
-# 내린다 — 남기면 같은 그룹의 새 요청이 보류 내내 fifo-yield 로 양보한다. 다시 그룹을
-# 단 WAIT 를 받으면 항목을 다시 넣는다. 실제 임대 표로 확인하고, 대기 루프가 재질의의
-# 그룹 없는 WAIT 다음 질의 전에 이미 항목을 내렸는지도 본다.
+# 대기 중 호스트 보류 WAIT(그룹 없는 `host-saturated`)로 바뀐 대기자는 자기 그룹 FIFO
+# 대기 항목을 내린다 — 남기면 같은 그룹의 새 요청이 보류 내내 fifo-yield 로 양보한다.
+# 다른 그룹 없는 WAIT 는 항목을 두고, 다시 그룹을 단 WAIT 를 받았는데 표에 자기 항목이
+# 없으면 다시 넣는다. 실제 임대 표로 확인하고, 대기 루프가 재질의의 호스트 보류 WAIT
+# 다음 질의 전에 이미 항목을 내렸는지도 본다.
 cat > "$RA/hf.sh" <<'HFEOF'
 hf_drv="$1"; RA_ROOT="$2"; set --
 . "$hf_drv"
@@ -12935,14 +12936,23 @@ m="$RUN_DIR/hfA.waiting"
 hf_put HF:a "$m"
 n0=$(hf_nonce "$m")
 printf 'start=%s/%s\n' "$(hf_kind HF:a)" "$( [ "$n0" != "-" ] && [ -n "$n0" ] && printf nonce || printf none)"
-wait_fifo_follow "$m" HF:a "$$" "-"
+wait_fifo_follow "$m" HF:a "$$" "-" lease-lock-busy
+printf 'busy=%s/%s\n' "$(hf_kind HF:a)" "$( [ "$(hf_nonce "$m")" = "$n0" ] && printf same || printf changed)"
+wait_fifo_follow "$m" HF:a "$$" acct:ra1 no-room
+printf 'kept=%s\n' "$( [ "$(hf_nonce "$m")" = "$n0" ] && printf same || printf changed)"
+wait_fifo_follow "$m" HF:a "$$" "-" host-saturated
 printf 'hold=%s/%s\n' "$(hf_kind HF:a)" "$(hf_nonce "$m")"
-wait_fifo_follow "$m" HF:a "$$" "-"
+wait_fifo_follow "$m" HF:a "$$" "-" host-saturated
 printf 'hold2=%s/%s\n' "$(hf_kind HF:a)" "$(hf_nonce "$m")"
-wait_fifo_follow "$m" HF:a "$$" acct:ra1
+wait_fifo_follow "$m" HF:a "$$" acct:ra1 no-room
 n1=$(hf_nonce "$m")
 printf 'back=%s/%s\n' "$(hf_kind HF:a)" \
   "$( [ "$n1" = "$(route_lease_of "$T" "$RUN_ID" HF:a | jq -r '.nonce')" ] && [ "$n1" != "$n0" ] && printf fresh || printf "stale:$n1")"
+# 항목은 내려갔는데 표지가 옛 논스를 지닌 채 남은 경우에도 표가 기준이라 다시 넣는다.
+route_lease_wait_drop "$T" "$RUN_ID" HF:a "$n1" >/dev/null 2>&1
+wait_fifo_follow "$m" HF:a "$$" acct:ra1 no-room
+n2=$(hf_nonce "$m")
+printf 'stale=%s/%s\n' "$(hf_kind HF:a)" "$( [ -n "$n2" ] && [ "$n2" != "$n1" ] && printf fresh || printf "same:$n2")"
 wait_drop "$m"
 printf 'dropped=%s\n' "$(hf_kind HF:a)"
 
@@ -12973,9 +12983,12 @@ rm -f "$RA/hf.calls" "$RA/hf.seen"
 hf_out=$(env -u CC_PIPELINE_SHIFT_ID -u CLAUDE_CONFIG_DIR -u XDG_CONFIG_HOME HOME="$RA/home" \
   RUN_PACE_ROOT="$RA/pace" bash "$RA/hf.sh" "$RA/orch/run.sh" "$RA" 2>/dev/null)
 check "그룹 대기자는 FIFO 항목과 그 논스를 지닌다" "$(ra_get "$hf_out" start)" "wait/nonce"
-check "그룹 없는 WAIT 를 받으면 자기 FIFO 항목을 내리고 표지 논스를 비운다" "$(ra_get "$hf_out" hold)" "/-"
-check "이어지는 그룹 없는 WAIT 는 아무것도 바꾸지 않는다" "$(ra_get "$hf_out" hold2)" "/-"
+check "호스트 보류가 아닌 그룹 없는 WAIT(잠금 경합)는 FIFO 항목을 그대로 둔다" "$(ra_get "$hf_out" busy)" "wait/same"
+check "항목이 있는 그룹 대기자는 그룹 WAIT 에서 항목을 다시 넣지 않는다" "$(ra_get "$hf_out" kept)" "same"
+check "호스트 보류 WAIT 를 받으면 자기 FIFO 항목을 내리고 표지 논스를 비운다" "$(ra_get "$hf_out" hold)" "/-"
+check "이어지는 호스트 보류 WAIT 는 아무것도 바꾸지 않는다" "$(ra_get "$hf_out" hold2)" "/-"
 check "다시 그룹을 단 WAIT 를 받으면 새 논스로 항목을 다시 넣는다" "$(ra_get "$hf_out" back)" "wait/fresh"
+check "표지가 옛 논스를 지녀도 표에 항목이 없으면 다시 넣는다" "$(ra_get "$hf_out" stale)" "wait/fresh"
 check "대기를 내리면 다시 넣은 항목도 사라진다" "$(ra_get "$hf_out" dropped)" ""
 check "대기 루프는 그룹 없는 WAIT 다음 질의 전에 FIFO 항목을 이미 내렸다" \
   "$(ra_get "$hf_out" at2)/$(ra_get "$hf_out" loop)/$(ra_get "$hf_out" stop)" "/0/"
