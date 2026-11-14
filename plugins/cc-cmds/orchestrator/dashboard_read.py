@@ -527,9 +527,12 @@ def _blocked_fold(lines):
         if scope == "run":
             step = False
         elif (scope == "cone" and anchor != "" and anchor not in seg
-              and not anchor.startswith("clause-")):
+              and not anchor.startswith("clause-")
+              and not anchor.startswith("베이스-")):
             # A `clause-<id>` anchor is a termination clause's evidence
-            # request: it holds that clause alone, not the run.
+            # request: it holds that clause alone, not the run. A
+            # `베이스-<별칭>` anchor is the base-move check's target key: the
+            # target latch and its unanswered record hold the run instead.
             step = True
         else:
             continue

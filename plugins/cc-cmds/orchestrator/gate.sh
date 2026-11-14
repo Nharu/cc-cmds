@@ -925,8 +925,13 @@ readonly GATE_EXIT_ANCHOR=10
 # while an earlier move's latch still stands — having written a shift halt
 # record at site `베이스 이동` and its cone row. The caller tells the two
 # meanings apart by stderr: this one always carries a `[run][warn] 베이스 이동 — `
-# line, which names the record and says whether the act was performed. Never
-# the first line — every call prints its manifest line before it.
+# line, which names the record and says whether the act was performed. An act
+# that meets another act's record still being written waits for it rather than
+# ending 11 with nothing to name. The one stop the line names by a latch path
+# instead is a stop no record could be written for yet (the target latch
+# holding `기록 없음`, or a latch that cannot be read); the next entry writes
+# that record. Never the first line — every call prints its manifest line
+# before it.
 readonly GATE_EXIT_PARK=11
 
 # THE `wait` VERB'S OWN CODES. A stage's rc passes through `wait` the way an
@@ -30287,10 +30292,17 @@ gate_base_guard_target_stop() {
   # lock was not taken, or a file or the ledger could not be read). A target
   # latch already standing is that stop, and nothing new is written. Always
   # exit 11.
-  local al="$1" seg="$2" q="$3" obs="$4" msg="$5" d="$RUN_DIR/base-guard" tl
+  local al="$1" seg="$2" q="$3" obs="$4" msg="$5" d="$RUN_DIR/base-guard" tl tv
   tl="$d/$al.latch"
   if [ -e "$tl" ]; then
-    warn "베이스 이동 — ${msg} — 대상 걸쇠 $tl 가 이미 서 있어 새 기록을 쓰지 않습니다 · 행위 수행 안 함"
+    # The standing latch is that stop, so the line names the record it holds;
+    # only a latch with no record yet (`기록 없음`, or one that cannot be read)
+    # is named by its own path.
+    tv=$(gate_base_guard_read "$tl" 2>/dev/null) || tv=''
+    case "$tv" in
+      /*.md) warn "베이스 이동 — ${msg} — 대상 걸쇠가 이미 서 있어 새 기록을 쓰지 않습니다 — 기록 $tv · 행위 수행 안 함" ;;
+      *) warn "베이스 이동 — ${msg} — 대상 걸쇠 $tl 가 이미 서 있어(${tv:-읽지 못함}) 새 기록을 쓰지 않습니다 · 행위 수행 안 함" ;;
+    esac
     return "$GATE_EXIT_PARK"
   fi
   mkdir -p "$d" 2>/dev/null || true
@@ -30406,6 +30418,42 @@ gate_base_guard_latch_wait() {
   return "$GATE_EXIT_PARK"
 }
 
+gate_base_guard_marker_wait() {
+  # gate_base_guard_marker_wait <alias> <marker line> — called off the lock
+  # after the entry found a `.writing` marker that names no record and is not
+  # older than sixty seconds. Reads the marker again under the lock once a
+  # second. Prints the record and exits 0 once the marker names one; exits 1
+  # once the marker is gone, is not the line first read, or is older than
+  # sixty seconds; exits 2 when the lock is not taken or the marker cannot be
+  # read. The act that wrote the marker ends inside that window, so the wait
+  # does too.
+  local first="$2" kf="$RUN_DIR/base-guard/$1" wf v w_old w_new w_at w_rec w_lf
+  wf="$kf.writing"
+  while :; do
+    sleep 1
+    gate_index_lock "$kf" || return 2
+    if [ ! -e "$wf" ]; then
+      gate_index_unlock "$kf"
+      return 1
+    fi
+    if ! v=$(gate_base_guard_read "$wf"); then
+      gate_index_unlock "$kf"
+      return 2
+    fi
+    gate_index_unlock "$kf"
+    IFS=$'\t' read -r w_old w_new w_at w_rec w_lf <<EOF
+$v
+EOF
+    if [ -n "$w_rec" ]; then
+      printf '%s' "$w_rec"
+      return 0
+    fi
+    [ "$v" = "$first" ] || return 1
+    case "$w_at" in ''|*[!0-9]*) w_at=0 ;; esac
+    [ "$(( $(date -u +%s) - w_at ))" -le 60 ] || return 1
+  done
+}
+
 gate_base_guard_plan() {
   # gate_base_guard_plan <alias> <segment> <kind> — the dry run's reading:
   # nothing is written, and a latch that stands or a base that moved answers
@@ -30489,7 +30537,7 @@ gate_base_guard_entry() {
     gate_base_guard_latch_wait "$al" "$tl" "$now" '대상' || return "$?"
   fi
   # 2. A marker left by an act that caught a move: one that names its record
-  #    is finished here, one still being written holds this act, and one with
+  #    is finished here, one still being written is waited out, and one with
   #    no record older than sixty seconds belongs to an act that died and is
   #    cleared so the move is caught again.
   if [ -e "$wf" ]; then
@@ -30511,9 +30559,27 @@ EOF
       case "$w_at" in ''|*[!0-9]*) w_at=0 ;; esac
       age=$(( $(date -u +%s) - w_at ))
       if [ "$age" -le 60 ]; then
+        # A MARKER WITH NO RECORD YET IS WAITED OUT, NOT ANSWERED WITH 11 AT
+        # ONCE: a bare 11 here would name no record, and a stage that stops on
+        # it leaves a halt record no answer reaches. So the act waits, off the
+        # lock, until the marker names its record (the act ends 11 naming it),
+        # or is gone or older than sixty seconds (the entry starts again, and
+        # finds the move recorded or catches it itself).
         gate_index_unlock "$kf"
-        warn "베이스 이동 — 다른 행위가 이 대상의 베이스 이동(${w_old} → ${w_new}) 기록을 쓰는 중입니다 · 행위 수행 안 함"
-        return "$GATE_EXIT_PARK"
+        local w_wr w_rc=0
+        w_wr=$(gate_base_guard_marker_wait "$al" "$v") || w_rc=$?
+        case "$w_rc" in
+          0)
+            warn "베이스 이동 — 다른 행위가 이 대상의 베이스 이동(${w_old} → ${w_new})을 먼저 잡아 기록 $w_wr 를 썼습니다 · 행위 수행 안 함"
+            return "$GATE_EXIT_PARK" ;;
+          1)
+            gate_base_guard_entry "$al" "$seg" "$verb" "$kind" "$@" || return "$?"
+            return 0 ;;
+        esac
+        gate_base_guard_target_stop "$al" "$seg" \
+          "대상 $al 의 베이스 이동 작성 중 표지 $wf 를 기다리는 동안 대조 잠금을 잡지 못하거나 표지를 읽지 못해 대조하지 못했습니다." \
+          "$nolock" "작성 중 표지 $wf 를 기다리는 동안 대조하지 못함"
+        return "$?"
       fi
       rm -f "$wf" 2>/dev/null || true
     fi

@@ -2113,6 +2113,12 @@ cc__blocked_fold() {
   # segment-anchored cone does, and a person's unanswered request shows up as
   # an unanswered record under `halt/shift/`, not as a run stop.
   #
+  # A `베이스-<별칭>` anchor is not a step either. The base-move check makes that
+  # key when a move cannot be recorded on a segment, and its cone stands on that
+  # target's acts: the run is held by the target latch and by the unanswered
+  # record under `halt/shift/`, and a `재시도` answer lifts both. So the row
+  # stays out of the set, as a `clause-<id>` anchor does.
+  #
   # The fold — last row per `사유` — runs inside that set, so an act-scope row
   # that reuses a run block's `사유` neither hides it nor stands in for it.
   #
@@ -2153,7 +2159,8 @@ cc__blocked_fold() {
         if (why == "") continue
         if (bscope[b] == "run") step = 0
         else if (bscope[b] == "cone" && banchor[b] != "" && !(banchor[b] in seg) \
-                 && index(banchor[b], "clause-") != 1) step = 1
+                 && index(banchor[b], "clause-") != 1 \
+                 && index(banchor[b], "베이스-") != 1) step = 1
         else continue
         last[why] = bnr[b]; lastcause[why] = bcause[b]; laststep[why] = step
         lastscope[why] = bscope[b]; lastanchor[why] = banchor[b]
