@@ -1347,6 +1347,8 @@ ir_row() {
 }
 lease_row() { printf -- '- `stage-lease` | 교대=1 | 파견 id=%s | 계보=%s | 계정=u1 | 관측=tracker@1793689940.2379742 | prev=abc' "$1" "$1"; }
 wait_row()  { printf -- '- `stage-wait` | 교대=1 | 계보=%s | 그룹=- | 계정=- | 까지=- | 비용=- | 비용 출처=- | 근거=%s | prev=abc' "$1" "$2"; }
+# wait_row_t <계보> <근거> <기록 시각> — 호스트·기록 시각 칸을 싣는 지금의 대기 행.
+wait_row_t() { printf -- '- `stage-wait` | 교대=1 | 계보=%s | 그룹=- | 계정=- | 까지=- | 비용=- | 비용 출처=- | 근거=%s | 호스트=- | 기록 시각=%s | prev=abc' "$1" "$2" "$3"; }
 
 # 런 A — 시도 로그·공유 로그·로그 없음, 무커밋 네 경우, 부하 표본.
 R19A=20261001-aaaaaa19; R19B=20261001-bbbbbb19; R19C=20261001-cccccc19
@@ -1401,7 +1403,7 @@ mk_ledger "$R19B" \
   "$(wait_row B:S9#1 lease-lock-busy)" \
   "- \`master 판독\` | 교대=0 | 대상=x | 팁=$TIP_E | 상태=초록 | 관측=2026-10-01T00:01:00Z | prev=abc" \
   "$(wait_row B:S9#2 lease-lock-busy)" \
-  "$(wait_row B:S9#3 account-busy)" \
+  "$(wait_row_t B:S9#3 account-busy 2026-10-01T00:01:30Z)" \
   "$(lease_row B:S1#1)" \
   "$(ir_row S1 1 implement/정상\ 완료/d7aca8873bfa/eeeeeeee)" \
   "- \`cost\` | 누적 usd=1.0 | 관측 시각=2026-10-02T00:00:00Z | prev=abc"
@@ -1442,6 +1444,11 @@ check "19: 부하 표본이 있으면 스테이지 구간 안의 표본으로 ho
 check "19: 로그가 없는 런은 time 이 null 이고 대기·무커밋이 채워진다" \
   "$(jdel "$R19B" '[.host_load_source, (.stages[0] | .source, (.time | tostring)), (.waits | length), (.waits[0].at | tostring), .waits[0].at_source, (.nocommit | length)] | map(tostring) | join(",")')" \
   "기록 없음,로그 없음,null,3,null,없음,1"
+check "19: 기록 시각 칸이 있는 stage-wait 의 at 은 그 값이고 출처는 자기 행이다" \
+  "$(jdel "$R19B" '.waits | [(.[1] | .at, .at_source), (.[2] | .at, .at_source)] | join(",")')" \
+  "2026-10-01T00:01:00Z,앞 행,2026-10-01T00:01:30Z,자기 행"
+check "19: 뒤따르는 stage-result 는 그 대기 행의 기록 시각을 빌린다" \
+  "$(jdel "$R19B" '.nocommit[0].at')" "2026-10-01T00:01:30Z"
 check "19: 요약의 coverage" "$(jsum '.delay.coverage | [.records, .with_time, .with_host_load, .stale] | map(tostring) | join(",")')" "3,2,1,0"
 check "19: 요약의 by_date" "$(jsum '.delay.wasted.by_date | tojson')" '{"2026-10-01":{"lease_lock_busy":2,"nocommit":3}}'
 check "19: 요약의 by_concurrency 는 사건 시각을 품는 런 수다" \

@@ -19,7 +19,7 @@ Engineering workflow commands for Claude Code.
 | `/cc-cmds:design-base-unattended` | 베이스 설계의 무인 팔 — 좌석·드라이버가 파견하면 베이스 문서의 토론·저장(드라이버면 동결까지)을, `--split` 이면 감사 뒤 분할 점검과 트래커 발행을 돈다 (질문은 park·정지 기록으로) | 사람이 직접 부르지 않는다. `design-base` 리드 좌석이 Step 2 승인 뒤 `claude -p` 로 파견하거나(다리), autopilot 이 베이스 런의 설계 단계와 분할 단계로 파견한다(스테이지) |
 | `/cc-cmds:design-discuss-unattended` | 설계 세션의 무인 팔 — 좌석이 파견하면 Step 3 토론과 Step 4 종합·저장을 도는 다리, autopilot 드라이버가 파견하면 Step 7U 동결까지 도는 스테이지 (질문은 park·정지 기록으로) | 사람이 직접 부르지 않는다. `design` 리드 좌석이 Step 2 승인 뒤 `claude -p` 로 파견하거나(다리), autopilot 드라이버가 `design_required` 인 런의 첫 스테이지로 파견한다(스테이지) |
 | `/cc-cmds:design-lite` | 2인 팀을 활용한 경량 설계 토론 | 깊은 다관점 분석보다 빠른 방향 설정이 우선될 때 (sonnet 단독 합성으로 미묘한 invariant 누락 가능) |
-| `/cc-cmds:design-reconverge` | 반증된 검증 항목이나 설계 결함 발견 하나에 스코프된 재수렴 — 설계를 고치고 두 값 판정 후 정지 (무인) | 자율 파이프라인 드라이버가 사다리 R2(재설계) 레인에 진입할 때, 라우터 교대가 구현 단계의 잔여 항목 반증(implement-unattended Step 1.5d 또는 Step 3 구현 중 반증 중단)을 재수렴으로 파견할 때, 사람이 감사 종합 질문의 후보 요구를 채택해 라우터 교대가 재수렴으로 넘길 때, 또는 구현 단계의 구속 티어 이탈 중단(implement-unattended CFI-U3)에 사람이 `재수렴` 을 골라(또는 매니페스트의 `구속-이탈` 자동 채택 행으로) 라우터 교대가 넘길 때, 또는 확인 리뷰 상한의 P0 잔존으로 끝난 런의 후속 런이 첫 단계에서 재수렴을 골랐을 때, 또는 무인 설계 사다리 정지에 사람이 `골격 재검토` 를 골라 라우터 교대가 `잔여 동결 재검토` 범위로 넘길 때(사람 답이 재부착이 아니라 재수렴으로 가는 예외), 또는 무인 감사가 상한 안의 회차에서 골격급 결함을 내고 게이트가 그 감사 키에 자동 재수렴을 열어 라우터 교대나 구동기가 `감사 골격급` 범위로 넘길 때. 사람이 참여하는 재설계는 `/cc-cmds:design`으로 처음부터 다시 수렴할 것 |
+| `/cc-cmds:design-reconverge` | 반증된 검증 항목이나 설계 결함 발견 하나에 스코프된 재수렴 — 설계를 고치고 두 값 판정 후 정지 (무인) | 자율 파이프라인 드라이버가 사다리 R2(재설계) 레인에 진입할 때, 라우터 교대가 구현 단계의 잔여 항목 반증(implement-unattended Step 1.5d 또는 Step 3 구현 중 반증 중단)을 재수렴으로 파견할 때, 사람이 감사 종합 질문의 후보 요구를 채택해 라우터 교대가 재수렴으로 넘길 때, 또는 구현 단계의 구속 티어 이탈 중단(implement-unattended CFI-U3)에 사람이 `재수렴` 을 골라(또는 매니페스트의 `구속-이탈` 자동 채택 행으로) 라우터 교대가 넘길 때, 또는 확인 리뷰 상한의 P0 잔존으로 끝난 런의 후속 런이 첫 단계에서 재수렴을 골랐을 때, 또는 무인 설계 사다리 정지에 사람이 `골격 재검토` 를 골라 라우터 교대가 `잔여 동결 재검토` 범위로 넘길 때(사람 답이 재부착이 아니라 재수렴으로 가는 예외), 또는 무인 감사가 상한 안의 회차에서 골격급 결함을 내고 게이트가 그 감사 키에 자동 재수렴을 열어 라우터 교대나 구동기가 `감사 골격급` 범위로 넘길 때, 또는 사람이 문구·구조가 설계 문서와 다른 화면을 `시각-판정` 에서 승인해 승인 술어가 `승인 보류 — 설계 문서 반영 대기` 를 내고 라우터 교대가 `승인 화면 반영` 범위로 넘길 때. 사람이 참여하는 재설계는 `/cc-cmds:design`으로 처음부터 다시 수렴할 것 |
 | `/cc-cmds:design-solo-unattended` | 리드 단독 설계의 무인 팔 — autopilot 이 `solo` 티어 런과 `team-4` 단일 설계의 `solo-audit` 경로 런의 설계 단계로 파견하면 리드 혼자 요약을 쓰고 동결한다 (팀 없음, 질문은 정지 기록으로) | 사람이 직접 부르지 않는다. autopilot 드라이버·게이트가 선택 함수가 이 스킬을 고른 런 — `solo` 티어이거나 `team-4` 이고 `design_path` 가 `solo-audit` 이며 `design_required` 인 런 — 의 설계 스테이지로 파견한다 |
 | `/cc-cmds:design-upgrade` | 팀 구성 강화 분석 (모델·역할 축) | 직전 `/design` 팀 구성 제안에서 opus 승격이 유의미한 역할이 있는지, 또는 누락 도메인을 메울 신규 역할·과부하 역할 분할이 필요한지 second-opinion으로 검토할 때 |
 | `/cc-cmds:implement` | 설계 문서 기반 구현 | 사용자가 작성된 설계 문서를 바탕으로 단계적 계획을 세우고 실제 구현을 수행하기를 원할 때 |
@@ -332,7 +332,7 @@ _`autopilot` 의 Act 2b 를 대신 도는 헤드리스 좌석이다. 사람에�
 | Option | Default | Summary |
 | --- | --- | --- |
 | `<design-doc-path>` | (required) | 재수렴 대상 설계 문서 경로 (`.md`). 드라이버와 라우터 교대가 메인 워크트리 절대 경로로 넘긴다. |
-| `<scope>` | (required) | 재수렴 스코프. `R<n>` 형태의 잔여 검증 항목 식별자, `(정규화 파일 경로, 카테고리 태그)` 형태의 문제 동일성, `감사 종합 요구 <중단 기록 절대 경로>` 형태의 채택된 감사 종합 요구, `구속 티어 이탈 <중단 기록 절대 경로>` 형태의 사람이 재수렴을 고른 구속 티어 이탈, `설계 수준 잔여 <리뷰 리포트 절대 경로>` 형태의 확인 리뷰가 설계 수준으로 분류한 잔여 발견, `상한 P0 잔여 <리뷰 리포트 절대 경로>` 형태의 앞 런이 확인 리뷰 상한에서 남긴 P0 발견, 또는 `잔여 동결 재검토 <중단 기록 절대 경로>` 형태의 사람이 `골격 재검토` 를 고른 사다리 정지, 또는 경로 없는 문구 `감사 골격급` 형태의 무인 감사가 상한 안의 회차에서 낸 골격급 결함(보고서는 설계 문서에서 유도한다). |
+| `<scope>` | (required) | 재수렴 스코프. `R<n>` 형태의 잔여 검증 항목 식별자, `(정규화 파일 경로, 카테고리 태그)` 형태의 문제 동일성, `감사 종합 요구 <중단 기록 절대 경로>` 형태의 채택된 감사 종합 요구, `구속 티어 이탈 <중단 기록 절대 경로>` 형태의 사람이 재수렴을 고른 구속 티어 이탈, `설계 수준 잔여 <리뷰 리포트 절대 경로>` 형태의 확인 리뷰가 설계 수준으로 분류한 잔여 발견, `상한 P0 잔여 <리뷰 리포트 절대 경로>` 형태의 앞 런이 확인 리뷰 상한에서 남긴 P0 발견, 또는 `잔여 동결 재검토 <중단 기록 절대 경로>` 형태의 사람이 `골격 재검토` 를 고른 사다리 정지, 또는 경로 없는 문구 `감사 골격급` 형태의 무인 감사가 상한 안의 회차에서 낸 골격급 결함(보고서는 설계 문서에서 유도한다), 또는 `승인 화면 반영 <시각-판정 중단 기록 절대 경로>` 형태의 사람이 승인한 화면 문구·구조를 설계 문서에 반영하는 범위. |
 
 > _Parsing (`<design-doc-path>`): `$ARGUMENTS`의 첫 `.md` 토큰을 경로로 해석._
 
@@ -433,7 +433,7 @@ _이 커맨드는 별도 인자를 받지 않으며, 직전 `/design` 팀 구성
 
 ### /cc-cmds:review-unattended
 
-**Usage**: `/cc-cmds:review-unattended <target> [--report-path <abs-path>] [--base-sha <sha>] [--declared-files <csv>] [--seat-commits <list>] [--post-merge <commit>] [--merged <commit>] [--slice <id>] [--expand <분야>[,<분야>]] [--basis-cycle <n>] [--basis-review-head <sha>] [--basis-report-path <abs-path>] [--resolve-basis-cycle <n>] [--resolve-basis-head <sha>] [--resolve-base <sha>] [--recover --scratch-dir <abs-path>] [--lead-fix <abs-path>] [--recheck <abs-path>] [--pr-head <sha>] [--depth 전체|가벼움] [--post-ready] [<directive>]`
+**Usage**: `/cc-cmds:review-unattended <target> [--report-path <abs-path>] [--base-sha <sha>] [--declared-files <csv>] [--seat-commits <list>] [--post-merge <commit>] [--merged <commit>] [--judge-head <sha>] [--slice <id>] [--expand <분야>[,<분야>]] [--basis-cycle <n>] [--basis-review-head <sha>] [--basis-report-path <abs-path>] [--resolve-basis-cycle <n>] [--resolve-basis-head <sha>] [--resolve-base <sha>] [--recover --scratch-dir <abs-path>] [--lead-fix <abs-path>] [--recheck <abs-path>] [--pr-head <sha>] [--depth 전체|가벼움] [--post-ready] [<directive>]`
 
 | Option | Default | Summary |
 | --- | --- | --- |
@@ -443,8 +443,9 @@ _이 커맨드는 별도 인자를 받지 않으며, 직전 `/design` 팀 구성
 | `--base-sha <sha>` | off (`gh pr view … baseRefName` 또는 기본 브랜치에서 base 를 스스로 유도) | diff 의 base 를 드라이버가 지정. 드라이버는 세그먼트가 갈라져 나온 base 를 이미 알고 있으므로, 이 값이 있으면 리뷰가 그것을 다시 유도하지 않는다. 넘겨받은 값은 신뢰하지 않고 `git merge-base --is-ancestor` 로 검증하며, 실패하면 기존 유도로 폴백하고 그 사실을 리포트 개요에 남긴다. |
 | `--declared-files <csv>` | off (변경 파일 집합을 diff 에서만 유도) | 이 세그먼트가 건드리기로 **선언된** 파일 집합(쉼표 구분). diff 는 무엇이 바뀌었는지만 말하고 무엇이 바뀌기로 되어 있었는지는 말하지 않으므로, 선언 밖 파일이 리뷰 범위 안에 있을 때 그것을 지목할 수 있게 한다. |
 | `--seat-commits <list>` | off (이 세그먼트에 좌석이 적용한 강제 표면 편집이 없다) | 사람 승인 뒤 게이트가 이 세그먼트 브랜치에 만든 좌석 적용 커밋 목록(`<sha> (<경로>, …); …`). 그 커밋이 바꾼 파일은 선언 집합 안이므로 리뷰 범위이며, 리뷰는 그 변경을 다른 커밋과 똑같이 읽고 개요에 커밋과 경로를 한 줄로 남긴다. |
-| `--post-merge <commit>` | off (머지 전 리뷰 — 머지 커밋에서 아무것도 다시 돌리지 않는다) | 머지 먼저(선머지후리뷰) 세그먼트의 사후 리뷰. 값은 다시 검증할 커밋 — 베이스에 생긴 머지 커밋, 또는 브랜치가 머지된 것보다 앞선 커밋을 지녔을 때(아직 머지되지 않은 리드 수정) 게이트가 고른 브랜치 팁. PR 대상은 열린 PR 과 닫힌 PR 모두에서 브랜치로 풀고, 그 커밋을 분리 체크아웃에 꺼내 설계 문서의 재현 절차와 이 슬라이스 몫의 구현 시 검증 레시피를 다시 돌려 결과를 리포트에 남기며, 실패는 P0 로 적는다. 다른 슬라이스의 항목은 `미실행 — 다른 슬라이스`, 어느 슬라이스에도 배정되지 않은 항목은 `미실행 — 배정 없음` 으로 적는다. diff 기준은 그대로 `--base-sha`...브랜치 팁. |
+| `--post-merge <commit>` | off (머지 전 리뷰 — 머지 커밋에서 아무것도 다시 돌리지 않는다) | 머지 먼저(선머지후리뷰) 세그먼트의 사후 리뷰. 값은 다시 검증할 커밋 — 베이스에 생긴 머지 커밋, 또는 브랜치가 머지된 것보다 앞선 커밋을 지녔을 때(아직 머지되지 않은 리드 수정) 게이트가 고른 브랜치 팁. PR 대상은 열린 PR 과 닫힌 PR 모두에서 브랜치로 풀고, 그 커밋을 분리 체크아웃에 꺼내 설계 문서의 재현 절차와 이 슬라이스 몫의 구현 시 검증 레시피를 다시 돌려 결과를 리포트에 남기며, 실패는 P0 로 적는다. 몫이 아닌 항목은 `미실행` 으로 적는다(Step 1). diff 기준은 그대로 `--base-sha`...브랜치 팁. |
 | `--merged <commit>` | off (머지된 PR 은 정지 사유) | 사람이 리뷰보다 먼저 머지해 머지 대조가 미포함 위반이 된 리뷰 먼저(선리뷰후머지) 세그먼트의 덮는 리뷰. 값은 베이스에 생긴 머지 커밋. PR 대상은 열린 PR 과 닫힌 PR 모두에서 브랜치로 풀어 가장 최근 PR 을 대상으로 삼고, diff 는 `--base-sha`...PR 의 head 다. `--post-merge` 와 달리 머지 커밋에서 설계 점검을 다시 돌리지 않고, 개요에 머지 커밋을 지목하는 한 줄만 남긴다. `--post-merge` 와 함께 오면 `--post-merge` 가 이긴다. |
+| `--judge-head <sha>` | off | 머지된 PR 을 입양한 세그먼트의 판정 헤드(워크트리 HEAD). 지적·줄 번호·`리뷰 HEAD` 의 기준. |
 | `--slice <id>` | off (슬라이스 범위를 적용하지 않고 모든 발견을 센다 — 개요에 `적용 안 됨 — 인자 없음`) | 이 세그먼트가 구현한 설계 슬라이스 id. 지시문의 `설계는 <doc>` 이 가리키는 설계 문서의 `## 구현 슬라이싱` 에서 같은 id 의 블록을 이 슬라이스의 범위로 읽고, 다른 선언 슬라이스에 배정된 P1·P2·P3 발견을 `## 다른 슬라이스 몫 (집계 제외)` 절로 옮겨 집계에서 뺀다. 문서·절·블록이 없으면 모두 센다. |
 | `--expand <분야>[,<분야>]` | off (기술 분야만 리뷰 — 추정한 요구 지적과 문서 표현 다듬기는 등급 없이 `## 범위 밖 관찰` 절에만 남는다) | 기본에서 빠진 리뷰 분야를 연다. 값은 `요구`와 `문서표현` 둘이다. 드라이버와 게이트가 매니페스트 계획의 `review_expand` 를 리뷰 파견마다 싣는다. 분야는 이 플래그로만 열리며, 앵커 브리프의 의도 문장이나 `## 실행 계획` 블록은 분야를 열지 않는다. `--lead-fix` 는 이 플래그를 읽지 않는다. |
 | `--basis-cycle <n>` | off (delta mode is not attempted; review runs full) | The 사이클 number of this segment's most recent FULL review cycle. Required together with --basis-review-head and --basis-report-path to attempt delta mode — all three or none. Any one missing or malformed drops the whole attempt to a full review, never a halt. |
@@ -457,13 +458,13 @@ _이 커맨드는 별도 인자를 받지 않으며, 직전 `/design` 팀 구성
 | `--scratch-dir <abs-path>` | off (지명 없음 — 후보를 열거하고 하나가 지명될 때까지 아무것도 복구하지 않는다) | 드라이버가 지명한 위트니스 scratch 디렉터리. 한 논리 세그먼트가 여러 번 재시도되면 디렉터리도 여럿이고 각 시도가 자기 원장에서 `epoch 1` 을 얻으므로, 어느 시도를 관측했는지 아는 드라이버만 지명할 수 있다. |
 | `--lead-fix <abs-path>` | off (리뷰 모드 — 코드를 고치지 않는다) | 리드 수정 모드. 뒤에 오는 상한 리포트의 P0·P1 항목만 리드가 직접 고쳐 세그먼트 브랜치에 커밋하고(대상 절단점이 push 를 인가하면 민 뒤), 항목마다 `수정됨` 또는 `수정 불가 — <사유>` 한 줄을 적은 수정 기록을 리포트 옆에 남긴다. 팀을 띄우지 않고 새 리포트를 쓰지 않는다. |
 | `--recheck <abs-path>` | off (상한 리포트 항목을 다시 판정하지 않는다) | 확인 리뷰. 평소의 리뷰를 그대로 돌리면서, 뒤에 오는 상한 리포트의 P0·P1 항목을 리드 수정의 수정 기록과 함께 항목마다 코드에서 다시 판정하고, 중복을 걷어 이번 사이클의 발견과 합쳐 센다. |
-| `--pr-head <sha>` | off (PR 의 head 를 원격에서 읽어 diff 끝으로 쓴다) | 리뷰어 런의 고정 헤드. 리뷰 전용 세그먼트를 계획할 때 게이트가 원격의 PR 헤드와 대조해 고정한 커밋이다. 이 값이 있으면 diff 는 `git diff <--base-sha>...<pr-head>` 이고 `리뷰 HEAD` 줄도 이 sha 다 — 리뷰 중에 작성자가 브랜치를 옮겨도 리뷰와 게시는 같은 커밋을 본다. 스테이지의 cwd 는 대상 메인 워크트리이고 고정 헤드는 `--segment` 를 단 게이트 행위가 도는 세그먼트 워크트리에 있으므로, PR 헤드의 파일은 그 워크트리의 절대 경로 아래에서 또는 `git show <pr-head>:<경로>` 로 읽고 cwd 상대 경로로 읽은 바이트는 근거로 쓰지 않는다. |
+| `--pr-head <sha>` | off (PR 의 head 를 원격에서 읽어 diff 끝으로 쓴다) | 리뷰어 런의 고정 헤드. 리뷰 전용 세그먼트를 계획할 때 게이트가 원격의 PR 헤드와 대조해 고정한 커밋이다. 이 값이 있으면 diff 는 `git diff <--base-sha>...<pr-head>` 이고 `리뷰 HEAD` 줄도 이 sha 다 — 리뷰 중에 작성자가 브랜치를 옮겨도 리뷰와 게시는 같은 커밋을 본다. PR 헤드의 파일은 cwd 가 아니라 세그먼트 워크트리에서 읽는다(Step 1). |
 | `--depth 전체|가벼움` | 전체 (Step 3 의 팀 구성 그대로) | 리뷰 깊이. `가벼움` 은 Step 3 의 팀 구성 대신 단일 라운드의 작은 구성 — 대화형 `review-lite` 의 단일 라운드와 같은 수·역할의 리뷰어 — 으로 리뷰한다. 리포트 형식·등급 판정선·게시 항목은 깊이와 무관하게 같다. |
 | `--post-ready` | off (게시 항목 절을 쓰지 않는다) | 리포트에 `## 게시 항목` 절을 쓴다 — P0·P1 지적마다 게시용 한 항목. 이 스테이지는 그래도 게시하지 않으며, 게시는 게이트의 `act --kind review-post` 가 이 절을 읽어 한다. |
 
 > _Parsing (`<target>`): 숫자만 포함된 토큰은 PR 번호, `https://github.com/<owner>/<repo>/pull/<n>` 형태는 그 레포의 PR 번호(리뷰어 런이 넘긴다), 하이픈·영문 포함 토큰은 브랜치로 해석. 어느 형태에도 해당되지 않으면 중단 기록을 남기고 정지._
 
-> _Parsing (`<directive>`): 타겟과 인식된 플래그(`--report-path`·`--base-sha`·`--declared-files`·`--seat-commits`·`--post-merge`·`--merged`·`--slice`·`--expand`·`--basis-cycle`·`--basis-review-head`·`--basis-report-path`·`--resolve-basis-cycle`·`--resolve-basis-head`·`--resolve-base`·`--recover`·`--scratch-dir`·`--lead-fix`·`--recheck`·`--pr-head`·`--depth`·`--post-ready`)의 값을 뺀 나머지. 인식되지 않는 `--` 토큰은 지시문으로 흡수하지 않고 폐기하며, 폐기 사실을 리포트에 한 줄 남긴다._
+> _Parsing (`<directive>`): 타겟과 인식된 플래그(`--report-path`·`--base-sha`·`--declared-files`·`--seat-commits`·`--post-merge`·`--merged`·`--judge-head`·`--slice`·`--expand`·`--basis-cycle`·`--basis-review-head`·`--basis-report-path`·`--resolve-basis-cycle`·`--resolve-basis-head`·`--resolve-base`·`--recover`·`--scratch-dir`·`--lead-fix`·`--recheck`·`--pr-head`·`--depth`·`--post-ready`)의 값을 뺀 나머지. 인식되지 않는 `--` 토큰은 지시문으로 흡수하지 않고 폐기하며, 폐기 사실을 리포트에 한 줄 남긴다._
 
 > _Parsing (`--report-path <abs-path>`): `--report-path` 다음 토큰을 값으로 취한다. 값이 없거나 절대 경로가 아니면 중단 기록을 남기고 정지._
 
@@ -476,6 +477,8 @@ _이 커맨드는 별도 인자를 받지 않으며, 직전 `/design` 팀 구성
 > _Parsing (`--post-merge <commit>`): `--post-merge` 다음 토큰을 값으로 취한다. 값이 없으면 플래그를 버리고 개요에 한 줄 남긴다 — 정지하지 않는다._
 
 > _Parsing (`--merged <commit>`): `--merged` 다음 토큰을 값으로 취한다. 값이 없으면 플래그를 버리고 개요에 한 줄 남긴다 — 정지하지 않는다. `--post-merge` 와 함께 오면 `--merged` 를 버리고 개요에 한 줄 남긴다._
+
+> _Parsing (`--judge-head <sha>`): 다음 토큰이 값. 정지·버림 조건은 Step 1 의 `--judge-head` 불릿._
 
 > _Parsing (`--slice <id>`): `--slice` 다음 토큰을 값으로 취한다. 값이 없으면 플래그를 버리고 개요에 한 줄 남긴다 — 정지하지 않는다._
 

@@ -1154,8 +1154,9 @@ def iso_ms: (sub("\\.[0-9]+Z$"; "Z") | fromdate) * 1000
 # 읽는다(`|` 로 자르고, 키 앞 공백과 값 뒤 공백을 떼고, 같은 키가 둘이면 마지막 것).
 #   - 시각 칸은 `관측`·`기록 시각`·`관측 시각`·`판독 시각` 의 ISO 값뿐이다. stage-lease 의
 #     `관측=tracker@…` 처럼 ISO 가 아닌 값은 버린다. `span` 은 그 값 전부의 최소·최대다.
-#   - 시각이 없는 행(stage-wait·stage-result)의 사건 시각 `at` 은 바로 앞의 시각 있는 행의 첫
-#     시각 칸이고 `at_source` 는 `앞 행`, 앞 행이 없으면 null 과 `없음` 이다.
+#   - stage-wait 의 사건 시각 `at` 은 그 행의 `기록 시각` 이고 `at_source` 는 `자기 행` 이다.
+#     그 칸이 없는 옛 stage-wait 와 시각이 없는 stage-result 의 `at` 은 바로 앞의 시각 있는 행의
+#     첫 시각 칸이고 `at_source` 는 `앞 행`, 앞 행이 없으면 null 과 `없음` 이다.
 #   - 무커밋: 구현 `정상 완료` stage-result 의 진척 토큰(`실패 서명` 의 넷째 성분)이 그
 #     스테이지의 파견 행(그 행 앞의 마지막 `계보=B:<세그먼트>#<실행 버전>` stage-lease)보다 앞에
 #     나온 해시와 같으면 무커밋이다. 같은 세그먼트의 앞선 stage-result 토큰은 그대로 같아야
@@ -1185,8 +1186,9 @@ def token: ((get("실패 서명") // "") | split("/") | .[3] // "") | if test("^
                stage: (if $ver == null then $st else "\($st)#\($ver)" end),
                kind: get("종류"), class: get("종단 부류")}],
    waits: [range(0; $R | length) as $i | $R[$i] | select(.s == "stage-wait")
-           | {reason: get("근거"), lineage: get("계보"), at: $PREV[$i],
-              at_source: (if $PREV[$i] == null then "없음" else "앞 행" end)}],
+           | rtime as $own
+           | {reason: get("근거"), lineage: get("계보"), at: ($own // $PREV[$i]),
+              at_source: (if $own != null then "자기 행" elif $PREV[$i] == null then "없음" else "앞 행" end)}],
    judged: [range(0; $R | length) as $i | $R[$i]
             | select(.s == "stage-result" and get("종류") == "implement" and get("종단 부류") == "정상 완료")
             | get("세그먼트") as $seg | get("실행 버전") as $ver | token as $tok

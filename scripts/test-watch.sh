@@ -1941,8 +1941,10 @@ check "그 기록이 원장을 건드리지 않는다" \
 # whoever raised the banner. The gate and the watcher do not sit in the seat's
 # pane, so the value is read from `notify.seat` — and with no record it is `:`.
 #
-# The record itself is written once, by the first ROUTER caller that has a
-# pane, ahead of the kill switch, and never replaced. The router markers are
+# The record itself is created by the first ROUTER caller that has a pane,
+# ahead of the kill switch. The watcher only creates it and never replaces it,
+# whatever pane its environment names; moving it is the seat's gate call
+# alone, which `test-gate.sh` and `test-notify-focus.sh` cover. The router markers are
 # cleared on the real command: this suite may run inside a stage, where
 # `CC_PIPELINE_SEGMENT` is exported and every positive case below would then
 # pass for the wrong reason or fail for one.

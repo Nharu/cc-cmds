@@ -3678,6 +3678,241 @@ gh13 '' "$(gh13_view 'OPEN X')"
 check "13 자식: pr-view 는 칸에 공백이 든 출력을 미상 으로 바꾼다" "$(rkg pr-view "$SPM" "$S13" "$SRD" "$SPL" "$SPG" "$WORK/rkg.err" 41 t/rk)" "미상"
 gh13
 check "13 자식: 모르는 모드는 판정불가 다" "$(rkg no-such-mode "$SPM" "$S13" "$SRD" "$SPL" "$SPG" "$WORK/rkg.err")" "판정불가"
+
+# 13 머지 입양 — a source with no design document whose manifest carries a
+# `머지 입양` row per segment, and whose ledger carries the obligation the
+# planning act issued and the `사후리뷰` row after it. The stub's `pr view <n>`
+# answer decides whether the request is still merged at the row's commits.
+PLAN13M='{ "steps": [ { "id": "I1", "skill": "implement", "summary": "구현", "depends_on": [] }, { "id": "I2", "skill": "implement", "summary": "구현", "depends_on": [] }, { "id": "R1", "skill": "review", "summary": "리뷰", "depends_on": ["I1", "I2"] } ] }'
+M13M=$(printf 'c%.0s' $(seq 40)); H13M=$(printf 'd%.0s' $(seq 40)); F13M=$(printf 'e%.0s' $(seq 40))
+# pr13m <seg> — the pull request number the fixture gives that segment.
+pr13m() { case "$1" in I1) printf 7 ;; *) printf 8 ;; esac; }
+# mk13m <src> <open|done|merged|doneopen|fulfilpark> <seg[=how]…> — the source
+# run, one `머지 입양` row and one obligation per segment; `done` fulfils each
+# obligation and ends it `완료`, `merged` fulfils it and ends on `머지됨`,
+# `doneopen` ends `완료` with it open, `fulfilpark` fulfils it and ends `park`.
+# A segment written `<seg>=<how>` takes that ending instead of the run's.
+mk13m() {
+  local s="$1" how="$2" a k h rows=''; shift 2
+  for a in "$@"; do
+    k=${a%%=*}
+    rows="$rows$(printf -- '- `머지 입양` | 세그먼트=%s | 대상=rk | PR=%s | 머지 커밋=%s | PR 헤드=%s | 출처 런=-' "$k" "$(pr13m "$k")" "$M13M" "$H13M")
+"
+  done
+  P_DOC='(없음)' P_PLAN="$PLAN13M" P_NOROSTER=1 P_EXTRA="$SEAT_ROW
+${rows%
+}" mk_prev "$s"
+  for a in "$@"; do
+    k=${a%%=*}; h=$how
+    case "$a" in *=*) h=${a#*=} ;; esac
+    fx_row '리뷰 의무' "의무 id=RO-$k" "상태=미이행" "세그먼트=$k" "대상=rk" "머지 커밋=$M13M" "분기점=$F13M" "생성 등급=-"
+    fx_row 'segment' "id=$k" "상태=계획됨" "레포=t/rk" "워크트리=$WORK/repo-run-$s-$k" "선행=없음" "리뷰 정책=선리뷰후머지"
+    fx_row 'segment' "id=$k" "상태=사후리뷰" "워크트리=$WORK/repo-run-$s-$k"
+    case "$h" in
+      done)
+        fx_row '리뷰 의무' "의무 id=RO-$k" "상태=이행" "세그먼트=$k" "대상=rk" "머지 커밋=$M13M" "분기점=$F13M" "생성 등급=-"
+        fx_row 'segment' "id=$k" "상태=완료" "워크트리=$WORK/repo-run-$s-$k" ;;
+      merged)
+        fx_row '리뷰 의무' "의무 id=RO-$k" "상태=이행" "세그먼트=$k" "대상=rk" "머지 커밋=$M13M" "분기점=$F13M" "생성 등급=-"
+        fx_row 'segment' "id=$k" "상태=머지됨" "워크트리=$WORK/repo-run-$s-$k" ;;
+      doneopen)
+        fx_row 'segment' "id=$k" "상태=완료" "워크트리=$WORK/repo-run-$s-$k" ;;
+      fulfilpark)
+        fx_row '리뷰 의무' "의무 id=RO-$k" "상태=이행" "세그먼트=$k" "대상=rk" "머지 커밋=$M13M" "분기점=$F13M" "생성 등급=-"
+        fx_row 'segment' "id=$k" "상태=park" "워크트리=$WORK/repo-run-$s-$k" ;;
+    esac
+  done
+  seat_end 마감
+}
+# view13m <merge commit> — the stub's answer to `pr view` of both requests.
+view13m() {
+  local n
+  for n in 7 8; do
+    printf '{"state":"MERGED","mergeCommit":{"oid":"%s"},"headRefOid":"%s"}\n' "$1" "$H13M" > "$GH13/view.$n"
+  done
+}
+# md13m — the adopt output's lines about merged requests.
+md13m() { printf '%s\n' "$A13" | awk -F'\t' '$1 == "머지입양후보" || ($1 == "입양불가" && $4 ~ /^머지입양/)'; }
+S13M=20261001-a00000d1
+mk13m "$S13M" open I1
+gh13; view13m "$M13M"
+a13 "$S13M"
+check "13 머지 입양: 리뷰가 열린 머지된 PR 은 머지입양후보 한 줄이다" "$(md13m)" \
+  "머지입양후보${TAB}I1${TAB}7${TAB}$M13M${TAB}$H13M"
+check "13 머지 입양: 수정 PR 이 없는 세그먼트는 다른 입양불가 줄을 내지 않는다" \
+  "$(printf '%s\n' "$A13" | awk -F'\t' '$1 == "입양불가"')" ""
+view13m "$F13M"
+a13 "$S13M"
+check "13 머지 입양: 머지 커밋이 행과 다르면 머지입양다름 이다" "$(md13m)" "입양불가${TAB}I1${TAB}7${TAB}머지입양다름"
+printf '1\n' > "$GH13/rc"
+a13 "$S13M"
+check "13 머지 입양: PR 을 읽지 못하면 머지입양판독불가 다" "$(md13m)" "입양불가${TAB}I1${TAB}7${TAB}머지입양판독불가"
+gh13; view13m "$M13M"
+S13M2=20261001-a00000d2
+mk13m "$S13M2" done I1
+a13 "$S13M2"
+check "13 머지 입양: 의무를 이행하고 완료 로 끝난 세그먼트는 줄이 없다" "$(md13m)" ""
+# A fix flow that merged its fix ends on `머지됨`, and its fulfilled obligation
+# ends the candidacy as a `완료` does.
+S13M4=20261001-a00000d4
+mk13m "$S13M4" merged I1
+a13 "$S13M4"
+check "13 머지 입양: 의무를 이행하고 머지됨 으로 끝난 세그먼트는 줄이 없다" "$(md13m)" ""
+# The open-obligation count reads the Korean keys whatever awk counts in, so
+# a `완료` whose obligation is still open stays a candidate.
+S13M5=20261001-a00000d5
+mk13m "$S13M5" doneopen I1
+a13 "$S13M5"
+check "13 머지 입양: 의무가 열린 채 완료 로 끝난 세그먼트는 후보 한 줄이다" "$(md13m)" \
+  "머지입양후보${TAB}I1${TAB}7${TAB}$M13M${TAB}$H13M"
+# An obligation fulfilled before the fix merged leaves the segment unended when
+# its run stopped on a `park`, so the next run still sees it.
+S13M6=20261001-a00000d6
+mk13m "$S13M6" fulfilpark I1
+a13 "$S13M6"
+check "13 머지 입양: 의무를 이행했어도 park 로 멈춘 세그먼트는 후보 한 줄이다" "$(md13m)" \
+  "머지입양후보${TAB}I1${TAB}7${TAB}$M13M${TAB}$H13M"
+# A merge-adopted segment whose fix branch carries a request of its own (9, not
+# the row's 7) that fails the fix-branch checks reports that request beside its
+# candidate line, while the one with no such request above printed nothing more.
+S13M8=20261001-a00000d8
+mk13m "$S13M8" open I1
+fx_row '원격 판독' "세그먼트=I1" "브랜치=seg/rk-fix-I1" "워크트리 HEAD=$H13M" "원격 팁=$H13M" "PR=9" "PR 상태=CLOSED" "PR HEAD=$H13M"
+a13 "$S13M8"
+check "13 머지 입양: 자기 수정 PR 이 검사에 걸린 세그먼트는 후보 줄 곁에 그 PR 의 입양불가 줄이 선다" \
+  "$(printf '%s\n' "$A13" | awk -F'\t' '$1 == "머지입양후보" || $1 == "입양불가"')" \
+  "입양불가${TAB}I1${TAB}9${TAB}PR닫힘
+머지입양후보${TAB}I1${TAB}7${TAB}$M13M${TAB}$H13M"
+# A merge-adopted segment whose fix branch has an open fix pull request (41)
+# is paired with that branch only when the source's first review after the
+# obligation read the merged request on the adoption line (`입양 줄=예`). The
+# new run's gate exempts a paired segment from that check, and its review of
+# base...fix branch leaves the merge commit's own changes out, so a source
+# whose first review was not on the adoption line (`아니오`), or that never
+# reviewed (no `cycle` row), gives the fix branch `머지입양미리뷰` and a
+# `머지입양후보` line with no worktree.
+# mk13mfix <src> <예|아니오|없음> [how] — that source, with the fix branch
+# pushed and its pull request open at the branch's head; `how` is mk13m's
+# ending of the merged request (`open` when left out).
+mk13mfix() {
+  local s="$1" line="$2" w="$WORK/repo-run-$1-I1" b="seg/$1-I1" h
+  mk13m "$s" "${3:-open}" I1
+  ( cd "$WT" && git worktree add -q -b "$b" "$w" main && cd "$w" && printf '%s\n' "$s" > seg.txt \
+      && git add seg.txt && git commit -qm "$s" && git push -q origin "$b" ) >/dev/null 2>&1
+  h=$(cd "$w" && git rev-parse HEAD)
+  fx_row 'segment' "id=I1" "상태=리뷰중" "워크트리=$w" "브랜치=$b" "PR=41"
+  [ "$line" = 없음 ] || fx_row 'cycle' "세그먼트=I1" "리뷰 HEAD=$h" "입양 줄=$line"
+  fx_row '원격 판독' "세그먼트=I1" "브랜치=$b" "워크트리 HEAD=$h" "원격 팁=$h" "PR=41" "PR 상태=OPEN" "PR HEAD=$h"
+  use13 "$w" "$b" "$h"
+}
+# mfix13m — the adopt output's lines: a candidate's kind, segment, worktree and
+# PR, a refusal's first four cells, and the merged request line whole.
+mfix13m() {
+  printf '%s\n' "$A13" | awk -F'\t' '
+    $1 == "머지입양후보" { print; next }
+    $1 == "입양후보" { print $1 "\t" $2 "\t" $4 "\t" $5; next }
+    $1 == "입양불가" { print $1 "\t" $2 "\t" $3 "\t" $4 }'
+}
+SAVE13="$SW $SB $SH"
+S13MA=20261001-a00000da
+mk13mfix "$S13MA" 예
+a13 "$S13MA"
+check "13 머지 입양: 첫 사후 리뷰가 입양 줄=예 인 원천의 열린 수정 PR 은 머지입양후보와 짝을 이룬다" "$(mfix13m)" \
+  "입양후보${TAB}I1${TAB}$S13_W${TAB}41
+머지입양후보${TAB}I1${TAB}7${TAB}$M13M${TAB}$H13M${TAB}$S13_W"
+S13MB=20261001-a00000db
+mk13mfix "$S13MB" 아니오
+a13 "$S13MB"
+check "13 머지 입양: 첫 사후 리뷰가 입양 줄=아니오 인 원천의 수정 브랜치는 머지입양미리뷰 이고 머지입양후보는 짝이 없다" "$(mfix13m)" \
+  "입양불가${TAB}I1${TAB}41${TAB}머지입양미리뷰
+머지입양후보${TAB}I1${TAB}7${TAB}$M13M${TAB}$H13M"
+a13 "$S13MB" --auto
+check "13 머지 입양: 좌석(--auto)도 입양 줄=아니오 인 원천의 수정 브랜치를 짝짓지 않는다" "$(mfix13m)" \
+  "입양불가${TAB}I1${TAB}41${TAB}머지입양미리뷰
+머지입양후보${TAB}I1${TAB}7${TAB}$M13M${TAB}$H13M"
+S13MC=20261001-a00000dc
+mk13mfix "$S13MC" 없음
+a13 "$S13MC"
+check "13 머지 입양: 의무 뒤 cycle 행이 없는 원천의 수정 브랜치도 머지입양미리뷰 다" "$(mfix13m)" \
+  "입양불가${TAB}I1${TAB}41${TAB}머지입양미리뷰
+머지입양후보${TAB}I1${TAB}7${TAB}$M13M${TAB}$H13M"
+# An obligation the source fulfilled was closed by a review the gate accepted,
+# so its fix branch still pairs whatever `입양 줄` the later cycle carries.
+S13MD=20261001-a00000dd
+mk13mfix "$S13MD" 아니오 fulfilpark
+a13 "$S13MD"
+check "13 머지 입양: 의무를 이행한 원천의 열린 수정 PR 은 입양 줄=아니오 여도 머지입양후보와 짝을 이룬다" "$(mfix13m)" \
+  "입양후보${TAB}I1${TAB}$S13_W${TAB}41
+머지입양후보${TAB}I1${TAB}7${TAB}$M13M${TAB}$H13M${TAB}$S13_W"
+# shellcheck disable=SC2086
+use13 $SAVE13
+S13M3=20261001-a00000d3
+mk13m "$S13M3" open I1 I2
+a13 "$S13M3"
+check "13 머지 입양: 리뷰가 열린 머지 입양 세그먼트마다 후보 한 줄이다" "$(md13m)" \
+  "머지입양후보${TAB}I1${TAB}7${TAB}$M13M${TAB}$H13M
+머지입양후보${TAB}I2${TAB}8${TAB}$M13M${TAB}$H13M"
+# A person's re-kickoff that takes the merged request over keeps the target's
+# `머지` cutpoint and passes; one whose hook check lowered that cutpoint to `PR`
+# (the `7.7 절단점` answer with the rewritten target row) fails `입양` here,
+# before 7.8 would close the source in favour of a run the driver refuses.
+printf '입양 I1\t이어받기 — I1 · PR #7 · 머지됨 · %s\n' "$(printf '%s' "$M13M" | cut -c1-12)" > "$WORK/a13m-take"
+SL_DOC='(없음)' SL_DOCSHA='(해당 없음)' SL_AUTO= SL_ASKED="$WORK/a13m-take" seat_link "$S13M" 20261002-b00000d1
+out=$(rk verify-subset "$SL_OUT" "$BASE/docs/pipeline-run/$S13M.plan.md" --expect-sha256 "$SL_PMS" --expect-grant-sha256 "$SL_PGS" --asked "$WORK/a13m-take")
+check "13 머지 입양 사람: 절단점을 그대로 두고 이어받으면 render-manifest 가 0, verify-subset 이 통과하고 머지 입양 행이 하나다" \
+  "$SL_RC/$(col "$out" 판정)/$(printf '%s\n' "$out" | awk -F'\t' '$1 == "검사" && $2 == "입양" { print $3 }')/$(grep -c '^- `머지 입양` | 세그먼트=I1 |' "$SL_OUT" || true)" "0/통과/통과/1"
+grep -E '^- `target`' "$BASE/docs/pipeline-run/$S13M.plan.md" | sed 's/| 절단점=머지 |/| 절단점=PR |/' > "$WORK/targets-13m-pr"
+cp "$WORK/a13m-take" "$WORK/a13m-low"; printf '7.7 절단점 rk\tPR\n' >> "$WORK/a13m-low"
+SL_DOC='(없음)' SL_DOCSHA='(해당 없음)' P_GCUT=PR SL_AUTO= SL_ASKED="$WORK/a13m-low" seat_link "$S13M" 20261002-b00000d2 --targets "$WORK/targets-13m-pr"
+out=$(rk verify-subset "$SL_OUT" "$BASE/docs/pipeline-run/$S13M.plan.md" --expect-sha256 "$SL_PMS" --expect-grant-sha256 "$SL_PGS" --asked "$WORK/a13m-low")
+check "13 머지 입양 사람: 훅 점검이 절단점을 PR 로 낮춘 초안은 render-manifest 가 0 이고 verify-subset 이 실패한다" \
+  "$SL_RC/$(col "$out" 판정)/$(grep -c '| 절단점=PR |' "$SL_OUT" || true)" "0/실패/1"
+check "13 머지 입양 사람: 실패한 검사는 입양 하나다" "$(printf '%s\n' "$out" | awk -F'\t' '$1 == "검사" && $3 == "실패" { print $2 }')" "입양"
+has "13 머지 입양 사람: 입양 검사의 사유가 머지 입양 대상의 절단점을 든다" \
+  "$(printf '%s\n' "$out" | awk -F'\t' '$1 == "검사" && $2 == "입양" { print $4 }')" "세그먼트 I1 의 머지 입양 대상 rk 의 절단점이 「PR」입니다"
+# The source's target row carries no `리뷰 정책 상한`, so a carried blank
+# `review-ceiling` row confirmed at `리뷰없음` reaches the draft through `--set`
+# and passes the target check; the `입양` check refuses that ceiling on a
+# merge-adopted target, as the driver's manifest check would on the run's first
+# gate call.
+cp "$WORK/a13m-take" "$WORK/a13m-ceil"; printf '5o rk:review-ceiling\t이대로\n' >> "$WORK/a13m-ceil"
+blanks "$WORK/blanks-13m-ceil" "t/rk${TAB}review-ceiling${TAB}리뷰없음"
+SL_DOC='(없음)' SL_DOCSHA='(해당 없음)' SL_AUTO= SL_ASKED="$WORK/a13m-ceil" seat_link "$S13M" 20261002-b00000d3 --set 'rk:review-ceiling=리뷰없음'
+out=$(rk verify-subset "$SL_OUT" "$BASE/docs/pipeline-run/$S13M.plan.md" --expect-sha256 "$SL_PMS" --expect-grant-sha256 "$SL_PGS" --asked "$WORK/a13m-ceil" \
+  --set 'rk:review-ceiling=리뷰없음' --blank-rows "$WORK/blanks-13m-ceil")
+check "13 머지 입양 사람: 빈 상한을 리뷰없음 으로 확정한 초안은 render-manifest 가 0 이고 verify-subset 이 실패한다" \
+  "$SL_RC/$(col "$out" 판정)/$(grep -E '^- `target`' "$SL_OUT" | grep -c '| 리뷰 정책 상한=리뷰없음' || true)" "0/실패/1"
+check "13 머지 입양 사람: 빈 상한을 리뷰없음 으로 확정한 초안에서 실패한 검사는 입양 하나다" \
+  "$(printf '%s\n' "$out" | awk -F'\t' '$1 == "검사" && $3 == "실패" { print $2 }')" "입양"
+has "13 머지 입양 사람: 입양 검사의 사유가 머지 입양 대상의 리뷰없음 상한을 든다" \
+  "$(printf '%s\n' "$out" | awk -F'\t' '$1 == "검사" && $2 == "입양" { print $4 }')" "세그먼트 I1 의 머지 입양 대상 rk 의 리뷰 정책 상한이 「리뷰없음」입니다"
+# A source with no design document and three implementation steps, I1 and I2
+# merge-adopted and I3 left free: I1 fulfilled its obligation and ended
+# `완료`, so it derives no candidate and its row is not carried, while I2 is
+# taken over. The draft then leaves I1 and I3 without an adoption row, which
+# the driver's manifest check refuses, so `입양` fails on both paths here,
+# before 7.8 would close the source in favour of a run the driver refuses.
+PLAN13M_SAVE=$PLAN13M
+PLAN13M='{ "steps": [ { "id": "I1", "skill": "implement", "summary": "구현", "depends_on": [] }, { "id": "I2", "skill": "implement", "summary": "구현", "depends_on": [] }, { "id": "I3", "skill": "implement", "summary": "구현", "depends_on": [] }, { "id": "R1", "skill": "review", "summary": "리뷰", "depends_on": ["I1", "I2", "I3"] } ] }'
+S13M7=20261001-a00000d7
+mk13m "$S13M7" open I1=done I2
+PLAN13M=$PLAN13M_SAVE
+a13 "$S13M7"
+check "13 머지 입양 셋: 의무를 마친 I1 은 줄이 없고 I2 만 후보다" "$(md13m)" \
+  "머지입양후보${TAB}I2${TAB}8${TAB}$M13M${TAB}$H13M"
+printf '입양 I2\t이어받기 — I2 · PR #8 · 머지됨 · %s\n' "$(printf '%s' "$M13M" | cut -c1-12)" > "$WORK/a13m-two"
+SL_DOC='(없음)' SL_DOCSHA='(해당 없음)' SL_AUTO= SL_ASKED="$WORK/a13m-two" seat_link "$S13M7" 20261002-b00000d4
+out=$(rk verify-subset "$SL_OUT" "$BASE/docs/pipeline-run/$S13M7.plan.md" --expect-sha256 "$SL_PMS" --expect-grant-sha256 "$SL_PGS" --asked "$WORK/a13m-two")
+check "13 머지 입양 셋 사람: 행 없는 구현 단계가 둘인 초안은 render-manifest 가 0 이고 verify-subset 이 실패한다" \
+  "$SL_RC/$(col "$out" 판정)/$(grep -c '^- `머지 입양`' "$SL_OUT" || true)" "0/실패/1"
+check "13 머지 입양 셋 사람: 실패한 검사는 입양 하나다" "$(printf '%s\n' "$out" | awk -F'\t' '$1 == "검사" && $3 == "실패" { print $2 }')" "입양"
+has "13 머지 입양 셋 사람: 입양 검사의 사유가 드라이버 매니페스트 검사의 거절을 든다" \
+  "$(printf '%s\n' "$out" | awk -F'\t' '$1 == "검사" && $2 == "입양" { print $4 }')" "입양 행 없는 구현 단계가 2개입니다"
+SL_DOC='(없음)' SL_DOCSHA='(해당 없음)' SL_ASKED= seat_link "$S13M7" 20261002-b00000d5
+check "13 머지 입양 셋 좌석: 같은 초안을 좌석 경로도 verify-subset 에서 거절한다" "$SL_RC/$SL_VS" "0/실패"
+rm -f "$GH13/view.7" "$GH13/view.8"
+unset -f pr13m mk13m view13m md13m
+unset PLAN13M M13M H13M F13M S13M S13M2 S13M3 S13M4 S13M5 S13M6 S13M7 S13M8 PLAN13M_SAVE
 unset CC_REMOTE_GH
 
 # ---------------------------------------------------------------------------

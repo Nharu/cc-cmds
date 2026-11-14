@@ -3,7 +3,7 @@ name: review-unattended
 description: 에이전트 팀을 활용한 다관점 코드 리뷰 (무인 — 사람 확인 없이 리포트까지 완주)
 when_to_use: 자율 파이프라인 드라이버가 리뷰 스테이지를 헤드리스로 디스패치할 때. 사람이 직접 부르는 경우에는 `/cc-cmds:review`를 쓸 것
 disable-model-invocation: true
-usage: "/cc-cmds:review-unattended <target> [--report-path <abs-path>] [--base-sha <sha>] [--declared-files <csv>] [--seat-commits <list>] [--post-merge <commit>] [--merged <commit>] [--slice <id>] [--expand <분야>[,<분야>]] [--basis-cycle <n>] [--basis-review-head <sha>] [--basis-report-path <abs-path>] [--resolve-basis-cycle <n>] [--resolve-basis-head <sha>] [--resolve-base <sha>] [--recover --scratch-dir <abs-path>] [--lead-fix <abs-path>] [--recheck <abs-path>] [--pr-head <sha>] [--depth 전체|가벼움] [--post-ready] [<directive>]"
+usage: "/cc-cmds:review-unattended <target> [--report-path <abs-path>] [--base-sha <sha>] [--declared-files <csv>] [--seat-commits <list>] [--post-merge <commit>] [--merged <commit>] [--judge-head <sha>] [--slice <id>] [--expand <분야>[,<분야>]] [--basis-cycle <n>] [--basis-review-head <sha>] [--basis-report-path <abs-path>] [--resolve-basis-cycle <n>] [--resolve-basis-head <sha>] [--resolve-base <sha>] [--recover --scratch-dir <abs-path>] [--lead-fix <abs-path>] [--recheck <abs-path>] [--pr-head <sha>] [--depth 전체|가벼움] [--post-ready] [<directive>]"
 options:
     - name: "<target>"
       kind: positional
@@ -33,13 +33,18 @@ options:
     - name: "--post-merge <commit>"
       kind: flag
       default: "off (머지 전 리뷰 — 머지 커밋에서 아무것도 다시 돌리지 않는다)"
-      summary: "머지 먼저(선머지후리뷰) 세그먼트의 사후 리뷰. 값은 다시 검증할 커밋 — 베이스에 생긴 머지 커밋, 또는 브랜치가 머지된 것보다 앞선 커밋을 지녔을 때(아직 머지되지 않은 리드 수정) 게이트가 고른 브랜치 팁. PR 대상은 열린 PR 과 닫힌 PR 모두에서 브랜치로 풀고, 그 커밋을 분리 체크아웃에 꺼내 설계 문서의 재현 절차와 이 슬라이스 몫의 구현 시 검증 레시피를 다시 돌려 결과를 리포트에 남기며, 실패는 P0 로 적는다. 다른 슬라이스의 항목은 `미실행 — 다른 슬라이스`, 어느 슬라이스에도 배정되지 않은 항목은 `미실행 — 배정 없음` 으로 적는다. diff 기준은 그대로 `--base-sha`...브랜치 팁."
+      summary: "머지 먼저(선머지후리뷰) 세그먼트의 사후 리뷰. 값은 다시 검증할 커밋 — 베이스에 생긴 머지 커밋, 또는 브랜치가 머지된 것보다 앞선 커밋을 지녔을 때(아직 머지되지 않은 리드 수정) 게이트가 고른 브랜치 팁. PR 대상은 열린 PR 과 닫힌 PR 모두에서 브랜치로 풀고, 그 커밋을 분리 체크아웃에 꺼내 설계 문서의 재현 절차와 이 슬라이스 몫의 구현 시 검증 레시피를 다시 돌려 결과를 리포트에 남기며, 실패는 P0 로 적는다. 몫이 아닌 항목은 `미실행` 으로 적는다(Step 1). diff 기준은 그대로 `--base-sha`...브랜치 팁."
       parse_note: "`--post-merge` 다음 토큰을 값으로 취한다. 값이 없으면 플래그를 버리고 개요에 한 줄 남긴다 — 정지하지 않는다."
     - name: "--merged <commit>"
       kind: flag
       default: "off (머지된 PR 은 정지 사유)"
       summary: "사람이 리뷰보다 먼저 머지해 머지 대조가 미포함 위반이 된 리뷰 먼저(선리뷰후머지) 세그먼트의 덮는 리뷰. 값은 베이스에 생긴 머지 커밋. PR 대상은 열린 PR 과 닫힌 PR 모두에서 브랜치로 풀어 가장 최근 PR 을 대상으로 삼고, diff 는 `--base-sha`...PR 의 head 다. `--post-merge` 와 달리 머지 커밋에서 설계 점검을 다시 돌리지 않고, 개요에 머지 커밋을 지목하는 한 줄만 남긴다. `--post-merge` 와 함께 오면 `--post-merge` 가 이긴다."
       parse_note: "`--merged` 다음 토큰을 값으로 취한다. 값이 없으면 플래그를 버리고 개요에 한 줄 남긴다 — 정지하지 않는다. `--post-merge` 와 함께 오면 `--merged` 를 버리고 개요에 한 줄 남긴다."
+    - name: "--judge-head <sha>"
+      kind: flag
+      default: "off"
+      summary: "머지된 PR 을 입양한 세그먼트의 판정 헤드(워크트리 HEAD). 지적·줄 번호·`리뷰 HEAD` 의 기준."
+      parse_note: "다음 토큰이 값. 정지·버림 조건은 Step 1 의 `--judge-head` 불릿."
     - name: "--slice <id>"
       kind: flag
       default: "off (슬라이스 범위를 적용하지 않고 모든 발견을 센다 — 개요에 `적용 안 됨 — 인자 없음`)"
@@ -103,7 +108,7 @@ options:
     - name: "--pr-head <sha>"
       kind: flag
       default: "off (PR 의 head 를 원격에서 읽어 diff 끝으로 쓴다)"
-      summary: "리뷰어 런의 고정 헤드. 리뷰 전용 세그먼트를 계획할 때 게이트가 원격의 PR 헤드와 대조해 고정한 커밋이다. 이 값이 있으면 diff 는 `git diff <--base-sha>...<pr-head>` 이고 `리뷰 HEAD` 줄도 이 sha 다 — 리뷰 중에 작성자가 브랜치를 옮겨도 리뷰와 게시는 같은 커밋을 본다. 스테이지의 cwd 는 대상 메인 워크트리이고 고정 헤드는 `--segment` 를 단 게이트 행위가 도는 세그먼트 워크트리에 있으므로, PR 헤드의 파일은 그 워크트리의 절대 경로 아래에서 또는 `git show <pr-head>:<경로>` 로 읽고 cwd 상대 경로로 읽은 바이트는 근거로 쓰지 않는다."
+      summary: "리뷰어 런의 고정 헤드. 리뷰 전용 세그먼트를 계획할 때 게이트가 원격의 PR 헤드와 대조해 고정한 커밋이다. 이 값이 있으면 diff 는 `git diff <--base-sha>...<pr-head>` 이고 `리뷰 HEAD` 줄도 이 sha 다 — 리뷰 중에 작성자가 브랜치를 옮겨도 리뷰와 게시는 같은 커밋을 본다. PR 헤드의 파일은 cwd 가 아니라 세그먼트 워크트리에서 읽는다(Step 1)."
       parse_note: "`--pr-head` 다음 토큰을 값으로 취한다. 값이 없거나 `git rev-parse --verify <값>^{commit}` 이 cwd 에서 풀지 못하면 중단 기록을 남기고 정지 — 고정 헤드 없는 게시용 리뷰는 게시 위치가 어긋난다."
     - name: "--depth 전체|가벼움"
       kind: flag
@@ -119,7 +124,7 @@ options:
       kind: positional
       required: false
       summary: '리뷰 관점 지시문. severity 기준은 바꾸지 않고 팀 구성과 컨텍스트 가중치에만 영향.'
-      parse_note: "타겟과 인식된 플래그(`--report-path`·`--base-sha`·`--declared-files`·`--seat-commits`·`--post-merge`·`--merged`·`--slice`·`--expand`·`--basis-cycle`·`--basis-review-head`·`--basis-report-path`·`--resolve-basis-cycle`·`--resolve-basis-head`·`--resolve-base`·`--recover`·`--scratch-dir`·`--lead-fix`·`--recheck`·`--pr-head`·`--depth`·`--post-ready`)의 값을 뺀 나머지. 인식되지 않는 `--` 토큰은 지시문으로 흡수하지 않고 폐기하며, 폐기 사실을 리포트에 한 줄 남긴다."
+      parse_note: "타겟과 인식된 플래그(`--report-path`·`--base-sha`·`--declared-files`·`--seat-commits`·`--post-merge`·`--merged`·`--judge-head`·`--slice`·`--expand`·`--basis-cycle`·`--basis-review-head`·`--basis-report-path`·`--resolve-basis-cycle`·`--resolve-basis-head`·`--resolve-base`·`--recover`·`--scratch-dir`·`--lead-fix`·`--recheck`·`--pr-head`·`--depth`·`--post-ready`)의 값을 뺀 나머지. 인식되지 않는 `--` 토큰은 지시문으로 흡수하지 않고 폐기하며, 폐기 사실을 리포트에 한 줄 남긴다."
 notes: "사람에게 묻는 표면이 없다. 범위를 스스로 좁히지 않으며(수렴 술어를 얇게 만들기 때문 — 드라이버가 넘긴 `--slice` 에 따른 다른 슬라이스 몫 제외와, 기본 분야 밖 관찰을 `## 범위 밖 관찰` 로 보내는 것은 스스로 좁히기가 아니다 — 둘 다 버리지 않고 리포트에 남긴다), 리포트를 쓰고 종료한다 — 후속 논의 단계가 없다."
 ---
 
@@ -255,7 +260,9 @@ When the target is not a file path, verify gh CLI first: `command -v gh`, then `
   1. **Resolve a branch target across open and closed pull requests**, as `--post-merge` item 1 does — `gh pr list --head {branch} --state all --json number,title,state --jq '.[0]'` — and take the most recent pull request as the target (1d).
   2. **The diff is `--base-sha`...the target head, as 1b says, and the target head is the pull request's head** (`headRefOid`), which survives the branch's deletion after the merge. The gate already chose the base and, when an earlier full cycle exists, the delta basis on the same line; take both as given.
   3. **Do not re-run the design's checks on the merge commit** — `--post-merge` item 2 is not part of this review. Write one overview line naming `<commit>` as the merge commit the review covers.
+  **A merged pull request's URL as the target** is the review of a segment adopted as a pull request merged outside the run. `<commit>` is then the `머지 커밋` of the segment's review obligation — the merge commit the base made — and the line carries `--base-sha` (the obligation's fork point) and `--judge-head`. Item 1 does not apply: the URL names the pull request, which is merged by design (1d). Items 2 and 3 apply as written.
   `--merged` together with `--post-merge` keeps `--post-merge`: drop `--merged` with its value and leave one overview line naming the drop.
+- **`--judge-head <sha>`** → the head the findings of an adopted merged pull request's review are judged against: the segment worktree's HEAD, which holds the merge commit and anything the base carried after it. It takes the **next token** as its value and is removed with it before the directive is extracted, exactly as `--declared-files` is. Read the segment worktree's HEAD with `gate.sh exec --target <대상> --segment <세그먼트> … -- git rev-parse HEAD`, and its absolute path once with `gate.sh exec --target <대상> --segment <세그먼트> … -- git rev-parse --show-toplevel`; a value that differs from that HEAD, or a missing value, is a **halt** with `분류: precondition-failed` naming both. Without `--merged` it is dropped with one overview line. Together with `--pr-head` it is the same halt: the two name different heads for one review. With it present the diff stays `--base-sha`...the pull request's head, and a finding is written as that head reads: a change the judge head no longer carries is not a finding and gets one overview line, a finding's line numbers are the judge head's, and the report's `리뷰 HEAD` line names the judge head.
 - **`--slice <id>`** → the design slice this segment implemented. It takes the **next token** as its value, and the flag and its value are removed from the argument string **before** the directive is extracted, exactly as `--declared-files` is. A `--slice` whose value is missing is dropped along with the flag and leaves one overview line naming the drop; the slice scope then falls back to `인자 없음` in 1c′. What the value selects is decided in 1c′, not here.
 - **`--expand <분야>[,<분야>]`** → the fields the run's plan opened beyond the default (context-package item 14's Field scope), carried by the driver and the gate from the manifest's `review_expand`. It takes the **next token** as its value, and the flag and its value are removed from the argument string **before** the directive is extracted, exactly as `--declared-files` is. Split the value on commas; the known values are `요구` and `문서표현`, and given twice the open fields are the union. A missing value drops the flag, and an unknown value is discarded; either is **not a halt** and leaves one overview line naming what was dropped. When nothing is left, it is as if the flag were not given. Without this bullet the flag would fall to the `Any other token beginning with --` bullet below and be discarded.
 - **`--basis-cycle <n>`, `--basis-review-head <sha>` and `--basis-report-path <abs-path>`** → the delta basis the driver selected. Each takes the **next token** as its value, and each flag is removed together with its value **before** the directive is extracted, exactly as the two flags above are. A flag whose value is missing is dropped along with the flag. Whether the three values qualify is decided in 1b′, not here — parsing only strips them.
@@ -385,7 +392,7 @@ The slice scope changes what is **counted**, never what is **read**: the whole c
 | Case | Handling |
 | --- | --- |
 | Draft PR | proceed; mark draft status in the report header |
-| Closed / merged PR | **halt** (`precondition-failed`) — in a pipeline run the PR was created moments ago, so this state means something else moved it. **Except under `--post-merge` or `--merged`**: there a merged PR whose head branch is the target is the expected target, and only a PR closed without merging, or a merged one of another head branch, halts |
+| Closed / merged PR | **halt** (`precondition-failed`) — in a pipeline run the PR was created moments ago, so this state means something else moved it. **Except under `--post-merge` or `--merged`**: there a merged PR whose head branch is the target is the expected target, and only a PR closed without merging, or a merged one of another head branch, halts. **A PR URL target with `--merged`** is a merged pull request the run adopted: merged is its expected state, and only a PR that is not merged, or whose merge commit is not `--merged`'s value, halts |
 | Multiple PRs on one branch | **halt**, listing them. **Except under `--post-merge` or `--merged`**: each merge after the first opens a new PR from the same branch, so merged PRs on the target branch and at most one open PR are the expected history — take the most recent (`.[0]` of 1a's query) as the target, and halt only when two or more PRs are open or the most recent one was closed without merging |
 | Empty target (0 commits from base to target head) | **halt** (`gate-unanswerable`, `Step 1b 빈 대상`) — the fixed shape of 1b, recommending `구현 재파견` |
 | Fork PR | `gh pr view` handles it normally |
@@ -399,6 +406,8 @@ The slice scope changes what is **counted**, never what is **read**: the whole c
 Identical to the base skill. Survey the tree (`ls` at root), read `CLAUDE.md` and `.gitignore` for conventions and skip targets, skip the usual build/vendor directories, and orient on the changed files' neighbourhood with `Glob`/`Read`. Then explore related modules and dependencies, related tests, existing patterns in the affected area, and the architectural context. This output is the key input for Step 3.
 
 **With `--pr-head`, survey the pinned head, not the cwd.** Every path of this survey is under the segment worktree's absolute path that Step 1 took, or is read with `git show <pr-head>:<경로>` — the cwd is the target's main worktree, whose bytes are not the reviewed head (Step 1, 「A pinned pull request head replaces the pull request's head」).
+
+**With `--judge-head`, survey the judge head the same way.** Every path of this survey is under the segment worktree's absolute path the `--judge-head` bullet took, or is read with `git show <judge-head>:<경로>`; the cwd is the target's main worktree, whose bytes are not the judge head.
 
 ---
 
@@ -476,6 +485,7 @@ The spawn / ledger / dispatch+convergence / escalation contract and the task-ass
 
 - **Every reviewer prompt additionally carries CFI-U0 and CFI-U5 verbatim.** A spawned reviewer has no question surface and no notification surface, modifies no code, and reports completion and blockage to its spawner by witness file and return value only — never a banner, by any route: not the notification tools, not a script, not by asking someone else to emit one on its behalf. **Every** means every boundary dispatch, not only round 1: CFI-U0, CFI-U5, that sentence and every other paragraph this skill tells a reviewer prompt to carry verbatim go into each round's dispatch prompt again; the role brief file the protocol's `## Spawn` writes holds the role body only and does not stand in for them.
 - **With `--pr-head`, every reviewer prompt carries the pinned head's location**, in every round's dispatch: the segment worktree's absolute path Step 1 took, and this sentence — "Read the reviewed head's files only under `<that absolute path>` or with `git show <pr-head>:<path>`; your working directory is the target's main worktree, not the reviewed head, so a file read relative to it is never evidence for a finding."
+- **With `--judge-head`, every reviewer prompt carries the judge head's location** in the same form, in every round's dispatch: the segment worktree's absolute path, and this sentence — "Judge every finding on `<judge-head>`: read its files only under `<that absolute path>` or with `git show <judge-head>:<path>`, give line numbers as that commit reads, and do not report a change that commit no longer carries; your working directory is the target's main worktree, not the judge head."
 - All inter-reviewer discussion in English. **NO code modifications.**
 - **The lead facilitates** the rounds (produce → cross-review → convergence), each a fresh dispatch per reviewer. Round count follows the protocol's `### Round budget`.
 - **Convergence**: after cross-review, dispatch each reviewer's role once afresh with a convergence prompt carrying the current consensus and open conflicts, peer witnesses by path; a round is converged-and-collected only when its witness is `witness_present` and the body says "no further input".
@@ -540,7 +550,7 @@ Directly after the overview's `리뷰 대상` line, in every report, full or del
 
 The line states **what actually happened**. Whatever the flags requested, if any 1b′ check failed the line says `전체`, and if any 1b″ check failed it says `전체` too. The router copies this line onto the ledger's `cycle` row and the gate compares the two on every write, so the format is load-bearing.
 
-Directly after it, in every report, full or delta, one line naming the commit this review actually read — the target head the diff was taken to, as a full sha:
+Directly after it, in every report, full or delta, one line naming the commit this review actually read — the target head the diff was taken to, or, when 1a read `--judge-head`, the judge head, as a full sha:
 
 ```
 - **리뷰 HEAD**: `<sha>`
@@ -608,7 +618,7 @@ With `--post-ready`, write one more section after the severity sections: one ite
 ```
 
 - Items are `### G1`, `### G2`, … in order, each exactly these seven one-line fields in this order; no value is empty or carries `**`. Their number equals the `발견 요약` P0 + P1, and their `등급` counts equal its P0 and P1.
-- `파일` and `줄` are the item's anchor in the diff `--base-sha`...`--pr-head` spans: `면` is `RIGHT` for a line of the new side and `LEFT` for a deleted line of the old side. A finding about a whole file writes `줄: 없음`; one about no single file writes `파일: 없음` and `줄: 없음`. The gate posts an item whose line is not in the diff in the review body instead of as an inline comment, so an anchor is never invented to make an item inline.
+- `파일` and `줄` are the item's anchor in the diff `--base-sha`...`--pr-head` spans (under `--judge-head`, the lines of the judge head): `면` is `RIGHT` for a line of the new side and `LEFT` for a deleted line of the old side. A finding about a whole file writes `줄: 없음`; one about no single file writes `파일: 없음` and `줄: 없음`. The gate posts an item whose line is not in the diff in the review body instead of as an inline comment, so an anchor is never invented to make an item inline.
 - `근거` and `제안` are written for the pull request's author and end in 「-습니다」 체, one paragraph each, self-contained — the paste-ready comment's facts and request in that tone, without its label or the reviewer's name.
 - The stage still posts nothing. Without `--post-ready` this section is not written.
 

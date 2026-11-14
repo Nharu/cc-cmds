@@ -666,18 +666,29 @@ cc_notify_seat_state() {
   # interleave, and what breaks is the ledger ROW beside the prose. The gate
   # transcribes this file on its next call, exactly as the watcher's stall
   # observations already travel.
-  local f state
+  # cc_notify_seat_state [follow] — the gate passes `follow`; the watcher's pass
+  # and the banner path pass nothing.
+  local f state verb="" t seat="" cur=""
+  if [ "${1:-}" = follow ]; then verb=follow; fi
   if [ -z "${RUN_DIR:-}" ] || [ ! -d "${RUN_DIR:-}" ]; then
     return 0
   fi
-  # WHERE A RUN BANNER'S CLICK LANDS is recorded here, once, by the first
-  # router caller that has a tmux pane — at kickoff that is the watcher's first
-  # pass or the seat's own first `plan`/`act`/`exec`, both carrying the seat's
-  # environment. A stage or a shift is not the router and never writes it. The
-  # three conditions are judged in the shell first, so a run that already has
-  # the record spawns nothing on every later pass. It sits ahead of the kill
-  # switch's use: the record is a location, not a banner, and is written whatever
-  # the switch says.
+  # WHERE A RUN BANNER'S CLICK LANDS is recorded here. It is created by the
+  # first router caller that has a tmux pane — at kickoff that is the watcher's
+  # first pass or the seat's own first `plan`/`act`/`exec`, both carrying the
+  # seat's environment. It is moved only by the gate's call, which passes
+  # `follow`: the seat calls the gate from the pane it sits in now, so a seat
+  # that came back on another tmux server or in another pane takes the record
+  # with it. The watcher's pass and the banner path only create it, never move
+  # it, because a watcher runs with the environment it was started with and
+  # more than one may run for a run — one started from the old pane would move
+  # the record back on every pass. A stage or a shift is not the router and
+  # never writes it. The conditions are judged in the shell first, so a run
+  # whose record already names this pane spawns nothing on every later call;
+  # the handler compares again before it writes, so a wrong shell judgment
+  # costs one process and never a wrong record. It sits ahead of the kill
+  # switch's use: the record is a location, not a banner, and is written
+  # whatever the switch says.
   #
   # THE KILL SWITCH IS READ BEFORE THE ONCE-GUARD BELOW, and the order is the
   # whole point. The near-miss warning carries its own marker, so making it wait
@@ -694,7 +705,26 @@ cc_notify_seat_state() {
   case "${TMUX_PANE:-}" in
     %|%*[!0-9]*) : ;;
     %*)
-      if cc_caller_is_router && [ ! -e "$RUN_DIR/notify.seat" ]; then
+      if [ "$verb" = follow ]; then
+        if cc_caller_is_router; then
+          case "${TMUX:-}" in
+            *,*,*)
+              t=${TMUX%,*}
+              seat=$(printf '%s\t%s\t%s' "${t%,*}" "${t##*,}" "$TMUX_PANE")
+              ;;
+          esac
+          if [ -f "$RUN_DIR/notify.seat" ]; then
+            IFS= read -r cur < "$RUN_DIR/notify.seat" 2>/dev/null || true
+          fi
+          if [ -z "$seat" ] || [ "$cur" != "$seat" ]; then
+            if [ "$state" = '끔' ]; then
+              CC_CMDS_NOTIFY_FOCUS_PRIME=off /bin/bash "$CC_NOTIFY_FOCUS" follow "$RUN_DIR" >/dev/null 2>&1 || true
+            else
+              /bin/bash "$CC_NOTIFY_FOCUS" follow "$RUN_DIR" >/dev/null 2>&1 || true
+            fi
+          fi
+        fi
+      elif cc_caller_is_router && [ ! -e "$RUN_DIR/notify.seat" ]; then
         if [ "$state" = '끔' ]; then
           CC_CMDS_NOTIFY_FOCUS_PRIME=off /bin/bash "$CC_NOTIFY_FOCUS" record "$RUN_DIR" >/dev/null 2>&1 || true
         else

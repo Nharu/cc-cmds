@@ -26,8 +26,12 @@
 # two assignments and in the common file's start condition, the set of files
 # pointing at that file, its missing question and notification surfaces, its
 # missing copies, the phase sentence, and the start disposition and end
-# obligation with their two spellings. Every other assertion here is one a
-# source suite used to make.
+# obligation with their two spellings. The approved-screen reflection block
+# (6e-7) adds the fixed sentences of the writers and readers of the
+# approval and of the reflection's ends, the sentences of each router copy's
+# reflection paragraph, and that
+# paragraph's identity across the two copies. Every other assertion here is one
+# a source suite used to make.
 #
 # Usage: bash scripts/test-meta-invariants.sh
 
@@ -1704,6 +1708,61 @@ check "교대 사본의 「Waiting on a stage」 절에 고르지 않고 대기�
   "$(mo_count "$(router_section "$RS_CORPUS" '### Waiting on a stage')" "$mo_none")" "1"
 check "교대 사본에는 포그라운드 스테이지 대기 문장 전체가 없다" "$(mo_count "$(cat "$RS_CORPUS")" "$mo_wait")" "0"
 check "리드 사본에는 포그라운드 대기 문장 전체가 없다" "$(mo_count "$(cat "$AP_ROUTER")" "$mo_wait")" "0"
+
+# A merged pull request a `머지 입양` row hands the run is routed by the same
+# sentences in BOTH router copies: how its slice is planned and first reviewed,
+# what its review line carries, how `입양 종결` closes it, how a fix records the
+# obligation before it merges and goes on to merge when a base resolution brings
+# it back with the obligation already closed, and how termination condition 12 holds it. Each is counted once over the whole copy, so a copy
+# that drops or rewords one of them fails here.
+for pair in "리드:$AP_ROUTER" "교대:$RS_CORPUS"; do
+  who=${pair%%:*}; file=${pair#*:}
+  for lit in \
+    '**A slice whose `슬라이싱` entry carries `머지 입양` is a pull request merged outside this run**' \
+    'Pass no `리뷰 정책` on its planning row either way: the planning act resolves the policy to `선리뷰후머지` itself, and the gate refuses any first row of the segment other than that `--from-declaration` act or a `park`.' \
+    'the line names the adopted pull request'"'"'s URL instead of a branch and carries `--base-sha <분기점> --merged <머지 커밋> --judge-head <워크트리 HEAD>`' \
+    '- **`입양 종결`** → a segment a `머지 입양` row adopted passed its review with no commit over its base.' \
+    '**A segment a `머지 입양` row adopted records `act --kind obligation` before it merges, and does not merge when that act is refused.**' \
+    '**A refusal that says the obligation is already closed (`this review obligation is already closed`) is not a refusal to merge on**: the segment fulfilled it on an earlier arrival at `머지` and came back after a base resolution' \
+    '→ 「Merging and applying a segment」. On a segment a `머지 입양` row adopted, record `act --kind obligation` before the merge, and do not merge when that act is refused — except a refusal that says the obligation is already closed, which means an earlier arrival at `머지` fulfilled it before a base resolution: then merge without recording it again.' \
+    'A segment a `머지 입양` row adopted carries an element too, with or without a `cycle` row, until its `완료` row.' \
+    '**A segment a `머지 입양` row adopted is held the same way, whatever its review policy, from the moment it is planned**' \
+    '**Its refusal (exit 3) parks the segment, not the shift**, and its text ends with the refusal'"'"'s class.' \
+    'When the entry carries `입양` too, its branch and worktree are the earlier run'"'"'s and may hold that run'"'"'s uncommitted or unpushed fix, so the refusal removes and deletes nothing: on `거절 부류: 재시도 가능` issue call 3 alone once more, and a refusal with no class, first or second, is the paragraph above'"'"'s and ends the shift as that paragraph says.' \
+    'Otherwise, on `거절 부류: 재시도 가능` take call 1,' \
+    '`gate.sh exec … --target <대상> --surface 워크트리쓰기 --destructive -- git branch -D <슬라이싱 의 브랜치>`, call 2 and call 3 again once, in that order — the removal leaves the branch the first call 2 cut' \
+    'Either way, on a second refusal, on `거절 부류: 영구`, or when call 1 or 2 fails, write `act --kind segment --target <대상> --segment <id> -- 상태=park 워크트리=<워크트리> 선행=없음` and a `blocked` row saying why, and go on with the shift.'
+  do
+    check "$who 사본에 머지 입양 문장이 한 번 실린다 — 「${lit:0:50}」" "$(mo_count "$(cat "$file")" "$lit")" "1"
+  done
+  # The merged-request refusal parks the one segment; the sentence that ended
+  # the whole shift on it must not come back in either copy.
+  check "$who 사본에 머지 입양 계획 거절로 시프트를 끝내던 옛 문장이 없다" \
+    "$(mo_count "$(cat "$file")" 'before its planned row; on its refusal (exit 3) write nothing more and end the shift with a `사유=중단` handoff.')" "0"
+  # The removal and branch deletion of the retry belong to a branch this run's
+  # call 2 cut; a refusal sentence that applies them to a paired segment, whose
+  # branch and worktree are an earlier run's, must not come back.
+  check "$who 사본에 짝 세그먼트에도 제거 재시도를 걸던 옛 문장이 없다" \
+    "$(mo_count "$(cat "$file")" 'its text ends with the refusal'"'"'s class: on `거절 부류: 재시도 가능` take call 1,')" "0"
+done
+# The two refusal classes the router branches on are the gate's own words: a
+# gate that drops or rewords a class token leaves the router reading nothing.
+check "게이트가 머지 입양 계획 거절에 재시도 가능 부류를 낸다" \
+  "$(mo_count "$(cat "$GATE")" '— 거절 부류: 재시도 가능"')" "4"
+check "게이트가 머지 입양 계획 거절에 영구 부류를 낸다" \
+  "$(mo_count "$(cat "$GATE")" '— 거절 부류: 영구"')" "11"
+# The kickoff reads a named pull request's state before the entry judgment and
+# takes a `reviewer` judgment again when a merged one can be adopted: without
+# both, a request to review a merged pull request after the fact lands on the
+# reviewer path, which writes no `머지 입양` row.
+for lit in \
+  '**A merged pull request the intent names is read before the judgment, not after it.**' \
+  'A judgment that still writes `reviewer` is taken again like a schema violation, compared with `jq -e '"'"'.run_profile != "reviewer"'"'"' <plan file>` as the delivery key is.' \
+  'take the state Step 1 item 3 read before the entry judgment'
+do
+  check "autopilot SKILL 에 머지된 PR 엔트리 판정 문장이 한 번 실린다 — 「${lit:0:50}」" \
+    "$(mo_count "$(cat "$AP_SKILL")" "$lit")" "1"
+done
 # The planning-order refusal is consumed by the router, not only written by the
 # gate: the copies quote the gate's own words, so a gate rewording that leaves
 # the router text behind fails here, and the broad sentence that sent this
@@ -1844,15 +1903,15 @@ done
 # re-derived exception
 #
 # The clause that keeps the re-kickoff from carrying a ledger row now names the
-# one row it derives again instead, the `세그먼트 입양` row, and says what
-# happens to every segment that fails the derivation. Both halves are pinned in
+# two rows it derives again instead, the `세그먼트 입양` and `머지 입양` rows,
+# and says what happens to every segment that fails the derivation. Both halves are pinned in
 # the resident body, so a rewording that keeps the exception and drops the
 # report of what was not adopted fails here. The third phrase pins the lineage
 # walk for an interview record: a broken link stops the re-kickoff and is never
 # bridged by a farther ancestor.
 # ---------------------------------------------------------------------------
 for lit in \
-  'a ledger row only triggers a question — or, for a `세그먼트 입양` row alone, a re-derivation' \
+  'a ledger row only triggers a question — or, for a `세그먼트 입양` or `머지 입양` row alone, a re-derivation' \
   'anything else is not adopted and is reported with its cause' \
   'and it never skips to a farther ancestor'
 do
@@ -1975,6 +2034,103 @@ check "설계 파견 5번이 차단=파견 전 재수렴 행을 골격 재검토
   "$(grep -cF -- 'row reading `종류=reconverge` without `차단=파견 전` yet' "$RS_REFS/design-dispatch.md")|$(grep -cF -- '**While the step'"'"'s last `stage-result` row carries `차단=파견 전`, the review was blocked on the document'"'"'s size and has not run**' "$RS_REFS/design-dispatch.md")" "1|1"
 check "게이트가 설계 스텝의 마지막 행이 크기 차단인 동안 감사를 거절한다" \
   "$(grep -cF -- 'if gate_key_last_row_is_size_block "$au_dstep"; then' "$GATE")" "1"
+
+# ---------------------------------------------------------------------------
+# 6e-7. An approved screen's wording reaches the design document
+#
+# A person who approves screens whose wording differs from the frozen design
+# document approves that wording; the implementation then follows the document.
+# So every writer of the approval line hands the difference to a reflection,
+# the implementation stops rather than move the screens back to the document,
+# a failed reflection stops on a record only a person answers, and both router
+# copies dispatch the reflection the same way. Each pin below is the sentence
+# that says so; a copy that loses one builds the document's older wording over
+# what the person approved, and stays green.
+# ---------------------------------------------------------------------------
+SK="$PLUGIN_ROOT/skills"
+while IFS='|' read -r who file lit; do
+  [ -n "$file" ] || continue
+  n=$(grep -cF -- "$lit" "$SK/$file" || true)
+  check "$who ${file} 가 「${lit}」 을 싣는다" "$([ "${n:-0}" -ge 1 ] && echo 예 || echo 아니오)" "예"
+done <<'EOF'
+대화형 승인|visual/SKILL.md|Read `${CLAUDE_SKILL_DIR}/../_common/approval-reflection.md` and edit the design document by it
+대화형 승인|visual/SKILL.md|`**문서 반영**: 대기 — 어긋남 <n>건`
+대화형 구현|implement/SKILL.md|the `중단 ← 추천` description says to run `/cc-cmds:visual <문서> 구현 승인` again
+대화형 구현|implement/SKILL.md|AskUserQuestion with options `승인 화면대로 구현 ← 추천` / `중단`
+무인 구현|implement-unattended/SKILL.md|is a **CFI-U3 BT-STOP**: halt before the plan is written
+무인 구현|implement-unattended/SKILL.md|**Never put in the plan a list that moves the screens' wording or structure back to the binding tier**
+무인 구현|implement-unattended/SKILL.md|**A difference a line of the block points at is a person-only stop.**
+무인 구현|implement-unattended/SKILL.md|such a line is one the person left `문서대로 둠` at the reflection stop. Write `**선택지**: (없음)` with no `재수렴` option
+무인 구현|implement-unattended/SKILL.md|**One BT-STOP never offers `재수렴`:**
+무인 발행|visual-publish-unattended/SKILL.md|**Every `시각-판정` record is preceded by the drift block.**
+무인 발행|visual-publish-unattended/SKILL.md|`**문서 반영**: 대기 — 어긋남 <n>건 — 사람 답 <the same name>`
+반영 실패|_common/approval-reflection.md|`**스텝**: Step 3 승인 화면 반영 — 충돌`
+반영 실패|_common/approval-reflection.md|- `결정 첨부 후 다시 반영` — 사람이 충돌을 푸는 결정을 첨부에 붙이면
+반영 실패|_common/approval-reflection.md|An exit 2 prints only the lines it could not find and no count line, so read the block instead
+대화형 승인|visual/SKILL.md|the latest `## 인가 <run-id>` block names the run, and that run is alive while its run directory `${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/run/<run-id>` holds no `done` file yet
+대화형 승인|visual/SKILL.md|a difference stops the reflection with the sidecar as it is and writes no `실패`
+대화형 승인|_common/approval-reflection.md|key, take the latest `## 인가 <run-id>` block; its run is alive while its
+대화형 승인|_common/approval-reflection.md|no `done` reads as alive too; whether to end it is a person's call
+대화형 승인|_common/approval-reflection.md|show the run id and stop before taking the working copy
+대화형 승인|visual/SKILL.md|stop before this step edits anything, with the sidecar as step 6 left it
+반영 실패|_common/approval-reflection.md|and the lines `drift` prints are lines that cannot be applied
+대화형 승인|visual/SKILL.md|The sidecar's ` — 사람 답` tail is not this test
+반영 종단|_common/approval-reflection.md|위 두 종단의 두 번째 | `대기` 그대로
+반영 종단|_common/approval-reflection.md|`대기 — 반영 재시도 소진`, 다시 실행 안내
+반영 종단|_common/approval-reflection.md|The same end the second time changes nothing this session writes
+아침 보고|autopilot/references/act3-report.md|write `대기 — 반영 재시도 소진`
+운반 답|_common/approval-reflection.md|measure the document's `shasum -a 256` and the gate's
+운반 답|_common/approval-reflection.md|Never take the stop record's baselines
+운반 답|_common/approval-reflection.md|an exit 2 is the same question when the block's lines are, in number and verbatim, the drift lines that `시각-판정` record's `**질문 문면**` quotes and the piece's `<n>`, and every printed line is one of them.
+운반 답|_common/approval-reflection.md|and its only answer, `문서대로 둠`, must still apply
+운반 답|design-reconverge/SKILL.md|**A carried answer on the `승인 화면 반영` scope follows the carried-answer re-entry procedure of `${CLAUDE_SKILL_DIR}/../_common/approval-reflection.md` (`## 운반 답 재진입`) instead of items 1–5 below.**
+반영 성공|_common/approval-reflection.md|`visual-check.sh binding <설계 문서>` measures over the published document
+반영 성공|visual/SKILL.md|visual-check.sh binding
+반영 종단|_common/approval-reflection.md|사람에게 묻는 기록으로 보고하지 않는다 — 라우터 교대의 반영 분기가 이 기록을 재파견으로 처리한다
+반영 실패|_common/approval-reflection.md|but writes `**선택지**: (없음)` and no `**추천**`, `**추천 근거**` or `**선택지 리스크**` line
+반영 실패|_common/approval-reflection.md|once the run has ended, running `/cc-cmds:visual <문서> 구현 승인` again continues the interactive reflection from the document edit
+반영 종단|_common/approval-reflection.md|운반 답 갈래로 들인 시도의 실패(위 실패 행의 경우) | `실패 — <사유>` | `Step 3 승인 화면 반영 — 충돌`, `**선택지**: (없음)`
+반영 종단|_common/approval-reflection.md|`실패 — <사유>`, 정지 기록, 그 기록에 답하지 말고 런이 끝난 뒤 다시 실행하라는 안내, 화면 슬라이스가 이 런에서 서 있음
+반영 실패|autopilot-router-shift/references/visual-dispatch.md|the seat does not ask the person to answer it, but to run `/cc-cmds:visual <설계 문서> 구현 승인` again once the run has ended
+아침 보고|autopilot/references/act3-report.md|adds its stop record but not the option `결정 첨부 후 다시 반영`
+아침 보고|autopilot/references/act3-report.md|이 기록에는 답을 받을 수 없으니 답하지 말고, 런이 끝난 뒤 `/cc-cmds:visual <설계 문서 절대 경로> 구현 승인` 을 다시 실행하면
+EOF
+# The second same end keeps the sidecar at `대기`; a copy that writes
+# `실패 — <종단>` there stops the automatic retry and asks a person.
+for f in _common/approval-reflection.md design-reconverge/SKILL.md; do
+  n=$(grep -cF -- '실패 — <종단>' "$SK/$f" || true)
+  n2=$(grep -cF -- '실패 — <the end>' "$SK/$f" || true)
+  check "반영 종단 ${f} 가 두 번째 같은 종단에 실패 줄을 쓰지 않는다" "$(( ${n:-0} + ${n2:-0} ))" "0"
+done
+reflect_para() {
+  # reflect_para <file> — the reflection-dispatch paragraph of the visual wait,
+  # from its bold head up to the next bold paragraph head.
+  awk '/^\*\*A predicate held for the design document\.\*\*/ { f = 1 }
+       f && /^\*\*The fixed judgment\.\*\*/ { exit } f' "$1"
+}
+for pair in "리드:$AP_ROUTER" "교대:$RS_REFS/visual-dispatch.md"; do
+  who=${pair%%:*}
+  para=$(reflect_para "${pair#*:}")
+  for lit in \
+    'When the predicate'"'"'s first line is `승인 보류 — 설계 문서 반영 대기`' \
+    '-- reconverge -p "/cc-cmds:design-reconverge <스냅숏 design_doc> 승인 화면 반영 <시각-판정 기록 절대 경로>"' \
+    '**The reflection'"'"'s end is not a re-plan signal.**' \
+    'is the `중단 기록` of the visual publish step'"'"'s last `중단 답` row' \
+    'Dispatch it once more, with the same scope,' \
+    '「반영 두 번째 시도도 <종단> 으로 끝남' \
+    'carries no option: do not report it as a question for a person — this re-dispatch handles it' \
+    'A `대기` with no tail is an interactive reflection that stopped between its approval write and its sidecar write: never dispatch it' \
+    'for an answer of this run the tail equals the latest `시각-판정 기록` that `visual-check.sh run-state` prints' \
+    'it equals the file name of that row'"'"'s `출처 기록` (`<run id>/halt/<file>.md`)' \
+    'a second `precondition-failed` stop record carries no option either'
+  do
+    check "$who 사본의 반영 파견 문단이 「${lit}」 을 싣는다" "$(mo_count "$para" "$lit")" "1"
+  done
+done
+lead_para=$(reflect_para "$AP_ROUTER")
+shift_para=$(reflect_para "$RS_REFS/visual-dispatch.md")
+check "반영 파견 문단이 리드·교대 사본에서 바이트까지 같다" \
+  "$([ -n "$lead_para" ] && [ "$lead_para" = "$shift_para" ] && echo 예 || echo 아니오)" "예"
 
 printf '\n통과 %s · 실패 %s\n' "$passed" "$failed"
 [ "$failed" -eq 0 ]
