@@ -47010,6 +47010,25 @@ p9n_x=$(p9n_src 'gate_rule_enabled 가짜-룰 "'"$P9N"'/extra/가짜-룰.rule" &
 check "9n: 선언이 끌 수 없다고 하는 룰은 게이트 목록에 없어도 켜지고 경고된다" \
   "$p9n_x/$(grep -c '끌 수 없는 목록에 그 이름이 없습니다' "$P9N/e-x.txt" || true)" "켬/1"
 
+# (6) 매니페스트 검사 — 「룰 설정」 키가 없으면 정규화하지 않는다 ---------------------------
+# 매니페스트 검사는 게이트 호출마다 돈다. 키가 없는 매니페스트에서 카탈로그를 만들면
+# 호출마다 정규화 프로세스가 뜬다. 소싱한 셸에서 정규화 도우미를 호출 수를 적는 대역으로
+# 바꾸고 `check_manifest` 만 부른다. 키가 있는 매니페스트가 대조군이다 — 검사가 검사 13 에
+# 닿기 전에 끝나면 대조군도 0 이 되어 드러난다.
+p9n_canon_calls() {  # p9n_canon_calls — 현재 픽스처에서 check_manifest 가 정규화 도우미를 부른 횟수
+  : > "$P9N/canon-calls.txt"
+  p9n_src 'rule_name_canon() { printf "x\n" >> "'"$P9N"'/canon-calls.txt"; cat; }
+    ( check_manifest ) >/dev/null 2>&1' >/dev/null 2>&1
+  wc -l < "$P9N/canon-calls.txt" | tr -d ' '
+}
+p9n_fixture R9NG
+p9n_n0=$(p9n_canon_calls)
+p9n_fixture R9NG2 "**$(p9n_nfd 리뷰-후-머지)**: 끔"
+p9n_n1=$(p9n_canon_calls)
+check "9n: 대조군 — 「룰 설정」 키가 있으면 매니페스트 검사가 정규화한다 (아래 단언이 공허하지 않다)" \
+  "$( [ "${p9n_n1:-0}" -ge 1 ] && printf yes || printf "no($p9n_n1)" )" "yes"
+check "9n: 「룰 설정」 키가 없는 매니페스트 검사는 정규화 프로세스를 띄우지 않는다" "$p9n_n0" "0"
+
 # ---------------------------------------------------------------------------
 # 58. argv 정규 파싱 층 — 한 번 파싱하고, 실제 도구의 문법대로 읽는다
 # --- section: 58 | group: parse | covers: parse | anchors: 58: 재현 행 1 은 ok 다, 58: 재현 행 7 은 form 이다, 58: 다섯 철자의 -R 이 같은 옵션을 남긴다, 58: 표 함수는 heredoc 이다, 58: gate_main 다음 줄이 exit 다 ---

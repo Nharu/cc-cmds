@@ -1844,32 +1844,38 @@ EOF
   # whose file names arrived decomposed still meet. A key that meets no rule at
   # all is said once as well: it switches nothing, and a person who typed it
   # believes it switched something.
+  #
+  # THE SECTION IS READ BEFORE THE CATALOG. Both warnings need at least one key,
+  # and this check runs on every gate call, so a manifest with no `## 룰 설정`
+  # key lines builds no catalog here and starts no normalisation process.
   local rcat rline rf rname rkeys rk rnames nl='
 ' tab='	'
-  rcat=$(rule_catalog "$ORCH_DIR/rules")
   rule_setting_load
-  rnames="$nl"
-  rkeys="$rcat"
-  while [ -n "$rkeys" ]; do
-    rline=${rkeys%%"$nl"*}
-    case "$rkeys" in *"$nl"*) rkeys=${rkeys#*"$nl"} ;; *) rkeys="" ;; esac
-    rf=${rline%%"$tab"*}; rname=${rline#*"$tab"}
-    rnames="$rnames$rname$nl"
-    [ -f "$rf" ] || continue
-    case "$(rule_switchable_value "$rf")" in 예*) continue ;; esac
-    [ -n "$(rule_setting_value "$rname")" ] || continue
-    warn_once 'rule-setting-inert' \
-      "「룰 설정」에 끌 수 없는 룰 '$rname' 의 키가 있습니다 — 그 줄은 게이트에 읽히지 않으면서 구속 다이제스트에는 들어갑니다"
-  done
-  rkeys="$RULE_SETTING_TAB"
-  while [ -n "$rkeys" ]; do
-    rline=${rkeys%%"$nl"*}
-    case "$rkeys" in *"$nl"*) rkeys=${rkeys#*"$nl"} ;; *) rkeys="" ;; esac
-    rk=${rline%%"$tab"*}
-    case "$rnames" in *"$nl$rk$nl"*) continue ;; esac
-    warn_once 'rule-setting-unknown' \
-      "「룰 설정」의 키 '$rk' 는 룰 카탈로그의 어느 룰과도 맞지 않습니다 — 그 줄은 아무 룰도 끄거나 켜지 않습니다"
-  done
+  if [ -n "$RULE_SETTING_TAB" ]; then
+    rcat=$(rule_catalog "$ORCH_DIR/rules")
+    rnames="$nl"
+    rkeys="$rcat"
+    while [ -n "$rkeys" ]; do
+      rline=${rkeys%%"$nl"*}
+      case "$rkeys" in *"$nl"*) rkeys=${rkeys#*"$nl"} ;; *) rkeys="" ;; esac
+      rf=${rline%%"$tab"*}; rname=${rline#*"$tab"}
+      rnames="$rnames$rname$nl"
+      [ -f "$rf" ] || continue
+      case "$(rule_switchable_value "$rf")" in 예*) continue ;; esac
+      [ -n "$(rule_setting_value "$rname")" ] || continue
+      warn_once 'rule-setting-inert' \
+        "「룰 설정」에 끌 수 없는 룰 '$rname' 의 키가 있습니다 — 그 줄은 게이트에 읽히지 않으면서 구속 다이제스트에는 들어갑니다"
+    done
+    rkeys="$RULE_SETTING_TAB"
+    while [ -n "$rkeys" ]; do
+      rline=${rkeys%%"$nl"*}
+      case "$rkeys" in *"$nl"*) rkeys=${rkeys#*"$nl"} ;; *) rkeys="" ;; esac
+      rk=${rline%%"$tab"*}
+      case "$rnames" in *"$nl$rk$nl"*) continue ;; esac
+      warn_once 'rule-setting-unknown' \
+        "「룰 설정」의 키 '$rk' 는 룰 카탈로그의 어느 룰과도 맞지 않습니다 — 그 줄은 아무 룰도 끄거나 켜지 않습니다"
+    done
+  fi
 
   # 14 — `dev 식별자` on the target rows.
   #
