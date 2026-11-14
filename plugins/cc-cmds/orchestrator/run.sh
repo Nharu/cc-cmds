@@ -4383,6 +4383,7 @@ RUN_LEDGER_ISO_RE='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$'
 RUN_LEDGER_SRC_RE='^[A-Za-z0-9._-]{1,64}$'
 RUN_LEDGER_EPOCH_RE='^[0-9][0-9.eE+-]{0,31}$'
 RUN_LEDGER_ORG_RE='^org:[0-9a-f]{16}$'
+RUN_LEDGER_HOST_RE='^포화 ratio=[0-9]+ ncpu=[0-9]+ 표본=[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$'
 
 run_ledger_identity_ok() {
   # run_ledger_identity_ok <value> — 0 when the value may stand as an identity on
@@ -4457,12 +4458,12 @@ run_ledger_series_check() {
   local series="$1"; shift
   local keys want f k v seat=0 bound=0
   local lease_basis=' first sticky resume-bound resume-migrated reassigned-after-limit reassigned-no-room after-wait shift-seat-fallback single-seat failover-shift '
-  local wait_reason=' group-exhausted no-room unknown-concurrency fifo-yield resume-bound-exhausted resume-bound-no-room resume-bound-borrowed lease-lock-busy lease-contention lease-hold-busy lease-hold-lost wait-end-refused '
+  local wait_reason=' group-exhausted no-room unknown-concurrency fifo-yield resume-bound-exhausted resume-bound-no-room resume-bound-borrowed lease-lock-busy lease-contention lease-hold-busy lease-hold-lost wait-end-refused host-saturated '
   local acct="" basis="" cost="" csrc="" phase="" psrc="" thr="" worst n
   local cost_src='(group-kind|kind|default)'
   case "$series" in
     stage-lease) want='파견 id|계보|계정|레인|예약|비용|비용 출처|근거|관측|단계|단계 출처|문턱' ;;
-    stage-wait)  want='계보|그룹|계정|까지|비용|비용 출처|근거' ;;
+    stage-wait)  want='계보|그룹|계정|까지|비용|비용 출처|근거|호스트|기록 시각' ;;
     *) printf '%s [run][거부] 원장 계열 검사: 이 검사가 모르는 계열이다 (%s)\n' "$(now_iso)" "$series" >&2; return 2 ;;
   esac
   keys=""
@@ -4542,6 +4543,12 @@ run_ledger_series_check() {
       stage-wait:근거)
         basis="$v"
         case "$wait_reason" in *" $v "*) ;; *) run_ledger_refuse "$series" "$k" '닫힌 어휘'; return 2 ;; esac ;;
+      stage-wait:호스트)
+        if [ "$v" != "-" ] && ! [[ $v =~ $RUN_LEDGER_HOST_RE ]]; then
+          run_ledger_refuse "$series" "$k" '「-」 또는 「포화 ratio=<정수> ncpu=<정수> 표본=YYYY-MM-DDTHH:MM:SSZ」 모양'; return 2
+        fi ;;
+      'stage-wait:기록 시각')
+        [[ $v =~ $RUN_LEDGER_ISO_RE ]] || { run_ledger_refuse "$series" "$k" 'YYYY-MM-DDTHH:MM:SSZ 모양'; return 2; } ;;
       'stage-wait:답 운반')
         case "$v" in
           ''|*[!0-9]*|0*) run_ledger_refuse "$series" "$k" '원장 줄 번호'; return 2 ;;
@@ -5055,6 +5062,52 @@ run_section_rows() {
     !whole && substr($0, 1, 3) == "## " { inblk = 0 }
     inblk { for (i = 1; i <= np; i++) if (index($0, p[i]) == 1) { print; break } }
   ' "$LEDGER" 2>/dev/null || true
+}
+
+run_dispatch_wait_summary() {
+  # run_dispatch_wait_summary — the run-end report's `파견 대기` value, empty
+  # when no wait was counted: `호스트 <n>건 <m>분 이상 · 계정 <n>건 <m>분 이상`,
+  # a class with no case left out.
+  #
+  # A case is one lineage's run of consecutive `stage-wait` rows, ended by that
+  # lineage's next `stage-lease` row or by the end of the ledger; a batch that
+  # holds both classes is one case of each. `host-saturated` is the host class;
+  # `group-exhausted`, `no-room`, `unknown-concurrency`, `fifo-yield` and every
+  # `resume-bound-*` are the account class; a row with any other reason is not
+  # counted and neither ends nor joins a batch. The minutes are the `기록 시각`
+  # differences between neighbouring counted rows of one lineage, each added to
+  # the earlier row's class, summed and floored to minutes — a lower bound,
+  # since the wait after the last row of a batch is not measured. A row without
+  # `기록 시각` gives no difference on either side.
+  { run_section_rows 'stage-wait' 'stage-lease' || true; } | jq -R -s -r '
+    def cls:
+      if . == "host-saturated" then "h"
+      elif . == "group-exhausted" or . == "no-room" or . == "unknown-concurrency"
+           or . == "fifo-yield" or startswith("resume-bound-") then "a"
+      else null end;
+    def ep: try fromdateiso8601 catch null;
+    [ split("\n")[] | capture("^- `(?<s>[^`]+)`(?<rest>.*)$")
+      | { s, f: ([ .rest | split("|")[] | sub("^ +"; "") | sub(" +$"; "")
+                   | capture("^(?<k>[^=]+)=(?<v>.*)$") | { (.k): .v } ] | add // {}) } ]
+    | reduce .[] as $r ({open: {}, last: {}, n: {h: 0, a: 0}, sec: {h: 0, a: 0}};
+        ($r.f["계보"] // "") as $lin
+        | if $r.s == "stage-lease" then .open[$lin] = {} | .last[$lin] = null
+          elif $r.s == "stage-wait" then
+            (($r.f["근거"] // "") | cls) as $c
+            | if $c == null then .
+              else
+                (if (.open[$lin] // {})[$c] == true then .
+                 else .n[$c] += 1 | .open[$lin] = ((.open[$lin] // {}) + {($c): true}) end)
+                | (.last[$lin]) as $p
+                | ((($r.f["기록 시각"] // "") | ep)) as $t
+                | (if $p != null and $p.t != null and $t != null and $t > $p.t
+                   then .sec[$p.c] += ($t - $p.t) else . end)
+                | .last[$lin] = {c: $c, t: $t}
+              end
+          else . end)
+    | [ (if .n.h > 0 then "호스트 \(.n.h)건 \(.sec.h / 60 | floor)분 이상" else empty end),
+        (if .n.a > 0 then "계정 \(.n.a)건 \(.sec.a / 60 | floor)분 이상" else empty end) ]
+    | join(" · ")' 2>/dev/null || true
 }
 
 run_segment_ids() {
@@ -6535,6 +6588,7 @@ spawn_route_grant() {
     || die "라우터 요청을 만들지 못했습니다 — $did 를 띄우지 않습니다"
   prior=$( { route_lease_of "$(run_pace_root)/leases" "$RUN_ID" "$SPAWN_LINEAGE" 2>/dev/null || true; } \
            | { jq -r '.nonce // empty' 2>/dev/null || true; })
+  spawn_lease_retry_sweep
   env=$(route_resolve "$req") || die "계정 리졸버가 정지했습니다 — $did 를 띄우지 않습니다"
   verdict=$(printf '%s' "$env" | jq -r '.verdict // ""' 2>/dev/null || true)
   case "$verdict" in
@@ -6602,14 +6656,20 @@ spawn_lease_drop() {
   # spawn_lease_drop <dispatch id> <minted 0|1> — a launch that stops after the
   # grant and before the spawn. Releases only a lease this launch minted: a
   # retry that sat back on its lineage's live lease hands back nothing, because
-  # the lease is the earlier dispatch's.
+  # the lease is the earlier dispatch's. A release that does not answer 0 keeps
+  # the record and leaves the `.lease-retry` marker, so `spawn_lease_retry_sweep`
+  # hands the lease back later instead of leaving it live until the run ends.
   local f="$RUN_DIR/$1.lease" lin nonce rc=0
   if [ "${2:-0}" = "1" ] && [ -f "$f" ]; then
     lin=$(sed -n '1p' "$f"); nonce=$(sed -n '2p' "$f")
     route_lease_release "$(run_pace_root)/leases" "$RUN_ID" "$lin" "$nonce" || rc=$?
-    [ "$rc" = "0" ] || warn "$1: 임대 반납이 rc=$rc 로 끝났다"
+    if [ "$rc" != "0" ]; then
+      warn "$1: 임대 반납이 rc=$rc 로 끝났다 — 기록을 남겨 다시 반납한다"
+      : > "$RUN_DIR/$1.lease-retry" 2>/dev/null || warn "$1: 반납 재시도 표지를 쓰지 못했다"
+      return 0
+    fi
   fi
-  rm -f "$f"
+  rm -f "$f" "$RUN_DIR/$1.lease-retry"
   return 0
 }
 
@@ -6619,7 +6679,10 @@ spawn_lease_release() {
   # another dispatch has since taken on the same lineage is left alone; the
   # record goes only when the release answered 0, which makes a second call a
   # no-op. A stage still running keeps its lease — its pid is a holder and the
-  # reservation is really in use; the run's end collects that record.
+  # reservation is really in use; the run's end collects that record. A release
+  # that does not answer 0 leaves the `.lease-retry` marker beside the record,
+  # and `spawn_lease_retry_sweep` calls this again; the marker goes with the
+  # record when a release answers 0.
   local did="$1" f lin nonce rc=0
   run_routed || return 0
   f="$RUN_DIR/$did.lease"
@@ -6635,10 +6698,34 @@ spawn_lease_release() {
   route_lease_release "$(run_pace_root)/leases" "$RUN_ID" "$lin" "$nonce" || rc=$?
   spawn_cost_samples "$did" "$lin"
   if [ "$rc" = "0" ]; then
-    rm -f "$f"
+    rm -f "$f" "$RUN_DIR/$did.lease-retry"
   else
-    warn "$did: 임대 반납이 rc=$rc 로 끝났다 — 기록을 남겨 둔다"
+    warn "$did: 임대 반납이 rc=$rc 로 끝났다 — 기록을 남겨 다시 반납한다"
+    : > "$RUN_DIR/$did.lease-retry" 2>/dev/null || warn "$did: 반납 재시도 표지를 쓰지 못했다"
   fi
+  return 0
+}
+
+spawn_lease_retry_sweep() {
+  # spawn_lease_retry_sweep — hand back again every lease whose release did not
+  # answer 0 (`<did>.lease-retry` beside its record). Called before the driver
+  # asks the router and where a lineage ends: a lease left live by a failed
+  # release counts as another lineage's live heavy grant in the router's host
+  # hold, so it goes back at the next question instead of at the run's end.
+  # A record without the marker is not touched, and a stage still running keeps
+  # its lease as `spawn_lease_release` decides. A marker whose record is gone
+  # goes too.
+  local m did
+  run_routed || return 0
+  for m in "$RUN_DIR"/*.lease-retry; do
+    [ -f "$m" ] || continue
+    did=$(basename "$m" .lease-retry)
+    if [ -f "$RUN_DIR/$did.lease" ]; then
+      spawn_lease_release "$did"
+    else
+      rm -f "$m"
+    fi
+  done
   return 0
 }
 
@@ -6671,6 +6758,7 @@ spawn_lineage_release() {
   # and nothing else collects its record before the run ends.
   local base f n=0
   run_routed || return 0
+  spawn_lease_retry_sweep
   base=$(route_lineage_of "$1")
   for f in "$RUN_DIR/$base.lease" "$RUN_DIR/$base".retry*.lease "$RUN_DIR/$base".fix*.lease; do
     [ -f "$f" ] || continue
@@ -6718,7 +6806,7 @@ spawn_lease_release_run() {
     warn "런 임대 회수가 rc=$rc 로 끝났다"
     return 0
   fi
-  for f in "$RUN_DIR"/*.lease; do
+  for f in "$RUN_DIR"/*.lease "$RUN_DIR"/*.lease-retry; do
     [ -f "$f" ] && rm -f "$f"
   done
   return 0
@@ -11109,6 +11197,50 @@ wait_drop() {
   rm -f "$m"
 }
 
+wait_fifo_follow() {
+  # wait_fifo_follow <marker> <lineage> <holder> <group> <reason> — keep this
+  # wait's FIFO entry in step with the WAIT it was just given.
+  #
+  # THE HOST HOLD TAKES THE ENTRY DOWN. It answers a waiter whose account found
+  # room with a group-less `host-saturated` WAIT, and the host wait uses no
+  # FIFO: an entry left behind would keep every new request of the same group
+  # yielding with `fifo-yield` — the stages the host hold lets through included
+  # — for as long as the hold lasts. Any other group-less WAIT (a busy lease
+  # lock, an empty candidate pool) keeps the entry, so a waiter at the head of
+  # its queue is not sent to the back by a passing failure.
+  #
+  # A WAIT WITH A GROUP AND NO ENTRY OF ITS OWN PUTS ONE BACK, at the end of the
+  # queue: a waiter that came back from the host hold to an account wait, or
+  # whose first put failed, would otherwise yield to every entry of that group
+  # for good. The lease table, not the marker, says whether the entry is there,
+  # so a marker that kept a nonce after its entry came down does not stop it.
+  local m="$1" lin="$2" holder="$3" grp="$4" why="$5" nonce rec t
+  [ -f "$m" ] || return 0
+  t="$(run_pace_root)/leases"
+  nonce=$(cc_waiting_field "$m" '논스' | tr -d '[:space:]')
+  if [ "$grp" = "-" ]; then
+    [ "$why" = "host-saturated" ] || return 0
+    [ -n "$nonce" ] && [ "$nonce" != "-" ] || return 0
+    route_lease_wait_drop "$t" "$RUN_ID" "$lin" "$nonce" >/dev/null 2>&1 || return 0
+    wait_marker_set "$m" '논스' '-' || true
+    return 0
+  fi
+  if [ -n "$nonce" ] && [ "$nonce" != "-" ] \
+     && route_lease_of "$t" "$RUN_ID" "$lin" 2>/dev/null \
+          | jq -e --arg n "$nonce" '.kind == "wait" and .nonce == $n' >/dev/null 2>&1; then
+    return 0
+  fi
+  rec=$(route_lease_wait_put --table "$t" --now "$(now_epoch)" --run-id "$RUN_ID" \
+          --lineage "$lin" --group "$grp" --inventory "$RUN_DIR/inventory.json" \
+          --holder "${holder:-0}" 2>/dev/null) || return 0
+  nonce=$(printf '%s' "$rec" | jq -r '.nonce // "-"' 2>/dev/null || printf '%s' '-')
+  [ "$nonce" != "-" ] || return 0
+  # An entry the marker does not name is one no drop could find again.
+  wait_marker_set "$m" '논스' "$nonce" \
+    || route_lease_wait_drop "$t" "$RUN_ID" "$lin" "$nonce" >/dev/null 2>&1 || true
+  return 0
+}
+
 wait_router_why() {
   # wait_router_why <envelope> — the one-line reading a park row carries.
   printf '%s' "$1" | jq -r '"라우터 판정 \(.verdict // "-") \(.reason // "-")"
@@ -11163,7 +11295,7 @@ stage_wait_loop() {
   # sleep (so no `stage-wait` row lands after the end), and once more on a
   # grant, whose fresh lease is then given back.
   local key="$1" kind="$2" m="$3" ev="$4" bound="$5" hb="$6" dl="$7" stopfn="$8" endedfn="${9:-}"
-  local lin holder stall chunk now upto ready e d slp t seen req env verdict why basis rdy gnonce
+  local lin holder stall chunk now upto ready e d slp t seen req env verdict why basis rdy gnonce wgrp
   WAIT_LOOP_ENV=""
   lin=$(cc_waiting_field "$m" '계보')
   holder=$(cc_waiting_field "$m" '보유자' | tr -d '[:space:]')
@@ -11236,6 +11368,12 @@ stage_wait_loop() {
       "$stopfn" "라우터 재질의 요청을 만들지 못했다 — $key 는 기동하지 않는다"
       wait_drop "$m"; return 3
     }
+    # The driver's failed releases go back before each requery. The gate's
+    # supervisor runs this loop too, without the driver's helpers, so the
+    # sweep runs only where it is defined.
+    if declare -F spawn_lease_retry_sweep >/dev/null 2>&1; then
+      spawn_lease_retry_sweep
+    fi
     if ! env=$(route_resolve "$req"); then
       "$stopfn" "계정 해석기가 멈췄다 — $key 는 기동하지 않는다"
       wait_drop "$m"; return 3
@@ -11260,8 +11398,10 @@ stage_wait_loop() {
           wait_drop "$m"; return 3
         fi
         upto=$(printf '%s' "$env" | jq -r '.until_epoch | if type == "number" then floor | tostring else "-" end' 2>/dev/null || printf '%s' '-')
-        wait_marker_set "$m" '갱신' "$(now_epoch)" '까지' "$upto" \
-          '그룹' "$(printf '%s' "$env" | jq -r '.group // "-"' 2>/dev/null || printf '%s' '-')" || true
+        wgrp=$(printf '%s' "$env" | jq -r '.group // "-"' 2>/dev/null || printf '%s' '-')
+        wait_marker_set "$m" '갱신' "$(now_epoch)" '까지' "$upto" '그룹' "$wgrp" || true
+        wait_fifo_follow "$m" "$lin" "$holder" "$wgrp" \
+          "$(printf '%s' "$env" | jq -r '.reason // ""' 2>/dev/null || true)"
         # A WAIT without `reserve_seen` keeps the memory the marker already has.
         if printf '%s' "$env" | jq -e '(.reserve_seen | type) == "array"' >/dev/null 2>&1; then
           wait_marker_set "$m" '예비' "$(printf '%s' "$env" | jq -c '.reserve_seen' 2>/dev/null || printf '%s' '[]')" || true
@@ -12572,6 +12712,11 @@ review_recover() {
   reaped=$(cat "$RUN_DIR/$sid.reaped" 2>/dev/null || printf '')
   reaped="${reaped##* }"
   [ -n "$reaped" ] || reaped=미상
+  # The original review lineage's lease goes back before the recovery asks the
+  # router, as an implementation fix's does: the recovery is a lineage of its
+  # own, and a lease the failed review still held would count against it as
+  # another lineage's live heavy grant.
+  spawn_lineage_release "$sid"
   local src=0
   stage_spawn "$rsid" "$cwd" "/cc-cmds:review-unattended $branch --recover --scratch-dir $dirs --report-path $rp$(review_slice_flag "$seg")${recheck:+ --recheck $recheck}$(review_expand_flag) \"설계는 $(doc_arg)\"" || src=$?
   if [ "$src" = "$STAGE_SPAWN_PARK_RC" ]; then
@@ -13309,6 +13454,9 @@ segment_cycle() {
         [ "$rrc" = "0" ] || return 1
         recovered=1
       fi
+      # The review lineage ends here. After a recovery `review_recover` already
+      # released it before the recovery asked the router, so this call finds no
+      # record and only logs that.
       spawn_lineage_release "$sid"
 
       # --- S6 TRIAGE -------------------------------------------------------
@@ -15865,6 +16013,11 @@ main_loop_body() {
   if [ "${refusal_n:-0}" -gt 0 ]; then
     report_append "거절 종료" "${refusal_n}건 — 같은 세션 재부착 1회, 두 번째 거절은 거절 소진 park"
   fi
+  # Dispatch waits, host and account apart; the line appears only when a wait
+  # was counted.
+  local dwait
+  dwait=$(run_dispatch_wait_summary)
+  [ -z "$dwait" ] || report_append "파견 대기" "$dwait"
   RUN_END_LOOP_DONE=1
   # EVERY PLANNED SLICE LANDED counts the ones an earlier run landed too: a
   # re-kicked run that merges the rest has delivered the whole plan, and an end
