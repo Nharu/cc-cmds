@@ -39283,6 +39283,12 @@ SPV_PREV_AR="${CC_CMDS_AUTOPILOT_AUTO_RESOLVE:-}"
 CC_CMDS_AUTOPILOT_AUTO_RESOLVE=0
 sap_fx RSPV1 SPV "6b6b6b6b-1111-2222-3333-444444444444"
 check "34r: 픽스처의 세그먼트 행이 섰다" "$SAP_SEG_RC" "0"
+# The run stays an unrouted run the CI layer does not stand on, as `sa_run_reset`
+# leaves the sa run: the fixture's first gate call took the absent inventory
+# baseline and wrote the CI layer record `1`, and with it every merge below is
+# refused for want of a round-0 pass before the provenance check is reached.
+# The reader raises the layer only on a first line `1`, so `0` lowers it.
+printf '0\n' > "$CAP_DIR/ci-layer"
 # The cone manifest is copied from the shared one, which section 9 leaves with
 # `리뷰-후-머지` off; the merge cases below need it on, and the copy carries no
 # binding digest for the edit to move.
@@ -59708,6 +59714,12 @@ W87="$WORK/wt87"
 check "87b 전제 — 세그먼트 트리가 베이스보다 앞서지 않는다" \
   "$(cd "$W87" 2>/dev/null && git rev-list --count HEAD --not refs/heads/main refs/remotes/origin/main 2>/dev/null)" "0"
 head87=$(cd "$W87" && git rev-parse HEAD)
+# The run opens as an unrouted run the CI layer does not stand on, as
+# `sa_run_reset` opens the sa run: left to the first gate call, the absent
+# inventory baseline writes the CI layer record `1`, and the reviews below that
+# end at `머지` read `CI 대기` instead. The exclusive create does not overwrite
+# a record already there, and the reader raises the layer only on a first line `1`.
+mkdir -p "$STATE_LATE/cc-cmds/run/R87" && printf '0\n' > "$STATE_LATE/cc-cmds/run/R87/ci-layer"
 rp87() {  # rp87 <파일> <P0> <P1> <몫 줄 수|-> [배정…]
   local f=$1 p0=$2 p1=$3 ns=$4 a; shift 4
   {
