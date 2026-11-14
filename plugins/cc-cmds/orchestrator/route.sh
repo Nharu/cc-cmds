@@ -1212,7 +1212,8 @@ def rt_host_heavy($k): (($k // "") | tostring) as $s | any(rt_host_kinds[]; . ==
 # 원래 사건으로 묻는다), 요청 종류가 무거운 종류이고, 답이 `txn.op` `write` 의 GRANT 이고,
 # 요청 계보에 살아 있는 자기 부여가 없고(이어 쥐기는 통과), 다른 계보의 살아 있는 무거운
 # 부여가 하나 이상 있다. 마지막 조건이 교착을 막는다 — 다른 무거운 스테이지가 도는 동안만
-# 보류한다. `stage_kind` 가 없는 옛 기록은 무거운 부여로 세지 않는다.
+# 보류한다. `stage_kind` 가 없는 옛 기록은 무거운 부여로 세지 않는다. 계정 대기의 재질의가
+# 이 보류로 바뀌면 대기 루프가 그 대기자의 그룹 FIFO 대기 항목을 내린다.
 def rt_host_hold($p):
   ($p.c.host // null) as $h
   | ($p.c.request.run_id) as $run

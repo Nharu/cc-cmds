@@ -11005,6 +11005,40 @@ wait_drop() {
   rm -f "$m"
 }
 
+wait_fifo_follow() {
+  # wait_fifo_follow <marker> <lineage> <holder> <group> — keep this wait's
+  # FIFO entry in step with the group of the WAIT it was just given.
+  #
+  # A WAIT WITH NO GROUP TAKES THE ENTRY DOWN. The host hold answers a waiter
+  # whose account found room with a group-less `host-saturated` WAIT, and the
+  # host wait uses no FIFO: an entry left behind would keep every new request
+  # of the same group yielding with `fifo-yield` — the stages the host hold lets
+  # through included — for as long as the hold lasts.
+  #
+  # A WAIT WITH A GROUP AND NO ENTRY PUTS ONE BACK, at the end of the queue: a
+  # waiter that came back from the host hold to an account wait, or whose first
+  # put failed, would otherwise yield to every entry of that group for good.
+  local m="$1" lin="$2" holder="$3" grp="$4" nonce rec
+  [ -f "$m" ] || return 0
+  nonce=$(cc_waiting_field "$m" '논스' | tr -d '[:space:]')
+  if [ "$grp" = "-" ]; then
+    [ -n "$nonce" ] && [ "$nonce" != "-" ] || return 0
+    route_lease_wait_drop "$(run_pace_root)/leases" "$RUN_ID" "$lin" "$nonce" >/dev/null 2>&1 || return 0
+    wait_marker_set "$m" '논스' '-' || true
+    return 0
+  fi
+  [ -z "$nonce" ] || [ "$nonce" = "-" ] || return 0
+  rec=$(route_lease_wait_put --table "$(run_pace_root)/leases" --now "$(now_epoch)" --run-id "$RUN_ID" \
+          --lineage "$lin" --group "$grp" --inventory "$RUN_DIR/inventory.json" \
+          --holder "${holder:-0}" 2>/dev/null) || return 0
+  nonce=$(printf '%s' "$rec" | jq -r '.nonce // "-"' 2>/dev/null || printf '%s' '-')
+  [ "$nonce" != "-" ] || return 0
+  # An entry the marker does not name is one no drop could find again.
+  wait_marker_set "$m" '논스' "$nonce" \
+    || route_lease_wait_drop "$(run_pace_root)/leases" "$RUN_ID" "$lin" "$nonce" >/dev/null 2>&1 || true
+  return 0
+}
+
 wait_router_why() {
   # wait_router_why <envelope> — the one-line reading a park row carries.
   printf '%s' "$1" | jq -r '"라우터 판정 \(.verdict // "-") \(.reason // "-")"
@@ -11059,7 +11093,7 @@ stage_wait_loop() {
   # sleep (so no `stage-wait` row lands after the end), and once more on a
   # grant, whose fresh lease is then given back.
   local key="$1" kind="$2" m="$3" ev="$4" bound="$5" hb="$6" dl="$7" stopfn="$8" endedfn="${9:-}"
-  local lin holder stall chunk now upto ready e d slp t seen req env verdict why basis rdy gnonce
+  local lin holder stall chunk now upto ready e d slp t seen req env verdict why basis rdy gnonce wgrp
   WAIT_LOOP_ENV=""
   lin=$(cc_waiting_field "$m" '계보')
   holder=$(cc_waiting_field "$m" '보유자' | tr -d '[:space:]')
@@ -11162,8 +11196,9 @@ stage_wait_loop() {
           wait_drop "$m"; return 3
         fi
         upto=$(printf '%s' "$env" | jq -r '.until_epoch | if type == "number" then floor | tostring else "-" end' 2>/dev/null || printf '%s' '-')
-        wait_marker_set "$m" '갱신' "$(now_epoch)" '까지' "$upto" \
-          '그룹' "$(printf '%s' "$env" | jq -r '.group // "-"' 2>/dev/null || printf '%s' '-')" || true
+        wgrp=$(printf '%s' "$env" | jq -r '.group // "-"' 2>/dev/null || printf '%s' '-')
+        wait_marker_set "$m" '갱신' "$(now_epoch)" '까지' "$upto" '그룹' "$wgrp" || true
+        wait_fifo_follow "$m" "$lin" "$holder" "$wgrp"
         # A WAIT without `reserve_seen` keeps the memory the marker already has.
         if printf '%s' "$env" | jq -e '(.reserve_seen | type) == "array"' >/dev/null 2>&1; then
           wait_marker_set "$m" '예비' "$(printf '%s' "$env" | jq -c '.reserve_seen' 2>/dev/null || printf '%s' '[]')" || true

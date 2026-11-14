@@ -12909,6 +12909,77 @@ else
   bad "대기 루프 반납 재시도" "stage_wait_loop 에 spawn_lease_retry_sweep 이 없다"
 fi
 
+# 대기 중 그룹 없는 WAIT(호스트 보류)로 바뀐 대기자는 자기 그룹 FIFO 대기 항목을
+# 내린다 — 남기면 같은 그룹의 새 요청이 보류 내내 fifo-yield 로 양보한다. 다시 그룹을
+# 단 WAIT 를 받으면 항목을 다시 넣는다. 실제 임대 표로 확인하고, 대기 루프가 재질의의
+# 그룹 없는 WAIT 다음 질의 전에 이미 항목을 내렸는지도 본다.
+cat > "$RA/hf.sh" <<'HFEOF'
+hf_drv="$1"; RA_ROOT="$2"; set --
+. "$hf_drv"
+set +e
+RUN_DIR="$RA_ROOT/run"; ORCH_DIR="$RA_ROOT/orch"; RUN_ID=hf-run; DOC_KEY=ra; LEDGER="$RA_ROOT/ledger.md"
+GRANT=""; MANIFEST=""
+log() { :; }; warn() { :; }
+T="$(run_pace_root)/leases"
+hf_kind() { route_lease_of "$T" "$RUN_ID" "$1" 2>/dev/null | jq -r '.kind // empty' 2>/dev/null; }
+hf_nonce() { sed -n 's/^논스=//p' "$1" 2>/dev/null; }
+hf_put() {  # hf_put <lineage> <marker>
+  local rec n
+  rec=$(route_lease_wait_put --table "$T" --now "$(now_epoch)" --run-id "$RUN_ID" --lineage "$1" \
+          --group acct:ra1 --inventory "$RUN_DIR/inventory.json" --holder "$$" 2>/dev/null)
+  n=$(printf '%s' "$rec" | jq -r '.nonce // "-"')
+  wait_marker_write "$2" "보유자=$$" "지문=$(cc_proc_fingerprint "$$")" "기록자=드라이버" "계보=$1" \
+    "그룹=acct:ra1" "까지=-" "갱신=$(now_epoch)" "종류=implement" "논스=$n" "예비=[]"
+}
+m="$RUN_DIR/hfA.waiting"
+hf_put HF:a "$m"
+n0=$(hf_nonce "$m")
+printf 'start=%s/%s\n' "$(hf_kind HF:a)" "$( [ "$n0" != "-" ] && [ -n "$n0" ] && printf nonce || printf none)"
+wait_fifo_follow "$m" HF:a "$$" "-"
+printf 'hold=%s/%s\n' "$(hf_kind HF:a)" "$(hf_nonce "$m")"
+wait_fifo_follow "$m" HF:a "$$" "-"
+printf 'hold2=%s/%s\n' "$(hf_kind HF:a)" "$(hf_nonce "$m")"
+wait_fifo_follow "$m" HF:a "$$" acct:ra1
+n1=$(hf_nonce "$m")
+printf 'back=%s/%s\n' "$(hf_kind HF:a)" \
+  "$( [ "$n1" = "$(route_lease_of "$T" "$RUN_ID" HF:a | jq -r '.nonce')" ] && [ "$n1" != "$n0" ] && printf fresh || printf "stale:$n1")"
+wait_drop "$m"
+printf 'dropped=%s\n' "$(hf_kind HF:a)"
+
+# 대기 루프 — 첫 재질의는 그룹 없는 `host-saturated` WAIT, 다음 재질의는 GRANT. 두 번째
+# 질의 때 이 계보의 항목이 이미 없어야 한다.
+printf '2\n%s\n%s\n' "$$" "$(cc_proc_fingerprint "$$")" > "$RUN_DIR/watch.stall"
+m="$RUN_DIR/hfB.waiting"
+hf_put HF:b "$m"
+route_resolve() {
+  local c
+  c=$(cat "$RA_ROOT/hf.calls" 2>/dev/null || printf 0); c=$((c + 1)); printf '%s\n' "$c" > "$RA_ROOT/hf.calls"
+  if [ "$c" = "1" ]; then
+    printf '{"verdict":"WAIT","group":null,"account":null,"until_epoch":null,"reason":"host-saturated","cost":null}'
+  else
+    printf 'at2=%s\n' "$(hf_kind HF:b)" >> "$RA_ROOT/hf.seen"
+    printf '{"verdict":"GRANT","nonce":null}'
+  fi
+}
+hf_hb() { :; }; hf_dl() { :; }; hf_stop() { printf 'stop=%s\n' "$1" >> "$RA_ROOT/hf.seen"; }
+rc=0
+stage_wait_loop hfB implement "$m" first "" hf_hb hf_dl hf_stop || rc=$?
+printf 'loop=%s\n' "$rc"
+cat "$RA_ROOT/hf.seen" 2>/dev/null
+wait_drop "$m"
+rm -f "$RUN_DIR/watch.stall"
+HFEOF
+rm -f "$RA/hf.calls" "$RA/hf.seen"
+hf_out=$(env -u CC_PIPELINE_SHIFT_ID -u CLAUDE_CONFIG_DIR -u XDG_CONFIG_HOME HOME="$RA/home" \
+  RUN_PACE_ROOT="$RA/pace" bash "$RA/hf.sh" "$RA/orch/run.sh" "$RA" 2>/dev/null)
+check "그룹 대기자는 FIFO 항목과 그 논스를 지닌다" "$(ra_get "$hf_out" start)" "wait/nonce"
+check "그룹 없는 WAIT 를 받으면 자기 FIFO 항목을 내리고 표지 논스를 비운다" "$(ra_get "$hf_out" hold)" "/-"
+check "이어지는 그룹 없는 WAIT 는 아무것도 바꾸지 않는다" "$(ra_get "$hf_out" hold2)" "/-"
+check "다시 그룹을 단 WAIT 를 받으면 새 논스로 항목을 다시 넣는다" "$(ra_get "$hf_out" back)" "wait/fresh"
+check "대기를 내리면 다시 넣은 항목도 사라진다" "$(ra_get "$hf_out" dropped)" ""
+check "대기 루프는 그룹 없는 WAIT 다음 질의 전에 FIFO 항목을 이미 내렸다" \
+  "$(ra_get "$hf_out" at2)/$(ra_get "$hf_out" loop)/$(ra_get "$hf_out" stop)" "/0/"
+
 # 런 끝 `파견 대기` 줄 — 계보마다 연속 stage-wait 묶음을 건수로, 같은 계보 이웃
 # 행의 `기록 시각` 차이를 앞 행의 부류에 더해 분으로 내린다. 세지 않는 근거의 행은
 # 묶음을 끊지도 들지도 않고, stage-lease 가 묶음을 끝낸다.
