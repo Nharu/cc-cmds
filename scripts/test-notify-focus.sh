@@ -1181,6 +1181,66 @@ clear28
 wait_for "$NLOG" '^-remove$' || true
 check "L28 (다) 대조: 표지가 없으면 지운다" "$(grep -c -- '^-remove$' "$NLOG" 2>/dev/null || true)" "1"
 
+# L29. The gate's call passes `follow`: a router caller in another pane moves
+# the record there, a call without it (the watcher's pass, the banner path)
+# never moves it back, and a stage, shift or re-entry caller moves nothing.
+follow29() {
+  mkdir -p "$1"
+  env "${L28_ENV[@]}" CC_CMDS_AUTOPILOT_NOTIFY= RUN_DIR="$1" "${@:2}" bash -c \
+    '. "$0" && cc_notify_seat_state follow' "$ORCH/notify-run.sh" >/dev/null 2>&1
+}
+click29() {
+  env "${L28_ENV[@]}" CC_CMDS_NOTIFY_FOCUS_PRIME=off RUN_DIR="$1" bash -c \
+    '. "$0" && cc_notify_click answer-run' "$ORCH/notify-run.sh" 2>/dev/null
+}
+# C1: the recorded pane is gone (the server was restarted), and the seat calls
+# the gate from a pane on the new server.
+mkdir -p "$WORK/rd29a"
+printf '%s\t%s\t%s\n' "$SOCK" 32123 %303 > "$WORK/rd29a/notify.seat"
+rm -f "$TR"
+follow29 "$WORK/rd29a" TMUX="$SOCK,98817,0" TMUX_PANE=%54
+check "L29 C1 라우터의 follow 가 기록을 새 창으로 옮긴다" "$(cat "$WORK/rd29a/notify.seat" 2>/dev/null || true)" \
+  "$(printf '%s\t%s\t%s' "$SOCK" 98817 %54)"
+check "L29 C1 옮긴 뒤 prime 정확히 하나" "$(primes)" "1"
+check "L29 C1 그 뒤 런 배너의 클릭 값은 새 창이다" "$(click29 "$WORK/rd29a")" \
+  "/bin/bash '$H' focus '$SOCK' '98817' '%54'"
+rm -f "$TR"
+follow29 "$WORK/rd29a" TMUX="$SOCK,98817,0" TMUX_PANE=%54
+check "L29 C1 같은 창의 다음 호출은 아무것도 띄우지 않는다" "$(primes)" "0"
+# C2: the old pane lives on, the seat resumed in another one, and an old
+# watcher still carries the old pane.
+mkdir -p "$WORK/rd29b"
+printf '%s\t%s\t%s\n' "$SOCK" 4242 %48 > "$WORK/rd29b/notify.seat"
+follow29 "$WORK/rd29b" TMUX="$SOCK,4242,0" TMUX_PANE=%49
+check "L29 C2 follow 가 기록을 %49 로 옮긴다" "$(cat "$WORK/rd29b/notify.seat" 2>/dev/null || true)" \
+  "$(printf '%s\t%s\t%s' "$SOCK" 4242 %49)"
+seat28 "$WORK/rd29b" CC_CMDS_AUTOPILOT_NOTIFY= TMUX="$SOCK,4242,0" TMUX_PANE=%48
+check "L29 C2 %48 의 인자 없는 호출 뒤에도 %49 로 남는다" "$(cat "$WORK/rd29b/notify.seat" 2>/dev/null || true)" \
+  "$(printf '%s\t%s\t%s' "$SOCK" 4242 %49)"
+for mark in CC_PIPELINE_SEGMENT=A CC_PIPELINE_STAGE_ID=A#1 CC_PIPELINE_SHIFT_ID=S1 \
+  CC_PIPELINE_REENTRY=RUN29@1790000000; do
+  follow29 "$WORK/rd29b" TMUX="$SOCK,4242,0" TMUX_PANE=%50 "$mark"
+  check "L29 표지 ${mark%%=*} 를 실은 follow 는 기록을 바꾸지 않는다" \
+    "$(cat "$WORK/rd29b/notify.seat" 2>/dev/null || true)" "$(printf '%s\t%s\t%s' "$SOCK" 4242 %49)"
+done
+mkdir -p "$WORK/rd29c"
+printf '%s\t%s\t%s\n' "$SOCK" 4242 %48 > "$WORK/rd29c/notify.seat"
+rm -f "$TR"
+follow29 "$WORK/rd29c" TMUX="$SOCK,4242,0" TMUX_PANE=%51 CC_CMDS_AUTOPILOT_NOTIFY=0
+check "L29 꺼진 런의 follow 도 기록은 옮긴다" "$(cat "$WORK/rd29c/notify.seat" 2>/dev/null || true)" \
+  "$(printf '%s\t%s\t%s' "$SOCK" 4242 %51)"
+check "L29 꺼진 런의 follow: prime 없음" "$(primes)" "0"
+
+# L30. A click whose pane is gone leaves one `pane-gone` line in focus.log; a
+# click whose pane is alive leaves none.
+click "L30 사라진 창" "$WORK/bin/tmux" "$V" STUB_DISPLAY='31235||||' STUB_CLIENTS="$C_ONE" STUB_DUMP="$DUMP_C"
+check "L30 사라진 창: pane-gone 줄 정확히 하나" \
+  "$(grep -c -- " pane-gone $SOCK 4242 %48\$" "$CACHE/focus.log" 2>/dev/null || true)" "1"
+check "L30 사라진 창: focus.log 는 한 줄이다" "$(wc -l < "$CACHE/focus.log" 2>/dev/null | tr -d ' ')" "1"
+click "L30 살아 있는 창" "$WORK/bin/tmux" "$V" "${T1ENV[@]}"
+check "L30 살아 있는 창: pane-gone 줄 없음" "$(cat "$CACHE/focus.log" 2>/dev/null | grep -c -- 'pane-gone' || true)" "0"
+check "L30 살아 있는 창: 선택했다" "$(showline)" "show 9 CL-1"
+
 # --- K1–K10. the key-window watch after arrival on the trusted path -----------
 # Window 9 is the target and 25 the window the person left. A mouse-press
 # figure of 999999 ms is a press long before the click; 0 is one just now.
@@ -1315,6 +1375,60 @@ record "T21 TMUX 없음" "$WORK/rd2" TMUX_PANE=%48
 check "T21 TMUX 없음: 기록이 생기지 않는다" "$([ -e "$WORK/rd2/notify.seat" ] && echo 있음 || echo 없음)" "없음"
 record "T21 TMUX 꼴이 깨짐" "$WORK/rd2" TMUX="$SOCK" TMUX_PANE=%48
 check "T21 TMUX 꼴이 깨짐: 기록이 생기지 않는다" "$([ -e "$WORK/rd2/notify.seat" ] && echo 있음 || echo 없음)" "없음"
+
+# --- T22. follow ----------------------------------------------------------------
+# follow_v <label> <dir> [VAR=value ...] — the verb that moves the record. Run
+# with the prime switched on and traced, so whether it started one is read from
+# the trace line.
+follow_v() {
+  local label=$1 dir=$2 rc
+  shift 2
+  env -u TMUX -u TMUX_PANE "${PRIME_ON[@]}" "$@" bash "$H_CALL" follow "$dir" >"$WORK/out" 2>"$WORK/err"
+  rc=$?
+  check "$label: 종료 코드 0" "$rc" "0"
+  check "$label: 표준 출력 0 바이트" "$(wc -c < "$WORK/out" | tr -d ' ')" "0"
+}
+inode() { ls -i "$1" 2>/dev/null | awk '{ print $1 }'; }
+mkdir -p "$WORK/rf"
+rm -f "$TR"
+follow_v "T22 기록 없음" "$WORK/rf" TMUX="$SOCK,4242,0" TMUX_PANE=%48
+check "T22 기록 없음: 탭 구분 한 줄을 쓴다" "$(cat "$WORK/rf/notify.seat" 2>/dev/null || true)" \
+  "$(printf '%s\t%s\t%s' "$SOCK" 4242 %48)"
+check "T22 기록 없음: 한 줄이다" "$(wc -l < "$WORK/rf/notify.seat" | tr -d ' ')" "1"
+check "T22 기록 없음: prime 정확히 하나" "$(primes)" "1"
+before=$(cksum < "$WORK/rf/notify.seat")
+ino=$(inode "$WORK/rf/notify.seat")
+rm -f "$TR"
+follow_v "T22 같은 값" "$WORK/rf" TMUX="$SOCK,4242,0" TMUX_PANE=%48
+check "T22 같은 값: 바이트 그대로" "$(cksum < "$WORK/rf/notify.seat")" "$before"
+check "T22 같은 값: 파일을 바꿔 끼우지 않았다" "$(inode "$WORK/rf/notify.seat")" "$ino"
+check "T22 같은 값: prime 없음" "$(primes)" "0"
+# The reboot shape: the record names the old server's pid and pane, and the
+# seat now sits on the same socket with a new server and pane.
+mkdir -p "$WORK/rf2"
+printf '%s\t%s\t%s\n' "$SOCK" 32123 %303 > "$WORK/rf2/notify.seat"
+rm -f "$TR"
+follow_v "T22 재부팅 꼴" "$WORK/rf2" TMUX="$SOCK,98817,0" TMUX_PANE=%54
+check "T22 재부팅 꼴: 새 줄로 바뀐다" "$(cat "$WORK/rf2/notify.seat" 2>/dev/null || true)" \
+  "$(printf '%s\t%s\t%s' "$SOCK" 98817 %54)"
+check "T22 재부팅 꼴: prime 정확히 하나" "$(primes)" "1"
+check "T22 재부팅 꼴: 띄운 대상은 새 창" "$(sed 's/^[0-9]* //' "$TR")" "prime 띄움 $SOCK 98817 %54"
+check "T22 재부팅 꼴: 임시 파일이 남지 않는다" "$(ls -A "$WORK/rf2" | grep -c 'notify.seat.tmp' || true)" "0"
+old2=$(cat "$WORK/rf2/notify.seat")
+rm -f "$TR"
+follow_v "T22 TMUX 없음" "$WORK/rf2" TMUX_PANE=%60
+check "T22 TMUX 없음: 기록 그대로" "$(cat "$WORK/rf2/notify.seat")" "$old2"
+follow_v "T22 TMUX 꼴이 깨짐" "$WORK/rf2" TMUX="$SOCK" TMUX_PANE=%60
+check "T22 TMUX 꼴이 깨짐: 기록 그대로" "$(cat "$WORK/rf2/notify.seat")" "$old2"
+check "T22 거른 환경: prime 없음" "$(primes)" "0"
+mkdir -p "$WORK/rfro"
+printf '%s\t%s\t%s\n' "$SOCK" 32123 %303 > "$WORK/rfro/notify.seat"
+chmod 555 "$WORK/rfro"
+rm -f "$TR"
+follow_v "T22 쓸 수 없는 디렉터리" "$WORK/rfro" TMUX="$SOCK,98817,0" TMUX_PANE=%54
+chmod 755 "$WORK/rfro"
+check "T22 쓸 수 없는 디렉터리: 임시 파일이 남지 않는다" "$(ls -A "$WORK/rfro" | grep -c 'notify.seat.tmp' || true)" "0"
+check "T22 쓸 수 없는 디렉터리: prime 없음" "$(primes)" "0"
 
 # --- T8–T11. a private tmux server ---------------------------------------------
 real_unavailable() {

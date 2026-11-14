@@ -54358,8 +54358,10 @@ gate_verb_act() {
   gate_refused_drain
   # This seat's own state, then the watcher's — both go through the same file, so
   # whichever wrote it first is the one line the report carries and the two seats
-  # cannot leave two lines for one fact.
-  cc_notify_seat_state || true
+  # cannot leave two lines for one fact. `follow` is passed here and nowhere
+  # else: the seat calls the gate from the pane it sits in now, so this call is
+  # the one that moves the click record after the seat comes back elsewhere.
+  cc_notify_seat_state follow || true
   gate_drain_notify_state
 
   # THE DEADLINE IS A DISPATCH GATE. It is frozen into the binding digest and

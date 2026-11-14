@@ -28901,6 +28901,32 @@ check "스테이지 호출은 클릭 좌석을 적지 않는다" \
 check "라우터 호출은 그 pane 을 클릭 좌석으로 적는다" \
   "$(cat "$RD/notify.seat" 2>/dev/null || true)" \
   "$(printf '%s\t%s\t%s' '/tmp/tmux-g,x/default' 4242 %48)"
+# The seat comes back on a restarted server in another pane: its next gate call
+# moves the record there. Only the gate's call passes `follow`, so a gate that
+# dropped it would pass every notify-run.sh test and fail here.
+( cd "$WT" && PATH="$WORK/bin:$PATH" \
+    CC_CMDS_AUTOPILOT_NOTIFY=1 CC_CMDS_NOTIFY_PATH_DISABLE_PREPEND=1 \
+    CC_CMDS_NOTIFY_HOST_OS=Darwin CC_TEST_NOTIFY_LOG="$NOTIFY_LOG" \
+    TMUX="/tmp/tmux-g,x/default,98817,3" TMUX_PANE=%54 \
+    bash "$GATE" act --manifest "$FX_MANIFEST" --kind segment --target infra --segment SBS3 \
+      --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(snapH)" \
+      --rationale "픽스처 — 다른 창의 라우터가 좌석을 옮긴다" -- "상태=계획됨" "워크트리=$WT" "선행=없음" \
+    >/dev/null 2>&1 )
+check "다른 서버 pid·창의 라우터 호출은 클릭 좌석을 그 창으로 옮긴다" \
+  "$(cat "$RD/notify.seat" 2>/dev/null || true)" \
+  "$(printf '%s\t%s\t%s' '/tmp/tmux-g,x/default' 98817 %54)"
+( cd "$WT" && PATH="$WORK/bin:$PATH" \
+    CC_CMDS_AUTOPILOT_NOTIFY=1 CC_CMDS_NOTIFY_PATH_DISABLE_PREPEND=1 \
+    CC_CMDS_NOTIFY_HOST_OS=Darwin CC_TEST_NOTIFY_LOG="$NOTIFY_LOG" \
+    CC_PIPELINE_SEGMENT=SB CC_PIPELINE_STAGE_ID='SB#1' \
+    TMUX="/tmp/tmux-g,x/default,98817,3" TMUX_PANE=%60 \
+    bash "$GATE" act --manifest "$FX_MANIFEST" --kind segment --target infra --segment SBS4 \
+      --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(snapH)" \
+      --rationale "픽스처 — 스테이지는 좌석을 옮기지 않는다" -- "상태=계획됨" "워크트리=$WT" "선행=없음" \
+    >/dev/null 2>&1 )
+check "또 다른 창의 스테이지 호출은 옮긴 클릭 좌석을 바꾸지 않는다" \
+  "$(cat "$RD/notify.seat" 2>/dev/null || true)" \
+  "$(printf '%s\t%s\t%s' '/tmp/tmux-g,x/default' 98817 %54)"
 rm -f "$RD/notify.seat"
 
 # --- THE SHARD'S SEAT, AT A SITE THAT IS NOT THE APPROVAL ONE ---------------
