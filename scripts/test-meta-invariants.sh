@@ -1944,6 +1944,41 @@ check "교대 색인의 할트 답 행이 세그먼트의 재수렴 행 진입 �
   "$(printf '%s\n' "$rs_halt_row" | grep -cF -- 'the last `stage-result` row of a segment reads `종류=reconverge` — a settled row carrying `정산=` and a re-convergence dispatched for a binding-tier answer alike')" "1"
 check "반증 재수렴 6번이 정산= 행을 할트 답 절의 몫으로 넘긴다" \
   "$(grep -cF -- 'So is a re-convergence row carrying `정산=`: the gate wrote it when item 3 of that subsection settled an answer' "$RS_REFS/refutation-reconverge.md")" "1"
+# A pre-dispatch size block writes a `stage-result` row of the blocked kind
+# (`종류=reconverge` included) with `차단=파견 전` and no session. Read by its
+# shape alone it opens the halt-answer and refutation files, whose
+# after-the-re-convergence dispositions would call its missing literal a failed
+# re-convergence and forbid the redispatch the size record's answer asks for.
+check "교대 색인의 할트 답 행이 차단=파견 전 행을 진입 조건에서 뺀다" \
+  "$(printf '%s\n' "$rs_halt_row" | grep -cF -- 'A last row carrying `차단=파견 전` meets none of these row conditions')" "1"
+check "교대 색인 아래 문단이 차단=파견 전 행을 끝난 스테이지로 읽지 않는다" \
+  "$(printf '%s\n' "$rs_index" | grep -cF -- '**A `stage-result` row carrying `차단=파견 전` is no stage that ended.**')" "1"
+check "교대 색인 아래 문단이 차단 행에 재수렴 종단 술어 거짓도 두 번째 재수렴 금지도 내지 않는다" \
+  "$(printf '%s\n' "$rs_index" | grep -cF -- 'so it never yields `사유=중단 답 라우팅 — 재수렴 종단 술어 거짓` or `재수렴 라우팅 — 재수렴 종단 술어 거짓`, and it never forbids a second re-convergence. The key waits on that size record')" "1"
+check "교대 골격급 재수렴과 설계 스텝 재수렴의 끝 처분이 차단=파견 전 행을 뺀다" \
+  "$(grep -cF -- 'a row carrying `차단=파견 전` ended nothing and waits on its size record' "$RS_SKILL" "$RS_REFS/halt-answer-3.md" | awk -F: '{s+=$NF} END{print s}')" "2"
+check "반증 재수렴 6번이 차단=파견 전 행을 읽지 않는다" \
+  "$(grep -cF -- 'A row carrying `차단=파견 전` is no re-convergence at all' "$RS_REFS/refutation-reconverge.md")" "1"
+# A size block exits 11 like a reach park. Read by the exit alone, the shift
+# stops the segment at `도달 거부`, which holds it behind a second question and
+# keeps the size record's answer from redispatching. The exit table, the
+# segment-stop sentence and the site row each tell the two apart, and the gate
+# refuses the stop.
+check "교대 종료 코드 11 행이 크기 차단 파견을 도달 park 에서 뺀다" \
+  "$(grep -cF -- '**A dispatch (`act --kind skill`) whose `11` leaves its key a new last `stage-result` row carrying `차단=파견 전` is no reach park**' "$RS_SKILL")" "1"
+check "교대 세그먼트 정지 문장이 크기 차단의 11 로 세그먼트를 멈추지 않는다" \
+  "$(grep -cF -- 'A dispatch'"'"'s `11` that left the segment'"'"'s key a last row carrying `차단=파견 전` stops nothing' "$RS_SKILL")" "1"
+check "교대 정지 자리 표의 도달 거부 행이 크기 차단 파견을 뺀다" \
+  "$(grep -cF -- '— never a dispatch whose `11` left a `차단=파견 전` row | never |' "$RS_SKILL")" "1"
+check "게이트가 마지막 행이 크기 차단인 세그먼트의 도달 거부 정지를 거절한다" \
+  "$(grep -cE -- '"\$ssite" = "도달 거부" \] && \[ -n "\$seg" \]' "$GATE")|$(grep -cF -- '&& gate_key_last_row_is_size_block "$seg"; then' "$GATE")" "1|1"
+# A person's skeleton review blocked on the document's size leaves the design
+# step's last row a `종류=reconverge` block row. Counting it as the review that
+# ran sends the run on to the audit of a document the person asked to change.
+check "설계 파견 5번이 차단=파견 전 재수렴 행을 골격 재검토가 돈 것으로 세지 않는다" \
+  "$(grep -cF -- 'row reading `종류=reconverge` without `차단=파견 전` yet' "$RS_REFS/design-dispatch.md")|$(grep -cF -- '**While the step'"'"'s last `stage-result` row carries `차단=파견 전`, the review was blocked on the document'"'"'s size and has not run**' "$RS_REFS/design-dispatch.md")" "1|1"
+check "게이트가 설계 스텝의 마지막 행이 크기 차단인 동안 감사를 거절한다" \
+  "$(grep -cF -- 'if gate_key_last_row_is_size_block "$au_dstep"; then' "$GATE")" "1"
 
 # ---------------------------------------------------------------------------
 # 6e-7. An approved screen's wording reaches the design document
@@ -1974,9 +2009,9 @@ done <<'EOF'
 무인 구현|implement-unattended/SKILL.md|**One BT-STOP never offers `재수렴`:**
 무인 발행|visual-publish-unattended/SKILL.md|**Every `시각-판정` record is preceded by the drift block.**
 무인 발행|visual-publish-unattended/SKILL.md|`**문서 반영**: 대기 — 어긋남 <n>건 — 사람 답 <the same name>`
-반영 실패|design-reconverge/SKILL.md|`**스텝**: Step 3 승인 화면 반영 — 충돌`
-반영 실패|design-reconverge/SKILL.md|- `결정 첨부 후 다시 반영` — 사람이 충돌을 푸는 결정을 첨부에 붙이면
-반영 실패|design-reconverge/SKILL.md|An exit 2 prints only the lines it could not find and no count line, so read the block instead
+반영 실패|_common/approval-reflection.md|`**스텝**: Step 3 승인 화면 반영 — 충돌`
+반영 실패|_common/approval-reflection.md|- `결정 첨부 후 다시 반영` — 사람이 충돌을 푸는 결정을 첨부에 붙이면
+반영 실패|_common/approval-reflection.md|An exit 2 prints only the lines it could not find and no count line, so read the block instead
 대화형 승인|visual/SKILL.md|the latest `## 인가 <run-id>` block names the run, and that run is alive while its run directory `${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/run/<run-id>` holds no `done` file yet
 대화형 승인|visual/SKILL.md|a difference stops the reflection with the sidecar as it is and writes no `실패`
 대화형 승인|_common/approval-reflection.md|key, take the latest `## 인가 <run-id>` block; its run is alive while its
@@ -1987,7 +2022,7 @@ done <<'EOF'
 대화형 승인|visual/SKILL.md|The sidecar's ` — 사람 답` tail is not this test
 반영 종단|_common/approval-reflection.md|위 두 종단의 두 번째 | `대기` 그대로
 반영 종단|_common/approval-reflection.md|`대기 — 반영 재시도 소진`, 다시 실행 안내
-반영 종단|design-reconverge/SKILL.md|The same end the second time changes nothing this session writes
+반영 종단|_common/approval-reflection.md|The same end the second time changes nothing this session writes
 아침 보고|autopilot/references/act3-report.md|write `대기 — 반영 재시도 소진`
 운반 답|_common/approval-reflection.md|measure the document's `shasum -a 256` and the gate's
 운반 답|_common/approval-reflection.md|Never take the stop record's baselines

@@ -247,6 +247,40 @@ answer let in again carries no card and no attachment and does not.
    working copy → publish → sidecar in the order of `## 쓰기 순서`. Never rewrite
    the carried record.
 
+## 재수렴 범위
+
+`design-reconverge` reads this section from its Step 2 bullet for the scope
+`승인 화면 반영 <시각-판정 중단 기록 절대 경로>`. There is no carrier block: the
+evidence is the sidecar's `### 설계 문서 어긋남` block. On this scope the rules
+below come before the re-convergence's own halt-step rule, its decision-draft
+rule, its write constraints (CFI-6 and Constraints), the hash its working-copy
+response 2 expects, the before side of its Step 4 digest comparison and the
+place its Step 5 verdict returns to.
+
+- **Evidence.** The record's `**관측 상세**` carries `설계 문서 어긋남=<n>건 · sha256 <hex>`. Run `visual-check.sh drift <document>` through the gate (`--surface 읽기`); when its count or sha256 differs from the record's piece, or it exits 1, halt with `분류: precondition-failed` naming both values. An exit 2 prints only the lines it could not find and no count line, so read the block instead: when the block's `- ` lines are, in number and verbatim, the drift lines the record's `**질문 문면**` quotes and the piece's `<n>`, and every printed line is one of them, that exit 2 is not that halt — the block is the one the person approved, and the lines it prints are lines that cannot be applied — the wording left the document, or its heading did not hold — so carry them to the Edit step below, which stops on them in the reflection stop's form. An exit 2 repeats on every attempt over the same document, so a `precondition-failed` here would never reach the person who can take the line out. **The scope is the block's lines and nothing wider**.
+- **Edit.** In the re-convergence's Step 3 working copy, before editing each line, check that its document wording stands verbatim inside a section `## 고칠 수 있는 절` lists; then rewrite it to the screen wording there, keeping the superseded decision sentence in place as Step 3 does. The four failures of `## 실패로 보는 경우` and a line that cannot be applied are judged on the working copy, before the publish; on any of them publish nothing.
+- **Recovery comparison first.** Every entry on this scope — a re-attached session, one started on a re-entry card, a new session the gate let in again under its entry predicate's condition 4, and a carried answer — compares the reflection record's `사후 sha256` with the document now before it reflects anything, as `## 쓰기 순서` (「A cut after the publish is not a failure.」) gives it; equal means the reflection was published and only the sidecar's two lines are left. On a re-entry card this comes before its item 3: when the reflection record (`${CC_PIPELINE_RUN_DIR}/design/{slug}/approval-reflection-<기록 파일 이름>.md`) exists and its `사후 sha256` equals the document's `shasum -a 256` now, write only the sidecar's two lines as `## 쓰기 순서` step 3 gives them, then go to Step 5 with `판정: 재설계 필요`. Only when they differ, or the record is absent, does item 3 halt.
+- **The reflection record goes right before the publish, the sidecar after it.** Once the working copy's checks pass, write the reflection record with the working copy's sha256 as its `사후 sha256`, then publish, then write the sidecar's two lines, as `## 쓰기 순서` and `## 반영 기록` give them, the tail ` — 사람 답 <the record's file name>`. The sidecar is the visual sidecar `<base>/docs/visual/{slug}.md`, written in its atomic form.
+- **Writes outside the document.** This scope writes two more things, and only these: the visual sidecar's `**문서 반영**` and `**설계 문서 구속 다이제스트**` lines, and the reflection record — declared `--surface 트리밖쓰기 --reach 런로컬` like the document publish.
+- **The reflection stop.** Whichever case stops this scope — S1–S4 unmet, a collision with another binding decision, a forbidden section, wording a screen-less slice planned or merged, or a line that cannot be applied — its `**스텝**` is not the re-convergence's fixed `Step 3 S<n>` but the one below, and the case goes into the reason. On a failure, first rewrite the sidecar's `**문서 반영**` to `실패 — <사유 한 줄> — 사람 답 <the record's file name>` (the reason names the case and, for a line that cannot be applied, the line; it never contains ` — 사람 답 `), then write the halt record: `**스텝**: Step 3 승인 화면 반영 — 충돌`, `**분류**: gate-unanswerable`, `**질문 문면**` quoting every failed drift line verbatim with its case, and one option only:
+
+    ```text
+    - `결정 첨부 후 다시 반영` — 사람이 충돌을 푸는 결정을 첨부에 붙이면 같은 런의 라우터 교대가 같은 범위로 반영을 한 번 더 파견한다. 첨부는 어긋남 줄마다 그 줄을 축자로 옮기고 `문서대로 둠` 또는 `화면대로 고침` 을 고른다
+    ```
+
+    then, fixed:
+
+    ```text
+    **추천**: (없음) — 충돌을 푸는 결정은 사람만 안다
+    **추천 근거**: (없음)
+    **선택지 리스크**: `결정 첨부 후 다시 반영` — 답이 오기 전까지 화면 슬라이스가 이 런에서 서 있고, `문서대로 둠` 으로 뺀 줄의 남은 차이는 구현 단계의 구속 티어 이탈 정지로 다시 사람에게 온다
+    ```
+
+    `**관측 상세**` carries `범위=승인 화면 반영 <the record's absolute path>`, `사전 sha256=` and `사전 구속 표면 다이제스트=` (the re-convergence's 「A halt carries the scope and the Step 1 baselines」), so the carry rules move the scope as it is. There is no hold option: a record left unanswered is the hold. No `**결정 초안**`: only a person answers it, and the decision that resolves its collision is one only a person knows.
+- **Re-entered with the answer.** A carried `결정 첨부 후 다시 반영` card follows `## 운반 답 재진입`: the card check, the baselines measured now after the recovery comparison, the question comparison, the attachment and the reflection, in that order. The attachment is read there and nowhere else, and a choice is never taken from the answer's `근거`. When every line is out, publish nothing, write `완료 — 문서 sha256 <the document's hash as it stands>` with the tail, and end with the verdict Step 4 computes.
+- **Ends outside a normal end and the reflection stop.** A `precondition-failed` before the publish (a moved document hash, `lockf` 75) and an end with no halt record are let in once more on the same answer by the gate. The same end the second time changes nothing this session writes: it does not touch the sidecar, which stays `대기`, it writes no `실패` line and no reflection stop, and a `precondition-failed` before the publish writes only its own record with no option, as the first time did. The gate refuses a third attempt, and the morning report shows `대기 — 반영 재시도 소진` (`## 종단`). This session cannot tell the first such end from the second, so it never writes as if it were the second.
+- **The verdict.** A normal reflection ends with `판정: 재설계 필요` and the terminal literal: it is dispatched only on `대기` (one difference or more) and rewrites decision sentences or resolved entries, so Step 4's binding-surface digest always moves. Step 4's rule is unchanged for this scope; what differs is where the verdict returns. The row sits under the visual publishing step's key, not a segment's, so the verdict returns the run to the visual wait, not to segment planning: `판정: 재설계 필요` there voids no segment's plan, the plans of segments without screens stay alive, and the next routing shift reads the approval predicate again and plans the screen slices once it reads `승인 유효`. **The carrier is not written on this path**, and the terminal predicate is the second shape's.
+
 ## 종단
 
 How a reflection attempt ends, and what each end leaves, is a closed table: the

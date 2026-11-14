@@ -96,9 +96,21 @@ DIGEST_FILE=$(bash "$GATE" digest-path --manifest "${CC_PIPELINE_MANIFEST:-}" 2>
 # one key two ways, and this hook does not start the whole gate on every call to
 # learn it. A missing engine leaves the gate call and the default deny exactly
 # as they were; only the request, the ticket and the prediction need it.
+#
+# This file's own directory is computed once and shared by the two sources here
+# and by the edit branch's `hook_self`. The parent is taken with a parameter
+# expansion rather than `dirname`, with `dirname`'s answers for a name with no
+# slash (`.`) and for a name directly under the root (`/`); the `cd … && pwd`
+# that follows resolves it to the same absolute spelling it always produced.
+HOOK_DIR=${BASH_SOURCE[0]:-$0}
+case "$HOOK_DIR" in
+  */*) HOOK_DIR=${HOOK_DIR%/*}; [ -n "$HOOK_DIR" ] || HOOK_DIR=/ ;;
+  *) HOOK_DIR=. ;;
+esac
+HOOK_DIR=$(cd "$HOOK_DIR" && pwd)
 THP_OK=0
 # shellcheck source=/dev/null
-. "$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)/target-hook-probe.sh" 2>/dev/null && THP_OK=1
+. "$HOOK_DIR/target-hook-probe.sh" 2>/dev/null && THP_OK=1
 
 # THE SURFACE CLASSIFIER IS SOURCED HERE, AT THE HEAD, from this file's own
 # directory. The suffix arms live in it and the gate, the driver and the
@@ -109,7 +121,7 @@ THP_OK=0
 # `hook_suffix_verdict` refuses every call it is asked about.
 ES_OK=0
 # shellcheck source=/dev/null
-. "$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)/enforcement-surfaces.sh" 2>/dev/null \
+. "$HOOK_DIR/enforcement-surfaces.sh" 2>/dev/null \
   && command -v es_class >/dev/null 2>&1 && ES_OK=1
 
 deny() {
@@ -525,9 +537,10 @@ hook_run_dir_verdict() {
     # 오른다. 디렉터리를 허용해도 그 안에서 열리는 것은 `halt/*` 뿐이고 `halt/*/*`
     # 는 위에서 이미 거부된다.
     halt) ;;
-    # 설계 문서 락. 설계 문서를 고치는 스테이지(구현 팔의 토큰 쓰기, 감사의 조정
-    # 패스, 재수렴 패스)가 모두 `lockf -k -t 0 "$RUN_DIR/designdoc.lock"` 으로 쓰기를
-    # 감싸는데 이 목록이 그 이름을 몰라 재수렴 스테이지가 락에서 멈췄다. 위트니스
+    # 설계 문서 락. 설계 문서를 고치는 스테이지가 모두 쓰기 전에
+    # `"$RUN_DIR/designdoc.lock"` 을 잡는다 — 구현 팔의 토큰 쓰기는 `lockf -k -t 0`
+    # 으로 감싸고, 감사의 조정 패스와 재수렴 패스는 `doc-tidy.py --lock` 으로 같은
+    # flock(2) 락을 잡는다. 이 목록이 그 이름을 몰라 재수렴 스테이지가 락에서 멈췄다. 위트니스
     # 예외와 같은 근거로 안전하다 — 런 시작 시점에 없고, 강제 표면 다이제스트가 읽지
     # 않으며, `lockf -k` 가 남기는 빈 파일이다. 정확히 이 이름 하나만 연다.
     designdoc.lock) ;;
@@ -914,7 +927,66 @@ fi
 
 input=$(cat)
 [ -n "$input" ] || deny "$(jstr 'gate: the hook input is empty — cannot judge is not allow')"
-tool=$(printf '%s' "$input" | jq -r '.tool_name // empty')
+
+# ONE `jq` FOR THE SIX FIELDS, NUL AFTER EACH. Each field is the bytes the old
+# per-field `$(printf '%s' "$input" | jq -r '<field> // empty')` held, so every
+# branch below reads what it always read:
+#
+#   - per input value, each output of `<field> // empty` rendered the way `-r`
+#     renders it — a string raw, anything else by `jx_pp`, which is jq's own
+#     two-space pretty printer spelled out — and followed by a newline; several
+#     JSON values in the input concatenate, as the old calls did value by value;
+#   - a NUL inside a value is dropped, as the command substitution dropped it;
+#   - an error in one field empties that field and no other, and an input that
+#     stops parsing keeps the values read before it, as the old calls did;
+#   - the trailing newlines `$( )` stripped are stripped below, all of them for
+#     five fields and exactly one for the exact command, whose old `printf x`
+#     tail kept the rest.
+#
+# It runs here, after the jq refusal and ahead of the first tool branch, so a
+# tool other than Bash starts no more `jq` than it did.
+#
+# THE OUTPUT GOES THROUGH A TEMPORARY FILE, NOT A PROCESS SUBSTITUTION. A command
+# substitution would drop the NULs that separate the fields, so the reads take
+# their input from a redirection. bash 3.2 runs a process substitution's child
+# with the DEBUG trap cleared, so `scripts/measure-spawn-count.sh` could not see
+# that child and would find the `jq` inside it run by a shell it never traced —
+# a process the count misses. The substitution is kept only for a host where
+# `mktemp` fails, so such a host still reads the six fields.
+JX_FILTER='def jx_ind($n): [range($n)] | map("  ") | join("");
+def jx_pp($n): if type == "object" then
+    (if length == 0 then "{}" else "{\n" + ([to_entries[] | jx_ind($n + 1) + (.key | tojson) + ": " + (.value | jx_pp($n + 1))] | join(",\n")) + "\n" + jx_ind($n) + "}" end)
+  elif type == "array" then
+    (if length == 0 then "[]" else "[\n" + (map(jx_ind($n + 1) + jx_pp($n + 1)) | join(",\n")) + "\n" + jx_ind($n) + "]" end)
+  else tojson end;
+def jx_r: if type == "string" then . else jx_pp(0) end;
+def jx_f($vs; f): [$vs[] | try (f // empty | jx_r + "\n") catch ""] | add // "" | explode | map(select(. != 0)) | implode;
+[try inputs catch empty] as $vs
+| (try jx_f($vs; .tool_name) catch ""), "\u0000",
+  (try jx_f($vs; .tool_input.file_path // .tool_input.notebook_path) catch ""), "\u0000",
+  (try jx_f($vs; .tool_input.command) catch ""), "\u0000",
+  (try jx_f($vs; .tool_use_id) catch ""), "\u0000",
+  (try jx_f($vs; .cwd) catch ""), "\u0000"'
+jx_strip() {  # jx_strip <var> — drop every trailing newline, as `$( )` does
+  local _v
+  eval "_v=\${$1}"
+  while [ "${_v%"$NL"}" != "$_v" ]; do _v=${_v%"$NL"}; done
+  eval "$1=\$_v"
+}
+jx_read() {  # jx_read — the six fields from stdin, each up to its NUL
+  IFS= read -r -d '' tool; IFS= read -r -d '' jx_path; IFS= read -r -d '' cmd_exact
+  IFS= read -r -d '' jx_tuid; IFS= read -r -d '' jx_cwd
+  return 0
+}
+tool=""; jx_path=""; cmd_exact=""; jx_tuid=""; jx_cwd=""
+if jx_tmp=$(mktemp "${TMPDIR:-/tmp}/cc-gate-pretool.XXXXXX" 2>/dev/null); then
+  printf '%s' "$input" | jq -n -j "$JX_FILTER" >"$jx_tmp"
+  jx_read <"$jx_tmp"
+  rm -f "$jx_tmp"
+else
+  jx_read < <(printf '%s' "$input" | jq -n -j "$JX_FILTER")
+fi
+jx_strip tool; jx_strip jx_path; jx_strip jx_tuid; jx_strip jx_cwd
 # An empty tool name is not a tool this hook has no opinion about; it is an
 # input it could not read. The two must not share a branch — the second is a
 # reason to defer and the first is a reason to refuse.
@@ -938,9 +1010,9 @@ tool=$(printf '%s' "$input" | jq -r '.tool_name // empty')
 # ---------------------------------------------------------------------------
 case "$tool" in
   Write|Edit|NotebookEdit|MultiEdit)
-    p=$(printf '%s' "$input" | jq -r '.tool_input.file_path // .tool_input.notebook_path // empty')
+    p=$jx_path
     [ -n "$p" ] || allow "$(jstr 'gate: an edit with no path — nothing here to judge')"
-    hook_self=$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)
+    hook_self=$HOOK_DIR
 
     # A CONTROL CHARACTER IN THE PATH IS UNJUDGEABLE, NOT HARMLESS. The identity
     # comparison below reads `stat`'s line-oriented output, so a path carrying a
@@ -1553,17 +1625,17 @@ case "$tool" in
   *) allow "$(jstr 'gate: a tool other than Bash is not what this hook judges')" ;;
 esac
 
-cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // empty')
+cmd=$cmd_exact; jx_strip cmd
 [ -n "$cmd" ] || deny "$(jstr 'gate: the command string could not be read — cannot judge is not allow')"
 
-# THE BYTES, NOT THE SHELL'S COPY OF THEM. `$( )` drops trailing newlines, and a
-# ticket or a prediction compares the string the harness hands every hook — so
-# the exact value is kept beside the convenient one, and every comparison that
-# decides an allow is made inside jq against the payload itself.
-cmd_exact=$(printf '%s' "$input" | jq -r '.tool_input.command // empty'; printf x)
-cmd_exact="${cmd_exact%x}"; cmd_exact="${cmd_exact%"$NL"}"
-tuid=$(printf '%s' "$input" | jq -r '.tool_use_id // empty')
-pcwd=$(printf '%s' "$input" | jq -r '.cwd // empty')
+# THE BYTES, NOT THE SHELL'S COPY OF THEM. `cmd` has lost its trailing newlines,
+# and a ticket or a prediction compares the string the harness hands every hook
+# — so the exact value is kept beside the convenient one, and every comparison
+# that decides an allow is made inside jq against the payload itself. The exact
+# value drops only the one newline the field's rendering added.
+cmd_exact="${cmd_exact%"$NL"}"
+tuid=$jx_tuid
+pcwd=$jx_cwd
 if [ -n "$pcwd" ] && [ -d "$pcwd" ]; then pcwd=$(cd "$pcwd" && pwd -P); else pcwd=$(pwd -P); fi
 caller=""; caller_key=""
 if [ "$THP_OK" = 1 ]; then

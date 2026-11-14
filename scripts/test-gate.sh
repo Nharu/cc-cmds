@@ -14775,6 +14775,137 @@ check "15d-4: T4 와 미해결 판독기가 같은 항목을 연다" "$td15r_ver
   "[표 열림 열림/열림][표 닫힘 닫힘/닫힘][열린 보류 열림/열림][해결 대기 열림/열림][메모 해결 닫힘/닫힘][해결됨 항목 닫힘/닫힘][앞 절 항목 닫힘/닫힘]"
 
 # ---------------------------------------------------------------------------
+# 15d-5. 사유 거둠이 선언 파일을 넓혀 닫는 꼴을 판독기와 슬라이싱 함수가 받는다
+# --- section: 15d-5 | group: base | covers: unresolved_closure_pending, unclosed-decisions, slice_decl_files, slicing_order_defects | anchors: 15d-5: 선언 확장 줄을 가진 대조 무충돌 거둠 뒤 슬라이스 A 판독이 빈다, 15d-5: 선언 확장 줄을 가진 대조 무충돌 거둠 뒤 unclosed-decisions 가 빈다, 15d-5: 보류 항목에 선언 확장 줄만 붙으면 계속 나온다, 15d-5: 넓힌 선언 파일을 slice_decl_files 가 새 원소까지 낸다, 15d-5: 넓힌 문서의 slicing_order_defects 가 빈다, 15d-5: 넓히기 전 머지 순서 픽스처는 결함이 없다, 15d-5: 뒤 슬라이스를 넓혀 앞 슬라이스와 겹치면 결함이다, 15d-5: 앞 슬라이스를 넓혀 뒤 슬라이스와 겹치면 결함이다, 15d-5: 재수렴 문면이 슬라이싱 축 세 값과 선언 확장 줄 꼴을 싣는다, 15d-5: 재수렴 문면이 옛 문장을 싣지 않는다, 15d-5: 재수렴 문면이 재진입 분기와 기록 다이제스트 대조를 싣는다, 15d-5: 사유 거둠 절이 선언 확장 닫기를 싣는다, 15d-5: 대조 운반 줄의 선언 확장 부분이 base64 로 적힌다, 15d-5: 원장 읽기 금지의 예외가 마지막 상태 규칙의 segment 행을 싣는다 ---
+#
+# The re-convergence can now close a base-reason entry by appending paths to a
+# slice's `**선언 파일**` and recording them on a `**선언 확장**` line. The skill
+# does not run here, so its write is applied to fixture documents in the form
+# `_common/unresolved-closure.md` `## 사유 거둠` fixes, and the readers that
+# meet the result are asked directly: the open-decision reader, the gate's
+# `unclosed-decisions` verb, and the two slicing functions the gate's
+# re-declaration and the slicing checks read. The gate's re-declaration flow
+# itself is section 113's. Every helper this section calls is in the preamble
+# or defined here.
+# ---------------------------------------------------------------------------
+rc15d5_dir="$WT/docs"
+mkdir -p "$rc15d5_dir" "$WT/docs/pipeline-grant"
+rc15d5_doc() {  # rc15d5_doc <name> <entry block> <slice A files> <slice B files> [B 머지 순서]
+  {
+    printf '# 픽스처 설계\n\n**상태**: 동결됨\n\n'
+    printf '## 베이스 제약\n\n**베이스 문서**: docs/base.md\n**티켓**: T1\n**베이스 sha256**: 0000\n\n'
+    printf '### 계약 C2 — 값\n\n**값 상한**: 10\n\n'
+    printf '## 합의된 아키텍처\n\n값 상한 10 을 그대로 쓴다.\n'
+    printf '\n## 미해결 이슈 / 트레이드오프\n\n%s\n' "$2"
+    printf '\n## 구현 슬라이싱\n\n**슬라이스 수**: 2\n'
+    printf '\n### 슬라이스 A — 픽스처\n\n**스킬**: implement\n**레포**: t/infra\n**선언 파일**: %s\n**선행**: 없음\n**절단점**: 커밋\n' "$3"
+    if [ -n "${5:-}" ]; then
+      printf '\n### 슬라이스 B — 픽스처\n\n**스킬**: implement\n**레포**: t/infra\n**선언 파일**: %s\n**선행**: 없음\n**머지 순서**: %s\n**머지 순서 사유**: 픽스처\n**절단점**: 커밋\n' "$4" "$5"
+    else
+      printf '\n### 슬라이스 B — 픽스처\n\n**스킬**: implement\n**레포**: t/infra\n**선언 파일**: %s\n**선행**: A\n**절단점**: 커밋\n' "$4"
+    fi
+  } > "$rc15d5_dir/fixture-15d5-$1.md"
+}
+rc15d5_closed='### 미결 1. 선언을 넓히는 베이스 사유 결정
+
+**상태**: 해결
+**사유 거둠**: 베이스 개정 없이 — 대조 무충돌 · 런 R15D5 · A#3 · 중단 기록 A#1.md
+**대조 기록**: 「계약 C2 — 값」 무충돌
+**선언 확장**: 슬라이스 A + `extra/new.txt`
+**사유**: 베이스 계약 변경 필요 — 계약 C2
+**구현 처분**: 구현 무관
+**닿는 슬라이스**: A'
+rc15d5_open='### 미결 2. 보류에 선언 확장 줄
+
+**상태**: 보류
+**선언 확장**: 슬라이스 A + `extra/new.txt`
+**사유**: 베이스 계약 변경 필요 — 계약 C2
+**구현 처분**: 구현 무관
+**닿는 슬라이스**: A'
+rc15d5_doc wide "$rc15d5_closed" '`A.txt`, `extra/new.txt`' '`B.txt`'
+rc15d5_doc open "$rc15d5_open" '`A.txt`' '`B.txt`'
+rc15d5_doc mo-base "$rc15d5_open" '`A.txt`' '`B.txt`' A
+rc15d5_doc mo-late "$rc15d5_open" '`A.txt`' '`B.txt`, `A.txt`' A
+rc15d5_doc mo-early "$rc15d5_open" '`A.txt`, `B.txt`' '`B.txt`' A
+rc15d5_src() {  # rc15d5_src <function> <args...> — a function of the gate, run by sourcing it
+  ( cd "$WT" && bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null >/dev/null 2>&1; set +eu; shift; "$@"' _ "$GATE" "$@" )
+}
+rc15d5_verb() {  # rc15d5_verb <name> <seg> — `gate unclosed-decisions` on a manifest naming the fixture
+  local rid="R15D5$(printf '%s' "$1" | tr '[:lower:]' '[:upper:]')"
+  write15c "$WORK/plan-$rid.md" "$plan15c" "docs/fixture-15d5-$1.md" "$rid"
+  grant15c "$rid" "docs/fixture-15d5-$1.md"
+  local o r=0
+  o=$(cd "$WT" && gate_inproc unclosed-decisions --manifest "$WORK/plan-$rid.md" --segment "$2" 2>/dev/null) || r=$?
+  printf '%s|%s' "$r" "$(printf '%s\n' "$o" | { grep -vE '\[run\] ' || true; })"
+}
+rc15d5_f() { printf '%s/fixture-15d5-%s.md' "$rc15d5_dir" "$1"; }
+
+check "15d-5: 선언 확장 줄을 가진 대조 무충돌 거둠 뒤 슬라이스 A 판독이 빈다" \
+  "$(rc15d5_src unresolved_closure_pending "$(rc15d5_f wide)" A)" ""
+check "15d-5: 선언 확장 줄을 가진 대조 무충돌 거둠 뒤 unclosed-decisions 가 빈다" "$(rc15d5_verb wide A)" "0|"
+check "15d-5: 보류 항목에 선언 확장 줄만 붙으면 계속 나온다" \
+  "$(rc15d5_src unresolved_closure_pending "$(rc15d5_f open)" A)/$(rc15d5_verb open A)" \
+  "### 미결 2. 보류에 선언 확장 줄/0|### 미결 2. 보류에 선언 확장 줄"
+check "15d-5: 넓힌 선언 파일을 slice_decl_files 가 새 원소까지 낸다" \
+  "$(rc15d5_src slice_decl_files "$(rc15d5_f wide)" A | tr '\n' ' ')" "A.txt extra/new.txt "
+check "15d-5: 넓힌 문서의 slicing_order_defects 가 빈다" \
+  "$(rc15d5_src slicing_order_defects "$(rc15d5_f wide)")" ""
+
+# Closure disjointness both ways: B carries `머지 순서: A`, so A lands after B
+# is cut and before B merges. An added path of B overlapping A, and an added
+# path of A overlapping B, are both the defect; the unwidened pair is not, so
+# the two defect assertions do not pass on a fixture that always fails.
+check "15d-5: 넓히기 전 머지 순서 픽스처는 결함이 없다" \
+  "$(rc15d5_src slicing_order_defects "$(rc15d5_f mo-base)")" ""
+check "15d-5: 뒤 슬라이스를 넓혀 앞 슬라이스와 겹치면 결함이다" \
+  "$(rc15d5_src slicing_order_defects "$(rc15d5_f mo-late)")" "슬라이스 B: 머지 순서 선언 파일 겹침 「A.txt」 — 슬라이스 A"
+check "15d-5: 앞 슬라이스를 넓혀 뒤 슬라이스와 겹치면 결함이다" \
+  "$(rc15d5_src slicing_order_defects "$(rc15d5_f mo-early)")" "슬라이스 B: 머지 순서 선언 파일 겹침 「B.txt」 — 슬라이스 A"
+
+# The texts that state the rule.
+rc15d5_sk="$repo_root/plugins/cc-cmds/skills"
+rc15d5_rc="$rc15d5_sk/design-reconverge/SKILL.md"
+rc15d5_n=0
+for rc15d5_l in '**The slicing axis**' '- `없음` — ' '- `선언 확장` — ' '- `선언 파일 밖` — ' \
+  '**선언 확장**: 슬라이스 <id> + `<경로>`, `<경로>`[; 슬라이스 <id> + …]' \
+  '선언 파일에 경로를 더하는 것 밖의 슬라이싱 변경은 이 런에서 닫지 않는다 — 슬라이싱을 다시 세운 새 런이 필요하다'; do
+  grep -qF -- "$rc15d5_l" "$rc15d5_rc" && rc15d5_n=$((rc15d5_n + 1))
+done
+check "15d-5: 재수렴 문면이 슬라이싱 축 세 값과 선언 확장 줄 꼴을 싣는다" "$rc15d5_n" "6"
+rc15d5_n=0
+for rc15d5_l in '선언 파일을 바꾸는 결정은 이 런에서 닫지 않는다' 'gets neither a card nor'; do
+  grep -qF -- "$rc15d5_l" "$rc15d5_rc" && rc15d5_n=$((rc15d5_n + 1))
+done
+check "15d-5: 재수렴 문면이 옛 문장을 싣지 않는다" "$rc15d5_n" "0"
+rc15d5_n=0
+for rc15d5_l in 'The branch is whether `CC_PIPELINE_HALT_ANSWER` is set, not how the session was started' \
+  '- **Not set** — ' '`$CC_PIPELINE_LEDGER`' "its \`기록 다이제스트\` equals the record's \`shasum -a 256\`"; do
+  grep -qF -- "$rc15d5_l" "$rc15d5_rc" && rc15d5_n=$((rc15d5_n + 1))
+done
+check "15d-5: 재수렴 문면이 재진입 분기와 기록 다이제스트 대조를 싣는다" "$rc15d5_n" "4"
+rc15d5_sec=$(LC_ALL=C awk '/^## 사유 거둠$/ { on = 1; next } on && /^## / { exit } on { print }' \
+  "$rc15d5_sk/_common/unresolved-closure.md")
+rc15d5_n=0
+for rc15d5_l in '`선언 확장`' '**선언 확장**: 슬라이스 <id>' 'three with a' 'never closes in the run'; do
+  grep -qF -- "$rc15d5_l" <<<"$rc15d5_sec" && rc15d5_n=$((rc15d5_n + 1))
+done
+check "15d-5: 사유 거둠 절이 선언 확장 닫기를 싣는다" "$rc15d5_n" "4"
+# The carrier's `선언 확장` part is base64 like every other value: the re-entry decodes it, so a raw
+# value would decode to nothing and stop the widening as a carrier read failure.
+rc15d5_n=0
+grep -qF -- 'Every other `<…>` value, the `선언 확장` value included, is its UTF-8 bytes as one base64 line' \
+  "$rc15d5_rc" && rc15d5_n=$((rc15d5_n + 1))
+grep -qF -- 'of the line the closing writes, byte for byte. Every other' "$rc15d5_rc" || rc15d5_n=$((rc15d5_n + 1))
+check "15d-5: 대조 운반 줄의 선언 확장 부분이 base64 로 적힌다" "$rc15d5_n" "2"
+# The open-decision sub-case forbids ledger reads; the slicing axis's state rule reads a `segment` row,
+# so the ban, the re-entry's restatement and the state rule all name that read as an exception.
+rc15d5_n=$(grep -cF -- "the last \`segment\` row the slicing axis's state rule reads" "$rc15d5_rc")
+grep -qF -- 'This read is one of the two exceptions to the 「Do not read the ledger」' "$rc15d5_rc" \
+  && rc15d5_n=$((rc15d5_n + 1))
+grep -qF -- 'Reading this one ledger line is the only exception' "$rc15d5_rc" || rc15d5_n=$((rc15d5_n + 1))
+check "15d-5: 원장 읽기 금지의 예외가 마지막 상태 규칙의 segment 행을 싣는다" "$rc15d5_n" "4"
+
+# ---------------------------------------------------------------------------
 # 15e. The audit is dispatched as a run-scope step, on preconditions the gate checks
 # --- section: 15e | group: base | covers: act, plan, wait, supervise, done-conditions | anchors: 15e: 동결된 설계 뒤 --segment - 감사 파견의 plan 이 통과한다, 15e: 감사 단계의 stage-result 행이 세그먼트=- · 스테이지=A1 · 종류=audit 이다, 15e: 설계가 끝나기 전의 감사 파견은 승인 행 없이 거부된다, 15e: 감사 단계가 없는 계획에서는 감사 면제가 서지 않는다, 15e: 미동결 문서에는 감사가 뜨지 않는다, 15e: 설계 시도가 살아 있으면 감사가 뜨지 않는다, 15e: - reconverge 와 - implement 는 여전히 거부된다, 15e: 감사 단계의 재개가 받힌다, 15e: 감사 파견이 fetch 뒤 원격 베이스 끝에 분리된 감사 워크트리를 만든다, 15e: 그 감사 워크트리는 로컬 main 끝에서 뜨지 않는다,15e: 감사 스테이지 자신의 --segment - 행위가 감사 워크트리에서 돈다, 15e: 같은 감사 단계의 재파견은 감사 워크트리를 다시 쓴다, 15e: 설계 단계가 없는 계획의 감사 파견 plan 이 동결된 문서에서 통과한다, 15e: 설계 단계가 없는 계획의 감사 행이 세그먼트=- · 스테이지=A1 · 종류=audit 로 정상 완료다, 15e: 감사 뒤 구현 단계가 남은 계획은 조건 1 이 그 단계를 든다, 15e: 감사만 있는 계획은 감사가 정상 완료로 끝나면 조건 1 이 선다 ---
 #
@@ -24497,6 +24628,66 @@ case "$msg" in
   *"$RD3"/cc-team-witness-review-beta*) ok "게이트 경유 생성이 런 디렉터리 아래 위트니스 경로를 낸다" ;;
   *) bad "게이트 경유 위트니스 생성" "런 디렉터리 아래 경로가 출력에 없다: $msg" ;;
 esac
+# 재수렴·감사 스킬의 문서 정리 호출도 같은 면제 모양으로 잰다. 스킬은 정리 도구를
+# `<plugin root>/orchestrator/doc-tidy.py apply|unmark … --lock "$RUN_DIR/designdoc.lock"`
+# 로 부르고, 잠금은 도구가 스스로 잡는다. 앞서 스킬이 쓰던 `lockf … doc-tidy.py`
+# 철자는 등급과 도달 칸은 지났지만, 도구 경로가 `lockf` 의 피연산자라 두 쓰기
+# 가드가 플러그인 안으로의 쓰기로 보고 rc 3 으로 막았고, 그 철자를 게이트 경유로
+# 돌리는 행이 없어 스위트는 초록이었다. 그래서 두 철자를 모두 게이트 경유로 돌린다.
+DT31=$(mktemp -d "${TMPDIR:-/tmp}/doc-tidy-31ac.XXXXXX")
+printf '# 문서\n\n결정 문장 (대체된 문장: "옛 결정 문장")\n' > "$DT31/doc.md"
+cp "$DT31/doc.md" "$DT31/pre.md"
+DT31_TOOL="$repo_root/plugins/cc-cmds/orchestrator/doc-tidy.py"
+gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 트리밖쓰기 --reach 런로컬 --snapshot-digest "$(HN)" --rationale x \
+      -- "$DT31_TOOL" apply "$DT31/doc.md" --archive "$DT31/arch.md" --doc-key k \
+         --writer design-reconverge --lock "$RD3/designdoc.lock"
+check "스킬 철자의 doc-tidy.py apply --lock 을 게이트 경유로 실행하면 통과한다" "$rc" "0"
+case "$(cat "$DT31/doc.md" 2>/dev/null)" in
+  *'(보관 A1)'*) ok "게이트 경유 apply 가 실제로 돌아 대체 괄호를 보관 표지로 옮겼다" ;;
+  *) bad "게이트 경유 doc-tidy apply" "문서가 정리되지 않았다: $msg" ;;
+esac
+check "도구가 잡은 잠금 파일이 런 디렉터리에 남는다 (lockf -k 와 같다)" \
+  "$( [ -f "$RD3/designdoc.lock" ] && printf 'yes' || printf 'no' )" "yes"
+gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 트리밖쓰기 --reach 런로컬 --snapshot-digest "$(HN)" --rationale x \
+      -- "$DT31_TOOL" unmark "$DT31/doc.md" --archive "$DT31/arch.md" --doc-key k \
+         --writer design-audit-unattended --since "$DT31/pre.md" --lock "$RD3/designdoc.lock"
+check "스킬 철자의 doc-tidy.py unmark --lock 을 게이트 경유로 실행하면 통과한다" "$rc" "0"
+# 대조군 — 옛 철자는 여전히 막힌다. 이 단언이 없으면 위 통과가 가드의 면제를
+# 잰 것인지, 가드가 아예 돌지 않은 것인지 가릴 수 없다. 대조군의 잠금 파일은
+# 픽스처 매니페스트의 디렉터리(`$WORK`, `$RD3` 가 그 아래다) 밖인 `$DT31` 에 둔다. `lockf` 는 매니페스트
+# 쓰기 가드가 명령줄 전체를 피연산자로 보는 래퍼라, 잠금 경로가 매니페스트 디렉터리를
+# 담으면 그 가드가 플러그인 루트 가드보다 먼저 거절해 이 대조군이 재려는 거절이
+# 가려진다.
+gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 트리밖쓰기 --reach 런로컬 --snapshot-digest "$(HN)" --rationale x \
+      -- /usr/bin/lockf -k -t 0 "$DT31/designdoc.lock" \
+         "$repo_root/plugins/cc-cmds/skills/design-reconverge/../../orchestrator/doc-tidy.py" \
+         apply "$DT31/doc.md" --archive "$DT31/arch.md" --doc-key k --writer design-reconverge
+check "대조군: lockf 피연산자로 이름 붙은 doc-tidy.py 는 쓰기 가드가 거절한다" "$rc" "3"
+case "$msg" in
+  *"orchestrator or hook script"*) ok "대조군 거절이 플러그인 루트 쓰기 가드의 것이다" ;;
+  *) bad "대조군 거절 원인" "플러그인 루트 가드 문면이 없다: $msg" ;;
+esac
+# 다른 프로세스가 잠금을 쥐고 있으면 도구는 아무것도 읽거나 쓰지 않고 75 로 끝난다
+# — `lockf -t 0` 의 EX_TEMPFAIL 과 같은 값이라 스킬의 75 갈래가 그대로 맞는다.
+# 잠금은 flock(2) 이고, 붙잡는 쪽도 같은 호출로 잡아 두 플랫폼에서 같게 잰다.
+printf '# 문서\n\n둘째 문장 (대체된 문장: "옛 둘째 문장")\n' > "$DT31/held.md"
+DT31_SHA=$(shasum -a 256 "$DT31/held.md" | cut -d' ' -f1)
+DT31_RC=0
+python3 -c 'import fcntl, os, subprocess, sys
+fd = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT, 0o644)
+fcntl.flock(fd, fcntl.LOCK_EX)
+sys.exit(subprocess.call(sys.argv[2:], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))' \
+  "$RD3/designdoc.lock" "$DT31_TOOL" apply "$DT31/held.md" --archive "$DT31/held-arch.md" \
+  --doc-key k --writer design-reconverge --lock "$RD3/designdoc.lock" || DT31_RC=$?
+check "잠금을 다른 프로세스가 쥐면 doc-tidy.py --lock 은 75 로 끝난다" "$DT31_RC" "75"
+check "잠금에 막힌 doc-tidy.py 는 문서를 바꾸지 않는다" \
+  "$(shasum -a 256 "$DT31/held.md" | cut -d' ' -f1)" "$DT31_SHA"
+check "잠금에 막힌 doc-tidy.py 는 보관 파일을 만들지 않는다" \
+  "$( [ -e "$DT31/held-arch.md" ] && printf 'yes' || printf 'no' )" "no"
+rm -rf "$DT31"
 # 대조군 — 아무도 만들지 않는 이름은 예외가 아니다. 예외를 넓게 적어 두면 가드가
 # 지키는 범위가 조용히 줄고, 그 넓힘은 실제 발행 경로를 하나도 통과시키지 못하면서
 # 기준선 파일 하나를 더 열어 준다.
@@ -24615,7 +24806,8 @@ gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
       --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
       -- touch "$RD3/settings/impl.json"
 check "음성 대조군: 강제 표면인 settings/ 는 여전히 거부" "$rc" "3"
-# 설계 문서 락. 문서를 고치는 스테이지가 모두 이 이름으로 `lockf` 를 잡는데 목록이
+# 설계 문서 락. 문서를 고치는 스테이지가 모두 이 이름의 잠금을 잡는데(구현 팔은
+# `lockf` 로, 감사의 조정 패스와 재수렴 패스는 `doc-tidy.py --lock` 으로) 목록이
 # 몰라서 재수렴 스테이지가 편집을 준비해 놓고 락에서 멈췄다. 가드는 명령이 아니라
 # 경로 인자로 판정하므로, 리눅스 러너에 없는 `lockf` 대신 `touch` 로 같은 이름을 건다.
 gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
@@ -40030,7 +40222,7 @@ for rp_id in $rp_ids; do
   rp_n=$((rp_n + 1))
   grep -qF -- "| \`$rp_id\` |" "$RP_SHIFT" || rp_miss="$rp_miss $rp_id"
 done
-check "34o: 게이트 선언에서 경로 id 열둘을 읽는다 (아래가 공허하지 않다)" "$rp_n" "12"
+check "34o: 게이트 선언에서 경로 id 열다섯을 읽는다 (아래가 공허하지 않다)" "$rp_n" "15"
 check "34o: 교대 스킬이 게이트의 경로 id 를 모두 이름 댄다" "${rp_miss:-없음}" "없음"
 rp_lits=0
 grep -qF -- '`**스텝**: Step 6 조정 패스 — CFI-3b 종합 질문`' "$RP_SKILLS/design-audit-unattended/SKILL.md" && rp_lits=$((rp_lits + 1))
@@ -46880,14 +47072,16 @@ p59_snap() {
 }
 p59_h() { p59_snap | jq -r .H; }
 p59_state() {
-  # p59_state <판정> <사유> [computed_at 오프셋 초] [schema] [tracker] — 센서가 쓰는
-  # 모양의 state.json. 키 이름은 센서의 것과 같고, 이 절이 읽는 것만 채운다.
-  local verdict="$1" reason="$2" off="${3:-0}" schema="${4:-cc-pace-state v1}" tracker="${5:-ok}" now
+  # p59_state <판정> <사유> [computed_at 오프셋 초] [schema] [tracker] [호스트 블록 JSON]
+  # — 센서가 쓰는 모양의 state.json. 키 이름은 센서의 것과 같고, 이 절이 읽는 것만
+  # 채운다. 호스트 블록은 주어졌을 때만 싣는다.
+  local verdict="$1" reason="$2" off="${3:-0}" schema="${4:-cc-pace-state v1}" tracker="${5:-ok}" host="${6:-null}" now
   now=$(( $(date -u +%s) - off ))
   jq -cn --arg schema "$schema" --arg v "$verdict" --arg r "$reason" --arg t "$tracker" \
-     --argjson now "$now" \
+     --argjson now "$now" --argjson h "$host" \
      '{schema: $schema, tick_seq: 7, computed_at: ($now | todate), computed_at_epoch: $now,
-       tracker: $t, verdict: $v, verdict_reason: $r, seats: []}' > "$P59_PACE/state.json"
+       tracker: $t, verdict: $v, verdict_reason: $r, seats: []}
+      + (if $h == null then {} else {host: $h} end)' > "$P59_PACE/state.json"
 }
 p59_rows() { { grep -cF "\`$1\`" "$P59_LEDGER" || true; }; }
 p59_last() { { grep -F "\`$1\`" "$P59_LEDGER" || true; } | tail -1; }
@@ -46979,6 +47173,7 @@ check "59: 첫 행의 이전도 (미상) 이다" "$(p59_field "$p59_row" 이전)
 check "59: 부재 행의 기준 틱은 - 다" "$(p59_field "$p59_row" '기준 틱')" "-"
 check "59: 부재 행의 관측도 - 다" "$(p59_field "$p59_row" 관측)" "-"
 check "59: 부재 행의 사유는 (미상) 이다" "$(p59_field "$p59_row" 사유)" "(미상)"
+check "59: 부재 행의 호스트는 - 다" "$(p59_field "$p59_row" 호스트)" "-"
 p59_act
 check "59: 판정이 그대로면(여전히 부재) 행이 늘지 않는다" "$(p59_rows pace)" "1"
 p59_state 가속 idle
@@ -46991,10 +47186,11 @@ check "59: 기준 틱은 센서의 tick_seq 다" "$(p59_field "$p59_row" '기준
 check "59: 관측은 센서의 computed_at 이다" \
   "$(p59_field "$p59_row" 관측)" "$(jq -r .computed_at "$P59_PACE/state.json")"
 check "59: 사유는 센서의 verdict_reason 이다" "$(p59_field "$p59_row" 사유)" "idle"
-# 비교 기준은 판정 하나다 — 사유만 바뀐 틱은 행을 만들지 않는다.
+check "59: 호스트 블록이 없는 state.json 의 호스트는 - 다" "$(p59_field "$p59_row" 호스트)" "-"
+# 호스트와 무관한 사유끼리만 바뀐 틱은 판정이 같으면 행을 만들지 않는다.
 p59_state 가속 lanes-below-target
 p59_act
-check "59: 사유만 바뀌고 판정이 같으면 행이 늘지 않는다" "$(p59_rows pace)" "2"
+check "59: 호스트와 무관한 사유만 바뀌고 판정이 같으면 행이 늘지 않는다" "$(p59_rows pace)" "2"
 # snapshot 은 읽기이므로 판정이 바뀌어도 쓰지 않는다 — 다음 act 가 쓴다.
 p59_state 제동 brake
 p59_snap >/dev/null
@@ -47002,10 +47198,52 @@ check "59: snapshot 은 판정이 바뀌어도 pace 행을 쓰지 않는다" "$(
 p59_act
 check "59: 그다음 act 가 그 변화를 쓴다" "$(p59_rows pace)" "3"
 check "59: 이전 필드가 직전 행의 판정을 잇는다" "$(p59_field "$(p59_last pace)" 이전)" "가속"
+# 같은 판정 안에서도 호스트 사유가 들고 나거나 바뀌면 행을 쓴다.
+p59_hblk() {
+  # p59_hblk <state> [<ratio> <saturated>] — 센서가 싣는 모양의 호스트 블록.
+  jq -cn --arg s "$1" --argjson r "${2:-null}" --argjson sat "${3:-false}" '
+    {state: $s, load1: (if $r == null then null else $r * 18 / 1000 end), load5: null,
+     ncpu: (if $r == null then null else 18 end), ratio_permille: $r, saturated: $sat,
+     since_epoch: 0, enter_permille: 2000, leave_permille: 1500, sampled_at_epoch: 0}'
+}
+p59_state 제동 host 0 'cc-pace-state v1' ok "$(p59_hblk ok 2000 true)"
+p59_act
+check "59: 같은 판정 제동 안에서 brake 가 host 로 바뀌면 행이 는다" "$(p59_rows pace)" "4"
+p59_row=$(p59_last pace)
+check "59: 그 행의 사유는 host 이고 이전은 제동이다" \
+  "$(p59_field "$p59_row" 사유)/$(p59_field "$p59_row" 이전)" "host/제동"
+check "59: 포화 호스트의 호스트 칸은 판독값을 싣는다" "$(p59_field "$p59_row" 호스트)" "포화 ratio=2000 ncpu=18"
+p59_state 제동 host 0 'cc-pace-state v1' ok "$(p59_hblk ok 2100 true)"
+p59_act
+check "59: 판정과 사유가 그대로면 호스트 판독값이 바뀌어도 행이 늘지 않는다" "$(p59_rows pace)" "4"
+p59_state 제동 brake-host 0 'cc-pace-state v1' ok "$(p59_hblk ok 2000 true)"
+p59_act
+check "59: host 에서 brake-host 로 바뀌어도 행이 는다" \
+  "$(p59_rows pace)/$(p59_field "$(p59_last pace)" 사유)" "5/brake-host"
+p59_state 제동 brake
+p59_act
+check "59: 호스트 사유에서 brake 로 돌아가도 행이 는다" \
+  "$(p59_rows pace)/$(p59_field "$(p59_last pace)" 사유)/$(p59_field "$(p59_last pace)" 호스트)" "6/brake/-"
+# 호스트 칸의 나머지 세 꼴 — 판정이 바뀌는 틱마다 하나씩.
+p59_state 가속 idle 0 'cc-pace-state v1' ok "$(p59_hblk off)"
+p59_act
+check "59: off 블록의 호스트 칸은 꺼짐이다" \
+  "$(p59_rows pace)/$(p59_field "$(p59_last pace)" 호스트)" "7/꺼짐"
+p59_state 유지 default 0 'cc-pace-state v1' ok "$(p59_hblk unread)"
+p59_act
+check "59: unread 블록의 호스트 칸은 미상이다" \
+  "$(p59_rows pace)/$(p59_field "$(p59_last pace)" 호스트)" "8/미상"
+p59_state 가속 idle 0 'cc-pace-state v1' ok "$(p59_hblk ok 55 false)"
+p59_act
+check "59: 포화가 아닌 ok 블록의 호스트 칸은 정상과 판독값이다" \
+  "$(p59_rows pace)/$(p59_field "$(p59_last pace)" 호스트)" "9/정상 ratio=55 ncpu=18"
+p59_state 제동 brake
+p59_act
+check "59: 다시 제동으로 바뀐 행이 남는다" "$(p59_rows pace)" "10"
 # 낡음도 변화다 — 센서가 멈추면 다음 act 가 (미상) 으로 돌아간 것을 적는다.
 p59_state 제동 brake 400
 p59_act
-check "59: 센서가 낡으면 (미상) 으로 돌아간 행이 남는다" "$(p59_rows pace)" "4"
+check "59: 센서가 낡으면 (미상) 으로 돌아간 행이 남는다" "$(p59_rows pace)" "11"
 check "59: 그 행의 판정은 (미상) 이고 이전은 제동이다" \
   "$(p59_field "$(p59_last pace)" 판정)/$(p59_field "$(p59_last pace)" 이전)" "(미상)/제동"
 rm -f "$P59_PACE/state.json"
@@ -50646,7 +50884,7 @@ check "67c: 게이트의 경로 판정이 사다리 기록의 골격 재검토 �
 
 fc67c_i5=$(fc67c_item "$fc67c_rs" '5. **`정상 완료` on the row is not the freeze.**')
 check "67c: 라우터 항목 5 가 골격 재검토 표지를 항목 9 로 보낸다" \
-  "$(printf '%s\n' "$fc67c_i5" | { grep -cF '`**잔여 동결**: 사람 · 골격 재검토 — 런 <this run'"'"'s id> ·` (`grep -nF` through the gate) and the step has no `stage-result` row reading `종류=reconverge` yet, the next step is item 9 of' || true; })" "1"
+  "$(printf '%s\n' "$fc67c_i5" | { grep -cF '`**잔여 동결**: 사람 · 골격 재검토 — 런 <this run'"'"'s id> ·` (`grep -nF` through the gate) and the step has no `stage-result` row reading `종류=reconverge` without `차단=파견 전` yet, the next step is item 9 of' || true; })" "1"
 
 fc67c_i8=$(fc67c_item "$fc67c_rs" '9. **A residual-ladder halt answered `골격 재검토` goes to re-convergence, then to a fresh audit.**')
 fc67c_n8=0
@@ -70459,6 +70697,456 @@ check "111: 부여 뒤 기동 디렉터리가 사라지면 감독자는 준비 �
 unset -f s111_in s111_d s111_launch s111_instr s111_ls s111_new s111_left
 unset S111 r111 a111 d111 g111 s111_rb s111_rh s111_aw s111_im s111_ip s111_GRANT s111_WAIT s111_NODIR \
   s111_lg s111_lw s111_lm s111_dm s111_lz s111_dz s111_r
+
+# ---------------------------------------------------------------------------
+# 113b. 설계 문서 크기 — 크기 표, 파견 전 차단 기록과 행, 세 답 경로와 좌석 제한, 문서 정리의 되돌림 검사
+# --- section: 113b | group: base | covers: act, halt-answer, doc_size_threshold, doc_size_verdict, doc_size_check, doc_size_halt_write, gate_doc_size_dispatch_check, gate_halt_answer_route, gate_doc_tidy_admissible, doc-tidy, gate_doc_tidy_archive_path, gate_audit_reconverge_keyable, gate_size_block_redispatch_row, gate_size_block_reconverge_routable, audit_key_reconverge_rows, gate_halt_card_crash_line, gate_audit_reconverge_row_admits, gate_size_block_card_capped, gate_stage_row_before_size_block, gate_segment_review_walk, gate_decision_reconverge_entry, gate_decision_reconverge_open, gate_large_context_record, gate_large_context_inherit, stage_model_of, gate_dispatch_doc_size_gate | anchors: 113b: 크기 표가 세 종류의 문턱과 경고 문턱을 낸다, 113b: 문턱 위 문서는 재수렴에 초과이고 감사에 경고다, 113b: 크기 초과 기록이 스텝·추천·관측 상세를 싣는다, 113b: 좌석의 큰 문맥 답은 거절된다, 113b: 사람의 큰 문맥 답은 큰문맥-재파견 이다, 113b: 사람의 런 밖 처리 답은 크기-보류 다, 113b: 좌석의 정리 답은 정리-재파견 이다, 113b: 크기 기록에 다른 선택지는 갈래가 없다, 113b: 읽기 불가 기록은 정리 후 재파견을 싣지 않는다, 113b: 읽기 불가 기록에 좌석은 답할 수 없고 사람의 런 밖 처리는 크기-보류 다, 113b: plan 은 차단을 예보하고 기록을 쓰지 않는다, 113b: act 는 시도를 청구해 기록과 의도된 park 행을 쓰고 11 로 끝난다, 113b: 답 카드를 실을 파견의 차단 행은 그 줄을 답 운반으로 싣는다, 113b: tidy 가 문서를 문턱 아래로 정리하고 보관 파일을 쓴다, 113b: check 가 정리 전후와 보관 파일을 되돌림으로 맞춘다, 113b: 정리 행이 있으면 정리 뒤 문서로 조건 둘째가 서고 다시 정리하지 않는다, 113b: 정리 행이 없으면 바뀐 문서의 정리 답은 거절된다, 113b: 저장소 밖 문서의 보관 파일은 DOC_BASE 아래 docs/design-archive 다, 113b: 크기 차단 뒤 답이 없으면 런 범위 재수렴을 다시 받지 않는다, 113b: 크기 차단 뒤 열린 정리 답이면 같은 재수렴을 다시 받는다, 113b: 크기 차단 뒤 큰 문맥 답은 사람의 것만 재수렴을 다시 받는다, 113b: 답 카드가 없는 차단 행 뒤에는 의도된 park 재수렴을 다시 받지 않는다, 113b: 답 카드를 실은 차단 행 뒤에는 운반하던 재수렴을 운반 없이 다시 받는다, 113b: 답 카드를 실은 차단 행 뒤의 다음 파견은 그 카드를 다시 받는다, 113b: 크기 차단 행이 넘긴 카드는 세션 전 사망 세 번에서 막힌다, 113b: 답 카드가 없는 차단 행 뒤의 다음 파견은 카드를 받지 않는다, 113b: 답 카드를 실은 차단 행이면 재수렴 재파견 답 경로가 정리 전에 받는다, 113b: 재수렴 계수기는 크기 차단 행을 세지 않는다, 113b: 받지 않을 재수렴 재파견은 답 경로가 정리 전에 거절한다, 113b: 크기 차단 뒤 정리 답이 있어도 결정 수거 답의 재수렴을 다시 받는다, 113b: 결정 수거 답의 재수렴이 막히면 재파견 답 경로가 정리 전에 받는다, 113b: 세션이 돈 재수렴 뒤에는 같은 결정 수거 기록으로 다시 열지 않는다, 113b: 세그먼트 리뷰 계수는 세그먼트 키의 크기 차단 행을 재수렴으로 세지 않는다, 113b: 큰 문맥 세션의 재부착만 큰 문맥 창으로 돈다, 113b: 큰 문맥 세션에 묶인 답 운반은 크기 차단 없이 큰 창으로 돈다, 113b: 큰 문맥 기록이 없는 세션에 묶인 답 운반은 여전히 크기 차단된다 ---
+#
+# 크기 차단은 세션 없이 기록 하나와 행 하나로 끝나고, 그 기록의 답은 게이트가 경로 셋으로
+# 가른다. 이 절은 게이트를 소싱한 자식에서 그 함수들을 직접 부른다: 원장은 빈 파일에서
+# 시작하고, 설계 문서는 재수렴 문턱 289000 을 넘고 감사 경고 문턱 299000 도 넘는 픽스처(고정 키
+# docs/doc-tidy-fixture.md)로, 대체 괄호 하나를 옮기면 재수렴 문턱 아래로 내려가게 만든다. 파견 행위 전체(인가·임대·감독자)는
+# 다른 절이 재고, 여기서는 크기 판정과 답 경로와 정리 도구만 본다.
+# ---------------------------------------------------------------------------
+S113="$WORK/s113"; rm -rf "$S113"; mkdir -p "$S113/run/halt" "$S113/repo/docs"
+S113=$(cd -P "$S113" && pwd)
+s113_doc="$S113/repo/docs/doc-tidy-fixture.md"
+awk 'BEGIN {
+  print "# 크기 시험 문서"; print ""; print "## 합의된 아키텍처"; print ""
+  l = sprintf("%0199d", 0); for (i = 0; i < 1425; i++) print "- " l
+  p = sprintf("%012000d", 0); printf "결정 문장입니다. (대체된 문장: \"%s\")\n", p
+}' > "$s113_doc"
+cp "$s113_doc" "$S113/pre.md"
+: > "$S113/ledger.md"; : > "$S113/ledger-empty.md"
+# s113_call <원장> <문서> <셸 문> — 게이트를 소싱한 자식에서 셸 문 하나를 이 절의 런
+# 디렉터리·원장·문서 위에서 부른다. 그 종료 코드가 호출의 종료 코드다. 게이트를 소싱하면
+# errexit 가 켜지므로, 0 이 아닌 값을 돌려주는 판정 함수 뒤에 이어 부를 것이 있으면 `|| :` 로 받는다.
+s113_call() {
+  local l="$1" d="$2"; shift 2
+  ( cd "$WT" && bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; RUN_DIR="$2"; LEDGER="$3"; RUN_ID=RT113
+      DOC="$4"; DOC_DIR="${4%/*}"; DOC_KEY=docs/doc-tidy-fixture.md; DOC_SLUG=docs-doc-tidy-fixture; DOC_BASE="$5"
+      shift 5; eval "$1"' _ "$GATE" "$S113/run" "$l" "$d" "$S113/repo" "$@" )
+}
+# s113_route <원장> <문서> <기록> <선택지> <답한 주체> — 경로 id, 거절이면 `거절`.
+s113_route() {
+  local r
+  r=$(s113_call "$1" "$2" 'gate_halt_answer_route S2 "'"$3"'" "'"$4"'" "'"$5"'"' 2>/dev/null) || r=거절
+  printf '%s' "${r:-거절}"
+}
+
+s113_r=$(s113_call "$S113/ledger.md" "$s113_doc" '
+  printf "%s|%s|%s|%s|%s" "$(doc_size_threshold audit | tr "\t" /)" "$(doc_size_threshold reconverge | tr "\t" /)" \
+    "$(doc_size_threshold implement | tr "\t" /)" "$(doc_size_min_threshold 1)" "$(doc_size_min_threshold 2)"' 2>/dev/null)
+check "113b: 크기 표가 세 종류의 문턱과 경고 문턱을 낸다" "$s113_r" "323000/299000|289000/265000|313000/289000|289000|265000"
+s113_r=$(s113_call "$S113/ledger.md" "$s113_doc" '
+  printf "%s|%s" "$(doc_size_verdict reconverge "$DOC" | cut -f1)" "$(doc_size_verdict audit "$DOC" | cut -f1)"' 2>/dev/null)
+check "113b: 문턱 위 문서는 재수렴에 초과이고 감사에 경고다" "$s113_r" "초과|경고"
+
+# (가) 크기 초과 기록 — 정리 뒤 예상이 문턱 아래이고 형제 계획이 없어 정리 후 재파견을 추천한다.
+s113_rec=$(s113_call "$S113/ledger.md" "$s113_doc" '
+  doc_size_check reconverge "$DOC" || :; doc_size_halt_write "S2#1" reconverge "$DOC" -; doc_size_release' 2>/dev/null)
+s113_sha=$(shasum -a 256 "$s113_doc" | cut -d' ' -f1)
+s113_r="$(sed -n 's/^\*\*스텝\*\*: //p' "$s113_rec" 2>/dev/null)|$(sed -n 's/^\*\*추천\*\*: \(`[^`]*`\).*/\1/p' "$s113_rec" 2>/dev/null)"
+s113_r="$s113_r|$(grep -c -e '^\*\*관측 상세\*\*: .* / 종류=reconverge / 문서 사전 sha256='"$s113_sha"'$' "$s113_rec" 2>/dev/null)"
+check "113b: 크기 초과 기록이 스텝·추천·관측 상세를 싣는다" "$s113_r" '파견 전 / 문서 크기 초과|`정리 후 재파견`|1'
+
+# (나) 답 경로 — 좌석은 정리 답만, 사람은 세 갈래 모두.
+check "113b: 좌석의 큰 문맥 답은 거절된다" \
+  "$(s113_route "$S113/ledger.md" "$s113_doc" "$s113_rec" '큰 문맥으로 재파견' 좌석)" "거절"
+check "113b: 사람의 큰 문맥 답은 큰문맥-재파견 이다" \
+  "$(s113_route "$S113/ledger.md" "$s113_doc" "$s113_rec" '큰 문맥으로 재파견' 사람)" "큰문맥-재파견"
+check "113b: 사람의 런 밖 처리 답은 크기-보류 다" \
+  "$(s113_route "$S113/ledger.md" "$s113_doc" "$s113_rec" '런 밖에서 처리' 사람)" "크기-보류"
+check "113b: 좌석의 정리 답은 정리-재파견 이다" \
+  "$(s113_route "$S113/ledger.md" "$s113_doc" "$s113_rec" '정리 후 재파견' 좌석)" "정리-재파견"
+check "113b: 크기 기록에 다른 선택지는 갈래가 없다" \
+  "$(s113_route "$S113/ledger.md" "$s113_doc" "$s113_rec" '재수렴' 사람)" "거절"
+
+# (다) 읽기 불가 기록 — 선택지는 런 밖 처리 하나이고 사람만 답한다.
+s113_urec=$(s113_call "$S113/ledger.md" "$S113/없는-문서.md" '
+  doc_size_check reconverge "$DOC" || :; doc_size_halt_write "S2#2" reconverge "$DOC" -; doc_size_release' 2>/dev/null)
+check "113b: 읽기 불가 기록은 정리 후 재파견을 싣지 않는다" \
+  "$(sed -n 's/^\*\*스텝\*\*: //p' "$s113_urec" 2>/dev/null)|$(grep -c -F '`정리 후 재파견`' "$s113_urec" 2>/dev/null)" \
+  "파견 전 / 문서 읽기 불가|0"
+check "113b: 읽기 불가 기록에 좌석은 답할 수 없고 사람의 런 밖 처리는 크기-보류 다" \
+  "$(s113_route "$S113/ledger.md" "$s113_doc" "$s113_urec" '정리 후 재파견' 좌석)|$(s113_route "$S113/ledger.md" "$s113_doc" "$s113_urec" '런 밖에서 처리' 좌석)|$(s113_route "$S113/ledger.md" "$s113_doc" "$s113_urec" '런 밖에서 처리' 사람)" \
+  "거절|거절|크기-보류"
+
+# (라) 파견 전 검사 — plan 은 예보만, act 는 시도를 청구하고 기록과 행을 쓴다.
+s113_r=$(s113_call "$S113/ledger.md" "$s113_doc" 'r=0; gate_doc_size_dispatch_check plan S3 reconverge - || r=$?; printf "%s" "$r"' 2>/dev/null)
+check "113b: plan 은 차단을 예보하고 기록을 쓰지 않는다" \
+  "$s113_r|$(ls "$S113/run/halt" | grep -c '^S3#' || true)" "11|0"
+s113_r=$(s113_call "$S113/ledger.md" "$s113_doc" 'r=0; gate_doc_size_dispatch_check act S3 reconverge - || r=$?; printf "%s" "$r"' 2>/dev/null)
+s113_row=$(grep -F -e '- `stage-result` |' "$S113/ledger.md" | grep -F '| 스테이지=S3 |' | tail -1)
+check "113b: act 는 시도를 청구해 기록과 의도된 park 행을 쓰고 11 로 끝난다" \
+  "$s113_r|$(sed -n 's/^\*\*스텝\*\*: //p' "$S113/run/halt/S3#1.md" 2>/dev/null)|$(printf '%s' "$s113_row" | grep -c -F -e '| 차단=파견 전 |' || true)|$(printf '%s' "$s113_row" | grep -c -F -e '| 종단 부류=의도된 park |' || true)|$(printf '%s' "$s113_row" | grep -c -F -e '| 문서 크기=' || true)" \
+  "11|파견 전 / 문서 크기 초과|1|1|1"
+# 답 카드를 실을 파견이 막히면 차단 행이 그 카드의 줄을 `답 운반` 으로 싣고, 카드가 없는 파견의
+# 차단 행에는 그 필드가 없다.
+: > "$S113/ledger-ha.md"
+s113_r=$(s113_call "$S113/ledger-ha.md" "$s113_doc" 'GATE_HA_LINE=7; r=0; gate_doc_size_dispatch_check act S5 reconverge - || r=$?; printf "%s" "$r"' 2>/dev/null)
+s113_row=$(grep -F -e '- `stage-result` |' "$S113/ledger-ha.md" | grep -F '| 스테이지=S5 |' | tail -1)
+check "113b: 답 카드를 실을 파견의 차단 행은 그 줄을 답 운반으로 싣는다" \
+  "$s113_r|$(printf '%s' "$s113_row" | grep -c -F -e '| 답 운반=7 |' || true)|$(grep -F -e '- `stage-result` |' "$S113/ledger.md" | grep -F '| 스테이지=S3 |' | grep -c -F -e '| 답 운반=' || true)" \
+  "11|1|0"
+
+# (마) 정리 도구 — tidy 가 대체 괄호를 보관 파일로 옮기고, check 가 되돌림으로 맞춘다.
+s113_arch="$S113/repo/docs/design-archive/docs-doc-tidy-fixture.md"
+mkdir -p "${s113_arch%/*}"
+s113_rc=0
+"$repo_root/plugins/cc-cmds/orchestrator/doc-tidy.py" tidy "$s113_doc" --archive "$s113_arch" \
+  --doc-key docs/doc-tidy-fixture.md --writer 게이트 --below 289000 >/dev/null 2>&1 || s113_rc=$?
+s113_sz=$(wc -c < "$s113_doc" | tr -d ' ')
+check "113b: tidy 가 문서를 문턱 아래로 정리하고 보관 파일을 쓴다" \
+  "$s113_rc|$([ "$s113_sz" -lt 289000 ] && echo 아래)|$(grep -c -F ' (보관 A1)' "$s113_doc" || true)|$(sed -n '2p' "$s113_arch" 2>/dev/null)" \
+  "0|아래|1|<!-- cc-design-archive v1; writer=doc-tidy; owner-doc=docs/doc-tidy-fixture.md -->"
+s113_rc=0
+"$repo_root/plugins/cc-cmds/orchestrator/doc-tidy.py" check "$S113/pre.md" "$s113_doc" "$s113_arch" >/dev/null 2>&1 || s113_rc=$?
+check "113b: check 가 정리 전후와 보관 파일을 되돌림으로 맞춘다" "$s113_rc" "0"
+
+# (바) 정리 뒤 재파견 — 정리 행의 정리 후 sha256 이 조건 둘째를 세운다.
+s113_post=$(shasum -a 256 "$s113_doc" | cut -d' ' -f1)
+printf -- '- `doc-tidy` | 교대=0 | 대상=infra | 세그먼트=S2 | 중단 기록=%s | 정리 전 sha256=%s | 정리 후 sha256=%s | 보관 파일=%s | prev=x\n' \
+  "$s113_rec" "$s113_sha" "$s113_post" "$s113_arch" >> "$S113/ledger.md"
+s113_r=$(s113_call "$S113/ledger.md" "$s113_doc" 'r=0; gate_doc_tidy_admissible S2 "'"$s113_rec"'" || r=$?; printf "%s|%s" "$r" "$GATE_DOC_TIDY_DONE"' 2>/dev/null)
+check "113b: 정리 행이 있으면 정리 뒤 문서로 조건 둘째가 서고 다시 정리하지 않는다" "$s113_r" "0|1"
+check "113b: 정리 행이 없으면 바뀐 문서의 정리 답은 거절된다" \
+  "$(s113_route "$S113/ledger-empty.md" "$s113_doc" "$s113_rec" '정리 후 재파견' 좌석)" "거절"
+
+# (사) 보관 파일 경로 — 저장소 밖 문서의 DOC_BASE 는 문서 디렉터리이고, 게이트도 스킬처럼
+# <DOC_BASE>/docs/design-archive/<slug>.md 를 쓴다.
+check "113b: 저장소 밖 문서의 보관 파일은 DOC_BASE 아래 docs/design-archive 다" \
+  "$(s113_call "$S113/ledger.md" "$s113_doc" 'DOC_BASE="$DOC_DIR"; gate_doc_tidy_archive_path' 2>/dev/null)" \
+  "$S113/repo/docs/docs/design-archive/docs-doc-tidy-fixture.md"
+
+# (아) 런 범위 재수렴의 크기 차단 — 감사 단계 키 S4 의 의도된 park 감사 뒤 재수렴이 크기로
+# 막혔다. 차단 행은 재수렴 수로 세지 않고, 그 기록의 열린 재파견 답이 있을 때만 같은
+# 재수렴을 다시 받으며, 받지 않을 재파견은 답 경로가 정리 전에 거절한다.
+s113_srec="$S113/run/halt/S4#2.md"
+printf '**스킬**: design-reconverge\n**스텝**: 파견 전 / 문서 크기 초과\n**관측 상세**: 문서=%s / 종류=reconverge\n' \
+  "$s113_doc" > "$s113_srec"
+s113_block='- `stage-result` | 교대=0 | 세그먼트=- | 스테이지=S4 | 종류=reconverge | 종료 코드=- | 실행 버전=2 | 세션 id=- | 부모=- | 기록자=게이트 | 차단=파견 전 | 종단 부류=의도된 park | 관측=파견 전 차단 | prev=x'
+# s113_rs <원장> <첫 행의 종단 부류> [<답 행의 선택지> <답한 주체>] — S4 의 감사 행, 차단 행,
+# 그리고 선택지가 있으면 그 기록의 중단 답 행을 쓴다.
+s113_rs() {
+  {
+    printf -- '- `stage-result` | 교대=0 | 세그먼트=- | 스테이지=S4 | 종류=audit | 종료 코드=0 | 실행 버전=1 | 세션 id=s1 | 종단 부류=%s | prev=x\n' "$2"
+    printf '%s\n' "$s113_block"
+    [ -z "${3:-}" ] || printf -- '- `중단 답` | 교대=0 | 세그먼트=S4 | 중단 기록=%s | 선택지=%s | 답한 주체=%s | prev=x\n' \
+      "$s113_srec" "$3" "$4"
+  } > "$1"
+}
+s113_stub='gate_run_scope_step() { [ "$1" = audit ] && printf S4; }; '
+s113_keyable() {
+  s113_call "$1" "$s113_doc" "$s113_stub"'r=0; gate_audit_reconverge_keyable S4 || r=$?; printf "%s" "$r"' 2>/dev/null
+}
+s113_rs "$S113/ledger-rs.md" '의도된 park'
+check "113b: 크기 차단 뒤 답이 없으면 런 범위 재수렴을 다시 받지 않는다" "$(s113_keyable "$S113/ledger-rs.md")" "1"
+s113_rs "$S113/ledger-rs.md" '의도된 park' '정리 후 재파견' 좌석
+check "113b: 크기 차단 뒤 열린 정리 답이면 같은 재수렴을 다시 받는다" "$(s113_keyable "$S113/ledger-rs.md")" "0"
+s113_rs "$S113/ledger-rs.md" '의도된 park' '큰 문맥으로 재파견' 좌석
+s113_r=$(s113_keyable "$S113/ledger-rs.md")
+s113_rs "$S113/ledger-rs.md" '의도된 park' '큰 문맥으로 재파견' 사람
+check "113b: 크기 차단 뒤 큰 문맥 답은 사람의 것만 재수렴을 다시 받는다" "$s113_r|$(s113_keyable "$S113/ledger-rs.md")" "1|0"
+{
+  printf -- '- `stage-result` | 교대=0 | 세그먼트=- | 스테이지=S4 | 종류=reconverge | 종료 코드=0 | 실행 버전=1 | 세션 id=s1 | 종단 부류=의도된 park | prev=x\n'
+  printf '%s\n' "$s113_block"
+  printf -- '- `중단 답` | 교대=0 | 세그먼트=S4 | 중단 기록=%s | 선택지=정리 후 재파견 | 답한 주체=좌석 | prev=x\n' "$s113_srec"
+} > "$S113/ledger-rc.md"
+check "113b: 답 카드가 없는 차단 행 뒤에는 의도된 park 재수렴을 다시 받지 않는다" "$(s113_keyable "$S113/ledger-rc.md")" "1"
+# 답을 운반하던 재수렴이 크기로 막혔다 — 원래 기록의 사람 답(1번째 줄), 그 답을 실은 차단 행,
+# 크기 기록의 정리 답. 차단 행이 답 카드를 실으므로 운반 없는 재파견을 다시 받고, 게이트는
+# 그 카드를 재파견에 다시 건넨다.
+s113_orec="$S113/run/halt/S4#1.md"
+printf '**스킬**: design-reconverge\n**스텝**: Step 2 결정\n' > "$s113_orec"
+{
+  printf -- '- `중단 답` | 교대=0 | 세그먼트=S4 | 중단 기록=%s | 선택지=가 | 답한 주체=사람 | prev=x\n' "$s113_orec"
+  printf -- '- `stage-result` | 교대=0 | 세그먼트=- | 스테이지=S4 | 종류=reconverge | 종료 코드=0 | 실행 버전=1 | 세션 id=s1 | 종단 부류=의도된 park | prev=x\n'
+  printf '%s\n' "${s113_block/ 차단=파견 전 |/ 차단=파견 전 | 답 운반=1 |}"
+  printf -- '- `중단 답` | 교대=0 | 세그먼트=S4 | 중단 기록=%s | 선택지=정리 후 재파견 | 답한 주체=좌석 | prev=x\n' "$s113_srec"
+} > "$S113/ledger-rca.md"
+check "113b: 답 카드를 실은 차단 행 뒤에는 운반하던 재수렴을 운반 없이 다시 받는다" "$(s113_keyable "$S113/ledger-rca.md")" "0"
+check "113b: 답 카드를 실은 차단 행 뒤의 다음 파견은 그 카드를 다시 받는다" \
+  "$(s113_call "$S113/ledger-rca.md" "$s113_doc" "$s113_stub"'gate_halt_card_crash_line S4' 2>/dev/null)" "1"
+cp "$S113/ledger-rca.md" "$S113/ledger-rcd.md"
+s113_r=$(s113_call "$S113/ledger-rcd.md" "$s113_doc" "$s113_stub"'r=0; gate_size_block_card_capped S4 1 || r=$?; printf "%s" "$r"' 2>/dev/null)
+for s113_n in 3 4 5; do
+  printf -- '- `stage-result` | 교대=0 | 세그먼트=- | 스테이지=S4 | 종류=reconverge | 종료 코드=1 | 실행 버전=%s | 세션 id=미상 | 답 운반=1 | 종단 부류=크래시 | prev=x\n' "$s113_n" \
+    >> "$S113/ledger-rcd.md"
+done
+check "113b: 크기 차단 행이 넘긴 카드는 세션 전 사망 세 번에서 막힌다" \
+  "$s113_r|$(s113_call "$S113/ledger-rcd.md" "$s113_doc" "$s113_stub"'r=0; gate_size_block_card_capped S4 1 || r=$?; printf "%s/%s" "$r" "$GATE_SBC_DEATHS"' 2>/dev/null)" "1|0/3"
+check "113b: 답 카드가 없는 차단 행 뒤의 다음 파견은 카드를 받지 않는다" \
+  "$(s113_call "$S113/ledger-rc.md" "$s113_doc" "$s113_stub"'gate_halt_card_crash_line S4' 2>/dev/null)" ""
+s113_r=$(s113_call "$S113/ledger-rca.md" "$s113_doc" "$s113_stub"'r=0; gate_size_block_reconverge_routable S4 "'"$s113_srec"'" || r=$?; printf "%s" "$r"' 2>/dev/null)
+check "113b: 답 카드를 실은 차단 행이면 재수렴 재파견 답 경로가 정리 전에 받는다" "$s113_r" "0"
+printf -- '- `stage-result` | 교대=0 | 세그먼트=- | 스테이지=S4 | 종류=reconverge | 종료 코드=0 | 실행 버전=3 | 세션 id=s3 | 종단 부류=정상 완료 | prev=x\n' \
+  >> "$S113/ledger-rs.md"
+check "113b: 재수렴 계수기는 크기 차단 행을 세지 않는다" \
+  "$(s113_call "$S113/ledger-rs.md" "$s113_doc" 'audit_key_reconverge_rows S4 "$LEDGER" | wc -l | tr -d " "' 2>/dev/null)" "1"
+s113_rs "$S113/ledger-rs.md" '정상 완료'
+s113_r=$(s113_call "$S113/ledger-rs.md" "$s113_doc" "$s113_stub"'gate_halt_answer_route S4 "'"$s113_srec"'" "정리 후 재파견" 좌석 >/dev/null 2>&1 || :; printf "%s" "$GATE_HALT_ROUTE_REASON"' 2>/dev/null)
+case "$s113_r" in '재파견할 - reconverge 를 게이트가 받지 않습니다 — '*) s113_r=거절 ;; esac
+check "113b: 받지 않을 재수렴 재파견은 답 경로가 정리 전에 거절한다" "$s113_r" "거절"
+# 결정 수거 답이 연 재수렴이 크기로 막혔다 — 감사 키 S4 의 정상 완료 감사, 수거 기록의 사람
+# 답, 그 재수렴의 차단 행, 크기 기록의 정리 답. 크기 답은 수거 답의 자리를 차지하지 않고 차단
+# 행은 기록당 한 번 세기에 들지 않으므로, 같은 재수렴이 다시 들어오고 정리 답 경로도 받는다.
+# 대조로 세션이 돈 재수렴 행이 뒤에 서면 같은 기록으로 다시 열지 않는다.
+s113_dcrec="$S113/run/halt/decision-collect-s113.md"
+{
+  printf '<!-- cc-pipeline-halt v1; writer=gate; reader=orchestrator; stage=S4#1; run=RT113 -->\n'
+  printf '**스텝**: 결정 수거 — 구현 전 결정\n'
+  printf -- '- 「결정 가」 — 추천 답: 예 · 추천 근거: 시험 · 닿는 슬라이스: 전체\n'
+} > "$s113_dcrec"
+{
+  printf -- '- `stage-result` | 교대=0 | 세그먼트=- | 스테이지=S4 | 종류=audit | 종료 코드=0 | 실행 버전=1 | 세션 id=s1 | 종단 부류=정상 완료 | prev=x\n'
+  printf -- '- `결정 수거` | 교대=0 | 문서 다이제스트=d1 | 중단 기록=%s | 기록 다이제스트=%s | 보류 세그먼트=전체 | prev=x\n' \
+    "$s113_dcrec" "$(shasum -a 256 "$s113_dcrec" | cut -d' ' -f1)"
+  printf -- '- `중단 답` | 교대=0 | 세그먼트=S4 | 중단 기록=%s | 선택지=추천대로 확정 | 답한 주체=사람 | prev=x\n' "$s113_dcrec"
+  printf '%s\n' "$s113_block"
+  printf -- '- `중단 답` | 교대=0 | 세그먼트=S4 | 중단 기록=%s | 선택지=정리 후 재파견 | 답한 주체=좌석 | prev=x\n' "$s113_srec"
+} > "$S113/ledger-dc.md"
+s113_r=$(s113_call "$S113/ledger-dc.md" "$s113_doc" "$s113_stub"'r=0; gate_decision_reconverge_entry S4 || r=$?; printf "%s|%s" "$r" "$GATE_DCR_RECORD"' 2>/dev/null)
+check "113b: 크기 차단 뒤 정리 답이 있어도 결정 수거 답의 재수렴을 다시 받는다" "$s113_r" "0|$s113_dcrec"
+s113_r=$(s113_call "$S113/ledger-dc.md" "$s113_doc" "$s113_stub"'r=0; gate_size_block_reconverge_routable S4 "'"$s113_srec"'" || r=$?; printf "%s" "$r"' 2>/dev/null)
+check "113b: 결정 수거 답의 재수렴이 막히면 재파견 답 경로가 정리 전에 받는다" "$s113_r" "0"
+printf -- '- `stage-result` | 교대=0 | 세그먼트=- | 스테이지=S4 | 종류=reconverge | 종료 코드=0 | 실행 버전=3 | 세션 id=s3 | 종단 부류=정상 완료 | prev=x\n' \
+  >> "$S113/ledger-dc.md"
+s113_r=$(s113_call "$S113/ledger-dc.md" "$s113_doc" "$s113_stub"'r=0; gate_decision_reconverge_open S4 "'"$s113_dcrec"'" || r=$?; printf "%s" "$r"' 2>/dev/null)
+check "113b: 세션이 돈 재수렴 뒤에는 같은 결정 수거 기록으로 다시 열지 않는다" "$s113_r" "1"
+# 세그먼트 안 설계 수준 잔여 재수렴이 크기로 막혔다 — 리드 수정 뒤 재검사 사이클, 그리고 세그먼트
+# 키의 차단 행. 세그먼트 리뷰 계수는 차단 행을 재수렴으로 세지 않아 `다음` 이 재수렴에 머문다.
+# 대조로 세션이 돈 재수렴 행은 재수렴 한 번을 쓴 것으로 센다.
+{
+  printf -- '- `cycle` | 교대=0 | 세그먼트=A1 | 사이클=1 | P0=1 | P1=0 | prev=x\n'
+  printf -- '- `stage-result` | 교대=0 | 세그먼트=A1 | 스테이지=A1 | 종류=lead-fix | 종료 코드=0 | 실행 버전=1 | 세션 id=s1 | 종단 부류=정상 완료 | prev=x\n'
+  printf -- '- `cycle` | 교대=0 | 세그먼트=A1 | 사이클=2 | P0=1 | P1=0 | prev=x\n'
+} > "$S113/ledger-seg.md"
+cp "$S113/ledger-seg.md" "$S113/ledger-segc.md"
+printf -- '- `stage-result` | 교대=0 | 세그먼트=A1 | 스테이지=A1 | 종류=reconverge | 종료 코드=- | 실행 버전=2 | 세션 id=- | 부모=- | 기록자=게이트 | 차단=파견 전 | 종단 부류=의도된 park | 관측=파견 전 차단 | prev=x\n' \
+  >> "$S113/ledger-seg.md"
+printf -- '- `stage-result` | 교대=0 | 세그먼트=A1 | 스테이지=A1 | 종류=reconverge | 종료 코드=1 | 실행 버전=2 | 세션 id=s2 | 종단 부류=크래시 | prev=x\n' \
+  >> "$S113/ledger-segc.md"
+s113_r=$(s113_call "$S113/ledger-seg.md" "$s113_doc" 'gate_segment_review_walk A1 | grep -E "^(재수렴 뒤|마지막 뒤 재수렴|저작 뒤)=" | tr "\n" " "' 2>/dev/null)
+check "113b: 세그먼트 리뷰 계수는 세그먼트 키의 크기 차단 행을 재수렴으로 세지 않는다" \
+  "$s113_r|$(s113_call "$S113/ledger-segc.md" "$s113_doc" 'gate_segment_review_walk A1 | grep -E "^(재수렴 뒤|마지막 뒤 재수렴)=" | tr "\n" " "' 2>/dev/null)" \
+  "저작 뒤=0 재수렴 뒤=0 마지막 뒤 재수렴=없음 |재수렴 뒤=1 마지막 뒤 재수렴=실패 "
+# 키의 마지막 결과 행이 크기 차단인지 — 교대 정지의 도달 거부 거절과 감사 입장 거절이 이것으로
+# 가른다. 세그먼트 키는 마지막 행이 차단이면 참이고 뒤에 세션 행이 붙으면 거짓이다. 설계 단계
+# 키의 골격 재검토 재수렴이 막힌 채 마지막이면 참이고, 그 뒤 재수렴이 돌았으면 거짓이다.
+s113_lb() {
+  s113_call "$1" "$s113_doc" 'r=0; gate_key_last_row_is_size_block '"$2"' || r=$?; printf "%s" "$r"' 2>/dev/null
+}
+{
+  printf -- '- `stage-result` | 교대=0 | 세그먼트=- | 스테이지=D1 | 종류=design | 종료 코드=0 | 실행 버전=1 | 세션 id=s1 | 종단 부류=정상 완료 | prev=x\n'
+  printf -- '- `stage-result` | 교대=0 | 세그먼트=- | 스테이지=D1 | 종류=reconverge | 종료 코드=- | 실행 버전=2 | 세션 id=- | 부모=- | 기록자=게이트 | 차단=파견 전 | 종단 부류=의도된 park | 관측=파견 전 차단 | prev=x\n'
+} > "$S113/ledger-dsz.md"
+cp "$S113/ledger-dsz.md" "$S113/ledger-dszr.md"
+printf -- '- `stage-result` | 교대=0 | 세그먼트=- | 스테이지=D1 | 종류=reconverge | 종료 코드=0 | 실행 버전=3 | 세션 id=s3 | 종단 부류=정상 완료 | prev=x\n' \
+  >> "$S113/ledger-dszr.md"
+check "113b: 마지막 결과 행이 크기 차단인 키만 그 차단을 기다린다" \
+  "$(s113_lb "$S113/ledger-seg.md" A1)|$(s113_lb "$S113/ledger-segc.md" A1)|$(s113_lb "$S113/ledger-dsz.md" D1)|$(s113_lb "$S113/ledger-dszr.md" D1)|$(s113_lb "$S113/ledger-empty.md" A1)" \
+  "0|1|0|1|1"
+# 큰 문맥 창의 재부착 — 큰 문맥으로 띄운 새 세션은 세션 id 별 기록을 남기고, 그 세션의 재부착은
+# 그 기록을 읽어 같은 창으로 돈다. 기록이 없는 세션의 재부착은 표준 창 그대로다.
+s113_r=$(s113_call "$S113/ledger-empty.md" "$s113_doc" 'unset CC_ORCH_LARGE_CONTEXT_ONCE; gate_large_context_record lc-1
+  a=$(stage_model_of implement); r=0; gate_large_context_inherit lc-2 || r=$?; b=$(stage_model_of implement)
+  gate_large_context_inherit lc-1; printf "%s|%s|%s|%s" "$a" "$r" "$b" "$(stage_model_of implement)"' 2>/dev/null)
+check "113b: 큰 문맥 세션의 재부착만 큰 문맥 창으로 돈다" "$s113_r" "opus|1|opus|opus[1m]"
+# 답 운반의 크기 단계 — act 가 부르는 그 함수를 운반 act 의 값(GATE_CARRY_ANSWER 와 묶인 세션
+# GATE_HA_BOUND)으로 부른다. 큰 문맥 기록이 있는 묶인 세션의 운반은 문턱 위 문서에서도 막히지
+# 않고 큰 창으로 돌며 문서 크기는 잰다. 기록이 없는 묶인 세션의 운반은 그대로 막힌다. 앞의 정리가
+# 픽스처 문서를 문턱 아래로 내렸으므로, 정리 전 사본(문턱 위)을 문서로 쓴다.
+: > "$S113/ledger-lc.md"
+s113_r=$(s113_call "$S113/ledger-lc.md" "$S113/pre.md" 'unset CC_ORCH_LARGE_CONTEXT_ONCE GATE_LARGE_CONTEXT GATE_RESUME
+  gate_large_context_record lc-3; GATE_DOC_SIZE_KIND=reconverge; GATE_DOC_SIZE_LAST=; GATE_CARRY_ANSWER=7; GATE_HA_BOUND=lc-3
+  r=0; gate_dispatch_doc_size_gate act S6 - || r=$?
+  printf "%s|%s|%s|%s" "$(doc_size_verdict reconverge "$DOC" | cut -f1)" "$r" "${GATE_DOC_SIZE_LAST:+있음}" "$(stage_model_of implement)"' 2>/dev/null)
+check "113b: 큰 문맥 세션에 묶인 답 운반은 크기 차단 없이 큰 창으로 돈다" \
+  "$s113_r|$(grep -c -F '| 스테이지=S6 |' "$S113/ledger-lc.md" || true)|$(ls "$S113/run/halt" | grep -c '^S6#' || true)" \
+  "초과|0|있음|opus[1m]|0|0"
+s113_r=$(s113_call "$S113/ledger-lc.md" "$S113/pre.md" 'unset CC_ORCH_LARGE_CONTEXT_ONCE GATE_LARGE_CONTEXT GATE_RESUME
+  GATE_DOC_SIZE_KIND=reconverge; GATE_DOC_SIZE_LAST=; GATE_CARRY_ANSWER=7; GATE_HA_BOUND=lc-4
+  r=0; gate_dispatch_doc_size_gate act S7 - || r=$?; printf "%s|%s" "$r" "$(stage_model_of implement)"' 2>/dev/null)
+check "113b: 큰 문맥 기록이 없는 세션에 묶인 답 운반은 여전히 크기 차단된다" \
+  "$s113_r|$(grep -F '| 스테이지=S7 |' "$S113/ledger-lc.md" | grep -c -F '| 차단=파견 전 |' || true)" \
+  "11|opus|1"
+unset -f s113_call s113_route s113_rs s113_keyable s113_lb
+unset S113 s113_doc s113_r s113_rec s113_sha s113_urec s113_row s113_arch s113_rc s113_sz s113_post s113_srec s113_block s113_stub s113_orec s113_n s113_dcrec
+
+# ---------------------------------------------------------------------------
+# 114. 재킥오프 판정 L16 — 원천 매니페스트의 설계 문서가 가장 낮은 문턱 이상이면 금지
+# --- section: 114 | group: base | covers: rekick, doc_size_threshold, doc_size_min_threshold | anchors: 114: 문턱 이상인 원천 설계 문서는 L16 으로 금지된다, 114: L16 줄이 바이트와 문턱을 싣는다, 114: 문턱보다 한 바이트 작은 문서에는 L16 이 서지 않는다 ---
+#
+# 원천 런은 매니페스트와 빈 원장뿐이라 계보·종료 행·동의 행에 기대는 다른 금지선도
+# 함께 서지만, 단언은 L16 줄만 읽는다. 문턱은 run.sh 의 크기 표에서 읽어 픽스처
+# 문서의 크기를 정하므로 표가 바뀌어도 경계에서 잰다.
+# ---------------------------------------------------------------------------
+S114="$WORK/s114"; rm -rf "$S114"; mkdir -p "$S114/repo/docs/pipeline-run" "$S114/repo/docs/pipeline-grant"
+S114=$(cd -P "$S114" && pwd)
+s114_t=$( cd "$WT" && CC_ORCH_SOURCE_ONLY=1 bash -c '. "$1" >/dev/null 2>&1; doc_size_min_threshold 1' \
+  _ "$repo_root/plugins/cc-cmds/orchestrator/run.sh" 2>/dev/null )
+awk -v n="$s114_t" 'BEGIN { l = sprintf("%099d", 0); for (i = 0; i * 100 < n; i++) print l }' \
+  > "$S114/repo/docs/rk-full.md"
+head -c "$s114_t" "$S114/repo/docs/rk-full.md" > "$S114/repo/docs/rk-big.md"
+head -c $((s114_t - 1)) "$S114/repo/docs/rk-big.md" > "$S114/repo/docs/rk-under.md"
+# s114_judge <run id> <설계 문서 키> — 그 문서를 이름 댄 원천 런의 판정 출력.
+s114_judge() {
+  printf '# 파이프라인 런 매니페스트 — %s\n\n## 요소\n**설계 문서**: %s\n' "$1" "$2" \
+    > "$S114/repo/docs/pipeline-run/$1.plan.md"
+  : > "$S114/repo/docs/pipeline-run/$1.md"
+  ( cd "$S114" && CLAUDE_CODE_SESSION_ID="s-$1" bash "$repo_root/plugins/cc-cmds/orchestrator/rekick.sh" \
+      judge --prev "$1" --base "$S114/repo" 2>/dev/null ) || true
+}
+s114_l16() { printf '%s\n' "$1" | awk -F'\t' '$1 == "금지선" && $2 == "L16" { print $3 }'; }
+s114_out=$(s114_judge RT114A docs/rk-big.md)
+check "114: 문턱 이상인 원천 설계 문서는 L16 으로 금지된다" \
+  "$(printf '%s\n' "$s114_out" | awk -F'\t' '$1 == "판정" { print $2; exit }')|$(s114_l16 "$s114_out" | grep -c . || true)" "금지|1"
+check "114: L16 줄이 바이트와 문턱을 싣는다" "$(s114_l16 "$s114_out")" \
+  "원천 매니페스트의 설계 문서가 $s114_t 바이트로 문턱 $s114_t 를 넘습니다"
+s114_out=$(s114_judge RT114B docs/rk-under.md)
+check "114: 문턱보다 한 바이트 작은 문서에는 L16 이 서지 않는다" \
+  "$( { printf '%s\n' "$s114_out" | grep -c '^판정' || true; } )|$(s114_l16 "$s114_out" | grep -c . || true)" "1|0"
+unset -f s114_judge s114_l16
+unset S114 s114_t s114_out
+
+# ---------------------------------------------------------------------------
+# 115. 정리 도구의 완료 기준 — 재현 사본(없으면 합성 문서)이 apply 뒤 300000 미만이고 check 가 0 이다
+# --- section: 115 | group: base | covers: doc-tidy | anchors: 115: 합성 문서가 재현 사본의 크기와 정리 대상 바이트를 그대로 갖는다, 115: apply 가 문서를 300000 아래로 정리한다, 115: check 가 apply 전후와 보관 파일을 되돌림으로 맞춘다, 115: tidy 는 정리 뒤에도 문턱 이상이면 아무것도 쓰지 않고 1 이다, 115: 동결 사본에 같은 바이트로 있는 표지 줄의 항목만 옮긴다, 115: 동결 사본 없이는 표지 줄의 항목을 옮기지 않는다, 115: unmark 가 기준에 있는 표지만 지우고 C 조각을 남긴다, 115: 머리 아래가 빈 줄·표지 줄·옛 머리 줄이어도 상태 줄은 문서에 남는다, 115: 옮길 범위에 이동 필드가 아닌 필드 줄이 있으면 항목을 옮기지 않는다, 115: 문서에 이미 있는 보관 표지 번호는 다시 쓰지 않는다 ---
+#
+# 입력은 환경 변수 CC_DOC_SIZE_REPRO 가 가리키는 트리 밖 재현 사본이고, 그 파일이
+# 없으면 같은 꼴의 합성 문서다. 쓴 입력을 `repro=real <경로>` 또는 `repro=synthetic`
+# 한 줄로 내고, 재현 사본이면 CC_DOC_SIZE_REVIEWED 의 감사 동결 사본을 `--reviewed` 로
+# 넘기며 `reviewed=<경로>` 또는 `reviewed=missing` 한 줄을 더 낸다. 재현 사본은 읽기만
+# 하고 정리는 이 절의 임시 디렉터리에 뜬 사본 위에서 한다. 합성 문서는 354324 바이트,
+# 대체 괄호 53개가 10561 바이트, `해결:` 줄을 가진 해결 항목 65개에서 옮길 줄이 56631
+# 바이트, 제자리에 남는 `해결:` 줄이 36166 바이트이고 미리뷰 표지 줄은 없다.
+# ---------------------------------------------------------------------------
+S115="$WORK/s115"; rm -rf "$S115"; mkdir -p "$S115"
+S115=$(cd -P "$S115" && pwd)
+s115_tool="$repo_root/plugins/cc-cmds/orchestrator/doc-tidy.py"
+s115_synth() {
+  LC_ALL=C awk -v total=354324 '
+    function pad(n,   s) { s = sprintf("%" n "s", ""); gsub(/ /, "x", s); return s }
+    function emit(s) { out[++no] = s; used += length(s) + 1 }
+    BEGIN {
+      emit("# 합성 재현 문서"); emit(""); emit("## 합의된 아키텍처"); emit("")
+      for (i = 1; i <= 53; i++) emit("문장 " i " 입니다. (대체된 문장: \"" pad(i < 53 ? 176 : 190) "\")")
+      at = no
+      emit(""); emit("## 미해결 이슈 / 트레이드오프"); emit("")
+      for (i = 1; i <= 65; i++) {
+        mv = (i < 65) ? 871 : 887; st = (i < 65) ? 556 : 582
+        a = "**구현 처분**: 구현"; b = "**닿는 슬라이스**: A"
+        emit("### 항목 " i); emit("**상태**: 해결"); emit(a); emit(b)
+        emit("논의 " pad(mv - length(a) - length(b) - 3 - length("논의 ")))
+        emit("해결: " pad(st - 1 - length("해결: ")))
+      }
+      rem = total - used; nf = int((rem - 3) / 200); last = rem - nf * 200
+      for (k = 1; k <= at; k++) print out[k]
+      for (k = 1; k <= nf; k++) print "- " sprintf("%0197d", 0)
+      print "- " pad(last - 3)
+      for (k = at + 1; k <= no; k++) print out[k]
+    }'
+}
+s115_synth > "$S115/synth.md"
+check "115: 합성 문서가 재현 사본의 크기와 정리 대상 바이트를 그대로 갖는다" \
+  "$("$s115_tool" plan "$S115/synth.md" 2>/dev/null | grep -E '^(current|t1_count|t1_bytes|t3_count|t3_bytes)=' | tr '\n' ' ')" \
+  "current=354324 t1_count=53 t1_bytes=10561 t3_count=65 t3_bytes=56631 "
+
+s115_rev=""
+if [ -n "${CC_DOC_SIZE_REPRO:-}" ] && [ -f "$CC_DOC_SIZE_REPRO" ]; then
+  cp "$CC_DOC_SIZE_REPRO" "$S115/doc.md"
+  printf 'repro=real %s\n' "$CC_DOC_SIZE_REPRO"
+  if [ -n "${CC_DOC_SIZE_REVIEWED:-}" ] && [ -f "$CC_DOC_SIZE_REVIEWED" ]; then
+    s115_rev="$CC_DOC_SIZE_REVIEWED"; printf 'reviewed=%s\n' "$s115_rev"
+  else
+    printf 'reviewed=missing\n'
+  fi
+else
+  cp "$S115/synth.md" "$S115/doc.md"
+  printf 'repro=synthetic\n'
+fi
+cp "$S115/doc.md" "$S115/before.md"
+s115_rc=0
+"$s115_tool" apply "$S115/doc.md" --archive "$S115/archive.md" --doc-key docs/doc-tidy-fixture.md \
+  --writer test-gate ${s115_rev:+--reviewed "$s115_rev"} >/dev/null 2>&1 || s115_rc=$?
+s115_sz=$(wc -c < "$S115/doc.md" | tr -d ' ')
+check "115: apply 가 문서를 300000 아래로 정리한다" \
+  "$s115_rc|$([ "$s115_sz" -lt 300000 ] && echo 아래 || echo "$s115_sz")" "0|아래"
+s115_rc=0
+"$s115_tool" check "$S115/before.md" "$S115/doc.md" "$S115/archive.md" >/dev/null 2>&1 || s115_rc=$?
+check "115: check 가 apply 전후와 보관 파일을 되돌림으로 맞춘다" "$s115_rc" "0"
+
+cp "$S115/synth.md" "$S115/big.md"
+s115_sha=$(shasum -a 256 "$S115/big.md" | cut -d' ' -f1)
+s115_rc=0
+"$s115_tool" tidy "$S115/big.md" --archive "$S115/big-archive.md" --doc-key docs/doc-tidy-fixture.md \
+  --writer test-gate --below 200000 >/dev/null 2>&1 || s115_rc=$?
+check "115: tidy 는 정리 뒤에도 문턱 이상이면 아무것도 쓰지 않고 1 이다" \
+  "$s115_rc|$([ "$(shasum -a 256 "$S115/big.md" | cut -d' ' -f1)" = "$s115_sha" ] && echo 그대로)|$([ -e "$S115/big-archive.md" ] && echo 있음 || echo 없음)" \
+  "1|그대로|없음"
+
+# 표지 줄 — 항목 1 의 논의 줄은 동결 사본에 같은 바이트로 있고, 항목 2 의 것은 없다.
+s115_m='**미리뷰(스톱 이후 추가)**'
+{
+  printf '# 표지 시험\n\n## 미해결 이슈 / 트레이드오프\n\n'
+  printf '### 하나\n**상태**: 해결\n**구현 처분**: 구현\n%s 검토한 논의\n해결: 하나로 정함\n\n' "$s115_m"
+  printf '### 둘\n**상태**: 해결\n**구현 처분**: 구현\n%s 검토하지 않은 논의\n해결: 둘로 정함\n' "$s115_m"
+} > "$S115/mark.md"
+printf '# 동결\n\n%s 검토한 논의\n' "$s115_m" > "$S115/frozen.md"
+cp "$S115/mark.md" "$S115/mark-plain.md"
+"$s115_tool" apply "$S115/mark.md" --archive "$S115/mark-archive.md" --doc-key docs/doc-tidy-fixture.md \
+  --writer test-gate --reviewed "$S115/frozen.md" >/dev/null 2>&1 || :
+check "115: 동결 사본에 같은 바이트로 있는 표지 줄의 항목만 옮긴다" \
+  "$(grep -c -F '**보관**: B1' "$S115/mark.md" || true)|$(grep -c -F "$s115_m 검토한 논의" "$S115/mark.md" || true)|$(grep -c -F "$s115_m 검토하지 않은 논의" "$S115/mark.md" || true)|$(grep -c -F "$s115_m 검토한 논의" "$S115/mark-archive.md" || true)" \
+  "1|0|1|1"
+check "115: 동결 사본 없이는 표지 줄의 항목을 옮기지 않는다" \
+  "$("$s115_tool" plan "$S115/mark-plain.md" 2>/dev/null | grep -E '^t3_count=')" "t3_count=0"
+
+cp "$S115/mark-plain.md" "$S115/unmark.md"
+printf '%s 검토하지 않은 논의\n' "$s115_m" > "$S115/unmark-base.md"
+s115_rc=0
+"$s115_tool" unmark "$S115/unmark.md" --archive "$S115/unmark-archive.md" --doc-key docs/doc-tidy-fixture.md \
+  --writer test-gate --since "$S115/unmark-base.md" >/dev/null 2>&1 || s115_rc=$?
+check "115: unmark 가 기준에 있는 표지만 지우고 C 조각을 남긴다" \
+  "$s115_rc|$(grep -c -x -F '검토하지 않은 논의' "$S115/unmark.md" || true)|$(grep -c -F "$s115_m 검토한 논의" "$S115/unmark.md" || true)|$(grep -c '^### C1$' "$S115/unmark-archive.md" || true)" \
+  "0|1|1|1"
+
+# 머리 바로 아래가 필드가 아닌 항목 — 빈 줄, 표지만 있는 줄, 옛 머리 줄. 옮기는 것은 이동
+# 필드와 논의뿐이고, 상태·사유 줄은 문서에 남는다.
+{
+  printf '# 머리 아래 시험\n\n## 미해결 이슈 / 트레이드오프\n\n'
+  printf '### 빈 줄\n\n**상태**: 해결\n**사유**: 구현 판단\n**구현 처분**: 구현 전 결정\n**닿는 슬라이스**: 전체\n\n재시도 논의.\n해결: 세 번으로 정함\n\n'
+  printf '### 표지 줄\n%s\n**상태**: 해결\n**구현 처분**: 구현 전 결정\n\n논의 둘.\n해결: 정함\n\n' "$s115_m"
+  printf '### 옛 머리\n> **Old heading** (for re-deriving citations): "옛" - 바꿈\n**상태**: 해결\n**구현 처분**: 구현 전 결정\n\n논의 셋.\n해결: 정함\n'
+} > "$S115/lead.md"
+cp "$S115/lead.md" "$S115/lead-before.md"
+s115_rc=0
+"$s115_tool" apply "$S115/lead.md" --archive "$S115/lead-archive.md" --doc-key docs/doc-tidy-fixture.md \
+  --writer test-gate >/dev/null 2>&1 || s115_rc=$?
+s115_ck=0
+"$s115_tool" check "$S115/lead-before.md" "$S115/lead.md" "$S115/lead-archive.md" >/dev/null 2>&1 || s115_ck=$?
+check "115: 머리 아래가 빈 줄·표지 줄·옛 머리 줄이어도 상태 줄은 문서에 남는다" \
+  "$s115_rc|$s115_ck|$(grep -c -x -F '**상태**: 해결' "$S115/lead.md" || true)|$(grep -c -F '**사유**: 구현 판단' "$S115/lead.md" || true)|$(grep -c -F '**구현 처분**' "$S115/lead.md" || true)|$(grep -c '^\*\*보관\*\*: B[0-9]*$' "$S115/lead.md" || true)|$(grep -c -F '**상태**' "$S115/lead-archive.md" || true)" \
+  "0|0|3|1|0|3|0"
+
+# 논의 사이에 이동 필드가 아닌 필드 줄이 낀 항목은 옮기지 않는다.
+printf '# 끼인 필드\n\n## 미해결 이슈 / 트레이드오프\n\n### 섞임\n**상태**: 해결\n**구현 처분**: 구현\n\n논의.\n**사유**: 끼어든 필드\n해결: 정함\n' \
+  > "$S115/mixed.md"
+check "115: 옮길 범위에 이동 필드가 아닌 필드 줄이 있으면 항목을 옮기지 않는다" \
+  "$("$s115_tool" plan "$S115/mixed.md" 2>/dev/null | grep -E '^t3_count=')" "t3_count=0"
+
+# 다른 보관 파일에서 온 표지가 이미 있는 문서 — 빈 보관 파일로 apply 해도 새 번호는 그 뒤다.
+printf '# 번호\n\n## 합의된 아키텍처\n\n옛 결정. (보관 A1)\n새 결정. (대체된 문장: "바뀐 문장")\n' > "$S115/num.md"
+cp "$S115/num.md" "$S115/num-before.md"
+s115_rc=0
+"$s115_tool" apply "$S115/num.md" --archive "$S115/num-archive.md" --doc-key docs/doc-tidy-fixture.md \
+  --writer test-gate >/dev/null 2>&1 || s115_rc=$?
+check "115: 문서에 이미 있는 보관 표지 번호는 다시 쓰지 않는다" \
+  "$s115_rc|$(grep -c -F '(보관 A1)' "$S115/num.md" || true)|$(grep -c -F '새 결정. (보관 A2)' "$S115/num.md" || true)|$(grep -c '^### A2$' "$S115/num-archive.md" || true)" \
+  "0|1|1|1"
+unset -f s115_synth
+unset S115 s115_tool s115_rev s115_rc s115_sz s115_sha s115_m s115_ck
 
 # --- epilogue-begin ---
 #

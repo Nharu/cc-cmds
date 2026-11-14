@@ -4534,14 +4534,14 @@ fi
 
 # 흡수는 한 팔이 아니라 파견된 스테이지의 stage-result 행 **전부** 바로 다음에 선다.
 # 한 팔에서 빠지면 그 팔의 판단은 증상 없이 사라진다. S9 는 스테이지를 띄우지 않는
-# 셸 적용이라 대상이 아니다.
+# 셸 적용이고, `차단=파견 전` 행은 세션을 띄우기 전에 크기로 막은 시도라 대상이 아니다.
 AB21_SITES=$(awk -v needle="ledger_row 'stage-result'" '
   pend && !cont {
     if ($0 ~ /^[[:space:]]*$/) next
     if (index($0, "absorb_stage_judgment") == 0) print "MISS " prevln
     pend = 0
   }
-  index($0, needle) && index($0, "스테이지=S9") == 0 { pend = 1; prevln = NR; n++ }
+  index($0, needle) && index($0, "스테이지=S9") == 0 && index($0, "차단=파견 전") == 0 { pend = 1; prevln = NR; n++ }
   pend { cont = ($0 ~ /\\$/) }
   END { print "N " n+0 }
 ' "$DRIVER")
@@ -4550,7 +4550,7 @@ check "파견 팔의 stage-result 행 자리가 열이다 — 계속 시도 하�
 check "파견 팔의 stage-result 행마다 바로 다음 문장이 흡수 호출이다" \
   "$(printf '%s\n' "$AB21_SITES" | grep -c '^MISS' || true)" "0"
 
-# 드라이버의 stage-result 행 전부(S9 셸 적용 넷, 계속 시도 하나, 베이스 분할 하나, 시각 단계 하나, 재수렴 하나, 리드 수정 하나를 포함해 열넷)가 압축
+# 드라이버의 stage-result 행 전부(S9 셸 적용 넷, 계속 시도 하나, 베이스 분할 하나, 시각 단계 하나, 재수렴 하나, 리드 수정 하나, 파견 전 크기 차단 하나를 포함해 열다섯)가 압축
 # 창·레인·기록자 셋을 싣는다. 게이트 쪽 필드표 린트는 gate.sh 만 읽으므로, 드라이버 열의 방어는
 # 이 정적 계수뿐이다 — 한 자리에서 빠지면 그 행은 필드 없는 「실험 이전 행」으로 읽힌다.
 # 시각 단계 자리는 조각을 visual_row_pieces 로 VISUAL_ROW_PIECES 배열에 모은 뒤 그 배열로
@@ -4568,13 +4568,13 @@ WIN_SITES=$(awk -v needle="ledger_row 'stage-result'" '
   kind != "" { buf = buf " " $0; if ($0 !~ /\\$/) close_stmt() }
   END { print "N " n+0 }
 ' "$DRIVER")
-check "드라이버의 stage-result 호출부가 열넷이다 (아래 단언이 공허하지 않다)" \
-  "$(printf '%s\n' "$WIN_SITES" | sed -n 's/^N //p')" "14"
-check "열넷 호출부 전부가 압축 창·레인·기록자=드라이버 를 싣는다" \
+check "드라이버의 stage-result 호출부가 열다섯이다 (아래 단언이 공허하지 않다)" \
+  "$(printf '%s\n' "$WIN_SITES" | sed -n 's/^N //p')" "15"
+check "열다섯 호출부 전부가 압축 창·레인·기록자=드라이버 를 싣는다" \
   "$(printf '%s\n' "$WIN_SITES" | grep -c '^MISS' || true)" "0"
 # 대기 표지도 같은 문면의 키를 싣는다 — 그 줄은 보유자의 지문과 함께 쓰이므로 뺀다.
 check "기록자=드라이버 리터럴 수가 호출부 수와 같다" \
-  "$(grep '"기록자=드라이버"' "$DRIVER" | grep -vc '"지문=' || true)" "14"
+  "$(grep '"기록자=드라이버"' "$DRIVER" | grep -vc '"지문=' || true)" "15"
 
 # The driver hands the run id and both sidecar paths down to every stage. The
 # arms re-derived them from the document key, which resolves only for a run
@@ -12638,6 +12638,7 @@ ra_drv="$1"; RA_ROOT="$2"; ra_sid="$3"; set --
 set +e
 RUN_DIR="$RA_ROOT/run"; ORCH_DIR="$RA_ROOT/orch"; CLI_BIN=/usr/bin/true
 RUN_ID=ra-run; DOC_KEY=ra; GRANT=""; MANIFEST=""; LEDGER="$RA_ROOT/ledger.md"
+[ -z "${RA_DOC:-}" ] || DOC="$RA_DOC"
 home_alias() { printf 'ra'; }
 ra_live() { route_lease_of "$(run_pace_root)/leases" "$RUN_ID" "$1" 2>/dev/null | jq -r '.account // empty' 2>/dev/null; }
 stage_spawn "$ra_sid" "$RA_ROOT" "prompt" 2>/dev/null; rc=$?
@@ -12648,6 +12649,8 @@ printf 'window=%s/%s\n' "$( { wc -l < "$RUN_DIR/$ra_sid.window" 2>/dev/null || p
 printf 'cfgrec=%s\n' "$(stage_config_dir_of "$ra_sid")"
 printf 'record=%s\n' "$( [ -f "$RUN_DIR/$ra_sid.lease" ] && printf yes || printf no)"
 printf 'live=%s\n' "$(ra_live "$ra_sid")"
+printf 'docsize=%s\n' "$(cat "$RUN_DIR/$ra_sid.docsize" 2>/dev/null)"
+printf 'attempt=%s\n' "$(cat "$RUN_DIR/$ra_sid.attempt" 2>/dev/null)"
 ra_costs() {
   if [ -f "$(run_pace_root)/costs/samples.jsonl" ]; then
     jq -s --arg l "$1" '[.[] | select(.lineage == $l)] | length' "$(run_pace_root)/costs/samples.jsonl"
@@ -12747,6 +12750,34 @@ check "가드 기록이 다르면 park 코드 79 다" "$(ra_get "$ra_out" rc)" "
 check "그 사유가 어긋남을 말한다" "$(ra_get "$ra_out" reason)" "라우팅 가드 어긋남 — 런 기록 0, 스냅숏 정규 파일"
 check "가드 어긋남은 임대를 묻지도 않는다" "$(ra_get "$ra_out" live)/$(ra_get "$ra_out" record)" "/no"
 printf '1\n' > "$RA/run/routing-guard"
+
+# 설계 문서 크기 — 구현 파견은 문턱(구현 313000) 이상인 문서로 띄우지 않는다. 시도를
+# 핀하고, 중단 기록과 그 시도의 `stage-result` 행(`차단=파견 전`, `종단 부류=의도된
+# park`)을 쓰고, park 코드로 돌아와 호출자가 park 행을 쓰게 한다. 임대도 창 기록도 없다.
+# 문턱 아래 문서는 띄우고, 그 파견의 `<바이트>/<문턱>` 을 `.docsize` 로 남긴다.
+ra_big="$RA/doc-big.md"; ra_small="$RA/doc-small.md"
+awk 'BEGIN { l = sprintf("%0199d", 0); for (i = 0; i < 1650; i++) print l }' > "$ra_big"
+awk 'BEGIN { l = sprintf("%0199d", 0); for (i = 0; i < 10; i++) print l }' > "$ra_small"
+ra_out=$(RA_DOC="$ra_big" ra_spawn "S4:segZ:1")
+check "문턱 이상 문서의 구현 파견은 park 코드 79 다" "$(ra_get "$ra_out" rc)" "79"
+case "$(ra_get "$ra_out" reason)" in
+  "파견 전 / 문서 크기 초과 — 설계 문서 330000 바이트가 문턱 313000 이상이라 띄우지 않았다") ok "크기 차단 사유가 바이트와 문턱을 싣는다" ;;
+  *) bad "크기 차단 사유" "$(ra_get "$ra_out" reason)" ;;
+esac
+check "크기 차단은 시도를 핀하고 그 시도의 중단 기록을 쓴다" \
+  "$(ra_get "$ra_out" attempt)|$(sed -n 's/^\*\*스텝\*\*: //p' "$RA/run/halt/S4:segZ:1#1.md" 2>/dev/null)|$(sed -n 's/^\*\*재호출 명령\*\*: //p' "$RA/run/halt/S4:segZ:1#1.md" 2>/dev/null)" \
+  "1|파견 전 / 문서 크기 초과|(없음)"
+ra_row=$( { grep -F -e '- `stage-result` |' "$RA/ledger.md" || true; } | { grep -F '| 파견 id=S4:segZ:1 |' || true; } | tail -1)
+check "크기 차단은 의도된 park 의 stage-result 행 하나를 쓴다" \
+  "$(printf '%s' "$ra_row" | grep -c -F -e '| 차단=파견 전 |' || true)|$(printf '%s' "$ra_row" | grep -c -F -e '| 종단 부류=의도된 park' || true)|$(printf '%s' "$ra_row" | grep -c -F -e '| 문서 크기=330000/313000 |' || true)|$(printf '%s' "$ra_row" | grep -c -F -e '| 실행 버전=1 |' || true)" \
+  "1|1|1|1"
+check "크기 차단은 임대도 창 기록도 남기지 않는다" \
+  "$(ra_get "$ra_out" live)/$(ra_get "$ra_out" record)/$(ra_get "$ra_out" window)" "/no/0/"
+ra_out=$(RA_DOC="$ra_small" ra_spawn "S4:segY:1")
+check "문턱 아래 문서의 구현 파견은 띄우고 그 크기를 남긴다" \
+  "$(ra_get "$ra_out" rc)/$(ra_get "$ra_out" docsize)" "0/2000/313000"
+ra_out=$(RA_DOC="$ra_big" ra_spawn "S5:segX:1")
+check "크기 표 밖의 단계(리뷰)는 문서 크기로 막지 않는다" "$(ra_get "$ra_out" rc)/$(ra_get "$ra_out" docsize)" "78/"
 
 # 드라이버의 WAIT 는 파킹하지 않고 이 프로세스에서 기다린다. 다른 런의 대기 항목이
 # 그 계정 그룹의 자리를 채우고(보유자는 이 시험이 살려 둔다), 감시자 임계 기록을

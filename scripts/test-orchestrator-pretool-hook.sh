@@ -1157,5 +1157,185 @@ for c in 'git push origin seg/x' 'gh pr create --title t --body b' "$GATE exec -
 done
 check "대상 훅 곁: 어느 갈래도 ask 나 defer 로 답하지 않는다" "$n_ask" "0"
 
+# ---------------------------------------------------------------------------
+# 9. 한 번의 jq 추출 — 필드마다 부르던 추출과 같은 바이트인가
+#
+# THE ORACLE IS THE OLD CODE, RUN. The hook reads its six payload fields from
+# one `jq` that puts a NUL after each, where it used to start one `jq -r` per
+# field. Every branch below reads those fields, so each must hold the bytes the
+# per-field call held. Two oracles: `jx_old` is the per-field extraction as the
+# hook wrote it, run against the extraction block cut from the current hook,
+# with `cmp` on what each prints; and the base commit's own hook, when this
+# clone holds that commit, run beside the current one on the same payloads,
+# with its stdout and exit code compared. A shallow clone does not hold it, and
+# there the second oracle says so instead of passing.
+#
+# EACH PAYLOAD LANDS ON AN EDGE: trailing and lone newlines, a NUL inside a
+# value, non-string values that `-r` pretty-prints, a missing or mistyped
+# parent, several JSON values in one input, an input that stops parsing part
+# way, invalid UTF-8, and the notebook path behind a false file path.
+# ---------------------------------------------------------------------------
+JX_BASE=f6a733fdb8fc71587f20cebabdc6a3b99f4a1dd1
+JX_DIR="$WORK/jx"
+mkdir -p "$JX_DIR/p"
+
+# The jq this host runs must emit a NUL for `"\u0000"` under `-j`: the fields
+# are told apart by nothing else.
+jq -n -j '"a", "\u0000", "b"' > "$JX_DIR/nul.out" 2>/dev/null
+printf 'a\000b' > "$JX_DIR/nul.want"
+if cmp -s "$JX_DIR/nul.out" "$JX_DIR/nul.want"; then
+  ok "한 번의 jq: 이 호스트의 jq 가 \\u0000 을 NUL 바이트로 낸다"
+else
+  bad "한 번의 jq: NUL 출력" "$(od -c "$JX_DIR/nul.out")"
+fi
+
+# The block runs from the filter to the strip of the five fields; the two
+# command lines after the tool branches finish it.
+sed -n '/^JX_FILTER=/,/^jx_strip tool; jx_strip jx_path/p' "$HOOK" > "$JX_DIR/new-block.sh"
+check "한 번의 jq: 훅에서 추출 블록을 꺼냈다" \
+  "$(grep -c -e '^JX_FILTER=' -e '^jx_strip tool; jx_strip jx_path' "$JX_DIR/new-block.sh")" "2"
+
+jx_old() {  # stdin: a payload; prints the six fields, each in brackets
+  local input tool p cmd cmd_exact tuid pcwd
+  input=$(cat)
+  tool=$(printf '%s' "$input" | jq -r '.tool_name // empty')
+  p=$(printf '%s' "$input" | jq -r '.tool_input.file_path // .tool_input.notebook_path // empty')
+  cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // empty')
+  cmd_exact=$(printf '%s' "$input" | jq -r '.tool_input.command // empty'; printf x)
+  cmd_exact="${cmd_exact%x}"; cmd_exact="${cmd_exact%"$NL"}"
+  tuid=$(printf '%s' "$input" | jq -r '.tool_use_id // empty')
+  pcwd=$(printf '%s' "$input" | jq -r '.cwd // empty')
+  printf '[%s]\n' "$tool" "$p" "$cmd" "$cmd_exact" "$tuid" "$pcwd"
+}
+NL='
+'
+jx_new() {  # stdin: a payload; the hook's own block, then the same six fields
+  CC_JX_BLOCK="$JX_DIR/new-block.sh" bash -c '
+    set -uo pipefail
+    NL="
+"
+    input=$(cat)
+    . "$CC_JX_BLOCK"
+    cmd=$cmd_exact; jx_strip cmd
+    cmd_exact="${cmd_exact%"$NL"}"
+    printf "[%s]\n" "$tool" "$jx_path" "$cmd" "$cmd_exact" "$jx_tuid" "$jx_cwd"'
+}
+
+jx_n=0
+jx_case() {  # jx_case <payload> — one payload file per case
+  jx_n=$((jx_n + 1))
+  printf '%s' "$1" > "$JX_DIR/p/$jx_n.json"
+}
+jx_case '{"tool_name":"Bash","tool_input":{"command":"ls -la"},"tool_use_id":"t1","cwd":"/tmp"}'
+jx_case '{"tool_name":"Bash\n","tool_input":{"command":"ls\n\n"},"tool_use_id":"t1\n","cwd":"/tmp\n\n"}'
+jx_case '{"tool_name":"Bash","tool_input":{"command":"\n"}}'
+jx_case '{"tool_name":"Bash","tool_input":{"command":"a\nb\n c"}}'
+jx_case '{"tool_name":"Bash","tool_input":{"command":"echo 한글 ✓ é"},"cwd":"/tmp/한"}'
+jx_case '{"tool_name":"","tool_input":{"command":"x"},"cwd":""}'
+jx_case '{"tool_input":{}}'
+jx_case '{"tool_name":"Ba\u0000sh","tool_input":{"command":"a\u0000b\u0000"},"cwd":"\u0000"}'
+jx_case '{"tool_name":"Bash","tool_input":{"command":"\u0000"}}'
+jx_case '{"tool_name":"Bash", "tool_input":'
+jx_case 'not json'
+jx_case '   '
+jx_case '{"tool_name":"Bash","tool_input":{"command":"x"}} garbage'
+jx_case '{"tool_name":"Bash","tool_input":"s"} 5 {"tool_name":"C"}'
+jx_case '{"tool_name":"Bash","tool_input":{"command":12.50}}'
+jx_case '{"tool_name":"Bash","tool_input":{"command":1e1000}}'
+jx_case '{"tool_name":"Bash","tool_input":{"command":100000000000000000001}}'
+jx_case '{"tool_name":"Bash","tool_input":{"command":{"a":[1,{"b":null}],"c":{},"d":[],"e":"q\"\u0001\u007f/"}}}'
+jx_case '{"tool_name":"Bash","tool_input":{"command":{"k\"\n":"v","한":[" "],"z":-0,"f":1.5e3}}}'
+jx_case '{"tool_name":"Bash","tool_input":{"command":[[[[{}]]],[[]]]}}'
+jx_case '{"tool_name":"Bash","tool_input":{"command":{"x":"\u0000"}}}'
+jx_case '{"tool_name":"Bash","tool_input":{"command":false}}'
+jx_case '{"tool_name":"Bash","tool_input":{"command":null}}'
+jx_case '{"tool_name":"Bash","tool_input":{"command":true}}'
+jx_case '{"tool_name":"Bash"}'
+jx_case '{"tool_name":"Bash","tool_input":["a"]}'
+jx_case '{"tool_name":5,"tool_input":{"command":"x"}}'
+jx_case '{"tool_name":"Write","tool_input":{"notebook_path":"/a/b"}}'
+jx_case '{"tool_name":"Write","tool_input":{"file_path":false,"notebook_path":"/n"}}'
+jx_case '{"tool_name":"A"} {"tool_name":"B","tool_input":{"command":"c"}}'
+jx_case '{"tool_name":"A\n\n"} {"tool_input":{"command":"c\n"}} {"tool_input":{"command":"d\n"}}'
+jx_case '"just a string"'
+jx_case '[1,2]'
+jx_case '{"a":1,"a":2,"tool_name":"Bash","tool_name":"X"}'
+jx_case '{"tool_name":"Bash","tool_input":{"command":"\ud800x"}}'
+jx_case '{"tool_name":"Bash","tool_input":{"command":"tab\there\r\n"}}'
+jx_case "$(printf '{"tool_name":"Ba\377sh","tool_input":{"command":"x\300y"}}')"
+jx_case "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"$GATE exec --manifest /m.md -- ls\"},\"cwd\":\"$WORK\"}"
+jx_case "{\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"$LEDGER\"}}"
+jx_case "{\"tool_name\":\"Edit\",\"tool_input\":{\"file_path\":\"$WORK/plain.txt\"}}"
+jx_case '{"tool_name":"Read","tool_input":{"file_path":"/etc/hosts"}}'
+
+jx_diff=""
+i=1
+while [ "$i" -le "$jx_n" ]; do
+  jx_old < "$JX_DIR/p/$i.json" > "$JX_DIR/p/$i.old" 2>/dev/null
+  jx_new < "$JX_DIR/p/$i.json" > "$JX_DIR/p/$i.new" 2>/dev/null
+  cmp -s "$JX_DIR/p/$i.old" "$JX_DIR/p/$i.new" || jx_diff="$jx_diff $i"
+  i=$((i + 1))
+done
+check "한 번의 jq: 필드별 추출과 바이트가 같다 (${jx_n}건)" "${jx_diff:- 없음}" " 없음"
+
+# The base commit's hook beside the current one. Both run from copies of their
+# own hook directory at paths of one shape, so the edit branch's own-directory
+# check sees the same thing in each and nothing but the code differs.
+if ( cd "$repo_root" && git cat-file -e "$JX_BASE:plugins/cc-cmds/hooks/gate-pretool.sh" ) 2>/dev/null; then
+  mkdir -p "$JX_DIR/hk/old" "$JX_DIR/hk/new"
+  for f in $(cd "$repo_root" && git ls-tree --name-only "$JX_BASE" plugins/cc-cmds/hooks/); do
+    [ "$(cd "$repo_root" && git cat-file -t "$JX_BASE:$f")" = blob ] || continue
+    ( cd "$repo_root" && git show "$JX_BASE:$f" ) > "$JX_DIR/hk/old/${f##*/}"
+  done
+  for f in "$repo_root"/plugins/cc-cmds/hooks/*; do
+    [ -f "$f" ] && cp "$f" "$JX_DIR/hk/new/"
+  done
+  jx_hdiff="" jx_said=0
+  i=1
+  while [ "$i" -le "$jx_n" ]; do
+    for side in old new; do
+      rc=0
+      bash "$JX_DIR/hk/$side/gate-pretool.sh" --run-dir "$RUN_DIR" --gate "$GATE" \
+        --ledger "$LEDGER" --grant "$GRANT" --manifest "$MANIFEST" \
+        < "$JX_DIR/p/$i.json" > "$JX_DIR/p/$i.hook-$side" 2>/dev/null || rc=$?
+      printf '%s' "$rc" > "$JX_DIR/p/$i.rc-$side"
+    done
+    if ! cmp -s "$JX_DIR/p/$i.hook-old" "$JX_DIR/p/$i.hook-new" \
+       || ! cmp -s "$JX_DIR/p/$i.rc-old" "$JX_DIR/p/$i.rc-new"; then
+      jx_hdiff="$jx_hdiff $i"
+    fi
+    grep -q permissionDecision "$JX_DIR/p/$i.hook-new" && jx_said=$((jx_said + 1))
+    i=$((i + 1))
+  done
+  # Two empty outputs are equal too; every payload must have drawn a decision.
+  check "한 번의 jq: 훅 대 훅 비교의 모든 건이 판정을 냈다 (아래 단언이 공허하지 않다)" "$jx_said" "$jx_n"
+  check "한 번의 jq: 베이스 ${JX_BASE%"${JX_BASE#????????}"} 의 훅과 stdout·종료 코드가 같다 (${jx_n}건)" \
+    "${jx_hdiff:- 없음}" " 없음"
+
+  # The block sits ahead of the first tool branch, so a tool other than Bash
+  # must not start more `jq` than it did: a shim counts the calls on each side.
+  # The hook puts its own PATH ahead of the caller's unless told not to, and the
+  # shim is reached only when it is not.
+  jx_real_jq=$(command -v jq)
+  mkdir -p "$JX_DIR/shim"
+  printf '#!/bin/sh\nprintf x >> "%s/jq.count"\nexec "%s" "$@"\n' "$JX_DIR" "$jx_real_jq" > "$JX_DIR/shim/jq"
+  chmod +x "$JX_DIR/shim/jq"
+  jx_more=""
+  for i in $(cd "$JX_DIR/p" && grep -l -e '"Read"' -e '"Write"' -e '"Edit"' -- *.json); do
+    for side in old new; do
+      : > "$JX_DIR/jq.count"
+      PATH="$JX_DIR/shim:$PATH" CC_CMDS_GATE_PATH_DISABLE_PREPEND=1 bash "$JX_DIR/hk/$side/gate-pretool.sh" --run-dir "$RUN_DIR" --gate "$GATE" \
+        --ledger "$LEDGER" --grant "$GRANT" --manifest "$MANIFEST" \
+        < "$JX_DIR/p/$i" > /dev/null 2>&1
+      eval "jx_c_$side=\$(wc -c < \"\$JX_DIR/jq.count\" | tr -d ' ')"
+    done
+    [ "$jx_c_new" -gt 0 ] || jx_more="$jx_more ${i%.json}(셈 없음)"
+    [ "$jx_c_new" -le "$jx_c_old" ] || jx_more="$jx_more ${i%.json}($jx_c_old→$jx_c_new)"
+  done
+  check "한 번의 jq: Bash 아닌 도구는 베이스보다 jq 를 더 부르지 않는다" "${jx_more:- 없음}" " 없음"
+else
+  printf 'NOTE: 한 번의 jq: 이 복제본에 베이스 %s 가 없어 훅 대 훅 비교를 돌리지 않았다\n' "$JX_BASE"
+fi
+
 printf '\ntest-orchestrator-pretool-hook: %d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" = "0" ]
