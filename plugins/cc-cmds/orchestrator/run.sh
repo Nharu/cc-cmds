@@ -2561,9 +2561,18 @@ rule_catalog() {
 # in this process, so the caller that fills it must not be inside a command
 # substitution — `rule_setting_load` is that caller. A manifest with no such
 # section, or a section with no key lines, starts no normalisation process.
+#
+# ONLY THE KEY COLUMN IS NORMALISED; the value keeps the manifest's bytes. The
+# binding digest freezes a rule line only when its value is the composed `켬` or
+# `끔` byte for byte (the `R` record of the manifest memo and
+# `manifest_rule_lines`), so a decomposed `끔` normalised here would switch a
+# rule off through a line the digest never froze, and a later edit of that line
+# would pass the digest comparison unseen. A value in any other form therefore
+# reads as itself and switches nothing.
 RULE_SETTING_FOR=""; RULE_SETTING_TAB=""; RULE_SETTING_CANON_RC=0
 rule_setting_load() {
-  local for raw
+  local for raw keys canon b c line k out nl='
+' tab='	'
   if manifest_memo_on; then for="memo:${MANIFEST_MEMO_GEN:-0}:$MANIFEST"; else for=""; fi
   if [ -n "$for" ] && [ "$for" = "$RULE_SETTING_FOR" ]; then return 0; fi
   if manifest_memo_on; then
@@ -2582,7 +2591,31 @@ rule_setting_load() {
   if [ -z "$raw" ]; then
     RULE_SETTING_TAB=""
   else
-    RULE_SETTING_TAB=$(printf '%s\n' "$raw" | rule_name_canon) || RULE_SETTING_CANON_RC=$?
+    keys=""; b="$raw"
+    while [ -n "$b" ]; do
+      line=${b%%"$nl"*}
+      case "$b" in *"$nl"*) b=${b#*"$nl"} ;; *) b="" ;; esac
+      keys="$keys${line%%"$tab"*}$nl"
+    done
+    canon=$(printf '%s' "$keys" | rule_name_canon) || RULE_SETTING_CANON_RC=$?
+    # Pair each normalised key with its own line's value bytes. A key the
+    # normaliser printed no line for keeps its raw bytes.
+    out=""; b="$raw"; c="$canon"
+    while [ -n "$b" ]; do
+      line=${b%%"$nl"*}
+      case "$b" in *"$nl"*) b=${b#*"$nl"} ;; *) b="" ;; esac
+      if [ -n "$c" ]; then
+        k=${c%%"$nl"*}
+        case "$c" in *"$nl"*) c=${c#*"$nl"} ;; *) c="" ;; esac
+      else
+        k=${line%%"$tab"*}
+      fi
+      case "$line" in
+        *"$tab"*) out="$out$k$tab${line#*"$tab"}$nl" ;;
+        *) out="$out$k$nl" ;;
+      esac
+    done
+    RULE_SETTING_TAB=${out%"$nl"}
   fi
   RULE_SETTING_FOR="$for"
   return 0

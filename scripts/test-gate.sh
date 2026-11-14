@@ -47029,6 +47029,27 @@ check "9n: 대조군 — 「룰 설정」 키가 있으면 매니페스트 검�
   "$( [ "${p9n_n1:-0}" -ge 2 ] && printf yes || printf "no($p9n_n1)" )" "yes"
 check "9n: 「룰 설정」 키가 없는 매니페스트 검사는 정규화 프로세스를 띄우지 않는다" "$p9n_n0" "0"
 
+# (7) 값을 NFD 로 적은 「끔」 — 아무 룰도 끄지 않는다 ---------------------------------------
+# 구속 다이제스트는 값이 조합형 `켬`·`끔` 인 룰 줄만 얼린다. 값까지 정규화하면 얼려지지
+# 않은 줄이 룰을 끈다. 게이트 호출(스냅숏 메모를 거치는 읽기)과 소싱한 셸(메모가 꺼진
+# awk 읽기)의 두 경로를 다 본다. 값이 조합형인 같은 줄은 끈다는 것이 대조군이다.
+p9n_res=""
+for p9n_f in NFC NFD; do
+  p9n_fixture "R9NH$p9n_f" "**리뷰-후-머지**: $(p9n_nfd 끔)"
+  p9n_gate "$p9n_f" act --manifest "$P9N_MAN" --kind merge --target infra --segment S9N --cutpoint 머지 \
+    --snapshot-digest "$(p9n_h "$p9n_f")" --rationale x -- gh api -X PUT repos/o/r/pulls/1/merge -f "sha=$(wt_head)"
+  if passes_review; then p9n_res="$p9n_res$p9n_f=통과 "; else p9n_res="$p9n_res$p9n_f=거부 "; fi
+done
+check "9n: NFD 값의 리뷰-후-머지 끔은 두 카탈로그에서 머지를 풀지 않는다" "$p9n_res" "NFC=거부 NFD=거부 "
+check "9n: 픽스처 — NFD 값 「끔」 은 조합형 「끔」 과 바이트가 다르다 (위 단언이 공허하지 않다)" \
+  "$( [ "$(p9n_nfd 끔)" != "끔" ] && printf yes || printf no )" "yes"
+p9n_v=""
+for p9n_val in "끔" "$(p9n_nfd 끔)"; do
+  p9n_fixture R9NH2 "**리뷰-후-머지**: $p9n_val"
+  p9n_v="$p9n_v$(p9n_src 'gate_rule_enabled 리뷰-후-머지 && printf 켬 || printf 끔' 2>/dev/null)/"
+done
+check "9n: 메모가 꺼진 읽기에서도 조합형 값만 리뷰-후-머지를 끈다" "$p9n_v" "끔/켬/"
+
 # ---------------------------------------------------------------------------
 # 58. argv 정규 파싱 층 — 한 번 파싱하고, 실제 도구의 문법대로 읽는다
 # --- section: 58 | group: parse | covers: parse | anchors: 58: 재현 행 1 은 ok 다, 58: 재현 행 7 은 form 이다, 58: 다섯 철자의 -R 이 같은 옵션을 남긴다, 58: 표 함수는 heredoc 이다, 58: gate_main 다음 줄이 exit 다 ---
