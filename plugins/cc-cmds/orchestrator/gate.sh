@@ -54651,9 +54651,9 @@ gate_verb_act() {
               rn_adkeys='--merged --judge-head'
               rn_adwant=$(gate_adoption_branch_review_want "$segment") ;;
           esac
-          rn_adgot=$(printf '%s\n' "$rn_prompt" | awk -v keys=" $rn_adkeys " '
+          rn_adgot=$(awk -v keys=" $rn_adkeys " '
             { for (i = 1; i <= NF; i++) if (index(keys, " " $i " ")) { o = o (o == "" ? "" : " ") $i " " (i < NF ? $(i + 1) : "") } }
-            END { printf "%s", o }')
+            END { printf "%s", o }' <<<"$rn_prompt")
           if [ "$rn_adgot" != "$rn_adwant" ]; then
             warn "머지 입양 세그먼트 ${segment} 의 리뷰 파견 플래그 (${rn_adgot:-없음}) 가 의무 행과 워크트리 HEAD 에서 다시 만든 값 (${rn_adwant:-없음}) 과 다릅니다 — 스냅숏의 리뷰 줄을 그대로 실어 다시 파견하세요"
             exit "$GATE_EXIT_RULE"
