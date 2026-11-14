@@ -260,7 +260,10 @@
 # an `입양후보` line the cell followed by `들여올PR=<번호>`. The reason tokens: park,
 # 설계재실행, 문서바뀜, 슬라이스다름, 워크트리없음, PR기록없음, PR닫힘, HEAD불일치,
 # 브랜치다름, 작업트리변경, PR판독불가, PR불일치, 포크PR, 베이스다름, 착지됨,
-# 라이브, 원장없음, 중단답이월불가 (the seat's only), and 판정불가 when the gate child could
+# 라이브, 원장없음, 중단답이월불가 (the seat's only), 머지입양미리뷰 (the fix branch of
+# a merged request no review of the source read on the adoption line — its
+# obligation open and the first `cycle` row after the obligation not carrying
+# `입양 줄=예`), and 판정불가 when the gate child could
 # not answer. A `머지입양후보` line comes from a `머지 입양` row of the previous
 # manifest whose review the previous run left open (`rk_merge_adopt_candidates`),
 # and such a row that cannot be adopted gives an `입양불가` line with
@@ -947,6 +950,39 @@ rk_merge_open_obligations() {
   ' "$RK_PL" 2>/dev/null || printf '0'
 }
 
+# rk_merge_unread <segment> — 0 when the segment has a `머지 입양` row and the
+# previous run left no evidence that any review read the merged request: its
+# issued obligations are not all fulfilled, and the first `cycle` row of the
+# segment after the obligation's issuing row (`상태=미이행`, the first one) is
+# missing or does not carry `입양 줄=예`. The new run's gate exempts a segment
+# paired with a `세그먼트 입양` row from that very check, and its first review
+# of the fix branch reads base...fix branch, which leaves the merge commit's
+# own changes out — so such a segment's fix branch is never paired, and the
+# new run reviews the merged request again on the adoption line. A source that
+# was itself paired records no `입양 줄`, so unless its obligation was
+# fulfilled it is not paired again either: a second review of the merged
+# request is the cost, never a merge nobody read.
+rk_merge_unread() {
+  [ -n "$(rk_merge_src_row "$1")" ] || return 1
+  if [ "$(rk_merge_open_obligations "$1" 전체)" != "0" ] && [ "$(rk_merge_open_obligations "$1")" = "0" ]; then
+    return 1
+  fi
+  # A ledger awk cannot read prints nothing, which reads as unread.
+  [ "$(RM_K="$1" awk '
+    function fld(name,   n, i, a, s) {
+      n = split($0, a, / \| /)
+      for (i = 2; i <= n; i++) {
+        s = a[i]; sub(/[[:space:]]+$/, "", s)
+        if (index(s, name "=") == 1) return substr(s, length(name "=") + 1)
+      }
+      return ""
+    }
+    !iss && index($0, "- `리뷰 의무` | ") == 1 && fld("세그먼트") == ENVIRON["RM_K"] && fld("상태") == "미이행" { iss = 1; next }
+    iss && index($0, "- `cycle` | ") == 1 && fld("세그먼트") == ENVIRON["RM_K"] { seen = (fld("입양 줄") == "예"); exit }
+    END { print (seen ? "읽음" : "안읽음") }
+  ' "$RK_PL" 2>/dev/null)" != "읽음" ]
+}
+
 # rk_ledger_seg_rows <key> — the ledger's `segment` rows of that id, in order.
 rk_ledger_seg_rows() {
   { grep -E '^- `segment` ' "$RK_PL" 2>/dev/null || true; } | { grep -F "| id=$1 |" || true; }
@@ -1133,6 +1169,11 @@ EOF
       elif [ "$ab" != "$B" ]; then tok='브랜치다름'
       fi
     fi
+    # 4b — the fix branch of a merged request no review of the previous run
+    # read on the adoption line is not taken over (`rk_merge_unread`): its
+    # segment's `머지입양후보` line then carries no worktree, and the new run
+    # reviews the merged request again.
+    if [ -z "$tok" ] && rk_merge_unread "$key"; then tok='머지입양미리뷰'; fi
     h=$wh
     if [ -n "$tok" ]; then rk_merge_fix_silent "$key" "$n" || printf '입양불가\t%s\t%s\t%s%s\n' "$key" "$n" "$tok" "$pim"; continue; fi
     cim=$pim
@@ -1280,6 +1321,9 @@ EOF
 #     its issued obligations are all fulfilled — no line;
 #   the segment's fix branch is itself a candidate above (an open fix pull
 #     request) — the line carries that worktree, and the new run takes both rows;
+#     a fix branch whose merged request no review of the source read on the
+#     adoption line is never such a candidate (`rk_merge_unread`), so its
+#     segment falls to the next case;
 #   otherwise — the line alone, and the new run reviews the merged request again
 #     from its own derived worktree; fix commits with no open pull request stay
 #     in the old worktree.
