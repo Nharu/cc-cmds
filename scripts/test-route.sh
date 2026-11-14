@@ -3117,9 +3117,25 @@ check "W7 경계: 라우터-2 의 late 행" "$(tr_w7u known 1000 $((FX_NOW + 155
 for row in "-:no-room" "full:resume-bound-no-room" "full:resume-bound-exhausted" "-:group-exhausted"; do
   rc=0
   tr_in_run "$TR_RUN_SH" run_ledger_series_check stage-wait 계보=S1 "그룹=$G_FULL" "계정=${row%%:*}" 까지=- \
-    비용=0.3000/0.0800 '비용 출처=default/default' "근거=${row#*:}" 2>"$WORK/series.err" || rc=$?
+    비용=0.3000/0.0800 '비용 출처=default/default' "근거=${row#*:}" 호스트=- '기록 시각=2026-11-14T00:00:00Z' \
+    2>"$WORK/series.err" || rc=$?
   check "원장 검사: 마감 없는 stage-wait 계정=${row%%:*} 근거=${row#*:}" "$rc" 0
 done
+
+# 호스트 보류 대기의 원장 행 — 그룹·계정·까지·비용이 모두 `-` 이고 호스트 칸이 포화 표본을
+# 싣는다. 호스트 칸의 꼴이 어긋나거나 기록 시각이 없으면 계열 검사가 거부한다.
+tr_hw() {  # tr_hw <호스트 칸> <기록 시각 칸> — 계열 검사의 rc
+  local rc=0
+  tr_in_run "$TR_RUN_SH" run_ledger_series_check stage-wait 계보=S1 그룹=- 계정=- 까지=- 비용=- '비용 출처=-' \
+    근거=host-saturated "$1" ${2:+"$2"} 2>"$WORK/series.err" || rc=$?
+  printf '%s' "$rc"
+}
+check "원장 검사: host-saturated stage-wait 는 포화 표본을 싣는다" \
+  "$(tr_hw '호스트=포화 ratio=1350 ncpu=8 표본=2026-11-14T00:00:00Z' '기록 시각=2026-11-14T00:00:05Z')" 0
+check "원장 검사: 호스트 칸의 꼴이 어긋나면 거부한다" \
+  "$( [ "$(tr_hw '호스트=포화 1350' '기록 시각=2026-11-14T00:00:05Z')" != 0 ] && printf 거부 || printf 통과)" 거부
+check "원장 검사: 기록 시각 칸이 없으면 거부한다" \
+  "$( [ "$(tr_hw '호스트=-' '')" != 0 ] && printf 거부 || printf 통과)" 거부
 
 # ===========================================================================
 # 대여. 대화형으로 예약된 cc 가 `interactive_lending: "auto"` 로 등록되면 발행된 대여
@@ -3855,6 +3871,78 @@ tr_affinity_rec_case() {
   done
 }
 tr_in_run "$TR_RUN_SH" tr_affinity_rec_case
+
+# ===========================================================================
+# 호스트 보류. 포화 문맥에서 무거운 종류의 `first` 가 임대를 새로 놓는 계정 부여를 받을
+# 때, 다른 계보의 살아 있는 무거운 부여가 있으면 그룹 없는 WAIT `host-saturated` 로 바뀐다.
+# 나머지 조합은 모두 계정 판정의 답 그대로다. 문맥 `host` 는 pace 상태의 호스트 블록이다.
+# ===========================================================================
+HS='.host = {saturated: true, ratio_permille: 1350, ncpu: 8, sampled_at_epoch: ($now - 10)}'
+HL='.leases.items += [LG("r2"; "W1"; "b"; true) + {stage_kind: "review"}]'
+HOLD='.verdict == "WAIT" and .reason == "host-saturated" and .group == null and .account == null
+      and .until_epoch == null and .cost == null and .host.ratio_permille == 1350 and .host.ncpu == 8
+      and (.host.sampled_at_epoch | type) == "number" and (.nonce // null) == null'
+PASS='.verdict == "GRANT" and .reason != "host-saturated"'
+expect "호스트 보류: 포화이고 다른 계보의 무거운 부여가 살아 있으면 WAIT host-saturated" "$(decide "$HS | $HL")" "$HOLD"
+expect "호스트 보류: 같은 런의 다른 계보도 (라) 에 센다" \
+  "$(decide "$HS | .leases.items += [LG(\"r1\"; \"S2\"; \"b\"; true) + {stage_kind: \"lead-fix\"}]")" "$HOLD"
+expect "호스트 보류: 리뷰의 첫 파견도 보류한다" "$(decide "$HS | $HL | REQ({kind: \"review\"})")" "$HOLD"
+expect "호스트 보류: 리드 수정의 첫 파견도 보류한다" "$(decide "$HS | $HL | REQ({kind: \"lead-fix\"})")" "$HOLD"
+HN='.host = {saturated: false, ratio_permille: 500, ncpu: 8, sampled_at_epoch: $now}'
+expect "호스트 보류: 포화가 아니면 통과" "$(decide "$HL | $HN")" "$PASS"
+expect "호스트 보류: 호스트 문맥이 없으면 통과" "$(decide "$HL")" "$PASS"
+for ev in resume crash-retry hollow-retry limit-reclaim first-reject; do
+  check "호스트 보류: 사건 $ev 는 통과" \
+    "$(decide "$HS | $HL | REQ({event: \"$ev\"})" | jq -r '.reason // "-"')" \
+    "$(decide "$HL | REQ({event: \"$ev\"})" | jq -r '.reason // "-"')"
+done
+for k in design audit shift; do
+  expect "호스트 보류: 종류 $k 는 통과" "$(decide "$HS | $HL | REQ({kind: \"$k\"})")" '.reason != "host-saturated"'
+done
+expect "호스트 보류: 다른 무거운 부여가 없으면 통과" "$(decide "$HS")" "$PASS"
+expect "호스트 보류: 죽은 무거운 부여는 세지 않는다" \
+  "$(decide "$HS | .leases.items += [LG(\"r2\"; \"W1\"; \"b\"; false) + {stage_kind: \"review\"}]")" "$PASS"
+expect "호스트 보류: stage_kind 없는 옛 부여는 세지 않는다" \
+  "$(decide "$HS | .leases.items += [LG(\"r2\"; \"W1\"; \"b\"; true)]")" "$PASS"
+expect "호스트 보류: 가벼운 종류의 부여는 세지 않는다" \
+  "$(decide "$HS | .leases.items += [LG(\"r2\"; \"W1\"; \"b\"; true) + {stage_kind: \"design\"}]")" "$PASS"
+expect "호스트 보류: 대기 기록은 세지 않는다" \
+  "$(decide "$HS | .leases.items += [LR(\"r2\"; \"W1\"; \"b\"; \"wait\"; null; true; 1) + {stage_kind: \"review\"}]")" "$PASS"
+expect "호스트 보류: 자기 계보의 살아 있는 부여를 이어 쥐는 답은 통과" \
+  "$(decide "$HS | $HL | .leases.items += [LG(\"r1\"; \"S1\"; \"a\"; true) + {stage_kind: \"implement\"}]")" "$PASS"
+expect "호스트 보류: 좌석 답은 통과" \
+  "$(decide "$HS | $HL | .inventory.state = \"corrupt\"")" '.reason != "host-saturated"'
+
+tr_host_case() {
+  local b="$WORK/host-ctx" t lf
+  unset CLAUDE_CONFIG_DIR
+  export XDG_STATE_HOME="$b/state" RUN_DIR="$b/run" RUN_PACE_ROOT="$b/pace"
+  rm -rf "$b"; mkdir -p "$XDG_STATE_HOME" "$RUN_DIR" "$RUN_PACE_ROOT"
+  tr_write_inv valid "$RUN_DIR/inventory.json"
+  hst() {  # hst <state.json 내용> — gather 의 host 칸
+    printf '%s\n' "$1" > "$RUN_PACE_ROOT/state.json"
+    route_gather_context "$(tr_req)" /seat 2>/dev/null | jq -c '.host'
+  }
+  local now ok
+  now=$(date -u +%s)
+  ok=$(jq -cn --arg s "$RUN_PACE_SCHEMA" --argjson n "$now" \
+    '{schema: $s, computed_at_epoch: $n, host: {state: "ok", saturated: true, ratio_permille: 1350, ncpu: 8, sampled_at_epoch: ($n - 5)}}')
+  check "호스트 문맥: 신선한 pace 상태의 호스트 블록을 싣는다" "$(hst "$ok")" \
+    "$(jq -cn --argjson n "$now" '{saturated: true, ratio_permille: 1350, ncpu: 8, sampled_at_epoch: ($n - 5)}')"
+  check "호스트 문맥: 낡은 pace 상태는 null" \
+    "$(hst "$(printf '%s' "$ok" | jq -c --argjson s "$RUN_PACE_STALE_SECONDS" '.computed_at_epoch -= ($s + 1)')")" null
+  check "호스트 문맥: 호스트 블록이 ok 가 아니면 null" "$(hst "$(printf '%s' "$ok" | jq -c '.host.state = "unread"')")" null
+  check "호스트 문맥: 스키마가 다르면 null" "$(hst "$(printf '%s' "$ok" | jq -c '.schema = "x"')")" null
+  check "호스트 문맥: 깨진 상태 파일은 null" "$(hst '{')" null
+  rm -f "$RUN_PACE_ROOT/state.json"
+  check "호스트 문맥: 상태 파일이 없으면 null" "$(route_gather_context "$(tr_req)" /seat 2>/dev/null | jq -c '.host')" null
+  # 부여 기록은 요청 종류를 stage_kind 로 싣는다 — (라) 가 세는 칸이다.
+  t="$b/leases"
+  txn "$t" 'REQ({kind: "review"})' >/dev/null 2>&1
+  lf=$(ls "$t"/*.lease 2>/dev/null | head -1)
+  check "임대 기록: 부여 기록은 요청 종류를 stage_kind 로 싣는다" "$(jq -r '.stage_kind' "$lf" 2>/dev/null)" review
+}
+tr_in_run "$TR_RUN_SH" tr_host_case
 
 # ===========================================================================
 # 5시간 한도 없음과 주간 리셋 압력. 주간 창이 알려진 그룹의 5시간 창은 사용량 행에 5시간
