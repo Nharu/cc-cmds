@@ -50569,20 +50569,20 @@ gate_perform_review_post() {
       # inline comment.
       if [ -n "$req" ] \
          && rev=$(gate_label_ack_gh_write "$creds" api "repos/$GATE_RVP_SLUG/pulls/$GATE_RVP_PR/reviews/$rid" 2>/dev/null) \
-         && rst=$(printf '%s' "$rev" | jq -r '.state // empty' 2>/dev/null) && [ -n "$rst" ]; then
+         && rst=$(jq -r '.state // empty' <<<"$rev" 2>/dev/null) && [ -n "$rst" ]; then
         com=""
         if [ "$rst" = "PENDING" ]; then
           gq='query($owner: String!, $name: String!, $number: Int!, $endCursor: String) { repository(owner: $owner, name: $name) { pullRequest(number: $number) { reviewThreads(first: 100, after: $endCursor) { pageInfo { hasNextPage endCursor } nodes { diffSide comments(first: 100) { nodes { path line originalLine body pullRequestReview { fullDatabaseId } } } } } } } }'
           if gql=$(gate_label_ack_gh_write "$creds" api graphql --paginate -f "query=$gq" \
                      -f "owner=${GATE_RVP_SLUG%%/*}" -f "name=${GATE_RVP_SLUG#*/}" -F "number=$GATE_RVP_PR" 2>/dev/null); then
-            com=$(printf '%s' "$gql" | jq -s -c --arg rid "$rid" '
+            com=$(jq -s -c --arg rid "$rid" '
                     if length == 0 or any(.[]; (.errors // null) != null or (.data.repository.pullRequest // null) == null)
                     then error("review thread read failed") else . end
                     | [ .[] | .data.repository.pullRequest.reviewThreads.nodes[]? | .diffSide as $s
                         | .comments.nodes[]?
                         | select((.pullRequestReview.fullDatabaseId | tostring) == $rid)
                         | {pull_request_review_id: ($rid | tonumber), path, line, original_line: .originalLine, side: $s, body} ]' \
-                  2>/dev/null) || com=""
+                  <<<"$gql" 2>/dev/null) || com=""
           fi
         else
           com=$(gate_label_ack_gh_write "$creds" api --paginate "repos/$GATE_RVP_SLUG/pulls/$GATE_RVP_PR/comments" 2>/dev/null \
