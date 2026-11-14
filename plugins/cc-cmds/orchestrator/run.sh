@@ -15124,10 +15124,22 @@ visual_approval_route_hint() {
   # approved screens are still being written into the document; in a run with
   # the publish stage that is the approval-reflection re-convergence's work, so
   # the person is told to wait, and in a run without it the fixed seat's
-  # `/cc-cmds:visual <문서> 구현 승인` is run again to write them. A first line
-  # `승인 보류 — 설계 문서 반영 실패` says that writing stopped, and the
-  # reflection's halt record is what a person answers.
-  local latest pl
+  # `/cc-cmds:visual <문서> 구현 승인` is run again to write them. The wait
+  # holds only while the sidecar's `**구현 승인**` line carries the
+  # ` — 사람 답 <record>` tail the publish stage writes — the line the gate's
+  # entry predicate reads too: an approval with no tail
+  # is an interactive reflection that stopped before its sidecar write, which
+  # neither the router nor the gate's entry predicate dispatches, so even a run
+  # with the publish stage points the person at that command again. A first
+  # line `승인 보류 — 설계 문서 반영 실패` says that writing stopped, and the
+  # reflection's halt record is what a person answers only when the
+  # `**구현 승인**` line's tail names this run's latest `시각-판정` record — the
+  # gate entry predicate's condition 1. Any other tail, or none, is an attempt
+  # the carried-answer branch let in (its stop offers no option, and an answer
+  # to it passes the entry predicate in no run) or a run without the publish
+  # stage, so the person runs `/cc-cmds:visual <문서> 구현 승인` again once the
+  # run has ended.
+  local latest pl sc dl tl
   if visual_confirm_waiting "${DOC:-}"; then
     if ! manifest_has_visual_publish_step; then
       printf '%s' "$VISUAL_DS_WAIT_REPORT"
@@ -15142,13 +15154,32 @@ visual_approval_route_hint() {
   [ -z "${DOC:-}" ] || pl=$(bash "$ORCH_DIR/visual-check.sh" approval "$DOC" 2>/dev/null | sed -n 1p)
   case "$pl" in
     '승인 보류 — 설계 문서 반영 대기'*)
+      dl=''
+      sc=$(visual_sidecar_path "${DOC:-}" 2>/dev/null) && dl=$(grep -m1 '^\*\*구현 승인\*\*: ' "$sc" 2>/dev/null)
       if manifest_has_visual_publish_step; then
+        case "$dl" in
+          *' — 사람 답 '*) ;;
+          *)
+            printf '승인한 화면을 설계 문서에 반영하던 대화형 실행이 멈췄고 이 런은 그 반영을 파견하지 않습니다 — 고정 좌석에서 /cc-cmds:visual %s 구현 승인 을 다시 실행해 반영을 이어 가세요' "${DOC:-<문서>}"
+            return 0 ;;
+        esac
         printf '승인한 화면을 설계 문서에 반영하는 중이라 사람이 할 일은 없습니다 — 시각 발행 단계(S2P)의 승인 화면 반영 재수렴이 끝날 때까지 기다리세요'
       else
         printf '승인한 화면이 아직 설계 문서에 반영되지 않았습니다 — 고정 좌석에서 /cc-cmds:visual %s 구현 승인 을 다시 실행해 반영하세요' "${DOC:-<문서>}"
       fi
       return 0 ;;
     '승인 보류 — 설계 문서 반영 실패'*)
+      dl=''
+      sc=$(visual_sidecar_path "${DOC:-}" 2>/dev/null) && dl=$(grep -m1 '^\*\*구현 승인\*\*: ' "$sc" 2>/dev/null || true)
+      tl=$(printf '%s\n' "$dl" | sed -nE 's/^.* — 사람 답 ([A-Za-z0-9._#-]+\.md)[[:space:]]*$/\1/p')
+      latest=''
+      if manifest_has_visual_publish_step; then
+        latest=$(visual_publish_latest_verdict_record) || latest=''
+      fi
+      if [ -z "$tl" ] || [ -z "$latest" ] || [ "$tl" != "${latest##*/}" ]; then
+        printf '승인한 화면을 설계 문서에 반영하다 멈췄고 그 중단 기록에는 답을 받을 수 없습니다 — 그 기록에 답하지 말고, 런이 끝난 뒤 고정 좌석에서 /cc-cmds:visual %s 구현 승인 을 다시 실행해 반영을 이어 가세요' "${DOC:-<문서>}"
+        return 0
+      fi
       if latest=$(visual_publish_latest_record 'Step 3 승인 화면 반영'); then
         printf '승인한 화면을 설계 문서에 반영하다 멈췄습니다 — 승인 화면 반영 중단 기록 %s 에 사람이 답하세요' "$latest"
       else

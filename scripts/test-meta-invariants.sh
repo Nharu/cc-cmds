@@ -26,8 +26,12 @@
 # two assignments and in the common file's start condition, the set of files
 # pointing at that file, its missing question and notification surfaces, its
 # missing copies, the phase sentence, and the start disposition and end
-# obligation with their two spellings. Every other assertion here is one a
-# source suite used to make.
+# obligation with their two spellings. The approved-screen reflection block
+# (6e-7) adds the fixed sentences of the writers and readers of the
+# approval and of the reflection's ends, the sentences of each router copy's
+# reflection paragraph, and that
+# paragraph's identity across the two copies. Every other assertion here is one
+# a source suite used to make.
 #
 # Usage: bash scripts/test-meta-invariants.sh
 
@@ -1975,6 +1979,103 @@ check "설계 파견 5번이 차단=파견 전 재수렴 행을 골격 재검토
   "$(grep -cF -- 'row reading `종류=reconverge` without `차단=파견 전` yet' "$RS_REFS/design-dispatch.md")|$(grep -cF -- '**While the step'"'"'s last `stage-result` row carries `차단=파견 전`, the review was blocked on the document'"'"'s size and has not run**' "$RS_REFS/design-dispatch.md")" "1|1"
 check "게이트가 설계 스텝의 마지막 행이 크기 차단인 동안 감사를 거절한다" \
   "$(grep -cF -- 'if gate_key_last_row_is_size_block "$au_dstep"; then' "$GATE")" "1"
+
+# ---------------------------------------------------------------------------
+# 6e-7. An approved screen's wording reaches the design document
+#
+# A person who approves screens whose wording differs from the frozen design
+# document approves that wording; the implementation then follows the document.
+# So every writer of the approval line hands the difference to a reflection,
+# the implementation stops rather than move the screens back to the document,
+# a failed reflection stops on a record only a person answers, and both router
+# copies dispatch the reflection the same way. Each pin below is the sentence
+# that says so; a copy that loses one builds the document's older wording over
+# what the person approved, and stays green.
+# ---------------------------------------------------------------------------
+SK="$PLUGIN_ROOT/skills"
+while IFS='|' read -r who file lit; do
+  [ -n "$file" ] || continue
+  n=$(grep -cF -- "$lit" "$SK/$file" || true)
+  check "$who ${file} 가 「${lit}」 을 싣는다" "$([ "${n:-0}" -ge 1 ] && echo 예 || echo 아니오)" "예"
+done <<'EOF'
+대화형 승인|visual/SKILL.md|Read `${CLAUDE_SKILL_DIR}/../_common/approval-reflection.md` and edit the design document by it
+대화형 승인|visual/SKILL.md|`**문서 반영**: 대기 — 어긋남 <n>건`
+대화형 구현|implement/SKILL.md|the `중단 ← 추천` description says to run `/cc-cmds:visual <문서> 구현 승인` again
+대화형 구현|implement/SKILL.md|AskUserQuestion with options `승인 화면대로 구현 ← 추천` / `중단`
+무인 구현|implement-unattended/SKILL.md|is a **CFI-U3 BT-STOP**: halt before the plan is written
+무인 구현|implement-unattended/SKILL.md|**Never put in the plan a list that moves the screens' wording or structure back to the binding tier**
+무인 구현|implement-unattended/SKILL.md|**A difference a line of the block points at is a person-only stop.**
+무인 구현|implement-unattended/SKILL.md|such a line is one the person left `문서대로 둠` at the reflection stop. Write `**선택지**: (없음)` with no `재수렴` option
+무인 구현|implement-unattended/SKILL.md|**One BT-STOP never offers `재수렴`:**
+무인 발행|visual-publish-unattended/SKILL.md|**Every `시각-판정` record is preceded by the drift block.**
+무인 발행|visual-publish-unattended/SKILL.md|`**문서 반영**: 대기 — 어긋남 <n>건 — 사람 답 <the same name>`
+반영 실패|_common/approval-reflection.md|`**스텝**: Step 3 승인 화면 반영 — 충돌`
+반영 실패|_common/approval-reflection.md|- `결정 첨부 후 다시 반영` — 사람이 충돌을 푸는 결정을 첨부에 붙이면
+반영 실패|_common/approval-reflection.md|An exit 2 prints only the lines it could not find and no count line, so read the block instead
+대화형 승인|visual/SKILL.md|the latest `## 인가 <run-id>` block names the run, and that run is alive while its run directory `${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/run/<run-id>` holds no `done` file yet
+대화형 승인|visual/SKILL.md|a difference stops the reflection with the sidecar as it is and writes no `실패`
+대화형 승인|_common/approval-reflection.md|key, take the latest `## 인가 <run-id>` block; its run is alive while its
+대화형 승인|_common/approval-reflection.md|no `done` reads as alive too; whether to end it is a person's call
+대화형 승인|_common/approval-reflection.md|show the run id and stop before taking the working copy
+대화형 승인|visual/SKILL.md|stop before this step edits anything, with the sidecar as step 6 left it
+반영 실패|_common/approval-reflection.md|and the lines `drift` prints are lines that cannot be applied
+대화형 승인|visual/SKILL.md|The sidecar's ` — 사람 답` tail is not this test
+반영 종단|_common/approval-reflection.md|위 두 종단의 두 번째 | `대기` 그대로
+반영 종단|_common/approval-reflection.md|`대기 — 반영 재시도 소진`, 다시 실행 안내
+반영 종단|_common/approval-reflection.md|The same end the second time changes nothing this session writes
+아침 보고|autopilot/references/act3-report.md|write `대기 — 반영 재시도 소진`
+운반 답|_common/approval-reflection.md|measure the document's `shasum -a 256` and the gate's
+운반 답|_common/approval-reflection.md|Never take the stop record's baselines
+운반 답|_common/approval-reflection.md|an exit 2 is the same question when the block's lines are, in number and verbatim, the drift lines that `시각-판정` record's `**질문 문면**` quotes and the piece's `<n>`, and every printed line is one of them.
+운반 답|_common/approval-reflection.md|and its only answer, `문서대로 둠`, must still apply
+운반 답|design-reconverge/SKILL.md|**A carried answer on the `승인 화면 반영` scope follows the carried-answer re-entry procedure of `${CLAUDE_SKILL_DIR}/../_common/approval-reflection.md` (`## 운반 답 재진입`) instead of items 1–5 below.**
+반영 성공|_common/approval-reflection.md|`visual-check.sh binding <설계 문서>` measures over the published document
+반영 성공|visual/SKILL.md|visual-check.sh binding
+반영 종단|_common/approval-reflection.md|사람에게 묻는 기록으로 보고하지 않는다 — 라우터 교대의 반영 분기가 이 기록을 재파견으로 처리한다
+반영 실패|_common/approval-reflection.md|but writes `**선택지**: (없음)` and no `**추천**`, `**추천 근거**` or `**선택지 리스크**` line
+반영 실패|_common/approval-reflection.md|once the run has ended, running `/cc-cmds:visual <문서> 구현 승인` again continues the interactive reflection from the document edit
+반영 종단|_common/approval-reflection.md|운반 답 갈래로 들인 시도의 실패(위 실패 행의 경우) | `실패 — <사유>` | `Step 3 승인 화면 반영 — 충돌`, `**선택지**: (없음)`
+반영 종단|_common/approval-reflection.md|`실패 — <사유>`, 정지 기록, 그 기록에 답하지 말고 런이 끝난 뒤 다시 실행하라는 안내, 화면 슬라이스가 이 런에서 서 있음
+반영 실패|autopilot-router-shift/references/visual-dispatch.md|the seat does not ask the person to answer it, but to run `/cc-cmds:visual <설계 문서> 구현 승인` again once the run has ended
+아침 보고|autopilot/references/act3-report.md|adds its stop record but not the option `결정 첨부 후 다시 반영`
+아침 보고|autopilot/references/act3-report.md|이 기록에는 답을 받을 수 없으니 답하지 말고, 런이 끝난 뒤 `/cc-cmds:visual <설계 문서 절대 경로> 구현 승인` 을 다시 실행하면
+EOF
+# The second same end keeps the sidecar at `대기`; a copy that writes
+# `실패 — <종단>` there stops the automatic retry and asks a person.
+for f in _common/approval-reflection.md design-reconverge/SKILL.md; do
+  n=$(grep -cF -- '실패 — <종단>' "$SK/$f" || true)
+  n2=$(grep -cF -- '실패 — <the end>' "$SK/$f" || true)
+  check "반영 종단 ${f} 가 두 번째 같은 종단에 실패 줄을 쓰지 않는다" "$(( ${n:-0} + ${n2:-0} ))" "0"
+done
+reflect_para() {
+  # reflect_para <file> — the reflection-dispatch paragraph of the visual wait,
+  # from its bold head up to the next bold paragraph head.
+  awk '/^\*\*A predicate held for the design document\.\*\*/ { f = 1 }
+       f && /^\*\*The fixed judgment\.\*\*/ { exit } f' "$1"
+}
+for pair in "리드:$AP_ROUTER" "교대:$RS_REFS/visual-dispatch.md"; do
+  who=${pair%%:*}
+  para=$(reflect_para "${pair#*:}")
+  for lit in \
+    'When the predicate'"'"'s first line is `승인 보류 — 설계 문서 반영 대기`' \
+    '-- reconverge -p "/cc-cmds:design-reconverge <스냅숏 design_doc> 승인 화면 반영 <시각-판정 기록 절대 경로>"' \
+    '**The reflection'"'"'s end is not a re-plan signal.**' \
+    'is the `중단 기록` of the visual publish step'"'"'s last `중단 답` row' \
+    'Dispatch it once more, with the same scope,' \
+    '「반영 두 번째 시도도 <종단> 으로 끝남' \
+    'carries no option: do not report it as a question for a person — this re-dispatch handles it' \
+    'A `대기` with no tail is an interactive reflection that stopped between its approval write and its sidecar write: never dispatch it' \
+    'for an answer of this run the tail equals the latest `시각-판정 기록` that `visual-check.sh run-state` prints' \
+    'it equals the file name of that row'"'"'s `출처 기록` (`<run id>/halt/<file>.md`)' \
+    'a second `precondition-failed` stop record carries no option either'
+  do
+    check "$who 사본의 반영 파견 문단이 「${lit}」 을 싣는다" "$(mo_count "$para" "$lit")" "1"
+  done
+done
+lead_para=$(reflect_para "$AP_ROUTER")
+shift_para=$(reflect_para "$RS_REFS/visual-dispatch.md")
+check "반영 파견 문단이 리드·교대 사본에서 바이트까지 같다" \
+  "$([ -n "$lead_para" ] && [ "$lead_para" = "$shift_para" ] && echo 예 || echo 아니오)" "예"
 
 printf '\n통과 %s · 실패 %s\n' "$passed" "$failed"
 [ "$failed" -eq 0 ]
