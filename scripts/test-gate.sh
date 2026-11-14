@@ -6090,15 +6090,18 @@ pre_ledger_series() {
   lsr_wait_cases() {
     # 대기 원인 열 × `그룹` 세 모양 × `까지` 값/`-`. `계정` 은 재개 구속
     # 원인에만 값이다. `비용`·`비용 출처` 는 `까지` 와 함께 값이거나 함께 `-` 다.
-    local r acct g u c cs
+    # `호스트` 는 호스트 보류 원인에만 포화 표본이고, `기록 시각` 은 늘 값이다.
+    local r acct g u c cs h
     for r in group-exhausted no-room unknown-concurrency fifo-yield \
              resume-bound-exhausted resume-bound-no-room lease-lock-busy lease-contention \
-             lease-hold-busy lease-hold-lost wait-end-refused; do
+             lease-hold-busy lease-hold-lost wait-end-refused host-saturated; do
       case "$r" in resume-bound-*) acct='acct-a' ;; *) acct='-' ;; esac
+      case "$r" in host-saturated) h='포화 ratio=1350 ncpu=8 표본=2026-09-27T01:00:00Z' ;; *) h='-' ;; esac
       for g in - org:0123456789abcdef acct:acct-b; do
         for u in 2026-09-27T01:02:03Z -; do
           case "$u" in -) c='-'; cs='-' ;; *) c='1.0000/0.0000'; cs='default/default' ;; esac
-          lsr_row stage-wait '계보=S2-impl-1' "그룹=$g" "계정=$acct" "까지=$u" "비용=$c" "비용 출처=$cs" "근거=$r"
+          lsr_row stage-wait '계보=S2-impl-1' "그룹=$g" "계정=$acct" "까지=$u" "비용=$c" "비용 출처=$cs" "근거=$r" \
+            "호스트=$h" '기록 시각=2026-09-27T01:00:05Z'
         done
       done
     done
@@ -6108,8 +6111,8 @@ pre_ledger_series() {
     # 두 기록자를 넷씩 동시에 띄워 한 원장에 섞어 쓴다.
     local i
     for i in 1 2 3 4; do
-      gate_append 'stage-wait' "계보=G$i" '그룹=-' '계정=-' '까지=-' '비용=-' '비용 출처=-' '근거=lease-lock-busy' &
-      ledger_row 'stage-wait' "계보=D$i" '그룹=-' '계정=-' '까지=-' '비용=-' '비용 출처=-' '근거=lease-contention' &
+      gate_append 'stage-wait' "계보=G$i" '그룹=-' '계정=-' '까지=-' '비용=-' '비용 출처=-' '근거=lease-lock-busy' '호스트=-' '기록 시각=2026-09-27T01:00:05Z' &
+      ledger_row 'stage-wait' "계보=D$i" '그룹=-' '계정=-' '까지=-' '비용=-' '비용 출처=-' '근거=lease-contention' '호스트=-' '기록 시각=2026-09-27T01:00:05Z' &
     done
     wait
   }
@@ -50523,20 +50526,20 @@ lsr62_g=$(lsr_ledger w62-gate)
 lsr62_d=$(lsr_ledger w62-driver)
 lsr62_m=$(lsr_ledger w62-mixed)
 { lsr_lease_cases; lsr_wait_cases; } > "$lsr_root/cases62.tsv"
-check "62: 사례표가 임대 60·대기 66 줄이다" "$( { grep -c . "$lsr_root/cases62.tsv" || true; } )" "126"
+check "62: 사례표가 임대 60·대기 72 줄이다" "$( { grep -c . "$lsr_root/cases62.tsv" || true; } )" "132"
 check "62: 주입한 호스트에서 lock_tool 이 비어 있다 (락 없는 갈래)" \
   "$(lsr_in Linux "$lsr62_g" - lock_tool)" ""
 check "62: 게이트 기록자가 사례를 전부 받는다" \
-  "$(lsr_in Linux "$lsr62_g" - lsr_each gate_append < "$lsr_root/cases62.tsv" | sort | uniq -c | tr -s ' ' | sed 's/^ //')" "126 0"
+  "$(lsr_in Linux "$lsr62_g" - lsr_each gate_append < "$lsr_root/cases62.tsv" | sort | uniq -c | tr -s ' ' | sed 's/^ //')" "132 0"
 check "62: 드라이버 기록자가 사례를 전부 받는다" \
-  "$(lsr_in Linux "$lsr62_d" - lsr_each ledger_row < "$lsr_root/cases62.tsv" | sort | uniq -c | tr -s ' ' | sed 's/^ //')" "126 0"
+  "$(lsr_in Linux "$lsr62_d" - lsr_each ledger_row < "$lsr_root/cases62.tsv" | sort | uniq -c | tr -s ' ' | sed 's/^ //')" "132 0"
 sed -n '1p;61p' "$lsr_root/cases62.tsv" > "$lsr_root/shift62.tsv"
 for lsr62_sh in 'LS#7' 'LS#12'; do
   lsr_in Linux "$lsr62_g" "$lsr62_sh" lsr_each gate_append < "$lsr_root/shift62.tsv" >/dev/null
   lsr_in Linux "$lsr62_d" "$lsr62_sh" lsr_each ledger_row < "$lsr_root/shift62.tsv" >/dev/null
 done
-check "62: 두 원장이 각각 130행이다" \
-  "$( { grep -c '^- `' "$lsr62_g" || true; } )/$( { grep -c '^- `' "$lsr62_d" || true; } )" "130/130"
+check "62: 두 원장이 각각 136행이다" \
+  "$( { grep -c '^- `' "$lsr62_g" || true; } )/$( { grep -c '^- `' "$lsr62_d" || true; } )" "136/136"
 if cmp -s "$lsr62_g" "$lsr62_d"; then
   ok "62: 두 기록자가 같은 바이트와 같은 체인을 쓴다"
 else
@@ -50553,16 +50556,16 @@ check "62: 첫 행이 고정된 문법 그대로다" \
   "- \`stage-lease\` | 교대=0 | 파견 id=S1-impl-1.retry | 계보=S1-impl-1 | 계정=acct-a | 레인=~/.claude-a | 예약=0.2500/0.1000 | 비용=0.0300/0.0080 | 비용 출처=group-kind/kind | 근거=first | 관측=usage-cache@1790000000.5 | 단계=rest | 단계 출처=declared | 문턱=1.2000 | prev=$lsr62_seed"
 check "62: 교대 원천 세 조건 — 표식 없음 0, #7 은 7, #12 는 12" \
   "$( { grep -cF '| 교대=0 |' "$lsr62_d" || true; } )/$( { grep -cF '| 교대=7 |' "$lsr62_d" || true; } )/$( { grep -cF '| 교대=12 |' "$lsr62_d" || true; } )" \
-  "126/2/2"
+  "132/2/2"
 check "62: 락 없는 갈래는 락 파일을 만들지 않는다" \
   "$(ls -A "${lsr62_g%/*}" "${lsr62_d%/*}" | { grep -c 'ledger\.lock' || true; })" "0"
 check "62: 번갈아 쓴 두 기록자도 사례를 전부 받는다" \
-  "$(lsr_in Linux "$lsr62_m" - lsr_each alt < "$lsr_root/cases62.tsv" | sort | uniq -c | tr -s ' ' | sed 's/^ //')" "126 0"
+  "$(lsr_in Linux "$lsr62_m" - lsr_each alt < "$lsr_root/cases62.tsv" | sort | uniq -c | tr -s ' ' | sed 's/^ //')" "132 0"
 rc=0; lsr_in Linux "$lsr62_m" - gate_chain_verify >/dev/null 2>&1 || rc=$?
 check "62: 번갈아 쓴 원장의 사슬이 검증된다" "$rc" "0"
 check "62: 번갈아 쓴 원장이 한 기록자가 쓴 원장과 같은 바이트다" \
   "$( { grep '^- `' "$lsr62_m" || true; } | shasum -a 256 | cut -d' ' -f1)" \
-  "$( { grep '^- `' "$lsr62_g" || true; } | sed -n '1,126p' | shasum -a 256 | cut -d' ' -f1)"
+  "$( { grep '^- `' "$lsr62_g" || true; } | sed -n '1,132p' | shasum -a 256 | cut -d' ' -f1)"
 
 # ---------------------------------------------------------------------------
 # 63. 락 아래 섞어 쓴 두 기록자
@@ -50611,6 +50614,8 @@ lsr64_g=$(lsr_ledger r64-gate)
 lsr64_d=$(lsr_ledger r64-driver)
 check "64: 두 기록자의 행 상한이 같다 (RUN_ROW_MAX == GATE_ROW_MAX)" \
   "$(lsr_in - "$lsr64_g" - printf '%s' "$RUN_ROW_MAX")" "$(lsr_in - "$lsr64_g" - printf '%s' "$GATE_ROW_MAX")"
+# 대기 사례의 끝 두 칸. 어긋나는 필드 하나만 남도록 정상 값으로 채운다.
+lsr64_wt=('호스트=-' '기록 시각=2026-09-27T01:00:05Z')
 {
   lsr_row stage-lease '파견 id=S1-impl-1' '계보=S1-impl-1' '계정=a|b' '레인=~/.claude-a' '예약=-' '비용=-' '비용 출처=-' '근거=first' '관측=-' '단계=-' '단계 출처=-' '문턱=-'
   lsr_row stage-lease '파견 id=S1-impl-1' '계보=S1-impl-1' '계정=123e4567-e89b-12d3-a456-426614174000' '레인=~/.claude-a' '예약=-' '비용=-' '비용 출처=-' '근거=first' '관측=-' '단계=-' '단계 출처=-' '문턱=-'
@@ -50635,16 +50640,18 @@ check "64: 두 기록자의 행 상한이 같다 (RUN_ROW_MAX == GATE_ROW_MAX)" 
   lsr_row stage-lease '파견 id=S1-impl-1' '계보=S1-impl-1' '계정=acct-a' '레인=~/.claude-a' '예약=-' '비용=-' '비용 출처=-' '근거=first' '관측=-' '단계=-' '단계 출처=-' '문턱=-' '비고=x'
   lsr_row stage-lease '교대=3' '파견 id=S1-impl-1' '계보=S1-impl-1' '계정=acct-a' '레인=~/.claude-a' '예약=-' '비용=-' '비용 출처=-' '근거=first' '관측=-' '단계=-' '단계 출처=-' '문턱=-'
   lsr_row stage-lease oops '파견 id=S1-impl-1' '계보=S1-impl-1' '계정=acct-a' '레인=~/.claude-a' '예약=-' '비용=-' '비용 출처=-' '근거=first' '관측=-' '단계=-' '단계 출처=-' '문턱=-'
-  lsr_row stage-wait '계보=S2-impl-1' '그룹=org:ABCDEF0123456789' '계정=-' '까지=-' '비용=-' '비용 출처=-' '근거=no-room'
-  lsr_row stage-wait '계보=S2-impl-1' '그룹=org:0123' '계정=-' '까지=-' '비용=-' '비용 출처=-' '근거=no-room'
-  lsr_row stage-wait '계보=S2-impl-1' '그룹=acct:0123456789abcdef0123' '계정=-' '까지=-' '비용=-' '비용 출처=-' '근거=no-room'
-  lsr_row stage-wait '계보=S2-impl-1' '그룹=bogus' '계정=-' '까지=-' '비용=-' '비용 출처=-' '근거=no-room'
-  lsr_row stage-wait '계보=S2-impl-1' '그룹=-' '계정=-' '까지=2026-09-27 01:02:03' '비용=-' '비용 출처=-' '근거=no-room'
-  lsr_row stage-wait '계보=S2-impl-1' '그룹=-' '계정=-' '까지=1790000000' '비용=-' '비용 출처=-' '근거=no-room'
-  lsr_row stage-wait '계보=S2-impl-1' '그룹=-' '계정=-' '까지=-' '비용=-' '비용 출처=-' '근거=bogus'
-  lsr_row stage-wait '계보=S2-impl-1' '그룹=-' '계정=acct-a' '까지=-' '비용=-' '비용 출처=-' '근거=no-room'
-  lsr_row stage-wait '계보=S2-impl-1' '그룹=-' '계정=-' '까지=-' '비용=-' '비용 출처=-' '근거=resume-bound-no-room'
-  lsr_row stage-wait '계보=(미상)' '그룹=-' '계정=-' '까지=-' '비용=-' '비용 출처=-' '근거=no-room'
+  lsr_row stage-wait '계보=S2-impl-1' '그룹=org:ABCDEF0123456789' '계정=-' '까지=-' '비용=-' '비용 출처=-' '근거=no-room' "${lsr64_wt[@]}"
+  lsr_row stage-wait '계보=S2-impl-1' '그룹=org:0123' '계정=-' '까지=-' '비용=-' '비용 출처=-' '근거=no-room' "${lsr64_wt[@]}"
+  lsr_row stage-wait '계보=S2-impl-1' '그룹=acct:0123456789abcdef0123' '계정=-' '까지=-' '비용=-' '비용 출처=-' '근거=no-room' "${lsr64_wt[@]}"
+  lsr_row stage-wait '계보=S2-impl-1' '그룹=bogus' '계정=-' '까지=-' '비용=-' '비용 출처=-' '근거=no-room' "${lsr64_wt[@]}"
+  lsr_row stage-wait '계보=S2-impl-1' '그룹=-' '계정=-' '까지=2026-09-27 01:02:03' '비용=-' '비용 출처=-' '근거=no-room' "${lsr64_wt[@]}"
+  lsr_row stage-wait '계보=S2-impl-1' '그룹=-' '계정=-' '까지=1790000000' '비용=-' '비용 출처=-' '근거=no-room' "${lsr64_wt[@]}"
+  lsr_row stage-wait '계보=S2-impl-1' '그룹=-' '계정=-' '까지=-' '비용=-' '비용 출처=-' '근거=bogus' "${lsr64_wt[@]}"
+  lsr_row stage-wait '계보=S2-impl-1' '그룹=-' '계정=acct-a' '까지=-' '비용=-' '비용 출처=-' '근거=no-room' "${lsr64_wt[@]}"
+  lsr_row stage-wait '계보=S2-impl-1' '그룹=-' '계정=-' '까지=-' '비용=-' '비용 출처=-' '근거=resume-bound-no-room' "${lsr64_wt[@]}"
+  lsr_row stage-wait '계보=(미상)' '그룹=-' '계정=-' '까지=-' '비용=-' '비용 출처=-' '근거=no-room' "${lsr64_wt[@]}"
+  lsr_row stage-wait '계보=S2-impl-1' '그룹=-' '계정=-' '까지=-' '비용=-' '비용 출처=-' '근거=host-saturated' '호스트=포화 1350' '기록 시각=2026-09-27T01:00:05Z'
+  lsr_row stage-wait '계보=S2-impl-1' '그룹=-' '계정=-' '까지=-' '비용=-' '비용 출처=-' '근거=no-room' '호스트=-' '기록 시각=1790000000'
   lsr_row stage-lease '파견 id=S1-impl-1' '계보=S1-impl-1' '계정=acct-a' '레인=~/.claude-a' '예약=-' '비용=0.03/0.008' '비용 출처=kind/kind' '근거=first' '관측=-' '단계=-' '단계 출처=-' '문턱=-'
   lsr_row stage-lease '파견 id=S1-impl-1' '계보=S1-impl-1' '계정=acct-a' '레인=~/.claude-a' '예약=-' '비용=0.0300/0.0080' '비용 출처=group/kind' '근거=first' '관측=-' '단계=-' '단계 출처=-' '문턱=-'
   lsr_row stage-lease '파견 id=S1-impl-1' '계보=S1-impl-1' '계정=acct-a' '레인=~/.claude-a' '예약=-' '비용=0.0300/0.0080' '비용 출처=-' '근거=first' '관측=-' '단계=-' '단계 출처=-' '문턱=-'
@@ -50655,14 +50662,15 @@ check "64: 두 기록자의 행 상한이 같다 (RUN_ROW_MAX == GATE_ROW_MAX)" 
   lsr_row stage-lease '파견 id=S1-impl-1' '계보=S1-impl-1' '계정=acct-a' '레인=~/.claude-a' '예약=-' '비용=-' '비용 출처=-' '근거=first' '관측=-' '단계=-' '단계 출처=declared' '문턱=-'
   lsr_row stage-lease '파견 id=S1-impl-1' '계보=S1-impl-1' '계정=acct-a' '레인=~/.claude-a' '예약=-' '비용=-' '비용 출처=-' '근거=first' '관측=-' '단계=rest' '단계 출처=-' '문턱=-'
   lsr_row stage-lease '파견 id=S1-impl-1' '계보=S1-impl-1' '계정=acct-a' '레인=~/.claude-a' '예약=-' '비용=-' '비용 출처=-' '근거=first' '관측=-' '단계=burst' '단계 출처=declared' '문턱=1.2000'
-  lsr_row stage-wait '계보=S2-impl-1' '그룹=-' '계정=-' '까지=-' '비용=-' '비용 출처=default/default' '근거=no-room'
-  lsr_row stage-wait '계보=S2-impl-1' '그룹=-' '계정=-' '까지=-' '근거=no-room'
+  lsr_row stage-wait '계보=S2-impl-1' '그룹=-' '계정=-' '까지=-' '비용=-' '비용 출처=default/default' '근거=no-room' "${lsr64_wt[@]}"
+  lsr_row stage-wait '계보=S2-impl-1' '그룹=-' '계정=-' '까지=-' '근거=no-room' "${lsr64_wt[@]}"
+  lsr_row stage-wait '계보=S2-impl-1' '그룹=-' '계정=-' '까지=-' '비용=-' '비용 출처=-' '근거=no-room'
 } > "$lsr_root/bad64.tsv"
 lsr64_sg=$(lsr_sha "$lsr64_g"); lsr64_sd=$(lsr_sha "$lsr64_d")
-check "64: 게이트 기록자가 거부 사례 45개를 모두 rc 2 로 거부한다" \
-  "$(lsr_in Linux "$lsr64_g" - lsr_each gate_append < "$lsr_root/bad64.tsv" | sort | uniq -c | tr -s ' ' | sed 's/^ //')" "45 2"
+check "64: 게이트 기록자가 거부 사례 48개를 모두 rc 2 로 거부한다" \
+  "$(lsr_in Linux "$lsr64_g" - lsr_each gate_append < "$lsr_root/bad64.tsv" | sort | uniq -c | tr -s ' ' | sed 's/^ //')" "48 2"
 check "64: 드라이버 기록자가 같은 사례를 모두 rc 2 로 거부한다" \
-  "$(lsr_in Linux "$lsr64_d" - lsr_each ledger_row < "$lsr_root/bad64.tsv" | sort | uniq -c | tr -s ' ' | sed 's/^ //')" "45 2"
+  "$(lsr_in Linux "$lsr64_d" - lsr_each ledger_row < "$lsr_root/bad64.tsv" | sort | uniq -c | tr -s ' ' | sed 's/^ //')" "48 2"
 # 거부 사유. 키를 늘리면 키 목록 대조가 사례마다 먼저 거부해 rc 만으로는 통과하므로,
 # 임대 사례마다 거부 줄이 지목한 필드를 본다.
 lsr64_why() {
@@ -50686,6 +50694,9 @@ lsr64_why() {
 check "64: 임대 거부 사례마다 겨냥한 필드로 거부된다" \
   "$(grep '^stage-lease' "$lsr_root/bad64.tsv" | lsr_in Linux "$lsr64_d" - lsr64_why ledger_row | paste -sd, -)" \
   "계정,계정,계정,계정,계정,계정,계정,레인,레인,레인,예약,예약,근거,관측,관측,관측,파견 id,계보,키 목록,키 목록,키 목록,교대,키=값,비용,비용 출처,비용 출처,단계,단계 출처,문턱,문턱,단계 출처,단계 출처,문턱"
+check "64: 대기 거부 사례마다 겨냥한 필드로 거부된다" \
+  "$(grep '^stage-wait' "$lsr_root/bad64.tsv" | lsr_in Linux "$lsr64_d" - lsr64_why ledger_row | paste -sd, -)" \
+  "그룹,그룹,그룹,그룹,까지,까지,근거,계정,계정,계보,호스트,기록 시각,비용 출처,키 목록,키 목록"
 check "64: 거부된 행은 한 바이트도 남기지 않는다" \
   "$(lsr_sha "$lsr64_g")/$(lsr_sha "$lsr64_d")" "$lsr64_sg/$lsr64_sd"
 check "64: 거부는 곁파일도 남기지 않는다" \
@@ -50713,18 +50724,18 @@ lsr64_adv() {
     lsr64_try "$w" stage-lease "파견 id=$v" '계보=S1-impl-1' '계정=acct-a' '레인=~/.claude-a' '예약=-' '비용=-' '비용 출처=-' '근거=first' '관측=-' '단계=-' '단계 출처=-' '문턱=-'
     lsr64_try "$w" stage-lease '파견 id=S1-impl-1' "계보=$v" '계정=acct-a' '레인=~/.claude-a' '예약=-' '비용=-' '비용 출처=-' '근거=first' '관측=-' '단계=-' '단계 출처=-' '문턱=-'
     lsr64_try "$w" stage-lease '파견 id=S1-impl-1' '계보=S1-impl-1' "계정=$v" '레인=~/.claude-a' '예약=-' '비용=-' '비용 출처=-' '근거=first' '관측=-' '단계=-' '단계 출처=-' '문턱=-'
-    lsr64_try "$w" stage-wait "계보=$v" '그룹=-' '계정=-' '까지=-' '비용=-' '비용 출처=-' '근거=no-room'
-    lsr64_try "$w" stage-wait '계보=S2-impl-1' '그룹=-' "계정=$v" '까지=-' '비용=-' '비용 출처=-' '근거=resume-bound-no-room'
-    lsr64_try "$w" stage-wait '계보=S2-impl-1' "그룹=acct:$v" '계정=-' '까지=-' '비용=-' '비용 출처=-' '근거=no-room'
+    lsr64_try "$w" stage-wait "계보=$v" '그룹=-' '계정=-' '까지=-' '비용=-' '비용 출처=-' '근거=no-room' "${lsr64_wt[@]}"
+    lsr64_try "$w" stage-wait '계보=S2-impl-1' '그룹=-' "계정=$v" '까지=-' '비용=-' '비용 출처=-' '근거=resume-bound-no-room' "${lsr64_wt[@]}"
+    lsr64_try "$w" stage-wait '계보=S2-impl-1' "그룹=acct:$v" '계정=-' '까지=-' '비용=-' '비용 출처=-' '근거=no-room' "${lsr64_wt[@]}"
   done
   for v in "${hexes[@]}"; do
     lsr64_try "$w" stage-lease '파견 id=S1-impl-1' '계보=S1-impl-1' "계정=$v" '레인=~/.claude-a' '예약=-' '비용=-' '비용 출처=-' '근거=first' '관측=-' '단계=-' '단계 출처=-' '문턱=-'
-    lsr64_try "$w" stage-wait '계보=S2-impl-1' '그룹=-' "계정=$v" '까지=-' '비용=-' '비용 출처=-' '근거=resume-bound-exhausted'
-    lsr64_try "$w" stage-wait '계보=S2-impl-1' "그룹=acct:$v" '계정=-' '까지=-' '비용=-' '비용 출처=-' '근거=group-exhausted'
+    lsr64_try "$w" stage-wait '계보=S2-impl-1' '그룹=-' "계정=$v" '까지=-' '비용=-' '비용 출처=-' '근거=resume-bound-exhausted' "${lsr64_wt[@]}"
+    lsr64_try "$w" stage-wait '계보=S2-impl-1' "그룹=acct:$v" '계정=-' '까지=-' '비용=-' '비용 출처=-' '근거=group-exhausted' "${lsr64_wt[@]}"
   done
   for v in 'org:123e4567-e89b-12d3-a456-426614174000' 'org:0123456789abcde' 'org:0123456789abcdef0' \
            'org:0123456789ABCDEF'; do
-    lsr64_try "$w" stage-wait '계보=S2-impl-1' "그룹=$v" '계정=-' '까지=-' '비용=-' '비용 출처=-' '근거=group-exhausted'
+    lsr64_try "$w" stage-wait '계보=S2-impl-1' "그룹=$v" '계정=-' '까지=-' '비용=-' '비용 출처=-' '근거=group-exhausted' "${lsr64_wt[@]}"
   done
   for v in '~/a@b' '~/a|b' '~/.claude-a/' '.claude-a'; do
     lsr64_try "$w" stage-lease '파견 id=S1-impl-1' '계보=S1-impl-1' '계정=acct-a' "레인=$v" '예약=-' '비용=-' '비용 출처=-' '근거=first' '관측=-' '단계=-' '단계 출처=-' '문턱=-'
@@ -50736,16 +50747,16 @@ lsr64_adv() {
     lsr64_try "$w" stage-lease '파견 id=S1-impl-1' '계보=S1-impl-1' '계정=acct-a' '레인=~/.claude-a' '예약=-' "비용=$v" '비용 출처=kind/kind' '근거=first' '관측=-' '단계=-' '단계 출처=-' '문턱=-'
   done
   for v in 'kind' 'kind/kind/kind' 'Kind/kind' 'group-kind/-'; do
-    lsr64_try "$w" stage-wait '계보=S2-impl-1' '그룹=-' '계정=-' '까지=-' '비용=0.0300/0.0080' "비용 출처=$v" '근거=no-room'
+    lsr64_try "$w" stage-wait '계보=S2-impl-1' '그룹=-' '계정=-' '까지=-' '비용=0.0300/0.0080' "비용 출처=$v" '근거=no-room' "${lsr64_wt[@]}"
   done
   for v in 'a|b@1' 'x@y@1' 'us age@1' $'us\rage@1' $'us\nage@1' 'usage-cache' 'usage-cache@' '@1' \
            'me@example.com@1'; do
     lsr64_try "$w" stage-lease '파견 id=S1-impl-1' '계보=S1-impl-1' '계정=acct-a' '레인=~/.claude-a' '예약=-' '비용=-' '비용 출처=-' '근거=first' "관측=$v" '단계=-' '단계 출처=-' '문턱=-'
   done
-  lsr64_try "$w" stage-wait '그룹=-' '계보=S2-impl-1' '계정=-' '까지=-' '비용=-' '비용 출처=-' '근거=no-room'
-  lsr64_try "$w" stage-wait '계보=S2-impl-1' '그룹=-' '계정=-' '비용=-' '비용 출처=-' '근거=no-room'
-  lsr64_try "$w" stage-wait '계보=S2-impl-1' '그룹=-' '계정=-' '까지=-' '비용=-' '비용 출처=-' '근거=no-room' '비고=x'
-  lsr64_try "$w" stage-wait '교대=3' '계보=S2-impl-1' '그룹=-' '계정=-' '까지=-' '비용=-' '비용 출처=-' '근거=no-room'
+  lsr64_try "$w" stage-wait '그룹=-' '계보=S2-impl-1' '계정=-' '까지=-' '비용=-' '비용 출처=-' '근거=no-room' "${lsr64_wt[@]}"
+  lsr64_try "$w" stage-wait '계보=S2-impl-1' '그룹=-' '계정=-' '비용=-' '비용 출처=-' '근거=no-room' "${lsr64_wt[@]}"
+  lsr64_try "$w" stage-wait '계보=S2-impl-1' '그룹=-' '계정=-' '까지=-' '비용=-' '비용 출처=-' '근거=no-room' "${lsr64_wt[@]}" '비고=x'
+  lsr64_try "$w" stage-wait '교대=3' '계보=S2-impl-1' '그룹=-' '계정=-' '까지=-' '비용=-' '비용 출처=-' '근거=no-room' "${lsr64_wt[@]}"
 }
 check "64: 게이트 기록자가 적대 입력 133개를 모두 rc 2 로 거부한다" \
   "$(lsr_in Linux "$lsr64_g" - lsr64_adv gate_append | sort | uniq -c | tr -s ' ' | sed 's/^ //')" "133 2"
@@ -50824,6 +50835,10 @@ lsr_in Linux "$lsr65_l" - gate_append 'segment' 'id=S1' '상태=실행중' >/dev
 lsr_in Linux "$lsr65_l" - gate_append 'cycle' '세그먼트=S1' '사이클=1' 'P0=0' 'P1=0' >/dev/null 2>&1
 cp "$lsr65_l" "$lsr_root/e65.base"
 lsr65_d0=$(lsr_in Linux "$lsr65_l" - lsr_digest "$FX_MANIFEST" 2>/dev/null)
+# 대기 행의 `기록 시각` 은 쓰는 순간의 시각이라, 모양을 확인한 뒤 `T` 로 바꿔 비교한다.
+lsr65_wbody() {
+  lsr_body "$1" | sed -E 's/\| 기록 시각=[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$/| 기록 시각=T/'
+}
 
 lsr65_e1=$(jq -cn --arg d "$HOME/.claude-a" '{verdict: "GRANT", basis: "first", account: "acct-a",
   config_dir: $d, group: null, reservation_bp: {five_hour: 2500, seven_day: 7}, admitted_as: null,
@@ -50877,12 +50892,18 @@ lsr65_w1=$(jq -cn '{verdict: "WAIT", reason: "no-room", group: "org:0123456789ab
   until_epoch: 1790000000.9, cost: {five_hour: {bp: 10000, source: "default"}, seven_day: {bp: 0, source: "kind"}}}')
 rc=0; lsr_in Linux "$lsr65_l" - gate_stage_wait_row 'S2-impl-1.retry' "$lsr65_w1" >/dev/null 2>&1 || rc=$?
 check "65: WAIT 봉투는 대기 행이 된다" "$rc" "0"
-check "65: 대기 행의 까지 는 floor|todate 다" "$(lsr_body "$lsr65_l")" \
-  "- \`stage-wait\` | 교대=0 | 계보=S2-impl-1 | 그룹=org:0123456789abcdef | 계정=- | 까지=2026-09-21T14:13:20Z | 비용=1.0000/0.0000 | 비용 출처=default/kind | 근거=no-room"
+check "65: 대기 행의 까지 는 floor|todate 다" "$(lsr65_wbody "$lsr65_l")" \
+  "- \`stage-wait\` | 교대=0 | 계보=S2-impl-1 | 그룹=org:0123456789abcdef | 계정=- | 까지=2026-09-21T14:13:20Z | 비용=1.0000/0.0000 | 비용 출처=default/kind | 근거=no-room | 호스트=- | 기록 시각=T"
 lsr65_w2=$(jq -cn '{verdict: "WAIT", reason: "fifo-yield", group: null, account: null, until_epoch: null}')
 lsr_in Linux "$lsr65_l" - gate_stage_wait_row 'S2-impl-2' "$lsr65_w2" >/dev/null 2>&1 || true
-check "65: 그룹과 까지 가 없는 대기는 - 로 쓴다" "$(lsr_body "$lsr65_l")" \
-  "- \`stage-wait\` | 교대=0 | 계보=S2-impl-2 | 그룹=- | 계정=- | 까지=- | 비용=- | 비용 출처=- | 근거=fifo-yield"
+check "65: 그룹과 까지 가 없는 대기는 - 로 쓴다" "$(lsr65_wbody "$lsr65_l")" \
+  "- \`stage-wait\` | 교대=0 | 계보=S2-impl-2 | 그룹=- | 계정=- | 까지=- | 비용=- | 비용 출처=- | 근거=fifo-yield | 호스트=- | 기록 시각=T"
+# 호스트 보류 대기. 봉투의 `host` 표본을 호스트 칸에 정수와 표본 시각으로 쓴다.
+lsr65_wh=$(jq -cn '{verdict: "WAIT", reason: "host-saturated", group: null, account: null, until_epoch: null, cost: null,
+  host: {ratio_permille: 1350.7, ncpu: 8, sampled_at_epoch: 1790000000.4}}')
+rc=0; lsr_in Linux "$lsr65_l" - gate_stage_wait_row 'S2-impl-4' "$lsr65_wh" >/dev/null 2>&1 || rc=$?
+check "65: 호스트 보류 대기는 호스트 칸에 포화 표본을 쓴다" "$rc/$(lsr65_wbody "$lsr65_l")" \
+  "0/- \`stage-wait\` | 교대=0 | 계보=S2-impl-4 | 그룹=- | 계정=- | 까지=- | 비용=- | 비용 출처=- | 근거=host-saturated | 호스트=포화 ratio=1350 ncpu=8 표본=2026-09-21T14:13:20Z | 기록 시각=T"
 
 # 재개 구속. 구속이 없거나 봉투의 계정과 다르면 행을 쓰지 않는다.
 lsr65_rb=$(jq -cn '{verdict: "GRANT", basis: "resume-bound", account: "acct-a", config_dir: "/lanes/a",
@@ -50948,31 +50969,33 @@ rc=0; lsr_in Linux "$lsr65_l" - gate_stage_lease_row 'S1-impl-8' "$lsr65_rm" acc
 check "65: 옮겨 온 구속을 단 resume-migrated GRANT 는 새 계정의 행이 된다" "$rc/$(lsr_body "$lsr65_l")" \
   "0/- \`stage-lease\` | 교대=0 | 파견 id=S1-impl-8 | 계보=S1-impl-8 | 계정=acct-b | 레인=/lanes/b | 예약=- | 비용=- | 비용 출처=- | 근거=resume-migrated | 관측=- | 단계=- | 단계 출처=- | 문턱=-"
 rc=0; lsr_in Linux "$lsr65_l" - gate_stage_wait_row 'S2-impl-3' "$lsr65_rw" acct-a >/dev/null 2>&1 || rc=$?
-check "65: 맞는 구속을 단 resume-bound 대기는 행이 된다" "$rc/$(lsr_body "$lsr65_l")" \
-  "0/- \`stage-wait\` | 교대=0 | 계보=S2-impl-3 | 그룹=acct:acct-a | 계정=acct-a | 까지=2026-09-21T14:13:20Z | 비용=- | 비용 출처=- | 근거=resume-bound-exhausted"
+check "65: 맞는 구속을 단 resume-bound 대기는 행이 된다" "$rc/$(lsr65_wbody "$lsr65_l")" \
+  "0/- \`stage-wait\` | 교대=0 | 계보=S2-impl-3 | 그룹=acct:acct-a | 계정=acct-a | 까지=2026-09-21T14:13:20Z | 비용=- | 비용 출처=- | 근거=resume-bound-exhausted | 호스트=- | 기록 시각=T"
 # 리셋권을 기다리는 예비 공급 대기. 라우터가 리셋권 고정 입력에서 내는 봉투를 그대로
 # 적었다 — 마감이 없고 비용 칸이 있으며 `reserve` 가 덧붙는다. 행 작성기는 덧붙은
 # 키를 읽지 않고, 추가 작성기 안의 계열 검사가 이 모양을 받아야 행이 남는다.
 lsr65_rv='{"verdict":"WAIT","group":"org:4444444444444444","account":"full","until_epoch":null,"reason":"resume-bound-no-room","cost":{"five_hour":{"bp":3000,"source":"default"},"seven_day":{"bp":800,"source":"default"}},"reserve":{"group":"org:4444444444444444","account":"full","pass_id":"rp-0000000e","kind":"seven_day","expires_at_epoch":1800864000},"txn":{"op":"none","record":null}}'
 rc=0; lsr_in Linux "$lsr65_l" - gate_stage_wait_row 'S1-impl-6' "$lsr65_rv" full >/dev/null 2>&1 || rc=$?
-check "65: 리셋권 예비 공급 대기는 까지 - 에 비용을 단 행 하나가 된다" "$rc/$(lsr_body "$lsr65_l")" \
-  "0/- \`stage-wait\` | 교대=0 | 계보=S1-impl-6 | 그룹=org:4444444444444444 | 계정=full | 까지=- | 비용=0.3000/0.0800 | 비용 출처=default/default | 근거=resume-bound-no-room"
+check "65: 리셋권 예비 공급 대기는 까지 - 에 비용을 단 행 하나가 된다" "$rc/$(lsr65_wbody "$lsr65_l")" \
+  "0/- \`stage-wait\` | 교대=0 | 계보=S1-impl-6 | 그룹=org:4444444444444444 | 계정=full | 까지=- | 비용=0.3000/0.0800 | 비용 출처=default/default | 근거=resume-bound-no-room | 호스트=- | 기록 시각=T"
 check "65: 예비 공급 대기 행은 정확히 하나다" \
   "$( { grep -cF '계보=S1-impl-6 |' "$lsr65_l" || true; } )" "1"
 # 같은 대기가 리셋권을 누른 뒤의 봉투. 대기가 본 리셋권의 기억 `reserve_seen` 과 눌린
 # 시각 `reserve.pressed_at_epoch` 가 덧붙어도 행 작성기는 그 키를 읽지 않으므로, 계보
-# 칸만 빼면 위의 예비 공급 행과 바이트가 같아야 한다.
+# 칸만 빼면 위의 예비 공급 행과 바이트가 같아야 한다. 쓰는 순간의 `기록 시각` 은 두 행 사이에
+# 초가 넘어갈 수 있어 양쪽 모두 `T` 로 바꿔 비교한다.
 lsr65_rp='{"verdict":"WAIT","group":"org:4444444444444444","account":"full","until_epoch":null,"reason":"resume-bound-no-room","cost":{"five_hour":{"bp":3000,"source":"default"},"seven_day":{"bp":800,"source":"default"}},"reserve":{"group":"org:4444444444444444","account":"full","pass_id":"rp-0000000e","kind":"seven_day","expires_at_epoch":1800864000,"pressed_at_epoch":1800000000},"reserve_seen":[{"group":"org:4444444444444444","account":"full","id":"rp-0000000e","kind":"seven_day","expires_at_epoch":1800864000,"pressed_at_epoch":1800000000}],"txn":{"op":"none","record":null}}'
-lsr65_rv_body=$( { grep -F '계보=S1-impl-6 |' "$lsr65_l" || true; } | sed -e 's/ | prev=[0-9a-f]*$//' -e 's/ | 계보=S1-impl-6 | / | 계보=S1-impl-7 | /')
+lsr65_rv_body=$( { grep -F '계보=S1-impl-6 |' "$lsr65_l" || true; } | sed -E -e 's/ \| prev=[0-9a-f]*$//' -e 's/ \| 계보=S1-impl-6 \| / | 계보=S1-impl-7 | /' \
+  -e 's/\| 기록 시각=[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$/| 기록 시각=T/')
 rc=0; lsr_in Linux "$lsr65_l" - gate_stage_wait_row 'S1-impl-7' "$lsr65_rp" full >/dev/null 2>&1 || rc=$?
-check "65: 눌린 리셋권의 기억을 단 대기 봉투는 계보 칸만 다른 같은 행이 된다" "$rc/$(lsr_body "$lsr65_l")" \
+check "65: 눌린 리셋권의 기억을 단 대기 봉투는 계보 칸만 다른 같은 행이 된다" "$rc/$(lsr65_wbody "$lsr65_l")" \
   "0/${lsr65_rv_body:-예비 공급 행 없음}"
 rc=0; lsr_in Linux "$lsr65_l" - gate_chain_verify >/dev/null 2>&1 || rc=$?
 check "65: 래퍼가 쓴 원장의 사슬이 검증된다" "$rc" "0"
 
 # 추출기 격리.
-check "65: 이 절이 더한 새 계열 행은 열일곱이다" \
-  "$( { grep -cE '^- `stage-(lease|wait)`' "$lsr65_l" || true; } )" "17"
+check "65: 이 절이 더한 새 계열 행은 열여덟이다" \
+  "$( { grep -cE '^- `stage-(lease|wait)`' "$lsr65_l" || true; } )" "18"
 lsr65_d1=$(lsr_in Linux "$lsr65_l" - lsr_digest "$FX_MANIFEST" 2>/dev/null)
 if [ -n "$lsr65_d0" ] && [ "$lsr65_d1" = "$lsr65_d0" ]; then
   ok "65: 새 계열 행은 진전 해시를 움직이지 않는다"
@@ -51535,7 +51558,7 @@ lsr75_w=$(lsr75_new w75)
 check "75: WAIT 의 라우터 반쪽은 0 이다" \
   "$(lsr75_route "$lsr75_w" '{"verdict":"WAIT","reason":"no-room","group":null,"account":null,"until_epoch":null}' SW1)" "0 B:SW1#1"
 case "$(lsr_body "$lsr75_w")" in
-  '- `stage-wait` | '*' | 계보=B:SW1#1 | 그룹=- | 계정=- | 까지=- | 비용=- | 비용 출처=- | 근거=no-room')
+  '- `stage-wait` | '*' | 계보=B:SW1#1 | 그룹=- | 계정=- | 까지=- | 비용=- | 비용 출처=- | 근거=no-room | 호스트=- | 기록 시각=20'*Z)
     ok "75: WAIT 가 계보 B:SW1#1 의 stage-wait 행을 남긴다" ;;
   *) bad "75 WAIT 행" "$(lsr_body "$lsr75_w")" ;;
 esac
@@ -52038,7 +52061,7 @@ check "95: 기다리는 묶인 WAIT 와 새 WAIT 면 묶인 대기다" \
   "$(lsr93_row t5 "$lsr93_BWU" "$lsr93_FWU")" "0|WAIT|resume|bound|-||resume,first|0|1|0|-"
 lsr93_t5=$( { grep '^- `stage-wait` ' "$lsr_root/t5/ledger.md" || true; } )
 case "$lsr93_t5" in
-  *"| 계보=B:S9#2 | 그룹=- | 계정=u1 | "*"| 근거=resume-bound-exhausted | 답 운반="[0-9]*) ok "95: 묶인 대기의 stage-wait 행이 묶인 계정과 답 운반을 싣는다" ;;
+  *"| 계보=B:S9#2 | 그룹=- | 계정=u1 | "*"| 근거=resume-bound-exhausted | 호스트=- | 기록 시각="*" | 답 운반="[0-9]*) ok "95: 묶인 대기의 stage-wait 행이 묶인 계정과 답 운반을 싣는다" ;;
   *) bad "95 묶인 대기 행" "$lsr93_t5" ;;
 esac
 # 묶인 소진 대기의 마감 대조는 예상 소요를 더한다 — 라우터가 다른 WAIT 를 마감에 견주는
@@ -52071,7 +52094,7 @@ check "95: binding-digest 는 없는 문서를 exit 2 로 거부한다" "$lsr93_
 check "95: 예비 묶인 WAIT 와 언제인지 아는 새 WAIT 면 새 대기다" \
   "$(lsr93_row t6 "$lsr93_BWR" "$lsr93_FWU")" "0|WAIT|first||-||resume,first|0|1|0|-"
 case "$( { grep '^- `stage-wait` ' "$lsr_root/t6/ledger.md" || true; } )" in
-  *"| 계정=- | "*"| 근거=group-exhausted | 답 운반="[0-9]*) ok "95: 새 대기의 stage-wait 행도 답 운반을 싣는다" ;;
+  *"| 계정=- | "*"| 근거=group-exhausted | 호스트=- | 기록 시각="*" | 답 운반="[0-9]*) ok "95: 새 대기의 stage-wait 행도 답 운반을 싣는다" ;;
   *) bad "95 새 대기 행" "$(grep '^- `stage-wait` ' "$lsr_root/t6/ledger.md")" ;;
 esac
 check "95: 묶인 마감 PARK 와 예비 새 WAIT 면 새 예비 대기다" \
@@ -52581,7 +52604,7 @@ check "95: TC6 필드표 린트가 답 운반·중단 답 줄과 함께 통과�
 lsr93_wck() {  # lsr93_wck [<덧붙일 인자> [<둘째>]] — stage-wait 계열 검사의 rc
   LSR93_W1=${1:-} LSR93_W2=${2:-} lsr93_in "$lsr_root/t5/ledger.md" eval '
     set --; [ -z "$LSR93_W1" ] || set -- "$LSR93_W1"; [ -z "$LSR93_W2" ] || set -- "$@" "$LSR93_W2"
-    r=0; run_ledger_series_check stage-wait 계보=B:S9#3 그룹=- 계정=- 까지=- 비용=- "비용 출처=-" 근거=no-room "$@" >/dev/null 2>&1 || r=$?
+    r=0; run_ledger_series_check stage-wait 계보=B:S9#3 그룹=- 계정=- 까지=- 비용=- "비용 출처=-" 근거=no-room 호스트=- "기록 시각=2026-09-27T01:00:05Z" "$@" >/dev/null 2>&1 || r=$?
     printf %s "$r"' 2>/dev/null
 }
 check "95: TC6 stage-wait 계열 검사는 끝의 답 운반만 받고 줄 번호가 아닌 값은 거부한다" \
@@ -66800,7 +66823,7 @@ h98_lv=$(lsr_ledger v98)
 h98_wr() {  # h98_wr <기록자> <계정> — 차용 중 재개 대기 행 하나를 서브셸에서 쓰고 rc 를 낸다
   local rc=0
   ( lsr_in - "$h98_lv" - "$1" stage-wait '계보=S2-impl-1' '그룹=org:0123456789abcdef' "계정=$2" \
-      '까지=-' '비용=-' '비용 출처=-' '근거=resume-bound-borrowed' ) >/dev/null 2>&1 || rc=$?
+      '까지=-' '비용=-' '비용 출처=-' '근거=resume-bound-borrowed' '호스트=-' '기록 시각=2026-09-27T01:00:05Z' ) >/dev/null 2>&1 || rc=$?
   printf '%s' "$rc"
 }
 check "98: 차용 중 재개 대기는 계정과 함께 받고 비용 두 칸은 - 다" \
@@ -66815,7 +66838,7 @@ h98_BRW='{"verdict":"WAIT","reason":"resume-bound-borrowed","group":"org:0123456
 check "98: 차용된 묶인 대기와 새 열린 대기면 묶인 대기다" \
   "$(lsr93_row t98a "$h98_BRW" "$lsr93_FWO")" "0|WAIT|resume|bound|-||resume,first|0|1|0|-"
 case "$( { grep '^- `stage-wait` ' "$lsr_root/t98a/ledger.md" || true; } )" in
-  *"| 계보=B:S9#2 | 그룹=org:0123456789abcdef | 계정=u1 | 까지=- | 비용=- | 비용 출처=- | 근거=resume-bound-borrowed | 답 운반="[0-9]*)
+  *"| 계보=B:S9#2 | 그룹=org:0123456789abcdef | 계정=u1 | 까지=- | 비용=- | 비용 출처=- | 근거=resume-bound-borrowed | 호스트=- | 기록 시각="*" | 답 운반="[0-9]*)
     ok "98: 그 stage-wait 행이 기증자 그룹·묶인 계정·답 운반을 싣는다" ;;
   *) bad "98 차용 묶인 대기 행" "$( { grep '^- `stage-wait` ' "$lsr_root/t98a/ledger.md" || true; } )" ;;
 esac

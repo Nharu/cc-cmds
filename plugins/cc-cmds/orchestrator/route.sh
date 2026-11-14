@@ -1204,6 +1204,31 @@ def rt_ask_kinds: ["design", "audit", "split", "visual", "implement", "review", 
 def rt_ask_on($c):
   (($c.config.ask // null) != null)
   and ((($c.request.kind // "") | tostring) as $k | any(rt_ask_kinds[]; . == $k));
+# 호스트 포화 중 보류하는 무거운 스테이지 종류. 검사를 띄우는 구현·리뷰·리드 수정이다.
+def rt_host_kinds: ["implement", "review", "lead-fix"];
+def rt_host_heavy($k): (($k // "") | tostring) as $s | any(rt_host_kinds[]; . == $s);
+# 호스트 보류 단계. 계정 판정이 낸 봉투를 받아, 포화 문맥에서 아래가 모두 성립할 때만
+# 그룹 없는 WAIT `host-saturated` 로 바꾸고 임대를 쓰지 않는다: 사건이 `first` 이고(재질의는
+# 원래 사건으로 묻는다), 요청 종류가 무거운 종류이고, 답이 `txn.op` `write` 의 GRANT 이고,
+# 요청 계보에 살아 있는 자기 부여가 없고(이어 쥐기는 통과), 다른 계보의 살아 있는 무거운
+# 부여가 하나 이상 있다. 마지막 조건이 교착을 막는다 — 다른 무거운 스테이지가 도는 동안만
+# 보류한다. `stage_kind` 가 없는 옛 기록은 무거운 부여로 세지 않는다. 계정 대기의 재질의가
+# 이 보류로 바뀌면 대기 루프가 그 대기자의 그룹 FIFO 대기 항목을 내린다.
+def rt_host_hold($p):
+  ($p.c.host // null) as $h
+  | ($p.c.request.run_id) as $run
+  | ($p.c.request.lineage) as $lin
+  | if (($h | type) != "object") or ($h.saturated != true) then .
+    elif $p.c.request.event != "first" then .
+    elif (rt_host_heavy($p.c.request.kind) | not) then .
+    elif .verdict != "GRANT" or ((.txn.op? // null) != "write") then .
+    elif $p.own != null and $p.own.kind == "grant" and $p.own.live == true then .
+    elif ([($p.c.leases.items // [])[]
+           | select(.kind == "grant" and .live == true and rt_host_heavy(.stage_kind)
+                    and ((.run_id == $run and .lineage == $lin) | not))] | length) == 0 then .
+    else rt_env({verdict: "WAIT", group: null, account: null, until_epoch: null, reason: "host-saturated", cost: null,
+                 host: {ratio_permille: $h.ratio_permille, ncpu: $h.ncpu, sampled_at_epoch: $h.sampled_at_epoch}};
+                "none"; null) end;
 # 후보 하나가 재부착까지 버티는가. 기준은 `(1 + resume_n) × 이번 요청의 주간 예약` 이고,
 # r7 은 쉼 단계 정렬과 같은 식이다 — 대여 행의 주간 창 끝은 그 행의 대여 상한, 주간
 # 창을 모르면 null 이고 버티지 못한다.
@@ -1271,7 +1296,7 @@ def rt_rec_new($p; $e):
   {schema: $p.schema, kind: "grant", run_id: $p.c.request.run_id, lineage: $p.c.request.lineage, nonce: $e.nonce,
    seq: rt_nextseq($p), account: $e.account, config_dir: $e.config_dir, reservation_bp: $e.reservation_bp,
    admitted_as: $e.admitted_as, basis: $e.basis, observed: $e.observed, granted_at_epoch: $p.c.now,
-   holders: ($p.c.request.holders // [])};
+   holders: ($p.c.request.holders // []), stage_kind: ($p.c.request.kind // null)};
 def rt_rec_hold($p):
   $p.own | del(.live, .path) | .holders = ((.holders + ($p.c.request.holders // [])) | unique_by(.pid));
 
@@ -1693,6 +1718,9 @@ def rt_decide($schema):
      elif $c.request.event == "limit-reclaim" or $c.request.event == "first-reject" then
        rt_new($p; "reassigned-after-limit"; rt_prev($p))
      else error("request.event") end)
+  # 호스트 보류는 계정 판정 뒤, 교대 좌석 대체 앞의 마지막 단계다. 교대는 무거운 종류가
+  # 아니라 이 단계를 지난다.
+  | rt_host_hold($p)
   | (if $p.shift and $p.pin == null and ((.verdict == "WAIT") or ((.verdict == "PARK") and (.reason != "inventory-corrupt")))
      then rt_env(rt_seat($p; "shift-seat-fallback"); "none"; null) else . end)
   # 고정 요청의 PARK 는 어느 갈래에서 나든 고정 계정을 싣는다. 이미 계정을 정한 봉투는
@@ -2213,7 +2241,7 @@ route_gather_context() {
   # 에서 bp 로 옮긴다. 그 변수가 없는 셸에서는 null 이 되고 결정은 rc 2 로 닫힌다.
   # 비용 표본은 원문 그대로 `cost_samples` 에 싣고, 저장소 때문에 rc 2 로 닫지 않는다.
   local req="${1:-}" seat="${2:-}" now inv irc=0 inventory usage table leases frames run_id cap cfg bpath borrow bpj
-  local costs prog out phase lane aff psrc
+  local costs prog out phase lane aff psrc host
   now=$(date -u +%s) || return 2
   printf '%s' "$req" | jq -e 'type == "object"' >/dev/null 2>&1 || return 2
   inv="${RUN_DIR:-}/inventory.json"
@@ -2261,6 +2289,19 @@ route_gather_context() {
   # 고정의 출처. 요청 단위 고정에 출처가 실렸을 때만 `seat.pin_source` 가 되고, 없으면
   # `seat` 의 바이트는 그대로다. 이관 판정은 출처가 있는 고정에만 든다.
   psrc=$(route__pin_source_of "$req")
+  # 호스트 포화. fleet 센서가 state.json 에 발행한 호스트 블록을 읽기만 한다. 스키마가
+  # 같고, 계산 시각이 낡음 한도 안이고, 블록의 상태가 `ok` 일 때만 값이고 그 밖은 null 이다.
+  # 이 판독 때문에 rc 2 로 닫지 않는다 — 모르면 막지 않는다.
+  host=null
+  if [ -n "${RUN_PACE_SCHEMA:-}" ] && [ -n "${RUN_PACE_STALE_SECONDS:-}" ] && [ -f "$(run_pace_root)/state.json" ]; then
+    host=$(jq -c --arg s "$RUN_PACE_SCHEMA" --argjson now "$now" --argjson stale "$RUN_PACE_STALE_SECONDS" '
+      if (type == "object") and .schema == $s and ((.computed_at_epoch | type) == "number")
+         and (($now - .computed_at_epoch) <= $stale)
+         and ((.host | type) == "object") and .host.state == "ok"
+      then .host | {saturated: (.saturated == true), ratio_permille, ncpu, sampled_at_epoch}
+      else null end' "$(run_pace_root)/state.json" 2>/dev/null) || host=null
+    [ -n "$host" ] || host=null
+  fi
   # 런의 직전 계정 기록. 없거나 파싱되지 않거나 스키마·형이 틀리면 null 이고, 이 기록
   # 때문에 rc 2 로 닫지 않는다 — 기록이 없을 때와 같은 판정으로 계속된다.
   aff=null
@@ -2275,10 +2316,11 @@ route_gather_context() {
       sticky: ([$leases.items[] | select(.run_id == $req.run_id and .kind == "grant" and .live == true) | .account] | unique),
       seat: ({config_dir: $seat} + (if $lane == "" then {} else {lane: $lane} end)
              + (if $lane == "" or $psrc == "" then {} else {pin_source: $psrc} end)), config: $cfg, deadline: ($req.deadline // null),
-      borrow: $borrow, borrow_path: $bp, phase: $phase, cost_samples: $cost_samples, affinity: $aff}'
+      borrow: $borrow, borrow_path: $bp, phase: $phase, cost_samples: $cost_samples, affinity: $aff, host: $host}'
   set -- --argjson now "$now" --argjson req "$req" --argjson inv "$inventory" --argjson usage "$usage" \
     --argjson leases "$leases" --argjson frames "$frames" --argjson cfg "$cfg" --arg seat "$seat" \
-    --argjson borrow "$borrow" --argjson bp "$bpj" --argjson phase "$phase" --arg lane "$lane" --arg psrc "$psrc" --argjson aff "$aff"
+    --argjson borrow "$borrow" --argjson bp "$bpj" --argjson phase "$phase" --arg lane "$lane" --arg psrc "$psrc" --argjson aff "$aff" \
+    --argjson host "$host"
   # 판독 사이에 파일이 사라지거나 바뀌어 읽기가 실패하면 표본 없이 한 번 더 조립한다.
   if ! out=$(jq -cn "$@" --rawfile cost_samples "$costs" "$prog" 2>/dev/null); then
     [ "$costs" = /dev/null ] && return 2
