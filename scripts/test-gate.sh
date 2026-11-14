@@ -46005,7 +46005,7 @@ check "57: plugin-pin 의 plugin-dir 이 사본을 가리킨다" \
   "$(p57_pin "$P57_RD" 'plugin-dir')" "$P57_RD/plugin/cc-cmds"
 check "57: plugin-pin 의 다이제스트가 사본을 다시 재도 같다" \
   "$(p57_pin "$P57_RD" digest)" \
-  "$( . "$P57_RD/plugin/cc-cmds/orchestrator/pin.sh"; pin_digest "$P57_RD/plugin/cc-cmds" )"
+  "$( . "$repo_root/plugins/cc-cmds/orchestrator/pin.sh"; pin_digest "$P57_RD/plugin/cc-cmds" )"
 check "57: plugin-pin 이 version 을 싣는다" \
   "$( [ -n "$(p57_pin "$P57_RD" version)" ] && printf yes || printf no )" "yes"
 check "57: plugin-pin 이 pinned-at 을 싣는다" \
