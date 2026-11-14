@@ -3029,7 +3029,7 @@ check "design-reconverge: 문서 옆·런 디렉터리·sh -c 사본과 mv 게�
 check "design-reconverge: 임의 명령을 감싸는 옛 잠금 일반형이 남지 않는다" \
   "$(has "$RC_SKILL" "\"\${RUN_DIR}/designdoc.lock\" <command>")" 아니오
 check "스냅숏: blocked[] 접기는 act 범위 행을 싣지 않는다" \
-  "$(has "$(dirname "$GATE")/liveness.sh" 'else if (bscope[b] == "cone" && banchor[b] != "" && !(banchor[b] in seg) \')/$(has "$(dirname "$GATE")/liveness.sh" '&& index(banchor[b], "clause-") != 1) step = 1')" "예/예"
+  "$(has "$(dirname "$GATE")/liveness.sh" 'else if (bscope[b] == "cone" && banchor[b] != "" && !(banchor[b] in seg) \')/$(has "$(dirname "$GATE")/liveness.sh" '&& index(banchor[b], "베이스-") != 1) step = 1')" "예/예"
 check "좌석 사본: 상한 고지는 세 상한 사유로 고른다" \
   "$(has "$SEAT_REF" "When that \`사유\` begins \`중단 답 라우팅 — 세션 전에 세 번 죽었다\`, \`중단 답 라우팅 — 새 파견이 같은 질문에 다시 멈췄다\` or \`중단 답 라우팅 — 들인 답을 이 런에서 운반할 수 없다\`, it is the carry's cap")" 예
 check "좌석 사본: 상한 고지는 새 답도 같은 상한에 걸린다고 말한다" \
