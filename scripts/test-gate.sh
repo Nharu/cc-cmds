@@ -60225,10 +60225,6 @@ case "$msg" in
 esac
 ( cd "$WT" && git worktree remove --force "$W87" ) >/dev/null 2>&1
 
-# The `tguard` family's helpers are `pre_tguard` in the head, called here so a
-# full run defines them at the family's own position.
-pre_tguard
-
 # ---------------------------------------------------------------------------
 # 87c. 대상 훅 아래의 원격 행위 — 감싼 호출의 거절 기록, 맨 명령의 admit, 반복 차단
 # --- section: 87c | group: tguard | covers: admit, exec, act, snapshot | anchors: 87c: 감싼 push 는 런 훅이 거절하고 대상 거절 형태=감쌈 행이 남는다, 87c: 맨 push 는 요청으로 기록되고 admit 이 표를 낸다, 87c: 표를 쓴 재발행은 두 훅을 지나 원격에 닿는다, 87c: 원격 판독 뒤 소비된 push 표는 판정=관측 으로 닫힌다, 87c: 맨 gh pr create 도 같은 순서를 지난다, 87c: 맨 env gh pr view 는 예측 거절이고 표가 없다, 87c: 같은 조건의 같은 행위는 admit 에서 막힌다, 87c: guard_refusals 는 같음 에서 바뀜 으로 바뀐다, 87c: 가드 파일을 고치면 대상 훅 행이 남고 막힘이 풀린다, 87c: 원격에 닿지 못한 판독 뒤에는 소비된 표가 기다린다, 87c: 효과 없이 소비된 push 표는 판정=추정 이 된다, 87c: settings.json 을 고치면 표면 이동이다, 87c: defer 로 답하는 가드 아래의 admit 은 rc 3 이고 표가 없다, 87c: 낱말 가드 아래에서도 맨 push 는 admit 을 거쳐 원격에 닿는다 ---
@@ -60237,6 +60233,13 @@ pre_tguard
 # 훅, 그다음 대상 훅, 그다음 명령 — 를 `tg_issue` 로 밟는다. 원격은 베어 레포이고
 # gh 는 argv 를 남기는 스텁이다.
 # ---------------------------------------------------------------------------
+# The `tguard` family's helpers are `pre_tguard` in the head, called here, in the
+# family's first section, so a full run defines them at the family's own
+# position. A cut already calls it before this section, so here it is a no-op
+# there; a call in the previous section's tail would run the shared preludes it
+# pulls in only when nothing earlier in the cut had, and make that section's
+# executed lines depend on what the cut put in front of it.
+pre_tguard
 tg_world c guard_b0.py
 check "87c: 픽스처 세계의 세그먼트 행이 기록된다 (아래가 공허하지 않다)" "$rc" "0"
 head87c=$(cd "$TG_WT" && git rev-parse HEAD)
