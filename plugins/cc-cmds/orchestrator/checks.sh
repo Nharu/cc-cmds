@@ -471,16 +471,48 @@ manifest_home_slug_into() {
   # manifest_home_slug_into <var>. Read once a pass: `pass_once` sets
   # `HOME_SLUG_READ=0` and the first segment that needs the slug fills
   # `HOME_SLUG`.
+  #
+  # The same read fills `HOME_MAIN_WT`, the row's `메인 워크트리`, which
+  # `home_has_origin` measures.
   local l r=""
   if [ "${HOME_SLUG_READ:-0}" != 1 ]; then
     while IFS= read -r l || [ -n "$l" ]; do
       case "$l" in '- `target`'*'홈=예'*) r=$l ;; esac
     done 2>/dev/null < "$MANIFEST"
     HOME_SLUG=""
-    if [ -n "$r" ]; then row_field_into HOME_SLUG "$r" '원격 슬러그'; fi
+    HOME_MAIN_WT=""
+    if [ -n "$r" ]; then
+      row_field_into HOME_SLUG "$r" '원격 슬러그'
+      row_field_into HOME_MAIN_WT "$r" '메인 워크트리'
+    fi
     HOME_SLUG_READ=1
   fi
   printf -v "$1" '%s' "$HOME_SLUG"
+}
+
+wt_has_origin() {
+  # wt_has_origin <worktree> — true when the repository of the worktree has a
+  # remote named `origin`, the one judgement the driver and the gate make for
+  # a target with no remote.
+  ( cd "$1" 2>/dev/null && git remote get-url origin >/dev/null 2>&1 )
+}
+
+home_has_origin() {
+  # Whether the manifest's home target has `origin`, measured once a pass in its
+  # main worktree: `pass_once` empties `HOME_ORIGIN`. A home row that names no
+  # main worktree, or one that is not a directory, reads as having a remote —
+  # the slug the poller borrowed before this judgement existed is what such a
+  # target keeps.
+  local s
+  if [ -z "${HOME_ORIGIN:-}" ]; then
+    manifest_home_slug_into s
+    if [ -n "${HOME_MAIN_WT:-}" ] && [ -d "$HOME_MAIN_WT" ] && ! wt_has_origin "$HOME_MAIN_WT"; then
+      HOME_ORIGIN=없음
+    else
+      HOME_ORIGIN=있음
+    fi
+  fi
+  [ "$HOME_ORIGIN" = 있음 ]
 }
 
 branch_of() {
@@ -632,6 +664,7 @@ pass_once() {
   seed_table
   SEG_ROWS=$( { grep '^- `segment`' "$LEDGER" 2>/dev/null || true; } )
   HOME_SLUG_READ=0
+  HOME_ORIGIN=""
 
   for seg in $(segment_ids); do
     segment_last_row_into row "$seg"
@@ -647,8 +680,18 @@ pass_once() {
     fi
     [ -n "$branch" ] || continue
 
+    # A SEGMENT WITH NO `origin` IS NOT ASKED ABOUT AT ALL. Its slug is a local
+    # identifier (`local/<name>`) that names nothing on GitHub, and borrowing it
+    # sent a made-up repository name to `gh` on every pass. The segment's own
+    # worktree is measured when it exists, the home target's main worktree when
+    # it does not.
     slug=""
-    if [ -n "$wt" ] && [ -d "$wt" ]; then wt_memo_into slug slug "$wt"; fi
+    if [ -n "$wt" ] && [ -d "$wt" ]; then
+      wt_memo_into slug slug "$wt"
+      [ -n "$slug" ] || wt_has_origin "$wt" || continue
+    else
+      home_has_origin || continue
+    fi
     [ -n "$slug" ] || manifest_home_slug_into slug
     [ -n "$slug" ] || continue
 

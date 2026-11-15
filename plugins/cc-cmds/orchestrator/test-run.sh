@@ -306,16 +306,17 @@ TR_OLD
 }
 trap cleanup EXIT
 
-write_manifest() {   # write_manifest <출력> [대상맵다이제스트override] [계획다이제스트override] [베이스브랜치] [설계문서]
+write_manifest() {   # write_manifest <출력> [대상맵다이제스트override] [계획다이제스트override] [베이스브랜치] [설계문서] [대상행추가필드] [대상절단점]
   # 넷째 인자는 베이스 브랜치를 갈아 끼운다. 기본값은 픽스처 레포에 고정해 둔 이름이라
   # 기존 호출은 넷을 세지 않은 채 그대로 성립하고, 해소되지 않는 값을 넣어야만 하는
   # 절만 명시한다. 다섯째는 헤더의 `owner-doc=` 과 본문의 「설계 문서」를 함께 움직인다
   # — 프리플라이트가 그 둘을 대조하므로 한쪽만 바꾸면 검사가 그 불일치에서 멈춘다.
   # 여섯째는 대상 행 끝에 선택 필드를 덧붙인다 — `dev 식별자`·`배포트리거 식별자`
   # 처럼 부재가 기본인 필드를 시험하려면 행 자체가 달라져야 하고, 그 행이 두
-  # 다이제스트의 입력이라 여기서 함께 만들어야 값이 맞는다.
-  local out="$1" tdig="${2:-}" pdig="${3:-}" bb="${4:-main}" doc="${5:-(없음)}" extra="${6:-}"
-  local trow="- \`target\` | 별칭=home | 메인 워크트리=$MF_REPO | 공통 git 디렉터리=$MF_CG | 베이스 브랜치=$bb | 홈=예 | 원격 슬러그=Nharu/cc-cmds | 절단점=머지 | 말단 행위 상한=없음${extra}"
+  # 다이제스트의 입력이라 여기서 함께 만들어야 값이 맞는다. 일곱째는 대상 행의
+  # 절단점이며 기본값은 `머지` 다 — 원격 없는 대상의 절단점 상한을 재는 절만 바꾼다.
+  local out="$1" tdig="${2:-}" pdig="${3:-}" bb="${4:-main}" doc="${5:-(없음)}" extra="${6:-}" cut="${7:-머지}"
+  local trow="- \`target\` | 별칭=home | 메인 워크트리=$MF_REPO | 공통 git 디렉터리=$MF_CG | 베이스 브랜치=$bb | 홈=예 | 원격 슬러그=Nharu/cc-cmds | 절단점=$cut | 말단 행위 상한=없음${extra}"
   local plan='{ "steps": ["audit", "implement"] }'
   [ -n "$tdig" ] || tdig=$(printf '%s\n' "$trow" | sed 's/[[:space:]]\{1,\}/ /g' | sort | shasum -a 256 | cut -d' ' -f1)
   # An empty third argument means "omit the binding digest"; a non-empty one is
@@ -5603,6 +5604,58 @@ R5NONE="$WORK/freeze-run-absent"
 check "원격 판정 동결 — 실행 디렉터리가 없으면 잰 값을 돌려준다" "$(r5_judge "$R5NONE" "$MF5")" "있음"
 check "원격 판정 동결 — 실행 디렉터리가 없으면 아무것도 적지 않는다" \
   "$( [ -e "$R5NONE" ] && printf 있음 || printf 없음 )/$(r5_judge "" "$MF5")" "없음/있음"
+# `run.sh --preflight` 는 원격 없는 대상의 `커밋` 보다 높은 절단점을 기동 전에 거부한다.
+# `브랜치` 도 `커밋` 보다 높다. 원격 있는 대상은 높은 절단점에서도 통과하고, 어느
+# 경우든 실행 디렉터리와 원장을 만들지 않는다. 드라이버를 하위 프로세스로 돌리되 런
+# 상태 디렉터리와 홈을 픽스처 아래로 격리하고 파이프라인 환경은 물려주지 않는다.
+# 원격 있는 경우는 `$MF_REPO` 의 원격이 아직 유효한 이 자리, 서버 쪽 브랜치를 만들기
+# 전에 둔다.
+NRPF="$WORK/preflight-noremote"
+mkdir -p "$NRPF"
+( cd "$NRPF" && git init -q . && git config user.email t@example.invalid \
+  && git config user.name T && printf 'a\n' > a.txt && git add -A \
+  && git commit -qm one && git branch -M main ) >/dev/null 2>&1
+NRPF_CG=$(cd "$NRPF" && git rev-parse --path-format=absolute --git-common-dir)
+check "사전 점검 픽스처 — 원격 없는 레포다" \
+  "$( cd "$NRPF" && git remote get-url origin >/dev/null 2>&1 && printf 원격있음 || printf 원격없음 )" "원격없음"
+PF_HOME="$WORK/preflight-home"; PF_STATE="$WORK/preflight-state"; PF_ERR="$WORK/preflight.err"
+mkdir -p "$PF_HOME" "$PF_STATE"
+PF_MF="$WORK/preflight.plan.md"
+PF_LEDGER="$HERE/docs/pipeline-run/20260825-deadbeef.md"
+PF_LEDGER_BEFORE=$( [ -e "$PF_LEDGER" ] && printf 있음 || printf 없음 )
+pf_run() {   # pf_run [인자…] — 격리된 환경에서 드라이버를 돌려 종료 코드를 찍는다
+  ( cd "$HERE" && env -i PATH="$SANITIZED_PATH" HOME="$PF_HOME" XDG_STATE_HOME="$PF_STATE" \
+      CC_CMDS_ORCH_HOST_OS=Darwin /usr/bin/env bash "$DRIVER" "$@" ) >/dev/null 2>"$PF_ERR"
+  printf '%s' "$?"
+}
+pf_nothing_made() {   # 실행 디렉터리도 원장도 생기지 않았으면 `없음`
+  if [ -n "$(ls -A "$PF_STATE" 2>/dev/null)" ]; then printf '상태 디렉터리 생김'
+  elif [ "$( [ -e "$PF_LEDGER" ] && printf 있음 || printf 없음 )" != "$PF_LEDGER_BEFORE" ]; then printf '원장 생김'
+  else printf 없음; fi
+}
+for pf_cut in PR 브랜치; do
+  ( MF_REPO="$NRPF"; MF_CG="$NRPF_CG"; write_manifest "$PF_MF" "" "" "main" "" "" "$pf_cut" )
+  pf_rc=$(pf_run --manifest "$PF_MF" --preflight)
+  pf_last=$(tail -1 "$PF_ERR" 2>/dev/null)
+  case "$pf_rc:$pf_last" in
+    0:*) bad "사전 점검 ($pf_cut)" "원격 없는 대상의 절단점 $pf_cut 이 통과했다" ;;
+    *"원격이 없어 절단점 커밋까지만 갈 수 있습니다: $pf_cut"*)
+      ok "사전 점검 — 원격 없는 대상의 절단점 $pf_cut 이 기동 전에 거부된다" ;;
+    *) bad "사전 점검 ($pf_cut)" "거부는 됐으나 다른 이유였다 (rc=$pf_rc): $pf_last" ;;
+  esac
+  check "사전 점검 — 절단점 $pf_cut 거부가 실행 디렉터리와 원장을 만들지 않는다" "$(pf_nothing_made)" "없음"
+done
+( MF_REPO="$NRPF"; MF_CG="$NRPF_CG"; write_manifest "$PF_MF" "" "" "main" "" "" "커밋" )
+pf_rc=$(pf_run --manifest "$PF_MF" --preflight)
+check "사전 점검 — 원격 없는 대상의 절단점 커밋은 통과한다" "$pf_rc" "0"
+[ "$pf_rc" = 0 ] || printf 'NOTE: preflight stderr: %s\n' "$(tail -1 "$PF_ERR" 2>/dev/null)"
+check "사전 점검 — 통과도 실행 디렉터리와 원장을 만들지 않는다" "$(pf_nothing_made)" "없음"
+write_manifest "$PF_MF" "" "" "main" "" "" "PR"
+pf_rc=$(pf_run --manifest "$PF_MF" --preflight)
+check "사전 점검 — 원격 있는 대상은 절단점 PR 에서도 통과한다" "$pf_rc" "0"
+[ "$pf_rc" = 0 ] || printf 'NOTE: preflight stderr: %s\n' "$(tail -1 "$PF_ERR" 2>/dev/null)"
+check "사전 점검 — 원격 있는 대상의 통과도 실행 디렉터리와 원장을 만들지 않는다" "$(pf_nothing_made)" "없음"
+check "사전 점검 — --manifest 없는 --preflight 는 사용법 오류 2 다" "$(pf_run --preflight)" "2"
 # 소비 집합은 fetch **이후**의 원격 추적 ref 집합이다 — 소비 지점이 `base_fetch` 를
 # 먼저 부르고 그다음 `base_sha` 를 부른다. 킥오프가 fetch 이전의 것을 보면 수용 집합이
 # 진부분집합이 되어, 서버에는 있는데 이 클론이 아직 가져오지 않은 베이스 브랜치가
@@ -6858,6 +6911,79 @@ GHSTUB
     ok "detached HEAD 워크트리는 핸들 없음으로 건너뛴다"
   else
     bad "폴러 패스" "detached HEAD 에서도 폴링했다: $(cat "$CK_OB")"
+  fi
+
+  # A SEGMENT WITH NO `origin` IS NEVER ASKED ABOUT. Its manifest slug is a local
+  # identifier (`local/<이름>`) that names nothing on GitHub, and the poller used
+  # to borrow it for a worktree with no remote and for a segment with no worktree
+  # yet. The stub above is wrapped by one that logs every call, so "asked
+  # nothing" is measured as an empty log rather than read off a quiet output.
+  CKL_RD="$CK_RD/local"; mkdir -p "$CKL_RD"
+  CKL_BIN="$CKL_RD/bin"; mkdir -p "$CKL_BIN"
+  CKL_CALLS="$CKL_RD/gh.calls"
+  CKL_OB="$CKL_RD/checks.observed"
+  printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s"\nexec "%s" "$@"\n' "$CKL_CALLS" "$CK_BIN/gh" > "$CKL_BIN/gh"
+  chmod +x "$CKL_BIN/gh"
+  CKL_WT="$CKL_RD/wt"; CKL_MAIN="$CKL_RD/main"
+  for ckl_d in "$CKL_WT" "$CKL_MAIN"; do
+    mkdir -p "$ckl_d"
+    ( cd "$ckl_d" \
+      && git init -q . >/dev/null 2>&1 \
+      && git config user.email 't@example.invalid' \
+      && git config user.name 'checks test' \
+      && git commit -q --allow-empty -m 'x' \
+      && git checkout -q -b 'seg/ckl' ) >/dev/null 2>&1
+  done
+  check "원격 없는 폴러 픽스처 두 레포에 origin 이 없다" \
+    "$( cd "$CKL_WT" && git remote get-url origin >/dev/null 2>&1 && printf 있음 || printf 없음 )/$( cd "$CKL_MAIN" && git remote get-url origin >/dev/null 2>&1 && printf 있음 || printf 없음 )" \
+    "없음/없음"
+  ckl_run() {   # ckl_run <ledger> <manifest> — one pass with a fresh call log and observation file
+    rm -f "$CKL_CALLS" "$CKL_OB"
+    printf 'pending' > "$CKL_RD/mode"
+    GH_STUB_DIR="$CKL_RD" GH_STUB_LONG="$CK_LONG" PATH="$CKL_BIN:$PATH" \
+      bash "$CHECKS_SH" --run-dir "$CKL_RD" --ledger "$1" --manifest "$2" --once \
+      > "$CKL_RD/out" 2> "$CKL_RD/err"
+  }
+  ckl_calls() {
+    if [ -f "$CKL_CALLS" ]; then { grep -c '' < "$CKL_CALLS" || true; } | tr -d ' '; else printf '0'; fi
+  }
+  ckl_obs() { if [ -e "$CKL_OB" ]; then printf 있음; else printf 없음; fi; }
+  CKL_MF_LOCAL="$CKL_RD/manifest-local.md"
+  printf -- '- `target` | 별칭=home | 메인 워크트리=%s | 홈=예 | 원격 슬러그=local/main | 베이스 브랜치=main\n' "$CKL_MAIN" > "$CKL_MF_LOCAL"
+  CKL_MF_REMOTE="$CKL_RD/manifest-remote.md"
+  printf -- '- `target` | 별칭=home | 메인 워크트리=%s | 홈=예 | 원격 슬러그=Nharu/cc-cmds | 베이스 브랜치=master\n' "$CK_WT" > "$CKL_MF_REMOTE"
+
+  # The segment's own worktree exists and has no remote.
+  CKL_LG_WT="$CKL_RD/ledger-wt.md"
+  printf -- '- `run` | 교대=0 | run-id=ckl | prev=aaaa\n' > "$CKL_LG_WT"
+  printf -- '- `segment` | 교대=0 | id=L1 | 상태=실행중 | 워크트리=%s | prev=bbbb\n' "$CKL_WT" >> "$CKL_LG_WT"
+  ckl_run "$CKL_LG_WT" "$CKL_MF_LOCAL"
+  check "원격 없는 세그먼트 워크트리 — 폴러가 gh 를 한 번도 부르지 않고 관측 파일도 만들지 않는다" \
+    "$(ckl_calls)/$(ckl_obs)" "0/없음"
+
+  # No worktree yet: the home target's main worktree decides, and it has no remote.
+  CKL_LG_NOWT="$CKL_RD/ledger-nowt.md"
+  printf -- '- `run` | 교대=0 | run-id=ckl | prev=aaaa\n' > "$CKL_LG_NOWT"
+  printf -- '- `segment` | 교대=0 | id=L2 | 상태=실행중 | 브랜치=seg/ckl | 워크트리=%s | prev=bbbb\n' "$CKL_RD/absent-wt" >> "$CKL_LG_NOWT"
+  ckl_run "$CKL_LG_NOWT" "$CKL_MF_LOCAL"
+  check "워크트리 없는 세그먼트, 홈 대상에 원격 없음 — 폴러가 gh 를 한 번도 부르지 않고 관측 파일도 만들지 않는다" \
+    "$(ckl_calls)/$(ckl_obs)" "0/없음"
+
+  # The controls: the same two shapes on a repository with `origin` still ask.
+  ckl_run "$CKL_LG_NOWT" "$CKL_MF_REMOTE"
+  if [ "$(ckl_calls)" -ge 1 ]; then
+    ok "대조군 — 워크트리 없는 세그먼트의 홈 대상에 원격이 있으면 폴러가 gh 를 부른다"
+  else
+    bad "폴러 패스 (원격 없음)" "대조군이 gh 를 부르지 않았다 — 원격 없음 단언이 공허하다: $(cat "$CKL_RD/err" 2>/dev/null)"
+  fi
+  CKL_LG_RWT="$CKL_RD/ledger-rwt.md"
+  printf -- '- `run` | 교대=0 | run-id=ckl | prev=aaaa\n' > "$CKL_LG_RWT"
+  printf -- '- `segment` | 교대=0 | id=L3 | 상태=실행중 | 브랜치=seg/ck | 워크트리=%s | prev=bbbb\n' "$CK_WT" >> "$CKL_LG_RWT"
+  ckl_run "$CKL_LG_RWT" "$CKL_MF_LOCAL"
+  if [ "$(ckl_calls)" -ge 1 ]; then
+    ok "대조군 — 원격 있는 세그먼트 워크트리는 홈 대상에 원격이 없어도 폴러가 gh 를 부른다"
+  else
+    bad "폴러 패스 (원격 없음)" "원격 있는 세그먼트 워크트리를 건너뛰었다: $(cat "$CKL_RD/err" 2>/dev/null)"
   fi
 
   rm -rf "$CK_RD"
