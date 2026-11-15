@@ -67502,11 +67502,11 @@ gate_refutation_reconverge_why() {
   esac
   rn=${it%% *}
   cl=$(gate_refutation_route "$seg" "$rec" "${DOC:-}" 2>/dev/null || true)
-  br=$(printf '%s\n' "$cl" | sed -n 's/^갈래=//p' | sed -n '1p')
+  br=$(sed -n 's/^갈래=//p' <<<"$cl" | sed -n '1p')
   case "$br" in
     재수렴|사람) ;;
     *)
-      GATE_RRW_WHY="이 기록의 반증 갈래가 ${br:-없음} ($(printf '%s\n' "$cl" | sed -n 's/^사유=//p' | sed -n '1p')) 라 재수렴 파견이 거절됩니다"
+      GATE_RRW_WHY="이 기록의 반증 갈래가 ${br:-없음} ($(sed -n 's/^사유=//p' <<<"$cl" | sed -n '1p')) 라 재수렴 파견이 거절됩니다"
       return 1 ;;
   esac
   if ! gate_reconverge_block_waiting "${DOC:-}" "$rn"; then
