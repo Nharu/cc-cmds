@@ -40853,7 +40853,7 @@ for rp_id in $rp_ids; do
   rp_n=$((rp_n + 1))
   grep -qF -- "| \`$rp_id\` |" "$RP_SHIFT" || rp_miss="$rp_miss $rp_id"
 done
-check "34o: 게이트 선언에서 경로 id 열다섯을 읽는다 (아래가 공허하지 않다)" "$rp_n" "15"
+check "34o: 게이트 선언에서 경로 id 열여섯을 읽는다 (아래가 공허하지 않다)" "$rp_n" "16"
 check "34o: 교대 스킬이 게이트의 경로 id 를 모두 이름 댄다" "${rp_miss:-없음}" "없음"
 rp_lits=0
 grep -qF -- '`**스텝**: Step 6 조정 패스 — CFI-3b 종합 질문`' "$RP_SKILLS/design-audit-unattended/SKILL.md" && rp_lits=$((rp_lits + 1))
@@ -72160,6 +72160,184 @@ check "107:부분 복구 리뷰는 이어가기 메시지에 닿지 않는다" "
 rm -rf "$s106_base/docs/reviews/seg-$TG_RUN-"*
 unset -f s106_rp s106_outcome
 unset S106 r106 a106 d106 r106_sh s106_home s106_b r106_snap m106_snap n106 t106 n106_rows g106 c106 s106_base
+
+# ---------------------------------------------------------------------------
+# 110f. 반증 정지의 재수렴 답 — 사람의 재수렴은 항목의 재수렴으로 가고, 자동 답은 소진에 막히며, 앞 런의 반증은 사람에게 간다
+# --- section: 110f | group: base | covers: gate_refutation_token, gate_refutation_route, gate_refutation_reconverge_token, gate_refutation_adopted_src, gate_refutation_reconverge_why, gate_refutation_record_of, gate_refutation_next_of, gate_halt_answer_route, gate_halt_auto_answer_admit, gate_adoption_halt_source, gate_carry_routed_elsewhere, gate_halt_record_no_options, halt_refutation_token, halt_record_wellformed | anchors: 110f: 반증 대기 기록의 결정은 사람이다, 110f: 묶인 반증 기록의 사람 재수렴은 반증-재수렴이다, 110f: 대기 블록이 없으면 재수렴 답은 라우팅 불가다, 110f: 소진된 항목의 자동 재수렴은 거절되고 사람 답은 선다, 110f: 반증 대기 기록의 자동 재수렴은 늘 거절된다, 110f: 입양 사본의 사람 재수렴이 이 런으로 들어온다, 110f: 운반 act 는 반증 재수렴 답을 운반하지 않는다, 110f: 열린 선택지 없는 반증 기록은 고정 답을 지킨다 ---
+#
+# 구현 스테이지의 반증 정지(Step 1.5d, Step 3 구현 중 반증, 그리고 앞 런의 대기 블록을 본
+# Step 1.5a 반증 대기)에 준 `재수렴` 답은 멈춘 세션에 다시 붙지 않고 그 기록의 항목을
+# 재수렴한다. 이 절은 원장·정지 기록·설계 문서·재수렴 운반 파일을 손으로 둔 픽스처에서
+# 소싱한 게이트 함수로 그 경로의 다섯 조건, 자동 답의 소진 상한, 입양 운반, 운반 act 의
+# 거절, 그리고 선택지 없는 반증 기록의 형식 결함과 열린 기록의 고정 답을 잰다.
+# ---------------------------------------------------------------------------
+w110f="$WORK/r110f"; rm -rf "$w110f"
+mkdir -p "$w110f/runs/R110F/halt" "$w110f/runs/RSRC/halt" "$w110f/ledgers"
+d110f="$w110f/doc.md"; c110f="$w110f/carrier.md"
+l110f="$w110f/ledgers/R110F.md"; s110f="$w110f/ledgers/RSRC.md"
+r110f="$w110f/runs/R110F"
+cat > "$d110f" <<'EOF'
+# 설계
+
+## 구현 시 검증 항목
+
+### R1. 파킹으로 정한 항목
+- **반증 시 처리**: 파킹
+
+### R3. 재수렴할 항목
+- **검증 레시피**: x
+EOF
+car110f() {  # car110f <R3 대기 블록 유무 1|0> <R3 이 런 처리 기록 유무 1|0> [<꼬리>]
+  {
+    printf '# 재수렴 캐리어\n<!-- cc-design-reconverge v1; owner-doc=design.md; -->\n\n'
+    [ "$1" = 0 ] || printf '## 회차 1\n**상태**: 대기\n**대상 항목**: §구현 시 검증 항목 R3 — 재수렴할 항목\n\n'
+    [ "$2" = 0 ] || printf '## 회차 2\n**상태**: 처리됨\n**대상 항목**: §구현 시 검증 항목 R3 — 재수렴할 항목\n**처리 기록**: 재수렴 sha256: aa · 판정: 불필요 · 런: R110F · 사유\n\n'
+    printf '<!-- cc-design-reconverge: end -->\n'
+    [ -z "${3:-}" ] || printf '%s\n' "$3"
+  } > "$c110f"
+}
+mk110f() {  # mk110f <파일> <머리 stage> <스텝> <대상 항목|-> [<선택지 라벨>…]
+  local f="$1" h="$2" s="$3" it="$4" o
+  shift 4
+  {
+    printf '<!-- cc-pipeline-halt v1; run-id=R110F; stage=%s; -->\n' "$h"
+    printf '**스킬**: implement-unattended\n**분류**: precondition-failed\n**스텝**: %s\n**질문 문면**: q\n' "$s"
+    [ "$it" = - ] || printf '**대상 항목**: %s\n' "$it"
+    if [ "$#" -gt 0 ]; then
+      printf '**선택지**:\n'
+      for o in "$@"; do printf -- '- `%s` — 설명\n' "$o"; done
+    else
+      printf '**선택지**: (없음)\n'
+    fi
+    printf '<!-- /cc-pipeline-halt v1 -->\n'
+  } > "$f"
+}
+rf110f() {  # rf110f <함수> <인자…> — 소싱한 게이트 함수 하나, 이 절의 런·원장·문서·운반 파일로. 표준 오류는 $w110f/err
+  ( cd "$WT" && C110F="$c110f" bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; RUN_DIR="$2"; LEDGER="$3"; DOC="$4"; RUN_ID=R110F; shift 4
+      gate_reconverge_carrier_path() { printf "%s" "$C110F"; }
+      gate_doc_key_of() { printf design.md; }
+      gate_bind_escape_cap() { :; }
+      "$@"' _ "$GATE" "$r110f" "$l110f" "$d110f" "$@" ) 2>"$w110f/err"
+}
+err110f() { grep -c -F "$1" "$w110f/err" 2>/dev/null || true; }
+seed110f() {  # seed110f — 세그먼트 SA 의 마지막 구현 시도 1 이 의도된 park 로 끝난 원장
+  {
+    printf -- '- `segment` | id=SA | 상태=실행중 | 선언 파일 집합=src/\n'
+    printf -- '- `stage-result` | 세그먼트=SA | 스테이지=SA | 종류=implement | 종료 코드=0 | 실행 버전=1 | 종단 부류=의도된 park\n'
+  } > "$l110f"
+}
+seed110f
+car110f 1 0
+h110f="$r110f/halt/SA#1.md"
+
+check "110f: 반증 대기 스텝은 네 번째 반증 토큰이고 재수렴 갈래 토큰이다" \
+  "$(rf110f gate_refutation_token 'Step 1.5a 반증 대기 — R3')|$(rf110f gate_refutation_reconverge_token 'Step 1.5a 반증 대기 — R3'; printf '%s' "$?")|$(rf110f gate_refutation_reconverge_token 'Step 3 구현 결함 반증 — x'; printf '%s' "$?")" \
+  "Step 1.5a 반증 대기|0|1"
+mk110f "$h110f" 'SA#1' 'Step 1.5a 반증 대기 — R3' 'R3 · 반증됨(실패)' '재수렴' '파킹'
+check "110f: 드라이버의 기록 토큰 판독도 반증 대기를 읽는다" "$(rf110f halt_refutation_token "$h110f"; printf '%s' "$?")" "0"
+check "110f: 반증 대기 기록의 결정은 사람이다" \
+  "$(rf110f gate_refutation_route SA "$h110f" "$d110f" | awk '/^(갈래|사유|항목)=/ { sub(/^[^=]*=/, ""); printf "%s%s", (n++ ? "|" : ""), $0 }')" \
+  "사람|앞 런의 반증 대기 블록 — 재수렴은 사람 답으로만|R3"
+check "110f: 반증 대기 기록은 문서의 파킹 필드보다 먼저 사람이다" \
+  "$(mk110f "$w110f/p.md" 'SA#1' 'Step 1.5a 반증 대기 — R1' 'R1 · 반증됨(실패)' '재수렴' '파킹'; rf110f gate_refutation_route SA "$w110f/p.md" "$d110f" | sed -n 's/^갈래=//p')" "사람"
+mk110f "$w110f/q.md" 'SA#1' 'Step 1.5a 반증 대기 — x' - '재수렴' '파킹'
+check "110f: 대상 항목 줄이 없는 반증 대기 기록은 판정 불가다" \
+  "$(rf110f gate_refutation_route SA "$w110f/q.md" "$d110f" | sed -n 's/^갈래=//p')" "판정 불가"
+check "110f: 묶인 반증 대기 기록의 원소는 사람을 낸다" "$(rf110f gate_refutation_next_field SA '다음')" "사람"
+
+# 사람의 재수렴 — 다섯 조건이 서면 반증-재수렴, 하나라도 빠지면 라우팅 불가.
+for t110f in 'Step 1.5d — R3' 'Step 3 구현 중 반증 — R3' 'Step 1.5a 반증 대기 — R3'; do
+  mk110f "$h110f" 'SA#1' "$t110f" 'R3 · 반증됨(실패)' '재수렴' '파킹'
+  check "110f: 묶인 반증 기록의 사람 재수렴은 반증-재수렴이다 — ${t110f%% — *}" \
+    "$(rf110f gate_halt_answer_route SA "$h110f" '재수렴' 사람)" "반증-재수렴"
+done
+mk110f "$h110f" 'SA#1' 'Step 1.5d — R3' 'R3 · 반증됨(실패)' '재수렴' '파킹'
+car110f 0 1
+check "110f: 대기 블록이 없으면 재수렴 답은 라우팅 불가다" \
+  "$(rf110f gate_halt_answer_route SA "$h110f" '재수렴' 사람; printf '%s' "$?")|$(err110f '대기 블록이 없어')" "3|1"
+car110f 1 0
+mk110f "$w110f/r1.md" 'SA#1' 'Step 1.5d — R1' 'R1 · 반증됨(실패)' '파킹'
+cp "$w110f/r1.md" "$r110f/halt/SA#1.md"
+check "110f: 파킹으로 정한 항목의 재수렴 답은 라우팅 불가다" \
+  "$(rf110f gate_halt_answer_route SA "$h110f" '재수렴' 사람; printf '%s' "$?")|$(err110f '반증 갈래가 파킹')" "3|1"
+mk110f "$h110f" 'SA#1' 'Step 3 구현 결함 반증 — R3' 'R3 · 반증됨(실패)' '구현 수정' '파킹'
+check "110f: 구현 결함 기록의 재수렴 답은 라우팅 불가다" \
+  "$(rf110f gate_halt_answer_route SA "$h110f" '재수렴' 사람; printf '%s' "$?")|$(err110f '재수렴을 실행할 갈래가 없습니다')" "3|1"
+mk110f "$r110f/halt/SA#7.md" 'SA#7' 'Step 1.5d — R3' 'R3 · 반증됨(실패)' '재수렴' '파킹'
+check "110f: 마지막 시도에 묶이지 않는 기록의 재수렴 답은 라우팅 불가다" \
+  "$(rf110f gate_halt_answer_route SA "$r110f/halt/SA#7.md" '재수렴' 사람; printf '%s' "$?")|$(err110f '묶이지 않고')" "3|1"
+rm -f "$r110f/halt/SA#7.md"
+mk110f "$h110f" 'SA#1' 'Step 1.5d — R3' 'R3 · 반증됨(실패)' '재수렴' '파킹'
+printf -- '- `segment` | id=SA | 상태=park\n' >> "$l110f"
+check "110f: 종단 세그먼트의 재수렴 답은 라우팅 불가다" \
+  "$(rf110f gate_halt_answer_route SA "$h110f" '재수렴' 사람; printf '%s' "$?")|$(err110f '이미 종단')" "3|1"
+seed110f
+
+# 자동 재수렴 — 이 런에서 항목이 이미 재수렴됐거나 판독할 수 없으면 사람에게 간다.
+car110f 1 1
+check "110f: 소진된 항목의 자동 재수렴은 거절되고 사람 답은 선다" \
+  "$(rf110f gate_halt_auto_answer_admit SA "$h110f" '재수렴'; printf '%s' "$?")|$(err110f '두 번째 재수렴은 사람의 답으로만')|$(rf110f gate_halt_answer_route SA "$h110f" '재수렴' 사람)" \
+  "3|1|반증-재수렴"
+car110f 1 0 '## 회차 9'
+check "110f: 운반 파일을 판독할 수 없으면 자동 재수렴은 거절된다" \
+  "$(rf110f gate_halt_auto_answer_admit SA "$h110f" '재수렴'; printf '%s' "$?")" "3"
+car110f 1 0
+check "110f: 소진되지 않은 항목의 자동 재수렴은 지나간다" \
+  "$(rf110f gate_halt_auto_answer_admit SA "$h110f" '재수렴'; printf '%s' "$?")" "0"
+mk110f "$h110f" 'SA#1' 'Step 1.5a 반증 대기 — R3' 'R3 · 반증됨(실패)' '재수렴' '파킹'
+check "110f: 반증 대기 기록의 자동 재수렴은 늘 거절된다" \
+  "$(rf110f gate_halt_auto_answer_admit SA "$h110f" '재수렴'; printf '%s' "$?")|$(err110f '사람의 답으로만 재수렴합니다')" "3|1"
+
+# 입양 — 앞 런의 사람 재수렴이 대기 블록이 남은 항목이면 사본으로 들어오고, 경로는 반증-재수렴이다.
+src110f="$w110f/runs/RSRC/halt/SA#1.md"
+mk110f "$src110f" 'SA#1' 'Step 1.5d — R3' 'R3 · 반증됨(실패)' '재수렴' '파킹'
+ad110f() {  # ad110f <답한 주체> — 입양 출처 판정의 「rc|사본 기록」
+  printf -- '- `중단 답` | 세그먼트=SA | 스킬=implement-unattended | 중단 기록=%s | 선택지=재수렴 | 답한 주체=%s | 근거=x\n' "$src110f" "$1" > "$s110f"
+  ( cd "$WT" && C110F="$c110f" bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; RUN_DIR="$2"; LEDGER="$3"; DOC="$4"; RUN_ID=R110F
+      gate_reconverge_carrier_path() { printf "%s" "$C110F"; }
+      gate_doc_key_of() { printf design.md; }
+      gate_adoption_row() { printf "x"; }
+      manifest_row_fields() { printf RSRC; }
+      gate_adoption_source_key() { printf SA; }
+      gate_carry_already_imported() { return 1; }
+      gate_halt_answer_handed_on() { return 1; }
+      cc_stage_is_live() { return 1; }
+      gate_carry_record_whole() { return 0; }
+      gate_carry_source_doc_same() { return 0; }
+      r=0; gate_adoption_halt_source SA || r=$?
+      printf "%s|%s" "$r" "${GATE_CARRY_REC##*/}"' _ "$GATE" "$r110f" "$l110f" "$d110f" ) 2>/dev/null
+}
+check "110f: 입양 사본의 사람 재수렴이 이 런으로 들어온다" "$(ad110f 사람)" "0|SA#1.md"
+check "110f: 사람이 아닌 반증 재수렴 답은 입양으로 들어오지 않는다" "$(ad110f 좌석)" "2|"
+car110f 0 0
+check "110f: 대기 블록이 없는 항목의 반증 재수렴 답은 입양으로 들어오지 않는다" "$(ad110f 사람)" "2|"
+car110f 1 0
+mk110f "$r110f/halt/SA#adopted-RSRC.md" 'SA#1' 'Step 1.5d — R3' 'R3 · 반증됨(실패)' '재수렴' '파킹'
+printf -- '- `segment` | id=SA | 상태=계획됨 | 선언 파일 집합=src/\n' > "$l110f"
+rm -f "$h110f"
+check "110f: 입양 사본 이름에서 출처 런을 읽는다" "$(rf110f gate_refutation_adopted_src SA "$r110f/halt/SA#adopted-RSRC.md")" "RSRC"
+check "110f: 묶이지 않은 입양 사본의 사람 재수렴도 반증-재수렴이다" \
+  "$(rf110f gate_halt_answer_route SA "$r110f/halt/SA#adopted-RSRC.md" '재수렴' 사람)" "반증-재수렴"
+seed110f
+check "110f: 입양 사본은 마지막 시도의 반증 기록으로 묶이지 않는다" "$(rf110f gate_refutation_record_of SA)" ""
+rm -f "$r110f/halt/SA#adopted-RSRC.md"
+
+# 운반 act — 반증 재수렴 답은 운반의 몫이 아니다. 결함 반증의 답은 그대로 운반 몫이다.
+check "110f: 운반 act 는 반증 재수렴 답을 운반하지 않는다" \
+  "$(rf110f gate_carry_routed_elsewhere "$src110f" implement-unattended 'Step 1.5d — R3' '재수렴' | grep -c '반증 정지의 재수렴 답은' || true)|$(rf110f gate_carry_routed_elsewhere "$src110f" implement-unattended 'Step 3 구현 결함 반증 — R3' '구현 수정')" \
+  "1|"
+
+# 형식 — 선택지 없는 반증 기록은 결함이지만, 그것만이 결함인 열린 기록은 고정 답을 지킨다.
+mk110f "$w110f/n.md" 'SA#1' 'Step 1.5d — R3' 'R3 · 반증됨(실패)'
+check "110f: 선택지 없는 반증 기록은 일곱째 결함을 낸다" \
+  "$(rf110f halt_record_wellformed "$w110f/n.md" | tr '\n' ';')" "반증 정지 선택지 없음;"
+mk110f "$w110f/w.md" 'SA#1' 'Step 1 외부 선행 미충족 — x' -
+check "110f: 선택지 없는 다른 구현 기록은 결함이 아니다" \
+  "$(rf110f halt_record_wellformed "$w110f/w.md"; printf '%s' "$?")" "0"
+check "110f: 열린 선택지 없는 반증 기록은 고정 답을 지킨다" \
+  "$(rf110f gate_halt_record_no_options "$w110f/n.md"; printf '%s' "$?")" "0"
+unset -f car110f mk110f rf110f err110f seed110f ad110f
+unset w110f d110f c110f l110f s110f r110f h110f t110f src110f
 
 # ---------------------------------------------------------------------------
 # 111. 스테이지의 기동 디렉터리 — 비홈 대상의 세그먼트 워크트리, 감사 워크트리, 리뷰전용의 메인 워크트리, 재부착, 소실 거절

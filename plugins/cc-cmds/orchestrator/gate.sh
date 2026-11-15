@@ -15472,10 +15472,13 @@ gate_adoption_halt_source() {
   # of a session on this run's own `stage-result` rows, the session was born
   # under the earlier run's settings, plugin copy and instruction synthesis,
   # and the plan it would continue lives in the earlier run's directory and
-  # ledger, which this run's stages cannot read. Two answers need no session.
+  # ledger, which this run's stages cannot read. Three answers need no session.
   # An implement stage's binding-tier stop (CFI-U3 BT-STOP) answered `재수렴`:
   # its route re-converges the document on the record and plans the segment
-  # again from its first process. And an answer the earlier run's ledger names
+  # again from its first process. A person's `재수렴` on an implement stage's
+  # refutation stop (`Step 1.5d`, `Step 3 구현 중 반증`, `Step 1.5a 반증 대기`)
+  # whose item still has a waiting block in the re-convergence carrier: this
+  # run re-converges that item from the copy (route `반증-재수렴`). And an answer the earlier run's ledger names
   # in an `이월` row (`gate_halt_answer_deferred`): a carry act there found no
   # room before the deadline and kept the answer for the next run, and only a
   # halt of the re-entry table is carried that way, so a fresh session of this
@@ -15561,10 +15564,37 @@ gate_adoption_halt_source() {
     GATE_CARRY_SRC=''; GATE_CARRY_LINE=''
     return 1
   fi
-  if { [ "$skill" != "implement-unattended" ] || [ "$opt" != "재수렴" ] \
-       || [ "${step#*CFI-U3 BT-STOP}" = "$step" ]; } \
+  # A PERSON'S `재수렴` ON A REFUTATION STOP carries too, when the stop is one of
+  # the three re-converging refutation tokens and the carrier still holds the
+  # item's waiting block: this run re-converges the item from the copy, with no
+  # session of the earlier run. An answer no person gave does not carry, nor
+  # one a re-convergence already took up there (`gate_halt_answer_spent`
+  # above).
+  local refute=''
+  if [ "$skill" = "implement-unattended" ] && [ "$opt" = "재수렴" ] \
+     && gate_refutation_reconverge_token "$step"; then
+    if [ "$(gate_row_field "$row" '답한 주체')" != "사람" ]; then
+      GATE_CARRY_WHY="반증 정지 기록의 「재수렴」 답은 사람의 답만 이 런으로 이어집니다 — 답한 주체=$(gate_row_field "$row" '답한 주체')"
+      return 2
+    fi
+    local rit
+    rit=$(gate_refutation_item_of "$rec"); rit=${rit%% *}
+    case "$rit" in
+      R[0-9]*) ;;
+      *) GATE_CARRY_WHY="반증 정지 기록에 바른 \`**대상 항목**\` 줄이 없어 재수렴할 항목을 읽을 수 없습니다: $rec"
+         return 2 ;;
+    esac
+    if ! gate_reconverge_block_waiting "${DOC:-}" "$rit"; then
+      GATE_CARRY_WHY="재수렴 운반 파일에 $rit 을 이름 짓는 상태: 대기 블록이 없어 이 런의 재수렴이 읽을 증거가 없습니다: $rec"
+      return 2
+    fi
+    refute=1
+  fi
+  if [ -z "$refute" ] \
+     && { [ "$skill" != "implement-unattended" ] || [ "$opt" != "재수렴" ] \
+          || [ "${step#*CFI-U3 BT-STOP}" = "$step" ]; } \
      && ! gate_halt_answer_handed_on "$sledger" "$ln" "$skey"; then
-    GATE_CARRY_WHY="스킬 ${skill:-미상} 의 기록(스텝 「${step}」)에 대한 답 「${opt}」 은 멈춘 세션을 다시 붙여 넘기는 답인데, 그 세션은 출처 런의 것이라 이 런에서 다시 붙일 수 없고, 출처 원장에 그 답을 다음 런으로 넘긴 이월 행도 없습니다 — implement-unattended 기록 중 스텝 문면의 첫 \` — \` 앞에 CFI-U3 BT-STOP 이 있는 기록에 대한 「재수렴」 답, 출처 원장의 이월 행이 이름 짓는 답, 그리고 implement-unattended 의 좌석 실행 정지(스텝이 Step 3 잔여 검증 좌석 실행 또는 Step 3 게이트 도달 좌석 실행)에 대한 「좌석 실행」 답 가운데 답 뒤에 같은 키의 마감 초과 cone 행이 있고 그 뒤 그 키의 stage-result 행이 없는 답만 이 런으로 이어집니다"
+    GATE_CARRY_WHY="스킬 ${skill:-미상} 의 기록(스텝 「${step}」)에 대한 답 「${opt}」 은 멈춘 세션을 다시 붙여 넘기는 답인데, 그 세션은 출처 런의 것이라 이 런에서 다시 붙일 수 없고, 출처 원장에 그 답을 다음 런으로 넘긴 이월 행도 없습니다 — implement-unattended 기록 중 스텝 문면의 첫 \` — \` 앞에 CFI-U3 BT-STOP 이 있는 기록에 대한 「재수렴」 답, implement-unattended 의 반증 정지(스텝이 Step 1.5d, Step 3 구현 중 반증 또는 Step 1.5a 반증 대기)에 사람이 준 「재수렴」 답 가운데 재수렴 운반 파일에 그 항목의 대기 블록이 남은 답, 출처 원장의 이월 행이 이름 짓는 답, 그리고 implement-unattended 의 좌석 실행 정지(스텝이 Step 3 잔여 검증 좌석 실행 또는 Step 3 게이트 도달 좌석 실행)에 대한 「좌석 실행」 답 가운데 답 뒤에 같은 키의 마감 초과 cone 행이 있고 그 뒤 그 키의 stage-result 행이 없는 답만 이 런으로 이어집니다"
     return 2
   fi
   if cc_stage_is_live "$sdir" "$skey"; then
@@ -25843,10 +25873,17 @@ gate_halt_record_no_options() {
   # predicate finds no defect, and it is not a routing shift's record
   # (`halt/shift/`). Such a record is answered with the two fixed labels
   # `원인 해소 후 재개` and `세그먼트 park`, and with nothing else.
+  #
+  # `반증 정지 선택지 없음` ALONE DOES NOT COUNT HERE. That defect moves only
+  # the record of the attempt being judged (the stage-end classification); a
+  # refutation record without options that is already open keeps its two fixed
+  # answers, its confirmation and its `원인-보류` as before.
+  local d
   case "$1" in */halt/shift/*) return 1 ;; esac
   [ -f "$1" ] || return 1
   [ -z "$(gate_halt_option_lines "$1")" ] || return 1
-  halt_record_wellformed "$1" >/dev/null
+  d=$(halt_record_wellformed "$1") && return 0
+  [ "$d" = '반증 정지 선택지 없음' ]
 }
 
 GATE_HALT_FIXED_RESUME='원인 해소 후 재개'
@@ -27319,6 +27356,31 @@ $( { gate_stage_result_rows_of "$key" || true; } )
 EOF
   fi
   [ "$opt" = "재수렴" ] || return 0
+  # A REFUTATION ITEM IS RE-CONVERGED AUTOMATICALLY AT MOST ONCE PER RUN. On a
+  # record of the three re-converging refutation tokens, an automatic `재수렴`
+  # is refused when this run's re-convergence already closed a block of the
+  # record's item, or when that cannot be read; on a `Step 1.5a 반증 대기`
+  # record it is always refused, because an earlier run's refutation
+  # re-converges only on a person's answer. The first re-convergence of an item
+  # goes out through the shift's `refutation_next[]`, not through an answer.
+  if [ "$(sed -n 's/^\*\*스킬\*\*: //p' "$rec" 2>/dev/null | sed -n '1p' | sed 's/[[:space:]]*$//')" = "implement-unattended" ]; then
+    local rtok rit rsp
+    rtok=$(gate_refutation_token "$(gate_halt_record_step "$rec")" || true)
+    case "$rtok" in
+      'Step 1.5a 반증 대기')
+        warn "앞 런의 반증 대기 기록은 사람의 답으로만 재수렴합니다 — 자동 \`재수렴\` 답은 받지 않습니다: $rec"
+        return "$GATE_EXIT_RULE" ;;
+      'Step 1.5d'|'Step 3 구현 중 반증')
+        rit=$(gate_refutation_item_of "$rec")
+        rit=${rit%% *}
+        rsp=$(gate_reconverge_spent "$rit")
+        case "$rsp" in
+          소진*|'판독 불가'*)
+            warn "이 런에서 $rit 의 재수렴이 이미 쓰였습니다 — 두 번째 재수렴은 사람의 답으로만 나갑니다 (소진 판정: $rsp): $rec"
+            return "$GATE_EXIT_RULE" ;;
+        esac ;;
+    esac
+  fi
   cap=$(gate_bind_escape_cap)
   [ -n "$cap" ] || return 0
   case "$cap" in
@@ -28127,6 +28189,13 @@ gate_carry_routed_elsewhere() {
   if [ "$skill" = "implement-unattended" ] && [ "${s1#*CFI-U3 BT-STOP}" != "$s1" ] \
      && [ "$opt" = "재수렴" ]; then
     printf '구속 티어 이탈 정지의 재수렴 답은 재수렴으로 갑니다 — 운반하지 않습니다: %s' "$rec"; return 0
+  fi
+  # A refutation stop's `재수렴` answer re-converges the record's item (route
+  # `반증-재수렴`), from this run's own record or from an adoption copy; the
+  # re-attached session could not write the design document.
+  if [ "$skill" = "implement-unattended" ] && [ "$opt" = "재수렴" ] \
+     && gate_refutation_reconverge_token "$step"; then
+    printf '반증 정지의 재수렴 답은 그 항목의 재수렴으로 갑니다 — 운반하지 않습니다: %s' "$rec"; return 0
   fi
   if [ "$skill" = "autopilot-router-shift" ] && halt_step_is_decision_collect "$rec"; then
     printf '결정 수거 기록의 답은 재수렴으로 갑니다 — 운반하지 않습니다: %s' "$rec"; return 0
@@ -29008,7 +29077,7 @@ gate_halt_settle() {
 # 「Handing on a person's answer to a halt」 in the routing shift's skill. The
 # skill maps each id to its item; `scripts/test-gate.sh` reads the ids from
 # this line and fails when the skill stops naming one.
-readonly GATE_HALT_ROUTES='재부착 감사-재수렴 구속-재수렴 교대-정지 빈-대상 적용-보류 설계-재수렴 골격급-재수렴 외부-보류 구현-수정 반증-파킹 원인-보류 정리-재파견 큰문맥-재파견 크기-보류'
+readonly GATE_HALT_ROUTES='재부착 감사-재수렴 구속-재수렴 교대-정지 빈-대상 적용-보류 설계-재수렴 골격급-재수렴 외부-보류 구현-수정 반증-파킹 반증-재수렴 원인-보류 정리-재파견 큰문맥-재파견 크기-보류'
 
 gate_doc_size_detail() {
   # gate_doc_size_detail <record> <field> — one field of a pre-dispatch size
@@ -29596,6 +29665,21 @@ gate_halt_answer_route() {
        && [ "${hstep#*CFI-U3 BT-STOP}" != "$hstep" ]; then
     id=구속-재수렴
     ! gate_segment_terminal "$key" || why=$terminal
+  elif [ "$skill" = "implement-unattended" ] && [ "$opt" = "재수렴" ] \
+       && gate_refutation_reconverge_token "$step"; then
+    # A PERSON'S `재수렴` ON A REFUTATION STOP GOES TO A RE-CONVERGENCE OF THE
+    # RECORD'S ITEM, NOT A RE-ATTACHMENT: the halted session cannot write the
+    # design document. The shift dispatches it from the answer itself, so the
+    # spent test of a second re-convergence is not asked here — that bound is
+    # the automatic answers' (`gate_halt_auto_answer_admit`). A live attempt
+    # does not refuse it.
+    id=반증-재수렴
+    gate_refutation_reconverge_why "$key" "$rec" || why=$GATE_RRW_WHY
+  elif [ "$skill" = "implement-unattended" ] && [ "$opt" = "재수렴" ]; then
+    # Neither a binding-tier stop nor one of the three re-converging
+    # refutation tokens: the record has no branch that re-converges, and a
+    # re-attached session cannot carry the answer out.
+    why='이 기록에는 재수렴을 실행할 갈래가 없습니다'
   elif [ "$skill" = "review-unattended" ] && [ "${step#Step 1b 빈 대상}" != "$step" ]; then
     id=빈-대상
     case "$opt" in
@@ -67038,10 +67122,12 @@ gate_snapshot_implement_next_json() {
 # ---------------------------------------------------------------------------
 # THE BRANCH A REFUTATION STOP TAKES, decided once for both drivers.
 #
-# An implement stage that sees a residual item fail stops on one of three
+# An implement stage that sees a residual item fail stops on one of four
 # tokens: `Step 1.5d` (before implementing), `Step 3 구현 중 반증` (a design
-# claim refuted while implementing) and `Step 3 구현 결함 반증` (the stage's own
-# code made the recipe fail). The record names the item on its
+# claim refuted while implementing), `Step 3 구현 결함 반증` (the stage's own
+# code made the recipe fail) and `Step 1.5a 반증 대기` (an earlier run left a
+# waiting re-convergence block on the item, so only a person's answer moves
+# it). The record names the item on its
 # `**대상 항목**: R<n> · <판정 토큰>` line, and the design document's item may
 # carry `**반증 시 처리**: 파킹`. `gate_refutation_route` reads the two and
 # nothing else — no snapshot, only its arguments, the run's `halt/` directory
@@ -67050,11 +67136,12 @@ gate_snapshot_implement_next_json() {
 
 gate_refutation_token() {
   # gate_refutation_token <step value> — the refutation stop token the record's
-  # `**스텝**` value begins with; 1 when it begins with none of the three.
+  # `**스텝**` value begins with; 1 when it begins with none of the four.
   case "$1" in
     'Step 3 구현 결함 반증'*) printf 'Step 3 구현 결함 반증' ;;
     'Step 3 구현 중 반증'*) printf 'Step 3 구현 중 반증' ;;
     'Step 1.5d'*) printf 'Step 1.5d' ;;
+    'Step 1.5a 반증 대기'*) printf 'Step 1.5a 반증 대기' ;;
     *) return 1 ;;
   esac
 }
@@ -67196,10 +67283,16 @@ gate_refutation_emit() {
 
 gate_refutation_route() {
   # gate_refutation_route <segment> <record> <document> — the branch of one
-  # refutation stop: `구현 수정` | `파킹` | `재수렴` | `판정 불가`, printed as
-  # the bundle `갈래=`, `사유=`, `항목=`, `기록=`. 0 whenever it decided, a
-  # `판정 불가` included; 1 only when the record's `**스텝**` is none of the
-  # three refutation tokens.
+  # refutation stop: `구현 수정` | `파킹` | `재수렴` | `사람` | `판정 불가`,
+  # printed as the bundle `갈래=`, `사유=`, `항목=`, `기록=`. 0 whenever it
+  # decided, a `판정 불가` included; 1 only when the record's `**스텝**` is none
+  # of the four refutation tokens.
+  #
+  # `Step 1.5a 반증 대기` is decided first, right after the `**대상 항목**` line
+  # is read: a missing or malformed line cannot be decided, and otherwise the
+  # branch is `사람` whatever the document's `반증 시 처리` says. It comes before
+  # the other tokens' branches because their `없음` and drift readings would
+  # re-converge, and this stop re-converges only on a person's answer.
   #
   # `Step 1.5d` and `Step 3 구현 중 반증` read the item's `반증 시 처리` in the
   # document: a record with no `**대상 항목**` line (written before the line
@@ -67229,6 +67322,13 @@ gate_refutation_route() {
   fi
   it=$(gate_refutation_item_of "$rec")
   rn=${it%% *}; jt=${it#* }
+  if [ "$tok" = 'Step 1.5a 반증 대기' ]; then
+    case "$it" in
+      없음|형식) gate_refutation_emit '판정 불가' '반증 대기 기록의 대상 항목 줄이 없거나 형식이 틀림' '-' "$rec"; return 0 ;;
+    esac
+    gate_refutation_emit '사람' '앞 런의 반증 대기 블록 — 재수렴은 사람 답으로만' "$rn" "$rec"
+    return 0
+  fi
   if [ "$tok" = 'Step 3 구현 결함 반증' ]; then
     case "$it" in
       없음|형식) gate_refutation_emit '파킹' '구현 결함 기록 형식 위반' '-' "$rec"; return 0 ;;
@@ -67354,6 +67454,77 @@ gate_refutation_bound_name() {
   printf '%s' "${b##*/}"
 }
 
+gate_refutation_reconverge_token() {
+  # gate_refutation_reconverge_token <step value> — 0 when the step begins with
+  # one of the three refutation tokens whose stop can re-converge (`Step 1.5d`,
+  # `Step 3 구현 중 반증`, `Step 1.5a 반증 대기`). `Step 3 구현 결함 반증` is not
+  # one: its branches are an implementation fix and a park.
+  case "$(gate_refutation_token "$1" || true)" in
+    'Step 1.5d'|'Step 3 구현 중 반증'|'Step 1.5a 반증 대기') return 0 ;;
+  esac
+  return 1
+}
+
+gate_refutation_adopted_src() {
+  # gate_refutation_adopted_src <segment> <record> — the source run an adoption
+  # copy's file name carries (`<segment>#adopted-<source run>.md`), or 1 when
+  # the record's name is not that copy's.
+  local n=${2##*/} src
+  case "$n" in
+    "$1#adopted-"?*.md) src=${n#"$1#adopted-"}; src=${src%.md} ;;
+    *) return 1 ;;
+  esac
+  case "$src" in */*|*'#'*) return 1 ;; esac
+  printf '%s' "$src"
+}
+
+gate_refutation_reconverge_why() {
+  # gate_refutation_reconverge_why <segment> <record> — 0 when a person's
+  # `재수렴` on this refutation record can be carried out as a re-convergence
+  # of its item: the segment is not terminal, the record names its item on a
+  # well-formed `**대상 항목**` line, the decision function reads `재수렴` or
+  # `사람`, the design document's carrier holds a waiting block for the item,
+  # and the record is the one bound to the segment's last implement attempt or
+  # an adoption copy brought in with the answer. Otherwise 1 with
+  # GATE_RRW_WHY filled. The spent test is not one of them.
+  local seg=$1 rec=$2 it rn br cl st
+  GATE_RRW_WHY=''; GATE_RRW_ITEM=''
+  if gate_segment_terminal "$seg"; then
+    st=$(gate_segment_field "$seg" '상태')
+    GATE_RRW_WHY="세그먼트 $seg 가 이미 종단(상태=$st)이라 교대가 이 답을 실행할 갈래가 없습니다"
+    return 1
+  fi
+  it=$(gate_refutation_item_of "$rec")
+  case "$it" in
+    없음|형식)
+      GATE_RRW_WHY="기록 ${rec##*/} 에 \`**대상 항목**: R<n> · <등급>\` 줄이 바르게 없어 재수렴할 항목을 읽을 수 없습니다"
+      return 1 ;;
+  esac
+  rn=${it%% *}
+  cl=$(gate_refutation_route "$seg" "$rec" "${DOC:-}" 2>/dev/null || true)
+  br=$(sed -n 's/^갈래=//p' <<<"$cl" | sed -n '1p')
+  case "$br" in
+    재수렴|사람) ;;
+    *)
+      GATE_RRW_WHY="이 기록의 반증 갈래가 ${br:-없음} ($(sed -n 's/^사유=//p' <<<"$cl" | sed -n '1p')) 라 재수렴 파견이 거절됩니다"
+      return 1 ;;
+  esac
+  if ! gate_reconverge_block_waiting "${DOC:-}" "$rn"; then
+    GATE_RRW_WHY="재수렴 운반 파일에 $rn 을 이름 짓는 상태: 대기 블록이 없어 재수렴이 읽을 증거가 없습니다"
+    return 1
+  fi
+  # A live attempt settles nothing: it may be the very dispatch carrying this
+  # answer out, and the binding test cannot be asked while it runs.
+  if ! gate_refutation_adopted_src "$seg" "$rec" >/dev/null \
+     && ! gate_stage_live_attempt "$seg" \
+     && [ "$(gate_refutation_bound_name "$seg" "$rec")" != "${rec##*/}" ]; then
+    GATE_RRW_WHY="기록 ${rec##*/} 이 세그먼트 $seg 의 마지막 구현 시도에 묶이지 않고 입양 운반이 들여온 사본도 아니어서 교대가 재수렴을 파견할 수 없습니다"
+    return 1
+  fi
+  GATE_RRW_ITEM=$rn
+  return 0
+}
+
 gate_refutation_record_of() {
   # gate_refutation_record_of <segment> [<record file name>] — the refutation
   # halt record bound to the segment's last implement attempt, by the routing
@@ -67366,12 +67537,17 @@ gate_refutation_record_of() {
   # record a `blocked` row already names as `근거`, or a routing block handed
   # back by its file name in `사유`, has been carried out and binds no more,
   # unless a person's answer stands open on it or the optional second argument
-  # names it, which is how the route asks before the answer's row exists. 1 when
-  # none binds.
+  # names it, which is how the route asks before the answer's row exists. A copy
+  # the adoption carry wrote (`<segment>#adopted-<source run>.md`) is never a
+  # candidate. 1 when none binds.
   local seg=$1 want=${2:-} a f hd single='' cnt s pick='' alt=''
   a=$(gate_refutation_candidate "$seg") || return 1
   for f in "$RUN_DIR"/halt/*.md; do
     [ -f "$f" ] || continue
+    # An adoption copy keeps its source run's header verbatim, so its `stage=`
+    # can equal this run's attempt; it is carried only by the answer it came
+    # with, never bound here.
+    case "${f##*/}" in *'#adopted-'*) continue ;; esac
     hd=$(gate_refutation_header_stage "$f")
     case "$hd" in
       "$seg#$a") ;;

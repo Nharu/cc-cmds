@@ -498,7 +498,7 @@ if decision_point_reached Sden; then ok "결정 지점 탐지기는 질문 도�
 check "종단: 질문 도구 권한 거부는 산출물 없는 정지" "$(classify_termination Sden 0 1)" "산출물 없는 정지"
 
 # 중단 기록의 모양. 옵션 줄 규칙은 run.sh 한 곳에 있고, 형식 술어는 닫힌 결함
-# 낱말 여섯만 낸다. 형식이 어긋난 기록은 정지가 아니라 공허한 성공이고, 옮겨
+# 낱말 일곱만 낸다. 형식이 어긋난 기록은 정지가 아니라 공허한 성공이고, 옮겨
 # 둔 `.malformed` 가 있으면 다시 분류해도 같은 답이 나온다.
 HF="$WORK/hf"; mkdir -p "$HF"
 hf_rec() {  # hf_rec <이름> <줄>... — 머리줄과 닫는 펜스 사이에 줄을 둔 기록
@@ -536,6 +536,48 @@ check "확인 명령의 금지 문자는 해소 확인 문법" "$(hf_def confpip
 hf_rec confsp '**스텝**: Step 1' '**선택지**: (없음) — x' '**해소 확인 명령**: `git  status`' '**해소 기대 출력**: `x`'
 check "확인 명령의 연속 공백은 해소 확인 문법" "$(hf_def confsp)" "해소 확인 문법"
 if halt_record_wellformed "$HF/missing.md" >/dev/null; then bad "없는 기록" "없는 파일을 올바르다고 읽음"; else ok "없는 기록 파일은 형식 술어를 통과하지 못한다"; fi
+# 일곱째 결함: 구현 스테이지의 반증 정지(네 토큰)는 늘 선택지를 싣는다. 선택지 없는
+# 다른 기록 — 외부 선행 대기, 화면 조각의 사람 전용 BT-STOP, 베이스 이동 정지, 고정 답의
+# precondition-failed — 은 결함이 아니고, 다른 스킬의 같은 스텝도 결함이 아니다.
+hf_ref() {  # hf_ref <이름> <스킬> <스텝> [선택지 줄…] — 대상 항목 줄을 단 반증 모양의 기록
+  local n="$1" sk="$2" st="$3"; shift 3
+  if [ "$#" -gt 0 ]; then
+    hf_rec "$n" "**스킬**: $sk" '**분류**: precondition-failed' "**스텝**: $st" '**질문 문면**: q' '**대상 항목**: R1 · 반증됨(실패)' '**선택지**:' "$@"
+  else
+    hf_rec "$n" "**스킬**: $sk" '**분류**: precondition-failed' "**스텝**: $st" '**질문 문면**: q' '**대상 항목**: R1 · 반증됨(실패)' '**선택지**: (없음)'
+  fi
+}
+for t in 'Step 1.5d' 'Step 1.5a 반증 대기' 'Step 3 구현 중 반증' 'Step 3 구현 결함 반증'; do
+  hf_ref refnone implement-unattended "$t — 픽스처"
+  check "선택지 없는 반증 정지는 반증 정지 선택지 없음 — $t" "$(hf_def refnone)" "반증 정지 선택지 없음"
+done
+hf_ref refopts implement-unattended 'Step 1.5d — 픽스처' '- `재수렴` — 항목을 재수렴한다' '- `파킹` — 세그먼트를 파킹한다'
+check "선택지를 실은 반증 정지는 결함이 아니다" "$(hf_def refopts)" ""
+hf_ref refpark implement-unattended 'Step 1.5a 반증 대기 — 픽스처' '- `파킹` — 세그먼트를 파킹한다'
+check "파킹 하나만 실은 반증 정지도 결함이 아니다" "$(hf_def refpark)" ""
+hf_ref refother review-unattended 'Step 1.5d — 픽스처'
+check "다른 스킬의 같은 스텝은 결함이 아니다" "$(hf_def refother)" ""
+for t in 'Step 1 외부 선행 미충족' 'Step 2 CFI-U3 BT-STOP' 'Step 0 베이스 이동' '종료 조건 11 판독 불가'; do
+  hf_ref nonref implement-unattended "$t — 픽스처"
+  check "선택지 없는 반증 밖 기록은 결함이 아니다 — $t" "$(hf_def nonref)" ""
+done
+check "드라이버의 반증 토큰은 넷이다" \
+  "$(for t in 'Step 1.5d' 'Step 1.5a 반증 대기' 'Step 3 구현 중 반증' 'Step 3 구현 결함 반증' 'Step 1.5b'; do hf_ref tok implement-unattended "$t — x" '- `파킹`'; halt_refutation_token "$HF/tok.md" && printf 1 || printf 0; done)" "11110"
+hf_ref refnone implement-unattended 'Step 3 구현 중 반증 — 픽스처'
+cp "$HF/refnone.md" "$HF/refnone.md.malformed"
+case "$(halt_record_format_message "$HF/refnone.md.malformed")" in
+  *'결함: 반증 정지 선택지 없음'*'`재수렴`'*'`파킹`'*'(없음)'*) ok "반증 정지 결함의 이어가기 문구는 실을 선택지를 말한다" ;;
+  *) bad "반증 정지 결함의 이어가기 문구" "결함 낱말이나 실을 선택지가 빠졌다" ;;
+esac
+case "$(halt_record_format_message "$HF/inline.md")" in
+  *'반증 정지는'*) bad "다른 결함의 이어가기 문구" "반증 정지 안내가 섞였다" ;;
+  *) ok "다른 결함의 이어가기 문구에는 반증 정지 안내가 없다" ;;
+esac
+printf '1\n' > "$RUN_DIR/Srf.attempt"
+cp "$HF/refnone.md" "$RUN_DIR/halt/Srf#1.md"
+check "종단: 선택지 없는 반증 정지는 공허한 성공" "$(classify_termination Srf 0 1)" "공허한 성공"
+cp "$HF/refopts.md" "$RUN_DIR/halt/Srf#1.md"
+check "종단: 선택지를 실은 반증 정지는 의도된 park" "$(classify_termination Srf 0 1)" "의도된 park"
 
 # 분류: 시도 번호가 붙은 경로의 결함 있는 기록은 의도된 park 보다 앞서 공허한
 # 성공이다. 옛 경로(시도 표지 없음)의 기록은 판정하지 않는다.
