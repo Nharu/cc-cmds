@@ -1102,6 +1102,186 @@ check "--apply-probe-sha 도 런 안에서는 3" "$(CC_PIPELINE_RUN_ID=x "$BASH"
 check "--apply-probe-sha 는 --target 과 함께 쓰지 않는다" "$(kd --apply-probe-sha "$CW" $T >/dev/null 2>&1; echo $?)" "2"
 check "--apply-probe-sha 에 없는 파일 → 3" "$(kd --apply-probe-sha "$WORK/none.md" >/dev/null 2>&1; echo $?)" "3"
 
+# ---------------------------------------------------------------------------
+# --digests — 첫 킥오프가 두 다이제스트를 얻는 정해진 진입점. 드라이버는 소싱될 때
+# MANIFEST 를 비우므로, 소싱 전에 환경 변수로 넘긴 경로는 사라지고 빈 피연산자를
+# 받은 awk 는 표준 입력을 읽는다 — 빈 표준 입력이면 빈 입력의 해시가, 열린
+# 파이프면 멈춤이 나온다. 그래서 판독 함수는 열린 파이프 아래에서 시험한다.
+# ---------------------------------------------------------------------------
+DG="$WORK/digests"; mkdir -p "$DG"
+DG_EMPTY='e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'
+# dg_fill <src> <대상 맵 다이제스트> <구속 다이제스트> — 두 칸을 그 값으로 바꾼 사본을 낸다.
+dg_fill() {
+  awk -v t="$2" -v b="$3" '
+    index($0, "**대상 맵 다이제스트**: ") == 1 { print "**대상 맵 다이제스트**: " t; next }
+    index($0, "**구속 다이제스트**: ") == 1 { print "**구속 다이제스트**: " b; next }
+    { print }' "$1"
+}
+# dg_val <output> <first field> — the TAB line's value.
+dg_val() { printf '%s\n' "$1" | awk -F'\t' -v k="$2" '$1 == k { print $2; exit }'; }
+# dg_drv <manifest> <script> — the driver sourced in a child, MANIFEST set after it.
+dg_drv() {
+  ( cd "$repo_root" && CC_ORCH_SOURCE_ONLY=1 \
+    bash -c 'd="$1"; m="$2"; s="$3"; set --; . "$d" >/dev/null 2>&1; set +e; MANIFEST="$m"; MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""; eval "$s"' \
+      _ "$DRIVER" "$1" "$2" )
+}
+# dg_env <manifest> <script> — the path handed over in the environment before sourcing.
+dg_env() {
+  ( cd "$repo_root" && MANIFEST="$1" CC_ORCH_SOURCE_ONLY=1 \
+    bash -c 'd="$1"; s="$2"; set --; . "$d" >/dev/null 2>&1; set +e; eval "$s"' _ "$DRIVER" "$2" )
+}
+# The readers a seat would reach for, and the two serializations.
+DG_READERS='manifest_header; echo; manifest_field "인가" "종료 지점"; manifest_plan_json; manifest_intent_line
+manifest_targets; manifest_rule_lines; manifest_preauth_rows; manifest_autoadopt_rows
+rule_setting_load; printf "%s\n" "$RULE_SETTING_TAB"
+canonical_targets | shasum -a 256; binding_set_bytes | shasum -a 256'
+# Manifest-shaped bytes on the pipe: a reader that reads stdin prints LEAK.
+DG_LEAK='<!-- cc-run-manifest v1; run-id=LEAK; anchor-key=LEAK; -->
+## 대상
+- `target` | 별칭=LEAK | 원격 슬러그=LEAK/LEAK
+## 의도
+```text
+LEAK
+```
+## 실행 계획
+```json
+{ "LEAK": 1 }
+```
+## 인가
+**종료 지점**: LEAK
+## 룰 설정
+**LEAK**: 끔
+'
+DG_HOLD=3
+# dg_pipe <out> <command…> — the command's stdin is a pipe that carries DG_LEAK
+# and stays open DG_HOLD seconds. <out>.when reads `early` when the command
+# ended before the pipe closed, `late` when it waited for the close.
+dg_pipe() {
+  local o="$1"; shift
+  rm -f "$o.closed"
+  { printf '%s' "$DG_LEAK"; sleep "$DG_HOLD"; : > "$o.closed"; } | {
+    "$@" > "$o" 2> "$o.err"; echo $? > "$o.rc"
+    if [ -e "$o.closed" ]; then echo late; else echo early; fi > "$o.when"
+  }
+}
+
+# C1 — 두 칸이 자리표시 `-` 인 완성 초안에서 두 값을 얻고, 옮겨 적은 매니페스트가
+# 진입 검사를 통과하며, 소싱 뒤 MANIFEST 를 넣어 다시 잰 값과 같다.
+DGD="$DG/draft.md"; DGF="$DG/final.md"
+mf_write "$DG/raw.md" " | dev 식별자=$A_DEV | 배포트리거 식별자=$A_DEP" "$A_DL" "$A_CC" "-"
+dg_fill "$DG/raw.md" - - > "$DGD"
+check "C1 전제: 초안의 두 칸이 자리표시다" "$(grep -cE '^\*\*(대상 맵|구속) 다이제스트\*\*: -$' "$DGD")" "2"
+out=$(kd --digests "$DGD" 2>"$DG/c1.err"); rc=$?
+check "C1 --digests 는 0 으로 끝난다" "$rc" "0"
+check "C1 --digests 는 두 줄을 낸다" "$(printf '%s\n' "$out" | grep -c .)" "2"
+check "C1 줄 순서와 머리말" "$(printf '%s\n' "$out" | awk -F'\t' '{ print $1 }' | paste -sd'|' -)" "대상 맵 다이제스트|구속 다이제스트"
+check "C1 표준 오류는 비어 있다" "$(cat "$DG/c1.err")" ""
+DG_T=$(dg_val "$out" '대상 맵 다이제스트'); DG_B=$(dg_val "$out" '구속 다이제스트')
+case "$DG_T|$DG_B" in
+  "$DG_EMPTY"*|*"|$DG_EMPTY") bad "C1 빈 입력 해시" "$out" ;;
+  *) ok "C1 두 값 모두 빈 입력의 해시가 아니다" ;;
+esac
+dg_fill "$DGD" "$DG_T" "$DG_B" > "$DGF"
+( cd "$repo_root" && CC_ORCH_SOURCE_ONLY=1 \
+  bash -c 'd="$1"; m="$2"; e="$3"; set --; . "$d" >/dev/null 2>&1; set +e; MANIFEST="$m"; ( check_manifest ) >/dev/null 2>"$e"' \
+    _ "$DRIVER" "$DGF" "$DG/c1.check" ); rc=$?
+if [ "$rc" = "0" ]; then
+  ok "C1 두 값을 옮겨 적은 매니페스트가 check_manifest 를 통과한다"
+else
+  bad "C1 두 값을 옮겨 적은 매니페스트가 check_manifest 를 통과한다" "rc=$rc: $(tail -1 "$DG/c1.check")"
+fi
+DG_RE=$(dg_drv "$DGF" 'canonical_targets | shasum -a 256 | cut -d" " -f1; binding_set_bytes | shasum -a 256 | cut -d" " -f1' | paste -sd'|' -)
+check "C1 소싱 뒤 MANIFEST 를 넣어 다시 잰 값과 같다" "$DG_RE" "$DG_T|$DG_B"
+check "C1 --digests 는 초안을 바꾸지 않는다" "$(grep -cE '^\*\*(대상 맵|구속) 다이제스트\*\*: -$' "$DGD")" "2"
+
+# C2 — 실패 범위. 2: 빈 경로·값 없음·다른 인자. 3: 없는 파일·디렉터리·읽을 수
+# 없는 파일·종류 표지 없음·대상 행 없음·런 안. 모두 표준 출력이 비고 표준 오류는
+# 한 줄이며 빈 입력의 해시가 나오지 않는다.
+grep -v 'cc-run-manifest v1' "$DGD" > "$DG/nokind.md"
+grep -v '^- `target`' "$DGD" > "$DG/notarget.md"
+cp "$DGD" "$DG/unreadable.md"; chmod 000 "$DG/unreadable.md"
+# dg_fail <name> <want rc> <args…>
+dg_fail() {
+  local name="$1" want="$2" o="$DG/fail.out" e="$DG/fail.err" rc; shift 2
+  kd "$@" > "$o" 2> "$e"; rc=$?
+  check "C2 $name → $want" "$rc" "$want"
+  check "C2 $name 표준 출력은 비어 있다" "$(cat "$o")" ""
+  check "C2 $name 표준 오류는 한 줄이다" "$(grep -c . "$e")" "1"
+  if grep -q 'e3b0c442' "$o" "$e"; then
+    bad "C2 $name 빈 입력 해시" "$(cat "$o" "$e")"
+  else
+    ok "C2 $name 빈 입력 해시가 나오지 않는다"
+  fi
+}
+dg_fail '빈 경로' 2 --digests ''
+dg_fail '값 없음' 2 --digests
+dg_fail '--target 동반' 2 --digests "$DGD" $T
+dg_fail '--apply-probe-sha 동반' 2 --digests "$DGD" --apply-probe-sha "$DGD"
+dg_fail '--now 동반' 2 --digests "$DGD" --now "$NOW"
+dg_fail '--plugin-candidates 동반' 2 --digests "$DGD" --plugin-candidates
+dg_fail '--failover-candidates 동반' 2 --digests "$DGD" --failover-candidates
+dg_fail '--preauth-candidates 동반' 2 --digests "$DGD" --preauth-candidates "$MF_REPO"
+dg_fail '없는 파일' 3 --digests "$DG/none.md"
+dg_fail '디렉터리' 3 --digests "$DG"
+if [ "$(id -u)" = "0" ]; then
+  ok "C2 읽을 수 없는 파일 — root 로 돌아 chmod 000 이 읽기를 막지 않으므로 건너뜀"
+else
+  dg_fail '읽을 수 없는 파일' 3 --digests "$DG/unreadable.md"
+fi
+chmod 600 "$DG/unreadable.md"
+dg_fail '종류 표지 없음' 3 --digests "$DG/nokind.md"
+dg_fail '대상 행 없음' 3 --digests "$DG/notarget.md"
+check "C2 런 안에서는 3" "$(CC_PIPELINE_RUN_ID=x "$BASH" "$HELPER" --digests "$DGD" >/dev/null 2>&1; echo $?)" "3"
+# 열린 파이프 아래에서도 실패는 파이프가 닫히기 전에 끝난다.
+dg_c2_pipe() {
+  kd --digests '' ; echo "rc=$?"
+  kd --digests "$DG/notarget.md"; echo "rc=$?"
+  kd --digests "$DG/nokind.md"; echo "rc=$?"
+}
+dg_pipe "$DG/c2p" dg_c2_pipe
+check "C2 열린 파이프 아래에서도 끝난다" "$(cat "$DG/c2p.when")" "early"
+check "C2 열린 파이프 아래의 종료 코드" "$(paste -sd' ' - < "$DG/c2p")" "rc=2 rc=3 rc=3"
+check "C2 열린 파이프 아래의 표준 오류" "$(grep -c . "$DG/c2p.err")" "3"
+
+# C3 — 티켓의 세 모양. 판독 함수와 두 직렬화를 열린 파이프 아래에서 부른다.
+dg_pipe "$DG/c3env" dg_env "$DGF" "$DG_READERS"
+check "C3 환경 변수로 넘김: 열린 파이프 아래에서 끝난다" "$(cat "$DG/c3env.when")" "early"
+if grep -q LEAK "$DG/c3env"; then bad "C3 환경 변수로 넘김: 표준 입력을 읽었다" "$(grep -m 3 LEAK "$DG/c3env")"
+else ok "C3 환경 변수로 넘김: 출력에 LEAK 표지가 없다"; fi
+dg_pipe "$DG/c3empty" dg_drv '' "$DG_READERS"
+check "C3 열린 파이프: 빈 MANIFEST 의 판독이 끝난다" "$(cat "$DG/c3empty.when")" "early"
+if grep -q LEAK "$DG/c3empty"; then bad "C3 열린 파이프: 표준 입력을 읽었다" "$(grep -m 3 LEAK "$DG/c3empty")"
+else ok "C3 열린 파이프: 빈 MANIFEST 의 판독에 LEAK 표지가 없다"; fi
+dg_pipe "$DG/c3set" dg_drv "$DGF" 'canonical_targets | shasum -a 256 | cut -d" " -f1; binding_set_bytes | shasum -a 256 | cut -d" " -f1'
+check "C3 소싱 뒤 설정: 열린 파이프 아래에서 끝난다" "$(cat "$DG/c3set.when")" "early"
+check "C3 소싱 뒤 설정: 고정물의 기록값이 그대로 나온다" "$(paste -sd'|' - < "$DG/c3set")" "$DG_T|$DG_B"
+dg_pipe "$DG/c3kd" kd --digests "$DGF"
+check "C3 --digests 도 열린 파이프 아래에서 끝난다" "$(cat "$DG/c3kd.when")" "early"
+check "C3 --digests 의 값은 열린 파이프 아래에서도 같다" \
+  "$(dg_val "$(cat "$DG/c3kd")" '대상 맵 다이제스트')|$(dg_val "$(cat "$DG/c3kd")" '구속 다이제스트')" "$DG_T|$DG_B"
+
+# 원본 검사 — run.sh 에서 "$MANIFEST" 를 피연산자로 넘기는 줄은 모두 같은 줄에
+# `</dev/null` 을 갖는다. 판독이 아닌 줄의 모양은 아래 제외 목록이다: 주석, `[ -n/-f/-z ]`
+# 검사(그 검사를 지난 cat 포함), 비교, 대입, dirname/basename 경로 계산, printf 인자,
+# `bash -c` 로 넘기는 함수 인자.
+DG_SCAN=$(awk '
+  index($0, "\"$MANIFEST\"") == 0 { next }
+  /^[[:space:]]*#/ { next }
+  /\[ -[nfzd] "\$\{?MANIFEST/ { next }
+  /= "\$MANIFEST" \]/ { next }
+  /[A-Z_]+="\$MANIFEST"/ { next }
+  /(dirname|basename) "\$MANIFEST"/ { next }
+  /printf '"'"'[^'"'"']*'"'"' "\$MANIFEST"/ { next }
+  /'"'"' _ "\$gate"/ { next }
+  index($0, "\"$MANIFEST\" </dev/null") > 0 { n++; next }
+  { print NR ": " $0 }
+  END { print "N=" n + 0 }' "$DRIVER")
+DG_SCAN_N=$(printf '%s\n' "$DG_SCAN" | sed -n 's/^N=//p')
+DG_SCAN_BAD=$(printf '%s\n' "$DG_SCAN" | grep -v '^N=' || true)
+check "원본 검사: \"\$MANIFEST\" 판독 줄은 모두 </dev/null 을 갖는다" "$DG_SCAN_BAD" ""
+if [ "${DG_SCAN_N:-0}" -ge 30 ]; then ok "원본 검사: 차단된 판독 줄을 ${DG_SCAN_N}개 찾았다"
+else bad "원본 검사: 차단된 판독 줄 수" "${DG_SCAN_N:-0}개 — 검사가 빈 집합을 훑었다"; fi
+
 # 행 0개 원천 + 파일의 auto-adopt — 「없음으로 답함」 은 적용이지 빈칸이 아니다.
 CW_ROWS_SAVE="$CW_ROWS"; CW_ROWS=''
 cw_write "$CW"

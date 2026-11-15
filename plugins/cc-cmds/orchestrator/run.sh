@@ -559,7 +559,7 @@ $(LC_ALL=C awk '
         print "HF\t" key "\t" v
       }
     }
-  ' "$MANIFEST")"
+  ' "$MANIFEST" </dev/null)"
   MANIFEST_MEMO_PATH="$MANIFEST"
 }
 
@@ -628,12 +628,19 @@ REPLAN=0
 # ends before the run directory, the ledger or the exit trap exist.
 PREFLIGHT=0
 
+# Every reader that hands "$MANIFEST" to awk, sed or grep as a file operand
+# closes stdin on the same line with `</dev/null`. awk given an empty operand
+# opens no file and reads stdin instead, so an empty MANIFEST under an open
+# pipe would block or hash the pipe's bytes; with stdin closed it reads nothing
+# and prints what it prints for an empty input. A non-empty MANIFEST reads the
+# file alone, so output and exit status are unchanged. grep and sed never read
+# stdin for an empty operand and carry the redirect only to keep one shape.
 manifest_header() {
   # No trailing newline in either form: `tr` turns the last newline into a
   # space, and the memo's record already carries that space.
   local h
   if manifest_memo_on; then h=$(manifest_memo_one "H	"); printf '%s' "$h"; return 0; fi
-  sed -n '2,8p' "$MANIFEST" | tr '\n' ' '
+  sed -n '2,8p' "$MANIFEST" </dev/null | tr '\n' ' '
 }
 
 manifest_hdr_field() {
@@ -651,7 +658,7 @@ manifest_field() {
     $0 == want { inb=1; next }
     inb && /^## / { exit }
     inb { pat = "^\\*\\*" key "\\*\\*: "; if ($0 ~ pat) { sub(pat, "", $0); print; exit } }
-  ' "$MANIFEST"
+  ' "$MANIFEST" </dev/null
 }
 
 manifest_plan_json() {
@@ -666,7 +673,7 @@ manifest_plan_json() {
     inb && !fence && /^```json/ { fence=1; next }
     inb && fence && /^```/ { exit }
     inb && fence { print }
-  ' "$MANIFEST"
+  ' "$MANIFEST" </dev/null
 }
 
 manifest_plan_field() {
@@ -731,57 +738,57 @@ manifest_intent_line() {
     inb && /^## / { exit }
     inb && /^```/ { if (fence) exit; fence=1; next }
     inb && fence && NF { print; exit }
-  ' "$MANIFEST"
+  ' "$MANIFEST" </dev/null
 }
 
 manifest_targets() {
   if manifest_memo_on; then manifest_memo_all "T	"; return 0; fi
-  grep -E '^- `target`' "$MANIFEST" 2>/dev/null || true
+  grep -E '^- `target`' "$MANIFEST" </dev/null 2>/dev/null || true
 }
 
 manifest_rule_lines() {
   if manifest_memo_on; then manifest_memo_all "R	"; return 0; fi
-  grep -E '^\*\*[^*]+\*\*: (켬|끔)$' "$MANIFEST" 2>/dev/null || true
+  grep -E '^\*\*[^*]+\*\*: (켬|끔)$' "$MANIFEST" </dev/null 2>/dev/null || true
 }
 
 manifest_preauth_rows() {
   if manifest_memo_on; then manifest_memo_all "P	"; return 0; fi
-  grep -E '^- `사전 인가`' "$MANIFEST" 2>/dev/null || true
+  grep -E '^- `사전 인가`' "$MANIFEST" </dev/null 2>/dev/null || true
 }
 
 manifest_autoadopt_rows_anywhere() {
   if manifest_memo_on; then manifest_memo_all "AW	"; return 0; fi
-  grep -E '^- `자동 채택`' "$MANIFEST" 2>/dev/null || true
+  grep -E '^- `자동 채택`' "$MANIFEST" </dev/null 2>/dev/null || true
 }
 
 manifest_design_roster_rows_anywhere() {
   if manifest_memo_on; then manifest_memo_all "DR	"; return 0; fi
-  grep -E '^- `설계 로스터`' "$MANIFEST" 2>/dev/null || true
+  grep -E '^- `설계 로스터`' "$MANIFEST" </dev/null 2>/dev/null || true
 }
 
 manifest_clause_rows_raw() {
   if manifest_memo_on; then manifest_memo_all "C	"; return 0; fi
-  grep -E '^- `종료 절`' "$MANIFEST" 2>/dev/null || true
+  grep -E '^- `종료 절`' "$MANIFEST" </dev/null 2>/dev/null || true
 }
 
 manifest_base_publish_rows() {
   if manifest_memo_on; then manifest_memo_all "BP	"; return 0; fi
-  grep -E '^- `베이스 발행`' "$MANIFEST" 2>/dev/null || true
+  grep -E '^- `베이스 발행`' "$MANIFEST" </dev/null 2>/dev/null || true
 }
 
 manifest_base_design_rows() {
   if manifest_memo_on; then manifest_memo_all "BD	"; return 0; fi
-  grep -E '^- `베이스 설계`' "$MANIFEST" 2>/dev/null || true
+  grep -E '^- `베이스 설계`' "$MANIFEST" </dev/null 2>/dev/null || true
 }
 
 manifest_source_ticket_rows() {
   if manifest_memo_on; then manifest_memo_all "ST	"; return 0; fi
-  grep -E '^- `출처 티켓`' "$MANIFEST" 2>/dev/null || true
+  grep -E '^- `출처 티켓`' "$MANIFEST" </dev/null 2>/dev/null || true
 }
 
 manifest_adoption_rows() {
   if manifest_memo_on; then manifest_memo_all "AD	"; return 0; fi
-  grep -E '^- `세그먼트 입양`' "$MANIFEST" 2>/dev/null || true
+  grep -E '^- `세그먼트 입양`' "$MANIFEST" </dev/null 2>/dev/null || true
 }
 
 manifest_merge_adoption_rows() {
@@ -790,7 +797,7 @@ manifest_merge_adoption_rows() {
   # post-merge review. `manifest_adoption_rows` keeps returning `세그먼트 입양`
   # rows only; a reader that means "any adoption row" reads both.
   if manifest_memo_on; then manifest_memo_all "MD	"; return 0; fi
-  grep -E '^- `머지 입양`' "$MANIFEST" 2>/dev/null || true
+  grep -E '^- `머지 입양`' "$MANIFEST" </dev/null 2>/dev/null || true
 }
 
 manifest_surface_approval_rows() {
@@ -798,47 +805,47 @@ manifest_surface_approval_rows() {
   # adopted segment a person approved at kickoff, bound to the base entry and
   # the branch entry that were shown.
   if manifest_memo_on; then manifest_memo_all "SA	"; return 0; fi
-  grep -E '^- `강제 표면 승인`' "$MANIFEST" 2>/dev/null || true
+  grep -E '^- `강제 표면 승인`' "$MANIFEST" </dev/null 2>/dev/null || true
 }
 
 manifest_review_pr_rows() {
   if manifest_memo_on; then manifest_memo_all "VP	"; return 0; fi
-  grep -E '^- `리뷰 PR`' "$MANIFEST" 2>/dev/null || true
+  grep -E '^- `리뷰 PR`' "$MANIFEST" </dev/null 2>/dev/null || true
 }
 
 manifest_review_post_rows() {
   if manifest_memo_on; then manifest_memo_all "VG	"; return 0; fi
-  grep -E '^- `리뷰 게시`' "$MANIFEST" 2>/dev/null || true
+  grep -E '^- `리뷰 게시`' "$MANIFEST" </dev/null 2>/dev/null || true
 }
 
 manifest_review_depth_rows() {
   if manifest_memo_on; then manifest_memo_all "VD	"; return 0; fi
-  grep -E '^- `리뷰 깊이`' "$MANIFEST" 2>/dev/null || true
+  grep -E '^- `리뷰 깊이`' "$MANIFEST" </dev/null 2>/dev/null || true
 }
 
 manifest_review_format_rows() {
   if manifest_memo_on; then manifest_memo_all "VF	"; return 0; fi
-  grep -E '^- `리뷰 문면`' "$MANIFEST" 2>/dev/null || true
+  grep -E '^- `리뷰 문면`' "$MANIFEST" </dev/null 2>/dev/null || true
 }
 
 manifest_predecessor_landing_rows() {
   if manifest_memo_on; then manifest_memo_all "PL	"; return 0; fi
-  grep -E '^- `선행 착지`' "$MANIFEST" 2>/dev/null || true
+  grep -E '^- `선행 착지`' "$MANIFEST" </dev/null 2>/dev/null || true
 }
 
 manifest_rekick_rows() {
   if manifest_memo_on; then manifest_memo_all "RK	"; return 0; fi
-  grep -E '^- `재킥오프`' "$MANIFEST" 2>/dev/null || true
+  grep -E '^- `재킥오프`' "$MANIFEST" </dev/null 2>/dev/null || true
 }
 
 manifest_apply_code_rows() {
   if manifest_memo_on; then manifest_memo_all "AC	"; return 0; fi
-  grep -E '^- `적용 프로브 코드`' "$MANIFEST" 2>/dev/null || true
+  grep -E '^- `적용 프로브 코드`' "$MANIFEST" </dev/null 2>/dev/null || true
 }
 
 manifest_label_ack_rows() {
   if manifest_memo_on; then manifest_memo_all "LA	"; return 0; fi
-  grep -E '^- `라벨 인정`' "$MANIFEST" 2>/dev/null || true
+  grep -E '^- `라벨 인정`' "$MANIFEST" </dev/null 2>/dev/null || true
 }
 
 manifest_label_ack_checks() {
@@ -1118,7 +1125,7 @@ EOF
 
 manifest_plugin_allow_rows() {
   if manifest_memo_on; then manifest_memo_all "PA	"; return 0; fi
-  grep -E '^- `플러그인 허용`' "$MANIFEST" 2>/dev/null || true
+  grep -E '^- `플러그인 허용`' "$MANIFEST" </dev/null 2>/dev/null || true
 }
 
 manifest_failover_allow_rows() {
@@ -1127,7 +1134,7 @@ manifest_failover_allow_rows() {
   # at its usage limit. The row order is the list order the lane choice
   # breaks ties with.
   if manifest_memo_on; then manifest_memo_all "FA	"; return 0; fi
-  grep -E '^- `계정 이전 허용`' "$MANIFEST" 2>/dev/null || true
+  grep -E '^- `계정 이전 허용`' "$MANIFEST" </dev/null 2>/dev/null || true
 }
 
 manifest_failover_accounts() {
@@ -1145,7 +1152,7 @@ run_failover_allowed() {
 
 manifest_repair_rows() {
   if manifest_memo_on; then manifest_memo_all "RE	"; return 0; fi
-  grep -E '^- `수리 사건`' "$MANIFEST" 2>/dev/null || true
+  grep -E '^- `수리 사건`' "$MANIFEST" </dev/null 2>/dev/null || true
 }
 
 target_field() {
@@ -1376,7 +1383,7 @@ manifest_autoadopt_rows() {
     $0 == "## 인가" { inb = 1; next }
     inb && /^## / { exit }
     inb && index($0, "- `자동 채택`") == 1 { print }
-  ' "$MANIFEST" 2>/dev/null || true
+  ' "$MANIFEST" </dev/null 2>/dev/null || true
 }
 
 # ---------------------------------------------------------------------------
@@ -1584,7 +1591,7 @@ check_manifest() {
   if manifest_memo_on; then
     if [ -n "$(manifest_memo_one "K	")" ]; then kind_ok=1; fi
   else
-    if grep -q 'cc-run-manifest v1' "$MANIFEST"; then kind_ok=1; fi
+    if grep -q 'cc-run-manifest v1' "$MANIFEST" </dev/null; then kind_ok=1; fi
   fi
   [ "$kind_ok" = 1 ] || die "매니페스트 kind 토큰 불일치 — cc-run-manifest v1 이 아니다"
 
@@ -1623,7 +1630,7 @@ check_manifest() {
   # 2 — exactly one authorization block. No append form exists, so a second is
   # not residue from a normal path; it is tampering.
   local n
-  if manifest_memo_on; then n=$(manifest_memo_one "N	"); else n=$(grep -cE '^## 인가$' "$MANIFEST" || true); fi
+  if manifest_memo_on; then n=$(manifest_memo_one "N	"); else n=$(grep -cE '^## 인가$' "$MANIFEST" </dev/null || true); fi
   [ "$n" = "1" ] || die "매니페스트에 「## 인가」 절이 ${n}개 — 정확히 하나여야 합니다"
 
   # 3 — origin-worktree tie-break, FAIL-OPEN by design (see the note above).
@@ -2681,7 +2688,7 @@ rule_setting_load() {
         p = index($0, "**: ")
         if (substr($0, 1, 2) == "**" && p > 3) print substr($0, 3, p - 3) "\t" substr($0, p + 4)
       }
-    ' "$MANIFEST" 2>/dev/null)
+    ' "$MANIFEST" </dev/null 2>/dev/null)
   fi
   RULE_SETTING_CANON_RC=0
   if [ -z "$raw" ]; then
