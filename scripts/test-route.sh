@@ -3211,6 +3211,21 @@ check "M7: 그 그룹의 실측 합 비율이 가장 크면 그 값(약 0.5)" \
   "$(tr_m7 "$M7R" '{"group":"acct:a","windows":{"five_hour":{"state":"unknown"}}}' "$TCOST" | jq -r '(.k_ppm - 500000 | fabs) <= 1')" "true"
 check "M7: 다른 그룹의 실측 표본은 k 에 들지 않는다" \
   "$(tr_m7 "$M7R" '{"group":"acct:b","windows":{"five_hour":{"state":"unknown"}}}' "$TCOST" | jq -c .k_ppm)" 266667
+# 그룹별 실측 비율 표. 계정 a 표본 셋(0.45/0.9)과 계정 b 표본 넷(0.45/0.6, 합 2.4 로 최소
+# 질량 위)을 함께 두면 표는 두 그룹을 담고, 각 값은 그 그룹에 대해 rt_rho_measured 를 직접
+# 돈 값과 같다. 입장 판정과 관측 줄은 이 표로 M7 을 세므로, 표로 센 rt_m7r 도 rt_m7 과 같아야 한다.
+M7G_SMP='RHO([range(0; 3) | RSMP(.; 0.9; 0.45)] + [range(3; 7) | RSMP(.; 0.6; 0.45) | .account = "b"])'
+M7G=$(ctx "$RHO_JQ $M7G_SMP")
+check "M7: 그룹별 실측 비율 표는 그룹마다 rt_rho_measured 와 같다" \
+  "$( ( . "$TR_ROUTE"; jq -n -c --argjson c "$M7G" "$(route__jq_lib)"' rt_rho_groups($c) as $rg
+        | [($rg | keys), ([$rg[]] == [rt_rho_measured($c; "acct:a"), rt_rho_measured($c; "acct:b")]), ($rg["acct:b"] > $rg["acct:a"])]' ) )" \
+  '[["acct:a","acct:b"],true,true]'
+check "M7: 표로 센 rt_m7r 은 그룹마다 rt_m7 과 같다" \
+  "$( ( . "$TR_ROUTE"; jq -n -c --argjson c "$M7G" "$(route__jq_lib)"' rt_rho_groups($c) as $rg
+        | [("acct:a", "acct:b", "acct:z") as $g | {group: $g, windows: {five_hour: {state: "unknown"}}} as $G
+           | (rt_m7r($c; $G; {}; rt_rho_pick($rg; $c; $g)) == rt_m7($c; $G; {}))] | all' ) )" "true"
+check "M7: 표본 설정이 없는 문맥의 표는 비고 그룹 비율은 null" \
+  "$( ( . "$TR_ROUTE"; jq -n -c --argjson c "$M7C" "$(route__jq_lib)"' rt_rho_groups($c) as $rg | [$rg, rt_rho_pick($rg; $c; "acct:a")]' ) )" '[{},null]'
 check "M7: 셀 수 있는 비용비가 없으면 null" \
   "$(tr_m7 "$M7C" "$G5" '{"five_hour":{"bp":0},"seven_day":{"bp":800}}')" "null"
 check "M7: 형이 틀린 비용과 그룹 보기에도 오류 없이 null" "$(tr_m7 "$M7C" '"x"' '"y"' 2>&1)" "null"

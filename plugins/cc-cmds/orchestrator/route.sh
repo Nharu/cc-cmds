@@ -852,23 +852,47 @@ def rt_cost_table($c):
               | if $cell == null then . else .[$w].by_group[$gv[0].g][$gv[0].kind] = $cell end))
     end;
 
-# 실측 합 비율 Σd7 / Σd5. 두 창이 모두 위생을 통과한 살아 있는 표본만 더하고, `$g` 가
-# null 이 아니면 그 그룹의 표본만 더한다. 설정이나 표본이 쓸 수 없거나 Σd5 가 최소
-# 질량에 못 미치거나 0 이하이면 null 이다.
-def rt_rho_measured($c; $g):
+# 실측 합 비율의 재료. 두 창이 모두 위생을 통과한 살아 있는 표본마다 그 그룹과 두
+# 창의 증가량 `{g, d5, d7}` 을 표본 순으로 늘어놓는다. 설정이나 표본을 쓸 수 없으면
+# null 이다. 표본 원문을 파싱하는 곳은 여기 한 곳이다.
+def rt_rho_parts($c):
   ($c.config.cost // null) as $k
   | ($c.config.rest_min_mass // null) as $mm
   | if (($k | rt_cost_cfg_ok) | not) or (($c.cost_samples | type) != "string") or (($c.now | type) != "number")
        or (($mm | type) != "number") then null
-    else [rt_cost_live($c; $k)[] | select($g == null or .g == $g) | (.) as $s
+    else [rt_cost_live($c; $k)[] | (.) as $s
            | ($s.windows.five_hour // null) as $x5 | ($s.windows.seven_day // null) as $x7
            | select($x5 != null and $x7 != null)
            | select(($s | rt_cost_hyg($k.hygiene; $x5)) and ($s | rt_cost_hyg($k.hygiene; $x7)))
-           | {d5: (($x5.u1 - $x5.u0) / $s.m), d7: (($x7.u1 - $x7.u0) / $s.m)}] as $ds
-      | ($ds | map(.d5) | add) as $s5
-      | if $s5 == null or $s5 < $mm or $s5 <= 0 then null
-        else (($ds | map(.d7) | add) / $s5) end
+           | {g: $s.g, d5: (($x5.u1 - $x5.u0) / $s.m), d7: (($x7.u1 - $x7.u0) / $s.m)}]
     end;
+
+# 재료 배열 `$ds` 의 합 비율 Σd7 / Σd5. Σd5 가 최소 질량에 못 미치거나 0 이하이면 null 이다.
+def rt_rho_sum($c; $ds):
+  ($ds | map(.d5) | add) as $s5
+  | if $s5 == null or $s5 < $c.config.rest_min_mass or $s5 <= 0 then null
+    else (($ds | map(.d7) | add) / $s5) end;
+
+# 실측 합 비율 Σd7 / Σd5. `$g` 가 null 이 아니면 그 그룹의 표본만 더한다. 설정이나
+# 표본이 쓸 수 없거나 Σd5 가 최소 질량에 못 미치거나 0 이하이면 null 이다.
+def rt_rho_measured($c; $g):
+  rt_rho_parts($c) as $ds
+  | if $ds == null then null else rt_rho_sum($c; [$ds[] | select($g == null or .g == $g)]) end;
+
+# 그룹별 실측 합 비율 표 `{<그룹>: 비율 또는 null}`. 표본 원문을 한 번만 파싱해,
+# 그룹마다 `rt_rho_measured($c; <그룹>)` 과 같은 값을 담는다. 표본이 없는 그룹은 키가
+# 없다. 한 문맥에서 여러 그룹·계정의 M7 을 셀 때 이 표를 한 번 만들어 넘긴다.
+def rt_rho_groups($c):
+  rt_rho_parts($c) as $ds
+  | if $ds == null then {}
+    else reduce ([$ds[] | .g | select(type == "string")] | unique)[] as $g ({};
+           .[$g] = (try rt_rho_sum($c; [$ds[] | select(.g == $g)]) catch null))
+    end;
+
+# 그룹 `$g` 의 실측 합 비율을 표 `$rg` 에서 찾는다. 그룹 이름이 문자열이 아니면 표를
+# 쓰지 않고 `rt_rho_measured` 로 직접 센다.
+def rt_rho_pick($rg; $c; $g):
+  if ($g | type) == "string" then ($rg[$g] // null) else (try rt_rho_measured($c; $g) catch null) end;
 
 # 쉼 문턱의 비율 ρ. 모든 그룹의 실측 합 비율이고, 셀 수 없으면 출하 기본 비율로
 # 대신한다. 어느 경우에도 오류를 내지 않는다 — 비율이 판정을 멈추게 하지 않도록.
@@ -915,8 +939,9 @@ def rt_admit_core($c; $G; $ex):
 # 수가 아님) `u5_bp`·`t5_s` 가 null, 지금 쓰는 창이 없으면(reset_elapsed, 또는 창 리셋이
 # 지금이거나 지남) 둘 다 0, 그 밖은 창의 사용률과 창 리셋까지 남은 초다. `p5` 는 지금
 # 만료되지 않은 5시간(five_hour·both) 리셋권 수다. 5시간 창이 unlimited 이거나 k 를 셀
-# 수 없으면 null 이다. 형이 맞지 않는 입력에도 오류를 내지 않는다.
-def rt_m7($c; $G; $cost):
+# 수 없으면 null 이다. 형이 맞지 않는 입력에도 오류를 내지 않는다. `rho` 는 그 그룹의
+# 실측 합 비율을 내는 식이고, 5시간 창이 unlimited 가 아닐 때만 셈한다.
+def rt_m7r($c; $G; $cost; rho):
   (try ($G.windows.five_hour // null) catch null) as $x
   | if (($x | type) == "object") and ($x.state == "unlimited") then null
     else
@@ -925,7 +950,7 @@ def rt_m7($c; $G; $cost):
               then $cost.seven_day.bp / $cost.five_hour.bp else null end) catch null),
         (try ($c.config.c.seven_day.default as $a | $c.config.c.five_hour.default as $b
               | if (($a | type) == "number") and (($b | type) == "number") and ($b > 0) then $a / $b else null end) catch null),
-        (try rt_rho_measured($c; $G.group) catch null)]
+        (try rho catch null)]
        | map(select(type == "number"))) as $ks
       | if ($ks | length) == 0 then null
         else (try ($c.now | if type == "number" then . else null end) catch null) as $now
@@ -943,6 +968,9 @@ def rt_m7($c; $G; $cost):
         end
     end;
 
+# 실측 합 비율을 그 그룹에 대해 직접 세는 `rt_m7r`.
+def rt_m7($c; $G; $cost): rt_m7r($c; $G; $cost; rt_rho_measured($c; $G.group));
+
 # `$t` 초 동안의 최대 소진량 M7(t)(주간 bp, 실수) = k × X5(t). X5 는 그 동안 쓸 수 있는
 # 5시간 소진량이다 — 창을 모르면 지금 창 하나와 그 뒤 새 창 수, 지금 쓰는 창이 없으면
 # 새 창 수, 그 밖은 지금 창의 남은 몫과 창 리셋 뒤의 새 창 수만큼 10000 씩이고, 어느
@@ -959,10 +987,11 @@ def rt_m7_burn($m; $t):
 # 5시간 창을 모르는 식의 M7 만큼 써도 남는 양을 후보로 더하고, 후보 가운데 최댓값을
 # 정수로 반올림해 `remaining_bp` 동률 깨기를 가로채지 않는다. 주간 창이 known 이 아니거나
 # 주간 리셋 시각이 수가 아니거나 지났거나 M7 을 셀 수 없으면(5시간 한도 없음 포함) 0 이다.
-def rt_w7($c; $G; $cost):
+# `m7` 은 그 그룹의 `rt_m7` 결과를 내는 식이고, 주간 창이 위 조건을 통과할 때만 셈한다.
+def rt_w7m($c; $G; m7):
   $G.windows.seven_day as $x
   | if ($x.state != "known") or (($x.resets_at | type) != "number") or ($x.resets_at <= $c.now) then 0
-    else rt_m7($c; $G; $cost) as $m
+    else m7 as $m
       | if $m == null then 0
         else (10000 - $x.u_bp - $G.sigma.seven_day) as $r7
           | ($x.resets_at - $c.now) as $t
@@ -974,6 +1003,9 @@ def rt_w7($c; $G; $cost):
           | max | round
         end
     end;
+
+# M7 을 그 그룹에 대해 직접 세는 `rt_w7m`.
+def rt_w7($c; $G; $cost): rt_w7m($c; $G; rt_m7($c; $G; $cost));
 
 # 주간 리셋 압력 P(bp/h 정수). 5시간 한도가 없는 그룹의 정렬 키로만 쓰는 필요 속도로,
 # 주간 창 끝 `$top` 까지의 잔여(그 그룹 live 임대의 주간 예약을 뺀 것)를 리셋까지 남은
@@ -1640,14 +1672,17 @@ def rt_new($p; $basis0; $excl):
     else
       # 대여 등록 행에 고정된 요청은 고정 계정 하나만, 대여 검사로만 입장한다. u 계정으로
       # 대체되지 않고, 후보가 없으면 그 행의 원인을 밝혀 PARK 한다. 한도 뒤 재배정의 제외
-      # 계정은 고정 계정에 적용하지 않는다 — 옮겨 갈 다른 계정이 없다.
-      [$p.accounts[]
+      # 계정은 고정 계정에 적용하지 않는다 — 옮겨 갈 다른 계정이 없다. W7 이 쓰는 그룹별
+      # 실측 합 비율은 표본을 한 번만 파싱한 표에서 찾는다.
+      (try rt_rho_groups($p.c) catch {}) as $rg
+      | [$p.accounts[]
         | select(if $p.pin != null then .id == $p.pin else rt_policy_ok(.) or rt_lend_new_ok(.) end)
         | select($p.pin != null or .id != $excl) | (.) as $a
         | (if $p.pin != null and (rt_lend_new_ok($a) | not) then rt_lend_fail(rt_admit_core($p.c; $p.groups[$a.group]; $a.exhausted_until))
            else rt_admit($p; $a) end) as $adm
         | {a: $a, adm: $adm, fifo: rt_fifo_blocked($p; $a.group),
-           w7: rt_w7($p.c; $p.groups[$a.group]; $adm.cost)}] as $pool
+           w7: ($p.groups[$a.group] as $G
+                | rt_w7m($p.c; $G; rt_m7r($p.c; $G; $adm.cost; rt_rho_pick($rg; $p.c; $G.group))))}] as $pool
       | [$pool[] | select(.adm.admitted and (.fifo | not))] as $cands
       | if ($cands | length) > 0 then
           # 대여 층이 두 단계 모두에서 맨 앞 키라 대여 행은 언제나 맨 뒤다. 그 행의 남은 양은 상한까지다.
@@ -1820,15 +1855,17 @@ def rt_wait_record($leases; $run; $lin; $acct; $dir; $nonce; $now; $holders; $sc
 # 관측 줄의 그룹 항목. 결정과 같은 문맥(잠금 아래 다시 읽은 표를 끼운 것)에서 모든
 # 그룹의 W7 과 주간 창 값을 그룹 순으로 늘어놓는다. 비용은 그 그룹에 대한 입장
 # 판정이 쓰는 값이다. 항목 끝에는 W7 이 쓴 M7 의 재료 `m7`, 그 `k_ppm` 으로 셈한 ρ7,
-# 그룹 5시간 창의 상태를 싣는다.
+# 그룹 5시간 창의 상태를 싣는다. 실측 합 비율은 표본을 한 번만 파싱한 그룹별 표에서
+# 찾고, W7 은 이미 센 M7 을 다시 세지 않는다.
 def rt_observe($schema):
   rt_need_cap | rt_cost_apply | rt_prep($schema) as $p
+  | (try rt_rho_groups($p.c) catch {}) as $rg
   | [$p.groups[]] | sort_by(.group)
   | map((.) as $G | $G.windows.seven_day as $x
         | rt_admit_core($p.c; $G; null).cost as $cost
-        | rt_m7($p.c; $G; $cost) as $m
+        | rt_m7r($p.c; $G; $cost; rt_rho_pick($rg; $p.c; $G.group)) as $m
         | {group: $G.group,
-           w7_bp: rt_w7($p.c; $G; $cost),
+           w7_bp: rt_w7m($p.c; $G; $m),
            u7_bp: (if $x.state == "known" then $x.u_bp else null end),
            sigma7_bp: $G.sigma.seven_day,
            resets_at: ($x.resets_at // null),
