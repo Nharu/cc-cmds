@@ -2531,8 +2531,12 @@ FXO1=$(sed -n 1p "$FXO")
 check "관측 픽스처는 두 줄이다" "$(wc -l < "$FXO" | tr -d ' ')" 2
 check "관측 픽스처 두 줄의 최상위 키 순서가 같다" "$(jq -c keys_unsorted "$FXO" | sort -u | wc -l | tr -d ' ')" 1
 check "관측 픽스처의 groups 항목 키 순서" "$(jq -c '.groups[] | keys_unsorted' "$FXO" | sort -u)" \
-  '["group","w7_bp","u7_bp","sigma7_bp","resets_at","rho7_bp_d"]'
-check "관측 픽스처 두 줄의 그룹별 rho7_bp_d" "$(jq -c '[.groups[].rho7_bp_d]' "$FXO")" "$(printf '[5120,678]\n[5120,650]')"
+  '["group","w7_bp","u7_bp","sigma7_bp","resets_at","rho7_bp_d","m7","five_hour_state"]'
+check "관측 픽스처 두 줄의 그룹별 rho7_bp_d" "$(jq -c '[.groups[].rho7_bp_d]' "$FXO")" "$(printf '[6400,6400]\n[6400,null]')"
+check "관측 픽스처의 m7 객체 키 순서" "$(jq -c '.groups[] | .m7 | select(. != null) | keys_unsorted' "$FXO" | sort -u)" \
+  '["k_ppm","u5_bp","t5_s","p5"]'
+check "관측 픽스처의 그룹별 five_hour_state" "$(jq -c '[.groups[].five_hour_state]' "$FXO")" \
+  "$(printf '["unknown","known"]\n["unknown","unlimited"]')"
 
 P="$OB/grant"
 rc=0; out=$(obtxn "$P" "$OBF" 2>"$OB.grant.err") || rc=$?
@@ -2553,14 +2557,17 @@ w7want=$(printf '%s' "$c" | bash "$TR_ROUTE" classify \
   | ( . "$TR_ROUTE"; jq -r --argjson c "$c" "$(route__jq_lib)"' .groups[] | select(.group == "acct:a") | rt_w7($c; .; rt_admit_core($c; .; null).cost)' ))
 check "관측: 판정된 그룹의 w7_bp 는 같은 문맥의 rt_w7" "$(printf '%s' "$line" | jq -r '.groups[0].w7_bp')" "$w7want"
 check "관측: 그 W7 은 0 보다 크다" "$( [ "${w7want:-0}" -gt 0 ] 2>/dev/null && printf 큼 || printf 아님)" "큼"
-rhowant=$(printf '%s' "$c" | bash "$TR_ROUTE" classify \
-  | ( . "$TR_ROUTE"; jq -r --argjson c "$c" "$(route__jq_lib)"' .groups[] | select(.group == "acct:a") | rt_rho7_bp_d($c; rt_admit_core($c; .; null).cost)' ))
-check "관측: 판정된 그룹의 rho7_bp_d 는 같은 문맥·같은 비용의 rt_rho7_bp_d" "$(printf '%s' "$line" | jq -r '.groups[0].rho7_bp_d')" "$rhowant"
+m7want=$(printf '%s' "$c" | bash "$TR_ROUTE" classify \
+  | ( . "$TR_ROUTE"; jq -c --argjson c "$c" "$(route__jq_lib)"' .groups[] | select(.group == "acct:a") | rt_m7($c; .; rt_admit_core($c; .; null).cost)' ))
+check "관측: 판정된 그룹의 m7 은 같은 문맥·같은 비용의 rt_m7" "$(printf '%s' "$line" | jq -c '.groups[0].m7')" "$m7want"
+check "관측: 판정된 그룹의 five_hour_state" "$(printf '%s' "$line" | jq -r '.groups[0].five_hour_state')" "known"
+rhowant=$( ( . "$TR_ROUTE"; jq -n -r --argjson c "$c" --argjson m "$m7want" "$(route__jq_lib)"' rt_rho7_bp_d($c; $m)' ))
+check "관측: 판정된 그룹의 rho7_bp_d 는 그 m7 으로 셈한 rt_rho7_bp_d" "$(printf '%s' "$line" | jq -r '.groups[0].rho7_bp_d')" "$rhowant"
 check "관측: 그 ρ7 은 0 보다 크다" "$( [ "${rhowant:-0}" -gt 0 ] 2>/dev/null && printf 큼 || printf 아님)" "큼"
-# ρ7 은 5시간 비용이 양수이고 주간 비용이 수일 때만 셈한다.
+# ρ7 은 m7 의 k_ppm × 48000 / 1000000 의 반올림이고, m7 이 null 이면 null 이다.
 rho_of() { ( . "$TR_ROUTE"; jq -n -r --argjson c "$c" "$(route__jq_lib)"" rt_rho7_bp_d(\$c; $1)" ); }
-check "관측: 5시간 비용 bp 가 0 이면 rho7_bp_d 는 null" "$(rho_of '{five_hour: {bp: 0}, seven_day: {bp: 800}}')" "null"
-check "관측: 주간 비용 bp 가 null 이면 rho7_bp_d 는 null" "$(rho_of '{five_hour: {bp: 3000}, seven_day: {bp: null}}')" "null"
+check "관측: m7 이 null 이면 rho7_bp_d 는 null" "$(rho_of 'null')" "null"
+check "관측: k_ppm 133334 의 rho7_bp_d 는 6400" "$(rho_of '{k_ppm: 133334, u5_bp: null, t5_s: null, p5: 0}')" "6400"
 
 # 주간 창이 known 이 아닌 계정 b 를 둔 문맥. a 는 OBF 와 같다.
 OBU='USE([UW("a"; W(0.1; $now + 3600); W(0.1; $now + 3600)), UW("b"; W(0.1; $now + 3600); null)])'
@@ -2570,12 +2577,32 @@ check "관측: 주간 창 미상 계정을 둔 GRANT 거래는 a 를 acct:a 로 
 line=$(cat "$P/observe/route.jsonl" 2>/dev/null)
 check "관측: 주간 창이 known 이 아닌 그룹도 rho7_bp_d 는 양의 정수" \
   "$(printf '%s' "$line" | jq -r '.groups[] | select(.group == "acct:b") | [(.u7_bp == null), ((.rho7_bp_d | type) == "number" and .rho7_bp_d > 0 and .rho7_bp_d == (.rho7_bp_d | floor))] | map(tostring) | join(" ")')" "true true"
-# 리셋권 없이 W7 이 양수인 그룹에서 ρ7·t 는 r7 − W7 과 두 값의 반올림 오차 안에서 같다.
-check "관측: acct:a 의 r7 − W7 과 rho7_bp_d·t 가 반올림 오차 안에서 같다" \
+# 리셋권 없이 W7 이 양수인 그룹에서 r7 − W7 은 줄의 m7 으로 다시 셈한 k × X5(t) 와
+# 반올림 오차 1 안에서 같다. X5 는 줄의 at·resets_at·m7 만으로 셈한다.
+check "관측: acct:a 의 r7 − W7 과 m7 으로 셈한 k × X5(t) 가 반올림 오차 안에서 같다" \
   "$(printf '%s' "$line" | jq -r '.at as $at | .groups[] | select(.group == "acct:a")
-     | ((.resets_at - $at) / 86400) as $d
-     | (((10000 - .u7_bp - .sigma7_bp - .w7_bp) - .rho7_bp_d * $d) | fabs) <= (0.5 * $d + 0.5)')" "true"
+     | (.resets_at - $at) as $t | .m7 as $m
+     | (if $m.u5_bp == null then 10000 * (1 + (($t / 18000) | ceil))
+        elif $m.t5_s <= 0 then 10000 * (($t / 18000) | ceil)
+        else (10000 - $m.u5_bp) + 10000 * ((([0, $t - $m.t5_s] | max) / 18000) | ceil) end
+        + 10000 * $m.p5) as $x5
+     | (((10000 - .u7_bp - .sigma7_bp - .w7_bp) - $x5 * $m.k_ppm / 1000000) | fabs) <= 1')" "true"
 check "관측: 그 교차 단언의 W7 은 0 보다 크다" "$(printf '%s' "$line" | jq -r '.groups[] | select(.group == "acct:a") | .w7_bp > 0')" "true"
+
+# 5시간 값이 없는 계정 b 를 둔 문맥. 주간 창은 known 이고 한 시간 뒤 리셋이라 5시간
+# 상한을 전제하면 W7 이 양수일 자리지만, 형태 추정이 그 그룹을 5시간 한도 없음으로
+# 판정하므로 W7 은 0, ρ7·m7 은 null 이다. 입장 판정도 같은 rt_w7 을 부른다.
+OBN='USE([UW("a"; W(0.1; $now + 3600); W(0.1; $now + 3600)), UW("b"; null; W(0.1; $now + 3600))])'
+P="$OB/unlimited5"
+rc=0; out=$(obtxn "$P" "$OBN" 2>/dev/null) || rc=$?
+check "관측: 5시간 한도 없음 계정을 둔 GRANT 거래는 a 를 acct:a 로 준다" "$rc/$(printf '%s' "$out" | jq -r '.verdict + " " + .account + " " + .group')" "0/GRANT a acct:a"
+line=$(cat "$P/observe/route.jsonl" 2>/dev/null)
+check "관측: 5시간 한도 없음 그룹의 w7_bp·rho7_bp_d·m7·five_hour_state" \
+  "$(printf '%s' "$line" | jq -c '.groups[] | select(.group == "acct:b") | [.w7_bp, .rho7_bp_d, .m7, .five_hour_state]')" '[0,null,null,"unlimited"]'
+c=$(ctx "$OBN")
+check "관측: 같은 문맥의 분류 그룹 acct:b 에 rt_w7 을 직접 돌려도 0" \
+  "$(printf '%s' "$c" | bash "$TR_ROUTE" classify \
+     | ( . "$TR_ROUTE"; jq -r --argjson c "$c" "$(route__jq_lib)"' .groups[] | select(.group == "acct:b") | [.windows.five_hour.state, rt_w7($c; .; rt_admit_core($c; .; null).cost)] | map(tostring) | join(" ")' ))" "unlimited 0"
 
 P="$OB/wait"
 rc=0; out=$(obtxn "$P" "$OBWAIT") || rc=$?
@@ -2922,18 +2949,23 @@ G_WORK='org:1111111111111111'; G_BUSY='org:2222222222222222'; G_LATE='org:333333
 G_FULL='org:4444444444444444'; G_FULL2='org:5555555555555555'
 
 # 라우터-1 — 버려질 한도가 5시간 여유보다 앞선다. W7 이 둘 다 0 인 work(1250)·late(1000)
-# 는 5시간 부하가 작은 late 가 먼저다.
-check "라우터-1: busy 의 W7" "$(fx_w7 '.' "$G_BUSY")" 6147
+# 는 5시간 부하가 작은 late 가 먼저다. busy 는 r7 7000, 주간 리셋까지 7200초, 5시간 창
+# 4000 에 창 리셋까지 3600초, 5시간 리셋권 하나라 X5 = 6000 + 10000 + 10000 = 26000 이고,
+# k_ppm 266667 의 M7 ≈ 6933.34 를 빼 W7 은 67 이다.
+check "라우터-1: busy 의 W7" "$(fx_w7 '.' "$G_BUSY")" 67
 check "라우터-1: work 의 W7" "$(fx_w7 '.' "$G_WORK")" 0
 check "라우터-1: late 의 W7" "$(fx_w7 '.' "$G_LATE")" 0
 expect "라우터-1: busy 를 고른다" "$(fxdecide '.')" '.verdict == "GRANT" and .basis == "first" and .account == "busy" and .config_dir == "/fixture/busy"'
 check "라우터-1: 순서" "$(fx_order '.')" "busy late work spare"
 
-# 라우터-2 — 리셋 전에 만료되는 주간 리셋권이 순서를 바꾼다.
+# 라우터-2 — 리셋 전에 만료되는 주간 리셋권이 순서를 바꾼다. late 변형은 리셋권을 만료
+# 직전(지금 + 140000초)에 누르면 주간 리셋까지 15000초가 남고, 5시간 창을 모르는 식의
+# X5 = 20000 에 k_ppm 266667 의 M7° ≈ 5333.34 라 리셋권 항이 4667 이다. 리셋권 없는 기본
+# 항은 0 이므로 late 가 busy(67) 보다 앞선다.
 LATE2='UAC("late"; .windows.five_hour.utilization = 0.4 | .windows.seven_day.utilization = 0.1
   | .windows.seven_day.resets_at_epoch = 1800155000 | .reset_passes.held[0].expires_at_epoch = 1800140000)'
-check "라우터-2: late 변형의 W7" "$(fx_w7 "$LATE2" "$G_LATE")" 630
-check "라우터-2: 순서" "$(fx_order "$LATE2")" "busy late work spare"
+check "라우터-2: late 변형의 W7" "$(fx_w7 "$LATE2" "$G_LATE")" 4667
+check "라우터-2: 순서" "$(fx_order "$LATE2")" "late busy work spare"
 expect "라우터-2: work·late 중 late" "$(fxdecide "$LATE2 | FONLY([\"work\",\"late\"])")" '.verdict == "GRANT" and .account == "late"'
 expect "라우터-2: late 리셋권을 지우면 work" "$(fxdecide "$LATE2 | UAC(\"late\"; del(.reset_passes)) | FONLY([\"work\",\"late\"])")" '.verdict == "GRANT" and .account == "work"'
 expect "라우터-2: late 리셋권이 unknown 이면 work" "$(fxdecide "$LATE2 | UAC(\"late\"; .reset_passes.held[0].kind = \"unknown\") | FONLY([\"work\",\"late\"])")" '.verdict == "GRANT" and .account == "work"'
@@ -3088,8 +3120,12 @@ expect "눌림-6: 낡은 파일에서 창만 있는 판독은 미지 입장 GRAN
   "$(fxctx "$FX_STALE" "$FXU_STALE" "$SN $F7 | GONE | SEEN([$EL5 | .pressed_at_epoch = 1799999000])" | bash "$TR_ROUTE" decide)" \
   '.verdict == "GRANT" and .admitted_as == "unknown"'
 
-# 버려질 한도의 경계. 그룹 보기를 직접 만들어 rt_w7 만 돈다. r7 3000, 리셋까지
-# 36000초이면 ρ7·T ≈ 4266.67 이라 리셋권 없는 값은 0 이고, 항이 켜지면 양수다.
+# 버려질 한도의 경계. 그룹 보기를 직접 만들어 rt_w7 만 돈다. 5시간 창이 없는 최소
+# 문맥이라 X5 는 「모를 때」 식이고 k_ppm 은 비용비 800/3000 의 266667 이다. r7 3000, 리셋
+# 까지 36000초이면 M7 = k × 30000 ≈ 8000.01 이라 리셋권 없는 기본 항은 0 이다. 주간
+# 리셋권 항은 max(0, 10000 − M7°(t − (E − now))) 이다 — 만료가 리셋7 − 1 이면 남은 1초의
+# X5° = 20000 이라 4667, 만료가 지금 + 1 이면 남은 35999초의 X5° = 30000 이라 2000 이다.
+# both 리셋권은 5시간 리셋권 수 p5 에도 들어 X5° 에 10000 을 더한다.
 tr_w7u() {
   # tr_w7u <상태> <u_bp> <리셋7> <리셋권 JSON 배열>
   ( . "$TR_ROUTE"
@@ -3102,16 +3138,106 @@ tr_p() { printf '[{"id":"p","kind":"%s","expires_at_epoch":%s}]' "$1" "$2"; }
 R7B=$((FX_NOW + 36000))
 check "W7 경계: 리셋권 없음" "$(tr_w7u known 7000 "$R7B" '[]')" 0
 check "W7 경계: 만료 = 리셋7 은 리셋권 없는 값" "$(tr_w7u known 7000 "$R7B" "$(tr_p seven_day "$R7B")")" 0
-check "W7 경계: 만료 = 리셋7 − 1 은 항을 켠다" "$(tr_w7u known 7000 "$R7B" "$(tr_p seven_day $((R7B - 1)))")" 8733
-check "W7 경계: 만료 = 지금 + 1 은 항을 켠다" "$(tr_w7u known 7000 "$R7B" "$(tr_p seven_day $((FX_NOW + 1)))")" 5733
+check "W7 경계: 만료 = 리셋7 − 1 은 항을 켠다" "$(tr_w7u known 7000 "$R7B" "$(tr_p seven_day $((R7B - 1)))")" 4667
+check "W7 경계: 만료 = 지금 + 1 은 항을 켠다" "$(tr_w7u known 7000 "$R7B" "$(tr_p seven_day $((FX_NOW + 1)))")" 2000
 check "W7 경계: 만료된 리셋권은 리셋권 없는 값" "$(tr_w7u known 7000 "$R7B" "$(tr_p seven_day "$FX_NOW")")" 0
 check "W7 경계: five_hour 는 리셋권 없는 값" "$(tr_w7u known 7000 "$R7B" "$(tr_p five_hour $((R7B - 1)))")" 0
 check "W7 경계: unknown 은 리셋권 없는 값" "$(tr_w7u known 7000 "$R7B" "$(tr_p unknown $((R7B - 1)))")" 0
-check "W7 경계: both 는 항을 켠다" "$(tr_w7u known 7000 "$R7B" "$(tr_p both $((R7B - 1)))")" 8733
+check "W7 경계: both 는 항을 켜고 p5 에도 든다" "$(tr_w7u known 7000 "$R7B" "$(tr_p both $((R7B - 1)))")" 2000
 check "W7 경계: 리셋7 = 지금이면 0" "$(tr_w7u known 7000 "$FX_NOW" "$(tr_p seven_day "$FX_NOW")")" 0
 check "W7 경계: 리셋이 지난 창은 0" "$(tr_w7u reset_elapsed 0 "$FX_NOW" '[]')" 0
 check "W7 경계: 주간을 모르면 0" "$(tr_w7u unknown null null '[]')" 0
-check "W7 경계: 라우터-2 의 late 행" "$(tr_w7u known 1000 $((FX_NOW + 155000)) "$(tr_p seven_day $((FX_NOW + 154999)))")" 630
+check "W7 경계: 라우터-2 의 late 행" "$(tr_w7u known 1000 $((FX_NOW + 155000)) "$(tr_p seven_day $((FX_NOW + 154999)))")" 4667
+check "W7 경계: 5시간 창이 unlimited 이면 0" \
+  "$( ( . "$TR_ROUTE"
+      jq -n --argjson now "$FX_NOW" --argjson cap "$TCAP" --argjson cost "$TCOST" \
+        "$(route__jq_lib)"' rt_w7({now: $now, config: {cap_bp: $cap}};
+          {windows: {five_hour: {state: "unlimited", u_bp: 0, resets_at: null}, seven_day: {state: "known", u_bp: 1000, resets_at: ($now + 3600)}},
+           sigma: {seven_day: 0}, passes: []}; $cost)' ) )" 0
+
+# 최대 소진량 M7 의 재료와 소진량. tr_m7 은 rt_m7 을, tr_m7b 는 rt_m7_burn 을 직접 돈다.
+tr_m7() {
+  # tr_m7 <문맥 JSON> <그룹 보기 JSON> <비용 JSON>
+  local c=$1 g=$2 cost=$3
+  ( . "$TR_ROUTE"; jq -n -c --argjson c "$c" --argjson G "$g" --argjson cost "$cost" "$(route__jq_lib)"' rt_m7($c; $G; $cost)' )
+}
+tr_m7b() {
+  # tr_m7b <m7 JSON> <초>
+  local m=$1 t=$2
+  ( . "$TR_ROUTE"; jq -n -c --argjson m "$m" --argjson t "$t" "$(route__jq_lib)"' rt_m7_burn($m; $t)' )
+}
+# tr_g5 <5시간 창 jq 식> [리셋권 jq 식] — 5시간 창만 둔 그룹 보기. 식 안의 `$now` 는
+# FX_NOW 다. JSON 을 jq 로 만들어, 큰따옴표 명령 치환 안에 이스케이프한 따옴표와 쉼표를
+# 두지 않는다 — bash 3.2 는 그 쉼표에서 중괄호 확장을 해 인자를 쪼갠다.
+tr_g5() { jq -nc --argjson now "$FX_NOW" "{group: \"g\", windows: {five_hour: ($1)}, passes: (${2:-[]})}"; }
+# tr_m7c [config.c jq 식] — FX_NOW·TCAP 만 둔 최소 문맥.
+tr_m7c() {
+  local e='{}'
+  [ $# -eq 0 ] || e=$1
+  jq -nc --argjson now "$FX_NOW" --argjson cap "$TCAP" "{now: \$now, config: ({cap_bp: \$cap} + ($e))}"
+}
+M7C=$(tr_m7c)
+G5U=$(tr_g5 '{state: "unknown", u_bp: null, resets_at: null}')
+check "M7: 5시간 창 unknown 은 u5·t5 null" "$(tr_m7 "$M7C" "$G5U" "$TCOST")" \
+  '{"k_ppm":266667,"u5_bp":null,"t5_s":null,"p5":0}'
+check "M7: 5시간 창이 없는 그룹 보기도 u5·t5 null" "$(tr_m7 "$M7C" '{"group":"g","windows":{}}' "$TCOST")" \
+  '{"k_ppm":266667,"u5_bp":null,"t5_s":null,"p5":0}'
+G5=$(tr_g5 '{state: "reset_elapsed", u_bp: 0, resets_at: ($now - 10)}')
+check "M7: reset_elapsed 는 지금 쓰는 창이 없다" "$(tr_m7 "$M7C" "$G5" "$TCOST")" \
+  '{"k_ppm":266667,"u5_bp":0,"t5_s":0,"p5":0}'
+G5=$(tr_g5 '{state: "known", u_bp: 3000, resets_at: $now}')
+check "M7: 창 리셋이 지금인 known 도 지금 쓰는 창이 없다" "$(tr_m7 "$M7C" "$G5" "$TCOST")" \
+  '{"k_ppm":266667,"u5_bp":0,"t5_s":0,"p5":0}'
+G5=$(tr_g5 '{state: "known", u_bp: 2500, resets_at: ($now + 7200)}')
+check "M7: known 은 사용률과 창 리셋까지 남은 초" "$(tr_m7 "$M7C" "$G5" "$TCOST")" \
+  '{"k_ppm":266667,"u5_bp":2500,"t5_s":7200,"p5":0}'
+G5=$(tr_g5 '{state: "unlimited", u_bp: 0, resets_at: null}')
+check "M7: unlimited 는 null" "$(tr_m7 "$M7C" "$G5" "$TCOST")" "null"
+G5=$(tr_g5 '{state: "unknown", u_bp: null, resets_at: null}' \
+  '[{id: "p1", kind: "five_hour", expires_at_epoch: ($now + 100)}, {id: "p2", kind: "both", expires_at_epoch: ($now + 100)},
+    {id: "p3", kind: "five_hour", expires_at_epoch: $now}, {id: "p4", kind: "seven_day", expires_at_epoch: ($now + 100)}]')
+check "M7: p5 는 만료되지 않은 five_hour·both 리셋권만 센다" "$(tr_m7 "$M7C" "$G5" "$TCOST" | jq -c .p5)" 2
+# k 는 셀 수 있는 세 값 가운데 최댓값이다. 각 문맥에서 한 값만 가장 크다.
+G5=$(tr_g5 '{state: "unknown"}')
+C5=$(tr_m7c '{c: {five_hour: {default: 0.3}, seven_day: {default: 0.08}}}')
+check "M7: 요청 종류 비용비가 가장 크면 그 값(1000/2000)" \
+  "$(tr_m7 "$C5" "$G5" '{"five_hour":{"bp":2000},"seven_day":{"bp":1000}}' | jq -c .k_ppm)" 500000
+C5=$(tr_m7c '{c: {five_hour: {default: 0.5}, seven_day: {default: 0.375}}}')
+check "M7: 출하 기본 비용비가 가장 크면 그 값(0.375/0.5)" "$(tr_m7 "$C5" "$G5" "$TCOST" | jq -c .k_ppm)" 750000
+# 실측 표본은 계정 a(acct:a)의 것이고 Σd7 / Σd5 = 1.35 / 2.7 = 0.5 다. 판독 끝값이 1 을
+# 넘으면 표본이 형 검사에서 빠지므로 증가량은 5시간 0.9, 주간 0.45 로 둔다.
+M7R=$(ctx "$RHO_JQ RHO([range(0; 3) | RSMP(.; 0.9; 0.45)])")
+check "M7: 그 그룹의 실측 합 비율이 가장 크면 그 값(약 0.5)" \
+  "$(tr_m7 "$M7R" '{"group":"acct:a","windows":{"five_hour":{"state":"unknown"}}}' "$TCOST" | jq -r '(.k_ppm - 500000 | fabs) <= 1')" "true"
+check "M7: 다른 그룹의 실측 표본은 k 에 들지 않는다" \
+  "$(tr_m7 "$M7R" '{"group":"acct:b","windows":{"five_hour":{"state":"unknown"}}}' "$TCOST" | jq -c .k_ppm)" 266667
+# 그룹별 실측 비율 표. 계정 a 표본 셋(0.45/0.9)과 계정 b 표본 넷(0.45/0.6, 합 2.4 로 최소
+# 질량 위)을 함께 두면 표는 두 그룹을 담고, 각 값은 그 그룹에 대해 rt_rho_measured 를 직접
+# 돈 값과 같다. 입장 판정과 관측 줄은 이 표로 M7 을 세므로, 표로 센 rt_m7r 도 rt_m7 과 같아야 한다.
+M7G_SMP='RHO([range(0; 3) | RSMP(.; 0.9; 0.45)] + [range(3; 7) | RSMP(.; 0.6; 0.45) | .account = "b"])'
+M7G=$(ctx "$RHO_JQ $M7G_SMP")
+check "M7: 그룹별 실측 비율 표는 그룹마다 rt_rho_measured 와 같다" \
+  "$( ( . "$TR_ROUTE"; jq -n -c --argjson c "$M7G" "$(route__jq_lib)"' rt_rho_groups($c) as $rg
+        | [($rg | keys), ([$rg[]] == [rt_rho_measured($c; "acct:a"), rt_rho_measured($c; "acct:b")]), ($rg["acct:b"] > $rg["acct:a"])]' ) )" \
+  '[["acct:a","acct:b"],true,true]'
+check "M7: 표로 센 rt_m7r 은 그룹마다 rt_m7 과 같다" \
+  "$( ( . "$TR_ROUTE"; jq -n -c --argjson c "$M7G" "$(route__jq_lib)"' rt_rho_groups($c) as $rg
+        | [("acct:a", "acct:b", "acct:z") as $g | {group: $g, windows: {five_hour: {state: "unknown"}}} as $G
+           | (rt_m7r($c; $G; {}; rt_rho_pick($rg; $c; $g)) == rt_m7($c; $G; {}))] | all' ) )" "true"
+check "M7: 표본 설정이 없는 문맥의 표는 비고 그룹 비율은 null" \
+  "$( ( . "$TR_ROUTE"; jq -n -c --argjson c "$M7C" "$(route__jq_lib)"' rt_rho_groups($c) as $rg | [$rg, rt_rho_pick($rg; $c; "acct:a")]' ) )" '[{},null]'
+check "M7: 셀 수 있는 비용비가 없으면 null" \
+  "$(tr_m7 "$M7C" "$G5" '{"five_hour":{"bp":0},"seven_day":{"bp":800}}')" "null"
+check "M7: 형이 틀린 비용과 그룹 보기에도 오류 없이 null" "$(tr_m7 "$M7C" '"x"' '"y"' 2>&1)" "null"
+# X5 의 세 경우. k_ppm 1000000(k = 1)이라 소진량이 X5 그대로다.
+check "M7 소진: 모를 때 36000초는 창 하나와 새 창 둘" "$(tr_m7b '{"k_ppm":1000000,"u5_bp":null,"t5_s":null,"p5":0}' 36000)" 30000
+check "M7 소진: 모를 때 36001초는 새 창 셋" "$(tr_m7b '{"k_ppm":1000000,"u5_bp":null,"t5_s":null,"p5":0}' 36001)" 40000
+check "M7 소진: 모를 때 음수 초는 지금 창 하나" "$(tr_m7b '{"k_ppm":1000000,"u5_bp":null,"t5_s":null,"p5":0}' -5)" 10000
+check "M7 소진: 지금 쓰는 창이 없으면 새 창 수만" "$(tr_m7b '{"k_ppm":1000000,"u5_bp":0,"t5_s":0,"p5":0}' 36000)" 20000
+check "M7 소진: known 은 창 리셋 전이면 남은 몫만" "$(tr_m7b '{"k_ppm":1000000,"u5_bp":2500,"t5_s":7200,"p5":0}' 3600)" 7500
+check "M7 소진: known 은 창 리셋 뒤 새 창 수를 더한다" "$(tr_m7b '{"k_ppm":1000000,"u5_bp":2500,"t5_s":7200,"p5":0}' 25201)" 27500
+check "M7 소진: 5시간 리셋권 하나가 10000 을 더한다" "$(tr_m7b '{"k_ppm":1000000,"u5_bp":null,"t5_s":null,"p5":1}' 36000)" 40000
+check "M7 소진: k_ppm 500000 은 X5 의 절반" "$(tr_m7b '{"k_ppm":500000,"u5_bp":2500,"t5_s":7200,"p5":1}' 25201)" 18750
 
 # 예비 공급 대기의 원장 행 — 비용 칸이 있는 마감 없는 행을 계열 검사가 받는다.
 for row in "-:no-room" "full:resume-bound-no-room" "full:resume-bound-exhausted" "-:group-exhausted"; do
