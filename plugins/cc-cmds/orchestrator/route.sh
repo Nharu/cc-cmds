@@ -854,7 +854,7 @@ def rt_cost_table($c):
 
 # 실측 합 비율의 재료. 두 창이 모두 위생을 통과한 살아 있는 표본마다 그 그룹과 두
 # 창의 증가량 `{g, d5, d7}` 을 표본 순으로 늘어놓는다. 설정이나 표본을 쓸 수 없으면
-# null 이다. 표본 원문을 파싱하는 곳은 여기 한 곳이다.
+# null 이다. 실측 합 비율의 계산이 표본 원문을 파싱하는 곳은 여기 한 곳이다.
 def rt_rho_parts($c):
   ($c.config.cost // null) as $k
   | ($c.config.rest_min_mass // null) as $mm
