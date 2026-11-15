@@ -88,7 +88,7 @@ repo_root=$(cd "$script_dir/.." && pwd)
 # section). The component stays at 60 bytes or fewer. The self-test checks that
 # every short run-id string of scripts/test-gate.sh is in here and the length
 # bound; a fixture that adds a new short one has to add it here too.
-ISO_TOKEN='iso-R1R2R3R4R5R55R57R68'
+ISO_TOKEN='iso-R1R2R3R4R5R55R57R68R87'
 
 iso_usage() {
   printf 'gate-isolation: 사용법 — compare --dir D --plan F [--out F] / solos --out D --spec S [--timing-out F] / check --sections C [--with W] [--out D] / sweep [--out D] [--chunk-s S] [--jobs J] / capacity --base REV / --self-test (공통: --bash B, --suite F, --timing F)\n' >&2
