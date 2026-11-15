@@ -1246,11 +1246,11 @@ check "C2 열린 파이프 아래의 표준 오류" "$(grep -c . "$DG/c2p.err")"
 # C3 — 티켓의 세 모양. 판독 함수와 두 직렬화를 열린 파이프 아래에서 부른다.
 dg_pipe "$DG/c3env" dg_env "$DGF" "$DG_READERS"
 check "C3 환경 변수로 넘김: 열린 파이프 아래에서 끝난다" "$(cat "$DG/c3env.when")" "early"
-if grep -q LEAK "$DG/c3env"; then bad "C3 환경 변수로 넘김: 표준 입력을 읽었다" "$(grep LEAK "$DG/c3env" | head -3)"
+if grep -q LEAK "$DG/c3env"; then bad "C3 환경 변수로 넘김: 표준 입력을 읽었다" "$(grep -m 3 LEAK "$DG/c3env")"
 else ok "C3 환경 변수로 넘김: 출력에 LEAK 표지가 없다"; fi
 dg_pipe "$DG/c3empty" dg_drv '' "$DG_READERS"
 check "C3 열린 파이프: 빈 MANIFEST 의 판독이 끝난다" "$(cat "$DG/c3empty.when")" "early"
-if grep -q LEAK "$DG/c3empty"; then bad "C3 열린 파이프: 표준 입력을 읽었다" "$(grep LEAK "$DG/c3empty" | head -3)"
+if grep -q LEAK "$DG/c3empty"; then bad "C3 열린 파이프: 표준 입력을 읽었다" "$(grep -m 3 LEAK "$DG/c3empty")"
 else ok "C3 열린 파이프: 빈 MANIFEST 의 판독에 LEAK 표지가 없다"; fi
 dg_pipe "$DG/c3set" dg_drv "$DGF" 'canonical_targets | shasum -a 256 | cut -d" " -f1; binding_set_bytes | shasum -a 256 | cut -d" " -f1'
 check "C3 소싱 뒤 설정: 열린 파이프 아래에서 끝난다" "$(cat "$DG/c3set.when")" "early"
