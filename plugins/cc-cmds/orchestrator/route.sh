@@ -852,24 +852,30 @@ def rt_cost_table($c):
               | if $cell == null then . else .[$w].by_group[$gv[0].g][$gv[0].kind] = $cell end))
     end;
 
-# 쉼 문턱의 비율 ρ = Σd7 / Σd5. 두 창이 모두 위생을 통과한 살아 있는 표본만 더한다.
-# 설정이나 표본이 쓸 수 없거나 Σd5 가 최소 질량에 못 미치면 출하 기본 비율로 대신한다.
-# 어느 경우에도 오류를 내지 않는다 — 비율이 판정을 멈추게 하지 않도록.
-def rt_rest_rho($c):
-  {v: ($c.config.c.seven_day.default / $c.config.c.five_hour.default), source: "default"} as $dflt
-  | ($c.config.cost // null) as $k
+# 실측 합 비율 Σd7 / Σd5. 두 창이 모두 위생을 통과한 살아 있는 표본만 더하고, `$g` 가
+# null 이 아니면 그 그룹의 표본만 더한다. 설정이나 표본이 쓸 수 없거나 Σd5 가 최소
+# 질량에 못 미치거나 0 이하이면 null 이다.
+def rt_rho_measured($c; $g):
+  ($c.config.cost // null) as $k
   | ($c.config.rest_min_mass // null) as $mm
   | if (($k | rt_cost_cfg_ok) | not) or (($c.cost_samples | type) != "string") or (($c.now | type) != "number")
-       or (($mm | type) != "number") then $dflt
-    else [rt_cost_live($c; $k)[] | (.) as $s
+       or (($mm | type) != "number") then null
+    else [rt_cost_live($c; $k)[] | select($g == null or .g == $g) | (.) as $s
            | ($s.windows.five_hour // null) as $x5 | ($s.windows.seven_day // null) as $x7
            | select($x5 != null and $x7 != null)
            | select(($s | rt_cost_hyg($k.hygiene; $x5)) and ($s | rt_cost_hyg($k.hygiene; $x7)))
            | {d5: (($x5.u1 - $x5.u0) / $s.m), d7: (($x7.u1 - $x7.u0) / $s.m)}] as $ds
       | ($ds | map(.d5) | add) as $s5
-      | if $s5 == null or $s5 < $mm or $s5 <= 0 then $dflt
-        else {v: (($ds | map(.d7) | add) / $s5), source: "measured"} end
+      | if $s5 == null or $s5 < $mm or $s5 <= 0 then null
+        else (($ds | map(.d7) | add) / $s5) end
     end;
+
+# 쉼 문턱의 비율 ρ. 모든 그룹의 실측 합 비율이고, 셀 수 없으면 출하 기본 비율로
+# 대신한다. 어느 경우에도 오류를 내지 않는다 — 비율이 판정을 멈추게 하지 않도록.
+def rt_rest_rho($c):
+  {v: ($c.config.c.seven_day.default / $c.config.c.five_hour.default), source: "default"} as $dflt
+  | rt_rho_measured($c; null) as $v
+  | if $v == null then $dflt else {v: $v, source: "measured"} end;
 
 # 표를 문맥의 `config.c` 위에 얹는다. 표의 칸이 주입된 같은 칸을 이긴다. 빈 창은
 # 건드리지 않는다.
@@ -903,24 +909,70 @@ def rt_admit_core($c; $G; $ex):
     end)
   + {cost: $cost};
 
-# 버려질 한도 W7(bp). 최대 속도 ρ7 로 써도 주간 정기 리셋 때 남아 사라지는 양이다.
-# ρ7 은 비용표의 주간/5시간 비율에 5시간 상한을 곱한 속도이고, 리셋 전에 만료되는
-# 주간 리셋권은 만료 직전에 눌러 다시 차는 양 U(E) 만큼 공급을 늘린다. 리셋권을 더해도
-# 줄지 않도록 리셋권 없는 값과의 최댓값을 쓰고, 정수로 반올림해 `remaining_bp` 동률
-# 깨기를 가로채지 않는다.
+# 최대 소진량 M7 의 재료 `{k_ppm, u5_bp, t5_s, p5}`. k 는 요청 종류 비용비, 출하 기본
+# 비용비, 그 그룹의 실측 합 비율 가운데 수로 셀 수 있는 것의 최댓값이고, `k_ppm` 은
+# k × 1000000 의 올림 정수다. 5시간 창을 모르면(상태 unknown, 또는 사용률·리셋 시각이
+# 수가 아님) `u5_bp`·`t5_s` 가 null, 지금 쓰는 창이 없으면(reset_elapsed, 또는 창 리셋이
+# 지금이거나 지남) 둘 다 0, 그 밖은 창의 사용률과 창 리셋까지 남은 초다. `p5` 는 지금
+# 만료되지 않은 5시간(five_hour·both) 리셋권 수다. 5시간 창이 unlimited 이거나 k 를 셀
+# 수 없으면 null 이다. 형이 맞지 않는 입력에도 오류를 내지 않는다.
+def rt_m7($c; $G; $cost):
+  (try ($G.windows.five_hour // null) catch null) as $x
+  | if (($x | type) == "object") and ($x.state == "unlimited") then null
+    else
+      ([(try (if (($cost.five_hour.bp | type) == "number") and ($cost.five_hour.bp > 0)
+                 and (($cost.seven_day.bp | type) == "number")
+              then $cost.seven_day.bp / $cost.five_hour.bp else null end) catch null),
+        (try ($c.config.c.seven_day.default as $a | $c.config.c.five_hour.default as $b
+              | if (($a | type) == "number") and (($b | type) == "number") and ($b > 0) then $a / $b else null end) catch null),
+        (try rt_rho_measured($c; $G.group) catch null)]
+       | map(select(type == "number"))) as $ks
+      | if ($ks | length) == 0 then null
+        else (try ($c.now | if type == "number" then . else null end) catch null) as $now
+          | (if (($x | type) != "object") or ($x.state == "unknown") or ($now == null) then {u5_bp: null, t5_s: null}
+             elif $x.state == "reset_elapsed" then {u5_bp: 0, t5_s: 0}
+             elif (($x.u_bp | type) != "number") or (($x.resets_at | type) != "number") then {u5_bp: null, t5_s: null}
+             elif (($x.resets_at - $now) | floor) <= 0 then {u5_bp: 0, t5_s: 0}
+             else {u5_bp: $x.u_bp, t5_s: (($x.resets_at - $now) | floor)} end) as $w
+          | (try (if $now == null then 0
+                  else [($G.passes // [])[]
+                        | select((.kind == "five_hour" or .kind == "both")
+                                 and ((.expires_at_epoch | type) == "number") and (.expires_at_epoch > $now))]
+                       | length end) catch 0) as $p5
+          | {k_ppm: (($ks | max) * 1000000 | ceil), u5_bp: $w.u5_bp, t5_s: $w.t5_s, p5: $p5}
+        end
+    end;
+
+# `$t` 초 동안의 최대 소진량 M7(t)(주간 bp, 실수) = k × X5(t). X5 는 그 동안 쓸 수 있는
+# 5시간 소진량이다 — 창을 모르면 지금 창 하나와 그 뒤 새 창 수, 지금 쓰는 창이 없으면
+# 새 창 수, 그 밖은 지금 창의 남은 몫과 창 리셋 뒤의 새 창 수만큼 10000 씩이고, 어느
+# 경우에도 5시간 리셋권마다 10000 을 더한다. k 는 `k_ppm` / 1000000 으로 셈한다.
+def rt_m7_burn($m; $t):
+  ([0, $t] | max) as $tt
+  | ((if ($m.u5_bp == null) or ($m.t5_s == null) then 10000 * (1 + (($tt / 18000) | ceil))
+      elif $m.t5_s <= 0 then 10000 * (($tt / 18000) | ceil)
+      else ([0, 10000 - $m.u5_bp] | max) + 10000 * ((([0, $tt - $m.t5_s] | max) / 18000) | ceil) end)
+     + 10000 * $m.p5) * $m.k_ppm / 1000000;
+
+# 버려질 한도 W7(bp). 주간 정기 리셋까지 최대 소진량 M7 만큼 써도 그때 남아 사라지는
+# 양이다. 리셋 전에 만료되는 주간 리셋권은 만료 직전에 눌렀을 때 그 뒤 남은 시간 동안
+# 5시간 창을 모르는 식의 M7 만큼 써도 남는 양을 후보로 더하고, 후보 가운데 최댓값을
+# 정수로 반올림해 `remaining_bp` 동률 깨기를 가로채지 않는다. 주간 창이 known 이 아니거나
+# 주간 리셋 시각이 수가 아니거나 지났거나 M7 을 셀 수 없으면(5시간 한도 없음 포함) 0 이다.
 def rt_w7($c; $G; $cost):
   $G.windows.seven_day as $x
-  | if ($x.state != "known") or (($x.resets_at | type) != "number") or ($x.resets_at <= $c.now)
-       or ((($cost.five_hour.bp // 0) > 0) | not) then 0
-    else (10000 - $x.u_bp - $G.sigma.seven_day) as $r7
-      | ($x.resets_at - $c.now) as $t
-      | (($cost.seven_day.bp / $cost.five_hour.bp) * $c.config.cap_bp / 18000) as $rho
-      | ([($G.passes // [])[]
-          | select((.kind == "seven_day" or .kind == "both") and (.expires_at_epoch > $c.now) and (.expires_at_epoch < $x.resets_at))
-          | ([10000, (10000 - $r7) + $rho * (.expires_at_epoch - $c.now)] | min) as $u
-          | ([0, $r7 + $u - $rho * $t] | max)]
-         + [([0, $r7 - $rho * $t] | max)])
-      | max | round
+  | if ($x.state != "known") or (($x.resets_at | type) != "number") or ($x.resets_at <= $c.now) then 0
+    else rt_m7($c; $G; $cost) as $m
+      | if $m == null then 0
+        else (10000 - $x.u_bp - $G.sigma.seven_day) as $r7
+          | ($x.resets_at - $c.now) as $t
+          | ($m + {u5_bp: null, t5_s: null}) as $mo
+          | ([($G.passes // [])[]
+              | select((.kind == "seven_day" or .kind == "both") and (.expires_at_epoch > $c.now) and (.expires_at_epoch < $x.resets_at))
+              | ([0, 10000 - rt_m7_burn($mo; $t - (.expires_at_epoch - $c.now))] | max)]
+             + [([0, $r7 - rt_m7_burn($m; $t)] | max)])
+          | max | round
+        end
     end;
 
 # 주간 리셋 압력 P(bp/h 정수). 5시간 한도가 없는 그룹의 정렬 키로만 쓰는 필요 속도로,
@@ -932,14 +984,12 @@ def rt_p7($c; $G; $top):
   | if ($x.state != "known") or (($x.resets_at | type) != "number") or ($x.resets_at <= $c.now) then 0
     else (([0, $top - $x.u_bp - $G.sigma.seven_day] | max) * 3600 / ($x.resets_at - $c.now)) | round end;
 
-# 관측 줄에 싣는 ρ7(하루당 bp 정수). `rt_w7` 의 ρ(초당)에 86400 을 곱한 값이고,
-# 주간 창 상태와 무관하게 비용만으로 셈한다. 5시간 비용이 양수가 아니거나 주간
-# 비용이 수가 아니면 셈할 수 없어 null 이다.
-def rt_rho7_bp_d($c; $cost):
-  if ((($cost.five_hour.bp | type) == "number") and ($cost.five_hour.bp > 0)
-      and (($cost.seven_day.bp | type) == "number"))
-  then (($cost.seven_day.bp / $cost.five_hour.bp) * $c.config.cap_bp / 18000 * 86400) | round
-  else null end;
+# 관측 줄에 싣는 ρ7(하루당 bp 정수). 5시간 창을 쉬지 않고 채울 때의 하루당 주간 소진
+# 상한 k × 48000 의 반올림이고, k 는 `rt_m7` 결과의 `k_ppm` 으로 셈한다. `rt_m7` 이
+# null 이면(5시간 한도 없음, 또는 k 를 셀 수 없음) null 이다.
+def rt_rho7_bp_d($c; $m):
+  if $m == null then null
+  else ($m.k_ppm * 48000 / 1000000) | round end;
 
 # 리셋권 종류가 덮는 창. 모르는 종류는 아무 창도 덮지 않는다.
 def rt_pass_wins($kind):
@@ -1597,8 +1647,7 @@ def rt_new($p; $basis0; $excl):
         | (if $p.pin != null and (rt_lend_new_ok($a) | not) then rt_lend_fail(rt_admit_core($p.c; $p.groups[$a.group]; $a.exhausted_until))
            else rt_admit($p; $a) end) as $adm
         | {a: $a, adm: $adm, fifo: rt_fifo_blocked($p; $a.group),
-           w7: (if ($p.groups[$a.group].windows.five_hour.state? // null) == "unlimited" then 0
-                else rt_w7($p.c; $p.groups[$a.group]; $adm.cost) end)}] as $pool
+           w7: rt_w7($p.c; $p.groups[$a.group]; $adm.cost)}] as $pool
       | [$pool[] | select(.adm.admitted and (.fifo | not))] as $cands
       | if ($cands | length) > 0 then
           # 대여 층이 두 단계 모두에서 맨 앞 키라 대여 행은 언제나 맨 뒤다. 그 행의 남은 양은 상한까지다.
@@ -1770,18 +1819,22 @@ def rt_wait_record($leases; $run; $lin; $acct; $dir; $nonce; $now; $holders; $sc
 
 # 관측 줄의 그룹 항목. 결정과 같은 문맥(잠금 아래 다시 읽은 표를 끼운 것)에서 모든
 # 그룹의 W7 과 주간 창 값을 그룹 순으로 늘어놓는다. 비용은 그 그룹에 대한 입장
-# 판정이 쓰는 값이고, 항목 끝의 ρ7 도 W7 과 같은 비용으로 셈해 싣는다.
+# 판정이 쓰는 값이다. 항목 끝에는 W7 이 쓴 M7 의 재료 `m7`, 그 `k_ppm` 으로 셈한 ρ7,
+# 그룹 5시간 창의 상태를 싣는다.
 def rt_observe($schema):
   rt_need_cap | rt_cost_apply | rt_prep($schema) as $p
   | [$p.groups[]] | sort_by(.group)
   | map((.) as $G | $G.windows.seven_day as $x
         | rt_admit_core($p.c; $G; null).cost as $cost
+        | rt_m7($p.c; $G; $cost) as $m
         | {group: $G.group,
            w7_bp: rt_w7($p.c; $G; $cost),
            u7_bp: (if $x.state == "known" then $x.u_bp else null end),
            sigma7_bp: $G.sigma.seven_day,
            resets_at: ($x.resets_at // null),
-           rho7_bp_d: rt_rho7_bp_d($p.c; $cost)});
+           rho7_bp_d: rt_rho7_bp_d($p.c; $m),
+           m7: $m,
+           five_hour_state: ($G.windows.five_hour.state? // null)});
 def rt_observe_line($schema; $oschema; $env; $op):
   (.request // {}) as $r
   | {schema: $oschema, at: .now, run_id: ($r.run_id // null), lineage: ($r.lineage // null),
