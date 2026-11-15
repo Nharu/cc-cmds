@@ -26,7 +26,13 @@
 #
 # Usage:
 #   run.sh --manifest <abs-path> [--run-id <id>] [--replan]
+#   run.sh --manifest <abs-path> --preflight
 #   run.sh --doc <abs-path> [--run-id <id>] [--replan]
+#
+# `--preflight` runs the kickoff checks of a frozen manifest — the manifest
+# check, the base branches and the cutpoint ceiling of a target with no
+# `origin` — and ends with 0 before anything of the run exists. The seat calls
+# it before the immediate start, where a refusal can still be acted on.
 #
 # THERE IS NO `--detach`. The run is driven by the main session's model — the
 # router — and detaching would put the deciding turn somewhere nobody can see.
@@ -617,6 +623,10 @@ manifest_row_fields() {
 # default that permits it makes the refusal reachable only by remembering to
 # ask for it.
 REPLAN=0
+
+# Set only by `--preflight`. The manifest's kickoff checks run and the process
+# ends before the run directory, the ledger or the exit trap exist.
+PREFLIGHT=0
 
 manifest_header() {
   # No trailing newline in either form: `tr` turns the last newline into a
@@ -2794,6 +2804,32 @@ check_base_branches() {
       ( cd "$wt" && git rev-parse --verify --quiet "refs/heads/$bb" >/dev/null 2>&1 ) \
         || die "대상 '$a' 의 베이스 브랜치가 그 레포의 로컬 브랜치 ref 로 해소되지 않습니다: $bb ($(base_fetch_note); refs/heads/$bb 없음 — base_sha 가 소비할 수 있는 형태여야 합니다)"
     fi
+  done
+}
+
+# A target with no `origin` can go no further than the `커밋` cutpoint: every
+# rung above it — `브랜치` included — either pushes, opens a pull request or
+# merges on a server, or was never measured to stay off one, so a higher
+# cutpoint on such a target parks the segment at its first remote act in the
+# night. Refused here, where the person who froze the manifest can still start
+# a new kickoff with a lower cutpoint.
+#
+# KICKOFF ONLY, for the reason `check_base_branches` is: the gate re-enters
+# `check_manifest` on every act, and a remote added or removed mid-run would
+# turn a check living there into a hard stop of every remaining act. It runs on
+# both start paths — the seat's `--preflight` before the immediate start, and
+# `run.sh --manifest` itself on the deferred one. A target with `origin` is not
+# touched. An unreadable cutpoint token was already refused by `check_manifest`;
+# the stop below only keeps this function from comparing an empty index.
+check_local_only_cutpoints() {
+  local a ct ci commit_i
+  commit_i=$(cutpoint_index '커밋') || die "절단점 어휘에 커밋이 없습니다"
+  for a in $(target_aliases); do
+    target_has_origin "$a" && continue
+    ct=$(target_field "$a" '절단점')
+    ci=$(cutpoint_index "$ct") || die "대상 '$a' 의 절단점 토큰이 어휘에 없습니다"
+    [ "$ci" -le "$commit_i" ] \
+      || die "대상 '$a' 은 원격이 없어 절단점 커밋까지만 갈 수 있습니다: $ct"
   done
 }
 
@@ -16892,6 +16928,7 @@ while [ $# -gt 0 ]; do
     --doc)        DOC="$2"; shift 2 ;;
     --run-id)     RUN_ID="$2"; shift 2 ;;
     --replan)     REPLAN=1; shift ;;
+    --preflight)  PREFLIGHT=1; shift ;;
     --self-check) self_check; exit $? ;;
     *) echo "run.sh: unknown argument '$1'" >&2; exit 2 ;;
   esac
@@ -16903,6 +16940,13 @@ done
 # diagnostic that reports which branch the seam picked, so it has to run on the
 # arm that is being refused.
 platform_supported || platform_refuse || exit $?
+
+# `--preflight` checks a frozen manifest and nothing else, so without one it is
+# the same invocation error as naming neither input — never a `--doc` run.
+if [ "$PREFLIGHT" = 1 ] && [ -z "$MANIFEST" ]; then
+  echo "run.sh: --preflight requires --manifest <abs-path>" >&2
+  exit 2
+fi
 
 # A run is about a MANIFEST. `--doc` remains accepted as the degenerate case —
 # one document, one target — because absorbing it costs one branch here and
@@ -16929,6 +16973,8 @@ if [ -n "$MANIFEST" ]; then
   # KICKOFF ONLY. The gate re-enters `check_manifest` on every act; this one runs
   # once, where a refusal can still be acted on.
   check_base_branches
+  check_local_only_cutpoints
+  [ "$PREFLIGHT" = 1 ] && exit 0
   derive_paths_from_manifest
 elif [ -n "$DOC" ]; then
   [ -f "$DOC" ] || { echo "run.sh: design document not found: $DOC" >&2; exit 2; }
