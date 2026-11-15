@@ -30,7 +30,14 @@
 #                      exists, else `account` in claude-design. A record that
 #                      exists but does not parse is 판독실패 naming its path,
 #                      never a fall back to the host file.
-#   lane               print the lane id the gate pins a visual publish stage
+#   expect             print the expected account by the same rule `account`
+#                      uses, one line, exit 0. A record that does not parse,
+#                      or no expected account, prints nothing and exits 1.
+#                      Read-only, and allowed inside a run: the gate calls its
+#                      own copy before it launches a visual publish stage in a
+#                      run with routing off. The gate's grading table has no
+#                      row for it, so a stage that calls it is refused there.
+#   lane             print the lane id the gate pins a visual publish stage
 #                      to: the record's `**레인**` when the record exists, else
 #                      the `lane` value of claude-design. No value (no file, no
 #                      line, an empty value) or a record that does not parse
@@ -96,7 +103,7 @@ MODEL_KEYS='ds-generate screen-generate polish implement-large implement-large-t
 MODEL_VOCAB='opus sonnet haiku fable'
 
 usage() {
-  echo "사용법: visual-config.sh account | lane | share | models | bans | seed | append <줄> | snapshot [--part models|bans]" >&2
+  echo "사용법: visual-config.sh account | expect | lane | share | models | bans | seed | append <줄> | snapshot [--part models|bans]" >&2
   exit 2
 }
 
@@ -206,10 +213,16 @@ run_record_read() {
   rec_state=정상
 }
 
-# --- account ------------------------------------------------------------------
-cmd_account() {
-  refuse_in_run_unless_publish account
-  local expected='' read_email='' verdict out rc line
+# --- expected account ---------------------------------------------------------
+# The one rule that names the pinned account: the `**계정**` of a `정상`
+# run-local record, else (no record) the last `account` line of claude-design.
+# A `손상` record names no account and never falls back to the host file. Prints
+# the account, or nothing; always returns 0, also when the host file or its
+# `account` line is absent. `account` (the stage's K0) and `expect` (the gate's
+# pre-launch check) both read it here, so the two cannot expect different
+# accounts. Reading the record again leaves `rec_state` as it was.
+expected_account() {
+  local line expected=''
   run_record_read
   if [ "$rec_state" = 정상 ]; then
     expected=$rec_account
@@ -219,6 +232,25 @@ cmd_account() {
       expected=$(trim "${line#*=}")
     fi
   fi
+  printf '%s' "$expected"
+}
+
+# --- expect -------------------------------------------------------------------
+cmd_expect() {
+  local expected
+  run_record_read
+  [ "$rec_state" != 손상 ] || exit 1
+  expected=$(expected_account)
+  [ -n "$expected" ] || exit 1
+  printf '%s\n' "$expected"
+}
+
+# --- account ------------------------------------------------------------------
+cmd_account() {
+  refuse_in_run_unless_publish account
+  local expected='' read_email='' verdict out rc
+  run_record_read
+  expected=$(expected_account)
 
   if [ "$rec_state" = 손상 ]; then
     mkdir -p "$STATE_DIR"
@@ -523,6 +555,7 @@ sub=$1
 shift
 case "$sub" in
   account) [ $# -eq 0 ] || usage; cmd_account ;;
+  expect) [ $# -eq 0 ] || usage; cmd_expect ;;
   lane) [ $# -eq 0 ] || usage; cmd_lane ;;
   share) [ $# -eq 0 ] || usage; cmd_share ;;
   models) [ $# -eq 0 ] || usage; cmd_models ;;
