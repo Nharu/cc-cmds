@@ -59420,7 +59420,7 @@ gate_visual_seat_account_check() {
   # park row keeps 300 bytes of it, so a long path is what gets cut there, and
   # the full sentence stays on the gate's warning line. Only local parts are
   # written, never a domain.
-  local seg="$1" cfg="$2" expected email shown le lr cause
+  local seg="$1" cfg="$2" expected email shown le lr cause same=0 had=0
   shown=${cfg:-물려받은 기본값}
   if ! expected=$(CC_PIPELINE_RUN_DIR="$RUN_DIR" bash "$GATE_DIR/visual-config.sh" expect 2>/dev/null) \
      || [ -z "$expected" ]; then
@@ -59436,7 +59436,13 @@ gate_visual_seat_account_check() {
   fi
   le=${expected%%@*}
   lr=${email%%@*}
-  if [ "$(printf '%s' "$email" | tr '[:upper:]' '[:lower:]')" != "$(printf '%s' "$expected" | tr '[:upper:]' '[:lower:]')" ]; then
+  # Case-blind with `nocasematch`, restored to what the caller had, so the
+  # comparison forks nothing.
+  if shopt -q nocasematch; then had=1; fi
+  shopt -s nocasematch
+  [[ "$email" == "$expected" ]] && same=1
+  if [ "$had" = 0 ]; then shopt -u nocasematch; fi
+  if [ "$same" = 0 ]; then
     printf '좌석 계정 불일치 — 로그인 계정 %s 가 고정 Claude Design 계정 %s 가 아니다. 좌석을 고정 계정으로 로그인한 뒤 다시 파견하세요 (좌석 설정 디렉터리 %s)' \
       "$lr" "$le" "$shown"
     return 1
