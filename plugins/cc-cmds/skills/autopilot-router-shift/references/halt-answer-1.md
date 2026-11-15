@@ -24,6 +24,7 @@ The gate admits a shift on exactly these conditions, stamps the row `답한 주�
    | `재부착` | 3 |
    | `감사-재수렴` | 4 |
    | `구속-재수렴` | 5 |
+   | `반증-재수렴` | `origin_run` empty: `refutation-reconverge.md`'s answer dispatch; not empty: item 5's carried-answer paragraph |
    | `교대-정지` | 6 |
    | `빈-대상` | 7 |
    | `적용-보류` | 7 |
@@ -63,7 +64,7 @@ The gate admits a shift on exactly these conditions, stamps the row `답한 주�
    - An audit's synthesis stop (`skill` `design-audit-unattended`, kind `audit`, step text containing `CFI-3b`, any option but `adopt as a requirement`) is carried as `audit` with `-p "/cc-cmds:design-audit-unattended <스냅숏 design_doc>"`.
    - A re-convergence's stop at its Step 3 (`skill` `design-reconverge`, kind `reconverge`, step text beginning `Step 3`, `승인 화면 반영` too) is carried as `reconverge` with `-p "/cc-cmds:design-reconverge <문서> <범위>"` — `<문서>` the main-worktree absolute path re-convergence dispatches pass, `<범위>` the `범위=` value of its `**관측 상세**`, verbatim.
    - A visual publish stop (`skill` `visual-publish-unattended`, kind `visual-publish`, step beginning `시각-판정`, `금지-후보`, `발행-실패` or `디자인-시스템-판정`) is carried as `visual-publish` with `-p "/cc-cmds:visual-publish-unattended <스냅숏 design_doc>"`; a fresh session takes the answer's branch without publishing again. After `거부` or `발행하지 않음` (closing `시각-승인` there) it writes nothing, and 「Dispatching the visual stage」 item 5 consumes the closing; a design system `승인` re-sends the visual step after a `정상 완료`.
-   - An implement stop (`skill` `implement-unattended`, kind `implement`, any step) is carried as `implement`, a `좌석 실행` stop among them. A `CFI-U3 BT-STOP` stop answered `재수렴` and a `좌석 적용` stop are routed elsewhere in this subsection, and the gate refuses to carry them (exit 3).
+   - An implement stop (`skill` `implement-unattended`, kind `implement`, any step) is carried as `implement`, a `좌석 실행` stop among them. A `CFI-U3 BT-STOP` stop answered `재수렴`, a refutation stop (step `Step 1.5d`, `Step 1.5a 반증 대기` or `Step 3 구현 중 반증`) answered `재수렴` and a `좌석 적용` stop are routed elsewhere in this subsection, and the gate refuses to carry them (exit 3). A refutation `재수렴` brought in with an adopted segment reads `route` `반증-재수렴` and goes to item 5's carried-answer paragraph, never to this carry act.
    - A design-discussion stop (`skill` `design-discuss-unattended`, kind `design`) and a lead solo design stop (`skill` `design-solo-unattended`, kind `design`), any step, are carried as `design`.
    - A base split stop (`skill` `design-base-unattended`, kind `split`, any step) is carried as `split`.
 

@@ -9426,7 +9426,7 @@ halt_option_lines() {
 
 halt_record_wellformed() {
   # halt_record_wellformed <file> — one defect word per line on stdout, from a
-  # closed set of six, and 0 when there is none, 1 otherwise:
+  # closed set of seven, and 0 when there is none, 1 otherwise:
   #   머리줄 없음      the first line does not start `<!-- cc-pipeline-halt v1;`
   #   닫는 펜스 없음   the last non-empty line is not the closing fence
   #   닫는 펜스 중복   the closing fence appears more than once
@@ -9435,6 +9435,14 @@ halt_record_wellformed() {
   #                    not `(없음)`-led — the options were written on that line
   #   해소 확인 문법   the two confirmation fields break their grammar, or only
   #                    one of them is there
+  #   반증 정지 선택지 없음
+  #                    an `implement-unattended` record whose `**스텝**` begins
+  #                    with one of the four refutation tokens
+  #                    (`halt_refutation_token`) has no option line
+  #                    (`halt_option_lines`): a refutation stop always offers
+  #                    its options. Every other record without options — an
+  #                    external wait, a screen slice's person-only stop, a base
+  #                    move's stop — is not this defect.
   # NOTHING ELSE IS A DEFECT. An option-shaped line outside the option block is
   # a shape the contract allows, and `**선택지**: (없음)` with option-shaped
   # lines under it reads as a record without options. `**스킬**`, `**분류**`
@@ -9477,6 +9485,12 @@ halt_record_wellformed() {
       if (ob) print "선택지 줄 밖"
       if (nc + ne > 0 && (nc != 1 || ne != 1 || gb)) print "해소 확인 문법"
     }' "$f" 2>/dev/null) || true
+  if [ "$(sed -n 's/^\*\*스킬\*\*: //p' "$f" 2>/dev/null | sed -n '1p' | sed 's/[[:space:]]*$//')" = "implement-unattended" ] \
+     && halt_refutation_token "$f" \
+     && [ -z "$(halt_option_lines < "$f")" ]; then
+    out="${out:+$out
+}반증 정지 선택지 없음"
+  fi
   [ -n "$out" ] || return 0
   printf '%s\n' "$out"
   return 1
@@ -9544,9 +9558,13 @@ halt_record_format_message() {
   # a stage whose halt record was malformed, for the driver's `continue_or_park`
   # and the gate's `gate_continuation_argv` alike. The defects are read again
   # from the moved file, so the message names what the stage actually wrote.
-  local m="$1" defects
+  local m="$1" defects rf=''
   defects=$( { halt_record_wellformed "$m" || true; } | awk 'NF { printf "%s%s", (n++ ? ", " : ""), $0 }')
-  printf '%s' "이 스테이지가 쓴 중단 기록의 형식이 공유 계약 v1 과 맞지 않아 중단으로 받지 않았다 — 결함: ${defects:-판독 불가}. 그 기록은 $m 로 옮겼다. 같은 질문을 공유 계약(_common/pipeline-sidecar.md §4)의 v1 형식으로 다시 써라: 첫 줄은 머리줄, 마지막 비지 않은 줄에 닫는 펜스 한 번, \`**스텝**\` 줄, 옵션은 콜론 뒤가 빈 \`**선택지**:\` 줄 아래에 한 줄씩. 기록의 경로는 지금 \`printenv CC_PIPELINE_STAGE_ID\` 로 다시 읽은 값으로 정하고, 앞서 읽은 값을 쓰지 마라. 턴은 셋 중 하나로만 끝난다 — 지시가 지목한 산출물을 쓴다, 정지 기록을 쓴다, 판단 표지를 게이트에 낸다."
+  case ", $defects," in
+    *', 반증 정지 선택지 없음,'*)
+      rf=' 구현 스테이지의 반증 정지는 `재수렴`(대기 블록이 있고 파킹 항목이 아닐 때)과 `파킹` 을 싣는다 — `**선택지**: (없음)` 으로 쓰지 마라.' ;;
+  esac
+  printf '%s' "이 스테이지가 쓴 중단 기록의 형식이 공유 계약 v1 과 맞지 않아 중단으로 받지 않았다 — 결함: ${defects:-판독 불가}. 그 기록은 $m 로 옮겼다. 같은 질문을 공유 계약(_common/pipeline-sidecar.md §4)의 v1 형식으로 다시 써라: 첫 줄은 머리줄, 마지막 비지 않은 줄에 닫는 펜스 한 번, \`**스텝**\` 줄, 옵션은 콜론 뒤가 빈 \`**선택지**:\` 줄 아래에 한 줄씩.${rf} 기록의 경로는 지금 \`printenv CC_PIPELINE_STAGE_ID\` 로 다시 읽은 값으로 정하고, 앞서 읽은 값을 쓰지 마라. 턴은 셋 중 하나로만 끝난다 — 지시가 지목한 산출물을 쓴다, 정지 기록을 쓴다, 판단 표지를 게이트에 낸다."
 }
 
 halt_step_is_external_wait() {
@@ -14452,9 +14470,9 @@ S4_RF_SEG="" S4_RF_ALIAS="" S4_RF_BRANCH="" S4_RF_WT="" S4_RF_SBASE="" S4_RF_PDI
 
 halt_refutation_token() {
   # halt_refutation_token <record> — 0 when the record's `**스텝**` begins with
-  # one of the three refutation stop tokens of an implement stage.
+  # one of the four refutation stop tokens of an implement stage.
   case "$(sed -n 's/^\*\*스텝\*\*: //p' "$1" 2>/dev/null | sed -n '1p')" in
-    'Step 1.5d'*|'Step 3 구현 중 반증'*|'Step 3 구현 결함 반증'*) return 0 ;;
+    'Step 1.5d'*|'Step 3 구현 중 반증'*|'Step 3 구현 결함 반증'*|'Step 1.5a 반증 대기'*) return 0 ;;
   esac
   return 1
 }
