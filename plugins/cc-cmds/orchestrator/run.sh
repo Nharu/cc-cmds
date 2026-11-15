@@ -2763,7 +2763,9 @@ rule_setting_value() {
 # this clone — a single-branch clone, a branch created after the clone, a narrowed
 # `remote.origin.fetch` — went from completing normally to a hard stop at kickoff.
 # Fetching here is what makes the two sets the same set rather than widening the
-# check back out.
+# check back out. A target with no `origin` has no remote-tracking set: `base_ref`
+# hands its consumers `refs/heads/…`, so for that target the consumed set is the
+# local head set and the check reads the same set.
 check_base_branches() {
   local a wt bb
   for a in $(target_aliases); do
@@ -2780,15 +2782,25 @@ check_base_branches() {
     # `BASE_BRANCH` assignment from leaking into a run that has not started yet.
     case "$bb" in
       ''|'(없음)')
-        ( base_branch "$a" >/dev/null ) \
-          || die "대상 '$a' 은 베이스 브랜치를 선언하지 않았고 유도값도 그 레포의 원격 추적 ref 로 해소되지 않습니다 ($(base_fetch_note); refs/remotes/origin/<유도값> 없음 — base_sha 가 소비할 수 있는 형태여야 합니다)"
+        if target_has_origin "$a"; then
+          ( base_branch "$a" >/dev/null ) \
+            || die "대상 '$a' 은 베이스 브랜치를 선언하지 않았고 유도값도 그 레포의 원격 추적 ref 로 해소되지 않습니다 ($(base_fetch_note); refs/remotes/origin/<유도값> 없음 — base_sha 가 소비할 수 있는 형태여야 합니다)"
+        else
+          ( base_branch "$a" >/dev/null ) \
+            || die "대상 '$a' 은 베이스 브랜치를 선언하지 않았고 유도값도 그 레포의 로컬 브랜치 ref 로 해소되지 않습니다 ($(base_fetch_note); refs/heads/<유도값> 없음 — base_sha 가 소비할 수 있는 형태여야 합니다)"
+        fi
         continue ;;
     esac
     wt=$(target_field "$a" '메인 워크트리')
     # Verified in the MAIN worktree because refs are shared across every linked
     # worktree of one repository.
-    ( cd "$wt" && git rev-parse --verify --quiet "refs/remotes/origin/$bb" >/dev/null 2>&1 ) \
-      || die "대상 '$a' 의 베이스 브랜치가 그 레포의 원격 추적 ref 로 해소되지 않습니다: $bb ($(base_fetch_note); refs/remotes/origin/$bb 없음 — base_sha 가 소비할 수 있는 형태여야 합니다)"
+    if target_has_origin "$a"; then
+      ( cd "$wt" && git rev-parse --verify --quiet "refs/remotes/origin/$bb" >/dev/null 2>&1 ) \
+        || die "대상 '$a' 의 베이스 브랜치가 그 레포의 원격 추적 ref 로 해소되지 않습니다: $bb ($(base_fetch_note); refs/remotes/origin/$bb 없음 — base_sha 가 소비할 수 있는 형태여야 합니다)"
+    else
+      ( cd "$wt" && git rev-parse --verify --quiet "refs/heads/$bb" >/dev/null 2>&1 ) \
+        || die "대상 '$a' 의 베이스 브랜치가 그 레포의 로컬 브랜치 ref 로 해소되지 않습니다: $bb ($(base_fetch_note); refs/heads/$bb 없음 — base_sha 가 소비할 수 있는 형태여야 합니다)"
+    fi
   done
 }
 
@@ -5540,12 +5552,55 @@ routing_guard_record() {
   return 0
 }
 
+# ---------------------------------------------------------------------------
+# The run's CI layer record. The CI layer of the gate (the master reading, the
+# rerun, match and label-ack acts, the CI values of `다음` and the CI refusal of
+# a merge) needs only the ledger and the read credential, not the account
+# inventory; it stands on every run the routing shift drives. A routed run has it
+# through `routing-guard`. A run opened on a machine with no lane inventory takes
+# an absent-mark baseline, gets no routing record, and gets this record instead,
+# so its CI failures go to the rerun and the CI fix rather than to a park.
+#
+# WRITTEN ONCE, BY THE SAME TAKE BRANCH AND FOR THE SAME REASON AS THE ROUTING
+# RECORD ABOVE: a run opened before this code existed reaches the judge with a
+# baseline already in place and never enters the take branch, so it keeps the
+# behaviour it was opened with. ONLY ON AN ABSENT-MARK BASELINE: a regular-file
+# baseline already writes `routing-guard`, which stands the CI layer by itself.
+# Exclusive create under noclobber; a failed create leaves the run without the
+# CI layer, which is how such a run behaved before — the safe side.
+# ---------------------------------------------------------------------------
+ci_layer_record() {
+  # ci_layer_record <inventory path> — called from the take branch of
+  # `rundir_inventory_snapshot` only, right after `routing_guard_record`.
+  local tgt=""
+  [ -n "${RUN_DIR:-}" ] || return 0
+  [ -L "$1" ] || return 0
+  tgt=$(readlink "$1" 2>/dev/null) || return 0
+  case "$tgt" in
+    "$RUN_INVENTORY_ABSENT_MARK"*) ;;
+    *) return 0 ;;
+  esac
+  ( set -C; printf '1\n' > "$RUN_DIR/ci-layer" ) 2>/dev/null || true
+  return 0
+}
+
 run_routed() {
   # run_routed — true when this run's record says `1`. Every reader that used to
   # ask the build switch asks this instead; a run with no record is unrouted.
   local rec=""
   [ -n "${RUN_DIR:-}" ] && [ -f "$RUN_DIR/routing-guard" ] || return 1
   rec=$( { head -1 "$RUN_DIR/routing-guard" 2>/dev/null || true; } | tr -d '[:space:]')
+  [ "$rec" = "1" ]
+}
+
+run_ci_layer() {
+  # run_ci_layer — true when the CI layer stands on this run: every routed run,
+  # and an unrouted run whose inventory baseline was absent at its take and that
+  # no fixed-graph driver has entered.
+  local rec=""
+  run_routed && return 0
+  [ -n "${RUN_DIR:-}" ] && [ -f "$RUN_DIR/ci-layer" ] && [ ! -e "$RUN_DIR/fixed-graph" ] || return 1
+  rec=$( { head -1 "$RUN_DIR/ci-layer" 2>/dev/null || true; } | tr -d '[:space:]')
   [ "$rec" = "1" ]
 }
 
@@ -6081,6 +6136,7 @@ rundir_inventory_snapshot() {
     rc=0; rundir_inventory_judge "$inv" || rc=$?
     if [ "$rc" = "0" ]; then
       routing_guard_record "$inv"
+      ci_layer_record "$inv"
       if [ -n "$tpub" ]; then
         rundir_inventory_record "$inv" "$tpub" "$troot"
       else
@@ -12496,6 +12552,68 @@ ladder_bump() {
 # ---------------------------------------------------------------------------
 BASE_BRANCH=""
 
+# Whether a target has a remote named `origin`, read from the disk. This is the one
+# judgement every base-ref consumer below shares: a target with no `origin` has no
+# remote-tracking refs at all, so its base is its local branch head. A root that
+# does not resolve reads as having a remote, because every consumer's behaviour
+# before this function existed assumed a remote-tracking ref and an unknown target
+# keeps that behaviour.
+#
+# THE JUDGEMENT IS FROZEN PER RUN, as `base_branch` is. The first answer for a
+# target is written to `$RUN_DIR/target-origin.<alias>` as `<root>\t있음|없음`,
+# and every later call of the run whose root is the same reads it back. Adding,
+# renaming or removing `origin` is a worktree write a stage may make, and a
+# judgement read afresh on every act would let that one write switch the gate's
+# base-move check off, or move the review line's base onto a local branch the
+# same stage can move. A cached answer for another root is measured again, so a
+# run whose alias resolves somewhere else is not handed the old repository's
+# answer. With no run directory (before kickoff, `--preflight`) nothing is
+# written; a root that does not resolve reads as having a remote and is not
+# written either. The write is a temporary file in the same directory renamed
+# over the answer, so a reader never sees half a line.
+target_has_origin() {
+  local al="${1:-$(home_alias)}" root f v tmp
+  root=$(alias_root "$al" 2>/dev/null) || return 0
+  [ -n "$root" ] || return 0
+  f="${RUN_DIR:-}/target-origin.$al"
+  if [ -n "${RUN_DIR:-}" ] && [ -f "$f" ]; then
+    v=$(cat "$f" 2>/dev/null) || v=''
+    if [ "${v%%$'\t'*}" = "$root" ]; then
+      case "${v#*$'\t'}" in
+        있음) return 0 ;;
+        없음) return 1 ;;
+      esac
+    fi
+  fi
+  if ( cd "$root" && git remote get-url origin >/dev/null 2>&1 ); then v=있음; else v=없음; fi
+  if [ -n "${RUN_DIR:-}" ] && [ -d "$RUN_DIR" ]; then
+    tmp=$(mktemp "$RUN_DIR/.target-origin.$al.XXXXXX" 2>/dev/null) || tmp=''
+    if [ -n "$tmp" ]; then
+      if printf '%s\t%s' "$root" "$v" > "$tmp" 2>/dev/null; then
+        mv -f "$tmp" "$f" 2>/dev/null || rm -f "$tmp"
+      else
+        rm -f "$tmp"
+      fi
+    fi
+  fi
+  [ "$v" = 있음 ]
+}
+
+# The full ref name of a target's base: `refs/remotes/origin/<base>` when the
+# target has `origin`, `refs/heads/<base>` when it does not. A target with no
+# remote is merged by nobody but the person who owns it, so its local branch is
+# the truth of its base. Fails when `base_branch` fails.
+base_ref() {
+  local al="${1:-$(home_alias)}" b
+  b=$(base_branch "$al") || return 1
+  [ -n "$b" ] || return 1
+  if target_has_origin "$al"; then
+    printf 'refs/remotes/origin/%s' "$b"
+  else
+    printf 'refs/heads/%s' "$b"
+  fi
+}
+
 # Per-alias, and cached per alias on disk rather than in one global — a shell
 # without associative arrays is the floor here, and a single global would hand
 # the second repository the first one's base branch.
@@ -12528,10 +12646,19 @@ base_branch() {
   # then reached the worktree branch point, the ledger, the drift comparison and
   # the rebase target. Before the sentinel fell through here the same input failed
   # loudly at `base_sha`; refusing here keeps that loudness and moves it earlier.
-  { [ -n "$b" ] && ( cd "$root" && git rev-parse --verify --quiet "refs/remotes/origin/$b" >/dev/null 2>&1 ); } || {
-    warn "대상 '$al' 의 베이스 브랜치를 유도했으나 원격 추적 ref 로 해소되지 않습니다: ${b:-(유도 실패)}"
-    return 1
-  }
+  # A target with no `origin` is verified against the local branch ref, which is
+  # the ref `base_ref` hands its consumers.
+  if target_has_origin "$al"; then
+    { [ -n "$b" ] && ( cd "$root" && git rev-parse --verify --quiet "refs/remotes/origin/$b" >/dev/null 2>&1 ); } || {
+      warn "대상 '$al' 의 베이스 브랜치를 유도했으나 원격 추적 ref 로 해소되지 않습니다: ${b:-(유도 실패)}"
+      return 1
+    }
+  else
+    { [ -n "$b" ] && ( cd "$root" && git rev-parse --verify --quiet "refs/heads/$b" >/dev/null 2>&1 ); } || {
+      warn "대상 '$al' 의 베이스 브랜치를 유도했으나 로컬 브랜치 ref 로 해소되지 않습니다: ${b:-(유도 실패)}"
+      return 1
+    }
+  fi
   BASE_BRANCH="$b"
   [ -n "${RUN_DIR:-}" ] && [ -d "$RUN_DIR" ] && printf '%s' "$b" > "$f"
   printf '%s' "$b"
@@ -12565,6 +12692,8 @@ base_fetch() {
   BASE_FETCH_RC=0
   root=$(alias_root "$al") || { BASE_FETCH_RC=2; return 0; }
   [ -n "$root" ] || { BASE_FETCH_RC=2; return 0; }
+  # A target with no `origin` has nothing to fetch; status 3 says so.
+  target_has_origin "$al" || { BASE_FETCH_RC=3; return 0; }
   ( cd "$root" && git fetch --quiet origin 2>/dev/null ) || BASE_FETCH_RC=1
   return 0
 }
@@ -12575,6 +12704,7 @@ base_fetch_note() {
   case "${BASE_FETCH_RC:-0}" in
     1) printf 'fetch 가 실패했습니다 — 오프라인·자격 만료·원격 이름이 origin 이 아님 중 하나일 수 있습니다' ;;
     2) printf '대상 루트를 해소하지 못해 fetch 를 시도하지도 못했습니다' ;;
+    3) printf '원격이 없어 fetch 하지 않았습니다' ;;
     *) printf 'fetch 는 성공했습니다' ;;
   esac
 }
@@ -12608,10 +12738,11 @@ base_fetch_ref() {
 # case the design excludes by assuming sequentiality. Two more things break from
 # the same root: external-drift detection compares against this value and would
 # never fire, and the apply worktree pins a merge commit that exists only on the
-# remote.
+# remote. A target with no `origin` has no server merging into it, so `base_ref`
+# hands it the local branch ref instead.
 base_sha() {
   local al="${1:-$(home_alias)}"
-  ( cd "$(alias_root "$al")" && git rev-parse "refs/remotes/origin/$(base_branch "$al")" )
+  ( cd "$(alias_root "$al")" && git rev-parse "$(base_ref "$al")" )
 }
 
 # Rebase onto the segment's own base after external drift. There is exactly one
@@ -16818,6 +16949,14 @@ else
 fi
 
 rundir_init
+
+# The fixed-graph mark. This driver has no path for the CI values of `다음`: its
+# merge step parks a failed check and asserts `머지` right before the merge, so
+# `run_ci_layer` reads this file and keeps the CI layer off a run it drives. Only
+# this main path writes it — a gate or tool that sources this file with
+# `CC_ORCH_SOURCE_ONLY=1` stops above — so a run the routing shift drives never
+# carries it. Its content is not read; an existing mark stays as it is.
+[ -e "$RUN_DIR/fixed-graph" ] || { : > "$RUN_DIR/fixed-graph"; } 2>/dev/null || :
 
 # BEFORE THE EXIT TRAP AND THE LEDGER: a hotfix plan on an unrouted run does not
 # start at all, so it leaves no end row and no ledger behind.

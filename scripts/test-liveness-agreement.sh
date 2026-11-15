@@ -775,6 +775,19 @@ else
   check "절 키 cone 막힘은 cc_unresolved_blocked 에 나오지 않는다" \
     "$(cc_unresolved_blocked "$FX_LEDGER")" ""
   st_case "절 키 cone 막힘은 종단을 막지 않는다" "종단"
+  # The base-move check's target key `베이스-<별칭>` names no segment and no
+  # step either: the target latch and its record hold the run, and the
+  # `재시도` release writes a row of another `사유`, so a fold over this key
+  # would never see it resolved.
+  fx_mkrun st-cone-basekey; fx_segment S1 머지됨
+  fx_row 'blocked' "대상=cc-cmds" "스코프=cone" "원인=막힘" "사유=교대 정지 — 베이스 이동" \
+    "앵커 세그먼트=베이스-cc-cmds" "중단 기록=$FX_RUN_DIR/halt/shift/베이스-cc-cmds#1.md"
+  fx_row 'blocked' "대상=cc-cmds" "스코프=cone" "원인=해소" "사유=베이스 이동 — 재시도 답으로 걸쇠 해제" \
+    "앵커 세그먼트=베이스-cc-cmds" "중단 기록=$FX_RUN_DIR/halt/shift/베이스-cc-cmds#1.md"
+  fx_heartbeat 0 5
+  check "대상 키 cone 막힘은 재시도 해제 뒤 cc_unresolved_blocked 에 나오지 않는다" \
+    "$(cc_unresolved_blocked "$FX_LEDGER")" ""
+  st_case "대상 키 cone 막힘은 재시도 해제 뒤 종단을 막지 않는다" "종단"
   fx_mkrun st-scope-quoted; fx_segment S1 머지됨
   fx_row 'blocked' "대상=-" "스코프=act" "원인=불명" "사유=인용" "근거='스코프=run'"
   st_case "다른 필드 안의 스코프=run 은 범위가 아니다" "종단"
@@ -1115,6 +1128,35 @@ fx_row '중단 답' "중단 기록=$FX_RUN_DIR/halt/S1#1.md" "선택지=보류"
 check "유휴 H′ — 그 기록에 사람의 새 답이 서면 유휴다" \
   "$(idle_of "$FX_RUN_DIR" "$FX_LEDGER")" "유휴"
 ua_case "유휴 H′ 이식" 0
+
+# A STAGE RECORD THAT POINTS AT THE GATE'S RECORD IS ANSWERED WITH IT. The
+# base-move check stops the act and writes its own record; the stage then
+# writes one with no options whose `**관측 상세**` names the gate's as
+# `게이트 기록=<경로>`. A person answers the gate's record only, and that one
+# answer takes both out of the count, in the shell and in the port alike.
+id_mkrun 20261012-00000014 90000
+mkdir -p "$FX_RUN_DIR/halt/shift"
+printf '# 중단 기록\n**관측 상세**: 기지값=a / 지금=b / 자리=들머리 / 행위 종료 코드=수행 안 함 / 동시 행위·사람 커밋 구분 안 함\n' \
+  > "$FX_RUN_DIR/halt/shift/S1#1.md"
+printf '# 중단 기록\n**분류**: precondition-failed\n**관측 상세**: 게이트가 베이스 이동으로 멈춤 / 게이트 기록=%s\n' \
+  "$FX_RUN_DIR/halt/shift/S1#1.md" > "$FX_RUN_DIR/halt/S1#2.md"
+check "유휴 I — 게이트 기록과 그것을 가리키는 스테이지 기록이 둘 다 답 없으면 유휴가 아니다" \
+  "$(idle_of "$FX_RUN_DIR" "$FX_LEDGER")" "유휴 아님"
+ua_case "유휴 I 이식 (둘 다 답 없음)" 2
+fx_row '중단 답' "중단 기록=$FX_RUN_DIR/halt/shift/S1#1.md" "선택지=재시도"
+check "유휴 I′ — 게이트 기록에 답이 서면 그것을 가리키는 스테이지 기록도 답한 것이다" \
+  "$(idle_of "$FX_RUN_DIR" "$FX_LEDGER")" "유휴"
+ua_case "유휴 I′ 이식 (게이트 기록의 답 하나로 둘 다)" 0
+printf '# 중단 기록\n**관측 상세**: 게이트 기록=%s\n' "$FX_RUN_DIR/halt/S1#2.md" > "$FX_RUN_DIR/halt/S1#3.md"
+ua_case "유휴 I″ 이식 (가리키는 것은 한 단계뿐 — 스테이지 기록을 가리키는 기록은 답 없음)" 1
+# The stage writes the token as its instructions show it: wrapped in backticks,
+# or closing the sentence. Neither the backtick nor the `.`/`,` after the path
+# is part of the path, so both records are answered with the gate's.
+printf '# 중단 기록\n**분류**: precondition-failed\n**관측 상세**: 게이트가 베이스 이동으로 멈춤 / `게이트 기록=%s`.\n' \
+  "$FX_RUN_DIR/halt/shift/S1#1.md" > "$FX_RUN_DIR/halt/S1#4.md"
+printf '# 중단 기록\n**분류**: precondition-failed\n**관측 상세**: 게이트 기록=%s, 그 기록에 답한다.\n' \
+  "$FX_RUN_DIR/halt/shift/S1#1.md" > "$FX_RUN_DIR/halt/S1#5.md"
+ua_case "유휴 I‴ 이식 (백틱으로 감싼 포인터와 쉼표로 끝나는 포인터도 게이트 기록의 답으로 닫힘)" 1
 
 id_mkrun 20261012-0000000c 90000
 fx_approval A1 대기

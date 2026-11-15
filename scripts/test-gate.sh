@@ -4816,6 +4816,9 @@ SAGEOF
     # 대상 행에 더 실을 필드. 대상 맵 다이제스트가 이 행에서 계산되므로 행을 다
     # 만든 뒤가 아니라 여기서 붙인다. 빈 값이면 기존 매니페스트는 바이트 그대로다.
     [ -z "${SA_TARGET_EXTRA:-}" ] || row="$row | $SA_TARGET_EXTRA"
+    # 둘째 대상 행. 대상 맵 다이제스트가 두 행 모두에서 계산되므로 여기서 붙인다.
+    # 빈 값이면 기존 매니페스트는 바이트 그대로다.
+    [ -z "${SA_TARGET_ROW2:-}" ] || row="$row"$'\n'"$SA_TARGET_ROW2"
     td=$(printf '%s\n' "$row" | sed 's/[[:space:]]\{1,\}/ /g' | sort | shasum -a 256 | cut -d' ' -f1)
     plan='{ "steps": [] }'
     # 계획을 바꿔 싣는 집합(리뷰어 프로필)만 이 값을 둔다. 빈 값이면 바이트 그대로다.
@@ -4879,6 +4882,18 @@ SAPEOF
     sa_bd "$SA_MANIFEST" "$SA_WT"
   }
 
+  sa_run_reset() {
+    # sa_run_reset — 이 픽스처의 런 디렉터리를 비우고, CI 층이 서지 않는 미라우팅 런으로 다시
+    # 연다. 하니스의 설정 루트에는 레인 인벤토리가 없어, 첫 게이트 호출이 부재 기준선을 잡으며
+    # CI 층 기록을 배타 생성으로 쓴다. 그대로 두면 모든 sa 런이 CI 층 런이 되어 머지가 회차 0 의
+    # 통과 판정을 요구받는다. 그래서 기록을 `0` 으로 먼저 둔다 — 배타 생성은 있는 파일을 덮지
+    # 않고, 판독기는 첫 줄이 `1` 일 때만 CI 층을 세우므로, 기준선 채택과 그 원장 행은 그대로
+    # 일어난다. 런 디렉터리를 지우는 픽스처는 모두 이 헬퍼로 지운다 — `rm -rf` 만 하면 첫 호출이
+    # 다시 `1` 을 쓴다. CI 층 런은 `cb60_ci_layer` 가 기록을 `1` 로 덮어 만든다.
+    rm -rf "$SA_RUN"
+    mkdir -p "$SA_RUN" && printf '0\n' > "$SA_RUN/ci-layer"
+  }
+
   sa_new() {
     # sa_new <라벨> [상한] [룰설정 줄...] — 자기 저장소·베어 원격·세그먼트
     # 워크트리를 만들고 매니페스트와 인가 기록을 쓴다.
@@ -4898,7 +4913,7 @@ SAPEOF
     SA_SEGWT="$SA_ROOT/seg"
     SA_SEGBR="seg-$SA_ID"
     SA_APPLY="(해당 없음)"; SA_APPLY_CMD=""; SA_APPLY_PROBE=""; SA_APPLY_CODES=""
-    SA_PREAUTH_EXTRA=""; SA_TARGET_EXTRA=""; SA_OWNER_DOC=""; SA_LABEL_ACK=""
+    SA_PREAUTH_EXTRA=""; SA_TARGET_EXTRA=""; SA_TARGET_ROW2=""; SA_OWNER_DOC=""; SA_LABEL_ACK=""
     SA_PLAN=""; SA_AUTH_RAW=""; SA_CUT=""
     mkdir -p "$SA_REPO"
     ( cd "$SA_REPO" \
@@ -4920,6 +4935,7 @@ SAPEOF
     SA_LEDGER="$SA_WT/docs/pipeline-run/$SA_ID.md"
     SA_GRANT="$SA_WT/docs/pipeline-grant/$SA_ID.md"
     SA_RUN="$XDG_STATE_HOME/cc-cmds/run/$SA_ID"
+    sa_run_reset
     sa_manifest "$ceil" "$@"
     SA_LABEL="$label"
   }
@@ -5257,6 +5273,18 @@ CB60EOF
     printf 'gate\tsuccess\n' > "$CB60_S/base"
     cb60_line 실패 0 0
   }
+  cb60_ci_layer() {
+    # cb60_ci_layer — 방금 만든 CK 픽스처를 인벤토리 부재 기준선으로 열린 런으로 바꾼다.
+    # 라우팅 기록과 고정 그래프 표지를 지우고, 기준선을 이 셸의 설정 루트를 가리키는 부재
+    # 표지 링크로 두고, CI 층 기록 `1` 을 쓴다. 표지 상수는 run.sh 의 정의 줄에서 읽는다 —
+    # 값을 여기 베껴 두면 상수가 바뀌어도 이 픽스처는 옛 표지로 남는다.
+    local mark
+    mark=$(sed -n "s/^readonly RUN_INVENTORY_ABSENT_MARK='\(.*\)'\$/\1/p" "$repo_root/plugins/cc-cmds/orchestrator/run.sh")
+    [ -n "$mark" ] || { printf 'cb60_ci_layer: run.sh 에서 부재 표지 상수를 읽지 못했다\n' >&2; exit 1; }
+    rm -f "$SA_RUN/routing-guard" "$SA_RUN/fixed-graph" "$SA_RUN/inventory.json"
+    ln -s "$mark$XDG_CONFIG_HOME" "$SA_RUN/inventory.json"
+    printf '1\n' > "$SA_RUN/ci-layer"
+  }
   cb60_checks() {
     # cb60_checks <pre|post> <버킷> <실행 id> <잡 번호> [이름] — 체크 화면 한 항목.
     printf '[{"name":"%s","bucket":"%s","link":"https://github.com/%s/actions/runs/%s/job/%s","workflow":"gate","event":"pull_request"}]\n' \
@@ -5547,7 +5575,13 @@ pre_review() {
   # done proposal taken and a terminal handoff written. Inherited, that ledger
   # turns this run's merges into acts after the end, so the ledger starts empty
   # here the way the run directory does.
+  # The run directory reopens as an unrouted run the CI layer does not stand on,
+  # as `sa_run_reset` does for the sa run: left to the first gate call, the
+  # absent inventory baseline writes `1` and the 선머지후리뷰 merge below is
+  # refused for want of a round-0 pass.
   rm -rf "$XDG_STATE_HOME/cc-cmds/run/$SH_ID"
+  mkdir -p "$XDG_STATE_HOME/cc-cmds/run/$SH_ID" \
+    && printf '0\n' > "$XDG_STATE_HOME/cc-cmds/run/$SH_ID/ci-layer"
   rm -f "$SH_LEDGER"
   fx_rid_copy R1 "$SH_ID" "$WORK/manifest-clean.md" "$SH_MANIFEST"
   awk '/^- `target`/ { print $0 " | 리뷰 정책 상한=선머지후리뷰"; next } { print }' \
@@ -5601,7 +5635,7 @@ pre_sb() {
     sa_new "$@"
     SA_PREAUTH_EXTRA=$'gh pr\ngh api'
     sa_manifest "${2-선머지후리뷰}"
-    rm -rf "$SA_RUN"
+    sa_run_reset
   }
 
   sc_ends() {
@@ -5626,7 +5660,7 @@ pre_sb() {
       { print }
     ' "$SA_MANIFEST" > "$SA_MANIFEST.c" && mv "$SA_MANIFEST.c" "$SA_MANIFEST"
     sa_bd "$SA_MANIFEST" "$SA_WT"
-    rm -rf "$SA_RUN"
+    sa_run_reset
   }
 
   sb_grant_max() {
@@ -5646,7 +5680,7 @@ pre_sb() {
     sed "s/^\*\*런 최대 절단점\*\*: .*/**런 최대 절단점**: $1/" "$SA_MANIFEST" > "$SA_MANIFEST.g" \
       && mv "$SA_MANIFEST.g" "$SA_MANIFEST"
     sa_bd "$SA_MANIFEST" "$SA_WT"
-    rm -rf "$SA_RUN"
+    sa_run_reset
   }
 
   sb_act() {
@@ -5705,7 +5739,7 @@ pre_sb() {
       SA_OWNER_DOC="${SA_ROOT#/}/slice-doc.md"
     fi
     sa_manifest "$ceil" "$@"
-    rm -rf "$SA_RUN"
+    sa_run_reset
     SB_STATE="$SA_ROOT/apply-state"; mkdir -p "$SB_STATE"
   }
 
@@ -5888,7 +5922,7 @@ pre_sb() {
     SA_GRANT="$SA_WT/docs/pipeline-grant/$SA_ID.md"
     SA_RUN="$XDG_STATE_HOME/cc-cmds/run/$SA_ID"
     sa_manifest 선리뷰후머지
-    rm -rf "$SA_RUN"
+    sa_run_reset
   }
   sd_import() {
     # sd_import <라벨> <증거 런 id> <이 런 id> <프로브> [P1] — 증거 런이 세그먼트 SD 를
@@ -30820,7 +30854,7 @@ newtd=$(printf '%s\n' "$newrow" | sed 's/[[:space:]]\{1,\}/ /g' | sort | shasum 
 sed "s/^\*\*대상 맵 다이제스트\*\*: .*/**대상 맵 다이제스트**: $newtd/" "$SA_MANIFEST" > "$SA_MANIFEST.b" \
   && mv "$SA_MANIFEST.b" "$SA_MANIFEST"
 sa_bd "$SA_MANIFEST" "$SA_WT"
-rm -rf "$SA_RUN"
+sa_run_reset
 sag snapshot --manifest "$SA_MANIFEST"
 check "10(b): 절단점이 머지 미만인 대상의 상한 선언은 런을 멈추지 않는다" "$rc" "0"
 case "$msg" in
@@ -30863,7 +30897,7 @@ sa_new '해소기 상한' 리뷰없음
 sa_seg_row S11 리뷰없음
 check "11: 상한이 허용하는 창에서는 그 행이 통과한다" "$rc" "0"
 sa_manifest 선리뷰후머지
-rm -rf "$SA_RUN"
+sa_run_reset
 sa_commit '작업' >/dev/null
 sa_merge S11
 check "11: 상한을 조인 뒤의 머지는 해소기가 거절한다" "$rc" "2"
@@ -31143,7 +31177,7 @@ awk -v a="$rowA" -v b="$rowB" -v td="$td15" '
   { skip=0; print }
 ' "$SA_MANIFEST" > "$SA_MANIFEST.15" && mv "$SA_MANIFEST.15" "$SA_MANIFEST"
 sa_bd "$SA_MANIFEST" "$SA_WT"
-rm -rf "$SA_RUN"
+sa_run_reset
 sag snapshot --manifest "$SA_MANIFEST"
 check "15: 대상 둘을 선언한 매니페스트가 검사를 통과한다" "$rc" "0"
 sa_seg_row S15 선머지후리뷰
@@ -31731,6 +31765,551 @@ sa_fulfil "$OID20B"
 check "20(ii): M 이 로컬 베이스에 들어갔는데 cycle 행이 없으면 거절된다" "$rc" "2"
 check "20(ii): 그 거절이 원장을 늘리지 않는다" "$(sa_rows)" "$nb"
 
+# --- 15p. 원격이 없는 대상의 세그먼트는 로컬 베이스 브랜치 ref 에서 끊긴다 -------
+# --- section: 15p | group: sa | covers: exec, snapshot, act, gate_review_line | anchors: 15p: 원격 없는 대상의 스냅숏 베이스는 로컬 브랜치 ref 다, 15p: 원격 추적 ref 시작점은 거부되고 아무것도 만들어지지 않는다, 15p: 그 거부는 로컬 브랜치 ref 를 기대 시작점으로 이름 댄다, 15p: 로컬 브랜치 ref 시작점은 통과하고 워크트리가 생긴다, 15p: 계획 행이 통과한다, 15p: 세그먼트 워크트리의 커밋이 통과한다, 15p: 세그먼트 커밋 뒤 베이스 이동 정지가 없다, 15p: review-line 의 --base-sha 는 워크트리 HEAD 와 로컬 베이스의 merge-base 다 ---
+#
+# A target with no `origin` has no remote-tracking base to cut from and no pull
+# request a review can find its base from. The snapshot names the local branch
+# ref instead, the gate's worktree check expects that ref and refuses the
+# remote-tracking one, and the review line carries the base the gate derived
+# from the segment worktree. The fixture is a repository of its own whose remote
+# is removed after it is built, on a plan whose one implementation step is the
+# run's one undeclared segment. `sa_new` clears the cutpoint and the plan, so
+# the manifest is written again with both once the remote is gone.
+sa_new '원격 없는 세그먼트' ''
+( cd "$SA_REPO" && git remote remove origin ) >/dev/null 2>&1
+SA_CUT=커밋
+SA_PLAN='{ "steps": [ { "id": "S1", "skill": "implement", "summary": "구현", "depends_on": [] }, { "id": "V2", "skill": "review", "summary": "리뷰", "depends_on": ["S1"] } ] }'
+sa_manifest ''
+WT15P="$(dirname "$SA_WT")/$(basename "$SA_WT")-run-$SA_ID-S1"
+BR15P="seg/$SA_ID-S1"
+snap15p=$( cd "$SA_WT" && gate_inproc snapshot --manifest "$SA_MANIFEST" 2>/dev/null )
+check "15p: 원격 없는 대상의 스냅숏 베이스는 로컬 브랜치 ref 다" \
+  "$(printf '%s' "$snap15p" | jq -r '.["슬라이싱"]["세그먼트"][0] | "\(.id)|\(.["베이스"])|\(.["워크트리"])"')" \
+  "S1|refs/heads/main|$WT15P"
+p15_add() {  # p15_add <git worktree add args...> — the router's call 2 through the gate; sets rc, msg
+  sag exec --manifest "$SA_MANIFEST" --target main --segment - --cutpoint 커밋 --surface 워크트리쓰기 \
+    --snapshot-digest "$(SAH)" --rationale x -- git worktree add "$@"
+}
+p15_state() {  # p15_state — whether the worktree or the branch was made
+  printf '%s/%s' \
+    "$( [ -e "$WT15P" ] && printf 워크트리 || printf - )" \
+    "$( cd "$SA_WT" && git rev-parse --verify --quiet "refs/heads/$BR15P" >/dev/null && printf 브랜치 || printf - )"
+}
+p15_add -b "$BR15P" "$WT15P" refs/remotes/origin/main
+check "15p: 원격 추적 ref 시작점은 거부되고 아무것도 만들어지지 않는다" "$rc/$(p15_state)" "2/-/-"
+case "$msg" in
+  *"기대 시작점: refs/heads/main"*) ok "15p: 그 거부는 로컬 브랜치 ref 를 기대 시작점으로 이름 댄다" ;;
+  *) bad "15p: 그 거부는 로컬 브랜치 ref 를 기대 시작점으로 이름 댄다" "$msg" ;;
+esac
+p15_add -b "$BR15P" "$WT15P" refs/heads/main
+check "15p: 로컬 브랜치 ref 시작점은 통과하고 워크트리가 생긴다" \
+  "$rc/$(p15_state)/$( cd "$WT15P" 2>/dev/null && git rev-parse HEAD )" \
+  "0/워크트리/브랜치/$( cd "$SA_WT" && git rev-parse refs/heads/main )"
+[ "$rc" = 0 ] || bad "15p 로컬 브랜치 ref 통과 문면" "$msg"
+sag act --manifest "$SA_MANIFEST" --kind segment --target main --segment S1 --cutpoint 커밋 \
+  --surface 읽기 --snapshot-digest "$(SAH)" --rationale x --from-declaration \
+  -- 상태=계획됨 "워크트리=$WT15P" "브랜치=$BR15P"
+check "15p: 계획 행이 통과한다" "$rc" "0"
+[ "$rc" = 0 ] || bad "15p 계획 행 문면" "$msg"
+( cd "$WT15P" && printf 'p\n' > p15.txt && git add p15.txt ) >/dev/null 2>&1
+sag exec --manifest "$SA_MANIFEST" --target main --segment S1 --cutpoint 커밋 --surface 워크트리쓰기 \
+  --snapshot-digest "$(SAH)" --rationale x -- git commit -qm 작업-15p
+check "15p: 세그먼트 워크트리의 커밋이 통과한다" \
+  "$rc/$( cd "$WT15P" && git log -1 --format=%s )" "0/작업-15p"
+[ "$rc" = 0 ] || bad "15p 커밋 문면" "$msg"
+check "15p: 세그먼트 커밋 뒤 베이스 이동 정지가 없다" \
+  "$( { ls "$SA_RUN/halt/shift" 2>/dev/null || true; } | grep -c . || true)|$( { grep -c '베이스 이동' "$SA_LEDGER" 2>/dev/null || true; } )|$( ls "$SA_RUN/base-guard" 2>/dev/null | grep -c '\.latch' || true)" \
+  "0|0|0"
+mb15p=$( cd "$WT15P" && git merge-base HEAD refs/heads/main )
+sag review-line --manifest "$SA_MANIFEST" --segment S1
+case "$rc|$msg" in
+  "0|/cc-cmds:review-unattended $BR15P "*" --base-sha $mb15p "*)
+    ok "15p: review-line 의 --base-sha 는 워크트리 HEAD 와 로컬 베이스의 merge-base 다" ;;
+  *) bad "15p: review-line 의 --base-sha 는 워크트리 HEAD 와 로컬 베이스의 merge-base 다" "rc=$rc $msg (기대 base $mb15p)" ;;
+esac
+( cd "$SA_WT" && git worktree remove --force "$WT15P" && git branch -D "$BR15P" ) >/dev/null 2>&1 || true
+SA_CUT=""; SA_PLAN=""
+
+# --- 15q. 원격 없는 대상에서 베이스를 옮긴 게이트 행위는 세그먼트를 멈추고 기록을 남긴다 ---
+# --- section: 15q | group: sa | covers: exec, act, plan, snapshot, shift-halt, halt-answer, clause-exec, gate_base_guard_entry, gate_base_guard_after, gate_base_guard_record_move, gate_base_guard_latch_wait, gate_base_guard_marker_wait, gate_base_guard_release, gate_base_guard_target_stop, gate_base_guard_plan, gate_base_guard_last_answer, gate_base_guard_done_unmet, gate_base_guard_open_latches, gate_shift_halt_write, gate_shift_halts_json | anchors: 15q: 기지값이 없을 때 plan 은 기지값도 디렉터리도 쓰지 않는다, 15q: base-guard 디렉터리가 없던 런의 첫 보호 행위가 디렉터리를 만든다, 15q: 첫 관측은 기지값을 적을 뿐 정지하지 않는다, 15q: 베이스를 옮긴 exec 는 수행된 뒤 11 이고 수행됨 경고를 낸다, 15q: 그 정지의 기록은 세그먼트의 베이스 이동 교대 정지 기록이다, 15q: 그 기록을 실은 cone 행이 경로와 다이제스트를 싣는다, 15q: 세그먼트 걸쇠가 그 기록을 가리키고 기지값은 옮겨진 베이스다, 15q: 성공한 행위가 옮긴 베이스에는 실패 행이 없다, 15q: 정지한 세그먼트의 다음 행위는 수행 없이 11 이고 새 기록도 행도 없다, 15q: 다른 세그먼트의 행위는 통과한다, 15q: 걸쇠가 선 세그먼트의 plan 은 park 예상 머리 꼴로 베이스 이동을 낸다, 15q: 그 plan 은 행을 쓰지 않는다, 15q: 세그먼트 park 답 뒤의 행위는 여전히 수행 없이 11 이다, 15q: 재시도 답 뒤의 행위는 통과하고 세그먼트 걸쇠가 없어진다, 15q: 걸쇠를 풀기 전 그 답은 answered_halts 에 있다 (아래 소비가 공허하지 않다), 15q: 걸쇠를 푼 행위는 그 기록의 앵커로 해소 행 하나를 쓰고 답은 answered_halts 에서 빠진다, 15q: 재시도 답 뒤 두 번째 이동은 새 기록 #2 를 만든다, 15q: 베이스를 옮기고 0 아닌 코드로 끝난 행위도 11 이고 같은 꼴의 기록을 남긴다, 15q: 그 행위의 실패 행은 원래 코드의 것 하나이고 11 의 실패 행은 없다, 15q: 베이스가 옮겨진 뒤의 plan 은 park 예상 머리 꼴로 베이스 이동을 낸다, 15q: 게이트 밖의 이동 뒤 다음 exec 는 수행되지 않고 11 이며 같은 꼴의 기록을 남긴다, 15q: 60 초보다 오래된 대조 잠금은 걷어 내고 행위를 대조한다, 15q: 세그먼트 행 없는 앵커의 이동은 대상 키 기록과 그 앵커의 cone 행을 남기고 11 이다, 15q: 그 앵커의 다음 행위는 수행 없이 11 이고 blocked 행을 더 쓰지 않는다, 15q: 그 기록에 재시도 답이 달린 뒤 그 앵커의 행위는 통과한다, 15q: 대조 잠금을 잡지 못한 들머리는 수행 없이 11 이고 대상 키 기록과 대상 걸쇠를 남긴다, 15q: 그 기록에 재시도 답이 달린 뒤 그 대상의 행위는 통과한다, 15q: 행위 뒤 자리에서 잠금을 잡지 못하면 경고를 남기고 행위의 코드를 낸다, 15q: 대상 키 쓰기까지 거부되면 대상 걸쇠에 기록 없음과 작성 실패 행 하나를 두고 11 이며 기지값은 그대로다, 15q: 스냅숏 shift_halts 에 대상 키의 기록 불가 정지가 보인다, 15q: 거부되는 동안 그 대상의 다음 보호 행위는 수행 없이 11 이고 행을 더 쓰지 않는다, 15q: 디렉터리를 되돌린 뒤의 보호 행위는 대상 키 기록을 쓰고 걸쇠를 그 경로로 바꾼 채 11 이다, 15q: 그 대상 키 기록에 재시도 답이 달린 뒤 행위가 통과하고 해소 행 하나가 그 답을 소비한다, 15q: 세그먼트 없는 행위의 이동은 대상 키 기록·대상 걸쇠·행위 범위 행을 남기고 런 범위 cone 행은 없다, 15q: 대상 키 정지의 cone 행은 런을 막는 미해소 막힘 집계에 들지 않는다, 15q: 대상 걸쇠의 기록에 답이 없는 동안 다른 대상으로 낸 종료 제안도 그 걸쇠를 조건 5 로 든다, 15q: 세그먼트 걸쇠가 답 없는 기록을 가리키는 동안 종료 제안이 그 걸쇠를 조건 5 로 든다, 15q: 세그먼트 걸쇠가 답 없는 대상 키 기록을 가리켜도 종료 제안이 그 걸쇠를 조건 5 로 들고 회수 판독기도 센다, 15q: 기록 없는 걸쇠도 종료 제안이 조건 5 로 든다, 15q: 대상 키 기록의 선택지는 재시도 하나다, 15q: 대상 걸쇠가 서 있어도 다른 대상의 행위는 통과한다, 15q: 그 기록에 답이 달리면 대상 걸쇠가 아직 서 있어도 종료 조건에서 빠진다, 15q: 그 기록에 재시도 답이 달린 뒤 그 대상의 세그먼트 없는 행위는 통과한다, 15q: 대상 키 걸쇠를 재시도 답으로 푼 뒤 런을 막는 미해소 막힘에 베이스 이동 정지가 없다, 15q: 기지값을 읽지 못하면 수행 없이 11 이고 기지값은 그대로이며 대상 키 기록과 대상 걸쇠가 생긴다, 15q: 걸쇠를 읽지 못하면 수행 없이 11 이고 걸쇠는 남으며 대상 키 기록과 대상 걸쇠가 생긴다, 15q: 원장의 중단 답 조회가 실패하면 11 이고 걸쇠는 남으며 대상 걸쇠가 선다, 15q: 기록 없는 작성 중 표지는 바로 11 로 끝내지 않고 기다렸다가 표지가 걷히면 다시 대조해 통과한다, 15q: 다른 행위가 같은 이동의 기록을 쓰는 중이면 새 기록 없이 11 이다, 15q: 작성 중 표지를 기다린 11 의 경고는 그 표지가 덧적은 기록 경로를 말한다, 15q: 기록 경로 없이 60 초보다 오래된 표지는 걷어 내고 그 이동을 다시 잡는다, 15q: 기록이 선 표지는 다음 들머리가 기지값 고침과 걸쇠 적기를 마저 하고 지운다, 15q: 중첩 행위가 이동을 먼저 잡으면 바깥 행위 뒤 자리는 기록을 더 쓰지 않는다, 15q: 라우터의 베이스 이동 shift-halt 는 2 로 거부되고 기록도 행도 생기지 않는다, 15q: clause-exec 갈래로 베이스를 옮긴 행위도 11 과 기록을 남긴다, 15q: 원격 있는 대상에서 베이스를 옮긴 행위는 행위의 코드를 내고 행도 기록도 쓰지 않는다 ---
+#
+# A target with no `origin` has nothing outside this host that would notice an
+# act of the run moving its local base branch, so the gate compares the base
+# ref with a known value kept under the run directory at every act's entry and
+# again after the act. The fixture is a repository whose remote is removed
+# before the first gate call, with segments whose worktree is the main worktree
+# (an act there moves `main` with a plain commit) and segments in a linked
+# worktree (an act there never moves it). A second target with no remote shows
+# what a stop on the first target's own key does not hold. Each case leaves the
+# latches it raised answered with `재시도` before the next case, except where the
+# case is about a latch still standing.
+sa_new '베이스 이동 대조' ''
+( cd "$SA_REPO" && git remote remove origin ) >/dev/null 2>&1
+SA_CUT=커밋
+QB_SIDE="$SA_ROOT/side"
+mkdir -p "$QB_SIDE"
+( cd "$QB_SIDE" && git init -q . && git config user.email t@example.invalid && git config user.name T \
+  && echo s > s.txt && git add -A && git commit -qm s && git branch -M main ) >/dev/null 2>&1
+SA_TARGET_ROW2="- \`target\` | 별칭=side | 메인 워크트리=$QB_SIDE | 공통 git 디렉터리=$(cd "$QB_SIDE" && git rev-parse --path-format=absolute --git-common-dir) | 베이스 브랜치=main | 홈=아니오 | 원격 슬러그=t/side | 절단점=커밋 | 말단 행위 상한=없음"
+SA_PREAUTH_EXTRA='git commit -q --allow-empty -m qb-clause'
+SA_AUTH_RAW='- `종료 절` | id=C1 | 문면=베이스 위의 근거 커밋이 있다'
+sa_manifest ''
+QG="$SA_RUN/base-guard"
+qb_x() {  # qb_x <세그먼트> <argv…> — 그 세그먼트의 exec 하나. rc·msg·raw 를 남긴다
+  local s="$1"; shift
+  sag exec --manifest "$SA_MANIFEST" --target main --segment "$s" --cutpoint 커밋 --surface 워크트리쓰기 \
+    --snapshot-digest "$(SAH)" --rationale x -- "$@"
+}
+qb_main()  { ( cd "$SA_WT" && git rev-parse refs/heads/main ); }
+qb_move()  { ( cd "$SA_WT" && git commit -q --allow-empty -m "$1" ) >/dev/null 2>&1; }  # 게이트 밖의 이동
+qb_known() { cut -f2 "$QG/main" 2>/dev/null; }
+qb_recs()  { ls "$SA_RUN/halt/shift" 2>/dev/null | grep -c '\.md$' || true; }
+qb_n()     { { grep -cF -- "$1" "$SA_LEDGER" 2>/dev/null || true; }; }
+qb_nb()    { qb_n '- `blocked` '; }
+qb_cone()  { { grep -F -- "| 중단 기록=$1 |" "$SA_LEDGER" 2>/dev/null | grep -F '스코프=cone' || true; } | tail -1; }
+qb_did()   { [ -e "$1" ] && printf 수행 || printf -; }
+qb_warn()  { case "$raw" in *"[run][warn] 베이스 이동 — "*"$1"*) printf 예 ;; *) printf 아니오 ;; esac; }
+qb_tl()    { cat "$QG/main.latch" 2>/dev/null; }
+qb_tk()    { case "${1##*/}" in 베이스-main\#*.md) [ -f "$1" ] && printf 대상키기록 ;; esac; }  # 대상 키 기록인가
+qb_say()   { [ "$rc" = "$1" ] || printf '  15q %s: rc=%s %s\n' "$2" "$rc" "$msg"; }
+qb_runblk() {  # qb_runblk — 런을 막는 미해소 막힘 가운데 베이스 이동 교대 정지의 줄 수(종료 조건 5 가 읽는 집계). 집계가 돌지 못하면 「집계 실패」
+  local o
+  o=$(bash -c '. "$1" || exit 90; cc_unresolved_blocked "$2"' _ "$(dirname "$GATE")/liveness.sh" "$SA_LEDGER" 2>/dev/null) \
+    || { printf '집계 실패'; return 0; }
+  printf '%s\n' "$o" | { grep -cF "$(printf '\t')교대 정지 — 베이스 이동" || true; }
+}
+qb_ans() {  # qb_ans <키> <기록> <선택지> — 사람의 답 하나를 게이트로 쓴다
+  sag act --manifest "$SA_MANIFEST" --kind halt-answer --target main --segment "$1" --cutpoint 커밋 \
+    --surface 읽기 --snapshot-digest "$(SAH)" --rationale "픽스처 — 사람의 답" \
+    -- "중단 기록=$2" "선택지=$3" '답한 주체=사람' '근거=사람이 고름'
+  [ "$rc" = 0 ] || bad "15q 답 행 ($1 $3)" "$msg"
+}
+qb_answered() {  # qb_answered <기록> — 스냅숏 answered_halts[] 에서 그 기록의 원소 수
+  ( cd "$SA_WT" && gate_inproc snapshot --manifest "$SA_MANIFEST" 2>/dev/null ) \
+    | jq -r --arg r "$1" '[.answered_halts[] | select(.record == $r)] | length'
+}
+qb_plan() {  # qb_plan <세그먼트> — 그 세그먼트의 plan 하나
+  sag plan --manifest "$SA_MANIFEST" --kind x --target main --segment "$1" --cutpoint 커밋 \
+    --surface 워크트리쓰기 -- touch qb-plan
+}
+for qb_s in Q1 Q3 Q7; do sa_seg_row "$qb_s" '' "$SA_WT"; [ "$rc" = 0 ] || bad "15q 세그먼트 행 $qb_s" "$msg"; done
+for qb_s in Q2 Q4 Q5 Q6 Q8 Q9; do sa_seg_row "$qb_s" ''; [ "$rc" = 0 ] || bad "15q 세그먼트 행 $qb_s" "$msg"; done
+
+# (바)·(하2)·(차) 첫 관측 --------------------------------------------------------------
+qb_plan Q2
+check "15q: 기지값이 없을 때 plan 은 기지값도 디렉터리도 쓰지 않는다" "$rc|$( [ -e "$QG" ] && printf 있음 || printf - )" "0|-"
+qb_x Q2 touch qb-first
+check "15q: base-guard 디렉터리가 없던 런의 첫 보호 행위가 디렉터리를 만든다" "$( [ -d "$QG" ] && printf 디렉터리 )" "디렉터리"
+check "15q: 첫 관측은 기지값을 적을 뿐 정지하지 않는다" \
+  "$rc|$(qb_did "$SA_SEGWT/qb-first")|$(cat "$QG/main" 2>/dev/null)|$(qb_recs)" "0|수행|refs/heads/main	$(qb_main)|0"
+
+# (가)·(카) 베이스를 옮긴 exec ----------------------------------------------------------
+qb_old=$(qb_main); qb_r0=$(qb_n '결정=결과')
+qb_x Q1 git commit -q --allow-empty -m qb-ga
+QB_R1="$SA_RUN/halt/shift/Q1#1.md"
+check "15q: 베이스를 옮긴 exec 는 수행된 뒤 11 이고 수행됨 경고를 낸다" \
+  "$rc|$( [ "$(qb_main)" != "$qb_old" ] && printf 이동 )|$(qb_warn '행위는 수행됨')" "11|이동|예"
+check "15q: 그 정지의 기록은 세그먼트의 베이스 이동 교대 정지 기록이다" \
+  "$(sed -n 's/^\*\*스텝\*\*: //p' "$QB_R1" 2>/dev/null)" "교대 정지 — 베이스 이동"
+qb_c=$(qb_cone "$QB_R1")
+check "15q: 그 기록을 실은 cone 행이 경로와 다이제스트를 싣는다" \
+  "$(sa_field "$qb_c" 사유)|$(sa_field "$qb_c" '앵커 세그먼트')|$(sa_field "$qb_c" '기록 다이제스트')" \
+  "교대 정지 — 베이스 이동|Q1|$(shasum -a 256 "$QB_R1" 2>/dev/null | cut -d' ' -f1)"
+check "15q: 세그먼트 걸쇠가 그 기록을 가리키고 기지값은 옮겨진 베이스다" \
+  "$(cat "$QG/main.latch.Q1" 2>/dev/null)|$(qb_known)" "$QB_R1|$(qb_main)"
+check "15q: 성공한 행위가 옮긴 베이스에는 실패 행이 없다" "$(( $(qb_n '결정=결과') - qb_r0 ))" "0"
+
+# (라) 정지 뒤의 같은 세그먼트와 다른 세그먼트 ---------------------------------------------
+qb_b0=$(qb_nb); qb_n0=$(qb_recs)
+qb_x Q1 touch qb-ra
+check "15q: 정지한 세그먼트의 다음 행위는 수행 없이 11 이고 새 기록도 행도 없다" \
+  "$rc|$(qb_did "$SA_WT/qb-ra")|$(( $(qb_recs) - qb_n0 ))|$(( $(qb_nb) - qb_b0 ))" "11|-|0|0"
+qb_x Q2 touch qb-ra2
+check "15q: 다른 세그먼트의 행위는 통과한다" "$rc|$(qb_did "$SA_SEGWT/qb-ra2")" "0|수행"
+
+# (바) 걸쇠가 선 세그먼트의 plan ---------------------------------------------------------
+qb_b0=$(qb_nb)
+qb_plan Q1
+case "$rc|$msg" in
+  "11|"*"park 예상: 도달 판정=베이스 이동 "*"걸쇠 $QG/main.latch.Q1"*) ok "15q: 걸쇠가 선 세그먼트의 plan 은 park 예상 머리 꼴로 베이스 이동을 낸다" ;;
+  *) bad "15q: 걸쇠가 선 세그먼트의 plan 은 park 예상 머리 꼴로 베이스 이동을 낸다" "rc=$rc $msg" ;;
+esac
+check "15q: 그 plan 은 행을 쓰지 않는다" "$(( $(qb_nb) - qb_b0 ))" "0"
+
+# (마)·(거3) 답 — 세그먼트 park 는 풀지 않고 재시도는 푼다 -----------------------------------
+qb_ans Q1 "$QB_R1" '세그먼트 park'
+qb_x Q1 touch qb-ma1
+check "15q: 세그먼트 park 답 뒤의 행위는 여전히 수행 없이 11 이다" "$rc|$(qb_did "$SA_WT/qb-ma1")" "11|-"
+qb_ans Q1 "$QB_R1" 재시도
+qb_a0=$(qb_answered "$QB_R1"); qb_h0=$(qb_n '원인=해소')
+qb_x Q1 touch qb-ma2
+check "15q: 재시도 답 뒤의 행위는 통과하고 세그먼트 걸쇠가 없어진다" \
+  "$rc|$(qb_did "$SA_WT/qb-ma2")|$( [ -e "$QG/main.latch.Q1" ] && printf 걸쇠 || printf - )" "0|수행|-"
+qb_h=$( { grep -F '원인=해소' "$SA_LEDGER" || true; } | tail -1)
+check "15q: 걸쇠를 풀기 전 그 답은 answered_halts 에 있다 (아래 소비가 공허하지 않다)" \
+  "$( [ "${qb_a0:-0}" -ge 1 ] 2>/dev/null && printf 있음 )" "있음"
+check "15q: 걸쇠를 푼 행위는 그 기록의 앵커로 해소 행 하나를 쓰고 답은 answered_halts 에서 빠진다" \
+  "$(( $(qb_n '원인=해소') - qb_h0 ))|$(sa_field "$qb_h" '앵커 세그먼트')|$(sa_field "$qb_h" '중단 기록')|$(qb_answered "$QB_R1")" \
+  "1|Q1|$QB_R1|0"
+
+# (자) 재시도 뒤의 두 번째 이동 -----------------------------------------------------------
+qb_x Q1 git commit -q --allow-empty -m qb-ja
+check "15q: 재시도 답 뒤 두 번째 이동은 새 기록 #2 를 만든다" \
+  "$rc|$( [ -f "$SA_RUN/halt/shift/Q1#2.md" ] && printf '#2' )|$(cat "$QG/main.latch.Q1" 2>/dev/null)" \
+  "11|#2|$SA_RUN/halt/shift/Q1#2.md"
+
+# (나)·(카) 베이스를 옮기고 실패한 행위 ----------------------------------------------------
+# 곁가지의 첫 커밋은 베이스 위에 그대로 얹히고, 셋째 커밋은 베이스에 없는 파일을 고쳐 충돌로
+# 멈춘다. 그래서 행위는 베이스를 한 커밋 옮긴 채 0 아닌 코드로 끝난다.
+( cd "$SA_WT" && git checkout -q -b qb-pick \
+  && printf 'p\n' > qb-pick.txt && git add qb-pick.txt && git commit -qm qb-pick-1 \
+  && printf 'o\n' > qb-other.txt && git add qb-other.txt && git commit -qm qb-pick-2 \
+  && printf 'o2\n' > qb-other.txt && git add qb-other.txt && git commit -qm qb-pick-3 \
+  && git checkout -q main ) >/dev/null 2>&1
+qb_pick1=$( cd "$SA_WT" && git rev-parse qb-pick~2 ); qb_pick3=$( cd "$SA_WT" && git rev-parse qb-pick )
+qb_old=$(qb_main); qb_r0=$(qb_n '결정=결과'); qb_r11=$(qb_n '근거=rc=11')
+qb_x Q3 git cherry-pick "$qb_pick1" "$qb_pick3"
+qb_say 11 '실패한 이동'
+check "15q: 베이스를 옮기고 0 아닌 코드로 끝난 행위도 11 이고 같은 꼴의 기록을 남긴다" \
+  "$rc|$( [ "$(qb_main)" != "$qb_old" ] && printf 이동 )|$(sed -n 's/^\*\*스텝\*\*: //p' "$SA_RUN/halt/shift/Q3#1.md" 2>/dev/null)" \
+  "11|이동|교대 정지 — 베이스 이동"
+check "15q: 그 행위의 실패 행은 원래 코드의 것 하나이고 11 의 실패 행은 없다" \
+  "$(( $(qb_n '결정=결과') - qb_r0 ))|$(( $(qb_n '근거=rc=11') - qb_r11 ))" "1|0"
+( cd "$SA_WT" && git cherry-pick --quit && git reset -q --hard HEAD ) >/dev/null 2>&1 || true
+
+# (바)·(다) 게이트 밖의 이동 ------------------------------------------------------------
+qb_move qb-da
+qb_plan Q2
+case "$rc|$msg" in
+  "11|"*"park 예상: 도달 판정=베이스 이동 "*"기지값 "*) ok "15q: 베이스가 옮겨진 뒤의 plan 은 park 예상 머리 꼴로 베이스 이동을 낸다" ;;
+  *) bad "15q: 베이스가 옮겨진 뒤의 plan 은 park 예상 머리 꼴로 베이스 이동을 낸다" "rc=$rc $msg" ;;
+esac
+qb_x Q4 touch qb-da
+check "15q: 게이트 밖의 이동 뒤 다음 exec 는 수행되지 않고 11 이며 같은 꼴의 기록을 남긴다" \
+  "$rc|$(qb_did "$SA_SEGWT/qb-da")|$(qb_warn '행위 수행 안 함')|$(sed -n 's/^\*\*스텝\*\*: //p' "$SA_RUN/halt/shift/Q4#1.md" 2>/dev/null)" \
+  "11|-|예|교대 정지 — 베이스 이동"
+
+# (타) 낡은 대조 잠금 ------------------------------------------------------------------
+mkdir -p "$QG/main.lock" && printf '1 1000\n' > "$QG/main.lock/owner"
+qb_x Q2 touch qb-ta
+check "15q: 60 초보다 오래된 대조 잠금은 걷어 내고 행위를 대조한다" "$rc|$(qb_did "$SA_SEGWT/qb-ta")" "0|수행"
+
+# (파) 세그먼트 행이 없는 앵커 -----------------------------------------------------------
+qb_x Z9 git commit -q --allow-empty -m qb-pa
+QB_RZ=$(cat "$QG/main.latch.Z9" 2>/dev/null)
+qb_c=$(qb_cone "$QB_RZ")
+check "15q: 세그먼트 행 없는 앵커의 이동은 대상 키 기록과 그 앵커의 cone 행을 남기고 11 이다" \
+  "$rc|${QB_RZ##*/}|$(sa_field "$qb_c" '앵커 세그먼트')" "11|베이스-main#1.md|베이스-main"
+qb_b0=$(qb_nb)
+qb_x Z9 touch qb-pa2
+check "15q: 그 앵커의 다음 행위는 수행 없이 11 이고 blocked 행을 더 쓰지 않는다" \
+  "$rc|$(qb_did "$SA_WT/qb-pa2")|$(( $(qb_nb) - qb_b0 ))" "11|-|0"
+qb_ans 베이스-main "$QB_RZ" 재시도
+qb_x Z9 touch qb-pa3
+check "15q: 그 기록에 재시도 답이 달린 뒤 그 앵커의 행위는 통과한다" "$rc|$(qb_did "$SA_WT/qb-pa3")" "0|수행"
+
+# (하1) 대조 잠금을 잡지 못한 들머리와 행위 뒤 ------------------------------------------------
+mkdir -p "$QG/main.lock" && printf '1 %s\n' "$(date -u +%s)" > "$QG/main.lock/owner"
+qb_x Q2 touch qb-h1
+QB_RT=$(qb_tl)
+check "15q: 대조 잠금을 잡지 못한 들머리는 수행 없이 11 이고 대상 키 기록과 대상 걸쇠를 남긴다" \
+  "$rc|$(qb_did "$SA_SEGWT/qb-h1")|$(qb_warn '대조 잠금을 잡지 못해')|$(qb_tk "$QB_RT")" \
+  "11|-|예|대상키기록"
+rm -rf "$QG/main.lock"
+qb_ans 베이스-main "$QB_RT" 재시도
+qb_x Q2 touch qb-h1b
+check "15q: 그 기록에 재시도 답이 달린 뒤 그 대상의 행위는 통과한다" \
+  "$rc|$(qb_did "$SA_SEGWT/qb-h1b")|$( [ -e "$QG/main.latch" ] && printf 걸쇠 || printf - )" "0|수행|-"
+# 행위 뒤 자리의 잠금 실패 — 세그먼트 워크트리의 커밋(베이스를 옮기지 않는다)이 끝난 자리에서
+# post-commit 훅이 대조 잠금을 잡아 둔다. 훅 디렉터리는 워크트리들이 함께 쓴다.
+QB_HOOK="$SA_CG/hooks/post-commit"
+mkdir -p "$SA_CG/hooks" && : > "$SA_ROOT/qb-lock.on"
+cat > "$QB_HOOK" <<QBHOOK
+#!/bin/sh
+[ -f '$SA_ROOT/qb-lock.on' ] || exit 0
+rm -f '$SA_ROOT/qb-lock.on'
+mkdir '$QG/main.lock'
+exit 0
+QBHOOK
+chmod +x "$QB_HOOK"
+qb_x Q2 git commit -q --allow-empty -m qb-h1c
+check "15q: 행위 뒤 자리에서 잠금을 잡지 못하면 경고를 남기고 행위의 코드를 낸다" \
+  "$rc|$(qb_warn '대조 잠금을 잡지 못해 행위 뒤 대조를 건너뜁니다')" "0|예"
+qb_say 0 '행위 뒤 잠금 실패'
+rm -rf "$QG/main.lock" "$QB_HOOK"
+
+# (하3) 기록 작성기가 거부되는 동안 -------------------------------------------------------
+# `halt/shift` 를 다른 자리로 가는 심볼릭 링크로 바꾸면 기록 작성기는 그 디렉터리를 런의 것으로
+# 받지 않는다(세그먼트 쓰기도 대상 키 쓰기도 거부된다).
+mv "$SA_RUN/halt/shift" "$SA_RUN/halt/shift.qb" && ln -s "$SA_RUN/halt/shift.qb" "$SA_RUN/halt/shift"
+qb_move qb-h3
+qb_k0=$(qb_known); qb_f0=$(qb_n '사유=베이스 이동 — 기록 작성 실패')
+qb_x Q5 touch qb-h3
+qb_say 11 '작성 거부'
+check "15q: 대상 키 쓰기까지 거부되면 대상 걸쇠에 기록 없음과 작성 실패 행 하나를 두고 11 이며 기지값은 그대로다" \
+  "$rc|$(qb_did "$SA_SEGWT/qb-h3")|$(qb_tl)|$(( $(qb_n '사유=베이스 이동 — 기록 작성 실패') - qb_f0 ))|$( [ "$(qb_known)" = "$qb_k0" ] && printf 그대로 )" \
+  "11|-|기록 없음|1|그대로"
+check "15q: 스냅숏 shift_halts 에 대상 키의 기록 불가 정지가 보인다" \
+  "$( ( cd "$SA_WT" && gate_inproc snapshot --manifest "$SA_MANIFEST" 2>/dev/null ) | jq -r '[.shift_halts[] | select(.["세그먼트"] == "베이스-main" and .["기록"] == "") | .["자리"]] | first // ""')" \
+  "베이스 이동"
+qb_b0=$(qb_nb)
+qb_x Q2 touch qb-h3b
+check "15q: 거부되는 동안 그 대상의 다음 보호 행위는 수행 없이 11 이고 행을 더 쓰지 않는다" \
+  "$rc|$(qb_did "$SA_SEGWT/qb-h3b")|$(( $(qb_nb) - qb_b0 ))" "11|-|0"
+rm -f "$SA_RUN/halt/shift" && mv "$SA_RUN/halt/shift.qb" "$SA_RUN/halt/shift"
+qb_x Q2 touch qb-h3c
+QB_RT=$(qb_tl)
+check "15q: 디렉터리를 되돌린 뒤의 보호 행위는 대상 키 기록을 쓰고 걸쇠를 그 경로로 바꾼 채 11 이다" \
+  "$rc|$(qb_did "$SA_SEGWT/qb-h3c")|$(qb_tk "$QB_RT")" "11|-|대상키기록"
+qb_ans 베이스-main "$QB_RT" 재시도
+qb_h0=$(qb_n '원인=해소')
+qb_x Q2 touch qb-h3d
+check "15q: 그 대상 키 기록에 재시도 답이 달린 뒤 행위가 통과하고 해소 행 하나가 그 답을 소비한다" \
+  "$rc|$(qb_did "$SA_SEGWT/qb-h3d")|$(( $(qb_n '원인=해소') - qb_h0 ))|$(qb_answered "$QB_RT")" "0|수행|1|0"
+
+# (거1) --segment - 행위 ---------------------------------------------------------------
+qb_g0=$(qb_n '사유=베이스 이동 — 세그먼트 없는 행위'); qb_d0=$(qb_n '앵커 세그먼트=- ')
+qb_x - git commit -q --allow-empty -m qb-g1
+QB_RT=$(qb_tl)
+check "15q: 세그먼트 없는 행위의 이동은 대상 키 기록·대상 걸쇠·행위 범위 행을 남기고 런 범위 cone 행은 없다" \
+  "$rc|$(qb_tk "$QB_RT")|$(( $(qb_n '사유=베이스 이동 — 세그먼트 없는 행위') - qb_g0 ))|$(( $(qb_n '앵커 세그먼트=- ') - qb_d0 ))" \
+  "11|대상키기록|1|0"
+check "15q: 대상 키 정지의 cone 행은 런을 막는 미해소 막힘 집계에 들지 않는다" "$(qb_runblk)" "0"
+# 그래도 런은 그 정지 위로 끝나지 않는다: 종료 조건 5 가 걸쇠 파일을 읽는다. 종료 제안은 걸쇠가 없는
+# 다른 대상(side)으로 낸다 — 대상 걸쇠는 그 대상을 지목한 행위만 읽으므로, 이것이 걸쇠를 비켜 가던
+# 길이다. 조건 10(종료 절 C1 미정산)을 함께 보아 예측이 실제로 조건을 셌음을 보인다.
+qb_done() {  # qb_done <걸쇠> — side 로 낸 종료 제안 예측이 그 걸쇠를 조건 5 로 드는가 | 조건을 셌는가
+  sag plan --manifest "$SA_MANIFEST" --kind propose-done --target side --segment - --cutpoint 커밋 --rationale x
+  local l=- c=-
+  case "$raw" in *"5 베이스 이동 "*"걸쇠 $1 "*) l=걸쇠 ;; esac
+  case "$raw" in *"종료 절 C1 미정산"*) c=조건 ;; esac
+  printf '%s|%s' "$l" "$c"
+}
+qb_openl() {  # qb_openl — 회수 판독기(gate_base_guard_open_latches)가 세는 종료를 붙드는 걸쇠 수. 돌지 못하면 「판독 실패」
+  bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null || exit 90; gate_base_guard_open_latches "$2" "$3"' _ "$GATE" "$SA_RUN" "$SA_LEDGER" 2>/dev/null \
+    || printf '판독 실패'
+}
+check "15q: 대상 걸쇠의 기록에 답이 없는 동안 다른 대상으로 낸 종료 제안도 그 걸쇠를 조건 5 로 든다" \
+  "$(qb_done "$QG/main.latch")" "걸쇠|조건"
+check "15q: 세그먼트 걸쇠가 답 없는 기록을 가리키는 동안 종료 제안이 그 걸쇠를 조건 5 로 든다" \
+  "$(qb_done "$QG/main.latch.Q1")|$(cat "$QG/main.latch.Q1" 2>/dev/null)" "걸쇠|조건|$SA_RUN/halt/shift/Q1#2.md"
+# 세그먼트 기록이 거부되어 대상 키 기록을 가리키게 된 세그먼트 걸쇠와, 기록 없는 걸쇠. 걸쇠 파일만
+# 꾸며 판독을 보고 바로 걷어 낸다 — Q5 의 행위는 이 뒤에 없다.
+qb_o0=$(qb_openl)
+printf '%s\n' "$QB_RT" > "$QG/main.latch.Q5"
+check "15q: 세그먼트 걸쇠가 답 없는 대상 키 기록을 가리켜도 종료 제안이 그 걸쇠를 조건 5 로 들고 회수 판독기도 센다" \
+  "$(qb_done "$QG/main.latch.Q5")|$(( $(qb_openl) - qb_o0 ))" "걸쇠|조건|1"
+printf '기록 없음\n' > "$QG/main.latch.Q5"
+check "15q: 기록 없는 걸쇠도 종료 제안이 조건 5 로 든다" "$(qb_done "$QG/main.latch.Q5")" "걸쇠|조건"
+rm -f "$QG/main.latch.Q5"
+qb_o0=$(qb_openl)
+check "15q: 대상 키 기록의 선택지는 재시도 하나다" \
+  "$(awk '/^\*\*선택지\*\*:/ { on = 1; next } /^\*\*/ { on = 0 } on && /^- / { n++; l = $0 } END { printf "%d|%s", n, (index(l, "`재시도`") ? "재시도" : l) }' "$QB_RT" 2>/dev/null)" \
+  "1|재시도"
+sag exec --manifest "$SA_MANIFEST" --target side --segment - --cutpoint 커밋 --surface 워크트리쓰기 \
+  --snapshot-digest "$(SAH)" --rationale x -- touch qb-side
+check "15q: 대상 걸쇠가 서 있어도 다른 대상의 행위는 통과한다" "$rc|$(qb_did "$QB_SIDE/qb-side")" "0|수행"
+qb_ans 베이스-main "$QB_RT" 재시도
+check "15q: 그 기록에 답이 달리면 대상 걸쇠가 아직 서 있어도 종료 조건에서 빠진다" \
+  "$(qb_done "$QG/main.latch")|$( [ -e "$QG/main.latch" ] && printf 걸쇠섬 )|$(( qb_o0 - $(qb_openl) ))" "-|조건|걸쇠섬|1"
+qb_x - touch qb-g1b
+check "15q: 그 기록에 재시도 답이 달린 뒤 그 대상의 세그먼트 없는 행위는 통과한다" "$rc|$(qb_did "$SA_WT/qb-g1b")" "0|수행"
+check "15q: 대상 키 걸쇠를 재시도 답으로 푼 뒤 런을 막는 미해소 막힘에 베이스 이동 정지가 없다" "$(qb_runblk)" "0"
+
+# (거2) 읽을 수 없는 기지값·걸쇠, 실패한 답 조회 ---------------------------------------------
+qb_kv=$(cat "$QG/main")
+rm -f "$QG/main" && mkdir "$QG/main"
+qb_x Q2 touch qb-g2
+QB_RT=$(qb_tl)
+check "15q: 기지값을 읽지 못하면 수행 없이 11 이고 기지값은 그대로이며 대상 키 기록과 대상 걸쇠가 생긴다" \
+  "$rc|$(qb_did "$SA_SEGWT/qb-g2")|$( [ -d "$QG/main" ] && printf 그대로 )|$( [ -f "$QB_RT" ] && printf 기록 )" "11|-|그대로|기록"
+rmdir "$QG/main" && printf '%s\n' "$qb_kv" > "$QG/main"
+qb_ans 베이스-main "$QB_RT" 재시도
+qb_x Q2 touch qb-g2b
+[ "$rc" = 0 ] || bad "15q 기지값 복구 뒤 통과" "rc=$rc $msg"
+QB_R4=$(cat "$QG/main.latch.Q4" 2>/dev/null)
+rm -f "$QG/main.latch.Q4" && mkdir "$QG/main.latch.Q4"
+qb_x Q4 touch qb-g2c
+QB_RT=$(qb_tl)
+check "15q: 걸쇠를 읽지 못하면 수행 없이 11 이고 걸쇠는 남으며 대상 키 기록과 대상 걸쇠가 생긴다" \
+  "$rc|$(qb_did "$SA_SEGWT/qb-g2c")|$( [ -d "$QG/main.latch.Q4" ] && printf 남음 )|$( [ -f "$QB_RT" ] && printf 기록 )" "11|-|남음|기록"
+rmdir "$QG/main.latch.Q4" && printf '%s\n' "$QB_R4" > "$QG/main.latch.Q4"
+qb_ans 베이스-main "$QB_RT" 재시도
+qb_x Q2 touch qb-g2d
+[ "$rc" = 0 ] || bad "15q 걸쇠 복구 뒤 통과" "rc=$rc $msg"
+# 원장의 답 조회 실패는 행위 하나로 꾸밀 수 없다(원장을 읽지 못하는 게이트는 들머리 앞에서 멈춘다).
+# 그래서 들머리가 부르는 걸쇠 대기를 원장이 없는 자리에서 직접 부른다.
+# 원장은 읽기만 막고(mode 200) 쓰기는 열어 둔다: 원장에 행을 쓰지 못하는 게이트는 그 자리에서
+# 죽으므로, 읽기 실패와 쓰기 실패를 한 픽스처에 겹치면 이 갈래의 11 을 볼 수 없다.
+qb_scr="$WORK/qb-ledger-fail"; mkdir -p "$qb_scr/base-guard"
+printf '%s\n' "$QB_R4" > "$qb_scr/base-guard/main.latch.Q4"
+: > "$qb_scr/원장.md"; chmod 200 "$qb_scr/원장.md"
+# 소싱한 게이트의 errexit 아래에서도 반환 코드를 잃지 않도록 `|| r=$?` 로 받는다.
+qb_lr=$( cd "$SA_WT" && CC_GATE_SOURCE_ONLY=1 bash -c '. "$0" >/dev/null 2>&1
+    RUN_DIR="$1"; LEDGER="$2"; GATE_BG_SEG=Q4; r=0
+    gate_base_guard_latch_wait main "$3" "$4" 세그먼트 >/dev/null 2>&1 || r=$?; printf "%s" "$r"' \
+    "$GATE" "$qb_scr" "$qb_scr/원장.md" "$qb_scr/base-guard/main.latch.Q4" "refs/heads/main	$(qb_main)" 2>/dev/null ) || qb_lr="${qb_lr:-exit$?}"
+chmod 600 "$qb_scr/원장.md"
+check "15q: 원장의 중단 답 조회가 실패하면 11 이고 걸쇠는 남으며 대상 걸쇠가 선다" \
+  "$qb_lr|$(cat "$qb_scr/base-guard/main.latch.Q4" 2>/dev/null)|$( [ -f "$qb_scr/base-guard/main.latch" ] && printf 대상걸쇠 )" \
+  "11|$QB_R4|대상걸쇠"
+
+# (거5) 작성 중 표지 -------------------------------------------------------------------
+# 기록을 쓰는 다른 행위는 뒤에서 흉내 낸다. 게이트 호출을 뒤에서 띄우고, 그 호출이 표지를 기다린다는
+# 로그 줄을 낸 뒤에야 표지를 바꾼다: 표지를 지우면(작성을 마침) 기다린 행위는 다시 대조해 통과하고,
+# 표지에 기록 경로를 덧적으면 기다린 행위는 그 기록을 말하며 11 로 끝난다. 표지를 바꾸는 쪽은 게이트의
+# 작성기처럼 임시 파일에 쓴 뒤 이름 바꾸기로 놓으므로, 게이트의 폴링이 반쯤 쓰인 표지를 읽지 않는다.
+# 기다림 줄을 단언하므로 기다리지 않고 지나가는 게이트도, 바로 11 로 끝내는 게이트도 아래 단언에 걸린다.
+QB_WAITLINE="베이스 이동 — 작성 중 표지 $QG/main.writing 가 기록을 이을 때까지 기다립니다"
+qb_bgx() {  # qb_bgx <출력 파일> <argv…> — Q8 의 exec 하나를 뒤에서 띄운다. 끝나면 <출력 파일>.rc 에 코드를 남긴다
+  local f="$1" h; shift
+  h=$(SAH)
+  rm -f "$f" "$f.rc"
+  ( cd "$SA_WT" || exit 0; r=0
+    gate_inproc exec --manifest "$SA_MANIFEST" --target main --segment Q8 --cutpoint 커밋 --surface 워크트리쓰기 \
+      --snapshot-digest "$h" --rationale x -- "$@" > "$f" 2>&1 || r=$?
+    printf '%s' "$r" > "$f.rc" ) &
+  qb_bg=$!
+}
+qb_await() {  # qb_await <출력 파일> — 기다림 줄이 보이면 0, 그 전에 뒤의 호출이 끝나거나 60 초가 지나면 1
+  local i=0
+  while [ "$i" -lt 600 ]; do
+    grep -qF -- "$QB_WAITLINE" "$1" 2>/dev/null && return 0
+    kill -0 "$qb_bg" 2>/dev/null || { grep -qF -- "$QB_WAITLINE" "$1" 2>/dev/null; return "$?"; }
+    sleep 0.1; i=$((i + 1))
+  done
+  return 1
+}
+qb_bgend() {  # qb_bgend <출력 파일> — 뒤의 호출을 기다려 sag 처럼 rc·msg·raw 를 채운다
+  local out
+  wait "$qb_bg" 2>/dev/null || true
+  rc=$(cat "$1.rc" 2>/dev/null); rc=${rc:-없음}
+  out=$(cat "$1" 2>/dev/null)
+  msg=$(printf '%s' "$out" | grep -vE '\[run\] ' | tr '\n' ' ' | sed 's/[[:space:]]*$//')
+  raw=$(printf '%s' "$out" | tr '\n' ' ' | sed 's/[[:space:]]*$//')
+}
+qb_wput() {  # qb_wput <줄> — 표지를 임시 파일에 쓴 뒤 이름 바꾸기로 놓는다
+  printf '%s\n' "$1" > "$QG/main.writing.qb" && mv -f "$QG/main.writing.qb" "$QG/main.writing"
+}
+QB_WOUT="$SA_ROOT/qb-wait.out"
+qb_at=$(date -u +%s)
+qb_wput "$(printf 'a\tb\t%s' "$qb_at")"
+qb_n0=$(qb_recs)
+qb_bgx "$QB_WOUT" touch qb-w0
+if qb_await "$QB_WOUT"; then qb_wsaw=예; else qb_wsaw=아니오; fi
+rm -f "$QG/main.writing"
+qb_bgend "$QB_WOUT"
+check "15q: 기록 없는 작성 중 표지는 바로 11 로 끝내지 않고 기다렸다가 표지가 걷히면 다시 대조해 통과한다" \
+  "$qb_wsaw|$rc|$(qb_did "$SA_SEGWT/qb-w0")|$(( $(qb_recs) - qb_n0 ))" "예|0|수행|0"
+qb_say 0 '표지가 걷힌 뒤'
+# 덧적는 걸쇠는 기다리는 행위 자신의 세그먼트 걸쇠다: 다른 세그먼트의 걸쇠를 가리키는 표지 뒤의
+# 11 은 이 시험이 정답으로 박을 동작이 아니다.
+QB_WREC="$SA_RUN/halt/shift/Q8#7.md"
+qb_at=$(date -u +%s)
+qb_wput "$(printf 'a\tb\t%s' "$qb_at")"
+qb_n0=$(qb_recs)
+qb_bgx "$QB_WOUT" touch qb-w1
+if qb_await "$QB_WOUT"; then qb_wsaw=예; else qb_wsaw=아니오; fi
+qb_wput "$(printf 'a\tb\t%s\t%s\t%s' "$qb_at" "$QB_WREC" "$QG/main.latch.Q8")"
+qb_bgend "$QB_WOUT"
+check "15q: 다른 행위가 같은 이동의 기록을 쓰는 중이면 새 기록 없이 11 이다" \
+  "$qb_wsaw|$rc|$(qb_did "$SA_SEGWT/qb-w1")|$(( $(qb_recs) - qb_n0 ))|$( [ -e "$QG/main.writing" ] && printf 표지 )" "예|11|-|0|표지"
+check "15q: 작성 중 표지를 기다린 11 의 경고는 그 표지가 덧적은 기록 경로를 말한다" \
+  "$(qb_warn "기록 $QB_WREC")|$(qb_warn '행위 수행 안 함')" "예|예"
+rm -f "$QB_WOUT" "$QB_WOUT.rc"
+qb_move qb-w2
+printf 'a\tb\t%s\n' "$(( $(date -u +%s) - 120 ))" > "$QG/main.writing"
+qb_x Q8 touch qb-w2
+check "15q: 기록 경로 없이 60 초보다 오래된 표지는 걷어 내고 그 이동을 다시 잡는다" \
+  "$rc|$(qb_did "$SA_SEGWT/qb-w2")|$( [ -f "$SA_RUN/halt/shift/Q8#1.md" ] && printf 기록 )|$( [ -e "$QG/main.writing" ] && printf 표지 || printf - )" \
+  "11|-|기록|-"
+# 기록을 쓴 뒤 다시 잡지 못해 기지값과 표지가 남은 상태 — 다음 들머리가 마저 한다.
+qb_move qb-w3
+qb_k0=$(qb_known); qb_now=$(qb_main)
+printf '%s\t%s\t%s\t%s\t%s\n' "$qb_k0" "$qb_now" "$(date -u +%s)" "$SA_RUN/halt/shift/Q8#1.md" "$QG/main.latch.Q9" > "$QG/main.writing"
+qb_x Q9 touch qb-w3
+check "15q: 기록이 선 표지는 다음 들머리가 기지값 고침과 걸쇠 적기를 마저 하고 지운다" \
+  "$rc|$(qb_did "$SA_SEGWT/qb-w3")|$(qb_known)|$(cat "$QG/main.latch.Q9" 2>/dev/null)|$( [ -e "$QG/main.writing" ] && printf 표지 || printf - )" \
+  "11|-|$qb_now|$SA_RUN/halt/shift/Q8#1.md|-"
+
+# (하4) 오래 도는 exec 안의 중첩된 게이트 행위 ------------------------------------------------
+# 바깥 행위의 커밋이 끝난 자리에서 post-commit 훅이 다른 세그먼트의 게이트 행위를 낸다.
+# 그 중첩 행위의 들머리가 이동을 먼저 잡으므로 바깥 행위 뒤 자리에는 보고할 이동이 없다.
+QB_HOOK="$SA_CG/hooks/post-commit"; QB_NEST="$SA_ROOT/qb-nest"
+mkdir -p "$SA_CG/hooks" && : > "$QB_NEST.on"
+cat > "$QB_HOOK" <<QBHOOK
+#!/bin/sh
+[ -f '$QB_NEST.on' ] || exit 0
+rm -f '$QB_NEST.on'
+cd '$SA_WT' || exit 0
+h=\$(bash '$GATE' snapshot --manifest '$SA_MANIFEST' 2>/dev/null | jq -r .H)
+bash '$GATE' exec --manifest '$SA_MANIFEST' --target main --segment Q6 --cutpoint 커밋 --surface 워크트리쓰기 \
+  --snapshot-digest "\$h" --rationale x -- touch qb-nest-in >/dev/null 2>'$QB_NEST.err'
+printf '%s' "\$?" > '$QB_NEST.rc'
+exit 0
+QBHOOK
+chmod +x "$QB_HOOK"
+qb_x Q7 git commit -q --allow-empty -m qb-nest
+check "15q: 중첩 행위가 이동을 먼저 잡으면 바깥 행위 뒤 자리는 기록을 더 쓰지 않는다" \
+  "$rc|$(cat "$QB_NEST.rc" 2>/dev/null)|$( [ -f "$SA_RUN/halt/shift/Q6#1.md" ] && printf 안쪽기록 )|$(ls "$SA_RUN/halt/shift" 2>/dev/null | grep -c '^Q7#' || true)" \
+  "0|11|안쪽기록|0"
+rm -f "$QB_HOOK"
+
+# (하6) 라우터의 베이스 이동 shift-halt ----------------------------------------------------
+qb_b0=$(qb_nb); qb_n0=$(qb_recs)
+CC_PIPELINE_SHIFT_ID="$SA_ID#1" CC_PIPELINE_STAGE_ID='' CC_PIPELINE_SEGMENT='' \
+  sag act --manifest "$SA_MANIFEST" --kind shift-halt --target main --segment Q2 --cutpoint 커밋 \
+    --surface 읽기 --snapshot-digest "$(SAH)" --rationale "픽스처 — 교대 정지" \
+    -- '자리=베이스 이동' '질문=베이스가 옮겨졌는가?' '관측=라우터가 본 이동'
+check "15q: 라우터의 베이스 이동 shift-halt 는 2 로 거부되고 기록도 행도 생기지 않는다" \
+  "$rc|$(( $(qb_nb) - qb_b0 ))|$(( $(qb_recs) - qb_n0 ))" "2|0|0"
+
+# (하5) clause-exec 갈래 --------------------------------------------------------------
+qb_old=$(qb_main)
+CC_PIPELINE_SHIFT_ID="$SA_ID#1" CC_PIPELINE_STAGE_ID='' CC_PIPELINE_SEGMENT='' \
+  sag act --manifest "$SA_MANIFEST" --kind clause-exec --target main --segment - --cutpoint 커밋 \
+    --surface 워크트리쓰기 --reach 런로컬 --snapshot-digest "$(SAH)" --rationale "픽스처 — 종료 절 근거 실행" \
+    -- 절=C1 git commit -q --allow-empty -m qb-clause
+QB_RT=$(qb_tl)
+check "15q: clause-exec 갈래로 베이스를 옮긴 행위도 11 과 기록을 남긴다" \
+  "$rc|$( [ "$(qb_main)" != "$qb_old" ] && printf 이동 )|$(qb_warn '행위는 수행됨')|$(sed -n 's/^\*\*스텝\*\*: //p' "$QB_RT" 2>/dev/null)" \
+  "11|이동|예|교대 정지 — 베이스 이동"
+SA_CUT=""; SA_PREAUTH_EXTRA=""; SA_AUTH_RAW=""; SA_TARGET_ROW2=""
+
+# (사) 원격 있는 대상 ------------------------------------------------------------------
+sa_new '원격 있는 베이스 이동' ''
+sa_seg_row QR '' "$SA_WT"
+qb_b0=$(qb_nb); qb_old=$(qb_main)
+qb_x QR git commit -q --allow-empty -m qb-sa
+check "15q: 원격 있는 대상에서 베이스를 옮긴 행위는 행위의 코드를 내고 행도 기록도 쓰지 않는다" \
+  "$rc|$( [ "$(qb_main)" != "$qb_old" ] && printf 이동 )|$(( $(qb_nb) - qb_b0 ))|$( [ -e "$SA_RUN/base-guard" ] && printf 가드 || printf - )|$(qb_recs)" \
+  "0|이동|0|-|0"
+
+# --- 15r. 원격 없는 대상의 admit 맨 꼴은 exec 를 쓰라는 거부다 ---------------------------
+# --- section: 15r | group: tguard | covers: admit, hook, gate_base_guard_entry | anchors: 15r: 원격 있는 대상의 admit 맨 꼴은 표를 낸다, 15r: 원격 없는 대상의 admit 맨 꼴은 3 과 exec 문면으로 끝나고 표를 남기지 않는다 ---
+#
+# The bare form runs its command outside the gate, so on a target with no
+# remote the act would have no "after" for the base-move check to compare and a
+# move it made would be pinned on another act's segment. The world with a
+# remote is the one 87e builds; the second world drops its remote before the
+# run measures it.
+tg_world r -
+k15r=$(thp_key_norm "$TG_CALLER")
+tg_hook "gh pr view 1"; tg_admit 읽기
+check "15r: 원격 있는 대상의 admit 맨 꼴은 표를 낸다" "$rc|$(test -f "$TG_RD/admit/ticket/$k15r" && echo 표)" "0|표"
+tg_world r2 -
+( cd "$TG_A" && git remote remove origin ) >/dev/null 2>&1
+# 원격 판정은 런 안에서 처음 잰 값으로 고정되므로, 원격을 지운 이 런은 처음부터 원격 없는 런으로 다시 잰다.
+rm -f "$TG_RD/target-origin.a"
+tg_hook "gh pr view 1"; tg_admit 읽기
+case "$rc|$msg" in
+  "3|"*"원격 없는 대상의 행위는 게이트가 수행해야 베이스 이동을 대조할 수 있습니다 — exec 로 부르십시오"*)
+    check "15r: 원격 없는 대상의 admit 맨 꼴은 3 과 exec 문면으로 끝나고 표를 남기지 않는다" \
+      "$(test -f "$TG_RD/admit/ticket/$k15r" && echo 표 || echo 없음)" "없음" ;;
+  *) bad "15r: 원격 없는 대상의 admit 맨 꼴은 3 과 exec 문면으로 끝나고 표를 남기지 않는다" "rc=$rc $msg" ;;
+esac
+
 # --- 35-21. fetch 는 성공했는데 베이스의 원격 추적 ref 가 없으면 거절이다 -------
 # --- section: 35-21 | group: sa | covers: act | anchors: 21: 머지가 통과해 의무를 남긴다 ---
 #
@@ -31739,7 +32318,7 @@ check "20(ii): 그 거절이 원장을 늘리지 않는다" "$(sa_rows)" "$nb"
 sa_new '없는 베이스 ref' 선머지후리뷰
 SA_BASE=원격에없는이름
 sa_manifest 선머지후리뷰
-rm -rf "$SA_RUN"
+sa_run_reset
 sa_seg_row S21 선머지후리뷰
 sa_commit '작업' >/dev/null
 sag act --manifest "$SA_MANIFEST" --kind merge --target main --segment S21 \
@@ -33059,7 +33638,7 @@ if sb_bound; then ok "29: 머지 먼저 세그먼트의 머지도 워크트리 H
 sb_new '결속 (끔)' 선머지후리뷰
 SA_PREAUTH_EXTRA='gh pr'
 sa_manifest 선머지후리뷰 '**리뷰-후-머지**: 끔'
-rm -rf "$SA_RUN"
+sa_run_reset
 sa_seg_row S29O ""
 sa_commit '작업' >/dev/null
 sb_plan S29O gh pr merge 1
@@ -34732,7 +35311,7 @@ sa_new '상한 조인 뒤 수리' 리뷰없음
 sa_seg_row S34 리뷰없음
 check "34: 느슨한 상한 아래에서는 그 행이 통과한다" "$rc" "0"
 sa_manifest 선리뷰후머지
-rm -rf "$SA_RUN"
+sa_run_reset
 sa_commit '작업' >/dev/null
 sa_merge S34
 check "34: 상한을 조인 뒤 그 세그먼트의 머지는 해소기가 거절한다" "$rc" "2"
@@ -39307,6 +39886,12 @@ SPV_PREV_AR="${CC_CMDS_AUTOPILOT_AUTO_RESOLVE:-}"
 CC_CMDS_AUTOPILOT_AUTO_RESOLVE=0
 sap_fx RSPV1 SPV "6b6b6b6b-1111-2222-3333-444444444444"
 check "34r: 픽스처의 세그먼트 행이 섰다" "$SAP_SEG_RC" "0"
+# The run stays an unrouted run the CI layer does not stand on, as `sa_run_reset`
+# leaves the sa run: the fixture's first gate call took the absent inventory
+# baseline and wrote the CI layer record `1`, and with it every merge below is
+# refused for want of a round-0 pass before the provenance check is reached.
+# The reader raises the layer only on a first line `1`, so `0` lowers it.
+printf '0\n' > "$CAP_DIR/ci-layer"
 # The cone manifest is copied from the shared one, which section 9 leaves with
 # `리뷰-후-머지` off; the merge cases below need it on, and the copy carries no
 # binding digest for the edit to move.
@@ -41894,7 +42479,7 @@ sb_new '5 마감' 선머지후리뷰
 sed 's/^\*\*벽시계 마감\*\*: .*/**벽시계 마감**: 2020-01-01T00:00:00Z/' \
     "$SA_MANIFEST" > "$SA_MANIFEST.d" && mv "$SA_MANIFEST.d" "$SA_MANIFEST"
 sa_bd "$SA_MANIFEST" "$SA_WT"
-rm -rf "$SA_RUN"
+sa_run_reset
 sa_seg_row SB5 선머지후리뷰
 check "5: 마감이 지나도 세그먼트 행은 기록된다 (마감은 디스패치와 머지만 막는다)" "$rc" "0"
 sa_commit '작업' >/dev/null
@@ -41965,7 +42550,7 @@ awk '
 check "5b: 픽스처가 지난 마감과 천장을 함께 싣는다" \
   "$({ grep -cE '^\*\*(벽시계 마감\*\*: 2020|비용 천장\*\*: 100)' "$SA_MANIFEST" || true; })" "2"
 sa_bd "$SA_MANIFEST" "$SA_WT"
-rm -rf "$SA_RUN"
+sa_run_reset
 sa_seg_row SB5B 선머지후리뷰
 check "5b: 세그먼트 행은 기록된다" "$rc" "0"
 sa_commit '작업' >/dev/null
@@ -42048,7 +42633,7 @@ sc_new() {
     { print }
   ' "$SA_MANIFEST" > "$SA_MANIFEST.c" && mv "$SA_MANIFEST.c" "$SA_MANIFEST"
   sa_bd "$SA_MANIFEST" "$SA_WT"
-  rm -rf "$SA_RUN"
+  sa_run_reset
   SAH >/dev/null
   mkdir -p "$SA_RUN"
   SC_PACE="$SA_ROOT/pace"
@@ -42114,7 +42699,7 @@ check "5c: 그 런의 원장에는 표면이동 막힘 행만 있다" \
 sed 's/^\*\*벽시계 마감\*\*: .*/**벽시계 마감**: 2020-01-01T00:00:00Z/' \
     "$SA_MANIFEST" > "$SA_MANIFEST.d" && mv "$SA_MANIFEST.d" "$SA_MANIFEST"
 sa_bd "$SA_MANIFEST" "$SA_WT"
-rm -rf "$SA_RUN"
+sa_run_reset
 SC_PACE="$SA_ROOT/pace"; mkdir -p "$SC_PACE/busy"
 sc_overdue
 check "5c: 표면 이동 행만 있는 런에는 아무것도 쓰지 않는다" "$rc/$(sc_ends)" "0/0"
@@ -43931,7 +44516,7 @@ sd4_merge() {
   awk -v m="$SD_M" -v t="$SD_TIP" '/^- `segment` / && index($0, "출처=") { sub("머지 커밋=" m, "머지 커밋=" t) } { print }' \
     "$SA_LEDGER" > "$SA_LEDGER.c" && mv "$SA_LEDGER.c" "$SA_LEDGER"
 }
-sd4_human() { SA_APPLY=사람; sa_manifest 선리뷰후머지; rm -rf "$SA_RUN"; }
+sd4_human() { SA_APPLY=사람; sa_manifest 선리뷰후머지; sa_run_reset; }
 sd4_case 1 "증거 원장 20260901-00000d41.md 가 없다" sd4_noled
 sd4_case 2 "해시 연쇄가 온전하지 않다" sd4_chain
 sd4_case 3 "발견 요약 이 없다" sd4_report
@@ -49664,6 +50249,59 @@ check "60b-5: 크래시로 끝난 CI 수정은 같은 head 로 다시 파견된�
 cb60_foot
 
 # ---------------------------------------------------------------------------
+# 60b-6. 라우팅 기록 없이 인벤토리 부재 기준선으로 열린 런의 CI 실패 — 재실행으로 간다
+# --- section: 60b-6 | group: sa | covers: act, plan, snapshot, gate_check_merge_checks | anchors: 60b-6: CI 층 기록만 있는 런의 실패 행에서 다음은 CI 재실행 이다, 60b-6: 그 런의 머지는 CI실패 park 가 아니라 다음을 가리키는 rc 3 이다, 60b-6: 그 런의 재실행은 POST 하나를 내고 수락 행을 쓴다, 60b-6: 그 런의 회차 1 실패 뒤 다음은 CI 수정 이고 파견이 통과한다, 60b-6: 그 갈래 전체에서 blocked 행과 halt 기록이 없다, 60b-6: 고정 그래프 표지가 있으면 다음은 머지 이고 머지는 CI실패 park 다 ---
+#
+# 라우터가 아닌 드라이버로 열렸어도 계정 인벤토리가 없는 기기에서 기준선을 부재 표지로 잡은
+# 런은 CI 층 기록을 갖고, 고정 그래프 드라이버가 들어오지 않았으면 라우팅 런처럼 CI 실패를
+# 재실행·CI 수정으로 넘긴다. 픽스처는 60b 의 것(`cb60_head`·`cb60_new`)에 `cb60_ci_layer` 로
+# 라우팅 기록을 걷고 부재 표지 기준선과 CI 층 기록을 둔다. 마지막 사례는 같은 픽스처에 고정
+# 그래프 표지를 더해, CI 값을 처분할 길이 없는 드라이버의 런은 예전처럼 머지로 남는 것을 잰다.
+# ---------------------------------------------------------------------------
+cb60_head
+
+cb60_new "CI 층 — 부재 기준선의 런"
+cb60_ci_layer
+cb66_b0=$(cb60_n blocked)
+check "60b-6: 픽스처에 라우팅 기록이 없고 CI 층 기록과 부재 표지 기준선이 있다" \
+  "$([ -e "$SA_RUN/routing-guard" ] && printf 있음 || printf 없음)|$(cat "$SA_RUN/ci-layer" 2>/dev/null)|$([ -L "$SA_RUN/inventory.json" ] && printf 링크 || printf 아님)" \
+  "없음|1|링크"
+check "60b-6: CI 층 기록만 있는 런의 실패 행에서 다음은 CI 재실행 이다" "$(cb60_next)" "CI 재실행"
+cb60_np=$(cb60_posts)
+sa_merge CK
+check "60b-6: 그 런의 머지는 CI실패 park 가 아니라 다음을 가리키는 rc 3 이다" \
+  "$rc|$(cb60_n blocked)|$(cb60_posts)" "3|$cb66_b0|$cb60_np"
+case "$msg" in *'다음=CI 재실행'*) ok "60b-6: 그 거부 문면이 다음=CI 재실행 을 든다" ;; *) bad "60b-6: 그 거부 문면이 다음=CI 재실행 을 든다" "$msg" ;; esac
+cb60_act
+check "60b-6: 그 런의 재실행은 POST 하나를 내고 수락 행을 쓴다" \
+  "$rc|$(cb60_posts)|$(sa_field "$(cb60_last 'CI 처분')" 상태)|$(sa_field "$(cb60_last 'CI 처분')" 회차)" "0|1|수락|1"
+check "60b-6: 재실행 뒤 다음은 CI 대기 다" "$(cb60_next)" "CI 대기"
+cb60_line 실패 1 0
+cb60_nx=$(cb60_next)
+cb60_impl plan "/cc-cmds:implement-unattended \"세그먼트 CK · CI 수정: $CK60_SHA\""
+check "60b-6: 그 런의 회차 1 실패 뒤 다음은 CI 수정 이고 파견이 통과한다" "$cb60_nx|$rc" "CI 수정|0"
+check "60b-6: 그 갈래 전체에서 blocked 행과 halt 기록이 없다" \
+  "$(( $(cb60_n blocked) - cb66_b0 ))|$(find "$SA_RUN/halt" -type f 2>/dev/null | wc -l | tr -d ' ')" "0|0"
+
+# 고정 그래프 쌍둥이 — 같은 기록 위에 드라이버의 표지가 있으면 CI 층이 서지 않는다.
+cb60_new "CI 층 — 고정 그래프 드라이버의 런"
+cb60_ci_layer
+: > "$SA_RUN/fixed-graph"
+check "60b-6: 고정 그래프 표지가 있으면 실패 행에서도 다음은 머지 다" "$(cb60_next)" "머지"
+ck60_plan
+case "$rc|$msg" in
+  "11|"*'park 예상: 도달 판정=CI실패'*) ok "60b-6: 고정 그래프 런의 머지 plan 은 CI실패 로 예보한다" ;;
+  *) bad "60b-6: 고정 그래프 런의 머지 plan 은 CI실패 로 예보한다" "rc=$rc $msg" ;;
+esac
+sa_merge CK
+check "60b-6: 고정 그래프 표지가 있으면 다음은 머지 이고 머지는 CI실패 park 다" \
+  "$rc|$(sa_field "$(cb60_last blocked)" '도달 판정')" "11|CI실패"
+cb60_np=$(cb60_posts)
+cb60_act
+check "60b-6: 고정 그래프 런의 재실행은 rc 3 이고 POST 가 없다" "$rc|$(cb60_posts)" "3|$cb60_np"
+cb60_foot
+
+# ---------------------------------------------------------------------------
 # 60c. 재실행·재요청 실행 철자 — 두 모드에서 도달·행과 무관하게 막힌다
 # --- section: 60c | group: sa | covers: plan, exec | anchors: 60c: 무인 모드에서 재실행 철자는 도달·행과 무관하게 rc 3 이다, 60c: 사람이 있는 모드에서 재실행 철자는 행이 있어도 승인 rc 5 다, 60c: 재실행 철자는 가짜 gh 를 부르지 않는다, 60c: 읽기 철자는 막히지 않는다 ---
 #
@@ -53897,7 +54535,7 @@ c61_new() {
   sa_new "$1" 리뷰없음
   SA_PREAUTH_EXTRA=$'gh pr\ngh api'
   sa_manifest 리뷰없음
-  rm -rf "$SA_RUN"
+  sa_run_reset
   mkdir -p "$SA_WT/plugins" "$SA_WT/scripts"
   cp -R "$repo_root/plugins/cc-cmds" "$SA_WT/plugins/"
   cp "$repo_root/scripts/grade-regression-probe.sh" "$SA_WT/scripts/"
@@ -59794,6 +60432,12 @@ W87="$WORK/wt87"
 check "87b 전제 — 세그먼트 트리가 베이스보다 앞서지 않는다" \
   "$(cd "$W87" 2>/dev/null && git rev-list --count HEAD --not refs/heads/main refs/remotes/origin/main 2>/dev/null)" "0"
 head87=$(cd "$W87" && git rev-parse HEAD)
+# The run opens as an unrouted run the CI layer does not stand on, as
+# `sa_run_reset` opens the sa run: left to the first gate call, the absent
+# inventory baseline writes the CI layer record `1`, and the reviews below that
+# end at `머지` read `CI 대기` instead. The exclusive create does not overwrite
+# a record already there, and the reader raises the layer only on a first line `1`.
+mkdir -p "$STATE_LATE/cc-cmds/run/R87" && printf '0\n' > "$STATE_LATE/cc-cmds/run/R87/ci-layer"
 rp87() {  # rp87 <파일> <P0> <P1> <몫 줄 수|-> [배정…]
   local f=$1 p0=$2 p1=$3 ns=$4 a; shift 4
   {
@@ -60129,10 +60773,6 @@ case "$msg" in
 esac
 ( cd "$WT" && git worktree remove --force "$W87" ) >/dev/null 2>&1
 
-# The `tguard` family's helpers are `pre_tguard` in the head, called here so a
-# full run defines them at the family's own position.
-pre_tguard
-
 # ---------------------------------------------------------------------------
 # 87c. 대상 훅 아래의 원격 행위 — 감싼 호출의 거절 기록, 맨 명령의 admit, 반복 차단
 # --- section: 87c | group: tguard | covers: admit, exec, act, snapshot | anchors: 87c: 감싼 push 는 런 훅이 거절하고 대상 거절 형태=감쌈 행이 남는다, 87c: 맨 push 는 요청으로 기록되고 admit 이 표를 낸다, 87c: 표를 쓴 재발행은 두 훅을 지나 원격에 닿는다, 87c: 원격 판독 뒤 소비된 push 표는 판정=관측 으로 닫힌다, 87c: 맨 gh pr create 도 같은 순서를 지난다, 87c: 맨 env gh pr view 는 예측 거절이고 표가 없다, 87c: 같은 조건의 같은 행위는 admit 에서 막힌다, 87c: guard_refusals 는 같음 에서 바뀜 으로 바뀐다, 87c: 가드 파일을 고치면 대상 훅 행이 남고 막힘이 풀린다, 87c: 원격에 닿지 못한 판독 뒤에는 소비된 표가 기다린다, 87c: 효과 없이 소비된 push 표는 판정=추정 이 된다, 87c: settings.json 을 고치면 표면 이동이다, 87c: defer 로 답하는 가드 아래의 admit 은 rc 3 이고 표가 없다, 87c: 낱말 가드 아래에서도 맨 push 는 admit 을 거쳐 원격에 닿는다 ---
@@ -60141,6 +60781,13 @@ pre_tguard
 # 훅, 그다음 대상 훅, 그다음 명령 — 를 `tg_issue` 로 밟는다. 원격은 베어 레포이고
 # gh 는 argv 를 남기는 스텁이다.
 # ---------------------------------------------------------------------------
+# The `tguard` family's helpers are `pre_tguard` in the head, called here, in the
+# family's first section, so a full run defines them at the family's own
+# position. A cut already calls it before this section, so here it is a no-op
+# there; a call in the previous section's tail would run the shared preludes it
+# pulls in only when nothing earlier in the cut had, and make that section's
+# executed lines depend on what the cut put in front of it.
+pre_tguard
 tg_world c guard_b0.py
 check "87c: 픽스처 세계의 세그먼트 행이 기록된다 (아래가 공허하지 않다)" "$rc" "0"
 head87c=$(cd "$TG_WT" && git rev-parse HEAD)
