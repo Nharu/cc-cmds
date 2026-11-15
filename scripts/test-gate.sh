@@ -17058,8 +17058,14 @@ check "15vn: 불일치 계정이면 경로 정지 행을 쓰고 시도를 핀하
 vn15_b=$(vn15_basis other)
 case "$vn15_b" in
   *@*|*corp.example*|*example.com*) bad "15vn: 불일치 근거는 두 로컬 부분과 다시 파견을 싣고 도메인을 싣지 않는다" "$vn15_b" ;;
-  "좌석 계정 불일치 — 로그인 계정 someone 가 고정 Claude Design 계정 pub 가 아니다."*"다시 파견하세요 (좌석 설정 디렉터리 $VN15/other)")
-    ok "15vn: 불일치 근거는 두 로컬 부분과 다시 파견을 싣고 도메인을 싣지 않는다" ;;
+  "좌석 계정 불일치 — 로그인 계정 someone 가 고정 Claude Design 계정 pub 가 아니다."*"다시 파견하세요 (좌석 설정 디렉터리 "*)
+    # The row clips at 300 bytes, so a long work path may be cut there; the
+    # gate's warning line keeps the whole directory.
+    if grep -qF "(좌석 설정 디렉터리 $VN15/other)" "$VN15/runs/other/err"; then
+      ok "15vn: 불일치 근거는 두 로컬 부분과 다시 파견을 싣고 도메인을 싣지 않는다"
+    else
+      bad "15vn: 불일치 근거는 두 로컬 부분과 다시 파견을 싣고 도메인을 싣지 않는다" "경고 줄: $(cat "$VN15/runs/other/err")"
+    fi ;;
   *) bad "15vn: 불일치 근거는 두 로컬 부분과 다시 파견을 싣고 도메인을 싣지 않는다" "$vn15_b" ;;
 esac
 vn15_long="$VN15/long/$(printf 'a%.0s' $(seq 1 120))/$(printf 'b%.0s' $(seq 1 120))"
@@ -17087,8 +17093,8 @@ check "15vn: 고정 계정이 없으면 고정 계정 미설정 으로 멈추고
 # (라) a login that cannot be read.
 for vn15_m in noauth:'읽기 실패' out:'loggedIn false'; do
   vn15_r=$(vn15_go "${vn15_m%%:*}" CLAUDE_CONFIG_DIR="$VN15/${vn15_m%%:*}")
-  case "$vn15_r|$(vn15_st "${vn15_m%%:*}" | cut -d'|' -f1-2)|$(vn15_basis "${vn15_m%%:*}")" in
-    "경로정지|1|없음|좌석 계정 판독 실패 — ${vn15_m#*:}. "*"다시 파견하세요 ("*"설정 디렉터리 $VN15/${vn15_m%%:*})")
+  case "$vn15_r|$(vn15_st "${vn15_m%%:*}" | cut -d'|' -f1-2)|$(vn15_basis "${vn15_m%%:*}")|$(grep -cF "설정 디렉터리 $VN15/${vn15_m%%:*})" "$VN15/runs/${vn15_m%%:*}/err")" in
+    "경로정지|1|없음|좌석 계정 판독 실패 — ${vn15_m#*:}. "*"다시 파견하세요 ("*"|1")
       ok "15vn: 로그인을 읽지 못하면 좌석 계정 판독 실패 로 멈춘다 (${vn15_m%%:*})" ;;
     *) bad "15vn: 로그인을 읽지 못하면 좌석 계정 판독 실패 로 멈춘다 (${vn15_m%%:*})" "$vn15_r|$(vn15_st "${vn15_m%%:*}")|$(vn15_basis "${vn15_m%%:*}")" ;;
   esac
