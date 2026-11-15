@@ -19,6 +19,9 @@
 #              replaces the host `lane` and `account` (an inheriting
 #              `**승계**` record included); a broken record is 판독실패 for
 #              account and exit 1 for lane, never the host file
+#   expect     the expected account by the rule `account` uses: the host
+#              value, a record's `**계정**`, nothing and exit 1 with no value
+#              or a broken record; allowed inside a run with no marker
 #   share      the `share` address from claude-design, read inside a run too;
 #              no key, an empty value or no file is an empty output and exit 1
 #   models     defaults, overrides, an out-of-vocabulary value and an unknown
@@ -212,6 +215,33 @@ for broken in head nolane emptyacct; do
   vc "$HR" CC_PIPELINE_RUN_DIR="$HR/run" -- lane
   [ "$RC" = 1 ] && [ ! -s "$T/out" ] && pass "이관 기록 손상(${broken}): lane 은 빈 출력과 종료 1" || fail "손상 기록(${broken}) lane = ${RC} $(cat "$T/out")"
 done
+
+# --- expect -------------------------------------------------------------------
+# The expected account by the rule `account` uses, printed for the gate's
+# pre-launch check: the host `account`, else a `정상` record's `**계정**`; a
+# broken record never falls back to the host value.
+vc "$H" -- expect
+[ "$RC" = 0 ] && [ "$(cat "$T/out")" = "Design.Owner@example.com" ] \
+  && pass "expect: 기록이 없으면 호스트 account 를 한 줄로, 종료 0" || fail "expect 호스트 = ${RC} $(cat "$T/out")"
+vc "$HR" CC_PIPELINE_RUN_DIR="$HR/run" -- expect
+[ "$RC" = 1 ] && [ ! -s "$T/out" ] \
+  && pass "expect: 손상된 이관 기록은 빈 출력과 종료 1 (호스트로 떨어지지 않음)" || fail "expect 손상 기록 = ${RC} $(cat "$T/out")"
+printf '%s\n' '<!-- cc-visual-lane v1; writer=gate; reader=run.sh,visual-config.sh,visual-publish-unattended -->' \
+  '**레인**: u3' '**계정**: unattended.three@example.com' \
+  '**이관**: 1 · pub → u3 · reserve · 2026-11-07T00:00:00Z' > "$RECF"
+vc "$HR" CC_PIPELINE_RUN_DIR="$HR/run" -- expect
+[ "$RC" = 0 ] && [ "$(cat "$T/out")" = "unattended.three@example.com" ] \
+  && pass "expect: 정상 이관 기록이 있으면 기록의 **계정**" || fail "expect 기록 = ${RC} $(cat "$T/out")"
+vc "$T/h-unset" -- expect
+[ "$RC" = 1 ] && [ ! -s "$T/out" ] && pass "expect: 호스트 파일도 기록도 없으면 빈 출력과 종료 1" || fail "expect 없음 = ${RC} $(cat "$T/out")"
+HE="$T/h-expect-noacct"
+mkdir -p "$HE/config/cc-cmds"
+printf '%s\n' 'lane = pub' > "$HE/config/cc-cmds/claude-design"
+vc "$HE" -- expect
+[ "$RC" = 1 ] && [ ! -s "$T/out" ] && pass "expect: 호스트 파일에 account 줄이 없으면 빈 출력과 종료 1" || fail "expect account 없음 = ${RC} $(cat "$T/out")"
+vc "$H" CC_PIPELINE_RUN_ID=20261012-deadbeef -- expect
+[ "$RC" = 0 ] && [ "$(cat "$T/out")" = "Design.Owner@example.com" ] && ! grep -q '런 안에서는 거절한다' "$T/err" \
+  && pass "expect: 발행 표지 없이 런 안에서도 허용" || fail "expect 런 안 = ${RC} $(cat "$T/err")"
 
 # --- share --------------------------------------------------------------------
 HS="$T/h-share"
