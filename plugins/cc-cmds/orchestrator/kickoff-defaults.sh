@@ -62,6 +62,7 @@
 #   kickoff-defaults.sh --carry <previous manifest> --kickoff-at <ISO8601>
 #                       --expect-sha256 <hex> [--now <epoch>] [--auto]
 #   kickoff-defaults.sh --apply-probe-sha <manifest draft>
+#   kickoff-defaults.sh --digests <manifest draft>
 #   kickoff-defaults.sh --plugin-candidates [--confirmed <키>]… [--released <키>]…
 #   kickoff-defaults.sh --preauth-candidates <worktree>
 #   kickoff-defaults.sh --failover-candidates
@@ -88,6 +89,21 @@
 # measured as written; `printf '%s' '<probe>'` would strip it. The `행` line is
 # the manifest check's `적용 프로브 코드` half, which the run's first gate call
 # would otherwise be the first to run.
+#
+# `--digests` reads a complete manifest draft the kickoff wrote with its file
+# tool and prints the two digests the manifest check recomputes at entry, two
+# TAB-separated lines and no header:
+#
+#   대상 맵 다이제스트  <sha256 of the canonical target rows>
+#   구속 다이제스트     <sha256 of the frozen binding set>
+#
+# Both are measured by the driver's own serializations on a private copy of the
+# draft, and neither serialization reads the two digest fields, so a draft with
+# a placeholder `-` in both yields the values to write into them. It takes no
+# other argument. An empty or missing value, or another argument beside it, is
+# a usage error (2); a path that is missing, unreadable or a directory, a draft
+# without the `cc-run-manifest v1` kind token, or one with no target row, is
+# refused (3) — the last so an empty input never yields the empty-input hash.
 #
 # `--plugin-candidates` takes no other argument than its own two and prints,
 # with no header, the plugin keys the kickoff's 5t proposes from, read from the
@@ -233,6 +249,7 @@ KD_CHECK_GIVEN=0; KD_CHECK=''
 KD_RESOLVE_GIVEN=0; KD_RESOLVE=''
 KD_CARRY_GIVEN=0; KD_CARRY=''; KD_KAT=''; KD_XSHA=''; KD_AUTO=0
 KD_APS_GIVEN=0; KD_APS=''
+KD_DIG_GIVEN=0; KD_DIG=''
 KD_PC_GIVEN=0; KD_PC_CONFIRMED=''; KD_PC_RELEASED=''
 KD_PA_GIVEN=0; KD_PA=''
 KD_FC_GIVEN=0
@@ -279,6 +296,9 @@ while [ $# -gt 0 ]; do
     --apply-probe-sha)
       [ $# -ge 2 ] && [ -n "$2" ] || kd_usage "--apply-probe-sha 에 값이 없습니다"
       KD_APS_GIVEN=1; KD_APS="$2"; shift 2 ;;
+    --digests)
+      [ $# -ge 2 ] && [ -n "$2" ] || kd_usage "--digests 에 값이 없습니다"
+      KD_DIG_GIVEN=1; KD_DIG="$2"; shift 2 ;;
     --plugin-candidates)
       KD_PC_GIVEN=1; shift ;;
     --preauth-candidates)
@@ -305,7 +325,7 @@ done
 if [ "$KD_FC_GIVEN" = "1" ]; then
   [ "$KD_NT" -eq 0 ] && [ "$KD_AA_GIVEN" = "0" ] && [ "$KD_CHECK_GIVEN" = "0" ] \
     && [ "$KD_RESOLVE_GIVEN" = "0" ] && [ "$KD_CARRY_GIVEN" = "0" ] && [ "$KD_APS_GIVEN" = "0" ] \
-    && [ "$KD_PC_GIVEN" = "0" ] && [ "$KD_PA_GIVEN" = "0" ] && [ -z "$KD_KAT$KD_XSHA$KD_NOW$KD_PC_CONFIRMED$KD_PC_RELEASED" ] && [ "$KD_AUTO" = "0" ] \
+    && [ "$KD_PC_GIVEN" = "0" ] && [ "$KD_PA_GIVEN" = "0" ] && [ "$KD_DIG_GIVEN" = "0" ] && [ -z "$KD_KAT$KD_XSHA$KD_NOW$KD_PC_CONFIRMED$KD_PC_RELEASED" ] && [ "$KD_AUTO" = "0" ] \
     || kd_usage "--failover-candidates 는 다른 인자와 함께 쓰지 않습니다"
   command -v jq >/dev/null 2>&1 || kd_refuse "jq 가 없어 레인 인벤토리를 읽을 수 없습니다"
   kd_fc_inv="${XDG_CONFIG_HOME:-$HOME/.config}/cc-lane/accounts.json"
@@ -331,7 +351,7 @@ fi
 if [ "$KD_PC_GIVEN" = "1" ]; then
   [ "$KD_NT" -eq 0 ] && [ "$KD_AA_GIVEN" = "0" ] && [ "$KD_CHECK_GIVEN" = "0" ] \
     && [ "$KD_RESOLVE_GIVEN" = "0" ] && [ "$KD_CARRY_GIVEN" = "0" ] && [ "$KD_APS_GIVEN" = "0" ] \
-    && [ -z "$KD_KAT$KD_XSHA$KD_NOW" ] && [ "$KD_AUTO" = "0" ] \
+    && [ "$KD_DIG_GIVEN" = "0" ] && [ -z "$KD_KAT$KD_XSHA$KD_NOW" ] && [ "$KD_AUTO" = "0" ] \
     || kd_usage "--plugin-candidates 는 다른 인자와 함께 쓰지 않습니다"
   command -v jq >/dev/null 2>&1 || kd_refuse "jq 가 없어 플러그인 기록을 읽을 수 없습니다"
   [ -r "$KD_DIR/plugin-isolation.sh" ] || kd_refuse "plugin-isolation.sh 를 읽을 수 없습니다: $KD_DIR/plugin-isolation.sh"
@@ -378,7 +398,7 @@ fi
 if [ "$KD_PA_GIVEN" = "1" ]; then
   [ "$KD_NT" -eq 0 ] && [ "$KD_AA_GIVEN" = "0" ] && [ "$KD_CHECK_GIVEN" = "0" ] \
     && [ "$KD_RESOLVE_GIVEN" = "0" ] && [ "$KD_CARRY_GIVEN" = "0" ] && [ "$KD_APS_GIVEN" = "0" ] \
-    && [ -z "$KD_KAT$KD_XSHA$KD_NOW" ] && [ "$KD_AUTO" = "0" ] \
+    && [ "$KD_DIG_GIVEN" = "0" ] && [ -z "$KD_KAT$KD_XSHA$KD_NOW" ] && [ "$KD_AUTO" = "0" ] \
     || kd_usage "--preauth-candidates 는 다른 인자와 함께 쓰지 않습니다"
   [ -d "$KD_PA" ] || kd_usage "--preauth-candidates 의 작업 트리가 디렉터리가 아닙니다: '$KD_PA'"
   # The tracked files of the target's worktree are the only evidence: a trace
@@ -437,6 +457,12 @@ if [ "$KD_APS_GIVEN" = "1" ]; then
     && [ "$KD_RESOLVE_GIVEN" = "0" ] && [ "$KD_CARRY_GIVEN" = "0" ] && [ -z "$KD_KAT$KD_XSHA" ] \
     || kd_usage "--apply-probe-sha 는 다른 인자와 함께 쓰지 않습니다"
 fi
+if [ "$KD_DIG_GIVEN" = "1" ]; then
+  [ "$KD_NT" -eq 0 ] && [ "$KD_AA_GIVEN" = "0" ] && [ "$KD_CHECK_GIVEN" = "0" ] \
+    && [ "$KD_RESOLVE_GIVEN" = "0" ] && [ "$KD_CARRY_GIVEN" = "0" ] && [ "$KD_APS_GIVEN" = "0" ] \
+    && [ -z "$KD_KAT$KD_XSHA$KD_NOW" ] && [ "$KD_AUTO" = "0" ] \
+    || kd_usage "--digests 는 다른 인자와 함께 쓰지 않습니다"
+fi
 if [ "$KD_CHECK_GIVEN" = "1" ] && [ "$KD_RESOLVE_GIVEN" = "1" ]; then
   kd_usage "--check-deadline 과 --resolve-deadline 은 함께 쓰지 않습니다"
 fi
@@ -451,7 +477,7 @@ if [ "$KD_CARRY_GIVEN" = "1" ]; then
     || kd_usage "--carry 는 --target·--apply-actor·--check-deadline 과 함께 쓰지 않습니다 — 대상과 적용 주체는 이전 매니페스트에서 읽습니다"
   [ -n "$KD_KAT" ] || kd_usage "--carry 에는 --kickoff-at 이 필요합니다"
   [ -n "$KD_XSHA" ] || kd_usage "--carry 에는 --expect-sha256 이 필요합니다"
-elif [ "$KD_APS_GIVEN" = "1" ]; then
+elif [ "$KD_APS_GIVEN" = "1" ] || [ "$KD_DIG_GIVEN" = "1" ]; then
   :
 elif [ -n "$KD_KAT$KD_XSHA" ]; then
   kd_usage "--kickoff-at·--expect-sha256 은 --carry 와 함께만 씁니다"
@@ -544,6 +570,35 @@ if [ "$KD_APS_GIVEN" = "1" ]; then
   else
     printf '행\t거부\t%s\n' "$(printf '%s' "${kd_err#*\[run\]\[stop\] }" | LC_ALL=C tr '\001-\037\177' ' ')"
   fi
+  exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# `--digests` — the two digests the manifest check recomputes at entry, by the
+# same serializations and the same hash, read from a private copy so both are
+# measured on one set of bytes. `MANIFEST` is set only after the driver was
+# sourced: sourcing resets it to empty. The memo is cleared so every reader
+# opens the copy.
+# ---------------------------------------------------------------------------
+if [ "$KD_DIG_GIVEN" = "1" ]; then
+  for kd_f in canonical_targets binding_set_bytes; do
+    command -v "$kd_f" >/dev/null 2>&1 || kd_refuse "run.sh 에 $kd_f 가 없습니다"
+  done
+  [ -r "$KD_DIG" ] && [ ! -d "$KD_DIG" ] || kd_refuse "매니페스트 초안을 읽을 수 없습니다: $KD_DIG"
+  KD_COPY=$(mktemp "${TMPDIR:-/tmp}/cc-kickoff-dig.XXXXXX" 2>/dev/null) || kd_refuse "개인 사본을 만들지 못했습니다"
+  trap 'rm -f "$KD_COPY"' EXIT
+  cat -- "$KD_DIG" > "$KD_COPY" 2>/dev/null || kd_refuse "매니페스트 초안을 개인 사본으로 옮기지 못했습니다"
+  MANIFEST="$KD_COPY"; MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""
+  grep -q 'cc-run-manifest v1' "$KD_COPY" </dev/null \
+    || kd_refuse "매니페스트 초안에 cc-run-manifest v1 종류 표지가 없습니다: $KD_DIG"
+  [ -n "$(canonical_targets)" ] || kd_refuse "매니페스트 초안에 대상 행이 없습니다: $KD_DIG"
+  kd_tdig=$(canonical_targets | shasum -a 256 | cut -d' ' -f1)
+  kd_bdig=$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)
+  printf '%s\n' "$kd_tdig" | grep -E '^[0-9a-f]{64}$' >/dev/null \
+    || kd_refuse "대상 맵 다이제스트를 계산하지 못했습니다"
+  printf '%s\n' "$kd_bdig" | grep -E '^[0-9a-f]{64}$' >/dev/null \
+    || kd_refuse "구속 다이제스트를 계산하지 못했습니다"
+  printf '대상 맵 다이제스트\t%s\n구속 다이제스트\t%s\n' "$kd_tdig" "$kd_bdig"
   exit 0
 fi
 
