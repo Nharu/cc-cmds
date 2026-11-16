@@ -896,6 +896,50 @@ record_blocked() {
   printf '%s\t%s\t%s\n' "$at" "$1" "$2" >> "$RUN_DIR/stall"
 }
 
+release_stall_marker() {
+  # release_stall_marker <marker> <사유> — remove an arm's once-marker when the
+  # block it led to has been released.
+  #
+  # THE MARKER LIVES AS LONG AS ITS BLOCK ROW. A stall the gate copied from this
+  # watcher (`원인=불명`, `대상=-`) is released by the next progress row
+  # (`cc__blocked_fold`), and a stall that comes back after that has to be
+  # recorded again — a marker that outlived its block kept the arm silent for
+  # the rest of the run, so the run stopped with no signal and the termination
+  # conditions never saw the second stall. So the marker goes when both hold:
+  # a block row for <사유> was copied into the ledger after the marker was made
+  # (its `관측` is the observation time this watcher wrote, at or after the
+  # marker's mtime, one second of slack for the two clocks), and <사유> is not
+  # in `cc_unresolved_blocked` now. Before the gate has copied the observation
+  # the block is not released but unwritten, and the marker stays.
+  local mk="$1" why="$2" mt ts ep hit=0
+  [ -f "$mk" ] || return 0
+  mt=$(file_mtime "$mk")
+  [ -n "$mt" ] || return 0
+  while IFS= read -r ts; do
+    [ -n "$ts" ] || continue
+    ep=$(cc_iso_to_epoch "$ts")
+    [ -n "$ep" ] || continue
+    if [ "$ep" -ge $((mt - 1)) ] 2>/dev/null; then hit=1; break; fi
+  done <<EOF
+$(LC_ALL=C awk -F'|' -v w="$why" '
+    function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
+    index($0, "- `blocked`") == 1 {
+      c = ""; r = ""; t = ""; o = ""
+      for (i = 2; i <= NF; i++) {
+        f = trim($i)
+        if (index(f, "원인=") == 1) c = substr(f, 8)
+        else if (index(f, "사유=") == 1) r = substr(f, 8)
+        else if (index(f, "대상=") == 1) t = substr(f, 8)
+        else if (index(f, "관측=") == 1) o = substr(f, 8)
+      }
+      if (c == "불명" && t == "-" && r == w && o != "") print o
+    }' "$LEDGER" 2>/dev/null || true)
+EOF
+  [ "$hit" = 1 ] || return 0
+  [ "$( { cc_unresolved_blocked "$LEDGER" | cut -f2 | grep -cxF "$why" || true; } )" = "0" ] || return 0
+  rm -f "$mk"
+}
+
 beat() {
   # beat — the watcher's own liveness, apart from every arm: the reads the arms
   # judge on and the heartbeat that publishes them.
@@ -1174,6 +1218,10 @@ pass() {
   # arm's condition exactly. The marker distinguishes a changeover from a
   # stranding, and it is read as an EXPIRY rather than as a flag; see
   # `shift_active`.
+  #
+  # THE MARKER IS RELEASED WITH ITS BLOCK (`release_stall_marker`): once a
+  # progress row has released the copied block, the arm can fire again.
+  release_stall_marker "$RUN_DIR/watch.announced-after-stage" "스테이지 종단 후 라우터 무응답"
   if [ "$live_w" = "0" ] && [ "$pend" = "0" ] && [ "$age" -ge "$AFTER_STAGE" ] \
      && [ "$nonterm" -ge 1 ] && ! shift_active && ! failover_waiting \
      && done_empty \
@@ -1317,7 +1365,10 @@ pass() {
   #
   # The once-guard is a dedicated marker for the same reason the arm above's is:
   # the gate empties `stall` on every act, so a guard that read that file would
-  # come back to life and this arm would re-fire every pass.
+  # come back to life and this arm would re-fire every pass. It is released
+  # with its block (`release_stall_marker`), and with it the general arm's and
+  # the expiry offer's zero-segment yield below open again.
+  release_stall_marker "$RUN_DIR/watch.announced-run-open" "세그먼트 미개시"
   run_open_into run_age
   if [ "$live_w" = "0" ] && [ "$pend" = "0" ] \
      && [ "$(cc_segment_count "$LEDGER")" = "0" ] \

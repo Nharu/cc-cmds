@@ -993,6 +993,25 @@ case "$out" in
 esac
 check "그 관측도 한 번만 남는다" "$(grep -c '세그먼트 미개시' "$RD/stall" || true)" "1"
 
+# THE MARKER LIVES AS LONG AS ITS BLOCK. A progress row alone does not take it
+# away while the gate has not copied the observation into the ledger; once the
+# copied block is followed by progress (a launch evidence `stage-result`) the
+# block is released, and with it the marker, so a stall that comes back is
+# recorded again.
+printf -- '- `stage-result` | 스테이지=A | 실행 버전=1 | 세션 id=s1 | 종단 부류=정상 완료 | prev=y\n' >> "$LG"
+run --stall 99999 --silence 99999 --after-stage 0 --run-open 60 >/dev/null
+check "옮겨 적히기 전에는 진행 행이 와도 표지가 남는다" \
+  "$( [ -f "$RD/watch.announced-run-open" ] && printf 남음 || printf 없음 )" "남음"
+printf -- '- `blocked` | 대상=- | 스코프=run | 원인=불명 | 사유=세그먼트 미개시 | 관측=%s | prev=z\n' \
+  "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LG"
+run --stall 99999 --silence 99999 --after-stage 0 --run-open 60 >/dev/null
+check "옮겨 적힌 막힘 뒤에 진행이 없으면 표지가 남는다" \
+  "$( [ -f "$RD/watch.announced-run-open" ] && printf 남음 || printf 없음 )" "남음"
+printf -- '- `stage-result` | 스테이지=A | 실행 버전=2 | 세션 id=s2 | 종단 부류=정상 완료 | prev=w\n' >> "$LG"
+run --stall 99999 --silence 99999 --after-stage 0 --run-open 60 >/dev/null
+check "막힘이 진행 행으로 풀리면 표지가 거두어지거나 다시 관측되어 기록된다" \
+  "$( { [ ! -f "$RD/watch.announced-run-open" ] || [ "$(grep -c '세그먼트 미개시' "$RD/stall" || true)" = 2 ]; } && printf 풀림 || printf 남음 )" "풀림"
+
 # The threshold is a threshold. A run that opened seconds ago has not failed to
 # open a segment — it has not had time to. This is also the case that reads a
 # REAL timestamp through the ISO-to-epoch conversion: a parser that answered a

@@ -341,11 +341,21 @@ def _halt_answer_state(numbered, tail, record=None):
     """cc__halt_answer_state over (line number, row) pairs in ledger order.
 
     A record no `중단 답` names takes the state of the gate record its
-    `**관측 상세**` points at as `게이트 기록=<경로>`, one step only.
+    `**관측 상세**` points at as `게이트 기록=<경로>`, one step only. When
+    both read `없음`, the record is `자동처리` if a later attempt of its key
+    ran (`_halt_auto_next`, on the original record's tail); `답함` and
+    `되돌림` always come first.
     """
     st = _halt_answer_state_of(numbered, tail)
-    if st != "없음" or not record:
-        return st
+    if st == "없음" and record:
+        st = _halt_pointer_state(numbered, tail, record, st)
+    if st == "없음" and _halt_auto_next(numbered, tail) is not None:
+        st = "자동처리"
+    return st
+
+
+def _halt_pointer_state(numbered, tail, record, st):
+    """The state of the gate record `record` points at, or `st` unchanged."""
     try:
         with open(record, encoding="utf-8", errors="replace") as fh:
             text = fh.read()
@@ -368,6 +378,43 @@ def _halt_answer_state(numbered, tail, record=None):
     return st
 
 
+_HALT_ATTEMPT_NAME = re.compile(r"^(.+)#([0-9]+)\.md$")
+
+
+def _halt_auto_next(numbered, tail):
+    """cc__halt_auto_next — (M, 종류 or `-`) when a later attempt of the
+    record's key left a launch evidence row, else None.
+
+    The name after the tail's `/halt/` has no slash and reads `<key>#<N>.md`
+    with N decimal, the key being everything before the last `#`; the row's
+    `스테이지` equals the key and its `실행 버전` M exceeds N. M is the smallest
+    such attempt, 종류 that of its first row in the ledger.
+    """
+    if "/halt/" not in tail:
+        return None
+    rest = tail.split("/halt/", 1)[1] if tail.startswith("/") else None
+    if rest is None or "/" in rest:
+        return None
+    m = _HALT_ATTEMPT_NAME.match(rest)
+    if not m:
+        return None
+    key, n = m.group(1), int(m.group(2))
+    best = None
+    kind = "-"
+    for _no, ln in numbered:
+        if not _launch_evidence(ln):
+            continue
+        if _awk_fld(ln, "스테이지") != key:
+            continue
+        mv = _awk_fld(ln, "실행 버전")
+        if not re.fullmatch(r"[0-9]+", mv) or int(mv) <= n:
+            continue
+        if best is None or int(mv) < best:
+            best = int(mv)
+            kind = _awk_fld(ln, "종류") or "-"
+    return None if best is None else (best, kind)
+
+
 def _halt_answer_state_of(numbered, tail):
     """The state of the record `tail` names alone."""
     last = None
@@ -387,8 +434,9 @@ def _halt_answer_state_of(numbered, tail):
 def unanswered_halt_records(run_dir, numbered):
     """cc_unanswered_halts — (path, `없음` or `되돌림`) per record still waiting.
 
-    `numbered` is None for an empty ledger argument: no `중단 답` is looked
-    for and every record counts.
+    A record that reads `답함` or `자동처리` no longer waits for a person and
+    is left out. `numbered` is None for an empty ledger argument: no `중단 답`
+    is looked for and every record counts.
     """
     if run_dir.endswith("/"):
         run_dir = run_dir[:-1]
@@ -411,7 +459,7 @@ def unanswered_halt_records(run_dir, numbered):
             state = "없음"
             if numbered is not None:
                 state = _halt_answer_state(numbered, "/%s/%s/%s" % (leaf, sub, name), f)
-                if state == "답함":
+                if state in ("답함", "자동처리"):
                     continue
             out.append((f, state))
     return out
@@ -488,6 +536,33 @@ def _awk_fld(line, name):
     return v
 
 
+def _awk_has(line, name):
+    """Whether a `|` piece, from the second on, starts with `name=` once its
+    leading blanks are gone — liveness.sh's `le_has`."""
+    head = name + "="
+    return any(s.lstrip(" \t").startswith(head) for s in line.split("|")[1:])
+
+
+def _launch_evidence(line):
+    """liveness.sh's awk `launch_evidence`: a `stage-result` row of an attempt
+    that really ran — a `세션 id` that is not `-` or `미상`, no `차단` field, not
+    a death before the session (`답 운반` with `세션 id=미상`, or `관측`
+    beginning `스폰 전 대기 중`), and `종단 부류` `정상 완료` or `의도된 park`.
+    """
+    if not line.startswith("- `stage-result`"):
+        return False
+    sid = _awk_fld(line, "세션 id")
+    if sid in ("", "-", "미상"):
+        return False
+    if _awk_has(line, "차단"):
+        return False
+    if _awk_fld(line, "답 운반") != "" and sid == "미상":
+        return False
+    if _awk_fld(line, "관측").startswith("스폰 전 대기 중"):
+        return False
+    return _awk_fld(line, "종단 부류") in ("정상 완료", "의도된 park")
+
+
 _LINEAGE_B = re.compile(r"계보=B:([^ |#]+#[0-9]+)")
 
 
@@ -504,24 +579,33 @@ def _blocked_fold(lines):
     that holds the whole run, in the byte order `LC_ALL=C sort` gives.
 
     `lines` must be every ledger line that carries a `계보=B:` lineage, in file
-    order, beside the `segment` and `blocked` rows: a step cone is released by a
-    later attempt's lineage on any row family.
+    order, beside the `segment`, `stage-result` and `blocked` rows: a step cone
+    is released by a later attempt's lineage on any row family, and a run-scope
+    `원인=불명` row with `대상=-` — a stall the gate copied from a watcher — is
+    released by a later progress row, a launch evidence row of any key
+    (`_launch_evidence`) or a `segment` row whose `상태` is not `park`.
     """
     seg = set()
     blocks = []
     lins = []
+    lastprog = -1
     for i, ln in enumerate(lines):
         lins.append(_LINEAGE_B.findall(ln))
+        if _launch_evidence(ln):
+            lastprog = i
         if ln.startswith("- `segment`"):
             sid = _awk_fld(ln, "id")
             if sid != "":
                 seg.add(sid)
+            if _awk_fld(ln, "상태") != "park":
+                lastprog = i
             continue
         if ln.startswith("- `blocked`"):
             blocks.append((i, _awk_fld(ln, "스코프"), _awk_fld(ln, "사유"),
-                           _awk_fld(ln, "앵커 세그먼트"), _awk_fld(ln, "원인")))
+                           _awk_fld(ln, "앵커 세그먼트"), _awk_fld(ln, "원인"),
+                           _awk_fld(ln, "대상")))
     last = {}
-    for i, scope, why, anchor, cause in blocks:
+    for i, scope, why, anchor, cause, target in blocks:
         if why == "":
             continue
         if scope == "run":
@@ -538,10 +622,12 @@ def _blocked_fold(lines):
             step = True
         else:
             continue
-        last[why] = (i, cause, step, scope, anchor)
+        last[why] = (i, cause, step, scope, anchor, target)
     out = []
-    for why, (i, cause, step, scope, anchor) in last.items():
+    for why, (i, cause, step, scope, anchor, target) in last.items():
         if cause == "해소":
+            continue
+        if not step and cause == "불명" and target == "-" and lastprog > i:
             continue
         if step and lins[i]:
             k, nn = _lineage_key(lins[i][0])
@@ -2653,6 +2739,19 @@ def _main(argv):
             led.refresh()
             numbered = led.numbered()
         print(len(unanswered_halt_records(argv[1], numbered)))
+        return 0
+    if len(argv) >= 2 and argv[0] == "unresolved-blocked":
+        # Through `Ledger`, the rows the dashboard folds, as `cc_unresolved_blocked`
+        # prints them.
+        led = Ledger(argv[1])
+        led.refresh()
+        for cause, why in unresolved_blocked(led.lines()):
+            print("%s\t%s" % (cause, why))
+        return 0
+    if len(argv) >= 1 and argv[0] == "launch-evidence-rows":
+        # One `1`/`0` per row on standard input, as `cc__launch_evidence_rows`.
+        for line in sys.stdin.read().split("\n")[:-1]:
+            print(1 if _launch_evidence(line) else 0)
         return 0
     if len(argv) >= 1 and argv[0] == "display-tz":
         off, label = display_tz(argv[1] if len(argv) > 1 else None)

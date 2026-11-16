@@ -21197,6 +21197,51 @@ case "$( { grep -E '^- `segment`' "$FX_LEDGER" || true; } | grep -cF 'id=SFRESH 
 esac
 
 # ---------------------------------------------------------------------------
+# 32b. The gate reads the same "handled" judgment the run pane does
+# --- section: 32b | group: base | covers: liveness, defer, cc_halt_answered, cc_unresolved_blocked, gate_row_is_pre_session_death, gate_defer_handoff_unmet | anchors: 32b: 게이트의 기동 전 사망 행은 기동 증거가 아니다, 32b: 다음 시도가 없는 중단 기록은 이월 인계를 중단으로 돌린다, 32b: 다음 시도의 기동 증거가 지난 기록은 이월 인계를 막지 않는다, 32b: 게이트가 읽는 미해소 막힘에서 진행이 뒤따른 정체 관측이 빠진다 ---
+#
+# A halt record a later attempt of its key passed is no longer a question to a
+# person, and every reader asks `cc_halt_answered` — the gate's hand-off
+# conditions included. The launch evidence test and the gate's death-before-
+# session test are fed one fixed row set: a row the gate reads as a death
+# before its session is never launch evidence.
+# ---------------------------------------------------------------------------
+g32b_rd="$WORK/g32b-run/R32B"
+mkdir -p "$g32b_rd/halt"
+g32b_led="$g32b_rd/ledger.md"
+printf '# 중단 기록\n' > "$g32b_rd/halt/A#1.md"
+{
+  printf -- '- `stage-result` | 스테이지=A | 실행 버전=2 | 세션 id=미상 | 답 운반=있음 | 종단 부류=정상 완료\n'
+  printf -- '- `stage-result` | 스테이지=A | 실행 버전=2 | 세션 id=s2 | 관측=스폰 전 대기 중 — 픽스처 | 종단 부류=정상 완료\n'
+  printf -- '- `stage-result` | 스테이지=A | 실행 버전=2 | 세션 id=s2 | 종단 부류=크래시\n'
+  printf -- '- `stage-result` | 스테이지=B | 실행 버전=1 | 세션 id=sb | 종단 부류=정상 완료\n'
+} > "$g32b_led"
+g32b_pair=$(bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null >/dev/null 2>&1
+  ev=$(cc__launch_evidence_rows < "$2")
+  while IFS= read -r row; do
+    if gate_row_is_pre_session_death "$row"; then printf 1; else printf 0; fi
+    printf ":%s " "$(printf "%s\n" "$ev" | sed -n 1p)"
+    ev=$(printf "%s\n" "$ev" | sed 1d)
+  done < "$2"' _ "$GATE" "$g32b_led" 2>/dev/null)
+check "32b: 게이트의 기동 전 사망 행은 기동 증거가 아니다" "$g32b_pair" "1:0 1:0 0:0 0:1 "
+g32b_unmet() {
+  bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null >/dev/null 2>&1; RUN_DIR="$2"; LEDGER="$3"
+    gate_defer_handoff_unmet' _ "$GATE" "$g32b_rd" "$g32b_led" 2>/dev/null
+}
+case "$(g32b_unmet)" in
+  "답 없는 정지 기록이 있습니다"*) ok "32b: 다음 시도가 없는 중단 기록은 이월 인계를 중단으로 돌린다" ;;
+  *) bad "32b: 다음 시도가 없는 중단 기록은 이월 인계를 중단으로 돌린다" "$(g32b_unmet)" ;;
+esac
+printf -- '- `blocked` | 대상=- | 스코프=run | 원인=불명 | 사유=라이브니스 침묵\n' >> "$g32b_led"
+printf -- '- `stage-result` | 스테이지=A | 실행 버전=3 | 세션 id=s3 | 종단 부류=정상 완료\n' >> "$g32b_led"
+case "$(g32b_unmet)" in
+  "답 없는 정지 기록이 있습니다"*) bad "32b: 다음 시도의 기동 증거가 지난 기록은 이월 인계를 막지 않는다" "$(g32b_unmet)" ;;
+  *) ok "32b: 다음 시도의 기동 증거가 지난 기록은 이월 인계를 막지 않는다" ;;
+esac
+check "32b: 게이트가 읽는 미해소 막힘에서 진행이 뒤따른 정체 관측이 빠진다" \
+  "$(bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null >/dev/null 2>&1; cc_unresolved_blocked "$2"' _ "$GATE" "$g32b_led" 2>/dev/null)" ""
+
+# ---------------------------------------------------------------------------
 # 33. A stage that parked itself, a worktree that is the same repository, and a
 # --- section: 33 | group: base | covers: snapshot, act | anchors: 중단 기록의 닫는 문면이 마지막 비어 있지 않은 줄이다 ---
 #     manifest whose clauses do not parse
