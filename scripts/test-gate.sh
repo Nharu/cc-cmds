@@ -16959,6 +16959,175 @@ check "15vm: 고정 레인 없음 문면이 세 출처를 모두 이름 댄다" 
 rm -rf "$VM15"
 
 # ---------------------------------------------------------------------------
+# 15vn. A routing-off visual publish launch checks the seat's Claude Design account
+# --- section: 15vn | group: base | covers: act, gate_launch_stage, gate_visual_seat_account_check, gate_visual_lane_auth_email | anchors: 15vn: 대소문자만 다른 일치 계정이면 시도를 핀하고 감독자를 띄운다, 15vn: 불일치 계정이면 경로 정지 행을 쓰고 시도를 핀하지 않는다, 15vn: 불일치 근거는 두 로컬 부분과 다시 파견을 싣고 도메인을 싣지 않는다, 15vn: 300 바이트를 넘는 설정 디렉터리에서도 근거의 머리와 로컬 부분이 남는다, 15vn: 고정 계정이 없으면 고정 계정 미설정 으로 멈추고 로그인을 읽지 않는다, 15vn: 설정 디렉터리가 없으면 물려받은 기본값을 읽는다, 15vn: 옮긴 교대가 띄우는 스테이지는 런의 좌석 기록 디렉터리를 읽는다, 15vn: 좌석을 풀지 못한 옮긴 교대는 옮긴 디렉터리를 읽어 불일치로 멈춘다, 15vn: 라우팅 런의 고정 레인 없음 정지는 로그인을 읽지 않는다, 15vn: 라우팅 꺼짐 무조건 정지 문면이 게이트에 없다 ---
+#
+# A run with routing off launches the visual publish stage in the config
+# directory it inherits, so the dispatch half compares that directory's login
+# with the pinned Claude Design account before it pins an attempt. Each case is
+# a fresh run directory with no routing record and an absent-inventory mark,
+# and one dispatch of the run-scope step S2P in a gate sourced in a child. The
+# launch directory, the instructions and the detached supervisor are stand-ins:
+# the stand-in supervisor writes its argv and the `CLAUDE_CONFIG_DIR` it got.
+# The CLI is a stub that logs the directory it was asked in and answers
+# `auth status --json` from that directory's `auth.json` (none: it fails).
+# ---------------------------------------------------------------------------
+VN15="$WORK/vn15"
+rm -rf "$VN15"
+mkdir -p "$VN15/runs" "$VN15/repo/docs" "$VN15/cfg/cc-cmds" "$VN15/cfg-none/cc-cmds" "$VN15/state" "$VN15/bin" "$VN15/wt" \
+  "$VN15/default" "$VN15/seat" "$VN15/moved" "$VN15/other" "$VN15/noauth" "$VN15/out"
+VN15=$(cd -P "$VN15" && pwd)
+git -c init.defaultBranch=main init -q "$VN15/repo" 2>/dev/null
+printf '# d\n' > "$VN15/repo/docs/d.md"
+printf '%s\n' 'account = pub@example.com' > "$VN15/cfg/cc-cmds/claude-design"
+printf '%s\n' 'lane = pub' > "$VN15/cfg-none/cc-cmds/claude-design"
+cat > "$VN15/bin/claude" <<VN15STUB
+#!/bin/sh
+printf '%s\n' "\${CLAUDE_CONFIG_DIR:-기본값}" >> "$VN15/calls"
+d=\${CLAUDE_CONFIG_DIR:-$VN15/default}
+[ -f "\$d/auth.json" ] || exit 1
+cat "\$d/auth.json"
+VN15STUB
+chmod +x "$VN15/bin/claude"
+vn15_auth() { printf '%s\n' "$2" > "$1/auth.json"; }  # vn15_auth <dir> <auth status json>
+vn15_auth "$VN15/seat" '{"loggedIn":true,"email":"PUB@Example.COM"}'
+vn15_auth "$VN15/moved" '{"loggedIn":true,"email":"mover@corp.example"}'
+vn15_auth "$VN15/other" '{"loggedIn":true,"email":"someone@corp.example"}'
+vn15_auth "$VN15/out" '{"loggedIn":false}'
+vn15_auth "$VN15/default" '{"loggedIn":true,"email":"pub@example.com"}'
+: > "$VN15/not-a-dir"
+
+vn15_go() {
+  # vn15_go <case> [<NAME=value>...] — a fresh run directory and one dispatch of
+  # S2P with the given environment; prints 0, 경로정지 (GATE_EXIT_ROUTE) or the rc.
+  # VN_SEATREC writes the run's seat record, VN_ROUTED=1 makes the run routed
+  # with a regular inventory baseline.
+  local d="$VN15/runs/$1"; shift
+  rm -rf "$d" "$VN15/calls"; mkdir -p "$d"
+  printf '# 원장 픽스처\n\n## 실행 R15VN\n\n' > "$d/ledger.md"
+  ln -s "/dev/null$VN15/cfg" "$d/inventory.json"
+  ( cd "$WT" && env -u CC_PIPELINE_STAGE_ID -u CC_PIPELINE_SHIFT_ID -u CC_PIPELINE_SEGMENT -u CC_PIPELINE_TARGET \
+      -u CC_PIPELINE_RUN_DIR -u CC_PIPELINE_RUN_ID -u CC_PIPELINE_MANIFEST -u CC_PIPELINE_LEDGER -u CC_PIPELINE_GRANT \
+      -u CC_GATE_SHIFT_LANE -u CLAUDE_CONFIG_DIR -u GATE_LIMIT_DELEGATE -u GATE_RESUME \
+      XDG_CONFIG_HOME="$VN15/cfg" XDG_STATE_HOME="$VN15/state" VN_D="$VN15" VN_R="$d" "$@" bash -c '
+    CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null >/dev/null 2>&1
+    set +e
+    unset CC_GATE_SOURCE_ONLY
+    RUN_ID=R15VN; RUN_DIR=$VN_R; LEDGER=$VN_R/ledger.md; MANIFEST=$VN_D/manifest.md
+    DOC=$VN_D/repo/docs/d.md; CLI_BIN=$VN_D/bin/claude
+    [ -z "${VN_SEATREC:-}" ] || printf "%s\n" "$VN_SEATREC" > "$RUN_DIR/config-dir"
+    if [ "${VN_ROUTED:-}" = 1 ]; then
+      printf "1\n" > "$RUN_DIR/routing-guard"; rm -f "$RUN_DIR/inventory.json"; printf "{}\n" > "$RUN_DIR/inventory.json"
+    fi
+    gate_run_scope_kind_of_key() { [ "$1" = S2P ] && printf visual-publish; }
+    gate_stage_launch_dir() { printf "%s" "$VN_D/wt"; }
+    gate_stage_instructions_for_launch() { :; }
+    cc_detach_exec() {
+      shift 2
+      printf "%s\n" "${CLAUDE_CONFIG_DIR:-없음}" > "$RUN_DIR/sup-cfg"
+      printf "%s\n" "$@" > "$RUN_DIR/sup-argv"
+      : > "$RUN_DIR/S2P.pid"
+      printf 424242
+    }
+    r=0
+    gate_launch_stage infra S2P visual-publish -p "/cc-cmds:visual-publish-unattended $DOC" >/dev/null 2>"$RUN_DIR/err" || r=$?
+    if [ "$r" = "$GATE_EXIT_ROUTE" ]; then printf 경로정지; else printf "%s" "$r"; fi' _ "$GATE" 2>/dev/null )
+}
+vn15_st() {
+  # vn15_st <case> — 「blocked 행 수|핀|감독자 argv 의 동사|감독자의 설정 디렉터리|CLI 를 부른 디렉터리들」
+  local d="$VN15/runs/$1"
+  printf '%s|%s|%s|%s|%s' "$({ grep -c '^- `blocked` ' "$d/ledger.md" || true; } | tr -d ' ')" \
+    "$(cat "$d/S2P.attempt" 2>/dev/null || printf 없음)" \
+    "$(grep -x supervise-stage "$d/sup-argv" 2>/dev/null || printf 없음)" \
+    "$(cat "$d/sup-cfg" 2>/dev/null || printf 없음)" \
+    "$(if [ -s "$VN15/calls" ]; then paste -sd, "$VN15/calls"; else printf 없음; fi)"
+}
+vn15_basis() {  # vn15_basis <case> — the `blocked` row's 근거
+  sed -n 's/^- `blocked` .*| 근거=\(.*\) | 관측=.*/\1/p' "$VN15/runs/$1/ledger.md" | tail -1
+}
+
+# (가) a match that differs only in case launches.
+vn15_r=$(vn15_go match CLAUDE_CONFIG_DIR="$VN15/seat")
+check "15vn: 대소문자만 다른 일치 계정이면 시도를 핀하고 감독자를 띄운다" \
+  "$vn15_r|$(vn15_st match)" "0|0|1|supervise-stage|$VN15/seat|$VN15/seat"
+
+# (나) another account parks before the pin.
+vn15_r=$(vn15_go other CLAUDE_CONFIG_DIR="$VN15/other")
+check "15vn: 불일치 계정이면 경로 정지 행을 쓰고 시도를 핀하지 않는다" \
+  "$vn15_r|$(vn15_st other)" "경로정지|1|없음|없음|없음|$VN15/other"
+vn15_b=$(vn15_basis other)
+case "$vn15_b" in
+  *@*|*corp.example*|*example.com*) bad "15vn: 불일치 근거는 두 로컬 부분과 다시 파견을 싣고 도메인을 싣지 않는다" "$vn15_b" ;;
+  "좌석 계정 불일치 — 로그인 계정 someone 가 고정 Claude Design 계정 pub 가 아니다."*"다시 파견하세요 (좌석 설정 디렉터리 "*)
+    # The row clips at 300 bytes, so a long work path may be cut there; the
+    # gate's warning line keeps the whole directory.
+    if grep -qF "(좌석 설정 디렉터리 $VN15/other)" "$VN15/runs/other/err"; then
+      ok "15vn: 불일치 근거는 두 로컬 부분과 다시 파견을 싣고 도메인을 싣지 않는다"
+    else
+      bad "15vn: 불일치 근거는 두 로컬 부분과 다시 파견을 싣고 도메인을 싣지 않는다" "경고 줄: $(cat "$VN15/runs/other/err")"
+    fi ;;
+  *) bad "15vn: 불일치 근거는 두 로컬 부분과 다시 파견을 싣고 도메인을 싣지 않는다" "$vn15_b" ;;
+esac
+vn15_long="$VN15/long/$(printf 'a%.0s' $(seq 1 120))/$(printf 'b%.0s' $(seq 1 120))"
+mkdir -p "$vn15_long"
+vn15_auth "$vn15_long" '{"loggedIn":true,"email":"someone@corp.example"}'
+vn15_r=$(vn15_go long CLAUDE_CONFIG_DIR="$vn15_long")
+vn15_b=$(vn15_basis long)
+case "$vn15_r|${#vn15_long}|$vn15_b" in
+  경로정지\|*\|"좌석 계정 불일치 — 로그인 계정 someone 가 고정 Claude Design 계정 pub 가 아니다."*"다시 파견하세요 ("*)
+    if [ "${#vn15_long}" -gt 300 ] && [ "$(printf '%s' "$vn15_b" | wc -c | tr -d ' ')" -le 304 ] \
+       && grep -qF "$vn15_long" "$VN15/runs/long/err"; then
+      ok "15vn: 300 바이트를 넘는 설정 디렉터리에서도 근거의 머리와 로컬 부분이 남는다"
+    else
+      bad "15vn: 300 바이트를 넘는 설정 디렉터리에서도 근거의 머리와 로컬 부분이 남는다" "경로 ${#vn15_long} 바이트, 근거 $(printf '%s' "$vn15_b" | wc -c) 바이트"
+    fi ;;
+  *) bad "15vn: 300 바이트를 넘는 설정 디렉터리에서도 근거의 머리와 로컬 부분이 남는다" "$vn15_r|$vn15_b" ;;
+esac
+check "15vn: 긴 경로의 불일치도 시도를 핀하지 않는다" "$(vn15_st long | cut -d'|' -f1-3)" "1|없음|없음"
+
+# (다) no pinned account to expect.
+vn15_r=$(vn15_go none XDG_CONFIG_HOME="$VN15/cfg-none" CLAUDE_CONFIG_DIR="$VN15/seat")
+check "15vn: 고정 계정이 없으면 고정 계정 미설정 으로 멈추고 로그인을 읽지 않는다" \
+  "$vn15_r|$(vn15_st none)|$(vn15_basis none | cut -d' ' -f1-4)" "경로정지|1|없음|없음|없음|없음|고정 계정 미설정 —"
+
+# (라) a login that cannot be read.
+for vn15_m in noauth:'읽기 실패' out:'loggedIn false'; do
+  vn15_r=$(vn15_go "${vn15_m%%:*}" CLAUDE_CONFIG_DIR="$VN15/${vn15_m%%:*}")
+  case "$vn15_r|$(vn15_st "${vn15_m%%:*}" | cut -d'|' -f1-2)|$(vn15_basis "${vn15_m%%:*}")|$(grep -cF "설정 디렉터리 $VN15/${vn15_m%%:*})" "$VN15/runs/${vn15_m%%:*}/err")" in
+    "경로정지|1|없음|좌석 계정 판독 실패 — ${vn15_m#*:}. "*"다시 파견하세요 ("*"|1")
+      ok "15vn: 로그인을 읽지 못하면 좌석 계정 판독 실패 로 멈춘다 (${vn15_m%%:*})" ;;
+    *) bad "15vn: 로그인을 읽지 못하면 좌석 계정 판독 실패 로 멈춘다 (${vn15_m%%:*})" "$vn15_r|$(vn15_st "${vn15_m%%:*}")|$(vn15_basis "${vn15_m%%:*}")" ;;
+  esac
+done
+
+# (마) the directory read is the one the stage gets.
+vn15_r=$(vn15_go inherit)
+check "15vn: 설정 디렉터리가 없으면 물려받은 기본값을 읽는다" "$vn15_r|$(vn15_st inherit)" "0|0|1|supervise-stage|없음|기본값"
+vn15_auth "$VN15/default" '{"loggedIn":true,"email":"someone@corp.example"}'
+vn15_r=$(vn15_go inherit-other)
+check "15vn: 물려받은 기본값이 다른 계정이면 그 사실을 이름 대고 멈춘다" \
+  "$vn15_r|$(vn15_st inherit-other | cut -d'|' -f1-2)|$(vn15_basis inherit-other | sed 's/.*(//')" "경로정지|1|없음|좌석 설정 디렉터리 물려받은 기본값)"
+vn15_r=$(vn15_go shift-seat CC_PIPELINE_SHIFT_ID=SH15VN CC_GATE_SHIFT_LANE="$VN15/moved" CLAUDE_CONFIG_DIR="$VN15/moved" VN_SEATREC="$VN15/seat")
+check "15vn: 옮긴 교대가 띄우는 스테이지는 런의 좌석 기록 디렉터리를 읽는다" \
+  "$vn15_r|$(vn15_st shift-seat)" "0|0|1|supervise-stage|$VN15/seat|$VN15/seat"
+vn15_r=$(vn15_go shift-broken CC_PIPELINE_SHIFT_ID=SH15VN CC_GATE_SHIFT_LANE="$VN15/moved" CLAUDE_CONFIG_DIR="$VN15/moved" VN_SEATREC="$VN15/not-a-dir")
+check "15vn: 좌석을 풀지 못한 옮긴 교대는 옮긴 디렉터리를 읽어 불일치로 멈춘다" \
+  "$vn15_r|$(vn15_st shift-broken)|$(vn15_basis shift-broken | cut -d' ' -f1-8)" \
+  "경로정지|1|없음|없음|없음|$VN15/moved|좌석 계정 불일치 — 로그인 계정 mover 가"
+
+# (바) a routed run keeps its lane rule and reads no login.
+vn15_r=$(vn15_go routed VN_ROUTED=1 CLAUDE_CONFIG_DIR="$VN15/seat")
+check "15vn: 라우팅 런의 고정 레인 없음 정지는 로그인을 읽지 않는다" \
+  "$vn15_r|$(vn15_st routed)|$(vn15_basis routed | cut -d' ' -f1-4)" "경로정지|1|없음|없음|없음|없음|고정 레인 없음 —"
+
+# (사) the unconditional routing-off park is gone.
+check "15vn: 라우팅 꺼짐 무조건 정지 문면이 게이트에 없다" \
+  "$({ grep -c '라우팅 꺼짐 — 시각 발행 단계는 고정 레인으로만 뜬다' "$GATE" || true; } | tr -d ' ')" "0"
+unset -f vn15_auth vn15_go vn15_st vn15_basis
+unset vn15_r vn15_b vn15_long vn15_m
+rm -rf "$VN15"
+
+# ---------------------------------------------------------------------------
 # 15vq. The approved-screen reflection: one re-convergence per person's answer
 # --- section: 15vq | group: base | covers: act, plan, snapshot, halt-answer, gate_approval_reflection_entry, gate_approval_reflection_live, gate_approval_reflection_retry_ok, gate_approval_reflection_scope_of, gate_caller_is_visual_publish_stage, gate_stage_last_settled_row, gate_stage_row_segment, gate_stage_result_rows_of, gate_redeclare_after_reconverge, gate_replan_due_json, gate_halt_detail_scope, visual_approval_route_hint, visual_approval_verdict | anchors: 15vq: 사람의 답이 없으면 반영 재수렴은 거부된다, 15vq: 반영 대기 동안 승인 판정은 보류다, 15vq: 반영 대기 안내는 사람이 할 일이 없다고 말한다, 15vq: 발행 단계가 없는 런의 반영 대기 안내는 구현 승인을 다시 실행하라고 한다, 15vq: 꼬리 없는 반영 대기 안내는 발행 단계가 있어도 구현 승인을 다시 실행하라고 한다, 15vq: 범위가 다른 프롬프트는 거부된다, 15vq: 가장 마지막 시각-판정 기록이 아니면 거부된다, 15vq: 감사 단계에 살아 있는 시도가 있으면 거부된다, 15vq: 사람의 승인 답 하나로 반영 재수렴 plan 이 통과한다, 15vq: 반영 행이 세그먼트=- · 스테이지=S2P · 종류=reconverge 로 정상 완료다, 15vq: 같은 답의 두 번째 반영은 거부된다, 15vq: 마지막 반영 세션을 잇는 --resume 은 통과한다, 15vq: 다른 세션의 --resume 은 거부된다, 15vq: 반영 행은 재계획 후보가 아니다, 15vq: 반영 행 뒤에는 재선언하지 않는다, 15vq: 반영 시도가 살아 있는 동안 감사 파견은 거부된다, 15vq: 반영 시도가 살아 있는 동안 시각 발행 파견은 거부된다, 15vq: 반영 세션은 시각 발행 단계로 읽히지 않는다, 15vq: 시각 발행 정지의 재부착은 반영 행을 건너뛴다, 15vq: 반영 실패 동안 승인 판정은 보류다, 15vq: 반영 실패 안내는 반영 정지 기록을 든다, 15vq: 운반 답 갈래로 들인 반영의 실패 안내는 정지 기록에 답하라고 하지 않고 런이 끝난 뒤 다시 실행하라고 한다, 15vq: 반영 정지 기록의 좌석 답은 거부된다, 15vq: 결정 첨부 후 다시 반영 답으로 반영 plan 이 통과한다, 15vq: 비정상 종료 뒤 같은 답으로 한 번 더 들인다, 15vq: 세 번째 시도는 거부된다, 15vq: precondition-failed 정지는 한 번 더 들이는 종단이다, 15vq: 앞선 런에서 들인 승인 답이 반영을 연다, 15vq: 반영 범위 세 낱말을 범위로 읽는다 ---
 #

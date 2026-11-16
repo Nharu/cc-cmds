@@ -21541,6 +21541,10 @@ readonly GATE_METRICS_ROUND_TIMEOUT_S=3600
 # round's lock for as long as it hangs; a timed-out call takes the branch a
 # failed one already takes.
 readonly GATE_METRICS_GH_TIMEOUT_S=10
+# Per `claude auth status --json` read of a visual publish account check. The
+# routing-off launch makes that read before it pins an attempt, so a CLI that
+# hangs would hold the dispatch with no row; past this it reads as `읽기 실패`.
+readonly GATE_VISUAL_AUTH_TIMEOUT_S=20
 # Where instrument issues go, whichever run's ledger the round was hosted by.
 # They measure this plugin's own collector and compaction window, so they belong
 # to this plugin's repository; left to gh, the destination would follow the
@@ -59358,11 +59362,26 @@ gate_continuation_argv() {
 gate_visual_lane_auth_email() {
   # gate_visual_lane_auth_email <config dir> — the email `claude auth status
   # --json` reports in <config dir>. rc 0 with the email; otherwise rc 1 with
-  # the cause on stdout: `읽기 실패` (the command failed or did not print a JSON
-  # object), `loggedIn false`, or `email 없음`.
+  # the cause on stdout: `읽기 실패` (the command failed, did not print a JSON
+  # object, or ran longer than `GATE_VISUAL_AUTH_TIMEOUT_S`), `loggedIn false`,
+  # or `email 없음`.
+  #
+  # AN EMPTY <config dir> READS THE INHERITED ENVIRONMENT: `CLAUDE_CONFIG_DIR`
+  # is then not assigned, so the read sees whatever directory this process
+  # runs under — unset included — which is the directory a stage launched
+  # from here would get. The migration record's caller never passes an empty
+  # one; the routing-off visual publish check does.
+  #
+  # The read runs under a deadline, because the routing-off visual publish
+  # check makes it on every dispatch before an attempt is pinned: a CLI that
+  # does not answer would otherwise hold the dispatch with no row written.
   local cfg="$1" bin out rc=0 facts
   bin=${CLI_BIN:-claude}
-  out=$(CLAUDE_CONFIG_DIR="$cfg" command "$bin" auth status --json 2>/dev/null) || rc=$?
+  if [ -n "$cfg" ]; then
+    out=$(gate_metrics_timed "$GATE_VISUAL_AUTH_TIMEOUT_S" env CLAUDE_CONFIG_DIR="$cfg" "$bin" auth status --json 2>/dev/null) || rc=$?
+  else
+    out=$(gate_metrics_timed "$GATE_VISUAL_AUTH_TIMEOUT_S" "$bin" auth status --json 2>/dev/null) || rc=$?
+  fi
   if [ "$rc" != "0" ]; then printf '읽기 실패'; return 1; fi
   facts=$(printf '%s' "$out" | jq -r 'if type != "object" then error("shape") else . end
            | [ (if .loggedIn == true then "1" else "0" end),
@@ -59374,6 +59393,62 @@ gate_visual_lane_auth_email() {
     1*) printf 'email 없음'; return 1 ;;
     *) printf 'loggedIn false'; return 1 ;;
   esac
+}
+
+gate_visual_seat_account_check() {
+  # gate_visual_seat_account_check <segment> <config dir> — before a visual
+  # publish stage is launched in a run with routing off, compare the account
+  # <config dir> is logged in as with the pinned Claude Design account. rc 0
+  # when they match (case aside), with one log line; rc 1 with the reason on
+  # stdout, which the caller writes as a routing park.
+  #
+  # <config dir> IS THE ONE THE STAGE WILL GET. With routing off the supervisor
+  # inherits this process's environment and launches the stage with it, so the
+  # caller passes the seat directory it exports for a stage dispatched from a
+  # moved shift, else this process's own `CLAUDE_CONFIG_DIR` (empty when it is
+  # unset, which reads the inherited default). Reading any other directory —
+  # the run's seat record, say — could pass a seat the stage does not run on.
+  #
+  # The expected account comes from `visual-config.sh expect`, the same rule
+  # the stage's own K0 (`visual-config.sh account`) uses, so the two cannot
+  # expect different accounts. The login is read with the gate's CLI binary.
+  #
+  # THE THREE REASONS START WITH FIXED HEADS — 「고정 계정 미설정 —」,
+  # 「좌석 계정 판독 실패 —」 and 「좌석 계정 불일치 —」 — which the router,
+  # seat and morning report references name. Each puts the cause, the local
+  # parts and the way to recover first and the paths last, in parentheses: the
+  # park row keeps 300 bytes of it, so a long path is what gets cut there, and
+  # the full sentence stays on the gate's warning line. Only local parts are
+  # written, never a domain.
+  local seg="$1" cfg="$2" expected email shown le lr cause same=0 had=0
+  shown=${cfg:-물려받은 기본값}
+  if ! expected=$(CC_PIPELINE_RUN_DIR="$RUN_DIR" bash "$GATE_DIR/visual-config.sh" expect 2>/dev/null) \
+     || [ -z "$expected" ]; then
+    printf "고정 계정 미설정 — 호스트 파일 claude-design 에 'account = <주소>' 줄이 없거나 런 지역 이관 기록을 읽지 못한다. 고친 뒤 다시 파견하세요 (호스트 파일 %s, 이관 기록 %s)" \
+      "${XDG_CONFIG_HOME:-$HOME/.config}/cc-cmds/claude-design" "$RUN_DIR/visual-lane"
+    return 1
+  fi
+  if ! email=$(gate_visual_lane_auth_email "$cfg"); then
+    cause=$email
+    printf '좌석 계정 판독 실패 — %s. 좌석이 고정 계정으로 로그인된 뒤 다시 파견하세요 (claude auth status --json, 설정 디렉터리 %s)' \
+      "$cause" "$shown"
+    return 1
+  fi
+  le=${expected%%@*}
+  lr=${email%%@*}
+  # Case-blind with `nocasematch`, restored to what the caller had, so the
+  # comparison forks nothing.
+  if shopt -q nocasematch; then had=1; fi
+  shopt -s nocasematch
+  [[ "$email" == "$expected" ]] && same=1
+  if [ "$had" = 0 ]; then shopt -u nocasematch; fi
+  if [ "$same" = 0 ]; then
+    printf '좌석 계정 불일치 — 로그인 계정 %s 가 고정 Claude Design 계정 %s 가 아니다. 좌석을 고정 계정으로 로그인한 뒤 다시 파견하세요 (좌석 설정 디렉터리 %s)' \
+      "$lr" "$le" "$shown"
+    return 1
+  fi
+  log "시각 발행 좌석 계정 일치 — $seg (설정 디렉터리 $shown)"
+  return 0
 }
 
 gate_visual_lane_write() {
@@ -60716,26 +60791,6 @@ gate_launch_stage() {
       "크기 차단 행이 넘긴 원장 ${GATE_HA_CARD_LINE} 번째 줄의 답을 실은 시도가 세션이 생기기 전에 ${GATE_SBC_DEATHS} 번 죽었다"
     return "$GATE_EXIT_CARRY_CAP"
   fi
-  # THE VISUAL PUBLISH STAGE RUNS ON ITS PINNED LANE OR NOT AT ALL. Routing off
-  # asks nothing and inherits the environment, which is whatever config
-  # directory the dispatching session runs under — not the lane logged in to
-  # the pinned Claude Design account. And with no `lane` in the host file there
-  # is nothing to pin. Both park here, before an attempt is claimed, so the
-  # dispatch can be repeated once a person has fixed the cause.
-  if [ "$kind" = "visual-publish" ]; then
-    if ! run_routed; then
-      gate_launch_route_park "$alias" "$(gate_stage_row_segment "$seg" "$kind")" "$seg" \
-        "라우팅 꺼짐 — 시각 발행 단계는 고정 레인으로만 뜬다. 라우팅을 켠 런에서 다시 파견하세요"
-      return "$GATE_EXIT_ROUTE"
-    fi
-    # The lookup is the migration's (`kind_pin_resolve`): the run-local record,
-    # the document-level record, then the host file. Any one of them pins.
-    if ! kind_pin_lane_of "$kind" >/dev/null; then
-      gate_launch_route_park "$alias" "$(gate_stage_row_segment "$seg" "$kind")" "$seg" \
-        "고정 레인 없음 — 호스트 파일 ${XDG_CONFIG_HOME:-$HOME/.config}/cc-cmds/claude-design 에 'lane = <레인 id>' 줄이 없고, 런 지역 이관 기록 $RUN_DIR/visual-lane 도 문서 단위 이관 기록 $(visual_lane_doc_path "${DOC:-}" 2>/dev/null || printf '(문서 없음)') 도 레인을 주지 않는다. 호스트 파일에 그 줄을 쓴 뒤 다시 파견하세요"
-      return "$GATE_EXIT_ROUTE"
-    fi
-  fi
   # A STAGE DISPATCHED FROM A SHIFT THE GATE MOVED TO ANOTHER ACCOUNT runs on
   # the seat, not on that account. The answer is taken here, while the moved
   # shift's environment is still in force: with routing on the router's own
@@ -60751,6 +60806,35 @@ gate_launch_stage() {
     seat_cfg=$(resolve_account 2>/dev/null) || seat_cfg=""
     [ -n "$seat_cfg" ] \
       || warn "the seat lane could not be resolved for a stage dispatched from a moved shift — it inherits the shift's lane ($seg)"
+  fi
+  # THE VISUAL PUBLISH STAGE PUBLISHES ONLY AS THE PINNED CLAUDE DESIGN ACCOUNT.
+  # A routed run gets that from its pinned lane: with no lane from the run-local
+  # record, the document-level record or the host file there is nothing to pin,
+  # and the dispatch parks. A run with routing off launches the stage in the
+  # config directory it inherits — the seat directory exported below for a
+  # stage dispatched from a moved shift, else this process's own — so the
+  # login of that very directory is compared, before launch, with the account
+  # the stage's K0 expects; a missing expected account, an unreadable login or
+  # another account parks. Every park here comes before an attempt is claimed,
+  # so the dispatch can be repeated once a person has fixed the cause. This
+  # block reads the seat answer above, which only reads.
+  if [ "$kind" = "visual-publish" ]; then
+    if run_routed; then
+      # The lookup is the migration's (`kind_pin_resolve`): the run-local record,
+      # the document-level record, then the host file. Any one of them pins.
+      if ! kind_pin_lane_of "$kind" >/dev/null; then
+        gate_launch_route_park "$alias" "$(gate_stage_row_segment "$seg" "$kind")" "$seg" \
+          "고정 레인 없음 — 호스트 파일 ${XDG_CONFIG_HOME:-$HOME/.config}/cc-cmds/claude-design 에 'lane = <레인 id>' 줄이 없고, 런 지역 이관 기록 $RUN_DIR/visual-lane 도 문서 단위 이관 기록 $(visual_lane_doc_path "${DOC:-}" 2>/dev/null || printf '(문서 없음)') 도 레인을 주지 않는다. 호스트 파일에 그 줄을 쓴 뒤 다시 파견하세요"
+        return "$GATE_EXIT_ROUTE"
+      fi
+    else
+      local vp_cfg vp_why
+      if [ -n "$seat_cfg" ]; then vp_cfg=$seat_cfg; else vp_cfg=${CLAUDE_CONFIG_DIR:-}; fi
+      if ! vp_why=$(gate_visual_seat_account_check "$seg" "$vp_cfg"); then
+        gate_launch_route_park "$alias" "$(gate_stage_row_segment "$seg" "$kind")" "$seg" "$vp_why"
+        return "$GATE_EXIT_ROUTE"
+      fi
+    fi
   fi
   # A DELEGATED RE-ATTACHMENT NEEDS THE ROUTER: with routing off nothing judges
   # the limit, and a plain re-attachment would run on an account no evidence
