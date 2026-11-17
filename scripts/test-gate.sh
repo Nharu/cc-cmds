@@ -28909,6 +28909,127 @@ check "31bb: 표제 위에 놓인 사람의 승인 답으로는 승인 라벨이
 HW_SID=""
 
 # ---------------------------------------------------------------------------
+# 31bc. 사람이 고를 선택지를 담은 답 없는 정지 기록은 그 키의 재파견을 막는다
+# --- section: 31bc | group: cone | covers: act, plan, snapshot, handoff, gate_person_halt_refuse, gate_person_halts_of_key, gate_awaiting_halts_json, cc_person_halts, cc_halt_person_held, cc_unanswered_halts, cc_auto_handled_halts | anchors: 31bc: 답 없는 선택지 기록이 선 키의 스킬 파견은 3 이고 행을 쓰지 않는다, 31bc: 그 거부는 기록 경로를 든다, 31bc: 스냅숏 awaiting_halts 가 그 기록 하나를 낸다, 31bc: 살아 있는 것이 없을 때 대기·이월 인계는 거부되고 중단 인계는 선다, 31bc: 그 중단 인계 행이 답 대기 기록을 싣는다, 31bc: 피드의 stage-result 줄과 handoff 줄이 답 대기 기록을 붙인다, 31bc: 뒤 시도의 실행 증거가 있어도 그 기록은 답 없는 기록으로 남는다, 31bc: 선택지 없는 기록과 반증 기록은 뒤 시도로 자동처리된다, 31bc: 그 기록에 중단 답이 서면 거부가 풀린다 ---
+#
+# A visual step that stopped on a record offering a person two options was
+# dispatched again, and the next attempt's launch evidence then read the record
+# as handled automatically: the question left every count of unanswered records
+# while no person had answered it. Such a record now holds its key until a
+# `중단 답` row names it — the gate refuses the dispatch and writes no row, the
+# snapshot lists the record in `awaiting_halts[]`, and the handoff row and the
+# feed carry its path. A record with no option, and a refutation stop whose
+# route the design document carries, are still passed by the next attempt.
+# ---------------------------------------------------------------------------
+PH_SEAT="31bc0000-1111-2222-3333-444455556661"
+PH_RID=RPH1
+PH_PLAN='{ "steps": [ { "id": "S2V", "skill": "visual", "summary": "시각", "depends_on": [] }, { "id": "S2P", "skill": "visual-publish", "summary": "발행", "depends_on": ["S2V"] } ] }'
+vz_fixture "$PH_RID"
+ph_pd=$(printf '%s\n' "$PH_PLAN" | shasum -a 256 | cut -d' ' -f1)
+sed -e "s/^{ \"steps\": \[\] }\$/$PH_PLAN/" -e "s/^\*\*계획 다이제스트\*\*: .*/**계획 다이제스트**: $ph_pd/" \
+  "$CAP_NM" > "$CAP_NM.t" && mv "$CAP_NM.t" "$CAP_NM"
+check "31bc 픽스처: 매니페스트의 계획에 시각 단계가 있다" "$(grep -cF '"skill": "visual"' "$CAP_NM" || true)" "1"
+{ cap_usage_line 10000 5000 1000; } > "$NTX/$PH_SEAT.jsonl"
+mkdir -p "$CAP_DIR/halt"
+ph_rec() {  # ph_rec <파일> <stage> <스킬> <스텝> [선택지 줄…] — a stage's halt record, `(없음)` with no option line
+  local f="$1" st="$2" sk="$3" step="$4"; shift 4
+  { printf '<!-- cc-pipeline-halt v1; writer=%s; reader=orchestrator; stage=%s; run=%s -->\n' "$sk" "$st" "$PH_RID"
+    printf '**중단 시각**: 2026-11-18T00:00:00Z\n**스킬**: %s\n**스텝**: %s\n' "$sk" "$step"
+    printf '**분류**: gate-unanswerable\n**질문 문면**: 픽스처의 질문\n'
+    if [ "$#" -gt 0 ]; then printf '**선택지**:\n'; printf '%s\n' "$@"; else printf '**선택지**: (없음)\n'; fi
+    printf '**하네스 오류**: (없음)\n**재호출 명령**: (없음)\n**후속**: 보류 큐\n<!-- /cc-pipeline-halt v1 -->\n'
+  } > "$f"
+}
+ph_sr() {  # ph_sr <세그먼트> <스테이지> <종류> <실행 버전> <종단 부류> — a gate-written stage-result row
+  hw_row stage-result 교대=0 "세그먼트=$1" "스테이지=$2" "종류=$3" '종료 코드=0' "실행 버전=$4" \
+    "세션 id=ph-$2-$4" 기록자=게이트 "종단 부류=$5" '실패 서명=-'
+}
+ph_dispatch() {  # ph_dispatch <plan|act> — the visual step's dispatch as the seat issues it
+  cap_gate "$PH_SEAT" '' "$1" --manifest "$CAP_NM" --kind skill --target infra --segment - --cutpoint 커밋 \
+    --surface 워크트리쓰기 --snapshot-digest "$(cap_H "$PH_SEAT" '')" --rationale x \
+    -- visual -p "/cc-cmds:visual-unattended $VZ_DOC"
+}
+ph_awaiting() {  # ph_awaiting — the snapshot's awaiting_halts as 키|기록|스텝, comma-joined
+  cap_snap "$PH_SEAT" '' | jq -r '[.awaiting_halts[]? | "\(.["키"])|\(.["기록"])|\(.["스텝"])"] | join(",")'
+}
+
+# Two records the next attempt still passes: one with no option, and an
+# implementation refutation stop whose answer the design document carries.
+ph_rec "$CAP_DIR/halt/S4#1.md" 'S4#1' implement-unattended 'Step 3 — 외부 대기'
+ph_rec "$CAP_DIR/halt/S2#1.md" 'S2#1' implement-unattended 'Step 3 구현 결함 반증 — 픽스처' \
+  '- `구현 수정` — 같은 런의 교대가 이 기록을 수정 대상으로 구현을 다시 파견한다'
+ph_sr S4 S4 implement 1 '의도된 park'; ph_sr S4 S4 implement 2 '정상 완료'
+ph_sr S2 S2 implement 1 '의도된 park'; ph_sr S2 S2 implement 2 '정상 완료'
+check "31bc: 선택지 없는 기록과 반증 기록은 뒤 시도로 자동처리된다" \
+  "$(cc_auto_handled_halts "$CAP_DIR" "$CAP_LEDGER" | cut -f1 | sort | tr '\n' ' ')" "S2#1 S4#1 "
+
+# The visual step stopped on a record offering two options.
+PH_REC="$CAP_DIR/halt/S2V#1.md"
+ph_rec "$PH_REC" 'S2V#1' visual-unattended 'Step 2 화면 재사용 — 픽스처' \
+  '- `재사용으로 진행` — 이전 화면을 그대로 쓴다' '- `다시 생성` — 화면을 새로 만든다'
+ph_sr - S2V visual 1 '의도된 park'
+# Counted by the key rather than by the whole ledger: this is the seat's first
+# act, and the rows a shift writes on its first act are not the dispatch's.
+ph_nkey() { grep -c 'S2V' "$CAP_LEDGER" || true; }
+ph_n0=$(ph_nkey)
+ph_dispatch act
+check "31bc: 답 없는 선택지 기록이 선 키의 스킬 파견은 3 이고 행을 쓰지 않는다" \
+  "$rc/$(ph_nkey)" "3/$ph_n0"
+case "$msg" in
+  *"키 S2V 에 사람이 고를 선택지를 담은 답 없는 정지 기록이 있습니다: halt/S2V#1.md"*) ok "31bc: 그 거부는 기록 경로를 든다" ;;
+  *) bad "31bc: 그 거부는 기록 경로를 든다" "$msg" ;;
+esac
+check "31bc: 스냅숏 awaiting_halts 가 그 기록 하나를 낸다" "$(ph_awaiting)" "S2V|halt/S2V#1.md|Step 2 화면 재사용 — 픽스처"
+
+# Nothing is alive: a wait or a carry-over has nothing to hold, and the stop
+# hands off with its record on the row.
+ph_handoff() {  # ph_handoff <사유> — the seat's handoff; leaves rc
+  cap_gate "$PH_SEAT" '' act --manifest "$CAP_NM" --kind handoff --target infra --cutpoint 커밋 \
+    --surface 읽기 --snapshot-digest "$(cap_H "$PH_SEAT" '')" --rationale "픽스처 — 인계" \
+    -- 교대=0 대상=infra "사유=$1" '버린 선택지=-' "막힌 지점=$PH_REC" '다음 후보=-' 'CI 대기=-'
+}
+ph_hrows() { { cap_rows handoff | grep -c . || true; } | tr -d ' '; }
+ph_h0=$(ph_hrows)
+ph_handoff 대기; ph_c1=$rc
+ph_handoff 이월; ph_c2=$rc
+ph_handoff 중단
+check "31bc: 살아 있는 것이 없을 때 대기·이월 인계는 거부되고 중단 인계는 선다" \
+  "$ph_c1 $ph_c2 $rc:$(ph_hrows)" "3 3 0:$((ph_h0 + 1))"
+check "31bc: 그 중단 인계 행이 답 대기 기록을 싣는다" \
+  "$(row_field "$(cap_rows handoff | tail -1)" '답 대기 기록')" "halt/S2V#1.md"
+
+# The feed's stage-result line and handoff line name the record.
+ph_fd="$WORK/ph-feed"; rm -rf "$ph_fd"; mkdir -p "$ph_fd"
+cp "$CAP_LEDGER" "$ph_fd/ledger.md"
+ph_feed() {
+  bash "$repo_root/plugins/cc-cmds/orchestrator/feed.sh" --run-dir "$ph_fd" --ledger "$ph_fd/ledger.md" \
+    --once --stall 1200 2>&1
+}
+ph_feed >/dev/null
+{ printf -- '- `stage-result` | 교대=0 | 세그먼트=- | 스테이지=S2V | 종류=visual | 종료 코드=0 | 실행 버전=1 | 종단 부류=의도된 park | 기록자=게이트 | 답 대기 기록=halt/S2V#1.md | prev=x\n'
+  cap_rows handoff | tail -1; } >> "$ph_fd/ledger.md"
+check "31bc: 피드의 stage-result 줄과 handoff 줄이 답 대기 기록을 붙인다" \
+  "$(ph_feed | grep -c ' · 답 대기 halt/S2V#1.md' || true)" "2"
+
+# A later attempt's launch evidence, written past the refusal, does not pass
+# the record: only a person's answer does.
+ph_sr - S2V visual 2 '정상 완료'
+check "31bc: 뒤 시도의 실행 증거가 있어도 그 기록은 답 없는 기록으로 남는다" \
+  "$(cc_unanswered_halts "$CAP_DIR" "$CAP_LEDGER")|$(cc_auto_handled_halts "$CAP_DIR" "$CAP_LEDGER" | grep -c '^S2V#1' || true)" "1|0"
+ph_dispatch plan
+check "31bc 픽스처: 답 전의 파견 예측도 같은 거부다 (아래가 공허하지 않다)" \
+  "$rc/$(printf '%s' "$msg" | grep -c '사람이 고를 선택지를 담은' || true)" "3/1"
+hw_row '중단 답' 세그먼트=S2V "중단 기록=$PH_REC" 스킬=visual-unattended '선택지=재사용으로 진행' \
+  '답한 주체=사람' 근거=픽스처
+ph_dispatch plan
+check "31bc: 그 기록에 중단 답이 서면 거부가 풀린다" \
+  "$(printf '%s' "$msg" | grep -c '사람이 고를 선택지를 담은' || true)|$(ph_awaiting)" "0|"
+vz_drop "$PH_RID"
+rm -rf "$ph_fd"
+unset -f ph_rec ph_sr ph_dispatch ph_awaiting ph_handoff ph_hrows ph_feed ph_nkey
+unset PH_SEAT PH_RID PH_PLAN PH_REC ph_pd ph_n0 ph_h0 ph_c1 ph_c2 ph_fd
+
+# ---------------------------------------------------------------------------
 # 12b. B3's budget is a WINDOW, and the two halves are asserted separately
 # --- section: 12b | group: base | covers: snapshot, act | needs: 33 | anchors: B3 이 한 창 안에서 예산을 넘기면 발동한다 ---
 #

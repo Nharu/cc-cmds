@@ -343,15 +343,79 @@ def _halt_answer_state(numbered, tail, record=None):
     A record no `중단 답` names takes the state of the gate record its
     `**관측 상세**` points at as `게이트 기록=<경로>`, one step only. When
     both read `없음`, the record is `자동처리` if a later attempt of its key
-    ran (`_halt_auto_next`, on the original record's tail); `답함` and
-    `되돌림` always come first.
+    ran (`_halt_auto_next`, on the original record's tail) and the record
+    does not put options before a person (`_halt_person_held`); `답함` and
+    `되돌림` always come first. The person-held test reads `record`, or when
+    none is given the tail resolved as liveness.sh resolves it.
     """
     st = _halt_answer_state_of(numbered, tail)
     if st == "없음" and record:
         st = _halt_pointer_state(numbered, tail, record, st)
     if st == "없음" and _halt_auto_next(numbered, tail) is not None:
-        st = "자동처리"
+        if not _halt_person_held(record or _halt_record_of_tail(tail)):
+            st = "자동처리"
     return st
+
+
+def _halt_record_of_tail(tail):
+    """The record file a tail names: under `RUN_DIR` when its last component
+    is the tail's run id, else under the state home's run directory."""
+    t = tail[1:] if tail.startswith("/") else tail
+    leaf = t.split("/", 1)[0]
+    rest = t[len(leaf) + 1:] if t.startswith(leaf + "/") else t
+    run_dir = os.environ.get("RUN_DIR", "")
+    if run_dir and run_dir.rstrip("/").rsplit("/", 1)[-1] == leaf:
+        return "%s/%s" % (run_dir.rstrip("/"), rest)
+    state = os.environ.get("XDG_STATE_HOME") or os.path.join(os.environ.get("HOME", ""), ".local/state")
+    return "%s/cc-cmds/run/%s/%s" % (state, leaf, rest)
+
+
+_HALT_FENCE = "<!-- /cc-pipeline-halt v1 -->"
+_HALT_OPTIONS_OPEN = re.compile(r"^\*\*선택지\*\*:[ \t]*$")
+_HALT_OPTION_BARE = re.compile(r"^- `[^`]+`$")
+_HALT_OPTION_DESC = re.compile(r"^- `[^`]+` — ")
+_HALT_REFUTATION_STEPS = ("Step 1.5d", "Step 3 구현 중 반증", "Step 3 구현 결함 반증")
+
+
+def halt_option_lines(text):
+    """liveness.sh's `halt_option_lines` — the option lines of a halt record's
+    `**선택지**:` block, verbatim, by the same rule: the block opens only on a
+    `**선택지**:` line with nothing after the colon, closes on the next line
+    starting with `**`, and the closing fence ends the read."""
+    out = []
+    inb = False
+    for line in text.split("\n"):
+        if line == _HALT_FENCE:
+            break
+        if inb and line.startswith("**"):
+            inb = False
+        if _HALT_OPTIONS_OPEN.match(line):
+            inb = True
+            continue
+        if inb and (_HALT_OPTION_BARE.match(line) or _HALT_OPTION_DESC.match(line)):
+            out.append(line)
+    return out
+
+
+def _halt_person_held(record):
+    """liveness.sh's `cc_halt_person_held` — the record exists, offers at
+    least one option and its `**스텝**` begins with none of the three
+    refutation tokens the gate's decision function routes without a person."""
+    if not record:
+        return False
+    try:
+        with open(record, encoding="utf-8", errors="replace") as fh:
+            text = fh.read()
+    except OSError:
+        return False
+    if not halt_option_lines(text):
+        return False
+    step = ""
+    for line in text.split("\n"):
+        if line.startswith("**스텝**: "):
+            step = line[len("**스텝**: "):]
+            break
+    return not step.startswith(_HALT_REFUTATION_STEPS)
 
 
 def _halt_pointer_state(numbered, tail, record, st):
