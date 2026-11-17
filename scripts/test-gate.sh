@@ -56639,6 +56639,8 @@ printf '# 83v 픽스처 설계\n' > "$t3v_doc"
 t3v_key=${t3v_doc#/}
 t3v_m=$(sed -e "s|^\*\*설계 문서\*\*: .*|**설계 문서**: $t3v_key|" -e "s|owner-doc=(없음)|owner-doc=$t3v_key|" "$RX_M")
 printf '%s\n' "$t3v_m" > "$RX_M"
+t3v_g="$WT/docs/pipeline-grant/R83V.md"
+sed "s|owner-doc=(없음)|owner-doc=$t3v_key|" "$t3v_g" > "$t3v_g.t" && mv "$t3v_g.t" "$t3v_g"
 refresh_bd "$RX_M"
 mkdir -p "$WORK/vp83v-cfg/cc-cmds" "$WORK/vp83v-copy" "$WORK/vp83v-bin" "$WORK/vp83v-claude-home"
 cp "$CC_ORCH/visual-config.sh" "$WORK/vp83v-copy/visual-config.sh"
@@ -56705,7 +56707,7 @@ if [ "$rc" = 0 ] && [ -z "$(rx_cell)" ] && grep -qxF '**계정**: vp83v@example.
   ok "83c: 8v — 발행 단계의 record 는 기기전역 선언으로 열려 계정 기록을 쓴다"
 else bad "83c: 8v — 발행 단계의 record 는 기기전역 선언으로 열려 계정 기록을 쓴다" "rc=$rc 칸=$(rx_cell): $msg"; fi
 rm -rf "$t3v_repo"
-unset t3v_key t3v_rec t3v_repo t3v_doc
+unset t3v_key t3v_rec t3v_repo t3v_doc t3v_g
 rm -rf "$WORK/vp83v-cfg" "$WORK/vp83v-copy" "$WORK/vp83v-bin" "$WORK/vp83v-claude-home" "$WORK/vp83v-claude-calls"
 
 # 9 — 기기전역 경로를 담은 외부 상태 변경.
