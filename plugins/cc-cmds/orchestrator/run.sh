@@ -9422,6 +9422,33 @@ halt_record_present() {
   [ "$(grep -v '^[[:space:]]*$' "$f" | tail -1)" = "<!-- /cc-pipeline-halt v1 -->" ]
 }
 
+halt_record_stage_answered() {
+  # halt_record_stage_answered <record path> — 0 when this run's ledger holds a
+  # `중단 답` row carrying both `중단 기록=<that path>` and `답한 주체=스테이지`:
+  # the design stage registered the gate-checked answer to its own
+  # `ladder-unsettled` record and froze the document in the same session, so
+  # the record is no longer a reason to park. Both classifier copies — the
+  # driver's `classify_termination` and the gate's settlement chain, which
+  # sources this file — ask this one function, so the two read one ledger and
+  # one rule.
+  #
+  # Fields are compared by string equality after splitting on ` | `, never as a
+  # regex: a record path is an operand, not a pattern. No ledger, or an empty
+  # one, is no such row (the unit tests call the classifier without a ledger).
+  local rec="$1"
+  [ -n "$rec" ] && [ -n "${LEDGER:-}" ] && [ -s "$LEDGER" ] || return 1
+  run_section_rows '중단 답' | awk -v r="중단 기록=$rec" -v a="답한 주체=스테이지" '
+    { n = split($0, f, "|"); hr = 0; ha = 0
+      for (i = 1; i <= n; i++) {
+        v = f[i]; sub(/^ +/, "", v); sub(/ +$/, "", v)
+        if (v == r) hr = 1
+        if (v == a) ha = 1
+      }
+      if (hr && ha) { found = 1; exit }
+    }
+    END { exit (found ? 0 : 1) }'
+}
+
 # ---------------------------------------------------------------------------
 # THE HALT RECORD'S SHAPE, READ IN ONE PLACE. The gate sources this file, so the
 # option-line rule below is the one the gate's option check, the morning
@@ -10001,7 +10028,15 @@ classify_termination() {
   if [ "$exit_rc" = "0" ] && halt_record_format_clue "$stage" >/dev/null; then
     printf '공허한 성공'; return 0
   fi
-  if halt_record_present "$stage"; then printf '의도된 park'; return 0; fi
+  # A record the stage itself answered through the gate's stage arm of
+  # `halt-answer` (`답한 주체=스테이지`) is no park reason: the same session
+  # went on to freeze the document, so the attempt is judged by the arms below
+  # — `정상 완료` when the freeze literal and the frozen document are there, and
+  # not otherwise. A record with no such row parks as before.
+  if halt_record_present "$stage" \
+     && ! halt_record_stage_answered "$(halt_record_path "$stage")"; then
+    printf '의도된 park'; return 0
+  fi
   # A stage the driver signalled from the limit-shape arm never reaches
   # `stage_collect`, so its `.rc` is the consumer's default and not an
   # observation. The mark the arm left is; it outranks the rc rows below.

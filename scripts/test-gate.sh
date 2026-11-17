@@ -4321,6 +4321,25 @@ pre_cone() {
       bash "$GATE" "$@" ) > "$CAP_OUT" 2> "$CAP_ERR"; rc=$?
     msg=$( { grep -h -vE '\[run\] ' "$CAP_OUT" "$CAP_ERR" || true; } | tr '\n' ' ' | sed 's/[[:space:]]*$//')
   }
+  cap_stage_gate() {
+    # cap_stage_gate <스테이지 id> <세그먼트 표지> <교대 id> <argv…> — `cap_gate`
+    # as a launched stage calls the gate: `CC_PIPELINE_STAGE_ID` set, and the
+    # segment marker as the launcher left it — the key for a driver-launched
+    # stage, `-` for a gate-dispatched run-scope step, empty when only the stage
+    # id was exported. A shift id may ride along, as it does for a stage a shift
+    # started. The digest is read under the same environment, since the session
+    # variables enter it. Leaves `rc`, `CAP_OUT` and `CAP_ERR` as `cap_gate` does.
+    local stid="$1" sseg="$2" shid="$3" sid="5757aaaa-1111-2222-3333-444444444455"; shift 3
+    local h
+    h=$( cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
+      CLAUDE_CODE_SESSION_ID="$sid" CC_CLAUDE_BIN="$CAP_STUB" \
+      CC_PIPELINE_SHIFT_ID="$shid" CC_PIPELINE_STAGE_ID="$stid" CC_PIPELINE_SEGMENT="$sseg" \
+      bash "$GATE" snapshot --manifest "$CAP_NM" 2>/dev/null | jq -r .H )
+    ( cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
+      CLAUDE_CODE_SESSION_ID="$sid" CC_CLAUDE_BIN="$CAP_STUB" \
+      CC_PIPELINE_SHIFT_ID="$shid" CC_PIPELINE_STAGE_ID="$stid" CC_PIPELINE_SEGMENT="$sseg" \
+      bash "$GATE" "${@//@H@/$h}" ) > "$CAP_OUT" 2> "$CAP_ERR"; rc=$?
+  }
   cap_rows() {  # cap_rows <계열> — that series' rows in the cap ledger
     { grep -F "\`$1\`" "$CAP_LEDGER" || true; }
   }
@@ -15501,6 +15520,114 @@ check "15e-3 동결 전 픽스처의 재수렴이 정상 완료다 (아래가 �
 dl15_plan R15EQ "중단 기록 $RD15EQ/halt/D1#1.md 의 질문에 사람이 \`골격 재검토\` 을 골랐습니다. 그 선택지를 질문의 답으로 받아, 기록이 적은 스텝부터 이어서 진행하세요." --resume sau-reconv
 check "15e-3: 마지막 재수렴 세션을 잇는 --resume 재수렴은 통과한다" "$rc" "0"
 rm -f "$WT/$DOC15EQ"
+
+# The design stage that freezes its own ladder record. The stub follows the
+# skill's stage-gate halt-answer call contract: it writes the ladder record,
+# reads through the gate once as every design stage does, and when the record recommends `잔여로 두고 동결` it reads H by itself, calls
+# `act --kind halt-answer` with the record and the option only, and on exit 0
+# writes the `**잔여 동결**` line, freezes the document and prints the freeze
+# literal. Any other recommendation calls nothing and ends on the record.
+# `stub-dl-rec` in the run directory picks the recommendation (`freeze` or
+# `none`), `stub-dl-key` holds the document key the basis quotes.
+STUB_DL_SELF="$WORK/bin/claude-stub-dl-self"
+cat > "$STUB_DL_SELF" <<'STUBDLSEOF'
+#!/usr/bin/env bash
+rd="$CC_PIPELINE_RUN_DIR"; mkdir -p "$rd/halt"
+rec="$rd/halt/$CC_PIPELINE_STAGE_ID.md"
+mode=$(cat "$rd/stub-dl-rec" 2>/dev/null); key=$(cat "$rd/stub-dl-key" 2>/dev/null)
+p=""; prev=""
+for a in "$@"; do [ "$prev" = "-p" ] && p="$a"; prev="$a"; done
+doc=""
+for t in $p; do case "$t" in *.md) doc="$t"; break ;; esac; done
+if [ "$mode" = "freeze" ]; then
+  recline='**추천**: `잔여로 두고 동결` — 남은 항목이 모두 동결 가능한 부류다'
+else
+  recline='**추천**: (없음) — 동결할지는 사람만 아는 우선순위다'
+fi
+printf '%s\n' "<!-- cc-pipeline-halt v1; writer=design-discuss-unattended; reader=orchestrator; stage=$CC_PIPELINE_STAGE_ID; run=$CC_PIPELINE_RUN_ID -->" \
+  '**중단 시각**: 2026-11-17T00:00:00Z' '**스킬**: design-discuss-unattended' '**스텝**: Step 7U / ladder-unsettled' \
+  '**분류**: gate-unanswerable' '**질문 문면**: 사다리가 남긴 잔여 항목을 어떻게 할까요?' '**선택지**:' \
+  '- `잔여로 두고 동결` — 남은 항목을 잔여로 두고 문서를 동결한다' '- `골격 재검토` — 잔여 항목에 맞춰 골격을 다시 본다' \
+  "$recline" "**추천 근거**: 기기 사실:$key 의 R1 차단 부류=코드-부재" '**잔여 판정**: 코드-부재: R1' \
+  '**하네스 오류**: (없음)' '**재호출 명령**: (없음)' '**후속**: 보류 큐' '<!-- /cc-pipeline-halt v1 -->' > "$rec"
+h=$(bash "$CC_PIPELINE_GATE" snapshot --manifest "$CC_PIPELINE_MANIFEST" --fields H 2>/dev/null)
+bash "$CC_PIPELINE_GATE" exec --manifest "$CC_PIPELINE_MANIFEST" --target "$CC_PIPELINE_TARGET" \
+  --segment "$CC_PIPELINE_SEGMENT" --cutpoint 커밋 --surface 읽기 --snapshot-digest "$h" \
+  --rationale "픽스처 — 설계 스테이지 자신의 게이트 호출" -- ls "$CC_PIPELINE_RUN_DIR" >/dev/null 2>&1
+if [ "$mode" = "freeze" ]; then
+  h=$(bash "$CC_PIPELINE_GATE" snapshot --manifest "$CC_PIPELINE_MANIFEST" --fields H 2>/dev/null)
+  bash "$CC_PIPELINE_GATE" act --manifest "$CC_PIPELINE_MANIFEST" --kind halt-answer --target "$CC_PIPELINE_TARGET" \
+    --segment "${CC_PIPELINE_STAGE_ID%%#*}" --cutpoint 커밋 --surface 읽기 --snapshot-digest "$h" \
+    -- "중단 기록=$rec" '선택지=잔여로 두고 동결' >> "$rd/stub-dl-act.txt" 2>&1
+  arc=$?
+  printf '%s\n' "$arc" >> "$rd/stub-dl-rc.txt"
+  if [ "$arc" = 0 ] && [ -f "$doc" ]; then
+    awk -v l="**잔여 동결**: 스테이지 · 잔여로 두고 동결 — 런 $CC_PIPELINE_RUN_ID · R1" \
+      '$0 == "**상태**: 초안" { print "**상태**: 동결됨"; print l; next } { print }' "$doc" > "$doc.t" && mv "$doc.t" "$doc"
+    printf '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.1,"session_id":"sau-dself","num_turns":1,"result":"설계 문서를 동결했습니다."}\n'
+    exit 0
+  fi
+fi
+printf '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.1,"session_id":"sau-dself","num_turns":1,"result":"잔여 사다리에서 멈춥니다."}\n'
+exit 0
+STUBDLSEOF
+chmod +x "$STUB_DL_SELF"
+dl15_draft() {  # dl15_draft <설계 문서> — a draft whose one residual item is code not yet written
+  printf '%s\n' '# 픽스처 설계' '' '**상태**: 초안' '' '## 합의된 아키텍처' '' '본문' '' '## 구현 시 검증 항목' '' \
+    '### R1. 픽스처 항목 1' '**주장**: 픽스처' '**분류**: 실행 측정' '**잔여 사유**: 구현 필요' '**차단 사유**: 픽스처' \
+    '**검증 레시피**: 픽스처' '**기대 결과**: 픽스처' '**실패 시 영향**: 픽스처' '**검증 등급**: 구현 시 검증' > "$WT/$1"
+}
+dl15_self() {  # dl15_self <run id> <설계 문서> <freeze|none> — the self-answering design stage, dispatched and waited for
+  local r="$1" d="$2" rd="$STATE_LATE/cc-cmds/run/$1"
+  mkdir -p "$rd"
+  printf '%s\n' "$3" > "$rd/stub-dl-rec"; printf '%s\n' "$d" > "$rd/stub-dl-key"
+  CC_CMDS_AUTOPILOT_AUTO_RESOLVE=1 au15_dispatch "$r" "$STUB_DL_SELF" design "/cc-cmds:design-discuss-unattended $WT/$d \"테스트\""
+  # Four gate calls inside the stage (two snapshots, a read, the answer), so
+  # the wait is longer than `au15_wait`'s one minute.
+  ( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" \
+    gate_inproc wait --manifest "$WORK/plan-$r.md" --segment D1 --interval 1 --timeout 300 ) >/dev/null 2>&1; rc=$?
+}
+
+# C2 — the stage's own answer: one design attempt, `정상 완료`, the document
+# frozen, the row stamped `스테이지`, and nothing left for the shift to carry.
+DOC15EU='docs/fixture-design-15e3-selffreeze.md'
+au15_run R15EU "$DOC15EU"
+dl15_draft "$DOC15EU"
+RD15EU="$STATE_LATE/cc-cmds/run/R15EU"
+dl15_self R15EU "$DOC15EU" freeze
+check "15e-3: 스스로 답한 설계 스테이지의 halt-answer 가 0 으로 선다" "$(cat "$RD15EU/stub-dl-rc.txt" 2>/dev/null)" "0"
+check "15e-3: 스스로 동결한 설계 시도는 정상 완료다" "$(au15_class R15EU D1 design)" "정상 완료"
+check "15e-3: 스스로 동결한 설계 키에는 시도가 하나뿐이다" \
+  "$(au15_rows R15EU '| 세그먼트=- | 스테이지=D1 | 종류=design |' | grep -c . | tr -d ' ')" "1"
+check "15e-3: 그 중단 답 행은 답한 주체=스테이지 · 선택지=잔여로 두고 동결 이다" \
+  "$( { grep -F '`중단 답`' "$WT/docs/pipeline-run/R15EU.md" || true; } | { grep -F "중단 기록=$RD15EU/halt/D1#1.md |" || true; } \
+     | { grep -cF '| 선택지=잔여로 두고 동결 |' || true; } | tr -d ' ')/$( { grep -F '`중단 답`' "$WT/docs/pipeline-run/R15EU.md" || true; } | { grep -cF '| 답한 주체=스테이지 |' || true; } | tr -d ' ')" "1/1"
+check "15e-3: 문서가 동결되고 잔여 동결 줄이 스테이지를 싣는다" \
+  "$(grep -cxF -e '**상태**: 동결됨' -e "**잔여 동결**: 스테이지 · 잔여로 두고 동결 — 런 R15EU · R1" "$WT/$DOC15EU" | tr -d ' ')" "2"
+check "15e-3: 스테이지가 답한 기록은 교대가 넘길 답으로 남지 않는다" "$(dl15_halts R15EU)" "[]"
+
+# C4 — after the stage's freeze a person may still ask for the skeleton review,
+# and it re-converges on the design key like the seat's freeze.
+reconv15eu="/cc-cmds:design-reconverge $WT/$DOC15EU 잔여 동결 재검토 $RD15EU/halt/D1#1.md"
+dl15_answer R15EU '골격 재검토'
+check "15e-3: 스테이지 동결 뒤 사람의 골격 재검토 답이 선다" "$rc" "0"
+check "15e-3: 스테이지 동결 뒤 골격 재검토의 route 는 설계-재수렴 이다" \
+  "$(au15_snap "$WORK/plan-R15EU.md" | jq -r '[.answered_halts[] | .route] | last // ""')" "설계-재수렴"
+dl15_plan R15EU "$reconv15eu"
+check "15e-3: 스테이지 동결 뒤 입구의 - reconverge 파견 plan 이 통과한다" "$rc" "0"
+rm -f "$WT/$DOC15EU"
+
+# C3 — a record whose recommendation is `(없음)` calls nothing: the attempt
+# parks on it and waits for the seat or a person.
+DOC15EV='docs/fixture-design-15e3-selfnone.md'
+au15_run R15EV "$DOC15EV"
+dl15_draft "$DOC15EV"
+RD15EV="$STATE_LATE/cc-cmds/run/R15EV"
+dl15_self R15EV "$DOC15EV" none
+check "15e-3: 추천이 (없음) 인 사다리 기록의 설계 시도는 의도된 park 다" "$(au15_class R15EV D1 design)" "의도된 park"
+check "15e-3: 그 시도는 halt-answer 를 부르지 않고 중단 답 행도 없다" \
+  "$( [ -e "$RD15EV/stub-dl-rc.txt" ] && printf called || printf none)/$( { grep -cF '`중단 답`' "$WT/docs/pipeline-run/R15EV.md" || true; } | tr -d ' ')" "none/0"
+rm -f "$WT/$DOC15EV"
 
 # After the freeze: the ladder was frozen on, the audit ran, then the person
 # asks for the review.
@@ -38368,6 +38495,146 @@ cap_gate "$SLN_SEAT" '' act --manifest "$CAP_NM" --kind halt-answer --target inf
 check "34p: 사람의 답은 좌석이 거부한 기록에서도 선다" "$rc/$(row_field "$(sln_last)" '답한 주체')/$(row_field "$(sln_last)" '선택지')" "0/사람/골격 재검토"
 check "34p: 사람 답 행에는 잔여 판정 도장이 없다" "$(row_field "$(sln_last)" '잔여 판정')" ""
 
+# A DESIGN STAGE FREEZES ITS OWN LADDER RECORD. A discuss or solo stage whose
+# `/ ladder-unsettled` record recommends `잔여로 두고 동결` registers that
+# answer itself, under every check the seat's answer meets, and the gate stamps
+# `답한 주체=스테이지`, copies the record's basis into `근거` and writes the
+# attachment. Three launch environments: a driver-launched stage (segment
+# marker = key), a gate-dispatched run-scope step (`-`), and a stage that
+# carries only its id and a shift id it inherited. The keys have no
+# `stage-result` row: the attempt is the one still running.
+sln_doc '1:구현 필요:-:0:0' '2:검증 차단:사람-환경:1:0'
+SLN_LV='**잔여 판정**: 코드-부재: R1 / 사람-환경: R2'
+sln_stage() {
+  # sln_stage <스테이지 id> <세그먼트 표지> <교대 id> <--segment> <argv…> — the stage's halt-answer
+  local stid="$1" sseg="$2" shid="$3" key="$4"; shift 4
+  cap_stage_gate "$stid" "$sseg" "$shid" act --manifest "$CAP_NM" --kind halt-answer --target infra \
+    --segment "$key" --cutpoint 커밋 --surface 읽기 --snapshot-digest @H@ \
+    --rationale "픽스처 — 스테이지의 자기 답" -- "$@"
+}
+sln_ah() {  # sln_ah <기록> — how many answered_halts[] elements name the record
+  cap_snap "$SLN_SEAT" '' | jq -r --arg r "$1" '[.answered_halts[] | select(.record == $r)] | length'
+}
+sln_hs=$(sln_ha)
+SLN_S1="$CAP_DIR/halt/S1#1.md"
+sln_rec "$SLN_S1" "$SLN_DD" 'S1#1' "$SLN_LS" gate-unanswerable "$SLN_REC_LINE" "$SLN_B12" "$SLN_LV"
+sln_stage 'S1#1' S1 '' S1 "중단 기록=$SLN_S1" '선택지=잔여로 두고 동결'
+check "34p: 드라이버가 띄운 discuss 스테이지가 자기 사다리 기록을 동결로 답한다" "$rc" "0"
+sln_row=$(sln_last)
+check "34p: 스테이지 답 행은 답한 주체=스테이지 · 선택지=잔여로 두고 동결 · 근거 종류=기기 사실이다" \
+  "$(row_field "$sln_row" '답한 주체')/$(row_field "$sln_row" '선택지')/$(row_field "$sln_row" '근거 종류')" \
+  "스테이지/잔여로 두고 동결/기기 사실"
+check "34p: 스테이지 답 행의 근거는 기록의 추천 근거 줄 그대로다" \
+  "$(row_field "$sln_row" '근거')" "${SLN_B12#'**추천 근거**: '}"
+check "34p: 스테이지 답 행이 잔여 판정 도장을 싣는다" "$(row_field "$sln_row" '잔여 판정')" "코드-부재:R1/사람-환경:R2"
+SLN_S1A="${SLN_S1%.md}.answer.md"
+check "34p: 게이트가 쓴 첨부가 행의 첨부·첨부 다이제스트와 맞는다" \
+  "$(row_field "$sln_row" '첨부')/$(row_field "$sln_row" '첨부 다이제스트')" \
+  "$SLN_S1A/$(shasum -a 256 "$SLN_S1A" 2>/dev/null | cut -d' ' -f1)"
+check "34p: 첨부가 채택한 선택지와 되돌리는 법을 싣는다" \
+  "$( { grep -cxF -e '채택한 선택지: 잔여로 두고 동결' -e '## 되돌리는 법' "$SLN_S1A" || true; } | tr -d ' ')" "2"
+
+sln_doc '1:구현 필요:-:0:0' '2:검증 차단:사람-환경:1:0'
+SLN_S2="$CAP_DIR/halt/S2#1.md"
+sln_rec "$SLN_S2" design-solo-unattended 'S2#1' "$SLN_LS" gate-unanswerable "$SLN_REC_LINE" "$SLN_B12" "$SLN_LV"
+sln_stage 'S2#1' - '' S2 "중단 기록=$SLN_S2" '선택지=잔여로 두고 동결'
+check "34p: 게이트가 파견한 solo 스테이지(세그먼트 -)가 자기 사다리 기록을 동결로 답한다" "$rc" "0"
+SLN_S3="$CAP_DIR/halt/S3#2.md"
+sln_rec "$SLN_S3" "$SLN_DD" 'S3#2' "$SLN_LS" gate-unanswerable "$SLN_REC_LINE" "$SLN_B12" "$SLN_LV"
+sln_stage 'S3#2' - 'shift-34p' S3 "중단 기록=$SLN_S3" '선택지=잔여로 두고 동결'
+check "34p: 교대가 띄운 게이트 파견 스테이지(교대 id 를 물려받음)도 자기 사다리 기록을 동결로 답한다" "$rc" "0"
+check "34p: 세 스테이지 답이 행 셋을 남긴다" "$(sln_ha)" "$((sln_hs + 3))"
+check "34p: 스테이지가 답한 기록은 answered_halts 에 오르지 않는다" \
+  "$(sln_ah "$SLN_S1")/$(sln_ah "$SLN_S2")/$(sln_ah "$SLN_S3")" "0/0/0"
+
+# THE STAGE ARM'S REFUSALS. Each a key of its own, so no case meets another's
+# automatic answer; none leaves a row or an attachment.
+sln_sneg() {
+  # sln_sneg <이름> <기대 문면|-> <스테이지 id> <세그먼트 표지> <--segment> <argv…>
+  local name="$1" want="$2" n0; shift 2
+  n0=$(sln_ha)
+  sln_stage "$@"
+  check "34p: 스테이지의 $name 은 3 으로 거절된다" "$rc" "3"
+  check "34p: 스테이지의 $name 거절은 행을 남기지 않는다" "$(sln_ha)" "$n0"
+  if [ "$want" != "-" ]; then
+    check "34p: 스테이지의 $name 거절 문면" "$( { grep -qF -- "$want" "$CAP_ERR" && printf 'present'; } || printf 'absent')" "present"
+  fi
+}
+sln_sr_rec() {  # sln_sr_rec <스테이지 id> <스킬> <스텝> <분류> <추천 줄> [잔여 판정 줄] — record at the stage's own path
+  local f="$CAP_DIR/halt/$1.md"
+  sln_rec "$f" "$2" "$1" "$3" "$4" "$5" "$SLN_B12" "${6:-$SLN_LV}"
+  printf '%s' "$f"
+}
+sln_xf=$(sln_sr_rec 'X1#1' "$SLN_DD" "$SLN_LS" gate-unanswerable "$SLN_REC_LINE")
+sln_sneg "답한 주체 지정" "is the gate's on the stage arm" 'X1#1' X1 '' X1 "중단 기록=$sln_xf" '선택지=잔여로 두고 동결' '답한 주체=스테이지'
+sln_xf=$(sln_sr_rec 'X0#1' "$SLN_DD" "$SLN_LS" gate-unanswerable "$SLN_REC_LINE")
+sln_sneg "첨부 지정" "is the gate's on the stage arm" 'X0#1' X0 '' X0 "중단 기록=$sln_xf" '선택지=잔여로 두고 동결' "첨부=${sln_xf%.md}.answer.md"
+sln_xf=$(sln_sr_rec 'XE#1' "$SLN_DD" "$SLN_LS" gate-unanswerable '**추천**: (없음) — 동결할지는 사람만 아는 우선순위다')
+sln_sneg "추천 (없음) 기록에 대한 답" - 'XE#1' XE '' XE "중단 기록=$sln_xf" '선택지=잔여로 두고 동결'
+sln_xf=$(sln_sr_rec 'XF#1' "$SLN_DD" "$SLN_LS" gate-unanswerable "$SLN_REC_LINE")
+sln_xff=$(grep -v '^<!-- /cc-pipeline-halt v1 -->$' "$sln_xf"); printf '%s\n' "$sln_xff" > "$sln_xf"
+sln_sneg "닫는 울타리 없는 기록에 대한 답" "closing fence" 'XF#1' XF '' XF "중단 기록=$sln_xf" '선택지=잔여로 두고 동결'
+sln_doc '1:구현 필요:-:0:0' '2:검증 차단:사람-환경:0:0'
+sln_xf=$(sln_sr_rec 'XG#1' "$SLN_DD" "$SLN_LS" gate-unanswerable "$SLN_REC_LINE")
+sln_sneg "구현 후 를 적지 않은 사람-환경 항목의 기록에 대한 답" "does not state" 'XG#1' XG '' XG "중단 기록=$sln_xf" '선택지=잔여로 두고 동결'
+sln_doc '1:구현 필요:-:0:0' '2:검증 차단:사람-환경:1:0'
+# A person's answer to the key's earlier attempt that no stage has taken up yet.
+sln_sr XH 1
+sln_xf=$(sln_sr_rec 'XH#1' "$SLN_DD" "$SLN_LS" gate-unanswerable "$SLN_REC_LINE")
+cap_gate "$SLN_SEAT" '' act --manifest "$CAP_NM" --kind halt-answer --target infra --segment XH \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$SLN_SEAT" '')" \
+         --rationale "픽스처 — 앞 시도에 대한 사람의 답" \
+         -- "중단 기록=$sln_xf" '선택지=골격 재검토' '답한 주체=사람' '근거=사람이 골격 재검토를 고름'
+check "34p: 앞 시도의 기록에 사람의 답이 선다 (아래 거절의 전제)" "$rc" "0"
+sln_xf=$(sln_sr_rec 'XH#2' "$SLN_DD" "$SLN_LS" gate-unanswerable "$SLN_REC_LINE")
+sln_sneg "아직 받지 않은 사람의 답이 있는 키의 답" "a person's answer" 'XH#2' XH '' XH "중단 기록=$sln_xf" '선택지=잔여로 두고 동결'
+sln_xf=$(sln_sr_rec 'X2#1' "$SLN_DD" "$SLN_LS" gate-unanswerable "$SLN_REC_LINE")
+sln_sneg "근거 지정" "is the gate's on the stage arm" 'X2#1' X2 '' X2 "중단 기록=$sln_xf" '선택지=잔여로 두고 동결' '근거=스테이지가 고름'
+sln_xf=$(sln_sr_rec 'X3#1' "$SLN_DD" "$SLN_LS" gate-unanswerable "$SLN_REC_LINE")
+sln_sneg "앞 시도의 기록에 대한 답" "of its own attempt" 'X3#2' X3 '' X3 "중단 기록=$sln_xf" '선택지=잔여로 두고 동결'
+sln_xf=$(sln_sr_rec 'X4#1' "$SLN_DD" "$SLN_LS" gate-unanswerable "$SLN_REC_LINE")
+sln_sneg "다른 키의 기록에 대한 답" "of its own attempt" 'X4b#1' X4b '' X4b "중단 기록=$sln_xf" '선택지=잔여로 두고 동결'
+sln_xf=$(sln_sr_rec 'X5#1' "$SLN_DD" "$SLN_LS" gate-unanswerable '**추천**: `골격 재검토` — 골격을 다시 본다')
+sln_sneg "골격 재검토 추천 기록에 대한 답" - 'X5#1' X5 '' X5 "중단 기록=$sln_xf" '선택지=잔여로 두고 동결'
+sln_xf=$(sln_sr_rec 'X6#1' "$SLN_DD" "$SLN_LS" gate-unanswerable "$SLN_REC_LINE")
+sln_sneg "골격 재검토 선택" "a stage registers only" 'X6#1' X6 '' X6 "중단 기록=$sln_xf" '선택지=골격 재검토'
+sln_xf=$(sln_sr_rec 'X7#1' design-base-unattended "$SLN_LS" gate-unanswerable "$SLN_REC_LINE")
+sln_sneg "design-base-unattended 기록에 대한 답" "only a discuss or solo design stage" 'X7#1' X7 '' X7 "중단 기록=$sln_xf" '선택지=잔여로 두고 동결'
+sln_xf=$(sln_sr_rec 'X8#1' "$SLN_DD" 'Step 5U / skeleton' gate-unanswerable "$SLN_REC_LINE")
+sln_sneg "skeleton 기록에 대한 답" "\`/ ladder-unsettled\` record" 'X8#1' X8 '' X8 "중단 기록=$sln_xf" '선택지=잔여로 두고 동결'
+sln_xf=$(sln_sr_rec 'X9#1' "$SLN_DD" "$SLN_LS" precondition-failed "$SLN_REC_LINE")
+sln_sneg "precondition-failed 기록에 대한 답" "gate-unanswerable" 'X9#1' X9 '' X9 "중단 기록=$sln_xf" '선택지=잔여로 두고 동결'
+sln_xf=$(sln_sr_rec 'XA#1' "$SLN_DD" "$SLN_LS" gate-unanswerable "$SLN_REC_LINE" '**잔여 판정**: 코드-부재: R1 / 전제-반증: R2')
+sln_sneg "전제-반증 값이 있는 기록에 대한 답" "\`전제-반증\`" 'XA#1' XA '' XA "중단 기록=$sln_xf" '선택지=잔여로 두고 동결'
+sln_xf=$(sln_sr_rec 'XB#1' "$SLN_DD" "$SLN_LS" gate-unanswerable "$SLN_REC_LINE")
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=0 sln_sneg "자동 답 스위치가 꺼진 런의 답" "CC_CMDS_AUTOPILOT_AUTO_RESOLVE is off" 'XB#1' XB '' XB "중단 기록=$sln_xf" '선택지=잔여로 두고 동결'
+sln_xf=$(sln_sr_rec 'XC#1' "$SLN_DD" "$SLN_LS" gate-unanswerable "$SLN_REC_LINE")
+sln_sr XC 1
+sln_sneg "이미 stage-result 행이 선 시도의 답" "already has its \`stage-result\` row" 'XC#1' XC '' XC "중단 기록=$sln_xf" '선택지=잔여로 두고 동결'
+sln_xf=$(sln_sr_rec 'XD#1' "$SLN_DD" "$SLN_LS" gate-unanswerable "$SLN_REC_LINE")
+printf '앞서 놓인 첨부\n' > "${sln_xf%.md}.answer.md"
+sln_sneg "첨부가 이미 있는 기록에 대한 답" "already exists" 'XD#1' XD '' XD "중단 기록=$sln_xf" '선택지=잔여로 두고 동결'
+check "34p: 이미 있던 첨부는 덮어쓰이지 않는다" "$(cat "${sln_xf%.md}.answer.md")" "앞서 놓인 첨부"
+sln_sneg "같은 기록에 대한 두 번째 답" - 'S1#1' S1 '' S1 "중단 기록=$SLN_S1" '선택지=잔여로 두고 동결'
+check "34p: 거절된 스테이지 답은 첨부를 남기지 않는다" \
+  "$(for k in X3#1 X5#1 X6#1 X7#1 X8#1 X9#1 XA#1 XB#1 XC#1; do [ -e "$CAP_DIR/halt/$k.answer.md" ] && printf '%s ' "$k"; done)" ""
+
+# THE SEAT DOES NOT ANSWER IT AGAIN, AND A PERSON STILL MAY. Once the attempt
+# that froze has settled (its `stage-result` row below), the record has its
+# automatic answer, so the seat's copy is refused; a person's `골격 재검토`
+# afterwards is the record's next answer, and only it reaches answered_halts.
+printf -- '- `stage-result` | 교대=0 | 세그먼트=S1 | 스테이지=S1 | 종류=design | 실행 버전=1 | 세션 id=s-S1-1 | 종단 부류=정상 완료 | prev=x\n' >> "$CAP_LEDGER"
+sln_neg_seat_n0=$(sln_ha)
+sln_seat S1 "$SLN_S1"
+check "34p: 스테이지가 답한 기록에 대한 좌석 답은 3 으로 거절된다" "$rc/$(sln_ha)" "3/$sln_neg_seat_n0"
+cap_gate "$SLN_SEAT" '' act --manifest "$CAP_NM" --kind halt-answer --target infra --segment S1 \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$SLN_SEAT" '')" \
+         --rationale "픽스처 — 스테이지 동결 뒤 사람의 답" \
+         -- "중단 기록=$SLN_S1" '선택지=골격 재검토' '답한 주체=사람' '근거=사람이 골격 재검토를 고름'
+check "34p: 스테이지 동결 뒤 사람의 골격 재검토가 선다" "$rc/$(row_field "$(sln_last)" '답한 주체')" "0/사람"
+check "34p: 스테이지 답 뒤 사람의 답은 answered_halts 에 사람으로 오른다" \
+  "$(cap_snap "$SLN_SEAT" '' | jq -r --arg r "$SLN_S1" '[.answered_halts[] | select(.record == $r) | .answered_by] | join(",")')" "사람"
+
 # THE STAMP'S SIZE. Twelve and sixteen items fit the row cap with the stamp
 # whole, and what is left of the row once `근거` and the three path values
 # (`중단 기록`, `첨부`, `레인`) are taken out — B — is 684 bytes or less, so
@@ -52267,7 +52534,7 @@ check "67b: 두 부류만 적은 줄을 사본에서 잡는다" \
 
 # ---------------------------------------------------------------------------
 # 67c. 잔여 사다리 동결과 골격 재검토 경로의 문면 고정
-# --- section: 67c | group: static | covers: - | anchors: 67c: 라우터 항목 2 의 경로 표가 설계-재수렴 을 항목 9 로 보낸다, 67c: 라우터 항목 5 가 골격 재검토 표지를 항목 9 로 보낸다, 67c: 라우터 항목 9 가 파견 모양을 싣는다, 67c: 범위 문자열이 사이드카 정의와 바이트로 같다, 67c: 설계 스킬들이 사다리 정지 문면을 싣는다, 67c: 좌석 문면이 동결 뒤 골격 재검토를 싣는다, 67c: 구현 스킬이 머지 뒤 사람 확인 꼬리표와 W3 시점 짝을 싣는다, 67c: 재수렴 스킬이 구현 전 문장을 싣는다, 67c: 아침 보고서가 동결 잔여 목록을 싣는다 ---
+# --- section: 67c | group: static | covers: - | anchors: 67c: 라우터 항목 2 의 경로 표가 설계-재수렴 을 항목 9 로 보낸다, 67c: 라우터 항목 5 가 골격 재검토 표지를 항목 9 로 보낸다, 67c: 라우터 항목 9 가 파견 모양을 싣는다, 67c: 범위 문자열이 사이드카 정의와 바이트로 같다, 67c: 설계 스킬들이 사다리 정지 문면을 싣는다, 67c: 두 설계 스킬이 스테이지의 halt-answer 계약을 싣는다, 67c: 좌석 문면이 동결 뒤 골격 재검토를 싣는다, 67c: 구현 스킬이 머지 뒤 사람 확인 꼬리표와 W3 시점 짝을 싣는다, 67c: 재수렴 스킬이 구현 전 문장을 싣는다, 67c: 아침 보고서가 동결 잔여 목록을 싣는다 ---
 #
 # The gate enforces the re-convergence entry; the routing shift, the design
 # skills, the seat and the morning report only describe it, and nothing runs
@@ -52337,15 +52604,26 @@ check "67c: 설계 스킬들이 사다리 정지 문면을 싣는다" \
   "$(fc67c_lits "$fc67c_sk/design-discuss-unattended/SKILL.md" \
       'Always `**스텝**: Step 7U / ladder-unsettled` (naming `설계-골격` there makes the gate refuse the seat)' \
       'In a `design-base-unattended` run the line is always `**추천**: (없음)`' \
-      '`**잔여 동결**: <좌석|사람> · <선택지> — 런 <run id> · R<n>, R<n>`' \
+      '`**잔여 동결**: <좌석|사람|스테이지> · <선택지> — 런 <run id> · R<n>, R<n>`' \
       '- **Ladder answer `골격 재검토`**: do not redesign here')/$(fc67c_lits "$fc67c_sk/design-solo-unattended/SKILL.md" \
-      'When this freeze follows an answer to this stage'"'"'s `ladder-unsettled` halt, first write the `**잔여 동결**` line')/$(fc67c_lits "$fc67c_sk/design-base-unattended/SKILL.md" \
+      'When this freeze follows an answer to this stage'"'"'s `ladder-unsettled` halt — the seat'"'"'s, a person'"'"'s, or this stage'"'"'s own answer the gate accepted — first write the `**잔여 동결**` line' \
+      'in the discuss arm'"'"'s Step 7U job 5 form (`<좌석|사람|스테이지>`)')/$(fc67c_lits "$fc67c_sk/design-base-unattended/SKILL.md" \
       '**This arm'"'"'s own halt records write `**스킬**: design-base-unattended`**' \
-      'in this arm the ladder halt'"'"'s `**추천**` is always `(없음)`, so both answers come from a person')" "4/1/2"
+      'in this arm the ladder halt'"'"'s `**추천**` is always `(없음)`, so both answers come from a person')" "4/2/2"
+
+# Both design arms carry the stage-gate halt-answer call contract: discuss
+# writes it, solo points at it from its halt and residual-ladder steps.
+check "67c: 두 설계 스킬이 스테이지의 halt-answer 계약을 싣는다" \
+  "$(fc67c_lits "$fc67c_sk/design-discuss-unattended/SKILL.md" \
+      '- **When the record recommends `잔여로 두고 동결`, follow the stage–gate `halt-answer` call contract below verbatim**' \
+      '- **The stage–gate `halt-answer` call contract.**' \
+      'a `중단 답` row carrying both `중단 기록=<this record'"'"'s absolute path>` and `답한 주체=스테이지`')/$(fc67c_lits "$fc67c_sk/design-solo-unattended/SKILL.md" \
+      'When the record recommends `잔여로 두고 동결`, follow the discuss arm'"'"'s stage–gate `halt-answer` call contract (its Step 7U job 4) verbatim' \
+      'the discuss arm'"'"'s stage–gate `halt-answer` call contract (its Step 7U job 4, items 2–6) and Step 7U job 5 follow it in the same session')" "3/2"
 
 check "67c: 좌석 문면이 동결 뒤 골격 재검토를 싣는다" \
   "$(fc67c_lits "$fc67c_sk/autopilot/references/act2-seat.md" \
-      '**A person may still ask for the skeleton review on a ladder record the seat froze.**' \
+      '**A person may still ask for the skeleton review on a ladder record the seat or the stage froze.**' \
       "write a \`halt-answer\` on the same record with \`'선택지=골격 재검토'\` and \`'답한 주체=사람'\`" \
       '**The one exception is a skeleton review asked for after the run ended**' \
       'The seat never runs it, and no row of this run carries it.')" "4"
