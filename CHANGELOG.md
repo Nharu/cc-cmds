@@ -5,6 +5,20 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.48.3] - 2026-11-18
+
+교대 스킬 본문에서 드물게 쓰이는 절을 참조 파일로 더 옮겨, 교대마다 첫 요청에 실리는 본문을 줄인다. 본문은 164,459 바이트에서 73,127 바이트가 되었다. 옮긴 문면은 바이트 그대로이며, 교대는 색인 표의 진입 조건이 설 때만 그 파일을 읽는다.
+
+### Changed
+
+- **`autopilot-router-shift` 본문 분리** — 감사 파견(`audit-dispatch.md`), 세그먼트 계획(`planning.md`), 리뷰어 런(`reviewer-run.md`), 머지와 적용(`merge-apply-1.md`·`merge-apply-2.md`), 머지 기록(`merge-record.md`), 리뷰 뒤 재구현 파견(`impl-redispatch.md`), 세그먼트 한 개 정지(`segment-stop.md`), 종료 절 정산의 뒷부분(`termination.md`)을 `references/` 로 옮겼다. 종료 절 정산 절은 머리와 act 필드 표만 본문에 남는다.
+- **색인 표** — 새 파일마다 진입 조건 행을 더하고, 모든 행이 그 파일의 표제를 꺾쇠로 싣는다. 옮긴 절 밖에서도 쓰이는 문장의 조건(베이스 이동 `재시도` 답, `decision_holds[]` 등)도 행에 들어 있다.
+- **시험** — 메타 불변 시험이 본문 78,000 바이트 상한, 옮긴 표제의 단일 위치, 인용된 표제의 색인 행 기재, 코퍼스 표제 중복 없음을 단언한다. 옮긴 문구를 읽던 시험 자리는 옮겨 간 참조 파일을 읽는다.
+
+### Why
+
+교대는 매번 새 세션으로 떠서 본문 전체를 첫 요청에 싣는다. 실행 비율이 15% 이하인 절을 떼어 내면 교대당 첫 요청 프리픽스와 캐시 쓰기 비용이 함께 준다.
+
 ## [3.48.0] - 2026-11-17
 
 Claude Design 발행의 기대 계정을 호스트 하나가 아니라 문서마다 정한다. 발행된 캔버스는 만든 계정에 묶이는데, 지금까지는 호스트 설정 파일의 `account` 하나와 로그인을 대조해 여러 계정으로 나눠 발행한 문서를 다룰 수 없었다. 이제 첫 발행이 그 계정을 문서 계정 기록 `docs/visual-account/<slug>.md` 에 남기고, 그 뒤의 다시 발행·동기는 기록된 계정으로만 진행한다.
