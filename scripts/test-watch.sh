@@ -1584,6 +1584,17 @@ blocked_row() {
 approval_row() {
   printf -- '- `승인` | 승인 id=%s | 상태=대기 | 막는 세그먼트=S1\n' "$1" >> "$LG"
 }
+shw_seed() {
+  # shw_seed <앵커> <자리> <의존 세그먼트> [<번호>] — a shift halt record under
+  # `$RD/halt/shift/<앵커>#<번호>.md` and the cone `blocked` row that vouches for
+  # it, in the field spelling the gate's shift-halt writer uses.
+  local a="$1" site="$2" deps="$3" sn="${4:-1}" rec
+  mkdir -p "$RD/halt/shift"
+  rec="$RD/halt/shift/$a#$sn.md"
+  printf '**스킬**: autopilot-router-shift\n**질문 문면**: 시험 질문 %s\n' "$a" > "$rec"
+  printf -- '- `blocked` | 대상=cc-cmds | 스코프=cone | 원인=막힘 | 앵커 세그먼트=%s | 사유=교대 정지 — %s | 근거=시험 | 중단 기록=%s | 기록 다이제스트=abc | 자리=%s | 의존 세그먼트 수=%s | 의존 세그먼트=%s | prev=x\n' \
+    "$a" "$site" "$rec" "$site" "$(printf '%s' "$deps" | tr ',' '\n' | grep -c .)" "$deps" >> "$LG"
+}
 # The kill switch is attached to the REAL command, never to the function and
 # never file-wide. A prefix assignment on a bash function call outlives the call,
 # so every case after it would inherit the value with nothing on screen to say so.
@@ -1678,6 +1689,8 @@ ks_seed() {
                  printf -- '- `stage-result` | 세그먼트=S1 | 종료 코드=0\n' >> "$LG" ;;
     run-open)    printf -- '- `run` | id=R1 | 시작=2026-09-03T00:00:00Z\n' > "$LG" ;;
     silence)     printf -- '- `segment` | id=S1 | 상태=실행중\n' > "$LG" ;;
+    shift-halt)  printf -- '- `segment` | id=S1 | 상태=실행중\n' > "$LG"
+                 shw_seed S1 '적용 정산' S1 ;;
   esac
 }
 ks_run() {
@@ -1690,7 +1703,7 @@ ks_run() {
   esac
 }
 
-for arm in ended answer answer-run rekick hands after-stage run-open silence; do
+for arm in ended answer answer-run rekick hands after-stage run-open silence shift-halt; do
   fresh
   : > "$NOTIFY_LOG"
   ks_seed "$arm"
@@ -1709,6 +1722,18 @@ for arm in ended answer answer-run rekick hands after-stage run-open silence; do
   sleep 0.2
   check "킬스위치가 '$arm' arm 도 끈다" "$(notify_lines)" "0"
 done
+
+# 교대 정지 배너의 켬 대조가 그 갈래에서 왔다는 것 — 위 반복의 대조는 배너 수만
+# 세므로, 기록의 칸 키가 실린 줄이 있어야 그 갈래가 실제로 울린 것이다.
+fresh
+: > "$NOTIFY_LOG"
+ks_seed shift-halt
+ks_run 1 shift-halt >/dev/null
+notify_settle 1
+check "교대 정지 기록의 배너는 그 기록의 칸 키로 뜬다" \
+  "$(grep -cF -- 'shift-halt-S1#1 ' "$NOTIFY_LOG" 2>/dev/null || true)" "1"
+check "배너를 띄운 기록 이름이 표지에 한 줄 남는다" \
+  "$(cat "$RD/watch.announced-shift-halts" 2>/dev/null)" "S1#1"
 
 # ---------------------------------------------------------------------------
 # One token chooses TITLE AND GROUP, and the assertion reads both from the same
@@ -2680,6 +2705,119 @@ r7_drive after
 # 화면에 남는 것은 ended 다 — 멈춤 배너가 ended 를 덮는 순서는 나오지 않는다.
 check "재시험 뒤에 생긴 done 은 resume 다음 ended 순서로 남는다" "$(r7_order)" "resume|ended|"
 
+# 사람의 답을 기다리는 교대 정지 기록이 있으면 정산 멈춤 갈래는 다른 조건이 모두
+# 서도 울리지 않고 표지도 남기지 않는다. 같은 입력에 `shw=0` 을 준 대조가 울려야
+# 그 침묵이 `shw` 때문이라는 것이 선다.
+r7_shw() {
+  # r7_shw <shw> — 갈래 하나를 지연 없이 돌린다.
+  : > "$R7_LOG"
+  CC_SETTLE_FN="$settle_fn" R7_LOG="$R7_LOG" SHW="$1" \
+  RUN_DIR="$RD" LEDGER="$LG" LIVENESS_SH="$LIVENESS" \
+    bash -c '
+      . "$LIVENESS_SH"
+      eval "$CC_SETTLE_FN"
+      failover_waiting() { return 1; }
+      announce() { return 0; }
+      cc_notify_fire() { printf "%s\n" "$1" >> "$R7_LOG"; return 0; }
+      STALL=100 age=300 live=0 pend=0 nonterm=0 size=1 thr=100 quiet=300 relay_eff=0 shw=$SHW
+      settle_stall_arm
+    '
+}
+fresh
+eod_mark
+printf -- '- `segment` | id=S1 | 상태=머지됨\n' > "$LG"
+r7_shw 1
+check "대기 교대 정지 기록이 있으면 정산 멈춤 갈래는 울리지 않는다" "$(r7_order)" ""
+check "그때 정산 멈춤 표지도 남기지 않는다" \
+  "$(ls "$RD"/watch.announced-settle-stall-* 2>/dev/null | grep -c . || true)" "0"
+fresh
+eod_mark
+printf -- '- `segment` | id=S1 | 상태=머지됨\n' > "$LG"
+r7_shw 0
+check "대조 — 대기 기록이 없으면 같은 입력에서 정산 멈춤 갈래가 울린다" "$(r7_order)" "resume|"
+
+# ---------------------------------------------------------------------------
+# 대기 교대 정지 기록의 네 조건. 모두 서는 픽스처에서 한 줄이고, 조건을 하나씩
+# 깨면 0 줄이다 — 답 첨부 파일, 보증 행 없음, `중단 답` 있음, 뒤 `종료 절` 행.
+# ---------------------------------------------------------------------------
+shw_lines() {
+  RUN_DIR_ARG="$RD" LG_ARG="$LG" LIVENESS_SH="$LIVENESS" bash -c '
+    . "$LIVENESS_SH"
+    cc_waiting_shift_halts "$RUN_DIR_ARG" "$LG_ARG" | grep -c . || true'
+}
+shw_out() {
+  RUN_DIR_ARG="$RD" LG_ARG="$LG" LIVENESS_SH="$LIVENESS" bash -c '
+    . "$LIVENESS_SH"
+    cc_waiting_shift_halts "$RUN_DIR_ARG" "$LG_ARG"'
+}
+
+fresh
+printf -- '- `segment` | id=S1 | 상태=머지됨\n' > "$LG"
+shw_seed clause-C2 '종료 절 근거' clause-C2
+check "네 조건이 모두 서면 대기 교대 정지 기록은 한 줄이다" "$(shw_lines)" "1"
+check "그 줄은 이름·자리·앵커·경로다" "$(shw_out)" \
+  "clause-C2#1	종료 절 근거	clause-C2	$RD/halt/shift/clause-C2#1.md"
+check "질문 문면은 첫 질문 문면 줄의 값이다" \
+  "$(LIVENESS_SH="$LIVENESS" REC="$RD/halt/shift/clause-C2#1.md" bash -c '. "$LIVENESS_SH"; cc_shift_halt_question "$REC"')" \
+  "시험 질문 clause-C2"
+
+fresh
+printf -- '- `segment` | id=S1 | 상태=머지됨\n' > "$LG"
+shw_seed clause-C2 '종료 절 근거' clause-C2
+mv "$RD/halt/shift/clause-C2#1.md" "$RD/halt/shift/clause-C2#1.answer.md"
+check "답 첨부 파일은 대기 기록이 아니다" "$(shw_lines)" "0"
+
+fresh
+printf -- '- `segment` | id=S1 | 상태=머지됨\n' > "$LG"
+mkdir -p "$RD/halt/shift"
+printf '**질문 문면**: 손으로 둔 기록\n' > "$RD/halt/shift/S1#1.md"
+check "보증 행이 없는 파일은 대기 기록이 아니다" "$(shw_lines)" "0"
+
+fresh
+printf -- '- `segment` | id=S1 | 상태=실행중\n' > "$LG"
+shw_seed S1 '적용 정산' S1
+printf -- '- `중단 답` | 중단 기록=%s | 선택지=재시도 | prev=x\n' "$RD/halt/shift/S1#1.md" >> "$LG"
+check "중단 답이 선 기록은 대기 기록이 아니다" "$(shw_lines)" "0"
+
+fresh
+printf -- '- `segment` | id=S1 | 상태=머지됨\n' > "$LG"
+shw_seed clause-C2 '종료 절 근거' clause-C2
+printf -- '- `종료 절` | id=C2 | 상태=충족 | 근거=시험 | prev=x\n' >> "$LG"
+check "보증 행 뒤 같은 id 의 종료 절 행이 닫은 요청은 대기 기록이 아니다" "$(shw_lines)" "0"
+
+fresh
+printf -- '- `segment` | id=S1 | 상태=머지됨\n' > "$LG"
+printf -- '- `종료 절` | id=C2 | 상태=미충족 | 근거=시험 | prev=x\n' >> "$LG"
+shw_seed clause-C2 '종료 절 근거' clause-C2
+check "보증 행 앞의 종료 절 행은 그 뒤 요청을 닫지 않는다" "$(shw_lines)" "1"
+
+# 잡힌 세그먼트는 보증 행의 의존 세그먼트 목록이다. 목록이 잘렸고 cone 파일이 그
+# 수와 맞지 않으면 앵커 하나만 잡는다.
+fresh
+printf -- '- `segment` | id=S1 | 상태=실행중\n- `segment` | id=S2 | 상태=실행중\n' > "$LG"
+shw_seed S1 '적용 정산' S1,S2
+check "잡힌 세그먼트는 의존 세그먼트 목록이다" \
+  "$(LIVENESS_SH="$LIVENESS" RDA="$RD" LGA="$LG" bash -c '. "$LIVENESS_SH"; cc_shift_halt_held "$RDA" "$LGA"' | tr '\n' ',')" "S1,S2,"
+fresh
+printf -- '- `segment` | id=S1 | 상태=실행중\n- `segment` | id=S2 | 상태=실행중\n' > "$LG"
+shw_seed S1 '적용 정산' S1
+sed 's/의존 세그먼트 수=1/의존 세그먼트 수=2/' "$LG" > "$LG.t" && mv "$LG.t" "$LG"
+check "잘린 목록에 맞는 cone 파일이 없으면 앵커 하나만 잡는다" \
+  "$(LIVENESS_SH="$LIVENESS" RDA="$RD" LGA="$LG" bash -c '. "$LIVENESS_SH"; cc_shift_halt_held "$RDA" "$LGA"' | tr '\n' ',')" "S1,"
+printf 'S1,S2\n' > "$RD/cone.S1"
+check "잘린 목록은 수가 맞는 cone 파일로 대신한다" \
+  "$(LIVENESS_SH="$LIVENESS" RDA="$RD" LGA="$LG" bash -c '. "$LIVENESS_SH"; cc_shift_halt_held "$RDA" "$LGA"' | tr '\n' ',')" "S1,S2,"
+
+# 비종단 개수는 비종단 id 의 줄 수다. 소속 판정은 하나다.
+fresh
+printf -- '- `segment` | id=S1 | 상태=실행중\n- `segment` | id=S2 | 상태=머지됨\n- `segment` | id=S3 | 상태=park\n- `segment` | id=S4 | 상태=계획됨\n' > "$LG"
+nt_ids=$(LIVENESS_SH="$LIVENESS" LGA="$LG" bash -c '. "$LIVENESS_SH"; cc_nonterminal_segment_ids "$LGA"' | sort | tr '\n' ',')
+nt_n=$(LIVENESS_SH="$LIVENESS" LGA="$LG" bash -c '. "$LIVENESS_SH"; cc_nonterminal_segments "$LGA"')
+check "비종단 id 는 종단이 아닌 세그먼트다" "$nt_ids" "S1,S4,"
+check "비종단 개수는 비종단 id 의 줄 수와 같다" "$nt_n" "2"
+check "원장이 없으면 비종단 개수는 0 이다" \
+  "$(LIVENESS_SH="$LIVENESS" bash -c '. "$LIVENESS_SH"; cc_nonterminal_segments ""')" "0"
+
 # ---------------------------------------------------------------------------
 # 유휴 자기 종료 — 아무도 기다리지 않는 런에서 루프가 `done` 없이 스스로 끝나고,
 # 사람의 답을 기다리는 런에서는 끝나지 않는다.
@@ -3149,7 +3287,8 @@ unset -f sil_jump sil_held sil_const sil_open_quiet
 # `checks.observed` 처럼 릴레이 경로만 읽어 탐침에서 뺀 이름(qp_relay_only)이다 — 살아 있는 릴레이는
 # 그것만으로 런을 일하는 런으로 만들므로 그 경로는 조용한 런의 탐침에 닿지 않는다.
 # 디렉터리 원소(`halt/`)는 직접 자식이 생기거나 이름이 바뀌어 들어올 때 시각이
-# 움직인다.
+# 움직인다. `cone.<앵커>` 를 덮는 원소는 `LEDGER` 다 — 게이트는 그 파일을 같은
+# 행위의 cone `blocked` 행보다 먼저 쓰므로, 그 행이 원장을 키울 때 파일은 이미 있다.
 # ---------------------------------------------------------------------------
 QP_LIST=$(sed -n "s/^WATCH_PROBES='\(.*\)'\$/\1/p" "$WATCH")
 qp_inputs='*.pid *.pid
@@ -3167,10 +3306,12 @@ shift.live shift.live
 relay.live relay.live
 halt halt/
 halt/*.md halt/
+halt/shift halt/shift/
 halt/shift/* halt/shift/
 halt/shift/*.md halt/shift/
 done done
 ends-on-done ends-on-done
+cone. LEDGER
 routing-guard -
 ci-layer -
 fixed-graph -
