@@ -5,6 +5,17 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.48.3] - 2026-11-18
+
+무인 discuss·solo 설계 스테이지가 남긴 잔여 사다리 중단(`/ ladder-unsettled`)의 추천이 `잔여로 두고 동결` 이면, 스테이지가 그 답을 게이트에 직접 등록하고 같은 세션에서 문서를 동결한다. 지금까지는 같은 추천이라도 스테이지가 멈춘 뒤 좌석이 답하고 설계 세션을 한 번 더 띄워야 해서, 바꾸는 것이 없는 답 하나에 세션 하나와 교대 한 번이 들었다.
+
+### Changed
+
+- **게이트 `halt-answer` 의 스테이지 갈래** — 스테이지 호출은 교대 표지보다 먼저 가린다. 자기 시도의 기록(`$RUN_DIR/halt/$CC_PIPELINE_STAGE_ID.md`, `--segment` 는 스테이지 id 의 `#` 앞)이고, 완결된 `gate-unanswerable` 사다리 기록이며, 쓴 스킬이 discuss 나 solo 이고, 자동 답 스위치가 켜져 있고, 좌석 답과 같은 추천·설계 문서 대조와 자동 답 상한을 지나고, 이 시도의 `stage-result` 행이 아직 없을 때만 받는다. 스테이지는 `중단 기록` 과 `선택지` 만 넘기고, 게이트가 `답한 주체=스테이지`, 기록의 추천 근거를 그대로 옮긴 `근거`, `근거 종류=기기 사실`, 잔여 판정 도장과 첨부를 쓴다.
+- **두 분류기** — 드라이버의 `classify_termination` 과 게이트의 정산 사슬은 `답한 주체=스테이지` 행이 이름 댄 기록을 park 근거로 쓰지 않고 산출물 술어로 판정한다.
+- **자동 답 판정 사본** — 게이트·`liveness.sh`·`attention-round.sh`·`dashboard_read.py` 가 `스테이지` 를 사람 없이 쓴 답으로 읽는다. 게이트의 `answered_halts` 는 스테이지 행을 넘길 답으로 싣지 않는다.
+- **스킬** — `design-discuss-unattended` 에 스테이지–게이트 `halt-answer` 호출 계약을 두고, `design-solo-unattended` 가 그것을 따른다. `**잔여 동결**` 줄의 주체에 `스테이지` 가 더해진다. 좌석 참조와 아침 보고서는 스테이지가 동결한 기록을 좌석이 다시 답하지 않고, 사람 없이 동결한 잔여 항목에 함께 싣는다.
+
 ## [3.48.0] - 2026-11-17
 
 Claude Design 발행의 기대 계정을 호스트 하나가 아니라 문서마다 정한다. 발행된 캔버스는 만든 계정에 묶이는데, 지금까지는 호스트 설정 파일의 `account` 하나와 로그인을 대조해 여러 계정으로 나눠 발행한 문서를 다룰 수 없었다. 이제 첫 발행이 그 계정을 문서 계정 기록 `docs/visual-account/<slug>.md` 에 남기고, 그 뒤의 다시 발행·동기는 기록된 계정으로만 진행한다.
