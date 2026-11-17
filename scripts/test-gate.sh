@@ -850,6 +850,10 @@ fi
 # print nothing.
 tg_report_fail_file=""
 tg_report_sel=""
+# The load-marked failures of the same narrowed run, `<id><TAB><label>` per line,
+# which the wrapper reads to decide whether the failed sections are run again on
+# their own (`oracle_load_rerun`). Set by the same call, empty everywhere else.
+tg_report_load_file=""
 
 # ---------------------------------------------------------------------------
 # THE THREE-SIGNAL ORACLE — totals, FAIL reconciliation, noise
@@ -1198,12 +1202,98 @@ oracle_run() {
   rm -f "$fo" "$fe"
   printf '%s\n' "$rc" > "$cap/rc"
 
+  # A narrowed run that may run its load-marked failures again holds the
+  # verdict's output until the rerun decides what it says. Whether to hold is
+  # decided by the run's own conditions alone; the rest need the verdict.
+  if [ -n "$tg_report_load_file" ] && [ -z "${CC_TEST_GATE_LOAD_RERUN:-}" ] && [ -z "$sec_iso_out" ]; then
+    oracle_load_rerun "$cap" "$script" "$scope"
+    return $?
+  fi
   if [ -n "$tg_report_fail_file" ] && [ -s "$tg_report_fail_file" ]; then
     oracle_report_failed "$tg_report_fail_file" "$tg_report_sel"
   fi
   oracle_judge "$cap" "$script" "$cap/map" "$scope"
   verdict_rc=$?
   return "$verdict_rc"
+}
+
+# THE LOAD RERUN. A narrowed run whose every failure is a load-marked assertion,
+# attributed to a section, under a plain `fail` verdict with no enforced noise,
+# runs each failed section once more on its own. All of them passing makes the
+# run a pass that names the failures it absorbed; any of them failing makes it the
+# failure it was, with the sections that failed again named first. A run that
+# does not meet the conditions prints what the verdict printed and ends as before.
+oracle_load_rerun() {
+  local cap="$1" script="$2" scope="$3"
+  local jo je vrc tot passed_n failed_n faillines enf ok=1 ids="" id lab n=0 bad_ids="" r
+  jo=$(mktemp "${TMPDIR:-/tmp}/cc-gate-oracle-jo.XXXXXX")
+  je=$(mktemp "${TMPDIR:-/tmp}/cc-gate-oracle-je.XXXXXX")
+  oracle_judge "$cap" "$script" "$cap/map" "$scope" > "$jo" 2> "$je"
+  vrc=$?
+
+  tot=$(grep -E '^test-gate: [0-9]+ passed, [0-9]+ failed$' "$cap/out" 2>/dev/null | tail -1 || true)
+  passed_n=$(printf '%s\n' "$tot" | sed -E 's/^test-gate: ([0-9]+) passed, ([0-9]+) failed$/\1/')
+  failed_n=$(printf '%s\n' "$tot" | sed -E 's/^test-gate: ([0-9]+) passed, ([0-9]+) failed$/\2/')
+  faillines=$(grep -c '^FAIL:' "$cap/err" 2>/dev/null || true)
+  enf=$(grep '^test-gate: 판정=' "$je" | tail -1 | sed -nE 's/.*노이즈 강제=([0-9]+).*/\1/p')
+  [ "$vrc" = "1" ] || ok=0
+  [ -n "$tot" ] && [ "$faillines" = "$failed_n" ] || ok=0
+  [ "$enf" = "0" ] || ok=0
+  if [ "$ok" = "1" ]; then
+    [ -s "$tg_report_fail_file" ] && [ -s "$tg_report_load_file" ] || ok=0
+  fi
+  if [ "$ok" = "1" ]; then
+    [ "$(grep -c '' "$tg_report_fail_file")" = "$failed_n" ] || ok=0
+    while IFS= read -r id; do
+      case "$id" in ''|-|@*) ok=0; break ;; esac
+      case ",$ids," in *",$id,"*) ;; *) ids="${ids:+$ids,}$id" ;; esac
+    done < "$tg_report_fail_file"
+  fi
+  if [ "$ok" = "1" ]; then
+    for id in ${ids//,/ }; do
+      [ "$(grep -cxF "$id" "$tg_report_fail_file")" = "$(awk -F '\t' -v i="$id" '$1 == i { n++ } END { print n + 0 }' "$tg_report_load_file")" ] || { ok=0; break; }
+    done
+  fi
+
+  if [ "$ok" != "1" ]; then
+    if [ -n "$tg_report_fail_file" ] && [ -s "$tg_report_fail_file" ]; then
+      oracle_report_failed "$tg_report_fail_file" "$tg_report_sel"
+    fi
+    cat "$je" >&2; cat "$jo"
+    rm -f "$jo" "$je"
+    return "$vrc"
+  fi
+
+  for id in ${ids//,/ }; do
+    CC_TEST_GATE_LOAD_RERUN=1 CC_TEST_SLOT_HELD=1 bash "$SELF" --sections "$id" >&2
+    r=$?
+    [ "$r" = "0" ] || bad_ids="${bad_ids:+$bad_ids }$id"
+  done
+
+  if [ -n "$bad_ids" ]; then
+    for id in $bad_ids; do
+      printf 'test-gate: 회귀 — 절 %s: 단독 재실행에서도 실패했습니다\n' "$id" >&2
+    done
+    oracle_report_failed "$tg_report_fail_file" "$tg_report_sel"
+    cat "$je" >&2; cat "$jo"
+    rm -f "$jo" "$je"
+    return "$vrc"
+  fi
+
+  grep -v -e '^test-gate: 판정=' -e '^test-gate: 캡처 — ' "$je" >&2 || true
+  grep -v '^::error::' "$jo" || true
+  while IFS=$'\t' read -r id lab; do
+    [ -n "$id" ] || continue
+    n=$((n + 1))
+    printf 'test-gate: 부하 실패 — 절 %s: 「%s」 · 단독 재실행 통과\n' "$id" "$lab" >&2
+  done < "$tg_report_load_file"
+  if [ "${GITHUB_ACTIONS:-}" = "true" ]; then
+    printf '::warning::test-gate 부하 실패 범위=%s — 표시된 단언 %s개가 실패했고 절 %s 의 단독 재실행에서 통과했습니다\n' "$scope" "$n" "$ids"
+  fi
+  printf 'test-gate: 판정=부하통과 범위=%s — 표시된 단언 %s개가 실패했고 그 절의 단독 재실행 한 번에서 통과했습니다\n' "$scope" "$n" >&2
+  printf 'test-gate: %s passed, 0 failed\n' "$passed_n"
+  rm -f "$jo" "$je"
+  return 0
 }
 
 # The oracle's own entry points, answered before the section index is built: none
@@ -1712,9 +1802,15 @@ FRONTEOF
     # literal paths that call writes in — this file and the marker file a lane
     # always gives — as fixed placeholders. The real ones differ in every
     # scratch directory, and the digest must not.
+    #
+    # THE LOAD-MARK FILE rides along under the same rule: `bad` appends
+    # `<id><TAB><label>` to it for each failure whose judgement line carries the
+    # load marker, and the wrapper reads it after the verdict.
     sec_fail=""
+    sec_load=""
     if [ "$cutdig_mode" = "1" ]; then
       sec_fail='/cc-cut-digest/fail'
+      sec_load='/cc-cut-digest/load'
       sec_timing_out='/cc-cut-digest/marks'
     elif [ -z "${CC_TEST_GATE_ORACLE_INNER:-}" ]; then
       sec_fail=$(mktemp "$sec_dir/fail.XXXXXX")
@@ -1723,9 +1819,19 @@ FRONTEOF
         /*) ;;
         *) sec_fail="" ;;
       esac
+      sec_load=$(mktemp "$sec_dir/load.XXXXXX")
+      case "$sec_load" in
+        *"'"*) sec_load="" ;;
+        /*) ;;
+        *) sec_load="" ;;
+      esac
     fi
     if [ -n "$sec_fail" ]; then
       printf "tg_fail_file='%s'\n" "$sec_fail" >> "$sec_cut"
+      sec_cur=$(( sec_cur + 1 ))
+    fi
+    if [ -n "$sec_load" ]; then
+      printf "tg_load_file='%s'\n" "$sec_load" >> "$sec_cut"
       sec_cur=$(( sec_cur + 1 ))
     fi
     # THE WRAPPED CALL ALWAYS HAS MARKERS. When the caller gave no marker file
@@ -1999,6 +2105,7 @@ SECEOF
     else
       oracle_child_repo_root="$repo_root"
       tg_report_fail_file="$sec_fail"
+      tg_report_load_file="$sec_load"
       tg_report_sel="$sections_want"
       if [ -n "$sec_timing_out" ]; then
         tg_progress_marks="$sec_timing_out"
@@ -2248,11 +2355,68 @@ tg_iso_put() {
   printf '%s\t%s\t%s\t%s\n' "${tg_cur_sec:--}" "$1" "$l" "$o" >> "$tg_iso_rec"
 }
 ok()   { passed=$((passed + 1)); printf 'PASS: %s\n' "$1"; [ -z "${tg_iso_rec:-}" ] || tg_iso_put PASS "$1"; }
+# THE LOAD MARKER. A wall-clock assertion whose verdict can flip under host load
+# carries the marker comment on its judgement line — the line that calls `bad`, or
+# the first line of a `check` call — or, when that line ends with a backslash, alone
+# on the comment-only line right above it. The reason runs from after the marker
+# to the next ` #` or the end of the line. A failure whose judgement line is
+# marked says so at the end of its FAIL line, with the host's load at that
+# moment, and in a narrowed run names itself in the load-mark file the wrapper
+# reads. A judgement line in a file that cannot be read counts as unmarked. The
+# marker text is assembled here so that this line is not itself a marker.
+tg_load_mk='# gate''-load:'
+tg_start_pwd="$PWD"
+tg_load_pick() {
+  local t
+  case "$1" in *"$tg_load_mk "*) ;; *) return 0 ;; esac
+  t="${1#*"$tg_load_mk "}"
+  t="${t%% #*}"
+  t="${t#"${t%%[![:space:]]*}"}"
+  t="${t%"${t##*[![:space:]]}"}"
+  tg_load_why="$t"
+}
+tg_load_reason() {
+  local src="$1" no="$2" cur="" prev="" t
+  tg_load_why=""
+  case "$no" in ''|0|*[!0-9]*) return 0 ;; esac
+  case "$src" in '') return 0 ;; /*) ;; *) src="$tg_start_pwd/$src" ;; esac
+  [ -f "$src" ] && [ -r "$src" ] || return 0
+  { IFS= read -r prev; IFS= read -r cur; } \
+    < <(awk -v n="$no" 'NR == n - 1 { p = $0 } NR == n { print p; print; exit }' "$src" 2>/dev/null)
+  tg_load_pick "$cur"
+  [ -z "$tg_load_why" ] || return 0
+  t="${prev#"${prev%%[![:space:]]*}"}"
+  case "$t" in '#'*) tg_load_pick "$prev" ;; esac
+}
+tg_load_now() {
+  local l="" n="" a b c
+  if l=$(sysctl -n vm.loadavg 2>/dev/null) && [ -n "$l" ]; then
+    l="${l//[\{\}]/}"
+    read -r a b c _ <<< "$l"
+    n=$(sysctl -n hw.ncpu 2>/dev/null)
+  elif [ -r /proc/loadavg ]; then
+    read -r a b c _ < /proc/loadavg
+    n=$(getconf _NPROCESSORS_ONLN 2>/dev/null)
+  fi
+  if [ -n "${a:-}" ] && [ -n "${b:-}" ] && [ -n "${c:-}" ] && [ -n "$n" ]; then
+    printf '부하 1분/5분/15분=%s/%s/%s CPU=%s' "$a" "$b" "$c" "$n"
+  else
+    printf '부하=측정불가'
+  fi
+}
 # A narrowed cut also names the section it is in, for the failed-section report;
 # both names are read with a default because a full run defines neither.
 bad()  {
-  failed=$((failed + 1)); printf 'FAIL: %s — %s\n' "$1" "${2:-}" >&2
+  local tg_sfx=""
+  if [ "${FUNCNAME[1]:-}" = "check" ]; then
+    tg_load_reason "${BASH_SOURCE[2]:-}" "${BASH_LINENO[1]:-0}"
+  else
+    tg_load_reason "${BASH_SOURCE[1]:-}" "${BASH_LINENO[0]:-0}"
+  fi
+  [ -z "$tg_load_why" ] || tg_sfx=" · 부하 표시($tg_load_why) $(tg_load_now)"
+  failed=$((failed + 1)); printf 'FAIL: %s — %s%s\n' "$1" "${2:-}" "$tg_sfx" >&2
   [ -z "${tg_fail_file:-}" ] || printf '%s\n' "${tg_cur_sec:-}" >> "$tg_fail_file"
+  [ -z "$tg_load_why" ] || [ -z "${tg_load_file:-}" ] || printf '%s\t%s\n' "${tg_cur_sec:-}" "$1" >> "$tg_load_file"
   [ -z "${tg_iso_rec:-}" ] || tg_iso_put FAIL "$1"
 }
 check(){ if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "got '$2', want '$3'"; fi; }
@@ -7639,6 +7803,146 @@ check "밖 복사본의 좁힌 실행은 제자리 실행과 같은 PASS 줄과 
   "$([ -n "$cdg_self_pass" ] && [ "$cdg_copy_pass" = "$cdg_self_pass" ] && echo pass)|$([ -n "$cdg_self_tot" ] && [ "$cdg_copy_tot" = "$cdg_self_tot" ] && echo total)|$(printf '%s' "$cdg_self_tot" | sed -n 's/^test-gate: [0-9]* passed, \([0-9]*\) failed$/\1/p')" \
   "pass|total|0"
 rm -rf "$cdg_dir"
+
+# ---------------------------------------------------------------------------
+# 0i. A narrowed run whose only failures are load-marked runs them again alone
+# --- section: 0i | group: static | covers: - | anchors: 표시된 단언만 실패하고 단독 재실행이 통과하면 부하통과로 끝난다, 재실행도 실패하면 회귀 줄과 함께 빨강이다, 표시되지 않은 실패가 섞이면 재실행하지 않는다 ---
+# ---------------------------------------------------------------------------
+# The real suite has no assertion that fails on purpose, so the narrowed calls go
+# to a copy whose 0d gains a fixture after its last check, active only when
+# `TLR_MODE` is set. The fixture counts its own runs in `TLR_STATE`: the first run
+# fails, a second one — the wrapper's rerun of 0d — passes, unless the mode keeps
+# it failing. Its two failures are load-marked, one by the marker at the end of a
+# `bad` line and one by the marker alone above a `check` whose first line ends
+# with a backslash. The count in the state file is also the evidence of whether a
+# rerun happened at all. The calls drop both the nested-call marker this section
+# inherits and the rerun marker, as 0e's do, and hand the root down.
+tlr_dir=$(mktemp -d "${TMPDIR:-/tmp}/cc-gate-loadrerun.XXXXXX")
+tlr_suite="$repo_root/scripts/test-gate.sh"
+awk -v mk="$tg_load_mk" '
+  { print }
+  index($0, "check \"비지 않은 --sections 는 가드를 지나간다\"") == 1 && !d {
+    print "if [ -n \"${TLR_MODE:-}\" ]; then"
+    print "  tlr_n=$(cat \"$TLR_STATE\" 2>/dev/null || echo 0); tlr_n=$((tlr_n + 1)); printf \"%s\\n\" \"$tlr_n\" > \"$TLR_STATE\""
+    print "  if [ \"$TLR_MODE\" = always ] || [ \"$tlr_n\" = 1 ]; then"
+    print "    bad \"의도된 부하 단언\" \"회 $tlr_n\" " mk " 픽스처 대기"
+    print "  else"
+    print "    ok \"의도된 부하 단언\""
+    print "  fi"
+    print "  " mk " 픽스처 윗줄"
+    print "  check \"의도된 윗줄 단언\" \\"
+    print "    \"$tlr_n\" 2"
+    print "  case \"$TLR_MODE\" in"
+    print "    mixed) bad \"의도된 보통 단언\" x ;;"
+    print "    noise) tlr_no_such_command_0i ;;"
+    print "  esac"
+    print "fi"
+    d = 1; n++
+  }
+  END { print n > "/dev/stderr" }
+' "$tlr_suite" > "$tlr_dir/test-gate.sh" 2> "$tlr_dir/mutations"
+check "부하 재실행 사본: 고친 자리가 하나다" "$(cat "$tlr_dir/mutations")" "1"
+# tlr_call <tag> <mode> [<env assignment>...]
+tlr_call() {
+  local tag="$1" mode="$2" rc=0
+  shift 2
+  rm -f "$tlr_dir/$tag.state"
+  env -u CC_TEST_GATE_ORACLE_INNER -u CC_TEST_GATE_LOAD_RERUN -u GITHUB_ACTIONS \
+    TMPDIR="$tlr_dir" CC_TEST_GATE_REPO_ROOT="$repo_root" \
+    TLR_MODE="$mode" TLR_STATE="$tlr_dir/$tag.state" "$@" \
+    bash "$tlr_dir/test-gate.sh" --sections 0d > "$tlr_dir/$tag.out" 2> "$tlr_dir/$tag.err" || rc=$?
+  printf '%s' "$rc" > "$tlr_dir/$tag.rc"
+}
+# What a lane reads: the exit code and the last totals line of standard output.
+tlr_lane() {
+  local tot
+  tot=$(grep -E '^test-gate: [0-9]+ passed, [0-9]+ failed$' "$tlr_dir/$1.out" | tail -n 1)
+  case "$(cat "$tlr_dir/$1.rc"):$tot" in
+    "0:test-gate: "*" passed, 0 failed") echo lane-pass ;;
+    *) echo lane-fail ;;
+  esac
+}
+tlr_runs() { cat "$tlr_dir/$1.state" 2>/dev/null || echo 0; }
+tlr_n() { grep -c -- "$2" "$tlr_dir/$1.$3" || true; }
+mkdir -p "$tlr_dir/iso"
+tlr_call pass flaky GITHUB_ACTIONS=true
+tlr_call again always
+tlr_call mixed mixed
+tlr_call inherit flaky CC_TEST_GATE_LOAD_RERUN=1
+tlr_call noise noise
+tlr_call iso flaky CC_GATE_ISO_OUT="$tlr_dir/iso"
+
+check "표시된 단언만 실패하고 단독 재실행이 통과하면 부하통과로 끝난다" \
+  "$(cat "$tlr_dir/pass.rc")|$(tlr_runs pass)|$(tlr_lane pass)|$(tail -n 1 "$tlr_dir/pass.err")" \
+  "0|2|lane-pass|test-gate: 판정=부하통과 범위=좁힌 실행 — 표시된 단언 2개가 실패했고 그 절의 단독 재실행 한 번에서 통과했습니다"
+check "부하통과는 표시된 실패마다 부하 실패 줄을 낸다" \
+  "$(grep '^test-gate: 부하 실패 — ' "$tlr_dir/pass.err" | paste -s -d '|' -)" \
+  "test-gate: 부하 실패 — 절 0d: 「의도된 부하 단언」 · 단독 재실행 통과|test-gate: 부하 실패 — 절 0d: 「의도된 윗줄 단언」 · 단독 재실행 통과"
+check "부하통과는 원래 판정 줄·캡처 줄·오류 주석을 내지 않고 경고 주석을 합계 줄 앞에 낸다" \
+  "$(tlr_n pass '^test-gate: 판정=fail ' err)|$(tlr_n pass '^test-gate: 캡처 — ' err)|$(tlr_n pass '^::error::' out)|$(tail -n 2 "$tlr_dir/pass.out" | head -n 1 | grep -c '^::warning::test-gate 부하 실패 ' || true)" \
+  "0|0|0|1"
+# The marker is read in both forms, and the suffix carries the reason and the
+# host's load without a ` — ` of its own: the signature reader cuts the FAIL
+# name at the last one.
+tlr_sfx=' · 부하 표시\(픽스처 (대기|윗줄)\) (부하 1분/5분/15분=[0-9.,]+/[0-9.,]+/[0-9.,]+ CPU=[0-9]+|부하=측정불가)$'
+check "표시된 실패의 FAIL 줄은 줄 끝 꼴과 윗줄 꼴 모두 부하 표시 접미를 단다" \
+  "$(grep '^FAIL: 의도된 부하 단언 — 회 1 ' "$tlr_dir/pass.err" | grep -cE "$tlr_sfx" || true)|$(grep '^FAIL: 의도된 윗줄 단언 — ' "$tlr_dir/pass.err" | grep -cE "$tlr_sfx" || true)|$(grep '^FAIL: 의도된 부하 단언 — ' "$tlr_dir/pass.err" | head -n 1 | awk -F ' — ' '{ print NF - 1 }')" \
+  "1|1|1"
+check "재실행도 실패하면 회귀 줄과 함께 빨강이다" \
+  "$(cat "$tlr_dir/again.rc")|$(tlr_runs again)|$(tlr_lane again)|$(tlr_n again '^test-gate: 회귀 — 절 0d: 단독 재실행에서도 실패했습니다$' err)|$(tlr_n again '^test-gate: 판정=부하통과' err)" \
+  "1|2|lane-fail|1|0"
+check "회귀 줄 다음에 실패한 절 두 줄이 오고 그 다음이 원래 판정 줄이다" \
+  "$(awk '/^test-gate: 회귀 — / { r = NR } /^test-gate: 실패한 절 — / { f = NR } /^test-gate: 판정=fail / { v = NR } END { print (r > 0 && f == r + 1 && v == f + 2) ? "order" : r " " f " " v }' "$tlr_dir/again.err")" \
+  "order"
+check "표시되지 않은 실패가 섞이면 재실행하지 않는다" \
+  "$(cat "$tlr_dir/mixed.rc")|$(tlr_runs mixed)|$(tlr_lane mixed)|$(tlr_n mixed '^test-gate: 회귀 — ' err)|$(tlr_n mixed '^test-gate: 판정=fail ' err)" \
+  "1|1|lane-fail|0|1"
+check "재실행 표지를 물려받은 실행은 재실행하지 않는다" \
+  "$(cat "$tlr_dir/inherit.rc")|$(tlr_runs inherit)|$(tlr_lane inherit)|$(tlr_n inherit '^test-gate: 판정=fail ' err)" \
+  "1|1|lane-fail|1"
+check "강제 노이즈가 섞인 실패는 재실행하지 않고 노이즈 줄을 남긴다" \
+  "$(cat "$tlr_dir/noise.rc")|$(tlr_runs noise)|$(tlr_lane noise)|$(tlr_n noise '^test-gate: 노이즈 — id=0d ' err)|$(tlr_n noise '^test-gate: 판정=fail ' err)" \
+  "1|1|lane-fail|1|1"
+check "격리 기록 실행은 재실행하지 않는다" \
+  "$(cat "$tlr_dir/iso.rc")|$(tlr_runs iso)|$(tlr_lane iso)" "1|1|lane-fail"
+
+# A full run hands the wrapper no load-mark file, and that alone keeps it from
+# rerunning. The wrapper is called here directly on a stand-in child, with a
+# stand-in `SELF` that leaves a trace when run; the same call with the file set
+# is the control that shows the stand-ins reach the rerun at all.
+printf '%s\n' '#!/usr/bin/env bash' 'printf "FAIL: 대역 단언 — x\n" >&2' 'printf "test-gate: 3 passed, 1 failed\n"' 'exit 1' > "$tlr_dir/child.sh"
+printf '%s\n' '#!/usr/bin/env bash' "printf x >> '$tlr_dir/self.trace'" 'exit 0' > "$tlr_dir/self.sh"
+printf '0d\n' > "$tlr_dir/fail.list"
+printf '0d\t대역 단언\n' > "$tlr_dir/load.list"
+mkdir -p "$tlr_dir/tmp"
+tlr_direct() {
+  ( TMPDIR="$tlr_dir/tmp" SELF="$tlr_dir/self.sh" tg_report_fail_file="$tlr_dir/fail.list"
+    tg_report_load_file="$1" tg_report_sel=0d sec_iso_out="" tg_progress_marks="" oracle_iso_rec=""
+    unset CC_TEST_GATE_LOAD_RERUN GITHUB_ACTIONS
+    oracle_run "$tlr_dir/child.sh" "" "직접" ) > "$tlr_dir/direct.out" 2> "$tlr_dir/direct.err"
+}
+tlr_d_rc=0; tlr_direct "" || tlr_d_rc=$?
+tlr_d_full="$tlr_d_rc|$(cat "$tlr_dir/self.trace" 2>/dev/null)|$(tlr_n direct '^test-gate: 판정=fail ' err)"
+tlr_d_rc=0; tlr_direct "$tlr_dir/load.list" || tlr_d_rc=$?
+tlr_d_ctl="$tlr_d_rc|$(cat "$tlr_dir/self.trace" 2>/dev/null)|$(tlr_n direct '^test-gate: 판정=부하통과 ' err)"
+check "부하 표시 파일이 없는 실행(전량 실행)은 재실행하지 않고 대조 호출은 재실행한다" \
+  "$tlr_d_full / $tlr_d_ctl" "1||1 / 0|x|1"
+
+# The marker reader on its own: the end-of-line form, the comment-only line
+# above, a reason cut at the next ` #`, an above line that is not comment-only,
+# and a file that cannot be read.
+printf '%s\n' \
+  "x=1" \
+  "bad \"a\" b $tg_load_mk  경과 상한  # gate""-isolation: 변동" \
+  "  $tg_load_mk 윗줄 사유" \
+  "check \"c\" \\" \
+  "y=2 $tg_load_mk 코드 줄의 것" \
+  "check \"d\" e e" > "$tlr_dir/src.sh"
+tlr_rd() { tg_load_reason "$1" "$2"; printf '%s' "$tg_load_why"; }
+check "표지 읽기 — 줄 끝·윗줄·코드 줄 위·읽을 수 없는 파일" \
+  "$(tlr_rd "$tlr_dir/src.sh" 2)|$(tlr_rd "$tlr_dir/src.sh" 4)|$(tlr_rd "$tlr_dir/src.sh" 6)|$(tlr_rd "$tlr_dir/none.sh" 2)|$(tlr_rd "" 2)" \
+  "경과 상한|윗줄 사유|||"
+rm -rf "$tlr_dir"
 
 # ---------------------------------------------------------------------------
 # 1. The snapshot is a JSON object, not a table
