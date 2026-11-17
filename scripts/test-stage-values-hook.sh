@@ -66,7 +66,7 @@ full_env() {
 }
 
 ctx_of() { jq -r '.hookSpecificOutput.additionalContext' <<< "$1" 2>/dev/null; }
-line_of() { printf '%s\n' "$1" | grep -E "^$2=" | head -n 1; }
+line_of() { printf '%s\n' "$1" | grep -E "^$2=" | sed -n '1p'; }
 
 # --- S1 outside a pipeline ------------------------------------------------
 out=$(env -i PATH="$PATH" HOME="$d" bash "$HOOK" < /dev/null); rc=$?
@@ -83,7 +83,7 @@ check "S2 출력이 JSON 한 개다" "$(jq -s 'length' <<< "$out" 2>/dev/null)" 
 check "S2 hookEventName 이 SessionStart 다" \
   "$(jq -r '.hookSpecificOutput.hookEventName' <<< "$out" 2>/dev/null)" "SessionStart"
 ctx=$(ctx_of "$out")
-first=$(printf '%s\n' "$ctx" | head -n 1)
+first=$(printf '%s\n' "$ctx" | sed -n '1p')
 case "$first" in
   '[cc-stage-values] '*) ok "S2 첫 줄이 [cc-stage-values] 표지로 시작한다" ;;
   *) bad "S2 첫 줄이 [cc-stage-values] 표지로 시작한다" "$first" ;;
@@ -121,7 +121,7 @@ check "S3 그 접두는 / 없는 TMPDIR 의 접두와 같다" "$p" \
 # --- S4 a routing shift (no stage id) ---------------------------------------
 out=$(full_env CC_PIPELINE_STAGE_ID= CC_PIPELINE_SHIFT_ID=shift-7 bash "$HOOK" < /dev/null)
 ctx=$(ctx_of "$out")
-has "S4 시프트는 첫 줄에 시프트 id 를 싣는다" "$(printf '%s\n' "$ctx" | head -n 1)" "(shift-7, 세션 시작 시점)"
+has "S4 시프트는 첫 줄에 시프트 id 를 싣는다" "$(printf '%s\n' "$ctx" | sed -n '1p')" "(shift-7, 세션 시작 시점)"
 check "S4 스테이지 id 는 (없음)" "$(line_of "$ctx" CC_PIPELINE_STAGE_ID)" "CC_PIPELINE_STAGE_ID=(없음)"
 check "S4 스테이지 키는 (없음)" "$(line_of "$ctx" 'stage key')" "stage key=(없음)"
 check "S4 작업 사본 접두는 (없음)" "$(line_of "$ctx" 'working-copy prefix')" "working-copy prefix=(없음)"
