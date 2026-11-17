@@ -552,6 +552,25 @@ if [ "$dl_before_line" != "$reason" ] && [ "${#dl_before_line}" -lt "${#dl_befor
 else
   bad "거부 문면이 [gate-digest] 줄을 방출 파일보다 먼저 첫째 출처로 이름한다" "줄이 없거나 파일 뒤에 있다"
 fi
+# SEVERAL GATE CALLS MAY SHARE ONE RESPONSE. The gate accepts the same H on
+# consecutive calls, so the first source is the last line among the previous
+# response's calls; the retired wording restricted it to a response that made
+# exactly one, which sent every multi-call response to the slower sources.
+case "$reason" in
+  *'exactly one gate call'*) bad "거부 문면이 한 호출뿐인 응답으로 첫째 출처를 묶지 않는다" "옛 문면이 남아 있다" ;;
+  *) ok "거부 문면이 한 호출뿐인 응답으로 첫째 출처를 묶지 않는다" ;;
+esac
+case "$reason" in
+  *'the line of the last of them'*) ok "거부 문면이 여러 호출 중 마지막 줄을 첫째 출처로 이름한다" ;;
+  *) bad "거부 문면이 여러 호출 중 마지막 줄을 첫째 출처로 이름한다" "새 문면이 없다" ;;
+esac
+if grep -q 'exactly one gate call' "$HOOK"; then
+  bad "지침파일 거부 문면에도 옛 문면이 없다" "훅에 옛 문면이 남아 있다"
+else
+  ok "지침파일 거부 문면에도 옛 문면이 없다"
+fi
+check "두 다이제스트 원천 문면이 같은 규칙을 적는다" \
+  "$(grep -c 'line of the last of them' "$HOOK" | tr -d ' ')" "2"
 if [ "$n_shapes" -ge 2 ]; then
   ok "거부 문면이 게이트로 시작하는 명령을 둘 이상 제시한다 ($n_shapes)"
 else
