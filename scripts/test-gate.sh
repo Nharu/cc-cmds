@@ -3952,11 +3952,13 @@ snapH() {
 TAB=$(printf '\t')
 # One act on the base fixture, which is what drains a stall observation into the
 # ledger — the transcription is the ledger writer's job and `snapshot` writes
-# nothing.
+# nothing. The act is a plain read: a `segment` row whose `상태` is not `park`,
+# or a launch evidence row, is progress, and progress after a stall row releases
+# it (`cc__blocked_fold`), so a draining act that wrote one would release the
+# very block the next assertion reads as still open.
 drain_act() {
-  gate act --manifest "$FX_MANIFEST" --kind segment --target infra --segment SDR \
-    --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(snapH)" \
-    --rationale "픽스처 — 전사 유발" -- "상태=계획됨" "워크트리=$WT" "선행=없음"
+  gate exec --manifest "$FX_MANIFEST" --target infra --cutpoint 커밋 --surface 읽기 \
+    --snapshot-digest "$(snapH)" --rationale "픽스처 — 전사 유발" -- ls
 }
 
 # `cone` — the container of section 31, moved here whole: the pipeline
@@ -21479,6 +21481,51 @@ case "$( { grep -E '^- `segment`' "$FX_LEDGER" || true; } | grep -cF 'id=SFRESH 
   0) bad "첫 세그먼트" "행위는 통과했는데 원장에 그 행이 없다" ;;
   *) ok "그 행이 원장에 남는다" ;;
 esac
+
+# ---------------------------------------------------------------------------
+# 32b. The gate reads the same "handled" judgment the run pane does
+# --- section: 32b | group: base | covers: liveness, defer, cc_halt_answered, cc_unresolved_blocked, gate_row_is_pre_session_death, gate_defer_handoff_unmet | anchors: 32b: 게이트의 기동 전 사망 행은 기동 증거가 아니다, 32b: 다음 시도가 없는 중단 기록은 이월 인계를 중단으로 돌린다, 32b: 다음 시도의 기동 증거가 지난 기록은 이월 인계를 막지 않는다, 32b: 게이트가 읽는 미해소 막힘에서 진행이 뒤따른 정체 관측이 빠진다 ---
+#
+# A halt record a later attempt of its key passed is no longer a question to a
+# person, and every reader asks `cc_halt_answered` — the gate's hand-off
+# conditions included. The launch evidence test and the gate's death-before-
+# session test are fed one fixed row set: a row the gate reads as a death
+# before its session is never launch evidence.
+# ---------------------------------------------------------------------------
+g32b_rd="$WORK/g32b-run/R32B"
+mkdir -p "$g32b_rd/halt"
+g32b_led="$g32b_rd/ledger.md"
+printf '# 중단 기록\n' > "$g32b_rd/halt/A#1.md"
+{
+  printf -- '- `stage-result` | 스테이지=A | 실행 버전=2 | 세션 id=미상 | 답 운반=있음 | 종단 부류=정상 완료\n'
+  printf -- '- `stage-result` | 스테이지=A | 실행 버전=2 | 세션 id=s2 | 관측=스폰 전 대기 중 — 픽스처 | 종단 부류=정상 완료\n'
+  printf -- '- `stage-result` | 스테이지=A | 실행 버전=2 | 세션 id=s2 | 종단 부류=크래시\n'
+  printf -- '- `stage-result` | 스테이지=B | 실행 버전=1 | 세션 id=sb | 종단 부류=정상 완료\n'
+} > "$g32b_led"
+g32b_pair=$(bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null >/dev/null 2>&1
+  ev=$(cc__launch_evidence_rows < "$2")
+  while IFS= read -r row; do
+    if gate_row_is_pre_session_death "$row"; then printf 1; else printf 0; fi
+    printf ":%s " "$(printf "%s\n" "$ev" | sed -n 1p)"
+    ev=$(printf "%s\n" "$ev" | sed 1d)
+  done < "$2"' _ "$GATE" "$g32b_led" 2>/dev/null)
+check "32b: 게이트의 기동 전 사망 행은 기동 증거가 아니다" "$g32b_pair" "1:0 1:0 0:0 0:1 "
+g32b_unmet() {
+  bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null >/dev/null 2>&1; RUN_DIR="$2"; LEDGER="$3"
+    gate_defer_handoff_unmet' _ "$GATE" "$g32b_rd" "$g32b_led" 2>/dev/null
+}
+case "$(g32b_unmet)" in
+  "답 없는 정지 기록이 있습니다"*) ok "32b: 다음 시도가 없는 중단 기록은 이월 인계를 중단으로 돌린다" ;;
+  *) bad "32b: 다음 시도가 없는 중단 기록은 이월 인계를 중단으로 돌린다" "$(g32b_unmet)" ;;
+esac
+printf -- '- `blocked` | 대상=- | 스코프=run | 원인=불명 | 사유=라이브니스 침묵\n' >> "$g32b_led"
+printf -- '- `stage-result` | 스테이지=A | 실행 버전=3 | 세션 id=s3 | 종단 부류=정상 완료\n' >> "$g32b_led"
+case "$(g32b_unmet)" in
+  "답 없는 정지 기록이 있습니다"*) bad "32b: 다음 시도의 기동 증거가 지난 기록은 이월 인계를 막지 않는다" "$(g32b_unmet)" ;;
+  *) ok "32b: 다음 시도의 기동 증거가 지난 기록은 이월 인계를 막지 않는다" ;;
+esac
+check "32b: 게이트가 읽는 미해소 막힘에서 진행이 뒤따른 정체 관측이 빠진다" \
+  "$(bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null >/dev/null 2>&1; cc_unresolved_blocked "$2"' _ "$GATE" "$g32b_led" 2>/dev/null)" ""
 
 # ---------------------------------------------------------------------------
 # 33. A stage that parked itself, a worktree that is the same repository, and a

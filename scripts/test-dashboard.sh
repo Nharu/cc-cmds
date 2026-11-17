@@ -836,6 +836,28 @@ print(a, b, c, n(whole))' "$LN")" "0 0 1 1"
 check "T27 그 판정이 셸과 같다" \
   "$(bash -c '. "$1"; cc_unanswered_halts "$2" "$2/L.md"' _ "$LIVENESS" "$LN")" "1"
 
+# T27b — a record a later attempt of its key passed, and one a person answered,
+# leave the dashboard's unanswered list; one whose next attempt only crashed
+# stays.
+LA="$WORK/la/la-run"; mkdir -p "$LA"
+halt_rec "$LA/halt/A#1.md" "자동 처리 질문" ""
+halt_rec "$LA/halt/B#1.md" "답한 질문" ""
+halt_rec "$LA/halt/C#1.md" "남는 질문" ""
+check "T27b 다음 시도가 지난 기록과 답한 기록은 답 없는 목록에서 빠진다" \
+  "$(cd "$ORCH" && pyq -c '
+import os, sys
+import dashboard_read as m
+rd = sys.argv[1]; lp = os.path.join(rd, "L.md")
+with open(lp, "w") as f:
+    f.write("# 파이프라인 런 보고서\n\n"
+            "- `stage-result` | 스테이지=A | 실행 버전=2 | 세션 id=s2 | 종단 부류=정상 완료\n"
+            "- `중단 답` | 중단 기록=%s/halt/B#1.md | 선택지=재시도\n"
+            "- `stage-result` | 스테이지=C | 실행 버전=2 | 세션 id=c2 | 종단 부류=크래시\n" % rd)
+led = m.Ledger(lp); led.refresh()
+print(" ".join(sorted(os.path.basename(r[0] if isinstance(r, tuple) else r) for r in m.unanswered_halt_records(rd, led.numbered()))))' "$LA")" "C#1.md"
+check "T27b 그 수가 셸과 같다" \
+  "$(bash -c '. "$1"; cc_unanswered_halts "$2" "$2/L.md"' _ "$LIVENESS" "$LA")" "1"
+
 # T30 — the seat: a waiting run needs a person only while a session its lineage
 # names has a live snapshot. These runs sit in a run root of their own, so the
 # counts T19 asserts do not move.

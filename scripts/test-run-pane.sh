@@ -441,6 +441,65 @@ unres=$(bash -c '. "$1"; cc_cone_blocked "$2"' _ "$LIVENESS" "$FX_LEDGER" \
 check "9 그 둘이 unresolved 다" "$unres" "B-alias P1-3 "
 
 # ---------------------------------------------------------------------------
+# 9b. Halt records a later attempt of their key passed.
+#
+# A3 is passed by A#4 (launch evidence, kind implement); B1 has an attempt row
+# that is not evidence (a crash); C2 has evidence only for an earlier attempt.
+# Only A3 is a `halt-auto` row, below the empty-gate summary and above the
+# events, and the cone block whose `중단 기록` names A3 is hidden with it.
+# ---------------------------------------------------------------------------
+fx_mkrun pr-hauto; fx_ledger_path
+mkdir -p "$FX_RUN_DIR/halt"
+for h in 'A#3' 'B#1' 'C#2'; do printf '# 중단\n' > "$FX_RUN_DIR/halt/$h.md"; done
+fx_segment A park
+fx_row 'blocked' "대상=A" "스코프=cone" "원인=게이트 park" "사유=리뷰 지적" \
+  "관측=-" "중단 기록=$FX_RUN_DIR/halt/A#3.md"
+fx_row 'stage-result' "스테이지=A" "실행 버전=4" "종류=implement" "세션 id=sess-a4" \
+  "종단 부류=정상 완료"
+fx_row 'stage-result' "스테이지=B" "실행 버전=2" "종류=review" "세션 id=sess-b2" \
+  "종단 부류=크래시"
+fx_row 'stage-result' "스테이지=C" "실행 버전=1" "종류=plan" "세션 id=sess-c1" \
+  "종단 부류=정상 완료"
+fx_heartbeat 0 5
+fx_session_index s-hauto pr-hauto
+out=$(pane s-hauto)
+check "9b 다음 회차가 지난 기록만 자동 처리 줄이 된다" "$(brows "$out" halt-auto)" \
+  "halt-auto${TAB}cut${TAB}dim${TAB}자동 처리됨 · 중단 A#3 → A#4 implement"
+check "9b 자동 처리 줄은 막힘 없음 요약 아래, 이벤트 위다" \
+  "$(bundles "$out" | tr ' ' '\n' | awk '$0 == "gate-none" || $0 == "halt-auto" || $0 == "event-heading"' | uniq | tr '\n' ' ')" \
+  "gate-none halt-auto event-heading "
+check "9b 중단 기록이 자동 처리된 cone 막힘은 숨는다" "$(brow "$out" block-heading)" ""
+out=$(pane s-hauto --rows 6)
+check "9b --rows 6 — 자동 처리 줄은 이벤트 다음으로 빠진다" "$(brows "$out" halt-auto)" ""
+has   "9b --rows 6 — 막힘 없음 요약은 남는다" "$(bundles "$out")" "gate-none"
+
+# A shift stop's cone row carries `중단 기록=` under `halt/shift/`: a new attempt
+# of the segment does not hide it, only an answer to the record does. A row with
+# no `중단 기록=` is hidden by a later attempt's launch evidence only when the
+# subject's lineage was seen up to the row (F, lineage #1, attempt 2), and not
+# when no lineage was (E) or the later attempt is not past it (G, #3 then 2).
+fx_mkrun pr-hide; fx_ledger_path
+mkdir -p "$FX_RUN_DIR/halt/shift"
+printf '# 중단\n' > "$FX_RUN_DIR/halt/shift/D#1.md"
+for s in D E F G; do fx_segment "$s" park; done
+fx_row 'stage-lease' "계보=B:F#1"
+fx_row 'stage-lease' "계보=B:G#3"
+fx_row 'blocked' "대상=D" "스코프=cone" "원인=막힘" "사유=교대 정지 D" "관측=-" \
+  "중단 기록=$FX_RUN_DIR/halt/shift/D#1.md"
+fx_row 'blocked' "대상=E" "스코프=cone" "원인=게이트 park" "사유=계보 없는 막힘" "관측=-"
+fx_row 'blocked' "대상=F" "스코프=cone" "원인=게이트 park" "사유=계보 있는 막힘" "관측=-"
+fx_row 'blocked' "대상=G" "스코프=cone" "원인=게이트 park" "사유=앞서지 못한 시도" "관측=-"
+for s in D E F G; do
+  fx_row 'stage-result' "스테이지=$s" "실행 버전=2" "세션 id=sess-$s" "종단 부류=정상 완료"
+done
+fx_heartbeat 0 5
+fx_session_index s-hide pr-hide
+heads() { brows "$(pane s-hide)" block-heading | cut -f4 | sed 's/^▲ 막힘 · cone \([A-Z]\) .*/\1/' | tr '\n' ' '; }
+check "9b 교대 정지 행은 새 시도 뒤에도 남고, 계보 없는 행과 앞서지 못한 시도의 행도 남는다" "$(heads)" "D E G "
+fx_row '중단 답' "중단 기록=$FX_RUN_DIR/halt/shift/D#1.md" "선택지=재시도"
+check "9b 그 교대 정지 기록에 답이 서면 그 행이 숨는다" "$(heads)" "E G "
+
+# ---------------------------------------------------------------------------
 # 10. Row order: title, head, segments, then the gate in its own order —
 # approvals, run blocks, cone blocks, the unresolved count, orphans — then the
 # events.
@@ -955,7 +1014,7 @@ has "19 진행 중 런 표시 — 도우미가 8초 안에 끝난다" \
 # reduction never removes — the protected rows, the segment heading, the fold
 # rows, the empty-gate summary — and a `seg` row past the reduction is one that
 # holds a block.
-BUNDLES=" none title session-title head head-detail gap seg-heading seg seg-detail seg-folded gate-none approval block-heading block-reason cone-unresolved orphan event-heading event "
+BUNDLES=" none title session-title head head-detail gap seg-heading seg seg-detail seg-folded gate-none approval block-heading block-reason cone-unresolved orphan halt-auto event-heading event "
 n_outs=0; e_head=""; e_refresh=""; e_idx=""; e_len=""; e_row=""; classes=""
 for f in "$OUTS"/o.*; do
   case "$f" in *.dim) continue ;; esac

@@ -849,6 +849,21 @@ describe('그리기', () => {
     expect(await ui.find({ type: 'Text', text: '버릴 줄' })).toBeUndefined()
   })
 
+  test('자동 처리된 중단 기록 줄은 흐린 한 줄로 그린다', async ($, on) => {
+    const { w, clock } = world(on)
+    w.reply = out('ended', 'r1', [
+      'gate-none\tcut\tdim\t승인 대기 없음 · 막힘 없음',
+      'halt-auto\tcut\tdim\t자동 처리됨 · 중단 A#3 → A#4 implement',
+    ])
+    await start($)
+    await clock.advance(TICK)
+    const ui = await mount($)
+    const lines = await drawnLines(ui)
+    expect(lines).toHaveLength(2)
+    expect(shown(lines[1])).toBe('자동 처리됨 · 중단 A#3 → A#4 implement')
+    expect((await piece(ui, '자동 처리됨 · 중단 A#3 → A#4 implement'))?.props.dimColor).toBe(true)
+  })
+
   test('세션 제목 줄은 연결된 런 없음 아래에 남는다', async ($, on) => {
     const { w, clock } = world(on)
     w.reply = out('none', '-', ['none\tcut\tdim\t연결된 런 없음', 'session-title\tcut\tdim\t세션 \tnormal\t내 작업'])

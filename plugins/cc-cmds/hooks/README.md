@@ -878,8 +878,11 @@ Every row after it is
 - The bundle is one of a closed set — `none`, `title`, `session-title`, `head`,
   `head-detail`, `gap`, `seg-heading`, `seg`, `seg-detail`, `seg-folded`,
   `gate-none`, `approval`, `block-heading`, `block-reason`, `cone-unresolved`,
-  `orphan`, `event-heading`, `event`. The module drops a row whose bundle it
-  does not know.
+  `orphan`, `halt-auto`, `event-heading`, `event`. The module drops a row whose
+  bundle it does not know. `halt-auto` is a dim line per halt record a later
+  attempt of its key passed without an answer
+  (`자동 처리됨 · 중단 <키>#<N> → <키>#<M> <종류>`); it counts toward no waiting
+  figure, and the reduction drops it right after the events.
 - `cut` draws the line truncated at its end; `wrap` lets the engine wrap it and
   is used only by `block-reason`, so a block's reason is shown in full.
 - A line is one or more tone/text parts drawn in one outer `Text`, so the parts

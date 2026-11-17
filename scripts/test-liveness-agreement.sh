@@ -1158,6 +1158,54 @@ printf '# 중단 기록\n**분류**: precondition-failed\n**관측 상세**: 게
   "$FX_RUN_DIR/halt/shift/S1#1.md" > "$FX_RUN_DIR/halt/S1#5.md"
 ua_case "유휴 I‴ 이식 (백틱으로 감싼 포인터와 쉼표로 끝나는 포인터도 게이트 기록의 답으로 닫힘)" 1
 
+# A RECORD A LATER ATTEMPT OF ITS KEY PASSED NO LONGER WAITS, AND A STALL
+# OBSERVATION PROGRESS CONTRADICTS NO LONGER HOLDS THE RUN. One ledger shaped
+# like the run that showed both: A#6 passed by A#7's launch evidence, A#1 and
+# A#10 answered, B#2 followed only by rows that are not evidence (a lease, a
+# wait, a death before the session, a row with no session, a crash, an external
+# end), a colon key `S4:A:0#1` passed by its next attempt, and `S5.md` with no
+# attempt number, which nothing passes. On the block side, a `라이브니스 침묵`
+# released by the progress after it, and three that progress does not release:
+# a `원인=막힘` row, a `원인=불명` row that names its target, and a stall
+# observation followed only by a park segment row, a wait and a shift launch.
+id_mkrun 20261012-00000015 90000
+mkdir -p "$FX_RUN_DIR/halt"
+for h in 'A#1' 'A#6' 'A#10' 'B#2' 'S4:A:0#1' 'S5'; do
+  printf '# 중단 기록\n' > "$FX_RUN_DIR/halt/$h.md"
+done
+fx_blocked '라이브니스 침묵' 불명
+fx_blocked '픽스처 막힘' 막힘
+fx_row 'blocked' "대상=S1" "스코프=run" "원인=불명" "사유=적용 불명"
+fx_row '중단 답' "중단 기록=$FX_RUN_DIR/halt/A#1.md" "선택지=재시도"
+fx_row 'stage-result' "스테이지=A" "실행 버전=7" "종류=implement" "세션 id=sess-a7" "종단 부류=정상 완료"
+fx_row '중단 답' "중단 기록=$FX_RUN_DIR/halt/A#10.md" "선택지=보류"
+fx_row 'stage-lease' "계보=B:B#3"
+fx_row 'stage-wait' "계보=B:B#3"
+fx_row 'stage-result' "스테이지=B" "실행 버전=3" "세션 id=미상" "답 운반=있음" "종단 부류=정상 완료"
+fx_row 'stage-result' "스테이지=B" "실행 버전=4" "세션 id=-" "차단=파견 전" "종단 부류=정상 완료"
+fx_row 'stage-result' "스테이지=B" "실행 버전=5" "세션 id=sess-b5" "관측=스폰 전 대기 중 — 픽스처" "종단 부류=정상 완료"
+fx_row 'stage-result' "스테이지=B" "실행 버전=6" "세션 id=sess-b6" "종단 부류=크래시"
+fx_row 'stage-result' "스테이지=B" "실행 버전=7" "세션 id=sess-b7" "종단 부류=외부 종료"
+fx_row 'stage-result' "스테이지=S4:A:0" "실행 버전=2" "세션 id=sess-s4" "종단 부류=의도된 park"
+fx_row 'stage-result' "스테이지=S5" "실행 버전=2" "세션 id=sess-s5" "종단 부류=정상 완료"
+fx_blocked '세그먼트 미개시' 불명
+fx_segment S1 park
+fx_row 'stage-wait' "계보=B:B#8"
+fx_row '교대 기동' "교대=2"
+ua_case "자동 처리 — 다음 시도의 기동 증거가 지난 기록과 답한 기록은 빠지고 B#2·S5 만 남는다" 2
+check "자동 처리 — 자동 처리된 기록 목록" \
+  "$(cc_auto_handled_halts "$FX_RUN_DIR" "$FX_LEDGER" | LC_ALL=C sort | tr '\t\n' ' |')" \
+  "A#6 A#7 implement|S4:A:0#1 S4:A:0#2 -|"
+check "자동 처리 — 답한 기록은 다음 시도가 있어도 답함이다" \
+  "$(cc__halt_answer_state "$FX_LEDGER" "/${FX_RUN_DIR##*/}/halt/A#1.md")" "답함"
+ab_sh=$(cc_unresolved_blocked "$FX_LEDGER")
+check "진행 풀림 — 포트의 미해소 막힘이 셸과 같다" "$(port unresolved-blocked "$FX_LEDGER")" "$ab_sh"
+check "진행 풀림 — 진행이 뒤따른 라이브니스 침묵만 풀리고 셋이 남는다" \
+  "$(printf '%s\n' "$ab_sh" | cut -f2 | tr '\n' '|')" "세그먼트 미개시|적용 불명|픽스처 막힘|"
+le_sh=$(cc__launch_evidence_rows < "$FX_LEDGER" | tr -d '\n')
+check "기동 증거 — 포트의 행별 판정이 셸과 같다" "$(port launch-evidence-rows < "$FX_LEDGER" | tr -d '\n')" "$le_sh"
+check "기동 증거 — A#7·S4:A:0#2·S5#2 세 행만 증거다" "$(printf '%s' "$le_sh" | tr -cd 1 | wc -c | tr -d ' ')" "3"
+
 id_mkrun 20261012-0000000c 90000
 fx_approval A1 대기
 check "유휴 C — 대기 중인 승인이 있으면 유휴가 아니다" "$(idle_of "$FX_RUN_DIR" "$FX_LEDGER")" "유휴 아님"
