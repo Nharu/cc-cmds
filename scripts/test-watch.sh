@@ -1715,12 +1715,18 @@ for arm in ended answer answer-run rekick hands after-stage run-open silence shi
     bad "킬스위치 대조군 '$arm'" "켬인데도 배너가 0이라 아래 끔 단언이 공허하다"
   fi
 
+  # The off pass logs to a file of its own. The on pass above may fire several
+  # banners (answer-run also raises the approval's own banner), `notify_settle 1`
+  # returns at the first, and the detached notifiers of the rest can land after
+  # this pass truncates the shared log — a late write from the ON pass that this
+  # assertion would read as the switch leaking.
+  ks_off_log="$WORK/killswitch-off.$arm.log"
+  : > "$ks_off_log"
   fresh
-  : > "$NOTIFY_LOG"
   ks_seed "$arm"
-  ks_run 0 "$arm" >/dev/null
+  ( CC_TEST_NOTIFY_LOG="$ks_off_log"; export CC_TEST_NOTIFY_LOG; ks_run 0 "$arm" ) >/dev/null
   sleep 0.2
-  check "킬스위치가 '$arm' arm 도 끈다" "$(notify_lines)" "0"
+  check "킬스위치가 '$arm' arm 도 끈다" "$(grep -c . "$ks_off_log" 2>/dev/null || true)" "0"
 done
 
 # 교대 정지 배너의 켬 대조가 그 갈래에서 왔다는 것 — 위 반복의 대조는 배너 수만
