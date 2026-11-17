@@ -1095,8 +1095,12 @@ conforming with no migration.
 | 해당 없음 — <판정>
 
 ## 검증 선결
+**검증 규약**: _common/verification.md sha256=<읽은 판의 전체 해시>
 - 전제: <전제>
-  판정: 확인됨 — <근거> | 미확인 — <이유>
+  판정: 확인됨 — <근거> | 반증됨 — <관측> | 미확인 — <이유>
+  시험: <돌린 명령이나 요청, 축자>
+  동의: 문 <n>
+  관측: <결과 발췌> @<ISO8601>
 | 없음 — <이유>
 
 ## 골격 사전 판정
@@ -1188,6 +1192,21 @@ confirming question carries the one line `(읽어 드린 요구: ## 확인된 �
 **Several reproduction claims** each take a `### 주장 <k>` sub-block under
 `## 재현 근거`.
 
+**`## 검증 선결` opens with the convention it was judged under.** In a record
+whose interview was held, the `**검증 규약**` line is always the section's first
+line, before `없음 — <이유>` as well: it names the verification convention the
+kickoff read and that file's whole-file hash, taken from the kickoff trace's
+`규약 읽기` line. The three lines `시험:`, `동의:` and `관측:` go only on an item
+whose consented test ran, and always together; `동의:` names, as `문 <n>`, the
+question of this record's `## 요구사항 문답` that took the consent, so that
+question's options and answer are the consent's evidence. A record with no
+interview, holding the visual direction alone, has no such section. A v3 record
+without the `**검증 규약**` line carries a value that does not fit its section,
+so the design stage, by its existing rule, writes it as a `기록 형식`
+requirement decision. The version token stays `cc-run-interview v3`: the list of
+sections is unchanged. `orchestrator/interview-check.sh` checks these lines
+before the kickoff takes the record's hash.
+
 **No structured line begins with a backtick.** Each begins with a fixed Korean
 token or a bold key, so none of them takes the shape of a backticked ledger row
 such as the approval row a provenance check anchors on.
@@ -1255,13 +1274,17 @@ one appended line per Act 1 boundary:
 - <ISO8601> | 단계=기본값 고지 | 제시=<n> | 무시=<m> | 파일=<a> | 환경=<b> | 경로=<파일 경로|off|없음|해석불가> | sha256=<파일 전체 해시|->
 - <ISO8601> | 단계=기본값 확정 | 적용=<n> | 해제=<k>
 - <ISO8601> | 단계=문답(질문지) | 질문=<n>
+- <ISO8601> | 단계=규약 읽기 | 파일=<플러그인 기준 경로> | sha256=<파일 전체 해시>
 - <ISO8601> | 단계=이어받기 고지 | 이전 런=<id> | 매니페스트 sha256=<hex> | 인가 기록 sha256=<hex> | 인터뷰 sha256=<hex|-> | 인터뷰 출처=<런 id|-> | 이어받음=<n> | 물음=<k>
 ````
 
-There is no H1. Only six stages carry fields: `인터뷰 동결` (`경로=`, `sha256=`),
+There is no H1. Only seven stages carry fields: `인터뷰 동결` (`경로=`, `sha256=`),
 `대상 변경` (`새 base=`), `기본값 고지` (`제시=`, `무시=`, `파일=`, `환경=`,
 `경로=`, `sha256=`), `기본값 확정` (`적용=`, `해제=`), `문답(질문지)`
-(`질문=`, the number of questions on the form) and `이어받기 고지` (`이전 런=`,
+(`질문=`, the number of questions on the form), `규약 읽기` (`파일=`, the
+convention file's path relative to the plugin's `skills/`, and `sha256=`, that
+file's whole-file hash, taken right after the kickoff reads it; the line carries
+the path and the hash only) and `이어받기 고지` (`이전 런=`,
 the three source hashes, `인터뷰 출처=` the run whose interview record was copied
 — the source itself or the lineage ancestor `rekick.sh verify` named, `-` when
 none was — `이어받음=` the number of values carried and `물음=` the number of
@@ -1270,10 +1293,10 @@ two kickoff-defaults lines carry counts, the defaults file's path and its hash,
 and never a value; `이어받기 고지` carries run ids, hashes and counts only.
 
 **The stage vocabulary is closed**: `대상 확인` · `대상 변경` · `계획 제시` ·
-`요구사항 인터뷰` · `요구 확인` · `기본값 고지` · `기본값 확정` · `경계 질문` ·
+`요구사항 인터뷰` · `규약 읽기` · `요구 확인` · `기본값 고지` · `기본값 확정` · `경계 질문` ·
 `로스터` · `승인` · `인터뷰 동결` · `매니페스트 기록` · `문답(텍스트)` ·
-`문답(질문지)` · `이어받기 고지` · `기동 직전` · `연기` · `중단`. `기본값 고지`, `기본값 확정` and
-`이어받기 고지` are not terminal.
+`문답(질문지)` · `이어받기 고지` · `기동 직전` · `연기` · `중단`. `기본값 고지`, `기본값 확정`,
+`규약 읽기` and `이어받기 고지` are not terminal.
 
 **When a trace is finished — one test for every reader.** A trace is finished when
 its last stage is `연기` or `중단`, when it is a `대상 변경` carrying `새 base=`, or

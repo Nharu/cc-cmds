@@ -71,6 +71,7 @@ lint:
 	bash scripts/lint-terminal-literals.sh
 	bash scripts/lint-interview-record-sections.sh
 	bash scripts/lint-interview-convention-refs.sh
+	bash scripts/lint-interview-verification.sh
 	bash scripts/lint-kickoff-defaults.sh
 	bash scripts/lint-kickoff-recommendations.sh
 	@jq empty plugins/cc-cmds/hooks/hooks.json
@@ -503,6 +504,7 @@ LINT_TESTS := \
 	scripts/test-lint-terminal-literals.sh \
 	scripts/test-lint-interview-record-sections.sh \
 	scripts/test-lint-interview-convention-refs.sh \
+	scripts/test-lint-interview-verification.sh \
 	scripts/test-lint-kickoff-defaults.sh \
 	scripts/test-lint-kickoff-recommendations.sh
 
@@ -552,6 +554,7 @@ ORCH_TESTS := \
 	scripts/test-waiting-decisions.sh \
 	scripts/test-halt-question.sh \
 	scripts/test-visual-config.sh \
+	scripts/test-interview-check.sh \
 	scripts/test-visual-check.sh \
 	scripts/test-visual-capture.sh \
 	scripts/test-meta-invariants.sh \
