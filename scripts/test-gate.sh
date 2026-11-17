@@ -5959,7 +5959,7 @@ pre_sb() {
       fi
       sleep 0.2; i=$((i + 1))
     done
-    [ "$i" -lt 150 ] || bad "적용 감독자 대기 ($1)" "30초 안에 끝나지 않았다: $(sb_seg_last "$1")"
+    [ "$i" -lt 150 ] || bad "적용 감독자 대기 ($1)" "30초 안에 끝나지 않았다: $(sb_seg_last "$1")" # gate-load: 감독자가 끝나기까지 30초 상한
     sout=$(cat "$SA_RUN/log/apply-$1.sup.out" "$SA_RUN/log/apply-$1.sup.err" 2>/dev/null || true)
     raw="$raw $(printf '%s' "$sout" | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
     msg="$msg $(printf '%s' "$sout" | grep -vE '\[run\] ' | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
@@ -7673,6 +7673,7 @@ check "진행 줄은 stdout 에 섞이지 않고 합계 줄은 그대로다" \
   "$(grep -c '^test-gate: 진행' "$est_dir/p.out" || true)|$(grep -c -E '^test-gate: [0-9]+ passed, 0 failed$' "$est_dir/p.out" || true)" "0|1"
 est_gap=$(( $(cat "$est_dir/pipe_end") - $(cat "$est_dir/child_end") ))
 est_left=$(pgrep -f "$est_dir/slow.sh" 2>/dev/null | grep -c . || true)
+# gate-load: 자식 종료에서 파이프를 놓기까지 2초 상한
 check "자식이 끝나면 루프가 2초 안에 파이프를 놓고 남지 않는다" \
   "$([ "$est_gap" -le 2 ] && echo 2초안 || echo "${est_gap}초")|${est_left:-0}" "2초안|0"
 rm -rf "$est_dir"
@@ -11364,7 +11365,7 @@ esac
 # supervisor and answers the stage's own rc — the stub's 0.
 wait_out=$(cd "$WT" && CC_CLAUDE_BIN="$STUB" \
       bash "$GATE" wait --manifest "$FX_MANIFEST" --segment SL --interval 1 --timeout 60 2>&1); wait_rc=$?
-check "wait 이 파견된 스테이지의 rc 를 그대로 돌려준다" "$wait_rc" "0"
+check "wait 이 파견된 스테이지의 rc 를 그대로 돌려준다" "$wait_rc" "0" # gate-load: wait 가 60초 상한 안에 끝나야 한다
 # The plugin root actually reaches the wrapper, and it is the directory that
 # contains the skills — not the orchestrator directory.
 if [ -f "$WORK/stub-argv.txt" ]; then
@@ -13908,7 +13909,7 @@ chmod +x "$STUB15C"
 check "15c: 세그먼트 행 0개 매니페스트에서 --segment - 설계 파견이 기동한다" "$rc" "0"
 ( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" CC_CLAUDE_BIN="$STUB15C" \
   bash "$GATE" wait --manifest "$M15C" --segment D1 --interval 1 --timeout 60 ) >/dev/null 2>&1; rc=$?
-check "15c: 단계 id 로 wait 하면 스테이지 rc 0 을 돌려준다" "$rc" "0"
+check "15c: 단계 id 로 wait 하면 스테이지 rc 0 을 돌려준다" "$rc" "0" # gate-load: wait 가 60초 상한 안에 끝나야 한다
 rows15c() { { grep -F '`stage-result`' "$L15C" 2>/dev/null || true; } | { grep -F "$1" || true; }; }
 check "15c: 설계 단계의 stage-result 행이 세그먼트=- · 스테이지=단계 id 다" \
   "$(rows15c '| 세그먼트=- | 스테이지=D1 | 종류=design |' | grep -c . || true)" "1"
@@ -13923,6 +13924,7 @@ check "15c: 스테이지는 세그먼트 - 와 단계 id 기반 스테이지 id 
 # dispatch: a second wait answers from the same row and adds none.
 ( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" CC_CLAUDE_BIN="$STUB15C" \
   bash "$GATE" wait --manifest "$M15C" --segment D1 --interval 1 --timeout 60 ) >/dev/null 2>&1; rc=$?
+# gate-load: wait 가 60초 상한 안에 끝나야 한다
 check "15c: 같은 단계를 다시 기다려도 rc 0 이고 행은 늘지 않는다" \
   "$rc/$(rows15c '스테이지=D1 ' | grep -c . || true)" "0/1"
 check "15c: 파견 뒤에도 원장에 segment 행이 생기지 않는다" \
@@ -15389,7 +15391,7 @@ ahead15e=$( cd "$WT" && git commit-tree "main^{tree}" -p "$orig15e" -m ahead-15e
 au15_dispatch R15EA "$STUB_AU_AUDIT" audit "$audit15e"
 check "15e: 동결된 설계 뒤 감사 파견이 기동한다" "$rc" "0"
 au15_wait R15EA A1
-check "15e: 감사 단계를 단계 id 로 wait 하면 rc 0 이다" "$rc" "0"
+check "15e: 감사 단계를 단계 id 로 wait 하면 rc 0 이다" "$rc" "0" # gate-load: wait 가 60초 상한 안에 끝나야 한다
 check "15e: 감사 단계의 stage-result 행이 세그먼트=- · 스테이지=A1 · 종류=audit 이다" \
   "$(au15_rows R15EA '| 세그먼트=- | 스테이지=A1 | 종류=audit |' | grep -c . || true)" "1"
 check "15e: 단계 id 를 세그먼트로 쓴 감사 행은 없다" \
@@ -15426,6 +15428,7 @@ gateL exec --manifest "$WORK/plan-R15EA.md" --target infra --segment - --cutpoin
 check "15e: 감사 스테이지가 아닌 호출자의 --segment - 행위는 메인 워크트리에서 돈다" \
   "$rc/$(printf ' %s \n' "$msg" | grep -cF -- " $WT " || true)/$(printf ' %s \n' "$msg" | grep -cF -- " $AW15E " || true)" "0/1/0"
 au15_wait R15EA A1
+# gate-load: wait 가 60초 상한 안에 끝나야 한다
 check "15e: 같은 감사 단계를 다시 기다려도 rc 0 이고 외부 종료 행이 생기지 않는다" \
   "$rc/$(au15_rows R15EA '스테이지=A1 ' | grep -c . || true)/$(au15_rows R15EA '종단 부류=외부 종료' | grep -c . || true)" "0/1/0"
 check "15e: 감사 파견 뒤에도 원장에 segment 행이 생기지 않는다" \
@@ -16394,7 +16397,7 @@ printf '# 시각 사이드카\n\n**상태**: 검토 통과\n' > "$SC15V"
 au15_dispatch R15V "$STUB_VIS15" visual "$visual15v"
 check "15v: 검토 통과 사이드카를 둔 시각 파견이 기동한다" "$rc" "0"
 au15_wait R15V S2V
-check "15v: 그 시각 단계의 기다림이 상한 안에 끝난다 (아래 판정이 앞 행을 읽지 않는다)" "$rc" "0"
+check "15v: 그 시각 단계의 기다림이 상한 안에 끝난다 (아래 판정이 앞 행을 읽지 않는다)" "$rc" "0" # gate-load: wait 가 60초 상한 안에 끝나야 한다
 check "15v: 종결 문구와 검토 통과 사이드카가 함께인 시각 단계는 정상 완료다" "$(au15_class R15V S2V visual)" "정상 완료"
 # A step that ended `정상 완료` on its screens is not dispatched again in the
 # same run: only the design system round trip re-opens a finished visual step,
@@ -22408,6 +22411,7 @@ check "B4 현재 런은 자기를 지우지 못한다" "$(b_isdir "$B4D")" "yes"
 # 그리고 왜 도달 불가인지. `rundir_init` 이 런-오픈 분기보다 먼저 돌아 자기
 # `started-at` 을 now 로 다시 쓰므로, 회수가 도달할 때 보존 시계가 언제나 0 이다.
 b4_now=$(date -u +%s); b4_started=$(cat "$B4D/started-at" 2>/dev/null || printf 0)
+# gate-load: 다시 쓴 시각과 지금의 차가 120초 안이어야 한다
 check "B4 자기 started-at 은 게이트 진입이 now 로 다시 썼다" \
   "$(if [ $((b4_now - b4_started)) -lt 120 ]; then printf yes; else printf no; fi)" "yes"
 
@@ -27754,7 +27758,7 @@ check "그 물음을 무효로 닫는다" "$rc" "0"
 # to re-open it, and before the disposition existed that refusal came back as a
 # bare non-zero in the middle of the recording function.
 emit_torn SJ4 "$JSTUB4"
-check "닫힌 물음을 다시 방출해도 게이트는 앞서와 같은 값으로 끝난다" "$rc" "$torn_rc1"
+check "닫힌 물음을 다시 방출해도 게이트는 앞서와 같은 값으로 끝난다" "$rc" "$torn_rc1" # gate-load: 두 wait 가 모두 60초 상한 안에 끝나야 같은 값이다
 case "$out" in
   *"스테이지 종단"*) ok "기록 함수가 끝까지 도달한다 (흡수기에서 죽지 않는다)" ;;
   *) bad "흡수기 탈출" "스테이지 종단 줄이 없다 — 기록 도중 게이트가 죽었다: $out" ;;
@@ -32882,6 +32886,7 @@ qb_bgx "$QB_WOUT" touch qb-w0
 if qb_await "$QB_WOUT"; then qb_wsaw=예; else qb_wsaw=아니오; fi
 rm -f "$QG/main.writing"
 qb_bgend "$QB_WOUT"
+# gate-load: 기다림 줄이 보이기까지 60초 상한
 check "15q: 기록 없는 작성 중 표지는 바로 11 로 끝내지 않고 기다렸다가 표지가 걷히면 다시 대조해 통과한다" \
   "$qb_wsaw|$rc|$(qb_did "$SA_SEGWT/qb-w0")|$(( $(qb_recs) - qb_n0 ))" "예|0|수행|0"
 qb_say 0 '표지가 걷힌 뒤'
@@ -32895,6 +32900,7 @@ qb_bgx "$QB_WOUT" touch qb-w1
 if qb_await "$QB_WOUT"; then qb_wsaw=예; else qb_wsaw=아니오; fi
 qb_wput "$(printf 'a\tb\t%s\t%s\t%s' "$qb_at" "$QB_WREC" "$QG/main.latch.Q8")"
 qb_bgend "$QB_WOUT"
+# gate-load: 기다림 줄이 보이기까지 60초 상한
 check "15q: 다른 행위가 같은 이동의 기록을 쓰는 중이면 새 기록 없이 11 이다" \
   "$qb_wsaw|$rc|$(qb_did "$SA_SEGWT/qb-w1")|$(( $(qb_recs) - qb_n0 ))|$( [ -e "$QG/main.writing" ] && printf 표지 )" "예|11|-|0|표지"
 check "15q: 작성 중 표지를 기다린 11 의 경고는 그 표지가 덧적은 기록 경로를 말한다" \
@@ -38752,7 +38758,7 @@ check "34e: 릴레이 픽스처의 세그먼트 행이 기록된다" "$rc" "0"
 rl_stage RL1; rl_s="$RL_SPID"
 rl_case fg fgwait
 RL_SEG=RL1 rl_call 상한
-rl_until 60 rl_has start.1 || bad "34e 음성 대조" "스텁이 뜨지 않았다"
+rl_until 60 rl_has start.1 || bad "34e 음성 대조" "스텁이 뜨지 않았다" # gate-load: 스텁 기동까지 60초 상한
 rl_sample 3
 rl_stage_end "$rl_s"
 rl_join
@@ -38766,9 +38772,9 @@ rl_stage RL1; rl_s="$RL_SPID"
 rl_case stage wait cap
 rl_n0=$(rl_launches)
 rl_call 상한
-rl_until 60 test -e "$CAP_DIR/shift.live" || bad "34e 스테이지 대기" "교대 표지가 서지 않았다"
+rl_until 60 test -e "$CAP_DIR/shift.live" || bad "34e 스테이지 대기" "교대 표지가 서지 않았다" # gate-load: 교대 표지가 서기까지 60초 상한
 rl_sample 30 end.1
-rl_until 15 rl_relay_waiting || bad "34e 스테이지 대기" "릴레이가 대기에 들지 않았다"
+rl_until 15 rl_relay_waiting || bad "34e 스테이지 대기" "릴레이가 대기에 들지 않았다" # gate-load: 릴레이 대기 진입까지 15초 상한
 RL_STUBS=0
 rl_l0=$(rl_lines)
 rl_sample 6
@@ -38780,6 +38786,7 @@ rl_t=$(date +%s)
 rl_stage_end "$rl_s"
 rl_sample 15 start.2
 rl_join
+# gate-load: 스테이지 종료에서 후임 기동까지 10초 상한
 check "34e: (1) 스테이지가 끝난 뒤 10초 안에 후임이 뜬다" \
   "$( rl_has start.2 && [ $(( $(cat "$RL_O/start.2") - rl_t )) -le 10 ] && printf in || printf out)" "in"
 check "34e: (1) 릴레이가 사는 동안 살아 있는 표지가 없는 샘플이 없다" "$RL_GAP" "0"
@@ -38796,8 +38803,8 @@ sleep 300 & RL_POLL=$!; FX_PIDS="${FX_PIDS:-}$RL_POLL "
 printf '%s\n' "$RL_POLL" > "$CAP_DIR/checks.pid"
 rl_case ci wait plain
 RL_CI=RLC1 rl_call 상한
-rl_until 60 rl_has end.1 || bad "34e CI 대기" "스텁이 끝나지 않았다"
-rl_until 15 rl_relay_waiting || bad "34e CI 대기" "릴레이가 대기에 들지 않았다"
+rl_until 60 rl_has end.1 || bad "34e CI 대기" "스텁이 끝나지 않았다" # gate-load: 스텁 종료까지 60초 상한
+rl_until 15 rl_relay_waiting || bad "34e CI 대기" "릴레이가 대기에 들지 않았다" # gate-load: 릴레이 대기 진입까지 15초 상한
 rl_l0=$(rl_lines); rl_c0=$( { cap_rows checks | grep -c . || true; } | tr -d ' ')
 for rl_i in 1 2 3 4 5 6 7 8; do rl_observe RLC1 대기; rl_sample 1; done
 check "34e: (2) 대기 줄에는 깨지 않는다" "$(rl_has start.2 && printf woke || printf held)" "held"
@@ -38807,6 +38814,7 @@ rl_t=$(date +%s)
 rl_observe RLC1 통과
 rl_until 15 rl_has start.2
 rl_join
+# gate-load: 통과 줄에서 후임 기동까지 10초 상한
 check "34e: (2) 통과 줄 뒤 10초 안에 후임이 뜬다" \
   "$( rl_has start.2 && [ $(( $(cat "$RL_O/start.2") - rl_t )) -le 10 ] && printf in || printf out)" "in"
 check "34e: (2) 후임의 기동이 폴러의 줄을 교대 기동 행 앞의 checks 행으로 배수한다" \
@@ -38825,7 +38833,7 @@ rl_observe RLC2 통과
 rl_case drained wait plain
 RL_CI=RLC2 RL_HOLD=60 rl_call 상한
 rl_until 60 rl_has end.1
-rl_until 15 rl_relay_waiting || bad "34e 배수된 전이" "릴레이가 대기에 들지 않았다"
+rl_until 15 rl_relay_waiting || bad "34e 배수된 전이" "릴레이가 대기에 들지 않았다" # gate-load: 릴레이 대기 진입까지 15초 상한
 rl_sample 6
 check "34e: (3) 배수된 통과는 대기 인계보다 앞의 checks 행이다" \
   "$(awk '/^- `checks` / && /\| 상태=통과 \|/ && /\| 세그먼트=RLC2( \||$)/ { c = NR }
@@ -38837,6 +38845,7 @@ rl_t=$(date +%s)
 rl_observe RLC2 통과
 rl_until 15 rl_has start.2
 rl_join
+# gate-load: 관측에서 후임 기동까지 10초 상한
 check "34e: (3) 기동 뒤에 관측된 판정은 10초 안에 후임을 띄운다" \
   "$( rl_has start.2 && [ $(( $(cat "$RL_O/start.2") - rl_t )) -le 10 ] && printf in || printf out)" "in"
 
@@ -38898,6 +38907,7 @@ rl_t=$(date +%s)
 rl_call 대기
 rl_until 30 rl_has start.1
 rl_join
+# gate-load: 재진입에서 기동까지 10초 상한
 check "34e: (7) 재진입 시점의 빈 대기 집합은 곧바로 기동한다" \
   "$( rl_has start.1 && [ $(( $(cat "$RL_O/start.1") - rl_t )) -le 10 ] && printf in || printf out):$rc" "in:0"
 check "34e: (7) 그 기동 행은 사유=대기 다" "$(row_field "$(cap_rows '교대 기동' | tail -1)" '사유')" "대기"
@@ -38925,6 +38935,7 @@ rl_t=$(date +%s)
 rl_call 대기
 rl_until 30 rl_has start.1
 rl_join
+# gate-load: 재진입에서 기동까지 10초 상한
 check "34e: (9) 남은 스테이지가 살아 있어도 기준 행 뒤의 stage-result 로 깨어난다" \
   "$( rl_has start.1 && [ $(( $(cat "$RL_O/start.1") - rl_t )) -le 10 ] && printf in || printf out):$(kill -0 "$rl_sb" 2>/dev/null && printf alive || printf dead)" "in:alive"
 rl_stage_end "$rl_sb"
@@ -38936,6 +38947,7 @@ rl_case between wait-kill cap
 RL_KILL="$RL_SPID" rl_call 상한
 rl_until 60 rl_has start.2
 rl_join
+# gate-load: 교대 종료에서 후임 기동까지 10초 상한
 check "34e: (10) 인계 뒤 스테이지가 끝나면 릴레이 시작에서 곧바로 기동한다" \
   "$( rl_has start.2 && [ $(( $(cat "$RL_O/start.2") - $(cat "$RL_O/end.1") )) -le 10 ] && printf in || printf out):$rc" "in:0"
 
@@ -39042,6 +39054,7 @@ rl_t=$(date +%s)
 rl_call 대기
 rl_until 30 rl_has start.1
 rl_join
+# gate-load: 재진입에서 기동까지 10초 상한
 check "34e: (18) 재진입 act 가 배수한 통과로 곧바로 기동한다" \
   "$( rl_has start.1 && [ $(( $(cat "$RL_O/start.1") - rl_t )) -le 10 ] && printf in || printf out):$rc" "in:0"
 check "34e: (18) 그 checks 행은 대기 인계 뒤, 재진입의 기동 행 앞에 있다" \
@@ -42137,7 +42150,7 @@ rg_call() {
 rl_case race hold
 rg_n0=$(rl_launches)
 rg_call A 중단; RG_A=$RG_BG
-rl_until 60 rl_has start.1 || bad "34g 겹친 기동" "첫 교대가 뜨지 않았다"
+rl_until 60 rl_has start.1 || bad "34g 겹친 기동" "첫 교대가 뜨지 않았다" # gate-load: 첫 교대 기동까지 60초 상한
 rg_call B 중단; RG_B=$RG_BG
 wait "$RG_B" 2>/dev/null || true
 check "34g: (1) 뒤에 든 호출은 3 이고 교대를 띄우지 않는다" \
@@ -42431,11 +42444,12 @@ rj_r1=$(( $(date +%s) + 20 ))
 rl_plant_cut RJ1 1 "$rj_r1"
 rl_case reset wait-reset cap
 RL_RESET=RJ1 RL_GRACE=$RJ_G rl_call 상한
-rl_until 60 rl_has end.1 || bad "34j 리셋 대기" "첫 교대가 끝나지 않았다"
-rl_until 15 rl_relay_waiting || bad "34j 리셋 대기" "릴레이가 대기에 들지 않았다"
+rl_until 60 rl_has end.1 || bad "34j 리셋 대기" "첫 교대가 끝나지 않았다" # gate-load: 첫 교대 종료까지 60초 상한
+rl_until 15 rl_relay_waiting || bad "34j 리셋 대기" "릴레이가 대기에 들지 않았다" # gate-load: 릴레이 대기 진입까지 15초 상한
 check "34j: (3) relay.live 의 reset= 줄이 끊긴 스테이지와 그 시계를 싣는다" \
   "$(sed -n 's/^reset=//p' "$CAP_DIR/relay.live")" "RJ1:$rj_r1"
 rl_sample 2
+# gate-load: 표본을 마친 시각이 리셋+G 전이어야 한다
 check "34j: (3) 리셋+G 전에는 후속 교대가 뜨지 않는다" \
   "$(rl_has start.2 && printf woke || printf held):$( [ "$(date +%s)" -lt $((rj_r1 + RJ_G)) ] && printf early || printf late)" "held:early"
 rl_until 60 rl_has start.2
@@ -42443,6 +42457,7 @@ rl_join
 rj_at1=$(rl_iso_ep "$(row_field "$(cap_rows '교대 기동' | tail -1)" '기록 시각')")
 check "34j: 리셋+G 에서 후속 교대가 뜬다" \
   "$rc:$(rl_calls):$(row_field "$(cap_rows '교대 기동' | tail -1)" '사유')" "0:2:대기"
+# gate-load: 후속 기동이 G + 2·poll 안이어야 한다
 check "34j: (3) C2 — 리셋에서 후속 교대 기동의 기록 시각까지가 G 이상, G + 2·poll 이하다" \
   "$( [ "${rj_at1:-0}" -ge $((rj_r1 + RJ_G)) ] && [ "${rj_at1:-0}" -le $((rj_r1 + RJ_G + 2 * RJ_POLL)) ] && printf in || printf "out:${rj_at1:-}-$rj_r1")" "in"
 
@@ -42452,8 +42467,8 @@ rj_r2=$(( $(date +%s) + 900 ))
 rl_plant_cut RJ2 1 "$rj_r2"
 rl_case cleared wait-reset cap
 RL_RESET=RJ2 RL_GRACE=$RJ_G rl_call 상한
-rl_until 60 rl_has end.1 || bad "34j 한도 해제" "첫 교대가 끝나지 않았다"
-rl_until 15 rl_relay_waiting || bad "34j 한도 해제" "릴레이가 대기에 들지 않았다"
+rl_until 60 rl_has end.1 || bad "34j 한도 해제" "첫 교대가 끝나지 않았다" # gate-load: 첫 교대 종료까지 60초 상한
+rl_until 15 rl_relay_waiting || bad "34j 한도 해제" "릴레이가 대기에 들지 않았다" # gate-load: 릴레이 대기 진입까지 15초 상한
 rl_sample 3
 check "34j: (4) 한도 해제 행이 서기 전에는 깨지 않는다" "$(rl_has start.2 && printf woke || printf held)" "held"
 rj_t=$(date +%s)
@@ -42461,6 +42476,7 @@ printf -- '- `한도 해제` | 교대=0 | 근거=픽스처 | 레인=~/.claude | 
 rl_until 30 rl_has start.2
 rl_join
 rj_at2=$(rl_iso_ep "$(row_field "$(cap_rows '교대 기동' | tail -1)" '기록 시각')")
+# gate-load: 후속 기동이 G + 2·poll 안이어야 한다
 check "34j: (4) C2 — 더 이른 한도 해제 행에서 후속 교대 기동까지가 G + 2·poll 이하다" \
   "$rc:$( [ "${rj_at2:-0}" -le $((rj_t + RJ_G + 2 * RJ_POLL)) ] && printf in || printf "out:${rj_at2:-}-$rj_t")" "0:in"
 
@@ -42499,7 +42515,7 @@ rj_n=$(row_field "$(cap_rows '교대 기동' | tail -1)" '서수')
 check "34j: (6) 가까운 시계로 죽은 교대도 무기록으로 끝난다" "$rc:$(row_field "$(cap_rows handoff | tail -1)" '사유')" "1:무기록"
 rl_case near-reissue cap
 RL_GRACE=$RJ_G rl_call 대기
-rl_until 30 rl_relay_waiting || bad "34j T1′" "릴레이가 대기에 들지 않았다"
+rl_until 30 rl_relay_waiting || bad "34j T1′" "릴레이가 대기에 들지 않았다" # gate-load: 릴레이 대기 진입까지 30초 상한
 rl_sample 3
 check "34j: T1′ 의 대기가 리셋까지 기다린다" \
   "$(sed -n 's/^reset=//p' "$CAP_DIR/relay.live")|$(sed -n 's/^ci=//p' "$CAP_DIR/relay.live")|$(rl_has start.1 && printf woke || printf held)" \
@@ -42507,6 +42523,7 @@ check "34j: T1′ 의 대기가 리셋까지 기다린다" \
 rl_until 60 rl_has start.1
 rl_join
 rj_at3=$(rl_iso_ep "$(row_field "$(cap_rows '교대 기동' | tail -1)" '기록 시각')")
+# gate-load: 후속 기동이 G + 2·poll 안이어야 한다
 check "34j: (6) C2 — T1′ 의 후속은 리셋+G 이후, G + 2·poll 안에 뜬다" \
   "$rc:$( [ "${rj_at3:-0}" -ge $((rj_r3 + RJ_G)) ] && [ "${rj_at3:-0}" -le $((rj_r3 + RJ_G + 2 * RJ_POLL)) ] && printf in || printf "out:${rj_at3:-}-$rj_r3")" "0:in"
 
@@ -42524,6 +42541,7 @@ rl_until 60 rl_has start.2
 rl_join
 rj_wk=$(cat "$RL_O/end.1" 2>/dev/null || printf 0)
 rj_at4=$(rl_iso_ep "$(row_field "$(cap_rows '교대 기동' | tail -1)" '기록 시각')")
+# gate-load: 후속 기동이 G + 2·poll 안이어야 한다
 check "34j: (7) C2 — 깨어난 시각에서 후속 교대 기동까지가 G + 2·poll 이하다" \
   "$rc:$( [ "${rj_at4:-0}" -le $((rj_wk + RJ_G + 2 * RJ_POLL)) ] && printf in || printf "out:${rj_at4:-}-$rj_wk")" "0:in"
 ORCH_HOST_OS=Darwin CC_SYSCTL_TEST_VALUES="kern.sleeptime=$((rj_r4 - 10)),kern.waketime=$rj_wk" \
@@ -42708,8 +42726,8 @@ fk_usage 'acct("seat"; free)'
 rl_stage FK0; fk_s="$RL_SPID"
 rl_case forelay wait cap
 HOME="$FK_H" rl_call 상한
-rl_until 60 rl_has end.1 || bad "34w 릴레이 갈래" "첫 교대가 끝나지 않았다"
-rl_until 15 rl_relay_waiting || bad "34w 릴레이 갈래" "릴레이가 대기에 들지 않았다"
+rl_until 60 rl_has end.1 || bad "34w 릴레이 갈래" "첫 교대가 끝나지 않았다" # gate-load: 첫 교대 종료까지 60초 상한
+rl_until 15 rl_relay_waiting || bad "34w 릴레이 갈래" "릴레이가 대기에 들지 않았다" # gate-load: 릴레이 대기 진입까지 15초 상한
 fk_n0=$(fk_launches)
 fk_abort() {
   cap_gate "$FK_SEAT" '' act --manifest "$CAP_NM" --kind router-shift --target infra \
@@ -42720,7 +42738,7 @@ HOME="$FK_H" fk_abort
 check "34w: 릴레이가 기다리는 동안의 사유=중단 은 거부 3 이고 기동이 없다" "$rc|$(fk_launches)" "3|$fk_n0"
 fk_usage
 rl_stage_end "$fk_s"
-rl_until 30 rl_has end.2 || bad "34w 릴레이 갈래" "후임이 뜨지 않았다"
+rl_until 30 rl_has end.2 || bad "34w 릴레이 갈래" "후임이 뜨지 않았다" # gate-load: 후임 종료까지 30초 상한
 rl_join
 check "34w: 릴레이가 깨어 낸 후임은 여유 계정에서 뜬다" \
   "$rc|$(cat "$RL_O/cfg.1" 2>/dev/null)|$(cat "$RL_O/cfg.2" 2>/dev/null)|$(row_field "$(fk_last)" 결과)" \
@@ -42843,9 +42861,9 @@ fk_aff() { cat "$CAP_DIR/route-affinity" 2>/dev/null || printf 없음; }
 fk_aff0=$(fk_aff)
 rl_case folease hold
 HOME="$FK_H" rl_call 상한
-rl_until 60 rl_has start.1 || bad "34w 임대" "교대가 뜨지 않았다"
+rl_until 60 rl_has start.1 || bad "34w 임대" "교대가 뜨지 않았다" # gate-load: 교대 기동까지 60초 상한
 fk_lease_up() { [ -n "$(fk_lease)" ]; }
-rl_until 10 fk_lease_up || bad "34w 임대" "임대가 서지 않았다"
+rl_until 10 fk_lease_up || bad "34w 임대" "임대가 서지 않았다" # gate-load: 임대가 서기까지 10초 상한
 fk_l=$(fk_lease)
 check "34w: 이전 교대가 고른 계정에 failover-shift 임대를 잡고 보유자가 그 교대다" \
   "$(printf '%s' "$fk_l" | jq -r '[.run_id, .lineage, .account, .basis] | join("|")')|$(printf '%s' "$fk_l" | jq -r '(.reservation_bp.five_hour > 0 or .reservation_bp.seven_day > 0)')|$(printf '%s' "$fk_l" | jq -r --arg p "$(cat "$RL_O/pid.1")" 'any(.holders[]?; (.pid | tostring) == $p)')" \
@@ -44592,7 +44610,7 @@ while [ "$sb15_i" -lt 150 ]; do
   fi
   sleep 0.2; sb15_i=$((sb15_i + 1))
 done
-[ "$sb15_i" -lt 150 ] || bad "15: 감독자 대기" "30초 안에 끝나지 않았다: $(sb_seg_last SB15)"
+[ "$sb15_i" -lt 150 ] || bad "15: 감독자 대기" "30초 안에 끝나지 않았다: $(sb_seg_last SB15)" # gate-load: 감독자가 끝나기까지 30초 상한
 if [ -e "$sb15_mark" ]; then ok "15: 트리를 죽인 뒤에도 명령이 끝까지 돌았다"
 else bad "15: 표지" "명령이 끝나지 않았다"; fi
 case "$(sb_seg_last SB15)" in
@@ -46619,7 +46637,7 @@ gateL exec --manifest "$FX_MANIFEST" --target infra --segment S42A --cutpoint �
 check "42 라우터의 읽기 초과 exec 가 통과한다" "$rc" "0"
 ( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" CC_CLAUDE_BIN="$STUB42A" \
   bash "$GATE" wait --manifest "$FX_MANIFEST" --segment S42A --interval 1 --timeout 60 ) >/dev/null 2>&1; rc=$?
-check "42 (A) 의 wait 이 스테이지 rc 0 을 돌려준다" "$rc" "0"
+check "42 (A) 의 wait 이 스테이지 rc 0 을 돌려준다" "$rc" "0" # gate-load: wait 가 60초 상한 안에 끝나야 한다
 k42a=$(klass42 S42A)
 if [ -n "$k42a" ] && [ "$k42a" != "정상 완료" ]; then
   ok "라우터 행만 늘어난 스테이지는 정상 완료가 아니다 ($k42a)"
@@ -46640,7 +46658,7 @@ canon_report "$rid42" S42B >/dev/null
   --trigger '첫 리뷰' -- review -p "$(rv_x "$rid42" S42B)" ) >/dev/null 2>&1
 ( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" CC_CLAUDE_BIN="$STUB42B" \
   bash "$GATE" wait --manifest "$FX_MANIFEST" --segment S42B --interval 1 --timeout 60 ) >/dev/null 2>&1; rc=$?
-check "42 (B) 의 wait 이 스테이지 rc 0 을 돌려준다" "$rc" "0"
+check "42 (B) 의 wait 이 스테이지 rc 0 을 돌려준다" "$rc" "0" # gate-load: wait 가 60초 상한 안에 끝나야 한다
 check "스테이지 자신이 게이트를 한 번 부르면 정상 완료다" "$(klass42 S42B)" "정상 완료"
 check "42 (B) 의 스테이지 행에 행위자=스테이지 가 찍혀 있다" \
   "$( { grep -F '`자율 승인`' "$FX_LEDGER" || true; } | { grep -F '세그먼트=S42B ' || true; } | { grep -cF '| 행위자=스테이지 |' || true; } )" "1"
@@ -47996,6 +48014,7 @@ check "57p: 그 클론은 바이트 그대로다" "$(p57p_state "$P57P_UNREACH")
 p57p_t0=$(date +%s)
 P57P_SSH="sleep $P57P_SLEEP #" p57p_take "$P57P/rd-hang" "$P57P_HANG/plugins/cc-cmds"
 p57p_el=$(( $(date +%s) - p57p_t0 ))
+# gate-load: 매달리는 fetch 가 끊기기까지의 경과가 35초 안이어야 한다
 check "57p: 매달리는 원격은 20초 상한 안에 fetch 실패로 끝난다" \
   "$(p57p_pin "$P57P/rd-hang" origin-sync)/$( [ "$p57p_el" -ge 15 ] && [ "$p57p_el" -le 35 ] && printf 상한안 || printf "경과${p57p_el}s" )" \
   "fetch 실패/상한안"
@@ -51300,7 +51319,7 @@ p69_wait_round() {
   # 돌아오기 전에 잡히므로, 없으면 회차가 없었거나 이미 끝난 것이다.
   local i=0
   while [ -d "$P69_LOCK" ]; do
-    [ "$i" -lt 300 ] || { bad "69: 회차 대기" "잠금이 30초 안에 풀리지 않았다"; return 1; }
+    [ "$i" -lt 300 ] || { bad "69: 회차 대기" "잠금이 30초 안에 풀리지 않았다"; return 1; } # gate-load: 회차 잠금이 풀리기까지 30초 상한
     sleep 0.1; i=$((i + 1))
   done
   return 0
@@ -54361,9 +54380,11 @@ lsr93_l=$(lsr93_dfx th2h)
 lsr93_hrow "$lsr93_l" 이월
 check "95: TH2 마감 전 이월만 남은 대기는 붙듦 상한에서 좌석에 돌려준다" \
   "$(lsr93_rwait "$lsr93_l" "$FX_MANIFEST")" "1|y|좌석 호출의 대기 상한 2초가 지났다"
+# gate-load: 곧장 끝나는 대기가 2초 안에 끝나야 한다
 check "95: TH2 대조 — 지난 마감의 이월 대기는 깨움 조건으로 곧장 끝난다" \
   "$(lsr93_rwait "$lsr93_l" "$lsr93_mfp")" "0|n|"
 lsr93_hrow "$lsr93_l" 중단
+# gate-load: 곧장 끝나는 대기가 2초 안에 끝나야 한다
 check "95: TH2 대조 — 이월이 빠진 대기는 빈 집합으로 곧장 끝난다" \
   "$(lsr93_rwait "$lsr93_l" "$FX_MANIFEST")" "0|n|"
 
@@ -55606,7 +55627,7 @@ gateB plan --manifest "$WORK/bsx-RB1.md" --kind skill --target infra --segment -
   --surface 워크트리쓰기 -- split -p "$(bsx_p RB1 "$BSX_P_SPLIT")"
 check "76:감사가 끝나기 전의 분할 파견은 거부된다" "$rc" "3"
 bsx_launch RB1 "$WORK/bin/bsx-audit" audit "$BSX_P_AUDIT" A1
-check "76:감사 파견이 기동하고 wait 가 rc 0 을 돌려준다" "$BSX_ACT_RC/$BSX_WAIT_RC" "0/0"
+check "76:감사 파견이 기동하고 wait 가 rc 0 을 돌려준다" "$BSX_ACT_RC/$BSX_WAIT_RC" "0/0" # gate-load: 스테이지가 대기 상한 안에 끝나야 한다
 check "76:감사 단계의 stage-result 행이 세그먼트=- · 스테이지=단계 id · 종류=audit 다" \
   "$(bsx_rows RB1 '| 세그먼트=- | 스테이지=A1 | 종류=audit ' | grep -c . || true)" "1"
 check "76:감사 단계가 정상 완료로 끝난다" "$(bsx_class RB1 '| 스테이지=A1 | 종류=audit ')" "정상 완료"
@@ -55645,14 +55666,14 @@ case "$msg" in
   *) bad "76재수렴 선행 문면" "$msg" ;;
 esac
 bsx_launch RB1F "$WORK/bin/bsx-audit" audit "$BSX_P_AUDIT" A1
-check "76:동결 문서로 다시 킥오프한 런은 설계 행 없이 감사를 띄운다" "$BSX_ACT_RC/$BSX_WAIT_RC" "0/0"
+check "76:동결 문서로 다시 킥오프한 런은 설계 행 없이 감사를 띄운다" "$BSX_ACT_RC/$BSX_WAIT_RC" "0/0" # gate-load: 스테이지가 대기 상한 안에 끝나야 한다
 check "76:그 감사가 정상 완료로 끝난다" "$(bsx_class RB1F '| 스테이지=A1 | 종류=audit ')" "정상 완료"
 # A `--resume` carries the router's fixed sentence, not the slash command, so the
 # prompt check does not apply to it — the session is pinned to the step's rows.
 bsx_sid=$(bsx_rows RB1F '| 스테이지=A1 | 종류=audit ' | tail -1 | tr '|' '\n' | sed -n 's/^ *세션 id=//p' | sed 's/[[:space:]]*$//')
 BSX_RESUME="$bsx_sid" bsx_launch RB1F "$WORK/bin/bsx-audit" audit \
   "중단 기록 x 의 질문에 사람이 \`y\` 을 골랐습니다. 그 선택지를 질문의 답으로 받아, 기록이 적은 스텝부터 이어서 진행하세요." A1
-check "76:고정 문장으로 감사 세션을 재부착하는 --resume 파견은 기동한다" "$BSX_ACT_RC/$BSX_WAIT_RC" "0/0"
+check "76:고정 문장으로 감사 세션을 재부착하는 --resume 파견은 기동한다" "$BSX_ACT_RC/$BSX_WAIT_RC" "0/0" # gate-load: 스테이지가 대기 상한 안에 끝나야 한다
 check "76:그 재부착이 감사 행을 하나 더 남긴다" \
   "$(bsx_rows RB1F '| 세그먼트=- | 스테이지=A1 | 종류=audit ' | grep -c . || true)" "2"
 # A person adopts the audit's composed requirement on an audit that ended
@@ -58459,10 +58480,10 @@ if [ -e "$W84/done" ]; then
          -v l="$(awk -v a="$l84a" -v b="$l84b" 'BEGIN { print b - a }')" 'BEGIN { exit !(m < l + 3) }'; then
     ok "84: make 가 루프 시간 안에 돌아온다"
   else
-    bad "84: make 가 루프 시간 안에 돌아온다" "make ${t84a} - ${t84b}, 루프 ${l84a} - ${l84b}"
+    bad "84: make 가 루프 시간 안에 돌아온다" "make ${t84a} - ${t84b}, 루프 ${l84a} - ${l84b}" # gate-load: make 경과가 루프 경과보다 3초 넘게 길면 안 된다
   fi
 else
-  bad "84: 떼어 낸 자식이 끝까지 돌지 못했다" "$(cat "$W84/child.log" "$W84/make.out" 2>/dev/null)"
+  bad "84: 떼어 낸 자식이 끝까지 돌지 못했다" "$(cat "$W84/child.log" "$W84/make.out" 2>/dev/null)" # gate-load: 자식이 대기 상한 안에 끝나야 한다
 fi
 
 # ---------------------------------------------------------------------------
@@ -65154,12 +65175,13 @@ esac
 # 띄우고, 다시 붙고, 동결 뒤를 본다. 재부착은 슬래시 명령이 아니라 고정 문장을 싣고
 # 이 단계의 행에 묶이므로, 티어 강제는 그것을 읽지 않는다.
 bsx_launch RTS "$WORK/bin/bsx-design" design "$TIER_P_SOLO" D1
+# gate-load: 스테이지가 대기 상한 안에 끝나야 한다
 check "89: solo 설계 스테이지가 동결 문서로 정상 완료한다" \
   "$BSX_ACT_RC/$BSX_WAIT_RC/$(bsx_class RTS '| 스테이지=D1 | 종류=design ')" "0/0/정상 완료"
 tier_sid=$(bsx_rows RTS '| 스테이지=D1 | 종류=design ' | tail -1 | tr '|' '\n' | sed -n 's/^ *세션 id=//p' | sed 's/[[:space:]]*$//')
 BSX_RESUME="$tier_sid" bsx_launch RTS "$WORK/bin/bsx-design" design \
   "중단 기록 x 의 질문에 사람이 \`y\` 을 골랐습니다. 그 선택지를 질문의 답으로 받아, 기록이 적은 스텝부터 이어서 진행하세요." D1
-check "89: solo 설계 스테이지의 재부착은 거부되지 않는다" "$BSX_ACT_RC/$BSX_WAIT_RC" "0/0"
+check "89: solo 설계 스테이지의 재부착은 거부되지 않는다" "$BSX_ACT_RC/$BSX_WAIT_RC" "0/0" # gate-load: 스테이지가 대기 상한 안에 끝나야 한다
 check "89: 그 재부착이 설계 행을 하나 더 남긴다" \
   "$(bsx_rows RTS '| 세그먼트=- | 스테이지=D1 | 종류=design ' | grep -c . || true)" "2"
 check "89: solo 런의 동결 뒤 다음 스텝은 구현이다" \
@@ -65219,6 +65241,7 @@ check "89: 같은 로스터 행을 지닌 discuss-audit 계획은 통과한다 (
 bsx_launch RTSP "$WORK/bin/bsx-design" design "$TIER_P_SOLO" D1
 printf '1\n' > "$BSX_STATE/cc-cmds/run/RTSP/stub-au-composed"
 bsx_launch RTSP "$WORK/bin/bsx-audit" audit "$TIER_P_AUDIT" A1
+# gate-load: 스테이지가 대기 상한 안에 끝나야 한다
 check "89: solo-audit 런의 감사가 정상 완료한다" \
   "$BSX_ACT_RC/$BSX_WAIT_RC/$(bsx_class RTSP '| 스테이지=A1 | 종류=audit ')" "0/0/정상 완료"
 check "89: solo-audit 런은 단독 설계 뒤 감사, 감사 뒤 구현이다" \
@@ -67203,7 +67226,7 @@ p96_gate() {
 p96_wait_round() {
   local i=0
   while [ -d "$P96_LOCK" ]; do
-    [ "$i" -lt 300 ] || { bad "96: 회차 대기" "잠금이 30초 안에 풀리지 않았다"; return 1; }
+    [ "$i" -lt 300 ] || { bad "96: 회차 대기" "잠금이 30초 안에 풀리지 않았다"; return 1; } # gate-load: 회차 잠금이 풀리기까지 30초 상한
     sleep 0.1; i=$((i + 1))
   done
   return 0
@@ -67517,7 +67540,7 @@ p96c_wait() {
   while [ -d "$st/cc-cmds/attention-round/lock" ] || [ -d "$st/cc-cmds/.halt.lock" ]; do
     if [ "$i" -ge 900 ]; then
       # 실패를 가를 재료로 회차 로그의 끝을 싣고, 뒤 단계가 같은 잠금에 막히지 않게 지운다.
-      bad "96c: 회차 대기" "잠금이 90초 안에 풀리지 않았다 — $(tail -n 5 "$P96C_STATE"/cc-cmds/run/*/log/attention-round.log "$P96C/hostrd/log/attention-round.log" 2>/dev/null | tr '\n' ' ')"
+      bad "96c: 회차 대기" "잠금이 90초 안에 풀리지 않았다 — $(tail -n 5 "$P96C_STATE"/cc-cmds/run/*/log/attention-round.log "$P96C/hostrd/log/attention-round.log" 2>/dev/null | tr '\n' ' ')" # gate-load: 회차 잠금이 풀리기까지 90초 상한
       rm -rf "$st/cc-cmds/attention-round/lock"
       return 1
     fi
@@ -68699,7 +68722,7 @@ h98h_bout=$(CC_ROUTE_LEASE_HOLD_WAIT_TEST_SECONDS=1 h98h_in "$h98h_pb" "$h98h_lb
 h98h_bel=$SECONDS
 check "98h: 잠금이 보유 총예산 내내 바쁘면 감독자는 rc 3 으로 끝나고 기동하지 않는다" "$h98h_bout" "3|3"
 if [ "$h98h_bel" -ge 2 ] && [ "$h98h_bel" -le 10 ]; then ok "98h: 확보는 보유 예산의 두 배 안에서 다시 시도한다"
-else bad "98h: 확보는 보유 예산의 두 배 안에서 다시 시도한다" "${h98h_bel}초"; fi
+else bad "98h: 확보는 보유 예산의 두 배 안에서 다시 시도한다" "${h98h_bel}초"; fi # gate-load: 재시도까지의 경과가 10초 안이어야 한다
 check "98h: 그 끝은 lease-hold-busy 원인 행 하나를 남긴다" \
   "$( { grep '^- `stage-wait` ' "$h98h_lb" | grep -cF '| 계보=B:SHB#1 | 그룹=- | 계정=- | 까지=- | 비용=- | 비용 출처=- | 근거=lease-hold-busy' || true; } )" "1"
 check "98h: 옛 임대를 nonce 로 반납한다" "$(cat "$h98h_db/released" 2>/dev/null)" "B:SHB#1 nb"
@@ -68741,6 +68764,7 @@ check "98h: resume 사건의 재파견도 원인 행 뒤에 입장으로 닫힌�
 h98h_pf="$lsr_root/pace98h-f"; rm -rf "$h98h_pf"
 h98h_lf=$(lsr75_new h98hf)
 h98h_lock "$h98h_pf"
+# gate-load: 확보 경과가 1초 이하여야 한다
 check "98h: 이미 보유자인 감독자는 잠금이 바빠도 곧바로 확보한다" \
   "$(CC_ROUTE_LEASE_HOLD_WAIT_TEST_SECONDS=1 h98h_in "$h98h_pf" "$h98h_lf" eval 'h98h_c_lease LS "B:SHF#1" nf grant $$ >/dev/null 2>&1; SECONDS=0; r=0; gate_sup_lease_secure "B:SHF#1" nf || r=$?; e=$SECONDS; [ "$e" -le 1 ] && e=곧바로; printf "%s|%s" "$r" "$e"' 2>/dev/null)" "0|곧바로"
 
