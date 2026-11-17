@@ -41184,7 +41184,7 @@ CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$RRT_PREV_AR"
 FX_GATE="$repo_root/plugins/cc-cmds/orchestrator/gate.sh"
 FX_RUN="$repo_root/plugins/cc-cmds/orchestrator/run.sh"
 FX_SIDECAR="$repo_root/plugins/cc-cmds/skills/_common/pipeline-sidecar.md"
-FX_SHIFT="$repo_root/plugins/cc-cmds/skills/autopilot-router-shift/SKILL.md"
+FX_SHIFT="$repo_root/plugins/cc-cmds/skills/autopilot-router-shift/references/merge-apply-2.md"
 fx_miss=''
 for fx_tok in '고칠 곳' '판정 주체' '판정 신호' '판정 근거' '측정 등급' '베이스 일치' '라우팅=외부-보류' \
               '종료 코드·사후 프로브 불일치' '베이스 동일 실패' '관측 근거' '대상 적용 정지' 'apply_target_stopped'; do
@@ -43776,7 +43776,7 @@ check "12: 인계 행은 하나 그대로다" "$(sb_count '`적용 인계`')" "1
 
 # 라우터의 두 사본 — 교대 스킬과 리드 사본의 「**The apply.**」 문단 첫머리가 같고,
 # 둘 다 `적용` 의 `없음` 갈래에서 fetch 도 적용 행위도 내지 않는다고 적는다.
-ap12_shift=$(grep -m1 -F '**The apply.**' "$repo_root/plugins/cc-cmds/skills/autopilot-router-shift/SKILL.md" || true)
+ap12_shift=$(grep -m1 -F '**The apply.**' "$repo_root/plugins/cc-cmds/skills/autopilot-router-shift/references/merge-apply-2.md" || true)
 ap12_lead=$(grep -m1 -F '**The apply.**' "$repo_root/plugins/cc-cmds/skills/autopilot/references/router-lead-copy.md" || true)
 check "12: 두 라우터 사본의 적용 문단 첫머리가 같다" "$ap12_shift" "$ap12_lead"
 for ap12 in "$ap12_shift" "$ap12_lead"; do
@@ -70213,7 +70213,7 @@ rv108_tpl=$(awk '
     for (i = 2; i <= n; i += 2)
       if (index(p[i], "gate.sh exec … ") == 1 || index(p[i], "git update-ref -d ") == 1) print p[i]
   }
-' "$repo_root/plugins/cc-cmds/skills/autopilot-router-shift/SKILL.md" | awk '!seen[$0]++')
+' "$repo_root/plugins/cc-cmds/skills/autopilot-router-shift/references/reviewer-run.md" | awk '!seen[$0]++')
 rv108_pick() { printf '%s\n' "$rv108_tpl" | awk -v n="$1" '!f && index($0, n) { print; f = 1 }'; }
 rv108_fetch_t=$(rv108_pick 'git fetch origin ')
 rv108_add_t=$(rv108_pick 'git worktree add ')
@@ -70353,23 +70353,28 @@ check "108s: 중단 답 사본이 세 자리의 재시도를 review-post 로 적
 check "108s: 다음 값 사본에 게시 가 있다" \
   "$( { grep -cF '**`게시`**' "$S106_SK/autopilot-router-shift/references/review-next-1.md" || true; } | awk '{ print ($1 > 0) ? "있음" : "없음" }')" "있음"
 s106_rt=""
-for s106_f in "$S106_SK/autopilot-router-shift/SKILL.md" "$S106_SK/autopilot/references/router-lead-copy.md"; do
+for s106_f in "$S106_SK/autopilot-router-shift/references/termination.md" "$S106_SK/autopilot/references/router-lead-copy.md"; do
   s106_rt="$s106_rt$( { grep -cF -- '--kind review-post --segment <seg> --clause <절 id> --cutpoint 커밋 --surface 외부상태변경 -- 게시' "$s106_f" || true; } ):"
   s106_rt="$s106_rt$( { grep -cF -- '-f body=' "$s106_f" || true; } ) "
 done
 check "108s: 라우터 두 사본이 정산 게시를 review-post 로 적는다" "$s106_rt" "1:0 1:0 "
 # 게이트의 act 는 --reach 를 remote-check 에만 받고 나머지는 exit 2 로 거절하므로,
 # review-post 를 적은 문면은 어느 사본에서도 --reach 를 싣지 않는다. 줄 끝 역슬래시로 이은
-# 펜스 블록은 한 줄로 이어 붙여 읽는다.
+# 펜스 블록은 한 줄로 이어 붙여 읽는다. 교대 사본은 본문과 references 전부를 함께 읽는다 —
+# review-post 문면이 리뷰어 런·세그먼트 정지·종료 절 정산 참조 파일에 나뉘어 있다.
 s106_rr=""
-for s106_f in "$S106_SK/autopilot-router-shift/SKILL.md" "$S106_SK/autopilot/references/router-lead-copy.md"; do
+s106_shift_files=("$S106_SK/autopilot-router-shift/SKILL.md" "$S106_SK/autopilot-router-shift/references/"*.md)
+s106_lead_files=("$S106_SK/autopilot/references/router-lead-copy.md")
+for s106_set in shift lead; do
+  if [ "$s106_set" = shift ]; then s106_fs=("${s106_shift_files[@]}"); else s106_fs=("${s106_lead_files[@]}"); fi
   s106_rr="$s106_rr$(awk '
+    FNR == 1 { c = "" }
     { l = (c == "" ? $0 : c " " $0) }
     /\\$/ { c = substr(l, 1, length(l) - 1); next }
     { c = "" }
     index(l, "--kind review-post") { n++; if (index(l, "--reach")) r++ }
     END { printf "%d/%d ", (n > 0 ? 1 : 0), r + 0 }
-  ' "$s106_f")"
+  ' "${s106_fs[@]}")"
 done
 check "108s: review-post 문면은 두 사본 어디에도 --reach 를 싣지 않는다" "$s106_rr" "1/0 1/0 "
 s106_sc="$S106_SK/_common/pipeline-sidecar.md"
