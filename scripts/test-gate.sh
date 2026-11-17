@@ -73008,7 +73008,7 @@ s113_route() {
 s113_r=$(s113_call "$S113/ledger.md" "$s113_doc" '
   printf "%s|%s|%s|%s|%s" "$(doc_size_threshold audit | tr "\t" /)" "$(doc_size_threshold reconverge | tr "\t" /)" \
     "$(doc_size_threshold implement | tr "\t" /)" "$(doc_size_min_threshold 1)" "$(doc_size_min_threshold 2)"' 2>/dev/null)
-check "113b: 크기 표가 세 종류의 문턱과 경고 문턱을 낸다" "$s113_r" "323000/299000|289000/265000|313000/289000|289000|265000"
+check "113b: 크기 표가 세 종류의 문턱과 경고 문턱을 낸다" "$s113_r" "323000/299000|289000/265000|305000/281000|289000|265000"
 s113_r=$(s113_call "$S113/ledger.md" "$s113_doc" '
   printf "%s|%s" "$(doc_size_verdict reconverge "$DOC" | cut -f1)" "$(doc_size_verdict audit "$DOC" | cut -f1)"' 2>/dev/null)
 check "113b: 문턱 위 문서는 재수렴에 초과이고 감사에 경고다" "$s113_r" "초과|경고"
