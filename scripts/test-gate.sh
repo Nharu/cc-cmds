@@ -3952,11 +3952,13 @@ snapH() {
 TAB=$(printf '\t')
 # One act on the base fixture, which is what drains a stall observation into the
 # ledger — the transcription is the ledger writer's job and `snapshot` writes
-# nothing.
+# nothing. The act is a plain read: a `segment` row whose `상태` is not `park`,
+# or a launch evidence row, is progress, and progress after a stall row releases
+# it (`cc__blocked_fold`), so a draining act that wrote one would release the
+# very block the next assertion reads as still open.
 drain_act() {
-  gate act --manifest "$FX_MANIFEST" --kind segment --target infra --segment SDR \
-    --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(snapH)" \
-    --rationale "픽스처 — 전사 유발" -- "상태=계획됨" "워크트리=$WT" "선행=없음"
+  gate exec --manifest "$FX_MANIFEST" --target infra --cutpoint 커밋 --surface 읽기 \
+    --snapshot-digest "$(snapH)" --rationale "픽스처 — 전사 유발" -- ls
 }
 
 # `cone` — the container of section 31, moved here whole: the pipeline
