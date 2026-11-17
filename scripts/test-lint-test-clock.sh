@@ -178,7 +178,7 @@ form arith-lt '(( el ''< 5 ))' '(( el ''> 5 ))'
 form arith-le '(( el ''<= 5 ))' '(( el ''>= 5 ))'
 form eq '[ "$el" -''eq 0 ]' '[ "$n" -''eq 0 ]'
 form arith-eq '(( el ''== 0 ))' '(( n ''== 0 ))'
-form inline '[ $(( '"$NOW"' - m )) -''lt 60 ]' '[ $(( '"$NOW"' - 60 )) -''lt "$m" ]' 'm=$(stat -f %m f)'
+form inline '[ $(( '"$NOW"' - m )) -''lt 60 ]' '[ $(( '"$NOW"' - 60 )) -''lt "$m" ]' 'm=$(stat'' -f %m f)'
 form seconds '[ $'"$S"' -''lt 5 ]' '[ $'"$S"' -''gt 5 ]' ':'
 mkcase clock-minus-const other.sh 'n=$(( '"$NOW"' - 30 ))' '[ "$n" -''lt 5 ] && echo y'
 expect_case "elapsed-compare: 시각에서 상수를 뺀 값은 경과가 아니다" clock-minus-const 0
