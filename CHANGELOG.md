@@ -5,6 +5,16 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.48.4] - 2026-11-18
+
+`AskUserQuestion` 을 한 번 띄우면 원격 이벤트가 질문 이벤트 하나만 남게 한다. 지금까지는 질문 좌석 훅이 창이 열리는 순간 `auq` 이벤트를 남긴 뒤, 같은 질문의 권한 창에 대해 권한 알림 훅이 도구 이름을 보지 않고 `permission` 이벤트를 하나 더 내어 릴레이가 같은 질문을 두 번 전달했다.
+
+### Fixed
+
+- **권한 알림 훅의 `AskUserQuestion` 판정** — `hooks/session-permission-notify.sh` 의 `request` 역할이 `seen` 시각을 기록하고 `agent_id` 를 확인한 다음, 도구가 `AskUserQuestion` 이면 이벤트도 대기 표시도 남기지 않고 멈춘다. `seen` 은 그대로 남으므로 창 뒤 약 6초에 오는 `Notification(permission_prompt)` 폴백 신호도 10초 창 안에서 지금처럼 억제된다. 질문 폼 도구(`mcp__cc-cmds__question_form`)와 그 밖의 도구의 권한 요청은 지금처럼 `permission` 이벤트를 남긴다.
+- **훅 문서** — `hooks/README.md` 의 권한 좌석 절에서 `request` 문단과 판정 순서에 이 판정을 적었다.
+- **회귀 시험** — `scripts/test-session-permission-notify.sh` 에 새 절을 더해, `AskUserQuestion` 권한 요청과 뒤따르는 폴백 신호가 사건을 남기지 않음, 질문 좌석 훅까지 함께 돌렸을 때 스풀의 사건이 `auq` 하나뿐임, `Bash`·질문 폼 도구의 권한 요청은 여전히 사건을 남김을 단언한다.
+
 ## [3.48.3] - 2026-11-18
 
 대시보드가 파견을 미룬 모든 대기를 "사용량 한도"로 단정해 보이던 결함을 고쳤다. 이제 대기 표지의 계보로 원장에서 같은 계보의 마지막 `stage-wait` 행을 찾아, 그 행의 근거를 계정 한도·계정 여유 부족·호스트 포화·차례·임대 대기·원인 미상의 다섯 갈래로 묶어 보이고, 끝 정보(리셋 시각, 호스트 부하와 해제 문턱)를 함께 보인다. 대기를 정하는 쪽(라우터·드라이버·게이트·감시자·대기 표지)은 바꾸지 않았다.
