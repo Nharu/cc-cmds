@@ -73464,7 +73464,7 @@ s116_ask() {
 # 계보 순(W1 부터)으로 판정을 늘어놓는다.
 s116_round() {
   local i
-  for i in $(seq "$2" 1); do printf '%s %s\n' "$i" "$(s116_ask "$1" "W$i" "$3" "$4")"; done \
+  for i in $(seq "$2" -1 1); do printf '%s %s\n' "$i" "$(s116_ask "$1" "W$i" "$3" "$4")"; done \
     | sort -n | awk '{ print $2 }' | paste -sd, -
 }
 s116_live_waits() { jq -s '[.[] | select(.kind == "wait")] | length' "$1"/*.lease 2>/dev/null || printf '?'; }
