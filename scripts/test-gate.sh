@@ -49912,25 +49912,46 @@ check "60: 죽은 드레인이 남긴 파일을 오래된 것부터 회수한다
 # 않으면, 이 절이 바로 위에서 재는 「죽은 드레인」이 그 다음 모든 드레인을 런이 끝날 때까지
 # 막는다 — 회수하려던 결함이 한 층 위에서 되살아난다.
 #
-# 소유자 시각은 **지금**으로 찍는다. 낡은 시각을 찍으면 나이 만료가 먼저 발화해, pid 판정을
-# 재는 대신 만료를 재게 된다.
+# 이 절은 (3c)~(3e) 에서 시간을 재지 않는다. 드레인이 잠금 앞에서 기다리는 곳은 게이트의
+# `sleep` 뿐이므로, 그 `sleep` 을 함수로 가려 부른 함수의 이름을 흔적 파일에 적는다. 게이트는
+# 이 셸 안의 서브셸에서 돌므로(`gate_inproc`) 내보내지 않은 함수에도 닿는다. 흔적 파일과
+# 방식은 게이트가 지우지 않는 내보낸 변수로 넘긴다.
+#   abort — 잠금 고리(`gate_checks_drain_lock`)의 첫 잠과 탈취(`gate_checks_drain_takeover`)의
+#           두 번째 잠에서 그 게이트를 끝낸다. 잠금을 즉시 넘겼다면 둘 다 일어나지 않으므로,
+#           전사된 행이 그 증거가 된다.
+#   wait  — 적고 그대로 잔다.
+# 가림 함수가 어느 줄을 지나는지는 게이트의 잠 횟수에 달려 있어 줄마다 변동 표지를 단다.
+sleep() {
+  printf '%s\n' "${FUNCNAME[1]:-}" >> "$CK60_SLEEP_TRACE" # gate-isolation: 변동
+  if [ "$CK60_SLEEP_MODE" = abort ]; then # gate-isolation: 변동
+    case "${FUNCNAME[1]:-}" in # gate-isolation: 변동
+      gate_checks_drain_lock) exit 3 ;; # gate-isolation: 변동
+      gate_checks_drain_takeover) # gate-isolation: 변동
+        [ "$(grep -cx gate_checks_drain_takeover "$CK60_SLEEP_TRACE")" -lt 2 ] || exit 3 ;; # gate-isolation: 변동
+    esac # gate-isolation: 변동
+  fi # gate-isolation: 변동
+  command sleep "$@" # gate-isolation: 변동
+}
+CK60_SLEEP_TRACE=$(mktemp "${TMPDIR:-/tmp}/ck60-sleep.XXXXXX")
+CK60_SLEEP_MODE=abort
+export CK60_SLEEP_TRACE CK60_SLEEP_MODE
+ck60_slept() { { grep -cx "$1" "$CK60_SLEEP_TRACE" || true; }; }
+
+# 소유자 시각은 **지금보다 하루 뒤**로 찍는다. 그러면 나이 만료(60초)가 발화하지 않으므로,
+# 잠금을 넘기는 길은 pid 판정 하나뿐이다.
 ck60_lk="$SA_RUN/checks.drain.lock"
 ck60_dead=99999
 while kill -0 "$ck60_dead" 2>/dev/null; do ck60_dead=$((ck60_dead - 1)); done
 mkdir -p "$ck60_lk"
-printf '%s %s\n' "$ck60_dead" "$(date -u +%s)" > "$ck60_lk/owner"
+printf '%s %s\n' "$ck60_dead" "$(( $(date -u +%s) + 86400 ))" > "$ck60_lk/owner"
 ck60_line 통과 없음 "$CK60_SHA" -
 ck60_nl=$(ck60_checks)
-ck60_t0=$(date -u +%s)
+: > "$CK60_SLEEP_TRACE"
+CK60_SLEEP_MODE=abort
 ck60_drain
-ck60_dt=$(( $(date -u +%s) - ck60_t0 ))
 check "60: 죽은 소유자가 남긴 드레인 잠금을 빼앗아 전사한다" "$(ck60_checks)" "$((ck60_nl + 1))"
-# 나이 만료(60초)로도 같은 행이 나오므로, 빠르게 끝났다는 것이 pid 판정을 잰 증거다.
-if [ "$ck60_dt" -lt 30 ]; then
-  ok "60: 그 탈취가 pid 판정으로 즉시 일어난다 (${ck60_dt}초, 나이 만료를 기다리지 않는다)" # gate-isolation: 변동
-else
-  bad "60 드레인 잠금" "죽은 소유자의 잠금을 ${ck60_dt}초 만에야 넘겼다 — pid 판정이 아니라 나이 만료가 풀었다"
-fi
+check "60: 그 탈취가 pid 판정으로 즉시 일어난다 (잠금 고리가 한 번도 잠들지 않는다)" \
+  "$(ck60_slept gate_checks_drain_lock)" "0"
 if [ -d "$ck60_lk" ]; then
   bad "60 드레인 잠금" "정상 드레인 뒤에도 잠금이 남아 있다 — 다음 드레인이 60초를 기다린다"
 else
@@ -49944,19 +49965,28 @@ fi
 # 않는다는 것으로만 드러난다. 탈취를 판정한 뒤 다시 확인하지 않는 구현은 여기서 그
 # 새 잠금을 옮겨 지운다.
 #
-# 기다렸다는 증거는 경과 시간이다. 풀기 전의 두 단언만으로는 「기다리는 중」과 「아직
-# 드레인에 닿지도 않음」이 구별되지 않으므로, 위에서 잰 정상 드레인 시간보다 3초 넉넉히
-# 붙잡아 두고 행위 전체가 그만큼 걸렸는지 본다.
+# 기다렸다는 증거는 흔적이다. 풀기 전의 단언만으로는 「기다리는 중」과 「아직 드레인에
+# 닿지도 않음」이 구별되지 않으므로, 배경 드레인이 잠금 고리에서 처음 잠들 때까지 기다린 뒤
+# 그것이 아직 살아 있는지 본다. 이 고리에는 상한을 두지 않는다: 배경이 먼저 끝나면 고리를
+# 빠져나오고, 바로 아래 단언이 그것을 실패로 잡는다. 소유자 시각은 (3c) 처럼 하루 뒤라,
+# 기다림이 길어져도 나이 만료가 잠금을 넘기지 않는다.
 mkdir -p "$ck60_lk"
-ck60_own="$$ $(date -u +%s)"
+ck60_own="$$ $(( $(date -u +%s) + 86400 ))"
 printf '%s\n' "$ck60_own" > "$ck60_lk/owner"
 ck60_line 실패 lint "$CK60_SHA" lint
 ck60_nw=$(ck60_checks)
-ck60_hold=$((ck60_dt + 3))
-ck60_t0=$(date -u +%s)
+: > "$CK60_SLEEP_TRACE"
+CK60_SLEEP_MODE=wait
 ck60_drain &
 ck60_bg=$!
-sleep "$ck60_hold"
+while [ "$(ck60_slept gate_checks_drain_lock)" = "0" ] && kill -0 "$ck60_bg" 2>/dev/null; do # gate-isolation: 변동
+  command sleep 0.05 # gate-isolation: 변동
+done # gate-isolation: 변동
+if kill -0 "$ck60_bg" 2>/dev/null; then
+  ok "60: 드레인이 살아 있는 소유자의 잠금 앞에서 잠들어 기다린다"
+else
+  bad "60 잠금 대기" "드레인이 잠금 고리에서 잠들기 전에 끝났다 — 살아 있는 소유자의 잠금을 기다리지 않았다"
+fi
 check "60: 살아 있는 소유자의 잠금 아래서는 전사하지 않는다" "$(ck60_checks)" "$ck60_nw"
 if [ "$(ck60_bytes)" -gt 0 ]; then
   ok "60: 그동안 관측 파일이 그대로 남아 있다"
@@ -49967,37 +49997,38 @@ check "60: 기다리는 드레인이 살아 있는 소유자의 잠금을 지우
   "$(cat "$ck60_lk/owner" 2>/dev/null || true)" "$ck60_own"
 rm -rf "$ck60_lk"
 wait "$ck60_bg"
-ck60_dw=$(( $(date -u +%s) - ck60_t0 ))
 check "60: 잠금이 풀린 뒤 그 관측을 전사한다" "$(ck60_checks)" "$((ck60_nw + 1))"
-if [ "$ck60_dw" -ge "$ck60_hold" ]; then
-  ok "60: 그 드레인이 잠금이 풀릴 때까지 기다렸다 (${ck60_dw}초 >= ${ck60_hold}초)" # gate-isolation: 변동
-else
-  bad "60 잠금 대기" "행위가 ${ck60_dw}초 만에 끝났다 — 붙잡아 둔 ${ck60_hold}초보다 짧으면 기다린 것이 아니다"
-fi
 
 # (3e) 죽은 탈취자가 남긴 `.takeover` 는 길을 막지 않는다 ----------------------------------
 #
 # 탈취 판정을 감싸는 둘째 잠금도 소유자의 죽음으로 풀려야 한다. 그러지 않으면 탈취
 # 한가운데서 죽은 게이트 하나가 죽은 드레인의 잠금을 영영 빼앗을 수 없게 만든다.
+#
+# 낡은 `.takeover` 를 걷어 내는 첫 탈취 시도는 한 번 잠든다. 두 번째 잠이 오면 그 게이트를
+# 끝내므로, 전사된 행은 낡은 탈취 잠금이 한 번에 걷혔다는 증거다.
 mkdir -p "$ck60_lk" "$ck60_lk.takeover"
-printf '%s %s\n' "$ck60_dead" "$(date -u +%s)" > "$ck60_lk/owner"
+printf '%s %s\n' "$ck60_dead" "$(( $(date -u +%s) + 86400 ))" > "$ck60_lk/owner"
 touch -t 202609010000 "$ck60_lk.takeover"
 ck60_line 통과 없음 "$CK60_SHA" -
 ck60_nt=$(ck60_checks)
-ck60_t0=$(date -u +%s)
+: > "$CK60_SLEEP_TRACE"
+CK60_SLEEP_MODE=abort
 ck60_drain
-ck60_dt2=$(( $(date -u +%s) - ck60_t0 ))
 check "60: 낡은 탈취 잠금을 걷어 내고 죽은 소유자의 잠금을 빼앗는다" "$(ck60_checks)" "$((ck60_nt + 1))"
-if [ "$ck60_dt2" -lt 30 ]; then
-  ok "60: 그 탈취도 나이 만료를 기다리지 않는다 (${ck60_dt2}초)" # gate-isolation: 변동
+check "60: 그 탈취도 잠금 고리를 잠재우지 않는다" "$(ck60_slept gate_checks_drain_lock)" "0"
+if [ "$(ck60_slept gate_checks_drain_takeover)" -le 1 ]; then
+  ok "60: 그 탈취는 낡은 탈취 잠금 앞에서 많아야 한 번 잠든다"
 else
-  bad "60 탈취 잠금" "${ck60_dt2}초 걸렸다 — 낡은 탈취 잠금이 아니라 나이 만료가 풀었다"
+  bad "60 탈취 잠금" "탈취가 $(ck60_slept gate_checks_drain_takeover)번 잠들었다 — 낡은 탈취 잠금이 한 번에 걷히지 않았다"
 fi
 if [ -d "$ck60_lk.takeover" ] || [ -d "$ck60_lk" ]; then
   bad "60 탈취 잠금" "드레인 뒤에 잠금 디렉터리가 남아 있다"
 else
   ok "60: 드레인 뒤에 두 잠금 모두 남지 않는다"
 fi
+unset -f sleep
+rm -f "$CK60_SLEEP_TRACE"
+unset CK60_SLEEP_TRACE CK60_SLEEP_MODE
 
 # (4) 머지 거절의 아홉 갈래 — 리뷰 정책 세 값 모두에서 같은 답 ----------------------
 #
