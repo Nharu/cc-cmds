@@ -5,6 +5,28 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.48.0] - 2026-11-17
+
+Claude Design 발행의 기대 계정을 호스트 하나가 아니라 문서마다 정한다. 발행된 캔버스는 만든 계정에 묶이는데, 지금까지는 호스트 설정 파일의 `account` 하나와 로그인을 대조해 여러 계정으로 나눠 발행한 문서를 다룰 수 없었다. 이제 첫 발행이 그 계정을 문서 계정 기록 `docs/visual-account/<slug>.md` 에 남기고, 그 뒤의 다시 발행·동기는 기록된 계정으로만 진행한다.
+
+### Added
+
+- **문서 계정 기록** — `<base>/docs/visual-account/<slug>.md` (머리 `cc-visual-account v1`, `**계정**`·`**출처**` 두 줄). 쓰는 주체는 첫 발행의 `visual-config.sh record <문서>`, 사람의 `visual-config.sh assign <문서> <주소> [--replace]`, 끝난 캔버스 이관을 닫는 게이트뿐이다.
+- **허용 목록** — 호스트 설정 파일 `claude-design` 의 `allow = <주소>` 줄(여럿 가능)과 기존 `account` 줄을 합친 목록. 아직 발행 전인 문서는 그 가운데 어느 계정으로 로그인해도 발행할 수 있다. `visual-config.sh allowed` 가 목록을 낸다.
+- **판정 규칙** — `visual-config.sh expect <문서>` 가 런 지역 이관 기록, 문서 계정 기록, 문서 단위 이관 기록, 미지정(기록 없이 이미 발행된 문서), 허용 목록 순으로 기대 계정을 정한다.
+
+### Changed
+
+- **`visual-config.sh account <문서>`** — 문서 인자를 받아 그 문서의 기대 계정과 로그인을 대조한다(대소문자 무시).
+- **게이트 좌석 사전 확인** — 발행 스테이지 파견 전에 문서의 기대 계정과 좌석 로그인을 대조하고, 미지정·손상·미설정·불일치를 각자의 문면으로 거절한다. `record` 는 발행 스테이지가 런의 설계 문서에 부를 때만 열리고, `assign` 은 런 안에서 열리지 않는다. 스테이지의 `docs/visual-account/` 쓰기는 게이트와 훅이 거절한다.
+- **캔버스 이관 마감** — 게이트가 문서 단위 이관 기록을 쓸 때 새 계정을 문서 계정 기록에도 `이관` 출처로 쓴다.
+- **스킬** — `/cc-cmds:visual` 은 K0 가 미지정이면 허용 계정 가운데 하나를 묻고 `assign` 으로 기록한 뒤 다시 확인하며, 첫 발행 뒤 `record` 를 부른다. `/cc-cmds:visual-publish-unattended` 는 첫 발행 뒤 `record` 를 부르고, 미지정은 발행 실패로 멈춘다.
+
+### Post-install notes
+
+- 여러 계정으로 발행하려면 `~/.config/cc-cmds/claude-design` 에 `allow = <주소>` 줄을 계정마다 더한다. 기존 `account = <주소>` 줄은 그대로 허용 목록에 들어가므로 계정 하나만 쓰면 바꿀 것이 없다.
+- 이 판 전에 이미 발행된 문서는 계정 기록이 없어 다음 발행·동기에서 `문서 계정 미지정` 으로 멈춘다. 그 캔버스를 만든 계정으로 `visual-config.sh assign <설계 문서> <주소>` 를 한 번 실행한다(대화형 `/cc-cmds:visual` 은 K0 에서 그 질문을 직접 묻는다). 캔버스 이관을 거친 문서는 이관 기록이 계정을 정하므로 할 것이 없다.
+
 ## [3.47.0] - 2026-11-16
 
 무인 런의 상태 표면이 이미 지나간 중단 기록과 막힘을 계속 「사람 결정 필요」로 보이던 문제를 고쳤다. 같은 스테이지의 다음 시도가 기동 증거를 남긴 중단 기록은 자동 처리로 읽히고, cone 막힘과 정체 관측 run 막힘은 그 뒤의 진행으로 풀린다. 런 패널은 자동 처리된 기록을 흐린 한 줄로 따로 보인다.

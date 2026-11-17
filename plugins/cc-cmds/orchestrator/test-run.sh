@@ -14933,6 +14933,23 @@ check "시각 고정: 계정 줄이 없는 문서 단위 기록은 읽지 않고
 printf '**계정**: b@example.com\n**출처**: r0 · 이관 1 · 2026-11-01T00:00:00Z\n' >> "$VP_DOCREC"
 check "시각 고정: 문서 단위 기록이 호스트보다 먼저이고 출처는 run-record" \
   "$(vp_run kind_pin_resolve visual-publish)/$(vp_run kind_pin_source_of visual-publish)" "doc-lane run-record/run-record"
+# 계정 기록 경로 — 드라이버(게이트가 소싱하는 같은 함수)의 유도와 헬퍼의 유도가
+# 같은 문서에서 같은 파일을 가리킨다. 헬퍼가 그 자리에 쓴 기록을 드라이버 경로로
+# 읽어 대조한다.
+VP_ACCT_PATH=$(vp_run visual_account_path "$VP/repo/docs/d.md")
+check "계정 기록 경로: 사이드카와 같은 베이스·슬러그 아래 docs/visual-account" \
+  "$VP_ACCT_PATH" "$(cd "$VP/repo" && pwd -P)/docs/visual-account/docs-d.md"
+rm -f "$VP_DOCREC"
+( XDG_CONFIG_HOME="$VP/cfg" XDG_STATE_HOME="$VP/state"; export XDG_CONFIG_HOME XDG_STATE_HOME
+  unset CC_PIPELINE_RUN_DIR CC_PIPELINE_RUN_ID CC_PIPELINE_VISUAL_PUBLISH CC_PIPELINE_GATE
+  bash "$(dirname "$DRIVER")/visual-config.sh" assign "$VP/repo/docs/d.md" a@example.com >/dev/null 2>&1 ) || true
+check "계정 기록 경로: 헬퍼가 쓴 기록이 드라이버가 유도한 경로에 있다" \
+  "$(grep -c '^\*\*계정\*\*: a@example.com$' "$VP_ACCT_PATH" 2>/dev/null || true)" "1"
+check "계정 기록 경로: 문서가 없으면 실패한다" \
+  "$(vp_run visual_account_path "$VP/repo/docs/none.md"; printf 'rc=%s' "$?")" "rc=1"
+rm -rf "$(dirname "$VP_ACCT_PATH")"
+printf '%s\n**레인**: doc-lane\n**계정**: b@example.com\n**출처**: r0 · 이관 1 · 2026-11-01T00:00:00Z\n' \
+  '<!-- cc-visual-lane-doc v1; writer=gate; reader=run.sh,gate.sh,visual,visual-publish-unattended -->' > "$VP_DOCREC"
 vp_runrec run-lane
 check "시각 고정: 런 지역 기록이 문서 단위 기록보다 먼저다" \
   "$(vp_run kind_pin_lane_of visual-publish)/$(vp_run kind_pin_request_json visual-publish | jq -r .pin_source)" "run-lane/run-record"

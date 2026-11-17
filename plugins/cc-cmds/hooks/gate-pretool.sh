@@ -616,11 +616,19 @@ hook_visual_lane_verdict() {
   # 스테이지가 쓰면 다음 런의 고정 레인을 스스로 고르는 셈이다. 대소문자를 접는
   # 파일 시스템이라 접어서 비교한다. 게이트의 `gate_visual_lane_doc_spelling` 이
   # Bash 쪽의 같은 거부다.
+  #
+  # 문서 계정 기록(`<base>/docs/visual-account/<slug>.md`)도 같은 자리에서 거부한다.
+  # 그 기록은 발행 스테이지가 런의 설계 문서에 `visual-config.sh record` 로, 게이트가
+  # 캔버스 이관을 닫을 때, 사람이 `visual-config.sh assign` 으로만 쓴다 — 스테이지가
+  # 편집 도구로 쓰면 다음 런이 대조할 계정을 스스로 고르는 셈이다. 게이트의
+  # `gate_visual_account_doc_spelling` 이 Bash 쪽의 같은 거부다.
   local lc
   lc=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
   case "$lc" in
     */docs/visual-lane|*/docs/visual-lane/*)
       deny "$(jstr 'gate: the document-level migration record is the gate'"'"'s to write, when it closes a visual publish stage whose canvas migration finished — a stage does not write under docs/visual-lane/')" ;;
+    */docs/visual-account|*/docs/visual-account/*)
+      deny "$(jstr 'gate: a document'"'"'s account record is written only by `visual-config.sh record <doc>` from the visual publish stage on the run'"'"'s own design document, by the gate when it closes a finished canvas migration, or by a person with `visual-config.sh assign` — a stage does not write under docs/visual-account/')" ;;
   esac
   return 0
 }

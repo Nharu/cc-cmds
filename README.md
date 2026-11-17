@@ -76,7 +76,7 @@ terminal-notifier가 없거나 macOS가 아니면 알림은 오류 없이 비활
 
 `/cc-cmds:visual` 은 설계 문서의 화면을 로컬에서 만들고 검토한 뒤, Claude Design 에 발행하고 캔버스 편집을 되당겨 구현을 승인하는 대화형 스킬입니다. 무인 런에서는 `/cc-cmds:visual-unattended` 가 화면을 `검토 통과` 까지만 올리고, 발행·동기·구현 승인은 아침에 사람 좌석에서 `/cc-cmds:visual` 로 합니다.
 
-- **계정 고정**: Claude Design 에 닿는 국면은 `~/.config/cc-cmds/claude-design` 의 `account = <주소>` 와 `claude auth status` 의 계정이 같을 때만 진행합니다. 이 파일은 사람이 직접 쓰며, 없거나 다르면 그 국면에서 멈춥니다.
+- **문서별 계정**: 발행된 캔버스는 만든 계정에 묶이므로, Claude Design 에 닿는 국면은 문서마다 정해진 계정과 `claude auth status` 의 계정이 같을 때만 진행합니다. 첫 발행이 그 계정을 `docs/visual-account/<slug>.md` 에 기록하고, 이후 그 문서는 기록된 계정으로만 다시 발행·동기합니다. 아직 발행 전인 문서는 `~/.config/cc-cmds/claude-design` 의 `allow = <주소>` 줄들과 `account = <주소>` 줄을 합친 허용 목록 가운데 하나로 로그인하면 됩니다. 이 파일은 사람이 직접 씁니다. 기록 없이 이미 발행된 문서는 `visual-config.sh assign <문서> <주소>` 로 계정을 정해 줘야 하며, 그 전에는 그 국면에서 멈춥니다.
 - **금지 목록**: 흔히 AI 티로 불리는 패턴의 목록이 처음 쓸 때 `~/.config/cc-cmds/visual-bans` 로 심어지고, 검토자가 찾은 새 패턴은 사람이 하나씩 승인한 뒤에만 더해집니다. 레포 디자인 시스템의 `**금지 해제**` 줄로 항목별로 끌 수 있습니다.
 - **검토 렌더**: 검토용 스크린숏은 시스템 Chrome 헤드리스로 찍습니다. Chrome 이 없으면 HTML 만으로 검토하고 그 사실을 사이드카에 적습니다.
 

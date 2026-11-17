@@ -9116,6 +9116,20 @@ visual_lane_doc_path() {
   printf '%s/visual-lane/%s' "$(dirname "$(dirname "$sc")")" "$(basename "$sc")"
 }
 
+# THE DOCUMENT'S ACCOUNT RECORD sits beside the sidecar too, under the same base
+# and slug: `<base>/docs/visual-account/{slug}.md`. It names the Claude Design
+# account the document's canvases belong to. `visual-config.sh` derives the same
+# path the same way and reads it in its expected-account rule; the gate writes
+# it, with the migrated account, when it writes the document-level migration
+# record above. Its head is `<!-- cc-visual-account v1; … -->` and its lines are
+# `**계정**` and `**출처**`.
+visual_account_path() {
+  # visual_account_path <document path>
+  local sc
+  sc=$(visual_sidecar_path "$1") || return 1
+  printf '%s/visual-account/%s' "$(dirname "$(dirname "$sc")")" "$(basename "$sc")"
+}
+
 visual_lane_doc_field() {
   # visual_lane_doc_field <record path> <field> — the value of the record's
   # `**<field>**: ` line, the last one when there are several. 1 and nothing
