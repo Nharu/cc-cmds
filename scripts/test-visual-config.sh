@@ -316,7 +316,9 @@ vc "$HD" FAKE_CLAUDE_EMAIL=Second@Example.com -- record "$DOC"
   && pass "record: 새 문서의 목록 안 로그인을 출처 발행으로 쓴다(표기는 로그인 값)" || fail "record 허용 = ${RC} $(cat "$T/err")"
 perm=$(ls -l "$ACCT" | cut -c1-10)
 [ "$perm" = -rw-r--r-- ] && pass "record: 기록 파일은 644" || fail "record 권한 = ${perm}"
-ls -A "$(dirname "$ACCT")" | grep -q '^\.visual-account\.' && fail "record 임시 파일이 남았다" || pass "record: 임시 파일을 남기지 않는다"
+listing=$(ls -A "$(dirname "$ACCT")")
+case "$listing" in .visual-account.*|*"
+".visual-account.*) fail "record 임시 파일이 남았다" ;; *) pass "record: 임시 파일을 남기지 않는다" ;; esac
 grep -qE ' 기록 판독=Second 기대=허용목록$' "$HD/state/cc-cmds/claude-design-account.log" && pass "record: 로그에 판정 기록 한 줄" || fail "record 로그 = $(cat "$HD/state/cc-cmds/claude-design-account.log" 2>/dev/null)"
 before=$(cat "$ACCT")
 vc "$HD" FAKE_CLAUDE_EMAIL=second@example.com -- record "$DOC"
@@ -366,7 +368,9 @@ for winner in First@example.com second@example.com; do
     First*) [ "$RC" = 0 ] && grep -qxF "**계정**: $winner" "$ACCT" && pass "record: 경쟁에서 져도 같은 계정이면 종료 0" || fail "record 경쟁 같음 = ${RC} $(cat "$T/err")" ;;
     *) [ "$RC" = 1 ] && grep -qxF "**계정**: $winner" "$ACCT" && pass "record: 경쟁에서 진 다른 계정은 덮지 않고 종료 1" || fail "record 경쟁 다름 = ${RC} $(cat "$T/err")" ;;
   esac
-  ls -A "$(dirname "$ACCT")" | grep -q '^\.visual-account\.' && fail "record 경쟁 뒤 임시 파일이 남았다(${winner})" || pass "record: 경쟁 뒤에도 임시 파일을 남기지 않는다(${winner})"
+  listing=$(ls -A "$(dirname "$ACCT")")
+  case "$listing" in .visual-account.*|*"
+".visual-account.*) fail "record 경쟁 뒤 임시 파일이 남았다(${winner})" ;; *) pass "record: 경쟁 뒤에도 임시 파일을 남기지 않는다(${winner})" ;; esac
 done
 vc "$HD" -- record
 [ "$RC" = 2 ] && pass "record: 문서 인자가 없으면 사용법 오류" || fail "record 인자 없음 = ${RC}"
