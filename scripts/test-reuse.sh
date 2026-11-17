@@ -513,7 +513,7 @@ tr_plain() {
     [ ! -e "$g/$f" ] && [ ! -L "$g/$f" ] || return 1
   done
   for f in replace notes; do
-    if [ -d "$g/refs/$f" ] && [ -n "$(find "$g/refs/$f" ! -type d 2>/dev/null | head -n 1)" ]; then return 1; fi
+    if [ -d "$g/refs/$f" ] && [ -n "$(find "$g/refs/$f" ! -type d 2>/dev/null)" ]; then return 1; fi
   done
   if [ -f "$g/packed-refs" ] && grep -qE '^[0-9a-f]+ refs/(replace|notes)/' "$g/packed-refs"; then return 1; fi
   return 0
