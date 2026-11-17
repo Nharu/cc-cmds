@@ -71143,13 +71143,17 @@ mn_src() {
       _ "$GATE" "$m" "$SA_LEDGER" "$SA_ID" "$SA_RUN" "$@" 2>/dev/null )
 }
 
-gh() { "$MN_STUB" "$@"; }
-export -f gh
-export MN_STUB MN_GH_ANS="MERGED $MN_M $MN_H master false"
-sag act --manifest "$SA_MANIFEST" --kind segment --target side --segment I1 --cutpoint 커밋 \
-    --snapshot-digest "$(SAH)" --rationale x --from-declaration -- 상태=계획됨 "워크트리=$MN_WT"
-unset -f gh
-unset MN_GH_ANS
+mn_plan() {
+  # mn_plan — 세그먼트 I1 의 계획 act 하나. GitHub 대역은 둘째 대상의 머지된 PR 을 답한다.
+  gh() { "$MN_STUB" "$@"; }
+  export -f gh
+  export MN_STUB MN_GH_ANS="MERGED $MN_M $MN_H master false"
+  sag act --manifest "$SA_MANIFEST" --kind segment --target side --segment I1 --cutpoint 커밋 \
+      --snapshot-digest "$(SAH)" --rationale x --from-declaration -- 상태=계획됨 "워크트리=$MN_WT"
+  unset -f gh
+  unset MN_GH_ANS
+}
+mn_plan
 mn_r=$rc; mn_m=$msg
 mn_seg=$( { grep -F '`segment`' "$SA_LEDGER" 2>/dev/null || true; } | { grep -F '| id=I1 ' || true; } | tail -1)
 check "109n: 비홈 대상의 머지 입양 계획 act 가 받아지고 계획 행이 둘째 대상의 워크트리에 선다" \
@@ -71186,7 +71190,7 @@ check "109n: 입양 행의 세그먼트는 둘째 대상으로 읽히고 입양 
 ( cd "$MN_SIDE" && git worktree remove --force "$MN_WT2" && git branch -D "seg/$mn_src2-I2" ) >/dev/null 2>&1
 rm -f "$MN_M2" "$MN_STUB"
 SA_PLAN=""; SA_AUTH_RAW=""; SA_TARGET_ROW2=""
-unset -f mn_src
+unset -f mn_src mn_plan
 unset mn_side_raw MN_SREM MN_SIDE MN_FORK MN_H MN_M MN_WT MN_STUB MN_WT2 MN_M2 mn_src2 mn_r mn_m mn_seg mn_got
 
 # ---------------------------------------------------------------------------
