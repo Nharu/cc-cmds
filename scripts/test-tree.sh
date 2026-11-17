@@ -2637,15 +2637,16 @@ EOF
   # One pool of <goals> as process <tag>, two jobs at a time, with the
   # variables given after the goals. Start it with `&`: the background shell
   # becomes the pool's own bash, so a TERM sent to $! reaches the pool. SPFF=1
-  # sets TT_FAIL_FAST and SPDL=<n> a deadline n seconds on; the goals the
-  # deadline cut go to standard error as `sp-cut=`.
+  # sets TT_FAIL_FAST and SPDL=<n> a deadline n seconds after the clone, so a
+  # slow clone on a loaded host does not use it up before the first job
+  # starts; the goals the deadline cut go to standard error as `sp-cut=`.
   sp() {
     local tag="$1" goals="$2"
     shift 2
     cd "$W" || exit 2
     exec env CC_TEST_TREE_MAKE="$T/bin/slowmake" CC_TEST_TREE_GATE="$T/bin/gate" "$@" bash -c '
-      . "$1"; trap "tt_cleanup; exit 143" TERM; TT_FAIL_FAST="${SPFF:-0}"; [ -z "${SPDL:-}" ] || TT_DEADLINE=$(( $(date +%s) + SPDL ))
-      cd "$2" && tt_clone > /dev/null && TT_JOBS=2 && tt_pool_run "" "$3" > /dev/null; printf "rc=%s\n" "$?"; printf "sp-cut=%s\n" "$TT_CUT_GOALS" >&2; tt_cleanup' _ "$self" "$W" "$goals" > "$T/sp-$tag.out" 2> "$T/sp-$tag.err"
+      . "$1"; trap "tt_cleanup; exit 143" TERM; TT_FAIL_FAST="${SPFF:-0}"
+      cd "$2" && tt_clone > /dev/null && TT_JOBS=2 && { [ -z "${SPDL:-}" ] || TT_DEADLINE=$(( $(date +%s) + SPDL )); } && tt_pool_run "" "$3" > /dev/null; printf "rc=%s\n" "$?"; printf "sp-cut=%s\n" "$TT_CUT_GOALS" >&2; tt_cleanup' _ "$self" "$W" "$goals" > "$T/sp-$tag.out" 2> "$T/sp-$tag.err"
   }
   # Waits until the double logged line $1 (up to 30 seconds).
   logwait() {
@@ -2777,7 +2778,7 @@ EOF
   # the pool unfinished, not failed: status 5 and the goal named as cut.
   : > "$T/slot.log"
   v=$(date +%s)
-  sp A deaf CC_TEST_SLOTS=0 SPDL=1 CC_CHECK_PUSH_STOP_GRACE=1 &
+  sp A deaf CC_TEST_SLOTS=0 SPDL=4 CC_CHECK_PUSH_STOP_GRACE=1 &
   wait $!
   v=$(( $(date +%s) - v ))
   check "F41 마감: 미완은 종료 코드 5" "$(cat "$T/sp-A.out")" "rc=5"
