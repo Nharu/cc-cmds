@@ -1868,6 +1868,85 @@ cc__table_awk_lib='
   }
 '
 
+# ---------------------------------------------------------------------------
+# THE LAUNCH EVIDENCE ROW — ONE DEFINITION FOR THREE READERS.
+#
+# Whether a halt record was handled without an answer (`cc__halt_answer_state`
+# reading `자동처리`), whether a cone block was passed by a new attempt of its
+# subject (`cc_cone_blocked`) and whether a stall block raised from a watcher's
+# observation was contradicted by progress (`cc__blocked_fold`) all ask one
+# question of the ledger: did an attempt actually run? `launch_evidence(line)`
+# answers it, and every awk program that asks prepends this string, so the
+# three readers cannot drift apart. The Python copy in `dashboard_read.py`
+# (`_launch_evidence`) follows the same four conditions, and
+# `scripts/test-liveness-agreement.sh` holds the two copies to one answer per
+# row through `cc__launch_evidence_rows` below.
+#
+# A row is evidence only when it is a `stage-result` row that meets all four:
+#
+#   session   — it has a `세션 id` and the value is neither `-` nor `미상`. The
+#               gate and the driver write `stage-result` rows with no session
+#               (a document size block, the settlement of a halt answer), and a
+#               driver row whose real id was never read carries a derived uuid,
+#               so on driver rows the next two conditions carry the weight;
+#   block     — it has no `차단` field (`차단=파견 전` stopped before dispatch);
+#   death     — it is not a row the gate's `gate_row_is_pre_session_death`
+#               reads as a death before the session started: `답 운반` present
+#               with `세션 id=미상`, or `관측` beginning `스폰 전 대기 중`.
+#               The session condition covers both already; this one keeps the
+#               direction "the gate's pre-session death is never evidence"
+#               true on its own, and `scripts/test-gate.sh` feeds one row set
+#               to both checks;
+#   end       — its `종단 부류` is `정상 완료` or `의도된 park`. The second is
+#               written only when the attempt left its own halt record, so the
+#               wait for a person moves onto that record. A crash, an external
+#               end, a limit end and every other class end with no record of
+#               their own, and treating them as evidence would leave a person
+#               nothing to read. The values are chosen, not excluded, so a class
+#               added later is not evidence until it is added here.
+#
+# A row that only carries `계보=B:<key>#<n>` — `stage-lease`, `stage-wait`,
+# `blocked` — is never evidence: those are written before a launch, for an
+# account-wait heartbeat, and for attempts that never started.
+# ---------------------------------------------------------------------------
+cc__launch_evidence_awk_lib='
+  function le_fld(line, name,   n, i, a, s, v) {
+    v = ""
+    n = split(line, a, "|")
+    for (i = 2; i <= n; i++) {
+      s = a[i]; sub(/^[ \t]+/, "", s)
+      if (index(s, name "=") == 1) { v = substr(s, length(name) + 2); sub(/[ \t]+$/, "", v) }
+    }
+    return v
+  }
+  function le_has(line, name,   n, i, a, s) {
+    n = split(line, a, "|")
+    for (i = 2; i <= n; i++) {
+      s = a[i]; sub(/^[ \t]+/, "", s)
+      if (index(s, name "=") == 1) return 1
+    }
+    return 0
+  }
+  function launch_evidence(line,   sid, t) {
+    if (index(line, "- `stage-result`") != 1) return 0
+    sid = le_fld(line, "세션 id")
+    if (sid == "" || sid == "-" || sid == "미상") return 0
+    if (le_has(line, "차단")) return 0
+    if (le_fld(line, "답 운반") != "" && sid == "미상") return 0
+    if (index(le_fld(line, "관측"), "스폰 전 대기 중") == 1) return 0
+    t = le_fld(line, "종단 부류")
+    return (t == "정상 완료" || t == "의도된 park")
+  }
+'
+
+cc__launch_evidence_rows() {
+  # cc__launch_evidence_rows — for each ledger row on standard input, `1` when
+  # it is a launch evidence row (`launch_evidence` above) and `0` otherwise, one
+  # line per row. The test entry point that holds the shell definition, the
+  # Python copy and the gate's pre-session death check to one answer.
+  LC_ALL=C awk "$cc__launch_evidence_awk_lib"'{ print (launch_evidence($0) ? 1 : 0) }'
+}
+
 cc__approval_table() {
   # cc__approval_table <ledger> — the approval table described above, or `F`.
   LC_ALL=C awk "$cc__table_awk_lib"'
@@ -2136,8 +2215,27 @@ cc__blocked_fold() {
   # the new attempt's `stage-wait` or `stage-lease` row carries `계보=B:<키>#<M>`
   # with M > N, and that row is the evidence the park was acted on. A row whose
   # lineage is not of that shape — every driver lineage — is released by
-  # `원인=해소` alone.
-  LC_ALL=C awk '
+  # `원인=해소` alone. The cone display (`cc_cone_blocked`) hides a cone row
+  # on launch evidence only, so one row can leave this fold on a lease or wait
+  # lineage and still show as a cone block; that difference is kept.
+  #
+  # A STALL OBSERVATION IS RELEASED BY PROGRESS. When the last row of a `사유`
+  # is run scope with `원인=불명` and `대상=-`, it is one the gate copied from a
+  # watcher's stall file (`라이브니스 침묵`, `스테이지 종단 후 라우터 무응답`,
+  # `세그먼트 미개시`) — "the run looks stopped" — and a progress row after it
+  # contradicts that observation directly, so the block is released. A
+  # progress row is a launch evidence row of any key (`launch_evidence`) or a
+  # `segment` row whose `상태` is not `park`. `교대 기동`, `stage-lease`,
+  # `stage-wait` and rows that only carry a lineage are not progress: a shift
+  # is a response to a stall, not a refutation of it, and the others are
+  # written without anything moving. The class is read from two structural
+  # fields, `원인` and `대상`, never from the `사유` text. Every other class —
+  # a `원인=불명` row that names its target (the driver's apply-unknown park),
+  # `막힘`, `무효화`, `판정 불가`, `거절 소진` — is released by `원인=해소`
+  # alone, because progress does not say its cause is gone. A stall that comes
+  # back after the release is written as a new row and stands until the next
+  # progress row.
+  LC_ALL=C awk "$cc__launch_evidence_awk_lib"'
     function fld(line, name,   n, i, a, s, v) {
       n = split(line, a, /\|/); v = ""
       for (i = 2; i <= n; i++) {
@@ -2155,10 +2253,16 @@ cc__blocked_fold() {
       return out
     }
     { lin[NR] = lineages($0) }
-    /^- `segment`/ { id = fld($0, "id"); if (id != "") seg[id] = 1; next }
+    launch_evidence($0) { lastprog = NR }
+    /^- `segment`/ {
+      id = fld($0, "id"); if (id != "") seg[id] = 1
+      if (fld($0, "상태") != "park") lastprog = NR
+      next
+    }
     /^- `blocked`/ {
       nb++; bnr[nb] = NR; bscope[nb] = fld($0, "스코프"); bwhy[nb] = fld($0, "사유")
       banchor[nb] = fld($0, "앵커 세그먼트"); bcause[nb] = fld($0, "원인")
+      btarget[nb] = fld($0, "대상")
     }
     END {
       # Segment ids are known only once the whole ledger is read, so the set is
@@ -2173,9 +2277,12 @@ cc__blocked_fold() {
         else continue
         last[why] = bnr[b]; lastcause[why] = bcause[b]; laststep[why] = step
         lastscope[why] = bscope[b]; lastanchor[why] = banchor[b]
+        lasttarget[why] = btarget[b]
       }
       for (why in last) {
         if (lastcause[why] == "해소") continue
+        if (!laststep[why] && lastcause[why] == "불명" && lasttarget[why] == "-" \
+            && lastprog > last[why]) continue
         if (laststep[why] && split(lin[last[why]], own, " ") > 0) {
           k = own[1]; sub(/#[0-9]+$/, "", k); nn = own[1]; sub(/^.*#/, "", nn)
           released = 0
@@ -2348,11 +2455,37 @@ cc_cone_blocked() {
   # still stands cannot be read off the ledger, so the caller counts these
   # rather than listing them.
   #
+  # A routing run does not write `segment` rows again while a segment cycles
+  # through implementation and re-convergence, so two more rules hide a row,
+  # held or unresolved alike:
+  #
+  #   the record it points at was handled — the row carries the structural
+  #     field `중단 기록=<path>` and `cc_halt_answered` succeeds for that
+  #     record. The free-text `근거` is never read for a path. The answer test
+  #     is the halt functions below, called once per such row after the awk
+  #     pass, so the fold carries the path as an internal column and drops it
+  #     before printing.
+  #   a new attempt of the subject ran after it — a launch evidence row
+  #     (`launch_evidence`) of the subject's key with an attempt number above
+  #     N0 comes after the row, N0 being the largest attempt of the subject
+  #     seen up to and including the row: lineages `계보=B:<subject>#<n>`
+  #     (the row's own `근거` included, where a deadline park carries its
+  #     lineage) and the `실행 버전` of the subject's `stage-result` rows. A
+  #     late `stage-result` of the same attempt does not exceed N0, and a row
+  #     that only carries a lineage is not evidence, so neither hides it. This
+  #     rule applies only when the subject's lineage was seen up to the row: a
+  #     routing run writes each attempt's `stage-lease` before it spawns, so N0
+  #     then includes the attempt in progress, while a run without routing
+  #     writes no lineage and N0 would hold only finished attempts. And it never
+  #     applies to a row that carries `중단 기록=`: while that record still
+  #     waits for a person the row must stay, because the seat's waiting
+  #     decisions report reads these rows to know a record was pointed at.
+  #
   # Output is in ledger order of each kept row; 원인 is passed through as
-  # written.
-  local ledger="$1"
+  # written. The five columns and their order are unchanged by the two rules.
+  local ledger="$1" line rest halt pre tail
   [ -n "$ledger" ] && [ -f "$ledger" ] || return 0
-  LC_ALL=C awk -F'|' '
+  { LC_ALL=C awk -F'|' "$cc__launch_evidence_awk_lib"'
     function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
     function field(name,   i, f, n) {
       n = length(name)
@@ -2361,6 +2494,24 @@ cc_cone_blocked() {
         if (substr(f, 1, n) == name) return substr(f, n + 1)
       }
       return ""
+    }
+    {
+      s0 = $0
+      while (match(s0, /계보=B:[^ |#]+#[0-9]+/)) {
+        tok = substr(s0, RSTART + length("계보=B:"), RLENGTH - length("계보=B:"))
+        s0 = substr(s0, RSTART + RLENGTH)
+        lk = tok; sub(/#[0-9]+$/, "", lk); ln = tok; sub(/^.*#/, "", ln)
+        linseen[lk] = 1
+        if (!(lk in maxn) || ln + 0 > maxn[lk]) maxn[lk] = ln + 0
+      }
+    }
+    /^- `stage-result`/ {
+      sk = field("스테이지="); sn = field("실행 버전=")
+      if (sk != "" && sn ~ /^[0-9]+$/ && (!(sk in maxn) || sn + 0 > maxn[sk])) maxn[sk] = sn + 0
+      if (sk != "" && sn ~ /^[0-9]+$/ && launch_evidence($0)) {
+        ne++; evK[ne] = sk; evN[ne] = sn + 0; evNR[ne] = NR
+      }
+      next
     }
     /^- `segment`/ {
       id = field("id=")
@@ -2380,6 +2531,9 @@ cc_cone_blocked() {
       last[key] = NR
       kSubj[key] = subj; kReason[key] = reason
       kCause[key] = field("원인="); kObs[key] = field("관측=")
+      kHalt[key] = field("중단 기록=")
+      kLin[key] = (subj in linseen)
+      kN0[key] = (subj in maxn) ? maxn[subj] : 0
     }
     END {
       for (i = 1; i <= nk; i++) {
@@ -2387,11 +2541,29 @@ cc_cone_blocked() {
         if (!(s in seen)) kind = "unresolved"
         else if ((s in moved) && moved[s] > last[key]) continue
         else kind = "held"
+        if (kHalt[key] == "" && kLin[key]) {
+          passed = 0
+          for (e = 1; e <= ne && !passed; e++)
+            if (evK[e] == s && evNR[e] > last[key] && evN[e] > kN0[key]) passed = 1
+          if (passed) continue
+        }
         obs = kObs[key]; if (obs == "") obs = "-"
-        printf "%d\t%s\t%s\t%s\t%s\t%s\n", last[key], kind, s, kCause[key], kReason[key], obs
+        printf "%d\t%s\t%s\t%s\t%s\t%s\t%s\n", last[key], kind, s, kCause[key], kReason[key], obs, kHalt[key]
       }
     }
-  ' "$ledger" 2>/dev/null | LC_ALL=C sort -n -k1,1 | cut -f2- || true
+  ' "$ledger" 2>/dev/null | LC_ALL=C sort -n -k1,1 | cut -f2- || true; } \
+  | while IFS= read -r line; do
+      halt=${line##*$'\t'}; rest=${line%$'\t'*}
+      if [ -n "$halt" ]; then
+        case "$halt" in
+          */halt/*)
+            pre=${halt%/halt/*}
+            tail="/${pre##*/}/halt/${halt#"$pre"/halt/}"
+            cc_halt_answered "$ledger" "$tail" "$halt" && continue ;;
+        esac
+      fi
+      printf '%s\n' "$rest"
+    done
   return 0
 }
 
@@ -2736,7 +2908,17 @@ CC_RUN_IDLE_EXIT_SECONDS=86400
 cc__halt_answer_state() {
   # cc__halt_answer_state <ledger> <tail> [<record>] — `없음` when no `중단 답`
   # row names the record whose `중단 기록=` ends in <tail>, `되돌림` when its
-  # last such row is named by a later block's `막힌 답 줄`, and `답함` otherwise.
+  # last such row is named by a later block's `막힌 답 줄`, `답함` when one
+  # does otherwise, and `자동처리` when none does but a later attempt of the
+  # record's key ran (`cc__halt_auto_next`).
+  #
+  # THE ORDER IS FIXED: the record's own answer state first, then the gate
+  # record its `게이트 기록=` points at, and only when both read `없음` the
+  # automatic handling — always tested on the original record's tail, never
+  # on the record the pointer names. `답함` and `되돌림` always come before
+  # `자동처리`: a person's answer and a returned answer are facts that have to
+  # show as themselves, so an answer returned to a person stays waiting even
+  # when the key's next attempt ran.
   #
   # Fields are matched whole between ` | ` separators, the record on its tail
   # for the reason `cc_unanswered_halts` gives.
@@ -2777,7 +2959,56 @@ cc__halt_answer_state() {
       esac
     fi
   fi
+  if [ "$st" = "없음" ] && [ -n "$(cc__halt_auto_next "$1" "$2")" ]; then
+    st="자동처리"
+  fi
   printf '%s' "$st"
+}
+
+cc__halt_auto_next() {
+  # cc__halt_auto_next <ledger> <tail> — `<M><TAB><종류|->` when the record
+  # <tail> names was handled by a later attempt of its key, and nothing
+  # otherwise.
+  #
+  # TWO CONDITIONS, BOTH STRUCTURAL. (1) What follows `/halt/` in the tail is a
+  # name with no slash of the form `<key>#<N>.md`, N decimal; the key is
+  # everything before the last `#`, colons included. That leaves out a routing
+  # shift's record under `halt/shift/`, the gate's `decision-collect-*` record,
+  # an adopted copy `#adopted-<run>` and a driver record with no attempt suffix.
+  # (2) The ledger holds a launch evidence row (`launch_evidence`) whose
+  # `스테이지` is that key verbatim and whose `실행 버전` is some M > N. The row's
+  # position is not read: attempt numbers only grow within one key of one run's
+  # ledger. A driver record named `<stage>:<segment>#<n>` meets no row, because
+  # the driver's `stage-result` carries the stage alone, so it stays waiting.
+  #
+  # WHY THE NEXT ATTEMPT AND NOT THE SHIFT'S APPROVAL ROW. The shift's
+  # `자율 승인` row says what it handled only in its free-text `근거`. That the
+  # key's next attempt really ran — a session, not blocked before dispatch, not
+  # dead before its session, ended normally or on its own halt record — is the
+  # structural fact that the stop was passed; if that attempt stops again it
+  # leaves its own record, so the wait for a person does not vanish.
+  #
+  # M is the smallest attempt number that meets (2); 종류 is the `종류` of the
+  # first such row of that M in the ledger, or `-` when it has none.
+  local name key n
+  case "$2" in */halt/*) ;; *) return 0 ;; esac
+  name=${2#/*/halt/}
+  case "$name" in */*|"$2") return 0 ;; esac
+  case "$name" in *'#'*.md) ;; *) return 0 ;; esac
+  n=${name%.md}; key=${n%'#'*}; n=${n##*'#'}
+  case "$n" in ''|*[!0-9]*) return 0 ;; esac
+  [ -n "$key" ] && [ -n "$1" ] && [ -f "$1" ] || return 0
+  LC_ALL=C awk -v k="$key" -v n="$n" "$cc__launch_evidence_awk_lib"'
+    index($0, "- `stage-result`") == 1 && launch_evidence($0) {
+      if (le_fld($0, "스테이지") != k) next
+      m = le_fld($0, "실행 버전")
+      if (m !~ /^[0-9]+$/ || m + 0 <= n + 0) next
+      if (best == "" || m + 0 < best + 0) {
+        best = m + 0; kind = le_fld($0, "종류"); if (kind == "") kind = "-"
+      }
+    }
+    END { if (best != "") printf "%s\t%s\n", best, kind }
+  ' "$1" 2>/dev/null || true
 }
 
 cc__halt_answer_state_of() {
@@ -2824,16 +3055,49 @@ cc_halt_returned() {
 }
 
 cc_halt_answered() {
-  # cc_halt_answered <ledger> <tail> [<record>] — succeeds when a `중단 답` row
-  # names the record and its answer was not returned (`cc_halt_returned`), or
-  # when the record points at a gate record that is answered so.
-  [ "$(cc__halt_answer_state "$1" "$2" "${3:-}")" = "답함" ]
+  # cc_halt_answered <ledger> <tail> [<record>] — succeeds when the record no
+  # longer waits for a person: a `중단 답` row names it and its answer was not
+  # returned (`cc_halt_returned`), the record points at a gate record that is
+  # answered so, or a later attempt of its key ran (`자동처리`).
+  #
+  # Every caller asks "is this record still waiting for a person" — the count
+  # below, the waiting decisions report, rekick's carried-over list, the
+  # morning report's list of shift stops and the cone display's hiding rule —
+  # so the automatic handling reaches all of them through this one function.
+  case "$(cc__halt_answer_state "$1" "$2" "${3:-}")" in
+    답함|자동처리) return 0 ;;
+  esac
+  return 1
+}
+
+cc_auto_handled_halts() {
+  # cc_auto_handled_halts <run-dir> <ledger> — one line per halt record under
+  # `<run-dir>/halt/` whose state is `자동처리`, as
+  # `<key>#<N><TAB><key>#<M><TAB><종류|->`: the record's name without `.md`,
+  # the attempt that passed it (`cc__halt_auto_next`) and that attempt's kind.
+  # The walk is `cc_unanswered_halts`'s; a record under `halt/shift/` never
+  # reads `자동처리`. Its reader is the run pane's `halt-auto` bundle.
+  local run_dir="${1%/}" ledger="$2" f name tail nx key
+  [ -n "$run_dir" ] && [ -d "$run_dir/halt" ] && [ -n "$ledger" ] || return 0
+  for f in "$run_dir"/halt/*.md; do
+    [ -f "$f" ] || continue
+    case "$f" in *.answer.md) continue ;; esac
+    name=${f##*/}
+    tail="/${run_dir##*/}/halt/$name"
+    [ "$(cc__halt_answer_state "$ledger" "$tail" "$f")" = "자동처리" ] || continue
+    nx=$(cc__halt_auto_next "$ledger" "$tail")
+    [ -n "$nx" ] || continue
+    name=${name%.md}; key=${name%'#'*}
+    printf '%s\t%s#%s\t%s\n' "$name" "$key" "${nx%%$'\t'*}" "${nx#*$'\t'}"
+  done
+  return 0
 }
 
 cc_unanswered_halts() {
   # cc_unanswered_halts <run-dir> <ledger> — count of halt records under
-  # `<run-dir>/halt/` that no `중단 답` row names, or whose answer was returned
-  # to a person (`cc_halt_returned`).
+  # `<run-dir>/halt/` that still wait for a person: no `중단 답` row names them
+  # and no later attempt of their key ran, or their answer was returned to a
+  # person (`cc_halt_returned`). The test is `cc_halt_answered`'s.
   #
   # A HALT RECORD IS A QUESTION TO A PERSON, and until a row answers it the run
   # is waiting rather than idle. The answer attachment the seat writes beside a

@@ -44,6 +44,7 @@ const BUNDLES = new Set([
   'block-reason',
   'cone-unresolved',
   'orphan',
+  'halt-auto',
   'event-heading',
   'event',
 ])

@@ -35,8 +35,8 @@
 # `block-reason` wraps. The bundles are a closed set: `none`, `title`,
 # `session-title`, `head`, `head-detail`, `gap`, `seg-heading`, `seg`,
 # `seg-detail`, `seg-folded`, `gate-none`, `approval`, `block-heading`,
-# `block-reason`, `cone-unresolved`, `orphan`, `event-heading`, `event`. Text
-# never holds a TAB.
+# `block-reason`, `cone-unresolved`, `orphan`, `halt-auto`, `event-heading`,
+# `event`. Text never holds a TAB.
 #
 # THE CAP is `min(24, --rows)`, and this file meets it by dropping rows in a
 # fixed order (see the reduction below). Some rows are protected and stay past
@@ -888,6 +888,22 @@ fi
 # The summary only when nothing at all stands: beside a standing block it
 # would say "no block".
 [ "$NROWS" -eq "$gate_start" ] && add_row gate-none cut - 0 1 dim "승인 대기 없음 · 막힘 없음"
+# Halt records a later attempt of their key passed without a person's answer
+# (`cc_auto_handled_halts`): out of every waiting count, shown here so a person
+# can look at them later. Below the summary and outside it — they wait for
+# nobody — and unprotected, so the reduction drops them right after the events.
+if [ "$rd_ok" = 1 ]; then
+  while IFS="$TAB" read -r h_from h_to h_kind; do
+    [ -n "$h_to" ] || continue
+    if [ -n "$h_kind" ] && [ "$h_kind" != "-" ]; then
+      add_row halt-auto cut - 0 1 dim "자동 처리됨 · 중단 $h_from → $h_to $h_kind"
+    else
+      add_row halt-auto cut - 0 1 dim "자동 처리됨 · 중단 $h_from → $h_to"
+    fi
+  done <<EOF
+$(cc_auto_handled_halts "$rd" "$ledger" 2>/dev/null || true)
+EOF
+fi
 
 # ---------------------------------------------------------------------------
 # Recent events
@@ -908,11 +924,12 @@ fi
 # ---------------------------------------------------------------------------
 # The reduction. Until the estimated total is at most the cap, in order:
 #   1. events, oldest first; with none left, the event heading and its gap;
-#   2. the detail rows of finished segments;
-#   3. finished segments, folded into `끝난 세그먼트 N개`;
-#   4. the remaining detail rows, a running segment's last;
-#   5. gaps;
-#   6. open segments without a held block (park included), folded into
+#   2. the automatically handled halt records (`halt-auto`), from the bottom;
+#   3. the detail rows of finished segments;
+#   4. finished segments, folded into `끝난 세그먼트 N개`;
+#   5. the remaining detail rows, a running segment's last;
+#   6. gaps;
+#   7. open segments without a held block (park included), folded into
 #      `끝나지 않은 세그먼트 N개`.
 # Protected rows — title, session title, head, head-detail, approvals, block
 # headings and reasons, the unresolved cone count, orphans, a segment with a
@@ -971,6 +988,7 @@ if over; then
     [ "$left" -eq 0 ] && { row_off "$EV_HEAD"; row_off "$EV_GAP"; }
   fi
 fi
+over && drop_bottom_up halt-auto
 over && drop_bottom_up seg-detail done
 over && [ "$n_segs" -gt 0 ] && fold_segments "$FOLD_DONE" "끝난 세그먼트" done
 over && drop_bottom_up seg-detail open park held
