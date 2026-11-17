@@ -5,6 +5,19 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.48.3] - 2026-11-18
+
+목표를 지명하지 않은 `make check-push` 가 바뀐 파일을 읽는 REST 목표를 돌리지 않아, 로컬 검사를 통과한 세그먼트가 CI 에서야 실패하던 문제를 고쳤다. gate.sh 의 빌트인 파이프라인 요소를 늘린 세그먼트 다섯이 모두 이렇게 `run/scripts/test-measure-spawn-count.sh` 에서 실패했다. 이제 check-push 는 시험 트리에서 바뀐 파일을 읽는 목표를 정적으로 찾아 지명한 목표 뒤에 붙여 돌린다.
+
+### Added
+
+- **`scripts/rest-readers.sh`** — `derive --tree <dir> --changed <file>` 가 시험 트리의 REST 목표마다 진입 스크립트(`run/<경로>` 는 그 경로, 그 밖은 `make -n` 이 찍는 명령 줄)와 그것이 source 하는 파일이 이름 댄 추적 파일을 읽어, 바뀐 파일을 읽는 목표를 `print-rest-goals` 순서로, 아무 목표도 읽지 않는 바뀐 파일을 준 순서로 낸다. 계산하지 못하면 1 과 실패한 단계를 낸다. 자체 시험 목표 `run-rest-readers-selftest` 를 `test`·REST 목표에 더했다.
+- **test-gate 절 116·117** — 116 은 지난 실패를 재생한다(gate.sh 에 빌트인 파이프라인 요소를 더한 커밋에서 목표 지명 없는 check-push 가 자리 수 목표를 유도하고 그 실패로 1 로 끝난다). 117 은 지난 다섯 PR 의 변경 파일로 유도한 목표가 그 목표를 담는지 대조한다.
+
+### Changed
+
+- **check-push 의 목표 유도** — `run`·`items` 는 head 와 베이스의 merge-base 이후 바뀐 파일로 목표를 유도해 `CHECK_PUSH_GOALS` 뒤에 붙인다. head 모드의 베이스는 `origin/<베이스 브랜치>`, 없으면 로컬 브랜치이고, 둘 다 없으면 `check-push: 유도 판정불가` 줄을 찍고 지명한 목표만 돈다. 새 줄 `check-push: 유도 목표 — 변경 파일 N개, 유도 K개: …` 와 `check-push: 유도 근거 없는 변경 파일 M개 — …` 를 찍고, 도장에 `유도목표=`·`유도없음=` 필드를 더한다. 유도를 계산하지 못하면 항목을 돌리기 전에 `check-push: 유도 실패 — <단계>` 로 1 로 끝나고 도장을 찍지 않는다.
+
 ## [3.48.2] - 2026-11-17
 
 호스트 부하가 높은 밤에 무인 스테이지의 마지막 `make check-push` 가 하네스 상한 7200초에 잘려 판정 없이 끝나던 문제를 고쳤다. 이제 check-push 는 스스로 시간 예산(무인 기본 6600초) 안에서 멈춰 끝난 항목과 남은 항목을 판정 줄로 알리고, 같은 커밋에서 다시 띄우면 같은 베이스를 유지해 이미 통과한 항목을 기록으로 건너뛴다. 무인 실행은 첫 실패가 확정되면 남은 잡을 기다리지 않고 끝난다.
