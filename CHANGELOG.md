@@ -5,7 +5,7 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [3.48.2] - 2026-11-18
+## [3.48.3] - 2026-11-18
 
 `AskUserQuestion` 을 한 번 띄우면 원격 이벤트가 질문 이벤트 하나만 남게 한다. 지금까지는 질문 좌석 훅이 창이 열리는 순간 `auq` 이벤트를 남긴 뒤, 같은 질문의 권한 창에 대해 권한 알림 훅이 도구 이름을 보지 않고 `permission` 이벤트를 하나 더 내어 릴레이가 같은 질문을 두 번 전달했다.
 
@@ -14,6 +14,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **권한 알림 훅의 `AskUserQuestion` 판정** — `hooks/session-permission-notify.sh` 의 `request` 역할이 `seen` 시각을 기록하고 `agent_id` 를 확인한 다음, 도구가 `AskUserQuestion` 이면 이벤트도 대기 표시도 남기지 않고 멈춘다. `seen` 은 그대로 남으므로 창 뒤 약 6초에 오는 `Notification(permission_prompt)` 폴백 신호도 10초 창 안에서 지금처럼 억제된다. 질문 폼 도구(`mcp__cc-cmds__question_form`)와 그 밖의 도구의 권한 요청은 지금처럼 `permission` 이벤트를 남긴다.
 - **훅 문서** — `hooks/README.md` 의 권한 좌석 절에서 `request` 문단과 판정 순서에 이 판정을 적었다.
 - **회귀 시험** — `scripts/test-session-permission-notify.sh` 에 새 절을 더해, `AskUserQuestion` 권한 요청과 뒤따르는 폴백 신호가 사건을 남기지 않음, 질문 좌석 훅까지 함께 돌렸을 때 스풀의 사건이 `auq` 하나뿐임, `Bash`·질문 폼 도구의 권한 요청은 여전히 사건을 남김을 단언한다.
+
+## [3.48.2] - 2026-11-17
+
+호스트 부하가 높은 밤에 무인 스테이지의 마지막 `make check-push` 가 하네스 상한 7200초에 잘려 판정 없이 끝나던 문제를 고쳤다. 이제 check-push 는 스스로 시간 예산(무인 기본 6600초) 안에서 멈춰 끝난 항목과 남은 항목을 판정 줄로 알리고, 같은 커밋에서 다시 띄우면 같은 베이스를 유지해 이미 통과한 항목을 기록으로 건너뛴다. 무인 실행은 첫 실패가 확정되면 남은 잡을 기다리지 않고 끝난다.
+
+### Changed
+
+- **시간 예산** — 새 변수 `CHECK_PUSH_BUDGET_SECS`(0 은 끔, 비우면 무인 6600초, 그 밖은 끔). 마감이 지나면 직렬 단계와 잡 풀이 새 일을 시작하지 않고, 도는 잡은 TERM 뒤 유예(기본 60초) 안에 끝나지 않으면 KILL 로 내린다. 끊긴 잡은 실패가 아니라 끝나지 않은 항목이고, 실행은 종료 코드 5 와 `check-push: 판정 — 미완(시간 예산 <s>초) · 끝난 항목 … · 남은 항목 … · 시도 <n>` 줄로 끝난다. `items` 의 머리는 `check-push: items 미완(시간 예산 <s>초)` 이다.
+- **이어 돌리기** — 무인 merged 실행은 head 커밋마다 시도 기록(`<공통 git 디렉터리>/cc-cmds-check-push-resume/<커밋>`)을 남긴다. 같은 head 의 다음 시도가 6시간 안에 오고 기록의 베이스가 방금 fetch 한 베이스의 조상이면 기록의 베이스로 시험하고, 도장에 `base출처=이어감` 과 `fetch베이스=` 를 남긴다. 통과하면 기록을 지운다.
+- **두 번 잘린 목표의 CI 몫** — 같은 커밋의 시도에서 시간 예산에 두 번 잘린 REST 목표는, 시험 트리의 `lint.yml` 이 그 head 의 바뀐 경로에 대해 `rest-tests` 를 돌릴 때 로컬 목록에서 빠지고 `check-push: CI 몫 — <목표>` 줄과 도장의 `CI몫=` 에 남는다. `verify` 는 그 목표를 한 줄로 알린다.
+- **실패 즉시 보고와 조기 종료** — 잡 풀은 잡이 실패로 끝나는 즉시 `<접두>: 실패 확정 — <잡> rc=<n>` 과 그 잡의 출력을 찍는다. 새 변수 `CHECK_PUSH_FAIL_FAST`(비우면 무인 `run` 은 1, 그 밖은 0, `items` 는 늘 0)가 1 이면 첫 실패 뒤 남은 잡을 끊고, 끊긴 잡은 `끝나지 않은 항목` 한 줄로 알린다.
+- **도장** — `v=2` 그대로 `시간예산=`·`시도=`·`CI몫=`·`fetch베이스=` 필드를 더한다. 시험 트리 줄 끝에 `fetch베이스=`·`시도=` 가 붙는다.
+- **스테이지 규칙** — `implement-unattended` 와 `_common/fix-cycle.md` 는 미완 판정을 실패도 멈춤 의심도 아닌 것으로 읽고, 베이스를 fetch 한 뒤 같은 커밋에서 같은 명령을 모두 세 번까지 다시 띄운다. 세 번째도 판정이 없으면 push 하지 않고 남은 항목을 적어 멈춘다. check-push 에 대한 가장 오래 도는 잡의 세 배 규칙은 없앴다.
+
+### Fixed
+
+- `make check-push` 가 하네스 상한에 잘리면 이미 통과한 레인과 목표도 다음 시도에서 다시 돌던 문제 — 다음 fetch 가 베이스를 옮겨 합친 트리가 바뀌면 통과 기록이 맞지 않았다. 이제 시도 기록이 베이스를 고정한다.
+- `repro`·`base-verdict`·베이스 대조는 check-push 의 시간 예산과 조기 종료를 받지 않고 모든 잡을 끝까지 돌린다.
+
+### Post-install notes
+
+- 레포 `CLAUDE.md` 의 check-push 관련 문면(스테이지 안에서 다시 돌리기, 백그라운드 상한)은 이 판이 바꾸지 않았다. 미완 판정과 세 번까지의 재시도를 그 문서에도 적을지는 사람이 정한다.
 
 ## [3.48.1] - 2026-11-17
 
