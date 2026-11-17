@@ -3814,11 +3814,13 @@ gate_reach_disposition() {
   # write that happens to name a home path — and a program named by a path,
   # which a row names by its base name and so never word for word.
   #
-  # ONE ACT OPENS HERE WITHOUT A ROW: the visual helper's `account` and
-  # `append`, honestly declared machine-global. They append to two fixed host
-  # files — the account log and the ban list — and the table grades them
-  # `트리밖쓰기` only from the visual publish stage, and `append` only on a
-  # person's unconsumed `승인` to the candidate it adds. That grade is what
+  # ONE ACT OPENS HERE WITHOUT A ROW: the visual helper's `account`, `append`
+  # and `record`, honestly declared machine-global. They append to two fixed
+  # host files — the account log and the ban list — or write the run design
+  # document's account record with the login value, and the table grades them
+  # `트리밖쓰기` only from the visual publish stage, `account` and `record` only
+  # on the run's own design document, and `append` only on a person's
+  # unconsumed `승인` to the candidate it adds. That grade is what
   # opens them, so they need neither a `사전 인가` row nor a judgment; and no
   # row could open them anyway, because the stage calls the helper by the path
   # of the copy beside this gate, which the argv0 check below parks. Opened only
@@ -3837,7 +3839,7 @@ gate_reach_disposition() {
     fi
     if [ "$cls" = "표" ] && [ "$graded" = "트리밖쓰기" ] && [ "$Geff" = "트리밖쓰기" ] \
        && [ "$X" = "0" ] && [ "${1##*/}" = "visual-config.sh" ] && gate_own_helper "$1"; then
-      case "${2:-}" in account|append) return 0 ;; esac
+      case "${2:-}" in account|append|record) return 0 ;; esac
     fi
     case "$1" in */*) printf '기기전역\targv0-path\t-'; return 0 ;; esac
     # A MOBILE DEVICE ACT carries checks of its own, and none of them is a
@@ -7863,6 +7865,24 @@ gate_caller_is_visual_publish_stage() {
   [ -z "$k" ] || [ "$k" = "visual-publish" ]
 }
 
+gate_visual_doc_is_run_doc() {
+  # gate_visual_doc_is_run_doc <doc arg> — 0 when <doc arg> names this run's
+  # design document (`$DOC` from the manifest): both directories resolved with
+  # `pwd -P` and the file names equal. A relative <doc arg> is taken from this
+  # process's directory, where the graded act runs. rc 1 when `$DOC` is empty,
+  # either directory does not resolve, or they differ — the account record a
+  # visual helper reads or writes is keyed by that document, so any other one
+  # would let the stage choose which record it is checked against.
+  local arg="$1" ad rd
+  [ -n "${DOC:-}" ] && [ -n "$arg" ] || return 1
+  [ "${arg##*/}" = "${DOC##*/}" ] || return 1
+  case "$arg" in */*) ad=${arg%/*}; [ -n "$ad" ] || ad=/ ;; *) ad=. ;; esac
+  case "$DOC" in */*) rd=${DOC%/*}; [ -n "$rd" ] || rd=/ ;; *) rd=. ;; esac
+  ad=$(cd "$ad" 2>/dev/null && pwd -P) || return 1
+  rd=$(cd "$rd" 2>/dev/null && pwd -P) || return 1
+  [ -n "$ad" ] && [ "$ad" = "$rd" ]
+}
+
 gate_ban_line_id() {
   # gate_ban_line_id <line> — the id a `visual-config.sh append` line adds:
   # the line in either form the helper takes (a sidecar candidate line
@@ -8080,25 +8100,34 @@ surface_of_argv0() {
         *)      printf '등급 미상' ;;
       esac ;;
     # The three visual helpers, graded by their subcommand. `visual-config.sh
-    # snapshot` reads the run's copy of the visual settings and `lane` reads the
-    # pinned lane from the host file. `account` records the publishing account
-    # in the host file, which only the visual publish stage does; `append` adds
-    # one forbidden-list line, and only on the person's `승인` to the candidate
-    # the line names (`gate_ban_append_answer`). Both land in host files, so the
-    # stage declares them `기기전역`, and the machine-global cell of
-    # `gate_reach_disposition` opens exactly the two this row grades
-    # `트리밖쓰기`. `share` prints the configured share scope and writes nothing.
-    # Anywhere else, and every other subcommand, writes the
-    # settings home or the sidecar, which is the seat's work, so they take the
-    # unknown grade and its refusal.
+    # snapshot` reads the run's copy of the visual settings, `lane` reads the
+    # pinned lane from the host file and `allowed` the allow list. `account`
+    # logs the publishing account in the host file and `record` writes the
+    # document's account record with the login value, which only the visual
+    # publish stage does, and only on the run's own design document
+    # (`gate_visual_doc_is_run_doc`): another document's record would let the
+    # stage choose the account it is checked against. `append` adds one
+    # forbidden-list line, and only on the person's `승인` to the candidate the
+    # line names (`gate_ban_append_answer`). All three land outside the tree on
+    # this machine, so the stage declares them `기기전역`, and the
+    # machine-global cell of `gate_reach_disposition` opens exactly the three
+    # this row grades `트리밖쓰기`. `share` prints the configured share scope and
+    # writes nothing. Anywhere else, and every other subcommand — `assign`, a
+    # person's assignment, among them — writes the settings home, an account
+    # record or the sidecar, which is the seat's work, so they take the unknown
+    # grade and its refusal.
     # `visual-check.sh` only reads the document, the sidecar and the screens.
     # `visual-capture.sh` writes its screenshots into an output directory outside
     # the tree, and `app` serves the build on a loopback port it takes down itself.
     visual-config.sh)
       case "${1:-}" in
-        snapshot|lane|share) printf '읽기' ;;
-        account)
-          if gate_caller_is_visual_publish_stage; then printf '트리밖쓰기'; else printf '등급 미상'; fi ;;
+        snapshot|lane|share|allowed) printf '읽기' ;;
+        account|record)
+          if [ "$#" -eq 2 ] && gate_caller_is_visual_publish_stage && gate_visual_doc_is_run_doc "$2"; then
+            printf '트리밖쓰기'
+          else
+            printf '등급 미상'
+          fi ;;
         append)
           if [ "$#" -eq 2 ] && gate_ban_append_answer "$2" >/dev/null; then printf '트리밖쓰기'; else printf '등급 미상'; fi ;;
         *)        printf '등급 미상' ;;
@@ -37687,8 +37716,9 @@ gate_argv_visual_helper() {
 gate_argv_visual_helper_write() {
   # gate_argv_visual_helper_write <argv...> — 0 when some word of argv, read
   # with quotes and shell punctuation turned into blanks, names
-  # `visual-config.sh` and the word after it is `account`, `append` or `seed`,
-  # the subcommands that write the host files. The peel above stops at the
+  # `visual-config.sh` and the word after it is `account`, `append`, `seed`,
+  # `record` or `assign`, the subcommands that write the host files or a
+  # document's account record. The peel above stops at the
   # launchers whose operands the table reads; `find -exec`, `xargs`, `sudo`
   # and an interpreter (`bash <copy> append …`, `sh -c '<copy> append …'`)
   # run a helper the same way and name it only as a word further in, so this
@@ -37701,7 +37731,7 @@ gate_argv_visual_helper_write() {
       w=$(printf '%s' "$w" | tr "\"'\`;&|()<>" '            ')
       for t in $w; do
         case "${prev##*/}:$t" in
-          visual-config.sh:account|visual-config.sh:append|visual-config.sh:seed) exit 0 ;;
+          visual-config.sh:account|visual-config.sh:append|visual-config.sh:seed|visual-config.sh:record|visual-config.sh:assign) exit 0 ;;
         esac
         prev=$t
       done
@@ -37712,12 +37742,13 @@ gate_argv_visual_helper_write() {
 
 gate_argv_visual_account_rundir() {
   # gate_argv_visual_account_rundir <argv...> — 0 when argv runs
-  # `visual-config.sh account` and some word of it assigns
-  # `CC_PIPELINE_RUN_DIR` (`env CC_PIPELINE_RUN_DIR=… <helper> account`, a
-  # leading `CC_PIPELINE_RUN_DIR=…` before the helper, or the same inside an
-  # interpreter's string). `account` reads the account it expects from the
-  # run-local migration record under that directory, so pointing it at another
-  # directory lets the stage choose the account it is checked against. Read
+  # `visual-config.sh account` or `visual-config.sh record` and some word of it
+  # assigns `CC_PIPELINE_RUN_DIR` (`env CC_PIPELINE_RUN_DIR=… <helper> account`,
+  # a leading `CC_PIPELINE_RUN_DIR=…` before the helper, or the same inside an
+  # interpreter's string). Both read the account they expect from the run-local
+  # migration record under that directory first, so pointing it at another
+  # directory lets the stage choose the account it is checked against or
+  # records. Read
   # the same quote-blind way as `gate_argv_visual_helper_write`, so a false hit
   # refuses, never opens.
   gate_argv_visual_helper_write "$@" || return 1
@@ -37727,7 +37758,7 @@ gate_argv_visual_account_rundir() {
     for w in "$@"; do
       w=$(printf '%s' "$w" | tr "\"'\`;&|()<>" '            ')
       for t in $w; do
-        case "${prev##*/}:$t" in visual-config.sh:account) acct=0 ;; esac
+        case "${prev##*/}:$t" in visual-config.sh:account|visual-config.sh:record) acct=0 ;; esac
         case "$t" in CC_PIPELINE_RUN_DIR=*) asg=0 ;; esac
         prev=$t
       done
@@ -40068,6 +40099,32 @@ gate_visual_lane_doc_refuse() {
   warn "rule refused: the document-level migration record is the gate's to write, when it closes a visual publish stage whose canvas migration finished — a stage does not write under docs/visual-lane/: $1"
 }
 
+gate_visual_account_doc_spelling() {
+  # gate_visual_account_doc_spelling <path> — 0 when the path is the
+  # per-document account record directory `docs/visual-account` or lies under
+  # it. A stage writes a document's account record only through
+  # `visual-config.sh record` on the run's own design document, which the
+  # grading table opens; a stage that wrote the file directly would choose the
+  # account the next run of that document is checked against.
+  gate_nocase_glob "/$1" '*/docs/visual-account/*' || gate_nocase_glob "/$1" '*/docs/visual-account'
+}
+
+gate_visual_account_doc_joined_hit() {
+  # gate_visual_account_doc_joined_hit <joined command line> — the interpreter
+  # arm's substring test for `docs/visual-account`. It matches the directory
+  # only when a separator or the end of a word follows it, so a design document
+  # whose name merely starts with `visual-account` is not refused.
+  local j="$1" sep
+  for sep in / ' ' '"' "'" ';' ')' '|' '&' '>'; do
+    gate_nocase_contains "$j" "docs/visual-account$sep" && return 0
+  done
+  return 1
+}
+
+gate_visual_account_doc_refuse() {
+  warn "rule refused: a document's account record is written only by \`visual-config.sh record <doc>\` from the visual publish stage on the run's own design document, by the gate when it closes a finished canvas migration, or by a person with \`visual-config.sh assign\` — a stage does not write under docs/visual-account/: $1"
+}
+
 gate_sibling_record_write_guard() {
   # gate_sibling_record_write_guard <매니페스트 디렉터리> <그 물리 철자> <argv...>
   #
@@ -40157,6 +40214,9 @@ gate_sibling_record_write_guard() {
       if gate_nocase_contains "$joinedn" 'docs/visual-lane'; then
         gate_visual_lane_doc_refuse "$joinedn"; return "$GATE_EXIT_RULE"
       fi
+      if gate_visual_account_doc_joined_hit "$joinedn"; then
+        gate_visual_account_doc_refuse "$joinedn"; return "$GATE_EXIT_RULE"
+      fi
       if [ -n "$gdir" ]; then
         gdirn=$(gate_path_spelling "$gdir")
         gdirpn=$(gate_path_spelling "$gdirp")
@@ -40240,9 +40300,16 @@ gate_sibling_record_write_guard() {
       if [ -n "$x" ] && gate_visual_lane_doc_spelling "$x"; then
         gate_visual_lane_doc_refuse "$a"; return "$GATE_EXIT_RULE"
       fi
+      # And for the per-document account record.
+      if [ -n "$x" ] && gate_visual_account_doc_spelling "$x"; then
+        gate_visual_account_doc_refuse "$a"; return "$GATE_EXIT_RULE"
+      fi
     fi
     if gate_visual_lane_doc_spelling "$a" || gate_visual_lane_doc_spelling "$ap"; then
       gate_visual_lane_doc_refuse "$a"; return "$GATE_EXIT_RULE"
+    fi
+    if gate_visual_account_doc_spelling "$a" || gate_visual_account_doc_spelling "$ap"; then
+      gate_visual_account_doc_refuse "$a"; return "$GATE_EXIT_RULE"
     fi
     # THE DIRECTORY ITSELF AS A DESTINATION, remembered and judged after every
     # candidate is seen — the record-suffixed source may come before or after.
@@ -53374,16 +53441,17 @@ gate_act_cell_front() {
     # marker check would be all that stands before the host forbidden list —
     # and the caller sets that environment. The gate's own copy is graded only
     # when it is called directly, so no interpreter spelling is needed for it.
-    warn "axis 2 \`등급 미상\` — a runner in front of \`visual-config.sh account|append|seed\` is not graded, and no declaration opens it; the gate's own copy is graded only when called directly"
+    warn "axis 2 \`등급 미상\` — a runner in front of \`visual-config.sh account|append|seed|record|assign\` is not graded, and no declaration opens it; the gate's own copy is graded only when called directly"
     [ "$verb" = "plan" ] || exit "$GATE_EXIT_VOCAB"
   fi
   if gate_argv_visual_account_rundir "$@"; then
-    # THE EXPECTED ACCOUNT COMES FROM THE RUN DIRECTORY. `account` compares the
-    # logged-in account with the one the run-local migration record under
-    # `CC_PIPELINE_RUN_DIR` names, so an act that sets that variable itself
-    # picks the record it is checked against. The stage inherits the run's
-    # value; no spelling that reassigns it is admitted.
-    warn "\`visual-config.sh account\` with \`CC_PIPELINE_RUN_DIR\` reassigned is refused — the expected account is read from the run's own migration record, so the act runs with the inherited value"
+    # THE EXPECTED ACCOUNT COMES FROM THE RUN DIRECTORY FIRST. `account`
+    # compares the logged-in account with, and `record` records, the one the
+    # run-local migration record under `CC_PIPELINE_RUN_DIR` names before any
+    # other source, so an act that sets that variable itself picks the record
+    # it is checked against or the account it records. The stage inherits the
+    # run's value; no spelling that reassigns it is admitted.
+    warn "\`visual-config.sh account|record\` with \`CC_PIPELINE_RUN_DIR\` reassigned is refused — the expected account is read from the run's own migration record first, so the act runs with the inherited value"
     [ "$verb" = "plan" ] || exit "$GATE_EXIT_VOCAB"
   fi
   if [ "$graded" = "등급 미상" ] && [ "${GATE_UNKNOWN_DECLARED:-0}" != "1" ]; then
@@ -59409,42 +59477,103 @@ gate_visual_seat_account_check() {
   # unset, which reads the inherited default). Reading any other directory —
   # the run's seat record, say — could pass a seat the stage does not run on.
   #
-  # The expected account comes from `visual-config.sh expect`, the same rule
-  # the stage's own K0 (`visual-config.sh account`) uses, so the two cannot
-  # expect different accounts. The login is read with the gate's CLI binary.
+  # The expected account comes from `visual-config.sh expect "$DOC"`, the same
+  # rule the stage's own K0 (`visual-config.sh account <doc>`) uses, so the two
+  # cannot expect different accounts. Its one line is one of five shapes: `기록
+  # <address> <source>` (the run-local migration record, the document's
+  # account record or its document-level migration record names the account),
+  # `허용 <address>…` (a new document: any account of the host allow list),
+  # `미지정 <sidecar>` (a published document with no record of its account),
+  # `미설정` (no allow list) and `손상 <path>` (a record that does not parse).
+  # The login is read with the gate's CLI binary, and only for the first two.
   #
-  # THE THREE REASONS START WITH FIXED HEADS — 「고정 계정 미설정 —」,
-  # 「좌석 계정 판독 실패 —」 and 「좌석 계정 불일치 —」 — which the router,
-  # seat and morning report references name. Each puts the cause, the local
-  # parts and the way to recover first and the paths last, in parentheses: the
-  # park row keeps 300 bytes of it, so a long path is what gets cut there, and
-  # the full sentence stays on the gate's warning line. Only local parts are
-  # written, never a domain.
-  local seg="$1" cfg="$2" expected email shown le lr cause same=0 had=0
+  # THE REASONS START WITH FIXED HEADS — 「고정 계정 미설정 —」,
+  # 「문서 계정 미지정 —」, 「계정 기록 판독 실패 —」, 「좌석 계정 판독 실패 —」
+  # and 「좌석 계정 불일치 —」 — which the router, seat and morning report
+  # references name. Each puts the cause, the local parts and the way to
+  # recover first and the paths last, in parentheses: the park row keeps 300
+  # bytes of it, so a long path is what gets cut there, and the full sentence
+  # stays on the gate's warning line. Only local parts are written, never a
+  # domain.
+  #
+  # AN EMPTY `$DOC` OR AN ANSWER OUTSIDE THE FIVE SHAPES IS A FAILED READ, not
+  # a fallback to the host file: the record that would have named this
+  # document's account is what could not be read, and a seat checked against
+  # another account could publish into a canvas its account cannot open.
+  local seg="$1" cfg="$2" expected kind rest email shown le lr cause src a ok=0 had=0
+  local -a list=()
   shown=${cfg:-물려받은 기본값}
-  if ! expected=$(CC_PIPELINE_RUN_DIR="$RUN_DIR" bash "$GATE_DIR/visual-config.sh" expect 2>/dev/null) \
-     || [ -z "$expected" ]; then
-    printf "고정 계정 미설정 — 호스트 파일 claude-design 에 'account = <주소>' 줄이 없거나 런 지역 이관 기록을 읽지 못한다. 고친 뒤 다시 파견하세요 (호스트 파일 %s, 이관 기록 %s)" \
-      "${XDG_CONFIG_HOME:-$HOME/.config}/cc-cmds/claude-design" "$RUN_DIR/visual-lane"
+  if [ -z "${DOC:-}" ]; then
+    printf '계정 기록 판독 실패 — 매니페스트에 설계 문서가 없어 문서의 계정 기록을 정하지 못한다. 매니페스트를 고친 뒤 다시 파견하세요 (매니페스트 %s)' \
+      "${MANIFEST:-?}"
     return 1
   fi
+  if ! expected=$(CC_PIPELINE_RUN_DIR="$RUN_DIR" bash "$GATE_DIR/visual-config.sh" expect "$DOC" 2>/dev/null); then
+    expected=''
+  fi
+  case "$expected" in *$'\n'*) expected='' ;; esac
+  kind=${expected%% *}
+  rest=''
+  [ "$kind" = "$expected" ] || rest=${expected#* }
+  case "$kind" in
+    기록)
+      a=${rest%% *}; src=${rest#* }
+      case "$src" in 런이관|문서기록|문서이관) ;; *) kind='' ;; esac
+      [ -n "$a" ] && [ "$a" != "$rest" ] || kind='' ;;
+    허용) [ -n "$rest" ] || kind='' ;;
+    미지정|손상) [ -n "$rest" ] || kind='' ;;
+    미설정) [ -z "$rest" ] || kind='' ;;
+    *) kind='' ;;
+  esac
+  case "$kind" in
+    '')
+      printf '계정 기록 판독 실패 — visual-config.sh expect 가 판정 다섯 꼴 중 하나를 내지 않았다. 헬퍼와 기록을 고친 뒤 다시 파견하세요 (설계 문서 %s)' "$DOC"
+      return 1 ;;
+    손상)
+      printf '계정 기록 판독 실패 — 이 문서의 계정 기록이 머리나 owner-doc 이 맞지 않아 읽히지 않는다. 기록을 고치거나 visual-config.sh assign <문서> <주소> --replace 로 다시 정한 뒤 다시 파견하세요 (기록 %s)' "$rest"
+      return 1 ;;
+    미지정)
+      printf '문서 계정 미지정 — 이미 발행된 문서인데 그 캔버스의 계정 기록이 없다. visual-config.sh assign <문서> <주소> 로 계정을 정한 뒤 다시 파견하세요 (사이드카 %s)' "$rest"
+      return 1 ;;
+    미설정)
+      printf "고정 계정 미설정 — 호스트 파일 claude-design 에 'allow = <주소>' 줄도 'account = <주소>' 줄도 없어 새 문서를 발행할 계정이 없다. 그 줄을 쓴 뒤 다시 파견하세요 (호스트 파일 %s)" \
+        "${XDG_CONFIG_HOME:-$HOME/.config}/cc-cmds/claude-design"
+      return 1 ;;
+  esac
   if ! email=$(gate_visual_lane_auth_email "$cfg"); then
     cause=$email
-    printf '좌석 계정 판독 실패 — %s. 좌석이 고정 계정으로 로그인된 뒤 다시 파견하세요 (claude auth status --json, 설정 디렉터리 %s)' \
+    printf '좌석 계정 판독 실패 — %s. 좌석이 이 문서의 계정으로 로그인된 뒤 다시 파견하세요 (claude auth status --json, 설정 디렉터리 %s)' \
       "$cause" "$shown"
     return 1
   fi
-  le=${expected%%@*}
   lr=${email%%@*}
   # Case-blind with `nocasematch`, restored to what the caller had, so the
   # comparison forks nothing.
   if shopt -q nocasematch; then had=1; fi
   shopt -s nocasematch
-  [[ "$email" == "$expected" ]] && same=1
+  if [ "$kind" = 기록 ]; then
+    [[ "$email" == "$a" ]] && ok=1
+  else
+    read -r -a list <<< "$rest"
+    for a in "${list[@]}"; do
+      [[ "$email" == "$a" ]] && { ok=1; break; }
+    done
+  fi
   if [ "$had" = 0 ]; then shopt -u nocasematch; fi
-  if [ "$same" = 0 ]; then
-    printf '좌석 계정 불일치 — 로그인 계정 %s 가 고정 Claude Design 계정 %s 가 아니다. 좌석을 고정 계정으로 로그인한 뒤 다시 파견하세요 (좌석 설정 디렉터리 %s)' \
-      "$lr" "$le" "$shown"
+  if [ "$ok" = 0 ]; then
+    if [ "$kind" = 기록 ]; then
+      le=${a%%@*}
+      case "$src" in
+        런이관) src='런 이관 기록' ;;
+        문서기록) src='문서 계정 기록' ;;
+        문서이관) src='문서 이관 기록' ;;
+      esac
+      printf '좌석 계정 불일치 — 로그인 계정 %s 가 이 문서의 기록 계정 %s 가 아니다 (%s). 좌석을 그 계정으로 로그인한 뒤 다시 파견하세요 (좌석 설정 디렉터리 %s)' \
+        "$lr" "$le" "$src" "$shown"
+    else
+      printf "좌석 계정 불일치 — 로그인 계정 %s 가 허용 목록에 없다. 허용 계정으로 로그인하거나 호스트 파일 claude-design 에 'allow' 줄을 더한 뒤 다시 파견하세요 (좌석 설정 디렉터리 %s)" \
+        "$lr" "$shown"
+    fi
     return 1
   fi
   log "시각 발행 좌석 계정 일치 — $seg (설정 디렉터리 $shown)"
@@ -59535,7 +59664,17 @@ gate_visual_lane_doc_commit() {
   # migration's values. Called when the gate closes a visual publish stage's
   # row, after the terminal class is decided. Always rc 0: a failed write warns
   # and the row closes all the same.
-  local rec="${RUN_DIR:-}/visual-lane" last s lane acct dl tmp=""
+  #
+  # THE DOCUMENT'S ACCOUNT RECORD FOLLOWS THE MIGRATION, and only when the
+  # document-level record above was written: the canvases now belong to the
+  # migrated account, so `visual_account_path "$DOC"` gets that account with
+  # `**출처**: 이관 · <run id> · 이관 <s> · <UTC ISO>` under the head
+  # `cc-visual-account v1` whose `owner-doc` is the document key the visual
+  # helper derives (the path relative to the document's repository top). A
+  # failed write warns with the `visual-config.sh assign … --replace` that
+  # writes the same account by hand, since until then the next run expects the
+  # account the record still names.
+  local rec="${RUN_DIR:-}/visual-lane" last s lane acct dl tmp="" ap atmp="" ddir dtop dkey
   [ -n "${RUN_DIR:-}" ] && [ -f "$rec" ] || return 0
   last=$(grep -E '^\*\*이관\*\*: [0-9]+ ' "$rec" 2>/dev/null | tail -n 1) || return 0
   s=${last#\*\*이관\*\*: }
@@ -59560,6 +59699,25 @@ gate_visual_lane_doc_commit() {
   else
     [ -z "${tmp:-}" ] || rm -f "$tmp" 2>/dev/null
     warn "the document-level migration record could not be written: $dl"
+    return 0
+  fi
+  ap=$(visual_account_path "$DOC" 2>/dev/null) || ap=''
+  dkey=''
+  if ddir=$(cd "$(dirname "$DOC")" 2>/dev/null && pwd -P) \
+     && dtop=$(cd "$ddir" && git rev-parse --show-toplevel 2>/dev/null) \
+     && dtop=$(cd "$dtop" && pwd -P); then
+    dkey="$ddir/$(basename "$DOC")"
+    dkey=${dkey#"$dtop"/}
+  fi
+  if [ -n "$ap" ] && [ -n "$dkey" ] && [ -n "$acct" ] \
+     && mkdir -p "$(dirname "$ap")" 2>/dev/null && atmp=$(mktemp "$(dirname "$ap")/.visual-account.XXXXXX" 2>/dev/null) \
+     && printf '<!-- cc-visual-account v1; writer=visual-config.sh|gate; reader=visual-config.sh,gate.sh,visual,visual-publish-unattended; owner-doc=%s -->\n**계정**: %s\n**출처**: 이관 · %s · 이관 %s · %s\n' \
+          "$dkey" "$acct" "$RUN_ID" "$s" "$(now_iso)" > "$atmp" \
+     && chmod 644 "$atmp" 2>/dev/null && mv -f "$atmp" "$ap"; then
+    log "문서 계정 기록 — $ap (이관 $s)"
+  else
+    [ -z "${atmp:-}" ] || rm -f "$atmp" 2>/dev/null
+    warn "the document's account record could not be written: ${ap:-(no path)} — record the migrated account by hand with \`visual-config.sh assign $DOC ${acct:-<the migrated account>} --replace\`"
   fi
   return 0
 }

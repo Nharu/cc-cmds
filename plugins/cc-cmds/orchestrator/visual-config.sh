@@ -1,14 +1,17 @@
 #!/usr/bin/env bash
-# Host settings of the visual design skills: the pinned Claude Design account,
-# the per-phase model table, and the ban list the reviewers and the machine
-# check read.
+# Host settings of the visual design skills: the Claude Design account each
+# design document's canvases belong to, the per-phase model table, and the ban
+# list the reviewers and the machine check read.
 #
 # Three host files live in the host settings directory, all mode 644 and none
 # named `*.env`:
 #
-#   claude-design   `account = <address>`, `lane = <lane id>` and
-#                   `share = <address>` — written by a person, never seeded,
-#                   never copied into a run
+#   claude-design   `allow = <address>` (zero or more lines), `account =
+#                   <address>`, `lane = <lane id>` and `share = <address>` —
+#                   written by a person, never seeded, never copied into a run.
+#                   The allow list is every `allow` value together with the
+#                   last `account` value, compared case-insensitively; a file
+#                   with one `account` line alone allows that one account
 #   visual-models   `key = value` lines overriding the skill defaults
 #   visual-bans     `<id> | <kind> | <description> | <pattern or ->` lines,
 #                   seeded from visual-bans.seed beside this script
@@ -18,25 +21,76 @@
 # different file, because a path a run could re-point is the very risk the
 # account pin exists to close. Tests move XDG_CONFIG_HOME instead.
 #
+# Each design document has one account record,
+# `<base>/docs/visual-account/<slug>.md` — `<base>` and `<slug>` derived as the
+# sidecar's are. Its head is `<!-- cc-visual-account v1; writer=…; reader=…;
+# owner-doc=<document key> -->` and its lines are `**계정**` and `**출처**`
+# (`발행 · <UTC ISO>`, `지정 · <UTC ISO>` or `이관 · <run id> · 이관 <s> · <UTC
+# ISO>`). Only `record`, `assign` and the gate write it.
+#
+# The expected account of a document comes from one rule, `doc_expected`, and
+# the first row that applies answers:
+#   1. the run-local migration record `${CC_PIPELINE_RUN_DIR}/visual-lane`
+#      exists → its `**계정**` (기록, 런이관), or 손상 when it does not parse;
+#   2. the account record exists → its `**계정**` (기록, 문서기록), or 손상
+#      when its head is not v1, its `owner-doc` is not this document, its
+#      `**계정**` is empty, or the document-level migration record also parses
+#      and names a different account. A 손상 here never falls to row 3;
+#   3. the document-level migration record `<base>/docs/visual-lane/<slug>.md`
+#      parses as `cc-visual-lane-doc v1` → its `**계정**` (기록, 문서이관);
+#      a file that does not parse counts as absent;
+#   4. this document's sidecar (same `owner-doc`) holds an `**아티팩트**`
+#      value other than `(미발행)` → 미지정: published, no record, no guess;
+#   5. otherwise (a new document) → 허용 with the allow list, or 미설정 when
+#      the list is empty.
+# `account`, `expect` and `record` all read it, so the stage's K0, the gate's
+# pre-launch check and the interactive seat cannot expect different accounts.
+# A document argument that is not a file or sits outside git is a usage error
+# (exit 2) for all four document subcommands, which then write nothing.
+#
 # Subcommands:
-#   account            read `command claude auth status --json` in THIS
+#   account <doc>      read `command claude auth status --json` in THIS
 #                      process's own config directory, compare its `email`
-#                      with the expected account, append one line to the
-#                      host log, print the verdict. 일치 exits 0; 불일치, 미설정
-#                      and 판독실패 exit 1. Refused inside a run, except in the
-#                      visual publish stage (below). The expected account is
-#                      the `**계정**` of the run-local migration record
-#                      `${CC_PIPELINE_RUN_DIR}/visual-lane` when that file
-#                      exists, else `account` in claude-design. A record that
-#                      exists but does not parse is 판독실패 naming its path,
-#                      never a fall back to the host file.
-#   expect             print the expected account by the same rule `account`
-#                      uses, one line, exit 0. A record that does not parse,
-#                      or no expected account, prints nothing and exits 1.
-#                      Read-only, and allowed inside a run: the gate calls its
-#                      own copy before it launches a visual publish stage in a
-#                      run with routing off. The gate's grading table has no
-#                      row for it, so a stage that calls it is refused there.
+#                      with the document's expected account, append one line
+#                      to the host log, print the verdict: 일치, 불일치,
+#                      미지정, 미설정 or 판독실패 (손상 and an unreadable login).
+#                      The first line is `계정 판정: <verdict> (판독 <local
+#                      part>, 기대 <local part|허용 목록|->)`, the second
+#                      `기준: <런 이관 기록|문서 계정 기록|문서 이관 기록|허용
+#                      목록> <path>` when one of those decided. 일치 exits 0,
+#                      every other verdict 1. Refused inside a run, except in
+#                      the visual publish stage (below).
+#   expect <doc>       print the document's expected account kind and value on
+#                      one line and exit 0: `기록 <address> <런이관|문서기록|
+#                      문서이관>`, `허용 <address> <address>…`, `미지정
+#                      <sidecar path>`, `미설정` or `손상 <path>`. Read-only,
+#                      and allowed inside a run: the gate calls its own copy
+#                      before it launches a visual publish stage in a run with
+#                      routing off and compares the login itself. The gate's
+#                      grading table has no row for it, so a stage that calls
+#                      it is refused there.
+#   record <doc>       the first publish's account record, written right after
+#                      K2 passes. The value is this process's login, never an
+#                      argument. A run-local migration record → nothing
+#                      written, exit 0 (the gate writes the record when it
+#                      closes a migrating stage). A 문서기록 or 문서이관 record →
+#                      exit 0 when the login equals it, else 1. 허용 → written
+#                      (`출처: 발행`) only when the login is in the list, else 1.
+#                      미지정, 미설정, 손상 and an unreadable login → 1. The
+#                      write links a temporary file onto the record name, so it
+#                      never replaces an existing record; losing that race
+#                      reads the winner and exits 0 only when it equals the
+#                      login. Refused inside a run, except in the visual
+#                      publish stage (below).
+#   assign <doc> <address> [--replace]
+#                      a person's assignment (`출처: 지정`). Only an address in
+#                      the allow list; an equal existing record writes nothing
+#                      and succeeds; a different (or 손상) record is replaced
+#                      only with `--replace`; an address other than the
+#                      document-level migration record's is refused even with
+#                      `--replace`. Refused inside every run.
+#   allowed            print the allow list, one address per line; an empty
+#                      list exits 1. Read-only, and allowed inside a run.
 #   lane             print the lane id the gate pins a visual publish stage
 #                      to: the record's `**레인**` when the record exists, else
 #                      the `lane` value of claude-design. No value (no file, no
@@ -69,12 +123,13 @@
 #                      the model and ban sub-blocks of its `## 시각 방향`. Any
 #                      mismatch exits 1 with the reason.
 #
-# Inside a run, `account` and `append` run only when the gate launched this
-# process as a visual publish stage, which it marks with
+# Inside a run, `account`, `append` and `record` run only when the gate
+# launched this process as a visual publish stage, which it marks with
 # `CC_PIPELINE_VISUAL_PUBLISH=1` and sets for that kind alone, and only from
 # the copy of this script beside that gate (`CC_PIPELINE_GATE`). The gate grades
-# both of them per act besides (`append` only against a person's approval of
-# that very candidate). `seed` is refused inside every run, that stage included.
+# all three per act besides (`account` and `record` only on the run's own design
+# document, `append` only against a person's approval of that very candidate).
+# `seed` and `assign` are refused inside every run, that stage included.
 #
 # The log `${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/claude-design-account.log`
 # gets one line per account read: time, verdict, the local part read and the
@@ -82,8 +137,10 @@
 #
 # Exit codes:
 #   0 — success (account: 일치)
-#   1 — a verdict other than 일치, a refused append, a snapshot mismatch
-#   2 — usage error, or a subcommand refused because it runs inside a run
+#   1 — a verdict other than 일치, a refused record, assign or append, an empty
+#       allow list, a snapshot mismatch
+#   2 — usage error (a document argument that does not resolve included), or a
+#       subcommand refused because it runs inside a run
 #
 # Compatibility: bash 3.2 (macOS) — no associative arrays, no `mapfile`; BSD
 # and GNU userland alike; `grep -E` only.
@@ -103,7 +160,7 @@ MODEL_KEYS='ds-generate screen-generate polish implement-large implement-large-t
 MODEL_VOCAB='opus sonnet haiku fable'
 
 usage() {
-  echo "사용법: visual-config.sh account | expect | lane | share | models | bans | seed | append <줄> | snapshot [--part models|bans]" >&2
+  echo "사용법: visual-config.sh account <문서> | expect <문서> | record <문서> | assign <문서> <주소> [--replace] | allowed | lane | share | models | bans | seed | append <줄> | snapshot [--part models|bans]" >&2
   exit 2
 }
 
@@ -115,8 +172,8 @@ refuse_in_run() {
 }
 
 refuse_in_run_unless_publish() {
-  # The visual publish stage's marker lifts the refusal for `account` and
-  # `append` alone, and only for the copy beside the gate the stage was
+  # The visual publish stage's marker lifts the refusal for `account`,
+  # `append` and `record` alone, and only for the copy beside the gate the stage was
   # launched with (`CC_PIPELINE_GATE`): that is the copy the gate grades
   # against a person's answer. Any other copy — the run's source checkout, a
   # worktree — would otherwise write the host files on the marker alone, with
@@ -213,96 +270,414 @@ run_record_read() {
   rec_state=정상
 }
 
+# --- document paths -----------------------------------------------------------
+# The same derivation `visual-check.sh` (`locate_sidecar`) and `run.sh`
+# (`visual_sidecar_path`) use: the document key is the path below the
+# document's repository top, the slug is that key without `.md` with `/`
+# spelled `-`, and the base is the repository's common git directory's parent,
+# so a segment worktree and the main checkout name one file. Sets DOC_KEY
+# SIDECAR ACCT_RECORD DOC_LANE_RECORD, or prints the reason on stderr and
+# returns 1.
+DOC_KEY=''
+SIDECAR=''
+ACCT_RECORD=''
+DOC_LANE_RECORD=''
+
+doc_locate() {
+  local doc=$1 dir top docp gcd base slug
+  [ -n "$doc" ] && [ -f "$doc" ] || { echo "visual-config.sh: 설계 문서가 파일이 아니다: ${doc}" >&2; return 1; }
+  dir=$(cd "$(dirname "$doc")" 2>/dev/null && pwd -P) || { echo "visual-config.sh: 설계 문서 디렉터리를 풀 수 없다: ${doc}" >&2; return 1; }
+  top=$(cd "$dir" && git rev-parse --show-toplevel 2>/dev/null) || { echo "visual-config.sh: 설계 문서가 git 트리 밖이다: ${doc}" >&2; return 1; }
+  top=$(cd "$top" && pwd -P) || return 1
+  docp="$dir/$(basename "$doc")"
+  DOC_KEY=${docp#"$top"/}
+  slug=$(printf '%s' "${DOC_KEY%.md}" | tr '/' '-')
+  gcd=$(cd "$dir" && git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || { echo "visual-config.sh: 베이스를 풀 수 없다: ${doc}" >&2; return 1; }
+  base=$(dirname "$gcd")
+  SIDECAR="$base/docs/visual/${slug}.md"
+  ACCT_RECORD="$base/docs/visual-account/${slug}.md"
+  DOC_LANE_RECORD="$base/docs/visual-lane/${slug}.md"
+}
+
+lower() {
+  printf '%s' "$1" | tr '[:upper:]' '[:lower:]'
+}
+
+# The `**계정**` of the document-level migration record, or nothing when the
+# file is absent, its head is not `cc-visual-lane-doc v1`, or the line is
+# missing or empty (the same reading as `run.sh`'s `visual_lane_doc_field`).
+doc_lane_account() {
+  local line
+  [ -f "$DOC_LANE_RECORD" ] || return 0
+  case "$(head -n 1 "$DOC_LANE_RECORD" 2>/dev/null || true)" in '<!-- cc-visual-lane-doc v1;'*) ;; *) return 0 ;; esac
+  line=$(grep -E '^\*\*계정\*\*: ' "$DOC_LANE_RECORD" 2>/dev/null | tail -n 1 || true)
+  trim "${line#\*\*계정\*\*: }"
+}
+
+# The `**계정**` of the account record when its head is `cc-visual-account v1`
+# with this document's `owner-doc`; nothing otherwise (absent, wrong head,
+# another document's, empty account line).
+acct_record_account() {
+  local head owner line
+  [ -f "$ACCT_RECORD" ] || return 0
+  head=$(head -n 1 "$ACCT_RECORD" 2>/dev/null || true)
+  case "$head" in '<!-- cc-visual-account v1;'*) ;; *) return 0 ;; esac
+  owner=$(printf '%s' "$head" | sed -nE 's/^.*owner-doc=([^;]*)-->.*$/\1/p')
+  owner=$(trim "$owner")
+  [ -n "$owner" ] && [ "$owner" = "$DOC_KEY" ] || return 0
+  line=$(grep -E '^\*\*계정\*\*: ' "$ACCT_RECORD" 2>/dev/null | tail -n 1 || true)
+  trim "${line#\*\*계정\*\*: }"
+}
+
+# 0 when this document's sidecar (same `owner-doc`) pins an `**아티팩트**`
+# value other than `(미발행)`: some account's canvas already exists.
+doc_published() {
+  local owner
+  [ -f "$SIDECAR" ] || return 1
+  owner=$(sed -n '1,2p' "$SIDECAR" | { grep -E '^<!-- cc-visual v1;' || true; } | sed -n '1p' \
+    | sed -nE 's/^.*owner-doc=([^;]*);.*$/\1/p')
+  owner=$(trim "$owner")
+  [ "$owner" = "$DOC_KEY" ] || return 1
+  local vals
+  vals=$(grep -E '^\*\*아티팩트\*\*: ' "$SIDECAR" 2>/dev/null \
+    | sed -E 's/^\*\*아티팩트\*\*: //' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' \
+    | grep -vE '^(\(미발행\))?$' || true)
+  [ -n "$vals" ]
+}
+
+# --- allow list ---------------------------------------------------------------
+# Every `allow` value and the last `account` value of claude-design, in file
+# order. A value is one word with its surrounding blanks trimmed; an empty value
+# or one holding a blank or a comma is left out, and of addresses that differ
+# only in case the first spelling stays. Prints one address per line.
+allowed_list() {
+  [ -f "$ACCOUNT_FILE" ] || return 0
+  local last_acct line n=0 key val seen=' ' lv
+  last_acct=$(grep -nE '^[[:space:]]*account[[:space:]]*=' "$ACCOUNT_FILE" | tail -n 1 | cut -d: -f1 || true)
+  while IFS= read -r line || [ -n "$line" ]; do
+    n=$((n + 1))
+    case "$line" in *=*) ;; *) continue ;; esac
+    key=$(trim "${line%%=*}")
+    case "$key" in
+      allow) ;;
+      account) [ "$n" = "${last_acct:-0}" ] || continue ;;
+      *) continue ;;
+    esac
+    val=$(trim "${line#*=}")
+    [ -n "$val" ] || continue
+    case "$val" in *[[:space:],]*) continue ;; esac
+    lv=$(lower "$val")
+    case "$seen" in *" $lv "*) continue ;; esac
+    seen="$seen$lv "
+    printf '%s\n' "$val"
+  done < "$ACCOUNT_FILE"
+}
+
+in_allowed() {
+  local want a
+  want=$(lower "$1")
+  [ -n "$want" ] || return 1
+  while IFS= read -r a; do
+    [ -n "$a" ] || continue
+    [ "$(lower "$a")" = "$want" ] && return 0
+  done <<EOF
+$(allowed_list)
+EOF
+  return 1
+}
+
 # --- expected account ---------------------------------------------------------
-# The one rule that names the pinned account: the `**계정**` of a `정상`
-# run-local record, else (no record) the last `account` line of claude-design.
-# A `손상` record names no account and never falls back to the host file. Prints
-# the account, or nothing; always returns 0, also when the host file or its
-# `account` line is absent. `account` (the stage's K0) and `expect` (the gate's
-# pre-launch check) both read it here, so the two cannot expect different
-# accounts. Reading the record again leaves `rec_state` as it was.
-expected_account() {
-  local line expected=''
+# doc_expected — the one rule (rows 1-5 in the head comment). Needs doc_locate
+# first. Sets EXP_KIND (기록 허용 미지정 미설정 손상), EXP_ACCOUNT (기록),
+# EXP_SRC (런이관 문서기록 문서이관, 기록 and 손상) and EXP_PATH (the record
+# that decided, the sidecar for 미지정, the host file for 허용 and 미설정).
+EXP_KIND=''
+EXP_ACCOUNT=''
+EXP_SRC=''
+EXP_PATH=''
+
+doc_expected() {
+  local acct lane_acct
+  EXP_KIND='' EXP_ACCOUNT='' EXP_SRC='' EXP_PATH=''
   run_record_read
-  if [ "$rec_state" = 정상 ]; then
-    expected=$rec_account
-  elif [ "$rec_state" = 없음 ] && [ -f "$ACCOUNT_FILE" ]; then
-    line=$(grep -E '^[[:space:]]*account[[:space:]]*=' "$ACCOUNT_FILE" | tail -n 1 || true)
-    if [ -n "$line" ]; then
-      expected=$(trim "${line#*=}")
+  case "$rec_state" in
+    정상) EXP_KIND=기록; EXP_ACCOUNT=$rec_account; EXP_SRC=런이관; EXP_PATH=$RUN_LANE_RECORD; return 0 ;;
+    손상) EXP_KIND=손상; EXP_SRC=런이관; EXP_PATH=$RUN_LANE_RECORD; return 0 ;;
+  esac
+  lane_acct=$(doc_lane_account)
+  if [ -e "$ACCT_RECORD" ]; then
+    acct=$(acct_record_account)
+    EXP_SRC=문서기록
+    EXP_PATH=$ACCT_RECORD
+    if [ -z "$acct" ] || { [ -n "$lane_acct" ] && [ "$(lower "$lane_acct")" != "$(lower "$acct")" ]; }; then
+      EXP_KIND=손상
+    else
+      EXP_KIND=기록
+      EXP_ACCOUNT=$acct
     fi
+    return 0
   fi
-  printf '%s' "$expected"
+  if [ -n "$lane_acct" ]; then
+    EXP_KIND=기록; EXP_ACCOUNT=$lane_acct; EXP_SRC=문서이관; EXP_PATH=$DOC_LANE_RECORD
+    return 0
+  fi
+  if doc_published; then
+    EXP_KIND=미지정; EXP_PATH=$SIDECAR
+    return 0
+  fi
+  EXP_PATH=$ACCOUNT_FILE
+  if [ -n "$(allowed_list)" ]; then EXP_KIND=허용; else EXP_KIND=미설정; fi
+}
+
+src_label() {
+  case "$1" in
+    런이관) printf '%s' '런 이관 기록' ;;
+    문서기록) printf '%s' '문서 계정 기록' ;;
+    문서이관) printf '%s' '문서 이관 기록' ;;
+  esac
+}
+
+# The `email` of `command claude auth status --json` in this process's own
+# config directory, or nothing when the CLI fails or prints no email.
+read_login() {
+  local out rc=0 body
+  out=$(command claude auth status --json 2>/dev/null) || rc=$?
+  [ "$rc" = 0 ] || return 0
+  body=$(printf '%s' "$out" | tr -d '\n' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+  case "$body" in
+    '{'*'}')
+      printf '%s' "$body" \
+        | grep -oE '"email"[[:space:]]*:[[:space:]]*"[^"]*"' | head -n 1 \
+        | sed -E 's/^"email"[[:space:]]*:[[:space:]]*"([^"]*)"$/\1/' || true
+      ;;
+  esac
+}
+
+log_line() {
+  mkdir -p "$STATE_DIR"
+  printf '%s %s 판독=%s 기대=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$2" "$3" >> "$ACCOUNT_LOG"
 }
 
 # --- expect -------------------------------------------------------------------
 cmd_expect() {
-  local expected
-  run_record_read
-  [ "$rec_state" != 손상 ] || exit 1
-  expected=$(expected_account)
-  [ -n "$expected" ] || exit 1
-  printf '%s\n' "$expected"
+  doc_locate "$1" || exit 2
+  doc_expected
+  case "$EXP_KIND" in
+    기록) printf '기록 %s %s\n' "$EXP_ACCOUNT" "$EXP_SRC" ;;
+    허용) printf '허용 %s\n' "$(allowed_list | tr '\n' ' ' | sed -e 's/[[:space:]]*$//')" ;;
+    미지정) printf '미지정 %s\n' "$EXP_PATH" ;;
+    미설정) printf '미설정\n' ;;
+    손상) printf '손상 %s\n' "$EXP_PATH" ;;
+  esac
+}
+
+# --- allowed ------------------------------------------------------------------
+cmd_allowed() {
+  local list
+  list=$(allowed_list)
+  [ -n "$list" ] || exit 1
+  printf '%s\n' "$list"
 }
 
 # --- account ------------------------------------------------------------------
 cmd_account() {
   refuse_in_run_unless_publish account
-  local expected='' read_email='' verdict out rc
-  run_record_read
-  expected=$(expected_account)
+  local doc=$1 read_email verdict lr le shown
+  doc_locate "$doc" || exit 2
+  doc_expected
 
-  if [ "$rec_state" = 손상 ]; then
-    mkdir -p "$STATE_DIR"
-    printf '%s %s 판독=%s 기대=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" 판독실패 - - >> "$ACCOUNT_LOG"
+  if [ "$EXP_KIND" = 손상 ]; then
+    log_line 판독실패 - -
     echo "계정 판정: 판독실패 (판독 -, 기대 -)"
-    echo "멈춤 — 이관 기록 ${RUN_LANE_RECORD} 을 읽지 못했다 (머리가 cc-visual-lane v1 이 아니거나 **레인**·**계정** 줄이 없거나 비었다)"
-    echo "로그: ${ACCOUNT_LOG}"
-    echo "고칠 길: 게이트가 쓴 이관 기록을 확인하고 같은 국면을 다시 실행한다"
+    echo "기준: $(src_label "$EXP_SRC") ${EXP_PATH}"
+    if [ "$EXP_SRC" = 런이관 ]; then
+      echo "멈춤 — 이관 기록 ${EXP_PATH} 을 읽지 못했다 (머리가 cc-visual-lane v1 이 아니거나 **레인**·**계정** 줄이 없거나 비었다)"
+      echo "로그: ${ACCOUNT_LOG}"
+      echo "고칠 길: 게이트가 쓴 이관 기록을 확인하고 같은 국면을 다시 실행한다"
+    else
+      echo "멈춤 — 계정 기록 ${EXP_PATH} 을 읽지 못했다 (머리가 cc-visual-account v1 이 아니거나 owner-doc 이 이 문서가 아니거나 **계정** 줄이 비었거나, 문서 이관 기록 ${DOC_LANE_RECORD} 의 계정과 다르다)"
+      echo "로그: ${ACCOUNT_LOG}"
+      echo "고칠 길: 문서 이관 기록이 있으면 그 계정으로 'visual-config.sh assign ${doc} <주소> --replace' 해 맞춘 뒤 다시 실행한다"
+    fi
     exit 1
   fi
 
-  rc=0
-  out=$(command claude auth status --json 2>/dev/null) || rc=$?
-  if [ "$rc" = 0 ]; then
-    local body
-    body=$(printf '%s' "$out" | tr -d '\n' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
-    case "$body" in
-      '{'*'}')
-        read_email=$(printf '%s' "$body" \
-          | grep -oE '"email"[[:space:]]*:[[:space:]]*"[^"]*"' | head -n 1 \
-          | sed -E 's/^"email"[[:space:]]*:[[:space:]]*"([^"]*)"$/\1/' || true)
-        ;;
-    esac
-  fi
-
-  if [ -z "$expected" ]; then
-    verdict=미설정
-  elif [ -z "$read_email" ]; then
-    verdict=판독실패
-  elif [ "$(printf '%s' "$read_email" | tr '[:upper:]' '[:lower:]')" = "$(printf '%s' "$expected" | tr '[:upper:]' '[:lower:]')" ]; then
-    verdict=일치
-  else
-    verdict=불일치
-  fi
-
-  local lr le
+  read_email=$(read_login)
   lr=$(local_part "$read_email")
-  le=$(local_part "$expected")
-  mkdir -p "$STATE_DIR"
-  printf '%s %s 판독=%s 기대=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$verdict" "$lr" "$le" >> "$ACCOUNT_LOG"
+  le=-
+  shown=-
+  case "$EXP_KIND" in
+    기록)
+      le=$(local_part "$EXP_ACCOUNT"); shown=$le
+      if [ -z "$read_email" ]; then verdict=판독실패
+      elif [ "$(lower "$read_email")" = "$(lower "$EXP_ACCOUNT")" ]; then verdict=일치
+      else verdict=불일치
+      fi
+      ;;
+    허용)
+      shown='허용 목록'; le=허용목록
+      if [ -z "$read_email" ]; then verdict=판독실패
+      elif in_allowed "$read_email"; then verdict=일치
+      else verdict=불일치
+      fi
+      ;;
+    미지정) verdict=미지정 ;;
+    *) verdict=미설정 ;;
+  esac
 
-  echo "계정 판정: ${verdict} (판독 ${lr}, 기대 ${le})"
-  if [ "$verdict" != 일치 ]; then
-    case "$verdict" in
-      미설정) echo "멈춤 — ${ACCOUNT_FILE} 에 'account = <주소>' 줄이 없다" ;;
-      판독실패) echo "멈춤 — 'command claude auth status --json' 에서 email 을 읽지 못했다" ;;
-      불일치) echo "멈춤 — 이 설정 디렉터리의 로그인 계정이 고정 계정이 아니다" ;;
-    esac
-    echo "로그: ${ACCOUNT_LOG}"
-    echo "고칠 길: 고정 계정으로 로그인한 좌석에서 같은 국면을 다시 실행한다"
+  log_line "$verdict" "$lr" "$le"
+  echo "계정 판정: ${verdict} (판독 ${lr}, 기대 ${shown})"
+  case "$EXP_KIND" in
+    기록) echo "기준: $(src_label "$EXP_SRC") ${EXP_PATH}" ;;
+    허용|미설정) echo "기준: 허용 목록 ${EXP_PATH}" ;;
+  esac
+  [ "$verdict" != 일치 ] || return 0
+  case "$verdict" in
+    미설정)
+      echo "멈춤 — ${ACCOUNT_FILE} 에 'allow = <주소>' 나 'account = <주소>' 줄이 없다"
+      echo "로그: ${ACCOUNT_LOG}"
+      echo "고칠 길: 호스트 파일에 'allow = <주소>' 줄을 더한 뒤 같은 국면을 다시 실행한다"
+      ;;
+    미지정)
+      echo "멈춤 — 발행됐지만 계정 기록이 없다 — 'visual-config.sh assign ${doc} <주소>' 로 지정한 뒤 다시 실행한다. 그 주소가 허용 목록에 없으면 호스트 파일에 'allow' 줄을 먼저 더한다(런 안이면 런 밖의 사람이) (사이드카 ${EXP_PATH})"
+      echo "로그: ${ACCOUNT_LOG}"
+      echo "고칠 길: 런 밖에서 'visual-config.sh assign ${doc} <주소>' 로 이 문서의 계정을 지정한다"
+      ;;
+    판독실패)
+      echo "멈춤 — 'command claude auth status --json' 에서 email 을 읽지 못했다"
+      echo "로그: ${ACCOUNT_LOG}"
+      echo "고칠 길: 이 설정 디렉터리에서 로그인한 뒤 같은 국면을 다시 실행한다"
+      ;;
+    불일치)
+      if [ "$EXP_KIND" = 기록 ]; then
+        echo "멈춤 — 이 문서는 ${le} 의 캔버스다 (기록 ${EXP_PATH}) — 그 계정으로 로그인해 다시 실행한다"
+        echo "로그: ${ACCOUNT_LOG}"
+        echo "고칠 길: ${le} 계정으로 로그인한 좌석에서 같은 국면을 다시 실행한다"
+      else
+        echo "멈춤 — 로그인 계정이 허용 목록에 없다 — 'allow' 줄을 더하거나 허용 계정으로 로그인한다 (호스트 파일 ${ACCOUNT_FILE})"
+        echo "로그: ${ACCOUNT_LOG}"
+        echo "고칠 길: 허용 목록의 계정으로 로그인한 좌석에서 같은 국면을 다시 실행한다"
+      fi
+      ;;
+  esac
+  exit 1
+}
+
+# --- account record writing ---------------------------------------------------
+acct_record_head() {
+  printf '<!-- cc-visual-account v1; writer=visual-config.sh|gate; reader=visual-config.sh,gate.sh,visual,visual-publish-unattended; owner-doc=%s -->\n' "$DOC_KEY"
+}
+
+# acct_record_tmp <address> <source> — a temporary file beside the record
+# holding the whole record; prints its path.
+acct_record_tmp() {
+  local dir t
+  dir=$(dirname "$ACCT_RECORD")
+  mkdir -p "$dir"
+  t=$(mktemp "$dir/.visual-account.XXXXXX")
+  {
+    acct_record_head
+    printf '**계정**: %s\n' "$1"
+    printf '**출처**: %s\n' "$2"
+  } > "$t"
+  chmod 644 "$t"
+  printf '%s\n' "$t"
+}
+
+# --- record -------------------------------------------------------------------
+cmd_record() {
+  refuse_in_run_unless_publish record
+  local doc=$1 read_email lr t winner
+  doc_locate "$doc" || exit 2
+  doc_expected
+
+  if [ "$EXP_KIND" = 기록 ] && [ "$EXP_SRC" = 런이관 ]; then
+    echo "계정 기록: 쓰지 않음 — 런 이관 기록 ${EXP_PATH} 이 이 런의 기대 계정이다 (계정 기록은 게이트가 이관 스테이지를 닫을 때 쓴다)"
+    return 0
+  fi
+  case "$EXP_KIND" in
+    미지정|미설정|손상)
+      echo "계정 기록: 쓰지 않음 — 판정 ${EXP_KIND} (${EXP_PATH}) — 이미 발행된 문서의 계정은 'visual-config.sh assign' 만 정한다" >&2
+      exit 1
+      ;;
+  esac
+
+  read_email=$(read_login)
+  lr=$(local_part "$read_email")
+  if [ -z "$read_email" ]; then
+    log_line 기록 - -
+    echo "계정 기록: 쓰지 않음 — 'command claude auth status --json' 에서 email 을 읽지 못했다" >&2
     exit 1
   fi
+
+  if [ "$EXP_KIND" = 기록 ]; then
+    log_line 기록 "$lr" "$(local_part "$EXP_ACCOUNT")"
+    if [ "$(lower "$read_email")" = "$(lower "$EXP_ACCOUNT")" ]; then
+      echo "계정 기록: 이미 있음 — $(src_label "$EXP_SRC") ${EXP_PATH} 이 로그인 계정 ${lr} 와 같다"
+      return 0
+    fi
+    echo "계정 기록: 쓰지 않음 — 로그인 계정 ${lr} 가 $(src_label "$EXP_SRC") ${EXP_PATH} 의 계정 $(local_part "$EXP_ACCOUNT") 가 아니다" >&2
+    exit 1
+  fi
+
+  # 허용: a new document.
+  log_line 기록 "$lr" 허용목록
+  if ! in_allowed "$read_email"; then
+    echo "계정 기록: 쓰지 않음 — 로그인 계정 ${lr} 가 허용 목록에 없다 (호스트 파일 ${ACCOUNT_FILE})" >&2
+    exit 1
+  fi
+  t=$(acct_record_tmp "$read_email" "발행 · $(date -u +%Y-%m-%dT%H:%M:%SZ)")
+  if ln "$t" "$ACCT_RECORD" 2>/dev/null; then
+    rm -f "$t"
+    echo "계정 기록: 썼다 — ${ACCT_RECORD} (${lr})"
+    return 0
+  fi
+  rm -f "$t"
+  winner=$(acct_record_account)
+  if [ -n "$winner" ] && [ "$(lower "$winner")" = "$(lower "$read_email")" ]; then
+    echo "계정 기록: 이미 있음 — ${ACCT_RECORD} 이 로그인 계정 ${lr} 와 같다"
+    return 0
+  fi
+  echo "계정 기록: 쓰지 않음 — ${ACCT_RECORD} 이 먼저 쓰였고 로그인 계정 ${lr} 와 다르다" >&2
+  exit 1
+}
+
+# --- assign -------------------------------------------------------------------
+cmd_assign() {
+  refuse_in_run assign
+  local doc=$1 addr replace=$3 cur lane_acct t
+  addr=$(trim "$2")
+  doc_locate "$doc" || exit 2
+  case "$addr" in ''|*[[:space:],]*)
+    echo "지정하지 않았다 — 주소 '${addr}' 가 한 낱말이 아니다" >&2; exit 1 ;;
+  esac
+  if ! in_allowed "$addr"; then
+    echo "지정하지 않았다 — '${addr}' 는 허용 목록에 없다 (호스트 파일 ${ACCOUNT_FILE} 에 'allow = <주소>' 줄을 먼저 더한다)" >&2
+    exit 1
+  fi
+  lane_acct=$(doc_lane_account)
+  if [ -n "$lane_acct" ] && [ "$(lower "$lane_acct")" != "$(lower "$addr")" ]; then
+    echo "지정하지 않았다 — 문서 이관 기록 ${DOC_LANE_RECORD} 의 계정 $(local_part "$lane_acct") 와 다르다 (--replace 로도 덮지 않는다 — 그 이관 기록을 사람이 지운 뒤 지정한다)" >&2
+    exit 1
+  fi
+  if [ -e "$ACCT_RECORD" ]; then
+    cur=$(acct_record_account)
+    if [ -n "$cur" ] && [ "$(lower "$cur")" = "$(lower "$addr")" ]; then
+      echo "지정할 것 없음 — ${ACCT_RECORD} 이 이미 $(local_part "$cur") 이다"
+      return 0
+    fi
+    if [ "$replace" != --replace ]; then
+      if [ -n "$cur" ]; then
+        echo "지정하지 않았다 — ${ACCT_RECORD} 이 이미 $(local_part "$cur") 이다 (바꾸려면 --replace)" >&2
+      else
+        echo "지정하지 않았다 — ${ACCT_RECORD} 을 읽지 못했다 (덮으려면 --replace)" >&2
+      fi
+      exit 1
+    fi
+  fi
+  t=$(acct_record_tmp "$addr" "지정 · $(date -u +%Y-%m-%dT%H:%M:%SZ)")
+  mv "$t" "$ACCT_RECORD"
+  echo "지정했다 — ${ACCT_RECORD} ($(local_part "$addr"))"
 }
 
 # --- lane ---------------------------------------------------------------------
@@ -554,8 +929,17 @@ cmd_snapshot() {
 sub=$1
 shift
 case "$sub" in
-  account) [ $# -eq 0 ] || usage; cmd_account ;;
-  expect) [ $# -eq 0 ] || usage; cmd_expect ;;
+  account) [ $# -eq 1 ] || usage; cmd_account "$1" ;;
+  expect) [ $# -eq 1 ] || usage; cmd_expect "$1" ;;
+  record) [ $# -eq 1 ] || usage; cmd_record "$1" ;;
+  assign)
+    case $# in
+      2) cmd_assign "$1" "$2" '' ;;
+      3) [ "$3" = --replace ] || usage; cmd_assign "$1" "$2" "$3" ;;
+      *) usage ;;
+    esac
+    ;;
+  allowed) [ $# -eq 0 ] || usage; cmd_allowed ;;
   lane) [ $# -eq 0 ] || usage; cmd_lane ;;
   share) [ $# -eq 0 ] || usage; cmd_share ;;
   models) [ $# -eq 0 ] || usage; cmd_models ;;

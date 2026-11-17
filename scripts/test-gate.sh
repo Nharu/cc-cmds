@@ -16119,7 +16119,7 @@ rm -f "$WORK/plan15v-shape.md"
 
 # ---------------------------------------------------------------------------
 # 15vp. The run-scope visual publish step: its readers, its halts and its grades
-# --- section: 15vp | group: base | covers: act, plan, grade, exec, gate_visual_halt_refusal, gate_visual_halt_linked_close, visual_approval_provenance, gate_visual_approval_resolve, visual_publish_standing_refusal, visual_publish_person_answer, visual_publish_artifact_complete, visual_ds_confirm_provenance, visual_row_pieces, visual_overwrite_report, gate_halt_record_question, gate_own_visual_helper, gate_argv_visual_helper, gate_argv_visual_helper_write, gate_reach_disposition | anchors: 15vp: S2P 는 visual-publish 종류다, 15vp: 계획의 visual-publish 단계가 런 범위 단계다, 15vp: 시각 발행만 Artifact 환경과 표지를 받는다, 15vp: 시각 발행이 아닌 종류는 고정 lane 이 없다, 15vp: 시각 발행 종류는 호스트 파일의 lane 을 고정한다, 15vp: 재진입 표에 시각 발행 정지 넷이 있다, 15vp: 사람이 아닌 답은 거부를 세우지 않는다, 15vp: 시각-판정 의 사람 거부는 거부다, 15vp: 뒤의 사람 승인이 앞의 거부를 지운다, 15vp: 발행-실패 의 발행하지 않음 은 무효다, 15vp: 출처 꼬리 없는 승인 줄은 발행 단계가 있는 런에서 무효다, 15vp: 마지막 시각-판정 기록이 아닌 꼬리는 무효다, 15vp: 사람 승인 답이 없는 꼬리는 무효다, 15vp: 마지막 기록에 사람 승인이 있는 꼬리는 선다, 15vp: 발행 단계가 없는 런은 꼬리 없는 줄을 받는다, 15vp: 종결 문구만 있는 발행 단계는 산출이 아니다, 15vp: 발행됨 사이드카와 종결 문구는 산출이다, 15vp: 사람 거부 뒤의 종결 문구는 산출이다, 15vp: 발행 단계 밖의 account 는 등급 미상이다, 15vp: 발행 단계의 account 는 트리 밖 쓰기다, 15vp: 사람 승인한 후보의 append 는 트리 밖 쓰기다, 15vp: 다른 후보의 append 는 등급 미상이다, 15vp: 소비된 답의 append 는 등급 미상이다, 15vp: lane 은 읽기다, 15vp: 중단 답 연동 닫기가 처분 사유를 싣는다, 15vp: 게이트 옆이 아닌 시각 헬퍼 사본의 append 는 선언으로 열리지 않는다, 15vp: find -exec 뒤의 시각 헬퍼 append 는 선언으로 열리지 않는다, 15vp: xargs 뒤의 시각 헬퍼 append 는 선언으로 열리지 않는다, 15vp: 실행기 뒤의 시각 헬퍼 append 는 선언으로 열리지 않는다, 15vp: 실행기 뒤의 시각 헬퍼 lane 은 쓰기 거부에 걸리지 않는다, 15vp: 발행 단계의 account 는 기기전역 선언으로 열린다, 15vp: 사람 승인한 후보의 append 는 기기전역 선언으로 열린다, 15vp: 게이트 옆이 아닌 사본의 account 는 같은 등급으로도 기기전역 선언으로 열리지 않는다, 15vp: 호스트 금지 목록을 그 경로로 읽는 shasum 는 읽기 선언으로 통과한다, 15vp: 호스트 금지 목록을 그 경로로 읽는 scan 은 읽기 선언으로 통과한다 ---
+# --- section: 15vp | group: base | covers: act, plan, grade, exec, gate_visual_halt_refusal, gate_visual_halt_linked_close, visual_approval_provenance, gate_visual_approval_resolve, visual_publish_standing_refusal, visual_publish_person_answer, visual_publish_artifact_complete, visual_ds_confirm_provenance, visual_row_pieces, visual_overwrite_report, gate_halt_record_question, gate_own_visual_helper, gate_argv_visual_helper, gate_argv_visual_helper_write, gate_reach_disposition | anchors: 15vp: S2P 는 visual-publish 종류다, 15vp: 계획의 visual-publish 단계가 런 범위 단계다, 15vp: 시각 발행만 Artifact 환경과 표지를 받는다, 15vp: 시각 발행이 아닌 종류는 고정 lane 이 없다, 15vp: 시각 발행 종류는 호스트 파일의 lane 을 고정한다, 15vp: 재진입 표에 시각 발행 정지 넷이 있다, 15vp: 사람이 아닌 답은 거부를 세우지 않는다, 15vp: 시각-판정 의 사람 거부는 거부다, 15vp: 뒤의 사람 승인이 앞의 거부를 지운다, 15vp: 발행-실패 의 발행하지 않음 은 무효다, 15vp: 출처 꼬리 없는 승인 줄은 발행 단계가 있는 런에서 무효다, 15vp: 마지막 시각-판정 기록이 아닌 꼬리는 무효다, 15vp: 사람 승인 답이 없는 꼬리는 무효다, 15vp: 마지막 기록에 사람 승인이 있는 꼬리는 선다, 15vp: 발행 단계가 없는 런은 꼬리 없는 줄을 받는다, 15vp: 종결 문구만 있는 발행 단계는 산출이 아니다, 15vp: 발행됨 사이드카와 종결 문구는 산출이다, 15vp: 사람 거부 뒤의 종결 문구는 산출이다, 15vp: 발행 단계 밖의 account 는 등급 미상이다, 15vp: 발행 단계의 account 는 트리 밖 쓰기다, 15vp: 다른 문서를 든 account 는 등급 미상이다, 15vp: 발행 단계의 record 는 트리 밖 쓰기다, 15vp: assign 은 발행 단계에서도 등급 미상이다, 15vp: allowed 는 읽기다, 15vp: 발행 단계의 record 는 기기전역 선언으로 열린다, 15vp: 사람 승인한 후보의 append 는 트리 밖 쓰기다, 15vp: 다른 후보의 append 는 등급 미상이다, 15vp: 소비된 답의 append 는 등급 미상이다, 15vp: lane 은 읽기다, 15vp: 중단 답 연동 닫기가 처분 사유를 싣는다, 15vp: 게이트 옆이 아닌 시각 헬퍼 사본의 append 는 선언으로 열리지 않는다, 15vp: find -exec 뒤의 시각 헬퍼 append 는 선언으로 열리지 않는다, 15vp: xargs 뒤의 시각 헬퍼 append 는 선언으로 열리지 않는다, 15vp: 실행기 뒤의 시각 헬퍼 append 는 선언으로 열리지 않는다, 15vp: 실행기 뒤의 시각 헬퍼 lane 은 쓰기 거부에 걸리지 않는다, 15vp: 발행 단계의 account 는 기기전역 선언으로 열린다, 15vp: 사람 승인한 후보의 append 는 기기전역 선언으로 열린다, 15vp: 게이트 옆이 아닌 사본의 account 는 같은 등급으로도 기기전역 선언으로 열리지 않는다, 15vp: 호스트 금지 목록을 그 경로로 읽는 shasum 는 읽기 선언으로 통과한다, 15vp: 호스트 금지 목록을 그 경로로 읽는 scan 은 읽기 선언으로 통과한다 ---
 #
 # The publish step is the fifth row of the run-scope table. It runs after the
 # visual step, publishes the screens at the one lane the host file pins, and
@@ -16265,18 +16265,38 @@ check "15vp: 사람이 승인으로 바꾼 거부는 산출이 아니다" \
   "$(vp15 "$VP15/m.md" - 'visual_publish_artifact_complete "$1"; printf "rc=%s" "$?"' "$VP15/stream.txt")" "rc=1"
 rm -f "$SC15VP" "$WT/docs/fixture-design-15vp.md"
 
-# The grades: `account` writes the host file only from the publish stage, and
-# `append` adds the one line a person approved, once.
+# The grades: `account` and `record` write outside the tree only from the
+# publish stage and only on the run's own design document, and `append` adds
+# the one line a person approved, once.
+vp15_doc=docs/fixture-design-15vp.md
 check "15vp: lane 은 읽기다" \
   "$(vp15 "$VP15/m.md" - 'surface_of_argv0 "$1" lane' "$CC_ORCH/visual-config.sh")" "읽기"
 check "15vp: share 는 읽기다" \
   "$(vp15 "$VP15/m.md" 'S2P#2' 'surface_of_argv0 "$1" share' "$CC_ORCH/visual-config.sh")" "읽기"
+check "15vp: allowed 는 읽기다" \
+  "$(vp15 "$VP15/m.md" 'S2#1' 'surface_of_argv0 "$1" allowed' "$CC_ORCH/visual-config.sh")" "읽기"
 check "15vp: 발행 단계 밖의 account 는 등급 미상이다" \
-  "$(vp15 "$VP15/m.md" 'S2#1' 'surface_of_argv0 "$1" account' "$CC_ORCH/visual-config.sh")" "등급 미상"
+  "$(vp15 "$VP15/m.md" 'S2#1' 'surface_of_argv0 "$1" account "$2"' "$CC_ORCH/visual-config.sh" "$vp15_doc")" "등급 미상"
 check "15vp: 발행 단계가 없는 계획의 account 는 등급 미상이다" \
-  "$(vp15 "$VP15/m-nop.md" 'S2P#1' 'surface_of_argv0 "$1" account' "$CC_ORCH/visual-config.sh")" "등급 미상"
+  "$(vp15 "$VP15/m-nop.md" 'S2P#1' 'surface_of_argv0 "$1" account "$2"' "$CC_ORCH/visual-config.sh" "$vp15_doc")" "등급 미상"
 check "15vp: 발행 단계의 account 는 트리 밖 쓰기다" \
-  "$(vp15 "$VP15/m.md" 'S2P#2' 'surface_of_argv0 "$1" account' "$CC_ORCH/visual-config.sh")" "트리밖쓰기"
+  "$(vp15 "$VP15/m.md" 'S2P#2' 'surface_of_argv0 "$1" account "$2"' "$CC_ORCH/visual-config.sh" "$vp15_doc")" "트리밖쓰기"
+check "15vp: 런 설계 문서를 절대 경로로 든 account 도 트리 밖 쓰기다" \
+  "$(vp15 "$VP15/m.md" 'S2P#2' 'surface_of_argv0 "$1" account "$2"' "$CC_ORCH/visual-config.sh" "$WT/$vp15_doc")" "트리밖쓰기"
+check "15vp: 다른 문서를 든 account 는 등급 미상이다" \
+  "$(vp15 "$VP15/m.md" 'S2P#2' 'surface_of_argv0 "$1" account "$2"' "$CC_ORCH/visual-config.sh" docs/other-design.md)" "등급 미상"
+check "15vp: 문서 인자 없는 account 는 등급 미상이다" \
+  "$(vp15 "$VP15/m.md" 'S2P#2' 'surface_of_argv0 "$1" account' "$CC_ORCH/visual-config.sh")" "등급 미상"
+check "15vp: 런 설계 문서를 얻지 못하면 account 는 등급 미상이다" \
+  "$(vp15 "$VP15/m.md" 'S2P#2' 'DOC=; surface_of_argv0 "$1" account "$2"' "$CC_ORCH/visual-config.sh" "$vp15_doc")" "등급 미상"
+check "15vp: 발행 단계의 record 는 트리 밖 쓰기다" \
+  "$(vp15 "$VP15/m.md" 'S2P#2' 'surface_of_argv0 "$1" record "$2"' "$CC_ORCH/visual-config.sh" "$vp15_doc")" "트리밖쓰기"
+check "15vp: 발행 단계 밖의 record 는 등급 미상이다" \
+  "$(vp15 "$VP15/m.md" 'S2#1' 'surface_of_argv0 "$1" record "$2"' "$CC_ORCH/visual-config.sh" "$vp15_doc")" "등급 미상"
+check "15vp: 다른 문서를 든 record 는 등급 미상이다" \
+  "$(vp15 "$VP15/m.md" 'S2P#2' 'surface_of_argv0 "$1" record "$2"' "$CC_ORCH/visual-config.sh" docs/other-design.md)" "등급 미상"
+check "15vp: assign 은 발행 단계에서도 등급 미상이다" \
+  "$(vp15 "$VP15/m.md" 'S2P#2' 'surface_of_argv0 "$1" assign "$2" "$3"' "$CC_ORCH/visual-config.sh" "$vp15_doc" a@example.com)" "등급 미상"
 vp15_halt 5 '금지-후보 — 반복 문구' 'hero-gradient'
 vp15_answer 5 사람 승인
 ban15vp='- `hero-gradient` | 그라데이션 히어로 — 3회 home'
@@ -16376,18 +16396,22 @@ printf '# 원장\n\n## 실행 R15VP\n' > "$VP15/led.md"
 vp15_halt 12 '금지-후보 — 반복 문구' 'hero-gradient'
 vp15_answer 12 사람 승인
 check "15vp: 발행 단계의 account 는 기기전역 선언으로 열린다" \
-  "$(vp15_reach 'S2P#3' - 0 "$CC_ORCH/visual-config.sh" account)" "트리밖쓰기|열림"
+  "$(vp15_reach 'S2P#3' - 0 "$CC_ORCH/visual-config.sh" account "$vp15_doc")" "트리밖쓰기|열림"
+check "15vp: 발행 단계의 record 는 기기전역 선언으로 열린다" \
+  "$(vp15_reach 'S2P#3' - 0 "$CC_ORCH/visual-config.sh" record "$vp15_doc")" "트리밖쓰기|열림"
+check "15vp: assign 은 같은 등급으로도 기기전역 선언으로 열리지 않는다" \
+  "$(vp15_reach 'S2P#3' 트리밖쓰기 0 "$CC_ORCH/visual-config.sh" assign "$vp15_doc" a@example.com)" "트리밖쓰기|기기전역/argv0-path"
 check "15vp: 사람 승인한 후보의 append 는 기기전역 선언으로 열린다" \
   "$(vp15_reach 'S2P#3' - 0 "$CC_ORCH/visual-config.sh" append "$ban15vp")" "트리밖쓰기|열림"
 check "15vp: 발행 단계 밖의 account 는 기기전역 선언으로 열리지 않는다" \
-  "$(vp15_reach 'S2#1' - 0 "$CC_ORCH/visual-config.sh" account)" "등급 미상|기기전역/argv0-path"
+  "$(vp15_reach 'S2#1' - 0 "$CC_ORCH/visual-config.sh" account "$vp15_doc")" "등급 미상|기기전역/argv0-path"
 check "15vp: 다른 후보의 append 는 기기전역 선언으로 열리지 않는다" \
   "$(vp15_reach 'S2P#3' - 0 "$CC_ORCH/visual-config.sh" append 'other-id | 다른 후보')" "등급 미상|기기전역/argv0-path"
 check "15vp: 파괴를 신고한 account 는 기기전역 선언으로 열리지 않는다" \
-  "$(vp15_reach 'S2P#3' - 1 "$CC_ORCH/visual-config.sh" account)" "트리밖쓰기|기기전역/argv0-path"
+  "$(vp15_reach 'S2P#3' - 1 "$CC_ORCH/visual-config.sh" account "$vp15_doc")" "트리밖쓰기|기기전역/argv0-path"
 mkdir -p "$VP15/copy"; cp "$CC_ORCH/visual-config.sh" "$VP15/copy/visual-config.sh"
 check "15vp: 게이트 옆이 아닌 사본의 account 는 같은 등급으로도 기기전역 선언으로 열리지 않는다" \
-  "$(vp15_reach 'S2P#3' 트리밖쓰기 0 "$VP15/copy/visual-config.sh" account)" "트리밖쓰기|기기전역/argv0-path"
+  "$(vp15_reach 'S2P#3' 트리밖쓰기 0 "$VP15/copy/visual-config.sh" account "$vp15_doc")" "트리밖쓰기|기기전역/argv0-path"
 check "15vp: 게이트 옆 사본의 다른 부속 명령은 같은 등급으로도 기기전역 선언으로 열리지 않는다" \
   "$(vp15_reach 'S2P#3' 트리밖쓰기 0 "$CC_ORCH/visual-config.sh" seed)" "트리밖쓰기|기기전역/argv0-path"
 
@@ -16669,7 +16693,7 @@ for vpc15 in bash "sh -c"; do
       --surface 트리밖쓰기 --reach 런로컬 -- sh -c "$VPC15/visual-config.sh append zz-probe"
   fi
   case "$msg" in
-    *"a runner in front of \`visual-config.sh account|append|seed\` is not graded"*)
+    *"a runner in front of \`visual-config.sh account|append|seed|record|assign\` is not graded"*)
       ok "15vp: 실행기 뒤의 시각 헬퍼 append 는 선언으로 열리지 않는다 (${vpc15%% *})" ;;
     *) bad "15vp: 실행기 뒤의 시각 헬퍼 append 는 선언으로 열리지 않는다 (${vpc15%% *})" "rc=$rc $msg" ;;
   esac
@@ -16696,8 +16720,23 @@ for vpc15 in env pre sh; do
            --surface 트리밖쓰기 --reach 기기전역 -- sh -c "CC_PIPELINE_RUN_DIR=$VPC15 $CC_ORCH/visual-config.sh account" ;;
   esac
   case "$msg" in
-    *"with \`CC_PIPELINE_RUN_DIR\` reassigned is refused"*) ok "15vp: account 행위의 CC_PIPELINE_RUN_DIR 재대입은 거부된다 ($vpc15)" ;;
+    *"\`visual-config.sh account|record\` with \`CC_PIPELINE_RUN_DIR\` reassigned is refused"*) ok "15vp: account 행위의 CC_PIPELINE_RUN_DIR 재대입은 거부된다 ($vpc15)" ;;
     *) bad "15vp: account 행위의 CC_PIPELINE_RUN_DIR 재대입은 거부된다 ($vpc15)" "rc=$rc $msg" ;;
+  esac
+done
+gate plan --manifest "$FX_MANIFEST" --target infra --segment SW --cutpoint 커밋 \
+  --surface 트리밖쓰기 --reach 기기전역 -- env "CC_PIPELINE_RUN_DIR=$VPC15" "$CC_ORCH/visual-config.sh" record docs/d.md
+case "$msg" in
+  *"with \`CC_PIPELINE_RUN_DIR\` reassigned is refused"*) ok "15vp: record 행위의 CC_PIPELINE_RUN_DIR 재대입은 거부된다" ;;
+  *) bad "15vp: record 행위의 CC_PIPELINE_RUN_DIR 재대입은 거부된다" "rc=$rc $msg" ;;
+esac
+for vpc15 in record assign; do
+  gate plan --manifest "$FX_MANIFEST" --target infra --segment SW --cutpoint 커밋 \
+    --surface 트리밖쓰기 --reach 런로컬 -- bash "$VPC15/visual-config.sh" "$vpc15" docs/d.md
+  case "$msg" in
+    *"a runner in front of \`visual-config.sh account|append|seed|record|assign\` is not graded"*)
+      ok "15vp: 실행기 뒤의 시각 헬퍼 $vpc15 은 선언으로 열리지 않는다" ;;
+    *) bad "15vp: 실행기 뒤의 시각 헬퍼 $vpc15 은 선언으로 열리지 않는다" "rc=$rc $msg" ;;
   esac
 done
 gate plan --manifest "$FX_MANIFEST" --target infra --segment SW --cutpoint 커밋 \
@@ -16837,7 +16876,7 @@ rm -f "$SC15VR" "$WT/$DOC15VR"
 
 # ---------------------------------------------------------------------------
 # 15vm. A visual publish pin the router migrates is recorded by the gate
-# --- section: 15vm | group: base | covers: grade, gate_resume_grant_ok, gate_visual_lane_auth_email, gate_visual_lane_write, gate_visual_lane_commit, gate_visual_lane_doc_commit, gate_route_env_fresh, kind_pin_resolve, kind_pin_request_json, gate_launch_stage, gate_launch_route, gate_launch_route_ask, gate_launch_route_carry, gate_verb_supervise_stage, gate_record_stage_outcome | anchors: 15vm: 시각 발행 요청 칸은 migratable 과 호스트 고정을 싣는다, 15vm: 이관 fresh GRANT 는 재부착 구속을 지난다, 15vm: 이관 GRANT 가 런 지역 이관 기록을 쓴다, 15vm: 새 레인의 계정을 읽지 못하면 기록을 쓰지 않고 레인과 원인을 낸다, 15vm: 문서 단위 기록의 레인을 받은 첫 GRANT 는 승계 줄을 쓴다, 15vm: 마지막 이관이 끝났으면 문서 단위 기록이 쓰인다, 15vm: 파견 경로 다섯이 같은 기록 함수와 요청 칸을 지난다 ---
+# --- section: 15vm | group: base | covers: grade, gate_resume_grant_ok, gate_visual_lane_auth_email, gate_visual_lane_write, gate_visual_lane_commit, gate_visual_lane_doc_commit, gate_route_env_fresh, kind_pin_resolve, kind_pin_request_json, gate_launch_stage, gate_launch_route, gate_launch_route_ask, gate_launch_route_carry, gate_verb_supervise_stage, gate_record_stage_outcome | anchors: 15vm: 시각 발행 요청 칸은 migratable 과 호스트 고정을 싣는다, 15vm: 이관 fresh GRANT 는 재부착 구속을 지난다, 15vm: 이관 GRANT 가 런 지역 이관 기록을 쓴다, 15vm: 새 레인의 계정을 읽지 못하면 기록을 쓰지 않고 레인과 원인을 낸다, 15vm: 문서 단위 기록의 레인을 받은 첫 GRANT 는 승계 줄을 쓴다, 15vm: 마지막 이관이 끝났으면 문서 단위 기록이 쓰인다, 15vm: 문서 단위 기록을 쓰면 같은 계정의 문서 계정 기록도 쓰인다, 15vm: 문서 단위 기록을 쓰지 못하면 문서 계정 기록도 쓰이지 않는다, 15vm: 문서 계정 기록을 쓰지 못하면 assign --replace 로 고치라고 경고한다, 15vm: 파견 경로 다섯이 같은 기록 함수와 요청 칸을 지난다 ---
 #
 # The router (slice A) answers a visual publish request whose pin is blocked
 # with a GRANT on another lane: `migrated: {from, to, why}` and `fresh: true`.
@@ -16917,8 +16956,10 @@ check "15vm: GRANT 가 아니거나 다른 종류면 기록 함수는 아무것�
 # The document-level record: written when the stage row closes and the last
 # migration's progress file says `**완료**: 예`, and nowhere else.
 VM15_DL="$(cd "$VM15/repo" && pwd -P)/docs/visual-lane/docs-d.md"
+VM15_AR="$(cd "$VM15/repo" && pwd -P)/docs/visual-account/docs-d.md"
 vm15 'gate_visual_lane_doc_commit' >/dev/null
 check "15vm: 마지막 이관이 끝나지 않았으면 문서 단위 기록이 쓰이지 않는다" "$([ -e "$VM15_DL" ] && printf 있음 || printf 없음)" "없음"
+check "15vm: 마지막 이관이 끝나지 않았으면 문서 계정 기록도 쓰이지 않는다" "$([ -e "$VM15_AR" ] && printf 있음 || printf 없음)" "없음"
 printf '**완료**: 예\n' > "$VM15/run/visual-migration/1.md"
 vm15 'gate_visual_lane_doc_commit' >/dev/null
 check "15vm: 앞 이관만 끝난 것으로는 문서 단위 기록이 쓰이지 않는다" "$([ -e "$VM15_DL" ] && printf 있음 || printf 없음)" "없음"
@@ -16927,6 +16968,30 @@ vm15 'gate_visual_lane_doc_commit' >/dev/null
 check "15vm: 마지막 이관이 끝났으면 문서 단위 기록이 쓰인다" \
   "$(sed -n 1p "$VM15_DL" 2>/dev/null | cut -c1-26)|$(sed -n '2,3p' "$VM15_DL" 2>/dev/null | tr '\n' ' ')|$(grep -c '^\*\*출처\*\*: R15VM · 이관 2 · ' "$VM15_DL" 2>/dev/null)" \
   "<!-- cc-visual-lane-doc v1|**레인**: c **계정**: new@example.com |1"
+check "15vm: 문서 단위 기록을 쓰면 같은 계정의 문서 계정 기록도 쓰인다" \
+  "$(sed -n 1p "$VM15_AR" 2>/dev/null | grep -c '^<!-- cc-visual-account v1;.*owner-doc=docs/d.md -->$')|$(sed -n 2p "$VM15_AR" 2>/dev/null)|$(grep -c '^\*\*출처\*\*: 이관 · R15VM · 이관 2 · ' "$VM15_AR" 2>/dev/null)" \
+  "1|**계정**: new@example.com|1"
+check "15vm: 그 계정 기록을 헬퍼가 기록 계정으로 읽는다" \
+  "$(CC_PIPELINE_RUN_DIR= XDG_CONFIG_HOME="$VM15/cfg" XDG_STATE_HOME="$VM15/state" bash "$CC_ORCH/visual-config.sh" expect "$VM15/repo/docs/d.md")" \
+  "기록 new@example.com 문서기록"
+# A failed document-level write writes no account record either: the account
+# record follows a migration the document-level record shows.
+rm -f "$VM15_DL" "$VM15_AR"
+mkdir -p "$(dirname "$VM15_DL")"; chmod 555 "$(dirname "$VM15_DL")"
+vm15 'gate_visual_lane_doc_commit' >/dev/null 2>&1
+chmod 755 "$(dirname "$VM15_DL")"
+check "15vm: 문서 단위 기록을 쓰지 못하면 문서 계정 기록도 쓰이지 않는다" \
+  "$([ -e "$VM15_DL" ] && printf 있음 || printf 없음)/$([ -e "$VM15_AR" ] && printf 있음 || printf 없음)" "없음/없음"
+# A failed account record write warns with the hand repair.
+mkdir -p "$(dirname "$VM15_AR")"; chmod 555 "$(dirname "$VM15_AR")"
+vm15_out=$(vm15 'gate_visual_lane_doc_commit 2>&1')
+chmod 755 "$(dirname "$VM15_AR")"
+case "$vm15_out" in
+  *"the document's account record could not be written"*"visual-config.sh assign "*" new@example.com --replace"*)
+    ok "15vm: 문서 계정 기록을 쓰지 못하면 assign --replace 로 고치라고 경고한다" ;;
+  *) bad "15vm: 문서 계정 기록을 쓰지 못하면 assign --replace 로 고치라고 경고한다" "$vm15_out" ;;
+esac
+check "15vm: 그때도 문서 단위 기록은 쓰인다" "$([ -e "$VM15_DL" ] && printf 있음 || printf 없음)/$([ -e "$VM15_AR" ] && printf 있음 || printf 없음)" "있음/없음"
 check "15vm: 스테이지 행 닫기가 시각 발행 종류에서 문서 단위 기록 함수를 부른다" \
   "$(sed -n '/^gate_record_stage_outcome()/,/^}/p' "$GATE" | grep -c '\[ "$kind" != "visual-publish" \] || gate_visual_lane_doc_commit' || true)" "1"
 
@@ -16960,7 +17025,7 @@ rm -rf "$VM15"
 
 # ---------------------------------------------------------------------------
 # 15vn. A routing-off visual publish launch checks the seat's Claude Design account
-# --- section: 15vn | group: base | covers: act, gate_launch_stage, gate_visual_seat_account_check, gate_visual_lane_auth_email | anchors: 15vn: 대소문자만 다른 일치 계정이면 시도를 핀하고 감독자를 띄운다, 15vn: 불일치 계정이면 경로 정지 행을 쓰고 시도를 핀하지 않는다, 15vn: 불일치 근거는 두 로컬 부분과 다시 파견을 싣고 도메인을 싣지 않는다, 15vn: 300 바이트를 넘는 설정 디렉터리에서도 근거의 머리와 로컬 부분이 남는다, 15vn: 고정 계정이 없으면 고정 계정 미설정 으로 멈추고 로그인을 읽지 않는다, 15vn: 설정 디렉터리가 없으면 물려받은 기본값을 읽는다, 15vn: 옮긴 교대가 띄우는 스테이지는 런의 좌석 기록 디렉터리를 읽는다, 15vn: 좌석을 풀지 못한 옮긴 교대는 옮긴 디렉터리를 읽어 불일치로 멈춘다, 15vn: 라우팅 런의 고정 레인 없음 정지는 로그인을 읽지 않는다, 15vn: 라우팅 꺼짐 무조건 정지 문면이 게이트에 없다 ---
+# --- section: 15vn | group: base | covers: act, gate_launch_stage, gate_visual_seat_account_check, gate_visual_lane_auth_email | anchors: 15vn: 대소문자만 다른 일치 계정이면 시도를 핀하고 감독자를 띄운다, 15vn: 불일치 계정이면 경로 정지 행을 쓰고 시도를 핀하지 않는다, 15vn: 불일치 근거는 두 로컬 부분과 다시 파견을 싣고 도메인을 싣지 않는다, 15vn: 300 바이트를 넘는 설정 디렉터리에서도 근거의 머리와 로컬 부분이 남는다, 15vn: 고정 계정이 없으면 고정 계정 미설정 으로 멈추고 로그인을 읽지 않는다, 15vn: 설정 디렉터리가 없으면 물려받은 기본값을 읽는다, 15vn: 옮긴 교대가 띄우는 스테이지는 런의 좌석 기록 디렉터리를 읽는다, 15vn: 좌석을 풀지 못한 옮긴 교대는 옮긴 디렉터리를 읽어 불일치로 멈춘다, 15vn: 문서 계정 기록과 같은 로그인이면 시도를 핀하고 감독자를 띄운다, 15vn: 문서 계정 기록과 다른 로그인이면 기록 계정과 출처를 대고 멈춘다, 15vn: 읽히지 않는 계정 기록이면 계정 기록 판독 실패 로 멈추고 로그인을 읽지 않는다, 15vn: 계정 기록 없이 발행된 문서는 문서 계정 미지정 으로 멈추고 로그인을 읽지 않는다, 15vn: 새 문서는 허용 목록의 어느 계정이든 시도를 핀한다, 15vn: 설계 문서가 없는 런은 계정 기록 판독 실패 로 멈추고 로그인을 읽지 않는다, 15vn: 다섯 꼴 밖의 판정 줄은 계정 기록 판독 실패 로 멈추고 로그인을 읽지 않는다, 15vn: 라우팅 런의 고정 레인 없음 정지는 로그인을 읽지 않는다, 15vn: 라우팅 꺼짐 무조건 정지 문면이 게이트에 없다 ---
 #
 # A run with routing off launches the visual publish stage in the config
 # directory it inherits, so the dispatch half compares that directory's login
@@ -17015,6 +17080,10 @@ vn15_go() {
     unset CC_GATE_SOURCE_ONLY
     RUN_ID=R15VN; RUN_DIR=$VN_R; LEDGER=$VN_R/ledger.md; MANIFEST=$VN_D/manifest.md
     DOC=$VN_D/repo/docs/d.md; CLI_BIN=$VN_D/bin/claude
+    [ "${VN_NODOC:-}" != 1 ] || DOC=
+    if [ "${VN_BADEXPECT:-}" = 1 ]; then
+      bash() { case "${2:-}" in expect) printf "엉뚱한 줄\n"; return 0 ;; esac; command bash "$@"; }
+    fi
     [ -z "${VN_SEATREC:-}" ] || printf "%s\n" "$VN_SEATREC" > "$RUN_DIR/config-dir"
     if [ "${VN_ROUTED:-}" = 1 ]; then
       printf "1\n" > "$RUN_DIR/routing-guard"; rm -f "$RUN_DIR/inventory.json"; printf "{}\n" > "$RUN_DIR/inventory.json"
@@ -17058,7 +17127,7 @@ check "15vn: 불일치 계정이면 경로 정지 행을 쓰고 시도를 핀하
 vn15_b=$(vn15_basis other)
 case "$vn15_b" in
   *@*|*corp.example*|*example.com*) bad "15vn: 불일치 근거는 두 로컬 부분과 다시 파견을 싣고 도메인을 싣지 않는다" "$vn15_b" ;;
-  "좌석 계정 불일치 — 로그인 계정 someone 가 고정 Claude Design 계정 pub 가 아니다."*"다시 파견하세요 (좌석 설정 디렉터리 "*)
+  "좌석 계정 불일치 — 로그인 계정 someone 가 허용 목록에 없다."*"다시 파견하세요 (좌석 설정 디렉터리 "*)
     # The row clips at 300 bytes, so a long work path may be cut there; the
     # gate's warning line keeps the whole directory.
     if grep -qF "(좌석 설정 디렉터리 $VN15/other)" "$VN15/runs/other/err"; then
@@ -17074,7 +17143,7 @@ vn15_auth "$vn15_long" '{"loggedIn":true,"email":"someone@corp.example"}'
 vn15_r=$(vn15_go long CLAUDE_CONFIG_DIR="$vn15_long")
 vn15_b=$(vn15_basis long)
 case "$vn15_r|${#vn15_long}|$vn15_b" in
-  경로정지\|*\|"좌석 계정 불일치 — 로그인 계정 someone 가 고정 Claude Design 계정 pub 가 아니다."*"다시 파견하세요 ("*)
+  경로정지\|*\|"좌석 계정 불일치 — 로그인 계정 someone 가 허용 목록에 없다."*"다시 파견하세요 ("*)
     if [ "${#vn15_long}" -gt 300 ] && [ "$(printf '%s' "$vn15_b" | wc -c | tr -d ' ')" -le 304 ] \
        && grep -qF "$vn15_long" "$VN15/runs/long/err"; then
       ok "15vn: 300 바이트를 넘는 설정 디렉터리에서도 근거의 머리와 로컬 부분이 남는다"
@@ -17115,6 +17184,52 @@ check "15vn: 좌석을 풀지 못한 옮긴 교대는 옮긴 디렉터리를 읽
   "$vn15_r|$(vn15_st shift-broken)|$(vn15_basis shift-broken | cut -d' ' -f1-8)" \
   "경로정지|1|없음|없음|없음|$VN15/moved|좌석 계정 불일치 — 로그인 계정 mover 가"
 
+# (마-2) the document's own account: its account record, a published document
+# with no record, a record that does not parse, the allow list, and the reads
+# that cannot name the document's account.
+vn15_acct="$VN15/repo/docs/visual-account/docs-d.md"
+vn15_side="$VN15/repo/docs/visual/docs-d.md"
+vn15_rec() {  # vn15_rec <address> [<head>]
+  mkdir -p "$(dirname "$vn15_acct")"
+  { printf '%s\n' "${2:-<!-- cc-visual-account v1; writer=visual-config.sh|gate; reader=visual-config.sh,gate.sh,visual,visual-publish-unattended; owner-doc=docs/d.md -->}"
+    printf '**계정**: %s\n**출처**: 지정 · 2026-11-17T00:00:00Z\n' "$1"; } > "$vn15_acct"
+}
+vn15_rec 'mover@corp.example'
+vn15_r=$(vn15_go rec-match CLAUDE_CONFIG_DIR="$VN15/moved")
+check "15vn: 문서 계정 기록과 같은 로그인이면 시도를 핀하고 감독자를 띄운다" \
+  "$vn15_r|$(vn15_st rec-match | cut -d'|' -f1-3)" "0|0|1|supervise-stage"
+vn15_r=$(vn15_go rec-other CLAUDE_CONFIG_DIR="$VN15/seat")
+vn15_b=$(vn15_basis rec-other)
+case "$vn15_r|$vn15_b" in
+  *@*|*corp.example*|*example.com*) bad "15vn: 문서 계정 기록과 다른 로그인이면 기록 계정과 출처를 대고 멈춘다" "$vn15_r|$vn15_b" ;;
+  "경로정지|좌석 계정 불일치 — 로그인 계정 PUB 가 이 문서의 기록 계정 mover 가 아니다 (문서 계정 기록). 좌석을 그 계정으로 로그인한 뒤 다시 파견하세요 ("*)
+    ok "15vn: 문서 계정 기록과 다른 로그인이면 기록 계정과 출처를 대고 멈춘다" ;;
+  *) bad "15vn: 문서 계정 기록과 다른 로그인이면 기록 계정과 출처를 대고 멈춘다" "$vn15_r|$vn15_b" ;;
+esac
+vn15_rec 'mover@corp.example' '<!-- cc-visual-account v1; writer=gate; owner-doc=docs/other.md -->'
+vn15_r=$(vn15_go rec-bad CLAUDE_CONFIG_DIR="$VN15/seat")
+check "15vn: 읽히지 않는 계정 기록이면 계정 기록 판독 실패 로 멈추고 로그인을 읽지 않는다" \
+  "$vn15_r|$(vn15_st rec-bad)|$(vn15_basis rec-bad | cut -d' ' -f1-5)" "경로정지|1|없음|없음|없음|없음|계정 기록 판독 실패 —"
+rm -f "$vn15_acct"
+mkdir -p "$(dirname "$vn15_side")"
+printf '%s\n' '# 시각 사이드카' '<!-- cc-visual v1; writer=visual; owner-doc=docs/d.md; reader=implement -->' \
+  '**상태**: 발행됨' '' '### 화면 home' '**아티팩트**: https://claude.ai/design/p/x' > "$vn15_side"
+vn15_r=$(vn15_go unassigned CLAUDE_CONFIG_DIR="$VN15/seat")
+check "15vn: 계정 기록 없이 발행된 문서는 문서 계정 미지정 으로 멈추고 로그인을 읽지 않는다" \
+  "$vn15_r|$(vn15_st unassigned)|$(vn15_basis unassigned | cut -d' ' -f1-4)" "경로정지|1|없음|없음|없음|없음|문서 계정 미지정 —"
+rm -f "$vn15_side"
+mkdir -p "$VN15/cfg-allow/cc-cmds"
+printf '%s\n' 'allow = mover@corp.example' 'account = pub@example.com' > "$VN15/cfg-allow/cc-cmds/claude-design"
+vn15_r=$(vn15_go allow XDG_CONFIG_HOME="$VN15/cfg-allow" CLAUDE_CONFIG_DIR="$VN15/moved")
+check "15vn: 새 문서는 허용 목록의 어느 계정이든 시도를 핀한다" \
+  "$vn15_r|$(vn15_st allow | cut -d'|' -f1-3)" "0|0|1|supervise-stage"
+vn15_r=$(vn15_go nodoc VN_NODOC=1 CLAUDE_CONFIG_DIR="$VN15/seat")
+check "15vn: 설계 문서가 없는 런은 계정 기록 판독 실패 로 멈추고 로그인을 읽지 않는다" \
+  "$vn15_r|$(vn15_st nodoc)|$(vn15_basis nodoc | cut -d' ' -f1-5)" "경로정지|1|없음|없음|없음|없음|계정 기록 판독 실패 —"
+vn15_r=$(vn15_go badexpect VN_BADEXPECT=1 CLAUDE_CONFIG_DIR="$VN15/seat")
+check "15vn: 다섯 꼴 밖의 판정 줄은 계정 기록 판독 실패 로 멈추고 로그인을 읽지 않는다" \
+  "$vn15_r|$(vn15_st badexpect)|$(vn15_basis badexpect | cut -d' ' -f1-5)" "경로정지|1|없음|없음|없음|없음|계정 기록 판독 실패 —"
+
 # (바) a routed run keeps its lane rule and reads no login.
 vn15_r=$(vn15_go routed VN_ROUTED=1 CLAUDE_CONFIG_DIR="$VN15/seat")
 check "15vn: 라우팅 런의 고정 레인 없음 정지는 로그인을 읽지 않는다" \
@@ -17123,8 +17238,8 @@ check "15vn: 라우팅 런의 고정 레인 없음 정지는 로그인을 읽지
 # (사) the unconditional routing-off park is gone.
 check "15vn: 라우팅 꺼짐 무조건 정지 문면이 게이트에 없다" \
   "$({ grep -c '라우팅 꺼짐 — 시각 발행 단계는 고정 레인으로만 뜬다' "$GATE" || true; } | tr -d ' ')" "0"
-unset -f vn15_auth vn15_go vn15_st vn15_basis
-unset vn15_r vn15_b vn15_long vn15_m
+unset -f vn15_auth vn15_go vn15_st vn15_basis vn15_rec
+unset vn15_r vn15_b vn15_long vn15_m vn15_acct vn15_side
 rm -rf "$VN15"
 
 # ---------------------------------------------------------------------------
@@ -25170,6 +25285,43 @@ esac
 case "$(vm_hook "$VL3/link.md")" in
   "deny gate: the document-level migration record is the gate's to write"*) ok "훅은 문서 단위 레인 기록을 가리키는 심링크 편집도 거부한다" ;;
   *) bad "훅의 심링크 문서 단위 기록 판정" "$(vm_hook "$VL3/link.md")" ;;
+esac
+# The per-document account record `docs/visual-account/` takes the same three
+# refusals, and the interpreter arm's substring test does not take a design
+# document whose name merely starts with `visual-account`.
+mkdir -p "$VL3/repo/docs/visual-account"
+CC_PIPELINE_STAGE_ID='S2#4' gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
+      -- touch "$VL3/repo/docs/visual-account/d.md"
+check "문서 계정 기록 쓰기는 Bash 에서 거절된다" "$rc/$( [ -e "$VL3/repo/docs/visual-account/d.md" ] && printf yes || printf no )" "3/no"
+case "$msg" in
+  *"a document's account record is written only by"*) ok "그 거절이 문서 계정 기록 문면이다" ;;
+  *) bad "문서 계정 기록 거절 문면" "$msg" ;;
+esac
+CC_PIPELINE_STAGE_ID='S2#4' gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
+      -- bash -c "touch $VL3/repo/docs/visual-account/d.md"
+check "인터프리터 안의 문서 계정 기록 쓰기도 거절된다" "$rc/$( [ -e "$VL3/repo/docs/visual-account/d.md" ] && printf yes || printf no )" "3/no"
+: > "$VL3/repo/docs/visual-account/d.md"
+ln -s "$VL3/repo/docs/visual-account/d.md" "$VL3/alink.md"
+CC_PIPELINE_STAGE_ID='S2#4' gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
+      -- touch "$VL3/alink.md"
+check "문서 계정 기록을 가리키는 말단 심링크 쓰기도 거절된다" "$rc" "3"
+CC_PIPELINE_STAGE_ID='S2#4' gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
+      -- bash -c "touch $VL3/repo/docs/visual-account-notes.md"
+case "$msg" in
+  *"a document's account record is written only by"*) bad "visual-account 로 시작하는 설계 문서 이름은 문서 계정 기록 거절에 걸리지 않는다" "$msg" ;;
+  *) ok "visual-account 로 시작하는 설계 문서 이름은 문서 계정 기록 거절에 걸리지 않는다" ;;
+esac
+case "$(vm_hook "$VL3/repo/docs/visual-account/d.md")" in
+  "deny gate: a document's account record is written only by"*) ok "훅은 문서 계정 기록 편집을 거부한다" ;;
+  *) bad "훅의 문서 계정 기록 판정" "$(vm_hook "$VL3/repo/docs/visual-account/d.md")" ;;
+esac
+case "$(vm_hook "$VL3/repo/docs/visual-account-notes.md")" in
+  "deny gate: a document's account record"*) bad "훅은 visual-account 로 시작하는 설계 문서 편집을 거부하지 않는다" "$(vm_hook "$VL3/repo/docs/visual-account-notes.md")" ;;
+  *) ok "훅은 visual-account 로 시작하는 설계 문서 편집을 거부하지 않는다" ;;
 esac
 rm -rf "$VL3"
 
@@ -56473,6 +56625,20 @@ pj_reset
 rx_manifest R83V ''
 t3v_plan='{ "steps": [ { "id": "S2V", "skill": "visual", "summary": "시각", "depends_on": [] }, { "id": "S2P", "skill": "visual-publish", "summary": "발행", "depends_on": ["S2V"] } ] }'
 t3v_m=$(sed "s/^{ \"steps\": \[\] }\$/$t3v_plan/" "$RX_M"); printf '%s\n' "$t3v_m" > "$RX_M"
+# The helper's `account` takes the run's design document, and the table opens
+# it only on that document, so the manifest names one. It lives in a fixture
+# repository of its own, named by its absolute-path key: the helper keeps a
+# document's records under its repository's base, and this repository's base
+# is a real checkout.
+t3v_repo="$WORK/vp83v-repo"
+rm -rf "$t3v_repo"; mkdir -p "$t3v_repo/docs"
+git -c init.defaultBranch=main init -q "$t3v_repo" 2>/dev/null
+t3v_repo=$(cd -P "$t3v_repo" && pwd)
+t3v_doc="$t3v_repo/docs/d.md"
+printf '# 83v 픽스처 설계\n' > "$t3v_doc"
+t3v_key=${t3v_doc#/}
+t3v_m=$(sed -e "s|^\*\*설계 문서\*\*: .*|**설계 문서**: $t3v_key|" -e "s|owner-doc=(없음)|owner-doc=$t3v_key|" "$RX_M")
+printf '%s\n' "$t3v_m" > "$RX_M"
 refresh_bd "$RX_M"
 mkdir -p "$WORK/vp83v-cfg/cc-cmds" "$WORK/vp83v-copy" "$WORK/vp83v-bin" "$WORK/vp83v-claude-home"
 cp "$CC_ORCH/visual-config.sh" "$WORK/vp83v-copy/visual-config.sh"
@@ -56494,7 +56660,7 @@ t3v_exec() {  # t3v_exec <스테이지 id> <argv...> — 발행 단계의 선언
   msg=$(printf '%s' "$out" | grep -vE '\[run\] ' | tr '\n' ' ' | sed 's/[[:space:]]*$//')
   printf '%s' "$out" > "$WORK/last-output.txt"
 }
-t3v_exec 'S2P#1' "$CC_ORCH/visual-config.sh" account
+t3v_exec 'S2P#1' "$CC_ORCH/visual-config.sh" account "$t3v_doc"
 if [ "$rc" != 11 ] && [ -z "$(rx_cell)" ]; then ok "83c: 8v — 발행 단계의 게이트 옆 헬퍼 account 는 기기전역 선언으로 park 하지 않는다"
 else bad "83c: 8v — 발행 단계의 게이트 옆 헬퍼 account 는 기기전역 선언으로 park 하지 않는다" "rc=$rc 칸=$(rx_cell): $msg"; fi
 t3_calls 8v 0
@@ -56505,7 +56671,7 @@ else bad "83c: 8v — 연 account 는 PATH 의 claude 스텁만 한 번 부르�
 # The row is found by its act digest, not by the argv excerpt: the excerpt is
 # clipped at 128 bytes from the end, and under a long checkout path the clip
 # takes `account` off.
-t3v_dig=$(printf '%s' "$CC_ORCH/visual-config.sh account" | shasum -a 256 | cut -d' ' -f1)
+t3v_dig=$(printf '%s' "$CC_ORCH/visual-config.sh account $t3v_doc" | shasum -a 256 | cut -d' ' -f1)
 t3v_row=$( { grep -F '`자율 승인`' "$WT/docs/pipeline-run/R83V.md" 2>/dev/null || true; } | grep -F "행위 다이제스트=$t3v_dig" | tail -1)
 case "$t3v_row" in *"| 도달=기기전역 |"*)
   ok "83c: 8v — 자율 승인 행이 그 행위와 기기전역 도달을 담는다" ;;
@@ -56516,12 +56682,30 @@ t3v_n() { { grep -c '^- `자율 승인`' "$WT/docs/pipeline-run/R83V.md" 2>/dev/
 for t3v_case in "S2#1|$CC_ORCH/visual-config.sh|발행 단계 밖의 account" \
                 "S2P#1|$WORK/vp83v-copy/visual-config.sh|게이트 옆이 아닌 사본의 account"; do
   t3v_n0=$(t3v_n)
-  t3v_exec "${t3v_case%%|*}" "$(printf '%s' "$t3v_case" | cut -d'|' -f2)" account
+  t3v_exec "${t3v_case%%|*}" "$(printf '%s' "$t3v_case" | cut -d'|' -f2)" account "$t3v_doc"
   t3v_n1=$(t3v_n)
   if [ "$rc" != 0 ] && [ "${t3v_n1:-0}" = "${t3v_n0:-0}" ]; then
     ok "83c: 8v — ${t3v_case##*|} 는 같은 선언으로 열리지 않는다"
   else bad "83c: 8v — ${t3v_case##*|} 는 같은 선언으로 열리지 않는다" "rc=$rc 행 ${t3v_n0}→${t3v_n1}: $msg"; fi
 done
+# Another document's record would let the stage choose the account it is
+# checked against, so the same declaration does not open it.
+printf '# 다른 문서\n' > "$t3v_repo/docs/other.md"
+t3v_n0=$(t3v_n)
+t3v_exec 'S2P#1' "$CC_ORCH/visual-config.sh" account "$t3v_repo/docs/other.md"
+t3v_n1=$(t3v_n)
+if [ "$rc" != 0 ] && [ "${t3v_n1:-0}" = "${t3v_n0:-0}" ]; then
+  ok "83c: 8v — 다른 문서를 든 account 는 같은 선언으로 열리지 않는다"
+else bad "83c: 8v — 다른 문서를 든 account 는 같은 선언으로 열리지 않는다" "rc=$rc 행 ${t3v_n0}→${t3v_n1}: $msg"; fi
+# `record` is opened by the same machine-global cell. The stub's login is the
+# host file's account, so the new document's record is written with it.
+t3v_rec="$t3v_repo/docs/visual-account/docs-d.md"
+t3v_exec 'S2P#1' "$CC_ORCH/visual-config.sh" record "$t3v_doc"
+if [ "$rc" = 0 ] && [ -z "$(rx_cell)" ] && grep -qxF '**계정**: vp83v@example.com' "$t3v_rec" 2>/dev/null; then
+  ok "83c: 8v — 발행 단계의 record 는 기기전역 선언으로 열려 계정 기록을 쓴다"
+else bad "83c: 8v — 발행 단계의 record 는 기기전역 선언으로 열려 계정 기록을 쓴다" "rc=$rc 칸=$(rx_cell): $msg"; fi
+rm -rf "$t3v_repo"
+unset t3v_key t3v_rec t3v_repo t3v_doc
 rm -rf "$WORK/vp83v-cfg" "$WORK/vp83v-copy" "$WORK/vp83v-bin" "$WORK/vp83v-claude-home" "$WORK/vp83v-claude-calls"
 
 # 9 — 기기전역 경로를 담은 외부 상태 변경.
