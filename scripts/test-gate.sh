@@ -24941,7 +24941,7 @@ esac
 rm -f "$PACE_N-old"
 
 # --- 31ac-2. The run directory has the same guard through Bash as through Write
-# --- section: 31ac-2 | group: cone | covers: exec | anchors: 평문 이름의 스테이지 로그 쓰기가 거절된다 ---
+# --- section: 31ac-2 | group: cone | covers: exec, doc-tidy | anchors: 평문 이름의 스테이지 로그 쓰기가 거절된다 ---
 #
 # 훅은 런 디렉터리를 지키고 게이트는 지키지 않아, 같은 쓰기가 `Write` 로는 거절되고
 # `Bash` 로는 통과했다. 정직한 `--surface 트리밖쓰기` 가 그 전부에 닿았다.
@@ -25072,6 +25072,100 @@ check "잠금에 막힌 doc-tidy.py 는 문서를 바꾸지 않는다" \
   "$(shasum -a 256 "$DT31/held.md" | cut -d' ' -f1)" "$DT31_SHA"
 check "잠금에 막힌 doc-tidy.py 는 보관 파일을 만들지 않는다" \
   "$( [ -e "$DT31/held-arch.md" ] && printf 'yes' || printf 'no' )" "no"
+# 작업 사본 동사 — 감사·재수렴이 문서를 사본으로 떠서 고치고 잠금 안에서 되돌려
+# 쓰는 두 걸음도 스킬 철자대로 게이트 경유로 돌린다. 접두는 도구가 런 id·스테이지
+# id·TMPDIR 에서 스스로 세므로, 세 값을 이 픽스처의 것으로 고정해 부른다. 사본
+# 디렉터리는 `$DT31/tmp` 아래에만 생기고, 단언은 그 아래 cc-proto 디렉터리 수로
+# 「아무것도 만들지 않았다」를 잰다.
+DT31_T="$DT31/tmp"
+mkdir -p "$DT31_T"
+DT31_PFX="$DT31_T/cc-proto-$CONE_RUN_ID-SD-1."
+printf '# 문서\n\n사본 문장\n' > "$DT31/co.md"
+DT31_CO_SHA=$(shasum -a 256 "$DT31/co.md" | cut -d' ' -f1)
+DT31_ZERO=0000000000000000000000000000000000000000000000000000000000000000
+dt31_copies() { find "$DT31_T" -mindepth 1 -maxdepth 1 -name 'cc-proto-*' | wc -l | tr -d ' '; }
+dt31_dir_of() { printf '%s' "$1" | sed -nE 's/.*(^| )dir=([^ ]+).*/\2/p'; }
+dt31_gate() {
+  CC_PIPELINE_RUN_ID="${DT31_RID:-$CONE_RUN_ID}" CC_PIPELINE_STAGE_ID='SD#1' TMPDIR="$DT31_T" \
+    gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
+      --surface 트리밖쓰기 --reach 런로컬 --snapshot-digest "$(HN)" --rationale x \
+      -- "$DT31_TOOL" "$@"
+}
+dt31_gate checkout "$DT31/co.md" --prefix "$DT31_PFX" --expect "$DT31_CO_SHA" --pre
+check "doc-tidy.py checkout 을 게이트 경유로 실행하면 통과한다" "$rc" "0"
+DT31_D=$(dt31_dir_of "$msg")
+case "$DT31_D" in
+  "$DT31_PFX"?*) ok "checkout 이 이 스테이지의 작업 사본 접두 아래 디렉터리를 낸다" ;;
+  *) bad "checkout 디렉터리" "접두 $DT31_PFX 아래가 아니다: ${DT31_D:-(빈 값)} — $msg" ;;
+esac
+check "checkout 의 doc.md 는 원본과 같다" \
+  "$(shasum -a 256 "$DT31_D/doc.md" 2>/dev/null | cut -d' ' -f1)" "$DT31_CO_SHA"
+check "checkout --pre 의 pre.md 도 원본과 같다" \
+  "$(shasum -a 256 "$DT31_D/pre.md" 2>/dev/null | cut -d' ' -f1)" "$DT31_CO_SHA"
+case "$msg" in
+  *"sha256=$DT31_CO_SHA"*) ok "checkout 이 원본 sha256 을 출력한다" ;;
+  *) bad "checkout sha256 출력" "$msg" ;;
+esac
+dt31_gate checkout "$DT31/co.md" --prefix "$DT31_PFX" --expect "$DT31_ZERO"
+check "checkout 의 기대 해시가 다르면 65 로 끝난다" "$rc" "65"
+check "해시가 다른 checkout 은 디렉터리를 만들지 않는다" "$(dt31_copies)" "1"
+dt31_gate checkout "$DT31/co.md" --prefix "$DT31_T/other." --expect "$DT31_CO_SHA"
+check "cc-proto 접두가 아닌 checkout 은 1 로 끝난다" "$rc" "1"
+DT31_RID=20990101-deadbeef dt31_gate checkout "$DT31/co.md" --prefix "$DT31_PFX" --expect "$DT31_CO_SHA"
+check "다른 런 id 의 접두로 부른 checkout 은 1 로 끝난다" "$rc" "1"
+check "거절된 checkout 은 디렉터리를 만들지 않는다" "$(dt31_copies)" "1"
+# publish — 사본을 고쳐 잠금 안에서 원본 자리에 되돌려 쓴다.
+printf '# 문서\n\n고친 사본 문장\n' > "$DT31_D/doc.md"
+DT31_NEW_SHA=$(shasum -a 256 "$DT31_D/doc.md" | cut -d' ' -f1)
+dt31_gate publish "$DT31_D/doc.md" "$DT31/co.md" --expect "$DT31_CO_SHA" --lock "$RD3/designdoc.lock"
+check "doc-tidy.py publish 를 게이트 경유로 실행하면 통과한다" "$rc" "0"
+check "publish 가 원본을 사본의 바이트로 바꾼다" \
+  "$(shasum -a 256 "$DT31/co.md" | cut -d' ' -f1)" "$DT31_NEW_SHA"
+case "$msg" in
+  *"post_sha256=$DT31_NEW_SHA"*) ok "publish 가 쓴 뒤의 sha256 을 출력한다" ;;
+  *) bad "publish post_sha256 출력" "$msg" ;;
+esac
+check "--cleanup 없는 publish 는 사본 디렉터리를 남긴다" \
+  "$( [ -d "$DT31_D" ] && printf 'yes' || printf 'no' )" "yes"
+DT31_RC=0
+python3 -c 'import fcntl, os, subprocess, sys
+fd = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT, 0o644)
+fcntl.flock(fd, fcntl.LOCK_EX)
+sys.exit(subprocess.call(sys.argv[2:], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))' \
+  "$RD3/designdoc.lock" env CC_PIPELINE_RUN_ID="$CONE_RUN_ID" CC_PIPELINE_STAGE_ID='SD#1' TMPDIR="$DT31_T" \
+  "$DT31_TOOL" publish "$DT31_D/pre.md" "$DT31/co.md" --expect "$DT31_NEW_SHA" \
+  --lock "$RD3/designdoc.lock" || DT31_RC=$?
+check "잠금을 다른 프로세스가 쥐면 publish 는 75 로 끝난다" "$DT31_RC" "75"
+check "잠금에 막힌 publish 는 원본을 바꾸지 않는다" \
+  "$(shasum -a 256 "$DT31/co.md" | cut -d' ' -f1)" "$DT31_NEW_SHA"
+dt31_gate publish "$DT31_D/pre.md" "$DT31/co.md" --expect "$DT31_CO_SHA" --lock "$RD3/designdoc.lock"
+check "그사이 원본이 바뀐 publish 는 65 로 끝난다" "$rc" "65"
+check "65 로 끝난 publish 는 원본을 바꾸지 않는다" \
+  "$(shasum -a 256 "$DT31/co.md" | cut -d' ' -f1)" "$DT31_NEW_SHA"
+dt31_gate publish "$DT31_D/pre.md" "$DT31/co.md" --expect "$DT31_NEW_SHA" --lock "$RD3/designdoc.lock" --cleanup
+check "publish --cleanup 을 게이트 경유로 실행하면 통과한다" "$rc" "0"
+check "publish --cleanup 이 사본으로 원본을 바꾼다" \
+  "$(shasum -a 256 "$DT31/co.md" | cut -d' ' -f1)" "$DT31_CO_SHA"
+check "publish --cleanup 이 사본 디렉터리를 지운다" \
+  "$( [ -e "$DT31_D" ] && printf 'yes' || printf 'no' )" "no"
+# 대조군 — 정리할 디렉터리가 이름공간 밖이면 잠금 전에 1 로 끝나고 아무것도 쓰지 않는다.
+mkdir -p "$DT31/plain"
+printf '# 문서\n\n밖의 사본\n' > "$DT31/plain/doc.md"
+dt31_gate publish "$DT31/plain/doc.md" "$DT31/co.md" --expect "$DT31_CO_SHA" --lock "$RD3/designdoc.lock" --cleanup
+check "cc-proto 이름공간 밖 사본의 publish --cleanup 은 1 로 끝난다" "$rc" "1"
+check "이름공간 밖 대조군은 원본도 사본 디렉터리도 그대로 둔다" \
+  "$(shasum -a 256 "$DT31/co.md" | cut -d' ' -f1)-$( [ -d "$DT31/plain" ] && printf 'yes' || printf 'no' )" \
+  "$DT31_CO_SHA-yes"
+# 대조군 — 글자로는 접두로 시작해도 `..` 로 이름공간을 벗어나는 철자는 거절된다.
+dt31_gate checkout "$DT31/co.md" --prefix "$DT31_PFX" --expect "$DT31_CO_SHA"
+DT31_D2=$(dt31_dir_of "$msg")
+dt31_gate publish "$DT31_D2/../../plain/doc.md" "$DT31/co.md" --expect "$DT31_CO_SHA" \
+  --lock "$RD3/designdoc.lock" --cleanup
+check "접두 아래에서 .. 로 빠져나간 publish --cleanup 은 1 로 끝난다" "$rc" "1"
+check "그 대조군은 원본과 두 디렉터리를 그대로 둔다" \
+  "$(shasum -a 256 "$DT31/co.md" | cut -d' ' -f1)-$( [ -d "$DT31/plain" ] && [ -d "$DT31_D2" ] && printf 'yes' || printf 'no' )" \
+  "$DT31_CO_SHA-yes"
+unset DT31_RID
 rm -rf "$DT31"
 # 대조군 — 아무도 만들지 않는 이름은 예외가 아니다. 예외를 넓게 적어 두면 가드가
 # 지키는 범위가 조용히 줄고, 그 넓힘은 실제 발행 경로를 하나도 통과시키지 못하면서
