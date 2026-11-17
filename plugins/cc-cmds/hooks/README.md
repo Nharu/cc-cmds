@@ -75,6 +75,38 @@ approval question (`승인 <id> — …`), and for a form also when a question i
 single choice or is conditional. The banner itself is unchanged by the
 attachment: the terminal-notifier argv is the same with or without a spool.
 
+**Seat 1 rewrites a run approval's banner the first time the seat asks it.** An
+autopilot seat asks a pending gate approval in its own `AskUserQuestion`, and
+the run already raised an `answer` banner for that approval. Without a link the
+person would see two entries for one decision. So seat 1 links a call to an
+approval when all of these hold: the call has exactly one question; that
+question begins with the canonical prefix `승인 <id> — `, or else its `header`
+is an approval id (`<name>-<8 hex>`, at most 12 code points — the seat puts the
+id there for a visual approval's halt question with `halt-question.sh render
+--approval <id>`); and exactly one run in the session index
+(`${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/session/<session id>`) has a
+directory whose `watch.announced-approvals` holds that id as a line. The link
+is `cc_notify_approval_link` in `orchestrator/notify-run.sh`, shared with the
+return hook below. When it holds, the autopilot switch is on as well, and the id
+is not yet in that run's `notify.asked-approvals`, seat 1 appends the id there
+and raises `approval-ask` instead of `session-ask`, with `RUN_DIR` and `RUN_ID`
+naming the linked run for that one call:
+
+| Field | `approval-ask` |
+|---|---|
+| Group | the approval's own `cc-cmds-autopilot-<run id>-<id>`, so it replaces the approval's banner |
+| Sound | none — the line carries no `-sound` |
+| Click | this session's pane, like `session-ask` |
+| Title | `cc-cmds · <run name> · 답하세요`, or `cc-cmds · 답하세요` with no run name |
+| Body | the `session-ask` body above |
+| Switch | the session switch, and seat 1 checks the autopilot switch before choosing it |
+| Attention | `auq`, in the approval's slot, with the attachment above |
+
+A second ask of the same approval, and every call with no link, raises
+`session-ask` as before. The run name is the run's `notify.label`, which the gate
+writes; the run's own `answer` banner carries it too, as `cc-cmds · <run name> ·
+답할 것이 생겼습니다`.
+
 Seat 1 is structurally irreplaceable for `AskUserQuestion`: the hook fires at the
 moment the dialog opens and it is the only event that carries the question text.
 Two alternatives were measured and rejected — a permission notice arrives 6.03 s
@@ -377,6 +409,16 @@ The session id is the payload's `.session_id`, the same value the firing side
 puts in the group. The session slot is cleared first so that a question raised
 right after an answer has the shortest possible window to be erased by a late
 clear.
+
+**An answer to a linked approval also closes the approval's slot.** On a
+`PostToolUse` answer the hook computes seat 1's approval link
+(`cc_notify_approval_link`) from the same payload. When it holds and the id is
+in that run's `notify.asked-approvals` — seat 1 rewrote that approval's banner —
+the same detached job runs `cc_notify_clear approval-ask <id>` with `RUN_DIR`
+and `RUN_ID` naming that run: a handled marker with cause `return` on the
+approval's slot, and `terminal-notifier -remove` of its group. The gate still
+clears the slot when the approval closes; the two markers are idempotent. A
+`UserPromptSubmit` return has no question and closes no approval slot.
 
 **What counts as a return.** Two events close: answering an `AskUserQuestion`
 (`PostToolUse`, always a return) and submitting a message (`UserPromptSubmit`,
