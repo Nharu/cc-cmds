@@ -186,9 +186,32 @@
   }
 
   function countKinds(items) {
-    var c = { "승인": 0, "중단 기록": 0, "사용량 한도": 0 };
-    items.forEach(function (w) { if (c[w.kind] != null) c[w.kind]++; });
+    var c = { "승인": 0, "중단 기록": 0 };
+    items.forEach(function (w) { c[w.kind] = (c[w.kind] || 0) + 1; });
     return c;
+  }
+
+  // 파견 대기 갈래의 요약 순서. 이 목록에 없는 종류는 뒤에 이름 순으로 잇는다
+  var WAIT_GROUPS = ["계정 한도", "계정 여유 부족", "호스트 포화", "차례·임대 대기", "원인 미상"];
+
+  function waitKindsLine(kinds) {
+    var rest = Object.keys(kinds).filter(function (k) {
+      return k !== "승인" && k !== "중단 기록" && WAIT_GROUPS.indexOf(k) < 0;
+    }).sort();
+    var parts = ["승인 " + kinds["승인"], "중단 기록 " + kinds["중단 기록"]];
+    WAIT_GROUPS.concat(rest).forEach(function (k) { if (kinds[k]) parts.push(k + " " + kinds[k]); });
+    return parts.join(" · ");
+  }
+
+  // 파견 대기 하나의 끝 정보: 계정 한도는 리셋 시각, 호스트 포화는 부하와 해제 문턱, 나머지는 까지 시각이 있을 때만
+  function waitEnd(w) {
+    if (w.kind === "계정 한도") return w.until != null ? "리셋 " + fmtMDHM(w.until) : "리셋 시각 미상";
+    if (w.kind === "호스트 포화") {
+      if (!w.host) return "부하 미상";
+      return "부하 " + w.host.ratio_permille + "‰ · " +
+        (w.host.leave_permille != null ? "해제 " + w.host.leave_permille + "‰" : "해제 문턱 미상");
+    }
+    return w.until != null ? "까지 " + fmtMDHM(w.until) : "";
   }
 
   function sumBy(arr, f) { var t = 0; arr.forEach(function (x) { t += f(x) || 0; }); return t; }
@@ -585,11 +608,11 @@
       }
       return el("div", { cls: "cell" }, line, span("t2 num", sub));
     }
-    var limits = (r.waiting || []).filter(function (w) { return w.kind === "사용량 한도"; }).sort(bySince);
-    if (limits.length) {
-      var l = limits[0];
+    var waits = (r.waiting || []).filter(function (w) { return !isAsk(w); }).sort(bySince);
+    if (waits.length) {
+      var l = waits[0], end = waitEnd(l);
       return el("div", { cls: "cell" },
-        el("div", { cls: "wline" }, tag("neutral", "사용량 한도", "i-hourglass"), span("wt ell", l.text || "사용량 한도 대기", l.ref || null)),
+        el("div", { cls: "wline" }, tag("neutral", l.kind, "i-hourglass"), span("wt ell", (l.text || l.kind) + (end ? " · " + end : ""), l.ref || null)),
         span("t2 num", (l.since != null ? dur(now - l.since) + "째" : "시작 시각 미상") + " · 사람 할 일 없음"));
     }
     return el("div", { cls: "cell none", text: "—" });
@@ -842,7 +865,7 @@
     var waitStat = el("div", { cls: "stat" + (askN ? " need" : "") },
       el("span", { cls: "l" }, ico("i-hand", "ico-sm"), "기다리는 것"),
       el("span", { cls: "v num" }, String(waiting.length) + " ",
-        waiting.length ? el("small", { text: "승인 " + kinds["승인"] + " · 중단 기록 " + kinds["중단 기록"] + (kinds["사용량 한도"] ? " · 사용량 한도 " + kinds["사용량 한도"] : "") }) : null));
+        waiting.length ? el("small", { text: waitKindsLine(kinds) }) : null));
 
     var stats = el("div", { cls: "stats" },
       el("div", { cls: "stat" }, el("span", { cls: "l" }, ico("i-clock", "ico-sm"), ended ? "걸린 시간" : "경과"),
@@ -854,12 +877,28 @@
   }
 
   function waitItem(w, now) {
-    var isHalt = w.kind === "중단 기록", isLimit = w.kind === "사용량 한도";
-    var chip = isLimit ? tag("neutral", w.kind, "i-hourglass") : tag("need", w.kind, isHalt ? "i-flag" : "i-stamp");
+    var isHalt = w.kind === "중단 기록", isWait = !isAsk(w);
+    var chip = isWait ? tag("neutral", w.kind, "i-hourglass") : tag("need", w.kind, isHalt ? "i-flag" : "i-stamp");
     var body = el("div", { cls: "body" }, el("p", { cls: "wtext", text: w.text || "(문면 없음)" }));
     var kv = el("dl", { cls: "kv" });
-    kv.appendChild(el("dt", { text: isHalt ? "기록 경로" : isLimit ? "대기 파일" : "승인 id" }));
+    kv.appendChild(el("dt", { text: isHalt ? "기록 경로" : isWait ? "대기 파일" : "승인 id" }));
     kv.appendChild(el("dd", null, copyText(w.ref || "-", !isHalt)));
+    if (isWait) {
+      kv.appendChild(el("dt", { text: "근거" }));
+      kv.appendChild(el("dd", { text: w.reason != null ? w.reason : "없음" }));
+      if (w.until != null) {
+        kv.appendChild(el("dt", { text: w.kind === "계정 한도" ? "리셋 시각" : "까지" }));
+        kv.appendChild(el("dd", { cls: "num", text: fmtMDHM(w.until) }));
+      }
+      if (w.host) {
+        kv.appendChild(el("dt", { text: "호스트 부하" }));
+        kv.appendChild(el("dd", { cls: "num", text: w.host.ratio_permille + "‰, 코어 " + w.host.ncpu }));
+        kv.appendChild(el("dt", { text: "해제 문턱" }));
+        kv.appendChild(el("dd", { cls: "num", text: w.host.leave_permille != null ? w.host.leave_permille + "‰" : "미상" }));
+        kv.appendChild(el("dt", { text: "표본 시각" }));
+        kv.appendChild(el("dd", { cls: "num", text: w.host.sampled_at != null ? fmtMDHM(w.host.sampled_at) : "미상" }));
+      }
+    }
     if (isHalt) {
       var where = [];
       if (w.step) where.push(w.step);

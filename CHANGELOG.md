@@ -5,7 +5,7 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [3.48.3] - 2026-11-18
+## [3.48.4] - 2026-11-18
 
 `AskUserQuestion` 을 한 번 띄우면 원격 이벤트가 질문 이벤트 하나만 남게 한다. 지금까지는 질문 좌석 훅이 창이 열리는 순간 `auq` 이벤트를 남긴 뒤, 같은 질문의 권한 창에 대해 권한 알림 훅이 도구 이름을 보지 않고 `permission` 이벤트를 하나 더 내어 릴레이가 같은 질문을 두 번 전달했다.
 
@@ -14,6 +14,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **권한 알림 훅의 `AskUserQuestion` 판정** — `hooks/session-permission-notify.sh` 의 `request` 역할이 `seen` 시각을 기록하고 `agent_id` 를 확인한 다음, 도구가 `AskUserQuestion` 이면 이벤트도 대기 표시도 남기지 않고 멈춘다. `seen` 은 그대로 남으므로 창 뒤 약 6초에 오는 `Notification(permission_prompt)` 폴백 신호도 10초 창 안에서 지금처럼 억제된다. 질문 폼 도구(`mcp__cc-cmds__question_form`)와 그 밖의 도구의 권한 요청은 지금처럼 `permission` 이벤트를 남긴다.
 - **훅 문서** — `hooks/README.md` 의 권한 좌석 절에서 `request` 문단과 판정 순서에 이 판정을 적었다.
 - **회귀 시험** — `scripts/test-session-permission-notify.sh` 에 새 절을 더해, `AskUserQuestion` 권한 요청과 뒤따르는 폴백 신호가 사건을 남기지 않음, 질문 좌석 훅까지 함께 돌렸을 때 스풀의 사건이 `auq` 하나뿐임, `Bash`·질문 폼 도구의 권한 요청은 여전히 사건을 남김을 단언한다.
+
+## [3.48.3] - 2026-11-18
+
+대시보드가 파견을 미룬 모든 대기를 "사용량 한도"로 단정해 보이던 결함을 고쳤다. 이제 대기 표지의 계보로 원장에서 같은 계보의 마지막 `stage-wait` 행을 찾아, 그 행의 근거를 계정 한도·계정 여유 부족·호스트 포화·차례·임대 대기·원인 미상의 다섯 갈래로 묶어 보이고, 끝 정보(리셋 시각, 호스트 부하와 해제 문턱)를 함께 보인다. 대기를 정하는 쪽(라우터·드라이버·게이트·감시자·대기 표지)은 바꾸지 않았다.
+
+### Fixed
+
+- **원인 조회** — `dashboard_read.py` 의 증분 원장 판독기가 계보마다 마지막 `stage-wait` 행을 기억한다(`last_wait`). 보관 계열(`KEEP_SERIES`)은 그대로라 다른 판정이 읽는 행은 늘지 않는다. 드라이버 쪽처럼 `B:` 로 시작하지 않는 계보도 같은 길로 잡힌다.
+- **대기 항목 계약** — 대시보드 응답의 파견 대기 항목 `kind` 는 갈래 이름이고, `text` 는 갈래별 고정 문구다. 새 키 `reason`(행의 근거 원값), `until`(행의 `까지` epoch), `host`(부하 천분율·코어 수·표본 시각·`fleet.sh` 에서 읽은 해제 문턱)를 싣는다. 표지에 계보가 없거나, 같은 계보의 행이 없거나, 근거 칸이 없거나, 근거 값이 닫힌 어휘 13개 밖이면 원인 미상이다. 응답에서 "사용량 한도" 종류는 없어졌다.
+- **화면** — 런 목록의 대기 칸은 태그를 갈래 이름으로, 본문 줄에 끝 정보("리셋 <시각>", "부하 <n>‰ · 해제 <n>‰", 값이 없으면 "미상")를 잇는다. 런 상세 머리의 요약은 "승인 · 중단 기록" 뒤에 0 이 아닌 갈래를 고정 순서로 센다. 상세 대기 항목은 근거 원값, 리셋 시각 또는 까지, 호스트 부하·해제 문턱·표본 시각을 보인다.
+- **시험** — `scripts/test-dashboard.sh` T31 이 호스트 포화·계정 한도·원인 미상(행 없음, 어휘 밖, 계보 없음, 근거 칸 없음)·같은 계보의 마지막 행 우선·`B:` 밖 계보를 단언하고, 갈래 매핑의 키 집합을 `run.sh` 의 `wait_reason` 어휘와 대조한다. `scripts/test-dashboard-screen.sh` S6 이 목록 칸 태그·끝 정보와 상세 요약 줄을, S5 가 `app.js` 에 "사용량 한도"가 남지 않음을 단언한다.
 
 ## [3.48.2] - 2026-11-17
 
