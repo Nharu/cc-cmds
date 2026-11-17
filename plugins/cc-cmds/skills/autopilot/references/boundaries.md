@@ -261,9 +261,11 @@ Before writing it, check it yourself against these, and fix what fails:
 - every exploration entry carries `근거:`, `→` and `@`;
 - `가설(추측)` appears exactly when `재현 차단요인` does;
 - all five delivery-shape keys are present;
-- when 5c ran, `적용 주체` equals 5c's answer.
+- when 5c ran, `적용 주체` equals 5c's answer;
+- when 5j ran, the first line of `## 검증 선결` is the `**검증 규약**` line, carrying the hash of the kickoff trace's `규약 읽기` line;
+- an item that carries a `시험:` line carries its `동의:` and `관측:` lines too.
 
-Then take its whole-file `sha256` (`shasum -a 256`) and append `단계=인터뷰 동결 | 경로=<기록 경로> | sha256=<기록 해시>` to the kickoff trace; Step 6 writes the path and that value into the manifest. The record does not carry the roster — it refers to the manifest's `설계 로스터` rows. **Do not edit it after the hash is taken.** Nothing re-hashes the file at runtime, so an edit after that point is seen by no gate, and the manifest goes on vouching for bytes that are gone.
+Then run `bash <plugin root>/orchestrator/interview-check.sh <기록 경로>` on it. On exit 0, its standard output is one line `sha256=<hex>`, the record's whole-file hash: append `단계=인터뷰 동결 | 경로=<기록 경로> | sha256=<기록 해시>` with that value to the kickoff trace; Step 6 writes the path and that value into the manifest. On any other exit, fix the reasons its standard error gives and run it again; when the reason is that the `**검증 규약**` line is missing, read `verification.md`, append the `규약 읽기` line to the trace, then fix the record. **Do not freeze before it passes.** A fix after a failed check edits the same file, which has not had its hash taken yet: the write stays creation-only, and the rule below about edits after the hash holds unchanged. The record does not carry the roster — it refers to the manifest's `설계 로스터` rows. **Do not edit it after the hash is taken.** Nothing re-hashes the file at runtime, so an edit after that point is seen by no gate, and the manifest goes on vouching for bytes that are gone.
 
 **A re-kickoff whose draft keeps the interview row (the remaining graph holds a `design` or a `visual` step) writes this record once too, but 5j does not run for it**: the record is the source run's record copied byte for byte by Step 1.0 item 7, creation-only under the new run id, and its hash is the source row's. Its title and header lines keep naming the run that held the interview.
 
