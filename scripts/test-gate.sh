@@ -6652,12 +6652,14 @@ BSXSTUBEOF
     printf '%s' "$p"
   }
   bsx_launch() {
-    # bsx_launch <run id> <stub> <kind> <prompt> <step id> [wait seconds] — dispatch
-    # one run-scope stage and wait on it. The act's code is left in BSX_ACT_RC.
-    # With BSX_RESUME set, the dispatch re-attaches that session.
+    # bsx_launch <run id> <stub> <kind> <prompt> <step id> [wait seconds | 끝까지]
+    # — dispatch one run-scope stage and wait on it. The act's code is left in
+    # BSX_ACT_RC, the wait's in BSX_WAIT_RC. With BSX_RESUME set, the dispatch
+    # re-attaches that session.
     # The wait is an upper bound, not a pause: a stub stage ends in a second, so
-    # 60 is ample — except for a stage whose body itself makes many gate calls,
-    # which passes its own bound rather than being cut off before its last line.
+    # 60 is ample. `끝까지` is for a stage whose body itself makes many gate calls:
+    # it repeats the 60-second wait for as long as the wait ends on its timeout
+    # (13), so the stage's own last line, not the host's speed, ends it.
     local m="$WORK/bsx-$1.md" t="${6:-60}" p
     p=$(bsx_p "$1" "$4")
     ( cd "$WT" && XDG_STATE_HOME="$BSX_STATE" CC_CLAUDE_BIN="$2" \
@@ -6665,6 +6667,14 @@ BSXSTUBEOF
       --surface 워크트리쓰기 --snapshot-digest "$(bsx_H "$m")" --rationale x \
       ${BSX_RESUME:+--resume} ${BSX_RESUME:+"$BSX_RESUME"} \
       -- "$3" -p "$p" ) >/dev/null 2>&1; BSX_ACT_RC=$?
+    if [ "$t" = "끝까지" ]; then
+      BSX_WAIT_RC=13
+      while [ "$BSX_WAIT_RC" = "13" ]; do
+        ( cd "$WT" && XDG_STATE_HOME="$BSX_STATE" CC_CLAUDE_BIN="$2" \
+          bash "$GATE" wait --manifest "$m" --segment "$5" --interval 1 --timeout 60 ) >/dev/null 2>&1; BSX_WAIT_RC=$?
+      done
+      return 0
+    fi
     ( cd "$WT" && XDG_STATE_HOME="$BSX_STATE" CC_CLAUDE_BIN="$2" \
       bash "$GATE" wait --manifest "$m" --segment "$5" --interval 1 --timeout "$t" ) >/dev/null 2>&1; BSX_WAIT_RC=$?
   }
@@ -55839,13 +55849,13 @@ printf 'execrecord %s\n' "\$?" >> "$BSX_PLANLOG"
 BSXPROBEEOF
 bsx_stub "$WORK/bin/bsx-probe" "$BSX_LIT_SPLIT" ". \"$WORK/bin/bsx-probe-body.sh\""
 # Twenty probes, each a snapshot and a plan (the last an exec), so some forty
-# gate starts inside one stage: on a loaded machine that ran past the default
-# 60-second wait and cut the list off at its tail. 600 seconds was cut off the
-# same way on a host running several pipeline runs at once, where one gate call
-# took 20 to 30 seconds; the bound is an upper limit only, so an unloaded run
-# still ends as soon as the probe does.
-bsx_launch RB7 "$WORK/bin/bsx-probe" split "$BSX_P_SPLIT" S1 1800
-check "78:탐침 스테이지가 대기 상한 안에 끝났다" "$BSX_WAIT_RC" "0"
+# gate starts inside one stage. How long that takes is the host's business, not
+# this section's: the stage is waited on to its end, and what is judged is that
+# it ended cleanly and reached its last line, the exec that writes `execrecord`.
+bsx_launch RB7 "$WORK/bin/bsx-probe" split "$BSX_P_SPLIT" S1 끝까지
+check "78:탐침 스테이지가 끝까지 돌았다" "$BSX_WAIT_RC" "0"
+check "78:탐침 스테이지가 마지막 줄의 exec 까지 닿았다" \
+  "$(if grep -q '^execrecord ' "$BSX_PLANLOG" 2>/dev/null; then echo 있음; else echo 없음; fi)" "있음"
 bsx_plan_rc() { sed -n "s/^$1 //p" "$BSX_PLANLOG" 2>/dev/null | tail -1; }
 [ "$(bsx_plan_rc gh)" = "0" ] || sed -n '1,12p' "$BSX_PLANLOG.gh" >&2
 check "78:분할 좌석의 gh issue 발행은 협업으로 통과한다" "$(bsx_plan_rc gh)" "0"
