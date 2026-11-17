@@ -56629,9 +56629,11 @@ t3v_m=$(sed "s/^{ \"steps\": \[\] }\$/$t3v_plan/" "$RX_M"); printf '%s\n' "$t3v_
 # it only on that document, so the manifest names one. It lives in a fixture
 # repository of its own, named by its absolute-path key: the helper keeps a
 # document's records under its repository's base, and this repository's base
-# is a real checkout.
-t3v_repo="$WORK/vp83v-repo"
-rm -rf "$t3v_repo"; mkdir -p "$t3v_repo/docs"
+# is a real checkout. The repository sits under /tmp rather than $WORK: the key
+# is written into the run's ledger row, which has a 1024-byte cap, and under a
+# long $TMPDIR (a clean-clone pool) the $WORK path pushes that row over it.
+t3v_repo=$(mktemp -d /tmp/vp83v.XXXXXX)
+mkdir -p "$t3v_repo/docs"
 git -c init.defaultBranch=main init -q "$t3v_repo" 2>/dev/null
 t3v_repo=$(cd -P "$t3v_repo" && pwd)
 t3v_doc="$t3v_repo/docs/d.md"
