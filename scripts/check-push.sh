@@ -86,17 +86,44 @@
 #                           seconds waited
 #   CC_TEST_SLOTS_DIR       the slot store (default: cc-cmds/test-slots under
 #                           ${XDG_STATE_HOME:-$HOME/.local/state})
+#   CHECK_PUSH_BUDGET_SECS  the time budget in seconds, counted from the start:
+#                           past it no serial step and no job starts, the
+#                           running jobs are stopped and the run ends 미완
+#                           (5). 0 turns it off; unset or empty, an
+#                           unattended run takes 6600 and any other run is
+#                           off. With CHECK_PUSH_JOBS 1 it reaches only the
+#                           serial bundle
+#   CHECK_PUSH_FAIL_FAST    1 stops the job pool at its first failure, 0 runs
+#                           every job to its end. Unset or empty, an
+#                           unattended run is 1 and any other run 0; items
+#                           is always 0
+#   CC_CHECK_PUSH_STOP_GRACE  seconds a stopped job gets between TERM and
+#                           KILL (default 60)
 #   CC_CHECK_PUSH_MAKE      the make for lint, readme and check-cheap (default
 #                           make); the self-test swaps in doubles through it,
 #                           as it does through CC_TEST_TREE_GATE,
 #                           CC_TEST_TREE_SHARD, CC_TEST_TREE_MAKE and
 #                           CC_TEST_TREE_GH
 #
+# A RUN CUT BY ITS BUDGET IS TAKEN UP AGAIN, NOT STARTED OVER. An unattended
+# merged run with its base from FETCH_HEAD keeps a record per head commit
+# under the common git directory (cc-cmds-check-push-resume/<commit>): the
+# base it tested, when the first attempt started, the attempt count and how
+# often the budget cut each goal. The next attempt on the same head within six
+# hours keeps that base when it is an ancestor of the base just fetched, so
+# the passes the cut run recorded are reused, and stamps `base출처=이어감`
+# with the fetched base in `fetch베이스=`. A goal the budget cut twice is left
+# to the pull request's rest-tests when the tested tree's lint.yml runs them
+# for a path this head changed (`CI몫=` in the stamp). A stamp removes the
+# record; a failure leaves it.
+#
 # Exit codes: 0 passed / stamped, 1 a check failed or no stamp, 2 usage, a
 # base that is not a commit, or an unattended run whose head changed
 # plugins/cc-cmds/orchestrator/gate.sh against its merge-base with the base
 # while CHECK_PUSH_SECTIONS is empty (refused before the clone, so the tree is
-# left without a stamp), 4 no fresh base in FETCH_HEAD. items ends the same
+# left without a stamp), 4 no fresh base in FETCH_HEAD, 5 unfinished: the
+# budget ran out before every item ended, and the `판정 — 미완` line names
+# what ended and what is left (a failure wins over it). items ends the same
 # way, except that it never refuses for gate.sh and ends 2 when
 # CHECK_PUSH_REUSE is 0, or when CHECK_PUSH_GOALS or CHECK_PUSH_SECTIONS is
 # given with CHECK_PUSH_JOBS 1.
@@ -117,6 +144,9 @@ CP_READERS="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/rest-readers.sh"
 # CHECK_PUSH_* variable.
 CP_JOBS="${CHECK_PUSH_JOBS:-4}"
 CP_REUSE="${CHECK_PUSH_REUSE:-1}"
+CP_BUDGET="${CHECK_PUSH_BUDGET_SECS:-}"
+CP_FAIL_FAST="${CHECK_PUSH_FAIL_FAST:-}"
+CP_RESUME_DIR="cc-cmds-check-push-resume"
 
 check_push_usage() {
   printf 'check-push: 사용법 — run / items / verify / --self-test 중 하나\n' >&2
@@ -276,10 +306,118 @@ check_push_reused_sections() {
   fi
 }
 
+# Writes the resume record $1 — head $2, base $3, first start $4, attempt $5,
+# cut goals $6 — through a temporary file, and drops the records of the same
+# directory older than 24 hours.
+check_push_resume_write() {
+  local f="$1" d tmp
+  d="${f%/*}"
+  mkdir -p "$d" || return 1
+  find "$d" -type f -mmin +1440 -exec rm -f {} + 2>/dev/null
+  tmp=$(mktemp "$d/.resume.XXXXXX") || return 1
+  if ! printf 'v=1\ncommit=%s\nbase=%s\n처음=%s\n시도=%s\n잘린목표=%s\n' "$2" "$3" "$4" "$5" "$6" > "$tmp" \
+    || ! mv -f "$tmp" "$f"; then
+    rm -f "$tmp"
+    return 1
+  fi
+  return 0
+}
+
+# How often the cut-goal list $1 (`<goal>:<count>,…`) counts goal $2; 0 when
+# it does not name it.
+check_push_cut_count() {
+  local rest="$1," it
+  while [ -n "$rest" ]; do
+    it="${rest%%,*}"
+    rest="${rest#*,}"
+    case "$it" in "$2":*) printf '%s' "${it##*:}"; return 0 ;; esac
+  done
+  printf '0'
+}
+
+# The cut-goal list $1 with the count of each goal of the comma list $2 one up.
+check_push_cut_bump() {
+  local list="$1" rest="$2," g n out it r
+  while [ -n "$rest" ]; do
+    g="${rest%%,*}"
+    rest="${rest#*,}"
+    [ -n "$g" ] || continue
+    n=$(check_push_cut_count "$list" "$g")
+    case "$n" in ''|*[!0-9]*) n=0 ;; esac
+    out=""
+    r="$list,"
+    while [ -n "$r" ]; do
+      it="${r%%,*}"
+      r="${r#*,}"
+      [ -n "$it" ] || continue
+      case "$it" in "$g":*) continue ;; esac
+      out="${out:+$out,}$it"
+    done
+    list="${out:+$out,}$g:$((n + 1))"
+  done
+  printf '%s' "$list"
+}
+
+# 0 when the pull request's CI runs the REST goals for this head: the tested
+# tree's .github/workflows/lint.yml has jobs.rest-tests, and one of its
+# on.pull_request.paths patterns matches a path head $2 changed since its
+# merge-base with base $1. Only `<path>/**` (a prefix) and an exact path are
+# read; any other pattern, and a yq that fails, match nothing. Otherwise 1
+# with the reason in CP_CI_WHY.
+check_push_ci_covers() {
+  local base="$1" commit="$2" wf="$TT_WORK/.github/workflows/lint.yml" has pats mb changed p pre f
+  CP_CI_WHY=""
+  if [ ! -f "$wf" ]; then
+    CP_CI_WHY="시험 트리에 .github/workflows/lint.yml 이 없다"
+    return 1
+  fi
+  has=$(yq '.jobs | has("rest-tests")' "$wf" 2>/dev/null) || has=""
+  if [ "$has" != true ]; then
+    CP_CI_WHY="시험 트리의 lint.yml 에 jobs.rest-tests 가 없다(또는 yq 로 읽지 못했다)"
+    return 1
+  fi
+  if ! pats=$(yq '.on.pull_request.paths[]' "$wf" 2>/dev/null); then
+    CP_CI_WHY="시험 트리의 lint.yml 의 on.pull_request.paths 를 yq 로 읽지 못했다"
+    return 1
+  fi
+  if ! mb=$(git merge-base "$base" "$commit" 2>/dev/null) || ! changed=$(git diff --name-only "$mb" "$commit" 2>/dev/null); then
+    CP_CI_WHY="head 가 merge-base 이후 바꾼 경로를 읽지 못했다"
+    return 1
+  fi
+  while IFS= read -r p; do
+    case "$p" in
+      ?*/\*\*)
+        pre="${p%\*\*}"
+        case "$pre" in *[\*\?\[]*) continue ;; esac
+        while IFS= read -r f; do
+          case "$f" in "$pre"?*) return 0 ;; esac
+        done <<EOF
+$changed
+EOF
+        ;;
+      ''|*[\*\?\[]*) ;;
+      *)
+        while IFS= read -r f; do
+          [ "$f" != "$p" ] || return 0
+        done <<EOF
+$changed
+EOF
+        ;;
+    esac
+  done <<EOF
+$pats
+EOF
+  CP_CI_WHY="시험 트리의 lint.yml 의 pull_request 경로가 head 가 바꾼 경로에 맞지 않는다"
+  return 1
+}
+
 # run (the default) checks and stamps; items runs check-cheap, the sections and
 # the goals only so their passes are recorded, and touches no stamp.
 check_push_run() {
   local verb="${1:-run}" make_bin commit tree gdir stamp_dir stamp mode src base="" fetch="없음" secs goals added="없음" doubles rc stage="" step old got how key steps it rec
+  local start budget ff deadline="" sdone="" cutstep="" left="" prc=0 unfinished=0 now
+  local rs="" rs_first="" tries="" cutl="" fbase="없음" ob of ot why ci="" g n keep rest
+  start=$(date +%s)
   make_bin="${CC_CHECK_PUSH_MAKE:-make}"
   secs="${CHECK_PUSH_SECTIONS:-}"
   goals="${CHECK_PUSH_GOALS:-}"
@@ -289,6 +427,27 @@ check_push_run() {
       return 2
       ;;
   esac
+  case "$CP_BUDGET" in
+    '') if [ -n "${CC_PIPELINE_RUN_ID:-}" ]; then budget=6600; else budget=0; fi ;;
+    0) budget=0 ;;
+    *[!0-9]*|0*)
+      printf 'check-push: CHECK_PUSH_BUDGET_SECS=%s 는 0 이나 양의 정수가 아니다 — 비우면 무인 실행은 6600초, 그 밖은 끔, 0 은 끔\n' "$(printf %q "$CP_BUDGET")" >&2
+      return 2
+      ;;
+    *) budget="$CP_BUDGET" ;;
+  esac
+  case "$CP_FAIL_FAST" in
+    '') if [ -n "${CC_PIPELINE_RUN_ID:-}" ] && [ "$verb" = run ]; then ff=1; else ff=0; fi ;;
+    0|1) ff="$CP_FAIL_FAST" ;;
+    *)
+      printf 'check-push: CHECK_PUSH_FAIL_FAST=%s 는 0 도 1 도 아니다 — 비우면 무인 run 은 1, 그 밖은 0\n' "$(printf %q "$CP_FAIL_FAST")" >&2
+      return 2
+      ;;
+  esac
+  # items runs to record passes, so it runs every job to its end.
+  [ "$verb" != items ] || ff=0
+  [ "${#budget}" -le 9 ] || budget=999999999
+  [ "$budget" = 0 ] || deadline=$((start + budget))
   steps="lint readme check-cheap"
   if [ "$verb" = items ]; then
     if [ "$CP_REUSE" = 0 ]; then
@@ -359,6 +518,51 @@ check_push_run() {
       [ "$rc" = 0 ] || return "$rc"
       base="$TT_BASE"
       fetch="$TT_FETCH"
+      fbase="$base"
+    fi
+  fi
+
+  # THE ATTEMPT RECORD. Only an unattended merged run with its base from
+  # FETCH_HEAD keeps one. A record of this head from the last six hours whose
+  # base is here and is an ancestor of the base just fetched (or that base)
+  # pins the tested base to it, so the passes an earlier attempt recorded
+  # still hold; anything else starts the record over at attempt 1.
+  if [ "$src" = "FETCH_HEAD" ]; then
+    rs="$gdir/$CP_RESUME_DIR/$commit"
+    now=$(date +%s)
+    rs_first="$now"
+    tries=1
+    if [ -f "$rs" ]; then
+      ob=$(check_push_field "$rs" base)
+      of=$(check_push_field "$rs" 처음)
+      ot=$(check_push_field "$rs" 시도)
+      why=""
+      if [ "$(check_push_field "$rs" v)" != 1 ] || [ "$(check_push_field "$rs" commit)" != "$commit" ]; then
+        why="기록의 형식이나 커밋이 맞지 않는다"
+      else
+        case "$of$ot" in
+          ''|*[!0-9]*) why="기록의 처음·시도 값이 숫자가 아니다" ;;
+          *)
+            if [ "$of" -gt "$now" ] || [ $((now - of)) -gt 21600 ]; then
+              why="기록의 처음이 21600초 안이 아니다"
+            elif ! git cat-file -e "$ob^{commit}" 2>/dev/null; then
+              why="기록의 베이스 $ob 가 이 저장소에 없다"
+            elif ! git merge-base --is-ancestor "$ob" "$base" 2>/dev/null; then
+              why="기록의 베이스 $ob 가 방금 fetch 한 베이스 $base 의 조상이 아니다"
+            fi
+            ;;
+        esac
+      fi
+      if [ -z "$why" ]; then
+        base="$ob"
+        src="이어감"
+        rs_first="$of"
+        tries=$((ot + 1))
+        cutl=$(check_push_field "$rs" 잘린목표)
+        printf 'check-push: 이어감 — 시도 %s, 기록의 베이스 %s 를 쓴다 (방금 fetch 한 베이스 %s)\n' "$tries" "$base" "$fbase" >&2
+      else
+        printf 'check-push: 시도 기록을 잇지 않는다 — %s, 새 베이스로 시도 1 을 쓴다\n' "$why" >&2
+      fi
     fi
   fi
 
@@ -378,6 +582,11 @@ check_push_run() {
     printf 'check-push: 무인 런에서 %s 를 바꾼 커밋은 시험할 절을 지명해야 한다 — CHECK_PUSH_SECTIONS=<id,...> 로 바꾼 축의 test-gate 절을 지명해 다시 부른다 (CHECK_PUSH_GOALS 만으로는 gate.sh 변경을 덮지 못한다. base %s 대비 변경을 판정하지 못한 경우도 바뀐 것으로 본다)\n' \
       "$CP_GATE_PATH" "$base" >&2
     return 2
+  fi
+
+  if [ -n "$rs" ] && ! check_push_resume_write "$rs" "$commit" "$base" "$rs_first" "$tries" "$cutl"; then
+    printf 'check-push: 경고 — 시도 기록 %s 를 쓰지 못했다. 이번 시도는 이어 돌릴 수 없다\n' "$rs" >&2
+    rs=""
   fi
 
   trap 'tt_cleanup; [ -z "$CP_TMP_STAMP" ] || rm -f "$CP_TMP_STAMP"' EXIT
@@ -410,8 +619,9 @@ check_push_run() {
     TT_REUSE_BASE="$base"
   fi
 
-  printf 'check-push: 시험 트리 — 합침=%s base=%s base출처=%s head=%s tree=%s 절=%s 목표=%s 절+베이스=%s fetch=%s 대역=%s\n' \
-    "$TT_OUTCOME" "$(tt_or_none "$base")" "$src" "$commit" "$TT_TREE" "$(tt_or_none "$secs")" "$(tt_or_none "$goals")" "$added" "$fetch" "$doubles"
+  printf 'check-push: 시험 트리 — 합침=%s base=%s base출처=%s head=%s tree=%s 절=%s 목표=%s 절+베이스=%s fetch=%s 대역=%s fetch베이스=%s 시도=%s\n' \
+    "$TT_OUTCOME" "$(tt_or_none "$base")" "$src" "$commit" "$TT_TREE" "$(tt_or_none "$secs")" "$(tt_or_none "$goals")" "$added" "$fetch" "$doubles" \
+    "$fbase" "$(tt_or_none "$tries")"
   if [ "$TT_OUTCOME" = "충돌" ]; then
     printf 'check-push: 합침=충돌 %s — 합친 트리는 시험하지 않았다, CI 런 없음\n' "$(tt_or_none "$TT_CONFLICTS")"
   fi
@@ -440,6 +650,32 @@ check_push_run() {
     return "$rc"
   fi
 
+  # A GOAL THE BUDGET CUT TWICE ON THIS HEAD IS LEFT TO CI when CI runs it for
+  # this head. Every goal left in TT_GOALS is in the tested tree's REST goal
+  # list, because tt_check_items refuses any other. items does not leave one
+  # out: recording its pass is what items is for.
+  if [ "$verb" = run ] && [ -n "$cutl" ] && [ -n "$TT_GOALS" ]; then
+    keep=""
+    rest="$TT_GOALS,"
+    while [ -n "$rest" ]; do
+      g="${rest%%,*}"
+      rest="${rest#*,}"
+      [ -n "$g" ] || continue
+      n=$(check_push_cut_count "$cutl" "$g")
+      case "$n" in ''|*[!0-9]*) n=0 ;; esac
+      if [ "$n" -ge 2 ]; then
+        if check_push_ci_covers "$base" "$commit"; then
+          printf 'check-push: CI 몫 — %s (이 커밋의 시도에서 시간 예산에 두 번 잘림, PR 의 rest-tests 가 돌린다)\n' "$g" >&2
+          ci="${ci:+$ci,}$g"
+          continue
+        fi
+        printf 'check-push: CI 몫 아님 — %s (시간 예산에 %s번 잘렸지만 %s) · 로컬에서 다시 돈다\n' "$g" "$n" "$CP_CI_WHY" >&2
+      fi
+      keep="${keep:+$keep,}$g"
+    done
+    TT_GOALS="$keep"
+  fi
+
   # Each step of the serial bundle waits for as many host-wide test slots as
   # its weight and runs under a foreground job shell, which measures it and
   # sends an interrupt on to make as TERM. The slots go back when it ends. A
@@ -448,12 +684,20 @@ check_push_run() {
   # check-cheap is an item like a goal: a recorded pass whose inputs this tree
   # keeps is reused, and otherwise it runs in a checkout of its own, made
   # before it waits for its slots, and its pass is recorded.
+  # Past the deadline no step starts: it and every item after it are left.
   tt_slots_init
   for step in $steps; do
+    if [ -n "$deadline" ] && [ "$(date +%s)" -ge "$deadline" ]; then
+      cutstep="$step"
+      break
+    fi
     it=""
     rec=0
     if [ "$step" = check-cheap ]; then
-      tt_item_reuse "make:check-cheap" && continue
+      if tt_item_reuse "make:check-cheap"; then
+        sdone="${sdone:+$sdone,}$step"
+        continue
+      fi
       tt_item_prepare cc "make:check-cheap"
       it="$TT_IT_DIR"
       rec="$TT_IT_REC"
@@ -477,17 +721,77 @@ check_push_run() {
     ts_release "$got"
     [ "$step" != check-cheap ] || tt_item_done "$it" "$rc" "make:check-cheap" "$rec"
     if [ "$rc" != 0 ]; then
+      printf 'check-push: 실패 확정 — 단계 %s rc=%s\n' "$step" "$rc" >&2
       stage="$step"
       break
     fi
     if [ "$step" = readme ] && ! tt_git diff --exit-code -- README.md; then
       printf 'check-push: README.md 가 생성 결과와 다르다 (make readme 뒤 커밋한다)\n' >&2
+      printf 'check-push: 실패 확정 — 단계 readme (README.md 신선도)\n' >&2
       stage="readme"
       break
     fi
+    sdone="${sdone:+$sdone,}$step"
   done
-  if [ -z "$stage" ] && ! tt_run_items "$TT_SECTIONS" "$TT_GOALS"; then
-    stage="$TT_FAILED"
+
+  # The job pool stops at the deadline and, with fail-fast, at its first
+  # failure. The CHECK_PUSH_JOBS=1 path runs the sections in one test-gate
+  # call and the goals in one make, with no record a later attempt could
+  # reuse, so the budget does not reach it.
+  if [ -z "$stage" ] && [ -z "$cutstep" ]; then
+    TT_FAIL_FAST="$ff"
+    if [ "$TT_JOBS" -gt 1 ]; then
+      TT_DEADLINE="$deadline"
+    else
+      TT_DEADLINE=""
+      if [ -n "$deadline" ] && { [ -n "$TT_SECTIONS" ] || [ -n "$TT_GOALS" ]; }; then
+        printf 'check-push: 경고 — CHECK_PUSH_JOBS=1 의 직렬 경로는 통과 기록이 없어 시간 예산 %s초를 절·목표에 적용하지 않는다\n' "$budget" >&2
+      fi
+    fi
+    tt_run_items "$TT_SECTIONS" "$TT_GOALS"
+    prc=$?
+    if [ -n "$TT_FAILED" ]; then
+      stage="$TT_FAILED"
+    elif [ "$prc" = 5 ]; then
+      unfinished=1
+    elif [ "$prc" != 0 ]; then
+      stage="$(check_push_items_step "$TT_SECTIONS" "$TT_GOALS")"
+    fi
+    if [ -n "$rs" ] && [ -n "${TT_CUT_GOALS:-}" ]; then
+      cutl=$(check_push_cut_bump "$cutl" "$TT_CUT_GOALS")
+      check_push_resume_write "$rs" "$commit" "$base" "$rs_first" "$tries" "$cutl" \
+        || printf 'check-push: 경고 — 시도 기록 %s 에 잘린 목표를 적지 못했다\n' "$rs" >&2
+    fi
+  fi
+
+  # UNFINISHED: the budget left items that did not end, and nothing failed.
+  # What ended includes what was reused from a record; what is left is the
+  # step the deadline kept from starting and everything after it, or the
+  # pool's jobs that were stopped or never started.
+  if [ -z "$stage" ] && { [ -n "$cutstep" ] || [ "$unfinished" = 1 ]; }; then
+    if [ -n "$cutstep" ]; then
+      left=""
+      rest=0
+      for step in $steps; do
+        [ "$step" != "$cutstep" ] || rest=1
+        [ "$rest" = 0 ] || left="${left:+$left,}$step"
+      done
+      [ -z "$TT_SECTIONS" ] || left="$left,$TT_SECTIONS"
+      [ -z "$TT_GOALS" ] || left="$left,$TT_GOALS"
+    else
+      sdone="$sdone${TT_DONE_ITEMS:+${sdone:+,}$TT_DONE_ITEMS}"
+      left="$TT_UNFINISHED_SECTIONS"
+      [ -z "$TT_UNFINISHED_GOALS" ] || left="${left:+$left,}$TT_UNFINISHED_GOALS"
+    fi
+    if [ "$verb" = items ]; then
+      printf 'check-push: items 미완(시간 예산 %s초) · 끝난 항목 %s · 남은 항목 %s · 시도 %s\n' \
+        "$budget" "$(tt_or_none "$sdone")" "$(tt_or_none "$left")" "$(tt_or_none "$tries")" >&2
+    else
+      printf 'check-push: 판정 — 미완(시간 예산 %s초) · 끝난 항목 %s · 남은 항목 %s · 시도 %s\n' \
+        "$budget" "$(tt_or_none "$sdone")" "$(tt_or_none "$left")" "$(tt_or_none "$tries")" >&2
+    fi
+    printf 'check-push: 같은 명령으로 다시 띄우면 끝난 항목은 기록으로 건너뛴다 (베이스 %s 유지)\n' "$(tt_or_none "$base")" >&2
+    return 5
   fi
 
   if [ "$verb" = items ]; then
@@ -561,11 +865,17 @@ check_push_run() {
       printf '재사용=%s\n' "$(tt_or_none "$TT_REUSED")"
     fi
     printf '재사용절=%s\n' "$(check_push_reused_sections)"
+    if [ "$budget" = 0 ]; then printf '시간예산=꺼짐\n'; else printf '시간예산=%s\n' "$budget"; fi
+    printf '시도=%s\n' "$(tt_or_none "$tries")"
+    printf 'CI몫=%s\n' "$(tt_or_none "$ci")"
+    printf 'fetch베이스=%s\n' "$fbase"
     printf '유도목표=%s\n' "$(tt_or_none "$CP_DERIVED")"
     printf '유도없음=%s\n' "$CP_UNREAD_N"
   } > "$CP_TMP_STAMP" || return 1
   mv -f "$CP_TMP_STAMP" "$stamp" || return 1
   CP_TMP_STAMP=""
+  # The head passed: its attempts are over.
+  [ -z "$rs" ] || rm -f "$rs"
   printf 'check-push: 통과 — 커밋 %s (트리 %s) 에 도장을 찍었다\n' "$commit" "$tree"
 }
 
@@ -600,6 +910,11 @@ check_push_verify() {
     "$(check_push_field "$stamp" commit)" "$(check_push_field "$stamp" tested_tree)" "$(check_push_field "$stamp" sections)" \
     "$(check_push_field "$stamp" goals)" "$(check_push_field "$stamp" 절+베이스)" "$(check_push_field "$stamp" fetch)" \
     "$(check_push_field "$stamp" 대역)"
+  # A goal left to CI is said, not refused: the pull request's rest-tests runs it.
+  f=$(check_push_field "$stamp" CI몫)
+  if [ -n "$f" ] && [ "$f" != "없음" ]; then
+    printf 'check-push: CI 몫 — %s (로컬에서 돌리지 않았다)\n' "$f"
+  fi
   if [ -n "${CC_PIPELINE_RUN_ID:-}" ]; then
     f=$(check_push_field "$stamp" 합침)
     case "$f" in
@@ -646,6 +961,7 @@ printf 'bundle:%s|MAKEFLAGS=%s|MFLAGS=%s|MAKELEVEL=%s\n' "$1" "${MAKEFLAGS-unset
 [ ! -f base-only.txt ] || printf 'saw-base-only\n' >> "@T@/seen.log"
 printf '%s:%s\n' "$1" "${CC_TEST_SLOT_HELD-unset}" >> "@T@/held.log"
 if [ -f breaker.txt ] && [ "$1" = check-cheap ]; then exit 1; fi
+[ ! -f "@T@/bundle-slow" ] || [ "$1" != lint ] || sleep 3
 if [ "$1" = check-cheap ]; then
   printf 'cc cwd=%s git=%s\n' "$(pwd -P)" "$(command -v git)" >> "@T@/cwd.log"
   [ ! -f "@T@/reads-cc" ] || while IFS= read -r f; do cat "$f" > /dev/null; done < "@T@/reads-cc"
@@ -668,6 +984,13 @@ case "$1" in
     if [ "${3:-}" = --cut-digest ]; then printf 'ab%s\n' "$(printf '%s' "$2" | cksum | cut -d' ' -f1)"; exit 0; fi
     printf 'env:TMPDIR=%s|OUT=%s|REC=%s\n' "${TMPDIR:-}" "${CC_GATE_TIMING_OUT:-}" "${CC_GATE_TIMING_RECORD:-}" >> "@T@/env.log"
     [ ! -f "@T@/gate-slow" ] || sleep 3
+    # slow-<ids> holds the seconds a lane of exactly those ids sleeps; the
+    # sleep's pid goes to slowpid-<ids>, so a case can see it was stopped.
+    if [ -f "@T@/slow-$2" ]; then
+      sleep "$(cat "@T@/slow-$2")" &
+      printf '%s\n' "$!" > "@T@/slowpid-$2"
+      wait "$!"
+    fi
     rc=0; failed=""
     for id in $ids; do
       case ",$2," in *",$id,"*) bash "sections/$id.sh" || { rc=1; failed="${failed:+$failed,}$id"; } ;; esac
@@ -815,7 +1138,7 @@ EOF
   has "F12 묶음 단계마다 자리를 잡는다" "$out" "check-push: 자리 잡음 단계 lint (0초 대기)"
   has "F12 마지막 묶음 단계도 자리를 잡는다" "$out" "check-push: 자리 잡음 단계 check-cheap (0초 대기)"
   out=$(sed -n 's/=.*$//p' "$stamp" | tr '\n' ' ')
-  check "F12 도장 v2 필드" "$out" "v commit at bash 합침 base base출처 fetch tested_tree sections goals 절+베이스 충돌경로 대역 병렬 자리대기 재사용 재사용절 유도목표 유도없음 "
+  check "F12 도장 v2 필드" "$out" "v commit at bash 합침 base base출처 fetch tested_tree sections goals 절+베이스 충돌경로 대역 병렬 자리대기 재사용 재사용절 시간예산 시도 CI몫 fetch베이스 유도목표 유도없음 "
   check "F12 재사용을 끈 실행의 도장은 재사용=꺼짐" "$(check_push_field "$stamp" 재사용)" "꺼짐"
   check "F12 재사용을 끈 실행의 도장은 재사용절=꺼짐" "$(check_push_field "$stamp" 재사용절)" "꺼짐"
   check "F12 사적 저장소에서는 자리를 기다리지 않는다" "$(check_push_field "$stamp" 자리대기)" "0"
@@ -929,7 +1252,7 @@ check-push: CHECK_PUSH_JOBS=1 의 실패 단계는 목록 전체를 이름 댄�
   # its rerun line; g1's make fails too, and every job still runs to its end.
   : > "$T/order.log"
   : > "$T/gate-rerun-line"; : > "$T/fail-g1"
-  out=$(cprun CC_PIPELINE_RUN_ID=t CHECK_PUSH_JOBS=4 CHECK_PUSH_SECTIONS=s1,s2 CHECK_PUSH_GOALS=g1,g2); rc=$?
+  out=$(cprun CC_PIPELINE_RUN_ID=t CHECK_PUSH_FAIL_FAST=0 CHECK_PUSH_JOBS=4 CHECK_PUSH_SECTIONS=s1,s2 CHECK_PUSH_GOALS=g1,g2); rc=$?
   rm -f "$T/gate-rerun-line" "$T/fail-g1"
   check "F31 종료 1, 도장 없음" "$rc $(stamp_count)" "1 0"
   has "F31 단계가 실패한 절과 목표를 함께 든다" "$out" "check-push: 합친 트리 실패 — base=$sm2 단계=절=s1 목표=g1"
@@ -1258,7 +1581,7 @@ check-push: CHECK_PUSH_JOBS=1 의 실패 단계는 목록 전체를 이름 댄�
   rm -f "$T/reads-cc" "$T/reads-g1"
   (cd "$W" && sgit checkout -q h) > /dev/null 2>&1
 
-  # --- F42 유도: 바꾼 파일을 읽는 목표가 지명한 목표 뒤에 붙어 돈다 -------------------
+  # --- F43 유도: 바꾼 파일을 읽는 목표가 지명한 목표 뒤에 붙어 돈다 -------------------
   # Branch d adds a run/ goal whose entry script reads data/in.txt, so the
   # change derives it; h.txt, goals.txt and notes.txt are read by no goal.
   (
@@ -1277,48 +1600,235 @@ check-push: CHECK_PUSH_JOBS=1 의 실패 단계는 목록 전체를 이름 댄�
   dgoals() { grep -e '^make:--no-print-directory' "$T/order.log" | tr '\n' ' '; }
   : > "$T/order.log"
   out=$(cprun CHECK_PUSH_BASE="$sa" CHECK_PUSH_JOBS=1 CHECK_PUSH_GOALS=g2); rc=$?
-  check "F42 통과" "$rc" "0"
-  has "F42 시험 트리 줄의 목표= 는 지명한 목표 그대로다" "$out" " 절=없음 목표=g2 "
-  has "F42 유도 목표 줄" "$out" "check-push: 유도 목표 — 변경 파일 5개, 유도 1개: run/tools/r.sh"
-  has "F42 유도 근거 없는 변경 파일 줄" "$out" "check-push: 유도 근거 없는 변경 파일 3개 — goals.txt h.txt notes.txt"
-  check "F42 지명한 목표 뒤에 유도 목표가 붙어 돈다" "$(dgoals)" "make:--no-print-directory g2 run/tools/r.sh "
-  check "F42 도장의 goals 는 합집합이고 유도목표·유도없음이 있다" \
+  check "F43 통과" "$rc" "0"
+  has "F43 시험 트리 줄의 목표= 는 지명한 목표 그대로다" "$out" " 절=없음 목표=g2 "
+  has "F43 유도 목표 줄" "$out" "check-push: 유도 목표 — 변경 파일 5개, 유도 1개: run/tools/r.sh"
+  has "F43 유도 근거 없는 변경 파일 줄" "$out" "check-push: 유도 근거 없는 변경 파일 3개 — goals.txt h.txt notes.txt"
+  check "F43 지명한 목표 뒤에 유도 목표가 붙어 돈다" "$(dgoals)" "make:--no-print-directory g2 run/tools/r.sh "
+  check "F43 도장의 goals 는 합집합이고 유도목표·유도없음이 있다" \
     "$(check_push_field "$dstamp" goals) $(check_push_field "$dstamp" 유도목표) $(check_push_field "$dstamp" 유도없음)" "g2,run/tools/r.sh run/tools/r.sh 3"
   : > "$T/order.log"
   out=$(cprun CHECK_PUSH_BASE="$sa" CHECK_PUSH_JOBS=1 CHECK_PUSH_GOALS=run/tools/r.sh,g1); rc=$?
-  check "F42 지명한 목표가 유도되면 지명 순서대로 한 번만 돈다" "$rc $(dgoals)" "0 make:--no-print-directory run/tools/r.sh g1 "
+  check "F43 지명한 목표가 유도되면 지명 순서대로 한 번만 돈다" "$rc $(dgoals)" "0 make:--no-print-directory run/tools/r.sh g1 "
   # A goal other than run/ is entered through what `make -n` prints for it.
   printf 'bash tools/r.sh --self-test\n' > "$T/n-g1"
   : > "$T/order.log"
   out=$(cprun CHECK_PUSH_BASE="$sa" CHECK_PUSH_JOBS=1 CHECK_PUSH_GOALS=g2); rc=$?
   rm -f "$T/n-g1"
-  check "F42 make -n 이 이름 댄 진입 파일로 유도한 목표는 print-rest-goals 순서로 붙는다" "$rc $(dgoals)" "0 make:--no-print-directory g2 g1 run/tools/r.sh "
+  check "F43 make -n 이 이름 댄 진입 파일로 유도한 목표는 print-rest-goals 순서로 붙는다" "$rc $(dgoals)" "0 make:--no-print-directory g2 g1 run/tools/r.sh "
   # Head mode: the base branch's remote-tracking ref, else the local branch.
   rm -f "$dstamp"
   : > "$T/order.log"
   out=$(cprun CHECK_PUSH_BASE_BRANCH=lb CHECK_PUSH_JOBS=1 CHECK_PUSH_GOALS=g2); rc=$?
-  check "F42 head 모드는 원격 추적 ref 가 없으면 로컬 브랜치와의 merge-base 부터 본다" "$rc $(dgoals)" "0 make:--no-print-directory g2 run/tools/r.sh "
+  check "F43 head 모드는 원격 추적 ref 가 없으면 로컬 브랜치와의 merge-base 부터 본다" "$rc $(dgoals)" "0 make:--no-print-directory g2 run/tools/r.sh "
   rm -f "$dstamp"
   : > "$T/order.log"
   out=$(cprun CHECK_PUSH_BASE_BRANCH=nosuch CHECK_PUSH_JOBS=1 CHECK_PUSH_GOALS=g2); rc=$?
-  check "F42 head 모드에 베이스 ref 가 없으면 지명한 목표만 돌고 통과한다" "$rc $(dgoals)" "0 make:--no-print-directory g2 "
-  has "F42 판정불가 줄" "$out" "check-push: 유도 판정불가 — 베이스 브랜치 nosuch 의 refs/remotes/origin/nosuch 도 refs/heads/nosuch 도 없다"
-  check "F42 판정불가 도장" "$(check_push_field "$dstamp" 유도목표) $(check_push_field "$dstamp" 유도없음)" "판정불가 0"
+  check "F43 head 모드에 베이스 ref 가 없으면 지명한 목표만 돌고 통과한다" "$rc $(dgoals)" "0 make:--no-print-directory g2 "
+  has "F43 판정불가 줄" "$out" "check-push: 유도 판정불가 — 베이스 브랜치 nosuch 의 refs/remotes/origin/nosuch 도 refs/heads/nosuch 도 없다"
+  check "F43 판정불가 도장" "$(check_push_field "$dstamp" 유도목표) $(check_push_field "$dstamp" 유도없음)" "판정불가 0"
   # A derivation that cannot be computed ends 1 before any item, with no stamp.
   rm -f "$dstamp"
   : > "$T/derive-n-fail"
   : > "$T/order.log"
   out=$(cprun CHECK_PUSH_BASE="$sa" CHECK_PUSH_GOALS=g2); rc=$?
   rm -f "$T/derive-n-fail"
-  check "F42 유도 실패는 종료 1, 도장 없음" "$rc $([ -f "$dstamp" ] && echo 있음 || echo 없음)" "1 없음"
-  has "F42 유도 실패 줄이 단계를 이름 댄다" "$out" "check-push: 유도 실패 — make -n g1"
-  check "F42 유도 실패면 항목을 하나도 돌리지 않는다" "$(grep -c -e '^bundle:' -e '^make:--no-print-directory' -e '^gate:--sections' "$T/order.log")" "0"
+  check "F43 유도 실패는 종료 1, 도장 없음" "$rc $([ -f "$dstamp" ] && echo 있음 || echo 없음)" "1 없음"
+  has "F43 유도 실패 줄이 단계를 이름 댄다" "$out" "check-push: 유도 실패 — make -n g1"
+  check "F43 유도 실패면 항목을 하나도 돌리지 않는다" "$(grep -c -e '^bundle:' -e '^make:--no-print-directory' -e '^gate:--sections' "$T/order.log")" "0"
   # items derives too, and runs the derived goal with nothing named.
   : > "$T/order.log"
   out=$(cd "$W" && env CHECK_PUSH_REUSE=1 CHECK_PUSH_BASE="$sa" CHECK_PUSH_JOBS=2 bash "$self" items 2>&1); rc=$?
-  check "F42 items 통과" "$rc" "0"
-  has "F42 items 도 유도 목표 줄을 찍는다" "$out" "check-push: 유도 목표 — 변경 파일 5개, 유도 1개: run/tools/r.sh"
-  has "F42 items 가 지명 없이 유도 목표를 돌린다" "$(grep -e '^make:' "$T/order.log" | grep -v print-rest-goals)" "run/tools/r.sh"
+  check "F43 items 통과" "$rc" "0"
+  has "F43 items 도 유도 목표 줄을 찍는다" "$out" "check-push: 유도 목표 — 변경 파일 5개, 유도 1개: run/tools/r.sh"
+  has "F43 items 가 지명 없이 유도 목표를 돌린다" "$(grep -e '^make:' "$T/order.log" | grep -v print-rest-goals)" "run/tools/r.sh"
+  (cd "$W" && sgit checkout -q h) > /dev/null 2>&1
+
+  # --- F42 시간 예산, 이어 돌리기, CI 몫, 조기 종료 ------------------------------------
+  # Each section gets a lane of its own (the shard double) and reuse is on, so
+  # a lane that ended before the budget ran out leaves its record. The cases
+  # commit on branch hb, so their trees are new to everything above. M4 on
+  # master descends from M2 and stands for the base a later fetch brings.
+  local sm4 hb0 rsf p t0 el
+  (
+    cd "$T/seed" || exit 1
+    sgit checkout -q master && printf 'm4\n' > m4.txt && sgit add -A && sgit commit -q -m M4 && sgit push -q origin master
+  ) > /dev/null 2>&1 || bad "F42 픽스처" "M4 커밋 실패"
+  sm4=$(cd "$T/seed" && git rev-parse master)
+  (cd "$W" && sgit fetch -q --no-tags --refmap= origin refs/heads/master) > /dev/null 2>&1
+  rm -rf "$items_dir"
+  (cd "$W" && sgit checkout -q -b hb h) > /dev/null 2>&1
+  rw b.txt 'b\n'
+  hb0=$(cd "$W" && git rev-parse HEAD)
+  rsf="$W/.git/cc-cmds-check-push-resume/$hb0"
+  cb() { cprun CC_PIPELINE_RUN_ID=t CHECK_PUSH_REUSE=1 CHECK_PUSH_JOBS=2 CC_TEST_TREE_SHARD="$T/bin/shard" CC_CHECK_PUSH_STOP_GRACE=2 "$@"; }
+  # 0 while the pid in file $1 still runs.
+  pid_alive() { [ -f "$1" ] && kill -0 "$(cat "$1")" 2>/dev/null; }
+
+  # Budget stop: s1 ends at once, s2 sleeps past the budget.
+  fh_line "$sm2"
+  printf '60\n' > "$T/slow-s2"
+  rm -f "$T/slowpid-s2"
+  out=$(cb CHECK_PUSH_SECTIONS=s1,s2 CHECK_PUSH_BUDGET_SECS=20); rc=$?
+  rm -f "$T/slow-s2"
+  check "F42 예산 멈춤: 종료 코드 5, 도장 없음" "$rc $([ -f "$W/.git/cc-cmds-check-push/$(cur_tree)" ] && echo 있음 || echo 없음)" "5 없음"
+  has "F42 예산 멈춤: 미완 판정 줄이 끝난 항목과 남은 항목을 이름 댄다" "$out" "check-push: 판정 — 미완(시간 예산 20초) · 끝난 항목 lint,readme,check-cheap,s1 · 남은 항목 s2 · 시도 1"
+  has "F42 예산 멈춤: 다시 띄우라는 줄이 베이스를 이름 댄다" "$out" "check-push: 같은 명령으로 다시 띄우면 끝난 항목은 기록으로 건너뛴다 (베이스 $sm2 유지)"
+  has "F42 예산 멈춤: 풀이 마감을 까닭으로 멈춘다" "$out" "check-push: 멈춤 — 시간 예산 마감"
+  check "F42 예산 멈춤: 시도 기록에 베이스와 시도 1" "$(check_push_field "$rsf" base) $(check_push_field "$rsf" 시도)" "$sm2 1"
+  check "F42 예산 멈춤: 빠른 레인의 기록이 남는다" "$(ls "$items_dir/lane" 2>/dev/null | wc -l | tr -d ' ')" "$(ve 1 0)"
+  if pid_alive "$T/slowpid-s2"; then bad "F42 예산 멈춤: 느린 레인의 프로세스가 남지 않는다" "$(cat "$T/slowpid-s2")"; else ok "F42 예산 멈춤: 느린 레인의 프로세스가 남지 않는다"; fi
+
+  # Resume to the end: the next fetch moved the base on to M4, a descendant of
+  # the recorded base, so the run keeps M2 and runs only what is left.
+  fh_line "$sm4"
+  : > "$T/order.log"
+  out=$(cb CHECK_PUSH_SECTIONS=s1,s2 CHECK_PUSH_BUDGET_SECS=0); rc=$?
+  check "F42 이어 끝내기: 통과" "$rc" "0"
+  check "F42 이어 끝내기: 도장의 base·base출처·fetch베이스·시도" "$(cur_field base) $(cur_field base출처) $(cur_field fetch베이스) $(cur_field 시도)" "$sm2 이어감 $sm4 2"
+  has "F42 이어 끝내기: 시험 트리 줄이 이어감과 fetch 한 베이스를 보인다" "$out" "base=$sm2 base출처=이어감 head=$hb0"
+  has "F42 이어 끝내기: 시험 트리 줄 끝의 fetch베이스와 시도" "$out" "fetch베이스=$sm4 시도=2"
+  has "F42 이어 끝내기: 빠른 레인은 기록으로 건너뛴다" "$out" "$(ve 'check-push: 재사용 절 s1 ← ' 'check-push: 통과')"
+  check "F42 이어 끝내기: 게이트 대역은 느린 레인만 받는다" "$(grep -c '^gate:--sections s1$' "$T/order.log") $(grep -c '^gate:--sections s2$' "$T/order.log")" "$(ve '0 1' '1 1')"
+  check "F42 이어 끝내기: 도장의 시간예산" "$(cur_field 시간예산)" "꺼짐"
+  check "F42 이어 끝내기: 통과 뒤 시도 기록이 없다" "$([ -e "$rsf" ] && echo 있음 || echo 없음)" "없음"
+
+  # Cut from outside, as the harness limit would: TERM once the fast lane
+  # ended (and left its record), then the same command again. The commit
+  # changes the file lane s1 runs, so its earlier record does not hold.
+  rw sections/s1.sh '[ ! -e rows.txt ] # term\n'
+  fh_line "$sm4"
+  printf '60\n' > "$T/slow-s2"
+  rm -f "$T/slowpid-s2"
+  crec=$(ls "$items_dir/lane" 2>/dev/null | wc -l | tr -d ' ')
+  (cd "$W" && exec env CC_PIPELINE_RUN_ID=t CHECK_PUSH_REUSE=1 CHECK_PUSH_JOBS=2 CC_TEST_TREE_SHARD="$T/bin/shard" CC_CHECK_PUSH_STOP_GRACE=2 \
+    CHECK_PUSH_SECTIONS=s1,s2 bash "$self" run > "$T/term.out" 2>&1) &
+  p=$!
+  t0=0
+  while [ "$t0" -lt 60 ]; do
+    if [ "$v" = 1 ]; then
+      [ "$(ls "$items_dir/lane" 2>/dev/null | wc -l | tr -d ' ')" -gt "$crec" ] && [ -f "$T/slowpid-s2" ] && break
+    else
+      grep -q '끝 — 레인 [0-9](s1) rc=0' "$T/term.out" 2>/dev/null && [ -f "$T/slowpid-s2" ] && break
+    fi
+    sleep 1
+    t0=$((t0 + 1))
+  done
+  sleep 1
+  kill -TERM "$p" 2>/dev/null
+  wait "$p"
+  rc=$?
+  rm -f "$T/slow-s2"
+  check "F42 밖에서 끊긴 실행: 종료 코드 143" "$rc" "143"
+  if pid_alive "$T/slowpid-s2"; then bad "F42 밖에서 끊긴 실행: 잡 프로세스가 남지 않는다" "$(cat "$T/slowpid-s2")"; else ok "F42 밖에서 끊긴 실행: 잡 프로세스가 남지 않는다"; fi
+  : > "$T/order.log"
+  out=$(cb CHECK_PUSH_SECTIONS=s1,s2); rc=$?
+  check "F42 밖에서 끊긴 뒤 같은 명령: 도장에 닿는다" "$rc $(cur_field 시도)" "0 2"
+  check "F42 밖에서 끊긴 뒤 같은 명령: 빠른 레인은 다시 돌지 않는다" "$(grep -c '^gate:--sections s1$' "$T/order.log")" "$(ve 0 1)"
+
+  # A goal the budget cut twice is left to CI when the tested tree's lint.yml
+  # runs rest-tests for a path this head changed (h.txt, an exact pattern).
+  (cd "$W" && mkdir -p .github/workflows) && rw .github/workflows/lint.yml \
+    "on:\n  pull_request:\n    paths:\n      - 'scripts/**'\n      - '**.md'\n      - 'h.txt'\njobs:\n  rest-tests:\n    runs-on: x\n"
+  hb0=$(cd "$W" && git rev-parse HEAD)
+  rsf="$W/.git/cc-cmds-check-push-resume/$hb0"
+  printf 'sleep 60\n' > "$T/run-g2"
+  fh_line "$sm4"
+  out=$(cb CHECK_PUSH_GOALS=g2 CHECK_PUSH_BUDGET_SECS=20); rc=$?
+  check "F42 목표 잘림 1: 종료 코드 5, 잘린목표 g2:1" "$rc $(check_push_field "$rsf" 잘린목표)" "5 g2:1"
+  fh_line "$sm4"
+  out=$(cb CHECK_PUSH_GOALS=g2 CHECK_PUSH_BUDGET_SECS=20); rc=$?
+  check "F42 목표 잘림 2: 종료 코드 5, 잘린목표 g2:2, 시도 2" "$rc $(check_push_field "$rsf" 잘린목표) $(check_push_field "$rsf" 시도)" "5 g2:2 2"
+  fh_line "$sm4"
+  : > "$T/order.log"
+  out=$(cb CHECK_PUSH_GOALS=g2); rc=$?
+  check "F42 두 번 잘린 목표: 통과하고 도장 CI몫=g2" "$rc $(cur_field CI몫)" "0 g2"
+  has "F42 두 번 잘린 목표: CI 몫 줄" "$out" "check-push: CI 몫 — g2 (이 커밋의 시도에서 시간 예산에 두 번 잘림, PR 의 rest-tests 가 돌린다)"
+  check "F42 두 번 잘린 목표: 로컬에서 돌리지 않는다" "$(grep -c '^make:--no-print-directory g2$' "$T/order.log")" "0"
+  out=$(cvrun); rc=$?
+  check "F42 두 번 잘린 목표: verify 는 받는다" "$rc" "0"
+  has "F42 두 번 잘린 목표: verify 가 CI 몫 줄을 찍는다" "$out" "check-push: CI 몫 — g2 (로컬에서 돌리지 않았다)"
+  sed 's/^대역=.*$/대역=없음/' "$W/.git/cc-cmds-check-push/$(cur_tree)" > "$T/stamp.tmp" && mv -f "$T/stamp.tmp" "$W/.git/cc-cmds-check-push/$(cur_tree)"
+  out=$(cvrun CC_PIPELINE_RUN_ID=t); rc=$?
+  check "F42 두 번 잘린 목표: 대역=없음 이면 무인 verify 도 이어감 도장을 받는다" "$rc" "0"
+  rm -f "$T/run-g2"
+
+  # The same count where lint.yml's paths miss every changed path: the goal
+  # runs here again.
+  rw .github/workflows/lint.yml "on:\n  pull_request:\n    paths:\n      - 'docs/**'\n      - 'zzz.txt'\njobs:\n  rest-tests:\n    runs-on: x\n"
+  hb0=$(cd "$W" && git rev-parse HEAD)
+  rsf="$W/.git/cc-cmds-check-push-resume/$hb0"
+  mkdir -p "${rsf%/*}"
+  printf 'v=1\ncommit=%s\nbase=%s\n처음=%s\n시도=2\n잘린목표=g2:2\n' "$hb0" "$sm4" "$(date +%s)" > "$rsf"
+  fh_line "$sm4"
+  : > "$T/order.log"
+  out=$(cb CHECK_PUSH_GOALS=g2); rc=$?
+  check "F42 경로가 맞지 않으면: 통과하고 CI몫=없음" "$rc $(cur_field CI몫)" "0 없음"
+  has "F42 경로가 맞지 않으면: 이유 한 줄" "$out" "check-push: CI 몫 아님 — g2 (시간 예산에 2번 잘렸지만 시험 트리의 lint.yml 의 pull_request 경로가 head 가 바꾼 경로에 맞지 않는다) · 로컬에서 다시 돈다"
+  check "F42 경로가 맞지 않으면: 로컬에서 돈다" "$(grep -c '^make:--no-print-directory g2$' "$T/order.log")" "1"
+
+  # Base pinning refused: a record older than six hours, and a record whose
+  # base is not an ancestor of the fetched base.
+  printf 'v=1\ncommit=%s\nbase=%s\n처음=%s\n시도=1\n잘린목표=\n' "$hb0" "$sm2" "$(( $(date +%s) - 30000 ))" > "$rsf"
+  fh_line "$sm4"
+  out=$(cb CHECK_PUSH_GOALS=g1); rc=$?
+  check "F42 오래된 기록: 새 베이스, base출처=FETCH_HEAD, 시도 1" "$rc $(cur_field base) $(cur_field base출처) $(cur_field 시도)" "0 $sm4 FETCH_HEAD 1"
+  has "F42 오래된 기록: 잇지 않는 까닭" "$out" "check-push: 시도 기록을 잇지 않는다 — 기록의 처음이 21600초 안이 아니다"
+  printf 'v=1\ncommit=%s\nbase=%s\n처음=%s\n시도=1\n잘린목표=\n' "$hb0" "$sm3" "$(date +%s)" > "$rsf"
+  fh_line "$sm4"
+  out=$(cb CHECK_PUSH_GOALS=g1); rc=$?
+  check "F42 조상이 아닌 기록 베이스: 새 베이스, base출처=FETCH_HEAD, 시도 1" "$rc $(cur_field base) $(cur_field base출처) $(cur_field 시도)" "0 $sm4 FETCH_HEAD 1"
+  has "F42 조상이 아닌 기록 베이스: 잇지 않는 까닭" "$out" "가 방금 fetch 한 베이스 $sm4 의 조상이 아니다"
+
+  # Unattended early stop: g1 fails at once while g2 sleeps; the run ends 1
+  # long before g2 would, names g1 alone and g2 as unfinished.
+  : > "$T/fail-g1"
+  printf 'sleep 30\n' > "$T/run-g2"
+  fh_line "$sm4"
+  t0=$(date +%s)
+  out=$(cprun CC_PIPELINE_RUN_ID=t CHECK_PUSH_JOBS=2 CC_CHECK_PUSH_STOP_GRACE=2 CHECK_PUSH_GOALS=g1,g2); rc=$?
+  el=$(( $(date +%s) - t0 ))
+  check "F42 무인 조기 종료: 종료 코드 1" "$rc" "1"
+  if [ "$el" -lt 25 ]; then ok "F42 무인 조기 종료: 느린 목표를 기다리지 않는다"; else bad "F42 무인 조기 종료: 느린 목표를 기다리지 않는다" "${el}초"; fi
+  has "F42 무인 조기 종료: 끝나지 않은 항목 줄" "$out" "check-push: 끝나지 않은 항목 — g2"
+  has "F42 무인 조기 종료: 실패한 항목만 단계에 든다" "$out" "check-push: 합친 트리 실패 — base=$sm4 단계=목표=g1"
+  case "$out" in
+    *"check-push: 실패 확정 — 목표 g1 rc=1"*"검사 실패 — 도장을 찍지 않는다"*) ok "F42 무인 조기 종료: 실패 확정 줄이 마지막 판정 줄보다 앞" ;;
+    *) bad "F42 무인 조기 종료: 실패 확정 줄이 마지막 판정 줄보다 앞" "$out" ;;
+  esac
+  # Interactive runs every job to its end, and says the failure first.
+  printf 'sleep 3\n' > "$T/run-g2"
+  out=$(cprun CHECK_PUSH_JOBS=2 CHECK_PUSH_GOALS=g1,g2); rc=$?
+  check "F42 대화형: 종료 코드 1" "$rc" "1"
+  hasnt "F42 대화형: 끝나지 않은 항목이 없다" "$out" "끝나지 않은 항목"
+  case "$out" in
+    *"check-push: 실패 확정 — 목표 g1 rc=1"*"check-push: 끝 — 목표 g2 rc=0"*) ok "F42 대화형: 실패 확정 줄이 느린 목표의 끝 줄보다 앞" ;;
+    *) bad "F42 대화형: 실패 확정 줄이 느린 목표의 끝 줄보다 앞" "$out" ;;
+  esac
+  rm -f "$T/fail-g1" "$T/run-g2"
+
+  # A deadline that passes during the serial bundle leaves the next step and
+  # every item after it.
+  : > "$T/bundle-slow"
+  rw b.txt 'b3\n'
+  fh_line "$sm4"
+  out=$(cb CHECK_PUSH_GOALS=g1 CHECK_PUSH_BUDGET_SECS=1); rc=$?
+  rm -f "$T/bundle-slow"
+  check "F42 직렬 묶음에서 마감: 종료 코드 5" "$rc" "5"
+  has "F42 직렬 묶음에서 마감: 남은 항목이 뒤 단계와 목표를 든다" "$out" "check-cheap,g1 · 시도 1"
+
+  # Usage: wrong values end 2 before any check runs.
+  : > "$T/order.log"
+  for p in abc -1 07 1.5; do
+    out=$(cprun CHECK_PUSH_BUDGET_SECS="$p"); rc=$?
+    check "F42 CHECK_PUSH_BUDGET_SECS=$p → 2" "$rc" "2"
+  done
+  has "F42 예산 거부가 변수를 이름 댄다" "$out" "check-push: CHECK_PUSH_BUDGET_SECS=1.5 는 0 이나 양의 정수가 아니다"
+  for p in 2 yes; do
+    out=$(cprun CHECK_PUSH_FAIL_FAST="$p"); rc=$?
+    check "F42 CHECK_PUSH_FAIL_FAST=$p → 2" "$rc" "2"
+  done
+  check "F42 거부는 검사 전에 끝난다" "$(grep -c '^bundle:' "$T/order.log")" "0"
   (cd "$W" && sgit checkout -q h) > /dev/null 2>&1
 
   # --- (5) a commit that changes the tree has no stamp ------------------------------
@@ -1335,8 +1845,8 @@ check-push: CHECK_PUSH_JOBS=1 의 실패 단계는 목록 전체를 이름 댄�
   rm -rf "$T"
   printf 'check-push self-test: %d passed, %d failed\n' "$passed" "$failed"
   # A floor on the count, so a refactor that silently skips cases cannot pass.
-  if [ "$passed" -lt 189 ]; then
-    printf 'check-push self-test: 통과 수 %d 가 하한 189 에 못 미칩니다\n' "$passed" >&2
+  if [ "$passed" -lt 241 ]; then
+    printf 'check-push self-test: 통과 수 %d 가 하한 241 에 못 미칩니다\n' "$passed" >&2
     return 1
   fi
   [ "$failed" = "0" ]

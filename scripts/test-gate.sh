@@ -65768,7 +65768,7 @@ graded_as '읽기' '89p: fence-check 는 읽기다' -- "$CC_ORCH/base-split.py" 
 
 # ---------------------------------------------------------------------------
 # 89q. 티켓 배달의 스킬 문면
-# --- section: 89q | group: tier | covers: 킥오프 문면, design_delivery, ticket-delivery | anchors: 89q: 킥오프가 판정의 배달 방식을 대조하고 묻는다, 89q: 킥오프가 하위 런의 설계 생략과 착수 행을 싣는다, 89q: 경계 문면이 티켓 배달 런의 종료 절과 5r 을 싣는다, 89q: 자가 점검이 티켓 배달 꼴과 출처 티켓 꼴을 싣는다, 89q: 재킥오프가 새 런 id 로 착수 행을 쓴다, 89q: 아침 보고가 두 절을 싣는다, 89q: 설계 두 갈래가 티켓 배달 절을 공유한다, 89q: 분할과 리뷰가 티켓 배달을 읽는다, 89q: 공유 계약의 닫힘 경로가 구현 중단을 든다 ---
+# --- section: 89q | group: tier | covers: 킥오프 문면, design_delivery, ticket-delivery | anchors: 89q: 킥오프가 판정의 배달 방식을 대조하고 묻는다, 89q: 킥오프가 하위 런의 설계 생략과 착수 행을 싣는다, 89q: 경계 문면이 티켓 배달 런의 종료 절과 5r 을 싣는다, 89q: 자가 점검이 티켓 배달 꼴과 출처 티켓 꼴을 싣는다, 89q: 재킥오프가 새 런 id 로 착수 행을 쓴다, 89q: 아침 보고가 두 절을 싣는다, 89q: 설계 두 갈래가 티켓 배달 절을 공유한다, 89q: 분할과 리뷰가 티켓 배달을 읽는다, 89q: 공유 계약의 닫힘 경로가 구현 중단을 든다, 89q: 두 감사가 Step 6 에서 조정 패스를 읽는다, 89q: 조정 패스가 티켓 배정 규율을 싣는다 ---
 #
 # 게이트와 스크립트는 다른 절이 재므로 여기서는 문면만 대조한다. 옛 문면이 남으면 같은
 # 일을 두 가지로 적은 것이 되므로 없음도 함께 단언한다.
@@ -65786,6 +65786,9 @@ tkq_ba="$tkq_sk/design-base-unattended/SKILL.md"
 tkq_rv="$tkq_sk/review-unattended/SKILL.md"
 tkq_bl="$tkq_sk/_common/base-linkage.md"
 tkq_td="$tkq_sk/_common/ticket-delivery.md"
+tkq_au="$tkq_sk/design-audit/SKILL.md"
+tkq_uu="$tkq_sk/design-audit-unattended/SKILL.md"
+tkq_ad="$tkq_sk/design-audit/references/03-adjustment-pass.md"
 check "89q: 킥오프가 판정의 배달 방식을 대조하고 묻는다" \
   "$(tkx_has "$tkq_ap" "jq -e '.design_delivery == \"slices\"'")/$(tkx_has "$tkq_ap" '(header chip `배달 방식`)')/$(tkx_has "$tkq_ap" '`한 런 안 슬라이스`')/$(tkx_has "$tkq_ap" '`티켓 배달`')" "있음/있음/있음/있음"
 check "89q: design_path 재작성은 다섯 경우다" \
@@ -65808,6 +65811,10 @@ check "89q: 분할과 리뷰가 티켓 배달을 읽는다" \
   "$(tkx_has "$tkq_ba" '`--split` reads both document kinds')/$(tkx_has "$tkq_rv" '- **Ticket fence.**')/$(tkx_has "$tkq_bl" '`design-discuss-unattended`·`design-solo-unattended` Step 1')" "있음/있음/있음"
 check "89q: 공유 계약의 닫힘 경로가 구현 중단을 든다" \
   "$(tkx_has "$tkq_td" '구현 중단 기록으로 사람에게 넘기며')/$(tkx_has "$tkq_td" '설계를 생략한 하위 런은 구현 중단에서 사람이 정한다')/$(tkx_has "$tkq_td" '기록 주체」 가 정한다')" "있음/있음/없음"
+check "89q: 두 감사가 Step 6 에서 조정 패스를 읽는다" \
+  "$(tkx_has "$tkq_au" '**Read `${CLAUDE_SKILL_DIR}/references/03-adjustment-pass.md`.**')/$(tkx_has "$tkq_uu" '**Read `${CLAUDE_SKILL_DIR}/../design-audit/references/03-adjustment-pass.md`.**')" "있음/있음"
+check "89q: 조정 패스가 티켓 배정 규율을 싣는다" \
+  "$(tkx_has "$tkq_ad" '## Ticket-delivery assignment (T3 and T4)')/$(tkx_has "$tkq_ad" '**A new open entry goes to exactly one ticket.**')/$(tkx_has "$tkq_ad" '**`닿는 슬라이스` stays the scope.**')/$(tkx_has "$tkq_ad" '**A new residual item goes to exactly one ticket.**')/$(tkx_has "$tkq_ad" '**An existing assignment does not move.**')/$(tkx_has "$tkq_ad" 'carries its ticket-list edit by `## Ticket-delivery assignment (T3 and T4)`')" "있음/있음/있음/있음/있음/있음"
 
 # ---------------------------------------------------------------------------
 # 89r. 아침 보고의 상위 착지 판정
