@@ -5,6 +5,18 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.50.3] - 2026-11-19
+
+이관 고정 계정이 속한 묶음이 대화형 레인(cc)의 차용 때문에만 예약된 경우, 라우터가 그 계정을 PARK `pinned-lane-ineligible(group-reserved)` 로 끝내던 결함을 고쳤다. PARK 에는 대기 임대가 서지 않아 cc-lane 의 기증자 교체가 걸리지 않았고, 사람은 그룹 예약을 원인으로 읽었다. 이제 그 경우는 기증자 계정을 실은 차용 대기 `pinned-borrowed` 이고, 같은 org 에 레인이 아닌 대화형 전용 계정이 있는 진짜 예약은 지금처럼 PARK 다.
+
+### Fixed
+
+- **차용 예약 표지** — 라우터가 차용 중일 때 차용하는 레인의 행(설정 디렉터리가 차용 기록의 레인 디렉터리와 같은 인벤토리·사용량 행, 없으면 id `cc`)을 찾고, 예약을 만드는 인벤토리 행이 모두 레인 행인 차용 묶음의 차용 표지 계정 보기에만 `reserved_by_borrow: true` 를 단다. `group_reserved` 값과 다른 보기는 그대로다.
+- **이관 고정 입장** — 그룹 예약이면서 차용 예약이 아닐 때만 PARK 이고, 차용 표지가 있으면 `{verdict: "WAIT", reason: "pinned-borrowed", account: <기증자>, until_epoch: null, cost: null}` 이다. 기증자는 고정 계정이 기증자면 그 자신, 기증자 묶음의 다른 계정이면 차용 기록의 기증자다. 묶음 예약 없이 차용만 있는 경우도 `no-room` 대신 같은 사유다.
+- **이관 후보 거절 사유** — 차용 예약 묶음의 계정은 `group-reserved` 대신 남은 순서대로 첫 원인을 받아, `pinned-publish-no-successor` 복구 줄에 `a(borrowed)` 로 적힌다.
+- **원장과 읽는 쪽** — 원장 계열 검사가 `stage-wait.근거=pinned-borrowed` 를 받고 그 행의 `계정` 칸을 요구한다(거부 문면 「재개 구속 원인이나 차용 대기일 때만 값」). 런 끝 파견 대기 요약은 계정 부류로, 대시보드는 `계정 여유 부족` 으로 센다. 사이드카 계약의 `stage-wait` 행 산문과 어휘 표를 맞췄다.
+- **회귀 시험** — `test-route.sh` 의 이관 절(차용 예약 대기·기증자 계정·진짜 예약 PARK·거절 사유·분류 보기·대기 행 작성기 계약)과 원장 검사, `test-run.sh` 의 파견 대기 요약 사례.
+
 ## [3.50.2] - 2026-11-18
 
 리뷰 스테이지가 `정상 완료` 로 끝났는데 그 결과의 `cycle` 행이 없는 세그먼트를 라우터가 다시 리뷰로 파견해, 앞 리포트를 덮어쓰고 결과가 원장에 남지 않던 결함을 고쳤다. 이제 게이트는 기록을 기다리는 세그먼트를 스냅숏의 `cycle_due[]` 로 알리고, 그 행이 서기 전까지 그 세그먼트의 리뷰 파견을 거부한다. 리뷰어 런과 일반 런 모두에 해당한다.
