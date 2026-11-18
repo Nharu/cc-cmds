@@ -2905,12 +2905,80 @@ cc_run_state() {
 # assignment also overwrites whatever a caller's environment carried.
 CC_RUN_IDLE_EXIT_SECONDS=86400
 
+# ---------------------------------------------------------------------------
+# THE HALT RECORD'S SHAPE, READ IN ONE PLACE. `run.sh` and the gate source this
+# file, so the option-line rule below is the one the gate's option check, the
+# morning report's option block, the format predicate and the person-held test
+# under it all read; three copies of it drifted apart once already. It lives
+# here rather than in `run.sh` because the read-only tools (the watcher, the
+# fleet view, the feed) source this file alone, and the answer state they read
+# depends on it. `dashboard_read.py` carries the same rule as `halt_option_lines`.
+# ---------------------------------------------------------------------------
+halt_option_lines() {
+  # halt_option_lines — the option lines of the halt record text on stdin,
+  # verbatim: the lines of its `**선택지**:` block — opened only by a
+  # `**선택지**:` line with nothing after the colon, closed by the next line
+  # that starts with `**` or by the closing fence — that read `` - `<label>` ``
+  # alone or followed by ` — <description>`. A line of that shape outside the
+  # block (a command halt's command line, a line quoted into the question) is
+  # not an option.
+  LC_ALL=C awk '
+    $0 == "<!-- /cc-pipeline-halt v1 -->" { exit }
+    inb && /^\*\*/ { inb = 0 }
+    /^\*\*선택지\*\*:[ \t]*$/ { inb = 1; next }
+    inb && /^- `[^`]+`$/ { print; next }
+    inb && /^- `[^`]+` — / { print }
+  ' 2>/dev/null || true
+}
+
+cc_halt_person_held() {
+  # cc_halt_person_held <record file> — succeeds when the record puts options
+  # before a person: the file exists, its first line opens with the
+  # `<!-- cc-pipeline-halt v1;` header, one line of it is the closing fence
+  # `<!-- /cc-pipeline-halt v1 -->`, `halt_option_lines` prints at least one
+  # line for it, and its `**스텝**` does not begin with `Step 1.5d`,
+  # `Step 3 구현 중 반증` or `Step 3 구현 결함 반증`.
+  #
+  # A RECORD LIKE THIS WAITS FOR A PERSON'S ANSWER, NOT FOR THE KEY'S NEXT
+  # ATTEMPT. The next attempt does not answer the question the record asks; a
+  # re-dispatch over it only runs the same step again past a question nobody
+  # answered. So the answer state never reads such a record as `자동처리`, and
+  # the gate refuses a dispatch of its key until a `중단 답` row names it.
+  #
+  # THE THREE REFUTATION TOKENS ARE LEFT OUT. Those records carry options too,
+  # but the gate's decision function picks the branch (`구현 수정`, re-convergence,
+  # parking) and the driver or the routing shift dispatches the same segment
+  # again with no `중단 답` row; holding them here would stop that loop that runs
+  # without a person. `run.sh`'s `halt_refutation_token` names a fourth token,
+  # `Step 1.5a 반증 대기`, which stays inside this test: the decision function
+  # always routes that record to a person.
+  #
+  # ONLY A RECORD `halt-answer` ACCEPTS IS HELD. The gate's `중단 답` refuses a
+  # record whose first line is not the `<!-- cc-pipeline-halt v1;` header or
+  # that carries no `<!-- /cc-pipeline-halt v1 -->` line, and that row is the
+  # one way to release a held key. Such a record left behind by an attempt that
+  # exited non-zero is never moved aside as malformed, so holding it would keep
+  # its key refused until the run ends with no answer able to release it. The
+  # two checks below are that act's two checks, spelled the same way.
+  [ -n "${1:-}" ] && [ -f "$1" ] || return 1
+  local hfirst=''
+  IFS= read -r hfirst < "$1" || true
+  [ "${hfirst#<!-- cc-pipeline-halt v1;}" != "$hfirst" ] || return 1
+  grep -qxF '<!-- /cc-pipeline-halt v1 -->' "$1" 2>/dev/null || return 1
+  [ -n "$(halt_option_lines < "$1")" ] || return 1
+  case "$(sed -n 's/^\*\*스텝\*\*: //p' "$1" 2>/dev/null | sed -n '1p')" in
+    'Step 1.5d'*|'Step 3 구현 중 반증'*|'Step 3 구현 결함 반증'*) return 1 ;;
+  esac
+  return 0
+}
+
 cc__halt_answer_state() {
   # cc__halt_answer_state <ledger> <tail> [<record>] — `없음` when no `중단 답`
   # row names the record whose `중단 기록=` ends in <tail>, `되돌림` when its
   # last such row is named by a later block's `막힌 답 줄`, `답함` when one
   # does otherwise, and `자동처리` when none does but a later attempt of the
-  # record's key ran (`cc__halt_auto_next`).
+  # record's key ran (`cc__halt_auto_next`) and the record does not put options
+  # before a person (`cc_halt_person_held`).
   #
   # THE ORDER IS FIXED: the record's own answer state first, then the gate
   # record its `게이트 기록=` points at, and only when both read `없음` the
@@ -2919,6 +2987,10 @@ cc__halt_answer_state() {
   # `자동처리`: a person's answer and a returned answer are facts that have to
   # show as themselves, so an answer returned to a person stays waiting even
   # when the key's next attempt ran.
+  #
+  # A RECORD THAT PUTS OPTIONS BEFORE A PERSON STAYS `없음` whatever later
+  # attempt of its key ran: the next attempt does not answer its question.
+  # Both steps read the same record file, resolved once below.
   #
   # Fields are matched whole between ` | ` separators, the record on its tail
   # for the reason `cc_unanswered_halts` gives.
@@ -2938,17 +3010,17 @@ cc__halt_answer_state() {
   # in dashboard_read.py takes the same bytes.
   local st f g pre rest leaf
   st=$(cc__halt_answer_state_of "$1" "$2")
-  if [ "$st" = "없음" ]; then
-    f="${3:-}"
-    if [ -z "$f" ]; then
-      leaf=${2#/}; leaf=${leaf%%/*}
-      rest=${2#/"$leaf"/}
-      if [ -n "${RUN_DIR:-}" ] && [ "${RUN_DIR##*/}" = "$leaf" ]; then
-        f="${RUN_DIR%/}/$rest"
-      else
-        f="${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/run/$leaf/$rest"
-      fi
+  f="${3:-}"
+  if [ -z "$f" ]; then
+    leaf=${2#/}; leaf=${leaf%%/*}
+    rest=${2#/"$leaf"/}
+    if [ -n "${RUN_DIR:-}" ] && [ "${RUN_DIR##*/}" = "$leaf" ]; then
+      f="${RUN_DIR%/}/$rest"
+    else
+      f="${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/run/$leaf/$rest"
     fi
+  fi
+  if [ "$st" = "없음" ]; then
     if [ -f "$f" ]; then
       g=$(sed -n 's/^\*\*관측 상세\*\*:.*게이트 기록=`\{0,1\}\([^ `]*\.md\).*$/\1/p' "$f" 2>/dev/null | sed -n '1p')
       case "$g" in
@@ -2959,7 +3031,8 @@ cc__halt_answer_state() {
       esac
     fi
   fi
-  if [ "$st" = "없음" ] && [ -n "$(cc__halt_auto_next "$1" "$2")" ]; then
+  if [ "$st" = "없음" ] && [ -n "$(cc__halt_auto_next "$1" "$2")" ] \
+     && ! cc_halt_person_held "$f"; then
     st="자동처리"
   fi
   printf '%s' "$st"
@@ -3130,6 +3203,43 @@ cc_unanswered_halts() {
     n=$((n + 1))
   done
   printf '%s' "$n"
+}
+
+cc_person_halts() {
+  # cc_person_halts <run-dir> <ledger> — one line per unanswered halt record
+  # that puts options before a person, as
+  # `<key><TAB>halt/<key>#<N>.md<TAB><스텝 value>`: a record directly under
+  # `<run-dir>/halt/` (not `halt/shift/`, not an `.answer.md`) whose name is
+  # `<key>#<N>.md` with N decimal — the key everything before the last `#`,
+  # the rule `cc__halt_auto_next` uses — that `cc_halt_answered` reads as not
+  # answered and `cc_halt_person_held` holds. The walk order is
+  # `cc_unanswered_halts`'s.
+  #
+  # A NAME OF ANY OTHER SHAPE IS NOT LISTED. The automatic handling never
+  # reaches such a record, so no dispatch of a key could pass it.
+  #
+  # The gate's skill dispatch check, the snapshot's `awaiting_halts[]` and the
+  # `답 대기 기록` field of the gate's `handoff` row all read this one list, so
+  # what refuses a dispatch and what shows the wait cannot disagree.
+  local run_dir="${1%/}" ledger="$2" f name tail n key step
+  [ -n "$run_dir" ] && [ -d "$run_dir/halt" ] || return 0
+  for f in "$run_dir"/halt/*.md; do
+    [ -f "$f" ] || continue
+    case "$f" in *.answer.md) continue ;; esac
+    name=${f##*/}
+    case "$name" in *'#'*.md) ;; *) continue ;; esac
+    n=${name%.md}; key=${n%'#'*}; n=${n##*'#'}
+    case "$n" in ''|*[!0-9]*) continue ;; esac
+    [ -n "$key" ] || continue
+    tail="/${run_dir##*/}/halt/$name"
+    if [ -n "$ledger" ] && cc_halt_answered "$ledger" "$tail" "$f"; then
+      continue
+    fi
+    cc_halt_person_held "$f" || continue
+    step=$(sed -n 's/^\*\*스텝\*\*: //p' "$f" 2>/dev/null | sed -n '1p' | tr -d '\t')
+    printf '%s\thalt/%s\t%s\n' "$key" "$name" "$step"
+  done
+  return 0
 }
 
 cc_run_idle_exit() {

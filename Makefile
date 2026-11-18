@@ -189,6 +189,16 @@ check-cheap:
 #   CHECK_PUSH_JOBS         section lanes and goal jobs run at once (default 4;
 #                           1 runs them in turn, as before)
 #   CHECK_PUSH_REUSE        0 turns off the reuse of recorded passes (default 1)
+#   CHECK_PUSH_BUDGET_SECS  time budget in seconds from the start (0 off; unset
+#                           or empty: 6600 in an unattended run, else off).
+#                           Past it nothing more starts, the running jobs are
+#                           stopped and the run ends unfinished, exit 5, with
+#                           a `check-push: 판정 — 미완(시간 예산 …)` line; the
+#                           same command again on the same commit keeps the
+#                           base and skips what already passed
+#   CHECK_PUSH_FAIL_FAST    1 stops the jobs at the first failure, 0 runs them
+#                           all to their end (unset or empty: 1 in an
+#                           unattended run, else 0; check-items always 0)
 #   CC_TEST_SLOTS           host-wide test slots, one CPU's share each: a
 #                           positive whole number, or auto for max(4, CPUs);
 #                           0 turns them off. Unset or empty, an unattended
@@ -489,6 +499,7 @@ LINT_TESTS := \
 	scripts/test-gate-oracle.sh \
 	scripts/test-measure-team-cost.sh \
 	scripts/test-measure-lead-context.sh \
+	scripts/test-measure-bookkeeping.sh \
 	scripts/test-measure-test-share.sh \
 	scripts/test-measure-test-slots.sh \
 	scripts/test-measure-discussion-passes.sh \
@@ -537,6 +548,7 @@ ORCH_TESTS := \
 	scripts/test-fleet.sh \
 	scripts/test-statusline.sh \
 	scripts/test-statusline-hook.sh \
+	scripts/test-stage-values-hook.sh \
 	scripts/test-liveness-agreement.sh \
 	scripts/test-dashboard.sh \
 	scripts/test-dashboard-screen.sh \
