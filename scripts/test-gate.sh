@@ -16121,7 +16121,7 @@ rm -f "$WORK/plan15v-shape.md"
 
 # ---------------------------------------------------------------------------
 # 15vp. The run-scope visual publish step: its readers, its halts and its grades
-# --- section: 15vp | group: base | covers: act, plan, grade, exec, gate_visual_halt_refusal, gate_visual_halt_linked_close, visual_approval_provenance, gate_visual_approval_resolve, visual_publish_standing_refusal, visual_publish_person_answer, visual_publish_artifact_complete, visual_ds_confirm_provenance, visual_row_pieces, visual_overwrite_report, gate_halt_record_question, gate_own_visual_helper, gate_argv_visual_helper, gate_argv_visual_helper_write, gate_reach_disposition | anchors: 15vp: S2P 는 visual-publish 종류다, 15vp: 계획의 visual-publish 단계가 런 범위 단계다, 15vp: 시각 발행만 Artifact 환경과 표지를 받는다, 15vp: 시각 발행이 아닌 종류는 고정 lane 이 없다, 15vp: 시각 발행 종류는 호스트 파일의 lane 을 고정한다, 15vp: 재진입 표에 시각 발행 정지 넷이 있다, 15vp: 사람이 아닌 답은 거부를 세우지 않는다, 15vp: 시각-판정 의 사람 거부는 거부다, 15vp: 뒤의 사람 승인이 앞의 거부를 지운다, 15vp: 발행-실패 의 발행하지 않음 은 무효다, 15vp: 출처 꼬리 없는 승인 줄은 발행 단계가 있는 런에서 무효다, 15vp: 마지막 시각-판정 기록이 아닌 꼬리는 무효다, 15vp: 사람 승인 답이 없는 꼬리는 무효다, 15vp: 마지막 기록에 사람 승인이 있는 꼬리는 선다, 15vp: 발행 단계가 없는 런은 꼬리 없는 줄을 받는다, 15vp: 종결 문구만 있는 발행 단계는 산출이 아니다, 15vp: 발행됨 사이드카와 종결 문구는 산출이다, 15vp: 사람 거부 뒤의 종결 문구는 산출이다, 15vp: 발행 단계 밖의 account 는 등급 미상이다, 15vp: 발행 단계의 account 는 트리 밖 쓰기다, 15vp: 다른 문서를 든 account 는 등급 미상이다, 15vp: 발행 단계의 record 는 트리 밖 쓰기다, 15vp: assign 은 발행 단계에서도 등급 미상이다, 15vp: allowed 는 읽기다, 15vp: 발행 단계의 record 는 기기전역 선언으로 열린다, 15vp: 사람 승인한 후보의 append 는 트리 밖 쓰기다, 15vp: 다른 후보의 append 는 등급 미상이다, 15vp: 소비된 답의 append 는 등급 미상이다, 15vp: lane 은 읽기다, 15vp: 중단 답 연동 닫기가 처분 사유를 싣는다, 15vp: 게이트 옆이 아닌 시각 헬퍼 사본의 append 는 선언으로 열리지 않는다, 15vp: find -exec 뒤의 시각 헬퍼 append 는 선언으로 열리지 않는다, 15vp: xargs 뒤의 시각 헬퍼 append 는 선언으로 열리지 않는다, 15vp: 실행기 뒤의 시각 헬퍼 append 는 선언으로 열리지 않는다, 15vp: 실행기 뒤의 시각 헬퍼 lane 은 쓰기 거부에 걸리지 않는다, 15vp: 발행 단계의 account 는 기기전역 선언으로 열린다, 15vp: 사람 승인한 후보의 append 는 기기전역 선언으로 열린다, 15vp: 게이트 옆이 아닌 사본의 account 는 같은 등급으로도 기기전역 선언으로 열리지 않는다, 15vp: 호스트 금지 목록을 그 경로로 읽는 shasum 는 읽기 선언으로 통과한다, 15vp: 호스트 금지 목록을 그 경로로 읽는 scan 은 읽기 선언으로 통과한다 ---
+# --- section: 15vp | group: base | covers: act, plan, grade, exec, gate_visual_halt_refusal, gate_visual_halt_linked_close, visual_approval_provenance, gate_visual_approval_resolve, visual_publish_standing_refusal, visual_publish_person_answer, visual_publish_artifact_complete, visual_ds_confirm_provenance, visual_row_pieces, visual_overwrite_report, gate_halt_record_question, gate_own_visual_helper, gate_argv_visual_helper, gate_argv_visual_helper_write, gate_reach_disposition | anchors: 15vp: S2P 는 visual-publish 종류다, 15vp: runtime-users 는 읽기다, 15vp: 계획의 visual-publish 단계가 런 범위 단계다, 15vp: 시각 발행만 Artifact 환경과 표지를 받는다, 15vp: 시각 발행이 아닌 종류는 고정 lane 이 없다, 15vp: 시각 발행 종류는 호스트 파일의 lane 을 고정한다, 15vp: 재진입 표에 시각 발행 정지 넷이 있다, 15vp: 사람이 아닌 답은 거부를 세우지 않는다, 15vp: 시각-판정 의 사람 거부는 거부다, 15vp: 뒤의 사람 승인이 앞의 거부를 지운다, 15vp: 발행-실패 의 발행하지 않음 은 무효다, 15vp: 출처 꼬리 없는 승인 줄은 발행 단계가 있는 런에서 무효다, 15vp: 마지막 시각-판정 기록이 아닌 꼬리는 무효다, 15vp: 사람 승인 답이 없는 꼬리는 무효다, 15vp: 마지막 기록에 사람 승인이 있는 꼬리는 선다, 15vp: 발행 단계가 없는 런은 꼬리 없는 줄을 받는다, 15vp: 종결 문구만 있는 발행 단계는 산출이 아니다, 15vp: 발행됨 사이드카와 종결 문구는 산출이다, 15vp: 사람 거부 뒤의 종결 문구는 산출이다, 15vp: 발행 단계 밖의 account 는 등급 미상이다, 15vp: 발행 단계의 account 는 트리 밖 쓰기다, 15vp: 다른 문서를 든 account 는 등급 미상이다, 15vp: 발행 단계의 record 는 트리 밖 쓰기다, 15vp: assign 은 발행 단계에서도 등급 미상이다, 15vp: allowed 는 읽기다, 15vp: 발행 단계의 record 는 기기전역 선언으로 열린다, 15vp: 사람 승인한 후보의 append 는 트리 밖 쓰기다, 15vp: 다른 후보의 append 는 등급 미상이다, 15vp: 소비된 답의 append 는 등급 미상이다, 15vp: lane 은 읽기다, 15vp: 중단 답 연동 닫기가 처분 사유를 싣는다, 15vp: 게이트 옆이 아닌 시각 헬퍼 사본의 append 는 선언으로 열리지 않는다, 15vp: find -exec 뒤의 시각 헬퍼 append 는 선언으로 열리지 않는다, 15vp: xargs 뒤의 시각 헬퍼 append 는 선언으로 열리지 않는다, 15vp: 실행기 뒤의 시각 헬퍼 append 는 선언으로 열리지 않는다, 15vp: 실행기 뒤의 시각 헬퍼 lane 은 쓰기 거부에 걸리지 않는다, 15vp: 발행 단계의 account 는 기기전역 선언으로 열린다, 15vp: 사람 승인한 후보의 append 는 기기전역 선언으로 열린다, 15vp: 게이트 옆이 아닌 사본의 account 는 같은 등급으로도 기기전역 선언으로 열리지 않는다, 15vp: 호스트 금지 목록을 그 경로로 읽는 shasum 는 읽기 선언으로 통과한다, 15vp: 호스트 금지 목록을 그 경로로 읽는 scan 은 읽기 선언으로 통과한다 ---
 #
 # The publish step is the fifth row of the run-scope table. It runs after the
 # visual step, publishes the screens at the one lane the host file pins, and
@@ -16444,6 +16444,8 @@ check "15vp: confirm 은 읽기다" \
   "$(vp15 "$VP15/m.md" 'S2P#2' 'surface_of_argv0 "$1" confirm "$2"' "$CC_ORCH/visual-check.sh" "$WT/docs/fixture-design-15vp.md")" "읽기"
 check "15vp: system-users 는 읽기다" \
   "$(vp15 "$VP15/m.md" 'S2V#1' 'surface_of_argv0 "$1" system-users "$2"' "$CC_ORCH/visual-check.sh" "$WT/docs/fixture-design-15vp.md")" "읽기"
+check "15vp: runtime-users 는 읽기다" \
+  "$(vp15 "$VP15/m.md" 'S2P#2' 'surface_of_argv0 "$1" runtime-users "$2"' "$CC_ORCH/visual-check.sh" "$WT/docs/fixture-design-15vp.md")" "읽기"
 check "15vp: 픽스처의 확인 줄이 이 문서의 대기로 읽힌다 (아래가 공허하지 않다)" \
   "$(vp15 "$VP15/m.md" - 'visual_confirm_state "$DOC"')" "확인 대기 — 문서 docs/fixture-design-15vp.md"
 check "15vp: 디자인 시스템 종단 문구와 대기 확인 줄은 생성 단계의 산출이다" \
@@ -17246,7 +17248,7 @@ rm -rf "$VN15"
 
 # ---------------------------------------------------------------------------
 # 15vq. The approved-screen reflection: one re-convergence per person's answer
-# --- section: 15vq | group: base | covers: act, plan, snapshot, halt-answer, gate_approval_reflection_entry, gate_approval_reflection_live, gate_approval_reflection_retry_ok, gate_approval_reflection_scope_of, gate_caller_is_visual_publish_stage, gate_stage_last_settled_row, gate_stage_row_segment, gate_stage_result_rows_of, gate_redeclare_after_reconverge, gate_replan_due_json, gate_halt_detail_scope, visual_approval_route_hint, visual_approval_verdict | anchors: 15vq: 사람의 답이 없으면 반영 재수렴은 거부된다, 15vq: 반영 대기 동안 승인 판정은 보류다, 15vq: 반영 대기 안내는 사람이 할 일이 없다고 말한다, 15vq: 발행 단계가 없는 런의 반영 대기 안내는 구현 승인을 다시 실행하라고 한다, 15vq: 꼬리 없는 반영 대기 안내는 발행 단계가 있어도 구현 승인을 다시 실행하라고 한다, 15vq: 범위가 다른 프롬프트는 거부된다, 15vq: 가장 마지막 시각-판정 기록이 아니면 거부된다, 15vq: 감사 단계에 살아 있는 시도가 있으면 거부된다, 15vq: 사람의 승인 답 하나로 반영 재수렴 plan 이 통과한다, 15vq: 반영 행이 세그먼트=- · 스테이지=S2P · 종류=reconverge 로 정상 완료다, 15vq: 같은 답의 두 번째 반영은 거부된다, 15vq: 마지막 반영 세션을 잇는 --resume 은 통과한다, 15vq: 다른 세션의 --resume 은 거부된다, 15vq: 반영 행은 재계획 후보가 아니다, 15vq: 반영 행 뒤에는 재선언하지 않는다, 15vq: 반영 시도가 살아 있는 동안 감사 파견은 거부된다, 15vq: 반영 시도가 살아 있는 동안 시각 발행 파견은 거부된다, 15vq: 반영 세션은 시각 발행 단계로 읽히지 않는다, 15vq: 시각 발행 정지의 재부착은 반영 행을 건너뛴다, 15vq: 반영 실패 동안 승인 판정은 보류다, 15vq: 반영 실패 안내는 반영 정지 기록을 든다, 15vq: 운반 답 갈래로 들인 반영의 실패 안내는 정지 기록에 답하라고 하지 않고 런이 끝난 뒤 다시 실행하라고 한다, 15vq: 반영 정지 기록의 좌석 답은 거부된다, 15vq: 결정 첨부 후 다시 반영 답으로 반영 plan 이 통과한다, 15vq: 비정상 종료 뒤 같은 답으로 한 번 더 들인다, 15vq: 세 번째 시도는 거부된다, 15vq: precondition-failed 정지는 한 번 더 들이는 종단이다, 15vq: 앞선 런에서 들인 승인 답이 반영을 연다, 15vq: 반영 범위 세 낱말을 범위로 읽는다 ---
+# --- section: 15vq | group: base | covers: act, plan, snapshot, halt-answer, gate_approval_reflection_entry, gate_approval_reflection_live, gate_approval_reflection_retry_ok, gate_approval_reflection_scope_of, gate_caller_is_visual_publish_stage, gate_stage_last_settled_row, gate_stage_row_segment, gate_stage_result_rows_of, gate_redeclare_after_reconverge, gate_replan_due_json, gate_halt_detail_scope, visual_approval_route_hint, visual_approval_verdict, visual_publish_redispatch_holds, gate_visual_redispatch_why | anchors: 15vq: 사람의 답이 없으면 반영 재수렴은 거부된다, 15vq: 최신 시각-판정 에 대한 사람 승인으로 쓰인 무효 승인은 재파견 조건이 선다, 15vq: 재파견 조건이 서면 정상 완료한 발행 단계를 다시 띄운다, 15vq: 재파견 거절은 서지 않은 조건을 든다, 15vq: 반영 대기 동안 승인 판정은 보류다, 15vq: 반영 대기 안내는 사람이 할 일이 없다고 말한다, 15vq: 발행 단계가 없는 런의 반영 대기 안내는 구현 승인을 다시 실행하라고 한다, 15vq: 꼬리 없는 반영 대기 안내는 발행 단계가 있어도 구현 승인을 다시 실행하라고 한다, 15vq: 범위가 다른 프롬프트는 거부된다, 15vq: 가장 마지막 시각-판정 기록이 아니면 거부된다, 15vq: 감사 단계에 살아 있는 시도가 있으면 거부된다, 15vq: 사람의 승인 답 하나로 반영 재수렴 plan 이 통과한다, 15vq: 반영 행이 세그먼트=- · 스테이지=S2P · 종류=reconverge 로 정상 완료다, 15vq: 같은 답의 두 번째 반영은 거부된다, 15vq: 마지막 반영 세션을 잇는 --resume 은 통과한다, 15vq: 다른 세션의 --resume 은 거부된다, 15vq: 반영 행은 재계획 후보가 아니다, 15vq: 반영 행 뒤에는 재선언하지 않는다, 15vq: 반영 시도가 살아 있는 동안 감사 파견은 거부된다, 15vq: 반영 시도가 살아 있는 동안 시각 발행 파견은 거부된다, 15vq: 반영 세션은 시각 발행 단계로 읽히지 않는다, 15vq: 시각 발행 정지의 재부착은 반영 행을 건너뛴다, 15vq: 반영 실패 동안 승인 판정은 보류다, 15vq: 반영 실패 안내는 반영 정지 기록을 든다, 15vq: 운반 답 갈래로 들인 반영의 실패 안내는 정지 기록에 답하라고 하지 않고 런이 끝난 뒤 다시 실행하라고 한다, 15vq: 반영 정지 기록의 좌석 답은 거부된다, 15vq: 결정 첨부 후 다시 반영 답으로 반영 plan 이 통과한다, 15vq: 비정상 종료 뒤 같은 답으로 한 번 더 들인다, 15vq: 세 번째 시도는 거부된다, 15vq: precondition-failed 정지는 한 번 더 들이는 종단이다, 15vq: 앞선 런에서 들인 승인 답이 반영을 연다, 15vq: 반영 범위 세 낱말을 범위로 읽는다 ---
 #
 # A person's `승인` to the publish stage's `시각-판정` record leaves the
 # implementation approval with `**문서 반영**: 대기`, and the approval holds the
@@ -17363,6 +17365,74 @@ case "$(VQ_M="$WORK/plan-R15VQN.md" vq15 'visual_approval_route_hint')" in
   *"/cc-cmds:visual $DOC15VQ 구현 승인 을 다시 실행해"*) ok "15vq: 발행 단계가 없는 런의 반영 대기 안내는 구현 승인을 다시 실행하라고 한다" ;;
   *) bad "15vq: 발행 단계가 없는 런의 반영 대기 안내는 구현 승인을 다시 실행하라고 한다" "$(VQ_M="$WORK/plan-R15VQN.md" vq15 'visual_approval_route_hint')" ;;
 esac
+
+# An approval a person gave to the run's latest `시각-판정` that broke on its
+# inputs is asked again by the publish stage: the re-dispatch rule holds, the
+# hint names the re-dispatch, and the gate lets the finished publish step run
+# again. Each condition that fails keeps it shut and is named in the refusal.
+vq15_void() {  # vq15_void <꼬리> — the published sidecar, its approval's input bundle no longer the screens'
+  printf '# 시각 사이드카\n<!-- cc-visual v1; owner-doc=%s; -->\n\n**상태**: 발행됨\n**구현 승인**: 2026-11-11 — 입력 묶음 %s — 금지 목록 %s — 기계 검사 수용 없음%s\n\n### 화면 home\n' \
+    "$DOC15VQ" "$(printf 'old-bundle' | shasum -a 256 | cut -d' ' -f1)" "$(printf 'bans' | shasum -a 256 | cut -d' ' -f1)" "$1" > "$SC15VQ"
+}
+vq15_holds() { vq15 'visual_publish_redispatch_holds "$DOC"; printf " rc=%s" "$?"'; }
+vq15_redisp() { vq15 'gate_visual_redispatch_why S2P visual-publish; printf " rc=%s" "$?"'; }
+# The ledger copies keep the run's file name: an anchorless ledger is this
+# run's only under `<run-id>.md`.
+VQ15_RDL="$WORK/vq15-redisp/R15VQ.md"
+VQ15_REFL="$WORK/vq15-ref/R15VQ.md"
+mkdir -p "$WORK/vq15-redisp" "$WORK/vq15-ref"
+cp "$LED15VQ" "$VQ15_RDL"
+printf -- '- `stage-result` | 세그먼트=- | 스테이지=S2P | 종류=visual-publish | 종료 코드=0 | 실행 버전=2 | 세션 id=spub2 | 종단 부류=정상 완료 | 실패 서명=x\n' \
+  >> "$VQ15_RDL"
+vq15_void ' — 사람 답 S2P#1.md'
+case "$(bash "$CC_ORCH/visual-check.sh" approval "$WT/$DOC15VQ" 2>/dev/null | sed -n 1p)" in
+  '승인 무효 — 입력 묶음이 달라졌다'*) ok "15vq 픽스처: 묶음이 달라진 승인 줄은 입력 묶음 불일치로 무효다 (아래가 공허하지 않다)" ;;
+  *) bad "15vq 픽스처: 묶음이 달라진 승인 줄은 입력 묶음 불일치로 무효다 (아래가 공허하지 않다)" \
+       "$(bash "$CC_ORCH/visual-check.sh" approval "$WT/$DOC15VQ" 2>/dev/null | sed -n 1p)" ;;
+esac
+check "15vq: 최신 시각-판정 에 대한 사람 승인으로 쓰인 무효 승인은 재파견 조건이 선다" "$(vq15_holds)" " rc=0"
+case "$(vq15 'visual_approval_route_hint')" in
+  *'교대가 시각 발행 단계(S2P)를 다시 보낸다'*'새 `시각-판정` 기록'*) ok "15vq: 재파견 조건이 서면 안내는 교대가 발행 단계를 다시 보낸다고 한다" ;;
+  *) bad "15vq: 재파견 조건이 서면 안내는 교대가 발행 단계를 다시 보낸다고 한다" "$(vq15 'visual_approval_route_hint')" ;;
+esac
+check "15vq: 재파견 조건이 서면 정상 완료한 발행 단계를 다시 띄운다" "$(VQ_L="$VQ15_RDL" vq15_redisp)" " rc=0"
+vq15_void ''
+check "15vq: 꼬리 없는 무효 승인은 재파견 조건이 서지 않는다" "$(vq15_holds)" "구현 승인 줄에 사람 답 출처 꼬리가 없다 rc=1"
+case "$(VQ_L="$VQ15_RDL" vq15_redisp)" in
+  *'새 화면을 만든 뒤, 또는 입력 묶음이 달라져'*'재파견 조건이 서지 않음: 구현 승인 줄에 사람 답 출처 꼬리가 없다 rc=1') ok "15vq: 재파견 거절은 서지 않은 조건을 든다" ;;
+  *) bad "15vq: 재파견 거절은 서지 않은 조건을 든다" "$(VQ_L="$VQ15_RDL" vq15_redisp)" ;;
+esac
+vq15_void ' — 사람 답 S2P#1.md'
+vq15_vrec 2
+check "15vq: 꼬리가 가장 마지막 시각-판정 기록이 아니면 재파견 조건이 서지 않는다" "$(vq15_holds)" \
+  "출처 꼬리 S2P#1.md 가 가장 마지막 시각-판정 기록 S2P#2.md 이 아니다 rc=1"
+case "$(vq15 'visual_approval_route_hint')" in
+  *'다시 보낸다'*) bad "15vq: 재파견 조건이 서지 않으면 안내는 최신 시각-판정 기록에 답하라고 한다" "$(vq15 'visual_approval_route_hint')" ;;
+  *"시각-판정 중단 기록 $RD15VQ/halt/S2P#2.md 에 사람이 「승인」 으로 답해"*) ok "15vq: 재파견 조건이 서지 않으면 안내는 최신 시각-판정 기록에 답하라고 한다" ;;
+  *) bad "15vq: 재파견 조건이 서지 않으면 안내는 최신 시각-판정 기록에 답하라고 한다" "$(vq15 'visual_approval_route_hint')" ;;
+esac
+rm -f "$RD15VQ/halt/S2P#2.md"
+printf '# 원장\n\n## 실행 R15VQ\n' > "$WORK/vq15-noans.md"
+check "15vq: 사람의 승인 답이 없으면 재파견 조건이 서지 않는다" "$(VQ_L="$WORK/vq15-noans.md" vq15_holds)" \
+  "시각-판정 기록 S2P#1.md 에 대한 사람의 마지막 답이 「승인」 이 아니다 rc=1"
+printf '%s\n' '<!-- cc-pipeline-halt v1; writer=visual-publish-unattended; reader=orchestrator; stage=S2P#9; run=R15VQ -->' \
+  '**스킬**: visual-publish-unattended' '**스텝**: 발행-실패 — 픽스처' '**분류**: gate-unanswerable' \
+  '<!-- /cc-pipeline-halt v1 -->' > "$RD15VQ/halt/S2P#9.md"
+cp "$LED15VQ" "$VQ15_REFL"
+printf -- '- `중단 답` | 세그먼트=S2P | 중단 기록=%s | 답한 주체=사람 | 선택지=발행하지 않음 | 근거=픽스처\n' \
+  "$RD15VQ/halt/S2P#9.md" >> "$VQ15_REFL"
+check "15vq: 사람 거절이 서 있으면 재파견 조건이 서지 않는다" "$(VQ_L="$VQ15_REFL" vq15_holds)" \
+  "시각 발행 단계 중단 기록 S2P#9.md 에 사람이 남긴 「발행하지 않음」 답이 서 있다 rc=1"
+rm -rf "$RD15VQ/halt/S2P#9.md" "$WORK/vq15-ref" "$WORK/vq15-noans.md"
+vq15_sidecar '**문서 반영**: 대기 — 어긋남 1건 — 사람 답 S2P#1.md'
+check "15vq: 입력 묶음 불일치가 아닌 판정은 재파견 조건이 서지 않는다" "$(vq15_holds)" \
+  "구현 승인 판정이 입력 묶음 불일치가 아니다 (승인 보류 — 설계 문서 반영 대기) rc=1"
+case "$(VQ_L="$VQ15_RDL" vq15_redisp)" in
+  *'재파견 조건이 서지 않음'*) bad "15vq: 입력 묶음 불일치가 아닌 거절은 재파견 조건을 들지 않는다" "$(VQ_L="$VQ15_RDL" vq15_redisp)" ;;
+  *'새 화면을 만든 뒤'*' rc=1') ok "15vq: 입력 묶음 불일치가 아닌 거절은 재파견 조건을 들지 않는다" ;;
+  *) bad "15vq: 입력 묶음 불일치가 아닌 거절은 재파견 조건을 들지 않는다" "$(VQ_L="$VQ15_RDL" vq15_redisp)" ;;
+esac
+rm -rf "$WORK/vq15-redisp"
 printf '# 시각 사이드카\n<!-- cc-visual v1; owner-doc=%s; -->\n\n**상태**: 발행됨\n**구현 승인**: 2026-11-11 — 입력 묶음 %s — 금지 목록 %s — 기계 검사 수용 없음\n**문서 반영**: 대기 — 어긋남 1건\n\n### 화면 home\n' \
   "$DOC15VQ" "$VQ15_B" "$(printf 'bans' | shasum -a 256 | cut -d' ' -f1)" > "$SC15VQ"
 check "15vq 픽스처: 꼬리 없는 승인도 승인 술어가 반영 대기 보류다 (아래가 공허하지 않다)" \
