@@ -2194,6 +2194,10 @@ export CC_CMDS_ATTENTION_ROOT="$WORK/attention-root-absent"
 # base branch's readings live under it: a value inherited from the caller would
 # let this host's readings into every routed fixture's dispositions.
 unset GATE_PACE_ROOT
+# The same holds for the driver's own pace root: an inherited value would send
+# every visual publish request a section builds to this host's real
+# `visual-pins/`. A section that needs its own root still sets it.
+unset RUN_PACE_ROOT
 # gh 는 이 프로세스 전체에서 미인증이고 도달할 수 없는 호스트를 본다. 결속된 원격
 # 머지의 픽스처 철자는 REST `gh api … /pulls/<n>/merge -f sha=…` 이고, 그것을 `act`
 # 로 통과시키면 게이트가 실제로 실행한다 — `gh pr merge` 는 픽스처 원격이 로컬 베어
@@ -17236,7 +17240,7 @@ rm -f "$SC15VR" "$WT/$DOC15VR"
 
 # ---------------------------------------------------------------------------
 # 15vm. A visual publish pin the router migrates is recorded by the gate
-# --- section: 15vm | group: base | covers: grade, gate_resume_grant_ok, gate_visual_lane_auth_email, gate_visual_lane_write, gate_visual_lane_commit, gate_visual_lane_doc_commit, gate_route_env_fresh, kind_pin_resolve, kind_pin_request_json, gate_launch_stage, gate_launch_route, gate_launch_route_ask, gate_launch_route_carry, gate_verb_supervise_stage, gate_record_stage_outcome | anchors: 15vm: 시각 발행 요청 칸은 migratable 과 호스트 고정을 싣는다, 15vm: 이관 fresh GRANT 는 재부착 구속을 지난다, 15vm: 이관 GRANT 가 런 지역 이관 기록을 쓴다, 15vm: 새 레인의 계정을 읽지 못하면 기록을 쓰지 않고 레인과 원인을 낸다, 15vm: 문서 단위 기록의 레인을 받은 첫 GRANT 는 승계 줄을 쓴다, 15vm: 마지막 이관이 끝났으면 문서 단위 기록이 쓰인다, 15vm: 문서 단위 기록을 쓰면 같은 계정의 문서 계정 기록도 쓰인다, 15vm: 문서 단위 기록을 쓰지 못하면 문서 계정 기록도 쓰이지 않는다, 15vm: 문서 계정 기록을 쓰지 못하면 assign --replace 로 고치라고 경고한다, 15vm: 파견 경로 다섯이 같은 기록 함수와 요청 칸을 지난다 ---
+# --- section: 15vm | group: base | covers: grade, gate_resume_grant_ok, gate_visual_lane_auth_email, gate_visual_lane_write, gate_visual_lane_commit, gate_visual_lane_doc_commit, gate_route_env_fresh, kind_pin_resolve, kind_pin_request_json, kind_pin_note, gate_launch_stage, gate_launch_route, gate_launch_route_ask, gate_launch_route_carry, gate_verb_supervise_stage, gate_record_stage_outcome | anchors: 15vm: 시각 발행 요청 칸은 migratable 과 호스트 고정을 싣는다, 15vm: 시각 발행 요청 칸은 그 레인의 시각 고정 기록을 남긴다, 15vm: 라우터가 PARK 를 내도 시각 발행 질문의 고정 기록은 남는다, 15vm: 이관 grant 는 시각 고정 기록을 새 레인으로 덮어쓴다, 15vm: 이관 grant 의 시각 고정 기록 쓰기 실패는 park 사유 없이 grant 를 잇는다,15vm: 이관 fresh GRANT 는 재부착 구속을 지난다, 15vm: 이관 GRANT 가 런 지역 이관 기록을 쓴다, 15vm: 새 레인의 계정을 읽지 못하면 기록을 쓰지 않고 레인과 원인을 낸다, 15vm: 문서 단위 기록의 레인을 받은 첫 GRANT 는 승계 줄을 쓴다, 15vm: 마지막 이관이 끝났으면 문서 단위 기록이 쓰인다, 15vm: 문서 단위 기록을 쓰면 같은 계정의 문서 계정 기록도 쓰인다, 15vm: 문서 단위 기록을 쓰지 못하면 문서 계정 기록도 쓰이지 않는다, 15vm: 문서 계정 기록을 쓰지 못하면 assign --replace 로 고치라고 경고한다, 15vm: 파견 경로 다섯이 같은 기록 함수와 요청 칸을 지난다 ---
 #
 # The router (slice A) answers a visual publish request whose pin is blocked
 # with a GRANT on another lane: `migrated: {from, to, why}` and `fresh: true`.
@@ -17269,17 +17273,32 @@ vm15() {  # vm15 <snippet> [args...] — run a snippet in the sourced gate, on t
     set +e
     unset CC_PIPELINE_RUN_DIR
     RUN_ID=R15VM; RUN_DIR="$VM_D/run"; DOC="$VM_D/repo/docs/d.md"; CLI_BIN="$VM_D/bin/claude"
+    RUN_PACE_ROOT="$VM_D/pace"
     eval "$VM_SNIP"' _ "$@" 2>/dev/null )
 }
+# The run's visual pin record, where the question and a migration grant write it.
+VM15_PINS="$VM15/pace/visual-pins"
+VM15_PIN="$VM15_PINS/$( ( . "$CC_ORCH/route.sh"; k=$(route__key R15VM x); printf '%s' "${k%+*}" ) ).pin"
+vm15_pin() { if [ -f "$VM15_PIN" ]; then jq -r '[.schema, .run_id, .account, .run_dir] | join("|")' "$VM15_PIN"; else printf 없음; fi; }
 vm15_env() {  # vm15_env <from> <to> — a migration GRANT as the router writes it
   printf '{"verdict":"GRANT","account":"%s","config_dir":"%s","basis":"first","fresh":true,"migrated":{"from":"%s","to":"%s","why":"reserve"}}' \
     "$2" "$VM15/cfg-$2" "$1" "$2"
 }
 vm15_sum() { if [ -f "$VM15/run/visual-lane" ]; then shasum -a 256 "$VM15/run/visual-lane" | cut -d' ' -f1; else printf 없음; fi; }
 
+vm15 'kind_pin_request_json implement' >/dev/null
+check "15vm: 다른 종류의 요청 칸은 시각 고정 기록을 남기지 않는다" "$([ -e "$VM15_PINS" ] && printf 있음 || printf 없음)" "없음"
 check "15vm: 시각 발행 요청 칸은 migratable 과 호스트 고정을 싣는다" \
   "$(vm15 'kind_pin_request_json visual-publish')/$(vm15 'kind_pin_request_json implement')" \
   '{"migratable":true,"pin_lane":"a","pin_source":"host"}/{}'
+check "15vm: 시각 발행 요청 칸은 그 레인의 시각 고정 기록을 남긴다" \
+  "$(vm15_pin):$(ls -A "$VM15_PINS" | grep -c .)" "cc-cmds-visual-pin v1|R15VM|a|$VM15/run:1"
+# The record is written before the request reaches the router, so a PARK
+# leaves it too: the question below is answered PARK by a stand-in resolver.
+rm -f "$VM15_PIN"
+vm15_park='route_resolve() { printf "%s" "{\"verdict\":\"PARK\",\"reason\":\"pinned-lane-ineligible\"}"; }; export GATE_ROUTE_LINEAGE=B:V1#1; gate_launch_route_ask V1 visual-publish first "" | jq -r .verdict'
+check "15vm: 라우터가 PARK 를 내도 시각 발행 질문의 고정 기록은 남는다" \
+  "$(vm15 "$vm15_park")/$(vm15_pin)" "PARK/cc-cmds-visual-pin v1|R15VM|a|$VM15/run"
 check "15vm: fresh 봉투만 새 세션으로 읽힌다" \
   "$(vm15 'gate_route_env_fresh "$1" && printf 1 || printf 0' "$(vm15_env a b)")$(vm15 'gate_route_env_fresh "$1" && printf 1 || printf 0' '{"verdict":"GRANT","account":"a"}')" "10"
 check "15vm: 이관 fresh GRANT 는 재부착 구속을 지난다" \
@@ -17294,6 +17313,7 @@ VM_AUTH=ok vm15 'gate_visual_lane_commit visual-publish "$1"; printf "rc=%s" "$?
 check "15vm: 이관 GRANT 가 런 지역 이관 기록을 쓴다" \
   "$(cat "$VM15/out1")|$(sed -n 1p "$VM15/run/visual-lane" | cut -c1-22)|$(sed -n '2,3p' "$VM15/run/visual-lane" | tr '\n' ' ')|$(grep -c '^\*\*이관\*\*: 1 · a → b · reserve · ' "$VM15/run/visual-lane")" \
   "rc=0|<!-- cc-visual-lane v1|**레인**: b **계정**: new@example.com |1"
+check "15vm: 이관 grant 는 시각 고정 기록을 새 레인으로 덮어쓴다" "$(vm15_pin)" "cc-cmds-visual-pin v1|R15VM|b|$VM15/run"
 check "15vm: 기록이 생긴 뒤의 고정은 그 레인이고 출처는 run-record 다" \
   "$(vm15 'kind_pin_request_json visual-publish')" '{"migratable":true,"pin_lane":"b","pin_source":"run-record"}'
 check "15vm: 런 지역 기록의 계정을 visual-config.sh 가 기대 계정으로 읽는다" \
@@ -17366,6 +17386,24 @@ vm15 'gate_visual_lane_commit visual-publish "{\"verdict\":\"GRANT\",\"account\"
 check "15vm: 문서 단위 기록의 레인을 받은 첫 GRANT 는 승계 줄을 쓴다" \
   "$(cat "$VM15/out2")|$(sed -n '2,3p' "$VM15/run/visual-lane" | tr '\n' ' ')|$(grep -c "^\*\*승계\*\*: $VM15_DL · R15VM · " "$VM15/run/visual-lane")|$(grep -c '^\*\*이관\*\*' "$VM15/run/visual-lane" || true)" \
   "rc=0|**레인**: c **계정**: new@example.com |1|0"
+check "15vm: 승계 갈래는 시각 고정 기록을 따로 쓰지 않고 질문 때의 레인을 남긴다" "$(vm15_pin)" "cc-cmds-visual-pin v1|R15VM|c|$VM15/run"
+
+# A failed pin record write stops neither the request nor the grant: the
+# request carries the same JSON, the migration grant returns rc 0 with no park
+# reason on stdout, and the run-local record is still written.
+chmod 555 "$VM15_PINS"
+vm15_q=$(vm15 'q=$(kind_pin_request_json visual-publish); rc=$?; printf "%s|rc=%s" "$q" "$rc"')
+vm15_g=$(VM_AUTH=ok vm15 'gate_visual_lane_commit visual-publish "$1"; printf "rc=%s" "$?"' "$(vm15_env c d)")
+chmod 755 "$VM15_PINS"
+check "15vm: 시각 고정 기록 쓰기 실패는 요청 칸을 바꾸지 않는다" \
+  "$vm15_q" '{"migratable":true,"pin_lane":"c","pin_source":"run-record"}|rc=0'
+check "15vm: 이관 grant 의 시각 고정 기록 쓰기 실패는 park 사유 없이 grant 를 잇는다" \
+  "$vm15_g|$(sed -n 2p "$VM15/run/visual-lane")|$(vm15_pin)" "rc=0|**레인**: d|cc-cmds-visual-pin v1|R15VM|c|$VM15/run"
+vm15_w=$(VM_AUTH=ok vm15 'chmod 555 "$RUN_PACE_ROOT/visual-pins"; gate_visual_lane_commit visual-publish "$1" 2>&1 >/dev/null; chmod 755 "$RUN_PACE_ROOT/visual-pins"' "$(vm15_env d e)")
+case "$vm15_w" in
+  *"the visual pin record was not moved to lane e (rc=4)"*) ok "15vm: 이관 grant 의 시각 고정 기록 쓰기 실패는 경고 한 줄을 낸다" ;;
+  *) bad "15vm: 이관 grant 의 시각 고정 기록 쓰기 실패는 경고 한 줄을 낸다" "$vm15_w" ;;
+esac
 
 # The wiring: every dispatch path builds its request with the one pin builder,
 # and every path that launches on a kept grant writes the record through the
