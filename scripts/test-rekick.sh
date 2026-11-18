@@ -815,6 +815,56 @@ detect_case "3b 결함 종료 + 나중 마감 행" RKWDEF
 hasnt "3b 결함 종료 + 나중 마감 행: 끝 토큰은 첫 종료 행의 것이다" "$OUT" "같은 한도"
 
 # ---------------------------------------------------------------------------
+# 3c. 시각 승인 고지 — 재킥오프·대기 판정만 승인 뒤 문서 변경을 한 줄로 알린다
+# ---------------------------------------------------------------------------
+# The line is the sibling visual-check.sh `since-approval` output, verbatim, on a
+# real sidecar of the fixture document: a document without a sidecar or without
+# an approval line (`해당 없음`) gives no line, and no other verdict carries one.
+VSC="$BASE/docs/visual/$(printf '%s' "${DOC%.md}" | tr '/' '-').md"
+vsc_write() {  # vsc_write <digest|-> — the sidecar, with an approval line unless the digest is -
+  mkdir -p "$(dirname "$VSC")"
+  if [ "$1" = "-" ]; then
+    printf '# 시각 사이드카\n\n**설계 문서 구속 다이제스트**: %s\n' "$(bash "$ORCH/visual-check.sh" binding "$BASE/$DOC")" > "$VSC"
+  else
+    printf '# 시각 사이드카\n\n**설계 문서 구속 다이제스트**: %s\n**구현 승인**: 2026-10-01T00:00:00Z\n' "$1" > "$VSC"
+  fi
+}
+vnote() { printf '%s\n' "$1" | awk -F'\t' '$1 == "고지" && index($2, "승인 뒤 문서") == 1 { print $2 }'; }
+
+mk_prev RKVW
+detect_case "3c 사이드카 없음" RKVW 다시
+check "3c: 사이드카가 없는 대기에는 승인 고지가 없다" "$(col "$OUT" 판정)/$(vnote "$OUT")" "대기/"
+hasnt "3c: 해당 없음 은 고지로 나오지 않는다 (사이드카 없음)" "$OUT" "해당 없음"
+vsc_write -
+detect_case "3c 승인 줄 없음" RKVW 다시
+hasnt "3c: 구현 승인 줄이 없는 사이드카의 해당 없음 도 고지로 나오지 않는다" "$OUT" "해당 없음"
+check "3c: 그 대기에도 승인 고지가 없다" "$(vnote "$OUT")" ""
+vsc_write "$(bash "$ORCH/visual-check.sh" binding "$BASE/$DOC")"
+detect_case "3c 승인 뒤 변경 없음" RKVW 다시
+check "3c: 승인한 다이제스트가 지금 문서와 같으면 대기가 변경 없음을 알린다" "$(vnote "$OUT")" "승인 뒤 문서 변경 없음"
+check "3c: 그 고지는 since-approval 의 출력 그대로다" \
+  "$(printf '%s\n' "$OUT" | grep -c "^고지${TAB}$(bash "$ORCH/visual-check.sh" since-approval "$BASE/$DOC")\$")" "1"
+vsc_write "$Z64"
+detect_case "3c 승인 뒤 바뀜" RKVW 다시
+check "3c: 다이제스트가 다르고 구속 문면 사본이 없으면 비교 기준 없음을 알린다" "$(vnote "$OUT")" \
+  "승인 뒤 문서 바뀜 — 비교 기준 없음, 다음 시각 단계가 재사용과 다시 생성을 묻고 다시 생성을 고르면 승인한 화면을 잃습니다"
+
+mk_prev RKVE; fx_done
+fx_blocked '세그먼트 정박' 막힘
+detect_case "3c 재킥오프" RKVE
+check "3c: 재킥오프 판정도 같은 고지를 싣는다" "$(col "$OUT" 판정)/$(vnote "$OUT")" \
+  "재킥오프/승인 뒤 문서 바뀜 — 비교 기준 없음, 다음 시각 단계가 재사용과 다시 생성을 묻고 다시 생성을 고르면 승인한 화면을 잃습니다"
+
+mk_prev RKVL; fx_stage_live I1; fx_done
+detect_case "3c 진행 중" RKVL
+check "3c: 진행 중 판정에는 승인 고지가 없다" "$(col "$OUT" 판정)/$(vnote "$OUT")" "진행 중/"
+mk_prev RKVC; fx_done
+fx_row '종료 절' "id=C1" "상태=충족" "근거=픽스처"
+detect_case "3c 완료" RKVC
+check "3c: 완료 판정에는 승인 고지가 없다" "$(col "$OUT" 판정)/$(vnote "$OUT")" "완료/"
+rm -f "$VSC"
+
+# ---------------------------------------------------------------------------
 # 4. 완료와 종료 절
 # ---------------------------------------------------------------------------
 P_EXTRA='- `종료 절` | id=C2 | 문면=둘째 절' mk_prev RKC2; fx_done
