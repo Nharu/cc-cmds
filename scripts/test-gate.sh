@@ -58548,6 +58548,110 @@ rm -f "$SMAN85"
 rm -f "$LEDGER85" "$WT/$DOC85"
 
 # ---------------------------------------------------------------------------
+# 85h. An adopted segment whose earlier run kept its ledger under another base
+# --- section: 85h | group: base | covers: plan, act, gate_source_run_ledger, gate_adoption_check, gate_adoption_halt_source, gate_carry_source_doc_same, gate_carry_already_imported | anchors: 85h: 다른 base 의 출처 원장을 ledger-path 로 찾아 입양 계획이 통과한다, 85h: ledger-path 가 없으면 이 원장 곁을 보고 입양 계획이 거부된다, 85h: 다른 런 id 꼴의 ledger-path 는 믿지 않고 입양 계획이 거부된다, 85h: 다른 base 의 출처 원장이 착지를 말하면 입양하지 않는다, 85h: 다른 base 의 출처 원장과 그 곁 매니페스트로 사람의 재수렴 답을 들여온다 ---
+#
+# A run's ledger sits under its home target's base (`docs/pipeline-run/`), so an
+# earlier run whose home target differs from this run's keeps its ledger in
+# another directory. The gate writes that ledger's path into the earlier run's
+# directory (`ledger-path`) on every entry, and the planning act finds the
+# earlier ledger there, trusting it only when it names `<run id>.md` and the file
+# exists; otherwise it looks beside this run's ledger, as before. The earlier
+# run's manifest is read beside the ledger found.
+# ---------------------------------------------------------------------------
+DOC85H='docs/fixture-design-85h.md'
+two_slice_doc "$WT/$DOC85H" t/infra 머지 '**리뷰 정책**: 리뷰없음'
+SRC85H='20260102-bbbbbbbb'
+WT85H="$(dirname "$WT")/$(basename "$WT")-run-$SRC85H-SA"
+( cd "$WT" && git worktree add -q -b "seg/$SRC85H-SA" "$WT85H" HEAD ) >/dev/null 2>&1
+ROW85H="- \`세그먼트 입양\` | 세그먼트=SA | 브랜치=seg/$SRC85H-SA | 워크트리=$WT85H | 출처 런=$SRC85H | PR=91"
+BASE85H="$WORK/base-85h"
+mkdir -p "$BASE85H/docs/pipeline-run"
+LEDGER85H="$BASE85H/docs/pipeline-run/$SRC85H.md"
+SRCDIR85H="$STATE_LATE/cc-cmds/run/$SRC85H"
+mkdir -p "$SRCDIR85H"
+src85h_ledger() {  # src85h_ledger <상태> — the earlier run's ledger, under the other base, with one SA row
+  printf '# 픽스처 출처 런\n\n- `segment` | id=SA | 상태=%s | 워크트리=%s | 선행=없음\n' "$1" "$WT85H" > "$LEDGER85H"
+}
+run85h() {  # run85h <run id> [입양 행] — manifest, grant, and the adoption row
+  g15_run "$1" "$DOC85H" "$plan15c" 리뷰없음
+  printf '%s\n' "${2-$ROW85H}" >> "$WORK/plan-$1.md"
+}
+missing85h() {  # missing85h <label> — the last planning act was refused for a missing earlier ledger
+  case "$rc/$msg" in
+    3/*"출처 런 원장이 없습니다"*) ok "$1" ;;
+    *) bad "$1" "rc=$rc $msg" ;;
+  esac
+}
+
+src85h_ledger 리뷰중
+printf '%s\n' "$LEDGER85H" > "$SRCDIR85H/ledger-path"
+run85h R85HA
+g15_plan act R85HA SA 상태=계획됨 "워크트리=$WT85H"
+check "85h: 다른 base 의 출처 원장을 ledger-path 로 찾아 입양 계획이 통과한다" "$rc" "0"
+check "85h: 그 계획 행은 입양 워크트리를 싣는다" \
+  "$(g15_row R85HA SA | tr '|' '\n' | sed -n 's/^ *워크트리=//p' | sed 's/[[:space:]]*$//')" "$WT85H"
+
+rm -f "$SRCDIR85H/ledger-path"
+run85h R85HB
+g15_plan act R85HB SA 상태=계획됨 "워크트리=$WT85H"
+missing85h "85h: ledger-path 가 없으면 이 원장 곁을 보고 입양 계획이 거부된다"
+
+# A `ledger-path` naming another run's ledger is not trusted even though that
+# file exists: the landing check would read the wrong run.
+cp "$LEDGER85H" "$BASE85H/docs/pipeline-run/20260102-cccccccc.md"
+printf '%s\n' "$BASE85H/docs/pipeline-run/20260102-cccccccc.md" > "$SRCDIR85H/ledger-path"
+run85h R85HC
+g15_plan act R85HC SA 상태=계획됨 "워크트리=$WT85H"
+missing85h "85h: 다른 런 id 꼴의 ledger-path 는 믿지 않고 입양 계획이 거부된다"
+rm -f "$BASE85H/docs/pipeline-run/20260102-cccccccc.md"
+
+printf '%s\n' "$LEDGER85H" > "$SRCDIR85H/ledger-path"
+src85h_ledger 머지됨
+run85h R85HD
+g15_plan act R85HD SA 상태=계획됨 "워크트리=$WT85H"
+case "$rc/$msg" in
+  3/*"출처 런 $SRC85H 가 이미 머지됨 로 끝냈습니다"*) ok "85h: 다른 base 의 출처 원장이 착지를 말하면 입양하지 않는다" ;;
+  *) bad "85h: 다른 base 의 출처 원장이 착지를 말하면 입양하지 않는다" "rc=$rc $msg" ;;
+esac
+
+# The earlier run's open answer to a halt is read from the ledger found, and
+# the manifest that says which document the record quotes is read beside it:
+# no copy of either sits beside this run's ledger.
+WT85HK="$(dirname "$WT")/$(basename "$WT")-run-$SRC85H-S9"
+( cd "$WT" && git worktree add -q -b "seg/$SRC85H-S9" "$WT85HK" HEAD ) >/dev/null 2>&1
+ROW85HK="- \`세그먼트 입양\` | 세그먼트=SA | 브랜치=seg/$SRC85H-S9 | 워크트리=$WT85HK | 출처 런=$SRC85H | PR=92"
+REC85H="$SRCDIR85H/halt/S9#4.md"
+mkdir -p "$SRCDIR85H/halt"
+printf '%s\n' "<!-- cc-pipeline-halt v1; writer=implement-unattended; reader=orchestrator; stage=S9#4; run=$SRC85H -->" \
+  '**스킬**: implement-unattended' '**스텝**: Step 3 CFI-U3 BT-STOP — 리뷰 수정이 구속 티어와 충돌' \
+  '**분류**: gate-unanswerable' '**질문 문면**: 구속 티어를 옮길 것인가?' '**선택지**:' \
+  '- `구속 티어 이탈 승인` — 이탈한다' '- `재수렴` — 같은 런의 라우팅 교대가 재수렴한다' \
+  '**후속**: 보류 큐' '<!-- /cc-pipeline-halt v1 -->' > "$REC85H"
+DIG85H=$(shasum -a 256 "$REC85H" | cut -d' ' -f1)
+printf '# 픽스처 출처 런 매니페스트\n\n## 요소\n**설계 문서**: %s\n' "$DOC85H" > "$BASE85H/docs/pipeline-run/$SRC85H.plan.md"
+{ printf '# 픽스처 출처 런\n\n- `segment` | id=S9 | 상태=리뷰중 | 워크트리=%s | 선행=없음\n' "$WT85HK"
+  printf -- '- `stage-result` | 교대=0 | 세그먼트=S9 | 스테이지=S9 | 종류=implement | 실행 버전=4 | 세션 id=s-impl-4 | 종단 부류=의도된 park | prev=x\n'
+  printf -- '- `중단 답` | 세그먼트=S9 | 중단 기록=%s | 스킬=implement-unattended | 선택지=재수렴 | 근거=사람이 재수렴을 골랐다 | 기록 다이제스트=%s | 레인=좌석 | 기록 시각=2026-01-02T01:00:00Z\n' \
+    "$REC85H" "$DIG85H"; } > "$LEDGER85H"
+run85h R85HE "$ROW85HK"
+g15_plan act R85HE SA 상태=계획됨 "워크트리=$WT85HK"
+row85he=$( { grep -F '`중단 답`' "$WT/docs/pipeline-run/R85HE.md" 2>/dev/null || true; } | tail -1)
+check "85h: 다른 base 의 출처 원장과 그 곁 매니페스트로 사람의 재수렴 답을 들여온다" \
+  "$rc/$( { grep -cF '`중단 답`' "$WT/docs/pipeline-run/R85HE.md" 2>/dev/null || true; } | tr -d ' ')" "0/1"
+case "$row85he" in
+  *"| 근거=입양 이월(출처 런 $SRC85H 원장 5 번째 줄) — 사람이 재수렴을 골랐다 |"*) ok "85h: 들여온 행의 근거는 다른 base 의 출처 원장 줄을 든다" ;;
+  *) bad "85h: 들여온 행의 근거는 다른 base 의 출처 원장 줄을 든다" "$row85he" ;;
+esac
+
+( cd "$WT" && git worktree remove --force "$WT85HK" && git branch -D "seg/$SRC85H-S9" ) >/dev/null 2>&1
+( cd "$WT" && git worktree remove --force "$WT85H" && git branch -D "seg/$SRC85H-SA" ) >/dev/null 2>&1
+rm -rf "$SRCDIR85H" "$BASE85H"
+rm -f "$WT/$DOC85H"
+unset -f src85h_ledger run85h missing85h
+unset DOC85H SRC85H WT85H ROW85H BASE85H LEDGER85H SRCDIR85H WT85HK ROW85HK REC85H DIG85H row85he
+
+# ---------------------------------------------------------------------------
 # 83v. 모바일 기기 도구 — 등급표, 기기 전역 칸, 기기 정리, 구현 전 결정 수거, 결함 수정 울타리, 재수렴 소진
 # --- section: 83v | group: reach | covers: grade, reach, gate_device_act_kind, gate_device_name_fits, gate_device_name_ok, gate_device_listed, gate_device_targets_listed, gate_device_pair_ordinal, gate_device_open_check, gate_device_record, gate_preauth_pair_argv, device-cleanup, gate_decision_collect, gate_decision_collect_holds, gate_decision_hold_refuse, decision-collect, gate_defect_fix, defect-fix, gate_reconverge_spent, reconverge-spent | anchors: 83v: simctl create 는 트리밖쓰기다, 83v: 시뮬레이터가 아닌 xcodebuild test 는 미상이다, 83v: 기기 정리 행이 없는 만들기는 no-cleanup 이다, 83v: 이름 접두가 맞지 않는 만들기는 device-name 이다, 83v: 이 런이 만들지 않은 기기는 목록에 없다, 83v: 정리는 이 파견의 기기만 지운다, 83v: 도구가 없으면 정리는 3 이다, 83v: 첫 수거가 닿는 세그먼트를 보류한다, 83v: 같은 다이제스트의 재수거는 아무것도 쓰지 않는다, 83v: 보류된 세그먼트의 프로세스 A 파견은 3 이다, 83v: 답을 받은 뒤 다시 보류되면 순환 상한이다, 83v: 항목이 닫힌 문서의 수거는 보류를 푼다, 83v: 셋째 시도는 열지 않는다, 83v: 선언 밖 파일은 울타리 이탈이다, 83v: 레시피가 가리키는 시험 파일은 표시된다, 83v: 구속면이 움직이면 열지 않는다, 83v: 스킬 문면의 defect-fix 호출 꼴을 파서가 받는다, 83v: 이 런의 처리 기록은 소진이다, 83v: 다른 런의 처리 기록은 소진이 아니다, 83v: 잘린 캐리어는 판독 불가다 ---
 #
@@ -65768,7 +65872,7 @@ graded_as '읽기' '89p: fence-check 는 읽기다' -- "$CC_ORCH/base-split.py" 
 
 # ---------------------------------------------------------------------------
 # 89q. 티켓 배달의 스킬 문면
-# --- section: 89q | group: tier | covers: 킥오프 문면, design_delivery, ticket-delivery | anchors: 89q: 킥오프가 판정의 배달 방식을 대조하고 묻는다, 89q: 킥오프가 하위 런의 설계 생략과 착수 행을 싣는다, 89q: 경계 문면이 티켓 배달 런의 종료 절과 5r 을 싣는다, 89q: 자가 점검이 티켓 배달 꼴과 출처 티켓 꼴을 싣는다, 89q: 재킥오프가 새 런 id 로 착수 행을 쓴다, 89q: 아침 보고가 두 절을 싣는다, 89q: 설계 두 갈래가 티켓 배달 절을 공유한다, 89q: 분할과 리뷰가 티켓 배달을 읽는다, 89q: 공유 계약의 닫힘 경로가 구현 중단을 든다 ---
+# --- section: 89q | group: tier | covers: 킥오프 문면, design_delivery, ticket-delivery | anchors: 89q: 킥오프가 판정의 배달 방식을 대조하고 묻는다, 89q: 킥오프가 하위 런의 설계 생략과 착수 행을 싣는다, 89q: 경계 문면이 티켓 배달 런의 종료 절과 5r 을 싣는다, 89q: 자가 점검이 티켓 배달 꼴과 출처 티켓 꼴을 싣는다, 89q: 재킥오프가 새 런 id 로 착수 행을 쓴다, 89q: 아침 보고가 두 절을 싣는다, 89q: 설계 두 갈래가 티켓 배달 절을 공유한다, 89q: 분할과 리뷰가 티켓 배달을 읽는다, 89q: 공유 계약의 닫힘 경로가 구현 중단을 든다, 89q: 두 감사가 Step 6 에서 조정 패스를 읽는다, 89q: 조정 패스가 티켓 배정 규율을 싣는다 ---
 #
 # 게이트와 스크립트는 다른 절이 재므로 여기서는 문면만 대조한다. 옛 문면이 남으면 같은
 # 일을 두 가지로 적은 것이 되므로 없음도 함께 단언한다.
@@ -65786,6 +65890,9 @@ tkq_ba="$tkq_sk/design-base-unattended/SKILL.md"
 tkq_rv="$tkq_sk/review-unattended/SKILL.md"
 tkq_bl="$tkq_sk/_common/base-linkage.md"
 tkq_td="$tkq_sk/_common/ticket-delivery.md"
+tkq_au="$tkq_sk/design-audit/SKILL.md"
+tkq_uu="$tkq_sk/design-audit-unattended/SKILL.md"
+tkq_ad="$tkq_sk/design-audit/references/03-adjustment-pass.md"
 check "89q: 킥오프가 판정의 배달 방식을 대조하고 묻는다" \
   "$(tkx_has "$tkq_ap" "jq -e '.design_delivery == \"slices\"'")/$(tkx_has "$tkq_ap" '(header chip `배달 방식`)')/$(tkx_has "$tkq_ap" '`한 런 안 슬라이스`')/$(tkx_has "$tkq_ap" '`티켓 배달`')" "있음/있음/있음/있음"
 check "89q: design_path 재작성은 다섯 경우다" \
@@ -65808,6 +65915,10 @@ check "89q: 분할과 리뷰가 티켓 배달을 읽는다" \
   "$(tkx_has "$tkq_ba" '`--split` reads both document kinds')/$(tkx_has "$tkq_rv" '- **Ticket fence.**')/$(tkx_has "$tkq_bl" '`design-discuss-unattended`·`design-solo-unattended` Step 1')" "있음/있음/있음"
 check "89q: 공유 계약의 닫힘 경로가 구현 중단을 든다" \
   "$(tkx_has "$tkq_td" '구현 중단 기록으로 사람에게 넘기며')/$(tkx_has "$tkq_td" '설계를 생략한 하위 런은 구현 중단에서 사람이 정한다')/$(tkx_has "$tkq_td" '기록 주체」 가 정한다')" "있음/있음/없음"
+check "89q: 두 감사가 Step 6 에서 조정 패스를 읽는다" \
+  "$(tkx_has "$tkq_au" '**Read `${CLAUDE_SKILL_DIR}/references/03-adjustment-pass.md`.**')/$(tkx_has "$tkq_uu" '**Read `${CLAUDE_SKILL_DIR}/../design-audit/references/03-adjustment-pass.md`.**')" "있음/있음"
+check "89q: 조정 패스가 티켓 배정 규율을 싣는다" \
+  "$(tkx_has "$tkq_ad" '## Ticket-delivery assignment (T3 and T4)')/$(tkx_has "$tkq_ad" '**A new open entry goes to exactly one ticket.**')/$(tkx_has "$tkq_ad" '**`닿는 슬라이스` stays the scope.**')/$(tkx_has "$tkq_ad" '**A new residual item goes to exactly one ticket.**')/$(tkx_has "$tkq_ad" '**An existing assignment does not move.**')/$(tkx_has "$tkq_ad" 'carries its ticket-list edit by `## Ticket-delivery assignment (T3 and T4)`')" "있음/있음/있음/있음/있음/있음"
 
 # ---------------------------------------------------------------------------
 # 89r. 아침 보고의 상위 착지 판정
@@ -70986,6 +71097,113 @@ unset -f md_row md_snap md_form md_fx md_plan md_seg md_rnext md_cyc_last md_oid
 unset md_uc md_cls_got md_base_tip md_rows2 md_rows3 md_r2 md_m2 md_rc1 md_al
 unset MD_PLAN MD_JSON MD_RC MD_OUT MD_H MD_M MD_FORK MD_WT MD_STUB MD_FIX
 unset md_a md_b md_rows0 md_rows1 md_rc2 md_fail md_r md_ob md_n1 md_got md_m md_fix md_rp md_r0 md_rf md_obn md_ff md_cut_got md_c
+
+# ---------------------------------------------------------------------------
+# 109n. 비홈 대상의 머지 입양 — 두 대상·문서 없는 런에서 세그먼트의 대상을 계획과 같은 출처로 읽는다
+# --- section: 109n | group: mf | covers: gate_adoption_segment_alias, gate_segment_repo_alias, gate_undeclared_segments, gate_segment_ahead_count, gate_segment_target_stopped, gate_review_line, gate_merge_adoption_plan_check, gate_verb_act, act | anchors: 109n: 비홈 대상의 머지 입양 계획 act 가 받아지고 계획 행이 둘째 대상의 워크트리에 선다, 109n: 비홈 머지 입양의 리뷰 줄이 rc 0 이고 PR 과 분기점·머지 커밋·판정 HEAD 를 싣는다, 109n: 앞선 커밋 수가 둘째 대상의 베이스 master 로 세어져 0 이다, 109n: 입양 행의 세그먼트는 둘째 대상으로 읽히고 입양 행 없는 세그먼트는 홈이다 ---
+#
+# 홈 대상(main, 베이스 main)과 둘째 대상(side, 베이스 master, 자기 베어 원격)을 둔 문서 없는
+# 런에서 둘째 대상의 머지된 PR 하나를 `머지 입양` 행으로 받는다. 문서 없는 런의 계획 행에는
+# `레포` 칸이 없으므로, 뒤 단계가 세그먼트의 대상을 계획 경로와 같은 입양 행에서 읽지 않으면
+# 홈 대상의 베이스 main 을 둘째 대상의 워크트리에서 찾다가 앞선 커밋 수를 읽지 못한다. 둘째
+# 대상의 세그먼트 워크트리에는 refs/heads/main 도 refs/remotes/origin/main 도 없다.
+# ---------------------------------------------------------------------------
+pre_ledger_series
+pre_mf
+sa_new "비홈 머지 입양" 선리뷰후머지
+mn_side_raw="$SA_ROOT/side"
+MN_SREM="$SA_ROOT/side.git"
+mkdir -p "$mn_side_raw"
+( cd "$mn_side_raw" && git init -q . && git config user.email t@example.invalid && git config user.name T \
+  && echo s > s.txt && git add -A && git commit -qm s && git branch -M master ) >/dev/null 2>&1
+( git init -q --bare "$MN_SREM" && cd "$mn_side_raw" && git remote add origin "$MN_SREM" \
+  && git push -q origin master ) >/dev/null 2>&1
+# 게이트는 대상 메인 워크트리의 값에서 세그먼트 워크트리 경로를 유도하므로 실제 경로로 적는다.
+MN_SIDE=$(cd "$mn_side_raw" && pwd -P)
+MN_FORK=$(cd "$MN_SIDE" && git rev-parse master)
+( cd "$MN_SIDE" \
+  && git checkout -q -b mn-pr master \
+  && echo p1 > p.txt && git add p.txt && git commit -qm p1 \
+  && git checkout -q master \
+  && echo b > b.txt && git add b.txt && git commit -qm base \
+  && git merge -q --no-ff -m 'merge pr 7' mn-pr ) >/dev/null 2>&1
+MN_H=$(cd "$MN_SIDE" && git rev-parse mn-pr)
+MN_M=$(cd "$MN_SIDE" && git rev-parse master)
+( cd "$MN_SIDE" && git push -q origin master && git push -q origin mn-pr:refs/pull/7/head ) >/dev/null 2>&1
+MN_WT="$(dirname "$MN_SIDE")/side-run-$SA_ID-I1"
+( cd "$MN_SIDE" && git worktree add -q -b "seg/$SA_ID-I1" "$MN_WT" master ) >/dev/null 2>&1
+SA_TARGET_ROW2="- \`target\` | 별칭=side | 메인 워크트리=$MN_SIDE | 공통 git 디렉터리=$(cd "$MN_SIDE" && git rev-parse --path-format=absolute --git-common-dir) | 베이스 브랜치=master | 홈=아니오 | 원격 슬러그=t/side-$SA_ID | 절단점=배포 | 말단 행위 상한=없음 | 리뷰 정책 상한=선리뷰후머지"
+SA_PLAN='{ "steps": [ { "id": "I1", "skill": "implement", "depends_on": [] }, { "id": "R1", "skill": "review", "depends_on": ["I1"] } ] }'
+SA_AUTH_RAW="- \`머지 입양\` | 세그먼트=I1 | 대상=side | PR=7 | 머지 커밋=$MN_M | PR 헤드=$MN_H | 출처 런=-"
+sa_manifest 선리뷰후머지
+mkdir -p "$SA_RUN"; printf '1\n' > "$SA_RUN/routing-guard"
+MN_STUB="$WORK/mn109-gh"
+cat > "$MN_STUB" <<'MN109EOF'
+#!/bin/sh
+# 머지 입양 계획 act 의 GitHub 대역 — `gh -R <slug> pr view …` 에 $MN_GH_ANS 를 한 줄로 낸다.
+case "$3 $4" in
+  "pr view") printf '%s\n' "${MN_GH_ANS:?}" ;;
+  *) exit 1 ;;
+esac
+MN109EOF
+chmod +x "$MN_STUB"
+mn_src() {
+  # mn_src <매니페스트> <함수> [인자…] — 게이트를 읽기만 한 셸에서 이 픽스처의 원장과 그
+  # 매니페스트로 함수 하나를 부른다. 문서가 없으므로 슬라이싱은 미통치다.
+  local m="$1"; shift
+  ( cd "$SA_WT" && bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; MANIFEST="$2"; LEDGER="$3"; RUN_ID="$4"; RUN_DIR="$5"; DOC=""; shift 5; "$@"' \
+      _ "$GATE" "$m" "$SA_LEDGER" "$SA_ID" "$SA_RUN" "$@" 2>/dev/null )
+}
+
+mn_plan() {
+  # mn_plan — 세그먼트 I1 의 계획 act 하나. GitHub 대역은 둘째 대상의 머지된 PR 을 답한다.
+  gh() { "$MN_STUB" "$@"; }
+  export -f gh
+  export MN_STUB MN_GH_ANS="MERGED $MN_M $MN_H master false"
+  sag act --manifest "$SA_MANIFEST" --kind segment --target side --segment I1 --cutpoint 커밋 \
+      --snapshot-digest "$(SAH)" --rationale x --from-declaration -- 상태=계획됨 "워크트리=$MN_WT"
+  unset -f gh
+  unset MN_GH_ANS
+}
+mn_plan
+mn_r=$rc; mn_m=$msg
+mn_seg=$( { grep -F '`segment`' "$SA_LEDGER" 2>/dev/null || true; } | { grep -F '| id=I1 ' || true; } | tail -1)
+check "109n: 비홈 대상의 머지 입양 계획 act 가 받아지고 계획 행이 둘째 대상의 워크트리에 선다" \
+  "$mn_r|$(printf '%s' "$mn_seg" | tr '|' '\n' | sed -n 's/^ *워크트리=//p' | sed 's/[[:space:]]*$//')" "0|$MN_WT"
+[ "$mn_r" = 0 ] || printf '  109n 계획 act: %s\n' "$mn_m"
+check "109n: (선행) 둘째 대상의 세그먼트 워크트리에는 main 참조가 없다" \
+  "$(cd "$MN_WT" && { git rev-parse -q --verify refs/heads/main; git rev-parse -q --verify refs/remotes/origin/main; } | grep -c . || true)" "0"
+
+sag act --manifest "$SA_MANIFEST" --kind segment --target side --segment I1 --cutpoint 커밋 \
+    --snapshot-digest "$(SAH)" --rationale x -- 상태=사후리뷰 워크트리="$MN_WT" 선행=없음
+check "109n: (선행) 사후리뷰 행이 받아진다" "$rc" "0"
+sag review-line --manifest "$SA_MANIFEST" --segment I1
+case "$rc|$msg" in
+  "0|"*"/cc-cmds:review-unattended https://github.com/t/side-$SA_ID/pull/7 --report-path "*" --base-sha $MN_FORK --merged $MN_M --judge-head $MN_M"*) mn_got=맞음 ;;
+  *) mn_got="rc=$rc $msg" ;;
+esac
+check "109n: 비홈 머지 입양의 리뷰 줄이 rc 0 이고 PR 과 분기점·머지 커밋·판정 HEAD 를 싣는다" "$mn_got" "맞음"
+check "109n: 앞선 커밋 수가 둘째 대상의 베이스 master 로 세어져 0 이다" \
+  "$(mn_src "$SA_MANIFEST" gate_segment_ahead_count I1)" "0"
+
+# 같은 픽스처에 둘째 대상의 워크트리를 가리키는 `세그먼트 입양` 행 하나를 더 두면 그 세그먼트도
+# 둘째 대상으로 읽힌다. 입양 행이 없는 세그먼트는 지금처럼 홈 대상이다.
+mn_src2='20260103-dddddddd'
+MN_WT2="$(dirname "$MN_SIDE")/side-run-$mn_src2-I2"
+( cd "$MN_SIDE" && git worktree add -q -b "seg/$mn_src2-I2" "$MN_WT2" master ) >/dev/null 2>&1
+MN_M2="$WORK/mn109-adopt.md"
+cp "$SA_MANIFEST" "$MN_M2"
+printf -- '- `세그먼트 입양` | 세그먼트=I2 | 브랜치=seg/%s-I2 | 워크트리=%s | 출처 런=%s | PR=8\n' \
+  "$mn_src2" "$MN_WT2" "$mn_src2" >> "$MN_M2"
+check "109n: 입양 행의 세그먼트는 둘째 대상으로 읽히고 입양 행 없는 세그먼트는 홈이다" \
+  "$(mn_src "$MN_M2" gate_segment_repo_alias I2)|$(mn_src "$MN_M2" gate_segment_repo_alias I1)|$(mn_src "$MN_M2" gate_segment_repo_alias I9)" \
+  "side|side|main"
+
+( cd "$MN_SIDE" && git worktree remove --force "$MN_WT2" && git branch -D "seg/$mn_src2-I2" ) >/dev/null 2>&1
+rm -f "$MN_M2" "$MN_STUB"
+SA_PLAN=""; SA_AUTH_RAW=""; SA_TARGET_ROW2=""
+unset -f mn_src mn_plan
+unset mn_side_raw MN_SREM MN_SIDE MN_FORK MN_H MN_M MN_WT MN_STUB MN_WT2 MN_M2 mn_src2 mn_r mn_m mn_seg mn_got
 
 # ---------------------------------------------------------------------------
 # 112. 계정 이전 — 판정 함수의 출력, 대기·마감 초과 행과 종료 코드, 좌석 되돌림, 허용 술어
