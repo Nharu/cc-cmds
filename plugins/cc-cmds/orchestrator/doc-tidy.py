@@ -6,6 +6,8 @@
     doc-tidy.py unmark  DOC --archive ARCHIVE --doc-key KEY --writer NAME --since BASE [--lock FILE]
     doc-tidy.py check   BEFORE AFTER ARCHIVE
     doc-tidy.py tidy    DOC --archive ARCHIVE --doc-key KEY --writer NAME --below BYTES [--reviewed FROZEN] [--lock FILE]
+    doc-tidy.py checkout DOC --prefix PREFIX --expect SHA256 [--pre]
+    doc-tidy.py publish COPY DOC --expect SHA256 --lock FILE [--cleanup]
 
 Rule T1 moves every superseded-sentence parenthesis ` (대체된 문장: "...")` into
 an `### A<n>` piece and leaves ` (보관 A<n>)` in its place. Rule T3 moves, from a
@@ -56,8 +58,33 @@ never removed (as `lockf -k`), an exclusive lock is tried without waiting (as
 it, nothing is read or written and the exit code is 75, the EX_TEMPFAIL that
 `lockf -t 0` returns. Without `--lock` the caller holds the document lock.
 
-Exit codes: 0 success, 1 check failed or refused (nothing written), 2 usage,
-75 the `--lock` file is held by another process (nothing read or written).
+`checkout` and `publish` are the working-copy steps of the unattended audit and
+re-convergence. The working-copy prefix is `<tmp>/cc-proto-<run id>-<stage
+key>.`, computed here from `CC_PIPELINE_RUN_ID`, `CC_PIPELINE_STAGE_ID` (`#`
+spelled `-`) and `${TMPDIR:-/tmp}` with its trailing slashes removed — the
+namespace the gate's run-local proof accepts. `checkout` refuses when either
+variable is empty or `--prefix` is not that prefix byte for byte, and exits 65
+when DOC's sha256 is not `--expect`; both create nothing. Otherwise it makes a
+`<prefix>XXXXXXXX` directory, writes `doc.md` (and with `--pre` an identical
+`pre.md`) and prints `dir=<directory>` and `sha256=<value>`; a copy that fails
+removes the directory and exits 1. `publish` checks its arguments first, and
+with `--cleanup` that COPY's parent, resolved the way the gate's proof
+resolves a path (`..` from the physical parent, symlinked ancestors followed),
+is a directory directly under the resolved temporary directory whose name
+starts with the prefix's name, is not itself a symlink and holds nothing but
+`doc.md` and `pre.md`; a failed check exits 1 before the lock is tried. Then
+it takes `--lock` (75 when held), measures DOC again inside the lock (65 when
+it is not `--expect`, nothing written), and overwrites DOC in place with
+COPY's bytes — no temporary file beside DOC and no rename — printing
+`post_sha256=<value>`. With `--cleanup` it then removes the directory; when
+only that removal fails the publish stands, the exit code is 0 and a
+`cleanup_failed=<directory>` line follows.
+
+Exit codes: 0 success (a publish whose cleanup alone failed included, with its
+`cleanup_failed=` line), 1 check failed or refused (nothing written; a
+`checkout` copy that failed leaves nothing behind), 2 usage, 65 the document's
+sha256 is not the expected one (nothing written), 75 the `--lock` file is held
+by another process (nothing read or written).
 
 Run it by path, with no interpreter and no `lockf` in front: the gate grades
 the basename and the subcommand, and an interpreter prefix is graded as an
@@ -75,6 +102,7 @@ import fcntl  # noqa: E402
 import hashlib  # noqa: E402
 import os  # noqa: E402
 import re  # noqa: E402
+import shutil  # noqa: E402
 import tempfile  # noqa: E402
 import time  # noqa: E402
 
@@ -94,6 +122,11 @@ BACKTICK_RUN_RE = re.compile(r"`+")
 
 
 class Refused(Exception):
+    pass
+
+
+class HashMismatch(Exception):
+    """The document's sha256 is not the expected one: another writer."""
     pass
 
 
@@ -733,6 +766,108 @@ def cmd_tidy(args):
     return rc
 
 
+# ------------------------------------------------------------- working copy
+
+EX_DATAERR = 65
+SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+COPY_ENTRIES = ("doc.md", "pre.md")
+
+
+def proto_prefix():
+    """Return (temporary directory, prefix name) of this stage's working-copy
+    namespace: `<tmp>` and `cc-proto-<run id>-<stage key>.`."""
+    rid = os.environ.get("CC_PIPELINE_RUN_ID", "")
+    sid = os.environ.get("CC_PIPELINE_STAGE_ID", "")
+    if not rid or not sid:
+        raise Refused("CC_PIPELINE_RUN_ID 와 CC_PIPELINE_STAGE_ID 가 모두 있어야 작업 사본 접두를 셀 수 있음")
+    tdir = os.environ.get("TMPDIR") or "/tmp"
+    while tdir.endswith("/") and tdir != "/":
+        tdir = tdir[:-1]
+    return tdir, "cc-proto-%s-%s." % (rid, sid.replace("#", "-"))
+
+
+def sha256_of(path):
+    with open(path, "rb") as f:
+        return hashlib.sha256(f.read()).hexdigest()
+
+
+def check_expect(value):
+    if not SHA256_RE.match(value):
+        raise Refused("--expect 가 소문자 16진 64자리가 아님: %s" % value)
+
+
+def cmd_checkout(args):
+    check_expect(args.expect)
+    tdir, name = proto_prefix()
+    want = os.path.join(tdir, name) if tdir != "/" else "/" + name
+    if args.prefix != want:
+        raise Refused("--prefix %s 가 이 스테이지의 작업 사본 접두 %s 와 다름" % (args.prefix, want))
+    with open(args.doc, "rb") as f:
+        data = f.read()
+    got = hashlib.sha256(data).hexdigest()
+    if got != args.expect:
+        raise HashMismatch("문서 sha256 %s 가 기대값 %s 와 다름" % (got, args.expect))
+    d = tempfile.mkdtemp(prefix=name, dir=tdir)
+    try:
+        names = COPY_ENTRIES if args.pre else COPY_ENTRIES[:1]
+        for n in names:
+            with open(os.path.join(d, n), "wb") as f:
+                f.write(data)
+    except OSError as e:
+        shutil.rmtree(d, ignore_errors=True)
+        raise Refused("사본 복사 실패 — %s (만든 디렉터리를 지움)" % e)
+    print("dir=%s" % d)
+    print("sha256=%s" % got)
+    return 0
+
+
+def precheck_publish(args):
+    """Argument and name checks of `publish`, run before the lock is tried."""
+    check_expect(args.expect)
+    if not os.path.isfile(args.copy):
+        raise Refused("사본 %s 가 일반 파일이 아님" % args.copy)
+    if not os.path.isfile(args.doc):
+        raise Refused("문서 %s 가 일반 파일이 아님" % args.doc)
+    if not args.cleanup:
+        return
+    tdir, name = proto_prefix()
+    parent = os.path.dirname(args.copy) or "."
+    # `..` is taken from the physical parent and symlinked ancestors are
+    # followed, as the gate's run-local proof resolves a path: a directory
+    # spelled `<prefix>XXXXXX/../..` starts with the prefix as text and still
+    # points outside the namespace.
+    real = os.path.realpath(parent)
+    root = os.path.realpath(tdir)
+    base = os.path.basename(real)
+    if os.path.dirname(real) != root or not base.startswith(name) or len(base) <= len(name):
+        raise Refused("정리할 디렉터리 %s 가 작업 사본 이름공간 %s 밖임"
+                      % (real, os.path.join(root, name)))
+    if os.path.islink(parent.rstrip("/") or "/"):
+        raise Refused("정리할 디렉터리 %s 가 심볼릭 링크임" % parent)
+    extra = sorted(set(os.listdir(real)) - set(COPY_ENTRIES))
+    if extra:
+        raise Refused("정리할 디렉터리에 doc.md·pre.md 밖의 항목이 있음: %s" % ", ".join(extra))
+
+
+def cmd_publish(args):
+    got = sha256_of(args.doc)
+    if got != args.expect:
+        raise HashMismatch("잠금 안에서 잰 문서 sha256 %s 가 기대값 %s 와 다름" % (got, args.expect))
+    with open(args.copy, "rb") as f:
+        data = f.read()
+    with open(args.doc, "wb") as f:
+        f.write(data)
+    print("post_sha256=%s" % hashlib.sha256(data).hexdigest())
+    if args.cleanup:
+        d = os.path.realpath(os.path.dirname(args.copy) or ".")
+        try:
+            shutil.rmtree(d)
+        except OSError as e:
+            print("doc-tidy publish: 사본 디렉터리 정리 실패 — %s" % e, file=sys.stderr)
+            print("cleanup_failed=%s" % d)
+    return 0
+
+
 EX_TEMPFAIL = 75
 
 
@@ -781,11 +916,30 @@ def main(argv):
     sp.add_argument("after")
     sp.add_argument("archive")
 
+    sp = sub.add_parser("checkout")
+    sp.add_argument("doc")
+    sp.add_argument("--prefix", required=True)
+    sp.add_argument("--expect", required=True)
+    sp.add_argument("--pre", action="store_true")
+
+    sp = sub.add_parser("publish")
+    sp.add_argument("copy")
+    sp.add_argument("doc")
+    sp.add_argument("--expect", required=True)
+    sp.add_argument("--lock", required=True)
+    sp.add_argument("--cleanup", action="store_true")
+
     args = p.parse_args(argv)
     handler = {"plan": cmd_plan, "apply": cmd_apply, "unmark": cmd_unmark,
-               "check": cmd_check, "tidy": cmd_tidy}[args.verb]
+               "check": cmd_check, "tidy": cmd_tidy,
+               "checkout": cmd_checkout, "publish": cmd_publish}[args.verb]
+    # A verb's own argument and name checks run before the lock is tried, so a
+    # refused name exits 1 even while another process holds the lock.
+    precheck = {"publish": precheck_publish}.get(args.verb)
     lock_fd = None
     try:
+        if precheck is not None:
+            precheck(args)
         if getattr(args, "lock", None):
             lock_fd = take_lock(args.lock)
             if lock_fd is None:
@@ -793,6 +947,9 @@ def main(argv):
                       file=sys.stderr)
                 return EX_TEMPFAIL
         return handler(args)
+    except HashMismatch as e:
+        print("doc-tidy %s: %s" % (args.verb, e), file=sys.stderr)
+        return EX_DATAERR
     except Refused as e:
         print("doc-tidy %s: %s" % (args.verb, e), file=sys.stderr)
         return 1

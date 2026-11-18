@@ -14899,8 +14899,8 @@ gate_approval_reflection_entry() {
   src=$(gate_row_field "$row" '출처 런')
   if [ -n "$src" ]; then
     sdir="$(dirname "$RUN_DIR")/$src"
-    sledger="$(dirname "$LEDGER")/$src.md"
-    sman="$(dirname "$LEDGER")/$src.plan.md"
+    sledger=$(gate_source_run_ledger "$src")
+    sman="$(dirname "$sledger")/$src.plan.md"
     orec=$(gate_carry_abs "$(gate_row_field "$row" '출처 기록')")
     case "$orec" in
       "$sdir"/halt/*.md) ;;
@@ -15140,7 +15140,7 @@ gate_undeclared_segments() {
   # segment on the target its `대상` field names. When the same step also
   # carries a `세그먼트 입양` row, that row's worktree decides, as above — the
   # segment is planned there, and the planning act compares the two targets.
-  local ids id row wt cg a al home
+  local ids id al home
   home=$(home_alias 2>/dev/null || true)
   if [ -z "$(manifest_adoption_rows)$(manifest_merge_adoption_rows)" ]; then
     id=$(gate_plan_implement_step)
@@ -15150,14 +15150,27 @@ gate_undeclared_segments() {
   ids=$(manifest_plan_json 2>/dev/null \
     | jq -r '.steps[]? | select(type == "object" and .skill == "implement") | .id // empty | select(. != "")' 2>/dev/null || true)
   for id in $ids; do
-    al="$home"
-    if row=$(gate_adoption_row "$id"); then
-      al=$(gate_adoption_worktree_alias "$(manifest_row_fields "$row" '워크트리')" "$home")
-    elif row=$(gate_merge_adoption_row "$id"); then
-      al=$(manifest_row_fields "$row" '대상')
-    fi
+    al=$(gate_adoption_segment_alias "$id" "$home")
     printf '%s\t%s\n' "$id" "$al"
   done
+}
+
+gate_adoption_segment_alias() {
+  # gate_adoption_segment_alias <segment id> <fallback alias> — the target an
+  # adoption row puts the segment on: the target of the `세그먼트 입양` row's
+  # worktree (`gate_adoption_worktree_alias`), else the `대상` field of the
+  # `머지 입양` row, else the fallback. A step carrying both rows is decided by
+  # the `세그먼트 입양` worktree. The planning path (`gate_undeclared_segments`)
+  # and the later stages (`gate_segment_repo_alias`) both ask this, so they put
+  # one segment on one target. Reads only.
+  local row
+  if row=$(gate_adoption_row "$1"); then
+    gate_adoption_worktree_alias "$(manifest_row_fields "$row" '워크트리')" "$2"
+  elif row=$(gate_merge_adoption_row "$1"); then
+    manifest_row_fields "$row" '대상'
+  else
+    printf '%s' "$2"
+  fi
 }
 
 gate_adoption_worktree_alias() {
@@ -15413,6 +15426,33 @@ gate_adoption_source_key() {
   esac
 }
 
+gate_source_run_ledger() {
+  # gate_source_run_ledger <source run id> — the path of an earlier run's
+  # ledger. First the `ledger-path` the gate writes into that run's directory
+  # (`$(dirname "$RUN_DIR")/<run id>/ledger-path`) on every entry, trusted only
+  # when its first line is non-empty, names a file called `<run id>.md` and that
+  # file exists; otherwise the path beside this run's ledger
+  # (`$(dirname "$LEDGER")/<run id>.md`), whether or not it exists — the caller
+  # decides what a missing ledger means, as before.
+  #
+  # A run's ledger is written under its home target's base, so an earlier run
+  # whose home target differs from this run's keeps its ledger in another
+  # directory; the run directory is one place for every run, whatever its home.
+  # The name check keeps a hand-edited `ledger-path`, or one naming another
+  # run's ledger, from turning the landing check and the answer carry to the
+  # wrong ledger. Always returns 0 and writes nothing.
+  local src="$1" lp=''
+  if [ -n "${RUN_DIR:-}" ] && [ -f "$(dirname "$RUN_DIR")/$src/ledger-path" ]; then
+    lp=$(sed -n '1p' "$(dirname "$RUN_DIR")/$src/ledger-path" 2>/dev/null || true)
+  fi
+  if [ -n "$lp" ] && [ "$(basename "$lp")" = "$src.md" ] && [ -f "$lp" ]; then
+    printf '%s' "$lp"
+  else
+    printf '%s' "$(dirname "$LEDGER")/$src.md"
+  fi
+  return 0
+}
+
 gate_adoption_check() {
   # gate_adoption_check <segment id> <alias> <adoption row> — 0 when the
   # adopted segment may be planned in this run; otherwise a warning and 1.
@@ -15452,7 +15492,9 @@ gate_adoption_check() {
     return 1
   fi
   [ "$src" != "-" ] || return 0
-  src_ledger="$(dirname "$LEDGER")/$src.md"
+  # The earlier run's ledger is found by `gate_source_run_ledger`: the
+  # `ledger-path` in that run's directory, else the path beside this ledger.
+  src_ledger=$(gate_source_run_ledger "$src")
   if [ ! -f "$src_ledger" ]; then
     warn "입양 세그먼트 ${seg} 의 출처 런 원장이 없습니다: $src_ledger — 출처 런이 그 세그먼트를 착지시키지 않았는지 판정할 수 없습니다"
     return 1
@@ -15538,7 +15580,7 @@ gate_adoption_halt_source() {
   # A segment no run cut (`출처 런=-`) has no earlier run to carry from.
   [ "$src" != "-" ] || return 1
   skey=$(gate_adoption_source_key "$adrow")
-  sledger="$(dirname "$LEDGER")/$src.md"
+  sledger=$(gate_source_run_ledger "$src")
   sdir="$(dirname "$RUN_DIR")/$src"
   [ -f "$sledger" ] || return 1
   lines=$( { grep -n "^- \`중단 답\` " "$sledger" 2>/dev/null || true; } | { grep -F "| 세그먼트=$skey |" || true; })
@@ -15817,9 +15859,10 @@ gate_carry_source_doc_same() {
   # gate_carry_source_doc_same <earlier run id> — whether the earlier run's
   # frozen manifest names this run's design document; 1 with the reason in
   # GATE_CARRY_WHY otherwise. A halt record quotes its own run's document, so
-  # an answer to it means nothing against another one.
+  # an answer to it means nothing against another one. The manifest sits beside
+  # the earlier run's ledger (`gate_source_run_ledger`).
   local sman sdoc doc
-  sman="$(dirname "$LEDGER")/$1.plan.md"
+  sman="$(dirname "$(gate_source_run_ledger "$1")")/$1.plan.md"
   sdoc=$( [ -f "$sman" ] && awk '$0 == "## 요소" { inb=1; next } inb && /^## / { exit }
             inb && sub(/^\*\*설계 문서\*\*: /, "") { print; exit }' "$sman" )
   doc=$(manifest_field '요소' '설계 문서')
@@ -16123,7 +16166,7 @@ gate_chain_halt_source() {
   # brought in twice.
   local key="$1" rk="$2" src="$3" skey sledger sdir row ln rec
   GATE_CARRY_ROW=''; GATE_CARRY_LINE=''; GATE_CARRY_SRC=''; GATE_CARRY_REC=''; GATE_CARRY_ATT=''; GATE_CARRY_WHY=''
-  sledger="$(dirname "$LEDGER")/$src.md"
+  sledger=$(gate_source_run_ledger "$src")
   sdir="$(dirname "$RUN_DIR")/$src"
   [ -f "$sledger" ] || return 1
   skey=$(gate_chain_source_key "$sledger" "$rk")
@@ -20596,14 +20639,22 @@ EOF
 gate_segment_repo_alias() {
   # gate_segment_repo_alias <segment> — the target alias the segment belongs
   # to: the last non-empty `레포` over all of its rows, then its slice's `레포`,
-  # then the home target. The last row alone does not answer: the router's
-  # `머지됨` row carries no `레포`, and an empty slug would read as the home
-  # target in a run of several targets.
+  # then — in a run with no slicing declaration (`gate_slicing_branch` reads
+  # `미통치`) only — the target an adoption row puts it on
+  # (`gate_adoption_segment_alias`), then the home target. The last row alone
+  # does not answer: the router's `머지됨` row carries no `레포`, and an empty
+  # slug would read as the home target in a run of several targets. The
+  # adoption step reads what the planning path (`gate_undeclared_segments`)
+  # read, under the same condition, because a run with no declaration writes
+  # no `레포` on its plan row.
   local seg="$1" slug al=''
   slug=$(gate_rows 'segment' | gate_rows_field_eq 'id' "$seg" | gate_rows_field_values '레포' \
            | tr -d '`' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | awk 'NF { v = $0 } END { print v }')
   [ -z "$slug" ] || al=$(alias_for_slug "$slug" 2>/dev/null) || al=''
   [ -n "$al" ] || al=$(gate_slice_alias "$seg" 2>/dev/null) || al=''
+  if [ -z "$al" ] && [ "$(gate_slicing_branch)" = '미통치' ]; then
+    al=$(gate_adoption_segment_alias "$seg" '' 2>/dev/null) || al=''
+  fi
   [ -n "$al" ] || al=$(home_alias 2>/dev/null) || al=''
   printf '%s' "$al"
 }
@@ -27858,7 +27909,7 @@ gate_carry_source_last_row() {
   row=$(sed -n "${1}p" "$LEDGER" 2>/dev/null)
   src=$(gate_row_field "$row" '출처 런')
   [ -n "$src" ] || return 0
-  lpl="$(dirname "$LEDGER")/$src.md"
+  lpl=$(gate_source_run_ledger "$src")
   orec=$(gate_carry_abs "$(gate_row_field "$row" '출처 기록')")
   sr=$(gate_carry_source_row "$lpl" "$orec")
   [ -n "$sr" ] || return 0
@@ -27874,7 +27925,7 @@ gate_key_imported_deferred_answer() {
   # no stage of this run has taken it up yet; nothing otherwise. Adopted and
   # re-kickoff copies alike: the key's last `중단 답` row carries `출처 런` and
   # `출처 기록`, and the earlier ledger's row for that record is deferred there.
-  local row ln src sr
+  local row ln src sr sled
   row=$( { grep -n "^- \`중단 답\` " "$LEDGER" 2>/dev/null || true; } \
          | { grep -F "| 세그먼트=$1 |" || true; } | tail -1)
   [ -n "$row" ] || return 0
@@ -27883,9 +27934,10 @@ gate_key_imported_deferred_answer() {
   src=$(gate_row_field "$row" '출처 런')
   [ -n "$src" ] || return 0
   gate_halt_answer_spent "$LEDGER" "$1" "$ln" && return 0
-  sr=$(gate_carry_source_row "$(dirname "$LEDGER")/$src.md" "$(gate_carry_abs "$(gate_row_field "$row" '출처 기록')")")
+  sled=$(gate_source_run_ledger "$src")
+  sr=$(gate_carry_source_row "$sled" "$(gate_carry_abs "$(gate_row_field "$row" '출처 기록')")")
   [ -n "$sr" ] || return 0
-  gate_halt_answer_handed_on "$(dirname "$LEDGER")/$src.md" "${sr%%:*}" "$(gate_row_field "${sr#*:}" '세그먼트')" || return 0
+  gate_halt_answer_handed_on "$sled" "${sr%%:*}" "$(gate_row_field "${sr#*:}" '세그먼트')" || return 0
   printf '%s' "$ln"
 }
 
@@ -28263,7 +28315,7 @@ gate_carry_origin() {
     GATE_CO_LPREC=$(gate_row_field "$row" '중단 기록'); GATE_CO_SKEY=$key
     return 0
   fi
-  GATE_CO_LPL="$(dirname "$LEDGER")/$GATE_CO_SRC.md"
+  GATE_CO_LPL=$(gate_source_run_ledger "$GATE_CO_SRC")
   GATE_CO_LPRD="$(dirname "$RUN_DIR")/$GATE_CO_SRC"
   GATE_CO_LPREC=$(gate_carry_abs "$(gate_row_field "$row" '출처 기록')")
   GATE_CO_SKEY=$key
@@ -48703,7 +48755,9 @@ gate_apply_imported_evidence() {
   # last `cycle` row of the segment), GATE_SETTLE_EVIDENCE_RUN and
   # GATE_SETTLE_SUBJECT set; 1 otherwise, with the reason, unprefixed, in
   # GATE_SETTLE_FAIL:
-  #   * `출처` is a run id and `<that run id>.md` sits beside this ledger;
+  #   * `출처` is a run id and `<that run id>.md` is found — through the
+  #     `ledger-path` of that run's directory, else beside this ledger
+  #     (`gate_source_run_ledger`);
   #   * its hash chain is intact (`gate_chain_verify <ledger> <run id>`);
   #   * the segment's last `cycle` row there reads P0=0 and P1=0 exactly — a
   #     dismissal or carry-over is not read — and names `리뷰 HEAD` and a
@@ -48724,7 +48778,7 @@ gate_apply_imported_evidence() {
   if ! [[ "$org" =~ ^[0-9]{8}-[0-9a-f]{8}$ ]]; then
     GATE_SETTLE_FAIL="들여온 행의 출처(${org:-없음})가 런 id 꼴이 아니라 증거 원장을 정할 수 없다"; return 1
   fi
-  eled="$(dirname "$LEDGER")/${org}.md"
+  eled=$(gate_source_run_ledger "$org")
   [ -f "$eled" ] || { GATE_SETTLE_FAIL="증거 원장 ${org}.md 가 없다"; return 1; }
   gate_chain_verify "$eled" "$org" >/dev/null 2>&1 \
     || { GATE_SETTLE_FAIL="증거 원장 ${org} 의 해시 연쇄가 온전하지 않다"; return 1; }
@@ -49120,7 +49174,7 @@ gate_apply_settle_confirm_row() {
   m=$(gate_segment_field "$seg" '머지 커밋'); wt=$(gate_segment_field "$seg" '워크트리')
   # The earlier run's kept apply worktree is no path of this run's rows; it is
   # named in the log, for the person comparing it in the morning.
-  pled="$(dirname "$LEDGER")/${prun}.md"
+  pled=$(gate_source_run_ledger "$prun")
   pkept=""
   if [ -n "$prun" ] && [ -f "$pled" ]; then
     pkept=$( { grep -E '^- `segment` ' "$pled" 2>/dev/null || true; } | gate_rows_field_eq 'id' "$seg" \
