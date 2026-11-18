@@ -509,5 +509,57 @@ E=$'\033'; B=$'\007'
 check "10 CSI 밖의 ESC 시퀀스도 지우고 단언 정밀도로 읽는다" "$(extract 'gate-shards (1)' "$WORK/k9.log")" \
   "$(printf '%s\n' '정밀도: 단언' 'gate-shards|test-gate.sh|1 가' 'gate-shards|test-gate.sh|2 나')"
 
+# ---------------------------------------------------------------------------
+# 11. A load failure that passed its rerun takes its FAIL line back out.
+# ---------------------------------------------------------------------------
+# A narrowed run ends green after its two load-marked failures passed alone: the
+# run's FAIL lines and its own total stay in the log, then the rerun, the load
+# lines and the wrapper's green total. Beside it in the same job, another suite
+# fails for real.
+lp_suite() {
+  printf '%s\n' "bash scripts/suite-guard.sh $1"
+  printf '%s\n' 'FAIL: 34e 가 — 회 1 · 부하 표시(경과 상한) 부하 1분/5분/15분=9.1/8.2/7.3 CPU=8'
+  printf '%s\n' "FAIL: 34e 나 — got '1', want '2' · 부하 표시(대기 상한) 부하=측정불가"
+  printf '%s\n' 'test-gate: 3 passed, 2 failed'
+  printf '%s\n' 'PASS: 34e 가' 'PASS: 34e 나' 'test-gate: 5 passed, 0 failed'
+  printf '%s\n' 'test-gate: 판정=pass 범위=좁힌 실행 — 세 신호 모두 조용합니다'
+  printf '%s\n' 'test-gate: 부하 실패 — 절 34e: 「34e 가」 · 단독 재실행 통과'
+  printf '%s\n' 'test-gate: 부하 실패 — 절 34e: 「34e 나」 · 단독 재실행 통과'
+  printf '%s\n' 'test-gate: 판정=부하통과 범위=좁힌 실행 — 표시된 단언 2개가 실패했고 그 절의 단독 재실행 한 번에서 통과했습니다'
+  printf '%s\n' 'test-gate: 3 passed, 0 failed'
+  sg_end "$1" 0
+}
+{
+  lp_suite 'scripts/test-gate.sh --sections 34e'
+  printf '%s\n' 'bash scripts/suite-guard.sh scripts/test-gate.sh --sections 7'
+  printf '%s\n' "FAIL: 7 머지 검사 — got '3', want '0'"
+  printf '%s\n' 'test-gate: 1 passed, 1 failed'
+  sg_end 'scripts/test-gate.sh --sections 7' 1
+} > "$WORK/l1.log"
+check "11 부하통과 로그 옆의 다른 실패는 그 이름만 단언 정밀도로 남는다" "$(extract 'gate-shards (2)' "$WORK/l1.log")" \
+  "$(printf '%s\n' '정밀도: 단언' 'gate-shards|test-gate.sh|7 머지 검사')"
+# Without the suite-guard lines the whole log is one suite.
+lp_suite x | grep -v -e '^bash scripts/suite-guard' -e '^suite-guard\[' > "$WORK/l2.log"
+printf '%s\n' "FAIL: 7 머지 검사 — got '3', want '0'" 'test-gate: 1 passed, 1 failed' >> "$WORK/l2.log"
+check "11 무가드 경로에서도 부하 실패 줄이 제 FAIL 줄과 계수를 거둔다" "$(extract 'gate-shards (2)' "$WORK/l2.log")" \
+  "$(printf '%s\n' '정밀도: 단언' 'gate-shards|7 머지 검사')"
+# The same name fails once under load and once for real: the load line takes one
+# FAIL line, and the other keeps the name in the list.
+{
+  lp_suite 'scripts/test-gate.sh --sections 34e'
+  printf '%s\n' 'bash scripts/suite-guard.sh scripts/test-gate.sh --sections 34e,7'
+  printf '%s\n' 'FAIL: 34e 가 — 회 1 · 부하 표시(경과 상한) 부하=측정불가'
+  printf '%s\n' "FAIL: 7 머지 검사 — got '3', want '0'"
+  printf '%s\n' 'test-gate: 1 passed, 2 failed'
+  sg_end 'scripts/test-gate.sh --sections 34e,7' 1
+} > "$WORK/l3.log"
+check "11 부하 실패와 진짜 실패로 한 번씩 난 이름은 남는다" "$(extract 'gate-shards (2)' "$WORK/l3.log")" \
+  "$(printf '%s\n' '정밀도: 단언' 'gate-shards|test-gate.sh|34e 가' 'gate-shards|test-gate.sh|7 머지 검사')"
+# A load line whose label matches no FAIL name takes nothing back, so the name
+# it was meant for stays in the list, where it reads as more than master has.
+sed 's/「34e 나」/「34e 다」/' "$WORK/l1.log" > "$WORK/l4.log"
+check "11 맞지 않는 라벨은 아무것도 거두지 않고 그 이름이 남는다" "$(extract 'gate-shards (2)' "$WORK/l4.log")" \
+  "$(printf '%s\n' '정밀도: 단언' 'gate-shards|test-gate.sh|34e 나' 'gate-shards|test-gate.sh|7 머지 검사')"
+
 printf '\ntest-ci-signature: %d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" -eq 0 ]

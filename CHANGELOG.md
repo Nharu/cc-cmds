@@ -5,7 +5,7 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [3.49.0] - 2026-11-18
+## [3.50.0] - 2026-11-18
 
 무인 스테이지 리드가 값 읽기·복사·해시 같은 부기 명령에 게이트 호출과 원장 행을 쓰던 비중을 줄인다. 지금까지는 파이프라인 값을 `printenv` 로 하나씩 읽고, 설계 문서 작업 사본을 `mktemp`·`cp`·`shasum`·`lockf` 로 나눠 뜨고 되돌려 썼으며, 다이제스트 원천 규칙이 응답마다 게이트 호출 하나를 강요했다. 이제 값은 세션 시작 블록에서 한 번에 받고, 사본은 `doc-tidy.py` 의 동사 둘로 다루며, 한 응답이 게이트 호출을 여럿 실을 수 있다.
 
@@ -22,6 +22,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **재수렴·감사의 작업 사본** — `design-reconverge` 와 `design-audit-unattended` 의 사본 절차를 `checkout`·`publish --cleanup` 으로 바꾸고(감사는 다섯 응답), `_common/approval-reflection.md` 의 인용을 새 절차에 맞춘다.
 - **응답당 게이트 호출** — `_common/agent-team-protocol.md` 의 Turn economy 가 한 다이제스트로 응답당 넷까지(구성원이나 하위 에이전트가 살아 있으면 둘) 싣게 하고, 첫 라운드의 난수 생성을 한 응답에 싣는다.
 - **시험** — `scripts/test-snapshot.sh` 가 새 문면을 고정하고 옛 `cp`·`lockf`·`mktemp` 사본 절차가 남지 않았음을, 무인 스킬마다 `printenv` 처방이 블록 우선 문면과 함께 있음을 단언한다. 훅 시험과 test-gate 31ac-2 가 새 훅·동사를 단언한다.
+
+## [3.49.0] - 2026-11-18
+
+벽시계 상한에 기대는 test-gate 단언이 호스트 부하로 실패해도 회귀처럼 빨강으로 남지 않게 한다. 상한을 재는 판정 줄에 `# gate-load: <사유>` 표지를 달고, 좁힌 실행에서 표지가 달린 단언만 실패하면 그 절을 단독으로 한 번 다시 돌려 통과하면 `판정=부하통과` 로 끝낸다. 린트가 표지 없는 경과 상한 비교를 잡고, CI 실패 서명과 무인 구현 스테이지의 해석 규약도 이 판정을 읽는다.
+
+### Added
+
+- **부하 표지와 단독 재실행** — `bad()` 가 판정 줄(여러 줄 `check` 는 바로 윗줄 주석)의 `# gate-load:` 표지를 읽어 실패를 따로 적는다. 좁힌 실행에서 실패가 모두 표시된 단언이면 그 절들을 단독으로 한 번 다시 돌려, 통과하면 `test-gate: 부하 실패 — 절 <id>: 「<라벨>」 · 단독 재실행 통과` 줄과 `test-gate: 판정=부하통과` 로 끝내고, 다시 실패하면 `test-gate: 회귀 — 절 <id>: …` 줄과 함께 실패로 남긴다. 표시되지 않은 실패가 섞이면 다시 돌리지 않는다. 절 0i 가 세 갈래를 고정한다.
+- **lint-test-clock 의 `elapsed-compare`** — 시각의 차로 받은 경과 변수를 상한과 견주는 비교를 잡는다. `scripts/test-gate.sh` 에서는 이어진 판정 줄의 표지로만 받고 기준선에 넣지 않으며, 표지 자체의 형식(빈 사유, ` — `, 판정 없는 줄, 파일 밖, `gate-isolation` 뒤)도 검사한다.
+- **ci-signature 의 부하 실패 거르기** — `test-gate: 부하 실패 —` 줄의 라벨과 같은 `FAIL:` 줄 하나를 실패 서명과 `failed` 합에서 뺀다. 맞지 않는 라벨은 그대로 남는다.
+- **무인 구현 스테이지 해석 규약** — `implement-unattended` 와 `_common/fix-cycle.md` 가 `판정=부하통과` 로 끝난 좁힌 실행을 통과로 읽고, 부하 실패 절을 `**시험 범위**` 줄에 `부하 실패 <절 id>` 로 적게 한다.
+
+### Changed
+
+- **기존 상한 판정 60곳에 표지** — 경과 초, 잠자며 세는 대기, `gate wait` 종료 코드, 마감 시각까지 되풀이하는 대기로 상한을 재는 판정에 표지를 달았다.
+- **절 60 드레인 잠금 단언** — 경과 초 대신 `sleep` 그림자가 남긴 잠 흔적으로 pid 판정에 의한 즉시 탈취와 살아 있는 소유자 앞의 대기를 가린다.
+- **절 78 탐침 스테이지** — `bsx_launch … 끝까지` 로 대기 상한 대신 스테이지가 끝날 때까지 기다리고, 정상 종료와 마지막 `exec` 기록을 단언한다.
+
+### Why
+
+부하가 높은 호스트에서 벽시계 상한 단언이 코드 결함 없이 실패하면, 무인 스테이지는 그것을 회귀로 읽어 다시 돌리기를 거듭하거나 멈췄다. 상한을 재는 자리를 표시하고 단독 재실행 한 번으로 가르면 부하 실패와 진짜 회귀가 갈린다.
 
 ## [3.48.5] - 2026-11-18
 

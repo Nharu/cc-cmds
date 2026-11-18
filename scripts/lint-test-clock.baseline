@@ -3,6 +3,7 @@
 # delete an entry when its line is fixed. Regenerate with
 # bash scripts/lint-test-clock.sh --write-baseline
 plugins/cc-cmds/orchestrator/test-run.sh|elapsed-bound|if [ $((feed_t1 - feed_t0)) -le "$FEED_IV" ]; then
+scripts/test-fleet.sh|elapsed-compare|young() { local m; m=$(date -u -r "$1" +%s 2>/dev/null || printf 0); [ $(( $(date -u +%s) - m )) -lt 60 ] && printf yes || printf no; }
 scripts/test-notify-focus.sh|elapsed-bound|check "L12 분리: 1초 안에 돌아온다" "$([ $((t1 - t0)) -le 1 ] && echo 예 || echo "아니오 $((t1 - t0))초")" "예"
 scripts/test-notify-focus.sh|elapsed-bound|check "L17 3초 안에 끝난다" "$([ $((t1 - t0)) -le 3 ] && echo 예 || echo "아니오 $((t1 - t0))초")" "예"
 scripts/test-route.sh|clock-margin|expect "부팅 전 mtime 이어도 파싱되는 모르는 스키마는 깨짐" "$(txn "$d" '.' --boot-epoch "$((NOW - 10))")" '.verdict == "PARK" and .reason == "lease-table-corrupt"'
@@ -10,4 +11,18 @@ scripts/test-route.sh|clock-margin|expect "현 부팅의 파싱 불가 파일은
 scripts/test-route.sh|clock-margin|out=$(txn "$d" '.' --boot-epoch "$((NOW - 10))")
 scripts/test-route.sh|clock-margin|recent=$(printf '%s' "$FXO1" | jq -c --argjson t "$((NOW - 10))" '.at = $t')
 scripts/test-route.sh|clock-margin|{ ts_line $((NOW - 50)); rl_line 0.25 null; } > "$RUN_DIR/log/S1.retry.json"
+scripts/test-route.sh|elapsed-compare|if [ "$el" -le 1 ]; then ok "(라) 훑기는 락을 기다리지 않는다"; else bad "(라) 훑기는 락을 기다리지 않는다" "${el}초"; fi
+scripts/test-route.sh|elapsed-compare|if [ "$el" -lt 2 ]; then ok "$lb: 독이 든 표·인벤토리 $st — 락 대기 없이 끝난다"
+scripts/test-route.sh|elapsed-compare|if [ "$el" -lt 2 ]; then ok "락을 만들 수 없는 표에서 헛돌지 않는다"; else bad "락을 만들 수 없는 표에서 헛돌지 않는다" "${el}초"; fi
+scripts/test-run-issue-filing.sh|elapsed-compare|check "8b: 멈춘 등록은 끊겨 회차가 멈춤보다 먼저 끝난다" "$([ "$el" -lt "$ROUND_STALL_S" ] && printf 예 || printf "아니오(${el}초)")" "예"
+scripts/test-run-issue-filing.sh|elapsed-compare|check "8b: 멈춘 등록이 있어도 게이트 동사는 멈춤보다 먼저 돌아온다" "$([ "$el_call" -lt "$ROUND_STALL_S" ] && printf 예 || printf "아니오(${el_call}초)")" "예"
+scripts/test-run-issue-filing.sh|elapsed-compare|check "8b: 멈춘 조회가 있어도 게이트 동사는 멈춤보다 먼저 돌아온다" "$([ "$el_call" -lt "$ROUND_STALL_S" ] && printf 예 || printf "아니오(${el_call}초)")" "예"
+scripts/test-run-issue-filing.sh|elapsed-compare|check "8b: 멈춘 조회는 끊겨 회차가 멈춤보다 먼저 끝난다" "$([ "$el" -lt "$ROUND_STALL_S" ] && printf 예 || printf "아니오(${el}초)")" "예"
+scripts/test-run-issue-filing.sh|elapsed-compare|check "8c: 기한에 끊긴 회차는 멈춤보다 먼저 끝난다" "$([ "$el" -lt "$ROUND_STALL_S" ] && printf 예 || printf "아니오(${el}초)")" "예"
+scripts/test-run-issue-filing.sh|elapsed-compare|check "8c: 수집기가 오래 걸려도 게이트 동사는 수집기의 멈춤보다 먼저 돌아온다" "$([ "$el_call" -lt "$CC_STUB_SLEEP" ] && printf 예 || printf "아니오(${el_call}초)")" "예"
+scripts/test-similar-items.sh|elapsed-compare|if [ "$elapsed" -le 35 ]; then ok "무응답 — 35초 안에 끝난다 (${elapsed}s)"; else bad "무응답 — 35초 안에 끝난다" "${elapsed}s"; fi
 scripts/test-snapshot.sh|clock-margin|"그룹=org:h1" "까지=-" "갱신=$((w_now - w_stall - 1))" "종류=review" "논스=-" > "$RD_R1/S9.waiting"
+scripts/test-statusline.sh|elapsed-compare|if [ "$g8_elapsed" -le 3 ]; then ok "G8 폴링 상한이 1초다 (경과 ${g8_elapsed}초)"
+scripts/test-tree.sh|elapsed-compare|if [ "$v" -lt 20 ]; then ok "F41 조기 종료는 긴 잡을 기다리지 않는다"; else bad "F41 조기 종료는 긴 잡을 기다리지 않는다" "${v}초"; fi
+scripts/test-tree.sh|elapsed-compare|if [ -n "$e" ] && ! kill -0 "$e" 2>/dev/null && [ "$v" -lt 20 ]; then
+scripts/test-tree.sh|elapsed-compare|if [ -n "$out" ] && [ -n "$line" ] && [ "$out" -ge 2 ] && [ $((line - v)) -lt "$out" ]; then
