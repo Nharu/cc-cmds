@@ -965,7 +965,7 @@ check "(12) 반증 정지로 끝난 시도의 종단 행에는 답 대기 기록
 # re-attach. A first frame whose id is not a session id's shape stays `미상`.
 hold_seat HF 'Step 2 — 픽스처의 정지' 1 0f1e2d3c-4b5a-4968-8776-a5b4c3d2e1f0
 case "$(hold_row HF)" in
-  *"| 종단 부류=크래시 |"*"| 세션 id=0f1e2d3c-4b5a-4968-8776-a5b4c3d2e1f0 |"*) ok "(12) 결과 줄 없이 죽은 시도의 종단 행이 스트림 첫 프레임의 세션 id 를 싣는다" ;;
+  *"| 세션 id=0f1e2d3c-4b5a-4968-8776-a5b4c3d2e1f0 |"*"| 종단 부류=크래시 |"*) ok "(12) 결과 줄 없이 죽은 시도의 종단 행이 스트림 첫 프레임의 세션 id 를 싣는다" ;;
   *) bad "(12) 결과 줄 없이 죽은 시도의 세션 id" "$(hold_row HF)" ;;
 esac
 hold_seat HG 'Step 2 — 픽스처의 정지' 1 'stub-session --settings /x'
