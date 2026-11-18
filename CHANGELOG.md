@@ -5,6 +5,24 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.49.0] - 2026-11-18
+
+무인 스테이지 리드가 값 읽기·복사·해시 같은 부기 명령에 게이트 호출과 원장 행을 쓰던 비중을 줄인다. 지금까지는 파이프라인 값을 `printenv` 로 하나씩 읽고, 설계 문서 작업 사본을 `mktemp`·`cp`·`shasum`·`lockf` 로 나눠 뜨고 되돌려 썼으며, 다이제스트 원천 규칙이 응답마다 게이트 호출 하나를 강요했다. 이제 값은 세션 시작 블록에서 한 번에 받고, 사본은 `doc-tidy.py` 의 동사 둘로 다루며, 한 응답이 게이트 호출을 여럿 실을 수 있다.
+
+### Added
+
+- **세션 시작 값 블록** — `hooks/stage-values-sessionstart.sh` 가 SessionStart(startup·resume·compact) 에 허용 목록의 `CC_PIPELINE_*` 열두 이름과 파생값 셋(`CLAUDE_PLUGIN_ROOT`, 스테이지 키, 작업 사본 접두)을 `[cc-stage-values]` 블록으로 싣는다. 환경을 훑지 않으므로 인가 경로와 토큰은 들어가지 않고, 파이프라인 밖 세션에서는 아무것도 내지 않는다.
+- **`doc-tidy.py checkout`·`publish`** — `checkout` 은 문서 해시가 기대값이고 접두가 이 스테이지의 것일 때만 사본 디렉터리를 만들고(`dir=`·`sha256=`), `publish` 는 잠금 안에서 문서 해시를 다시 재어 기대값일 때만 사본으로 문서를 제자리에서 덮어쓴다(`post_sha256=`). 잠금 점유는 75, 해시 불일치는 65 이고, `--cleanup` 은 안전한 모양의 사본 디렉터리만 지우며 실패하면 `cleanup_failed=` 줄을 낸다.
+- **부기 측정 스크립트** — `scripts/measure-bookkeeping.py` 가 런의 시도 로그와 원장으로 종류별 부기 전용 리드 요청 비율, 스테이지당 부기 exec 수, 다이제스트 거부 호출 수를 표와 JSON 으로 낸다.
+
+### Changed
+
+- **다이제스트 원천** — 훅의 안내문·거부문과 라우터 두 사본이 직전 응답의 여러 게이트 호출 중 마지막 `[gate-digest]` 줄을 쓰게 한다.
+- **값 원천** — 스테이지 정책과 무인 스킬 여덟이 파이프라인 값을 마지막 `[cc-stage-values]` 블록에서 먼저 읽고, 블록이 없거나 그 이름이 없을 때만 이름을 지정한 `printenv` 로 읽는다.
+- **재수렴·감사의 작업 사본** — `design-reconverge` 와 `design-audit-unattended` 의 사본 절차를 `checkout`·`publish --cleanup` 으로 바꾸고(감사는 다섯 응답), `_common/approval-reflection.md` 의 인용을 새 절차에 맞춘다.
+- **응답당 게이트 호출** — `_common/agent-team-protocol.md` 의 Turn economy 가 한 다이제스트로 응답당 넷까지(구성원이나 하위 에이전트가 살아 있으면 둘) 싣게 하고, 첫 라운드의 난수 생성을 한 응답에 싣는다.
+- **시험** — `scripts/test-snapshot.sh` 가 새 문면을 고정하고 옛 `cp`·`lockf`·`mktemp` 사본 절차가 남지 않았음을, 무인 스킬마다 `printenv` 처방이 블록 우선 문면과 함께 있음을 단언한다. 훅 시험과 test-gate 31ac-2 가 새 훅·동사를 단언한다.
+
 ## [3.48.5] - 2026-11-18
 
 홈이 아닌 대상의 입양 세그먼트를 계획 뒤의 단계도 계획과 같은 대상으로 읽고, 홈이 다른 출처 런의 원장을 찾는다. 지금까지는 문서 없는 런의 계획 행에 `레포` 칸이 없어, 둘째 대상의 `머지 입양`·`세그먼트 입양` 세그먼트가 계획 뒤에는 홈 대상으로 읽혔다. 그래서 홈 대상의 베이스 브랜치를 둘째 대상의 워크트리에서 찾다가 앞선 커밋 수를 읽지 못했다. 또 출처 런의 원장을 이 런 원장과 같은 디렉터리에서만 찾아, 홈이 다른 출처 런은 입양 계획이 「출처 런 원장이 없습니다」로 거부되었다.
