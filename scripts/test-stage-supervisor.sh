@@ -929,16 +929,21 @@ mkdir -p "$(dirname "$CC_STUB_HOLD_REC")"
   fi
   printf '**하네스 오류**: (없음)\n**재호출 명령**: (없음)\n**후속**: 보류 큐\n<!-- /cc-pipeline-halt v1 -->\n'
 } > "$CC_STUB_HOLD_REC"
+if [ -n "${CC_STUB_HOLD_KILLED:-}" ]; then
+  # Killed in its last turn: the session's first frame, and no result line.
+  printf '%s\n' "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"$CC_STUB_HOLD_KILLED\"}"
+  exit 143
+fi
 printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.01,"num_turns":1,"session_id":"stub-session"}'
 exit 0
 STUBEOF
 chmod +x "$STUB_HOLD"
-hold_seat() {  # hold_seat <segment> <스텝> <선택지 있음: 1 | ""> — a hand-written routed token, run to its end
+hold_seat() {  # hold_seat <segment> <스텝> <선택지 있음: 1 | ""> [<죽은 시도의 첫 프레임 세션 id>] — a hand-written routed token, run to its end
   seg "$1"
   printf '1\n' > "$RD/$1.attempt"
   printf 'n%s\n\n\nB:%s#1\n-\n-\n%s\n' "$1" "$1" "$R12_CFG" > "$RD/$1.launch"
   CC_CLAUDE_BIN="$STUB_HOLD" CC_STUB_HOLD_REC="$RD/halt/$1#1.md" CC_STUB_HOLD_STEP="$2" CC_STUB_HOLD_OPTS="$3" \
-    g supervise-stage --manifest "$MANIFEST" --target repo --segment "$1" --nonce "n$1" -- review -p x >/dev/null
+    CC_STUB_HOLD_KILLED="${4:-}" g supervise-stage --manifest "$MANIFEST" --target repo --segment "$1" --nonce "n$1" -- review -p x >/dev/null
 }
 hold_row() {  # hold_row <segment> — that segment's last stage-result row
   { grep -F '`stage-result`' "$LEDGER" || true; } | { grep -F "세그먼트=$1 " || true; } | tail -1
@@ -954,6 +959,18 @@ check "(12) 선택지 없는 정지로 끝난 시도의 종단 행에는 답 대
 hold_seat HE 'Step 3 구현 결함 반증 — 픽스처' 1
 check "(12) 반증 정지로 끝난 시도의 종단 행에는 답 대기 기록이 없다" \
   "$(hold_row HE | grep -c '종단 부류=의도된 park' || true)/$(hold_row HE | grep -c '답 대기 기록=' || true)" "1/0"
+# A STOP KILLED IN ITS LAST TURN. The attempt wrote a complete record offering
+# options, then died with no result line; the session its stream's first frame
+# names goes on the row, so an answer to that record has a session to
+# re-attach. A first frame whose id is not a session id's shape stays `미상`.
+hold_seat HF 'Step 2 — 픽스처의 정지' 1 0f1e2d3c-4b5a-4968-8776-a5b4c3d2e1f0
+case "$(hold_row HF)" in
+  *"| 종단 부류=크래시 |"*"| 세션 id=0f1e2d3c-4b5a-4968-8776-a5b4c3d2e1f0 |"*) ok "(12) 결과 줄 없이 죽은 시도의 종단 행이 스트림 첫 프레임의 세션 id 를 싣는다" ;;
+  *) bad "(12) 결과 줄 없이 죽은 시도의 세션 id" "$(hold_row HF)" ;;
+esac
+hold_seat HG 'Step 2 — 픽스처의 정지' 1 'stub-session --settings /x'
+check "(12) 첫 프레임의 세션 id 가 모양에 맞지 않으면 종단 행은 세션 id=미상 이다" \
+  "$(hold_row HG | grep -c '종단 부류=크래시' || true)/$(hold_row HG | grep -c '| 세션 id=미상 |' || true)" "1/1"
 mv "$WORK/ha-pinned-gate.sh" "$PINNED_GATE"
 mv "$WORK/ha-pinned-run.sh" "$RD/plugin/cc-cmds/orchestrator/run.sh"
 check "(12) 답 카드 시험 뒤 고정 사본이 원래 바이트로 돌아왔다" \

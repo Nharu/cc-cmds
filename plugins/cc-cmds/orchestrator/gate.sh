@@ -64100,6 +64100,20 @@ gate_record_stage_outcome() {
   cost=$(printf '%s' "$res"    | jq -r '.total_cost_usd // empty' 2>/dev/null || true)
   subtype=$(printf '%s' "$res" | jq -r '.subtype // empty'        2>/dev/null || true)
   sid=$(printf '%s' "$res"     | jq -r '.session_id // empty'     2>/dev/null || true)
+  # NO RESULT LINE DOES NOT MEAN NO SESSION. An attempt killed in its last turn
+  # (the stage CLI's pid stopped by a person, as the TERM trap documents) ends
+  # with no result envelope, yet the harness opened a session and wrote its id
+  # on the stream's first frame. A row reading `세션 id=미상` there leaves the
+  # key's last settled row with nothing to re-attach, so an answer to the
+  # complete record that attempt wrote is refused and the record holds the key
+  # to the end of the run. The id is read from THIS attempt's stream, the one
+  # `$out` names, under the same shape check the re-attachment applies
+  # (`stage_session_id_strict`): a planted or malformed value stays `미상`, and
+  # so does an attempt that died before its session started.
+  if [ -z "$sid" ] && [ -f "$out" ]; then
+    sid=$(sed -n '/"session_id":"/{s/.*"session_id":"\([^"]*\)".*/\1/p;q;}' "$out")
+    run_session_id_shape_ok "$sid" || sid=""
+  fi
 
   # The terminal class, from what the GATE can observe and nothing more. A stage
   # that performed a gated act left rows; one that left none either never got
