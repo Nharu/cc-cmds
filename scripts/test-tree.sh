@@ -80,6 +80,20 @@ TT_JOBS_USED=1
 TT_RECORD=""
 TT_PROGRESS_SECS=60
 TT_POOL_PIDS=""
+# check-push's stop conditions for the pool. TT_DEADLINE is an epoch second
+# (empty: none) and TT_FAIL_FAST 1 stops at the first failure; once either is
+# met the pool starts no job and stops the running ones (TERM, then KILL after
+# CC_CHECK_PUSH_STOP_GRACE seconds, default 60). Every other caller leaves both
+# off, so its pool runs every job to its end. After a pool,
+# TT_UNFINISHED_SECTIONS and TT_UNFINISHED_GOALS name what was stopped or never
+# started, TT_CUT_GOALS the goals a deadline stopped while they ran, and
+# TT_DONE_ITEMS the sections and goals that ended, reused ones included.
+TT_DEADLINE=""
+TT_FAIL_FAST=0
+TT_UNFINISHED_SECTIONS=""
+TT_UNFINISHED_GOALS=""
+TT_CUT_GOALS=""
+TT_DONE_ITEMS=""
 
 # The host-wide test slots every job of the pool, and each of the two calls of
 # the TT_JOBS 1 path, waits for before it starts (scripts/test-slots.sh).
@@ -353,10 +367,61 @@ tt_clone() {
   return 0
 }
 
+# 0 while process $1 runs; a zombie counts as ended.
+tt_pid_alive() {
+  local s
+  s=$(ps -o stat= -p "$1" 2>/dev/null) || return 1
+  case "$s" in ''|*Z*) return 1 ;; esac
+  return 0
+}
+
+# The processes $@ and every descendant of theirs, space-separated.
+tt_pid_tree() {
+  ps -A -o pid= -o ppid= 2>/dev/null | awk -v roots="$*" '
+    BEGIN { n = split(roots, r, " "); for (i = 1; i <= n; i++) s[r[i]] = 1 }
+    { pp[$1] = $2 }
+    END {
+      do { c = 0; for (p in pp) if (!(p in s) && (pp[p] in s)) { s[p] = 1; c = 1 } } while (c)
+      for (p in s) printf "%s ", p
+    }'
+}
+
+# The grace in whole seconds a stopped job gets between TERM and KILL.
+tt_stop_grace() {
+  case "${CC_CHECK_PUSH_STOP_GRACE:-}" in
+    ''|*[!0-9]*) printf '60' ;;
+    *) printf '%s' "$CC_CHECK_PUSH_STOP_GRACE" ;;
+  esac
+}
+
+# Stops the jobs $2... of this shell: TERM to each (a job shell passes it on to
+# its command), up to $1 seconds for them to end, then KILL to whatever is
+# still alive of them and of the descendants they had when the stop began.
+# The caller waits for the jobs.
+tt_pool_stop() {
+  local grace="$1" snap p t=0 live
+  shift
+  [ "$#" -gt 0 ] || return 0
+  snap=$(tt_pid_tree "$@")
+  for p in "$@"; do kill -TERM "$p" 2>/dev/null; done
+  while :; do
+    live=""
+    for p in "$@"; do tt_pid_alive "$p" && live="$live $p"; done
+    [ -n "$live" ] && [ "$t" -lt "$grace" ] || break
+    sleep 1
+    t=$((t + 1))
+  done
+  for p in $snap ${live:+$(tt_pid_tree $live)}; do
+    tt_pid_alive "$p" && kill -KILL "$p" 2>/dev/null
+  done
+  return 0
+}
+
 tt_cleanup() {
   local p
   if [ -n "${TT_POOL_PIDS:-}" ]; then
-    for p in $TT_POOL_PIDS; do kill -TERM "$p" 2>/dev/null; done
+    # shellcheck disable=SC2086
+    tt_pool_stop "$(tt_stop_grace)" $TT_POOL_PIDS
     for p in $TT_POOL_PIDS; do wait "$p" 2>/dev/null; done
     TT_POOL_PIDS=""
   fi
@@ -580,6 +645,10 @@ tt_run_items() {
   local secs="$1" goals="$2" rc
   TT_FAILED=""
   TT_JOBS_USED=1
+  TT_UNFINISHED_SECTIONS=""
+  TT_UNFINISHED_GOALS=""
+  TT_CUT_GOALS=""
+  TT_DONE_ITEMS=""
   if [ "${TT_JOBS:-1}" -gt 1 ]; then
     tt_pool_run "$secs" "$goals"
     return $?
@@ -814,8 +883,13 @@ tt_lane_done() {
 # every section runs in one lane: the same coverage, only slower. The heaviest
 # job starts first and a job with no estimate counts as the heaviest, so a long
 # job does not start last. bash 3.2: no `wait -n` and no associative arrays; a
-# slot is watched with kill -0. Every job runs
-# to its end, so one run names every failure.
+# slot is watched with kill -0. A job is judged when it is reaped, and a
+# failure is said at once — the `실패 확정` line and the job's whole output —
+# so the output after the pool does not repeat it. Without a stop condition
+# every job runs to its end, so one run names every failure; with TT_DEADLINE
+# past or TT_FAIL_FAST 1 after a failure the pool starts nothing more, stops
+# the running jobs, records none of them and names them, with the jobs it
+# never started, on a `끝나지 않은 항목` line.
 
 # The estimate of key $1 in the estimate file $2 in whole seconds, or nothing.
 tt_pool_est_of() {
@@ -906,9 +980,10 @@ tt_pool_start() {
   return 0
 }
 
-# Marks job $1 finished with exit status $2 and says so.
+# Marks job $1 finished with exit status $2 and says so, with the word $3
+# (default 끝; 끊음 for a stopped job).
 tt_pool_finish() {
-  local i="$1" rc="$2" p left=""
+  local i="$1" rc="$2" word="${3:-끝}" p left=""
   TT_PJ_DONE[$i]=1
   TT_PJ_RC[$i]="$rc"
   ts_release "${TT_PJ_SLOTS[$i]:-}"
@@ -918,19 +993,58 @@ tt_pool_finish() {
     [ "$p" = "${TT_PJ_PID[$i]:-}" ] || left="$left $p"
   done
   TT_POOL_PIDS="$left"
-  printf '%s: 끝 — %s rc=%s %d초\n' "$TT_PREFIX" "${TT_PJ_NAME[$i]}" "$rc" "${TT_PJ_EL[$i]}" >&2
+  printf '%s: %s — %s rc=%s %d초\n' "$TT_PREFIX" "$word" "${TT_PJ_NAME[$i]}" "$rc" "${TT_PJ_EL[$i]}" >&2
+}
+
+# Judges the ended job $1: TT_PJ_BAD[$1] 1 when it failed, and TT_PJ_FIDS[$1]
+# the items it failed. A goal fails on a nonzero exit; a lane on a nonzero
+# exit, a missing total line or a total line that counts a failure — the
+# judgement the lane's record was written under. With $2 `say` it also prints
+# why.
+tt_pool_judge() {
+  local i="$1" say="${2:-}" rc="${TT_PJ_RC[$1]}" bad=0 rr
+  TT_PJ_BAD[$i]=0
+  TT_PJ_FIDS[$i]=""
+  if [ "${TT_PJ_KIND[$i]}" = lane ]; then
+    if [ "$rc" != 0 ]; then
+      [ -z "$say" ] || printf '%s: %s 가 종료 코드 %s 로 끝났다\n' "$TT_PREFIX" "${TT_PJ_NAME[$i]}" "$rc" >&2
+      bad=1
+    fi
+    if ! grep -Eq '^test-gate: [0-9]+ passed, [0-9]+ failed$' "$TT_POOL_DIR/job-$i/out" 2>/dev/null; then
+      [ -z "$say" ] || printf '%s: %s 의 출력에 합계 줄(test-gate: <n> passed, <n> failed)이 없다\n' "$TT_PREFIX" "${TT_PJ_NAME[$i]}" >&2
+      bad=1
+    elif ! tt_lane_ok 0 "$TT_POOL_DIR/job-$i/out"; then
+      [ -z "$say" ] || printf '%s: %s 의 합계 줄이 실패를 센다\n' "$TT_PREFIX" "${TT_PJ_NAME[$i]}" >&2
+      bad=1
+    fi
+    if [ "$bad" = 1 ]; then
+      rr=$(sed -n 's/^test-gate: 실패한 절만 다시 — bash scripts\/test-gate.sh --sections \([^ ]*\)$/\1/p' "$TT_POOL_DIR/job-$i/out" 2>/dev/null | tail -n 1)
+      TT_PJ_FIDS[$i]="${rr:-${TT_PJ_ARG[$i]}}"
+    fi
+  elif [ "$rc" != 0 ]; then
+    [ -z "$say" ] || printf '%s: %s 가 종료 코드 %s 로 끝났다\n' "$TT_PREFIX" "${TT_PJ_NAME[$i]}" "$rc" >&2
+    bad=1
+    TT_PJ_FIDS[$i]="${TT_PJ_ARG[$i]}"
+  fi
+  TT_PJ_BAD[$i]="$bad"
 }
 
 tt_pool_run() {
   local secs="$1" goals="$2" est lanes n=0 i k load ids rest g e h jeff tab
-  local t0 now lastp next=0 ndone=0 running=0 rc old oi bad rr fsecs="" fgoals="" picks took shards
+  local t0 now lastp next=0 ndone=0 running=0 rc old oi fsecs="" fgoals="" picks took shards
+  local stop="" nfail=0 pids usecs="" ugoals=""
   local order=()
   tab=$(printf '\t')
   TT_PJ_KIND=(); TT_PJ_ARG=(); TT_PJ_NAME=(); TT_PJ_EST=(); TT_PJ_PID=(); TT_PJ_T0=()
   TT_PJ_DONE=(); TT_PJ_RC=(); TT_PJ_EL=(); TT_PJ_KEY=(); TT_PJ_SLOTS=()
   TT_PJ_PREP=(); TT_PJ_IT=(); TT_PJ_REC=(); TT_PJ_REUSED=(); TT_PJ_GCOPY=(); TT_PJ_DIG=()
+  TT_PJ_BAD=(); TT_PJ_FIDS=(); TT_PJ_SHOWN=(); TT_PJ_CUT=()
   TT_FAILED_SECTIONS=""
   TT_FAILED_GOALS=""
+  TT_UNFINISHED_SECTIONS=""
+  TT_UNFINISHED_GOALS=""
+  TT_CUT_GOALS=""
+  TT_DONE_ITEMS=""
   [ -n "$secs" ] || [ -n "$goals" ] || return 0
   TT_POOL_DIR="$TT_DIR/pool"
   if ! mkdir -p "$TT_POOL_DIR"; then
@@ -953,6 +1067,7 @@ tt_pool_run() {
       [ -n "$ids" ] || continue
       printf '%s: 재사용 절 %s ← %s (%s%s)\n' "$TT_PREFIX" "$ids" "$h" "$e" "$(tt_reuse_how "$how")" >&2
       TT_REUSED_SECTIONS="${TT_REUSED_SECTIONS:+$TT_REUSED_SECTIONS,}$ids"
+      TT_DONE_ITEMS="${TT_DONE_ITEMS:+$TT_DONE_ITEMS,}$ids"
       took="$took$ids,"
     done <<EOF
 $picks
@@ -1042,6 +1157,44 @@ EOF
   t0=$(date +%s)
   lastp="$t0"
   while [ "$ndone" -lt "$n" ]; do
+    if [ -n "${TT_DEADLINE:-}" ] && [ "$(date +%s)" -ge "$TT_DEADLINE" ]; then
+      stop="시간 예산 마감"
+    elif [ "${TT_FAIL_FAST:-0}" = 1 ] && [ "$nfail" -gt 0 ]; then
+      stop="실패 확정"
+    fi
+    if [ -n "$stop" ]; then
+      # The running jobs are stopped, waited for and left unrecorded; their
+      # checkouts go as a failed job's do.
+      pids=""
+      k=0
+      while [ "$k" -lt "$next" ]; do
+        i="${order[$k]}"
+        k=$((k + 1))
+        [ -z "${TT_PJ_DONE[$i]:-}" ] || continue
+        pids="$pids ${TT_PJ_PID[$i]}"
+      done
+      printf '%s: 멈춤 — %s · 새 잡을 시작하지 않고 도는 잡 %d개를 끊는다\n' "$TT_PREFIX" "$stop" "$running" >&2
+      # shellcheck disable=SC2086
+      tt_pool_stop "$(tt_stop_grace)" $pids
+      k=0
+      while [ "$k" -lt "$next" ]; do
+        i="${order[$k]}"
+        k=$((k + 1))
+        [ -z "${TT_PJ_DONE[$i]:-}" ] || continue
+        wait "${TT_PJ_PID[$i]}" 2>/dev/null
+        rc=$?
+        TT_PJ_CUT[$i]=1
+        tt_pool_finish "$i" "$rc" 끊음
+        if [ "${TT_PJ_KIND[$i]}" = lane ]; then
+          tt_lane_done "$i" 1
+        else
+          tt_item_done "${TT_PJ_IT[$i]:-}" 1 "${TT_PJ_KEY[$i]}" 0
+          if [ "$stop" = "시간 예산 마감" ]; then TT_CUT_GOALS="${TT_CUT_GOALS:+$TT_CUT_GOALS,}${TT_PJ_ARG[$i]}"; fi
+        fi
+        running=$((running - 1))
+      done
+      break
+    fi
     while [ "$running" -lt "$jeff" ] && [ "$next" -lt "$n" ]; do
       i="${order[$next]}"
       if [ "${TT_PJ_KIND[$i]}" = goal ] && [ -z "${TT_PJ_PREP[$i]:-}" ]; then
@@ -1080,6 +1233,10 @@ EOF
         else
           tt_item_done "${TT_PJ_IT[$i]:-}" 1 "${TT_PJ_KEY[$i]}" 0
         fi
+        tt_pool_judge "$i"
+        nfail=$((nfail + 1))
+        TT_PJ_SHOWN[$i]=1
+        printf '%s: 실패 확정 — %s rc=1 (시작하지 못했다)\n' "$TT_PREFIX" "${TT_PJ_NAME[$i]}" >&2
         ndone=$((ndone + 1))
       fi
     done
@@ -1097,6 +1254,14 @@ EOF
         tt_lane_done "$i" "$rc"
       else
         tt_item_done "${TT_PJ_IT[$i]:-}" "$rc" "${TT_PJ_KEY[$i]}" "${TT_PJ_REC[$i]:-0}"
+      fi
+      tt_pool_judge "$i"
+      if [ "${TT_PJ_BAD[$i]}" = 1 ]; then
+        nfail=$((nfail + 1))
+        TT_PJ_SHOWN[$i]=1
+        printf '%s: 실패 확정 — %s rc=%s\n' "$TT_PREFIX" "${TT_PJ_NAME[$i]}" "$rc" >&2
+        printf '=== %s: 잡 %s ===\n' "$TT_PREFIX" "${TT_PJ_NAME[$i]}" >&2
+        cat "$TT_POOL_DIR/job-$i/out" >&2 2>/dev/null
       fi
       running=$((running - 1))
       ndone=$((ndone + 1))
@@ -1119,48 +1284,51 @@ EOF
     fi
   done
 
-  # The whole output of every job, in the order they were put in the pool,
-  # then the verdicts: a lane fails on a nonzero exit, a missing total line or
-  # a total line that counts a failure — the judgement the lane's record was
-  # written under.
+  # The output of every job not said at its failure, in the order they were
+  # put in the pool, then the verdicts of the jobs that ended. A stopped job
+  # and one never started are not judged: they are unfinished.
   : > "$TT_POOL_DIR/goal-times.tsv"
   i=0
   while [ "$i" -lt "$n" ]; do
-    printf '=== %s: 잡 %s ===\n' "$TT_PREFIX" "${TT_PJ_NAME[$i]}"
-    if [ -n "${TT_PJ_REUSED[$i]:-}" ]; then printf '재사용 — 돌리지 않았다\n'; fi
-    cat "$TT_POOL_DIR/job-$i/out" 2>/dev/null
+    if [ -z "${TT_PJ_SHOWN[$i]:-}" ]; then
+      printf '=== %s: 잡 %s ===\n' "$TT_PREFIX" "${TT_PJ_NAME[$i]}"
+      if [ -n "${TT_PJ_REUSED[$i]:-}" ]; then printf '재사용 — 돌리지 않았다\n'; fi
+      if [ -z "${TT_PJ_DONE[$i]:-}" ]; then printf '시작하지 않았다\n'; fi
+      if [ -n "${TT_PJ_CUT[$i]:-}" ]; then printf '끊었다 — 판정하지 않는다\n'; fi
+      cat "$TT_POOL_DIR/job-$i/out" 2>/dev/null
+    fi
     i=$((i + 1))
   done
   i=0
   while [ "$i" -lt "$n" ]; do
-    rc="${TT_PJ_RC[$i]}"
-    if [ "${TT_PJ_KIND[$i]}" = lane ]; then
-      bad=0
-      if [ "$rc" != 0 ]; then
-        printf '%s: %s 가 종료 코드 %s 로 끝났다\n' "$TT_PREFIX" "${TT_PJ_NAME[$i]}" "$rc" >&2
-        bad=1
+    if [ -z "${TT_PJ_DONE[$i]:-}" ] || [ -n "${TT_PJ_CUT[$i]:-}" ]; then
+      # A job never started may still hold the checkout it was given.
+      if [ -z "${TT_PJ_DONE[$i]:-}" ]; then
+        if [ "${TT_PJ_KIND[$i]}" = lane ]; then tt_lane_done "$i" 1; else tt_item_done "${TT_PJ_IT[$i]:-}" 1 "${TT_PJ_KEY[$i]}" 0; fi
       fi
-      if ! grep -Eq '^test-gate: [0-9]+ passed, [0-9]+ failed$' "$TT_POOL_DIR/job-$i/out" 2>/dev/null; then
-        printf '%s: %s 의 출력에 합계 줄(test-gate: <n> passed, <n> failed)이 없다\n' "$TT_PREFIX" "${TT_PJ_NAME[$i]}" >&2
-        bad=1
-      elif ! tt_lane_ok 0 "$TT_POOL_DIR/job-$i/out"; then
-        printf '%s: %s 의 합계 줄이 실패를 센다\n' "$TT_PREFIX" "${TT_PJ_NAME[$i]}" >&2
-        bad=1
+      if [ "${TT_PJ_KIND[$i]}" = lane ]; then
+        usecs="${usecs:+$usecs,}${TT_PJ_ARG[$i]}"
+      else
+        ugoals="${ugoals:+$ugoals,}${TT_PJ_ARG[$i]}"
       fi
-      if [ "$bad" = 1 ]; then
-        rr=$(sed -n 's/^test-gate: 실패한 절만 다시 — bash scripts\/test-gate.sh --sections \([^ ]*\)$/\1/p' "$TT_POOL_DIR/job-$i/out" 2>/dev/null | tail -n 1)
-        fsecs="${fsecs:+$fsecs,}${rr:-${TT_PJ_ARG[$i]}}"
+      i=$((i + 1))
+      continue
+    fi
+    TT_DONE_ITEMS="${TT_DONE_ITEMS:+$TT_DONE_ITEMS,}${TT_PJ_ARG[$i]}"
+    [ -n "${TT_PJ_REUSED[$i]:-}" ] || tt_pool_judge "$i" say
+    if [ "${TT_PJ_BAD[$i]:-0}" = 1 ]; then
+      if [ "${TT_PJ_KIND[$i]}" = lane ]; then
+        fsecs="${fsecs:+$fsecs,}${TT_PJ_FIDS[$i]}"
+      else
+        fgoals="${fgoals:+$fgoals,}${TT_PJ_FIDS[$i]}"
       fi
-    elif [ "$rc" != 0 ]; then
-      printf '%s: %s 가 종료 코드 %s 로 끝났다\n' "$TT_PREFIX" "${TT_PJ_NAME[$i]}" "$rc" >&2
-      fgoals="${fgoals:+$fgoals,}${TT_PJ_ARG[$i]}"
-    elif [ -n "${TT_PJ_REUSED[$i]:-}" ]; then
-      :
-    else
+    elif [ "${TT_PJ_KIND[$i]}" = goal ] && [ -z "${TT_PJ_REUSED[$i]:-}" ]; then
       printf 'make:%s\t%s\n' "${TT_PJ_ARG[$i]}" "${TT_PJ_EL[$i]}" >> "$TT_POOL_DIR/goal-times.tsv"
     fi
     i=$((i + 1))
   done
+  TT_UNFINISHED_SECTIONS="$usecs"
+  TT_UNFINISHED_GOALS="$ugoals"
 
   # A goal's time goes into the record once, after the pool, through the tested
   # tree's test-gate; a tree that does not know --record-add drops it.
@@ -1176,7 +1344,12 @@ EOF
   TT_FAILED_GOALS="$fgoals"
   TT_FAILED="${fsecs:+절=$fsecs}"
   [ -z "$fgoals" ] || TT_FAILED="${TT_FAILED:+$TT_FAILED }목표=$fgoals"
-  [ -z "$TT_FAILED" ]
+  if [ -n "$usecs" ] || [ -n "$ugoals" ]; then
+    printf '%s: 끝나지 않은 항목 — %s\n' "$TT_PREFIX" "$usecs${usecs:+${ugoals:+,}}$ugoals" >&2
+  fi
+  [ -z "$TT_FAILED" ] || return 1
+  if [ -n "$usecs" ] || [ -n "$ugoals" ]; then return 5; fi
+  return 0
 }
 
 tt_section_markers() {
@@ -1330,8 +1503,9 @@ tt_items_cell() {
 tt_base_contrast() {
   local base="$1" secs="$2" goals="$3" rc rest it fs="" fg=""
   local psecs="" pgoals="" bsecs="" bgoals="" dsecs="" dgoals=""
-  # The base is run to tell a defect apart, so nothing is reused or recorded.
-  local TT_REUSE=0
+  # The base is run to tell a defect apart, so nothing is reused or recorded,
+  # and every item runs to its end whatever stop conditions the caller had.
+  local TT_REUSE=0 TT_DEADLINE="" TT_FAIL_FAST=0
   TT_PRE_ITEMS=""
   TT_BRANCH_ITEMS=""
   TT_BASE_DROPPED=""
@@ -1536,6 +1710,9 @@ tt_repro_stamp_line() {
 
 tt_cli_repro() {
   local base="" head="" expect="" secs="" goals="" rc mrc hrc=0 lrc=0 lane_tmp="" lane_state="" verdict
+  # A reproduction runs every item to its end: no deadline, no early stop.
+  TT_DEADLINE=""
+  TT_FAIL_FAST=0
   TT_PREFIX="test-tree repro"
   TT_SECVAR="--sections"
   TT_GOALVAR="--goals"
@@ -1678,6 +1855,9 @@ tt_cli_repro() {
 # check-push deletes the stamp of its tree before it starts.
 tt_cli_base_verdict() {
   local base="" head="" expect="" secs="" goals="" jobs="4" rc
+  # The verdict needs every item's outcome: no deadline, no early stop.
+  TT_DEADLINE=""
+  TT_FAIL_FAST=0
   TT_PREFIX="test-tree base-verdict"
   TT_SECVAR="--sections"
   TT_GOALVAR="--goals"
@@ -2202,6 +2382,14 @@ test-tree base-verdict: 브랜치 결함 항목=s1"
   out=$(bv --base "$sbf" --head "$shn" --expect "$tbfhn" --sections s1,s3 --goals g1,g2 --jobs 2)
   has "F37 절과 목표가 섞이면 단계 표기로 이름 댄다" "$out" "test-tree base-verdict: 기존 결함 항목=절=s3 목표=g2
 test-tree base-verdict: 브랜치 결함 항목=절=s1 목표=g1"
+  # check-push's stop conditions do not reach the base verdict: the same
+  # mixed case under a one-second budget and an early stop names the same
+  # items and leaves nothing unfinished.
+  out=$(CC_PIPELINE_RUN_ID=f37 CHECK_PUSH_FAIL_FAST=1 CHECK_PUSH_BUDGET_SECS=1 \
+    bv --base "$sbf" --head "$shn" --expect "$tbfhn" --sections s1,s3 --goals g1,g2 --jobs 2)
+  has "F37 시간 예산과 조기 종료 변수 아래서도 base 판정은 그대로다" "$out" "test-tree base-verdict: 기존 결함 항목=절=s3 목표=g2
+test-tree base-verdict: 브랜치 결함 항목=절=s1 목표=g1"
+  hasnt "F37 base 판정은 끝나지 않은 항목을 남기지 않는다" "$out" "끝나지 않은 항목"
   : > "$T/gate.log"
   out=$(bv --base "$sbf" --head "$shf" --expect "$thf" --sections h3)
   rc=$?
@@ -2442,6 +2630,12 @@ case "$g" in
     sp=$!
     wait "$sp"
     exit 0 ;;
+  deaf)
+    trap '' TERM
+    sleep 30 &
+    printf 'P %s %s\n' "$g" "$!" >> "@T@/slot.log"
+    wait
+    exit 0 ;;
 esac
 sleep "${SLOW_SECS:-0}"
 printf 'E %s %s\n' "$g" "$(date +%s)" >> "@T@/slot.log"
@@ -2449,13 +2643,17 @@ EOF
   chmod +x "$T/bin/slowmake"
   # One pool of <goals> as process <tag>, two jobs at a time, with the
   # variables given after the goals. Start it with `&`: the background shell
-  # becomes the pool's own bash, so a TERM sent to $! reaches the pool.
+  # becomes the pool's own bash, so a TERM sent to $! reaches the pool. SPFF=1
+  # sets TT_FAIL_FAST and SPDL=<n> a deadline n seconds after the clone, so a
+  # slow clone on a loaded host does not use it up before the first job
+  # starts; the goals the deadline cut go to standard error as `sp-cut=`.
   sp() {
     local tag="$1" goals="$2"
     shift 2
     cd "$W" || exit 2
     exec env CC_TEST_TREE_MAKE="$T/bin/slowmake" CC_TEST_TREE_GATE="$T/bin/gate" "$@" bash -c '
-      . "$1"; trap "tt_cleanup; exit 143" TERM; cd "$2" && tt_clone > /dev/null && TT_JOBS=2 && tt_pool_run "" "$3" > /dev/null; printf "rc=%s\n" "$?"; tt_cleanup' _ "$self" "$W" "$goals" > "$T/sp-$tag.out" 2> "$T/sp-$tag.err"
+      . "$1"; trap "tt_cleanup; exit 143" TERM; TT_FAIL_FAST="${SPFF:-0}"
+      cd "$2" && tt_clone > /dev/null && TT_JOBS=2 && { [ -z "${SPDL:-}" ] || TT_DEADLINE=$(( $(date +%s) + SPDL )); } && tt_pool_run "" "$3" > /dev/null; printf "rc=%s\n" "$?"; printf "sp-cut=%s\n" "$TT_CUT_GOALS" >&2; tt_cleanup' _ "$self" "$W" "$goals" > "$T/sp-$tag.out" 2> "$T/sp-$tag.err"
   }
   # Waits until the double logged line $1 (up to 30 seconds).
   logwait() {
@@ -2558,6 +2756,50 @@ EOF
   check "F38 무게 계산: CPU 25초 / 벽시계 10초 → 올림(2.25) = 3" "$(ts_weight_calc "0m20.000s 0m5.000s" 10)" "3"
   check "F38 무게 계산: CPU/벽시계 2.25 경계 → 2" "$(ts_weight_calc "0m22.500s 0m0.000s" 10)" "2"
   check "F38 무게 계산: 벽시계 10초 미만이면 갱신하지 않는다" "$(ts_weight_calc "0m50.000s 0m0.000s" 9)" ""
+
+  # --- F41 풀의 멈춤 조건과 실패의 즉시 보고 ------------------------------------
+  # With TT_FAIL_FAST 1 the first failure stops the pool: the other job is
+  # stopped and named unfinished, and the status is the failure's.
+  : > "$T/slot.log"
+  v=$(date +%s)
+  sp A rc7,long CC_TEST_SLOTS=0 SPFF=1 &
+  wait $!
+  v=$(( $(date +%s) - v ))
+  check "F41 조기 종료: 실패가 이기고 도는 잡은 끊긴다" "$(cat "$T/sp-A.out")|$(grep -c '^T long$' "$T/slot.log")" "rc=1|1"
+  has "F41 조기 종료: 실패 확정 줄" "$(cat "$T/sp-A.err")" "test-tree: 실패 확정 — 목표 rc7 rc=7"
+  has "F41 조기 종료: 멈춘 까닭" "$(cat "$T/sp-A.err")" "test-tree: 멈춤 — 실패 확정 · 새 잡을 시작하지 않고 도는 잡 1개를 끊는다"
+  has "F41 조기 종료: 끝나지 않은 항목 줄" "$(cat "$T/sp-A.err")" "test-tree: 끝나지 않은 항목 — long"
+  check "F41 조기 종료: 실패에 끊긴 목표는 시간 예산에 잘린 목표가 아니다" "$(sed -n 's/^sp-cut=//p' "$T/sp-A.err")" ""
+  if [ "$v" -lt 20 ]; then ok "F41 조기 종료는 긴 잡을 기다리지 않는다"; else bad "F41 조기 종료는 긴 잡을 기다리지 않는다" "${v}초"; fi
+  # Without it every job runs to its end, and the failure is said when it is
+  # reaped, before the slower job ends, and not again after the pool.
+  : > "$T/slot.log"
+  sp A rc7,w9 CC_TEST_SLOTS=0 SLOW_SECS=3 &
+  wait $!
+  check "F41 대화형: 모든 잡이 끝까지 돈다" "$(cat "$T/sp-A.out")|$(grep -c '^E w9 ' "$T/slot.log")" "rc=1|1"
+  v=$(awk '/실패 확정 — 목표 rc7/ { f = NR } /끝 — 목표 w9 / { e = NR } END { print (f && e && f < e) ? "앞" : "뒤" }' "$T/sp-A.err")
+  check "F41 대화형: 실패 확정 줄이 느린 잡의 끝보다 먼저 나온다" "$v" "앞"
+  hasnt "F41 대화형: 끝나지 않은 항목이 없다" "$(cat "$T/sp-A.err")" "끝나지 않은 항목"
+  check "F41 실패한 잡의 출력 머리는 한 번만 나온다" "$(grep -c '^=== test-tree: 잡 목표 rc7 ===$' "$T/sp-A.err")" "1"
+  # A job that ignores TERM is killed after the grace, and the deadline makes
+  # the pool unfinished, not failed: status 5 and the goal named as cut.
+  : > "$T/slot.log"
+  v=$(date +%s)
+  sp A deaf CC_TEST_SLOTS=0 SPDL=4 CC_CHECK_PUSH_STOP_GRACE=1 &
+  wait $!
+  v=$(( $(date +%s) - v ))
+  check "F41 마감: 미완은 종료 코드 5" "$(cat "$T/sp-A.out")" "rc=5"
+  has "F41 마감: 멈춘 까닭" "$(cat "$T/sp-A.err")" "test-tree: 멈춤 — 시간 예산 마감"
+  has "F41 마감: 끊긴 잡의 줄" "$(cat "$T/sp-A.err")" "test-tree: 끊음 — 목표 deaf rc="
+  has "F41 마감: 끝나지 않은 항목 줄" "$(cat "$T/sp-A.err")" "test-tree: 끝나지 않은 항목 — deaf"
+  has "F41 마감: 잘린 목표를 돌려준다" "$(cat "$T/sp-A.err")" "sp-cut=deaf"
+  hasnt "F41 마감: 실패 확정이 아니다" "$(cat "$T/sp-A.err")" "실패 확정"
+  e=$(awk '$1 == "P" && $2 == "deaf" { print $3 }' "$T/slot.log")
+  if [ -n "$e" ] && ! kill -0 "$e" 2>/dev/null && [ "$v" -lt 20 ]; then
+    ok "F41 TERM 을 무시하는 잡은 유예 뒤 KILL 로 내려간다"
+  else
+    bad "F41 TERM 을 무시하는 잡은 유예 뒤 KILL 로 내려간다" "pid=$e ${v}초"
+  fi
 
   # --- F40 항목 체크아웃과 재사용 --------------------------------------------------
   # The make double logs where each goal ran, what git PATH finds and whether
@@ -2837,7 +3079,7 @@ EOF
   rm -rf "$T"
   printf 'test-tree self-test: %d passed, %d failed\n' "$passed" "$failed"
   # A floor on the count, so a refactor that silently skips cases cannot pass.
-  if [ "$passed" -lt 203 ]; then
+  if [ "$passed" -lt 222 ]; then
     printf 'test-tree self-test: 통과 수 %d 가 하한 203 에 못 미칩니다\n' "$passed" >&2
     return 1
   fi

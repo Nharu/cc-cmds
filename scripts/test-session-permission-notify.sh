@@ -661,4 +661,86 @@ check "hooks.json UserPromptSubmit → prompt" "$(entry UserPromptSubmit - promp
 check "hooks.json 의 좌석 항목은 모두 아홉" \
   "$(jq -r '[.hooks[][]?.hooks[] | select(.command | contains("session-permission-notify.sh"))] | length' "$HOOKS_JSON")" "9"
 
+# ---------------------------------------------------------------------------
+# 11. AskUserQuestion: the question seat owns the remote event.
+# ---------------------------------------------------------------------------
+# The permission dialog of AskUserQuestion is the question screen itself, and
+# the question seat leaves its `auq` event when that screen opens. This seat
+# records `seen` and nothing else, so the fallback signal about six seconds
+# later is held back too. The question seat raises a banner, so this section
+# comes after section 9's count of notifier calls and gives the question seat
+# a notifier log of its own.
+ASK_HOOK="$PLUGIN_ROOT/hooks/session-ask-notify.sh"
+ASK_NOTIFY_LOG="$WORK/notifier-ask.log"
+: > "$ASK_NOTIFY_LOG"
+ask_run() { # ask_run — the question seat on the current payload, into the same spool
+  : > "$ERR"; : > "$OUTF"
+  env -u CC_PIPELINE_SEGMENT -u CC_PIPELINE_STAGE_ID -u CC_PIPELINE_SHIFT_ID \
+      -u CC_PIPELINE_REENTRY -u CC_PIPELINE_RUN_ID -u RUN_ID -u RUN_DIR \
+      -u CC_CMDS_SESSION_NOTIFY -u CC_CMDS_AUTOPILOT_NOTIFY -u TMUX -u TMUX_PANE \
+      PATH="$PATH_FULL" \
+      HOME="$HOMEDIR" \
+      TMPDIR="$T" \
+      XDG_STATE_HOME="$STATE" \
+      CC_CMDS_ATTENTION_ROOT="$SPOOL" \
+      CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" \
+      CC_CMDS_NOTIFY_PATH_DISABLE_PREPEND=1 \
+      CC_CMDS_NOTIFY_HOST_OS=Darwin \
+      CC_TEST_NOTIFY_LOG="$ASK_NOTIFY_LOG" \
+      bash "$ASK_HOOK" < "$P" > "$OUTF" 2> "$ERR"
+  local rc=$?
+  if [ "$rc" -ne 0 ] || [ -s "$OUTF" ] || [ -s "$ERR" ]; then
+    noisy="$noisy [ask rc=$rc out=$(wc -c < "$OUTF" | tr -d ' ') err=$(head -c 200 "$ERR")]"
+  fi
+  return 0
+}
+noisy=""
+AUQ_IN='{"questions":[{"header":"범위","question":"어디까지 바꿀까요?","multiSelect":false,"options":[{"label":"전부","description":"d"},{"label":"일부","description":"d"}]}]}'
+
+reset
+perm sess-auq AskUserQuestion "$AUQ_IN"
+before=$(now_ms)
+hook_run request "$PATH_FULL"
+check "AskUserQuestion — 권한 요청은 사건을 남기지 않는다" "$(n_events)" "0"
+seen=$(cat "$BASE/sess-auq/seen" 2>/dev/null || echo 0)
+check "AskUserQuestion — seen 은 기록된다" "$([ "${seen:-0}" -ge "$before" ] && echo yes || echo no)" "yes"
+check "AskUserQuestion — 대기·열림 표시가 없다" \
+  "$(find "$BASE/sess-auq" -name 'open.*' -o -name 'pending.*' 2>/dev/null | wc -l | tr -d ' ')" "0"
+notif sess-auq
+hook_run notification "$PATH_FULL"
+check "AskUserQuestion — 뒤따르는 보조 신호도 사건을 남기지 않는다" "$(n_events)" "0"
+check "AskUserQuestion — 보조 신호 슬롯 사건이 없다" \
+  "$(ev '[.[] | select(.slot | endswith("@notification"))] | length')" "0"
+perm sess-auq Bash '{"command":"ls"}'
+hook_run request "$PATH_FULL"
+check "대조군 — 같은 세션의 Bash 권한 요청은 사건 하나를 남긴다" \
+  "$(ev '[.[] | select(.kind == "permission")] | length')" "1"
+check "대조군 — 그 사건의 도구는 Bash" "$(ev '.[0].reply.tool_name')" "Bash"
+
+reset
+SID_AUQ=sess-auq-seat
+post "$SID_AUQ" PreToolUse AskUserQuestion "$AUQ_IN" '{"tool_use_id":"toolu_01AUQ"}'
+ask_run
+perm "$SID_AUQ" AskUserQuestion "$AUQ_IN"
+hook_run request "$PATH_FULL"
+notif "$SID_AUQ"
+hook_run notification "$PATH_FULL"
+check "질문 한 번 — 스풀의 사건은 정확히 하나" "$(n_events)" "1"
+check "질문 한 번 — 그 사건의 종류는 auq" "$(ev '.[0].kind')" "auq"
+
+reset
+perm sess-form mcp__cc-cmds__question_form '{"title":"t","questions":[]}'
+hook_run request "$PATH_FULL"
+check "질문 폼 도구 — 권한 요청은 permission 사건 하나를 남긴다" \
+  "$(ev '[.[] | select(.kind == "permission")] | length')" "1"
+check "질문 폼 도구 — reply.tool_name 은 그 도구 이름" "$(ev '.[0].reply.tool_name')" "mcp__cc-cmds__question_form"
+
+reset
+perm sess-auq-settle AskUserQuestion "$AUQ_IN"
+hook_run request "$PATH_FULL"
+post sess-auq-settle PostToolUse AskUserQuestion "$AUQ_IN"
+hook_run settle "$PATH_FULL"
+check "AskUserQuestion — 결과 신호는 처리 표지를 쓰지 않는다" "$(n_handled)" "0"
+check "AskUserQuestion 절 — 모든 실행이 종료 0, stdout·stderr 비어 있음" "${noisy:-없음}" "없음"
+
 finish

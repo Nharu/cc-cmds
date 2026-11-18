@@ -3657,10 +3657,30 @@ HCOPY="$WORK/hcopy13.md"; { cat "$HPM"; printf '%s\n' "$HROW"; } > "$HCOPY"
 HPL="$BASE/docs/pipeline-run/$H13.md"; HPG="$BASE/docs/pipeline-grant/$H13.md"
 check "13 자식: halt-source 는 이월할 재수렴 답에 이월 을 낸다" "$(rkg halt-source "$HCOPY" "$H13" "$HRD" "$HPL" "$HPG" "$WORK/rkg.err" I1)" "이월"
 mkdir -p "$WORK/elsewhere13"; cp "$SPL" "$WORK/elsewhere13/other.md"
-check "13 자식: LEDGER 를 다른 디렉터리의 원장으로 넘기면 adopt-check 는 통과 가 아니라 원장없음 이다" \
+# The source run's ledger is found through the `ledger-path` its run directory
+# holds, so a LEDGER in another directory still reaches it. With that file gone,
+# or naming a file of another run id, the lookup falls back to the ledger's own
+# directory and finds nothing there.
+check "13 자식: LEDGER 가 다른 디렉터리여도 adopt-check 는 출처 런의 ledger-path 로 원장을 찾아 통과 를 낸다" \
+  "$(rkg adopt-check "$WORK/copy13.md" "$S13" "$SRD" "$WORK/elsewhere13/other.md" "$SPG" "$WORK/rkg.err" I1 rk "$ROW13")" "통과"
+check "13 자식: LEDGER 가 다른 디렉터리여도 halt-source 는 출처 런의 ledger-path 로 원장을 찾아 이월 을 낸다" \
+  "$(rkg halt-source "$HCOPY" "$H13" "$HRD" "$WORK/elsewhere13/other.md" "$HPG" "$WORK/rkg.err" I1)" "이월"
+cp "$SRD/ledger-path" "$WORK/lp13-s.bak"; cp "$HRD/ledger-path" "$WORK/lp13-h.bak"
+rm -f "$SRD/ledger-path" "$HRD/ledger-path"
+check "13 자식: 출처 런의 ledger-path 가 없고 LEDGER 가 다른 디렉터리면 adopt-check 는 원장없음 이다" \
   "$(rkg adopt-check "$WORK/copy13.md" "$S13" "$SRD" "$WORK/elsewhere13/other.md" "$SPG" "$WORK/rkg.err" I1 rk "$ROW13")" "원장없음"
-check "13 자식: LEDGER 를 다른 원장으로 넘기면 halt-source 는 이월 하지 않는다" \
+check "13 자식: 출처 런의 ledger-path 가 없고 LEDGER 가 다른 디렉터리면 halt-source 는 이월 하지 않는다" \
   "$(rkg halt-source "$HCOPY" "$H13" "$HRD" "$WORK/elsewhere13/other.md" "$HPG" "$WORK/rkg.err" I1)" "없음"
+# An existing file whose name is not `<source run>.md`, so only the name check refuses it.
+cp "$SPL" "$WORK/elsewhere13/20261001-a00000ff.md"
+printf '%s\n' "$WORK/elsewhere13/20261001-a00000ff.md" > "$SRD/ledger-path"
+printf '%s\n' "$WORK/elsewhere13/20261001-a00000ff.md" > "$HRD/ledger-path"
+check "13 자식: 출처 런의 ledger-path 가 다른 런 id 의 꼴이면 adopt-check 는 원장없음 이다" \
+  "$(rkg adopt-check "$WORK/copy13.md" "$S13" "$SRD" "$WORK/elsewhere13/other.md" "$SPG" "$WORK/rkg.err" I1 rk "$ROW13")" "원장없음"
+check "13 자식: 출처 런의 ledger-path 가 다른 런 id 의 꼴이면 halt-source 는 이월 하지 않는다" \
+  "$(rkg halt-source "$HCOPY" "$H13" "$HRD" "$WORK/elsewhere13/other.md" "$HPG" "$WORK/rkg.err" I1)" "없음"
+cp "$WORK/lp13-s.bak" "$SRD/ledger-path"; cp "$WORK/lp13-h.bak" "$HRD/ledger-path"
+rm -f "$WORK/lp13-s.bak" "$WORK/lp13-h.bak"
 check "13 자식: RUN_DIR 을 없는 디렉터리로 넘기면 halt-source 는 이월 하지 않는다" \
   "$(rkg halt-source "$HCOPY" "$H13" "$WORK/no-such-run/$H13" "$HPL" "$HPG" "$WORK/rkg.err" I1)" "불가"
 check "13 자식: MANIFEST 를 사설 사본이 아닌 원천 매니페스트로 넘기면 halt-source 는 이월 하지 않는다" \

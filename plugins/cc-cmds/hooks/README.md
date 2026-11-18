@@ -621,7 +621,8 @@ session banner switch `CC_CMDS_SESSION_NOTIFY`) and `cc_caller_is_router`
 must both be true, and the session id must be non-empty and inside
 `[A-Za-z0-9_.-]`, so it is used as is in the slot and the state path. The roles
 that act for the main session alone (`request`, `settle`, `stop`, `prompt`)
-then end on a present `agent_id`.
+then end on a present `agent_id`. `request` then ends, after `seen` is
+written, when the tool is `AskUserQuestion`.
 
 **The state files.** Under `${TMPDIR:-/tmp}/cc-cmds-permission/<sid>/`, with
 `umask 077`:
@@ -643,7 +644,11 @@ key-sorted compact JSON. A handled marker matches by slot and time alone, so a
 single slot per session would let one parallel call's result close another
 dialog that is still open.
 
-**`request`.** It records `seen` (before the `agent_id` check), computes the
+**`request`.** It records `seen` (before the `agent_id` check). When the tool
+is `AskUserQuestion` it stops there and writes nothing else: that dialog is the
+question screen itself, the question seat already left its event at the moment
+the screen opened, and the `seen` time is what holds back the fallback signal
+that arrives about six seconds later. For any other tool it computes the
 fingerprint, creates `pending.<fp>`, and detaches the rest: one `jq` call
 builds the per-tool summary, redacts it and writes the attachment straight to
 a `cc-attention-detail.*` file; the title is `cc-cmds · <session title> ·

@@ -132,6 +132,7 @@ check "S5 목표 링크가 블록이라 말줄임이 먹는다" "$(hits '.row-li
 check "S5 app.js 가 머리 띠의 상세 탐색을 채운다" "$(hits 'getElementById("band-nav")' "$SCREEN/app.js")" "1"
 check "S5 끝난 런의 띠가 갱신 멈춤을 말한다" "$(hits '연결됨 · 갱신 멈춤' "$SCREEN/app.js")" "1"
 check "S5 결과 줄의 원장 시각을 표시 시각으로 바꾼다" "$(hits 's.result.line.replace(' "$SCREEN/app.js")" "1"
+check "S5 app.js 에 사용량 한도 문자열이 남지 않는다" "$(hits '사용량 한도' "$SCREEN/app.js")" "0"
 
 # ---------------------------------------------------------------------------
 # S6 — a poll must not take away what the reader is on. The real app.js runs
@@ -583,7 +584,44 @@ async function seatCases() {
   report("버려진 런 묶음의 부제가 좌석 없는 대기 런을 말한다", text().includes("버려졌거나 활성 세션 없이 기다리는 런"), true);
 }
 
-listCases().then(detailCases).then(endedHoldCases).then(baseFilterCases).then(seatCases).catch((e) => { console.error(e && e.stack || e); process.exit(1); });
+// A run that waits for dispatch on three causes: the list cell names the oldest
+// wait's group with its end information, and the detail head counts each group.
+async function waitCases() {
+  const waits = [
+    { kind: "호스트 포화", text: "호스트 포화 대기", reason: "host-saturated", until: null, ref: "A.waiting", since: 1793690000, returned: false,
+      host: { ratio_permille: 8823, ncpu: 18, sampled_at: 1793699000, leave_permille: 1500 } },
+    { kind: "계정 한도", text: "계정 한도 대기", reason: "group-exhausted", until: 1793710800, host: null, ref: "B.waiting", since: 1793691000, returned: false },
+    { kind: "원인 미상", text: "원인 미상 대기", reason: null, until: null, host: null, ref: "C.waiting", since: 1793692000, returned: false },
+  ];
+  const lc = await boot("/", () => ({
+    tz_offset_s: 32400, tz_label: "KST", generated_at: 1793700000, today: "2026-11-04",
+    runs: [{ id: "wait-run", goal: "목표 wait-run", attention: "watch", state: "진행중", elapsed_s: 60, last_growth: 1793690000,
+      base: "/a", seg: {}, cost_usd: 1, waiting: waits, prs: [] }],
+    totals: {}, bases: ["/a"], hidden: 0, hidden_experiment: 0,
+  }));
+  let row = null;
+  lc.app.walk((n) => { if (!row && n.getAttribute("id") === "run-wait-run") row = n; });
+  const rowText = row ? row.textContent : "";
+  report("목록 칸의 태그가 가장 오래된 대기의 갈래 이름이다", rowText.includes("호스트 포화호스트 포화 대기"), true);
+  report("호스트 포화 줄에 부하와 해제 문턱이 붙는다", rowText.includes("호스트 포화 대기 · 부하 8823‰ · 해제 1500‰"), true);
+  report("목록 칸의 둘째 줄은 사람 할 일 없음 그대로다", rowText.includes("사람 할 일 없음"), true);
+
+  const dc = await boot("/run/wait-run", () => ({
+    tz_offset_s: 32400,
+    summary: { id: "wait-run", state: "진행중", attention: "watch", started_at: 1793680000, elapsed_s: 60, prs: [], notes: [] },
+    judgments: { items: [], by_class: {} }, waiting: waits, steps: [], timeline: [], shifts: [],
+    clauses: [], reviews: [], segments: [], links: {}, cost: {},
+  }));
+  const text = dc.app.textContent;
+  report("상세 머리 요약이 갈래별로 고정 순서로 센다", text.includes("승인 0 · 중단 기록 0 · 계정 한도 1 · 호스트 포화 1 · 원인 미상 1"), true);
+  report("상세 대기 항목이 근거 원값을 보인다", text.includes("근거host-saturated") && text.includes("근거group-exhausted"), true);
+  report("근거가 없는 대기 항목은 근거 없음을 보인다", text.includes("근거없음"), true);
+  report("계정 한도 항목은 리셋 시각을 보인다", text.includes("리셋 시각"), true);
+  report("호스트 포화 항목은 부하·코어·해제 문턱·표본 시각을 보인다",
+    text.includes("호스트 부하8823‰, 코어 18") && text.includes("해제 문턱1500‰") && text.includes("표본 시각"), true);
+}
+
+listCases().then(detailCases).then(endedHoldCases).then(baseFilterCases).then(seatCases).then(waitCases).catch((e) => { console.error(e && e.stack || e); process.exit(1); });
 JS
 
 if command -v node >/dev/null 2>&1; then
