@@ -15884,6 +15884,10 @@ case "$rc/$msg" in
   3/*"양쪽에 다 맞습니다"*) ok "15e-3: 되돌림 뒤 재답은 되돌려진 앞 답에 막히지 않는다" ;;
   *) bad "15e-3: 되돌림 뒤 재답은 되돌려진 앞 답에 막히지 않는다" "$rc/$msg" ;;
 esac
+# 멈춘 감사의 종합 질문 기록은 답 없이 남아 있고, 사람이 고를 선택지를 담은 답 없는
+# 기록은 그 키(A1)의 재파견을 막는다. 이 절은 설계 단계 키의 입구를 재므로, 새 감사를
+# 보내기 전에 그 기록을 치운다.
+rm -f "$RD15EP/halt/A1#1.md"
 au15_dispatch R15EP "$STUB_AU_AUDIT" audit "$audit15ep"
 au15_wait R15EP A1
 check "15e-3 픽스처의 새 감사가 정상 완료다 (아래 계획 거부가 공허하지 않다)" "$(au15_class R15EP A1 audit)" "정상 완료"
@@ -41107,6 +41111,9 @@ case "$msg" in
   *'names an enforcement surface'*) ok "34r: 그 거절은 토큰 검사의 것이다" ;;
   *) bad "34r: 그 거절은 토큰 검사의 것이다" "$msg" ;;
 esac
+# 그 기록은 좌석 답이 거절되어 답 없이 남고, 사람이 고를 선택지를 담은 답 없는 기록은
+# 그 키의 재파견을 막는다. 아래는 출처 검사의 거절을 재므로 그 기록을 치운다.
+rm -f "$CAP_DIR/halt/SPV#3.md"
 
 # THE MERGE: the review rule refuses until a review covers the seat commit's
 # HEAD, the provenance check refuses a stage edit the review did cover, and the
@@ -72837,7 +72844,11 @@ esac
 # 대조 — 앞 시도에 구현 결함 기록이 없으면 같은 모양의 멈춘 시도도 틀로 운반된다.
 rfa_new "반증 수정 시도 아닌 정지"
 rfa_sr implement 1 '의도된 park'
-rfa_stop_rec 'RF#1' >/dev/null
+e110b=$(rfa_stop_rec 'RF#1')
+# 사람이 고를 선택지를 담은 답 없는 기록은 그 키의 재파견을 막으므로, 앞 시도의 정지에도
+# 사람이 답한 뒤 다음 시도가 돈다.
+rfa_ans "$e110b" '재시도'
+check "110b: 결함 기록 없는 앞 시도의 정지에 사람의 답이 선다 (아래가 공허하지 않다)" "$rc" "0"
 rfa_sr implement 2 '의도된 park'
 f110b=$(rfa_stop_rec 'RF#2')
 rfa_ans "$f110b" '재시도'
@@ -72845,7 +72856,7 @@ check "110b: 결함 기록 없는 앞 시도 뒤의 시도는 수정 시도가 �
   "$( ( LEDGER="$SA_LEDGER" RUN_DIR="$SA_RUN" gate_refutation_fix_attempt_halted RF "$SA_LEDGER" "$SA_RUN" ); printf '%s' "$?")" "1"
 rfa_carry "$(rfa_ans_line)" "$(rfa_ans_field "$f110b" carry_prompt)"
 check "110b: 그 틀 운반은 게이트를 지난다" "$(cb60_pass)" "통과"
-unset r110b n110b h110b f110b p110b s110b a110b
+unset r110b n110b h110b f110b p110b s110b a110b e110b
 
 # ---------------------------------------------------------------------------
 # 110c. 선택지 없는 기록의 사람 답 — 두 고정 라벨, 라우팅 도장, park 의 소진, 런 범위 키와 옵션 기록의 거절
