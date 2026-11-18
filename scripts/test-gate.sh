@@ -38519,6 +38519,7 @@ sln_hs=$(sln_ha)
 SLN_S1="$CAP_DIR/halt/S1#1.md"
 sln_rec "$SLN_S1" "$SLN_DD" 'S1#1' "$SLN_LS" gate-unanswerable "$SLN_REC_LINE" "$SLN_B12" "$SLN_LV"
 sln_stage 'S1#1' S1 '' S1 "중단 기록=$SLN_S1" '선택지=잔여로 두고 동결'
+[ "$rc" = 0 ] || sed 's/^/  34p 스테이지 답 거절: /' "$CAP_ERR" >&2
 check "34p: 드라이버가 띄운 discuss 스테이지가 자기 사다리 기록을 동결로 답한다" "$rc" "0"
 sln_row=$(sln_last)
 check "34p: 스테이지 답 행은 답한 주체=스테이지 · 선택지=잔여로 두고 동결 · 근거 종류=기기 사실이다" \
