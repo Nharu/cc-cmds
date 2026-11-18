@@ -3341,6 +3341,22 @@ cc_shift_halt_question() {
   LC_ALL=C awk -v p='**질문 문면**: ' 'index($0, p) == 1 { printf "%s", substr($0, length(p) + 1); exit }' "$1" 2>/dev/null || true
 }
 
+cc__comma_list_items() {
+  # cc__comma_list_items <list> [count] — the elements of a comma-separated
+  # list, one per line with surrounding whitespace trimmed; with a second
+  # argument, only the number of elements holding a non-blank character, as an
+  # integer with no newline. The list is read through the environment, not
+  # `-v`, so awk does not unescape it, and no builtin is a pipeline element.
+  CC_CLI_LIST="$1" CC_CLI_MODE="${2:-}" awk 'BEGIN {
+    n = split(ENVIRON["CC_CLI_LIST"], a, ","); c = 0
+    for (i = 1; i <= n; i++) {
+      v = a[i]; sub(/^[[:space:]]+/, "", v); sub(/[[:space:]]+$/, "", v)
+      if (ENVIRON["CC_CLI_MODE"] == "count") { if (v != "") c++ } else print v
+    }
+    if (ENVIRON["CC_CLI_MODE"] == "count") printf "%d", c
+  }'
+}
+
 cc_shift_halt_held() {
   # cc_shift_halt_held <run-dir> <ledger> — the segments the waiting shift
   # halt records hold, one per line and each once: the union of every waiting
@@ -3356,19 +3372,19 @@ cc_shift_halt_held() {
   {
     while IFS=$'\t' read -r nm site anchor path cnt list; do
       [ -n "$nm" ] || continue
-      have=$(printf '%s' "$list" | tr ',' '\n' | awk 'NF { n++ } END { printf "%d", n }')
+      have=$(cc__comma_list_items "$list" count)
       case "$cnt" in ''|*[!0-9]*) cnt=$have ;; esac
       if [ "$cnt" -gt "$have" ]; then
         list=$anchor
         if [ -n "$anchor" ] && [ -f "$run_dir/cone.$anchor" ]; then
           alt=$(tr -d '\n' < "$run_dir/cone.$anchor" 2>/dev/null || true)
-          if [ "$(printf '%s' "$alt" | tr ',' '\n' | awk 'NF { n++ } END { printf "%d", n }')" = "$cnt" ]; then
+          if [ "$(cc__comma_list_items "$alt" count)" = "$cnt" ]; then
             list=$alt
           fi
         fi
       fi
       [ -n "$list" ] || list=$anchor
-      printf '%s\n' "$list" | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
+      cc__comma_list_items "$list"
     done <<EOF
 $(cc__shift_halt_waiting_rows "$run_dir" "$ledger")
 EOF
