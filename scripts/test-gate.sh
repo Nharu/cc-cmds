@@ -7362,6 +7362,13 @@ while IFS= read -r f; do
           continue
         fi ;;
     esac
+    # AN EXTERNAL COMMAND SHADOWED FOR A FEW ASSERTIONS IS THE SAME SHAPE. A
+    # column-zero `sleep 1` written above a later `sleep()` that records which
+    # gate function slept runs `/bin/sleep`, so nothing vanishes; the shadow is
+    # the fixture's instrument and is unset when its section ends.
+    if [ -n "$(type -P "$name" 2>/dev/null || true)" ]; then
+      continue
+    fi
     if [ "$callline" -lt "$defline" ]; then
       offenders="$offenders $name(호출 $callline < 정의 $defline)"
     fi
@@ -7890,14 +7897,14 @@ check "부하통과는 표시된 실패마다 부하 실패 줄을 낸다" \
   "$(grep '^test-gate: 부하 실패 — ' "$tlr_dir/pass.err" | paste -s -d '|' -)" \
   "test-gate: 부하 실패 — 절 0d: 「의도된 부하 단언」 · 단독 재실행 통과|test-gate: 부하 실패 — 절 0d: 「의도된 윗줄 단언」 · 단독 재실행 통과"
 check "부하통과는 원래 판정 줄·캡처 줄·오류 주석을 내지 않고 경고 주석을 합계 줄 앞에 낸다" \
-  "$(tlr_n pass '^test-gate: 판정=fail ' err)|$(tlr_n pass '^test-gate: 캡처 — ' err)|$(tlr_n pass '^::error::' out)|$(tail -n 2 "$tlr_dir/pass.out" | head -n 1 | grep -c '^::warning::test-gate 부하 실패 ' || true)" \
+  "$(tlr_n pass '^test-gate: 판정=fail ' err)|$(tlr_n pass '^test-gate: 캡처 — ' err)|$(tlr_n pass '^::error::' out)|$(tail -n 2 "$tlr_dir/pass.out" | awk 'NR == 1' | grep -c '^::warning::test-gate 부하 실패 ' || true)" \
   "0|0|0|1"
 # The marker is read in both forms, and the suffix carries the reason and the
 # host's load without a ` — ` of its own: the signature reader cuts the FAIL
 # name at the last one.
 tlr_sfx=' · 부하 표시\(픽스처 (대기|윗줄)\) (부하 1분/5분/15분=[0-9.,]+/[0-9.,]+/[0-9.,]+ CPU=[0-9]+|부하=측정불가)$'
 check "표시된 실패의 FAIL 줄은 줄 끝 꼴과 윗줄 꼴 모두 부하 표시 접미를 단다" \
-  "$(grep '^FAIL: 의도된 부하 단언 — 회 1 ' "$tlr_dir/pass.err" | grep -cE "$tlr_sfx" || true)|$(grep '^FAIL: 의도된 윗줄 단언 — ' "$tlr_dir/pass.err" | grep -cE "$tlr_sfx" || true)|$(grep '^FAIL: 의도된 부하 단언 — ' "$tlr_dir/pass.err" | head -n 1 | awk -F ' — ' '{ print NF - 1 }')" \
+  "$(grep '^FAIL: 의도된 부하 단언 — 회 1 ' "$tlr_dir/pass.err" | grep -cE "$tlr_sfx" || true)|$(grep '^FAIL: 의도된 윗줄 단언 — ' "$tlr_dir/pass.err" | grep -cE "$tlr_sfx" || true)|$(grep '^FAIL: 의도된 부하 단언 — ' "$tlr_dir/pass.err" | awk -F ' — ' 'NR == 1 { print NF - 1 }')" \
   "1|1|1"
 check "재실행도 실패하면 회귀 줄과 함께 빨강이다" \
   "$(cat "$tlr_dir/again.rc")|$(tlr_runs again)|$(tlr_lane again)|$(tlr_n again '^test-gate: 회귀 — 절 0d: 단독 재실행에서도 실패했습니다$' err)|$(tlr_n again '^test-gate: 판정=부하통과' err)" \
