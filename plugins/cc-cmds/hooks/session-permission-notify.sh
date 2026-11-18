@@ -336,6 +336,14 @@ case "$role" in
     fi
     find "$base" -mindepth 2 -maxdepth 2 -type f -mmin +1440 -exec rm -f {} + >/dev/null 2>&1
     [ -z "$agent_id" ] || exit 0
+    # The permission dialog of AskUserQuestion is the question screen itself,
+    # and the question seat already left its event when that screen opened.
+    # This seat keeps only the `seen` time written above, which holds back the
+    # fallback signal that follows the dialog, and leaves nothing else.
+    tool=$(printf '%s' "$input" | jq -r '.tool_name // empty' 2>/dev/null)
+    case "$tool" in
+      AskUserQuestion) exit 0 ;;
+    esac
     fp=$(fingerprint) || exit 0
     : > "$dir/pending.$fp" 2>/dev/null || exit 0
     if [ "${CC_CMDS_NOTIFY_PERMISSION_SYNC:-}" = "1" ]; then

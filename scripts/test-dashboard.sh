@@ -910,6 +910,94 @@ check "T30 상세 summary 에도 같은 attention·hidden·seat_active 가 실�
   "$(nq "(lambda s: (s['attention'], s['hidden'], s['seat_active']))(m.Model(root='$SXR').detail('seat-off', now=now)['summary'])")" \
   "('dead', True, False)"
 
+# T31 — a dispatch wait shows its cause: the group comes from the `근거` of the
+# last `stage-wait` row of the marker's lineage, and the end information from
+# that row's `까지` and `호스트`. These runs sit in a run root of their own, and
+# the wake reading is taken off the host seam so a marker refreshed seconds ago
+# is fresh on any machine.
+XDG_STATE_HOME="$WORK/wx"
+WXR="$XDG_STATE_HOME/cc-cmds/run"
+mkdir -p "$WXR"
+wx_waiter() {
+  # wx_waiter <key> <계보> — a fresh marker held by a live process, in the shape
+  # `scripts/test-liveness-agreement.sh` gives its `ag_waiter`.
+  local pid fp
+  sleep 120 &
+  pid=$!
+  FX_PIDS="${FX_PIDS:-}$pid "
+  fp=$(LC_ALL=C ps -o lstart= -p "$pid" 2>/dev/null | sed 's/[[:space:]]\{1,\}/ /g;s/^ //;s/ $//')
+  printf '보유자=%s\n지문=%s\n기록자=게이트\n계보=%s\n그룹=-\n까지=-\n갱신=%s\n종류=implement\n시도=1\n' \
+    "$pid" "$fp" "$2" "$(( $(date -u +%s) - 5 ))" > "$FX_RUN_DIR/$1.waiting"
+}
+wx_wait() {
+  # wx_wait <계보> <근거> <까지> <호스트> — one `stage-wait` row in the gate's field order.
+  fx_row 'stage-wait' "계보=$1" '그룹=-' '계정=-' "까지=$3" '비용=-' '비용 출처=-' "근거=$2" "호스트=$4" \
+    '기록 시각=2026-11-17T17:05:49Z'
+}
+for id in wc-host wc-acct wc-norow wc-odd wc-last wc-drv wc-nolin wc-nocell; do
+  fx_mkrun "$id"; fx_ledger_path; fx_segment W1 실행중; fx_heartbeat 0 5
+done
+FX_RUN_DIR="$WXR/wc-host"; FX_LEDGER="$FX_RUN_DIR/fixture-ledger.md"
+wx_waiter W1 'B:W1#1'; wx_wait 'B:W1#1' host-saturated - '포화 ratio=8823 ncpu=18 표본=2026-11-17T17:44:50Z'
+FX_RUN_DIR="$WXR/wc-acct"; FX_LEDGER="$FX_RUN_DIR/fixture-ledger.md"
+wx_waiter W1 'B:W1#1'; wx_wait 'B:W1#1' group-exhausted 2026-11-18T03:00:00Z -
+FX_RUN_DIR="$WXR/wc-norow"; FX_LEDGER="$FX_RUN_DIR/fixture-ledger.md"
+wx_waiter W1 'B:W1#1'; wx_wait 'B:W1#2' host-saturated - -
+FX_RUN_DIR="$WXR/wc-odd"; FX_LEDGER="$FX_RUN_DIR/fixture-ledger.md"
+wx_waiter W1 'B:W1#1'; wx_wait 'B:W1#1' no-such-reason - -
+FX_RUN_DIR="$WXR/wc-last"; FX_LEDGER="$FX_RUN_DIR/fixture-ledger.md"
+wx_waiter W1 'B:W1#1'
+wx_wait 'B:W1#1' host-saturated - '포화 ratio=8823 ncpu=18 표본=2026-11-17T17:44:50Z'
+wx_wait 'B:W1#1' group-exhausted 2026-11-18T03:00:00Z -
+FX_RUN_DIR="$WXR/wc-drv"; FX_LEDGER="$FX_RUN_DIR/fixture-ledger.md"
+wx_waiter W1 'I1#2'; wx_wait 'I1#2' lease-lock-busy - -
+FX_RUN_DIR="$WXR/wc-nolin"; FX_LEDGER="$FX_RUN_DIR/fixture-ledger.md"
+wx_waiter W1 ''; wx_wait 'B:W1#1' host-saturated - -
+FX_RUN_DIR="$WXR/wc-nocell"; FX_LEDGER="$FX_RUN_DIR/fixture-ledger.md"
+wx_waiter W1 'B:W1#1'; fx_row 'stage-wait' '계보=B:W1#1' '그룹=-' '까지=-' '호스트=-'
+XDG_STATE_HOME="$NX"
+
+wx_row() {
+  # wx_row <run-id> <expression over w> — the run's waiting items, every run shown.
+  ORCH_HOST_OS=Linux nq "[[($2) for w in r['waiting']] for r in m.Model(root='$WXR').runs(days='all', dead=True, exp=True, now=now)['runs'] if r['id'] == '$1']"
+}
+WX_LEAVE=$(sed -n 's/^readonly FLEET_HOST_LEAVE_PERMILLE=\([0-9][0-9]*\).*/\1/p' "$ORCH/fleet.sh")
+check "T31 호스트 포화 대기는 갈래·문구·근거와 부하·코어·표본·해제 문턱을 싣는다 (C1)" \
+  "$(wx_row wc-host '(w["kind"], w["text"], w["reason"], w["until"], w["host"])')" \
+  "[[('호스트 포화', '호스트 포화 대기', 'host-saturated', None, {'ratio_permille': 8823, 'ncpu': 18, 'sampled_at': 1794937490, 'leave_permille': $WX_LEAVE})]]"
+check "T31 해제 문턱은 fleet.sh 선언에서 읽은 값이다" "$WX_LEAVE" "1500"
+check "T31 계정 한도 대기는 까지 를 epoch 로 싣고 host 는 없다 (C2)" \
+  "$(wx_row wc-acct '(w["kind"], w["text"], w["reason"], w["until"], w["host"])')" \
+  "[[('계정 한도', '계정 한도 대기', 'group-exhausted', 1794970800, None)]]"
+check "T31 같은 계보의 행이 없으면 원인 미상이고 근거는 None 이다 (C3)" \
+  "$(wx_row wc-norow '(w["kind"], w["text"], w["reason"], w["until"], w["host"])')" \
+  "[[('원인 미상', '원인 미상 대기', None, None, None)]]"
+check "T31 닫힌 어휘 밖 근거는 원인 미상이고 원값을 싣는다 (C3)" \
+  "$(wx_row wc-odd '(w["kind"], w["reason"])')" "[[('원인 미상', 'no-such-reason')]]"
+check "T31 같은 계보의 마지막 행이 원인이다" \
+  "$(wx_row wc-last '(w["kind"], w["reason"], w["until"], w["host"])')" "[[('계정 한도', 'group-exhausted', 1794970800, None)]]"
+check "T31 B: 로 시작하지 않는 계보도 짝지어진다" \
+  "$(wx_row wc-drv '(w["kind"], w["text"], w["reason"])')" "[[('차례·임대 대기', '차례·임대 대기', 'lease-lock-busy')]]"
+check "T31 표지에 계보가 없으면 원인 미상이다" \
+  "$(wx_row wc-nolin '(w["kind"], w["reason"])')" "[[('원인 미상', None)]]"
+check "T31 행에 근거 칸이 없으면 원인 미상이다" \
+  "$(wx_row wc-nocell '(w["kind"], w["reason"], w["host"])')" "[[('원인 미상', None, None)]]"
+check "T31 대기 항목의 ref·since·returned 는 표지 이름·기준 시각·False 다" \
+  "$(wx_row wc-host '(w["ref"], isinstance(w["since"], int), w["returned"])')" "[[('W1.waiting', True, False)]]"
+check "T31 파견 대기만 있는 런은 사람을 기다리지 않는다" \
+  "$(ORCH_HOST_OS=Linux nq "[r['attention'] == 'need' for r in m.Model(root='$WXR').runs(days='all', dead=True, exp=True, now=now)['runs'] if r['id'] == 'wc-host']")" "[False]"
+WX_VOCAB=$(sed -n "s/^  local wait_reason=' \(.*\) '\$/\1/p" "$ORCH/run.sh" | tr ' ' '\n' | sort | tr '\n' ' ')
+check "T31 갈래 매핑의 키 집합이 run.sh 의 wait_reason 어휘와 같다" \
+  "$(nq "' '.join(sorted(m.WAIT_REASON_GROUP)) + ' '")" "$WX_VOCAB"
+check "T31 run.sh 의 wait_reason 어휘를 읽었다" "$(printf '%s' "$WX_VOCAB" | wc -w | tr -d ' ')" "13"
+check "T31 응답 어디에도 사용량 한도 종류가 없다" \
+  "$(ORCH_HOST_OS=Linux nq "sum(1 for r in m.Model(root='$WXR').runs(days='all', dead=True, exp=True, now=now)['runs'] for w in r['waiting'] if w['kind'] == '사용량 한도')")" "0"
+check "T31 여덟 런 모두 파견 대기 하나를 싣는다" \
+  "$(ORCH_HOST_OS=Linux nq "sorted((r['id'], len(r['waiting'])) for r in m.Model(root='$WXR').runs(days='all', dead=True, exp=True, now=now)['runs'])")" \
+  "[('wc-acct', 1), ('wc-drv', 1), ('wc-host', 1), ('wc-last', 1), ('wc-nocell', 1), ('wc-nolin', 1), ('wc-norow', 1), ('wc-odd', 1)]"
+check "T31 상세의 waiting 도 같은 갈래를 싣는다" \
+  "$(ORCH_HOST_OS=Linux nq "[w['kind'] for w in m.Model(root='$WXR').detail('wc-acct', now=now)['waiting']]")" "['계정 한도']"
+
 # T28 — the HTTP layer over this root: the toggle reaches the tick cache, the
 # shell row, and the evaluation cache picking up a new halt record.
 PN=$(free_port)
