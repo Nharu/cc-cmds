@@ -305,7 +305,9 @@ evidence is the sidecar's `### 설계 문서 어긋남` block. On this scope the
 below come before the re-convergence's own halt-step rule, its decision-draft
 rule, its write constraints (CFI-6 and Constraints), the hash its working
 copy's `checkout --expect` takes, the before side of its Step 4 digest comparison and the
-place its Step 5 verdict returns to.
+place its Step 5 verdict returns to. The same skill's sub-case for a record
+whose `**스텝**` is exactly `Step 2 CFI-U3 BT-STOP — 사람 둔 어긋남` reads
+`## 사람 둔 어긋남 재수렴` below instead.
 
 - **Evidence.** The record's `**관측 상세**` carries `설계 문서 어긋남=<n>건 · sha256 <hex>`. Run `visual-check.sh drift <document>` through the gate (`--surface 읽기`); when its count or sha256 differs from the record's piece, or it exits 1, halt with `분류: precondition-failed` naming both values. An exit 2 prints only the lines it could not find and no count line, so read the block instead: when the block's `- ` lines are, in number and verbatim, the drift lines the record's `**질문 문면**` quotes and the piece's `<n>`, and every printed line is one of them, that exit 2 is not that halt — the block is the one the person approved, and the lines it prints are lines that cannot be applied — the wording left the document, or its heading did not hold — so carry them to the Edit step below, which stops on them in the reflection stop's form. An exit 2 repeats on every attempt over the same document, so a `precondition-failed` here would never reach the person who can take the line out. **The scope is the block's lines and nothing wider**.
 - **Edit.** In the re-convergence's Step 3 working copy, before editing each line, check that its document wording stands verbatim inside a section `## 고칠 수 있는 절` lists; then rewrite it to the screen wording there, keeping the superseded decision sentence in place as Step 3 does. The five failures of `## 실패로 보는 경우` and a line that cannot be applied are judged on the working copy, before the publish; on any of them publish nothing.
@@ -331,6 +333,19 @@ place its Step 5 verdict returns to.
 - **Re-entered with the answer.** A carried `결정 첨부 후 다시 반영` card follows `## 운반 답 재진입`: the card check, the baselines measured now after the recovery comparison, the question comparison, the attachment and the reflection, in that order. The attachment is read there and nowhere else, and a choice is never taken from the answer's `근거`. When every line is out, publish nothing, write `완료 — 문서 sha256 <the document's hash as it stands>` with the tail, and end with the verdict Step 4 computes.
 - **Ends outside a normal end and the reflection stop.** A `precondition-failed` before the publish (a moved document hash, `lockf` 75) and an end with no halt record are let in once more on the same answer by the gate. The same end the second time changes nothing this session writes: it does not touch the sidecar, which stays `대기`, it writes no `실패` line and no reflection stop, and a `precondition-failed` before the publish writes only its own record with no option, as the first time did. The gate refuses a third attempt, and the morning report shows `대기 — 반영 재시도 소진` (`## 종단`). This session cannot tell the first such end from the second, so it never writes as if it were the second.
 - **The verdict.** A normal reflection ends with `판정: 재설계 필요` and the terminal literal: it is dispatched only on `대기` (one difference or more) and rewrites decision sentences or resolved entries, so Step 4's binding-surface digest always moves. Step 4's rule is unchanged for this scope; what differs is where the verdict returns. The row sits under the visual publishing step's key, not a segment's, so the verdict returns the run to the visual wait, not to segment planning: `판정: 재설계 필요` there voids no segment's plan, the plans of segments without screens stay alive, and the next routing shift reads the approval predicate again and plans the screen slices once it reads `승인 유효`. **The carrier is not written on this path**, and the terminal predicate is the second shape's.
+
+## 사람 둔 어긋남 재수렴
+
+`design-reconverge` reads this section from the sub-case of its `구속 티어 이탈`
+scope whose record's `**스텝**` is exactly `Step 2 CFI-U3 BT-STOP — 사람 둔 어긋남`.
+A person chose `재수렴` on drift lines they had left `문서대로 둠`. **The scope
+is the lines the record's `**질문 문면**` quotes, nothing wider.** Write each by
+the `화면대로 고침` rules of `## 고칠 수 있는 절` — the write may reach
+`## 팀이 정한 요구 결정` — without the re-convergence's Step 3 S1–S4. A line a
+forbidden section holds (`## 구현 슬라이싱`, `## 구현 시 검증 항목`,
+`## 베이스 제약`, `## 시각 정합 기준`, `## 검증 기록`) is not written: name it
+and its section in the result; the next implement attempt stops on it again.
+Write nothing to the visual sidecar.
 
 ## 종단
 
