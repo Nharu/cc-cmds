@@ -14939,8 +14939,8 @@ gate_approval_reflection_entry() {
   src=$(gate_row_field "$row" '출처 런')
   if [ -n "$src" ]; then
     sdir="$(dirname "$RUN_DIR")/$src"
-    sledger="$(dirname "$LEDGER")/$src.md"
-    sman="$(dirname "$LEDGER")/$src.plan.md"
+    sledger=$(gate_source_run_ledger "$src")
+    sman="$(dirname "$sledger")/$src.plan.md"
     orec=$(gate_carry_abs "$(gate_row_field "$row" '출처 기록')")
     case "$orec" in
       "$sdir"/halt/*.md) ;;
@@ -15180,7 +15180,7 @@ gate_undeclared_segments() {
   # segment on the target its `대상` field names. When the same step also
   # carries a `세그먼트 입양` row, that row's worktree decides, as above — the
   # segment is planned there, and the planning act compares the two targets.
-  local ids id row wt cg a al home
+  local ids id al home
   home=$(home_alias 2>/dev/null || true)
   if [ -z "$(manifest_adoption_rows)$(manifest_merge_adoption_rows)" ]; then
     id=$(gate_plan_implement_step)
@@ -15190,14 +15190,27 @@ gate_undeclared_segments() {
   ids=$(manifest_plan_json 2>/dev/null \
     | jq -r '.steps[]? | select(type == "object" and .skill == "implement") | .id // empty | select(. != "")' 2>/dev/null || true)
   for id in $ids; do
-    al="$home"
-    if row=$(gate_adoption_row "$id"); then
-      al=$(gate_adoption_worktree_alias "$(manifest_row_fields "$row" '워크트리')" "$home")
-    elif row=$(gate_merge_adoption_row "$id"); then
-      al=$(manifest_row_fields "$row" '대상')
-    fi
+    al=$(gate_adoption_segment_alias "$id" "$home")
     printf '%s\t%s\n' "$id" "$al"
   done
+}
+
+gate_adoption_segment_alias() {
+  # gate_adoption_segment_alias <segment id> <fallback alias> — the target an
+  # adoption row puts the segment on: the target of the `세그먼트 입양` row's
+  # worktree (`gate_adoption_worktree_alias`), else the `대상` field of the
+  # `머지 입양` row, else the fallback. A step carrying both rows is decided by
+  # the `세그먼트 입양` worktree. The planning path (`gate_undeclared_segments`)
+  # and the later stages (`gate_segment_repo_alias`) both ask this, so they put
+  # one segment on one target. Reads only.
+  local row
+  if row=$(gate_adoption_row "$1"); then
+    gate_adoption_worktree_alias "$(manifest_row_fields "$row" '워크트리')" "$2"
+  elif row=$(gate_merge_adoption_row "$1"); then
+    manifest_row_fields "$row" '대상'
+  else
+    printf '%s' "$2"
+  fi
 }
 
 gate_adoption_worktree_alias() {
@@ -15453,6 +15466,33 @@ gate_adoption_source_key() {
   esac
 }
 
+gate_source_run_ledger() {
+  # gate_source_run_ledger <source run id> — the path of an earlier run's
+  # ledger. First the `ledger-path` the gate writes into that run's directory
+  # (`$(dirname "$RUN_DIR")/<run id>/ledger-path`) on every entry, trusted only
+  # when its first line is non-empty, names a file called `<run id>.md` and that
+  # file exists; otherwise the path beside this run's ledger
+  # (`$(dirname "$LEDGER")/<run id>.md`), whether or not it exists — the caller
+  # decides what a missing ledger means, as before.
+  #
+  # A run's ledger is written under its home target's base, so an earlier run
+  # whose home target differs from this run's keeps its ledger in another
+  # directory; the run directory is one place for every run, whatever its home.
+  # The name check keeps a hand-edited `ledger-path`, or one naming another
+  # run's ledger, from turning the landing check and the answer carry to the
+  # wrong ledger. Always returns 0 and writes nothing.
+  local src="$1" lp=''
+  if [ -n "${RUN_DIR:-}" ] && [ -f "$(dirname "$RUN_DIR")/$src/ledger-path" ]; then
+    lp=$(sed -n '1p' "$(dirname "$RUN_DIR")/$src/ledger-path" 2>/dev/null || true)
+  fi
+  if [ -n "$lp" ] && [ "$(basename "$lp")" = "$src.md" ] && [ -f "$lp" ]; then
+    printf '%s' "$lp"
+  else
+    printf '%s' "$(dirname "$LEDGER")/$src.md"
+  fi
+  return 0
+}
+
 gate_adoption_check() {
   # gate_adoption_check <segment id> <alias> <adoption row> — 0 when the
   # adopted segment may be planned in this run; otherwise a warning and 1.
@@ -15492,7 +15532,9 @@ gate_adoption_check() {
     return 1
   fi
   [ "$src" != "-" ] || return 0
-  src_ledger="$(dirname "$LEDGER")/$src.md"
+  # The earlier run's ledger is found by `gate_source_run_ledger`: the
+  # `ledger-path` in that run's directory, else the path beside this ledger.
+  src_ledger=$(gate_source_run_ledger "$src")
   if [ ! -f "$src_ledger" ]; then
     warn "입양 세그먼트 ${seg} 의 출처 런 원장이 없습니다: $src_ledger — 출처 런이 그 세그먼트를 착지시키지 않았는지 판정할 수 없습니다"
     return 1
@@ -15578,7 +15620,7 @@ gate_adoption_halt_source() {
   # A segment no run cut (`출처 런=-`) has no earlier run to carry from.
   [ "$src" != "-" ] || return 1
   skey=$(gate_adoption_source_key "$adrow")
-  sledger="$(dirname "$LEDGER")/$src.md"
+  sledger=$(gate_source_run_ledger "$src")
   sdir="$(dirname "$RUN_DIR")/$src"
   [ -f "$sledger" ] || return 1
   lines=$( { grep -n "^- \`중단 답\` " "$sledger" 2>/dev/null || true; } | { grep -F "| 세그먼트=$skey |" || true; })
@@ -15857,9 +15899,10 @@ gate_carry_source_doc_same() {
   # gate_carry_source_doc_same <earlier run id> — whether the earlier run's
   # frozen manifest names this run's design document; 1 with the reason in
   # GATE_CARRY_WHY otherwise. A halt record quotes its own run's document, so
-  # an answer to it means nothing against another one.
+  # an answer to it means nothing against another one. The manifest sits beside
+  # the earlier run's ledger (`gate_source_run_ledger`).
   local sman sdoc doc
-  sman="$(dirname "$LEDGER")/$1.plan.md"
+  sman="$(dirname "$(gate_source_run_ledger "$1")")/$1.plan.md"
   sdoc=$( [ -f "$sman" ] && awk '$0 == "## 요소" { inb=1; next } inb && /^## / { exit }
             inb && sub(/^\*\*설계 문서\*\*: /, "") { print; exit }' "$sman" )
   doc=$(manifest_field '요소' '설계 문서')
@@ -16163,7 +16206,7 @@ gate_chain_halt_source() {
   # brought in twice.
   local key="$1" rk="$2" src="$3" skey sledger sdir row ln rec
   GATE_CARRY_ROW=''; GATE_CARRY_LINE=''; GATE_CARRY_SRC=''; GATE_CARRY_REC=''; GATE_CARRY_ATT=''; GATE_CARRY_WHY=''
-  sledger="$(dirname "$LEDGER")/$src.md"
+  sledger=$(gate_source_run_ledger "$src")
   sdir="$(dirname "$RUN_DIR")/$src"
   [ -f "$sledger" ] || return 1
   skey=$(gate_chain_source_key "$sledger" "$rk")
@@ -16493,9 +16536,11 @@ gate_review_report_candidates() {
   # review may have written, one per line: the canonical one, then every
   # existing `-r<k>` sibling with k ≥ 2 and no leading zero. The same set the
   # `cycle` row check accepts, so a report the row may name is one the stage
-  # outcome counts.
+  # outcome counts. The canonical one is the cycle's base path
+  # (`gate_review_report_base_path`), whatever re-dispatch tail the next review
+  # would take.
   local rp f k
-  rp=$(gate_review_report_path "$1")
+  rp=$(gate_review_report_base_path "$1")
   printf '%s\n' "$rp"
   for f in "${rp%.md}"-r*.md; do
     [ -f "$f" ] || continue
@@ -16517,7 +16562,22 @@ gate_review_report_produced() {
   # recorded `정상 완료` and blocks on `부분 복구`. Recorded `공허한 성공`, the
   # recovery would be continued instead, and the continue message asks for the
   # canonical line an incomplete witness set cannot honestly fill.
-  local f
+  #
+  # ONE PATH WHEN A REVIEW DISPATCH DECLARED A TRIGGER IN THIS CYCLE: the path
+  # its row carries (`gate_review_last_triggered_report`), the report that
+  # dispatch was told to write. An earlier dispatch's report in the same cycle
+  # does not stand in for it, so a re-dispatch that wrote nothing reads
+  # `공허한 성공` even with that report on disk. With no such row the whole
+  # candidate set is read, as for the driver's dispatches.
+  local f last
+  last=$(gate_review_last_triggered_report "$1")
+  if [ -n "$last" ]; then
+    if predicate_review "$last"; then return 0; fi
+    if [ "$(gate_report_count "$(gate_review_report_counts "$last" 2>/dev/null)" 요약)" = 복구 ]; then
+      return 0
+    fi
+    return 1
+  fi
   while IFS= read -r f; do
     [ -n "$f" ] || continue
     if predicate_review "$f"; then return 0; fi
@@ -16553,16 +16613,160 @@ gate_report_norm() {
   fi
 }
 
-gate_review_report_path() {
-  # gate_review_report_path <segment> [<k>] — THE canonical report path of the
-  # segment's next review, absolute: `docs/reviews/seg-<run>-<segment>-cycle<n>.md`
-  # under the run's base, with `-r<k>` before `.md` for the driver's k-th
-  # dispatch of the same review (k ≥ 2). One function for the review line, the
-  # review dispatch check, the driver and the `cycle` row check, so the four
-  # cannot name one review two ways.
+gate_review_report_base_path() {
+  # gate_review_report_base_path <segment> [<k>] — the report path of the
+  # segment's current cycle with no re-dispatch tail, absolute:
+  # `docs/reviews/seg-<run>-<segment>-cycle<n>.md` under the run's base, with
+  # `-r<k>` before `.md` when <k> is given. <n> is `gate_segment_review_ordinal`.
+  # The `cycle` row check and the candidate set read the cycle from here: the
+  # report they accept is this path or one `-r<k>` (k ≥ 2) beside it.
   local seg=$1 k=${2:-} n
   n=$(gate_segment_review_ordinal "$seg")
   gate_report_abs "docs/reviews/seg-$RUN_ID-$seg-cycle$n${k:+-r$k}.md"
+}
+
+gate_review_triggered_dispatch_rows() {
+  # gate_review_triggered_dispatch_rows <segment> — the review dispatch rows of
+  # the segment's current cycle that declared a trigger: every `자율 승인` row
+  # after the segment's last `cycle` row (the whole ledger when it has none)
+  # with `kind=skill`, this `세그먼트`, and both `리포트 경로` and `계기`. A
+  # recovery declares no trigger and the driver declares none, so neither is
+  # counted here.
+  [ -n "$1" ] || return 0
+  gate_ledger_rows_after "$(gate_segment_last_cycle_row "$1")" \
+    | awk 'index($0, "- `자율 승인` ") == 1' \
+    | gate_rows_field_eq 'kind' 'skill' | gate_rows_field_eq '세그먼트' "$1" \
+    | gate_rows_having_field '리포트 경로' | gate_rows_having_field '계기'
+}
+
+gate_review_last_triggered_report() {
+  # gate_review_last_triggered_report <segment> — the absolute `리포트 경로` of
+  # the last row `gate_review_triggered_dispatch_rows` prints; nothing when it
+  # prints none.
+  local row
+  row=$(gate_review_triggered_dispatch_rows "$1" | tail -1)
+  [ -n "$row" ] || return 0
+  gate_report_abs "$(gate_row_field "$row" '리포트 경로')"
+}
+
+gate_review_report_path() {
+  # gate_review_report_path <segment> [<k>] — THE canonical report path of the
+  # segment's next review, absolute. With <k> it is the base path with `-r<k>`
+  # (k ≥ 2), the driver's k-th dispatch of the same review. Without it, <m> is
+  # the number of distinct report paths the review dispatches of this cycle
+  # that declared a trigger were given (`gate_review_triggered_dispatch_rows`):
+  # the base path when <m> is 0, and the base path with `-r<m+1>` otherwise, so
+  # a review sent again in the same cycle never writes over the report an
+  # earlier dispatch was told to write. Paths, not rows: a `--resume` dispatch
+  # declares a trigger too, but the session it re-attaches still writes the
+  # report it was first given, so its row repeats that path and does not move
+  # the next one. The driver declares no trigger, so its paths do not move.
+  # One function for the review line, the review dispatch check and the
+  # driver, so the three cannot name one review two ways; both checks run
+  # before the dispatch row is written, so they read the same <m>.
+  local seg=$1 k=${2:-} m
+  if [ -n "$k" ]; then
+    gate_review_report_base_path "$seg" "$k"
+    return 0
+  fi
+  m=$(gate_review_triggered_dispatch_rows "$seg" | gate_rows_field_values '리포트 경로' \
+        | LC_ALL=C sort -u | gate_count)
+  m=${m:-0}
+  if [ "$m" -gt 0 ]; then
+    gate_review_report_base_path "$seg" "$(( m + 1 ))"
+  else
+    gate_review_report_base_path "$seg"
+  fi
+}
+
+gate_review_last_dispatch_report() {
+  # gate_review_last_dispatch_report <segment> — the absolute `리포트 경로` of
+  # the segment's last review dispatch row (`자율 승인`, `kind=skill`, this
+  # `세그먼트`, a `리포트 경로` field), a recovery's included; nothing when it
+  # has none.
+  local row
+  [ -n "$1" ] || return 0
+  row=$(gate_rows '자율 승인' | gate_rows_field_eq 'kind' 'skill' | gate_rows_field_eq '세그먼트' "$1" \
+          | gate_rows_having_field '리포트 경로' | tail -1)
+  [ -n "$row" ] || return 0
+  gate_report_abs "$(gate_row_field "$row" '리포트 경로')"
+}
+
+# The line-anchored `리뷰 HEAD` line of a review report, byte for byte the
+# router's crash-recovery probe (`review-crash.md` item 5). One definition, so
+# the meta test can find the same bytes in both files.
+GATE_REVIEW_HEAD_LINE_ERE='^[-*[:space:]]*\*\*리뷰 HEAD\*\*: `?[0-9a-f]{40}`?$'
+
+gate_review_cycle_due_of() {
+  # gate_review_cycle_due_of <segment> — the `cycle_due[]` element of one
+  # segment, or nothing. An element stands while the segment is not `머지됨`,
+  # `완료` or `park`, its last `stage-result` row (`gate_plan_rows_of`) is a
+  # review that ended `정상 완료`, and no `cycle` row and no `리뷰 기록 거절`
+  # row of the segment follows that row. A review that left no report is
+  # recorded `공허한 성공` by the classifier, so it never stands here. Keys in
+  # order `세그먼트, 다음, 리포트 경로, 실행 버전`: `다음` is always
+  # `사이클 기록`, `리포트 경로` is the segment's last review dispatch row's
+  # (`gate_review_last_dispatch_report`, else `gate_review_report_path`), and
+  # `실행 버전` is the stage-result row's.
+  #
+  # THE REPORT CARRIES EXACTLY ONE `리뷰 HEAD` LINE, or no element stands. The
+  # router fills the `cycle` row's required `리뷰 HEAD` from that line alone, so
+  # a report without it — a crash recovery's (`--recover`), which never writes
+  # one — cannot be recorded, and a wait on it would meet the review dispatch
+  # refusal with no way out. The match is `GATE_REVIEW_HEAD_LINE_ERE`, the same
+  # bytes as the router's crash-recovery probe in
+  # `skills/autopilot-router-shift/references/review-crash.md` item 5: change the
+  # two together. No match, two or more, or a report that is missing or
+  # unreadable: nothing.
+  local seg=$1 sst last after rp ver hn
+  [ -n "$seg" ] || return 0
+  sst=$(gate_segment_field "$seg" '상태')
+  if [ "$sst" = '머지됨' ] || [ "$sst" = '완료' ] || [ "$sst" = 'park' ]; then return 0; fi
+  last=$( { gate_plan_rows_of "$seg" | grep '^- `stage-result` ' || true; } | tail -1)
+  [ -n "$last" ] || return 0
+  [ "$(gate_row_field "$last" '종류')" = 'review' ] || return 0
+  [ "$(gate_row_field "$last" '종단 부류')" = '정상 완료' ] || return 0
+  after=$(gate_ledger_rows_after "$last" \
+            | awk 'index($0, "- `cycle` ") == 1 || index($0, "- `리뷰 기록 거절` ") == 1' \
+            | gate_rows_field_eq '세그먼트' "$seg")
+  [ -z "$after" ] || return 0
+  rp=$(gate_review_last_dispatch_report "$seg")
+  [ -n "$rp" ] || rp=$(gate_review_report_path "$seg")
+  [ -f "$rp" ] && [ -r "$rp" ] || return 0
+  hn=$(grep -cE "$GATE_REVIEW_HEAD_LINE_ERE" "$rp" 2>/dev/null) || true
+  [ "${hn:-0}" = 1 ] || return 0
+  ver=$(gate_row_field "$last" '실행 버전')
+  printf '    {"세그먼트": "%s", "다음": "사이클 기록", "리포트 경로": "%s", "실행 버전": "%s"},\n' \
+    "$(gate_json_escape "$seg")" "$(gate_json_escape "$rp")" "$(gate_json_escape "$ver")"
+}
+
+gate_review_cycle_refusal_fact() {
+  # gate_review_cycle_refusal_fact <segment> <부류> <absolute report path> —
+  # the `리뷰 기록 거절` row a `cycle` refusal that tells the router to dispatch
+  # the review again leaves, written just before that refusal returns. Only on
+  # `act` — the verb of the act that reached the `cycle` arm, read from the
+  # caller's `verb` — and only while the segment's `cycle_due[]` element stands:
+  # the row ends that element, so the re-dispatch the refusal asked for is not
+  # refused as one that skipped the record. <부류> is `델타`, `해소` or
+  # `다른 슬라이스`; `실행 버전` is the element's. The refusal's exit code and
+  # its warning do not change, and a refusal outside the wait leaves no row.
+  local seg=$1 cls=$2 rep=$3 el ver
+  [ "${verb:-}" = act ] || return 0
+  el=$(gate_review_cycle_due_of "$seg")
+  [ -n "$el" ] || return 0
+  ver=$(jq -r '.["실행 버전"] // empty' <<<"${el%,}" 2>/dev/null || true)
+  gate_append '리뷰 기록 거절' "세그먼트=$seg" "리포트 경로=${rep:--}" "부류=$cls" "실행 버전=${ver:--}" || true
+}
+
+gate_snapshot_cycle_due_json() {
+  # One element per segment `gate_review_cycle_due_of` names.
+  local out s
+  out=$(gate_segment_ids | while IFS= read -r s; do
+          [ -n "$s" ] || continue
+          gate_review_cycle_due_of "$s"
+        done )
+  [ -n "$out" ] || return 0
+  printf '%s\n' "${out%,}"
 }
 
 gate_decl_block() {
@@ -20113,6 +20317,11 @@ gate_snapshot() {
   printf '  "shift_halts": [\n'
   gate_shift_halts_json
   printf '  ],\n'
+  # The stage halt records that put options before a person and wait for an
+  # answer — the keys no skill is dispatched to until one comes.
+  printf '  "awaiting_halts": [\n'
+  gate_awaiting_halts_json
+  printf '  ],\n'
   # Each termination clause with its wording, state and open evidence request.
   printf '  "clauses": [\n'
   gate_clauses_json
@@ -20306,6 +20515,15 @@ gate_snapshot() {
   # outside the default `--fields` projection and outside `H`.
   printf '  "refutation_next": [\n'
   gate_snapshot_refutation_next_json
+  printf '  ],\n'
+  # THE SEGMENTS WHOSE REVIEW ENDED `정상 완료` WITH NO `cycle` ROW OVER IT YET
+  # (`gate_review_cycle_due_of`), each with the report the row is to name. The
+  # review dispatch of such a segment is refused until the row stands, so this
+  # is what a router reads to record it first. Right after `refutation_next`;
+  # always emitted, empty included; outside the default `--fields` projection
+  # and outside `H`.
+  printf '  "cycle_due": [\n'
+  gate_snapshot_cycle_due_json
   printf '  ],\n'
   printf '  "shift": %s,\n' "$(gate_shift_state)"
   # THE PACING VERDICT, beside `shift` and ahead of `handoff`, read from the
@@ -20636,14 +20854,22 @@ EOF
 gate_segment_repo_alias() {
   # gate_segment_repo_alias <segment> — the target alias the segment belongs
   # to: the last non-empty `레포` over all of its rows, then its slice's `레포`,
-  # then the home target. The last row alone does not answer: the router's
-  # `머지됨` row carries no `레포`, and an empty slug would read as the home
-  # target in a run of several targets.
+  # then — in a run with no slicing declaration (`gate_slicing_branch` reads
+  # `미통치`) only — the target an adoption row puts it on
+  # (`gate_adoption_segment_alias`), then the home target. The last row alone
+  # does not answer: the router's `머지됨` row carries no `레포`, and an empty
+  # slug would read as the home target in a run of several targets. The
+  # adoption step reads what the planning path (`gate_undeclared_segments`)
+  # read, under the same condition, because a run with no declaration writes
+  # no `레포` on its plan row.
   local seg="$1" slug al=''
   slug=$(gate_rows 'segment' | gate_rows_field_eq 'id' "$seg" | gate_rows_field_values '레포' \
            | tr -d '`' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | awk 'NF { v = $0 } END { print v }')
   [ -z "$slug" ] || al=$(alias_for_slug "$slug" 2>/dev/null) || al=''
   [ -n "$al" ] || al=$(gate_slice_alias "$seg" 2>/dev/null) || al=''
+  if [ -z "$al" ] && [ "$(gate_slicing_branch)" = '미통치' ]; then
+    al=$(gate_adoption_segment_alias "$seg" '' 2>/dev/null) || al=''
+  fi
   [ -n "$al" ] || al=$(home_alias 2>/dev/null) || al=''
   printf '%s' "$al"
 }
@@ -25421,6 +25647,30 @@ gate_answered_judgments_json() {
   [ "$first" = "1" ] || printf '\n'
 }
 
+gate_awaiting_halts_json() {
+  # One element per unanswered stage halt record that puts options before a
+  # person, as `{"키": …, "기록": "halt/<키>#<N>.md", "스텝": …}`: the lines of
+  # `cc_person_halts`, in its order.
+  #
+  # THE KEYS HERE ARE NOT DISPATCHED TO. The gate refuses a skill dispatch on
+  # such a key (`gate_person_halt_refuse`); this array is what lets a shift see
+  # that before it issues the act, route the other keys, and hand over with
+  # `사유=중단` naming these records once nothing else is left.
+  local first=1 key rec step
+  [ -n "${RUN_DIR:-}" ] || return 0
+  while IFS="$(printf '\t')" read -r key rec step; do
+    [ -n "$key" ] || continue
+    [ "$first" = "1" ] || printf ',\n'
+    first=0
+    printf '    {"키": "%s", "기록": "%s", "스텝": "%s"}' \
+      "$(gate_json_escape "$key")" "$(gate_json_escape "$rec")" "$(gate_json_escape "$step")"
+  done <<EOF
+$(cc_person_halts "$RUN_DIR" "${LEDGER:-}")
+EOF
+  [ "$first" = "1" ] || printf '\n'
+  return 0
+}
+
 gate_shift_halts_json() {
   # One element per segment a routing shift stopped that no answer has reached
   # yet: each cone row `shift-halt` wrote whose record no `중단 답` row names,
@@ -25934,8 +26184,8 @@ gate_halt_option_lines() {
   # found an option in a line nobody offered as one. Every reader of a record's
   # options — the option check of `halt-answer`, the recommendation, the
   # routable labels and the seat-apply frame check — reads them here, and here
-  # reads run.sh's `halt_option_lines`, the rule the morning report and the
-  # format predicate read too.
+  # reads liveness.sh's `halt_option_lines`, the rule the morning report, the
+  # format predicate and the answer state's person-held test read too.
   [ -r "$1" ] || return 0
   halt_option_lines < "$1"
 }
@@ -27898,7 +28148,7 @@ gate_carry_source_last_row() {
   row=$(sed -n "${1}p" "$LEDGER" 2>/dev/null)
   src=$(gate_row_field "$row" '출처 런')
   [ -n "$src" ] || return 0
-  lpl="$(dirname "$LEDGER")/$src.md"
+  lpl=$(gate_source_run_ledger "$src")
   orec=$(gate_carry_abs "$(gate_row_field "$row" '출처 기록')")
   sr=$(gate_carry_source_row "$lpl" "$orec")
   [ -n "$sr" ] || return 0
@@ -27914,7 +28164,7 @@ gate_key_imported_deferred_answer() {
   # no stage of this run has taken it up yet; nothing otherwise. Adopted and
   # re-kickoff copies alike: the key's last `중단 답` row carries `출처 런` and
   # `출처 기록`, and the earlier ledger's row for that record is deferred there.
-  local row ln src sr
+  local row ln src sr sled
   row=$( { grep -n "^- \`중단 답\` " "$LEDGER" 2>/dev/null || true; } \
          | { grep -F "| 세그먼트=$1 |" || true; } | tail -1)
   [ -n "$row" ] || return 0
@@ -27923,9 +28173,10 @@ gate_key_imported_deferred_answer() {
   src=$(gate_row_field "$row" '출처 런')
   [ -n "$src" ] || return 0
   gate_halt_answer_spent "$LEDGER" "$1" "$ln" && return 0
-  sr=$(gate_carry_source_row "$(dirname "$LEDGER")/$src.md" "$(gate_carry_abs "$(gate_row_field "$row" '출처 기록')")")
+  sled=$(gate_source_run_ledger "$src")
+  sr=$(gate_carry_source_row "$sled" "$(gate_carry_abs "$(gate_row_field "$row" '출처 기록')")")
   [ -n "$sr" ] || return 0
-  gate_halt_answer_handed_on "$(dirname "$LEDGER")/$src.md" "${sr%%:*}" "$(gate_row_field "${sr#*:}" '세그먼트')" || return 0
+  gate_halt_answer_handed_on "$sled" "${sr%%:*}" "$(gate_row_field "${sr#*:}" '세그먼트')" || return 0
   printf '%s' "$ln"
 }
 
@@ -28303,7 +28554,7 @@ gate_carry_origin() {
     GATE_CO_LPREC=$(gate_row_field "$row" '중단 기록'); GATE_CO_SKEY=$key
     return 0
   fi
-  GATE_CO_LPL="$(dirname "$LEDGER")/$GATE_CO_SRC.md"
+  GATE_CO_LPL=$(gate_source_run_ledger "$GATE_CO_SRC")
   GATE_CO_LPRD="$(dirname "$RUN_DIR")/$GATE_CO_SRC"
   GATE_CO_LPREC=$(gate_carry_abs "$(gate_row_field "$row" '출처 기록')")
   GATE_CO_SKEY=$key
@@ -34401,8 +34652,13 @@ gate_review_line() {
   #
   # The report path is the canonical one, `gate_review_report_path`: every
   # `cycle` row of the segment, resolution rows included, plus one, under
-  # `docs/reviews/` of the run's base. A review that crashed and is sent again
-  # therefore names the same report, and two resolution reviews in a row do not.
+  # `docs/reviews/` of the run's base, with `-r<m+1>` when <m> review dispatches
+  # that declared a trigger already went out after that row. A review sent
+  # again in the same cycle — after a crash, or after a `cycle` row refused
+  # with a re-dispatch — therefore names a report of its own and never writes
+  # over the earlier one, and two resolution reviews in a row do not share one
+  # either. A recovery repeats a dispatch and takes that dispatch's path, which
+  # this line does not print.
   #
   # The declared set is `gate_segment_decl_whole`, the value the carry act's
   # `<선언 파일>` slot is built from.
@@ -37350,6 +37606,38 @@ gate_segment_person_hold() {
     fi
   done
   return 0
+}
+
+gate_person_halts_of_key() {
+  # gate_person_halts_of_key <key> — the run-directory-relative paths of the
+  # unanswered halt records that put options before a person on <key>
+  # (`cc_person_halts`), comma-separated; nothing when there is none.
+  local key="${1:-}"
+  [ -n "$key" ] && [ -n "${RUN_DIR:-}" ] || return 0
+  cc_person_halts "$RUN_DIR" "${LEDGER:-}" \
+    | LC_ALL=C awk -F '\t' -v k="$key" '$1 == k { out = out (out == "" ? "" : ", ") $2 } END { printf "%s", out }'
+}
+
+gate_person_halt_refuse() {
+  # gate_person_halt_refuse <key> <kind> — refuses a skill dispatch on <key>
+  # with GATE_EXIT_RULE, writing no row, while a halt record of that key puts
+  # options before a person and no `중단 답` row names it; returns otherwise.
+  #
+  # THE NEXT ATTEMPT DOES NOT ANSWER THE QUESTION. A dispatch over such a
+  # record runs the same step past a question nobody answered, and before this
+  # check the next attempt's launch made the answer state read the record as
+  # handled, so the run counted no question at all. The key is the one the
+  # dispatch's `stage-result` row would carry — a run-scope step's id or the
+  # segment — which is the key `cc__halt_auto_next` matches. Every unanswered
+  # record of the key is read, not only the last attempt's: each one has to be
+  # answered. A record with no options and the three refutation stops the
+  # decision function routes are not held (`cc_halt_person_held`).
+  local key="${1:-}" kind="${2:-skill}" held
+  held=$(gate_person_halts_of_key "$key")
+  [ -n "$held" ] || return 0
+  warn "키 ${key} 에 사람이 고를 선택지를 담은 답 없는 정지 기록이 있습니다: ${held}"
+  warn "사람의 답 전에는 같은 키를 다시 파견하지 않는다; 다른 키를 라우팅하고, 남은 것이 없으면 사유=중단 으로 인계하며 막힌 지점 에 이 경로를 적는다 — 이 ${kind} 파견은 받지 않습니다"
+  exit "$GATE_EXIT_RULE"
 }
 
 gate_segment_visual_refusal() {
@@ -42832,6 +43120,26 @@ gate_record_row() {
       # still says 델타. The only repair left is a review the gate accepts.
       delta_repair=" — if a row rewritten to match the review-mode line of the report and the cycle numbers of this segment still meets the same check, the row cannot repair it: re-dispatch the review of this segment as a full review without the three basis flags, and write no cycle row until there is a report the gate accepts"
       resolve_repair=" — the row cannot repair it: re-dispatch the review of this segment as a full review without the three resolution flags, and write no cycle row until there is a report the gate accepts"
+      # Every refusal that carries one of the two tails above, and the three
+      # that ask for a review without `--slice`, leaves a `리뷰 기록 거절` row first
+      # while the segment waits on this record (`gate_review_cycle_refusal_fact`),
+      # so the review they ask for is not refused for the missing record.
+      #
+      # THE ROW NAMES THE LAST REVIEW DISPATCH'S REPORT. When review dispatches
+      # of this cycle declared a trigger, the report is the one the last of them
+      # was told to write (`gate_review_last_triggered_report`): every such
+      # dispatch gets a path of its own, so an earlier one's report is not the
+      # cycle's last review. Exit 2 with no row, and ahead of every refusal
+      # below, so a row naming an earlier report never leaves the
+      # `리뷰 기록 거절` row that would end the wait for the later one. The
+      # `cycle_due[]` element carries the path that passes.
+      local crf_rep crf_last
+      crf_rep=$(gate_report_abs "$(gate_field_of '리포트 경로' "$@")")
+      crf_last=$(gate_review_last_triggered_report "$seg")
+      if [ -n "$crf_last" ] && [ "$(gate_report_norm "$crf_rep")" != "$(gate_report_norm "$crf_last")" ]; then
+        warn "the \`리포트 경로\` of the cycle row ($(gate_report_norm "$crf_rep")) is not the report of the last review dispatch of this cycle ($(gate_report_norm "$crf_last")) — record that report, the \`리포트 경로\` of the segment's \`cycle_due[]\` element"
+        return "$GATE_EXIT_VOCAB"
+      fi
       # Check 1 — vocabulary, whenever the field is present at all.
       case "$cmode" in
         ''|전체|델타|해소) ;;
@@ -42852,11 +43160,13 @@ gate_record_row() {
         case "$cbasis" in
           ''|*[!0-9]*)
             warn "a cycle row with \`모드=델타\` needs a positive integer \`기준 사이클\`: '${cbasis:-(none)}'$delta_repair"
+            gate_review_cycle_refusal_fact "$seg" 델타 "$crf_rep"
             return "$GATE_EXIT_VOCAB" ;;
         esac
         cbasis_n=$((10#$cbasis))
         if [ "$cbasis_n" -lt 1 ]; then
           warn "a cycle row with \`모드=델타\` needs a positive integer \`기준 사이클\`: '$cbasis'$delta_repair"
+          gate_review_cycle_refusal_fact "$seg" 델타 "$crf_rep"
           return "$GATE_EXIT_VOCAB"
         fi
         # A delta names an EARLIER cycle. `사이클=5 기준 사이클=5` passed every
@@ -42870,6 +43180,7 @@ gate_record_row() {
         esac
         if [ "$ccyc_ok" != 1 ]; then
           warn "the \`사이클\` ('$ccyc') of a \`모드=델타\` cycle row has to be an integer greater than \`기준 사이클\` ($cbasis) — a delta cannot take itself or a later cycle as its basis$delta_repair"
+          gate_review_cycle_refusal_fact "$seg" 델타 "$crf_rep"
           return "$GATE_EXIT_VOCAB"
         fi
         # Checks 3 and 5 share one pass over this segment's cycle rows. FIELD
@@ -42899,18 +43210,21 @@ EOF
         # Check 3 — the basis row exists in THIS segment.
         if [ -z "$brow" ]; then
           warn "there is no cycle row for basis cycle $cbasis in segment $seg$delta_repair"
+          gate_review_cycle_refusal_fact "$seg" 델타 "$crf_rep"
           return "$GATE_EXIT_VOCAB"
         fi
         # Check 4 — no delta of a delta: an inherited verdict crosses one step.
         bmode=$(gate_row_field "$brow" '모드'); [ -n "$bmode" ] || bmode=전체
         if [ "$bmode" != 전체 ]; then
           warn "basis cycle $cbasis is itself a delta cycle — a delta of a delta is not allowed$delta_repair"
+          gate_review_cycle_refusal_fact "$seg" 델타 "$crf_rep"
           return "$GATE_EXIT_VOCAB"
         fi
         # Check 5 — the basis is the LATEST full cycle, and the refusal names
         # the one that is.
         if [ "$latest" -ne "$cbasis_n" ]; then
           warn "there is a full cycle more recent than basis cycle $cbasis: $latest — the basis has to be the last full cycle of this segment$delta_repair"
+          gate_review_cycle_refusal_fact "$seg" 델타 "$crf_rep"
           return "$GATE_EXIT_VOCAB"
         fi
         # Check 6 — ancestry, in the segment's own worktree. `is-ancestor` has
@@ -42923,6 +43237,7 @@ EOF
         wt=$(gate_segment_worktree "$seg")
         if [ -z "$wt" ] || [ ! -d "$wt" ]; then
           warn "cannot judge the ancestry of basis review HEAD $bhead and review HEAD $rh — there is no segment worktree: '${wt:-(none)}'$delta_repair"
+          gate_review_cycle_refusal_fact "$seg" 델타 "$crf_rep"
           return "$GATE_EXIT_VOCAB"
         fi
         rc=0
@@ -42930,8 +43245,10 @@ EOF
         case "$rc" in
           0) ;;
           1) warn "basis review HEAD $bhead is not an ancestor of the review HEAD $rh of this row (a rebase or similar) — a delta review does not hold$delta_repair"
+             gate_review_cycle_refusal_fact "$seg" 델타 "$crf_rep"
              return "$GATE_EXIT_VOCAB" ;;
           *) warn "cannot judge the ancestry of basis review HEAD $bhead and review HEAD $rh (git exit $rc, worktree $wt)$delta_repair"
+             gate_review_cycle_refusal_fact "$seg" 델타 "$crf_rep"
              return "$GATE_EXIT_VOCAB" ;;
         esac
         # Check 7 — the basis report exists and is not a stub. The anchor is
@@ -42940,6 +43257,7 @@ EOF
         brep=$(gate_report_abs "$(gate_row_field "$brow" '리포트 경로')")
         if [ ! -f "$brep" ] || ! grep -qE '^[-*[:space:]]*\*\*발견 요약\*\*' "$brep"; then
           warn "the report of basis cycle $cbasis is missing, or it has no \`발견 요약\`: $brep$delta_repair"
+          gate_review_cycle_refusal_fact "$seg" 델타 "$crf_rep"
           return "$GATE_EXIT_VOCAB"
         fi
       fi
@@ -42959,6 +43277,7 @@ EOF
         case "$cbasis" in
           ''|*[!0-9]*)
             warn "a cycle row with \`모드=해소\` needs a positive integer \`기준 사이클\`: '${cbasis:-(none)}'$resolve_repair"
+            gate_review_cycle_refusal_fact "$seg" 해소 "$crf_rep"
             return "$GATE_EXIT_VOCAB" ;;
         esac
         cbasis_n=$((10#$cbasis))
@@ -42969,6 +43288,7 @@ EOF
         esac
         if [ "$ccyc_ok" != 1 ]; then
           warn "the \`사이클\` ('$ccyc') of a \`모드=해소\` cycle row has to be an integer greater than \`기준 사이클\` ($cbasis)$resolve_repair"
+          gate_review_cycle_refusal_fact "$seg" 해소 "$crf_rep"
           return "$GATE_EXIT_VOCAB"
         fi
         brow=$(gate_base_resolve_basis_row "$seg")
@@ -42976,12 +43296,14 @@ EOF
         case "$cs" in ''|*[!0-9]*) cs=-1 ;; *) cs=$((10#$cs)) ;; esac
         if [ -z "$brow" ] || [ "$cs" -ne "$cbasis_n" ]; then
           warn "basis cycle $cbasis is not the last cycle of segment $seg that is not a resolution (${cs#-1}) — a resolution review takes that cycle as its basis$resolve_repair"
+          gate_review_cycle_refusal_fact "$seg" 해소 "$crf_rep"
           return "$GATE_EXIT_VOCAB"
         fi
         bhead=$(gate_row_field "$brow" '리뷰 HEAD')
         wt=$(gate_segment_worktree "$seg")
         if [ -z "$wt" ] || [ ! -d "$wt" ]; then
           warn "cannot judge the ancestry of basis review HEAD $bhead and review HEAD $rh — there is no segment worktree: '${wt:-(none)}'$resolve_repair"
+          gate_review_cycle_refusal_fact "$seg" 해소 "$crf_rep"
           return "$GATE_EXIT_VOCAB"
         fi
         rc=0
@@ -42989,8 +43311,10 @@ EOF
         case "$rc" in
           0) ;;
           1) warn "basis review HEAD $bhead is not an ancestor of the review HEAD $rh of this row — a resolution review does not hold$resolve_repair"
+             gate_review_cycle_refusal_fact "$seg" 해소 "$crf_rep"
              return "$GATE_EXIT_VOCAB" ;;
           *) warn "cannot judge the ancestry of basis review HEAD $bhead and review HEAD $rh (git exit $rc, worktree $wt)$resolve_repair"
+             gate_review_cycle_refusal_fact "$seg" 해소 "$crf_rep"
              return "$GATE_EXIT_VOCAB" ;;
         esac
         # ONLY A SEGMENT WHOSE 다음 READS 해소 리뷰 TAKES ONE. That value stands
@@ -43037,6 +43361,7 @@ EOF
           rhead=$(printf '%s\n' "$line" | sed -E -n 's/.*기준 리뷰 HEAD `([0-9a-f]+)`.*/\1/p')
           if [ -z "$rcyc" ] || [ "$((10#$rcyc))" -ne "$cbasis_n" ]; then
             warn "the basis cycle (${rcyc:-(none)}) of the report differs from the basis cycle ($cbasis) of the row: $rep$delta_repair"
+            gate_review_cycle_refusal_fact "$seg" 델타 "$crf_rep"
             return "$GATE_EXIT_VOCAB"
           fi
           # Short and long shas may be mixed between the row and the report;
@@ -43045,10 +43370,12 @@ EOF
           r2=$(cd "$wt" && git rev-parse --verify "${bhead}^{commit}" 2>/dev/null || true)
           if [ -z "$r1" ] || [ -z "$r2" ]; then
             warn "cannot resolve the basis review HEAD (${rhead:-(none)}) of the report and the review HEAD ($bhead) of the basis row — cannot judge: $rep$delta_repair"
+            gate_review_cycle_refusal_fact "$seg" 델타 "$crf_rep"
             return "$GATE_EXIT_VOCAB"
           fi
           if [ "$r1" != "$r2" ]; then
             warn "the basis review HEAD ($rhead) of the report is not the same commit as the review HEAD ($bhead) of the basis row: $rep$delta_repair"
+            gate_review_cycle_refusal_fact "$seg" 델타 "$crf_rep"
             return "$GATE_EXIT_VOCAB"
           fi
         fi
@@ -43058,17 +43385,20 @@ EOF
           rbase=$(printf '%s\n' "$line" | sed -E -n 's/.*베이스 `([0-9a-f]+)`.*/\1/p')
           if [ -z "$rcyc" ] || [ "$((10#$rcyc))" -ne "$cbasis_n" ]; then
             warn "the basis cycle (${rcyc:-(none)}) of the report differs from the basis cycle ($cbasis) of the row: $rep$resolve_repair"
+            gate_review_cycle_refusal_fact "$seg" 해소 "$crf_rep"
             return "$GATE_EXIT_VOCAB"
           fi
           r1=$(gate_commit_in "$wt" "$rhead" || true)
           r2=$(gate_commit_in "$wt" "$bhead" || true)
           if [ -z "$r1" ] || [ "$r1" != "$r2" ]; then
             warn "the basis review HEAD (${rhead:-(none)}) of the report is not the commit of the basis row's review HEAD ($bhead): $rep$resolve_repair"
+            gate_review_cycle_refusal_fact "$seg" 해소 "$crf_rep"
             return "$GATE_EXIT_VOCAB"
           fi
           rt=$(gate_commit_in "$wt" "$rbase" || true)
           if [ -z "$rt" ]; then
             warn "the base (${rbase:-(none)}) on the report's review-mode line does not resolve in $wt: $rep$resolve_repair"
+            gate_review_cycle_refusal_fact "$seg" 해소 "$crf_rep"
             return "$GATE_EXIT_VOCAB"
           fi
           # T IS A BASE THE GATE OBSERVED. A resolution review reads `^T`, so a
@@ -43077,11 +43407,13 @@ EOF
                        [ "$(gate_commit_in "$wt" "$c" || true)" = "$rt" ] && { printf y; break; }
                      done || true)" ]; then
             warn "the base $rbase on the report's review-mode line is not one a \`베이스 판정\` row of $seg named — a resolution review reviews against a base the gate observed: $rep$resolve_repair"
+            gate_review_cycle_refusal_fact "$seg" 해소 "$crf_rep"
             return "$GATE_EXIT_VOCAB"
           fi
           rset=$( (cd "$wt" && git rev-list "$rh" "^$r1" "^$rt") 2>/dev/null) || rset=''
           if [ -z "$rset" ]; then
             warn "there is no commit in $rh ^$r1 ^$rt — a resolution review has nothing to read: $rep$resolve_repair"
+            gate_review_cycle_refusal_fact "$seg" 해소 "$crf_rep"
             return "$GATE_EXIT_VOCAB"
           fi
           # Every merge in the set brings in the base and nothing else: a parent
@@ -43095,17 +43427,20 @@ EOF
                     done || true)
           if [ -n "$rbad" ]; then
             warn "a merge in $rh ^$r1 ^$rt brings in ${rbad% } — not the base $rt or its history: $rep$resolve_repair"
+            gate_review_cycle_refusal_fact "$seg" 해소 "$crf_rep"
             return "$GATE_EXIT_VOCAB"
           fi
         fi
       elif [ "$eff_mode" = 해소 ]; then
         warn "cannot open the report of a cycle row with \`모드=해소\`: $rep$resolve_repair"
+        gate_review_cycle_refusal_fact "$seg" 해소 "$crf_rep"
         return "$GATE_EXIT_VOCAB"
       elif [ "$eff_mode" = 델타 ]; then
         # A full row whose report cannot be opened passes here — no new refusal
         # on the existing path; the merge rule already catches the absence at
         # merge time. A delta row has nothing to back its claim without it.
         warn "cannot open the report of a cycle row with \`모드=델타\`: $rep$delta_repair"
+        gate_review_cycle_refusal_fact "$seg" 델타 "$crf_rep"
         return "$GATE_EXIT_VOCAB"
       fi
       # Checks 9 to 11 — A DEFECT THAT MAKES THE COUNT ITSELF WRONG IS REFUSED;
@@ -43135,8 +43470,13 @@ EOF
             fi
           done
         fi
+        # The mismatch sits inside the report, so no rewritten row clears it:
+        # the way out is the review without `--slice`, which writes no
+        # other-slice section, and the refusal fact ends a wait that would
+        # otherwise refuse that very dispatch.
         if [ "$(gate_report_count "$rcounts" '몫 항목')" != "$(gate_report_count "$rcounts" '몫')" ]; then
-          warn "the other-slice section of the report has $(gate_report_count "$rcounts" '몫 항목') item(s) but its \`다른 슬라이스 몫\` line reads '$(gate_report_count "$rcounts" '몫')' — the count the review dropped is not the count it lists: $rep"
+          warn "the other-slice section of the report has $(gate_report_count "$rcounts" '몫 항목') item(s) but its \`다른 슬라이스 몫\` line reads '$(gate_report_count "$rcounts" '몫')' — the count the review dropped is not the count it lists. Dispatch the review of $seg again without --slice: $rep"
+          gate_review_cycle_refusal_fact "$seg" '다른 슬라이스' "$crf_rep"
           return "$GATE_EXIT_VOCAB"
         fi
         # EVERY ITEM IS CHECKED, NOT EVERY ASSIGNMENT THE PARSER CAUGHT. An item
@@ -43145,6 +43485,7 @@ EOF
         # at it.
         if [ "$(gate_report_count "$rcounts" '몫 배정')" != "정규" ]; then
           warn "an item of the other-slice section does not carry exactly one \`    - **배정**: 슬라이스 <id>\` line (four spaces, one per item) — an item with no readable assignment cannot be dropped from the count. Dispatch the review of $seg again without --slice: $rep"
+          gate_review_cycle_refusal_fact "$seg" '다른 슬라이스' "$crf_rep"
           return "$GATE_EXIT_VOCAB"
         fi
         # ONLY A SLICE STILL TO LAND OWNS A FINDING. A slice that is merged,
@@ -43160,6 +43501,7 @@ EOF
           case "$ast" in 계획됨|실행중|리뷰중) ;; *) ast='' ;; esac
           if [ "$aid" = "$seg" ] || [ -z "$arow" ] || [ -z "$ast" ]; then
             warn "the other-slice section assigns an item to slice '$aid', which is not another segment of this run still to land (계획됨·실행중·리뷰중) — a finding of this segment, of a landed or parked slice or of no slice is counted here. Dispatch the review of $seg again without --slice: $rep"
+            gate_review_cycle_refusal_fact "$seg" '다른 슬라이스' "$crf_rep"
             return "$GATE_EXIT_VOCAB"
           fi
         done <<EOF
@@ -43192,13 +43534,15 @@ EOF
       # the rows before it, and the fingerprint is computed from the report
       # alone, so the field never enters it. A row still over the cap without
       # the fingerprint drops this field too, with its own warning.
-      # THE REPORT IS THE CANONICAL ONE OF THIS CYCLE. `gate_review_report_path`
+      # THE REPORT IS THE CANONICAL ONE OF THIS CYCLE. `gate_review_report_base_path`
       # numbers a segment's reports by its `cycle` rows, so this row's report is
       # that path, or a re-dispatch's `-r<k>` (k ≥ 2) beside it. Any other path
       # is refused here, the last refusal before anything is written: a report
       # at another path may be another review's, overwritten or never read.
+      # Whether it is the LAST dispatch's report is checked earlier, ahead of
+      # the delta checks (see `crf_rep`).
       local rp_want rp_got rp_k
-      rp_want=$(gate_report_norm "$(gate_review_report_path "$seg")")
+      rp_want=$(gate_report_norm "$(gate_review_report_base_path "$seg")")
       rp_got=$(gate_report_norm "$rep")
       if [ "$rp_got" != "$rp_want" ]; then
         rp_k=${rp_got#"${rp_want%.md}-r"}; rp_k=${rp_k%.md}
@@ -43828,10 +44172,19 @@ EOF
       # still does not fit at the narrowest width is refused rather than written
       # with a shorter wait set. `리셋 대기` is the same, and is written only
       # when it names a key, so a row without one is the row written before it.
-      local hrsf=""
+      #
+      # `답 대기 기록` IS THE GATE'S, never the shift's: the unanswered halt
+      # records that put options before a person (`cc_person_halts`), as
+      # run-directory-relative paths. It is written whatever `사유` reads, so
+      # the progress channel shows the wait from the row alone, and like
+      # `CI 대기` it counts toward the length and is never narrowed.
+      local hrsf="" haw
+      haw=$(cc_person_halts "$RUN_DIR" "$LEDGER" \
+              | LC_ALL=C awk -F '\t' '$2 != "" { out = out (out == "" ? "" : ", ") $2 } END { printf "%s", out }')
       [ -z "$hrs" ] || hrsf=" | 리셋 대기=$hrs"
       [ -z "$hms" ] || hrsf="$hrsf | master 대기=$hms"
       [ -z "$hcw" ] || hrsf="$hrsf | 확인 대기=$hcw"
+      [ -z "$haw" ] || hrsf="$hrsf | 답 대기 기록=$haw"
       while [ "$hw" -ge 40 ]; do
         hd=$(gate_row_safe "$(gate_field_of '버린 선택지' "$@")" "$hw")
         hb=$(gate_row_safe "$(gate_field_of '막힌 지점' "$@")" "$hw")
@@ -43843,12 +44196,13 @@ EOF
         hw=$((hw - 40))
       done
       if [ "$hlen" -gt "$GATE_ROW_MAX" ]; then
-        warn "the handoff row does not fit in ${GATE_ROW_MAX} bytes even with its free text narrowed to the floor — \`CI 대기\`, \`리셋 대기\`, \`master 대기\` and \`확인 대기\` are never cut, so nothing is written"
+        warn "the handoff row does not fit in ${GATE_ROW_MAX} bytes even with its free text narrowed to the floor — \`CI 대기\`, \`리셋 대기\`, \`master 대기\`, \`확인 대기\` and \`답 대기 기록\` are never cut, so nothing is written"
         return "$GATE_EXIT_VOCAB"
       fi
       gate_append 'handoff' "교대=$hn" "사유=$hwhy" \
         "버린 선택지=$hd" "막힌 지점=$hb" "다음 후보=$hc" "CI 대기=${hci:--}" \
         ${hrs:+"리셋 대기=$hrs"} ${hms:+"master 대기=$hms"} ${hcw:+"확인 대기=$hcw"} \
+        ${haw:+"답 대기 기록=$haw"} \
         "대상=$alias" "기록 시각=$(now_iso)"
       log "교대 $hn 기록 — 사유 $hwhy"
       # PAST THE DEADLINE THERE IS NOTHING FOR THE RELAY TO WAKE FOR, so the
@@ -48756,7 +49110,9 @@ gate_apply_imported_evidence() {
   # last `cycle` row of the segment), GATE_SETTLE_EVIDENCE_RUN and
   # GATE_SETTLE_SUBJECT set; 1 otherwise, with the reason, unprefixed, in
   # GATE_SETTLE_FAIL:
-  #   * `출처` is a run id and `<that run id>.md` sits beside this ledger;
+  #   * `출처` is a run id and `<that run id>.md` is found — through the
+  #     `ledger-path` of that run's directory, else beside this ledger
+  #     (`gate_source_run_ledger`);
   #   * its hash chain is intact (`gate_chain_verify <ledger> <run id>`);
   #   * the segment's last `cycle` row there reads P0=0 and P1=0 exactly — a
   #     dismissal or carry-over is not read — and names `리뷰 HEAD` and a
@@ -48777,7 +49133,7 @@ gate_apply_imported_evidence() {
   if ! [[ "$org" =~ ^[0-9]{8}-[0-9a-f]{8}$ ]]; then
     GATE_SETTLE_FAIL="들여온 행의 출처(${org:-없음})가 런 id 꼴이 아니라 증거 원장을 정할 수 없다"; return 1
   fi
-  eled="$(dirname "$LEDGER")/${org}.md"
+  eled=$(gate_source_run_ledger "$org")
   [ -f "$eled" ] || { GATE_SETTLE_FAIL="증거 원장 ${org}.md 가 없다"; return 1; }
   gate_chain_verify "$eled" "$org" >/dev/null 2>&1 \
     || { GATE_SETTLE_FAIL="증거 원장 ${org} 의 해시 연쇄가 온전하지 않다"; return 1; }
@@ -49173,7 +49529,7 @@ gate_apply_settle_confirm_row() {
   m=$(gate_segment_field "$seg" '머지 커밋'); wt=$(gate_segment_field "$seg" '워크트리')
   # The earlier run's kept apply worktree is no path of this run's rows; it is
   # named in the log, for the person comparing it in the morning.
-  pled="$(dirname "$LEDGER")/${prun}.md"
+  pled=$(gate_source_run_ledger "$prun")
   pkept=""
   if [ -n "$prun" ] && [ -f "$pled" ]; then
     pkept=$( { grep -E '^- `segment` ' "$pled" 2>/dev/null || true; } | gate_rows_field_eq 'id' "$seg" \
@@ -54943,6 +55299,9 @@ gate_verb_act() {
       exit "$GATE_EXIT_RULE"
     fi
     stage_is_run_scope_step=1
+    # A run-scope step's key is settled here; the segment branch takes the same
+    # check before its person-hold refusal below.
+    gate_person_halt_refuse "$stage_key" "$rs_kind"
 
     # NOTHING ELSE WRITES THE DOCUMENT WHILE THE REFLECTION RUNS. The
     # approved-screen reflection edits the design document and the visual
@@ -55279,6 +55638,12 @@ gate_verb_act() {
   # stage or a re-plan sent there meanwhile would be the router answering it.
   # Every other segment is routed as before; the hold is the question's
   # `막는 세그먼트` and nothing wider.
+  #
+  # A SEGMENT KEY WHOSE HALT RECORD PUTS OPTIONS BEFORE A PERSON is refused
+  # first, as a run-scope step's key is above (`gate_person_halt_refuse`).
+  if [ "$kind" = "skill" ] && [ "$segment" != "-" ]; then
+    gate_person_halt_refuse "$stage_key" "${rs_kind:-skill}"
+  fi
   if { [ "$kind" = "skill" ] || [ "$kind" = "replan" ]; } && [ "$segment" != "-" ]; then
     local ph_id
     ph_id=$(gate_segment_person_hold "$segment")
@@ -55658,6 +56023,21 @@ gate_verb_act() {
             fi ;;
         esac ;;
       review)
+        # A REVIEW THAT ENDED `정상 완료` IS RECORDED BEFORE ANOTHER GOES OUT.
+        # While the segment's `cycle_due[]` element stands, every review
+        # dispatch of it is refused with no row, whatever its trigger, recovery
+        # flag or `--slice`: this runs ahead of all of them, so the router gets
+        # the same answer whatever it chose. A `리뷰 기록 거절` row the `cycle`
+        # arm left ends the element, so a re-dispatch that arm asked for passes.
+        local rn_due rn_due_ver rn_due_rp
+        rn_due=$(gate_review_cycle_due_of "$segment")
+        if [ -n "$rn_due" ]; then
+          rn_due_ver=$(jq -r '.["실행 버전"] // empty' <<<"${rn_due%,}" 2>/dev/null || true)
+          rn_due_rp=$(jq -r '.["리포트 경로"] // empty' <<<"${rn_due%,}" 2>/dev/null || true)
+          warn "세그먼트 ${segment} 의 리뷰(실행 버전 ${rn_due_ver:-미상})가 정상 완료했지만 그 결과를 기록한 cycle 행이 없습니다 — 리포트는 ${rn_due_rp:-미상} 입니다"
+          warn "스냅숏의 cycle_due[] 를 읽고 그 리포트로 cycle 을 먼저 기록하세요"
+          exit "$GATE_EXIT_RULE"
+        fi
         # A merge-first segment merged again after its last cycle owes the
         # review of that new merge commit, whatever HEAD the cycle read.
         rn_row=$(gate_segment_last_cycle_row "$segment")
@@ -55853,7 +56233,12 @@ gate_verb_act() {
   fi
   if [ "$kind" = "skill" ] && [ "${1:-}" = "review" ] && [ "$rv_recov" = "0" ]; then
     local rv_want rv_f rv_ok=0
-    rv_want=$(gate_review_report_path "$segment")
+    # A `--resume` dispatch continues a session that was already told where to
+    # write, so the path it must carry is the last review dispatch's, not the
+    # next fresh one's.
+    rv_want=""
+    [ -z "${GATE_RESUME:-}" ] || rv_want=$(gate_review_last_dispatch_report "$segment")
+    [ -n "$rv_want" ] || rv_want=$(gate_review_report_path "$segment")
     if [ -z "$rv_rp" ] || [ "$(gate_report_norm "$(gate_report_abs "$rv_rp")")" != "$(gate_report_norm "$rv_want")" ]; then
       warn "리뷰 파견의 --report-path (${rv_rp:-없음}) 가 세그먼트 ${segment} 의 정본 리포트 경로 (${rv_want}) 와 다릅니다"
       warn "gate.sh review-line --segment ${segment} 가 찍는 경로를 그대로 실어 다시 파견하세요"
@@ -59435,8 +59820,15 @@ gate_continuation_argv() {
       elif [ -n "$missing" ]; then unmet=$(residual_unmet_message "$missing")
       else unmet="게이트를 거친 행위도 정지 기록도 없다"; fi ;;
     # A review acted through the gate and still wrote no report, so the default
-    # sentence would be false; it is told the canonical report of this cycle.
-    review) unmet="이 사이클의 리뷰 리포트($(gate_review_report_path "$key"))에 \`발견 요약\` 줄이 없고 정지 기록도 없다" ;;
+    # sentence would be false; it is told the report it was dispatched to
+    # write: the last review dispatch of this cycle that declared a trigger,
+    # else the cycle's base path. Not `gate_review_report_path`, which already
+    # counts this dispatch's row and so names the next dispatch's path.
+    review)
+      local crp
+      crp=$(gate_review_last_triggered_report "$key")
+      [ -n "$crp" ] || crp=$(gate_review_report_base_path "$key")
+      unmet="이 사이클의 리뷰 리포트(${crp})에 \`발견 요약\` 줄이 없고 정지 기록도 없다" ;;
     *)      unmet="게이트를 거친 행위도 정지 기록도 없다" ;;
   esac
   local cmsg
@@ -64073,6 +64465,20 @@ gate_record_stage_outcome() {
   cost=$(printf '%s' "$res"    | jq -r '.total_cost_usd // empty' 2>/dev/null || true)
   subtype=$(printf '%s' "$res" | jq -r '.subtype // empty'        2>/dev/null || true)
   sid=$(printf '%s' "$res"     | jq -r '.session_id // empty'     2>/dev/null || true)
+  # NO RESULT LINE DOES NOT MEAN NO SESSION. An attempt killed in its last turn
+  # (the stage CLI's pid stopped by a person, as the TERM trap documents) ends
+  # with no result envelope, yet the harness opened a session and wrote its id
+  # on the stream's first frame. A row reading `세션 id=미상` there leaves the
+  # key's last settled row with nothing to re-attach, so an answer to the
+  # complete record that attempt wrote is refused and the record holds the key
+  # to the end of the run. The id is read from THIS attempt's stream, the one
+  # `$out` names, under the same shape check the re-attachment applies
+  # (`stage_session_id_strict`): a planted or malformed value stays `미상`, and
+  # so does an attempt that died before its session started.
+  if [ -z "$sid" ] && [ -f "$out" ]; then
+    sid=$(sed -n '/"session_id":"/{s/.*"session_id":"\([^"]*\)".*/\1/p;q;}' "$out")
+    run_session_id_shape_ok "$sid" || sid=""
+  fi
 
   # The terminal class, from what the GATE can observe and nothing more. A stage
   # that performed a gated act left rows; one that left none either never got
@@ -64429,6 +64835,13 @@ gate_record_stage_outcome() {
   # Both helpers print `<key>=<value>`; the rows below spell each key out so
   # the field table's lint reads them at the call site.
   dsf=${dsf#문서 크기=}; dsw=${dsw#크기 경고=}
+  # `답 대기 기록`, when the attempt parked on a record that puts options before
+  # a person (`cc_halt_person_held`): the progress channel shows the wait from
+  # this row alone, without opening the record. The driver's rows do not carry it.
+  local hawait=""
+  if [ "$klass" = "의도된 park" ] && cc_halt_person_held "$haltf"; then
+    hawait="halt/${haltf##*/}"
+  fi
   if [ -n "$psha" ]; then
     visual_row_pieces "$kind" "$out" "세그먼트=$rowseg" "스테이지=$seg" "종류=$kind" \
       "종료 코드=$rc" "실행 버전=$attempt" "세션 id=${sid:-미상}" \
@@ -64440,7 +64853,7 @@ gate_record_stage_outcome() {
       ${GATE_RA_WIN:+"창 종류=$GATE_RA_WIN"} ${GATE_RA_SLEEP:+"마지막 절전=$GATE_RA_SLEEP"} \
       "plan_sha256=$psha" ${rv:+"재수렴 판정=$rv"} ${sk:+"골격급=$sk"} ${rq:+"재수렴 요청=$rq"} \
       ${dsf:+"문서 크기=$dsf"} ${dsw:+"크기 경고=$dsw"} "시각 종단=-" "종단 부류=$klass" ${transient:+"일시 원인=$transient"} "실패 서명=$fsig" \
-      ${hacarry:+"답 운반=$hacarry"}; \
+      ${hacarry:+"답 운반=$hacarry"} ${hawait:+"답 대기 기록=$hawait"}; \
       gate_append 'stage-result' "${VISUAL_ROW_PIECES[@]}"
   else
     visual_row_pieces "$kind" "$out" "세그먼트=$rowseg" "스테이지=$seg" "종류=$kind" \
@@ -64453,7 +64866,7 @@ gate_record_stage_outcome() {
       ${GATE_RA_WIN:+"창 종류=$GATE_RA_WIN"} ${GATE_RA_SLEEP:+"마지막 절전=$GATE_RA_SLEEP"} \
       ${rv:+"재수렴 판정=$rv"} ${sk:+"골격급=$sk"} ${rq:+"재수렴 요청=$rq"} \
       ${dsf:+"문서 크기=$dsf"} ${dsw:+"크기 경고=$dsw"} "시각 종단=-" "종단 부류=$klass" ${transient:+"일시 원인=$transient"} "실패 서명=$fsig" \
-      ${hacarry:+"답 운반=$hacarry"}; \
+      ${hacarry:+"답 운반=$hacarry"} ${hawait:+"답 대기 기록=$hawait"}; \
       gate_append 'stage-result' "${VISUAL_ROW_PIECES[@]}"
   fi
   # Every audit attempt leaves its `감사 공시` row right after its own row.

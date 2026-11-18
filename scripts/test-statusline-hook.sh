@@ -251,10 +251,17 @@ hasnt "L5 옛 트리가 명령에 남지 않는다" "$(cmd_of "$L5")" "$PLUG/orc
 # The matcher is what bounds the cost. `SessionStart` also fires on resume,
 # clear, compact and fork, and a long unattended run compacts many times — a
 # wider matcher would repeat the whole decision dozens of times inside one run.
+# The second block is the stage values hook, which prints again on resume and
+# compact on purpose; the narrow-matcher reason holds for the status line block
+# at `[0]` alone.
 # ---------------------------------------------------------------------------
 if jq -e '.hooks | has("SessionStart")' "$HOOKS_JSON" >/dev/null 2>&1; then
-  check "L6 SessionStart 블록이 정확히 하나다" \
-    "$(jq -r '.hooks.SessionStart | length' "$HOOKS_JSON")" "1"
+  check "L6 SessionStart 블록이 둘이다" \
+    "$(jq -r '.hooks.SessionStart | length' "$HOOKS_JSON")" "2"
+  has "L6 [1] 이 세션 시작 값 훅이다" \
+    "$(jq -r '.hooks.SessionStart[1].hooks[0].command' "$HOOKS_JSON")" "hooks/stage-values-sessionstart.sh"
+  check "L6 [1] 의 매처가 startup|resume|compact 다" \
+    "$(jq -r '.hooks.SessionStart[1].matcher' "$HOOKS_JSON")" "startup|resume|compact"
   check "L6 매처가 startup 하나뿐이다" \
     "$(jq -r '.hooks.SessionStart[0].matcher' "$HOOKS_JSON")" "startup"
   check "L6 훅 항목이 정확히 하나다" \

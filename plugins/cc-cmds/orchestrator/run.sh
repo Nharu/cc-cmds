@@ -9434,28 +9434,11 @@ halt_record_present() {
 }
 
 # ---------------------------------------------------------------------------
-# THE HALT RECORD'S SHAPE, READ IN ONE PLACE. The gate sources this file, so the
-# option-line rule below is the one the gate's option check, the morning
-# report's option block and the format predicate all read; three copies of it
-# drifted apart once already.
+# THE HALT RECORD'S SHAPE. The option-line rule `halt_option_lines` this file
+# and the gate read is defined once in `liveness.sh`, which this file sources
+# near its top: the read-only tools that source `liveness.sh` alone need it for
+# the answer state.
 # ---------------------------------------------------------------------------
-halt_option_lines() {
-  # halt_option_lines — the option lines of the halt record text on stdin,
-  # verbatim: the lines of its `**선택지**:` block — opened only by a
-  # `**선택지**:` line with nothing after the colon, closed by the next line
-  # that starts with `**` or by the closing fence — that read `` - `<label>` ``
-  # alone or followed by ` — <description>`. A line of that shape outside the
-  # block (a command halt's command line, a line quoted into the question) is
-  # not an option.
-  LC_ALL=C awk '
-    $0 == "<!-- /cc-pipeline-halt v1 -->" { exit }
-    inb && /^\*\*/ { inb = 0 }
-    /^\*\*선택지\*\*:[ \t]*$/ { inb = 1; next }
-    inb && /^- `[^`]+`$/ { print; next }
-    inb && /^- `[^`]+` — / { print }
-  ' 2>/dev/null || true
-}
-
 halt_record_wellformed() {
   # halt_record_wellformed <file> — one defect word per line on stdout, from a
   # closed set of seven, and 0 when there is none, 1 otherwise:
