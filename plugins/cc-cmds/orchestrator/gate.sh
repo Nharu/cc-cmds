@@ -16613,20 +16613,24 @@ gate_review_report_path() {
   # gate_review_report_path <segment> [<k>] — THE canonical report path of the
   # segment's next review, absolute. With <k> it is the base path with `-r<k>`
   # (k ≥ 2), the driver's k-th dispatch of the same review. Without it, <m> is
-  # the number of review dispatches of this cycle that declared a trigger
-  # (`gate_review_triggered_dispatch_rows`): the base path when <m> is 0, and
-  # the base path with `-r<m+1>` otherwise, so a review sent again in the same
-  # cycle never writes over the report an earlier dispatch was told to write.
-  # The driver declares no trigger, so its paths do not move. One function for
-  # the review line, the review dispatch check and the driver, so the three
-  # cannot name one review two ways; both checks run before the dispatch row is
-  # written, so they read the same <m>.
+  # the number of distinct report paths the review dispatches of this cycle
+  # that declared a trigger were given (`gate_review_triggered_dispatch_rows`):
+  # the base path when <m> is 0, and the base path with `-r<m+1>` otherwise, so
+  # a review sent again in the same cycle never writes over the report an
+  # earlier dispatch was told to write. Paths, not rows: a `--resume` dispatch
+  # declares a trigger too, but the session it re-attaches still writes the
+  # report it was first given, so its row repeats that path and does not move
+  # the next one. The driver declares no trigger, so its paths do not move.
+  # One function for the review line, the review dispatch check and the
+  # driver, so the three cannot name one review two ways; both checks run
+  # before the dispatch row is written, so they read the same <m>.
   local seg=$1 k=${2:-} m
   if [ -n "$k" ]; then
     gate_review_report_base_path "$seg" "$k"
     return 0
   fi
-  m=$(gate_review_triggered_dispatch_rows "$seg" | gate_count)
+  m=$(gate_review_triggered_dispatch_rows "$seg" | gate_rows_field_values '리포트 경로' \
+        | LC_ALL=C sort -u | gate_count)
   m=${m:-0}
   if [ "$m" -gt 0 ]; then
     gate_review_report_base_path "$seg" "$(( m + 1 ))"
@@ -16710,7 +16714,7 @@ gate_review_cycle_refusal_fact() {
   [ "${verb:-}" = act ] || return 0
   el=$(gate_review_cycle_due_of "$seg")
   [ -n "$el" ] || return 0
-  ver=$(printf '%s\n' "${el%,}" | jq -r '.["실행 버전"] // empty' 2>/dev/null || true)
+  ver=$(jq -r '.["실행 버전"] // empty' <<<"${el%,}" 2>/dev/null || true)
   gate_append '리뷰 기록 거절' "세그먼트=$seg" "리포트 경로=${rep:--}" "부류=$cls" "실행 버전=${ver:--}" || true
 }
 
@@ -55975,8 +55979,8 @@ gate_verb_act() {
         local rn_due rn_due_ver rn_due_rp
         rn_due=$(gate_review_cycle_due_of "$segment")
         if [ -n "$rn_due" ]; then
-          rn_due_ver=$(printf '%s\n' "${rn_due%,}" | jq -r '.["실행 버전"] // empty' 2>/dev/null || true)
-          rn_due_rp=$(printf '%s\n' "${rn_due%,}" | jq -r '.["리포트 경로"] // empty' 2>/dev/null || true)
+          rn_due_ver=$(jq -r '.["실행 버전"] // empty' <<<"${rn_due%,}" 2>/dev/null || true)
+          rn_due_rp=$(jq -r '.["리포트 경로"] // empty' <<<"${rn_due%,}" 2>/dev/null || true)
           warn "세그먼트 ${segment} 의 리뷰(실행 버전 ${rn_due_ver:-미상})가 정상 완료했지만 그 결과를 기록한 cycle 행이 없습니다 — 리포트는 ${rn_due_rp:-미상} 입니다"
           warn "스냅숏의 cycle_due[] 를 읽고 그 리포트로 cycle 을 먼저 기록하세요"
           exit "$GATE_EXIT_RULE"
@@ -56176,7 +56180,12 @@ gate_verb_act() {
   fi
   if [ "$kind" = "skill" ] && [ "${1:-}" = "review" ] && [ "$rv_recov" = "0" ]; then
     local rv_want rv_f rv_ok=0
-    rv_want=$(gate_review_report_path "$segment")
+    # A `--resume` dispatch continues a session that was already told where to
+    # write, so the path it must carry is the last review dispatch's, not the
+    # next fresh one's.
+    rv_want=""
+    [ -z "${GATE_RESUME:-}" ] || rv_want=$(gate_review_last_dispatch_report "$segment")
+    [ -n "$rv_want" ] || rv_want=$(gate_review_report_path "$segment")
     if [ -z "$rv_rp" ] || [ "$(gate_report_norm "$(gate_report_abs "$rv_rp")")" != "$(gate_report_norm "$rv_want")" ]; then
       warn "리뷰 파견의 --report-path (${rv_rp:-없음}) 가 세그먼트 ${segment} 의 정본 리포트 경로 (${rv_want}) 와 다릅니다"
       warn "gate.sh review-line --segment ${segment} 가 찍는 경로를 그대로 실어 다시 파견하세요"

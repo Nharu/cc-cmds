@@ -2733,6 +2733,34 @@ rv_x() {
   printf '/cc-cmds:review-unattended x --report-path %s' \
     "$(CANON_BASE=${3:-${CANON_BASE:-$WORK_ROOT}} canon_rp "$1" "$2")"
 }
+# rv_xn <run> <segment> [base] — rv_x for the segment's NEXT review dispatch
+# that declares a trigger in the same cycle: `-r<m+1>` once <m> distinct report
+# paths were given to such dispatches of the segment after its last `cycle` row
+# (none: the plain path). Counted from the ledger here, like canon_rp, so a
+# fixture that dispatches one segment's review again carries the path the gate
+# takes rather than copying the gate's own answer.
+rv_xn() {
+  local led m
+  led=${CANON_LEDGER:-$WT/docs/pipeline-run/$1.md}
+  m=$( { cat "$led" 2>/dev/null || true; } | awk -v s="$2" '
+        { n = split($0, p, / \| /); seg = 0; rp = ""; tr = 0; sk = 0
+          for (i = 2; i <= n; i++) {
+            v = p[i]; sub(/[ \t]+$/, "", v)
+            if (v == "세그먼트=" s) seg = 1
+            else if (v == "kind=skill") sk = 1
+            else if (index(v, "리포트 경로=") == 1) { rp = v; sub(/^리포트 경로=/, "", rp) }
+            else if (index(v, "계기=") == 1) tr = 1
+          } }
+        index($0, "- `cycle` ") == 1 && seg { delete seen; c = 0; next }
+        index($0, "- `자율 승인` ") == 1 && seg && sk && tr && rp != "" && !(rp in seen) { seen[rp] = 1; c++ }
+        END { print c + 0 }')
+  if [ "$m" -gt 0 ]; then
+    printf '/cc-cmds:review-unattended x --report-path %s' \
+      "$(CANON_BASE=${3:-${CANON_BASE:-$WORK_ROOT}} canon_rp "$1" "$2" "$((m + 1))")"
+  else
+    rv_x "$@"
+  fi
+}
 # rv_trig <segment> — the first trigger the R1 ledger stands behind right now for
 # that segment's next review, asked of the gate's own fact function. For a
 # fixture whose review dispatch is there to reach some other check: which
@@ -27821,7 +27849,7 @@ emit_torn() {
   out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CC_CLAUDE_BIN="$2" \
         bash "$GATE" act --manifest "$NM" --kind skill --target infra --segment "$1" --cutpoint 커밋 \
         --surface 워크트리쓰기 --snapshot-digest "$(HN)" --rationale x \
-        --trigger '첫 리뷰' -- review -p "$(rv_x "$CONE_RUN_ID" "$1" "$CANON_TOP")" 2>&1); rc=$?
+        --trigger '첫 리뷰' -- review -p "$(rv_xn "$CONE_RUN_ID" "$1" "$CANON_TOP")" 2>&1); rc=$?
   # The dispatch returns at once and the recorder runs in the detached
   # supervisor; `emit_collect` is what makes "record one stage result" true of
   # this helper. The stage's rc replaces the dispatch's, which is what the
@@ -27938,7 +27966,7 @@ emit_ar() {
   out=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CC_CLAUDE_BIN="$2" CC_CMDS_AUTOPILOT_AUTO_RESOLVE=1 \
         bash "$GATE" act --manifest "$NM" --kind skill --target infra --segment "$1" --cutpoint 커밋 \
         --surface 워크트리쓰기 --snapshot-digest "$(HN)" --rationale x \
-        --trigger '첫 리뷰' -- review -p "$(rv_x "$CONE_RUN_ID" "$1" "$CANON_TOP")" 2>&1); rc=$?
+        --trigger '첫 리뷰' -- review -p "$(rv_xn "$CONE_RUN_ID" "$1" "$CANON_TOP")" 2>&1); rc=$?
   # Same shape as `emit_torn`: the recorder runs in the detached supervisor, so
   # the result is waited for, its log folded in, and the stage's rc comes back.
   # The switch does not ride on the wait — the supervisor inherited it from
