@@ -138,6 +138,12 @@ case "${ROUTE_HALT_HOLD_SCHEMA:-}" in
   'cc-cmds-hold v1') ;;
   *) readonly ROUTE_HALT_HOLD_SCHEMA='cc-cmds-hold v1' ;;
 esac
+# 런의 시각 발행 고정 기록. 게이트가 쓰고 cc-lane 의 차용 기증자 선택이 읽는다. 본문
+# 규칙은 `route__visual_pin_put_main` 의 머리 주석이 정한다.
+case "${ROUTE_VISUAL_PIN_SCHEMA:-}" in
+  'cc-cmds-visual-pin v1') ;;
+  *) readonly ROUTE_VISUAL_PIN_SCHEMA='cc-cmds-visual-pin v1' ;;
+esac
 case "${ROUTE_INVENTORY_SCHEMA:-}" in
   'cc-lane-accounts v1') ;;
   *) readonly ROUTE_INVENTORY_SCHEMA='cc-lane-accounts v1' ;;
@@ -3269,6 +3275,86 @@ route__halt_hold_drop_main() {
   return 0
 }
 
+route__visual_pin_dir() {
+  # route__visual_pin_dir <lease-table-dir> — 시각 고정 기록 디렉터리. 임대 표 디렉터리의
+  # 형제 `visual-pins` 다. 보호 기록 디렉터리처럼 경로를 따로 짓지 않는다.
+  printf '%s/visual-pins' "$(dirname "$1")"
+}
+
+route__visual_pin_put_main() {
+  # visual-pin-put --table <lease-table-dir> --run-id <r> --account <id> --run-dir <abs>
+  #                --pinned-at <epoch>
+  #
+  # 런의 시각 발행이 어느 계정에 고정됐는지를 임대 표 밖에 남긴다. cc-lane 의 차용 기증자
+  # 선택은 이 기록이 겨냥한 계정의 그룹을 순위 맨 뒤로 민다. 이 머리 주석이 시각 고정 기록
+  # 본문 규칙의 코드 쪽 권위이고, cc-lane 의 판독기
+  # `Sources/CCLaneKit/Inventory/VisualPinTable.swift` 의 머리 주석이 이 주석을 가리킨다.
+  #
+  # - 위치: 임대 표 디렉터리의 형제 `visual-pins/`. 없으면 만든다.
+  # - 이름: `<rt_enc(run_id)>.pin`. 런마다 하나이고 다시 쓰면 덮어쓴다. `run_id` 가
+  #   비었거나 `.` 으로 시작하면 rc 2 다 — 점 파일 이름이 되어 판독기가 읽지 않는다.
+  # - 본문: JSON 객체 하나, `jq -c` 의 출력 꼴에 줄바꿈 하나. 필드 순서는 `schema`(글자
+  #   그대로 `cc-cmds-visual-pin v1`), `run_id`, `account`(레인 id, 곧 인벤토리 계정 id),
+  #   `run_dir`(절대 경로), `pinned_at_epoch`(정수, 이 기록을 쓴 시각) 이다. 판독기는
+  #   `pinned_at_epoch` 를 형식 검사에만 쓰고 판정에는 쓰지 않는다.
+  # - 쓰기: 같은 디렉터리의 `.` 으로 시작하고 `.pin` 으로 끝나지 않는 임시 파일에 쓴 뒤
+  #   `mv` 로 바꾼다. 쓸 때마다 살지 않는 다른 기록을 지운다. 이미 없는 파일은 오류가 아니다.
+  # - 생존: `run_dir` 가 디렉터리로 있고 `run_dir/done` 이 없거나 비어 있을 때만 산다.
+  #   보호 기록과 같은 규칙이다.
+  #
+  # 값은 모두 인자로 받고 시각도 환경도 스스로 읽지 않는다. 그래서 아래 입력은 늘 아래
+  # 본문을 낸다(두 레포의 시험이 이 예시를 바이트까지 같게 쓴다).
+  #   --run-id 20261022-5ac0f2a9 --account u7
+  #   --run-dir /Users/example/.local/state/cc-cmds/run/20261022-5ac0f2a9 --pinned-at 1792682789
+  #   {"schema":"cc-cmds-visual-pin v1","run_id":"20261022-5ac0f2a9","account":"u7","run_dir":"/Users/example/.local/state/cc-cmds/run/20261022-5ac0f2a9","pinned_at_epoch":1792682789}
+  #
+  # rc 0 씀 / 2 인자 거부 / 4 디렉터리·쓰기 실패.
+  local t="" run="" acct="" rd="" at="" d name body tmp f frd
+  while [ $# -gt 0 ]; do
+    [ $# -ge 2 ] || return 2
+    case "$1" in
+      --table) t="$2" ;;
+      --run-id) run="$2" ;;
+      --account) acct="$2" ;;
+      --run-dir) rd="$2" ;;
+      --pinned-at) at="$2" ;;
+      *) return 2 ;;
+    esac
+    shift 2
+  done
+  if [ -z "$t" ] || [ -z "$acct" ]; then return 2; fi
+  case "$run" in
+    ''|.*) return 2 ;;
+  esac
+  case "$rd" in /*) ;; *) return 2 ;; esac
+  case "$at" in
+    ''|*[!0-9]*) return 2 ;;
+  esac
+  name=$(jq -rn --arg r "$run" "$(route__jq_lib)"' $r | rt_enc') || return 2
+  [ -n "$name" ] || return 2
+  body=$(jq -cn --arg schema "$ROUTE_VISUAL_PIN_SCHEMA" --arg run "$run" --arg acct "$acct" \
+         --arg rd "$rd" --argjson at "$at" \
+         '{schema: $schema, run_id: $run, account: $acct, run_dir: $rd, pinned_at_epoch: $at}' \
+         2>/dev/null) || return 2
+  d=$(route__visual_pin_dir "$t")
+  if [ ! -d "$d" ]; then
+    mkdir -p "$d" 2>/dev/null || [ -d "$d" ] || return 4
+  fi
+  tmp="$d/.$name.tmp.$$"
+  if ! printf '%s\n' "$body" > "$tmp" 2>/dev/null || ! mv -f "$tmp" "$d/$name.pin" 2>/dev/null; then
+    rm -f "$tmp" 2>/dev/null
+    return 4
+  fi
+  for f in "$d"/*.pin; do
+    [ -f "$f" ] || continue
+    [ "$f" != "$d/$name.pin" ] || continue
+    frd=$(jq -r '.run_dir // empty | strings' "$f" 2>/dev/null) || continue
+    case "$frd" in /*) ;; *) continue ;; esac
+    if [ ! -d "$frd" ] || [ -s "$frd/done" ]; then rm -f "$f" 2>/dev/null || :; fi
+  done
+  return 0
+}
+
 route__cost_put_main() {
   # cost-sample-put <costs-dir> --run-id <r> --lineage <l> --kind <k> --account <id> --log <file>
   # 스테이지 로그 한 파일을 요약해 저장소에 한 줄을 쓴다. 단독 프로세스라 저장소
@@ -3422,6 +3508,7 @@ route_lease_wait_put() { bash "$(route__dir)/route.sh" lease-wait-put "$@"; }
 route_lease_wait_drop() { bash "$(route__dir)/route.sh" lease-wait-drop "$@"; }
 route_halt_hold_put() { bash "$(route__dir)/route.sh" halt-hold-put "$@"; }
 route_halt_hold_drop() { bash "$(route__dir)/route.sh" halt-hold-drop "$@"; }
+route_visual_pin_put() { bash "$(route__dir)/route.sh" visual-pin-put "$@"; }
 route_cost_sample_put() { bash "$(route__dir)/route.sh" cost-sample-put "$@"; }
 
 # ---------------------------------------------------------------------------
@@ -3630,7 +3717,7 @@ route_resolve() {
 }
 
 route__usage() {
-  printf '%s\n' 'usage: route.sh <lineage|classify|admit|decide|inventory-check|usage-read|frames|lease-txn|lease-hold|lease-has-holder|lease-release|lease-release-run|lease-sweep-done|lease-of|lease-wait-put|lease-wait-drop|halt-hold-put|halt-hold-drop|borrow-read|phase-read|cost-sample-put|cost-table> [args]' >&2
+  printf '%s\n' 'usage: route.sh <lineage|classify|admit|decide|inventory-check|usage-read|frames|lease-txn|lease-hold|lease-has-holder|lease-release|lease-release-run|lease-sweep-done|lease-of|lease-wait-put|lease-wait-drop|halt-hold-put|halt-hold-drop|visual-pin-put|borrow-read|phase-read|cost-sample-put|cost-table> [args]' >&2
 }
 
 route__main() {
@@ -3658,6 +3745,7 @@ route__main() {
     lease-wait-drop) route__wait_drop_main "$@" ;;
     halt-hold-put) route__halt_hold_put_main "$@" ;;
     halt-hold-drop) route__halt_hold_drop_main "$@" ;;
+    visual-pin-put) route__visual_pin_put_main "$@" ;;
     borrow-read) route__borrow_read_main "$@" ;;
     phase-read) route__phase_read_main "$@" ;;
     cost-sample-put) route__cost_put_main "$@" ;;

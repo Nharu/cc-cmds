@@ -1935,6 +1935,66 @@ rc=0; bash "$TR_ROUTE" halt-hold-drop --table "$HH/pace/leases" --run-id rnone -
 check "없는 키의 halt-hold-drop 은 rc 0" "$rc" 0
 rc=0; bash "$TR_ROUTE" halt-hold-drop --table "$WORK/no-such/leases" --run-id rnone --key S9 || rc=$?
 check "보호 디렉터리가 없어도 halt-hold-drop 은 rc 0" "$rc" 0
+
+# 런의 시각 발행 고정 기록. 임대 표의 형제 `visual-pins/` 에 쓰고, 고정 예시 입력이면
+# 파일 전체가 그 예시 본문에 줄바꿈 하나를 더한 것과 바이트까지 같다. cc-lane 의 판독기
+# 시험이 같은 예시를 유효한 기록 하나로 읽는다.
+VP="$WORK/visual-pin"
+mkdir -p "$VP/pace/leases"
+vpput() {
+  # vpput <run_id> <run_dir> [추가 인자…]
+  local r="$1" rd="$2"
+  shift 2
+  bash "$TR_ROUTE" visual-pin-put --table "$VP/pace/leases" --run-id "$r" --account u7 \
+    --run-dir "$rd" --pinned-at 1792682789 "$@"
+}
+vpname() { local k; k=$(tr_key "$1" x); printf '%s.pin' "${k%+*}"; }
+vpcount() { local n=0 f; for f in "$VP/pace/visual-pins"/*.pin; do [ -e "$f" ] && n=$((n + 1)); done; printf '%s' "$n"; }
+check "시각 고정 디렉터리는 첫 쓰기 전에 없다" "$([ -e "$VP/pace/visual-pins" ] && printf 있음 || printf 없음)" "없음"
+rc=0; vpput 20261022-5ac0f2a9 /Users/example/.local/state/cc-cmds/run/20261022-5ac0f2a9 || rc=$?
+check "visual-pin-put 은 rc 0" "$rc" 0
+check "시각 고정 디렉터리는 임대 표의 형제로 생긴다" "$([ -d "$VP/pace/visual-pins" ] && printf 있음 || printf 없음)" "있음"
+check "시각 고정 기록 이름은 run_id 를 rt_enc 로 인코딩한다" "$(ls "$VP/pace/visual-pins")" "20261022-5ac0f2a9.pin"
+printf '%s\n' '{"schema":"cc-cmds-visual-pin v1","run_id":"20261022-5ac0f2a9","account":"u7","run_dir":"/Users/example/.local/state/cc-cmds/run/20261022-5ac0f2a9","pinned_at_epoch":1792682789}' > "$VP/expected.pin"
+check "고정 예시 입력의 파일 전체는 예시 본문과 줄바꿈 하나와 바이트까지 같다" \
+  "$(cmp -s "$VP/expected.pin" "$VP/pace/visual-pins/20261022-5ac0f2a9.pin" && printf 같음 || printf 다름)" "같음"
+check "시각 고정 디렉터리에 임시 파일이 남지 않는다" "$(ls -A "$VP/pace/visual-pins" | grep -c '^\.' || true)" "0"
+check "시각 고정 기록은 임대 표에 아무것도 넣지 않는다" "$(ls -A "$VP/pace/leases" | grep -c . || true)" "0"
+mkdir -p "$VP/run/live" "$VP/run/done1" "$VP/run/empty-done"
+printf 'ended\n' > "$VP/run/done1/done"
+: > "$VP/run/empty-done/done"
+vpput R1x "$VP/run/live"
+check "시각 고정 기록 이름의 대문자 run_id 는 인코딩된다" "$(vpname R1x)" "%521x.pin"
+check "다음 쓰기는 run_dir 가 없는 고정 예시 기록을 치운다" "$(ls "$VP/pace/visual-pins")" "$(vpname R1x)"
+vpput rdone "$VP/run/done1"
+check "쓰는 시각 고정 기록 자신은 끝난 런이어도 그 쓰기에서 치우지 않는다" "$(vpcount)" "2"
+vpput rempty "$VP/run/empty-done"
+vpput rgone "$VP/run/gone"
+check "쓰기마다 다른 시각 고정 기록 가운데 끝난 런의 기록을 치운다" "$(ls "$VP/pace/visual-pins" | LC_ALL=C sort | tr '\n' ' ')" \
+  "$(printf '%s\n' "$(vpname rempty)" "$(vpname rgone)" "$(vpname R1x)" | LC_ALL=C sort | tr '\n' ' ')"
+vpput R1x "$VP/run/live" --account u9
+expect "같은 런의 다시 쓰기는 덮어쓴다" "$(cat "$VP/pace/visual-pins/$(vpname R1x)")" '.account == "u9" and .run_id == "R1x"'
+check "시각 고정 쓰기는 끝난 런과 run_dir 가 없는 기록을 치운다" "$(ls "$VP/pace/visual-pins" | LC_ALL=C sort | tr '\n' ' ')" \
+  "$(printf '%s\n' "$(vpname rempty)" "$(vpname R1x)" | LC_ALL=C sort | tr '\n' ' ')"
+check "done 이 비어 있는 런과 끝나지 않은 런의 시각 고정 기록은 남는다" "$(vpcount)" "2"
+for vp_bad in "--run-dir relative/run" "--pinned-at 12x" "--pinned-at ''" "--account ''" "--bogus x" "--account"; do
+  rc=0; eval "vpput rbad \"$VP/run/live\" $vp_bad" >/dev/null 2>&1 || rc=$?
+  check "visual-pin-put 은 잘못된 인자($vp_bad)를 rc 2 로 거부한다" "$rc" 2
+done
+check "거부된 시각 고정 쓰기는 기록을 남기지 않는다" "$([ -e "$VP/pace/visual-pins/$(vpname rbad)" ] && printf 있음 || printf 없음)" "없음"
+for vp_run in "" ".hidden"; do
+  rc=0; vpput "$vp_run" "$VP/run/live" >/dev/null 2>&1 || rc=$?
+  check "visual-pin-put 은 run_id '$vp_run' 을 rc 2 로 거부한다" "$rc" 2
+done
+check "run_id 거부는 기록을 남기지 않는다" "$(vpcount)" "2"
+rc=0; bash "$TR_ROUTE" visual-pin-put --run-id rnotable --account u7 --run-dir "$VP/run/live" --pinned-at 1 || rc=$?
+check "visual-pin-put 은 --table 없이 rc 2" "$rc" 2
+mkdir -p "$VP/ro/pace/leases"
+chmod 555 "$VP/ro/pace"
+rc=0; bash "$TR_ROUTE" visual-pin-put --table "$VP/ro/pace/leases" --run-id rro --account u7 --run-dir "$VP/run/live" --pinned-at 1 || rc=$?
+chmod 755 "$VP/ro/pace"
+check "시각 고정 디렉터리를 만들 수 없으면 rc 4" "$rc" 4
+check "사용법 줄은 visual-pin-put 을 싣는다" "$(bash "$TR_ROUTE" 2>&1 | grep -c 'halt-hold-drop|visual-pin-put|' || true)" "1"
 d=$(tnew reassign)
 live_lease "$d" r1 S1 a
 out=$(txn "$d" 'USE([UA("a"; 0.1; 0.1), UA("b"; 0.2; 0.2)]) | REQ({event: "limit-reclaim"})')
