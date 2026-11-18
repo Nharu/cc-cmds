@@ -1,6 +1,6 @@
 ### Stopping one segment for a person
 
-**A stop that belongs to one segment does not end the shift.** At each site the table below names, the segment needs a person and its siblings do not: instead of ending the shift with a `사유=중단` handoff, stop that one segment with a halt record the gate writes, and go on routing the others.
+**A stop that belongs to one segment does not end the shift.** At each site the table below names, the segment needs a person and its siblings do not: instead of ending the shift with a `사유=중단` handoff, stop that one segment with a halt record the gate writes, and go on routing the others. A stage that stopped on its own record with options for a person is already held the same way, through `awaiting_halts[]` rather than `shift_halts[]`: write no shift stop for it (「Holding a key whose stage halt waits for a person」).
 
 ```
 gate.sh act --manifest <매니페스트> --kind shift-halt --target <alias> --segment <id> \

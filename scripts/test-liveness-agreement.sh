@@ -1206,6 +1206,48 @@ le_sh=$(cc__launch_evidence_rows < "$FX_LEDGER" | tr -d '\n')
 check "기동 증거 — 포트의 행별 판정이 셸과 같다" "$(port launch-evidence-rows < "$FX_LEDGER" | tr -d '\n')" "$le_sh"
 check "기동 증거 — A#7·S4:A:0#2·S5#2 세 행만 증거다" "$(printf '%s' "$le_sh" | tr -cd 1 | wc -c | tr -d ' ')" "3"
 
+# A RECORD THAT PUTS OPTIONS BEFORE A PERSON IS NOT PASSED BY THE NEXT ATTEMPT.
+# A visual step stopped on a record with two options and was dispatched again:
+# the second attempt's launch evidence leaves that record waiting, in the shell
+# and in the port alike. A refutation stop's options are answered from the
+# design document, so the same evidence still passes it.
+id_mkrun 20261012-00000016 90000
+mkdir -p "$FX_RUN_DIR/halt"
+{ printf '<!-- cc-pipeline-halt v1; writer=visual-unattended; reader=orchestrator; stage=S2V#1; run=x -->\n'
+  printf '**스텝**: Step 2 화면 재사용 — 픽스처\n**선택지**:\n'
+  printf '%s\n' '- `재사용으로 진행` — 이전 화면을 그대로 쓴다' '- `다시 생성` — 화면을 새로 만든다'
+  printf '<!-- /cc-pipeline-halt v1 -->\n'; } > "$FX_RUN_DIR/halt/S2V#1.md"
+{ printf '<!-- cc-pipeline-halt v1; writer=implement-unattended; reader=orchestrator; stage=S2#1; run=x -->\n'
+  printf '**스텝**: Step 3 구현 결함 반증 — 픽스처\n**선택지**:\n'
+  printf '%s\n' '- `구현 수정` — 같은 런의 교대가 이 기록을 수정 대상으로 구현을 다시 파견한다'
+  printf '<!-- /cc-pipeline-halt v1 -->\n'; } > "$FX_RUN_DIR/halt/S2#1.md"
+fx_row 'stage-result' "스테이지=S2V" "실행 버전=2" "세션 id=sess-v2" "종단 부류=정상 완료"
+fx_row 'stage-result' "스테이지=S2" "실행 버전=2" "세션 id=sess-s2" "종단 부류=정상 완료"
+ua_case "사람 선택지 기록 — 뒤 시도의 기동 증거가 있어도 선택지 기록은 남고 반증 기록은 빠진다" 1
+check "사람 선택지 기록 — 자동 처리된 기록 목록에 반증 기록만 있다" \
+  "$(cc_auto_handled_halts "$FX_RUN_DIR" "$FX_LEDGER" | cut -f1 | tr '\n' '|')" "S2#1|"
+
+# A RECORD `halt-answer` WOULD REFUSE IS NOT HELD. An option record left without
+# its closing fence or its opening header by an attempt that exited non-zero is
+# never moved aside as malformed, and the gate's `중단 답` refuses it, so no
+# answer could release a key held on it. The next attempt passes it, in the
+# shell and in the port alike, and the complete option record above still waits.
+{ printf '<!-- cc-pipeline-halt v1; writer=visual-unattended; reader=orchestrator; stage=S3V#1; run=x -->\n'
+  printf '**스텝**: Step 2 화면 재사용 — 펜스 없음\n**선택지**:\n'
+  printf '%s\n' '- `재사용으로 진행` — 이전 화면을 그대로 쓴다' '- `다시 생성` — 화면을 새로 만든다'
+} > "$FX_RUN_DIR/halt/S3V#1.md"
+{ printf '**스텝**: Step 2 화면 재사용 — 머리줄 없음\n**선택지**:\n'
+  printf '%s\n' '- `재사용으로 진행` — 이전 화면을 그대로 쓴다' '- `다시 생성` — 화면을 새로 만든다'
+  printf '<!-- /cc-pipeline-halt v1 -->\n'; } > "$FX_RUN_DIR/halt/S4V#1.md"
+fx_row 'stage-result' "스테이지=S3V" "실행 버전=2" "세션 id=sess-v3" "종단 부류=정상 완료"
+fx_row 'stage-result' "스테이지=S4V" "실행 버전=2" "세션 id=sess-v4" "종단 부류=정상 완료"
+check "불완전한 선택지 기록 — 셸은 펜스나 머리줄이 없는 기록을 사람 대기로 묶지 않는다" \
+  "$(cc_halt_person_held "$FX_RUN_DIR/halt/S3V#1.md" && printf 묶음 || printf 안묶음)/$(cc_halt_person_held "$FX_RUN_DIR/halt/S4V#1.md" && printf 묶음 || printf 안묶음)/$(cc_halt_person_held "$FX_RUN_DIR/halt/S2V#1.md" && printf 묶음 || printf 안묶음)" \
+  "안묶음/안묶음/묶음"
+ua_case "불완전한 선택지 기록 — 뒤 시도의 기동 증거로 빠지고 완결된 선택지 기록만 남는다" 1
+check "불완전한 선택지 기록 — 자동 처리된 기록 목록에 두 불완전 기록과 반증 기록이 있다" \
+  "$(cc_auto_handled_halts "$FX_RUN_DIR" "$FX_LEDGER" | cut -f1 | LC_ALL=C sort | tr '\n' '|')" "S2#1|S3V#1|S4V#1|"
+
 id_mkrun 20261012-0000000c 90000
 fx_approval A1 대기
 check "유휴 C — 대기 중인 승인이 있으면 유휴가 아니다" "$(idle_of "$FX_RUN_DIR" "$FX_LEDGER")" "유휴 아님"

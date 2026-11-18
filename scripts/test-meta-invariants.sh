@@ -1634,6 +1634,41 @@ check "리드 사본의 키 표가 implement_next[] 행을 싣는다" \
   "$(grep -c -- '^| `implement_next\[\]` |' "$AP_ROUTER" || true)" "1"
 check "리드 사본의 키 표가 refutation_next[] 행을 싣는다" \
   "$(grep -c -- '^| `refutation_next\[\]` |' "$AP_ROUTER" || true)" "1"
+
+# 리뷰가 `정상 완료` 로 끝난 뒤의 라우팅 절. 두 사본이 같은 바이트이고, 대기 신호와
+# 그 뒤의 세 갈래를 싣는다. 대기 판정의 `리뷰 HEAD` 줄 정규식은 게이트 변수와 라우터의
+# 크래시 복구 탐침이 같은 바이트다 — 한쪽만 바뀌면 복구 리포트를 두고 두 판정이 갈린다.
+cd_head='#### Routing a segment after its review ends `정상 완료`'
+cd_sec_ap=""; cd_sec_rs=""
+for pair in "리드:$AP_ROUTER" "교대:$RS_CORPUS"; do
+  who=${pair%%:*}; file=${pair#*:}
+  check "$who 사본에 리뷰 뒤 사이클 기록 절 표제가 한 줄 있다" \
+    "$(grep -cxF -- "$cd_head" "$file" || true)" "1"
+  sec=$(router_section "$file" "$cd_head")
+  for lit in \
+    '`cycle_due[]`' \
+    '**A segment with a `cycle_due[]` element is handled through it first.**' \
+    'exactly one line-anchored `리뷰 HEAD` line' \
+    '`다음=게시`' \
+    '`리뷰 기록 거절`'
+  do
+    nlit=$(printf '%s\n' "$sec" | grep -cF -- "$lit" || true)
+    if [ "${nlit:-0}" != "0" ]; then
+      ok "$who 사본의 리뷰 뒤 사이클 기록 절이 「${lit}」을 싣는다"
+    else
+      bad "$who 사본의 리뷰 뒤 사이클 기록 절" "「${lit}」이 없다"
+    fi
+  done
+  if [ -z "$cd_sec_ap" ]; then cd_sec_ap="$sec"; else cd_sec_rs="$sec"; fi
+done
+check "두 사본의 리뷰 뒤 사이클 기록 절이 바이트 동일하다" "$cd_sec_rs" "$cd_sec_ap"
+check "리드 사본의 키 표가 cycle_due[] 행을 싣는다" \
+  "$(grep -c -- '^| `cycle_due\[\]` |' "$AP_ROUTER" || true)" "1"
+cd_ere=$(sed -n "s/^GATE_REVIEW_HEAD_LINE_ERE='\(.*\)'\$/\1/p" "$repo_root/plugins/cc-cmds/orchestrator/gate.sh")
+check "게이트의 리뷰 HEAD 줄 정규식이 한 번 정의된다" "$(printf '%s\n' "$cd_ere" | grep -c . || true)" "1"
+check "라우터의 크래시 복구 탐침이 게이트의 리뷰 HEAD 줄 정규식과 같은 바이트다" \
+  "$(grep -cF -- "'$cd_ere'" "$repo_root/plugins/cc-cmds/skills/autopilot-router-shift/references/review-crash.md" || true)" "1"
+unset cd_head cd_sec_ap cd_sec_rs cd_ere
 ha_sec=$(router_section "$RS_CORPUS" "#### Handing on a person's answer to a halt")
 for lit in \
   '| `빈-대상` | 7 |' \
