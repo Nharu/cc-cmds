@@ -70395,7 +70395,7 @@ unset S106_SK s106_rt s106_rr s106_f s106_sc s106_got s106_k
 
 # ---------------------------------------------------------------------------
 # 108c. 정상 완료한 리뷰는 cycle 행이 서기 전에 다시 파견되지 않는다
-# --- section: 108c | group: sa | covers: snapshot, act, plan, review-line, cycle, review_next, gate_review_cycle_due_of, gate_review_cycle_refusal_fact, gate_review_report_path, autopilot-router-shift | anchors: 108c: 리뷰어 런의 정상 완료 리뷰는 cycle_due 에 리포트 경로로 선다, 108c: 리뷰어 런의 대기 중 계기 파견과 복구 파견은 rc 3 이고 행이 없다, 108c: 리뷰어 런의 원소 경로 cycle 행 뒤 cycle_due 는 비고 다음 은 게시다, 108c: 일반 런의 정상 완료 리뷰는 cycle_due 에 선다, 108c: 일반 런의 대기 중 계기 파견과 복구 파견은 rc 3 이고 행이 없다, 108c: 일반 런의 원소 경로 cycle 행 뒤 cycle_due 는 빈다, 108c: 대기 중 다른 슬라이스 거절은 리뷰 기록 거절 행을 남기고 대기를 푼다, 108c: 거절 뒤 리뷰 줄은 cycle1-r2 를 낸다, 108c: 거절 뒤 cycle1 경로 파견은 rc 2 이고 cycle1-r2 파견은 통과한다, 108c: 마지막 파견이 아닌 리포트의 cycle 행은 rc 2 다, 108c: 크래시로 끝난 리뷰는 대기가 아니고 복구 파견이 통과한다, 108c: 리뷰 HEAD 줄 없는 복구 리포트는 대기가 아니고 계기 재파견이 cycle1-r2 로 통과한다, 108c: 같은 복구 리포트에 리뷰 HEAD 줄이 한 줄이면 같은 재파견이 rc 3 이다 ---
+# --- section: 108c | group: sa | covers: snapshot, act, plan, review-line, cycle, review_next, gate_review_cycle_due_of, gate_review_cycle_refusal_fact, gate_review_report_path, autopilot-router-shift | anchors: 108c: 리뷰어 런의 정상 완료 리뷰는 cycle_due 에 리포트 경로로 선다, 108c: 리뷰어 런의 대기 중 계기 파견과 복구 파견은 rc 3 이고 행이 없다, 108c: 리뷰어 런의 원소 경로 cycle 행 뒤 cycle_due 는 비고 다음 은 게시다, 108c: 일반 런의 정상 완료 리뷰는 cycle_due 에 선다, 108c: 일반 런의 대기 중 계기 파견과 복구 파견은 rc 3 이고 행이 없다, 108c: 일반 런의 원소 경로 cycle 행 뒤 cycle_due 는 빈다, 108c: 대기 중 다른 슬라이스 거절은 리뷰 기록 거절 행을 남기고 대기를 푼다, 108c: 거절 뒤 리뷰 줄은 cycle1-r2 를 낸다, 108c: 거절 뒤 cycle1 경로 파견은 rc 2 이고 cycle1-r2 파견은 통과한다, 108c: 마지막 파견이 아닌 리포트의 cycle 행은 rc 2 다, 108c: 크래시로 끝난 리뷰는 대기가 아니고 복구 파견이 통과한다, 108c: 리뷰 HEAD 줄 없는 복구 리포트는 대기가 아니고 계기 재파견이 cycle1-r2 로 통과한다, 108c: 같은 복구 리포트에 리뷰 HEAD 줄이 한 줄이면 같은 재파견이 rc 3 이다, 108c: 대기 중 몫 건수 불일치 거절은 리뷰 기록 거절 행을 남기고 대기를 푼다 ---
 #
 # 리뷰 스테이지가 `정상 완료` 로 끝났는데 그 결과의 cycle 행이 없는 세그먼트를 스냅숏의
 # `cycle_due[]` 가 내고, 그동안 그 세그먼트의 리뷰 파견은 계기·복구 어느 쪽이든 rc 3 으로
@@ -70506,7 +70506,7 @@ check "108c: 리뷰어 런의 원소 경로 cycle 행 뒤 cycle_due 는 비고 �
 # 일반 런 — 구현 세그먼트 C1·C2·C3·C4 -----------------------------------------------------
 sa_new "사이클 기록 대기 — 일반 런"
 cd108_h=$(sa_commit 작업)
-for cd108_s in C1 C2 C3 C4; do sa_seg_row "$cd108_s" ""; done
+for cd108_s in C1 C2 C3 C4 C5; do sa_seg_row "$cd108_s" ""; done
 check "108c: (전제) 일반 런의 세그먼트 행이 기록된다" "$rc" "0"
 
 # C1 — 같은 순서, 같은 신호와 거부
@@ -70592,6 +70592,32 @@ check "108c: 같은 복구 리포트에 리뷰 HEAD 줄이 한 줄이면 같은 
   "$(cd108_due | cut -d'|' -f1)|$rc|$(cd108_nauto)" "C4|3|$cd108_n0"
 cd108_rep "$cd108_p" "$cd108_h" 2
 check "108c: 리뷰 HEAD 줄이 둘인 리포트는 대기를 세우지 않는다" "$(cd108_due)" ""
+
+# C5 — 대기 중 cycle 행이 몫 줄과 몫 항목 수의 불일치로 거절되면 거절 행이 대기를 풀고
+# 거절 문면이 --slice 없는 재파견을 안내한다. 항목의 배정은 아직 착지하지 않은 C1 이라
+# 뒤따르는 배정 검사에는 걸리지 않는다 — 이 거절은 건수 검사의 것이다.
+cd108_p=$(cd108_cp C5)
+cd108_disp C5 "$cd108_p" '첫 리뷰'
+{
+  printf '# 코드 리뷰 리포트\n\n- **리뷰 HEAD**: `%s`\n' "$cd108_h"
+  printf -- '- **발견 요약**: 🔴 P0 0건 | 🟠 P1 0건 | 🟡 P2 0건 | 🟢 P3 0건\n'
+  printf -- '- **다른 슬라이스 몫**: 2건 (집계 제외)\n'
+  printf '\n## 다른 슬라이스 몫 (집계 제외)\n\n- **[c]** **[P1]** `x.sh:1` d — r\n    - **배정**: 슬라이스 C1 — 「줄」\n'
+} > "$cd108_p"
+cd108_sr C5 '정상 완료' 5
+cd108_cycle C5 "$cd108_h" "$cd108_p"; cd108_r1=$rc; cd108_m1=$msg
+cd108_rr=$( { grep '^- `리뷰 기록 거절` ' "$SA_LEDGER" || true; } | tail -1)
+check "108c: 대기 중 몫 건수 불일치 거절은 리뷰 기록 거절 행을 남기고 대기를 푼다" \
+  "$cd108_r1|$(sa_field "$cd108_rr" 세그먼트)|$(sa_field "$cd108_rr" 부류)|$(sa_field "$cd108_rr" '실행 버전')|$(cd108_due)" \
+  "2|C5|다른 슬라이스|5|"
+case "$cd108_m1" in
+  *"1 item(s)"*"reads '2'"*"without --slice"*) ok "108c: 몫 건수 불일치 거절은 --slice 없는 재파견을 안내한다" ;;
+  *) bad "108c 몫 건수 불일치 거절 문면" "$cd108_m1" ;;
+esac
+cd108_l=$(cd108_rl C5)
+cd108_plan C5 "$cd108_l" '첫 리뷰'
+check "108c: 몫 건수 불일치 거절 뒤 재파견은 cycle1-r2 로 통과한다" \
+  "$(cd108_base "$(cd108_rpath "$cd108_l")")|$rc" "seg-$SA_ID-C5-cycle1-r2.md|0"
 unset -f cd108_rep cd108_sr cd108_disp cd108_cp cd108_due cd108_next cd108_nauto cd108_act cd108_plan cd108_cycle cd108_rl cd108_rpath cd108_base
 unset cd108_w cd108_h cd108_l cd108_p cd108_p2 cd108_n0 cd108_r1 cd108_r2 cd108_m1 cd108_rr cd108_s cd108_v
 

@@ -42962,8 +42962,8 @@ gate_record_row() {
       # still says 델타. The only repair left is a review the gate accepts.
       delta_repair=" — if a row rewritten to match the review-mode line of the report and the cycle numbers of this segment still meets the same check, the row cannot repair it: re-dispatch the review of this segment as a full review without the three basis flags, and write no cycle row until there is a report the gate accepts"
       resolve_repair=" — the row cannot repair it: re-dispatch the review of this segment as a full review without the three resolution flags, and write no cycle row until there is a report the gate accepts"
-      # Every refusal that carries one of the two tails above, and the two that
-      # ask for a review without `--slice`, leaves a `리뷰 기록 거절` row first
+      # Every refusal that carries one of the two tails above, and the three
+      # that ask for a review without `--slice`, leaves a `리뷰 기록 거절` row first
       # while the segment waits on this record (`gate_review_cycle_refusal_fact`),
       # so the review they ask for is not refused for the missing record.
       #
@@ -43312,8 +43312,13 @@ EOF
             fi
           done
         fi
+        # The mismatch sits inside the report, so no rewritten row clears it:
+        # the way out is the review without `--slice`, which writes no
+        # other-slice section, and the refusal fact ends a wait that would
+        # otherwise refuse that very dispatch.
         if [ "$(gate_report_count "$rcounts" '몫 항목')" != "$(gate_report_count "$rcounts" '몫')" ]; then
-          warn "the other-slice section of the report has $(gate_report_count "$rcounts" '몫 항목') item(s) but its \`다른 슬라이스 몫\` line reads '$(gate_report_count "$rcounts" '몫')' — the count the review dropped is not the count it lists: $rep"
+          warn "the other-slice section of the report has $(gate_report_count "$rcounts" '몫 항목') item(s) but its \`다른 슬라이스 몫\` line reads '$(gate_report_count "$rcounts" '몫')' — the count the review dropped is not the count it lists. Dispatch the review of $seg again without --slice: $rep"
+          gate_review_cycle_refusal_fact "$seg" '다른 슬라이스' "$crf_rep"
           return "$GATE_EXIT_VOCAB"
         fi
         # EVERY ITEM IS CHECKED, NOT EVERY ASSIGNMENT THE PARSER CAUGHT. An item
