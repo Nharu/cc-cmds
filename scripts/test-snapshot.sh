@@ -3007,26 +3007,48 @@ check "교대 계약: 정산의 0·3·4 밖 exit 은 3 처럼 운반한다" \
 check "design-reconverge: 기계 정산 줄은 기록을 가진 두 범위에서만 쓴다" \
   "$(has "$RC_SKILL" "- the scope is \`감사 종합 요구 <record>\` or \`구속 티어 이탈 <record>\`. Never for an \`R<n>\` scope")" 예
 # 재수렴의 문서 쓰기는 게이트가 런로컬로 증명하는 이름공간의 사본 하나와 잠금 아래 게시 한 번이다.
-# 사본 자리·신고를 정하지 않으면 스테이지가 임의의 이름을 기기전역으로 신고해 사전 인가 판단에서
-# 멈추므로, 그 자리와 신고를 싣는 것은 이 문장들뿐이다.
-check "design-reconverge: 사본 디렉터리는 cc-proto 이름공간의 mktemp -d 하나다" \
-  "$(has "$RC_SKILL" "the copy lives in the one directory \`mktemp -d \"\${TMPDIR:-/tmp}/cc-proto-<run id>-<stage id>.XXXXXX\"\` makes")" 예
+# 사본은 doc-tidy.py checkout 이 그 이름공간에 만들고 publish 가 잠금 안에서 해시를 다시 재어
+# 덮어 쓴다. 자리·신고를 정하지 않으면 스테이지가 임의의 이름을 기기전역으로 신고해 사전 인가
+# 판단에서 멈추므로, 그 자리와 신고를 싣는 것은 이 문장들뿐이다.
+check "design-reconverge: 사본 디렉터리는 checkout 이 작업 사본 접두 아래에 만드는 하나다" \
+  "$(has "$RC_SKILL" "The copy lives in the one directory the helper's \`checkout\` makes under the working-copy prefix: the \`working-copy prefix=\` line of the last \`[cc-stage-values]\` block, else \`\${TMPDIR:-/tmp}/cc-proto-<run id>-<stage id>.\`")" 예
 check "design-reconverge: stage id 는 CC_PIPELINE_STAGE_ID 의 # 를 - 로 바꾼 것이다" \
-  "$(has "$RC_SKILL" "\`<stage id>\` is \`CC_PIPELINE_STAGE_ID\` with \`#\` as \`-\` (\`A#7\` → \`A-7\`), the form the gate proves run-local")" 예
-check "design-reconverge: 네 행위는 트리밖쓰기·런로컬로, rm -r 은 파괴로 신고한다" \
-  "$(has "$RC_SKILL" "The \`mktemp\`, both \`cp\`s (taking the copy and the publish) and the \`rm -r\` are declared \`--surface 트리밖쓰기 --reach 런로컬\`, and the \`rm -r\` adds \`--destructive\`.")" 예
+  "$(has "$RC_SKILL" "\`<stage id>\` \`CC_PIPELINE_STAGE_ID\` with \`#\` as \`-\` (\`A#7\` → \`A-7\`) — the form the gate proves run-local")" 예
+check "design-reconverge: 헬퍼 호출과 rm -r 은 트리밖쓰기·런로컬로, 정리하는 둘은 파괴로 신고한다" \
+  "$(has "$RC_SKILL" "Every helper call and the \`rm -r\` are declared \`--surface 트리밖쓰기 --reach 런로컬\`, and \`publish --cleanup\` and the \`rm -r\` add \`--destructive\`.")" 예
 check "design-reconverge: 기기전역·미상 신고를 금한다" \
   "$(has "$RC_SKILL" "Never declare them \`기기전역\` or \`미상\`: the first parks on the pre-authorization judgment, the second parks as \`도달미상\` because the document path lies outside the namespace.")" 예
-check "design-reconverge: 게시는 문서 잠금으로 감싼 cp 다" \
-  "$(has "$RC_SKILL" "5. Publish with \`/usr/bin/lockf -k -t 0 \"\${RUN_DIR}/designdoc.lock\" cp <dir>/doc.md <document>\` (absolute path; \`-k\` and \`-t 0\` both required), and record \`shasum -a 256 <document>\` as \`사후 sha256\`.")" 예
-check "design-reconverge: 게시 뒤 사본 디렉터리를 지운다" \
-  "$(has "$RC_SKILL" "6. \`rm -r <dir>\`, then go on to Step 4's verdict and the carrier close.")" 예
+check "design-reconverge: 사본은 checkout 이 기대 해시를 재고 pre.md 와 함께 뜬다" \
+  "$(has "$RC_SKILL" "1. \`<plugin root>/orchestrator/doc-tidy.py checkout <document> --prefix <prefix> --expect <hash> --pre\`")" 예
+check "design-reconverge: 게시는 잠금 안에서 해시를 다시 재는 publish --cleanup 이다" \
+  "$(has "$RC_SKILL" "4. Publish with \`<plugin root>/orchestrator/doc-tidy.py publish <dir>/doc.md <document> --expect <1's sha256> --lock \"\${RUN_DIR}/designdoc.lock\" --cleanup\`, and record its \`post_sha256=\` as \`사후 sha256\`.")" 예
+check "design-reconverge: 게시 뒤 정리만 실패하면 rm -r 로 지운다" \
+  "$(has "$RC_SKILL" "A \`cleanup_failed=<dir>\` line means the publish stands and only the directory is left: \`rm -r <dir>\`.")" 예
 check "design-reconverge: 정지 전에 사본 디렉터리를 먼저 지운다" \
-  "$(has "$RC_SKILL" "7. A halt at 2, 4 or 5 removes the directory first and lists 4's edits in the record's \`관측 상세\`.")" 예
+  "$(has "$RC_SKILL" "5. A halt at 3 or 4 removes the directory first with \`rm -r <dir>\` and lists 3's edits in the record's \`관측 상세\`.")" 예
 check "design-reconverge: 압축 뒤 접두사로 찾아 지우고 1 부터 다시 한다" \
-  "$(has "$RC_SKILL" "A compaction between 1 and 5 drops the copy: find it by the prefix \`cc-proto-<run id>-<stage id>.\`, remove it as in 6, and restart at 1.")" 예
+  "$(has "$RC_SKILL" "A compaction between 1 and 4 drops the copy: find it by the prefix, \`rm -r\` it, and restart at 1.")" 예
 check "design-reconverge: 문서 옆·런 디렉터리·sh -c 사본과 mv 게시를 금한다" \
-  "$(has "$RC_SKILL" "Never put the copy beside the document (a hidden file in the same directory included) or under the run directory, never copy inside \`sh -c\` or \`bash -c\`, never publish with \`mv\`, and never use a temporary name outside the namespace above: the publish is a \`cp\`.")" 예
+  "$(has "$RC_SKILL" "Never put the copy beside the document (a hidden file in the same directory included) or under the run directory, never copy inside \`sh -c\` or \`bash -c\`, never publish with \`mv\`, and never use a temporary name outside the namespace above: the publish is the helper's overwrite in place.")" 예
+# 감사·재수렴의 사본 절차는 헬퍼 하위 명령으로 줄었다 — mktemp 와 cp 로 뜨고 lockf 로 감싼 cp 로
+# 게시하던 옛 처방이 어느 쪽에 남으면 리드는 두 절차 가운데 아무거나 고른다.
+for f in "$RC_SKILL" "$AU_SKILL"; do
+  n=$(basename "$(dirname "$f")")
+  check "$n: 사본 절차에 cp 사본 뜨기와 lockf 로 감싼 cp 게시 처방이 없다" \
+    "$(has "$f" "cp <document> <dir>/doc.md")/$(has "$f" "lockf -k -t 0 \"\${RUN_DIR}/designdoc.lock\" cp")/$(has "$f" "mktemp -d \"\${TMPDIR:-/tmp}/cc-proto-<run id>-<stage id>.XXXXXX\"\`.")" "아니오/아니오/아니오"
+  check "$n: 사본 절차가 doc-tidy.py checkout 과 publish 를 부른다" \
+    "$(has "$f" "/orchestrator/doc-tidy.py checkout <document> --prefix <prefix> --expect")/$(has "$f" "/orchestrator/doc-tidy.py publish <dir>/doc.md <document> --expect <1's sha256> --lock \"\${RUN_DIR}/designdoc.lock\" --cleanup")" "예/예"
+done
+# 파이프라인 값은 세션 시작 훅의 [cc-stage-values] 블록에서 먼저 가져오고 printenv 는 블록이 없을
+# 때의 대체 원천일 뿐이다 — printenv 를 처방하는 무인 스킬이 그 블록을 말하지 않으면 리드는 값마다
+# 게이트 호출 하나를 계속 쓴다.
+for n in design-discuss-unattended design-solo-unattended design-reconverge design-audit-unattended implement-unattended review-unattended visual-unattended visual-publish-unattended; do
+  f="$repo_root/plugins/cc-cmds/skills/$n/SKILL.md"
+  check "$n: printenv 를 처방하면 [cc-stage-values] 블록을 먼저 읽게 한다" \
+    "$(has "$f" "printenv CC_PIPELINE")/$(has "$f" "the last \`[cc-stage-values]\` block")" "예/예"
+done
+check "design-reconverge: printenv 는 블록이 없거나 이름이 없을 때의 대체 원천이다" \
+  "$(has "$RC_SKILL" "- **Take pipeline variables from the last \`[cc-stage-values]\` block in the conversation; only with no block, or without the name in it, read them by name** — \`printenv CC_PIPELINE_RUN_ID\`, one name per call — and never bare \`env\` or bare \`printenv\`.")" 예
 check "design-reconverge: 임의 명령을 감싸는 옛 잠금 일반형이 남지 않는다" \
   "$(has "$RC_SKILL" "\"\${RUN_DIR}/designdoc.lock\" <command>")" 아니오
 check "스냅숏: blocked[] 접기는 act 범위 행을 싣지 않는다" \
