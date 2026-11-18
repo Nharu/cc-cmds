@@ -13351,6 +13351,14 @@ check "0 건 부류의 조각은 빠지고 1 분이 안 되면 0 분이다" "$(d
   dw_row stage-lease L1
 } > "$DW/none.md"
 check "센 행이 없으면 값이 비어 줄을 쓰지 않는다" "$(dw_sum "$DW/none.md")" ""
+# 이관 고정의 차용 대기 `pinned-borrowed` 는 계정 부류다.
+{
+  printf '# 원장\n\n## 실행 dw-run\n\n'
+  dw_row stage-wait L1 pinned-borrowed 2026-11-14T00:00:00Z
+  dw_row stage-wait L1 pinned-borrowed 2026-11-14T00:02:00Z
+  dw_row stage-lease L1
+} > "$DW/borrow.md"
+check "파견 대기는 pinned-borrowed 를 계정 부류로 센다" "$(dw_sum "$DW/borrow.md")" "계정 1건 2분 이상"
 
 # ---------------------------------------------------------------------------
 # 34. 남은 일 이어받기 — 이전 런이 착지시킨 슬라이스는 다시 하지 않는다
