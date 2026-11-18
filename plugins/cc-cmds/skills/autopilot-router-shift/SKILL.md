@@ -63,6 +63,8 @@ Then read, in this order: `unmet_condition_numbers` (what is keeping the run fro
 - **In `orphan_stages[]`** — its record outlived both its process and its supervisor. Do nothing to it directly: the prelude of the next gate call — any verb but `plan`, your next `snapshot` included — settles it with a `stage-result` row of `종단 부류=외부 종료`, and a dispatch after that takes the next attempt number on its own. Settled, it is a candidate for 「Re-attaching a cut stage」 before any fresh dispatch.
 - **In none of them, with no record** — it may be dispatched, under the three conditions in the dispatch section. A key whose last attempt ended with the supervisor's lease cause row (a `stage-wait` row of that attempt's lineage whose `근거` is `lease-hold-busy` or `lease-hold-lost`) counts as one with no record: dispatch the same step again. A successor of a shift that ended with `대기` meets such a key through the snapshot, not through `wait`, so this branch is where it is handled.
 
+**A key in `awaiting_halts[]` is in none of these branches: it waits for a person.** Its stage stopped on a record that offers a person options, no answer has reached it, and the gate refuses every skill dispatch on it — dispatch nothing there and route the other keys (「Holding a key whose stage halt waits for a person」).
+
 `segments_total` against `segments[]` and `obligations_total` against `obligations[]` are the same comparison twice: the arrays are capped and the totals are not, so a difference means the list lost its tail.
 
 ## Branch procedures read on entry
@@ -104,7 +106,7 @@ The read answers only when its output carries `게이트 통과`. Exit 4 means r
 snapshot  →  decide one act  →  gate call  →  read exit code  →  (repeat)
 ```
 
-**The decision IS the argv.** You do not write a plan document; you assemble one gate command line, and the gate's argument parser is the schema check. Every acting call carries `--snapshot-digest <H>` copied from the snapshot you just read — or from the last `[gate-digest] H=<H> actor=<actor>` stderr line of an acting call in the immediately preceding response's tool result, when that line's `actor` is yours and that response made exactly one `--emit-digest` call.
+**The decision IS the argv.** You do not write a plan document; you assemble one gate command line, and the gate's argument parser is the schema check. Every acting call carries `--snapshot-digest <H>` copied from the snapshot you just read — or from the last `[gate-digest] H=<H> actor=<actor>` stderr line among the gate calls the immediately preceding response made, when that line's `actor` is yours.
 
 **The loop does not stop to ask.** A stage just finished, a review came back with findings, the next step is large — none of those is a question. Where a decision is genuinely yours, the judgment grades decide it: grade 0 you take, grade 1 you take and record, grade 2 you escalate through the gate so the stop is a row rather than a silence.
 
@@ -452,7 +454,7 @@ gate.sh act --manifest <매니페스트> --kind skill --target <alias> --segment
 
 ### Stopping one segment for a person
 
-**A stop that belongs to one segment does not end the shift.** At each site the table below names, the segment needs a person and its siblings do not: instead of ending the shift with a `사유=중단` handoff, stop that one segment with a halt record the gate writes, and go on routing the others.
+**A stop that belongs to one segment does not end the shift.** At each site the table below names, the segment needs a person and its siblings do not: instead of ending the shift with a `사유=중단` handoff, stop that one segment with a halt record the gate writes, and go on routing the others. A stage that stopped on its own record with options for a person is already held the same way, through `awaiting_halts[]` rather than `shift_halts[]`: write no shift stop for it (「Holding a key whose stage halt waits for a person」).
 
 ```
 gate.sh act --manifest <매니페스트> --kind shift-halt --target <alias> --segment <id> \
@@ -492,6 +494,15 @@ gate.sh act --manifest <매니페스트> --kind shift-halt --target <alias> --se
 **When the gate cannot write the record** — exit 3 because `halt/shift` is not a real directory at its place, or because a file already sits at the name — write `act --kind blocked -- 스코프=cone 원인=막힘 '앵커 세그먼트=<id>' '사유=교대 정지 기록 불가 — <자리>' '근거=<게이트 문면>'` and go on: that row is in `shift_halts[]` with an empty `기록`, so it is held as above for the rest of the run, and the seat finds the stop in the ledger. Exit 2 is your argv (an unknown site, a missing `질문` or `관측`, a field the gate writes itself); fix it and call once more. Never pass `중단 기록`, `기록 다이제스트`, `자리` or `교대` on a `blocked` row — those are the gate's, and the row is refused with exit 2.
 
 **End the shift only when nothing is left.** After the act, read the snapshot again and route every other segment as usual. When no act remains to dispatch, end with `사유=중단` and put each record's absolute path in `막힌 지점`. The answer comes back as an `answered_halts[]` element and 「Handing on a person's answer to a halt」 item 6 carries it out.
+
+### Holding a key whose stage halt waits for a person
+
+**`awaiting_halts[]` lists the stage halt records a person has to answer.** Each element — `키`, `기록` (relative to the run directory) and `스텝` — is a complete record (its opening header and closing fence, as `중단 답` requires) directly under `halt/` that offers at least one option, has no `중단 답` row yet, and is not a refutation stop (`Step 1.5d`, `Step 3 구현 중 반증`, `Step 3 구현 결함 반증`), whose route the design document carries. A later attempt's evidence never settles such a record: it stays unanswered until a person answers it.
+
+1. **Dispatch no skill on an element's `키`** — not the same step again, not a fresh attempt, not another stage kind on that key. The gate refuses that dispatch with exit 3, writes no row and names the record; on that refusal do not issue the same act again.
+2. **Route every other key as usual.** The held key holds nothing else by itself.
+3. **When the held keys are all that is left**, end the shift with `사유=중단` and put each element's absolute record path (`$CC_PIPELINE_RUN_DIR/<기록>`) in `막힌 지점`. The gate adds the same paths to the `handoff` row as `답 대기 기록` on its own.
+4. **The answer releases the key.** Once a `중단 답` row names the record, the element leaves `awaiting_halts[]`, the answer appears in `answered_halts[]`, and 「Handing on a person's answer to a halt」 carries it out — a re-dispatch carries the answer with it.
 
 ### Settling the termination clauses and proposing done
 
@@ -580,7 +591,7 @@ gate.sh act --manifest <매니페스트> --kind handoff --target <alias> \
 
 **`이월` is written only when the next run is all that is left.** The gate takes `사유=이월` when no stage or supervisor is live, no halt record is unanswered, at least one `answered_halts[]` element reads `state` `이월`, the run has no ending row, and `CI 대기` and `리셋 대기` are both empty; otherwise it refuses with exit 3 and no row — a live stage or a CI wait is `대기`, an unanswered record is `중단`, an ended run is `종단`. Before the deadline the gate holds the wait until one second past it and launches your successor, whose first act ends the run with `마감`. **Past the deadline it takes `이월` only when nothing but those answers holds the run, and ends the run with `마감` in the same act**; otherwise it refuses with exit 3 and no row, because something else still holds the run — hand off with the reason that names it: `대기` for a live stage or supervisor or a CI wait, `중단` for anything else, and the gate does not refuse that `중단`. And the gate refuses `중단` when those answers are all that holds the run — the same judgment the ending past the deadline reads — or when `막힌 지점` names one of their records: the person already answered them.
 
-**On `중단`, `막힌 지점` carries what you measured, not an instruction to wait** — the line numbers, the lane, the `resetsAt` that has not passed. Your successor re-measures it either way, and a measurement tells it what to look at. `무기록` is never yours to write: it is the value the gate gives the row it writes for a shift that ended without one.
+**On `중단`, `막힌 지점` carries what you measured, not an instruction to wait** — the line numbers, the lane, the `resetsAt` that has not passed, and the absolute path of every `awaiting_halts[]` record. A key held there is never a reason for `대기` or `이월`: no stage moves it, only a person's answer. Your successor re-measures it either way, and a measurement tells it what to look at. `무기록` is never yours to write: it is the value the gate gives the row it writes for a shift that ended without one.
 
 **A live stage holds back none of the other four.** Its supervisor is detached from your session, so ending on `상한`, `승인`, `종단` or `중단` while it runs costs the stage nothing: your successor finds it in `live_stages[]` or in the ledger. `대기` is the exception by design — it is the ending that exists for a live stage, and the gate holds the successor until that stage moves.
 
