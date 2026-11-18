@@ -2933,7 +2933,9 @@ halt_option_lines() {
 
 cc_halt_person_held() {
   # cc_halt_person_held <record file> — succeeds when the record puts options
-  # before a person: the file exists, `halt_option_lines` prints at least one
+  # before a person: the file exists, its first line opens with the
+  # `<!-- cc-pipeline-halt v1;` header, one line of it is the closing fence
+  # `<!-- /cc-pipeline-halt v1 -->`, `halt_option_lines` prints at least one
   # line for it, and its `**스텝**` does not begin with `Step 1.5d`,
   # `Step 3 구현 중 반증` or `Step 3 구현 결함 반증`.
   #
@@ -2950,7 +2952,19 @@ cc_halt_person_held() {
   # without a person. `run.sh`'s `halt_refutation_token` names a fourth token,
   # `Step 1.5a 반증 대기`, which stays inside this test: the decision function
   # always routes that record to a person.
+  #
+  # ONLY A RECORD `halt-answer` ACCEPTS IS HELD. The gate's `중단 답` refuses a
+  # record whose first line is not the `<!-- cc-pipeline-halt v1;` header or
+  # that carries no `<!-- /cc-pipeline-halt v1 -->` line, and that row is the
+  # one way to release a held key. Such a record left behind by an attempt that
+  # exited non-zero is never moved aside as malformed, so holding it would keep
+  # its key refused until the run ends with no answer able to release it. The
+  # two checks below are that act's two checks, spelled the same way.
   [ -n "${1:-}" ] && [ -f "$1" ] || return 1
+  local hfirst=''
+  IFS= read -r hfirst < "$1" || true
+  [ "${hfirst#<!-- cc-pipeline-halt v1;}" != "$hfirst" ] || return 1
+  grep -qxF '<!-- /cc-pipeline-halt v1 -->' "$1" 2>/dev/null || return 1
   [ -n "$(halt_option_lines < "$1")" ] || return 1
   case "$(sed -n 's/^\*\*스텝\*\*: //p' "$1" 2>/dev/null | sed -n '1p')" in
     'Step 1.5d'*|'Step 3 구현 중 반증'*|'Step 3 구현 결함 반증'*) return 1 ;;

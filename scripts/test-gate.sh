@@ -28910,7 +28910,7 @@ HW_SID=""
 
 # ---------------------------------------------------------------------------
 # 31bc. 사람이 고를 선택지를 담은 답 없는 정지 기록은 그 키의 재파견을 막는다
-# --- section: 31bc | group: cone | covers: act, plan, snapshot, handoff, gate_person_halt_refuse, gate_person_halts_of_key, gate_awaiting_halts_json, cc_person_halts, cc_halt_person_held, cc_unanswered_halts, cc_auto_handled_halts | anchors: 31bc: 답 없는 선택지 기록이 선 키의 스킬 파견은 3 이고 행을 쓰지 않는다, 31bc: 그 거부는 기록 경로를 든다, 31bc: 스냅숏 awaiting_halts 가 그 기록 하나를 낸다, 31bc: 살아 있는 것이 없을 때 대기·이월 인계는 거부되고 중단 인계는 선다, 31bc: 그 중단 인계 행이 답 대기 기록을 싣는다, 31bc: 피드의 stage-result 줄과 handoff 줄이 답 대기 기록을 붙인다, 31bc: 뒤 시도의 실행 증거가 있어도 그 기록은 답 없는 기록으로 남는다, 31bc: 선택지 없는 기록과 반증 기록은 뒤 시도로 자동처리된다, 31bc: 그 기록에 중단 답이 서면 거부가 풀린다 ---
+# --- section: 31bc | group: cone | covers: act, plan, snapshot, handoff, gate_person_halt_refuse, gate_person_halts_of_key, gate_awaiting_halts_json, cc_person_halts, cc_halt_person_held, cc_unanswered_halts, cc_auto_handled_halts | anchors: 31bc: 답 없는 선택지 기록이 선 키의 스킬 파견은 3 이고 행을 쓰지 않는다, 31bc: 그 거부는 기록 경로를 든다, 31bc: 스냅숏 awaiting_halts 가 그 기록 하나를 낸다, 31bc: 살아 있는 것이 없을 때 대기·이월 인계는 거부되고 중단 인계는 선다, 31bc: 그 중단 인계 행이 답 대기 기록을 싣는다, 31bc: 피드의 stage-result 줄과 handoff 줄이 답 대기 기록을 붙인다, 31bc: 뒤 시도의 실행 증거가 있어도 그 기록은 답 없는 기록으로 남는다, 31bc: 선택지 없는 기록과 반증 기록은 뒤 시도로 자동처리된다, 31bc: 펜스 없는 선택지 기록은 크래시 뒤 사람 대기로 묶이지 않고 뒤 시도로 자동처리된다, 31bc: 그 기록에 중단 답이 서면 거부가 풀린다 ---
 #
 # A visual step that stopped on a record offering a person two options was
 # dispatched again, and the next attempt's launch evidence then read the record
@@ -28962,6 +28962,18 @@ ph_sr S4 S4 implement 1 '의도된 park'; ph_sr S4 S4 implement 2 '정상 완료
 ph_sr S2 S2 implement 1 '의도된 park'; ph_sr S2 S2 implement 2 '정상 완료'
 check "31bc: 선택지 없는 기록과 반증 기록은 뒤 시도로 자동처리된다" \
   "$(cc_auto_handled_halts "$CAP_DIR" "$CAP_LEDGER" | cut -f1 | sort | tr '\n' ' ')" "S2#1 S4#1 "
+
+# An option record with no closing fence, left by an attempt that crashed, is
+# one `중단 답` would refuse, and no crash moves it aside as malformed: holding
+# its key would leave nothing able to release it, so the next attempt passes it
+# and the snapshot does not list it.
+ph_rec "$CAP_DIR/halt/S3#1.md.t" 'S3#1' implement-unattended 'Step 3 — 펜스 없음' \
+  '- `재시도` — 같은 단계를 다시 돌린다' '- `보류` — 세그먼트를 park 한다'
+grep -vxF '<!-- /cc-pipeline-halt v1 -->' "$CAP_DIR/halt/S3#1.md.t" > "$CAP_DIR/halt/S3#1.md" || true
+rm -f "$CAP_DIR/halt/S3#1.md.t"
+ph_sr S3 S3 implement 1 '크래시'; ph_sr S3 S3 implement 2 '정상 완료'
+check "31bc: 펜스 없는 선택지 기록은 크래시 뒤 사람 대기로 묶이지 않고 뒤 시도로 자동처리된다" \
+  "$(cc_auto_handled_halts "$CAP_DIR" "$CAP_LEDGER" | cut -f1 | sort | tr '\n' ' ')|$(ph_awaiting)" "S2#1 S3#1 S4#1 |"
 
 # The visual step stopped on a record offering two options.
 PH_REC="$CAP_DIR/halt/S2V#1.md"

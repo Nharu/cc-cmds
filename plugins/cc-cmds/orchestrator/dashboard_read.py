@@ -398,15 +398,21 @@ def halt_option_lines(text):
 
 
 def _halt_person_held(record):
-    """liveness.sh's `cc_halt_person_held` — the record exists, offers at
-    least one option and its `**스텝**` begins with none of the three
-    refutation tokens the gate's decision function routes without a person."""
+    """liveness.sh's `cc_halt_person_held` — the record exists, is complete
+    the way the gate's `중단 답` requires (its first line opens with the
+    `<!-- cc-pipeline-halt v1;` header and one line is the closing fence),
+    offers at least one option and its `**스텝**` begins with none of the
+    three refutation tokens the gate's decision function routes without a
+    person."""
     if not record:
         return False
     try:
         with open(record, encoding="utf-8", errors="replace") as fh:
             text = fh.read()
     except OSError:
+        return False
+    lines = text.split("\n")
+    if not lines[0].startswith("<!-- cc-pipeline-halt v1;") or _HALT_FENCE not in lines:
         return False
     if not halt_option_lines(text):
         return False
