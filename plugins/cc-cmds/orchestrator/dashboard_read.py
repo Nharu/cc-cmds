@@ -407,7 +407,10 @@ def _halt_person_held(record):
     if not record:
         return False
     try:
-        with open(record, encoding="utf-8", errors="replace") as fh:
+        # newline="" keeps a carriage return where the shell's `grep -x` and
+        # `awk` see it, so a CRLF record is not held here while the shell
+        # passes it.
+        with open(record, encoding="utf-8", errors="replace", newline="") as fh:
             text = fh.read()
     except OSError:
         return False

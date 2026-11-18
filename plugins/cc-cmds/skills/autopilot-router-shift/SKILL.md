@@ -488,7 +488,7 @@ gate.sh act --manifest <매니페스트> --kind shift-halt --target <alias> --se
 
 ### Holding a key whose stage halt waits for a person
 
-**`awaiting_halts[]` lists the stage halt records a person has to answer.** Each element — `키`, `기록` (relative to the run directory) and `스텝` — is a record directly under `halt/` that offers at least one option, has no `중단 답` row yet, and is not a refutation stop (`Step 1.5d`, `Step 3 구현 중 반증`, `Step 3 구현 결함 반증`), whose route the design document carries. A later attempt's evidence never settles such a record: it stays unanswered until a person answers it.
+**`awaiting_halts[]` lists the stage halt records a person has to answer.** Each element — `키`, `기록` (relative to the run directory) and `스텝` — is a complete record (its opening header and closing fence, as `중단 답` requires) directly under `halt/` that offers at least one option, has no `중단 답` row yet, and is not a refutation stop (`Step 1.5d`, `Step 3 구현 중 반증`, `Step 3 구현 결함 반증`), whose route the design document carries. A later attempt's evidence never settles such a record: it stays unanswered until a person answers it.
 
 1. **Dispatch no skill on an element's `키`** — not the same step again, not a fresh attempt, not another stage kind on that key. The gate refuses that dispatch with exit 3, writes no row and names the record; on that refusal do not issue the same act again.
 2. **Route every other key as usual.** The held key holds nothing else by itself.
