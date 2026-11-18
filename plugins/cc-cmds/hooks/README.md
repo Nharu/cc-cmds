@@ -18,11 +18,12 @@ described under "The active-notify self-approve hook" below),
 back to it, `session-title.sh` names a session after the slash command it is
 running, `session-permission-notify.sh` leaves a remote attention event when a
 permission dialog opens, `stage-rules-edit.sh` shows the stage rules status after an
-edit of the user-scope `CLAUDE.md`, and `session-status-snapshot.sh` leaves
-each session's state and recent output in the attention spool; the last five
-have their contracts in later sections
+edit of the user-scope `CLAUDE.md`, `stage-values-sessionstart.sh` hands an
+unattended stage its pipeline values at session start, and
+`session-status-snapshot.sh` leaves each session's state and recent output in
+the attention spool; the last six have their contracts in later sections
 of this file. `autopilot-status.tsx` is not a command hook at all but a plugin
-module, listed under `"modules"`; its section is the last one. None of the seven
+module, listed under `"modules"`; its section is the last one. None of the eight
 raises a session banner, and the
 rules below are written for the two seats alone. The question form under
 `question-form/` is a sub-mod: `autopilot-status.tsx` is the one entry listed
@@ -776,6 +777,50 @@ opened.
 **Every path exits 0 and nothing reaches stderr.** It runs under
 `set -uo pipefail`, never `-e`. The helper's stderr goes to `/dev/null`, and a
 missing `jq` exits 0 after the same Homebrew PATH prepend the banner seats use.
+
+## The stage values hook
+
+`stage-values-sessionstart.sh` is registered under the top-level
+`SessionStart` key as the second entry (`[1]`, after the status line's
+`startup` entry) with the matcher `startup|resume|compact` and
+`"timeout": 5`. It does not raise a banner. It exists because every Bash call
+of an unattended stage goes through `gate.sh exec`, so reading a pipeline value
+with `printenv` costs a model request and a ledger row per value, while the
+values themselves are fixed for the life of a stage attempt.
+
+**When it acts.** Only when `CC_PIPELINE_RUN_ID` is set and not empty. A
+general session gets nothing on stdout and exit 0.
+
+**What it does.** It writes one object to stdout:
+`{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"…"}}`.
+The context starts with the fixed ASCII marker `[cc-stage-values]`, the stage
+id (the shift id in a routing shift) and a sentence telling the lead to use
+these values instead of `printenv` and to take the last block when there are
+several. Then come one `NAME=value` line per name of a fixed allow-list —
+`CC_PIPELINE_RUN_ID`, `_RUN_DIR`, `_MANIFEST`, `_LEDGER`, `_GATE`, `_TARGET`,
+`_SEGMENT`, `_STAGE_ID`, `_SHIFT_ID`, `_HALT_ANSWER`, `_REENTRY_CARD` and
+`_AUDIT_PASS` — and three derived values: the plugin root
+(`CLAUDE_PLUGIN_ROOT`), the stage key (the stage id with `#` spelled `-`) and
+the working-copy prefix `${TMPDIR:-/tmp}/cc-proto-<run id>-<stage key>.`, the
+temporary directory taken with its trailing slashes removed, as the gate's
+run-local proof spells it. An empty value reads `(없음)`; a routing shift has
+no stage id, so its stage key and prefix read `(없음)` too. The stage policy's
+`## Pipeline variables` section points the lead at the last block and keeps
+`printenv` for a name the block lacks.
+
+**What it never prints.** The names are a list in the script, never a scan of
+the environment. `CC_PIPELINE_GRANT`, the pipeline token and every other
+variable stay out whatever the environment holds.
+
+**Why the matcher is wide.** A resume starts the session again with a new
+attempt's environment, so the stage id moves, and a compaction drops the
+earlier block from the context. Printing again on both is the point, unlike the
+status line entry, whose narrow matcher keeps a long run from repeating its
+install decision.
+
+**Every path exits 0 and nothing reaches stderr.** It runs under
+`set -uo pipefail`, never `-e`, reads and drops the event payload, and a
+missing `jq` exits 0 after the same Homebrew PATH prepend the other hooks use.
 
 ## The session status snapshot hook
 

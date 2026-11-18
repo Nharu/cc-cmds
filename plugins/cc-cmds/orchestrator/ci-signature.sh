@@ -107,6 +107,15 @@
 # outright: a cut between two suites leaves nothing in the kept part that says
 # one is missing.
 #
+# A LOAD FAILURE IS NOT A FAILURE OF THE RUN. A narrowed test-gate run whose only
+# failures were load-marked assertions, and whose failed sections then passed run
+# again alone, ends green and prints `test-gate: 부하 실패 — 절 <id>: 「<label>」 ·
+# …` per such failure, after the run's own FAIL lines, which stay in the log. Once
+# the whole log is read, each such line takes one FAIL line whose name is its
+# label out of the list, and one from the failed count of the suite it belongs to
+# (the whole log when there is no suite-guard line), before the rules above are
+# judged. A label that matches no name leaves that name in the list.
+#
 # Any other log falls to step precision, the same as a check that printed no
 # `FAIL:` line at all (a lint, a build step). A lint that prints `FAIL:` lines
 # without a total — `lint-pace-threshold-pins.sh` does — lands here too, which
@@ -200,6 +209,11 @@ cs_read_fail_lines() {
       END_MARK = "]: \354\242\205\353\243\214 rc="
       # `판정=` in UTF-8, so the source stays ASCII under the C locale.
       VERDICT = "\355\214\220\354\240\225="
+      # `부하 실패 — 절 `, and the brackets around the label that follows:
+      # `「` and `」 · `.
+      LOADP = "\353\266\200\355\225\230 \354\213\244\355\214\250 \342\200\224 \354\240\210 "
+      LOPEN = "\343\200\214"
+      LCLOSE = "\343\200\215 \302\267 "
       # Every escape sequence a terminal or a runner may write, in the order
       # that keeps one from leaving a piece of another: an operating-system
       # command (ended by BEL or ST, or by nothing when cut), a control
@@ -226,6 +240,18 @@ cs_read_fail_lines() {
       if (j != "" && substr(j, 1, length(VERDICT)) == VERDICT) {
         v = substr(j, length(VERDICT) + 1); sub(/ .*$/, "", v)
         if (v == "swallowed" || v == "crash" || v == "noise" || v == "probe") broken = 1
+        next
+      }
+      # A load-marked failure that passed when its section was run again alone.
+      # The label is the name of one FAIL line printed earlier in the same run,
+      # which the END block takes back out of the list and out of the count.
+      if (j != "" && substr(j, 1, length(LOADP)) == LOADP) {
+        a = index(j, LOPEN); b = lastsep(j, LCLOSE)
+        if (a > 0 && b > a) {
+          nl++
+          lname[nl] = substr(j, a + length(LOPEN), b - a - length(LOPEN))
+          lkey[nl] = guarded ? sole() : ""
+        }
         next
       }
       if (substr(line, 1, length(SG)) == SG) {
@@ -288,16 +314,16 @@ cs_read_fail_lines() {
         sub(/[ \t]+$/, "", name)
         if (name == "") next
         nf++
+        oname[nf] = name; okey[nf] = ""
         if (guarded) {
           k = sole()
           if (k == "") { unattributed = 1; out[nf] = name; next }
           fails[k]++
+          okey[nf] = k
           out[nf] = base(k) "|" name
-          if (!((k, name) in seenk)) { seenk[k, name] = 1; dist[k]++ }
         } else {
           prefail = 1
           out[nf] = (suite != "") ? suite "|" name : name
-          if (!(out[nf] in seenu)) { seenu[out[nf]] = 1; ndist++ }
         }
         next
       }
@@ -312,6 +338,27 @@ cs_read_fail_lines() {
       }
     }
     END {
+      # A LOAD FAILURE TAKES BACK ONE FAIL LINE. Each one removes the first FAIL
+      # line of its suite whose name is its label, and one from the failed count
+      # of that suite, so the count and the names still agree. A label that
+      # matches no line leaves everything as it was, and the name it should have
+      # removed stays in the list. The same name failing again elsewhere keeps
+      # its own line.
+      for (i = 1; i <= nl; i++) {
+        for (n = 1; n <= nf; n++) {
+          if (gone[n] || oname[n] != lname[i] || okey[n] != lkey[i]) continue
+          gone[n] = 1
+          if (guarded) { fails[okey[n]]--; tfail[okey[n]]-- } else tsum--
+          break
+        }
+      }
+      for (n = 1; n <= nf; n++) {
+        if (gone[n]) continue
+        if (guarded) {
+          k = okey[n]
+          if (k != "" && !((k, oname[n]) in seenk)) { seenk[k, oname[n]] = 1; dist[k]++ }
+        } else if (!(out[n] in seenu)) { seenu[out[n]] = 1; ndist++ }
+      }
       # THE COUNT MUST AGREE WITH THE NAMES. A failure the suite counted but
       # printed no FAIL line for, or two failures printed under one name, leave
       # the signature list short of the failures, and a short list reads as a
@@ -330,7 +377,7 @@ cs_read_fail_lines() {
         for (k in listed_self) if (!(k in self_started)) ok = 0
       }
       print (ok ? "T" : "F")
-      for (i = 1; i <= nf; i++) print out[i]
+      for (i = 1; i <= nf; i++) if (!gone[i]) print out[i]
     }
   '
 }

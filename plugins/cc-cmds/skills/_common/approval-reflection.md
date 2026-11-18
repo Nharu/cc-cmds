@@ -127,8 +127,9 @@ never dropped silently. The attachment is read at step 4 of
 
 1. **Working copy.** Every edit rides one working copy of the document.
 2. **Publish.**
-   - Unattended: the re-convergence's working copy and its `lockf` publish
-     (`design-reconverge` Step 3), its hash checks included.
+   - Unattended: the re-convergence's working copy and its `doc-tidy.py
+     publish` under the document lock (`design-reconverge` Step 3), its hash
+     checks included.
    - Interactive: compare the document's `shasum -a 256` before taking the copy
      and again right before publishing; a difference stops the reflection
      without writing `실패` — only a failure of `## 실패로 보는 경우` or a line
@@ -204,7 +205,7 @@ Writes of the record and of the sidecar are declared like the document publish,
 A reflection that comes back to the re-convergence on a carried
 `결정 첨부 후 다시 반영` follows this one procedure, in order. It takes the place
 of the re-convergence's 「Re-entered with a carried answer」 items, of the
-expected hash of its working-copy response 2 and of the before side of its
+expected hash of its working copy's `checkout --expect` and of the before side of its
 Step 4 digest comparison, on this scope only. A carried answer the gate lets
 in again under its entry predicate's condition 4 follows it too; a `승인`
 answer let in again carries no card and no attachment and does not.
@@ -219,12 +220,12 @@ answer let in again carries no card and no attachment and does not.
    `사전 구속 표면 다이제스트`. Never take the stop record's baselines, and never
    refuse the answer because the document moved after the stop: a screen-less
    slice writing the same document meanwhile is the ordinary flow. The hash the
-   working-copy response 2 expects, the digest Step 4 compares and the
+   working copy's `checkout --expect` takes, the digest Step 4 compares and the
    baselines a stop record of this attempt carries are all these values. What
    keeps another write from overwriting a line the person saw is not the whole
    document's hash but the per-line verbatim check (`## 실패로 보는 경우`, a line
-   that cannot be applied) and the working copy's hash checks and `lockf`
-   publish.
+   that cannot be applied) and the working copy's hash checks and its
+   `doc-tidy.py publish`, which measures the document again inside the lock.
 3. **Question comparison.** The question is the same when the `시각-판정` record
    that the stop record's `범위=승인 화면 반영 <기록>` names is still the latest
    `시각-판정 기록` that `visual-check.sh run-state --run-dir <dir>` prints over
@@ -254,8 +255,8 @@ answer let in again carries no card and no attachment and does not.
 `승인 화면 반영 <시각-판정 중단 기록 절대 경로>`. There is no carrier block: the
 evidence is the sidecar's `### 설계 문서 어긋남` block. On this scope the rules
 below come before the re-convergence's own halt-step rule, its decision-draft
-rule, its write constraints (CFI-6 and Constraints), the hash its working-copy
-response 2 expects, the before side of its Step 4 digest comparison and the
+rule, its write constraints (CFI-6 and Constraints), the hash its working
+copy's `checkout --expect` takes, the before side of its Step 4 digest comparison and the
 place its Step 5 verdict returns to.
 
 - **Evidence.** The record's `**관측 상세**` carries `설계 문서 어긋남=<n>건 · sha256 <hex>`. Run `visual-check.sh drift <document>` through the gate (`--surface 읽기`); when its count or sha256 differs from the record's piece, or it exits 1, halt with `분류: precondition-failed` naming both values. An exit 2 prints only the lines it could not find and no count line, so read the block instead: when the block's `- ` lines are, in number and verbatim, the drift lines the record's `**질문 문면**` quotes and the piece's `<n>`, and every printed line is one of them, that exit 2 is not that halt — the block is the one the person approved, and the lines it prints are lines that cannot be applied — the wording left the document, or its heading did not hold — so carry them to the Edit step below, which stops on them in the reflection stop's form. An exit 2 repeats on every attempt over the same document, so a `precondition-failed` here would never reach the person who can take the line out. **The scope is the block's lines and nothing wider**.
