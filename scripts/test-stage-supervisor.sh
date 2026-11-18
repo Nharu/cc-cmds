@@ -909,6 +909,68 @@ ha_seat HB ""
 check "(12) 카드 없는 시도의 환경에는 변수가 없다" "$(cut -d'|' -f1 "$WORK/ha-HB" 2>/dev/null)" "unset"
 check "(12) 카드 없는 시도의 종단 행에는 답 운반이 없다" \
   "$( { grep -F '세그먼트=HB ' "$LEDGER" || true; } | { grep -F '`stage-result`' || true; } | { grep -c '답 운반=' || true; })" "0"
+
+# A STOP THAT WAITS FOR A PERSON. An attempt that ends `의도된 park` on its own
+# record offering options carries that record's run-directory-relative path in
+# `답 대기 기록`; a record with no option, and a refutation stop whose route the
+# design document carries, leave the field off.
+STUB_HOLD="$WORK/claude-stub-hold"
+cat > "$STUB_HOLD" <<'STUBEOF'
+#!/usr/bin/env bash
+mkdir -p "$(dirname "$CC_STUB_HOLD_REC")"
+{
+  printf '<!-- cc-pipeline-halt v1; writer=review-unattended; reader=orchestrator; stage=%s; run=x -->\n' "${CC_STUB_HOLD_REC##*/}"
+  printf '**중단 시각**: 2026-11-18T00:00:00Z\n**스킬**: review-unattended\n**스텝**: %s\n' "$CC_STUB_HOLD_STEP"
+  printf '**분류**: gate-unanswerable\n**질문 문면**: 픽스처의 질문\n'
+  if [ -n "$CC_STUB_HOLD_OPTS" ]; then
+    printf '**선택지**:\n- `가` — 하나를 고른다\n- `나` — 다른 하나를 고른다\n'
+  else
+    printf '**선택지**: (없음)\n'
+  fi
+  printf '**하네스 오류**: (없음)\n**재호출 명령**: (없음)\n**후속**: 보류 큐\n<!-- /cc-pipeline-halt v1 -->\n'
+} > "$CC_STUB_HOLD_REC"
+if [ -n "${CC_STUB_HOLD_KILLED:-}" ]; then
+  # Killed in its last turn: the session's first frame, and no result line.
+  printf '%s\n' "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"$CC_STUB_HOLD_KILLED\"}"
+  exit 143
+fi
+printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.01,"num_turns":1,"session_id":"stub-session"}'
+exit 0
+STUBEOF
+chmod +x "$STUB_HOLD"
+hold_seat() {  # hold_seat <segment> <스텝> <선택지 있음: 1 | ""> [<죽은 시도의 첫 프레임 세션 id>] — a hand-written routed token, run to its end
+  seg "$1"
+  printf '1\n' > "$RD/$1.attempt"
+  printf 'n%s\n\n\nB:%s#1\n-\n-\n%s\n' "$1" "$1" "$R12_CFG" > "$RD/$1.launch"
+  CC_CLAUDE_BIN="$STUB_HOLD" CC_STUB_HOLD_REC="$RD/halt/$1#1.md" CC_STUB_HOLD_STEP="$2" CC_STUB_HOLD_OPTS="$3" \
+    CC_STUB_HOLD_KILLED="${4:-}" g supervise-stage --manifest "$MANIFEST" --target repo --segment "$1" --nonce "n$1" -- review -p x >/dev/null
+}
+hold_row() {  # hold_row <segment> — that segment's last stage-result row
+  { grep -F '`stage-result`' "$LEDGER" || true; } | { grep -F "세그먼트=$1 " || true; } | tail -1
+}
+hold_seat HC 'Step 2 — 픽스처의 정지' 1
+case "$(hold_row HC)" in
+  *"| 종단 부류=의도된 park |"*"| 답 대기 기록=halt/HC#1.md"*) ok "(12) 선택지를 담은 정지로 끝난 시도의 종단 행이 답 대기 기록을 싣는다" ;;
+  *) bad "(12) 답 대기 기록 종단 행" "$(hold_row HC)" ;;
+esac
+hold_seat HD 'Step 2 — 픽스처의 정지' ""
+check "(12) 선택지 없는 정지로 끝난 시도의 종단 행에는 답 대기 기록이 없다" \
+  "$(hold_row HD | grep -c '종단 부류=의도된 park' || true)/$(hold_row HD | grep -c '답 대기 기록=' || true)" "1/0"
+hold_seat HE 'Step 3 구현 결함 반증 — 픽스처' 1
+check "(12) 반증 정지로 끝난 시도의 종단 행에는 답 대기 기록이 없다" \
+  "$(hold_row HE | grep -c '종단 부류=의도된 park' || true)/$(hold_row HE | grep -c '답 대기 기록=' || true)" "1/0"
+# A STOP KILLED IN ITS LAST TURN. The attempt wrote a complete record offering
+# options, then died with no result line; the session its stream's first frame
+# names goes on the row, so an answer to that record has a session to
+# re-attach. A first frame whose id is not a session id's shape stays `미상`.
+hold_seat HF 'Step 2 — 픽스처의 정지' 1 0f1e2d3c-4b5a-4968-8776-a5b4c3d2e1f0
+case "$(hold_row HF)" in
+  *"| 세션 id=0f1e2d3c-4b5a-4968-8776-a5b4c3d2e1f0 |"*"| 종단 부류=크래시 |"*) ok "(12) 결과 줄 없이 죽은 시도의 종단 행이 스트림 첫 프레임의 세션 id 를 싣는다" ;;
+  *) bad "(12) 결과 줄 없이 죽은 시도의 세션 id" "$(hold_row HF)" ;;
+esac
+hold_seat HG 'Step 2 — 픽스처의 정지' 1 'stub-session --settings /x'
+check "(12) 첫 프레임의 세션 id 가 모양에 맞지 않으면 종단 행은 세션 id=미상 이다" \
+  "$(hold_row HG | grep -c '종단 부류=크래시' || true)/$(hold_row HG | grep -c '| 세션 id=미상 |' || true)" "1/1"
 mv "$WORK/ha-pinned-gate.sh" "$PINNED_GATE"
 mv "$WORK/ha-pinned-run.sh" "$RD/plugin/cc-cmds/orchestrator/run.sh"
 check "(12) 답 카드 시험 뒤 고정 사본이 원래 바이트로 돌아왔다" \

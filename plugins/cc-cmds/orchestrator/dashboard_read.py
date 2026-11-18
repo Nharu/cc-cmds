@@ -343,15 +343,88 @@ def _halt_answer_state(numbered, tail, record=None):
     A record no `중단 답` names takes the state of the gate record its
     `**관측 상세**` points at as `게이트 기록=<경로>`, one step only. When
     both read `없음`, the record is `자동처리` if a later attempt of its key
-    ran (`_halt_auto_next`, on the original record's tail); `답함` and
-    `되돌림` always come first.
+    ran (`_halt_auto_next`, on the original record's tail) and the record
+    does not put options before a person (`_halt_person_held`); `답함` and
+    `되돌림` always come first. The person-held test reads `record`, or when
+    none is given the tail resolved as liveness.sh resolves it.
     """
     st = _halt_answer_state_of(numbered, tail)
     if st == "없음" and record:
         st = _halt_pointer_state(numbered, tail, record, st)
     if st == "없음" and _halt_auto_next(numbered, tail) is not None:
-        st = "자동처리"
+        if not _halt_person_held(record or _halt_record_of_tail(tail)):
+            st = "자동처리"
     return st
+
+
+def _halt_record_of_tail(tail):
+    """The record file a tail names: under `RUN_DIR` when its last component
+    is the tail's run id, else under the state home's run directory."""
+    t = tail[1:] if tail.startswith("/") else tail
+    leaf = t.split("/", 1)[0]
+    rest = t[len(leaf) + 1:] if t.startswith(leaf + "/") else t
+    run_dir = os.environ.get("RUN_DIR", "")
+    if run_dir and run_dir.rstrip("/").rsplit("/", 1)[-1] == leaf:
+        return "%s/%s" % (run_dir.rstrip("/"), rest)
+    state = os.environ.get("XDG_STATE_HOME") or os.path.join(os.environ.get("HOME", ""), ".local/state")
+    return "%s/cc-cmds/run/%s/%s" % (state, leaf, rest)
+
+
+_HALT_FENCE = "<!-- /cc-pipeline-halt v1 -->"
+_HALT_OPTIONS_OPEN = re.compile(r"^\*\*선택지\*\*:[ \t]*$")
+_HALT_OPTION_BARE = re.compile(r"^- `[^`]+`$")
+_HALT_OPTION_DESC = re.compile(r"^- `[^`]+` — ")
+_HALT_REFUTATION_STEPS = ("Step 1.5d", "Step 3 구현 중 반증", "Step 3 구현 결함 반증")
+
+
+def halt_option_lines(text):
+    """liveness.sh's `halt_option_lines` — the option lines of a halt record's
+    `**선택지**:` block, verbatim, by the same rule: the block opens only on a
+    `**선택지**:` line with nothing after the colon, closes on the next line
+    starting with `**`, and the closing fence ends the read."""
+    out = []
+    inb = False
+    for line in text.split("\n"):
+        if line == _HALT_FENCE:
+            break
+        if inb and line.startswith("**"):
+            inb = False
+        if _HALT_OPTIONS_OPEN.match(line):
+            inb = True
+            continue
+        if inb and (_HALT_OPTION_BARE.match(line) or _HALT_OPTION_DESC.match(line)):
+            out.append(line)
+    return out
+
+
+def _halt_person_held(record):
+    """liveness.sh's `cc_halt_person_held` — the record exists, is complete
+    the way the gate's `중단 답` requires (its first line opens with the
+    `<!-- cc-pipeline-halt v1;` header and one line is the closing fence),
+    offers at least one option and its `**스텝**` begins with none of the
+    three refutation tokens the gate's decision function routes without a
+    person."""
+    if not record:
+        return False
+    try:
+        # newline="" keeps a carriage return where the shell's `grep -x` and
+        # `awk` see it, so a CRLF record is not held here while the shell
+        # passes it.
+        with open(record, encoding="utf-8", errors="replace", newline="") as fh:
+            text = fh.read()
+    except OSError:
+        return False
+    lines = text.split("\n")
+    if not lines[0].startswith("<!-- cc-pipeline-halt v1;") or _HALT_FENCE not in lines:
+        return False
+    if not halt_option_lines(text):
+        return False
+    step = ""
+    for line in text.split("\n"):
+        if line.startswith("**스텝**: "):
+            step = line[len("**스텝**: "):]
+            break
+    return not step.startswith(_HALT_REFUTATION_STEPS)
 
 
 def _halt_pointer_state(numbered, tail, record, st):
@@ -1317,6 +1390,10 @@ class Ledger:
     shorter file or a different inode starts over. Only the row families the
     dashboard reads are kept, and beside them every line carrying a `계보=B:`
     lineage; `자율 승인`, which is most of every ledger, is otherwise passed over.
+    `stage-wait` is not a kept family; besides whatever its lineage keeps of
+    it, the last such row per lineage is held in `last_wait`, because the wait
+    heartbeat rewrites it every chunk and the dashboard reads only the latest
+    cause.
 
     Every kept row's ledger line number (the first line is 1, as awk's `NR`)
     is held in `linenos`, beside `rows` and as long. The count stops where the
@@ -1341,6 +1418,7 @@ class Ledger:
         self.rows = []
         self.linenos = []
         self.judged = []
+        self.last_wait = {}
         self.nlines = 0
         self.first_line = None
         self.first_time = None
@@ -1389,6 +1467,10 @@ class Ledger:
         if (m and m.group(1) == "자율 승인" and "| kind=judgment |" in line
                 and _field_whole_is(line, "kind", "judgment")):
             self.judged.append((no, line))
+        if m and m.group(1) == "stage-wait":
+            lin = split_fields(line).get("계보", "")
+            if lin:
+                self.last_wait[lin] = line
         if m and m.group(1) in KEEP_SERIES:
             self.rows.append((m.group(1), line))
             self.linenos.append(no)
@@ -1695,8 +1777,75 @@ def approval_text(row):
     return text + (" — " + " · ".join(tail) if tail else "")
 
 
-def waiting_items(approvals, halts, waiters):
-    """`waiting`: open approvals, then unanswered halt records, then fresh waiters."""
+WAIT_UNKNOWN = "원인 미상"
+WAIT_REASON_GROUP = {
+    "group-exhausted": "계정 한도",
+    "resume-bound-exhausted": "계정 한도",
+    "no-room": "계정 여유 부족",
+    "unknown-concurrency": "계정 여유 부족",
+    "resume-bound-no-room": "계정 여유 부족",
+    "resume-bound-borrowed": "계정 여유 부족",
+    "host-saturated": "호스트 포화",
+    "fifo-yield": "차례·임대 대기",
+    "lease-lock-busy": "차례·임대 대기",
+    "lease-contention": "차례·임대 대기",
+    "lease-hold-busy": "차례·임대 대기",
+    "lease-hold-lost": "차례·임대 대기",
+    "wait-end-refused": "차례·임대 대기",
+}
+WAIT_GROUP_TEXT = {
+    "계정 한도": "계정 한도 대기",
+    "계정 여유 부족": "계정 여유 부족 대기",
+    "호스트 포화": "호스트 포화 대기",
+    "차례·임대 대기": "차례·임대 대기",
+    WAIT_UNKNOWN: "원인 미상 대기",
+}
+_HOST_CELL = re.compile(r"^포화 ratio=(\d+) ncpu=(\d+) 표본=(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)$")
+_FLEET_DECL = {}
+
+
+def fleet_leave_permille():
+    """The value of `readonly FLEET_HOST_LEAVE_PERMILLE=<digits>` as fleet.sh
+    declares it, read once from the file beside this module; None when the file
+    holds no single declaration. The declaration carries a `readonly` prefix and
+    a trailing comment, so `liveness_decl` cannot read it."""
+    if "leave" not in _FLEET_DECL:
+        t = read_text(os.path.join(os.path.dirname(os.path.abspath(__file__)), "fleet.sh"))
+        decl = re.findall(r"(?m)^readonly FLEET_HOST_LEAVE_PERMILLE=([0-9]+)(?:\s.*)?$", t or "")
+        _FLEET_DECL["leave"] = int(decl[0]) if len(decl) == 1 else None
+    return _FLEET_DECL["leave"]
+
+
+def wait_host(cell):
+    """A `stage-wait` row's `호스트` cell as the gate writes it for a saturated
+    host, or None for `-` or any other shape."""
+    m = _HOST_CELL.match(cell or "")
+    if not m:
+        return None
+    return {"ratio_permille": int(m.group(1)), "ncpu": int(m.group(2)),
+            "sampled_at": iso_epoch(m.group(3)), "leave_permille": fleet_leave_permille()}
+
+
+def wait_item(name, base, row):
+    """One fresh waiter as a `waiting` item: its group comes from the `근거` of
+    the last `stage-wait` row of its lineage, and is `원인 미상` when there is no
+    row, no `근거` cell or a value outside the vocabulary."""
+    f = split_fields(row) if row else {}
+    reason = f.get("근거")
+    group = WAIT_REASON_GROUP.get(reason, WAIT_UNKNOWN)
+    until = f.get("까지")
+    return {"kind": group, "text": WAIT_GROUP_TEXT[group], "reason": reason,
+            "until": iso_epoch(until) if until and until != "-" else None,
+            "host": wait_host(f.get("호스트")),
+            "ref": name, "since": base, "returned": False}
+
+
+def waiting_items(approvals, halts, waiters, run_dir=None, last_wait=None):
+    """`waiting`: open approvals, then unanswered halt records, then fresh waiters.
+
+    A waiter's cause is looked up by the `계보` of its marker in `last_wait`,
+    the ledger's last `stage-wait` row per lineage."""
+    last_wait = last_wait or {}
     out = []
     seen = set()
     for aid, row in approvals:
@@ -1711,8 +1860,8 @@ def waiting_items(approvals, halts, waiters):
                     "returned": state == "되돌림", "skill": rec["skill"], "step": rec["step"],
                     "class": rec["class"], "recommend": rec["recommend"]})
     for name, base in waiters:
-        out.append({"kind": "사용량 한도", "text": "사용량 한도 대기", "ref": name, "since": base,
-                    "returned": False})
+        lin = waiting_field(os.path.join(run_dir, name), "계보") if run_dir else ""
+        out.append(wait_item(name, base, last_wait.get(lin) if lin else None))
     return out
 
 
@@ -2030,7 +2179,8 @@ class Model:
         halts = unanswered_halt_records(src.run_dir, numbered) if src.run_dir else []
         waiters = (waiting_fresh(src.run_dir, lines, src.ledger_path, procs, now=now)
                    if src.run_dir else [])
-        out["waiting"] = waiting_items(open_approval_rows(lines), halts, waiters)
+        out["waiting"] = waiting_items(open_approval_rows(lines), halts, waiters, src.run_dir,
+                                       led.last_wait if led else {})
         out["now"] = run_now(src.run_dir, lines, numbered, live, state == "종단")
         out["result"] = run_result(src.run_dir, state)
         out["prs"] = run_prs(led.series("segment") if led else [], manifest)
