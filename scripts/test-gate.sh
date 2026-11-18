@@ -21752,9 +21752,9 @@ check "핸들을 쓰는 동사가 통과한다" "$rc" "0"
 check "ledger-path 가 원장 절대경로를 담는다" "$(cat "$RD/ledger-path" 2>/dev/null || true)" "$FX_LEDGER"
 # `notify.label` is written beside it on every entry: the manifest header's
 # anchor key, the run's name in an approval banner's title. The expected value
-# is read from the header here, and an empty one is a failure rather than a
-# match of two empty strings.
-fx_anchor=$(grep -o -m 1 'anchor-key=[^ ]*' "$FX_MANIFEST" 2>/dev/null || true)
+# is read from the header here, where fields end at `;`, and an empty one is a
+# failure rather than a match of two empty strings.
+fx_anchor=$(grep -o -m 1 'anchor-key=[^ ;]*' "$FX_MANIFEST" 2>/dev/null || true)
 fx_anchor=${fx_anchor#anchor-key=}
 check "notify.label 이 매니페스트의 앵커 키를 담는다" \
   "$(cat "$RD/notify.label" 2>/dev/null || true)" "${fx_anchor:-앵커 키 없음}"
