@@ -2073,9 +2073,10 @@ case " ${TERMINAL_SEGMENT_STATES:-} " in
   *) readonly TERMINAL_SEGMENT_STATES="머지됨 완료 park" ;;
 esac
 
-cc_nonterminal_segment_ids() {
-  # cc_nonterminal_segment_ids <ledger> — the ids of the segments not in a
-  # terminal state, one per line. `TERMINAL_SEGMENT_STATES` above is the
+cc__nonterminal_segment_scan() {
+  # cc__nonterminal_segment_scan <ledger> — sets `CC__NTS_IDS` to the ids of
+  # the segments not in a terminal state, each followed by a newline, and
+  # `CC__NTS_N` to their number. `TERMINAL_SEGMENT_STATES` above is the
   # enumeration; everything else is in flight. The membership test is the
   # gate's, verbatim, because a second spelling of it is how the two readers
   # diverged in the first place.
@@ -2086,10 +2087,12 @@ cc_nonterminal_segment_ids() {
   # open) or `미정산` (a merge carried in from an earlier run whose apply did
   # not finish). That word is how the gate's condition 1 and this set agree.
   #
-  # `cc_nonterminal_segments` counts these lines, so the count and the set are
-  # one test. The watcher reads the set to tell the segments a shift's halt
-  # record holds from the ones nothing holds.
+  # `cc_nonterminal_segment_ids` and `cc_nonterminal_segments` both read this
+  # one scan, so the set and the count are one test. The results go into two
+  # globals rather than through a pipe, so the count, which the gate reads,
+  # forks nothing beyond what the scan itself runs.
   local ledger="$1" sid row st tbl
+  CC__NTS_IDS='' CC__NTS_N=0
   [ -n "$ledger" ] || return 0
   # From the table, the apply phase is read only for a terminal 상태: a
   # segment whose 상태 is not terminal is in flight whatever that phase says.
@@ -2099,9 +2102,9 @@ cc_nonterminal_segment_ids() {
       case " $TERMINAL_SEGMENT_STATES " in
         *" $st "*)
           case "$(cc_segment_apply_phase "$ledger" "$sid")" in
-            대기|미정산) printf '%s\n' "$sid" ;;
+            대기|미정산) CC__NTS_IDS="$CC__NTS_IDS$sid"$'\n'; CC__NTS_N=$((CC__NTS_N + 1)) ;;
           esac ;;
-        *) printf '%s\n' "$sid" ;;
+        *) CC__NTS_IDS="$CC__NTS_IDS$sid"$'\n'; CC__NTS_N=$((CC__NTS_N + 1)) ;;
       esac
     done <<EOF
 $tbl
@@ -2114,21 +2117,31 @@ EOF
     row=$( { grep -E '^- `segment`' "$ledger" 2>/dev/null | grep -F "id=$sid " || true; } | tail -1)
     st=$(printf '%s' "$row" | tr '|' '\n' | sed -n 's/^ *상태=//p' | sed 's/[[:space:]]*$//' | tail -1)
     case "$(cc_segment_apply_phase "$ledger" "$sid")" in
-      대기|미정산) printf '%s\n' "$sid"; continue ;;
+      대기|미정산) CC__NTS_IDS="$CC__NTS_IDS$sid"$'\n'; CC__NTS_N=$((CC__NTS_N + 1)); continue ;;
     esac
     case " $TERMINAL_SEGMENT_STATES " in
       *" $st "*) ;;
-      *) printf '%s\n' "$sid" ;;
+      *) CC__NTS_IDS="$CC__NTS_IDS$sid"$'\n'; CC__NTS_N=$((CC__NTS_N + 1)) ;;
     esac
   done
   return 0
 }
 
+cc_nonterminal_segment_ids() {
+  # cc_nonterminal_segment_ids <ledger> — the ids of the segments not in a
+  # terminal state, one per line, by `cc__nonterminal_segment_scan`. The
+  # watcher reads the set to tell the segments a shift's halt record holds
+  # from the ones nothing holds.
+  cc__nonterminal_segment_scan "$1"
+  printf '%s' "$CC__NTS_IDS"
+}
+
 cc_nonterminal_segments() {
   # cc_nonterminal_segments <ledger> — count of segments not in a terminal
-  # state: the number of lines `cc_nonterminal_segment_ids` prints, as an
-  # integer with no newline (`0` with no ledger).
-  cc_nonterminal_segment_ids "$1" | awk 'NF { n++ } END { printf "%d", n }'
+  # state, by `cc__nonterminal_segment_scan`, as an integer with no newline
+  # (`0` with no ledger).
+  cc__nonterminal_segment_scan "$1"
+  printf '%s' "$CC__NTS_N"
 }
 
 cc_segment_count() {
