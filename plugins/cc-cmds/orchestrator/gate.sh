@@ -27568,9 +27568,13 @@ gate_halt_stage_self_answer() {
   done <<EOF
 $( { gate_stage_result_rows_of "$seg" || true; } )
 EOF
-  # `근거` is the record's `**추천 근거**` line S5 checked, byte for byte.
+  # `근거` is the record's `**추천 근거**` line S5 checked. The attachment
+  # carries it whole; the row carries it whole when it fits, and clipped as the
+  # seat's answer clips it otherwise — the record and attachment paths ride on
+  # the row unclipped and are as long as this machine's state directory makes
+  # them, so the same record can fit on one host and not on another.
   rec_why=$(sed -n 's/^\*\*추천 근거\*\*: //p' "$rec" | sed -n '1p' | sed 's/[[:space:]]*$//')
-  if [ "$(gate_row_safe "$rec_why" "$GATE_ROW_MAX")" != "$rec_why" ]; then
+  if [ "$(gate_row_safe "$rec_why" 100000)" != "$rec_why" ]; then
     warn "the record's \`**추천 근거**\` cannot ride on the row as it stands, so the gate does not record it: $rec"
     return "$GATE_EXIT_RULE"
   fi
@@ -27582,13 +27586,20 @@ EOF
   hdig=$(shasum -a 256 "$rec" | cut -d' ' -f1)
   hlane=$(gate_lane_label)
   hat=$(now_iso)
-  hlen=$(gate_row_projected_bytes '중단 답' "세그먼트=$seg" "중단 기록=$rec" "스킬=$skill" \
-    "선택지=$opt" "답한 주체=스테이지" "근거=$rec_why" "근거 종류=기기 사실" \
-    ${ladder:+"잔여 판정=$ladder"} "기록 다이제스트=$hdig" "첨부=$att" \
-    "첨부 다이제스트=0000000000000000000000000000000000000000000000000000000000000000" \
-    "레인=$hlane" "기록 시각=$hat")
+  local hwhy="$rec_why" hw=300
+  while :; do
+    hlen=$(gate_row_projected_bytes '중단 답' "세그먼트=$seg" "중단 기록=$rec" "스킬=$skill" \
+      "선택지=$opt" "답한 주체=스테이지" "근거=$hwhy" "근거 종류=기기 사실" \
+      ${ladder:+"잔여 판정=$ladder"} "기록 다이제스트=$hdig" "첨부=$att" \
+      "첨부 다이제스트=0000000000000000000000000000000000000000000000000000000000000000" \
+      "레인=$hlane" "기록 시각=$hat")
+    [ "$hlen" -le "$GATE_ROW_MAX" ] && break
+    [ "$hw" -ge 40 ] || break
+    hwhy=$(gate_row_safe "$rec_why" "$hw")
+    hw=$((hw - 40))
+  done
   if [ "$hlen" -gt "$GATE_ROW_MAX" ]; then
-    warn "the \`중단 답\` row of this stage answer does not fit the row cap (${hlen} bytes over ${GATE_ROW_MAX}) — nothing was written: $rec"
+    warn "the \`중단 답\` row of this stage answer does not fit the row cap even with \`근거\` clipped (${hlen} bytes over ${GATE_ROW_MAX}) — nothing was written: $rec"
     return "$GATE_EXIT_RULE"
   fi
   body="채택한 선택지: $opt"$'\n'"추천 근거:"
@@ -27607,7 +27618,7 @@ EOF
   local attdig
   attdig=$(shasum -a 256 "$att" | cut -d' ' -f1)
   if ! ( gate_append '중단 답' "세그먼트=$seg" "중단 기록=$rec" "스킬=$skill" \
-           "선택지=$opt" "답한 주체=스테이지" "근거=$rec_why" "근거 종류=기기 사실" \
+           "선택지=$opt" "답한 주체=스테이지" "근거=$hwhy" "근거 종류=기기 사실" \
            ${ladder:+"잔여 판정=$ladder"} "기록 다이제스트=$hdig" \
            "첨부=$att" "첨부 다이제스트=$attdig" "레인=$hlane" "기록 시각=$hat" ); then
     rm -f "$att"

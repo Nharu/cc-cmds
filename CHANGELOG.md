@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **게이트 `halt-answer` 의 스테이지 갈래** — 스테이지 호출은 교대 표지보다 먼저 가린다. 자기 시도의 기록(`$RUN_DIR/halt/$CC_PIPELINE_STAGE_ID.md`, `--segment` 는 스테이지 id 의 `#` 앞)이고, 완결된 `gate-unanswerable` 사다리 기록이며, 쓴 스킬이 discuss 나 solo 이고, 자동 답 스위치가 켜져 있고, 좌석 답과 같은 추천·설계 문서 대조와 자동 답 상한을 지나고, 이 시도의 `stage-result` 행이 아직 없을 때만 받는다. 스테이지는 `중단 기록` 과 `선택지` 만 넘기고, 게이트가 `답한 주체=스테이지`, 기록의 추천 근거를 그대로 옮긴 `근거`, `근거 종류=기기 사실`, 잔여 판정 도장과 첨부를 쓴다.
+- **게이트 `halt-answer` 의 스테이지 갈래** — 스테이지 호출은 교대 표지보다 먼저 가린다. 자기 시도의 기록(`$RUN_DIR/halt/$CC_PIPELINE_STAGE_ID.md`, `--segment` 는 스테이지 id 의 `#` 앞)이고, 완결된 `gate-unanswerable` 사다리 기록이며, 쓴 스킬이 discuss 나 solo 이고, 자동 답 스위치가 켜져 있고, 좌석 답과 같은 추천·설계 문서 대조와 자동 답 상한을 지나고, 이 시도의 `stage-result` 행이 아직 없을 때만 받는다. 스테이지는 `중단 기록` 과 `선택지` 만 넘기고, 게이트가 `답한 주체=스테이지`, 기록의 추천 근거를 그대로 옮긴 `근거`(행 상한을 넘으면 좌석처럼 잘렸다고 표시해 자르고, 첨부에는 온전히 남긴다), `근거 종류=기기 사실`, 잔여 판정 도장과 첨부를 쓴다.
 - **두 분류기** — 드라이버의 `classify_termination` 과 게이트의 정산 사슬은 `답한 주체=스테이지` 행이 이름 댄 기록을 park 근거로 쓰지 않고 산출물 술어로 판정한다.
 - **자동 답 판정 사본** — 게이트·`liveness.sh`·`attention-round.sh`·`dashboard_read.py` 가 `스테이지` 를 사람 없이 쓴 답으로 읽는다. 게이트의 `answered_halts` 는 스테이지 행을 넘길 답으로 싣지 않는다.
 - **스킬** — `design-discuss-unattended` 에 스테이지–게이트 `halt-answer` 호출 계약을 두고, `design-solo-unattended` 가 그것을 따른다. `**잔여 동결**` 줄의 주체에 `스테이지` 가 더해진다. 좌석 참조와 아침 보고서는 스테이지가 동결한 기록을 좌석이 다시 답하지 않고, 사람 없이 동결한 잔여 항목에 함께 싣는다.

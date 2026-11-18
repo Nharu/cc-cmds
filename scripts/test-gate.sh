@@ -38524,8 +38524,17 @@ sln_row=$(sln_last)
 check "34p: 스테이지 답 행은 답한 주체=스테이지 · 선택지=잔여로 두고 동결 · 근거 종류=기기 사실이다" \
   "$(row_field "$sln_row" '답한 주체')/$(row_field "$sln_row" '선택지')/$(row_field "$sln_row" '근거 종류')" \
   "스테이지/잔여로 두고 동결/기기 사실"
-check "34p: 스테이지 답 행의 근거는 기록의 추천 근거 줄 그대로다" \
-  "$(row_field "$sln_row" '근거')" "${SLN_B12#'**추천 근거**: '}"
+# `근거` is the basis line whole, or — where this machine's state paths are long
+# enough to push the row past the cap — a clip of it that says so; the
+# attachment keeps the whole either way.
+sln_why=$(row_field "$sln_row" '근거'); sln_b="${SLN_B12#'**추천 근거**: '}"
+if [ "$sln_why" = "$sln_b" ]; then sln_wv=그대로
+elif [ "${sln_why%…(잘림)}" != "$sln_why" ] && [ "${sln_b#"${sln_why%…(잘림)}"}" != "$sln_b" ]; then sln_wv=잘림
+else sln_wv="$sln_why"; fi
+case "$sln_wv" in
+  그대로|잘림) ok "34p: 스테이지 답 행의 근거는 기록의 추천 근거 줄이다 (그대로, 또는 잘렸다고 말하는 앞부분)" ;;
+  *) bad "34p: 스테이지 답 행의 근거" "기록의 추천 근거 줄도 그 잘린 앞부분도 아님: $sln_wv" ;;
+esac
 check "34p: 스테이지 답 행이 잔여 판정 도장을 싣는다" "$(row_field "$sln_row" '잔여 판정')" "코드-부재:R1/사람-환경:R2"
 SLN_S1A="${SLN_S1%.md}.answer.md"
 check "34p: 게이트가 쓴 첨부가 행의 첨부·첨부 다이제스트와 맞는다" \
@@ -38533,6 +38542,8 @@ check "34p: 게이트가 쓴 첨부가 행의 첨부·첨부 다이제스트와 
   "$SLN_S1A/$(shasum -a 256 "$SLN_S1A" 2>/dev/null | cut -d' ' -f1)"
 check "34p: 첨부가 채택한 선택지와 되돌리는 법을 싣는다" \
   "$( { grep -cxF -e '채택한 선택지: 잔여로 두고 동결' -e '## 되돌리는 법' "$SLN_S1A" || true; } | tr -d ' ')" "2"
+check "34p: 첨부가 추천 근거를 자르지 않고 싣는다" \
+  "$( { grep -cxF -e "- ${sln_b%% / *}" -e "- ${sln_b#* / }" "$SLN_S1A" || true; } | tr -d ' ')" "2"
 
 sln_doc '1:구현 필요:-:0:0' '2:검증 차단:사람-환경:1:0'
 SLN_S2="$CAP_DIR/halt/S2#1.md"
