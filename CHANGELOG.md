@@ -5,6 +5,24 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.50.0] - 2026-11-18
+
+무인 스테이지 리드가 값 읽기·복사·해시 같은 부기 명령에 게이트 호출과 원장 행을 쓰던 비중을 줄인다. 지금까지는 파이프라인 값을 `printenv` 로 하나씩 읽고, 설계 문서 작업 사본을 `mktemp`·`cp`·`shasum`·`lockf` 로 나눠 뜨고 되돌려 썼으며, 다이제스트 원천 규칙이 응답마다 게이트 호출 하나를 강요했다. 이제 값은 세션 시작 블록에서 한 번에 받고, 사본은 `doc-tidy.py` 의 동사 둘로 다루며, 한 응답이 게이트 호출을 여럿 실을 수 있다.
+
+### Added
+
+- **세션 시작 값 블록** — `hooks/stage-values-sessionstart.sh` 가 SessionStart(startup·resume·compact) 에 허용 목록의 `CC_PIPELINE_*` 열두 이름과 파생값 셋(`CLAUDE_PLUGIN_ROOT`, 스테이지 키, 작업 사본 접두)을 `[cc-stage-values]` 블록으로 싣는다. 환경을 훑지 않으므로 인가 경로와 토큰은 들어가지 않고, 파이프라인 밖 세션에서는 아무것도 내지 않는다.
+- **`doc-tidy.py checkout`·`publish`** — `checkout` 은 문서 해시가 기대값이고 접두가 이 스테이지의 것일 때만 사본 디렉터리를 만들고(`dir=`·`sha256=`), `publish` 는 잠금 안에서 문서 해시를 다시 재어 기대값일 때만 사본으로 문서를 제자리에서 덮어쓴다(`post_sha256=`). 잠금 점유는 75, 해시 불일치는 65 이고, `--cleanup` 은 안전한 모양의 사본 디렉터리만 지우며 실패하면 `cleanup_failed=` 줄을 낸다.
+- **부기 측정 스크립트** — `scripts/measure-bookkeeping.py` 가 런의 시도 로그와 원장으로 종류별 부기 전용 리드 요청 비율, 스테이지당 부기 exec 수, 다이제스트 거부 호출 수를 표와 JSON 으로 낸다.
+
+### Changed
+
+- **다이제스트 원천** — 훅의 안내문·거부문과 라우터 두 사본이 직전 응답의 여러 게이트 호출 중 마지막 `[gate-digest]` 줄을 쓰게 한다.
+- **값 원천** — 스테이지 정책과 무인 스킬 여덟이 파이프라인 값을 마지막 `[cc-stage-values]` 블록에서 먼저 읽고, 블록이 없거나 그 이름이 없을 때만 이름을 지정한 `printenv` 로 읽는다.
+- **재수렴·감사의 작업 사본** — `design-reconverge` 와 `design-audit-unattended` 의 사본 절차를 `checkout`·`publish --cleanup` 으로 바꾸고(감사는 다섯 응답), `_common/approval-reflection.md` 의 인용을 새 절차에 맞춘다.
+- **응답당 게이트 호출** — `_common/agent-team-protocol.md` 의 Turn economy 가 한 다이제스트로 응답당 넷까지(구성원이나 하위 에이전트가 살아 있으면 둘) 싣게 하고, 첫 라운드의 난수 생성을 한 응답에 싣는다.
+- **시험** — `scripts/test-snapshot.sh` 가 새 문면을 고정하고 옛 `cp`·`lockf`·`mktemp` 사본 절차가 남지 않았음을, 무인 스킬마다 `printenv` 처방이 블록 우선 문면과 함께 있음을 단언한다. 훅 시험과 test-gate 31ac-2 가 새 훅·동사를 단언한다.
+
 ## [3.49.0] - 2026-11-18
 
 벽시계 상한에 기대는 test-gate 단언이 호스트 부하로 실패해도 회귀처럼 빨강으로 남지 않게 한다. 상한을 재는 판정 줄에 `# gate-load: <사유>` 표지를 달고, 좁힌 실행에서 표지가 달린 단언만 실패하면 그 절을 단독으로 한 번 다시 돌려 통과하면 `판정=부하통과` 로 끝낸다. 린트가 표지 없는 경과 상한 비교를 잡고, CI 실패 서명과 무인 구현 스테이지의 해석 규약도 이 판정을 읽는다.
