@@ -70392,6 +70392,208 @@ check "108s: 행위 종류 목록이 review-post 를 싣는다" \
 unset S106_SK s106_rt s106_rr s106_f s106_sc s106_got s106_k
 
 # ---------------------------------------------------------------------------
+# 108c. 정상 완료한 리뷰는 cycle 행이 서기 전에 다시 파견되지 않는다
+# --- section: 108c | group: sa | covers: snapshot, act, plan, review-line, cycle, review_next, gate_review_cycle_due_of, gate_review_cycle_refusal_fact, gate_review_report_path, autopilot-router-shift | anchors: 108c: 리뷰어 런의 정상 완료 리뷰는 cycle_due 에 리포트 경로로 선다, 108c: 리뷰어 런의 대기 중 계기 파견과 복구 파견은 rc 3 이고 행이 없다, 108c: 리뷰어 런의 원소 경로 cycle 행 뒤 cycle_due 는 비고 다음 은 게시다, 108c: 일반 런의 정상 완료 리뷰는 cycle_due 에 선다, 108c: 일반 런의 대기 중 계기 파견과 복구 파견은 rc 3 이고 행이 없다, 108c: 일반 런의 원소 경로 cycle 행 뒤 cycle_due 는 빈다, 108c: 대기 중 다른 슬라이스 거절은 리뷰 기록 거절 행을 남기고 대기를 푼다, 108c: 거절 뒤 리뷰 줄은 cycle1-r2 를 낸다, 108c: 거절 뒤 cycle1 경로 파견은 rc 2 이고 cycle1-r2 파견은 통과한다, 108c: 마지막 파견이 아닌 리포트의 cycle 행은 rc 2 다, 108c: 크래시로 끝난 리뷰는 대기가 아니고 복구 파견이 통과한다, 108c: 리뷰 HEAD 줄 없는 복구 리포트는 대기가 아니고 계기 재파견이 cycle1-r2 로 통과한다, 108c: 같은 복구 리포트에 리뷰 HEAD 줄이 한 줄이면 같은 재파견이 rc 3 이다 ---
+#
+# 리뷰 스테이지가 `정상 완료` 로 끝났는데 그 결과의 cycle 행이 없는 세그먼트를 스냅숏의
+# `cycle_due[]` 가 내고, 그동안 그 세그먼트의 리뷰 파견은 계기·복구 어느 쪽이든 rc 3 으로
+# 막힌다. 원장의 stage-result 행과 계기를 실은 파견 행은 라우터·드라이버가 쓰는 모양대로
+# 직접 심는다 — 실제 스테이지를 띄우지 않고 게이트의 판정만 잰다. 거절을 재는 파견은 act 로
+# 불러 행이 없음을 함께 보고, 통과를 재는 파견은 plan 으로 부른다(통과한 act 는 스테이지를
+# 띄운다). 리뷰어 런과 일반 런이 각자 자기 픽스처를 이 절 안에서 만든다.
+# ---------------------------------------------------------------------------
+cd108_rep() {  # cd108_rep <파일> <리뷰 HEAD|-> [HEAD 줄 수] — P0·P1 이 없는 리뷰 리포트
+  local i n=${3:-1}
+  {
+    printf '# 코드 리뷰 리포트\n\n'
+    if [ "$2" != - ]; then
+      for i in $(seq 1 "$n"); do printf -- '- **리뷰 HEAD**: `%s`\n' "$2"; done
+    fi
+    printf -- '- **발견 요약**: 🔴 P0 0건 | 🟠 P1 0건 | 🟡 P2 0건 | 🟢 P3 0건\n'
+  } > "$1"
+}
+cd108_sr() {  # cd108_sr <세그먼트> <종단 부류> <실행 버전> — 리뷰 스테이지의 stage-result 행
+  printf -- '- `stage-result` | 교대=1 | 세그먼트=%s | 스테이지=%s | 종류=review | 종료 코드=0 | 실행 버전=%s | 종단 부류=%s | prev=x\n' \
+    "$1" "$1" "$3" "$2" >> "$SA_LEDGER"
+}
+cd108_disp() {  # cd108_disp <세그먼트> <리포트 경로> [계기] — act 리뷰 파견이 남기는 자율 승인 행
+  printf -- '- `자율 승인` | 교대=1 | kind=skill | 결정=act | 세그먼트=%s | 리포트 경로=%s%s | 근거=x | prev=x\n' \
+    "$1" "$2" "${3:+ | 계기=$3}" >> "$SA_LEDGER"
+}
+cd108_cp() {  # cd108_cp <세그먼트> [k] — 이 픽스처 런의 정본 리포트 경로(k 는 -r<k>)
+  CANON_LEDGER="$SA_LEDGER" CANON_BASE="$WORK" canon_rp "$SA_ID" "$1" ${2:+"$2"}
+}
+cd108_due() {  # cd108_due — cycle_due[] 원소를 `세그먼트|다음|리포트 경로|실행 버전` 으로 한 줄씩
+  ( cd "$SA_WT" && gate_inproc snapshot --manifest "$SA_MANIFEST" 2>/dev/null ) \
+    | jq -r '.cycle_due[]? | [.["세그먼트"], .["다음"], .["리포트 경로"], .["실행 버전"]] | join("|")'
+}
+cd108_next() {  # cd108_next <세그먼트> — review_next[] 의 다음
+  ( cd "$SA_WT" && gate_inproc snapshot --manifest "$SA_MANIFEST" 2>/dev/null ) \
+    | jq -r --arg s "$1" '.review_next[]? | select(.["세그먼트"] == $s) | .["다음"]'
+}
+cd108_nauto() { { grep -c '^- `자율 승인` ' "$SA_LEDGER" || true; }; }
+cd108_act() {  # cd108_act <세그먼트> <프롬프트> [계기] — act 리뷰 파견
+  if [ -n "${3:-}" ]; then
+    sag act --manifest "$SA_MANIFEST" --kind skill --target main --segment "$1" --cutpoint 커밋 --surface 워크트리쓰기 \
+        --snapshot-digest "$(SAH)" --rationale x --trigger "$3" -- review -p "$2"
+  else
+    sag act --manifest "$SA_MANIFEST" --kind skill --target main --segment "$1" --cutpoint 커밋 --surface 워크트리쓰기 \
+        --snapshot-digest "$(SAH)" --rationale x -- review -p "$2"
+  fi
+}
+cd108_plan() {  # cd108_plan <세그먼트> <프롬프트> [계기] — plan 리뷰 파견
+  if [ -n "${3:-}" ]; then
+    sag plan --manifest "$SA_MANIFEST" --kind skill --target main --segment "$1" --cutpoint 커밋 --surface 워크트리쓰기 \
+        --trigger "$3" -- review -p "$2"
+  else
+    sag plan --manifest "$SA_MANIFEST" --kind skill --target main --segment "$1" --cutpoint 커밋 --surface 워크트리쓰기 \
+        -- review -p "$2"
+  fi
+}
+cd108_cycle() {  # cd108_cycle <세그먼트> <리뷰 HEAD> <리포트 경로> [P1] — cycle 행
+  sag act --manifest "$SA_MANIFEST" --kind cycle --target main --segment "$1" --cutpoint 커밋 \
+      --snapshot-digest "$(SAH)" --rationale x \
+      -- 사이클=1 P0=0 "P1=${4:-0}" "리뷰 HEAD=$2" "리포트 경로=$3"
+}
+cd108_rl() {  # cd108_rl <세그먼트> — 리뷰 줄
+  sag review-line --manifest "$SA_MANIFEST" --segment "$1"; printf '%s' "$msg"
+}
+cd108_rpath() { printf '%s\n' "$1" | awk '{ for (i = 1; i < NF; i++) if ($i == "--report-path") print $(i + 1) }'; }
+# 리뷰 줄의 경로는 실경로로 풀린 절대 경로이고 정본 헬퍼의 경로는 임시 디렉터리 표기
+# 그대로다. 같은 리포트인지는 파일 이름으로 가린다 — 런 id·세그먼트·사이클·재파견 번호가
+# 모두 거기 있다.
+cd108_base() { printf '%s' "${1##*/}"; }
+
+# 리뷰어 런 — 다른 작성자의 PR 하나를 리뷰 전용 세그먼트로 계획한다 ---------------------------
+sa_new "사이클 기록 대기 — 리뷰어 런" 리뷰없음
+SA_PLAN='{ "run_profile": "reviewer", "steps": [ { "id": "R1", "skill": "review", "depends_on": [] } ] }'
+SA_AUTH_RAW=$(printf -- '- `리뷰 PR` | 세그먼트=P1 | 대상=main | PR=7 | 작성자=other-dev | 드래프트=아니오 | 베이스=main\n- `리뷰 게시` | 방식=직접 | 의사표시=허용 | 계정=rv-bot\n- `리뷰 깊이` | 깊이=가벼움')
+sa_manifest 리뷰없음
+( cd "$SA_REPO" && git checkout -q -b pr7 main && printf 'one\ntwo\n' > a.txt && git commit -qam pr7 \
+    && git push -q origin HEAD:refs/pull/7/head && git checkout -q main ) >/dev/null 2>&1
+cd108_w=$( ( cd "$SA_WT" && gate_inproc snapshot --manifest "$SA_MANIFEST" 2>/dev/null ) \
+  | jq -r '.["리뷰 세그먼트"][]? | select(.id == "P1") | .["워크트리"]')
+( cd "$SA_REPO" && git fetch -q origin "+refs/pull/7/head:refs/cc-review/$SA_ID/P1" \
+    "+refs/heads/main:refs/cc-review/$SA_ID/P1-base" \
+    && git worktree add -q --detach "$cd108_w" "refs/cc-review/$SA_ID/P1" ) >/dev/null 2>&1
+cd108_h=$(git --git-dir="$SA_REMOTE" rev-parse refs/pull/7/head)
+sag act --manifest "$SA_MANIFEST" --kind segment --review-pr --target main --segment P1 --cutpoint 커밋 \
+    --snapshot-digest "$(SAH)" --rationale x -- 상태=계획됨 "워크트리=$cd108_w"
+check "108c: (전제) 리뷰어 런의 리뷰 전용 세그먼트가 계획된다" "$rc" "0"
+cd108_l=$(cd108_rl P1)
+cd108_p=$(cd108_rpath "$cd108_l")
+cd108_plan P1 "$cd108_l" '첫 리뷰'
+check "108c: (전제) 리뷰어 런의 첫 리뷰 파견은 통과한다" "$rc" "0"
+cd108_disp P1 "$cd108_p" '첫 리뷰'
+mkdir -p "$(dirname "$cd108_p")"; cd108_rep "$cd108_p" "$cd108_h"
+cd108_sr P1 '정상 완료' 4
+check "108c: 리뷰어 런의 정상 완료 리뷰는 cycle_due 에 리포트 경로로 선다" "$(cd108_due)" "P1|사이클 기록|$cd108_p|4"
+cd108_n0=$(cd108_nauto)
+cd108_act P1 "$cd108_l" '첫 리뷰'; cd108_r1=$rc; cd108_m1=$msg
+cd108_act P1 "$cd108_l --recover"; cd108_r2=$rc
+check "108c: 리뷰어 런의 대기 중 계기 파견과 복구 파견은 rc 3 이고 행이 없다" \
+  "$cd108_r1/$cd108_r2/$(cd108_nauto)" "3/3/$cd108_n0"
+case "$cd108_m1" in
+  *"cycle 행이 없습니다"*"$cd108_p"*"cycle_due[]"*) ok "108c: 그 거절은 리포트와 cycle_due[] 를 든다" ;;
+  *) bad "108c 대기 거절 문면" "$cd108_m1" ;;
+esac
+cd108_cycle P1 "$cd108_h" "$cd108_p"
+check "108c: 리뷰어 런의 원소 경로 cycle 행 뒤 cycle_due 는 비고 다음 은 게시다" \
+  "$rc|$(cd108_due)|$(cd108_next P1)" "0||게시"
+
+# 일반 런 — 구현 세그먼트 C1·C2·C3·C4 -----------------------------------------------------
+sa_new "사이클 기록 대기 — 일반 런"
+cd108_h=$(sa_commit 작업)
+for cd108_s in C1 C2 C3 C4; do sa_seg_row "$cd108_s" ""; done
+check "108c: (전제) 일반 런의 세그먼트 행이 기록된다" "$rc" "0"
+
+# C1 — 같은 순서, 같은 신호와 거부
+cd108_p=$(cd108_cp C1)
+cd108_l=$(cd108_rl C1)
+check "108c: (전제) 일반 런의 첫 리뷰 줄은 정본 경로를 낸다" "$(cd108_base "$(cd108_rpath "$cd108_l")")" "$(cd108_base "$cd108_p")"
+cd108_disp C1 "$cd108_p" '첫 리뷰'
+mkdir -p "$(dirname "$cd108_p")"; cd108_rep "$cd108_p" "$cd108_h"
+cd108_sr C1 '정상 완료' 2
+check "108c: 일반 런의 정상 완료 리뷰는 cycle_due 에 선다" "$(cd108_due)" "C1|사이클 기록|$cd108_p|2"
+cd108_n0=$(cd108_nauto)
+cd108_act C1 "$cd108_l" '첫 리뷰'; cd108_r1=$rc
+cd108_act C1 "$cd108_l --recover"; cd108_r2=$rc
+check "108c: 일반 런의 대기 중 계기 파견과 복구 파견은 rc 3 이고 행이 없다" \
+  "$cd108_r1/$cd108_r2/$(cd108_nauto)" "3/3/$cd108_n0"
+cd108_cycle C1 "$cd108_h" "$cd108_p"
+check "108c: 일반 런의 원소 경로 cycle 행 뒤 cycle_due 는 빈다" "$rc|$(cd108_due)" "0|"
+cd108_v=$(cd108_next C1)
+if [ -n "$cd108_v" ] && [ "$cd108_v" != '사이클 기록' ]; then
+  ok "108c: 그 뒤 review_next 의 다음 은 그 cycle 값이다"
+else
+  bad "108c: 그 뒤 review_next 의 다음 은 그 cycle 값이다" "다음='$cd108_v'"
+fi
+
+# C2 — 대기 중 cycle 행이 다른 슬라이스 절에서 거절되면 거절 행이 대기를 푼다
+cd108_p=$(cd108_cp C2)
+cd108_disp C2 "$cd108_p" '첫 리뷰'
+{
+  printf '# 코드 리뷰 리포트\n\n- **리뷰 HEAD**: `%s`\n' "$cd108_h"
+  printf -- '- **발견 요약**: 🔴 P0 0건 | 🟠 P1 1건 | 🟡 P2 0건 | 🟢 P3 0건\n'
+  printf -- '- **다른 슬라이스 몫**: 1건 (집계 제외)\n'
+  printf '\n## 🔴 P0\n\n## 🟠 P1\n\n- P1 픽스처 `a.txt:2` y\n'
+  printf '\n## 다른 슬라이스 몫 (집계 제외)\n\n- **[c]** **[P1]** `x.sh:1` d — r\n    - **배정**: 슬라이스 C2 — 「줄」\n'
+} > "$cd108_p"
+cd108_sr C2 '정상 완료' 3
+cd108_cycle C2 "$cd108_h" "$cd108_p" 1; cd108_r1=$rc
+cd108_rr=$( { grep '^- `리뷰 기록 거절` ' "$SA_LEDGER" || true; } | tail -1)
+check "108c: 대기 중 다른 슬라이스 거절은 리뷰 기록 거절 행을 남기고 대기를 푼다" \
+  "$cd108_r1|$(sa_field "$cd108_rr" 세그먼트)|$(sa_field "$cd108_rr" 부류)|$(sa_field "$cd108_rr" '실행 버전')|$(cd108_due)" \
+  "2|C2|다른 슬라이스|3|"
+cd108_p2=$(cd108_cp C2 2)
+cd108_l=$(cd108_rl C2)
+check "108c: 거절 뒤 리뷰 줄은 cycle1-r2 를 낸다" "$(cd108_base "$(cd108_rpath "$cd108_l")")" "seg-$SA_ID-C2-cycle1-r2.md"
+cd108_plan C2 "/cc-cmds:review-unattended x --report-path $cd108_p" '첫 리뷰'; cd108_r1=$rc
+cd108_plan C2 "$cd108_l" '첫 리뷰'
+check "108c: 거절 뒤 cycle1 경로 파견은 rc 2 이고 cycle1-r2 파견은 통과한다" "$cd108_r1/$rc" "2/0"
+cd108_disp C2 "$cd108_p2" '첫 리뷰'
+cd108_rep "$cd108_p2" "$cd108_h"
+cd108_sr C2 '정상 완료' 4
+check "108c: (전제) 재파견의 정상 완료가 cycle1-r2 로 다시 대기를 세운다" "$(cd108_due)" "C2|사이클 기록|$cd108_p2|4"
+cd108_rep "$cd108_p" "$cd108_h"
+cd108_cycle C2 "$cd108_h" "$cd108_p"
+check "108c: 마지막 파견이 아닌 리포트의 cycle 행은 rc 2 다" "$rc" "2"
+cd108_cycle C2 "$cd108_h" "$cd108_p2"
+check "108c: 마지막 파견의 리포트로는 cycle 행이 선다" "$rc|$(cd108_due)" "0|"
+
+# C3 — 크래시로 끝난 리뷰는 대기가 아니다
+cd108_p=$(cd108_cp C3)
+cd108_l=$(cd108_rl C3)
+cd108_disp C3 "$cd108_p" '첫 리뷰'
+cd108_sr C3 크래시 1
+cd108_plan C3 "$cd108_l --recover"
+check "108c: 크래시로 끝난 리뷰는 대기가 아니고 복구 파견이 통과한다" "$(cd108_due)|$rc" "|0"
+
+# C4 — 계기 있는 첫 파견이 크래시, 복구 파견이 정상 완료, 리포트에 리뷰 HEAD 줄 없음
+cd108_p=$(cd108_cp C4)
+cd108_disp C4 "$cd108_p" '첫 리뷰'
+cd108_sr C4 크래시 1
+cd108_disp C4 "$cd108_p"
+printf '# 코드 리뷰 리포트\n\n- **발견 요약(부분 복구)**: 일부\n\n## 🟠 P1\n\n- P1 픽스처 `a.txt:3` z\n' > "$cd108_p"
+cd108_sr C4 '정상 완료' 2
+cd108_l=$(cd108_rl C4)
+cd108_plan C4 "$cd108_l" '첫 리뷰'
+check "108c: 리뷰 HEAD 줄 없는 복구 리포트는 대기가 아니고 계기 재파견이 cycle1-r2 로 통과한다" \
+  "$(cd108_due)|$(cd108_base "$(cd108_rpath "$cd108_l")")|$rc" "|seg-$SA_ID-C4-cycle1-r2.md|0"
+{
+  printf '# 코드 리뷰 리포트\n\n- **리뷰 HEAD**: `%s`\n' "$cd108_h"
+  printf -- '- **발견 요약(부분 복구)**: 일부\n\n## 🟠 P1\n\n- P1 픽스처 `a.txt:3` z\n'
+} > "$cd108_p"
+cd108_n0=$(cd108_nauto)
+cd108_act C4 "$cd108_l" '첫 리뷰'
+check "108c: 같은 복구 리포트에 리뷰 HEAD 줄이 한 줄이면 같은 재파견이 rc 3 이다" \
+  "$(cd108_due | cut -d'|' -f1)|$rc|$(cd108_nauto)" "C4|3|$cd108_n0"
+cd108_rep "$cd108_p" "$cd108_h" 2
+check "108c: 리뷰 HEAD 줄이 둘인 리포트는 대기를 세우지 않는다" "$(cd108_due)" ""
+unset -f cd108_rep cd108_sr cd108_disp cd108_cp cd108_due cd108_next cd108_nauto cd108_act cd108_plan cd108_cycle cd108_rl cd108_rpath cd108_base
+unset cd108_w cd108_h cd108_l cd108_p cd108_p2 cd108_n0 cd108_r1 cd108_r2 cd108_m1 cd108_rr cd108_s cd108_v
+
+# ---------------------------------------------------------------------------
 # 108p. 리뷰어 계획 — 진입 검사기의 고정 틀과 라우팅 런에서만의 기동
 # --- section: 108p | group: tier | covers: tier, run_profile, check_manifest, hotfix_routing_check | anchors: 108p: 고정 틀의 리뷰어 계획이 통과한다, 108p: 고정 틀을 벗어난 리뷰어 계획은 거부된다, 108p: 라우팅 기록이 1 이 아닌 런의 리뷰어 기동은 거부된다, 108p: 라우팅 런의 리뷰어 기동은 통과한다, 108p: 문서 없는 입양 매니페스트는 라우팅 런에서만 기동한다, 108p: 문서 있는 입양 매니페스트도 라우팅 런에서만 기동한다 ---
 #

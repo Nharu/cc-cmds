@@ -1062,6 +1062,27 @@ check "refutation_next 는 implement_next 바로 뒤의 배열이다" \
 check "refutation_next 는 기본 --fields 투영 밖이다" \
   "$( ( cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" --fields "$GATE_SNAPSHOT_FIELDS_DEFAULT" 2>/dev/null ) | jq -r 'has("refutation_next")')" "false"
 
+# `cycle_due[]` sits right after `refutation_next[]`, outside the default
+# projection and outside `H`. I9's last row is a review that ended `정상 완료`
+# with no `cycle` row after it, but it waits only once its report carries one
+# `리뷰 HEAD` line: a report file appearing at the canonical path moves the
+# element and leaves `H` where it was. The gate's section 108c drives the wait.
+check "cycle_due 는 refutation_next 바로 뒤의 배열이다" \
+  "$(jq -r '[(keys_unsorted | index("cycle_due")) - (keys_unsorted | index("refutation_next")), (.cycle_due | type), (.cycle_due | length)] | map(tostring) | join("|")' "$SNAP_I")" "1|array|0"
+check "cycle_due 는 기본 --fields 투영 밖이다" \
+  "$( ( cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" --fields "$GATE_SNAPSHOT_FIELDS_DEFAULT" 2>/dev/null ) | jq -r 'has("cycle_due")')" "false"
+hc0=$( ( cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" --fields H 2>/dev/null ) )
+mkdir -p "$WT/docs/reviews"
+printf -- '# 코드 리뷰 리포트\n\n- **리뷰 HEAD**: `%s`\n- **발견 요약**: 🔴 P0 0건 | 🟠 P1 0건 | 🟡 P2 0건 | 🟢 P3 0건\n' \
+  "$(printf 'a%.0s' $(seq 1 40))" > "$WT/docs/reviews/seg-R1-I9-cycle1.md"
+check "리뷰 HEAD 줄 한 줄의 리포트가 생기면 cycle_due 원소가 선다" \
+  "$( ( cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null ) \
+      | jq -r '[.cycle_due[] | .["세그먼트"] + "|" + .["다음"] + "|" + (.["리포트 경로"] | split("/") | last)] | join(" ")')" \
+  "I9|사이클 기록|seg-R1-I9-cycle1.md"
+check "cycle_due 의 값이 움직여도 H 는 그대로다" \
+  "$( ( cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" --fields H 2>/dev/null ) )" "$hc0"
+rm -f "$WT/docs/reviews/seg-R1-I9-cycle1.md"
+
 # ---------------------------------------------------------------------------
 # 6e-2. `audit_skeleton_due` — the audit that asked for its skeletal re-convergence
 #
