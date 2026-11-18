@@ -7,8 +7,7 @@
 # named `*.env`:
 #
 #   claude-design   `allow = <address>` (zero or more lines), `account =
-#                   <address>`, `lane = <lane id>` and `share = <address>` —
-#                   written by a person, never seeded, never copied into a run.
+#                   <address>` and `lane = <lane id>` — written by a person, never seeded, never copied into a run.
 #                   The allow list is every `allow` value together with the
 #                   last `account` value, compared case-insensitively; a file
 #                   with one `account` line alone allows that one account
@@ -97,10 +96,6 @@
 #                      line, an empty value) or a record that does not parse
 #                      prints nothing and exits 1. Read-only, and allowed
 #                      inside a run.
-#   share              print the `share` value of claude-design — the address
-#                      a migrated canvas is shared with. No value prints
-#                      nothing and exits 1. Read-only, and allowed inside a
-#                      run.
 #   models            print the resolved model table, `<key> = <value> |
 #                      <기본값|호스트 설정>`, one line per key in a fixed order.
 #                      An unknown key or a value outside the vocabulary keeps
@@ -160,7 +155,7 @@ MODEL_KEYS='ds-generate screen-generate polish implement-large implement-large-t
 MODEL_VOCAB='opus sonnet haiku fable'
 
 usage() {
-  echo "사용법: visual-config.sh account <문서> | expect <문서> | record <문서> | assign <문서> <주소> [--replace] | allowed | lane | share | models | bans | seed | append <줄> | snapshot [--part models|bans]" >&2
+  echo "사용법: visual-config.sh account <문서> | expect <문서> | record <문서> | assign <문서> <주소> [--replace] | allowed | lane | models | bans | seed | append <줄> | snapshot [--part models|bans]" >&2
   exit 2
 }
 
@@ -696,17 +691,6 @@ cmd_lane() {
   printf '%s\n' "$val"
 }
 
-# --- share --------------------------------------------------------------------
-cmd_share() {
-  local line val=''
-  if [ -f "$ACCOUNT_FILE" ]; then
-    line=$(grep -E '^[[:space:]]*share[[:space:]]*=' "$ACCOUNT_FILE" | tail -n 1 || true)
-    [ -z "$line" ] || val=$(trim "${line#*=}")
-  fi
-  [ -n "$val" ] || exit 1
-  printf '%s\n' "$val"
-}
-
 # --- models -------------------------------------------------------------------
 cmd_models() {
   local key val src line k v found
@@ -941,7 +925,6 @@ case "$sub" in
     ;;
   allowed) [ $# -eq 0 ] || usage; cmd_allowed ;;
   lane) [ $# -eq 0 ] || usage; cmd_lane ;;
-  share) [ $# -eq 0 ] || usage; cmd_share ;;
   models) [ $# -eq 0 ] || usage; cmd_models ;;
   bans) [ $# -eq 0 ] || usage; cmd_bans ;;
   seed) [ $# -eq 0 ] || usage; cmd_seed ;;
