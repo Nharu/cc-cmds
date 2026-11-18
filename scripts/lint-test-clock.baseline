@@ -23,3 +23,6 @@ scripts/test-run-issue-filing.sh|elapsed-compare|check "8c: 수집기가 오래 
 scripts/test-similar-items.sh|elapsed-compare|if [ "$elapsed" -le 35 ]; then ok "무응답 — 35초 안에 끝난다 (${elapsed}s)"; else bad "무응답 — 35초 안에 끝난다" "${elapsed}s"; fi
 scripts/test-snapshot.sh|clock-margin|"그룹=org:h1" "까지=-" "갱신=$((w_now - w_stall - 1))" "종류=review" "논스=-" > "$RD_R1/S9.waiting"
 scripts/test-statusline.sh|elapsed-compare|if [ "$g8_elapsed" -le 3 ]; then ok "G8 폴링 상한이 1초다 (경과 ${g8_elapsed}초)"
+scripts/test-tree.sh|elapsed-compare|if [ "$v" -lt 20 ]; then ok "F41 조기 종료는 긴 잡을 기다리지 않는다"; else bad "F41 조기 종료는 긴 잡을 기다리지 않는다" "${v}초"; fi
+scripts/test-tree.sh|elapsed-compare|if [ -n "$e" ] && ! kill -0 "$e" 2>/dev/null && [ "$v" -lt 20 ]; then
+scripts/test-tree.sh|elapsed-compare|if [ -n "$out" ] && [ -n "$line" ] && [ "$out" -ge 2 ] && [ $((line - v)) -lt "$out" ]; then
