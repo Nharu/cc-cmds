@@ -17831,8 +17831,7 @@ au15_wait R15VQ S2P
 check "15vq: 반영 행이 세그먼트=- · 스테이지=S2P · 종류=reconverge 로 정상 완료다" \
   "$(au15_rows R15VQ '| 세그먼트=- | 스테이지=S2P | 종류=reconverge |' | grep -c . || true)/$(au15_class R15VQ S2P reconverge)" "1/정상 완료"
 check "15vq: 단계 id 를 세그먼트로 쓴 반영 행은 없다" "$(au15_rows R15VQ '세그먼트=S2P ' | grep -c . || true)" "0"
-att15vq=$(au15_rows R15VQ '| 세그먼트=- | 스테이지=S2P | 종류=reconverge |' | tail -1 \
-  | tr '|' '\n' | sed -n 's/^ *실행 버전=//p' | sed 's/[[:space:]]*$//')
+att15vq=$(au15_rows R15VQ '| 세그먼트=- | 스테이지=S2P | 종류=reconverge |' | tail -1 | tr '|' '\n' | sed -n 's/^ *실행 버전=//p' | sed 's/[[:space:]]*$//')
 vq15_plan "$reflect15vq"
 case "$rc/$msg" in
   3/*"승인 화면 반영을 이미 1번 들였습니다"*) ok "15vq: 같은 답의 두 번째 반영은 거부된다" ;;
@@ -17855,11 +17854,17 @@ check "15vq 픽스처: 반영 행이 게이트가 쓴 재설계 필요 행이다
   "$(au15_rows R15VQ '| 세그먼트=- | 스테이지=S2P | 종류=reconverge |' | grep -F '| 기록자=게이트 |' | grep -cF '| 재수렴 판정=재설계 필요 |' || true)" "1"
 vq15_rp='gate_segment_ids() { printf "S2\n"; }
   gate_replan_eval() { GATE_REPLAN_C1=1 GATE_REPLAN_C2=1 GATE_REPLAN_C3=1 GATE_REPLAN_C4=1 GATE_REPLAN_C5=1 GATE_REPLAN_C6=1 GATE_REPLAN_C7=1; }'
-check "15vq: 반영 행은 재계획 후보가 아니다" "$(vq15 "$vq15_rp"'
-  gate_replan_due_json | grep -c "\"segment\"" || true')" "0"
-check "15vq: 시각 발행 단계가 없으면 같은 행이 후보다 (위가 공허하지 않다)" "$(vq15 "$vq15_rp"'
+# A snippet of several lines is held in a variable, so the `$(vq15 …)` that
+# runs it sits on one source line: the line bash attributes to a command inside
+# a command substitution whose text spans lines is not the same in every
+# context, and the isolation check compares the lines a section executed.
+vq15_sn='
+  gate_replan_due_json | grep -c "\"segment\"" || true'
+check "15vq: 반영 행은 재계획 후보가 아니다" "$(vq15 "$vq15_rp$vq15_sn")" "0"
+vq15_sn='
   gate_run_scope_step() { return 1; }
-  gate_replan_due_json | grep -c "\"reconverge\": \"S2P#" || true')" "1"
+  gate_replan_due_json | grep -c "\"reconverge\": \"S2P#" || true'
+check "15vq: 시각 발행 단계가 없으면 같은 행이 후보다 (위가 공허하지 않다)" "$(vq15 "$vq15_rp$vq15_sn")" "1"
 f113_new R15VQD '`sa/vq.txt`' '`SB.txt`' || bad "15vq: R15VQD 픽스처 계획" "rc=$rc $msg"
 f113_set R15VQD SB '선언 파일' '`SB.txt`, `sb/vq.txt`'
 f113_in R15VQD '
@@ -17894,18 +17899,18 @@ case "$rc/$msg" in
   3/*"승인 화면 반영이 아직 돌고 있습니다"*) ok "15vq: 반영 시도가 살아 있는 동안 시각 발행 파견은 거부된다" ;;
   *) bad "15vq: 반영 시도가 살아 있는 동안 시각 발행 파견은 거부된다" "rc=$rc $msg" ;;
 esac
-check "15vq: 반영 세션은 시각 발행 단계로 읽히지 않는다" \
-  "$(vq15 'CC_PIPELINE_STAGE_ID="S2P#$1"; gate_caller_is_visual_publish_stage && printf 발행 || printf 아님
-    printf "visual-publish\n" > "$RUN_DIR/S2P.kind"; gate_caller_is_visual_publish_stage && printf /발행 || printf /아님' "$att15vq")" "아님/발행"
+vq15_sn='CC_PIPELINE_STAGE_ID="S2P#$1"; gate_caller_is_visual_publish_stage && printf 발행 || printf 아님
+    printf "visual-publish\n" > "$RUN_DIR/S2P.kind"; gate_caller_is_visual_publish_stage && printf /발행 || printf /아님'
+check "15vq: 반영 세션은 시각 발행 단계로 읽히지 않는다" "$(vq15 "$vq15_sn" "$att15vq")" "아님/발행"
 kill "$FX_LAST_PID" 2>/dev/null || true
 wait "$FX_LAST_PID" 2>/dev/null || true
 rm -f "$RD15VQ/S2P.pid" "$RD15VQ/S2P.start" "$RD15VQ/S2P.kind"
 
 # An answer to the publish stage's own halt re-attaches the publish session: the
 # reflection's later row on the same key is passed over.
-check "15vq: 시각 발행 정지의 재부착은 반영 행을 건너뛴다" \
-  "$(vq15 'printf "%s/%s" "$(gate_row_field "$(gate_stage_last_settled_row S2P)" "세션 id")" \
-    "$(gate_row_field "$(gate_stage_last_settled_row S2P reconverge)" "세션 id")"')" "svq-refl/spub1"
+vq15_sn='printf "%s/%s" "$(gate_row_field "$(gate_stage_last_settled_row S2P)" "세션 id")" \
+    "$(gate_row_field "$(gate_stage_last_settled_row S2P reconverge)" "세션 id")"'
+check "15vq: 시각 발행 정지의 재부착은 반영 행을 건너뛴다" "$(vq15 "$vq15_sn")" "svq-refl/spub1"
 
 # C3 — the reflection stopped on a collision, and a person attached a decision.
 r15vq=$((att15vq + 1))
@@ -17956,12 +17961,12 @@ case "$rc/$msg" in
   3/*"승인 화면 반영을 이미 2번 들였습니다"*) ok "15vq: 세 번째 시도는 거부된다" ;;
   *) bad "15vq: 세 번째 시도는 거부된다" "rc=$rc $msg" ;;
 esac
-check "15vq: precondition-failed 정지는 한 번 더 들이는 종단이다" \
-  "$(vq15 'vq15_rr() { gate_approval_reflection_retry_ok S2P "- \`stage-result\` | 실행 버전=$1 | 종단 부류=$2"; printf "%s" "$?"; }
+vq15_sn='vq15_rr() { gate_approval_reflection_retry_ok S2P "- \`stage-result\` | 실행 버전=$1 | 종단 부류=$2"; printf "%s" "$?"; }
     printf "**분류**: precondition-failed\n" > "$RUN_DIR/halt/S2P#90.md"
     printf "**분류**: gate-unanswerable\n" > "$RUN_DIR/halt/S2P#91.md"
     vq15_rr 90 "의도된 park"; vq15_rr 91 "의도된 park"; vq15_rr 92 "크래시"; vq15_rr 93 "정상 완료"
-    rm -f "$RUN_DIR/halt/S2P#90.md" "$RUN_DIR/halt/S2P#91.md"')" "0101"
+    rm -f "$RUN_DIR/halt/S2P#90.md" "$RUN_DIR/halt/S2P#91.md"'
+check "15vq: precondition-failed 정지는 한 번 더 들이는 종단이다" "$(vq15 "$vq15_sn")" "0101"
 
 # An answer brought over from an earlier run reads that run's records: the copy
 # under this run's `halt/` is the scope, and the earlier run's latest verdict
