@@ -2060,8 +2060,10 @@ done <<'EOF'
 무인 구현|implement-unattended/SKILL.md|is a **CFI-U3 BT-STOP**: halt before the plan is written
 무인 구현|implement-unattended/SKILL.md|**Never put in the plan a list that moves the screens' wording or structure back to the binding tier**
 무인 구현|implement-unattended/SKILL.md|**A difference a line of the block points at is a person-only stop.**
-무인 구현|implement-unattended/SKILL.md|such a line is one the person left `문서대로 둠` at the reflection stop. Write `**선택지**: (없음)` with no `재수렴` option
-무인 구현|implement-unattended/SKILL.md|**One BT-STOP never offers `재수렴`:**
+무인 구현|implement-unattended/SKILL.md|such a line is one the person left `문서대로 둠` at the reflection stop.
+무인 구현|implement-unattended/SKILL.md|**One BT-STOP takes a person's answer only:**
+무인 구현|implement-unattended/SKILL.md|stops with `**스텝**: Step 2 CFI-U3 BT-STOP — 사람 둔 어긋남`, the two options `재수렴` and `문서대로 구현`
+무인 구현|implement-unattended/SKILL.md|- **Released lines first.**
 무인 발행|visual-publish-unattended/SKILL.md|**Every `시각-판정` record is preceded by the drift block.**
 무인 발행|visual-publish-unattended/SKILL.md|`**문서 반영**: 대기 — 어긋남 <n>건 — 사람 답 <the same name>`
 반영 실패|_common/approval-reflection.md|`**스텝**: Step 3 승인 화면 반영 — 충돌`
@@ -2084,8 +2086,8 @@ done <<'EOF'
 운반 답|_common/approval-reflection.md|an exit 2 is the same question when the block's lines are, in number and verbatim, the drift lines that `시각-판정` record's `**질문 문면**` quotes and the piece's `<n>`, and every printed line is one of them.
 운반 답|_common/approval-reflection.md|and its only answer, `문서대로 둠`, must still apply
 운반 답|design-reconverge/SKILL.md|**A carried answer on the `승인 화면 반영` scope follows the carried-answer re-entry procedure of `${CLAUDE_SKILL_DIR}/../_common/approval-reflection.md` (`## 운반 답 재진입`) instead of items 1–5 below.**
-반영 성공|_common/approval-reflection.md|`visual-check.sh binding <설계 문서>` measures over the published document
-반영 성공|visual/SKILL.md|visual-check.sh binding
+반영 성공|_common/approval-reflection.md|`visual-check.sh pin <설계 문서>` prints over the published document
+반영 성공|visual/SKILL.md|visual-check.sh pin
 반영 종단|_common/approval-reflection.md|사람에게 묻는 기록으로 보고하지 않는다 — 라우터 교대의 반영 분기가 이 기록을 재파견으로 처리한다
 반영 실패|_common/approval-reflection.md|but writes `**선택지**: (없음)` and no `**추천**`, `**추천 근거**` or `**선택지 리스크**` line
 반영 실패|_common/approval-reflection.md|once the run has ended, running `/cc-cmds:visual <문서> 구현 승인` again continues the interactive reflection from the document edit
