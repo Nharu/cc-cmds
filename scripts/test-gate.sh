@@ -38530,7 +38530,8 @@ check "34p: 스테이지 답 행은 답한 주체=스테이지 · 선택지=잔�
 # attachment keeps the whole either way.
 sln_why=$(row_field "$sln_row" '근거'); sln_b="${SLN_B12#'**추천 근거**: '}"
 if [ "$sln_why" = "$sln_b" ]; then sln_wv=그대로
-elif [ "${sln_why%…(잘림)}" != "$sln_why" ] && [ "${sln_b#"${sln_why%…(잘림)}"}" != "$sln_b" ]; then sln_wv=잘림
+elif [ "${sln_why%…(잘림)}" != "$sln_why" ]; then
+  case "$sln_b" in "${sln_why%…(잘림)}"*) sln_wv=잘림 ;; *) sln_wv="$sln_why" ;; esac
 else sln_wv="$sln_why"; fi
 case "$sln_wv" in
   그대로|잘림) ok "34p: 스테이지 답 행의 근거는 기록의 추천 근거 줄이다 (그대로, 또는 잘렸다고 말하는 앞부분)" ;;

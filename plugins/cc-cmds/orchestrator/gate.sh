@@ -27569,8 +27569,8 @@ gate_halt_stage_self_answer() {
 $( { gate_stage_result_rows_of "$seg" || true; } )
 EOF
   # `근거` is the record's `**추천 근거**` line S5 checked. The attachment
-  # carries it whole; the row carries it whole when it fits, and clipped as the
-  # seat's answer clips it otherwise — the record and attachment paths ride on
+  # carries it whole; the row carries it whole when it fits, and clipped
+  # otherwise, down to the clip marker alone — the record and attachment paths ride on
   # the row unclipped and are as long as this machine's state directory makes
   # them, so the same record can fit on one host and not on another.
   rec_why=$(sed -n 's/^\*\*추천 근거\*\*: //p' "$rec" | sed -n '1p' | sed 's/[[:space:]]*$//')
@@ -27594,9 +27594,11 @@ EOF
       "첨부 다이제스트=0000000000000000000000000000000000000000000000000000000000000000" \
       "레인=$hlane" "기록 시각=$hat")
     [ "$hlen" -le "$GATE_ROW_MAX" ] && break
-    [ "$hw" -ge 40 ] || break
+    [ "$hw" -ge 0 ] || break
     hwhy=$(gate_row_safe "$rec_why" "$hw")
-    hw=$((hw - 40))
+    # The last step leaves the clip marker alone: the attachment carries the
+    # basis whole, so the row still says where to read it.
+    if [ "$hw" -gt 40 ]; then hw=$((hw - 40)); elif [ "$hw" -gt 0 ]; then hw=0; else hw=-1; fi
   done
   if [ "$hlen" -gt "$GATE_ROW_MAX" ]; then
     warn "the \`중단 답\` row of this stage answer does not fit the row cap even with \`근거\` clipped (${hlen} bytes over ${GATE_ROW_MAX}) — nothing was written: $rec"
