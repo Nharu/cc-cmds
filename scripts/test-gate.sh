@@ -66630,8 +66630,10 @@ h92_plan S1 review "/cc-cmds:review-unattended seg/R92-S1 \"설계는 $doc92\"" 
 r92a=$rc; m92a=$msg
 h92_plan S1 review "$(rv92 S1 "$WORK/rv92-other.md")" --trigger '첫 리뷰'
 check "92: 정본 경로가 없는 리뷰 파견은 rc 2 다" "$r92a/$rc" "2/2"
+# 게이트는 기준 디렉터리를 cd·pwd 로 얻어 연속한 / 를 하나로 찍는다. TMPDIR 이
+# / 로 끝나면 이 쪽 경로에는 // 가 남으므로 같은 모양으로 맞춰 비교한다.
 case "$m92a" in
-  *"정본 리포트 경로"*"$(c92 S1)"*) ok "92: 그 거절은 정본 경로를 찍는다" ;;
+  *"정본 리포트 경로"*"$(c92 S1 | tr -s '/')"*) ok "92: 그 거절은 정본 경로를 찍는다" ;;
   *) bad "92 정본 경로 거절 문면" "$m92a" ;;
 esac
 h92_plan S1 review "$(rv92 S1 "$(c92 S1 2)")" --trigger '첫 리뷰'
