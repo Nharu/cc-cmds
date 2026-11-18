@@ -1309,6 +1309,28 @@ if ( cd "$repo_root" && git cat-file -e "$JX_BASE:plugins/cc-cmds/hooks/gate-pre
   for f in "$repo_root"/plugins/cc-cmds/hooks/*; do
     [ -f "$f" ] && cp "$f" "$JX_DIR/hk/new/"
   done
+  # The digest-source sentence of the refusal text was reworded after the base
+  # (a response may make several gate calls; the last one's line is the one to
+  # take). That is a text change, not an extraction change, so the base copy
+  # takes the same wording before the two are compared; everything else in it
+  # stays the base's own bytes.
+  # The replacement is literal and line by line in awk: a bash `${var//…}` over
+  # the whole hook is slow enough to stall the suite.
+  JX_SRC_OLD='line in the output of the gate call your immediately preceding response made — only when that response made exactly one gate call carrying --emit-digest, and never' \
+  JX_SRC_NEW='line among the gate calls your immediately preceding response made — when that response made several, the line of the last of them — and never' \
+  JX_DIR_OLD='line in the output of the gate call your immediately preceding response made, else the H field that call emitted into' \
+  JX_DIR_NEW='line among the gate calls your immediately preceding response made — when it made several, the line of the last of them — else the H field the last of those calls emitted into' \
+  awk 'function rep(s, o, n,   i, out) {
+         out = ""
+         while ((i = index(s, o)) > 0) { out = out substr(s, 1, i - 1) n; s = substr(s, i + length(o)) }
+         return out s
+       }
+       { line = rep($0, ENVIRON["JX_SRC_OLD"], ENVIRON["JX_SRC_NEW"])
+         print rep(line, ENVIRON["JX_DIR_OLD"], ENVIRON["JX_DIR_NEW"]) }' \
+    "$JX_DIR/hk/old/gate-pretool.sh" > "$JX_DIR/hk/old/gate-pretool.sh.new"
+  mv "$JX_DIR/hk/old/gate-pretool.sh.new" "$JX_DIR/hk/old/gate-pretool.sh"
+  check "한 번의 jq: 베이스 훅 사본에 두 다이제스트 원천 문면의 바꿈이 들어갔다 (아래 비교가 문면 차이를 재지 않는다)" \
+    "$(grep -c 'line of the last of them' "$JX_DIR/hk/old/gate-pretool.sh" | tr -d ' ')" "2"
   jx_hdiff="" jx_said=0
   i=1
   while [ "$i" -le "$jx_n" ]; do
