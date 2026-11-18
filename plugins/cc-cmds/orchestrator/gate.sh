@@ -20116,6 +20116,11 @@ gate_snapshot() {
   printf '  "shift_halts": [\n'
   gate_shift_halts_json
   printf '  ],\n'
+  # The stage halt records that put options before a person and wait for an
+  # answer — the keys no skill is dispatched to until one comes.
+  printf '  "awaiting_halts": [\n'
+  gate_awaiting_halts_json
+  printf '  ],\n'
   # Each termination clause with its wording, state and open evidence request.
   printf '  "clauses": [\n'
   gate_clauses_json
@@ -25432,6 +25437,30 @@ gate_answered_judgments_json() {
   [ "$first" = "1" ] || printf '\n'
 }
 
+gate_awaiting_halts_json() {
+  # One element per unanswered stage halt record that puts options before a
+  # person, as `{"키": …, "기록": "halt/<키>#<N>.md", "스텝": …}`: the lines of
+  # `cc_person_halts`, in its order.
+  #
+  # THE KEYS HERE ARE NOT DISPATCHED TO. The gate refuses a skill dispatch on
+  # such a key (`gate_person_halt_refuse`); this array is what lets a shift see
+  # that before it issues the act, route the other keys, and hand over with
+  # `사유=중단` naming these records once nothing else is left.
+  local first=1 key rec step
+  [ -n "${RUN_DIR:-}" ] || return 0
+  while IFS="$(printf '\t')" read -r key rec step; do
+    [ -n "$key" ] || continue
+    [ "$first" = "1" ] || printf ',\n'
+    first=0
+    printf '    {"키": "%s", "기록": "%s", "스텝": "%s"}' \
+      "$(gate_json_escape "$key")" "$(gate_json_escape "$rec")" "$(gate_json_escape "$step")"
+  done <<EOF
+$(cc_person_halts "$RUN_DIR" "${LEDGER:-}")
+EOF
+  [ "$first" = "1" ] || printf '\n'
+  return 0
+}
+
 gate_shift_halts_json() {
   # One element per segment a routing shift stopped that no answer has reached
   # yet: each cone row `shift-halt` wrote whose record no `중단 답` row names,
@@ -25945,8 +25974,8 @@ gate_halt_option_lines() {
   # found an option in a line nobody offered as one. Every reader of a record's
   # options — the option check of `halt-answer`, the recommendation, the
   # routable labels and the seat-apply frame check — reads them here, and here
-  # reads run.sh's `halt_option_lines`, the rule the morning report and the
-  # format predicate read too.
+  # reads liveness.sh's `halt_option_lines`, the rule the morning report, the
+  # format predicate and the answer state's person-held test read too.
   [ -r "$1" ] || return 0
   halt_option_lines < "$1"
 }
@@ -37364,6 +37393,38 @@ gate_segment_person_hold() {
   return 0
 }
 
+gate_person_halts_of_key() {
+  # gate_person_halts_of_key <key> — the run-directory-relative paths of the
+  # unanswered halt records that put options before a person on <key>
+  # (`cc_person_halts`), comma-separated; nothing when there is none.
+  local key="${1:-}"
+  [ -n "$key" ] && [ -n "${RUN_DIR:-}" ] || return 0
+  cc_person_halts "$RUN_DIR" "${LEDGER:-}" \
+    | LC_ALL=C awk -F '\t' -v k="$key" '$1 == k { out = out (out == "" ? "" : ", ") $2 } END { printf "%s", out }'
+}
+
+gate_person_halt_refuse() {
+  # gate_person_halt_refuse <key> <kind> — refuses a skill dispatch on <key>
+  # with GATE_EXIT_RULE, writing no row, while a halt record of that key puts
+  # options before a person and no `중단 답` row names it; returns otherwise.
+  #
+  # THE NEXT ATTEMPT DOES NOT ANSWER THE QUESTION. A dispatch over such a
+  # record runs the same step past a question nobody answered, and before this
+  # check the next attempt's launch made the answer state read the record as
+  # handled, so the run counted no question at all. The key is the one the
+  # dispatch's `stage-result` row would carry — a run-scope step's id or the
+  # segment — which is the key `cc__halt_auto_next` matches. Every unanswered
+  # record of the key is read, not only the last attempt's: each one has to be
+  # answered. A record with no options and the three refutation stops the
+  # decision function routes are not held (`cc_halt_person_held`).
+  local key="${1:-}" kind="${2:-skill}" held
+  held=$(gate_person_halts_of_key "$key")
+  [ -n "$held" ] || return 0
+  warn "키 ${key} 에 사람이 고를 선택지를 담은 답 없는 정지 기록이 있습니다: ${held}"
+  warn "사람의 답 전에는 같은 키를 다시 파견하지 않는다; 다른 키를 라우팅하고, 남은 것이 없으면 사유=중단 으로 인계하며 막힌 지점 에 이 경로를 적는다 — 이 ${kind} 파견은 받지 않습니다"
+  exit "$GATE_EXIT_RULE"
+}
+
 gate_segment_visual_refusal() {
   # gate_segment_visual_refusal <segment> — the id of a `시각-승인` question of
   # this run that names the segment in `막는 세그먼트` and that a person closed
@@ -43839,10 +43900,19 @@ EOF
       # still does not fit at the narrowest width is refused rather than written
       # with a shorter wait set. `리셋 대기` is the same, and is written only
       # when it names a key, so a row without one is the row written before it.
-      local hrsf=""
+      #
+      # `답 대기 기록` IS THE GATE'S, never the shift's: the unanswered halt
+      # records that put options before a person (`cc_person_halts`), as
+      # run-directory-relative paths. It is written whatever `사유` reads, so
+      # the progress channel shows the wait from the row alone, and like
+      # `CI 대기` it counts toward the length and is never narrowed.
+      local hrsf="" haw
+      haw=$(cc_person_halts "$RUN_DIR" "$LEDGER" \
+              | LC_ALL=C awk -F '\t' '$2 != "" { out = out (out == "" ? "" : ", ") $2 } END { printf "%s", out }')
       [ -z "$hrs" ] || hrsf=" | 리셋 대기=$hrs"
       [ -z "$hms" ] || hrsf="$hrsf | master 대기=$hms"
       [ -z "$hcw" ] || hrsf="$hrsf | 확인 대기=$hcw"
+      [ -z "$haw" ] || hrsf="$hrsf | 답 대기 기록=$haw"
       while [ "$hw" -ge 40 ]; do
         hd=$(gate_row_safe "$(gate_field_of '버린 선택지' "$@")" "$hw")
         hb=$(gate_row_safe "$(gate_field_of '막힌 지점' "$@")" "$hw")
@@ -43854,12 +43924,13 @@ EOF
         hw=$((hw - 40))
       done
       if [ "$hlen" -gt "$GATE_ROW_MAX" ]; then
-        warn "the handoff row does not fit in ${GATE_ROW_MAX} bytes even with its free text narrowed to the floor — \`CI 대기\`, \`리셋 대기\`, \`master 대기\` and \`확인 대기\` are never cut, so nothing is written"
+        warn "the handoff row does not fit in ${GATE_ROW_MAX} bytes even with its free text narrowed to the floor — \`CI 대기\`, \`리셋 대기\`, \`master 대기\`, \`확인 대기\` and \`답 대기 기록\` are never cut, so nothing is written"
         return "$GATE_EXIT_VOCAB"
       fi
       gate_append 'handoff' "교대=$hn" "사유=$hwhy" \
         "버린 선택지=$hd" "막힌 지점=$hb" "다음 후보=$hc" "CI 대기=${hci:--}" \
         ${hrs:+"리셋 대기=$hrs"} ${hms:+"master 대기=$hms"} ${hcw:+"확인 대기=$hcw"} \
+        ${haw:+"답 대기 기록=$haw"} \
         "대상=$alias" "기록 시각=$(now_iso)"
       log "교대 $hn 기록 — 사유 $hwhy"
       # PAST THE DEADLINE THERE IS NOTHING FOR THE RELAY TO WAKE FOR, so the
@@ -54944,6 +55015,9 @@ gate_verb_act() {
       exit "$GATE_EXIT_RULE"
     fi
     stage_is_run_scope_step=1
+    # A run-scope step's key is settled here; the segment branch takes the same
+    # check before its person-hold refusal below.
+    gate_person_halt_refuse "$stage_key" "$rs_kind"
 
     # NOTHING ELSE WRITES THE DOCUMENT WHILE THE REFLECTION RUNS. The
     # approved-screen reflection edits the design document and the visual
@@ -55280,6 +55354,12 @@ gate_verb_act() {
   # stage or a re-plan sent there meanwhile would be the router answering it.
   # Every other segment is routed as before; the hold is the question's
   # `막는 세그먼트` and nothing wider.
+  #
+  # A SEGMENT KEY WHOSE HALT RECORD PUTS OPTIONS BEFORE A PERSON is refused
+  # first, as a run-scope step's key is above (`gate_person_halt_refuse`).
+  if [ "$kind" = "skill" ] && [ "$segment" != "-" ]; then
+    gate_person_halt_refuse "$stage_key" "${rs_kind:-skill}"
+  fi
   if { [ "$kind" = "skill" ] || [ "$kind" = "replan" ]; } && [ "$segment" != "-" ]; then
     local ph_id
     ph_id=$(gate_segment_person_hold "$segment")
@@ -64074,6 +64154,20 @@ gate_record_stage_outcome() {
   cost=$(printf '%s' "$res"    | jq -r '.total_cost_usd // empty' 2>/dev/null || true)
   subtype=$(printf '%s' "$res" | jq -r '.subtype // empty'        2>/dev/null || true)
   sid=$(printf '%s' "$res"     | jq -r '.session_id // empty'     2>/dev/null || true)
+  # NO RESULT LINE DOES NOT MEAN NO SESSION. An attempt killed in its last turn
+  # (the stage CLI's pid stopped by a person, as the TERM trap documents) ends
+  # with no result envelope, yet the harness opened a session and wrote its id
+  # on the stream's first frame. A row reading `세션 id=미상` there leaves the
+  # key's last settled row with nothing to re-attach, so an answer to the
+  # complete record that attempt wrote is refused and the record holds the key
+  # to the end of the run. The id is read from THIS attempt's stream, the one
+  # `$out` names, under the same shape check the re-attachment applies
+  # (`stage_session_id_strict`): a planted or malformed value stays `미상`, and
+  # so does an attempt that died before its session started.
+  if [ -z "$sid" ] && [ -f "$out" ]; then
+    sid=$(sed -n '/"session_id":"/{s/.*"session_id":"\([^"]*\)".*/\1/p;q;}' "$out")
+    run_session_id_shape_ok "$sid" || sid=""
+  fi
 
   # The terminal class, from what the GATE can observe and nothing more. A stage
   # that performed a gated act left rows; one that left none either never got
@@ -64430,6 +64524,13 @@ gate_record_stage_outcome() {
   # Both helpers print `<key>=<value>`; the rows below spell each key out so
   # the field table's lint reads them at the call site.
   dsf=${dsf#문서 크기=}; dsw=${dsw#크기 경고=}
+  # `답 대기 기록`, when the attempt parked on a record that puts options before
+  # a person (`cc_halt_person_held`): the progress channel shows the wait from
+  # this row alone, without opening the record. The driver's rows do not carry it.
+  local hawait=""
+  if [ "$klass" = "의도된 park" ] && cc_halt_person_held "$haltf"; then
+    hawait="halt/${haltf##*/}"
+  fi
   if [ -n "$psha" ]; then
     visual_row_pieces "$kind" "$out" "세그먼트=$rowseg" "스테이지=$seg" "종류=$kind" \
       "종료 코드=$rc" "실행 버전=$attempt" "세션 id=${sid:-미상}" \
@@ -64441,7 +64542,7 @@ gate_record_stage_outcome() {
       ${GATE_RA_WIN:+"창 종류=$GATE_RA_WIN"} ${GATE_RA_SLEEP:+"마지막 절전=$GATE_RA_SLEEP"} \
       "plan_sha256=$psha" ${rv:+"재수렴 판정=$rv"} ${sk:+"골격급=$sk"} ${rq:+"재수렴 요청=$rq"} \
       ${dsf:+"문서 크기=$dsf"} ${dsw:+"크기 경고=$dsw"} "시각 종단=-" "종단 부류=$klass" ${transient:+"일시 원인=$transient"} "실패 서명=$fsig" \
-      ${hacarry:+"답 운반=$hacarry"}; \
+      ${hacarry:+"답 운반=$hacarry"} ${hawait:+"답 대기 기록=$hawait"}; \
       gate_append 'stage-result' "${VISUAL_ROW_PIECES[@]}"
   else
     visual_row_pieces "$kind" "$out" "세그먼트=$rowseg" "스테이지=$seg" "종류=$kind" \
@@ -64454,7 +64555,7 @@ gate_record_stage_outcome() {
       ${GATE_RA_WIN:+"창 종류=$GATE_RA_WIN"} ${GATE_RA_SLEEP:+"마지막 절전=$GATE_RA_SLEEP"} \
       ${rv:+"재수렴 판정=$rv"} ${sk:+"골격급=$sk"} ${rq:+"재수렴 요청=$rq"} \
       ${dsf:+"문서 크기=$dsf"} ${dsw:+"크기 경고=$dsw"} "시각 종단=-" "종단 부류=$klass" ${transient:+"일시 원인=$transient"} "실패 서명=$fsig" \
-      ${hacarry:+"답 운반=$hacarry"}; \
+      ${hacarry:+"답 운반=$hacarry"} ${hawait:+"답 대기 기록=$hawait"}; \
       gate_append 'stage-result' "${VISUAL_ROW_PIECES[@]}"
   fi
   # Every audit attempt leaves its `감사 공시` row right after its own row.
