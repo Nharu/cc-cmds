@@ -1738,7 +1738,8 @@ check-push: CHECK_PUSH_JOBS=1 의 실패 단계는 목록 전체를 이름 댄�
   printf 'check-push self-test: %d passed, %d failed\n' "$passed" "$failed"
   # A floor on the count, so a refactor that silently skips cases cannot pass.
   if [ "$passed" -lt 230 ]; then
-    printf 'check-push self-test: 통과 수 %d 가 하한 230 에 못 미칩니다\n' "$passed" >&2    return 1
+    printf 'check-push self-test: 통과 수 %d 가 하한 230 에 못 미칩니다\n' "$passed" >&2
+    return 1
   fi
   [ "$failed" = "0" ]
 }
