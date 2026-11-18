@@ -481,9 +481,11 @@ row_of() {
 }
 halt_rec() {
   # halt_rec <path> <question line> <second line> — a halt record in the
-  # gate's field shape, its question over two lines.
+  # gate's field shape, its question over two lines. The opening header and
+  # the closing fence are the ones the gate's `중단 답` requires, so the record
+  # is one a person's answer can settle and the person-held test holds it.
   mkdir -p "$(dirname "$1")"
-  printf '<!-- cc-pipeline-halt -->\n**스킬**: implement-unattended\n**스텝**: Step 3 — 픽스처\n**분류**: gate-unanswerable\n**질문 문면**: %s\n%s\n**선택지**:\n- `재시도` — 다시 돈다\n**추천**: `재시도`\n<!-- /cc-pipeline-halt -->\n' \
+  printf '<!-- cc-pipeline-halt v1; writer=implement-unattended; reader=orchestrator -->\n**스킬**: implement-unattended\n**스텝**: Step 3 — 픽스처\n**분류**: gate-unanswerable\n**질문 문면**: %s\n%s\n**선택지**:\n- `재시도` — 다시 돈다\n**추천**: `재시도`\n<!-- /cc-pipeline-halt v1 -->\n' \
     "$2" "$3" > "$1"
 }
 halt_rec_noopt() {
@@ -491,7 +493,7 @@ halt_rec_noopt() {
   # shape with no option line and no recommendation: the record a key's next
   # attempt passes, as against `halt_rec`'s, which waits for a person.
   mkdir -p "$(dirname "$1")"
-  printf '<!-- cc-pipeline-halt -->\n**스킬**: implement-unattended\n**스텝**: Step 3 — 픽스처\n**분류**: precondition-failed\n**질문 문면**: %s\n**선택지**: (없음) — 픽스처\n<!-- /cc-pipeline-halt -->\n' \
+  printf '<!-- cc-pipeline-halt v1; writer=implement-unattended; reader=orchestrator -->\n**스킬**: implement-unattended\n**스텝**: Step 3 — 픽스처\n**분류**: precondition-failed\n**질문 문면**: %s\n**선택지**: (없음) — 픽스처\n<!-- /cc-pipeline-halt v1 -->\n' \
     "$2" > "$1"
 }
 ids_in() {
