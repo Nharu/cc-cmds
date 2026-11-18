@@ -244,7 +244,11 @@ route__jq_lib() {
   # 표본 스키마는 위의 가드가 문자 그대로 고정한 값이라 따옴표 안에 그대로 넣는다.
   # 판독기가 판정 경로 안에 있어 인자로 넘기면 모든 호출자가 같은 인자를 날라야 한다.
   printf 'def rt_cost_schema: "%s";\n' "$ROUTE_COST_SCHEMA"
-  cat <<'JQ'
+  # 주석만 있는 줄은 내보내지 않는다. 호출자는 이 문자열을 jq 의 인자 하나로 넘기고,
+  # 리눅스는 인자 하나를 128KiB 로 자르므로(MAX_ARG_STRLEN) 이 라이브러리에 정의를
+  # 덧붙이는 호출자(fleet.sh)가 주석까지 실으면 그 상한을 넘어 jq 가 뜨지 못한다.
+  # 이 본문에는 역슬래시로 끝나는 주석 줄도, `#` 로 시작하는 줄을 품은 문자열도 없다.
+  sed -E '/^[[:space:]]*#/d' <<'JQ'
 def rt_wins: ["five_hour", "seven_day"];
 def rt_bp: (. * 10000 | round);
 def rt_isint: type == "number" and (. == floor);
