@@ -944,6 +944,11 @@ printf '**스킬**: implement-unattended\n**스텝**: Step 1 CFI-U3 BT-STOP — 
 printf '**스킬**: implement-unattended\n**스텝**: Step 3 CFI-U3 BT-STOP — 미결 결정 아님\n' > "$UCD/h2.md"
 check "미결 결정 정지 판별은 스텝 값 전체를 비교한다" \
   "$(halt_step_is_unclosed_decision "$UCD/h1.md" && printf y || printf n)$(halt_step_is_unclosed_decision "$UCD/h2.md" && printf y || printf n)" "yn"
+printf '**스킬**: implement-unattended\n**스텝**: Step 2 CFI-U3 BT-STOP — 사람 둔 어긋남\n' > "$UCD/k1.md"
+printf '**스킬**: implement-unattended\n**스텝**: Step 2 CFI-U3 BT-STOP — 사람 둔 어긋남 아님\n' > "$UCD/k2.md"
+printf '**스킬**: implement-unattended\n**스텝**: Step 2 CFI-U3 BT-STOP\n' > "$UCD/k3.md"
+check "사람 둔 어긋남 정지 판별은 스텝 값 전체를 비교한다 (꼬리만 다른 스텝·앞 접두만 같은 스텝·미결 결정 정지는 아님)" \
+  "$(for f in k1 k2 k3 h1; do halt_step_is_kept_drift "$UCD/$f.md" && printf y || printf n; done)" "ynnn"
 # 검증기 — 설계 스킬이 쓰라고 한 표기는 통과하고, 그 밖의 값은 이유를 대며 거절된다.
 rs_full() {  # rs_full <file> <잔여 항목 값>
   {

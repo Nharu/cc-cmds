@@ -418,7 +418,12 @@
 # `gate_halt_draft_admit` passes (a re-convergence's S1/S3/S4 stop takes the
 # same argument). `초안 그대로=예` carries no `첨부`: the gate writes the
 # attachment from the draft itself, and the row gains `초안 채택=<m>/<n>`, which
-# a person's answer to a drafted record carries too. `<key>` is the segment
+# a person's answer to a drafted record carries too. A record whose whole
+# `**스텝**` reads `Step 2 CFI-U3 BT-STOP — 사람 둔 어긋남` — a screen slice's
+# stop on a drift line the person left `문서대로 둠` — is outside that case as
+# well and is refused before it: only `답한 주체=사람` is recorded for it, so
+# the shift's `재수렴` under a `구속-이탈` row is refused with 3 even though its
+# step, cut at the first ` — `, reads as a BT-STOP. `<key>` is the segment
 # id, or the step id for the design step, of the stage that halted; the gate
 # checks the record is this run's, complete, and lists the option verbatim,
 # and refuses with 3 an answer no branch of the shift can carry out
@@ -7865,6 +7870,28 @@ gate_caller_is_visual_publish_stage() {
   [ -z "$k" ] || [ "$k" = "visual-publish" ]
 }
 
+gate_caller_may_pin() {
+  # 0 when this gate call may write the binding copy through `visual-check.sh
+  # pin`: the caller's step (`CC_PIPELINE_STAGE_ID` before `#`) is the plan's
+  # single `visual` step, or it is the plan's single `visual-publish` step and
+  # the attempt is that key's approved-screen reflection — the kind the gate
+  # recorded for the step (`<step>.kind`) is `reconverge`, the only
+  # re-convergence the gate starts on that key. The publish stage itself (no
+  # recorded kind, or `visual-publish`) is not opened: no write of the digest
+  # is the publish stage's. `gate_caller_is_visual_publish_stage` is not reused
+  # here, because it takes the publish stage and refuses the reflection.
+  local sid="${CC_PIPELINE_STAGE_ID:-}" step k=''
+  [ -n "$sid" ] || return 1
+  if step=$(gate_run_scope_step visual 2>/dev/null) && [ "${sid%#*}" = "$step" ]; then
+    return 0
+  fi
+  step=$(gate_run_scope_step visual-publish 2>/dev/null) || return 1
+  [ "${sid%#*}" = "$step" ] || return 1
+  [ -n "${RUN_DIR:-}" ] && [ -f "$RUN_DIR/$step.kind" ] \
+    && k=$( { sed -n '1p' "$RUN_DIR/$step.kind" 2>/dev/null || true; } | tr -d '[:space:]')
+  [ "$k" = "reconverge" ]
+}
+
 gate_visual_doc_is_run_doc() {
   # gate_visual_doc_is_run_doc <doc arg> — 0 when <doc arg> names this run's
   # design document (`$DOC` from the manifest): both directories resolved with
@@ -8116,7 +8143,14 @@ surface_of_argv0() {
     # person's assignment, among them — writes the settings home, an account
     # record or the sidecar, which is the seat's work, so they take the unknown
     # grade and its refusal.
-    # `visual-check.sh` only reads the document, the sidecar and the screens.
+    # `visual-check.sh` reads the document, the sidecar and the screens, save
+    # `pin`: it writes the binding copy `<base>/docs/visual/binding/<slug>.txt`
+    # beside the sidecar and prints the digest the sidecar then carries. It
+    # lands outside the tree on this run, as the sidecar write does, so it is
+    # declared `런로컬`, whose cell opens `트리밖쓰기`. It is opened only on the
+    # run's own design document and only for the caller `gate_caller_may_pin`
+    # names — the visual stage and the approved-screen reflection — so no
+    # other stage can move the copy that lets reuse pass without a person.
     # `visual-capture.sh` writes its screenshots into an output directory outside
     # the tree, and `app` serves the build on a loopback port it takes down itself.
     visual-config.sh)
@@ -8134,8 +8168,14 @@ surface_of_argv0() {
       esac ;;
     visual-check.sh)
       case "${1:-}" in
-        scan|size|approval|drift|bundle|binding|system|confirm|system-users|run-state|reuse) printf '읽기' ;;
-        *)                                                                                  printf '등급 미상' ;;
+        scan|size|approval|drift|bundle|binding|system|confirm|system-users|run-state|reuse|since-approval) printf '읽기' ;;
+        pin)
+          if [ "$#" -eq 2 ] && gate_caller_may_pin && gate_visual_doc_is_run_doc "$2"; then
+            printf '트리밖쓰기'
+          else
+            printf '등급 미상'
+          fi ;;
+        *)                                                                                                 printf '등급 미상' ;;
       esac ;;
     visual-capture.sh)
       case "${1:-}" in
@@ -37718,7 +37758,8 @@ gate_argv_visual_helper_write() {
   # with quotes and shell punctuation turned into blanks, names
   # `visual-config.sh` and the word after it is `account`, `append`, `seed`,
   # `record` or `assign`, the subcommands that write the host files or a
-  # document's account record. The peel above stops at the
+  # document's account record, or names `visual-check.sh` and the word after
+  # it is `pin`, which writes the binding copy. The peel above stops at the
   # launchers whose operands the table reads; `find -exec`, `xargs`, `sudo`
   # and an interpreter (`bash <copy> append …`, `sh -c '<copy> append …'`)
   # run a helper the same way and name it only as a word further in, so this
@@ -37731,7 +37772,7 @@ gate_argv_visual_helper_write() {
       w=$(printf '%s' "$w" | tr "\"'\`;&|()<>" '            ')
       for t in $w; do
         case "${prev##*/}:$t" in
-          visual-config.sh:account|visual-config.sh:append|visual-config.sh:seed|visual-config.sh:record|visual-config.sh:assign) exit 0 ;;
+          visual-config.sh:account|visual-config.sh:append|visual-config.sh:seed|visual-config.sh:record|visual-config.sh:assign|visual-check.sh:pin) exit 0 ;;
         esac
         prev=$t
       done
@@ -44458,6 +44499,18 @@ EOF
       # under the entry's verbatim heading in the file beside the record, and a
       # draft answer's attachment is the gate's, written the same way; `근거`
       # is clipped and is not where the re-convergence reads the decision from.
+      # A SCREEN SLICE'S STOP ON A LINE THE PERSON LEFT `문서대로 둠` IS A
+      # PERSON'S ONLY, in its own branch before that one. Its whole `**스텝**`
+      # line is compared (`halt_step_is_kept_drift`), because the shift's
+      # exception below cuts the step at the first ` — ` and would otherwise
+      # take this record's `재수렴` under a `구속-이탈` adoption row and overturn
+      # the person's earlier choice. The seat was already stopped above, by the
+      # `(없음)` recommendation and the absent draft, so what is refused here is
+      # every other answer that is not a person's — the shift's above all.
+      if halt_step_is_kept_drift "$hrec" && [ "$hby" != "사람" ]; then
+        warn "이 중단 기록은 사람이 문서대로 둠으로 남긴 어긋남 줄의 정지(Step 2 CFI-U3 BT-STOP — 사람 둔 어긋남)입니다 — 답한 주체=사람 의 답만 기록합니다: $hrec"
+        return "$GATE_EXIT_RULE"
+      fi
       if halt_step_is_unclosed_decision "$hrec"; then
         if [ "$hby" != "사람" ] && { [ "$hby" != "좌석" ] || [ -z "$hdraft" ]; }; then
           warn "이 중단 기록은 닫히지 않은 결정 항목의 정지(Step 1 CFI-U3 BT-STOP — 미결 결정)입니다 — 답한 주체=사람 의 답만 기록합니다(좌석은 게이트가 확인한 결정 초안을 초안 그대로=예 로 채택할 때만 답합니다): $hrec"
@@ -53441,7 +53494,7 @@ gate_act_cell_front() {
     # marker check would be all that stands before the host forbidden list —
     # and the caller sets that environment. The gate's own copy is graded only
     # when it is called directly, so no interpreter spelling is needed for it.
-    warn "axis 2 \`등급 미상\` — a runner in front of \`visual-config.sh account|append|seed|record|assign\` is not graded, and no declaration opens it; the gate's own copy is graded only when called directly"
+    warn "axis 2 \`등급 미상\` — a runner in front of \`visual-config.sh account|append|seed|record|assign\` or \`visual-check.sh pin\` is not graded, and no declaration opens it; the gate's own copy is graded only when called directly"
     [ "$verb" = "plan" ] || exit "$GATE_EXIT_VOCAB"
   fi
   if gate_argv_visual_account_rundir "$@"; then
