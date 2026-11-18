@@ -8134,7 +8134,7 @@ surface_of_argv0() {
       esac ;;
     visual-check.sh)
       case "${1:-}" in
-        scan|size|approval|drift|bundle|binding|system|confirm|system-users|run-state|reuse) printf '읽기' ;;
+        scan|size|approval|drift|bundle|binding|system|confirm|system-users|runtime-users|run-state|reuse) printf '읽기' ;;
         *)                                                                                  printf '등급 미상' ;;
       esac ;;
     visual-capture.sh)
@@ -13146,9 +13146,10 @@ gate_visual_redispatch_why() {
   # or publish step may be dispatched again; on 1 prints why not.
   #
   # A STEP WHOSE LAST ROW ENDED `정상 완료` IS DISPATCHED AGAIN ONLY FOR THE
-  # DESIGN SYSTEM ROUND TRIP. The predecessor check reads only `depends_on`, so
-  # without this a router could re-run a finished generate stage over screens
-  # already made, or a finished publish stage with nothing new to publish.
+  # DESIGN SYSTEM ROUND TRIP, NEW SCREENS, OR A PERSON'S APPROVAL THAT BROKE ON
+  # ITS INPUTS. The predecessor check reads only `depends_on`, so without this a
+  # router could re-run a finished generate stage over screens already made, or
+  # a finished publish stage with nothing new to publish.
   # - The generate step runs again when its last row ended on the design system
   #   (`시각 종단=디자인 시스템`, read by `visual_row_end`; a row without the
   #   field ended on the screens), the confirmation line is a person's approval
@@ -13160,7 +13161,13 @@ gate_visual_redispatch_why() {
   #   approval line names no such record, so it re-dispatches nothing.
   # - The publish step runs again when the generate step's last `정상 완료` row
   #   is later in the ledger than the publish step's last row: there are new
-  #   screens to judge.
+  #   screens to judge. It also runs again, over the screens it already
+  #   published, when `visual_publish_redispatch_holds` holds (run.sh): the
+  #   approval verdict is an input bundle mismatch, the `**구현 승인**` line's
+  #   ` — 사람 답` tail names the run's latest `시각-판정` record, a person's
+  #   last answer to it is `승인` and no refusal stands. The stage then asks a
+  #   new `시각-판정`, which moves the latest record, so the same line does not
+  #   open this again.
   # A step whose last row ended any other way is not this rule's to judge.
   local key="$1" k="$2" last vend why dep vkey='' vlast vln pln
   last=$(gate_run_scope_last_row "$key" "$k")
@@ -13197,8 +13204,15 @@ gate_visual_redispatch_why() {
       vln=$(gate_row_ledger_line "$vlast")
       pln=$(gate_row_ledger_line "$last")
       if [ -z "$vln" ] || [ -z "$pln" ] || [ "$vln" -le "$pln" ]; then
-        printf '발행 단계 %s 는 정상 완료했고, 그 뒤 생성 단계%s 가 정상 완료한 행이 없습니다 — 같은 런에서 다시 띄우는 것은 생성 단계가 새 화면을 만든 뒤뿐입니다' \
+        if why=$(visual_publish_redispatch_holds "${DOC:-}"); then
+          return 0
+        fi
+        printf '발행 단계 %s 는 정상 완료했고, 그 뒤 생성 단계%s 가 정상 완료한 행이 없습니다 — 같은 런에서 다시 띄우는 것은 생성 단계가 새 화면을 만든 뒤, 또는 입력 묶음이 달라져 무효가 된 구현 승인 줄이 이 런의 가장 마지막 시각-판정 기록에 대한 사람 「승인」 으로 쓰였고 서 있는 사람 거절이 없을 때뿐입니다' \
           "$key" "${vkey:+ $vkey}"
+        case "$why" in
+          "$VISUAL_REDISPATCH_NOT_BUNDLE"*) ;;
+          *) printf ' — 입력 묶음 불일치 재파견 조건이 서지 않음: %s' "$why" ;;
+        esac
         return 1
       fi
       return 0 ;;
