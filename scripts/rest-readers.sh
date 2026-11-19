@@ -24,11 +24,11 @@
 # that name, and when that entry is a directory only if the word ends in /:
 # for a directory <d> no other tracked entry shares the name of, a bare <d>
 # or $repo_root/<d> names nothing and <d>/ names every tracked file under
-# it. A longer suffix counts
-# however many paths it matches, a directory one whatever the word ends in. A goal
-# reads its entry files, its scanned files and every file their words name.
-# Deleted and renamed-away paths of the change count as tracked for the
-# matching, so a reference the tree still holds to them is seen.
+# it. A longer suffix counts however many paths it matches, a directory one
+# whatever the word ends in. A goal reads its entry files, its scanned files
+# and every file their words name. Deleted and renamed-away paths of the
+# change count as tracked for the matching, so a reference the tree still
+# holds to them is seen.
 #
 # Usage:
 #   bash scripts/rest-readers.sh derive --tree <dir> --changed <file> [--make <make>]
