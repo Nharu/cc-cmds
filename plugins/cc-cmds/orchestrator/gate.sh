@@ -24987,6 +24987,16 @@ gate_main() {
   # gate does. Idempotent overwrite.
   printf '%s\n' "$LEDGER" > "$RUN_DIR/ledger-path"
 
+  # `notify.label` is the run's name in an approval banner's title: the
+  # manifest's anchor key, one line. The banner emitter reads it from the run
+  # directory because the watcher and the session hooks that raise those
+  # banners do not know the manifest. This gate is its one writer, on every
+  # entry like `ledger-path`; an empty key writes nothing, so the title keeps
+  # its plain wording rather than an empty name. Idempotent overwrite.
+  if [ -n "${ANCHOR_KEY:-}" ]; then
+    printf '%s\n' "$ANCHOR_KEY" > "$RUN_DIR/notify.label" 2>/dev/null || true
+  fi
+
   # The FORWARD index: session id → run ids. `session-lineage` runs the other
   # way (run → its session ids) and answering "which run belongs to this
   # session?" from it means scanning every run directory. One session can hold

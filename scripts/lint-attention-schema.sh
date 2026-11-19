@@ -33,6 +33,7 @@ TOKEN_PAIRS=(
   "session-ask auq"
   "session-ask question-form"
   "session-turn turn"
+  "approval-ask auq"
   "answer approval"
   "ended run-end"
   "rekick run-stop"
