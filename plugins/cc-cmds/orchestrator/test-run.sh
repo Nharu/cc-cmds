@@ -13274,6 +13274,24 @@ printf 'stale=%s/%s\n' "$(hf_kind HF:a)" "$( [ -n "$n2" ] && [ "$n2" != "$n1" ] 
 wait_drop "$m"
 printf 'dropped=%s\n' "$(hf_kind HF:a)"
 
+# 다시 넣는 갈래의 스테이지 종류. 여섯째 인자의 종류를 `--kind` 로 넘기고, 여섯째
+# 인자 없이는 종류 없는 항목이다. 항목이 표에 있으면 넣지 않으므로 종류도 그대로다.
+hf_sk() { route_lease_of "$T" "$RUN_ID" "$1" 2>/dev/null | jq -r 'if has("stage_kind") then (.stage_kind // "null") else "absent" end' 2>/dev/null; }
+m="$RUN_DIR/hfK.waiting"
+hf_put HF:k "$m"
+route_lease_wait_drop "$T" "$RUN_ID" HF:k "$(hf_nonce "$m")" >/dev/null 2>&1
+wait_fifo_follow "$m" HF:k "$$" acct:ra1 no-room
+printf 'kind5=%s/%s\n' "$(hf_kind HF:k)" "$(hf_sk HF:k)"
+route_lease_wait_drop "$T" "$RUN_ID" HF:k "$(hf_nonce "$m")" >/dev/null 2>&1
+wait_fifo_follow "$m" HF:k "$$" acct:ra1 no-room implement
+printf 'kind6=%s/%s\n' "$(hf_kind HF:k)" "$(hf_sk HF:k)"
+wait_fifo_follow "$m" HF:k "$$" acct:ra1 no-room review
+printf 'kindkept=%s\n' "$(hf_sk HF:k)"
+route_lease_wait_drop "$T" "$RUN_ID" HF:k "$(hf_nonce "$m")" >/dev/null 2>&1
+wait_fifo_follow "$m" HF:k "$$" acct:ra1 no-room ""
+printf 'kindempty=%s\n' "$(hf_sk HF:k)"
+wait_drop "$m"
+
 # 대기 루프 — 첫 재질의는 그룹 없는 `host-saturated` WAIT, 다음 재질의는 GRANT. 두 번째
 # 질의 때 이 계보의 항목이 이미 없어야 한다.
 printf '2\n%s\n%s\n' "$$" "$(cc_proc_fingerprint "$$")" > "$RUN_DIR/watch.stall"
@@ -13295,9 +13313,42 @@ stage_wait_loop hfB implement "$m" first "" hf_hb hf_dl hf_stop || rc=$?
 printf 'loop=%s\n' "$rc"
 cat "$RA_ROOT/hf.seen" 2>/dev/null
 wait_drop "$m"
+
+# 대기 루프는 자기 스테이지 종류를 다시 넣는 항목에 싣는다 — 항목 없는 대기자가 그룹을
+# 단 WAIT 를 받은 다음 질의 때 그 계보의 항목이 review 종류다.
+m="$RUN_DIR/hfC.waiting"
+wait_marker_write "$m" "보유자=$$" "지문=$(cc_proc_fingerprint "$$")" "기록자=드라이버" "계보=HF:c" \
+  "그룹=acct:ra1" "까지=-" "갱신=$(now_epoch)" "종류=review" "논스=-" "예비=[]"
+route_resolve() {
+  local c
+  c=$(cat "$RA_ROOT/hfc.calls" 2>/dev/null || printf 0); c=$((c + 1)); printf '%s\n' "$c" > "$RA_ROOT/hfc.calls"
+  if [ "$c" = "1" ]; then
+    printf '{"verdict":"WAIT","group":"acct:ra1","account":null,"until_epoch":null,"reason":"no-room","cost":null}'
+  else
+    printf 'loopkind=%s\n' "$(hf_sk HF:c)" >> "$RA_ROOT/hf.seen"
+    printf '{"verdict":"GRANT","nonce":null}'
+  fi
+}
+rc=0
+stage_wait_loop hfC review "$m" first "" hf_hb hf_dl hf_stop || rc=$?
+printf 'loopc=%s\n' "$rc"
+grep '^loopkind=' "$RA_ROOT/hf.seen" 2>/dev/null
+wait_drop "$m"
+
+# 드라이버의 첫 대기 넣기는 자기 스테이지 종류를 싣는다. 승인을 받으면 루프가 항목을
+# 지우므로, 항목은 루프의 첫 질의 때 읽는다.
+run_gate_call() { return 0; }
+route_resolve() {
+  printf 'spawnkind=%s/%s\n' "$(hf_kind HF:d)" "$(hf_sk HF:d)" >> "$RA_ROOT/hfd.seen"
+  printf '{"verdict":"GRANT","nonce":null}'
+}
+SPAWN_LINEAGE=HF:d
+spawn_route_wait hfD implement first "" '{"verdict":"WAIT","group":"acct:ra1","account":null,"until_epoch":null,"reason":"no-room","cost":null}' >/dev/null 2>&1
+head -n 1 "$RA_ROOT/hfd.seen" 2>/dev/null
+wait_drop "$RUN_DIR/$(spawn_wait_key hfD).waiting"
 rm -f "$RUN_DIR/watch.stall"
 HFEOF
-rm -f "$RA/hf.calls" "$RA/hf.seen"
+rm -f "$RA/hf.calls" "$RA/hfc.calls" "$RA/hf.seen" "$RA/hfd.seen"
 hf_out=$(env -u CC_PIPELINE_SHIFT_ID -u CLAUDE_CONFIG_DIR -u XDG_CONFIG_HOME HOME="$RA/home" \
   RUN_PACE_ROOT="$RA/pace" bash "$RA/hf.sh" "$RA/orch/run.sh" "$RA" 2>/dev/null)
 check "그룹 대기자는 FIFO 항목과 그 논스를 지닌다" "$(ra_get "$hf_out" start)" "wait/nonce"
@@ -13310,6 +13361,13 @@ check "표지가 옛 논스를 지녀도 표에 항목이 없으면 다시 넣�
 check "대기를 내리면 다시 넣은 항목도 사라진다" "$(ra_get "$hf_out" dropped)" ""
 check "대기 루프는 그룹 없는 WAIT 다음 질의 전에 FIFO 항목을 이미 내렸다" \
   "$(ra_get "$hf_out" at2)/$(ra_get "$hf_out" loop)/$(ra_get "$hf_out" stop)" "/0/"
+check "wait_fifo_follow 는 여섯째 인자 없이 다시 넣으면 종류 없는 항목을 쓴다" "$(ra_get "$hf_out" kind5)" "wait/null"
+check "wait_fifo_follow 는 다시 넣는 항목에 여섯째 인자의 종류를 싣는다" "$(ra_get "$hf_out" kind6)" "wait/implement"
+check "wait_fifo_follow 는 항목이 표에 있으면 종류도 그대로 둔다" "$(ra_get "$hf_out" kindkept)" "implement"
+check "wait_fifo_follow 의 빈 여섯째 인자는 종류 없는 항목이다" "$(ra_get "$hf_out" kindempty)" "null"
+check "대기 루프는 다시 넣는 항목에 자기 스테이지 종류를 싣는다" \
+  "$(ra_get "$hf_out" loopkind)/$(ra_get "$hf_out" loopc)" "review/0"
+check "spawn_route_wait 는 첫 대기 항목에 자기 스테이지 종류를 싣는다" "$(ra_get "$hf_out" spawnkind)" "wait/implement"
 
 # 런 끝 `파견 대기` 줄 — 계보마다 연속 stage-wait 묶음을 건수로, 같은 계보 이웃
 # 행의 `기록 시각` 차이를 앞 행의 부류에 더해 분으로 내린다. 세지 않는 근거의 행은
