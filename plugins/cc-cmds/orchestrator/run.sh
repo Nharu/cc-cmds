@@ -15539,6 +15539,67 @@ visual_approval_provenance() {
   return 0
 }
 
+# The reason visual_publish_redispatch_holds prints when the approval verdict is
+# not an input bundle mismatch. The gate's refusal tells it apart from the other
+# conditions by this prefix.
+VISUAL_REDISPATCH_NOT_BUNDLE='구현 승인 판정이 입력 묶음 불일치가 아니다'
+
+visual_publish_redispatch_holds() {
+  # visual_publish_redispatch_holds <design document> — 0 when a person's
+  # approval of this run broke on its inputs, so the publish stage may run
+  # again to ask the verdict over the current screens. All four hold:
+  # (1) the approval helper's first line starts with
+  #     `승인 무효 — 입력 묶음이 달라졌다`;
+  # (2) the ` — 사람 답 <file>` tail of the sidecar's `**구현 승인**` line,
+  #     read from the line itself because a void verdict prints no
+  #     provenance line, names the run's latest `시각-판정` record
+  #     (`visual_publish_latest_verdict_record`);
+  # (3) a person's last answer to that record is `승인`
+  #     (`visual_publish_person_answer`);
+  # (4) no refusal a person gave at the stage stands
+  #     (`visual_publish_standing_refusal`).
+  # A line without the tail never holds, so `visual_approval_provenance` keeps
+  # refusing the interactive phase's lines. Once the re-dispatched stage asks a
+  # new `시각-판정`, the latest record changes and the same line no longer
+  # holds, so the rule does not repeat. Prints the first condition that fails
+  # on 1. The gate's re-dispatch rule and `visual_approval_route_hint` both
+  # read it, so the hint never promises a dispatch the gate refuses.
+  local pl sc line src latest ref rec
+  pl=''
+  [ -z "${1:-}" ] || pl=$(bash "$ORCH_DIR/visual-check.sh" approval "$1" 2>/dev/null | sed -n 1p)
+  case "$pl" in
+    '승인 무효 — 입력 묶음이 달라졌다'*) ;;
+    *)
+      printf '%s (%s)' "$VISUAL_REDISPATCH_NOT_BUNDLE" "${pl:-판정 없음}"
+      return 1 ;;
+  esac
+  line=''
+  sc=$(visual_sidecar_path "$1" 2>/dev/null) && line=$(grep -m1 '^\*\*구현 승인\*\*: ' "$sc" 2>/dev/null || true)
+  src=$(printf '%s\n' "$line" | sed -nE 's/^.* — 사람 답 ([A-Za-z0-9._#-]+\.md)[[:space:]]*$/\1/p')
+  if [ -z "$src" ]; then
+    printf '구현 승인 줄에 사람 답 출처 꼬리가 없다'
+    return 1
+  fi
+  if ! latest=$(visual_publish_latest_verdict_record); then
+    printf '출처 꼬리 %s 가 가리킬 S2P 의 시각-판정 기록이 이 런에 없다' "$src"
+    return 1
+  fi
+  if [ "${latest##*/}" != "$src" ]; then
+    printf '출처 꼬리 %s 가 가장 마지막 시각-판정 기록 %s 이 아니다' "$src" "${latest##*/}"
+    return 1
+  fi
+  if ! visual_publish_person_answer "$latest" '승인' >/dev/null; then
+    printf '시각-판정 기록 %s 에 대한 사람의 마지막 답이 「승인」 이 아니다' "$src"
+    return 1
+  fi
+  if ref=$(visual_publish_standing_refusal); then
+    ref=${ref#*$'\t'}; rec=${ref%%$'\t'*}
+    printf '시각 발행 단계 중단 기록 %s 에 사람이 남긴 「%s」 답이 서 있다' "${rec##*/}" "${ref#*$'\t'}"
+    return 1
+  fi
+  return 0
+}
+
 visual_approval_route_hint() {
   # visual_approval_route_hint — where a person goes to approve the screens:
   # in a run with the publish stage, the stage's latest `시각-판정` record,
@@ -15570,6 +15631,13 @@ visual_approval_route_hint() {
   # to it passes the entry predicate in no run) or a run without the publish
   # stage, so the person runs `/cc-cmds:visual <문서> 구현 승인` again once the
   # run has ended.
+  #
+  # AN APPROVAL OF THIS RUN THAT BROKE ON ITS INPUTS IS ASKED AGAIN BY THE
+  # STAGE. In a run with the publish stage, when `visual_publish_redispatch_holds`
+  # holds — the verdict is an input bundle mismatch and the line was written on
+  # a person's `승인` to the run's latest `시각-판정` with no refusal standing —
+  # the router dispatches the publish stage again, so the person is told to
+  # answer the new `시각-판정` record that stage leaves, not the old one.
   local latest pl sc dl tl
   if visual_confirm_waiting "${DOC:-}"; then
     if ! manifest_has_visual_publish_step; then
@@ -15618,6 +15686,10 @@ visual_approval_route_hint() {
       fi
       return 0 ;;
   esac
+  if manifest_has_visual_publish_step && visual_publish_redispatch_holds "${DOC:-}" >/dev/null; then
+    printf '교대가 시각 발행 단계(S2P)를 다시 보낸다 — 그 단계가 새 `시각-판정` 기록을 남기면 그 기록에 답하라'
+    return 0
+  fi
   if manifest_has_visual_publish_step; then
     if latest=$(visual_publish_latest_verdict_record); then
       printf '시각 발행 단계(S2P)의 시각-판정 중단 기록 %s 에 사람이 「승인」 으로 답해 그 단계가 출처 꼬리 달린 구현 승인 줄을 쓰게 하세요' "$latest"

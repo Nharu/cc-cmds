@@ -377,3 +377,7 @@ One write form: **append**. The writer emits a whole new `## 이탈 <N>` block w
 ### 3.5 Reader predicate
 
 `review` reads the file only after the §1.2 read guard passes. A block is **groundable** iff it is well-formed under §3.2 and §3.3; a malformed block is surfaced to the user rather than consumed, never silently skipped. There is no unprocessed/processed distinction — the reader takes no disposition, so every groundable block is available on every read, and a reviewer that has already seen one is not a state this file tracks.
+
+## 4. A base-owned file beside the visual extracts
+
+§1.6 proves an extract's ownership by the link file that pins it. **One headerless file in that directory is not an extract and no link file pins it:** `docs/visual/support.history`, the base-shared history of the `support.js` hashes a replacement overwrote, one sha256 per line. It is append-only — a writer re-reads it just before the §1.3 rename and writes the union of those lines and its own — and only the two writes that overwrite `support.js` with different bytes write it: the attended `덮고 재고정` and the unattended publish stage's `승인` branch. Its owner is the base, not a sidecar, so it is outside §1.6's link-file ownership rule rather than an extract without an owner.
