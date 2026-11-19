@@ -508,6 +508,7 @@ LINT_TESTS := \
 	scripts/test-gate-oracle.sh \
 	scripts/test-measure-team-cost.sh \
 	scripts/test-measure-lead-context.sh \
+	scripts/test-measure-bookkeeping.sh \
 	scripts/test-measure-test-share.sh \
 	scripts/test-measure-test-slots.sh \
 	scripts/test-measure-discussion-passes.sh \
@@ -556,6 +557,7 @@ ORCH_TESTS := \
 	scripts/test-fleet.sh \
 	scripts/test-statusline.sh \
 	scripts/test-statusline-hook.sh \
+	scripts/test-stage-values-hook.sh \
 	scripts/test-liveness-agreement.sh \
 	scripts/test-dashboard.sh \
 	scripts/test-dashboard-screen.sh \
