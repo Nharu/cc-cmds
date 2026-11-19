@@ -241,6 +241,10 @@ for t in test test-rest; do
     *run-test-reuse-selftest*) ok "$t 가 test-reuse 자가 시험을 선행으로 둔다" ;;
     *) bad "$t 선행" "run-test-reuse-selftest 가 없다: $tline" ;;
   esac
+  case "$tline" in
+    *run-rest-readers-selftest*) ok "$t 가 rest-readers 자가 시험을 선행으로 둔다" ;;
+    *) bad "$t 선행" "run-rest-readers-selftest 가 없다: $tline" ;;
+  esac
 done
 
 printf 'test-local-bundle: %d passed, %d failed\n' "$passed" "$failed"

@@ -75011,6 +75011,134 @@ kill "$s116_holder" 2>/dev/null || true
 unset -f s116_put s116_ask s116_round s116_live_waits s116_rep
 unset S116 s116_route s116_now s116_holder s116_t s116_seqs s116_i
 
+# ---------------------------------------------------------------------------
+# 117. 목표를 지명하지 않은 check-push 가 바뀐 파일을 읽는 REST 목표를 스스로 돌린다 — 관측된 실패의 재생
+# --- section: 117 | group: static | covers: - | anchors: 117: 바꾼 gate.sh 를 읽는 자리 수 목표가 유도 목표 줄에 있다, 117: 유도한 목표의 실패로 check-push 가 1 로 끝난다, 117: 실패 단계가 유도한 자리 수 목표를 이름 댄다, 117: 그 목표의 출력에 빌트인 파이프라인 요소 자리 수 FAIL 줄이 있다, 117: 바뀐 파일이 없는 head 는 아무 목표도 유도하지 않는다 ---
+#
+# 지난 세그먼트들은 gate.sh 의 함수 본문에 빌트인을 첫 낱말로 둔 파이프라인 요소를 더하고도
+# push 전 검사를 통과했다. 그 수를 기준선과 대조하는 `run/scripts/test-measure-spawn-count.sh`
+# 를 아무도 지명하지 않았기 때문이고, 실패는 CI 에서야 드러났다. 이 절은 지금 트리의 추적
+# 파일을 새 저장소에 옮겨 커밋 A 로 두고, gate.sh 의 첫 함수 본문에 그런 요소를 기준선을 한
+# 자리 넘도록 더한 커밋 B 를 만든 뒤, 목표를 지명하지 않은 `check-push.sh run` 을 B 에서
+# `CHECK_PUSH_BASE=<A>` 로 돌린다. lint·readme·check-cheap 의 make 는 기록만 하는 대역이다.
+# 시험 트리의 make 는 print-rest-goals·`-n` 호출과 그 목표만 실제 make 로 넘기고, 유도된 다른
+# 목표는 이름만 적고 통과시킨다 — 유도된 목표를 모두 돌리면 이 절 하나가 REST 전량이 된다.
+# 더할 자리 수는 A 의 지금 셈과 기준선의 차에 하나를 더한 것이어서, 지금 셈이 기준선과 같은
+# 오늘은 한 자리다.
+# ---------------------------------------------------------------------------
+S117="$WORK/s117"; rm -rf "$S117"; mkdir -p "$S117/repo" "$S117/bin"
+S117=$(cd -P "$S117" && pwd)
+s117_key=plugins/cc-cmds/orchestrator/gate.sh
+s117_goal=run/scripts/test-measure-spawn-count.sh
+s117_real_make=$(command -v make)
+# 바깥에서 물려받은 git 위치 변수는 이 절의 저장소를 다른 저장소로 돌린다.
+s117_git() {
+  env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_OBJECT_DIRECTORY \
+    -u GIT_ALTERNATE_OBJECT_DIRECTORIES -u GIT_COMMON_DIR \
+    git -c user.name=test-gate -c user.email=test-gate@example.invalid -c commit.gpgsign=false "$@"
+}
+(cd "$repo_root" && s117_git ls-files -z) > "$S117/files"
+(cd "$repo_root" && tar -cf - --null -T "$S117/files" 2>/dev/null) | (cd "$S117/repo" && tar -xf -) || :
+(
+  cd "$S117/repo" || exit 1
+  s117_git init -q && s117_git symbolic-ref HEAD refs/heads/master \
+    && s117_git add -A && s117_git commit -q -m A
+) > "$S117/init.log" 2>&1
+s117_a=$(cd "$S117/repo" && s117_git rev-parse --verify --quiet HEAD)
+s117_want=$(awk -F '\t' -v k="$s117_key" '$1 == "pipeline" && $2 == k { print $3; exit }' \
+  "$S117/repo/tests/fixtures/measure-spawn-count/baseline.tsv")
+s117_now=$(bash "$S117/repo/scripts/measure-spawn-count.sh" --pipeline "$S117/repo/$s117_key" 2>/dev/null)
+s117_n=1
+case "$s117_want|$s117_now" in
+  *[!0-9\|]*|\|*|*\|) ;;
+  *) [ "$s117_now" -gt "$s117_want" ] || s117_n=$((s117_want - s117_now + 1)) ;;
+esac
+awk -v n="$s117_n" '
+  { print }
+  !done && /^[a-z_][a-z0-9_]*\(\) \{$/ { for (i = 0; i < n; i++) print "  printf x | tr x y >/dev/null"; done = 1 }
+' "$S117/repo/$s117_key" > "$S117/gate.b"
+cat "$S117/gate.b" > "$S117/repo/$s117_key"
+(cd "$S117/repo" && s117_git commit -q -a -m B) >> "$S117/init.log" 2>&1
+s117_b=$(cd "$S117/repo" && s117_git rev-parse --verify --quiet HEAD)
+
+cat > "$S117/bin/push-make" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$S117/push-make.log"
+exit 0
+EOF
+cat > "$S117/bin/tree-make" <<EOF
+#!/usr/bin/env bash
+for a in "\$@"; do
+  case "\$a" in
+    print-rest-goals|-n|$s117_goal) exec "$s117_real_make" "\$@" ;;
+  esac
+done
+printf '%s\n' "\$*" >> "$S117/tree-make.log"
+exit 0
+EOF
+chmod +x "$S117/bin/push-make" "$S117/bin/tree-make"
+
+# s117_push <head> <out> — check-push run on <head> against A, with nothing this
+# suite's own caller set: no pipeline variables, no named sections or goals.
+s117_push() {
+  (
+    for v in $(compgen -e); do
+      case "$v" in CC_PIPELINE_*|CHECK_PUSH_*|CC_CHECK_PUSH_*|CC_TEST_TREE_*) unset "$v" ;; esac
+    done
+    cd "$S117/repo" || exit 2
+    s117_git checkout -q --detach "$1" || exit 2
+    unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_COMMON_DIR
+    CHECK_PUSH_BASE="$s117_a" CHECK_PUSH_REUSE=0 \
+      CC_CHECK_PUSH_MAKE="$S117/bin/push-make" CC_TEST_TREE_MAKE="$S117/bin/tree-make" \
+      bash "$repo_root/scripts/check-push.sh" run
+  ) < /dev/null > "$2" 2>&1
+}
+s117_rc=0
+s117_push "$s117_b" "$S117/b.out" || s117_rc=$?
+s117_line=$(grep '^check-push: 유도 목표 — ' "$S117/b.out" | tail -n 1)
+case ",${s117_line##*: }," in *",$s117_goal,"*) s117_has=있음 ;; *) s117_has="없음: ${s117_line:-유도 목표 줄 없음}" ;; esac
+check "117: 바꾼 gate.sh 를 읽는 자리 수 목표가 유도 목표 줄에 있다" "$s117_has" "있음"
+check "117: 유도한 목표의 실패로 check-push 가 1 로 끝난다" "$s117_rc" "1"
+check "117: 실패 단계가 유도한 자리 수 목표를 이름 댄다" \
+  "$(grep -c -F "단계=목표=$s117_goal" "$S117/b.out" || true)" "1"
+check "117: 그 목표의 출력에 빌트인 파이프라인 요소 자리 수 FAIL 줄이 있다" \
+  "$(grep -c -F "FAIL: 빌트인 파이프라인 요소 자리 수 ($s117_key)" "$S117/b.out" || true)" "1"
+s117_rc=0
+s117_push "$s117_a" "$S117/a.out" || s117_rc=$?
+check "117: 바뀐 파일이 없는 head 는 아무 목표도 유도하지 않는다" \
+  "$s117_rc|$(grep -c -x -F 'check-push: 유도 목표 — 변경 파일 0개, 유도 0개: 없음' "$S117/a.out" || true)" "0|1"
+unset -f s117_git s117_push
+unset S117 s117_key s117_goal s117_real_make s117_a s117_b s117_want s117_now s117_n s117_rc s117_line s117_has
+
+# ---------------------------------------------------------------------------
+# 118. 지난 다섯 세그먼트의 변경 파일에서 유도한 목표가 그들이 CI 에서 처음 실패한 목표를 담는다
+# --- section: 118 | group: static | covers: - | anchors: 118: 지난 세그먼트의 변경 파일로 유도한 목표가 자리 수 목표를 담는다 ---
+#
+# 다섯 PR 은 모두 push 전 검사를 통과하고 CI 의 첫 lint 런에서
+# `run/scripts/test-measure-spawn-count.sh` 로 실패했다. 아래 고정 자료는 각 PR 의 번호와
+# 변경 파일 목록을 gh 로 읽은 그대로이고, 그 트리는 이미 master 에 합쳐졌으므로 대조는 지금
+# 트리의 읽기 관계로 한다. 줄마다 파일 수도 함께 단언해, 고정 자료가 잘려도 초록이 나지 않게 한다.
+# ---------------------------------------------------------------------------
+S118="$WORK/s118"; rm -rf "$S118"; mkdir -p "$S118"
+s118_goal=run/scripts/test-measure-spawn-count.sh
+while read -r s118_pr s118_want s118_files; do
+  [ -n "$s118_pr" ] || continue
+  printf '%s\n' "$s118_files" | tr ' ' '\n' > "$S118/$s118_pr"
+  s118_rc=0
+  bash "$repo_root/scripts/rest-readers.sh" derive --tree "$repo_root" --changed "$S118/$s118_pr" \
+    > "$S118/$s118_pr.out" 2> "$S118/$s118_pr.err" < /dev/null || s118_rc=$?
+  check "118: 지난 세그먼트의 변경 파일로 유도한 목표가 자리 수 목표를 담는다 (#$s118_pr)" \
+    "$s118_rc|$(grep -c . "$S118/$s118_pr" || true)|$(grep -c -x -F "$(printf '유도\t%s' "$s118_goal")" "$S118/$s118_pr.out" || true)" \
+    "0|$s118_want|1"
+done <<'EOF'
+1762 5 plugins/cc-cmds/hooks/gate-pretool.sh plugins/cc-cmds/orchestrator/gate.sh scripts/test-orchestrator-pretool-hook.sh tests/fixtures/measure-spawn-count/targets/U7 tests/fixtures/measure-spawn-count/targets/U8
+1735 28 CHANGELOG.md plugins/cc-cmds/.claude-plugin/plugin.json plugins/cc-cmds/hooks/gate-pretool.sh plugins/cc-cmds/orchestrator/doc-tidy.py plugins/cc-cmds/orchestrator/gate.sh plugins/cc-cmds/orchestrator/rekick.sh plugins/cc-cmds/orchestrator/rules/사전-인가-대조.sh plugins/cc-cmds/orchestrator/run.sh plugins/cc-cmds/orchestrator/test-run.sh plugins/cc-cmds/skills/_common/pipeline-sidecar.md plugins/cc-cmds/skills/autopilot-router-shift/SKILL.md plugins/cc-cmds/skills/autopilot-router-shift/references/design-dispatch.md plugins/cc-cmds/skills/autopilot-router-shift/references/halt-answer-1.md plugins/cc-cmds/skills/autopilot-router-shift/references/halt-answer-2.md plugins/cc-cmds/skills/autopilot-router-shift/references/halt-answer-3.md plugins/cc-cmds/skills/autopilot-router-shift/references/refutation-reconverge.md plugins/cc-cmds/skills/autopilot/references/act2-seat.md plugins/cc-cmds/skills/autopilot/references/router-lead-copy.md plugins/cc-cmds/skills/design-audit-unattended/SKILL.md plugins/cc-cmds/skills/design-reconverge/SKILL.md plugins/cc-cmds/skills/implement-unattended/SKILL.md scripts/lint-lead-read-set.sh scripts/test-gate.sh scripts/test-lint-lead-read-set.sh scripts/test-meta-invariants.sh scripts/test-rekick.sh scripts/test-run-stops.sh tests/fixtures/measure-spawn-count/baseline.tsv
+1765 6 plugins/cc-cmds/orchestrator/gate.sh plugins/cc-cmds/orchestrator/run.sh plugins/cc-cmds/orchestrator/visual-check.sh plugins/cc-cmds/skills/visual/references/sidecar.md scripts/test-gate.sh scripts/test-visual-check.sh
+1721 17 README.md plugins/cc-cmds/orchestrator/gate.sh plugins/cc-cmds/orchestrator/rekick.sh plugins/cc-cmds/orchestrator/run.sh plugins/cc-cmds/orchestrator/test-run.sh plugins/cc-cmds/skills/_common/pipeline-sidecar.md plugins/cc-cmds/skills/autopilot-router-shift/SKILL.md plugins/cc-cmds/skills/autopilot-router-shift/references/review-next-1.md plugins/cc-cmds/skills/autopilot/SKILL.md plugins/cc-cmds/skills/autopilot/references/act2-seat.md plugins/cc-cmds/skills/autopilot/references/freeze.md plugins/cc-cmds/skills/autopilot/references/rekickoff.md plugins/cc-cmds/skills/autopilot/references/router-lead-copy.md plugins/cc-cmds/skills/review-unattended/SKILL.md scripts/test-gate.sh scripts/test-meta-invariants.sh scripts/test-rekick.sh
+1776 20 plugins/cc-cmds/orchestrator/dashboard_read.py plugins/cc-cmds/orchestrator/gate.sh plugins/cc-cmds/orchestrator/liveness.sh plugins/cc-cmds/orchestrator/run-stops.sh plugins/cc-cmds/orchestrator/run.sh plugins/cc-cmds/orchestrator/test-run.sh plugins/cc-cmds/skills/_common/pipeline-sidecar.md plugins/cc-cmds/skills/autopilot-router-shift/SKILL.md plugins/cc-cmds/skills/autopilot-router-shift/references/halt-answer-2.md plugins/cc-cmds/skills/autopilot-router-shift/references/review-next-2.md plugins/cc-cmds/skills/autopilot/references/router-lead-copy.md plugins/cc-cmds/skills/design-audit-unattended/SKILL.md plugins/cc-cmds/skills/implement-unattended/SKILL.md plugins/cc-cmds/skills/review-unattended/SKILL.md plugins/cc-cmds/skills/visual-publish-unattended/SKILL.md plugins/cc-cmds/skills/visual-unattended/SKILL.md scripts/test-gate.sh scripts/test-liveness-agreement.sh scripts/test-run-stops.sh scripts/test-snapshot.sh
+EOF
+unset S118 s118_goal s118_pr s118_want s118_files s118_rc
+
 # --- epilogue-begin ---
 #
 # THE UNCONDITIONAL TAIL. A selected run has to report its own totals, carry its
