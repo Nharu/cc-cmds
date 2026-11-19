@@ -577,6 +577,8 @@ EOF
       "기록 시각=2026-10-01T$hh:00:00Z"
   fi
 done
+fx_row '중단 답' '세그먼트=A' '중단 기록=/x/nb-anchor/halt/A#1.md' '선택지=잔여로 두고 동결' '답한 주체=스테이지' \
+  '근거=g6' '기록 시각=2026-10-01T09:15:00Z'
 fx_row '승인' '승인 id=K1' '상태=대기' '대상=-' '절단점=경계' '질문 문면=k' '답변 문면=-' \
   '발행 시각=2026-10-01T09:30:00Z' '해소 시각=-'
 fx_row '승인' '승인 id=K1' '상태=승인' '대상=-' '절단점=경계' '질문 문면=k' '답변 문면=보류' '처분 사유=자동 해소' \
@@ -782,12 +784,12 @@ check "T24 by_segment" \
   "$(nq "sorted((k, round(v, 6)) for k, v in M.detail('nb-anchor', now=now)['cost']['by_segment'].items())")" \
   "[('A', 3.5), ('기타', 3.5)]"
 
-# T25 — judgments: two judgments, three automatic answers and one automatic
-# resolution; the execution row quoting `kind=judgment` and a person's answer
-# are not among them.
-check "T25 자율 판단 여섯 항목과 각 at" \
+# T25 — judgments: two judgments, four automatic answers (a stage's own ladder
+# freeze among them) and one automatic resolution; the execution row quoting
+# `kind=judgment` and a person's answer are not among them.
+check "T25 자율 판단 일곱 항목과 각 at" \
   "$(nq "[(j['source'], j['at'], j['결정'], j['해소 승인']) for j in M.detail('nb-anchor', now=now)['judgments']['items']]")" \
-  "[('판단', None, '채택', '-'), ('판단', 1790830800, '채택', 'J1'), ('자동 답', 1790834400, '좌석 실행', None), ('자동 답', 1790838000, '재시도', None), ('자동 답', 1790845200, '재수렴', None), ('자동 해소', 1790848800, '보류', 'K1')]"
+  "[('판단', None, '채택', '-'), ('판단', 1790830800, '채택', 'J1'), ('자동 답', 1790834400, '좌석 실행', None), ('자동 답', 1790838000, '재시도', None), ('자동 답', 1790845200, '재수렴', None), ('자동 답', 1790846100, '잔여로 두고 동결', None), ('자동 해소', 1790848800, '보류', 'K1')]"
 check "T25 판단 부류별 개수" "$(nq "M.detail('nb-anchor', now=now)['judgments']['by_class']")" "{'감사-발견': 1, '잔여-항목': 1}"
 
 # T26 — reviews, links and PRs.

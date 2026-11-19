@@ -406,9 +406,17 @@
 #   gate.sh act --kind halt-answer --target <alias> --segment <key> ... \\
 #               -- '중단 기록=<RUN_DIR/halt/…md>' '선택지=<그 기록의 선택지 원문>' 근거=<사람이 한 말의 요약> \\
 #                  ['첨부=<RUN_DIR/halt/…answer.md>'] ['초안 그대로=예']
-# `halt-answer` is the seat's alone on the same terms, save one shift case: an
-# implement-unattended CFI-U3 BT-STOP record answered `재수렴` under a
-# `자동 채택` row of class 구속-이탈, once per record. A record whose whole
+#   gate.sh act --kind halt-answer --target <alias> --segment <step key> ... \\
+#               -- '중단 기록=<RUN_DIR/halt/<CC_PIPELINE_STAGE_ID>.md>' '선택지=잔여로 두고 동결'
+# `halt-answer` is the seat's on the same terms, save one shift case and one
+# stage case. The shift case: an implement-unattended CFI-U3 BT-STOP record
+# answered `재수렴` under a `자동 채택` row of class 구속-이탈, once per record.
+# The stage case (the second form above): a discuss or solo design stage
+# answers its own attempt's `/ ladder-unsettled` record with
+# `잔여로 두고 동결` when the record recommends it and the seat's switch, rule,
+# design check and one-answer limit admit it; it names the record and the
+# option only, and the gate stamps `답한 주체=스테이지`, `근거` and the
+# attachment. A record whose whole
 # `**스텝**` reads `Step 1 CFI-U3 BT-STOP — 미결 결정` — the halt an implement
 # stage writes when open decisions reach its segment, listing their headings
 # in `**미결 결정 항목**` — is outside that case: `답한 주체=사람` is recorded
@@ -27553,7 +27561,7 @@ gate_halt_stage_self_answer() {
   [ -n "$rec" ] && [ -n "$opt" ] || {
     warn "a stage's \`중단 답\` needs \`중단 기록\` (its own halt record's absolute path) and \`선택지\` (\`$GATE_STAGE_FREEZE_OPT\`)"
     return "$GATE_EXIT_VOCAB"; }
-  # S2 — ITS OWN RECORD. The path and the step key both come from the stage's
+  # ITS OWN RECORD. The path and the step key both come from the stage's
   # own id; `CC_PIPELINE_SEGMENT` is not compared, since a gate-dispatched
   # run-scope design step carries `-` there and a driver-launched one its key.
   sid="${CC_PIPELINE_STAGE_ID:-}"
@@ -27566,7 +27574,7 @@ gate_halt_stage_self_answer() {
     warn "a stage answers only the halt record of its own attempt ($want, --segment $key) — received $rec, --segment $seg"
     return "$GATE_EXIT_RULE"
   fi
-  # S3 — A COMPLETE LADDER RECORD OF A DISCUSS OR SOLO DESIGN STAGE.
+  # A COMPLETE LADDER RECORD OF A DISCUSS OR SOLO DESIGN STAGE.
   [ -f "$rec" ] || { warn "the halt record does not exist: $rec"; return "$GATE_EXIT_VOCAB"; }
   local first=''
   IFS= read -r first < "$rec" || true
@@ -27589,12 +27597,12 @@ gate_halt_stage_self_answer() {
     *) warn "only a discuss or solo design stage freezes its own ladder record — this one is \`${skill:-미상}\`: $rec"
        return "$GATE_EXIT_RULE" ;;
   esac
-  # S4 — THE SEAT'S SWITCH.
+  # THE SEAT'S SWITCH.
   if ! gate_auto_resolve_enabled; then
     warn "CC_CMDS_AUTOPILOT_AUTO_RESOLVE is off, so a stage does not answer its own halt record — it ends on the record"
     return "$GATE_EXIT_RULE"
   fi
-  # S5 — THE SEAT'S RULE, CALLED AS THE SEAT CALLS IT.
+  # THE SEAT'S RULE, CALLED AS THE SEAT CALLS IT.
   gate_halt_recommendation "$rec" || return "$?"
   if [ "$GATE_HALT_REC_LABEL" != "$GATE_STAGE_FREEZE_OPT" ] || [ "$opt" != "$GATE_STAGE_FREEZE_OPT" ]; then
     warn "a stage registers only \`$GATE_STAGE_FREEZE_OPT\`, and only when its record recommends it — the record recommends \`$GATE_HALT_REC_LABEL\`, the call names \`$opt\`: $rec"
@@ -27606,29 +27614,39 @@ gate_halt_stage_self_answer() {
     warn "\`선택지\` is not one of the options this halt record lists verbatim: $opt"
     return "$GATE_EXIT_VOCAB"
   fi
-  # S6 — ONE AUTOMATIC ANSWER, NEVER OVER A WAITING ONE.
+  # ONE AUTOMATIC ANSWER, NEVER OVER A WAITING ONE.
   gate_halt_auto_answer_admit "$seg" "$rec" "$opt" || return "$?"
-  # S7 — THIS ATTEMPT IS STILL LIVE: no `stage-result` row of it yet.
+  # THIS ATTEMPT IS STILL LIVE: no `stage-result` row of it yet. The
+  # attempt is told by the step key and `실행 버전` together, in each of the
+  # three row shapes that carry this attempt: the gate's settlement row
+  # (`세그먼트=- | 스테이지=<key> | 종류=design`), the driver's own launch row
+  # (`세그먼트=- | 스테이지=… | 파견 id=<key>`, no `종류`) and a segment-shaped
+  # row (`세그먼트=<key>`). A re-convergence row on the same key is another
+  # stage's attempt and does not count.
   local ver="${sid##*#}"
   while IFS= read -r row; do
     [ -n "$row" ] || continue
+    case "$row" in
+      *"| 종류=reconverge "*) continue ;;
+      *"| 세그먼트=$key "*|*"| 세그먼트=- | 스테이지=$key | 종류=design "*) ;;
+      *"| 세그먼트=- | 스테이지="*"| 파견 id=$key "*) ;;
+      *) continue ;;
+    esac
     if [ "$(gate_row_field "$row" '실행 버전')" = "$ver" ]; then
       warn "attempt $sid already has its \`stage-result\` row, so it is no live stage answering its own record: $rec"
       return "$GATE_EXIT_RULE"
     fi
   done <<EOF
-$( { gate_stage_result_rows_of "$seg" || true; } )
+$( { gate_rows 'stage-result' || true; } )
 EOF
-  # `근거` is the record's `**추천 근거**` line S5 checked. The attachment
-  # carries it whole; the row carries it whole when it fits, and clipped
-  # otherwise, down to the clip marker alone — the record and attachment paths ride on
+  # `근거` is the record's `**추천 근거**` line S5 checked, normalized as the
+  # seat's row is (`gate_row_safe`: `|` to `/`, line breaks to spaces, runs of
+  # spaces to one) and clipped from 300 bytes down by 40 until the row fits,
+  # down to the clip marker alone — the record and attachment paths ride on
   # the row unclipped and are as long as this machine's state directory makes
-  # them, so the same record can fit on one host and not on another.
+  # them, so the same record can fit on one host and not on another. The
+  # attachment carries the line whole, as the record wrote it.
   rec_why=$(sed -n 's/^\*\*추천 근거\*\*: //p' "$rec" | sed -n '1p' | sed 's/[[:space:]]*$//')
-  if [ "$(gate_row_safe "$rec_why" 100000)" != "$rec_why" ]; then
-    warn "the record's \`**추천 근거**\` cannot ride on the row as it stands, so the gate does not record it: $rec"
-    return "$GATE_EXIT_RULE"
-  fi
   att="${rec%.md}.answer.md"
   if [ -e "$att" ]; then
     warn "the attachment of this answer already exists, so the gate does not overwrite it: $att"
@@ -27637,7 +27655,8 @@ EOF
   hdig=$(shasum -a 256 "$rec" | cut -d' ' -f1)
   hlane=$(gate_lane_label)
   hat=$(now_iso)
-  local hwhy="$rec_why" hw=300
+  local hwhy hw=260
+  hwhy=$(gate_row_safe "$rec_why" 300)
   while :; do
     hlen=$(gate_row_projected_bytes '중단 답' "세그먼트=$seg" "중단 기록=$rec" "스킬=$skill" \
       "선택지=$opt" "답한 주체=스테이지" "근거=$hwhy" "근거 종류=기기 사실" \
@@ -44299,7 +44318,7 @@ EOF
           사람|좌석) ;;
           교대) warn "\`답한 주체=교대\` is the gate's stamp on a shift's row — the seat writes \`사람\` or \`좌석\`"
                 return "$GATE_EXIT_RULE" ;;
-          *) warn "\`답한 주체\` is one of 사람 · 좌석 · 교대: $hby"
+          *) warn "the seat writes \`답한 주체\` as \`사람\` or \`좌석\` — \`교대\` and \`스테이지\` are the gate's stamps: $hby"
              return "$GATE_EXIT_VOCAB" ;;
         esac
       fi
@@ -44877,8 +44896,8 @@ EOF
       # The seat-apply fields are measured with a 40-character placeholder for
       # `좌석 커밋`, so a row that cannot fit is refused before anything is
       # committed rather than after, on the rollback path. A draft answer's
-      # attachment does not exist yet, so its digest is measured as 64
-      # characters.
+      # attachment does not exist yet, so the projection measures its digest
+      # as 64 characters (`hattm`); the row written below carries the real one.
       local hattm=$hattdig
       [ -z "$hdraft" ] || hattm=0000000000000000000000000000000000000000000000000000000000000000
       while [ "$hw" -ge 40 ]; do
@@ -44890,7 +44909,7 @@ EOF
           ${hsacf:+"승계 프레임=$hsacf"} ${hsacr:+"승계 원본=$hsacr"} ${hsanh:+"사람 몫=$hsanh"} \
           ${hladder:+"잔여 판정=$hladder"} ${hxj:+"고칠 곳=$hfix"} ${hxj:+"판정 주체=$hxj"} ${hxs:+"판정 신호=$hxs"} \
           ${hxe:+"판정 근거=$hxe"} ${hxg:+"측정 등급=$hxg"} ${hxr:+"라우팅=$hxr"} ${hconf:+"해소 확인=$hconf"} \
-          "기록 다이제스트=$hdig" ${hatt:+"첨부=$hatt"} ${hatt:+"첨부 다이제스트=$hattdig"} \
+          "기록 다이제스트=$hdig" ${hatt:+"첨부=$hatt"} ${hatt:+"첨부 다이제스트=$hattm"} \
           "레인=$hlane" "기록 시각=$hat")
         [ "$hlen" -le "$GATE_ROW_MAX" ] && break
         hw=$((hw - 40))
