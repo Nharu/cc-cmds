@@ -27639,7 +27639,7 @@ gate_halt_stage_self_answer() {
   done <<EOF
 $( { gate_rows 'stage-result' || true; } )
 EOF
-  # `근거` is the record's `**추천 근거**` line S5 checked, normalized as the
+  # `근거` is the record's `**추천 근거**` line the recommendation checks above read, normalized as the
   # seat's row is (`gate_row_safe`: `|` to `/`, line breaks to spaces, runs of
   # spaces to one) and clipped from 300 bytes down by 40 until the row fits,
   # down to the clip marker alone — the record and attachment paths ride on

@@ -39074,6 +39074,19 @@ sln_width() {  # sln_width <기록의 근거 줄 값> <행의 근거> — the cl
   done
   return 0
 }
+sln_cap=$(sed -n 's/^readonly GATE_ROW_MAX=\([0-9][0-9]*\)$/\1/p' "$GATE")
+sln_widest() {  # sln_widest <기록의 근거 줄 값> <행> — ok when the next wider clip would not have fit
+  local why w prev='' wider n
+  why=$(row_field "$2" '근거'); w=$(sln_width "$1" "$why")
+  [ -n "$w" ] || { printf 'no-width'; return 0; }
+  for n in 300 260 220 180 140 100 60 20 0; do
+    [ "$n" = "$w" ] && break; prev=$n
+  done
+  [ -n "$prev" ] || { printf ok; return 0; }
+  wider=$(sln_clipw "$1" "$prev")
+  n=$(( $(printf '%s' "$2" | LC_ALL=C wc -c | tr -d ' ') - $(printf '%s' "$why" | LC_ALL=C wc -c | tr -d ' ') + $(printf '%s' "$wider" | LC_ALL=C wc -c | tr -d ' ') ))
+  [ "$n" -gt "$sln_cap" ] && printf ok || printf 'width %s while %s fits (%s <= %s)' "$w" "$prev" "$n" "$sln_cap"
+}
 sln_why=$(row_field "$sln_row" '근거'); sln_b="${SLN_B12#'**추천 근거**: '}"
 check "34p: 스테이지 답 행의 근거는 기록의 추천 근거 줄을 정규화·절단한 값과 바이트로 같다" \
   "$([ -n "$(sln_width "$sln_b" "$sln_why")" ] && printf ok || printf '%s' "$sln_why")" "ok"
@@ -39114,6 +39127,7 @@ sln_why=$(row_field "$(sln_last)" '근거')
 sln_w=$(sln_width "${SLN_LB#'**추천 근거**: '}" "$sln_why")
 check "34p: 그 행의 근거는 정규화·절단한 값과 바이트로 같고 300 바이트 안이다" \
   "$([ -n "$sln_w" ] && [ "$(printf '%s' "$sln_why" | wc -c | tr -d ' ')" -le 300 ] && printf ok || printf '%s' "$sln_why")" "ok"
+check "34p: 그 근거는 행에 드는 가장 넓은 폭으로 잘렸다" "$(sln_widest "${SLN_LB#'**추천 근거**: '}" "$(sln_last)")" "ok"
 check "34p: 그 행의 근거에는 | 도 연속 공백도 남지 않는다" \
   "$(case "$sln_why" in *'|'*|*'  '*) printf 'left' ;; *) printf 'clean' ;; esac)" "clean"
 check "34p: 그 첨부는 추천 근거 줄을 원문 그대로 전부 싣는다" \
