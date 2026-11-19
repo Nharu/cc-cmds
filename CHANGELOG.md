@@ -5,7 +5,7 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [3.52.1] - 2026-11-18
+## [3.52.2] - 2026-11-19
 
 무인 discuss·solo 설계 스테이지가 남긴 잔여 사다리 중단(`/ ladder-unsettled`)의 추천이 `잔여로 두고 동결` 이면, 스테이지가 그 답을 게이트에 직접 등록하고 같은 세션에서 문서를 동결한다. 지금까지는 같은 추천이라도 스테이지가 멈춘 뒤 좌석이 답하고 설계 세션을 한 번 더 띄워야 해서, 바꾸는 것이 없는 답 하나에 세션 하나와 교대 한 번이 들었다.
 
@@ -16,6 +16,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **두 분류기** — 드라이버의 `classify_termination` 과 게이트의 정산 사슬은 `답한 주체=스테이지` 행이 이름 댄 기록을 park 근거로 쓰지 않고 산출물 술어로 판정한다.
 - **자동 답 판정 사본** — 게이트·`liveness.sh`·`attention-round.sh`·`dashboard_read.py` 가 `스테이지` 를 사람 없이 쓴 답으로 읽는다. 게이트의 `answered_halts` 는 스테이지 행을 넘길 답으로 싣지 않는다.
 - **스킬** — `design-discuss-unattended` 에 스테이지–게이트 `halt-answer` 호출 계약을 두고, `design-solo-unattended` 가 그것을 따른다. 앞 시도의 대화를 이어 받은 세션은 부르기 전에 이 단계의 모든 시도 기록을 가리키는 스테이지 답 행을 원장에서 먼저 찾아, 있으면 다시 부르지 않고 동결한다. 게이트 경로는 `CC_PIPELINE_GATE` 가 비면 게이트 훅 거부 문구의 exec 꼴 첫 낱말에서 얻는다. `**잔여 동결**` 줄의 주체에 `스테이지` 가 더해진다. 좌석 참조와 아침 보고서는 스테이지가 동결한 기록을 좌석이 다시 답하지 않고, 사람 없이 동결한 잔여 항목에 함께 싣는다.
+
+## [3.52.1] - 2026-11-19
+
+승인한 화면에 문서의 요구에 없는 내용이 담긴 경우를 반영 단계가 실패로 세고, 사람이 화면대로 문서를 고칠 수 있게 한다. 지금까지는 그 차이를 사람이 「문서대로 둠」으로 남기면 무인 구현이 선택지 없는 정지로 멈췄고, 반영 뒤 문서 다이제스트를 다시 잴 때 승인 시점의 구속 문면이 남지 않아 승인 화면 문면만 옮긴 편집과 다른 편집을 가를 수 없었다.
+
+### Fixed
+
+- **구속 문면 사본** — `visual-check.sh pin <설계 문서>` 가 구속 다이제스트를 찍으면서 그 입력 바이트를 `docs/visual/binding/<슬러그>.txt` 에 남긴다. `reuse` 는 그 사본과 지금 문서를 대조해 승인 화면 문면만 옮긴 차이면 `다시 고정` 줄을 내고, 다른 편집은 바뀐 줄을 최대 20줄 보인다. 새 읽기 부명령 `since-approval` 은 승인 뒤 문서 변경을 한 줄로 알린다.
+- **사람 둔 어긋남 정지** — 무인 구현의 화면 슬라이스 대조가 사람이 문서대로 둔 줄에서 `Step 2 CFI-U3 BT-STOP — 사람 둔 어긋남` 정지를 쓰고 `재수렴`·`문서대로 구현` 두 선택지를 준다. 게이트는 이 기록에 사람의 답만 받아, 교대의 자동 채택과 좌석의 답을 종료 코드 3 으로 거절한다. 사람의 `재수렴` 은 구속 재수렴으로, `문서대로 구현` 은 멈춘 세션의 재부착으로 라우팅되고, 그렇게 풀린 줄은 다음 시도에서 다시 멈추지 않는다.
+- **등급 행** — 게이트가 `visual-check.sh pin` 을 시각 스텝과 재수렴 종류의 발행 스텝에서 런 문서에 대해서만 `트리밖쓰기` 로, 그 밖은 `등급 미상` 으로 읽고, `since-approval` 은 읽기로 읽는다.
+- **반영 규약** — 반영 단계의 다섯째 실패(화면에 있고 요구 결정에 없는 내용)와 `요구 결정 <n>. 승인 화면 <화면 id> 반영` 항목, `화면대로 고침` 선택지를 적었고, 시각 스킬·무인 시각·재수렴·무인 설계 토론 스킬과 사이드카 계약을 같은 규칙에 맞췄다.
+- **킥오프 고지** — 재킥오프 판별(`rekick.sh detect`)의 `재킥오프`·`대기` 판정이 시각 사이드카가 승인된 문서에 `since-approval` 줄을 `고지` 로 싣고, 첫 킥오프는 같은 줄을 계획 아래 보인다.
+- **시험** — `scripts/test-visual-check.sh`, `scripts/test-gate.sh` 의 15vp·34c·79v 절, `scripts/test-rekick.sh` 3c 절, `orchestrator/test-run.sh`, `scripts/test-meta-invariants.sh` 의 고정 문면을 새 동작에 맞췄다.
 
 ## [3.52.0] - 2026-11-19
 

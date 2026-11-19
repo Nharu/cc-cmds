@@ -189,7 +189,25 @@
 #       screen block's `**대상 경로**` file exists with the block's
 #       `**sha256**`. Print `재사용 <상태>` and exit 0 when all hold, otherwise
 #       `재사용 불가 — <reason>` for the first that fails and exit 1. Writes
-#       nothing.
+#       nothing. A binding digest that differs still passes when the sidecar
+#       carries a `**구현 승인**` line, the binding copy's sha256 is the
+#       sidecar's digest, and `transcript_verdict` reads the change as blank
+#       lines only or as lines that carry approved screen text; the line after
+#       `재사용 <상태>` is then
+#       `다시 고정 구속 다이제스트 <hex> — 승인 화면 문면 옮김 <n>줄`. Any other
+#       difference prints, after the `재사용 불가` line, `바뀐 줄 +<a>줄 -<d>줄`
+#       and the lines themselves, or `바뀐 줄 비교 기준 없음 — <사유>`.
+#   pin <design doc>
+#       Write the binding text to the binding copy
+#       `<base>/docs/visual/binding/<slug>.txt` (a mktemp file renamed onto it)
+#       and print its sha256, the value `binding` prints. Exit 2, with no
+#       digest, when the document is missing, the base or slug cannot be
+#       resolved, or the directory or file cannot be written.
+#   since-approval <design doc>
+#       Print one notice line: `해당 없음 — <reason>` without a sidecar or a
+#       `**구현 승인**` line, `승인 뒤 문서 변경 없음` when the digest holds,
+#       and otherwise the moved-document line for a transcription, another
+#       edit or no comparison base. Exits 0; writes nothing.
 #
 # The sidecar is found the way every visual skill finds it: the document key is
 # the document's path below `git rev-parse --show-toplevel`, the slug is the
@@ -210,7 +228,7 @@
 #       unclosed <style>/<script>, or whose CSS or script block comment is
 #       still open at its </style>/</script> or closing attribute quote
 #       (scan and size); drift: a block line whose document side was not
-#       found
+#       found; pin: the copy could not be written
 #
 # Compatibility: bash 3.2 (macOS) — no associative arrays, no `mapfile`; BSD
 # and GNU userland alike; `grep -E` only.
@@ -218,7 +236,7 @@
 set -euo pipefail
 
 usage() {
-  echo "사용법: visual-check.sh scan <화면>... [--bans <파일>] [--lifts <system.md>] [--tokens <tokens.css>] | size <화면> | approval <설계 문서> | drift <설계 문서> | bundle <설계 문서> [--lines] | binding <설계 문서> | system <설계 문서> [--owner] | confirm <설계 문서> | system-users <설계 문서> [--also <hex>] | runtime-users <설계 문서> | run-state <설계 문서> --run-dir <런 디렉터리> --ledger <원장> --manifest <매니페스트> | reuse <설계 문서> --record <기록>" >&2
+  echo "사용법: visual-check.sh scan <화면>... [--bans <파일>] [--lifts <system.md>] [--tokens <tokens.css>] | size <화면> | approval <설계 문서> | drift <설계 문서> | bundle <설계 문서> [--lines] | binding <설계 문서> | system <설계 문서> [--owner] | confirm <설계 문서> | system-users <설계 문서> [--also <hex>] | runtime-users <설계 문서> | run-state <설계 문서> --run-dir <런 디렉터리> --ledger <원장> --manifest <매니페스트> | reuse <설계 문서> --record <기록> | pin <설계 문서> | since-approval <설계 문서>" >&2
   exit 2
 }
 
@@ -997,6 +1015,159 @@ cmd_binding() {
   binding_text "$1" | sha256_stdin
 }
 
+# copy_path — the binding copy `pin` keeps beside the sidecar:
+# `<base>/docs/visual/binding/<slug>.txt`. Needs locate_sidecar.
+copy_path() {
+  printf '%s\n' "$BASE/docs/visual/binding/${SLUG}.txt"
+}
+
+# cmd_pin <design doc> — write the binding text to the copy and print its
+# sha256, which is the binding digest. The text goes straight into a mktemp
+# file inside the copy's directory, never through a command substitution (that
+# would drop the final newline and the copy would no longer be the digest's
+# input), and the file is renamed onto the copy. A missing document, an
+# unresolved base or slug, and a directory or write failure exit 2 with no
+# digest printed.
+cmd_pin() {
+  [ $# -eq 1 ] || usage
+  local doc=$1 why dir tmp sha
+  [ -f "$doc" ] || { echo "visual-check.sh pin: 설계 문서가 없다: $doc" >&2; exit 2; }
+  if ! why=$(locate_sidecar "$doc"); then
+    echo "visual-check.sh pin: ${why}" >&2; exit 2
+  fi
+  locate_sidecar "$doc" >/dev/null
+  dir="$BASE/docs/visual/binding"
+  mkdir -p "$dir" 2>/dev/null || { echo "visual-check.sh pin: 사본 디렉터리를 만들 수 없다: $dir" >&2; exit 2; }
+  tmp=$(mktemp "$dir/.${SLUG}.XXXXXX" 2>/dev/null) || { echo "visual-check.sh pin: 사본 임시 파일을 만들 수 없다: $dir" >&2; exit 2; }
+  if ! binding_text "$doc" > "$tmp" 2>/dev/null; then
+    rm -f "$tmp"; echo "visual-check.sh pin: 사본을 쓸 수 없다: $tmp" >&2; exit 2
+  fi
+  sha=$(sha256_of "$tmp")
+  if ! mv -f "$tmp" "$dir/${SLUG}.txt" 2>/dev/null; then
+    rm -f "$tmp"; echo "visual-check.sh pin: 사본을 바꿀 수 없다: $dir/${SLUG}.txt" >&2; exit 2
+  fi
+  echo "$sha"
+}
+
+# drift_screen_texts — the screen side of every line of the sidecar's
+# `### 설계 문서 어긋남` block, one per output line: the text inside
+# `→ 「…」`, split at the line's first ` · 「` and first `」 → ` as `drift`
+# splits it. A `→ (삭제)` line and an empty text give nothing.
+drift_screen_texts() {
+  local body l t2 s
+  body=$(drift_block) || return 0
+  while IFS= read -r l; do
+    case "$l" in '- '*) ;; *) continue ;; esac
+    case "$l" in *' · 「'*'」 → '*) ;; *) continue ;; esac
+    t2=${l#*' · 「'}
+    s=${t2#*'」 → '}
+    s=$(printf '%s' "$s" | sed 's/[[:space:]]*$//')
+    case "$s" in
+      '「'*'」') s=${s#'「'}; s=${s%'」'} ;;
+      *) continue ;;
+    esac
+    [ -z "$s" ] || printf '%s\n' "$s"
+  done <<EOF
+$body
+EOF
+}
+
+# transcript_verdict <design doc> — compare the binding copy with the
+# document's binding text now, blank lines left out of both. The first output
+# line is the verdict:
+#   비교 기준 없음 — <사유>   no copy, or a copy whose sha256 is not the
+#                             sidecar's binding digest
+#   같음                      the same lines
+#   옮겨 적기 <n>             the copy's lines are an order-keeping subsequence
+#                             of the lines now, and each of the n lines added
+#                             holds at least one screen text of the drift block
+#                             verbatim
+#   다른 편집 <a> <d>         anything else; the lines that follow are the
+#                             multiset difference, `+ <line>` for the a lines
+#                             only now and `- <line>` for the d lines only in
+#                             the copy, each side cut at 20 lines with
+#                             `… 외 <n>줄`
+# The subsequence is matched greedily from the front: whichever matching is
+# chosen, the lines added are the multiset difference, so greedy is enough.
+# Needs locate_sidecar and $WORK.
+transcript_verdict() {
+  local doc=$1 copy want csha
+  copy=$(copy_path)
+  [ -f "$copy" ] || { echo "비교 기준 없음 — 구속 문면 사본 없음 (${copy})"; return 0; }
+  want=$(sidecar_field '설계 문서 구속 다이제스트')
+  csha=$(sha256_of "$copy")
+  [ "$csha" = "$want" ] \
+    || { echo "비교 기준 없음 — 사본 sha256 이 사이드카 다이제스트와 다르다 (사본 ${csha:0:12}, 사이드카 ${want:0:12})"; return 0; }
+  binding_text "$doc" > "$WORK/binding.now"
+  drift_screen_texts > "$WORK/binding.screens"
+  LC_ALL=C awk -v cf="$copy" -v sf="$WORK/binding.screens" '
+    BEGIN {
+      while ((getline l < cf) > 0) if (l != "") c[++nc] = l
+      while ((getline l < sf) > 0) if (l != "") s[++ns] = l
+    }
+    $0 != "" { m[++nm] = $0 }
+    END {
+      i = 1; na = 0
+      for (j = 1; j <= nm; j++) {
+        if (i <= nc && m[j] == c[i]) { i++; continue }
+        add[++na] = m[j]
+      }
+      ok = (i > nc)
+      for (k = 1; ok && k <= na; k++) {
+        hit = 0
+        for (q = 1; q <= ns; q++) if (index(add[k], s[q]) > 0) { hit = 1; break }
+        if (!hit) ok = 0
+      }
+      if (ok) {
+        if (na == 0) print "같음"; else print "옮겨 적기 " na
+        exit
+      }
+      for (k = 1; k <= nc; k++) cnt[c[k]]++
+      np = 0
+      for (j = 1; j <= nm; j++) { if (cnt[m[j]] > 0) cnt[m[j]]--; else plus[++np] = m[j] }
+      nd = 0
+      for (k = 1; k <= nc; k++) if (cnt[c[k]] > 0) { cnt[c[k]]--; minus[++nd] = c[k] }
+      print "다른 편집 " np " " nd
+      for (k = 1; k <= np && k <= 20; k++) print "+ " plus[k]
+      if (np > 20) print "… 외 " (np - 20) "줄"
+      for (k = 1; k <= nd && k <= 20; k++) print "- " minus[k]
+      if (nd > 20) print "… 외 " (nd - 20) "줄"
+    }
+  ' "$WORK/binding.now"
+}
+
+# cmd_since_approval <design doc> — one line for the kickoff and re-kickoff
+# notices: whether the document moved since the sidecar's implementation
+# approval, and what the next visual stage does about it. Exits 0.
+cmd_since_approval() {
+  [ $# -eq 1 ] || usage
+  local doc=$1 why want now verdict head
+  [ -f "$doc" ] || { echo "visual-check.sh since-approval: 설계 문서가 없다: $doc" >&2; exit 2; }
+  if ! why=$(locate_sidecar "$doc"); then
+    echo "해당 없음 — ${why}"; exit 0
+  fi
+  locate_sidecar "$doc" >/dev/null
+  [ -f "$SIDECAR" ] || { echo "해당 없음 — 사이드카 없음 (${SIDECAR})"; exit 0; }
+  grep -qE '^\*\*구현 승인\*\*:' "$SIDECAR" || { echo "해당 없음 — 구현 승인 줄 없음"; exit 0; }
+  want=$(sidecar_field '설계 문서 구속 다이제스트')
+  now=$(binding_text "$doc" | sha256_stdin)
+  if [ "$want" = "$now" ]; then
+    echo "승인 뒤 문서 변경 없음"; exit 0
+  fi
+  WORK=$(mktemp -d "${TMPDIR:-/tmp}/visual-check.XXXXXX")
+  trap 'rm -rf "$WORK"' EXIT
+  verdict=$(transcript_verdict "$doc")
+  head=${verdict%%$'\n'*}
+  case "$head" in
+    같음) echo "승인 뒤 문서 바뀜 — 승인 화면 문면만 옮김 0줄, 다음 시각 단계가 다이제스트를 다시 고정합니다" ;;
+    '옮겨 적기 '*) echo "승인 뒤 문서 바뀜 — 승인 화면 문면만 옮김 ${head#'옮겨 적기 '}줄, 다음 시각 단계가 다이제스트를 다시 고정합니다" ;;
+    '다른 편집 '*)
+      set -- ${head#'다른 편집 '}
+      echo "승인 뒤 문서 바뀜 — 다른 편집 있음 (+${1}줄 -${2}줄), 다음 시각 단계가 재사용과 다시 생성을 묻고 다시 생성을 고르면 승인한 화면을 잃습니다" ;;
+    *) echo "승인 뒤 문서 바뀜 — 비교 기준 없음, 다음 시각 단계가 재사용과 다시 생성을 묻고 다시 생성을 고르면 승인한 화면을 잃습니다" ;;
+  esac
+}
+
 # sidecar_field <name> — the value of the first `**<name>**:` line of the
 # sidecar's document-level fields (above the first `### ` block).
 sidecar_field() {
@@ -1414,7 +1585,7 @@ cmd_run_state() {
 }
 
 cmd_reuse() {
-  local doc='' rec='' why owner state recf recsha want now full sys blocks id path bsha fp
+  local doc='' rec='' why owner state recf recsha want now full sys blocks id path bsha fp bnow verdict head repin=''
   while [ $# -gt 0 ]; do
     case "$1" in
       --record) [ $# -ge 2 ] || usage; rec=$2; shift 2 ;;
@@ -1446,10 +1617,37 @@ cmd_reuse() {
   now=$(sha256_of "$rec")
   [ -n "$recsha" ] || { echo "재사용 불가 — 사이드카의 기록 필드에 sha256 이 없다 (${recf:-없음})"; exit 1; }
   [ "$recsha" = "$now" ] || { echo "재사용 불가 — 기록의 sha256 이 다르다 (사이드카 ${recsha:0:12}, 기록 ${now:0:12})"; exit 1; }
-  # 4 — the design document's binding digest.
+  # 4 — the design document's binding digest. A different digest still passes
+  # when the binding copy, checked against the sidecar's digest on an approved
+  # sidecar, says the lines are the same but for blank lines or the document
+  # took on only lines that carry approved screen text; the run then pins the
+  # digest again from the second output line.
   want=$(sidecar_field '설계 문서 구속 다이제스트')
-  now=$(binding_text "$doc" | sha256_stdin)
-  [ "$want" = "$now" ] || { echo "재사용 불가 — 설계 문서 구속 다이제스트가 다르다 (사이드카 ${want:0:12}, 지금 ${now:0:12})"; exit 1; }
+  bnow=$(binding_text "$doc" | sha256_stdin)
+  if [ "$want" != "$bnow" ]; then
+    WORK=$(mktemp -d "${TMPDIR:-/tmp}/visual-check.XXXXXX")
+    trap 'rm -rf "$WORK"' EXIT
+    if grep -qE '^\*\*구현 승인\*\*:' "$SIDECAR"; then
+      verdict=$(transcript_verdict "$doc")
+    else
+      verdict='비교 기준 없음 — 구현 승인 줄 없음'
+    fi
+    head=${verdict%%$'\n'*}
+    case "$head" in
+      같음) repin=0 ;;
+      '옮겨 적기 '*) repin=${head#'옮겨 적기 '} ;;
+      '다른 편집 '*)
+        echo "재사용 불가 — 설계 문서 구속 다이제스트가 다르다 (사이드카 ${want:0:12}, 지금 ${bnow:0:12})"
+        set -- ${head#'다른 편집 '}
+        echo "바뀐 줄 +${1}줄 -${2}줄"
+        case "$verdict" in *$'\n'*) printf '%s\n' "${verdict#*$'\n'}" ;; esac
+        exit 1 ;;
+      *)
+        echo "재사용 불가 — 설계 문서 구속 다이제스트가 다르다 (사이드카 ${want:0:12}, 지금 ${bnow:0:12})"
+        echo "바뀐 줄 비교 기준 없음 — ${head#'비교 기준 없음 — '}"
+        exit 1 ;;
+    esac
+  fi
   # 5a — the design system file as it is now, with its artifact line put back
   # to unpublished; an older sidecar's whole-file hash is taken too.
   want=$(sidecar_field '디자인 시스템 sha256')
@@ -1485,6 +1683,7 @@ cmd_reuse() {
 $blocks
 EOF
   echo "재사용 ${state}"
+  [ -z "$repin" ] || echo "다시 고정 구속 다이제스트 ${bnow} — 승인 화면 문면 옮김 ${repin}줄"
 }
 
 [ $# -ge 1 ] || usage
@@ -1503,5 +1702,7 @@ case "$sub" in
   runtime-users) cmd_runtime_users "$@" ;;
   run-state) cmd_run_state "$@" ;;
   reuse) cmd_reuse "$@" ;;
+  pin) cmd_pin "$@" ;;
+  since-approval) cmd_since_approval "$@" ;;
   *) usage ;;
 esac
