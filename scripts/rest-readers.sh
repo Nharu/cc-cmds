@@ -21,7 +21,11 @@
 # last component alone. At a length where no file matches, a tracked directory
 # that matches the same way names every tracked file under it. A one-component
 # suffix counts only when exactly one tracked entry (file or directory) has
-# that name; a longer suffix counts however many paths it matches. A goal
+# that name, and when that entry is a directory only if the word ends in /:
+# for a directory <d> no other tracked entry shares the name of, a bare <d>
+# or $repo_root/<d> names nothing and <d>/ names every tracked file under
+# it. A longer suffix counts
+# however many paths it matches, a directory one whatever the word ends in. A goal
 # reads its entry files, its scanned files and every file their words name.
 # Deleted and renamed-away paths of the change count as tracked for the
 # matching, so a reference the tree still holds to them is seen.
@@ -128,6 +132,7 @@ function resolve(t,   raw, c, n, m, i, k, s, out, parts, np, q) {
     s = c[k]
     for (i = k + 1; i <= m; i++) s = s "/" c[i]
     if (k == m && namecnt[s] != 1) break
+    if (k == m && !(s in fsuf) && t !~ /\/$/) break
     if (s in fsuf) {
       np = split(substr(fsuf[s], 2), parts, SUBSEP)
       for (q = 1; q <= np; q++) out = out "\035F" parts[q]
@@ -260,7 +265,7 @@ rr_self_test() {
   TMPDIR="$T/tmp"
   export TMPDIR
   R="$T/repo"
-  mkdir -p "$R/t" "$R/lib" "$R/fx/lib" "$R/pkg/deep" "$R/data/set" "$R/a" "$R/b" "$R/tools" "$R/notes" "$R/rules"
+  mkdir -p "$R/t" "$R/lib" "$R/fx/lib" "$R/pkg/deep" "$R/data/set" "$R/a" "$R/b" "$R/tools" "$R/notes" "$R/rules" "$R/solo" "$R/grp/sub"
   (
     cd "$R" || exit 1
     git init -q
@@ -268,9 +273,9 @@ rr_self_test() {
     printf 'print-rest-goals:\n\t@printf '"'"'%%s\\n'"'"' $(REST_GOALS)\n' >> Makefile
     printf 'run-x-selftest:\n\tbash tools/x.sh --self-test\n' >> Makefile
     printf '#!/usr/bin/env bash\nbash lib/target-full.sh "rules/사전-인가.sh"\n' > t/full.sh
-    printf '#!/usr/bin/env bash\nf="$repo_root/pkg/deep/v.sh"\n' > t/var.sh
-    printf '#!/usr/bin/env bash\nfor f in data/set/*; do :; done\n' > t/dir.sh
-    printf '#!/usr/bin/env bash\n# uses uniq.sh and dup.sh\n' > t/bare.sh
+    printf '#!/usr/bin/env bash\nf="$repo_root/pkg/deep/v.sh"\ng="$repo_root/solo"\n' > t/var.sh
+    printf '#!/usr/bin/env bash\nfor f in data/set/*; do :; done\nls solo/ grp/sub\n' > t/dir.sh
+    printf '#!/usr/bin/env bash\n# uses uniq.sh and dup.sh, then solo\n' > t/bare.sh
     printf '#!/usr/bin/env bash\n. "$here/t/helper.sh"\nbash t/runner.sh\n' > t/src.sh
     printf '# helper reads lib/via-source.txt\n' > t/helper.sh
     printf '# runner reads lib/via-exec.txt\n' > t/runner.sh
@@ -290,6 +295,8 @@ rr_self_test() {
     printf 'x\n' > rules/사전-인가.sh
     printf '# reads lib/x-data.txt\n' > tools/x.sh
     printf 'x\n' > lib/x-data.txt
+    printf 'x\n' > solo/inner.txt
+    printf 'x\n' > grp/sub/k.txt
     git add -A && git -c user.name=t -c user.email=t@example.invalid -c commit.gpgsign=false commit -q -m A
   ) > /dev/null 2>&1 || { bad "픽스처 준비" "git 실패"; rm -rf "$T"; return 1; }
 
@@ -310,6 +317,10 @@ rr_self_test() {
   check "변수 접두가 붙은 경로도 접미로 맞춘다" "$(goals_of "$out")" "run/t/var.sh "
   out=$(derive data/set/two.txt)
   check "디렉터리 참조는 그 아래 파일 전부를 덮는다" "$(goals_of "$out")" "run/t/dir.sh "
+  out=$(derive solo/inner.txt)
+  check "유일한 디렉터리 이름과 같은 맨 낱말은 펼치지 않고 / 를 붙인 낱말은 펼친다" "$(goals_of "$out")" "run/t/dir.sh "
+  out=$(derive grp/sub/k.txt)
+  check "두 구성 요소 이상의 디렉터리 접미는 / 없이도 센다" "$(goals_of "$out")" "run/t/dir.sh "
   out=$(derive lib/uniq.sh)
   check "유일한 맨 이름은 그 파일을 가리킨다" "$(goals_of "$out")" "run/t/bare.sh "
   out=$(derive a/dup.sh)
@@ -357,8 +368,8 @@ rr_self_test() {
 
   rm -rf "$T"
   printf 'rest-readers self-test: %d passed, %d failed\n' "$passed" "$failed"
-  if [ "$passed" -lt 23 ]; then
-    printf 'rest-readers self-test: 통과 수 %d 가 하한 23 에 못 미칩니다\n' "$passed" >&2
+  if [ "$passed" -lt 25 ]; then
+    printf 'rest-readers self-test: 통과 수 %d 가 하한 25 에 못 미칩니다\n' "$passed" >&2
     return 1
   fi
   [ "$failed" = "0" ]
