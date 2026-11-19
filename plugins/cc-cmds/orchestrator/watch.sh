@@ -1078,8 +1078,16 @@ settle_stall_arm() {
   # night.
   #
   # It reads `age`, `live`, `pend`, `nonterm` and `size` as `beat` left them in
-  # the calling `pass`. A function of its own, rather than inline, so the window
-  # between its condition and its fire can be driven on its own.
+  # the calling `pass`, and `shw` — the count of shift halt records waiting for
+  # a person — as `pass` computed it. A function of its own, rather than
+  # inline, so the window between its condition and its fire can be driven on
+  # its own; a driver that sets no `shw` reads it as 0.
+  #
+  # A WAITING SHIFT HALT RECORD IS NOT A STOPPED SETTLEMENT. A termination
+  # clause's evidence request is written after the last segment ends, so this
+  # window is exactly where it lands, and the record's own banner has already
+  # told the person what to answer. Calling it a seat that stopped would send
+  # them to resume a settlement that waits on them.
   #
   # ONCE PER LEDGER SIZE. The marker carries the size the stop was observed at,
   # so the same stop says nothing twice and a settlement that grew the ledger
@@ -1101,6 +1109,7 @@ settle_stall_arm() {
   cc_run_ends_on_done "$RUN_DIR" || return 0
   [ ! -f "$RUN_DIR/done" ] || return 0
   [ "$live" = "0" ] && [ "$pend" = "0" ] && [ "$nonterm" = "0" ] || return 0
+  [ "${shw:-0}" = "0" ] || return 0
   [ "$(cc_segment_count "$LEDGER")" -ge 1 ] 2>/dev/null || return 0
   [ "$(cc_unresolved_blocked "$LEDGER" | grep -c . || true)" = "0" ] || return 0
   [ -n "${quiet:-}" ] && [ "$quiet" -ge "$thr" ] || return 0
@@ -1126,6 +1135,7 @@ pass() {
   # firing in one pass is harmless.
   local age live live_w pend nonterm run_age gate_idle size grew silent id newly stale
   local cause reason slug mk thr quiet relay_eff halts="" fo_wait="" ub line expiry="" now
+  local shw_rows="" shw=0 shall=0 swait=0 sh_held sh_unheld sh_name sh_site sh_anchor sh_path sh_q sh_new sh_drop
   beat
   failover_clock_note
   # THE GATE'S IDLE TIME SITS BESIDE `age` because two arms read it: the
@@ -1425,6 +1435,31 @@ pass() {
   # The unresolved set is read once here, and the anchored arm below walks the
   # same copy; the count is of its lines that carry the reason, as `grep -cF`
   # counted them.
+  #
+  # THE SHIFT HALT RECORDS THAT WAIT FOR A PERSON are read once here too, and
+  # every arm below reads these four values. `shw_rows` is
+  # `cc_waiting_shift_halts`'s output and `shw` its line count. `shall` is 1
+  # when there is such a record and every segment in flight is one the records
+  # hold (`cc_shift_halt_held`): the run as a whole waits on a person, so the
+  # general stall arm keeps quiet the way an open approval keeps it quiet.
+  # `swait` is 1 when nothing runs and no segment in flight is left unheld —
+  # with no record it is `nonterm=0`, so a run with approvals alone reads the
+  # aggregate arm as before. Such a record holds no run-scope block (the
+  # unresolved fold leaves `clause-`, `베이스-` and segment anchors out), so
+  # without these values the stall arms read the wait as a stop and told the
+  # person to resume a router that had nothing to do.
+  shw_rows=$(cc_waiting_shift_halts "$RUN_DIR" "$LEDGER")
+  shw=$(printf '%s' "$shw_rows" | awk 'NF { n++ } END { printf "%d", n }')
+  sh_unheld=$nonterm
+  if [ "$shw" -gt 0 ]; then
+    sh_held=$(cc_shift_halt_held "$RUN_DIR" "$LEDGER")
+    sh_unheld=$(cc_nonterminal_segment_ids "$LEDGER" | CC_SHW_HELD="$sh_held" awk '
+      BEGIN { n = split(ENVIRON["CC_SHW_HELD"], a, "\n"); for (i = 1; i <= n; i++) if (a[i] != "") h[a[i]] = 1 }
+      NF && !($0 in h) { c++ }
+      END { printf "%d", c }')
+    [ "$sh_unheld" = "0" ] && shall=1
+  fi
+  if [ "$live_w" = "0" ] && [ "$sh_unheld" = "0" ]; then swait=1; fi
   ub=$(cc_unresolved_blocked "$LEDGER")
   silent=0
   while IFS= read -r line; do
@@ -1432,7 +1467,7 @@ pass() {
   done <<EOF
 $ub
 EOF
-  if [ "$live_w" = "0" ] && [ "$pend" = "0" ] \
+  if [ "$live_w" = "0" ] && [ "$pend" = "0" ] && [ "${shall:-0}" = "0" ] \
      && [ -n "$quiet" ] && [ "$quiet" -ge "$thr" ] \
      && [ "$relay_eff" = "0" ] && ! failover_waiting \
      && { [ "$nonterm" -ge 1 ] \
@@ -1510,18 +1545,101 @@ EOF
              "세션으로 돌아가 답하면 그 자리에서 이어집니다"
   fi
 
-  if [ "$live_w" = "0" ] && [ "$nonterm" = "0" ] && [ "$pend" -gt 0 ] \
-     && [ ! -f "$RUN_DIR/watch.announced-waiting" ]; then
-    : > "$RUN_DIR/watch.announced-waiting"
-    announce "모든 세그먼트가 승인 대기이거나 종단입니다 (대기 승인 ${pend}건)" \
-             "런은 막힌 것이 아니라 사람이 손대기 전까지 끝난 것입니다"
+  # ONE BANNER PER SHIFT HALT RECORD THAT WAITS FOR A PERSON. The gate writes
+  # these records for a routing shift, and a shift is not a seat that may raise
+  # a banner (`cc_caller_is_router` is false there), so before this arm a
+  # termination clause's evidence request reached nobody. The watcher wakes on
+  # `halt/shift/` and on the ledger, so the record's banner goes up within one
+  # pass of its vouching row.
+  #
+  # The slot is `answer`'s, keyed `shift-halt-<record name>`, so each record
+  # owns one slot and none overwrites another. No attention detail rides: no
+  # remote route answers a shift halt record, so an event would ask a question
+  # nobody can answer from there.
+  #
+  # TAKEN DOWN WHEN THE RECORD STOPS WAITING. A name listed in
+  # `watch.announced-shift-halts` that this pass did not read as waiting was
+  # answered or closed: its slot is released and its banner cleared, and the
+  # name leaves the marker, so a returned answer — waiting again — raises the
+  # banner once more. The approval marker keeps its ids instead because a
+  # reopened approval is meant to stay quiet; a returned answer is a question
+  # the person has to see again.
+  while IFS=$'\t' read -r sh_name sh_site sh_anchor sh_path; do
+    [ -n "$sh_name" ] || continue
+    grep -qxF "$sh_name" "$RUN_DIR/watch.announced-shift-halts" 2>/dev/null && continue
+    printf '%s\n' "$sh_name" >> "$RUN_DIR/watch.announced-shift-halts"
+    sh_q=$(cc_shift_halt_question "$sh_path")
+    [ -n "$sh_q" ] || sh_q='(질문 문면 없음)'
+    CC_NOTIFY_ATTENTION_DETAIL= cc_notify_fire answer "교대 정지 ${sh_name} · ${sh_site} — 「${sh_q}」" "shift-halt-${sh_name}" || true
+    announce "교대 정지 기록 ${sh_name}(${sh_site})이 사람의 답을 기다립니다 — 「${sh_q}」" \
+             "세션으로 돌아가 이 기록에 답하면 런이 이어집니다"
+  done <<EOF
+$shw_rows
+EOF
+  if [ -s "$RUN_DIR/watch.announced-shift-halts" ]; then
+    sh_new=""; sh_drop=0
+    while IFS= read -r sh_name; do
+      [ -n "$sh_name" ] || continue
+      if printf '%s\n' "$shw_rows" | awk -F '\t' -v n="$sh_name" '$1 == n { f = 1 } END { exit !f }'; then
+        sh_new="$sh_new$sh_name"$'\n'
+        continue
+      fi
+      sh_drop=1
+      cc_notify_stack_release "shift-halt-$sh_name" || true
+      cc_notify_clear answer "shift-halt-$sh_name" || true
+    done < "$RUN_DIR/watch.announced-shift-halts"
+    if [ "$sh_drop" = "1" ]; then
+      if printf '%s' "$sh_new" > "$RUN_DIR/.watch.announced-shift-halts.$$" 2>/dev/null \
+         && mv -f "$RUN_DIR/.watch.announced-shift-halts.$$" "$RUN_DIR/watch.announced-shift-halts" 2>/dev/null; then
+        :
+      else
+        rm -f "$RUN_DIR/.watch.announced-shift-halts.$$"
+      fi
+    fi
+  fi
+
+  # THE AGGREGATE COUNTS SHIFT HALT RECORDS BESIDE APPROVALS. `swait` is the
+  # whole run waiting on a person: nothing runs and every segment in flight is
+  # held by a waiting record. The marker stays a once-per-run presence mark for
+  # approvals; a record name it does not list raises the banner again and is
+  # appended to it, so a new evidence request after an approval wait is still
+  # heard. With no waiting record the condition, the text and the marker are
+  # what they were.
+  sh_new=0
+  if [ "$shw" -gt 0 ] && [ -f "$RUN_DIR/watch.announced-waiting" ]; then
+    while IFS=$'\t' read -r sh_name sh_site sh_anchor sh_path; do
+      [ -n "$sh_name" ] || continue
+      grep -qxF "$sh_name" "$RUN_DIR/watch.announced-waiting" 2>/dev/null || sh_new=1
+    done <<EOF
+$shw_rows
+EOF
+  fi
+  if [ "$swait" = "1" ] && [ $((pend + shw)) -gt 0 ] \
+     && { [ ! -f "$RUN_DIR/watch.announced-waiting" ] || [ "$sh_new" = "1" ]; }; then
+    [ -f "$RUN_DIR/watch.announced-waiting" ] || : > "$RUN_DIR/watch.announced-waiting"
+    if [ "$shw" -gt 0 ]; then
+      printf '%s\n' "$shw_rows" | awk -F '\t' 'NF { print $1 }' >> "$RUN_DIR/watch.announced-waiting"
+    fi
+    if [ "$shw" = "0" ]; then
+      announce "모든 세그먼트가 승인 대기이거나 종단입니다 (대기 승인 ${pend}건)" \
+               "런은 막힌 것이 아니라 사람이 손대기 전까지 끝난 것입니다"
+    else
+      announce "모든 세그먼트가 사람의 답을 기다리거나 종단입니다 (대기 승인 ${pend}건 · 교대 정지 기록 ${shw}건)" \
+               "런은 막힌 것이 아니라 사람이 손대기 전까지 끝난 것입니다"
+    fi
     # `answer-run` and not `status`: this is the one banner that asserts the WHOLE
     # run is stopped waiting for a person, and what that person does is answer. It
     # needs a per-run slot rather than a per-approval one, and it needs a slot of
     # its own rather than the lifecycle three's — a run can hold open approvals
     # while it is also stalled or finished, so sharing would let one of those
     # erase this one and leave an instruction that no longer matches the state.
-    cc_notify_fire answer-run "런이 사람을 기다립니다 — 대기 중 승인 ${pend}건" || true
+    if [ "$shw" = "0" ]; then
+      cc_notify_fire answer-run "런이 사람을 기다립니다 — 대기 중 승인 ${pend}건" || true
+    elif [ "$pend" -gt 0 ]; then
+      cc_notify_fire answer-run "런이 사람을 기다립니다 — 대기 중 승인 ${pend}건 · 교대 정지 기록 ${shw}건" || true
+    else
+      cc_notify_fire answer-run "런이 사람을 기다립니다 — 교대 정지 기록 ${shw}건" || true
+    fi
   fi
 
   # A RUN THAT ANCHORED. Without this arm a stall a stage caused reaches a person
