@@ -51,8 +51,14 @@ BASELINE="$repo_root/tests/fixtures/measure-spawn-count/baseline.tsv"
 TARGETS_DIR="$repo_root/tests/fixtures/measure-spawn-count/targets"
 UNITS="U1 U2 U3 U4 U5 U6 U7 U8 U9 U10"
 # The unit that runs each target which rewrites PATH: `<target> <unit>` lines.
+# The status line and the pane write PATH only as a prefix of the one command
+# that starts the observer when python3 is off PATH and `/usr/bin/python3` is
+# there, so no later command is hidden; their units still show that every other
+# command goes through the stubs.
 REWRITE_UNITS="plugins/cc-cmds/orchestrator/gate.sh U8
-plugins/cc-cmds/hooks/gate-pretool.sh U7"
+plugins/cc-cmds/hooks/gate-pretool.sh U7
+plugins/cc-cmds/orchestrator/statusline.sh U5
+plugins/cc-cmds/orchestrator/run-pane.sh U6"
 
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/cc-measure-spawn-test.XXXXXX")
 trap 'rm -rf "$WORK"' EXIT
