@@ -2778,9 +2778,13 @@ _AUTO_ANSWER = "자동 채택(구속-이탈) — "
 _JUDGMENT_KEYS = ("결정", "세그먼트", "판단 부류", "등급", "기준", "되돌리는 법", "근거", "해소 승인")
 
 
+_AUTO_BY = ("좌석", "교대", "스테이지")
+
+
 def _answered_by(f):
     """gate_halt_answered_by — a row without `답한 주체` is the shift's when its
-    reason carries the shift's prefix, and a person's otherwise."""
+    reason carries the shift's prefix, and a person's otherwise. `좌석`,
+    `교대` and `스테이지` are the automatic answers (`_AUTO_BY`)."""
     by = f.get("답한 주체")
     if by:
         return by
@@ -2817,7 +2821,7 @@ def run_judgments(led):
         items.append((no, _judgment(at, "판단", f)))
     for no, ln in led.numbered("중단 답"):
         f = split_fields(ln)
-        if _answered_by(f) not in ("좌석", "교대"):
+        if _answered_by(f) not in _AUTO_BY:
             continue
         items.append((no, _judgment(iso_epoch(f.get("기록 시각")), "자동 답",
                                     {"결정": f.get("선택지"), "세그먼트": f.get("세그먼트"),

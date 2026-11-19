@@ -449,6 +449,38 @@ sed '$d' "$RUN_DIR/halt/Sx.md" > "$RUN_DIR/halt/Sy.md"
 if halt_record_present Sy; then bad "잘린 중단 기록" "종결자 없는 기록을 halt로 읽음"; else ok "종결자 없는 중단 기록은 halt가 아니다"; fi
 check "잘린 기록의 종단 부류" "$(classify_termination Sy 0 1)" "공허한 성공"
 
+# A design stage that answered its own ladder record through the gate and froze
+# in the same session left a record that is no longer a reason to park: the
+# ledger's `중단 답` row naming that record with `답한 주체=스테이지` lets the
+# predicate decide. Only that row does — a seat's answer to the same record,
+# or a stage's answer to another record whose path merely starts the same,
+# leaves the attempt `의도된 park`.
+# The fixture ledger is not named for a run and carries no `## 실행 ` heading,
+# so the whole file is read as this run's rows, as a gate ledger is.
+SL_LEDGER_SAVE="$LEDGER"; SL_SCOPE_SAVE="${LEDGER_SCOPE:-}"
+LEDGER="$WORK/ledger-stage-answer.md"; : > "$LEDGER"; LEDGER_SCOPE=파일
+cat > "$RUN_DIR/halt/Sl.md" <<'EOF'
+<!-- cc-pipeline-halt v1; writer=design-discuss-unattended; reader=orchestrator; stage=Sl; run=testrun -->
+**중단 시각**: 2026-11-17T00:00:00Z
+**스킬**: design-discuss-unattended
+**스텝**: Step 7U / ladder-unsettled
+**분류**: gate-unanswerable
+**후속**: 보류 큐
+<!-- /cc-pipeline-halt v1 -->
+EOF
+SL_REC="$RUN_DIR/halt/Sl.md"
+check "종단: 답이 없는 사다리 기록은 의도된 park" "$(classify_termination Sl 0 0)" "의도된 park"
+printf -- '- `중단 답` | 세그먼트=Sl | 중단 기록=%s | 선택지=잔여로 두고 동결 | 답한 주체=좌석 | 기록 시각=x\n' "$SL_REC" >> "$LEDGER"
+check "종단: 좌석이 답한 사다리 기록은 여전히 의도된 park" "$(classify_termination Sl 0 0)" "의도된 park"
+printf -- '- `중단 답` | 세그먼트=Sl | 중단 기록=%sx | 선택지=잔여로 두고 동결 | 답한 주체=스테이지 | 기록 시각=x\n' "${SL_REC%.md}" >> "$LEDGER"
+check "종단: 경로 앞부분만 같은 다른 기록의 스테이지 답은 park 를 풀지 않는다" "$(classify_termination Sl 0 0)" "의도된 park"
+printf -- '- `중단 답` | 세그먼트=Sl | 중단 기록=%s | 선택지=잔여로 두고 동결 | 답한 주체=스테이지 | 기록 시각=x\n' "$SL_REC" >> "$LEDGER"
+check "종단: 스테이지가 답하고 동결한 사다리 기록은 술어대로 정상 완료" "$(classify_termination Sl 0 0)" "정상 완료"
+check "종단: 스테이지가 답한 기록이어도 산출물이 없으면 공허한 성공" "$(classify_termination Sl 0 1)" "공허한 성공"
+LEDGER="$SL_LEDGER_SAVE"; LEDGER_SCOPE="$SL_SCOPE_SAVE"
+check "종단: 원장이 바뀌면 같은 기록이 다시 의도된 park" "$(classify_termination Sl 0 0)" "의도된 park"
+rm -f "$SL_REC"
+
 # The sixth class. A stage that REACHED a decision point and declined to decide
 # for the user is not a stage that attempted nothing — and until this class
 # existed the two were byte-identical to the driver: exit 0, no artifact, no
@@ -4373,6 +4405,61 @@ check "다시 들어온 설계 팔은 두 번째로 파견하지 않는다" "$(a
 check "그 진입은 S1design 을 런 범위 무효화 게이트 park 로 멈춘다" \
   "$(grep -c '^S1design run 무효화 게이트 park 이 런의 설계 스테이지가 이미 종단 부류 공허한 성공 로 끝났다' "$ARMS/draft/parked" 2>/dev/null || true)" "1"
 
+# 드라이버가 직접 띄운 설계 스테이지가 자기 사다리 기록에 스스로 답하는 흐름. 파견은
+# 스테이지가 하는 일을 흉내 낸다 — 자기 시도의 `/ ladder-unsettled` 기록을 쓰고, `selfans`
+# 이면 게이트의 스테이지 갈래가 쓰는 꼴의 `답한 주체=스테이지` 중단 답 행을 원장에 더한 뒤
+# 문서를 동결하고 동결 문구를 스트림에 낸다. `none` 이면 추천이 (없음) 인 기록만 남긴다.
+# 분류기·술어·행 쓰기는 실제 함수라, 드라이버 행 꼴(`파견 id=S1design`, `종류` 없음)의
+# `종단 부류` 가 드라이버 경로의 판정이다.
+arms_self() {  # arms_self <라벨> <selfans|none>
+  local d="$ARMS/$1"
+  rm -rf "$d"; mkdir -p "$d/run/log" "$d/run/halt" "$d/docs"; : > "$d/ledger.md"
+  (
+    RUN_DIR="$d/run"; LEDGER="$d/ledger.md"; LEDGER_SCOPE=파일; RUN_ID=armsself
+    MANIFEST="$MFTEAM2"; MANIFEST_MEMO_PATH=""; MANIFEST_MEMO=""
+    DOC="$d/docs/x.md"; DOC_KEY="docs/x.md"; ANCHOR_KIND=repo; ANCHOR_KEY=Nharu/cc-cmds
+    CLI_BIN=true; ARMS_SELF="$2"
+    dispatch_stage() {
+      local rec log
+      printf '%s\n' "$1" >> "$d/dispatched"
+      printf '1\n' > "$RUN_DIR/$1.attempt"; printf '0' > "$RUN_DIR/$1.rc"
+      rec=$(halt_record_path "$1"); log=$(stage_log_path "$1")
+      printf '# 설계\n\n**상태**: 초안\n\n## 문제\n\n본문\n' > "$DOC"
+      printf '%s\n' "<!-- cc-pipeline-halt v1; writer=design-discuss-unattended; reader=orchestrator; stage=$1#1; run=armsself -->" \
+        '**스킬**: design-discuss-unattended' '**스텝**: Step 7U / ladder-unsettled' '**분류**: gate-unanswerable' \
+        '<!-- /cc-pipeline-halt v1 -->' > "$rec"
+      : > "$log"
+      if [ "$ARMS_SELF" = selfans ]; then
+        printf -- '- `중단 답` | 세그먼트=%s | 중단 기록=%s | 선택지=잔여로 두고 동결 | 답한 주체=스테이지 | 기록 시각=x\n' \
+          "$1" "$rec" >> "$LEDGER"
+        printf '# 설계\n\n**상태**: 동결됨\n\n## 문제\n\n본문\n' > "$DOC"
+        printf '%s\n' "$LIT_DESIGN_TERMINAL" >> "$log"
+      fi
+      printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"session_id":"sid","total_cost_usd":0}' >> "$log"
+    }
+    stage_session_id() { printf 'sid'; }
+    stage_parent_id() { printf 'parent'; }
+    report_append() { printf '%s\n' "$*" >> "$d/report"; }
+    park() { printf '%s\n' "$*" >> "$d/parked"; }
+    absorb_stage_judgment() { :; }
+    continue_or_park() { CONTINUE_BLOCKED=""; CONTINUE_CLASS=""; CONTINUE_PARK_REASON="계속 없음"; return 1; }
+    design_arm; printf 'rc=%s\n' "$?"
+  ) >> "$d/out" 2>/dev/null
+}
+arms_self_class() {  # arms_self_class <라벨> — 드라이버 행 꼴 설계 행의 종단 부류들
+  { grep -F '| 세그먼트=- | 스테이지=S1design | 파견 id=S1design |' "$ARMS/$1/ledger.md" 2>/dev/null || true; } \
+    | sed -n 's/.*종단 부류=\([^|]*\).*/\1/p' | sed 's/[[:space:]]*$//' | paste -sd, -
+}
+arms_self self selfans
+check "드라이버 직접 기동에서 스스로 답하고 동결한 설계 시도는 정상 완료 행 하나다" \
+  "$(arms_disp self)/$(arms_self_class self)" "1/정상 완료"
+check "그 설계 팔은 park 하지 않고 동결을 보고한 뒤 0 으로 끝나 감사로 넘어간다" \
+  "$(grep -c . "$ARMS/self/parked" 2>/dev/null || printf 0)/$(grep -c '^설계 문서 동결 — docs/x.md$' "$ARMS/self/report" 2>/dev/null || printf 0)/$(grep -c '^rc=0$' "$ARMS/self/out")" "0/1/1"
+arms_self none none
+check "드라이버 직접 기동에서 답 행 없이 기록만 남긴 설계 시도는 의도된 park 이고 설계 팔이 멈춘다" \
+  "$(arms_self_class none)/$(grep -c '^S1design run 무효화 게이트 park 중단 기록 존재' "$ARMS/none/parked" 2>/dev/null || printf 0)/$(grep -c '^rc=1$' "$ARMS/none/out")" \
+  "의도된 park/1/1"
+
 # S2 — 주 루프를 태운다. 설계 팔은 통과로 두고 문서의 동결 여부만 바꾼다.
 arms_loop() {
   # arms_loop <라벨> <매니페스트> <문서: 동결|초안> [원장에 미리 둘 행]
@@ -6192,6 +6279,40 @@ halt_record_present segB && b1=있음
 rm -f "$RUN_DIR/halt/segB#2.md"
 halt_record_present segB || b2=없음
 printf 'C %s/%s\n' "$b1" "$b2"
+
+# (D) 게이트 정산 쪽 분류 사슬도 드라이버 분류기와 같은 원장 판독으로 스테이지가 스스로
+#     답한 사다리 기록을 park 근거에서 뺀다. 설계 스테이지의 1회차를 두 분류기에 함께
+#     태운다 — 게이트는 `gate_record_stage_outcome` 이 쓴 `stage-result` 행, 드라이버는
+#     설계 술어의 rc 를 받은 `classify_termination`. 기록만 → 의도된 park, 좌석 답 행 →
+#     그대로 의도된 park, 스테이지 답 행에 동결 문구와 동결된 문서 → 정상 완료, 스테이지
+#     답 행이지만 스트림에 동결 문구가 없음 → 공허한 성공. 픽스처 원장은 런 이름도
+#     `## 실행 ` 표제도 없으므로 게이트 원장처럼 파일 전체를 이 런의 행으로 읽게 둔다.
+LEDGER_SCOPE=파일
+DOC="$RUN_DIR/design-doc.md"
+printf '# 문서\n\n**상태**: 동결됨\n' > "$DOC"
+d_class() {  # d_class <seg> <답한 주체|-> <동결 문구 있음|없음> — 그 seg 의 1회차 「게이트:드라이버」 부류
+  local s="$1" by="$2" rec="$RUN_DIR/halt/$1#1.md" q g pr=0
+  printf '1\n' > "$RUN_DIR/$s.attempt"
+  printf '%s\n' '<!-- cc-pipeline-halt v1; writer=design-discuss-unattended; reader=orchestrator; stage='"$s"'#1; run=testrun -->' \
+    '**스킬**: design-discuss-unattended' '**스텝**: Step 7U / ladder-unsettled' '**분류**: gate-unanswerable' \
+    '<!-- /cc-pipeline-halt v1 -->' > "$rec"
+  [ "$by" = "-" ] || printf -- '- `중단 답` | 세그먼트=%s | 중단 기록=%s | 선택지=잔여로 두고 동결 | 답한 주체=%s | 기록 시각=x\n' \
+    "$s" "$rec" "$by" >> "$LEDGER"
+  # 스스로 답한 스테이지는 게이트를 거쳐 행위했으므로, 게이트 쪽 행 계수 갈래가 세는
+  # 행위자=스테이지 의 `자율 승인` 행을 그 행 꼴 세그먼트로 남긴다.
+  [ "$by" != "스테이지" ] || printf -- '- `자율 승인` | 세그먼트=%s | 행위자=스테이지 | 기록 시각=x\n' \
+    "$(gate_stage_row_segment "$s" design)" >> "$LEDGER"
+  q="$RUN_DIR/log/$s#1.json"
+  { [ "$3" = "없음" ] || printf '%s\n' "$LIT_DESIGN_TERMINAL"
+    printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"session_id":"SID-'"$s"'","total_cost_usd":0}'; } > "$q"
+  gate_record_stage_outcome home "$s" design 1 0 0 "$q" >/dev/null 2>&1
+  g=$( { grep -E '^- `stage-result`' "$LEDGER" 2>/dev/null || true; } | { grep -E "(세그먼트|스테이지)=$s \|" || true; } \
+    | sed -n 's/.*종단 부류=\([^|]*\).*/\1/p' | sed 's/[[:space:]]*$//' | tail -1)
+  predicate_design "$s" || pr=$?
+  printf '%s:%s' "$g" "$(classify_termination "$s" 0 "$pr" 2>/dev/null)"
+}
+printf 'D %s/%s/%s/%s\n' "$(d_class segL1 - 있음)" "$(d_class segL2 좌석 있음)" \
+  "$(d_class segL3 스테이지 있음)" "$(d_class segL4 스테이지 없음)"
 GBEOF
 GB25_OUT=$(bash "$GB25/burn.sh" "$GATE25" "$GB25" "$MF" </dev/null 2>/dev/null)
 check "게이트의 시도 유도가 디스크의 1회차를 넘어 전진하고 핀과 판독기 경로가 그 번호로 맞는다" \
@@ -6200,6 +6321,13 @@ check "핀이 있으면 결과 기록기가 앞 시도의 무접미 중단 기�
   "$(printf '%s\n' "$GB25_OUT" | sed -n 's/^B //p')" "공허한 성공"
 check "자기 시도의 중단 기록은 읽는다 (B 가 중단 기록을 무시해서 통과한 것이 아니다)" \
   "$(printf '%s\n' "$GB25_OUT" | sed -n 's/^C //p')" "있음/없음"
+GB25_D=$(printf '%s\n' "$GB25_OUT" | sed -n 's/^D //p')
+check "게이트 정산 사슬과 드라이버 분류기가 기록만·좌석 답 행인 설계 사다리 기록을 함께 의도된 park 으로 읽는다" \
+  "$(printf '%s' "$GB25_D" | cut -d/ -f1-2)" "의도된 park:의도된 park/의도된 park:의도된 park"
+check "스테이지가 답하고 동결을 마친 설계 시도는 두 분류기 모두 정상 완료다" \
+  "$(printf '%s' "$GB25_D" | cut -d/ -f3)" "정상 완료:정상 완료"
+check "스테이지가 답했지만 동결 문구 없이 끝난 설계 시도는 두 분류기 모두 공허한 성공이다" \
+  "$(printf '%s' "$GB25_D" | cut -d/ -f4)" "공허한 성공:공허한 성공"
 
 DOC="$DOC_SAVE25"; DOC_KEY="$DOC_KEY_SAVE25"
 RUN_DIR="$RUN_DIR_SAVE25"; LEDGER="$LEDGER_SAVE25"

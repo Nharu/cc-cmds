@@ -5,6 +5,18 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.52.3] - 2026-11-19
+
+무인 discuss·solo 설계 스테이지가 남긴 잔여 사다리 중단(`/ ladder-unsettled`)의 추천이 `잔여로 두고 동결` 이면, 스테이지가 그 답을 게이트에 직접 등록하고 같은 세션에서 문서를 동결한다. 지금까지는 같은 추천이라도 스테이지가 멈춘 뒤 좌석이 답하고 설계 세션을 한 번 더 띄워야 해서, 바꾸는 것이 없는 답 하나에 세션 하나와 교대 한 번이 들었다.
+
+### Changed
+
+- **게이트 `halt-answer` 의 스테이지 갈래** — 스테이지 호출은 교대 표지보다 먼저 가린다. 자기 시도의 기록(`$RUN_DIR/halt/$CC_PIPELINE_STAGE_ID.md`, `--segment` 는 스테이지 id 의 `#` 앞)이고, 완결된 `gate-unanswerable` 사다리 기록이며, 쓴 스킬이 discuss 나 solo 이고, 자동 답 스위치가 켜져 있고, 좌석 답과 같은 추천·설계 문서 대조와 자동 답 상한을 지나고, 이 시도의 `stage-result` 행이 아직 없을 때만 받는다. 스테이지는 `중단 기록` 과 `선택지` 만 넘기고, 게이트가 `답한 주체=스테이지`, 기록의 추천 근거를 좌석 행처럼 정규화(`|` 는 `/`, 줄바꿈은 공백, 연속 공백은 하나)해 300 바이트부터 40 바이트씩 행 상한에 들 때까지 자른 `근거`(표지만 남을 때까지 줄이고, 첨부에는 원문 줄을 온전히 남긴다), `근거 종류=기기 사실`, 잔여 판정 도장과 첨부를 쓴다. 이 시도의 `stage-result` 행은 게이트 정산 행·드라이버 기동 행·세그먼트 모양 행 세 꼴 모두에서 단계 키와 `실행 버전` 으로 가리고, 같은 키의 재수렴 행은 세지 않는다.
+- **초안 답의 행 길이 투영** — 아직 쓰지 않은 첨부의 다이제스트를 64자 자리표시로 재어, 상한 근처 행이 `근거` 를 덜 자른 채 거절되지 않게 한다.
+- **두 분류기** — 드라이버의 `classify_termination` 과 게이트의 정산 사슬은 `답한 주체=스테이지` 행이 이름 댄 기록을 park 근거로 쓰지 않고 산출물 술어로 판정한다.
+- **자동 답 판정 사본** — 게이트·`liveness.sh`·`attention-round.sh`·`dashboard_read.py` 가 `스테이지` 를 사람 없이 쓴 답으로 읽는다. 게이트의 `answered_halts` 는 스테이지 행을 넘길 답으로 싣지 않는다.
+- **스킬** — `design-discuss-unattended` 에 스테이지–게이트 `halt-answer` 호출 계약을 두고, `design-solo-unattended` 가 그것을 따른다. 앞 시도의 대화를 이어 받은 세션은 부르기 전에 이 단계의 모든 시도 기록을 가리키는 스테이지 답 행을 원장에서 먼저 찾아, 있으면 다시 부르지 않고 동결한다. 게이트 경로는 `CC_PIPELINE_GATE` 가 비면 게이트 훅 거부 문구의 exec 꼴 첫 낱말에서 얻는다. `**잔여 동결**` 줄의 주체에 `스테이지` 가 더해진다. 좌석 참조와 아침 보고서는 스테이지가 동결한 기록을 좌석이 다시 답하지 않고, 사람 없이 동결한 잔여 항목에 함께 싣는다.
+
 ## [3.52.2] - 2026-11-19
 
 목표를 지명하지 않은 `make check-push` 가 바뀐 파일을 읽는 REST 목표를 돌리지 않아, 로컬 검사를 통과한 세그먼트가 CI 에서야 실패하던 문제를 고쳤다. gate.sh 의 빌트인 파이프라인 요소를 늘린 세그먼트 다섯이 모두 이렇게 `run/scripts/test-measure-spawn-count.sh` 에서 실패했다. 이제 check-push 는 시험 트리에서 바뀐 파일을 읽는 목표를 정적으로 찾아 지명한 목표 뒤에 붙여 돌린다.

@@ -406,9 +406,17 @@
 #   gate.sh act --kind halt-answer --target <alias> --segment <key> ... \\
 #               -- '중단 기록=<RUN_DIR/halt/…md>' '선택지=<그 기록의 선택지 원문>' 근거=<사람이 한 말의 요약> \\
 #                  ['첨부=<RUN_DIR/halt/…answer.md>'] ['초안 그대로=예']
-# `halt-answer` is the seat's alone on the same terms, save one shift case: an
-# implement-unattended CFI-U3 BT-STOP record answered `재수렴` under a
-# `자동 채택` row of class 구속-이탈, once per record. A record whose whole
+#   gate.sh act --kind halt-answer --target <alias> --segment <step key> ... \\
+#               -- '중단 기록=<RUN_DIR/halt/<CC_PIPELINE_STAGE_ID>.md>' '선택지=잔여로 두고 동결'
+# `halt-answer` is the seat's on the same terms, save one shift case and one
+# stage case. The shift case: an implement-unattended CFI-U3 BT-STOP record
+# answered `재수렴` under a `자동 채택` row of class 구속-이탈, once per record.
+# The stage case (the second form above): a discuss or solo design stage
+# answers its own attempt's `/ ladder-unsettled` record with
+# `잔여로 두고 동결` when the record recommends it and the seat's switch, rule,
+# design check and one-answer limit admit it; it names the record and the
+# option only, and the gate stamps `답한 주체=스테이지`, `근거` and the
+# attachment. A record whose whole
 # `**스텝**` reads `Step 1 CFI-U3 BT-STOP — 미결 결정` — the halt an implement
 # stage writes when open decisions reach its segment, listing their headings
 # in `**미결 결정 항목**` — is outside that case: `답한 주체=사람` is recorded
@@ -25804,7 +25812,14 @@ gate_answered_halts_json() {
   # because an early-exiting reader kills the writer with SIGPIPE and, under
   # `pipefail`, the pipeline then fails though the match was found.
   local lines ln row key keys first=1
-  lines=$(grep -n "^- \`중단 답\` " "$LEDGER" 2>/dev/null || true)
+  # A STAGE'S ANSWER TO ITS OWN LADDER RECORD IS NOT CARRIED: the same attempt
+  # applied it and froze, and its own `stage-result` row takes it up. It is
+  # dropped here, before a key's last row is chosen — dropped after, a key whose
+  # last row is the stage's would lose a person's answer written before it.
+  lines=$( { grep -n "^- \`중단 답\` " "$LEDGER" 2>/dev/null || true; } \
+           | while IFS= read -r row; do
+               [ "$(gate_row_field "${row#*:}" '답한 주체')" = "스테이지" ] || printf '%s\n' "$row"
+             done)
   [ -n "$lines" ] || return 0
   keys=$(printf '%s\n' "$lines" | while IFS= read -r row; do
            gate_row_field "${row#*:}" '세그먼트'
@@ -25827,8 +25842,9 @@ gate_answered_halts_json() {
     # dispatch of a run-scope step (`gate_chain_halt_import`), an `이월` answer
     # only. An `이월` answer goes on through the carry act; whether the earlier
     # ledger holds that row is read from `출처 런`, not from this element.
-    # `answered_by` is `사람`, `좌석` or `교대` (`gate_halt_answered_by`), so the
-    # shift's re-attach message can say who chose the option. `state` is `이월`
+    # `answered_by` is `사람`, `좌석` or `교대` (`gate_halt_answered_by`; a
+    # `스테이지` row never reaches here), so the shift's re-attach message can
+    # say who chose the option. `state` is `이월`
     # when an `이월` row of this run names the line — a carry found no room
     # before the deadline and the next run takes the answer up, so this run does
     # not carry it again — and `열림` otherwise. `route` is the
@@ -26082,10 +26098,10 @@ gate_open_answer_line_of() {
 
 gate_halt_answer_is_auto() {
   # gate_halt_answer_is_auto <row> — true for a `중단 답` row no person wrote:
-  # `답한 주체` is `교대` or `좌석`, or — on a row written before that field
-  # existed — `근거` opens with the shift's pre-adopted prefix.
+  # `답한 주체` is `교대`, `좌석` or `스테이지`, or — on a row written before
+  # that field existed — `근거` opens with the shift's pre-adopted prefix.
   case "$(gate_row_field "$1" '답한 주체')" in
-    교대|좌석) return 0 ;;
+    교대|좌석|스테이지) return 0 ;;
     '') ;;
     *) return 1 ;;
   esac
@@ -26096,7 +26112,8 @@ gate_halt_answer_is_auto() {
 }
 
 gate_halt_answered_by() {
-  # gate_halt_answered_by <row> — `사람`, `좌석` or `교대`. A row written before
+  # gate_halt_answered_by <row> — `사람`, `좌석`, `교대` or `스테이지` (a design
+  # stage's gate-checked answer to its own ladder record). A row written before
   # `답한 주체` existed reads `교대` when it carries the shift's prefix and
   # `사람` otherwise, since those were the only two writers then.
   local by
@@ -27747,6 +27764,204 @@ EOF
     warn "$key already had $n automatic \`재수렴\` answers, and the manifest's \`구속-이탈\` row bounds them at \`상한=$cap\` — the next one goes to a person"
     return "$GATE_EXIT_RULE"
   fi
+}
+
+readonly GATE_STAGE_FREEZE_OPT='잔여로 두고 동결'
+readonly GATE_STAGE_FREEZE_NOTE='이 동결은 설계 스테이지가 게이트의 좌석 검사를 거쳐 스스로 했습니다. 다르게 하려면 같은 기록에 골격 재검토를 답하십시오.'
+
+gate_halt_answer_attach_write() {
+  # gate_halt_answer_attach_write <attachment path> <body> — writes an answer's
+  # attachment the gate composed itself, atomically: a temp file beside it,
+  # then a rename that refuses to overwrite, the temp file removed on every
+  # failure. The same write pair as `gate_halt_draft_attach_write`, which
+  # builds its body from the draft check's globals and so cannot take this one.
+  local att="$1" body="$2" t
+  t=$(mktemp "${att%/*}/.stage-answer.XXXXXX") || return 1
+  printf '%s\n' "$body" > "$t" || { rm -f "$t"; return 1; }
+  if [ -e "$att" ] || ! mv -n "$t" "$att" || [ -e "$t" ]; then
+    rm -f "$t"
+    return 1
+  fi
+}
+
+gate_halt_stage_self_answer() {
+  # gate_halt_stage_self_answer <seg> <alias> <field=value>... — the stage arm
+  # of `halt-answer`: an unattended design stage (discuss or solo) registers
+  # `잔여로 두고 동결` on the `/ ladder-unsettled` record it wrote itself, and
+  # goes on to freeze the document in the same session instead of waiting for
+  # the seat and a second design session.
+  #
+  # THE STAGE DOES NOT DECIDE; THE SEAT'S CHECKS DO. The record has to pass
+  # `gate_halt_recommendation` and `gate_halt_design_check` exactly as the
+  # seat's answer does, under the seat's switch, and
+  # `gate_halt_auto_answer_admit` holds it to one automatic answer per record.
+  # What the stage may name is the record and the option; `답한 주체`, `근거`
+  # and the attachment are the gate's.
+  #
+  # THREE SEAT CHECKS DO NOT APPLY, and the self-record and live-attempt checks
+  # stand in for them: a `stage-result` row of the key (the first attempt has
+  # none yet), `gate_halt_auto_answer_current` (it refuses while the key's pid
+  # file exists, and the caller is that very attempt) and the answer's route
+  # (the row is consumed by this attempt's own `stage-result`, never carried).
+  #
+  # Any refusal writes neither a row nor an attachment, and the stage ends on
+  # its record as before.
+  local seg="$1" alias="$2"; shift 2
+  local f k rec opt sid key att want rec_why skill hdig hlane hat row hlen ladder body rest part
+  for f in "$@"; do
+    k="${f%%=*}"
+    case "$k" in
+      중단\ 기록|선택지) continue ;;
+      답한\ 주체|근거|첨부)
+        warn "a stage's \`중단 답\` names \`중단 기록\` and \`선택지\` only — \`${k}\` is the gate's on the stage arm"
+        return "$GATE_EXIT_RULE" ;;
+    esac
+    warn "a stage's \`중단 답\` takes \`중단 기록\` and \`선택지\` and nothing else: ${k}"
+    return "$GATE_EXIT_VOCAB"
+  done
+  rec=$(gate_field_of '중단 기록' "$@")
+  opt=$(gate_field_of '선택지' "$@")
+  [ -n "$rec" ] && [ -n "$opt" ] || {
+    warn "a stage's \`중단 답\` needs \`중단 기록\` (its own halt record's absolute path) and \`선택지\` (\`$GATE_STAGE_FREEZE_OPT\`)"
+    return "$GATE_EXIT_VOCAB"; }
+  # ITS OWN RECORD. The path and the step key both come from the stage's
+  # own id; `CC_PIPELINE_SEGMENT` is not compared, since a gate-dispatched
+  # run-scope design step carries `-` there and a driver-launched one its key.
+  sid="${CC_PIPELINE_STAGE_ID:-}"
+  [ -n "$sid" ] || {
+    warn "a stage answers only its own halt record, and this caller carries no CC_PIPELINE_STAGE_ID to name it"
+    return "$GATE_EXIT_RULE"; }
+  want="$RUN_DIR/halt/$sid.md"
+  key="${sid%%#*}"
+  if [ "$rec" != "$want" ] || [ "$seg" != "$key" ]; then
+    warn "a stage answers only the halt record of its own attempt ($want, --segment $key) — received $rec, --segment $seg"
+    return "$GATE_EXIT_RULE"
+  fi
+  # A COMPLETE LADDER RECORD OF A DISCUSS OR SOLO DESIGN STAGE.
+  [ -f "$rec" ] || { warn "the halt record does not exist: $rec"; return "$GATE_EXIT_VOCAB"; }
+  local first=''
+  IFS= read -r first < "$rec" || true
+  if [ "${first#<!-- cc-pipeline-halt v1;}" = "$first" ] \
+     || ! grep -qxF '<!-- /cc-pipeline-halt v1 -->' "$rec"; then
+    warn "not a complete halt record (opening header and closing fence): $rec"
+    return "$GATE_EXIT_RULE"
+  fi
+  case "$(sed -n 's/^\*\*스텝\*\*: //p' "$rec" | sed -n '1p')" in
+    *'/ ladder-unsettled'*) ;;
+    *) warn "a stage answers only its own \`/ ladder-unsettled\` record: $rec"; return "$GATE_EXIT_RULE" ;;
+  esac
+  if [ "$(sed -n 's/^\*\*분류\*\*: //p' "$rec" | sed -n '1p' | sed 's/[[:space:]]*$//')" != "gate-unanswerable" ]; then
+    warn "a stage answers only a \`gate-unanswerable\` ladder record: $rec"
+    return "$GATE_EXIT_RULE"
+  fi
+  skill=$(sed -n 's/^\*\*스킬\*\*: //p' "$rec" | sed -n '1p' | sed 's/[[:space:]]*$//')
+  case "$skill" in
+    design-discuss-unattended|design-solo-unattended) ;;
+    *) warn "only a discuss or solo design stage freezes its own ladder record — this one is \`${skill:-미상}\`: $rec"
+       return "$GATE_EXIT_RULE" ;;
+  esac
+  # THE SEAT'S SWITCH.
+  if ! gate_auto_resolve_enabled; then
+    warn "CC_CMDS_AUTOPILOT_AUTO_RESOLVE is off, so a stage does not answer its own halt record — it ends on the record"
+    return "$GATE_EXIT_RULE"
+  fi
+  # THE SEAT'S RULE, CALLED AS THE SEAT CALLS IT.
+  gate_halt_recommendation "$rec" || return "$?"
+  if [ "$GATE_HALT_REC_LABEL" != "$GATE_STAGE_FREEZE_OPT" ] || [ "$opt" != "$GATE_STAGE_FREEZE_OPT" ]; then
+    warn "a stage registers only \`$GATE_STAGE_FREEZE_OPT\`, and only when its record recommends it — the record recommends \`$GATE_HALT_REC_LABEL\`, the call names \`$opt\`: $rec"
+    return "$GATE_EXIT_RULE"
+  fi
+  gate_halt_design_check "$rec" || return "$?"
+  ladder=$GATE_HALT_LADDER_STAMP
+  if ! gate_halt_answer_labels "$seg" "$rec" | grep -xF -- "$opt" >/dev/null; then
+    warn "\`선택지\` is not one of the options this halt record lists verbatim: $opt"
+    return "$GATE_EXIT_VOCAB"
+  fi
+  # ONE AUTOMATIC ANSWER, NEVER OVER A WAITING ONE.
+  gate_halt_auto_answer_admit "$seg" "$rec" "$opt" || return "$?"
+  # THIS ATTEMPT IS STILL LIVE: no `stage-result` row of it yet. The
+  # attempt is told by the step key and `실행 버전` together, in each of the
+  # three row shapes that carry this attempt: the gate's settlement row
+  # (`세그먼트=- | 스테이지=<key> | 종류=design`), the driver's own launch row
+  # (`세그먼트=- | 스테이지=… | 파견 id=<key>`, no `종류`) and a segment-shaped
+  # row (`세그먼트=<key>`). A re-convergence row on the same key is another
+  # stage's attempt and does not count.
+  local ver="${sid##*#}"
+  while IFS= read -r row; do
+    [ -n "$row" ] || continue
+    case "$row" in
+      *"| 종류=reconverge "*) continue ;;
+      *"| 세그먼트=$key "*|*"| 세그먼트=- | 스테이지=$key | 종류=design "*) ;;
+      *"| 세그먼트=- | 스테이지="*"| 파견 id=$key "*) ;;
+      *) continue ;;
+    esac
+    if [ "$(gate_row_field "$row" '실행 버전')" = "$ver" ]; then
+      warn "attempt $sid already has its \`stage-result\` row, so it is no live stage answering its own record: $rec"
+      return "$GATE_EXIT_RULE"
+    fi
+  done <<EOF
+$( { gate_rows 'stage-result' || true; } )
+EOF
+  # `근거` is the record's `**추천 근거**` line the recommendation checks above read, normalized as the
+  # seat's row is (`gate_row_safe`: `|` to `/`, line breaks to spaces, runs of
+  # spaces to one) and clipped from 300 bytes down by 40 until the row fits,
+  # down to the clip marker alone — the record and attachment paths ride on
+  # the row unclipped and are as long as this machine's state directory makes
+  # them, so the same record can fit on one host and not on another. The
+  # attachment carries the line whole, as the record wrote it.
+  rec_why=$(sed -n 's/^\*\*추천 근거\*\*: //p' "$rec" | sed -n '1p' | sed 's/[[:space:]]*$//')
+  att="${rec%.md}.answer.md"
+  if [ -e "$att" ]; then
+    warn "the attachment of this answer already exists, so the gate does not overwrite it: $att"
+    return "$GATE_EXIT_RULE"
+  fi
+  hdig=$(shasum -a 256 "$rec" | cut -d' ' -f1)
+  hlane=$(gate_lane_label)
+  hat=$(now_iso)
+  local hwhy hw=260
+  hwhy=$(gate_row_safe "$rec_why" 300)
+  while :; do
+    hlen=$(gate_row_projected_bytes '중단 답' "세그먼트=$seg" "중단 기록=$rec" "스킬=$skill" \
+      "선택지=$opt" "답한 주체=스테이지" "근거=$hwhy" "근거 종류=기기 사실" \
+      ${ladder:+"잔여 판정=$ladder"} "기록 다이제스트=$hdig" "첨부=$att" \
+      "첨부 다이제스트=0000000000000000000000000000000000000000000000000000000000000000" \
+      "레인=$hlane" "기록 시각=$hat")
+    [ "$hlen" -le "$GATE_ROW_MAX" ] && break
+    [ "$hw" -ge 0 ] || break
+    hwhy=$(gate_row_safe "$rec_why" "$hw")
+    # The last step leaves the clip marker alone: the attachment carries the
+    # basis whole, so the row still says where to read it.
+    if [ "$hw" -gt 40 ]; then hw=$((hw - 40)); elif [ "$hw" -gt 0 ]; then hw=0; else hw=-1; fi
+  done
+  if [ "$hlen" -gt "$GATE_ROW_MAX" ]; then
+    warn "the \`중단 답\` row of this stage answer does not fit the row cap even with \`근거\` clipped (${hlen} bytes over ${GATE_ROW_MAX}) — nothing was written: $rec"
+    return "$GATE_EXIT_RULE"
+  fi
+  body="채택한 선택지: $opt"$'\n'"추천 근거:"
+  rest=$rec_why
+  while [ -n "$rest" ]; do
+    case "$rest" in
+      *' / '*) part=${rest%%' / '*}; rest=${rest#*' / '} ;;
+      *) part=$rest; rest='' ;;
+    esac
+    body="$body"$'\n'"- $part"
+  done
+  body="$body"$'\n\n'"$GATE_STAGE_FREEZE_NOTE"$'\n\n'"## 되돌리는 법"$'\n\n'"같은 기록에 \`골격 재검토\` 를 답한다."
+  gate_halt_answer_attach_write "$att" "$body" || {
+    warn "the attachment of the stage answer could not be written: $att"
+    return "$GATE_EXIT_RULE"; }
+  local attdig
+  attdig=$(shasum -a 256 "$att" | cut -d' ' -f1)
+  if ! ( gate_append '중단 답' "세그먼트=$seg" "중단 기록=$rec" "스킬=$skill" \
+           "선택지=$opt" "답한 주체=스테이지" "근거=$hwhy" "근거 종류=기기 사실" \
+           ${ladder:+"잔여 판정=$ladder"} "기록 다이제스트=$hdig" \
+           "첨부=$att" "첨부 다이제스트=$attdig" "레인=$hlane" "기록 시각=$hat" ); then
+    rm -f "$att"
+    warn "the \`중단 답\` row of the stage answer could not be written, so its attachment was removed: $att"
+    return "$GATE_EXIT_RULE"
+  fi
+  log "자동 답 — 스테이지가 자기 사다리 기록을 동결함 ($seg ← $opt)"
+  log "중단 답 기록 — $seg ← $opt (스테이지)"
 }
 
 gate_halt_auto_answer_current() {
@@ -44369,13 +44584,19 @@ EOF
       # writing this row would be the run answering its own question for a
       # person.
       #
-      # ONE EXCEPTION, AND ONLY FOR A SHIFT: a binding-tier stop answered
+      # ONE EXCEPTION FOR A STAGE: a discuss or solo design stage registers
+      # `잔여로 두고 동결` on its own `/ ladder-unsettled` record, under every
+      # check the seat's answer meets, and freezes in the same session
+      # (`gate_halt_stage_self_answer`). It is read from `cc_caller_is_stage`
+      # before the shift marker below, because a stage a shift started inherits
+      # `CC_PIPELINE_SHIFT_ID`. Any other stage call is refused there.
+      #
+      # ONE EXCEPTION FOR A SHIFT: a binding-tier stop answered
       # `재수렴` when the manifest's `## 인가` pre-adopts the `구속-이탈` class.
       # The person made that answer at kickoff, by freezing the row, so the
       # shift is not answering for them — it is carrying a frozen answer. Every
       # other condition is checked below, after the record has been read, and
-      # a shift that misses one is refused exactly as before. A stage never
-      # writes this row.
+      # a shift that misses one is refused exactly as before.
       #
       # AND THE SEAT MAY ANSWER WITHOUT A PERSON, from the record itself. A
       # stage that halted on a question it could already answer from the
@@ -44387,9 +44608,10 @@ EOF
       # the deciding, by `gate_halt_recommendation` and
       # `gate_halt_auto_answer_admit`; the seat only asks.
       #
-      # `답한 주체` TELLS THE THREE WRITERS APART on the row: `사람` (the
+      # `답한 주체` TELLS THE FOUR WRITERS APART on the row: `사람` (the
       # default, which every call written before the field still means),
-      # `좌석` and `교대`, which only the gate stamps.
+      # `좌석`, and `교대` and `스테이지`, which only the gate stamps — the
+      # last on a stage's answer to its own ladder record alone.
       #
       # EVERY WRITER'S ANSWER IS ROUTABLE OR NOT RECORDED. After the option
       # check, and for an automatic answer after its bounds,
@@ -44400,8 +44622,8 @@ EOF
       # do route. A person's answer takes no automatic bound but does take this.
       local hshift=''
       if cc_caller_is_stage; then
-        warn "a \`중단 답\` row is written by the seat only — a shift or a stage cannot answer a halt record for a person"
-        return "$GATE_EXIT_RULE"
+        gate_halt_stage_self_answer "$seg" "$alias" "$@"
+        return "$?"
       fi
       if [ -n "$(gate_shift_self_ordinal)" ] || [ -n "${CC_PIPELINE_SHIFT_ID:-}" ]; then
         hshift=1
@@ -44463,7 +44685,7 @@ EOF
           사람|좌석) ;;
           교대) warn "\`답한 주체=교대\` is the gate's stamp on a shift's row — the seat writes \`사람\` or \`좌석\`"
                 return "$GATE_EXIT_RULE" ;;
-          *) warn "\`답한 주체\` is one of 사람 · 좌석 · 교대: $hby"
+          *) warn "the seat writes \`답한 주체\` as \`사람\` or \`좌석\` — \`교대\` and \`스테이지\` are the gate's stamps: $hby"
              return "$GATE_EXIT_VOCAB" ;;
         esac
       fi
@@ -45053,8 +45275,8 @@ EOF
       # The seat-apply fields are measured with a 40-character placeholder for
       # `좌석 커밋`, so a row that cannot fit is refused before anything is
       # committed rather than after, on the rollback path. A draft answer's
-      # attachment does not exist yet, so its digest is measured as 64
-      # characters.
+      # attachment does not exist yet, so the projection measures its digest
+      # as 64 characters (`hattm`); the row written below carries the real one.
       local hattm=$hattdig
       [ -z "$hdraft" ] || hattm=0000000000000000000000000000000000000000000000000000000000000000
       while [ "$hw" -ge 40 ]; do
@@ -45066,7 +45288,7 @@ EOF
           ${hsacf:+"승계 프레임=$hsacf"} ${hsacr:+"승계 원본=$hsacr"} ${hsanh:+"사람 몫=$hsanh"} \
           ${hladder:+"잔여 판정=$hladder"} ${hxj:+"고칠 곳=$hfix"} ${hxj:+"판정 주체=$hxj"} ${hxs:+"판정 신호=$hxs"} \
           ${hxe:+"판정 근거=$hxe"} ${hxg:+"측정 등급=$hxg"} ${hxr:+"라우팅=$hxr"} ${hconf:+"해소 확인=$hconf"} \
-          "기록 다이제스트=$hdig" ${hatt:+"첨부=$hatt"} ${hatt:+"첨부 다이제스트=$hattdig"} \
+          "기록 다이제스트=$hdig" ${hatt:+"첨부=$hatt"} ${hatt:+"첨부 다이제스트=$hattm"} \
           "레인=$hlane" "기록 시각=$hat")
         [ "$hlen" -le "$GATE_ROW_MAX" ] && break
         hw=$((hw - 40))
@@ -64566,8 +64788,12 @@ gate_record_stage_outcome() {
   # ahead of every artifact arm, and both file it `공허한 성공`.
   if [ "$rc" = "0" ] && halt_record_format_clue "$seg" >/dev/null; then
     klass='공허한 성공'
+  # A record the stage answered itself (`답한 주체=스테이지`, the stage arm of
+  # `halt-answer`) is skipped here exactly as the driver's classifier skips it,
+  # through the same run.sh helper, so the attempt falls to the artifact arms.
   elif [ "$rc" = "0" ] && [ -s "$haltf" ] \
-     && [ "$( { grep -vE '^[[:space:]]*$' "$haltf" 2>/dev/null || true; } | tail -1)" = '<!-- /cc-pipeline-halt v1 -->' ]; then
+     && [ "$( { grep -vE '^[[:space:]]*$' "$haltf" 2>/dev/null || true; } | tail -1)" = '<!-- /cc-pipeline-halt v1 -->' ] \
+     && ! halt_record_stage_answered "$haltf"; then
     klass='의도된 park'
   # A MODEL SAFETY REFUSAL, before the crash arm and at either exit code: the
   # driver's reader on the same stream (`stage_refusal_exit`), so the two
