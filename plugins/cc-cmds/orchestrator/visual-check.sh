@@ -59,10 +59,18 @@
 #       Print the number of start tags (`<` followed by a letter) outside
 #       comments and script.
 #   approval <design doc>
-#       Print `승인 유효 <first 12 hex of the input bundle>` and exit 0 only when
-#       the document's sidecar is `발행됨`, carries exactly one well-formed
-#       `**구현 승인**` line, and the input bundle measured from the current
-#       files equals the line's value. Otherwise print `승인 없음 — <reason>` or
+#       Print `승인 유효 <first 12 hex of the line's input bundle>` and exit 0
+#       only when the document's sidecar is `발행됨`, carries exactly one
+#       well-formed `**구현 승인**` line, and the input bundle measured from the
+#       current files equals the line's value. When it does not and the
+#       document does not call the runtime, the line is measured again under
+#       the older definition, which carried a runtime line for every document:
+#       `runtime <candidate>` for the candidates `(없음)`, the current
+#       `support.js` sha256 and each 64-lowercase-hex line of
+#       `docs/visual/support.history`; one match keeps the approval. A
+#       document that calls the runtime is not measured again. A bundle that
+#       still differs prints `승인 무효 — 입력 묶음이 달라졌다 (줄 <12>, 지금
+#       <12 of the new definition>)`. Otherwise print `승인 없음 — <reason>` or
 #       `승인 무효 — <reason>` and exit 1. The line may end in the provenance
 #       tail ` — 사람 답 <file name>`, the name of the halt record under the
 #       run's `halt/` whose person's answer the line was written on
@@ -90,9 +98,12 @@
 #       Lines that fail are printed and the exit code is 2.
 #   bundle <design doc> [--lines]
 #       Print the input bundle sha256 (with --lines, the bundle text itself):
-#       `<screen id> <sha256>` per screen in screen-id order, then
-#       `runtime <support.js sha256>` and `tokens <tokens.css sha256>`, with
-#       `(없음)` for a file that does not exist.
+#       `<screen id> <sha256>` per screen in screen-id order, then the runtime
+#       line and `tokens <tokens.css sha256>`, with `(없음)` for a file that
+#       does not exist. The runtime line is `runtime <support.js sha256>` (or
+#       `runtime (없음)`) for a document that calls the runtime — one of its
+#       existing screen files holds `support.js` in its bytes, in any case —
+#       and the fixed `runtime (부르지 않음)` for every other document.
 #   binding <design doc>
 #       Print the design document's binding digest the sidecar's
 #       `**설계 문서 구속 다이제스트**` carries: the driver's `binding_digest`
@@ -139,6 +150,24 @@
 #       whose `**디자인 시스템 sha256**` equals the current normalized digest
 #       or whole-file hash of `system.md`, or the --also digest; `없음` when
 #       there is none. Exits 0.
+#   runtime-users <design doc>
+#       Print `런타임 사용 문서 <n>`, then one line
+#       `<document key> — <first line of its approval verdict> — 기대는 런
+#       <run-id>, <run-id> | 없음` for every other `cc-visual v1` sidecar under
+#       the same `docs/visual/` whose document calls the runtime (its screen
+#       paths built from that sidecar's own slug), in C-locale key order. The
+#       verdict is the first line of a separate `approval <base>/<key>`
+#       process, whatever its exit code. The runs are the `## 인가 <run-id>`
+#       blocks of every `<base>/docs/pipeline-grant/*.md` whose header
+#       `owner-doc=` is byte-equal to the key, with no `done` file in
+#       `${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/run/<run-id>`. A reader
+#       takes the key up to the first ` — ` and the verdict from there up to
+#       the last ` — 기대는 런 `; the list `런타임 무효 대상=` is the keys of the
+#       lines whose verdict starts with `승인 유효` or `승인 보류`, in C-locale
+#       order, joined with `, `. Exits 0. A selected key holding ` — ` or `,`
+#       prints `런타임 사용 문서 판독 불가 — <reason>` and exits 1; no sidecar
+#       for this document prints `런타임 사용 문서 없음 — <reason>` and exits 1.
+#       Exit 1 means the list is unknown, not empty.
 #   run-state <design doc> --run-dir <dir> --ledger <file> --manifest <file>
 #       Print the run's design system phase state on seven fixed lines —
 #       whether the plan has `S2P`, the latest `디자인-시스템-판정` and
@@ -173,7 +202,7 @@
 #   0 — scan: no finding; approval: valid; reuse: reusable; system --owner:
 #       this document's; other subcommands: success
 #   1 — scan: at least one finding; approval: none, void or held; drift: no
-#       block; bundle: no sidecar;
+#       block; bundle: no sidecar; runtime-users: the list is unknown;
 #       reuse: not reusable; system --owner: not this document's
 #   2 — usage error, an unreadable file, a malformed ban list or pattern, a
 #       --tokens file that is missing or contains `</style` (any case), a
@@ -189,7 +218,7 @@
 set -euo pipefail
 
 usage() {
-  echo "사용법: visual-check.sh scan <화면>... [--bans <파일>] [--lifts <system.md>] [--tokens <tokens.css>] | size <화면> | approval <설계 문서> | drift <설계 문서> | bundle <설계 문서> [--lines] | binding <설계 문서> | system <설계 문서> [--owner] | confirm <설계 문서> | system-users <설계 문서> [--also <hex>] | run-state <설계 문서> --run-dir <런 디렉터리> --ledger <원장> --manifest <매니페스트> | reuse <설계 문서> --record <기록>" >&2
+  echo "사용법: visual-check.sh scan <화면>... [--bans <파일>] [--lifts <system.md>] [--tokens <tokens.css>] | size <화면> | approval <설계 문서> | drift <설계 문서> | bundle <설계 문서> [--lines] | binding <설계 문서> | system <설계 문서> [--owner] | confirm <설계 문서> | system-users <설계 문서> [--also <hex>] | runtime-users <설계 문서> | run-state <설계 문서> --run-dir <런 디렉터리> --ledger <원장> --manifest <매니페스트> | reuse <설계 문서> --record <기록>" >&2
   exit 2
 }
 
@@ -656,7 +685,24 @@ screen_ids() {
   sed -nE 's/^### 화면 ([^[:space:]]+)[[:space:]]*$/\1/p' "$SIDECAR" | LC_ALL=C sort -u
 }
 
-bundle_text() {
+# doc_calls_runtime [<sidecar> <slug>] — the document calls the shared canvas
+# runtime: at least one screen file its sidecar names, in screen-id order,
+# exists and holds `support.js` anywhere in its bytes, in any case. A screen
+# file that does not exist is left out of the judgment (the approval's
+# screen-file check already voids such an approval). Without arguments it reads
+# the located SIDECAR and SLUG; `runtime-users` passes another sidecar with
+# that sidecar's own slug, so the screen paths are built from it.
+doc_calls_runtime() {
+  local SIDECAR=${1:-$SIDECAR} SLUG=${2:-$SLUG} id fp
+  for id in $(screen_ids); do
+    fp="$BASE/docs/visual/${SLUG}.${id}.html"
+    [ -f "$fp" ] || continue
+    if LC_ALL=C grep -qiF 'support.js' "$fp"; then return 0; fi
+  done
+  return 1
+}
+
+bundle_screen_lines() {
   local id fp
   for id in $(screen_ids); do
     fp="$BASE/docs/visual/${SLUG}.${id}.html"
@@ -666,10 +712,69 @@ bundle_text() {
       printf '%s %s\n' "$id" '(없음)'
     fi
   done
-  fp="$BASE/docs/visual/support.js"
-  if [ -f "$fp" ]; then printf 'runtime %s\n' "$(sha256_of "$fp")"; else printf 'runtime (없음)\n'; fi
-  fp="$BASE/docs/visual-system/tokens.css"
+}
+
+bundle_tokens_line() {
+  local fp="$BASE/docs/visual-system/tokens.css"
   if [ -f "$fp" ]; then printf 'tokens %s\n' "$(sha256_of "$fp")"; else printf 'tokens (없음)\n'; fi
+}
+
+# runtime_now — the current `support.js` sha256, or `(없음)` when it does not
+# exist.
+runtime_now() {
+  local fp="$BASE/docs/visual/support.js"
+  if [ -f "$fp" ]; then sha256_of "$fp"; else printf '(없음)\n'; fi
+}
+
+# bundle_text — the input bundle: the screen lines, the runtime line and the
+# tokens line. The runtime line carries a value only for a document that calls
+# the runtime (`runtime <sha256>`, or `runtime (없음)` when `support.js` does
+# not exist); a document that does not call it carries the fixed
+# `runtime (부르지 않음)`, so replacing `support.js` leaves its bundle as it
+# was.
+bundle_text() {
+  bundle_screen_lines
+  if doc_calls_runtime; then
+    printf 'runtime %s\n' "$(runtime_now)"
+  else
+    printf 'runtime (부르지 않음)\n'
+  fi
+  bundle_tokens_line
+}
+
+# legacy_bundle_matches <want> — an approval line written under the older
+# bundle definition still matches. That definition put the runtime line in
+# every document's bundle: the same screen and tokens lines with
+# `runtime <candidate>` between them (`runtime (없음)` for the candidate
+# `(없음)`). The line matches when that text hashes to <want> for some
+# candidate. The candidates, in order: `(없음)`, the current
+# `support.js` sha256, and each line of `<base>/docs/visual/support.history`
+# that is 64 lowercase hex digits (any other line is skipped; a history file
+# that is missing or unreadable adds no candidate, so a wrong reading can only
+# leave the approval void).
+legacy_bundle_matches() {
+  local want=$1 rt hist cands lines cand scr tok
+  rt="$BASE/docs/visual/support.js"
+  hist="$BASE/docs/visual/support.history"
+  cands='(없음)'
+  if [ -f "$rt" ]; then cands="${cands}
+$(sha256_of "$rt")"; fi
+  if [ -f "$hist" ] && [ -r "$hist" ]; then
+    lines=$(LC_ALL=C grep -E '^[0-9a-f]{64}$' "$hist" 2>/dev/null || true)
+    [ -z "$lines" ] || cands="${cands}
+${lines}"
+  fi
+  scr=$(bundle_screen_lines)
+  tok=$(bundle_tokens_line)
+  while IFS= read -r cand; do
+    [ -n "$cand" ] || continue
+    if [ "$(printf '%s\nruntime %s\n%s\n' "$scr" "$cand" "$tok" | sha256_stdin)" = "$want" ]; then
+      return 0
+    fi
+  done <<EOF
+$cands
+EOF
+  return 1
 }
 
 cmd_bundle() {
@@ -719,9 +824,16 @@ cmd_approval() {
     [ -f "$BASE/docs/visual/${SLUG}.${id}.html" ] || { echo "승인 무효 — 화면 파일 없음 (${id})"; exit 1; }
   done
   now=$(bundle_text | sha256_stdin)
-  [ "$now" = "$want" ] || { echo "승인 무효 — 입력 묶음이 달라졌다 (줄 ${want:0:12}, 지금 ${now:0:12})"; exit 1; }
+  if [ "$now" != "$want" ]; then
+    # Only a document that does not call the runtime is measured again under
+    # the older definition; a document that calls it is void once the runtime
+    # changed.
+    if doc_calls_runtime || ! legacy_bundle_matches "$want"; then
+      echo "승인 무효 — 입력 묶음이 달라졌다 (줄 ${want:0:12}, 지금 ${now:0:12})"; exit 1
+    fi
+  fi
   reflection_verdict || exit 1
-  echo "승인 유효 ${now:0:12}"
+  echo "승인 유효 ${want:0:12}"
   [ -z "$src" ] || echo "출처 사람 답 ${src}"
 }
 
@@ -1072,6 +1184,75 @@ cmd_system_users() {
   [ "$any" = 1 ] || echo '없음'
 }
 
+# grant_runs_waiting <document key> — the runs that lean on the document: every
+# `## 인가 <run-id>` block of every `<base>/docs/pipeline-grant/*.md` whose
+# `cc-pipeline-grant v1` header carries an `owner-doc=` byte-equal to the key,
+# kept when `${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/run/<run-id>/done`
+# does not exist. Prints them joined with `, ` in C-locale order without
+# repeats, or `없음`.
+grant_runs_waiting() {
+  local key=$1 g owner ids='' id state_home out=''
+  state_home=${XDG_STATE_HOME:-$HOME/.local/state}
+  for g in "$BASE"/docs/pipeline-grant/*.md; do
+    [ -f "$g" ] || continue
+    owner=$(sed -n '1,2p' "$g" | { grep -E '^<!-- cc-pipeline-grant v1;' || true; } | sed -n '1p' \
+      | sed -nE 's/^.*owner-doc=([^;]*);.*$/\1/p')
+    [ -n "$owner" ] && [ "$owner" = "$key" ] || continue
+    ids="${ids}$(sed -nE 's/^## 인가 ([^[:space:]]+)[[:space:]]*$/\1/p' "$g")
+"
+  done
+  for id in $(printf '%s' "$ids" | LC_ALL=C sort -u); do
+    [ -e "$state_home/cc-cmds/run/$id/done" ] && continue
+    out="${out:+${out}, }${id}"
+  done
+  printf '%s\n' "${out:-없음}"
+}
+
+# cmd_runtime_users — the documents a runtime replacement would void, and the
+# runs that lean on each. Every other `cc-visual v1` sidecar under the same
+# `docs/visual/` whose document calls the runtime (`doc_calls_runtime`, with the
+# screen paths built from that sidecar's own slug) gives one line
+# `<document key> — <first line of its approval verdict> — 기대는 런 <runs>`
+# under the head line `런타임 사용 문서 <n>`. The verdict is taken from a
+# separate `approval` process on `<base>/<document key>`, whatever its exit
+# code, because `cmd_approval` exits and reads the located globals. A reader
+# splits a line at its first ` — ` (the key) and its last ` — 기대는 런 ` (the
+# verdict), so a selected key holding ` — ` or `,` makes the list unknown:
+# exit 1. No sidecar for this document prints `런타임 사용 문서 없음 — <사유>`
+# and exits 1.
+cmd_runtime_users() {
+  [ $# -eq 1 ] || usage
+  local doc=$1 why f owner keys='' key slug verdict n=0 body=''
+  if ! why=$(locate_sidecar "$doc"); then
+    echo "런타임 사용 문서 없음 — ${why}"; exit 1
+  fi
+  locate_sidecar "$doc" >/dev/null
+  [ -f "$SIDECAR" ] || { echo "런타임 사용 문서 없음 — 사이드카 없음 (${SIDECAR})"; exit 1; }
+  for f in "$BASE"/docs/visual/*.md; do
+    [ -f "$f" ] || continue
+    owner=$(SIDECAR=$f sidecar_owner)
+    [ -n "$owner" ] && [ "$owner" != "$DOC_KEY" ] || continue
+    slug=$(printf '%s' "${owner%.md}" | tr '/' '-')
+    doc_calls_runtime "$f" "$slug" || continue
+    keys="${keys}${owner}
+"
+  done
+  while IFS= read -r key; do
+    [ -n "$key" ] || continue
+    case "$key" in
+      *' — '*|*,*) echo "런타임 사용 문서 판독 불가 — 문서 키가 구분자를 담는다 (${key})"; exit 1 ;;
+    esac
+    verdict=$(bash "${BASH_SOURCE[0]}" approval "$BASE/$key" 2>/dev/null | sed -n '1p' || true)
+    body="${body}${key} — ${verdict} — 기대는 런 $(grant_runs_waiting "$key")
+"
+    n=$((n + 1))
+  done <<EOF
+$(printf '%s' "$keys" | LC_ALL=C sort -u)
+EOF
+  echo "런타임 사용 문서 ${n}"
+  printf '%s' "$body"
+}
+
 # halt_step_has_prefix <halt record> <prefix> — the record's first `**스텝**`
 # value is the prefix, or starts with `<prefix> — `. The driver's function of
 # the same name reads the same field the same way.
@@ -1319,6 +1500,7 @@ case "$sub" in
   system) cmd_system "$@" ;;
   confirm) cmd_confirm "$@" ;;
   system-users) cmd_system_users "$@" ;;
+  runtime-users) cmd_runtime_users "$@" ;;
   run-state) cmd_run_state "$@" ;;
   reuse) cmd_reuse "$@" ;;
   *) usage ;;
