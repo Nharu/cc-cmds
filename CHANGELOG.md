@@ -5,6 +5,27 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.52.0] - 2026-11-19
+
+autopilot 좌석이 게이트 승인을 자기 `AskUserQuestion` 으로 다시 물을 때 알림이 같은 결정에 두 항목(승인 알림과 세션 질문 알림)으로 쌓이던 것을 한 항목으로 줄인다. 좌석의 첫 물음은 그 승인의 알림 자리를 소리 없이 고쳐 쓰고, 답이 돌아오면 그 자리를 닫는다. 승인 알림 제목에는 런 이름이 실린다.
+
+### Added
+
+- **새 알림 토큰 `approval-ask`** — `notify-run.sh` 의 닫힌 토큰 집합에 더했다. 그룹은 승인 알림과 같은 `cc-cmds-autopilot-<run id>-<승인 id>`, 소리 없음(발화 줄에 `-sound` 를 싣지 않음), 클릭은 이 세션 창, 제목은 `cc-cmds · <런 이름> · 답하세요`(런 이름이 없으면 `cc-cmds · 답하세요`), 스위치는 세션 갈래다. 스택 계수는 늘리지 않는다. 주의 이벤트는 `auq` 로 승인 슬롯에 남는다.
+- **승인 연결 `cc_notify_approval_link`** — 질문이 정확히 하나이고 그 문면이 정규 승인 접두 `승인 <id> — ` 로 시작하거나 `header` 가 승인 id 꼴(12 코드포인트 이하)이며, 세션 색인의 런 가운데 정확히 하나가 `watch.announced-approvals` 에 그 id 를 두었을 때만 연결한다. 두 세션 훅이 같은 함수를 쓴다.
+- **런 디렉터리 파일 둘** — 게이트가 들어올 때마다 쓰는 `notify.label`(매니페스트 앵커 키 한 줄), 세션 질문 훅이 첫 물음에 덧붙이는 `notify.asked-approvals`(승인 id 한 줄씩).
+- **`halt-question.sh render --approval <id>`** — 출력의 `header` 만 그 id 로 바꾼다(12 코드포인트를 넘으면 그대로). 좌석은 대기 중인 시각 승인 대신 S2P 정지 기록을 물을 때 스냅숏 `pending_approvals[]` 순서의 첫 `시각-승인` id 를 넘긴다.
+
+### Changed
+
+- **세션 질문 훅** — 연결이 섰고 autopilot 스위치도 켜져 있고 그 승인을 아직 묻지 않았으면 `session-ask` 대신 `approval-ask` 를 낸다. 두 번째 물음과 연결이 서지 않는 모든 경우는 지금처럼 `session-ask` 다.
+- **답 복귀 훅** — `AskUserQuestion` 답이 연결된 승인이고 그 id 가 `notify.asked-approvals` 에 있으면 승인 슬롯에 처리 표지 `return` 을 쓰고 그 그룹의 배너를 걷는다. 세션 슬롯을 걷는 지금 동작은 그대로다.
+- **`answer` 제목** — 런 이름이 있으면 `cc-cmds · <런 이름> · 답할 것이 생겼습니다`. 게이트와 감시자가 같은 제목을 낸다. `answer-run` 제목은 바뀌지 않는다.
+
+### Why
+
+좌석은 승인을 사람에게 그대로 다시 묻는데, 승인 알림과 세션 질문 알림이 서로 다른 그룹이라 한 결정이 화면과 알림 센터에 두 번 남고 두 번 울렸다. 이미 울린 승인만 고쳐 쓰도록 알림 표지를 연결 조건에 두어, 울림이 하나도 없는 경우는 생기지 않는다.
+
 ## [3.51.2] - 2026-11-18
 
 무인 런의 교대 정지 기록이 사람에게 닿는다. 라우팅 교대가 게이트로 쓴 교대 정지 기록(종료 절 근거 요청, 세그먼트 정지)은 교대가 배너를 띄울 수 있는 좌석이 아니어서 아무에게도 알려지지 않았다. 세그먼트가 모두 끝난 뒤 열린 종료 절 근거 요청은 감시자가 "좌석이 정산을 마치지 못하고 멈췄다"로 읽어, 사람을 기다리는 런을 멈춘 런이라고 안내했다. 이제 감시자가 사람을 기다리는 기록마다 배너를 띄우고, 답이 들어오거나 절이 정산되면 그 배너를 걷는다.
