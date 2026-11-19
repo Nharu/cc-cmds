@@ -68820,6 +68820,7 @@ h98_wd="${h98_lw%/*}"
 check "98: 차용된 묶인 재개의 파견은 대기 토큰·감독자·FIFO 항목·표지를 남긴다" \
   "${h98_wout%%|-*}|$(sed -n '4p;6p;7p' "$h98_wd/S98.launch" 2>/dev/null | paste -sd, -)|$(cat "$h98_wd/S98.sup" 2>/dev/null)|$(lsr93_n "$h98_wd/wait-put" '--group org:0123456789abcdef')$(lsr93_n "$h98_wd/wait-put" '--holder 424242')|$(lsr93_n "$h98_wd/S98.waiting" '그룹=org:0123456789abcdef')$(lsr93_n "$h98_wd/S98.waiting" '논스=w98')" \
   "0|WAIT|resume|bound|wait,resume,u1|424242|11|11"
+check "98: 감독자의 첫 FIFO 넣기는 스테이지 종류를 --kind 로 넘긴다" "$(lsr93_n "$h98_wd/wait-put" '--kind reconverge')" "1"
 check "98: 그 파견의 stage-wait 행은 하나이고 차용 중 재개 대기다" \
   "$(lsr93_n "$h98_lw" '- `stage-wait` ')/$(lsr93_n "$h98_lw" '| 근거=resume-bound-borrowed |')" "1/1"
 
@@ -74659,6 +74660,93 @@ check "115: 문서에 이미 있는 보관 표지 번호는 다시 쓰지 않는
   "0|1|1|1"
 unset -f s115_synth
 unset S115 s115_tool s115_rev s115_rc s115_sz s115_sha s115_m s115_ck
+
+# ---------------------------------------------------------------------------
+# 116. 다수 대기자 배수 — 여유가 앞선 대기자 몫까지 담으면 한 라운드에 대기열이 빠진다
+# --- section: 116 | group: base | covers: rt_fifo_blocked, rt_ahead, rt_res_of, rt_wait_record, route__wait_put_main, route__txn_main | anchors: 116: lease-wait-put --kind 로 줄 세운 대기자, 116: 여유가 전원을 담으면 seq 역순, 116: 그 라운드 뒤 살아 있는 대기 항목, 116: 여유가 앞 k 명 몫만, 116: 종류 없는 옛 대기 항목 뒤 ---
+#
+# 한 그룹(계정 a 하나)의 대기자 27개를 실제 `route.sh lease-wait-put --kind implement`
+# 로 가짜 임대 표에 줄 세운다. 보유자는 이 절이 띄운 살아 있는 sleep 하나다. 각
+# 대기자는 한 라운드에 한 번씩, 가장 불리한 순서인 seq 역순으로 실제 `route.sh
+# lease-txn` 에 다시 묻는다 — 거래는 잠금 아래에서 표를 다시 읽고 GRANT 면 그 계보의
+# 부여 기록을 같은 키에 쓰므로, 앞선 질문이 쓴 부여의 예약이 다음 질문의 σ 에 든다.
+# implement 하나의 예약은 5시간 300, 주간 100 이다(비용비 1, 비용 0.03·0.01). 5시간
+# 창의 리셋이 지난 사용량이면 실효 사용률 0 이라 27 × 300 이 한도 안이고, 5시간
+# 사용률 0.7 이면 여유 3000 이 앞 10 명 몫만 담는다. 호스트 포화 문맥은 두지 않는다.
+# ---------------------------------------------------------------------------
+S116="$WORK/s116"; rm -rf "$S116"; mkdir -p "$S116"
+s116_route="$repo_root/plugins/cc-cmds/orchestrator/route.sh"
+s116_now=$(date +%s)
+( sleep 600 >/dev/null 2>&1 & printf '%s' "$!" > "$S116/holder.pid" )
+s116_holder=$(cat "$S116/holder.pid")
+# s116_put <표> <계보> [--kind <종류>] — 계정 a 의 대기 항목 하나.
+s116_put() {
+  local t="$1" lin="$2"
+  shift 2
+  RUN_PACE_ROOT="$S116/pace" XDG_STATE_HOME="$S116/state" bash "$s116_route" lease-wait-put --table "$t" \
+    --now "$s116_now" --run-id r116 --lineage "$lin" --account a --config-dir /h/.claude-a \
+    --holder "$s116_holder" "$@"
+}
+# s116_ask <표> <계보> <5시간 사용률> <5시간 리셋 시각> — 그 대기자가 다시 묻는 거래 하나의 판정.
+s116_ask() {
+  jq -cn --argjson now "$s116_now" --arg lin "$2" --argjson u5 "$3" --argjson r5 "$4" --arg bp "$S116/no-borrow.json" '
+    def W($u; $r): {utilization: $u, resets_at_epoch: $r, observed_at_epoch: ($now - 60), source: "tracker"};
+    {now: $now, request: {run_id: "r116", lineage: $lin, event: "first", kind: "implement"},
+     inventory: {state: "valid", accounts: [{id: "a", config_dir: "/h/.claude-a", label: "a", interactive_reserved: false,
+                                            unattended: "enabled", added_at: 0}]},
+     usage: {state: "valid", written_at_epoch: $now, publish_interval_s: 300, fresh: true,
+             accounts: [{id: "a", config_dir: "/h/.claude-a", login: "ok", status: "allowed",
+                         windows: {five_hour: W($u5; $r5), seven_day: W(0.1; $now + 86400)}}]},
+     frames: [], leases: {state: "valid", items: [], corrupt: [], stale_corrupt: []}, sticky: [],
+     seat: {config_dir: "/seat"},
+     config: {k: {default: {five_hour: 1, seven_day: 1}},
+              c: {five_hour: {default: 0.03, by_kind: {}, by_group: {}}, seven_day: {default: 0.01, by_kind: {}, by_group: {}}},
+              cap_bp: 10000, ttl_s: {"stage-log": 1800, tracker: 1800}, file_stale_factor: 3},
+     borrow_path: $bp,
+     phase: {state: "valid", phase: "burst", until_epoch: ($now + 3600), burst_length_s: 28800}}' \
+  | RUN_PACE_ROOT="$S116/pace" XDG_STATE_HOME="$S116/state" bash "$s116_route" lease-txn --table "$1" \
+      --now "$s116_now" --boot-epoch "" --holder "$s116_holder" 2>/dev/null \
+  | jq -r 'if .verdict == "WAIT" then "WAIT:" + (.reason // "") else (.verdict // "?") end' 2>/dev/null
+}
+# s116_round <표> <대기자 수> <5시간 사용률> <5시간 리셋 시각> — seq 역순으로 한 번씩 묻고
+# 계보 순(W1 부터)으로 판정을 늘어놓는다.
+s116_round() {
+  local i
+  for i in $(seq "$2" -1 1); do printf '%s %s\n' "$i" "$(s116_ask "$1" "W$i" "$3" "$4")"; done \
+    | sort -n | awk '{ print $2 }' | paste -sd, -
+}
+s116_live_waits() { jq -s '[.[] | select(.kind == "wait")] | length' "$1"/*.lease 2>/dev/null || printf '?'; }
+s116_rep() { local i out=""; for i in $(seq 1 "$2"); do out="$out${out:+,}$1"; done; printf '%s' "$out"; }
+
+# 여유가 전원을 담는다 — 5시간 창의 리셋이 지났다.
+s116_t="$S116/full"
+s116_seqs=""
+for s116_i in $(seq 1 27); do
+  s116_seqs="$s116_seqs${s116_seqs:+,}$(s116_put "$s116_t" "W$s116_i" --kind implement | jq -r '"\(.seq):\(.stage_kind)"')"
+done
+check "116: lease-wait-put --kind 로 줄 세운 대기자 27개가 seq 1..27 과 종류 implement 를 싣는다" \
+  "$s116_seqs" "$(for s116_i in $(seq 1 27); do printf '%s:implement\n' "$s116_i"; done | paste -sd, -)"
+check "116: 여유가 전원을 담으면 seq 역순으로 한 번씩 물은 대기자 27개가 모두 GRANT" \
+  "$(s116_round "$s116_t" 27 0.9 $((s116_now - 60)))" "$(s116_rep GRANT 27)"
+check "116: 그 라운드 뒤 살아 있는 대기 항목은 0 이고 부여 기록이 27 개다" \
+  "$(s116_live_waits "$s116_t")/$(jq -s '[.[] | select(.kind == "grant")] | length' "$s116_t"/*.lease 2>/dev/null)" "0/27"
+
+# 여유가 앞 10 명 몫만 담는다 — 5시간 사용률 0.7, 리셋은 아직이다.
+s116_t="$S116/part"
+for s116_i in $(seq 1 27); do s116_put "$s116_t" "W$s116_i" --kind implement >/dev/null; done
+check "116: 여유가 앞 k 명 몫만 담으면 한 라운드 뒤 seq 앞 10 명만 GRANT 이고 나머지는 fifo-yield" \
+  "$(s116_round "$s116_t" 27 0.7 $((s116_now + 3600)))" "$(s116_rep GRANT 10),$(s116_rep WAIT:fifo-yield 17)"
+
+# 종류 없는 옛 대기 항목이 맨 앞에 있다 — 여유가 넉넉해도 그 뒤 대기자는 양보한다.
+s116_t="$S116/old"
+s116_put "$s116_t" W1 >/dev/null
+for s116_i in $(seq 2 4); do s116_put "$s116_t" "W$s116_i" --kind implement >/dev/null; done
+check "116: 종류 없는 옛 대기 항목 뒤 대기자들은 여유와 상관없이 fifo-yield" \
+  "$(for s116_i in 4 3 2; do s116_ask "$s116_t" "W$s116_i" 0.9 $((s116_now - 60)); done | paste -sd, -)" \
+  "WAIT:fifo-yield,WAIT:fifo-yield,WAIT:fifo-yield"
+kill "$s116_holder" 2>/dev/null || true
+unset -f s116_put s116_ask s116_round s116_live_waits s116_rep
+unset S116 s116_route s116_now s116_holder s116_t s116_seqs s116_i
 
 # --- epilogue-begin ---
 #

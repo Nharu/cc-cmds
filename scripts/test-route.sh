@@ -1285,11 +1285,41 @@ expect "섞인 후보: 시각 없는 대기가 미상 동시성만의 그룹을 
 
 FIFO='ONLY(["a"]) | USE([UA("a"; 0.1; 0.1)])'
 out=$(decide "$FIFO | ITEMS([LR(\"r2\"; \"S7\"; \"a\"; \"wait\"; null; true; 1)])")
-expect "더 이른 대기자가 있으면 신참은 fifo-yield" "$out" '.verdict == "WAIT" and .reason == "fifo-yield" and .group == "acct:a"'
+expect "종류 없는 옛 대기자가 앞서 있으면 신참은 여유와 상관없이 fifo-yield" "$out" '.verdict == "WAIT" and .reason == "fifo-yield" and .group == "acct:a"'
 out=$(decide "$FIFO | ITEMS([LR(\"r1\"; \"S1\"; \"a\"; \"wait\"; null; true; 1), LR(\"r2\"; \"S7\"; \"a\"; \"wait\"; null; true; 2)])")
 expect "맨 앞 대기자는 입장한다" "$out" '.verdict == "GRANT" and .account == "a" and .txn.record.seq == 3'
 out=$(decide "$FIFO | ITEMS([LR(\"r2\"; \"S7\"; \"a\"; \"wait\"; null; false; 1)])")
 expect "죽은 대기자는 막지 않는다" "$out" '.verdict == "GRANT"'
+
+# 여유를 보는 양보. 종류를 실은 앞선 대기자의 몫은 그 종류의 예약(implement 는 5시간
+# TR5, 주간 TR7)으로 셈해 그룹 σ 에 얹는다. 사용률 0.1 이면 1000 + TR5 + TR5 가 한도
+# 안이라 신참이 들어가고, 5시간 0.5 이면 자기 몫(5000 + TR5)은 담아도 둘은 못 담는다.
+KW='def WK($run; $lin; $acct; $live; $seq; $k): LR($run; $lin; $acct; "wait"; null; $live; $seq) + {stage_kind: $k};'
+out=$(decide "$KW $FIFO | ITEMS([WK(\"r2\"; \"S7\"; \"a\"; true; 1; \"implement\")])")
+expect "여유 양보: 종류 실은 앞선 대기자와 신참을 여유가 함께 담으면 신참은 GRANT" "$out" \
+  '.verdict == "GRANT" and .account == "a" and .txn.record.seq == 2'
+out=$(decide "$KW $FIFO | USE([UA(\"a\"; 0.5; 0.1)]) | ITEMS([WK(\"r2\"; \"S7\"; \"a\"; true; 1; \"implement\")])")
+expect "여유 양보: 여유가 신참 몫만 담고 앞 순번 몫까지는 못 담으면 fifo-yield" "$out" \
+  '.verdict == "WAIT" and .reason == "fifo-yield" and .group == "acct:a" and .until_epoch == null and .cost == null'
+expect "여유 양보: 앞선 대기자가 없으면 같은 사용률에서 신참은 GRANT" "$(decide "$FIFO | USE([UA(\"a\"; 0.5; 0.1)])")" \
+  '.verdict == "GRANT" and .account == "a"'
+out=$(decide "$KW $FIFO | ITEMS([WK(\"r2\"; \"S7\"; \"a\"; true; 1; \"implement\"), LR(\"r3\"; \"S8\"; \"a\"; \"wait\"; null; true; 2)])")
+expect "여유 양보: 앞선 대기자 가운데 하나라도 종류가 없으면 fifo-yield" "$out" '.verdict == "WAIT" and .reason == "fifo-yield"'
+out=$(decide "$KW $FIFO | ITEMS([WK(\"r2\"; \"S7\"; \"a\"; true; 1; \"\")])")
+expect "여유 양보: 종류가 빈 문자열인 앞선 대기자는 종류 없음으로 읽어 fifo-yield" "$out" '.verdict == "WAIT" and .reason == "fifo-yield"'
+out=$(decide "$KW $FIFO | ITEMS([WK(\"r1\"; \"S1\"; \"a\"; true; 2; \"implement\"), WK(\"r2\"; \"S7\"; \"a\"; true; 1; \"implement\")])")
+expect "여유 양보: 자기 항목(seq 2)이 있는 대기자도 종류 실은 seq 1 과 함께 담기면 GRANT" "$out" \
+  '.verdict == "GRANT" and .account == "a"'
+out=$(decide "$KW $FIFO | USE([UA(\"a\"; 0.5; 0.1)]) | ITEMS([WK(\"r1\"; \"S1\"; \"a\"; true; 2; \"implement\"), WK(\"r2\"; \"S7\"; \"a\"; true; 1; \"implement\")])")
+expect "여유 양보: 자기 항목(seq 2)이 있어도 seq 1 몫을 못 담으면 fifo-yield" "$out" '.verdict == "WAIT" and .reason == "fifo-yield"'
+out=$(decide "$KW $FIFO | USE([UA(\"a\"; 0.5; 0.1)]) | ITEMS([WK(\"r1\"; \"S1\"; \"a\"; true; 1; \"implement\"), WK(\"r2\"; \"S7\"; \"a\"; true; 2; \"implement\")])")
+expect "여유 양보: 뒤 순번 항목은 셈에 들지 않는다" "$out" '.verdict == "GRANT" and .account == "a"'
+out=$(decide "$KW $FIFO | USE([UA(\"a\"; 0.5; 0.1)]) | ITEMS([WK(\"r2\"; \"S7\"; \"a\"; false; 1; \"implement\")])")
+expect "여유 양보: 죽은 항목은 셈에 들지 않는다" "$out" '.verdict == "GRANT" and .account == "a"'
+out=$(decide "$KW $FIFO | .config.k.review = {five_hour: 0, seven_day: 0} | USE([UA(\"a\"; 0.5; 0.1)]) | ITEMS([WK(\"r2\"; \"S7\"; \"a\"; true; 1; \"review\")])")
+expect "여유 양보: 앞선 대기자의 몫은 신참이 아니라 그 대기자의 종류로 센다" "$out" '.verdict == "GRANT" and .account == "a"'
+out=$(decide "$KW $FIFO | .config.k.review = \"bad\" | ITEMS([WK(\"r2\"; \"S7\"; \"a\"; true; 1; \"review\")])")
+expect "여유 양보: 앞선 대기자의 몫을 셀 수 없으면 fifo-yield" "$out" '.verdict == "WAIT" and .reason == "fifo-yield"'
 
 # 봉투의 비용. 입장 판정이 정한 봉투는 그 판정의 창별 비용을 싣고, 판정 없이 정한
 # 봉투는 null 이다. PARK·좌석·휴면 봉투에는 키가 없다.
@@ -1307,7 +1337,7 @@ expect "빈자리 없음 대기는 고른 후보의 비용" "$out" ".reason == \
 out=$(decide "$LIM | ONLY([\"a\"]) | ITEMS([LG(\"r1\"; \"S1\"; \"a\"; true)]) | REQ({event: \"limit-reclaim\"})")
 expect "until 이 없는 빈자리 없음 대기는 null" "$out" '.reason == "no-room" and .until_epoch == null and has("cost") and .cost == null'
 out=$(decide "$FIFO | ITEMS([LR(\"r2\"; \"S7\"; \"a\"; \"wait\"; null; true; 1)])")
-expect "FIFO 양보 대기는 null" "$out" '.reason == "fifo-yield" and has("cost") and .cost == null'
+expect "FIFO 양보 대기(종류 없는 옛 대기자 앞)는 null" "$out" '.reason == "fifo-yield" and has("cost") and .cost == null'
 out=$(decide "$UCC")
 expect "미지 동시성 대기는 null" "$out" '.reason == "unknown-concurrency" and has("cost") and .cost == null'
 out=$(decide "$ONE | ITEMS([LG(\"r1\"; \"S1\"; \"a\"; true)]) | REQ({event: \"crash-retry\"})")
@@ -1776,6 +1806,23 @@ check "맞는 nonce 의 lease-wait-drop 은 지운다" "$(count_files "$d")" 1
 live_lease "$d" r1 S3 a
 rc=0; wput r1 S3 >/dev/null 2>&1 || rc=$?
 check "부여가 있는 키의 lease-wait-put 은 거부" "$rc" 1
+
+# 대기 항목의 스테이지 종류. `--kind` 가 없거나 비면 null 이고, 같은 키에 다시 넣으면
+# seq 는 그대로이고 종류는 이번 값이다.
+dk=$(tnew waitkinds)
+kput() { bash "$TR_ROUTE" lease-wait-put --table "$dk" --now "$NOW" --run-id r1 --lineage "$1" --account a --config-dir /h/.claude-a --holder "$TR_HOLDER" "${@:2}"; }
+k0=$(kput K0)
+expect "lease-wait-put --kind 없이는 stage_kind 가 null" "$k0" 'has("stage_kind") and .stage_kind == null'
+k1=$(kput K1 --kind implement)
+expect "lease-wait-put --kind implement 는 stage_kind implement" "$k1" '.stage_kind == "implement" and .seq == 2'
+expect "빈 --kind 는 stage_kind null" "$(kput K2 --kind '')" '.stage_kind == null and .seq == 3'
+k1b=$(kput K1 --kind review)
+expect "같은 키에 다시 넣으면 seq 는 그대로이고 종류는 이번 값" "$k1b" '.seq == 2 and .stage_kind == "review"'
+expect "종류 없이 다시 넣으면 종류는 null 로 덮인다" "$(kput K1)" '.seq == 2 and .stage_kind == null'
+expect "종류 실은 대기 항목도 예약을 싣지 않는다" "$k1" '(has("reservation_bp") | not)'
+kput K1 --kind implement >/dev/null
+out=$(ctx 'ONLY(["a"]) | USE([UA("a"; 0.1; 0.1)]) | REQ({run_id: "r5"})' | jq -c --argjson l "$(tr_table_json "$dk")" '.leases = $l' | bash "$TR_ROUTE" classify)
+expect "종류 실은 대기 항목도 Σ 에 0" "$out" '.groups[0].sigma == {five_hour: 0, seven_day: 0} and .groups[0].count == 3'
 
 # `--group` 은 그룹의 대표 계정(그 그룹에 드는 enabled 계정 중 가장 작은 id)을 고른다.
 GW="$WORK/gwait"
@@ -3096,7 +3143,7 @@ CHEAP='.config.c.five_hour.by_kind.review = 0.01 | REQ({lineage: "S2", kind: "re
 RWAIT='ITEMS([LR("r1"; "S1"; "full"; "wait"; null; true; 1)])'
 expect "FIFO: 대기자의 예비 공급 WAIT" "$(fxdecide "$F7F")" ".verdict == \"WAIT\" and .reason == \"no-room\" and .until_epoch == null and .group == \"$G_FULL\" and .reserve.kind == \"five_hour\""
 expect "FIFO: 대기자가 없으면 더 싼 스테이지는 입장한다" "$(fxdecide "$F7F | $CHEAP")" '.verdict == "GRANT" and .account == "full"'
-expect "FIFO: 예비 공급 대기자 뒤의 같은 그룹 스테이지는 fifo-yield" "$(fxdecide "$F7F | $CHEAP | $RWAIT")" ".verdict == \"WAIT\" and .reason == \"fifo-yield\" and .group == \"$G_FULL\" and (has(\"reserve\") | not)"
+expect "FIFO: 종류 없는 옛 예비 공급 대기자 뒤의 같은 그룹 스테이지는 fifo-yield" "$(fxdecide "$F7F | $CHEAP | $RWAIT")" ".verdict == \"WAIT\" and .reason == \"fifo-yield\" and .group == \"$G_FULL\" and (has(\"reserve\") | not)"
 expect "FIFO: 대기자 자신은 예비 공급 대기를 다시 받는다" "$(fxdecide "$F7F | $RWAIT")" ".verdict == \"WAIT\" and .reason == \"no-room\" and .until_epoch == null and .group == \"$G_FULL\" and .reserve.kind == \"five_hour\""
 
 # 라우터-8 — 낡은 파일의 리셋권은 세지 않는다. 스테이지 로그 창은 신선도와 무관하다.
@@ -3328,6 +3375,26 @@ expect "대여-입장: cc 홈 그룹의 다른 계정은 group-reserved" "$(clas
 expect "대여-입장: cc 홈 그룹의 다른 계정은 고르지 않는다" "$(decide "$LJ $GR")" '.verdict == "GRANT" and .account == "b"'
 expect "대여-입장: 등록 안 된 행의 보기는 대여 칸이 없다" "$(classify "$LJ UBLK")" \
   '[.accounts[] | select(.id == "a") | has("lend_enrolled") or has("lend")] == [false]'
+# 여유를 보는 양보는 대여 등록 행에서 대여 검사도 다시 돌린다. cc 의 두 창은 0.1 이라
+# 단단한 한도 10000 은 implement 둘(5시간 1000 + TR5 + TR5)을 담지만 5시간 5000 은 못
+# 담는다. 주간만 쓰는 review 대기자(5시간 0, 주간 TR7)는 5시간을 통과하고, 대여 상한이
+# 1000 + TR7 + TR7 보다 낮으면 막힌다. cc 에 고정된 요청은 막힌 원인을 PARK 에 싣으므로
+# 그 원인이 FIFO(`fifo`)인지 대여 검사인지를 가릴 수 있다.
+LKW='def WK($k; $seq): LR("r2"; "S7"; "cc"; "wait"; null; true; $seq) + {stage_kind: $k};
+  def RV: .config.k.review = {five_hour: 0, seven_day: 3};'
+out=$(decide "$LJ $LKW UBLK | PIN | ITEMS([WK(\"implement\"; 1)])")
+expect "대여-양보: 단단한 한도는 둘을 담아도 5시간 5000 이 못 담으면 FIFO 로 막힌다" "$out" "$(plb fifo)"
+expect "대여-양보: 앞선 대기자가 없으면 고정된 cc 에 GRANT" "$(decide "$LJ $LKW UBLK | PIN")" \
+  '.verdict == "GRANT" and .account == "cc"'
+out=$(decide "$LJ $LKW UBLK | PIN | RV | ITEMS([WK(\"review\"; 1)])")
+expect "대여-양보: 대여 상한이 둘을 담으면 GRANT cc" "$out" '.verdict == "GRANT" and .account == "cc"'
+out=$(decide "$LJ $LKW UBLK | PIN | RV | CCD(.ceiling_bp = $((1000 + TR7 + TR7 - 1))) | ITEMS([WK(\"review\"; 1)])")
+expect "대여-양보: 단단한 한도는 둘을 담아도 대여 상한이 못 담으면 FIFO 로 막힌다" "$out" "$(plb fifo)"
+expect "대여-양보: 같은 상한에서 앞선 대기자가 없으면 GRANT cc" \
+  "$(decide "$LJ $LKW UBLK | PIN | RV | CCD(.ceiling_bp = $((1000 + TR7 + TR7 - 1)))")" \
+  '.verdict == "GRANT" and .account == "cc"'
+out=$(decide "$LJ $LKW UBLK | ITEMS([WK(\"implement\"; 1)])")
+expect "대여-양보: 고정 없는 요청도 FIFO 로 막힌 대여 행에 들지 않는다" "$out" '.verdict == "WAIT"'
 
 # 쉼에서도 대여 층이 맨 앞 키다. 대여 행의 r7 은 10000 대신 대여 상한을 둔
 # ceiling_bp − ueff7 − σ7 이다 — cc 는 9000 − 1000 = 8000, 상한 3400 이면 2400.
@@ -3702,7 +3769,7 @@ expect "이관 고정: 상한 아래·입장 통과 → GRANT a, 이관 칸 없�
 out=$(mdecide "$MJ UBLK | RREC")
 expect "이관 고정: 5시간 막힘 → pinned-lend-blocked 아닌 WAIT no-room, 계정 a 의 그룹" "$out" \
   '.verdict == "WAIT" and .reason == "no-room" and (.until_epoch | type) == "number"'
-expect "이관 고정: FIFO 대기 항목 → WAIT fifo-yield" "$(mdecide "$MJ OPEN | RREC | ITEMS([LR(\"r9\"; \"S9\"; \"a\"; \"wait\"; null; true; 1)])")" \
+expect "이관 고정: 종류 없는 옛 FIFO 대기 항목 → WAIT fifo-yield" "$(mdecide "$MJ OPEN | RREC | ITEMS([LR(\"r9\"; \"S9\"; \"a\"; \"wait\"; null; true; 1)])")" \
   '.verdict == "WAIT" and .reason == "fifo-yield"'
 expect "이관 고정: 로그인 끊김 → PARK resume-logged-out" "$(mdecide "$MJ OPEN | RREC | AX(.login = \"expired\")")" \
   '.verdict == "PARK" and .reason == "resume-logged-out" and .account == "a"'
@@ -3781,7 +3848,7 @@ for row in 'window-unknown|AX(.windows.seven_day.observed_at_epoch = ($now - 400
   expect "이관 후보 없음: a 의 ${row%%|*} → PARK pinned-publish-no-successor" "$out" \
     ".verdict == \"PARK\" and .reason == \"pinned-publish-no-successor\" and (.recovery | contains(\"a(${row%%|*})\"))"
 done
-expect "이관 후보: FIFO 로만 떨어지면 WAIT fifo-yield" \
+expect "이관 후보: 종류 없는 옛 FIFO 대기 항목으로만 떨어지면 WAIT fifo-yield" \
   "$(mdecide "$MJ OPEN | PUB(0.98) | MIG | ITEMS([LR(\"r9\"; \"S9\"; \"a\"; \"wait\"; null; true; 1)])")" '.verdict == "WAIT" and .reason == "fifo-yield"'
 expect "이관 후보: 5시간으로만 떨어지면 WAIT no-room" "$(mdecide "$MJ UBLK | PUB(0.98) | MIG")" '.verdict == "WAIT" and .reason == "no-room"'
 # 이관 고정의 재개가 다른 계정에 묶임.
@@ -3804,7 +3871,7 @@ for bd in a b; do
   expect "이관 고정 재개(묶인 $bd): 5시간 막힘 → 계정 없는 WAIT no-room, 리셋 시각" \
     "$(mdecide "$MJ UBLK | RREC | MB(0.1; 0.2) | RSM(\"$bd\")")" \
     '.verdict == "WAIT" and .reason == "no-room" and .account == null and (.until_epoch | type) == "number"'
-  expect "이관 고정 재개(묶인 $bd): FIFO 대기 항목 → WAIT fifo-yield" \
+  expect "이관 고정 재개(묶인 $bd): 종류 없는 옛 FIFO 대기 항목 → WAIT fifo-yield" \
     "$(mdecide "$MJ OPEN | RREC | MB(0.1; 0.2) | RSM(\"$bd\") | ITEMS([LR(\"r9\"; \"S9\"; \"a\"; \"wait\"; null; true; 1)])")" \
     '.verdict == "WAIT" and .reason == "fifo-yield" and .account == null'
   expect "이관 고정 재개(묶인 $bd): 로그인 끊김 → PARK resume-logged-out" \
@@ -4520,7 +4587,7 @@ for ph in burst rest; do
     expect "질문 기준 $ph 8 ($ev): 다른 후보가 없으면 sticky" \
       "$(decide "$AK_JQ $pf | ONLY([\"u7\"]) | USE([UB(\"u7\"; 1000; $AK_SHORT)]) | $D | AKON")" \
       ".verdict == \"GRANT\" and .account == \"u7\" and .basis == \"sticky\" and $AK_NULL"
-    expect "질문 기준 $ph 8 ($ev): FIFO 에 막혀도 sticky" \
+    expect "질문 기준 $ph 8 ($ev): 종류 없는 옛 FIFO 대기 항목에 막혀도 sticky" \
       "$(decide "$AK_JQ $pf | ONLY([\"u7\"]) | USE([UB(\"u7\"; 1000; $AK_SHORT)]) | $D | AW(\"u7\") | AKON")" \
       ".verdict == \"GRANT\" and .account == \"u7\" and .basis == \"sticky\" and $AK_NULL"
     expect "질문 기준 $ph 8 ($ev): 다른 후보도 못 버티고 자기 계정 r7 이 가장 크면 sticky" \
