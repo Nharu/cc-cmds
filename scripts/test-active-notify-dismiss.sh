@@ -646,6 +646,50 @@ for var in CC_PIPELINE_SEGMENT CC_PIPELINE_STAGE_ID CC_PIPELINE_SHIFT_ID CC_PIPE
   check "$CASE — 표지가 없다" "$(an_markers)" ""
 done
 
+# ---------------------------------------------------------------------------
+# An answer to a run's approval the seat asked closes the approval's slot
+#
+# The session index names run R-DM, which announced the approval and whose
+# `notify.asked-approvals` lists it — the question hook rewrote that approval's
+# banner. The answer then takes the approval's group down and leaves a handled
+# marker with cause `return` on that slot, besides the session's own dismissal.
+# An approval the hook never asked keeps its banner.
+# ---------------------------------------------------------------------------
+DM_XDG="$WORK/xdg"
+DM_RD="$DM_XDG/cc-cmds/run/R-DM"
+DM_GROUP="cc-cmds-autopilot-R-DM-act-1a2b3c4d"
+mkdir -p "$DM_RD" "$DM_XDG/cc-cmds/session"
+printf '%s\n' act-1a2b3c4d act-2a2b3c4d > "$DM_RD/watch.announced-approvals"
+printf '%s\n' act-1a2b3c4d > "$DM_RD/notify.asked-approvals"
+printf '%s\n' R-DM > "$DM_XDG/cc-cmds/session/abc"
+dm_aq() {  # dm_aq <approval id>
+  jq -cn --arg q "승인 $1 — 진행할까요?" \
+    '{session_id:"abc",hook_event_name:"PostToolUse",tool_name:"AskUserQuestion",tool_use_id:"tu1",
+      tool_input:{questions:[{header:"승인",question:$q}]},tool_response:{answers:{($q):"승인"}}}'
+}
+approval_markers() {  # approval_markers <slot> — the handled causes on that slot
+  local f
+  { find "$SPOOL/handled" -maxdepth 1 -type f -name '*.json' 2>/dev/null || true; } \
+    | while IFS= read -r f; do
+        jq -r --arg s "$1" 'select(.slot == $s) | .cause' "$f"
+      done | LC_ALL=C sort -u
+}
+
+CASE=approval-return; reset_state; seed; reset_spool
+nc_raw -title "cc-cmds · 답할 것이 생겼습니다" -message appr -group "$DM_GROUP"
+hook_run "$(dm_aq act-1a2b3c4d)" XDG_STATE_HOME="$DM_XDG" CC_CMDS_ATTENTION_ROOT="$SPOOL"
+wait_row_gone "$DM_GROUP"
+check "$CASE — 승인 그룹의 배너를 걷는다" "$(row_count "$DM_GROUP")" "0"
+check "$CASE — 승인 슬롯에 return 처리 표지" "$(approval_markers "$DM_GROUP")" "return"
+expect_dismiss_a
+
+CASE=approval-not-asked; reset_state; seed; reset_spool
+nc_raw -title "cc-cmds · 답할 것이 생겼습니다" -message appr -group "cc-cmds-autopilot-R-DM-act-2a2b3c4d"
+hook_run "$(dm_aq act-2a2b3c4d)" XDG_STATE_HOME="$DM_XDG" CC_CMDS_ATTENTION_ROOT="$SPOOL"
+wait_row_gone "cc-cmds-session-abc"
+check "$CASE — 묻지 않은 승인의 배너는 남는다" "$(row_count cc-cmds-autopilot-R-DM-act-2a2b3c4d)" "1"
+check "$CASE — 그 슬롯에 표지가 없다" "$(approval_markers cc-cmds-autopilot-R-DM-act-2a2b3c4d)" ""
+
 check "U1 — 모든 훅 실행이 측정됐다 (0 건이면 공허하다)" "$([ "$u1_checked" -gt 0 ] && echo yes || echo no)" "yes"
 
 printf 'test-active-notify-dismiss: %s passed, %s failed\n' "$passed" "$failed"

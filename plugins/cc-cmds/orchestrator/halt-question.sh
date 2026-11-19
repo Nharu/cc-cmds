@@ -9,7 +9,7 @@
 # field, the record's whole question split into paragraphs as a message body
 # shown right before the dialog, and the options with each one's risk.
 #
-#   bash halt-question.sh render --record <record path>
+#   bash halt-question.sh render --record <record path> [--approval <id>]
 #
 # prints one JSON object:
 #   question — one line of at most HQ_QUESTION_MAX code points:
@@ -17,7 +17,13 @@
 #              else `[<record name>] <판정 요지>` (`source` = `요지`),
 #              else `[<record name>] <fallback sentence>` (`source` = `대체`),
 #              cut at a code point boundary and ended with HQ_MORE when over.
-#   header   — the first 12 code points of the record name.
+#   header   — the first 12 code points of the record name; with
+#              `--approval <id>`, that id instead when it is at most 12 code
+#              points, and the record name's cut otherwise. The seat passes
+#              the id of the gate approval a record stands in for (a visual
+#              approval asked through its `S2P` record), and the session ask
+#              hook reads the header to find which approval's banner the
+#              question replaces. Nothing else in the output changes.
 #   body     — markdown, parts separated by blank lines: the 판정 요지 line,
 #              the 추천 and 추천 근거 lines, the question split into
 #              paragraphs, the `**확인**: ` lines quoted after the question
@@ -234,7 +240,8 @@ hq_risk_parts() {
 # Rendering.
 # ---------------------------------------------------------------------------
 hq_render() {
-  local rec="$1" abs name last tag v line nl=$'\n' tab=$'\t'
+  # hq_render <record> [<approval id>]
+  local rec="$1" appr="${2:-}" hdr abs name last tag v line nl=$'\n' tab=$'\t'
   local q='' chunks='' nchunks=0 gist_line='' gist='' opts='' rec_l='' basis='' risk='' skill='' step='' ban='' ndec=0 confirms=''
   local question source fb url body part labels parts ol lab desc pv json
   [ -f "$rec" ] && [ -r "$rec" ] || hq_die "기록을 읽지 못했습니다: $rec"
@@ -342,15 +349,18 @@ EOF
   done <<EOF
 $opts
 EOF
-  jq -n --arg question "$question" --arg header "$(hq_cpcut "$name" 12)" --arg body "$body" \
+  hdr=$(hq_cpcut "$name" 12)
+  if [ -n "$appr" ] && [ "$(hq_cplen "$appr")" -le 12 ]; then hdr="$appr"; fi
+  jq -n --arg question "$question" --arg header "$hdr" --arg body "$body" \
     --arg source "$source" --argjson options "$json" \
     '{question: $question, header: $header, body: $body, source: $source, options: $options}'
 }
 
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
-  if [ "$#" -ne 3 ] || [ "$1" != "render" ] || [ "$2" != "--record" ]; then
-    printf 'usage: halt-question.sh render --record <record path>\n' >&2
+  if { [ "$#" -ne 3 ] && [ "$#" -ne 5 ]; } || [ "$1" != "render" ] || [ "$2" != "--record" ] \
+     || { [ "$#" -eq 5 ] && [ "$4" != "--approval" ]; }; then
+    printf 'usage: halt-question.sh render --record <record path> [--approval <id>]\n' >&2
     exit 2
   fi
-  hq_render "$3"
+  hq_render "$3" "${5:-}"
 fi

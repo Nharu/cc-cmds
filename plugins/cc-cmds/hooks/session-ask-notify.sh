@@ -171,5 +171,29 @@ detail=
 if [ -n "$detail_json" ]; then
   detail=$(cc_attention_detail_make "$detail_json" 2>/dev/null) || detail=
 fi
+
+# THE SEAT ASKING A RUN'S APPROVAL REWRITES THAT APPROVAL'S BANNER, ONCE. When
+# this one question stands in for an approval a run already announced (see
+# `cc_notify_approval_link`), the first ask is raised as `approval-ask` into the
+# approval's own slot, silent, so the person sees one entry for one decision
+# instead of the approval's banner and a second one for the same question. The
+# id goes into the run's `notify.asked-approvals` first, so a later ask of the
+# same approval — the person is already looking at it — is an ordinary
+# `session-ask`. The autopilot switch is read as well: with it off, the approval
+# never rang, and there is no banner to rewrite. `RUN_DIR` and `RUN_ID` name the
+# linked run for that one call only. Every case with no link is unchanged.
+link=$(cc_notify_approval_link "$input")
+if [ -n "$link" ]; then
+  link_rid=${link%%$'\t'*}
+  link_rest=${link#*$'\t'}
+  link_dir=${link_rest%%$'\t'*}
+  link_id=${link_rest#*$'\t'}
+  if cc_notify_enabled && ! cc_notify_approval_asked "$link_dir" "$link_id"; then
+    cc_notify_approval_mark_asked "$link_dir" "$link_id"
+    RUN_DIR="$link_dir" RUN_ID="$link_rid" CC_NOTIFY_ATTENTION_DETAIL="$detail" \
+      cc_notify_fire approval-ask "$body" "$link_id" >/dev/null 2>&1
+    exit 0
+  fi
+fi
 CC_NOTIFY_ATTENTION_DETAIL="$detail" cc_notify_fire session-ask "$body" >/dev/null 2>&1
 exit 0
