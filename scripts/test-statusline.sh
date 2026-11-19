@@ -3366,7 +3366,7 @@ printf '%d\n' $(( $(date -u +%s) + 600 )) > "$OBD/ensure.at"; : > "$SLCMP_PY"
 obr >/dev/null
 check "OB3 ensure.at 이 미래면 ensure 를 띄운다" "$(ob_wait_calls 1)" 1
 check "OB3 ensure 인자는 세션·이 스크립트의 절대 경로·대화록이다" \
-  "$(grep 'ensure --sl-session sess-ob ' "$SLCMP_PY" | head -1)" \
+  "$(grep -m1 'ensure --sl-session sess-ob ' "$SLCMP_PY")" \
   "$repo_root/plugins/cc-cmds/orchestrator/observer.py ensure --sl-session sess-ob --sl-script $SL --sl-transcript /dev/null"
 rm -f "$OBD/ensure.at"; : > "$SLCMP_PY"
 obr CC_CMDS_OBSERVER=off >/dev/null; obr CI=1 >/dev/null; sleep 0.5

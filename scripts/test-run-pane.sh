@@ -1249,7 +1249,7 @@ pob >/dev/null
 i=0; while [ "$i" -lt 30 ] && [ "$(pob_calls)" -lt 1 ]; do sleep 0.1; i=$((i + 1)); done
 check "20 진행 중 런을 그린 패널은 ensure 를 한 번 띄운다" "$(pob_calls)" 1
 check "20 ensure 인자는 세션·이 스크립트의 절대 경로·색인이다" \
-  "$(grep 'ensure --pane-session s-pob ' "$PCMP_PY" | head -1)" \
+  "$(grep -m1 'ensure --pane-session s-pob ' "$PCMP_PY")" \
   "$repo_root/plugins/cc-cmds/orchestrator/observer.py ensure --pane-session s-pob --pane-script $PANE --pane-index $SESSION_DIR/s-pob"
 check "20 패널이 부른 상태줄은 ensure 를 띄우지 않는다" "$(grep -c 'ensure --sl-session' "$PCMP_PY" || true)" 0
 mkdir -p "$POBD"; date -u +%s > "$POBD/ensure.at"; : > "$PCMP_PY"
