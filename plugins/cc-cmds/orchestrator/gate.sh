@@ -22055,7 +22055,7 @@ gate_reap_day_epoch() {
 }
 
 gate_reap_eligible() {
-  # gate_reap_eligible <run-dir> <run-id> <now> — 0 when all five clauses hold.
+  # gate_reap_eligible <run-dir> <run-id> <now> — 0 when all six clauses hold.
   #
   # FAIL-CLOSED IN EVERY CLAUSE. Reclamation needs positive evidence of age: a
   # clock that is missing, empty, unreadable or unparsable means "unknown", and
@@ -22064,10 +22064,30 @@ gate_reap_eligible() {
   # `git clean` in some other repo removed as "1970, infinitely old", which turns
   # that command into a remote delete for this run's state directory.
   local rd="$1" id="$2" now="$3" started ledger state day_epoch
+  local mk_l mk_pid="" mk_fp=""
   # 4 — a symlink is not a candidate at all. This is also what makes the
   # slash-free victim path safe rather than merely tidy.
   [ ! -L "$rd" ] || return 1
   [ -d "$rd" ] || return 1
+  # 6 — a pinned copy the resident observer is running from is in use. The
+  # observer writes `observer.code-inuse` (`pid=` and `fingerprint=`, the
+  # `LC_ALL=C ps -o lstart=` of that pid) into the run whose copy holds its code,
+  # and outlives that run while it watches others; reclaiming the copy would take
+  # away the scripts it calls next. The mark holds only while the recorded pid
+  # answers AND its start time is the recorded one, so a dead observer's mark — or
+  # a reused pid — leaves the run to the clauses below. A run with no mark costs
+  # one test and no process. The holder is judged by `cc_holder_is_live`, the
+  # shared predicate, so the gate keeps no liveness test of its own.
+  if [ -f "$rd/observer.code-inuse" ]; then
+    while IFS= read -r mk_l || [ -n "$mk_l" ]; do
+      case "$mk_l" in
+        pid=*) mk_pid=${mk_l#pid=} ;;
+        fingerprint=*) mk_fp=${mk_l#fingerprint=} ;;
+      esac
+      mk_l=""
+    done 2>/dev/null < "$rd/observer.code-inuse"
+    if cc_holder_is_live "$mk_pid" "$mk_fp"; then return 1; fi
+  fi
   # 3 — never the current run. Structurally unreachable anyway, because
   # `rundir_init` rewrites this run's `started-at` to `now` before the run-open
   # branch is reached, but the comparison is one test and says so out loud.

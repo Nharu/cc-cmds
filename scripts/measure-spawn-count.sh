@@ -120,7 +120,7 @@
 #   builtins: ulimit umask unalias unset wait
 #
 # UNITS ARE DRIVEN BY SPEC FILES, `tests/fixtures/measure-spawn-count/runs/spec/U1`
-# … `U8`, three tab-separated columns `kind key value`:
+# … `U10`, three tab-separated columns `kind key value`:
 #
 #   env      NAME VALUE      exported for the unit; `@UNSET@` unsets it. Every
 #                            inherited `CC_PIPELINE_*` is unset first.
@@ -198,7 +198,7 @@ SPECD="$RUNS/spec"
 BASELINE="$FIXD/baseline.tsv"
 ORCH="$REPO/plugins/cc-cmds/orchestrator"
 HOOKS="$REPO/plugins/cc-cmds/hooks"
-UNITS="U1 U2 U3 U4 U5 U6 U7 U8"
+UNITS="U1 U2 U3 U4 U5 U6 U7 U8 U9 U10"
 TARGETS="plugins/cc-cmds/orchestrator/watch.sh
 plugins/cc-cmds/orchestrator/checks.sh
 plugins/cc-cmds/orchestrator/feed.sh

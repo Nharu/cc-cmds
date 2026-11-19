@@ -88,6 +88,10 @@ export CC_CMDS_SESSION_NOTIFY
 # dashboard section turns it back on inside its own subshells only.
 CC_CMDS_DASHBOARD=off
 export CC_CMDS_DASHBOARD
+# The observer daemon is off for the same reason: the statusline and the pane
+# start one when it is absent, and a suite must not leave a daemon running.
+CC_CMDS_OBSERVER=off
+export CC_CMDS_OBSERVER
 # The run-end attention round is off for the same reason: an end row or a
 # stage tail in any fixture would otherwise start a detached round that calls
 # the real CLI and writes a `주의 좌석` row into the fixture ledger after the
@@ -23036,6 +23040,42 @@ if [ "$(id -u)" != "0" ]; then
 else
   ok "B16e mv 실패 갈래 — root 는 디렉터리 권한을 무시하므로 이 호스트에서는 세울 수 없다"
 fi
+
+# --- B17 — 관측 데몬이 코드를 쓰는 중이라는 표식 -----------------------------
+# 관측 데몬은 고정된 런의 오케스트레이터 사본에서 모듈을 불러 쓰는 동안
+# `observer.code-inuse` 에 자기 pid 와 시작 시각 지문을 적는다. 그 pid 가 살아 있고
+# 지문이 지금 그 프로세스의 시작 시각과 같을 때만 회수를 막는다. 죽은 pid 나 pid 가
+# 다른 프로세스에 다시 쓰인 경우(지문 불일치)의 표식은 회수를 막지 않는다.
+b_fp() {
+  local s
+  s=$(LC_ALL=C ps -o lstart= -p "$1" 2>/dev/null || true)
+  s=${s//$'\t'/ }
+  while [ "${s//  / }" != "$s" ]; do s=${s//  / }; done
+  s=${s# }; s=${s% }
+  printf '%s' "$s"
+}
+B17_FP=$(b_fp $$)
+check "B17 전제 — 이 셸의 시작 시각 지문을 읽었다" "$(if [ -n "$B17_FP" ]; then printf yes; else printf no; fi)" "yes"
+b_victim RV-B17L "$BAGE_OLD" 종단; B17L="$B_VICTIM"
+printf 'pid=%s\nfingerprint=%s\n' "$$" "$B17_FP" > "$B17L/observer.code-inuse"
+fx_age_file "$B17L" "$BAGE_OLD"
+b_victim RV-B17F "$BAGE_OLD" 종단; B17F="$B_VICTIM"
+printf 'pid=%s\nfingerprint=%s\n' "$$" "Thu Jan  1 00:00:00 1970" > "$B17F/observer.code-inuse"
+fx_age_file "$B17F" "$BAGE_OLD"
+sleep 0 & B17_DEAD=$!; wait "$B17_DEAD" 2>/dev/null || true
+b_victim RV-B17D "$BAGE_OLD" 종단; B17D="$B_VICTIM"
+printf 'pid=%s\nfingerprint=%s\n' "$B17_DEAD" "$B17_FP" > "$B17D/observer.code-inuse"
+fx_age_file "$B17D" "$BAGE_OLD"
+b_trigger RB17
+check "B17 회수를 트리거한 런-오픈이 통과한다" "$rc" "0"
+check "B17 살아 있는 데몬의 표식이 있는 런은 남는다" "$(b_isdir "$B17L")" "yes"
+check "B17 지문이 다른 표식은 회수를 막지 않는다" "$(b_exists "$B17F")" "no"
+if kill -0 "$B17_DEAD" 2>/dev/null; then
+  ok "B17 죽은 pid 갈래 — 그 pid 가 이미 다시 쓰여 이 실행에서는 세울 수 없다"
+else
+  check "B17 죽은 pid 의 표식은 회수를 막지 않는다" "$(b_exists "$B17D")" "no"
+fi
+rm -rf "$B17L"
 
 # --- 카나리아 정산 -----------------------------------------------------------
 B_CANARY_AFTER=$(b_canary)

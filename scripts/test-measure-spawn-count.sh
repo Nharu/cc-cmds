@@ -49,7 +49,7 @@ repo_root=$(cd "$script_dir/.." && pwd)
 MEASURE="$script_dir/measure-spawn-count.sh"
 BASELINE="$repo_root/tests/fixtures/measure-spawn-count/baseline.tsv"
 TARGETS_DIR="$repo_root/tests/fixtures/measure-spawn-count/targets"
-UNITS="U1 U2 U3 U4 U5 U6 U7 U8"
+UNITS="U1 U2 U3 U4 U5 U6 U7 U8 U9 U10"
 # The unit that runs each target which rewrites PATH: `<target> <unit>` lines.
 REWRITE_UNITS="plugins/cc-cmds/orchestrator/gate.sh U8
 plugins/cc-cmds/hooks/gate-pretool.sh U7"

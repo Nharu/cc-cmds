@@ -196,7 +196,99 @@ else
   skip "설치 대상의 적용 전 명령과 대조" "$REF_SETTINGS 에서 기준 명령을 읽을 수 없다"
 fi
 
-sl() { fx_statusline_stdin "$1" | bash "$SL"; }
+# THE FAST PATH IS COMPARED AGAINST THE DIRECT PATH AT EVERY RENDER BELOW. The
+# observer keeps a facts block per session and the status line draws from it
+# without reading a run; the two must give the same bytes. `sl`, `slp`,
+# `dm_line` and `slb` each render once as the case asks, and `slcmp` then takes
+# the same input three more times: the direct path, the facts block
+# (`CC_SL_FACTS_OUT=1`), and the fast path over that block with the switch on,
+# an `observer.pid` that answers (this suite's own pid) and the session index
+# moved aside — so a miss on the fast path draws the no-run line and cannot be
+# mistaken for a hit. A dormant block is not a fast-path session and is counted
+# apart.
+#
+# ONE CLOCK AND ONE ETIME FOR THE THREE. They run under `/bin/bash`, where 3.2
+# has neither `EPOCHSECONDS` nor `printf '%(%s)T'`, so every reading of the
+# clock is `date -u +%s`, which the stub below answers with one fixed epoch;
+# `ps -o etime= -p <pid>` answers its first reading again for the same pid. A
+# `/bin/bash` of 4 or later takes the clock from the shell itself, which no
+# stub reaches, so there the comparison is not run and says so once. python3 is
+# a stub that writes its arguments, so a miss on the fast path, whose direct
+# path would start `ensure`, starts nothing.
+SLCMP_BIN="$WORK/slcmp-bin"; SLCMP_PSC="$WORK/slcmp-ps"
+SLCMP_N="$WORK/slcmp.n"; SLCMP_D="$WORK/slcmp.dormant"; SLCMP_X="$WORK/slcmp.nofacts"
+SLCMP_PY="$WORK/slcmp.python3"; SLCMP_BAD="$WORK/slcmp.bad"
+mkdir -p "$SLCMP_BIN"; : > "$SLCMP_BAD"; : > "$SLCMP_N"; : > "$SLCMP_D"; : > "$SLCMP_X"; : > "$SLCMP_PY"
+SLCMP_REAL_DATE=$(command -v date); SLCMP_REAL_PS=$(command -v ps)
+cat > "$SLCMP_BIN/date" <<STUB
+#!/bin/sh
+if [ "\$#" -eq 2 ] && [ "\$1" = "-u" ] && [ "\$2" = "+%s" ] && [ -n "\${SLCMP_NOW:-}" ]; then
+  printf '%s\n' "\$SLCMP_NOW"; exit 0
+fi
+exec "$SLCMP_REAL_DATE" "\$@"
+STUB
+cat > "$SLCMP_BIN/ps" <<STUB
+#!/bin/sh
+if [ "\$#" -eq 4 ] && [ "\$1" = "-o" ] && [ "\$2" = "etime=" ] && [ "\$3" = "-p" ] && [ -n "\${SLCMP_PSC:-}" ]; then
+  if [ -f "\$SLCMP_PSC/\$4" ]; then cat "\$SLCMP_PSC/\$4"; exit 0; fi
+  "$SLCMP_REAL_PS" "\$@" > "\$SLCMP_PSC/\$4.tmp"; rc=\$?
+  mv "\$SLCMP_PSC/\$4.tmp" "\$SLCMP_PSC/\$4"; cat "\$SLCMP_PSC/\$4"; exit \$rc
+fi
+exec "$SLCMP_REAL_PS" "\$@"
+STUB
+cat > "$SLCMP_BIN/python3" <<STUB
+#!/bin/sh
+printf '%s\n' "\$*" >> "$SLCMP_PY"
+exit 0
+STUB
+chmod +x "$SLCMP_BIN/date" "$SLCMP_BIN/ps" "$SLCMP_BIN/python3"
+SLCMP_ON=0
+if [ "$(/bin/bash -c 'printf %s "${BASH_VERSINFO[0]}"' 2>/dev/null)" = 3 ]; then SLCMP_ON=1; fi
+
+slcmp() {
+  # slcmp <stdin JSON> [env(1) options and assignments...] — the comparison
+  # above for one input, under `$XDG_STATE_HOME` as it is now. Prints nothing; a
+  # difference is a FAIL naming the session, and every comparison is a line of
+  # `$SLCMP_N`; a difference is also a line of `$SLCMP_BAD`.
+  [ "$SLCMP_ON" = 1 ] || return 0
+  local in="$1" sid od idx now a f b moved=0
+  shift
+  sid=$(printf '%s' "$in" | jq -r '.session_id // empty' 2>/dev/null)
+  case "$sid" in ''|*[!A-Za-z0-9._-]*) return 0 ;; esac
+  od="$XDG_STATE_HOME/cc-cmds/observer"
+  idx="$XDG_STATE_HOME/cc-cmds/session/$sid"
+  now=$("$SLCMP_REAL_DATE" -u +%s)
+  rm -rf "$SLCMP_PSC"; mkdir -p "$SLCMP_PSC"
+  a=$(printf '%s' "$in" | env "$@" PATH="$SLCMP_BIN:$PATH" SLCMP_NOW="$now" SLCMP_PSC="$SLCMP_PSC" /bin/bash "$SL" 2>/dev/null)
+  f=$(printf '%s' "$in" | env "$@" PATH="$SLCMP_BIN:$PATH" SLCMP_NOW="$now" SLCMP_PSC="$SLCMP_PSC" CC_SL_FACTS_OUT=1 /bin/bash "$SL" 2>/dev/null)
+  case "$f" in
+    "cc-sl-facts 1${NL_}dormant${TAB_}1") printf '%s\n' "$sid" >> "$SLCMP_D"; return 0 ;;
+    "cc-sl-facts 1${NL_}"*) ;;
+    *) printf '%s\n' "$sid" >> "$SLCMP_X"; return 0 ;;
+  esac
+  mkdir -p "$od/sl"
+  printf '%s\n' "$f" > "$od/sl/$sid.facts"
+  printf '%d\n' "$$" > "$od/observer.pid"
+  if [ -e "$idx" ]; then mv "$idx" "$idx.slcmp"; moved=1; fi
+  b=$(printf '%s' "$in" | env -u CI -u CC_CMDS_OBSERVER "$@" PATH="$SLCMP_BIN:$PATH" SLCMP_NOW="$now" SLCMP_PSC="$SLCMP_PSC" /bin/bash "$SL" 2>/dev/null)
+  [ "$moved" = 1 ] && mv "$idx.slcmp" "$idx"
+  rm -f "$od/sl/$sid.facts" "$od/observer.pid"
+  printf '%s\n' "$sid" >> "$SLCMP_N"
+  # The render may run inside a command substitution, so a difference is kept in
+  # a file and counted at the end rather than through `bad`.
+  if [ "$a" != "$b" ]; then
+    printf '%s\n' "$sid" >> "$SLCMP_BAD"
+    printf 'FAIL: R2 직접·빠른 경로가 다르다 — %s (%s) — 직접 %s, 빠른 %s\n' "$sid" "$*" "$a" "$b" >&2
+  fi
+}
+NL_=$'\n'; TAB_=$'\t'
+
+sl() {
+  local rc
+  fx_statusline_stdin "$1" | bash "$SL"; rc=$?
+  slcmp "$(fx_statusline_stdin "$1")"
+  return "$rc"
+}
 
 # ---------------------------------------------------------------------------
 # 1-2. No run for this session
@@ -785,7 +877,12 @@ has   "A12 홀로 남은 워처 없는 승인대기 런은 여전히 승인 대�
 # meaning; with it set, the first line has to be the same bytes and the field
 # row comes second. Both renders go through `strip_clock`, because the running
 # arm's elapsed can tick between them.
-slp() { fx_statusline_stdin "$1" | CC_SL_PANE_FIELDS=1 bash "$SL"; }
+slp() {
+  local rc
+  fx_statusline_stdin "$1" | CC_SL_PANE_FIELDS=1 bash "$SL"; rc=$?
+  slcmp "$(fx_statusline_stdin "$1")" CC_SL_PANE_FIELDS=1
+  return "$rc"
+}
 first_of() { printf '%s\n' "$1" | sed -n 1p; }
 row_of()   { printf '%s\n' "$1" | sed -n 2p; }
 fld()      { printf '%s\n' "$2" | cut -f"$1"; }
@@ -2155,6 +2252,15 @@ reeval_ok_case() {
     "$(sl sess-live | strip_clock)"
 }
 
+# The comparisons below draw `sess-live` twice and expect one line. Its stand-in
+# stage was started in section 3 and lives 120 seconds, which a loaded host can
+# spend before this point, so the stage is started afresh here: one that expired
+# between the two draws would show `S1` on one side and `스테이지 0` on the other.
+sl_live_rd_keep=$FX_RUN_DIR
+FX_RUN_DIR="$XDG_STATE_HOME/cc-cmds/run/run-live"
+fx_stage_live S1
+FX_RUN_DIR=$sl_live_rd_keep
+
 # `$(printf ...)` is how the newline gets into the name at all — a literal one
 # cannot be written into the word list above without ending it.
 reeval_ok_case bs "백슬래시가 든 절대경로" "$WORK/reeval/plug\\back"
@@ -2277,7 +2383,12 @@ dm_live() {
 # The run ids `cc_run_state` was called on, one per line, in call order.
 dm_derived() { fx_statusline_stdin "$1" | CC_SL_TRACE=1 bash "$SL" 2>&1 >/dev/null | grep '^cc-sl-derive ' | sed 's/^cc-sl-derive //'; }
 dm_count() { dm_derived "$1" | grep -c . ; }
-dm_line() { fx_statusline_stdin "$1" | bash "$SL" 2>/dev/null; }
+dm_line() {
+  local rc
+  fx_statusline_stdin "$1" | bash "$SL" 2>/dev/null; rc=$?
+  slcmp "$(fx_statusline_stdin "$1")"
+  return "$rc"
+}
 
 # Thirty dormant finished runs, dm-t01 oldest and dm-t30 newest, two hours and
 # more in the past, ten seconds apart.
@@ -2565,12 +2676,20 @@ slb() {
     '{'*) ;;
     *) in=$(fx_statusline_stdin "$2" "$dir") ;;
   esac
+  # The comparison runs for this checkout's script only, from the same
+  # directory and with the same variables.
   if [ "$1" = - ]; then
-    (cd "$dir" && printf '%s' "$in" | env -u CLAUDE_CONFIG_DIR -u CC_CMDS_AUTOPILOT_TZ \
-      ${SLB_DTZ:+"CC_CMDS_AUTOPILOT_TZ=$SLB_DTZ"} TZ="${SLB_TZ:-UTC0}" bash "${SLB_SL:-$SL}")
+    (cd "$dir" && { printf '%s' "$in" | env -u CLAUDE_CONFIG_DIR -u CC_CMDS_AUTOPILOT_TZ \
+      ${SLB_DTZ:+"CC_CMDS_AUTOPILOT_TZ=$SLB_DTZ"} TZ="${SLB_TZ:-UTC0}" bash "${SLB_SL:-$SL}"; rc=$?
+      [ -n "${SLB_SL:-}" ] || slcmp "$in" -u CLAUDE_CONFIG_DIR -u CC_CMDS_AUTOPILOT_TZ \
+        ${SLB_DTZ:+"CC_CMDS_AUTOPILOT_TZ=$SLB_DTZ"} TZ="${SLB_TZ:-UTC0}"
+      exit "$rc"; })
   else
-    (cd "$dir" && printf '%s' "$in" | env -u CC_CMDS_AUTOPILOT_TZ \
-      ${SLB_DTZ:+"CC_CMDS_AUTOPILOT_TZ=$SLB_DTZ"} CLAUDE_CONFIG_DIR="$1" TZ="${SLB_TZ:-UTC0}" bash "${SLB_SL:-$SL}")
+    (cd "$dir" && { printf '%s' "$in" | env -u CC_CMDS_AUTOPILOT_TZ \
+      ${SLB_DTZ:+"CC_CMDS_AUTOPILOT_TZ=$SLB_DTZ"} CLAUDE_CONFIG_DIR="$1" TZ="${SLB_TZ:-UTC0}" bash "${SLB_SL:-$SL}"; rc=$?
+      [ -n "${SLB_SL:-}" ] || slcmp "$in" -u CC_CMDS_AUTOPILOT_TZ \
+        ${SLB_DTZ:+"CC_CMDS_AUTOPILOT_TZ=$SLB_DTZ"} CLAUDE_CONFIG_DIR="$1" TZ="${SLB_TZ:-UTC0}"
+      exit "$rc"; })
   fi
 }
 sb_in() { printf '{"session_id":"%s","transcript_path":"%s","cwd":"%s"}' "$1" "$2" "$BW"; }
@@ -3165,6 +3284,165 @@ if [ -n "$jx_def" ]; then
 else
   bad "JX sl_json_str_into 정의를 statusline.sh 에서 찾지 못했다"
 fi
+
+# ---------------------------------------------------------------------------
+# OB1-OB9. The observer: the comparison's count, the missing-observer mark,
+# when `ensure` is started, the call from the pane, and the fast path's
+# processes
+# ---------------------------------------------------------------------------
+if [ "$SLCMP_ON" = 1 ]; then
+  slcmp_n=$(wc -l < "$SLCMP_N" | tr -d ' ')
+  slcmp_bad=$(wc -l < "$SLCMP_BAD" | tr -d ' ')
+  slcmp_d=$(wc -l < "$SLCMP_D" | tr -d ' ')
+  slcmp_x=$(sort -u "$SLCMP_X" | tr '\n' ' ')
+  check "OB1 R2 직접·빠른 경로 비교 ${slcmp_n}건 (휴면 ${slcmp_d}건 제외) — 다른 렌더가 없다" "$slcmp_bad" 0
+  if [ "$slcmp_n" -ge 50 ]; then ok "OB1 R2 비교가 실제로 돌았다 (${slcmp_n}건)"
+  else bad "OB1 R2 비교가 실제로 돌았다" "${slcmp_n}건뿐이다"; fi
+  check "OB1 사실 블록을 내지 않은 세션이 없다" "${slcmp_x:-없음}" "없음"
+else
+  skip "OB1 R2 직접·빠른 경로 비교" "/bin/bash 가 3.2 가 아니라 시계를 스텁으로 고정할 수 없다"
+fi
+
+# One run in flight with a fresh heartbeat, so the watcher slot is empty, and a
+# pinned copy that serves the observer. Every render here has the switch on and
+# the python3 stub first on PATH, so nothing is really started.
+XDG_STATE_HOME="$WORK/obstate"; export XDG_STATE_HOME; mkdir -p "$XDG_STATE_HOME"
+OBD="$XDG_STATE_HOME/cc-cmds/observer"
+fx_mkrun run-ob; fx_ledger_path; fx_session_index sess-ob run-ob
+fx_segment S1 실행중
+fx_heartbeat 0 5
+OB_PROTO="$FX_RUN_DIR/plugin/cc-cmds/orchestrator/observer-protocol"
+mkdir -p "${OB_PROTO%/*}"; printf '1\n' > "$OB_PROTO"
+obr() { fx_statusline_stdin sess-ob | env -u CI -u CC_CMDS_OBSERVER "$@" PATH="$SLCMP_BIN:$PATH" bash "$SL" 2>/dev/null; }
+ob_fresh() { mkdir -p "$OBD"; date -u +%s > "$OBD/ensure.at"; }
+ob_calls() { grep -c 'ensure --sl-session sess-ob ' "$SLCMP_PY" 2>/dev/null || true; }
+ob_wait_calls() {
+  # ob_wait_calls <n> — wait up to 3 seconds for the detached stub to have
+  # written n calls, then print the count.
+  local i=0
+  while [ "$i" -lt 30 ] && [ "$(ob_calls)" -lt "$1" ]; do sleep 0.1; i=$((i + 1)); done
+  ob_calls
+}
+MARK=" · 관측기 낡음"
+
+ob_fresh; rm -f "$OBD/observer.pid" "$OBD/heartbeat"
+has "OB2 네 조건이 모두 서면 — 관측기 낡음 표지" "$(obr)" "$MARK"
+hasnt "OB2 스위치를 끄면 표지가 없다" "$(obr CC_CMDS_OBSERVER=off)" "$MARK"
+hasnt "OB2 CI 이면 표지가 없다" "$(obr CI=1)" "$MARK"
+rm -f "$OB_PROTO"
+hasnt "OB2 고정 사본에 observer-protocol 이 없으면 표지가 없다" "$(obr)" "$MARK"
+printf '1\n' > "$OB_PROTO"
+printf '%d\n' "$$" > "$OBD/observer.pid"; date -u +%s > "$OBD/heartbeat"
+hasnt "OB2 관측기가 살아 있고 하트비트가 새로우면 표지가 없다" "$(obr)" "$MARK"
+printf '%d\n' $(( $(date -u +%s) - 31 )) > "$OBD/heartbeat"
+has "OB2 하트비트가 31초 묵으면 표지" "$(obr)" "$MARK"
+sleep 0 & ob_dead=$!; wait "$ob_dead" 2>/dev/null
+printf '%d\n' "$ob_dead" > "$OBD/observer.pid"; date -u +%s > "$OBD/heartbeat"
+if kill -0 "$ob_dead" 2>/dev/null; then
+  skip "OB2 pid 가 답하지 않으면 표지" "끝난 pid $ob_dead 가 그새 다시 쓰였다"
+else
+  has "OB2 pid 가 답하지 않으면 표지" "$(obr)" "$MARK"
+fi
+if [ -x /usr/bin/python3 ]; then
+  skip "OB2 python3 이 없으면 표지가 없다" "/usr/bin/python3 가 있어 python3 없는 호스트를 만들 수 없다"
+else
+  hasnt "OB2 python3 이 없으면 표지가 없다" \
+    "$(fx_statusline_stdin sess-ob | env -u CI -u CC_CMDS_OBSERVER PATH="$(dirname "$(command -v jq)"):/bin:/usr/bin" bash "$SL" 2>/dev/null)" "$MARK"
+fi
+rm -f "$OBD/observer.pid" "$OBD/heartbeat"
+
+# `ensure` at most every 30 seconds, by the epoch in `ensure.at`, which the real
+# `ensure` writes and this stub does not.
+: > "$SLCMP_PY"; ob_fresh
+obr >/dev/null; obr >/dev/null; sleep 0.5
+check "OB3 ensure.at 이 방금이면 두 번 그려도 ensure 를 띄우지 않는다" "$(ob_calls)" 0
+printf '%d\n' $(( $(date -u +%s) - 31 )) > "$OBD/ensure.at"
+obr >/dev/null
+check "OB3 ensure.at 이 31초 묵으면 ensure 를 한 번 띄운다" "$(ob_wait_calls 1)" 1
+rm -f "$OBD/ensure.at"; : > "$SLCMP_PY"
+obr >/dev/null
+check "OB3 ensure.at 이 없으면 ensure 를 띄운다" "$(ob_wait_calls 1)" 1
+printf '%d\n' $(( $(date -u +%s) + 600 )) > "$OBD/ensure.at"; : > "$SLCMP_PY"
+obr >/dev/null
+check "OB3 ensure.at 이 미래면 ensure 를 띄운다" "$(ob_wait_calls 1)" 1
+check "OB3 ensure 인자는 세션·이 스크립트의 절대 경로·대화록이다" \
+  "$(grep 'ensure --sl-session sess-ob ' "$SLCMP_PY" | head -1)" \
+  "$repo_root/plugins/cc-cmds/orchestrator/observer.py ensure --sl-session sess-ob --sl-script $SL --sl-transcript /dev/null"
+rm -f "$OBD/ensure.at"; : > "$SLCMP_PY"
+obr CC_CMDS_OBSERVER=off >/dev/null; obr CI=1 >/dev/null; sleep 0.5
+check "OB3 스위치를 끄거나 CI 면 ensure 를 띄우지 않는다" "$(ob_calls)" 0
+
+rm -f "$OBD/ensure.at"; : > "$SLCMP_PY"
+ob_pf=$(obr CC_SL_PANE_FIELDS=1); sleep 0.5
+check "OB4 패널이 부른 상태줄은 ensure 를 띄우지 않는다" "$(ob_calls)" 0
+check "OB4 패널이 부른 상태줄은 등록하지 않는다 (ensure.at 없음)" "$([ -e "$OBD/ensure.at" ] && echo 있음 || echo 없음)" 없음
+hasnt "OB4 패널이 부른 상태줄의 줄에는 표지가 없다" "$ob_pf" "$MARK"
+check "OB4 CC_SL_PANE_FIELDS 는 등록 인자에 실리지 않는다" \
+  "$(grep -c 'PANE_FIELDS' "$SLCMP_PY" 2>/dev/null || true)" 0
+
+# R1. Under a bash 5 the fast path starts no process: PATH is a directory of
+# stubs that write their own name, and a command not among them is a `command
+# not found` on standard error, which is checked too.
+ob_b5=""
+for c in /opt/homebrew/bin/bash /usr/local/bin/bash /bin/bash /usr/bin/bash; do
+  [ -x "$c" ] || continue
+  if [ "$("$c" -c 'printf %s "${BASH_VERSINFO[0]}"' 2>/dev/null)" -ge 5 ] 2>/dev/null; then ob_b5=$c; break; fi
+done
+if [ -n "$ob_b5" ]; then
+  OBLOG="$WORK/ob-exec.log"; : > "$OBLOG"; OBBIN="$WORK/ob-exec-bin"; mkdir -p "$OBBIN"
+  for c in date ps jq awk sed cat stat grep tr wc head tail cut sort ls python3 dirname basename find mkdir mv rm env printf sleep; do
+    printf '#!/bin/sh\nprintf "%%s\\n" "%s" >> "%s"\nexit 0\n' "$c" "$OBLOG" > "$OBBIN/$c"
+    chmod +x "$OBBIN/$c"
+  done
+  ob_in=$(fx_statusline_stdin sess-ob)
+  ob_f=$(printf '%s' "$ob_in" | CC_SL_FACTS_OUT=1 bash "$SL" 2>/dev/null)
+  mkdir -p "$OBD/sl"; printf '%s\n' "$ob_f" > "$OBD/sl/sess-ob.facts"
+  printf '%d\n' "$$" > "$OBD/observer.pid"; date -u +%s > "$OBD/heartbeat"
+  ob_err="$WORK/ob-exec.err"
+  ob_out=$(printf '%s' "$ob_in" | env -u CI -u CC_CMDS_OBSERVER PATH="$OBBIN" "$ob_b5" "$SL" 2>"$ob_err")
+  has "OB5 bash 5 빠른 경로가 런을 그린다 ($ob_b5)" "$ob_out" "run-ob"
+  check "OB5 bash 5 빠른 경로는 외부 명령을 하나도 부르지 않는다" "$(wc -l < "$OBLOG" | tr -d ' ')" 0
+  check "OB5 bash 5 빠른 경로의 표준 오류가 비어 있다" "$(cat "$ob_err")" ""
+  rm -f "$OBD/sl/sess-ob.facts" "$OBD/observer.pid" "$OBD/heartbeat"
+else
+  printf 'SKIP: OB5 bash 5 가 없어 빠른 경로 0 프로세스 단언을 건너뛴다\n'
+  skipped=$((skipped + 1))
+fi
+
+# A real observer, in this state root only: started by `ensure` as the status
+# line starts it, it computes the facts block and the next render takes the fast
+# path. Stopped on the way out whatever happens.
+if command -v python3 >/dev/null 2>&1; then
+  OBPY="$repo_root/plugins/cc-cmds/orchestrator/observer.py"
+  trap 'XDG_STATE_HOME="$WORK/obstate" python3 "$OBPY" stop >/dev/null 2>&1; fx_reap; chmod -R u+rwX "$WORK" 2>/dev/null; rm -rf "$WORK"' EXIT
+  rm -rf "$OBD"
+  # The observer starts nothing from a pipeline stage's environment, and this
+  # suite is run from one, so the start drops the stage's names too.
+  env -u CI -u CC_CMDS_OBSERVER -u CC_PIPELINE_SEGMENT -u CC_PIPELINE_STAGE_ID \
+    python3 "$OBPY" ensure --sl-session sess-ob --sl-script "$SL" \
+    --sl-transcript /dev/null </dev/null >/dev/null 2>&1
+  i=0
+  while [ "$i" -lt 100 ] && [ ! -s "$OBD/sl/sess-ob.facts" ]; do sleep 0.1; i=$((i + 1)); done
+  if [ -s "$OBD/sl/sess-ob.facts" ]; then
+    ok "OB6 실제 관측기가 이 세션의 사실 블록을 쓴다"
+    check "OB6 사실 블록의 첫 줄" "$(head -1 "$OBD/sl/sess-ob.facts")" "cc-sl-facts 1"
+    ob_direct=$(fx_statusline_stdin sess-ob | bash "$SL" 2>/dev/null)
+    mv "$XDG_STATE_HOME/cc-cmds/session/sess-ob" "$WORK/sess-ob.aside"
+    ob_fast=$(fx_statusline_stdin sess-ob | env -u CI -u CC_CMDS_OBSERVER PATH="$SLCMP_BIN:$PATH" bash "$SL" 2>/dev/null)
+    mv "$WORK/sess-ob.aside" "$XDG_STATE_HOME/cc-cmds/session/sess-ob"
+    check "OB6 실제 관측기의 사실 블록으로 그린 줄이 직접 경로와 같다 (시계 칸 제외)" \
+      "$(printf '%s\n' "$ob_fast" | strip_clock)" "$(printf '%s\n' "$ob_direct" | strip_clock)"
+  else
+    bad "OB6 실제 관측기가 이 세션의 사실 블록을 쓴다" "10초 안에 $OBD/sl/sess-ob.facts 가 생기지 않았다"
+  fi
+  python3 "$OBPY" stop >/dev/null 2>&1
+  i=0
+  while [ "$i" -lt 50 ] && [ -e "$OBD/observer.pid" ]; do sleep 0.1; i=$((i + 1)); done
+  check "OB6 stop 뒤에 observer.pid 가 남지 않는다" "$([ -e "$OBD/observer.pid" ] && echo 남음 || echo 없음)" 없음
+else
+  skip "OB6 실제 관측기" "python3 이 없다"
+fi
+XDG_STATE_HOME="$WORK/state"; export XDG_STATE_HOME
 
 printf '\n통과 %s · 실패 %s · 건너뜀 %s\n' "$passed" "$failed" "$skipped"
 [ "$failed" -eq 0 ]

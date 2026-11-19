@@ -1,0 +1,25 @@
+env	CC_CMDS_NOTIFY_PATH_DISABLE_PREPEND	1
+env	CC_CMDS_ATTENTION_ROOT	@ROOT@/attention-absent
+env	CC_CMDS_DASHBOARD	off
+env	FLEET_PACE_ROOT	@ROOT@/pace
+env	HOME	@ROOT@/home
+env	XDG_STATE_HOME	@ROOT@/state
+env	XDG_CONFIG_HOME	@ROOT@/config
+env	CLAUDE_CONFIG_DIR	@UNSET@
+env	CC_CMDS_AUTOPILOT_TZ	@UNSET@
+env	CC_CMDS_OBSERVER	@UNSET@
+env	CI	@UNSET@
+env	CC_SL_SCREEN	@UNSET@
+env	CC_SL_PANE_FIELDS	@UNSET@
+env	CC_SL_TRACE	@UNSET@
+env	TMUX	@UNSET@
+env	TMUX_PANE	@UNSET@
+env	CLAUDE_CODE_SESSION_ID	@UNSET@
+env	GH_HOST	invalid.invalid
+env	GH_TOKEN
+fixture	copy	fastpath .
+fixture	live	state/cc-cmds/observer/observer
+fixture	stdin	stdin.json
+argv	main	@ORCH@/statusline.sh
+stop	exit	-
+stop	expect	main F1
