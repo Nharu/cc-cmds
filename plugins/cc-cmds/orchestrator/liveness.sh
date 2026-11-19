@@ -2073,19 +2073,27 @@ case " ${TERMINAL_SEGMENT_STATES:-} " in
   *) readonly TERMINAL_SEGMENT_STATES="머지됨 완료 park" ;;
 esac
 
-cc_nonterminal_segments() {
-  # cc_nonterminal_segments <ledger> — count of segments not in a terminal state.
-  # `TERMINAL_SEGMENT_STATES` above is the enumeration; everything else is in
-  # flight. The membership test is the gate's, verbatim, because a second
-  # spelling of it is how the two readers diverged in the first place.
+cc__nonterminal_segment_scan() {
+  # cc__nonterminal_segment_scan <ledger> — sets `CC__NTS_IDS` to the ids of
+  # the segments not in a terminal state, each followed by a newline, and
+  # `CC__NTS_N` to their number. `TERMINAL_SEGMENT_STATES` above is the
+  # enumeration; everything else is in flight. The membership test is the
+  # gate's, verbatim, because a second spelling of it is how the two readers
+  # diverged in the first place.
   #
   # A `머지됨` WHOSE APPLY IS STILL OWED IS IN FLIGHT: `cc_segment_apply_phase`
   # reads `대기` (the gate's segment arm marks the merge of a segment that owes
   # its apply — a fact derived from the manifest, which this reader does not
   # open) or `미정산` (a merge carried in from an earlier run whose apply did
-  # not finish). That word is how the gate's condition 1 and this count agree.
-  local ledger="$1" sid row st n=0 tbl
-  [ -n "$ledger" ] || { printf '0'; return 0; }
+  # not finish). That word is how the gate's condition 1 and this set agree.
+  #
+  # `cc_nonterminal_segment_ids` and `cc_nonterminal_segments` both read this
+  # one scan, so the set and the count are one test. The results go into two
+  # globals rather than through a pipe, so the count, which the gate reads,
+  # forks nothing beyond what the scan itself runs.
+  local ledger="$1" sid row st tbl
+  CC__NTS_IDS='' CC__NTS_N=0
+  [ -n "$ledger" ] || return 0
   # From the table, the apply phase is read only for a terminal 상태: a
   # segment whose 상태 is not terminal is in flight whatever that phase says.
   if cc__table_into tbl cc__segment_table "$ledger"; then
@@ -2094,14 +2102,13 @@ cc_nonterminal_segments() {
       case " $TERMINAL_SEGMENT_STATES " in
         *" $st "*)
           case "$(cc_segment_apply_phase "$ledger" "$sid")" in
-            대기|미정산) n=$((n + 1)) ;;
+            대기|미정산) CC__NTS_IDS="$CC__NTS_IDS$sid"$'\n'; CC__NTS_N=$((CC__NTS_N + 1)) ;;
           esac ;;
-        *) n=$((n + 1)) ;;
+        *) CC__NTS_IDS="$CC__NTS_IDS$sid"$'\n'; CC__NTS_N=$((CC__NTS_N + 1)) ;;
       esac
     done <<EOF
 $tbl
 EOF
-    printf '%s' "$n"
     return 0
   fi
   for sid in $( { grep -E '^- `segment`' "$ledger" 2>/dev/null || true; } \
@@ -2110,14 +2117,31 @@ EOF
     row=$( { grep -E '^- `segment`' "$ledger" 2>/dev/null | grep -F "id=$sid " || true; } | tail -1)
     st=$(printf '%s' "$row" | tr '|' '\n' | sed -n 's/^ *상태=//p' | sed 's/[[:space:]]*$//' | tail -1)
     case "$(cc_segment_apply_phase "$ledger" "$sid")" in
-      대기|미정산) n=$((n + 1)); continue ;;
+      대기|미정산) CC__NTS_IDS="$CC__NTS_IDS$sid"$'\n'; CC__NTS_N=$((CC__NTS_N + 1)); continue ;;
     esac
     case " $TERMINAL_SEGMENT_STATES " in
       *" $st "*) ;;
-      *) n=$((n + 1)) ;;
+      *) CC__NTS_IDS="$CC__NTS_IDS$sid"$'\n'; CC__NTS_N=$((CC__NTS_N + 1)) ;;
     esac
   done
-  printf '%s' "$n"
+  return 0
+}
+
+cc_nonterminal_segment_ids() {
+  # cc_nonterminal_segment_ids <ledger> — the ids of the segments not in a
+  # terminal state, one per line, by `cc__nonterminal_segment_scan`. The
+  # watcher reads the set to tell the segments a shift's halt record holds
+  # from the ones nothing holds.
+  cc__nonterminal_segment_scan "$1"
+  printf '%s' "$CC__NTS_IDS"
+}
+
+cc_nonterminal_segments() {
+  # cc_nonterminal_segments <ledger> — count of segments not in a terminal
+  # state, by `cc__nonterminal_segment_scan`, as an integer with no newline
+  # (`0` with no ledger).
+  cc__nonterminal_segment_scan "$1"
+  printf '%s' "$CC__NTS_N"
 }
 
 cc_segment_count() {
@@ -3205,6 +3229,77 @@ cc_unanswered_halts() {
   printf '%s' "$n"
 }
 
+cc__shift_halt_waiting_rows() {
+  # cc__shift_halt_waiting_rows <run-dir> <ledger> — one line per shift halt
+  # record that waits for a person, as
+  # `<기록 이름><TAB><자리><TAB><앵커><TAB><경로><TAB><의존 세그먼트 수><TAB><의존 세그먼트>`,
+  # the last four fields read off the cone `blocked` row that vouches for it.
+  # `cc_waiting_shift_halts` and `cc_shift_halt_held` are its readers, so the
+  # two read one test of "waiting" and one choice of the vouching row.
+  #
+  # A RECORD WAITS WHEN FOUR THINGS HOLD. It sits in `halt/shift/` and is not an
+  # answer attachment; a cone `blocked` row names it in `중단 기록` and carries
+  # a `기록 다이제스트` (the gate's own test of who wrote a shift record,
+  # `gate_shift_halt_row_of`, the last such row winning); `cc_halt_answered`
+  # says no answer stands (a returned answer is waiting again); and, for a
+  # `clause-<id>` anchor, no `종료 절` row of that id follows the vouching row
+  # (the gate's `gate_clause_open_request` closes a request that way).
+  #
+  # A file with no vouching row is not waiting. The gate moves the record into
+  # place before it writes the row, so a pass between the two reads nothing;
+  # the row grows the ledger and the next pass reads it.
+  #
+  # MATCHED ON THE PATH'S TAIL from the run directory's own name down, as
+  # `cc_unanswered_halts` matches it: the watcher may hold the run directory
+  # under another spelling than the one the gate wrote into the row.
+  #
+  # This is not `cc_unanswered_halts`. That count reads neither the vouching
+  # row nor a clause's closing row, and the termination check and several
+  # readers read it, so the two extra conditions live here only.
+  local run_dir="${1%/}" ledger="$2" f name tail row anchor
+  [ -n "$run_dir" ] && [ -d "$run_dir/halt/shift" ] && [ -n "$ledger" ] && [ -f "$ledger" ] || return 0
+  for f in "$run_dir"/halt/shift/*.md; do
+    [ -f "$f" ] || continue
+    case "$f" in *.answer.md) continue ;; esac
+    name=${f##*/}
+    tail="/${run_dir##*/}/halt/shift/$name"
+    row=$(CC_SHW_TAIL="$tail" LC_ALL=C awk '
+      function fld(line, name,   n, i, a, s, v) {
+        n = split(line, a, /\|/); v = ""
+        for (i = 2; i <= n; i++) {
+          s = a[i]; sub(/^[ \t]+/, "", s)
+          if (index(s, name "=") == 1) { v = substr(s, length(name) + 2); sub(/[ \t]+$/, "", v) }
+        }
+        return v
+      }
+      BEGIN { t = ENVIRON["CC_SHW_TAIL"]; hit = ""; closed = 0 }
+      /^- `blocked` / {
+        if (fld($0, "스코프") != "cone") next
+        rec = fld($0, "중단 기록")
+        if (length(rec) < length(t) || substr(rec, length(rec) - length(t) + 1) != t) next
+        if (fld($0, "기록 다이제스트") == "") next
+        an = fld($0, "앵커 세그먼트")
+        hit = fld($0, "자리") "\t" an "\t" fld($0, "의존 세그먼트 수") "\t" fld($0, "의존 세그먼트")
+        cid = (index(an, "clause-") == 1) ? substr(an, length("clause-") + 1) : ""
+        closed = 0
+        next
+      }
+      /^- `종료 절` / {
+        if (hit != "" && cid != "" && fld($0, "id") == cid) closed = 1
+        next
+      }
+      END { if (hit != "" && !closed) print hit }
+    ' "$ledger" 2>/dev/null || true)
+    [ -n "$row" ] || continue
+    if cc_halt_answered "$ledger" "$tail" "$f"; then
+      continue
+    fi
+    anchor=${row#*$'\t'}; anchor=${anchor%%$'\t'*}
+    printf '%s\t%s\t%s\t%s\t%s\n' "${name%.md}" "${row%%$'\t'*}" "$anchor" "$f" "${row#*$'\t'*$'\t'}"
+  done
+  return 0
+}
+
 cc_person_halts() {
   # cc_person_halts <run-dir> <ledger> — one line per unanswered halt record
   # that puts options before a person, as
@@ -3240,6 +3335,73 @@ cc_person_halts() {
     printf '%s\thalt/%s\t%s\n' "$key" "$name" "$step"
   done
   return 0
+}
+
+cc_waiting_shift_halts() {
+  # cc_waiting_shift_halts <run-dir> <ledger> — one line per shift halt record
+  # that waits for a person, as `<기록 이름><TAB><자리><TAB><앵커><TAB><경로>`.
+  # The name is the file name without `.md` (`clause-C2#1`), the site and the
+  # anchor are the vouching row's `자리` and `앵커 세그먼트`. What "waiting"
+  # means is `cc__shift_halt_waiting_rows`'s. The watcher raises one banner
+  # per line and counts the lines into its person-waiting aggregate.
+  cc__shift_halt_waiting_rows "$1" "$2" | LC_ALL=C awk -F '\t' '{ printf "%s\t%s\t%s\t%s\n", $1, $2, $3, $4 }'
+}
+
+cc_shift_halt_question() {
+  # cc_shift_halt_question <record> — the value of the record's first
+  # `**질문 문면**: ` line, or nothing. The gate writes that field on one line.
+  [ -n "${1:-}" ] && [ -f "$1" ] || return 0
+  LC_ALL=C awk -v p='**질문 문면**: ' 'index($0, p) == 1 { printf "%s", substr($0, length(p) + 1); exit }' "$1" 2>/dev/null || true
+}
+
+cc__comma_list_items() {
+  # cc__comma_list_items <list> [count] — the elements of a comma-separated
+  # list, one per line with surrounding whitespace trimmed; with a second
+  # argument, only the number of elements holding a non-blank character, as an
+  # integer with no newline. The list is read through the environment, not
+  # `-v`, so awk does not unescape it, and no builtin is a pipeline element.
+  CC_CLI_LIST="$1" CC_CLI_MODE="${2:-}" awk 'BEGIN {
+    n = split(ENVIRON["CC_CLI_LIST"], a, ","); c = 0
+    for (i = 1; i <= n; i++) {
+      v = a[i]; sub(/^[[:space:]]+/, "", v); sub(/[[:space:]]+$/, "", v)
+      if (ENVIRON["CC_CLI_MODE"] == "count") { if (v != "") c++ } else print v
+    }
+    if (ENVIRON["CC_CLI_MODE"] == "count") printf "%d", c
+  }'
+}
+
+cc_shift_halt_held() {
+  # cc_shift_halt_held <run-dir> <ledger> — the segments the waiting shift
+  # halt records hold, one per line and each once: the union of every waiting
+  # record's vouching-row `의존 세그먼트` list, which carries the anchor.
+  #
+  # A CLIPPED LIST IS READ SMALL. The gate bounds the list on the row and puts
+  # the whole of it in `<run-dir>/cone.<앵커>`; a `의존 세그먼트 수` above the
+  # list's element count says the list was clipped. That file stands in only
+  # when it holds exactly that many elements — the next cone on the same
+  # anchor rewrites it — and otherwise the record holds its anchor alone.
+  # Reading the set small makes the aggregate banner rarer, never wrong.
+  local run_dir="${1%/}" ledger="$2" nm site anchor path cnt list have alt
+  {
+    while IFS=$'\t' read -r nm site anchor path cnt list; do
+      [ -n "$nm" ] || continue
+      have=$(cc__comma_list_items "$list" count)
+      case "$cnt" in ''|*[!0-9]*) cnt=$have ;; esac
+      if [ "$cnt" -gt "$have" ]; then
+        list=$anchor
+        if [ -n "$anchor" ] && [ -f "$run_dir/cone.$anchor" ]; then
+          alt=$(tr -d '\n' < "$run_dir/cone.$anchor" 2>/dev/null || true)
+          if [ "$(cc__comma_list_items "$alt" count)" = "$cnt" ]; then
+            list=$alt
+          fi
+        fi
+      fi
+      [ -n "$list" ] || list=$anchor
+      cc__comma_list_items "$list"
+    done <<EOF
+$(cc__shift_halt_waiting_rows "$run_dir" "$ledger")
+EOF
+  } | awk 'NF && !seen[$0]++'
 }
 
 cc_run_idle_exit() {

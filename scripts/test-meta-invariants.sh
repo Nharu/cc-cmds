@@ -2167,5 +2167,59 @@ shift_para=$(reflect_para "$RS_REFS/visual-dispatch.md")
 check "반영 파견 문단이 리드·교대 사본에서 바이트까지 같다" \
   "$([ -n "$lead_para" ] && [ "$lead_para" = "$shift_para" ] && echo 예 || echo 아니오)" "예"
 
+# ---------------------------------------------------------------------------
+# 6e-8. Overwriting the shared runtime shows what it voids, and a person's
+#       approval that broke on its inputs is asked again
+#
+# Both writers of `support.js` keep the replaced value in the history before
+# they overwrite, show the documents the overwrite voids, and the publish stage
+# overwrites only over the list the person saw. When a person's approval breaks
+# on its input bundle, both router copies dispatch the publish stage again and
+# write the same blocked-point sentence the morning report copies. A copy that
+# loses one of these sentences leaves an approval void with nobody told, or
+# points the seat at the interactive path, and stays green.
+# ---------------------------------------------------------------------------
+while IFS='|' read -r who file lit; do
+  [ -n "$file" ] || continue
+  n=$(grep -cF -- "$lit" "$SK/$file" || true)
+  check "$who ${file} 가 「${lit}」 을 싣는다" "$([ "${n:-0}" -ge 1 ] && echo 예 || echo 아니오)" "예"
+done <<'EOF'
+런타임 이력|visual/SKILL.md|**Append the replaced value to the history before overwriting.**
+런타임 이력|visual/SKILL.md|Overwrite `support.js` only after that rename has landed; when the history write fails, do not overwrite
+런타임 이력|visual/SKILL.md|the runtime history `support.history` Step 4 (c) appends to
+런타임 고지|visual/SKILL.md|then the output of `visual-check.sh runtime-users <design document>` verbatim
+런타임 고지|visual-publish-unattended/SKILL.md|then the output of `visual-check.sh runtime-users <document>` (`--surface 읽기`) verbatim
+런타임 고지|visual-publish-unattended/SKILL.md|`런타임 무효 대상=<문서 키, …|없음|판독 불가>`
+런타임 고지|visual-publish-unattended/SKILL.md|`교체 전 런타임 sha256=<hex>`
+목록 비교|visual-publish-unattended/SKILL.md|**and the list of documents the overwrite voids is the one that record showed**
+목록 비교|visual-publish-unattended/SKILL.md|「무효가 될 문서 목록을 읽지 못해 런타임을 덮지 않았습니다 — <the first line `runtime-users` printed>」
+목록 비교|visual-publish-unattended/SKILL.md|「목록이 읽힐 때까지 `승인` 은 런타임을 덮지 않습니다」
+런타임 이력|visual-publish-unattended/SKILL.md|the runtime history `<base>/docs/visual/support.history` (appended to)
+런타임 이력|visual-publish-unattended/SKILL.md|The history write fails → overwrite nothing and halt at `시각-판정` again
+다시 묻는 이유|visual-publish-unattended/SKILL.md|**A record asked again over a void approval says why first.**
+다시 묻는 이유|visual-publish-unattended/SKILL.md|the order is the migration notice, this reason, then the rest of the question
+승인 줄 쓰기|visual-publish-unattended/SKILL.md|That write removes only a `**구현 승인**` and a `**문서 반영**` line already standing
+런타임 이력|visual/references/sidecar.md|부르지 않는 문서는 고정 문자열 `runtime (부르지 않음)` 이라
+런타임 이력|visual/references/sidecar.md|**런타임 이력 `support.history`.**
+런타임 이력|visual/references/sidecar.md|**이 정의 전에 이미 덮인 base.**
+런타임 이력|_common/sidecar.md|**One headerless file in that directory is not an extract and no link file pins it:**
+재파견|autopilot/references/act2-seat.md|ask the new `시각-판정` record the re-dispatched stage writes, never `/cc-cmds:visual`
+재파견|autopilot/references/act3-report.md|write that sentence verbatim instead, never the one above
+EOF
+redispatch_blocked='「입력 묶음이 달라져 구현 승인이 무효가 되었다 — 교대가 `S2P` 를 다시 보냈으니 그 단계가 남기는 `시각-판정` 에 답할 것」'
+for lit in \
+  "$redispatch_blocked" \
+  '**When the approval line stands and its input bundle broke it**' \
+  'After `S2P` ended `정상 완료` and the screens'"'"' approval line broke on its inputs, dispatch `S2P` again with the publish step'"'"'s dispatch command' \
+  'on new screens, or on a person'"'"'s approval that broke on its inputs' \
+  'neither of the two sentences above, and never point the seat at `/cc-cmds:visual`'
+do
+  nl=$(grep -cF -- "$lit" "$AP_ROUTER" || true)
+  ns=$(grep -cF -- "$lit" "$RS_REFS/visual-dispatch.md" || true)
+  check "재파견 「${lit}」 이 리드·교대 사본에 같은 수로 있다" "${nl:-0}/${ns:-0}" "1/1"
+done
+check "아침 보고가 재파견 막힌 지점 문장을 축자로 싣는다" \
+  "$(grep -cF -- "$redispatch_blocked" "$SK/autopilot/references/act3-report.md" || true)" "1"
+
 printf '\n통과 %s · 실패 %s\n' "$passed" "$failed"
 [ "$failed" -eq 0 ]
