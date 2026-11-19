@@ -29,6 +29,12 @@ CC_CMDS_AUTOPILOT_NOTIFY=0
 export CC_CMDS_AUTOPILOT_NOTIFY
 CC_CMDS_DASHBOARD=off
 export CC_CMDS_DASHBOARD
+# A run the gate ends wakes the attention seat, which re-reads the run with a
+# model call. The gate skips that round only under CI or this switch, so
+# outside CI the ceiling ending below would call the claude stand-in and fail
+# the suite's "nothing billed" assertions.
+CC_CMDS_ATTENTION=off
+export CC_CMDS_ATTENTION
 
 # A short prefix: the gate's run row carries paths under this directory and
 # has a byte cap, which a long TMPDIR such as macOS's would otherwise pass.
