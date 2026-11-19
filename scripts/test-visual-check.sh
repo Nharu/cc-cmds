@@ -55,8 +55,16 @@
 #   approval   no sidecar, state not 발행됨, no approval line, one screen byte
 #              changed, valid — and bundle --lines prints the bundle text; the
 #              `**문서 반영**` line in each of its values with and without the
-#              tail, repeated, misplaced or malformed
-#   drift      count and digest of the block up to the next `### ` heading and
+#              tail, repeated, misplaced or malformed; a document that does not
+#              call `support.js` keeps its approval over a runtime change and
+#              one that calls it loses it; a line of the older definition is
+#              valid again for a candidate runtime from `(없음)`, the current
+#              runtime or a 64-hex line of `support.history`, and void without
+#   runtime-users  only other documents that call the runtime, with their
+#              approval verdict and the runs without `done` whose grant
+#              `owner-doc=` equals the key; a key holding `,` or ` — ` and a
+#              missing sidecar are exit 1
+#   drift     count and digest of the block up to the next `### ` heading and
 #              up to the end of the file, `없음`, no block (1), and lines whose
 #              title or document text is not found (2); the sidecar placed by
 #              hand through `대기` → `완료` and `대기` → `실패`
@@ -485,10 +493,10 @@ bash "$CHECK" bundle "$DOC" --lines > "$T/bundle.txt"
 {
   printf 'home %s\n' "$(shasum -a 256 "$R/docs/visual/docs-feature.home.html" | awk '{print $1}')"
   printf 'list %s\n' "$(shasum -a 256 "$R/docs/visual/docs-feature.list.html" | awk '{print $1}')"
-  printf 'runtime %s\n' "$(shasum -a 256 "$R/docs/visual/support.js" | awk '{print $1}')"
+  printf 'runtime (부르지 않음)\n'
   printf 'tokens %s\n' "$(shasum -a 256 "$R/docs/visual-system/tokens.css" | awk '{print $1}')"
 } > "$T/bundle.want"
-cmp -s "$T/bundle.txt" "$T/bundle.want" && pass "bundle --lines 는 화면 id 순 줄과 runtime·tokens 줄" || fail "bundle --lines 문면이 기대와 다르다"
+cmp -s "$T/bundle.txt" "$T/bundle.want" && pass "bundle --lines 는 화면 id 순 줄과 runtime·tokens 줄 (런타임을 부르지 않는 문서는 runtime (부르지 않음))" || fail "bundle --lines 문면이 기대와 다르다: $(cat "$T/bundle.txt")"
 B=$(bash "$CHECK" bundle "$DOC")
 [ "$B" = "$(shasum -a 256 < "$T/bundle.want" | awk '{print $1}')" ] && pass "bundle 은 묶음 문면의 sha256" || fail "bundle 다이제스트가 문면의 sha256 이 아니다"
 BANSHA=$(shasum -a 256 "$SEED" | awk '{print $1}')
@@ -550,6 +558,121 @@ refl_case "실패 사유가 꼬리를 담으면 형식 오류" "$BADFORM" "**문
 refl_case "실패 사유가 비면 형식 오류" "$BADFORM" "**문서 반영**: 실패 — "
 printf '%s\n' '<!doctype html><p>home!</p>' > "$R/docs/visual/docs-feature.home.html"
 refl_case "기존 검사가 먼저 — 묶음이 다르면 반영 줄보다 묶음 불일치" "1 승인 무효 — 입력 묶음이 달라졌다 (줄 ${B:0:12}, 지금 $(bash "$CHECK" bundle "$DOC" | cut -c1-12))" "**문서 반영**: 대기 — 어긋남 1건"
+printf '%s\n' '<!doctype html><p>home</p>' > "$R/docs/visual/docs-feature.home.html"
+
+# --- approval: the runtime line follows whether the document calls it --------
+# A document none of whose screens holds `support.js` keeps its approval when
+# only the runtime changes; a document whose screen calls `./support.js` loses
+# it. A line written under the older definition (a runtime line in every
+# bundle) is measured again for a non-calling document with the candidates
+# `(없음)`, the current runtime and each 64-hex line of `support.history`.
+RTJS="$R/docs/visual/support.js"
+HIST="$R/docs/visual/support.history"
+rt_sha() { shasum -a 256 "$RTJS" | awk '{print $1}'; }
+write_sidecar 발행됨 "$APL"
+printf '%s\n' '/* runtime v2 */' > "$RTJS"
+got=$(approval)
+[ "$got" = "$VALID" ] && pass "approval 런타임: 부르지 않는 문서는 support.js 만 바뀌면 승인 유효" || fail "approval 런타임 부르지 않음 = ${got}"
+printf '%s\n' '<!doctype html><script src="./support.js"></script><p>home</p>' > "$R/docs/visual/docs-feature.home.html"
+bash "$CHECK" bundle "$DOC" --lines > "$T/bundle.calls"
+[ "$(sed -n 3p "$T/bundle.calls")" = "runtime $(rt_sha)" ] && pass "bundle --lines: 부르는 문서의 runtime 줄은 support.js sha256" || fail "bundle 부르는 문서 runtime 줄 = $(sed -n 3p "$T/bundle.calls")"
+BC=$(bash "$CHECK" bundle "$DOC")
+write_sidecar 발행됨 "**구현 승인**: 2026-10-12T09:00:00Z — 입력 묶음 ${BC} — 금지 목록 ${BANSHA} — 기계 검사 수용 없음"
+got=$(approval)
+[ "$got" = "0 승인 유효 ${BC:0:12}" ] && pass "approval 런타임: 부르는 문서도 런타임이 그대로면 유효" || fail "approval 런타임 부르는 문서 유효 = ${got}"
+V2=$(rt_sha)
+printf '%s\n' '/* runtime v3 */' > "$RTJS"
+got=$(approval)
+case "$got" in "1 승인 무효 — 입력 묶음이 달라졌다"*) pass "approval 런타임: 부르는 문서는 support.js 가 바뀌면 승인 무효" ;; *) fail "approval 런타임 부르는 문서 무효 = ${got}" ;; esac
+# The line's own runtime value in the history would match under the older
+# definition; a calling document is never measured that way.
+printf '%s\n' "$V2" > "$HIST"
+got=$(approval)
+case "$got" in "1 승인 무효 — 입력 묶음이 달라졌다"*) pass "approval 런타임: 부르는 문서는 이력에 값이 있어도 다시 재지 않는다" ;; *) fail "approval 런타임 부르는 문서 이력 = ${got}" ;; esac
+printf '%s\n' '<!doctype html><!-- SUPPORT.JS 언급 --><p>home</p>' > "$R/docs/visual/docs-feature.home.html"
+[ "$(bash "$CHECK" bundle "$DOC" --lines | sed -n 3p)" = "runtime $(rt_sha)" ] && pass "bundle: support.js 판정은 대소문자를 가리지 않는 바이트 검사" || fail "bundle 대소문자 판정 = $(bash "$CHECK" bundle "$DOC" --lines | sed -n 3p)"
+printf '%s\n' '<!doctype html><p>home</p>' > "$R/docs/visual/docs-feature.home.html"
+rm -f "$HIST"
+# The older definition: the same screen and tokens lines with `runtime <value>`.
+legacy_bundle() { # <runtime value>
+  {
+    printf 'home %s\n' "$(shasum -a 256 "$R/docs/visual/docs-feature.home.html" | awk '{print $1}')"
+    printf 'list %s\n' "$(shasum -a 256 "$R/docs/visual/docs-feature.list.html" | awk '{print $1}')"
+    printf 'runtime %s\n' "$1"
+    printf 'tokens %s\n' "$(shasum -a 256 "$R/docs/visual-system/tokens.css" | awk '{print $1}')"
+  } | shasum -a 256 | awk '{print $1}'
+}
+OLDRT=$(printf '/* runtime v1 */\n' | shasum -a 256 | awk '{print $1}')
+LEG=$(legacy_bundle "$OLDRT")
+write_sidecar 발행됨 "**구현 승인**: 2026-10-12T09:00:00Z — 입력 묶음 ${LEG} — 금지 목록 ${BANSHA} — 기계 검사 수용 없음"
+got=$(approval)
+case "$got" in "1 승인 무효 — 입력 묶음이 달라졌다 (줄 ${LEG:0:12}, 지금 ${B:0:12})") pass "approval 옛 정의: 교체 전 값이 이력에 없으면 무효 (지금 값은 새 정의)" ;; *) fail "approval 옛 정의 이력 없음 = ${got}" ;; esac
+printf '%s\n' 'not a hash' "$(printf '%s' "$OLDRT" | tr 'a-f' 'A-F')" " ${OLDRT}" > "$HIST"
+got=$(approval)
+case "$got" in "1 승인 무효 — 입력 묶음이 달라졌다"*) pass "approval 옛 정의: 64자리 소문자 16진수가 아닌 이력 줄은 건너뛴다" ;; *) fail "approval 옛 정의 이력 형식 = ${got}" ;; esac
+printf '%s\n' "$OLDRT" >> "$HIST"
+got=$(approval)
+[ "$got" = "0 승인 유효 ${LEG:0:12}" ] && pass "approval 옛 정의: 교체 전 값이 이력에 있으면 승인 유효 (줄 값의 앞 12자)" || fail "approval 옛 정의 이력 있음 = ${got}"
+rm -f "$HIST"
+LEGNOW=$(legacy_bundle "$(rt_sha)")
+write_sidecar 발행됨 "**구현 승인**: 2026-10-12T09:00:00Z — 입력 묶음 ${LEGNOW} — 금지 목록 ${BANSHA} — 기계 검사 수용 없음"
+got=$(approval)
+[ "$got" = "0 승인 유효 ${LEGNOW:0:12}" ] && pass "approval 옛 정의: 지금 support.js 값도 후보" || fail "approval 옛 정의 지금 값 = ${got}"
+LEGNONE=$(legacy_bundle '(없음)')
+write_sidecar 발행됨 "**구현 승인**: 2026-10-12T09:00:00Z — 입력 묶음 ${LEGNONE} — 금지 목록 ${BANSHA} — 기계 검사 수용 없음"
+got=$(approval)
+[ "$got" = "0 승인 유효 ${LEGNONE:0:12}" ] && pass "approval 옛 정의: (없음) 도 후보" || fail "approval 옛 정의 (없음) = ${got}"
+printf '%s\n' '/* runtime */' > "$RTJS"
+
+# --- runtime-users --------------------------------------------------------------
+# The other documents whose screens call the runtime, each with the first line
+# of its approval verdict and the runs that lean on it: the `## 인가` blocks of
+# the grant records whose `owner-doc=` equals the key, without a `done` file.
+ru_sidecar() { # <slug> <owner> <screen body>
+  {
+    echo "# 시각 디자인 연결 — $2"
+    echo "<!-- cc-visual v1; writer=visual; reader=implement; owner-doc=$2; origin-worktree=$R; NOT a design doc; mechanism-local, never staged by a skill -->"
+    echo "**상태**: 발행됨"
+    echo
+    echo "### 화면 home"
+  } > "$R/docs/visual/$1.md"
+  printf '%s\n' "$3" > "$R/docs/visual/$1.home.html"
+}
+ru() { local rc=0 out; out=$(XDG_STATE_HOME="$T/xdg" bash "$CHECK" runtime-users "$@" 2>&1) || rc=$?; printf '%s %s' "$rc" "$out"; }
+write_sidecar 발행됨 "$APL"
+got=$(ru "$DOC")
+[ "$got" = "0 런타임 사용 문서 0" ] && pass "runtime-users: 부르는 다른 문서가 없으면 0" || fail "runtime-users 0 = ${got}"
+printf '%s\n' '# c' > "$R/docs/c.md"
+ru_sidecar docs-c docs/c.md '<!doctype html><script src="./support.js"></script>'
+ru_sidecar docs-d docs/d.md '<!doctype html><p>d</p>'
+ru_sidecar docs-b docs/b.md '<!doctype html><script src="./Support.JS"></script>'
+# This document's own screen calls the runtime too; it is never listed.
+printf '%s\n' '<!doctype html><script src="./support.js"></script>' > "$R/docs/visual/docs-feature.home.html"
+mkdir -p "$R/docs/pipeline-grant" "$T/xdg/cc-cmds/run/R1" "$T/xdg/cc-cmds/run/R2"
+: > "$T/xdg/cc-cmds/run/R1/done"
+for g in R1 R2 R3; do
+  owner=docs/c.md
+  [ "$g" != R3 ] || owner=Users/x/docs/c.md
+  printf '# 인가\n<!-- cc-pipeline-grant v1; writer=autopilot; reader=orchestrator; owner-doc=%s; NOT a design doc -->\n\n## 인가 %s\n' "$owner" "$g" > "$R/docs/pipeline-grant/$g.md"
+done
+printf '# 인가\n<!-- cc-pipeline-grant v1; writer=autopilot; reader=orchestrator; owner-doc=docs/c.md; NOT a design doc -->\n\n## 인가 R0\n' > "$R/docs/pipeline-grant/R0.md"
+got=$(ru "$DOC")
+[ "$got" = "0 런타임 사용 문서 2
+docs/b.md — 승인 없음 — 설계 문서가 없다 — 기대는 런 없음
+docs/c.md — 승인 없음 — 구현 승인 줄 없음 — 기대는 런 R0, R2" ] && pass "runtime-users: 부르는 문서만 키 순으로, 승인 판정 첫 줄과 done 없는 런 (owner-doc 바이트 일치만)" || fail "runtime-users = ${got}"
+ru_sidecar 'docs-x,y' 'docs/x,y.md' '<!doctype html><script src="./support.js"></script>'
+got=$(ru "$DOC")
+case "$got" in "1 런타임 사용 문서 판독 불가 — "*) pass "runtime-users: 쉼표를 담는 문서 키는 목록을 모르는 것으로 종료 1" ;; *) fail "runtime-users 모호한 키 = ${got}" ;; esac
+rm -f "$R/docs/visual/docs-x,y.md" "$R/docs/visual/docs-x,y.home.html"
+ru_sidecar 'docs-x — y' 'docs/x — y.md' '<!doctype html><script src="./support.js"></script>'
+got=$(ru "$DOC")
+case "$got" in "1 런타임 사용 문서 판독 불가 — "*) pass "runtime-users: 「 — 」 를 담는 문서 키도 종료 1" ;; *) fail "runtime-users 대시 키 = ${got}" ;; esac
+rm -f "$R/docs/visual/docs-x — y.md" "$R/docs/visual/docs-x — y.home.html"
+printf '%s\n' '# none' > "$R/docs/none.md"
+got=$(ru "$R/docs/none.md")
+case "$got" in "1 런타임 사용 문서 없음 — 사이드카 없음"*) pass "runtime-users: 이 문서의 사이드카가 없으면 종료 1" ;; *) fail "runtime-users 사이드카 없음 = ${got}" ;; esac
+rm -rf "$R/docs/pipeline-grant" "$R/docs/none.md" "$R/docs/c.md"
+rm -f "$R/docs/visual/docs-b.md" "$R/docs/visual/docs-b.home.html" "$R/docs/visual/docs-c.md" "$R/docs/visual/docs-c.home.html" "$R/docs/visual/docs-d.md" "$R/docs/visual/docs-d.home.html"
 printf '%s\n' '<!doctype html><p>home</p>' > "$R/docs/visual/docs-feature.home.html"
 
 # --- drift --------------------------------------------------------------------
