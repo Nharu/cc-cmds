@@ -6626,7 +6626,7 @@ spawn_route_wait() {
   if [ "$grp" != "-" ]; then
     rec=$(route_lease_wait_put --table "$(run_pace_root)/leases" --now "$(now_epoch)" --run-id "$RUN_ID" \
             --lineage "$SPAWN_LINEAGE" --group "$grp" --inventory "$RUN_DIR/inventory.json" \
-            --holder "$holder" 2>/dev/null) || rrc=$?
+            --holder "$holder" ${kind:+--kind "$kind"} 2>/dev/null) || rrc=$?
     if [ "$rrc" = "0" ]; then
       wnonce=$(printf '%s' "$rec" | jq -r '.nonce // "-"' 2>/dev/null || printf '%s' '-')
     else
@@ -11395,8 +11395,10 @@ wait_drop() {
 }
 
 wait_fifo_follow() {
-  # wait_fifo_follow <marker> <lineage> <holder> <group> <reason> — keep this
-  # wait's FIFO entry in step with the WAIT it was just given.
+  # wait_fifo_follow <marker> <lineage> <holder> <group> <reason> [<kind>] — keep
+  # this wait's FIFO entry in step with the WAIT it was just given. <kind> is the
+  # waiting stage's kind; an entry put back carries it as `--kind`, and an empty
+  # or absent <kind> puts the entry back with no kind.
   #
   # THE HOST HOLD TAKES THE ENTRY DOWN. It answers a waiter whose account found
   # room with a group-less `host-saturated` WAIT, and the host wait uses no
@@ -11411,7 +11413,7 @@ wait_fifo_follow() {
   # whose first put failed, would otherwise yield to every entry of that group
   # for good. The lease table, not the marker, says whether the entry is there,
   # so a marker that kept a nonce after its entry came down does not stop it.
-  local m="$1" lin="$2" holder="$3" grp="$4" why="$5" nonce rec t
+  local m="$1" lin="$2" holder="$3" grp="$4" why="$5" kind="${6:-}" nonce rec t
   [ -f "$m" ] || return 0
   t="$(run_pace_root)/leases"
   nonce=$(cc_waiting_field "$m" '논스' | tr -d '[:space:]')
@@ -11429,7 +11431,7 @@ wait_fifo_follow() {
   fi
   rec=$(route_lease_wait_put --table "$t" --now "$(now_epoch)" --run-id "$RUN_ID" \
           --lineage "$lin" --group "$grp" --inventory "$RUN_DIR/inventory.json" \
-          --holder "${holder:-0}" 2>/dev/null) || return 0
+          --holder "${holder:-0}" ${kind:+--kind "$kind"} 2>/dev/null) || return 0
   nonce=$(printf '%s' "$rec" | jq -r '.nonce // "-"' 2>/dev/null || printf '%s' '-')
   [ "$nonce" != "-" ] || return 0
   # An entry the marker does not name is one no drop could find again.
@@ -11598,7 +11600,7 @@ stage_wait_loop() {
         wgrp=$(printf '%s' "$env" | jq -r '.group // "-"' 2>/dev/null || printf '%s' '-')
         wait_marker_set "$m" '갱신' "$(now_epoch)" '까지' "$upto" '그룹' "$wgrp" || true
         wait_fifo_follow "$m" "$lin" "$holder" "$wgrp" \
-          "$(printf '%s' "$env" | jq -r '.reason // ""' 2>/dev/null || true)"
+          "$(printf '%s' "$env" | jq -r '.reason // ""' 2>/dev/null || true)" "$kind"
         # A WAIT without `reserve_seen` keeps the memory the marker already has.
         if printf '%s' "$env" | jq -e '(.reserve_seen | type) == "array"' >/dev/null 2>&1; then
           wait_marker_set "$m" '예비' "$(printf '%s' "$env" | jq -c '.reserve_seen' 2>/dev/null || printf '%s' '[]')" || true

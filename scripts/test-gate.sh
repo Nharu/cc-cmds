@@ -40035,6 +40035,232 @@ cap_gate "$CLQ_SHIFT" "$CLQ_RID#1" act --manifest "$CAP_NM" --kind propose-done 
 check "34q: 모든 절이 정산된 뒤 propose-done 이 받아들여진다" "$rc" "0"
 [ "$rc" = "0" ] || printf '  34q: %s\n' "$msg"
 
+# --- 34qw. 교대 정지 기록의 사람 대기 배너 — 감시자가 띄우고 걷는다 ---
+# --- section: 34qw | group: cone | covers: shift-halt, halt-answer, watch, notify, cc_waiting_shift_halts, cc_shift_halt_held, settle_stall_arm | anchors: 34qw: 종료 절 근거 기록의 배너가 그 기록의 그룹으로 한 번 뜬다, 34qw: 런 전체 대기 집계가 교대 정지 기록 1건을 싣는다, 34qw: 대기 기록이 있는 동안 정산 정체 안내는 없다, 34qw: 종료 절 행으로 닫힌 기록의 배너를 한 번 걷는다, 34qw: 닫힌 뒤에는 정산 정체 안내가 뜬다, 34qw: 잡힌 세그먼트만 비종단이면 집계가 뜨고 일반 정체는 없다, 34qw: 잡히지 않은 비종단이 있으면 집계는 없고 일반 정체가 뜬다, 34qw: 중단 답 뒤 다음 주기에 배너를 걷는다, 34qw: 되돌린 답은 같은 그룹으로 다시 뜬다, 34qw: 보증 행 없는 기록 모양 파일은 배너를 만들지 않는다 ---
+#
+# A SHIFT HALT RECORD IS A QUESTION TO A PERSON, AND THE WATCHER IS THE ONE
+# THAT CAN SAY SO. A routing shift is not a seat that may raise a banner, so the
+# record the gate writes for it reached nobody, and with every segment merged
+# the settle-stall arm told the person to resume a settlement that was waiting
+# on them. Each record here is written by the gate's own verb, and the watcher
+# runs once with the notifier stubbed on `PATH`, so what is asserted is the argv
+# the real watcher hands the notifier for a record the real gate wrote.
+#
+# The helpers are this section's own: the stub directory, its log and the
+# watcher pass are defined here, so the cut stands alone. The pass ages the
+# watcher's state and the gate's last entry to 5000 s, the way 31ba's does, and
+# clears the stage and shift markers, so the watcher judges itself the seat a
+# banner may come from even when this suite runs inside a pipeline stage.
+QW_BIN="$WORK/bin-34qw"; mkdir -p "$QW_BIN"
+QW_LOG="$WORK/34qw-notify.log"; : > "$QW_LOG"
+cat > "$QW_BIN/terminal-notifier" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$CC_TEST_NOTIFY_LOG"
+STUB
+chmod +x "$QW_BIN/terminal-notifier"
+QW_WATCH="$(dirname "$GATE")/watch.sh"
+QW_OUT="$WORK/34qw-watch.out"
+qw_watch() {  # qw_watch <run-dir> <ledger> — one watcher pass, idle aged to 5000 s, notifier stubbed
+  local rd="$1" lg="$2" now
+  now=$(date -u +%s)
+  printf '%s\n%s\n%s\n' "$( . "$LIVENESS"; cc_ledger_size "$lg" )" "$((now - 5000))" "$lg" > "$rd/watch.state"
+  printf '%s\n' "$((now - 5000))" > "$rd/started-at"
+  ( unset TMUX TMUX_PANE
+    export XDG_STATE_HOME="$STATE_CONE" PATH="$QW_BIN:$PATH" CC_TEST_NOTIFY_LOG="$QW_LOG" \
+      CC_CMDS_AUTOPILOT_NOTIFY=1 CC_CMDS_NOTIFY_PATH_DISABLE_PREPEND=1 CC_CMDS_NOTIFY_HOST_OS=Darwin \
+      CC_PIPELINE_SEGMENT='' CC_PIPELINE_STAGE_ID='' CC_PIPELINE_SHIFT_ID=''
+    bash "$QW_WATCH" --run-dir "$rd" --ledger "$lg" --once \
+      --stall 60 --silence 60 --after-stage 60 --run-open 60 ) > "$QW_OUT" 2>&1
+}
+qw_n() {  # qw_n <고정 문자열…> — the stub log's lines that hold every given string
+  local s out
+  out=$(cat "$QW_LOG" 2>/dev/null || true)
+  for s in "$@"; do out=$(printf '%s\n' "$out" | grep -F -- "$s" || true); done
+  printf '%s' "$out" | grep -c . || true
+}
+qw_wait() {
+  # qw_wait <기대 수> <고정 문자열…> — qw_n after a bounded wait for that many.
+  # The notifier is launched detached, a removal included, so a line can land
+  # after the watcher has exited.
+  local want="$1" i=0; shift
+  while [ "$i" -lt 60 ]; do
+    [ "$(qw_n "$@")" -ge "$want" ] && break
+    sleep 0.1; i=$((i + 1))
+  done
+  qw_n "$@"
+}
+qw_quiet() {  # qw_quiet <고정 문자열…> — qw_n after a short wait, for a line that must not come
+  sleep 0.3
+  qw_n "$@"
+}
+qw_blk() { { grep -cE '^- `blocked`' "$1" 2>/dev/null || true; } | tr -d ' '; }
+qw_stall() { local n; n=$( { grep -c . "$1/stall" 2>/dev/null || true; } | tr -d ' '); printf '%s' "${n:-0}"; }
+
+# The settled run: two merged segments, the `ends-on-done` marker and no
+# `done`, which is the window a termination clause's evidence request lands
+# in. Beside the gate's record sits a hand-placed file of the same shape with
+# no row vouching for it.
+QW1_RID=RQW1
+cap_fx_new "$QW1_RID"
+mkdir -p "$CAP_DIR/halt/shift"
+sed -i.bak '/^\*\*구속 다이제스트\*\*/d' "$CAP_NM" && rm -f "$CAP_NM.bak"
+sed -i.bak '/^- `종료 절` /d' "$CAP_NM" && rm -f "$CAP_NM.bak"
+printf -- '- `종료 절` | id=C1 | 문면=첫째 절\n- `종료 절` | id=C2 | 문면=둘째 절\n' >> "$CAP_NM"
+QW1_SEAT="6e6e6e6e-7777-2222-3333-444444444444"
+{ cap_usage_line 10000 5000 1000; } > "$NTX/$QW1_SEAT.jsonl"
+for qw_s in Q1 Q2; do
+  cap_gate "$QW1_SEAT" '' act --manifest "$CAP_NM" --kind segment --target infra --segment "$qw_s" \
+           --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$QW1_SEAT" '')" \
+           --rationale x -- 워크트리="$CONE_C" 상태=실행중 선행=없음
+done
+cap_gate "$QW1_SEAT" '' act --manifest "$CAP_NM" --kind router-shift --target infra \
+         --cutpoint 커밋 --surface 워크트리쓰기 --snapshot-digest "$(cap_H "$QW1_SEAT" '')" \
+         --rationale "픽스처 — 교대 기동" \
+         -- 상한 -p "/cc-cmds:autopilot-router-shift $CAP_NM"
+check "34qw: 정산 런 픽스처의 교대 기동이 섰다" "$rc" "0"
+QW1_SHIFT=$(row_field "$(cap_rows '교대 기동' | tail -1)" '세션 id')
+{ cap_usage_line 10000 5000 1000; } > "$NTX/$QW1_SHIFT.jsonl"
+hw_row segment 교대=0 id=Q1 "워크트리=$CONE_C" 상태=머지됨 선행=없음
+hw_row segment 교대=0 id=Q2 "워크트리=$CONE_C" 상태=머지됨 선행=없음
+printf '1\n' > "$CAP_DIR/ends-on-done"
+QW1_Q='C2 가 요구하는 실측을 돌려 결과를 남기는가?'
+cap_gate "$QW1_SHIFT" "$QW1_RID#1" act --manifest "$CAP_NM" --kind shift-halt --target infra --segment - \
+         --site '종료 절 근거' --cutpoint 커밋 --surface 읽기 \
+         --snapshot-digest "$(cap_H "$QW1_SHIFT" "$QW1_RID#1")" --rationale "픽스처 — 절 근거 요청" \
+         -- '절=C2' "질문=$QW1_Q" '관측=그 실측은 이 런의 읽기로 만들 수 없다'
+check "34qw: 종료 절 근거의 shift-halt 가 통과한다" "$rc" "0"
+[ "$rc" = "0" ] || printf '  34qw: %s\n' "$msg"
+check "34qw: 그 기록이 halt/shift/clause-C2#1.md 에 선다" \
+  "$( [ -f "$CAP_DIR/halt/shift/clause-C2#1.md" ] && printf yes || printf no)" "yes"
+printf '**스킬**: autopilot-router-shift\n**질문 문면**: 손으로 둔 기록\n' > "$CAP_DIR/halt/shift/clause-C9#1.md"
+QW1_G="-group cc-cmds-autopilot-$QW1_RID-shift-halt-clause-C2#1 "
+QW1_AG="-group cc-cmds-autopilot-$QW1_RID-답"
+qw_b0=$(qw_blk "$CAP_LEDGER")
+qw_s0=$(qw_stall "$CAP_DIR")
+: > "$QW_LOG"
+qw_watch "$CAP_DIR" "$CAP_LEDGER"
+check "34qw: 종료 절 근거 기록의 배너가 그 기록의 그룹으로 한 번 뜬다" "$(qw_wait 1 "$QW1_G")" "1"
+check "34qw: 그 배너는 기록의 질문 문면을 싣는다" "$(qw_n "$QW1_G" "「${QW1_Q}」")" "1"
+check "34qw: 배너를 띄운 기록 이름이 표지에 한 줄 남는다" \
+  "$(cat "$CAP_DIR/watch.announced-shift-halts" 2>/dev/null)" "clause-C2#1"
+check "34qw: 런 전체 대기 집계가 교대 정지 기록 1건을 싣는다" \
+  "$(qw_wait 1 "$QW1_AG" '교대 정지 기록 1건')" "1"
+check "34qw: 보증 행 없는 기록 모양 파일은 배너를 만들지 않는다" "$(qw_n 'shift-halt-clause-C9')" "0"
+check "34qw: 대기 기록이 있는 동안 정산 정체 안내는 없다" \
+  "$(qw_quiet '끝맺지 못하고 멈췄습니다')/$( { ls "$CAP_DIR"/watch.announced-settle-stall-* 2>/dev/null || true; } | grep -c . || true)" "0/0"
+check "34qw: 그 주기는 정체 관측도 blocked 행도 더하지 않는다" \
+  "$(qw_stall "$CAP_DIR")/$(qw_blk "$CAP_LEDGER")" "$qw_s0/$qw_b0"
+qw_watch "$CAP_DIR" "$CAP_LEDGER"
+check "34qw: 같은 상태의 두 번째 주기는 기록 배너도 집계도 다시 띄우지 않는다" \
+  "$(qw_quiet "$QW1_G")/$(qw_n "$QW1_AG")" "1/1"
+
+# THE CONTRAST: the same run with the request closed. A copy under a
+# directory of the same name, so the record's path tail and the banner group
+# are the run's own, takes the `종료 절` row that settles C2. The watcher then
+# takes the record's banner down, drops its name from the marker, and the
+# settle-stall notice the record held off comes back — which is what makes the
+# silence above the record's doing. The hand-placed file is still there and
+# still counts for nothing: no aggregate rises for it.
+QW_C3="$WORK/34qw-c3"; rm -rf "$QW_C3"; mkdir -p "$QW_C3"
+cp -R "$CAP_DIR" "$QW_C3/$QW1_RID"
+cp "$CAP_LEDGER" "$QW_C3/ledger.md"
+printf -- '- `종료 절` | id=C2 | 상태=충족 | 근거=34qw 대조의 정산 | prev=x\n' >> "$QW_C3/ledger.md"
+: > "$QW_LOG"
+qw_watch "$QW_C3/$QW1_RID" "$QW_C3/ledger.md"
+check "34qw: 종료 절 행으로 닫힌 기록의 배너를 한 번 걷는다" \
+  "$(qw_wait 1 "-remove cc-cmds-autopilot-$QW1_RID-shift-halt-clause-C2#1")" "1"
+check "34qw: 닫힌 기록의 이름은 표지에서 빠진다" \
+  "$( { grep -cxF 'clause-C2#1' "$QW_C3/$QW1_RID/watch.announced-shift-halts" 2>/dev/null || true; } | tr -d ' ')" "0"
+check "34qw: 닫힌 뒤에는 정산 정체 안내가 뜬다" "$(qw_wait 1 '끝맺지 못하고 멈췄습니다')" "1"
+check "34qw: 보증 행 없는 기록 모양 파일은 집계에 세지 않는다" "$(qw_n "$QW1_AG")" "0"
+rm -rf "$QW_C3"
+
+# The segment-anchored record. Q3 stops at `병합 거절`; Q4 declares Q3 as its
+# predecessor, so the record's cone holds both. With those two the only
+# segments in flight, the run as a whole waits on the record: the aggregate
+# rises and the general stall arm keeps quiet. The contrast copy adds Q5, which
+# nothing holds, and reads the other way round.
+QW2_RID=RQW2
+cap_fx_new "$QW2_RID"
+mkdir -p "$CAP_DIR/halt/shift"
+QW2_SEAT="6e6e6e6e-8888-2222-3333-444444444444"
+{ cap_usage_line 10000 5000 1000; } > "$NTX/$QW2_SEAT.jsonl"
+qw2_seg() {  # qw2_seg <id> <worktree> [필드…] — a segment row the seat writes
+  local id="$1" wt="$2"; shift 2
+  cap_gate "$QW2_SEAT" '' act --manifest "$CAP_NM" --kind segment --target infra --segment "$id" \
+           --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$QW2_SEAT" '')" \
+           --rationale x -- 워크트리="$wt" 상태=실행중 "$@"
+}
+qw2_seg Q3 "$CONE_A" 선행=없음; qw_r3=$rc
+qw2_seg Q4 "$CONE_D" 선행=Q3; qw_r4=$rc
+cap_gate "$QW2_SEAT" '' act --manifest "$CAP_NM" --kind router-shift --target infra \
+         --cutpoint 커밋 --surface 워크트리쓰기 --snapshot-digest "$(cap_H "$QW2_SEAT" '')" \
+         --rationale "픽스처 — 교대 기동" \
+         -- 상한 -p "/cc-cmds:autopilot-router-shift $CAP_NM"
+check "34qw: 세그먼트 런 픽스처의 세그먼트 둘과 교대 기동이 섰다" "$qw_r3/$qw_r4/$rc" "0/0/0"
+QW2_SHIFT=$(row_field "$(cap_rows '교대 기동' | tail -1)" '세션 id')
+{ cap_usage_line 10000 5000 1000; } > "$NTX/$QW2_SHIFT.jsonl"
+cap_gate "$QW2_SHIFT" "$QW2_RID#1" act --manifest "$CAP_NM" --kind shift-halt --target infra --segment Q3 \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$QW2_SHIFT" "$QW2_RID#1")" \
+         --rationale "픽스처 — 교대 정지" \
+         -- '자리=병합 거절' '질문=병합 거절의 원인을 다시 읽고 다시 시도하는가?' '관측=병합이 리뷰 차단으로 거절됐다'
+check "34qw: 세그먼트 앵커의 shift-halt 가 통과한다" "$rc" "0"
+[ "$rc" = "0" ] || printf '  34qw: %s\n' "$msg"
+QW2_REC="$CAP_DIR/halt/shift/Q3#1.md"
+qw2_cone=",$(row_field "$(cap_rows 'blocked' | tail -1)" '의존 세그먼트'),"
+case "$qw2_cone" in
+  *,Q3,*) case "$qw2_cone" in *,Q4,*) ok "34qw: 그 기록의 원뿔이 Q3 과 Q4 를 잡는다" ;;
+                              *) bad "34qw: 그 기록의 원뿔이 Q3 과 Q4 를 잡는다" "$qw2_cone" ;; esac ;;
+  *) bad "34qw: 그 기록의 원뿔이 Q3 과 Q4 를 잡는다" "$qw2_cone" ;;
+esac
+QW2_G="-group cc-cmds-autopilot-$QW2_RID-shift-halt-Q3#1 "
+QW2_AG="-group cc-cmds-autopilot-$QW2_RID-답"
+QW_STALL_TXT='동안 멈춰 있습니다'
+qw_s0=$(qw_stall "$CAP_DIR")
+: > "$QW_LOG"
+qw_watch "$CAP_DIR" "$CAP_LEDGER"
+check "34qw: 세그먼트 앵커 기록의 배너가 그 기록의 그룹으로 뜬다" "$(qw_wait 1 "$QW2_G")" "1"
+check "34qw: 잡힌 세그먼트만 비종단이면 집계가 뜨고 일반 정체는 없다" \
+  "$(qw_wait 1 "$QW2_AG" '교대 정지 기록 1건')/$(qw_quiet "$QW_STALL_TXT")" "1/0"
+check "34qw: 그 주기는 정체 관측을 남기지 않는다" "$(qw_stall "$CAP_DIR")" "$qw_s0"
+QW_C5="$WORK/34qw-c5"; rm -rf "$QW_C5"; mkdir -p "$QW_C5"
+cp -R "$CAP_DIR" "$QW_C5/$QW2_RID"
+rm -f "$QW_C5/$QW2_RID"/watch.* "$QW_C5/$QW2_RID"/.watch.* "$QW_C5/$QW2_RID/stall"
+cp "$CAP_LEDGER" "$QW_C5/ledger.md"
+printf -- '- `segment` | 교대=0 | id=Q5 | 워크트리=%s | 상태=실행중 | 선행=없음 | prev=x\n' "$CONE_E" >> "$QW_C5/ledger.md"
+: > "$QW_LOG"
+qw_watch "$QW_C5/$QW2_RID" "$QW_C5/ledger.md"
+check "34qw: 잡히지 않은 비종단이 있으면 집계는 없고 일반 정체가 뜬다" \
+  "$(qw_wait 1 "$QW_STALL_TXT")/$(qw_n "$QW2_AG")" "1/0"
+check "34qw: 그 대조의 정체는 라이브니스 침묵 관측을 남긴다" \
+  "$( { grep -cF '라이브니스 침묵' "$QW_C5/$QW2_RID/stall" 2>/dev/null || true; } | tr -d ' ')" "1"
+rm -rf "$QW_C5"
+
+# THE ANSWER TAKES THE BANNER DOWN, AND A RETURNED ANSWER PUTS IT BACK. The
+# person's `중단 답` makes the record answered, so the next pass removes its
+# group and drops the name. A routing block stamped with that answer's line —
+# the shift could not carry the answer out — makes the record wait again, and
+# the pass after it raises the same group once more.
+cap_gate "$QW2_SEAT" '' act --manifest "$CAP_NM" --kind halt-answer --target infra --segment Q3 \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$QW2_SEAT" '')" \
+         --rationale "픽스처 — 사람의 답" \
+         -- "중단 기록=$QW2_REC" '선택지=재시도' '답한 주체=사람' '근거=사람이 고름'
+check "34qw: 세그먼트 앵커 기록의 사람 답이 선다" "$rc" "0"
+[ "$rc" = "0" ] || printf '  34qw: %s\n' "$msg"
+qw_ans_line=$(grep -n '^- `중단 답` ' "$CAP_LEDGER" | tail -1 | cut -d: -f1)
+: > "$QW_LOG"
+qw_watch "$CAP_DIR" "$CAP_LEDGER"
+check "34qw: 중단 답 뒤 다음 주기에 배너를 걷는다" \
+  "$(qw_wait 1 "-remove cc-cmds-autopilot-$QW2_RID-shift-halt-Q3#1")" "1"
+check "34qw: 답한 기록의 이름은 표지에서 빠진다" \
+  "$( { grep -cxF 'Q3#1' "$CAP_DIR/watch.announced-shift-halts" 2>/dev/null || true; } | tr -d ' ')" "0"
+hw_row blocked 대상=infra 스코프=cone 원인=막힘 앵커 세그먼트=Q3 '사유=답을 수행하지 못했다' "막힌 답 줄=$qw_ans_line"
+: > "$QW_LOG"
+qw_watch "$CAP_DIR" "$CAP_LEDGER"
+check "34qw: 되돌린 답은 같은 그룹으로 다시 뜬다" "$(qw_wait 1 "$QW2_G")" "1"
+check "34qw: 다시 뜬 기록의 이름이 표지에 돌아온다" \
+  "$( { grep -cxF 'Q3#1' "$CAP_DIR/watch.announced-shift-halts" 2>/dev/null || true; } | tr -d ' ')" "1"
+
 # --- 34qe. 종료 절 근거 실행 — 사전 인가 행이 연 실행으로 절을 정산한다 ---
 # --- section: 34qe | group: cone | covers: act, snapshot, shift-halt, halt-answer, clause-exec, check_manifest, feed, gate_done_conditions, gate_reach_disposition | anchors: 34qe: 관측된 꼴의 쓰기 실행이 승인 대기·도달 park 없이 0 이다, 34qe: 쓰기 실행이 읽기 자격 아래에서 돌았다, 34qe: 재조회를 인용한 충족 행에 자체 근거=예 가 붙는다, 34qe: 결속 형태로 시작하지 않는 실행은 거절된다, 34qe: 요지는 가리고 160자에서 자른다, 34qe: 종료 절 근거 기록에 좌석 답은 거절된다, 34qe: 같은 argv 의 exec 는 도달모순으로 park 된다, 34qe: 파괴를 명시하지 않은 행 아래의 파괴 실행은 협업 칸에서 park 된다, 34qe: 근거 실행이 없는 매니페스트의 구속 다이제스트는 그대로다 ---
 #
@@ -68777,6 +69003,7 @@ h98_wd="${h98_lw%/*}"
 check "98: 차용된 묶인 재개의 파견은 대기 토큰·감독자·FIFO 항목·표지를 남긴다" \
   "${h98_wout%%|-*}|$(sed -n '4p;6p;7p' "$h98_wd/S98.launch" 2>/dev/null | paste -sd, -)|$(cat "$h98_wd/S98.sup" 2>/dev/null)|$(lsr93_n "$h98_wd/wait-put" '--group org:0123456789abcdef')$(lsr93_n "$h98_wd/wait-put" '--holder 424242')|$(lsr93_n "$h98_wd/S98.waiting" '그룹=org:0123456789abcdef')$(lsr93_n "$h98_wd/S98.waiting" '논스=w98')" \
   "0|WAIT|resume|bound|wait,resume,u1|424242|11|11"
+check "98: 감독자의 첫 FIFO 넣기는 스테이지 종류를 --kind 로 넘긴다" "$(lsr93_n "$h98_wd/wait-put" '--kind reconverge')" "1"
 check "98: 그 파견의 stage-wait 행은 하나이고 차용 중 재개 대기다" \
   "$(lsr93_n "$h98_lw" '- `stage-wait` ')/$(lsr93_n "$h98_lw" '| 근거=resume-bound-borrowed |')" "1/1"
 
@@ -74616,6 +74843,93 @@ check "115: 문서에 이미 있는 보관 표지 번호는 다시 쓰지 않는
   "0|1|1|1"
 unset -f s115_synth
 unset S115 s115_tool s115_rev s115_rc s115_sz s115_sha s115_m s115_ck
+
+# ---------------------------------------------------------------------------
+# 116. 다수 대기자 배수 — 여유가 앞선 대기자 몫까지 담으면 한 라운드에 대기열이 빠진다
+# --- section: 116 | group: base | covers: rt_fifo_blocked, rt_ahead, rt_res_of, rt_wait_record, route__wait_put_main, route__txn_main | anchors: 116: lease-wait-put --kind 로 줄 세운 대기자, 116: 여유가 전원을 담으면 seq 역순, 116: 그 라운드 뒤 살아 있는 대기 항목, 116: 여유가 앞 k 명 몫만, 116: 종류 없는 옛 대기 항목 뒤 ---
+#
+# 한 그룹(계정 a 하나)의 대기자 27개를 실제 `route.sh lease-wait-put --kind implement`
+# 로 가짜 임대 표에 줄 세운다. 보유자는 이 절이 띄운 살아 있는 sleep 하나다. 각
+# 대기자는 한 라운드에 한 번씩, 가장 불리한 순서인 seq 역순으로 실제 `route.sh
+# lease-txn` 에 다시 묻는다 — 거래는 잠금 아래에서 표를 다시 읽고 GRANT 면 그 계보의
+# 부여 기록을 같은 키에 쓰므로, 앞선 질문이 쓴 부여의 예약이 다음 질문의 σ 에 든다.
+# implement 하나의 예약은 5시간 300, 주간 100 이다(비용비 1, 비용 0.03·0.01). 5시간
+# 창의 리셋이 지난 사용량이면 실효 사용률 0 이라 27 × 300 이 한도 안이고, 5시간
+# 사용률 0.7 이면 여유 3000 이 앞 10 명 몫만 담는다. 호스트 포화 문맥은 두지 않는다.
+# ---------------------------------------------------------------------------
+S116="$WORK/s116"; rm -rf "$S116"; mkdir -p "$S116"
+s116_route="$repo_root/plugins/cc-cmds/orchestrator/route.sh"
+s116_now=$(date +%s)
+( sleep 600 >/dev/null 2>&1 & printf '%s' "$!" > "$S116/holder.pid" )
+s116_holder=$(cat "$S116/holder.pid")
+# s116_put <표> <계보> [--kind <종류>] — 계정 a 의 대기 항목 하나.
+s116_put() {
+  local t="$1" lin="$2"
+  shift 2
+  RUN_PACE_ROOT="$S116/pace" XDG_STATE_HOME="$S116/state" bash "$s116_route" lease-wait-put --table "$t" \
+    --now "$s116_now" --run-id r116 --lineage "$lin" --account a --config-dir /h/.claude-a \
+    --holder "$s116_holder" "$@"
+}
+# s116_ask <표> <계보> <5시간 사용률> <5시간 리셋 시각> — 그 대기자가 다시 묻는 거래 하나의 판정.
+s116_ask() {
+  jq -cn --argjson now "$s116_now" --arg lin "$2" --argjson u5 "$3" --argjson r5 "$4" --arg bp "$S116/no-borrow.json" '
+    def W($u; $r): {utilization: $u, resets_at_epoch: $r, observed_at_epoch: ($now - 60), source: "tracker"};
+    {now: $now, request: {run_id: "r116", lineage: $lin, event: "first", kind: "implement"},
+     inventory: {state: "valid", accounts: [{id: "a", config_dir: "/h/.claude-a", label: "a", interactive_reserved: false,
+                                            unattended: "enabled", added_at: 0}]},
+     usage: {state: "valid", written_at_epoch: $now, publish_interval_s: 300, fresh: true,
+             accounts: [{id: "a", config_dir: "/h/.claude-a", login: "ok", status: "allowed",
+                         windows: {five_hour: W($u5; $r5), seven_day: W(0.1; $now + 86400)}}]},
+     frames: [], leases: {state: "valid", items: [], corrupt: [], stale_corrupt: []}, sticky: [],
+     seat: {config_dir: "/seat"},
+     config: {k: {default: {five_hour: 1, seven_day: 1}},
+              c: {five_hour: {default: 0.03, by_kind: {}, by_group: {}}, seven_day: {default: 0.01, by_kind: {}, by_group: {}}},
+              cap_bp: 10000, ttl_s: {"stage-log": 1800, tracker: 1800}, file_stale_factor: 3},
+     borrow_path: $bp,
+     phase: {state: "valid", phase: "burst", until_epoch: ($now + 3600), burst_length_s: 28800}}' \
+  | RUN_PACE_ROOT="$S116/pace" XDG_STATE_HOME="$S116/state" bash "$s116_route" lease-txn --table "$1" \
+      --now "$s116_now" --boot-epoch "" --holder "$s116_holder" 2>/dev/null \
+  | jq -r 'if .verdict == "WAIT" then "WAIT:" + (.reason // "") else (.verdict // "?") end' 2>/dev/null
+}
+# s116_round <표> <대기자 수> <5시간 사용률> <5시간 리셋 시각> — seq 역순으로 한 번씩 묻고
+# 계보 순(W1 부터)으로 판정을 늘어놓는다.
+s116_round() {
+  local i
+  for i in $(seq "$2" -1 1); do printf '%s %s\n' "$i" "$(s116_ask "$1" "W$i" "$3" "$4")"; done \
+    | sort -n | awk '{ print $2 }' | paste -sd, -
+}
+s116_live_waits() { jq -s '[.[] | select(.kind == "wait")] | length' "$1"/*.lease 2>/dev/null || printf '?'; }
+s116_rep() { local i out=""; for i in $(seq 1 "$2"); do out="$out${out:+,}$1"; done; printf '%s' "$out"; }
+
+# 여유가 전원을 담는다 — 5시간 창의 리셋이 지났다.
+s116_t="$S116/full"
+s116_seqs=""
+for s116_i in $(seq 1 27); do
+  s116_seqs="$s116_seqs${s116_seqs:+,}$(s116_put "$s116_t" "W$s116_i" --kind implement | jq -r '"\(.seq):\(.stage_kind)"')"
+done
+check "116: lease-wait-put --kind 로 줄 세운 대기자 27개가 seq 1..27 과 종류 implement 를 싣는다" \
+  "$s116_seqs" "$(for s116_i in $(seq 1 27); do printf '%s:implement\n' "$s116_i"; done | paste -sd, -)"
+check "116: 여유가 전원을 담으면 seq 역순으로 한 번씩 물은 대기자 27개가 모두 GRANT" \
+  "$(s116_round "$s116_t" 27 0.9 $((s116_now - 60)))" "$(s116_rep GRANT 27)"
+check "116: 그 라운드 뒤 살아 있는 대기 항목은 0 이고 부여 기록이 27 개다" \
+  "$(s116_live_waits "$s116_t")/$(jq -s '[.[] | select(.kind == "grant")] | length' "$s116_t"/*.lease 2>/dev/null)" "0/27"
+
+# 여유가 앞 10 명 몫만 담는다 — 5시간 사용률 0.7, 리셋은 아직이다.
+s116_t="$S116/part"
+for s116_i in $(seq 1 27); do s116_put "$s116_t" "W$s116_i" --kind implement >/dev/null; done
+check "116: 여유가 앞 k 명 몫만 담으면 한 라운드 뒤 seq 앞 10 명만 GRANT 이고 나머지는 fifo-yield" \
+  "$(s116_round "$s116_t" 27 0.7 $((s116_now + 3600)))" "$(s116_rep GRANT 10),$(s116_rep WAIT:fifo-yield 17)"
+
+# 종류 없는 옛 대기 항목이 맨 앞에 있다 — 여유가 넉넉해도 그 뒤 대기자는 양보한다.
+s116_t="$S116/old"
+s116_put "$s116_t" W1 >/dev/null
+for s116_i in $(seq 2 4); do s116_put "$s116_t" "W$s116_i" --kind implement >/dev/null; done
+check "116: 종류 없는 옛 대기 항목 뒤 대기자들은 여유와 상관없이 fifo-yield" \
+  "$(for s116_i in 4 3 2; do s116_ask "$s116_t" "W$s116_i" 0.9 $((s116_now - 60)); done | paste -sd, -)" \
+  "WAIT:fifo-yield,WAIT:fifo-yield,WAIT:fifo-yield"
+kill "$s116_holder" 2>/dev/null || true
+unset -f s116_put s116_ask s116_round s116_live_waits s116_rep
+unset S116 s116_route s116_now s116_holder s116_t s116_seqs s116_i
 
 # --- epilogue-begin ---
 #

@@ -61029,7 +61029,7 @@ gate_launch_wait() {
     rrc=0
     rec=$(route_lease_wait_put --table "$(run_pace_root)/leases" --now "$(now_epoch)" --run-id "$RUN_ID" \
             --lineage "$GATE_ROUTE_LINEAGE" --group "$grp" --inventory "$RUN_DIR/inventory.json" \
-            --holder "$sup" 2>/dev/null) || rrc=$?
+            --holder "$sup" ${kind:+--kind "$kind"} 2>/dev/null) || rrc=$?
     if [ "$rrc" = "0" ]; then
       wnonce=$(printf '%s' "$rec" | jq -r '.nonce // "-"' 2>/dev/null || printf '%s' '-')
     else
