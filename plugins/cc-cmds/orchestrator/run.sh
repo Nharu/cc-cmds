@@ -6626,7 +6626,7 @@ spawn_route_wait() {
   if [ "$grp" != "-" ]; then
     rec=$(route_lease_wait_put --table "$(run_pace_root)/leases" --now "$(now_epoch)" --run-id "$RUN_ID" \
             --lineage "$SPAWN_LINEAGE" --group "$grp" --inventory "$RUN_DIR/inventory.json" \
-            --holder "$holder" 2>/dev/null) || rrc=$?
+            --holder "$holder" ${kind:+--kind "$kind"} 2>/dev/null) || rrc=$?
     if [ "$rrc" = "0" ]; then
       wnonce=$(printf '%s' "$rec" | jq -r '.nonce // "-"' 2>/dev/null || printf '%s' '-')
     else
@@ -9450,28 +9450,11 @@ halt_record_stage_answered() {
 }
 
 # ---------------------------------------------------------------------------
-# THE HALT RECORD'S SHAPE, READ IN ONE PLACE. The gate sources this file, so the
-# option-line rule below is the one the gate's option check, the morning
-# report's option block and the format predicate all read; three copies of it
-# drifted apart once already.
+# THE HALT RECORD'S SHAPE. The option-line rule `halt_option_lines` this file
+# and the gate read is defined once in `liveness.sh`, which this file sources
+# near its top: the read-only tools that source `liveness.sh` alone need it for
+# the answer state.
 # ---------------------------------------------------------------------------
-halt_option_lines() {
-  # halt_option_lines — the option lines of the halt record text on stdin,
-  # verbatim: the lines of its `**선택지**:` block — opened only by a
-  # `**선택지**:` line with nothing after the colon, closed by the next line
-  # that starts with `**` or by the closing fence — that read `` - `<label>` ``
-  # alone or followed by ` — <description>`. A line of that shape outside the
-  # block (a command halt's command line, a line quoted into the question) is
-  # not an option.
-  LC_ALL=C awk '
-    $0 == "<!-- /cc-pipeline-halt v1 -->" { exit }
-    inb && /^\*\*/ { inb = 0 }
-    /^\*\*선택지\*\*:[ \t]*$/ { inb = 1; next }
-    inb && /^- `[^`]+`$/ { print; next }
-    inb && /^- `[^`]+` — / { print }
-  ' 2>/dev/null || true
-}
-
 halt_record_wellformed() {
   # halt_record_wellformed <file> — one defect word per line on stdout, from a
   # closed set of seven, and 0 when there is none, 1 otherwise:
@@ -11447,8 +11430,10 @@ wait_drop() {
 }
 
 wait_fifo_follow() {
-  # wait_fifo_follow <marker> <lineage> <holder> <group> <reason> — keep this
-  # wait's FIFO entry in step with the WAIT it was just given.
+  # wait_fifo_follow <marker> <lineage> <holder> <group> <reason> [<kind>] — keep
+  # this wait's FIFO entry in step with the WAIT it was just given. <kind> is the
+  # waiting stage's kind; an entry put back carries it as `--kind`, and an empty
+  # or absent <kind> puts the entry back with no kind.
   #
   # THE HOST HOLD TAKES THE ENTRY DOWN. It answers a waiter whose account found
   # room with a group-less `host-saturated` WAIT, and the host wait uses no
@@ -11463,7 +11448,7 @@ wait_fifo_follow() {
   # whose first put failed, would otherwise yield to every entry of that group
   # for good. The lease table, not the marker, says whether the entry is there,
   # so a marker that kept a nonce after its entry came down does not stop it.
-  local m="$1" lin="$2" holder="$3" grp="$4" why="$5" nonce rec t
+  local m="$1" lin="$2" holder="$3" grp="$4" why="$5" kind="${6:-}" nonce rec t
   [ -f "$m" ] || return 0
   t="$(run_pace_root)/leases"
   nonce=$(cc_waiting_field "$m" '논스' | tr -d '[:space:]')
@@ -11481,7 +11466,7 @@ wait_fifo_follow() {
   fi
   rec=$(route_lease_wait_put --table "$t" --now "$(now_epoch)" --run-id "$RUN_ID" \
           --lineage "$lin" --group "$grp" --inventory "$RUN_DIR/inventory.json" \
-          --holder "${holder:-0}" 2>/dev/null) || return 0
+          --holder "${holder:-0}" ${kind:+--kind "$kind"} 2>/dev/null) || return 0
   nonce=$(printf '%s' "$rec" | jq -r '.nonce // "-"' 2>/dev/null || printf '%s' '-')
   [ "$nonce" != "-" ] || return 0
   # An entry the marker does not name is one no drop could find again.
@@ -11650,7 +11635,7 @@ stage_wait_loop() {
         wgrp=$(printf '%s' "$env" | jq -r '.group // "-"' 2>/dev/null || printf '%s' '-')
         wait_marker_set "$m" '갱신' "$(now_epoch)" '까지' "$upto" '그룹' "$wgrp" || true
         wait_fifo_follow "$m" "$lin" "$holder" "$wgrp" \
-          "$(printf '%s' "$env" | jq -r '.reason // ""' 2>/dev/null || true)"
+          "$(printf '%s' "$env" | jq -r '.reason // ""' 2>/dev/null || true)" "$kind"
         # A WAIT without `reserve_seen` keeps the memory the marker already has.
         if printf '%s' "$env" | jq -e '(.reserve_seen | type) == "array"' >/dev/null 2>&1; then
           wait_marker_set "$m" '예비' "$(printf '%s' "$env" | jq -c '.reserve_seen' 2>/dev/null || printf '%s' '[]')" || true
@@ -15580,6 +15565,67 @@ visual_approval_provenance() {
   return 0
 }
 
+# The reason visual_publish_redispatch_holds prints when the approval verdict is
+# not an input bundle mismatch. The gate's refusal tells it apart from the other
+# conditions by this prefix.
+VISUAL_REDISPATCH_NOT_BUNDLE='구현 승인 판정이 입력 묶음 불일치가 아니다'
+
+visual_publish_redispatch_holds() {
+  # visual_publish_redispatch_holds <design document> — 0 when a person's
+  # approval of this run broke on its inputs, so the publish stage may run
+  # again to ask the verdict over the current screens. All four hold:
+  # (1) the approval helper's first line starts with
+  #     `승인 무효 — 입력 묶음이 달라졌다`;
+  # (2) the ` — 사람 답 <file>` tail of the sidecar's `**구현 승인**` line,
+  #     read from the line itself because a void verdict prints no
+  #     provenance line, names the run's latest `시각-판정` record
+  #     (`visual_publish_latest_verdict_record`);
+  # (3) a person's last answer to that record is `승인`
+  #     (`visual_publish_person_answer`);
+  # (4) no refusal a person gave at the stage stands
+  #     (`visual_publish_standing_refusal`).
+  # A line without the tail never holds, so `visual_approval_provenance` keeps
+  # refusing the interactive phase's lines. Once the re-dispatched stage asks a
+  # new `시각-판정`, the latest record changes and the same line no longer
+  # holds, so the rule does not repeat. Prints the first condition that fails
+  # on 1. The gate's re-dispatch rule and `visual_approval_route_hint` both
+  # read it, so the hint never promises a dispatch the gate refuses.
+  local pl sc line src latest ref rec
+  pl=''
+  [ -z "${1:-}" ] || pl=$(bash "$ORCH_DIR/visual-check.sh" approval "$1" 2>/dev/null | sed -n 1p)
+  case "$pl" in
+    '승인 무효 — 입력 묶음이 달라졌다'*) ;;
+    *)
+      printf '%s (%s)' "$VISUAL_REDISPATCH_NOT_BUNDLE" "${pl:-판정 없음}"
+      return 1 ;;
+  esac
+  line=''
+  sc=$(visual_sidecar_path "$1" 2>/dev/null) && line=$(grep -m1 '^\*\*구현 승인\*\*: ' "$sc" 2>/dev/null || true)
+  src=$(printf '%s\n' "$line" | sed -nE 's/^.* — 사람 답 ([A-Za-z0-9._#-]+\.md)[[:space:]]*$/\1/p')
+  if [ -z "$src" ]; then
+    printf '구현 승인 줄에 사람 답 출처 꼬리가 없다'
+    return 1
+  fi
+  if ! latest=$(visual_publish_latest_verdict_record); then
+    printf '출처 꼬리 %s 가 가리킬 S2P 의 시각-판정 기록이 이 런에 없다' "$src"
+    return 1
+  fi
+  if [ "${latest##*/}" != "$src" ]; then
+    printf '출처 꼬리 %s 가 가장 마지막 시각-판정 기록 %s 이 아니다' "$src" "${latest##*/}"
+    return 1
+  fi
+  if ! visual_publish_person_answer "$latest" '승인' >/dev/null; then
+    printf '시각-판정 기록 %s 에 대한 사람의 마지막 답이 「승인」 이 아니다' "$src"
+    return 1
+  fi
+  if ref=$(visual_publish_standing_refusal); then
+    ref=${ref#*$'\t'}; rec=${ref%%$'\t'*}
+    printf '시각 발행 단계 중단 기록 %s 에 사람이 남긴 「%s」 답이 서 있다' "${rec##*/}" "${ref#*$'\t'}"
+    return 1
+  fi
+  return 0
+}
+
 visual_approval_route_hint() {
   # visual_approval_route_hint — where a person goes to approve the screens:
   # in a run with the publish stage, the stage's latest `시각-판정` record,
@@ -15611,6 +15657,13 @@ visual_approval_route_hint() {
   # to it passes the entry predicate in no run) or a run without the publish
   # stage, so the person runs `/cc-cmds:visual <문서> 구현 승인` again once the
   # run has ended.
+  #
+  # AN APPROVAL OF THIS RUN THAT BROKE ON ITS INPUTS IS ASKED AGAIN BY THE
+  # STAGE. In a run with the publish stage, when `visual_publish_redispatch_holds`
+  # holds — the verdict is an input bundle mismatch and the line was written on
+  # a person's `승인` to the run's latest `시각-판정` with no refusal standing —
+  # the router dispatches the publish stage again, so the person is told to
+  # answer the new `시각-판정` record that stage leaves, not the old one.
   local latest pl sc dl tl
   if visual_confirm_waiting "${DOC:-}"; then
     if ! manifest_has_visual_publish_step; then
@@ -15659,6 +15712,10 @@ visual_approval_route_hint() {
       fi
       return 0 ;;
   esac
+  if manifest_has_visual_publish_step && visual_publish_redispatch_holds "${DOC:-}" >/dev/null; then
+    printf '교대가 시각 발행 단계(S2P)를 다시 보낸다 — 그 단계가 새 `시각-판정` 기록을 남기면 그 기록에 답하라'
+    return 0
+  fi
   if manifest_has_visual_publish_step; then
     if latest=$(visual_publish_latest_verdict_record); then
       printf '시각 발행 단계(S2P)의 시각-판정 중단 기록 %s 에 사람이 「승인」 으로 답해 그 단계가 출처 꼬리 달린 구현 승인 줄을 쓰게 하세요' "$latest"

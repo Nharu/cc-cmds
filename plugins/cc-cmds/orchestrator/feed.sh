@@ -430,6 +430,11 @@ project_into() {
       row_field_into a "$row" '스테이지'; row_field_into b "$row" '종류'
       row_field_into c "$row" '종료 코드'; row_field_into d "$row" '종단 부류'
       printf -v "$1" '스테이지 %s 종단 · 종류 %s · 종료 코드 %s · 부류 %s' "$a" "$b" "$c" "$d"
+      # A PERSON'S ANSWER IS AWAITED, and the row says so: the gate writes
+      # `답 대기 기록` when the attempt parked on a record that puts options
+      # before a person. The record file itself is not opened here.
+      row_field_into a "$row" '답 대기 기록'
+      [ -z "$a" ] || printf -v "$1" '%s · 답 대기 %s' "${!1}" "$a"
       ;;
     blocked)
       row_field_into a "$row" '스코프'; row_field_into b "$row" '사유'
@@ -446,6 +451,10 @@ project_into() {
       row_field_into a "$row" '교대'; row_field_into b "$row" '사유'
       row_field_into c "$row" '막힌 지점'; c=$(clip "$c" 80)
       printf -v "$1" '교대 %s 종료 · 사유 %s · 막힌 지점 %s' "$a" "$b" "$c"
+      # The gate's own list of records awaiting a person's answer, as on the
+      # `stage-result` line above.
+      row_field_into a "$row" '답 대기 기록'
+      [ -z "$a" ] || printf -v "$1" '%s · 답 대기 %s' "${!1}" "$a"
       ;;
     '종료 절')
       row_field_into a "$row" 'id'; row_field_into b "$row" '상태'

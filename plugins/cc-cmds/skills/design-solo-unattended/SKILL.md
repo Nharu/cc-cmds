@@ -59,7 +59,7 @@ From the discuss arm's CFI-L4: **(b)** no team is composed and nothing is spawne
 
 ## Dispatcher
 
-Read `CC_PIPELINE_RUN_ID` by name (`printenv CC_PIPELINE_RUN_ID`, never bare `env`). Empty or unset → this arm has no seat-dispatch branch: write nothing, print one line saying that `design-solo-unattended` is dispatched by the autopilot driver only, and end the turn. Non-empty → take `CC_PIPELINE_RUN_DIR`, `CC_PIPELINE_STAGE_ID` and `CC_PIPELINE_MANIFEST` the same way and continue.
+Read `CC_PIPELINE_RUN_ID` from the last `[cc-stage-values]` block in the conversation (`(없음)` reads as empty); only with no block, or no such line in it, read it by name (`printenv CC_PIPELINE_RUN_ID`, never bare `env`). Empty or unset → this arm has no seat-dispatch branch: write nothing, print one line saying that `design-solo-unattended` is dispatched by the autopilot driver only, and end the turn. Non-empty → take `CC_PIPELINE_RUN_DIR`, `CC_PIPELINE_STAGE_ID` and `CC_PIPELINE_MANIFEST` the same way and continue.
 
 ## Halt record
 
