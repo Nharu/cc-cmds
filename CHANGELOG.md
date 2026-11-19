@@ -5,7 +5,7 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [3.51.3] - 2026-11-19
+## [3.52.1] - 2026-11-19
 
 승인한 화면에 문서의 요구에 없는 내용이 담긴 경우를 반영 단계가 실패로 세고, 사람이 화면대로 문서를 고칠 수 있게 한다. 지금까지는 그 차이를 사람이 「문서대로 둠」으로 남기면 무인 구현이 선택지 없는 정지로 멈췄고, 반영 뒤 문서 다이제스트를 다시 잴 때 승인 시점의 구속 문면이 남지 않아 승인 화면 문면만 옮긴 편집과 다른 편집을 가를 수 없었다.
 
@@ -17,6 +17,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **반영 규약** — 반영 단계의 다섯째 실패(화면에 있고 요구 결정에 없는 내용)와 `요구 결정 <n>. 승인 화면 <화면 id> 반영` 항목, `화면대로 고침` 선택지를 적었고, 시각 스킬·무인 시각·재수렴·무인 설계 토론 스킬과 사이드카 계약을 같은 규칙에 맞췄다.
 - **킥오프 고지** — 재킥오프 판별(`rekick.sh detect`)의 `재킥오프`·`대기` 판정이 시각 사이드카가 승인된 문서에 `since-approval` 줄을 `고지` 로 싣고, 첫 킥오프는 같은 줄을 계획 아래 보인다.
 - **시험** — `scripts/test-visual-check.sh`, `scripts/test-gate.sh` 의 15vp·34c·79v 절, `scripts/test-rekick.sh` 3c 절, `orchestrator/test-run.sh`, `scripts/test-meta-invariants.sh` 의 고정 문면을 새 동작에 맞췄다.
+
+## [3.52.0] - 2026-11-19
+
+autopilot 좌석이 게이트 승인을 자기 `AskUserQuestion` 으로 다시 물을 때 알림이 같은 결정에 두 항목(승인 알림과 세션 질문 알림)으로 쌓이던 것을 한 항목으로 줄인다. 좌석의 첫 물음은 그 승인의 알림 자리를 소리 없이 고쳐 쓰고, 답이 돌아오면 그 자리를 닫는다. 승인 알림 제목에는 런 이름이 실린다.
+
+### Added
+
+- **새 알림 토큰 `approval-ask`** — `notify-run.sh` 의 닫힌 토큰 집합에 더했다. 그룹은 승인 알림과 같은 `cc-cmds-autopilot-<run id>-<승인 id>`, 소리 없음(발화 줄에 `-sound` 를 싣지 않음), 클릭은 이 세션 창, 제목은 `cc-cmds · <런 이름> · 답하세요`(런 이름이 없으면 `cc-cmds · 답하세요`), 스위치는 세션 갈래다. 스택 계수는 늘리지 않는다. 주의 이벤트는 `auq` 로 승인 슬롯에 남는다.
+- **승인 연결 `cc_notify_approval_link`** — 질문이 정확히 하나이고 그 문면이 정규 승인 접두 `승인 <id> — ` 로 시작하거나 `header` 가 승인 id 꼴(12 코드포인트 이하)이며, 세션 색인의 런 가운데 정확히 하나가 `watch.announced-approvals` 에 그 id 를 두었을 때만 연결한다. 두 세션 훅이 같은 함수를 쓴다.
+- **런 디렉터리 파일 둘** — 게이트가 들어올 때마다 쓰는 `notify.label`(매니페스트 앵커 키 한 줄), 세션 질문 훅이 첫 물음에 덧붙이는 `notify.asked-approvals`(승인 id 한 줄씩).
+- **`halt-question.sh render --approval <id>`** — 출력의 `header` 만 그 id 로 바꾼다(12 코드포인트를 넘으면 그대로). 좌석은 대기 중인 시각 승인 대신 S2P 정지 기록을 물을 때 스냅숏 `pending_approvals[]` 순서의 첫 `시각-승인` id 를 넘긴다.
+
+### Changed
+
+- **세션 질문 훅** — 연결이 섰고 autopilot 스위치도 켜져 있고 그 승인을 아직 묻지 않았으면 `session-ask` 대신 `approval-ask` 를 낸다. 두 번째 물음과 연결이 서지 않는 모든 경우는 지금처럼 `session-ask` 다.
+- **답 복귀 훅** — `AskUserQuestion` 답이 연결된 승인이고 그 id 가 `notify.asked-approvals` 에 있으면 승인 슬롯에 처리 표지 `return` 을 쓰고 그 그룹의 배너를 걷는다. 세션 슬롯을 걷는 지금 동작은 그대로다.
+- **`answer` 제목** — 런 이름이 있으면 `cc-cmds · <런 이름> · 답할 것이 생겼습니다`. 게이트와 감시자가 같은 제목을 낸다. `answer-run` 제목은 바뀌지 않는다.
+
+### Why
+
+좌석은 승인을 사람에게 그대로 다시 묻는데, 승인 알림과 세션 질문 알림이 서로 다른 그룹이라 한 결정이 화면과 알림 센터에 두 번 남고 두 번 울렸다. 이미 울린 승인만 고쳐 쓰도록 알림 표지를 연결 조건에 두어, 울림이 하나도 없는 경우는 생기지 않는다.
 
 ## [3.51.2] - 2026-11-18
 

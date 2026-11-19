@@ -22214,6 +22214,14 @@ export CLAUDE_CODE_SESSION_ID
 gate snapshot --manifest "$FX_MANIFEST"
 check "핸들을 쓰는 동사가 통과한다" "$rc" "0"
 check "ledger-path 가 원장 절대경로를 담는다" "$(cat "$RD/ledger-path" 2>/dev/null || true)" "$FX_LEDGER"
+# `notify.label` is written beside it on every entry: the manifest header's
+# anchor key, the run's name in an approval banner's title. The expected value
+# is read from the header here, where fields end at `;`, and an empty one is a
+# failure rather than a match of two empty strings.
+fx_anchor=$(grep -o -m 1 'anchor-key=[^ ;]*' "$FX_MANIFEST" 2>/dev/null || true)
+fx_anchor=${fx_anchor#anchor-key=}
+check "notify.label 이 매니페스트의 앵커 키를 담는다" \
+  "$(cat "$RD/notify.label" 2>/dev/null || true)" "${fx_anchor:-앵커 키 없음}"
 
 # Lineage used to be recorded only inside `gate_transcript_files`, which only
 # `close` reaches — so a run that never opened an approval had none at all.
@@ -30941,6 +30949,35 @@ case "$tok_refusal_clear" in
   *"알 수 없는 부류 토큰"*) ok "폐쇄 집합 — 지우기도 같은 집합을 쓴다" ;;
   *) bad "폐쇄 집합(지우기)" "$(printf '%s' "$tok_refusal_clear" | tr '\n' ' ')" ;;
 esac
+
+# --- `approval-ask`, THE ONE SILENT TOKEN ------------------------------------
+#
+# It is outside the token table above on purpose: the walk asserts every row
+# sounds `default`, and this token is the one that does not — it rewrites an
+# approval's banner that already rang. So it is asserted here, on its own: both
+# closed sets take it, its group is the approval's own slot (`answer`'s, per
+# item key), its sound is empty, and its title carries the run name when one
+# is set.
+ask_row=$(bash -c '
+  . "'"$repo_root"'/plugins/cc-cmds/orchestrator/notify-run.sh"
+  RUN_ID=RT
+  CC_NOTIFY_SESSION_ID=SID9
+  printf "%s|%s|%s|%s|%s" "$(cc_notify_group approval-ask KEY)" "$(cc_notify_group answer KEY)" \
+    "$(cc_notify_sound approval-ask)" "$(cc_notify_title approval-ask)" \
+    "$(CC_NOTIFY_RUN_LABEL=런이름 cc_notify_title approval-ask)"
+')
+check "approval-ask — 승인 슬롯·소리 없음·제목" "$ask_row" \
+  "cc-cmds-autopilot-RT-KEY|cc-cmds-autopilot-RT-KEY||cc-cmds · 답하세요|cc-cmds · 런이름 · 답하세요"
+ask_roundtrip=$(bash -c '
+  . "'"$repo_root"'/plugins/cc-cmds/orchestrator/notify-run.sh"
+  RUN_ID=RT
+  CC_NOTIFY_SESSION_ID=SID9
+  CC_CMDS_NOTIFY_HOST_OS=NotDarwin
+  cc_notify_fire approval-ask 본문 KEY 2>&1
+  cc_notify_clear approval-ask KEY 2>&1
+')
+check "approval-ask — 발사와 지우기 양쪽 폐쇄 집합에 있다" \
+  "$(printf '%s' "$ask_roundtrip" | grep -c '알 수 없는 부류 토큰' || true)" "0"
 
 # --- THE SESSION SEATS' SLOT --------------------------------------------------
 #
