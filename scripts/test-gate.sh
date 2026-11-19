@@ -39132,7 +39132,7 @@ check "34p: 그 행의 근거는 정규화·절단한 값과 바이트로 같고
   "$([ -n "$sln_w" ] && [ "$(printf '%s' "$sln_why" | wc -c | tr -d ' ')" -le 300 ] && printf ok || printf '%s' "$sln_why")" "ok"
 check "34p: 그 근거는 행에 드는 가장 넓은 폭으로 잘렸다" "$(sln_widest "${SLN_LB#'**추천 근거**: '}" "$(sln_last)")" "ok"
 check "34p: 그 행의 근거에는 | 도 연속 공백도 남지 않는다" \
-  "$(printf '%s' "$sln_why" | grep -qE '[|]|  ' && printf 'left' || printf 'clean')" "clean"
+  "$(grep -qE '[|]|  ' <<<"$sln_why" && printf 'left' || printf 'clean')" "clean"
 check "34p: 그 첨부는 추천 근거 줄을 원문 그대로 전부 싣는다" \
   "$( { grep -cxF -e "- $SLN_LP" "${SLN_SL%.md}.answer.md" || true; } | tr -d ' ')" "1"
 
