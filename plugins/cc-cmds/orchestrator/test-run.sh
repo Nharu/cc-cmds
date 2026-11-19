@@ -6293,6 +6293,10 @@ d_class() {  # d_class <seg> <답한 주체|-> <동결 문구 있음|없음> —
     '<!-- /cc-pipeline-halt v1 -->' > "$rec"
   [ "$by" = "-" ] || printf -- '- `중단 답` | 세그먼트=%s | 중단 기록=%s | 선택지=잔여로 두고 동결 | 답한 주체=%s | 기록 시각=x\n' \
     "$s" "$rec" "$by" >> "$LEDGER"
+  # 스스로 답한 스테이지는 게이트를 거쳐 행위했으므로, 게이트 쪽 행 계수 갈래가 세는
+  # 행위자=스테이지 의 `자율 승인` 행을 그 행 꼴 세그먼트로 남긴다.
+  [ "$by" != "스테이지" ] || printf -- '- `자율 승인` | 세그먼트=%s | 행위자=스테이지 | 기록 시각=x\n' \
+    "$(gate_stage_row_segment "$s" design)" >> "$LEDGER"
   q="$RUN_DIR/log/$s#1.json"
   { [ "$3" = "없음" ] || printf '%s\n' "$LIT_DESIGN_TERMINAL"
     printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"session_id":"SID-'"$s"'","total_cost_usd":0}'; } > "$q"

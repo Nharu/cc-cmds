@@ -15859,11 +15859,12 @@ rm -f "$WT/$DOC15EQ"
 # makes item 6's check first and does not call (item 1).
 #
 # `stub-dl-rec` in the run directory picks the case:
-#   freeze  — the first call carries a digest read before the stage's own read,
-#             so it ends 4 and the retry stands the row;
+#   freeze  — the first call carries a digest whose tip is on no ledger row,
+#             so it ends 4 and the retry with a fresh read stands the row;
 #   none    — the record recommends `(없음)`;
 #   actfail — the row stands but the call's end reads as non-zero;
-#   die     — the row stands and the session dies before the freeze;
+#   die     — the row stands and the session dies before the freeze, its
+#             error result still naming the session the resume re-attaches;
 #   nolit   — the row stands and the turn ends 0 without the freeze.
 # `stub-dl-key` holds the document key the basis quotes; the stub keeps the
 # document path in `stub-dl-doc` for its resumed session.
@@ -15874,7 +15875,7 @@ rd="$CC_PIPELINE_RUN_DIR"; mkdir -p "$rd/halt"
 rec="$rd/halt/$CC_PIPELINE_STAGE_ID.md"
 mode=$(cat "$rd/stub-dl-rec" 2>/dev/null); key=$(cat "$rd/stub-dl-key" 2>/dev/null)
 p=""; prev=""; resumed=""
-for a in "$@"; do [ "$prev" = "-p" ] && p="$a"; [ "$a" = "--resume" ] && resumed=1; prev="$a"; done
+for a in "$@"; do [ "$prev" = "-p" ] && p="$a"; case "$a" in -r|--resume) resumed=1 ;; esac; prev="$a"; done
 doc=""
 for t in $p; do case "$t" in *.md) doc="$t"; break ;; esac; done
 if [ -n "$resumed" ]; then doc=$(cat "$rd/stub-dl-doc" 2>/dev/null); else printf '%s\n' "$doc" > "$rd/stub-dl-doc"; fi
@@ -15916,8 +15917,10 @@ printf '%s\n' "<!-- cc-pipeline-halt v1; writer=design-discuss-unattended; reade
   '- `잔여로 두고 동결` — 남은 항목을 잔여로 두고 문서를 동결한다' '- `골격 재검토` — 잔여 항목에 맞춰 골격을 다시 본다' \
   "$recline" "**추천 근거**: 기기 사실:$key 의 R1 차단 부류=코드-부재" '**잔여 판정**: 코드-부재: R1' \
   '**하네스 오류**: (없음)' '**재호출 명령**: (없음)' '**후속**: 보류 큐' '<!-- /cc-pipeline-halt v1 -->' > "$rec"
-h0=$(gH)
+# The stage's own gated read during its work: the `자율 승인` row the gate's
+# settlement counts as this attempt having acted.
 gread ls "$CC_PIPELINE_RUN_DIR" >/dev/null
+h0=$(gH); h0="${h0%-*}-$(printf 'f%.0s' $(seq 1 64))"
 [ "$mode" != "none" ] || end_on_record
 call() {
   bash "$CC_PIPELINE_GATE" act --manifest "$CC_PIPELINE_MANIFEST" --kind halt-answer --target "$CC_PIPELINE_TARGET" \
@@ -15930,7 +15933,7 @@ printf '%s\n' "$arc" >> "$rd/stub-dl-rc.txt"
 if [ "$arc" = 4 ]; then call "$(gH)"; arc=$?; printf '%s\n' "$arc" >> "$rd/stub-dl-rc.txt"; fi
 case "$mode" in
   actfail) arc=1 ;;
-  die) exit 1 ;;
+  die) printf '{"type":"result","subtype":"error_during_execution","is_error":true,"total_cost_usd":0.1,"session_id":"sau-dself","num_turns":1}\n'; exit 1 ;;
   nolit) end_on_record ;;
 esac
 if [ "$arc" = 0 ] || row_found; then [ -f "$doc" ] && end_frozen; fi
@@ -39129,7 +39132,7 @@ check "34p: 그 행의 근거는 정규화·절단한 값과 바이트로 같고
   "$([ -n "$sln_w" ] && [ "$(printf '%s' "$sln_why" | wc -c | tr -d ' ')" -le 300 ] && printf ok || printf '%s' "$sln_why")" "ok"
 check "34p: 그 근거는 행에 드는 가장 넓은 폭으로 잘렸다" "$(sln_widest "${SLN_LB#'**추천 근거**: '}" "$(sln_last)")" "ok"
 check "34p: 그 행의 근거에는 | 도 연속 공백도 남지 않는다" \
-  "$(case "$sln_why" in *'|'*|*'  '*) printf 'left' ;; *) printf 'clean' ;; esac)" "clean"
+  "$(printf '%s' "$sln_why" | grep -qE '[|]|  ' && printf 'left' || printf 'clean')" "clean"
 check "34p: 그 첨부는 추천 근거 줄을 원문 그대로 전부 싣는다" \
   "$( { grep -cxF -e "- $SLN_LP" "${SLN_SL%.md}.answer.md" || true; } | tr -d ' ')" "1"
 
