@@ -3598,6 +3598,17 @@ halt_step_is_unclosed_decision() {
   [ "$(sed -n '/^\*\*스텝\*\*: */{s///;s/[[:space:]]*$//;p;q;}' "$1")" = "Step 1 CFI-U3 BT-STOP — 미결 결정" ]
 }
 
+# halt_step_is_kept_drift <halt record> — 0 when the record's whole `**스텝**`
+# value is exactly `Step 2 CFI-U3 BT-STOP — 사람 둔 어긋남`: the halt an
+# implement stage writes when a screen slice meets a drift line the person
+# left `문서대로 둠`, which only a person answers. The whole value is compared,
+# never a cut at the first ` — `, so the shift's `구속-이탈` adoption, which
+# reads the step up to that cut, cannot pass for it.
+halt_step_is_kept_drift() {
+  [ -f "$1" ] || return 1
+  [ "$(sed -n '/^\*\*스텝\*\*: */{s///;s/[[:space:]]*$//;p;q;}' "$1")" = "Step 2 CFI-U3 BT-STOP — 사람 둔 어긋남" ]
+}
+
 # `슬라이스 수` is a CHECKSUM, not an input: it is derived from the count of
 # blocks whose cutpoint index is at or above `PR`, so the two cannot disagree.
 # A mismatch means the declaration was truncated or misnumbered, which is worth
