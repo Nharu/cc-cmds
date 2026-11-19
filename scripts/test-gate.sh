@@ -16655,6 +16655,32 @@ check "15vp: 다른 문서를 든 record 는 등급 미상이다" \
   "$(vp15 "$VP15/m.md" 'S2P#2' 'surface_of_argv0 "$1" record "$2"' "$CC_ORCH/visual-config.sh" docs/other-design.md)" "등급 미상"
 check "15vp: assign 은 발행 단계에서도 등급 미상이다" \
   "$(vp15 "$VP15/m.md" 'S2P#2' 'surface_of_argv0 "$1" assign "$2" "$3"' "$CC_ORCH/visual-config.sh" "$vp15_doc" a@example.com)" "등급 미상"
+# `visual-check.sh pin` writes the binding copy outside the tree, from the
+# visual step and from the publish key's approved-screen reflection only, and
+# only on the run's own design document. `since-approval` is a read everywhere.
+check "15vp: 시각 단계의 pin 은 트리 밖 쓰기다" \
+  "$(vp15 "$VP15/m.md" 'S2V#1' 'surface_of_argv0 "$1" pin "$2"' "$CC_ORCH/visual-check.sh" "$vp15_doc")" "트리밖쓰기"
+check "15vp: 시각 단계의 다른 문서 pin 은 등급 미상이다" \
+  "$(vp15 "$VP15/m.md" 'S2V#1' 'surface_of_argv0 "$1" pin "$2"' "$CC_ORCH/visual-check.sh" docs/other-design.md)" "등급 미상"
+check "15vp: 문서 인자 없는 pin 은 등급 미상이다" \
+  "$(vp15 "$VP15/m.md" 'S2V#1' 'surface_of_argv0 "$1" pin' "$CC_ORCH/visual-check.sh")" "등급 미상"
+check "15vp: 발행 단계의 pin 은 등급 미상이다" \
+  "$(vp15 "$VP15/m.md" 'S2P#2' 'surface_of_argv0 "$1" pin "$2"' "$CC_ORCH/visual-check.sh" "$vp15_doc")" "등급 미상"
+check "15vp: 종류가 visual-publish 로 적힌 발행 키의 pin 은 등급 미상이다" \
+  "$(vp15 "$VP15/m.md" 'S2P#2' 'printf "visual-publish\n" > "$RUN_DIR/S2P.kind"; surface_of_argv0 "$1" pin "$2"' "$CC_ORCH/visual-check.sh" "$vp15_doc")" "등급 미상"
+check "15vp: 종류가 reconverge 로 적힌 발행 키의 pin 은 트리 밖 쓰기다" \
+  "$(vp15 "$VP15/m.md" 'S2P#2' 'printf "reconverge\n" > "$RUN_DIR/S2P.kind"; surface_of_argv0 "$1" pin "$2"' "$CC_ORCH/visual-check.sh" "$vp15_doc")" "트리밖쓰기"
+check "15vp: 반영 재수렴의 다른 문서 pin 은 등급 미상이다" \
+  "$(vp15 "$VP15/m.md" 'S2P#2' 'printf "reconverge\n" > "$RUN_DIR/S2P.kind"; surface_of_argv0 "$1" pin "$2"' "$CC_ORCH/visual-check.sh" docs/other-design.md)" "등급 미상"
+rm -f "$VP15/R15VP/S2P.kind"
+check "15vp: 다른 스테이지의 pin 은 등급 미상이다" \
+  "$(vp15 "$VP15/m.md" 'S2#1' 'surface_of_argv0 "$1" pin "$2"' "$CC_ORCH/visual-check.sh" "$vp15_doc")" "등급 미상"
+check "15vp: 스테이지 없는 pin 은 등급 미상이다" \
+  "$(vp15 "$VP15/m.md" - 'surface_of_argv0 "$1" pin "$2"' "$CC_ORCH/visual-check.sh" "$vp15_doc")" "등급 미상"
+check "15vp: since-approval 은 다른 스테이지에서도 읽기다" \
+  "$(vp15 "$VP15/m.md" 'S2#1' 'surface_of_argv0 "$1" since-approval "$2"' "$CC_ORCH/visual-check.sh" "$vp15_doc")" "읽기"
+check "15vp: 실행기 뒤의 시각 단계 pin 은 시각 헬퍼 쓰기로 읽힌다" \
+  "$(vp15 "$VP15/m.md" 'S2V#1' 'gate_argv_visual_helper_write bash "$1" pin "$2" && printf 쓰기 || printf 아님' "$CC_ORCH/visual-check.sh" "$vp15_doc")" "쓰기"
 vp15_halt 5 '금지-후보 — 반복 문구' 'hero-gradient'
 vp15_answer 5 사람 승인
 ban15vp='- `hero-gradient` | 그라데이션 히어로 — 3회 home'
@@ -17053,7 +17079,7 @@ for vpc15 in bash "sh -c"; do
       --surface 트리밖쓰기 --reach 런로컬 -- sh -c "$VPC15/visual-config.sh append zz-probe"
   fi
   case "$msg" in
-    *"a runner in front of \`visual-config.sh account|append|seed|record|assign\` is not graded"*)
+    *"a runner in front of \`visual-config.sh account|append|seed|record|assign\` or \`visual-check.sh pin\` is not graded"*)
       ok "15vp: 실행기 뒤의 시각 헬퍼 append 는 선언으로 열리지 않는다 (${vpc15%% *})" ;;
     *) bad "15vp: 실행기 뒤의 시각 헬퍼 append 는 선언으로 열리지 않는다 (${vpc15%% *})" "rc=$rc $msg" ;;
   esac
@@ -17094,11 +17120,18 @@ for vpc15 in record assign; do
   gate plan --manifest "$FX_MANIFEST" --target infra --segment SW --cutpoint 커밋 \
     --surface 트리밖쓰기 --reach 런로컬 -- bash "$VPC15/visual-config.sh" "$vpc15" docs/d.md
   case "$msg" in
-    *"a runner in front of \`visual-config.sh account|append|seed|record|assign\` is not graded"*)
+    *"a runner in front of \`visual-config.sh account|append|seed|record|assign\` or \`visual-check.sh pin\` is not graded"*)
       ok "15vp: 실행기 뒤의 시각 헬퍼 $vpc15 은 선언으로 열리지 않는다" ;;
     *) bad "15vp: 실행기 뒤의 시각 헬퍼 $vpc15 은 선언으로 열리지 않는다" "rc=$rc $msg" ;;
   esac
 done
+gate plan --manifest "$FX_MANIFEST" --target infra --segment SW --cutpoint 커밋 \
+  --surface 트리밖쓰기 --reach 런로컬 -- bash "$CC_ORCH/visual-check.sh" pin docs/d.md
+case "$msg" in
+  *"a runner in front of \`visual-config.sh account|append|seed|record|assign\` or \`visual-check.sh pin\` is not graded"*)
+    ok "15vp: 실행기 뒤의 visual-check.sh pin 은 선언으로 열리지 않는다" ;;
+  *) bad "15vp: 실행기 뒤의 visual-check.sh pin 은 선언으로 열리지 않는다" "rc=$rc $msg" ;;
+esac
 gate plan --manifest "$FX_MANIFEST" --target infra --segment SW --cutpoint 커밋 \
   --surface 트리밖쓰기 --reach 기기전역 -- "$CC_ORCH/visual-config.sh" account
 case "$msg" in
@@ -37939,6 +37972,55 @@ case "$capc_uc_skill" in
   *) bad "34c A24: 미결 결정 정지의 질문 문면이 첨부 형식을 싣고 근거를 결정 자리로 안내하지 않는다" "${capc_uc_skill:-(줄 없음)}" ;;
 esac
 
+# A25. A KEPT-DRIFT STOP WAITS FOR A PERSON. A screen slice stops on a drift
+# line the person already left `문서대로 둠`, and its step keeps the
+# `CFI-U3 BT-STOP` text, so the shift's `구속-이탈` adoption of A23 would take
+# its `재수렴` and overturn the person's own choice. The gate refuses every
+# writer but a person; a person's `재수렴` goes to the binding re-convergence
+# and `문서대로 구현` re-attaches the stopped session. The `구속-이탈` row of A23
+# is still in `## 인가`, so the shift's refusal is this rule's.
+capc_kd_rec() {  # capc_kd_rec <키> — a kept-drift stop of that key's first attempt
+  printf '%s\n' "<!-- cc-pipeline-halt v1; writer=implement-unattended; reader=orchestrator; stage=$1#1; run=R7 -->" \
+    '**스킬**: implement-unattended' '**스텝**: Step 2 CFI-U3 BT-STOP — 사람 둔 어긋남' \
+    '**분류**: gate-unanswerable' '**질문 문면**: 사람이 문서대로 둠으로 남긴 어긋남 줄과 승인 화면이 다르다.' \
+    '**선택지**:' \
+    '- `재수렴` — 같은 런의 교대가 design-reconverge 를 보내 인용 줄만 요구 결정 절에 반영한다.' \
+    '- `문서대로 구현` — 멈춘 세션을 다시 붙여 인용 줄을 문서 문면대로 구현한다.' \
+    '**추천**: (없음) — 사람이 앞서 문서대로 둠을 고른 줄이라 뒤집는 결정은 사람만 한다' \
+    '**추천 근거**: (없음) — 사람이 앞서 문서대로 둠을 고른 줄이라 뒤집는 결정은 사람만 한다' \
+    '**후속**: 보류 큐' '<!-- /cc-pipeline-halt v1 -->' > "$CAP_DIR/halt/$1#1.md"
+  printf -- '- `stage-result` | 교대=0 | 세그먼트=%s | 스테이지=%s | 종류=implement | 실행 버전=1 | 세션 id=s-impl-%s | 종단 부류=의도된 park | prev=x\n' \
+    "$1" "$1" "$1" >> "$CAP_LEDGER"
+}
+capc_kd_person() {  # capc_kd_person <키> <선택지>
+  cap_gate "$CAPC_SEAT_SID" '' act --manifest "$CAP_NM" --kind halt-answer --target infra --segment "$1" \
+           --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$CAPC_SEAT_SID" '')" \
+           --rationale "픽스처 — 사람 둔 어긋남 정지에 대한 사람의 답" \
+           -- "중단 기록=$CAP_DIR/halt/$1#1.md" "선택지=$2" '답한 주체=사람' '근거=사람이 고름'
+}
+capc_kd_route() {  # capc_kd_route <키> — that key's last answered route in the snapshot
+  cap_snap "$CAPC_SEAT_SID" '' | jq -r --arg k "$1" '[.answered_halts[] | select(.segment == $k) | .route] | last // ""'
+}
+capc_kd_rec CC5
+capc_kd_rec CC6
+capc_ha0=$(capc_ha)
+capc_bt_answer CC5 "$CAP_DIR/halt/CC5#1.md" 재수렴
+check "34c A25: 사람 둔 어긋남 정지에는 구속-이탈 행이 있어도 교대의 자동 채택이 3 으로 거절된다" "$rc" "3"
+check "34c A25: 그 거절은 사람의 답만 받는다고 말한다" \
+  "$( { grep -qF '사람 둔 어긋남)입니다 — 답한 주체=사람 의 답만 기록합니다' "$CAP_ERR" && printf 'present'; } || printf 'absent')" "present"
+cap_gate "$CAPC_SEAT_SID" '' act --manifest "$CAP_NM" --kind halt-answer --target infra --segment CC5 \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$CAPC_SEAT_SID" '')" \
+         --rationale "픽스처 — 좌석의 답" \
+         -- "중단 기록=$CAP_DIR/halt/CC5#1.md" '선택지=재수렴' '답한 주체=좌석' '근거=좌석이 고름'
+check "34c A25: 사람 둔 어긋남 정지에 대한 좌석의 재수렴 답도 3 으로 거절된다" "$rc" "3"
+check "34c A25: 두 거절 모두 행을 남기지 않는다" "$(capc_ha)" "$capc_ha0"
+capc_kd_person CC5 재수렴
+check "34c A25: 사람의 재수렴 답은 통과한다" "$rc" "0"
+check "34c A25: 그 답은 구속-재수렴 으로 라우팅된다" "$(capc_kd_route CC5)" "구속-재수렴"
+capc_kd_person CC6 '문서대로 구현'
+check "34c A25: 사람의 문서대로 구현 답은 통과한다" "$rc" "0"
+check "34c A25: 그 답은 재부착 으로 라우팅된다" "$(capc_kd_route CC6)" "재부착"
+
 # --- 34d. 좌석 정지 답 — 기록의 추천을 사람 없이 고른다 ----------------------
 # --- section: 34d | group: cone | covers: act, snapshot | anchors: 34d: 853c5bba 형상의 좌석 답이 선택지 없이 통과한다, 34d: 상한=1 이면 두 번째 자동 재수렴은 거부된다 ---
 #
@@ -56575,9 +56657,10 @@ graded_as '읽기'         '79v:visual-config.sh snapshot 은 읽기다'        
 for w79v in account models bans seed append; do
   graded_as '등급 미상'  "79v:visual-config.sh $w79v 는 등급 미상이다"        -- "$CC_ORCH/visual-config.sh" "$w79v"
 done
-for w79v in scan size approval bundle binding system reuse; do
+for w79v in scan size approval bundle binding system reuse since-approval; do
   graded_as '읽기'       "79v:visual-check.sh $w79v 은 읽기다"                -- "$CC_ORCH/visual-check.sh" "$w79v" docs/x.md
 done
+graded_as '등급 미상'    '79v:스테이지 없는 visual-check.sh pin 은 등급 미상이다' -- "$CC_ORCH/visual-check.sh" pin docs/x.md
 graded_as '등급 미상'    '79v:모르는 visual-check.sh 하위 명령은 등급 미상이다' -- "$CC_ORCH/visual-check.sh" frob docs/x.md
 graded_as '트리밖쓰기'   '79v:visual-capture.sh ref 는 트리 밖 쓰기다'          -- "$CC_ORCH/visual-capture.sh" ref docs/visual/x.home.html --out /tmp/x --size 1280x800
 graded_as '트리밖쓰기'   '79v:visual-capture.sh app 은 트리 밖 쓰기다'          -- "$CC_ORCH/visual-capture.sh" app --root dist --out /tmp/x --size 1280x800

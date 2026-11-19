@@ -76,7 +76,18 @@
 #              a changed tokens line, tokens.css, ban lift or source line is
 #              not, argument errors are 2, and no sidecar, record, screen,
 #              system.md or tokens.css byte moves
-#   system     the normalized digest of a file without a final newline equals
+#   pin        the copy's bytes are the binding digest's input with its final
+#              newline, the printed digest is binding's, and a missing
+#              document, an unresolved base and an unwritable directory exit 2
+#              with no digest
+#   reuse transcription  a moved digest passes with the line to pin again for
+#              blank lines only and for an added line that wraps a screen text
+#              with blank lines around it; a changed line, an added line
+#              without screen text (the list cut at 20 lines), a drift block
+#              without screen text, no approval line, no copy and a copy the
+#              digest does not match fail with the changed lines or the reason
+#   since-approval  the four notice lines and `해당 없음`
+#   system    the normalized digest of a file without a final newline equals
 #              a fixed constant, the artifact line is put back to unpublished,
 #              a file without one hashes whole, no system.md prints (없음);
 #              --owner is 0 for this document's sidecar whatever its record
@@ -901,6 +912,141 @@ write_system 'art=https://claude.ai/design/p/0000-ds'
   || fail "reuse: 발행된 system.md 의 전체 해시와 정규화 다이제스트가 같아 다음 단언이 공허하다"
 write_reuse 발행됨 "sys=$(sha_of "$RSYS")"
 reuse_case "옛 사이드카의 값이 발행된 system.md 의 전체 해시면 재사용" 0 "재사용 발행됨"
+write_system
+
+# --- pin ----------------------------------------------------------------------
+# The copy holds the bytes the binding digest hashes, final newline included,
+# and the digest pin prints is the one binding prints; a failure prints no
+# digest and exits 2.
+RCOPY="$RR/docs/visual/binding/docs-reuse.txt"
+cp "$RDOC" "$T/rdoc.keep"
+TRBASE='# 재사용 설계
+
+**상태**: 동결됨
+
+## 합의된 아키텍처
+
+첫 줄
+둘째 줄'
+printf '%s\n' "$TRBASE" > "$RDOC"
+rc=0; P0=$(bash "$CHECK" pin "$RDOC" 2>/dev/null) || rc=$?
+[ "$rc" = 0 ] && [ "$P0" = "$(bash "$CHECK" binding "$RDOC")" ] \
+  && pass "pin: binding 과 같은 다이제스트를 찍는다" || fail "pin = ${rc} ${P0}"
+[ -f "$RCOPY" ] && [ "$(sha_of "$RCOPY")" = "$P0" ] \
+  && pass "pin: 사본 바이트가 구속 다이제스트의 입력과 같다" || fail "pin: 사본이 없거나 sha256 이 다르다"
+[ "$(tail -c 1 "$RCOPY" | od -An -c | tr -d ' ')" = '\n' ] \
+  && pass "pin: 사본이 끝 개행을 지닌다" || fail "pin: 사본의 끝 개행이 없다"
+rc=0; out=$(bash "$CHECK" pin "$T/nope.md" 2>/dev/null) || rc=$?
+[ "$rc" = 2 ] && [ -z "$out" ] && pass "pin: 문서가 없으면 다이제스트 없이 2" || fail "pin 문서 없음 = ${rc} ${out}"
+printf '# 밖\n' > "$T/outside.md"
+rc=0; out=$(bash "$CHECK" pin "$T/outside.md" 2>/dev/null) || rc=$?
+[ "$rc" = 2 ] && [ -z "$out" ] && pass "pin: 베이스를 정하지 못하면 다이제스트 없이 2" || fail "pin git 밖 = ${rc} ${out}"
+mv "$RR/docs/visual/binding" "$T/binding.save"
+printf 'x\n' > "$RR/docs/visual/binding"
+rc=0; out=$(bash "$CHECK" pin "$RDOC" 2>/dev/null) || rc=$?
+[ "$rc" = 2 ] && [ -z "$out" ] && pass "pin: 사본 디렉터리를 만들지 못하면 다이제스트 없이 2" || fail "pin 디렉터리 실패 = ${rc} ${out}"
+rm -f "$RR/docs/visual/binding"; mv "$T/binding.save" "$RR/docs/visual/binding"
+for args in "" "$RDOC $RDOC"; do
+  rc=0
+  # shellcheck disable=SC2086
+  bash "$CHECK" pin $args > /dev/null 2>&1 || rc=$?
+  [ "$rc" = 2 ] && pass "pin: 인자 「${args}」 는 2" || fail "pin 인자 「${args}」 = ${rc}"
+done
+
+# --- reuse: transcription ----------------------------------------------------
+# A digest that moved since the pin: blank lines only and lines that wrap an
+# approved screen text pass with the line to pin again; a changed or other
+# added line, a missing copy, a copy the digest does not match, a sidecar
+# without an approval line and a drift block without screen text do not.
+APPL="**구현 승인**: 발행됨 — 입력 묶음 $(printf 'a' | shasum -a 256 | awk '{print $1}') — 금지 목록 $(printf 'b' | shasum -a 256 | awk '{print $1}') — 기계 검사 수용 없음"
+# write_tr [noappr] [noscreens] — the approved sidecar pinned on the base text.
+write_tr() {
+  write_reuse 발행됨 "bind=$P0"
+  {
+    case " $* " in *' noappr '*) ;; *) printf '%s\n' "$APPL" ;; esac
+    echo
+    echo "### 설계 문서 어긋남"
+    case " $* " in
+      *' noscreens '*) echo "없음" ;;
+      *)
+        echo "- home · 합의된 아키텍처 · 「(없음)」 → 「카드 목록을 보인다」"
+        echo "- list · 합의된 아키텍처 · 「셋째 줄」 → (삭제)"
+        ;;
+    esac
+  } >> "$RSC"
+}
+# tr_doc <extra text> — the base document with text appended.
+tr_doc() { printf '%s\n%s\n' "$TRBASE" "$1" > "$RDOC"; }
+# tr_case <label> <want rc> <want text> — reuse's output holds the text.
+tr_case() {
+  local rc=0 out
+  out=$(bash "$CHECK" reuse "$RDOC" --record "$REC" 2>&1) || rc=$?
+  case "$rc" in "$2") ;; *) fail "reuse 옮겨 적기 $1 = ${rc} ${out}"; return ;; esac
+  case "$out" in *"$3"*) pass "reuse 옮겨 적기: $1" ;; *) fail "reuse 옮겨 적기 $1 = ${rc} ${out}" ;; esac
+}
+write_tr
+printf '%s\n' "$TRBASE" | awk '{ print } $0 == "첫 줄" { print "" }' > "$RDOC"
+tr_case "빈 줄만 더하면 통과하고 다시 고정 줄을 찍는다" 0 "재사용 발행됨
+다시 고정 구속 다이제스트 $(bash "$CHECK" binding "$RDOC") — 승인 화면 문면 옮김 0줄"
+tr_doc '
+
+설명 글 — 승인 화면대로 카드 목록을 보인다.
+'
+tr_case "화면 문면을 설명 글로 감싸 앞뒤 빈 줄과 함께 더하면 통과한다" 0 "재사용 발행됨
+다시 고정 구속 다이제스트 $(bash "$CHECK" binding "$RDOC") — 승인 화면 문면 옮김 1줄"
+printf '%s\n' "$TRBASE" | sed 's/^둘째 줄$/둘째 줄 바뀜/' > "$RDOC"
+tr_case "바뀐 줄은 실패하고 목록을 보인다" 1 "재사용 불가 — 설계 문서 구속 다이제스트가 다르다"
+tr_case "바뀐 줄의 목록" 1 "바뀐 줄 +1줄 -1줄
++ 둘째 줄 바뀜
+- 둘째 줄"
+tr_doc '화면 문면 없는 새 줄'
+tr_case "화면 문면이 없는 더한 줄은 실패한다" 1 "바뀐 줄 +1줄 -0줄
++ 화면 문면 없는 새 줄"
+tr_doc "$(i=1; while [ $i -le 25 ]; do echo "추가 $i"; i=$((i + 1)); done)"
+rc=0; out=$(bash "$CHECK" reuse "$RDOC" --record "$REC" 2>&1) || rc=$?
+n=$(printf '%s\n' "$out" | grep -c '^+ ' || true)
+case "$out" in *'… 외 5줄'*) cut=1 ;; *) cut=0 ;; esac
+[ "$rc" = 1 ] && [ "$n" = 20 ] && [ "$cut" = 1 ] \
+  && pass "reuse 옮겨 적기: 바뀐 줄 목록은 20줄에서 자르고 남은 수를 적는다" || fail "reuse 20줄 상한 = ${rc} ${n} ${out}"
+write_tr noscreens
+tr_doc '설명 글 — 승인 화면대로 카드 목록을 보인다.'
+tr_case "어긋남 블록에 화면 문면이 없으면 다른 편집이다" 1 "바뀐 줄 +1줄 -0줄"
+write_tr noappr
+tr_case "구현 승인 줄이 없으면 비교 기준 없음" 1 "바뀐 줄 비교 기준 없음 — 구현 승인 줄 없음"
+write_tr
+mv "$RCOPY" "$T/copy.save"
+tr_case "사본이 없으면 비교 기준 없음" 1 "바뀐 줄 비교 기준 없음 — 구속 문면 사본 없음"
+printf '다른 사본\n' > "$RCOPY"
+tr_case "사본 sha256 이 사이드카 다이제스트와 다르면 비교 기준 없음" 1 "바뀐 줄 비교 기준 없음 — 사본 sha256 이 사이드카 다이제스트와 다르다"
+mv "$T/copy.save" "$RCOPY"
+before=$(sha_of "$RCOPY"); bash "$CHECK" reuse "$RDOC" --record "$REC" > /dev/null 2>&1 || true
+[ "$before" = "$(sha_of "$RCOPY")" ] && pass "reuse 옮겨 적기: 사본을 쓰지 않는다" || fail "reuse 가 사본을 바꿨다"
+
+# --- since-approval -----------------------------------------------------------
+# One notice line, exit 0, for each verdict, and `해당 없음` without a sidecar
+# or an approval line.
+sa_case() {
+  local rc=0 out
+  out=$(bash "$CHECK" since-approval "$RDOC" 2>&1) || rc=$?
+  case "$rc $out" in "0 $2"*) pass "since-approval: $1" ;; *) fail "since-approval $1 = ${rc} ${out}" ;; esac
+}
+write_tr
+printf '%s\n' "$TRBASE" > "$RDOC"
+sa_case "다이제스트가 같으면 변경 없음" "승인 뒤 문서 변경 없음"
+tr_doc '설명 글 — 승인 화면대로 카드 목록을 보인다.'
+sa_case "화면 문면만 옮겼으면 다시 고정" "승인 뒤 문서 바뀜 — 승인 화면 문면만 옮김 1줄, 다음 시각 단계가 다이제스트를 다시 고정합니다"
+printf '%s\n' "$TRBASE" | sed 's/^둘째 줄$/둘째 줄 바뀜/' > "$RDOC"
+sa_case "다른 편집이면 승인 화면을 잃을 수 있다" "승인 뒤 문서 바뀜 — 다른 편집 있음 (+1줄 -1줄), 다음 시각 단계가 재사용과 다시 생성을 묻고 다시 생성을 고르면 승인한 화면을 잃습니다"
+mv "$RCOPY" "$T/copy.save"
+sa_case "사본이 없으면 비교 기준 없음" "승인 뒤 문서 바뀜 — 비교 기준 없음, 다음 시각 단계가 재사용과 다시 생성을 묻고 다시 생성을 고르면 승인한 화면을 잃습니다"
+mv "$T/copy.save" "$RCOPY"
+write_tr noappr
+sa_case "구현 승인 줄이 없으면 해당 없음" "해당 없음 — 구현 승인 줄 없음"
+rm -f "$RSC"
+sa_case "사이드카가 없으면 해당 없음" "해당 없음 — 사이드카 없음"
+cp "$T/rdoc.keep" "$RDOC"
+rm -rf "$RR/docs/visual/binding"
+write_reuse 발행됨
 
 # --- system -------------------------------------------------------------------
 # The normalized digest reproduces the final newline or its absence, so the

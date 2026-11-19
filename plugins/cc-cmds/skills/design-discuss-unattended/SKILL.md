@@ -428,7 +428,7 @@ An **upper run** is one whose plan reads `design_delivery` `tickets`. A **child 
 `## 팀이 정한 요구 결정` lists the requirement-level decisions the team took because the interview record did not answer them, so that the person reads what was decided in their place before reading how it is built. Only a driver-dispatched stage writes it.
 
 - **Entry.** One heading `### 요구 결정 <n>. <제목>` and, under it, four bold-key fields: `**정한 것**` · `**기록과의 관계**` · `**근거**` · `**버린 대안**`. The `### 확인된 요구와의 대응` block in the same section is not an entry.
-- **`**기록과의 관계**` is a closed vocabulary**: `미답 — <기록의 절 | 문답 밖>` · `위임 — 문 <n>` · `위임 — 문 <n> (선택지 설명)` · `해석 — 문 <n>` · `벗어남 — 문 <n>` · `재현 가설` · `킥오프 탐색 확정 — 확인된 요구에 없음` · `미결 — 보류로 동결` · `기록 v1` · `기록 없음` · `기록 형식 — <…>`.
+- **`**기록과의 관계**` is a closed vocabulary**: `미답 — <기록의 절 | 문답 밖>` · `위임 — 문 <n>` · `위임 — 문 <n> (선택지 설명)` · `해석 — 문 <n>` · `벗어남 — 문 <n>` · `재현 가설` · `킥오프 탐색 확정 — 확인된 요구에 없음` · `미결 — 보류로 동결` · `기록 v1` · `기록 없음` · `기록 형식 — <…>` · `승인 화면 — <화면 id>`. The last value is written only by the approval reflection and by the re-convergence of a `Step 2 CFI-U3 BT-STOP — 사람 둔 어긋남` stop, for an item that brings a person-approved screen's wording into this section; a design stage never writes it.
 - **`### 확인된 요구와의 대응`** carries one line per line the kickoff read back: `- <읽어 준 줄, 축자> → 그대로 | 해석 — … | 벗어남 — …`.
 - **First line.** An empty list is `없음`. Under a v1 record the section opens with 「인터뷰 기록이 v1 이라 확인된 요구·탐색 결과·제시한 선택지 칸이 없습니다.」; with no record, 「이 런에는 인터뷰 기록이 없습니다 — 과제 문장과 의도로 설계했습니다.」.
 - **Tier.** The section is reference tier and carries no `상태`, `검증 등급` or `근거 등급` key. Its heading holds neither `미해결` nor `이슈`, so Step 5U's section regex does not reach it.

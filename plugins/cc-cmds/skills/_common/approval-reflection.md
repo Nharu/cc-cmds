@@ -63,8 +63,34 @@ A decision sentence that changes keeps the superseded sentence in the same
 place, as the re-convergence's Step 3 does on every scope that records one, so a
 citation aimed at the old wording still lands. A `→ (삭제)` line removes the
 wording from its sentence; a `「(없음)」` line adds the screen wording to the
-section the line names. Never touch `## 팀이 정한 요구 결정`, `## 시각 정합 기준`,
-`## 검증 기록` or any section outside the three.
+section the line names.
+
+**`## 팀이 정한 요구 결정` opens to an explicit `화면대로 고침` only.** A line
+of the two classes the attachment may lift — a line that touches the
+requirement-decision section (failure 5) and a collision with another binding
+decision (failure 2) — that the attachment names with `화면대로 고침` may change
+that section too, in these forms and no other:
+
+- **A sentence that changes.** Rewrite the colliding binding sentence — in that
+  section or in one of the three above — to read with the screen wording, and
+  end it with ` (대체된 문장: "<원래 문장>")`, the original sentence verbatim
+  inside the double quotes.
+- **A `「(없음)」` line.** Add a new item `### 요구 결정 <n>. 승인 화면 <화면 id> 반영`
+  carrying the four fields of a requirement-decision item. `<n>` is the largest
+  existing `### 요구 결정 <n>.` number of the section plus one; the item goes
+  right before the `### 확인된 요구와의 대응` block, or at the end of the section
+  when there is no such block. `**정한 것**` holds the screen wording verbatim;
+  `**기록과의 관계**` reads `승인 화면 — <화면 id>`; `**근거**` names the approved
+  screen id and where the person's `화면대로 고침` for that line came from (the
+  attachment's or the stop record's name); `**버린 대안**` reads
+  `반영 전 문서 문면 — 사람이 화면 문면을 골랐다`. Lines of one screen may share
+  one item.
+
+A colliding sentence that stands in a forbidden section (`## 구현 슬라이싱`,
+`## 구현 시 검증 항목`, `## 베이스 제약`, `## 시각 정합 기준`, `## 검증 기록`)
+makes the line one of failure 3, which takes `문서대로 둠` only. Never touch
+`## 팀이 정한 요구 결정` but by the exception above, and never touch
+`## 시각 정합 기준`, `## 검증 기록` or any other section outside the three.
 
 ## 실패로 보는 경우
 
@@ -85,12 +111,24 @@ carried answer measures its baselines again (`## 운반 답 재진입`, step 2).
    row or a merge row in the run ledger. The ledger row says which segment
    planned or merged; the verbatim quote in the plan's input says which wording
    is that segment's.
+5. **A line that touches the requirement-decision section** — any one of: (가)
+   the line's section heading is `팀이 정한 요구 결정` or a subheading under that
+   section; (나) the line's document wording stands verbatim inside the
+   `## 팀이 정한 요구 결정` section; (다) reflecting the line would make a
+   sentence of that section read otherwise, so the document contradicts itself
+   unless that sentence changes. A line the attachment names with
+   `화면대로 고침` is not this failure: it is reflected by the exception of
+   `## 고칠 수 있는 절`.
+
+Failure 2 is lifted the same way: a collision line the attachment names with
+`화면대로 고침` is reflected together with the sentence it collides with
+(`## 고칠 수 있는 절`), unless that sentence stands in a forbidden section.
 
 **A line that cannot be applied** fails too: before editing a line, check that
 its document wording stands verbatim inside one of the sections it may change.
 It does not when the wording sits in a section that cannot be changed (such as
-`## 팀이 정한 요구 결정` or `## 시각 정합 기준`), or when another write removed it
-from the document after the approval. Write that line into the failure's reason.
+`## 시각 정합 기준`), or when another write removed it from the document after
+the approval. Write that line into the failure's reason.
 
 Never drop a line of the approved list silently, and never edit a section the
 list may not change to make a line fit.
@@ -106,11 +144,16 @@ the line verbatim:
   what the unattended implementation's binding-tier stop handles.
 - `화면대로 고침` — the line is reflected, inside the sections it may change.
 
-A line of failure 3 or 4, and a line that cannot be applied, takes `문서대로 둠`
-only: the forbidden sections and the planned or merged wording are not lifted by
-an answer, so the only answer that ends the stop is to take the line out. A line
-the attachment does not name is reflected as before; a line it names with
-`화면대로 고침` that still fails stops again in the same form.
+A line of failure 2 or 5 takes both, but `화면대로 고침` applies to it only when
+the attachment names it so: a line of those two the attachment does not name,
+and every such line of an attempt with no attachment, fails again in the same
+form — the requirement-decision section and a colliding binding sentence change
+only on a person's answer for that very line. A line of failure 3 or 4, and a
+line that cannot be applied, takes `문서대로 둠` only: the forbidden sections and
+the planned or merged wording are not lifted by an answer, so the only answer
+that ends the stop is to take the line out. Any other line the attachment does
+not name is reflected as before; a line it names with `화면대로 고침` that still
+fails stops again in the same form.
 
 **The attachment's form.** The answer carries the decisions the way a
 `구속 티어 이탈` stop's answer does, as `첨부=<기록>.answer.md` — the answered
@@ -118,10 +161,10 @@ record's path with `.md` replaced by `.answer.md`. The file holds the block's
 lines, each copied verbatim on a line of its own, and under each one
 `문서대로 둠` or `화면대로 고침`. The gate does not require the attachment: an
 answer with none, or one that leaves a line out, is let in all the same. A line
-the attachment does not name reads `화면대로 고침`, and when that line fails
-again the reflection stops in the same form — a line of the approved list is
-never dropped silently. The attachment is read at step 4 of
-`## 운반 답 재진입`.
+the attachment does not name reads `화면대로 고침` — except a line of failure 2
+or 5, which stays that failure — and when that line fails again the reflection
+stops in the same form — a line of the approved list is never dropped silently.
+The attachment is read at step 4 of `## 운반 답 재진입`.
 
 ## 쓰기 순서
 
@@ -152,10 +195,14 @@ never dropped silently. The attachment is read at step 4 of
    `완료 — 문서 sha256 <사후 64 hex>` — unattended with the tail
    ` — 사람 답 <기록 파일 이름>` of the `시각-판정` record the scope names,
    interactive with no tail — and `**설계 문서 구속 다이제스트**` to the value
-   `visual-check.sh binding <설계 문서>` measures over the published document.
-   The old digest would read the approved screens as stale. Write the sidecar in
-   its atomic form: a temporary file in the same directory, then one whole-file
-   replace. No other byte of the sidecar changes.
+   `visual-check.sh pin <설계 문서>` prints over the published document. `pin`
+   writes the binding copy `<base>/docs/visual/binding/{slug}.txt` and prints
+   its digest in one step; the old digest would read the approved screens as
+   stale. When `pin` exits 2 it prints no digest: write no sidecar, and leave the
+   attempt as a sidecar write failure (「A cut after the publish is not a
+   failure.」 below). Write the sidecar in its atomic form: a temporary file in
+   the same directory, then one whole-file replace. No other byte of the sidecar
+   changes.
 4. **Failure.** Before writing the stop record, rewrite `**문서 반영**` to
    `실패 — <사유 한 줄>` with the same tail rule. The reason never contains
    ` — 사람 답 `, because readers read the tail from the line's last
@@ -244,7 +291,8 @@ answer let in again carries no card and no attachment and does not.
    reflection stop with the card's path in its `관측 상세`.
 4. **Attachment.** Read `첨부=<기록>.answer.md` and take each line's
    `문서대로 둠` or `화면대로 고침` (`## 첨부 결정`). With no attachment, every
-   line is `화면대로 고침`.
+   line is `화면대로 고침` except a line of failure 2 or 5, which no attachment
+   named and which fails again.
 5. **Reflection.** At the step the record names (`Step 3 승인 화면 반영`), run
    working copy → publish → sidecar in the order of `## 쓰기 순서`. Never rewrite
    the carried record.
@@ -257,14 +305,16 @@ evidence is the sidecar's `### 설계 문서 어긋남` block. On this scope the
 below come before the re-convergence's own halt-step rule, its decision-draft
 rule, its write constraints (CFI-6 and Constraints), the hash its working
 copy's `checkout --expect` takes, the before side of its Step 4 digest comparison and the
-place its Step 5 verdict returns to.
+place its Step 5 verdict returns to. The same skill's sub-case for a record
+whose `**스텝**` is exactly `Step 2 CFI-U3 BT-STOP — 사람 둔 어긋남` reads
+`## 사람 둔 어긋남 재수렴` below instead.
 
 - **Evidence.** The record's `**관측 상세**` carries `설계 문서 어긋남=<n>건 · sha256 <hex>`. Run `visual-check.sh drift <document>` through the gate (`--surface 읽기`); when its count or sha256 differs from the record's piece, or it exits 1, halt with `분류: precondition-failed` naming both values. An exit 2 prints only the lines it could not find and no count line, so read the block instead: when the block's `- ` lines are, in number and verbatim, the drift lines the record's `**질문 문면**` quotes and the piece's `<n>`, and every printed line is one of them, that exit 2 is not that halt — the block is the one the person approved, and the lines it prints are lines that cannot be applied — the wording left the document, or its heading did not hold — so carry them to the Edit step below, which stops on them in the reflection stop's form. An exit 2 repeats on every attempt over the same document, so a `precondition-failed` here would never reach the person who can take the line out. **The scope is the block's lines and nothing wider**.
-- **Edit.** In the re-convergence's Step 3 working copy, before editing each line, check that its document wording stands verbatim inside a section `## 고칠 수 있는 절` lists; then rewrite it to the screen wording there, keeping the superseded decision sentence in place as Step 3 does. The four failures of `## 실패로 보는 경우` and a line that cannot be applied are judged on the working copy, before the publish; on any of them publish nothing.
+- **Edit.** In the re-convergence's Step 3 working copy, before editing each line, check that its document wording stands verbatim inside a section `## 고칠 수 있는 절` lists; then rewrite it to the screen wording there, keeping the superseded decision sentence in place as Step 3 does. The five failures of `## 실패로 보는 경우` and a line that cannot be applied are judged on the working copy, before the publish; on any of them publish nothing.
 - **Recovery comparison first.** Every entry on this scope — a re-attached session, one started on a re-entry card, a new session the gate let in again under its entry predicate's condition 4, and a carried answer — compares the reflection record's `사후 sha256` with the document now before it reflects anything, as `## 쓰기 순서` (「A cut after the publish is not a failure.」) gives it; equal means the reflection was published and only the sidecar's two lines are left. On a re-entry card this comes before its item 3: when the reflection record (`${CC_PIPELINE_RUN_DIR}/design/{slug}/approval-reflection-<기록 파일 이름>.md`) exists and its `사후 sha256` equals the document's `shasum -a 256` now, write only the sidecar's two lines as `## 쓰기 순서` step 3 gives them, then go to Step 5 with `판정: 재설계 필요`. Only when they differ, or the record is absent, does item 3 halt.
 - **The reflection record goes right before the publish, the sidecar after it.** Once the working copy's checks pass, write the reflection record with the working copy's sha256 as its `사후 sha256`, then publish, then write the sidecar's two lines, as `## 쓰기 순서` and `## 반영 기록` give them, the tail ` — 사람 답 <the record's file name>`. The sidecar is the visual sidecar `<base>/docs/visual/{slug}.md`, written in its atomic form.
-- **Writes outside the document.** This scope writes two more things, and only these: the visual sidecar's `**문서 반영**` and `**설계 문서 구속 다이제스트**` lines, and the reflection record — declared `--surface 트리밖쓰기 --reach 런로컬` like the document publish.
-- **The reflection stop.** Whichever case stops this scope — S1–S4 unmet, a collision with another binding decision, a forbidden section, wording a screen-less slice planned or merged, or a line that cannot be applied — its `**스텝**` is not the re-convergence's fixed `Step 3 S<n>` but the one below, and the case goes into the reason. On a failure, first rewrite the sidecar's `**문서 반영**` to `실패 — <사유 한 줄> — 사람 답 <the record's file name>` (the reason names the case and, for a line that cannot be applied, the line; it never contains ` — 사람 답 `), then write the halt record: `**스텝**: Step 3 승인 화면 반영 — 충돌`, `**분류**: gate-unanswerable`, `**질문 문면**` quoting every failed drift line verbatim with its case, and one option only:
+- **Writes outside the document.** This scope writes three more things, and only these: the visual sidecar's `**문서 반영**` and `**설계 문서 구속 다이제스트**` lines, the binding copy `<base>/docs/visual/binding/{slug}.txt` that `visual-check.sh pin` writes with that digest, and the reflection record — declared `--surface 트리밖쓰기 --reach 런로컬` like the document publish, `pin` called by its absolute path as the first word of the `gate.sh exec`.
+- **The reflection stop.** Whichever case stops this scope — S1–S4 unmet, a collision with another binding decision, a forbidden section, wording a screen-less slice planned or merged, a line that touches the requirement-decision section, or a line that cannot be applied — its `**스텝**` is not the re-convergence's fixed `Step 3 S<n>` but the one below, and the case goes into the reason. On a failure, first rewrite the sidecar's `**문서 반영**` to `실패 — <사유 한 줄> — 사람 답 <the record's file name>` (the reason names the case and, for a line that cannot be applied, the line; it never contains ` — 사람 답 `), then write the halt record: `**스텝**: Step 3 승인 화면 반영 — 충돌`, `**분류**: gate-unanswerable`, `**질문 문면**` quoting every failed drift line verbatim with its case — and, when a line of failure 2 or 5 is among them, saying that each such line may be answered `화면대로 고침` in the attachment and that only the lines so answered are reflected, into `## 팀이 정한 요구 결정` as well — and one option only:
 
     ```text
     - `결정 첨부 후 다시 반영` — 사람이 충돌을 푸는 결정을 첨부에 붙이면 같은 런의 라우터 교대가 같은 범위로 반영을 한 번 더 파견한다. 첨부는 어긋남 줄마다 그 줄을 축자로 옮기고 `문서대로 둠` 또는 `화면대로 고침` 을 고른다
@@ -279,10 +329,23 @@ place its Step 5 verdict returns to.
     ```
 
     `**관측 상세**` carries `범위=승인 화면 반영 <the record's absolute path>`, `사전 sha256=` and `사전 구속 표면 다이제스트=` (the re-convergence's 「A halt carries the scope and the Step 1 baselines」), so the carry rules move the scope as it is. There is no hold option: a record left unanswered is the hold. No `**결정 초안**`: only a person answers it, and the decision that resolves its collision is one only a person knows.
-- **A failed attempt the carried-answer branch let in.** The exception to the one option above. When the scope's record is not a `<S2P 스텝>#<숫자>.md` directly under the attempting run's `halt/` — the copy `<스텝>#chained-<런>.md` the gate made in this run's `halt/` for a carried `승인`, or the earlier run's `시각-판정` record for a carried `결정 첨부 후 다시 반영` — and the attempt stops on one of the four failures or a line that cannot be applied, the stop carries the same `**스텝**`, `**분류**` and `**관측 상세**`, but writes `**선택지**: (없음)` and no `**추천**`, `**추천 근거**` or `**선택지 리스크**` line. A person's answer to that record passes the entry predicate in no run: answered in this run, the `결정 첨부 후 다시 반영` branch refuses it because the record's name is not `<스텝>#<숫자>.md` (the copy) or the record is not under the answering run's `halt/` (the earlier run's record), and past those two checks the `run-state` latest-record check and the `**구현 승인**` tail check of its condition 1 refuse it; carried to the next run, it is refused at the same places. `**질문 문면**` gives the failure's reason and says that this record cannot take an answer: once the run has ended, running `/cc-cmds:visual <문서> 구현 승인` again continues the interactive reflection from the document edit. The sidecar's `실패` line is written before the stop, as above.
+- **A failed attempt the carried-answer branch let in.** The exception to the one option above. When the scope's record is not a `<S2P 스텝>#<숫자>.md` directly under the attempting run's `halt/` — the copy `<스텝>#chained-<런>.md` the gate made in this run's `halt/` for a carried `승인`, or the earlier run's `시각-판정` record for a carried `결정 첨부 후 다시 반영` — and the attempt stops on one of the five failures or a line that cannot be applied, the stop carries the same `**스텝**`, `**분류**` and `**관측 상세**`, but writes `**선택지**: (없음)` and no `**추천**`, `**추천 근거**` or `**선택지 리스크**` line. A person's answer to that record passes the entry predicate in no run: answered in this run, the `결정 첨부 후 다시 반영` branch refuses it because the record's name is not `<스텝>#<숫자>.md` (the copy) or the record is not under the answering run's `halt/` (the earlier run's record), and past those two checks the `run-state` latest-record check and the `**구현 승인**` tail check of its condition 1 refuse it; carried to the next run, it is refused at the same places. `**질문 문면**` gives the failure's reason and says that this record cannot take an answer: once the run has ended, running `/cc-cmds:visual <문서> 구현 승인` again continues the interactive reflection from the document edit. The sidecar's `실패` line is written before the stop, as above.
 - **Re-entered with the answer.** A carried `결정 첨부 후 다시 반영` card follows `## 운반 답 재진입`: the card check, the baselines measured now after the recovery comparison, the question comparison, the attachment and the reflection, in that order. The attachment is read there and nowhere else, and a choice is never taken from the answer's `근거`. When every line is out, publish nothing, write `완료 — 문서 sha256 <the document's hash as it stands>` with the tail, and end with the verdict Step 4 computes.
 - **Ends outside a normal end and the reflection stop.** A `precondition-failed` before the publish (a moved document hash, `lockf` 75) and an end with no halt record are let in once more on the same answer by the gate. The same end the second time changes nothing this session writes: it does not touch the sidecar, which stays `대기`, it writes no `실패` line and no reflection stop, and a `precondition-failed` before the publish writes only its own record with no option, as the first time did. The gate refuses a third attempt, and the morning report shows `대기 — 반영 재시도 소진` (`## 종단`). This session cannot tell the first such end from the second, so it never writes as if it were the second.
 - **The verdict.** A normal reflection ends with `판정: 재설계 필요` and the terminal literal: it is dispatched only on `대기` (one difference or more) and rewrites decision sentences or resolved entries, so Step 4's binding-surface digest always moves. Step 4's rule is unchanged for this scope; what differs is where the verdict returns. The row sits under the visual publishing step's key, not a segment's, so the verdict returns the run to the visual wait, not to segment planning: `판정: 재설계 필요` there voids no segment's plan, the plans of segments without screens stay alive, and the next routing shift reads the approval predicate again and plans the screen slices once it reads `승인 유효`. **The carrier is not written on this path**, and the terminal predicate is the second shape's.
+
+## 사람 둔 어긋남 재수렴
+
+`design-reconverge` reads this section from the sub-case of its `구속 티어 이탈`
+scope whose record's `**스텝**` is exactly `Step 2 CFI-U3 BT-STOP — 사람 둔 어긋남`.
+A person chose `재수렴` on drift lines they had left `문서대로 둠`. **The scope
+is the lines the record's `**질문 문면**` quotes, nothing wider.** Write each by
+the `화면대로 고침` rules of `## 고칠 수 있는 절` — the write may reach
+`## 팀이 정한 요구 결정` — without the re-convergence's Step 3 S1–S4. A line a
+forbidden section holds (`## 구현 슬라이싱`, `## 구현 시 검증 항목`,
+`## 베이스 제약`, `## 시각 정합 기준`, `## 검증 기록`) is not written: name it
+and its section in the result; the next implement attempt stops on it again.
+Write nothing to the visual sidecar.
 
 ## 종단
 
@@ -298,7 +361,7 @@ recovery comparison first, then the document's sha256 and the gate's
 `binding-digest` measured now. 「대화형 기준」 is the document sha256 the
 interactive reflection measures before it takes its working copy.
 
-The row 「실패 넷, 적용할 수 없는 줄」 is the end of an attempt the entry
+The row 「실패 다섯, 적용할 수 없는 줄」 is the end of an attempt the entry
 predicate let in outside the carried-answer branch (the scope's record a
 `<S2P 스텝>#<숫자>.md` directly under the attempting run's `halt/`). An attempt
 the carried-answer branch let in that stops on the same cases ends on the row
@@ -307,7 +370,7 @@ the carried-answer branch let in that stops on the same cases ends on the row
 | 종단 | `**문서 반영**` | 정지 기록 | 쓰는 쪽 | 다시 들이는 길 | 다시 파견하는 쪽 | 다음 시도의 기준 해시 | 아침 보고 |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | 정상 완료 | `완료 — 문서 sha256 <사후>` | 없음 | 반영 재수렴 세션(사이드카 두 줄) | 들이지 않는다 — 술어가 `승인 유효` 로 돌아와 화면 슬라이스가 계획·파견된다 | 없음 | 해당 없음 | `완료`, 어긋남 건수, 반영 기록 경로 |
-| 실패 넷, 적용할 수 없는 줄 | `실패 — <사유>` | `Step 3 승인 화면 반영 — 충돌`, 선택지 `결정 첨부 후 다시 반영` | 반영 재수렴 세션(사이드카 `실패` 줄을 쓴 뒤 정지 기록) | 사람 답 — 같은 런은 `재부착` 라우트의 운반, 앞선 런은 진입 술어의 운반 답 갈래 | 라우터 교대 — 사람 답의 운반(`--carry-answer`) | 지금 문서로 다시 잰 값 | `실패 — <사유>`, 정지 기록, 선택지 `결정 첨부 후 다시 반영`, 답이 없으면 화면 슬라이스가 보류로 서 있음 |
+| 실패 다섯, 적용할 수 없는 줄 | `실패 — <사유>` | `Step 3 승인 화면 반영 — 충돌`, 선택지 `결정 첨부 후 다시 반영` | 반영 재수렴 세션(사이드카 `실패` 줄을 쓴 뒤 정지 기록) | 사람 답 — 같은 런은 `재부착` 라우트의 운반, 앞선 런은 진입 술어의 운반 답 갈래 | 라우터 교대 — 사람 답의 운반(`--carry-answer`) | 지금 문서로 다시 잰 값 | `실패 — <사유>`, 정지 기록, 선택지 `결정 첨부 후 다시 반영`, 답이 없으면 화면 슬라이스가 보류로 서 있음 |
 | 운반 답 갈래로 들인 시도의 실패(위 실패 행의 경우) | `실패 — <사유>` | `Step 3 승인 화면 반영 — 충돌`, `**선택지**: (없음)` | 반영 재수렴 세션(사이드카 `실패` 줄을 쓴 뒤 정지 기록) | 들이지 않는다 — 그 기록에 대한 답은 어느 런에서도 진입 술어를 지나지 못한다. 런이 끝난 뒤 `/cc-cmds:visual <문서> 구현 승인` 을 다시 실행하면 대화형 반영이 문서 고침부터 이어진다 | 없음 — 사람의 대화형 다시 실행 | 대화형 기준 | `실패 — <사유>`, 정지 기록, 그 기록에 답하지 말고 런이 끝난 뒤 다시 실행하라는 안내, 화면 슬라이스가 이 런에서 서 있음 |
 | 게시 전 `precondition-failed`(원인과 관계없이 분류만 본다 — 문서 해시 다름, `lockf` 75, 카드 다이제스트 다름 등), 첫 번째 | `대기` 그대로(운반 답의 시도면 `실패` 그대로) | 재수렴의 `precondition-failed` 정지(선택지 없음). 사람에게 묻는 기록으로 보고하지 않는다 — 라우터 교대의 반영 분기가 이 기록을 재파견으로 처리한다 | 반영 재수렴 세션(정지 기록만, 사이드카 줄은 쓰지 않음) | 진입 술어 조건 4 를 이 종단에서만 풀어 같은 답으로 한 번 더 | 라우터 교대 — 반영 분기. 운반 답의 시도였으면 같은 답의 운반 | 지금 문서로 다시 잰 값 | `대기`, 다시 들임 |
 | 정지 기록 없는 비정상 종료(시간 초과·예산 소진 등), 첫 번째 | `대기` 그대로(운반 답의 시도면 `실패` 그대로) | 없음 | 없음 — 쓰는 세션이 없다 | 위와 같음 | 위와 같음 | 위와 같음 | `대기`, 다시 들임 |
