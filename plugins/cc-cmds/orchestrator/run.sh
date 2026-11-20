@@ -7108,10 +7108,18 @@ report_visual_migration() {
   # migration's progress file `visual-migration/<s>.md`: `**완료**: 예` there is
   # a finished migration, anything else one that did not finish. A record with
   # only a `**승계**` line adds nothing — that run inherited a lane, it did not
-  # migrate.
+  # migrate. The new canvases are not shared with anyone, so a line whose new
+  # lane is the record's `**레인**` ends with the owner: that lane and the
+  # record's `**계정**` address, which a person logs in as to see them. The
+  # record holds the latest lane's account only, so an earlier migration's line
+  # — its new lane differs from `**레인**` — and a record with no `**계정**`
+  # carry no owner rather than a wrong one.
   local rec="$RUN_DIR/visual-lane" lines line rest s pair why from to prog where
+  local cur_lane acct owner
   [ -f "$rec" ] || return 0
   lines=$(grep -E '^\*\*이관\*\*: [0-9]+ · ' "$rec" 2>/dev/null) || return 0
+  cur_lane=$(sed -n 's/^\*\*레인\*\*: //p' "$rec" 2>/dev/null | tail -n 1)
+  acct=$(sed -n 's/^\*\*계정\*\*: //p' "$rec" 2>/dev/null | tail -n 1)
   while IFS= read -r line; do
     [ -n "$line" ] || continue
     rest=${line#\*\*이관\*\*: }
@@ -7120,12 +7128,16 @@ report_visual_migration() {
     why=${rest%% · *}
     from=${pair%% → *}; to=${pair##* → }
     prog="$RUN_DIR/visual-migration/$s.md"
+    owner=""
+    if [ -n "$acct" ] && [ "$to" = "$cur_lane" ]; then
+      owner=" — 새 캔버스는 레인 $to 의 계정 $acct 소유이고 공유되지 않았습니다 — 그 계정으로 claude.ai 에 로그인해 봅니다"
+    fi
     if grep -qxF '**완료**: 예' "$prog" 2>/dev/null; then
       where=$(report_visual_latest_verdict)
       [ -n "$where" ] || where=$(visual_sidecar_path "${DOC:-}" 2>/dev/null || printf '(사이드카 경로 없음)')
-      report_append "시각 발행 이관" "계정을 이관했고 캔버스 URL 이 바뀌었습니다 — $from → $to($why), 새 URL 은 $where"
+      report_append "시각 발행 이관" "계정을 이관했고 캔버스 URL 이 바뀌었습니다 — $from → $to($why), 새 URL 은 $where$owner"
     else
-      report_append "시각 발행 이관" "계정 이관이 정해졌으나 캔버스 이관이 끝나지 않았습니다 — $from → $to($why), 진행 파일 $prog"
+      report_append "시각 발행 이관" "계정 이관이 정해졌으나 캔버스 이관이 끝나지 않았습니다 — $from → $to($why), 진행 파일 $prog$owner"
     fi
   done <<EOF
 $lines
