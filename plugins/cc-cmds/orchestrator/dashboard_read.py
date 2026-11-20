@@ -1785,6 +1785,7 @@ WAIT_REASON_GROUP = {
     "unknown-concurrency": "계정 여유 부족",
     "resume-bound-no-room": "계정 여유 부족",
     "resume-bound-borrowed": "계정 여유 부족",
+    "pinned-borrowed": "계정 여유 부족",
     "host-saturated": "호스트 포화",
     "fifo-yield": "차례·임대 대기",
     "lease-lock-busy": "차례·임대 대기",

@@ -1004,7 +1004,7 @@ check "T31 파견 대기만 있는 런은 사람을 기다리지 않는다" \
 WX_VOCAB=$(sed -n "s/^  local wait_reason=' \(.*\) '\$/\1/p" "$ORCH/run.sh" | tr ' ' '\n' | sort | tr '\n' ' ')
 check "T31 갈래 매핑의 키 집합이 run.sh 의 wait_reason 어휘와 같다" \
   "$(nq "' '.join(sorted(m.WAIT_REASON_GROUP)) + ' '")" "$WX_VOCAB"
-check "T31 run.sh 의 wait_reason 어휘를 읽었다" "$(printf '%s' "$WX_VOCAB" | wc -w | tr -d ' ')" "13"
+check "T31 run.sh 의 wait_reason 어휘를 읽었다" "$(printf '%s' "$WX_VOCAB" | wc -w | tr -d ' ')" "14"
 check "T31 응답 어디에도 사용량 한도 종류가 없다" \
   "$(ORCH_HOST_OS=Linux nq "sum(1 for r in m.Model(root='$WXR').runs(days='all', dead=True, exp=True, now=now)['runs'] for w in r['waiting'] if w['kind'] == '사용량 한도')")" "0"
 check "T31 여덟 런 모두 파견 대기 하나를 싣는다" \
