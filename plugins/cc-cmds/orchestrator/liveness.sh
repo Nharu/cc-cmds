@@ -855,7 +855,7 @@ cc_ci_wait_clock() {
   #   4. once one of the three has set the clock, the latest `기록 시각` of the
   #      segment's `중단 답` rows a person gave replaces it when later — the
   #      latest, not the last row, because a carried row repeats an earlier
-  #      row's time. A row whose `답한 주체` is `교대` or `좌석`, or that has no
+  #      row's time. A row whose `답한 주체` is `교대`, `좌석` or `스테이지`, or that has no
   #      `답한 주체` and whose `근거` opens with `자동 채택(구속-이탈) — `, is not
   #      a person's (the two branches of the gate's `gate_halt_answer_is_auto`).
   #      A `기록 시각` that does not parse leaves out that row only.
@@ -922,7 +922,7 @@ cc_ci_wait_clock() {
       /^- `중단 답` / {
         if (val("세그먼트") != seg) next
         by = val("답한 주체")
-        if (by == "교대" || by == "좌석") next
+        if (by == "교대" || by == "좌석" || by == "스테이지") next
         if (by == "" && index(val("근거"), "자동 채택(구속-이탈) — ") == 1) next
         print val("기록 시각") "\t" NR
       }
