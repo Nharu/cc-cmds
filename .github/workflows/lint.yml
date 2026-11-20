@@ -18,13 +18,17 @@ on:
 # Naming one permission sets every unnamed one to `none`, so both are written:
 # `contents` for the checkout and `actions` for the duration signal to read the
 # master runs' baseline artifacts.
+#
+# Every job names `ubuntu-24.04` rather than `ubuntu-latest`, for the reason
+# `gate.yml` gives: the scripts here are the same GNU coreutils shell the gate
+# suite runs, and both workflows stay on the one image they were written for.
 permissions:
   contents: read
   actions: read
 
 jobs:
   lint-and-readme:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
@@ -77,7 +81,7 @@ jobs:
   # durations are printed longest first and uploaded as rest-timing-<shard>, the
   # input `scripts/rest-shard.sh --merge` rebuilds the census from.
   rest-tests:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -140,7 +144,7 @@ jobs:
   rest-duration:
     needs: rest-tests
     if: always()
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 

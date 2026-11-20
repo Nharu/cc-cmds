@@ -164,15 +164,40 @@ is_return_prompt() {
 # the `-list ALL` time. Detached, so the hook returns at once and the turn is
 # not held; `CC_CMDS_NOTIFY_DISMISS_SYNC=1` runs it in the foreground for tests.
 # This hook never calls terminal-notifier itself.
+#
+# AN ANSWER TO A RUN'S APPROVAL ALSO CLOSES THAT APPROVAL'S SLOT. When the
+# question answered was linked to a run's approval (`cc_notify_approval_link`,
+# the same reading the question hook made) and the question hook raised it
+# there — its id is in the run's `notify.asked-approvals` — the approval's slot
+# is cleared with `approval-ask`, which records a return and removes that
+# group's banner. The gate still clears the slot when the approval closes; the
+# two handled marks are idempotent. A prompt return has no question to link,
+# so `approval_clear` is empty there.
+approval_clear=
 dismiss() {
   if [ "${CC_CMDS_NOTIFY_DISMISS_SYNC:-}" = "1" ]; then
     { CC_NOTIFY_SESSION_ID="$sid" cc_notify_clear session-ask
+      clear_approval
       bash "$plugin_root/skills/active-notify/scripts/notify.sh" dismiss "$sid"
     } </dev/null >/dev/null 2>&1
   else
     { CC_NOTIFY_SESSION_ID="$sid" cc_notify_clear session-ask
+      clear_approval
       bash "$plugin_root/skills/active-notify/scripts/notify.sh" dismiss "$sid"
     } </dev/null >/dev/null 2>&1 &
+  fi
+  return 0
+}
+
+clear_approval() {
+  local rid rest d id
+  [ -n "$approval_clear" ] || return 0
+  rid=${approval_clear%%$'\t'*}
+  rest=${approval_clear#*$'\t'}
+  d=${rest%%$'\t'*}
+  id=${rest#*$'\t'}
+  if cc_notify_approval_asked "$d" "$id"; then
+    RUN_DIR="$d" RUN_ID="$rid" cc_notify_clear approval-ask "$id"
   fi
   return 0
 }
@@ -191,7 +216,10 @@ case "$event" in
     # matcher or lands in the wrong array cannot turn every tool call into a
     # dismissal.
     tool=$(printf '%s' "$input" | jq -r '.tool_name // empty' 2>/dev/null)
-    if [ "$tool" = "AskUserQuestion" ]; then dismiss; fi
+    if [ "$tool" = "AskUserQuestion" ]; then
+      approval_clear=$(cc_notify_approval_link "$input")
+      dismiss
+    fi
     ;;
 esac
 exit 0

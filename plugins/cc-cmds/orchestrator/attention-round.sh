@@ -134,7 +134,8 @@ attention_bytes() { LC_ALL=C wc -c < "$1" | tr -d ' '; }
 attention_ledger_rows() {
   # attention_ledger_rows <ledger> — the ledger rows the seat may read, one per
   # line as `<priority>\t<order>\t<line>\t<row>`, unsorted. Priorities:
-  #   1 an automatic `중단 답` (answered by the seat or the shift, or the older
+  #   1 an automatic `중단 답` (answered by the seat, the shift or a design
+  #     stage freezing its own ladder record, or the older
   #     `자동 채택(구속-이탈) — ` prefix with no `답한 주체`);
   #   2 `리뷰 기각`;
   #   3 a `자율 승인` that is not an exec row, higher `등급` first — the two
@@ -167,7 +168,7 @@ attention_ledger_rows() {
       k = F[1]; sub(/^- `/, "", k); sub(/`$/, "", k)
       if (k == "중단 답") {
         who = fv("답한 주체")
-        if (who == "좌석" || who == "교대" || (!has("답한 주체") && index(fv("근거"), "자동 채택(구속-이탈) — ") == 1))
+        if (who == "좌석" || who == "교대" || who == "스테이지" || (!has("답한 주체") && index(fv("근거"), "자동 채택(구속-이탈) — ") == 1))
           printf "1\t0\t%d\t%s\n", NR, $0
         next
       }

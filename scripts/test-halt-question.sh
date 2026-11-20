@@ -307,5 +307,18 @@ truthy "16: 긴 금지 후보 id 로도 question 이 상한 이하" "$([ "$(cpn 
 check "16: 끝이 $MORE" "$(has "$MORE" "${Q16: -${#MORE}}")" "1"
 check "16: 금지 후보 대체 문장의 머리" "$(has '[S2P#7] 금지 후보 ban-candidate-' "$Q16")" "1"
 
+# --- 17. --approval: 시각 승인의 id 를 header 에 싣는다 ----------------------------
+# 같은 기록을 인자 없이 렌더한 결과와 header 만 달라야 한다. 12 코드포인트를 넘는 id 는
+# header 를 바꾸지 않는다.
+render "$F16"
+BASE17=$(printf '%s' "$OUT" | jq -cS 'del(.header)')
+OUT=$(bash "$HQ" render --record "$F16" --approval vis-0a1b2c3d 2>"$WORK/err"); rc=$?
+check "17: --approval 종료 코드" "$rc" "0"
+check "17: header 가 승인 id" "$(jqv .header)" "vis-0a1b2c3d"
+check "17: header 밖의 필드는 그대로" "$(printf '%s' "$OUT" | jq -cS 'del(.header)')" "$BASE17"
+OUT=$(bash "$HQ" render --record "$F16" --approval visual-0a1b2c3d 2>"$WORK/err"); rc=$?
+check "17: 긴 id 종료 코드" "$rc" "0"
+check "17: 12 코드포인트를 넘는 id 는 header 를 바꾸지 않는다" "$(jqv .header)" "S2P#7"
+
 printf '\n%d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" = "0" ]

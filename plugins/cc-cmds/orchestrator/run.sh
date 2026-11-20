@@ -3598,6 +3598,17 @@ halt_step_is_unclosed_decision() {
   [ "$(sed -n '/^\*\*스텝\*\*: */{s///;s/[[:space:]]*$//;p;q;}' "$1")" = "Step 1 CFI-U3 BT-STOP — 미결 결정" ]
 }
 
+# halt_step_is_kept_drift <halt record> — 0 when the record's whole `**스텝**`
+# value is exactly `Step 2 CFI-U3 BT-STOP — 사람 둔 어긋남`: the halt an
+# implement stage writes when a screen slice meets a drift line the person
+# left `문서대로 둠`, which only a person answers. The whole value is compared,
+# never a cut at the first ` — `, so the shift's `구속-이탈` adoption, which
+# reads the step up to that cut, cannot pass for it.
+halt_step_is_kept_drift() {
+  [ -f "$1" ] || return 1
+  [ "$(sed -n '/^\*\*스텝\*\*: */{s///;s/[[:space:]]*$//;p;q;}' "$1")" = "Step 2 CFI-U3 BT-STOP — 사람 둔 어긋남" ]
+}
+
 # `슬라이스 수` is a CHECKSUM, not an input: it is derived from the count of
 # blocks whose cutpoint index is at or above `PR`, so the two cannot disagree.
 # A mismatch means the declaration was truncated or misnumbered, which is worth
@@ -6626,7 +6637,7 @@ spawn_route_wait() {
   if [ "$grp" != "-" ]; then
     rec=$(route_lease_wait_put --table "$(run_pace_root)/leases" --now "$(now_epoch)" --run-id "$RUN_ID" \
             --lineage "$SPAWN_LINEAGE" --group "$grp" --inventory "$RUN_DIR/inventory.json" \
-            --holder "$holder" 2>/dev/null) || rrc=$?
+            --holder "$holder" ${kind:+--kind "$kind"} 2>/dev/null) || rrc=$?
     if [ "$rrc" = "0" ]; then
       wnonce=$(printf '%s' "$rec" | jq -r '.nonce // "-"' 2>/dev/null || printf '%s' '-')
     else
@@ -9422,6 +9433,33 @@ halt_record_present() {
   [ "$(grep -v '^[[:space:]]*$' "$f" | tail -1)" = "<!-- /cc-pipeline-halt v1 -->" ]
 }
 
+halt_record_stage_answered() {
+  # halt_record_stage_answered <record path> — 0 when this run's ledger holds a
+  # `중단 답` row carrying both `중단 기록=<that path>` and `답한 주체=스테이지`:
+  # the design stage registered the gate-checked answer to its own
+  # `ladder-unsettled` record and froze the document in the same session, so
+  # the record is no longer a reason to park. Both classifier copies — the
+  # driver's `classify_termination` and the gate's settlement chain, which
+  # sources this file — ask this one function, so the two read one ledger and
+  # one rule.
+  #
+  # Fields are compared by string equality after splitting on ` | `, never as a
+  # regex: a record path is an operand, not a pattern. No ledger, or an empty
+  # one, is no such row (the unit tests call the classifier without a ledger).
+  local rec="$1"
+  [ -n "$rec" ] && [ -n "${LEDGER:-}" ] && [ -s "$LEDGER" ] || return 1
+  run_section_rows '중단 답' | awk -v r="중단 기록=$rec" -v a="답한 주체=스테이지" '
+    { n = split($0, f, "|"); hr = 0; ha = 0
+      for (i = 1; i <= n; i++) {
+        v = f[i]; sub(/^ +/, "", v); sub(/ +$/, "", v)
+        if (v == r) hr = 1
+        if (v == a) ha = 1
+      }
+      if (hr && ha) { found = 1; exit }
+    }
+    END { exit (found ? 0 : 1) }'
+}
+
 # ---------------------------------------------------------------------------
 # THE HALT RECORD'S SHAPE. The option-line rule `halt_option_lines` this file
 # and the gate read is defined once in `liveness.sh`, which this file sources
@@ -9984,7 +10022,15 @@ classify_termination() {
   if [ "$exit_rc" = "0" ] && halt_record_format_clue "$stage" >/dev/null; then
     printf '공허한 성공'; return 0
   fi
-  if halt_record_present "$stage"; then printf '의도된 park'; return 0; fi
+  # A record the stage itself answered through the gate's stage arm of
+  # `halt-answer` (`답한 주체=스테이지`) is no park reason: the same session
+  # went on to freeze the document, so the attempt is judged by the arms below
+  # — `정상 완료` when the freeze literal and the frozen document are there, and
+  # not otherwise. A record with no such row parks as before.
+  if halt_record_present "$stage" \
+     && ! halt_record_stage_answered "$(halt_record_path "$stage")"; then
+    printf '의도된 park'; return 0
+  fi
   # A stage the driver signalled from the limit-shape arm never reaches
   # `stage_collect`, so its `.rc` is the consumer's default and not an
   # observation. The mark the arm left is; it outranks the rc rows below.
@@ -11424,8 +11470,10 @@ wait_drop() {
 }
 
 wait_fifo_follow() {
-  # wait_fifo_follow <marker> <lineage> <holder> <group> <reason> — keep this
-  # wait's FIFO entry in step with the WAIT it was just given.
+  # wait_fifo_follow <marker> <lineage> <holder> <group> <reason> [<kind>] — keep
+  # this wait's FIFO entry in step with the WAIT it was just given. <kind> is the
+  # waiting stage's kind; an entry put back carries it as `--kind`, and an empty
+  # or absent <kind> puts the entry back with no kind.
   #
   # THE HOST HOLD TAKES THE ENTRY DOWN. It answers a waiter whose account found
   # room with a group-less `host-saturated` WAIT, and the host wait uses no
@@ -11440,7 +11488,7 @@ wait_fifo_follow() {
   # whose first put failed, would otherwise yield to every entry of that group
   # for good. The lease table, not the marker, says whether the entry is there,
   # so a marker that kept a nonce after its entry came down does not stop it.
-  local m="$1" lin="$2" holder="$3" grp="$4" why="$5" nonce rec t
+  local m="$1" lin="$2" holder="$3" grp="$4" why="$5" kind="${6:-}" nonce rec t
   [ -f "$m" ] || return 0
   t="$(run_pace_root)/leases"
   nonce=$(cc_waiting_field "$m" '논스' | tr -d '[:space:]')
@@ -11458,7 +11506,7 @@ wait_fifo_follow() {
   fi
   rec=$(route_lease_wait_put --table "$t" --now "$(now_epoch)" --run-id "$RUN_ID" \
           --lineage "$lin" --group "$grp" --inventory "$RUN_DIR/inventory.json" \
-          --holder "${holder:-0}" 2>/dev/null) || return 0
+          --holder "${holder:-0}" ${kind:+--kind "$kind"} 2>/dev/null) || return 0
   nonce=$(printf '%s' "$rec" | jq -r '.nonce // "-"' 2>/dev/null || printf '%s' '-')
   [ "$nonce" != "-" ] || return 0
   # An entry the marker does not name is one no drop could find again.
@@ -11627,7 +11675,7 @@ stage_wait_loop() {
         wgrp=$(printf '%s' "$env" | jq -r '.group // "-"' 2>/dev/null || printf '%s' '-')
         wait_marker_set "$m" '갱신' "$(now_epoch)" '까지' "$upto" '그룹' "$wgrp" || true
         wait_fifo_follow "$m" "$lin" "$holder" "$wgrp" \
-          "$(printf '%s' "$env" | jq -r '.reason // ""' 2>/dev/null || true)"
+          "$(printf '%s' "$env" | jq -r '.reason // ""' 2>/dev/null || true)" "$kind"
         # A WAIT without `reserve_seen` keeps the memory the marker already has.
         if printf '%s' "$env" | jq -e '(.reserve_seen | type) == "array"' >/dev/null 2>&1; then
           wait_marker_set "$m" '예비' "$(printf '%s' "$env" | jq -c '.reserve_seen' 2>/dev/null || printf '%s' '[]')" || true
