@@ -8146,8 +8146,7 @@ surface_of_argv0() {
     # line names (`gate_ban_append_answer`). All three land outside the tree on
     # this machine, so the stage declares them `기기전역`, and the
     # machine-global cell of `gate_reach_disposition` opens exactly the three
-    # this row grades `트리밖쓰기`. `share` prints the configured share scope and
-    # writes nothing. Anywhere else, and every other subcommand — `assign`, a
+    # this row grades `트리밖쓰기`. Anywhere else, and every other subcommand — `assign`, a
     # person's assignment, among them — writes the settings home, an account
     # record or the sidecar, which is the seat's work, so they take the unknown
     # grade and its refusal.
@@ -8163,7 +8162,7 @@ surface_of_argv0() {
     # the tree, and `app` serves the build on a loopback port it takes down itself.
     visual-config.sh)
       case "${1:-}" in
-        snapshot|lane|share|allowed) printf '읽기' ;;
+        snapshot|lane|allowed) printf '읽기' ;;
         account|record)
           if [ "$#" -eq 2 ] && gate_caller_is_visual_publish_stage && gate_visual_doc_is_run_doc "$2"; then
             printf '트리밖쓰기'

@@ -38,8 +38,8 @@
 #   expect     the expected account by the rule `account` uses: the allow
 #              list, a record's `**계정**`, `손상` for a broken record, `미설정`
 #              with no value; allowed inside a run with no marker
-#   share      the `share` address from claude-design, read inside a run too;
-#              no key, an empty value or no file is an empty output and exit 1
+#   share      not a subcommand: a usage error (exit 2) even with a `share =`
+#              line in claude-design
 #   models     defaults, overrides, an out-of-vocabulary value and an unknown
 #              key reported
 #   seed       copies only when the host file is absent; writes nothing when
@@ -496,20 +496,14 @@ vc "$H" CC_PIPELINE_RUN_ID=20261012-deadbeef -- expect "$DOC"
 [ "$RC" = 0 ] && [ "$(cat "$T/out")" = "허용 Design.Owner@example.com" ] && ! grep -q '런 안에서는 거절한다' "$T/err" \
   && pass "expect: 발행 표지 없이 런 안에서도 허용" || fail "expect 런 안 = ${RC} $(cat "$T/err")"
 
-# --- share --------------------------------------------------------------------
+# --- share is not a subcommand -------------------------------------------------
+# A `share =` line a person left in claude-design is read by no subcommand, and
+# `share` itself is an unknown subcommand.
 HS="$T/h-share"
 mkdir -p "$HS/config/cc-cmds"
-printf '%s\n' 'account = design.owner@example.com' > "$HS/config/cc-cmds/claude-design"
+printf '%s\n' 'account = design.owner@example.com' 'share = human.cc@example.com' > "$HS/config/cc-cmds/claude-design"
 vc "$HS" CC_PIPELINE_RUN_ID=20261012-deadbeef -- share
-[ "$RC" = 1 ] && [ ! -s "$T/out" ] && pass "share: 키가 없으면 빈 출력과 종료 1" || fail "share 없음 = ${RC} $(cat "$T/out")"
-printf '%s\n' 'share =   ' >> "$HS/config/cc-cmds/claude-design"
-vc "$HS" -- share
-[ "$RC" = 1 ] && [ ! -s "$T/out" ] && pass "share: 값이 비면 빈 출력과 종료 1" || fail "share 빈 값 = ${RC} $(cat "$T/out")"
-printf '%s\n' ' share = human.cc@example.com ' >> "$HS/config/cc-cmds/claude-design"
-vc "$HS" CC_PIPELINE_RUN_ID=20261012-deadbeef -- share
-[ "$RC" = 0 ] && [ "$(cat "$T/out")" = human.cc@example.com ] && pass "share: 런 안에서도 마지막 줄 값을 다듬어 낸다" || fail "share 판독 = ${RC} $(cat "$T/out")"
-vc "$T/h-unset" -- share
-[ "$RC" = 1 ] && [ ! -s "$T/out" ] && pass "share: 호스트 파일이 없으면 종료 1" || fail "share 파일 없음 = ${RC}"
+[ "$RC" = 2 ] && [ ! -s "$T/out" ] && pass "share: 알 수 없는 부속 명령이라 사용법 오류 (종료 2)" || fail "share = ${RC} $(cat "$T/out")"
 
 # --- models -------------------------------------------------------------------
 H="$T/h-models"
