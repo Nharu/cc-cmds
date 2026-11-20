@@ -7284,7 +7284,7 @@ doc_size_ceiling() {
   case "$1" in
     audit)      printf '162000' ;;
     reconverge) printf '196000' ;;
-    implement)  printf '172000' ;;
+    implement)  printf '180000' ;;
   esac
 }
 

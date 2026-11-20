@@ -10,14 +10,25 @@
 # .git/objects/info/alternates get an access time of 2000-01-01 before it
 # starts, and after it ends a file whose access time moved, whose modification
 # time changed or that is gone was read. A tracked symbolic link always counts
-# as read. When one of the four .git files moved, or a watch shim saw a git
-# call or a cloning cp aimed at the checkout, the item read the whole tree; a
-# git call whose calling directory alone is inside the checkout is not such a
-# call. A later tree reuses the pass when the record's doubles and tool
-# fingerprint are today's, the record is under 24 hours old, the tracked paths
-# match by (path, mode, empty or not), and every path it read has the same
-# blob; a whole-tree record also needs the same tree object, the same input
-# commit and the same base.
+# as read.
+#
+# The git watch shim sorts each git call on the checkout into three classes:
+# a location query (`rev-parse` with only the options that print where the
+# repository is), an immutable object read (only revisions that start with a
+# full 40-digit id, through an allowed subcommand with allowed options), and
+# strict, everything else. The record's `트리전체` is `예` when the index
+# moved, HEAD, config or alternates kept a move the shim did not put back,
+# the shim left a mark (a strict call, a cloning cp, a lock it could not take,
+# a read it found already done) or one id was both present and absent; it is
+# `git읽기` when none of that holds and the shim logged a location query or an
+# object read, and `아니오` otherwise. A later tree reuses the pass when the
+# record's doubles and tool fingerprint are today's, the record is under 24
+# hours old, the tracked paths match by (path, mode, empty or not), and every
+# path it read has the same blob; a `예` record also needs the same tree object,
+# the same input commit and the same base. A `git읽기` record needs neither of
+# those: it needs each id of its `객체` line to be present or absent in the
+# work clone of today's run (TR_OBJ_REPO) as it was when it was written, so it
+# is reused across a new HEAD and a new base.
 #
 # A RELEASE COMMIT DOES NOT VOID A PASS. A record that fails the conditions
 # above is still reused when every path whose blob differs between its listing
@@ -43,6 +54,10 @@
 # Variables:
 #   TR_EXCLUDE   item keys (`make:<goal>`, `make:check-cheap`) separated by
 #                spaces that are never recorded or reused; empty by default
+#   TR_OBJ_REPO  the repository the ids of a `git읽기` record are looked up in;
+#                set by scripts/test-tree.sh before it judges and never
+#                exported, so the goals it starts do not inherit it. Empty: the
+#                ids cannot be looked up and such a record is not reused
 #
 # The store: <common git directory>/cc-cmds-check-push-items/<item key with
 # `/` spelled `%2F`>/<tested tree>, one record per tree, written under a
@@ -60,6 +75,13 @@
 # condition a goal record meets; the goal judge refuses a lane record.
 
 TR_EXCLUDE=""
+TR_OBJ_REPO=""
+# Seconds a location query or an object read of the git watch shim waits for
+# the item's lock before it gives up and marks the call; the shim carries it as
+# the first constant of its body. The smallest whole number of seconds above
+# zero: the self-test's calls never contend, and zero would turn every pair of
+# concurrent calls of one item strict without waiting at all.
+TR_SHIM_WAIT=1
 # Records older than this many seconds are not reused.
 TR_MAX_AGE=86400
 # An access time above this epoch (2000-01-02 UTC) moved since the baseline,
@@ -188,7 +210,8 @@ tr_fp_init() {
 # --- one item's run ------------------------------------------------------------------
 #
 # $1 is the item checkout, $2 the prefix of its side files outside the checkout
-# (<prefix>.paths, .links, .base, .after, .mark, .canary, .shim/), $3 the
+# (<prefix>.paths, .links, .base, .after, .mark, .canary, .shim/, .lock/,
+# .shimlog), $3 the
 # tracked listing of its tree.
 
 # The baseline: the access times of the tracked regular files and the four .git
@@ -214,7 +237,7 @@ tr_baseline() {
   else
     : > "$side.base"
   fi
-  rm -f "$side.mark"
+  rm -rf "$side.mark" "$side.lock" "$side.shimlog"
   return 0
 }
 
@@ -256,16 +279,47 @@ EOF
 # to the command PATH finds now and leaves a line in <prefix>.mark when the
 # call can reach the checkout.
 #
-# The git shim marks a call when, resolved to a physical path, one of these is
-# inside the checkout (its .git included): the directory the -C arguments reach
-# when applied in order on top of the calling directory, a --git-dir or
-# --work-tree argument, the value of GIT_DIR, GIT_WORK_TREE, GIT_INDEX_FILE,
-# GIT_OBJECT_DIRECTORY or GIT_ALTERNATE_OBJECT_DIRECTORIES, or any other
-# argument that resolves to an existing path. The calling directory itself only
-# anchors relative paths and -C: a git that finds its repository from there
-# reads that repository's HEAD and config, which the access times of the four
-# .git files show, and a call that names a repository outside reads nothing of
-# the checkout.
+# The git shim first finds the call's repository: the --git-dir argument, else
+# GIT_DIR, else the directory the -C arguments reach when applied in order on
+# top of the calling directory. Only a call whose repository is the checkout is
+# sorted into a class, and only when no option before the subcommand is
+# anything but -C, --git-dir or --work-tree and no GIT_ variable outside the
+# author, committer, pager, terminal prompt and editor ones is set:
+#   - a location query: `rev-parse` with one or more arguments, all of them
+#     options that print where the repository is (--show-toplevel and its
+#     kin);
+#   - an immutable object read: cat-file, ls-tree, rev-parse --verify,
+#     merge-base, rev-list, log, show or diff, each with its own short list of
+#     options, whose revisions, one or more (exactly two for diff), all start
+#     with a full 40-digit id, with only ^{type}, ~n, ^n and :path after it and,
+#     for rev-list, log and show, A..B, A...B and ^A; a --format or --pretty
+#     format may hold only the listed placeholders. A checkout whose git
+#     directory has shallow, info/grafts, info/attributes or a ref under
+#     refs/replace/ or refs/notes/ has no object reads;
+#   - strict: every other call.
+# A strict call or one on another repository is passed on with exec. It is
+# marked when, resolved to a physical path, one of these is inside the
+# checkout (its .git included): the directory the -C arguments reach, a
+# --git-dir or --work-tree argument, the value of GIT_DIR, GIT_WORK_TREE,
+# GIT_INDEX_FILE, GIT_OBJECT_DIRECTORY or GIT_ALTERNATE_OBJECT_DIRECTORIES, or
+# any other argument that resolves to an existing path; and a strict call that
+# found the checkout from the calling directory alone is marked `cwd`, except
+# clone, version, help and a bare --version or --help, which need no
+# repository. A marked call also logs `엄격<TAB><subcommand or ->` in
+# <prefix>.shimlog.
+#
+# A location query or an object read runs inside the item's lock, the
+# directory <prefix>.lock holding the pid of the shim that took it. A shim
+# that sees the pid dead, or that waited TR_SHIM_WAIT seconds, marks the call
+# and passes it on. Inside the lock it marks the call and passes it on when
+# HEAD, config or alternates already moved; otherwise it runs the real git as
+# a child with TR_SHIM_INNER=1 (a git that child starts again is marked and
+# passed on), looks up each id of an object read with cat-file -e, puts the
+# access times of HEAD, config and alternates back (never the index's), logs
+# `위치<TAB>rev-parse` or `객체<TAB><id>:있음|없음 ...`, and ends with the
+# child's status. A TERM, INT or HUP goes to the child; the shim waits for
+# it, marks the call `신호`, leaves the access times as they are and ends with
+# 128 plus the signal's number.
 #
 # The cp shim marks a call that carries a clone option (-c alone or inside a
 # group of short options, --reflink, --reflink=<anything but never>) when one
@@ -277,12 +331,17 @@ tr_shims() {
   mkdir -p "$d" || return 1
   real_git=$(command -v git) || return 1
   real_cp=$(command -v cp) || return 1
+  tr_os_init
   {
     printf '#!/usr/bin/env bash\n'
     printf '# git watch shim of one test item.\n'
+    printf '# Seconds a location query or an object read waits for the lock.\n'
+    printf 'wait_s=%q\n' "$TR_SHIM_WAIT"
     printf 'ck=%q\nmk=%q\nreal=%q\n' "$ck" "$side.mark" "$real_git"
+    printf 'lk=%q\nsl=%q\nos=%q\nbm=%q\n' "$side.lock" "$side.shimlog" "$TR_OS" "$TR_BASE_MAX"
     tr_shim_common
     cat <<'EOF'
+g="$ck/.git"
 hit=""
 cwd=$(pwd -P)
 for v in "${GIT_DIR:-}" "${GIT_WORK_TREE:-}" "${GIT_INDEX_FILE:-}" "${GIT_OBJECT_DIRECTORY:-}"; do
@@ -321,8 +380,245 @@ for a in "$@"; do
       if [ -n "$R" ] && tr_in "$R"; then hit=arg; fi ;;
   esac
 done
-[ -z "$hit" ] || printf 'git %s %s\n' "$hit" "$cwd" >> "$mk"
-exec "$real" "$@"
+
+# The options before the subcommand, the repository and the subcommand.
+cb="$cwd"
+gd=""
+gdb=""
+sub=""
+gopt=""
+skip=""
+n=0
+for a in "$@"; do
+  n=$((n + 1))
+  case "$skip" in
+    C) tr_phys "$a" "$cb"
+       if [ -n "$R" ] && [ -d "$R" ]; then cb="$R"; fi
+       skip=""; continue ;;
+    g) gd="$a"; gdb="$cb"; skip=""; continue ;;
+    w) skip=""; continue ;;
+  esac
+  case "$a" in
+    -C) skip=C ;;
+    --git-dir) skip=g ;;
+    --work-tree) skip=w ;;
+    --git-dir=*) gd="${a#*=}"; gdb="$cb" ;;
+    --work-tree=*) ;;
+    -*) gopt="$a"; break ;;
+    *) sub="$a"; break ;;
+  esac
+done
+if [ -n "$gd" ]; then
+  tr_phys "$gd" "$gdb"
+elif [ -n "${GIT_DIR:-}" ]; then
+  tr_phys "$GIT_DIR" "$cwd"
+else
+  R="$cb"
+fi
+inck=""
+if [ -n "$R" ] && tr_in "$R"; then inck=1; fi
+envok=1
+for v in $(compgen -e); do
+  case "$v" in
+    GIT_AUTHOR_NAME|GIT_AUTHOR_EMAIL|GIT_AUTHOR_DATE|GIT_COMMITTER_NAME|GIT_COMMITTER_EMAIL|GIT_COMMITTER_DATE|GIT_PAGER|GIT_TERMINAL_PROMPT|GIT_EDITOR) ;;
+    GIT_*) envok="" ;;
+  esac
+done
+
+# A revision that starts with a full id: alone (with a path after it), a range,
+# or an exclusion.
+idre='[0-9a-f]{40}'
+tlre='(\^\{(commit|tree|blob|tag|object)?\}|~[0-9]*|\^[0-9]*)*'
+re_one="^${idre}${tlre}(:.*)?\$"
+re_rng="^${idre}${tlre}\.\.\.?${idre}${tlre}\$"
+re_exc="^\^${idre}${tlre}\$"
+tr_num() { case "$1" in ''|*[!0-9]*) return 1 ;; esac; return 0; }
+# 0 when format $1 holds only the allowed placeholders.
+tr_fmt() {
+  local f="$1"
+  while [ -n "$f" ]; do
+    case "$f" in
+      %%*|%H*|%T*|%P*|%s*|%b*|%B*|%n*) f="${f:2}" ;;
+      %an*|%ae*|%at*|%aI*|%cn*|%ce*|%ct*|%cI*) f="${f:3}" ;;
+      %*) return 1 ;;
+      *) f="${f:1}" ;;
+    esac
+  done
+  return 0
+}
+tr_walkopt() {
+  case "$1" in
+    --count|--first-parent|--no-patch|-s|--stat|--name-only|--name-status|--no-renames|--no-color|--no-decorate) return 0 ;;
+    --max-count=*) tr_num "${1#*=}" ;;
+    --format=*) tr_fmt "${1#*=}" ;;
+    --pretty=format:*|--pretty=tformat:*) tr_fmt "${1#*:}" ;;
+    -n*) tr_num "${1#-n}" ;;
+    -*) tr_num "${1#-}" ;;
+    *) return 1 ;;
+  esac
+}
+# 0 when the arguments after rev-parse are all location options.
+tr_loc() {
+  local a
+  [ "$#" -ge 1 ] || return 1
+  for a in "$@"; do
+    case "$a" in
+      --show-toplevel|--show-cdup|--show-prefix|--git-dir|--absolute-git-dir|--git-common-dir|--is-inside-work-tree|--is-inside-git-dir|--is-bare-repository|--path-format=absolute|--path-format=relative) ;;
+      *) return 1 ;;
+    esac
+  done
+  return 0
+}
+# 0 when subcommand $1 with the arguments after it is an object read; sets
+# ids to the full ids its revisions start with.
+tr_obj() {
+  local s="$1" a r nid=0 ver=""
+  shift
+  ids=""
+  case "$s" in cat-file|ls-tree|rev-parse|merge-base|rev-list|log|show|diff) ;; *) return 1 ;; esac
+  for a in "$@"; do
+    if [[ $a =~ $re_one ]]; then
+      ids="$ids ${a:0:40}"; nid=$((nid + 1)); continue
+    fi
+    case "$s" in
+      rev-list|log|show)
+        if [[ $a =~ $re_rng ]]; then
+          r="${a#*..}"; r="${r#.}"
+          ids="$ids ${a:0:40} ${r:0:40}"; nid=$((nid + 1)); continue
+        fi
+        if [[ $a =~ $re_exc ]]; then
+          ids="$ids ${a:1:40}"; nid=$((nid + 1)); continue
+        fi ;;
+    esac
+    case "$s:$a" in
+      cat-file:-e|cat-file:-t|cat-file:-s|cat-file:-p|cat-file:commit|cat-file:tree|cat-file:blob|cat-file:tag) ;;
+      ls-tree:-r|ls-tree:-t|ls-tree:-z|ls-tree:--name-only) ;;
+      rev-parse:--verify) ver=1 ;;
+      rev-parse:-q|rev-parse:--quiet) ;;
+      merge-base:--is-ancestor|merge-base:--all) ;;
+      diff:--stat|diff:--name-only|diff:--name-status|diff:--no-renames|diff:--exit-code|diff:--quiet|diff:--no-color|diff:-p|diff:--patch) ;;
+      rev-list:*|log:*|show:*) tr_walkopt "$a" || return 1 ;;
+      *) return 1 ;;
+    esac
+  done
+  [ "$nid" -ge 1 ] || return 1
+  [ "$s" != rev-parse ] || [ -n "$ver" ] || return 1
+  [ "$s" != diff ] || [ "$nid" = 2 ] || return 1
+  return 0
+}
+# 0 when nothing in the git directory changes what a full id shows.
+tr_plain() {
+  local f
+  for f in shallow info/grafts info/attributes; do
+    [ ! -e "$g/$f" ] && [ ! -L "$g/$f" ] || return 1
+  done
+  for f in replace notes; do
+    if [ -d "$g/refs/$f" ] && [ -n "$(find "$g/refs/$f" ! -type d 2>/dev/null)" ]; then return 1; fi
+  done
+  if [ -f "$g/packed-refs" ] && grep -qE '^[0-9a-f]+ refs/(replace|notes)/' "$g/packed-refs"; then return 1; fi
+  return 0
+}
+tr_mark() {
+  printf 'git %s %s\n' "$1" "$cwd" >> "$mk"
+  printf '엄격\t%s\n' "${sub:--}" >> "$sl"
+}
+tr_at() {
+  if [ "$os" = bsd ]; then
+    stat -f '%a' "$1" 2>/dev/null   # lint-bash-portability: disable=stat -f
+  else
+    stat -c '%X' "$1" 2>/dev/null   # lint-bash-portability: disable=stat -c
+  fi
+}
+
+cls=""
+ids=""
+if [ -n "$inck" ] && [ -n "$envok" ] && [ -n "$sub" ] && [ -z "$gopt" ] && [ -d "$g" ]; then
+  if [ "$sub" = rev-parse ] && tr_loc "${@:$((n + 1))}"; then
+    cls=L
+  elif tr_obj "$sub" "${@:$((n + 1))}" && tr_plain; then
+    cls=O
+  fi
+fi
+
+if [ -z "$cls" ]; then
+  if [ -n "$hit" ]; then
+    tr_mark "$hit"
+  elif [ -n "$inck" ]; then
+    case "$sub:$gopt" in
+      clone:|version:|help:|:--version|:--help) ;;
+      *) tr_mark cwd ;;
+    esac
+  fi
+  exec "$real" "$@"
+fi
+
+if [ -n "${TR_SHIM_INNER:-}" ]; then
+  tr_mark 안쪽
+  exec "$real" "$@"
+fi
+k=0
+while ! mkdir "$lk" 2>/dev/null; do
+  p=""
+  if [ -f "$lk/pid" ]; then p=$(cat "$lk/pid" 2>/dev/null); fi
+  if [ -n "$p" ] && ! kill -0 "$p" 2>/dev/null; then
+    tr_mark 잠금
+    exec "$real" "$@"
+  fi
+  k=$((k + 1))
+  if [ "$k" -gt $((wait_s * 20)) ]; then
+    tr_mark 잠금
+    exec "$real" "$@"
+  fi
+  sleep 0.05
+done
+printf '%s\n' "$$" > "$lk/pid"
+for f in HEAD config objects/info/alternates; do
+  [ -e "$g/$f" ] || continue
+  a=$(tr_at "$g/$f")
+  case "$a" in ''|*[!0-9]*) a=$((bm + 1)) ;; esac
+  if [ "$a" -gt "$bm" ]; then
+    tr_mark 직접
+    rm -rf "$lk"
+    exec "$real" "$@"
+  fi
+done
+sig=0
+trap 'sig=15' TERM
+trap 'sig=2' INT
+trap 'sig=1' HUP
+# An asynchronous child of a shell without job control reads /dev/null and
+# ignores INT, so standard input is handed over on descriptor 3 and an INT is
+# followed by a TERM.
+exec 3<&0
+TR_SHIM_INNER=1 "$real" "$@" 0<&3 3<&- &
+child=$!
+exec 3<&-
+wait "$child"
+rc=$?
+if [ "$sig" != 0 ]; then
+  kill -"$sig" "$child" 2>/dev/null
+  [ "$sig" != 2 ] || kill -15 "$child" 2>/dev/null
+  wait "$child" 2>/dev/null
+  tr_mark 신호
+  rm -rf "$lk"
+  exit $((128 + sig))
+fi
+st=""
+if [ "$cls" = O ]; then
+  for id in $(printf '%s\n' $ids | LC_ALL=C sort -u); do
+    if "$real" --git-dir="$g" cat-file -e "$id" 2>/dev/null; then st="$st $id:있음"; else st="$st $id:없음"; fi
+  done
+fi
+for f in HEAD config objects/info/alternates; do
+  [ ! -e "$g/$f" ] || touch -a -h -t 200001010000 "$g/$f"
+done
+if [ "$cls" = L ]; then
+  printf '위치\t%s\n' "$sub" >> "$sl"
+else
+  printf '객체\t%s\n' "${st# }" >> "$sl"
+fi
+rm -rf "$lk"
+exit "$rc"
 EOF
   } > "$d/git" || return 1
   {
@@ -356,17 +652,45 @@ EOF
 }
 
 # Writes the read set of the item to $4: the first line `예` when it read the
-# whole tree and `아니오` otherwise, then the tracked paths it read. The .git
-# files are read first, so the listing reads nothing of the checkout.
+# whole tree, `git읽기` when its only git calls on the checkout were location
+# queries and object reads, and `아니오` otherwise, then the tracked paths it
+# read. Beside it, in $4.head, go the record's extra header lines as
+# `name<TAB>value`: `객체` with each id an object read started from and
+# whether it was present (`git읽기` only, and only when there was such an id),
+# and `전체사유` with what made the item `예` (the .git files that moved, the
+# kinds of mark and the subcommands of the strict calls the shim logged). The
+# .git files are read first, so the listing reads nothing of the checkout.
 tr_collect() {
-  local ck="$1" side="$2" out="$4" whole=아니오 f a
+  local ck="$1" side="$2" out="$4" whole=아니오 f a why="" objs="" nread=0
+  rm -f "$out.head"
   for f in index HEAD config objects/info/alternates; do
     [ -e "$ck/.git/$f" ] || continue
     a=$(tr_atime "$ck/.git/$f") || return 1
     case "$a" in ''|*[!0-9]*) return 1 ;; esac
-    if [ "$a" -gt "$TR_BASE_MAX" ]; then whole=예; fi
+    if [ "$a" -gt "$TR_BASE_MAX" ]; then whole=예; why="$why ${f##*/}"; fi
   done
-  if [ -s "$side.mark" ]; then whole=예; fi
+  if [ -s "$side.mark" ]; then
+    whole=예
+    why="$why $(awk '{ print "표지:" $2 }' "$side.mark" | LC_ALL=C sort -u | tr '\n' ' ')"
+  fi
+  if [ -s "$side.shimlog" ]; then
+    why="$why $(awk -F '\t' '$1 == "엄격" { print "엄격:" $2 }' "$side.shimlog" | LC_ALL=C sort -u | tr '\n' ' ')"
+    nread=$(awk -F '\t' '$1 == "위치" || $1 == "객체" { n++ } END { print n + 0 }' "$side.shimlog")
+    objs=$(awk -F '\t' '$1 == "객체" { n = split($2, e, " "); for (i = 1; i <= n; i++) print e[i] }' "$side.shimlog" \
+      | LC_ALL=C sort -u | tr '\n' ' ')
+    if [ -n "$(printf '%s' "$objs" | tr ' ' '\n' | awk -F ':' 'NF { c[$1]++ } END { for (k in c) if (c[k] > 1) { print k; exit } }')" ]; then
+      whole=예
+      why="$why 객체엇갈림"
+    fi
+  fi
+  if [ "$whole" = 아니오 ] && [ "$nread" -gt 0 ]; then whole=git읽기; fi
+  why=$(printf '%s\n' "$why" | awk '{ $1 = $1; print }')
+  objs=$(printf '%s\n' "$objs" | awk '{ $1 = $1; print }')
+  if [ "$whole" = 예 ]; then
+    printf '전체사유\t%s\n' "$why" > "$out.head"
+  elif [ "$whole" = git읽기 ] && [ -n "$objs" ]; then
+    printf '객체\t%s\n' "$objs" > "$out.head"
+  fi
   if [ -s "$side.paths" ]; then
     ( cd "$ck" && tr_stat_am_list < "$side.paths" ) > "$side.after"
   else
@@ -431,14 +755,16 @@ tr_lane_write() {
 
 # The one record writer: into path $2 of store $1, version $3, key $4, the
 # version's own header lines $5 (empty: none), then tree, commit, base,
-# doubles, listing and read set. Written beside the path and moved over it;
-# then the store is swept.
+# doubles, listing and read set. The header lines tr_collect wrote beside the
+# read set (<read set>.head) go right after `트리전체`, before `읽은경로`,
+# where the judge still reads header fields. Written beside the path and moved
+# over it; then the store is swept.
 tr_record_put() {
   local store="$1" path="$2" ver="$3" key="$4" extra="$5" tree="$6" commit="$7" base="$8" doubles="$9" list="${10}" rs="${11}"
   local tmp whole nr nl at stamp
   tmp=$(mktemp "${path%/*}/.r.XXXXXX" 2>/dev/null) || return 1
   IFS= read -r whole < "$rs"
-  case "$whole" in 예|아니오) ;; *) rm -f "$tmp"; return 1 ;; esac
+  case "$whole" in 예|아니오|git읽기) ;; *) rm -f "$tmp"; return 1 ;; esac
   nr=$(($(wc -l < "$rs") - 1))
   nl=$(wc -l < "$list")
   at=$(tr_now)
@@ -449,7 +775,9 @@ tr_record_put() {
     [ -z "$extra" ] || printf '%s\n' "$extra"
     printf '시험트리\t%s\n커밋\t%s\n베이스\t%s\n' "$tree" "$commit" "$base"
     printf '시각\t%s\n시각표기\t%s\n대역\t%s\n도구\t%s\n' "$at" "$stamp" "$doubles" "$TR_FP"
-    printf '트리전체\t%s\n읽은경로\t%s\n' "$whole" "$((nr))"
+    printf '트리전체\t%s\n' "$whole"
+    [ ! -f "$rs.head" ] || awk -F '\t' 'NF == 2 && $1 != "" && $1 != "읽은경로"' "$rs.head"
+    printf '읽은경로\t%s\n' "$((nr))"
     sed -n '2,$p' "$rs"
     printf '목록\t%s\n' "$((nl))"
     cat "$list"
@@ -574,13 +902,16 @@ tr_lane_judge() {
 # The judge of both versions: $1 the version, $2 the ids and $3 the digest a
 # version-2 record must carry, then tr_judge's arguments. The awk judge prints
 # its verdict for the record's own conditions, or `후보` with the record's
-# input commit when only release paths differ under the same base; only then
-# is git asked about the release relation.
+# input commit when only release paths differ under the same base. A
+# `git읽기` record then has its ids looked up (tr_judge_objs) whichever of the
+# two the awk judge printed; only after that is git asked about the release
+# relation.
 tr_judge_ver() {
   local ver="$1" ids="$2" cut="$3" rec="$4" key="$5" tree="$6" commit="$7" base="${8:-없음}" doubles="$9" list="${10}" gdir="${11:-}" now out rest rc_commit
   [ -r "$rec" ] && [ -r "$list" ] || return 1
   now=$(tr_now)
   out=$(tr_judge_awk "$ver" "$ids" "$cut" "$rec" "$key" "$tree" "$commit" "$base" "$doubles" "$list" "$now" "$gdir") || return 1
+  tr_judge_objs "$rec" || return 1
   case "$out" in
     후보$'\t'*)
       rest="${out#*$'\t'}"
@@ -597,8 +928,40 @@ tr_judge_ver() {
   return 0
 }
 
+# 0 when record $1 is not `git읽기`, or it has no `객체` line, or every id of
+# that line is present or absent in TR_OBJ_REPO as the line says. 1 when
+# TR_OBJ_REPO is empty or not a repository, or an entry is malformed.
+tr_judge_objs() {
+  local rec="$1" w objs e id st now
+  local -a es
+  w=$(awk -F '\t' '$1 == "읽은경로" { exit } $1 == "트리전체" { print $2; exit }' "$rec")
+  [ "$w" = git읽기 ] || return 0
+  objs=$(awk -F '\t' '$1 == "읽은경로" { exit } $1 == "객체" { print $2; exit }' "$rec")
+  [ -n "$objs" ] || return 0
+  [ -n "$TR_OBJ_REPO" ] && [ -d "$TR_OBJ_REPO" ] || return 1
+  ( unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_COMMON_DIR
+    cd "$TR_OBJ_REPO" && git rev-parse --git-dir ) < /dev/null > /dev/null 2>&1 || return 1
+  read -r -a es <<< "$objs"
+  for e in "${es[@]}"; do
+    id="${e%%:*}"
+    st="${e#*:}"
+    case "$id" in *[!0-9a-f]*|'') return 1 ;; esac
+    [ "${#id}" = 40 ] || return 1
+    case "$st" in 있음|없음) ;; *) return 1 ;; esac
+    if ( unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_COMMON_DIR
+         cd "$TR_OBJ_REPO" && git cat-file -e "$id" ) < /dev/null > /dev/null 2>&1; then
+      now=있음
+    else
+      now=없음
+    fi
+    [ "$st" = "$now" ] || return 1
+  done
+  return 0
+}
+
 # The awk part of tr_judge_ver: its ten arguments, then the clock and the
-# common git directory (empty: no `후보` is printed).
+# common git directory (empty: no `후보` is printed). A `git읽기` record is
+# judged like an `아니오` one here; its ids are tr_judge_objs's.
 tr_judge_awk() {
   local ver="$1" ids="$2" cut="$3" rec="$4" key="$5" tree="$6" commit="$7" base="$8" doubles="$9" list="${10}" now="${11}" gdir="${12}"
   awk -v ver="$ver" -v ids="$ids" -v cut="$cut" \
@@ -637,7 +1000,7 @@ tr_judge_awk() {
       age = now - H["시각"]; if (age < 0 || age > maxage) exit 1
       if (n1 != n2) exit 1
       for (p in k1) if (!(p in k2) || k1[p] != k2[p]) exit 1
-      if (H["트리전체"] != "예" && H["트리전체"] != "아니오") exit 1
+      if (H["트리전체"] != "예" && H["트리전체"] != "아니오" && H["트리전체"] != "git읽기") exit 1
       for (i = 1; i <= nr; i++) if (!(rd[i] in b1)) exit 1
       tail = ""
       if (ver == 2) {
@@ -866,6 +1229,56 @@ tr_self_test() {
   out=$(if tr_reuse_find "$G" make:n "$tree1" "$c1" "" 없음 "$L" >/dev/null; then echo 재사용; else echo 재실행; fi)
   check "트리 전체: 베이스가 둘 다 없음이면 재사용" "$out" "재사용"
 
+  # --- `git읽기` records: the tree, the commit and the base are not compared;
+  # the ids of `객체` are looked up in TR_OBJ_REPO ---
+  local NOID LATER EMPTYR grec
+  TR_OBJ_REPO="$W"
+  NOID=0123456789abcdef0123456789abcdef01234567
+  LATER=$(printf 'appears later\n' | git hash-object --stdin)
+  EMPTYR="$T/emptyrepo"
+  mkdir -p "$EMPTYR"
+  ( cd "$EMPTYR" && git init -q . )
+  printf 'git읽기\na\n' > "$T/rsg1"
+  printf '객체\t%s:있음 %s:없음\n전체사유\t진단\n' "$c1" "$NOID" > "$T/rsg1.head"
+  tr_record_write "$G" make:g "$tree1" "$c1" b1 없음 "$L" "$T/rsg1"
+  grec="$(tr_store "$G")/make:g/$tree1"
+  has "git읽기: 머리줄을 트리전체 뒤·읽은경로 앞에 옮겨 적는다" "$(cat "$grec")" "트리전체	git읽기
+객체	$c1:있음 $NOID:없음
+전체사유	진단
+읽은경로	1
+a"
+  # Commits the commands of $1 in the work tree and judges key $3 (default
+  # make:g) on that commit under base $2; prints 재사용 or 재실행.
+  g_judge() {
+    local c t
+    ( cd "$W" && eval "$1" && sg add -A && sg commit -q --allow-empty -m g ) > /dev/null 2>&1
+    c=$(cd "$W" && git rev-parse HEAD)
+    t=$(cd "$W" && git rev-parse 'HEAD^{tree}')
+    tr_list "$W" "$c" "$T/lg"
+    if tr_reuse_find "$G" "${3:-make:g}" "$t" "$c" "$2" 없음 "$T/lg" > /dev/null; then echo 재사용; else echo 재실행; fi
+    ( cd "$W" && git reset -q --hard "$c1" ) > /dev/null 2>&1
+  }
+  out=$(if tr_judge "$grec" make:g "$tree1" "$c1" b1 없음 "$L" > /dev/null; then echo 재사용; else echo 재실행; fi)
+  check "git읽기: 객체·전체사유 머리줄을 가진 기록을 판정기가 읽어 재사용" "$out" "재사용"
+  check "git읽기: 커밋·베이스·트리가 달라도 읽지 않은 파일만 바뀌면 재사용" "$(g_judge 'printf "unread, longer\n" > b' b2)" "재사용"
+  check "git읽기: 읽은 파일이 바뀌면 재실행" "$(g_judge 'printf "changed\n" > a' b1)" "재실행"
+  check "git읽기: 경로가 늘면 재실행" "$(g_judge 'printf n > new' b1)" "재실행"
+  check "git읽기: 기록된 id 가 작업 복제본에 없으면 재실행" "$(TR_OBJ_REPO="$EMPTYR"; g_judge ':' b2)" "재실행"
+  check "git읽기: 작업 복제본을 잴 수 없으면 재실행" "$(TR_OBJ_REPO=""; g_judge ':' b2)" "재실행"
+  awk '{ print ($0 == "트리전체\tgit읽기") ? "트리전체\t아마" : $0 }' "$grec" > "$T/rec.bad"
+  out=$(if tr_judge "$T/rec.bad" make:g "$tree1" "$c1" b1 없음 "$L" > /dev/null; then echo 재사용; else echo 재실행; fi)
+  check "git읽기: 트리전체가 세 값 밖이면 버린다" "$out" "재실행"
+  printf 'git읽기\na\n' > "$T/rsg2"
+  printf '객체\t%s:없음\n' "$LATER" > "$T/rsg2.head"
+  tr_record_write "$G" make:g2 "$tree1" "$c1" b1 없음 "$L" "$T/rsg2"
+  out="$(g_judge ':' b2 make:g2)"
+  ( cd "$W" && printf 'appears later\n' | git hash-object -w --stdin ) > /dev/null
+  check "git읽기: 없던 기록 id 가 작업 복제본에 생기면 재실행" "$out|$(g_judge ':' b2 make:g2)" "재사용|재실행"
+  printf 'git읽기\na\n' > "$T/rsg3"
+  tr_record_write "$G" make:g3 "$tree1" "$c1" b1 없음 "$L" "$T/rsg3"
+  check "git읽기: 객체 줄 없는(위치 질의만 한) 기록은 작업 복제본 없이도 재사용" \
+    "$(TR_OBJ_REPO=""; g_judge 'printf "unread, longer\n" > b' b2 make:g3)" "재사용"
+
   # --- the sweep ---
   mkdir -p "$(tr_store "$G")/make:old"
   printf 'x\n' > "$(tr_store "$G")/make:old/t"
@@ -924,7 +1337,7 @@ tr_self_test() {
     if [ -s "$S.mark" ]; then echo 표지; else echo 없음; fi
     rm -f "$S.mark"
   }
-  check "git 감시 꼴: 작업 디렉터리만 체크아웃 안이면 표지 없음" "$(gmark "$CK/sub" status)" "없음"
+  check "git 감시 꼴: 작업 디렉터리로만 체크아웃을 찾은 엄격 호출도 표지" "$(gmark "$CK/sub" status)" "표지"
   check "git 감시 꼴: 작업 디렉터리만 체크아웃 안이고 밖을 복제하면 표지 없음" "$(gmark "$CK" clone -q "$FX" "$T/clone-out")" "없음"
   check "git 감시 꼴: -C 가 체크아웃" "$(gmark "$FX" -C "$CK" status)" "표지"
   check "git 감시 꼴: 앞에서부터 적용한 -C" "$(gmark "$T" -C items -C 1 status)" "표지"
@@ -970,6 +1383,93 @@ tr_self_test() {
   tr_collect "$CK" "$S" "$L" "$T/rsc"
   check "감시 꼴 표지가 있으면 트리 전체" "$(head -n 1 "$T/rsc")" "예"
 
+  # --- the three classes, collected ---
+  # Runs shell snippet $1 in the checkout after a fresh baseline and prints the
+  # first line of the read set; $SG is the git shim.
+  local SG dp want
+  SG="$S.shim/git"
+  gcol() {
+    tr_baseline "$CK" "$S" "$L" || return 1
+    ( cd "$CK" && eval "$1" ) > /dev/null 2>&1
+    tr_collect "$CK" "$S" "$L" "$T/rsg"
+    head -n 1 "$T/rsg"
+  }
+  ghead() { if [ -f "$T/rsg.head" ]; then cut -f1 "$T/rsg.head" | tr '\n' ' '; else echo 머리없음; fi; }
+  check "수집: 위치 질의만 부른 항목은 git읽기이고 객체 줄이 없다" \
+    "$(gcol '"$SG" rev-parse --show-toplevel')|$(ghead)" "git읽기|머리없음"
+  check "수집: 전체 id 의 cat-file -e 는 git읽기이고 객체 줄에 그 id" \
+    "$(gcol '"$SG" cat-file -e "$c1"')|$(cat "$T/rsg.head")" "git읽기|객체	$c1:있음"
+  check "수집: git rev-parse HEAD 는 예이고 전체사유가 있다" "$(gcol '"$SG" rev-parse HEAD')|$(ghead)" "예|전체사유 "
+  check "수집: 짧은 id 의 git log 는 예이고 전체사유가 있다" "$(gcol '"$SG" log -1 "${c1:0:7}"')|$(ghead)" "예|전체사유 "
+  check "수집: git status 는 예이고 전체사유가 있다" "$(gcol '"$SG" status')|$(ghead)" "예|전체사유 "
+  if [ "$moved" = 1 ]; then
+    check "수집: 위치 질의 뒤 셰임을 거치지 않은 rev-parse HEAD 는 예" \
+      "$(gcol '"$SG" rev-parse --show-toplevel && git rev-parse HEAD')" "예"
+  else
+    check "카나리아 정지 볼륨: 셰임 밖 읽기는 잴 수 없다" "$moved" "0"
+  fi
+  check "수집: 작업 디렉터리로만 찾은 rev-parse HEAD 는 접근시각을 되돌려도 표지로 예" \
+    "$(gcol '"$SG" rev-parse HEAD && touch -a -h -t 200001010000 .git/HEAD .git/config')|$(grep -c '표지:cwd' "$T/rsg.head")" "예|1"
+  check "수집: 위치 인자를 붙인 rev-parse --show-toplevel HEAD 는 예" "$(gcol '"$SG" rev-parse --show-toplevel HEAD')" "예"
+  check "수집: 목록 밖 선택지 log --decorate <전체 id> 는 예" "$(gcol '"$SG" log --decorate "$c1"')" "예"
+  check "수집: 리비전 인자 없는 log 는 예" "$(gcol '"$SG" log')" "예"
+  check "수집: log --reflog <전체 id> 는 예" "$(gcol '"$SG" log --reflog "$c1"')" "예"
+  check "수집: 값을 띄어 쓴 log -n 1 <전체 id> 는 예" "$(gcol '"$SG" log -n 1 "$c1"')" "예"
+  check "수집: 경로 인자를 붙인 log <전체 id> -- a 는 예" "$(gcol '"$SG" log "$c1" -- a')" "예"
+  check "수집: GIT_INDEX_FILE 을 둔 cat-file -e 는 예" "$(gcol 'GIT_INDEX_FILE="$CK/.git/index" "$SG" cat-file -e "$c1"')" "예"
+  want=$(cd "$CK" && git cat-file -e "$NOID" > /dev/null 2>&1; echo $?)
+  tr_baseline "$CK" "$S" "$L"
+  out=$(cd "$CK" && "$SG" cat-file -e "$NOID" > /dev/null 2>&1; echo $?)
+  check "수집: 셰임을 거친 객체 읽기는 진짜 git 의 0 아닌 종료 코드를 돌려준다" "$out|$([ "$want" != 0 ] && echo 0아님)" "$want|0아님"
+  ( : ) &
+  dp=$!
+  wait "$dp"
+  check "수집: 죽은 프로세스 번호의 잠금에서 위치 질의는 기다리지 않고 예" \
+    "$(gcol 'mkdir "$S.lock" && echo "$dp" > "$S.lock/pid" && "$SG" rev-parse --show-toplevel')|$(grep -c '표지:잠금' "$T/rsg.head")" "예|1"
+  check "수집: 살아 있는 프로세스가 쥔 잠금에서 위치 질의는 대기 한도 뒤 예" \
+    "$(gcol 'mkdir "$S.lock" && echo "$$" > "$S.lock/pid" && "$SG" rev-parse --show-toplevel')|$(grep -c '표지:잠금' "$T/rsg.head")" "예|1"
+  check "수집: 번호 파일 없는 잠금에서 위치 질의는 대기 한도 뒤 예" \
+    "$(gcol 'mkdir "$S.lock" && "$SG" rev-parse --show-toplevel')|$(grep -c '표지:잠금' "$T/rsg.head")" "예|1"
+  check "수집: TR_SHIM_INNER=1 의 위치 질의는 예" "$(gcol 'TR_SHIM_INNER=1 "$SG" rev-parse --show-toplevel')" "예"
+  check "수집: git 디렉터리에 shallow 가 있으면 객체 읽기는 예" \
+    "$(gcol 'echo "$c1" > .git/shallow && "$SG" cat-file -e "$c1"')" "예"
+  rm -f "$CK/.git/shallow"
+  check "수집: info/grafts 가 있으면 객체 읽기는 예" \
+    "$(gcol 'mkdir -p .git/info && echo "$c1" > .git/info/grafts && "$SG" cat-file -e "$c1"')" "예"
+  rm -f "$CK/.git/info/grafts"
+  check "수집: info/attributes 가 있으면 객체 읽기는 예" \
+    "$(gcol 'mkdir -p .git/info && echo "* -diff" > .git/info/attributes && "$SG" cat-file -e "$c1"')" "예"
+  rm -f "$CK/.git/info/attributes"
+  check "수집: refs/replace/ 아래 ref 가 있으면 객체 읽기는 예" \
+    "$(gcol 'mkdir -p .git/refs/replace && echo "$c1" > ".git/refs/replace/$NOID" && "$SG" cat-file -e "$c1"')" "예"
+  rm -rf "$CK/.git/refs/replace"
+  check "수집: refs/notes/ 아래 ref 가 있으면 객체 읽기는 예" \
+    "$(gcol 'mkdir -p .git/refs/notes && echo "$c1" > .git/refs/notes/commits && "$SG" cat-file -e "$c1"')" "예"
+  rm -rf "$CK/.git/refs/notes"
+  check "수집: 체크아웃 안의 git version 은 표지 없이 아니오" \
+    "$(gcol '"$SG" version')|$([ -s "$S.mark" ] && echo 표지 || echo 없음)" "아니오|없음"
+  # A stand-in for the real git that reads HEAD, writes its pid and sleeps.
+  local FG S2 sp fp
+  FG="$T/fakegit"
+  S2="$T/items/2"
+  mkdir -p "$FG"
+  printf '#!/bin/sh\ncat %q > /dev/null\necho $$ > %q\nexec sleep 30\n' "$CK/.git/HEAD" "$T/fakepid" > "$FG/git"
+  chmod +x "$FG/git"
+  ( PATH="$FG:$PATH"; tr_shims "$CK" "$S2" )
+  tr_baseline "$CK" "$S2" "$L"
+  rm -f "$T/fakepid"
+  ( cd "$CK" && exec "$S2.shim/git" rev-parse --show-toplevel ) > /dev/null 2>&1 &
+  sp=$!
+  i=0
+  while [ ! -s "$T/fakepid" ] && [ "$i" -lt 100 ]; do sleep 0.1; i=$((i + 1)); done
+  fp=$(cat "$T/fakepid" 2>/dev/null)
+  kill -TERM "$sp" 2>/dev/null
+  wait "$sp"
+  rc=$?
+  tr_collect "$CK" "$S2" "$L" "$T/rst"
+  check "수집: 위치 질의 도중 TERM 을 받은 셰임은 자식을 끝내고 128+15 로 끝나며 예" \
+    "$rc|$([ -n "$fp" ] && ! kill -0 "$fp" 2>/dev/null && echo 자식끝남)|$(head -n 1 "$T/rst")" "143|자식끝남|예"
+
   # --- lane records (version 2) ---
   local D1 D2 LD lrec lj lp n1 n2 longids
   D1=$(printf 'one' | tr_sha256)
@@ -993,6 +1493,13 @@ tr_self_test() {
   check "목표 판정기는 레인 기록(판 2)을 거절한다" "$out" "재실행"
   out=$(if tr_lane_judge "$rec" make:t "$tree1" "$c1" "" 없음 "$L" "$D1" > /dev/null; then echo 재사용; else echo 재실행; fi)
   check "레인 판정기는 목표 기록(판 1)을 거절한다" "$out" "재실행"
+  local glrec
+  tr_lane_write "$G" s7 "$tree1" "$c1" b1 없음 "$L" "$T/rsg1" "$D1"
+  glrec=$(tr_lane_path "$G" s7 "$tree1")
+  out=$(if tr_lane_judge "$glrec" s7 "$tree1" other b2 없음 "$L" "$D1" > /dev/null; then echo 재사용; else echo 재실행; fi)
+  out="$out|$(TR_OBJ_REPO="$EMPTYR"; if tr_lane_judge "$glrec" s7 "$tree1" other b2 없음 "$L" "$D1" > /dev/null; then echo 재사용; else echo 재실행; fi)"
+  check "레인 판정: git읽기 레인 기록은 커밋·베이스가 달라도 재사용하고, 기록된 id 가 바뀌면 재실행" "$out" "재사용|재실행"
+  rm -f "$glrec"
   if tr_lane_write "$G" s1 "$tree1" "$c1" "" 없음 "$L" "$rs" ""; then bad "레인 기록: 컷증명 없이는 쓰지 않는다"; else ok "레인 기록: 컷증명 없이는 쓰지 않는다"; fi
   longids=$(i=0; while [ "$i" -lt 120 ]; do printf 'long-section-id-%03d,' "$i"; i=$((i + 1)); done)
   tr_lane_write "$G" "$longids" "$tree1" "$c1" "" 없음 "$L" "$rs" "$D1"
@@ -1101,6 +1608,22 @@ tr_self_test() {
     tr_reuse_find "$RG" make:mr "$t" "$c" b1 없음 "$T/lr" 2>&1; printf 'rc=%s' "$?"
     ( cd "$R" && git reset -q --hard "$c0" ) > /dev/null 2>&1 )
   check "릴리스: 기록 커밋 객체가 없으면 오류 출력 없이 재실행" "$out" "rc=1|rc=1"
+  # A `git읽기` record that read plugin.json only: on a release commit the awk
+  # judge prints `후보`, and the ids are looked up before the release relation.
+  printf 'git읽기\n%s\n' "$PJ" > "$T/rsgr"
+  printf '객체\t%s:있음\n' "$c0" > "$T/rsgr.head"
+  tr_record_write "$RG" make:gr "$r0" "$c0" b1 없음 "$T/lr0" "$T/rsgr"
+  gr_after() {
+    local c t
+    ( cd "$R" && eval "$BUMP" && sg add -A && sg commit -q -m rel ) > /dev/null 2>&1
+    c=$(cd "$R" && git rev-parse HEAD)
+    t=$(cd "$R" && git rev-parse 'HEAD^{tree}')
+    tr_list "$R" "$c" "$T/lr"
+    TR_OBJ_REPO="$1"
+    rj make:gr "$t" "$c" b1 "$T/lr"
+    ( cd "$R" && git reset -q --hard "$c0" ) > /dev/null 2>&1
+  }
+  check "릴리스: 후보인 git읽기 기록도 기록된 id 가 바뀌면 재실행" "$(gr_after "$R")|$(gr_after "$EMPTYR")" "릴리스 차이|재실행"
   tr_lane_write "$RG" s1 "$r0" "$c0" b1 없음 "$T/lr0" "$T/rsw" "$D1"
   DIGV="$D1"
   out=$( ( cd "$R" && eval "$BUMP" && sg add -A && sg commit -q -m rel ) > /dev/null 2>&1
@@ -1112,8 +1635,8 @@ tr_self_test() {
   rm -rf "$T"
   printf 'test-reuse self-test: %d passed, %d failed\n' "$passed" "$failed"
   # A floor on the count, so a refactor that silently skips cases cannot pass.
-  if [ "$passed" -lt 99 ]; then
-    printf 'test-reuse self-test: 통과 수 %d 가 하한 %d 에 못 미칩니다\n' "$passed" 99 >&2
+  if [ "$passed" -lt 137 ]; then
+    printf 'test-reuse self-test: 통과 수 %d 가 하한 %d 에 못 미칩니다\n' "$passed" 137 >&2
     return 1
   fi
   [ "$failed" = "0" ]

@@ -27,7 +27,12 @@
 # every goal of the job pool run in a checkout of their own and leave a record
 # of the tracked files they read (scripts/test-reuse.sh); a later run whose
 # tree gives those files the same contents, under the same doubles and tools,
-# within 24 hours, skips the item and says so. Sections do the same per lane:
+# within 24 hours, skips the item and says so. An item that called git on its
+# checkout read the whole tree and is reused only on the same tree, input
+# commit and base, unless its only git calls were location queries
+# (`git rev-parse --show-toplevel` and its kin) and reads of objects named by
+# full 40-digit ids: that pass is reused across a new HEAD and a new base while
+# each of those ids is present or absent as it was. Sections do the same per lane:
 # a lane that passed records the files it read and the digest of the cut it
 # ran, and a later run skips the sections of every record whose files and cut
 # are unchanged, then cuts and runs only the rest. `items` runs the goals,
@@ -1577,6 +1582,58 @@ check-push: CHECK_PUSH_JOBS=1 의 실패 단계는 목록 전체를 이름 댄�
   rel_commit 0.1.2 '## [0.1.2] - 2026-01-03\n- c\n\n## [0.1.1] - 2026-01-02\n- b\n\n' r.txt 'r3\n'
   out=$(crr CC_PIPELINE_RUN_ID=t); rc=$?
   check "F41 릴리스 밖 파일도 바꾼 릴리스 커밋 뒤에는 g1 이 다시 돈다" "$rc $(cur_reuse)" "0 $(ve make:check-cheap 없음)"
+  # Location queries leave a `git읽기` record, reused across a new HEAD and a
+  # merged base. Goal g1 and section s9 ask where the repository is; goal g2
+  # and section s8, the control, read HEAD. The cases commit on branch hq; the
+  # base cases merge branch qb into it with --no-ff and name qb in FETCH_HEAD,
+  # so qb is an ancestor of HEAD. The git watch shim sorts a call with a
+  # GIT_CONFIG_GLOBAL or GIT_CONFIG_NOSYSTEM in its environment as strict, so
+  # these runs drop the two the self-test exports and keep the user's git
+  # configuration out with a HOME of their own.
+  reuse_has() { case ",$(cur_reuse)," in *",$1,"*) echo 예 ;; *) echo 아니오 ;; esac; }
+  sec_has() { case ",$(cur_field 재사용절)," in *",$1,"*) echo 예 ;; *) echo 아니오 ;; esac; }
+  whole_of() { awk -F'\t' '$1 == "트리전체" { print $2 }' "$items_dir/make:$1/$(cur_tree)" 2>/dev/null; }
+  mkdir -p "$T/home/.config"
+  cpq() { cprun -u GIT_CONFIG_GLOBAL -u GIT_CONFIG_NOSYSTEM HOME="$T/home" XDG_CONFIG_HOME="$T/home/.config" "$@"; }
+  crq() { cpq "$@" CHECK_PUSH_REUSE=1 CHECK_PUSH_JOBS=2 CHECK_PUSH_GOALS=g1 CHECK_PUSH_SECTIONS=s9; }
+  crc() { cpq "$@" CHECK_PUSH_REUSE=1 CHECK_PUSH_JOBS=2 CHECK_PUSH_GOALS=g2 CHECK_PUSH_SECTIONS=s8; }
+  printf 'git rev-parse --show-toplevel > /dev/null\n' > "$T/run-g1"
+  printf 'git rev-parse HEAD > /dev/null\n' > "$T/run-g2"
+  printf 'goals.txt\n' > "$T/reads-g2"
+  rm -rf "$items_dir"
+  (
+    cd "$W" || exit 1
+    sgit checkout -q -b hq h
+    printf '#!/usr/bin/env bash\n# fixture\n# --- section: s1 | group: g | covers: x | anchors: y ---\n# --- section: s8 | group: g | covers: x | anchors: y ---\n# --- section: s9 | group: g | covers: x | anchors: y ---\n# f1\n# end\n' > scripts/test-gate.sh
+    printf 'git rev-parse HEAD > /dev/null\n' > sections/s8.sh
+    printf 'git rev-parse --show-toplevel > /dev/null\n' > sections/s9.sh
+    sgit add -A && sgit commit -q -m Q1
+  ) > /dev/null 2>&1
+  out=$(crq); rc=$?
+  check "F41 git읽기: 위치 질의만 한 g1 은 git읽기로 기록된다" "$rc $(whole_of g1)" "0 $(ve git읽기 '')"
+  out=$(crc); rc=$?
+  check "F41 git읽기 대조군: rev-parse HEAD 를 부른 g2 는 트리 전체로 기록된다" "$rc $(whole_of g2)" "0 $(ve 예 '')"
+  rw README.md 'readme 2\n'
+  out=$(crq); rc=$?
+  check "F41 git읽기: 읽지 않은 파일만 바꾼 다음 커밋에서 g1 과 레인 s9 를 재사용한다" "$rc $(reuse_has make:g1) $(sec_has s9)" "0 $(ve '예 예' '아니오 아니오')"
+  out=$(crc); rc=$?
+  check "F41 git읽기 대조군: g2 와 레인 s8 은 다음 커밋에서 다시 돈다" "$rc $(reuse_has make:g2) $(sec_has s8)" "0 아니오 아니오"
+  rw goals.txt 'g2\ng1\n'
+  out=$(crq); rc=$?
+  check "F41 git읽기: g1 이 읽는 파일을 바꾼 커밋에서 g1 은 다시 돌고 레인 s9 는 재사용한다" "$rc $(reuse_has make:g1) $(sec_has s9)" "0 아니오 $(ve 예 아니오)"
+  (cd "$W" && sgit branch -q qb hq && sgit checkout -q qb && printf 'readme 3\n' > README.md && sgit commit -q -am QB1 \
+    && sgit checkout -q hq && sgit merge -q --no-ff --no-edit qb) > /dev/null 2>&1
+  fh_line "$(cd "$W" && git rev-parse qb)"
+  out=$(crq CC_PIPELINE_RUN_ID=t); rc=$?
+  check "F41 git읽기: 읽지 않은 파일의 내용만 바꾼 베이스를 합친 뒤 g1 과 레인 s9 를 재사용한다" \
+    "$rc $(cur_field 합침) $(reuse_has make:g1) $(sec_has s9)" "0 조상 $(ve '예 예' '아니오 아니오')"
+  (cd "$W" && sgit checkout -q qb && printf 'q\n' > qnew.txt && sgit add -A && sgit commit -q -m QB2 \
+    && sgit checkout -q hq && sgit merge -q --no-ff --no-edit qb) > /dev/null 2>&1
+  fh_line "$(cd "$W" && git rev-parse qb)"
+  out=$(crq CC_PIPELINE_RUN_ID=t); rc=$?
+  check "F41 git읽기: 추적 경로를 하나 더한 베이스를 합친 뒤 g1 과 레인 s9 는 다시 돈다" \
+    "$rc $(cur_field 합침) $(reuse_has make:g1) $(sec_has s9)" "0 조상 아니오 아니오"
+  rm -f "$T/run-g2" "$T/reads-g2"
   rm -f "$T/run-g1"
   rm -f "$T/reads-cc" "$T/reads-g1"
   (cd "$W" && sgit checkout -q h) > /dev/null 2>&1
@@ -1845,8 +1902,8 @@ check-push: CHECK_PUSH_JOBS=1 의 실패 단계는 목록 전체를 이름 댄�
   rm -rf "$T"
   printf 'check-push self-test: %d passed, %d failed\n' "$passed" "$failed"
   # A floor on the count, so a refactor that silently skips cases cannot pass.
-  if [ "$passed" -lt 241 ]; then
-    printf 'check-push self-test: 통과 수 %d 가 하한 241 에 못 미칩니다\n' "$passed" >&2
+  if [ "$passed" -lt 248 ]; then
+    printf 'check-push self-test: 통과 수 %d 가 하한 248 에 못 미칩니다\n' "$passed" >&2
     return 1
   fi
   [ "$failed" = "0" ]
