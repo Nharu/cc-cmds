@@ -5,7 +5,7 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [3.52.6] - 2026-11-20
+## [3.53.1] - 2026-11-21
 
 무거운 REST 목표와 test-gate 레인의 통과 기록이 git 을 부르기만 하면 트리·HEAD 커밋·베이스가 모두 같을 때만 다시 쓰이던 것을 좁혔다. 이제 git 셰임이 호출을 위치 질의, 전체 id 객체 읽기, 엄격 셋으로 나누고, 앞의 두 부류만 한 항목은 새 값 `git읽기` 로 기록되어 새 HEAD·베이스를 넘어서도 다시 쓰인다. 단, 읽은 파일과 추적 경로 집합이 같고, 기록한 객체 id 가 지금 저장소에서도 같은 있음·없음일 때만이다. 베이스 해소 스테이지의 시험 범위도 양쪽이 모두 바꾼 파일과 CI 워크플로의 경로 필터로 정하도록 고쳤다.
 
@@ -29,6 +29,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - 레포 루트 `CLAUDE.md` 의 `### 한 스테이지 안에서 다시 돌리기` 문단의 두 문장 — "git 을 쓰는 목표는 트리와 HEAD 커밋·베이스가 모두 같을 때만 다시 쓰인다." 와 "그 레인에 git 을 쓰는 절이 있으면 트리와 HEAD 커밋·베이스가 모두 같을 때만 다시 쓰인다." — 이 낡았다. 위치 질의와 전체 id 객체 읽기만 한 항목은 HEAD·베이스를 넘어 다시 쓰인다는 규칙으로 고친다.
 - 같은 `CLAUDE.md` 에 베이스 해소 스테이지가 읽을 워크플로 대응을 더한다. `lint.yml` 의 묶음은 REST 목표(`CHECK_PUSH_GOALS`), `gate.yml` 의 묶음은 `covers:`·`anchors:` 로 고른 test-gate 절(`CHECK_PUSH_SECTIONS`), `notify-macos.yml` 의 묶음은 `test-darwin-narrow` 의 항목 가운데 REST 목표와 `run-gate-darwin-sections` 의 절(18, 31ai, 84)이며, REST 목표에 없는 darwin 전용 항목은 고르지 않고 끝 메시지에 적는다. 이 대응이 없는 동안 cc-cmds 의 베이스 해소는 범위를 좁히지 않는다.
+
+## [3.53.0] - 2026-11-19
+
+공용 관측 데몬 `observer.py` 를 새로 두어, 상태줄과 실행 판이 그릴 때마다 원장·런 디렉터리를 다시 계산하지 않게 한다. 데몬은 등록된 세션마다 사실 블록을 미리 계산해 두고, 상태줄과 실행 판은 그 블록이 유효하면 그리기만 하고 끝난다. 이 빠른 경로에서 한 번 그리는 데 드는 외부 명령은 bash 5 에서 0개, bash 3.2 에서 `date` 1개다. 직접 경로로 그리면 같은 측정 도구 기준으로 한 번에 상태줄이 프로세스 91개, 실행 판이 122개를 만들고, 런이 여럿 도는 밤에는 이것이 짧은 수명 프로세스 가운데 큰 몫을 차지했다.
+
+### Added
+
+- **관측 데몬** — `orchestrator/observer.py` 의 `ensure`·`status`·`stop`·`adopt` 하위명령. 상태 루트의 `observer/` 아래에 `observer.pid`·`record.json`·하트비트를 두고, 판본이 바뀌면 새 판본으로 넘겨주며, 하트비트가 30초를 넘게 멈추면 hung 으로 판정한다. 등록한 세션도 채택한 런도 없는 채로 유예 시간(기본 300초)이 지나면 스스로 내려간다. 바퀴 간격의 기본값은 2초다. 작업 모듈은 데몬 자신의 코드 루트에서만 읽는다. `orchestrator/observer-protocol` 이 판본 규약의 첫 줄을 싣는다.
+- **사실 블록과 빠른 경로** — `statusline.sh` 는 `CC_SL_FACTS_OUT=1`, `run-pane.sh` 는 `CC_PANE_FACTS_OUT=1` 일 때 그림 대신 사실 블록을 낸다. 둘 다 맨 앞에서 `observer/sl/<sid>.facts`·`observer/pane/<sid>.facts` 를 읽는다. 입력 열쇠가 같고, `observer.pid` 가 살아 있고, 만료 전일 때만 그 블록으로 그린다. 하나라도 어긋나면 지금의 직접 경로로 그린다.
+- **관측기 낡음 표지** — 데몬이 떠 있어야 할 때(스위치가 켜져 있고, `CI` 가 아니고, python3 가 있고, 고른 런의 고정 사본에 `observer-protocol` 이 있을 때) 데몬이 없거나 하트비트가 30초를 넘게 묵었으면, 상태줄이 감시기 칸에 ` · 관측기 낡음` 을 둔다. 그리고 30초 간격으로 `ensure` 를 분리 기동한다.
+- **사본 거둠의 사용 표지** — 데몬이 자기 코드가 든 런에 `observer.code-inuse` 를 쓴다. 게이트의 `gate_reap_eligible` 은 그 pid 와 시작 지문이 살아 있는 동안 그 런을 거두지 않는다.
+- **측정 단위** — `measure-spawn-count.sh` 에 빠른 경로 단위 U9(상태줄)·U10(실행 판)을 더했다. 기준선은 둘 다 1이다.
+
+### Changed
+
+- **끄기 스위치** — `CC_CMDS_OBSERVER=off` 이거나 `CI` 가 비어 있지 않으면 데몬을 띄우지 않는다. 스테이지 환경(`CC_PIPELINE_SEGMENT`·`CC_PIPELINE_STAGE_ID`)에서도 띄우지 않는다. `scripts/run-fixture.sh` 는 이 스위치의 기본값을 `off` 로 둔다.
+- **시험** — 새 `test-observer.sh`. `test-statusline.sh`·`test-run-pane.sh` 는 모든 사례를 직접 경로와 빠른 경로로 그려 바이트를 비교한다. `test-liveness-agreement.sh` 는 데몬이 맡은 감시기를 살아 있는 감시기로 읽는지 단언한다.
 
 ## [3.52.5] - 2026-11-19
 

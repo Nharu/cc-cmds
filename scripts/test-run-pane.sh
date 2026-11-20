@@ -72,11 +72,93 @@ pane() {
     prev=$a
   done
   out=$(bash "$PANE" "$@")
+  pcmp "$@"
   f=$(mktemp "$OUTS/o.XXXXXX")
   printf '%s\n' "$out" > "$f"
   printf '%s %s\n' "$cap" "$cols" > "$f.dim"
   printf '%s' "$out"
 }
+
+# THE FAST PATH IS COMPARED AGAINST THE DIRECT PATH AT EVERY `pane` CALL. The
+# observer keeps a facts block per pane session (`CC_PANE_FACTS_OUT=1`), and a
+# draw with the switch on and an `observer.pid` that answers takes its rows from
+# it; the reduction is then taken again for this draw's `--cols` and `--rows`.
+# `pcmp` draws directly, takes the block, and draws again over it with the
+# session index moved aside, so a miss draws the no-run pane and cannot pass
+# for a hit. A dormant block is counted apart.
+#
+# One clock and one etime for the three draws: they run under `/bin/bash`, the
+# status line the pane calls through a `bash` that is `/bin/bash` too, and on
+# 3.2 every reading of the clock is `date -u +%s`, which the stub answers with
+# one fixed epoch, while `ps -o etime= -p <pid>` answers its first reading again
+# for the same pid. A `/bin/bash` of 4 or later reads the clock itself, so there
+# the comparison does not run and says so once. python3 is a stub, so a miss
+# starts nothing.
+PCMP_BIN="$WORK/pcmp-bin"; PCMP_PSC="$WORK/pcmp-ps"
+PCMP_N="$WORK/pcmp.n"; PCMP_D="$WORK/pcmp.dormant"; PCMP_X="$WORK/pcmp.nofacts"
+PCMP_BAD="$WORK/pcmp.bad"; PCMP_PY="$WORK/pcmp.python3"
+mkdir -p "$PCMP_BIN"; : > "$PCMP_N"; : > "$PCMP_D"; : > "$PCMP_X"; : > "$PCMP_BAD"; : > "$PCMP_PY"
+PCMP_REAL_DATE=$(command -v date); PCMP_REAL_PS=$(command -v ps)
+cat > "$PCMP_BIN/date" <<STUB
+#!/bin/sh
+if [ "\$#" -eq 2 ] && [ "\$1" = "-u" ] && [ "\$2" = "+%s" ] && [ -n "\${PCMP_NOW:-}" ]; then
+  printf '%s\n' "\$PCMP_NOW"; exit 0
+fi
+exec "$PCMP_REAL_DATE" "\$@"
+STUB
+cat > "$PCMP_BIN/ps" <<STUB
+#!/bin/sh
+if [ "\$#" -eq 4 ] && [ "\$1" = "-o" ] && [ "\$2" = "etime=" ] && [ "\$3" = "-p" ] && [ -n "\${PCMP_PSC:-}" ]; then
+  if [ -f "\$PCMP_PSC/\$4" ]; then cat "\$PCMP_PSC/\$4"; exit 0; fi
+  "$PCMP_REAL_PS" "\$@" > "\$PCMP_PSC/\$4.tmp"; rc=\$?
+  mv "\$PCMP_PSC/\$4.tmp" "\$PCMP_PSC/\$4"; cat "\$PCMP_PSC/\$4"; exit \$rc
+fi
+exec "$PCMP_REAL_PS" "\$@"
+STUB
+cat > "$PCMP_BIN/bash" <<'STUB'
+#!/bin/sh
+exec /bin/bash "$@"
+STUB
+cat > "$PCMP_BIN/python3" <<STUB
+#!/bin/sh
+printf '%s\n' "\$*" >> "$PCMP_PY"
+exit 0
+STUB
+chmod +x "$PCMP_BIN/date" "$PCMP_BIN/ps" "$PCMP_BIN/bash" "$PCMP_BIN/python3"
+PCMP_ON=0
+if [ "$(/bin/bash -c 'printf %s "${BASH_VERSINFO[0]}"' 2>/dev/null)" = 3 ]; then PCMP_ON=1; fi
+
+pcmp() {
+  # pcmp <sid> [args] — the comparison above for one draw. Prints nothing; a
+  # difference is a line of `$PCMP_BAD` and a FAIL on standard error.
+  [ "$PCMP_ON" = 1 ] || return 0
+  local sid="${1:-}" od idx now a f b moved=0
+  case "$sid" in ''|-*|*[!A-Za-z0-9._-]*) return 0 ;; esac
+  od="$XDG_STATE_HOME/cc-cmds/observer"
+  idx="$XDG_STATE_HOME/cc-cmds/session/$sid"
+  now=$("$PCMP_REAL_DATE" -u +%s)
+  rm -rf "$PCMP_PSC"; mkdir -p "$PCMP_PSC"
+  a=$(PATH="$PCMP_BIN:$PATH" PCMP_NOW="$now" PCMP_PSC="$PCMP_PSC" /bin/bash "$PANE" "$@" 2>/dev/null)
+  f=$(PATH="$PCMP_BIN:$PATH" PCMP_NOW="$now" PCMP_PSC="$PCMP_PSC" CC_PANE_FACTS_OUT=1 /bin/bash "$PANE" "$sid" 2>/dev/null)
+  case "$f" in
+    "cc-pane-facts 1${PCMP_NL}dormant${TAB}1") printf '%s\n' "$sid" >> "$PCMP_D"; return 0 ;;
+    "cc-pane-facts 1${PCMP_NL}"*) ;;
+    *) printf '%s\n' "$sid" >> "$PCMP_X"; return 0 ;;
+  esac
+  mkdir -p "$od/pane"
+  printf '%s\n' "$f" > "$od/pane/$sid.facts"
+  printf '%d\n' "$$" > "$od/observer.pid"
+  if [ -e "$idx" ]; then mv "$idx" "$idx.pcmp"; moved=1; fi
+  b=$(env -u CI -u CC_CMDS_OBSERVER PATH="$PCMP_BIN:$PATH" PCMP_NOW="$now" PCMP_PSC="$PCMP_PSC" /bin/bash "$PANE" "$@" 2>/dev/null)
+  [ "$moved" = 1 ] && mv "$idx.pcmp" "$idx"
+  rm -f "$od/pane/$sid.facts" "$od/observer.pid"
+  printf '%s\n' "$sid" >> "$PCMP_N"
+  if [ "$a" != "$b" ]; then
+    printf '%s\n' "$sid" >> "$PCMP_BAD"
+    printf 'FAIL: R2 패널 직접·빠른 경로가 다르다 — %s — 직접 %s, 빠른 %s\n' "$*" "$a" "$b" >&2
+  fi
+}
+PCMP_NL=$'\n'
 head_row() { printf '%s\n' "$1" | sed -n '1p'; }
 hfield()   { head_row "$1" | cut -f"$2"; }
 body()     { printf '%s\n' "$1" | awk 'NR > 1'; }
@@ -1137,6 +1219,74 @@ if [ -n "$sh_def" ] && [ -n "$fc_def" ] && [ -n "$sid_letters" ] && [ -n "$title
   check "20 fact_col 이 옛 cut -f 와 같다 (${fc_n}경우)$fc_bad" "$fc_ok" 1
 else
   bad "20 동치 단언" "pane_id_shape_ok·fact_col·글자 목록을 run-pane.sh 에서 찾지 못했다"
+fi
+
+# ---------------------------------------------------------------------------
+# 20. The observer: the comparison's count, the pane's registration, and the
+# fast path's processes
+# ---------------------------------------------------------------------------
+if [ "$PCMP_ON" = 1 ]; then
+  pcmp_n=$(wc -l < "$PCMP_N" | tr -d ' ')
+  pcmp_d=$(wc -l < "$PCMP_D" | tr -d ' ')
+  check "20 R2 패널 직접·빠른 경로 비교 ${pcmp_n}건 (휴면 ${pcmp_d}건 제외) — 다른 그림이 없다" \
+    "$(wc -l < "$PCMP_BAD" | tr -d ' ')" 0
+  if [ "$pcmp_n" -ge 20 ]; then ok "20 R2 패널 비교가 실제로 돌았다 (${pcmp_n}건)"
+  else bad "20 R2 패널 비교가 실제로 돌았다" "${pcmp_n}건뿐이다"; fi
+  check "20 사실 블록을 내지 않은 진행 중 세션이 없다" "$(sort -u "$PCMP_X" | tr '\n' ' ')" ""
+else
+  skip "20 R2 패널 직접·빠른 경로 비교" "/bin/bash 가 3.2 가 아니라 시계를 스텁으로 고정할 수 없다"
+fi
+
+POBD="$XDG_STATE_HOME/cc-cmds/observer"
+fx_mkrun run-pob; fx_ledger_path; fx_session_index s-pob run-pob
+fx_segment S1 실행중
+fx_heartbeat 0 5
+pob() { env -u CI -u CC_CMDS_OBSERVER "$@" PATH="$PCMP_BIN:$PATH" bash "$PANE" s-pob 2>/dev/null; }
+pob_calls() { grep -c 'ensure --pane-session s-pob ' "$PCMP_PY" 2>/dev/null || true; }
+check "20 등록 사례의 런은 진행 중이다 (전제)" "$(hfield "$(bash "$PANE" s-pob)" 3)" live
+rm -rf "$POBD"; : > "$PCMP_PY"
+pob >/dev/null
+i=0; while [ "$i" -lt 30 ] && [ "$(pob_calls)" -lt 1 ]; do sleep 0.1; i=$((i + 1)); done
+check "20 진행 중 런을 그린 패널은 ensure 를 한 번 띄운다" "$(pob_calls)" 1
+check "20 ensure 인자는 세션·이 스크립트의 절대 경로·색인이다" \
+  "$(grep -m1 'ensure --pane-session s-pob ' "$PCMP_PY")" \
+  "$repo_root/plugins/cc-cmds/orchestrator/observer.py ensure --pane-session s-pob --pane-script $PANE --pane-index $SESSION_DIR/s-pob"
+check "20 패널이 부른 상태줄은 ensure 를 띄우지 않는다" "$(grep -c 'ensure --sl-session' "$PCMP_PY" || true)" 0
+mkdir -p "$POBD"; date -u +%s > "$POBD/ensure.at"; : > "$PCMP_PY"
+pob >/dev/null; sleep 0.5
+check "20 ensure.at 이 방금이면 ensure 를 띄우지 않는다" "$(pob_calls)" 0
+rm -f "$POBD/ensure.at"
+pob CC_CMDS_OBSERVER=off >/dev/null; pob CI=1 >/dev/null; sleep 0.5
+check "20 스위치를 끄거나 CI 면 ensure 를 띄우지 않는다" "$(pob_calls)" 0
+fx_mkrun run-pob-end; fx_ledger_path; fx_session_index s-pob-end run-pob-end
+fx_segment S1 머지됨; fx_done
+: > "$PCMP_PY"
+env -u CI -u CC_CMDS_OBSERVER PATH="$PCMP_BIN:$PATH" bash "$PANE" s-pob-end >/dev/null 2>&1; sleep 0.5
+check "20 끝난 런을 그린 패널은 ensure 를 띄우지 않는다" "$(grep -c 'ensure' "$PCMP_PY" || true)" 0
+
+# R1. Under a bash 5 the pane's fast path starts no process.
+pob_b5=""
+for c in /opt/homebrew/bin/bash /usr/local/bin/bash /bin/bash /usr/bin/bash; do
+  [ -x "$c" ] || continue
+  if [ "$("$c" -c 'printf %s "${BASH_VERSINFO[0]}"' 2>/dev/null)" -ge 5 ] 2>/dev/null; then pob_b5=$c; break; fi
+done
+if [ -n "$pob_b5" ]; then
+  PLOG="$WORK/pob-exec.log"; : > "$PLOG"; PBIN="$WORK/pob-exec-bin"; mkdir -p "$PBIN"
+  for c in bash date ps jq awk sed cat stat grep tr wc head tail cut sort ls python3 dirname basename find mkdir mv rm env printf sleep perl; do
+    printf '#!/bin/sh\nprintf "%%s\\n" "%s" >> "%s"\nexit 0\n' "$c" "$PLOG" > "$PBIN/$c"
+    chmod +x "$PBIN/$c"
+  done
+  pob_f=$(CC_PANE_FACTS_OUT=1 bash "$PANE" s-pob 2>/dev/null)
+  mkdir -p "$POBD/pane"; printf '%s\n' "$pob_f" > "$POBD/pane/s-pob.facts"
+  printf '%d\n' "$$" > "$POBD/observer.pid"
+  pob_out=$(env -u CI -u CC_CMDS_OBSERVER PATH="$PBIN" "$pob_b5" "$PANE" s-pob 2>"$WORK/pob-exec.err")
+  check "20 bash 5 빠른 경로가 런을 그린다 ($pob_b5)" "$(hfield "$pob_out" 4)" run-pob
+  check "20 bash 5 빠른 경로는 외부 명령을 하나도 부르지 않는다" "$(wc -l < "$PLOG" | tr -d ' ')" 0
+  check "20 bash 5 빠른 경로의 표준 오류가 비어 있다" "$(cat "$WORK/pob-exec.err")" ""
+  rm -f "$POBD/pane/s-pob.facts" "$POBD/observer.pid"
+else
+  printf 'SKIP: 20 bash 5 가 없어 빠른 경로 0 프로세스 단언을 건너뛴다\n'
+  skipped=$((skipped + 1))
 fi
 
 printf '\n통과 %s · 실패 %s · 건너뜀 %s\n' "$passed" "$failed" "$skipped"
