@@ -684,7 +684,7 @@ def rt_publish_why($c; $ua; $v; $G):
   elif rt_ueff($G.windows.seven_day) >= rt_publish_cap_bp then "reserve"
   else null end;
 
-def rt_aview($c; $orgs; $fresh; $gv; $donors; $bgroups):
+def rt_aview($c; $orgs; $fresh; $gv; $donors; $bgroups; $borrow_reserved):
   (.) as $a
   | ([rt_uaccts($c)[] | select(.id == $a.id)] | .[0]) as $ua
   | rt_group_of($orgs; $a.id) as $g
@@ -701,6 +701,12 @@ def rt_aview($c; $orgs; $fresh; $gv; $donors; $bgroups):
   + (if any($donors[]; . == $a.id) then {borrowed: "donor"}
      elif any($bgroups[]; . == $g) then {borrowed: "group"}
      else {} end)
+  # 차용 표지가 붙은 보기 가운데 묶음 예약이 차용하는 레인의 행에서만 나온 묶음의 것에만
+  # 붙는다(차용 예약 묶음은 차용 묶음의 부분집합이다). `group_reserved` 값은 그대로라 보통
+  # 입장·유지·재개 사다리는 이 표지를 읽지 않고, 이관 고정 입장과 이관 후보 거절 사유만
+  # 읽는다. 그 밖의 보기는 바이트가 그대로다.
+  + (if (any($donors[]; . == $a.id) or any($bgroups[]; . == $g)) and any($borrow_reserved[]; . == $g)
+     then {reserved_by_borrow: true} else {} end)
   # 대여 등록 행에만 붙는다 — 등록 아닌 행의 보기는 바이트가 그대로다. 결정은 신선한
   # 사용량 파일의 것만 읽고, 예약을 셀 수 없는 설정이면 닫힘이다.
   + (if ($a | rt_enrolled) then
@@ -784,6 +790,20 @@ def rt_prep($schema):
   | (if ($b | rt_borrowing)
      then ([$donors[] | rt_group_of($orgs; .)] + [rt_group_of($orgs; $b.donor.id)] | unique)
      else [] end) as $bgroups
+  # 차용 때문에만 예약된 묶음. 차용하는 레인의 행은 설정 디렉터리가 차용 기록의
+  # `lane_config_dir` 과 같은 인벤토리 행과 사용량 행이고, 그런 행이 없으면 계정 id
+  # `cc` 다 — cc-lane 이 레인의 사용량 행을 찾는 규칙과 같다. 차용 묶음 가운데 예약을
+  # 만드는 인벤토리 행(`interactive_reserved == true`)이 하나 이상 있고 그 행이 모두 레인
+  # 행인 묶음이다. 레인 아닌 예약 행이 하나라도 있으면 진짜 예약이라 들지 않는다.
+  | (if ($b | rt_borrowing)
+     then ([$inv[] | select(.config_dir == $b.lane_config_dir) | .id]
+           + [rt_uaccts($c)[] | select(.config_dir == $b.lane_config_dir) | .id] | unique) as $ln
+       | (if ($ln | length) == 0 then ["cc"] else $ln end) as $lane_ids
+       | [$bgroups[] as $g
+          | [$inv[] | select((rt_group_of($orgs; .id) == $g) and (.interactive_reserved == true)) | .id] as $rs
+          | select(($rs | length) > 0 and all($rs[]; . as $r | any($lane_ids[]; . == $r)))
+          | $g]
+     else [] end) as $borrow_reserved
   | {c: $c, schema: $schema, fresh: $fresh, orgs: $orgs, items: $items, groups: $gv,
      lend_groups: ([$inv[] | select(rt_enrolled) | rt_group_of($orgs; .id)] | unique),
      pin: (if (($c.seat.lane? // null) | type) == "string" and $c.seat.lane != "" then $c.seat.lane else null end),
@@ -793,7 +813,7 @@ def rt_prep($schema):
                      and (($c.seat.pin_source? // null) == "host" or ($c.seat.pin_source? // null) == "run-record")
                   then $c.seat.pin_source else null end),
      migratable: ($c.request.migratable? == true),
-     accounts: ([$inv[] | rt_aview($c; $orgs; $fresh; $gv; $donors; $bgroups)] | sort_by(.id)),
+     accounts: ([$inv[] | rt_aview($c; $orgs; $fresh; $gv; $donors; $bgroups; $borrow_reserved)] | sort_by(.id)),
      okey: (if (($c.request.run_id | type) == "string") and (($c.request.lineage | type) == "string")
             then rt_key($c.request.run_id; $c.request.lineage) else null end),
      own: $own,
@@ -1473,7 +1493,7 @@ def rt_pub_xwait($p; $a):
 def rt_mig_reject($p; $a):
   $p.groups[$a.group] as $G
   | if $a.unattended != "enabled" then "unattended-off"
-    elif $a.group_reserved then "group-reserved"
+    elif $a.group_reserved and ($a.reserved_by_borrow != true) then "group-reserved"
     elif $a.login_bad then "logged-out"
     elif $a.mismatch then "mismatch"
     elif ($a.borrowed // null) != null then "borrowed"
@@ -1525,12 +1545,14 @@ def rt_park_mig_policy($id; $why):
     $id; $why);
 # 이관 고정의 보통 입장. 이관 조건이면 이관 선택이고, 아니면 고정 계정 하나를 정책 검사
 # 뒤 보통 무인 계정과 같은 입장 규칙(`rt_admit`, FIFO 미차단)으로 판정한다. 로그인 끊김은
-# 재개와 같은 문면의 PARK, 디렉터리 불일치·무인 켜짐 아님·그룹 예약은 원인을 밝힌 PARK,
-# 차용 중만이면 기다린다. 입장에서 떨어지면 고정 없는 풀과 같은 꼴의 WAIT 다. 고정 요청의
-# 풀 계산과 대여 행 PARK 는 타지 않는다. 이 함수의 WAIT 는 모두 계정 없는 풀 사유다 —
-# `resume-bound-*` 사유는 대기 행 작성기가 재개 구속과 같은 계정을 요구하는데, 새 기동에는
-# 구속이 없고 재개의 구속은 고정 계정과 다른 계정일 수 있다. 차용 중의 대기는 그 그룹의
-# `no-room` 이다.
+# 재개와 같은 문면의 PARK, 디렉터리 불일치·무인 켜짐 아님·차용 때문만이 아닌 그룹 예약은
+# 원인을 밝힌 PARK, 차용 표지가 있으면(차용 때문에만 생긴 그룹 예약 포함) 기다린다. 입장에서
+# 떨어지면 고정 없는 풀과 같은 꼴의 WAIT 다. 고정 요청의 풀 계산과 대여 행 PARK 는 타지
+# 않는다. 차용 대기만 계정을 싣는다 — 그 그룹의 `pinned-borrowed` 에 기증자 계정(고정
+# 계정이 기증자면 그 자신, 기증자 묶음의 다른 계정이면 차용 기록의 기증자)을 실어 원장과
+# 좌석이 차용 때문에 기다린다는 것과 기증자를 읽는다. 그 밖의 WAIT 는 계정 없는 풀 사유다.
+# `resume-bound-*` 사유는 쓰지 않는다 — 대기 행 작성기가 그 사유에 재개 구속과 같은 계정을
+# 요구하는데, 새 기동에는 구속이 없고 재개의 구속은 고정 계정과 다른 계정일 수 있다.
 def rt_mig_admit($p; $basis; $fresh):
   rt_av($p; $p.pin) as $a
   | if rt_mig7($p.groups[$a.group]) then rt_mig_pick($p; $a.id; rt_mig_why($p); $basis; $fresh)
@@ -1538,8 +1560,9 @@ def rt_mig_admit($p; $basis; $fresh):
       rt_env(rt_park("resume-logged-out"; "묶인 계정의 로그인이 끊겼다 — 그 설정 디렉터리에서 claude /login 을 한다"); "none"; null)
     elif $a.mismatch then rt_env(rt_park_mig_policy($a.id; "mismatch"); "none"; null)
     elif $a.unattended != "enabled" then rt_env(rt_park_mig_policy($a.id; "unattended-off"); "none"; null)
-    elif $a.group_reserved then rt_env(rt_park_mig_policy($a.id; "group-reserved"); "none"; null)
-    elif ($a.borrowed // null) != null then rt_env(rt_wait_c($a.group; null; null; "no-room"; null); "none"; null)
+    elif $a.group_reserved and ($a.reserved_by_borrow != true) then rt_env(rt_park_mig_policy($a.id; "group-reserved"); "none"; null)
+    elif ($a.borrowed // null) != null then
+      rt_env(rt_wait_c($a.group; (if $a.borrowed == "donor" then $a.id else $p.c.borrow.donor.id end); null; "pinned-borrowed"; null); "none"; null)
     else rt_admit($p; $a) as $adm
       | rt_fifo_blocked($p; $a) as $fifo
       | if $adm.admitted and ($fifo | not) then
