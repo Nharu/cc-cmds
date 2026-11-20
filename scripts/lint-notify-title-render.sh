@@ -18,6 +18,8 @@
 #   1  a `-title`/`-message` argument written as a quoted LITERAL must not begin
 #      with one of the six                                              [fail]
 #   2  the shared emitter's own title table must not either              [fail]
+#   3  the titles that carry the run name, rendered with and without a name,
+#      are the exact titles and do not begin with one of the six         [fail]
 #
 # ONLY LITERALS ARE JUDGED, and that limit is stated here because it is not
 # obvious from the output. `-message "${summary}"` opens with a variable whose
@@ -194,6 +196,34 @@ if [ -f "$emitter" ]; then
     fi
   done <<EOF
 $(printf '%s\n' "$table" | grep -nEo -- "printf '[^']*'" || true)
+EOF
+fi
+
+# --- Rule 3: the rendered titles that carry the run name --------------------
+#
+# `answer` and `approval-ask` put the run's name in the middle of the title, a
+# value rule 2 cannot read from the source. They are rendered here, with a name
+# that begins with a swallowed character and with no name, and each result must
+# be the exact title and must not begin with one of the six. Only an emitter
+# that reads the run name is rendered; a fixture emitter without it is skipped.
+if [ -f "$emitter" ] && grep -q '^cc_notify_run_label_read()' "$emitter" 2>/dev/null; then
+  render_title() {
+    # render_title <token> <run name>
+    bash -c '. "$1" >/dev/null 2>&1; CC_NOTIFY_RUN_LABEL="$2" cc_notify_title "$3"' \
+      _ "$emitter" "$2" "$1" 2>/dev/null || true
+  }
+  while IFS='|' read -r token label want; do
+    [ -n "$token" ] || continue
+    got=$(render_title "$token" "$label")
+    if [ "$got" != "$want" ] || banned_first "$got"; then
+      echo "FAIL: $(basename "$emitter") — 런 이름 「${label}」의 ${token} 제목이 「${got}」 (기대 「${want}」)" >&2
+      fail=1
+    fi
+  done <<'EOF'
+answer|[run] demo|cc-cmds · [run] demo · 답할 것이 생겼습니다
+answer||cc-cmds · 답할 것이 생겼습니다
+approval-ask|[run] demo|cc-cmds · [run] demo · 답하세요
+approval-ask||cc-cmds · 답하세요
 EOF
 fi
 

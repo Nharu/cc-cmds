@@ -222,8 +222,14 @@ cc_notify_scope_enabled() {
   # `focus-guide` READS NEITHER SWITCH. Only the click handler raises it, from a
   # click on a banner that was raised because its own switch was on, and the
   # click process inherits no switch value worth trusting.
+  #
+  # `approval-ask` IS A SESSION BANNER. It is the session ask seat's first ask of
+  # a gate approval, raised from the session that asks, so it reads the session
+  # switch like `session-ask`. The seat checks the autopilot switch itself before
+  # choosing it: with the autopilot banners off there was no first banner to
+  # rewrite, and the seat raises `session-ask` instead.
   case "$1" in
-    session-ask|session-turn) cc_notify_session_enabled ;;
+    session-ask|session-turn|approval-ask) cc_notify_session_enabled ;;
     focus-guide)              return 0 ;;
     *)                        cc_notify_enabled ;;
   esac
@@ -307,10 +313,7 @@ cc_notify_session_title_read() {
   #
   # The second line may end without a newline and is still a value; lines after
   # it are ignored, and no line is trimmed.
-  #
-  # `cw` and `cut` stay one line each starting at column 0, byte for byte the
-  # hook's own copies — a test compares the two files' lines.
-  local sid="${1:-}" root f schema='' title='' prog
+  local sid="${1:-}" root f schema='' title=''
   [[ $sid =~ ^[A-Za-z0-9-]+$ ]] || return 0
   command -v jq >/dev/null 2>&1 || return 0
   root="${XDG_STATE_HOME:-${HOME:-}/.local/state}"
@@ -320,11 +323,127 @@ cc_notify_session_title_read() {
   { IFS= read -r schema || true; IFS= read -r title || true; } 2>/dev/null <"$f" || return 0
   [ "$schema" = 'cc-session-title-now v1' ] || return 0
   [ -n "$title" ] || return 0
+  cc_notify_cut24 "$title"
+  return 0
+}
+
+cc_notify_cut24() {
+  # cc_notify_cut24 <text> — the text cut to 24 display columns, with a
+  # trailing run of white space and `·` removed; nothing when jq is missing.
+  #
+  # ONE CUT FOR EVERY NAME A TITLE CARRIES. The session title and the run name
+  # sit in the same middle slot of a title, so they are cut by the same rule —
+  # one copy here rather than one per reader.
+  #
+  # `cw` and `cut` stay one line each starting at column 0, byte for byte the
+  # session title hook's own copies — a test compares the two files' lines, and
+  # it expects exactly one of each in this file.
+  local prog
+  command -v jq >/dev/null 2>&1 || return 0
   prog='
 def cw: if (. >= 4352 and . <= 4447) or (. >= 11904 and . <= 42191 and . != 12351) or (. >= 44032 and . <= 55203) or (. >= 63744 and . <= 64255) or (. >= 65040 and . <= 65049) or (. >= 65072 and . <= 65135) or (. >= 65280 and . <= 65376) or (. >= 65504 and . <= 65510) or (. >= 127744 and . <= 129791) or (. >= 131072 and . <= 262141) then 2 else 1 end;
 def cut($n): reduce explode[] as $c ({o: [], w: 0, stop: false}; if .stop then . elif .w + ($c|cw) <= $n then .o += [$c] | .w += ($c|cw) else .stop = true end) | .o | implode | sub("[\\s·]+$"; "");
 $t | cut(24)'
-  jq -nr --arg t "$title" "$prog" 2>/dev/null || true
+  jq -nr --arg t "${1:-}" "$prog" 2>/dev/null || true
+  return 0
+}
+
+cc_notify_run_label_read() {
+  # cc_notify_run_label_read <run-dir> — print the run's name cut to 24 display
+  # columns, or nothing.
+  #
+  # The name is the manifest's anchor key, which the gate writes as the one
+  # line of `<run-dir>/notify.label` on every entry, so a reader here never
+  # opens the manifest. It is cut like the session title, because it sits in
+  # the same slot of a title. Every failure — no directory, no file, an empty
+  # first line, no jq — is an empty value, and the title table then keeps
+  # today's wording. Status always 0, nothing on stderr.
+  local d="${1:-}" label=''
+  [ -n "$d" ] || return 0
+  [ -f "$d/notify.label" ] || return 0
+  { IFS= read -r label || true; } 2>/dev/null <"$d/notify.label" || return 0
+  [ -n "$label" ] || return 0
+  cc_notify_cut24 "$label"
+  return 0
+}
+
+cc_notify_approval_link() {
+  # cc_notify_approval_link <hook-input-json> — print `<run id>\t<run dir>\t<id>`
+  # for the run approval one session question stands in for, or nothing.
+  #
+  # THE SEAT ASKS AN APPROVAL IN ITS OWN DIALOG, and both session hooks read this
+  # one answer: the question hook to raise the ask into the approval's own slot,
+  # the return hook to close that slot when the answer comes back. One copy here
+  # keeps the two from linking a question to different runs.
+  #
+  # A LINK NEEDS THREE THINGS, and any one missing is no link. The call is
+  # `AskUserQuestion` with exactly one question. That question names an
+  # approval id — its text begins with the gate's canonical prefix
+  # `승인 <id> — `, else its `header` has the id's shape (`<name>-<8 hex>`) in
+  # at most 12 code points, the width the dialog keeps. And exactly one run in
+  # this session's index already announced that id: its directory exists and
+  # its `watch.announced-approvals` holds the id as a whole line. Requiring the
+  # announcement means only an approval that already rang is ever rewritten.
+  #
+  # The session index is `${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/session/
+  # <session id>`, one run id per line, written by the gate. Every failure —
+  # no jq, a payload that does not parse, no index, a run id of another shape —
+  # is an empty value. Status always 0, nothing on stderr.
+  local input="${1:-}" got sid id root rid d hit='' n=0
+  command -v jq >/dev/null 2>&1 || return 0
+  got=$(printf '%s' "$input" | jq -r '
+    def pre: (.question // "" | tostring)
+      | (capture("^승인 (?<i>[A-Za-z0-9_-]{1,55}-[0-9a-f]{8}) — ") | .i) // "";
+    def hdr: (.header // "" | tostring) as $h
+      | if ($h | test("^[A-Za-z0-9_-]+-[0-9a-f]{8}$")) and ($h | length) <= 12
+        then $h else "" end;
+    if .tool_name == "AskUserQuestion" and ((.tool_input.questions // []) | length) == 1
+    then .tool_input.questions[0] as $q
+      | (($q | pre) as $p | if $p != "" then $p else ($q | hdr) end) as $i
+      | if $i != "" then "\(.session_id // "")\t\($i)" else empty end
+    else empty end' 2>/dev/null) || return 0
+  [ -n "$got" ] || return 0
+  sid=${got%%$'\t'*}
+  id=${got#*$'\t'}
+  [[ $sid =~ ^[A-Za-z0-9-]+$ ]] || return 0
+  [ -n "$id" ] || return 0
+  root="${XDG_STATE_HOME:-${HOME:-}/.local/state}"
+  case "$root" in ''|/.local/state) return 0 ;; esac
+  [ -f "$root/cc-cmds/session/$sid" ] || return 0
+  while IFS= read -r rid || [ -n "$rid" ]; do
+    [[ $rid =~ ^[A-Za-z0-9_-]+$ ]] || continue
+    d="$root/cc-cmds/run/$rid"
+    [ -d "$d" ] || continue
+    if grep -qxF -- "$id" "$d/watch.announced-approvals" 2>/dev/null; then
+      case "$hit" in
+        "$rid"$'\t'*) continue ;;
+      esac
+      hit="$rid"$'\t'"$d"
+      n=$((n + 1))
+    fi
+  done <"$root/cc-cmds/session/$sid" 2>/dev/null
+  [ "$n" -eq 1 ] || return 0
+  printf '%s\t%s' "$hit" "$id"
+  return 0
+}
+
+cc_notify_approval_asked() {
+  # cc_notify_approval_asked <run-dir> <id> — 0 when the session has already
+  # asked this approval, 1 otherwise. A predicate: callers put it in an `if`.
+  #
+  # `notify.asked-approvals` holds one approval id per line, appended by the
+  # question hook the first time the seat asks that approval. The first ask
+  # rewrites the approval's banner; every later ask is an ordinary session
+  # question, and the return hook closes the approval's slot only for an id
+  # found here.
+  grep -qxF -- "${2:-}" "${1:-}/notify.asked-approvals" 2>/dev/null
+}
+
+cc_notify_approval_mark_asked() {
+  # cc_notify_approval_mark_asked <run-dir> <id> — append the id as one line of
+  # `notify.asked-approvals`. Status always 0, nothing on stderr.
+  [ -n "${1:-}" ] && [ -d "${1:-}" ] && [ -n "${2:-}" ] || return 0
+  printf '%s\n' "$2" >> "$1/notify.asked-approvals" 2>/dev/null || true
   return 0
 }
 
@@ -379,8 +498,30 @@ cc_notify_title() {
   # to 24 columns before it arrives, so a banner cut at its end loses title
   # before it loses the action. The title never comes first, so the swallowing
   # set above does not apply to it. An empty value is today's wording.
+  #
+  # `answer` AND `approval-ask` CARRY THE RUN'S NAME IN THE SAME PLACE, from
+  # `CC_NOTIFY_RUN_LABEL` (see `cc_notify_run_label_read`), so a person can tell
+  # from the banner alone which run an approval belongs to. `cc_notify_fire`
+  # reads it from the run directory when the caller did not hand one over, so
+  # the gate's and the watcher's `answer` sites carry the same title. An empty
+  # value is today's wording. `answer-run` keeps its title: it is the run-level
+  # summary, and its body already says the run is waiting.
+  #
+  # `approval-ask` IS IMPERATIVE for the reason `session-ask` is: it is raised
+  # while the seat's dialog for that approval is open.
   case "$1" in
-    answer)     printf 'cc-cmds · 답할 것이 생겼습니다' ;;
+    answer)
+      if [ -n "${CC_NOTIFY_RUN_LABEL:-}" ]; then
+        printf 'cc-cmds · %s · 답할 것이 생겼습니다' "$CC_NOTIFY_RUN_LABEL"
+      else
+        printf 'cc-cmds · 답할 것이 생겼습니다'
+      fi ;;
+    approval-ask)
+      if [ -n "${CC_NOTIFY_RUN_LABEL:-}" ]; then
+        printf 'cc-cmds · %s · 답하세요' "$CC_NOTIFY_RUN_LABEL"
+      else
+        printf 'cc-cmds · 답하세요'
+      fi ;;
     answer-run) printf 'cc-cmds · 답할 것이 생겼습니다' ;;
     overflow)   printf 'cc-cmds · 답할 것이 더 있습니다' ;;
     hands)      printf 'cc-cmds · 직접 손대세요' ;;
@@ -451,10 +592,15 @@ cc_notify_group() {
   # and erase each other's banners, with a prefix correct enough to pass the
   # negative assertion above — so the hook refuses to fire before it reaches
   # this function, which is the only place that failure can be caught.
+  #
+  # `approval-ask` TAKES THE APPROVAL'S OWN SLOT, the one `answer` raised it in,
+  # and that is its whole purpose: raised into the same group, the seat's first
+  # ask of an approval replaces the approval's banner instead of adding a second
+  # one. The seat sets `RUN_ID` to the run it linked the question to.
   local rid="${RUN_ID:-미상}"
   local sid="${CC_NOTIFY_SESSION_ID:-}"
   case "$1" in
-    answer|hands) printf 'cc-cmds-autopilot-%s-%s' "$rid" "$2" ;;
+    answer|hands|approval-ask) printf 'cc-cmds-autopilot-%s-%s' "$rid" "$2" ;;
     answer-run)   printf 'cc-cmds-autopilot-%s-답' "$rid" ;;
     overflow)     printf 'cc-cmds-autopilot-%s-대기' "$rid" ;;
     session-ask|session-turn) printf 'cc-cmds-session-%s' "$sid" ;;
@@ -464,10 +610,16 @@ cc_notify_group() {
 }
 
 cc_notify_sound() {
-  # EVERY BANNER MAKES A SOUND. The token is taken and ignored: this is a
-  # constant, and it stays a function so the one place that names it is still one
-  # place — a caller reading a literal out of this file would be the drift the
-  # shared emitter exists to prevent.
+  # EVERY BANNER MAKES A SOUND BUT ONE. The value is `default` for every token
+  # except `approval-ask`, which prints nothing and is raised without `-sound`.
+  # It stays a function so the one place that names it is still one place — a
+  # caller reading a literal out of this file would be the drift the shared
+  # emitter exists to prevent.
+  #
+  # THE ONE SILENT TOKEN REWRITES A BANNER THAT ALREADY RANG. `approval-ask` is
+  # raised into an approval's own slot when the seat first asks that approval,
+  # after `answer` sounded for it; a sound there would ring the same decision
+  # twice, which is the duplicate it exists to remove.
   #
   # WHY IT IS NO LONGER AN AXIS. The old split gave sound only to the stacking
   # buckets, on the ground that re-firing into a replace slot is free and a sound
@@ -481,6 +633,9 @@ cc_notify_sound() {
   # rather than a concurrency, and the overflow body would count items answered
   # hours ago — a sound announcing a wait that is not happening. Reclamation
   # landed first.
+  case "${1:-}" in
+    approval-ask) return 0 ;;
+  esac
   printf 'default'
 }
 
@@ -749,13 +904,14 @@ cc_notify_click() {
   # raised by the gate or the watcher, which do not know the seat's pane, so it
   # reads the record the seat left in the run directory. The demoted `overflow`
   # is a run banner like the rest. The guide has nowhere to go: a click on it
-  # does nothing.
+  # does nothing. `approval-ask` is raised by the session that asks, from its
+  # own pane, so its click goes to that session like the session tokens.
   local v
   case "${1:-}" in
     focus-guide)
       printf ':'
       return 0 ;;
-    session-ask|session-turn)
+    session-ask|session-turn|approval-ask)
       v=$(/bin/bash "$CC_NOTIFY_FOCUS" exec-arg 2>/dev/null) || v=':' ;;
     *)
       v=$(/bin/bash "$CC_NOTIFY_FOCUS" exec-arg --seat-file "${RUN_DIR:-}/notify.seat" 2>/dev/null) || v=':' ;;
@@ -841,7 +997,7 @@ cc_notify_attention_tap() {
 cc_notify_fire() {
   # cc_notify_fire <token> <message> [item-key]
   #
-  # The token is one of ten and the set is closed: an unrecognized one raises
+  # The token is one of eleven and the set is closed: an unrecognized one raises
   # nothing and says so. Falling back to the quietest token would be the
   # characteristic failure of a table like this — an unclassified condition
   # would reach the user as a status report, or not at all.
@@ -850,11 +1006,17 @@ cc_notify_fire() {
   # `CC_NOTIFY_ATTENTION_DETAIL` (see `cc_attention_detail_make`). It is taken
   # into a local on entry, and every path that returns before the attention tap
   # below removes it; the tap reads and removes it otherwise.
+  #
+  # THE RUN NAME IN AN APPROVAL'S TITLE is read here, from the run's
+  # `notify.label`, for the two tokens whose title carries it. A caller that
+  # already set `CC_NOTIFY_RUN_LABEL` keeps its value; the local keeps the read
+  # from leaking into the caller's shell.
   local token="${1:-}" body="${2:-}" key="${3:-}" title group sound click n detail="${CC_NOTIFY_ATTENTION_DETAIL:-}"
   local tap_key
+  local CC_NOTIFY_RUN_LABEL="${CC_NOTIFY_RUN_LABEL:-}"
   case "$token" in
     answer|answer-run|overflow|hands|resume|rekick|ended) : ;;
-    session-ask|session-turn|focus-guide) : ;;
+    session-ask|session-turn|focus-guide|approval-ask) : ;;
     *)
       printf 'notify: 알 수 없는 부류 토큰 「%s」 — 배너를 올리지 않습니다\n' "$token" >&2
       cc_attention_detail_drop "$detail"
@@ -886,6 +1048,13 @@ cc_notify_fire() {
     cc_attention_detail_drop "$detail"
     return 0
   fi
+  case "$token" in
+    answer|approval-ask)
+      if [ -z "$CC_NOTIFY_RUN_LABEL" ] && [ -n "${RUN_DIR:-}" ]; then
+        CC_NOTIFY_RUN_LABEL=$(cc_notify_run_label_read "$RUN_DIR")
+      fi
+      ;;
+  esac
 
   # THE ATTENTION TAP. The seat decided to raise this banner before calling, so
   # the remote copy is left here, after the switch and the host check and above
@@ -908,7 +1077,7 @@ cc_notify_fire() {
   # leave an event is the tap's own table.
   tap_key="$key"
   case "$token" in
-    answer|hands) if [ -z "$tap_key" ]; then tap_key="$token"; fi ;;
+    answer|hands|approval-ask) if [ -z "$tap_key" ]; then tap_key="$token"; fi ;;
   esac
   if ! cc_notify_attention_tap cc_attention_emit "$token" \
       "$(cc_notify_group "$token" "$tap_key")" "$(cc_notify_title "$token")" \
@@ -964,11 +1133,15 @@ cc_notify_fire() {
   #
   # Responsibility 3: launched detached, status never asked.
   #
-  # ONE ARM, NOT TWO. The pair used to be split on whether a sound was chosen;
-  # the sound is a constant now, so the silent arm was unreachable code that read
-  # like a live branch.
+  # ONE LINE, NOT TWO. `cc_notify_sound` prints nothing only for `approval-ask`,
+  # which rewrites a banner that already rang, so `-sound` is an argument pair
+  # that is present or absent rather than a second firing line — a second line
+  # is a second place `-execute` could be dropped from. The `+` expansion keeps
+  # an empty pair from tripping `set -u` on bash 3.2.
+  local sound_arg=()
+  if [ -n "$sound" ]; then sound_arg=(-sound "$sound"); fi
   { terminal-notifier -title "$title" -message "$body" -group "$group" \
-      -sound "$sound" -execute "$click" >/dev/null 2>&1 & } 2>/dev/null || true
+      ${sound_arg[@]+"${sound_arg[@]}"} -execute "$click" >/dev/null 2>&1 & } 2>/dev/null || true
   return 0
 }
 
@@ -1071,7 +1244,7 @@ cc_notify_clear() {
   local token="${1:-}" key="${2:-}" group
   case "$token" in
     answer|answer-run|overflow|hands|resume|rekick|ended) : ;;
-    session-ask|session-turn|focus-guide) : ;;
+    session-ask|session-turn|focus-guide|approval-ask) : ;;
     *)
       printf 'notify: 알 수 없는 부류 토큰 「%s」 — 배너를 지우지 않습니다\n' "$token" >&2
       return 0 ;;
@@ -1093,10 +1266,12 @@ cc_notify_clear() {
   # session tokens are a return to the session, `answer` is cleared only where an
   # approval closes, and anything else is a plain clear. The session group is
   # one per session whatever the key, so one clearing closes that session's
-  # question and turn events together. The tap runs through
-  # `cc_notify_attention_tap`, and a failure of the helper changes nothing below.
+  # question and turn events together. `approval-ask` is cleared when the seat's
+  # answer returns, so it is a return too, in the approval's own slot. The tap
+  # runs through `cc_notify_attention_tap`, and a failure of the helper changes
+  # nothing below.
   case "$token" in
-    session-ask|session-turn|focus-guide) cc_notify_attention_tap cc_attention_handled "$group" return || true ;;
+    session-ask|session-turn|focus-guide|approval-ask) cc_notify_attention_tap cc_attention_handled "$group" return || true ;;
     answer) cc_notify_attention_tap cc_attention_handled "$group" approval-closed || true ;;
     *) cc_notify_attention_tap cc_attention_handled "$group" clear || true ;;
   esac

@@ -165,6 +165,7 @@ per `(token, kind)` pair; a token that raises no event has one row reading
 | `session-ask` | `auq` |
 | `session-ask` | `question-form` |
 | `session-turn` | `turn` |
+| `approval-ask` | `auq` |
 | `answer` | `approval` |
 | `ended` | `run-end` |
 | `rekick` | `run-stop` |
@@ -178,6 +179,8 @@ per `(token, kind)` pair; a token that raises no event has one row reading
 
 - `session-ask` raises `question-form` only when the attachment's `kind` is
   `question-form`, and `auq` otherwise.
+- `approval-ask` is the session question hook's first ask of an approval a run
+  already announced; it raises `auq` only.
 - With an attachment, its `kind` must be a kind its token can raise. An
   attachment that does not parse as a JSON object, or whose `kind` the token
   cannot raise, writes no event — and the attachment file is still removed.
@@ -238,6 +241,12 @@ otherwise. Kinds without a reply surface (`turn`, `run-end`, `run-stop`,
   marker matches.
 - Session tokens use one slot per session whatever the item key, so one marker
   on that slot closes every open event of the session.
+- An `auq` event has one of two slots. Raised by `session-ask` it is the
+  session's slot above. Raised by `approval-ask` it is the approval slot, the
+  approval's own group `cc-cmds-autopilot-<run_id>-<approval id>` that the
+  run's `answer` event uses, so the seat's first ask of an announced approval
+  and the approval itself are one entry; its handled marker is `return`, written
+  when the seat's answer comes back.
 
 ## Answerable events
 
