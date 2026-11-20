@@ -25,7 +25,7 @@ export CC_GATE_PIN_SYNC_DISABLE := 1
 TEST_TZ := Asia/Seoul
 export TZ := $(TEST_TZ)
 
-.PHONY: lint readme check check-unattended-refusal check-gate-suite policy-drift rule-enforcement testtest-rest gate-shard print-gate-shards print-gate-lanes print-gate-slots print-gate-sections print-gate-digests rest-shard print-rest-shards print-rest-goals test-active-notify test-orchestrator test-darwin test-darwin-narrow run-gate-shard-selftest run-check-gate-selftest run-rest-shard-selftest print-test-tz tz-probe check-cheap check-push check-push-verify check-items run-check-push-selftest run-test-tree-selftest run-test-slots-selftest run-test-reuse-selftest run-gate-timing-selftest run-ci-duration-selftest print-gate-iso-extra run-gate-isolation-selftest isolation-check isolation-sweep isolation-capacity
+.PHONY: lint readme check check-unattended-refusal check-gate-suite policy-drift rule-enforcement testtest-rest gate-shard print-gate-shards print-gate-lanes print-gate-slots print-gate-sections print-gate-digests rest-shard print-rest-shards print-rest-goals test-active-notify test-orchestrator test-darwin test-darwin-narrow run-gate-shard-selftest run-check-gate-selftest run-rest-shard-selftest print-test-tz tz-probe check-cheap check-push check-push-verify check-items run-check-push-selftest run-test-tree-selftest run-test-slots-selftest run-test-reuse-selftest run-rest-readers-selftest run-gate-timing-selftest run-ci-duration-selftest print-gate-iso-extra run-gate-isolation-selftest isolation-check isolation-sweep isolation-capacity
 
 lint:
 	bash scripts/lint-skill-invariants.sh
@@ -216,6 +216,15 @@ check-cheap:
 # tree gets no stamp and check-push-verify stays non-zero; name the sections of
 # the axis that changed and run it again. This carries over the refusal `check`
 # makes through check-gate-suite.
+#
+# The goals that run are CHECK_PUSH_GOALS followed by every REST goal the change
+# reaches: scripts/rest-readers.sh reads, in the tested tree, which tracked files
+# each goal's entry script and what it sources name, and a goal that names a
+# changed file joins the run. The change is the head against its merge-base with
+# the base (in head mode, with origin/<base branch>, else the local branch; with
+# neither it is 판정불가 and nothing is added). A changed file no goal names is
+# listed and counted in the stamp; a derivation that cannot be computed ends 1
+# before any item runs, with no stamp.
 #
 # check-cheap, each goal and each lane of sections run in a checkout of their
 # own and leave a record of the tracked files they read (a lane also the digest
@@ -594,7 +603,7 @@ $(TEST_GOALS): run/%:
 test: $(NOTIFY_TESTS:%=run/%) $(LINT_TESTS:%=run/%) $(ORCH_TESTS:%=run/%) \
 	run-gate-shard-selftest run-check-gate-selftest \
 	run-rest-shard-selftest run-check-push-selftest run-test-tree-selftest \
-	run-test-slots-selftest run-test-reuse-selftest \
+	run-test-slots-selftest run-test-reuse-selftest run-rest-readers-selftest \
 	run-gate-timing-selftest run-ci-duration-selftest run-gate-isolation-selftest
 
 # How many runners the gate suite runs on (N), and how many rows each runner
@@ -666,7 +675,7 @@ ORCH_TESTS_REST := $(filter-out scripts/test-gate.sh,$(ORCH_TESTS))
 REST_GOALS := $(NOTIFY_TESTS:%=run/%) $(LINT_TESTS:%=run/%) $(ORCH_TESTS_REST:%=run/%) \
 	run-gate-shard-selftest run-check-gate-selftest \
 	run-rest-shard-selftest run-check-push-selftest run-test-tree-selftest \
-	run-test-slots-selftest run-test-reuse-selftest \
+	run-test-slots-selftest run-test-reuse-selftest run-rest-readers-selftest \
 	run-gate-timing-selftest run-ci-duration-selftest run-gate-isolation-selftest
 
 test-rest: $(REST_GOALS)
@@ -880,6 +889,9 @@ run-test-slots-selftest:
 
 run-test-reuse-selftest:
 	bash scripts/test-reuse.sh --self-test
+
+run-rest-readers-selftest:
+	bash scripts/rest-readers.sh --self-test
 
 run-rest-shard-selftest:
 	bash scripts/rest-shard.sh --self-test

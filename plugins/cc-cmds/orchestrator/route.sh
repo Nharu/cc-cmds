@@ -244,7 +244,11 @@ route__jq_lib() {
   # 표본 스키마는 위의 가드가 문자 그대로 고정한 값이라 따옴표 안에 그대로 넣는다.
   # 판독기가 판정 경로 안에 있어 인자로 넘기면 모든 호출자가 같은 인자를 날라야 한다.
   printf 'def rt_cost_schema: "%s";\n' "$ROUTE_COST_SCHEMA"
-  cat <<'JQ'
+  # 주석만 있는 줄은 내보내지 않는다. 호출자는 이 문자열을 jq 의 인자 하나로 넘기고,
+  # 리눅스는 인자 하나를 128KiB 로 자르므로(MAX_ARG_STRLEN) 이 라이브러리에 정의를
+  # 덧붙이는 호출자(fleet.sh)가 주석까지 실으면 그 상한을 넘어 jq 가 뜨지 못한다.
+  # 이 본문에는 역슬래시로 끝나는 주석 줄도, `#` 로 시작하는 줄을 품은 문자열도 없다.
+  sed -E '/^[[:space:]]*#/d' <<'JQ'
 def rt_wins: ["five_hour", "seven_day"];
 def rt_bp: (. * 10000 | round);
 def rt_isint: type == "number" and (. == floor);
@@ -627,10 +631,13 @@ def rt_cost($c; $w; $kind; $g):
      elif ($cw.by_kind[$kind] // null) != null then {v: $cw.by_kind[$kind], source: "kind"}
      else {v: $cw.default, source: "default"} end)
   | if (.v | type) == "number" then {bp: (.v | rt_bp), source: .source} else error("config.c") end;
+# 종류 `$kind` 의 스테이지 하나가 그룹 `$g` 에 얹을 창별 예약. 입장 판정의 예약, 대여
+# 검사의 예약, 양보 판정이 세는 앞선 대기자의 몫이 모두 이 식에서 나온다.
+def rt_res_of($c; $kind; $g):
+  reduce rt_wins[] as $w ({}; .[$w] = (rt_kv($c; $kind; $w) * rt_cost($c; $w; $kind; $g).bp));
 # 이번 요청 하나가 그룹 `$g` 에 얹을 창별 예약. `rt_admit_core` 와 같은 계산이다.
 def rt_res($c; $g):
-  (($c.request.kind // "") | tostring) as $kind
-  | reduce rt_wins[] as $w ({}; .[$w] = (rt_kv($c; $kind; $w) * rt_cost($c; $w; $kind; $g).bp));
+  rt_res_of($c; (($c.request.kind // "") | tostring); $g);
 
 # 대여 입장의 단단한 검사. 첫 실패의 사유, 모두 통과면 null 이다. `$d` 는 발행된 결정,
 # `$uw` 는 사용량 행의 두 창, `$res` 는 이번 입장 하나의 예약이다. 결정의 신선도(H1),
@@ -671,7 +678,7 @@ def rt_publish_why($c; $ua; $v; $G):
   elif rt_ueff($G.windows.seven_day) >= rt_publish_cap_bp then "reserve"
   else null end;
 
-def rt_aview($c; $orgs; $fresh; $gv; $donors; $bgroups):
+def rt_aview($c; $orgs; $fresh; $gv; $donors; $bgroups; $borrow_reserved):
   (.) as $a
   | ([rt_uaccts($c)[] | select(.id == $a.id)] | .[0]) as $ua
   | rt_group_of($orgs; $a.id) as $g
@@ -688,6 +695,12 @@ def rt_aview($c; $orgs; $fresh; $gv; $donors; $bgroups):
   + (if any($donors[]; . == $a.id) then {borrowed: "donor"}
      elif any($bgroups[]; . == $g) then {borrowed: "group"}
      else {} end)
+  # 차용 표지가 붙은 보기 가운데 묶음 예약이 차용하는 레인의 행에서만 나온 묶음의 것에만
+  # 붙는다(차용 예약 묶음은 차용 묶음의 부분집합이다). `group_reserved` 값은 그대로라 보통
+  # 입장·유지·재개 사다리는 이 표지를 읽지 않고, 이관 고정 입장과 이관 후보 거절 사유만
+  # 읽는다. 그 밖의 보기는 바이트가 그대로다.
+  + (if (any($donors[]; . == $a.id) or any($bgroups[]; . == $g)) and any($borrow_reserved[]; . == $g)
+     then {reserved_by_borrow: true} else {} end)
   # 대여 등록 행에만 붙는다 — 등록 아닌 행의 보기는 바이트가 그대로다. 결정은 신선한
   # 사용량 파일의 것만 읽고, 예약을 셀 수 없는 설정이면 닫힘이다.
   + (if ($a | rt_enrolled) then
@@ -771,6 +784,20 @@ def rt_prep($schema):
   | (if ($b | rt_borrowing)
      then ([$donors[] | rt_group_of($orgs; .)] + [rt_group_of($orgs; $b.donor.id)] | unique)
      else [] end) as $bgroups
+  # 차용 때문에만 예약된 묶음. 차용하는 레인의 행은 설정 디렉터리가 차용 기록의
+  # `lane_config_dir` 과 같은 인벤토리 행과 사용량 행이고, 그런 행이 없으면 계정 id
+  # `cc` 다 — cc-lane 이 레인의 사용량 행을 찾는 규칙과 같다. 차용 묶음 가운데 예약을
+  # 만드는 인벤토리 행(`interactive_reserved == true`)이 하나 이상 있고 그 행이 모두 레인
+  # 행인 묶음이다. 레인 아닌 예약 행이 하나라도 있으면 진짜 예약이라 들지 않는다.
+  | (if ($b | rt_borrowing)
+     then ([$inv[] | select(.config_dir == $b.lane_config_dir) | .id]
+           + [rt_uaccts($c)[] | select(.config_dir == $b.lane_config_dir) | .id] | unique) as $ln
+       | (if ($ln | length) == 0 then ["cc"] else $ln end) as $lane_ids
+       | [$bgroups[] as $g
+          | [$inv[] | select((rt_group_of($orgs; .id) == $g) and (.interactive_reserved == true)) | .id] as $rs
+          | select(($rs | length) > 0 and all($rs[]; . as $r | any($lane_ids[]; . == $r)))
+          | $g]
+     else [] end) as $borrow_reserved
   | {c: $c, schema: $schema, fresh: $fresh, orgs: $orgs, items: $items, groups: $gv,
      lend_groups: ([$inv[] | select(rt_enrolled) | rt_group_of($orgs; .id)] | unique),
      pin: (if (($c.seat.lane? // null) | type) == "string" and $c.seat.lane != "" then $c.seat.lane else null end),
@@ -780,7 +807,7 @@ def rt_prep($schema):
                      and (($c.seat.pin_source? // null) == "host" or ($c.seat.pin_source? // null) == "run-record")
                   then $c.seat.pin_source else null end),
      migratable: ($c.request.migratable? == true),
-     accounts: ([$inv[] | rt_aview($c; $orgs; $fresh; $gv; $donors; $bgroups)] | sort_by(.id)),
+     accounts: ([$inv[] | rt_aview($c; $orgs; $fresh; $gv; $donors; $bgroups; $borrow_reserved)] | sort_by(.id)),
      okey: (if (($c.request.run_id | type) == "string") and (($c.request.lineage | type) == "string")
             then rt_key($c.request.run_id; $c.request.lineage) else null end),
      own: $own,
@@ -914,7 +941,7 @@ def rt_cost_apply:
 def rt_admit_core($c; $G; $ex):
   (($c.request.kind // "") | tostring) as $kind
   | (reduce rt_wins[] as $w ({}; .[$w] = rt_cost($c; $w; $kind; $G.group))) as $cost
-  | (reduce rt_wins[] as $w ({}; .[$w] = (rt_kv($c; $kind; $w) * $cost[$w].bp))) as $res
+  | rt_res_of($c; $kind; $G.group) as $res
   | $G.windows as $W
   | (if $ex != null or any($W[]; .state == "exhausted") then
       {admitted: false, admitted_as: null, reservation_bp: $res, failed: ["exhausted"],
@@ -1178,9 +1205,38 @@ def rt_admit($p; $a):
   if $a.publish_row == true then rt_publish_admit($p; $a)
   else rt_admit_core($p.c; $p.groups[$a.group]; $a.exhausted_until) as $adm
     | if ($a.lend_enrolled == true) and (rt_lend_new_ok($a) | not) then rt_lend_fail($adm) else $adm end end;
-def rt_fifo_blocked($p; $g):
-  ($p.own | if . != null and .kind == "wait" and .live == true then .seq else null end) as $mine
-  | any($p.items[]; (.kind == "wait") and (rt_group_of($p.orgs; .account) == $g) and ($mine == null or .seq < $mine));
+# 대기 순위. 「누가 앞인가」를 묻는 코드는 이 세 함수만 쓴다. 대기 항목의 순위는 배열이고
+# 지금은 `seq` 한 자리다. 요청자의 순위는 살아 있는 자기 대기 항목의 순위이고, 그런 항목이
+# 없는 새 요청은 null(모든 대기자 뒤)이다. 앞선 대기 항목은 그룹 `$g` 의 살아 있는 대기 항목
+# 가운데 요청자보다 순위가 작은 것이다 — `$p.items` 는 요청자 자기 계보의 항목을 이미 뺐다.
+def rt_wait_rank($e): [$e.seq];
+def rt_req_rank($p):
+  $p.own as $o
+  | if $o != null and $o.kind == "wait" and $o.live == true then rt_wait_rank($o) else null end;
+def rt_ahead($p; $g):
+  rt_req_rank($p) as $r
+  | [$p.items[] | select(.kind == "wait") | select(rt_group_of($p.orgs; .account) == $g)
+     | select($r == null or (rt_wait_rank(.) < $r))];
+# FIFO 양보 판정. 후보 계정 `$a` 의 그룹에 앞선 대기 항목이 없으면 막지 않는다. 앞선 항목
+# 가운데 스테이지 종류를 싣지 않은 것이 하나라도 있으면 그 몫을 셀 수 없으므로 여유와
+# 상관없이 막는다. 모두 종류를 실었으면 그룹 σ 에 앞선 대기자 전원의 예약을 얹은 보기로
+# 입장 판정을 다시 돌려, 앞 순번 몫까지 담을 여유가 없을 때만 막는다. 대여 등록 행은 같은
+# 보기로 대여 검사도 다시 통과해야 한다. `count` 는 그대로다 — 대기 항목은 이미 세어져 있다.
+# 셈이 오류를 내면 막는다: 셀 수 없는 몫을 0 으로 두지 않는다.
+def rt_fifo_blocked($p; $a):
+  rt_ahead($p; $a.group) as $ah
+  | if ($ah | length) == 0 then false
+    elif any($ah[]; ((.stage_kind | type) != "string") or (.stage_kind == "")) then true
+    else
+      try (
+        $p.groups[$a.group] as $G
+        | [$ah[] | rt_res_of($p.c; .stage_kind; $a.group)] as $rs
+        | ($G + {sigma: (reduce rt_wins[] as $w ($G.sigma; .[$w] = (.[$w] + ([$rs[] | .[$w]] | add))))}) as $G2
+        | (rt_admit_core($p.c; $G2; $a.exhausted_until).admitted | not)
+          or (($a.lend_enrolled == true) and ($a.lend.res != null)
+              and (rt_lend_why($p.c; $a.lend.dec; $a.lend.win; $G2; $a.lend.res) != null))
+      ) catch true
+    end;
 def rt_observed($G):
   [$G.windows[] | select(.observed != null)]
   | if length == 2 then (min_by(.observed) | "\(.source // "none")@\(.observed)") else "none" end;
@@ -1256,7 +1312,8 @@ def rt_wait($g; $acct; $until; $reason): rt_wait_c($g; $acct; $until; $reason; n
 # 예비 공급 대기. 오늘이면 마감 PARK 일 자리에서 누를 수 있는 리셋권이 있을 때, 같은
 # 사유와 비용에 마감 없이 기다리고 어느 리셋권을 기다리는지 덧붙인다. 그룹을 단 다른
 # 대기처럼 드라이버·게이트가 그 그룹의 FIFO 대기 항목을 넣으므로, 대기자가 사는 동안
-# 같은 그룹의 새 스테이지는 입장할 수 있어도 fifo-yield 로 양보한다. 의도된 동작이다 —
+# 같은 그룹의 새 스테이지는 그 대기자의 몫까지 담을 여유가 있을 때만 들어가고, 여유가
+# 없거나 대기 항목이 종류를 싣지 않았으면 fifo-yield 로 양보한다. 의도된 동작이다 —
 # 리셋권이 눌려 자리가 생기면 먼저 기다린 대기자가 그 자리를 받고, 끝내 눌리지 않으면
 # 대기 루프가 마감 − 예상 소요에서 PARK 해 항목을 내린다.
 def rt_wait_reserve($g; $acct; $reason; $cost; $pass):
@@ -1430,7 +1487,7 @@ def rt_pub_xwait($p; $a):
 def rt_mig_reject($p; $a):
   $p.groups[$a.group] as $G
   | if $a.unattended != "enabled" then "unattended-off"
-    elif $a.group_reserved then "group-reserved"
+    elif $a.group_reserved and ($a.reserved_by_borrow != true) then "group-reserved"
     elif $a.login_bad then "logged-out"
     elif $a.mismatch then "mismatch"
     elif ($a.borrowed // null) != null then "borrowed"
@@ -1451,7 +1508,7 @@ def rt_park_no_successor($p; $from; $why):
 # 판정과 FIFO 차단 여부를 싣는다.
 def rt_mig_pool($p; $from):
   [$p.accounts[] | select(.id != $from) | select(rt_mig_reject($p; .) == null)
-   | (.) as $a | {a: $a, adm: rt_admit($p; $a), fifo: rt_fifo_blocked($p; $a.group)}];
+   | (.) as $a | {a: $a, adm: rt_admit($p; $a), fifo: rt_fifo_blocked($p; $a)}];
 # 이관을 받을 최선의 계정 하나. 후보 풀 가운데 입장을 통과하고 FIFO 에 막히지 않은 계정을
 # 7일 창 실효 사용량이 작은 순(같으면 id 순)으로 정렬한 첫 `{a, adm}` 이고, 없으면 null 이다.
 def rt_mig_best_of($p; $pool):
@@ -1482,12 +1539,14 @@ def rt_park_mig_policy($id; $why):
     $id; $why);
 # 이관 고정의 보통 입장. 이관 조건이면 이관 선택이고, 아니면 고정 계정 하나를 정책 검사
 # 뒤 보통 무인 계정과 같은 입장 규칙(`rt_admit`, FIFO 미차단)으로 판정한다. 로그인 끊김은
-# 재개와 같은 문면의 PARK, 디렉터리 불일치·무인 켜짐 아님·그룹 예약은 원인을 밝힌 PARK,
-# 차용 중만이면 기다린다. 입장에서 떨어지면 고정 없는 풀과 같은 꼴의 WAIT 다. 고정 요청의
-# 풀 계산과 대여 행 PARK 는 타지 않는다. 이 함수의 WAIT 는 모두 계정 없는 풀 사유다 —
-# `resume-bound-*` 사유는 대기 행 작성기가 재개 구속과 같은 계정을 요구하는데, 새 기동에는
-# 구속이 없고 재개의 구속은 고정 계정과 다른 계정일 수 있다. 차용 중의 대기는 그 그룹의
-# `no-room` 이다.
+# 재개와 같은 문면의 PARK, 디렉터리 불일치·무인 켜짐 아님·차용 때문만이 아닌 그룹 예약은
+# 원인을 밝힌 PARK, 차용 표지가 있으면(차용 때문에만 생긴 그룹 예약 포함) 기다린다. 입장에서
+# 떨어지면 고정 없는 풀과 같은 꼴의 WAIT 다. 고정 요청의 풀 계산과 대여 행 PARK 는 타지
+# 않는다. 차용 대기만 계정을 싣는다 — 그 그룹의 `pinned-borrowed` 에 기증자 계정(고정
+# 계정이 기증자면 그 자신, 기증자 묶음의 다른 계정이면 차용 기록의 기증자)을 실어 원장과
+# 좌석이 차용 때문에 기다린다는 것과 기증자를 읽는다. 그 밖의 WAIT 는 계정 없는 풀 사유다.
+# `resume-bound-*` 사유는 쓰지 않는다 — 대기 행 작성기가 그 사유에 재개 구속과 같은 계정을
+# 요구하는데, 새 기동에는 구속이 없고 재개의 구속은 고정 계정과 다른 계정일 수 있다.
 def rt_mig_admit($p; $basis; $fresh):
   rt_av($p; $p.pin) as $a
   | if rt_mig7($p.groups[$a.group]) then rt_mig_pick($p; $a.id; rt_mig_why($p); $basis; $fresh)
@@ -1495,10 +1554,11 @@ def rt_mig_admit($p; $basis; $fresh):
       rt_env(rt_park("resume-logged-out"; "묶인 계정의 로그인이 끊겼다 — 그 설정 디렉터리에서 claude /login 을 한다"); "none"; null)
     elif $a.mismatch then rt_env(rt_park_mig_policy($a.id; "mismatch"); "none"; null)
     elif $a.unattended != "enabled" then rt_env(rt_park_mig_policy($a.id; "unattended-off"); "none"; null)
-    elif $a.group_reserved then rt_env(rt_park_mig_policy($a.id; "group-reserved"); "none"; null)
-    elif ($a.borrowed // null) != null then rt_env(rt_wait_c($a.group; null; null; "no-room"; null); "none"; null)
+    elif $a.group_reserved and ($a.reserved_by_borrow != true) then rt_env(rt_park_mig_policy($a.id; "group-reserved"); "none"; null)
+    elif ($a.borrowed // null) != null then
+      rt_env(rt_wait_c($a.group; (if $a.borrowed == "donor" then $a.id else $p.c.borrow.donor.id end); null; "pinned-borrowed"; null); "none"; null)
     else rt_admit($p; $a) as $adm
-      | rt_fifo_blocked($p; $a.group) as $fifo
+      | rt_fifo_blocked($p; $a) as $fifo
       | if $adm.admitted and ($fifo | not) then
           (rt_grant_new($p; $a; $adm; $basis) + (if $fresh then {fresh: true} else {} end)) as $e
           | rt_env($e; "write"; rt_rec_new($p; $e))
@@ -1680,7 +1740,7 @@ def rt_new($p; $basis0; $excl):
         | select($p.pin != null or .id != $excl) | (.) as $a
         | (if $p.pin != null and (rt_lend_new_ok($a) | not) then rt_lend_fail(rt_admit_core($p.c; $p.groups[$a.group]; $a.exhausted_until))
            else rt_admit($p; $a) end) as $adm
-        | {a: $a, adm: $adm, fifo: rt_fifo_blocked($p; $a.group),
+        | {a: $a, adm: $adm, fifo: rt_fifo_blocked($p; $a),
            w7: ($p.groups[$a.group] as $G
                 | rt_w7m($p.c; $G; rt_m7r($p.c; $G; $adm.cost; rt_rho_pick($rg; $p.c; $G.group))))}] as $pool
       | [$pool[] | select(.adm.admitted and (.fifo | not))] as $cands
@@ -1844,13 +1904,17 @@ def rt_txn_fallback($reason; $rec):
   else rt_orgs(.) as $o
     | rt_wait((if $rec != null then rt_group_of($o; $rec.account) else null end); null; null; $reason) end;
 
-def rt_wait_record($leases; $run; $lin; $acct; $dir; $nonce; $now; $holders; $schema):
+# 대기 항목. `$kind` 는 대기하는 스테이지의 종류이고, 비어 있지 않은 문자열이 아니면
+# `stage_kind` 가 null 이다. 같은 키의 대기 항목이 있으면 그 `seq` 를 지키고 종류는 이번
+# 값으로 쓴다.
+def rt_wait_record($leases; $run; $lin; $acct; $dir; $nonce; $now; $holders; $schema; $kind):
   ([$leases.items[] | select(.run_id == $run and .lineage == $lin)] | .[0]) as $own
   | if $own != null and $own.kind == "grant" then error("grant-held")
     else {schema: $schema, kind: "wait", run_id: $run, lineage: $lin, nonce: $nonce,
           seq: (if $own != null and ($own.seq | rt_isint) then $own.seq
                 else ((([$leases.items[] | .seq | select(type == "number")] | max) // 0) + 1) end),
-          account: $acct, config_dir: $dir, granted_at_epoch: $now, holders: $holders} end;
+          account: $acct, config_dir: $dir, granted_at_epoch: $now, holders: $holders,
+          stage_kind: (if ($kind | type) == "string" and $kind != "" then $kind else null end)} end;
 
 # 관측 줄의 그룹 항목. 결정과 같은 문맥(잠금 아래 다시 읽은 표를 끼운 것)에서 모든
 # 그룹의 W7 과 주간 창 값을 그룹 순으로 늘어놓는다. 비용은 그 그룹에 대한 입장
@@ -3089,17 +3153,19 @@ route__sweep_done_main() {
 
 route__wait_put_main() {
   # lease-wait-put --table <dir> --now <n> --run-id <r> --lineage <l> --account <id>
-  #                --config-dir <dir> --holder <pid>...
+  #                --config-dir <dir> --holder <pid>... [--kind <stage kind>]
   # 락 아래에서 `kind: wait` 항목을 쓴다. `seq` 는 표 안 최댓값 + 1 이고, 같은 키의
-  # 대기 항목이 이미 있으면 그 자리를 지킨다. 예약은 싣지 않는다. 같은 키에 부여가
-  # 있으면 거부한다(rc 1).
+  # 대기 항목이 이미 있으면 그 자리를 지킨다. 예약은 싣지 않는다. 스테이지 종류는
+  # `stage_kind` 로 싣는다(`--kind` 가 없거나 비면 null) — 양보 판정이 앞선 대기자의
+  # 몫을 그 종류로 센다. 같은 키에 다시 넣으면 종류는 이번 값으로 쓴다. 같은 키에
+  # 부여가 있으면 거부한다(rc 1).
   #
   # `--group <g> --inventory <file>` 은 `--account`·`--config-dir` 대신 그룹의 대표
   # 계정을 고른다 — 그 인벤토리에서 새 부여를 받을 수 있는(`enabled`) 계정 중 그
   # 그룹에 드는 가장 작은 id. WAIT 봉투는 조직 그룹이면 계정을 싣지 않으므로, 항목이
   # 그룹으로 세어지려면 그 그룹에 속한 계정 하나가 있어야 한다. 고를 계정이 없으면
   # rc 3 이고 아무것도 쓰지 않는다.
-  local t="" now="" run="" lin="" acct="" dir="" grp="" invf="" key holders nonce leases rec rc=0 usage pick
+  local t="" now="" run="" lin="" acct="" dir="" grp="" invf="" kind="" key holders nonce leases rec rc=0 usage pick
   local hs=()
   while [ $# -gt 0 ]; do
     [ $# -ge 2 ] || return 2
@@ -3113,6 +3179,7 @@ route__wait_put_main() {
       --group) grp="$2" ;;
       --inventory) invf="$2" ;;
       --holder) hs+=("$2") ;;
+      --kind) kind="$2" ;;
       *) return 2 ;;
     esac
     shift 2
@@ -3143,7 +3210,8 @@ route__wait_put_main() {
   if [ "$rc" = "0" ]; then
     rec=$(jq -cn --argjson leases "$leases" --arg run "$run" --arg lin "$lin" --arg acct "$acct" --arg dir "$dir" \
           --arg nonce "$nonce" --argjson now "$now" --argjson holders "$holders" --arg schema "$ROUTE_LEASE_SCHEMA" \
-          "$(route__jq_lib)"' rt_wait_record($leases; $run; $lin; $acct; $dir; $nonce; $now; $holders; $schema)' 2>/dev/null) || rc=1
+          --arg kind "$kind" \
+          "$(route__jq_lib)"' rt_wait_record($leases; $run; $lin; $acct; $dir; $nonce; $now; $holders; $schema; $kind)' 2>/dev/null) || rc=1
   fi
   if [ "$rc" = "0" ] && ! route__lease_put "$t" "$key" "$rec"; then rc=4; fi
   route__lock_release

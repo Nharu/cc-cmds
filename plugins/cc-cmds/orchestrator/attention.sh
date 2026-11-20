@@ -180,6 +180,7 @@ cc_attention_emit() {
     case "$token" in
       session-ask) kinds="auq question-form" ;;
       session-turn) kinds="turn" ;;
+      approval-ask) kinds="auq" ;;
       answer) kinds="approval" ;;
       ended) kinds="run-end" ;;
       rekick|resume) kinds="run-stop" ;;

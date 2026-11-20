@@ -44,6 +44,20 @@
 # and its reuse line ends in `릴리스 차이` (scripts/test-reuse.sh states the
 # rule in full).
 #
+# THE GOALS ARE THE NAMED ONES PLUS THE ONES THE CHANGE REACHES. Before the
+# items are checked, `run` and `items` take the change — the head against its
+# merge-base with the base; in head mode, with refs/remotes/origin/<base
+# branch>, else refs/heads/<base branch> — and ask scripts/rest-readers.sh,
+# in the tested tree, which REST goals read a changed file. The goals that run
+# are CHECK_PUSH_GOALS in the order given, then each derived goal not named,
+# in `print-rest-goals` order. A line `check-push: 유도 목표 — …` says what was
+# derived and a line `check-push: 유도 근거 없는 변경 파일 …` lists the changed
+# files no goal reads; the stamp keeps `유도목표=` and `유도없음=`. With
+# neither base ref in head mode nothing is derived and the line and the stamp
+# say 판정불가. A derivation that cannot be computed (a git or make step
+# failed) ends 1 before any item runs, with `check-push: 유도 실패 — <step>`
+# and no stamp.
+#
 # Usage:
 #   bash scripts/check-push.sh run         check in a clean clone, stamp on pass
 #   bash scripts/check-push.sh items       run the goals, the sections and
@@ -128,6 +142,9 @@ TT_SECVAR="CHECK_PUSH_SECTIONS"
 TT_GOALVAR="CHECK_PUSH_GOALS"
 CP_TMP_STAMP=""
 CP_GATE_PATH="plugins/cc-cmds/orchestrator/gate.sh"
+# The derivation runs this script's sibling, not the tested tree's copy, so a
+# tree that lacks the script or carries an older one derives the same way.
+CP_READERS="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/rest-readers.sh"
 # Read once here: the children never see it, because tt_scrubbed drops every
 # CHECK_PUSH_* variable.
 CP_JOBS="${CHECK_PUSH_JOBS:-4}"
@@ -223,6 +240,64 @@ check_push_gate_unchanged() {
   mb=$(git merge-base "$1" "$2" 2>/dev/null) || return 1
   changed=$(git diff --name-only "$mb" "$2" -- "$CP_GATE_PATH" 2>/dev/null) || return 1
   [ -z "$changed" ]
+}
+
+# The derivation step. Writes the changed paths of <head> (against <base> in
+# merge mode, against the base branch in head mode) to a file in TT_DIR, asks
+# rest-readers.sh which goals of the tested tree read them, and sets
+# CP_DERIVED (the derived goals comma-joined, or 판정불가), CP_UNREAD (the
+# changed paths no goal reads, space-joined), CP_UNREAD_N and CP_CHANGED_N.
+# Returns 0, or 1
+# with CP_DERIVE_STAGE naming the step that failed.
+check_push_derive() {
+  local mode="$1" base="$2" head="$3" br ref="" mb list out err k v
+  CP_DERIVED=""
+  CP_UNREAD=""
+  CP_UNREAD_N=0
+  CP_CHANGED_N=0
+  CP_DERIVE_STAGE=""
+  CP_DERIVE_WHY=""
+  if [ "$mode" = head ]; then
+    br="${CHECK_PUSH_BASE_BRANCH:-master}"
+    if git rev-parse --verify --quiet "refs/remotes/origin/$br^{commit}" > /dev/null; then
+      ref="refs/remotes/origin/$br"
+    elif git rev-parse --verify --quiet "refs/heads/$br^{commit}" > /dev/null; then
+      ref="refs/heads/$br"
+    else
+      CP_DERIVED="판정불가"
+      CP_DERIVE_WHY="베이스 브랜치 $br 의 refs/remotes/origin/$br 도 refs/heads/$br 도 없다"
+      return 0
+    fi
+    base=$(git rev-parse --verify --quiet "$ref^{commit}") || { CP_DERIVE_STAGE="git rev-parse $ref"; return 1; }
+  fi
+  mb=$(git merge-base "$base" "$head" 2>/dev/null) || { CP_DERIVE_STAGE="git merge-base $base $head"; return 1; }
+  list="$TT_DIR/derive-changed"
+  out="$TT_DIR/derive-out"
+  err="$TT_DIR/derive-err"
+  git -c core.quotePath=false diff --name-only --no-renames "$mb" "$head" > "$list" 2>/dev/null || { CP_DERIVE_STAGE="git diff $mb $head"; return 1; }
+  CP_CHANGED_N=$(grep -c . "$list")
+  if ! tt_scrubbed bash "$CP_READERS" derive --tree "$TT_WORK" --changed "$list" --make "${CC_TEST_TREE_MAKE:-make}" > "$out" 2> "$err" < /dev/null; then
+    CP_DERIVE_STAGE=$(sed -n 's/^rest-readers: 유도 실패 — //p' "$err" | tail -n 1)
+    [ -n "$CP_DERIVE_STAGE" ] || CP_DERIVE_STAGE="rest-readers.sh"
+    cat "$err" >&2
+    return 1
+  fi
+  while IFS=$'\t' read -r k v; do
+    case "$k" in
+      유도) CP_DERIVED="${CP_DERIVED:+$CP_DERIVED,}$v" ;;
+      근거없음) CP_UNREAD="${CP_UNREAD:+$CP_UNREAD }$v"; CP_UNREAD_N=$((CP_UNREAD_N + 1)) ;;
+    esac
+  done < "$out"
+  return 0
+}
+
+# <named> followed by every goal of <derived> it does not name, comma-joined.
+check_push_union() {
+  local all="$1" g
+  for g in $(printf '%s' "$2" | tr ',' ' '); do
+    case ",$all," in *",$g,"*) ;; *) all="${all:+$all,}$g" ;; esac
+  done
+  printf '%s' "$all"
 }
 
 # The sections this run took from lane records, comma-joined; 없음 when none;
@@ -556,6 +631,23 @@ check_push_run() {
     printf 'check-push: 합침=충돌 %s — 합친 트리는 시험하지 않았다, CI 런 없음\n' "$(tt_or_none "$TT_CONFLICTS")"
   fi
 
+  # The derivation: an undecided one is never read as an empty one.
+  if ! check_push_derive "$mode" "$base" "$commit"; then
+    printf 'check-push: 유도 실패 — %s\n' "$CP_DERIVE_STAGE" >&2
+    printf 'check-push: 커밋 %s 검사 실패 — 도장을 찍지 않는다\n' "$commit" >&2
+    return 1
+  fi
+  if [ "$CP_DERIVED" = "판정불가" ]; then
+    printf 'check-push: 유도 판정불가 — %s\n' "$CP_DERIVE_WHY"
+  else
+    printf 'check-push: 유도 목표 — 변경 파일 %s개, 유도 %s개: %s\n' \
+      "$CP_CHANGED_N" "$(printf '%s' "$CP_DERIVED" | tr ',' '\n' | grep -c .)" "$(tt_or_none "$CP_DERIVED")"
+    if [ "$CP_UNREAD_N" -gt 0 ]; then
+      printf 'check-push: 유도 근거 없는 변경 파일 %s개 — %s\n' "$CP_UNREAD_N" "$CP_UNREAD"
+    fi
+    goals=$(check_push_union "$goals" "$CP_DERIVED")
+  fi
+
   tt_check_items "$secs" "$goals"
   rc=$?
   if [ "$rc" != 0 ]; then
@@ -782,6 +874,8 @@ check_push_run() {
     printf '시도=%s\n' "$(tt_or_none "$tries")"
     printf 'CI몫=%s\n' "$(tt_or_none "$ci")"
     printf 'fetch베이스=%s\n' "$fbase"
+    printf '유도목표=%s\n' "$(tt_or_none "$CP_DERIVED")"
+    printf '유도없음=%s\n' "$CP_UNREAD_N"
   } > "$CP_TMP_STAMP" || return 1
   mv -f "$CP_TMP_STAMP" "$stamp" || return 1
   CP_TMP_STAMP=""
@@ -916,8 +1010,16 @@ case "$1" in
   --record-add) { printf 'REC=%s\n' "${CC_GATE_TIMING_RECORD:-}"; cat "$2"; } >> "@T@/recadd.log" ;;
 esac
 EOF
+  # A `-n` call is the derivation reading a goal's command lines: it prints
+  # what n-<goal> holds, or fails when derive-n-fail is there, and runs nothing.
   sed "s|@T@|$T|g" > "$T/bin/make" <<'EOF'
 #!/usr/bin/env bash
+if [ "${1:-}" = -n ]; then
+  [ ! -f "@T@/derive-n-fail" ] || exit 1
+  for a in "$@"; do last="$a"; done
+  [ ! -f "@T@/n-$last" ] || cat "@T@/n-$last"
+  exit 0
+fi
 printf 'make:%s\n' "$*" >> "@T@/order.log"
 if [ "$*" = "-s --no-print-directory print-rest-goals" ]; then cat goals.txt; exit 0; fi
 printf 'menv:%s|REC=%s\n' "$*" "${CC_GATE_TIMING_RECORD-unset}" >> "@T@/env.log"
@@ -1041,7 +1143,7 @@ EOF
   has "F12 묶음 단계마다 자리를 잡는다" "$out" "check-push: 자리 잡음 단계 lint (0초 대기)"
   has "F12 마지막 묶음 단계도 자리를 잡는다" "$out" "check-push: 자리 잡음 단계 check-cheap (0초 대기)"
   out=$(sed -n 's/=.*$//p' "$stamp" | tr '\n' ' ')
-  check "F12 도장 v2 필드" "$out" "v commit at bash 합침 base base출처 fetch tested_tree sections goals 절+베이스 충돌경로 대역 병렬 자리대기 재사용 재사용절 시간예산 시도 CI몫 fetch베이스 "
+  check "F12 도장 v2 필드" "$out" "v commit at bash 합침 base base출처 fetch tested_tree sections goals 절+베이스 충돌경로 대역 병렬 자리대기 재사용 재사용절 시간예산 시도 CI몫 fetch베이스 유도목표 유도없음 "
   check "F12 재사용을 끈 실행의 도장은 재사용=꺼짐" "$(check_push_field "$stamp" 재사용)" "꺼짐"
   check "F12 재사용을 끈 실행의 도장은 재사용절=꺼짐" "$(check_push_field "$stamp" 재사용절)" "꺼짐"
   check "F12 사적 저장소에서는 자리를 기다리지 않는다" "$(check_push_field "$stamp" 자리대기)" "0"
@@ -1536,6 +1638,69 @@ check-push: CHECK_PUSH_JOBS=1 의 실패 단계는 목록 전체를 이름 댄�
   rm -f "$T/reads-cc" "$T/reads-g1"
   (cd "$W" && sgit checkout -q h) > /dev/null 2>&1
 
+  # --- F43 유도: 바꾼 파일을 읽는 목표가 지명한 목표 뒤에 붙어 돈다 -------------------
+  # Branch d adds a run/ goal whose entry script reads data/in.txt, so the
+  # change derives it; h.txt, goals.txt and notes.txt are read by no goal.
+  (
+    cd "$W" || exit 1
+    sgit checkout -q -b d h
+    mkdir -p tools data
+    printf 'g1\ng2\nrun/tools/r.sh\n' > goals.txt
+    printf 'cat data/in.txt\n' > tools/r.sh
+    printf 'in\n' > data/in.txt
+    printf 'n\n' > notes.txt
+    sgit add -A && sgit commit -q -m D
+    sgit branch -q lb "$sa"
+  ) > /dev/null 2>&1
+  td=$(cd "$W" && git rev-parse 'HEAD^{tree}')
+  dstamp="$W/.git/cc-cmds-check-push/$td"
+  dgoals() { grep -e '^make:--no-print-directory' "$T/order.log" | tr '\n' ' '; }
+  : > "$T/order.log"
+  out=$(cprun CHECK_PUSH_BASE="$sa" CHECK_PUSH_JOBS=1 CHECK_PUSH_GOALS=g2); rc=$?
+  check "F43 통과" "$rc" "0"
+  has "F43 시험 트리 줄의 목표= 는 지명한 목표 그대로다" "$out" " 절=없음 목표=g2 "
+  has "F43 유도 목표 줄" "$out" "check-push: 유도 목표 — 변경 파일 5개, 유도 1개: run/tools/r.sh"
+  has "F43 유도 근거 없는 변경 파일 줄" "$out" "check-push: 유도 근거 없는 변경 파일 3개 — goals.txt h.txt notes.txt"
+  check "F43 지명한 목표 뒤에 유도 목표가 붙어 돈다" "$(dgoals)" "make:--no-print-directory g2 run/tools/r.sh "
+  check "F43 도장의 goals 는 합집합이고 유도목표·유도없음이 있다" \
+    "$(check_push_field "$dstamp" goals) $(check_push_field "$dstamp" 유도목표) $(check_push_field "$dstamp" 유도없음)" "g2,run/tools/r.sh run/tools/r.sh 3"
+  : > "$T/order.log"
+  out=$(cprun CHECK_PUSH_BASE="$sa" CHECK_PUSH_JOBS=1 CHECK_PUSH_GOALS=run/tools/r.sh,g1); rc=$?
+  check "F43 지명한 목표가 유도되면 지명 순서대로 한 번만 돈다" "$rc $(dgoals)" "0 make:--no-print-directory run/tools/r.sh g1 "
+  # A goal other than run/ is entered through what `make -n` prints for it.
+  printf 'bash tools/r.sh --self-test\n' > "$T/n-g1"
+  : > "$T/order.log"
+  out=$(cprun CHECK_PUSH_BASE="$sa" CHECK_PUSH_JOBS=1 CHECK_PUSH_GOALS=g2); rc=$?
+  rm -f "$T/n-g1"
+  check "F43 make -n 이 이름 댄 진입 파일로 유도한 목표는 print-rest-goals 순서로 붙는다" "$rc $(dgoals)" "0 make:--no-print-directory g2 g1 run/tools/r.sh "
+  # Head mode: the base branch's remote-tracking ref, else the local branch.
+  rm -f "$dstamp"
+  : > "$T/order.log"
+  out=$(cprun CHECK_PUSH_BASE_BRANCH=lb CHECK_PUSH_JOBS=1 CHECK_PUSH_GOALS=g2); rc=$?
+  check "F43 head 모드는 원격 추적 ref 가 없으면 로컬 브랜치와의 merge-base 부터 본다" "$rc $(dgoals)" "0 make:--no-print-directory g2 run/tools/r.sh "
+  rm -f "$dstamp"
+  : > "$T/order.log"
+  out=$(cprun CHECK_PUSH_BASE_BRANCH=nosuch CHECK_PUSH_JOBS=1 CHECK_PUSH_GOALS=g2); rc=$?
+  check "F43 head 모드에 베이스 ref 가 없으면 지명한 목표만 돌고 통과한다" "$rc $(dgoals)" "0 make:--no-print-directory g2 "
+  has "F43 판정불가 줄" "$out" "check-push: 유도 판정불가 — 베이스 브랜치 nosuch 의 refs/remotes/origin/nosuch 도 refs/heads/nosuch 도 없다"
+  check "F43 판정불가 도장" "$(check_push_field "$dstamp" 유도목표) $(check_push_field "$dstamp" 유도없음)" "판정불가 0"
+  # A derivation that cannot be computed ends 1 before any item, with no stamp.
+  rm -f "$dstamp"
+  : > "$T/derive-n-fail"
+  : > "$T/order.log"
+  out=$(cprun CHECK_PUSH_BASE="$sa" CHECK_PUSH_GOALS=g2); rc=$?
+  rm -f "$T/derive-n-fail"
+  check "F43 유도 실패는 종료 1, 도장 없음" "$rc $([ -f "$dstamp" ] && echo 있음 || echo 없음)" "1 없음"
+  has "F43 유도 실패 줄이 단계를 이름 댄다" "$out" "check-push: 유도 실패 — make -n g1"
+  check "F43 유도 실패면 항목을 하나도 돌리지 않는다" "$(grep -c -e '^bundle:' -e '^make:--no-print-directory' -e '^gate:--sections' "$T/order.log")" "0"
+  # items derives too, and runs the derived goal with nothing named.
+  : > "$T/order.log"
+  out=$(cd "$W" && env CHECK_PUSH_REUSE=1 CHECK_PUSH_BASE="$sa" CHECK_PUSH_JOBS=2 bash "$self" items 2>&1); rc=$?
+  check "F43 items 통과" "$rc" "0"
+  has "F43 items 도 유도 목표 줄을 찍는다" "$out" "check-push: 유도 목표 — 변경 파일 5개, 유도 1개: run/tools/r.sh"
+  has "F43 items 가 지명 없이 유도 목표를 돌린다" "$(grep -e '^make:' "$T/order.log" | grep -v print-rest-goals)" "run/tools/r.sh"
+  (cd "$W" && sgit checkout -q h) > /dev/null 2>&1
+
   # --- F42 시간 예산, 이어 돌리기, CI 몫, 조기 종료 ------------------------------------
   # Each section gets a lane of its own (the shard double) and reuse is on, so
   # a lane that ended before the budget ran out leaves its record. The cases
@@ -1737,8 +1902,8 @@ check-push: CHECK_PUSH_JOBS=1 의 실패 단계는 목록 전체를 이름 댄�
   rm -rf "$T"
   printf 'check-push self-test: %d passed, %d failed\n' "$passed" "$failed"
   # A floor on the count, so a refactor that silently skips cases cannot pass.
-  if [ "$passed" -lt 230 ]; then
-    printf 'check-push self-test: 통과 수 %d 가 하한 230 에 못 미칩니다\n' "$passed" >&2
+  if [ "$passed" -lt 248 ]; then
+    printf 'check-push self-test: 통과 수 %d 가 하한 248 에 못 미칩니다\n' "$passed" >&2
     return 1
   fi
   [ "$failed" = "0" ]
