@@ -272,6 +272,8 @@ Read the judgment's `design_heavy_reasons` out with the tier, one line per reaso
 
 **Present what each step will actually DO, not just its name.** A one-line-per-step graph reads far shallower than the work is: a `design` step is an unattended discussion team followed by a walkthrough whose dispositions the stage takes and records, a coherence pass, the residual-item ladder and the freeze; a `review` step is a multi-round agent team with a reconciliation pass, an `implement` step is two processes split across a plan-emission gate. Approving "S1 review" is not the same as approving that. One clause per step is enough — the point is that the person refusing has seen the shape.
 
+**When the run's design document already exists and has a visual sidecar, read one line under the plan about its approved screens.** Run `<plugin root>/orchestrator/visual-check.sh since-approval <설계 문서>` and show its one line verbatim beneath the step graph: whether the document moved since the screens were approved, and what the next visual stage will do about it. Output starting with `해당 없음` (no sidecar, or no `**구현 승인**` line) is not shown. Ask nothing about it — the line is notice, and the visual stage asks its own question when the screens can no longer be reused. A re-kickoff gets the same line as one of `detect`'s `고지` lines and shows it verbatim with the others.
+
 The plan message ends with the trailer line and the `AskUserQuestion` call for the first pending question.
 
 ### Step 5: The interview

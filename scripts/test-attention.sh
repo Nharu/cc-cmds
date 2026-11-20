@@ -478,7 +478,7 @@ while read -r token kind; do
     collect
   fi
 done < <(doc_pairs)
-check "8 문서의 토큰 표를 읽음" "$([ "$rows" -ge 13 ] && echo yes || echo "rows=$rows")" "yes"
+check "8 문서의 토큰 표를 읽음" "$([ "$rows" -ge 14 ] && echo yes || echo "rows=$rows")" "yes"
 
 # --------------------------------------------------------------------------
 # 9. Normalisation, origin.run_id from the reply, origin.repo.
@@ -503,6 +503,13 @@ norm_case() {
 }
 norm_case "답할 수 있는 auq (대조군)" session-ask "$SSLOT" "$(auq_detail true '[{"label":"왼쪽"},{"label":"오른쪽"}]')" true
 norm_case "선택지 없는 질문의 auq" session-ask "$SSLOT" "$(auq_detail true '[]')" false
+# The seat's first ask of an announced approval: `approval-ask` raises `auq` in
+# the approval's own slot, and a canonical-prefix question is never answerable.
+norm_case "승인 슬롯의 auq" approval-ask "$ASLOT" "$(auq_detail false '[{"label":"승인"},{"label":"거부"}]')" false RUN_ID="$RID"
+f=$(one_file "$ROOT/events")
+check "9 승인 슬롯의 auq: kind" "$(field "$f" '.kind')" "auq"
+check "9 승인 슬롯의 auq: slot 은 승인 그룹" "$(field "$f" '.slot')" "$ASLOT"
+check "9 승인 슬롯의 auq: token" "$(field "$f" '.token')" "approval-ask"
 norm_case "선택지가 빈 승인" answer "$ASLOT" "$(jq -cn --arg b "$AQ" --arg r "$RID" --arg a "$AID" \
   '{kind: "approval", actionable: true, body: $b,
     reply: {surface: "approval", run_id: $r, approval_id: $a, question: $b, options: []}}')" false RUN_ID="$RID"

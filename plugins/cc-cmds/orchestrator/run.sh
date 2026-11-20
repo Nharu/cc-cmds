@@ -3598,6 +3598,17 @@ halt_step_is_unclosed_decision() {
   [ "$(sed -n '/^\*\*스텝\*\*: */{s///;s/[[:space:]]*$//;p;q;}' "$1")" = "Step 1 CFI-U3 BT-STOP — 미결 결정" ]
 }
 
+# halt_step_is_kept_drift <halt record> — 0 when the record's whole `**스텝**`
+# value is exactly `Step 2 CFI-U3 BT-STOP — 사람 둔 어긋남`: the halt an
+# implement stage writes when a screen slice meets a drift line the person
+# left `문서대로 둠`, which only a person answers. The whole value is compared,
+# never a cut at the first ` — `, so the shift's `구속-이탈` adoption, which
+# reads the step up to that cut, cannot pass for it.
+halt_step_is_kept_drift() {
+  [ -f "$1" ] || return 1
+  [ "$(sed -n '/^\*\*스텝\*\*: */{s///;s/[[:space:]]*$//;p;q;}' "$1")" = "Step 2 CFI-U3 BT-STOP — 사람 둔 어긋남" ]
+}
+
 # `슬라이스 수` is a CHECKSUM, not an input: it is derived from the count of
 # blocks whose cutpoint index is at or above `PR`, so the two cannot disagree.
 # A mismatch means the declaration was truncated or misnumbered, which is worth
@@ -9434,6 +9445,33 @@ halt_record_present() {
   [ "$(grep -v '^[[:space:]]*$' "$f" | tail -1)" = "<!-- /cc-pipeline-halt v1 -->" ]
 }
 
+halt_record_stage_answered() {
+  # halt_record_stage_answered <record path> — 0 when this run's ledger holds a
+  # `중단 답` row carrying both `중단 기록=<that path>` and `답한 주체=스테이지`:
+  # the design stage registered the gate-checked answer to its own
+  # `ladder-unsettled` record and froze the document in the same session, so
+  # the record is no longer a reason to park. Both classifier copies — the
+  # driver's `classify_termination` and the gate's settlement chain, which
+  # sources this file — ask this one function, so the two read one ledger and
+  # one rule.
+  #
+  # Fields are compared by string equality after splitting on ` | `, never as a
+  # regex: a record path is an operand, not a pattern. No ledger, or an empty
+  # one, is no such row (the unit tests call the classifier without a ledger).
+  local rec="$1"
+  [ -n "$rec" ] && [ -n "${LEDGER:-}" ] && [ -s "$LEDGER" ] || return 1
+  run_section_rows '중단 답' | awk -v r="중단 기록=$rec" -v a="답한 주체=스테이지" '
+    { n = split($0, f, "|"); hr = 0; ha = 0
+      for (i = 1; i <= n; i++) {
+        v = f[i]; sub(/^ +/, "", v); sub(/ +$/, "", v)
+        if (v == r) hr = 1
+        if (v == a) ha = 1
+      }
+      if (hr && ha) { found = 1; exit }
+    }
+    END { exit (found ? 0 : 1) }'
+}
+
 # ---------------------------------------------------------------------------
 # THE HALT RECORD'S SHAPE. The option-line rule `halt_option_lines` this file
 # and the gate read is defined once in `liveness.sh`, which this file sources
@@ -9996,7 +10034,15 @@ classify_termination() {
   if [ "$exit_rc" = "0" ] && halt_record_format_clue "$stage" >/dev/null; then
     printf '공허한 성공'; return 0
   fi
-  if halt_record_present "$stage"; then printf '의도된 park'; return 0; fi
+  # A record the stage itself answered through the gate's stage arm of
+  # `halt-answer` (`답한 주체=스테이지`) is no park reason: the same session
+  # went on to freeze the document, so the attempt is judged by the arms below
+  # — `정상 완료` when the freeze literal and the frozen document are there, and
+  # not otherwise. A record with no such row parks as before.
+  if halt_record_present "$stage" \
+     && ! halt_record_stage_answered "$(halt_record_path "$stage")"; then
+    printf '의도된 park'; return 0
+  fi
   # A stage the driver signalled from the limit-shape arm never reaches
   # `stage_collect`, so its `.rc` is the consumer's default and not an
   # observation. The mark the arm left is; it outranks the rc rows below.

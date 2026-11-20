@@ -603,6 +603,103 @@ for def in '^def cw:' '^def cut\('; do
 done
 
 # ---------------------------------------------------------------------------
+# Seat 1 asking a run's approval — the `approval-ask` link
+#
+# A run under the confined state root announced an approval (its id is a line of
+# `watch.announced-approvals`) and the session index names that run. The first
+# ask of that approval is raised into the approval's own group, silent, with the
+# session's click; the id lands in the run's `notify.asked-approvals`. Every
+# case where one link condition is missing raises `session-ask` as before. Each
+# case uses its own approval id, so one case's marker cannot decide another's.
+# ---------------------------------------------------------------------------
+AP_RID="R-LINK"
+AP_RD="$STATE/cc-cmds/run/$AP_RID"
+mkdir -p "$AP_RD" "$STATE/cc-cmds/session"
+printf '%s\n' act-1a2b3c4d act-2a2b3c4d vis-0a1b2c3d act-4a2b3c4d act-5a2b3c4d act-6a2b3c4d \
+  > "$AP_RD/watch.announced-approvals"
+printf '%s\n' "$AP_RID" > "$STATE/cc-cmds/session/S-AP"
+
+ap_pay() {  # ap_pay <sid> <questions json>
+  pay "{\"session_id\":\"$1\",\"tool_name\":\"AskUserQuestion\",\"tool_input\":{\"questions\":$2}}"
+}
+
+P=$(ap_pay S-AP '[{"header":"승인","question":"승인 act-1a2b3c4d — 이 행위를 진행할까요?"}]')
+hook_run "$ASK_HOOK" "$P" "$PATH_FULL"
+notify_settle 1
+check "승인 연결 — 정규 접두 첫 물음은 배너 하나" "$(notify_lines)" "1"
+check "승인 연결 — 그룹이 승인 슬롯이다" \
+  "$(grep -cF -- '-group cc-cmds-autopilot-R-LINK-act-1a2b3c4d ' "$NOTIFY_LOG" || true)" "1"
+check "승인 연결 — 소리를 달지 않는다" \
+  "$(grep -cF -- '-sound' "$NOTIFY_LOG" || true)" "0"
+check "승인 연결 — 클릭은 이 세션 창(tmux 밖이면 :)" \
+  "$(grep -cE -- '-execute :$' "$NOTIFY_LOG" || true)" "1"
+check "승인 연결 — 런 이름이 없으면 제목은 cc-cmds · 답하세요" \
+  "$(grep -cF -- '-title cc-cmds · 답하세요 ' "$NOTIFY_LOG" || true)" "1"
+check "승인 연결 — 표지 파일에 id 를 남긴다" \
+  "$(grep -cxF act-1a2b3c4d "$AP_RD/notify.asked-approvals" 2>/dev/null || true)" "1"
+assert_quiet "승인 연결 첫 물음"
+
+hook_run "$ASK_HOOK" "$P" "$PATH_FULL"
+notify_settle 1
+check "승인 연결 — 두 번째 물음은 세션 슬롯" \
+  "$(grep -cF -- '-group cc-cmds-session-S-AP ' "$NOTIFY_LOG" || true)" "1"
+check "승인 연결 — 두 번째 물음은 소리를 단다" \
+  "$(grep -cF -- '-sound default' "$NOTIFY_LOG" || true)" "1"
+check "승인 연결 — 두 번째 물음은 표지를 다시 쓰지 않는다" \
+  "$(grep -cxF act-1a2b3c4d "$AP_RD/notify.asked-approvals" 2>/dev/null || true)" "1"
+assert_quiet "승인 연결 두 번째 물음"
+
+printf '%s\n' 'intent:demo-run' > "$AP_RD/notify.label"
+P=$(ap_pay S-AP '[{"header":"승인","question":"승인 act-2a2b3c4d — 진행?"}]')
+hook_run "$ASK_HOOK" "$P" "$PATH_FULL"
+notify_settle 1
+check "승인 연결 — 런 이름이 있으면 제목에 싣는다" \
+  "$(grep -cF -- '-title cc-cmds · intent:demo-run · 답하세요 ' "$NOTIFY_LOG" || true)" "1"
+rm -f "$AP_RD/notify.label"
+assert_quiet "승인 연결 런 이름"
+
+P=$(ap_pay S-AP '[{"header":"vis-0a1b2c3d","question":"화면 판정 결과를 받아들일까요?"}]')
+hook_run "$ASK_HOOK" "$P" "$PATH_FULL"
+notify_settle 1
+check "승인 연결 — header 의 승인 id 로도 승인 슬롯" \
+  "$(grep -cF -- '-group cc-cmds-autopilot-R-LINK-vis-0a1b2c3d ' "$NOTIFY_LOG" || true)" "1"
+check "승인 연결 — header 연결도 소리를 달지 않는다" \
+  "$(grep -cF -- '-sound' "$NOTIFY_LOG" || true)" "0"
+assert_quiet "승인 연결 header"
+
+# Each negative case below must raise session-ask and leave no marker.
+ap_session_case() {  # ap_session_case <label> <sid> <id> <payload> [env…]
+  local label="$1" sid="$2" id="$3" p="$4"; shift 4
+  hook_run "$ASK_HOOK" "$p" "$PATH_FULL" "$@"
+  notify_settle 1
+  check "$label — 세션 슬롯으로 낸다" \
+    "$(grep -cF -- "-group cc-cmds-session-$sid " "$NOTIFY_LOG" || true)" "1"
+  check "$label — 승인 슬롯을 쓰지 않는다" \
+    "$(grep -cF -- '-group cc-cmds-autopilot-' "$NOTIFY_LOG" || true)" "0"
+  check "$label — 표지를 남기지 않는다" \
+    "$(grep -cxF "$id" "$AP_RD/notify.asked-approvals" 2>/dev/null || true)" "0"
+  assert_quiet "$label"
+}
+
+ap_session_case "승인 연결 — 세션 색인에 없는 세션" S-NOIDX act-4a2b3c4d \
+  "$(ap_pay S-NOIDX '[{"header":"승인","question":"승인 act-4a2b3c4d — 진행?"}]')"
+ap_session_case "승인 연결 — 알림 표지에 없는 id" S-AP act-9a2b3c4d \
+  "$(ap_pay S-AP '[{"header":"승인","question":"승인 act-9a2b3c4d — 진행?"}]')"
+ap_session_case "승인 연결 — 질문이 둘" S-AP act-5a2b3c4d \
+  "$(ap_pay S-AP '[{"header":"승인","question":"승인 act-5a2b3c4d — 진행?"},{"header":"다른","question":"또?"}]')"
+ap_session_case "승인 연결 — autopilot 스위치 꺼짐" S-AP act-6a2b3c4d \
+  "$(ap_pay S-AP '[{"header":"승인","question":"승인 act-6a2b3c4d — 진행?"}]')" \
+  CC_CMDS_AUTOPILOT_NOTIFY=0
+
+# Two runs of the session both announced the id: no single run, no link.
+AP_RD2="$STATE/cc-cmds/run/R-LINK2"
+mkdir -p "$AP_RD2"
+printf '%s\n' act-4a2b3c4d > "$AP_RD2/watch.announced-approvals"
+printf '%s\n' "$AP_RID" R-LINK2 > "$STATE/cc-cmds/session/S-AP2"
+ap_session_case "승인 연결 — 두 런이 같은 id 를 알렸다" S-AP2 act-4a2b3c4d \
+  "$(ap_pay S-AP2 '[{"header":"승인","question":"승인 act-4a2b3c4d — 진행?"}]')"
+
+# ---------------------------------------------------------------------------
 # T15 — the running tally
 # ---------------------------------------------------------------------------
 if [ "$quiet_violations" = "0" ]; then
