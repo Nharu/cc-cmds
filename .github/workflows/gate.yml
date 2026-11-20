@@ -743,3 +743,52 @@ jobs:
           name: gate-isolation
           path: ${{ runner.temp }}/isolation/
           if-no-files-found: ignore
+
+  # THE ONE WAY A MASTER REGRESSION REACHES A PERSON. A whole master run that
+  # fails writes into the open `gate-full-failure` issue, or opens it; the next
+  # whole success closes it. It runs whatever the jobs before it ended in, and
+  # only on master: a `workflow_dispatch` from a branch never opens or closes
+  # master's issue. The full history is fetched because the candidates are the
+  # first-parent merges since the last whole success and their first parents,
+  # and yq is installed because the selector run on each merge needs it — a
+  # selector that cannot decide reads as the whole suite and makes every merge
+  # a candidate. Naming permissions at job level replaces the top-level ones,
+  # so all three are written.
+  gate-full-report:
+    needs: [gate-plan, gate-shards, shard-coverage, gate-report, gate-isolation]
+    if: always() && needs.gate-plan.outputs.run == '1' && github.ref == 'refs/heads/master' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: mikefarah/yq@v4
+
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: gate-plan
+          path: ${{ runner.temp }}/plan
+
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: gate-result-shard-*
+          path: ${{ runner.temp }}/results
+          merge-multiple: true
+
+      - name: Write the failure issue or close it
+        run: |
+          bash scripts/gate-full.sh report \
+            --plan "${{ needs.gate-plan.result }}" \
+            --shards "${{ needs.gate-shards.result }}" \
+            --coverage "${{ needs.shard-coverage.result }}" \
+            --report "${{ needs.gate-report.result }}" \
+            --plan-dir "$RUNNER_TEMP/plan" --results-dir "$RUNNER_TEMP/results"
