@@ -25,7 +25,7 @@ export CC_GATE_PIN_SYNC_DISABLE := 1
 TEST_TZ := Asia/Seoul
 export TZ := $(TEST_TZ)
 
-.PHONY: lint readme check check-unattended-refusal check-gate-suite policy-drift rule-enforcement testtest-rest gate-shard print-gate-shards print-gate-lanes print-gate-slots print-gate-sections print-gate-digests rest-shard print-rest-shards print-rest-goals test-active-notify test-orchestrator test-darwin test-darwin-narrow run-gate-shard-selftest run-check-gate-selftest run-rest-shard-selftest print-test-tz tz-probe check-cheap check-push check-push-verify check-items run-check-push-selftest run-test-tree-selftest run-test-slots-selftest run-test-reuse-selftest run-gate-timing-selftest run-ci-duration-selftest print-gate-iso-extra run-gate-isolation-selftest isolation-check isolation-sweep isolation-capacity
+.PHONY: lint readme check check-unattended-refusal check-gate-suite policy-drift rule-enforcement testtest-rest gate-shard print-gate-shards print-gate-lanes print-gate-slots print-gate-sections print-gate-digests rest-shard print-rest-shards print-rest-goals test-active-notify test-orchestrator test-darwin test-darwin-narrow run-gate-shard-selftest run-check-gate-selftest run-rest-shard-selftest print-test-tz tz-probe check-cheap check-push check-push-verify check-items run-check-push-selftest run-test-tree-selftest run-test-slots-selftest run-test-reuse-selftest run-gate-timing-selftest run-ci-duration-selftest run-gate-full-selftest print-gate-iso-extra run-gate-isolation-selftest isolation-check isolation-sweep isolation-capacity
 
 lint:
 	bash scripts/lint-skill-invariants.sh
@@ -595,7 +595,7 @@ test: $(NOTIFY_TESTS:%=run/%) $(LINT_TESTS:%=run/%) $(ORCH_TESTS:%=run/%) \
 	run-gate-shard-selftest run-check-gate-selftest \
 	run-rest-shard-selftest run-check-push-selftest run-test-tree-selftest \
 	run-test-slots-selftest run-test-reuse-selftest \
-	run-gate-timing-selftest run-ci-duration-selftest run-gate-isolation-selftest
+	run-gate-timing-selftest run-ci-duration-selftest run-gate-full-selftest run-gate-isolation-selftest
 
 # How many runners the gate suite runs on (N), and how many rows each runner
 # runs at once (L, its lanes). The partition is cut into S = N × L rows; runner
@@ -667,7 +667,7 @@ REST_GOALS := $(NOTIFY_TESTS:%=run/%) $(LINT_TESTS:%=run/%) $(ORCH_TESTS_REST:%=
 	run-gate-shard-selftest run-check-gate-selftest \
 	run-rest-shard-selftest run-check-push-selftest run-test-tree-selftest \
 	run-test-slots-selftest run-test-reuse-selftest \
-	run-gate-timing-selftest run-ci-duration-selftest run-gate-isolation-selftest
+	run-gate-timing-selftest run-ci-duration-selftest run-gate-full-selftest run-gate-isolation-selftest
 
 test-rest: $(REST_GOALS)
 
@@ -868,6 +868,9 @@ run-gate-timing-selftest:
 
 run-ci-duration-selftest:
 	bash scripts/ci-duration.sh --self-test
+
+run-gate-full-selftest:
+	bash scripts/gate-full.sh --self-test
 
 run-check-push-selftest:
 	bash scripts/check-push.sh --self-test

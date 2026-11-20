@@ -33,13 +33,21 @@
 # changes GATE_SHARDS or GATE_LANES owns the growth it causes.
 #
 # THE COMPARISON IS WITH THIS REPOSITORY'S MASTER, ON THE SAME WORKFLOW AND
-# RUNNER LABEL. A push to master writes the window it was compared against,
-# plus its own measurement, trimmed to five, as a file for the workflow to
-# upload as `ci-duration-<key>`. `fetch-base` finds the newest master push run
-# of the key's workflow — this repository's own, `event=push`,
+# RUNNER LABEL. A master run that measures the whole key — a push to master,
+# and on gate also a schedule or workflow_dispatch run — writes the window it
+# was compared against, plus its own measurement, trimmed to five, as a file
+# for the workflow to upload as `ci-duration-<key>`. `fetch-base` finds the
+# newest such master run of the key's workflow — this repository's own,
 # `branch=master` — that still has the artifact, the rule the gate plan job
-# uses for its timing source. A fork's pull request can upload an artifact of
-# the same name and never becomes a source, because only push runs are read.
+# uses for its timing source. lint-rest-tests and notify-macos read push runs
+# only (`event=push`). gate and the `gate-timing` artifact read the master runs
+# of any event and keep those whose event is schedule, workflow_dispatch or
+# push: gate's whole-suite runs are the scheduled ones, and the push runs from
+# before them still count while they are the newest with an artifact. The API
+# takes one `event` value, so the filter is on the answer; a skipped scheduled
+# run has no artifact and is passed over, which is why that page holds 100
+# runs and not 20. A fork's pull request can upload an artifact of the same
+# name and never becomes a source, because no pull_request run is read.
 # The per-section master times are the plan job's median of the last three
 # master runs, and count only when that is where they came from (`source`
 # starting with `artifact`): the seed and the census are not measurements.
@@ -87,7 +95,7 @@
 #   bash scripts/ci-duration.sh fetch-base (--key K | --name N --workflow W) --out DIR
 #                                          [--count K]
 #       prints `<run id> <created_at>` of the run it downloaded from; exit 1
-#       when no master push run has the artifact. With --count K it takes up
+#       when no master run of the events above has the artifact. With --count K it takes up
 #       to K such runs, newest first, each into DIR/<run id>/ so artifacts of
 #       one name do not overwrite each other, and prints one line per run;
 #       exit 0 when it got at least one
@@ -169,8 +177,13 @@ dur_fetch_base() {
   [ -n "$name" ] && [ -n "$wf" ] && [ -n "$out" ] || dur_usage
   repo="${GITHUB_REPOSITORY:-}"
   if [ -z "$repo" ]; then printf 'ci-duration: GITHUB_REPOSITORY 가 없어 기준 실행을 찾지 않습니다\n' >&2; return 1; fi
-  ids=$(gh api "repos/$repo/actions/workflows/$wf/runs?branch=master&event=push&per_page=20" \
-    --jq ".workflow_runs[] | select(.head_repository.full_name == \"$repo\") | \"\\(.id) \\(.created_at)\"" 2>/dev/null) || ids=""
+  if [ "$key" = "gate" ] || [ "$name" = "gate-timing" ]; then
+    ids=$(gh api "repos/$repo/actions/workflows/$wf/runs?branch=master&per_page=100" \
+      --jq ".workflow_runs[] | select(.head_repository.full_name == \"$repo\") | select(.event == \"schedule\" or .event == \"workflow_dispatch\" or .event == \"push\") | \"\\(.id) \\(.created_at)\"" 2>/dev/null) || ids=""
+  else
+    ids=$(gh api "repos/$repo/actions/workflows/$wf/runs?branch=master&event=push&per_page=20" \
+      --jq ".workflow_runs[] | select(.head_repository.full_name == \"$repo\") | \"\\(.id) \\(.created_at)\"" 2>/dev/null) || ids=""
+  fi
   while read -r id created; do
     [ -n "$id" ] || continue
     n=$(gh api "repos/$repo/actions/runs/$id/artifacts?name=$name" \
@@ -441,7 +454,11 @@ dur_check() {
   case "$secs" in ''|*[!0-9]*) printf 'ci-duration: --seconds 는 0 이상의 정수 초입니다: %s\n' "$secs" >&2; dur_usage ;; esac
   local event="${GITHUB_EVENT_NAME:-}" ref="${GITHUB_REF:-}" pr=0 push=0
   [ "$event" = "pull_request" ] && pr=1
-  [ "$event" = "push" ] && [ "$ref" = "refs/heads/master" ] && push=1
+  # A master run of any event that measures the whole key writes the window:
+  # gate's whole-suite runs are scheduled or started by hand, not pushed.
+  case "$event" in
+    push|schedule|workflow_dispatch) [ "$ref" = "refs/heads/master" ] && push=1 ;;
+  esac
   if [ "$pr" = "1" ] && [ -z "$base_sha" ] && [ -n "${GITHUB_EVENT_PATH:-}" ] && [ -f "${GITHUB_EVENT_PATH}" ]; then
     base_sha=$(jq -r '.pull_request.base.sha // empty' "$GITHUB_EVENT_PATH" 2>/dev/null) || base_sha=""
   fi
@@ -567,7 +584,10 @@ dur_self_test() {
 q=""; prev=""; for a in "$@"; do [ "$prev" = "--jq" ] && q="$a"; prev="$a"; done
 emit() { [ -f "$1" ] || exit 1; if [ -n "$q" ]; then jq -r "$q" "$1"; else cat "$1"; fi; exit $?; }
 case "$1 $2" in
-  "api repos/"*"/workflows/"*) [ -f "$STUB_DIR/runs" ] && cat "$STUB_DIR/runs"; exit 0 ;;
+  "api repos/"*"/workflows/"*)
+    printf '%s\n' "$2" >> "$STUB_DIR/urls"
+    if [ -f "$STUB_DIR/runs.json" ]; then emit "$STUB_DIR/runs.json"; fi
+    [ -f "$STUB_DIR/runs" ] && cat "$STUB_DIR/runs"; exit 0 ;;
   "api repos/"*"/artifacts"*) [ -f "$STUB_DIR/window" ] && echo 1 || echo 0; exit 0 ;;
   "api repos/"*"/attempts/"*"/jobs"*) emit "$STUB_DIR/jobs.json" ;;
   "api repos/"*"/attempts/"*)
@@ -638,6 +658,14 @@ STUB
   printf '10\n20\n30\n40\n50\n' > "$T/stub/window"
   GITHUB_EVENT_NAME=push GITHUB_REF=refs/heads/master run --seconds 60 --window-out "$T/win2" >/dev/null 2>&1
   if [ "$(grep -v '^#' "$T/win2/ci-duration-gate.tsv" | tr '\n' ' ')" = "20 30 40 50 60 " ]; then ok "창은 최근 다섯 개만 남는다"; else bad "창 다섯" "$(cat "$T/win2/ci-duration-gate.tsv" 2>/dev/null)"; fi
+  # The scheduled and hand-started whole-suite runs on master write the window
+  # the way a push did; the same event on another branch writes none.
+  GITHUB_EVENT_NAME=schedule GITHUB_REF=refs/heads/master run --seconds 70 --window-out "$T/win3" >/dev/null 2>&1
+  if [ "$(grep -v '^#' "$T/win3/ci-duration-gate.tsv" 2>/dev/null | tr '\n' ' ')" = "20 30 40 50 70 " ]; then ok "master 의 schedule 실행은 창에 측정을 더한다"; else bad "schedule 창" "$(cat "$T/win3/ci-duration-gate.tsv" 2>/dev/null)"; fi
+  GITHUB_EVENT_NAME=workflow_dispatch GITHUB_REF=refs/heads/master run --seconds 80 --window-out "$T/win4" >/dev/null 2>&1
+  if [ "$(grep -v '^#' "$T/win4/ci-duration-gate.tsv" 2>/dev/null | tr '\n' ' ')" = "20 30 40 50 80 " ]; then ok "master 의 workflow_dispatch 실행은 창에 측정을 더한다"; else bad "workflow_dispatch 창" "$(cat "$T/win4/ci-duration-gate.tsv" 2>/dev/null)"; fi
+  GITHUB_EVENT_NAME=workflow_dispatch GITHUB_REF=refs/heads/topic run --seconds 80 --window-out "$T/win5" >/dev/null 2>&1
+  if [ ! -e "$T/win5/ci-duration-gate.tsv" ]; then ok "master 가 아닌 ref 의 workflow_dispatch 는 창을 쓰지 않는다"; else bad "브랜치 workflow_dispatch 창" "$(cat "$T/win5/ci-duration-gate.tsv")"; fi
 
   rm -f "$T/stub/runs"
   out=$(GITHUB_EVENT_NAME=pull_request run --seconds 500 --base-sha "$base_sha" 2>&1); rc=$?
@@ -772,6 +800,41 @@ STUB
     ok "개수 인자가 없으면 한 실행을 --out 에 바로 받고 한 줄을 낸다"
   else
     bad "fetch-base 개수 없음" "rc=$rc out=$out"
+  fi
+
+  # The event filter is on the answer for gate's artifacts and on the query for
+  # the other keys. The run list answers JSON through the caller's own --jq:
+  # a pull_request run and a fork's schedule run are dropped, schedule,
+  # workflow_dispatch and push runs are kept, newest first.
+  if command -v jq >/dev/null 2>&1; then
+    rm -f "$T/stub/runs" "$T/stub/urls"
+    printf '%s\n' '{"workflow_runs":[' \
+      '{"id":25,"created_at":"2026-01-05T00:00:00Z","event":"pull_request","head_repository":{"full_name":"o/r"}},' \
+      '{"id":24,"created_at":"2026-01-04T00:00:00Z","event":"schedule","head_repository":{"full_name":"o/r"}},' \
+      '{"id":23,"created_at":"2026-01-03T00:00:00Z","event":"schedule","head_repository":{"full_name":"x/fork"}},' \
+      '{"id":22,"created_at":"2026-01-02T00:00:00Z","event":"workflow_dispatch","head_repository":{"full_name":"o/r"}},' \
+      '{"id":21,"created_at":"2026-01-01T00:00:00Z","event":"push","head_repository":{"full_name":"o/r"}}]}' > "$T/stub/runs.json"
+    out=$(fb --count 5 --out "$T/fb5" 2>&1); rc=$?
+    if [ "$rc" = "0" ] && [ "$(printf '%s\n' "$out" | cut -d' ' -f1 | tr '\n' ' ')" = "24 22 21 " ]; then
+      ok "gate-timing 의 fetch-base 는 schedule·workflow_dispatch·push 실행만 최신 순으로 남긴다"
+    else
+      bad "fetch-base 이벤트 거름" "rc=$rc out=$out"
+    fi
+    if grep -q '^repos/o/r/actions/workflows/gate.yml/runs?branch=master&per_page=100$' "$T/stub/urls"; then
+      ok "gate-timing 의 실행 조회는 event 거름 없이 branch=master 의 100 개를 읽는다"
+    else
+      bad "gate-timing 조회 꼴" "$(cat "$T/stub/urls" 2>/dev/null)"
+    fi
+    : > "$T/stub/urls"
+    PATH="$T/bin:$PATH" STUB_DIR="$T/stub" GITHUB_REPOSITORY=o/r bash "$0" fetch-base --key lint-rest-tests --out "$T/fb6" >/dev/null 2>&1
+    if grep -q '^repos/o/r/actions/workflows/lint.yml/runs?branch=master&event=push&per_page=20$' "$T/stub/urls"; then
+      ok "lint-rest-tests 의 실행 조회는 지금처럼 event=push 만 읽는다"
+    else
+      bad "lint-rest-tests 조회 꼴" "$(cat "$T/stub/urls" 2>/dev/null)"
+    fi
+    rm -f "$T/stub/runs.json"
+  else
+    bad "fetch-base 이벤트 거름" "jq 가 없어 흉내가 --jq 식을 돌리지 못합니다"
   fi
 
   # wall: the shape of run 39640545294 — the attempt started 17:04:45, the
@@ -917,8 +980,8 @@ STUB
   rm -rf "$T"
   printf 'ci-duration self-test: %d passed, %d failed\n' "$passed" "$failed"
   # A floor on the count, so a refactor that silently skips cases cannot pass.
-  if [ "$passed" -lt 45 ]; then
-    printf 'ci-duration self-test: 통과 수 %d 가 하한 45 에 못 미칩니다\n' "$passed" >&2
+  if [ "$passed" -lt 51 ]; then
+    printf 'ci-duration self-test: 통과 수 %d 가 하한 51 에 못 미칩니다\n' "$passed" >&2
     return 1
   fi
   [ "$failed" = "0" ]
