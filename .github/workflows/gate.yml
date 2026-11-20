@@ -63,6 +63,13 @@ name: gate
 # pull request that introduces it, so its check names never render and there is
 # no green run to harvest them from — the branch protection would then be
 # pointed at contexts that do not exist, which requires nothing at all.
+#
+# THE RUNNER IMAGE IS NAMED, NOT `ubuntu-latest`. When `ubuntu-latest` moved
+# to Ubuntu 26.04, whose default coreutils are the Rust rewrite, dispatch paths
+# started dying with rc 1 and `tr: write error: Broken pipe` at random, in
+# different sections on every run, on master too. The suite was written and
+# timed against GNU coreutils on 24.04, so every job names that image. Moving
+# to a newer one is a change of its own, with the suite made to pass there.
 on:
   pull_request:
     paths:
@@ -100,7 +107,7 @@ jobs:
   # extra rows S+1..S+E), `extra` is E and `work` is how many rows carry
   # isolation work, which `gate-isolation` must get back.
   gate-plan:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       GH_TOKEN: ${{ github.token }}
     outputs:
@@ -237,7 +244,7 @@ jobs:
   # not print its total.
   gate-shards:
     needs: gate-plan
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # The hosted runner has a docker daemon, so the real docker section must run
     # here: a missing daemon is a failure, not a skip.
     env:
@@ -291,7 +298,7 @@ jobs:
   # behind the plan only, and checks the very table the shards ran.
   shard-coverage:
     needs: gate-plan
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
@@ -343,7 +350,7 @@ jobs:
   gate-report:
     needs: [gate-plan, gate-shards]
     if: always()
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
@@ -459,7 +466,7 @@ jobs:
   gate-isolation:
     needs: [gate-plan, gate-shards]
     if: always() && needs.gate-plan.result == 'success'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       WORK: ${{ needs.gate-plan.outputs.work }}
     steps:

@@ -515,6 +515,22 @@ rk_doc_path() {
   fi
 }
 
+# rk_visual_notice — one `고지` line saying whether the design document moved
+# since its screens were approved, from the sibling visual-check.sh. A document
+# without a visual sidecar or an approval line (`해당 없음`), a missing document
+# and a failing check print nothing: the notice only speaks about an approval.
+rk_visual_notice() {
+  local key doc line
+  key=$(manifest_field '요소' '설계 문서')
+  case "$key" in ''|'(없음)') return 0 ;; esac
+  doc=$(rk_doc_path "$key")
+  [ -f "$doc" ] && [ -r "$RK_DIR/visual-check.sh" ] || return 0
+  line=$(bash "$RK_DIR/visual-check.sh" since-approval "$doc" < /dev/null 2>/dev/null) || return 0
+  line=$(printf '%s\n' "$line" | head -n 1)
+  case "$line" in ''|'해당 없음'*) return 0 ;; esac
+  printf '고지\t%s\n' "$line"
+}
+
 # rk_wide_instant <value> — epoch seconds, or nothing. A trailing `Z` and a
 # trailing `±HHMM` are rewritten to `±HH:MM` first, and the driver's own reader
 # decides the rest: it renders the value back to itself and refuses an offset
@@ -1939,6 +1955,7 @@ EOF
       "$RK_PREV" "$RK_AP_N" "$RK_AP_LIST"
     rk_deferred_halt_names "$RK_PL"
     rk_deferred_line 고지
+    rk_visual_notice
     # An `이월` row is a block too, but what it holds comes over: it is named
     # above, never among the parks that do not.
     local parks np=0 why reasons=""
@@ -2085,6 +2102,7 @@ rk_detect_wait() {
     "$RK_PREV" "$RK_HALT_N" "$RK_HALT_LIST"
   rk_deferred_halt_names "$RK_PL"
   rk_deferred_line 고지
+  rk_visual_notice
   rk_clause_lines "$1"
   rk_resume_quotes
   rk_detect_tail
