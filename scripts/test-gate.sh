@@ -16861,8 +16861,8 @@ rm -f "$SC15VP" "$WT/docs/fixture-design-15vp.md"
 vp15_doc=docs/fixture-design-15vp.md
 check "15vp: lane 은 읽기다" \
   "$(vp15 "$VP15/m.md" - 'surface_of_argv0 "$1" lane' "$CC_ORCH/visual-config.sh")" "읽기"
-check "15vp: share 는 읽기다" \
-  "$(vp15 "$VP15/m.md" 'S2P#2' 'surface_of_argv0 "$1" share' "$CC_ORCH/visual-config.sh")" "읽기"
+check "15vp: share 는 등급 미상이다" \
+  "$(vp15 "$VP15/m.md" 'S2P#2' 'surface_of_argv0 "$1" share' "$CC_ORCH/visual-config.sh")" "등급 미상"
 check "15vp: allowed 는 읽기다" \
   "$(vp15 "$VP15/m.md" 'S2#1' 'surface_of_argv0 "$1" allowed' "$CC_ORCH/visual-config.sh")" "읽기"
 check "15vp: 발행 단계 밖의 account 는 등급 미상이다" \
