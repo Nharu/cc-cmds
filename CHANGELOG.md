@@ -5,6 +5,25 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.54.0] - 2026-11-21
+
+무인 런의 시각 발행 고정 계정을 임대 표 곁의 기록 `visual-pins/<런>.pin` 에 남긴다. cc-lane 의 차용 기증자 선택이 이 기록을 읽어 고정 계정의 그룹을 순위 맨 뒤로 민다. 지금까지는 cc 가 고정 계정을 기증자로 빌려 그 그룹에 대화형 예약 행이 생기면, 라우터가 시각 발행을 `pinned-lane-ineligible` 로 PARK 해도 cc-lane 은 그 사실을 알 길이 없어 기증자를 바꾸지 않았다.
+
+### Added
+
+- **`route.sh visual-pin-put`** — 시각 고정 기록 `cc-cmds-visual-pin v1` 을 쓰는 동사. 위치는 임대 표 디렉터리의 형제 `visual-pins/`, 이름은 `<rt_enc(run_id)>.pin`(런마다 하나, 다시 쓰면 덮어씀), 본문은 `schema`·`run_id`·`account`·`run_dir`·`pinned_at_epoch` 순의 JSON 한 줄이다. 임시 파일과 `mv` 로 쓰고, 쓸 때마다 끝난 런의 기록을 치운다. 생존 규칙은 보호 기록과 같다. rc 는 0 씀, 2 인자 거부, 4 디렉터리·쓰기 실패다.
+- **라우터 질문 때의 쓰기** — 시각 발행 요청의 고정 필드를 짓는 `kind_pin_request_json` 이 고정 레인을 얻으면 `kind_pin_note` 로 그 레인의 기록을 남긴다. 요청이 라우터에 닿기 전에 쓰므로 PARK 를 받아도 기록이 남고, 다음 틱에 cc-lane 이 기증자를 바꾸면 다음 질문이 입장한다.
+- **이관 grant 때의 쓰기** — `gate_visual_lane_commit` 의 이관 갈래가 기록을 새 레인으로 덮어쓴다. 두 자리 모두 쓰기 실패는 경고 한 줄만 남기고 요청 JSON·rc·park 사유를 바꾸지 않는다.
+
+### Changed
+
+- **시험 스위트의 표 위치 격리** — `test-gate.sh` 가 물려받은 `RUN_PACE_ROOT` 를 지워, 시각 발행 요청을 짓는 절이 호스트의 실제 `visual-pins/` 에 기록을 남기지 않는다.
+
+### Post-install notes
+
+- 런은 시작 때 고정한 자기 플러그인 사본을 돌린다. 이 판 전에 시작한 런은 끝날 때까지 기록을 쓰지 않으므로, 그 런의 고정 계정은 그 런이 끝날 때까지 지금처럼 순위에서 밀리지 않는다.
+- 기록을 읽는 쪽은 cc-lane 이다. cc-lane 이 판독기를 싣기 전에는 기록이 쓰이기만 하고 기증자 선택은 바뀌지 않는다.
+
 ## [3.53.0] - 2026-11-19
 
 공용 관측 데몬 `observer.py` 를 새로 두어, 상태줄과 실행 판이 그릴 때마다 원장·런 디렉터리를 다시 계산하지 않게 한다. 데몬은 등록된 세션마다 사실 블록을 미리 계산해 두고, 상태줄과 실행 판은 그 블록이 유효하면 그리기만 하고 끝난다. 이 빠른 경로에서 한 번 그리는 데 드는 외부 명령은 bash 5 에서 0개, bash 3.2 에서 `date` 1개다. 직접 경로로 그리면 같은 측정 도구 기준으로 한 번에 상태줄이 프로세스 91개, 실행 판이 122개를 만들고, 런이 여럿 도는 밤에는 이것이 짧은 수명 프로세스 가운데 큰 몫을 차지했다.
