@@ -33,6 +33,7 @@ paste
 perl
 pgrep
 ps
+python3
 readlink
 rm
 rmdir

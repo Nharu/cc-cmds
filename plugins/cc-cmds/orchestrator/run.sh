@@ -4605,7 +4605,7 @@ run_ledger_series_check() {
   local series="$1"; shift
   local keys want f k v seat=0 bound=0
   local lease_basis=' first sticky resume-bound resume-migrated reassigned-after-limit reassigned-no-room after-wait shift-seat-fallback single-seat failover-shift '
-  local wait_reason=' group-exhausted no-room unknown-concurrency fifo-yield resume-bound-exhausted resume-bound-no-room resume-bound-borrowed lease-lock-busy lease-contention lease-hold-busy lease-hold-lost wait-end-refused host-saturated '
+  local wait_reason=' group-exhausted no-room unknown-concurrency fifo-yield resume-bound-exhausted resume-bound-no-room resume-bound-borrowed pinned-borrowed lease-lock-busy lease-contention lease-hold-busy lease-hold-lost wait-end-refused host-saturated '
   local acct="" basis="" cost="" csrc="" phase="" psrc="" thr="" worst n
   local cost_src='(group-kind|kind|default)'
   case "$series" in
@@ -4703,11 +4703,12 @@ run_ledger_series_check() {
     esac
   done
   # THE PAIRING RULES. A seat grant is the one grant without an account, and an
-  # account on a wait is the one that is already bound — stated here so that
-  # holds on the row without leaning on how the router happens to behave today.
+  # account on a wait is the one that is already bound, or the donor a pinned
+  # account's borrow wait names — stated here so that holds on the row without
+  # leaning on how the router happens to behave today.
   case "$series:$basis" in
     stage-lease:single-seat|stage-lease:shift-seat-fallback) seat=1 ;;
-    stage-wait:resume-bound-exhausted|stage-wait:resume-bound-no-room|stage-wait:resume-bound-borrowed) bound=1 ;;
+    stage-wait:resume-bound-exhausted|stage-wait:resume-bound-no-room|stage-wait:resume-bound-borrowed|stage-wait:pinned-borrowed) bound=1 ;;
   esac
   if [ "$series" = "stage-lease" ]; then
     if { [ "$seat" = "1" ] && [ "$acct" != "-" ]; } || { [ "$seat" = "0" ] && [ "$acct" = "-" ]; }; then
@@ -4715,7 +4716,7 @@ run_ledger_series_check() {
     fi
   else
     if { [ "$bound" = "1" ] && [ "$acct" = "-" ]; } || { [ "$bound" = "0" ] && [ "$acct" != "-" ]; }; then
-      run_ledger_refuse "$series" '계정' '재개 구속 원인일 때만 값'; return 2
+      run_ledger_refuse "$series" '계정' '재개 구속 원인이나 차용 대기일 때만 값'; return 2
     fi
   fi
   # The cost and its source come from one admission or from none: both `-`, or
@@ -5219,8 +5220,9 @@ run_dispatch_wait_summary() {
   # A case is one lineage's run of consecutive `stage-wait` rows, ended by that
   # lineage's next `stage-lease` row or by the end of the ledger; a batch that
   # holds both classes is one case of each. `host-saturated` is the host class;
-  # `group-exhausted`, `no-room`, `unknown-concurrency`, `fifo-yield` and every
-  # `resume-bound-*` are the account class; a row with any other reason is not
+  # `group-exhausted`, `no-room`, `unknown-concurrency`, `fifo-yield`,
+  # `pinned-borrowed` and every `resume-bound-*` are the account class; a row
+  # with any other reason is not
   # counted and neither ends nor joins a batch. The minutes are the `기록 시각`
   # differences between neighbouring counted rows of one lineage, each added to
   # the earlier row's class, summed and floored to minutes — a lower bound,
@@ -5230,7 +5232,7 @@ run_dispatch_wait_summary() {
     def cls:
       if . == "host-saturated" then "h"
       elif . == "group-exhausted" or . == "no-room" or . == "unknown-concurrency"
-           or . == "fifo-yield" or startswith("resume-bound-") then "a"
+           or . == "fifo-yield" or . == "pinned-borrowed" or startswith("resume-bound-") then "a"
       else null end;
     def ep: try fromdateiso8601 catch null;
     [ split("\n")[] | capture("^- `(?<s>[^`]+)`(?<rest>.*)$")
@@ -7106,10 +7108,18 @@ report_visual_migration() {
   # migration's progress file `visual-migration/<s>.md`: `**완료**: 예` there is
   # a finished migration, anything else one that did not finish. A record with
   # only a `**승계**` line adds nothing — that run inherited a lane, it did not
-  # migrate.
+  # migrate. The new canvases are not shared with anyone, so a line whose new
+  # lane is the record's `**레인**` ends with the owner: that lane and the
+  # record's `**계정**` address, which a person logs in as to see them. The
+  # record holds the latest lane's account only, so an earlier migration's line
+  # — its new lane differs from `**레인**` — and a record with no `**계정**`
+  # carry no owner rather than a wrong one.
   local rec="$RUN_DIR/visual-lane" lines line rest s pair why from to prog where
+  local cur_lane acct owner
   [ -f "$rec" ] || return 0
   lines=$(grep -E '^\*\*이관\*\*: [0-9]+ · ' "$rec" 2>/dev/null) || return 0
+  cur_lane=$(sed -n 's/^\*\*레인\*\*: //p' "$rec" 2>/dev/null | tail -n 1)
+  acct=$(sed -n 's/^\*\*계정\*\*: //p' "$rec" 2>/dev/null | tail -n 1)
   while IFS= read -r line; do
     [ -n "$line" ] || continue
     rest=${line#\*\*이관\*\*: }
@@ -7118,12 +7128,16 @@ report_visual_migration() {
     why=${rest%% · *}
     from=${pair%% → *}; to=${pair##* → }
     prog="$RUN_DIR/visual-migration/$s.md"
+    owner=""
+    if [ -n "$acct" ] && [ "$to" = "$cur_lane" ]; then
+      owner=" — 새 캔버스는 레인 $to 의 계정 $acct 소유이고 공유되지 않았습니다 — 그 계정으로 claude.ai 에 로그인해 봅니다"
+    fi
     if grep -qxF '**완료**: 예' "$prog" 2>/dev/null; then
       where=$(report_visual_latest_verdict)
       [ -n "$where" ] || where=$(visual_sidecar_path "${DOC:-}" 2>/dev/null || printf '(사이드카 경로 없음)')
-      report_append "시각 발행 이관" "계정을 이관했고 캔버스 URL 이 바뀌었습니다 — $from → $to($why), 새 URL 은 $where"
+      report_append "시각 발행 이관" "계정을 이관했고 캔버스 URL 이 바뀌었습니다 — $from → $to($why), 새 URL 은 $where$owner"
     else
-      report_append "시각 발행 이관" "계정 이관이 정해졌으나 캔버스 이관이 끝나지 않았습니다 — $from → $to($why), 진행 파일 $prog"
+      report_append "시각 발행 이관" "계정 이관이 정해졌으나 캔버스 이관이 끝나지 않았습니다 — $from → $to($why), 진행 파일 $prog$owner"
     fi
   done <<EOF
 $lines

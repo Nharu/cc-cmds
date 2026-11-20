@@ -13542,6 +13542,14 @@ check "0 건 부류의 조각은 빠지고 1 분이 안 되면 0 분이다" "$(d
   dw_row stage-lease L1
 } > "$DW/none.md"
 check "센 행이 없으면 값이 비어 줄을 쓰지 않는다" "$(dw_sum "$DW/none.md")" ""
+# 이관 고정의 차용 대기 `pinned-borrowed` 는 계정 부류다.
+{
+  printf '# 원장\n\n## 실행 dw-run\n\n'
+  dw_row stage-wait L1 pinned-borrowed 2026-11-14T00:00:00Z
+  dw_row stage-wait L1 pinned-borrowed 2026-11-14T00:02:00Z
+  dw_row stage-lease L1
+} > "$DW/borrow.md"
+check "파견 대기는 pinned-borrowed 를 계정 부류로 센다" "$(dw_sum "$DW/borrow.md")" "계정 1건 2분 이상"
 
 # ---------------------------------------------------------------------------
 # 34. 남은 일 이어받기 — 이전 런이 착지시킨 슬라이스는 다시 하지 않는다
@@ -15148,16 +15156,22 @@ printf 'broken\n' > "$VP/run/visual-lane"
 check "시각 고정: 읽히지 않는 런 지역 기록은 다음 출처로 넘어가지 않고 실패한다" \
   "$(vp_run kind_pin_resolve visual-publish; printf 'rc=%s' "$?")" "rc=1"
 # 아침 보고 — `**이관**` 줄마다 그 진행 파일의 `**완료**: 예` 로 두 문면을 가른다.
+# 새 레인이 기록의 `**레인**` 인 줄은 그 레인과 `**계정**` 주소를 소유자로 덧붙인다.
+VP_OWNER=" — 새 캔버스는 레인 new-lane 의 계정 b@example.com 소유이고 공유되지 않았습니다 — 그 계정으로 claude.ai 에 로그인해 봅니다"
 vp_runrec new-lane '**이관**: 1 · old-lane → new-lane · 원 계정 소진 · 2026-11-07T00:00:00Z'
 check "아침 보고: 진행 파일이 끝나지 않았으면 미완료 문면과 진행 파일 경로" \
   "$(vp_run report_visual_migration)" \
-  "시각 발행 이관 | 계정 이관이 정해졌으나 캔버스 이관이 끝나지 않았습니다 — old-lane → new-lane(원 계정 소진), 진행 파일 $VP/run/visual-migration/1.md"
+  "시각 발행 이관 | 계정 이관이 정해졌으나 캔버스 이관이 끝나지 않았습니다 — old-lane → new-lane(원 계정 소진), 진행 파일 $VP/run/visual-migration/1.md$VP_OWNER"
 printf '**완료**: 예\n' > "$VP/run/visual-migration/1.md"
 check "아침 보고: 끝난 이관에 시각-판정 기록이 없으면 새 URL 자리로 사이드카 경로" \
   "$(vp_run report_visual_migration)" \
-  "시각 발행 이관 | 계정을 이관했고 캔버스 URL 이 바뀌었습니다 — old-lane → new-lane(원 계정 소진), 새 URL 은 $(cd "$VP/repo" && pwd -P)/docs/visual/docs-d.md"
+  "시각 발행 이관 | 계정을 이관했고 캔버스 URL 이 바뀌었습니다 — old-lane → new-lane(원 계정 소진), 새 URL 은 $(cd "$VP/repo" && pwd -P)/docs/visual/docs-d.md$VP_OWNER"
 printf '**분류**: 시각-판정\n' > "$VP/run/halt/S2P#2.md"
 check "아침 보고: 끝난 이관은 최신 시각-판정 기록 경로를 새 URL 자리로 적는다" \
+  "$(vp_run report_visual_migration)" \
+  "시각 발행 이관 | 계정을 이관했고 캔버스 URL 이 바뀌었습니다 — old-lane → new-lane(원 계정 소진), 새 URL 은 $VP/run/halt/S2P#2.md$VP_OWNER"
+vp_runrec next-lane '**이관**: 1 · old-lane → new-lane · 원 계정 소진 · 2026-11-07T00:00:00Z'
+check "아침 보고: 새 레인이 기록의 레인과 다른 이관 줄에는 소유자를 붙이지 않는다" \
   "$(vp_run report_visual_migration)" \
   "시각 발행 이관 | 계정을 이관했고 캔버스 URL 이 바뀌었습니다 — old-lane → new-lane(원 계정 소진), 새 URL 은 $VP/run/halt/S2P#2.md"
 vp_runrec doc-lane "**승계**: $VP_DOCREC · r0 · 2026-11-07T00:00:00Z"

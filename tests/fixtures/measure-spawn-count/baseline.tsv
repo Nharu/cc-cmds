@@ -7,6 +7,8 @@ unit	U5	170
 unit	U6	300
 unit	U7	62
 unit	U8	1300
+unit	U9	1
+unit	U10	1
 abspath	plugins/cc-cmds/orchestrator/watch.sh	1
 abspath	plugins/cc-cmds/orchestrator/checks.sh	1
 abspath	plugins/cc-cmds/orchestrator/feed.sh	1
@@ -25,7 +27,7 @@ pipeline	plugins/cc-cmds/hooks/gate-pretool.sh	19
 pipeline	plugins/cc-cmds/orchestrator/liveness.sh	34
 cond	os	Darwin
 cond	bash	3.2.57(1)-release
-cond	stubs	dcfacc7a91eae110c9585ab6c825d011c1c20eaa70f79a18b7171232ce019dc3
-cond	spec	9599f3b3efaeff26be67b0f4838de5350f05249260c4616676512674f5d82e90
-cond	fixture	816e81f7dd6bf9b0627ab4e4741cc68abbbad4a76552fc59eb8628eae31460cd
+cond	stubs	68e1597dce3d4e63042bb92a86e2376f6ba3516c1ab966e2003fda92a87578a3
+cond	spec	2d24a03e307d9c4618838424f0595cb814ac6b426739cf8ab661fb30f93c856a
+cond	fixture	455c105d381e8ea29d49b81b6cf90ad4f7bbe9d9278f18c51e84d43cc3e980e1
 cond	u8-caller	stage

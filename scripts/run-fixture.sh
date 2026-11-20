@@ -21,6 +21,11 @@
 # assignment, so a suite that sets the switch before sourcing keeps its value.
 : "${CC_CMDS_DASHBOARD:=off}"
 export CC_CMDS_DASHBOARD
+# The observer daemon's automatic start is off by the same default: the
+# statusline and the pane start one when none is running, and a suite that
+# renders them must not leave a daemon behind.
+: "${CC_CMDS_OBSERVER:=off}"
+export CC_CMDS_OBSERVER
 
 # THE SECOND EXCEPTION: the attention spool root is pinned to a path that can
 # never be a directory, so the attention tap writes nothing from any suite that
