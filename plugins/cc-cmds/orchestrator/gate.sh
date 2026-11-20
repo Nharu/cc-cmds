@@ -426,12 +426,15 @@
 # `gate_halt_draft_admit` passes (a re-convergence's S1/S3/S4 stop takes the
 # same argument). `초안 그대로=예` carries no `첨부`: the gate writes the
 # attachment from the draft itself, and the row gains `초안 채택=<m>/<n>`, which
-# a person's answer to a drafted record carries too. A record whose whole
-# `**스텝**` reads `Step 2 CFI-U3 BT-STOP — 사람 둔 어긋남` — a screen slice's
-# stop on a drift line the person left `문서대로 둠` — is outside that case as
-# well and is refused before it: only `답한 주체=사람` is recorded for it, so
-# the shift's `재수렴` under a `구속-이탈` row is refused with 3 even though its
-# step, cut at the first ` — `, reads as a BT-STOP. `<key>` is the segment
+# a person's answer to a drafted record carries too. A kept-drift record — a
+# screen slice's stop on a drift line the person left `문서대로 둠`, written as
+# `Step 2 CFI-U3 BT-STOP — 사람 둔 어긋남` and read by `halt_step_is_kept_drift`
+# with every whitespace removed and every dash turned into `-`, so a record
+# spelled slightly off (a tail, an en dash, doubled spaces) is read as one too
+# and the person's choice is never overturned without a person — is outside
+# that case as well and is refused before it: only `답한 주체=사람` is recorded
+# for it, so the shift's `재수렴` under a `구속-이탈` row is refused with 3 even
+# though its step, cut at the first ` — `, reads as a BT-STOP. `<key>` is the segment
 # id, or the step id for the design step, of the stage that halted; the gate
 # checks the record is this run's, complete, and lists the option verbatim,
 # and refuses with 3 an answer no branch of the shift can carry out
@@ -15605,7 +15608,10 @@ gate_adoption_halt_source() {
   # under the earlier run's settings, plugin copy and instruction synthesis,
   # and the plan it would continue lives in the earlier run's directory and
   # ledger, which this run's stages cannot read. Three answers need no session.
-  # An implement stage's binding-tier stop (CFI-U3 BT-STOP) answered `재수렴`:
+  # An implement stage's binding-tier stop answered `재수렴` — a record whose
+  # step holds `CFI-U3 BT-STOP` before its first ` — `, or one
+  # `halt_step_is_kept_drift` reads as a kept-drift stop, so a kept-drift
+  # record spelled slightly off is not left without a carry:
   # its route re-converges the document on the record and plans the segment
   # again from its first process. A person's `재수렴` on an implement stage's
   # refutation stop (`Step 1.5d`, `Step 3 구현 중 반증`, `Step 1.5a 반증 대기`)
@@ -15724,9 +15730,10 @@ gate_adoption_halt_source() {
   fi
   if [ -z "$refute" ] \
      && { [ "$skill" != "implement-unattended" ] || [ "$opt" != "재수렴" ] \
-          || [ "${step#*CFI-U3 BT-STOP}" = "$step" ]; } \
+          || { [ "${step#*CFI-U3 BT-STOP}" = "$step" ] \
+               && ! halt_step_is_kept_drift "$rec"; }; } \
      && ! gate_halt_answer_handed_on "$sledger" "$ln" "$skey"; then
-    GATE_CARRY_WHY="스킬 ${skill:-미상} 의 기록(스텝 「${step}」)에 대한 답 「${opt}」 은 멈춘 세션을 다시 붙여 넘기는 답인데, 그 세션은 출처 런의 것이라 이 런에서 다시 붙일 수 없고, 출처 원장에 그 답을 다음 런으로 넘긴 이월 행도 없습니다 — implement-unattended 기록 중 스텝 문면의 첫 \` — \` 앞에 CFI-U3 BT-STOP 이 있는 기록에 대한 「재수렴」 답, implement-unattended 의 반증 정지(스텝이 Step 1.5d, Step 3 구현 중 반증 또는 Step 1.5a 반증 대기)에 사람이 준 「재수렴」 답 가운데 재수렴 운반 파일에 그 항목의 대기 블록이 남은 답, 출처 원장의 이월 행이 이름 짓는 답, 그리고 implement-unattended 의 좌석 실행 정지(스텝이 Step 3 잔여 검증 좌석 실행 또는 Step 3 게이트 도달 좌석 실행)에 대한 「좌석 실행」 답 가운데 답 뒤에 같은 키의 마감 초과 cone 행이 있고 그 뒤 그 키의 stage-result 행이 없는 답만 이 런으로 이어집니다"
+    GATE_CARRY_WHY="스킬 ${skill:-미상} 의 기록(스텝 「${step}」)에 대한 답 「${opt}」 은 멈춘 세션을 다시 붙여 넘기는 답인데, 그 세션은 출처 런의 것이라 이 런에서 다시 붙일 수 없고, 출처 원장에 그 답을 다음 런으로 넘긴 이월 행도 없습니다 — implement-unattended 기록 중 스텝 문면의 첫 \` — \` 앞에 CFI-U3 BT-STOP 이 있거나 사람 둔 어긋남 판독(공백을 모두 지우고 dash 를 - 로 바꾼 스텝에 CFI-U3BT-STOP 과 그 뒤 사람둔어긋남 이 있음)이 참인 기록에 대한 「재수렴」 답, implement-unattended 의 반증 정지(스텝이 Step 1.5d, Step 3 구현 중 반증 또는 Step 1.5a 반증 대기)에 사람이 준 「재수렴」 답 가운데 재수렴 운반 파일에 그 항목의 대기 블록이 남은 답, 출처 원장의 이월 행이 이름 짓는 답, 그리고 implement-unattended 의 좌석 실행 정지(스텝이 Step 3 잔여 검증 좌석 실행 또는 Step 3 게이트 도달 좌석 실행)에 대한 「좌석 실행」 답 가운데 답 뒤에 같은 키의 마감 초과 cone 행이 있고 그 뒤 그 키의 stage-result 행이 없는 답만 이 런으로 이어집니다"
     return 2
   fi
   if cc_stage_is_live "$sdir" "$skey"; then
@@ -28748,8 +28755,12 @@ gate_carry_routed_elsewhere() {
      && [ "$opt" = "adopt as a requirement" ]; then
     printf '감사 종합 요구를 채택한 답은 재수렴으로 갑니다 — 운반하지 않습니다: %s' "$rec"; return 0
   fi
-  if [ "$skill" = "implement-unattended" ] && [ "${s1#*CFI-U3 BT-STOP}" != "$s1" ] \
-     && [ "$opt" = "재수렴" ]; then
+  # A binding-tier stop is one whose step holds `CFI-U3 BT-STOP` before its
+  # first ` — `, or a kept-drift record `halt_step_is_kept_drift` reads as one
+  # even when it is spelled slightly off, so its `재수렴` is never carried to
+  # a session that cannot write the design document.
+  if [ "$skill" = "implement-unattended" ] && [ "$opt" = "재수렴" ] \
+     && { [ "${s1#*CFI-U3 BT-STOP}" != "$s1" ] || halt_step_is_kept_drift "$rec"; }; then
     printf '구속 티어 이탈 정지의 재수렴 답은 재수렴으로 갑니다 — 운반하지 않습니다: %s' "$rec"; return 0
   fi
   # A refutation stop's `재수렴` answer re-converges the record's item (route
@@ -30224,7 +30235,10 @@ gate_halt_answer_route() {
       why=$GATE_DCR_WHY
     fi
   elif [ "$skill" = "implement-unattended" ] && [ "$opt" = "재수렴" ] \
-       && [ "${hstep#*CFI-U3 BT-STOP}" != "$hstep" ]; then
+       && { [ "${hstep#*CFI-U3 BT-STOP}" != "$hstep" ] || halt_step_is_kept_drift "$rec"; }; then
+    # A binding-tier stop: `CFI-U3 BT-STOP` before the step's first ` — `, or
+    # a kept-drift record `halt_step_is_kept_drift` reads as one even when it
+    # is spelled slightly off, so a person's `재수렴` on it has a branch.
     id=구속-재수렴
     ! gate_segment_terminal "$key" || why=$terminal
   elif [ "$skill" = "implement-unattended" ] && [ "$opt" = "재수렴" ] \
@@ -45099,11 +45113,14 @@ EOF
       # draft answer's attachment is the gate's, written the same way; `근거`
       # is clipped and is not where the re-convergence reads the decision from.
       # A SCREEN SLICE'S STOP ON A LINE THE PERSON LEFT `문서대로 둠` IS A
-      # PERSON'S ONLY, in its own branch before that one. Its whole `**스텝**`
-      # line is compared (`halt_step_is_kept_drift`), because the shift's
-      # exception below cuts the step at the first ` — ` and would otherwise
-      # take this record's `재수렴` under a `구속-이탈` adoption row and overturn
-      # the person's earlier choice. The seat was already stopped above, by the
+      # PERSON'S ONLY, in its own branch before that one. Its first `**스텝**`
+      # value is read normalized (`halt_step_is_kept_drift`: whitespace
+      # removed, every dash turned into `-`, `CFI-U3BT-STOP` then `사람둔어긋남`
+      # with any tail), because the shift's exception below cuts the step at
+      # the first ` — ` and would otherwise take this record's `재수렴` under a
+      # `구속-이탈` adoption row and overturn the person's earlier choice, and a
+      # record spelled slightly off must not slip past this refusal into that
+      # exception. The seat was already stopped above, by the
       # `(없음)` recommendation and the absent draft, so what is refused here is
       # every other answer that is not a person's — the shift's above all.
       if halt_step_is_kept_drift "$hrec" && [ "$hby" != "사람" ]; then
