@@ -41,6 +41,8 @@ gate-shards (26)
 
 샤드 수는 `Makefile` 의 `GATE_SHARDS` 하나가 정한다. matrix 는 `gate-plan` 이 그 값으로 만들고 `shard-coverage` 가 표와 대조하므로, 그 값을 바꾸면 이 목록만 같은 커밋에서 맞춘다.
 
+**위 26개가 모두 생기는 것은 전량 판정의 실행뿐이다.** PR 의 gate 는 `scripts/gate-select.sh` 가 고른 절만 돈다. 좁힌 PR 은 정규 행을 1..K 만 띄우고(K 는 선택 절의 추정 시간이 정한다), 0절 PR 은 샤드 체크 런을 만들지 않는다. 그래서 이 목록을 그대로 required 로 걸면 좁힌 PR 과 0절 PR 은 생기지 않은 샤드 체크를 무기한 기다린다.
+
 ## 나머지 (10)
 
 ```

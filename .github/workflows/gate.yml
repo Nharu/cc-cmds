@@ -6,11 +6,23 @@ name: gate
 # possibly move a gate section, and pulling the suite along with them (about
 # 280 shard-minutes) is what this split removes.
 #
+# A PULL REQUEST RUNS ONLY THE SECTIONS ITS CHANGE CAN REACH; MASTER RUNS THEM
+# ALL ON A SCHEDULE. `gate-plan` hands the merge commit's two parents to
+# `scripts/gate-select.sh`, which answers either the whole suite with a reason
+# or a closed list of sections, and the table is cut from that list alone: K
+# regular rows, K being the selected sections' share of the estimated time
+# times GATE_SHARDS, rounded up and kept within 1..GATE_SHARDS. A selector that
+# cannot decide is read as the whole suite. A pull request that selects no
+# section opens no shard at all. Master is no longer run on push: a schedule
+# every four hours, and `workflow_dispatch` by hand, run the whole suite when
+# `scripts/gate-full.sh due` says master moved since the last whole run, and
+# only those runs upload the timing and duration windows the next runs read.
+#
 # THE PARTITION IS WEIGHED WITH WHAT THE LAST THREE MASTER RUNS MEASURED. Every
 # shard writes a marker line in front of each section it runs, `gate-report`
-# turns those into per-section times, and a push to master uploads them as the
+# turns those into per-section times, and a whole master run uploads them as the
 # `gate-timing` artifact. The next run's `gate-plan` job downloads that artifact
-# from the newest three master push runs that still have it, takes each
+# from the newest three master runs that still have it, takes each
 # section's median over them (one run's noise no longer moves the partition by
 # itself), makes the partition table from it once, and every shard and the
 # coverage check read that one table — no job partitions on its own, so no two
@@ -31,7 +43,9 @@ name: gate
 # A lane is judged on its own exit code and total line, and `gate-report`
 # checks that every non-empty row of the table printed its total.
 #
-# THE TEST TIME IS A SIGNAL OF ITS OWN. `gate-report` sums the row times and
+# THE TEST TIME IS A SIGNAL OF ITS OWN, ON A WHOLE RUN ONLY. A narrowed run's
+# sum is not comparable with the master window, so it is not judged; a pull
+# request the selector reads as the whole suite is. `gate-report` sums the row times and
 # hands them to `scripts/ci-duration.sh`, together with the plan directory and
 # this run's merged section times. A pull request whose sum, less its budget
 # raise, stays under the common upper bound — the master window's median plus
@@ -67,6 +81,8 @@ on:
   pull_request:
     paths:
       - 'scripts/test-gate.sh'
+      - 'scripts/gate-select.sh'
+      - 'scripts/gate-full.sh'
       - 'scripts/gate-shard.sh'
       - 'scripts/gate-timing.sh'
       - 'scripts/gate-timing.tsv'
@@ -76,9 +92,18 @@ on:
       - 'plugins/cc-cmds/orchestrator/**'
       - 'Makefile'
       - '.github/workflows/gate.yml'
-  push:
-    branches:
-      - master
+  # Every four hours, off the hour. A round whose master did not move since the
+  # last whole run ends in `gate-plan` with nothing run.
+  schedule:
+    - cron: '17 */4 * * *'
+  workflow_dispatch:
+
+# Pull request runs never wait on each other; whole master runs queue behind
+# one another instead of being cancelled, since a cancelled one measured
+# nothing.
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && format('gate-pr-{0}', github.run_id) || 'gate-full' }}
+  cancel-in-progress: false
 
 # Naming one permission sets every unnamed one to `none`, so both are written:
 # `contents` for the checkout and `actions` to read other runs' artifacts.
@@ -93,49 +118,77 @@ jobs:
   # sections none of them measured, which are weighed by their length or at
   # the median of the measured ones, whichever is larger; `table.err` in the
   # `gate-plan` artifact has one line per such section with its estimate.
-  # Only master push runs of this repository are read, so an artifact of the
+  # Only master runs of this repository are read, so an artifact of the
   # same name uploaded by a fork's pull request never becomes the source.
   #
-  # Its outputs drive the rest: `rows` is the matrix (runners 1..N, then the
-  # extra rows S+1..S+E), `extra` is E and `work` is how many rows carry
-  # isolation work, which `gate-isolation` must get back.
+  # Its outputs drive the rest: `run` says whether anything runs at all (a
+  # scheduled round on an unmoved master says 0), `mode` is `전량` or `선택`,
+  # `selected` the closed section list of a narrowed run and `count` how many
+  # sections run. `rows` is the matrix (runners 1..R/L, then the extra rows
+  # R+1..R+E), `regular` is R — the regular rows the table actually has, which a
+  # narrowed table may hold fewer of than K — `runners` and `lanes` what the
+  # shard target needs to agree with it, `extra` is E and `work` is how many
+  # rows carry isolation work, which `gate-isolation` must get back.
   gate-plan:
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
     outputs:
+      run: ${{ steps.due.outputs.run }}
+      mode: ${{ steps.select.outputs.mode }}
+      selected: ${{ steps.select.outputs.selected }}
+      count: ${{ steps.select.outputs.count }}
       rows: ${{ steps.table.outputs.rows }}
+      regular: ${{ steps.table.outputs.regular }}
+      runners: ${{ steps.table.outputs.runners }}
+      lanes: ${{ steps.table.outputs.lanes }}
       extra: ${{ steps.table.outputs.extra }}
       work: ${{ steps.table.outputs.work }}
     steps:
       # A pull request checks out one merge commit whose first parent is the
-      # base tip, so two commits are enough; a push fetches its `before` below.
+      # base tip, so two commits are enough; a whole run compares two shas and
+      # reads nothing older.
       - uses: actions/checkout@v4
         with:
           fetch-depth: ${{ github.event_name == 'pull_request' && 2 || 1 }}
 
+      # A pull request always runs. A scheduled round runs when master moved
+      # since the last whole run; a round that cannot tell runs too.
+      - name: Is a run due
+        id: due
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+            echo "run=1" >> "$GITHUB_OUTPUT"
+            echo "gate-plan: 실행 — pull request 는 항상 돕니다"
+            exit 0
+          fi
+          bash scripts/gate-full.sh due >> "$GITHUB_OUTPUT"
+
+      - uses: mikefarah/yq@v4
+        if: steps.due.outputs.run == '1'
+
       # FAILING IS THE POINT WHEN THERE IS NO BASE. Reading "no base" as "no
       # changed section" would leave the isolation check empty without a word,
-      # so a zero `before`, a fetch that fails or a base file the selector cannot
-      # read (its bounds, or a stray row inside them) fail the run instead.
+      # so a pull request whose base file the selector cannot read (its bounds,
+      # or a stray row inside them) fails the run instead. A whole master run
+      # has no base to compare with and changes no section: it writes an empty
+      # list and `-` for the base.
       - name: Find the changed sections
-        env:
-          BEFORE: ${{ github.event.before }}
+        if: steps.due.outputs.run == '1'
         run: |
           plan="$RUNNER_TEMP/plan"; mkdir -p "$plan"
-          base=""
-          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
-            base=$(git rev-parse --verify -q 'HEAD^1') || base=""
-          else
-            case "$BEFORE" in
-              *[!0]*) git fetch --no-tags --depth=1 origin "$BEFORE" && base="$BEFORE" ;;
-            esac
+          if [ "$GITHUB_EVENT_NAME" != "pull_request" ]; then
+            : > "$plan/changed"
+            echo "-" > "$plan/base"
+            echo "바뀐 절: (전량 실행 — 베이스 비교 없음)"
+            exit 0
           fi
+          base=$(git rev-parse --verify -q 'HEAD^1') || base=""
           if [ -z "$base" ] \
              || ! git show "$base:scripts/test-gate.sh" > "$RUNNER_TEMP/base-test-gate.sh" \
              || ! make -s --no-print-directory print-gate-digests GATE_DIGESTS_FROM="$RUNNER_TEMP/base-test-gate.sh" > "$plan/base.dig" \
              || ! make -s --no-print-directory print-gate-digests > "$plan/head.dig"; then
-            echo "::error::격리 검사 불가 — 베이스 없음 (베이스 '${base:-${BEFORE:-없음}}' 의 scripts/test-gate.sh 다이제스트를 내지 못했습니다)"
+            echo "::error::격리 검사 불가 — 베이스 없음 (베이스 '${base:-없음}' 의 scripts/test-gate.sh 다이제스트를 내지 못했습니다)"
             exit 1
           fi
           awk -F '\t' 'FNR == NR { b[$1] = $2; next } !($1 in b) || b[$1] != $2 { printf "%s%s", (n++ ? "," : ""), $1 }' \
@@ -143,7 +196,51 @@ jobs:
           echo "$base" > "$plan/base"
           echo "바뀐 절: $(cat "$plan/changed")"
 
+      # THE SELECTOR'S DOUBT IS THE WHOLE SUITE. Any exit other than 0, or an
+      # answer that is neither form, runs everything, so a selector that breaks
+      # can only make a run slower, never let a section go unrun.
+      - name: Select the sections
+        id: select
+        if: steps.due.outputs.run == '1'
+        run: |
+          plan="$RUNNER_TEMP/plan"
+          make -s print-gate-sections > "$plan/all-sections"
+          mode="전량"; reason=""; sel=""
+          if [ "$GITHUB_EVENT_NAME" != "pull_request" ]; then
+            reason="정기 전량 실행 (이벤트 $GITHUB_EVENT_NAME)"
+          else
+            rc=0
+            bash scripts/gate-select.sh --base 'HEAD^1' --head HEAD > "$plan/select.out" 2> "$plan/select.err" || rc=$?
+            cat "$plan/select.err" >&2
+            kind=$(cut -f 1 "$plan/select.out" | head -n 1)
+            if [ "$rc" != "0" ]; then
+              reason="선택 스크립트가 판정하지 못했습니다 (종료 $rc)"
+            elif [ "$kind" = "절" ]; then
+              mode="선택"; sel=$(cut -f 2 "$plan/select.out" | head -n 1)
+            elif [ "$kind" = "전량" ]; then
+              reason=$(cut -f 2- "$plan/select.out" | head -n 1)
+            else
+              reason="선택 스크립트의 답을 읽지 못했습니다"
+            fi
+          fi
+          if [ "$mode" = "전량" ]; then
+            count=$(grep -c . "$plan/all-sections" || true)
+            echo "gate-plan: 판정 전량 — $reason"
+          else
+            count=$(printf '%s' "$sel" | tr ',' '\n' | grep -c . || true)
+            echo "gate-plan: 판정 선택 ${count}절"
+          fi
+          echo "$mode" > "$plan/mode"
+          echo "$reason" > "$plan/reason"
+          echo "$sel" > "$plan/selected"
+          {
+            echo "mode=$mode"
+            echo "selected=$sel"
+            echo "count=${count:-0}"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Find the timing source
+        if: steps.due.outputs.run == '1'
         run: |
           plan="$RUNNER_TEMP/plan"; mkdir -p "$plan" "$RUNNER_TEMP/src"
           # One `<run id> <created_at>` line per run, newest first; the median
@@ -161,10 +258,11 @@ jobs:
           if [ "$#" -ge 1 ] && bash scripts/gate-timing.sh median --out "$plan/gate-timing.tsv" "$@"; then
             echo "artifact$runs" > "$plan/source"
           else
-            echo "::warning::gate-timing 아티팩트를 가진 master push 실행을 찾지 못해 절 본문 길이(줄 수)로 분할합니다"
+            echo "::warning::gate-timing 아티팩트를 가진 schedule·workflow_dispatch 또는 master push 실행을 찾지 못해 절 본문 길이(줄 수)로 분할합니다"
             echo "lines" > "$plan/source"
             created=""
           fi
+          echo "gate-plan: 타이밍 원천 $(cat "$plan/source")"
           age="-"
           if [ -n "$created" ]; then
             age=$(jq -rn --arg c "$created" '((now - ($c | fromdateiso8601)) / 3600 | floor | tostring) + "시간"' 2>/dev/null) || age="-"
@@ -175,12 +273,64 @@ jobs:
       # `@head` row and are not CI row seconds, so F and the room they give are
       # not the wall clock's unit; a change to a section then fails with that
       # reason rather than being placed by a guess.
+      #
+      # A NARROWED TABLE HAS K REGULAR ROWS, ONE LANE EACH. K is the selected
+      # sections' estimated time over the whole suite's, times GATE_SHARDS,
+      # rounded up and kept within 1..GATE_SHARDS; without measured weights it
+      # is GATE_SHARDS. The table may hold fewer rows than K (never more rows
+      # than components), so R — what every later job counts by — is read off
+      # the table: its rows less the extra rows its placement line reports. No
+      # selected section writes an empty table and an empty matrix, and no
+      # shard job starts.
       - name: Make the partition table
         id: table
+        if: steps.due.outputs.run == '1'
         run: |
           plan="$RUNNER_TEMP/plan"
           changed=$(cat "$plan/changed")
+          mode=$(cat "$plan/mode"); sel=$(cat "$plan/selected")
+          n=$(make -s print-gate-shards); lanes=$(make -s print-gate-lanes); s=$(make -s print-gate-slots)
+          share="-"
+          if [ "$mode" = "선택" ] && [ -z "$sel" ]; then
+            : > "$plan/table.tsv"; : > "$plan/table.err"
+            echo "0" > "$plan/extra"; echo "0" > "$plan/regular"; echo "0" > "$plan/runners"; echo "1" > "$plan/lanes"
+            {
+              echo "rows=[]"
+              echo "regular=0"
+              echo "runners=0"
+              echo "lanes=1"
+              echo "extra=0"
+              echo "work=0"
+            } >> "$GITHUB_OUTPUT"
+            {
+              echo "### gate 분할 계획"
+              echo ""
+              echo "- 판정: 선택 0절 — 이 변경이 닿는 gate 절이 없어 샤드를 띄우지 않습니다"
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
           if [ -f "$plan/gate-timing.tsv" ]; then set -- --timing "$plan/gate-timing.tsv"; else set --; fi
+          shards="$s"
+          if [ "$mode" = "선택" ]; then
+            k="$n"
+            if [ -f "$plan/gate-timing.tsv" ] \
+               && bash scripts/gate-shard.sh --timing "$plan/gate-timing.tsv" --weights > "$plan/weights.tsv" 2>> "$plan/weights.err"; then
+              got=$(awk -F '\t' -v S="$sel" -v N="$n" '
+                BEGIN { m = split(S, a, ","); for (i = 1; i <= m; i++) want[a[i]] = 1 }
+                { t += $2; if ($1 in want) w += $2 }
+                END {
+                  if (t <= 0) { print N " -"; exit }
+                  x = w * N / t; k = int(x); if (k < x) k++
+                  if (k < 1) k = 1; if (k > N) k = N
+                  printf "%d %d%%\n", k, int(w * 100 / t + 0.5)
+                }' "$plan/weights.tsv") && [ -n "$got" ] && { k=${got%% *}; share=${got#* }; }
+            else
+              echo "gate-plan: 절 추정 시간을 읽지 못해 행 수를 GATE_SHARDS 로 둡니다"
+            fi
+            shards="$k"; lanes=1
+            set -- "$@" --only "$sel"
+            echo "gate-plan: 좁힌 표 — 정규 행 상한 $k · 추정 시간 비율 $share"
+          fi
           if [ -n "$changed" ]; then
             case "$(cat "$plan/source")" in
               artifact*) set -- "$@" --isolate "$changed" --iso-extra "$(make -s print-gate-iso-extra)" ;;
@@ -188,7 +338,7 @@ jobs:
             esac
           fi
           rc=0
-          bash scripts/gate-shard.sh --shards "$(make -s print-gate-slots)" "$@" --table \
+          bash scripts/gate-shard.sh --shards "$shards" "$@" --table \
             > "$plan/table.tsv" 2> "$plan/table.err" || rc=$?
           cat "$plan/table.err" >&2
           if [ "$rc" = "5" ]; then
@@ -199,19 +349,33 @@ jobs:
             echo "::error::gate-shard.sh 도구 오류 (종료 $rc)"
             exit "$rc"
           fi
-          n=$(make -s print-gate-shards); s=$(make -s print-gate-slots)
-          e=$(( $(grep -c . "$plan/table.tsv") - s ))
-          rows=$( { seq 1 "$n"; if [ "$e" -gt 0 ]; then seq $(( s + 1 )) $(( s + e )); fi; } | jq -sc .)
+          e=$(sed -n 's/^gate-shard: 격리 배치 — .* · 추가 행 \([0-9][0-9]*\)\/.*/\1/p' "$plan/table.err" | head -n 1)
+          e=${e:-0}
+          r=$(( $(grep -c . "$plan/table.tsv") - e ))
+          if [ "$mode" = "선택" ]; then runners="$r"; else runners="$n"; fi
+          if [ "$r" -lt 1 ] || [ "$(( runners * lanes ))" != "$r" ]; then
+            echo "::error::표의 정규 행 수 $r 가 러너 $runners 개 × 레인 $lanes 와 맞지 않습니다"
+            exit 1
+          fi
+          rows=$( { seq 1 "$runners"; if [ "$e" -gt 0 ]; then seq $(( r + 1 )) $(( r + e )); fi; } | jq -sc .)
           work=$(awk -F '\t' '$4 != "" || $5 != "" || $6 != ""' "$plan/table.tsv" | grep -c . || true)
-          echo "$e" > "$plan/extra"
+          echo "$e" > "$plan/extra"; echo "$r" > "$plan/regular"; echo "$runners" > "$plan/runners"; echo "$lanes" > "$plan/lanes"
           {
             echo "rows=$rows"
+            echo "regular=$r"
+            echo "runners=$runners"
+            echo "lanes=$lanes"
             echo "extra=$e"
             echo "work=${work:-0}"
           } >> "$GITHUB_OUTPUT"
           {
             echo "### gate 분할 계획"
             echo ""
+            if [ "$mode" = "선택" ]; then
+              echo "- 판정: 선택 $(printf '%s' "$sel" | tr ',' '\n' | grep -c .)절 · 추정 시간 비율 $share · 정규 행 $r"
+            else
+              echo "- 판정: 전량 — $(cat "$plan/reason")"
+            fi
             echo "- 출처: $(cat "$plan/source") · 나이: $(cat "$plan/age")"
             un=$(sed -n 's/^gate-shard: 실측 없는 절 /실측 없는 절 /p' "$plan/table.err")
             echo "- ${un:-실측 없는 절: 없음}"
@@ -225,6 +389,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/upload-artifact@v4
+        if: steps.due.outputs.run == '1'
         with:
           name: gate-plan
           path: ${{ runner.temp }}/plan/
@@ -235,8 +400,13 @@ jobs:
   # files are uploaded even from a red shard: the sections it finished were
   # measured, and the report job needs every row's result to say which row did
   # not print its total.
+  #
+  # The runner and lane counts are the plan's, not the Makefile's: a narrowed
+  # table has R regular rows of one lane each, and the shard target has to cut
+  # its row numbers from the same R.
   gate-shards:
     needs: gate-plan
+    if: needs.gate-plan.outputs.run == '1' && needs.gate-plan.outputs.count != '0'
     runs-on: ubuntu-latest
     # The hosted runner has a docker daemon, so the real docker section must run
     # here: a missing daemon is a failure, not a skip.
@@ -257,7 +427,7 @@ jobs:
           path: ${{ runner.temp }}/plan
 
       - name: Run shard ${{ matrix.shard }}
-        run: make gate-shard SHARD=${{ matrix.shard }} GATE_EXTRA=${{ needs.gate-plan.outputs.extra }} GATE_TABLE="$RUNNER_TEMP/plan/table.tsv" GATE_OUT_DIR="$RUNNER_TEMP/out"
+        run: make gate-shard SHARD=${{ matrix.shard }} GATE_SHARDS=${{ needs.gate-plan.outputs.runners }} GATE_LANES=${{ needs.gate-plan.outputs.lanes }} GATE_EXTRA=${{ needs.gate-plan.outputs.extra }} GATE_TABLE="$RUNNER_TEMP/plan/table.tsv" GATE_OUT_DIR="$RUNNER_TEMP/out"
 
       # What the row's traced cut and its solos recorded, for `gate-isolation`.
       # A row without isolation work writes no `iso-<row>` directory.
@@ -288,9 +458,11 @@ jobs:
   # NOT CHAINED BEHIND THE SHARDS AND NOT CHAINED BEHIND THE RATCHET. This is
   # the job that proves no section fell out of the partition, so it has to have
   # its own verdict even on a run where every shard is red. It is chained
-  # behind the plan only, and checks the very table the shards ran.
+  # behind the plan only, and checks the very table the shards ran. A narrowed
+  # table is held to the selected list rather than to the whole suite.
   shard-coverage:
     needs: gate-plan
+    if: needs.gate-plan.outputs.run == '1' && needs.gate-plan.outputs.count != '0'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -312,44 +484,83 @@ jobs:
       # partitioner whether the shards cover the list, not whether the matrix
       # asked for all of them. One sorted comparison closes short, long,
       # duplicated and out-of-range together.
+      #
+      # A whole run's R is the Makefile's slot count; a narrowed run's lies in
+      # 1..GATE_SHARDS. Either way R is checked here against the Makefile, not
+      # only taken from the plan.
       - name: Matrix rows are the runners and the extra rows of the table
         env:
           ROWS: ${{ needs.gate-plan.outputs.rows }}
           EXTRA: ${{ needs.gate-plan.outputs.extra }}
+          REGULAR: ${{ needs.gate-plan.outputs.regular }}
+          RUNNERS: ${{ needs.gate-plan.outputs.runners }}
+          MODE: ${{ needs.gate-plan.outputs.mode }}
         run: |
           n=$(make -s print-gate-shards); s=$(make -s print-gate-slots)
+          if [ "$MODE" = "전량" ]; then
+            if [ "$REGULAR" != "$s" ] || [ "$RUNNERS" != "$n" ]; then
+              echo "전량 판정의 정규 행 $REGULAR · 러너 $RUNNERS 가 Makefile 의 $s · $n 과 다릅니다" >&2
+              exit 1
+            fi
+          elif [ "$REGULAR" -lt 1 ] || [ "$REGULAR" -gt "$n" ] || [ "$RUNNERS" != "$REGULAR" ]; then
+            echo "좁힌 판정의 정규 행 $REGULAR · 러너 $RUNNERS 가 1..$n 의 한 레인 행이 아닙니다" >&2
+            exit 1
+          fi
           got=$(printf '%s' "$ROWS" | jq -r '.[]' | sort -n | tr '\n' ' ')
-          expect=$( { seq 1 "$n"; if [ "$EXTRA" -gt 0 ]; then seq $(( s + 1 )) $(( s + EXTRA )); fi; } | tr '\n' ' ')
+          expect=$( { seq 1 "$RUNNERS"; if [ "$EXTRA" -gt 0 ]; then seq $(( REGULAR + 1 )) $(( REGULAR + EXTRA )); fi; } | tr '\n' ' ')
           if [ "$got" != "$expect" ]; then
-            echo "matrix 의 행 번호 [$got] 가 러너 1..$n 과 추가 행 $EXTRA 개 [$expect] 와 다릅니다" >&2
+            echo "matrix 의 행 번호 [$got] 가 러너 1..$RUNNERS 과 추가 행 $EXTRA 개 [$expect] 와 다릅니다" >&2
             exit 1
           fi
           t=$(grep -c . "$RUNNER_TEMP/plan/table.tsv")
-          if [ "$t" != "$(( s + EXTRA ))" ]; then
-            echo "표의 행 수 $t 가 정규 행 $s 개와 추가 행 $EXTRA 개의 합과 다릅니다" >&2
+          if [ "$t" != "$(( REGULAR + EXTRA ))" ]; then
+            echo "표의 행 수 $t 가 정규 행 $REGULAR 개와 추가 행 $EXTRA 개의 합과 다릅니다" >&2
             exit 1
           fi
-          echo "러너 $n 개 · 추가 행 $EXTRA 개"
+          echo "판정 $MODE · 러너 $RUNNERS 개 · 정규 행 $REGULAR 개 · 추가 행 $EXTRA 개"
 
-      # The table has S + E rows, not N: the check counts the rows the plan job
-      # cut and that their ids are exactly 1..S+E. Only the third column is
-      # counted, since a laid-over section sits in several rows by design.
+      # The table has R + E rows, not N: the check counts the rows the plan job
+      # cut and that their ids are exactly 1..R+E. Only the third column is
+      # counted, since a laid-over section sits in several rows by design. A
+      # narrowed table's union is compared with the selected list instead of
+      # the whole one.
       - name: Union of the rows is the whole section list
-        run: bash scripts/gate-shard.sh --shards "$(make -s print-gate-slots)" --check --from-table "$RUNNER_TEMP/plan/table.tsv" --extra "${{ needs.gate-plan.outputs.extra }}"
+        env:
+          MODE: ${{ needs.gate-plan.outputs.mode }}
+          SELECTED: ${{ needs.gate-plan.outputs.selected }}
+        run: |
+          if [ "$MODE" = "선택" ]; then set -- --only "$SELECTED"; else set --; fi
+          bash scripts/gate-shard.sh --shards "${{ needs.gate-plan.outputs.regular }}" --check --from-table "$RUNNER_TEMP/plan/table.tsv" --extra "${{ needs.gate-plan.outputs.extra }}" "$@"
 
   # Runs whatever the shards did, so a red run still uploads what it measured.
   # The increment check is skipped when a shard failed: its time was cut short,
-  # and the run is red already.
+  # and the run is red already. A run that selected no section has nothing to
+  # report beyond saying so, and passes. Only a whole master run uploads the
+  # timing and the duration window the next runs read, and only a whole run's
+  # sum is judged.
   gate-report:
     needs: [gate-plan, gate-shards]
-    if: always()
+    if: always() && needs.gate-plan.outputs.run == '1'
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
+      COUNT: ${{ needs.gate-plan.outputs.count }}
     steps:
+      - name: No section selected
+        if: needs.gate-plan.outputs.count == '0'
+        run: |
+          echo "gate-report: 선택 0절 — 돈 샤드가 없어 보고할 것이 없습니다"
+          {
+            echo "### gate 보고"
+            echo ""
+            echo "- 선택 0절 — 이 변경이 닿는 gate 절이 없어 샤드를 띄우지 않았습니다"
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - uses: actions/checkout@v4
+        if: needs.gate-plan.outputs.count != '0'
 
       - uses: actions/download-artifact@v4
+        if: needs.gate-plan.outputs.count != '0'
         with:
           name: gate-plan
           path: ${{ runner.temp }}/plan
@@ -357,6 +568,7 @@ jobs:
       # A run whose shards all died before uploading leaves nothing to match;
       # the merge then keeps the source's values, which is the right answer.
       - uses: actions/download-artifact@v4
+        if: needs.gate-plan.outputs.count != '0'
         continue-on-error: true
         with:
           pattern: gate-timing-shard-*
@@ -364,6 +576,7 @@ jobs:
           merge-multiple: true
 
       - uses: actions/download-artifact@v4
+        if: needs.gate-plan.outputs.count != '0'
         continue-on-error: true
         with:
           pattern: gate-result-shard-*
@@ -371,6 +584,7 @@ jobs:
           merge-multiple: true
 
       - name: Merge the measured times
+        if: needs.gate-plan.outputs.count != '0'
         run: |
           make -s print-gate-sections > "$RUNNER_TEMP/list"
           mkdir -p "$RUNNER_TEMP/timing"
@@ -383,14 +597,14 @@ jobs:
             --out "$RUNNER_TEMP/timing/gate-timing.tsv" "$RUNNER_TEMP"/shards/timing-*.tsv
 
       - name: Upload the timing for the next runs
-        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        if: needs.gate-plan.outputs.count != '0' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/master'
         uses: actions/upload-artifact@v4
         with:
           name: gate-timing
           path: ${{ runner.temp }}/timing/gate-timing.tsv
 
       - name: Upload the timing candidate
-        if: github.event_name == 'pull_request'
+        if: needs.gate-plan.outputs.count != '0' && github.event_name == 'pull_request'
         uses: actions/upload-artifact@v4
         with:
           name: gate-timing-candidate
@@ -398,20 +612,31 @@ jobs:
 
       - name: Report the shard times
         id: report
+        if: needs.gate-plan.outputs.count != '0'
         run: |
           bash scripts/gate-timing.sh report --table "$RUNNER_TEMP/plan/table.tsv" --dir "$RUNNER_TEMP/shards" | tee "$RUNNER_TEMP/report.out"
           echo "sum=$(tail -n 1 "$RUNNER_TEMP/report.out")" >> "$GITHUB_OUTPUT"
 
       - name: Duration signal
-        if: needs.gate-shards.result == 'success'
+        if: needs.gate-plan.outputs.count != '0' && needs.gate-plan.outputs.mode == '전량' && needs.gate-shards.result == 'success'
         run: bash scripts/ci-duration.sh check --key gate --seconds "${{ steps.report.outputs.sum }}" --window-out "$RUNNER_TEMP/ci-duration-gate" --plan-dir "$RUNNER_TEMP/plan" --sections "$RUNNER_TEMP/timing/gate-timing.tsv"
 
       - name: Duration signal skipped
-        if: needs.gate-shards.result != 'success'
+        if: needs.gate-plan.outputs.count != '0' && needs.gate-plan.outputs.mode == '전량' && needs.gate-shards.result != 'success'
         run: echo "::notice::gate 샤드가 성공하지 않아(${{ needs.gate-shards.result }}) 소요 증분 판정을 건너뜁니다 — 잘린 소요로는 판정하지 않습니다"
 
+      - name: Duration signal on a narrowed run
+        if: needs.gate-plan.outputs.count != '0' && needs.gate-plan.outputs.mode != '전량'
+        run: |
+          echo "::notice::좁힌 실행 — 합 비교 생략 (선택 ${COUNT}절의 합은 master 창과 비교하지 않습니다)"
+          {
+            echo "### gate 소요"
+            echo ""
+            echo "- 좁힌 실행 — 합 비교 생략 (선택 ${COUNT}절, 행 합 ${{ steps.report.outputs.sum }}초)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Upload the duration window
-        if: needs.gate-shards.result == 'success' && github.event_name == 'push' && github.ref == 'refs/heads/master'
+        if: needs.gate-plan.outputs.count != '0' && needs.gate-plan.outputs.mode == '전량' && needs.gate-shards.result == 'success' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/master'
         uses: actions/upload-artifact@v4
         with:
           name: ci-duration-gate
@@ -422,15 +647,22 @@ jobs:
       # attempt leaves its own line beside the first one. It never fails the
       # job: past 900 s raw it warns.
       #
-      # The extra rows are rows and runners too, so both counts take E.
+      # The extra rows are rows and runners too, so both counts take E. The
+      # regular rows, runners and lanes are the plan's, which a narrowed run
+      # cut smaller than the Makefile's.
       - name: Wall clock
-        if: always()
+        if: always() && needs.gate-plan.outputs.count != '0'
+        env:
+          REGULAR: ${{ needs.gate-plan.outputs.regular }}
+          RUNNERS: ${{ needs.gate-plan.outputs.runners }}
+          LANES: ${{ needs.gate-plan.outputs.lanes }}
+          EXTRA: ${{ needs.gate-plan.outputs.extra }}
         run: |
-          e=$(cat "$RUNNER_TEMP/plan/extra" 2>/dev/null || echo 0)
-          bash scripts/ci-duration.sh wall --slots "$(( $(make -s print-gate-slots) + e ))" --runners "$(( $(make -s print-gate-shards) + e ))" --lanes "$(make -s print-gate-lanes)" --timing-dir "$RUNNER_TEMP/shards" --result-dir "$RUNNER_TEMP/results" --out "$RUNNER_TEMP/wall/gate-wall.txt"
+          e=${EXTRA:-0}
+          bash scripts/ci-duration.sh wall --slots "$(( REGULAR + e ))" --runners "$(( RUNNERS + e ))" --lanes "$LANES" --timing-dir "$RUNNER_TEMP/shards" --result-dir "$RUNNER_TEMP/results" --out "$RUNNER_TEMP/wall/gate-wall.txt"
 
       - name: Upload the wall clock
-        if: always()
+        if: always() && needs.gate-plan.outputs.count != '0'
         uses: actions/upload-artifact@v4
         with:
           name: gate-wall-${{ github.run_attempt }}
@@ -444,10 +676,12 @@ jobs:
       # no regular cut and answers with `격리 전용 행` instead. It is last so a
       # red verdict here never skips the uploads above.
       - name: Every row printed its total
-        if: always()
+        if: always() && needs.gate-plan.outputs.count != '0'
+        env:
+          REGULAR: ${{ needs.gate-plan.outputs.regular }}
+          EXTRA: ${{ needs.gate-plan.outputs.extra }}
         run: |
-          e=$(cat "$RUNNER_TEMP/plan/extra" 2>/dev/null || echo 0)
-          bash scripts/gate-timing.sh rows --table "$RUNNER_TEMP/plan/table.tsv" --dir "$RUNNER_TEMP/results" --slots "$(( $(make -s print-gate-slots) + e ))"
+          bash scripts/gate-timing.sh rows --table "$RUNNER_TEMP/plan/table.tsv" --dir "$RUNNER_TEMP/results" --slots "$(( REGULAR + ${EXTRA:-0} ))"
 
   # THE VERDICT ON THE CHANGED SECTIONS. It waits for the shards but runs
   # whatever they did, since a red row still uploaded what it recorded, and it
@@ -458,7 +692,7 @@ jobs:
   # how a download of no artifact ends.
   gate-isolation:
     needs: [gate-plan, gate-shards]
-    if: always() && needs.gate-plan.result == 'success'
+    if: always() && needs.gate-plan.result == 'success' && needs.gate-plan.outputs.run == '1'
     runs-on: ubuntu-latest
     env:
       WORK: ${{ needs.gate-plan.outputs.work }}
