@@ -5,7 +5,7 @@
 # The router decides WHAT happens next; this decides whether it MAY. Those two
 # jobs lived in the same `case` arms of run.sh, so neither could move without
 # the other. Splitting them is the whole point of the redesign, and this file is
-# the half that does not judge.
+# the half that never judges.
 #
 # THE ARGV IS THE SCHEMA. Under the old shape the driver bought a judgment with
 # `claude -p --json-schema` and validated the returned bytes. When the router
