@@ -120,7 +120,7 @@
 #   builtins: ulimit umask unalias unset wait
 #
 # UNITS ARE DRIVEN BY SPEC FILES, `tests/fixtures/measure-spawn-count/runs/spec/U1`
-# … `U8`, three tab-separated columns `kind key value`:
+# … `U10`, three tab-separated columns `kind key value`:
 #
 #   env      NAME VALUE      exported for the unit; `@UNSET@` unsets it. Every
 #                            inherited `CC_PIPELINE_*` is unset first.
@@ -198,7 +198,7 @@ SPECD="$RUNS/spec"
 BASELINE="$FIXD/baseline.tsv"
 ORCH="$REPO/plugins/cc-cmds/orchestrator"
 HOOKS="$REPO/plugins/cc-cmds/hooks"
-UNITS="U1 U2 U3 U4 U5 U6 U7 U8"
+UNITS="U1 U2 U3 U4 U5 U6 U7 U8 U9 U10"
 TARGETS="plugins/cc-cmds/orchestrator/watch.sh
 plugins/cc-cmds/orchestrator/checks.sh
 plugins/cc-cmds/orchestrator/feed.sh
@@ -237,6 +237,23 @@ fi
 
 REAL_BASH=$(type -P bash) || die2 "bash 를 PATH 에서 찾지 못했습니다"
 ORIG_PATH=$PATH
+# THE PATH A STUB'S REAL BINARY IS RESOLVED ON leaves out every directory whose
+# name ends in `.shim`. The test tree and `make check-push` put such a directory
+# first on PATH for each test item, holding `git` and `cp` watch shims that note
+# the calls reaching the checkout and then exec the real command. The shims are
+# bash scripts, so this tool's `BASH_ENV` traced them and counted their own
+# subshells as the unit's processes: measured, U8 read 1199 by hand and 1215 and
+# 1221 inside check-push on the same tree. Skipping them counts the command the
+# unit runs, and the watch loses nothing it needs: a stub runs in the unit's
+# scratch copy, never in the checkout. Everything else this tool runs, and the
+# unit's own PATH, keeps ORIG_PATH.
+STUB_REAL_PATH=""
+_ifs=$IFS; IFS=:
+for _p in $ORIG_PATH; do
+  case "$_p" in *.shim|*.shim/) continue ;; esac
+  STUB_REAL_PATH="${STUB_REAL_PATH:+$STUB_REAL_PATH:}$_p"
+done
+IFS=$_ifs; unset _ifs _p
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/cc-measure-spawn.XXXXXX") || die2 "mktemp 실패"
 WORK=$(cd "$WORK" && pwd -P)
 # `CC_MEASURE_SPAWN_KEEP` keeps the scratch directory (copies, logs, outputs)
@@ -591,7 +608,8 @@ trap '[ -n "$__cc_in" ] || { __cc_in=1; [ -z "$CC_SPAWN_STUBS" ] || case $PATH i
 ENVEOF
 
 # build_stubs <dir> <log> <names-file> [<gh responses dir>] — one stub per
-# name that resolves on the original PATH. The notifiers always get a stub that
+# name that resolves on the original PATH less its `.shim` directories
+# (STUB_REAL_PATH, above). The notifiers always get a stub that
 # does nothing, and `gh` a stub that answers from the fixture's responses; a
 # name the host does not have gets no stub, so `command -v` still says so.
 # Every stub begins with the same two lines: the ` self` mark when its pid is
@@ -612,7 +630,7 @@ build_stubs() {
       terminal-notifier|osascript)
         printf "$head"'echo "$$ exec %s ppid=$PPID$s" >> "%s"\nexit 0\n' "$n" "$log" > "$dir/$n" ;;
       sleep)
-        real=$(PATH=$ORIG_PATH type -P sleep) || continue
+        real=$(PATH=$STUB_REAL_PATH type -P sleep) || continue
         {
           printf "$head"
           printf 'if [ -n "${CC_SPAWN_SLEEP_CYCLE:-}" ] && [ "$*" = "$CC_SPAWN_SLEEP_CYCLE" ]; then\n'
@@ -632,13 +650,13 @@ build_stubs() {
           printf 'if [ -f "%s/gh.tsv" ]; then\n' "$resp"
           printf '  while IFS="\t" read -r k rc out; do\n'
           printf '    if [ "$k" = "$key" ]; then\n'
-          printf '      if [ -n "$out" ] && [ "$out" != - ]; then %s "%s/$out"; fi\n' "$(PATH=$ORIG_PATH type -P cat)" "$resp"
+          printf '      if [ -n "$out" ] && [ "$out" != - ]; then %s "%s/$out"; fi\n' "$(PATH=$STUB_REAL_PATH type -P cat)" "$resp"
           printf '      exit "$rc"\n    fi\n  done < "%s/gh.tsv"\nfi\n' "$resp"
           printf 'echo "$key" >> "%s.gh-miss"\n' "$log"
           printf 'echo "gh stub: no fixture response for: $key" >&2\nexit 1\n'
         } > "$dir/gh" ;;
       *)
-        real=$(PATH=$ORIG_PATH type -P "$n") || continue
+        real=$(PATH=$STUB_REAL_PATH type -P "$n") || continue
         printf "$head"'echo "$$ exec %s ppid=$PPID$s" >> "%s"\nCC_SPAWN_SELF=$$; export CC_SPAWN_SELF\nexec "%s" "$@"\n' \
           "$n" "$log" "$real" > "$dir/$n" ;;
     esac

@@ -49,10 +49,16 @@ repo_root=$(cd "$script_dir/.." && pwd)
 MEASURE="$script_dir/measure-spawn-count.sh"
 BASELINE="$repo_root/tests/fixtures/measure-spawn-count/baseline.tsv"
 TARGETS_DIR="$repo_root/tests/fixtures/measure-spawn-count/targets"
-UNITS="U1 U2 U3 U4 U5 U6 U7 U8"
+UNITS="U1 U2 U3 U4 U5 U6 U7 U8 U9 U10"
 # The unit that runs each target which rewrites PATH: `<target> <unit>` lines.
+# The status line and the pane write PATH only as a prefix of the one command
+# that starts the observer when python3 is off PATH and `/usr/bin/python3` is
+# there, so no later command is hidden; their units still show that every other
+# command goes through the stubs.
 REWRITE_UNITS="plugins/cc-cmds/orchestrator/gate.sh U8
-plugins/cc-cmds/hooks/gate-pretool.sh U7"
+plugins/cc-cmds/hooks/gate-pretool.sh U7
+plugins/cc-cmds/orchestrator/statusline.sh U5
+plugins/cc-cmds/orchestrator/run-pane.sh U6"
 
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/cc-measure-spawn-test.XXXXXX")
 trap 'rm -rf "$WORK"' EXIT
@@ -159,6 +165,19 @@ check "빌트인 파이프라인 교정 줄의 셈이 1 이다 (프로세스 둘
   "$(field "$WORK/cal.txt" calibrate.pipeline-builtin)" "1"
 check "함수 파이프라인 교정 줄의 셈이 2 이다 (함수 요소는 하위 셸로 센다)" \
   "$(field "$WORK/cal.txt" calibrate.pipeline-function)" "2"
+# A test item's watch shims (`<item>.shim/`, first on PATH under the test tree
+# and check-push) are bash scripts that fork before they exec the real command.
+# A stub that resolved its real binary to one counted those forks as the unit's.
+mkdir -p "$WORK/item.shim"
+cat > "$WORK/item.shim/sed" <<EOF
+#!/usr/bin/env bash
+cwd=\$(pwd -P); : "\$cwd"
+exec $(type -P sed) "\$@"
+EOF
+chmod +x "$WORK/item.shim/sed"
+PATH="$WORK/item.shim:$PATH" bash "$MEASURE" --calibrate > "$WORK/cal-shim.txt" 2>"$WORK/cal-shim.err"
+check "감시 shim 디렉터리가 PATH 앞에 있어도 교정 대상의 셈이 6 이다 (shim 의 하위 셸을 세지 않는다)" \
+  "$(field "$WORK/cal-shim.txt" calibrate)" "6"
 
 for u in $UNITS; do
   bash "$MEASURE" --unit "$u" > "$WORK/$u.1" 2>"$WORK/$u.1.err"

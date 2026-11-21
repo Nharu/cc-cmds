@@ -120,12 +120,30 @@ pane_est_lines() {
   printf '%s' "$n"
 }
 
-pane_posint() {
-  # pane_posint <value> <default> — the value when it is a positive integer.
+pane_cells() {
+  # pane_cells <text> — the cells `pane_est_lines` counts for the text, printed.
+  local all asc
+  all=$(printf '%s' "$1" | LC_ALL=C wc -c | tr -d ' ')
+  asc=$(printf '%s' "$1" | LC_ALL=C tr -d '\200-\377' | LC_ALL=C wc -c | tr -d ' ')
+  printf '%s' $(( asc + (2 * (all - asc) + 2) / 3 ))
+}
+
+pane_lines_of_into() {
+  # pane_lines_of_into <cells> <cols> <var> — the lines that many cells take.
+  # The local has a name no caller passes, so `printf -v` reaches the caller's.
+  local pane_lo_n=$(( ($1 + $2 - 1) / $2 ))
+  [ "$pane_lo_n" -ge 1 ] || pane_lo_n=1
+  printf -v "$3" '%s' "$pane_lo_n"
+}
+
+pane_posint_into() {
+  # pane_posint_into <value> <default> <var> — the value when it is a positive
+  # integer, else the default.
   case "$1" in
-    ""|*[!0-9]*) printf '%s' "$2"; return 0 ;;
+    ""|*[!0-9]*) printf -v "$3" '%s' "$2"; return 0 ;;
   esac
-  if [ "${#1}" -gt 6 ] || [ $((10#$1)) -le 0 ]; then printf '%s' "$2"; else printf '%s' $((10#$1)); fi
+  if [ "${#1}" -gt 6 ] || [ $((10#$1)) -le 0 ]; then printf -v "$3" '%s' "$2"
+  else printf -v "$3" '%s' $((10#$1)); fi
 }
 
 if [ "${1:-}" = "--glyphs" ]; then
@@ -136,7 +154,8 @@ if [ "${1:-}" = "--glyphs" ]; then
   exit 0
 fi
 if [ "${1:-}" = "--estimate" ]; then
-  pane_est_lines "$(pane_posint "${2:-}" "$PANE_COLS_DEFAULT")" "$(cat)"
+  pane_posint_into "${2:-}" "$PANE_COLS_DEFAULT" est_cols
+  pane_est_lines "$est_cols" "$(cat)"
   printf '\n'
   exit 0
 fi
@@ -146,13 +165,362 @@ sid="${1:-}"
 cols=$PANE_COLS_DEFAULT; rows=$PANE_ROWS_DEFAULT
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --cols) cols=$(pane_posint "${2:-}" "$PANE_COLS_DEFAULT"); [ "$#" -ge 2 ] && shift ;;
-    --rows) rows=$(pane_posint "${2:-}" "$PANE_ROWS_DEFAULT"); [ "$#" -ge 2 ] && shift ;;
+    --cols) pane_posint_into "${2:-}" "$PANE_COLS_DEFAULT" cols; [ "$#" -ge 2 ] && shift ;;
+    --rows) pane_posint_into "${2:-}" "$PANE_ROWS_DEFAULT" rows; [ "$#" -ge 2 ] && shift ;;
   esac
   shift
 done
 cap=$PANE_CAP_MAX
 [ "$rows" -lt "$cap" ] && cap=$rows
+TAB=$'\t'
+NL='
+'
+
+# ---------------------------------------------------------------------------
+# Rows. Each row is kept in parallel arrays — bundle, mode, the tone/text
+# fragments as one TAB-joined string, the estimated line count, a class used
+# by the reduction, and whether it is protected and currently shown. A wrapped
+# row also keeps the cells its text takes, which do not depend on the width, so
+# the line count can be taken again for another `--cols`.
+# ---------------------------------------------------------------------------
+
+NROWS=0; TOTAL=0
+add_row() {
+  # add_row <bundle> <mode> <class> <protected 0|1> <on 0|1> <tone> <text> [<tone> <text>]...
+  #
+  # Adjacent fragments of the same tone are merged, so a row is never more
+  # pieces than it has colours.
+  local b="$1" m="$2" c="$3" p="$4" on="$5" frag="" lt="" lx="" plain=""
+  shift 5
+  while [ "$#" -ge 2 ]; do
+    if [ -n "$lt" ] && [ "$1" = "$lt" ]; then
+      lx="$lx$2"
+    else
+      [ -n "$lt" ] && frag="$frag${frag:+$TAB}$lt$TAB$lx"
+      lt="$1"; lx="$2"
+    fi
+    plain="$plain$2"
+    shift 2
+  done
+  [ -n "$lt" ] && frag="$frag${frag:+$TAB}$lt$TAB$lx"
+  if [ "$m" = "wrap" ]; then RCELLS[$NROWS]=$(pane_cells "$plain"); else RCELLS[$NROWS]=0; fi
+  add_row_raw "$b" "$m" "$c" "$p" "$on" "${RCELLS[$NROWS]}" "$frag"
+}
+add_row_raw() {
+  # add_row_raw <bundle> <mode> <class> <protected> <on> <cells> <fragments> —
+  # a row whose fragments are already joined, as a facts block keeps it.
+  local n=1
+  RB[$NROWS]=$1; RM[$NROWS]=$2; RC[$NROWS]=$3; RP[$NROWS]=$4; RCELLS[$NROWS]=$6; RF[$NROWS]=$7
+  [ "$2" = "wrap" ] && pane_lines_of_into "$6" "$cols" n
+  RN[$NROWS]=$n
+  RON[$NROWS]=$5
+  [ "$5" = 1 ] && TOTAL=$((TOTAL + RN[NROWS]))
+  NROWS=$((NROWS + 1))
+}
+row_off() { [ "${RON[$1]}" = 1 ] && { RON[$1]=0; TOTAL=$((TOTAL - RN[$1])); }; return 0; }
+row_on()  { [ "${RON[$1]}" = 1 ] || { RON[$1]=1; TOTAL=$((TOTAL + RN[$1])); }; return 0; }
+
+pane_age() {
+  # pane_age <seconds> — PANE_AGE in minutes, never seconds; a negative
+  # difference is 0.
+  local a="$1"
+  [ "$a" -lt 0 ] && a=0
+  if [ "$a" -lt 60 ]; then PANE_AGE='1분 안'
+  elif [ "$a" -lt 3600 ]; then printf -v PANE_AGE '%s분 전' $((a / 60))
+  else printf -v PANE_AGE '%s시간 전' $((a / 3600)); fi
+}
+
+pane_head_detail() {
+  # pane_head_detail — the head-detail row: ledger age, watcher, cumulative
+  # cost. The ledger age and the heartbeat age come from the fields row alone —
+  # the same evaluation that chose the status line's words — so the two screens
+  # cannot disagree, and without a fields row both slots are dropped rather than
+  # filled from another clock. Reads `fields`, `f_now`, `f_grew`, `f_hb`,
+  # `f_watch` and `cost_usd`.
+  local hd=() args=() j hb_age=""
+  if [ -n "$fields" ]; then
+    if [ "$f_grew" != "-" ]; then
+      pane_age $((f_now - f_grew))
+      hd[${#hd[@]}]=dim; hd[${#hd[@]}]="원장 $PANE_AGE"
+    fi
+    [ "$f_hb" != "-" ] && { pane_age $((f_now - f_hb)); hb_age=$PANE_AGE; }
+    case "$f_watch" in
+      ok)        hd[${#hd[@]}]=dim;  hd[${#hd[@]}]="워처 ♥${hb_age:+ $hb_age}" ;;
+      stale)     hd[${#hd[@]}]=warn; hd[${#hd[@]}]="워처 없음${hb_age:+ $hb_age}" ;;
+      unstarted) hd[${#hd[@]}]=dim;  hd[${#hd[@]}]="워처 미기동" ;;
+    esac
+  fi
+  [ -n "$cost_usd" ] && { hd[${#hd[@]}]=dim; hd[${#hd[@]}]="\$$cost_usd"; }
+  if [ "${#hd[@]}" -gt 0 ]; then
+    j=0
+    while [ "$j" -lt "${#hd[@]}" ]; do
+      if [ "$j" -gt 0 ]; then args[${#args[@]}]=dim; args[${#args[@]}]=" · "; fi
+      args[${#args[@]}]=${hd[$j]}; args[${#args[@]}]=${hd[$((j + 1))]}
+      j=$((j + 2))
+    done
+    add_row head-detail cut - 1 1 "${args[@]}"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# The reduction. Until the estimated total is at most the cap, in order:
+#   1. events, oldest first; with none left, the event heading and its gap;
+#   2. the automatically handled halt records (`halt-auto`), from the bottom;
+#   3. the detail rows of finished segments;
+#   4. finished segments, folded into `끝난 세그먼트 N개`;
+#   5. the remaining detail rows, a running segment's last;
+#   6. gaps;
+#   7. open segments without a held block (park included), folded into
+#      `끝나지 않은 세그먼트 N개`.
+# Protected rows — title, session title, head, head-detail, approvals, block
+# headings and reasons, the unresolved cone count, orphans, a segment with a
+# held block — are never touched, so the result is at most max(cap, floor).
+# ---------------------------------------------------------------------------
+
+over() { [ "$TOTAL" -gt "$cap" ]; }
+
+drop_bottom_up() {
+  # drop_bottom_up <bundle> [<class>...] — switch rows of that bundle off from
+  # the bottom, one at a time, while over the cap. With classes, only those.
+  local b="$1" i want
+  shift
+  want=" $* "
+  i=$((NROWS - 1))
+  while [ "$i" -ge 0 ] && over; do
+    if [ "${RON[$i]}" = 1 ] && [ "${RB[$i]}" = "$b" ] && [ "${RP[$i]}" = 0 ]; then
+      if [ "$want" = "  " ] || case "$want" in *" ${RC[$i]} "*) true ;; *) false ;; esac; then
+        row_off "$i"
+      fi
+    fi
+    i=$((i - 1))
+  done
+}
+
+fold_segments() {
+  # fold_segments <fold-row> <label> <class>... — fold every unprotected
+  # segment of those classes, with its detail row, into one counted row.
+  local fr="$1" label="$2" i n=0 want
+  shift 2
+  want=" $* "
+  i=0
+  while [ "$i" -lt "$NROWS" ]; do
+    if [ "${RP[$i]}" = 0 ] && case "$want" in *" ${RC[$i]} "*) true ;; *) false ;; esac; then
+      case "${RB[$i]}" in
+        seg)        [ "${RON[$i]}" = 1 ] && n=$((n + 1)); row_off "$i" ;;
+        seg-detail) row_off "$i" ;;
+      esac
+    fi
+    i=$((i + 1))
+  done
+  if [ "$n" -gt 0 ]; then
+    RF[$fr]="${RF[$fr]%%$TAB*}$TAB$label ${n}개"
+    row_on "$fr"
+  fi
+}
+
+pane_reduce_print() {
+  # pane_reduce_print — the reduction above, then the head row and every row
+  # still shown. Reads `n_segs`, `FOLD_DONE`, `FOLD_OPEN`, `EV_GAP`, `EV_HEAD`,
+  # `kind`, `rid`, `idx` and `refresh`.
+  local i left
+  if over; then
+    drop_bottom_up event
+    if [ "$EV_HEAD" -ge 0 ]; then
+      left=0; i=$((EV_HEAD + 1))
+      while [ "$i" -lt "$NROWS" ]; do
+        [ "${RB[$i]}" = event ] && [ "${RON[$i]}" = 1 ] && left=$((left + 1))
+        i=$((i + 1))
+      done
+      [ "$left" -eq 0 ] && { row_off "$EV_HEAD"; row_off "$EV_GAP"; }
+    fi
+  fi
+  over && drop_bottom_up halt-auto
+  over && drop_bottom_up seg-detail done
+  over && [ "$n_segs" -gt 0 ] && fold_segments "$FOLD_DONE" "끝난 세그먼트" done
+  over && drop_bottom_up seg-detail open park held
+  over && drop_bottom_up seg-detail run
+  over && drop_bottom_up gap
+  over && [ "$n_segs" -gt 0 ] && fold_segments "$FOLD_OPEN" "끝나지 않은 세그먼트" open park run
+
+  printf 'cc-pane\t%s\t%s\t%s\t%s\t%s\n' "$PANE_SCHEMA" "$kind" "$rid" "$idx" "$refresh"
+  i=0
+  while [ "$i" -lt "$NROWS" ]; do
+    [ "${RON[$i]}" = 1 ] && printf '%s\t%s\t%s\n' "${RB[$i]}" "${RM[$i]}" "${RF[$i]}"
+    i=$((i + 1))
+  done
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# The fast path.
+# ---------------------------------------------------------------------------
+#
+# WHEN THE OBSERVER HAS PRECOMPUTED THIS SESSION, DRAWING COSTS NO PROCESS. The
+# observer (`observer.py`) runs this script with the session id alone and
+# `CC_PANE_FACTS_OUT=1`, and keeps the block it prints as
+# `observer/pane/<sid>.facts`: the head facts, then every row as it was built,
+# with the cells a wrapped row's text takes and the inputs of the head-detail
+# row in place of that row. Nothing in it depends on the pane's size, so this
+# path takes `--cols` and `--rows` from this call, counts the wrapped rows'
+# lines, rebuilds the head-detail ages against the current clock and runs the
+# same reduction. It is used under the same conditions as the status line's
+# block — known keys, equal input keys (this script's path as invoked, the
+# session id, the index path and the environment values the pane reads), an
+# observer pid that answers and a clock before `expires` — and falls through to
+# the direct path otherwise. The clock is `EPOCHSECONDS`, else
+# `printf '%(%s)T'`, and only bash 3.2 spends a `date`.
+PANE_ID_SID_CLASS='*[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-]*'
+
+pane_fact_env() {
+  # pane_fact_env <name> <var> — `=` and the value when the variable is set,
+  # empty when it is not.
+  case "$1" in
+    CC_CMDS_AUTOPILOT_TZ) printf -v "$2" '%s' "${CC_CMDS_AUTOPILOT_TZ+=$CC_CMDS_AUTOPILOT_TZ}" ;;
+    XDG_STATE_HOME)       printf -v "$2" '%s' "${XDG_STATE_HOME+=$XDG_STATE_HOME}" ;;
+    HOME)                 printf -v "$2" '%s' "${HOME+=$HOME}" ;;
+    CLAUDE_CONFIG_DIR)    printf -v "$2" '%s' "${CLAUDE_CONFIG_DIR+=$CLAUDE_CONFIG_DIR}" ;;
+  esac
+}
+PANE_FACT_ENVS="CC_CMDS_AUTOPILOT_TZ XDG_STATE_HOME HOME CLAUDE_CONFIG_DIR"
+
+pane_fast() {
+  # pane_fast — draws the pane from this session's facts block and succeeds, or
+  # fails having printed nothing.
+  [ "${CC_PANE_FACTS_OUT:-}" = 1 ] && return 1
+  [ "${CC_CMDS_OBSERVER:-}" = off ] && return 1
+  [ -z "${CI:-}" ] || return 1
+  case "$sid" in ''|$PANE_ID_SID_CLASS) return 1 ;; esac
+  case "$sid" in *[!.]*) ;; *) return 1 ;; esac
+  local base od f k v cur head="" p="" seen=0 bit hd_seen=0 x
+  local f_expires="" b m c pr on cells
+  if [ -n "${XDG_STATE_HOME:-}" ]; then base=$XDG_STATE_HOME
+  elif [ -n "${HOME:-}" ]; then base="$HOME/.local/state"
+  else return 1
+  fi
+  od="$base/cc-cmds/observer"
+  f="$od/pane/$sid.facts"
+  { [ -f "$f" ] && [ -r "$f" ]; } || return 1
+  NROWS=0; TOTAL=0; RB=(); RM=(); RC=(); RP=(); RCELLS=(); RF=(); RN=(); RON=()
+  kind=""; rid=""; refresh=""; n_segs=""; FOLD_DONE=""; FOLD_OPEN=""; EV_GAP=""; EV_HEAD=""
+  fields=1; f_grew=""; f_hb=""; f_watch=""; cost_usd=""
+  {
+    IFS= read -r head || return 1
+    [ "$head" = "cc-pane-facts 1" ] || return 1
+    while IFS=$'\t' read -r k v || [ -n "$k" ]; do
+      bit=0
+      case "$k" in
+        key.script) bit=1; [ "$v" = "${BASH_SOURCE[0]}" ] || return 1 ;;
+        key.sid)    bit=2; [ "$v" = "$sid" ] || return 1 ;;
+        key.index)  bit=4; [ "$v" = "$base/cc-cmds/session/$sid" ] || return 1 ;;
+        key.CC_CMDS_AUTOPILOT_TZ|key.XDG_STATE_HOME|key.HOME|key.CLAUDE_CONFIG_DIR)
+          case "$k" in
+            key.CC_CMDS_AUTOPILOT_TZ) bit=8 ;; key.XDG_STATE_HOME) bit=16 ;;
+            key.HOME) bit=32 ;; *) bit=64 ;;
+          esac
+          pane_fact_env "${k#key.}" cur
+          [ "$v" = "$cur" ] || return 1
+          ;;
+        computed) bit=128 ;;
+        expires)  bit=256;    f_expires=$v ;;
+        dormant)  bit=512;    [ "$v" = 0 ] || return 1 ;;
+        kind)     bit=1024;   kind=$v ;;
+        rid)      bit=2048;   rid=$v ;;
+        refresh)  bit=4096;   refresh=$v ;;
+        nsegs)    bit=8192;   n_segs=$v ;;
+        folddone) bit=16384;  FOLD_DONE=$v ;;
+        foldopen) bit=32768;  FOLD_OPEN=$v ;;
+        evgap)    bit=65536;  EV_GAP=$v ;;
+        evhead)   bit=131072; EV_HEAD=$v ;;
+        grew)     bit=262144; f_grew=$v ;;
+        hb)       bit=524288; f_hb=$v ;;
+        watch)    bit=1048576; f_watch=$v ;;
+        cost)     bit=2097152; cost_usd=$v ;;
+        hd)
+          # Must come after the four head-detail inputs above.
+          [ $((seen & 3932160)) = 3932160 ] && [ "$hd_seen" = 0 ] || return 1
+          hd_seen=1
+          ;;
+        row)
+          # <bundle> <mode> <class> <protected> <on> <cells> <fragments> `.`
+          case "$v" in *"$TAB.") v=${v%"$TAB."} ;; *) return 1 ;; esac
+          b=${v%%"$TAB"*}; v=${v#*"$TAB"}
+          m=${v%%"$TAB"*}; v=${v#*"$TAB"}
+          c=${v%%"$TAB"*}; v=${v#*"$TAB"}
+          pr=${v%%"$TAB"*}; v=${v#*"$TAB"}
+          on=${v%%"$TAB"*}; v=${v#*"$TAB"}
+          cells=${v%%"$TAB"*}; v=${v#*"$TAB"}
+          case "$m" in cut|wrap) ;; *) return 1 ;; esac
+          case "$pr$on" in 00|01|10|11) ;; *) return 1 ;; esac
+          case "$cells" in ''|*[!0123456789]*) return 1 ;; esac
+          add_row_raw "$b" "$m" "$c" "$pr" "$on" "$cells" "$v"
+          ;;
+        *) return 1 ;;
+      esac
+      if [ "$bit" != 0 ]; then
+        [ $((seen & bit)) = 0 ] || return 1
+        seen=$((seen | bit))
+      fi
+      if [ "$k" = hd ]; then
+        f_now=$PANE_HD_NOW
+        pane_head_detail
+      fi
+      k=""; v=""
+    done
+  } 2>/dev/null < "$f" || return 1
+  [ "$seen" = 4194303 ] || return 1
+  for x in "$f_expires" "$n_segs" "$refresh"; do
+    case "$x" in ''|*[!0123456789]*) return 1 ;; esac
+  done
+  for x in "$EV_GAP" "$EV_HEAD" "$FOLD_DONE" "$FOLD_OPEN"; do
+    case "$x" in -1) ;; ''|*[!0123456789]*) return 1 ;; esac
+  done
+  [ "$PANE_HD_NOW" -lt "$f_expires" ] || return 1
+  case "$kind" in live|ended) ;; *) return 1 ;; esac
+  [ -n "$rid" ] || return 1
+  idx="$base/cc-cmds/session/$sid"
+  pane_reduce_print
+}
+
+pane_clock_into() {
+  # pane_clock_into <var> — the current epoch without a process where the
+  # shell has one, or empty.
+  local t=""
+  if [ -n "${EPOCHSECONDS:-}" ]; then
+    t=$EPOCHSECONDS
+  else
+    printf -v t '%(%s)T' -1 2>/dev/null || t=""
+    # `exec` keeps this to one process: bash 3.2 forks once more for a command
+    # substitution whose command carries a redirection, unless it execs.
+    case "$t" in ''|*[!0123456789]*) t=$(exec date -u +%s 2>/dev/null) ;; esac
+  fi
+  case "$t" in ''|*[!0123456789]*) t="" ;; esac
+  printf -v "$1" '%s' "$t"
+}
+
+pane_fast_ready() {
+  # pane_fast_ready — the observer is alive and the clock is known; PANE_HD_NOW
+  # is that clock. Checked before the block is read, so that a dead observer
+  # costs no parse.
+  local od p=""
+  if [ -n "${XDG_STATE_HOME:-}" ]; then od="$XDG_STATE_HOME/cc-cmds/observer"
+  elif [ -n "${HOME:-}" ]; then od="$HOME/.local/state/cc-cmds/observer"
+  else return 1
+  fi
+  { IFS= read -r p || [ -n "$p" ]; } 2>/dev/null < "$od/observer.pid" || return 1
+  case "$p" in ''|*[!0123456789]*) return 1 ;; esac
+  kill -0 "$p" 2>/dev/null || return 1
+  pane_clock_into PANE_HD_NOW
+  [ -n "$PANE_HD_NOW" ]
+}
+
+# `pane_fast` prints nothing until the whole block has been read and checked,
+# so a block that turns out unusable halfway leaves stdout empty for the
+# direct path; the rows it built are cleared here.
+if [ "${CC_PANE_FACTS_OUT:-}" != 1 ] && [ "${CC_CMDS_OBSERVER:-}" != off ] && [ -z "${CI:-}" ] \
+   && pane_fast_ready; then
+  pane_fast && exit 0
+  NROWS=0; TOTAL=0; RB=(); RM=(); RC=(); RP=(); RCELLS=(); RF=(); RN=(); RON=()
+fi
 
 pane_dirname_into() {
   # pane_dirname_into <path> <var> — sets <var> to what `dirname <path>` prints:
@@ -175,9 +543,6 @@ PANE_STATE="${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds"
 # The outer `$( )` stays: `cd` inside it leaves this shell's `PWD` alone.
 pane_dirname_into "${BASH_SOURCE[0]:-$0}" pane_src_dir
 PANE_DIR=$(cd "$pane_src_dir" 2>/dev/null && pwd) || PANE_DIR=""
-TAB=$'\t'
-NL='
-'
 
 pane_id_shape_ok() {
   # pane_id_shape_ok <value> <letters> — succeeds when some line of the value
@@ -222,11 +587,22 @@ pane_session_title() {
   PANE_TITLE=${l2//$TAB/ }
 }
 
+pane_facts_dormant() {
+  # pane_facts_dormant — in the facts mode, the block that says "nothing to keep
+  # for this session", then exit; otherwise nothing.
+  if [ "${CC_PANE_FACTS_OUT:-}" = 1 ]; then
+    printf 'cc-pane-facts 1\ndormant\t1\n'; exit 0
+  fi
+}
+
 pane_none() {
   # pane_none <index-path|-> — the head row and the one body row of a session
   # with no run to show, then exit. A session whose id passed the shape check
   # also gets its title row under it when it has a current title.
   local st=""
+  # In the facts mode there is nothing to precompute: the observer reads
+  # `dormant` and drops this session's registration.
+  pane_facts_dormant
   printf 'cc-pane\t%s\tnone\t-\t%s\t%s\n' "$PANE_SCHEMA" "$1" "$PANE_REFRESH_OTHER"
   printf 'none\tcut\tdim\t연결된 런 없음\n'
   [ "$1" = "-" ] || { pane_session_title "$sid"; st=$PANE_TITLE; }
@@ -259,6 +635,20 @@ fields=""
 case "$sl_out" in
   *"$NL"*) fields=${sl_out#*"$NL"}; fields=${fields%%"$NL"*} ;;
 esac
+# In the facts mode the status line adds a third line, `cc-sl-expires <epoch>`:
+# the instant its selection's verdicts can next change.
+pane_expires=""
+if [ "${CC_PANE_FACTS_OUT:-}" = 1 ]; then
+  pane_x=${sl_out#*"$NL"}
+  case "$pane_x" in
+    *"$NL"*) pane_x=${pane_x#*"$NL"}; pane_x=${pane_x%%"$NL"*} ;;
+    *) pane_x="" ;;
+  esac
+  case "$pane_x" in
+    "cc-sl-expires$TAB"*) pane_expires=${pane_x#*"$TAB"} ;;
+  esac
+  case "$pane_expires" in *[!0123456789]*) pane_expires="" ;; esac
+fi
 esc=$'\033'
 case "$human" in
   ""|"$esc"*) pane_none "$idx" ;;
@@ -296,6 +686,10 @@ pane_glyph_class "$glyph"; kind=$PANE_CLASS
 pane_glyph_tone "$glyph"; gtone=$PANE_TONE
 refresh=$PANE_REFRESH_OTHER
 [ "$kind" = "live" ] && refresh=$PANE_REFRESH_LIVE
+# Only a run in flight, drawn from a fields row, is precomputed: a finished run
+# moves no more, and a head copied from the human line carries the status
+# line's own clock slots.
+if [ "$kind" != live ] || [ -z "$fields" ]; then pane_facts_dormant; fi
 
 rd="$PANE_STATE/run/$rid"
 ledger=""
@@ -338,50 +732,6 @@ if [ -f "$PANE_DIR/display-tz.sh" ]; then
 fi
 full=0
 [ "$have_liveness" = 1 ] && [ -n "$ledger" ] && full=1
-
-# ---------------------------------------------------------------------------
-# Rows. Each row is kept in parallel arrays — bundle, mode, the tone/text
-# fragments as one TAB-joined string, the estimated line count, a class used
-# by the reduction, and whether it is protected and currently shown.
-# ---------------------------------------------------------------------------
-
-NROWS=0; TOTAL=0
-add_row() {
-  # add_row <bundle> <mode> <class> <protected 0|1> <on 0|1> <tone> <text> [<tone> <text>]...
-  #
-  # Adjacent fragments of the same tone are merged, so a row is never more
-  # pieces than it has colours.
-  local b="$1" m="$2" c="$3" p="$4" on="$5" frag="" lt="" lx="" plain=""
-  shift 5
-  while [ "$#" -ge 2 ]; do
-    if [ -n "$lt" ] && [ "$1" = "$lt" ]; then
-      lx="$lx$2"
-    else
-      [ -n "$lt" ] && frag="$frag${frag:+$TAB}$lt$TAB$lx"
-      lt="$1"; lx="$2"
-    fi
-    plain="$plain$2"
-    shift 2
-  done
-  [ -n "$lt" ] && frag="$frag${frag:+$TAB}$lt$TAB$lx"
-  RB[$NROWS]=$b; RM[$NROWS]=$m; RF[$NROWS]=$frag; RC[$NROWS]=$c; RP[$NROWS]=$p
-  if [ "$m" = "wrap" ]; then RN[$NROWS]=$(pane_est_lines "$cols" "$plain"); else RN[$NROWS]=1; fi
-  RON[$NROWS]=$on
-  [ "$on" = 1 ] && TOTAL=$((TOTAL + RN[NROWS]))
-  NROWS=$((NROWS + 1))
-}
-row_off() { [ "${RON[$1]}" = 1 ] && { RON[$1]=0; TOTAL=$((TOTAL - RN[$1])); }; return 0; }
-row_on()  { [ "${RON[$1]}" = 1 ] || { RON[$1]=1; TOTAL=$((TOTAL + RN[$1])); }; return 0; }
-
-pane_age() {
-  # pane_age <seconds> — PANE_AGE in minutes, never seconds; a negative
-  # difference is 0.
-  local a="$1"
-  [ "$a" -lt 0 ] && a=0
-  if [ "$a" -lt 60 ]; then PANE_AGE='1분 안'
-  elif [ "$a" -lt 3600 ]; then printf -v PANE_AGE '%s분 전' $((a / 60))
-  else printf -v PANE_AGE '%s시간 전' $((a / 3600)); fi
-}
 
 pane_etime_secs() {
   # pane_etime_secs <etime> — PANE_SECS is `MM:SS`, `HH:MM:SS` or
@@ -647,6 +997,7 @@ else
 fi
 
 [ "$full" = 1 ] || {
+  pane_facts_dormant
   printf 'cc-pane\t%s\t%s\t%s\t%s\t%s\n' "$PANE_SCHEMA" "$kind" "$rid" "$idx" "$refresh"
   i=0
   while [ "$i" -lt "$NROWS" ]; do
@@ -656,35 +1007,12 @@ fi
   exit 0
 }
 
-# head-detail: ledger age, watcher, cumulative cost. The ledger age and the
-# heartbeat age come from the fields row alone — the same evaluation that chose
-# the status line's words — so the two screens cannot disagree, and without a
-# fields row both slots are dropped rather than filled from another clock.
-hd=()
+# head-detail: ledger age, watcher, cumulative cost (`pane_head_detail`). Where
+# it lands is kept, so that a facts block can carry its inputs in its place.
 fact cost; fact_col "$PANE_FACT" 1; cost_usd=$PANE_COL
-if [ -n "$fields" ]; then
-  if [ "$f_grew" != "-" ]; then
-    pane_age $((f_now - f_grew))
-    hd[${#hd[@]}]=dim; hd[${#hd[@]}]="원장 $PANE_AGE"
-  fi
-  hb_age=""
-  [ "$f_hb" != "-" ] && { pane_age $((f_now - f_hb)); hb_age=$PANE_AGE; }
-  case "$f_watch" in
-    ok)        hd[${#hd[@]}]=dim;  hd[${#hd[@]}]="워처 ♥${hb_age:+ $hb_age}" ;;
-    stale)     hd[${#hd[@]}]=warn; hd[${#hd[@]}]="워처 없음${hb_age:+ $hb_age}" ;;
-    unstarted) hd[${#hd[@]}]=dim;  hd[${#hd[@]}]="워처 미기동" ;;
-  esac
-fi
-[ -n "$cost_usd" ] && { hd[${#hd[@]}]=dim; hd[${#hd[@]}]="\$$cost_usd"; }
-if [ "${#hd[@]}" -gt 0 ]; then
-  args=(); j=0
-  while [ "$j" -lt "${#hd[@]}" ]; do
-    if [ "$j" -gt 0 ]; then args[${#args[@]}]=dim; args[${#args[@]}]=" · "; fi
-    args[${#args[@]}]=${hd[$j]}; args[${#args[@]}]=${hd[$((j + 1))]}
-    j=$((j + 2))
-  done
-  add_row head-detail cut - 1 1 "${args[@]}"
-fi
+pane_hd_at=$NROWS
+pane_head_detail
+pane_hd_n=$((NROWS - pane_hd_at))
 
 # ---------------------------------------------------------------------------
 # Segments
@@ -922,84 +1250,88 @@ EOF
 fi
 
 # ---------------------------------------------------------------------------
-# The reduction. Until the estimated total is at most the cap, in order:
-#   1. events, oldest first; with none left, the event heading and its gap;
-#   2. the automatically handled halt records (`halt-auto`), from the bottom;
-#   3. the detail rows of finished segments;
-#   4. finished segments, folded into `끝난 세그먼트 N개`;
-#   5. the remaining detail rows, a running segment's last;
-#   6. gaps;
-#   7. open segments without a held block (park included), folded into
-#      `끝나지 않은 세그먼트 N개`.
-# Protected rows — title, session title, head, head-detail, approvals, block
-# headings and reasons, the unresolved cone count, orphans, a segment with a
-# held block — are never touched, so the result is at most max(cap, floor).
+# The facts block, when the observer asks for it.
 # ---------------------------------------------------------------------------
-
-over() { [ "$TOTAL" -gt "$cap" ]; }
-
-drop_bottom_up() {
-  # drop_bottom_up <bundle> [<class>...] — switch rows of that bundle off from
-  # the bottom, one at a time, while over the cap. With classes, only those.
-  local b="$1" i want
-  shift
-  want=" $* "
-  i=$((NROWS - 1))
-  while [ "$i" -ge 0 ] && over; do
-    if [ "${RON[$i]}" = 1 ] && [ "${RB[$i]}" = "$b" ] && [ "${RP[$i]}" = 0 ]; then
-      if [ "$want" = "  " ] || case "$want" in *" ${RC[$i]} "*) true ;; *) false ;; esac; then
-        row_off "$i"
-      fi
-    fi
-    i=$((i - 1))
-  done
-}
-
-fold_segments() {
-  # fold_segments <fold-row> <label> <class>... — fold every unprotected
-  # segment of those classes, with its detail row, into one counted row.
-  local fr="$1" label="$2" i n=0 want
-  shift 2
-  want=" $* "
+#
+# Every row as it was built, in order, before the reduction: the reduction and
+# the line counts are the drawing's, taken again for each `--cols` and
+# `--rows`. The head-detail row is carried as its inputs (`hd`), since its ages
+# move with the clock. `expires` is the status line's, which judged this run
+# against its thresholds. A row ends in a `.` so that its trailing empty
+# fragment survives the `read` that takes it back. A value holding a newline
+# cannot be carried, so then nothing is printed.
+pane_facts_emit() {
+  local out="" i n cur v
+  pane_fx() { out="$out$1$TAB$2$NL"; }
+  out="cc-pane-facts 1$NL"
+  pane_fx key.script "${BASH_SOURCE[0]}"
+  pane_fx key.sid "$sid"
+  pane_fx key.index "$idx"
+  for n in $PANE_FACT_ENVS; do pane_fact_env "$n" cur; pane_fx "key.$n" "$cur"; done
+  pane_fx computed "$f_now"; pane_fx expires "$pane_expires"; pane_fx dormant 0
+  pane_fx kind "$kind"; pane_fx rid "$rid"; pane_fx refresh "$refresh"
+  pane_fx nsegs "$n_segs"; pane_fx folddone "${FOLD_DONE:--1}"; pane_fx foldopen "${FOLD_OPEN:--1}"
+  pane_fx evgap "$EV_GAP"; pane_fx evhead "$EV_HEAD"
+  pane_fx grew "$f_grew"; pane_fx hb "$f_hb"; pane_fx watch "$f_watch"; pane_fx cost "$cost_usd"
+  n=22
   i=0
   while [ "$i" -lt "$NROWS" ]; do
-    if [ "${RP[$i]}" = 0 ] && case "$want" in *" ${RC[$i]} "*) true ;; *) false ;; esac; then
-      case "${RB[$i]}" in
-        seg)        [ "${RON[$i]}" = 1 ] && n=$((n + 1)); row_off "$i" ;;
-        seg-detail) row_off "$i" ;;
-      esac
+    if [ "$pane_hd_n" = 1 ] && [ "$i" = "$pane_hd_at" ]; then
+      out="${out}hd$TAB$NL"
+    else
+      out="${out}row$TAB${RB[$i]}$TAB${RM[$i]}$TAB${RC[$i]}$TAB${RP[$i]}$TAB${RON[$i]}$TAB${RCELLS[$i]}$TAB${RF[$i]}$TAB.$NL"
     fi
-    i=$((i + 1))
+    n=$((n + 1)); i=$((i + 1))
   done
-  if [ "$n" -gt 0 ]; then
-    RF[$fr]="${RF[$fr]%%$TAB*}$TAB$label ${n}개"
-    row_on "$fr"
-  fi
+  # One line per key and per row, and nothing more.
+  i=0; v=$out
+  while [ "${v#*"$NL"}" != "$v" ]; do v=${v#*"$NL"}; i=$((i + 1)); done
+  [ "$i" = $((n + 1)) ] || return 0
+  printf '%s' "$out"
 }
 
-if over; then
-  drop_bottom_up event
-  if [ "$EV_HEAD" -ge 0 ]; then
-    left=0; i=$((EV_HEAD + 1))
-    while [ "$i" -lt "$NROWS" ]; do
-      [ "${RB[$i]}" = event ] && [ "${RON[$i]}" = 1 ] && left=$((left + 1))
-      i=$((i + 1))
-    done
-    [ "$left" -eq 0 ] && { row_off "$EV_HEAD"; row_off "$EV_GAP"; }
+if [ "${CC_PANE_FACTS_OUT:-}" = 1 ]; then
+  if [ -n "$pane_expires" ]; then pane_facts_emit; fi
+  exit 0
+fi
+
+pane_reduce_print
+
+# ---------------------------------------------------------------------------
+# The observer.
+# ---------------------------------------------------------------------------
+#
+# A pane showing a run in flight registers its session with the observer, so
+# that its next draws take the fast path: `ensure` with this session, this
+# script and the index, detached with every stream closed, at most every 30
+# seconds by the epoch `ensure.at` holds. Only with the switch on
+# (`CC_CMDS_OBSERVER` is not `off` and `CI` is empty) and python3 present; a
+# finished run starts nothing. The status line the pane called starts nothing
+# itself, so this is the one start a pane draw makes.
+if [ "$kind" = live ] && [ "${CC_CMDS_OBSERVER:-}" != off ] && [ -z "${CI:-}" ] \
+   && [ -n "$PANE_DIR" ] && [ -f "$PANE_DIR/observer.py" ]; then
+  pane_py=0
+  if type -P python3 >/dev/null 2>&1; then pane_py=1
+  elif [ -x /usr/bin/python3 ]; then pane_py=2
+  fi
+  if [ "$pane_py" != 0 ]; then
+    pane_at=""
+    { IFS= read -r pane_at || [ -n "$pane_at" ]; } 2>/dev/null < "$PANE_STATE/observer/ensure.at" || pane_at=""
+    case "$pane_at" in ''|*[!0123456789]*) pane_at=0 ;; esac
+    pane_clock_into pane_now
+    case "$pane_now" in ''|*[!0123456789]*) pane_now=$f_now ;; esac
+    case "$pane_now" in ''|*[!0123456789]*) pane_now=0 ;; esac
+    if [ $((pane_now - pane_at)) -ge 30 ] || [ "$pane_at" -gt "$pane_now" ]; then
+      pane_self=${BASH_SOURCE[0]}
+      case "$pane_self" in /*) ;; *) pane_self="$PANE_DIR/run-pane.sh" ;; esac
+      if [ "$pane_py" = 1 ]; then
+        python3 "$PANE_DIR/observer.py" ensure --pane-session "$sid" --pane-script "$pane_self" \
+          --pane-index "$idx" </dev/null >/dev/null 2>&1 &
+      else
+        PATH="/usr/bin:$PATH" python3 "$PANE_DIR/observer.py" ensure --pane-session "$sid" \
+          --pane-script "$pane_self" --pane-index "$idx" </dev/null >/dev/null 2>&1 &
+      fi
+    fi
   fi
 fi
-over && drop_bottom_up halt-auto
-over && drop_bottom_up seg-detail done
-over && [ "$n_segs" -gt 0 ] && fold_segments "$FOLD_DONE" "끝난 세그먼트" done
-over && drop_bottom_up seg-detail open park held
-over && drop_bottom_up seg-detail run
-over && drop_bottom_up gap
-over && [ "$n_segs" -gt 0 ] && fold_segments "$FOLD_OPEN" "끝나지 않은 세그먼트" open park run
-
-printf 'cc-pane\t%s\t%s\t%s\t%s\t%s\n' "$PANE_SCHEMA" "$kind" "$rid" "$idx" "$refresh"
-i=0
-while [ "$i" -lt "$NROWS" ]; do
-  [ "${RON[$i]}" = 1 ] && printf '%s\t%s\t%s\n' "${RB[$i]}" "${RM[$i]}" "${RF[$i]}"
-  i=$((i + 1))
-done
 exit 0

@@ -312,10 +312,25 @@ fi
 # prose that documents the absence and reports it as the thing it documents.
 # Cutting at the first `#` keeps every executable occurrence — a real call with
 # a trailing comment still survives the cut — so the strictness is unchanged.
+#
+# ONE NAMED EXCEPTION, AND IT IS PINNED TO WHAT IT ASKS. The status line's fast
+# path runs before `liveness.sh` is sourced and asks one question no predicate
+# there answers for it: whether the observer's recorded pid answers. That test
+# lives in `sl_observer_answers` alone, its body is cut before the count, and the
+# assertions after the loop hold it to its one use — a single call, on the pid
+# read from `observer.pid` — so a stage or run judgement routed through it is a
+# red here rather than a quiet fourth answer.
 for f in "$GATE" "$WATCH" "$SL"; do
-  n=$(sed 's/#.*//' "$f" | grep -c 'kill -0' || true)
+  n=$(sed 's/#.*//' "$f" | awk '/^sl_observer_answers\(\) \{/ { skip = 1 } !skip { print } skip && /^}/ { skip = 0 }' \
+    | grep -c 'kill -0' || true)
   check "$(basename "$f") 는 자기 라이브니스 판정을 갖지 않는다" "$n" "0"
 done
+check "statusline.sh 의 관측기 존재 검사는 kill -0 한 줄뿐이다" \
+  "$(sed -n '/^sl_observer_answers() {/,/^}/p' "$SL" | sed 's/#.*//' | grep -c 'kill -0' || true)" 1
+check "statusline.sh 의 관측기 존재 검사는 한 곳에서만 불린다" \
+  "$(sed 's/#.*//' "$SL" | grep -v '^sl_observer_answers() {' | grep -c 'sl_observer_answers' || true)" 1
+check "그 한 곳은 observer.pid 에서 읽은 pid 를 묻는다" \
+  "$(sed 's/#.*//' "$SL" | grep -B2 'sl_observer_answers "\$p"' | grep -c 'observer.pid' || true)" 1
 
 # ---------------------------------------------------------------------------
 # The run-scope block census is a SET operation, so it carries the same
@@ -1440,6 +1455,89 @@ for eq_iso in 1970-01-01T00:00:00Z 2000-02-29T23:59:59Z 2026-11-10T12:34:56Z 209
     "$(bash -c '. "$1"; cc_iso_to_epoch_into v "$2"; printf "%s" "$v"' eq "$LIVENESS" "$eq_iso")" \
     "$(bash -c '. "$1"; cc_iso_to_epoch "$2"' eq "$LIVENESS" "$eq_iso")"
 done
+
+# ---------------------------------------------------------------------------
+# The observer as the run's watcher
+# ---------------------------------------------------------------------------
+# When the observer holds a run's watcher job, `watch.pid` names the observer's
+# own pid and the observer rewrites `watch.heartbeat`. The status line, the pane
+# and `liveness.sh` must read that as a watcher that is alive — the same as the
+# loop it stands in for — and `liveness.sh` must not count that pid as a stage.
+# The job here is a fixture module in a copy of the observer's tree, the only
+# place modules are loaded from; it writes the heartbeat in the watcher's field
+# order every second. The observer is started in this suite's own state root
+# with the switch on and the stage's names dropped, and stopped on the way out.
+if command -v python3 >/dev/null 2>&1; then
+  OW_TREE="$WORK/obtree"
+  OW_PY="$OW_TREE/orchestrator/observer.py"
+  mkdir -p "$OW_TREE/.claude-plugin" "$OW_TREE/orchestrator"
+  cp "$repo_root/plugins/cc-cmds/orchestrator/observer.py" \
+     "$repo_root/plugins/cc-cmds/orchestrator/observer-protocol" "$OW_TREE/orchestrator/"
+  cp "$repo_root/plugins/cc-cmds/.claude-plugin/plugin.json" "$OW_TREE/.claude-plugin/"
+  cat > "$OW_TREE/orchestrator/observer_watchfx.py" <<'PY'
+import os
+import time
+
+JOB = "watchfx"
+PID_FILE = "watch.pid"
+
+
+def probes(run):
+    return []
+
+
+def tick(ctx, run, changed, now):
+    t = int(time.time())
+    tmp = os.path.join(run, ".watch.heartbeat.tmp")
+    with open(tmp, "w") as f:
+        f.write("관측기 원장 0초 전 갱신 · 스테이지 0개 · 대기 승인 0건 · 비종단 세그먼트 1개"
+                " · 원장크기=1 · 마지막성장=%d\n" % t)
+    os.rename(tmp, os.path.join(run, "watch.heartbeat"))
+    return now + 1
+PY
+  trap 'XDG_STATE_HOME="$WORK/state" python3 "$OW_PY" stop >/dev/null 2>&1; fx_reap; rm -rf "$WORK"' EXIT
+  fx_mkrun run-obw; fx_ledger_path; fx_session_index sess-obw run-obw
+  fx_segment S1 실행중
+  mkdir -p "$FX_RUN_DIR/plugin/cc-cmds/orchestrator"
+  cp "$repo_root/plugins/cc-cmds/orchestrator/observer-protocol" "$FX_RUN_DIR/plugin/cc-cmds/orchestrator/"
+  ow_rc=0
+  env -u CI -u CC_CMDS_OBSERVER -u CC_PIPELINE_SEGMENT -u CC_PIPELINE_STAGE_ID \
+    python3 "$OW_PY" adopt --run-dir "$FX_RUN_DIR" --job watchfx </dev/null >/dev/null 2>"$WORK/ow.err" || ow_rc=$?
+  check "OW 관측기가 감시기 작업을 맡는다 (adopt 종료 코드)" "$ow_rc" 0
+  i=0
+  while [ "$i" -lt 50 ] && [ ! -s "$FX_RUN_DIR/watch.heartbeat" ]; do sleep 0.1; i=$((i + 1)); done
+  ow_pid=$(tr -d '[:space:]' < "$XDG_STATE_HOME/cc-cmds/observer/observer.pid" 2>/dev/null)
+  check "OW watch.pid 가 관측기의 pid 다" "$(tr -d '[:space:]' < "$FX_RUN_DIR/watch.pid" 2>/dev/null)" "${ow_pid:-없음}"
+  if [ -s "$FX_RUN_DIR/watch.heartbeat" ]; then ok "OW 관측기가 watch.heartbeat 를 쓴다"
+  else bad "OW 관측기가 watch.heartbeat 를 쓴다" "5초 안에 생기지 않았다 — $(cat "$WORK/ow.err" 2>/dev/null)"; fi
+  ow_grew=$(sed -n 's/.*마지막성장=\([0-9][0-9]*\).*/\1/p' "$FX_RUN_DIR/watch.heartbeat" 2>/dev/null)
+  ow_sl=$(fx_statusline_stdin sess-obw | bash "$SL")
+  check "OW 상태줄 — 그 런을 그린다" "$(printf '%s' "$ow_sl" | cut -d' ' -f2)" run-obw
+  case "$ow_sl" in
+    *워처*) bad "OW 상태줄 — 관측기가 맡은 감시기를 살아 있는 감시기로 읽는다" "'$ow_sl'" ;;
+    *)      ok "OW 상태줄 — 관측기가 맡은 감시기를 살아 있는 감시기로 읽는다" ;;
+  esac
+  ow_row=$(fx_statusline_stdin sess-obw | CC_SL_PANE_FIELDS=1 bash "$SL" | awk -F'\t' '$1 == "cc-sl" { print; exit }')
+  ow_pane=$(bash "$PANE" sess-obw)
+  check "OW 실행 판 — 그 런을 그린다" "$(printf '%s\n' "$ow_pane" | sed -n '1p' | cut -f4)" run-obw
+  case "$ow_pane" in
+    *"워처 없음"*|*"워처 미기동"*) bad "OW 실행 판 — 관측기가 맡은 감시기를 살아 있는 감시기로 읽는다" "$(printf '%s\n' "$ow_pane" | sed -n '2,4p')" ;;
+    *) ok "OW 실행 판 — 관측기가 맡은 감시기를 살아 있는 감시기로 읽는다" ;;
+  esac
+  check "OW 상태줄 필드 행 — 감시기 판정이 ok 다" "$(printf '%s' "$ow_row" | cut -f9)" ok
+  check "OW liveness — 관측기의 watch.pid 는 스테이지로 세지 않는다" "$(read_shared "$FX_RUN_DIR")" 0
+  check "OW liveness — 관측기의 watch.pid 는 고아 스테이지가 아니다" \
+    "$(CC_RD="$FX_RUN_DIR" bash -c '. "$0"; cc_orphan_stages "$CC_RD"' "$LIVENESS")" ""
+  check "OW liveness — 원장 성장 시각은 관측기가 쓴 하트비트의 값이다" \
+    "$(CC_RD="$FX_RUN_DIR" bash -c '. "$0"; cc_ledger_growth_at "$CC_RD"' "$LIVENESS")" "${ow_grew:-없음}"
+  python3 "$OW_PY" stop >/dev/null 2>&1
+  i=0
+  while [ "$i" -lt 50 ] && [ -e "$XDG_STATE_HOME/cc-cmds/observer/observer.pid" ]; do sleep 0.1; i=$((i + 1)); done
+  check "OW stop 뒤에 observer.pid 가 남지 않는다" \
+    "$([ -e "$XDG_STATE_HOME/cc-cmds/observer/observer.pid" ] && echo 남음 || echo 없음)" 없음
+else
+  printf 'SKIP: OW python3 이 없어 관측기 감시기 사례를 건너뛴다\n'
+fi
 
 printf '\n통과 %s · 실패 %s\n' "$passed" "$failed"
 [ "$failed" -eq 0 ]

@@ -1,0 +1,33 @@
+cc-pane-facts 1
+key.script	@ORCH@/run-pane.sh
+key.sid	SID10
+key.index	@ROOT@/state/cc-cmds/session/SID10
+key.CC_CMDS_AUTOPILOT_TZ	
+key.XDG_STATE_HOME	=@ROOT@/state
+key.HOME	=@ROOT@/home
+key.CLAUDE_CONFIG_DIR	
+computed	@NOW@
+expires	9999999999
+dormant	0
+kind	live
+rid	F1
+refresh	10000
+nsegs	1
+folddone	6
+foldopen	7
+evgap	-1
+evhead	-1
+grew	@NOW@
+hb	@NOW@
+watch	ok
+cost	
+row	title	cut	-	1	1	0	accent.b	autopilot F1	.
+row	head	cut	-	1	1	0	accent.b	⟳ 진행중	.
+hd	
+row	gap	cut	-	0	1	0	normal		.
+row	seg-heading	cut	-	0	1	0	normal.b	세그먼트	.
+row	seg	cut	open	0	1	0	dim	·	normal	 S1 실행중	.
+row	seg-folded	cut	-	0	0	0	dim	끝난 세그먼트	.
+row	seg-folded	cut	-	0	0	0	normal	끝나지 않은 세그먼트	.
+row	gap	cut	-	0	1	0	normal		.
+row	gate-none	cut	-	0	1	0	dim	승인 대기 없음 · 막힘 없음	.

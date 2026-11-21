@@ -353,7 +353,12 @@ sl_borrow_clock() {
   # other shape is no clock. With no helper loaded (`SL_DTZ` unset) the clock is
   # empty and the rest of the segment still draws. "Within 24 hours" is strict:
   # exactly 86400 seconds out as `HH:MM` would read as now.
-  SL_BORROW_CLOCK=
+  #
+  # The two inputs the clock is drawn from are kept as well, for the facts block:
+  # SL_BORROW_RESET is the epoch whenever a clock was asked for, and
+  # SL_BORROW_MDHM the formatted date when it had the shape drawn below. The
+  # fast path draws the same clock from them and its own current time.
+  SL_BORROW_CLOCK=; SL_BORROW_RESET=; SL_BORROW_MDHM=
   local e="$SL_B_RESET" now out
   [ -n "$e" ] || return 0
   [ "${SL_DTZ:-0}" = 1 ] || return 0
@@ -361,6 +366,7 @@ sl_borrow_clock() {
   case "$now" in
     ''|*[!0123456789]*) return 0 ;;
   esac
+  SL_BORROW_RESET=$e
   if [ "$e" -le "$now" ]; then
     SL_BORROW_CLOCK="홈 리셋 지남"
     return 0
@@ -368,6 +374,7 @@ sl_borrow_clock() {
   out=$(cc_display_mdhm "$e" 2>/dev/null)
   case "$out" in
     [0-9][0-9]/[0-9][0-9]\ [0-9][0-9]:[0-9][0-9])
+      SL_BORROW_MDHM=$out
       if [ $((e - now)) -lt 86400 ]; then
         SL_BORROW_CLOCK="홈 ${out#* }"
       else
@@ -413,7 +420,7 @@ sl_borrow_compute() {
   #
   # A session with no record pays two tests and no fork; the transcript is read
   # only past the file guard for that reason.
-  SL_BORROW_SEG=; SL_BORROW_SHORT=
+  SL_BORROW_SEG=; SL_BORROW_SHORT=; SL_BORROW_RESET=; SL_BORROW_MDHM=; SL_BORROW_CLK=0
   local f n cfg="${CLAUDE_CONFIG_DIR-}" tp="" view="" id mark="" detail=""
   sl_borrow_path || return 0
   f="$SL_BFILE"
@@ -456,6 +463,7 @@ sl_borrow_compute() {
       intent) mark="cc→${id}?"; detail=" (차용 확인 중)" ;;
       borrowed)
         mark="cc→${id}"
+        SL_BORROW_CLK=1
         sl_borrow_clock
         if [ -n "$SL_BORROW_CLOCK" ]; then detail=" · ${SL_BORROW_CLOCK}"; fi
         ;;
@@ -477,53 +485,18 @@ sl_exit_fallback() {
   # sl_exit_fallback — every early exit, so the fallback carries the segment too.
   # The width judged is the fallback's visible text; its two escapes print
   # nothing.
+  #
+  # In the facts mode the same exits mean "no run line to precompute": the
+  # observer reads `dormant` and drops this session's registration.
+  if [ "${CC_SL_FACTS_OUT:-}" = 1 ]; then
+    printf 'cc-sl-facts 1\ndormant\t1\n'; exit 0
+  fi
   local fb="[cc🎨] ${PWD##*/}"
   if [ $(( ${#fb} + ${#SL_BORROW_SEG} )) -gt "$CC_SL_BUDGET" ]; then
     SL_BORROW_SEG="$SL_BORROW_SHORT"
   fi
   emit_fallback; printf '%s' "$SL_BORROW_SEG"; exit 0
 }
-
-# Read here, before the sibling source, so that the two exits just below can
-# still carry the segment. Every caller hands this script a closed stdin, which
-# the render path already depended on at its old place further down.
-stdin_json=$(cat 2>/dev/null || true)
-sl_borrow_compute
-
-sl_dirname_into() {
-  # sl_dirname_into <path> <var> — sets <var> to what `dirname <path>` prints:
-  # trailing slashes go, then the last component and the slashes before it; a
-  # path with no slash is `.`, and one that leaves nothing is `/`.
-  local p="$1"
-  while [ "${p%/}" != "$p" ] && [ -n "${p%/}" ]; do p=${p%/}; done
-  case "$p" in
-    */*)
-      p=${p%/*}
-      while [ "${p%/}" != "$p" ] && [ -n "${p%/}" ]; do p=${p%/}; done
-      [ -n "$p" ] || p=/
-      ;;
-    *) p=. ;;
-  esac
-  printf -v "$2" '%s' "$p"
-}
-
-# The outer `$( )` stays: `cd` inside it leaves this shell's `PWD` alone.
-sl_dirname_into "${BASH_SOURCE[0]:-$0}" sl_src_dir
-CC_SL_DIR=$(cd "$sl_src_dir" 2>/dev/null && pwd) \
-  || sl_exit_fallback
-# The display zone for the borrow clock, sourced beside `liveness.sh` and ahead
-# of it so that its fallback exit still carries the clock. A failed source
-# empties that clock and nothing else, so it does not fall back. The segment
-# was computed before the directory was known, so a session with a segment
-# computes it once more now that the clock can be drawn.
-SL_DTZ=0
-# shellcheck source=./display-tz.sh
-if . "$CC_SL_DIR/display-tz.sh" 2>/dev/null; then
-  cc_display_tz_load && SL_DTZ=1
-  [ -n "$SL_BORROW_SEG" ] && sl_borrow_compute
-fi
-# shellcheck source=./liveness.sh
-. "$CC_SL_DIR/liveness.sh" 2>/dev/null || sl_exit_fallback
 
 # The staleness mark, and why it is not the watcher's.
 #
@@ -568,6 +541,398 @@ age_phrase() {
   else                         printf -v SL_AGE '%s시간 전' "$((s / 3600))"
   fi
 }
+
+# ---------------------------------------------------------------------------
+# Drawing, shared by both paths.
+# ---------------------------------------------------------------------------
+#
+# THE LINE IS DRAWN FROM FACTS AND A CLOCK, AND FROM NOTHING ELSE. What the
+# selection below settles — the run, its token, the approvals it waits on, the
+# stage that is up and its kind — is a fact that holds until a file changes or a
+# threshold passes. What moves every second — the ledger age, the watcher
+# verdict, the stage's elapsed time and the borrow clock's "within a day" — is
+# computed here against `now`. The direct path sets the facts itself and calls
+# this in the same process; the fast path reads the same facts from the block the
+# observer precomputed. One function draws both, so the bytes cannot drift.
+
+sl_etime_secs_into() {
+  # sl_etime_secs_into <etime> <var> — sets <var> to the seconds an `etime` of
+  # the shape `[[D-]HH:]MM:SS` names, or to empty for any other shape.
+  local e="$1" d=0 h=0 m s
+  printf -v "$2" '%s' ''
+  case "$e" in
+    *-*)
+      d=${e%%-*}; e=${e#*-}
+      case "$d" in ''|*[!0123456789]*) return 1 ;; esac
+      ;;
+  esac
+  case "$e" in
+    [0123456789][0123456789]:[0123456789][0123456789]:[0123456789][0123456789])
+      h=${e:0:2}; m=${e:3:2}; s=${e:6:2} ;;
+    [0123456789][0123456789]:[0123456789][0123456789])
+      [ "$d" = 0 ] || return 1
+      m=${e:0:2}; s=${e:3:2} ;;
+    *) return 1 ;;
+  esac
+  printf -v "$2" '%s' "$(( ((10#$d * 24 + 10#$h) * 60 + 10#$m) * 60 + 10#$s ))"
+}
+
+sl_elapsed_into() {
+  # sl_elapsed_into <seconds> <var> — the `ps -o etime=` spelling of a duration.
+  local t="$1" d h m s
+  [ "$t" -ge 0 ] || t=0
+  d=$((t / 86400)); h=$((t % 86400 / 3600)); m=$((t % 3600 / 60)); s=$((t % 60))
+  if   [ "$d" -gt 0 ]; then printf -v "$2" '%d-%02d:%02d:%02d' "$d" "$h" "$m" "$s"
+  elif [ "$h" -gt 0 ]; then printf -v "$2" '%02d:%02d:%02d' "$h" "$m" "$s"
+  else                      printf -v "$2" '%02d:%02d' "$m" "$s"
+  fi
+}
+
+sl_render() {
+  # sl_render — prints the line from the facts in `best_rid`, `best_state`,
+  # `grew`, `hb`, `sl_wpid`, `pend`, `w`, `seg`, `kind`, `elapsed`,
+  # `sl_stale_mark` and the borrow segment, judged against `now`.
+  local a line arm age_slot watch_slot watch_v
+  # The ledger's age comes from the watcher's heartbeat when there is one, and
+  # from the ledger's own mtime when there is not. Measured 2026-09-07: 61 of 62
+  # runs in flight published no `마지막성장`, so on the heartbeat alone this slot
+  # was empty for almost every run that needed it — and an age-less line reads as
+  # "just started" on a run that has been quiet for a day. Reading an mtime is
+  # still not a write, so the property this file rests on is untouched. An absent
+  # value on BOTH means nothing has been recorded at all, which is why every use
+  # below is guarded rather than defaulted to zero.
+  age_slot=""
+  if [ -n "$grew" ]; then
+    # CLAMPED, AND CLAMPED HERE RATHER THAN AT THE SOURCE. A ledger mtime in the
+    # future is not hypothetical — one run on this host measured 28 seconds ahead
+    # — and the mtime fallback above put a `grew` on far more runs than the
+    # heartbeat field ever did, so the exposure grew with it. Without this the
+    # line says `원장 -72초 전` while `cc_run_state`, which clamps the very same
+    # value, calls the run 진행중: two axes disagreeing about one run's sign. The
+    # slot is shared, so this one place covers 승인대기, 정지경고, 버려짐, 진행중
+    # and the 도는중 else branch. Clamping inside `cc_ledger_growth_at` would let
+    # both consumers inherit it, but that function has no `now` and would spend a
+    # `date` fork per call — once per indexed run per ten-second tick, twelve of
+    # them on a twelve-run session. Measure that before moving it.
+    a=$((now - grew))
+    [ "$a" -lt 0 ] && a=0
+    age_phrase "$a"
+    age_slot=" · 원장 $SL_AGE"
+  fi
+
+  # `watch.pid` is what keeps "has not come up yet" from collapsing into "died".
+  # Without it both render as silence, and silence from a watcher that was never
+  # started means something different to the person reading this at 3am.
+  #
+  # `watch_v` is the same verdict as a word for the pane's field row, set beside
+  # each slot so the two cannot be judged twice.
+  watch_slot=""; watch_v=ok
+  if [ -z "$hb" ]; then
+    if [ "$sl_wpid" = 1 ]; then watch_slot=" · 워처 없음"; watch_v=stale
+    else                        watch_slot=" · 워처 미기동"; watch_v=unstarted; fi
+  elif [ "$((now - hb))" -gt "$CC_SL_HEARTBEAT_STALE" ]; then
+    watch_slot=" · 워처 없음"; watch_v=stale
+  fi
+
+  # The arms' reasons are written beside the token case further down, where
+  # each arm's facts are gathered; this case only spells the line.
+  case "$best_state" in
+    종단)
+      line="✓ ${best_rid} 종료"
+      watch_slot=""; watch_v=none
+      arm=종료
+      ;;
+    승인대기)
+      line="⏸ ${best_rid} 승인 대기 ${pend}건${age_slot}"
+      arm=승인대기
+      ;;
+    정지경고)
+      line="⚠ ${best_rid} 스테이지 0${age_slot}"
+      arm=정지경고
+      ;;
+    버려짐)
+      line="⊘ ${best_rid} ${w}${age_slot}"
+      watch_slot=""; watch_v=none
+      arm=$w
+      ;;
+    도는중)
+      if [ -n "$seg" ]; then
+        line="⟳ ${best_rid} ${seg}"
+        [ -n "$kind" ]    && line="$line ${kind}"
+        [ -n "$elapsed" ] && line="$line ${elapsed}"
+        # Drop whole slots, lowest priority first, until it fits — the borrow
+        # detail before anything of the run's own, so that it goes first here as
+        # it does on every other arm. With no segment each sum below is the
+        # `${#line}` this arm always compared.
+        if [ $(( ${#line} + ${#SL_BORROW_SEG} )) -gt "$CC_SL_BUDGET" ]; then
+          SL_BORROW_SEG="$SL_BORROW_SHORT"
+        fi
+        if [ $(( ${#line} + ${#SL_BORROW_SEG} )) -gt "$CC_SL_BUDGET" ] && [ -n "$kind" ]; then
+          line="⟳ ${best_rid} ${seg}"
+          [ -n "$elapsed" ] && line="$line ${elapsed}"
+        fi
+        [ $(( ${#line} + ${#SL_BORROW_SEG} )) -gt "$CC_SL_BUDGET" ] && line="⟳ ${best_rid} ${seg}"
+      else
+        line="⟳ ${best_rid}${age_slot}"
+      fi
+      arm=도는중
+      ;;
+    진행중)
+      line="⟳ ${best_rid} 스테이지 0${age_slot}"
+      arm=진행중
+      ;;
+    정산중)
+      line="⟳ ${best_rid} 정산 중${age_slot}"
+      arm=정산중
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+
+  # The observer mark takes the watcher slot's place, and only an empty one: a
+  # watcher that is missing or never started is the more urgent fact, and the
+  # mark is exactly as long as ` · 워처 미기동`, so the budget above, which
+  # leaves the watcher slot out, still holds. The two arms that suppress the
+  # watcher slot suppress this too.
+  if [ -n "$sl_stale_mark" ] && [ -z "$watch_slot" ]; then
+    case "$arm" in
+      진행중|정지경고|도는중|승인대기|정산중) watch_slot="$sl_stale_mark" ;;
+    esac
+  fi
+
+  # The borrow detail goes here on every arm that is still too wide, once; an
+  # already-short segment is left as it is.
+  if [ $(( ${#line} + ${#SL_BORROW_SEG} )) -gt "$CC_SL_BUDGET" ]; then
+    SL_BORROW_SEG="$SL_BORROW_SHORT"
+  fi
+  printf '%s%s%s' "$line" "$watch_slot" "$SL_BORROW_SEG"
+
+  # THE PANE'S FIELD ROW, and only when it asks. `run-pane.sh` sets
+  # `CC_SL_PANE_FIELDS=1` and splits at the first newline; the engine's call does
+  # not set it, so the line above stays the whole output, byte for byte. The row
+  # carries the values this one evaluation judged with — the token, the arm's
+  # word, the clock, the ledger growth the `원장` slot used, the heartbeat mtime
+  # the watcher verdict read and that verdict — so the pane shows no word the
+  # status line did not judge and copies no threshold. Only a run line gets one;
+  # the no-run paths exit before reaching here.
+  if [ "${CC_SL_PANE_FIELDS:-}" = "1" ]; then
+    printf '\ncc-sl\t1\t%s\t%s\t%s\t%s\t%s\t%s\t%s' "$best_rid" "$best_state" "$arm" \
+      "$now" "${grew:--}" "${hb:--}" "$watch_v"
+  fi
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# The fast path.
+# ---------------------------------------------------------------------------
+#
+# WHEN THE OBSERVER HAS PRECOMPUTED THIS SESSION, DRAWING COSTS NO PROCESS. The
+# observer (`observer.py`) runs this same script with `CC_SL_FACTS_OUT=1` and
+# keeps its output as `observer/sl/<sid>.facts`. That block is used only when
+# its first line is `cc-sl-facts 1`, every key it names is one this reader
+# knows, every input key — this script's path as invoked, the session id, the
+# transcript path and the environment values that change what the selection
+# sees — equals this call's, the observer's pid answers, and the clock is
+# before its `expires`. Anything else falls through to the direct path with the
+# stdin already read, so a missing or stale block costs this call nothing but
+# the reads. The block is read with the `read` builtin; the clock is
+# `EPOCHSECONDS`, else `printf '%(%s)T'`, and only bash 3.2, which has neither,
+# spends a `date`. This path writes nothing either.
+#
+# THE TRIM ORDER IS PART OF THE BLOCK. A block computed by a script whose drop
+# order differs from this one's would draw a different line, so the order it
+# was computed for is written into it and must equal the one below.
+SL_FACTS_TRIM="bdetail kind elapsed"
+
+sl_fact_env() {
+  # sl_fact_env <name> <var> — the facts encoding of an input variable: `=` and
+  # its value when it is set, empty when it is not, so that "set to empty" and
+  # "unset" stay two keys.
+  case "$1" in
+    CLAUDE_CONFIG_DIR)    printf -v "$2" '%s' "${CLAUDE_CONFIG_DIR+=$CLAUDE_CONFIG_DIR}" ;;
+    XDG_STATE_HOME)       printf -v "$2" '%s' "${XDG_STATE_HOME+=$XDG_STATE_HOME}" ;;
+    HOME)                 printf -v "$2" '%s' "${HOME+=$HOME}" ;;
+    CC_CMDS_AUTOPILOT_TZ) printf -v "$2" '%s' "${CC_CMDS_AUTOPILOT_TZ+=$CC_CMDS_AUTOPILOT_TZ}" ;;
+    CC_SL_SCREEN)         printf -v "$2" '%s' "${CC_SL_SCREEN+=$CC_SL_SCREEN}" ;;
+    CC_SL_PANE_FIELDS)    printf -v "$2" '%s' "${CC_SL_PANE_FIELDS+=$CC_SL_PANE_FIELDS}" ;;
+    CC_SL_TRACE)          printf -v "$2" '%s' "${CC_SL_TRACE+=$CC_SL_TRACE}" ;;
+  esac
+}
+SL_FACT_ENVS="CLAUDE_CONFIG_DIR XDG_STATE_HOME HOME CC_CMDS_AUTOPILOT_TZ CC_SL_SCREEN CC_SL_PANE_FIELDS CC_SL_TRACE"
+
+sl_obs_dir_into() {
+  # sl_obs_dir_into <var> — the observer's state directory, by the rule the
+  # observer itself uses, or empty when there is no base to put it under.
+  local base=""
+  if [ -n "${XDG_STATE_HOME:-}" ]; then base=$XDG_STATE_HOME
+  elif [ -n "${HOME:-}" ]; then base="$HOME/.local/state"
+  fi
+  if [ -n "$base" ]; then printf -v "$1" '%s' "$base/cc-cmds/observer"
+  else printf -v "$1" '%s' ''
+  fi
+}
+
+sl_observer_answers() {
+  # sl_observer_answers <pid> — succeeds when the observer's recorded pid
+  # answers. The fast path runs before `liveness.sh` is sourced, so it cannot
+  # reach `cc_pid_exists`; this is the one existence test the file keeps, it is
+  # asked of `observer.pid` only and never of a stage or a run, and the
+  # agreement suite pins it to that one use.
+  kill -0 "$1" 2>/dev/null
+}
+
+sl_fast() {
+  # sl_fast — draws the line from this session's facts block and succeeds, or
+  # fails having printed nothing.
+  [ "${CC_SL_FACTS_OUT:-}" = 1 ] && return 1
+  [ -z "${CC_PANE_FACTS_OUT:-}" ] || return 1
+  [ "${CC_CMDS_OBSERVER:-}" = off ] && return 1
+  [ -z "${CI:-}" ] || return 1
+  local sid tp od f k v cur head="" p="" seen=0 bit detail
+  local f_expires="" f_start="" f_bdetail="" f_breset="" f_bmdhm=""
+  sl_json_str_into session_id sid
+  case "$sid" in
+    ''|*[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-]*) return 1 ;;
+  esac
+  case "$sid" in *[!.]*) ;; *) return 1 ;; esac
+  sl_json_str_into transcript_path tp
+  sl_obs_dir_into od
+  [ -n "$od" ] || return 1
+  f="$od/sl/$sid.facts"
+  { [ -f "$f" ] && [ -r "$f" ]; } || return 1
+  best_rid=""; best_state=""; grew=""; hb=""; sl_wpid=0; pend=""; w=""; seg=""; kind=""
+  {
+    IFS= read -r head || return 1
+    [ "$head" = "cc-sl-facts 1" ] || return 1
+    while IFS=$'\t' read -r k v || [ -n "$k" ]; do
+      case "$k" in
+        key.script)          bit=1;         [ "$v" = "${BASH_SOURCE[0]}" ] || return 1 ;;
+        key.sid)             bit=2;         [ "$v" = "$sid" ] || return 1 ;;
+        key.transcript_path) bit=4;         [ "$v" = "$tp" ] || return 1 ;;
+        key.CLAUDE_CONFIG_DIR|key.XDG_STATE_HOME|key.HOME|key.CC_CMDS_AUTOPILOT_TZ|key.CC_SL_SCREEN|key.CC_SL_PANE_FIELDS|key.CC_SL_TRACE)
+          case "$k" in
+            key.CLAUDE_CONFIG_DIR) bit=8 ;; key.XDG_STATE_HOME) bit=16 ;; key.HOME) bit=32 ;;
+            key.CC_CMDS_AUTOPILOT_TZ) bit=64 ;; key.CC_SL_SCREEN) bit=128 ;;
+            key.CC_SL_PANE_FIELDS) bit=256 ;; *) bit=512 ;;
+          esac
+          sl_fact_env "${k#key.}" cur
+          [ "$v" = "$cur" ] || return 1
+          ;;
+        computed) bit=1024 ;;
+        expires)  bit=2048;      f_expires=$v ;;
+        dormant)  bit=4096;      [ "$v" = 0 ] || return 1 ;;
+        trim)     bit=8192;      [ "$v" = "$SL_FACTS_TRIM" ] || return 1 ;;
+        rid)      bit=16384;     best_rid=$v ;;
+        state)    bit=32768;     best_state=$v ;;
+        pend)     bit=65536;     pend=$v ;;
+        w)        bit=131072;    w=$v ;;
+        seg)      bit=262144;    seg=$v ;;
+        kind)     bit=524288;    kind=$v ;;
+        start)    bit=1048576;   f_start=$v ;;
+        grew)     bit=2097152;   grew=$v ;;
+        hb)       bit=4194304;   hb=$v ;;
+        wpid)     bit=8388608;   sl_wpid=$v ;;
+        bshort)   bit=16777216;  SL_BORROW_SHORT=$v ;;
+        bdetail)  bit=33554432;  f_bdetail=$v ;;
+        breset)   bit=67108864;  f_breset=$v ;;
+        bmdhm)    bit=134217728; f_bmdhm=$v ;;
+        *) return 1 ;;
+      esac
+      [ $((seen & bit)) = 0 ] || return 1
+      seen=$((seen | bit))
+      k=""; v=""
+    done
+  } 2>/dev/null < "$f" || return 1
+  [ "$seen" = 268435455 ] || return 1
+  for v in "$f_expires" "$grew" "$hb" "$f_start" "$f_breset"; do
+    case "$v" in *[!0123456789]*) return 1 ;; esac
+  done
+  [ -n "$f_expires" ] && [ -n "$best_rid" ] || return 1
+  case "$sl_wpid" in 0|1) ;; *) return 1 ;; esac
+
+  { IFS= read -r p || [ -n "$p" ]; } 2>/dev/null < "$od/observer.pid" || return 1
+  case "$p" in ''|*[!0123456789]*) return 1 ;; esac
+  sl_observer_answers "$p" || return 1
+
+  now=""
+  if [ -n "${EPOCHSECONDS:-}" ]; then
+    now=$EPOCHSECONDS
+  else
+    printf -v now '%(%s)T' -1 2>/dev/null || now=""
+    # `exec` keeps this to one process: bash 3.2 forks once more for a command
+    # substitution whose command carries a redirection, unless it execs.
+    case "$now" in ''|*[!0123456789]*) now=$(exec date -u +%s 2>/dev/null) ;; esac
+  fi
+  case "$now" in ''|*[!0123456789]*) return 1 ;; esac
+  [ "$now" -lt "$f_expires" ] || return 1
+
+  elapsed=""
+  [ -n "$f_start" ] && sl_elapsed_into "$((now - f_start))" elapsed
+  # The borrow clock, as `sl_borrow_clock` draws it from the same two inputs.
+  detail=$f_bdetail
+  if [ -n "$f_breset" ]; then
+    if [ "$f_breset" -le "$now" ]; then
+      detail=" · 홈 리셋 지남"
+    elif [ -n "$f_bmdhm" ]; then
+      if [ $((f_breset - now)) -lt 86400 ]; then detail=" · 홈 ${f_bmdhm#* }"
+      else detail=" · 홈 $f_bmdhm"
+      fi
+    fi
+  fi
+  SL_BORROW_SEG=""
+  [ -n "$SL_BORROW_SHORT" ] && SL_BORROW_SEG="${SL_BORROW_SHORT}${detail}"
+  sl_stale_mark=""
+  sl_render
+}
+
+# Read here, before the sibling source, so that the two exits just below can
+# still carry the segment. Every caller hands this script a closed stdin, which
+# the render path already depended on at its old place further down. The
+# `read` builtin takes it whole; the trailing newlines go, as a command
+# substitution would drop them.
+stdin_json=""
+IFS= read -r -d '' stdin_json 2>/dev/null || true
+while [ "${stdin_json%$'\n'}" != "$stdin_json" ]; do stdin_json=${stdin_json%$'\n'}; done
+sl_stale_mark=""; sl_wpid=0; pend=""; w=""; seg=""; kind=""; elapsed=""
+SL_BORROW_SEG=""; SL_BORROW_SHORT=""
+sl_fast && exit 0
+sl_borrow_compute
+
+sl_dirname_into() {
+  # sl_dirname_into <path> <var> — sets <var> to what `dirname <path>` prints:
+  # trailing slashes go, then the last component and the slashes before it; a
+  # path with no slash is `.`, and one that leaves nothing is `/`.
+  local p="$1"
+  while [ "${p%/}" != "$p" ] && [ -n "${p%/}" ]; do p=${p%/}; done
+  case "$p" in
+    */*)
+      p=${p%/*}
+      while [ "${p%/}" != "$p" ] && [ -n "${p%/}" ]; do p=${p%/}; done
+      [ -n "$p" ] || p=/
+      ;;
+    *) p=. ;;
+  esac
+  printf -v "$2" '%s' "$p"
+}
+
+# The outer `$( )` stays: `cd` inside it leaves this shell's `PWD` alone.
+sl_dirname_into "${BASH_SOURCE[0]:-$0}" sl_src_dir
+CC_SL_DIR=$(cd "$sl_src_dir" 2>/dev/null && pwd) \
+  || sl_exit_fallback
+# The display zone for the borrow clock, sourced beside `liveness.sh` and ahead
+# of it so that its fallback exit still carries the clock. A failed source
+# empties that clock and nothing else, so it does not fall back. The segment
+# was computed before the directory was known, so a session with a segment
+# computes it once more now that the clock can be drawn.
+SL_DTZ=0
+# shellcheck source=./display-tz.sh
+if . "$CC_SL_DIR/display-tz.sh" 2>/dev/null; then
+  cc_display_tz_load && SL_DTZ=1
+  [ -n "$SL_BORROW_SEG" ] && sl_borrow_compute
+fi
+# shellcheck source=./liveness.sh
+. "$CC_SL_DIR/liveness.sh" 2>/dev/null || sl_exit_fallback
 
 sl_read_value_into() {
   # sl_read_value_into <file> <var> — sets <var> to the value `$(cat <file>)`
@@ -994,54 +1359,15 @@ fi
 [ -n "$best_rd" ] || sl_exit_fallback
 
 # ---------------------------------------------------------------------------
-# Render.
+# The facts of the chosen run.
 # ---------------------------------------------------------------------------
 
 # `now` was read once before the selection loop, so the rank and the slots
 # below are judged against one clock.
-
-# The ledger's age comes from the watcher's heartbeat when there is one, and
-# from the ledger's own mtime when there is not. Measured 2026-09-07: 61 of 62
-# runs in flight published no `마지막성장`, so on the heartbeat alone this slot
-# was empty for almost every run that needed it — and an age-less line reads as
-# "just started" on a run that has been quiet for a day. Reading an mtime is
-# still not a write, so the property this file rests on is untouched. An absent
-# value on BOTH means nothing has been recorded at all, which is why every use
-# below is guarded rather than defaulted to zero.
 sl_growth_into "$best_i" grew
-age_slot=""
-if [ -n "$grew" ]; then
-  # CLAMPED, AND CLAMPED HERE RATHER THAN AT THE SOURCE. A ledger mtime in the
-  # future is not hypothetical — one run on this host measured 28 seconds ahead
-  # — and the mtime fallback above put a `grew` on far more runs than the
-  # heartbeat field ever did, so the exposure grew with it. Without this the
-  # line says `원장 -72초 전` while `cc_run_state`, which clamps the very same
-  # value, calls the run 진행중: two axes disagreeing about one run's sign. The
-  # slot is shared, so this one place covers 승인대기, 정지경고, 버려짐, 진행중
-  # and the 도는중 else branch. Clamping inside `cc_ledger_growth_at` would let
-  # both consumers inherit it, but that function has no `now` and would spend a
-  # `date` fork per call — once per indexed run per ten-second tick, twelve of
-  # them on a twelve-run session. Measure that before moving it.
-  a=$((now - grew))
-  [ "$a" -lt 0 ] && a=0
-  age_phrase "$a"
-  age_slot=" · 원장 $SL_AGE"
-fi
-
-# `watch.pid` is what keeps "has not come up yet" from collapsing into "died".
-# Without it both render as silence, and silence from a watcher that was never
-# started means something different to the person reading this at 3am.
-#
-# `watch_v` is the same verdict as a word for the pane's field row, set beside
-# each slot so the two cannot be judged twice.
-watch_slot=""; watch_v=ok
 sl_mtime_into "$best_rd/watch.heartbeat" hb
-if [ -z "$hb" ]; then
-  if [ -f "$best_rd/watch.pid" ]; then watch_slot=" · 워처 없음"; watch_v=stale
-  else                                 watch_slot=" · 워처 미기동"; watch_v=unstarted; fi
-elif [ "$((now - hb))" -gt "$CC_SL_HEARTBEAT_STALE" ]; then
-  watch_slot=" · 워처 없음"; watch_v=stale
-fi
+sl_wpid=0; [ -f "$best_rd/watch.pid" ] && sl_wpid=1
+pend=""; w=""; seg=""; kind=""; elapsed=""
 
 case "$best_state" in
   종단)
@@ -1051,24 +1377,18 @@ case "$best_state" in
     # clean finish would show as a warning from the moment it ended and never
     # stop. In the GRADE the direction is the opposite: 정지경고 outranks 종단,
     # because a run between two stages is still a run.
-    line="✓ ${best_rid} 종료"
+    #
     # The watcher exits when the run ends, so a stale heartbeat here is the
-    # normal shape of a finish, not a missing watcher.
-    watch_slot=""; watch_v=none
-    arm=종료
+    # normal shape of a finish, not a missing watcher; the drawing drops the slot.
     ;;
   승인대기)
     pend=$(cc_open_approvals "$best_ledger")
-    line="⏸ ${best_rid} 승인 대기 ${pend}건${age_slot}"
-    arm=승인대기
     ;;
   정지경고)
     # The glyph and the wording stay. `CC_SL_ABANDON` is what separates this arm
     # from the one below, and it is now a SELECTION boundary too: this arm ranks
     # above 종단 and the one below ranks beneath it, so which side of the mark a
     # quiet run falls on decides whether it holds the line at all.
-    line="⚠ ${best_rid} 스테이지 0${age_slot}"
-    arm=정지경고
     ;;
   버려짐)
     # THREE THINGS MADE THE OLD LINE READ AS ACTIVE, and all three are fixed
@@ -1109,15 +1429,11 @@ case "$best_state" in
     # trailing empty lines, so a non-empty value holds at least one.
     blocked_out=$(cc_unresolved_blocked "$best_ledger" 2>/dev/null || true)
     if [ -n "$blocked_out" ]; then w=차단; else w=방치; fi
-    line="⊘ ${best_rid} ${w}${age_slot}"
-    watch_slot=""; watch_v=none
-    arm=$w
     ;;
   도는중)
     newest_stage_pid "$best_rd"; slot=$SL_SLOT
     seg=${slot%% *}; pid=${slot#* }
     if [ -n "$slot" ] && [ -n "$seg" ]; then
-      line="⟳ ${best_rid} ${seg}"
       # The kind comes from `liveness.sh`, the source the pane reads too. A
       # segment on its first driver attempt has none and the slot is dropped.
       kind=$(cc_stage_kind "$best_rd" "$best_ledger" "$seg")
@@ -1131,24 +1447,9 @@ case "$best_state" in
       # is rewritten on every gate call and is not the run's start time; the
       # latter is a formatted date string that no portable arithmetic accepts —
       # and reading it would mean branching on the two incompatible date flags.
-      [ -n "$kind" ]    && line="$line ${kind}"
-      [ -n "$elapsed" ] && line="$line ${elapsed}"
-      # Drop whole slots, lowest priority first, until it fits — the borrow
-      # detail before anything of the run's own, so that it goes first here as
-      # it does on every other arm. With no segment each sum below is the
-      # `${#line}` this arm always compared.
-      if [ $(( ${#line} + ${#SL_BORROW_SEG} )) -gt "$CC_SL_BUDGET" ]; then
-        SL_BORROW_SEG="$SL_BORROW_SHORT"
-      fi
-      if [ $(( ${#line} + ${#SL_BORROW_SEG} )) -gt "$CC_SL_BUDGET" ] && [ -n "$kind" ]; then
-        line="⟳ ${best_rid} ${seg}"
-        [ -n "$elapsed" ] && line="$line ${elapsed}"
-      fi
-      [ $(( ${#line} + ${#SL_BORROW_SEG} )) -gt "$CC_SL_BUDGET" ] && line="⟳ ${best_rid} ${seg}"
     else
-      line="⟳ ${best_rid}${age_slot}"
+      seg=""
     fi
-    arm=도는중
     ;;
   진행중)
     # NOT A STATE OF ITS OWN, and not the running row either. This is the
@@ -1163,8 +1464,6 @@ case "$best_state" in
     # stage that is up. The only thing separating this line from the stall row
     # is the glyph, which is exactly the difference — the same facts, one of
     # them past the mark.
-    line="⟳ ${best_rid} 스테이지 0${age_slot}"
-    arm=진행중
     ;;
   정산중)
     # EVERY SEGMENT HAS ENDED BUT THE RUN HAS NOT. A run carrying the
@@ -1172,31 +1471,177 @@ case "$best_state" in
     # ends on `done`; until then it is in flight, so it keeps the running glyph
     # and the watcher slot as 진행중 does. A quiet settlement leaves this arm
     # through the same 정지경고 and 버려짐 ladder, so no second threshold lives here.
-    line="⟳ ${best_rid} 정산 중${age_slot}"
-    arm=정산중
     ;;
   *)
     sl_exit_fallback
     ;;
 esac
 
-# The borrow detail goes here on every arm that is still too wide, once; an
-# already-short segment is left as it is.
-if [ $(( ${#line} + ${#SL_BORROW_SEG} )) -gt "$CC_SL_BUDGET" ]; then
-  SL_BORROW_SEG="$SL_BORROW_SHORT"
-fi
-printf '%s%s%s' "$line" "$watch_slot" "$SL_BORROW_SEG"
+# ---------------------------------------------------------------------------
+# The facts block, when the observer asks for it.
+# ---------------------------------------------------------------------------
+#
+# `expires` is the earliest instant at which one of the thresholds the
+# selection judged with could flip a verdict — a ledger growth passing
+# `CC_SL_STALL` or `CC_SL_ABANDON`, a heartbeat passing `CC_SL_HEARTBEAT_STALE`
+# — for every run that was judged, and never more than 60 seconds out. A file
+# changing under a run is the observer's to notice; this only covers the clock.
+# A value holding a tab or a newline cannot be carried, so then nothing is
+# printed and the observer keeps no block for this session.
+sl_expires_into() {
+  # sl_expires_into <var> — the `expires` described above.
+  local sl_ex_v=$((now + 60)) i g t
+  i=0
+  while [ "$i" -lt "$sl_n" ]; do
+    if [ "${sl_dorm[$i]}" != 1 ]; then
+      sl_growth_into "$i" g
+      if [ -n "$g" ]; then
+        for t in $((g + CC_SL_STALL)) $((g + CC_SL_ABANDON)); do
+          [ "$t" -gt "$now" ] && [ "$t" -lt "$sl_ex_v" ] && sl_ex_v=$t
+        done
+      fi
+      sl_mtime_into "${sl_hb[$i]}" g
+      if [ -n "$g" ]; then
+        t=$((g + CC_SL_HEARTBEAT_STALE + 1))
+        [ "$t" -gt "$now" ] && [ "$t" -lt "$sl_ex_v" ] && sl_ex_v=$t
+      fi
+    fi
+    i=$((i + 1))
+  done
+  printf -v "$1" '%s' "$sl_ex_v"
+}
 
-# THE PANE'S FIELD ROW, and only when it asks. `run-pane.sh` sets
-# `CC_SL_PANE_FIELDS=1` and splits at the first newline; the engine's call does
-# not set it, so the line above stays the whole output, byte for byte. The row
-# carries the values this one evaluation judged with — the token, the arm's
-# word, the clock, the ledger growth the `원장` slot used, the heartbeat mtime
-# the watcher verdict read and that verdict — so the pane shows no word the
-# status line did not judge and copies no threshold. Only a run line gets one;
-# the no-run paths above exit before reaching here.
-if [ "${CC_SL_PANE_FIELDS:-}" = "1" ]; then
-  printf '\ncc-sl\t1\t%s\t%s\t%s\t%s\t%s\t%s\t%s' "$best_rid" "$best_state" "$arm" \
-    "$now" "${grew:--}" "${hb:--}" "$watch_v"
+sl_facts_emit() {
+  local exp i t v start="" sid tp cur out bdetail breset bmdhm n
+  sl_expires_into exp
+  if [ -n "$elapsed" ]; then
+    sl_etime_secs_into "$elapsed" t || return 0
+    sl_elapsed_into "$t" v
+    # A spelling the drawing would not give back cannot be precomputed.
+    [ "$v" = "$elapsed" ] || return 0
+    start=$((now - t))
+  fi
+  bdetail=${SL_BORROW_SEG#"$SL_BORROW_SHORT"}; breset=""; bmdhm=""
+  if [ "${SL_BORROW_CLK:-0}" = 1 ]; then
+    bdetail=""; breset=$SL_BORROW_RESET; bmdhm=$SL_BORROW_MDHM
+  fi
+  sl_json_str_into session_id sid
+  sl_json_str_into transcript_path tp
+  out="cc-sl-facts 1"
+  out="$out"$'\n'"key.script"$'\t'"${BASH_SOURCE[0]}"
+  out="$out"$'\n'"key.sid"$'\t'"$sid"
+  out="$out"$'\n'"key.transcript_path"$'\t'"$tp"
+  for n in $SL_FACT_ENVS; do
+    sl_fact_env "$n" cur
+    out="$out"$'\n'"key.$n"$'\t'"$cur"
+  done
+  sl_fx_add() { out="$out"$'\n'"$1"$'\t'"$2"; }
+  sl_fx_add computed "$now";    sl_fx_add expires "$exp"
+  sl_fx_add dormant 0;          sl_fx_add trim "$SL_FACTS_TRIM"
+  sl_fx_add rid "$best_rid";    sl_fx_add state "$best_state"
+  sl_fx_add pend "$pend";       sl_fx_add w "$w"
+  sl_fx_add seg "$seg";         sl_fx_add kind "$kind"
+  sl_fx_add start "$start";     sl_fx_add grew "$grew"
+  sl_fx_add hb "$hb";           sl_fx_add wpid "$sl_wpid"
+  sl_fx_add bshort "$SL_BORROW_SHORT"; sl_fx_add bdetail "$bdetail"
+  sl_fx_add breset "$breset";   sl_fx_add bmdhm "$bmdhm"
+  # Every line is one key and one value: a second tab or any newline beyond the
+  # ones written above would be read as something else.
+  n=0; v=$out
+  while [ "${v#*$'\n'}" != "$v" ]; do v=${v#*$'\n'}; n=$((n + 1)); done
+  [ "$n" = 28 ] || return 0
+  v=$out
+  while [ -n "$v" ]; do
+    t=${v%%$'\n'*}
+    case "$t" in *$'\t'*$'\t'*) return 0 ;; esac
+    [ "$t" = "$v" ] && break
+    v=${v#*$'\n'}
+  done
+  printf '%s\n' "$out"
+}
+
+if [ "${CC_SL_FACTS_OUT:-}" = 1 ]; then
+  if [ "${sl_dorm[$best_i]}" = 1 ]; then
+    # A session whose line is a run nobody is moving needs no precomputing, and
+    # the direct path does not register one either.
+    printf 'cc-sl-facts 1\ndormant\t1\n'
+  else
+    sl_facts_emit
+  fi
+  exit 0
 fi
+
+# ---------------------------------------------------------------------------
+# The observer: the mark that it is missing, and starting it.
+# ---------------------------------------------------------------------------
+#
+# ONLY WHERE AN OBSERVER SHOULD BE RUNNING. Four conditions, all of them: the
+# switch is on (`CC_CMDS_OBSERVER` is not `off` and `CI` is empty), python3 is
+# there, the chosen run's pinned copy carries `observer-protocol` — a run of a
+# version the observer serves — and the observer is absent (no `observer.pid`,
+# or its pid does not answer) or stale (its `heartbeat` epoch more than 30
+# seconds old). Then ` · 관측기 낡음` takes an empty watcher slot.
+#
+# `ensure` is started on the first three conditions, at most every 30 seconds
+# by the epoch `ensure.at` holds, detached and with every stream closed, so
+# nothing it does reaches this line, and it carries this session's
+# registration. A dormant run starts nothing. With the switch off neither
+# happens, and this path's output and processes are what they were without an
+# observer.
+#
+# A CALL FROM THE PANE (`CC_SL_PANE_FIELDS`) DOES NEITHER. The pane registers
+# its own session and starts `ensure` itself once it has drawn; a start from
+# here would stamp `ensure.at` first and hold the pane's registration back for
+# 30 seconds. Its field row carries no mark either: the pane draws its own rows.
+# When the pane is computing its own facts block (`CC_PANE_FACTS_OUT=1`), the
+# field row is followed by `cc-sl-expires <epoch>`, so the pane's block expires
+# by this selection's thresholds rather than by a copy of them.
+if [ "${CC_SL_PANE_FIELDS:-}" = "1" ] && [ "${CC_PANE_FACTS_OUT:-}" = 1 ]; then
+  sl_render || sl_exit_fallback
+  sl_expires_into sl_exp
+  printf '\ncc-sl-expires\t%s' "$sl_exp"
+  exit 0
+fi
+sl_obs_on=0
+if [ "${CC_CMDS_OBSERVER:-}" != off ] && [ -z "${CI:-}" ] && [ -z "${CC_SL_PANE_FIELDS:-}" ] \
+   && [ "${sl_dorm[$best_i]}" != 1 ]; then
+  if type -P python3 >/dev/null 2>&1; then sl_obs_on=1
+  elif [ -x /usr/bin/python3 ]; then sl_obs_on=2
+  fi
+fi
+if [ "$sl_obs_on" != 0 ] && [ -f "$CC_SL_DIR/observer.py" ]; then
+  sl_obs_dir_into sl_od
+  if [ -n "$sl_od" ]; then
+    sl_at=""
+    { IFS= read -r sl_at || [ -n "$sl_at" ]; } 2>/dev/null < "$sl_od/ensure.at" || sl_at=""
+    case "$sl_at" in ''|*[!0123456789]*) sl_at=0 ;; esac
+    if [ $((now - sl_at)) -ge 30 ] || [ "$sl_at" -gt "$now" ]; then
+      sl_json_str_into session_id sl_sid
+      sl_json_str_into transcript_path sl_tp
+      sl_self=${BASH_SOURCE[0]}
+      case "$sl_self" in /*) ;; *) sl_self="$CC_SL_DIR/statusline.sh" ;; esac
+      if [ "$sl_obs_on" = 1 ]; then
+        python3 "$CC_SL_DIR/observer.py" ensure --sl-session "$sl_sid" --sl-script "$sl_self" \
+          --sl-transcript "$sl_tp" </dev/null >/dev/null 2>&1 &
+      else
+        PATH="/usr/bin:$PATH" python3 "$CC_SL_DIR/observer.py" ensure --sl-session "$sl_sid" \
+          --sl-script "$sl_self" --sl-transcript "$sl_tp" </dev/null >/dev/null 2>&1 &
+      fi
+    fi
+    if [ -f "$best_rd/plugin/cc-cmds/orchestrator/observer-protocol" ]; then
+      sl_p=""; sl_hbe=""
+      { IFS= read -r sl_p || [ -n "$sl_p" ]; } 2>/dev/null < "$sl_od/observer.pid" || sl_p=""
+      case "$sl_p" in ''|*[!0123456789]*) sl_p="" ;; esac
+      if [ -z "$sl_p" ] || ! cc_pid_exists "$sl_p"; then
+        sl_stale_mark=" · 관측기 낡음"
+      else
+        { IFS= read -r sl_hbe || [ -n "$sl_hbe" ]; } 2>/dev/null < "$sl_od/heartbeat" || sl_hbe=""
+        case "$sl_hbe" in ''|*[!0123456789]*) sl_hbe=0 ;; esac
+        [ $((now - sl_hbe)) -gt 30 ] && sl_stale_mark=" · 관측기 낡음"
+      fi
+    fi
+  fi
+fi
+
+sl_render || sl_exit_fallback
 exit 0

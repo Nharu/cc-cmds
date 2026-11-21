@@ -1,0 +1,29 @@
+cc-sl-facts 1
+key.script	@ORCH@/statusline.sh
+key.sid	SID9
+key.transcript_path	/dev/null
+key.CLAUDE_CONFIG_DIR	
+key.XDG_STATE_HOME	=@ROOT@/state
+key.HOME	=@ROOT@/home
+key.CC_CMDS_AUTOPILOT_TZ	
+key.CC_SL_SCREEN	
+key.CC_SL_PANE_FIELDS	
+key.CC_SL_TRACE	
+computed	@NOW@
+expires	9999999999
+dormant	0
+trim	bdetail kind elapsed
+rid	F1
+state	진행중
+pend	
+w	
+seg	
+kind	
+start	
+grew	@NOW@
+hb	@NOW@
+wpid	0
+bshort	
+bdetail	
+breset	
+bmdhm	

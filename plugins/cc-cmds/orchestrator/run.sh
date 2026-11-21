@@ -7695,11 +7695,20 @@ home_alias() {
 }
 
 alias_root() {
-  local a="$1" wt
+  local a="$1" wt cg
   { [ -z "$MANIFEST" ] || [ "$a" = "." ]; } && { main_root; return 0; }
   wt=$(target_field "$a" '메인 워크트리')
   [ -n "$wt" ] || return 1
-  dirname "$(cd "$wt" && git rev-parse --path-format=absolute --git-common-dir)"
+  # `dirname` by parameter expansion, with its answers kept: `.` for an empty
+  # value (a worktree git could not read) or one without a slash, `/` for a
+  # directory right under the root. The gate resolves a root several times on
+  # every act, and the external `dirname` was one process each time.
+  cg=$(cd "$wt" && git rev-parse --path-format=absolute --git-common-dir) || cg=''
+  case "$cg" in
+    */*) cg=${cg%/*}; [ -n "$cg" ] || cg=/ ;;
+    *) cg=. ;;
+  esac
+  printf '%s\n' "$cg"
 }
 
 # The `-R` argument. Deriving it from the origin URL is the fallback, not the
@@ -11389,17 +11398,46 @@ kind_pin_source_of() {
   printf '%s\n' "${r##* }"
 }
 
+kind_pin_note() {
+  # kind_pin_note <lane> — the run's visual pin record (`route.sh visual-pin-put`)
+  # naming <lane>, written beside the lease table where cc-lane's donor ranking
+  # reads it and pushes that account's group behind every other candidate.
+  #
+  # IT IS WRITTEN WHEN THE ROUTER IS ASKED, before the request reaches it, so a
+  # PARK leaves the record too: a run whose first question parks because cc
+  # holds the pinned account as its donor has the record from that question,
+  # cc-lane moves to another donor on its next tick, and the next question gets
+  # in. The one PARK before the record exists is accepted rather than resolving
+  # the lane in a second place at run start.
+  #
+  # The lane is taken as given and never resolved again, so the request's
+  # `pin_lane` and the record's `account` are the same value. Nothing goes to
+  # standard output, which is the request JSON of the caller. Writes nothing
+  # when the lane, `RUN_ID` or `RUN_DIR` is empty. Always rc 0: the record only
+  # reorders donors, so a failed write warns on standard error and the request
+  # goes on unchanged.
+  local lane="${1:-}" rc=0
+  [ -n "$lane" ] && [ -n "${RUN_ID:-}" ] && [ -n "${RUN_DIR:-}" ] || return 0
+  route_visual_pin_put --table "$(run_pace_root)/leases" --run-id "$RUN_ID" --account "$lane" \
+    --run-dir "$RUN_DIR" --pinned-at "$(date -u +%s)" >&2 || rc=$?
+  [ "$rc" = "0" ] || warn "the visual pin record was not written (rc=$rc, lane $lane) — the request goes on all the same"
+  return 0
+}
+
 kind_pin_request_json() {
   # kind_pin_request_json <kind> — the request fields of a pin, as one JSON
   # object merged into every router request this driver and the gate build:
   # `pin_lane` and `pin_source` when there is a pin, and `migratable: true` for
   # the visual publish stage, whose blocked pin the router may migrate. `{}`
   # for every other kind. Always valid JSON, so a builder's `--argjson` cannot
-  # fail on it.
+  # fail on it. A visual publish request with a pin also leaves the run's
+  # visual pin record for that lane (`kind_pin_note`) before the JSON is
+  # printed.
   local lane src
   [ "${1:-}" = "visual-publish" ] || { printf '{}'; return 0; }
   lane=$(kind_pin_lane_of "$1" 2>/dev/null || true)
   src=$(kind_pin_source_of "$1" 2>/dev/null || true)
+  [ -z "$lane" ] || kind_pin_note "$lane"
   jq -cn --arg pin "$lane" --arg src "$src" \
     '{migratable: true}
      + (if $pin == "" then {} else {pin_lane: $pin} end)

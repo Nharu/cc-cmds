@@ -21632,16 +21632,32 @@ readonly GATE_MASTER_REASON_MAX=160
 GATE_CI_MATCH_LOG_MAX_BYTES=8388608
 GATE_CI_MATCH_GH_SECONDS=20
 
+gate_master_enc_into() {
+  # gate_master_enc_into <var> <piece> — one piece of the file name with `%`,
+  # `/` and `_` percent-encoded, so `__` joins the three pieces without
+  # ambiguity, put in <var>. Parameter expansion rather than `sed`, and a
+  # variable rather than a printed value: the path is built on every gate act
+  # that writes the `master 판독` row, and the three pieces cost six processes
+  # as substitutions over `sed`.
+  local v=$2
+  v=${v//\%/%25}; v=${v//\//%2F}; v=${v//_/%5F}
+  printf -v "$1" '%s' "$v"
+}
+
 gate_master_enc() {
-  # gate_master_enc <piece> — one piece of the file name with `%`, `/` and `_`
-  # percent-encoded, so `__` joins the three pieces without ambiguity.
-  printf '%s' "$1" | sed -e 's/%/%25/g' -e 's#/#%2F#g' -e 's/_/%5F/g'
+  # gate_master_enc <piece> — the same encoding, printed.
+  local e
+  gate_master_enc_into e "$1"
+  printf '%s' "$e"
 }
 
 gate_master_file() {
   # gate_master_file <owner/name> <base branch> — the reading's path.
-  printf '%s/master/%s__%s__%s.json' "$(gate_pace_root)" \
-    "$(gate_master_enc "${1%%/*}")" "$(gate_master_enc "${1#*/}")" "$(gate_master_enc "$2")"
+  local o n b
+  gate_master_enc_into o "${1%%/*}"
+  gate_master_enc_into n "${1#*/}"
+  gate_master_enc_into b "$2"
+  printf '%s/master/%s__%s__%s.json' "$(gate_pace_root)" "$o" "$n" "$b"
 }
 
 gate_master_state() {
@@ -22109,7 +22125,7 @@ gate_reap_day_epoch() {
 }
 
 gate_reap_eligible() {
-  # gate_reap_eligible <run-dir> <run-id> <now> — 0 when all five clauses hold.
+  # gate_reap_eligible <run-dir> <run-id> <now> — 0 when all six clauses hold.
   #
   # FAIL-CLOSED IN EVERY CLAUSE. Reclamation needs positive evidence of age: a
   # clock that is missing, empty, unreadable or unparsable means "unknown", and
@@ -22118,10 +22134,30 @@ gate_reap_eligible() {
   # `git clean` in some other repo removed as "1970, infinitely old", which turns
   # that command into a remote delete for this run's state directory.
   local rd="$1" id="$2" now="$3" started ledger state day_epoch
+  local mk_l mk_pid="" mk_fp=""
   # 4 — a symlink is not a candidate at all. This is also what makes the
   # slash-free victim path safe rather than merely tidy.
   [ ! -L "$rd" ] || return 1
   [ -d "$rd" ] || return 1
+  # 6 — a pinned copy the resident observer is running from is in use. The
+  # observer writes `observer.code-inuse` (`pid=` and `fingerprint=`, the
+  # `LC_ALL=C ps -o lstart=` of that pid) into the run whose copy holds its code,
+  # and outlives that run while it watches others; reclaiming the copy would take
+  # away the scripts it calls next. The mark holds only while the recorded pid
+  # answers AND its start time is the recorded one, so a dead observer's mark — or
+  # a reused pid — leaves the run to the clauses below. A run with no mark costs
+  # one test and no process. The holder is judged by `cc_holder_is_live`, the
+  # shared predicate, so the gate keeps no liveness test of its own.
+  if [ -f "$rd/observer.code-inuse" ]; then
+    while IFS= read -r mk_l || [ -n "$mk_l" ]; do
+      case "$mk_l" in
+        pid=*) mk_pid=${mk_l#pid=} ;;
+        fingerprint=*) mk_fp=${mk_l#fingerprint=} ;;
+      esac
+      mk_l=""
+    done 2>/dev/null < "$rd/observer.code-inuse"
+    if cc_holder_is_live "$mk_pid" "$mk_fp"; then return 1; fi
+  fi
   # 3 — never the current run. Structurally unreachable anyway, because
   # `rundir_init` rewrites this run's `started-at` to `now` before the run-open
   # branch is reached, but the comparison is one test and says so out loud.
@@ -31241,7 +31277,11 @@ gate_base_guard_applies() {
   local al="$1" verb="$2" kind="$3"
   [ -n "${RUN_DIR:-}" ] || return 1
   case "$al" in ''|-) return 1 ;; esac
-  case " $(target_aliases 2>/dev/null | tr '\n' ' ') " in *" $al "*) ;; *) return 1 ;; esac
+  local a known=''
+  for a in $(target_aliases 2>/dev/null); do
+    [ "$a" = "$al" ] && { known=1; break; }
+  done
+  [ -n "$known" ] || return 1
   if [ "$verb" != "exec" ] && [ -n "$kind" ] && gate_kind_is_bookkeeping "$kind"; then
     return 1
   fi
@@ -31249,20 +31289,56 @@ gate_base_guard_applies() {
   return 0
 }
 
+gate_base_guard_locate() {
+  # gate_base_guard_locate <alias> — put the base's ref and the target's root
+  # in GATE_BG_LOC_REF and GATE_BG_LOC_ROOT, once per gate process, for the
+  # reads of `gate_base_guard_now` that follow.
+  #
+  # ONCE, BECAUSE NEITHER CAN CHANGE WITHIN ONE GATE CALL. The base branch is
+  # the manifest's declared one, or the run's frozen derivation; whether the
+  # target has `origin` is frozen per run (`target_has_origin`); and the root is
+  # the common git directory of the manifest's main worktree. Re-deriving them
+  # for the reading before the act and again for the one after cost about forty
+  # processes on every act of a target with no remote. The sha is still read
+  # afresh on every call — that is the value the check compares.
+  #
+  # Only after `gate_base_guard_applies` said yes, which already established
+  # that the target has no `origin`: the ref is then the local branch, the one
+  # `base_ref` would name. A failure leaves both empty, which reads as a base
+  # the target cannot name, as before.
+  local al="$1" b
+  GATE_BG_LOC_AL=$al; GATE_BG_LOC_REF=''; GATE_BG_LOC_ROOT=''
+  if b=$(base_branch "$al" 2>/dev/null) && [ -n "$b" ]; then
+    GATE_BG_LOC_REF="refs/heads/$b"
+  fi
+  GATE_BG_LOC_ROOT=$(alias_root "$al" 2>/dev/null) || GATE_BG_LOC_ROOT=''
+}
+
+gate_base_guard_now_into() {
+  # gate_base_guard_now_into <alias> — `gate_base_guard_now` into GATE_BG_NOW,
+  # without the substitution the printed form costs the caller.
+  local al="$1" ref root sha=''
+  if [ "${GATE_BG_LOC_AL-}" = "$al" ]; then
+    ref=$GATE_BG_LOC_REF root=$GATE_BG_LOC_ROOT
+  else
+    ref=$(base_ref "$al" 2>/dev/null) || ref=''
+    root=$(alias_root "$al" 2>/dev/null) || root=''
+  fi
+  if [ -n "$ref" ] && [ -n "$root" ]; then
+    sha=$(cd "$root" 2>/dev/null && git rev-parse --verify --quiet "$ref^{commit}" 2>/dev/null) || sha=''
+  fi
+  [ -n "$ref" ] || ref=-
+  [ -n "$sha" ] || sha=없음
+  GATE_BG_NOW="${ref}	${sha}"
+}
+
 gate_base_guard_now() {
   # gate_base_guard_now <alias> — `<ref>\t<sha>` of the base as it stands. A
   # ref that does not resolve reads `없음`: a base ref that disappeared is a
   # move too. A base the target cannot name at all reads `-\t없음`, which stays
   # equal to itself.
-  local al="$1" ref root sha=''
-  ref=$(base_ref "$al" 2>/dev/null) || ref=''
-  root=$(alias_root "$al" 2>/dev/null) || root=''
-  if [ -n "$ref" ] && [ -n "$root" ]; then
-    sha=$( (cd "$root" 2>/dev/null && git rev-parse --verify --quiet "$ref^{commit}") 2>/dev/null) || sha=''
-  fi
-  [ -n "$ref" ] || ref=-
-  [ -n "$sha" ] || sha=없음
-  printf '%s\t%s' "$ref" "$sha"
+  gate_base_guard_now_into "$1"
+  printf '%s' "$GATE_BG_NOW"
 }
 
 gate_base_guard_put() {
@@ -31600,6 +31676,7 @@ gate_base_guard_entry() {
   local al="$1" seg="$2" verb="$3" kind="$4"; shift 4
   GATE_BG_ON=''; GATE_BG_AL=''; GATE_BG_SEG=''
   gate_base_guard_applies "$al" "$verb" "$kind" || return 0
+  gate_base_guard_locate "$al"
   # THE BARE `admit` FORM RUNS ITS COMMAND OUTSIDE THE GATE, so the act would
   # have no "after" to compare, and a move it made would be caught at some
   # other act's entry and pinned on that act's segment. Refused before any
@@ -31616,7 +31693,7 @@ gate_base_guard_entry() {
   local d="$RUN_DIR/base-guard" kf tl wf lf now known v w_old w_new w_at w_rec w_lf age
   local nolock="기지값=대조 안 함 / 지금=대조 안 함 / 자리=들머리 / 행위 종료 코드=수행 안 함 / 동시 행위·사람 커밋 구분 안 함"
   kf="$d/$al"; tl="$kf.latch"; wf="$kf.writing"
-  now=$(gate_base_guard_now "$al")
+  gate_base_guard_now_into "$al"; now=$GATE_BG_NOW
   mkdir -p "$d" 2>/dev/null || true
   if ! gate_index_lock "$kf"; then
     gate_base_guard_target_stop "$al" "$seg" \
@@ -31740,7 +31817,7 @@ gate_base_guard_after() {
   [ "${GATE_BG_ON:-}" = "1" ] || return 0
   local al="$GATE_BG_AL" kf now known
   kf="$RUN_DIR/base-guard/$al"
-  now=$(gate_base_guard_now "$al")
+  gate_base_guard_now_into "$al"; now=$GATE_BG_NOW
   if ! gate_index_lock "$kf"; then
     warn "베이스 이동 — 대조 잠금을 잡지 못해 행위 뒤 대조를 건너뜁니다 — 다음 행위의 들머리가 대조합니다 · 행위는 수행됨"
     return 0
@@ -60311,7 +60388,14 @@ gate_visual_lane_commit() {
   # account could not be read or the write failed; the reason, naming the lane
   # and the cause, is on stdout, and the caller hands the lease back and parks
   # without launching.
-  local kind="${1:-}" env="${2:-}" rec facts from to why cfg email s dl dlane dacct dsrc
+  #
+  # A migration grant also moves the run's visual pin record (`route.sh
+  # visual-pin-put`) to the new lane, since the router's question wrote it for
+  # the lane it asked about. That write sends nothing to stdout and never
+  # changes the rc: a failure warns and the grant goes on, because the record
+  # only reorders cc-lane's donors. The inheritance branch writes none, its lane
+  # being the one the question already wrote.
+  local kind="${1:-}" env="${2:-}" rec facts from to why cfg email s dl dlane dacct dsrc prc=0
   [ "$kind" = "visual-publish" ] || return 0
   [ -n "${RUN_DIR:-}" ] && [ -d "$RUN_DIR" ] || return 0
   rec="$RUN_DIR/visual-lane"
@@ -60345,6 +60429,11 @@ EOF
       return 1
     fi
     log "시각 발행 이관 기록 — $rec: ${from:--} → $to (${why:--}, 이관 $s)"
+    if [ -n "${RUN_ID:-}" ]; then
+      route_visual_pin_put --table "$(run_pace_root)/leases" --run-id "$RUN_ID" --account "$to" \
+        --run-dir "$RUN_DIR" --pinned-at "$(date -u +%s)" >&2 || prc=$?
+      [ "$prc" = "0" ] || warn "the visual pin record was not moved to lane $to (rc=$prc) — the grant goes on all the same"
+    fi
     return 0
   fi
   [ ! -e "$rec" ] || return 0
