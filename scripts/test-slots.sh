@@ -632,8 +632,12 @@ ts_release_mine() {
 #
 # Runs "$@" as its child and ends with the child's exit status. bash holds a
 # trap until a foreground child ends, so the child runs in the background and
-# the shell waits for it; on TERM it sends the child TERM and waits again,
-# which is how cleanup's TERM still reaches the job. With $1 `fg` (a job shell
+# the shell waits for it; on TERM it sends the child TERM, which is how
+# cleanup's TERM still reaches the job. A trapped signal cuts the wait short
+# with a status above 128, so after the trap has run and the status is above
+# 128 the shell waits again, which returns the child's own exit status — the
+# one bash kept if it already reaped the child while the trap ran. A status of
+# 128 or below came from the child ending and is kept. With $1 `fg` (a job shell
 # run in the foreground, as check-push's serial steps are) an INT is sent on as
 # TERM the same way, and the child is started through perl with INT back at its
 # default: bash starts a background child with INT ignored, and a command that
@@ -672,7 +676,7 @@ ts_job_shell() {
   rc=$?
   while [ "$TS_JS_SIG" = 1 ]; do
     TS_JS_SIG=0
-    if kill -0 "$TS_JS_CPID" 2>/dev/null; then
+    if [ "$rc" -gt 128 ]; then
       wait "$TS_JS_CPID"
       rc=$?
     fi
@@ -733,7 +737,7 @@ ts_run_wrap() {
 # --- self-test ---------------------------------------------------------------------
 
 ts_self_test() {
-  local mode="${1:-}" passed=0 failed=0 T self out rc v pa pb pc dp cpus err f fpa w
+  local mode="${1:-}" passed=0 failed=0 T self out rc v pa pb pc dp cpus err f fpa w kstub child
   ok()  { passed=$((passed + 1)); printf 'PASS: %s\n' "$1"; }
   bad() { failed=$((failed + 1)); printf 'FAIL: %s — %s\n' "$1" "${2:-}" >&2; }
   check() { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "got「$2」 want「$3」"; fi; }
@@ -1073,6 +1077,41 @@ proc $pb $(ts_fp "$pb")
   check "잡 셸: TERM 을 자식에게 넘기고 자식의 종료 코드로 끝난다" "$rc $(cat "$T/js.log" 2>/dev/null)" "9 got-term"
   (ts_job_shell fg "" bash -c 'trap "exit 7" INT; kill -INT $$; sleep 1; exit 0')
   check "잡 셸: 앞쪽 잡의 자식은 INT 를 받을 수 있게 시작한다" "$?" "7"
+  # The next two force the order in which the child ends and is reaped while
+  # the trap runs: inside the job shell's process, kill stands in for the
+  # builtin and, after sending TERM, returns only once kill -0 on that pid
+  # fails, which is when bash has reaped the child (a zombie still answers
+  # kill -0). The child writes its pid file after setting its trap, so the
+  # signal never arrives before the trap is in place.
+  kstub='kill() { builtin kill "$@"; local r=$? n=0; if [ "$1" = -TERM ]; then while builtin kill -0 "$2" 2>/dev/null && [ "$n" -lt 100 ]; do sleep 0.1; n=$((n + 1)); done; fi; return "$r"; }'
+  child="trap 'echo got-term >> \"$T/js.log\"; kill \$sp 2>/dev/null; exit 9' TERM; echo \$\$ > '$T/child.pid'; sleep 60 & sp=\$!; wait \$sp"
+  rm -f "$T/child.pid" "$T/js.log"
+  (eval "$kstub"; ts_job_shell bg "" sh -c "$child") &
+  w=$!
+  for f in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+    [ -s "$T/child.pid" ] && break
+    sleep 1
+  done
+  kill -TERM "$w" 2>/dev/null
+  wait "$w"
+  rc=$?
+  check "잡 셸: 뒤쪽 잡이 TERM 을 받는 중에 자식이 끝나 거둬져도 자식의 종료 코드로 끝난다" "$rc $(cat "$T/js.log" 2>/dev/null)" "9 got-term"
+  # A process started in the background begins with INT ignored and cannot
+  # trap it, so the foreground job shell is started through perl with INT back
+  # at its default, in a bash that sources this script for its functions.
+  rm -f "$T/child.pid" "$T/js.log"
+  perl -e '$SIG{INT} = "DEFAULT"; exec { $ARGV[0] } @ARGV;' -- "$BASH" -c '. "$1"; eval "$2"; TS_GOT=""; ts_job_shell fg "" sh -c "$3"' _ "$self" "$kstub" "$child" &
+  w=$!
+  for f in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+    [ -s "$T/child.pid" ] && break
+    sleep 1
+  done
+  kill -INT "$w" 2>/dev/null
+  wait "$w"
+  rc=$?
+  check "잡 셸: 앞쪽 잡이 INT 를 받는 중에 자식이 끝나 거둬져도 자식의 종료 코드로 끝난다" "$rc $(cat "$T/js.log" 2>/dev/null)" "9 got-term"
+  out=$(sh -c 'exit 9' & p=$!; wait "$p"; wait "$p"; printf '%s' "$?")
+  check "잡 셸 전제: 이미 거둔 자식을 다시 wait 하면 저장된 종료 코드가 돌아온다" "$out" "9"
   ts_slot_take "목표 o" "" 2>/dev/null
   (ts_job_shell bg "" sh -c 'exit 0')
   has "잡 셸: 잡의 프로세스를 자리 owner 에 더한다" "$(cat "$T/s/$TS_GOT/owner")" "proc "
@@ -1191,7 +1230,7 @@ proc $pb $(ts_fp "$pb")
   rm -rf "$T"
   printf 'test-slots self-test: %d passed, %d failed\n' "$passed" "$failed"
   # A floor on the count, so a refactor that silently skips cases cannot pass.
-  if [ "$mode" = inner ]; then w=105; else w=113; fi
+  if [ "$mode" = inner ]; then w=108; else w=116; fi
   if [ "$passed" -lt "$w" ]; then
     printf 'test-slots self-test: 통과 수 %d 가 하한 %d 에 못 미칩니다\n' "$passed" "$w" >&2
     return 1
