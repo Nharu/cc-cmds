@@ -34,12 +34,12 @@
 set -uo pipefail
 
 R3_ON_CI=${CI:-}
-for _v in $(compgen -e); do
-  case "$_v" in CC_PIPELINE_*) unset "$_v" ;; esac
-done
-unset CI CC_CMDS_OBSERVER CC_OBSERVER_PID TMUX TMUX_PANE _v
+for v in $(compgen -e | grep '^CC_PIPELINE_' || true); do unset "$v"; done
+unset CI CC_CMDS_OBSERVER CC_OBSERVER_PID TMUX TMUX_PANE v
 CC_CMDS_AUTOPILOT_NOTIFY=0
 export CC_CMDS_AUTOPILOT_NOTIFY
+CC_CMDS_DASHBOARD=off
+export CC_CMDS_DASHBOARD
 
 script_dir=$(cd "$(dirname "$0")" && pwd)
 repo_root=$(cd "$script_dir/.." && pwd)
