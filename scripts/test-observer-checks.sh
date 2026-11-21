@@ -456,9 +456,11 @@ if [ ! -e "$R_P2/checks.pid" ]; then ok "P 넘겨받은 pid 가 없는 --once �
 # ===========================================================================
 pid_is() { [ "$(tr -d '[:space:]' 2>/dev/null < "$1")" = "$2" ]; } 2>/dev/null
 pid_runs() { # pid_runs <pid file> <ERE> — the pid in the file is alive and runs that
-  local p; p=$( { tr -d '[:space:]' < "$1"; } 2>/dev/null)
+  local p cmd; p=$( { tr -d '[:space:]' < "$1"; } 2>/dev/null)
   case "$p" in ''|*[!0-9]*) return 1 ;; esac
-  alive "$p" && ps -p "$p" -o command= 2>/dev/null | grep -qE "$2"
+  alive "$p" || return 1
+  cmd=$(ps -p "$p" -o command= 2>/dev/null) || return 1
+  [[ "$cmd" =~ $2 ]]
 }
 observed_lines() { [ -s "$1/checks.observed" ] && [ "$(grep -c '' < "$1/checks.observed" | tr -d ' ')" -ge "$2" ]; }
 
