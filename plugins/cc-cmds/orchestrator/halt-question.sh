@@ -24,10 +24,12 @@
 #              approval asked through its `S2P` record), and the session ask
 #              hook reads the header to find which approval's banner the
 #              question replaces. Nothing else in the output changes.
-#   body     — markdown, parts separated by blank lines: the 판정 요지 line,
-#              the 추천 and 추천 근거 lines, the question split into
-#              paragraphs, the `**확인**: ` lines quoted after the question
-#              block, the per-option risks, and `기록: <absolute path>`.
+#   body     — markdown, parts separated by blank lines: the reason the gate
+#              refused an automatic answer to this record, when the run's
+#              ledger holds one (below), the 판정 요지 line, the 추천 and
+#              추천 근거 lines, the question split into paragraphs, the
+#              `**확인**: ` lines quoted after the question block, the
+#              per-option risks, and `기록: <absolute path>`.
 #   source   — `원문` | `요지` | `대체`.
 #   options  — `{label, description, preview}` per option line, label and
 #              description byte for byte; `preview` is the risk sentence of
@@ -35,8 +37,20 @@
 #              whole risk line splits into parts that each head with an
 #              option label.
 #
+# THE REFUSAL PART. When the gate refuses a seat's or a stage's automatic
+# answer on the record's content it writes an `auto-refused` row. The run
+# directory is the record's directory's parent (`halt/`) or grandparent
+# (`halt/shift/`), its `ledger-path` names the ledger, and the last
+# `auto-refused` row whose `중단 기록` ends in the record's tail from the run
+# directory's name down puts one part at the head of the body:
+# `좌석이 추천 `<label>` 을 고르지 않은 이유: <reason>` for the seat,
+# `스테이지가 추천 `<label>` 을 스스로 답하지 못한 이유: <reason>` for a stage.
+# No `ledger-path`, an unreadable ledger or no such row adds nothing, and the
+# question, the header and the options never change.
+#
 # READ ONLY, AND NOT THE GATE. This file never calls or sources the gate and
-# writes nothing. The question block is read and folded by the same rule as
+# writes nothing; it reads the ledger the gate wrote, as a file. The question
+# block is read and folded by the same rule as
 # the gate's `gate_halt_record_question` — from the `**질문 문면**:` line to
 # the next field line or the closing fence, every run of white space made one
 # space — and the option lines by the same block rule as its option reader;
@@ -236,6 +250,43 @@ hq_risk_parts() {
   }'
 }
 
+hq_refusal() {
+  # hq_refusal <absolute record path> — the refusal part of the body, or
+  # nothing. Rows are split on ` | ` as the gate's row readers split them.
+  local rec="$1" dir rd tail lp ledger
+  dir=$(dirname "$rec")
+  case "$dir" in
+    */halt) rd=$(dirname "$dir") ;;
+    */halt/shift) rd=$(dirname "$(dirname "$dir")") ;;
+    *) return 0 ;;
+  esac
+  lp="$rd/ledger-path"
+  [ -f "$lp" ] && [ -r "$lp" ] || return 0
+  IFS= read -r ledger < "$lp" || [ -n "$ledger" ] || return 0
+  [ -n "$ledger" ] && [ -f "$ledger" ] && [ -r "$ledger" ] || return 0
+  tail="/${rd##*/}/${rec#"$rd"/}"
+  HQ_T="$tail" LC_ALL=C awk '
+    function fld(k,   i, v) {
+      for (i = 2; i <= nf; i++) if (index(f[i], k "=") == 1) {
+        v = substr(f[i], length(k) + 2); sub(/[ \t\r]+$/, "", v); return v
+      }
+      return ""
+    }
+    BEGIN { t = ENVIRON["HQ_T"] }
+    index($0, "- `auto-refused` | ") == 1 {
+      nf = split($0, f, / \| /)
+      v = fld("중단 기록")
+      if (length(v) < length(t) || substr(v, length(v) - length(t) + 1) != t) next
+      by = fld("답한 주체"); lab = fld("추천"); why = fld("사유"); hit = 1
+    }
+    END {
+      if (!hit) exit
+      if (lab == "") lab = "(없음)"
+      if (by == "좌석") printf "좌석이 추천 `%s` 을 고르지 않은 이유: %s", lab, why
+      else if (by == "스테이지") printf "스테이지가 추천 `%s` 을 스스로 답하지 못한 이유: %s", lab, why
+    }' "$ledger" 2>/dev/null || true
+}
+
 # ---------------------------------------------------------------------------
 # Rendering.
 # ---------------------------------------------------------------------------
@@ -300,6 +351,7 @@ EOF
   # The body, part by part.
   body=''
   hq_add() { [ -z "$1" ] || body="$body${body:+$nl$nl}$1"; }
+  hq_add "$(hq_refusal "$abs")"
   if [ -n "$gist" ]; then
     hq_add "$gist_line"
   elif [ "$source" = "대체" ]; then

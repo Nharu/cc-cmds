@@ -39213,7 +39213,7 @@ CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$HD_PREV_AR"
 if [ "$HD_PREV_AD" = "__unset__" ]; then unset CC_CMDS_AUTOPILOT_AUTO_DRAFT; else export CC_CMDS_AUTOPILOT_AUTO_DRAFT="$HD_PREV_AD"; fi
 
 # --- 34p. 설계 사다리 정지의 좌석 답 — 기록을 설계 문서와 대조한다 ---------------
-# --- section: 34p | group: cone | covers: act, snapshot | anchors: 34p: Step 7U / ladder-unsettled 의 코드-부재 기록에 좌석이 답한다, 34p: 사람-환경 항목이 구현 후를 적지 않은 기록은 거부된다, 34p: W3 표지 없는 항목을 뺀 기록은 거부된다, 34p: 네 양성이 행 넷을 남긴다, 34p: 100 항목 도장 행은 행 없이 거부된다 ---
+# --- section: 34p | group: cone | covers: act, snapshot | anchors: 34p: Step 7U / ladder-unsettled 의 코드-부재 기록에 좌석이 답한다, 34p: 사람-환경 항목이 구현 후를 적지 않은 기록은 거부된다, 34p: W3 표지 없는 항목을 뺀 기록은 거부된다, 34p: 네 양성이 행 넷을 남긴다, 34p: 100 항목 도장 행은 행 없이 거부된다, 34p: 내용 검사의 거부는 auto-refused 행 하나를 남기고 중단 답 행은 남기지 않는다, 34p: residual-check 가 세 항목마다 검증 등급 누락 줄을 낸다, 34p: 수리한 문서에서 같은 기록에 좌석 답이 선다, 34p: 같은 거부를 두 번 만나도 auto-refused 행은 하나다, 34p: 스테이지 답의 내용 거부도 auto-refused 행을 남긴다, 34p: 술어가 그 열다섯 줄 밖에는 내지 않는다, 34p: 위반 없는 CANON 문서에 residual-check 는 0 이고 출력이 없다, 34p: 글머리표·굵은 글씨 없는 렌더링 문서에 residual-check 는 0 이다 ---
 #
 # THE LADDER'S FREEZE IS A RULE THE SEAT APPLIES, AND THE GATE CHECKS THE RULE
 # AGAINST THE DESIGN DOCUMENT. A `/ ladder-unsettled` record says in
@@ -39738,6 +39738,175 @@ done
 sln_hn=$(sln_ha)
 sln_size Z100 100
 check "34p: 100 항목 도장 행은 행 없이 거부된다" "$([ "$rc" -ne 0 ] && printf nonzero || printf zero)/$(sln_ha)" "nonzero/$sln_hn"
+
+# THE WRITER'S CHECK AND THE REFUSAL'S ROW. A stage runs `gate.sh
+# residual-check` on its own document before it freezes it or writes a halt
+# record, and repairs what it prints; a content check that refuses an automatic
+# answer anyway leaves one `auto-refused` row with its own text, which is not an
+# answer, so the record still waits. The fixture of the halt's shape is a
+# document whose items lost their grade line: the record names them, the gate
+# reads no open item, and the check names each missing line.
+sln_ar() { { cap_rows 'auto-refused' | grep -c . || true; } | tr -d ' '; }
+sln_ar_last() { cap_rows 'auto-refused' | tail -1; }
+sln_rck() {  # sln_rck <문서> — residual-check on that document; leaves rc and CAP_OUT
+  cap_gate "$SLN_SEAT" '' residual-check --manifest "$CAP_NM" --document "$1"
+}
+sln_nograde() {  # sln_nograde — drop every grade line from the fixture document
+  grep -v '^\*\*검증 등급\*\*: ' "$SLN_DOC" > "$SLN_DOC.t"; mv "$SLN_DOC.t" "$SLN_DOC"
+}
+sln_doc '1:구현 필요:-:0:0' '2:구현 필요:-:0:0' '3:구현 필요:-:0:0'
+sln_nograde
+sln_sr RA 1
+SLN_RA="$CAP_DIR/halt/RA#1.md"
+sln_rec "$SLN_RA" "$SLN_DD" 'RA#1' "$SLN_LS" gate-unanswerable "$SLN_REC_LINE" \
+  "$(sln_basis R1=코드-부재 R2=코드-부재 R3=코드-부재)" '**잔여 판정**: 코드-부재: R1, R2, R3'
+sln_h0=$(sln_ha); sln_a0=$(sln_ar)
+sln_seat RA "$SLN_RA"
+check "34p: 등급 줄 없는 항목을 부른 기록에 대한 좌석 답은 3 으로 거부된다" "$rc" "3"
+check "34p: 그 거부의 경고는 구현 시 검증 항목이 아니라고 말한다" \
+  "$( { grep -qF -- 'is not an item of the design document still at `구현 시 검증`' "$CAP_ERR" && printf present; } || printf absent)" "present"
+check "34p: 내용 검사의 거부는 auto-refused 행 하나를 남기고 중단 답 행은 남기지 않는다" \
+  "$(sln_ar)/$(sln_ha)" "$((sln_a0 + 1))/$sln_h0"
+sln_arow=$(sln_ar_last)
+check "34p: auto-refused 행이 기록·답한 주체·추천을 싣는다" \
+  "$(case "$(row_field "$sln_arow" '중단 기록')" in */halt/RA#1.md) printf rec ;; *) printf other ;; esac)/$(row_field "$sln_arow" '답한 주체')/$(row_field "$sln_arow" '추천')" \
+  "rec/좌석/잔여로 두고 동결"
+check "34p: auto-refused 행의 사유는 경고 문면이다" \
+  "$(case "$(row_field "$sln_arow" '사유')" in *'is not an item of the design document still at'*) printf ok ;; *) row_field "$sln_arow" '사유' ;; esac)" "ok"
+check "34p: 거부된 기록은 답 없는 기록으로 남는다" "$(sln_ah "$SLN_RA")" "0"
+sln_rck "$SLN_DOC"
+check "34p: 등급 줄 없는 문서에 residual-check 는 1 로 끝난다" "$rc" "1"
+check "34p: residual-check 가 세 항목마다 검증 등급 누락 줄을 낸다" \
+  "$( { grep -cE "^R[123]	검증 등급	필수 필드 없음\$" "$CAP_OUT" || true; } | tr -d ' ')" "3"
+sln_doc '1:구현 필요:-:0:0' '2:구현 필요:-:0:0' '3:구현 필요:-:0:0'
+sln_rck "$SLN_DOC"
+check "34p: 등급 줄을 더해 수리한 문서에 residual-check 는 0 이고 출력이 없다" "$rc/$(grep -c . "$CAP_OUT" | tr -d ' ')" "0/0"
+sln_seat RA "$SLN_RA"
+[ "$rc" = 0 ] || sed 's/^/  34p 수리 뒤 좌석 답 거절: /' "$CAP_ERR" >&2
+check "34p: 수리한 문서에서 같은 기록에 좌석 답이 선다" "$rc/$(sln_ha)" "0/$((sln_h0 + 1))"
+check "34p: 수리 뒤 좌석 답 행이 잔여 판정 도장을 싣는다" "$(row_field "$(sln_last)" '잔여 판정')" "코드-부재:R1,R2,R3"
+
+# THE PAIR BREAK. `사람-환경` on an item whose reason is `구현 필요` reads
+# `미분류`; the seat's answer is refused, the check names the pair, and the
+# same refusal met twice is one row.
+sln_doc '1:구현 필요:-:0:0' '2:구현 필요:사람-환경:1:0'
+sln_sr RB 1
+SLN_RB="$CAP_DIR/halt/RB#1.md"
+sln_rec "$SLN_RB" "$SLN_DD" 'RB#1' "$SLN_LS" gate-unanswerable "$SLN_REC_LINE" "$SLN_B12" "$SLN_LV"
+sln_h0=$(sln_ha); sln_a0=$(sln_ar)
+sln_seat RB "$SLN_RB"
+check "34p: 짝이 깨진 차단 부류의 기록에 대한 좌석 답은 미분류 경고로 거부된다" \
+  "$rc/$( { grep -qF -- 'R2 reads `미분류`' "$CAP_ERR" && printf present; } || printf absent)" "3/present"
+sln_seat RB "$SLN_RB"
+check "34p: 같은 거부를 두 번 만나도 auto-refused 행은 하나다" "$rc/$(sln_ar)/$(sln_ha)" "3/$((sln_a0 + 1))/$sln_h0"
+sln_rck "$SLN_DOC"
+check "34p: residual-check 가 짝 깨짐을 낸다" \
+  "$rc/$( { grep -cxF 'R2	차단 부류	차단 부류 「사람-환경」 가 잔여 사유 「구현 필요」 와 짝이 맞지 않음' "$CAP_OUT" || true; } | tr -d ' ')" "1/1"
+sln_doc '1:구현 필요:-:0:0' '2:검증 차단:사람-환경:1:0'
+sln_rck "$SLN_DOC"
+check "34p: 잔여 사유를 검증 차단 으로 수리하면 residual-check 가 0 이다" "$rc" "0"
+sln_seat RB "$SLN_RB"
+check "34p: 짝을 수리한 문서에서 좌석 답이 선다" "$rc/$(sln_ha)" "0/$((sln_h0 + 1))"
+
+# THE STAGE'S OWN ANSWER refused by the same check leaves the same row, with
+# `답한 주체=스테이지`.
+sln_doc '1:구현 필요:-:0:0' '2:구현 필요:사람-환경:1:0'
+sln_xf=$(sln_sr_rec 'RC#1' "$SLN_DD" "$SLN_LS" gate-unanswerable "$SLN_REC_LINE")
+sln_a0=$(sln_ar)
+sln_sneg "짝이 깨진 문서의 기록에 대한 답" 'R2 reads `미분류`' 'RC#1' RC '' RC "중단 기록=$sln_xf" '선택지=잔여로 두고 동결'
+check "34p: 스테이지 답의 내용 거부도 auto-refused 행을 남긴다" \
+  "$(sln_ar)/$(row_field "$(sln_ar_last)" '답한 주체')" "$((sln_a0 + 1))/스테이지"
+
+# THE PREDICATE, ONE VIOLATION PER CLASS, AND TWO DOCUMENTS WITH NONE. Each
+# class is asserted by its own line, so a class the predicate stopped seeing
+# fails by name; the total says nothing else was printed.
+sln_pitem() {
+  # sln_pitem <표제> [<키>=<값>|-<키>|+<줄>]… — one item with every required
+  # field, a field's value replaced, a field dropped, or a line added.
+  local h="$1" d k v a keep; shift
+  printf '%s\n' "$h"
+  for d in '주장=픽스처' '분류=실행 측정' '잔여 사유=구현 필요' '차단 사유=픽스처' \
+           '검증 레시피=픽스처' '기대 결과=픽스처' '실패 시 영향=픽스처' '검증 등급=구현 시 검증'; do
+    k=${d%%=*}; v=${d#*=}; keep=1
+    for a in "$@"; do
+      case "$a" in
+        "-$k") keep=0 ;;
+        "$k="*) v=${a#*=} ;;
+      esac
+    done
+    [ "$keep" = 1 ] && printf '**%s**: %s\n' "$k" "$v"
+  done
+  for a in "$@"; do case "$a" in +*) printf '%s\n' "${a#+}" ;; esac; done
+  printf '\n'
+}
+SLN_PBAD="$WORK/34p-residual-bad.md"
+{ printf '# 술어 픽스처\n\n**상태**: 초안\n\n## 주요 결정사항과 근거\n\n### 1. 첫 결정\n\n본문 [검증 등급: 미검증]\n\n## 구현 시 검증 항목\n\n'
+  sln_pitem '### R1. 필드 누락' -기대\ 결과
+  sln_pitem '### R2. 분류 밖' '분류=아무 분류'
+  sln_pitem '### R3. 잔여 사유 밖' '잔여 사유=모름'
+  sln_pitem '### R4. 등급 밖' '검증 등급=아마도'
+  sln_pitem '### R5. 차단 부류 밖' '잔여 사유=검증 차단' '+**차단 부류**: 기타'
+  sln_pitem '### R6. 검증 시점 밖' '+**검증 시점**: 나중'
+  sln_pitem '### R7. 실행 주의 밖' '+**실행 주의**: 위험'
+  sln_pitem '### R8. 반증 시 처리 밖' '+**반증 시 처리**: 무시'
+  sln_pitem '### R9. 짝 깨짐' '+**차단 부류**: 사람-환경'
+  sln_pitem '### R10. 끝 등급' '검증 등급=검증됨(통과)'
+  sln_pitem '### R11. 임시 경로' '검증 레시피=cat /tmp/x'
+  sln_pitem '### R12. 앵커' '실패 시 영향=§없는 절'
+  printf '#### 잘못된 표제\n\n'
+  sln_pitem '### R2. 다시'
+} > "$SLN_PBAD"
+sln_rck "$SLN_PBAD"
+check "34p: 위반 부류마다 한 줄씩 어긋난 문서에 residual-check 는 1 이다" "$rc" "1"
+for sln_pat in \
+  '^R1	기대 결과	필수 필드 없음$' \
+  '^R2	분류	닫힌 어휘 밖의 값 「아무 분류」$' \
+  '^R3	잔여 사유	닫힌 어휘 밖의 값 「모름」$' \
+  '^R4	검증 등급	닫힌 어휘 밖의 값 「아마도」$' \
+  '^R5	차단 부류	닫힌 어휘 밖의 값 「기타」$' \
+  '^R6	검증 시점	닫힌 어휘 밖의 값 「나중」$' \
+  '^R7	실행 주의	닫힌 어휘 밖의 값 「위험」$' \
+  '^R8	반증 시 처리	닫힌 어휘 밖의 값 「무시」$' \
+  '^R9	차단 부류	차단 부류 「사람-환경」 가 잔여 사유 「구현 필요」 와 짝이 맞지 않음$' \
+  '^R10	검증 등급	끝 등급 「검증됨\(통과\)」 바로 뒤에 `구현 시 검증 기록` 줄이 없음$' \
+  '^R11	본문	`/tmp` 글자가 있음 \([0-9]+ 행\)$' \
+  '^R12	실패 시 영향	앵커 「§없는 절」 가 문서의 표제로 풀리지 않음$' \
+  '^문서	표제	「#### 잘못된 표제」 이 `### R<n>.` 꼴이 아님$' \
+  '^R2	표제	라벨이 겹침$' \
+  '^문서	검증 등급	저장 금지 토큰 `미검증` \([0-9]+ 행\)$'; do
+  check "34p: 술어가 「${sln_pat}」 를 한 번 낸다" \
+    "$( { grep -cE -- "$sln_pat" "$CAP_OUT" || true; } | tr -d ' ')" "1"
+done
+check "34p: 술어가 그 열다섯 줄 밖에는 내지 않는다" "$(grep -c . "$CAP_OUT" | tr -d ' ')" "15"
+SLN_PCANON="$WORK/34p-residual-canon.md"
+{ printf '# 술어 픽스처\n\n**상태**: 초안\n\n## 주요 결정사항과 근거\n\n### 1. 첫 결정\n\n본문\n\n## 구현 시 검증 항목\n\n'
+  sln_pitem '### R1. 코드 부재' '실패 시 영향=§주요 결정사항과 근거 1, §구현 시 검증 항목 R2'
+  sln_pitem '### R2. 사람 환경' '잔여 사유=검증 차단' '분류=외부 환경' '+**차단 부류**: 사람-환경' '+**검증 시점**: 구현 후' \
+    '+**실행 주의**: 장시간(>10분)' '+**반증 시 처리**: 파킹'
+  sln_pitem '### R3. 끝난 항목' '검증 등급=검증됨(통과)' '검증 레시피=' \
+    '+**구현 시 검증 기록**: 2026-11-21 픽스처' '+```' '+bash scripts/fixture.sh' '+```'
+  printf '## 참고\n\n```\n### 펜스 안 표제는 읽지 않는다\n**검증 등급**: 미검증\n```\n'
+} > "$SLN_PCANON"
+sln_rck "$SLN_PCANON"
+[ "$rc" = 0 ] || sed 's/^/  34p CANON 위반: /' "$CAP_OUT" >&2
+check "34p: 위반 없는 CANON 문서에 residual-check 는 0 이고 출력이 없다" "$rc/$(grep -c . "$CAP_OUT" | tr -d ' ')" "0/0"
+SLN_PREND="$WORK/34p-residual-render.md"
+sed 's/^\*\*\([^*][^*]*\)\*\*: /- \1: /' "$SLN_PCANON" > "$SLN_PREND"
+check "34p: 렌더링 픽스처가 굵은 키를 남기지 않는다 (아래가 공허하지 않다)" \
+  "$( { grep -c '^\*\*' "$SLN_PREND" || true; } | tr -d ' ')/$( { grep -c '^- 주장: ' "$SLN_PREND" || true; } | tr -d ' ')" "0/3"
+sln_rck "$SLN_PREND"
+check "34p: 글머리표·굵은 글씨 없는 렌더링 문서에 residual-check 는 0 이다" "$rc/$(grep -c . "$CAP_OUT" | tr -d ' ')" "0/0"
+printf '# 절 없는 문서\n\n## 다른 절\n\n본문\n' > "$WORK/34p-residual-none.md"
+sln_rck "$WORK/34p-residual-none.md"
+check "34p: 구현 시 검증 항목 절이 없는 문서에 residual-check 는 0 이다" "$rc" "0"
+sln_rck "$WORK/34p-residual-absent.md"
+check "34p: 읽을 수 없는 문서에 residual-check 는 2 다" "$rc" "2"
+{ cat "$SLN_PCANON"; printf '```\n열린 펜스\n'; } > "$WORK/34p-residual-fence.md"
+sln_rck "$WORK/34p-residual-fence.md"
+check "34p: 닫히지 않은 펜스가 있는 문서에 residual-check 는 2 다" "$rc" "2"
+cap_gate "$SLN_SEAT" '' residual-check --manifest "$CAP_NM"
+check "34p: --document 없는 residual-check 는 2 로 거절된다" "$rc" "2"
+rm -f "$SLN_PBAD" "$SLN_PCANON" "$SLN_PREND" "$WORK/34p-residual-none.md" "$WORK/34p-residual-fence.md"
 CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$SLN_PREV_AR"
 rm -f "$SLN_DOC"
 
@@ -53873,7 +54042,7 @@ check "67b: 두 부류만 적은 줄을 사본에서 잡는다" \
 
 # ---------------------------------------------------------------------------
 # 67c. 잔여 사다리 동결과 골격 재검토 경로의 문면 고정
-# --- section: 67c | group: static | covers: - | anchors: 67c: 라우터 항목 2 의 경로 표가 설계-재수렴 을 항목 9 로 보낸다, 67c: 라우터 항목 5 가 골격 재검토 표지를 항목 9 로 보낸다, 67c: 라우터 항목 9 가 파견 모양을 싣는다, 67c: 범위 문자열이 사이드카 정의와 바이트로 같다, 67c: 설계 스킬들이 사다리 정지 문면을 싣는다, 67c: 두 설계 스킬이 스테이지의 halt-answer 계약을 싣는다, 67c: 좌석 문면이 동결 뒤 골격 재검토를 싣는다, 67c: 구현 스킬이 머지 뒤 사람 확인 꼬리표와 W3 시점 짝을 싣는다, 67c: 재수렴 스킬이 구현 전 문장을 싣는다, 67c: 아침 보고서가 동결 잔여 목록을 싣는다 ---
+# --- section: 67c | group: static | covers: - | anchors: 67c: 라우터 항목 2 의 경로 표가 설계-재수렴 을 항목 9 로 보낸다, 67c: 라우터 항목 5 가 골격 재검토 표지를 항목 9 로 보낸다, 67c: 라우터 항목 9 가 파견 모양을 싣는다, 67c: 범위 문자열이 사이드카 정의와 바이트로 같다, 67c: 설계 스킬들이 사다리 정지 문면을 싣는다, 67c: 두 설계 스킬이 스테이지의 halt-answer 계약을 싣는다, 67c: 좌석 문면이 동결 뒤 골격 재검토를 싣는다, 67c: 네 무인 설계 스킬이 잔여 항목 검사 동사를 부른다, 67c: 검증 계약이 기계 검사 하위 절을 싣는다, 67c: 좌석 문면이 auto-refused 행과 도우미 body 의 사유를 싣는다, 67c: 구현 스킬이 머지 뒤 사람 확인 꼬리표와 W3 시점 짝을 싣는다, 67c: 재수렴 스킬이 구현 전 문장을 싣는다, 67c: 아침 보고서가 동결 잔여 목록을 싣는다 ---
 #
 # The gate enforces the re-convergence entry; the routing shift, the design
 # skills, the seat and the morning report only describe it, and nothing runs
@@ -53969,6 +54138,34 @@ check "67c: 좌석 문면이 동결 뒤 골격 재검토를 싣는다" \
       "write a \`halt-answer\` on the same record with \`'선택지=골격 재검토'\` and \`'답한 주체=사람'\`" \
       '**The one exception is a skeleton review asked for after the run ended**' \
       'The seat never runs it, and no row of this run carries it.')" "4"
+
+# The writer's residual check: the four unattended design skills call the
+# gate's verb, the verification contract defines it once, and the seat's text
+# says where a content refusal's reason now comes from.
+fc67c_rc='gate.sh residual-check --manifest "$CC_PIPELINE_MANIFEST" --document <문서>'
+check "67c: 네 무인 설계 스킬이 잔여 항목 검사 동사를 부른다" \
+  "$(fc67c_lits "$fc67c_sk/design-discuss-unattended/SKILL.md" "$fc67c_rc")/$(fc67c_lits "$fc67c_sk/design-solo-unattended/SKILL.md" "$fc67c_rc")/$(fc67c_lits "$fc67c_sk/design-base-unattended/SKILL.md" "$fc67c_rc")/$(fc67c_lits "$fc67c_sk/design-reconverge/SKILL.md" 'gate.sh residual-check --manifest "$CC_PIPELINE_MANIFEST" --document')" "1/1/1/1"
+check "67c: discuss 팔이 정지 기록 앞과 job 4 에서 검사하고 그 수리를 문서 쓰기 목록에 싣는다" \
+  "$(fc67c_lits "$fc67c_sk/design-discuss-unattended/SKILL.md" \
+      'Before 5U–7U halts and job 4: `gate.sh residual-check' \
+      'slicing repair, 잔여 검사 수리, the `## 팀이 정한 요구 결정`')" "2"
+check "67c: reconverge 는 정지 기록 앞에서 검사하고 작업 사본에서 고친다" \
+  "$(fc67c_lits "$fc67c_sk/design-reconverge/SKILL.md" \
+      'and before writing it call `gate.sh residual-check --manifest "$CC_PIPELINE_MANIFEST" --document <문서>` (`--surface 읽기`)' \
+      'an unrevised document is not edited; its exit-1 lines go in `관측 상세`' \
+      '--document <dir>/doc.md` (`--surface 읽기`), fixing the copy until it exits 0.')" "3"
+check "67c: discuss 팔이 job 4 첫머리에서 검사하고 호출 계약이 auto-refused 행을 싣는다" \
+  "$(fc67c_lits "$fc67c_sk/design-discuss-unattended/SKILL.md" \
+      '4. **Residual ladder.** First `gate.sh residual-check' \
+      'A refusal writes no `중단 답` row or attachment; a content check'"'"'s leaves one `auto-refused` row.')" "2"
+check "67c: solo 팔이 문서 없는 두 정지 자리는 검사하지 않는다고 적는다" \
+  "$(fc67c_lits "$fc67c_sk/design-solo-unattended/SKILL.md" '`document-present` and `ledger-missing` do not check')" "1"
+check "67c: 검증 계약이 기계 검사 하위 절을 싣는다" \
+  "$( { grep -cxF '### 5.3 기계 검사' "$fc67c_sk/_common/verification.md" || true; } | tr -d ' ')" "1"
+check "67c: 좌석 문면이 auto-refused 행과 도우미 body 의 사유를 싣는다" \
+  "$(fc67c_lits "$fc67c_sk/autopilot/references/act2-seat.md" \
+      'leaves one `auto-refused` row in the ledger with the refusal'"'"'s own text, and the helper'"'"'s `body` already puts that reason first' \
+      'unless the refusal left an `auto-refused` row for this record')" "2"
 
 check "67c: 구현 스킬이 머지 뒤 사람 확인 꼬리표와 W3 시점 짝을 싣는다" \
   "$(fc67c_lits "$fc67c_sk/implement-unattended/SKILL.md" \

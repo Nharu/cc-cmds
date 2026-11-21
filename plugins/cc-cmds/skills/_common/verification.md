@@ -196,7 +196,11 @@ The ledger holds only performed-and-completed entries; a blocked attempt lives i
 
 An R-item is MALFORMED if any of: a required field is missing / it contains a `/tmp` literal / `실패 시 영향` is an unresolved anchor / it uses a token or enum value outside this vocabulary / its `차단 부류` breaks §3.1's pairing / its `반증 시 처리` value is outside the closed `재수렴` | `파킹` vocabulary / it carries a terminal token (`검증됨(통과)`/`반증됨(실패)`/`검증불가(드리프트)`) without an adjacent `**구현 시 검증 기록**:` line (per §3.3).
 
-**Line rendering (the bullet/bold axes) is NOT a malformedness axis.** A non-canonical field-line rendering is a §3.4-tolerant-readable form, not a malformed item — the detection grammar reads all four renderings and the consumer's tolerant W1 lookup flips a legacy rendering, so a bullet/no-bold line is cosmetic drift, not a flip-breaker. It is surfaced only as a **trivial** style note by whatever pass is reading the document, scoped to lines that pass actually edited, never via this predicate and never as a retro-flag of untouched lines.
+**Line rendering (the bullet/bold axes) is NOT a malformedness axis.** §3.4's grammar and the tolerant W1 lookup read all four renderings, so a bullet/no-bold line is cosmetic drift: at most a **trivial** style note on lines the reading pass edited, never via this predicate, never a retro-flag.
+
+### 5.3 기계 검사
+
+`gate.sh residual-check --document <문서>` (a read) prints one line per violation of §5.2 a machine decides; exit 1 if any — fix in place, rerun until 0 — and 2 when it cannot run: note `잔여 검사: 판정불가` and go on.
 
 ---
 
