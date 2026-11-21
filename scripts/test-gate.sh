@@ -31289,7 +31289,11 @@ check "approval-ask — 승인 슬롯·런 디렉터리 없으면 소리 default
 # again. Driven through `cc_notify_fire` against a recording notifier of this
 # block's own, in a run directory of its own, so no other part of the file
 # decides what is counted. Each case reads its own log; an empty log fails the
-# case rather than passing it with zero sounds.
+# case rather than passing it with zero sounds. Both switches are pinned on,
+# because `approval-ask` reads the session switch and a value the caller's
+# environment carries would silence it. A case that fires twice waits for the
+# first notifier before the second fire, so the log's first line is the first
+# banner and not whichever detached notifier wrote first.
 rang_dir=$(mktemp -d "$WORK/rang.XXXXXX")
 mkdir -p "$rang_dir/bin" "$rang_dir/run"
 cat > "$rang_dir/bin/terminal-notifier" <<'STUB'
@@ -31305,6 +31309,7 @@ rang_fire() {
   env -u RUN_DIR -u CC_PIPELINE_SHIFT_ID -u CC_PIPELINE_REENTRY PATH="$rang_dir/bin:$PATH" \
     CC_TEST_NOTIFY_LOG="$1" \
     CC_CMDS_AUTOPILOT_NOTIFY=1 \
+    CC_CMDS_SESSION_NOTIFY=1 \
     CC_CMDS_NOTIFY_PATH_DISABLE_PREPEND=1 \
     CC_CMDS_NOTIFY_HOST_OS=Darwin \
     CC_PIPELINE_SEGMENT= CC_PIPELINE_STAGE_ID= \
@@ -31317,11 +31322,11 @@ rang_fire() {
   printf '%s|%s|%s' "${n:-0}" "${s:-0}" "${f:-0}"
 }
 check "승인 자리 — 같은 키의 answer 두 번은 배너 둘·소리 하나" \
-  "$(rang_fire "$rang_dir/a.log" 'cc_notify_fire answer 질문 RK1; cc_notify_fire answer 질문 RK1')" "2|1|1"
+  "$(rang_fire "$rang_dir/a.log" 'cc_notify_fire answer 질문 RK1; wait; cc_notify_fire answer 질문 RK1')" "2|1|1"
 check "승인 자리 — 반납한 뒤 같은 키의 answer 는 다시 울린다" \
   "$(rang_fire "$rang_dir/b.log" 'cc_notify_stack_release RK1; cc_notify_fire answer 질문 RK1')" "1|1|1"
 check "승인 자리 — answer 다음 approval-ask 는 첫 줄만 울린다" \
-  "$(rang_fire "$rang_dir/c.log" 'cc_notify_fire answer 질문 RK2; cc_notify_fire approval-ask 물음 RK2')" "2|1|1"
+  "$(rang_fire "$rang_dir/c.log" 'cc_notify_fire answer 질문 RK2; wait; cc_notify_fire approval-ask 물음 RK2')" "2|1|1"
 check "승인 자리 — 울린 적 없는 자리의 approval-ask 는 울린다" \
   "$(rang_fire "$rang_dir/d.log" 'cc_notify_fire approval-ask 물음 RK3')" "1|1|1"
 check "승인 자리 — 울린 자리는 표지 디렉터리를 남긴다" \
