@@ -43,6 +43,19 @@
 #                                            [--after-stage <sec>] [--run-open <sec>]
 #                                            [--silence <sec>]
 #   watch.sh --run-dir <dir> --ledger <path> --once      # one pass, no loop
+#   watch.sh ... --once [--started <epoch>] [--alive-at <epoch>]
+#
+# THE DELEGATED PASS. On a run the observer daemon serves, the loop does not
+# run here: a looping watcher hands its arguments to `observer.py adopt` and
+# exits, and the daemon's `watch` job calls this file with `--once` on every
+# change of the run directory and on every deadline the last pass announced.
+# Such a call carries `CC_OBSERVER_PID` in its environment, and that is what
+# marks it as delegated: it writes the daemon's pid, not its own, to
+# `watch.pid` and `watch.stall`, takes `--started` (when the daemon adopted the
+# job) as the start of watching, reads `--alive-at` (the daemon's previous
+# tick) as the last time a watcher saw the run, publishes `watch.next`, and
+# exits 3 when the run is over. A plain `--once` and the loop accept the two
+# arguments and use neither.
 #
 # THIS PROCESS IS ONE OF THE TWO SEATS THAT CAN CARRY THE NEWS; the other is the
 # adjudication gate. The condition this one reports is "the router stopped", and
@@ -61,8 +74,9 @@
 # never re-reads it.
 #
 # Exit codes:
-#   0  a pass completed (or the loop was terminated)
+#   0  a pass completed (or the loop was terminated, or handed to the daemon)
 #   2  invalid invocation
+#   3  a delegated pass found the run over; the daemon drops the job
 #
 # Compatibility: bash 3.2 — no associative arrays, no mapfile, no `wait -n`.
 
@@ -149,6 +163,7 @@ WATCH_ARGV=("$@")
 # another, so the pin lint can read it.
 RUN_DIR=""; LEDGER=""; INTERVAL=60; STALL=1200; ONCE=0; AFTER_STAGE=120; RUN_OPEN=300; SILENCE=300
 STAGE_AGE=7200
+WATCH_ARG_STARTED=""; WATCH_ARG_ALIVE_AT=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --run-dir)  RUN_DIR="$2"; shift 2 ;;
@@ -160,9 +175,27 @@ while [ $# -gt 0 ]; do
     --silence)  SILENCE="$2"; shift 2 ;;
     --stage-age) STAGE_AGE="$2"; shift 2 ;;
     --once)     ONCE=1; shift ;;
+    --started|--alive-at)
+      case "${2:-}" in
+        ''|*[!0-9]*) printf 'watch: %s 의 값은 정수 epoch 여야 합니다: %s\n' "$1" "${2:-}" >&2; exit 2 ;;
+      esac
+      if [ "$1" = "--started" ]; then WATCH_ARG_STARTED="$2"; else WATCH_ARG_ALIVE_AT="$2"; fi
+      shift 2 ;;
     *) printf 'watch: 알 수 없는 인자: %s\n' "$1" >&2; exit 2 ;;
   esac
 done
+# A delegated pass is a `--once` the observer daemon called: the daemon puts
+# its own pid in `CC_OBSERVER_PID`. Only such a pass reads the two arguments
+# above, and only it writes the daemon's pid where a watcher writes its own.
+WATCH_DELEGATED=0
+if [ "$ONCE" = "1" ]; then
+  case "${CC_OBSERVER_PID:-}" in
+    ''|*[!0-9]*) ;;
+    *) WATCH_DELEGATED=1 ;;
+  esac
+fi
+WATCH_SELF_PID=$$
+[ "$WATCH_DELEGATED" = "1" ] && WATCH_SELF_PID=$CC_OBSERVER_PID
 [ -n "$RUN_DIR" ] || { printf 'watch: --run-dir 는 필수입니다\n' >&2; exit 2; }
 [ -n "$LEDGER" ]  || { printf 'watch: --ledger 는 필수입니다\n' >&2; exit 2; }
 
@@ -208,7 +241,26 @@ RUN_ID=${watch_rd##*/}
 WATCH_HOST_UNAME=$(uname -s 2>/dev/null || true)
 WATCH_OS=${CC_WATCH_HOST_OS:-$WATCH_HOST_UNAME}
 WATCH_FP=""
-cc__proc_fingerprint_into WATCH_FP "$$"
+cc__proc_fingerprint_into WATCH_FP "$WATCH_SELF_PID"
+
+# THE LOOP HANDS ITSELF TO THE OBSERVER DAEMON when this copy carries the
+# protocol mark and the daemon is allowed here: `observer.py adopt` records the
+# job's arguments, makes sure the daemon is up, and succeeds once the daemon
+# holds `watch.pid`. From then on the daemon calls this file with `--once` on
+# every change and every announced deadline, so this process has nothing left
+# to do. Any refusal — the switch is off, a CI host, a stage environment, a run
+# directory outside the run root, no python — keeps the loop below exactly as
+# it was. Ahead of every write, so a handed-off loop leaves no mark of its own.
+if [ "$ONCE" = "0" ] && [ -e "$WATCH_DIR/observer-protocol" ] \
+  && [ "${CC_CMDS_OBSERVER:-}" != "off" ] && [ -z "${CI:-}" ]; then
+  watch_py=$(type -P python3 2>/dev/null || true)
+  if [ -z "$watch_py" ] && [ -x /usr/bin/python3 ]; then watch_py=/usr/bin/python3; fi
+  if [ -n "$watch_py" ] && "$watch_py" "$WATCH_DIR/observer.py" adopt --run-dir "$RUN_DIR" --job watch \
+      -- ${WATCH_ARGV[@]+"${WATCH_ARGV[@]}"} </dev/null; then
+    printf 'watch: 관측 데몬에 위임했습니다 — %s\n' "$RUN_DIR"
+    exit 0
+  fi
+fi
 
 # THE MEMORY CLOCK. One `date` here and the shell's own `SECONDS` after it
 # (`cc_clock_start`): every reading of the time below comes from it, so a cycle
@@ -249,6 +301,12 @@ watch_iso_into() {
 # reads the day-old `마지막성장` its predecessor left, and without this it would
 # leave on its first iteration, before writing a heartbeat of its own.
 WATCH_STARTED=$CC_CLOCK_EPOCH0
+# A delegated pass lives for one pass, so its own start says nothing about how
+# long this run has been watched; the daemon passes the moment it adopted the
+# job instead.
+if [ "$WATCH_DELEGATED" = "1" ] && [ -n "$WATCH_ARG_STARTED" ]; then
+  WATCH_STARTED=$WATCH_ARG_STARTED
+fi
 
 # Delegated for the same reason the three predicates below are: the status line
 # has to measure the SAME quantity this watcher does, and two spellings of
@@ -735,6 +793,16 @@ failover_clock_note() {
   else
     at=$(cc_failover_wait_resume "$LEDGER" 2>/dev/null || true)
     { IFS= read -r last; IFS= read -r prev_at; IFS= read -r held; } 2>/dev/null < "$f" || :
+    # A DELEGATED PASS runs only on a change or a deadline, so the last pass can
+    # lie far back while the daemon watched the run all along. `--alive-at` is
+    # the daemon's previous tick: the run was seen awake then, so a gap is
+    # counted only from the later of the two.
+    if [ "$WATCH_DELEGATED" = "1" ] && [ -n "$WATCH_ARG_ALIVE_AT" ]; then
+      case "$last" in
+        ''|*[!0-9]*) ;;
+        *) [ "$WATCH_ARG_ALIVE_AT" -gt "$last" ] && last=$WATCH_ARG_ALIVE_AT ;;
+      esac
+    fi
   fi
   case "$last" in ''|*[!0-9]*) last=$now ;; esac
   case "$held" in ''|*[!0-9]*) held=0 ;; esac
@@ -1010,7 +1078,10 @@ watch_self_marks() {
   # watcher legitimately runs in the window before the router's first gate call
   # makes it, and `run_is_over()` already owns that window. `cc_live_stages`
   # does not count this file — it has no `.start`/`.pgid` sibling.
-  [ -d "$RUN_DIR" ] && printf '%s' "$$" > "$RUN_DIR/watch.pid"
+  #
+  # A delegated pass writes the daemon's pid here and below, not its own: the
+  # pass is gone a second later, and the daemon is the watcher that stays.
+  [ -d "$RUN_DIR" ] && printf '%s' "$WATCH_SELF_PID" > "$RUN_DIR/watch.pid"
   # THE THRESHOLD THIS PROCESS IS USING, for a stage that waits for an account:
   # it paces its heartbeat rows on half of it. Three lines — the threshold in
   # seconds, this pid, this pid's fingerprint — written to a temporary name first
@@ -1022,7 +1093,7 @@ watch_self_marks() {
   # the file is gone; a restarted watcher's first pass replaces the old one's.
   local body
   [ -d "$RUN_DIR" ] || return 0
-  body="$STALL"$'\n'"$$"$'\n'"$WATCH_FP"$'\n'
+  body="$STALL"$'\n'"$WATCH_SELF_PID"$'\n'"$WATCH_FP"$'\n'
   if [ "$body" = "${WATCH_STALL_LAST:-}" ] && [ -f "$RUN_DIR/watch.stall" ]; then
     return 0
   fi
@@ -1789,6 +1860,7 @@ EOF
   if [ -n "$feed_mt" ] && [ ! -f "$RUN_DIR/watch.announced-feed-silence" ]; then
     watch_expiry_offer $((feed_mt + STALL * 2))
   fi
+  watch_expiry_offer_clocks
 
   # QUIET OR WORKING, decided once per full pass by the shared predicate on the
   # counts this pass already read, and kept for the main loop and `watch.mode`.
@@ -1811,6 +1883,84 @@ watch_expiry_offer() {
   watch_now_into n
   [ "$t" -gt "$n" ] || return 0
   if [ -z "${expiry:-}" ] || [ "$t" -lt "$expiry" ]; then expiry=$t; fi
+  return 0
+}
+
+watch_expiry_offer_clocks() {
+  # The clocks the full pass reads through shared predicates rather than through
+  # an arm of its own, offered to the calling pass's `expiry` the same way: a
+  # waiting record turning stale, a relay's refresh going silent or a wake key
+  # standing too long, a CI wait, a failover wait, a deferral or a cut's reset
+  # coming due, and the day-long idle exit. A delegated pass runs again only on
+  # a change or at the time it announced, so a clock not offered here would be
+  # read late by up to the daemon's longest gap. Each offer errs early.
+  local f t c k started tab grace v ep
+  [ -d "$RUN_DIR" ] || return 0
+  for f in "$RUN_DIR"/*.waiting; do
+    [ -f "$f" ] || continue
+    t=$(file_mtime "$f")
+    case "$t" in ''|*[!0-9]*) : ;; *) watch_expiry_offer $((t + STALL)) ;; esac
+    t=$(cc_waiting_field "$f" '갱신' | tr -d '[:space:]')
+    case "$t" in ''|*[!0-9]*) : ;; *) watch_expiry_offer $((t + STALL)) ;; esac
+  done
+  if [ -f "$RUN_DIR/relay.live" ]; then
+    t=$(cc_relay_field "$RUN_DIR" refreshed)
+    case "$t" in ''|*[!0-9]*) : ;; *) watch_expiry_offer $((t + SILENCE)) ;; esac
+    if [ -n "$(cc_relay_field "$RUN_DIR" ci | tr -d ',-')" ]; then
+      watch_now_into t
+      watch_expiry_offer $((t + ${INTERVAL%.*}))
+    fi
+    started=$(cc_relay_field "$RUN_DIR" started)
+    tab=$'\t'
+    while IFS="$tab" read -r k c; do
+      [ -n "$k" ] || continue
+      [ -n "$c" ] || c=$(cc_relay_seen_at "$RUN_DIR" "$started" "$k")
+      case "$c" in ''|*[!0-9]*) continue ;; esac
+      watch_expiry_offer $((c + AFTER_STAGE))
+    done <<EOF
+$(cc_relay_wake_keys "$RUN_DIR" "$LEDGER")
+EOF
+    for k in defer resume; do
+      t=$(cc_relay_field "$RUN_DIR" "$k")
+      case "$t" in ''|*[!0-9]*) : ;; *) watch_expiry_offer "$t" ;; esac
+    done
+    grace=$(cc_reset_grace)
+    case "$grace" in ''|*[!0-9]*) grace=0 ;; esac
+    for v in $(cc_relay_field "$RUN_DIR" reset | tr ',' ' '); do
+      ep=${v##*:}
+      case "$ep" in ''|*[!0-9]*) continue ;; esac
+      watch_expiry_offer $((ep + grace))
+    done
+  fi
+  case "${W_FO_AT:-}" in
+    ''|*[!0-9]*) : ;;
+    *) watch_expiry_offer $((W_FO_AT + CC_FAILOVER_WATCH_SLACK_SECONDS + ${W_FO_HELD:-0})) ;;
+  esac
+  t=${grew:-}
+  case "$t" in ''|*[!0-9]*) t=${WATCH_STARTED:-} ;; esac
+  case "${WATCH_STARTED:-}" in
+    ''|*[!0-9]*) : ;;
+    *) [ "$WATCH_STARTED" -gt "${t:-0}" ] && t=$WATCH_STARTED ;;
+  esac
+  case "$t" in ''|*[!0-9]*) : ;; *) watch_expiry_offer $((t + CC_RUN_IDLE_EXIT_SECONDS)) ;; esac
+  return 0
+}
+
+watch_next_write() {
+  # watch_next_write <first line> — publishes `watch.next` for the observer
+  # daemon: the first line is the epoch of the next pass this run needs without
+  # any change (empty for none), and each line after it is one member of the
+  # probe set, the globs a change of which calls the next pass. Written whole
+  # under a temporary name and renamed into place, so the daemon never reads half.
+  # The name matches no probe glob, so writing it is never a change.
+  local tmp
+  [ -d "$RUN_DIR" ] || return 0
+  tmp="$RUN_DIR/.watch.next.$$"
+  if { printf '%s\n' "${1:-}"; printf '%s\n' "${WATCH_PROBE_LIST[@]}"; } > "$tmp" 2>/dev/null \
+     && mv -f "$tmp" "$RUN_DIR/watch.next" 2>/dev/null; then
+    return 0
+  fi
+  rm -f "$tmp"
   return 0
 }
 
@@ -1914,7 +2064,7 @@ W_AGE=0; W_LIVE=0; W_PEND=0; W_NONTERM=0; W_SIZE=0; W_GREW=""
 W_FO_AT=""; W_FO_LAST=""; W_FO_PREV=""; W_FO_HELD=""
 W_QUIET=0; WATCH_EXPIRY=""; WATCH_STALL_LAST=""
 
-if [ "$ONCE" = "1" ]; then
+if [ "$ONCE" = "1" ] && [ "$WATCH_DELEGATED" = "0" ]; then
   pass
   watch_mode_write
   exit 0
@@ -1935,6 +2085,59 @@ wait_ended_fired() {
   done
   return 0
 }
+
+# THE DELEGATED PASS: one cycle of the loop below, in the loop's order, called by
+# the observer daemon. It exits 3 where the loop would exit, so the daemon drops
+# the job, and 0 otherwise, after publishing `watch.next` for the next call. It
+# never sleeps: where the loop's `done` tail waits for the `ended` claimant's
+# `fired` mark, this pass announces a call two seconds out and leaves, so the
+# daemon's call stays inside its time limit.
+if [ "$WATCH_DELEGATED" = "1" ]; then
+  if [ -f "$RUN_DIR/done" ]; then
+    RUN_DIR_SEEN=1
+    done_mt=$(file_mtime "$RUN_DIR/done")
+    watch_now_into watch_now
+    if cc_run_end_settled "$RUN_DIR" \
+       || { [ -n "$done_mt" ] && [ $(( watch_now - done_mt )) -ge "$STALL" ]; }; then
+      announce "런이 종단했습니다 — 감시를 멈춥니다" "$(cat "$RUN_DIR/done" 2>/dev/null || printf '종단 표시 있음')"
+      cc_notify_ended_once "$(cc_notify_ended_text "$RUN_DIR")" || true
+      if [ "$(cc_unresolved_blocked "$LEDGER" | grep -c . || true)" != "0" ] \
+         && [ ! -f "$RUN_DIR/watch.announced-loop-exit" ]; then
+        if [ -d "$RUN_DIR/notify.ended" ] && [ ! -f "$RUN_DIR/notify.ended/fired" ]; then
+          # The claim is a directory, which `file_mtime` does not read.
+          watch_claim_mt=$(date -u -r "$RUN_DIR/notify.ended" +%s 2>/dev/null || true)
+          case "$watch_claim_mt" in
+            ''|*[!0-9]*) : ;;
+            *)
+              if [ $(( watch_now - watch_claim_mt )) -lt "${INTERVAL%.*}" ]; then
+                watch_next_write $((watch_now + 2))
+                exit 0
+              fi ;;
+          esac
+        fi
+        : > "$RUN_DIR/watch.announced-loop-exit"
+        cc_notify_fire rekick \
+          "이 런은 여기서 끝났습니다 — 기준선은 다시 잡히지 않으니 새 런으로 다시 킥오프하세요" || true
+      fi
+      exit 3
+    fi
+    beat
+    watch_mode_write
+    case "$done_mt" in
+      ''|*[!0-9]*) watch_next_write "" ;;
+      *) watch_next_write $((done_mt + STALL)) ;;
+    esac
+    exit 0
+  fi
+  RUN_DIR_SEEN=1
+  if run_is_over; then
+    exit 3
+  fi
+  pass
+  watch_mode_write
+  watch_next_write "$WATCH_EXPIRY"
+  exit 0
+fi
 
 # WORKING AND QUIET CYCLES. A working run gets a full pass every cycle, as it
 # always did. A quiet one (`cc_run_quiet`, decided by each full pass) gets one
