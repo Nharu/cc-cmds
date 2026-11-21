@@ -251,6 +251,8 @@ expect run cost-ceiling 적용 120 .5 50.5 없음
 expect run cost-ceiling '형식 오류' 0 00 5. '$50' 1e3
 expect run roster-model 적용 opus
 expect run roster-model '어휘 밖' gpt
+expect run decision-confirm 적용 자동 수동
+expect run decision-confirm '어휘 밖' 켬 auto
 expect run roster-model.verification 적용 sonnet
 expect run roster-model.Verification '모르는 키' sonnet
 expect run roster-model.a_b '모르는 키' sonnet
@@ -540,6 +542,9 @@ check "무효 환경변수는 변수 행이 무시" "$(st "$out" ladder-rungs 2)
 check "무효 환경변수면 파일 값도 환경변수 무효" "$(st "$out" ladder-rungs 1)" "환경변수 무효"
 out=$(CC_CMDS_AUTOPILOT_DEFAULT_LADDER_RUNGS= kf 'ladder-rungs = 4' $T)
 check "빈 문자열은 미설정" "$(col "$out" ladder-rungs 5)" "파일:1"
+out=$(CC_CMDS_AUTOPILOT_DEFAULT_DECISION_CONFIRM=자동 kf 'decision-confirm = 수동' $T)
+check "결정 수거 확정 환경변수가 decision-confirm 키에 닿는다" \
+  "$(col "$out" decision-confirm 4)|$(col "$out" decision-confirm 5)" "자동|환경:CC_CMDS_AUTOPILOT_DEFAULT_DECISION_CONFIRM"
 out=$(CC_CMDS_AUTOPILOT_DEFAULTS_FILE=off kd --now "$NOW" $T)
 check "DEFAULTS_FILE=off → 원천 off" "$(printf '%s\n' "$out" | awk -F'\t' '$1=="원천"{print $2}')" "off"
 printf 'ladder-rungs = 4\n' > "$HOME/.config/cc-cmds/autopilot-defaults"
@@ -705,6 +710,8 @@ apply-actor = 파이프라인' apply-actor)" "1"
 check "apply-actor 사람 → 0" "$(wide '[Nharu/cc-cmds]
 cutpoint = 배포
 apply-actor = 사람' apply-actor)" "0"
+check "decision-confirm 자동 → 1" "$(wide 'decision-confirm = 자동' decision-confirm)" "1"
+check "decision-confirm 수동 → 0" "$(wide 'decision-confirm = 수동' decision-confirm)" "0"
 check "ladder-rungs → 0" "$(wide 'ladder-rungs = 4' ladder-rungs)" "0"
 check "cost-ceiling → 0" "$(wide 'cost-ceiling = 120' cost-ceiling)" "0"
 runner() { case "$(col "$(kf "[Nharu/cc-cmds]
@@ -962,6 +969,17 @@ for k in $(grep -E "^KD_(RUN|REPO)_KEYS='" "$HELPER" | sed -E "s/^KD_(RUN|REPO)_
   [ "$n" = "1" ] || miss="$miss $k($n)"
 done
 check "키 표의 모든 키가 적용·빈칸·이어받지 않음 중 정확히 한 행을 낸다" "${miss:-없음}" "없음"
+check "--carry: 결정 수거 확정 줄이 없는 원천은 수동을 이어받는다" \
+  "$(printf '%s\n' "$out" | awk -F'\t' '$1=="적용" && $3=="decision-confirm" { print $4 }')" "수동"
+cw_rows0=$CW_ROWS
+CW_ROWS="**결정 수거 확정**: 자동
+$cw_rows0"
+cw_write "$CW"
+dc_out=$(kc 'ladder-rungs = 2')
+check "--carry: 결정 수거 확정 자동을 이어받고 권한 행과 넓힘 표식을 낸다" \
+  "$(printf '%s\n' "$dc_out" | awk -F'\t' '$1=="적용" && $3=="decision-confirm" { print $4 }')|$(printf '%s\n' "$dc_out" | awk -F'\t' '$1=="권한" && $3=="decision-confirm" { print $5 }')" "자동|1"
+CW_ROWS=$cw_rows0
+cw_write "$CW"
 check "이어받지 않음 행은 이름 붙은 사유 토큰을 갖는다" \
   "$(printf '%s\n' "$out" | awk -F'\t' '$1=="이어받지 않음" && ($4 == "" || NF != 5)' | grep -c . || true)" "0"
 check "자동 채택 행마다 권한 행이 하나" "$(cnt "$out" 권한 auto-adopt)" "1"
@@ -973,7 +991,7 @@ check "권한 행은 이어받는 행을 축자로 싣는다" \
 widen() { printf '%s\n' "$out" | awk -F'\t' -v k="$1" '$1=="권한" && $3==k { print $5; exit }'; }
 check "권한 넓힘 표식 — 절단점 머지 1 · 리뷰 상한 선리뷰후머지 0 · 말단 상한 없음 1 · 사전 인가 1 · 자동 채택 1 · 적용 주체 없음 0" \
   "$(widen cutpoint)$(widen review-ceiling)$(widen terminal-cap)$(widen act-allow)$(widen auto-adopt)$(widen apply-actor)" "101110"
-check "권한 행 수가 원천 자동 채택+사전 인가 형태 행 수와 대상별 권한 필드 수의 합" "$(cnt "$out" 권한 '')" "7"
+check "권한 행 수가 원천 자동 채택+사전 인가 형태 행 수와 대상별 권한 필드 수, 결정 수거 확정 하나의 합" "$(cnt "$out" 권한 '')" "8"
 check "적용 프로브 코드 행 없는 원천 → 이어받지 않음 행 없음" \
   "$(printf '%s\n' "$out" | awk -F'\t' '$1=="이어받지 않음" && $3=="apply-probe-codes" { print $4 }')" "행 없음"
 

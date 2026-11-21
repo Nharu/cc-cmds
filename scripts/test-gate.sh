@@ -4161,6 +4161,39 @@ drain_act() {
     --snapshot-digest "$(snapH)" --rationale "픽스처 — 전사 유발" -- ls
 }
 
+# The decision collection's fixture helpers, shared by 83w (the answers a
+# person gives) and 83y (the seat's answers in a run whose confirmation is
+# `자동`). Both sections call `pre_base` first, which defines `gateL`,
+# `au15_H` and `au15_snap`.
+w83_doc() {  # w83_doc <파일> <항목 상태> <추천 근거> — 슬라이스 S2 하나와 S2 에 닿는 구현 전 결정 하나
+  {
+    printf '# 픽스처 설계\n\n**상태**: 동결됨\n\n## 합의된 아키텍처\n\n본문\n\n## 구현 슬라이싱\n\n'
+    printf '### 슬라이스 S2 — 구현\n\n**선언 파일**: s2.sh\n\n'
+    printf '## 미해결 이슈 / 트레이드오프\n\n### 미결 1. 값\n\n**상태**: %s\n**구현 처분**: 구현 전 결정\n' "$2"
+    printf '**닿는 슬라이스**: S2\n**추천 답**: 기본값 3\n**추천 근거**: %s\n' "$3"
+  } > "$1"
+}
+w83_dc() {  # w83_dc <런 id> <설계 문서> — decision-collect 동사; rc·msg 와 W83_REC·W83_HOLDS
+  gateL decision-collect --manifest "$WORK/plan-$1.md" --document "$WT/$2"
+  W83_REC=$(printf '%s' "$msg" | sed -n 's/.*중단 기록=\([^ ]*\).*/\1/p')
+  W83_HOLDS=$(printf '%s' "$msg" | sed -n 's/.*보류 세그먼트=\([^ ]*\).*/\1/p')
+}
+w83_ans() {  # w83_ans <런 id> <--segment> <답한 주체> <선택지> [<argv>…] — 수거 기록 W83_REC 의 답
+  local r="$1" s="$2" by="$3" o="$4"
+  shift 4
+  gateL act --manifest "$WORK/plan-$r.md" --kind halt-answer --target infra --segment "$s" --cutpoint 커밋 --surface 읽기 \
+        --snapshot-digest "$(au15_H "$r")" --rationale x \
+        -- "중단 기록=$W83_REC" "선택지=$o" "답한 주체=$by" '근거=픽스처의 답' "$@"
+}
+w83_plan() {  # w83_plan <런 id> <프롬프트> — `--segment -` 재수렴, plan 으로
+  gateL plan --manifest "$WORK/plan-$1.md" --kind skill --target infra --segment - --cutpoint 커밋 \
+       --surface 워크트리쓰기 -- reconverge -p "$2"
+}
+w83_route() {  # w83_route <런 id> <기록> — 그 기록의 answered_halts 원소 「segment/route/route_refusal」
+  au15_snap "$WORK/plan-$1.md" | jq -r --arg r "$2" \
+    '[.answered_halts[] | select(.record == $r) | "\(.segment)/\(.route // "")/\(.route_refusal // "")"] | last // ""'
+}
+
 # `cone` — the container of section 31, moved here whole: the pipeline
 # environment cleared, the run id derived from the manifest and asserted to
 # differ, the collision guard on the three paths, the cone manifest, grant
@@ -60591,41 +60624,13 @@ rm -rf "$D83V"
 
 # ---------------------------------------------------------------------------
 # 83w. 결정 수거의 답이 게이트 동사만으로 재수렴까지 가고, 새 수거가 보류를 푼다
-# --- section: 83w | group: base | covers: decision-collect, halt-answer, snapshot, plan, act, gate_decision_collect, gate_decision_collect_key, gate_decision_reconverge_pending, gate_decision_collect_pending_row, gate_snapshot_decision_holds_json, gate_decision_collect_named, gate_decision_reconverge_open, gate_decision_reconverge_entry, gate_halt_answer_route, gate_audit_concluded, audit_key_reconverge_rows, audit_key_collect_reconverge_lines, gate_decision_collect_undecided, gate_decision_collect_undecided_why, gate_halt_stops, gate_halt_stops_view, gate_halt_is_collect_record, run-stops, cc_unanswered_halts | anchors: 83w: 추천 답 없는 항목이 있으면 추천대로 확정은 거부되고 행이 없다, 83w: 첨부가 추천 답 없는 항목을 부르지 않는 항목별로 답함은 거부되고 행이 없다, 83w: 첨부가 그 항목을 소제목으로 부르는 항목별로 답함은 선다, 83w: 게이트의 정지 판독은 결정 수거 기록을 분류기에 넘기지 않는다, 83w: 미답 중단 판독은 그 수거 기록을 여전히 센다, 83w: 수거 기록의 머리 키는 감사 단계다, 83w: 좌석의 답은 거부된다, 83w: 머리 키가 아닌 --segment 의 답은 거부된다, 83w: 첨부 없는 항목별로 답함은 거부된다, 83w: 사람의 추천대로 확정이 선다, 83w: 그 답의 route 는 구속-재수렴이고 거절 사유가 없다, 83w: 범위가 다른 재수렴 프롬프트는 거부된다, 83w: 결정 수거 답의 - reconverge 파견 plan 이 통과한다, 83w: 재수렴 행이 세그먼트=- · 스테이지=A1 · 종류=reconverge 다, 83w: 수거 재수렴 뒤의 세그먼트 계획이 새 감사를 기다리지 않는다, 83w: 수거 재수렴과 그 재개·새 세션 이음 행은 감사 키의 재수렴으로 세지 않고 골격급 재수렴만 센다,83w: 같은 기록의 두 번째 재수렴은 거부된다, 83w: 순환 상한 기록의 답은 거부된다, 83w: 항목이 닫힌 문서의 수거는 보류를 푼다, 83w: 행 없는 설계 키에서도 사람의 답이 선다, 83w: 행 없는 설계 키의 - reconverge 파견 plan 이 통과한다, 83w: 설계 단계가 없는 계획의 수거는 보류하지 않는다, 83w: 대조 정지가 답을 기다리는 동안의 수거는 첫 기록의 보류를 그대로 읽는다, 83w: 대조 정지의 답은 같은 키의 재부착으로 간다, 83w: 멈춘 수거 재수렴을 잇는 --resume 은 통과한다, 83w: 이은 재수렴이 끝나 항목이 닫힌 뒤의 수거는 보류를 푼다 ---
+# --- section: 83w | group: base | covers: decision-collect, halt-answer, snapshot, plan, act, gate_decision_collect, gate_decision_collect_key, gate_decision_reconverge_pending, gate_decision_collect_pending_row, gate_snapshot_decision_holds_json, gate_decision_collect_named, gate_decision_reconverge_open, gate_decision_reconverge_entry, gate_halt_answer_route, gate_audit_concluded, audit_key_reconverge_rows, audit_key_collect_reconverge_lines, gate_decision_collect_undecided, gate_decision_collect_undecided_why, gate_halt_stops, gate_halt_stops_view, gate_halt_is_collect_record, run-stops, cc_unanswered_halts | anchors: 83w: 추천 답 없는 항목이 있으면 추천대로 확정은 거부되고 행이 없다, 83w: 첨부가 추천 답 없는 항목을 부르지 않는 항목별로 답함은 거부되고 행이 없다, 83w: 첨부가 그 항목을 소제목으로 부르는 항목별로 답함은 선다, 83w: 게이트의 정지 판독은 결정 수거 기록을 분류기에 넘기지 않는다, 83w: 미답 중단 판독은 그 수거 기록을 여전히 센다, 83w: 수거 기록의 머리 키는 감사 단계다, 83w: 결정 수거 확정 줄이 없는 런의 수거 기록은 추천 없음 두 줄을 싣는다, 83w: 좌석의 답은 거부된다, 83w: 머리 키가 아닌 --segment 의 답은 거부된다, 83w: 첨부 없는 항목별로 답함은 거부된다, 83w: 사람의 추천대로 확정이 선다, 83w: 그 답의 route 는 구속-재수렴이고 거절 사유가 없다, 83w: 범위가 다른 재수렴 프롬프트는 거부된다, 83w: 결정 수거 답의 - reconverge 파견 plan 이 통과한다, 83w: 재수렴 행이 세그먼트=- · 스테이지=A1 · 종류=reconverge 다, 83w: 수거 재수렴 뒤의 세그먼트 계획이 새 감사를 기다리지 않는다, 83w: 수거 재수렴과 그 재개·새 세션 이음 행은 감사 키의 재수렴으로 세지 않고 골격급 재수렴만 센다,83w: 같은 기록의 두 번째 재수렴은 거부된다, 83w: 순환 상한 기록의 답은 거부된다, 83w: 항목이 닫힌 문서의 수거는 보류를 푼다, 83w: 행 없는 설계 키에서도 사람의 답이 선다, 83w: 행 없는 설계 키의 - reconverge 파견 plan 이 통과한다, 83w: 설계 단계가 없는 계획의 수거는 보류하지 않는다, 83w: 대조 정지가 답을 기다리는 동안의 수거는 첫 기록의 보류를 그대로 읽는다, 83w: 대조 정지의 답은 같은 키의 재부착으로 간다, 83w: 멈춘 수거 재수렴을 잇는 --resume 은 통과한다, 83w: 이은 재수렴이 끝나 항목이 닫힌 뒤의 수거는 보류를 푼다 ---
 #
 # 런 범위 설계 → 감사 → 구현 계획에서 감사까지 정상 완료로 띄운 뒤, 게이트 동사만으로 수거
 # → 사람의 답 → `--segment -` 재수렴 → 새 다이제스트의 수거를 잇는다. 둘째 런은 설계 단계를
 # 한 번도 띄우지 않은 동결 문서(행 없는 키), 셋째 런은 설계 단계도 감사 단계도 없는 계획이다.
 # ---------------------------------------------------------------------------
 pre_base
-w83_doc() {  # w83_doc <파일> <항목 상태> <추천 근거> — 슬라이스 S2 하나와 S2 에 닿는 구현 전 결정 하나
-  {
-    printf '# 픽스처 설계\n\n**상태**: 동결됨\n\n## 합의된 아키텍처\n\n본문\n\n## 구현 슬라이싱\n\n'
-    printf '### 슬라이스 S2 — 구현\n\n**선언 파일**: s2.sh\n\n'
-    printf '## 미해결 이슈 / 트레이드오프\n\n### 미결 1. 값\n\n**상태**: %s\n**구현 처분**: 구현 전 결정\n' "$2"
-    printf '**닿는 슬라이스**: S2\n**추천 답**: 기본값 3\n**추천 근거**: %s\n' "$3"
-  } > "$1"
-}
-w83_dc() {  # w83_dc <런 id> <설계 문서> — decision-collect 동사; rc·msg 와 W83_REC·W83_HOLDS
-  gateL decision-collect --manifest "$WORK/plan-$1.md" --document "$WT/$2"
-  W83_REC=$(printf '%s' "$msg" | sed -n 's/.*중단 기록=\([^ ]*\).*/\1/p')
-  W83_HOLDS=$(printf '%s' "$msg" | sed -n 's/.*보류 세그먼트=\([^ ]*\).*/\1/p')
-}
-w83_ans() {  # w83_ans <런 id> <--segment> <답한 주체> <선택지> [<argv>…] — 수거 기록 W83_REC 의 답
-  local r="$1" s="$2" by="$3" o="$4"
-  shift 4
-  gateL act --manifest "$WORK/plan-$r.md" --kind halt-answer --target infra --segment "$s" --cutpoint 커밋 --surface 읽기 \
-        --snapshot-digest "$(au15_H "$r")" --rationale x \
-        -- "중단 기록=$W83_REC" "선택지=$o" "답한 주체=$by" '근거=픽스처의 답' "$@"
-}
-w83_plan() {  # w83_plan <런 id> <프롬프트> — `--segment -` 재수렴, plan 으로
-  gateL plan --manifest "$WORK/plan-$1.md" --kind skill --target infra --segment - --cutpoint 커밋 \
-       --surface 워크트리쓰기 -- reconverge -p "$2"
-}
-w83_route() {  # w83_route <런 id> <기록> — 그 기록의 answered_halts 원소 「segment/route/route_refusal」
-  au15_snap "$WORK/plan-$1.md" | jq -r --arg r "$2" \
-    '[.answered_halts[] | select(.record == $r) | "\(.segment)/\(.route // "")/\(.route_refusal // "")"] | last // ""'
-}
 
 # 첫째 런 — 감사 키에서 끝까지.
 DOC83W='docs/fixture-design-83w.md'
@@ -60640,6 +60645,8 @@ check "83w 픽스처의 감사가 정상 완료다 (아래가 공허하지 않�
 w83_dc R83W "$DOC83W"
 check "83w: 첫 수거가 S2 를 보류하고 기록을 쓴다" "$rc|$W83_HOLDS|$([ -f "$W83_REC" ] && echo 기록)" "0|S2|기록"
 check "83w: 수거 기록의 머리 키는 감사 단계다" "$(sed -n '1s/.*; stage=\([^;]*\); .*/\1/p' "$W83_REC" 2>/dev/null)" "A1#1"
+check "83w: 결정 수거 확정 줄이 없는 런의 수거 기록은 추천 없음 두 줄을 싣는다" \
+  "$(grep -cxF -e '**추천**: (없음) — 항목마다 사람의 결정이 필요하다' -e '**추천 근거**: (없음)' "$W83_REC" 2>/dev/null || true)" "2"
 w83_rec1=$W83_REC
 w83_prev_ar="${CC_CMDS_AUTOPILOT_AUTO_RESOLVE:-}"
 CC_CMDS_AUTOPILOT_AUTO_RESOLVE=1
@@ -60859,6 +60866,189 @@ check "83w: 미답 중단 판독은 그 수거 기록을 여전히 센다" \
 check "83w: 판독용 보기는 런 디렉터리를 바꾸지 않는다" "$([ -f "$W83_REC" ] && echo 기록)" "기록"
 rm -f "$WT/$DOC83WX" "$WT/$DOC83WY" "${w83_rec5%.md}.answer.md"
 unset -f w83_rx_rows
+
+# ---------------------------------------------------------------------------
+# 83y. 결정 수거 확정이 자동인 런 — 좌석이 추천대로 확정으로 답하고, 사람 몫 종류는 사람에게 남는다
+# --- section: 83y | group: base | covers: decision-collect, halt-answer, snapshot, plan, gate_decision_collect, gate_decision_collect_auto_item, decision_confirm_auto, gate_halt_auto_answer_current, gate_decision_collect_current_record, gate_decision_reconverge_entry, gate_halt_answer_route, gate_halt_recommendation, gate_decision_collect_capped | anchors: 83y: 자동 런의 수거 기록은 추천대로 확정 추천과 두 부분 근거를 싣는다, 83y: 자동 답이 꺼져 있으면 좌석의 답은 거부되고 행이 없다, 83y: 교대의 답은 거부되고 행이 없다, 83y: 좌석의 추천대로 확정이 선택지 없이 선다, 83y: 좌석의 행은 답한 주체·근거 종류·확정 항목·확정 문서를 싣는다, 83y: 같은 기록의 두 번째 좌석 답은 거부된다, 83y: 좌석 답의 route 는 구속-재수렴이고 거절 사유가 없다, 83y: 좌석 답의 - reconverge 파견 plan 이 통과한다, 83y: 좌석 답이 연 재수렴 뒤 다시 보류되면 순환 상한이고 추천이 없다, 83y: 순환 상한 기록의 좌석 답은 거부된다, 83y: 지금 수거가 읽지 않는 기록의 좌석 답은 거부된다, 83y: 둘째 수거 기록에도 좌석 답이 선다, 83y: 항목이 닫힌 문서의 수거는 보류를 푼다, 83y: 사람 몫 종류의 항목이 있으면 수거 기록은 추천 없음 두 줄을 싣는다, 83y: 골격급 항목과 베이스 계약 변경 항목에도 추천이 실린다, 83y: 닫힌 감사 합성 요구 항목은 추천을 막지 않는다, 83y: 두 도장이 행 상한을 넘으면 좌석의 답은 거부되고 행이 없다, 83y: 사람의 답이 선 기록의 좌석 답은 거부된다, 83y: 결정 수거 확정이 수동인 런의 기록은 추천이 없고 좌석의 답은 거부된다 ---
+#
+# 매니페스트 `## 인가` 에 `**결정 수거 확정**: 자동` 을 둔 런. 모든 항목이 추천 답과 추천 근거를
+# 싣고 사람 몫 종류가 없으면 수거 기록이 `추천대로 확정` 을 추천하고, 좌석의 답이 그 기록을
+# 닫아 재수렴까지 간다. 사람 몫 종류가 하나라도 있으면 기록은 줄이 없는 런과 같은 바이트다.
+# ---------------------------------------------------------------------------
+pre_base
+y83_mode() {  # y83_mode <런 id> <자동|수동> — 매니페스트 `## 인가`(마지막 절) 끝에 결정 수거 확정 줄
+  printf '**결정 수거 확정**: %s\n' "$2" >> "$WORK/plan-$1.md"
+}
+y83_doc() {  # y83_doc <파일> <표제> <추천 답> <추천 근거> [<항목 안 추가 줄>…] — 슬라이스 S2·S3 와 S2 에 닿는 열린 항목 하나
+  local f="$1" h="$2" a="$3" g="$4"
+  shift 4
+  {
+    printf '# 픽스처 설계\n\n**상태**: 동결됨\n\n## 합의된 아키텍처\n\n본문\n\n## 구현 슬라이싱\n\n'
+    printf '### 슬라이스 S2 — 구현\n\n**선언 파일**: s2.sh\n\n### 슬라이스 S3 — 구현\n\n**선언 파일**: s3.sh\n\n'
+    printf '## 미해결 이슈 / 트레이드오프\n\n%s\n\n**상태**: 보류\n' "$h"
+    for x in "$@"; do printf '%s\n' "$x"; done
+    printf '**구현 처분**: 구현 전 결정\n**닿는 슬라이스**: S2\n**추천 답**: %s\n**추천 근거**: %s\n' "$a" "$g"
+  } > "$f"
+}
+y83_more() {  # y83_more <파일> <표제> <상태> <닿는 슬라이스> <추천 근거> [<항목 안 추가 줄>…] — 항목 하나를 덧붙인다
+  local f="$1" h="$2" st="$3" sl="$4" g="$5"
+  shift 5
+  {
+    printf '\n%s\n\n**상태**: %s\n' "$h" "$st"
+    for x in "$@"; do printf '%s\n' "$x"; done
+    printf '**구현 처분**: 구현 전 결정\n**닿는 슬라이스**: %s\n**추천 답**: 기본값 7\n**추천 근거**: %s\n' "$sl" "$g"
+  } >> "$f"
+}
+y83_auto_lines() {  # y83_auto_lines — 기록 W83_REC 가 싣는 자동 추천 두 줄의 수
+  { grep -cE -e '^\*\*추천\*\*: `추천대로 확정` — ' \
+      -e '^\*\*추천 근거\*\*: 기기 사실:.* / 매니페스트 인가:결정 수거 확정=자동$' "$W83_REC" 2>/dev/null || true; }
+}
+y83_none_lines() {  # y83_none_lines — 기록 W83_REC 가 싣는 추천 없음 두 줄의 수
+  { grep -cxF -e '**추천**: (없음) — 항목마다 사람의 결정이 필요하다' -e '**추천 근거**: (없음)' "$W83_REC" 2>/dev/null || true; }
+}
+y83_seat() {  # y83_seat <런 id> <--segment> [<argv>…] — W83_REC 에 좌석 답, 선택지 없이 첨부와 함께
+  local r="$1" s="$2"
+  shift 2
+  printf '추천 근거 인용: %s\n\n## 되돌리는 법\n\n같은 기록에 항목별로 답함으로 다시 답한다.\n' "$W83_REC" > "${W83_REC%.md}.answer.md"
+  CC_CMDS_AUTOPILOT_AUTO_RESOLVE="${Y83_AR:-1}" \
+  gateL act --manifest "$WORK/plan-$r.md" --kind halt-answer --target infra --segment "$s" --cutpoint 커밋 --surface 읽기 \
+        --snapshot-digest "$(au15_H "$r")" --rationale x \
+        -- "중단 기록=$W83_REC" '답한 주체=좌석' '근거=기록의 추천을 채택' "첨부=${W83_REC%.md}.answer.md" "$@"
+}
+y83_rows() {  # y83_rows <런 id> — 그 런의 `중단 답` 행 수
+  { grep -F '`중단 답`' "$WT/docs/pipeline-run/$1.md" 2>/dev/null || true; } | grep -c . || true
+}
+
+# 첫째 런 — 자동 런에서 좌석이 수거 기록을 닫고, 재수렴 뒤의 수거 기록에도 답한다.
+DOC83YA='docs/fixture-design-83y-a.md'
+au15_run R83YA "$DOC83YA" "$plan15d"
+y83_mode R83YA 자동
+y83_doc "$WT/$DOC83YA" '### 미결 1. 값' '기본값 3' '기존 상한과 같다'
+w83_dc R83YA "$DOC83YA"
+y83_rec1=$W83_REC
+check "83y 픽스처의 첫 수거가 S2 를 보류한다 (아래가 공허하지 않다)" "$rc|$W83_HOLDS" "0|S2"
+check "83y: 자동 런의 수거 기록은 추천대로 확정 추천과 두 부분 근거를 싣는다" "$(y83_auto_lines)|$(y83_none_lines)" "2|0"
+Y83_AR=0 y83_seat R83YA D1
+check "83y: 자동 답이 꺼져 있으면 좌석의 답은 거부되고 행이 없다" "$rc|$(y83_rows R83YA)" "3|0"
+w83_prev_ar="${CC_CMDS_AUTOPILOT_AUTO_RESOLVE:-}"
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=1
+w83_ans R83YA D1 교대 '추천대로 확정'
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$w83_prev_ar"
+check "83y: 교대의 답은 거부되고 행이 없다" "$rc|$(y83_rows R83YA)" "3|0"
+y83_seat R83YA D1
+check "83y: 좌석의 추천대로 확정이 선택지 없이 선다" "$rc|$(y83_rows R83YA)" "0|1"
+y83_row=$( { grep -F '`중단 답`' "$WT/docs/pipeline-run/R83YA.md" 2>/dev/null || true; } | tail -1)
+y83_in() {  # y83_in <문자열> <조각> <이름> — 조각이 들어 있으면 이름
+  case "$1" in *"$2"*) printf '%s' "$3" ;; esac
+}
+check "83y: 좌석의 행은 답한 주체·근거 종류·확정 항목·확정 문서를 싣는다" \
+  "$(y83_in "$y83_row" '| 선택지=추천대로 확정 |' 선택지)/$(y83_in "$y83_row" '| 답한 주체=좌석 |' 주체)/$(y83_in "$y83_row" '| 근거 종류=' 종류)/$(y83_in "$y83_row" '| 확정 항목=「### 미결 1. 값」 |' 항목)/$(y83_in "$y83_row" "| 확정 문서=$WT/$DOC83YA |" 문서)" \
+  "선택지/주체/종류/항목/문서"
+unset -f y83_in
+y83_seat R83YA D1
+check "83y: 같은 기록의 두 번째 좌석 답은 거부된다" "$rc|$(y83_rows R83YA)" "3|1"
+check "83y: 좌석 답의 route 는 구속-재수렴이고 거절 사유가 없다" "$(w83_route R83YA "$y83_rec1")" "D1/구속-재수렴/"
+w83_plan R83YA "/cc-cmds:design-reconverge $WT/$DOC83YA 구속 티어 이탈 $y83_rec1"
+check "83y: 좌석 답의 - reconverge 파견 plan 이 통과한다" "$rc" "0"
+au15_dispatch R83YA "$STUB_AU_RECONV" reconverge "/cc-cmds:design-reconverge $WT/$DOC83YA 구속 티어 이탈 $y83_rec1"
+au15_wait R83YA D1
+check "83y 픽스처의 좌석 답이 연 재수렴이 정상 완료다 (아래가 공허하지 않다)" "$(au15_class R83YA D1 reconverge)" "정상 완료"
+# 재수렴이 항목을 닫지 않고 근거만 바꿨다 — 같은 S2 를 다시 잡는 수거는 순환 상한이다.
+y83_doc "$WT/$DOC83YA" '### 미결 1. 값' '기본값 3' '상한을 다시 쟀다'
+w83_dc R83YA "$DOC83YA"
+check "83y: 좌석 답이 연 재수렴 뒤 다시 보류되면 순환 상한이고 추천이 없다" \
+  "$rc|$W83_HOLDS|$(printf '%s' "$msg" | grep -c '순환 상한=S2' || true)|$(y83_none_lines)|$(y83_auto_lines)" "0|S2|1|2|0"
+y83_seat R83YA D1
+check "83y: 순환 상한 기록의 좌석 답은 거부된다" "$rc|$(y83_rows R83YA)" "3|1"
+# 첫 항목은 닫히고 S3 에 닿는 새 항목이 열린다 — 둘째 다이제스트의 기록, 이어 그 항목의 근거만
+# 바뀐 셋째 다이제스트의 기록. 열린 항목을 하나로 두어 좌석 행이 원장 행 상한 안에 든다.
+y83_s3doc() {  # y83_s3doc <추천 근거> — 첫 항목은 닫히고 S3 에 닿는 둘째 항목 하나만 열린 문서
+  y83_doc "$WT/$DOC83YA" '### 미결 1. 값' '기본값 3' '상한을 다시 쟀다'
+  y83_x=$(sed 's/^\*\*상태\*\*: 보류$/**상태**: 해결/' "$WT/$DOC83YA")
+  printf '%s\n' "$y83_x" > "$WT/$DOC83YA"
+  y83_more "$WT/$DOC83YA" '### 미결 2. 새 값' 보류 S3 "$1"
+}
+y83_s3doc '새 슬라이스의 상한과 같다'
+w83_dc R83YA "$DOC83YA"
+y83_rec2=$W83_REC
+y83_s3doc '새 슬라이스의 상한을 다시 쟀다'
+w83_dc R83YA "$DOC83YA"
+y83_rec3=$W83_REC
+unset -f y83_s3doc
+check "83y 픽스처의 둘째·셋째 수거가 S3 를 서로 다른 기록으로 보류한다 (아래가 공허하지 않다)" \
+  "$rc|$W83_HOLDS|$([ "$y83_rec2" != "$y83_rec3" ] && [ -f "$y83_rec2" ] && echo 다름)|$(y83_auto_lines)" "0|S3|다름|2"
+W83_REC=$y83_rec2
+y83_seat R83YA D1
+check "83y: 지금 수거가 읽지 않는 기록의 좌석 답은 거부된다" "$rc|$(y83_rows R83YA)" "3|1"
+W83_REC=$y83_rec3
+y83_seat R83YA D1
+check "83y: 둘째 수거 기록에도 좌석 답이 선다" "$rc|$(y83_rows R83YA)" "0|2"
+y83_x=$(sed 's/^\*\*상태\*\*: 보류$/**상태**: 해결/' "$WT/$DOC83YA")
+printf '%s\n' "$y83_x" > "$WT/$DOC83YA"
+w83_dc R83YA "$DOC83YA"
+check "83y: 항목이 닫힌 문서의 수거는 보류를 푼다" "$rc|$W83_HOLDS|$W83_REC" "0|없음|없음"
+( cd "$WT" && git worktree remove --force "$WT-run-R83YA-D1" ) >/dev/null 2>&1 || true
+( cd "$WT" && git worktree prune ) >/dev/null 2>&1 || true
+rm -f "$WT/$DOC83YA"
+
+# 둘째 런 — 자동 런이지만 사람 몫 종류가 있는 문서들. 다이제스트마다 새 기록이 선다.
+DOC83YN='docs/fixture-design-83y-n.md'
+au15_run R83YN "$DOC83YN" "$plan15d"
+y83_mode R83YN 자동
+y83_none=''
+y83_case() {  # y83_case <이름> — 지금 문서의 수거가 S2 를 보류하고 추천 없음 두 줄을 싣는지, 이름을 y83_none 에 모은다
+  w83_dc R83YN "$DOC83YN"
+  [ "$rc|$W83_HOLDS|$(y83_none_lines)|$(y83_auto_lines)" = "0|S2|2|0" ] || y83_none="${y83_none:+$y83_none,}$1"
+}
+y83_doc "$WT/$DOC83YN" '### 미결 1. 값' '(없음) — 운영 쪽만 아는 값이다' '기존 상한과 같다'
+y83_case 추천답없음
+y83_doc "$WT/$DOC83YN" '### 미결 1. 값' '기본값 3' '기존 상한과 같다' '**사유**: 감사 합성 요구 — 사람 판단'
+y83_case 감사합성요구
+y83_doc "$WT/$DOC83YN" '### 미결 1. 값' '기본값 3' '범위 축소 를 받아들이면 같다'
+y83_case 위험낱말
+y83_doc "$WT/$DOC83YN" '### 미결 1. 값' '기본값 3' '(없음) — 계정을 사람이 준비한다'
+y83_case 외부자원
+y83_doc "$WT/$DOC83YN" '### 미결 1. 값 | 둘' '기본값 3' '기존 상한과 같다'
+y83_case 표제세로줄
+y83_doc "$WT/$DOC83YN" '### 미결 1.  값' '기본값 3' '기존 상한과 같다'
+y83_case 표제연속공백
+y83_doc "$WT/$DOC83YN" '### 미결 1. 값' '기본값 3' '기존 상한과 같다'
+y83_more "$WT/$DOC83YN" '### 미결 1. 값' 보류 S2 '기존 상한과 같다'
+y83_case 표제둘
+check "83y: 사람 몫 종류의 항목이 있으면 수거 기록은 추천 없음 두 줄을 싣는다" "${y83_none:-모두}" "모두"
+y83_doc "$WT/$DOC83YN" '### 미결 1. 값' '기본값 3' '기존 상한과 같다' '**골격급**: 예'
+y83_more "$WT/$DOC83YN" '### 미결 2. 베이스' 보류 S2 '베이스와 같다' '**사유**: 베이스 계약 변경 필요 — 상한'
+w83_dc R83YN "$DOC83YN"
+check "83y: 골격급 항목과 베이스 계약 변경 항목에도 추천이 실린다" "$rc|$W83_HOLDS|$(y83_auto_lines)" "0|S2|2"
+y83_doc "$WT/$DOC83YN" '### 미결 1. 값' '기본값 3' '기존 상한과 같다'
+y83_more "$WT/$DOC83YN" '### 미결 2. 합성' 해결 S2 '합성과 같다' '**사유**: 감사 합성 요구 — 사람 판단'
+w83_dc R83YN "$DOC83YN"
+check "83y: 닫힌 감사 합성 요구 항목은 추천을 막지 않는다" "$rc|$W83_HOLDS|$(y83_auto_lines)" "0|S2|2"
+y83_long="### 미결 1. $(printf '가%.0s' $(seq 1 300))"
+y83_doc "$WT/$DOC83YN" "$y83_long" '기본값 3' '기존 상한과 같다'
+w83_dc R83YN "$DOC83YN"
+check "83y 픽스처의 긴 표제 기록은 추천을 싣는다 (아래가 공허하지 않다)" "$rc|$W83_HOLDS|$(y83_auto_lines)" "0|S2|2"
+y83_seat R83YN D1
+check "83y: 두 도장이 행 상한을 넘으면 좌석의 답은 거부되고 행이 없다" \
+  "$rc|$(y83_rows R83YN)|$(printf '%s' "$msg" | grep -c '도장은 줄이지 않으므로' || true)" "3|0|1"
+w83_ans R83YN D1 사람 '추천대로 확정'
+check "83y 픽스처의 그 기록에 사람의 답이 선다 (아래가 공허하지 않다)" "$rc|$(y83_rows R83YN)" "0|1"
+y83_seat R83YN D1
+check "83y: 사람의 답이 선 기록의 좌석 답은 거부된다" "$rc|$(y83_rows R83YN)" "3|1"
+rm -f "$WT/$DOC83YN"
+unset -f y83_case
+
+# 셋째 런 — 결정 수거 확정을 수동으로 적은 런은 줄이 없는 런과 같다.
+DOC83YM='docs/fixture-design-83y-m.md'
+au15_run R83YM "$DOC83YM" "$plan15d"
+y83_mode R83YM 수동
+y83_doc "$WT/$DOC83YM" '### 미결 1. 값' '기본값 3' '기존 상한과 같다'
+w83_dc R83YM "$DOC83YM"
+y83_seat R83YM D1
+check "83y: 결정 수거 확정이 수동인 런의 기록은 추천이 없고 좌석의 답은 거부된다" \
+  "$W83_HOLDS|$(y83_none_lines)|$(y83_auto_lines)|$rc|$(y83_rows R83YM)" "S2|2|0|3|0"
+rm -f "$WT/$DOC83YM"
+unset -f y83_mode y83_doc y83_more y83_auto_lines y83_none_lines y83_seat y83_rows
 
 # ---------------------------------------------------------------------------
 # 83x. 기기 짝 정리 — exec 가 열고, 스테이지 끝과 런 끝 정리가 이 런의 기기만 지운다
