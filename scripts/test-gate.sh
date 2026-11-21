@@ -7994,7 +7994,7 @@ rm -rf "$tlr_dir"
 # 1. The snapshot is a JSON object, not a table
 # --- section: 1 | group: base | covers: snapshot | anchors: 스냅숏이 유효한 JSON 객체로 나온다 ---
 # ---------------------------------------------------------------------------
-# The call is taken out of the `if` on purpose. A condition turns `errexit` off
+# The call is taken out of the `if` on purpose: a condition turns `errexit` off
 # for everything run inside it, subshells included, so the gate would run there
 # without the `set -e` it always has as a process. A command substitution does
 # not carry that, and `$rc` keeps what `pipefail` used to decide.
