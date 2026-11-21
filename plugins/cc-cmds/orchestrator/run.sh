@@ -2446,7 +2446,9 @@ EOF
   # 20c — the `급한 런` row: the kickoff's mark that the run is urgent. At most
   # one row, `출처` one of the three kickoff-side sources (a person's mid-run mark
   # is the run directory's marker file, never a manifest row) and a non-empty
-  # one-line reason.
+  # one-line reason with no `|` (the row's field separator) and no trailing
+  # space. The kickoff folds the intent's first line to that shape before it
+  # freezes the row.
   local ur_rows ur_row ur_n=0
   ur_rows=$(manifest_urgent_rows)
   while IFS= read -r ur_row; do

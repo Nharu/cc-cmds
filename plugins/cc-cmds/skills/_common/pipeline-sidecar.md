@@ -365,12 +365,16 @@ judged again.
 
 **A `급한 런` row marks the run urgent**, at most one per manifest:
 `` - `급한 런` | 출처=<킥오프|핫픽스|이어받음> | 사유=<한 줄> ``. A `--urgent`
-kickoff writes `출처=킥오프` with the intent's first line as `사유`; a
+kickoff writes `출처=킥오프` with the intent's first line as `사유`, folded to
+the row's shape — every `|` becomes `/`, leading and trailing whitespace is
+dropped, and the fixed string `의도 첫 줄이 비어 있는 급한 킥오프` stands in
+when nothing is left; a
 `--hotfix` kickoff always writes `출처=핫픽스` with the fixed string of the
 hotfix fixed values; a re-kickoff writes `출처=이어받음` only when the source
 holds no row and a person marked it urgent mid-run, and otherwise carries the
 source's row byte for byte. The manifest check refuses a second row, a `출처`
-outside those three and an empty `사유`. A manifest without the row serializes
+outside those three and a `사유` that is empty, carries a `|` or ends in a
+space. A manifest without the row serializes
 none, so its digest does not move.
 
 **The urgency marker is `<RUN_DIR>/urgent`, three lines**: `cc-run-urgent v1`,
@@ -920,7 +924,7 @@ never compared.
     violation is a **hard stop**; the inventory is not read here.
 20c. **The `급한 런` row.** At most one, and it matches
     `- \`급한 런\` | 출처=<킥오프|핫픽스|이어받음> | 사유=<한 줄>` with a
-    non-empty `사유` that does not end in a space. Each violation is a **hard
+    non-empty `사유` that carries no `|` and does not end in a space. Each violation is a **hard
     stop**; the run directory's marker is not read here.
 21. **The entry judgment's structure.** A plan carrying `design_tier_judged` is
     run through `orchestrator/prompts/entry-plan.check.jq`, the same file the
