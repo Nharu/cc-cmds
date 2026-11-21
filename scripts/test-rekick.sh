@@ -1584,6 +1584,64 @@ grep -vF -- "$AC_ROW" "$WORK/v-ark.md" > "$WORK/v-ark-drop.md"
 vs "이어받는 대응 행을 뺀 초안은 실패한다" 실패 "$WORK/v-ark-drop.md" "$E" 고정값
 VS_PREV="$PM"; VS_PMSHA="$PMSHA"; VS_PGSHA="$PGSHA"
 
+# (g2) A probe the pipeline runs that names a run id is carried neither as the
+# probe nor as its mapping: 5c is asked for a new probe and mapping, and the
+# draft carries both, the mapping bound to the new probe's bytes.
+RB_OLD='make probe RUN=20261121-4e3d8e05'
+RB_NEW='make probe RUN="$CC_APPLY_RUN_ID"'
+RB_ROW="- \`적용 프로브 코드\` | 불필요=0 | 필요=21 | 프로브 sha256=$(printf '%s' "$RB_OLD" | shasum -a 256 | cut -d' ' -f1)"
+RB_NROW="- \`적용 프로브 코드\` | 불필요=0 | 필요=21 | 프로브 sha256=$(printf '%s' "$RB_NEW" | shasum -a 256 | cut -d' ' -f1)"
+P_PROBE="\`$RB_OLD\`" P_AA=파이프라인 P_CUT=배포 P_GCUT=배포 P_EXTRA="$RB_ROW" mk_prev RKRB; fx_done
+mf_check "$BASE/docs/pipeline-run/RKRB.plan.md"; rc=$?
+check "7: 런 id 를 담은 프로브의 원천이 check_manifest 를 통과한다 (다음 단언이 공허하지 않다)" "$rc" "0"
+vac=$(rk verify --prev RKRB --base "$BASE")
+PMA=$(printf '%s\n' "$vac" | awk -F'\t' '$1 == "해시" && $2 == "매니페스트" { print $3 }')
+PGA=$(printf '%s\n' "$vac" | awk -F'\t' '$1 == "해시" && $2 == "인가 기록" { print $3 }')
+VS_PREV="$BASE/docs/pipeline-run/RKRB.plan.md"; VS_PMSHA="$PMA"; VS_PGSHA="$PGA"
+"$BASH" "$KD" --carry "$VS_PREV" --kickoff-at "$KAT1" --expect-sha256 "$PMA" > "$WORK/carry-rb" 2>/dev/null
+check "7: 런 id 를 담은 프로브 원천의 실제 --carry 는 프로브와 대응 모두 다시 물음을 낸다" \
+  "$(awk -F'\t' '$3 == "apply-probe" || $3 == "apply-probe-codes" { print $1"|"$3"|"$4 }' "$WORK/carry-rb")" \
+  "이어받지 않음|apply-probe|다시 물음
+이어받지 않음|apply-probe-codes|다시 물음"
+rk render-manifest --prev RKRB --base "$BASE" --run-id RKRBN --kickoff-at "$KAT1" --deadline "$DL1" \
+   --expect-sha256 "$PMA" --expect-grant-sha256 "$PGA" > "$WORK/v-rb.md"; rc=$?
+check "7: --set 없는 render-manifest 는 0 이고 대응 행을 싣지 않는다" "$rc/$(grep -c '^- `적용 프로브 코드`' "$WORK/v-rb.md")" "0/0"
+vs "5c 를 다시 묻지 않은 초안은 실패한다" 실패 "$WORK/v-rb.md" "$E" 고정값 --blank-rows "$WORK/carry-rb"
+o=$(rk verify-subset "$WORK/v-rb.md" "$VS_PREV" --expect-sha256 "$PMA" --expect-grant-sha256 "$PGA" --asked "$E" --blank-rows "$WORK/carry-rb")
+has "7: 그 실패 문면은 프로브가 담은 런 id 를 든다" "$o" "런 id 20261121-4e3d8e05 를 담고 있어"
+out=$(rk render-manifest --prev RKRB --base "$BASE" --run-id RKRBN --kickoff-at "$KAT1" --deadline "$DL1" \
+        --expect-sha256 "$PMA" --expect-grant-sha256 "$PGA" --set '런:apply-probe-codes=0/21' 2>/dev/null); rc=$?
+check "7: 새 프로브 없이 대응만 준 --set 은 render-manifest 가 1 로 거절한다" "$rc/$out" "1/"
+has "7: 그 거절 문면은 런 id 를 든다" "$(cat "$WORK/rk.err")" "런 id 20261121-4e3d8e05"
+out=$(rk render-manifest --prev RKRB --base "$BASE" --run-id RKRBN --kickoff-at "$KAT1" --deadline "$DL1" \
+        --expect-sha256 "$PMA" --expect-grant-sha256 "$PGA" --set "런:apply-probe=make probe${TAB}x" \
+        --set '런:apply-probe-codes=0/21' 2>/dev/null); rc=$?
+check "7: 탭이 든 새 프로브의 --set 은 render-manifest 가 용법 오류 2 로 거절한다" "$rc/$out" "2/"
+printf '5c 프로브\t%s\n5c\t0/21\n' "$RB_NEW" > "$WORK/asked-rb"
+RB_SETS=(--set "런:apply-probe=$RB_NEW" --set '런:apply-probe-codes=0/21')
+rk render-manifest --prev RKRB --base "$BASE" --run-id RKRBN --kickoff-at "$KAT1" --deadline "$DL1" \
+   --expect-sha256 "$PMA" --expect-grant-sha256 "$PGA" --asked "$WORK/asked-rb" "${RB_SETS[@]}" > "$WORK/v-rb5c.md"; rc=$?
+check "7: 5c 로 다시 물은 프로브와 대응을 준 render-manifest 는 0 으로 끝난다" "$rc" "0"
+check "7: 그 초안은 새 프로브를 역따옴표로 싣는다" \
+  "$(grep -c '^\*\*적용 프로브\*\*: ' "$WORK/v-rb5c.md")/$(grep -cxF -- "**적용 프로브**: \`$RB_NEW\`" "$WORK/v-rb5c.md")" "1/1"
+check "7: 그 초안의 대응 행은 새 프로브 바이트에 묶인다" \
+  "$(grep -c '^- `적용 프로브 코드`' "$WORK/v-rb5c.md")/$(grep -cxF -- "$RB_NROW" "$WORK/v-rb5c.md")" "1/1"
+mf_check "$WORK/v-rb5c.md"; rc=$?
+check "7: 그 초안이 check_manifest 를 통과한다" "$rc" "0"
+vs "5c 로 다시 물은 프로브와 대응을 실은 초안은 같은 --set 으로 통과한다" 통과 "$WORK/v-rb5c.md" "$WORK/asked-rb" "" \
+  "${RB_SETS[@]}" --blank-rows "$WORK/carry-rb"
+printf '5c 프로브\tmake probe\n5c\t0/21\n' > "$WORK/asked-rbx"
+vs "5c 프로브 답과 다른 프로브 --set 은 실패한다" 실패 "$WORK/v-rb5c.md" "$WORK/asked-rbx" 확정값 \
+  "${RB_SETS[@]}" --blank-rows "$WORK/carry-rb"
+VS_PREV="$BASE/docs/pipeline-run/RKARK.plan.md"
+vac=$(rk verify --prev RKARK --base "$BASE")
+PMA=$(printf '%s\n' "$vac" | awk -F'\t' '$1 == "해시" && $2 == "매니페스트" { print $3 }')
+PGA=$(printf '%s\n' "$vac" | awk -F'\t' '$1 == "해시" && $2 == "인가 기록" { print $3 }')
+out=$(rk render-manifest --prev RKARK --base "$BASE" --run-id RKARKN --kickoff-at "$KAT1" --deadline "$DL1" \
+        --expect-sha256 "$PMA" --expect-grant-sha256 "$PGA" --set "런:apply-probe=$RB_NEW" 2>/dev/null); rc=$?
+check "7: 런 id 를 담지 않은 프로브에 --set 런:apply-probe 는 지금처럼 render-manifest 가 1 로 거절한다" "$rc/$out" "1/"
+VS_PREV="$PM"; VS_PMSHA="$PMSHA"; VS_PGSHA="$PGSHA"
+
 # (h) The label acknowledgement rows are carried in the place the shape rows
 # are, and a row the previous run did not hold passes only under a 5u answer
 # that came with an added target or a cutpoint raised by 7.7.
@@ -2223,6 +2281,13 @@ check "12: 후속 매니페스트에는 플러그인 허용 행이 바이트 그
   "$(grep -c '^- `플러그인 허용`' "$SL_OUT")/$(grep -cxF -- "$PA_ROW" "$SL_OUT")" "1/1"
 mf_check "$SL_OUT"; rc=$?
 check "12: 플러그인 허용 행을 이어 쓴 후속 초안이 check_manifest 를 통과한다" "$rc" "0"
+
+# A seat source whose pipeline-run probe names a run id: the seat asks nothing,
+# so it cannot get the new probe 5c would ask for, and no successor passes.
+P_PROBE="\`$RB_OLD\`" P_AA=파이프라인 P_CUT=배포 P_GCUT=배포 P_EXTRA="$SEAT_ROW
+$RB_ROW" mk_seat RKRBS 마감
+seat_link RKRBS RKRBS1
+check "12: 런 id 를 담은 프로브의 좌석 원천은 verify-subset --auto 가 실패한다" "$SL_VS" "실패"
 [ "$rc" = 0 ] || tail -1 "$WORK/check.err" >&2
 check "12: 키가 켬인 행만 이으면 렌더와 verify-subset 이 플러그인 알림을 내지 않는다" \
   "$(cat "$WORK/sl.rerr" "$WORK/sl.verr" | grep -c '^플러그인 알림' || true)" "0"
