@@ -38342,9 +38342,9 @@ gate_argv_mark_urgent() {
   # purpose: a false hit refuses an act, never opens one.
   (
     set -f
-    local w t seen=1
+    local w t seen=1 punct='["'\''`;&|()<>]'
     for w in "$@"; do
-      w=$(printf '%s' "$w" | tr "\"'\`;&|()<>" '            ')
+      w=${w//$punct/ }
       for t in $w; do
         if [ "$seen" = "0" ] && [ "$t" = "mark-urgent" ]; then exit 0; fi
         [ "${t##*/}" != "rekick.sh" ] || seen=0
@@ -61360,7 +61360,7 @@ gate_launch_wait() {
   # group's WAIT names no account. No account to represent it leaves no entry.
   # The entry is marked urgent only from the envelope's `urgent`.
   wnonce="-"
-  wurg=$(printf '%s' "$GATE_ROUTE_ENV" | jq -r 'if .urgent == true then "1" else "" end' 2>/dev/null || printf '')
+  wurg=$(jq -r 'if .urgent == true then "1" else "" end' <<<"$GATE_ROUTE_ENV" 2>/dev/null || true)
   if [ "$grp" != "-" ]; then
     rrc=0
     rec=$(route_lease_wait_put --table "$(run_pace_root)/leases" --now "$(now_epoch)" --run-id "$RUN_ID" \
