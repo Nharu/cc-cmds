@@ -3516,8 +3516,16 @@ rk_sets_resolve() {
     # A PROBE BOUND TO A RUN IS THE ONE FILLED VALUE A `--set` REPLACES. The
     # source probe names a run id (`apply_probe_run_bound`), so 5c was asked
     # again and its answer overwrites the line. Argument parsing has already
-    # refused a value with a tab or newline, so the line stays one line.
+    # refused a value with a tab or newline, so the line stays one line. The
+    # render wraps the value in one pair of backticks and the driver strips
+    # exactly one from each end, so a value that itself starts or ends with a
+    # backtick would run as a different probe from the one hashed into the new
+    # mapping row: it is refused, and the person gives it without wrapping
+    # backticks, writing a trailing command substitution as `$(…)`.
     if [ "$k" = "apply-probe" ] && [ -n "$pv" ] && apply_probe_run_bound >/dev/null; then
+      case "$v" in
+        '`'*|*'`') printf '%s' "--set 런:$k — 값이 백틱으로 시작하거나 끝납니다. 감싸는 백틱 없이 주고, 끝의 명령 치환은 \$(…) 로 씁니다: $v"; return 1 ;;
+      esac
       pv=''
     fi
     [ -z "$pv" ] || { printf '%s' "--set $sc:$k — 원천 매니페스트에 이미 값이 있어 빈칸이 아닙니다"; return 1; }
@@ -3698,11 +3706,13 @@ vs_in() { printf '%s\n' "$2" | grep -qxF -- "$1"; }
 
 # vs_set_is <scope> <field> <draft value> — a `--set` entry names this place,
 # and the draft carries exactly its value. That the entry is one 5o confirmed
-# is check 2b's to show, not this exemption's.
+# is check 2b's to show, not this exemption's. The three values reach awk
+# through the environment, which awk reads as bytes; `-v` would undo backslash
+# escapes and refuse a value with a backslash as different from itself.
 VS_SETS=""
 vs_set_is() {
   [ -n "$VS_SETS" ] && [ -s "$VS_SETS" ] || return 1
-  awk -F '\t' -v s="$1" -v f="$2" -v d="$3" '$1 == s && $3 == f { ok = ($4 == d); hit = 1 } END { exit !(hit && ok) }' "$VS_SETS"
+  VSI_S="$1" VSI_F="$2" VSI_D="$3" awk -F '\t' '$1 == ENVIRON["VSI_S"] && $3 == ENVIRON["VSI_F"] { ok = ($4 == ENVIRON["VSI_D"]); hit = 1 } END { exit !(hit && ok) }' "$VS_SETS"
 }
 
 # vs_blank_has <alias|런> <key> <value> — a `빈칸` row of the saved 5o output

@@ -1633,6 +1633,33 @@ vs "5c 로 다시 물은 프로브와 대응을 실은 초안은 같은 --set �
 printf '5c 프로브\tmake probe\n5c\t0/21\n' > "$WORK/asked-rbx"
 vs "5c 프로브 답과 다른 프로브 --set 은 실패한다" 실패 "$WORK/v-rb5c.md" "$WORK/asked-rbx" 확정값 \
   "${RB_SETS[@]}" --blank-rows "$WORK/carry-rb"
+# The render wraps the new probe in one pair of backticks and the driver
+# strips one from each end, so a value that starts or ends with a backtick
+# would run as another probe than the one the new mapping row is hashed on.
+RB_BT='test "$(cat REV)" = `git rev-parse HEAD`'
+out=$(rk render-manifest --prev RKRB --base "$BASE" --run-id RKRBN --kickoff-at "$KAT1" --deadline "$DL1" \
+        --expect-sha256 "$PMA" --expect-grant-sha256 "$PGA" --set "런:apply-probe=$RB_BT" \
+        --set '런:apply-probe-codes=0/21' 2>/dev/null); rc=$?
+check "7: 끝이 백틱인 새 프로브의 --set 은 render-manifest 가 1 로 거절한다" "$rc/$out" "1/"
+has "7: 그 거절 문면은 백틱을 든다" "$(cat "$WORK/rk.err")" "값이 백틱으로 시작하거나 끝납니다"
+out=$(rk render-manifest --prev RKRB --base "$BASE" --run-id RKRBN --kickoff-at "$KAT1" --deadline "$DL1" \
+        --expect-sha256 "$PMA" --expect-grant-sha256 "$PGA" --set "런:apply-probe=\`$RB_NEW\`" \
+        --set '런:apply-probe-codes=0/21' 2>/dev/null); rc=$?
+check "7: 백틱으로 감싼 새 프로브의 --set 은 render-manifest 가 1 로 거절한다" "$rc/$out" "1/"
+# A new probe with a backslash is compared as bytes: the draft that carries it
+# passes the fixed-value and confirmed-value checks.
+RB_BS='test -f "rev\.$CC_APPLY_RUN_ID" && printf "%s\n" ok'
+RB_BSROW="- \`적용 프로브 코드\` | 불필요=0 | 필요=21 | 프로브 sha256=$(printf '%s' "$RB_BS" | shasum -a 256 | cut -d' ' -f1)"
+printf '5c 프로브\t%s\n5c\t0/21\n' "$RB_BS" > "$WORK/asked-rbbs"
+RB_BSSETS=(--set "런:apply-probe=$RB_BS" --set '런:apply-probe-codes=0/21')
+rk render-manifest --prev RKRB --base "$BASE" --run-id RKRBN --kickoff-at "$KAT1" --deadline "$DL1" \
+   --expect-sha256 "$PMA" --expect-grant-sha256 "$PGA" --asked "$WORK/asked-rbbs" "${RB_BSSETS[@]}" > "$WORK/v-rbbs.md"; rc=$?
+check "7: 역슬래시가 든 새 프로브의 render-manifest 는 0 이고 대응 행이 그 바이트에 묶인다" \
+  "$rc/$(grep -cxF -- "**적용 프로브**: \`$RB_BS\`" "$WORK/v-rbbs.md")/$(grep -cxF -- "$RB_BSROW" "$WORK/v-rbbs.md")" "0/1/1"
+mf_check "$WORK/v-rbbs.md"; rc=$?
+check "7: 그 초안이 check_manifest 를 통과한다" "$rc" "0"
+vs "역슬래시가 든 새 프로브를 실은 초안은 같은 --set 으로 통과한다" 통과 "$WORK/v-rbbs.md" "$WORK/asked-rbbs" "" \
+  "${RB_BSSETS[@]}" --blank-rows "$WORK/carry-rb"
 VS_PREV="$BASE/docs/pipeline-run/RKARK.plan.md"
 vac=$(rk verify --prev RKARK --base "$BASE")
 PMA=$(printf '%s\n' "$vac" | awk -F'\t' '$1 == "해시" && $2 == "매니페스트" { print $3 }')
