@@ -3598,15 +3598,37 @@ halt_step_is_unclosed_decision() {
   [ "$(sed -n '/^\*\*스텝\*\*: */{s///;s/[[:space:]]*$//;p;q;}' "$1")" = "Step 1 CFI-U3 BT-STOP — 미결 결정" ]
 }
 
-# halt_step_is_kept_drift <halt record> — 0 when the record's whole `**스텝**`
-# value is exactly `Step 2 CFI-U3 BT-STOP — 사람 둔 어긋남`: the halt an
-# implement stage writes when a screen slice meets a drift line the person
-# left `문서대로 둠`, which only a person answers. The whole value is compared,
-# never a cut at the first ` — `, so the shift's `구속-이탈` adoption, which
-# reads the step up to that cut, cannot pass for it.
+# halt_step_is_kept_drift <halt record> — 0 when the record is a kept-drift
+# stop: the halt an implement stage writes, as `Step 2 CFI-U3 BT-STOP — 사람 둔
+# 어긋남`, when a screen slice meets a drift line the person left `문서대로 둠`,
+# and which only a person answers. The record's first `**스텝**` value is read
+# normalized: every whitespace character is removed — the `[:space:]` class
+# under `LC_ALL=C` and the Unicode spaces U+00A0, U+1680, U+2000–U+200A,
+# U+2028, U+2029, U+202F, U+205F and U+3000, cut as UTF-8 byte sequences so
+# the reading does not depend on the locale — each of `—`, `–`, `‒`, `―` and
+# `−` becomes `-`, and the value is a kept-drift stop when `CFI-U3BT-STOP`
+# stands in it with `사람둔어긋남` after it, whatever trails. The reading is
+# wide on purpose: a record spelled slightly off (a tail, an en dash, doubled
+# spaces) is still read as person-only, so the person's `문서대로 둠` is never
+# overturned without a person. Reading too wide costs one more question to a
+# person; reading too narrow lets the shift or the seat answer it.
 halt_step_is_kept_drift() {
   [ -f "$1" ] || return 1
-  [ "$(sed -n '/^\*\*스텝\*\*: */{s///;s/[[:space:]]*$//;p;q;}' "$1")" = "Step 2 CFI-U3 BT-STOP — 사람 둔 어긋남" ]
+  local v u
+  v=$(sed -n '/^\*\*스텝\*\*: */{s///;p;q;}' "$1")
+  for u in $'\xc2\xa0' $'\xe1\x9a\x80' $'\xe2\x80\x80' $'\xe2\x80\x81' \
+    $'\xe2\x80\x82' $'\xe2\x80\x83' $'\xe2\x80\x84' $'\xe2\x80\x85' \
+    $'\xe2\x80\x86' $'\xe2\x80\x87' $'\xe2\x80\x88' $'\xe2\x80\x89' \
+    $'\xe2\x80\x8a' $'\xe2\x80\xa8' $'\xe2\x80\xa9' $'\xe2\x80\xaf' \
+    $'\xe2\x81\x9f' $'\xe3\x80\x80'; do
+    v=${v//"$u"/}
+  done
+  v=$(printf '%s' "$v" | LC_ALL=C tr -d '[:space:]')
+  for u in '—' '–' '‒' '―' '−'; do
+    v=${v//"$u"/-}
+  done
+  case "$v" in *CFI-U3BT-STOP*사람둔어긋남*) return 0 ;; esac
+  return 1
 }
 
 # `슬라이스 수` is a CHECKSUM, not an input: it is derived from the count of
