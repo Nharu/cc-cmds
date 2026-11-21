@@ -7673,11 +7673,20 @@ home_alias() {
 }
 
 alias_root() {
-  local a="$1" wt
+  local a="$1" wt cg
   { [ -z "$MANIFEST" ] || [ "$a" = "." ]; } && { main_root; return 0; }
   wt=$(target_field "$a" '메인 워크트리')
   [ -n "$wt" ] || return 1
-  dirname "$(cd "$wt" && git rev-parse --path-format=absolute --git-common-dir)"
+  # `dirname` by parameter expansion, with its answers kept: `.` for an empty
+  # value (a worktree git could not read) or one without a slash, `/` for a
+  # directory right under the root. The gate resolves a root several times on
+  # every act, and the external `dirname` was one process each time.
+  cg=$(cd "$wt" && git rev-parse --path-format=absolute --git-common-dir) || cg=''
+  case "$cg" in
+    */*) cg=${cg%/*}; [ -n "$cg" ] || cg=/ ;;
+    *) cg=. ;;
+  esac
+  printf '%s\n' "$cg"
 }
 
 # The `-R` argument. Deriving it from the origin URL is the fallback, not the

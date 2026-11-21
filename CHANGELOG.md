@@ -5,6 +5,16 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.54.2] - 2026-11-21
+
+스테이지가 게이트 `exec` 를 한 번 부를 때의 프로세스 수(U8)를 목표 아래로 되돌린다. master 에서 1199 로 상한 1170(기준선 1300 의 90%)을 넘어, 무인 런의 구현 스테이지가 바꾼 내용과 무관하게 push 전 `make check-push` 에서 멈췄다. 같은 트리가 check-push 안에서는 1215·1221 로 더 높게 쟀는데, 측정 도구가 시험 트리의 감시 래퍼까지 세었기 때문이다. 이 판에서 U8 은 1160 이고, 감시 래퍼를 PATH 앞에 둬도 1160 이다.
+
+### Fixed
+
+- **베이스 이동 가드의 위치 풀이** — 원격 없는 대상의 행위 앞뒤 대조가 베이스를 읽을 때마다 `base_ref`·`alias_root` 를 처음부터 다시 풀던 것을, 한 게이트 호출 안에서 바뀌지 않는 ref·루트는 한 번만 풀고 sha 만 매번 읽게 한다.
+- **외부 명령 줄이기** — `alias_root` 의 `dirname`, `master 판독` 파일 이름의 `sed` 인코딩, 대상 별칭 대조의 `tr` 을 매개변수 확장과 셸 반복으로 바꾼다. 출력은 그대로다.
+- **측정 도구의 감시 래퍼 누수** — `scripts/measure-spawn-count.sh` 의 스텁이 진짜 실행 파일을 찾을 때 이름이 `.shim` 으로 끝나는 디렉터리를 뺀다. check-push 와 시험 트리가 PATH 앞에 두는 `git`·`cp` 감시 래퍼는 bash 스크립트라, 그것을 진짜 명령으로 잡으면 래퍼의 하위 셸까지 단위의 셈에 들어갔다. 시험이 래퍼를 둔 채 교정 대상의 셈이 그대로인지 단언한다.
+
 ## [3.54.1] - 2026-11-20
 
 교대 스킬 본문에서 드물게 쓰이는 절을 참조 파일로 더 옮겨, 교대마다 첫 요청에 실리는 본문을 줄인다. 본문은 166,636 바이트에서 77,227 바이트가 되었다. 옮긴 문면은 바이트 그대로이며, 교대는 색인 표의 진입 조건이 설 때만 그 파일을 읽는다.
