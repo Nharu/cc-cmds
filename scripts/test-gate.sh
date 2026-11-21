@@ -60878,6 +60878,12 @@ unset -f w83_rx_rows
 # 닫아 재수렴까지 간다. 사람 몫 종류가 하나라도 있으면 기록은 줄이 없는 런과 같은 바이트다.
 # ---------------------------------------------------------------------------
 pre_base
+# 이 절의 상태 홈은 $WORK 가 아니라 /tmp 아래에 둔다. 좌석의 `중단 답` 행은 기록과 첨부의
+# 절대 경로, 확정 문서 경로, 다이제스트 둘을 함께 싣고 원장 행 상한은 1024 바이트라, 긴
+# $TMPDIR(깨끗한 복제본의 잡 풀) 아래의 $WORK 경로로는 표제가 짧은 기록의 행도 상한을 넘는다.
+y83_prev_state=$STATE_LATE
+STATE_LATE=$(mktemp -d /tmp/st83y.XXXXXX)
+STATE_LATE=$(cd -P "$STATE_LATE" && pwd)
 y83_mode() {  # y83_mode <런 id> <자동|수동> — 매니페스트 `## 인가`(마지막 절) 끝에 결정 수거 확정 줄
   printf '**결정 수거 확정**: %s\n' "$2" >> "$WORK/plan-$1.md"
 }
@@ -61052,6 +61058,8 @@ check "83y: 결정 수거 확정이 수동인 런의 기록은 추천이 없고 
   "$W83_HOLDS|$(y83_none_lines)|$(y83_auto_lines)|$rc|$(y83_rows R83YM)" "S2|2|0|3|0"
 rm -f "$WT/$DOC83YM"
 unset -f y83_mode y83_doc y83_more y83_auto_lines y83_none_lines y83_seat y83_rows
+rm -rf "$STATE_LATE"
+STATE_LATE=$y83_prev_state
 
 # ---------------------------------------------------------------------------
 # 83x. 기기 짝 정리 — exec 가 열고, 스테이지 끝과 런 끝 정리가 이 런의 기기만 지운다
