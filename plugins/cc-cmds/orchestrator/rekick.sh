@@ -147,7 +147,10 @@
 # there; anything else is refused, except `apply-probe` when the previous
 # probe is bound to a run (`apply_probe_run_bound`): 5c asked for a new probe,
 # recorded under `5c 프로브`, and its one-line value replaces the old one,
-# backticked as the probe line was. `render-manifest` writes the value into the
+# backticked as the probe line was. That value is given without wrapping
+# backticks: one that starts or ends with a backtick is refused, because the
+# driver strips one from each end and would run another probe than the one the
+# new mapping row is hashed on. `render-manifest` writes the value into the
 # draft and `verify-subset` takes the same `--set` list, so the draft's value is
 # compared with the confirmed one rather than exempted.
 #

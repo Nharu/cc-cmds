@@ -1646,6 +1646,7 @@ out=$(rk render-manifest --prev RKRB --base "$BASE" --run-id RKRBN --kickoff-at 
         --expect-sha256 "$PMA" --expect-grant-sha256 "$PGA" --set "런:apply-probe=\`$RB_NEW\`" \
         --set '런:apply-probe-codes=0/21' 2>/dev/null); rc=$?
 check "7: 백틱으로 감싼 새 프로브의 --set 은 render-manifest 가 1 로 거절한다" "$rc/$out" "1/"
+has "7: 그 거절 문면도 백틱을 든다" "$(cat "$WORK/rk.err")" "값이 백틱으로 시작하거나 끝납니다"
 # A new probe with a backslash is compared as bytes: the draft that carries it
 # passes the fixed-value and confirmed-value checks.
 RB_BS='test -f "rev\.$CC_APPLY_RUN_ID" && printf "%s\n" ok'
