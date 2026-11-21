@@ -159,13 +159,20 @@ jobs:
       # A scheduled round runs when master moved since the last whole run; a
       # round that cannot tell runs too. A pull request does not ask: the step
       # is skipped and the empty `run` reads as a run.
+      #
+      # THE STEP CONDITIONS BELOW WRAP `run` IN `format`. A skipped step's
+      # output is null, not an empty string, and an expression comparing null
+      # with '0' turns both into the number 0, so `!= '0'` alone is false on a
+      # pull request and every later step is skipped while the run is green.
+      # `format` makes it the string '' first. The job conditions read the job
+      # output, which is already a string.
       - name: Is a run due
         id: due
         if: github.event_name != 'pull_request'
         run: bash scripts/gate-full.sh due >> "$GITHUB_OUTPUT"
 
       - uses: mikefarah/yq@v4
-        if: steps.due.outputs.run != '0'
+        if: format('{0}', steps.due.outputs.run) != '0'
 
       # FAILING IS THE POINT WHEN THERE IS NO BASE. Reading "no base" as "no
       # changed section" would leave the isolation check empty without a word,
@@ -174,7 +181,7 @@ jobs:
       # has no base to compare with and changes no section: it writes an empty
       # list and `-` for the base.
       - name: Find the changed sections
-        if: steps.due.outputs.run != '0'
+        if: format('{0}', steps.due.outputs.run) != '0'
         run: |
           plan="$RUNNER_TEMP/plan"; mkdir -p "$plan"
           if [ "$GITHUB_EVENT_NAME" != "pull_request" ]; then
@@ -209,7 +216,7 @@ jobs:
       # whole master run skips this step and is `전량`.
       - name: Select the sections
         id: select
-        if: steps.due.outputs.run != '0' && github.event_name == 'pull_request'
+        if: format('{0}', steps.due.outputs.run) != '0' && github.event_name == 'pull_request'
         env:
           GATE_SELECT: ${{ vars.GATE_SELECT }}
         run: |
@@ -258,7 +265,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Find the timing source
-        if: steps.due.outputs.run != '0'
+        if: format('{0}', steps.due.outputs.run) != '0'
         run: |
           plan="$RUNNER_TEMP/plan"; mkdir -p "$plan" "$RUNNER_TEMP/src"
           # One `<run id> <created_at>` line per run, newest first; the median
@@ -302,7 +309,7 @@ jobs:
       # shard job starts.
       - name: Make the partition table
         id: table
-        if: steps.due.outputs.run != '0'
+        if: format('{0}', steps.due.outputs.run) != '0'
         run: |
           plan="$RUNNER_TEMP/plan"
           changed=$(cat "$plan/changed")
@@ -412,7 +419,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/upload-artifact@v4
-        if: steps.due.outputs.run != '0'
+        if: format('{0}', steps.due.outputs.run) != '0'
         with:
           name: gate-plan
           path: ${{ runner.temp }}/plan/
