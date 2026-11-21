@@ -51,7 +51,17 @@
 #
 # The banner fields and section boundaries are read here directly, and the set
 # of section ids read that way must equal the head suite's own `--list`;
-# otherwise the change cannot be judged.
+# otherwise the change cannot be judged. The closure of step 8 must equal the
+# one the head suite's own reader gives for the same picks
+# (`--sections <ids> --estimate`, which runs nothing), or the change cannot be
+# judged either; a head suite that does not know `--estimate` leaves nothing
+# to compare with, and the check is skipped with a line saying so.
+#
+# ONE CALL HAS A TIME CAP. A pull request calls this once and the failure
+# report once per candidate merge, each over a suite of tens of thousands of
+# lines, so a call that hangs would hold the job until the runner's own limit.
+# Past `GATE_SELECT_TIMEOUT` seconds (300 by default) every process the call
+# started is stopped and the call ends as a change that cannot be judged.
 #
 # Usage:
 #   bash scripts/gate-select.sh --base <commit> [--head <commit>]
@@ -492,6 +502,62 @@ sel_join() {
   tr ' ' '\n' | grep -v '^$' | sort -u | paste -s -d, -
 }
 
+# THE CLOSURE IS READ TWICE AND MUST AGREE. The `needs:` fields of step 8 come
+# from this file's own banner reader, while a cut is closed by the suite's.
+# Two readers that disagree send a picked section to CI without a predecessor
+# it needs, or with one it does not, and the id sets of `--list` still match;
+# so a disagreement is a change that cannot be judged. <want> is the closure
+# step 8 computed, comma-joined.
+sel_check_closure() {
+  local want="$1" req rc=0
+  req=$(tr ', ' '\n\n' < "$W/picked" | grep -v '^$' | sort -u | paste -s -d, -)
+  bash "$W/h/$SEL_SUITE" --sections "$req" --estimate > "$W/est.out" 2> "$W/est.err" || rc=$?
+  if [ "$rc" != 0 ]; then
+    if grep -q -e '모르는 인자' "$W/est.err" "$W/est.out"; then
+      sel_unit "$SEL_SUITE" "needs:" "(대조 생략) — 헤드 스위트가 --estimate 를 모릅니다"
+      return 0
+    fi
+    sel_die "헤드 스위트의 --sections --estimate 가 실패했습니다 (종료 $rc)"
+  fi
+  # The estimate's rows are `<id><TAB><seconds><TAB><source>`; the head and the
+  # group preludes are the `@` rows.
+  awk -F'\t' 'NF >= 2 && $1 !~ /^@/ && $1 !~ /^test-gate:/ { print $1 }' "$W/est.out" | sort -u > "$W/est.ids"
+  printf '%s\n' "$want" | tr ',' '\n' | grep -v '^$' | sort -u > "$W/own.ids"
+  if ! cmp -s "$W/est.ids" "$W/own.ids"; then
+    sel_die "직접 읽은 needs 폐포 [$(paste -s -d, - < "$W/own.ids")] 가 헤드 스위트의 폐포 [$(paste -s -d, - < "$W/est.ids")] 와 다릅니다"
+  fi
+}
+
+# The whole call in a child of its own process group, so a cap that runs out
+# stops every process the selection started rather than this shell alone, and
+# the verdict goes through a file, so a stopped child leaves no half answer on
+# stdout. The child's standard error is this one's.
+sel_capped() {
+  local cap="${GATE_SELECT_TIMEOUT:-300}" out pid rc=0 ticks=0
+  case "$cap" in
+    ''|*[!0-9]*|0) sel_die "GATE_SELECT_TIMEOUT 은 1 이상의 초 수여야 합니다: 「${cap}」" ;;
+  esac
+  out=$(mktemp "${TMPDIR:-/tmp}/gate-select-out.XXXXXX") || sel_die "임시 파일을 만들지 못했습니다"
+  set -m
+  GATE_SELECT_CAPPED=1 bash "$script_dir/$(basename "$0")" "$@" > "$out" &
+  pid=$!
+  set +m
+  while kill -0 "$pid" 2>/dev/null; do
+    if [ "$ticks" -ge "$((cap * 5))" ]; then
+      kill -TERM -- "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null
+      wait "$pid" 2>/dev/null
+      rm -f "$out"
+      sel_die "한 호출의 시간 상한 ${cap}초를 넘었습니다"
+    fi
+    sleep 0.2
+    ticks=$((ticks + 1))
+  done
+  wait "$pid" || rc=$?
+  cat "$out"
+  rm -f "$out"
+  exit "$rc"
+}
+
 # --- the steps ---------------------------------------------------------------
 
 sel_makefile() {
@@ -664,7 +730,7 @@ sel_orch() {
 }
 
 sel_main() {
-  local base="" head="HEAD" re g b f tg=0 mk=0
+  local base="" head="HEAD" re g b f sel tg=0 mk=0
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --base) [ "$#" -ge 2 ] || sel_usage; base="$2"; shift 2 ;;
@@ -677,6 +743,8 @@ sel_main() {
   HEAD=$(git rev-parse -q --verify "$head^{commit}" 2>/dev/null) || sel_die "헤드 커밋 $head 을 읽지 못했습니다"
   W=$(mktemp -d "${TMPDIR:-/tmp}/gate-select.XXXXXX") || sel_die "임시 디렉터리를 만들지 못했습니다"
   trap 'rm -rf "$W"' EXIT
+  # A stop from the cap still removes the scratch directory.
+  trap 'exit 143' TERM
 
   # 1. The changed paths the gate filter names.
   git show "$HEAD:.github/workflows/gate.yml" > "$W/gate.yml" 2>/dev/null || sel_die "헤드에 .github/workflows/gate.yml 이 없습니다"
@@ -724,9 +792,11 @@ sel_main() {
     [ ! -s "$W/orch" ] || sel_orch
   fi
 
-  # 8. The needs closure.
-  if [ -s "$W/picked" ]; then
-    printf '절\t%s\n' "$(sel_close "$W/idx.head" "$W/picked")"
+  # 8. The needs closure, held to the suite's own.
+  if [ -s "$W/picked" ] && [ -n "$(tr -d ', \n' < "$W/picked")" ]; then
+    sel=$(sel_close "$W/idx.head" "$W/picked")
+    sel_check_closure "$sel"
+    printf '절\t%s\n' "$sel"
   else
     printf '절\t\n'
   fi
@@ -736,7 +806,7 @@ sel_main() {
 # --- self-test -----------------------------------------------------------------
 
 sel_self_test() {
-  local passed=0 failed=0 T R B0 self out rc
+  local passed=0 failed=0 T R B0 self out rc s0 s1 spid
   ok()  { passed=$((passed + 1)); printf 'PASS: %s\n' "$1"; }
   bad() { failed=$((failed + 1)); printf 'FAIL: %s — %s\n' "$1" "${2:-}" >&2; }
   if ! command -v yq >/dev/null 2>&1 || ! command -v git >/dev/null 2>&1; then
@@ -800,8 +870,24 @@ echo top-level-in-lib
 EOF
   # A miniature suite: the two read modes the selector calls, over the same
   # dashed banners the real suite uses.
+  # The estimate mode prints the closure of the named sections the way the real
+  # suite does; FX_EST_DROP_NEEDS makes its reader ignore `needs:` and
+  # FX_EST_UNKNOWN makes it a suite older than the mode.
   cat > "$R/scripts/test-gate.sh" <<'EOF'
 #!/usr/bin/env bash
+if [ "${1:-}" = "--sections" ] && [ "${3:-}" = "--estimate" ]; then
+  if [ -n "${FX_EST_UNKNOWN:-}" ]; then echo "test-gate: 모르는 인자입니다: --estimate" >&2; exit 2; fi
+  awk -v want="$2" -v drop="${FX_EST_DROP_NEEDS:-}" '
+    /^# --- section: / { n = ""; if (drop == "" && match($0, /needs: [^ ]+/)) n = substr($0, RSTART + 7, RLENGTH - 7); dep[$4] = n }
+    END {
+      k = split(want, q, ","); t = 0
+      for (i = 1; i <= k; i++) if (!(q[i] in pk)) { pk[q[i]] = 1; qq[++t] = q[i] }
+      for (h = 1; h <= t; h++) { d = dep[qq[h]]; if (d != "" && !(d in pk)) { pk[d] = 1; qq[++t] = d } }
+      for (h = 1; h <= t; h++) print qq[h] "\t1\t추정"
+      print "@head\t1\t추정"
+    }' "$0"
+  exit 0
+fi
 if [ "${1:-}" = "--list" ] || [ "${1:-}" = "--digests" ]; then
   f=$0
   if [ "${2:-}" = "--from" ]; then f=$3; fi
@@ -933,11 +1019,56 @@ EOF
     bad "(q) mikefarah/yq 가 아니면 0 이 아닌 종료" "rc=$rc $(cat "$T/err")"
   fi
 
+  # (r) The closure is held to the suite's own reader: a reader that drops
+  # `needs:` disagrees and the change cannot be judged, while a suite that does
+  # not know `--estimate` leaves the closure as computed, with a line saying so.
+  if (cd "$R" && g checkout -q --detach "$B0" && fx_sub "$S" 'gamma' 'gamma --again' && g add -A && g commit -q -m case); then
+    (cd "$R" && FX_EST_DROP_NEEDS=1 bash "$self" --base "$B0" --head HEAD) > "$T/out" 2>"$T/err"; rc=$?
+    if [ "$rc" != 0 ] && [ ! -s "$T/out" ] && grep -q '직접 읽은 needs 폐포 \[1,2\] 가 헤드 스위트의 폐포 \[2\] 와 다릅니다' "$T/err"; then
+      ok "(r) 스위트 판독기와 needs 폐포가 다르면 0 이 아닌 종료"
+    else
+      bad "(r) 스위트 판독기와 needs 폐포가 다르면 0 이 아닌 종료" "rc=$rc $(cat "$T/out") $(cat "$T/err")"
+    fi
+    (cd "$R" && FX_EST_UNKNOWN=1 bash "$self" --base "$B0" --head HEAD) > "$T/out" 2>"$T/err"; rc=$?
+    if [ "$rc" = 0 ] && [ "$(head -n 1 "$T/out")" = "절${tab}1,2" ] && grep -q '^gate-select: scripts/test-gate.sh:needs: → (대조 생략)' "$T/err"; then
+      ok "(r) --estimate 를 모르는 스위트면 대조를 건너뛰고 그 사실을 적는다"
+    else
+      bad "(r) --estimate 를 모르는 스위트면 대조를 건너뛰고 그 사실을 적는다" "rc=$rc $(cat "$T/out") $(cat "$T/err")"
+    fi
+  else
+    bad "(r) needs 폐포 대조" "픽스처 커밋을 만들지 못했습니다"
+    bad "(r) --estimate 를 모르는 스위트" "픽스처 커밋을 만들지 못했습니다"
+  fi
+
+  # (s) The time cap stops the call and every process it started: a yq that
+  # hangs is stopped with it, and the call ends as one that cannot be judged.
+  mkdir -p "$T/slow"
+  printf '#!/bin/sh\necho $$ > "%s/slow/pid"\nexec sleep 30\n' "$T" > "$T/slow/yq"
+  chmod +x "$T/slow/yq"
+  s0=$(date +%s)
+  (cd "$R" && GATE_SELECT_TIMEOUT=1 PATH="$T/slow:$PATH" bash "$self" --base "$B0" --head HEAD) > "$T/out" 2>"$T/err"; rc=$?
+  s1=$(date +%s)
+  sleep 0.5
+  spid=$(cat "$T/slow/pid" 2>/dev/null)
+  if [ "$rc" != 0 ] && [ ! -s "$T/out" ] && grep -q '한 호출의 시간 상한 1초를 넘었습니다' "$T/err" \
+     && [ "$((s1 - s0))" -lt 10 ] && [ -n "$spid" ] && ! kill -0 "$spid" 2>/dev/null; then
+    ok "(s) 시간 상한을 넘으면 그 호출이 띄운 프로세스까지 멈추고 0 이 아닌 종료"
+  else
+    bad "(s) 시간 상한을 넘으면 그 호출이 띄운 프로세스까지 멈추고 0 이 아닌 종료" "rc=$rc 걸린 $((s1 - s0))초 pid=${spid:-없음} $(cat "$T/err")"
+    [ -z "$spid" ] || kill "$spid" 2>/dev/null
+  fi
+  (cd "$R" && GATE_SELECT_TIMEOUT=abc bash "$self" --base "$B0" --head HEAD) > "$T/out" 2>"$T/err"; rc=$?
+  if [ "$rc" = 2 ] && grep -q 'GATE_SELECT_TIMEOUT 은 1 이상의 초 수여야 합니다' "$T/err"; then
+    ok "(s) 초 수가 아닌 시간 상한은 0 이 아닌 종료"
+  else
+    bad "(s) 초 수가 아닌 시간 상한은 0 이 아닌 종료" "rc=$rc $(cat "$T/err")"
+  fi
+
   rm -rf "$T"
   printf 'gate-select self-test: %d passed, %d failed\n' "$passed" "$failed"
   # A floor on the count, so a refactor that silently skips cases cannot pass.
-  if [ "$passed" -lt 24 ]; then
-    printf 'gate-select self-test: 통과 수 %d 가 하한 24 에 못 미칩니다\n' "$passed" >&2
+  if [ "$passed" -lt 28 ]; then
+    printf 'gate-select self-test: 통과 수 %d 가 하한 28 에 못 미칩니다\n' "$passed" >&2
     return 1
   fi
   [ "$failed" = "0" ]
@@ -948,5 +1079,6 @@ EOF
 [ "$#" -ge 1 ] || sel_usage
 case "$1" in
   --self-test) sel_self_test; exit $? ;;
-  *) sel_main "$@" ;;
+  *)
+    if [ -n "${GATE_SELECT_CAPPED:-}" ]; then sel_main "$@"; else sel_capped "$@"; fi ;;
 esac
