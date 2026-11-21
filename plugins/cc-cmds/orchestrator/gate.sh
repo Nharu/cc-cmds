@@ -25370,6 +25370,7 @@ gate_main() {
       gate_admit_words
       gate_admit_wrapped_push_refuse
       gate_admit_dir_move_refuse
+      gate_mark_urgent_refuse "${GATE_ADMIT_WORDS[@]}"
       # THE CELL IS DERIVED, not asked for: the table's rung, and `push` at
       # least for a git push, whose rung the table leaves to the act's own
       # destination check — which raises a base update to `머지` with exit 8.
@@ -38325,6 +38326,42 @@ gate_argv_visual_helper_write() {
     done
     exit 1
   )
+}
+
+gate_argv_mark_urgent() {
+  # gate_argv_mark_urgent <argv...> — 0 when some word of argv, read with quotes
+  # and shell punctuation turned into blanks, has `rekick.sh` as its last path
+  # component and a later word is `mark-urgent`. That subcommand writes a run's
+  # urgency marker, which puts the run's stages ahead of every other waiter and
+  # into a borrowed donor group's headroom; only a person's interactive session
+  # may call it. Its own in-pipeline refusal reads four environment variables a
+  # stage can unset, so the gate refuses every spelling a stage or a routing
+  # shift could issue: the direct path, behind `env -u …`, `command`, `nice` and
+  # the other launchers, and inside a `-c` string. Reading every word covers the
+  # launchers the unwrap helpers peel and the ones they do not. Quote-blind on
+  # purpose: a false hit refuses an act, never opens one.
+  (
+    set -f
+    local w t seen=1
+    for w in "$@"; do
+      w=$(printf '%s' "$w" | tr "\"'\`;&|()<>" '            ')
+      for t in $w; do
+        if [ "$seen" = "0" ] && [ "$t" = "mark-urgent" ]; then exit 0; fi
+        [ "${t##*/}" != "rekick.sh" ] || seen=0
+      done
+    done
+    exit 1
+  )
+}
+
+gate_mark_urgent_refuse() {
+  # gate_mark_urgent_refuse <argv...> — exits 2 when argv runs the mid-run
+  # urgency mark (`gate_argv_mark_urgent`). The exec path calls it on the act's
+  # argv before anything runs, and the admit path on the request's words before
+  # a ticket is written, so neither a stage nor a routing shift sets urgency.
+  gate_argv_mark_urgent "$@" || return 0
+  warn "\`rekick.sh mark-urgent\` is refused — a run is marked urgent only from a person's interactive session (\`autopilot --urgent <run id>\`), never from a stage or a routing shift"
+  exit "$GATE_EXIT_VOCAB"
 }
 
 gate_argv_visual_account_rundir() {
@@ -54128,6 +54165,7 @@ gate_act_cell_front() {
     warn "\`visual-config.sh account|record\` with \`CC_PIPELINE_RUN_DIR\` reassigned is refused — the expected account is read from the run's own migration record first, so the act runs with the inherited value"
     [ "$verb" = "plan" ] || exit "$GATE_EXIT_VOCAB"
   fi
+  gate_mark_urgent_refuse "$@"
   if [ "$graded" = "등급 미상" ] && [ "${GATE_UNKNOWN_DECLARED:-0}" != "1" ]; then
     # THE GENERIC MESSAGE COMES FIRST SO THE SPECIFIC ONE IS READ LAST. Both
     # lines name a repair and the two repairs are opposites: the generic one
@@ -61259,7 +61297,7 @@ gate_launch_wait() {
   # Every refusal here comes BEFORE the pin, as on the grant path, so a host
   # state a person has to change does not consume an attempt.
   local alias="$1" seg="$2" kind="$3"; shift 3
-  local rowseg stall instr rrc=0 attempt out suplog nonce tmp sup grp upto rec wnonce m
+  local rowseg stall instr rrc=0 attempt out suplog nonce tmp sup grp upto rec wnonce wurg m
   rowseg=$(gate_stage_row_segment "$seg" "$kind")
   # WITHOUT A READABLE STALL THRESHOLD THERE IS NO CHUNK TO WAIT IN, and the
   # wait falls back to what a WAIT did before it could be waited on.
@@ -61320,12 +61358,14 @@ gate_launch_wait() {
   # a moment, and an entry held by a dead pid is filtered out on arrival. The
   # group goes in through a representative account, because an organisation
   # group's WAIT names no account. No account to represent it leaves no entry.
+  # The entry is marked urgent only from the envelope's `urgent`.
   wnonce="-"
+  wurg=$(printf '%s' "$GATE_ROUTE_ENV" | jq -r 'if .urgent == true then "1" else "" end' 2>/dev/null || printf '')
   if [ "$grp" != "-" ]; then
     rrc=0
     rec=$(route_lease_wait_put --table "$(run_pace_root)/leases" --now "$(now_epoch)" --run-id "$RUN_ID" \
             --lineage "$GATE_ROUTE_LINEAGE" --group "$grp" --inventory "$RUN_DIR/inventory.json" \
-            --holder "$sup" ${kind:+--kind "$kind"} 2>/dev/null) || rrc=$?
+            --holder "$sup" ${kind:+--kind "$kind"} ${wurg:+--urgent 1} 2>/dev/null) || rrc=$?
     if [ "$rrc" = "0" ]; then
       wnonce=$(printf '%s' "$rec" | jq -r '.nonce // "-"' 2>/dev/null || printf '%s' '-')
     else
