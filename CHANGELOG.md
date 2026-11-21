@@ -5,6 +5,27 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.55.0] - 2026-11-21
+
+런마다 60초 간격으로 전체 패스를 돌던 `watch.sh` 를 공용 관측 데몬에 맡긴다. 기동 줄은 그대로이고, 런의 고정 사본에 관측 규약 표지가 있으면 루프로 뜬 `watch.sh` 가 `observer.py adopt --job watch` 로 자기 인자를 넘기고 끝난다. 그 뒤 데몬의 watch 작업 모듈이 그 런의 탐침이 바뀌었을 때, 한 바퀴가 공표한 다음 기한이 지났을 때, 마지막 호출에서 300초가 지났을 때만 고정 사본의 `watch.sh --once` 를 부른다. 정지 판정, 배너, `blocked` 관측은 그대로 고정 사본의 `watch.sh` 안에 있다.
+
+### Added
+
+- **watch 작업 모듈** — `orchestrator/observer_watch.py`. 탐침 변화, 첫 바퀴, 지난 기한, 300초 최대 간격, 10초를 넘는 바퀴 틈(기계 잠듦·데몬 정지)에 `watch.sh --once --started <채택 시각> --alive-at <직전 바퀴 시각> <등록된 인자>` 를 부른다. 호출이 데몬 시한을 넘기면 60초 동안 변화에만 부르고, 종료 코드 3 이면 작업을 내려놓는다. 호출 사이에도 바퀴마다 `watch.heartbeat` 의 mtime 과 `watch.mode` 의 epoch 를 새로 하며, 판정 낱말은 바꾸지 않는다.
+- **위임된 한 바퀴** — 환경에 `CC_OBSERVER_PID` 가 있는 `watch.sh --once` 는 `watch.pid`·`watch.stall` 에 자기 pid 대신 그 pid 와 지문을 쓰고, 한 바퀴 뒤 `watch.next` 에 다음 기한과 탐침 글롭을 원자적으로 공표한다. `done` 꼬리의 끝 처리(알림, rekick)를 루프 판과 같은 조건으로 하고, 런이 끝났으면 종료 코드 3 으로 끝난다.
+- **새 인자 `--started`·`--alive-at`** — 위임된 판에서 24시간 유휴 종료의 하한과 장애 넘김 시계의 직전 관측 시각으로 쓴다. 정수가 아니면 2 로 끝난다.
+- **시험** — `scripts/test-observer-watch.sh`. 모듈의 호출 규칙, pid 대체, `watch.next` 의 꼴, `done` 꼬리, 위임 분기의 갈래, 위임 중 소비자 판정, 실제 데몬 아래의 발화 시각과 한 바퀴 소요 시간을 단언한다.
+
+### Changed
+
+- **기한 공표의 확장** — 전체 패스가 대기 기록 낡음, 중계 침묵·깨움 열쇠, CI 대기, 이월·재개·리셋 시계, 장애 넘김 대기, 24시간 유휴 종료의 기한도 `watch_expiry_offer` 로 내놓는다. 판정은 바뀌지 않고, 루프 판에서는 조용한 런의 전체 패스가 그 기한에 맞춰 더 일찍 돌 수 있을 뿐이다.
+- **좌석 문서** — `act2-seat.md` 의 감시기 설명에 위임과 되돌림 조건을 더했다.
+
+### Post-install notes
+
+- 런은 시작 때 고정한 자기 플러그인 사본을 돌린다. 이 판 전에 시작한 런은 끝날 때까지 지금의 60초 루프로 돈다.
+- `CC_CMDS_OBSERVER=off`, `CI`, python3 없음, 표지 없음, 10초 안에 채택되지 않음 가운데 하나면 지금의 루프로 돈다.
+
 ## [3.54.0] - 2026-11-21
 
 무인 런의 시각 발행 고정 계정을 임대 표 곁의 기록 `visual-pins/<런>.pin` 에 남긴다. cc-lane 의 차용 기증자 선택이 이 기록을 읽어 고정 계정의 그룹을 순위 맨 뒤로 민다. 지금까지는 cc 가 고정 계정을 기증자로 빌려 그 그룹에 대화형 예약 행이 생기면, 라우터가 시각 발행을 `pinned-lane-ineligible` 로 PARK 해도 cc-lane 은 그 사실을 알 길이 없어 기증자를 바꾸지 않았다.
