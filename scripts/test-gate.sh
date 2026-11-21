@@ -33450,7 +33450,9 @@ qb_x Z9 touch qb-pa3
 check "15q: 그 기록에 재시도 답이 달린 뒤 그 앵커의 행위는 통과한다" "$rc|$(qb_did "$SA_WT/qb-pa3")" "0|수행"
 
 # (하1) 대조 잠금을 잡지 못한 들머리와 행위 뒤 ------------------------------------------------
-mkdir -p "$QG/main.lock" && printf '1 %s\n' "$(date -u +%s)" > "$QG/main.lock/owner"
+# 잠금 시각은 한 시간 뒤로 적는다. 게이트는 60 초 이상 된 잠금을 걷어 내므로, 지금 시각으로
+# 적으면 부하가 큰 호스트에서 들머리가 잠금을 읽기 전에 60 초가 지나 행위가 그대로 수행된다.
+mkdir -p "$QG/main.lock" && printf '1 %s\n' "$(( $(date -u +%s) + 3600 ))" > "$QG/main.lock/owner"
 qb_x Q2 touch qb-h1
 QB_RT=$(qb_tl)
 check "15q: 대조 잠금을 잡지 못한 들머리는 수행 없이 11 이고 대상 키 기록과 대상 걸쇠를 남긴다" \
