@@ -56,14 +56,27 @@ Requests, calls and chains. Only the lead's records count — a record without a
 Dependency (mechanical). Every call of the second and later requests of a
 chain is judged; the first request's calls are not.
 
-  tokens           `Read`: `file_path` (path) and an integer `offset` above 1
-                   (line number). `Grep`: `pattern` and `glob` (string) and
-                   `path` (path). `Glob`: `pattern` (string) and `path` (path).
-                   A gate `exec` read: the words after the first `--` except
-                   the first of them and those starting with `-` — a word
-                   holding `/` is a path, any other a string. A gate
-                   `snapshot` has none. A token shorter than 3 characters is
-                   dropped.
+  tokens           `Read`: `file_path` (path) and, when the integer `offset` is
+                   above 1, a line range carrying that `file_path` — `offset`
+                   to `offset + limit - 1` when `limit` is a positive integer,
+                   else the one line `offset`. `Grep`: `pattern` and `glob`
+                   (string) and `path` (path). `Glob`: `pattern` (string) and
+                   `path` (path). A gate `exec` read: the words after the
+                   first `--` except the first of them and those starting with
+                   `-` — a word holding `/` is a path, any other a string;
+                   when the last path element of that first word is `git` or
+                   `gh`, up to two words right after it made of ASCII
+                   lowercase letters only are its subcommand (`worktree list`,
+                   `pr view`) and are not tokens, the first other word ending
+                   the subcommand. A gate `snapshot` has none. A string or
+                   path token shorter than 3 characters is dropped; a line
+                   range has no such floor.
+  sub-token        a string token is also split at `|`, whitespace and the
+                   characters ( ) [ ] { } ^ $ * + ? \\ ' " = < > & ! ; , : —
+                   each piece of 3 or more characters that is not made of
+                   ASCII lowercase letters only is a string token of its own
+                   (`HEAD` and `Step` of `리뷰 HEAD|### Step 5`, `15728` of
+                   `NR == 15728`). Path tokens are not split.
   source text      the text of the lead's user records — string content,
                    `text` blocks and `tool_result` content (a string or its
                    `text` blocks) — in record order. Assistant text and
@@ -71,9 +84,19 @@ chain is judged; the first request's calls are not.
   match            a string token matches as a substring. A path token matches
                    when the token itself, or — when it has two or more path
                    elements — its last two elements joined with `/`, appears
-                   as a substring. A line number token `n` matches the regular
-                   expression `(^|[^0-9])n[:-]` (multiline), the shape of
-                   `grep -n` and `grep -A` output.
+                   as a substring. A line range matches when a line number
+                   marker `m` inside the range is attached to the range's
+                   file. A marker is a place matching `(^|[^0-9])m[:-]`
+                   (multiline; `grep -n` and `grep -A` output) or a line head
+                   `^[ \\t]*m(\\t|→)` (`Read` output). It is attached when the
+                   file's path token matches on the marker's own line, or when
+                   the marker is in the result of a call holding a path token
+                   for the same file (the same path, or two paths of two or
+                   more elements each whose last two elements are equal).
+                   Source text before the chain is read the same way piece by
+                   piece: a `tool_result` piece by both ways, with the call its
+                   `tool_use_id` names; any other user text by the same-line
+                   way only.
   rule             the call `c` of the chain's request `i` (i >= 2) depends on
                    the earlier request `j` of the same chain when a token of
                    `c` matches the result of a call of `j` and matches no
@@ -130,8 +153,9 @@ request order, call order), or all of them when there are fewer than N.
 
   sample           `id` (`<run name>/<stage>#<attempt>/<tool_use id>`), the kind, the
                    position in the chain, the call's tool and input, the
-                   mechanical verdict and its evidence (each matched token and
-                   the chain request whose result held it), for up to four
+                   mechanical verdict and its evidence (each matched token —
+                   a line range as `<first>-<last>` with its file — and the
+                   chain request whose result held it), for up to four
                    nearest earlier requests of the chain every call's input
                    and the first 800 characters of its result, and for every
                    token the 120 characters around its first match in the
@@ -173,6 +197,11 @@ ROW_PREFIX = "- `stage-result`"
 LOG_RE = re.compile(r"^(.+)#(\d+)\.json$")
 TS_RE = re.compile(r"^(\d{4})-(\d\d)-(\d\d)T(\d\d):(\d\d):(\d\d)(\.\d+)?(Z|[+-]\d\d:\d\d)?$")
 MIN_TOKEN = 3
+SPLIT_RE = re.compile(r"[|\s()\[\]{}^$*+?\\'\"=<>&!;,:]+")
+LOWER_RE = re.compile(r"^[a-z]+$")
+MARK_RE = re.compile(r"(?<![0-9])([0-9]+)[:-]")
+HEAD_RE = re.compile(r"^[ \t]*([0-9]+)(?:\t|→)", re.M)
+SUBCOMMAND_TOOLS = {"git", "gh"}
 CHAIN_MIN = 3
 NEAREST = 4
 HEAD = 800
@@ -346,59 +375,135 @@ def classify(name, inp):
     return "other"
 
 
+def int_arg(v):
+    if isinstance(v, str) and v.isdigit():
+        v = int(v)
+    return v if isinstance(v, int) and not isinstance(v, bool) else None
+
+
 def call_tokens(call):
-    """[(type, value)] of a call, `type` one of str / path / line."""
+    """[token] of a call: (`str` | `path`, value), or (`range`, "<first>-<last>",
+    file path, first, last) for a `Read` line range."""
+    if "tokens" in call:
+        return call["tokens"]
     inp, out = call["input"], []
 
     def add(t, v):
         if isinstance(v, str) and len(v) >= MIN_TOKEN and (t, v) not in out:
             out.append((t, v))
 
+    def add_str(v):
+        add("str", v)
+        if isinstance(v, str):
+            for piece in SPLIT_RE.split(v):
+                if len(piece) >= MIN_TOKEN and not LOWER_RE.match(piece):
+                    add("str", piece)
+
     name, cls = call["name"], call["cls"]
     if name == "Read":
-        add("path", inp.get("file_path"))
-        off = inp.get("offset")
-        if isinstance(off, str) and off.isdigit():
-            off = int(off)
-        if isinstance(off, int) and not isinstance(off, bool) and off > 1:
-            add("line", str(off))
+        path = inp.get("file_path")
+        add("path", path)
+        off, lim = int_arg(inp.get("offset")), int_arg(inp.get("limit"))
+        if isinstance(path, str) and off is not None and off > 1:
+            last = off + lim - 1 if lim is not None and lim > 0 else off
+            tok = ("range", "%d-%d" % (off, last), path, off, last)
+            if tok not in out:
+                out.append(tok)
     elif name == "Grep":
-        add("str", inp.get("pattern"))
-        add("str", inp.get("glob"))
+        add_str(inp.get("pattern"))
+        add_str(inp.get("glob"))
         add("path", inp.get("path"))
     elif name == "Glob":
-        add("str", inp.get("pattern"))
+        add_str(inp.get("pattern"))
         add("path", inp.get("path"))
     elif cls == "exec_read":
         argv = gate_argv(inp.get("command")) or []
         rest = argv[argv.index("--") + 1:] if "--" in argv else []
-        for w in rest[1:]:
+        skip = 0
+        if rest and rest[0].split("/")[-1] in SUBCOMMAND_TOOLS:
+            for w in rest[1:3]:
+                if not LOWER_RE.match(w):
+                    break
+                skip += 1
+        for w in rest[1 + skip:]:
             if not w.startswith("-"):
-                add("path" if "/" in w else "str", w)
+                if "/" in w:
+                    add("path", w)
+                else:
+                    add_str(w)
+    call["tokens"] = out
     return out
 
 
+def call_paths(call):
+    return [tok[1] for tok in call_tokens(call) if tok[0] == "path"]
+
+
+def elements(path):
+    return [e for e in path.split("/") if e]
+
+
+def same_file(a, b):
+    if a == b:
+        return True
+    ea, eb = elements(a), elements(b)
+    return len(ea) >= 2 and len(eb) >= 2 and ea[-2:] == eb[-2:]
+
+
 def find(tok, text, end=None):
-    """Index of the token's first match in text[:end], or -1."""
-    t, v = tok
+    """Index of a string or path token's first match in text[:end], or -1."""
+    t, v = tok[0], tok[1]
     if end is None:
         end = len(text)
-    if t == "line":
-        m = re.compile(r"(^|[^0-9])" + re.escape(v) + r"[:-]", re.M).search(text, 0, end)
-        return m.start() + len(m.group(1)) if m else -1
     hits = [text.find(v, 0, end)]
     if t == "path":
-        elems = [e for e in v.split("/") if e]
+        elems = elements(v)
         if len(elems) >= 2:
             hits.append(text.find("/".join(elems[-2:]), 0, end))
     hits = [h for h in hits if h >= 0]
     return min(hits) if hits else -1
 
 
-def excerpt(tok, text, end=None):
-    p = find(tok, text, end)
-    if p < 0:
+def find_range(tok, text, paths):
+    """Index of the first line number marker inside the range that is attached
+    to the range's file, or -1. `paths` are the path tokens of the call whose
+    result `text` is, or None when `text` is no call's result."""
+    path, first, last = tok[2], tok[3], tok[4]
+    whole = paths is not None and any(same_file(path, p) for p in paths)
+    if not whole and find(("path", path), text) < 0:
+        return -1
+    best = -1
+    for rx in (MARK_RE, HEAD_RE):
+        for m in rx.finditer(text):
+            if best >= 0 and m.start(1) >= best:
+                break
+            if not first <= int(m.group(1)) <= last:
+                continue
+            p = m.start(1)
+            if not whole:
+                ls = text.rfind("\n", 0, p) + 1
+                le = text.find("\n", p)
+                if find(("path", path), text[ls:le if le >= 0 else len(text)]) < 0:
+                    continue
+            best = p
+            break
+    return best
+
+
+def find_in(tok, pieces):
+    """(text, index) of the token's first match over [(text, paths)], or None."""
+    for text, paths in pieces:
+        p = find_range(tok, text, paths) if tok[0] == "range" else find(tok, text)
+        if p >= 0:
+            return text, p
+    return None
+
+
+def around(tok, hit):
+    """The characters around a (text, index) match, or None for no match."""
+    if hit is None:
         return None
+    text, p = hit
     return text[max(0, p - AROUND):p + len(tok[1]) + AROUND]
 
 
@@ -407,7 +512,7 @@ def parse_log(path):
     sid = None
     reqs = OrderedDict()   # message id -> request
     results = {}           # tool_use id -> (text, timestamp)
-    parts, src_ords, src_ends, size = [], [], [], 0
+    parts, pieces, src_ords, src_ends, size = [], [], [], [], 0
     with open(path, encoding="utf-8", errors="replace") as f:
         for n, line in enumerate(f):
             try:
@@ -439,25 +544,47 @@ def parse_log(path):
                 cont = msg.get("content")
                 texts = []
                 if isinstance(cont, str):
-                    texts.append(cont)
+                    texts.append((cont, None))
                 for b in cont if isinstance(cont, list) else []:
                     if not isinstance(b, dict):
                         continue
                     if b.get("type") == "text":
-                        texts.append(b.get("text") or "")
+                        texts.append((b.get("text") or "", None))
                     elif b.get("type") == "tool_result":
                         t = result_text(b.get("content"))
-                        texts.append(t)
+                        texts.append((t, b.get("tool_use_id") or ""))
                         if b.get("tool_use_id") not in results:
                             results[b.get("tool_use_id")] = (t, ts)
-                for t in texts:
+                for t, tuid in texts:
                     parts.append(t)
+                    pieces.append((t, tuid))
                     size += len(t) + 1
                     src_ords.append(n)
                     src_ends.append(size)
-    return {"sid": sid, "reqs": list(reqs.values()), "results": results,
-            "src": "\n".join(parts) + ("\n" if parts else ""), "src_ords": src_ords,
-            "src_ends": src_ends}
+    reqs = list(reqs.values())
+    calls = dict((c["id"], c) for r in reqs for c in r["calls"] if c["id"])
+    return {"sid": sid, "reqs": reqs, "results": results, "calls": calls,
+            "src": "\n".join(parts) + ("\n" if parts else ""), "src_pieces": pieces,
+            "src_ords": src_ords, "src_ends": src_ends}
+
+
+def source_hit(tok, log, k, end):
+    """(text, index) of the token's first match in the source text before the
+    chain — the first `k` pieces, `end` characters of the joined text — or None."""
+    if tok[0] != "range":
+        p = find(tok, log["src"], end)
+        return (log["src"], p) if p >= 0 else None
+    for n in range(k):
+        text, tuid = log["src_pieces"][n]
+        if tuid is None:
+            paths = None
+        else:
+            call = log["calls"].get(tuid)
+            paths = call_paths(call) if call is not None else []
+        p = find_range(tok, text, paths)
+        if p >= 0:
+            return text, p
+    return None
 
 
 def read_only(req):
@@ -479,25 +606,34 @@ def chains_of(log):
     for start, length in spans:
         k = bisect.bisect_left(log["src_ords"], reqs[start]["ord"])
         end = log["src_ends"][k - 1] if k else 0
-        rtext = [None] + ["\n".join(results[c["id"]][0] for c in reqs[start + p]["calls"]
-                                    if c["id"] in results) for p in range(length)]
+        rcalls = [None] + [[(results[c["id"]][0], call_paths(c)) for c in reqs[start + p]["calls"]
+                            if c["id"] in results] for p in range(length)]
         depth, judged = [None, 1], []
         for i in range(2, length + 1):
             deps_of_req = set()
             for ci, c in enumerate(reqs[start + i - 1]["calls"]):
                 toks, evidence = call_tokens(c), []
                 for tok in toks:
-                    hits = [j for j in range(1, i) if find(tok, rtext[j]) >= 0]
-                    if hits and find(tok, log["src"], end) < 0:
-                        evidence += [{"token": tok[1], "request": j} for j in hits]
+                    hits = [j for j in range(1, i) if find_in(tok, rcalls[j]) is not None]
+                    if hits and source_hit(tok, log, k, end) is None:
+                        evidence += [token_ref(tok, request=j) for j in hits]
                 deps_of_req.update(e["request"] for e in evidence)
                 judged.append({"req": start + i - 1, "call": ci, "request_in_chain": i,
                                "tokens": toks, "evidence": evidence,
                                "verdict": DEPENDENT if evidence else INDEPENDENT})
             depth.append(1 + max([depth[j] for j in deps_of_req] or [0]))
-        out.append({"start": start, "length": length, "judged": judged, "end": end,
-                    "rtext": rtext, "max_depth": max(depth[1:])})
+        out.append({"start": start, "length": length, "judged": judged, "k": k, "end": end,
+                    "rcalls": rcalls, "max_depth": max(depth[1:])})
     return out
+
+
+def token_ref(tok, **more):
+    """A token as JSON: its value, and the file of a line range."""
+    ref = OrderedDict([("token", tok[1])])
+    if tok[0] == "range":
+        ref["file"] = tok[2]
+    ref.update(more)
+    return ref
 
 
 def empty():
@@ -653,7 +789,8 @@ def render_samples(doc):
         if not s["tokens"]:
             lines.append("- 토큰: %s" % NONE)
         for t in s["tokens"]:
-            lines.append("- 토큰 %s %s:" % (t["type"], j1(t["token"])))
+            lines.append("- 토큰 %s %s%s:" % (t["type"], j1(t["token"]),
+                                            " 파일 %s" % j1(t["file"]) if "file" in t else ""))
             lines.append("  - 연쇄 앞 원천 글: %s" % (t["before_chain"] if t["before_chain"] == NONE
                                                  else j1(t["before_chain"])))
             lines.append("  - 연쇄 결과: %s" % (t["chain_results"] if t["chain_results"] == NONE
@@ -686,15 +823,17 @@ def build_samples(population, n, seed):
                     for c in reqs[ch["start"] + pj - 1]["calls"]]})
             toks = []
             for tok in j["tokens"]:
-                before = excerpt(tok, log["src"], ch["end"])
+                before = around(tok, source_hit(tok, log, ch["k"], ch["end"]))
                 found = None
                 for pj in range(1, i):
-                    found = excerpt(tok, ch["rtext"][pj])
+                    found = around(tok, find_in(tok, ch["rcalls"][pj]))
                     if found is not None:
                         break
-                toks.append({"type": tok[0], "token": tok[1],
-                             "before_chain": NONE if before is None else before,
-                             "chain_results": NONE if found is None else found})
+                ref = token_ref(tok, before_chain=NONE if before is None else before,
+                                chain_results=NONE if found is None else found)
+                ref["type"] = tok[0]
+                ref.move_to_end("type", last=False)
+                toks.append(ref)
             out.append(OrderedDict([
                 ("id", "%s/%s/%s" % (run, logname[:-len(".json")], call["id"])), ("kind", kind),
                 ("position", OrderedDict([("chain_first_request", ch["start"] + 1),

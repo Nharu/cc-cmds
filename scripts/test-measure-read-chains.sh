@@ -52,11 +52,21 @@ def snapshot():
     return ("Bash", {"command": GATE + " snapshot --manifest \"$CC_PIPELINE_MANIFEST\" --fields H"})
 
 
-def read(path, offset=None):
+def read(path, offset=None, limit=None):
     inp = {"file_path": path}
     if offset is not None:
         inp["offset"] = offset
+    if limit is not None:
+        inp["limit"] = limit
     return ("Read", inp)
+
+
+def grep(pattern):
+    return ("Grep", {"pattern": pattern})
+
+
+def edit():
+    return ("Edit", {"file_path": "/w/x.py", "old_string": "a", "new_string": "b"})
 
 
 class S(object):
@@ -108,8 +118,8 @@ class S(object):
                 f.write(json.dumps(o, ensure_ascii=False) + "\n")
 
 
-def run(name, started, ledger_rows, logs, plugin=None, ledger=True):
-    d = os.path.join(root, name)
+def run(name, started, ledger_rows, logs, plugin=None, ledger=True, under=None):
+    d = os.path.join(under or root, name)
     os.makedirs(os.path.join(d, "log"))
     if started:
         epoch = int(datetime.datetime(*started, tzinfo=datetime.timezone.utc).timestamp())
@@ -137,7 +147,9 @@ os.makedirs(root)
 # Implement log IM#1: 13 lead requests (m1..m13); m3 carries two calls and m9
 # none, so 11 single-call requests and 10 read-only ones.
 im = S(sid(1))
-im.user("작업: /w/docs/design.md 를 읽는다", at=0)
+# The first user text names /w/zz/q.txt, so m8's path token is known before C2
+# and only its line range can make it dependent.
+im.user("작업: /w/docs/design.md 를 읽는다 (참고 /w/zz/q.txt)", at=0)
 # Chain C1 (m1..m3), broken by the Edit of m4.
 t = im.req("m1", [exec_("git grep -n foo")], text="찾는다", at=0, cache=1000)
 im.result(t[0], "/w/scripts/a.py:10:foo\n/w/docs/design.md:3:foo\n", at=3600)        # exec wait 1.0h
@@ -156,10 +168,12 @@ im.result(t[0], "ok", at=7200)
 t = im.req("m5", [exec_("grep -n bar lib")], at=7200, cache=1000)
 im.result(t[0], "lib/c.py:5:bar\n")                                                   # no timestamp: untimed
 t = im.req("m6", [read("/w/lib/c.py")], at=7200, cache=1000)                          # last two path elements
-im.result(t[0], "     1\timport util\n     2\t# see util/d.py:286: helper\n", at=7560)
+im.result(t[0], "     1\timport util\n     2\t# see zz/q.txt:286: helper\n", at=7560)
 t = im.req("m7", [snapshot()], at=7560, cache=1000)                                   # snapshot keeps the chain
 im.result(t[0], "{\"H\":\"hh\"}", at=7920)
-t = im.req("m8", [read("/w/zz/q.txt", offset=286)], at=7920, cache=1000)              # line number token
+# m8: offset without limit is the one-line range 286-286; m6's result carries
+# `zz/q.txt:286:` on one line, a marker attached to that file → dependent on m6.
+t = im.req("m8", [read("/w/zz/q.txt", offset=286)], at=7920, cache=1000)
 im.result(t[0], "   286\tq\n", at=8280)
 im.req("m9", text="생각만 한 요청", at=8280)                                            # no call: breaks
 t = im.req("m10", [read("/w/x1.txt")], at=8280)                                       # a run of two: no chain
@@ -202,6 +216,65 @@ run("20991201-dddddddd", (2099, 12, 1), [("review", "RV", "1", sid(4))], [("RV#1
 run("20991103-cccccccc", (2099, 11, 3), [], [("IM#1.json", S(sid(6)))], ledger=False)
 # A plain file under the root is not a run and is not counted.
 open(os.path.join(root, "README"), "w").write("x\n")
+
+# Second runs root `runs-tok`: one run, one implement log TK#1 holding four
+# chains for the line range, sub-token and subcommand rules. It sits under its
+# own root so the counts asserted on `runs` above stay as they are. Each chain
+# is broken from the next by an Edit request. Judged calls, counted by hand:
+# T1 4 (t2 three, t3 one), T2 2, T3 4 (v2 three, v3 one), T4 3 (w2 two, w3
+# one) = 13; independent ones: T1 2, T2 2, T3 2, T4 2 = 8.
+tok_root = os.path.join(base, "runs-tok")
+os.makedirs(tok_root)
+tk = S(sid(7))
+# Every Read path below is in this first user text, so no path token counts
+# and only the line ranges decide T1 and T2.
+tk.user("파일 /w/r/one.py 와 /w/r/two.py 와 /w/r/three.py 를 본다")
+# T1 — line ranges.
+t = tk.req("t1", [exec_("git grep -n alpha")])
+tk.result(t[0], "/w/r/one.py:286:alpha\n")
+t = tk.req("t2", [read("/w/r/one.py", offset=280, limit=20),      # 280-299 holds t1's `r/one.py:286:` on its line → dependent on t1
+                  read("/w/r/two.py", offset=280, limit=20),      # t1's marker 286 is attached to one.py, not two.py → independent
+                  read("/w/r/three.py")])                         # no offset: path token only, known before → independent
+tk.result(t[0], "   280\tq\n")
+tk.result(t[1], "   281\tq\n")
+tk.result(t[2], "   285\tx\n   286\ty\n")
+t = tk.req("t3", [read("/w/r/three.py", offset=286)])             # line head `   286\t` in t2's Read of the same file → dependent on t2
+tk.result(t[0], "   286\ty\n")
+t = tk.req("e1", [edit()])
+tk.result(t[0], "ok")
+# T2 — the marker in range is also in a result before the chain.
+t = tk.req("u1", [exec_("git grep -n beta")])
+tk.result(t[0], "/w/r/one.py:290:beta\n")
+t = tk.req("u2", [read("/w/r/one.py", offset=285, limit=10)])     # 285-294: u1's 290 matches, but t1's `r/one.py:286:` came before → independent
+tk.result(t[0], "   285\tq\n")
+t = tk.req("u3", [snapshot()])                                    # no token → independent
+tk.result(t[0], "{}")
+t = tk.req("e2", [edit()])
+tk.result(t[0], "ok")
+# T3 — sub-tokens.
+t = tk.req("v1", [exec_("cat /w/s/log.txt")])
+tk.result(t[0], "hit Bar9 here\n15728: row\nbaz\n")
+t = tk.req("v2", [grep("foo|Bar9|baz"),                            # piece Bar9 first in v1's result → dependent
+                  grep("qux|baz"),                                 # only the lowercase piece baz is in v1's result → independent
+                  exec_("awk 'NR == 15728' /w/s/data.txt")])       # piece 15728 first in v1's `15728:` → dependent
+tk.result(t[0], "x")
+tk.result(t[1], "x")
+tk.result(t[2], "x")
+t = tk.req("v3", [snapshot()])                                    # independent
+tk.result(t[0], "{}")
+t = tk.req("e3", [edit()])
+tk.result(t[0], "ok")
+# T4 — git and gh subcommands are not tokens.
+t = tk.req("w1", [exec_("git log --oneline -1")])
+tk.result(t[0], "worktree list status 1829\n")
+t = tk.req("w2", [exec_("git worktree list"),                      # worktree and list are the subcommand → no token → independent
+                  exec_("git status --short")])                    # status is the subcommand → independent
+tk.result(t[0], "x")
+tk.result(t[1], "x")
+t = tk.req("w3", [exec_("gh pr view 1829")])                       # 1829 first in w1's result → dependent
+tk.result(t[0], "x")
+run("20991105-eeeeeeee", (2099, 11, 5), [("implement", "TK", "1", sid(7))], [("TK#1.json", tk)],
+    plugin="3.50.1", under=tok_root)
 PY
 python3 -B "$tmp/gen.py" "$tmp"
 R="$tmp/runs"
@@ -250,18 +323,51 @@ check "경로가 연쇄 앞 user 글에 있음 → 독립" "$(v "$IM/tu_m3_1")" 
 check "exec 읽기의 경로 인자 → 의존" "$(v "$IM/tu_m3_2")" "의존"
 check "경로 끝 두 요소 맞춤 → 의존 (구성원 글은 원천이 아니다)" "$(v "$IM/tu_m6_1")" "의존"
 check "snapshot 은 토큰이 없어 독립" "$(v "$IM/tu_m7_1")" "독립"
-check "줄 번호 토큰 → 의존" "$(v "$IM/tu_m8_1")" "의존"
-check "줄 번호 의존의 근거는 연쇄 둘째 요청" \
-  "$(jq -r --arg id "$IM/tu_m8_1" '.samples[] | select(.id == $id) | .evidence | map("\(.token)@\(.request)") | join(",")' <<< "$out")" "286@2"
+check "한 줄 범위 토큰 → 의존" "$(v "$IM/tu_m8_1")" "의존"
+check "한 줄 범위 의존의 근거는 연쇄 둘째 요청 (경로는 연쇄 앞에 있어 근거가 아니다)" \
+  "$(jq -r --arg id "$IM/tu_m8_1" '.samples[] | select(.id == $id) | .evidence | map("\(.token)@\(.request)") | join(",")' <<< "$out")" "286-286@2"
 check "표본의 위치" \
   "$(jq -r --arg id "$IM/tu_m8_1" '.samples[] | select(.id == $id) | .position | "\(.chain_first_request),\(.chain_length),\(.request_in_chain),\(.call_in_request)"' <<< "$out")" "5,4,4,1"
 check "앞 요청은 가까운 넷까지 (넷째 요청은 앞 셋)" \
   "$(jq -r --arg id "$IM/tu_m8_1" '.samples[] | select(.id == $id) | .previous | map(.request_in_chain) | join(",")' <<< "$out")" "1,2,3"
 check "연쇄 앞 원천 글에 없는 토큰은 없음" \
-  "$(jq -r --arg id "$IM/tu_m8_1" '.samples[] | select(.id == $id) | .tokens[] | select(.type == "line") | .before_chain' <<< "$out")" "없음"
+  "$(jq -r --arg id "$IM/tu_m8_1" '.samples[] | select(.id == $id) | .tokens[] | select(.type == "range") | .before_chain' <<< "$out")" "없음"
+check "줄 범위 토큰은 그 Read 의 파일을 든다" \
+  "$(jq -r --arg id "$IM/tu_m8_1" '.samples[] | select(.id == $id) | .tokens[] | select(.type == "range") | "\(.token) \(.file)"' <<< "$out")" "286-286 /w/zz/q.txt"
 check "연쇄 앞 원천 글에 있던 토큰은 그 자리를 싣는다" \
   "$(jq -r --arg id "$IM/tu_m3_1" '.samples[] | select(.id == $id) | .tokens[0].before_chain | test("작업: /w/docs/design.md")' <<< "$out")" "true"
 all="$out"
+
+# ---- line ranges, sub-tokens, subcommands (runs-tok) --------------------------
+TK="20991105-eeeeeeee/TK#1"
+out=$(python3 -B "$measure" --runs-root "$tmp/runs-tok" --json --sample 50 --seed 1); rc=$?
+check "토큰 규칙 픽스처: rc 0" "$rc" "0"
+check "토큰 규칙 픽스처: 판정한 호출 열셋" "$(j .kinds.implement.judged_calls)" "13"
+check "토큰 규칙 픽스처: 묶을 수 있었던 호출 여덟" "$(j .kinds.implement.batchable_calls)" "8"
+check "같은 줄에 그 파일이 붙은 표지가 줄 범위 안 → 의존" "$(v "$TK/tu_t2_1")" "의존"
+check "줄 범위 의존의 근거" \
+  "$(jq -r --arg id "$TK/tu_t2_1" '.samples[] | select(.id == $id) | .evidence | map("\(.token)@\(.request) \(.file)") | join(",")' <<< "$out")" "280-299@1 /w/r/one.py"
+check "다른 파일에 붙은 표지 → 독립" "$(v "$TK/tu_t2_2")" "독립"
+check "같은 파일 Read 결과의 줄 머리 → 의존" "$(v "$TK/tu_t3_1")" "의존"
+check "범위 안 표지가 연쇄 앞의 같은 파일 결과에도 있음 → 독립" "$(v "$TK/tu_u2_1")" "독립"
+check "하위 토큰 Bar9 → 의존" "$(v "$TK/tu_v2_1")" "의존"
+check "소문자 조각만 앞 결과에 나옴 → 독립" "$(v "$TK/tu_v2_2")" "독립"
+check "awk 조건의 하위 토큰 15728 → 의존" "$(v "$TK/tu_v2_3")" "의존"
+check "git worktree list 는 앞 결과에 list 가 있어도 독립" "$(v "$TK/tu_w2_1")" "독립"
+check "git status --short 는 앞 결과에 status 가 있어도 독립" "$(v "$TK/tu_w2_2")" "독립"
+check "gh pr view 1829 의 1829 → 의존" "$(v "$TK/tu_w3_1")" "의존"
+check "하위 명령 낱말은 토큰이 아니다" \
+  "$(jq -r --arg id "$TK/tu_w3_1" '.samples[] | select(.id == $id) | [.tokens[].token] | join(",")' <<< "$out")" "1829"
+printf '%s\n' "$out" > "$tmp/tok.json"
+tlist=$(python3 -B "$measure" --render "$tmp/tok.json" --samples)
+case "$tlist" in
+  *'- 토큰 range "280-299" 파일 "/w/r/one.py":'*) pass "표본 목록이 줄 범위와 그 파일을 싣는다" ;;
+  *) fail "표본 목록이 줄 범위와 그 파일을 싣는다 — $tlist" ;;
+esac
+case "$tlist" in
+  *독립*|*의존*) fail "토큰 규칙 표본 목록에 기계 판정 문자열이 없다 — $tlist" ;;
+  *) pass "토큰 규칙 표본 목록에 기계 판정 문자열이 없다" ;;
+esac
 
 # ---- samples -----------------------------------------------------------------
 s1=$(python3 -B "$measure" --runs-root "$R" --since 2099-11-01 --until 2099-11-30 --json --sample 3 --seed 7 | jq -c '[.samples[].id]')
