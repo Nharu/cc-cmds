@@ -60314,7 +60314,14 @@ gate_visual_lane_commit() {
   # account could not be read or the write failed; the reason, naming the lane
   # and the cause, is on stdout, and the caller hands the lease back and parks
   # without launching.
-  local kind="${1:-}" env="${2:-}" rec facts from to why cfg email s dl dlane dacct dsrc
+  #
+  # A migration grant also moves the run's visual pin record (`route.sh
+  # visual-pin-put`) to the new lane, since the router's question wrote it for
+  # the lane it asked about. That write sends nothing to stdout and never
+  # changes the rc: a failure warns and the grant goes on, because the record
+  # only reorders cc-lane's donors. The inheritance branch writes none, its lane
+  # being the one the question already wrote.
+  local kind="${1:-}" env="${2:-}" rec facts from to why cfg email s dl dlane dacct dsrc prc=0
   [ "$kind" = "visual-publish" ] || return 0
   [ -n "${RUN_DIR:-}" ] && [ -d "$RUN_DIR" ] || return 0
   rec="$RUN_DIR/visual-lane"
@@ -60348,6 +60355,11 @@ EOF
       return 1
     fi
     log "시각 발행 이관 기록 — $rec: ${from:--} → $to (${why:--}, 이관 $s)"
+    if [ -n "${RUN_ID:-}" ]; then
+      route_visual_pin_put --table "$(run_pace_root)/leases" --run-id "$RUN_ID" --account "$to" \
+        --run-dir "$RUN_DIR" --pinned-at "$(date -u +%s)" >&2 || prc=$?
+      [ "$prc" = "0" ] || warn "the visual pin record was not moved to lane $to (rc=$prc) — the grant goes on all the same"
+    fi
     return 0
   fi
   [ ! -e "$rec" ] || return 0
