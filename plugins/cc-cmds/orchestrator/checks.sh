@@ -165,6 +165,23 @@ case "$checks_hop_rc" in
   3) printf 'checks: plugin-pin 이 이 런의 사본이 아닌 곳을 가리킵니다: %s/plugin-pin — 설치본 코드로 계속합니다\n' "$RUN_DIR" >&2 ;;
 esac
 
+# THE HAND-OVER TO THE OBSERVER, after the hop and ahead of the pid record. Only
+# the loop is handed over: a `--once` or `--spec` call is the observer's own, or
+# a person's single look. A copy without the `observer-protocol` mark, a run the
+# module gave back (`checks.fallback`), the off switch, CI and a host without
+# python3 all keep the loop here. `adopt` checks the run directory and the mark
+# before it starts the observer, so a run outside the run root never starts one;
+# any answer but 0 is the observer declining, and the loop below runs as before.
+if [ "$ONCE" != 1 ] && [ "$SPEC" != 1 ] \
+   && [ -f "$CHECKS_DIR/observer-protocol" ] && [ ! -e "$RUN_DIR/checks.fallback" ] \
+   && [ "${CC_CMDS_OBSERVER:-}" != off ] && [ -z "${CI:-}" ] \
+   && command -v python3 >/dev/null 2>&1; then
+  if python3 "$CHECKS_DIR/observer.py" adopt --run-dir "$RUN_DIR" --job checks -- ${CHECKS_ARGV[@]+"${CHECKS_ARGV[@]}"}; then
+    printf 'checks: 이 런의 폴링을 관측기(observer.py)가 맡았습니다 — %s\n' "$RUN_DIR" >&2
+    exit 0
+  fi
+fi
+
 OBSERVED="$RUN_DIR/checks.observed"
 PIDF="$RUN_DIR/checks.pid"
 # The stderr capture of the two `gh pr checks` calls: one file for the life of

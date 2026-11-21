@@ -402,5 +402,161 @@ fi
 check "R1 p4: 질의가 깨진 바퀴에는 판정 호출이 없다" \
   "$( { grep -c '^call --once' "$WORK/r1b.p4.out" || true; } | tr -d ' ')" 0
 
+# ===========================================================================
+# F. The fence: the module's only child is `gh api graphql` with a query that
+# starts with `query` and carries no `mutation`, even when a branch name does;
+# the module names no notifier; no notifier is ever reached.
+# ===========================================================================
+R_F=$(make_run 20261101-000000f1)
+( cd "$WORK/wt2" && git checkout -q -b seg/mutation-fix ) >/dev/null 2>&1
+printf -- '- `segment` | 교대=0 | id=S6 | 상태=실행중 | 워크트리=%s | prev=bbbb\n' "$WORK/wt2" >> "$(ledger_of "$R_F")"
+printf 'p1\n' > "$FX/phase"
+: > "$GH_LOG"
+python3 "$WORK/drive.py" "$R_F/plugin/cc-cmds/orchestrator" "$R_F" "$(ledger_of "$R_F")" \
+  "$(manifest_of "$R_F")" > "$WORK/f.out" 2>&1
+check "F 모듈의 gh 호출은 모두 읽기 전용 graphql 질의다" \
+  "$( { grep -vc '^api graphql -f query clean$' "$GH_LOG" || true; } | tr -d ' ')" 0
+if grep -q '^api graphql ' "$GH_LOG"; then ok "F 모듈이 실제로 질의했다"; else bad "F 질의 기록" "$(cat "$GH_LOG")"; fi
+check "F 모듈 파일에 알림 경로 이름이 없다" \
+  "$( { grep -cE 'notify-run\.sh|terminal-notifier|osascript' "$ORCH/observer_checks.py" || true; } | tr -d ' ')" 0
+( cd "$WORK/wt2" && git checkout -q seg/pass ) >/dev/null 2>&1
+
+# ===========================================================================
+# S. `--spec` prints one `<slug>\t<segment>\t<branch>` line per segment asked
+# about and touches neither the pid record nor the observed file.
+# ===========================================================================
+R_S=$(make_run 20261101-000000b1)
+spec_out=$(bash "$R_S/plugin/cc-cmds/orchestrator/checks.sh" --spec --run-dir "$R_S" \
+  --ledger "$(ledger_of "$R_S")" --manifest "$(manifest_of "$R_S")" 2>/dev/null)
+spec_want=$(printf 'Nharu/fx\tS%s\t%s\n' 1 seg/run 2 seg/pass 3 seg/fail 4 seg/none 5 seg/nopr)
+check "S --spec 출력이 세그먼트마다 슬러그·세그먼트·브랜치 한 줄이다" "$spec_out" "$spec_want"
+if [ ! -e "$R_S/checks.pid" ] && [ ! -e "$R_S/checks.observed" ]; then
+  ok "S --spec 는 pid·관측 파일을 건드리지 않는다"
+else
+  bad "S --spec 의 파일" "$(ls "$R_S")"
+fi
+
+# ===========================================================================
+# P. A `--once` pass handed `CC_OBSERVER_PID` writes that pid and leaves it.
+# ===========================================================================
+R_P=$(make_run 20261101-000000c1)
+CC_OBSERVER_PID=424242 bash "$R_P/plugin/cc-cmds/orchestrator/checks.sh" --run-dir "$R_P" \
+  --ledger "$(ledger_of "$R_P")" --manifest "$(manifest_of "$R_P")" --once >/dev/null 2>&1
+check "P CC_OBSERVER_PID 의 --once 는 그 pid 를 남긴다" "$(tr -d '[:space:]' < "$R_P/checks.pid" 2>/dev/null)" 424242
+R_P2=$(make_run 20261101-000000c2)
+bash "$R_P2/plugin/cc-cmds/orchestrator/checks.sh" --run-dir "$R_P2" \
+  --ledger "$(ledger_of "$R_P2")" --manifest "$(manifest_of "$R_P2")" --once >/dev/null 2>&1
+if [ ! -e "$R_P2/checks.pid" ]; then ok "P 넘겨받은 pid 가 없는 --once 는 끝날 때 pid 를 지운다"; else bad "P pid 정리" "$(cat "$R_P2/checks.pid")"; fi
+
+# ===========================================================================
+# D. Delegation end to end: the unchanged kickoff line on a marked pinned copy
+# ends 0, `checks.pid` names the observer, the observed lines are the ones the
+# gh pass wrote for the same state, and `done` lets the job go and removes the
+# pid record.
+# ===========================================================================
+pid_is() { [ "$(tr -d '[:space:]' 2>/dev/null < "$1")" = "$2" ]; } 2>/dev/null
+pid_runs() { # pid_runs <pid file> <ERE> — the pid in the file is alive and runs that
+  local p; p=$( { tr -d '[:space:]' < "$1"; } 2>/dev/null)
+  case "$p" in ''|*[!0-9]*) return 1 ;; esac
+  alive "$p" && ps -p "$p" -o command= 2>/dev/null | grep -qE "$2"
+}
+observed_lines() { [ -s "$1/checks.observed" ] && [ "$(grep -c '' < "$1/checks.observed" | tr -d ' ')" -ge "$2" ]; }
+
+R_D=$(make_run 20261101-000000d1)
+printf 'p1\n' > "$FX/phase"
+: > "$GH_LOG"
+bash "$R_D/plugin/cc-cmds/orchestrator/checks.sh" --run-dir "$R_D" --ledger "$(ledger_of "$R_D")" \
+  --manifest "$(manifest_of "$R_D")" --interval 1 > "$R_D/checks.log" 2>&1 < /dev/null
+check "D 기동 줄이 관측기에 넘기고 0 으로 끝난다" "$?" 0
+OP=$(opid)
+if [ -n "$OP" ] && alive "$OP"; then ok "D 관측기가 떠 있다"; else bad "D 관측기" "$(cat "$R_D/checks.log")"; fi
+if pid_is "$R_D/checks.pid" "$OP"; then ok "D checks.pid 가 관측기 pid 다"; else bad "D checks.pid" "$(cat "$R_D/checks.pid" 2>/dev/null) vs $OP"; fi
+if wait_for 30 observed_lines "$R_D" 4; then
+  cut -f2- "$R_D/checks.observed" > "$WORK/d.lines"
+  if diff "$WORK/r1a.p1.lines" "$WORK/d.lines" > "$WORK/d.diff"; then
+    ok "D 위임된 관측 줄이 gh 판의 같은 상태 줄과 같다"
+  else
+    bad "D 관측 줄 대조" "$(tr '\n' '|' < "$WORK/d.diff")"
+  fi
+else
+  bad "D 관측 줄" "$(cat "$R_D/checks.log") / $(tail -n 5 "$S/cc-cmds/observer/observer.log" 2>/dev/null)"
+fi
+check "D 관측기가 연 gh 호출은 graphql 질의뿐이다" \
+  "$( { grep -vc '^api graphql -f query clean$' "$GH_LOG" || true; } | tr -d ' ')" 0
+: > "$R_D/done"
+if wait_for 30 test ! -e "$R_D/checks.pid"; then ok "D done 뒤 작업이 내려지고 checks.pid 가 지워진다"; else bad "D done 뒤" "$(cat "$R_D/checks.pid")"; fi
+if [ ! -e "$R_D/checks.fallback" ]; then ok "D 정상 경로는 되돌림 표지를 남기지 않는다"; else bad "D fallback" "$(cat "$R_D/checks.fallback")"; fi
+
+# ===========================================================================
+# U. A pinned copy without the mark runs its own loop: `checks.pid` names the
+# process running `checks.sh`, not the observer.
+# ===========================================================================
+R_U=$(make_run 20261101-000000e1)
+rm -f "$R_U/plugin/cc-cmds/orchestrator/observer-protocol"
+bash "$R_U/plugin/cc-cmds/orchestrator/checks.sh" --run-dir "$R_U" --ledger "$(ledger_of "$R_U")" \
+  --manifest "$(manifest_of "$R_U")" --interval 1 > "$R_U/checks.log" 2>&1 < /dev/null &
+U_PID=$!; STRAYS="$STRAYS $U_PID"
+if wait_for 20 pid_is "$R_U/checks.pid" "$U_PID"; then
+  ok "U 표지 없는 사본은 자기 루프를 돌고 checks.pid 가 그 pid 다"
+else
+  bad "U checks.pid" "$(cat "$R_U/checks.pid" 2>/dev/null) vs $U_PID"
+fi
+: > "$R_U/done"
+if wait_for 20 eval '! alive "$U_PID"'; then ok "U 자기 루프는 done 으로 끝난다"; else bad "U 루프 종료" "$U_PID"; fi
+
+# ===========================================================================
+# B. A state the batch cannot cover (more contexts than one page) hands the run
+# back: `checks.fallback` appears, the job is dropped, and `checks.pid` names a
+# process running the run's own `checks.sh`.
+# ===========================================================================
+copy_old p1 pf
+cat > "$FX/gql/pf.json" <<EOF
+{"branches": {
+  "seg/run":  {"number": 11, "sha": "$SHA_A", "contexts": $gql_p1_run, "more": true},
+  "seg/pass": {"number": 12, "sha": "$SHA_B", "contexts": $gql_pass},
+  "seg/fail": {"number": 13, "sha": "$SHA_C", "contexts": $gql_fail},
+  "seg/none": {"number": 14, "sha": "$SHA_D", "contexts": []}
+}}
+EOF
+printf 'pf\n' > "$FX/phase"
+R_B=$(make_run 20261101-000000f2)
+bash "$R_B/plugin/cc-cmds/orchestrator/checks.sh" --run-dir "$R_B" --ledger "$(ledger_of "$R_B")" \
+  --manifest "$(manifest_of "$R_B")" --interval 1 > "$R_B/checks.log" 2>&1 < /dev/null
+check "B 기동 줄은 위임하고 0 으로 끝난다" "$?" 0
+if wait_for 30 test -e "$R_B/checks.fallback"; then ok "B 덮지 못하는 상태에서 checks.fallback 이 생긴다"; else bad "B fallback" "$(tail -n 5 "$S/cc-cmds/observer/observer.log" 2>/dev/null)"; fi
+if wait_for 30 pid_runs "$R_B/checks.pid" '(^|/)checks\.sh( |$)'; then
+  ok "B 되돌린 런은 checks.sh 가 자기 루프를 돈다"
+  STRAYS="$STRAYS $(tr -d '[:space:]' < "$R_B/checks.pid")"
+else
+  bad "B checks.pid" "$(cat "$R_B/checks.pid" 2>/dev/null)"
+fi
+: > "$R_B/done"
+
+# ===========================================================================
+# L. The fleet's liveness reads a pid running `observer.py serve` as the live
+# poller and watcher, and an unrelated process still as dead.
+# ===========================================================================
+awk '/^fleet_reentry_(poller|watcher|script)_live\(\) \{/{f=1} f{print} f && /^\}/{f=0}' \
+  "$ORCH/fleet.sh" > "$WORK/fleet-live.sh"
+R_L="$WORK/live-run"; mkdir -p "$R_L"
+sleep 60 & SLEEPER=$!; disown "$SLEEPER" 2>/dev/null; STRAYS="$STRAYS $SLEEPER"
+OP=$(opid)
+if [ -z "$OP" ] || ! alive "$OP"; then
+  bad "L 관측기" "관측기가 떠 있지 않다"
+else
+  l_check() { # l_check <pid> — prints poller/watcher verdicts as `<0|1> <0|1>`
+    printf '%s' "$1" > "$R_L/checks.pid"; printf '%s' "$1" > "$R_L/watch.pid"
+    ( . "$ORCH/liveness.sh"; . "$WORK/fleet-live.sh"
+      a=1; b=1
+      fleet_reentry_poller_live "$R_L" && a=0
+      fleet_reentry_watcher_live "$R_L" && b=0
+      printf '%s %s' "$a" "$b" )
+  }
+  check "L 관측기 pid 를 산 폴러·감시기로 읽는다" "$(l_check "$OP")" "0 0"
+  check "L 무관한 프로세스 pid 는 여전히 죽은 것으로 읽는다" "$(l_check "$SLEEPER")" "1 1"
+fi
+
+check "알림 도구가 한 번도 불리지 않았다" "$( [ -s "$NOTE_LOG" ] && cat "$NOTE_LOG" )" ""
+
 printf '\ntest-observer-checks: %d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" -eq 0 ]
