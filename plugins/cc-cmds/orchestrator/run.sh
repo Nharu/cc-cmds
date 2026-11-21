@@ -5420,7 +5420,7 @@ run_urgent_source() {
   [ -n "${1:-}" ] && [ -f "$f" ] && [ ! -L "$f" ] && [ -s "$f" ] || return 0
   first=$(sed -n '1p' "$f" 2>/dev/null) || return 0
   [ "$first" = "cc-run-urgent v1" ] || return 0
-  src=$(sed -n 's/^출처=\(..*\)$/\1/p' "$f" 2>/dev/null | head -n 1) || src=""
+  src=$(awk 'sub(/^출처=/, "") && $0 != "" { print; exit }' "$f" 2>/dev/null) || src=""
   printf '%s\n' "${src:-미상}"
 }
 
