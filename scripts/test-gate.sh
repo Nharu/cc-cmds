@@ -31260,24 +31260,72 @@ case "$tok_refusal_clear" in
   *) bad "폐쇄 집합(지우기)" "$(printf '%s' "$tok_refusal_clear" | tr '\n' ' ')" ;;
 esac
 
-# --- `approval-ask`, THE ONE SILENT TOKEN ------------------------------------
+# --- `approval-ask`, THE APPROVAL SLOT'S SECOND BANNER ------------------------
 #
-# It is outside the token table above on purpose: the walk asserts every row
-# sounds `default`, and this token is the one that does not — it rewrites an
-# approval's banner that already rang. So it is asserted here, on its own: both
-# closed sets take it, its group is the approval's own slot (`answer`'s, per
-# item key), its sound is empty, and its title carries the run name when one
-# is set.
-ask_row=$(bash -c '
+# It is outside the token table above on purpose: the table's rows sound
+# `default` unconditionally, and this token's sound depends on whether the
+# approval's slot already rang. So it is asserted here, on its own: both closed
+# sets take it, its group is the approval's own slot (`answer`'s, per item key),
+# its title carries the run name when one is set, and with no run directory —
+# nothing to tell whether a banner is being replaced — it rings as the slot's
+# first banner. Both subshells unset `RUN_DIR`, so a value an earlier part of the
+# file exported cannot decide the sound.
+ask_row=$(env -u RUN_DIR bash -c '
   . "'"$repo_root"'/plugins/cc-cmds/orchestrator/notify-run.sh"
   RUN_ID=RT
   CC_NOTIFY_SESSION_ID=SID9
   printf "%s|%s|%s|%s|%s" "$(cc_notify_group approval-ask KEY)" "$(cc_notify_group answer KEY)" \
-    "$(cc_notify_sound approval-ask)" "$(cc_notify_title approval-ask)" \
+    "$(cc_notify_sound approval-ask KEY)" "$(cc_notify_title approval-ask)" \
     "$(CC_NOTIFY_RUN_LABEL=런이름 cc_notify_title approval-ask)"
 ')
-check "approval-ask — 승인 슬롯·소리 없음·제목" "$ask_row" \
-  "cc-cmds-autopilot-RT-KEY|cc-cmds-autopilot-RT-KEY||cc-cmds · 답하세요|cc-cmds · 런이름 · 답하세요"
+check "approval-ask — 승인 슬롯·런 디렉터리 없으면 소리 default·제목" "$ask_row" \
+  "cc-cmds-autopilot-RT-KEY|cc-cmds-autopilot-RT-KEY|default|cc-cmds · 답하세요|cc-cmds · 런이름 · 답하세요"
+
+# --- AN APPROVAL'S SLOT RINGS ONCE WHILE IT IS HELD ---------------------------
+#
+# `answer` and `approval-ask` share the slot's ring mark `notify.rang/<key>`:
+# the first banner into the slot rings, every later one replaces it silently,
+# and releasing the slot (`cc_notify_stack_release`) lets the next one ring
+# again. Driven through `cc_notify_fire` against a recording notifier of this
+# block's own, in a run directory of its own, so no other part of the file
+# decides what is counted. Each case reads its own log; an empty log fails the
+# case rather than passing it with zero sounds.
+rang_dir=$(mktemp -d "$WORK/rang.XXXXXX")
+mkdir -p "$rang_dir/bin" "$rang_dir/run"
+cat > "$rang_dir/bin/terminal-notifier" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$CC_TEST_NOTIFY_LOG"
+STUB
+chmod +x "$rang_dir/bin/terminal-notifier"
+rang_fire() {
+  # rang_fire <log> <script> — the script runs with the emitter sourced and
+  # `RUN_DIR` set to this block's run directory, then waits for the detached
+  # notifier, and prints "<banner lines>|<sound lines>|<sound on line 1>".
+  : > "$1"
+  env -u RUN_DIR -u CC_PIPELINE_SHIFT_ID -u CC_PIPELINE_REENTRY PATH="$rang_dir/bin:$PATH" \
+    CC_TEST_NOTIFY_LOG="$1" \
+    CC_CMDS_AUTOPILOT_NOTIFY=1 \
+    CC_CMDS_NOTIFY_PATH_DISABLE_PREPEND=1 \
+    CC_CMDS_NOTIFY_HOST_OS=Darwin \
+    CC_PIPELINE_SEGMENT= CC_PIPELINE_STAGE_ID= \
+    bash -c '. "$1"; RUN_DIR="$2"; RUN_ID=RTRANG; eval "$3"; wait' \
+    _ "$repo_root/plugins/cc-cmds/orchestrator/notify-run.sh" "$rang_dir/run" "$2" >/dev/null 2>&1
+  local n s f
+  n=$(grep -c . "$1" 2>/dev/null || true)
+  s=$(grep -cF -- '-sound default' "$1" 2>/dev/null || true)
+  f=$(head -1 "$1" 2>/dev/null | grep -cF -- '-sound default' || true)
+  printf '%s|%s|%s' "${n:-0}" "${s:-0}" "${f:-0}"
+}
+check "승인 자리 — 같은 키의 answer 두 번은 배너 둘·소리 하나" \
+  "$(rang_fire "$rang_dir/a.log" 'cc_notify_fire answer 질문 RK1; cc_notify_fire answer 질문 RK1')" "2|1|1"
+check "승인 자리 — 반납한 뒤 같은 키의 answer 는 다시 울린다" \
+  "$(rang_fire "$rang_dir/b.log" 'cc_notify_stack_release RK1; cc_notify_fire answer 질문 RK1')" "1|1|1"
+check "승인 자리 — answer 다음 approval-ask 는 첫 줄만 울린다" \
+  "$(rang_fire "$rang_dir/c.log" 'cc_notify_fire answer 질문 RK2; cc_notify_fire approval-ask 물음 RK2')" "2|1|1"
+check "승인 자리 — 울린 적 없는 자리의 approval-ask 는 울린다" \
+  "$(rang_fire "$rang_dir/d.log" 'cc_notify_fire approval-ask 물음 RK3')" "1|1|1"
+check "승인 자리 — 울린 자리는 표지 디렉터리를 남긴다" \
+  "$([ -d "$rang_dir/run/notify.rang/RK3" ] && echo 있음 || echo 없음)" "있음"
 ask_roundtrip=$(bash -c '
   . "'"$repo_root"'/plugins/cc-cmds/orchestrator/notify-run.sh"
   RUN_ID=RT
