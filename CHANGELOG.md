@@ -5,6 +5,21 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.54.2] - 2026-11-22
+
+플러그인이 띄우는 배너마다 알림 소리가 정확히 하나 나게 한다. active-notify `fire-now` 배너와 "알림 테스트" 권한 테스트 배너는 지금까지 소리 없이 떴고, 같은 승인의 `answer` 배너는 게이트와 감시자가 겹쳐 올리면 한 배너에서 소리가 두 번 날 수 있었다.
+
+### Fixed
+
+- **active-notify `fire-now`** — single 한 번짜리(세션 자리를 갈아 끼우는 배너 포함), single `--count=N`, repeat 모두 `-sound default` 를 단다. 새 발사는 앞선 배너와 다른 사건을 처음 알리므로 매번 울린다.
+- **알림 테스트 우회 배너** — SKILL.md 필수 형식 명령과 루트 README 의 복구 명령에 `-sound 'default'` 를 넣었다. 자동 승인 훅의 패턴은 그대로이며 바뀐 명령도 그 패턴에 맞는다.
+- **승인 자리는 한 번 차 있는 동안 한 번만 울린다** — `answer` 와 `approval-ask` 가 런 디렉터리의 `notify.rang/<항목 키>` 표지를 `mkdir` 로 선점해, 처음 선점한 배너만 `default` 로 울리고 뒤의 배너는 소리 없이 갈아 끼운다. `answer` 가 쌓기 상한에 걸려 대기 자리로 강등된 승인에서는 `approval-ask` 가 그 자리의 첫 배너로 울린다. 소리는 terminal-notifier 존재 확인 뒤 발사 직전에 정하고, `cc_notify_stack_release` 가 승인 자리를 반납할 때 표지도 지운다. 런 디렉터리 없이 부른 `approval-ask` 는 첫 배너로 보고 울린다.
+- **시험** — fire-now 세 모드, 권한 테스트 우회 명령(SKILL.md 의 실제 줄을 읽는다), 세션 질문 훅의 승인 연결 묶음, 같은 승인 자리 두 번 올리기를 단언한다. `-group` 을 인자 줄 끝으로 읽던 두 픽스처(`attention-fire-main`, `fire-now-focus-arg`)는 `-group` 바로 뒤 낱말만 그룹으로 읽는다.
+
+### Why
+
+배너 하나는 사람에게 알리는 사건 하나를 처음 띄우는 것이다. 이미 소리가 나는 세션·autopilot 배너가 같은 자리를 갈아 끼우며 매번 울리는 지금의 동작과 같은 기준으로, 새로 소리를 넣는 배너와 승인 자리의 중복을 함께 맞춘다.
+
 ## [3.54.1] - 2026-11-20
 
 교대 스킬 본문에서 드물게 쓰이는 절을 참조 파일로 더 옮겨, 교대마다 첫 요청에 실리는 본문을 줄인다. 본문은 166,636 바이트에서 77,227 바이트가 되었다. 옮긴 문면은 바이트 그대로이며, 교대는 색인 표의 진입 조건이 설 때만 그 파일을 읽는다.
