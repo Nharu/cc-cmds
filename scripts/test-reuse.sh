@@ -477,6 +477,17 @@ tr_obj() {
   ids=""
   case "$s" in cat-file|ls-tree|rev-parse|merge-base|rev-list|log|show|diff) ;; *) return 1 ;; esac
   for a in "$@"; do
+    # git splits an argument at its first ".." into a range before it resolves
+    # "<rev>:<path>", and reads an empty side as HEAD, so "<id>:.." and
+    # "<id>:x..<ref>" walk HEAD or a ref. An argument holding ".." is an object
+    # read only when it is exactly a range of two full ids.
+    case "$a" in
+      *..*)
+        case "$s" in
+          rev-list|log|show) [[ $a =~ $re_rng ]] || return 1 ;;
+          *) return 1 ;;
+        esac ;;
+    esac
     if [[ $a =~ $re_one ]]; then
       ids="$ids ${a:0:40}"; nid=$((nid + 1)); continue
     fi
@@ -1399,6 +1410,13 @@ a"
     "$(gcol '"$SG" rev-parse --show-toplevel')|$(ghead)" "git읽기|머리없음"
   check "수집: 전체 id 의 cat-file -e 는 git읽기이고 객체 줄에 그 id" \
     "$(gcol '"$SG" cat-file -e "$c1"')|$(cat "$T/rsg.head")" "git읽기|객체	$c1:있음"
+  check "수집: 전체 id 의 :경로 꼬리 show <id>:a 는 git읽기이고 객체 줄에 그 id" \
+    "$(gcol '"$SG" show "$c1:a"')|$(cat "$T/rsg.head")" "git읽기|객체	$c1:있음"
+  check "수집: 범위로 다시 읽히는 log --format=%H <id>:.. 는 예" "$(gcol '"$SG" log --format=%H "$c1:.."')" "예"
+  check "수집: 범위로 다시 읽히는 log <id>:x..HEAD 는 예" "$(gcol '"$SG" log "$c1:x..HEAD"')" "예"
+  check "수집: 범위로 다시 읽히는 log <id>:sub/.. 는 예" "$(gcol '"$SG" log "$c1:sub/.."')" "예"
+  check "수집: 범위로 다시 읽히는 rev-parse --verify <id>:.. 는 예" "$(gcol '"$SG" rev-parse --verify "$c1:.."')" "예"
+  check "수집: 범위로 다시 읽히는 diff <id>:.. <id> 는 예" "$(gcol '"$SG" diff "$c1:.." "$c1"')" "예"
   check "수집: git rev-parse HEAD 는 예이고 전체사유가 있다" "$(gcol '"$SG" rev-parse HEAD')|$(ghead)" "예|전체사유 "
   check "수집: 짧은 id 의 git log 는 예이고 전체사유가 있다" "$(gcol '"$SG" log -1 "${c1:0:7}"')|$(ghead)" "예|전체사유 "
   check "수집: git status 는 예이고 전체사유가 있다" "$(gcol '"$SG" status')|$(ghead)" "예|전체사유 "
@@ -1635,8 +1653,8 @@ a"
   rm -rf "$T"
   printf 'test-reuse self-test: %d passed, %d failed\n' "$passed" "$failed"
   # A floor on the count, so a refactor that silently skips cases cannot pass.
-  if [ "$passed" -lt 137 ]; then
-    printf 'test-reuse self-test: 통과 수 %d 가 하한 %d 에 못 미칩니다\n' "$passed" 137 >&2
+  if [ "$passed" -lt 143 ]; then
+    printf 'test-reuse self-test: 통과 수 %d 가 하한 %d 에 못 미칩니다\n' "$passed" 143 >&2
     return 1
   fi
   [ "$failed" = "0" ]
