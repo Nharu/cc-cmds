@@ -16,7 +16,10 @@
 #   - the router-copy sections          (from scripts/test-snapshot.sh, 6d–6e-4)
 #
 # ASSERTIONS THIS FILE ADDS ON ITS OWN: k = 14, plus the shift's branch index
-# block (6e-6), which adds 5 + 3n for the shift's n reference files. The census selects every suite
+# block (6e-6), which adds 16 + 3n for the shift's n reference files: 5 + 3n
+# for the table and its files, and eleven for the body's byte bound, the eight
+# sections moved out of the body, the cited headings each index row carries and
+# the corpus's unique headings. The census selects every suite
 # that runs or sources the gate family and asserts two exports and the
 # pipeline-name clearing line for each, plus the line's position in a suite
 # that is also sourced as a library. This file carries its recognition corpus,
@@ -1199,11 +1202,17 @@ done
 # The shift posts a pull request review a termination clause asks for, and both
 # copies' settling sections give the same REST spelling with the declaration the
 # gate judges it at. A copy that dropped either would leave the review to a
-# stage or to a declaration the cutpoint rule refuses.
+# stage or to a declaration the cutpoint rule refuses. The shift's settling
+# section keeps only its head in the body; the posting procedure is the whole of
+# its reference file, so that file is read whole.
 for pair in "리드:$AP_ROUTER|### Proposing that the run is done" \
-            "교대:$RS_CORPUS|### Settling the termination clauses and proposing done"; do
+            "교대:$RS_REFS/termination.md|### Settling the termination clauses and proposing done"; do
   who=${pair%%:*}; rest=${pair#*:}; file=${rest%%|*}; head=${rest#*|}
-  sec=$(router_section "$file" "$head")
+  if [ "$who" = "교대" ]; then
+    sec=$(cat "$file")
+  else
+    sec=$(router_section "$file" "$head")
+  fi
   n1=$(printf '%s\n' "$sec" | grep -cF -- '--cutpoint 커밋 --surface 외부상태변경 -- 게시' || true)
   n2=$(printf '%s\n' "$sec" | grep -cF -- 'pulls/<n>/reviews' || true)
   if [ "${n1:-0}" != "0" ] && [ "${n2:-0}" != "0" ]; then
@@ -2012,6 +2021,53 @@ for p in "$RS_REFS"/*.md; do
   fi
 done
 
+# Every shift loads the body whole, so the sections a shift rarely needs live in
+# reference files and the body stays under a byte bound. A moved section that
+# reappears in the body is loaded twice; one that sits in two reference files
+# can drift apart; a cited heading the index row does not carry leaves the
+# shift no way to tell which file holds it; and two sections with one heading
+# make every heading cut of the corpus ambiguous.
+rs_body_sz=$(wc -c < "$RS_SKILL" | tr -d ' ')
+if [ "$rs_body_sz" -le 78000 ]; then
+  ok "교대 본문이 78000바이트 이하다 (${rs_body_sz})"
+else
+  bad "교대 본문 크기" "${rs_body_sz}바이트 — 드문 절은 references 로 옮긴다"
+fi
+for h in '#### Dispatching the audit stage' \
+         '#### Routing a skeleton-grade audit to re-convergence' \
+         '#### Planning the segments' \
+         '#### Reviewing pull requests on a reviewer run' \
+         '#### Merging and applying a segment' \
+         '#### Re-dispatching the implementation after review findings' \
+         '### Merging a segment and recording it' \
+         '### Stopping one segment for a person'; do
+  n_body=$(grep -cxF -- "$h" "$RS_SKILL" || true)
+  n_refs=$(grep -lxF -- "$h" "$RS_REFS"/*.md | wc -l | tr -d ' ')
+  check "교대 「${h#\#* }」 가 본문에 없고 references 한 파일에만 표제로 있다" "${n_body:-0}|${n_refs}" "0|1"
+done
+rs_ref_heads=$(awk 'FNR==1{f=FILENAME; sub(/.*\//,"",f)} /^##+ /{h=$0; sub(/^#+ /,"",h); print f "\t" h}' "$RS_REFS"/*.md)
+rs_cite_miss=""
+while IFS= read -r c; do
+  [ -n "$c" ] || continue
+  t=${c#「}; t=${t%」}
+  if [ "$t" = "Settling the termination clauses and proposing done" ]; then
+    f=termination.md
+  else
+    f=$(printf '%s\n' "$rs_ref_heads" | awk -F'\t' -v t="$t" '$2==t{print $1; exit}')
+  fi
+  [ -n "$f" ] || continue
+  row=$(printf '%s\n' "$rs_index" | awk -v f="\`$f\`" 'index($0,"| ")==1 { split($0,a,"|"); if (index(a[2], f)) print }')
+  case "$row" in
+    *"$c"*) ;;
+    *) rs_cite_miss="$rs_cite_miss $f:$c" ;;
+  esac
+done <<EOF
+$(grep -ohE '「[^」]*」' "$RS_CORPUS" | sort -u)
+EOF
+check "교대 코퍼스가 꺾쇠로 인용하는 references 표제를 그 파일의 색인 행이 싣는다" "${rs_cite_miss:-없음}" "없음"
+check "교대 코퍼스에 같은 표제가 둘 없다" \
+  "$(grep -E '^#+ ' "$RS_CORPUS" | sort | uniq -d | tr '\n' ' ')" ""
+
 # A re-convergence a halt answer sent for the design or audit step leaves that
 # step's last row reading `종류=reconverge`: the answer element has already left
 # `answered_halts[]`, the last row is no park, and the refutation row is keyed on
@@ -2046,7 +2102,7 @@ check "교대 색인 아래 문단이 차단=파견 전 행을 끝난 스테이�
 check "교대 색인 아래 문단이 차단 행에 재수렴 종단 술어 거짓도 두 번째 재수렴 금지도 내지 않는다" \
   "$(printf '%s\n' "$rs_index" | grep -cF -- 'so it never yields `사유=중단 답 라우팅 — 재수렴 종단 술어 거짓` or `재수렴 라우팅 — 재수렴 종단 술어 거짓`, and it never forbids a second re-convergence. The key waits on that size record')" "1"
 check "교대 골격급 재수렴과 설계 스텝 재수렴의 끝 처분이 차단=파견 전 행을 뺀다" \
-  "$(grep -cF -- 'a row carrying `차단=파견 전` ended nothing and waits on its size record' "$RS_SKILL" "$RS_REFS/halt-answer-3.md" | awk -F: '{s+=$NF} END{print s}')" "2"
+  "$(grep -cF -- 'a row carrying `차단=파견 전` ended nothing and waits on its size record' "$RS_REFS/audit-dispatch.md" "$RS_REFS/halt-answer-3.md" | awk -F: '{s+=$NF} END{print s}')" "2"
 check "반증 재수렴 6번이 차단=파견 전 행을 읽지 않는다" \
   "$(grep -cF -- 'A row carrying `차단=파견 전` is no re-convergence at all' "$RS_REFS/refutation-reconverge.md")" "1"
 # A size block exits 11 like a reach park. Read by the exit alone, the shift
@@ -2057,9 +2113,9 @@ check "반증 재수렴 6번이 차단=파견 전 행을 읽지 않는다" \
 check "교대 종료 코드 11 행이 크기 차단 파견을 도달 park 에서 뺀다" \
   "$(grep -cF -- '**A dispatch (`act --kind skill`) whose `11` leaves its key a new last `stage-result` row carrying `차단=파견 전` is no reach park**' "$RS_SKILL")" "1"
 check "교대 세그먼트 정지 문장이 크기 차단의 11 로 세그먼트를 멈추지 않는다" \
-  "$(grep -cF -- 'A dispatch'"'"'s `11` that left the segment'"'"'s key a last row carrying `차단=파견 전` stops nothing' "$RS_SKILL")" "1"
+  "$(grep -cF -- 'A dispatch'"'"'s `11` that left the segment'"'"'s key a last row carrying `차단=파견 전` stops nothing' "$RS_REFS/merge-apply-2.md")" "1"
 check "교대 정지 자리 표의 도달 거부 행이 크기 차단 파견을 뺀다" \
-  "$(grep -cF -- '— never a dispatch whose `11` left a `차단=파견 전` row | never |' "$RS_SKILL")" "1"
+  "$(grep -cF -- '— never a dispatch whose `11` left a `차단=파견 전` row | never |' "$RS_REFS/segment-stop.md")" "1"
 check "게이트가 마지막 행이 크기 차단인 세그먼트의 도달 거부 정지를 거절한다" \
   "$(grep -cE -- '"\$ssite" = "도달 거부" \] && \[ -n "\$seg" \]' "$GATE")|$(grep -cF -- '&& gate_key_last_row_is_size_block "$seg"; then' "$GATE")" "1|1"
 # A person's skeleton review blocked on the document's size leaves the design

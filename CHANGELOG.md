@@ -5,6 +5,20 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.54.1] - 2026-11-20
+
+교대 스킬 본문에서 드물게 쓰이는 절을 참조 파일로 더 옮겨, 교대마다 첫 요청에 실리는 본문을 줄인다. 본문은 166,636 바이트에서 77,227 바이트가 되었다. 옮긴 문면은 바이트 그대로이며, 교대는 색인 표의 진입 조건이 설 때만 그 파일을 읽는다.
+
+### Changed
+
+- **`autopilot-router-shift` 본문 분리** — 감사 파견(`audit-dispatch.md`), 세그먼트 계획(`planning.md`), 리뷰어 런(`reviewer-run.md`), 머지와 적용(`merge-apply-1.md`·`merge-apply-2.md`), 머지 기록(`merge-record.md`), 리뷰 뒤 재구현 파견(`impl-redispatch.md`), 세그먼트 한 개 정지(`segment-stop.md`), 종료 절 정산의 뒷부분(`termination.md`)을 `references/` 로 옮겼다. 종료 절 정산 절은 머리와 act 필드 표만 본문에 남는다.
+- **색인 표** — 새 파일마다 진입 조건 행을 더하고, 모든 행이 그 파일의 표제를 꺾쇠로 싣는다. 옮긴 절 밖에서도 쓰이는 문장의 조건(베이스 이동 `재시도` 답, `decision_holds[]` 등)도 행에 들어 있다.
+- **시험** — 메타 불변 시험이 본문 78,000 바이트 상한, 옮긴 표제의 단일 위치, 인용된 표제의 색인 행 기재, 코퍼스 표제 중복 없음을 단언한다. 옮긴 문구를 읽던 시험 자리는 옮겨 간 참조 파일을 읽는다.
+
+### Why
+
+교대는 매번 새 세션으로 떠서 본문 전체를 첫 요청에 싣는다. 실행 비율이 15% 이하인 절을 떼어 내면 교대당 첫 요청 프리픽스와 캐시 쓰기 비용이 함께 준다.
+
 ## [3.54.0] - 2026-11-21
 
 무인 런의 시각 발행 고정 계정을 임대 표 곁의 기록 `visual-pins/<런>.pin` 에 남긴다. cc-lane 의 차용 기증자 선택이 이 기록을 읽어 고정 계정의 그룹을 순위 맨 뒤로 민다. 지금까지는 cc 가 고정 계정을 기증자로 빌려 그 그룹에 대화형 예약 행이 생기면, 라우터가 시각 발행을 `pinned-lane-ineligible` 로 PARK 해도 cc-lane 은 그 사실을 알 길이 없어 기증자를 바꾸지 않았다.
