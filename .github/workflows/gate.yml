@@ -138,7 +138,7 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
     outputs:
-      run: ${{ steps.due.outputs.run }}
+      run: ${{ steps.due.outputs.run || '1' }}
       mode: ${{ steps.select.outputs.mode || '전량' }}
       selected: ${{ steps.select.outputs.selected }}
       count: ${{ steps.select.outputs.count }}
@@ -164,8 +164,9 @@ jobs:
       # output is null, not an empty string, and an expression comparing null
       # with '0' turns both into the number 0, so `!= '0'` alone is false on a
       # pull request and every later step is skipped while the run is green.
-      # `format` makes it the string '' first. The job conditions read the job
-      # output, which is already a string.
+      # `format` makes it the string '' first. A job output whose value is
+      # empty is not set at all and reads as null in the same way, so the job
+      # output `run` above falls back to '1' when the step did not run.
       - name: Is a run due
         id: due
         if: github.event_name != 'pull_request'
