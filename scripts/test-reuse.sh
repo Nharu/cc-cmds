@@ -1413,7 +1413,7 @@ a"
   check "수집: 전체 id 의 :경로 꼬리 show <id>:a 는 git읽기이고 객체 줄에 그 id" \
     "$(gcol '"$SG" show "$c1:a"')|$(cat "$T/rsg.head")" "git읽기|객체	$c1:있음"
   check "수집: 범위로 다시 읽히는 log --format=%H <id>:.. 는 예" "$(gcol '"$SG" log --format=%H "$c1:.."')" "예"
-  check "수집: 범위로 다시 읽히는 log <id>:x..HEAD 는 예" "$(gcol '"$SG" log "$c1:x..HEAD"')" "예"
+  check "수집: 범위로 다시 읽히는 log <id>:a..HEAD 는 예" "$(gcol '"$SG" log "$c1:a..HEAD"')" "예"
   check "수집: 범위로 다시 읽히는 log <id>:sub/.. 는 예" "$(gcol '"$SG" log "$c1:sub/.."')" "예"
   check "수집: 범위로 다시 읽히는 rev-parse --verify <id>:.. 는 예" "$(gcol '"$SG" rev-parse --verify "$c1:.."')" "예"
   check "수집: 범위로 다시 읽히는 diff <id>:.. <id> 는 예" "$(gcol '"$SG" diff "$c1:.." "$c1"')" "예"
