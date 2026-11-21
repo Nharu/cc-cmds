@@ -39768,11 +39768,14 @@ check "34p: 그 거부의 경고는 구현 시 검증 항목이 아니라고 말
 check "34p: 내용 검사의 거부는 auto-refused 행 하나를 남기고 중단 답 행은 남기지 않는다" \
   "$(sln_ar)/$(sln_ha)" "$((sln_a0 + 1))/$sln_h0"
 sln_arow=$(sln_ar_last)
+sln_arec=$(row_field "$sln_arow" '중단 기록')
+case "$sln_arec" in */halt/RA#1.md) sln_arec=rec ;; *) sln_arec=other ;; esac
 check "34p: auto-refused 행이 기록·답한 주체·추천을 싣는다" \
-  "$(case "$(row_field "$sln_arow" '중단 기록')" in */halt/RA#1.md) printf rec ;; *) printf other ;; esac)/$(row_field "$sln_arow" '답한 주체')/$(row_field "$sln_arow" '추천')" \
+  "$sln_arec/$(row_field "$sln_arow" '답한 주체')/$(row_field "$sln_arow" '추천')" \
   "rec/좌석/잔여로 두고 동결"
-check "34p: auto-refused 행의 사유는 경고 문면이다" \
-  "$(case "$(row_field "$sln_arow" '사유')" in *'is not an item of the design document still at'*) printf ok ;; *) row_field "$sln_arow" '사유' ;; esac)" "ok"
+sln_awhy=$(row_field "$sln_arow" '사유')
+case "$sln_awhy" in *'is not an item of the design document still at'*) sln_awhy=ok ;; esac
+check "34p: auto-refused 행의 사유는 경고 문면이다" "$sln_awhy" "ok"
 check "34p: 거부된 기록은 답 없는 기록으로 남는다" "$(sln_ah "$SLN_RA")" "0"
 sln_rck "$SLN_DOC"
 check "34p: 등급 줄 없는 문서에 residual-check 는 1 로 끝난다" "$rc" "1"
