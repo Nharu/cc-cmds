@@ -100,9 +100,10 @@ on:
 
 # Pull request runs never wait on each other; whole master runs queue behind
 # one another instead of being cancelled, since a cancelled one measured
-# nothing.
+# nothing. A `workflow_dispatch` on another ref queues in a group of its own,
+# so a branch's trial run never pushes master's waiting round out.
 concurrency:
-  group: ${{ github.event_name == 'pull_request' && format('gate-pr-{0}', github.run_id) || 'gate-full' }}
+  group: ${{ github.event_name == 'pull_request' && format('gate-pr-{0}', github.run_id) || github.ref == 'refs/heads/master' && 'gate-full' || format('gate-full-{0}', github.ref) }}
   cancel-in-progress: false
 
 # Naming one permission sets every unnamed one to `none`, so both are written:
@@ -122,20 +123,23 @@ jobs:
   # same name uploaded by a fork's pull request never becomes the source.
   #
   # Its outputs drive the rest: `run` says whether anything runs at all (a
-  # scheduled round on an unmoved master says 0), `mode` is `전량` or `선택`,
-  # `selected` the closed section list of a narrowed run and `count` how many
-  # sections run. `rows` is the matrix (runners 1..R/L, then the extra rows
+  # scheduled round on an unmoved master says 0; a pull request does not
+  # decide, and its empty `run` reads as the whole suite, as does the empty
+  # `run` of a plan that failed before deciding — every condition is written
+  # `!= '0'`), `mode` is `전량` or `선택` (a run that did not select is
+  # `전량`), `selected` the closed section list of a narrowed run and `count`
+  # how many sections run. `rows` is the matrix (runners 1..R/L, then the extra rows
   # R+1..R+E), `regular` is R — the regular rows the table actually has, which a
   # narrowed table may hold fewer of than K — `runners` and `lanes` what the
   # shard target needs to agree with it, `extra` is E and `work` is how many
   # rows carry isolation work, which `gate-isolation` must get back.
   gate-plan:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       GH_TOKEN: ${{ github.token }}
     outputs:
       run: ${{ steps.due.outputs.run }}
-      mode: ${{ steps.select.outputs.mode }}
+      mode: ${{ steps.select.outputs.mode || '전량' }}
       selected: ${{ steps.select.outputs.selected }}
       count: ${{ steps.select.outputs.count }}
       rows: ${{ steps.table.outputs.rows }}
@@ -152,20 +156,16 @@ jobs:
         with:
           fetch-depth: ${{ github.event_name == 'pull_request' && 2 || 1 }}
 
-      # A pull request always runs. A scheduled round runs when master moved
-      # since the last whole run; a round that cannot tell runs too.
+      # A scheduled round runs when master moved since the last whole run; a
+      # round that cannot tell runs too. A pull request does not ask: the step
+      # is skipped and the empty `run` reads as a run.
       - name: Is a run due
         id: due
-        run: |
-          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
-            echo "run=1" >> "$GITHUB_OUTPUT"
-            echo "gate-plan: 실행 — pull request 는 항상 돕니다"
-            exit 0
-          fi
-          bash scripts/gate-full.sh due >> "$GITHUB_OUTPUT"
+        if: github.event_name != 'pull_request'
+        run: bash scripts/gate-full.sh due >> "$GITHUB_OUTPUT"
 
       - uses: mikefarah/yq@v4
-        if: steps.due.outputs.run == '1'
+        if: steps.due.outputs.run != '0'
 
       # FAILING IS THE POINT WHEN THERE IS NO BASE. Reading "no base" as "no
       # changed section" would leave the isolation check empty without a word,
@@ -174,7 +174,7 @@ jobs:
       # has no base to compare with and changes no section: it writes an empty
       # list and `-` for the base.
       - name: Find the changed sections
-        if: steps.due.outputs.run == '1'
+        if: steps.due.outputs.run != '0'
         run: |
           plan="$RUNNER_TEMP/plan"; mkdir -p "$plan"
           if [ "$GITHUB_EVENT_NAME" != "pull_request" ]; then
@@ -198,16 +198,26 @@ jobs:
 
       # THE SELECTOR'S DOUBT IS THE WHOLE SUITE. Any exit other than 0, or an
       # answer that is neither form, runs everything, so a selector that breaks
-      # can only make a run slower, never let a section go unrun.
+      # can only make a run slower, never let a section go unrun. So does a
+      # list missing a section the digest comparison above found changed (the
+      # two are computed apart, and a changed section must never drop out of
+      # its run and its isolation check), and a list while GATE_LANES is not 1
+      # (the slot count then differs from the regular rows a narrowed table
+      # has). The repository variable GATE_SELECT set to `off` skips the
+      # selector altogether: the way to send every pull request back to the
+      # whole suite without changing this file. Only a pull request selects; a
+      # whole master run skips this step and is `전량`.
       - name: Select the sections
         id: select
-        if: steps.due.outputs.run == '1'
+        if: steps.due.outputs.run != '0' && github.event_name == 'pull_request'
+        env:
+          GATE_SELECT: ${{ vars.GATE_SELECT }}
         run: |
           plan="$RUNNER_TEMP/plan"
           make -s print-gate-sections > "$plan/all-sections"
           mode="전량"; reason=""; sel=""
-          if [ "$GITHUB_EVENT_NAME" != "pull_request" ]; then
-            reason="정기 전량 실행 (이벤트 $GITHUB_EVENT_NAME)"
+          if [ "$GATE_SELECT" = "off" ]; then
+            reason="GATE_SELECT=off"
           else
             rc=0
             bash scripts/gate-select.sh --base 'HEAD^1' --head HEAD > "$plan/select.out" 2> "$plan/select.err" || rc=$?
@@ -221,6 +231,14 @@ jobs:
               reason=$(cut -f 2- "$plan/select.out" | head -n 1)
             else
               reason="선택 스크립트의 답을 읽지 못했습니다"
+            fi
+          fi
+          if [ "$mode" = "선택" ]; then
+            missing=$(tr ',' '\n' < "$plan/changed" | grep . | awk -v S="$sel" 'BEGIN { n = split(S, a, ","); for (i = 1; i <= n; i++) w[a[i]] = 1 } !($0 in w) { printf "%s%s", (k++ ? "," : ""), $0 }')
+            if [ -n "$missing" ]; then
+              mode="전량"; sel=""; reason="바뀐 절 $missing 이 선택에 없습니다"
+            elif [ "$(make -s print-gate-lanes)" != "1" ]; then
+              mode="전량"; sel=""; reason="GATE_LANES 가 1 이 아닙니다"
             fi
           fi
           if [ "$mode" = "전량" ]; then
@@ -240,7 +258,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Find the timing source
-        if: steps.due.outputs.run == '1'
+        if: steps.due.outputs.run != '0'
         run: |
           plan="$RUNNER_TEMP/plan"; mkdir -p "$plan" "$RUNNER_TEMP/src"
           # One `<run id> <created_at>` line per run, newest first; the median
@@ -284,10 +302,15 @@ jobs:
       # shard job starts.
       - name: Make the partition table
         id: table
-        if: steps.due.outputs.run == '1'
+        if: steps.due.outputs.run != '0'
         run: |
           plan="$RUNNER_TEMP/plan"
           changed=$(cat "$plan/changed")
+          if [ ! -f "$plan/mode" ]; then
+            echo "전량" > "$plan/mode"; : > "$plan/selected"
+            echo "정기 전량 실행 (이벤트 $GITHUB_EVENT_NAME)" > "$plan/reason"
+            echo "gate-plan: 판정 전량 — $(cat "$plan/reason")"
+          fi
           mode=$(cat "$plan/mode"); sel=$(cat "$plan/selected")
           n=$(make -s print-gate-shards); lanes=$(make -s print-gate-lanes); s=$(make -s print-gate-slots)
           share="-"
@@ -389,7 +412,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/upload-artifact@v4
-        if: steps.due.outputs.run == '1'
+        if: steps.due.outputs.run != '0'
         with:
           name: gate-plan
           path: ${{ runner.temp }}/plan/
@@ -406,8 +429,8 @@ jobs:
   # its row numbers from the same R.
   gate-shards:
     needs: gate-plan
-    if: needs.gate-plan.outputs.run == '1' && needs.gate-plan.outputs.count != '0'
-    runs-on: ubuntu-latest
+    if: needs.gate-plan.outputs.run != '0' && needs.gate-plan.outputs.count != '0'
+    runs-on: ubuntu-24.04
     # The hosted runner has a docker daemon, so the real docker section must run
     # here: a missing daemon is a failure, not a skip.
     env:
@@ -462,8 +485,8 @@ jobs:
   # table is held to the selected list rather than to the whole suite.
   shard-coverage:
     needs: gate-plan
-    if: needs.gate-plan.outputs.run == '1' && needs.gate-plan.outputs.count != '0'
-    runs-on: ubuntu-latest
+    if: needs.gate-plan.outputs.run != '0' && needs.gate-plan.outputs.count != '0'
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
@@ -540,27 +563,15 @@ jobs:
   # sum is judged.
   gate-report:
     needs: [gate-plan, gate-shards]
-    if: always() && needs.gate-plan.outputs.run == '1'
-    runs-on: ubuntu-latest
+    if: always() && needs.gate-plan.outputs.run != '0'
+    runs-on: ubuntu-24.04
     env:
       GH_TOKEN: ${{ github.token }}
       COUNT: ${{ needs.gate-plan.outputs.count }}
     steps:
-      - name: No section selected
-        if: needs.gate-plan.outputs.count == '0'
-        run: |
-          echo "gate-report: 선택 0절 — 돈 샤드가 없어 보고할 것이 없습니다"
-          {
-            echo "### gate 보고"
-            echo ""
-            echo "- 선택 0절 — 이 변경이 닿는 gate 절이 없어 샤드를 띄우지 않았습니다"
-          } >> "$GITHUB_STEP_SUMMARY"
-
       - uses: actions/checkout@v4
-        if: needs.gate-plan.outputs.count != '0'
 
       - uses: actions/download-artifact@v4
-        if: needs.gate-plan.outputs.count != '0'
         with:
           name: gate-plan
           path: ${{ runner.temp }}/plan
@@ -625,14 +636,22 @@ jobs:
         if: needs.gate-plan.outputs.count != '0' && needs.gate-plan.outputs.mode == '전량' && needs.gate-shards.result != 'success'
         run: echo "::notice::gate 샤드가 성공하지 않아(${{ needs.gate-shards.result }}) 소요 증분 판정을 건너뜁니다 — 잘린 소요로는 판정하지 않습니다"
 
-      - name: Duration signal on a narrowed run
-        if: needs.gate-plan.outputs.count != '0' && needs.gate-plan.outputs.mode != '전량'
+      # A narrowed verdict says so instead of judging its sum: the sum of a few
+      # sections is not comparable with the whole-suite window. A verdict of
+      # no section has run no shard and says that.
+      - name: Summarize the verdict
+        if: always() && needs.gate-plan.outputs.mode != '전량'
         run: |
-          echo "::notice::좁힌 실행 — 합 비교 생략 (선택 ${COUNT}절의 합은 master 창과 비교하지 않습니다)"
+          if [ "$COUNT" = "0" ]; then
+            line="선택 0절 — 이 변경이 닿는 gate 절이 없어 샤드를 띄우지 않았습니다"
+          else
+            line="좁힌 실행 — 합 비교 생략 (선택 ${COUNT}절, 행 합 ${{ steps.report.outputs.sum }}초)"
+          fi
+          echo "gate-report: $line"
           {
-            echo "### gate 소요"
+            echo "### gate 보고"
             echo ""
-            echo "- 좁힌 실행 — 합 비교 생략 (선택 ${COUNT}절, 행 합 ${{ steps.report.outputs.sum }}초)"
+            echo "- $line"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload the duration window
@@ -692,8 +711,8 @@ jobs:
   # how a download of no artifact ends.
   gate-isolation:
     needs: [gate-plan, gate-shards]
-    if: always() && needs.gate-plan.result == 'success' && needs.gate-plan.outputs.run == '1'
-    runs-on: ubuntu-latest
+    if: always() && needs.gate-plan.result == 'success' && needs.gate-plan.outputs.run != '0'
+    runs-on: ubuntu-24.04
     env:
       WORK: ${{ needs.gate-plan.outputs.work }}
     steps:
@@ -746,18 +765,21 @@ jobs:
 
   # THE ONE WAY A MASTER REGRESSION REACHES A PERSON. A whole master run that
   # fails writes into the open `gate-full-failure` issue, or opens it; the next
-  # whole success closes it. It runs whatever the jobs before it ended in, and
-  # only on master: a `workflow_dispatch` from a branch never opens or closes
-  # master's issue. The full history is fetched because the candidates are the
+  # whole success closes it. It runs on every scheduled or manual master round,
+  # whatever the jobs before it ended in and whatever `run` says: a skipped
+  # round (`run` 0) only looks for a gap — a last whole success older than
+  # three intervals with merges after it — and never closes the issue. Only on
+  # master: a `workflow_dispatch` from a branch never opens or closes master's
+  # issue. The full history is fetched because the candidates are the
   # first-parent merges since the last whole success and their first parents,
   # and yq is installed because the selector run on each merge needs it — a
   # selector that cannot decide reads as the whole suite and makes every merge
-  # a candidate. Naming permissions at job level replaces the top-level ones,
-  # so all three are written.
+  # a candidate. Naming one permission at job level sets every unnamed one to
+  # `none`, so all three are written.
   gate-full-report:
     needs: [gate-plan, gate-shards, shard-coverage, gate-report, gate-isolation]
-    if: always() && needs.gate-plan.outputs.run == '1' && github.ref == 'refs/heads/master' && github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
+    if: always() && github.ref == 'refs/heads/master' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       actions: read
@@ -787,6 +809,7 @@ jobs:
       - name: Write the failure issue or close it
         run: |
           bash scripts/gate-full.sh report \
+            --run "${{ needs.gate-plan.outputs.run }}" \
             --plan "${{ needs.gate-plan.result }}" \
             --shards "${{ needs.gate-shards.result }}" \
             --coverage "${{ needs.shard-coverage.result }}" \
