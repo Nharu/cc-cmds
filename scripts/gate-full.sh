@@ -38,8 +38,19 @@
 # suite or with a list holding a failed section; with no candidate the report
 # says the failure lies outside the narrowed selection. When every job
 # succeeded and such an issue is open, the run is written into it and it is
-# closed. A run on a ref other than master, or on a pull request, writes
-# nothing: a branch's trial run must never open or close master's issue.
+# closed. A run that is not a schedule or workflow_dispatch run on master
+# writes nothing: a branch's trial run must never open or close master's issue.
+#
+# A ROUND THAT RAN NOTHING STILL LOOKS FOR A GAP. Every scheduled or manual
+# master round runs `report`, a skipped one (`--run 0`) included. It finds the
+# last whole success; when master took first-parent merges after that commit
+# and the success is older than three intervals (twelve hours), the gap — the
+# success's run, commit and time, the merges since and this round's run and
+# `run` value — is written into the same issue, whatever the round ended in. A
+# round that is a whole success has no gap. Not finding a whole success at all
+# is written as a gap too. A gap never closes the issue: the next whole
+# success does. This measures the outcome rather than each way the failure
+# report could drop out, so a way nobody has named yet still reaches a person.
 #
 # THE CANDIDATES ARE COUNTED UP TO A CAP. The selector runs once per merge, so
 # a long failing streak, or no successful whole run at all, would leave the
@@ -55,12 +66,15 @@
 #       is GITHUB_REPOSITORY and this run's id GITHUB_RUN_ID. An event other
 #       than schedule is always due
 #   bash scripts/gate-full.sh report --plan R --shards R --coverage R --report R
-#                                    [--plan-dir DIR] [--results-dir DIR]
+#                                    [--run V] [--plan-dir DIR] [--results-dir DIR]
 #                                    [--select PATH] [--cap N]
-#       R is each job's result (success, failure, cancelled, skipped). DIR
-#       holds the plan's table.tsv and the shards' result-<row>.tsv files. Run
-#       from the repository with its full history; the ref is GITHUB_REF, the
-#       commit GITHUB_SHA
+#       R is each job's result (success, failure, cancelled, skipped). V is the
+#       plan's `run` output: `0` reports a gap only, anything else (an empty
+#       value from a plan that failed before deciding included) is a whole
+#       run. DIR holds the plan's table.tsv and the shards' result-<row>.tsv
+#       files. Run from the repository with its full history; the ref is
+#       GITHUB_REF, the commit GITHUB_SHA. GATE_FULL_NOW, in epoch seconds,
+#       stands in for the clock
 #   bash scripts/gate-full.sh --self-test
 #
 # GATE_FULL_RUNS_JSON names a file holding the run list answer
@@ -76,7 +90,7 @@ set -uo pipefail
 script_dir=$(cd "$(dirname "$0")" && pwd)
 
 full_usage() {
-  printf 'gate-full: 사용법 — due [--sha SHA] [--event NAME] / report --plan R --shards R --coverage R --report R [--plan-dir DIR] [--results-dir DIR] [--select PATH] [--cap N] / --self-test\n' >&2
+  printf 'gate-full: 사용법 — due [--sha SHA] [--event NAME] / report --plan R --shards R --coverage R --report R [--run V] [--plan-dir DIR] [--results-dir DIR] [--select PATH] [--cap N] / --self-test\n' >&2
   exit 2
 }
 
@@ -147,13 +161,14 @@ full_due() {
 
 # --- report ------------------------------------------------------------------
 
-# Prints the head sha of the newest whole run that succeeded, nothing when
-# there is none; fails when the run list cannot be read. A run that ended in
-# success is a whole success only when its shards ran and succeeded: a skipped
-# round also ends in success and sits on the commit of the last whole run,
-# which may have failed. At most twenty runs are asked for their jobs.
+# Prints `<run id> <head sha> <created_at>` of the newest whole run that
+# succeeded, nothing when there is none; fails when the run list cannot be
+# read. A run that ended in success is a whole success only when its shards ran
+# and succeeded: a skipped round also ends in success and sits on the commit of
+# the last whole run, which may have failed. At most twenty runs are asked for
+# their jobs.
 full_last_success() {
-  local js ids id sha jobs
+  local js ids id sha cr jobs
   js=$(full_runs_json) || return 1
   ids=$(printf '%s' "$js" | jq -r --arg repo "${GITHUB_REPOSITORY:-}" --arg self "${GITHUB_RUN_ID:-}" '
     [.workflow_runs[]
@@ -161,18 +176,76 @@ full_last_success() {
       | select(.event == "schedule" or .event == "workflow_dispatch")
       | select(.conclusion == "success")
       | select((.id | tostring) != $self)]
-    | sort_by(.created_at) | reverse | .[0:20][] | "\(.id) \(.head_sha)"' 2>/dev/null) || return 1
-  while read -r id sha; do
+    | sort_by(.created_at) | reverse | .[0:20][] | "\(.id) \(.head_sha) \(.created_at)"' 2>/dev/null) || return 1
+  while read -r id sha cr; do
     [ -n "$id" ] || continue
     jobs=$(full_gh api "repos/${GITHUB_REPOSITORY:-}/actions/runs/$id/jobs?per_page=100" 2>/dev/null) || continue
     if printf '%s' "$jobs" | jq -e '[.jobs[] | select((.name | startswith("gate-shards")) and .conclusion == "success")] | length > 0' > /dev/null 2>&1; then
-      printf '%s\n' "$sha"
+      printf '%s %s %s\n' "$id" "$sha" "$cr"
       return 0
     fi
   done <<EOF
 $ids
 EOF
   return 0
+}
+
+# The gap lines for the issue, printed when there is a gap and nothing
+# otherwise: the last whole success (`<run id> <sha> <created_at>`, empty when
+# none was found) is older than three four-hour intervals and master took
+# first-parent merges after its commit. A time that cannot be read, or a
+# commit not in this history, counts as a gap: the doubt is shown to a person
+# rather than kept quiet.
+full_gap_lines() {
+  local last_line="$1" note="$2" sha="$3" url="$4" runv="$5" id lsha cr t now n age
+  local base="${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY:-}/actions/runs"
+  if [ -z "$last_line" ]; then
+    printf '공백 보고 — 마지막 전량 성공을 찾지 못했습니다%s\n\n' "${note:+ ($note)}"
+    printf -- '- 이번 회차: %s · run=%s\n' "$url" "${runv:-비어 있음}"
+    return 0
+  fi
+  read -r id lsha cr <<EOF
+$last_line
+EOF
+  if git cat-file -e "$lsha^{commit}" 2>/dev/null && git merge-base --is-ancestor "$lsha" "${sha:-HEAD}" 2>/dev/null; then
+    n=$(git rev-list --first-parent --merges --count "$lsha..${sha:-HEAD}")
+  else
+    n="알 수 없음 (커밋이 이 이력에 없습니다)"
+  fi
+  [ "$n" != "0" ] || return 0
+  now="${GATE_FULL_NOW:-$(date -u +%s)}"
+  t=$(jq -rn --arg c "$cr" '$c | fromdateiso8601' 2>/dev/null) || t=""
+  case "$t" in
+    ''|*[!0-9]*) age="알 수 없음" ;;
+    *) [ $(( now - t )) -gt 43200 ] || return 0
+       age="$(( (now - t) / 3600 ))시간" ;;
+  esac
+  printf '공백 보고 — 마지막 전량 성공이 12시간보다 오래되었고 그 뒤 master 에 머지가 있습니다\n\n'
+  printf -- '- 마지막 전량 성공 실행: %s/%s\n' "$base" "$id"
+  printf -- '- 커밋: %s · 시각: %s (%s 전)\n' "$lsha" "$cr" "$age"
+  printf -- '- 그 뒤 first-parent 머지: %s건\n' "$n"
+  printf -- '- 이번 회차: %s · run=%s\n' "$url" "${runv:-비어 있음}"
+}
+
+# Writes the body into the open issue as a comment, or opens one with the
+# label (made first when the repository lacks it).
+full_write_issue() {
+  local repo="$1" label="$2" open="$3" body="$4" what="$5"
+  if ! full_gh label list --repo "$repo" --search "$label" --json name --jq '.[].name' 2>/dev/null | grep -qx "$label"; then
+    full_gh label create "$label" --repo "$repo" --color B60205 --description 'gate 정기 전량 실패' > /dev/null 2>&1 \
+      || printf 'gate-full: %s 라벨을 만들지 못했습니다\n' "$label" >&2
+  fi
+  if [ -n "$open" ]; then
+    if full_gh issue comment "$open" --repo "$repo" --body-file "$body" > /dev/null; then
+      printf 'gate-full: %s — 이슈 #%s 에 코멘트를 달았습니다\n' "$what" "$open" >&2
+      return 0
+    fi
+  elif full_gh issue create --repo "$repo" --title "gate 정기 전량 실패" --label "$label" --body-file "$body" > /dev/null; then
+    printf 'gate-full: %s — %s 라벨 이슈를 열었습니다\n' "$what" "$label" >&2
+    return 0
+  fi
+  printf 'gate-full: 보고 실패 — 이슈를 쓰지 못했습니다\n' >&2
+  return 1
 }
 
 # `<row>\t<ids>\t<what>` for every row of the table that carries sections and
@@ -194,10 +267,11 @@ full_failed_rows() {
 }
 
 full_report() {
-  local plan="" shards="" cov="" rep="" pdir="" rdir="" sel_script="$script_dir/gate-select.sh" cap=30
+  local plan="" shards="" cov="" rep="" runv="" pdir="" rdir="" sel_script="$script_dir/gate-select.sh" cap=30
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --plan)        [ "$#" -ge 2 ] || full_usage; plan="$2"; shift 2 ;;
+      --run)         [ "$#" -ge 2 ] || full_usage; runv="$2"; shift 2 ;;
       --shards)      [ "$#" -ge 2 ] || full_usage; shards="$2"; shift 2 ;;
       --coverage)    [ "$#" -ge 2 ] || full_usage; cov="$2"; shift 2 ;;
       --report)      [ "$#" -ge 2 ] || full_usage; rep="$2"; shift 2 ;;
@@ -212,12 +286,12 @@ full_report() {
   case "$cap" in ''|*[!0-9]*|0) printf 'gate-full: --cap 은 양의 정수입니다: %s\n' "$cap" >&2; full_usage ;; esac
 
   local ref="${GITHUB_REF:-}" ev="${GITHUB_EVENT_NAME:-}"
-  if [ "$ref" != "refs/heads/master" ] || [ "$ev" = "pull_request" ]; then
+  if [ "$ref" != "refs/heads/master" ] || { [ "$ev" != "schedule" ] && [ "$ev" != "workflow_dispatch" ]; }; then
     printf 'gate-full: 보고 안 함 — ref %s · 이벤트 %s 는 master 의 정기·수동 실행이 아닙니다\n' "${ref:-없음}" "${ev:-없음}" >&2
     return 0
   fi
 
-  local repo="${GITHUB_REPOSITORY:-}" sha="${GITHUB_SHA:-}" label="gate-full-failure" open body
+  local repo="${GITHUB_REPOSITORY:-}" sha="${GITHUB_SHA:-}" label="gate-full-failure" open body rc
   local url="${GITHUB_SERVER_URL:-https://github.com}/$repo/actions/runs/${GITHUB_RUN_ID:-}"
   if ! open=$(full_gh issue list --repo "$repo" --label "$label" --state open --json number --jq '.[0].number // empty' 2>/dev/null); then
     printf 'gate-full: 보고 실패 — %s 라벨의 열린 이슈를 읽지 못했습니다\n' "$label" >&2
@@ -225,6 +299,26 @@ full_report() {
   fi
   open=$(printf '%s' "$open" | head -n 1)
   body=$(mktemp "${TMPDIR:-/tmp}/gate-full-report.XXXXXX") || return 1
+
+  # The last whole success, which both the gap and the candidate span read.
+  local last_line="" last="" last_note="" gap=""
+  if ! last_line=$(full_last_success); then
+    last_line=""; last_note="실행 목록을 읽지 못했습니다"
+  fi
+  last=$(printf '%s' "$last_line" | cut -d ' ' -f 2)
+
+  # A skipped round reports a gap and nothing else, and never closes.
+  if [ "$runv" = "0" ]; then
+    gap=$(full_gap_lines "$last_line" "$last_note" "$sha" "$url" "$runv")
+    if [ -z "$gap" ]; then
+      printf 'gate-full: 건너뛴 회차 — 공백 아님 (마지막 전량 성공 %s)\n' "${last:-없음}" >&2
+      rm -f "$body"
+      return 0
+    fi
+    printf '%s\n' "$gap" > "$body"
+    full_write_issue "$repo" "$label" "$open" "$body" "공백 보고"
+    rc=$?; rm -f "$body"; return "$rc"
+  fi
 
   if [ "$plan" = "success" ] && [ "$shards" = "success" ] && [ "$cov" = "success" ] && [ "$rep" = "success" ]; then
     if [ -z "$open" ]; then
@@ -260,10 +354,7 @@ full_report() {
   fi
 
   # The span of first-parent merges.
-  local last="" last_note="" merges span
-  if ! last=$(full_last_success); then
-    last=""; last_note="실행 목록을 읽지 못했습니다"
-  fi
+  local merges span
   if [ -n "$last" ] && git cat-file -e "$last^{commit}" 2>/dev/null && git merge-base --is-ancestor "$last" "${sha:-HEAD}" 2>/dev/null; then
     merges=$(git rev-list --first-parent --merges "$last..${sha:-HEAD}")
     span="마지막 성공 전량 커밋 $last 부터"
@@ -276,7 +367,7 @@ full_report() {
     fi
   fi
 
-  local m n=0 omitted=0 cands=0 subj pr out rc kind what hit lines=""
+  local m n=0 omitted=0 cands=0 subj pr out kind what hit lines=""
   while read -r m; do
     [ -n "$m" ] || continue
     n=$((n + 1))
@@ -326,28 +417,14 @@ EOF
     printf '%s' "$lines"
     [ "$cands" -gt 0 ] || printf -- '- 좁힌 선택 밖의 실패 — 후보 머지가 없습니다\n'
     [ "$omitted" -eq 0 ] || printf -- '- 후보 계산 생략 %s건 (상한 %s건)\n' "$omitted" "$cap"
+    gap=$(full_gap_lines "$last_line" "$last_note" "$sha" "$url" "$runv")
+    [ -z "$gap" ] || printf '\n%s\n' "$gap"
   } > "$body"
   [ "$cands" -gt 0 ] || printf 'gate-full: 좁힌 선택 밖의 실패 — 후보 머지가 없습니다\n' >&2
   [ "$omitted" -eq 0 ] || printf 'gate-full: 후보 계산 생략 %s건 (상한 %s건)\n' "$omitted" "$cap" >&2
 
-  if ! full_gh label list --repo "$repo" --search "$label" --json name --jq '.[].name' 2>/dev/null | grep -qx "$label"; then
-    full_gh label create "$label" --repo "$repo" --color B60205 --description 'gate 정기 전량 실패' > /dev/null 2>&1 \
-      || printf 'gate-full: %s 라벨을 만들지 못했습니다\n' "$label" >&2
-  fi
-  if [ -n "$open" ]; then
-    if full_gh issue comment "$open" --repo "$repo" --body-file "$body" > /dev/null; then
-      printf 'gate-full: 전량 실패 — 이슈 #%s 에 코멘트를 달았습니다\n' "$open" >&2
-      rm -f "$body"
-      return 0
-    fi
-  elif full_gh issue create --repo "$repo" --title "gate 정기 전량 실패" --label "$label" --body-file "$body" > /dev/null; then
-    printf 'gate-full: 전량 실패 — %s 라벨 이슈를 열었습니다\n' "$label" >&2
-    rm -f "$body"
-    return 0
-  fi
-  printf 'gate-full: 보고 실패 — 이슈를 쓰지 못했습니다\n' >&2
-  rm -f "$body"
-  return 1
+  full_write_issue "$repo" "$label" "$open" "$body" "전량 실패"
+  rc=$?; rm -f "$body"; return "$rc"
 }
 
 # --- self-test ---------------------------------------------------------------
@@ -488,7 +565,7 @@ EOF
     : > "$T/gh.log"; : > "$T/body"
     ( cd "$T/repo" && GATE_FULL_GH="$T/gh" GH_LOG="$T/gh.log" GH_JOBS="$T/jobs.json" GH_LABELS="$T/labels" \
         GH_OPEN="$T/open" GH_BODY="$T/body" GATE_FULL_RUNS_JSON="$T/ok.json" GITHUB_REPOSITORY=o/r GITHUB_RUN_ID=99 \
-        GITHUB_SHA="$head" GITHUB_REF="$r" GITHUB_EVENT_NAME="$e" \
+        GITHUB_SHA="$head" GITHUB_REF="$r" GITHUB_EVENT_NAME="$e" GATE_FULL_NOW="${GATE_FULL_NOW:-1767398400}" \
         bash "$self" report --plan success --shards "$s" --coverage success --report success \
           --plan-dir "$T/plan" --results-dir "$T/res" --select "$T/select.sh" "$@" )
   }
@@ -560,11 +637,73 @@ EOF
     bad "(k) 마지막 성공 전량이 없으면 구간을 상한으로 자른다" "rc=$rc $(cat "$T/body")"
   fi
 
+  # --- the gap: the clock stands two days after the success at 2026-01-01.
+  # (l) a skipped round whose last whole success is old, with four merges
+  # after it: the gap goes into the open issue, which stays open.
+  mk_runs "$T/ok.json" "50 schedule success $base 2026-01-01T00:00:00Z"
+  printf '7\n' > "$T/open"
+  rep refs/heads/master schedule skipped --run 0 2>"$T/err"; rc=$?
+  if [ "$rc" = "0" ] && grep -q '^공백 보고 — 마지막 전량 성공이 12시간보다 오래되었고' "$T/body" \
+     && grep -q '^- 마지막 전량 성공 실행: https://github.com/o/r/actions/runs/50$' "$T/body" \
+     && grep -q "^- 커밋: $base · 시각: 2026-01-01T00:00:00Z (48시간 전)$" "$T/body" \
+     && grep -q '^- 그 뒤 first-parent 머지: 4건$' "$T/body" \
+     && grep -q '^- 이번 회차: https://github.com/o/r/actions/runs/99 · run=0$' "$T/body" \
+     && grep -q '^issue comment 7 ' "$T/gh.log"; then
+    ok "(l) 오래된 마지막 전량 성공 뒤 머지가 있으면 건너뛴 회차가 공백을 적는다"
+  else
+    bad "(l) 오래된 마지막 전량 성공 뒤 머지가 있으면 건너뛴 회차가 공백을 적는다" "rc=$rc $(cat "$T/body") / $(cat "$T/gh.log")"
+  fi
+  if ! grep -q '^issue close' "$T/gh.log" && ! grep -qE '정기 전량 (실패|성공)' "$T/body"; then
+    ok "(l) 건너뛴 회차는 공백만 적고 이슈를 닫지 않는다"
+  else
+    bad "(l) 건너뛴 회차는 공백만 적고 이슈를 닫지 않는다" "$(cat "$T/gh.log") / $(cat "$T/body")"
+  fi
+
+  # (m) the same old success, but this round is a whole success: no gap, the
+  # issue is closed.
+  rep refs/heads/master schedule success --run 1 2>"$T/err"; rc=$?
+  if [ "$rc" = "0" ] && ! grep -q '공백 보고' "$T/body" && grep -q '^issue close 7 ' "$T/gh.log"; then
+    ok "(m) 이번 회차가 전량 성공이면 공백이 아니다"
+  else
+    bad "(m) 이번 회차가 전량 성공이면 공백이 아니다" "rc=$rc $(cat "$T/body") / $(cat "$T/gh.log")"
+  fi
+
+  # (n) no whole success to be found: written as a gap, a new issue opened.
+  mk_runs "$T/ok.json" "50 schedule failure $base 2026-01-01T00:00:00Z"
+  : > "$T/open"
+  rep refs/heads/master schedule skipped --run 0 2>"$T/err"; rc=$?
+  if [ "$rc" = "0" ] && grep -q '^공백 보고 — 마지막 전량 성공을 찾지 못했습니다$' "$T/body" \
+     && grep -q '^issue create ' "$T/gh.log" && ! grep -q '^issue close' "$T/gh.log"; then
+    ok "(n) 마지막 전량 성공을 찾지 못하면 공백으로 적는다"
+  else
+    bad "(n) 마지막 전량 성공을 찾지 못하면 공백으로 적는다" "rc=$rc $(cat "$T/body") / $(cat "$T/gh.log")"
+  fi
+
+  # (o) a success an hour old is no gap: a skipped round writes nothing.
+  mk_runs "$T/ok.json" "50 schedule success $base 2026-01-01T00:00:00Z"
+  printf '7\n' > "$T/open"
+  GATE_FULL_NOW=1767229200 rep refs/heads/master schedule skipped --run 0 2>"$T/err"; rc=$?
+  if [ "$rc" = "0" ] && [ ! -s "$T/body" ] && ! grep -qE '^issue (comment|create|close)' "$T/gh.log" \
+     && grep -q '^gate-full: 건너뛴 회차 — 공백 아님' "$T/err"; then
+    ok "(o) 12시간 안의 전량 성공이면 건너뛴 회차는 아무것도 쓰지 않는다"
+  else
+    bad "(o) 12시간 안의 전량 성공이면 건너뛴 회차는 아무것도 쓰지 않는다" "rc=$rc $(cat "$T/body") / $(cat "$T/gh.log") / $(cat "$T/err")"
+  fi
+
+  # (p) a failed whole round past an old success carries the gap under the
+  # failure.
+  rep refs/heads/master schedule failure --run 1 2>"$T/err"; rc=$?
+  if [ "$rc" = "0" ] && grep -q '^정기 전량 실패$' "$T/body" && grep -q '^공백 보고 — 마지막 전량 성공이 12시간보다' "$T/body"; then
+    ok "(p) 실패한 전량 회차도 공백을 함께 적는다"
+  else
+    bad "(p) 실패한 전량 회차도 공백을 함께 적는다" "rc=$rc $(cat "$T/body")"
+  fi
+
   rm -rf "$T"
   printf 'gate-full self-test: %d passed, %d failed\n' "$passed" "$failed"
   # A floor on the count, so a refactor that silently skips cases cannot pass.
-  if [ "$passed" -lt 14 ]; then
-    printf 'gate-full self-test: 통과 수 %d 가 하한 14 에 못 미칩니다\n' "$passed" >&2
+  if [ "$passed" -lt 20 ]; then
+    printf 'gate-full self-test: 통과 수 %d 가 하한 20 에 못 미칩니다\n' "$passed" >&2
     return 1
   fi
   [ "$failed" = "0" ]
