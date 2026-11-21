@@ -5,6 +5,17 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.54.1] - 2026-11-21
+
+무인 설계 스킬이 자기 설계 문서의 `## 구현 시 검증 항목` 을 동결 전과 정지 기록 전에 기계로 검사하고 고친다. 지금까지는 등급 줄이 빠진 항목이나 잔여 사유와 짝이 맞지 않는 차단 부류가 그대로 동결·정지되어, 좌석의 자동 답이 게이트의 문서 대조에서 거부되었다. 그 거부의 사유는 표준 오류에만 남아 같은 질문을 받은 사람이 왜 좌석이 답하지 않았는지 알 수 없었다.
+
+### Fixed
+
+- **`gate.sh residual-check --manifest <path> --document <문서>`** — 검증 계약의 잘 짜임 술어 가운데 기계로 가릴 수 있는 부분 전부(필수 여덟 필드, 닫힌 어휘, 차단 부류와 잔여 사유의 짝, 끝 등급 뒤 기록 줄, `/tmp` 글자, `§` 앵커, `### R<n>.` 표제와 라벨 겹침, 저장 금지 등급 `미검증`)를 위반 한 줄씩 낸다. 종료 코드는 0 위반 없음, 1 위반 있음, 2 판독 불가다. 읽기 동사라 원장에 행을 쓰지 않는다. 술어는 `run.sh` 의 `residual_items_malformed` 이다.
+- **네 무인 설계 스킬의 잔여 항목 검사** — `design-discuss-unattended`·`design-solo-unattended`·`design-base-unattended` 는 저장된 문서가 있는 정지 기록 앞과 잔여 사다리 앞에서, `design-reconverge` 는 작업 사본을 발행하기 전에 이 동사를 부르고 종료 0 이 될 때까지 제자리에서 고친다. 검증 계약 `_common/verification.md` 에 「기계 검사」 하위 절을 두어 호출 꼴과 종료 코드를 한 번만 정한다.
+- **자동 답 거부의 기록** — 좌석이나 스테이지의 자동 답을 내용 검사(추천, 설계 문서 대조, 결정 초안)가 거부하면 게이트가 새 행 종류 `auto-refused` 를 하나 남긴다. 행은 기록, 답한 주체, 추천 라벨, 거부 문면을 싣고, 같은 거부를 다시 만나면 새로 쓰지 않는다. `중단 답` 행이 아니므로 기록은 여전히 답 없는 기록이다.
+- **질문지의 거부 사유** — `halt-question.sh render` 가 기록의 `auto-refused` 행을 원장에서 읽어 `body` 맨 앞에 「좌석이 추천 `<라벨>` 을 고르지 않은 이유: …」(스테이지면 「스스로 답하지 못한 이유」)를 싣는다. 행이 없으면 본문은 전과 바이트로 같다. 좌석 문면(`act2-seat.md`)도 이 행을 가리킨다.
+
 ## [3.54.0] - 2026-11-21
 
 무인 런의 시각 발행 고정 계정을 임대 표 곁의 기록 `visual-pins/<런>.pin` 에 남긴다. cc-lane 의 차용 기증자 선택이 이 기록을 읽어 고정 계정의 그룹을 순위 맨 뒤로 민다. 지금까지는 cc 가 고정 계정을 기증자로 빌려 그 그룹에 대화형 예약 행이 생기면, 라우터가 시각 발행을 `pinned-lane-ineligible` 로 PARK 해도 cc-lane 은 그 사실을 알 길이 없어 기증자를 바꾸지 않았다.
