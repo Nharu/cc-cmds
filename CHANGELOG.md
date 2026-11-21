@@ -5,6 +5,25 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.54.1] - 2026-11-21
+
+파이프라인이 실행하는 적용 프로브가 런 정보를 실행 환경으로 받는다. 지금까지 프로브는 자기 대상을 가리려면 런 id 나 세그먼트 브랜치 이름을 문자열에 상수로 박아야 했고, 재킥오프가 그 프로브를 그대로 이어받으면 다음 런의 프로브는 언제나 지난 런의 배포를 재어 적용이 필요한데도 불필요로 읽혔다.
+
+### Fixed
+
+- **프로브 실행 환경** — 감독자의 사전·사후 프로브와 정산의 세 입구(끊긴 감독자, 적용 불명, 들여온 세그먼트)가 프로브에 `CC_APPLY_RUN_ID`(프로브를 돌리는 런)·`CC_APPLY_SEGMENT`(세그먼트 id)·`CC_APPLY_MERGE_COMMIT`(머지 커밋의 전체 이름)을 넘긴다. 적용 명령의 환경에는 넘기지 않는다.
+- **HEAD 확인** — 프로브를 돌리기 전에 워크트리 HEAD 가 고정한 머지 커밋인지 보고, 아니면 돌리지 않는다. 재사용한 적용 워크트리의 HEAD 가 다르면 사전 실패로 park 하고, 명령이 HEAD 를 옮겼으면 사후 프로브 없이 적용 불명으로 남기며, 정산은 측정 실패로 park 한다. 막힘과 park 문면이 `HEAD 불일치` 를 싣는다.
+- **런 id 를 담은 프로브의 재킥오프** — 이전 매니페스트의 파이프라인 프로브가 런 id 토큰을 담고 있으면 `kickoff-defaults.sh --carry` 가 프로브와 적용 프로브 코드 행을 모두 `다시 물음` 으로 내고, `rekick.sh` 는 5c 로 다시 물은 새 프로브(`--set 런:apply-probe`)와 대응을 함께 받아야 초안을 통과시킨다. 묻지 못하는 좌석 재킥오프는 그 원천에서 후속 런을 열지 않는다.
+
+### Changed
+
+- **5c 안내** — `boundaries.md` 가 프로브를 받을 때 세 변수와 HEAD 로 대상을 가리고, 들여온 세그먼트는 이전 런의 브랜치를 지니므로 브랜치 이름으로 고르지 말라고 말한다. `rekickoff.md` 가 `5c 프로브` 답 키와 그 흐름을 적는다.
+
+### Post-install notes
+
+- 런은 시작 때 고정한 자기 플러그인 사본을 돌린다. 이 판 전에 시작한 런의 프로브는 세 변수를 받지 못한다.
+- 이미 런 id 를 상수로 담은 프로브로 끝난 런을 재킥오프하면 5c 를 다시 묻는다.
+
 ## [3.54.0] - 2026-11-21
 
 무인 런의 시각 발행 고정 계정을 임대 표 곁의 기록 `visual-pins/<런>.pin` 에 남긴다. cc-lane 의 차용 기증자 선택이 이 기록을 읽어 고정 계정의 그룹을 순위 맨 뒤로 민다. 지금까지는 cc 가 고정 계정을 기증자로 빌려 그 그룹에 대화형 예약 행이 생기면, 라우터가 시각 발행을 `pinned-lane-ineligible` 로 PARK 해도 cc-lane 은 그 사실을 알 길이 없어 기증자를 바꾸지 않았다.
