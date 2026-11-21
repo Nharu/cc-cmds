@@ -976,11 +976,39 @@ printf '**스킬**: implement-unattended\n**스텝**: Step 1 CFI-U3 BT-STOP — 
 printf '**스킬**: implement-unattended\n**스텝**: Step 3 CFI-U3 BT-STOP — 미결 결정 아님\n' > "$UCD/h2.md"
 check "미결 결정 정지 판별은 스텝 값 전체를 비교한다" \
   "$(halt_step_is_unclosed_decision "$UCD/h1.md" && printf y || printf n)$(halt_step_is_unclosed_decision "$UCD/h2.md" && printf y || printf n)" "yn"
-printf '**스킬**: implement-unattended\n**스텝**: Step 2 CFI-U3 BT-STOP — 사람 둔 어긋남\n' > "$UCD/k1.md"
-printf '**스킬**: implement-unattended\n**스텝**: Step 2 CFI-U3 BT-STOP — 사람 둔 어긋남 아님\n' > "$UCD/k2.md"
-printf '**스킬**: implement-unattended\n**스텝**: Step 2 CFI-U3 BT-STOP\n' > "$UCD/k3.md"
-check "사람 둔 어긋남 정지 판별은 스텝 값 전체를 비교한다 (꼬리만 다른 스텝·앞 접두만 같은 스텝·미결 결정 정지는 아님)" \
-  "$(for f in k1 k2 k3 h1; do halt_step_is_kept_drift "$UCD/$f.md" && printf y || printf n; done)" "ynnn"
+# 사람 둔 어긋남 판독은 첫 스텝 값의 공백을 모두 지우고 dash 다섯 종을 - 로 바꾼 뒤
+# CFI-U3BT-STOP 과 그 뒤 사람둔어긋남 을 찾는다. 철자가 조금 어긋난 기록도 참이고,
+# 꼬리 없는 BT-STOP·미결 결정·강제 표면 정지·뒤집힌 순서는 거짓이다.
+kd_n=0 kd_got='' kd_want=''
+while IFS='|' read -r kd_w kd_step; do
+  kd_n=$((kd_n + 1))
+  printf '%s\n' '**스킬**: implement-unattended' "**스텝**: $kd_step" '**분류**: gate-unanswerable' > "$UCD/kd$kd_n.md"
+  kd_want="$kd_want$kd_w"
+  if halt_step_is_kept_drift "$UCD/kd$kd_n.md"; then kd_got="${kd_got}y"; else kd_got="${kd_got}n"; fi
+done <<EOF
+y|Step 2 CFI-U3 BT-STOP — 사람 둔 어긋남
+y|Step 2 CFI-U3 BT-STOP — 사람 둔 어긋남 (2줄)
+y|Step 2 CFI-U3 BT-STOP — 사람 둔 어긋남 아님
+y|Step 2 CFI-U3 BT-STOP – 사람 둔 어긋남
+y|Step 2 CFI-U3 BT-STOP —  사람  둔 어긋남
+y|Step 2 CFI-U3  BT-STOP — 사람 둔 어긋남
+y|Step 2 CFI–U3 BT–STOP — 사람 둔 어긋남
+y|Step 2 CFI-U3 BT-STOP - 사람 둔 어긋남
+y|Step 2 CFI-U3 BT-STOP — 사람 둔 어긋남
+y|Step 2 CFI-U3 BT-STOP —$(printf '\302\240')사람 둔 어긋남
+y|Step 2 CFI-U3 BT-STOP$(printf '\343\200\200')—$(printf '\342\200\203')사람 둔 어긋남
+y|Step 2 CFI-U3 BT-STOP ‒ 사람 둔 어긋남
+y|Step 2 CFI-U3 BT-STOP ― 사람 둔 어긋남
+y|Step 2 CFI-U3 BT-STOP − 사람 둔 어긋남
+n|Step 2 CFI-U3 BT-STOP
+n|Step 1 CFI-U3 BT-STOP — 미결 결정
+n|Step 3 강제 표면 좌석 적용 — 사람 둔 어긋남
+n|사람 둔 어긋남 — Step 2 CFI-U3 BT-STOP
+EOF
+check "사람 둔 어긋남 판독은 꼬리·dash 종류·겹친 공백·유니코드 공백 변형을 받고 다른 정지는 받지 않는다" "$kd_got" "$kd_want"
+printf '%s\n' '**스텝**: Step 1 CFI-U3 BT-STOP — 미결 결정' '**스텝**: Step 2 CFI-U3 BT-STOP — 사람 둔 어긋남' > "$UCD/kd-two.md"
+check "사람 둔 어긋남 판독은 첫 스텝 줄만 읽고, 없는 파일은 거짓이다 (둘째 스텝 줄·미결 결정 정지는 아님)" \
+  "$(for f in kd-two kd-none h1; do halt_step_is_kept_drift "$UCD/$f.md" && printf y || printf n; done)" "nnn"
 # 검증기 — 설계 스킬이 쓰라고 한 표기는 통과하고, 그 밖의 값은 이유를 대며 거절된다.
 rs_full() {  # rs_full <file> <잔여 항목 값>
   {
