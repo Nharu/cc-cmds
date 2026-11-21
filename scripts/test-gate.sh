@@ -60938,6 +60938,7 @@ w83_ans R83YA D1 교대 '추천대로 확정'
 CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$w83_prev_ar"
 check "83y: 교대의 답은 거부되고 행이 없다" "$rc|$(y83_rows R83YA)" "3|0"
 y83_seat R83YA D1
+[ "$rc" = 0 ] || printf '%s\n' "$msg" | sed -n '1,8p' >&2
 check "83y: 좌석의 추천대로 확정이 선택지 없이 선다" "$rc|$(y83_rows R83YA)" "0|1"
 y83_row=$( { grep -F '`중단 답`' "$WT/docs/pipeline-run/R83YA.md" 2>/dev/null || true; } | tail -1)
 y83_in() {  # y83_in <문자열> <조각> <이름> — 조각이 들어 있으면 이름
