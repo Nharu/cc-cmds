@@ -369,7 +369,10 @@ def rt_borrow_read($schema):
            or ((.donor | type) != "object")
            or ((.donor.id | type) != "string") or .donor.id == ""
            or ((.donor.config_dir | type) != "string") or .donor.config_dir == "" then {state: "corrupt"}
-      else {state: .state, lane_config_dir: .lane_config_dir, donor: {id: .donor.id, config_dir: .donor.config_dir}} end
+      else {state: .state, lane_config_dir: .lane_config_dir, donor: {id: .donor.id, config_dir: .donor.config_dir}}
+        # 공유 차용 표시. 상태가 `borrowed` 이고 최상위 `share` 가 불리언 참일 때만 싣는다 —
+        # 그 밖의 출력은 바이트가 그대로이고, `share` 의 형이 틀려도 손상이 아니다.
+        + (if .state == "borrowed" and .share == true then {share: true} else {} end) end
   end;
 def rt_borrow_mark($cfg; $b):
   if ($b | type) != "object" then {}
@@ -1163,6 +1166,67 @@ def rt_hold_ok($a):
   and ((($a.unattended == "enabled" or $a.unattended == "draining") and ($a.group_reserved | not)) or rt_lend_hold_ok($a)
        or rt_publish_hold_ok($a))
   and ($a.class != "X") and ($a.login_bad | not);
+# 급함. 라우터 코어에서 요청이 급한지 묻는 자리는 이 정의 하나만 쓴다. 요청이 `urgent:
+# true`(문맥 수집이 런 디렉터리의 급함 표지로 싣는다)이고 레인 고정이 없을 때만 참이다 —
+# 고정 요청은 급한 런이어도 순위·호스트 보류·입장 모두 급하지 않은 요청과 같다.
+def rt_urgent($p): ($p.c.request.urgent == true) and ($p.pin == null);
+# 공유 차용. 차용 판독이 `borrowed` 이면서 `share: true` 를 실었을 때만이다 — `intent`·
+# `returning` 기록과 공유가 아닌 `borrowed` 기록은 기증 그룹을 내주지 않는다.
+def rt_urgent_share($p): (($p.c.borrow // {}) | (.state == "borrowed") and (.share == true));
+def rt_urgent_donor_g($a): (($a.borrowed // null) == "donor") or (($a.borrowed // null) == "group");
+# 급한 요청이 차용 중인 기증 그룹을 쓸 선. 주간은 cc-lane 의 주간 경보선 아래, 5시간은
+# 대여 검사의 5시간 선과 같은 값이다. 유지는 cc-lane 의 기증자 경보선 두 갈래에서 멈춘다.
+def rt_urgent_donor_cap_bp: 9000;
+def rt_urgent_donor_five_bp: 5000;
+def rt_urgent_donor_alarm_bp: 9500;
+def rt_urgent_donor_alarm5_bp: 9000;
+# 기증 그룹 술어에서 두 선을 뺀 부분. 계정 `$a` 가 급한 요청의 기증 그룹 후보가 되지
+# 못하는 첫 원인, 모두 통과하면 null 이다. 그룹 예약은 차용 레인 밖의 대화형 예약 계정
+# 때문일 때만 원인이다 — `rt_mig_reject` 와 같은 식이라 이관 후보 거절과 같은 답을 낸다.
+def rt_urgent_donor_gate($p; $a):
+  if (rt_urgent($p) | not) then "not-urgent"
+  elif (rt_urgent_share($p) | not) then "no-share"
+  elif $a == null then "unknown-account"
+  elif (rt_urgent_donor_g($a) | not) then "not-donor"
+  elif $a.unattended != "enabled" then "unattended-off"
+  elif $a.login_bad then "logged-out"
+  elif $a.mismatch then "mismatch"
+  elif ($a.lend_enrolled == true) or ($a.publish_row == true) then "lend-or-publish"
+  elif $a.group_reserved and ($a.reserved_by_borrow != true) then "group-reserved"
+  elif ($p.fresh | not) then "usage-stale"
+  elif any($p.groups[$a.group].windows[]; .state == "unknown" or .state == "exhausted") then "window"
+  else null end;
+# 두 선. 그룹 보기 `$G` 에 예약 `$res` 를 얹은 주간 셈이 주간 선을, 5시간 창이 판정에
+# 참여하면 같은 5시간 셈이 5시간 선을 넘으면 그 원인, 아니면 null 이다.
+def rt_urgent_donor_lines($G; $res):
+  if rt_ueff($G.windows.seven_day) + $G.sigma.seven_day + $res.seven_day > rt_urgent_donor_cap_bp then "seven-day-line"
+  elif (rt_skip5($G.windows.five_hour) | not)
+       and (rt_ueff($G.windows.five_hour) + $G.sigma.five_hour + $res.five_hour > rt_urgent_donor_five_bp) then "five-hour-line"
+  else null end;
+# 기증 그룹 술어. 첫 원인, 모두 통과하면 null 이다. 예약은 `rt_res` 와 같은 식이다.
+def rt_urgent_donor_why($p; $a):
+  rt_urgent_donor_gate($p; $a) as $g
+  | if $g != null then $g
+    else (try rt_res($p.c; $a.group) catch null) as $res
+      | if $res == null then "reservation" else rt_urgent_donor_lines($p.groups[$a.group]; $res) end end;
+# 선·창·예약 원인. 급한 재개가 이 원인으로 떨어지면 다른 계정을 고르고, 그 밖의 원인이면
+# 급하지 않은 재개의 갈래로 흘러간다.
+def rt_urgent_line_cause($why):
+  any(("group-reserved", "usage-stale", "window", "reservation", "seven-day-line", "five-hour-line"); . == $why);
+# 급한 기증 그룹 부여의 유지. 두 선을 뺀 술어를 통과하고, 그룹의 주간 실효 사용이 주간
+# 경보선 미만이며, 5시간 창이 판정에 참여하면 5시간 실효 사용도 5시간 경보선 미만이고,
+# 계정이 소진이 아닐 때다. 입장 선을 넘은 뒤에도 유지되지만 경보선에서 멈춘다.
+def rt_urgent_hold_ok($p; $a):
+  $a != null and (rt_urgent_donor_gate($p; $a) == null)
+  and ($p.groups[$a.group] as $G
+       | (rt_ueff($G.windows.seven_day) < rt_urgent_donor_alarm_bp)
+         and (rt_skip5($G.windows.five_hour) or (rt_ueff($G.windows.five_hour) < rt_urgent_donor_alarm5_bp)))
+  and ($a.class != "X");
+# 부여 기록을 아는 유지. 기록이 `urgent_donor: true` 이고 그 계정이 지금도 기증 그룹
+# 계정이면 급한 유지 조건만 본다. 그 밖은 `rt_hold_ok($a)` 그대로다.
+def rt_hold_ok($p; $a; $o):
+  if ($o.urgent_donor? == true) and $a != null and rt_urgent_donor_g($a) then rt_urgent_hold_ok($p; $a)
+  else rt_hold_ok($a) end;
 # 대여 그룹. 그 그룹의 리셋권은 사람의 것이라 리셋권 대기가 지명하지 않는다.
 def rt_lend_g($p; $g): any(($p.lend_groups // [])[]; . == $g);
 # 계정에 부여하는 입장 판정. 등록 행은 대여 검사를 함께 통과해야 들고, 대여 검사에서만
@@ -1211,18 +1275,31 @@ def rt_admit($p; $a):
   if $a.publish_row == true then rt_publish_admit($p; $a)
   else rt_admit_core($p.c; $p.groups[$a.group]; $a.exhausted_until) as $adm
     | if ($a.lend_enrolled == true) and (rt_lend_new_ok($a) | not) then rt_lend_fail($adm) else $adm end end;
-# 대기 순위. 「누가 앞인가」를 묻는 코드는 이 세 함수만 쓴다. 대기 항목의 순위는 배열이고
-# 지금은 `seq` 한 자리다. 요청자의 순위는 살아 있는 자기 대기 항목의 순위이고, 그런 항목이
-# 없는 새 요청은 null(모든 대기자 뒤)이다. 앞선 대기 항목은 그룹 `$g` 의 살아 있는 대기 항목
-# 가운데 요청자보다 순위가 작은 것이다 — `$p.items` 는 요청자 자기 계보의 항목을 이미 뺐다.
-def rt_wait_rank($e): [$e.seq];
+# 대기 순위. 「누가 앞인가」를 묻는 코드는 이 세 함수만 쓴다. 대기 항목의 순위는 배열
+# `[급함 자리, seq]` 이고, 급한 항목(`urgent: true`)의 첫 자리는 0, 나머지는 1 이다 — 급한
+# 대기자는 급하지 않은 대기자 모두의 앞이고, 같은 급함 안에서는 `seq` 차례다. 요청자의
+# 순위는 살아 있는 자기 대기 항목의 순위이되 요청이 급하면 첫 자리를 0 으로 본다. 그런
+# 항목이 없는 새 요청은 급하면 `[0, infinite]`(급한 대기자 뒤, 급하지 않은 대기자 앞),
+# 급하지 않으면 null(모든 대기자 뒤)이다. 앞선 대기 항목은 그룹 `$g` 의 살아 있는 대기
+# 항목 가운데 요청자보다 순위가 작은 것이다 — `$p.items` 는 요청자 자기 계보의 항목을 이미
+# 뺐다. 순위는 봉투에 싣지 않는다.
+def rt_wait_rank($e): [(if $e.urgent == true then 0 else 1 end), $e.seq];
 def rt_req_rank($p):
   $p.own as $o
-  | if $o != null and $o.kind == "wait" and $o.live == true then rt_wait_rank($o) else null end;
+  | if $o != null and $o.kind == "wait" and $o.live == true
+    then [(if rt_urgent($p) or ($o.urgent == true) then 0 else 1 end), $o.seq]
+    elif rt_urgent($p) then [0, infinite]
+    else null end;
 def rt_ahead($p; $g):
   rt_req_rank($p) as $r
   | [$p.items[] | select(.kind == "wait") | select(rt_group_of($p.orgs; .account) == $g)
      | select($r == null or (rt_wait_rank(.) < $r))];
+# 앞선 대기자 몫을 얹은 그룹 보기. 계정 `$a` 의 그룹 σ 에 대기 항목 `$ah` 전원의 예약을
+# 창별로 더한다. 종류 없는 항목은 부르는 쪽이 먼저 걸러야 하고, 셈 오류는 그대로 올라간다.
+def rt_fifo_g2($p; $a; $ah):
+  $p.groups[$a.group] as $G
+  | [$ah[] | rt_res_of($p.c; .stage_kind; $a.group)] as $rs
+  | $G + {sigma: (reduce rt_wins[] as $w ($G.sigma; .[$w] = (.[$w] + ([$rs[] | .[$w]] | add))))};
 # FIFO 양보 판정. 후보 계정 `$a` 의 그룹에 앞선 대기 항목이 없으면 막지 않는다. 앞선 항목
 # 가운데 스테이지 종류를 싣지 않은 것이 하나라도 있으면 그 몫을 셀 수 없으므로 여유와
 # 상관없이 막는다. 모두 종류를 실었으면 그룹 σ 에 앞선 대기자 전원의 예약을 얹은 보기로
@@ -1235,12 +1312,29 @@ def rt_fifo_blocked($p; $a):
     elif any($ah[]; ((.stage_kind | type) != "string") or (.stage_kind == "")) then true
     else
       try (
-        $p.groups[$a.group] as $G
-        | [$ah[] | rt_res_of($p.c; .stage_kind; $a.group)] as $rs
-        | ($G + {sigma: (reduce rt_wins[] as $w ($G.sigma; .[$w] = (.[$w] + ([$rs[] | .[$w]] | add))))}) as $G2
+        rt_fifo_g2($p; $a; $ah) as $G2
         | (rt_admit_core($p.c; $G2; $a.exhausted_until).admitted | not)
           or (($a.lend_enrolled == true) and ($a.lend.res != null)
               and (rt_lend_why($p.c; $a.lend.dec; $a.lend.win; $G2; $a.lend.res) != null))
+      ) catch true
+    end;
+# 급한 기증 그룹 풀의 FIFO 판정. 앞선 항목은 후보 그룹의 앞선 대기 항목과, 어느 그룹이든
+# `urgent: true` 이고 요청자보다 순위가 앞선 대기 항목을 합친 것이다 — 한 필터로 고르므로
+# 두 조건에 다 드는 항목도 한 번만 센다. 앞선 항목이 없으면 막지 않고, 종류 없는 항목이
+# 있으면 막는다. 모두 종류를 실었으면 후보 그룹 σ 에 전원의 예약을 얹은 보기로 입장 판정과
+# 두 선을 다시 돌려, 어느 하나라도 떨어지면 막는다. 셈 오류는 막는다.
+def rt_urgent_fifo_blocked($p; $a):
+  rt_req_rank($p) as $r
+  | [$p.items[] | select(.kind == "wait")
+     | select((rt_group_of($p.orgs; .account) == $a.group) or (.urgent == true))
+     | select($r == null or (rt_wait_rank(.) < $r))] as $ah
+  | if ($ah | length) == 0 then false
+    elif any($ah[]; ((.stage_kind | type) != "string") or (.stage_kind == "")) then true
+    else
+      try (
+        rt_fifo_g2($p; $a; $ah) as $G2
+        | (rt_admit_core($p.c; $G2; $a.exhausted_until).admitted | not)
+          or (rt_urgent_donor_lines($G2; rt_res($p.c; $a.group)) != null)
       ) catch true
     end;
 def rt_observed($G):
@@ -1358,12 +1452,14 @@ def rt_host_heavy($k): (($k // "") | tostring) as $s | any(rt_host_kinds[]; . ==
 # 요청 계보에 살아 있는 자기 부여가 없고(이어 쥐기는 통과), 다른 계보의 살아 있는 무거운
 # 부여가 하나 이상 있다. 마지막 조건이 교착을 막는다 — 다른 무거운 스테이지가 도는 동안만
 # 보류한다. `stage_kind` 가 없는 옛 기록은 무거운 부여로 세지 않는다. 계정 대기의 재질의가
-# 이 보류로 바뀌면 대기 루프가 그 대기자의 그룹 FIFO 대기 항목을 내린다.
+# 이 보류로 바뀌면 대기 루프가 그 대기자의 그룹 FIFO 대기 항목을 내린다. 급한 요청은 보류
+# 하지 않는다 — 맨 앞에서 봉투를 그대로 돌려준다.
 def rt_host_hold($p):
   ($p.c.host // null) as $h
   | ($p.c.request.run_id) as $run
   | ($p.c.request.lineage) as $lin
-  | if (($h | type) != "object") or ($h.saturated != true) then .
+  | if rt_urgent($p) then .
+    elif (($h | type) != "object") or ($h.saturated != true) then .
     elif $p.c.request.event != "first" then .
     elif (rt_host_heavy($p.c.request.kind) | not) then .
     elif .verdict != "GRANT" or ((.txn.op? // null) != "write") then .
@@ -1441,7 +1537,9 @@ def rt_rec_new($p; $e):
   {schema: $p.schema, kind: "grant", run_id: $p.c.request.run_id, lineage: $p.c.request.lineage, nonce: $e.nonce,
    seq: rt_nextseq($p), account: $e.account, config_dir: $e.config_dir, reservation_bp: $e.reservation_bp,
    admitted_as: $e.admitted_as, basis: $e.basis, observed: $e.observed, granted_at_epoch: $p.c.now,
-   holders: ($p.c.request.holders // []), stage_kind: ($p.c.request.kind // null)};
+   holders: ($p.c.request.holders // []), stage_kind: ($p.c.request.kind // null)}
+  # 급한 기증 그룹 부여 표지. 봉투가 `urgent_donor: true` 일 때만 기록에 옮긴다.
+  + (if $e.urgent_donor? == true then {urgent_donor: true} else {} end);
 def rt_rec_hold($p):
   $p.own | del(.live, .path) | .holders = ((.holders + ($p.c.request.holders // [])) | unique_by(.pid));
 
@@ -1577,12 +1675,56 @@ def rt_resume_mig_on($p; $mp):
   $p.pin == null and ($mp | not) and ($p.c.request.no_migrate != true);
 # 묶인 계정 `$from` 이 소진된 재개를 다른 계정의 새 세션으로 옮기는 GRANT. 받을 계정은
 # 이관 선택과 같은 규칙으로 고르고, 없으면 null 이라 부른 쪽이 지금의 식을 그대로 낸다.
+# 급한 요청은 첫 이관 풀에 받을 계정이 없으면 묶인 계정을 뺀 기증 그룹 풀(기증 그룹 술어
+# 통과, 입장 판정, 급한 FIFO 판정)에서 같은 정렬로 고르고, 그 부여에 `urgent_donor: true`
+# 를 싣는다.
+def rt_urgent_mig_pool($p; $from):
+  [$p.accounts[] | select(.id != $from) | select(rt_urgent_donor_why($p; .) == null)
+   | (.) as $a | {a: $a, adm: rt_admit($p; $a), fifo: rt_urgent_fifo_blocked($p; $a)}];
 def rt_resume_mig($p; $from):
-  rt_mig_best($p; $from) as $b
+  rt_mig_best($p; $from) as $b0
+  | (if $b0 == null and rt_urgent($p) then
+       (rt_mig_best_of($p; rt_urgent_mig_pool($p; $from)) | if . == null then null else . + {urgent_donor: true} end)
+     else $b0 end) as $b
   | if $b == null then null
     else (rt_grant_new($p; $b.a; $b.adm; "resume-migrated")
-          + {migrated: {from: $from, to: $b.a.id, why: "resume-bound-exhausted"}, fresh: true}) as $e
+          + {migrated: {from: $from, to: $b.a.id, why: "resume-bound-exhausted"}, fresh: true}
+          + (if $b.urgent_donor == true then {urgent_donor: true} else {} end)) as $e
       | rt_env($e; "write"; rt_rec_new($p; $e)) end;
+# 급한 재개가 묶인 기증 그룹 계정을 떠날 곳. 이관이 허용되면 이관 GRANT 를 찾고, 없으면
+# 첫 이관 풀의 후보 없음 판정을 불러 그 대기의 그룹·기다릴 시각을 쓰되 사유는 `$why`,
+# 계정은 묶인 계정 `$from` 으로 바꾼다 — PARK 는 그대로, 예비 공급 표지도 그대로 둔다.
+# 이관이 허용되지 않거나 첫 이관 풀이 비면 null 이라, 부른 쪽이 급하지 않은 요청과 같은
+# 판정으로 돌아간다.
+def rt_urgent_resume_away($p; $mp; $from; $why):
+  if rt_resume_mig_on($p; $mp) | not then null
+  else rt_resume_mig($p; $from) as $m
+    | if $m != null then $m
+      else rt_mig_pool($p; $from) as $pool
+        | if ($pool | length) == 0 then null
+          else rt_nocand($p; $pool) | if .verdict == "WAIT" then .reason = $why | .account = $from else . end end
+      end
+  end;
+# 살아 있는 부여가 없는 급한 재개의 묶인 계정 판정. 묶인 기증 그룹 계정이 기증 그룹 술어를
+# 통과하고 입장하면 `urgent_donor: true` 의 `resume-bound` 부여다. 입장에서 떨어지거나
+# 선·창·예약 원인으로 술어에서 떨어지면 떠날 곳을 찾는다 — 사유는 소진만으로 막혔으면
+# `resume-bound-exhausted`, 아니면 `resume-bound-no-room` 이다. 그 밖의 원인이거나 떠날 곳이
+# 없으면 null 이라 급하지 않은 요청과 같은 재개 사다리로 흘러간다.
+def rt_urgent_resume_bound($p; $mp; $a):
+  rt_urgent_donor_why($p; $a) as $why
+  | if $why == null then
+      rt_admit($p; $a) as $adm
+      | if $adm.admitted then
+          (rt_grant_new($p; $a; $adm; "resume-bound") + {urgent_donor: true}) as $e
+          | rt_env($e; "write"; rt_rec_new($p; $e))
+        else rt_urgent_resume_away($p; $mp; $a.id;
+               (if $adm.failed == ["exhausted"] then "resume-bound-exhausted" else "resume-bound-no-room" end)) end
+    elif rt_urgent_line_cause($why) then
+      ($p.groups[$a.group].windows | [.[] | .state]) as $st
+      | rt_urgent_resume_away($p; $mp; $a.id;
+          (if $why == "window" and any($st[]; . == "exhausted") and (any($st[]; . == "unknown") | not)
+           then "resume-bound-exhausted" else "resume-bound-no-room" end))
+    else null end;
 # 재개. 이관 고정은 살아 있는 임대가 고정 계정에 있을 때만 그 임대를 잇는다. 임대가 다른
 # 계정에 있거나 살아 있지 않으면 고정 계정을 이관 고정의 보통 입장(`rt_mig_admit`)으로
 # 판정하고, 묶인 계정이 고정 계정과 다르면 그 GRANT 는 새 세션(`fresh`)이다 — 묶인 세션은
@@ -1596,6 +1738,18 @@ def rt_resume($p):
       | (if $a != null then $a.class else rt_class_of($G; null) end) as $cls
       | if $p.pin != null and $o.account != $p.pin then
           rt_env(rt_park("resume-bound-ineligible"; "대여 좌석에 고정된 런의 재개가 다른 계정에 묶여 있다 — 계보를 새로 시작한다"); "none"; null)
+        # 급한 기증 그룹 부여(기록 `urgent_donor: true`)는 고정이 없고 묶인 계정이 아직 기증
+        # 그룹 계정일 때, 소진이거나 급한 유지에서 떨어지면 묶인 계정을 떠날 곳을 찾는다.
+        # 없으면 계정이 묶인 계정인 그룹 없는 대기다 — 소진은 그 그룹 입장 판정이 낸 시각까지,
+        # 유지 탈락은 시각 없이 기다린다. 소진이 아닌 로그인 끊김은 아래 PARK 가 먼저다.
+        elif ($o.urgent_donor? == true) and $p.pin == null and $a != null and rt_urgent_donor_g($a)
+             and ($cls == "X" or (($a.login_bad | not) and (rt_urgent_hold_ok($p; $a) | not))) then
+          ($cls == "X") as $x
+          | rt_admit_core($p.c; $G; ($a.exhausted_until? // null)) as $adm
+          | (if $x then "resume-bound-exhausted" else "resume-bound-no-room" end) as $why
+          | rt_urgent_resume_away($p; $mp; $o.account; $why)
+            // rt_env(rt_wait_c(null; $o.account; (if $x then $adm.ready_at else null end); $why;
+                                (if $x then $adm.cost else null end)); "none"; null)
         # 발행 전용 행이 소진됐으면 기다리지 않는다. 대여 등록 행은 다시 열릴 시각을 알 때만
         # 기다리고, 모르면 계정과 원인을 밝혀 PARK 한다.
         elif $cls == "X" and ($a.publish_row? == true) then
@@ -1650,6 +1804,12 @@ def rt_resume($p):
                elif rt_migok($p) and rt_mig_due($p) then rt_mig_pick($p; $a.id; $a.publish.why; "resume-bound"; true)
                elif rt_migok($p) and $a.publish.why == "exhausted" then rt_pub_xwait($p; $a)
                else rt_env(rt_park_publish($p; $a; $a.publish.why); "none"; null) end)
+            # 급한 재개는 묶인 계정이 공유 차용 중인 기증 그룹 계정이면 아래 차용 대기·부적격
+            # 갈래보다 먼저 기증 그룹 판정을 받는다. 그 판정이 null 이면 아래로 흘러간다.
+            elif rt_urgent($p) and ($mp | not) and rt_urgent_donor_g($a) and rt_urgent_share($p)
+                 and ($p.table_corrupt | not) and ($p.borrow_corrupt | not)
+                 and (rt_urgent_resume_bound($p; $mp; $a) != null) then
+              rt_urgent_resume_bound($p; $mp; $a)
             # 무인 사용에서 빠진 이유가 cc 레인의 차용뿐이면 사람을 부르지 않고 기다린다.
             # 그룹 대표의 대기 기록이 cc-lane 의 체인을 부르고, 차용이 끝나면 다음 질의에서
             # `borrowed` 가 떨어져 재개가 부여된다. 로그인·임대 표·차용 기록이 깨진 상태는
@@ -1711,11 +1871,78 @@ def rt_lend_block($e):
         else "room" end)
      else "fifo" end) as $why
   | rt_park_lend($a.id; $why; (if $e.adm.admitted then null else $e.adm.ready_at end));
+# 고정 없는 풀의 후보 정렬. 입장을 통과하고 FIFO 에 막히지 않은 후보 `$cands` 를 받아
+# 보강·정렬·`order` 계산을 거친 부여 봉투를 낸다. 첫 풀과 급한 요청의 두 번째 풀이 함께
+# 쓴다 — 첫 풀의 봉투 바이트는 이 정의로 옮기기 전과 같다.
+def rt_new_pick($p; $cands; $basis):
+  # 대여 층이 두 단계 모두에서 맨 앞 키라 대여 행은 언제나 맨 뒤다. 그 행의 남은 양은 상한까지다.
+  rt_phase($p.c) as $ph
+  # 유지. 직전 계정 H 는 문맥의 기록이 같은 런의 것이고, 그 계정이 이 런의 live
+  # 임대에 있거나 기록 시각이 TTL 안일 때만이다. 설정에 유지 칸이 없으면 끈다.
+  | ($p.c.config.affinity // null) as $ac
+  | ($p.c.affinity // null) as $f
+  | (if $ac == null then null
+     elif ($f | type) == "object" and $f.run_id == $p.c.request.run_id and (($f.account | type) == "string")
+          and (any(($p.c.sticky // [])[]; . == $f.account)
+               or ((($f.at_epoch | type) == "number") and (($p.c.now - $f.at_epoch) <= $ac.ttl_s)))
+     then $f.account else null end) as $H
+  | (if $ac == null then null else ((($p.c.config.cap_bp // 10000) * $ac.hold_pct / 100) | round) end) as $Taff
+  # 분산. load5 는 그룹의 5시간 사용(창이 풀렸으면 0)에 그 그룹 live 임대의 5시간
+  # 예약 합을 더한 지역값이다 — r7 처럼 `rt_aview` 와 그룹 보기에는 싣지 않는다.
+  # 새 기준. 켜지지 않았으면 `rt_ask_fit` 을 부르지 않는다 — 설정 오류가 질문 가능
+  # 종류의 요청에서만 나게 하려는 것이다. `aff0` 은 오늘의 유지 판정이다.
+  | rt_ask_on($p.c) as $askon
+  | [$cands[] | $p.groups[.a.group] as $G | $G.windows.five_hour as $x
+       | (if $x == null or rt_ueff($x) == null then 10000 else rt_ueff($x) + ($G.sigma.five_hour // 0) end) as $l5
+       | (($x.state? // null) == "unlimited") as $unl
+       | (if $unl then (if $H != null and .a.id == $H then 0 else 1 end)
+          elif $H != null and .a.id == $H and $l5 < $Taff then 0 else 1 end) as $aff0
+       | (if $unl then rt_p7($p.c; $G; (if .a.lend_enrolled == true then (.a.lend.dec.ceiling_bp // 0) else 10000 end))
+          else 0 end) as $p7
+       | (if $askon then rt_ask_fit($p.c; $G; .a; .adm) else null end) as $ask
+       | ($ask != null and ($ask.fits | not)) as $short
+       | . + {load5: $l5, aff0: $aff0, p7: $p7, ask: $ask,
+              askk: (if $short then [1, (if $ask.r7 == null then 0 else 0 - $ask.r7 end)] else [0, 0] end),
+              aff: (if $short then 1 else $aff0 end)}] as $cands
+  | (if $ph.phase == "burst" then
+       ($cands | sort_by(rt_new_kb($p))) as $s
+       | {best: $s[0],
+          order: ({picked_by: rt_picked_by([$s[0:2][] | rt_new_kb($p)]; rt_new_names_b),
+                   load5_bp: $s[0].load5, affinity_account: $H, affinity_hold_bp: $Taff,
+                   pressure_bp_h: $s[0].p7}
+                  + rt_five_rec($p.groups[$s[0].a.group])
+                  + rt_ask_order($askon; $s; (if $askon then rt_ask_avoided($s; rt_new_kb($p)) else null end)))}
+     else
+       # 쉼: 주간 여유 r7 이 문턱 T 아래인 계정을 작은 순으로 먼저 쓰고, 문턱 위는 큰
+       # 순으로 그 뒤에 둔다. 주간 창을 모르는 계정은 층 2 이고 r7 을 세지 않는다.
+       # r7 은 여기서만 쓰는 지역값이다 — `rt_aview` 는 fleet.sh 도 보는 보기다.
+       # 대여 행의 7일 창 끝은 10000 이 아니라 그 행의 대여 상한이다 — 상한 위는 사람 몫이다.
+       rt_rest_rho($p.c) as $rho
+       | (($rho.v * $p.c.config.cap_bp * $ph.burst_length_s / 18000) | round) as $T
+       | [$cands[] | $p.groups[.a.group] as $G | $G.windows.seven_day as $x
+           | (if .a.lend_enrolled == true then (.a.lend.dec.ceiling_bp // 0) else 10000 end) as $top
+           | (if $x.state == "unknown" then null else $top - rt_ueff($x) - $G.sigma.seven_day end) as $r7
+           | . + {r7: $r7, tier: (if $r7 == null then 2 elif $r7 < $T then 0 else 1 end)}] as $rc
+       | ($rc | sort_by(rt_new_kr($p))) as $s
+       | $s[0] as $b
+       | {best: $b,
+          order: ({threshold_bp: $T, ratio_source: $rho.source, tier: (["below", "above", "unknown"][$b.tier]),
+                   r7_bp: $b.r7,
+                   admitted: {below: ([$rc[] | select(.tier == 0)] | length),
+                              above: ([$rc[] | select(.tier == 1)] | length),
+                              unknown: ([$rc[] | select(.tier == 2)] | length)},
+                   picked_by: rt_picked_by([$s[0:2][] | rt_new_kr($p)]; rt_new_names_r),
+                   load5_bp: $b.load5, affinity_account: $H, affinity_hold_bp: $Taff,
+                   pressure_bp_h: $b.p7}
+                  + rt_five_rec($p.groups[$b.a.group])
+                  + rt_ask_order($askon; $s; (if $askon then rt_ask_avoided($s; rt_new_kr($p)) else null end)))}
+     end) as $pick
+  | (rt_grant_new($p; $pick.best.a; $pick.best.adm; $basis) | .order += $pick.order);
 def rt_new($p; $basis0; $excl):
   $p.own as $o
   | (if $p.c.request.after_wait == true then "after-wait" else $basis0 end) as $basis
   | (($p.c.request.event == "first") and $o != null and ($o.kind == "grant") and ($o.live == true)
-     and rt_hold_ok(rt_av($p; $o.account)) and ($p.pin == null or $o.account == $p.pin)) as $idem
+     and rt_hold_ok($p; rt_av($p; $o.account); $o) and ($p.pin == null or $o.account == $p.pin)) as $idem
   | if $idem and ($p.c.request.nonce == $o.nonce) then
       rt_env(rt_grant_lease($p; $o; $o.basis); "hold"; rt_rec_hold($p))
     elif $p.table_corrupt then rt_env(rt_park("lease-table-corrupt"; rt_mv(rt_corrupt_path($p))); "none"; null)
@@ -1751,72 +1978,27 @@ def rt_new($p; $basis0; $excl):
                 | rt_w7m($p.c; $G; rt_m7r($p.c; $G; $adm.cost; rt_rho_pick($rg; $p.c; $G.group))))}] as $pool
       | [$pool[] | select(.adm.admitted and (.fifo | not))] as $cands
       | if ($cands | length) > 0 then
-          # 대여 층이 두 단계 모두에서 맨 앞 키라 대여 행은 언제나 맨 뒤다. 그 행의 남은 양은 상한까지다.
-          rt_phase($p.c) as $ph
-          # 유지. 직전 계정 H 는 문맥의 기록이 같은 런의 것이고, 그 계정이 이 런의 live
-          # 임대에 있거나 기록 시각이 TTL 안일 때만이다. 설정에 유지 칸이 없으면 끈다.
-          | ($p.c.config.affinity // null) as $ac
-          | ($p.c.affinity // null) as $f
-          | (if $ac == null then null
-             elif ($f | type) == "object" and $f.run_id == $p.c.request.run_id and (($f.account | type) == "string")
-                  and (any(($p.c.sticky // [])[]; . == $f.account)
-                       or ((($f.at_epoch | type) == "number") and (($p.c.now - $f.at_epoch) <= $ac.ttl_s)))
-             then $f.account else null end) as $H
-          | (if $ac == null then null else ((($p.c.config.cap_bp // 10000) * $ac.hold_pct / 100) | round) end) as $Taff
-          # 분산. load5 는 그룹의 5시간 사용(창이 풀렸으면 0)에 그 그룹 live 임대의 5시간
-          # 예약 합을 더한 지역값이다 — r7 처럼 `rt_aview` 와 그룹 보기에는 싣지 않는다.
-          # 새 기준. 켜지지 않았으면 `rt_ask_fit` 을 부르지 않는다 — 설정 오류가 질문 가능
-          # 종류의 요청에서만 나게 하려는 것이다. `aff0` 은 오늘의 유지 판정이다.
-          | rt_ask_on($p.c) as $askon
-          | [$cands[] | $p.groups[.a.group] as $G | $G.windows.five_hour as $x
-               | (if $x == null or rt_ueff($x) == null then 10000 else rt_ueff($x) + ($G.sigma.five_hour // 0) end) as $l5
-               | (($x.state? // null) == "unlimited") as $unl
-               | (if $unl then (if $H != null and .a.id == $H then 0 else 1 end)
-                  elif $H != null and .a.id == $H and $l5 < $Taff then 0 else 1 end) as $aff0
-               | (if $unl then rt_p7($p.c; $G; (if .a.lend_enrolled == true then (.a.lend.dec.ceiling_bp // 0) else 10000 end))
-                  else 0 end) as $p7
-               | (if $askon then rt_ask_fit($p.c; $G; .a; .adm) else null end) as $ask
-               | ($ask != null and ($ask.fits | not)) as $short
-               | . + {load5: $l5, aff0: $aff0, p7: $p7, ask: $ask,
-                      askk: (if $short then [1, (if $ask.r7 == null then 0 else 0 - $ask.r7 end)] else [0, 0] end),
-                      aff: (if $short then 1 else $aff0 end)}] as $cands
-          | (if $ph.phase == "burst" then
-               ($cands | sort_by(rt_new_kb($p))) as $s
-               | {best: $s[0],
-                  order: ({picked_by: rt_picked_by([$s[0:2][] | rt_new_kb($p)]; rt_new_names_b),
-                           load5_bp: $s[0].load5, affinity_account: $H, affinity_hold_bp: $Taff,
-                           pressure_bp_h: $s[0].p7}
-                          + rt_five_rec($p.groups[$s[0].a.group])
-                          + rt_ask_order($askon; $s; (if $askon then rt_ask_avoided($s; rt_new_kb($p)) else null end)))}
-             else
-               # 쉼: 주간 여유 r7 이 문턱 T 아래인 계정을 작은 순으로 먼저 쓰고, 문턱 위는 큰
-               # 순으로 그 뒤에 둔다. 주간 창을 모르는 계정은 층 2 이고 r7 을 세지 않는다.
-               # r7 은 여기서만 쓰는 지역값이다 — `rt_aview` 는 fleet.sh 도 보는 보기다.
-               # 대여 행의 7일 창 끝은 10000 이 아니라 그 행의 대여 상한이다 — 상한 위는 사람 몫이다.
-               rt_rest_rho($p.c) as $rho
-               | (($rho.v * $p.c.config.cap_bp * $ph.burst_length_s / 18000) | round) as $T
-               | [$cands[] | $p.groups[.a.group] as $G | $G.windows.seven_day as $x
-                   | (if .a.lend_enrolled == true then (.a.lend.dec.ceiling_bp // 0) else 10000 end) as $top
-                   | (if $x.state == "unknown" then null else $top - rt_ueff($x) - $G.sigma.seven_day end) as $r7
-                   | . + {r7: $r7, tier: (if $r7 == null then 2 elif $r7 < $T then 0 else 1 end)}] as $rc
-               | ($rc | sort_by(rt_new_kr($p))) as $s
-               | $s[0] as $b
-               | {best: $b,
-                  order: ({threshold_bp: $T, ratio_source: $rho.source, tier: (["below", "above", "unknown"][$b.tier]),
-                           r7_bp: $b.r7,
-                           admitted: {below: ([$rc[] | select(.tier == 0)] | length),
-                                      above: ([$rc[] | select(.tier == 1)] | length),
-                                      unknown: ([$rc[] | select(.tier == 2)] | length)},
-                           picked_by: rt_picked_by([$s[0:2][] | rt_new_kr($p)]; rt_new_names_r),
-                           load5_bp: $b.load5, affinity_account: $H, affinity_hold_bp: $Taff,
-                           pressure_bp_h: $b.p7}
-                          + rt_five_rec($p.groups[$b.a.group])
-                          + rt_ask_order($askon; $s; (if $askon then rt_ask_avoided($s; rt_new_kr($p)) else null end)))}
-             end) as $pick
-          | (rt_grant_new($p; $pick.best.a; $pick.best.adm; $basis) | .order += $pick.order) as $e
+          rt_new_pick($p; $cands; $basis) as $e
           | rt_env($e; "write"; rt_rec_new($p; $e))
         elif $p.shift and $p.pin == null then rt_env(rt_seat($p; "shift-seat-fallback"); "none"; null)
         elif $p.pin != null then rt_env(rt_lend_block($pool[0]); "none"; null)
+        # 급한 요청은 첫 풀이 비면 차용 중인 기증 그룹의 두 번째 풀을 본다. 후보는 제외
+        # 계정이 아니고 기증 그룹 술어를 통과한 계정이며, 입장 판정과 급한 FIFO 판정을 거친다.
+        # 통과 후보가 있으면 첫 풀과 같은 정렬로 고른 부여에 `urgent_donor: true` 를 싣는다.
+        # 입장은 통과했으나 FIFO 로만 막힌 후보가 있으면 그룹 없는 FIFO 양보 대기, 없으면
+        # 첫 풀(대여 등록 행 제외)의 후보 없음 판정 그대로다.
+        elif rt_urgent($p) then
+          [$p.accounts[] | select(.id != $excl) | select(rt_urgent_donor_why($p; .) == null) | (.) as $a
+           | rt_admit($p; $a) as $adm
+           | {a: $a, adm: $adm, fifo: rt_urgent_fifo_blocked($p; $a),
+              w7: ($p.groups[$a.group] as $G
+                   | rt_w7m($p.c; $G; rt_m7r($p.c; $G; $adm.cost; rt_rho_pick($rg; $p.c; $G.group))))}] as $pool2
+          | [$pool2[] | select(.adm.admitted and (.fifo | not))] as $cands2
+          | if ($cands2 | length) > 0 then
+              (rt_new_pick($p; $cands2; $basis) + {urgent_donor: true}) as $e
+              | rt_env($e; "write"; rt_rec_new($p; $e))
+            elif any($pool2[]; .adm.admitted and .fifo) then rt_env(rt_wait(null; null; null; "fifo-yield"); "none"; null)
+            else rt_nocand($p; [$pool[] | select(.a.lend_enrolled != true)]) end
         else rt_nocand($p; [$pool[] | select(.a.lend_enrolled != true)]) end
     end;
 
@@ -1824,7 +2006,7 @@ def rt_retry($p):
   $p.own as $o
   | (if $o != null and $o.kind == "grant" then rt_av($p; $o.account) else null end) as $a
   | ($p.pin == null or ($o != null and $o.account == $p.pin)) as $onpin
-  | if $o != null and $o.kind == "grant" and $o.live == true and rt_hold_ok($a) and $onpin then
+  | if $o != null and $o.kind == "grant" and $o.live == true and rt_hold_ok($p; $a; $o) and $onpin then
       rt_env(rt_grant_lease($p; $o; "sticky"); "hold"; rt_rec_hold($p))
     # 이관 판정에 드는 요청의 고정 계정이 이관 조건이면 재입회하지 않고 새 입장으로 넘겨
     # 이관 판정을 받게 한다. 살아 있는 임대의 유지는 위 갈래 그대로다.
@@ -1877,7 +2059,9 @@ def rt_decide($schema):
   # 그대로이고, 기존 이유의 원인은 reason 이 말하므로 `why` 는 null 이다.
   | (if $p.pin != null and .verdict == "PARK" and (has("account") | not)
      then . + {account: rt_pin_acct($p.pin), why: null} else . end)
-  | (if (($c.leases.stale_corrupt // []) | length) > 0 then . + {stale_corrupt: $c.leases.stale_corrupt} else . end);
+  | (if (($c.leases.stale_corrupt // []) | length) > 0 then . + {stale_corrupt: $c.leases.stale_corrupt} else . end)
+  # 급한 요청의 봉투만 `urgent: true` 를 싣는다. 급하지 않은 봉투의 바이트는 그대로다.
+  | (if rt_urgent($p) then . + {urgent: true} else . end);
 
 def rt_revalidate($schema; $rec):
   (.request = ((.request // {}) + {run_id: $rec.run_id, lineage: $rec.lineage, bound_account: $rec.account}))
@@ -1892,6 +2076,11 @@ def rt_revalidate($schema; $rec):
        then all($G.windows[]; .state != "unknown" and .state != "exhausted")
             and (rt_ueff($G.windows.seven_day) < rt_publish_cap_bp)
        else true end)
+    # 새로 놓는 급한 기증 그룹 부여는 잠금 아래 다시 읽은 σ 와 그 기록의 예약으로 두 선을
+    # 다시 본다. 미상·소진 창은 통과시키지 않고, 5시간 창이 판정에 참여하지 않으면 보지 않는다.
+    elif ($rec.urgent_donor? == true) and ($rec.nonce == $p.c.fresh_nonce) then
+      all($G.windows[]; .state != "unknown" and .state != "exhausted")
+      and (rt_urgent_donor_lines($G; ($rec.reservation_bp // {}) | {seven_day: (.seven_day // 0), five_hour: (.five_hour // 0)}) == null)
     else
       (if any($G.windows[]; .state == "unknown") then $G.count == 0
        else all(rt_wins[]; (.) as $w | rt_skip5($G.windows[$w]) or ((rt_ueff($G.windows[$w]) + $G.sigma[$w] + ($rec.reservation_bp[$w] // 0)) <= 10000)) end)
@@ -1902,25 +2091,35 @@ def rt_revalidate($schema; $rec):
            else true end)
     end;
 
+# 급한 기증 그룹 부여 기록(`urgent_donor: true`)의 거래 실패는 그 기증 그룹의 FIFO 대기
+# 항목을 만들지 않도록 그룹 없는 `lease-contention` 대기를 낸다. 급한 요청의 봉투는
+# 결정 봉투처럼 `urgent: true` 를 싣는다.
 def rt_txn_fallback($reason; $rec):
-  if .request.kind == "shift" and ((.seat.lane? // null) == null) then rt_seat_of(.seat.config_dir; "shift-seat-fallback"; .borrow)
-  elif $reason == "borrow-record-corrupt" then
-    rt_park_borrow_corrupt
-    + (if ((.seat.lane? // null) | type) == "string" and .seat.lane != "" then {account: rt_pin_acct(.seat.lane), why: null} else {} end)
-  else rt_orgs(.) as $o
-    | rt_wait((if $rec != null then rt_group_of($o; $rec.account) else null end); null; null; $reason) end;
+  {c: ., pin: (if ((.seat.lane? // null) | type) == "string" and .seat.lane != "" then .seat.lane else null end)} as $p
+  | (if .request.kind == "shift" and ((.seat.lane? // null) == null) then rt_seat_of(.seat.config_dir; "shift-seat-fallback"; .borrow)
+     elif $reason == "borrow-record-corrupt" then
+       rt_park_borrow_corrupt
+       + (if ((.seat.lane? // null) | type) == "string" and .seat.lane != "" then {account: rt_pin_acct(.seat.lane), why: null} else {} end)
+     elif $rec != null and ($rec.urgent_donor? == true) then rt_wait(null; null; null; "lease-contention")
+     else rt_orgs(.) as $o
+       | rt_wait((if $rec != null then rt_group_of($o; $rec.account) else null end); null; null; $reason) end)
+  | (if rt_urgent($p) then . + {urgent: true} else . end);
 
 # 대기 항목. `$kind` 는 대기하는 스테이지의 종류이고, 비어 있지 않은 문자열이 아니면
 # `stage_kind` 가 null 이다. 같은 키의 대기 항목이 있으면 그 `seq` 를 지키고 종류는 이번
-# 값으로 쓴다.
-def rt_wait_record($leases; $run; $lin; $acct; $dir; $nonce; $now; $holders; $schema; $kind):
+# 값으로 쓴다. `$urgent` 가 참일 때만 항목에 `urgent: true` 를 싣는다 — 급한 대기 항목은
+# 대기 순위에서 급하지 않은 항목 모두의 앞이다. 열 인자 꼴은 급하지 않은 항목이다.
+def rt_wait_record($leases; $run; $lin; $acct; $dir; $nonce; $now; $holders; $schema; $kind; $urgent):
   ([$leases.items[] | select(.run_id == $run and .lineage == $lin)] | .[0]) as $own
   | if $own != null and $own.kind == "grant" then error("grant-held")
     else {schema: $schema, kind: "wait", run_id: $run, lineage: $lin, nonce: $nonce,
           seq: (if $own != null and ($own.seq | rt_isint) then $own.seq
                 else ((([$leases.items[] | .seq | select(type == "number")] | max) // 0) + 1) end),
           account: $acct, config_dir: $dir, granted_at_epoch: $now, holders: $holders,
-          stage_kind: (if ($kind | type) == "string" and $kind != "" then $kind else null end)} end;
+          stage_kind: (if ($kind | type) == "string" and $kind != "" then $kind else null end)}
+      + (if $urgent == true then {urgent: true} else {} end) end;
+def rt_wait_record($leases; $run; $lin; $acct; $dir; $nonce; $now; $holders; $schema; $kind):
+  rt_wait_record($leases; $run; $lin; $acct; $dir; $nonce; $now; $holders; $schema; $kind; false);
 
 # 관측 줄의 그룹 항목. 결정과 같은 문맥(잠금 아래 다시 읽은 표를 끼운 것)에서 모든
 # 그룹의 W7 과 주간 창 값을 그룹 순으로 늘어놓는다. 비용은 그 그룹에 대한 입장
@@ -2404,6 +2603,14 @@ route_gather_context() {
   local costs prog out phase lane aff psrc host
   now=$(date -u +%s) || return 2
   printf '%s' "$req" | jq -e 'type == "object"' >/dev/null 2>&1 || return 2
+  # 급함. 런 디렉터리의 급함 표지가 유효하면(`run_urgent_source` 가 출처를 내면) 교대가
+  # 아닌 요청에 `urgent: true` 를 더한다. 표지는 런 기동이나 사람의 도중 표시 명령이 쓴다.
+  # 급하지 않으면 요청 바이트는 그대로다.
+  if [ -n "${RUN_DIR:-}" ] && declare -F run_urgent_source >/dev/null 2>&1 \
+     && [ -n "$(run_urgent_source "$RUN_DIR" 2>/dev/null)" ] \
+     && ! printf '%s' "$req" | jq -e '.kind == "shift"' >/dev/null 2>&1; then
+    req=$(printf '%s' "$req" | jq -c '. + {urgent: true}') || return 2
+  fi
   inv="${RUN_DIR:-}/inventory.json"
   if [ -n "${RUN_DIR:-}" ]; then
     route_inventory_check "$inv" 2>/dev/null || irc=$?
@@ -2973,7 +3180,9 @@ route__txn_main() {
       # 차용 재판독. 판정은 위에서부터: 새로 놓는 쓰기의 손상 > 기증자 적중 > 새로 놓는
       # 대여 쓰기의 차용 기록 `none` 아님 > 진행. 이어 가는 쓰기(보유, 멱등 재부여)는
       # 손상과 차용 중에도 진행한다. 대여 등록은 문맥의 인벤토리 행으로 판정한다 —
-      # 이 jq 는 `rt_prep` 을 돌리지 않는다.
+      # 이 jq 는 `rt_prep` 을 돌리지 않는다. 급한 기증 그룹 부여 기록(`urgent_donor: true`)은
+      # 다시 읽은 차용이 `borrowed` 이고 `share: true` 일 때만 기증자 적중으로 보지 않는다 —
+      # 새로 놓는 쓰기와 이어 가는 쓰기가 같다. 공유가 사라졌으면 적중이다.
       bv=""
       if [ -n "$bpath" ]; then
         bnew=$(route_borrow_read "$bpath") || bv=fail
@@ -2987,7 +3196,8 @@ route__txn_main() {
         bv=$(printf '%s' "$ctx2" | jq -r --argjson rec "$rec" "$(route__jq_lib)"'
               .borrow as $b
               | if $b.state == "corrupt" then (if $rec.nonce == .fresh_nonce then "corrupt" else "go" end)
-                elif ($b | rt_borrowing) and (($rec.account == $b.donor.id) or ($rec.config_dir == $b.donor.config_dir)) then "hit"
+                elif ($b | rt_borrowing) and (($rec.account == $b.donor.id) or ($rec.config_dir == $b.donor.config_dir))
+                     and ((($rec.urgent_donor? == true) and ($b.state == "borrowed") and ($b.share == true)) | not) then "hit"
                 elif ($rec.nonce == .fresh_nonce) and ($b.state != "none") and (.inventory.state == "valid")
                      and any((.inventory.accounts // [])[]; (type == "object") and (.id == $rec.account) and rt_enrolled) then "lend"
                 else "go" end') || bv=fail
@@ -3164,14 +3374,15 @@ route__wait_put_main() {
   # 대기 항목이 이미 있으면 그 자리를 지킨다. 예약은 싣지 않는다. 스테이지 종류는
   # `stage_kind` 로 싣는다(`--kind` 가 없거나 비면 null) — 양보 판정이 앞선 대기자의
   # 몫을 그 종류로 센다. 같은 키에 다시 넣으면 종류는 이번 값으로 쓴다. 같은 키에
-  # 부여가 있으면 거부한다(rc 1).
+  # 부여가 있으면 거부한다(rc 1). `--urgent 1` 이면 항목에 `urgent: true` 를 싣고, 없거나
+  # 다른 값이면 싣지 않는다 — 급한 대기 항목은 대기 순위에서 급하지 않은 항목의 앞이다.
   #
   # `--group <g> --inventory <file>` 은 `--account`·`--config-dir` 대신 그룹의 대표
   # 계정을 고른다 — 그 인벤토리에서 새 부여를 받을 수 있는(`enabled`) 계정 중 그
   # 그룹에 드는 가장 작은 id. WAIT 봉투는 조직 그룹이면 계정을 싣지 않으므로, 항목이
   # 그룹으로 세어지려면 그 그룹에 속한 계정 하나가 있어야 한다. 고를 계정이 없으면
   # rc 3 이고 아무것도 쓰지 않는다.
-  local t="" now="" run="" lin="" acct="" dir="" grp="" invf="" kind="" key holders nonce leases rec rc=0 usage pick
+  local t="" now="" run="" lin="" acct="" dir="" grp="" invf="" kind="" urg="" key holders nonce leases rec rc=0 usage pick
   local hs=()
   while [ $# -gt 0 ]; do
     [ $# -ge 2 ] || return 2
@@ -3186,6 +3397,7 @@ route__wait_put_main() {
       --inventory) invf="$2" ;;
       --holder) hs+=("$2") ;;
       --kind) kind="$2" ;;
+      --urgent) urg="$2" ;;
       *) return 2 ;;
     esac
     shift 2
@@ -3216,8 +3428,8 @@ route__wait_put_main() {
   if [ "$rc" = "0" ]; then
     rec=$(jq -cn --argjson leases "$leases" --arg run "$run" --arg lin "$lin" --arg acct "$acct" --arg dir "$dir" \
           --arg nonce "$nonce" --argjson now "$now" --argjson holders "$holders" --arg schema "$ROUTE_LEASE_SCHEMA" \
-          --arg kind "$kind" \
-          "$(route__jq_lib)"' rt_wait_record($leases; $run; $lin; $acct; $dir; $nonce; $now; $holders; $schema; $kind)' 2>/dev/null) || rc=1
+          --arg kind "$kind" --arg urg "$urg" \
+          "$(route__jq_lib)"' rt_wait_record($leases; $run; $lin; $acct; $dir; $nonce; $now; $holders; $schema; $kind; $urg == "1")' 2>/dev/null) || rc=1
   fi
   if [ "$rc" = "0" ] && ! route__lease_put "$t" "$key" "$rec"; then rc=4; fi
   route__lock_release
