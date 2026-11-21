@@ -170,6 +170,7 @@ whole, creation-only, no append form**), `ledger.md` (driver, append-only),
 - `선행 착지` | 슬라이스=<id> | 원격 슬러그=<owner>/<name> | 머지 커밋=<40자리 hex>     ← 어느 런 원장에도 착지 기록이 없는 선행 슬라이스마다, 사람이 확인한 한 행
 - `플러그인 허용` | 플러그인=<이름@마켓> | 사유=<한 줄>     ← 킥오프 5t 에서 사람이 고르거나 5o 에서 확정한 플러그인마다 한 행(5o 확정 행의 사유는 `킥오프 기본값`), 키마다 많아야 한 행
 - `계정 이전 허용` | 계정=<인벤토리 id> | 사유=<한 줄>     ← 킥오프 5v 에서 사람이 고르거나 5o 에서 확정한 계정마다 한 행(5o 확정 행의 사유는 `킥오프 기본값`), 계정마다 많아야 한 행. 좌석 레인이 한도일 때 교대가 옮겨 갈 수 있는 계정
+- `급한 런` | 출처=<킥오프|핫픽스|이어받음> | 사유=<한 줄>     ← `--urgent` 킥오프(사유는 의도의 첫 줄), 언제나 쓰는 `--hotfix` 킥오프(사유는 핫픽스 고정 문자열), 또는 재킥오프의 이어받음에만, 많아야 한 행. 운전자가 이 행에서 런 디렉터리의 `urgent` 표지 파일을 만든다
 - `적용 프로브 코드` | 불필요=<0–125> | 필요=<0–125> | 프로브 sha256=<64자 소문자 hex>     ← 파이프라인이 동결 프로브를 실행하는 대상이면 킥오프 5c 가 늘 쓰는 한 행. 두 값 모두 1·2·126·127·128 이상 불가
 - `라벨 인정` | 대상=<별칭> | 체크=<체크 이름> | 라벨=<라벨> | 사유=<한 줄>     ← 킥오프 5u 가 인정한 (대상, 체크) 쌍마다 한 행. 이 행이 없는 쌍은 라벨을 붙이지 않는다
 - `재킥오프` | 연쇄 상한=3 | 길이=<ISO 8601 기간> | 사유=<한 줄>     ← 킥오프가 묻지 않고 토글 없이 쓰는 한 행
@@ -203,7 +204,7 @@ point together with its decomposition into checkable clauses, the targets and
 their per-target cutpoints, the rule-catalog settings, the list of predicted
 irreversible acts, **the `자동 채택` rows**, **the `설계 로스터` rows**, **the
 `베이스 발행` and `베이스 설계` rows**, **the `출처 티켓` rows**, **the `세그먼트 입양` rows**, **the `머지 입양` rows**, **the `강제 표면 승인` rows**, **the `선행
-착지` rows**, **the `플러그인 허용` rows**, **the `계정 이전 허용` rows**, **the `적용 프로브 코드` row when written**, **the `라벨 인정` rows**, **the
+착지` rows**, **the `플러그인 허용` rows**, **the `계정 이전 허용` rows**, **the `급한 런` row when written**, **the `적용 프로브 코드` row when written**, **the `라벨 인정` rows**, **the
 `리뷰 PR`, `리뷰 게시`, `리뷰 깊이` and `리뷰 문면` rows** (a manifest without them
 serializes none, so its digest does not move), the cost ceiling and
 the stagnation bound when declared, and the deadline. The gate compares that
@@ -361,6 +362,28 @@ the gate reads the run's inventory snapshot when the shift moves, leaves out
 an account whose `unattended` is not `enabled`, and names it on the `계정 이전`
 row as `인벤토리 밖`. A re-kickoff carries the rows byte for byte with nothing
 judged again.
+
+**A `급한 런` row marks the run urgent**, at most one per manifest:
+`` - `급한 런` | 출처=<킥오프|핫픽스|이어받음> | 사유=<한 줄> ``. A `--urgent`
+kickoff writes `출처=킥오프` with the intent's first line as `사유`; a
+`--hotfix` kickoff always writes `출처=핫픽스` with the fixed string of the
+hotfix fixed values; a re-kickoff writes `출처=이어받음` only when the source
+holds no row and a person marked it urgent mid-run, and otherwise carries the
+source's row byte for byte. The manifest check refuses a second row, a `출처`
+outside those three and an empty `사유`. A manifest without the row serializes
+none, so its digest does not move.
+
+**The urgency marker is `<RUN_DIR>/urgent`, three lines**: `cc-run-urgent v1`,
+`출처=<킥오프|핫픽스|이어받음|사람>` and `시각=<ISO 8601 UTC>`. Two writers, each
+writing a temp file beside it and moving it in without overwriting, so the
+first writer's source line stands: the run driver, which writes it from the
+`급한 런` row each time it starts when the row is there and the marker is not;
+and a person's interactive `autopilot --urgent <run id>` through
+`rekick.sh mark-urgent`, which writes `출처=사람`. A stage cannot write it: the
+gate refuses a stage's or a routing shift's `mark-urgent` call. The router
+reads a run as urgent from the marker alone, on a request that is neither
+pinned nor a shift. A file whose first line is not `cc-run-urgent v1`, an
+empty file and anything that is not a regular file read as not urgent.
 
 **The `재킥오프` row is the person's consent that an ending run may be followed
 by a successor**, written by the kickoff on every run, unasked and with no
@@ -713,7 +736,7 @@ match act reads it to decide `수리 통과` (§3.2).
 **`리뷰 정책 상한` is optional on the target row, and its absence reads as
 `선리뷰후머지`.** It sits on the target row rather than in `## 인가` because that
 is one of the few surfaces where a NEW key actually enters the frozen set: the
-freeze covers the `target`, `종료 절`, `사전 인가`, `자동 채택`, `설계 로스터`, `베이스 발행`, `베이스 설계`, `출처 티켓`, `세그먼트 입양`, `머지 입양`, `강제 표면 승인`, `선행 착지`, `플러그인 허용`, `계정 이전 허용`, `적용 프로브 코드`, `라벨 인정`, `수리 사건`, `리뷰 PR`, `리뷰 게시`, `리뷰 깊이`, `리뷰 문면` and `재킥오프` rows and lines
+freeze covers the `target`, `종료 절`, `사전 인가`, `자동 채택`, `설계 로스터`, `베이스 발행`, `베이스 설계`, `출처 티켓`, `세그먼트 입양`, `머지 입양`, `강제 표면 승인`, `선행 착지`, `플러그인 허용`, `계정 이전 허용`, `급한 런`, `적용 프로브 코드`, `라벨 인정`, `수리 사건`, `리뷰 PR`, `리뷰 게시`, `리뷰 깊이`, `리뷰 문면` and `재킥오프` rows and lines
 whose value is literally `켬` or `끔`, and **an ordinary `**키**: 값` line inside
 `## 인가` moves neither digest.** The next optional field takes the same care.
 
@@ -895,6 +918,10 @@ never compared.
     `- \`계정 이전 허용\` | 계정=<인벤토리 id> | 사유=<한 줄>` with an id of
     `[a-z0-9-]+` and a non-empty `사유`, and no account carries two rows. Each
     violation is a **hard stop**; the inventory is not read here.
+20c. **The `급한 런` row.** At most one, and it matches
+    `- \`급한 런\` | 출처=<킥오프|핫픽스|이어받음> | 사유=<한 줄>` with a
+    non-empty `사유` that does not end in a space. Each violation is a **hard
+    stop**; the run directory's marker is not read here.
 21. **The entry judgment's structure.** A plan carrying `design_tier_judged` is
     run through `orchestrator/prompts/entry-plan.check.jq`, the same file the
     kickoff runs on its own output and the gate's tests run on their fixtures,

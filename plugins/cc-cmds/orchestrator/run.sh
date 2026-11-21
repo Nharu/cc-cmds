@@ -2443,7 +2443,7 @@ EOF
 $fa_rows
 EOF
 
-  # 20b — the `급한 런` row: the kickoff's mark that the run is urgent. At most
+  # 20c — the `급한 런` row: the kickoff's mark that the run is urgent. At most
   # one row, `출처` one of the three kickoff-side sources (a person's mid-run mark
   # is the run directory's marker file, never a manifest row) and a non-empty
   # one-line reason.

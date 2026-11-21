@@ -244,6 +244,8 @@ Step 6 freezes each 「인정함」 as one row inside `## 인가`, `- \`라벨 �
 
 **When the graph carries a design stage, say in one clause what it does before asking** — on `team-4` with `discuss-audit`, the discussion team from 5k, a walkthrough whose dispositions the stage takes and records, a coherence pass, the residual-item ladder, the freeze and the audit after it; on `team-4` with `solo-audit`, one lead writing from the interview, the residual-item ladder, the freeze and the audit after it, a skeletal finding re-converging the sections it names; on `solo`, one lead writing the summary from the interview, a re-read against the confirmed requirements, the residual-item ladder and the freeze, with no audit — and that nothing downstream reads the document until it is frozen.
 
+**On an urgent kickoff, show one more run-wide line before asking**: 「급함: 급한 런(킥오프)」 when the arguments carried `--urgent`, so the person sees that the run will stand ahead of unhurried waiters at a usage limit and may enter a donor account a sharing borrow lends. A kickoff without the flag shows no such line.
+
 **The approval utterance is captured verbatim.** It approves the STEP GRAPH, which is not the same thing as granting authority — that is what the rest of Step 5 took. Collapsing the two promotes plan approval into permission approval silently, so the manifest carries them as two separate fields.
 
 **5m — Freeze the interview record, when 5j ran or the plan carries a visual step.** Use the run id Step 2 minted and the `<base>` Step 2 resolved. Write `<base>/docs/pipeline-run/<run-id>.interview.md` **whole, once** — creation-only, no append form — in the shape of `pipeline-sidecar.md` `### 2b.5`, byte for byte. Its sections (`cc-run-interview v3`), in this order: `## 과제` · `## 요구사항 문답` · `## 확인된 요구` · `## 배포 형상` · `## 탐색 결과` · `## 재현 근거` · `## 검증 선결` · `## 골격 사전 판정` · `## 시각 방향` · `## 로스터`.
@@ -288,6 +290,7 @@ A `--hotfix` kickoff (SKILL.md 「핫픽스 킥오프」) asks four questions. E
 - **No `재킥오프` row** — a hotfix run is not continued by a successor the seat opens (`references/freeze.md`).
 - **No roster** — the design is the `solo` stage, one headless lead. 5k only names the document.
 - **Review field** — `기술(기본)`. The plan's `review_expand` is `[]` in the hotfix frame, so every review of the run looks at the technical field alone.
+- **Urgency** — a hotfix run is always an urgent run, with or without `--urgent`. `references/freeze.md` 「핫픽스 킥오프」 writes one `` - `급한 런` | 출처=핫픽스 | 사유=핫픽스 킥오프는 언제나 급한 런이다 `` row, its `사유` this fixed string verbatim, so the four questions stay four.
 - **Document path** — `docs/<레포>/hotfix-<의도 슬러그>.md`, relative to the home target's repository root, where `<레포>` is the `<name>` of the home target's `<owner>/<name>` and the slug is folded from the confirmed 「고칠 것」 line as 5k folds an intent.
 - **Only when the defaults file gives no value**: the deadline is the kickoff time plus six hours (`kickoff-defaults.sh --resolve-deadline +6h`, which also captures nothing for a `재킥오프` row, since there is none), the ladder is `2` rungs, the terminal-act cap is `없음`, and there are no `자동 채택` rows, no `플러그인 허용` rows and no `계정 이전 허용` rows. The cost ceiling and the stagnation bound take the defaults file's value and are `없음` otherwise; the deadline then ends the run.
 - **What the defaults file refuses by name** takes a fixed answer and is shown, never asked: the termination point is question (1)'s 「완료 기준」 line, the launch is immediate, there is no deferral, the banner switch is 5i's resolved state said on the screen, and the apply command and radius are question (3)'s tail.
@@ -301,7 +304,7 @@ A `--hotfix` kickoff (SKILL.md 「핫픽스 킥오프」) asks four questions. E
 - the fixed graph — `design` (one headless lead writes and freezes the design from the confirmed sentences, no audit), `implement` (two processes split by a plan-emission gate), `review` (an agent team) — and that each slice merges first and is reviewed after, the review's findings sending it round again;
 - beside the graph, the line 「리뷰 분야: 기술(기본)」, marked `고정값`;
 - per target: the cutpoint, the review policy ceiling, the dev and deploy-trigger identifiers, and, on `배포`, the apply values question (3) took;
-- the run-wide values: deadline, ladder, cost ceiling, stagnation bound, terminal-act cap, `자동 채택`, `플러그인 허용` and `계정 이전 허용` rows (or `계정 이전: 없음`), and the banner state — each marked `기본값` or `고정값` by where it came from;
+- the run-wide values: deadline, ladder, cost ceiling, stagnation bound, terminal-act cap, `자동 채택`, `플러그인 허용` and `계정 이전 허용` rows (or `계정 이전: 없음`), the line 「급함: 급한 런(핫픽스)」 marked `고정값`, and the banner state — each marked `기본값` or `고정값` by where it came from;
 - the document path, and the standard pre-authorization rows;
 - **every `unresolved` item of the plan, read as a stop notice**: these are the enforcement-surface paths, and each says that the run stops at that edit, with Step 3's sentence on whether the seat can apply that class;
 - the stage-rules status Step 3 shows, and the `무시` rows of the defaults helper with their reasons.
