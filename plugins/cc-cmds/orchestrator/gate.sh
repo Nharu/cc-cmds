@@ -13758,12 +13758,14 @@ gate_decision_collect_auto_item() {
   #     finds the entry in the document by those bytes.
   # `골격급: 예` and `베이스 계약 변경 필요` do not keep it: the re-convergence's
   # base contract check still asks a person when a decision conflicts.
-  local h="$1" fa="$2" fr="$3" vals="$4" hit n
-  hit=$(printf '%s\n' "$vals" | UCA_H="$h" awk -F '\t' '$2 == ENVIRON["UCA_H"]')
-  n=$(printf '%s' "$hit" | awk 'END { print NR }')
-  [ "$n" = 1 ] || return 1
-  [ "$(printf '%s' "$hit" | cut -f1)" = '블록' ] || return 1
-  case "$(printf '%s' "$hit" | cut -f4)" in '감사 합성 요구'*) return 1 ;; esac
+  local h="$1" fa="$2" fr="$3" vals="$4" hit
+  # One awk pass prints the kind and the `사유` of the one values line naming
+  # the heading, tab-joined, and nothing when it names it zero or several times.
+  hit=$(UCA_H="$h" awk -F '\t' '$2 == ENVIRON["UCA_H"] { n++; k = $1; s = $4 }
+    END { if (n == 1) printf "%s\t%s\n", k, s }' <<<"$vals")
+  [ -n "$hit" ] || return 1
+  [ "${hit%%$'\t'*}" = '블록' ] || return 1
+  case "${hit#*$'\t'}" in '감사 합성 요구'*) return 1 ;; esac
   case "$fa" in '(없음)'|'(없음) '*|'') return 1 ;; esac
   case "$fr" in '(없음)'|'(없음) '*|'') return 1 ;; esac
   case "$fa $fr" in *'위험 수용'*|*'게이트 비활성'*|*'그대로 진행'*|*'범위 축소'*) return 1 ;; esac
