@@ -1890,6 +1890,24 @@ fi
 mv "$MF.fo-save" "$MF"
 check "계정 이전 허용 행이 없으면 그 행을 얼리기 전과 같은 바이트다" \
   "$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)" "$bd_nocost"
+# 급한 런 행은 한도 대기 순번과 기증 계정 입장을 바꾸므로 같은 조건으로 같은 집합에 든다.
+cp "$MF" "$MF.ur-save"
+printf -- '- `급한 런` | 출처=킥오프 | 사유=픽스처\n' >> "$MF"
+bd_ur=$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)
+if [ "$bd_ur" = "$bd_nocost" ]; then
+  bad "구속 집합 감도" "급한 런 행을 더했는데 다이제스트가 그대로다"
+else
+  ok "급한 런 행이 생기면 구속 다이제스트가 움직인다"
+fi
+sed 's/출처=킥오프 | 사유=픽스처$/출처=핫픽스 | 사유=픽스처/' "$MF" > "$MF.c" && mv "$MF.c" "$MF"
+if [ "$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)" = "$bd_ur" ]; then
+  bad "구속 집합 감도" "급한 런 행의 출처를 바꿨는데 다이제스트가 그대로다"
+else
+  ok "급한 런 행의 출처가 바뀌면 구속 다이제스트가 움직인다"
+fi
+mv "$MF.ur-save" "$MF"
+check "급한 런 행이 없으면 그 행을 얼리기 전과 같은 바이트다" \
+  "$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)" "$bd_nocost"
 # 무진전 상한도 런을 끝내므로 같은 조건으로 같은 집합에 든다.
 awk '/^\*\*벽시계 마감\*\*: /{print; print "**무진전 상한**: 7"; next} {print}' "$MF" > "$MF.c" && mv "$MF.c" "$MF"
 check "픽스처가 실제로 상한 줄을 얻었다 (아래 둘이 공허하지 않다)" \
@@ -1949,6 +1967,62 @@ if ( check_manifest ) >/dev/null 2>&1; then
 else
   ok "칸이 다섯이 아닌 수리 사건 행은 런 시작에서 거부된다"
 fi
+
+# 급한 런 행 — 많아야 한 행, 출처는 킥오프·핫픽스·이어받음 셋 가운데 하나, 사유는
+# 비지 않은 한 줄. 사람의 도중 표시(`사람`)는 표지 파일에만 있고 행이 되지 않는다.
+UR_ROW='- `급한 런` | 출처=킥오프 | 사유=픽스처 의도'
+ur_case() {   # ur_case <기대 통과 0|1> <이름> [<행>...]
+  local want="$1" name="$2"
+  shift 2
+  re_mf "$@"
+  if ( check_manifest ) >/dev/null 2>&1; then
+    if [ "$want" = "0" ]; then ok "$name"; else bad "급한 런 행" "$name — 통과했다"; fi
+  else
+    if [ "$want" = "1" ]; then ok "$name"; else bad "급한 런 행" "$name — 거부됐다: $( ( check_manifest ) 2>&1 | tail -1 )"; fi
+  fi
+}
+ur_case 0 "급한 런 행 하나는 매니페스트 검사를 통과한다" "$UR_ROW"
+ur_case 0 "출처=핫픽스 행도 통과한다" '- `급한 런` | 출처=핫픽스 | 사유=핫픽스 킥오프는 언제나 급한 런이다'
+ur_case 0 "출처=이어받음 행도 통과한다" '- `급한 런` | 출처=이어받음 | 사유=20261101-0123abcd 에 사람이 도중에 단 급함'
+ur_case 1 "급한 런 행이 둘이면 런 시작에서 거부된다" "$UR_ROW" "$UR_ROW"
+ur_case 1 "출처=사람 행은 런 시작에서 거부된다" '- `급한 런` | 출처=사람 | 사유=x'
+ur_case 1 "사유가 빈 급한 런 행은 거부된다" '- `급한 런` | 출처=킥오프 | 사유='
+ur_case 1 "칸이 넷인 급한 런 행은 거부된다" "$UR_ROW | 넷째"
+re_mf "$UR_ROW"
+check "급한 런 행의 출처를 읽는다" "$(manifest_urgent_source)" "킥오프"
+re_mf
+check "급한 런 행이 없으면 출처가 비어 있다" "$(manifest_urgent_source)" ""
+
+# 급함 표지 파일 — 운전자는 행이 있고 표지가 없을 때만 행의 출처로 쓰고, 먼저 있던
+# 표지는 바꾸지 않는다. 판독은 첫 줄이 `cc-run-urgent v1` 인 일반 파일만 급함으로 읽는다.
+UM="$WORK/urgent-mark"; rm -rf "$UM"; mkdir -p "$UM/a" "$UM/b" "$UM/c" "$UM/d"
+um_saved_rd="${RUN_DIR:-}"
+re_mf "$UR_ROW"
+RUN_DIR="$UM/a"; run_urgent_mark
+check "행이 있고 표지가 없으면 운전자가 행의 출처로 표지를 쓴다" \
+  "$(sed -n '1p;2p' "$UM/a/urgent" 2>/dev/null | paste -sd'|' -)/$(run_urgent_source "$UM/a")" \
+  "cc-run-urgent v1|출처=킥오프/킥오프"
+check "표지의 셋째 줄은 UTC 시각이다" \
+  "$( { grep -cE '^시각=[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$' "$UM/a/urgent" || true; } )" "1"
+check "표지를 쓰고 임시 파일을 남기지 않는다" "$(find "$UM/a" -name 'urgent.tmp.*' | wc -l | tr -d ' ')" "0"
+printf 'cc-run-urgent v1\n출처=사람\n시각=2026-11-01T00:00:00Z\n' > "$UM/b/urgent"
+RUN_DIR="$UM/b"; run_urgent_mark
+check "표지가 이미 있으면 운전자는 바꾸지 않는다" "$(run_urgent_source "$UM/b")" "사람"
+re_mf
+RUN_DIR="$UM/c"; run_urgent_mark
+check "행이 없으면 표지를 쓰지 않는다" "$( [ -e "$UM/c/urgent" ] && printf 있음 || printf 없음)" "없음"
+RUN_DIR="$um_saved_rd"
+printf 'cc-run-urgent v2\n출처=킥오프\n' > "$UM/d/urgent"
+check "첫 줄이 다른 표지는 급하지 않음으로 읽는다" "$(run_urgent_source "$UM/d")" ""
+: > "$UM/d/urgent"
+check "빈 표지는 급하지 않음으로 읽는다" "$(run_urgent_source "$UM/d")" ""
+rm -f "$UM/d/urgent"; mkdir "$UM/d/urgent"
+check "일반 파일이 아닌 표지는 급하지 않음으로 읽는다" "$(run_urgent_source "$UM/d")" ""
+rmdir "$UM/d/urgent"
+printf 'cc-run-urgent v1\n' > "$UM/d/urgent"
+check "출처 줄이 없는 유효한 표지는 출처 미상의 급함이다" "$(run_urgent_source "$UM/d")" "미상"
+check "표지가 없으면 급하지 않다" "$(run_urgent_source "$UM/c")" ""
+write_manifest "$MF"
 
 # 적용 프로브 코드 행 — 프로브의 종료 코드 대응은 `## 인가` 의 행으로 얼린다. 행이
 # 없으면 바이트를 하나도 내지 않아 기존 매니페스트의 다이제스트가 그대로이고, 있으면
@@ -13425,6 +13499,24 @@ wait_fifo_follow "$m" HF:k "$$" acct:ra1 no-room ""
 printf 'kindempty=%s\n' "$(hf_sk HF:k)"
 wait_drop "$m"
 
+# 급한 WAIT(일곱째 인자 1)는 급함 표지가 없는 살아 있는 항목을 같은 키로 다시 써
+# 순번(seq)을 지키며 급함을 달고, 표지는 새 논스를 받는다. 이미 급한 항목은 그대로다.
+hf_urg() { route_lease_of "$T" "$RUN_ID" "$1" 2>/dev/null | jq -r '"\(.urgent // false)"' 2>/dev/null; }
+hf_seq() { route_lease_of "$T" "$RUN_ID" "$1" 2>/dev/null | jq -r '.seq // "-"' 2>/dev/null; }
+m="$RUN_DIR/hfU.waiting"
+hf_put HF:u "$m"
+u_s0=$(hf_seq HF:u); u_n0=$(hf_nonce "$m"); u_f0=$(hf_urg HF:u)
+wait_fifo_follow "$m" HF:u "$$" acct:ra1 no-room implement 1
+u_n1=$(hf_nonce "$m")
+printf 'urgput=%s/%s/%s/%s\n' "$u_f0" "$(hf_urg HF:u)" \
+  "$( [ "$(hf_seq HF:u)" = "$u_s0" ] && [ "$u_s0" != "-" ] && printf seq-kept || printf "seq-moved:$u_s0")" \
+  "$( [ "$u_n1" != "$u_n0" ] && [ "$u_n1" = "$(route_lease_of "$T" "$RUN_ID" HF:u | jq -r '.nonce')" ] && printf fresh || printf stale)"
+wait_fifo_follow "$m" HF:u "$$" acct:ra1 no-room implement 1
+printf 'urgkept=%s\n' "$( [ "$(hf_nonce "$m")" = "$u_n1" ] && printf same || printf changed)"
+wait_fifo_follow "$m" HF:u "$$" acct:ra1 no-room implement
+printf 'urgplain=%s/%s\n' "$(hf_urg HF:u)" "$( [ "$(hf_nonce "$m")" = "$u_n1" ] && printf same || printf changed)"
+wait_drop "$m"
+
 # 대기 루프 — 첫 재질의는 그룹 없는 `host-saturated` WAIT, 다음 재질의는 GRANT. 두 번째
 # 질의 때 이 계보의 항목이 이미 없어야 한다.
 printf '2\n%s\n%s\n' "$$" "$(cc_proc_fingerprint "$$")" > "$RUN_DIR/watch.stall"
@@ -13498,6 +13590,10 @@ check "wait_fifo_follow 는 여섯째 인자 없이 다시 넣으면 종류 없�
 check "wait_fifo_follow 는 다시 넣는 항목에 여섯째 인자의 종류를 싣는다" "$(ra_get "$hf_out" kind6)" "wait/implement"
 check "wait_fifo_follow 는 항목이 표에 있으면 종류도 그대로 둔다" "$(ra_get "$hf_out" kindkept)" "implement"
 check "wait_fifo_follow 의 빈 여섯째 인자는 종류 없는 항목이다" "$(ra_get "$hf_out" kindempty)" "null"
+check "급한 WAIT 는 급함 없는 살아 있는 항목을 순번 그대로 급함을 달아 다시 쓴다" \
+  "$(ra_get "$hf_out" urgput)" "false/true/seq-kept/fresh"
+check "이미 급한 항목은 급한 WAIT 에서 다시 쓰지 않는다" "$(ra_get "$hf_out" urgkept)" "same"
+check "급함 없는 WAIT 는 급한 항목을 내리거나 바꾸지 않는다" "$(ra_get "$hf_out" urgplain)" "true/same"
 check "대기 루프는 다시 넣는 항목에 자기 스테이지 종류를 싣는다" \
   "$(ra_get "$hf_out" loopkind)/$(ra_get "$hf_out" loopc)" "review/0"
 check "spawn_route_wait 는 첫 대기 항목에 자기 스테이지 종류를 싣는다" "$(ra_get "$hf_out" spawnkind)" "wait/implement"

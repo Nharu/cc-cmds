@@ -4321,5 +4321,118 @@ P_KAT='2026-10-29T00:00:00Z' mk_prev 20261020-00f0000a; fx_done
 out=$(rk_as s-20261020-00f0000a detect --arg '전혀 다른 일을 한다')
 check "17: 후보가 하나인 세션의 새 런 고지는 그대로다" "$(col "$out" 고지)" "이 세션이 연 런(20261020-00f0000a)과 다른 의도로 보고 새 런으로 시작합니다 — 이어받으려면 인자 없이 다시 부르세요"
 
+# ---------------------------------------------------------------------------
+# 18. 급함 — 사람의 도중 표시(mark-urgent)와 재킥오프의 급함 이어받기
+# ---------------------------------------------------------------------------
+# ur_rd <id> [route.sh 원천|none] — 그 런의 런 디렉터리와 고정 라우터 사본. none 이면 사본이 없다.
+ur_rd() {
+  local rd="$XDG_STATE_HOME/cc-cmds/run/$1"
+  mkdir -p "$rd/plugin/cc-cmds/orchestrator"
+  [ "${2:-}" = none ] || cp "${2:-$ORCH/route.sh}" "$rd/plugin/cc-cmds/orchestrator/route.sh"
+  printf '%s' "$rd"
+}
+ur_sum() { find "$1" -type f 2>/dev/null | LC_ALL=C sort | while IFS= read -r f; do printf '%s %s\n' "$f" "$(sha "$f")"; done | shasum -a 256 | cut -d' ' -f1; }
+# ur_mark <id> [세션] — 다른 세션에서 부른 mark-urgent. UR_OUT 에 출력, 판정과 런 id 를 낸다.
+ur_mark() {
+  UR_OUT=$(rk_as "${2:-s-ur-other}" mark-urgent --run "$1")
+  printf '%s/%s' "$(col "$UR_OUT" 판정)" "$(col "$UR_OUT" 판정 3)"
+}
+UR1=20261101-0000a001
+UR1D=$(ur_rd "$UR1")
+check "18: 다른 세션이 연 런도 표시한다" "$(ur_mark "$UR1")" "표시함/$UR1"
+has "18: 표시함의 고지는 다음 라우터 판정을 말한다" "$(col "$UR_OUT" 고지)" "다음 라우터 판정부터 급한 런으로 판정합니다"
+check "18: 표지는 사람 출처의 세 줄이다" \
+  "$(sed -n '1p;2p' "$UR1D/urgent" | paste -sd'|' -)/$(sed -n '3p' "$UR1D/urgent" | grep -cE '^시각=[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$')/$(wc -l < "$UR1D/urgent" | tr -d ' ')" \
+  "cc-run-urgent v1|출처=사람/1/3"
+check "18: 임시 파일이 남지 않는다" "$(find "$UR1D" -maxdepth 1 -name 'urgent.tmp.*' | wc -l | tr -d ' ')" "0"
+before=$(ur_sum "$UR1D")
+check "18: 다시 부르면 이미" "$(ur_mark "$UR1")" "이미/$UR1"
+has "18: 이미의 고지는 표지의 출처를 든다" "$(col "$UR_OUT" 고지)" "출처=사람"
+check "18: 이미는 아무것도 쓰지 않는다" "$(ur_sum "$UR1D")" "$before"
+
+UR2=20261101-0000a002
+UR2D=$(ur_rd "$UR2")
+printf 'garbage\n' > "$UR2D/urgent"
+before=$(ur_sum "$UR2D")
+check "18: 급함으로 읽히지 않는 표지 자리는 거부" "$(ur_mark "$UR2")" "거부/$UR2"
+has "18: 그 거부는 파일을 지우라고 경로를 든다" "$(col "$UR_OUT" 고지)" "$UR2D/urgent"
+check "18: 그 거부는 표지를 덮어쓰지 않는다" "$(ur_sum "$UR2D")" "$before"
+
+check "18: 런 id 의 꼴이 아니면 거부" "$(ur_mark RKUR-bad)" "거부/RKUR-bad"
+check "18: 런 디렉터리가 없으면 거부" "$(ur_mark 20261101-0000a0ff)" "거부/20261101-0000a0ff"
+check "18: 없는 런 디렉터리를 만들지 않는다" "$([ -e "$XDG_STATE_HOME/cc-cmds/run/20261101-0000a0ff" ] && echo 있음 || echo 없음)" "없음"
+UR3=20261101-0000a003
+UR3D=$(ur_rd "$UR3")
+printf '끝\n' > "$UR3D/done"
+check "18: 끝난 런은 거부" "$(ur_mark "$UR3")" "거부/$UR3"
+check "18: 끝난 런에 표지를 쓰지 않는다" "$([ -e "$UR3D/urgent" ] && echo 있음 || echo 없음)" "없음"
+UR4=20261101-0000a004
+UR4D=$(ur_rd "$UR4" none)
+check "18: 고정 라우터 사본이 없으면 거부" "$(ur_mark "$UR4")" "거부/$UR4"
+printf '#!/usr/bin/env bash\n# def rt_urgent( 는 주석이라 세지 않는다\ndef rt_other: 1;\n' > "$WORK/route-old.sh"
+UR5=20261101-0000a005
+UR5D=$(ur_rd "$UR5" "$WORK/route-old.sh")
+check "18: 급함을 읽지 않는 고정 사본은 거부" "$(ur_mark "$UR5")" "거부/$UR5"
+has "18: 그 거부는 이전 플러그인 사본을 말한다" "$(col "$UR_OUT" 고지)" "이전 플러그인 사본"
+check "18: 거부한 런들에 표지가 없다" "$([ -e "$UR4D/urgent" ] || [ -e "$UR5D/urgent" ] && echo 있음 || echo 없음)" "없음"
+
+# 옮기기에서 앞선 쓰기에 진 표시는 그 쓰기의 표지를 분류한다. mv 대역은 표지 자리에 킥오프
+# 출처의 표지를 먼저 놓고 옮기지 않는다.
+mkdir -p "$WORK/mvstub"
+cat > "$WORK/mvstub/mv" <<'MVSTUB'
+#!/bin/sh
+printf 'cc-run-urgent v1\n출처=킥오프\n시각=2026-11-01T00:00:00Z\n' > "$3"
+exit 1
+MVSTUB
+chmod +x "$WORK/mvstub/mv"
+UR6=20261101-0000a006
+UR6D=$(ur_rd "$UR6")
+UR_OUT=$( cd "$WORK" && PATH="$WORK/mvstub:$PATH" CLAUDE_CODE_SESSION_ID=s-ur-other "$BASH" "$RK" mark-urgent --run "$UR6" 2>"$WORK/rk.err" )
+check "18: 옮기기에서 진 표시는 이미" "$(col "$UR_OUT" 판정)" "이미"
+has "18: 그 이미는 앞선 쓰기의 출처를 든다" "$(col "$UR_OUT" 고지)" "출처=킥오프"
+check "18: 진 표시의 임시 파일은 남지 않는다" "$(find "$UR6D" -maxdepth 1 -name 'urgent.tmp.*' | wc -l | tr -d ' ')" "0"
+
+# render-manifest — 앞선 런의 급한 런 행은 바이트 그대로 하나 옮긴다.
+UR_ROW="- \`급한 런\` | 출처=킥오프 | 사유=픽스처"
+P_EXTRA="$UR_ROW" mk_prev RKUR; fx_done
+mf_check "$BASE/docs/pipeline-run/RKUR.plan.md"; rc=$?
+check "18: 급한 런 행을 가진 원천이 check_manifest 를 통과한다" "$rc" "0"
+vur=$(rk verify --prev RKUR --base "$BASE")
+PMU=$(printf '%s\n' "$vur" | awk -F'\t' '$1 == "해시" && $2 == "매니페스트" { print $3 }')
+PGU=$(printf '%s\n' "$vur" | awk -F'\t' '$1 == "해시" && $2 == "인가 기록" { print $3 }')
+rk graph --prev RKUR --base "$BASE" --expect-sha256 "$PMU" >/dev/null
+rk render-manifest --prev RKUR --base "$BASE" --run-id RKNU --kickoff-at "$KAT1" --deadline "$DL1" \
+   --expect-sha256 "$PMU" --expect-grant-sha256 "$PGU" > "$WORK/v-ur.md"; rc=$?
+check "18: 급한 런 행이 초안에 바이트 그대로 하나 옮겨진다" \
+  "$rc/$(grep -c '^- `급한 런`' "$WORK/v-ur.md")/$(grep -cxF -- "$UR_ROW" "$WORK/v-ur.md")" "0/1/1"
+VS_PREV="$BASE/docs/pipeline-run/RKUR.plan.md"; VS_PMSHA="$PMU"; VS_PGSHA="$PGU"
+vs "급한 런 행이 원천과 같은 초안은 통과한다" 통과 "$WORK/v-ur.md" "$E"
+sed 's/^\(- `급한 런` | 출처=킥오프 | 사유=\)픽스처$/\1바꿈/' "$WORK/v-ur.md" > "$WORK/v-ur-mod.md"
+vs "원천과 다른 급한 런 행은 표지 없이 실패한다" 실패 "$WORK/v-ur-mod.md" "$E" "급한 런"
+
+# render-manifest — 행이 없는 앞선 런에 사람이 도중에 단 급함은 이어받음 행 하나가 된다.
+mk_prev RKUH; fx_done
+UHD="$XDG_STATE_HOME/cc-cmds/run/RKUH"
+printf 'cc-run-urgent v1\n출처=사람\n시각=2026-11-01T00:00:00Z\n' > "$UHD/urgent"
+vuh=$(rk verify --prev RKUH --base "$BASE")
+PMUH=$(printf '%s\n' "$vuh" | awk -F'\t' '$1 == "해시" && $2 == "매니페스트" { print $3 }')
+PGUH=$(printf '%s\n' "$vuh" | awk -F'\t' '$1 == "해시" && $2 == "인가 기록" { print $3 }')
+rk graph --prev RKUH --base "$BASE" --expect-sha256 "$PMUH" >/dev/null
+rk render-manifest --prev RKUH --base "$BASE" --run-id RKNH --kickoff-at "$KAT1" --deadline "$DL1" \
+   --expect-sha256 "$PMUH" --expect-grant-sha256 "$PGUH" > "$WORK/v-uh.md"; rc=$?
+check "18: 사람 표지는 초안에 이어받음 행 하나가 된다" \
+  "$rc/$(grep -c '^- `급한 런`' "$WORK/v-uh.md")/$(grep -cxF -- '- `급한 런` | 출처=이어받음 | 사유=RKUH 에 사람이 도중에 단 급함' "$WORK/v-uh.md")" "0/1/1"
+VS_PREV="$BASE/docs/pipeline-run/RKUH.plan.md"; VS_PMSHA="$PMUH"; VS_PGSHA="$PGUH"
+vs "사람 표지가 받치는 이어받음 행은 통과한다" 통과 "$WORK/v-uh.md" "$E"
+mv "$UHD/urgent" "$UHD/urgent.off"
+vs "표지가 없으면 원천에 없는 급한 런 행은 실패한다" 실패 "$WORK/v-uh.md" "$E" "급한 런"
+printf 'garbage\n' > "$UHD/urgent"
+vs "유효하지 않은 표지는 원천에 없는 급한 런 행을 받치지 않는다" 실패 "$WORK/v-uh.md" "$E" "급한 런"
+printf 'cc-run-urgent v1\n출처=킥오프\n시각=2026-11-01T00:00:00Z\n' > "$UHD/urgent"
+rk render-manifest --prev RKUH --base "$BASE" --run-id RKNH --kickoff-at "$KAT1" --deadline "$DL1" \
+   --expect-sha256 "$PMUH" --expect-grant-sha256 "$PGUH" > "$WORK/v-uk.md"; rc=$?
+check "18: 사람이 아닌 출처의 표지는 행을 만들지 않는다" "$rc/$(grep -c '^- `급한 런`' "$WORK/v-uk.md")" "0/0"
+rm -f "$UHD/urgent" "$UHD/urgent.off"
+
 printf '\n%d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" -eq 0 ]

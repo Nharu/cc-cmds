@@ -75726,6 +75726,71 @@ done <<'EOF'
 EOF
 unset S118 s118_goal s118_pr s118_want s118_files s118_rc
 
+# ---------------------------------------------------------------------------
+# 119. 스테이지와 교대는 런에 급함을 달지 못한다
+# --- section: 119 | group: tguard | covers: gate_argv_mark_urgent, gate_mark_urgent_refuse, admit, exec, plan | anchors: 119: exec 의 급함 표시는 어휘 거부다, 119: 실행기 뒤의 급함 표시도 거부다, 119: 거부된 급함 표시는 표지를 쓰지 않는다, 119: 같은 명령의 다른 모드는 급함 거부에 걸리지 않는다, 119: plan 의 급함 표시도 거부다, 119: admit 의 급함 표시는 표를 내지 않는다 ---
+#
+# 급함 표지는 그 런의 스테이지를 모든 대기자 앞에 세우고 빌린 기증 그룹의 여유까지
+# 쓰게 하므로, 사람의 대화형 세션만 단다. 표시 명령 자신의 거부는 스테이지가 지울 수
+# 있는 환경 변수 넷을 읽으므로, 게이트가 exec·plan·admit 에서 그 명령의 모든 철자를
+# 먼저 거부한다. 픽스처 런 디렉터리는 표시 명령이 받아들이는 모양(올바른 id, 고정
+# 경로 사본)으로 두어, 거부가 없었다면 표지가 생겼을 자리를 단언한다.
+# ---------------------------------------------------------------------------
+tg_world u119 -
+r119_world=$rc
+u119_id=20260101-0000abcd
+u119_rd="$TG_STATE/cc-cmds/run/$u119_id"
+mkdir -p "$u119_rd/plugin/cc-cmds/orchestrator"
+cp "$repo_root/plugins/cc-cmds/orchestrator/route.sh" "$u119_rd/plugin/cc-cmds/orchestrator/route.sh"
+u119_rk="$repo_root/plugins/cc-cmds/orchestrator/rekick.sh"
+u119_warn='`rekick.sh mark-urgent` is refused'
+check "119: 세그먼트 행이 기록된다 (아래 단언의 전제)" "$r119_world" "0"
+# u119_exec <surface> <argv…> — 세그먼트 워크트리에서 낸 exec 하나.
+u119_exec() {
+  local s="$1"; shift
+  tg_g "$TG_WT" exec --manifest "$TG_M" --target a --segment SA --cutpoint 커밋 --surface "$s" \
+    --reach 런로컬 --snapshot-digest "$(tg_H)" --rationale x -- "$@"
+}
+u119_exec 트리밖쓰기 bash "$u119_rk" mark-urgent --run "$u119_id"
+case "$rc|$msg" in
+  "2|"*"$u119_warn"*) ok "119: exec 의 급함 표시는 어휘 거부다" ;;
+  *) bad "119: exec 의 급함 표시는 어휘 거부다" "rc=$rc $msg" ;;
+esac
+g119=""
+for c119 in "env -u CC_PIPELINE_RUN_ID -u CC_PIPELINE_STAGE_ID $u119_rk mark-urgent --run $u119_id" \
+            "command $u119_rk mark-urgent --run $u119_id" "nice -n 5 $u119_rk mark-urgent --run $u119_id" \
+            "$u119_rk mark-urgent --run $u119_id"; do
+  # shellcheck disable=SC2086
+  u119_exec 트리밖쓰기 $c119
+  case "$rc|$msg" in "2|"*"$u119_warn"*) ;; *) g119="$g119 [$c119 → rc=$rc]" ;; esac
+done
+u119_exec 트리밖쓰기 bash -c "cd /tmp; '$u119_rk' mark-urgent --run $u119_id"
+case "$rc|$msg" in "2|"*"$u119_warn"*) ;; *) g119="$g119 [bash -c → rc=$rc]" ;; esac
+check "119: 실행기 뒤의 급함 표시도 거부다" "${g119:-없음}" "없음"
+check "119: 거부된 급함 표시는 표지를 쓰지 않는다" \
+  "$(ls -A "$u119_rd" | paste -sd, -)" "plugin"
+u119_exec 읽기 ls
+r119_ls="$rc"
+u119_exec 읽기 bash "$u119_rk" detect --session s-u119 --arg '' --cwd "$TG_WT"
+case "$msg" in *"$u119_warn"*) n119=거부 ;; *) n119=통과 ;; esac
+check "119: 같은 명령의 다른 모드는 급함 거부에 걸리지 않는다" "$r119_ls|$n119" "0|통과"
+tg_g "$TG_WT" plan --manifest "$TG_M" --target a --segment SA --cutpoint 커밋 --surface 트리밖쓰기 \
+  --reach 런로컬 -- "$u119_rk" mark-urgent --run "$u119_id"
+case "$rc|$msg" in
+  "2|"*"$u119_warn"*) ok "119: plan 의 급함 표시도 거부다" ;;
+  *) bad "119: plan 의 급함 표시도 거부다" "rc=$rc $msg" ;;
+esac
+rm -f "$TG_RD/admit/ticket/$(thp_key_norm "$TG_CALLER")"
+tg_hook "$u119_rk mark-urgent --run $u119_id"
+tg_g "$TG_WT" admit --request last --manifest "$TG_M" --target a --segment SA --surface 트리밖쓰기 \
+  --reach 런로컬 --snapshot-digest "$(tg_H)" --rationale x
+n119=""
+case "$msg" in *"$u119_warn"*) n119=문면 ;; esac
+check "119: admit 의 급함 표시는 표를 내지 않는다" \
+  "$rc|$n119|$(test -f "$TG_RD/admit/ticket/$(thp_key_norm "$TG_CALLER")" && echo 표)|$(ls -A "$u119_rd" | paste -sd, -)" \
+  "2|문면||plugin"
+unset u119_id u119_rd u119_rk u119_warn r119_world r119_ls g119 c119 n119
+
 # --- epilogue-begin ---
 #
 # THE UNCONDITIONAL TAIL. A selected run has to report its own totals, carry its

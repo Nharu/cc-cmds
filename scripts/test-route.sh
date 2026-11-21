@@ -887,6 +887,18 @@ for st in intent borrowed returning; do
   bfile "$BRD/$st.json" ".state = \"$st\""
   br_case "$st" "$BRD/$st.json" "{\"state\":\"$st\",\"lane_config_dir\":\"/lane\",\"donor\":{\"id\":\"u3\",\"config_dir\":\"/h/.claude-u3\"}}"
 done
+# 공유 차용 표시. `borrowed` 이고 최상위 `share` 가 불리언 참일 때만 판독이 `share: true` 를
+# 싣는다. 형이 틀린 값과 다른 상태의 공유는 싣지 않고 손상도 아니다.
+bfile "$BRD/share.json" '.share = true'
+br_case "borrowed 공유" "$BRD/share.json" '{"state":"borrowed","lane_config_dir":"/lane","donor":{"id":"u3","config_dir":"/h/.claude-u3"},"share":true}'
+bfile "$BRD/share-str.json" '.share = "true"'
+br_case "borrowed 의 문자열 공유는 싣지 않는다" "$BRD/share-str.json" '{"state":"borrowed","lane_config_dir":"/lane","donor":{"id":"u3","config_dir":"/h/.claude-u3"}}'
+bfile "$BRD/share-false.json" '.share = false'
+br_case "borrowed 의 거짓 공유는 싣지 않는다" "$BRD/share-false.json" '{"state":"borrowed","lane_config_dir":"/lane","donor":{"id":"u3","config_dir":"/h/.claude-u3"}}'
+for st in intent returning; do
+  bfile "$BRD/share-$st.json" ".state = \"$st\" | .share = true"
+  br_case "$st 의 공유는 싣지 않는다" "$BRD/share-$st.json" "{\"state\":\"$st\",\"lane_config_dir\":\"/lane\",\"donor\":{\"id\":\"u3\",\"config_dir\":\"/h/.claude-u3\"}}"
+done
 printf '{"schema":' > "$BRD/broken.json"
 br_case "깨진 JSON" "$BRD/broken.json" "$CORRUPT"
 bfile "$BRD/schema.json" '.schema = "cc-lane-borrow v2"'
@@ -4815,6 +4827,190 @@ lint_case "case 갈래 머리 뒤 readonly 이름 추출" "$LT/arm" 1
 check "case 갈래 머리 뒤 이름 둘 다 보고" "$(sed -n 's#^FAIL: \[충돌\] \([^ ]*\) — .*$#\1#p' "$LT/arm.err" | sort | tr '\n' ' ')" "GUARD_X GUARD_Y "
 rc=0; bash "$TR_LINT" >"$LT/real.out" 2>&1 || rc=$?
 check "실제 트리에서 린트가 초록" "$rc" 0
+
+# ===========================================================================
+# 급한 런. 요청의 `urgent: true` 는 대기 순위의 앞자리, 호스트 보류 면제, 그리고 공유 차용
+# 중인 기증 그룹의 두 번째 풀을 준다. 레인 고정 요청은 급하지 않은 요청과 같다. 기증 그룹
+# h 는 a·c 두 계정이고 차용 기증자는 a 다. 첫 이관 풀의 다른 그룹은 b 하나다. 주간 예약은
+# TR7(2400), 5시간 예약은 TR5(3000)이다.
+# ===========================================================================
+UJ='
+def URG: REQ({urgent: true});
+def SHR: .borrow.share = true;
+def HH($ua; $uc): .inventory.accounts = [A("a"), A("c")]
+  | USE([UB("a"; 1000; $ua) + {org_hash: "h"}, UB("c"; 1000; $uc) + {org_hash: "h"}]);
+def HB($ua; $uc): .inventory.accounts = [A("a"), A("b"), A("c")]
+  | USE([UB("a"; 1000; $ua) + {org_hash: "h"}, UB("b"; 1000; 1000), UB("c"; 1000; $uc) + {org_hash: "h"}]);
+def UW1($run; $lin; $acct; $seq; $k; $u): LR($run; $lin; $acct; "wait"; null; true; $seq) + {stage_kind: $k}
+  + (if $u then {urgent: true} else {} end);
+def UGR: LR("r1"; "S1"; "a"; "grant"; RES; true; 1) + {stage_kind: "implement", urgent_donor: true};
+'
+# uwhy <필터> <계정> — 급한 요청의 기증 그룹 술어가 계정에 내는 첫 원인(null 이면 통과).
+uwhy() { un_jq "$UJ $1" "rt_cost_apply | rt_prep(\$schema) as \$p | rt_urgent_donor_why(\$p; rt_av(\$p; \"$2\")) | tostring" | tr -d '"'; }
+# uhold <필터> — 기증 그룹 부여의 급한 유지가 계정 a 에 내는 답.
+uhold() { un_jq "$UJ $1" 'rt_cost_apply | rt_prep($schema) as $p | rt_urgent_hold_ok($p; rt_av($p; "a"))'; }
+UBASE='HH(2000; 2000) | LEND("a") | SHR | URG'
+check "기증 그룹 술어: 공유 차용 중 급한 요청에 기증자 a 는 통과" "$(uwhy "$UBASE" a)" null
+check "기증 그룹 술어: 그룹 동료 c 도 통과" "$(uwhy "$UBASE" c)" null
+check "기증 그룹 술어: 급하지 않은 요청은 not-urgent" "$(uwhy 'HH(2000; 2000) | LEND("a") | SHR' a)" not-urgent
+check "기증 그룹 술어: 공유가 없으면 no-share" "$(uwhy 'HH(2000; 2000) | LEND("a") | URG' a)" no-share
+for st in intent returning; do
+  check "기증 그룹 술어: $st 기록의 공유는 no-share" \
+    "$(uwhy "HH(2000; 2000) | .borrow = BRW(\"$st\"; \"a\"; \"/h/.claude-a\") | SHR | URG" a)" no-share
+done
+check "기증 그룹 술어: 다른 그룹 계정은 not-donor" "$(uwhy 'HB(2000; 2000) | LEND("a") | SHR | URG' b)" not-donor
+check "기증 그룹 술어: draining 계정은 unattended-off" \
+  "$(uwhy "$UBASE | .inventory.accounts[0].unattended = \"draining\"" a)" unattended-off
+check "기증 그룹 술어: 로그인이 끊긴 계정은 logged-out" "$(uwhy "$UBASE | .usage.accounts[0].login = \"expired\"" a)" logged-out
+check "기증 그룹 술어: 디렉터리 불일치 계정은 mismatch" "$(uwhy "$UBASE | .usage.accounts[0].config_dir = \"/elsewhere\"" a)" mismatch
+check "기증 그룹 술어: 사용량이 신선하지 않으면 usage-stale" "$(uwhy "$UBASE | .usage.written_at_epoch = (\$now - 7200)" a)" usage-stale
+check "기증 그룹 술어: 그룹 창이 소진이면 window" "$(uwhy 'HH(2000; 10000) | LEND("a") | SHR | URG' a)" window
+check "기증 그룹 술어: 주간 6600 + 예약 2400 은 주간 선 9000 안" "$(uwhy 'HH(2000; 6600) | LEND("a") | SHR | URG' a)" null
+check "기증 그룹 술어: 주간 6601 + 예약 2400 은 seven-day-line" "$(uwhy 'HH(2000; 6601) | LEND("a") | SHR | URG' a)" seven-day-line
+check "기증 그룹 술어: 5시간 2000 + 예약 3000 은 5시간 선 5000 안" \
+  "$(uwhy "$UBASE | .usage.accounts[0].windows.five_hour.utilization = 0.2" a)" null
+check "기증 그룹 술어: 5시간 2001 + 예약 3000 은 five-hour-line" \
+  "$(uwhy "$UBASE | .usage.accounts[0].windows.five_hour.utilization = 0.2001" a)" five-hour-line
+check "기증 그룹 술어: 5시간 창이 판정에 참여하지 않으면 5시간 선을 보지 않는다" \
+  "$(uwhy 'HH(2000; 2000) | USE([N5("a"; 0.2; 86400) + {org_hash: "h"}, N5("c"; 0.2; 86400) + {org_hash: "h"}]) | LEND("a") | SHR | URG' a)" null
+check "급함: 레인 고정 요청은 급하지 않다" \
+  "$(un_jq "$UJ $UBASE | .seat.lane = \"u3\"" 'rt_cost_apply | rt_prep($schema) as $p | [rt_urgent($p), $p.pin != null]')" '[false,true]'
+
+# 급한 유지. 주간 경보선 9500, 5시간 경보선 9000 에서 멈추고, 5시간 창이 판정에 참여하지
+# 않으면 5시간 경보선을 보지 않는다.
+check "급한 유지: 주간 9499 는 유지" "$(uhold 'HH(1000; 9499) | LEND("a") | SHR | URG')" true
+check "급한 유지: 주간 9500 은 유지하지 않는다" "$(uhold 'HH(1000; 9500) | LEND("a") | SHR | URG')" false
+check "급한 유지: 5시간 8999 는 유지" "$(uhold "$UBASE | .usage.accounts[0].windows.five_hour.utilization = 0.8999")" true
+check "급한 유지: 5시간 9000 은 유지하지 않는다" "$(uhold "$UBASE | .usage.accounts[0].windows.five_hour.utilization = 0.9")" false
+check "급한 유지: 5시간 창이 판정에 참여하지 않으면 주간만 본다" \
+  "$(uhold 'USE([N5("a"; 0.9; 86400) + {org_hash: "h"}, N5("c"; 0.9; 86400) + {org_hash: "h"}]) | .inventory.accounts = [A("a"), A("c")] | LEND("a") | SHR | URG')" true
+check "급한 유지: 공유가 끊기면 유지하지 않는다" "$(uhold 'HH(1000; 2000) | LEND("a") | URG')" false
+
+# 대기 순위.
+check "대기 순위: 급한 항목은 [0, seq], 아닌 항목은 [1, seq]" \
+  "$(un_jq "$UJ ." '[rt_wait_rank({urgent: true, seq: 5}), rt_wait_rank({seq: 3}), rt_wait_rank({urgent: "yes", seq: 2})]')" '[[0,5],[1,3],[1,2]]'
+check "요청 순위: 급한 새 요청은 [0, infinite], 급하지 않은 새 요청은 null" \
+  "$(un_jq "$UJ ." '[rt_req_rank({c: {request: {urgent: true}}, pin: null, own: null}) == [0, infinite],
+                     rt_req_rank({c: {request: {}}, pin: null, own: null})]')" '[true,null]'
+check "요청 순위: 살아 있는 자기 대기 항목의 seq 에 급함 자리를 얹는다" \
+  "$(un_jq "$UJ ." '[{kind: "wait", live: true, seq: 4}] as [$w]
+     | [rt_req_rank({c: {request: {urgent: true}}, pin: null, own: $w}),
+        rt_req_rank({c: {request: {}}, pin: null, own: ($w + {urgent: true})}),
+        rt_req_rank({c: {request: {}}, pin: null, own: $w}),
+        rt_req_rank({c: {request: {urgent: true}}, pin: "u3", own: null})]')" '[[0,4],[0,4],[1,4],null]'
+check "대기 순위: 급한 새 요청은 급한 대기자 뒤, 급하지 않은 대기자 앞" \
+  "$(un_jq "$UJ ." '[([0, 3] < [0, infinite]), ([0, infinite] < [1, 1])]')" '[true,true]'
+
+# 급하지 않은 요청과 급한 요청의 봉투. 급함이 바꾸는 것은 `urgent: true` 하나다.
+check "급하지 않은 봉투는 urgent 키를 싣지 않는다" "$(decide '.' | jq -c 'has("urgent")')" false
+check "갈래가 같으면 급한 봉투는 urgent 하나만 더한다" "$(decide 'REQ({urgent: true})' | jq -c 'del(.urgent)')" "$(decide '.')"
+check "고정 요청의 봉투는 urgent 를 싣지 않는다" \
+  "$(decide 'REQ({urgent: true}) | .seat.lane = "u3"' | jq -c 'has("urgent")')" false
+check "급하지 않은 요청에는 공유 표시가 바이트를 바꾸지 않는다" \
+  "$(decide "$UJ HH(2000; 2000) | LEND(\"a\") | SHR")" "$(decide "$UJ HH(2000; 2000) | LEND(\"a\")")"
+
+# 두 번째 풀. 첫 풀이 비면 급한 요청은 기증 그룹에서 받는다.
+out=$(decide "$UJ $UBASE")
+expect "두 번째 풀: 공유 차용 중 급한 요청은 기증 그룹에서 GRANT urgent_donor" "$out" \
+  '.verdict == "GRANT" and .urgent_donor == true and .urgent == true and (.account == "a" or .account == "c")
+   and .txn.op == "write" and .txn.record.urgent_donor == true'
+seen "$out"
+out=$(decide "$UJ HH(2000; 2000) | LEND(\"a\") | URG")
+expect "두 번째 풀: 공유가 없으면 기증 그룹을 쓰지 않는다" "$out" '.verdict != "GRANT"'
+check "두 번째 풀이 비면 첫 풀의 후보 없음 판정에 urgent 만 더한다" "$(printf '%s' "$out" | jq -c 'del(.urgent)')" \
+  "$(decide "$UJ HH(2000; 2000) | LEND(\"a\")")"
+expect "두 번째 풀: intent 기록의 공유는 기증 그룹을 내주지 않는다" \
+  "$(decide "$UJ HH(2000; 2000) | .borrow = BRW(\"intent\"; \"a\"; \"/h/.claude-a\") | SHR | URG")" '(.urgent_donor // false) == false'
+expect "두 번째 풀: 주간 선을 넘는 기증 그룹은 쓰지 않는다" "$(decide "$UJ HH(2000; 6601) | LEND(\"a\") | SHR | URG")" \
+  '.verdict != "GRANT"'
+expect "두 번째 풀: 첫 풀에 후보가 있으면 첫 풀이 먼저다" "$(decide "$UJ HB(2000; 2000) | LEND(\"a\") | SHR | URG")" \
+  '.verdict == "GRANT" and .account == "b" and (.urgent_donor // false) == false'
+URC='REQ({event: "limit-reclaim", bound_account: "a"})'
+out=$(decide "$UJ $UBASE | $URC")
+expect "두 번째 풀: 한도 뒤 재배정은 직전 기증자를 뺀다" "$out" \
+  '.verdict == "GRANT" and .account == "c" and .urgent_donor == true'
+
+# 급한 FIFO. 앞선 항목은 후보 그룹의 앞선 대기 항목과 어느 그룹이든 급한 앞선 대기 항목이다.
+# 주간 4500 이면 자기 몫 2400 은 담아도 급한 앞선 대기자 몫까지는 주간 선 9000 을 넘는다.
+out=$(decide "$UJ HH(2000; 4500) | LEND(\"a\") | SHR | URG")
+expect "급한 FIFO: 앞선 대기자가 없으면 주간 4500 에서 GRANT" "$out" '.verdict == "GRANT" and .urgent_donor == true'
+out=$(decide "$UJ HH(2000; 4500) | LEND(\"a\") | SHR | URG | ITEMS([UW1(\"r2\"; \"S7\"; \"z\"; 1; \"implement\"; true)])")
+expect "급한 FIFO: 다른 그룹의 급한 앞선 대기자 몫을 못 담으면 그룹 없는 fifo-yield" "$out" \
+  '.verdict == "WAIT" and .reason == "fifo-yield" and .group == null and .urgent == true'
+expect "급한 FIFO: 다른 그룹의 급하지 않은 대기자는 세지 않는다" \
+  "$(decide "$UJ HH(2000; 4500) | LEND(\"a\") | SHR | URG | ITEMS([UW1(\"r2\"; \"S7\"; \"z\"; 1; \"implement\"; false)])")" \
+  '.verdict == "GRANT" and .urgent_donor == true'
+expect "급한 FIFO: 자기 항목보다 뒤의 급한 대기자는 세지 않는다" \
+  "$(decide "$UJ HH(2000; 4500) | LEND(\"a\") | SHR | URG | ITEMS([UW1(\"r1\"; \"S1\"; \"a\"; 1; \"implement\"; false), UW1(\"r2\"; \"S7\"; \"z\"; 2; \"implement\"; true)])")" \
+  '.verdict == "GRANT" and .urgent_donor == true'
+expect "급한 FIFO: 종류 없는 급한 앞선 대기자가 있으면 fifo-yield" \
+  "$(decide "$UJ $UBASE | ITEMS([LR(\"r2\"; \"S7\"; \"z\"; \"wait\"; null; true; 1) + {urgent: true}])")" \
+  '.verdict == "WAIT" and .reason == "fifo-yield" and .group == null'
+expect "급한 대기: 급하지 않은 앞선 대기자를 앞지른다" \
+  "$(decide "$KW $FIFO | USE([UA(\"a\"; 0.5; 0.1)]) | ITEMS([WK(\"r2\"; \"S7\"; \"a\"; true; 1; \"implement\")]) | REQ({urgent: true})")" \
+  '.verdict == "GRANT" and .account == "a" and .urgent == true'
+expect "급한 대기: 급한 앞선 대기자는 앞지르지 못한다" \
+  "$(decide "$KW $FIFO | USE([UA(\"a\"; 0.5; 0.1)]) | ITEMS([WK(\"r2\"; \"S7\"; \"a\"; true; 1; \"implement\") + {urgent: true}]) | REQ({urgent: true})")" \
+  '.verdict == "WAIT" and .reason == "fifo-yield" and .urgent == true'
+
+# 호스트 보류 면제.
+expect "호스트 보류: 급한 요청은 보류하지 않는다" "$(decide "$HS | $HL | REQ({urgent: true})")" \
+  '.verdict == "GRANT" and .reason != "host-saturated" and .urgent == true'
+
+# 살아 있는 급한 기증 그룹 부여의 재개. 유지에서 떨어지면 첫 이관 풀로 옮기고, 받을 곳이
+# 없으면 묶인 계정을 실은 그룹 없는 대기다.
+out=$(decide "$UJ HH(1000; 3000) | LEND(\"a\") | SHR | URG | ITEMS([UGR]) | REQ({event: \"resume\"})")
+expect "급한 재개: 유지 안이면 묶인 계정을 잇는다" "$out" '.verdict == "GRANT" and .account == "a" and .basis == "resume-bound"'
+out=$(decide "$UJ HB(1000; 9500) | LEND(\"a\") | SHR | URG | ITEMS([UGR]) | REQ({event: \"resume\"})")
+expect "급한 재개: 경보선에서 멈추면 첫 이관 풀로 옮긴다" "$out" \
+  '.verdict == "GRANT" and .account == "b" and .basis == "resume-migrated" and .migrated.from == "a"'
+out=$(decide "$UJ HH(1000; 9500) | LEND(\"a\") | SHR | URG | ITEMS([UGR]) | REQ({event: \"resume\"})")
+expect "급한 재개: 옮길 곳이 없으면 묶인 계정을 실은 그룹 없는 resume-bound-no-room" "$out" \
+  '.verdict == "WAIT" and .reason == "resume-bound-no-room" and .group == null and .account == "a" and .until_epoch == null'
+out=$(decide "$UJ HH(1000; 10000) | LEND(\"a\") | SHR | URG | ITEMS([UGR]) | REQ({event: \"resume\"})")
+expect "급한 재개: 소진이면 그룹 없는 resume-bound-exhausted" "$out" \
+  '.verdict == "WAIT" and .reason == "resume-bound-exhausted" and .group == null and .account == "a"'
+out=$(decide "$UJ HH(1000; 9500) | LEND(\"a\") | URG | ITEMS([UGR]) | REQ({event: \"resume\"})")
+expect "급한 재개: 차용이 끝나 공유가 없으면 유지 탈락으로 옮길 곳을 찾는다" "$out" \
+  '.verdict == "WAIT" and .group == null and .account == "a"'
+out=$(decide "$UJ HH(1000; 9500) | ITEMS([UGR]) | REQ({event: \"resume\"})")
+expect "급한 재개: 차용이 끝난 부여는 오늘의 유지 규칙 그대로다" "$out" '.verdict == "GRANT" and .account == "a"'
+
+# 재검사. 새로 놓는 급한 기증 그룹 부여는 잠금 아래 σ 와 그 기록의 예약으로 두 선을 다시 본다.
+urev() {
+  un_jq "$UJ $1 | .fresh_nonce = \"n-x\"" \
+    "rt_cost_apply | rt_revalidate(\$schema; {run_id: \"r1\", lineage: \"S1\", account: \"a\", nonce: \"$2\", urgent_donor: true,
+      reservation_bp: {five_hour: 3000, seven_day: 2400}})"
+}
+check "재검사: 주간 6600 + 2400 은 통과" "$(urev 'HH(1000; 6600) | LEND("a") | SHR' n-x)" true
+check "재검사: 주간 6601 + 2400 은 거절" "$(urev 'HH(1000; 6601) | LEND("a") | SHR' n-x)" false
+check "재검사: 소진 창은 거절" "$(urev 'HH(1000; 10000) | LEND("a") | SHR' n-x)" false
+check "재검사: 미상 창은 거절" \
+  "$(urev 'HH(1000; 2000) | .usage.accounts |= map(.windows.five_hour.observed_at_epoch = ($now - 7200)) | LEND("a") | SHR' n-x)" false
+check "재검사: 이어 가는 쓰기는 일반 창 검사다" "$(urev 'HH(1000; 6601) | LEND("a") | SHR' n-old)" true
+
+# 거래 실패. 급한 기증 그룹 부여 기록은 그룹 없는 lease-contention 이다.
+check "거래 실패: 급한 기증 그룹 기록은 그룹 없는 대기" \
+  "$(un_jq "$UJ HH(1000; 2000) | URG" 'rt_txn_fallback("lease-contention"; {account: "a", urgent_donor: true}) | [.verdict, .group, .reason, .urgent]')" \
+  '["WAIT",null,"lease-contention",true]'
+check "거래 실패: 급하지 않은 기록은 그 계정의 그룹을 지명" \
+  "$(un_jq "$UJ HH(1000; 2000)" 'rt_txn_fallback("lease-contention"; {account: "a"}) | [.verdict, .group, .reason, has("urgent")]')" \
+  '["WAIT","org:h","lease-contention",false]'
+
+# 대기 항목의 급함. 열 인자 꼴과 거짓 열한째 인자는 바이트가 같고, 같은 키에 다시 넣으면
+# seq 를 지킨다.
+check "대기 항목: 열 인자 꼴은 급함 거짓과 바이트가 같다" \
+  "$(un_jq "$UJ ." '[rt_wait_record({items: []}; "r1"; "S1"; "a"; "/h"; "n"; 1; []; $schema; "implement"),
+                     rt_wait_record({items: []}; "r1"; "S1"; "a"; "/h"; "n"; 1; []; $schema; "implement"; false)] | (.[0] == .[1]) and (.[0] | has("urgent") | not)')" true
+du=$(tnew urgwaits)
+uput() { bash "$TR_ROUTE" lease-wait-put --table "$du" --now "$NOW" --run-id r1 --lineage "$1" --account a --config-dir /h/.claude-a --holder "$TR_HOLDER" "${@:2}"; }
+u0=$(uput U0 --kind implement)
+expect "lease-wait-put --urgent 없이는 urgent 키가 없다" "$u0" '(has("urgent") | not) and .seq == 1'
+u1=$(uput U1 --kind implement --urgent 1)
+expect "lease-wait-put --urgent 1 은 urgent: true" "$u1" '.urgent == true and .seq == 2'
+expect "lease-wait-put --urgent 의 다른 값은 싣지 않는다" "$(uput U2 --urgent yes)" '(has("urgent") | not) and .seq == 3'
+expect "같은 키에 급함 없이 다시 넣으면 seq 를 지키고 급함은 빠진다" "$(uput U1 --kind implement)" '.seq == 2 and (has("urgent") | not)'
+expect "같은 키에 급함으로 다시 넣으면 seq 를 지킨다" "$(uput U0 --kind implement --urgent 1)" '.seq == 1 and .urgent == true'
 
 # ===========================================================================
 # 모음 전역 검사
