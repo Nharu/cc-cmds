@@ -41364,7 +41364,7 @@ if [ -n "$CX_HAD_RO" ]; then export CC_GATE_TOKEN_RO="$CX_PREV_RO"; else unset C
 CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$CX_PREV_AR"
 
 # --- 34qt. 종료 절 근거 실행의 실행 트리 — 게이트가 원장에서 고정한 커밋을 꺼내 그 안에서 돌린다 ---
-# --- section: 34qt | group: cone | covers: act, plan, snapshot, clause-exec, gate_act_worktree, gate_on_exit, gate_clause_exec_evidence_check, kickoff | anchors: 34qt: 단어 없는 실행은 이 대상의 마지막 머지를 꺼내 메인 체크아웃을 건드리지 않는다, 34qt: 트리=머지 전 세그먼트는 그 워크트리 HEAD 에서 지명한 시험만 돈다, 34qt: 명령이 HEAD 를 옮긴 실행을 인용한 충족은 거절된다, 34qt: 꺼낸 트리 밖 절대 경로의 스크립트는 띄우지 않고 거절된다, 34qt: 시한에 닿은 실행은 143 과 한도 초과=예 로 남는다, 34qt: 신호를 받은 실행은 행을 한 번만 쓰고 트리를 남기지 않는다, 34qt: 실행 워크트리 갈래는 그 HEAD 를 꺼내고 실행 워크트리를 건드리지 않는다, 34qt: 시험 실행 절의 사전 인가 선택지가 기본값으로 표지된다 ---
+# --- section: 34qt | group: cone | covers: act, plan, snapshot, clause-exec, gate_act_worktree, gate_on_exit, gate_clause_exec_evidence_check, gate_act_approval_id, gate_act_approval_fresh, gate_issue_act_approval, kickoff | anchors: 34qt: 단어 없는 실행은 이 대상의 마지막 머지를 꺼내 메인 체크아웃을 건드리지 않는다, 34qt: 등급 판정 기준 줄의 경로가 같은 호출의 실행 트리 줄 경로와 같다, 34qt: 다른 게이트 프로세스의 재제출에서 같은 승인 id 가 해소되어 행위를 연다, 34qt: 답 뒤에 머지가 내려앉으면 같은 승인 id 가 낡고 그 id 에 새 대기 행이 붙는다, 34qt: 트리=머지 전 세그먼트는 그 워크트리 HEAD 에서 지명한 시험만 돈다, 34qt: 명령이 HEAD 를 옮긴 실행을 인용한 충족은 거절된다, 34qt: 꺼낸 트리 밖 절대 경로의 스크립트는 띄우지 않고 거절된다, 34qt: 시한에 닿은 실행은 143 과 한도 초과=예 로 남는다, 34qt: 신호를 받은 실행은 행을 한 번만 쓰고 트리를 남기지 않는다, 34qt: 실행 워크트리 갈래는 그 HEAD 를 꺼내고 실행 워크트리를 건드리지 않는다, 34qt: 시험 실행 절의 사전 인가 선택지가 기본값으로 표지된다 ---
 #
 # A CLAUSE-EXEC RUNS IN A TREE THE GATE CHECKS OUT FOR IT, AT A COMMIT THE GATE
 # FIXES FROM THE LEDGER. With no `트리=` word the commit is this target's last
@@ -41451,6 +41451,24 @@ case "$(qt_out)" in
   *"pwd="*"-run-RQTA-cx-C1-1"*"head=$QT_M1"*) ok "34qt: 명령은 절·회차의 -cx- 경로에서 고정 커밋을 HEAD 로 돈다" ;;
   *) bad "34qt: 명령은 절·회차의 -cx- 경로에서 고정 커밋을 HEAD 로 돈다" "$(qt_out)" ;;
 esac
+# The grading base is the checked-out tree, and the checkout came first. The
+# base is logged as a physical path and the checkout under the main worktree's
+# spelling, so both are compared after resolving their (still existing) parent.
+qt_phys() { [ -n "$1" ] || return 0; printf '%s/%s' "$(cd "$(dirname "$1")" 2>/dev/null && pwd -P)" "$(basename "$1")"; }
+qt_ln_wt=$( { grep -n 'clause-exec 실행 트리 — ' "$CAP_ERR" || true; } | head -1)
+qt_ln_gb=$( { grep -n 'clause-exec 등급 판정 기준 — ' "$CAP_ERR" || true; } | head -1)
+qt_p_wt=$(printf '%s' "$qt_ln_wt" | sed -n 's/.*clause-exec 실행 트리 — \([^ ]*\) (.*/\1/p')
+qt_p_gb=$(printf '%s' "$qt_ln_gb" | sed -n 's/.*clause-exec 등급 판정 기준 — \(.*\)$/\1/p')
+case "$(qt_phys "$qt_p_gb")" in
+  *"-run-RQTA-cx-C1-1") check "34qt: 등급 판정 기준 줄의 경로가 같은 호출의 실행 트리 줄 경로와 같다" \
+                          "$(qt_phys "$qt_p_gb")" "$(qt_phys "$qt_p_wt")" ;;
+  *) bad "34qt: 등급 판정 기준 줄의 경로가 같은 호출의 실행 트리 줄 경로와 같다" "기준=$qt_p_gb 트리=$qt_p_wt" ;;
+esac
+if [ -n "$qt_ln_wt" ] && [ -n "$qt_ln_gb" ] && [ "${qt_ln_wt%%:*}" -lt "${qt_ln_gb%%:*}" ]; then
+  ok "34qt: 실행 트리 줄이 등급 판정 기준 줄보다 앞에 있다"
+else
+  bad "34qt: 실행 트리 줄이 등급 판정 기준 줄보다 앞에 있다" "트리=${qt_ln_wt%%:*} 기준=${qt_ln_gb%%:*}"
+fi
 
 # The plan mode forecasts the same commit and checks nothing out.
 qt_n0=$(cx_n '종료 절 실행')
@@ -41548,6 +41566,8 @@ check "34qt: HEAD 를 옮기지 않은 실행의 명령 뒤 HEAD 는 - 다" "$rc
 cx_clause C6 충족 "실행 $qt_sa"
 check "34qt: HEAD 를 옮기지 않은 실행을 인용한 충족은 받아들여진다" "$rc" "0"
 [ "$rc" = "0" ] || printf '  34qt: %s\n' "$msg"
+check "34qt: clause-exec 아닌 act 는 등급 판정 기준 줄을 남기지 않는다" \
+  "$rc|$( { grep -c 'clause-exec 등급 판정 기준 — ' "$CAP_ERR" || true; } )" "0|0"
 
 # A script operand outside the tree is not run; the same script inside it is.
 qt_refused_c7() {
@@ -41711,6 +41731,54 @@ fi
 check "34qt: 실행 워크트리가 메인 워크트리와 같으면 베이스 끝을 꺼낸다" \
   "$rc|$(row_field "$qt_r" '트리')|$(row_field "$qt_r" '커밋')|$(qt_out)|$(cx_trees)" "0|베이스|$qt_want|$qt_want|0"
 [ "$rc" = "0" ] || printf '  34qt: %s\n' "$msg"
+
+# ---- 승인 대기 · 다른 프로세스의 재제출 · 낡음 ----
+# A clause-exec reaches an approval wait through the reach cell, not the
+# pre-authorization: with auto-resolution off, a worktree write the table
+# grades and a whole-shape row covers, declared `협업`, parks as `도달모순` and
+# the park is issued as an approval. A read the table proved passes the reach
+# judgment whatever it declares, so it cannot stand here. The id is keyed on the
+# clause and the tree word, so another gate process finds it; the freshness
+# probe recomputes the fixed commit, so a merge landing after the answer makes
+# it stale.
+cx_fx RQTD '- `종료 절` | id=A1 | 문면=승인을 거쳐 쓰기가 돈다' \
+           '- `종료 절` | id=A2 | 문면=답 뒤에 머지가 내려앉는다' \
+           '- `사전 인가` | 형태=git commit --allow-empty -q -m qt-ap | 사유=승인 대기 갈래'
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=0
+qt_ap_last() {  # qt_ap_last — the id of the last waiting approval row
+  cap_rows '승인' | grep -F '상태=대기' | tail -1 | tr '|' '\n' | sed -n 's/^ *승인 id=//p' | sed 's/[[:space:]]*$//'
+}
+qt_ap_rows() {  # qt_ap_rows <승인 id> <상태> — how many rows of that id carry that state
+  { cap_rows '승인' | grep -F "승인 id=$1 " | grep -cF "상태=$2" || true; }
+}
+qt_ap_state() {  # qt_ap_state <승인 id> — the state on that id's last row
+  cap_rows '승인' | grep -F "승인 id=$1 " | tail -1 | tr '|' '\n' | sed -n 's/^ *상태=//p' | sed 's/[[:space:]]*$//'
+}
+cx_exec A1 워크트리쓰기 --reach 협업 -- git commit --allow-empty -q -m qt-ap
+qt_ap1=$(qt_ap_last)
+check "34qt: park 칸에 이른 clause-exec 는 승인을 발급하고 5 로 끝난다" \
+  "$rc|$( [ -n "$qt_ap1" ] && printf 발급 || printf 없음)|$(qt_nrows A1)|$(cx_trees)" "5|발급|0|0"
+[ "$rc" = "5" ] || printf '  34qt: %s\n' "$msg"
+hw_row 승인 "승인 id=$qt_ap1" 상태=승인 '해소 시각=테스트'
+cx_exec A1 워크트리쓰기 --reach 협업 -- git commit --allow-empty -q -m qt-ap
+case "$rc|$(qt_nrows A1)|$(cat "$CAP_ERR")" in
+  "0|1|"*"승인 $qt_ap1 이 해소되어 이 행위를 엽니다"*) ok "34qt: 다른 게이트 프로세스의 재제출에서 같은 승인 id 가 해소되어 행위를 연다" ;;
+  *) bad "34qt: 다른 게이트 프로세스의 재제출에서 같은 승인 id 가 해소되어 행위를 연다" "rc=$rc rows=$(qt_nrows A1) $msg" ;;
+esac
+cx_exec A2 워크트리쓰기 --reach 협업 -- git commit --allow-empty -q -m qt-ap
+qt_ap2=$(qt_ap_last)
+check "34qt: 다른 절의 같은 argv 는 다른 승인 id 로 발급된다" \
+  "$rc|$( [ -n "$qt_ap2" ] && [ "$qt_ap2" != "$qt_ap1" ] && printf 다름 || printf "같음 $qt_ap2")" "5|다름"
+hw_row 승인 "승인 id=$qt_ap2" 상태=승인 '해소 시각=테스트'
+cx_merged QM "$QT_M1"
+cx_exec A2 워크트리쓰기 --reach 협업 -- git commit --allow-empty -q -m qt-ap
+case "$rc|$(qt_nrows A2)|$(qt_ap_state "$qt_ap2")|$(qt_ap_rows "$qt_ap2" 대기)|$(cat "$CAP_ERR")" in
+  "5|0|대기|2|"*"the tree moved after approval $qt_ap2"*) ok "34qt: 답 뒤에 머지가 내려앉으면 같은 승인 id 가 낡고 그 id 에 새 대기 행이 붙는다" ;;
+  *) bad "34qt: 답 뒤에 머지가 내려앉으면 같은 승인 id 가 낡고 그 id 에 새 대기 행이 붙는다" \
+       "rc=$rc rows=$(qt_nrows A2) state=$(qt_ap_state "$qt_ap2") waits=$(qt_ap_rows "$qt_ap2" 대기) $msg" ;;
+esac
+check "34qt: 승인 대기 갈래의 출구도 트리를 남기지 않는다" "$(cx_trees)" "0"
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=1
 
 # ---- 킥오프 5p 꼬리 ----
 qt_bd="$repo_root/plugins/cc-cmds/skills/autopilot/references/boundaries.md"
