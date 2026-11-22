@@ -320,5 +320,39 @@ OUT=$(bash "$HQ" render --record "$F16" --approval visual-0a1b2c3d 2>"$WORK/err"
 check "17: 긴 id 종료 코드" "$rc" "0"
 check "17: 12 코드포인트를 넘는 id 는 header 를 바꾸지 않는다" "$(jqv .header)" "S2P#7"
 
+# --- 18. 자동 답 거부 사유: 원장의 auto-refused 행을 본문 맨 앞에 싣는다 --------------
+# 런 디렉터리는 기록 경로에서 찾는다(halt/ 의 부모, halt/shift/ 의 조부모). 원장은 그
+# 디렉터리의 ledger-path 가 가리킨다. 행이 없으면 본문은 행이 없던 때와 바이트로 같다.
+RID18=20990101-hq000018
+RD18="$WORK/run/$RID18"
+mkdir -p "$RD18/halt/shift"
+L18="$WORK/ledger-18.md"
+printf '# 파이프라인 런 보고서 — %s\n\n' "$RID18" > "$L18"
+printf '%s\n' "$L18" > "$RD18/ledger-path"
+LADDER_OPTS='- `잔여로 두고 동결` — 남은 항목을 구현 시 검증으로 두고 설계를 동결합니다
+- `골격 재검토` — 동결하지 않고 골격을 다시 봅니다'
+F18=$(mk "run/$RID18/halt/D1#1.md" design-discuss-unattended 'Step 7U / ladder-unsettled' - "$LONGQ" "$LADDER_OPTS" -)
+render "$F18"
+Q18=$(jqv .question); B18=$(jqv .body)
+WHY18='R1 is not an item of the design document still at `구현 시 검증`: 기록'
+printf -- '- `auto-refused` | 대상=cc | 세그먼트=D9 | 중단 기록=/%s/halt/D9#1.md | 답한 주체=좌석 | 추천=잔여로 두고 동결 | 사유=다른 기록의 사유 | 관측=2099-01-01T00:00:00Z | prev=x\n' "$RID18" >> "$L18"
+render "$F18"
+check "18: 다른 기록의 행은 본문을 바꾸지 않는다" "$(jqv .body)" "$B18"
+printf -- '- `auto-refused` | 대상=cc | 세그먼트=D1 | 중단 기록=/%s/halt/D1#1.md | 답한 주체=좌석 | 추천=잔여로 두고 동결 | 사유=%s | 관측=2099-01-01T00:00:00Z | prev=x\n' "$RID18" "$WHY18" >> "$L18"
+render "$F18"
+check "18: 행이 있어도 종료 코드 0" "$rc" "0"
+check "18: 행이 있으면 본문의 첫 부분이 좌석 거부 사유 문장이다" "$(jqv .body | sed -n '1p')" "좌석이 추천 \`잔여로 두고 동결\` 을 고르지 않은 이유: $WHY18"
+check "18: 그 뒤는 행이 없던 때의 본문과 바이트로 같다" "$(jqv .body)" "좌석이 추천 \`잔여로 두고 동결\` 을 고르지 않은 이유: $WHY18"$'\n\n'"$B18"
+check "18: question 은 행이 있어도 같다" "$(jqv .question)" "$Q18"
+F18s=$(mk "run/$RID18/halt/shift/D2#1.md" design-solo-unattended 'Step 7U / ladder-unsettled' - "$SHORTQ" "$LADDER_OPTS" -)
+render "$F18s"
+B18s=$(jqv .body)
+printf -- '- `auto-refused` | 대상=cc | 세그먼트=D2 | 중단 기록=/%s/halt/shift/D2#1.md | 답한 주체=스테이지 | 추천=잔여로 두고 동결 | 사유=R2 reads 미분류 | 관측=2099-01-01T00:00:00Z | prev=x\n' "$RID18" >> "$L18"
+render "$F18s"
+check "18: halt/shift/ 아래 기록도 런 디렉터리를 찾아 스테이지 거부 사유를 싣는다" "$(jqv .body)" "스테이지가 추천 \`잔여로 두고 동결\` 을 스스로 답하지 못한 이유: R2 reads 미분류"$'\n\n'"$B18s"
+rm -f "$RD18/ledger-path"
+render "$F18"
+check "18: ledger-path 가 없으면 본문은 행이 없던 때와 같다" "$(jqv .body)" "$B18"
+
 printf '\n%d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" = "0" ]

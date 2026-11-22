@@ -251,6 +251,8 @@ expect run cost-ceiling 적용 120 .5 50.5 없음
 expect run cost-ceiling '형식 오류' 0 00 5. '$50' 1e3
 expect run roster-model 적용 opus
 expect run roster-model '어휘 밖' gpt
+expect run decision-confirm 적용 자동 수동
+expect run decision-confirm '어휘 밖' 켬 auto
 expect run roster-model.verification 적용 sonnet
 expect run roster-model.Verification '모르는 키' sonnet
 expect run roster-model.a_b '모르는 키' sonnet
@@ -540,6 +542,9 @@ check "무효 환경변수는 변수 행이 무시" "$(st "$out" ladder-rungs 2)
 check "무효 환경변수면 파일 값도 환경변수 무효" "$(st "$out" ladder-rungs 1)" "환경변수 무효"
 out=$(CC_CMDS_AUTOPILOT_DEFAULT_LADDER_RUNGS= kf 'ladder-rungs = 4' $T)
 check "빈 문자열은 미설정" "$(col "$out" ladder-rungs 5)" "파일:1"
+out=$(CC_CMDS_AUTOPILOT_DEFAULT_DECISION_CONFIRM=자동 kf 'decision-confirm = 수동' $T)
+check "결정 수거 확정 환경변수가 decision-confirm 키에 닿는다" \
+  "$(col "$out" decision-confirm 4)|$(col "$out" decision-confirm 5)" "자동|환경:CC_CMDS_AUTOPILOT_DEFAULT_DECISION_CONFIRM"
 out=$(CC_CMDS_AUTOPILOT_DEFAULTS_FILE=off kd --now "$NOW" $T)
 check "DEFAULTS_FILE=off → 원천 off" "$(printf '%s\n' "$out" | awk -F'\t' '$1=="원천"{print $2}')" "off"
 printf 'ladder-rungs = 4\n' > "$HOME/.config/cc-cmds/autopilot-defaults"
@@ -705,6 +710,8 @@ apply-actor = 파이프라인' apply-actor)" "1"
 check "apply-actor 사람 → 0" "$(wide '[Nharu/cc-cmds]
 cutpoint = 배포
 apply-actor = 사람' apply-actor)" "0"
+check "decision-confirm 자동 → 1" "$(wide 'decision-confirm = 자동' decision-confirm)" "1"
+check "decision-confirm 수동 → 0" "$(wide 'decision-confirm = 수동' decision-confirm)" "0"
 check "ladder-rungs → 0" "$(wide 'ladder-rungs = 4' ladder-rungs)" "0"
 check "cost-ceiling → 0" "$(wide 'cost-ceiling = 120' cost-ceiling)" "0"
 runner() { case "$(col "$(kf "[Nharu/cc-cmds]
@@ -962,6 +969,17 @@ for k in $(grep -E "^KD_(RUN|REPO)_KEYS='" "$HELPER" | sed -E "s/^KD_(RUN|REPO)_
   [ "$n" = "1" ] || miss="$miss $k($n)"
 done
 check "키 표의 모든 키가 적용·빈칸·이어받지 않음 중 정확히 한 행을 낸다" "${miss:-없음}" "없음"
+check "--carry: 결정 수거 확정 줄이 없는 원천은 수동을 이어받는다" \
+  "$(printf '%s\n' "$out" | awk -F'\t' '$1=="적용" && $3=="decision-confirm" { print $4 }')" "수동"
+cw_rows0=$CW_ROWS
+CW_ROWS="**결정 수거 확정**: 자동
+$cw_rows0"
+cw_write "$CW"
+dc_out=$(kc 'ladder-rungs = 2')
+check "--carry: 결정 수거 확정 자동을 이어받고 권한 행과 넓힘 표식을 낸다" \
+  "$(printf '%s\n' "$dc_out" | awk -F'\t' '$1=="적용" && $3=="decision-confirm" { print $4 }')|$(printf '%s\n' "$dc_out" | awk -F'\t' '$1=="권한" && $3=="decision-confirm" { print $5 }')" "자동|1"
+CW_ROWS=$cw_rows0
+cw_write "$CW"
 check "이어받지 않음 행은 이름 붙은 사유 토큰을 갖는다" \
   "$(printf '%s\n' "$out" | awk -F'\t' '$1=="이어받지 않음" && ($4 == "" || NF != 5)' | grep -c . || true)" "0"
 check "자동 채택 행마다 권한 행이 하나" "$(cnt "$out" 권한 auto-adopt)" "1"
@@ -973,7 +991,7 @@ check "권한 행은 이어받는 행을 축자로 싣는다" \
 widen() { printf '%s\n' "$out" | awk -F'\t' -v k="$1" '$1=="권한" && $3==k { print $5; exit }'; }
 check "권한 넓힘 표식 — 절단점 머지 1 · 리뷰 상한 선리뷰후머지 0 · 말단 상한 없음 1 · 사전 인가 1 · 자동 채택 1 · 적용 주체 없음 0" \
   "$(widen cutpoint)$(widen review-ceiling)$(widen terminal-cap)$(widen act-allow)$(widen auto-adopt)$(widen apply-actor)" "101110"
-check "권한 행 수가 원천 자동 채택+사전 인가 형태 행 수와 대상별 권한 필드 수의 합" "$(cnt "$out" 권한 '')" "7"
+check "권한 행 수가 원천 자동 채택+사전 인가 형태 행 수와 대상별 권한 필드 수, 결정 수거 확정 하나의 합" "$(cnt "$out" 권한 '')" "8"
 check "적용 프로브 코드 행 없는 원천 → 이어받지 않음 행 없음" \
   "$(printf '%s\n' "$out" | awk -F'\t' '$1=="이어받지 않음" && $3=="apply-probe-codes" { print $4 }')" "행 없음"
 
@@ -1043,6 +1061,33 @@ apply-probe-codes = 0/3')
 check "파이프라인 원천의 2 없는 대응 행은 지금처럼 0/21 로 이어받는다" \
   "$(printf '%s\n' "$out" | awk -F'\t' '$1=="적용" && $3=="apply-probe-codes" { print $4 }')" "0/21"
 check "파이프라인 원천의 2 없는 대응 행은 빈칸 행이 되지 않는다" "$(cnt "$out" 빈칸 apply-probe-codes)" "0"
+CW_ROWS="$CW_ROWS_SAVE"; CW_AP="$CW_AP_SAVE"; CW_AA="$CW_AA_SAVE"; CW_CUT=''
+cw_write "$CW"
+
+# 파이프라인이 실행하는 적용 프로브가 런 id 를 상수로 담은 원천은 프로브도 대응
+# 행도 이어받지 않는다. 다음 런에서 그 프로브는 언제나 지난 런을 가리키므로 5c 를
+# 다시 묻고, 파일 값이 있어도 대응만 빈칸 행으로 따로 묻지 않는다.
+CW_ROWS_SAVE="$CW_ROWS"; CW_AP_SAVE="$CW_AP"; CW_AA_SAVE="$CW_AA"
+CW_AP='`make probe RUN=20261121-4e3d8e05`'; CW_AA='파이프라인'; CW_CUT='배포'
+RB_SHA=$(printf '%s' 'make probe RUN=20261121-4e3d8e05' | shasum -a 256 | awk '{ print $1 }')
+CW_ROWS="$CW_ROWS_SAVE
+- \`적용 프로브 코드\` | 불필요=0 | 필요=21 | 프로브 sha256=$RB_SHA"
+cw_write "$CW"
+for rb_file in '' '[Nharu/cc-cmds]
+apply-probe-codes = 0/21'; do
+  out=$(kc "$rb_file")
+  rb_lbl=${rb_file:+파일 값 있음}; rb_lbl=${rb_lbl:-파일 값 없음}
+  check "런 id 를 담은 프로브($rb_lbl) → 프로브·대응 모두 이어받지 않음 다시 물음" \
+    "$(printf '%s\n' "$out" | awk -F'\t' '$1=="이어받지 않음" && ($3=="apply-probe" || $3=="apply-probe-codes") { print $2"|"$3"|"$4 }')" \
+    "런|apply-probe|다시 물음
+런|apply-probe-codes|다시 물음"
+  check "런 id 를 담은 프로브($rb_lbl) → 적용·빈칸 행이 없다" \
+    "$(cnt "$out" 적용 apply-probe)$(cnt "$out" 적용 apply-probe-codes)$(cnt "$out" 빈칸 apply-probe-codes)" "000"
+  case "$(printf '%s\n' "$out" | awk -F'\t' '$1=="이어받지 않음" && $3=="apply-probe" { print $5 }')" in
+    *20261121-4e3d8e05*) ok "런 id 를 담은 프로브의 이어받지 않음 행은 그 토큰을 싣는다 ($rb_lbl)" ;;
+    *) bad "런 id 를 담은 프로브의 이어받지 않음 행은 그 토큰을 싣는다 ($rb_lbl)" ;;
+  esac
+done
 CW_ROWS="$CW_ROWS_SAVE"; CW_AP="$CW_AP_SAVE"; CW_AA="$CW_AA_SAVE"; CW_CUT=''
 cw_write "$CW"
 
@@ -1812,6 +1857,18 @@ expect repo act-allow '형식 오류' '형태=kubectl --context=prod | 사유=a'
 p5p=$(awk '/^\*\*5p — /{f=1; print; next} f&&(/^\*\*5[a-z] — /||/^#/){exit} f' "$BOUNDARIES")
 case "$p5p" in *"When the matcher's spelling comes to fewer than two words, do not offer it"*) ok "5p 문단이 한 낱말 대조기 철자를 제안하지 않는다고 적는다" ;;
   *) bad "5p 문단" "한 낱말 대조기 철자를 제안하지 않는다는 문장이 없다" ;; esac
+
+# 5c 는 프로브를 받을 때 그 실행 계약을 말한다 — 게이트가 넘기는 세 변수의 이름이
+# 문서와 어긋나면 사람이 받아 적은 프로브는 빈 값을 읽는다.
+p5cp=$(grep -F '**When taking the probe, say how it is run, so one probe serves every run.**' "$BOUNDARIES" || true)
+pr_miss=""
+for pr_var in CC_APPLY_RUN_ID CC_APPLY_SEGMENT CC_APPLY_MERGE_COMMIT; do
+  grep -qE "^readonly APPLY_ENV_[A-Z_]+=$pr_var\$" "$repo_root/plugins/cc-cmds/orchestrator/run.sh" || pr_miss="$pr_miss run.sh:$pr_var"
+  case "$p5cp" in *"\`$pr_var\`"*) ;; *) pr_miss="$pr_miss 문서:$pr_var" ;; esac
+done
+check "5c 프로브 실행 문단이 게이트가 넘기는 세 변수를 같은 이름으로 든다" "${pr_miss:-없음}" "없음"
+case "$p5cp" in *"Choosing by branch name is wrong"*"does not run the probe and parks"*) ok "5c 프로브 실행 문단이 브랜치 이름 판별을 막고 HEAD 불일치의 park 를 적는다" ;;
+  *) bad "5c 프로브 실행 문단" "브랜치 이름 판별·HEAD 불일치 문장이 없다" ;; esac
 
 printf '\n%d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" -eq 0 ]
