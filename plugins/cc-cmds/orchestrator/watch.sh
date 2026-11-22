@@ -164,6 +164,7 @@ WATCH_ARGV=("$@")
 RUN_DIR=""; LEDGER=""; INTERVAL=60; STALL=1200; ONCE=0; AFTER_STAGE=120; RUN_OPEN=300; SILENCE=300
 STAGE_AGE=7200
 WATCH_ARG_STARTED=""; WATCH_ARG_ALIVE_AT=""
+WATCH_RUN_ENV=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --run-dir)  RUN_DIR="$2"; shift 2 ;;
@@ -181,11 +182,18 @@ while [ $# -gt 0 ]; do
       esac
       if [ "$1" = "--started" ]; then WATCH_ARG_STARTED="$2"; else WATCH_ARG_ALIVE_AT="$2"; fi
       shift 2 ;;
+    --run-env)
+      case "${2:-}" in
+        CC_CMDS_AUTOPILOT_NOTIFY=*|TMUX=*|TMUX_PANE=*) ;;
+        *) printf 'watch: --run-env 의 값은 CC_CMDS_AUTOPILOT_NOTIFY·TMUX·TMUX_PANE 가운데 하나의 <이름>=<값> 이어야 합니다: %s\n' "${2:-}" >&2; exit 2 ;;
+      esac
+      WATCH_RUN_ENV+=("$2")
+      shift 2 ;;
     *) printf 'watch: 알 수 없는 인자: %s\n' "$1" >&2; exit 2 ;;
   esac
 done
 # A delegated pass is a `--once` the observer daemon called: the daemon puts
-# its own pid in `CC_OBSERVER_PID`. Only such a pass reads the two arguments
+# its own pid in `CC_OBSERVER_PID`. Only such a pass reads the three arguments
 # above, and only it writes the daemon's pid where a watcher writes its own.
 WATCH_DELEGATED=0
 if [ "$ONCE" = "1" ]; then
@@ -196,6 +204,19 @@ if [ "$ONCE" = "1" ]; then
 fi
 WATCH_SELF_PID=$$
 [ "$WATCH_DELEGATED" = "1" ] && WATCH_SELF_PID=$CC_OBSERVER_PID
+# A delegated pass runs in the environment the daemon was started with, which
+# belongs to whichever session started it first. The three per-run values the
+# pass reads — the banner switch and the seat's tmux pane — therefore come only
+# from `--run-env`, which the delegating loop appended from its own environment:
+# all three are cleared first, so a name the loop did not send reads as unset
+# rather than as the daemon's value. Ahead of the hop, which passes the same
+# arguments on and repeats this, and ahead of every write.
+if [ "$WATCH_DELEGATED" = "1" ]; then
+  unset CC_CMDS_AUTOPILOT_NOTIFY TMUX TMUX_PANE
+  for watch_re in ${WATCH_RUN_ENV[@]+"${WATCH_RUN_ENV[@]}"}; do
+    export "${watch_re%%=*}=${watch_re#*=}"
+  done
+fi
 [ -n "$RUN_DIR" ] || { printf 'watch: --run-dir 는 필수입니다\n' >&2; exit 2; }
 [ -n "$LEDGER" ]  || { printf 'watch: --ledger 는 필수입니다\n' >&2; exit 2; }
 
@@ -251,12 +272,24 @@ cc__proc_fingerprint_into WATCH_FP "$WATCH_SELF_PID"
 # to do. Any refusal — the switch is off, a CI host, a stage environment, a run
 # directory outside the run root, no python — keeps the loop below exactly as
 # it was. Ahead of every write, so a handed-off loop leaves no mark of its own.
+#
+# The daemon runs each pass in its own environment, not this loop's, so the
+# three values a run chooses for itself — the banner switch and the seat's tmux
+# session and pane — ride along as `--run-env <name>=<value>` after this loop's
+# own arguments, in that order, one per name whose value is not empty (empty
+# and unset read the same: banners on, no pane). They are stored with the other
+# arguments and come back on every delegated pass. A value holding a newline is
+# refused by `adopt`, and that refusal keeps the loop below.
 if [ "$ONCE" = "0" ] && [ -e "$WATCH_DIR/observer-protocol" ] \
   && [ "${CC_CMDS_OBSERVER:-}" != "off" ] && [ -z "${CI:-}" ]; then
   watch_py=$(type -P python3 2>/dev/null || true)
   if [ -z "$watch_py" ] && [ -x /usr/bin/python3 ]; then watch_py=/usr/bin/python3; fi
+  watch_carry=()
+  [ -n "${CC_CMDS_AUTOPILOT_NOTIFY:-}" ] && watch_carry+=(--run-env "CC_CMDS_AUTOPILOT_NOTIFY=$CC_CMDS_AUTOPILOT_NOTIFY")
+  [ -n "${TMUX:-}" ] && watch_carry+=(--run-env "TMUX=$TMUX")
+  [ -n "${TMUX_PANE:-}" ] && watch_carry+=(--run-env "TMUX_PANE=$TMUX_PANE")
   if [ -n "$watch_py" ] && "$watch_py" "$WATCH_DIR/observer.py" adopt --run-dir "$RUN_DIR" --job watch \
-      -- ${WATCH_ARGV[@]+"${WATCH_ARGV[@]}"} </dev/null; then
+      -- ${WATCH_ARGV[@]+"${WATCH_ARGV[@]}"} ${watch_carry[@]+"${watch_carry[@]}"} </dev/null; then
     printf 'watch: 관측 데몬에 위임했습니다 — %s\n' "$RUN_DIR"
     exit 0
   fi

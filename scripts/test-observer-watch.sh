@@ -23,7 +23,7 @@
 # THE STAGE GUARD IS CLEARED. `adopt` refuses inside a stage, and this suite is
 # run from one, so the variables that mark a stage are unset.
 #
-# The two timing recipes (the last section) read this host's ledgers for their
+# The two timing recipes (section 12) read this host's ledgers for their
 # size: `CC_TEST_LEDGER_DIR` names the directory of run ledgers whose longest
 # file sets the synthetic ledger's line count. Without it the count is a fixed
 # default. The eight-second bound of the pass-time recipe is a claim about this
@@ -393,7 +393,7 @@ fresh; : > "$FAKE_LOG"
 out=$(FAKE_OBS_RC=0 loop_fake); rc=$?
 check "8 adopt 가 0 이면 루프는 0 으로 끝난다" "$rc" "0"
 case "$out" in *"관측 데몬에 위임했습니다"*) ok "8 위임 한 줄을 남긴다" ;; *) bad "8 위임 한 줄을 남긴다" "$out" ;; esac
-check "8 adopt 에 넘긴 인자" "$(cat "$FAKE_LOG")" "adopt --run-dir $RD --job watch -- --run-dir $RD --ledger $LG --interval 1"
+check "8 adopt 에 넘긴 인자" "$(cat "$FAKE_LOG")" "adopt --run-dir $RD --job watch -- --run-dir $RD --ledger $LG --interval 1 --run-env CC_CMDS_AUTOPILOT_NOTIFY=0"
 check "8 위임한 루프는 런 디렉터리에 아무것도 쓰지 않는다" "$(ls "$RD" | tr '\n' ' ')" "started-at "
 
 ended_fixture
@@ -681,6 +681,90 @@ elif awk -v a="$r3_max" 'BEGIN { exit !(a <= 8) }'; then
 else
   bad "12 R3 위임된 --once 다섯 번이 각각 8초 이하" "최대 ${r3_max}초"
 fi
+
+# ---------------------------------------------------------------------------
+# 13. The run's own banner switch and seat pane reach the delegated pass.
+#
+# The observer runs every pass in the environment it was started with, which
+# belongs to whichever session started it first. The looping watcher therefore
+# appends its own non-empty values of the three per-run names as `--run-env`,
+# and the delegated pass reads those and nothing else: a name the loop did not
+# send reads as unset there, never as the caller's value. The calling
+# environment of each delegated case below is set to differ from what is
+# carried, so a pass that read the caller would fail the case.
+# ---------------------------------------------------------------------------
+running_fixture() {
+  fresh
+  printf -- '- `segment` | id=S1 | 상태=실행중\n' > "$LG"
+}
+state_of() { cat "$RD/notify.state" 2>/dev/null || true; }
+seat_of()  { cat "$RD/notify.seat" 2>/dev/null || true; }
+on_line='배너 켬 (CC_CMDS_AUTOPILOT_NOTIFY)'
+off_line='배너 끔 (CC_CMDS_AUTOPILOT_NOTIFY)'
+TAB=$(printf '\t')
+
+fresh; : > "$FAKE_LOG"
+out=$(FAKE_OBS_RC=0 CC_CMDS_AUTOPILOT_NOTIFY=off TMUX="/tmp/tmux-w/default,4242,3" TMUX_PANE=%48 loop_fake)
+check "13 루프는 비지 않은 세 이름을 정한 순서로 덧붙인다" "$(cat "$FAKE_LOG")" \
+  "adopt --run-dir $RD --job watch -- --run-dir $RD --ledger $LG --interval 1 --run-env CC_CMDS_AUTOPILOT_NOTIFY=off --run-env TMUX=/tmp/tmux-w/default,4242,3 --run-env TMUX_PANE=%48"
+fresh; : > "$FAKE_LOG"
+out=$(FAKE_OBS_RC=0 CC_CMDS_AUTOPILOT_NOTIFY= TMUX_PANE= TMUX="/tmp/tmux-w/default,4242,3" loop_fake)
+check "13 빈 값은 넘기지 않는다" "$(cat "$FAKE_LOG")" \
+  "adopt --run-dir $RD --job watch -- --run-dir $RD --ledger $LG --interval 1 --run-env TMUX=/tmp/tmux-w/default,4242,3"
+fresh; : > "$FAKE_LOG"
+out=$(env -u CC_CMDS_AUTOPILOT_NOTIFY FAKE_OBS_RC=0 bash "$FT/watch.sh" --run-dir "$RD" --ledger "$LG" --interval 1 2>&1)
+check "13 없는 값은 넘기지 않는다" "$(cat "$FAKE_LOG")" \
+  "adopt --run-dir $RD --job watch -- --run-dir $RD --ledger $LG --interval 1"
+
+running_fixture
+env -u CC_CMDS_AUTOPILOT_NOTIFY CC_OBSERVER_PID="$OBS" \
+  bash "$WATCH" --run-dir "$RD" --ledger "$LG" --once --run-env CC_CMDS_AUTOPILOT_NOTIFY=0 >/dev/null 2>&1
+check "13 부르는 환경에 스위치가 없어도 운반된 0 이면 notify.state 는 꺼짐" "$(state_of)" "$off_line"
+running_fixture
+CC_CMDS_AUTOPILOT_NOTIFY=0 CC_OBSERVER_PID="$OBS" \
+  bash "$WATCH" --run-dir "$RD" --ledger "$LG" --once >/dev/null 2>&1
+check "13 부르는 환경에만 스위치 0 이 있으면 위임된 판은 꺼짐으로 읽지 않는다" "$(state_of)" "$on_line"
+
+ended_fixture
+: > "$NOTIFY_LOG"
+env -u CC_CMDS_AUTOPILOT_NOTIFY CC_CMDS_NOTIFY_HOST_OS=Darwin CC_OBSERVER_PID="$OBS" \
+  bash "$WATCH" --run-dir "$RD" --ledger "$LG" --once --run-env CC_CMDS_AUTOPILOT_NOTIFY=0 >/dev/null 2>&1
+rc=$?
+sleep 1
+check "13 운반된 스위치가 꺼짐이면 끝난 런도 종료 코드 3" "$rc" "3"
+check "13 운반된 스위치가 꺼짐이면 배너를 부르지 않는다" "$(grep -c . "$NOTIFY_LOG" || true)" "0"
+ended_fixture
+: > "$NOTIFY_LOG"
+CC_CMDS_AUTOPILOT_NOTIFY=0 CC_CMDS_NOTIFY_HOST_OS=Darwin CC_OBSERVER_PID="$OBS" \
+  bash "$WATCH" --run-dir "$RD" --ledger "$LG" --once >/dev/null 2>&1
+sleep 1
+check "13 운반된 스위치가 없으면 부르는 환경의 0 과 무관하게 끝 배너가 나간다" \
+  "$(grep -c . "$NOTIFY_LOG" || true)" "1"
+
+running_fixture
+TMUX="/tmp/tmux-o/default,1111,1" TMUX_PANE=%11 CC_OBSERVER_PID="$OBS" \
+  bash "$WATCH" --run-dir "$RD" --ledger "$LG" --once \
+  --run-env TMUX=/tmp/tmux-w/default,4242,3 --run-env TMUX_PANE=%48 >/dev/null 2>&1
+check "13 notify.seat 은 부르는 환경이 아니라 운반된 TMUX·TMUX_PANE 으로 쓴다" "$(seat_of)" \
+  "/tmp/tmux-w/default${TAB}4242${TAB}%48"
+running_fixture
+TMUX="/tmp/tmux-o/default,1111,1" TMUX_PANE=%11 CC_OBSERVER_PID="$OBS" \
+  bash "$WATCH" --run-dir "$RD" --ledger "$LG" --once >/dev/null 2>&1
+check "13 운반되지 않은 pane 은 부르는 환경의 값으로 기록하지 않는다" \
+  "$( [ -e "$RD/notify.seat" ] && printf y || printf n)" "n"
+running_fixture
+CC_OBSERVER_PID="$OBS" bash "$WATCH" --run-dir "$RD" --ledger "$LG" --once \
+  --run-env TMUX_PANE=%1 --run-env TMUX=/tmp/tmux-w/default,4242,3 --run-env TMUX_PANE=%48 >/dev/null 2>&1
+check "13 같은 이름이 둘이면 뒤의 것" "$(seat_of)" "/tmp/tmux-w/default${TAB}4242${TAB}%48"
+
+running_fixture
+deleg --run-env PATH=/tmp; check "13 런 환경 이름 밖의 이름은 2" "$?" "2"
+deleg --run-env TMUX_PANE; check "13 = 이 없는 값은 2" "$?" "2"
+deleg --run-env; check "13 값이 없는 --run-env 는 2" "$?" "2"
+
+running_fixture
+plain --run-env CC_CMDS_AUTOPILOT_NOTIFY=1; check "13 맨 --once 도 --run-env 를 받아들인다" "$?" "0"
+check "13 맨 --once 는 --run-env 로 환경을 바꾸지 않는다" "$(state_of)" "$off_line"
 
 printf '\ntest-observer-watch: %d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" -eq 0 ]
