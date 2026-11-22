@@ -38289,15 +38289,17 @@ esac
 # writer but a person; a person's `재수렴` goes to the binding re-convergence
 # and `문서대로 구현` re-attaches the stopped session. The `구속-이탈` row of A23
 # is still in `## 인가`, so the shift's refusal is this rule's.
-capc_kd_rec() {  # capc_kd_rec <키> — a kept-drift stop of that key's first attempt
+capc_kd_rcm='**추천**: (없음) — 사람이 앞서 문서대로 둠을 고른 줄이라 뒤집는 결정은 사람만 한다'
+capc_kd_why='**추천 근거**: (없음) — 사람이 앞서 문서대로 둠을 고른 줄이라 뒤집는 결정은 사람만 한다'
+capc_kd_risk='**선택지 리스크**: `재수렴` — 재수렴이 인용한 줄을 승인 화면 문면으로 고쳐 사람이 앞서 고른 문서대로 둠을 뒤집고, 문서대로 구현으로만 풀린다고 표시한 줄은 쓰지 않아 다음 구현 시도가 그 줄에서 다시 멈춘다 / `문서대로 구현` — 인용한 줄이 문서 문면대로 구현되어 그 줄의 화면은 사람이 승인한 화면과 다르게 머지까지 간다'
+capc_kd_rec() {  # capc_kd_rec <키> [<스텝>] — a kept-drift stop of that key's first attempt
   printf '%s\n' "<!-- cc-pipeline-halt v1; writer=implement-unattended; reader=orchestrator; stage=$1#1; run=R7 -->" \
-    '**스킬**: implement-unattended' '**스텝**: Step 2 CFI-U3 BT-STOP — 사람 둔 어긋남' \
+    '**스킬**: implement-unattended' "**스텝**: ${2:-Step 2 CFI-U3 BT-STOP — 사람 둔 어긋남}" \
     '**분류**: gate-unanswerable' '**질문 문면**: 사람이 문서대로 둠으로 남긴 어긋남 줄과 승인 화면이 다르다.' \
     '**선택지**:' \
     '- `재수렴` — 같은 런의 교대가 design-reconverge 를 보내 인용 줄만 요구 결정 절에 반영한다.' \
     '- `문서대로 구현` — 멈춘 세션을 다시 붙여 인용 줄을 문서 문면대로 구현한다.' \
-    '**추천**: (없음) — 사람이 앞서 문서대로 둠을 고른 줄이라 뒤집는 결정은 사람만 한다' \
-    '**추천 근거**: (없음) — 사람이 앞서 문서대로 둠을 고른 줄이라 뒤집는 결정은 사람만 한다' \
+    "$capc_kd_rcm" "$capc_kd_why" "$capc_kd_risk" \
     '**후속**: 보류 큐' '<!-- /cc-pipeline-halt v1 -->' > "$CAP_DIR/halt/$1#1.md"
   printf -- '- `stage-result` | 교대=0 | 세그먼트=%s | 스테이지=%s | 종류=implement | 실행 버전=1 | 세션 id=s-impl-%s | 종단 부류=의도된 park | prev=x\n' \
     "$1" "$1" "$1" >> "$CAP_LEDGER"
@@ -38330,6 +38332,40 @@ check "34c A25: 그 답은 구속-재수렴 으로 라우팅된다" "$(capc_kd_r
 capc_kd_person CC6 '문서대로 구현'
 check "34c A25: 사람의 문서대로 구현 답은 통과한다" "$rc" "0"
 check "34c A25: 그 답은 재부착 으로 라우팅된다" "$(capc_kd_route CC6)" "재부착"
+# The fixture's three fixed lines are the stage's own: each equals, byte for
+# byte, a line of the implement-unattended skill with its leading blanks cut.
+for capc_kd_l in "$capc_kd_rcm" "$capc_kd_why" "$capc_kd_risk"; do
+  check "34c A25: 픽스처의 고정 줄이 스킬 줄과 같다 — ${capc_kd_l%%: *}" \
+    "$(sed 's/^[[:space:]]*//' "$repo_root/plugins/cc-cmds/skills/implement-unattended/SKILL.md" | grep -cxF -- "$capc_kd_l" | awk '{ print ($1 > 0) ? "present" : "absent" }')" "present"
+done
+# A kept-drift record spelled slightly off — a tail, an en dash, doubled spaces
+# — is read as one too: the shift's `재수렴` is refused with 3 by the
+# person-only refusal, the seat's with 3, neither leaves a row, and a person's `재수렴` on the
+# in-token en dash and in-token doubled space records still has its branch.
+capc_kd_rec CC7 'Step 2 CFI-U3 BT-STOP — 사람 둔 어긋남 (2줄)'
+capc_kd_rec CC8 'Step 2 CFI–U3 BT–STOP — 사람 둔 어긋남'
+capc_kd_rec CC9 'Step 2 CFI-U3  BT-STOP —  사람  둔 어긋남'
+for capc_kd_k in CC7 CC8 CC9; do
+  capc_ha0=$(capc_ha)
+  capc_bt_answer "$capc_kd_k" "$CAP_DIR/halt/$capc_kd_k#1.md" 재수렴
+  check "34c A25: 철자 변형 사람 둔 어긋남 정지의 교대 재수렴 답은 3 으로 거절된다 — $capc_kd_k" "$rc" "3"
+  check "34c A25: 그 교대 답의 거절은 사람 전용 거절이다 — $capc_kd_k" \
+    "$( { grep -qF '사람 둔 어긋남)입니다 — 답한 주체=사람 의 답만 기록합니다' "$CAP_ERR" && printf 'present'; } || printf 'absent')" "present"
+  cap_gate "$CAPC_SEAT_SID" '' act --manifest "$CAP_NM" --kind halt-answer --target infra --segment "$capc_kd_k" \
+           --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$CAPC_SEAT_SID" '')" \
+           --rationale "픽스처 — 좌석의 답" \
+           -- "중단 기록=$CAP_DIR/halt/$capc_kd_k#1.md" '선택지=재수렴' '답한 주체=좌석' '근거=좌석이 고름'
+  # The seat is refused before the person-only rule, by the `(없음)`
+  # recommendation the record carries; only the exit and the row count say so.
+  check "34c A25: 철자 변형 사람 둔 어긋남 정지의 좌석 재수렴 답은 3 으로 거절된다 — $capc_kd_k" "$rc" "3"
+  check "34c A25: 두 거절 모두 행을 남기지 않는다 — $capc_kd_k" "$(capc_ha)" "$capc_ha0"
+done
+for capc_kd_k in CC8 CC9; do
+  capc_kd_person "$capc_kd_k" 재수렴
+  check "34c A25: 토큰 안 철자 변형 기록의 사람 재수렴 답은 통과한다 — $capc_kd_k" "$rc" "0"
+  check "34c A25: 그 답은 구속-재수렴 으로 라우팅된다 — $capc_kd_k" "$(capc_kd_route "$capc_kd_k")" "구속-재수렴"
+done
+unset capc_kd_l capc_kd_k
 
 # --- 34d. 좌석 정지 답 — 기록의 추천을 사람 없이 고른다 ----------------------
 # --- section: 34d | group: cone | covers: act, snapshot | anchors: 34d: 853c5bba 형상의 좌석 답이 선택지 없이 통과한다, 34d: 상한=1 이면 두 번째 자동 재수렴은 거부된다 ---
@@ -46486,6 +46522,73 @@ esac
 kill -9 "$sd6_live" 2>/dev/null || true
 wait "$sd6_live" 2>/dev/null || true
 rm -f "$sd6_dir/SD.sup" "$sd6_dir/SD.sup.start"
+
+# --- 38-21. 적용 프로브가 받는 런 정보 ---------------------------------------------
+# --- section: 38-21 | group: sb | covers: act, apply, supervise-apply, apply-settle, apply_probe, apply_probe_head_ok | anchors: 21: 감독자의 사전·사후 프로브가 런 id·세그먼트·머지 커밋을 받고 HEAD 는 머지 커밋이다, 21: 입구 a 의 정산 프로브가 같은 세 값을 받는다, 21: 입구 b 의 정산 프로브가 같은 세 값을 받는다, 21: 입구 d 의 정산 프로브는 증거 런이 아니라 이 런의 id 를 받는다 ---
+#
+# 프로브는 런이 바뀌어도 같은 문자열로 돌아야 하므로, 런 id·브랜치를 상수로 박지 않고
+# 실행 환경의 세 변수와 HEAD 로 자기 대상을 가린다. 프로브마다 받은 값과 HEAD 를 한
+# 줄씩 적게 해 감독자(사전·사후)와 정산의 세 입구가 같은 계약을 지키는지 잰다.
+sb21_rec="$WORK/sb21-probe.rec"
+sb21_probe() {  # sb21_probe <표지> — 받은 값을 적고 표지가 있으면 불필요, 없으면 필요
+  printf '%s' "printf '%s:%s:%s:%s\\n' \"\$CC_APPLY_RUN_ID\" \"\$CC_APPLY_SEGMENT\" \"\$CC_APPLY_MERGE_COMMIT\" \"\$(git rev-parse HEAD)\" >> $sb21_rec; test -e $1 && exit 0 || exit 21"
+}
+sb21_mark="$WORK/sb21-applied"
+rm -f "$sb21_rec" "$sb21_mark"
+SB_CODES='0 21' sb_apply_new '21 감독자' "$(sb21_probe "$sb21_mark")" "touch $sb21_mark"
+sb_reviewed_landing SB21
+sb_apply SB21
+case "$(sb_seg_last SB21)" in
+  *"상태=완료"*"적용=수렴"*) ;;
+  *) bad "21: 감독자 픽스처" "$(sb_seg_last SB21)" ;;
+esac
+check "21: 감독자의 사전·사후 프로브가 런 id·세그먼트·머지 커밋을 받고 HEAD 는 머지 커밋이다" \
+  "$(cat "$sb21_rec" 2>/dev/null)" "$SA_ID:SB21:$SB_M:$SB_M
+$SA_ID:SB21:$SB_M:$SB_M"
+
+# 입구 a — 끊긴 감독자. 정산 워크트리에서 프로브 한 번.
+sb21a_mark="$WORK/sb21a-applied"
+rm -f "$sb21_rec" "$sb21a_mark"
+SB_CODES='0 21' sb_apply_new '21 입구 a' "$(sb21_probe "$sb21a_mark")" "touch $sb21a_mark"
+sb_reviewed_landing SB21A
+sb_seg_put SB21A "상태=적용 준비" "워크트리=$(sb_apply_wt SB21A)" "고정 커밋=$SB_M" "적용 명령=touch" \
+  "감독 토큰=$(printf '%064d' 0)"
+touch "$sb21a_mark"
+sb_settle act SB21A
+case "$rc:$(sb_seg_last SB21A)" in
+  0:*"상태=완료"*"적용=정산"*"·입구 a"*) ;;
+  *) bad "21: 입구 a 픽스처" "rc=$rc $msg $(sb_seg_last SB21A)" ;;
+esac
+check "21: 입구 a 의 정산 프로브가 같은 세 값을 받는다" "$(cat "$sb21_rec" 2>/dev/null)" "$SA_ID:SB21A:$SB_M:$SB_M"
+
+# 입구 b — 명령이 실패해 불명으로 남은 세그먼트. 사전·사후 두 줄 뒤 정산 한 줄.
+sb21b_mark="$WORK/sb21b-applied"
+rm -f "$sb21_rec" "$sb21b_mark"
+SB_CODES='0 21' sb_apply_new '21 입구 b' "$(sb21_probe "$sb21b_mark")" 'exit 1'
+sb_reviewed_landing SB21B
+sb_apply SB21B
+touch "$sb21b_mark"
+sb_settle act SB21B
+case "$rc:$(sb_seg_last SB21B)" in
+  0:*"상태=완료"*"적용=정산"*"·입구 b"*) ;;
+  *) bad "21: 입구 b 픽스처" "rc=$rc $msg $(sb_seg_last SB21B)" ;;
+esac
+check "21: 입구 b 의 정산 프로브가 같은 세 값을 받는다" "$(cat "$sb21_rec" 2>/dev/null)" "$SA_ID:SB21B:$SB_M:$SB_M
+$SA_ID:SB21B:$SB_M:$SB_M
+$SA_ID:SB21B:$SB_M:$SB_M"
+
+# 입구 d — 이전 런이 착지시킨 세그먼트를 들여왔다. 프로브는 브랜치 이름이 아니라 이
+# 런의 id 와 머지 커밋으로 대상을 가려야 하므로, 받는 런 id 는 증거 런의 것이 아니다.
+sb21d_mark="$WORK/sb21d-applied"
+rm -f "$sb21_rec"; touch "$sb21d_mark"
+sd_import '21 입구 d' 20260901-000000e1 20260902-000000e1 "$(sb21_probe "$sb21d_mark")"
+sb_settle act SD
+case "$rc:$(sb_seg_last SD)" in
+  0:*"상태=완료"*"적용=정산"*"·입구 d"*) ;;
+  *) bad "21: 입구 d 픽스처" "rc=$rc $msg $(sb_seg_last SD)" ;;
+esac
+check "21: 입구 d 의 정산 프로브는 증거 런이 아니라 이 런의 id 를 받는다" \
+  "$(cat "$sb21_rec" 2>/dev/null)" "20260902-000000e1:SD:$SD_M:$SD_M"
 
 # ---------------------------------------------------------------------------
 # 39. The in-process seam holds what it claims
@@ -74830,6 +74933,15 @@ check "110f: 운반 act 는 반증 재수렴 답을 운반하지 않는다" \
   "$(rf110f gate_carry_routed_elsewhere "$src110f" implement-unattended 'Step 1.5d — R3' '재수렴' | grep -c '반증 정지의 재수렴 답은' || true)|$(rf110f gate_carry_routed_elsewhere "$src110f" implement-unattended 'Step 3 구현 결함 반증 — R3' '구현 수정')" \
   "1|"
 
+# 사람 둔 어긋남 — 토큰 안에 en dash 나 겹친 공백이 든 기록도 정본과 같이 구속 티어 이탈
+# 정지로 읽혀, 그 재수렴 답은 운반의 몫이 아니고 앞 런의 사람 재수렴은 입양으로 들어온다.
+for kd110f in 'Step 2 CFI-U3 BT-STOP — 사람 둔 어긋남' 'Step 2 CFI–U3 BT–STOP — 사람 둔 어긋남' 'Step 2 CFI-U3  BT-STOP — 사람 둔 어긋남'; do
+  mk110f "$src110f" 'SA#1' "$kd110f" - '재수렴' '문서대로 구현'
+  check "110f: 사람 둔 어긋남 기록의 재수렴 답은 운반하지 않는다 — $kd110f" \
+    "$(rf110f gate_carry_routed_elsewhere "$src110f" implement-unattended "$kd110f" '재수렴' | grep -c '구속 티어 이탈 정지의 재수렴 답은' || true)" "1"
+  check "110f: 사람 둔 어긋남 기록의 사람 재수렴이 입양으로 들어온다 — $kd110f" "$(ad110f 사람)" "0|SA#1.md"
+done
+
 # 형식 — 선택지 없는 반증 기록은 결함이지만, 그것만이 결함인 열린 기록은 고정 답을 지킨다.
 mk110f "$w110f/n.md" 'SA#1' 'Step 1.5d — R3' 'R3 · 반증됨(실패)'
 check "110f: 선택지 없는 반증 기록은 일곱째 결함을 낸다" \
@@ -74840,7 +74952,7 @@ check "110f: 선택지 없는 다른 구현 기록은 결함이 아니다" \
 check "110f: 열린 선택지 없는 반증 기록은 고정 답을 지킨다" \
   "$(rf110f gate_halt_record_no_options "$w110f/n.md"; printf '%s' "$?")" "0"
 unset -f car110f mk110f rf110f err110f seed110f ad110f
-unset w110f d110f c110f l110f s110f r110f h110f t110f src110f
+unset w110f d110f c110f l110f s110f r110f h110f t110f src110f kd110f
 
 # ---------------------------------------------------------------------------
 # 111. 스테이지의 기동 디렉터리 — 비홈 대상의 세그먼트 워크트리, 감사 워크트리, 리뷰전용의 메인 워크트리, 재부착, 소실 거절

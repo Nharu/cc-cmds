@@ -165,6 +165,19 @@ check "빌트인 파이프라인 교정 줄의 셈이 1 이다 (프로세스 둘
   "$(field "$WORK/cal.txt" calibrate.pipeline-builtin)" "1"
 check "함수 파이프라인 교정 줄의 셈이 2 이다 (함수 요소는 하위 셸로 센다)" \
   "$(field "$WORK/cal.txt" calibrate.pipeline-function)" "2"
+# A test item's watch shims (`<item>.shim/`, first on PATH under the test tree
+# and check-push) are bash scripts that fork before they exec the real command.
+# A stub that resolved its real binary to one counted those forks as the unit's.
+mkdir -p "$WORK/item.shim"
+cat > "$WORK/item.shim/sed" <<EOF
+#!/usr/bin/env bash
+cwd=\$(pwd -P); : "\$cwd"
+exec $(type -P sed) "\$@"
+EOF
+chmod +x "$WORK/item.shim/sed"
+PATH="$WORK/item.shim:$PATH" bash "$MEASURE" --calibrate > "$WORK/cal-shim.txt" 2>"$WORK/cal-shim.err"
+check "감시 shim 디렉터리가 PATH 앞에 있어도 교정 대상의 셈이 6 이다 (shim 의 하위 셸을 세지 않는다)" \
+  "$(field "$WORK/cal-shim.txt" calibrate)" "6"
 
 for u in $UNITS; do
   bash "$MEASURE" --unit "$u" > "$WORK/$u.1" 2>"$WORK/$u.1.err"

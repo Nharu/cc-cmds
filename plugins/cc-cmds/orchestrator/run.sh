@@ -3639,15 +3639,37 @@ halt_step_is_unclosed_decision() {
   [ "$(sed -n '/^\*\*스텝\*\*: */{s///;s/[[:space:]]*$//;p;q;}' "$1")" = "Step 1 CFI-U3 BT-STOP — 미결 결정" ]
 }
 
-# halt_step_is_kept_drift <halt record> — 0 when the record's whole `**스텝**`
-# value is exactly `Step 2 CFI-U3 BT-STOP — 사람 둔 어긋남`: the halt an
-# implement stage writes when a screen slice meets a drift line the person
-# left `문서대로 둠`, which only a person answers. The whole value is compared,
-# never a cut at the first ` — `, so the shift's `구속-이탈` adoption, which
-# reads the step up to that cut, cannot pass for it.
+# halt_step_is_kept_drift <halt record> — 0 when the record is a kept-drift
+# stop: the halt an implement stage writes, as `Step 2 CFI-U3 BT-STOP — 사람 둔
+# 어긋남`, when a screen slice meets a drift line the person left `문서대로 둠`,
+# and which only a person answers. The record's first `**스텝**` value is read
+# normalized: every whitespace character is removed — the `[:space:]` class
+# under `LC_ALL=C` and the Unicode spaces U+00A0, U+1680, U+2000–U+200A,
+# U+2028, U+2029, U+202F, U+205F and U+3000, cut as UTF-8 byte sequences so
+# the reading does not depend on the locale — each of `—`, `–`, `‒`, `―` and
+# `−` becomes `-`, and the value is a kept-drift stop when `CFI-U3BT-STOP`
+# stands in it with `사람둔어긋남` after it, whatever trails. The reading is
+# wide on purpose: a record spelled slightly off (a tail, an en dash, doubled
+# spaces) is still read as person-only, so the person's `문서대로 둠` is never
+# overturned without a person. Reading too wide costs one more question to a
+# person; reading too narrow lets the shift or the seat answer it.
 halt_step_is_kept_drift() {
   [ -f "$1" ] || return 1
-  [ "$(sed -n '/^\*\*스텝\*\*: */{s///;s/[[:space:]]*$//;p;q;}' "$1")" = "Step 2 CFI-U3 BT-STOP — 사람 둔 어긋남" ]
+  local v u
+  v=$(sed -n '/^\*\*스텝\*\*: */{s///;p;q;}' "$1")
+  for u in $'\xc2\xa0' $'\xe1\x9a\x80' $'\xe2\x80\x80' $'\xe2\x80\x81' \
+    $'\xe2\x80\x82' $'\xe2\x80\x83' $'\xe2\x80\x84' $'\xe2\x80\x85' \
+    $'\xe2\x80\x86' $'\xe2\x80\x87' $'\xe2\x80\x88' $'\xe2\x80\x89' \
+    $'\xe2\x80\x8a' $'\xe2\x80\xa8' $'\xe2\x80\xa9' $'\xe2\x80\xaf' \
+    $'\xe2\x81\x9f' $'\xe3\x80\x80'; do
+    v=${v//"$u"/}
+  done
+  v=$(printf '%s' "$v" | LC_ALL=C tr -d '[:space:]')
+  for u in '—' '–' '‒' '―' '−'; do
+    v=${v//"$u"/-}
+  done
+  case "$v" in *CFI-U3BT-STOP*사람둔어긋남*) return 0 ;; esac
+  return 1
 }
 
 # `슬라이스 수` is a CHECKSUM, not an input: it is derived from the count of
@@ -7758,11 +7780,20 @@ home_alias() {
 }
 
 alias_root() {
-  local a="$1" wt
+  local a="$1" wt cg
   { [ -z "$MANIFEST" ] || [ "$a" = "." ]; } && { main_root; return 0; }
   wt=$(target_field "$a" '메인 워크트리')
   [ -n "$wt" ] || return 1
-  dirname "$(cd "$wt" && git rev-parse --path-format=absolute --git-common-dir)"
+  # `dirname` by parameter expansion, with its answers kept: `.` for an empty
+  # value (a worktree git could not read) or one without a slash, `/` for a
+  # directory right under the root. The gate resolves a root several times on
+  # every act, and the external `dirname` was one process each time.
+  cg=$(cd "$wt" && git rev-parse --path-format=absolute --git-common-dir) || cg=''
+  case "$cg" in
+    */*) cg=${cg%/*}; [ -n "$cg" ] || cg=/ ;;
+    *) cg=. ;;
+  esac
+  printf '%s\n' "$cg"
 }
 
 # The `-R` argument. Deriving it from the origin URL is the fallback, not the
@@ -11999,12 +12030,47 @@ apply_worktree() {
   printf '%s' "$p"
 }
 
+# THE RUN INFORMATION A PROBE RECEIVES. Every probe runs with these three
+# variables set, by the driver's S9 and by the gate's apply supervisor and
+# settlement alike, and the apply command itself receives none of them: the
+# command is the target's deployment, and its environment is not this
+# contract's to change. `CC_APPLY_RUN_ID` is the run executing the probe, also
+# when it settles a segment an earlier run adopted or merged;
+# `CC_APPLY_SEGMENT` is the segment id; `CC_APPLY_MERGE_COMMIT` is the full
+# 40-character name of that segment's merge commit, which is also the HEAD of
+# the worktree the probe runs in. A probe decides "is this run's merge
+# deployed" from the merge commit or HEAD, never from a run id or a branch
+# name: an adopted segment's branch carries the earlier run's id.
+readonly APPLY_ENV_RUN_ID=CC_APPLY_RUN_ID
+readonly APPLY_ENV_SEGMENT=CC_APPLY_SEGMENT
+readonly APPLY_ENV_MERGE=CC_APPLY_MERGE_COMMIT
+
+# apply_probe_head_ok <worktree> <merge commit> — prints the full name of the
+# merge commit and returns 0 when it resolves in <worktree> and equals that
+# worktree's HEAD; returns 1 with nothing printed otherwise (an empty argument,
+# a missing worktree, a commit that does not resolve, another HEAD). A probe
+# answer from a tree that is not the merge commit is no evidence about this
+# run's apply, so a caller that gets 1 does not run the probe.
+apply_probe_head_ok() {
+  local wt="$1" m="$2" full head
+  [ -n "$wt" ] && [ -n "$m" ] && [ -d "$wt" ] || return 1
+  full=$(cd "$wt" && git rev-parse --verify --quiet "${m}^{commit}" 2>/dev/null) || return 1
+  head=$(cd "$wt" && git rev-parse --verify --quiet HEAD 2>/dev/null) || return 1
+  [ -n "$full" ] && [ "$full" = "$head" ] || return 1
+  printf '%s' "$full"
+}
+
 apply_probe() {
+  # apply_probe <worktree> <probe> <run id> <segment> <merge commit>
   # Echoes nothing; the CALLER reads the exit status, which is the whole point
   # of `-detailed-exitcode`. Swallowing it into a string would put a parser
-  # between the tool and the decision.
-  local wt="$1" cmd="$2"
-  ( cd "$wt" && sh -c "$cmd" ) >/dev/null 2>&1
+  # between the tool and the decision. A worktree whose HEAD is not the merge
+  # commit runs no probe and returns 1, a value no mapping accepts, so the
+  # caller's verdict is 사전 실패 or 적용 불명; the caller calls
+  # `apply_probe_head_ok` again to write 「HEAD 불일치」 into its observation.
+  local wt="$1" cmd="$2" rid="${3:-}" seg="${4:-}" m="${5:-}" full
+  full=$(apply_probe_head_ok "$wt" "$m") || return 1
+  ( cd "$wt" && env "$APPLY_ENV_RUN_ID=$rid" "$APPLY_ENV_SEGMENT=$seg" "$APPLY_ENV_MERGE=$full" sh -c "$cmd" ) >/dev/null 2>&1
 }
 
 # The probe's exit-code mapping, frozen as the `## 인가` row
@@ -12066,18 +12132,48 @@ apply_code_row_check() {
     || die "적용 프로브 코드 행의 프로브 sha256 이 매니페스트의 적용 프로브 바이트와 맞지 않습니다 (행 $hx, 프로브 $want)"
 }
 
+# apply_probe_run_bound — status 0, printing the token, when the current
+# MANIFEST's frozen probe is bound to a run: the pipeline runs the apply, a
+# probe is frozen, and the unquoted probe string holds a run id of either
+# grammar (`<8 digits>-<8 hex>` or `<yyyy>-<mm>-<dd>-<8 hex>`) with no hex
+# character on either side. Any run's id counts. Only the manifest string is
+# read — never the script it names, and never the design document's slice
+# declaration — so every caller inside one re-kickoff gets the same answer
+# from the same source manifest. Status 1 otherwise.
+apply_probe_run_bound() {
+  local probe tok
+  [ -n "${MANIFEST:-}" ] || return 1
+  [ "$(apply_unquote "$(manifest_field '요소' '적용 주체')")" = "파이프라인" ] || return 1
+  probe=$(apply_unquote "$(manifest_field '요소' '적용 프로브')")
+  case "$probe" in ''|'(없음)'|'없음') return 1 ;; esac
+  tok=$(printf '%s\n' "$probe" | LC_ALL=C awk '{
+    s = $0; off = 0
+    while (match(substr(s, off + 1), /[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]|[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]/)) {
+      st = off + RSTART; len = RLENGTH
+      b = (st > 1) ? substr(s, st - 1, 1) : ""; a = substr(s, st + len, 1)
+      if (b !~ /[0-9a-f]/ && a !~ /[0-9a-f]/) { print substr(s, st, len); exit }
+      off = st
+    }
+  }')
+  [ -n "$tok" ] || return 1
+  printf '%s' "$tok"
+}
+
 # apply_code_row_reask — status 0 when the current MANIFEST's mapping cannot be
 # carried into a re-kickoff and 5c has to be asked again: the pipeline runs the
 # apply, a probe is frozen, and the `적용 프로브 코드` row is absent or carries
-# 2 in either value. Without a row only 불필요=0 is defined, so every needed
-# apply would be refused before it runs; a row carrying 2 is one the manifest
-# check refuses. A second row is left to the manifest check's own refusal.
+# 2 in either value, or the probe is bound to a run (`apply_probe_run_bound`).
+# Without a row only 불필요=0 is defined, so every needed apply would be
+# refused before it runs; a row carrying 2 is one the manifest check refuses;
+# a probe naming a run's id answers for that run and not for the next one. A
+# second row is left to the manifest check's own refusal.
 apply_code_row_reask() {
   local rows nu ne probe
   [ -n "${MANIFEST:-}" ] || return 1
   [ "$(apply_unquote "$(manifest_field '요소' '적용 주체')")" = "파이프라인" ] || return 1
   probe=$(apply_unquote "$(manifest_field '요소' '적용 프로브')")
   case "$probe" in ''|'(없음)'|'없음') return 1 ;; esac
+  apply_probe_run_bound >/dev/null && return 0
   rows=$(manifest_apply_code_rows)
   [ -n "$rows" ] || return 0
   case "$rows" in *"
@@ -12284,7 +12380,10 @@ apply_stage() {
   fi
   ledger_row 'segment' "id=$seg" "상태=적용 준비" "워크트리=$wt" "고정 커밋=$MERGE_COMMIT" "적용 명령=$cmd"
 
-  apply_probe "$wt" "$probe"; pre=$?
+  # A worktree left by an earlier attempt is reused without being pinned
+  # again, so its HEAD may not be the merge commit: `apply_probe` runs no probe
+  # there and the verdict below is 사전 실패 with 「HEAD 불일치」.
+  apply_probe "$wt" "$probe" "$RUN_ID" "$seg" "$MERGE_COMMIT"; pre=$?
   acct=$(stage_account_of "S9-$seg")
   case "$(apply_disposition "$nu" "$ne" "$pre")" in
     건너뜀)
@@ -12302,6 +12401,8 @@ apply_stage() {
        # apply leaves, so a later run reads a command that never ran as such.
        local nomap=""
        [ "$ne" = "-" ] && nomap=" — 적용 프로브 코드 행이 없어 필요 코드가 정의되지 않았다"
+       apply_probe_head_ok "$wt" "$MERGE_COMMIT" >/dev/null \
+         || nomap="${nomap} — HEAD 불일치: 워크트리 HEAD 가 머지 커밋 $MERGE_COMMIT 이 아니어서 프로브를 돌리지 않았다"
        ledger_row 'segment' "id=$seg" "상태=park" "적용=사전 실패" "워크트리=$wt" "고정 커밋=$MERGE_COMMIT"
        park "$seg" act 막힘 "게이트 park" "사전 프로브 실패(exit $pre, $map)${nomap} — 아무것도 건드리기 전에 거부한다" "$cmd"
        return 2 ;;
@@ -12310,7 +12411,11 @@ apply_stage() {
   log "$seg: S9 apply 실행 (재시도 없음) — $cmd"
   ( cd "$wt" && sh -c "$cmd" ) >"$RUN_DIR/log/S9-$seg.out" 2>"$RUN_DIR/log/S9-$seg.err"; rc=$?
 
-  apply_probe "$wt" "$probe"; post=$?
+  # A command that moved the worktree's HEAD leaves no tree the post-probe can
+  # answer for: no probe runs, and the outcome is 적용 불명 with 「HEAD 불일치」.
+  local headx=""
+  apply_probe "$wt" "$probe" "$RUN_ID" "$seg" "$MERGE_COMMIT"; post=$?
+  apply_probe_head_ok "$wt" "$MERGE_COMMIT" >/dev/null || headx=", HEAD 불일치 — 사후 프로브를 돌리지 않았다"
   acct=$(stage_account_of "S9-$seg")
   if [ "$(apply_disposition "$nu" "$ne" "$pre" "$rc" "$post")" = "수렴" ]; then
     ledger_row 'stage-result' "세그먼트=$seg" "스테이지=S9" "종료 코드=0" \
@@ -12327,7 +12432,7 @@ apply_stage() {
   # state, which is the one artifact a person will need in the morning.
   ledger_row 'stage-result' "세그먼트=$seg" "스테이지=S9" "종료 코드=$rc" \
     "압축 창=$(stage_window_of "S9-$seg")" "레인=$(stage_lane_of "S9-$seg")" ${acct:+"계정=$acct"} "기록자=드라이버" \
-    "아티팩트 술어 결과=1" "종단 부류=적용 불명" "관측=사전 $pre → 사후 $post ($map)" \
+    "아티팩트 술어 결과=1" "종단 부류=적용 불명" "관측=사전 $pre → 사후 $post ($map)${headx}" \
     "실패 서명=$(failure_signature apply '적용 불명' - -)"
   # A TARGET DEFECT STOPS ONLY THAT TARGET. The command exited 0 and the
   # post-probe still reads 「필요」: the segment park row carries the gate's
@@ -12348,7 +12453,7 @@ EOF
     return 3
   fi
   ledger_row 'segment' "id=$seg" "상태=park" "적용=불명" "워크트리=$wt" "고정 커밋=$MERGE_COMMIT"
-  park "$seg" run 불명 "게이트 park" "적용 불명 — 폭발 반경 '$radius' 정지, 워크트리 보존: $wt" "$cmd"
+  park "$seg" run 불명 "게이트 park" "적용 불명${headx} — 폭발 반경 '$radius' 정지, 워크트리 보존: $wt" "$cmd"
   report_append "사람 대조 필요" "$seg — apply 결과 불명, 반경 $radius. 워크트리 $wt 를 보존했다"
   APPLY_PARKED_RADIUS="$radius"
   return 1

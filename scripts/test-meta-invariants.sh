@@ -2187,7 +2187,21 @@ done <<'EOF'
 반영 실패|autopilot-router-shift/references/visual-dispatch.md|the seat does not ask the person to answer it, but to run `/cc-cmds:visual <설계 문서> 구현 승인` again once the run has ended
 아침 보고|autopilot/references/act3-report.md|adds its stop record but not the option `결정 첨부 후 다시 반영`
 아침 보고|autopilot/references/act3-report.md|이 기록에는 답을 받을 수 없으니 답하지 말고, 런이 끝난 뒤 `/cc-cmds:visual <설계 문서 절대 경로> 구현 승인` 을 다시 실행하면
+사람 둔 어긋남 판독|implement-unattended/SKILL.md|Remove every whitespace character from the record's first `**스텝**` value and turn each of `—`, `–`, `‒`, `―` and `−` into `-`; the record is a kept-drift stop when what is left contains `CFI-U3BT-STOP` and, after it, `사람둔어긋남`.
+사람 둔 어긋남 판독|_common/approval-reflection.md|Remove every whitespace character from the record's first `**스텝**` value and turn each of `—`, `–`, `‒`, `―` and `−` into `-`; the record is a kept-drift stop when what is left contains `CFI-U3BT-STOP` and, after it, `사람둔어긋남`.
+사람 둔 어긋남 판독|design-reconverge/SKILL.md|Remove every whitespace character from the record's first `**스텝**` value and turn each of `—`, `–`, `‒`, `―` and `−` into `-`; the record is a kept-drift stop when what is left contains `CFI-U3BT-STOP` and, after it, `사람둔어긋남`.
+사람 둔 어긋남 판독|_common/pipeline-sidecar.md|Remove every whitespace character from the record's first `**스텝**` value and turn each of `—`, `–`, `‒`, `―` and `−` into `-`; the record is a kept-drift stop when what is left contains `CFI-U3BT-STOP` and, after it, `사람둔어긋남`.
+사람 둔 어긋남 판독|autopilot-router-shift/references/halt-answer-1.md|Remove every whitespace character from the record's first `**스텝**` value and turn each of `—`, `–`, `‒`, `―` and `−` into `-`; the record is a kept-drift stop when what is left contains `CFI-U3BT-STOP` and, after it, `사람둔어긋남`.
+금지 절 표시|implement-unattended/SKILL.md|, or whose colliding binding sentence stands in one of those sections,
+금지 절 표시|_common/approval-reflection.md|, or whose colliding binding sentence stands in one of those sections,
 EOF
+# The kept-drift stop is read wide (whitespace removed, dashes folded), so no
+# copy may still describe it as an exact `**스텝**` value: a reader holding to
+# the exact wording leaves a slightly misspelled record to the shift.
+for lit in 'is exactly `Step 2 CFI-U3 BT-STOP — 사람 둔 어긋남`' 'whole `**스텝**` is `Step 2 CFI-U3 BT-STOP — 사람 둔 어긋남`'; do
+  n=$(grep -rcF -- "$lit" "$SK" | awk -F: '{ s += $NF } END { print s + 0 }')
+  check "스킬 트리 어디에도 「${lit}」 이 없다" "$n" "0"
+done
 # The second same end keeps the sidecar at `대기`; a copy that writes
 # `실패 — <종단>` there stops the automatic retry and asks a person.
 for f in _common/approval-reflection.md design-reconverge/SKILL.md; do

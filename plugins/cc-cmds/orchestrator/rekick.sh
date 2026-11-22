@@ -149,7 +149,13 @@
 # ladder-rungs · stagnation-bound · cost-ceiling · apply-probe · apply-actor ·
 # apply-probe-codes (scope `런`) or cutpoint · review-ceiling · terminal-cap · dev-ids ·
 # deploy-triggers (a target). The previous manifest must hold no value
-# there; anything else is refused. `render-manifest` writes the value into the
+# there; anything else is refused, except `apply-probe` when the previous
+# probe is bound to a run (`apply_probe_run_bound`): 5c asked for a new probe,
+# recorded under `5c 프로브`, and its one-line value replaces the old one,
+# backticked as the probe line was. That value is given without wrapping
+# backticks: one that starts or ends with a backtick is refused, because the
+# driver strips one from each end and would run another probe than the one the
+# new mapping row is hashed on. `render-manifest` writes the value into the
 # draft and `verify-subset` takes the same `--set` list, so the draft's value is
 # compared with the confirmed one rather than exempted.
 #
@@ -157,9 +163,11 @@
 # `render-manifest` copies it byte for byte with the rest of the section and
 # `verify-subset` refuses a draft whose row differs from the previous one —
 # added, dropped or changed. The one exception is a previous manifest whose
-# pipeline-run probe has no row, or a row carrying 2 (`apply_code_row_reask`):
-# with no row only 불필요=0 is defined and a row with 2 is refused by the
-# manifest check, so 5c is asked again. Then `render-manifest` drops the row,
+# pipeline-run probe has no row, a row carrying 2, or a probe bound to a run
+# (`apply_code_row_reask`): with no row only 불필요=0 is defined, a row with 2
+# is refused by the manifest check, and a bound probe answers only for the run
+# it names, so 5c is asked again — for a bound probe, for the probe as well,
+# and a draft without `--set 런:apply-probe` is refused. Then `render-manifest` drops the row,
 # `--set 런:apply-probe-codes=<불필요>/<필요>` writes the confirmed mapping as a
 # new row bound to the draft's probe bytes, and `verify-subset` accepts a row
 # that differs from the previous one only as that `--set` value, and refuses a
@@ -3234,8 +3242,9 @@ rk_render() {
   # A mapping row that cannot be carried is dropped, and a confirmed mapping is
   # written as a new row bound to the probe the draft will carry: the confirmed
   # `apply-probe` when one is set, the previous value otherwise.
-  local acdrop="" acrow="" acv acprobe bindsha="$RK_BIND"
+  local acdrop="" acrow="" acv acprobe bindsha="$RK_BIND" probebt=""
   if [ -z "$bindsha" ] && rk_upper_lineage_holds; then bindsha=$RK_UL_NOW; fi
+  apply_probe_run_bound >/dev/null && probebt=1
   if apply_code_row_reask; then
     acdrop=1
     acv=$(awk -F '\t' '$5 == "apply-probe-codes" { print $4 }' "$RK_TMP/sets.tsv")
@@ -3245,7 +3254,7 @@ rk_render() {
       acrow="- \`적용 프로브 코드\` | 불필요=${acv%%/*} | 필요=${acv#*/} | 프로브 sha256=$(apply_probe_sha "$(apply_unquote "$acprobe")")"
     fi
   fi
-  R_ACDROP="$acdrop" R_ACROW="$acrow" \
+  R_ACDROP="$acdrop" R_ACROW="$acrow" R_PROBEBT="$probebt" \
   R_SETS="$RK_TMP/sets.tsv" R_NEWID="$newid" R_KAT="$kat" R_DL="$dl" R_CONFIRM="$confirm" R_APPROVAL="$approval" \
   R_MAXCUT="$maxcut" R_VISUAL="$RK_VISUAL" R_DOUT="$G_DESIGN_OUT" R_IVKEEP="$G_IV_KEEP" R_DOCSHA="$G_DOC_SHA" \
   R_PLANF="$planf" R_PROV="$prov" R_TFILE="$( [ -n "$RK_TARGETS" ] && printf '%s' "$RK_TMP/targets.rows")" \
@@ -3390,6 +3399,11 @@ rk_render() {
       if (sec == "## 인가" && f == "벽시계 마감") { print "**벽시계 마감**: " ENVIRON["R_DL"]; next }
       if (sec == "## 인가" && f == "시각 정합 마커" && ENVIRON["R_VISUAL"] != "") { print "**시각 정합 마커**: " ENVIRON["R_VISUAL"]; next }
       if ((f in rule) && $0 ~ /\*\*: (켬|끔)$/) { print "**" f "**: " rule[f]; next }
+      # A source probe bound to a run is overwritten by the confirmed probe, in
+      # the backticked form the probe line already had.
+      if (sec == "## 요소" && f == "적용 프로브" && ENVIRON["R_PROBEBT"] == "1" && (("요소", f) in rset)) {
+        print "**" f "**: `" rset["요소", f] "`"; rdone["요소", f] = 1; next
+      }
       if ((substr(sec, 4), f) in rset) { print "**" f "**: " rset[substr(sec, 4), f]; rdone[substr(sec, 4), f] = 1; next }
       print; next
     }
@@ -3528,6 +3542,21 @@ rk_sets_resolve() {
       [ "$sc" = "런" ] || { printf '%s' "--set $k 의 범위는 런입니다"; return 1; }
       pv=$(manifest_field "$sec" "$f")
     fi
+    # A PROBE BOUND TO A RUN IS THE ONE FILLED VALUE A `--set` REPLACES. The
+    # source probe names a run id (`apply_probe_run_bound`), so 5c was asked
+    # again and its answer overwrites the line. Argument parsing has already
+    # refused a value with a tab or newline, so the line stays one line. The
+    # render wraps the value in one pair of backticks and the driver strips
+    # exactly one from each end, so a value that itself starts or ends with a
+    # backtick would run as a different probe from the one hashed into the new
+    # mapping row: it is refused, and the person gives it without wrapping
+    # backticks, writing a trailing command substitution as `$(…)`.
+    if [ "$k" = "apply-probe" ] && [ -n "$pv" ] && apply_probe_run_bound >/dev/null; then
+      case "$v" in
+        '`'*|*'`') printf '%s' "--set 런:$k — 값이 백틱으로 시작하거나 끝납니다. 감싸는 백틱 없이 주고, 끝의 명령 치환은 \$(…) 로 씁니다: $v"; return 1 ;;
+      esac
+      pv=''
+    fi
     [ -z "$pv" ] || { printf '%s' "--set $sc:$k — 원천 매니페스트에 이미 값이 있어 빈칸이 아닙니다"; return 1; }
     awk -F '\t' -v s="$sc" -v f="$f" '$1 == s && $3 == f { d = 1 } END { exit !d }' "$out" \
       && { printf '%s' "--set $sc:$k 가 두 번 주어졌습니다"; return 1; }
@@ -3535,6 +3564,15 @@ rk_sets_resolve() {
   done <<EOF
 $RK_SETS
 EOF
+  # A mapping confirmed for a bound probe without the new probe would bind the
+  # new row to the old run's probe.
+  local rbtok
+  if rbtok=$(apply_probe_run_bound) \
+     && awk -F '\t' '$5 == "apply-probe-codes" { d = 1 } END { exit !d }' "$out" \
+     && ! awk -F '\t' '$5 == "apply-probe" { d = 1 } END { exit !d }' "$out"; then
+    printf '%s' "--set 런:apply-probe-codes — 원천 적용 프로브가 런 id $rbtok 를 담고 있어, 5c 로 다시 물은 새 프로브(--set 런:apply-probe)도 함께 주어야 합니다"
+    return 1
+  fi
   return 0
 }
 
@@ -3697,11 +3735,13 @@ vs_in() { printf '%s\n' "$2" | grep -qxF -- "$1"; }
 
 # vs_set_is <scope> <field> <draft value> — a `--set` entry names this place,
 # and the draft carries exactly its value. That the entry is one 5o confirmed
-# is check 2b's to show, not this exemption's.
+# is check 2b's to show, not this exemption's. The three values reach awk
+# through the environment, which awk reads as bytes; `-v` would undo backslash
+# escapes and refuse a value with a backslash as different from itself.
 VS_SETS=""
 vs_set_is() {
   [ -n "$VS_SETS" ] && [ -s "$VS_SETS" ] || return 1
-  awk -F '\t' -v s="$1" -v f="$2" -v d="$3" '$1 == s && $3 == f { ok = ($4 == d); hit = 1 } END { exit !(hit && ok) }' "$VS_SETS"
+  VSI_S="$1" VSI_F="$2" VSI_D="$3" awk -F '\t' '$1 == ENVIRON["VSI_S"] && $3 == ENVIRON["VSI_F"] { ok = ($4 == ENVIRON["VSI_D"]); hit = 1 } END { exit !(hit && ok) }' "$VS_SETS"
 }
 
 # vs_blank_has <alias|런> <key> <value> — a `빈칸` row of the saved 5o output
@@ -3803,13 +3843,18 @@ EOF
   [ "$(MANIFEST="$prev" manifest_clause_rows_raw)" = "$(MANIFEST="$draft" manifest_clause_rows_raw)" ] \
     || why="${why:+$why; }종료 절 행이 다릅니다"
   # A field the previous run left empty may differ only by the value 5o
-  # confirmed for it (`--set`); the draft is compared with that value.
+  # confirmed for it (`--set`); the draft is compared with that value. A
+  # source probe bound to a run may differ only by the probe 5c was asked
+  # again for, which the draft carries backticked.
+  local pbound
+  pbound=$(MANIFEST="$prev" apply_probe_run_bound) || pbound=''
   for ks in '인가:비용 천장' '인가:무진전 상한' '인가:사다리 가용 단 수' '인가:미선언 상황 처분' \
             '요소:적용 지점' '요소:적용 프로브' '요소:적용 주체'; do
     k=${ks#*:}
     pval=$(MANIFEST="$prev" manifest_field "${ks%%:*}" "$k"); dval=$(MANIFEST="$draft" manifest_field "${ks%%:*}" "$k")
     [ "$pval" = "$dval" ] && continue
     if [ -z "$pval" ] && vs_set_is 런 "$k" "$dval"; then continue; fi
+    if [ "$k" = "적용 프로브" ] && [ -n "$pbound" ] && vs_set_is 런 "$k" "$(apply_unquote "$dval")"; then continue; fi
     why="${why:+$why; }$k 가 원천과 다릅니다"
   done
   # The apply mapping row is the previous row, or none — except where the
@@ -3819,6 +3864,12 @@ EOF
   # apply of the new run would stop before its command.
   local acset dac
   if MANIFEST="$prev" apply_code_row_reask; then
+    # A probe bound to a run needs the new probe 5c was asked again for, not
+    # only a new mapping: a seat re-kickoff, which asks nothing, stops here and
+    # opens no successor run.
+    if [ -n "$pbound" ] && ! awk -F '\t' '$5 == "apply-probe" { d = 1 } END { exit !d }' "$VS_SETS" 2>/dev/null; then
+      why="${why:+$why; }원천의 적용 프로브가 런 id $pbound 를 담고 있어 5c 로 다시 물은 새 프로브(--set 런:apply-probe)가 필요합니다"
+    fi
     acset=$(awk -F '\t' '$5 == "apply-probe-codes" { print $4 }' "$VS_SETS" 2>/dev/null)
     dac=$(MANIFEST="$draft" manifest_apply_code_rows)
     if [ -n "$acset" ]; then
@@ -3873,6 +3924,10 @@ EOF
       # `5c`, is the value — the same one `--set` carries.
       if [ "$sk" = "apply-probe-codes" ] && [ -n "$(rk_asked_answer '5c')" ]; then
         [ "$(rk_asked_answer '5c')" = "$sv" ] || why="${why:+$why; }$srsc:$sk 의 확정값이 5c 답과 다릅니다"
+      # The probe has the same second source when the source probe was bound
+      # to a run: 5c asked for a new one, recorded under `5c 프로브`.
+      elif [ "$sk" = "apply-probe" ] && [ -n "$(rk_asked_answer '5c 프로브')" ]; then
+        [ "$(rk_asked_answer '5c 프로브')" = "$sv" ] || why="${why:+$why; }$srsc:$sk 의 확정값이 5c 프로브 답과 다릅니다"
       else
         MANIFEST="$prev" vs_blank_has "$ssc" "$sk" "$sv" \
           || why="${why:+$why; }$srsc:$sk 의 확정값이 5o 에서 확인한 빈칸 행과 다릅니다"
@@ -3883,6 +3938,7 @@ EOF
       elif [ "$sk" = "apply-probe-codes" ]; then
         dac=$(MANIFEST="$draft" manifest_apply_code_rows | head -n 1)
         sdv="$(manifest_row_fields "$dac" '불필요' 1 | head -1)/$(manifest_row_fields "$dac" '필요' 1 | head -1)"
+      elif [ "$sk" = "apply-probe" ]; then sdv=$(apply_unquote "$(MANIFEST="$draft" manifest_field "$ssec" "$sf")")
       else sdv=$(MANIFEST="$draft" manifest_field "$ssec" "$sf"); fi
       [ "$sdv" = "$sv" ] || why="${why:+$why; }초안의 $ssc:$sk 가 확정값이 아닙니다"
     done < "$VS_SETS"

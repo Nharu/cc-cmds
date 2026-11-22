@@ -1002,6 +1002,13 @@ tr_case "바뀐 줄의 목록" 1 "바뀐 줄 +1줄 -1줄
 tr_doc '화면 문면 없는 새 줄'
 tr_case "화면 문면이 없는 더한 줄은 실패한다" 1 "바뀐 줄 +1줄 -0줄
 + 화면 문면 없는 새 줄"
+printf '%s\n' "$TRBASE" | grep -vx '둘째 줄' > "$RDOC"
+tr_case "사본 줄을 지운 편집은 다른 편집이다" 1 "바뀐 줄 +0줄 -1줄
+- 둘째 줄"
+printf '%s\n' "$TRBASE" | awk '$0 == "둘째 줄" { print "설명 글 — 승인 화면대로 카드 목록을 보인다."; next } { print }' > "$RDOC"
+tr_case "사본 줄을 화면 문면이 든 줄로 고친 편집은 다른 편집이다" 1 "바뀐 줄 +1줄 -1줄
++ 설명 글 — 승인 화면대로 카드 목록을 보인다.
+- 둘째 줄"
 tr_doc "$(i=1; while [ $i -le 25 ]; do echo "추가 $i"; i=$((i + 1)); done)"
 rc=0; out=$(bash "$CHECK" reuse "$RDOC" --record "$REC" 2>&1) || rc=$?
 n=$(printf '%s\n' "$out" | grep -c '^+ ' || true)

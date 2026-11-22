@@ -426,12 +426,15 @@
 # `gate_halt_draft_admit` passes (a re-convergence's S1/S3/S4 stop takes the
 # same argument). `초안 그대로=예` carries no `첨부`: the gate writes the
 # attachment from the draft itself, and the row gains `초안 채택=<m>/<n>`, which
-# a person's answer to a drafted record carries too. A record whose whole
-# `**스텝**` reads `Step 2 CFI-U3 BT-STOP — 사람 둔 어긋남` — a screen slice's
-# stop on a drift line the person left `문서대로 둠` — is outside that case as
-# well and is refused before it: only `답한 주체=사람` is recorded for it, so
-# the shift's `재수렴` under a `구속-이탈` row is refused with 3 even though its
-# step, cut at the first ` — `, reads as a BT-STOP. `<key>` is the segment
+# a person's answer to a drafted record carries too. A kept-drift record — a
+# screen slice's stop on a drift line the person left `문서대로 둠`, written as
+# `Step 2 CFI-U3 BT-STOP — 사람 둔 어긋남` and read by `halt_step_is_kept_drift`
+# with every whitespace removed and every dash turned into `-`, so a record
+# spelled slightly off (a tail, an en dash, doubled spaces) is read as one too
+# and the person's choice is never overturned without a person — is outside
+# that case as well and is refused before it: only `답한 주체=사람` is recorded
+# for it, so the shift's `재수렴` under a `구속-이탈` row is refused with 3 even
+# though its step, cut at the first ` — `, reads as a BT-STOP. `<key>` is the segment
 # id, or the step id for the design step, of the stage that halted; the gate
 # checks the record is this run's, complete, and lists the option verbatim,
 # and refuses with 3 an answer no branch of the shift can carry out
@@ -15605,7 +15608,10 @@ gate_adoption_halt_source() {
   # under the earlier run's settings, plugin copy and instruction synthesis,
   # and the plan it would continue lives in the earlier run's directory and
   # ledger, which this run's stages cannot read. Three answers need no session.
-  # An implement stage's binding-tier stop (CFI-U3 BT-STOP) answered `재수렴`:
+  # An implement stage's binding-tier stop answered `재수렴` — a record whose
+  # step holds `CFI-U3 BT-STOP` before its first ` — `, or one
+  # `halt_step_is_kept_drift` reads as a kept-drift stop, so a kept-drift
+  # record spelled slightly off is not left without a carry:
   # its route re-converges the document on the record and plans the segment
   # again from its first process. A person's `재수렴` on an implement stage's
   # refutation stop (`Step 1.5d`, `Step 3 구현 중 반증`, `Step 1.5a 반증 대기`)
@@ -15724,9 +15730,10 @@ gate_adoption_halt_source() {
   fi
   if [ -z "$refute" ] \
      && { [ "$skill" != "implement-unattended" ] || [ "$opt" != "재수렴" ] \
-          || [ "${step#*CFI-U3 BT-STOP}" = "$step" ]; } \
+          || { [ "${step#*CFI-U3 BT-STOP}" = "$step" ] \
+               && ! halt_step_is_kept_drift "$rec"; }; } \
      && ! gate_halt_answer_handed_on "$sledger" "$ln" "$skey"; then
-    GATE_CARRY_WHY="스킬 ${skill:-미상} 의 기록(스텝 「${step}」)에 대한 답 「${opt}」 은 멈춘 세션을 다시 붙여 넘기는 답인데, 그 세션은 출처 런의 것이라 이 런에서 다시 붙일 수 없고, 출처 원장에 그 답을 다음 런으로 넘긴 이월 행도 없습니다 — implement-unattended 기록 중 스텝 문면의 첫 \` — \` 앞에 CFI-U3 BT-STOP 이 있는 기록에 대한 「재수렴」 답, implement-unattended 의 반증 정지(스텝이 Step 1.5d, Step 3 구현 중 반증 또는 Step 1.5a 반증 대기)에 사람이 준 「재수렴」 답 가운데 재수렴 운반 파일에 그 항목의 대기 블록이 남은 답, 출처 원장의 이월 행이 이름 짓는 답, 그리고 implement-unattended 의 좌석 실행 정지(스텝이 Step 3 잔여 검증 좌석 실행 또는 Step 3 게이트 도달 좌석 실행)에 대한 「좌석 실행」 답 가운데 답 뒤에 같은 키의 마감 초과 cone 행이 있고 그 뒤 그 키의 stage-result 행이 없는 답만 이 런으로 이어집니다"
+    GATE_CARRY_WHY="스킬 ${skill:-미상} 의 기록(스텝 「${step}」)에 대한 답 「${opt}」 은 멈춘 세션을 다시 붙여 넘기는 답인데, 그 세션은 출처 런의 것이라 이 런에서 다시 붙일 수 없고, 출처 원장에 그 답을 다음 런으로 넘긴 이월 행도 없습니다 — implement-unattended 기록 중 스텝 문면의 첫 \` — \` 앞에 CFI-U3 BT-STOP 이 있거나 사람 둔 어긋남 판독(공백을 모두 지우고 dash 를 - 로 바꾼 스텝에 CFI-U3BT-STOP 과 그 뒤 사람둔어긋남 이 있음)이 참인 기록에 대한 「재수렴」 답, implement-unattended 의 반증 정지(스텝이 Step 1.5d, Step 3 구현 중 반증 또는 Step 1.5a 반증 대기)에 사람이 준 「재수렴」 답 가운데 재수렴 운반 파일에 그 항목의 대기 블록이 남은 답, 출처 원장의 이월 행이 이름 짓는 답, 그리고 implement-unattended 의 좌석 실행 정지(스텝이 Step 3 잔여 검증 좌석 실행 또는 Step 3 게이트 도달 좌석 실행)에 대한 「좌석 실행」 답 가운데 답 뒤에 같은 키의 마감 초과 cone 행이 있고 그 뒤 그 키의 stage-result 행이 없는 답만 이 런으로 이어집니다"
     return 2
   fi
   if cc_stage_is_live "$sdir" "$skey"; then
@@ -21625,16 +21632,32 @@ readonly GATE_MASTER_REASON_MAX=160
 GATE_CI_MATCH_LOG_MAX_BYTES=8388608
 GATE_CI_MATCH_GH_SECONDS=20
 
+gate_master_enc_into() {
+  # gate_master_enc_into <var> <piece> — one piece of the file name with `%`,
+  # `/` and `_` percent-encoded, so `__` joins the three pieces without
+  # ambiguity, put in <var>. Parameter expansion rather than `sed`, and a
+  # variable rather than a printed value: the path is built on every gate act
+  # that writes the `master 판독` row, and the three pieces cost six processes
+  # as substitutions over `sed`.
+  local v=$2
+  v=${v//\%/%25}; v=${v//\//%2F}; v=${v//_/%5F}
+  printf -v "$1" '%s' "$v"
+}
+
 gate_master_enc() {
-  # gate_master_enc <piece> — one piece of the file name with `%`, `/` and `_`
-  # percent-encoded, so `__` joins the three pieces without ambiguity.
-  printf '%s' "$1" | sed -e 's/%/%25/g' -e 's#/#%2F#g' -e 's/_/%5F/g'
+  # gate_master_enc <piece> — the same encoding, printed.
+  local e
+  gate_master_enc_into e "$1"
+  printf '%s' "$e"
 }
 
 gate_master_file() {
   # gate_master_file <owner/name> <base branch> — the reading's path.
-  printf '%s/master/%s__%s__%s.json' "$(gate_pace_root)" \
-    "$(gate_master_enc "${1%%/*}")" "$(gate_master_enc "${1#*/}")" "$(gate_master_enc "$2")"
+  local o n b
+  gate_master_enc_into o "${1%%/*}"
+  gate_master_enc_into n "${1#*/}"
+  gate_master_enc_into b "$2"
+  printf '%s/master/%s__%s__%s.json' "$(gate_pace_root)" "$o" "$n" "$b"
 }
 
 gate_master_state() {
@@ -28769,8 +28792,12 @@ gate_carry_routed_elsewhere() {
      && [ "$opt" = "adopt as a requirement" ]; then
     printf '감사 종합 요구를 채택한 답은 재수렴으로 갑니다 — 운반하지 않습니다: %s' "$rec"; return 0
   fi
-  if [ "$skill" = "implement-unattended" ] && [ "${s1#*CFI-U3 BT-STOP}" != "$s1" ] \
-     && [ "$opt" = "재수렴" ]; then
+  # A binding-tier stop is one whose step holds `CFI-U3 BT-STOP` before its
+  # first ` — `, or a kept-drift record `halt_step_is_kept_drift` reads as one
+  # even when it is spelled slightly off, so its `재수렴` is never carried to
+  # a session that cannot write the design document.
+  if [ "$skill" = "implement-unattended" ] && [ "$opt" = "재수렴" ] \
+     && { [ "${s1#*CFI-U3 BT-STOP}" != "$s1" ] || halt_step_is_kept_drift "$rec"; }; then
     printf '구속 티어 이탈 정지의 재수렴 답은 재수렴으로 갑니다 — 운반하지 않습니다: %s' "$rec"; return 0
   fi
   # A refutation stop's `재수렴` answer re-converges the record's item (route
@@ -30245,7 +30272,10 @@ gate_halt_answer_route() {
       why=$GATE_DCR_WHY
     fi
   elif [ "$skill" = "implement-unattended" ] && [ "$opt" = "재수렴" ] \
-       && [ "${hstep#*CFI-U3 BT-STOP}" != "$hstep" ]; then
+       && { [ "${hstep#*CFI-U3 BT-STOP}" != "$hstep" ] || halt_step_is_kept_drift "$rec"; }; then
+    # A binding-tier stop: `CFI-U3 BT-STOP` before the step's first ` — `, or
+    # a kept-drift record `halt_step_is_kept_drift` reads as one even when it
+    # is spelled slightly off, so a person's `재수렴` on it has a branch.
     id=구속-재수렴
     ! gate_segment_terminal "$key" || why=$terminal
   elif [ "$skill" = "implement-unattended" ] && [ "$opt" = "재수렴" ] \
@@ -31248,7 +31278,11 @@ gate_base_guard_applies() {
   local al="$1" verb="$2" kind="$3"
   [ -n "${RUN_DIR:-}" ] || return 1
   case "$al" in ''|-) return 1 ;; esac
-  case " $(target_aliases 2>/dev/null | tr '\n' ' ') " in *" $al "*) ;; *) return 1 ;; esac
+  local a known=''
+  for a in $(target_aliases 2>/dev/null); do
+    [ "$a" = "$al" ] && { known=1; break; }
+  done
+  [ -n "$known" ] || return 1
   if [ "$verb" != "exec" ] && [ -n "$kind" ] && gate_kind_is_bookkeeping "$kind"; then
     return 1
   fi
@@ -31256,20 +31290,56 @@ gate_base_guard_applies() {
   return 0
 }
 
+gate_base_guard_locate() {
+  # gate_base_guard_locate <alias> — put the base's ref and the target's root
+  # in GATE_BG_LOC_REF and GATE_BG_LOC_ROOT, once per gate process, for the
+  # reads of `gate_base_guard_now` that follow.
+  #
+  # ONCE, BECAUSE NEITHER CAN CHANGE WITHIN ONE GATE CALL. The base branch is
+  # the manifest's declared one, or the run's frozen derivation; whether the
+  # target has `origin` is frozen per run (`target_has_origin`); and the root is
+  # the common git directory of the manifest's main worktree. Re-deriving them
+  # for the reading before the act and again for the one after cost about forty
+  # processes on every act of a target with no remote. The sha is still read
+  # afresh on every call — that is the value the check compares.
+  #
+  # Only after `gate_base_guard_applies` said yes, which already established
+  # that the target has no `origin`: the ref is then the local branch, the one
+  # `base_ref` would name. A failure leaves both empty, which reads as a base
+  # the target cannot name, as before.
+  local al="$1" b
+  GATE_BG_LOC_AL=$al; GATE_BG_LOC_REF=''; GATE_BG_LOC_ROOT=''
+  if b=$(base_branch "$al" 2>/dev/null) && [ -n "$b" ]; then
+    GATE_BG_LOC_REF="refs/heads/$b"
+  fi
+  GATE_BG_LOC_ROOT=$(alias_root "$al" 2>/dev/null) || GATE_BG_LOC_ROOT=''
+}
+
+gate_base_guard_now_into() {
+  # gate_base_guard_now_into <alias> — `gate_base_guard_now` into GATE_BG_NOW,
+  # without the substitution the printed form costs the caller.
+  local al="$1" ref root sha=''
+  if [ "${GATE_BG_LOC_AL-}" = "$al" ]; then
+    ref=$GATE_BG_LOC_REF root=$GATE_BG_LOC_ROOT
+  else
+    ref=$(base_ref "$al" 2>/dev/null) || ref=''
+    root=$(alias_root "$al" 2>/dev/null) || root=''
+  fi
+  if [ -n "$ref" ] && [ -n "$root" ]; then
+    sha=$(cd "$root" 2>/dev/null && git rev-parse --verify --quiet "$ref^{commit}" 2>/dev/null) || sha=''
+  fi
+  [ -n "$ref" ] || ref=-
+  [ -n "$sha" ] || sha=없음
+  GATE_BG_NOW="${ref}	${sha}"
+}
+
 gate_base_guard_now() {
   # gate_base_guard_now <alias> — `<ref>\t<sha>` of the base as it stands. A
   # ref that does not resolve reads `없음`: a base ref that disappeared is a
   # move too. A base the target cannot name at all reads `-\t없음`, which stays
   # equal to itself.
-  local al="$1" ref root sha=''
-  ref=$(base_ref "$al" 2>/dev/null) || ref=''
-  root=$(alias_root "$al" 2>/dev/null) || root=''
-  if [ -n "$ref" ] && [ -n "$root" ]; then
-    sha=$( (cd "$root" 2>/dev/null && git rev-parse --verify --quiet "$ref^{commit}") 2>/dev/null) || sha=''
-  fi
-  [ -n "$ref" ] || ref=-
-  [ -n "$sha" ] || sha=없음
-  printf '%s\t%s' "$ref" "$sha"
+  gate_base_guard_now_into "$1"
+  printf '%s' "$GATE_BG_NOW"
 }
 
 gate_base_guard_put() {
@@ -31607,6 +31677,7 @@ gate_base_guard_entry() {
   local al="$1" seg="$2" verb="$3" kind="$4"; shift 4
   GATE_BG_ON=''; GATE_BG_AL=''; GATE_BG_SEG=''
   gate_base_guard_applies "$al" "$verb" "$kind" || return 0
+  gate_base_guard_locate "$al"
   # THE BARE `admit` FORM RUNS ITS COMMAND OUTSIDE THE GATE, so the act would
   # have no "after" to compare, and a move it made would be caught at some
   # other act's entry and pinned on that act's segment. Refused before any
@@ -31623,7 +31694,7 @@ gate_base_guard_entry() {
   local d="$RUN_DIR/base-guard" kf tl wf lf now known v w_old w_new w_at w_rec w_lf age
   local nolock="기지값=대조 안 함 / 지금=대조 안 함 / 자리=들머리 / 행위 종료 코드=수행 안 함 / 동시 행위·사람 커밋 구분 안 함"
   kf="$d/$al"; tl="$kf.latch"; wf="$kf.writing"
-  now=$(gate_base_guard_now "$al")
+  gate_base_guard_now_into "$al"; now=$GATE_BG_NOW
   mkdir -p "$d" 2>/dev/null || true
   if ! gate_index_lock "$kf"; then
     gate_base_guard_target_stop "$al" "$seg" \
@@ -31747,7 +31818,7 @@ gate_base_guard_after() {
   [ "${GATE_BG_ON:-}" = "1" ] || return 0
   local al="$GATE_BG_AL" kf now known
   kf="$RUN_DIR/base-guard/$al"
-  now=$(gate_base_guard_now "$al")
+  gate_base_guard_now_into "$al"; now=$GATE_BG_NOW
   if ! gate_index_lock "$kf"; then
     warn "베이스 이동 — 대조 잠금을 잡지 못해 행위 뒤 대조를 건너뜁니다 — 다음 행위의 들머리가 대조합니다 · 행위는 수행됨"
     return 0
@@ -45156,11 +45227,14 @@ EOF
       # draft answer's attachment is the gate's, written the same way; `근거`
       # is clipped and is not where the re-convergence reads the decision from.
       # A SCREEN SLICE'S STOP ON A LINE THE PERSON LEFT `문서대로 둠` IS A
-      # PERSON'S ONLY, in its own branch before that one. Its whole `**스텝**`
-      # line is compared (`halt_step_is_kept_drift`), because the shift's
-      # exception below cuts the step at the first ` — ` and would otherwise
-      # take this record's `재수렴` under a `구속-이탈` adoption row and overturn
-      # the person's earlier choice. The seat was already stopped above, by the
+      # PERSON'S ONLY, in its own branch before that one. Its first `**스텝**`
+      # value is read normalized (`halt_step_is_kept_drift`: whitespace
+      # removed, every dash turned into `-`, `CFI-U3BT-STOP` then `사람둔어긋남`
+      # with any tail), because the shift's exception below cuts the step at
+      # the first ` — ` and would otherwise take this record's `재수렴` under a
+      # `구속-이탈` adoption row and overturn the person's earlier choice, and a
+      # record spelled slightly off must not slip past this refusal into that
+      # exception. The seat was already stopped above, by the
       # `(없음)` recommendation and the absent draft, so what is refused here is
       # every other answer that is not a person's — the shift's above all.
       if halt_step_is_kept_drift "$hrec" && [ "$hby" != "사람" ]; then
@@ -49093,7 +49167,10 @@ gate_apply_supervise() {
   err="${out%.out}.err"
   mkdir -p "$RUN_DIR/log" 2>/dev/null || true
 
-  apply_probe "$wt" "$probe"; pre=$?
+  # The probe receives the run information and runs only where HEAD is the
+  # pinned commit `m`; the dispatch pinned this worktree to `m` a moment ago,
+  # so a mismatch here is defensive and reads as 사전 실패 with 「HEAD 불일치」.
+  apply_probe "$wt" "$probe" "$RUN_ID" "$seg" "$m"; pre=$?
   disp=$(apply_disposition "$nu" "$ne" "$pre")
   case "$disp" in
     건너뜀)
@@ -49115,6 +49192,8 @@ gate_apply_supervise() {
       # pre-probe other than 0 could not be read as 「필요」.
       nomap=""
       [ "$ne" = "-" ] && nomap=" — 적용 프로브 코드 행이 없어 필요 코드가 정의되지 않았다"
+      apply_probe_head_ok "$wt" "$m" >/dev/null \
+        || nomap="${nomap} — HEAD 불일치: 워크트리 HEAD 가 고정 커밋 $m 이 아니어서 프로브를 돌리지 않았다"
       wrc=0
       gate_apply_supervisor_row "$alias" "$seg" "$tok" "상태=park" "워크트리=$wt" "고정 커밋=$m" "적용=사전 실패" || wrc=$?
       if [ "$wrc" != "0" ]; then
@@ -49131,7 +49210,11 @@ gate_apply_supervise() {
 
   log "$seg: 적용 실행 (재시도 없음)"
   ( cd "$wt" && sh -c "$cmd" ) >"$out" 2>"$err" || rc=$?
-  apply_probe "$wt" "$probe"; post=$?
+  # A command that moved HEAD off `m` gets no post-probe: 적용 불명 with
+  # 「HEAD 불일치」 in its observation.
+  local headx=''
+  apply_probe "$wt" "$probe" "$RUN_ID" "$seg" "$m"; post=$?
+  apply_probe_head_ok "$wt" "$m" >/dev/null || headx=", HEAD 불일치 — 사후 프로브를 돌리지 않았다"
   disp=$(apply_disposition "$nu" "$ne" "$pre" "$rc" "$post")
   if [ "$disp" = "수렴" ]; then
     wrc=0
@@ -49188,9 +49271,9 @@ EOF
   fi
   gate_apply_unknown_open "$seg" \
     || gate_append 'blocked' "대상=-" "스코프=run" "원인=막힘" "사유=적용 불명 $seg" \
-         "관측=사전 프로브 exit $pre · 명령 exit $rc · 사후 프로브 exit $post ($map) — 워크트리 보존: $wt" \
+         "관측=사전 프로브 exit $pre · 명령 exit $rc · 사후 프로브 exit $post ($map)${headx} — 워크트리 보존: $wt" \
          "재개 명령=$(gate_row_safe "$cmd" 240)"
-  warn "적용 불명 — 명령 exit $rc, 사후 프로브 exit $post ($map). 워크트리를 남겼습니다: $wt"
+  warn "적용 불명 — 명령 exit $rc, 사후 프로브 exit $post ($map)${headx}. 워크트리를 남겼습니다: $wt"
   return "$GATE_EXIT_PARK"
 }
 
@@ -49726,6 +49809,15 @@ gate_perform_apply_settle() {
   if [ -e "$swt" ] || ! ( cd "$root" && git worktree add --detach "$swt" "$m" >/dev/null 2>&1 ); then
     gate_apply_settle_park "$alias" "$seg" '측정 실패' "고정 실패 — 정산 워크트리를 고정 커밋 ${m} 에 고정하지 못했다: ${swt}·${ent}"; return $?
   fi
+  # THE PROBE RUNS ONLY WHERE HEAD IS THE MERGE COMMIT, and it receives the
+  # full name `apply_probe_head_ok` resolved, never the raw `m`. The worktree
+  # was pinned to `m` just above, so a mismatch is defensive: no probe runs and
+  # the verdict is 측정 실패 with 「HEAD 불일치」.
+  local full
+  if ! full=$(apply_probe_head_ok "$swt" "$m"); then
+    gate_apply_worktree_drop "$root" "$swt"
+    gate_apply_settle_park "$alias" "$seg" '측정 실패' "HEAD 불일치 — 정산 워크트리 HEAD 가 고정 커밋 ${m} 이 아니어서 프로브를 돌리지 않았다·$ent"; return $?
+  fi
   t=${GATE_SETTLE_PROBE_TIMEOUT:-300}
   case "$t" in ''|*[!0-9]*) t=300 ;; esac
   mkdir -p "$RUN_DIR/log" 2>/dev/null || true
@@ -49734,7 +49826,8 @@ gate_perform_apply_settle() {
   # measurement not made, and the reason says so, so the morning can tell the
   # host's cause from the target's.
   if command -v perl >/dev/null 2>&1; then
-    ( cd "$swt" && gate_metrics_timed "$t" sh -c "$probe" ) >"$out" 2>&1 || rc=$?
+    ( cd "$swt" && gate_metrics_timed "$t" env "$APPLY_ENV_RUN_ID=$RUN_ID" "$APPLY_ENV_SEGMENT=$seg" \
+        "$APPLY_ENV_MERGE=$full" sh -c "$probe" ) >"$out" 2>&1 || rc=$?
   else
     rc=127; noperl=" — 시간 상한 도우미를 돌릴 perl 이 없다"
   fi
