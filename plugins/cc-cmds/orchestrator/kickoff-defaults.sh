@@ -638,7 +638,7 @@ kd_wide_instant() {
   deadline_instant "$s"
 }
 if [ "$KD_CARRY_GIVEN" = "1" ]; then
-  for kd_f in deadline_instant manifest_field target_field target_aliases manifest_preauth_rows manifest_autoadopt_rows_anywhere manifest_design_roster_rows_anywhere manifest_rekick_rows manifest_plugin_allow_rows manifest_failover_allow_rows apply_code_row_reask; do
+  for kd_f in deadline_instant manifest_field target_field target_aliases manifest_preauth_rows manifest_autoadopt_rows_anywhere manifest_design_roster_rows_anywhere manifest_rekick_rows manifest_plugin_allow_rows manifest_failover_allow_rows apply_code_row_reask apply_probe_run_bound; do
     command -v "$kd_f" >/dev/null 2>&1 || kd_refuse "run.sh 에 $kd_f 가 없습니다"
   done
   KD_KAT_E=$(kd_wide_instant "$KD_KAT")
@@ -1967,7 +1967,18 @@ EOF
     kd_carry_scalar "$kd_t" deploy-triggers "$(target_field "$kd_al" '배포트리거 식별자')"
     kd_t=$((kd_t + 1))
   done
-  kd_carry_scalar run apply-probe "$(manifest_field '요소' '적용 프로브')"
+  # A PROBE BOUND TO A RUN IS ASKED AGAIN, NOT CARRIED. A frozen probe string
+  # naming a run id (`apply_probe_run_bound`) answers for that run and not for
+  # the next one, so neither the probe nor its mapping is carried: both keys
+  # are `다시 물음` and the re-kickoff asks 5c for a new probe and mapping
+  # together. The file's mapping value is not offered as a `빈칸` row either —
+  # it was chosen for the old probe.
+  kd_rb=$(apply_probe_run_bound) || kd_rb=''
+  if [ -n "$kd_rb" ]; then
+    kd_out_not run apply-probe '다시 물음' "이전 매니페스트의 적용 프로브가 런 id ${kd_rb} 를 담고 있어 이어받지 않습니다 — 그 런에만 맞는 프로브이므로, 5c 로 새 프로브와 대응을 함께 다시 물어야 합니다"
+  else
+    kd_carry_scalar run apply-probe "$(manifest_field '요소' '적용 프로브')"
+  fi
   # The mapping is a `## 인가` row, not a field, and is offered as the
   # `<불필요>/<필요>` the file spells it in. The row itself is carried byte for
   # byte by the re-kickoff renderer; this is the value the kickoff asks with.
@@ -1980,7 +1991,9 @@ EOF
   # key is named `다시 물음` — the re-kickoff asks 5c on that row, and a seat
   # re-kickoff, which asks nothing, opens no successor run on it.
   kd_ac=$(manifest_apply_code_rows | head -1)
-  if apply_code_row_reask; then
+  if [ -n "$kd_rb" ]; then
+    kd_out_not run apply-probe-codes '다시 물음' "이전 매니페스트의 적용 프로브가 런 id ${kd_rb} 를 담고 있어 대응도 이어받지 않습니다 — 5c 로 새 프로브와 함께 대응을 다시 물어야 합니다"
+  elif apply_code_row_reask; then
     if kd_xi=$(kd_file_ok any apply-probe-codes); then
       kd_v="${E_NORM[kd_xi]}"
       printf '빈칸\t런\tapply-probe-codes\t%s\t%s\t0\t%s\n' "$(kd_cell "$kd_v")" "${E_SRC[kd_xi]}" \

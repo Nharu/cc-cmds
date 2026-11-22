@@ -1064,6 +1064,33 @@ check "파이프라인 원천의 2 없는 대응 행은 빈칸 행이 되지 않
 CW_ROWS="$CW_ROWS_SAVE"; CW_AP="$CW_AP_SAVE"; CW_AA="$CW_AA_SAVE"; CW_CUT=''
 cw_write "$CW"
 
+# 파이프라인이 실행하는 적용 프로브가 런 id 를 상수로 담은 원천은 프로브도 대응
+# 행도 이어받지 않는다. 다음 런에서 그 프로브는 언제나 지난 런을 가리키므로 5c 를
+# 다시 묻고, 파일 값이 있어도 대응만 빈칸 행으로 따로 묻지 않는다.
+CW_ROWS_SAVE="$CW_ROWS"; CW_AP_SAVE="$CW_AP"; CW_AA_SAVE="$CW_AA"
+CW_AP='`make probe RUN=20261121-4e3d8e05`'; CW_AA='파이프라인'; CW_CUT='배포'
+RB_SHA=$(printf '%s' 'make probe RUN=20261121-4e3d8e05' | shasum -a 256 | awk '{ print $1 }')
+CW_ROWS="$CW_ROWS_SAVE
+- \`적용 프로브 코드\` | 불필요=0 | 필요=21 | 프로브 sha256=$RB_SHA"
+cw_write "$CW"
+for rb_file in '' '[Nharu/cc-cmds]
+apply-probe-codes = 0/21'; do
+  out=$(kc "$rb_file")
+  rb_lbl=${rb_file:+파일 값 있음}; rb_lbl=${rb_lbl:-파일 값 없음}
+  check "런 id 를 담은 프로브($rb_lbl) → 프로브·대응 모두 이어받지 않음 다시 물음" \
+    "$(printf '%s\n' "$out" | awk -F'\t' '$1=="이어받지 않음" && ($3=="apply-probe" || $3=="apply-probe-codes") { print $2"|"$3"|"$4 }')" \
+    "런|apply-probe|다시 물음
+런|apply-probe-codes|다시 물음"
+  check "런 id 를 담은 프로브($rb_lbl) → 적용·빈칸 행이 없다" \
+    "$(cnt "$out" 적용 apply-probe)$(cnt "$out" 적용 apply-probe-codes)$(cnt "$out" 빈칸 apply-probe-codes)" "000"
+  case "$(printf '%s\n' "$out" | awk -F'\t' '$1=="이어받지 않음" && $3=="apply-probe" { print $5 }')" in
+    *20261121-4e3d8e05*) ok "런 id 를 담은 프로브의 이어받지 않음 행은 그 토큰을 싣는다 ($rb_lbl)" ;;
+    *) bad "런 id 를 담은 프로브의 이어받지 않음 행은 그 토큰을 싣는다 ($rb_lbl)" ;;
+  esac
+done
+CW_ROWS="$CW_ROWS_SAVE"; CW_AP="$CW_AP_SAVE"; CW_AA="$CW_AA_SAVE"; CW_CUT=''
+cw_write "$CW"
+
 # ---------------------------------------------------------------------------
 # --apply-probe-sha — 초안의 프로브 해시를 드라이버 함수로 재고, 적용 프로브
 # 코드 행을 매니페스트 검사의 그 절반으로 판정한다. 작은따옴표가 든 프로브는
@@ -1830,6 +1857,18 @@ expect repo act-allow '형식 오류' '형태=kubectl --context=prod | 사유=a'
 p5p=$(awk '/^\*\*5p — /{f=1; print; next} f&&(/^\*\*5[a-z] — /||/^#/){exit} f' "$BOUNDARIES")
 case "$p5p" in *"When the matcher's spelling comes to fewer than two words, do not offer it"*) ok "5p 문단이 한 낱말 대조기 철자를 제안하지 않는다고 적는다" ;;
   *) bad "5p 문단" "한 낱말 대조기 철자를 제안하지 않는다는 문장이 없다" ;; esac
+
+# 5c 는 프로브를 받을 때 그 실행 계약을 말한다 — 게이트가 넘기는 세 변수의 이름이
+# 문서와 어긋나면 사람이 받아 적은 프로브는 빈 값을 읽는다.
+p5cp=$(grep -F '**When taking the probe, say how it is run, so one probe serves every run.**' "$BOUNDARIES" || true)
+pr_miss=""
+for pr_var in CC_APPLY_RUN_ID CC_APPLY_SEGMENT CC_APPLY_MERGE_COMMIT; do
+  grep -qE "^readonly APPLY_ENV_[A-Z_]+=$pr_var\$" "$repo_root/plugins/cc-cmds/orchestrator/run.sh" || pr_miss="$pr_miss run.sh:$pr_var"
+  case "$p5cp" in *"\`$pr_var\`"*) ;; *) pr_miss="$pr_miss 문서:$pr_var" ;; esac
+done
+check "5c 프로브 실행 문단이 게이트가 넘기는 세 변수를 같은 이름으로 든다" "${pr_miss:-없음}" "없음"
+case "$p5cp" in *"Choosing by branch name is wrong"*"does not run the probe and parks"*) ok "5c 프로브 실행 문단이 브랜치 이름 판별을 막고 HEAD 불일치의 park 를 적는다" ;;
+  *) bad "5c 프로브 실행 문단" "브랜치 이름 판별·HEAD 불일치 문장이 없다" ;; esac
 
 printf '\n%d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" -eq 0 ]

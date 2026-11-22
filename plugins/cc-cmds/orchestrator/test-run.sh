@@ -976,11 +976,39 @@ printf '**스킬**: implement-unattended\n**스텝**: Step 1 CFI-U3 BT-STOP — 
 printf '**스킬**: implement-unattended\n**스텝**: Step 3 CFI-U3 BT-STOP — 미결 결정 아님\n' > "$UCD/h2.md"
 check "미결 결정 정지 판별은 스텝 값 전체를 비교한다" \
   "$(halt_step_is_unclosed_decision "$UCD/h1.md" && printf y || printf n)$(halt_step_is_unclosed_decision "$UCD/h2.md" && printf y || printf n)" "yn"
-printf '**스킬**: implement-unattended\n**스텝**: Step 2 CFI-U3 BT-STOP — 사람 둔 어긋남\n' > "$UCD/k1.md"
-printf '**스킬**: implement-unattended\n**스텝**: Step 2 CFI-U3 BT-STOP — 사람 둔 어긋남 아님\n' > "$UCD/k2.md"
-printf '**스킬**: implement-unattended\n**스텝**: Step 2 CFI-U3 BT-STOP\n' > "$UCD/k3.md"
-check "사람 둔 어긋남 정지 판별은 스텝 값 전체를 비교한다 (꼬리만 다른 스텝·앞 접두만 같은 스텝·미결 결정 정지는 아님)" \
-  "$(for f in k1 k2 k3 h1; do halt_step_is_kept_drift "$UCD/$f.md" && printf y || printf n; done)" "ynnn"
+# 사람 둔 어긋남 판독은 첫 스텝 값의 공백을 모두 지우고 dash 다섯 종을 - 로 바꾼 뒤
+# CFI-U3BT-STOP 과 그 뒤 사람둔어긋남 을 찾는다. 철자가 조금 어긋난 기록도 참이고,
+# 꼬리 없는 BT-STOP·미결 결정·강제 표면 정지·뒤집힌 순서는 거짓이다.
+kd_n=0 kd_got='' kd_want=''
+while IFS='|' read -r kd_w kd_step; do
+  kd_n=$((kd_n + 1))
+  printf '%s\n' '**스킬**: implement-unattended' "**스텝**: $kd_step" '**분류**: gate-unanswerable' > "$UCD/kd$kd_n.md"
+  kd_want="$kd_want$kd_w"
+  if halt_step_is_kept_drift "$UCD/kd$kd_n.md"; then kd_got="${kd_got}y"; else kd_got="${kd_got}n"; fi
+done <<EOF
+y|Step 2 CFI-U3 BT-STOP — 사람 둔 어긋남
+y|Step 2 CFI-U3 BT-STOP — 사람 둔 어긋남 (2줄)
+y|Step 2 CFI-U3 BT-STOP — 사람 둔 어긋남 아님
+y|Step 2 CFI-U3 BT-STOP – 사람 둔 어긋남
+y|Step 2 CFI-U3 BT-STOP —  사람  둔 어긋남
+y|Step 2 CFI-U3  BT-STOP — 사람 둔 어긋남
+y|Step 2 CFI–U3 BT–STOP — 사람 둔 어긋남
+y|Step 2 CFI-U3 BT-STOP - 사람 둔 어긋남
+y|Step 2 CFI-U3 BT-STOP — 사람 둔 어긋남
+y|Step 2 CFI-U3 BT-STOP —$(printf '\302\240')사람 둔 어긋남
+y|Step 2 CFI-U3 BT-STOP$(printf '\343\200\200')—$(printf '\342\200\203')사람 둔 어긋남
+y|Step 2 CFI-U3 BT-STOP ‒ 사람 둔 어긋남
+y|Step 2 CFI-U3 BT-STOP ― 사람 둔 어긋남
+y|Step 2 CFI-U3 BT-STOP − 사람 둔 어긋남
+n|Step 2 CFI-U3 BT-STOP
+n|Step 1 CFI-U3 BT-STOP — 미결 결정
+n|Step 3 강제 표면 좌석 적용 — 사람 둔 어긋남
+n|사람 둔 어긋남 — Step 2 CFI-U3 BT-STOP
+EOF
+check "사람 둔 어긋남 판독은 꼬리·dash 종류·겹친 공백·유니코드 공백 변형을 받고 다른 정지는 받지 않는다" "$kd_got" "$kd_want"
+printf '%s\n' '**스텝**: Step 1 CFI-U3 BT-STOP — 미결 결정' '**스텝**: Step 2 CFI-U3 BT-STOP — 사람 둔 어긋남' > "$UCD/kd-two.md"
+check "사람 둔 어긋남 판독은 첫 스텝 줄만 읽고, 없는 파일은 거짓이다 (둘째 스텝 줄·미결 결정 정지는 아님)" \
+  "$(for f in kd-two kd-none h1; do halt_step_is_kept_drift "$UCD/$f.md" && printf y || printf n; done)" "nnn"
 # 검증기 — 설계 스킬이 쓰라고 한 표기는 통과하고, 그 밖의 값은 이유를 대며 거절된다.
 rs_full() {  # rs_full <file> <잔여 항목 값>
   {
@@ -2867,6 +2895,114 @@ if apply_stage segA && [ "$(grep -c . "$AP_CNT")" = "1" ]; then
 else
   bad "뒤집힌 대응 수렴" "사전 0 이 「필요」 로 읽히지 않았다"
 fi
+
+# (5g) 프로브의 런 정보와 HEAD 보장 — 프로브는 머지 커밋이 HEAD 인 워크트리에서만
+# 돌고 CC_APPLY_RUN_ID·CC_APPLY_SEGMENT·CC_APPLY_MERGE_COMMIT 을 받으며, 적용 명령은
+# 그 셋을 받지 않는다. HEAD 가 머지 커밋이 아니면 프로브를 돌리지 않고 관측에
+# 「HEAD 불일치」 를 적는다.
+AP_WT="$(apply_worktree segA)"
+[ -d "$AP_WT" ] && ( cd "$AP_REPO" && git worktree remove --force "$AP_WT" >/dev/null 2>&1; git worktree prune >/dev/null 2>&1 )
+AP_ALT="$AP_DIR/alt-wt"
+( cd "$AP_REPO" && git worktree add -q --detach "$AP_ALT" "$AP_SHA" >/dev/null 2>&1 ) \
+  && ( cd "$AP_ALT" && git -c user.email=t@t -c user.name=t commit -q --allow-empty -m moved ) >/dev/null 2>&1
+AP_SHA2=$(cd "$AP_ALT" && git rev-parse HEAD)
+check "HEAD 표본: 다른 커밋의 워크트리가 있다 (아래가 공허하지 않다)" "$( [ "$AP_SHA2" != "$AP_SHA" ] && echo 다름 || echo 같음 )" "다름"
+check "apply_probe_head_ok: 맞으면 전체 이름을 찍는다" "$(apply_probe_head_ok "$AP_REPO" "$AP_SHA")" "$AP_SHA"
+check "apply_probe_head_ok: 짧은 이름도 전체 이름으로 푼다" "$(apply_probe_head_ok "$AP_REPO" "$(printf '%s' "$AP_SHA" | cut -c1-12)")" "$AP_SHA"
+ho_rc=0; ho_out=$(apply_probe_head_ok "$AP_ALT" "$AP_SHA") || ho_rc=$?
+check "apply_probe_head_ok: HEAD 가 다르면 1 이고 찍지 않는다" "$ho_rc/$ho_out" "1/"
+ho_rc=0; ho_out=$(apply_probe_head_ok "$AP_REPO" "0123456789abcdef0123456789abcdef01234567") || ho_rc=$?
+check "apply_probe_head_ok: 풀리지 않는 커밋이면 1" "$ho_rc/$ho_out" "1/"
+ho_rc=0; apply_probe_head_ok "$AP_REPO" "" >/dev/null || ho_rc=$?
+check "apply_probe_head_ok: 머지 커밋이 비면 1" "$ho_rc" "1"
+ho_rc=0; apply_probe_head_ok "$AP_DIR/no-such-wt" "$AP_SHA" >/dev/null || ho_rc=$?
+check "apply_probe_head_ok: 워크트리가 없으면 1" "$ho_rc" "1"
+( cd "$AP_REPO" && git worktree remove --force "$AP_ALT" >/dev/null 2>&1; git worktree prune >/dev/null 2>&1 )
+
+ap_manifest_probe() {   # ap_manifest_probe <적용명령> <프로브> <불필요> <필요>
+  {
+    printf '# a\n<!-- cc-run-manifest v1; run-id=ap; anchor-key=k -->\n\n'
+    printf '## 대상\n'
+    printf -- '- `target` | 별칭=only | 메인 워크트리=%s | 공통 git 디렉터리=%s | 베이스 브랜치=main | 홈=예 | 원격 슬러그=o/repo | 절단점=배포 | 말단 행위 상한=없음\n\n' "$AP_REPO" "$AP_CG"
+    printf '## 요소\n**적용 지점**: %s\n**적용 프로브**: %s\n**적용 주체**: 파이프라인\n' "$1" "$2"
+  } > "$AP_DIR/plan.md"
+  MANIFEST="$AP_DIR/plan.md"
+  printf -- '\n## 인가\n- `적용 프로브 코드` | 불필요=%s | 필요=%s | 프로브 sha256=%s\n' "$3" "$4" \
+    "$(apply_probe_sha "$(apply_probe_cmd segA)")" >> "$MANIFEST"
+}
+AP_RUNID_SAVE="${RUN_ID:-}"; RUN_ID="ap-env-run"
+AP_ENV="$AP_DIR/probe-env"; AP_CMDENV="$AP_DIR/cmd-env"
+ap_manifest_probe "sh -c 'env > $AP_CMDENV; echo 0 > $AP_ST'" \
+  "printf '%s:%s:%s:%s\n' \"\$CC_APPLY_RUN_ID\" \"\$CC_APPLY_SEGMENT\" \"\$CC_APPLY_MERGE_COMMIT\" \"\$(git rev-parse HEAD)\" >> $AP_ENV; exit \$(cat $AP_ST)" 0 21
+check "런 정보 픽스처의 대응 행이 이 프로브에 묶였다 (아래가 공허하지 않다)" "$(apply_probe_codes "$(apply_probe_cmd segA)")" "0 21"
+: > "$LEDGER"; : > "$AP_ENV"; rm -f "$AP_CMDENV"; printf '21\n' > "$AP_ST"
+if apply_stage segA; then ok "런 정보: 사전 21 → 사후 0 이 수렴한다"; else bad "런 정보 수렴" "수렴하지 않았다"; fi
+check "런 정보: 사전·사후 프로브가 세 변수와 HEAD 를 받는다" \
+  "$(cat "$AP_ENV")" "ap-env-run:segA:$AP_SHA:$AP_SHA
+ap-env-run:segA:$AP_SHA:$AP_SHA"
+check "런 정보: 적용 명령은 세 변수를 받지 않는다" \
+  "$( { grep -c '^CC_APPLY_' "$AP_CMDENV" || true; } )" "0"
+
+# 이미 있는 워크트리의 HEAD 가 머지 커밋이 아니면 사전 프로브가 돌지 않고 사전 실패다.
+AP_WT="$(apply_worktree segA)"
+( cd "$AP_REPO" && git worktree add -q --detach "$AP_WT" "$AP_SHA" >/dev/null 2>&1 ) \
+  && ( cd "$AP_WT" && git -c user.email=t@t -c user.name=t commit -q --allow-empty -m drift ) >/dev/null 2>&1
+check "재사용 워크트리의 HEAD 가 머지 커밋과 다르다 (아래가 공허하지 않다)" \
+  "$( [ "$(cd "$AP_WT" && git rev-parse HEAD)" != "$AP_SHA" ] && echo 다름 || echo 같음 )" "다름"
+: > "$LEDGER"; : > "$AP_ENV"; rm -f "$AP_CMDENV"; printf '21\n' > "$AP_ST"
+if apply_stage segA; then bad "HEAD 불일치 재사용" "어긋난 워크트리에서 처분이 났다"; else ok "HEAD 불일치 재사용: 적용을 거부한다"; fi
+check "HEAD 불일치 재사용: 프로브가 돌지 않는다" "$(grep -c . "$AP_ENV")" "0"
+check "HEAD 불일치 재사용: 적용 명령이 돌지 않는다" "$( [ -e "$AP_CMDENV" ] && echo 돌았다 || echo 안돌았다 )" "안돌았다"
+check "HEAD 불일치 재사용: 마지막 segment 행이 park 적용=사전 실패 다" \
+  "$( { grep -F '`segment`' "$LEDGER" || true; } | tail -1 | grep -c '상태=park | 적용=사전 실패' || true)" "1"
+check "HEAD 불일치 재사용: 관측이 HEAD 불일치를 적는다" "$( { grep -c 'HEAD 불일치' "$LEDGER" || true; } )" "1"
+( cd "$AP_REPO" && git worktree remove --force "$AP_WT" >/dev/null 2>&1; git worktree prune >/dev/null 2>&1 )
+
+# 명령이 HEAD 를 옮기면 사후 프로브가 돌지 않고 적용 불명이며 관측이 HEAD 불일치를 적는다.
+ap_manifest_probe "git -c user.email=t@t -c user.name=t commit -q --allow-empty -m moved; echo 0 > $AP_ST" \
+  "printf '%s\n' \"\$CC_APPLY_SEGMENT\" >> $AP_ENV; exit \$(cat $AP_ST)" 0 21
+: > "$LEDGER"; : > "$AP_ENV"; printf '21\n' > "$AP_ST"
+ap_rc=0; apply_stage segA || ap_rc=$?
+check "HEAD 이동 명령: 적용 불명으로 반경 정지에 넘긴다" "$ap_rc" "1"
+check "HEAD 이동 명령: 사후 프로브가 돌지 않는다 (사전 한 번만)" "$(grep -c . "$AP_ENV")" "1"
+check "HEAD 이동 명령: 종단 부류 적용 불명 행이 HEAD 불일치를 적는다" \
+  "$( { grep '종단 부류=적용 불명' "$LEDGER" | grep -c 'HEAD 불일치' || true; } )" "1"
+RUN_HALTED=0; rm -f "$RUN_DIR/halted-repo.txt" "$RUN_DIR/halted-segments.txt"; APPLY_PARKED_RADIUS=""
+AP_WT="$(apply_worktree segA)"
+[ -d "$AP_WT" ] && ( cd "$AP_REPO" && git worktree remove --force "$AP_WT" >/dev/null 2>&1; git worktree prune >/dev/null 2>&1 )
+RUN_ID="$AP_RUNID_SAVE"
+
+# (5h) 런 묶임 판정 — 원천 매니페스트의 프로브 문자열에 런 id 토큰이 16진 글자가
+# 아닌 경계 사이에 있으면 묶였다. 두 문법을 받고, 주체가 사람이거나 프로브가 없으면
+# 묶이지 않는다. 묶인 프로브는 대응 행이 온전해도 재질문 대상이다.
+ap_bound() {   # ap_bound <프로브> <주체> — 토큰 또는 「아님」
+  {
+    printf '# a\n<!-- cc-run-manifest v1; run-id=ap; anchor-key=k -->\n\n## 요소\n'
+    printf '**적용 지점**: make deploy\n**적용 프로브**: %s\n**적용 주체**: %s\n' "$1" "$2"
+  } > "$AP_DIR/bound.md"
+  MANIFEST="$AP_DIR/bound.md" apply_probe_run_bound || printf '아님'
+}
+check "런 묶임: 백틱 꼴 프로브 경로의 8-8 토큰" \
+  "$(ap_bound '`bash /t/docs/pipeline-deploy/20261112-ab8884f1-probe.sh`' 파이프라인)" "20261112-ab8884f1"
+check "런 묶임: 날짜 꼴 토큰" "$(ap_bound 'bash /t/2026-11-12-0bd7f01a/probe.sh' 파이프라인)" "2026-11-12-0bd7f01a"
+check "런 묶임: 문자열 끝의 토큰" "$(ap_bound 'check-run 20261113-bd6cfe75' 파이프라인)" "20261113-bd6cfe75"
+check "런 묶임: 문자열 시작의 토큰" "$(ap_bound '20261113-bd6cfe75.sh' 파이프라인)" "20261113-bd6cfe75"
+check "런 묶임: 앞에 16진 글자가 붙으면 아니다" "$(ap_bound 'x a20261113-bd6cfe75' 파이프라인)" "아님"
+check "런 묶임: 뒤에 16진 글자가 붙으면 아니다" "$(ap_bound 'x 20261113-bd6cfe75c' 파이프라인)" "아님"
+check "런 묶임: 붙은 토큰 뒤의 경계 토큰은 잡는다" "$(ap_bound 'a20261113-bd6cfe75 /20261114-0000abcd/' 파이프라인)" "20261114-0000abcd"
+check "런 묶임: 토큰이 없으면 아니다" "$(ap_bound 'make probe' 파이프라인)" "아님"
+check "런 묶임: 주체가 사람이면 아니다" "$(ap_bound 'bash 20261112-ab8884f1-probe.sh' 사람)" "아님"
+check "런 묶임: 프로브가 (없음) 이면 아니다" "$(ap_bound '(없음)' 파이프라인)" "아님"
+ap_bound 'bash 20261112-ab8884f1-probe.sh' 파이프라인 >/dev/null
+printf -- '\n## 인가\n- `적용 프로브 코드` | 불필요=0 | 필요=21 | 프로브 sha256=%s\n' \
+  "$(apply_probe_sha 'bash 20261112-ab8884f1-probe.sh')" >> "$AP_DIR/bound.md"
+check "런 묶임: 온전한 대응 행이 있어도 재질문 대상이다" \
+  "$(MANIFEST="$AP_DIR/bound.md" apply_code_row_reask && echo 재질문 || echo 이어받음)" "재질문"
+ap_bound 'make probe' 파이프라인 >/dev/null
+printf -- '\n## 인가\n- `적용 프로브 코드` | 불필요=0 | 필요=21 | 프로브 sha256=%s\n' \
+  "$(apply_probe_sha 'make probe')" >> "$AP_DIR/bound.md"
+check "런 묶임: 묶이지 않은 프로브의 온전한 대응 행은 이어받는다" \
+  "$(MANIFEST="$AP_DIR/bound.md" apply_code_row_reask && echo 재질문 || echo 이어받음)" "이어받음"
 
 # (6) 반경 판정 — 런은 전부 멈추고, 레포는 같은 레포만, 슬라이스 목록은 그 셋만.
 RUN_HALTED=0; rm -f "$RUN_DIR/halted-repo.txt" "$RUN_DIR/halted-segments.txt"
