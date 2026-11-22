@@ -41455,8 +41455,8 @@ esac
 # base is logged as a physical path and the checkout under the main worktree's
 # spelling, so both are compared after resolving their (still existing) parent.
 qt_phys() { [ -n "$1" ] || return 0; printf '%s/%s' "$(cd "$(dirname "$1")" 2>/dev/null && pwd -P)" "$(basename "$1")"; }
-qt_ln_wt=$( { grep -n 'clause-exec 실행 트리 — ' "$CAP_ERR" || true; } | head -1)
-qt_ln_gb=$( { grep -n 'clause-exec 등급 판정 기준 — ' "$CAP_ERR" || true; } | head -1)
+qt_ln_wt=$( { grep -n -m1 'clause-exec 실행 트리 — ' "$CAP_ERR" || true; } )
+qt_ln_gb=$( { grep -n -m1 'clause-exec 등급 판정 기준 — ' "$CAP_ERR" || true; } )
 qt_p_wt=$(printf '%s' "$qt_ln_wt" | sed -n 's/.*clause-exec 실행 트리 — \([^ ]*\) (.*/\1/p')
 qt_p_gb=$(printf '%s' "$qt_ln_gb" | sed -n 's/.*clause-exec 등급 판정 기준 — \(.*\)$/\1/p')
 case "$(qt_phys "$qt_p_gb")" in
