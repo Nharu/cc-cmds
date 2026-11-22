@@ -42,7 +42,7 @@ The question tool is absent from the Step 0 roster and from every step below, in
 
 Read `${CLAUDE_SKILL_DIR}/../design-discuss-unattended/SKILL.md` and take from it, unchanged: the discriminator `CC_PIPELINE_RUN_ID` and the two dispatchers; the park record and the halt record (driver dispatch) and their mechanics; the **nine park sites** and the **seven driver-dispatch sites**. One driver site is renamed here: **`slicing-unknown` reads `split-unrepairable`** — a base document has no slicing section, and the repair that can fail is the one of `base-split.py check` (Step 7U below).
 
-Two rules are added to what is taken. **This arm's own halt records write `**스킬**: design-base-unattended`**, never the discuss arm's name the record template fixes — the gate reads that line to refuse the seat's answer to a base run's ladder halt. **A resumed turn follows the two ladder branches of the discuss arm's `### Resumed turns`** (`잔여로 두고 동결` and `골격 재검토`) as written; in this arm the ladder halt's `**추천**` is always `(없음)`, so both answers come from a person.
+Two rules are added to what is taken. **This arm's own halt records write `**스킬**: design-base-unattended`**, never the discuss arm's name the record template fixes — the gate reads that line to refuse the seat's answer to a base run's ladder halt. **A resumed turn follows the two ladder branches of the discuss arm's `### Resumed turns`** (`잔여로 두고 동결` and `골격 재검토`) as written; in this arm the ladder halt's `**추천**` is always `(없음)`, so both answers come from a person. **The residual item check before a halt record is taken too**: when this flow's saved document exists at a driver-dispatch halt (`split-unrepairable` included), call `gate.sh residual-check --manifest "$CC_PIPELINE_MANIFEST" --document <문서>` (`${CLAUDE_SKILL_DIR}/../../orchestrator/gate.sh`, through `gate.sh exec` with `--surface 읽기`) before writing the record, repair each printed violation in place, and call again until it exits 0; exit 2 is read by `${CLAUDE_SKILL_DIR}/../_common/verification.md` 「기계 검사」.
 
 ### Per-grade disposition
 
@@ -84,6 +84,8 @@ Read and follow `design-discuss-unattended`'s Step 5, Step 5U and Step 6U as wri
 Read `design-discuss-unattended`'s Step 7U and follow its five jobs in order, with the second replaced:
 
 2. **Split check.** Run `"${CLAUDE_SKILL_DIR}/../../orchestrator/base-split.py" check <문서>` through `gate.sh exec --surface 읽기`, by path. Repair each reported violation in place and run it again until it exits 0. A repair that needs a decision the authors did not make — moving an owned file between tickets, removing an edge, accepting a depth above two without a reason the document already states — → halt `split-unrepairable`, with the check's output lines in `관측 상세`.
+
+Job 4, the residual ladder, opens with the residual item check as that arm says: call `gate.sh residual-check --manifest "$CC_PIPELINE_MANIFEST" --document <문서>` with `--surface 읽기`, repair each printed violation in place, and call again until it exits 0, before the first rung.
 
 The freeze is unchanged and byte-identical: `**상태**: 동결됨` on the status line, then the literal 「설계 문서를 동결했습니다.」 on its own line, the document path and its whole-file `sha256`.
 

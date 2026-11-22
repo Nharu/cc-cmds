@@ -318,7 +318,13 @@ readonly LIT_VISUAL_PUBLISH_TERMINAL='시각 발행 단계를 마쳤습니다.'
 LOG_FILE=""
 
 log()  { printf '%s [run] %s\n' "$(now_iso)" "$*" >&2; }
-warn() { printf '%s [run][warn] %s\n' "$(now_iso)" "$*" >&2; }
+# The gate turns GATE_HALT_REFUSE_CAPTURE on around a content check of an
+# automatic halt answer, so the refusal's own text can go on its ledger row.
+warn() {
+  printf '%s [run][warn] %s\n' "$(now_iso)" "$*" >&2
+  [ "${GATE_HALT_REFUSE_CAPTURE:-0}" != 1 ] || GATE_HALT_REFUSE_WHY="$*"
+  return 0
+}
 die()  { printf '%s [run][stop] %s\n' "$(now_iso)" "$*" >&2; exit 1; }
 
 now_iso()  { date -u +%Y-%m-%dT%H:%M:%SZ; }
@@ -3235,6 +3241,181 @@ residual_item_after_explicit() {
   local body
   body=$(residual_item_lines "$1" "$2") || return 1
   grep -qE '^(- )?(\*\*검증 시점\*\*|검증 시점): 구현 후[ \t]*$' <<<"$body"
+}
+
+# residual_items_malformed <doc> — the machine-checkable part of the
+# verification contract's well-formedness predicate over `## 구현 시 검증 항목`,
+# for an unattended design skill to run on its own saved document before it
+# freezes it or writes a halt record. One line per violation,
+# `<label><TAB><field><TAB><reason>`; a violation of the whole document is
+# labelled `문서`. Exit 0 when there is none (and when the section is absent),
+# 1 when there is one, 2 when the document cannot be read or has an unclosed
+# fence.
+#
+# What it checks, per item: the eight required fields; the closed values of
+# 분류, 잔여 사유, 검증 등급, 차단 부류, 검증 시점, 실행 주의 and 반증 시 처리
+# (an optional field only when its line is present); a present `차단 부류`
+# line that residual_item_block_class does not read back as its own value; a
+# terminal grade whose next line is not a `구현 시 검증 기록` line; a `/tmp`
+# literal anywhere in the item, fenced recipe lines included; a `실패 시 영향`
+# value beginning with `§` that no heading of the document resolves; a
+# sub-heading of the section that is not `### R<n>.` and a label used twice.
+# Across the document outside fences: the save-forbidden grade `미검증` in its
+# line form and its inline-tag form.
+#
+# What it leaves alone: the line rendering (a leading bullet, a key without
+# bold) — the readers above take all four renderings — and whether a
+# `사람-환경`/`외부-준비` item states `검증 시점: 구현 후`, which the design
+# ladder's own rule decides.
+residual_items_malformed() {
+  local doc="$1" out cls_lines label cls n
+  [ -n "$doc" ] && [ -f "$doc" ] && [ -r "$doc" ] || { echo "residual_items_malformed: 문서를 읽을 수 없음 — $doc" >&2; return 2; }
+  if fence_unclosed "$doc"; then
+    echo "residual_items_malformed: 닫히지 않은 펜스 — $doc" >&2
+    return 2
+  fi
+  out=$(defenced "$doc" | awk '
+    function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t\r]+$/, "", s); return s }
+    function clean(s) { gsub(/\t/, " ", s); return s }
+    function emit(l, f, r) { print l "\t" f "\t" clean(r) }
+    # The value of <k> on line s in the tolerant spelling, or the sentinel
+    # "\001" when the line is not a line of <k>. A key with nothing after its
+    # colon is present with an empty value: a recipe written as a fenced
+    # block under `**검증 레시피**:` is the canonical example.
+    function keyval(s, k,   r) {
+      sub(/^- /, "", s); r = s; sub(/[ \t\r]+$/, "", r)
+      if (r == "**" k "**:" || r == k ":") return ""
+      if (index(s, "**" k "**: ") == 1) return trim(substr(s, length(k) + 7))
+      if (index(s, k ": ") == 1) return trim(substr(s, length(k) + 3))
+      return "\001"
+    }
+    function inset(v, set) { return index(set, "|" v "|") > 0 }
+    function anchor_ok(part,   a, h, c) {
+      a = substr(part, length("§") + 1)
+      for (h in heads) {
+        if (index(a, h) != 1) continue
+        c = substr(a, length(h) + 1, 1)
+        if (c == "" || index(" ,.;:()/·", c) > 0) return 1
+      }
+      return 0
+    }
+    NR == FNR { raw[FNR] = $0; next }
+    { dl[FNR] = $0; nl = FNR }
+    END {
+      req = "주장|분류|잔여 사유|차단 사유|검증 레시피|기대 결과|실패 시 영향|검증 등급"
+      nreq = split(req, rk, "|")
+      v["분류"] = "|정적 사실|실행 측정|외부 환경|행동 가설|미니 구현|"
+      v["잔여 사유"] = "|구현 필요|검증 차단|예산 소진|분류 제외|"
+      v["검증 등급"] = "|구현 시 검증|검증됨(통과)|반증됨(실패)|검증불가(드리프트)|"
+      v["차단 부류"] = "|코드-부재|사람-환경|외부-준비|"
+      v["실행 주의"] = "|유료/외부 변이|머신 상태 변이|장시간(>10분)|파괴적|"
+      v["반증 시 처리"] = "|재수렴|파킹|"
+      v["검증 시점"] = ""
+      term = "|검증됨(통과)|반증됨(실패)|검증불가(드리프트)|"
+      # Headings of the whole document, outside fences, for anchor resolution:
+      # the text, and for `<label>. <title>` the label alone and the label
+      # after its parent `##` heading.
+      sec = ""; insec = 0; secseen = 0
+      for (i = 1; i <= nl; i++) {
+        s = dl[i]
+        if (s ~ /^#{1,4} /) {
+          h = s; sub(/^#+ /, "", h); h = trim(h)
+          if (h != "") heads[h] = 1
+          if (s ~ /^## /) sec = h
+          if (match(h, /^[A-Z]?[0-9]+(\.[0-9]+)*\.? /)) {
+            lab = substr(h, 1, RLENGTH - 1); sub(/\.$/, "", lab)
+            heads[lab] = 1
+            if (sec != "" && s !~ /^## /) heads[sec " " lab] = 1
+          }
+        }
+        if (s ~ /^(- )?(\*\*검증 등급\*\*|검증 등급): 미검증[ \t]*$/ || index(s, "[검증 등급: 미검증]") > 0)
+          emit("문서", "검증 등급", "저장 금지 토큰 `미검증` (" i " 행)")
+      }
+      # The first `## 구현 시 검증 항목` section: owner[i] is the item a line
+      # belongs to, 0 for the preamble and for lines under a bad sub-heading.
+      ni = 0; cur = 0
+      for (i = 1; i <= nl; i++) {
+        s = dl[i]
+        if (s ~ /^## /) {
+          if (insec) break
+          if (s == "## 구현 시 검증 항목") { insec = 1; secseen = 1 }
+          continue
+        }
+        if (!insec) continue
+        if (s ~ /^#{3,6} /) {
+          if (match(s, /^### R[0-9]+\.( |$)/)) {
+            ni++; cur = ni
+            lab = substr(s, 5, RLENGTH - 4); sub(/\.( )?$/, "", lab)
+            ilab[ni] = lab
+            if (lab in seen) emit(lab, "표제", "라벨이 겹침")
+            seen[lab] = 1
+            if (index(raw[i], "/tmp") > 0) emit(lab, "표제", "`/tmp` 글자가 있음 (" i " 행)")
+          } else {
+            cur = 0
+            emit("문서", "표제", "「" trim(s) "」 이 `### R<n>.` 꼴이 아님")
+          }
+          continue
+        }
+        owner[i] = cur
+      }
+      for (k = 1; k <= ni; k++) {
+        lab = ilab[k]
+        delete have
+        for (i = 1; i <= nl; i++) {
+          if (!((i in owner) && owner[i] == k)) continue
+          s = dl[i]
+          if (index(raw[i], "/tmp") > 0) emit(lab, "본문", "`/tmp` 글자가 있음 (" i " 행)")
+          for (j = 1; j <= nreq; j++) {
+            x = keyval(s, rk[j]); if (x == "\001") continue
+            have[rk[j]] = 1
+          }
+          for (f in v) {
+            x = keyval(s, f); if (x == "\001") continue
+            if (f == "검증 시점") {
+              if (x != "구현 전" && x != "구현 후" && x !~ /^구현 중\(.+\)$/)
+                emit(lab, f, "닫힌 어휘 밖의 값 「" x "」")
+            } else if (!inset(x, v[f])) {
+              emit(lab, f, "닫힌 어휘 밖의 값 「" x "」")
+            } else if (f == "차단 부류") {
+              print "@cls\t" lab "\t" x
+            }
+            if (f == "검증 등급" && inset(x, term)) {
+              nx = (i + 1 <= nl) ? dl[i + 1] : ""
+              if (keyval(nx, "구현 시 검증 기록") == "\001")
+                emit(lab, f, "끝 등급 「" x "」 바로 뒤에 `구현 시 검증 기록` 줄이 없음")
+            }
+          }
+          x = keyval(s, "실패 시 영향")
+          if (x != "\001" && index(x, "§") == 1) {
+            np = split(x, part, /[ \t]*[,，][ \t]*/)
+            for (j = 1; j <= np; j++) {
+              if (index(part[j], "§") != 1) continue
+              if (!anchor_ok(part[j]))
+                emit(lab, "실패 시 영향", "앵커 「" part[j] "」 가 문서의 표제로 풀리지 않음")
+            }
+          }
+        }
+        for (j = 1; j <= nreq; j++)
+          if (!(rk[j] in have)) emit(lab, rk[j], "필수 필드 없음")
+      }
+      if (!secseen) print "@none"
+    }
+  ' "$doc" -) || { echo "residual_items_malformed: 판독 실패 — $doc" >&2; return 2; }
+  case "$out" in *'@none'*) return 0 ;; esac
+  cls_lines=$(printf '%s\n' "$out" | grep '^@cls	' || true)
+  out=$(printf '%s\n' "$out" | grep -v '^@cls	' || true)
+  if [ -n "$cls_lines" ]; then
+    while IFS='	' read -r _ label cls; do
+      [ -n "$label" ] || continue
+      [ "$(residual_item_block_class "$doc" "$label")" = "$cls" ] && continue
+      out="${out:+$out
+}${label}	차단 부류	차단 부류 「${cls}」 가 잔여 사유 「$(residual_item_value "$doc" "$label" '잔여 사유')」 와 짝이 맞지 않음"
+    done <<<"$cls_lines"
+  fi
+  n=$(printf '%s' "$out" | grep -c . || true)
+  [ "$n" -gt 0 ] || return 0
+  printf '%s\n' "$out"
+  return 1
 }
 
 # ---------------------------------------------------------------------------
