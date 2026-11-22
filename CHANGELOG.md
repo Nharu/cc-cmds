@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`checks.sh` 위임** — `--once`·`--spec` 이 아니고, 고정 사본에 `observer-protocol` 이 있고, `checks.fallback` 이 없고, `CC_CMDS_OBSERVER=off`·`CI` 가 아니며, python3 가 있으면 `observer.py adopt --job checks` 를 부르고, 채택되면 0 으로 끝난다. 위임 중에는 `checks.pid` 가 관측기 pid 를 담는다.
 - **fleet 재진입 생존 판정** — 폴러·감시기 생존 판정이 `observer.py` 를 도는 pid 도 산 것으로 읽는다. 좌석 문서의 감시기 복구 대조도 같다.
+- **관측기 데몬의 PATH** — 관측기가 데몬으로 뜰 때 `/usr/bin:/bin` 을 부른 쪽 PATH 의 앞이 아니라 뒤에 붙인다. 앞에 두면 `gh` 가 `/usr/bin` 에 있는 호스트에서 부른 쪽이 고른 `gh` 가 가려진다.
 
 ### Post-install notes
 
