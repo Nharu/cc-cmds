@@ -33,8 +33,9 @@ closed set:
   work the decision changes, or `전체` — and then by two more lines,
   `**추천 답**: <한 줄>`, the answer the writer recommends, and
   `**추천 근거**: <한 줄>`, why. The run collects every such entry before
-  implementation and shows a person each one with its recommendation, so the
-  person can confirm them all at once.
+  implementation into one record showing each with its recommendation, which
+  a person confirms all at once — or, in a run whose decision confirmation is
+  `자동`, the seat, when no entry is a kind only a person settles.
 - `구현 무관` — the entry decides nothing the code writes: a later measurement,
   another ticket, an operational judgment outside the repository. The
   implementation does not read it.
@@ -90,6 +91,9 @@ two cases a writer leaves `구현 전 결정` only for four kinds of entry:
   puts any note about how it was settled on a line of its own inside the
   entry. The reader also takes a note after `—`, `·` or `(` (`## 판독 문법`),
   but a bare value is the one every reader agrees on.
+- A `구현 전 결정` entry waiting on something a person prepares — a
+  credential, an account, a device — writes `**추천 답**: (없음) — <what to
+  prepare>`, so its record goes to a person in either confirmation mode.
 - An interactive audit writes `사유: 감사 합성 요구 — 사람 판단` on a synthesis
   item the person asked to record as open, as the unattended audit does.
 - The answer an implementation chooses for a `구현 재량` entry is recorded in
