@@ -256,7 +256,6 @@ doc=''
 if [ -n "$dv" ] && [ "$dv" != "(없음)" ]; then
   if [ -f "$RL_ROOT/$dv" ]; then doc="$RL_ROOT/$dv"
   elif [ -f "/$dv" ]; then doc="/$dv"
-  elif [ -f "$dv" ]; then doc="$dv"
   else rl_unreadable '미검증 잔여' "$dv" '설계 문서를 찾지 못했습니다'; fi
 elif [ -z "$dv" ]; then
   rl_unreadable '미검증 잔여' "$MANIFEST" '매니페스트에 「**설계 문서**」 줄이 없습니다'
