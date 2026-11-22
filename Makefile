@@ -509,6 +509,7 @@ LINT_TESTS := \
 	scripts/test-measure-team-cost.sh \
 	scripts/test-measure-lead-context.sh \
 	scripts/test-measure-bookkeeping.sh \
+	scripts/test-measure-read-chains.sh \
 	scripts/test-measure-test-share.sh \
 	scripts/test-measure-test-slots.sh \
 	scripts/test-measure-discussion-passes.sh \
