@@ -5,6 +5,18 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.56.1] - 2026-11-23
+
+게이트의 슬라이싱 판독기가 긴 설계 문서에서 맞게 읽은 값을 상태 141 로 돌려주던 결함을 고친다. 이 때문에 선언 파일 대조가 값을 읽지 못했다고 판정해, 구현 파견할 세그먼트를 확률적으로 park 했다.
+
+### Fixed
+
+- **`slicing_body`·`slice_field`** — awk 가 일치 직후 `exit` 하지 않고 입력을 끝까지 읽으면서 출력만 멈춘다. 게이트는 `set -o pipefail` 로 돈다. 그래서 `## 구현 슬라이싱` 뒤 본문이 파이프 버퍼보다 길면, 먼저 끝난 읽는 쪽이 앞 단계를 SIGPIPE 로 죽였고 파이프라인이 141 로 끝났다. 같은 파일의 `## 구현 시 검증 항목` 판독기와 같은 처리다. 파이프 버퍼보다 큰 꼬리를 붙인 문서로 두 판독기의 종료 상태와 읽은 값을 시험한다.
+
+### Post-install notes
+
+- 런은 시작 때 고정한 자기 플러그인 사본을 돌린다. 이 판 전에 시작한 런은 계속 옛 판독기를 쓴다.
+
 ## [3.56.0] - 2026-11-22
 
 급한 무인 런을 사람이 표시할 수 있게 한다. 킥오프 때 `autopilot --urgent` 로, 이미 돌고 있는 런은 사람의 대화형 세션에서 `autopilot --urgent <런 id>` 로 급함을 단다. 급한 런의 단계는 라우터의 대기 줄에서 급하지 않은 대기자 모두의 앞에 서고, 첫 풀에 자리가 없으면 공유 차용 중인 기증 그룹의 여유를 경보선 안에서 마지막 후보로 쓴다. 급하지 않은 요청의 판정 바이트는 바뀌지 않는다.
