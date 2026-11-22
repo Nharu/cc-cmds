@@ -54488,6 +54488,15 @@ gate_act_cell_front() {
     [ "${GATE_ADMIT:-}" != "1" ] || actwt="$GATE_ADMIT_CWD"
     if [ -n "$actwt" ]; then
       GATE_GRADE_CWD=$(gate_real_prefix "$actwt")
+      # THE GRADING BASE OF A CLAUSE-EXEC IS LOGGED HERE, AND ONLY HERE. No row
+      # records this value, so without the line a test cannot see that the
+      # checkout finished before the first reader took its path. The line
+      # stands only while the clause-exec arm is up and this assignment took
+      # the checked-out tree; every other act leaves no such line.
+      if [ "${GATE_CLAUSE_EXEC_ACTIVE:-}" = "1" ] && [ -n "${GATE_CLAUSE_EXEC_WT:-}" ] \
+         && [ "$actwt" = "$GATE_CLAUSE_EXEC_WT" ]; then
+        log "clause-exec 등급 판정 기준 — $GATE_GRADE_CWD"
+      fi
     fi
   fi
 
