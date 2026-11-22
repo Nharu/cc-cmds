@@ -489,6 +489,7 @@ manifest_snapshot_take() {
   #   LA <row>     every `- \`라벨 인정\`` row anywhere, in order
   #   PA <row>     every `- \`플러그인 허용\`` row anywhere, in order
   #   FA <row>     every `- \`계정 이전 허용\`` row anywhere, in order
+  #   UR <row>     every `- \`급한 런\`` row anywhere, in order
   #   RE <row>     every `- \`수리 사건\`` row anywhere, in order
   #   VP <row>     every `- \`리뷰 PR\`` row anywhere, in order
   #   VG <row>     every `- \`리뷰 게시\`` row anywhere, in order
@@ -538,6 +539,7 @@ $(LC_ALL=C awk '
     index($0, "- `라벨 인정`") == 1 { print "LA\t" $0 }
     index($0, "- `플러그인 허용`") == 1 { print "PA\t" $0 }
     index($0, "- `계정 이전 허용`") == 1 { print "FA\t" $0 }
+    index($0, "- `급한 런`") == 1 { print "UR\t" $0 }
     index($0, "- `수리 사건`") == 1 { print "RE\t" $0 }
     index($0, "- `리뷰 PR`") == 1 { print "VP\t" $0 }
     index($0, "- `리뷰 게시`") == 1 { print "VG\t" $0 }
@@ -1157,6 +1159,20 @@ manifest_failover_accounts() {
   manifest_failover_allow_rows | sed -n 's/^- `계정 이전 허용` | 계정=\([a-z0-9-]*\) |.*/\1/p'
 }
 
+manifest_urgent_rows() {
+  # Every `급한 런` row, in manifest order. A person's kickoff (or the hotfix
+  # kickoff, or a successor carrying it over) marks the run urgent with it; the
+  # check allows at most one, and the driver turns it into the run directory's
+  # urgency marker that the router reads.
+  if manifest_memo_on; then manifest_memo_all "UR	"; return 0; fi
+  grep -E '^- `급한 런`' "$MANIFEST" </dev/null 2>/dev/null || true
+}
+
+manifest_urgent_source() {
+  # The `출처` value of the `급한 런` row, or nothing when there is no row.
+  manifest_urgent_rows | sed -n '1s/^- `급한 런` | 출처=\([^ |]*\) |.*/\1/p'
+}
+
 run_failover_allowed() {
   # True when this run may move a shift off the seat lane: the manifest
   # carries at least one `계정 이전 허용` row AND the run is routed. Either
@@ -1341,6 +1357,13 @@ binding_set_bytes() {
     # an account no person accepted at kickoff. Whole-file scan, zero bytes
     # when absent, so a manifest written before this row existed keeps its digest.
     manifest_failover_allow_rows | sed 's/[[:space:]]\{1,\}/ /g;s/^/failoverallow\t/'
+    # THE `급한 런` ROW IS IN THE FROZEN SET, on the same terms, beside the
+    # `계정 이전 허용` rows. It lets the run's stages go ahead of other waiters and
+    # into a borrowed donor group's headroom; a row any act could append mid-run
+    # would let a stage spend the person's interactive share no person accepted
+    # at kickoff. Whole-file scan, zero bytes when absent, so a manifest written
+    # before this row existed keeps its digest.
+    manifest_urgent_rows | sed 's/[[:space:]]\{1,\}/ /g;s/^/urgent\t/'
     # THE `수리 사건` ROW IS IN THE FROZEN SET, on the same terms. It marks a run
     # the plugin started on its default consent, and the gate holds such a run's
     # authorization to that consent's bounds only while the row is there; a row
@@ -1735,7 +1758,7 @@ check_manifest() {
   bd=$(manifest_field '인가' '구속 다이제스트')
   if [ -n "$bd" ]; then
     [ "$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)" = "$bd" ] \
-      || die "구속 다이제스트가 얼린 집합과 일치하지 않습니다 — 목표·종료 절·대상·룰 설정·사전 인가·수리 사건·설계 로스터·베이스 발행·베이스 설계·출처 티켓·세그먼트 입양·머지 입양·강제 표면 승인·선행 착지·재킥오프·적용 프로브 코드·라벨 인정·플러그인 허용·계정 이전 허용·리뷰 PR·리뷰 게시·리뷰 깊이·리뷰 문면·마감 중 하나가 움직였습니다"
+      || die "구속 다이제스트가 얼린 집합과 일치하지 않습니다 — 목표·종료 절·대상·룰 설정·사전 인가·수리 사건·설계 로스터·베이스 발행·베이스 설계·출처 티켓·세그먼트 입양·머지 입양·강제 표면 승인·선행 착지·재킥오프·적용 프로브 코드·라벨 인정·플러그인 허용·계정 이전 허용·급한 런·리뷰 PR·리뷰 게시·리뷰 깊이·리뷰 문면·마감 중 하나가 움직였습니다"
   else
     warn "매니페스트에 구속 다이제스트가 없습니다 — 얼린 집합을 대조하지 않고 진행합니다"
   fi
@@ -2439,6 +2462,24 @@ EOF
     fa_keys="$fa_keys$fa_key "
   done <<EOF
 $fa_rows
+EOF
+
+  # 20c — the `급한 런` row: the kickoff's mark that the run is urgent. At most
+  # one row, `출처` one of the three kickoff-side sources (a person's mid-run mark
+  # is the run directory's marker file, never a manifest row) and a non-empty
+  # one-line reason with no `|` (the row's field separator) and no trailing
+  # space. The kickoff folds the intent's first line to that shape before it
+  # freezes the row.
+  local ur_rows ur_row ur_n=0
+  ur_rows=$(manifest_urgent_rows)
+  while IFS= read -r ur_row; do
+    [ -n "$ur_row" ] || continue
+    ur_n=$((ur_n + 1))
+    [ "$ur_n" -le 1 ] || die "「급한 런」 행이 둘 이상입니다 — 매니페스트마다 많아야 하나입니다"
+    grep -qE '^- `급한 런` \| 출처=(킥오프|핫픽스|이어받음) \| 사유=[^|]*[^ |]$' <<<"$ur_row" \
+      || die "「급한 런」 행의 형식이 어긋났습니다 — 받는 형태는 \`- \`급한 런\` | 출처=<킥오프|핫픽스|이어받음> | 사유=<한 줄>\` 입니다: $ur_row"
+  done <<EOF
+$ur_rows
 EOF
 
   # 20b — the `수리 사건` row: the event a repair run fixes, written by the
@@ -5586,6 +5627,43 @@ rundir_of_run_id() {
   printf '%s' "${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/run/$1"
 }
 
+run_urgent_source() {
+  # run_urgent_source <run-dir> — the `출처` value of the run's urgency marker
+  # `<run-dir>/urgent`, or nothing when the run is not urgent. The marker is
+  # three lines (`cc-run-urgent v1`, `출처=<…>`, `시각=<ISO 8601 UTC>`); a file
+  # whose first line is not exactly `cc-run-urgent v1`, an empty file and
+  # anything that is not a regular file read as not urgent, so an unknown
+  # marker never puts one run ahead of another. A valid first line with no
+  # `출처` line still reads as urgent, with the source `미상`. The driver, the
+  # router's context and the person's mid-run mark command share this reading.
+  local f="${1:-}/urgent" first src
+  [ -n "${1:-}" ] && [ -f "$f" ] && [ ! -L "$f" ] && [ -s "$f" ] || return 0
+  first=$(sed -n '1p' "$f" 2>/dev/null) || return 0
+  [ "$first" = "cc-run-urgent v1" ] || return 0
+  src=$(awk 'sub(/^출처=/, "") && $0 != "" { print; exit }' "$f" 2>/dev/null) || src=""
+  printf '%s\n' "${src:-미상}"
+}
+
+run_urgent_mark() {
+  # run_urgent_mark — on every entry, turn the manifest's `급한 런` row into the
+  # run directory's urgency marker when the marker is absent. Written to a temp
+  # file in the same directory and moved without overwriting, so whichever
+  # writer is first (this entry, another entry, or a person's mid-run mark)
+  # keeps its file; urgency is the same either way and only the source line is
+  # the first writer's. A failure is a warning, never a stop.
+  local src tmp
+  [ -n "${MANIFEST:-}" ] && [ -n "${RUN_DIR:-}" ] || return 0
+  src=$(manifest_urgent_source 2>/dev/null) || src=""
+  [ -n "$src" ] || return 0
+  [ -e "$RUN_DIR/urgent" ] || [ -L "$RUN_DIR/urgent" ] && return 0
+  tmp="$RUN_DIR/urgent.tmp.$$"
+  if printf 'cc-run-urgent v1\n출처=%s\n시각=%s\n' "$src" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$tmp" 2>/dev/null; then
+    mv -n "$tmp" "$RUN_DIR/urgent" 2>/dev/null || :
+  fi
+  rm -f "$tmp" 2>/dev/null || :
+  return 0
+}
+
 rundir_init() {
   RUN_DIR=$(rundir_of_run_id "$RUN_ID") \
     || die "런 id 에 경로 성분이 있습니다 — 런 디렉터리 이름은 한 칸이어야 합니다: $RUN_ID"
@@ -5613,6 +5691,9 @@ rundir_init() {
   # that stops one segment; the gate refuses to write one anywhere but a real
   # directory at that place, so the driver makes it with the rest.
   mkdir -p "$RUN_DIR/halt" "$RUN_DIR/halt/shift" "$RUN_DIR/log" "$RUN_DIR/digest" "$RUN_DIR/shared"
+  # The urgency marker the router reads, from the manifest's `급한 런` row, on
+  # every entry and only when absent.
+  run_urgent_mark
   LOG_FILE="$RUN_DIR/log/driver.log"
   spawn_drop_dead_waiters
   printf '%s\n' "$(now_epoch)" > "$RUN_DIR/started-at"
@@ -6838,7 +6919,7 @@ spawn_route_wait() {
   #
   # THE HOLDER IS THIS SHELL'S OWN PID. `$$` names the top-level driver even in
   # a subshell, and a subshell that waits must be the one a reader checks.
-  local did="$1" kind="$2" ev="$3" bound="$4" env="$5" key m holder grp upto rec wnonce="-" rrc=0 lrc=0 wrc=0
+  local did="$1" kind="$2" ev="$3" bound="$4" env="$5" key m holder grp upto urg rec wnonce="-" rrc=0 lrc=0 wrc=0
   STAGE_SPAWN_PARK_REASON=$(wait_router_why "$env")
   if ! cc_effective_stall "$RUN_DIR" >/dev/null; then
     STAGE_SPAWN_PARK_REASON="$STAGE_SPAWN_PARK_REASON (실효 정지 임계를 읽지 못해 기다리지 않는다)"
@@ -6854,10 +6935,14 @@ spawn_route_wait() {
   holder=$(exec sh -c 'echo $PPID')
   grp=$(printf '%s' "$env" | jq -r '.group // "-"' 2>/dev/null || printf '%s' '-')
   upto=$(printf '%s' "$env" | jq -r '.until_epoch | if type == "number" then floor | tostring else "-" end' 2>/dev/null || printf '%s' '-')
+  # The entry is marked urgent only from the envelope's `urgent`; the shell does
+  # not read the lane pin again — the router already left `urgent` off a pinned
+  # request.
+  urg=$(printf '%s' "$env" | jq -r 'if .urgent == true then "1" else "" end' 2>/dev/null || printf '')
   if [ "$grp" != "-" ]; then
     rec=$(route_lease_wait_put --table "$(run_pace_root)/leases" --now "$(now_epoch)" --run-id "$RUN_ID" \
             --lineage "$SPAWN_LINEAGE" --group "$grp" --inventory "$RUN_DIR/inventory.json" \
-            --holder "$holder" ${kind:+--kind "$kind"} 2>/dev/null) || rrc=$?
+            --holder "$holder" ${kind:+--kind "$kind"} ${urg:+--urgent 1} 2>/dev/null) || rrc=$?
     if [ "$rrc" = "0" ]; then
       wnonce=$(printf '%s' "$rec" | jq -r '.nonce // "-"' 2>/dev/null || printf '%s' '-')
     else
@@ -11711,7 +11796,7 @@ wait_drop() {
 }
 
 wait_fifo_follow() {
-  # wait_fifo_follow <marker> <lineage> <holder> <group> <reason> [<kind>] — keep
+  # wait_fifo_follow <marker> <lineage> <holder> <group> <reason> [<kind> [<urgent>]] — keep
   # this wait's FIFO entry in step with the WAIT it was just given. <kind> is the
   # waiting stage's kind; an entry put back carries it as `--kind`, and an empty
   # or absent <kind> puts the entry back with no kind.
@@ -11729,7 +11814,16 @@ wait_fifo_follow() {
   # whose first put failed, would otherwise yield to every entry of that group
   # for good. The lease table, not the marker, says whether the entry is there,
   # so a marker that kept a nonce after its entry came down does not stop it.
-  local m="$1" lin="$2" holder="$3" grp="$4" why="$5" kind="${6:-}" nonce rec t
+  #
+  # AN URGENT WAIT RE-PUTS A LIVE ENTRY THAT IS NOT MARKED URGENT. <urgent> is
+  # `1` when the WAIT envelope carries `urgent: true` (a run marked urgent while
+  # this stage was already waiting); the entry is then written again under the
+  # same key with `--urgent 1`, which keeps its `seq`, and the marker takes the
+  # new entry's nonce — so the waiter moves ahead of the non-urgent waiters
+  # without losing its place among the urgent ones. An entry put back carries
+  # the same mark. The group-less arm and the host-hold drop do not change.
+  local m="$1" lin="$2" holder="$3" grp="$4" why="$5" kind="${6:-}" urg="${7:-}" nonce rec t
+  [ "$urg" = "1" ] || urg=""
   [ -f "$m" ] || return 0
   t="$(run_pace_root)/leases"
   nonce=$(cc_waiting_field "$m" '논스' | tr -d '[:space:]')
@@ -11742,12 +11836,13 @@ wait_fifo_follow() {
   fi
   if [ -n "$nonce" ] && [ "$nonce" != "-" ] \
      && route_lease_of "$t" "$RUN_ID" "$lin" 2>/dev/null \
-          | jq -e --arg n "$nonce" '.kind == "wait" and .nonce == $n' >/dev/null 2>&1; then
+          | jq -e --arg n "$nonce" --arg u "$urg" \
+              '.kind == "wait" and .nonce == $n and ($u == "" or .urgent == true)' >/dev/null 2>&1; then
     return 0
   fi
   rec=$(route_lease_wait_put --table "$t" --now "$(now_epoch)" --run-id "$RUN_ID" \
           --lineage "$lin" --group "$grp" --inventory "$RUN_DIR/inventory.json" \
-          --holder "${holder:-0}" ${kind:+--kind "$kind"} 2>/dev/null) || return 0
+          --holder "${holder:-0}" ${kind:+--kind "$kind"} ${urg:+--urgent 1} 2>/dev/null) || return 0
   nonce=$(printf '%s' "$rec" | jq -r '.nonce // "-"' 2>/dev/null || printf '%s' '-')
   [ "$nonce" != "-" ] || return 0
   # An entry the marker does not name is one no drop could find again.
@@ -11916,7 +12011,8 @@ stage_wait_loop() {
         wgrp=$(printf '%s' "$env" | jq -r '.group // "-"' 2>/dev/null || printf '%s' '-')
         wait_marker_set "$m" '갱신' "$(now_epoch)" '까지' "$upto" '그룹' "$wgrp" || true
         wait_fifo_follow "$m" "$lin" "$holder" "$wgrp" \
-          "$(printf '%s' "$env" | jq -r '.reason // ""' 2>/dev/null || true)" "$kind"
+          "$(printf '%s' "$env" | jq -r '.reason // ""' 2>/dev/null || true)" "$kind" \
+          "$(printf '%s' "$env" | jq -r 'if .urgent == true then "1" else "" end' 2>/dev/null || true)"
         # A WAIT without `reserve_seen` keeps the memory the marker already has.
         if printf '%s' "$env" | jq -e '(.reserve_seen | type) == "array"' >/dev/null 2>&1; then
           wait_marker_set "$m" '예비' "$(printf '%s' "$env" | jq -c '.reserve_seen' 2>/dev/null || printf '%s' '[]')" || true
