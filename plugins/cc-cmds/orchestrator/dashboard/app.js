@@ -1013,6 +1013,54 @@
     return steps[steps.length - 1];
   }
 
+  // Estimated width of a time-band label at font size 12, in SVG user units.
+  // Every factor is wider than the measured system font, so a label judged
+  // clear of its neighbour is clear on screen too.
+  function bandTextWidth(s) {
+    var em = 0;
+    for (var i = 0; i < s.length; i++) {
+      var c = s.charCodeAt(i), ch = s.charAt(i);
+      if (c >= 0xac00 && c <= 0xd7a3) em += 1.0;
+      else if (ch === ":" || ch === "/" || ch === " ") em += 0.4;
+      else em += 0.7;
+    }
+    return em * 12;
+  }
+
+  // Decides which tick labels of the time band are drawn and with what text.
+  // A tick label that comes within 6 units of the start label or the right-end
+  // label is hidden (its grid line stays). The date of a hidden midnight label
+  // moves to the next visible non-midnight label, or, when none takes it, onto
+  // the right-end label; a visible midnight label met first drops it.
+  // g: { left, right, startText, endText(dated) } — the edge labels' anchors and texts.
+  function bandLabels(ticks, g, endDated) {
+    var GAP = 6;
+    var endText = g.endText(endDated);
+    var sBox = { a: g.left, b: g.left + bandTextWidth(g.startText) };
+    var eBox = { a: g.right - bandTextWidth(endText), b: g.right };
+    var hit = function (a, b) {
+      return (a < eBox.b + GAP && b > eBox.a - GAP) || (a < sBox.b + GAP && b > sBox.a - GAP);
+    };
+    var out = [], pending = false;
+    ticks.forEach(function (k) {
+      var text = k.midnight ? fmtMD(k.t) + " 00:00" : fmtHM(k.t);
+      var half = bandTextWidth(text) / 2;
+      if (hit(k.x - half, k.x + half)) {
+        if (k.midnight) pending = true;
+        return;
+      }
+      if (k.midnight) { pending = false; out.push({ x: k.x, text: text }); return; }
+      if (pending) {
+        text = fmtMDHM(k.t);
+        half = bandTextWidth(text) / 2;
+        if (hit(k.x - half, k.x + half)) return;
+        pending = false;
+      }
+      out.push({ x: k.x, text: text });
+    });
+    return { labels: out, endText: endText, pending: pending };
+  }
+
   function barClass(cls) {
     if (cls === "정상 완료") return "b-ok";
     if (cls === "의도된 park") return "b-park";
@@ -1052,14 +1100,28 @@
     var grid = sv("g");
     var step = tickStep(t1 - t0), off = tz ? tz.off : 0;
     var first = Math.ceil((t0 + off) / step) * step - off;
+    var ticks = [];
     for (var t = first; t < t1; t += step) {
       if (t <= t0) continue;
+      ticks.push({ t: t, x: x(t), midnight: (t + off) % 86400 === 0 });
       grid.appendChild(sv("line", { "class": "grid", x1: x(t), y1: TOP, x2: x(t), y2: TOP + rows.length * RH }));
-      var atMidnight = (t + off) % 86400 === 0;
-      grid.appendChild(sv("text", { "class": "t-sub", x: x(t), y: 16, "text-anchor": "middle" }, atMidnight ? fmtMD(t) + " 00:00" : fmtHM(t)));
     }
-    grid.appendChild(sv("text", { "class": "t-sub", x: L, y: 16 }, fmtMDHM(t0)));
-    grid.appendChild(sv("text", { "class": "t-main", x: W - R, y: 16, "text-anchor": "end" }, ended ? "종단 " + fmtHM(t1) : "지금 " + fmtHM(now)));
+    var edge = {
+      left: L, right: W - R, startText: fmtMDHM(t0),
+      endText: function (dated) {
+        var te = ended ? t1 : now;
+        return (ended ? "종단 " : "지금 ") + (dated ? fmtMDHM(te) : fmtHM(te));
+      }
+    };
+    // A date still waiting after the first pass goes onto the right-end label;
+    // the wider label is judged once more and no third pass follows.
+    var band = bandLabels(ticks, edge, false);
+    if (band.pending) band = bandLabels(ticks, edge, true);
+    band.labels.forEach(function (k) {
+      grid.appendChild(sv("text", { "class": "t-sub", x: k.x, y: 16, "text-anchor": "middle" }, k.text));
+    });
+    grid.appendChild(sv("text", { "class": "t-sub", x: L, y: 16 }, edge.startText));
+    grid.appendChild(sv("text", { "class": "t-main", x: W - R, y: 16, "text-anchor": "end" }, band.endText));
     svg.appendChild(grid);
 
     var lines = sv("g");

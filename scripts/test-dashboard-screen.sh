@@ -621,7 +621,115 @@ async function waitCases() {
     text.includes("호스트 부하8823‰, 코어 18") && text.includes("해제 문턱1500‰") && text.includes("표본 시각"), true);
 }
 
-listCases().then(detailCases).then(endedHoldCases).then(baseFilterCases).then(seatCases).then(waitCases).catch((e) => { console.error(e && e.stack || e); process.exit(1); });
+// S7: the run detail's time band. The label widths are the design's estimate
+// table written out again here, not taken from app.js, so a change to the table
+// has to be made in both places.
+const BAND_OFF = 32400, BAND_GAP = 6;
+function bandWidth(s) {
+  let em = 0;
+  for (const ch of s) {
+    const c = ch.codePointAt(0);
+    if (c >= 0xac00 && c <= 0xd7a3) em += 1.0;
+    else if (ch === ":" || ch === "/" || ch === " ") em += 0.4;
+    else em += 0.7;
+  }
+  return em * 12;
+}
+const bandPad = (n) => (n < 10 ? "0" : "") + n;
+const bandMD = (e) => { const d = new Date((e + BAND_OFF) * 1000); return bandPad(d.getUTCMonth() + 1) + "/" + bandPad(d.getUTCDate()); };
+
+// Draws a run whose band spans t0..t1 and reads the band's top row back.
+async function drawBand(t0, t1, ended) {
+  const c = await boot("/run/tb", () => ({
+    tz_offset_s: BAND_OFF,
+    summary: { id: "tb", state: ended ? "종단" : "진행중", attention: "watch", started_at: t0, elapsed_s: t1 - t0,
+      ended_at: ended ? t1 : null, prs: [], notes: [] },
+    run_start: t0,
+    judgments: { items: [], by_class: {} }, waiting: [], steps: [],
+    timeline: [{ stage: "A", attempt: 1, kind: "implement", start: t0, end: t1, "class": "정상 완료" }], shifts: [],
+    clauses: [], reviews: [], segments: [], links: {}, cost: {},
+  }));
+  let svg = null;
+  c.app.walk((n) => { if (!svg && n.tagName === "SVG" && n.getAttribute("class") === "tb") svg = n; });
+  const labels = [], ticks = [];
+  let grid = 0;
+  if (svg) svg.walk((n) => {
+    if (n.tagName === "LINE" && n.getAttribute("class") === "grid") grid++;
+    if (n.tagName !== "TEXT" || n.getAttribute("y") !== "16") return;
+    const x = Number(n.getAttribute("x")), anchor = n.getAttribute("text-anchor"), text = n.textContent, w = bandWidth(text);
+    const box = anchor === "middle" ? [x - w / 2, x + w / 2] : anchor === "end" ? [x - w, x] : [x, x + w];
+    labels.push({ text, anchor, a: box[0], b: box[1] });
+    if (anchor === "middle") ticks.push(text);
+  });
+  const end = labels.find((l) => l.anchor === "end");
+  let overlaps = 0;
+  for (let i = 0; i < labels.length; i++) for (let j = i + 1; j < labels.length; j++) {
+    if (labels[i].a < labels[j].b + BAND_GAP && labels[i].b + BAND_GAP > labels[j].a) overlaps++;
+  }
+  return { labels, ticks, grid, overlaps, end: end ? end.text : null };
+}
+
+// Tick times the band places: multiples of step in the display zone, t0 < t < t1.
+function bandTicks(t0, t1, step) {
+  const out = [];
+  for (let t = Math.ceil((t0 + BAND_OFF) / step) * step - BAND_OFF; t < t1; t += step) if (t > t0) out.push(t);
+  return out;
+}
+
+async function timebandCases() {
+  // The ticket's run: KST 11/21 23:13 to 11/23 03:42, three-hour ticks.
+  const T0 = Date.UTC(2026, 10, 21, 14, 13) / 1000, T1 = Date.UTC(2026, 10, 22, 18, 42) / 1000;
+  const live = await drawBand(T0, T1, false);
+  report("티켓 런 위쪽 라벨끼리 6 단위 안으로 붙는 쌍이 없다", live.overlaps, 0);
+  report("티켓 런의 11/22 00:00 눈금 라벨이 숨는다", live.ticks.includes("11/22 00:00"), false);
+  report("티켓 런의 끝 03:00 눈금 라벨이 숨는다", live.ticks.includes("03:00"), false);
+  report("티켓 런의 11/22 03:00 라벨이 날짜를 받아 보인다", live.ticks.includes("11/22 03:00"), true);
+  report("티켓 런의 11/23 00:00 라벨이 그대로 보인다", live.ticks.includes("11/23 00:00"), true);
+  report("티켓 런의 오른쪽 끝 라벨이 지금 03:42 다", live.end, "지금 03:42");
+  report("티켓 런의 눈금선이 10개다", live.grid, 10);
+  const done = await drawBand(T0, T1, true);
+  report("끝난 티켓 런 위쪽 라벨끼리 6 단위 안으로 붙는 쌍이 없다", done.overlaps, 0);
+  report("끝난 티켓 런의 오른쪽 끝 라벨이 종단 03:42 다", done.end, "종단 03:42");
+
+  // Starts and ends one minute either side of a tick, eight steps long.
+  const REF = Date.UTC(2026, 10, 1, 15, 0) / 1000;
+  for (const step of [900, 3600, 10800, 43200, 86400, 604800]) {
+    const tick = Math.ceil((REF + BAND_OFF) / step) * step - BAND_OFF;
+    const starts = [["시작 1분 전", tick - 60], ["시작 1분 뒤", tick + 60],
+      ["끝 1분 전", tick - 60 - 8 * step], ["끝 1분 뒤", tick + 60 - 8 * step]];
+    for (const [name, t0] of starts) for (const ended of [false, true]) {
+      const t1 = t0 + 8 * step, r = await drawBand(t0, t1, ended), ts = bandTicks(t0, t1, step), wrong = [];
+      if (r.overlaps) wrong.push("겹침 " + r.overlaps);
+      if (r.grid !== ts.length) wrong.push("눈금선 " + r.grid + "/" + ts.length);
+      const shown = r.labels.map((l) => l.text);
+      if (step < 86400) {
+        ts.filter((t) => (t + BAND_OFF) % 86400 === 0).forEach((t) => {
+          if (!shown.some((s) => s.includes(bandMD(t)))) wrong.push("날짜 " + bandMD(t) + " 없음");
+        });
+      } else {
+        ts.slice(1, -2).forEach((t) => {
+          if (!r.ticks.includes(bandMD(t) + " 00:00")) wrong.push(bandMD(t) + " 00:00 숨음");
+        });
+      }
+      report("간격 " + step + "초 " + name + " " + (ended ? "끝난 런" : "진행 중 런"), wrong.join(", ") || "없음", "없음");
+    }
+  }
+
+  // Live runs that end one minute after midnight, fifteen-minute ticks.
+  const MID1 = Date.UTC(2026, 10, 2, 15, 1) / 1000;
+  const ten = await drawBand(MID1 - 600, MID1, false);
+  report("10분 런의 자정 라벨이 숨는다", ten.ticks.includes("11/03 00:00"), false);
+  report("10분 런의 오른쪽 끝 라벨이 날짜를 단다", ten.end, "지금 11/03 00:01");
+  report("10분 런 위쪽 라벨끼리 6 단위 안으로 붙는 쌍이 없다", ten.overlaps, 0);
+  const three = await drawBand(MID1 - 180, MID1, false);
+  report("3분 런의 자정 라벨이 보인다", three.ticks.includes("11/03 00:00"), true);
+  report("3분 런의 오른쪽 끝 라벨은 날짜가 없다", three.end, "지금 00:01");
+  report("3분 런 위쪽 라벨끼리 6 단위 안으로 붙는 쌍이 없다", three.overlaps, 0);
+}
+
+const fail = (e) => { console.error(e && e.stack || e); process.exit(1); };
+if (process.argv[3] === "timeband") timebandCases().catch(fail);
+else listCases().then(detailCases).then(endedHoldCases).then(baseFilterCases).then(seatCases).then(waitCases).catch(fail);
 JS
 
 if command -v node >/dev/null 2>&1; then
@@ -634,6 +742,25 @@ elif [ -n "${CI:-}" ]; then
   bad "S6 node" "CI 에 node 가 없어 폴링 시험을 돌릴 수 없다"
 else
   printf 'SKIP: S6 — 이 호스트에 node 가 없다\n'
+fi
+
+# ---------------------------------------------------------------------------
+# S7 — the run detail's time band keeps its edge labels clear of the tick labels.
+# The same harness draws runs under node with the `timeband` argument; the label
+# boxes come from the design's estimated width table, written out again in the
+# harness, and no two labels on the top row may come within 6 units. A hidden
+# midnight label's date has to survive on another label where the design keeps it.
+# ---------------------------------------------------------------------------
+if command -v node >/dev/null 2>&1; then
+  node "$WORK/redraw.js" "$SCREEN/app.js" timeband >"$WORK/timeband.out" 2>"$WORK/timeband.err"
+  check "S7 하니스가 끝까지 돈다" "$? $(tail -n 1 "$WORK/timeband.err")" "0 "
+  while IFS=$'\t' read -r name got want; do
+    check "S7 $name" "$got" "$want"
+  done <"$WORK/timeband.out"
+elif [ -n "${CI:-}" ]; then
+  bad "S7 node" "CI 에 node 가 없어 시간 띠 시험을 돌릴 수 없다"
+else
+  printf 'SKIP: S7 — 이 호스트에 node 가 없다\n'
 fi
 
 printf '\ntest-dashboard-screen: %d passed, %d failed\n' "$passed" "$failed"
