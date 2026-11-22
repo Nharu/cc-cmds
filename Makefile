@@ -563,6 +563,7 @@ ORCH_TESTS := \
 	scripts/test-dashboard.sh \
 	scripts/test-dashboard-screen.sh \
 	scripts/test-observer.sh \
+	scripts/test-observer-checks.sh \
 	scripts/test-run-pane.sh \
 	scripts/test-display-tz.sh \
 	scripts/test-run-stops.sh \

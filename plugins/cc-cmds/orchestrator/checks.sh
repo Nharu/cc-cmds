@@ -71,13 +71,38 @@
 # reaches the zero case more often than the driver does, so the trap fires more
 # readily here.
 #
+# THE RESIDENT OBSERVER CAN TAKE THE LOOP OVER, AND THREE FORMS SERVE IT. Started
+# by the unchanged kickoff line from a pinned copy that carries the
+# `observer-protocol` mark, this script hands its own arguments to `observer.py
+# adopt --job checks` and ends when that answers 0; the observer's `checks`
+# module (`observer_checks.py`) then asks GitHub about every adopted run in one
+# GraphQL query a minute. The module learns what to ask from `--spec`, which
+# prints the discovery result and nothing else, and hands each run its share of
+# the answer through `--once --from-snapshot`, which runs one pass of the very
+# interpretation below against that file instead of `gh`. The verb fence above is
+# unchanged: neither form calls `gh` at all. A run whose pinned copy has no mark,
+# or that the module gave back with `checks.fallback`, runs the loop as before.
+#
 # Usage:
 #   checks.sh --run-dir <dir> --ledger <path> --manifest <path>
-#             [--interval <sec>] [--once]
+#             [--interval <sec>] [--once] [--started <epoch>]
+#   checks.sh --spec --run-dir <dir> --ledger <path> --manifest <path>
+#   checks.sh --once --from-snapshot <file> --run-dir <dir> --ledger <path>
+#             --manifest <path> [--interval <sec>] [--started <epoch>]
+#
+#   --spec           print `<slug>\t<segment>\t<head branch>` per segment to ask
+#                    about and end; calls no `gh`, writes no file
+#   --from-snapshot  one pass that reads the PR and its check contexts from the
+#                    snapshot file instead of `gh`; prints `quiet=<0|1>` last
+#   --started        the epoch the idle exit counts from (default: now)
+#   CC_OBSERVER_PID  in a `--once` pass, the pid written to `checks.pid` instead
+#                    of this process's, and the file is left in place at exit
 #
 # Exit codes:
-#   0 — ran to one of the run's four exits
+#   0 — ran to one of the run's four exits, or handed the loop to the observer
 #   2 — bad arguments
+#   3 — `--from-snapshot`: the pass found the run over (the loop would break)
+#   4 — `--from-snapshot`: the snapshot is missing or its head line is wrong
 #
 # Compatibility: bash 3.2 (macOS) — no associative arrays, no `mapfile`.
 
@@ -97,7 +122,7 @@ CHECKS_DIR=$(cd "$checks_src" && pwd)
 
 CHECKS_ARGV=("$@")
 
-RUN_DIR=""; LEDGER=""; MANIFEST=""; INTERVAL=60; ONCE=0
+RUN_DIR=""; LEDGER=""; MANIFEST=""; INTERVAL=60; ONCE=0; SPEC=0; SNAPSHOT=""; STARTED_ARG=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --run-dir)  RUN_DIR="$2"; shift 2 ;;
@@ -105,9 +130,22 @@ while [ $# -gt 0 ]; do
     --manifest) MANIFEST="$2"; shift 2 ;;
     --interval) INTERVAL="$2"; shift 2 ;;
     --once)     ONCE=1; shift ;;
+    --spec)     SPEC=1; shift ;;
+    --from-snapshot) [ $# -ge 2 ] || { printf 'checks: --from-snapshot 에 파일이 없습니다\n' >&2; exit 2; }
+                SNAPSHOT="$2"; shift 2 ;;
+    --started)  [ $# -ge 2 ] || { printf 'checks: --started 에 값이 없습니다\n' >&2; exit 2; }
+                STARTED_ARG="$2"; shift 2 ;;
     *) printf 'checks: 알 수 없는 인자: %s\n' "$1" >&2; exit 2 ;;
   esac
 done
+case "$STARTED_ARG" in
+  ''|*[!0-9]*) [ -z "$STARTED_ARG" ] || { printf 'checks: --started 는 epoch 초입니다: %s\n' "$STARTED_ARG" >&2; exit 2; } ;;
+esac
+# A snapshot pass is one pass by definition, so `--from-snapshot` without
+# `--once` is refused rather than read as a loop that never asks anybody.
+if [ -n "$SNAPSHOT" ] && [ "$ONCE" != 1 ]; then
+  printf 'checks: --from-snapshot 는 --once 와 함께만 씁니다\n' >&2; exit 2
+fi
 [ -n "$RUN_DIR" ]  || { printf 'checks: --run-dir 는 필수입니다\n' >&2; exit 2; }
 [ -n "$LEDGER" ]   || { printf 'checks: --ledger 는 필수입니다\n' >&2; exit 2; }
 # REQUIRED, because the slug fallback has nowhere else to go. `$RUN_DIR/plan.tsv`
@@ -127,18 +165,53 @@ case "$checks_hop_rc" in
   3) printf 'checks: plugin-pin 이 이 런의 사본이 아닌 곳을 가리킵니다: %s/plugin-pin — 설치본 코드로 계속합니다\n' "$RUN_DIR" >&2 ;;
 esac
 
+# THE HAND-OVER TO THE OBSERVER, after the hop and ahead of the pid record. Only
+# the loop is handed over: a `--once` or `--spec` call is the observer's own, or
+# a person's single look. A copy without the `observer-protocol` mark, a run the
+# module gave back (`checks.fallback`), the off switch, CI and a host without
+# python3 all keep the loop here. `adopt` checks the run directory and the mark
+# before it starts the observer, so a run outside the run root never starts one;
+# any answer but 0 is the observer declining, and the loop below runs as before.
+if [ "$ONCE" != 1 ] && [ "$SPEC" != 1 ] \
+   && [ -f "$CHECKS_DIR/observer-protocol" ] && [ ! -e "$RUN_DIR/checks.fallback" ] \
+   && [ "${CC_CMDS_OBSERVER:-}" != off ] && [ -z "${CI:-}" ] \
+   && command -v python3 >/dev/null 2>&1; then
+  if python3 "$CHECKS_DIR/observer.py" adopt --run-dir "$RUN_DIR" --job checks -- ${CHECKS_ARGV[@]+"${CHECKS_ARGV[@]}"}; then
+    printf 'checks: 이 런의 폴링을 관측기(observer.py)가 맡았습니다 — %s\n' "$RUN_DIR" >&2
+    exit 0
+  fi
+fi
+
 OBSERVED="$RUN_DIR/checks.observed"
 PIDF="$RUN_DIR/checks.pid"
 # The stderr capture of the two `gh pr checks` calls: one file for the life of
 # this process, overwritten by each call and removed with the pid record, so a
-# poll makes no temporary of its own.
-CHECKS_ERR=$(mktemp 2>/dev/null || true)
+# poll makes no temporary of its own. The two forms that call no `gh` make none.
+CHECKS_ERR=""
+if [ "$SPEC" != 1 ] && [ -z "$SNAPSHOT" ]; then
+  CHECKS_ERR=$(mktemp 2>/dev/null || true)
+fi
 # When this poller started watching. The idle exit counts from no earlier than
 # this, so a poller started on a run that has been quiet for a day does not
 # leave on its first pass. It is also the anchor of the memory clock
-# (`cc_clock_start`) the observed lines are stamped from.
+# (`cc_clock_start`) the observed lines are stamped from. A pass the observer
+# runs is a fresh process every minute, so the observer hands over the moment it
+# adopted the run as `--started`, and the idle exit keeps counting from there.
 cc_clock_start
-CHECKS_STARTED=$CC_CLOCK_EPOCH0
+CHECKS_STARTED=${STARTED_ARG:-$CC_CLOCK_EPOCH0}
+# THE PID THIS PROCESS WRITES TO `checks.pid`. While the observer holds the job
+# that file names the observer, so the relay's poller-liveness check keeps
+# reading "a poller is alive" between passes; the observer's `--once` pass
+# therefore writes the pid it was handed and leaves the file for the observer to
+# remove when it lets the job go.
+CHECKS_SELF_PID=$$
+CHECKS_KEEP_PID=0
+if [ "$ONCE" = 1 ]; then
+  case "${CC_OBSERVER_PID:-}" in
+    ''|*[!0-9]*) : ;;
+    *) CHECKS_SELF_PID=$CC_OBSERVER_PID; CHECKS_KEEP_PID=1 ;;
+  esac
+fi
 
 # The clip ceilings, spelled here because the poller is the one that cuts. The
 # drain re-applies `gate_row_safe` at the same widths, and that is a second line
@@ -595,19 +668,144 @@ no_checks_reply() {
   return 1
 }
 
+# ---------------------------------------------------------------------------
+# The snapshot: what the observer's `checks` module asked GitHub for this run,
+# in one file. Head line `checks-snapshot 1`, then tab-separated lines:
+#
+#   pr   <slug> <branch> <number | 없음 | 실패> <head sha>
+#   ctx  <slug> <branch> <CheckRun | StatusContext> <name or context>
+#        <workflow name> <event> <status> <conclusion or state> <startedAt>
+#        <required 0|1>
+#
+# A `pr` line stands for `gh pr list --head`, the `ctx` lines of that pair for
+# the check contexts `gh pr checks` reads. `없음` is the empty list and `실패` a
+# question that broke, and both skip the segment exactly as the two `gh` answers
+# do. The contexts are turned into the very rows and exit code `gh pr checks`
+# prints, so the interpretation below is the one code path for both sources.
+# ---------------------------------------------------------------------------
+SNAP_TEXT=""
+
+snapshot_load() {
+  # 0 when the snapshot reads and its head line is the format's.
+  [ -f "$SNAPSHOT" ] || return 1
+  cc__file_bytes SNAP_TEXT "$SNAPSHOT"
+  [ "${SNAP_TEXT%%$'\n'*}" = "checks-snapshot 1" ]
+}
+
+snapshot_pr_into() {
+  # snapshot_pr_into <n-var> <sha-var> <slug> <branch> — the PR number and head
+  # sha of the pair's `pr` line; returns 1, both empty, when there is no line or
+  # it carries no number.
+  local __k="pr$TAB$3$TAB$4$TAB" __l __v=""
+  while IFS= read -r __l; do
+    case "$__l" in "$__k"*) __v=${__l#"$__k"} ;; esac
+  done <<EOF
+$SNAP_TEXT
+EOF
+  printf -v "$1" '%s' ""
+  printf -v "$2" '%s' ""
+  case "${__v%%"$TAB"*}" in ''|*[!0-9]*) return 1 ;; esac
+  printf -v "$1" '%s' "${__v%%"$TAB"*}"
+  case "$__v" in *"$TAB"*) printf -v "$2" '%s' "${__v#*"$TAB"}" ;; esac
+  return 0
+}
+
+snapshot_answer() {
+  # snapshot_answer <slug> <branch> <required 0|1> — sets `CK_OUT`, `CK_RC` and
+  # `CK_ERR` to what `gh pr checks` prints, exits with and says on stderr for the
+  # pair's contexts. gh's own rules, in its order: the newest of each duplicate
+  # (by start time; a status context is keyed by its context, a check run by
+  # name, workflow and event) is kept, `--required` then drops what is not
+  # required, the state is the status context's `state` or the check run's
+  # conclusion once COMPLETED and its status before, and the bucket follows from
+  # it. A failure answers 1, a pending check 8, anything else 0; no context at
+  # all answers 1 with `no checks reported`, and no required one with `no
+  # required checks reported`. A cancelled check is printed as a `fail` row, as
+  # gh's non-terminal output prints it, without counting toward the exit code.
+  # Rows come out failing first by name, then the cancelled ones by name — the
+  # order the failing names are joined in — then the rest, whose order nothing
+  # reads.
+  local res
+  res=$(LC_ALL=C awk -F'\t' -v s="$1" -v b="$2" -v req="$3" '
+    $1 == "ctx" && $2 == s && $3 == b {
+      n++; ty[n] = $4; nm[n] = $5; wf[n] = $6; ev[n] = $7
+      su[n] = $8; co[n] = $9; at[n] = $10; rq[n] = $11
+    }
+    END {
+      if (n == 0) { printf "1\tno checks reported on the '\''%s'\'' branch\n", b; exit }
+      for (i = 1; i <= n; i++) o[i] = i
+      for (i = 2; i <= n; i++) {
+        k = o[i]
+        for (j = i - 1; j >= 1 && at[o[j]] < at[k]; j--) o[j + 1] = o[j]
+        o[j + 1] = k
+      }
+      m = 0; fl = 0; pe = 0
+      for (i = 1; i <= n; i++) {
+        k = o[i]
+        key = (ty[k] == "StatusContext") ? ("C\t" nm[k]) : ("R\t" nm[k] "/" wf[k] "/" ev[k])
+        if (key in seen) continue
+        seen[key] = 1
+        if (req == "1" && rq[k] != "1") continue
+        if (ty[k] == "StatusContext") st = co[k]
+        else st = (su[k] == "COMPLETED") ? co[k] : su[k]
+        if (st == "SUCCESS") bu = "pass"
+        else if (st == "SKIPPED" || st == "NEUTRAL") bu = "skipping"
+        else if (st == "ERROR" || st == "FAILURE" || st == "TIMED_OUT" || st == "ACTION_REQUIRED") { bu = "fail"; fl++ }
+        else if (st == "CANCELLED") bu = "cancel"
+        else { bu = "pending"; pe++ }
+        m++; rn[m] = nm[k]; rb[m] = (bu == "cancel") ? "fail" : bu
+        rk[m] = (bu == "fail") ? 0 : ((bu == "cancel") ? 1 : ((bu == "pending") ? 2 : 3))
+      }
+      if (m == 0) { printf "1\tno required checks reported on the '\''%s'\'' branch\n", b; exit }
+      for (i = 1; i <= m; i++) p[i] = i
+      for (i = 2; i <= m; i++) {
+        k = p[i]
+        for (j = i - 1; j >= 1 && (rk[p[j]] > rk[k] || (rk[p[j]] == rk[k] && rn[p[j]] > rn[k])); j--) p[j + 1] = p[j]
+        p[j + 1] = k
+      }
+      printf "%d\t\n", (fl > 0) ? 1 : ((pe > 0) ? 8 : 0)
+      for (i = 1; i <= m; i++) printf "%s\t%s\n", rn[p[i]], rb[p[i]]
+    }' <<EOF
+$SNAP_TEXT
+EOF
+)
+  local head=${res%%$'\n'*}
+  CK_RC=${head%%"$TAB"*}
+  CK_ERR=${head#*"$TAB"}
+  CK_OUT=""
+  case "$res" in *$'\n'*) CK_OUT=${res#*$'\n'} ;; esac
+}
+
+checks_answer() {
+  # checks_answer <slug> <pr-number> <branch> <required 0|1> — sets `CK_OUT`,
+  # `CK_RC` and `CK_ERR` to the output, exit code and stderr of the checks
+  # question: from the snapshot on a `--from-snapshot` pass, from `gh` on every
+  # other. The stderr goes to `CHECKS_ERR`, the process's one capture file, and
+  # is read back with a builtin.
+  local slug="$1" n="$2" err="${CHECKS_ERR:-/dev/null}"
+  if [ -n "$SNAPSHOT" ]; then
+    snapshot_answer "$slug" "$3" "$4"
+    return 0
+  fi
+  if [ "$4" = 1 ]; then
+    CK_OUT=$(gh -R "$slug" pr checks "$n" --required 2>"$err"); CK_RC=$?
+  else
+    CK_OUT=$(gh -R "$slug" pr checks "$n" 2>"$err"); CK_RC=$?
+  fi
+  cc__file_bytes CK_ERR "$err"
+}
+
 poll_status() {
-  # poll_status <slug> <pr-number> — prints `<상태>\t<진행 중>\t<실패 체크>`.
+  # poll_status <slug> <pr-number> <branch> — prints `<상태>\t<진행 중>\t<실패 체크>`.
   #
   # `진행 중` IS COUNTED ONLY ON THE FAILURE ANSWER. `gh pr checks` ends in
   # failure as soon as one check failed, whatever else is still pending, so a
   # quickly failing shard beside running ones answers rc=1 like a settled
   # failure. The `pending` rows of that same output are what tell the two apart;
   # every other answer carries 0.
-  #
-  # The stderr goes to `CHECKS_ERR`, the process's one capture file, and is read
-  # back with a builtin.
-  local slug="$1" n="$2" out err="${CHECKS_ERR:-/dev/null}" rc fails pend msg
-  out=$(gh -R "$slug" pr checks "$n" 2>"$err"); rc=$?
+  local out rc fails pend msg
+  checks_answer "$1" "$2" "$3" 0
+  out=$CK_OUT; rc=$CK_RC
   case "$rc" in
     0) printf '통과\t0\t-'; return 0 ;;
     8) printf '대기\t0\t-'; return 0 ;;
@@ -618,7 +816,7 @@ poll_status() {
       pend=$(printf '%s\n' "$out" | awk -F'\t' '$2 == "pending" { c++ } END { print c + 0 }')
       printf '실패\t%s\t%s' "${pend:-0}" "$fails"; return 0
     fi
-    cc__file_bytes msg "$err"
+    msg=$CK_ERR
     if no_checks_reply "$msg"; then
       printf '미등록\t0\t-'; return 0
     fi
@@ -628,20 +826,21 @@ poll_status() {
 }
 
 poll_required() {
-  # poll_required <slug> <pr-number> — prints the `필수 집합` value.
+  # poll_required <slug> <pr-number> <branch> — prints the `필수 집합` value.
   #
   # The same rule the driver applies inline, projected onto names instead of a
   # row count. What the field buys is that the answer SURVIVES: the driver's
   # count is a local variable that is gone the moment the merge returns, and by
   # morning only the ledger is left to tell "nothing was required" from "a
   # required check broke".
-  local slug="$1" n="$2" out err="${CHECKS_ERR:-/dev/null}" rc names msg
-  out=$(gh -R "$slug" pr checks "$n" --required 2>"$err"); rc=$?
+  local out rc names msg
+  checks_answer "$1" "$2" "$3" 1
+  out=$CK_OUT; rc=$CK_RC
   names=$(names_of "$out")
   if [ -n "$names" ]; then
     printf '%s' "$names"; return 0
   fi
-  cc__file_bytes msg "$err"
+  msg=$CK_ERR
   if no_checks_reply "$msg"; then
     printf '없음'; return 0
   fi
@@ -652,16 +851,17 @@ poll_required() {
   return 0
 }
 
-pass_once() {
-  local seg row st wt branch slug listed n sha status fails req prev line g pend cur
-  # The poller's own pid, so a person can tell a live poller from a finished
-  # run's. NO `.start`/`.pgid` SIBLING IS WRITTEN, and that is what exempts this
-  # file from the live-stage census structurally — that predicate requires the
-  # sibling. The orphan detector cannot be exempted that way because it asks only
-  # "is this pid still here", so it carries the name `checks` explicitly.
-  [ -d "$RUN_DIR" ] && printf '%s' "$$" > "$PIDF"
+# The segments a pass asks about, set by `discover_targets`: one line
+# `<slug>\t<segment>\t<head branch>` each. A variable rather than a printed list,
+# so the worktree memo the discovery fills survives the pass.
+TARGETS=""
+
+discover_targets() {
+  # Which segments are asked about, and under which slug and branch. The one
+  # place that decides it, so `--spec` names exactly the pairs a pass would ask.
+  local seg row st wt branch slug
+  TARGETS=""
   [ -f "$LEDGER" ] || return 0
-  seed_table
   SEG_ROWS=$( { grep '^- `segment`' "$LEDGER" 2>/dev/null || true; } )
   HOME_SLUG_READ=0
   HOME_ORIGIN=""
@@ -694,15 +894,40 @@ pass_once() {
     fi
     [ -n "$slug" ] || manifest_home_slug_into slug
     [ -n "$slug" ] || continue
+    TARGETS="${TARGETS}$slug$TAB$seg$TAB$branch
+"
+  done
+  return 0
+}
+
+pass_once() {
+  local seg branch slug listed n sha status fails req prev line g pend cur
+  # The poller's own pid, so a person can tell a live poller from a finished
+  # run's. NO `.start`/`.pgid` SIBLING IS WRITTEN, and that is what exempts this
+  # file from the live-stage census structurally — that predicate requires the
+  # sibling. The orphan detector cannot be exempted that way because it asks only
+  # "is this pid still here", so it carries the name `checks` explicitly.
+  [ -d "$RUN_DIR" ] && printf '%s' "$CHECKS_SELF_PID" > "$PIDF"
+  [ -f "$LEDGER" ] || return 0
+  seed_table
+  discover_targets
+
+  # The list is read on fd 3, so nothing a question runs reads it as its stdin.
+  while IFS="$TAB" read -r -u 3 slug seg branch; do
+    [ -n "$slug" ] && [ -n "$branch" ] || continue
 
     # ONE CALL FOR BOTH HALVES OF THE IDENTITY. An empty result is NOT an error
     # — at kickoff no segment has a PR yet, and the healthy state then is "zero
     # poll targets and not one line written". `미등록` is only ever written when
     # a PR EXISTS and carries no checks.
-    listed=$(gh -R "$slug" pr list --head "$branch" --json number,headRefOid 2>/dev/null) || continue
-    json_first_into n "$listed" '"number":' '0123456789' ''
-    [ -n "$n" ] || continue
-    json_first_into sha "$listed" '"headRefOid":"' '0123456789abcdef' '"'
+    if [ -n "$SNAPSHOT" ]; then
+      snapshot_pr_into n sha "$slug" "$branch" || continue
+    else
+      listed=$(gh -R "$slug" pr list --head "$branch" --json number,headRefOid 2>/dev/null) || continue
+      json_first_into n "$listed" '"number":' '0123456789' ''
+      [ -n "$n" ] || continue
+      json_first_into sha "$listed" '"headRefOid":"' '0123456789abcdef' '"'
+    fi
     case "$sha" in
       ????????????????????????????????????????) : ;;
       *) sha="미상" ;;
@@ -714,7 +939,7 @@ pass_once() {
     # the other way round, a pass straddling the row files the screen from
     # before the rerun — its `실패` — as round g's first line.
     num_or_zero_into g "$(cc_ci_round_get "$(cc_ci_round "$LEDGER" "$seg" "$sha")" g)"
-    line=$(poll_status "$slug" "$n")
+    line=$(poll_status "$slug" "$n" "$branch")
     status=${line%%"$TAB"*}
     line=${line#*"$TAB"}
     num_or_zero_into pend "${line%%"$TAB"*}"
@@ -726,7 +951,7 @@ pass_once() {
     # `필수 집합` is asked only for an observation that is a transition: the
     # columns of an unchanged state are never written, so asking for them on
     # every pass was a `gh` call whose answer nothing read.
-    req=$(poll_required "$slug" "$n")
+    req=$(poll_required "$slug" "$n" "$branch")
     # A `실패` IS COMMITTED ONLY WITH A SETTLED `필수 집합`. The two columns come
     # from two different `gh` calls, and the transition key is `상태` alone — so a
     # `실패` whose second call broke once was written as `필수 집합=판정 불가`,
@@ -759,11 +984,19 @@ pass_once() {
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
       "$(now_iso)" "${seg:--}" "$slug#$n" "$sha" "$status" "$g" "$pend" \
       "$(field_safe "$req" "$REQ_MAX")" "$(field_safe "$fails" "$FAIL_MAX")" >> "$OBSERVED"
-  done
+  done 3<<EOF
+$TARGETS
+EOF
   return 0
 }
 
 release_pid() {
+  # A pass the observer ran leaves `checks.pid` holding the observer's pid: the
+  # observer removes it when it lets the job go.
+  if [ "$CHECKS_KEEP_PID" = 1 ]; then
+    [ -z "$CHECKS_ERR" ] || rm -f "$CHECKS_ERR" 2>/dev/null || true
+    return 0
+  fi
   rm -f "$PIDF" ${CHECKS_ERR:+"$CHECKS_ERR"} 2>/dev/null || true
 }
 
@@ -806,6 +1039,21 @@ run_is_over() {
   return 1
 }
 
+# THE SPEC FORM ANSWERS BEFORE ANYTHING IS RECORDED: it prints what a pass would
+# ask about and ends, so it writes neither the pid record nor `checks.observed`.
+if [ "$SPEC" = 1 ]; then
+  discover_targets
+  printf '%s' "$TARGETS"
+  exit 0
+fi
+
+# A snapshot that cannot be read leaves the pass without an answer to give, so
+# it writes nothing at all — the same as a poll whose `gh` call broke.
+if [ -n "$SNAPSHOT" ] && ! snapshot_load; then
+  printf 'checks: 스냅숏이 없거나 머리 줄이 맞지 않습니다: %s\n' "$SNAPSHOT" >&2
+  exit 4
+fi
+
 # The trap goes up before the pid record does, and `HUP` is on it — a terminal
 # going away is one of the ordinary ways a detached process ends.
 trap 'release_pid' EXIT HUP INT TERM
@@ -835,10 +1083,20 @@ while :; do
     run_is_over && break
   else
     checks_since_poll=$((checks_since_poll + 1))
-    printf '%s' "$$" > "$PIDF"
+    printf '%s' "$CHECKS_SELF_PID" > "$PIDF"
     [ -f "$RUN_DIR/done" ] && break
     [ -d "$RUN_DIR" ] || { run_is_over && break; }
   fi
   sleep "$INTERVAL"
 done
+# THE SNAPSHOT PASS REPORTS WHAT THE LOOP WOULD HAVE DONE NEXT. The observer
+# keeps the cadence, so it is told whether the run reads quiet — the loop's own
+# `cc_watch_mode_quiet` judgment — and whether the loop would have left here,
+# which it answers by letting the job go.
+if [ -n "$SNAPSHOT" ]; then
+  checks_quiet=0
+  [ -d "$RUN_DIR" ] && cc_watch_mode_quiet "$RUN_DIR" "$INTERVAL" && checks_quiet=1
+  printf 'quiet=%s\n' "$checks_quiet"
+  run_is_over && exit 3
+fi
 exit 0
