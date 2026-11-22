@@ -3244,6 +3244,38 @@ check "사람의 새 답이 서면 returned_halts 는 비고 새 답이 answered
 rm -rf "$RET_DIR"
 
 # ---------------------------------------------------------------------------
+# 14. clauses[] carries `근거 시점` — "종단 뒤" for a clause whose evidence
+# exists only after the run ends, null otherwise
+#
+# The gate judges it from the manifest alone: a marked row, or a row with no
+# bound execution whose wording says its evidence is read from the morning or
+# run report. A plain clause, and a clause that only names the report, read
+# null, so the shift never judges the wording itself.
+# ---------------------------------------------------------------------------
+PT_DIR=$(mktemp -d "${TMPDIR:-/tmp}/cc-snap-postrun.XXXXXX")
+PT_MANIFEST="$PT_DIR/plan.md"
+PT_LEDGER="$PT_DIR/ledger.md"
+{
+  printf -- '- `종료 절` | id=C1 | 문면=확인 결과는 아침 보고서에서 읽는다\n'
+  printf -- '- `종료 절` | id=C2 | 문면=주의 좌석의 결과가 남는다 | 근거 시점=종단 뒤\n'
+  printf -- '- `종료 절` | id=C3 | 문면=시험이 통과한다\n'
+  printf -- '- `종료 절` | id=C4 | 문면=아침 보고서에 시험 결과가 실린다\n'
+} > "$PT_MANIFEST"
+: > "$PT_LEDGER"
+pt_read() {  # pt_read <jq> — gate_clauses_json on the fixture manifest, through jq
+  local frag
+  frag=$(CC_GATE_SOURCE_ONLY=1 bash -c '
+    . "$1" >/dev/null 2>&1; set +e +u
+    LEDGER="$2"; MANIFEST="$3"; RUN_ID=R; RUN_DIR="$4"
+    gate_clauses_json 2>/dev/null' _ "$GATE" "$PT_LEDGER" "$PT_MANIFEST" "$PT_DIR")
+  printf '[%s]' "$frag" | jq -c "$1"
+}
+check "clauses[] 의 근거 시점: 문면 판별·표지는 종단 뒤, 보통 절과 보고서 이름만 든 절은 null" \
+  "$(pt_read '[.[] | [.id, .["근거 시점"]]]')" \
+  '[["C1","종단 뒤"],["C2","종단 뒤"],["C3",null],["C4",null]]'
+rm -rf "$PT_DIR"
+
+# ---------------------------------------------------------------------------
 # 계정 이전 대기 — 릴레이의 재개 시각 원소와 깨움 키, 게이트·워처가 함께 읽는 대기 판독.
 # 판독은 원장의 행과 relay.live 의 `resume=` 줄만 보므로 게이트 없이 liveness.sh 로 잰다.
 # ---------------------------------------------------------------------------

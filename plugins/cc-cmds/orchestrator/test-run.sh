@@ -1838,6 +1838,52 @@ check "쉼표 앞 공백 원소가 매니페스트 검사에서 거부된다" \
 write_manifest "$MF" "" ""
 write_manifest "$MF" "" "$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)"
 
+# --- 종료 절 행의 선택 필드 「근거 시점」 -------------------------------------
+#
+# A clause whose evidence exists only after the run ends carries the marker
+# `근거 시점=종단 뒤`. The check takes that one value, once per row, and never
+# beside `근거 실행`: a clause bound to an execution run during the run is not
+# one whose evidence comes only after the run. Each case is written with its
+# binding digest recomputed, so a refusal is the field's and not the digest's.
+pt_with() {   # pt_with <종료 절 행> [<사전 인가 행>] — the manifest with that clause row in place of C1
+  local bd
+  write_manifest "$MF" "" ""
+  awk -v r="$1" -v a="${2:-}" '/^- `종료 절` /{ print r; if (a != "") print a; next } { print }' "$MF" > "$MF.t" \
+    && mv "$MF.t" "$MF"
+  bd=$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)
+  awk -v d="$bd" '/^- `종료 절` / && !w { print "**구속 다이제스트**: " d; w = 1 } { print }' "$MF" > "$MF.t" \
+    && mv "$MF.t" "$MF"
+}
+pt_case() {   # pt_case <이름> <기대: 통과|거부 문면 조각> <종료 절 행> [<사전 인가 행>]
+  local out rc
+  pt_with "$3" "${4:-}"
+  out=$( ( check_manifest ) 2>&1 ); rc=$?
+  if [ "$2" = "통과" ]; then
+    if [ "$rc" = "0" ]; then ok "$1"; else bad "$1" "거부됐다: $(printf '%s' "$out" | tail -1)"; fi
+  else
+    case "$rc|$out" in
+      0\|*) bad "$1" "통과했다" ;;
+      *"$2"*) ok "$1" ;;
+      *) bad "$1" "다른 사유로 거부됐다: $(printf '%s' "$out" | tail -1)" ;;
+    esac
+  fi
+}
+MANIFEST="$MF"
+pt_case "근거 시점=종단 뒤 가 통과한다" 통과 \
+  '- `종료 절` | id=C1 | 문면=아침에 사람이 남김 목록을 본다 | 근거 시점=종단 뒤'
+pt_case "근거 시점의 다른 값은 거부된다" "「근거 시점」 값은 「종단 뒤」 하나입니다" \
+  '- `종료 절` | id=C1 | 문면=아침에 사람이 남김 목록을 본다 | 근거 시점=머지 뒤'
+pt_case "근거 시점을 두 번 쓴 행은 거부된다" "「근거 시점」이 둘 이상입니다" \
+  '- `종료 절` | id=C1 | 문면=아침에 사람이 남김 목록을 본다 | 근거 시점=종단 뒤 | 근거 시점=종단 뒤'
+pt_case "근거 실행과 함께 쓴 근거 시점은 거부된다" "「근거 시점」과 「근거 실행」을 함께 둘 수 없습니다" \
+  '- `종료 절` | id=C1 | 문면=아침에 사람이 남김 목록을 본다 | 근거 실행=sh scripts/probe.sh | 근거 시점=종단 뒤' \
+  '- `사전 인가` | 형태=sh scripts/probe.sh | 사유=절 근거 실행'
+pt_case "근거 실행만 단 같은 행은 통과한다 (위 거부가 근거 실행 쪽 결함이 아님)" 통과 \
+  '- `종료 절` | id=C1 | 문면=아침에 사람이 남김 목록을 본다 | 근거 실행=sh scripts/probe.sh' \
+  '- `사전 인가` | 형태=sh scripts/probe.sh | 사유=절 근거 실행'
+write_manifest "$MF" "" ""
+write_manifest "$MF" "" "$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)"
+
 # A goal edit must move it — otherwise the digest is over something that cannot
 # change and the check is vacuous.
 bd_before=$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)

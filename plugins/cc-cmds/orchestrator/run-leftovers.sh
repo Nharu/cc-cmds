@@ -197,7 +197,7 @@ for seg in $SEGMENTS; do
       continue
     fi
     sec=$(rl_section_lines "$f" "$RL_P2_HEAD") || {
-      rl_unreadable '리뷰 P2' "$f" "표제 「$RL_P2_HEAD」 이 없습니다"
+      rl_unreadable '리뷰 P2' "$f" "표제 「${RL_P2_HEAD}」 이 없습니다"
       continue; }
     while IFS= read -r ln; do
       [ -n "$ln" ] || continue
@@ -231,7 +231,7 @@ for seg in $SEGMENTS; do
     continue
   fi
   sec=$(rl_section_lines "$f" "$RL_UNREVIEWED_HEAD") || {
-    rl_unreadable '리뷰 미검토' "$f" "표제 「$RL_UNREVIEWED_HEAD」 이 없습니다"
+    rl_unreadable '리뷰 미검토' "$f" "표제 「${RL_UNREVIEWED_HEAD}」 이 없습니다"
     continue; }
   listed=$(printf '%s\n' "$sec" | awk -F'\t' 'NF && substr($2, 1, 2) == "- "')
   if [ -z "$listed" ]; then

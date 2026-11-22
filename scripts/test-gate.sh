@@ -41804,6 +41804,334 @@ saq_refused "park 뒤의 승계" 'was parked'
 check "34t: park 뒤에는 승계되지 않는다" "$rc" "3"
 CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$SAQ_PREV_AR"
 
+# --- 34qh. 종단 뒤 절의 이관 정산 — 게이트가 남김 목록 사본을 근거로 쓴다 ---
+# --- section: 34qh | group: cone | covers: act, snapshot, shift-halt, clause-exec, check_manifest, gate_done_conditions, leftovers | anchors: 34qh: 표지 절과 문면 절의 근거 시점은 종단 뒤이고 보통 절은 null 이다, 34qh: 종단 뒤 절의 종료 절 근거 요청은 거절된다, 34qh: 종단 뒤 절의 clause-exec 는 거절된다, 34qh: 종단 뒤 절의 충족은 중단 답 줄을 인용해도 거절된다, 34qh: 근거를 넘긴 이관은 어휘 오류다, 34qh: 첫 이관이 clause-handover 를 모드 700 으로 만든다, 34qh: 이관 행의 sha256 이 사본의 sha256 과 같다, 34qh: 이관 절이 done 줄에 실린다, 34qh: 음성 고정물의 두 절은 근거 시점이 null 이고 이관이 거절된다, 34qh: 열린 근거 요청이 있는 절의 이관은 거절되고 사본을 쓰지 않는다, 34qh: 판독기 run-leftovers.sh 가 실패하면 이관은 행도 사본도 남기지 않는다, 34qh: 판독기 연속 실패 뒤 불가능 정산의 done 줄은 무효화다, 34qh: 심볼릭 링크인 clause-handover 에서 이관은 거절된다, 34qh: 무효화 done 줄은 불가능 절 뒤에 이관 절을 싣는다, 34qh: P0 잔존 무효화 done 줄도 이관 절을 싣는다, 34qh: 교대 지침과 리드 사본이 이관 판독기 실패 규칙을 싣는다 ---
+#
+# A CLAUSE WHOSE EVIDENCE EXISTS ONLY AFTER THE RUN ENDS IS HANDED OVER, NOT
+# ASKED ABOUT. The gate judges such a clause from its `근거 시점=종단 뒤` marker
+# or from a fixed string in its wording, refuses every way of meeting it during
+# the run — an evidence request, an execution, `충족` — and settles it `이관`
+# with grounds it writes itself: the leftover reader's output, copied into the
+# run directory, its digest and its item count. Each fixture is a cap run of
+# its own whose segments have merged, so what is left is the clauses alone.
+qh_auth_row() {  # qh_auth_row <행> — one row placed inside `## 인가` of the cap manifest
+  awk -v r="$1" '{ print } !d && $0 == "## 인가" { print r; d = 1 }' "$CAP_NM" > "$CAP_NM.ins" \
+    && mv "$CAP_NM.ins" "$CAP_NM"
+}
+qh_fx() {
+  # qh_fx <run-id> <좌석 세션 uuid> <행…> — the cap run with those rows under
+  # `## 인가`, two merged segments, and a routing shift in `QH_SHIFT`.
+  local rid="$1" c; QH_SEAT="$2"; shift 2
+  QH_RID="$rid"
+  cap_fx_new "$rid"
+  sed -i.bak '/^\*\*구속 다이제스트\*\*/d' "$CAP_NM" && rm -f "$CAP_NM.bak"
+  sed -i.bak '/^- `종료 절` /d' "$CAP_NM" && rm -f "$CAP_NM.bak"
+  # Each row goes directly under the heading, so the last one is placed first
+  # and the manifest keeps the order given here.
+  for ((c = $#; c >= 1; c--)); do qh_auth_row "${!c}"; done
+  { cap_usage_line 10000 5000 1000; } > "$NTX/$QH_SEAT.jsonl"
+  cap_gate "$QH_SEAT" '' act --manifest "$CAP_NM" --kind router-shift --target infra \
+           --cutpoint 커밋 --surface 워크트리쓰기 --snapshot-digest "$(cap_H "$QH_SEAT" '')" \
+           --rationale "픽스처 — 교대 기동" \
+           -- 상한 -p "/cc-cmds:autopilot-router-shift $CAP_NM"
+  check "34qh: 픽스처 $rid 의 교대 기동이 섰다" "$rc" "0"
+  [ "$rc" = "0" ] || printf '  34qh: %s\n' "$msg"
+  QH_SHIFT=$(row_field "$(cap_rows '교대 기동' | tail -1)" '세션 id')
+  { cap_usage_line 10000 5000 1000; } > "$NTX/$QH_SHIFT.jsonl"
+  hw_row segment 교대=0 id=Q1 "워크트리=$CONE_C" 상태=머지됨 선행=없음
+  hw_row segment 교대=0 id=Q2 "워크트리=$CONE_C" 상태=머지됨 선행=없음
+}
+qh_clause() {  # qh_clause <id> <상태> [필드…] — the shift's clause row, the fields as given
+  local id="$1" st="$2"; shift 2
+  cap_gate "$QH_SHIFT" "$QH_RID#1" act --manifest "$CAP_NM" --kind clause --target infra \
+           --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$QH_SHIFT" "$QH_RID#1")" \
+           --rationale "픽스처 — 절 정산" -- "id=$id" "상태=$st" "$@"
+}
+qh_halt() {  # qh_halt <id> — the shift's evidence request on that clause
+  cap_gate "$QH_SHIFT" "$QH_RID#1" act --manifest "$CAP_NM" --kind shift-halt --target infra --segment - \
+           --site '종료 절 근거' --cutpoint 커밋 --surface 읽기 \
+           --snapshot-digest "$(cap_H "$QH_SHIFT" "$QH_RID#1")" --rationale "픽스처 — 절 근거 요청" \
+           -- "절=$1" '질문=그 절의 근거를 남기는가?' '관측=런 안의 읽기로 만들 수 없다'
+}
+qh_exec() {  # qh_exec <id> — the shift's clause-exec of a plain read on that clause
+  cap_gate "$QH_SHIFT" "$QH_RID#1" act --manifest "$CAP_NM" --kind clause-exec --target infra --segment - \
+           --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$QH_SHIFT" "$QH_RID#1")" \
+           --rationale "픽스처 — 종료 절 근거 실행" -- "절=$1" cat README.md
+}
+qh_done() {  # qh_done <절 목록> — the shift's propose-done act
+  cap_gate "$QH_SHIFT" "$QH_RID#1" act --manifest "$CAP_NM" --kind propose-done --target infra --segment - \
+           --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$QH_SHIFT" "$QH_RID#1")" \
+           --rationale "픽스처 — 종료 제안" -- "절=$1" "근거=$CAP_LEDGER"
+}
+qh_cl() {  # qh_cl <id> <키> — one key of that clause's `clauses[]` element, null as `null`
+  cap_snap "$QH_SEAT" '' | jq -r --arg i "$1" --arg k "$2" '[.clauses[] | select(.id == $i) | .[$k] | tostring] | first // "부재"'
+}
+qh_mode() { stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1"; }
+qh_n() { cap_rows "$1" | grep -c . || true; }
+qh_last_why() {  # qh_last_why <id> — the `근거` of that clause's last `종료 절` row
+  row_field "$(cap_rows '종료 절' | grep -F "| id=$1 |" | tail -1)" '근거'
+}
+QH_RE='^종단 재료 (.+) · sha256 ([0-9a-f]{64}) · 항목 ([0-9]+)건 · 판별 (표지|문면 런 보고서에서 읽|문면 아침 보고서에서 읽)$'
+
+# ---- 양성 고정물: 문면 절 C1 · 표지 절 C2 · 보통 절 C3 ----
+qh_fx RQH1 "6f6f6f6f-1111-2222-3333-000000000001" \
+  '- `종료 절` | id=C1 | 문면=확인하지 못한 항목과 사람이 할 일이 런 보고서에서 읽힌다' \
+  '- `종료 절` | id=C2 | 문면=아침에 사람이 남김 목록을 보고 후속을 정한다 | 근거 시점=종단 뒤' \
+  '- `종료 절` | id=C3 | 문면=셋째 절'
+check "34qh: 표지 절과 문면 절의 근거 시점은 종단 뒤이고 보통 절은 null 이다" \
+  "$(qh_cl C1 '근거 시점')|$(qh_cl C2 '근거 시점')|$(qh_cl C3 '근거 시점')" "종단 뒤|종단 뒤|null"
+qh_halt C1; qh_r1=$rc; qh_halt C2
+check "34qh: 종단 뒤 절의 종료 절 근거 요청은 거절된다" "$qh_r1/$rc" "3/3"
+case "$msg" in
+  *'상태=이관'*) ok "34qh: 그 거절은 이관 정산을 가리킨다" ;;
+  *) bad "34qh: 그 거절은 이관 정산을 가리킨다" "$msg" ;;
+esac
+qh_exec C1; qh_r1=$rc; qh_exec C2
+check "34qh: 종단 뒤 절의 clause-exec 는 거절된다" "$qh_r1/$rc/$(qh_n '종료 절 실행')" "3/3/0"
+qh_clause C1 충족 '근거=중단 답 줄 3 · 첨부 /tmp/x.answer.md'; qh_r1=$rc
+qh_clause C2 충족 '근거=중단 답 줄 3 · 첨부 /tmp/x.answer.md'; qh_r2=$rc
+qh_clause C2 충족 "근거=$CAP_LEDGER 의 Q1 머지됨 행"
+check "34qh: 종단 뒤 절의 충족은 중단 답 줄을 인용해도 거절된다" "$qh_r1/$qh_r2/$rc/$(qh_n '종료 절')" "3/3/3/0"
+qh_clause C1 이관 '근거=손으로 쓴 근거'
+check "34qh: 근거를 넘긴 이관은 어휘 오류다" "$rc/$(qh_n '종료 절')" "2/0"
+qh_clause C3 이관
+check "34qh: 보통 절의 이관은 거절된다" "$rc/$(qh_n '종료 절')" "3/0"
+check "34qh: 이관 전에는 clause-handover 가 없다" \
+  "$( [ -e "$CAP_DIR/clause-handover" ] && printf 있음 || printf 없음)" "없음"
+qh_clause C1 이관
+check "34qh: 문면 절의 이관이 행을 쓴다" "$rc" "0"
+[ "$rc" = "0" ] || printf '  34qh: %s\n' "$msg"
+check "34qh: 첫 이관이 clause-handover 를 모드 700 으로 만든다" \
+  "$( [ -d "$CAP_DIR/clause-handover" ] && [ ! -L "$CAP_DIR/clause-handover" ] && qh_mode "$CAP_DIR/clause-handover")" "700"
+check "34qh: 사본 파일의 모드는 600 이다" "$(qh_mode "$CAP_DIR/clause-handover/C1.md" 2>/dev/null)" "600"
+qh_w1=$(qh_last_why C1)
+check "34qh: 이관 행의 근거는 정해진 꼴이고 문면 판별을 싣는다" \
+  "$(printf '%s' "$qh_w1" | grep -cE "$QH_RE" || true)|${qh_w1##* · 판별 }" "1|문면 런 보고서에서 읽"
+qh_hp=$(printf '%s' "$qh_w1" | sed -E -n "s/$QH_RE/\\1/p")
+qh_hs=$(printf '%s' "$qh_w1" | sed -E -n "s/$QH_RE/\\2/p")
+qh_hn=$(printf '%s' "$qh_w1" | sed -E -n "s/$QH_RE/\\3/p")
+check "34qh: 이관 행의 sha256 이 사본의 sha256 과 같다" \
+  "$qh_hp|$qh_hs" "$CAP_DIR/clause-handover/C1.md|$(shasum -a 256 "$CAP_DIR/clause-handover/C1.md" 2>/dev/null | cut -d' ' -f1)"
+check "34qh: 이관 행의 항목 수는 사본의 항목 줄 수다" \
+  "$qh_hn" "$(grep -c '^- \[' "$CAP_DIR/clause-handover/C1.md" 2>/dev/null || true)"
+qh_clause C2 이관
+check "34qh: 표지 절의 이관이 행을 쓰고 표지 판별을 싣는다" "$rc|$(qh_last_why C2 | sed 's/^.* · 판별 //')" "0|표지"
+qh_clause C1 이관
+check "34qh: 같은 절의 두 번째 이관은 거절된다" "$rc/$(cap_rows '종료 절' | grep -cF '| id=C1 |' || true)" "3/1"
+check "34qh: 이관 뒤 clauses[] 원소는 이관이다" "$(qh_cl C1 '상태')|$(qh_cl C2 '상태')" "이관|이관"
+qh_clause C3 충족 "근거=$CAP_LEDGER 의 Q1·Q2 머지됨 행"
+check "34qh: 보통 절은 충족으로 정산된다" "$rc" "0"
+cap_gate "$QH_SHIFT" "$QH_RID#1" plan --manifest "$CAP_NM" --kind propose-done --target infra --segment - \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$QH_SHIFT" "$QH_RID#1")" \
+         --rationale "픽스처 — 종료 예상" -- 절=C1,C2,C3 "근거=$CAP_LEDGER"
+case "$rc|$msg" in
+  0\|*'통과 예상'*) ok "34qh: 이관 절이 든 런의 종료 예상은 통과다" ;;
+  *) bad "34qh: 이관 절이 든 런의 종료 예상은 통과다" "$rc $msg" ;;
+esac
+qh_done C1,C2,C3
+check "34qh: 이관 절이 든 런의 propose-done 이 받아들여진다" "$rc" "0"
+[ "$rc" = "0" ] || printf '  34qh: %s\n' "$msg"
+qh_dl=$(sed -n 1p "$CAP_DIR/done" 2>/dev/null)
+case "$qh_dl" in
+  *'종료 조건 성립 · 이관 절 C1 C2 · 근거 '*) ok "34qh: 이관 절이 done 줄에 실린다" ;;
+  *) bad "34qh: 이관 절이 done 줄에 실린다" "$qh_dl" ;;
+esac
+check "34qh: 런 디렉터리에 절 근거 요청 기록도 원장에 중단 답 행도 없다" \
+  "$( { ls "$CAP_DIR/halt/shift" 2>/dev/null || true; } | grep -c '^clause-' || true)/$(qh_n '중단 답')" "0/0"
+
+# ---- 음성 고정물: 아침 보고서를 담되 고정 문자열이 없는 문면, 근거 실행이 묶인 문면, 열린 근거 요청 ----
+qh_fx RQH2 "6f6f6f6f-1111-2222-3333-000000000002" \
+  '- `종료 절` | id=C1 | 문면=시험이 런이 끝난 뒤에만 생기는 산출물(아침 보고서 등)을 근거로 삼는 종료 절이 든 런이 정산된다는 것을 단언하고 통과한다' \
+  '- `종료 절` | id=C2 | 문면=확인하지 못한 항목이 런 보고서에서 읽힌다 | 근거 실행=sh scripts/qh-probe.sh' \
+  '- `종료 절` | id=C3 | 문면=아침에 사람이 본다 | 근거 시점=종단 뒤' \
+  '- `사전 인가` | 형태=sh scripts/qh-probe.sh | 사유=절 근거 실행'
+qh_clause C1 이관; qh_r1=$rc
+qh_clause C2 이관
+check "34qh: 음성 고정물의 두 절은 근거 시점이 null 이고 이관이 거절된다" \
+  "$(qh_cl C1 '근거 시점')|$(qh_cl C2 '근거 시점')|$qh_r1|$rc" "null|null|3|3"
+# The request is planted, because the gate refuses to open one on such a
+# clause: a run whose manifest marked the clause after the request was made.
+mkdir -p "$CAP_DIR/halt/shift"
+printf '**스킬**: autopilot-router-shift\n**질문 문면**: 심은 근거 요청\n' > "$CAP_DIR/halt/shift/clause-C3#1.md"
+hw_row blocked 대상=- 스코프=cone 원인=막힘 '앵커 세그먼트=clause-C3' "중단 기록=$CAP_DIR/halt/shift/clause-C3#1.md" '사유=교대 정지 — 종료 절 근거'
+qh_clause C3 이관
+check "34qh: 열린 근거 요청이 있는 절의 이관은 거절되고 사본을 쓰지 않는다" \
+  "$rc/$(qh_n '종료 절')/$( [ -e "$CAP_DIR/clause-handover/C3.md" ] && printf 있음 || printf 없음)" "3/0/없음"
+
+# ---- 판독기 실패: 이 런의 게이트 사본에서 run-leftovers.sh 를 언제나 1 로 끝나는 스텁으로 ----
+QH_PLUG="$WORK/34qh-plugin"; rm -rf "$QH_PLUG"
+cp -R "$(cd "$(dirname "$GATE")/.." && pwd)" "$QH_PLUG"
+cat > "$QH_PLUG/orchestrator/run-leftovers.sh" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' '스텁 판독기 실패'
+exit 1
+STUB
+qh_fx RQH3 "6f6f6f6f-1111-2222-3333-000000000003" \
+  '- `종료 절` | id=C1 | 문면=아침에 사람이 남김 목록을 본다 | 근거 시점=종단 뒤'
+QH_GATE_SAVE="$GATE"; GATE="$QH_PLUG/orchestrator/gate.sh"
+qh_clause C1 이관
+GATE="$QH_GATE_SAVE"
+qh_refusal=$( { grep -F 'the leftover reader run-leftovers.sh ended with' "$CAP_OUT" "$CAP_ERR" || true; } | sed -n 1p | sed 's/^[^:]*://')
+check "34qh: 판독기 run-leftovers.sh 가 실패하면 이관은 행도 사본도 남기지 않는다" \
+  "$rc/$(qh_n '종료 절')/$( { ls "$CAP_DIR/clause-handover" 2>/dev/null || true; } | grep -c . || true)" "3/0/0"
+check "34qh: 그 거절 줄은 판독기의 종료 코드를 말한다" \
+  "$(printf '%s' "$qh_refusal" | grep -c 'ended with 1' || true)" "1"
+qh_clause C1 불가능 "근거=이관 판독기 실패 연속 2교대 — ${qh_refusal:-거부 줄 없음}"
+check "34qh: 판독기 연속 실패 뒤 불가능 정산이 받아들여진다" "$rc" "0"
+qh_done C1
+qh_dl=$(sed -n 1p "$CAP_DIR/done" 2>/dev/null)
+case "$rc|$qh_dl" in
+  0\|*'종단 — 무효화 · 불가능 절 C1 · 근거 '*) ok "34qh: 판독기 연속 실패 뒤 불가능 정산의 done 줄은 무효화다" ;;
+  *) bad "34qh: 판독기 연속 실패 뒤 불가능 정산의 done 줄은 무효화다" "$rc $qh_dl $msg" ;;
+esac
+
+# ---- clause-handover 자리가 심볼릭 링크인 런 ----
+qh_fx RQH4 "6f6f6f6f-1111-2222-3333-000000000004" \
+  '- `종료 절` | id=C1 | 문면=아침에 사람이 남김 목록을 본다 | 근거 시점=종단 뒤'
+mkdir -p "$WORK/34qh-elsewhere"
+ln -s "$WORK/34qh-elsewhere" "$CAP_DIR/clause-handover"
+qh_clause C1 이관
+check "34qh: 심볼릭 링크인 clause-handover 에서 이관은 거절된다" \
+  "$rc/$(qh_n '종료 절')/$( { ls "$WORK/34qh-elsewhere" 2>/dev/null || true; } | grep -c . || true)" "3/0/0"
+
+# ---- 무효화로 끝나는 런: 이관 절 하나와 불가능 절 하나 ----
+qh_fx RQH5 "6f6f6f6f-1111-2222-3333-000000000005" \
+  '- `종료 절` | id=C1 | 문면=아침에 사람이 남김 목록을 본다 | 근거 시점=종단 뒤' \
+  '- `종료 절` | id=C2 | 문면=둘째 절'
+qh_clause C1 이관; qh_r1=$rc
+qh_clause C2 불가능 "근거=$CAP_LEDGER 의 Q2 머지됨 행 — 얻지 못함"
+qh_done C1,C2
+qh_dl=$(sed -n 1p "$CAP_DIR/done" 2>/dev/null)
+case "$qh_r1|$rc|$qh_dl" in
+  0\|0\|*'종단 — 무효화 · 불가능 절 C2 · 이관 절 C1 · 근거 '*) ok "34qh: 무효화 done 줄은 불가능 절 뒤에 이관 절을 싣는다" ;;
+  *) bad "34qh: 무효화 done 줄은 불가능 절 뒤에 이관 절을 싣는다" "$qh_r1 $rc $qh_dl $msg" ;;
+esac
+
+# ---- 같은 런에 확인 리뷰 상한에서 P0 가 남아 park 된 세그먼트를 더한 것 ----
+qh_fx RQH6 "6f6f6f6f-1111-2222-3333-000000000006" \
+  '- `종료 절` | id=C1 | 문면=아침에 사람이 남김 목록을 본다 | 근거 시점=종단 뒤' \
+  '- `종료 절` | id=C2 | 문면=둘째 절'
+qh_base=$(dirname "$(cd "$WT" && git rev-parse --path-format=absolute --git-common-dir)")
+QH_KEY="docs/fixture-34qh-RQH6.md"
+mkdir -p "$qh_base/docs"
+printf '# 34qh 픽스처 설계 문서\n' > "$qh_base/$QH_KEY"
+sed -e "s|^\*\*설계 문서\*\*: .*|**설계 문서**: $QH_KEY|" -e "s|owner-doc=(없음)|owner-doc=$QH_KEY|" "$CAP_NM" > "$CAP_NM.t" && mv "$CAP_NM.t" "$CAP_NM"
+sed "s|owner-doc=(없음)|owner-doc=$QH_KEY|" "$CAP_GRANT" > "$CAP_GRANT.t" && mv "$CAP_GRANT.t" "$CAP_GRANT"
+QH_REP="$WORK/34qh-p0-report.md"
+{ printf '# 코드 리뷰 리포트\n\n- **리뷰 HEAD**: `abc1234`\n'
+  printf -- '- **발견 요약**: 🔴 P0 1건 | 🟠 P1 0건 | 🟡 P2 0건 | 🟢 P3 0건\n'
+  printf -- '- **P1 분류**: 차단 0건 | 이월 가능 0건\n\n## 🔴 P0 (즉시 수정 필수)\n\n'
+  printf -- '- **[c]** `x/q3.sh:1` 결함 — r\n\n## 🟠 P1 (머지 전 수정 권장)\n\n없음\n'
+} > "$QH_REP"
+qh_cyc() {  # qh_cyc <사이클> <P0> <P1> — one cycle row of Q3
+  printf -- '- `cycle` | 교대=1 | 세그먼트=Q3 | 사이클=%s | P0=%s | P1=%s | 리뷰 HEAD=abc1234 | 리포트 경로=%s | prev=x\n' \
+    "$1" "$2" "$3" "$QH_REP" >> "$CAP_LEDGER"
+}
+qh_lf() {
+  printf -- '- `stage-result` | 교대=1 | 세그먼트=Q3 | 스테이지=Q3 | 종류=lead-fix | 종료 코드=0 | 종단 부류=정상 완료 | prev=x\n' >> "$CAP_LEDGER"
+}
+hw_row segment 교대=0 id=Q3 "워크트리=$CONE_C" 상태=계획됨 선행=없음
+qh_cyc 1 1 0; qh_cyc 2 1 1
+qh_lf; qh_cyc 3 1 0; qh_lf; qh_cyc 4 1 0; qh_lf; qh_cyc 5 1 0
+hw_row segment 교대=0 id=Q3 "워크트리=$CONE_C" 상태=park 선행=없음
+qh_clause C1 이관; qh_r1=$rc
+qh_clause C2 불가능 "근거=$CAP_LEDGER 의 Q2 머지됨 행 — 얻지 못함"
+qh_done C1,C2
+qh_dl=$(sed -n 1p "$CAP_DIR/done" 2>/dev/null)
+case "$qh_r1|$rc|$qh_dl" in
+  0\|0\|*'종단 — P0 잔존 — 확인 리뷰 상한에서 P0 가 남은 세그먼트: Q3 · 무효화 · 불가능 절 C2 · 이관 절 C1 · 근거 '*)
+    ok "34qh: P0 잔존 무효화 done 줄도 이관 절을 싣는다" ;;
+  *) bad "34qh: P0 잔존 무효화 done 줄도 이관 절을 싣는다" "$qh_r1 $rc $qh_dl $msg" ;;
+esac
+rm -f "$qh_base/$QH_KEY"
+
+# ---- 교대 지침과 리드 사본의 문면: 세 번째 교대의 판단은 지침이 한다 ----
+QH_TERM="$repo_root/plugins/cc-cmds/skills/autopilot-router-shift/references/termination.md"
+QH_LEAD="$repo_root/plugins/cc-cmds/skills/autopilot/references/router-lead-copy.md"
+qh_txt() {  # qh_txt <파일> — the three fixed forms that file must carry, as a/b/c
+  case "$(cat "$1" 2>/dev/null)" in (*'`이관 판독기 실패 <id> — <거부 줄>`'*) printf a ;; esac
+  case "$(cat "$1" 2>/dev/null)" in (*"The one exception is a clause whose \`근거 시점\` is \`\"종단 뒤\"\` and whose \`이관\` the leftover reader refused"*) printf b ;; esac
+  case "$(cat "$1" 2>/dev/null)" in (*"상태=불가능 '근거=이관 판독기 실패 연속 2교대 — <거부 줄>'"*) printf c ;; esac
+}
+check "34qh: 교대 지침과 리드 사본이 이관 판독기 실패 규칙을 싣는다" "$(qh_txt "$QH_TERM")|$(qh_txt "$QH_LEAD")" "abc|abc"
+
+# --- 34ql. 남김 목록 판독기 — 원장과 디스크에서 사람 몫을 결정적으로 뽑는다 ---
+# --- section: 34ql | group: cone | covers: leftovers | anchors: 34ql: 판독기 출력이 P2 둘을 출처와 함께 싣는다, 34ql: 문단만 있는 미검토 영역은 첫 줄이 한 항목이다, 34ql: 차단 부류 줄 없는 구현 필요 항목은 코드-부재다, 34ql: 검증됨으로 뒤집힌 항목은 나오지 않는다, 34ql: 머리 줄의 항목 수가 항목 줄 수와 같다, 34ql: 이관 줄의 판별 꼬리가 이관 행의 것과 바이트 그대로 같다, 34ql: 리뷰 보고서가 없으면 판독 실패 줄이 나오고 종료 코드는 0 이다, 34ql: 원장이 없으면 종료 코드가 0 이 아니다, 34ql: 사본을 고친 뒤 이관 줄은 바뀜이다, 34ql: 아침 보고서 지침이 판독기 출력을 축자로 옮긴다 ---
+#
+# THE MORNING'S LIST OF WHAT NO ONE CONFIRMED IS READ, NOT WRITTEN. The reader
+# `run-leftovers.sh` takes the manifest and the ledger and prints one item per
+# review P2 finding, unreviewed area, open residual design item, answer
+# attachment and settled clause, each with a fixed person's part and its source.
+# The fixture is a run tree of its own: the manifest under
+# `docs/pipeline-run/`, so the root it resolves relative paths against is the
+# tree's top, and every source file beside it.
+QL_READER="$(dirname "$GATE")/run-leftovers.sh"
+QL_ROOT="$WORK/34ql"; rm -rf "$QL_ROOT"
+mkdir -p "$QL_ROOT/docs/pipeline-run" "$QL_ROOT/docs/review" "$QL_ROOT/run/RQL1/clause-handover"
+# The reader names its sources by their physical path, and a temporary
+# directory can sit behind a symlink (`/var` on macOS).
+QL_ROOT=$(cd -P -- "$QL_ROOT" && pwd -P)
+QL_NM="$QL_ROOT/docs/pipeline-run/RQL1.plan.md"
+QL_LG="$QL_ROOT/docs/pipeline-run/RQL1.md"
+QL_RD="$QL_ROOT/run/RQL1"
+QL_DOC="$QL_ROOT/docs/ql-design.md"
+printf '# 픽스처 매니페스트\n\n## 요소\n**설계 문서**: docs/ql-design.md\n\n## 인가\n- `종료 절` | id=C1 | 문면=첫째 절 문면\n- `종료 절` | id=C2 | 문면=둘째 절 문면\n- `종료 절` | id=C3 | 문면=확인하지 못한 항목이 런 보고서에서 읽힌다\n' > "$QL_NM"
+printf '# 설계\n\n## 구현 시 검증 항목\n\n### R1. 사람 환경 항목\n**검증 등급**: 구현 시 검증\n**잔여 사유**: 검증 차단\n**차단 부류**: 사람-환경\n\n### R2. 통과한 항목\n**검증 등급**: 검증됨(통과)\n\n### R3. 코드 없는 항목\n**검증 등급**: 구현 시 검증\n**잔여 사유**: 구현 필요\n\n## 다음 절\n' > "$QL_DOC"
+printf '# 리뷰\n\n## 🟡 P2 (차후 이슈 등록 권장)\n\n- 첫째 P2 지적\n- 둘째 P2 지적\n\n## 미검토 영역\n\n- 미검토 범위 하나\n' > "$QL_ROOT/docs/review/a.md"
+printf '# 리뷰\n\n## 🟡 P2 (차후 이슈 등록 권장)\n\n없음\n\n## 미검토 영역\n\n문단으로만 적은 미검토 범위\n둘째 줄\n' > "$QL_ROOT/docs/review/b.md"
+printf '남김 목록 — 정산 때의 사본\n' > "$QL_RD/clause-handover/C3.md"
+QL_HS=$(shasum -a 256 "$QL_RD/clause-handover/C3.md" | cut -d' ' -f1)
+QL_WHY="종단 재료 $QL_RD/clause-handover/C3.md · sha256 $QL_HS · 항목 7건 · 판별 문면 런 보고서에서 읽"
+{ printf '# 원장\n\n'
+  printf -- '- `cycle` | 교대=1 | 세그먼트=A | 사이클=1 | 모드=전체 | 리포트 경로=docs/review/a.md | prev=x\n'
+  printf -- '- `cycle` | 교대=1 | 세그먼트=B | 사이클=1 | 모드=전체 | 리포트 경로=docs/review/b.md | prev=x\n'
+  printf -- '- `종료 절` | 교대=1 | id=C1 | 상태=충족 | 근거=중단 답 줄 3 · 첨부 %s/att.answer.md | prev=x\n' "$QL_RD"
+  printf -- '- `종료 절` | 교대=1 | id=C2 | 상태=불가능 | 근거=얻지 못함 | prev=x\n'
+  printf -- '- `종료 절` | 교대=1 | id=C3 | 상태=이관 | 근거=%s | prev=x\n' "$QL_WHY"
+} > "$QL_LG"
+ql_run() { QL_OUT=$(bash "$QL_READER" "$@" 2>/dev/null); ql_rc=$?; }
+ql_has() { printf '%s\n' "$QL_OUT" | grep -cF -- "$1" || true; }
+ql_run "$QL_NM" "$QL_LG" --run-dir "$QL_RD"
+check "34ql: 판독기가 0 으로 끝나고 머리 줄이 런 id 를 싣는다" "$ql_rc|$(printf '%s\n' "$QL_OUT" | sed -n 1p | sed 's/ · 항목.*$//')" "0|남김 목록 — 런 RQL1"
+check "34ql: 판독기 출력이 P2 둘을 출처와 함께 싣는다" \
+  "$(ql_has "- [리뷰 P2] 세그먼트 A · 첫째 P2 지적 · 사람 몫: 후속 이슈로 올릴지 정한다 · 출처 $QL_ROOT/docs/review/a.md:")/$(ql_has "- [리뷰 P2] 세그먼트 A · 둘째 P2 지적 · ")" "1/1"
+check "34ql: 미검토 목록 줄이 한 항목이다" "$(ql_has "- [리뷰 미검토] 세그먼트 A · 미검토 범위 하나 · 사람 몫: 이 범위를 따로 볼지 정한다 · 출처 $QL_ROOT/docs/review/a.md:")" "1"
+check "34ql: 문단만 있는 미검토 영역은 첫 줄이 한 항목이다" \
+  "$(ql_has "- [리뷰 미검토] 세그먼트 B · 문단으로만 적은 미검토 범위 · ")/$(ql_has '둘째 줄')" "1/0"
+check "34ql: 사람-환경 잔여 항목이 출처와 함께 나온다" \
+  "$(ql_has "- [미검증 잔여] R1 사람 환경 항목 · 차단 부류 사람-환경 · 사람 몫: 머지 뒤 사람이 레시피로 확인한다 · 출처 $QL_DOC:")" "1"
+check "34ql: 차단 부류 줄 없는 구현 필요 항목은 코드-부재다" "$(ql_has "- [미검증 잔여] R3 코드 없는 항목 · 차단 부류 코드-부재 · ")" "1"
+check "34ql: 검증됨으로 뒤집힌 항목은 나오지 않는다" "$(ql_has '] R2 ')" "0"
+check "34ql: 답 첨부와 불가능 절이 출처와 함께 나온다" \
+  "$(ql_has "- [종료 절 답 첨부] 절 C1 · 사람 몫: 첨부가 적은 확인하지 못한 것을 본다 · 출처 $QL_RD/att.answer.md")/$(ql_has '- [종료 절] C2 불가능 · 둘째 절 문면 · 사람 몫: 이 런에서 얻지 못한 결과를 다음 런이나 사람이 얻는다 · 출처 원장 ')" "1/1"
+ql_ho=$(printf '%s\n' "$QL_OUT" | grep -F -- '- [종료 절] C3 이관 · ' || true)
+check "34ql: 이관 줄이 정산 재료와 일치를 싣는다" \
+  "$(printf '%s' "$ql_ho" | grep -cF "· 정산 재료 $QL_RD/clause-handover/C3.md (일치) · " || true)" "1"
+check "34ql: 이관 줄의 판별 꼬리가 이관 행의 것과 바이트 그대로 같다" "${ql_ho##* · 판별 }" "${QL_WHY##* · 판별 }"
+ql_items=$(printf '%s\n' "$QL_OUT" | grep -c '^- \[' || true)
+check "34ql: 머리 줄의 항목 수가 항목 줄 수와 같다" \
+  "$(printf '%s\n' "$QL_OUT" | sed -n 1p | sed 's/^.* · 항목 \([0-9]*\)건$/\1/')/$ql_items" "9/9"
+check "34ql: 끝 줄은 다른 절을 가리키는 안내다" \
+  "$(printf '%s\n' "$QL_OUT" | tail -1)" '이 밖의 사람 몫은 「기다리는 결정」·「보류 큐」·「남은 외부 상태」·「사람 대조 필요」 절에 있습니다'
+mv "$QL_ROOT/docs/review/a.md" "$QL_ROOT/docs/review/a.md.off"
+ql_run "$QL_NM" "$QL_LG" --run-dir "$QL_RD"
+check "34ql: 리뷰 보고서가 없으면 판독 실패 줄이 나오고 종료 코드는 0 이다" \
+  "$ql_rc/$(ql_has "- [판독 실패] 리뷰 P2 · $QL_ROOT/docs/review/a.md · 리뷰 보고서를 읽지 못했습니다")" "0/1"
+mv "$QL_ROOT/docs/review/a.md.off" "$QL_ROOT/docs/review/a.md"
+ql_run "$QL_NM" "$QL_ROOT/docs/pipeline-run/none.md" --run-dir "$QL_RD"
+check "34ql: 원장이 없으면 종료 코드가 0 이 아니다" "$( [ "$ql_rc" != "0" ] && printf 0아님 || printf 0)" "0아님"
+printf '고친 줄\n' >> "$QL_RD/clause-handover/C3.md"
+ql_run "$QL_NM" "$QL_LG" --run-dir "$QL_RD"
+check "34ql: 사본을 고친 뒤 이관 줄은 바뀜이다" "$(ql_has "· 정산 재료 $QL_RD/clause-handover/C3.md (바뀜) · ")" "1"
+QL_ACT3="$repo_root/plugins/cc-cmds/skills/autopilot/references/act3-report.md"
+ql_act3() {
+  case "$(cat "$QL_ACT3" 2>/dev/null)" in (*'- **확인하지 못한 항목과 사람이 할 일** — '*) printf a ;; esac
+  case "$(cat "$QL_ACT3" 2>/dev/null)" in (*'`<plugin-dir>/orchestrator/run-leftovers.sh`'*) printf b ;; esac
+  case "$(cat "$QL_ACT3" 2>/dev/null)" in (*'run `bash <copy> <manifest> <ledger> --run-dir <RUN_DIR>` and copy every line it prints verbatim and in order'*) printf c ;; esac
+  case "$(cat "$QL_ACT3" 2>/dev/null)" in (*'「확인하지 못한 항목을 읽지 못했습니다 — <the first line of its error>」'*) printf d ;; esac
+}
+check "34ql: 아침 보고서 지침이 판독기 출력을 축자로 옮긴다" "$(ql_act3)" "abcd"
+
 # --- 34r. 강제 표면의 출처 — 좌석 적용 밖에서 바뀐 분류 경로는 리뷰와 머지에 닿지 못한다 ---
 # --- section: 34r | group: cone | covers: act, snapshot, surface-class | anchors: 34r: 사람의 좌석 커밋은 통과한다, 34r: 승계된 좌석 커밋도 통과한다, 34r: 베이스만 바꾼 경로는 통과한다, 34r: 베이스를 머지한 커밋은 통과한다, 34r: 리베이스한 브랜치의 규칙 파일이 좌석 바이트다, 34r: 출처가 깨진 세그먼트의 리뷰가 blocked 행으로 막힌다, 34r: 좌석 커밋 뒤 재리뷰 전의 머지는 거절된다, 34r: 재리뷰 뒤의 머지는 통과한다, 34r: 출처가 깨진 머지는 거절된다, 34r: review-line 이 좌석 커밋을 나열한다, 34r: 스냅숏이 강제 표면과 좌석 적용 커밋을 낸다, 34r: 스테이지의 규칙 파일 cp 는 exec 에서 거절된다, 34r: HEAD 가 추적하지 않는 CLAUDE.md 의 거절은 exec 거절이 아니라 리뷰-후-적용 규칙의 것이다, 34r: 바이트에 묶인 리뷰 행이 있어도 런 디렉터리 밖 사본의 설정 홈 CLAUDE.md cp 는 park 없이 거절된다, 34r: 런 디렉터리 제안본의 설정 홈 CLAUDE.md cp 는 park 없이 거절된다, 34r: 그 cp 를 적은 좌석 실행 기록의 좌석 답은 거절되고 행을 남기지 않는다, 34r: 드라이버는 그 거절에서 머지하지 않고 park 한다 ---
 #

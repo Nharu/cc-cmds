@@ -886,6 +886,12 @@ fx_row '종료 절' "id=C1" "상태=불가능" "근거=처음엔 안 됐다"
 fx_row '종료 절' "id=C1" "상태=충족" "근거=됐다"
 detect_case "4 불가능 → 충족" RKIMP2
 check "4: 불가능 → 충족 순서면 불가능 줄이 없고 완료다" "$(col "$OUT" 판정)" "완료"
+P_EXTRA='- `종료 절` | id=C2 | 문면=둘째 절은 아침 보고서에서 읽는다' mk_prev RKHAND; fx_done
+fx_row '종료 절' "id=C1" "상태=충족" "근거=a"
+fx_row '종료 절' "id=C2" "상태=이관" "근거=종단 재료 픽스처"
+detect_case "4 충족 + 이관" RKHAND
+check "4: 이관한 절은 충족과 같이 세어 완료다" "$(col "$OUT" 판정)" "완료"
+hasnt "4: 이관 절은 불가능·보류 굵은 줄을 내지 않는다" "$OUT" "C2 "
 
 mk_prev RKHOLD
 printf '%s\n' "질의 잔여 — 픽스처" > "$FX_RUN_DIR/done"
@@ -1902,6 +1908,15 @@ has "12: L7 — 동의 행이 없으면 금지" "$(fired "$out")" "L7 "
 SEAT_NOPROG=1 mk_seat RKJ-L9 천장
 out=$(jdg RKJ-L9)
 check "12: L9 — E 로 끝났지만 진전 행이 없으면 금지" "$(fired "$out")/$(fact "$out" 진전)" "L9 /0"
+P_EXTRA="$SEAT_ROW
+- \`종료 절\` | id=C2 | 문면=둘째 절" SEAT_NOPROG=1 mk_seat RKJ-L9H 천장
+fx_row '종료 절' "id=C1" "상태=이관" "근거=종단 재료 픽스처"
+out=$(jdg RKJ-L9H)
+check "12: L9 — 이관한 종료 절 행은 진전 행이고 종료 절 사실에 충족과 같이 센다" \
+  "$(fired "$out")/$(fact "$out" 진전)/$(fact "$out" '종료 절')" "/1/1/2"
+mk_seat RKJ-L2H 마감; fx_row '종료 절' "id=C1" "상태=이관" "근거=종단 재료 픽스처"
+out=$(jdg RKJ-L2H)
+check "12: L2 — 종료 절을 모두 이관·충족으로 끝낸 원천은 금지" "$(fired "$out")/$(fact "$out" '종료 절')" "L2 /1/1"
 
 P_EXTRA="$SEAT_ROW
 $(prov7 RKJROOT0 1 RKJROOT 무진전)" mk_seat RKJ-L15 무진전
