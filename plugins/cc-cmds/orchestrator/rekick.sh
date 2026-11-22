@@ -146,7 +146,7 @@
 # `--set` carries a value 5o confirmed for a `빈칸` row of `--carry`: `<범위>`
 # is that row's scope (`런`, or a target named by its alias or by the remote
 # slug `--carry` labels it with) and `<키>` its key, one of
-# ladder-rungs · stagnation-bound · cost-ceiling · apply-probe · apply-actor ·
+# ladder-rungs · stagnation-bound · cost-ceiling · decision-confirm · apply-probe · apply-actor ·
 # apply-probe-codes (scope `런`) or cutpoint · review-ceiling · terminal-cap · dev-ids ·
 # deploy-triggers (a target). The previous manifest must hold no value
 # there; anything else is refused, except `apply-probe` when the previous
@@ -2856,6 +2856,9 @@ EOF
   printf '값\t종료 절 수\t%s\n' "${ncl:-0}"
   printf '값\t벽시계 마감\t%s\n' "$(manifest_field '인가' '벽시계 마감')"
   printf '값\t미선언 상황 처분\t%s\n' "$(manifest_field '인가' '미선언 상황 처분')"
+  local rkdc
+  rkdc=$(manifest_field '인가' '결정 수거 확정')
+  printf '값\t결정 수거 확정\t%s\n' "${rkdc:-수동}"
   printf '값\t시각 정합 마커\t%s\n' "$(manifest_field '인가' '시각 정합 마커')"
   printf '값\t설계 문서\t%s\n' "$(manifest_field '요소' '설계 문서')"
   while IFS= read -r row; do
@@ -3470,6 +3473,7 @@ rk_set_field() {
     ladder-rungs)     printf '인가\t사다리 가용 단 수' ;;
     stagnation-bound) printf '인가\t무진전 상한' ;;
     cost-ceiling)     printf '인가\t비용 천장' ;;
+    decision-confirm) printf '인가\t결정 수거 확정' ;;
     apply-probe)      printf '요소\t적용 프로브' ;;
     apply-actor)      printf '요소\t적용 주체' ;;
     cutpoint)         printf '대상\t절단점' ;;
@@ -3558,6 +3562,11 @@ rk_sets_resolve() {
       pv=''
     fi
     [ -z "$pv" ] || { printf '%s' "--set $sc:$k — 원천 매니페스트에 이미 값이 있어 빈칸이 아닙니다"; return 1; }
+    # A previous manifest without the line was read as `수동`; a blank there
+    # never widens the follow-up run.
+    if [ "$k" = "decision-confirm" ] && [ "$v" != "수동" ]; then
+      printf '%s' "--set $sc:$k — 원천 매니페스트에 줄이 없어 수동으로 읽혔으므로 이어받는 값은 수동입니다: $v"; return 1
+    fi
     awk -F '\t' -v s="$sc" -v f="$f" '$1 == s && $3 == f { d = 1 } END { exit !d }' "$out" \
       && { printf '%s' "--set $sc:$k 가 두 번 주어졌습니다"; return 1; }
     printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$sc" "$sec" "$f" "$v" "$k" "$rsc" >> "$out"
@@ -3849,10 +3858,12 @@ EOF
   local pbound
   pbound=$(MANIFEST="$prev" apply_probe_run_bound) || pbound=''
   for ks in '인가:비용 천장' '인가:무진전 상한' '인가:사다리 가용 단 수' '인가:미선언 상황 처분' \
-            '요소:적용 지점' '요소:적용 프로브' '요소:적용 주체'; do
+            '인가:결정 수거 확정' '요소:적용 지점' '요소:적용 프로브' '요소:적용 주체'; do
     k=${ks#*:}
     pval=$(MANIFEST="$prev" manifest_field "${ks%%:*}" "$k"); dval=$(MANIFEST="$draft" manifest_field "${ks%%:*}" "$k")
     [ "$pval" = "$dval" ] && continue
+    # A previous manifest without the line reads as `수동`, the value carried.
+    if [ "$k" = '결정 수거 확정' ] && [ -z "$pval" ] && [ "$dval" = '수동' ]; then continue; fi
     if [ -z "$pval" ] && vs_set_is 런 "$k" "$dval"; then continue; fi
     if [ "$k" = "적용 프로브" ] && [ -n "$pbound" ] && vs_set_is 런 "$k" "$(apply_unquote "$dval")"; then continue; fi
     why="${why:+$why; }$k 가 원천과 다릅니다"

@@ -910,6 +910,8 @@ check "5: verify 가 원천 매니페스트의 전체 sha256 을 낸다" "$(prin
 check "5: verify 가 원천 인가 기록의 전체 sha256 을 낸다" "$(printf '%s\n' "$out" | awk -F'\t' '$1 == "해시" && $2 == "인가 기록" { print $3 }')" "$(sha "$BASE/docs/pipeline-grant/RKV.md")"
 check "5: verify 가 인터뷰 기록의 전체 sha256 을 낸다" "$(printf '%s\n' "$out" | awk -F'\t' '$1 == "해시" && $2 == "인터뷰" { print $3 }')" "$(sha "$BASE/docs/pipeline-run/RKV.interview.md")"
 check "5: 깨끗한 원천에는 질문 행이 없다" "$(cnt "$out" 질문)" "0"
+check "5: 결정 수거 확정 줄이 없는 원천의 verify 는 그 값을 수동으로 낸다" \
+  "$(printf '%s\n' "$out" | awk -F'\t' '$1 == "값" && $2 == "결정 수거 확정" { print $3 }')" "수동"
 
 vfail() {  # vfail <label> <want check name>
   local o r
@@ -1199,6 +1201,22 @@ mod "$WORK/v-cl.md" 's/| 문면=픽스처 절$/| 문면=바뀐 절/'
 vs "종료 절 행이 바뀐 초안은 실패한다" 실패 "$WORK/v-cl.md" "$E" 고정값
 mod "$WORK/v-ap.md" 's/^\*\*적용 주체\*\*: (해당 없음)$/**적용 주체**: 사람/'
 vs "적용 주체가 바뀐 초안은 실패한다" 실패 "$WORK/v-ap.md" "$E" 고정값
+# 결정 수거 확정 — 줄이 없는 원천은 수동으로 읽혀, 이어받는 값은 수동뿐이다.
+dc_draft() {  # dc_draft <out> <값> — NM1 의 미선언 상황 처분 줄 뒤에 결정 수거 확정 줄
+  awk -v v="$2" '{ print } /^\*\*미선언 상황 처분\*\*: / { print "**결정 수거 확정**: " v }' "$NM1" > "$1"
+}
+dc_draft "$WORK/v-dca.md" 자동
+dc_draft "$WORK/v-dcm.md" 수동
+check "7: 결정 수거 확정 줄을 하나씩 더한 초안을 만들었다" \
+  "$(grep -c '^\*\*결정 수거 확정\*\*: 자동$' "$WORK/v-dca.md")/$(grep -c '^\*\*결정 수거 확정\*\*: 수동$' "$WORK/v-dcm.md")" "1/1"
+vs "줄이 없는 원천에 결정 수거 확정 자동을 더한 초안은 실패한다" 실패 "$WORK/v-dca.md" "$E" 고정값
+vs "줄이 없는 원천에 결정 수거 확정 수동을 적은 초안은 통과한다" 통과 "$WORK/v-dcm.md" "$E"
+rk render-manifest --prev "$SRC" --base "$BASE" --run-id RKN9 --kickoff-at "$KAT1" --deadline "$DL1" \
+   --expect-sha256 "$PMSHA" --expect-grant-sha256 "$PGSHA" --asked "$E" \
+   --set '런:decision-confirm=자동' > "$WORK/v-dcset.md"; rc=$?
+check "7: --set 런:decision-confirm=자동 은 거부된다" "$([ "$rc" != 0 ] && echo 거부)" "거부"
+has "7: 그 거부는 수동으로 읽힌 원천을 든다" "$(cat "$WORK/rk.err")" "수동으로 읽혔으므로"
+unset -f dc_draft
 mod "$WORK/v-dep.md" 's/"depends_on": \[\]/"depends_on": ["D1"]/'
 vs "지운 id 를 가리키는 depends_on 은 실패한다" 실패 "$WORK/v-dep.md" "$E" 의존
 { cat "$NM1"; printf -- '- `사전 인가` | 이어받은 런=%s | 매니페스트 sha256=%s | 인가 기록 sha256=%s\n' "$SRC" "$PMSHA" "$PGSHA"; } > "$WORK/v-prov2.md"
@@ -1407,6 +1425,19 @@ VS_PREV="$BASE/docs/pipeline-run/RKRULE.plan.md"; VS_PMSHA="$PMR"; VS_PGSHA="$PG
 check "7: --rule 이 룰 설정 줄을 그 답으로 쓴다" "$(grep -c '^\*\*사전-인가-대조\*\*: 끔$' "$WORK/v-rule.md")" "1"
 vs "룰 설정 키를 7.7 답으로 고친 초안은 통과한다" 통과 "$WORK/v-rule.md" "$WORK/asked-rule"
 vs "덮는 답 없이 룰 설정 줄이 바뀐 초안은 실패한다" 실패 "$WORK/v-rule.md" "$E" 고정값
+
+# (c2) 결정 수거 확정 자동을 가진 원천 — 초안이 그 줄을 바이트 그대로 잇는다.
+P_AXES='**결정 수거 확정**: 자동' mk_prev RKDCA; fx_done
+PMD=$(sha "$BASE/docs/pipeline-run/RKDCA.plan.md"); PGD=$(sha "$BASE/docs/pipeline-grant/RKDCA.md")
+check "7: 결정 수거 확정 자동인 원천의 verify 는 그 값을 낸다" \
+  "$(rk verify --prev RKDCA --base "$BASE" | awk -F'\t' '$1 == "값" && $2 == "결정 수거 확정" { print $3 }')" "자동"
+rk render-manifest --prev RKDCA --base "$BASE" --run-id RKN5D --kickoff-at "$KAT1" --deadline "$DL1" \
+   --expect-sha256 "$PMD" --expect-grant-sha256 "$PGD" --asked "$E" > "$WORK/v-dcc.md"
+check "7: 초안은 원천의 결정 수거 확정 줄을 그대로 잇는다" "$(grep -c '^\*\*결정 수거 확정\*\*: 자동$' "$WORK/v-dcc.md")" "1"
+VS_PREV="$BASE/docs/pipeline-run/RKDCA.plan.md"; VS_PMSHA="$PMD"; VS_PGSHA="$PGD"
+vs "결정 수거 확정 자동을 이은 초안은 통과한다" 통과 "$WORK/v-dcc.md" "$E"
+sed 's/^\*\*결정 수거 확정\*\*: 자동$/**결정 수거 확정**: 수동/' "$WORK/v-dcc.md" > "$WORK/v-dcc2.md"
+vs "원천의 결정 수거 확정과 다른 값의 초안은 실패한다" 실패 "$WORK/v-dcc2.md" "$E" 고정값
 
 # (d) The base binding, re-bound by a 7.8 answer.
 NOWBASE=$(sha "$BASE/docs/rk-base.md")

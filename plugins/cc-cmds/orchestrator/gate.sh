@@ -13748,6 +13748,43 @@ gate_decision_holds_seg() {
   return 1
 }
 
+gate_decision_collect_auto_item() {
+  # gate_decision_collect_auto_item <heading> <추천 답> <추천 근거> <values>
+  # — 0 when one open entry lets the collection recommend `추천대로 확정` in a
+  # run whose confirmation mode is `자동`; 1 when it keeps the whole record a
+  # person's. <values> is the document's `unresolved_closure_pending … values`
+  # output. The entry passes when:
+  #   - exactly one values line carries the heading, and it is a `블록` line —
+  #     a table row's fields cannot be read, and a heading found twice or not
+  #     at all cannot say which entry the answer closes;
+  #   - its `사유` does not begin with `감사 합성 요구`: that entry asks whether
+  #     the confirmed requirement itself changes, which only a person decides;
+  #   - neither the recommendation nor its reason reads undecided by the rule
+  #     `gate_decision_collect_undecided` reads answers by (`(없음)`, `(없음) `
+  #     and a reason, or empty) — an entry that needs a credential, an account
+  #     or a device a person prepares is written `(없음) — <what to prepare>`;
+  #   - neither carries `위험 수용`, `게이트 비활성`, `그대로 진행` or
+  #     `범위 축소`, the words the seat's own check refuses in an option;
+  #   - the heading survives the ledger's row-safe transform unchanged, because
+  #     the seat's answer row stamps it as `확정 항목=` and the morning report
+  #     finds the entry in the document by those bytes.
+  # `골격급: 예` and `베이스 계약 변경 필요` do not keep it: the re-convergence's
+  # base contract check still asks a person when a decision conflicts.
+  local h="$1" fa="$2" fr="$3" vals="$4" hit
+  # One awk pass prints the kind and the `사유` of the one values line naming
+  # the heading, tab-joined, and nothing when it names it zero or several times.
+  hit=$(UCA_H="$h" awk -F '\t' '$2 == ENVIRON["UCA_H"] { n++; k = $1; s = $4 }
+    END { if (n == 1) printf "%s\t%s\n", k, s }' <<<"$vals")
+  [ -n "$hit" ] || return 1
+  [ "${hit%%$'\t'*}" = '블록' ] || return 1
+  case "${hit#*$'\t'}" in '감사 합성 요구'*) return 1 ;; esac
+  case "$fa" in '(없음)'|'(없음) '*|'') return 1 ;; esac
+  case "$fr" in '(없음)'|'(없음) '*|'') return 1 ;; esac
+  case "$fa $fr" in *'위험 수용'*|*'게이트 비활성'*|*'그대로 진행'*|*'범위 축소'*) return 1 ;; esac
+  [ "$(gate_row_safe "$h" 4096)" = "$h" ] || return 1
+  return 0
+}
+
 gate_decision_collect() {
   # gate_decision_collect <document> — collects the document's open
   # `구현 전 결정` entries under its current binding digest and leaves
@@ -13830,12 +13867,28 @@ EOF
     [ "${n:-0}" -ge 1 ] 2>/dev/null || n=1
     mkdir -p "$RUN_DIR/halt" 2>/dev/null || true
     rec="$RUN_DIR/halt/decision-collect-$(printf '%s' "$dig" | cut -c1-12).md"
+    # THE RECOMMENDATION IS CHOSEN HERE, and only in a run whose
+    # decision-collection confirmation is `자동` (`decision_confirm_auto`), on a
+    # record that did not reach the loop cap, and when every open entry passes
+    # `gate_decision_collect_auto_item`. Then the record recommends
+    # `추천대로 확정` and the seat may answer it with no person; otherwise the
+    # two lines are the fixed `(없음)` ones, byte for byte. The values reading
+    # prints every entry of the section whatever the segment, so one reading
+    # under any id serves every heading.
+    local auto_ok='' vals=''
+    if [ -z "$loopcap" ] && decision_confirm_auto; then
+      auto_ok=1
+      vals=$(unresolved_closure_pending "$DOC" "${ids%% *}" values)
+    fi
     while IFS= read -r h; do
       [ -n "$h" ] || continue
       f=$(unresolved_closure_fields "$DOC" "$h")
       fa=$(printf '%s' "$f" | cut -f1); fr=$(printf '%s' "$f" | cut -f2); fs=$(printf '%s' "$f" | cut -f3)
       items="${items}- 「${h}」 — 추천 답: ${fa:-(없음)} · 추천 근거: ${fr:-(없음)} · 닿는 슬라이스: ${fs:-전체}"$'\n'
       nitems=$((nitems + 1))
+      if [ -n "$auto_ok" ]; then
+        gate_decision_collect_auto_item "$h" "$fa" "$fr" "$vals" || auto_ok=''
+      fi
     done <<EOF
 $heads
 EOF
@@ -13860,8 +13913,13 @@ EOF
       printf '**선택지**:\n'
       printf -- '- `추천대로 확정` — 항목마다 적힌 추천 답을 결정으로 삼는다: 같은 런의 교대가 /cc-cmds:design-reconverge %s 구속 티어 이탈 %s 를 보내 결정을 본문에 반영하고 항목을 해결로 닫는다. 사유가 「베이스 계약 변경 필요」 인 항목은 재수렴이 결정을 베이스 계약과 대조해 어긋남이 없으면 닫고, 있으면 베이스를 그대로 둔 채 이어 갈지 사람에게 한 번 더 묻는다. 보류된 세그먼트는 그 재수렴이 끝나 새 수거가 놓아 준 뒤 프로세스 A 부터 다시 계획한다\n' "$DOC" "$rec"
       printf -- '- `항목별로 답함` — 첨부의 결정으로 그 항목을 닫고 첨부에 없는 항목은 추천 답으로 닫는다. 그 뒤의 경로는 `추천대로 확정` 과 같다\n'
-      printf '**추천**: (없음) — 항목마다 사람의 결정이 필요하다\n'
-      printf '**추천 근거**: (없음)\n'
+      if [ -n "$auto_ok" ]; then
+        printf '**추천**: `추천대로 확정` — 모든 항목이 추천 답과 추천 근거를 싣고 사람 몫 종류가 없으며, 이 런의 결정 수거 확정이 자동이다\n'
+        printf '**추천 근거**: 기기 사실:%s 의 구현 전 결정 항목 %s개가 모두 추천 답과 추천 근거를 싣고 사람 몫 종류가 없다 / 매니페스트 인가:결정 수거 확정=자동\n' "$DOC" "$nitems"
+      else
+        printf '**추천**: (없음) — 항목마다 사람의 결정이 필요하다\n'
+        printf '**추천 근거**: (없음)\n'
+      fi
       printf '**선택지 리스크**: `추천대로 확정` — 추천 답이 (없음) 인 항목이 하나라도 있으면 게이트가 거부하고, 받으면 적힌 추천 답이 그대로 구속 티어에 쓰인다 / `항목별로 답함` — 첨부가 추천 답이 (없음) 인 항목을 모두 소제목으로 부르지 않으면 게이트가 거부하고, 받으면 첨부에 없는 항목은 추천 답으로 닫힌다\n'
       printf '**하네스 오류**: (없음)\n'
       printf '**재호출 명령**: (없음)\n'
@@ -13914,7 +13972,7 @@ gate_decision_hold_refuse() {
     warn "이 세그먼트는 park 로 두고 보류 집합 밖의 세그먼트를 계속 라우팅하세요"
   else
     warn "세그먼트 ${seg} 는 결정 수거 기록 ${GATE_DC_RECORD} 의 보류 세그먼트입니다 — 답 여부와 상관없이, 재수렴이 항목을 닫아 새 수거가 이 세그먼트를 놓아 줄 때까지 구현을 보내지 않습니다"
-    warn "보류 집합 밖의 세그먼트를 계속 라우팅하세요. 사람의 답은 그 기록의 중단 답으로 받습니다"
+    warn "보류 집합 밖의 세그먼트를 계속 라우팅하세요. 답은 그 기록의 중단 답으로 받습니다 — 사람이 답하거나, 결정 수거 확정이 자동인 런에서는 좌석이 추천대로 확정으로 답합니다"
   fi
   exit "$GATE_EXIT_RULE"
 }
@@ -13991,11 +14049,12 @@ gate_decision_reconverge_open() {
 
 gate_decision_reconverge_entry() {
   # gate_decision_reconverge_entry <key> — 0 when a `- reconverge` on the key
-  # is the re-convergence a person's answer to a decision-collection record
-  # asks for, with GATE_DCR_RECORD that record; 1 otherwise, with GATE_DCR_WHY
-  # saying which fact is missing.
+  # is the re-convergence an answer to a decision-collection record asks for,
+  # with GATE_DCR_RECORD that record; 1 otherwise, with GATE_DCR_WHY saying
+  # which fact is missing.
   #
-  # The key's last `중단 답` is a person's `추천대로 확정` or `항목별로 답함`
+  # The key's last `중단 답` is a person's `추천대로 확정` or `항목별로 답함`,
+  # or, in a run whose confirmation mode is `자동`, the seat's,
   # on a record `gate_decision_reconverge_open` still admits. A `--resume` of
   # that re-convergence is admitted the way the audit's is: the key's last row
   # is a re-convergence of the session being resumed, and the record is the
@@ -14035,8 +14094,16 @@ gate_decision_reconverge_entry() {
     *) GATE_DCR_WHY="결정 수거 기록의 마지막 답(원장 ${last%%:*}번째 줄)이 「추천대로 확정」 이나 「항목별로 답함」 이 아닙니다"
        return 1 ;;
   esac
-  if [ "$(gate_halt_answered_by "$row")" != '사람' ]; then
-    GATE_DCR_WHY="결정 수거 기록의 마지막 답(원장 ${last%%:*}번째 줄)이 사람의 답이 아닙니다"
+  # A PERSON'S ANSWER, OR IN A RUN WHOSE CONFIRMATION MODE IS `자동` THE
+  # SEAT'S. The shift's never opens it.
+  local dcby
+  dcby=$(gate_halt_answered_by "$row")
+  if [ "$dcby" != '사람' ] && { [ "$dcby" != '좌석' ] || ! decision_confirm_auto; }; then
+    if decision_confirm_auto; then
+      GATE_DCR_WHY="결정 수거 기록의 마지막 답(원장 ${last%%:*}번째 줄)이 사람이나 좌석의 답이 아닙니다"
+    else
+      GATE_DCR_WHY="결정 수거 기록의 마지막 답(원장 ${last%%:*}번째 줄)이 사람의 답이 아닙니다"
+    fi
     return 1
   fi
   if gate_decision_collect_undecided_why "$rec" "$(gate_row_field "$row" '선택지')"; then
@@ -14239,6 +14306,21 @@ gate_reconverge_spent() {
     }
   ' "$carrier"
   return 0
+}
+
+gate_decision_collect_current_record() {
+  # gate_decision_collect_current_record — the `중단 기록` of the `결정 수거`
+  # row the collection reads now, by the rule of
+  # `gate_snapshot_decision_holds_json`: the last row while its record's
+  # re-convergence is pending, else the row of the document's current binding
+  # digest. Nothing when there is no document or no such row. A read.
+  local dig row
+  [ -n "${DOC:-}" ] && [ -r "${DOC:-}" ] || return 0
+  dig=$(binding_digest 2>/dev/null) && [ -n "$dig" ] || return 0
+  row=$(gate_decision_collect_pending_row)
+  [ -n "$row" ] || row=$(gate_decision_collect_row "$dig")
+  [ -n "$row" ] || return 0
+  gate_row_field "$row" '중단 기록'
 }
 
 gate_snapshot_decision_holds_json() {
@@ -28166,6 +28248,23 @@ gate_halt_auto_answer_current() {
       warn "no \`shift-halt\` row of this run wrote this record, so it is not a question this run asked: $rec"
       return "$GATE_EXIT_RULE" ;;
   esac
+  # A DECISION-COLLECTION RECORD IS CURRENT BY THE COLLECTION, in a run whose
+  # confirmation mode is `자동`. The gate wrote it after the key's attempt
+  # settled `정상 완료`, so no attempt halted on it and the park test below
+  # would refuse it. It is current when a `결정 수거` row vouches for its bytes
+  # and it is the record of the row the collection reads now — the last row
+  # while its re-convergence is pending, else the row of the document's
+  # current binding digest, the rule `gate_snapshot_decision_holds_json`
+  # reads. Only reads: nothing is collected here. In a `수동` run the branch
+  # is not taken, so the waiting-decisions list reads such a record as before.
+  if halt_step_is_decision_collect "$rec" && decision_confirm_auto; then
+    if gate_decision_collect_named "$rec" \
+       && [ "$(gate_decision_collect_current_record)" = "$rec" ]; then
+      return 0
+    fi
+    warn "this decision-collection record is not the one the collection reads now (the pending row, else the row of the document's current binding digest) — an automatic answer goes only to that record: $rec"
+    return "$GATE_EXIT_RULE"
+  fi
   local lp
   gate_halt_record_of_last_park "$LEDGER" "$RUN_DIR" "$key" "$rec"
   lp=$?
@@ -45363,11 +45462,35 @@ EOF
       # An answer that leaves an entry with no recommendation undecided is
       # refused, and no row is written, so the same record can be answered
       # again (`gate_decision_collect_undecided`).
+      # IN A RUN WHOSE CONFIRMATION MODE IS `자동` THE SEAT ANSWERS IT TOO, on a
+      # record that did not reach the loop cap. The recommendation the seat
+      # copies was chosen by the collection (`gate_decision_collect_auto_item`),
+      # and `gate_halt_recommendation` above already held the answer to it. A
+      # shift never answers it, in either mode. The seat's row stamps the
+      # record's `**미결 결정 항목**` value as `확정 항목` and the document as
+      # `확정 문서`, which the morning report starts from.
+      local hdcitems='' hdcdoc=''
       if halt_step_is_decision_collect "$hrec"; then
         local hdckey
         if [ "$hby" != "사람" ]; then
-          warn "이 중단 기록은 결정 수거 기록(${GATE_DC_STEP})입니다 — 답한 주체=사람 의 답만 기록합니다: $hrec"
-          return "$GATE_EXIT_RULE"
+          if [ "$hby" != "좌석" ]; then
+            warn "이 중단 기록은 결정 수거 기록(${GATE_DC_STEP})입니다 — 교대는 답하지 않습니다. 사람이 답하거나, 결정 수거 확정이 자동인 런에서는 좌석이 \`추천대로 확정\` 으로 답합니다: $hrec"
+            return "$GATE_EXIT_RULE"
+          fi
+          if ! decision_confirm_auto; then
+            warn "이 중단 기록은 결정 수거 기록(${GATE_DC_STEP})입니다 — 이 런의 결정 수거 확정이 자동이 아니므로 답한 주체=사람 의 답만 기록합니다: $hrec"
+            return "$GATE_EXIT_RULE"
+          fi
+          if gate_decision_collect_capped "$hrec"; then
+            warn "이 중단 기록은 순환 상한에 닿은 결정 수거 기록입니다 — 좌석은 답하지 않고 사람 몫으로 남깁니다: $hrec"
+            return "$GATE_EXIT_RULE"
+          fi
+          hdcitems=$(sed -n 's/^\*\*미결 결정 항목\*\*: //p' "$hrec" | sed -n '1p')
+          hdcdoc=$DOC
+          if [ -z "$hdcitems" ] || [ -z "$hdcdoc" ]; then
+            warn "결정 수거 기록에서 미결 결정 항목 줄이나 설계 문서를 읽지 못해 좌석의 답을 기록하지 않습니다: $hrec"
+            return "$GATE_EXIT_RULE"
+          fi
         fi
         hdckey=$(sed -n '1s/.*; stage=\([^;]*\)#[0-9][0-9]*; .*/\1/p' "$hrec")
         if [ -z "$hdckey" ] || [ "$seg" != "$hdckey" ]; then
@@ -45518,7 +45641,8 @@ EOF
         hwhy=$(gate_row_safe "$hpre$(gate_field_of '근거' "$@")" "$hw")
         hlen=$(gate_row_projected_bytes '중단 답' "세그먼트=$seg" "중단 기록=$hrec" \
           "스킬=${hskill:-미상}" "선택지=$hopt" "답한 주체=$hby" "근거=$hwhy" \
-          ${hkinds:+"근거 종류=$hkinds"} ${hdm:+"초안 채택=$hdm"} ${hsac:+"좌석 커밋=$hsac"} ${hsana:+"적용 파일=$hsana"} \
+          ${hkinds:+"근거 종류=$hkinds"} ${hdcitems:+"확정 항목=$hdcitems"} ${hdcitems:+"확정 문서=$hdcdoc"} \
+          ${hdm:+"초안 채택=$hdm"} ${hsac:+"좌석 커밋=$hsac"} ${hsana:+"적용 파일=$hsana"} \
           ${hsafr:+"승인 프레임=$hsafr"} ${hsasn:+"적용 범위 수=$hsasn"} ${hsasd:+"적용 범위 다이제스트=$hsasd"} \
           ${hsacf:+"승계 프레임=$hsacf"} ${hsacr:+"승계 원본=$hsacr"} ${hsanh:+"사람 몫=$hsanh"} \
           ${hladder:+"잔여 판정=$hladder"} ${hxj:+"고칠 곳=$hfix"} ${hxj:+"판정 주체=$hxj"} ${hxs:+"판정 신호=$hxs"} \
@@ -45531,6 +45655,10 @@ EOF
       [ "$hlen" -le "$GATE_ROW_MAX" ] || {
         if [ -n "$hsa" ]; then
           warn "the \`중단 답\` row of this seat apply does not fit the row cap even with \`근거\` clipped (${hlen} bytes over ${GATE_ROW_MAX}) — nothing was committed; a shorter record path or segment key is needed"
+          return "$GATE_EXIT_RULE"
+        fi
+        if [ -n "$hdcitems" ]; then
+          warn "좌석의 \`중단 답\` 행이 \`근거\` 를 줄여도 \`확정 항목\`·\`확정 문서\` 도장과 함께 원장 행 상한(${GATE_ROW_MAX}바이트)을 넘습니다 — 도장은 줄이지 않으므로 좌석의 답을 기록하지 않고, 기록은 사람 몫으로 남습니다: $hrec"
           return "$GATE_EXIT_RULE"
         fi
         warn "the \`중단 답\` row does not fit the row cap even with \`근거\` clipped — the option or the path is too long to record"
@@ -45599,6 +45727,7 @@ EOF
           fi
           gate_append '중단 답' "세그먼트=$seg" "중단 기록=$hrec" "스킬=${hskill:-미상}" \
             "선택지=$hopt" "답한 주체=$hby" "근거=$hwhy" ${hkinds:+"근거 종류=$hkinds"} \
+            ${hdcitems:+"확정 항목=$hdcitems"} ${hdcitems:+"확정 문서=$hdcdoc"} \
             ${hsafr:+"승인 프레임=$hsafr"} \
             ${hdm:+"초안 채택=$hdm"} ${hsanh:+"사람 몫=$hsanh"} ${hladder:+"잔여 판정=$hladder"} ${hxj:+"고칠 곳=$hfix"} ${hxj:+"판정 주체=$hxj"} \
             ${hxs:+"판정 신호=$hxs"} ${hxe:+"판정 근거=$hxe"} ${hxg:+"측정 등급=$hxg"} ${hxr:+"라우팅=$hxr"} \

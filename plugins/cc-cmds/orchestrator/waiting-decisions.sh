@@ -532,6 +532,16 @@ wd_report() {
     unset CC_GATE_SOURCE_ONLY CC_ORCH_SOURCE_ONLY
     MANIFEST=$manifest; RUN_ID=$run_id; RUN_DIR=$rundir; LEDGER=$ledger
     BASE=$base; GRANT="$base/docs/pipeline-grant/$run_id.md"
+    # The design document, resolved the way the driver resolves it: the
+    # decision collection's auto-answer check reads its open items from it.
+    DOC=$(manifest_field '요소' '설계 문서' 2>/dev/null)
+    case "$DOC" in
+      ''|'(없음)') DOC='' ;;
+      *) if [ -f "$base/$DOC" ]; then DOC="$base/$DOC"
+         elif [ -f "/$DOC" ]; then DOC="/$DOC"
+         else DOC="$base/$DOC"
+         fi ;;
+    esac
     wd_render
   ) || rc=$?
   case "$rc" in
