@@ -7156,6 +7156,24 @@ if [ "$orph_hit2" != "0" ]; then
 else
   bad "고아 탐지" "죽은 S1.pid 가 고아로 보고되지 않는다 — 면제가 이름을 넘어 번졌다"
 fi
+# WHILE THE RESIDENT OBSERVER HOLDS THE JOB, `checks.pid` NAMES THE OBSERVER — a
+# live pid that does not run `checks.sh`. The relay's poller-liveness test asks
+# only whether the pid exists, so it must keep reading "a poller is alive", and
+# the orphan census must keep the record exempt by name. A live process that is
+# not the poller stands in for the observer.
+rm -f "$ORPH_RD/S1.pid"
+sleep 60 & orph_obs=$!
+printf '%s' "$orph_obs" > "$ORPH_RD/checks.pid"
+orph_live=$(
+  RUN_DIR=$ORPH_RD
+  eval "$(sed -n '/^gate_relay_poller_live()/,/^}/p' "$(dirname "$DRIVER")/gate.sh")"
+  if gate_relay_poller_live; then printf 'live'; else printf 'dead'; fi
+)
+check "관측기 pid 를 담은 checks.pid 를 교대 대기가 산 폴러로 읽는다" "$orph_live" "live"
+orph_out3=$(cc_orphan_stages "$ORPH_RD")
+orph_hit3=$( { printf '%s\n' "$orph_out3" | grep -cx 'checks' || true; } | tr -d ' ')
+check "관측기 pid 를 담은 checks.pid 는 고아로 보고되지 않는다" "$orph_hit3" "0"
+kill "$orph_obs" 2>/dev/null; wait "$orph_obs" 2>/dev/null
 rm -rf "$ORPH_RD"
 
 # ---------------------------------------------------------------------------

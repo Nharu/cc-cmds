@@ -539,7 +539,10 @@ def spawn():
                 # status line's harness reads its pipe to the end.
                 os.closerange(3, 65536)
                 env = child_env()
-                env["PATH"] = "/usr/bin:/bin" + (":" + env["PATH"] if env.get("PATH") else "")
+                # The system directories go after the caller's PATH, not before:
+                # a job module runs `gh` by name, and on a host whose `gh` lives in
+                # /usr/bin a leading /usr/bin would shadow the one the caller picked.
+                env["PATH"] = (env["PATH"] + ":" if env.get("PATH") else "") + "/usr/bin:/bin"
                 os.execve(sys.executable, [sys.executable, os.path.abspath(__file__), "serve"], env)
             os.write(w, b"%d\n" % gpid)
         except BaseException:

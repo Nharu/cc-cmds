@@ -5,7 +5,7 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [3.56.1] - 2026-11-23
+## [3.57.1] - 2026-11-23
 
 게이트의 슬라이싱 판독기가 긴 설계 문서에서 맞게 읽은 값을 상태 141 로 돌려주던 결함을 고친다. 이 때문에 선언 파일 대조가 값을 읽지 못했다고 판정해, 구현 파견할 세그먼트를 확률적으로 park 했다.
 
@@ -16,6 +16,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Post-install notes
 
 - 런은 시작 때 고정한 자기 플러그인 사본을 돌린다. 이 판 전에 시작한 런은 계속 옛 판독기를 쓴다.
+
+## [3.57.0] - 2026-11-23
+
+무인 런의 PR 체크 폴링을 관측 데몬 `observer.py` 에 맡긴다. 지금까지는 런마다 `checks.sh` 가 PR 하나에 1분마다 `gh pr checks` 를 따로 불렀다. 이제 표지가 있는 고정 사본의 `checks.sh` 는 기동 줄을 바꾸지 않은 채 자기 인자를 관측기에 넘긴다. 관측기는 채택한 런들의 PR 을 1분에 한 번 GraphQL 읽기 질의 하나로 함께 묻고, 각 런의 `checks.out`·`checks.done` 을 지금과 같은 꼴로 쓴다.
+
+### Added
+
+- **checks 작업 모듈** — `orchestrator/observer_checks.py`. 채택한 런들의 PR 을 GraphQL 별칭 질의 하나로 묻고, 런마다 `gh pr checks` 의 비 TTY 출력과 같은 행(`이름\t버킷\t경과\tURL`)과 같은 종료 판정으로 스냅숏을 만든다. 취소된 체크는 `gh` 처럼 `fail` 로 찍되 종료 코드 1 에는 세지 않는다. 한 페이지에 다 담기지 않는 PR 처럼 모듈이 덮지 못하는 상태를 만나면 그 런에 `checks.fallback` 을 두고 런의 `checks.sh` 를 직접 루프로 되돌린다.
+- **`checks.sh --once --from-snapshot <파일>`·`--spec`** — `--from-snapshot` 은 `gh` 대신 관측기가 준 스냅숏 파일에서 PR 과 체크를 읽어 한 바퀴를 돌고 마지막에 `quiet=<0|1>` 을 찍는다. `--spec` 은 물어볼 세그먼트마다 `<slug>\t<세그먼트>\t<머리 브랜치>` 를 찍고 끝나며, `gh` 를 부르지도 파일을 쓰지도 않는다. `--once` 바퀴의 `CC_OBSERVER_PID` 는 `checks.pid` 에 이 프로세스 대신 쓸 pid 다.
+- **시험** — `scripts/test-observer-checks.sh`(질의 울타리, 스냅숏 대조, 위임 종단, 표지 없는 사본, 되돌림, fleet 생존 판정). `make test` 의 오케스트레이터 시험 목록에 더했다.
+
+### Changed
+
+- **`checks.sh` 위임** — `--once`·`--spec` 이 아니고, 고정 사본에 `observer-protocol` 이 있고, `checks.fallback` 이 없고, `CC_CMDS_OBSERVER=off`·`CI` 가 아니며, python3 가 있으면 `observer.py adopt --job checks` 를 부르고, 채택되면 0 으로 끝난다. 위임 중에는 `checks.pid` 가 관측기 pid 를 담는다.
+- **fleet 재진입 생존 판정** — 폴러·감시기 생존 판정이 `observer.py` 를 도는 pid 도 산 것으로 읽는다. 좌석 문서의 감시기 복구 대조도 같다.
+- **관측기 데몬의 PATH** — 관측기가 데몬으로 뜰 때 `/usr/bin:/bin` 을 부른 쪽 PATH 의 앞이 아니라 뒤에 붙인다. 앞에 두면 `gh` 가 `/usr/bin` 에 있는 호스트에서 부른 쪽이 고른 `gh` 가 가려진다.
+
+### Post-install notes
+
+- 런은 시작 때 고정한 자기 플러그인 사본을 돌린다. 이 판 전에 시작한 런은 끝날 때까지 지금처럼 `checks.sh` 가 직접 폴링한다.
 
 ## [3.56.0] - 2026-11-22
 
