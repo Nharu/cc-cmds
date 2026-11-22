@@ -5,6 +5,16 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.57.1] - 2026-11-23
+
+대시보드 런 상세의 시간 띠에서 왼쪽 끝 시작 라벨과 오른쪽 끝 지금·종단 라벨이 가장 가까운 눈금 라벨과 포개지던 것을 고친다. 끝 라벨은 그대로 두고 겹칠 거리 안의 눈금 라벨을 숨긴다.
+
+### Fixed
+
+- **시간 띠 끝 라벨 겹침** — `timeBand()` 가 눈금 라벨마다 실측보다 넉넉한 고정 글자 폭 표로 상자를 잡아, 시작 라벨이나 오른쪽 끝 라벨과 6 단위 안으로 붙는 눈금 라벨을 그리지 않는다. 그 눈금의 눈금선, 띠 높이, 끝 라벨의 위치와 정렬은 바뀌지 않는다.
+- **숨긴 자정의 날짜** — 숨긴 눈금 라벨이 자정 라벨이면 그 날짜를 다음에 보이는 비자정 눈금 라벨(`MM/DD HH:MM`)로 옮기고, 받을 라벨이 끝까지 없으면 오른쪽 끝 라벨을 `지금 MM/DD HH:MM`·`종단 MM/DD HH:MM` 으로 그린다. 간격 12시간 이상에서 옮길 곳이 없는 날짜는 이웃한 자정 라벨과 눈금선으로 읽는다.
+- **시험** — `scripts/test-dashboard-screen.sh` 에 S7 절을 더해, node DOM 대역으로 그린 시간 띠의 위쪽 라벨끼리 겹치지 않고 날짜가 남는지를 단언한다.
+
 ## [3.57.0] - 2026-11-23
 
 무인 런의 PR 체크 폴링을 관측 데몬 `observer.py` 에 맡긴다. 지금까지는 런마다 `checks.sh` 가 PR 하나에 1분마다 `gh pr checks` 를 따로 불렀다. 이제 표지가 있는 고정 사본의 `checks.sh` 는 기동 줄을 바꾸지 않은 채 자기 인자를 관측기에 넘긴다. 관측기는 채택한 런들의 PR 을 1분에 한 번 GraphQL 읽기 질의 하나로 함께 묻고, 각 런의 `checks.out`·`checks.done` 을 지금과 같은 꼴로 쓴다.
