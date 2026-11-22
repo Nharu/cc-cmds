@@ -72,7 +72,7 @@ jobs:
     # gate suite, so the old reason for a very long ceiling (that suite slowing
     # down as it runs) no longer applies to this job.
     #
-    # The 20-minute ceiling is the outer safety net, not the thing that tells
+    # The 30-minute ceiling is the outer safety net, not the thing that tells
     # a hang from progress. The make step is armed (scripts/ci-step-guard.sh)
     # with a deadline inside this ceiling — the job start plus CC_JOB_BUDGET_S,
     # less a margin for its dump — and every suite under it has a deadline
@@ -102,14 +102,28 @@ jobs:
     # plus a margin for variance; if that does not leave a quarter of the
     # ceiling, split differently before raising the ceiling.
     #
+    # The suite has since outgrown the twenty minutes. On 2026-11-20 a master
+    # run passed with part 1 at 908 seconds and part 2 at 1014, about 85
+    # seconds inside the suites' 1099-second deadline, and a pull request run
+    # that did not touch test-run.sh or run.sh was reaped at that deadline in
+    # both parts, twice in a row, with no assertion failing. So the ceiling
+    # went up to thirty rather than waiting on a third part: this leg is not
+    # what sets a pull request's critical path — the ubuntu gate shards take
+    # over half an hour — so the higher ceiling costs a pull request no wall
+    # clock, while a split needs a second boundary barrier placed where every
+    # section below it stands on setup alone. By the rule above, the longest
+    # part plus the steps around it (about 1040 seconds) now leaves about 42
+    # percent of the ceiling. When the parts grow past three quarters of it,
+    # split into more parts rather than raising the ceiling again.
+    #
     # CC_JOB_BUDGET_S below must equal this ceiling times 60:
     # `timeout-minutes` cannot read `env`, so the
     # two are tied by a check in scripts/test-suite-guard.sh rather than by a
     # reference. Change both together.
-    timeout-minutes: 20
+    timeout-minutes: 30
     env:
       CC_SUITE_GUARD_STRICT: '1'
-      CC_JOB_BUDGET_S: '1200'
+      CC_JOB_BUDGET_S: '1800'
     steps:
       # First, before checkout: the step deadline is measured from here.
       - name: Record job start
