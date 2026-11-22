@@ -33366,9 +33366,12 @@ mkdir -p "$QB_SIDE"
 SA_TARGET_ROW2="- \`target\` | 별칭=side | 메인 워크트리=$QB_SIDE | 공통 git 디렉터리=$(cd "$QB_SIDE" && git rev-parse --path-format=absolute --git-common-dir) | 베이스 브랜치=main | 홈=아니오 | 원격 슬러그=t/side | 절단점=커밋 | 말단 행위 상한=없음"
 # The clause-exec branch below moves the base ref itself: a commit made in the
 # tree the gate checks out for it lands on a detached HEAD and moves nothing.
-# Its commit exists before the manifest names it, and moves no ref here.
+# Its commit exists before the manifest names it, and moves no ref here. The
+# branch is moved with `git branch -f`, which the grading table reads as a
+# worktree write; git refuses that on a branch some worktree has checked out,
+# so the main worktree is detached right before that act.
 QB_CX=$(cd "$SA_WT" && git commit-tree 'main^{tree}' -p main -m qb-clause)
-SA_PREAUTH_EXTRA="git update-ref refs/heads/main $QB_CX"
+SA_PREAUTH_EXTRA="git branch -f main $QB_CX"
 SA_AUTH_RAW='- `종료 절` | id=C1 | 문면=베이스 위의 근거 커밋이 있다'
 sa_manifest ''
 QG="$SA_RUN/base-guard"
@@ -33785,10 +33788,11 @@ check "15q: 라우터의 베이스 이동 shift-halt 는 2 로 거부되고 기�
 
 # (하5) clause-exec 갈래 --------------------------------------------------------------
 qb_old=$(qb_main)
+( cd "$SA_WT" && git checkout -q --detach ) >/dev/null 2>&1
 CC_PIPELINE_SHIFT_ID="$SA_ID#1" CC_PIPELINE_STAGE_ID='' CC_PIPELINE_SEGMENT='' \
   sag act --manifest "$SA_MANIFEST" --kind clause-exec --target main --segment - --cutpoint 커밋 \
     --surface 워크트리쓰기 --reach 런로컬 --snapshot-digest "$(SAH)" --rationale "픽스처 — 종료 절 근거 실행" \
-    -- 절=C1 git update-ref refs/heads/main "$QB_CX"
+    -- 절=C1 git branch -f main "$QB_CX"
 QB_RT=$(qb_tl)
 check "15q: clause-exec 갈래로 베이스를 옮긴 행위도 11 과 기록을 남긴다" \
   "$rc|$( [ "$(qb_main)" != "$qb_old" ] && printf 이동 )|$(qb_warn '행위는 수행됨')|$(sed -n 's/^\*\*스텝\*\*: //p' "$QB_RT" 2>/dev/null)" \
