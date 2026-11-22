@@ -244,6 +244,15 @@
 #                    manifest's design document, one per line in document
 #                    order, or `문서 판독 불가 — <reason>`; empty when none
 #                    does. Writes nothing
+#   gate.sh residual-check --manifest <path> --document <design document>
+#                    prints one `<label><TAB><field><TAB><reason>` line per
+#                    violation of the machine-checkable residual-item
+#                    well-formedness predicate in the document's
+#                    `## 구현 시 검증 항목` (`residual_items_malformed`; a
+#                    violation of the whole document is labelled `문서`).
+#                    Exit 0 when there is none or the section is absent, 1 when
+#                    there is one, 2 when the document cannot be read or an
+#                    argument is wrong. Writes nothing
 #   gate.sh decision-collect --manifest <path> --document <design document>
 #                    collects every open `구현 전 결정` entry of the document
 #                    under its binding-surface digest: one halt record
@@ -24815,8 +24824,8 @@ gate_main() {
          exit 2 ;;
     esac
   fi
-  if [ -n "$dc_doc" ] && [ "$verb" != "decision-collect" ]; then
-    printf 'gate: --document is used only with decision-collect (verb received: %s)\n' "$verb" >&2
+  if [ -n "$dc_doc" ] && [ "$verb" != "decision-collect" ] && [ "$verb" != "residual-check" ]; then
+    printf 'gate: --document is used only with decision-collect and residual-check (verb received: %s)\n' "$verb" >&2
     exit 2
   fi
   # `--item` is shared by the two verbs that read a residual item; the other
@@ -25558,6 +25567,19 @@ gate_main() {
       local ss_rc=0
       bash "$GATE_DIR/enforcement-surface-screen.sh" ${ss_flags[@]+"${ss_flags[@]}"} -- "$@" || ss_rc=$?
       exit "$ss_rc"
+      ;;
+    residual-check)
+      # Reading, not acting: the machine-checkable part of the residual-item
+      # well-formedness predicate (`residual_items_malformed`) over the named
+      # document, for an unattended design skill to run on its own saved
+      # document. Its output and exit status pass through: 0 no violation, 1
+      # one line per violation, 2 a document that could not be read. No ledger
+      # row — nothing is performed.
+      [ -n "$dc_doc" ] || { printf 'gate: residual-check requires --document <path>\n' >&2; exit 2; }
+      [ $# -eq 0 ] || { printf 'gate: residual-check takes no argv after --\n' >&2; exit 2; }
+      local rc_rc=0
+      residual_items_malformed "$dc_doc" || rc_rc=$?
+      exit "$rc_rc"
       ;;
     decision-collect)
       # Writing under the run directory and one ledger row: the collection of
@@ -27701,6 +27723,65 @@ gate_halt_record_tail() {
   esac
 }
 
+# ---------------------------------------------------------------------------
+# THE REASON AN AUTOMATIC ANSWER WAS REFUSED ON THE RECORD'S CONTENT.
+#
+# `gate_halt_recommendation`, `gate_halt_design_check` and
+# `gate_halt_draft_admit` judge what the record and the design document say.
+# When one of them refuses a seat's or a stage's answer, the reason used to
+# reach standard error only, so the person later asked the same question could
+# not tell why the seat had not answered it. `gate_halt_content_check` runs one
+# of the three with `warn` copying its text into GATE_HALT_REFUSE_WHY; the last
+# warning before a refusal is the refusal's own line. The other refusals of an
+# automatic answer — the switch is off, an automatic answer already stands,
+# another answer is waiting, the record is not the key's last settling stop, no
+# branch can route it — are not content checks and are left off this path: the
+# seat retries the timing ones on its next return, and a routing refusal already
+# reaches the question through the seat's own text.
+# ---------------------------------------------------------------------------
+gate_halt_content_check() {
+  # gate_halt_content_check <check function> <arg>... — runs the check with the
+  # capture on, and returns its status. GATE_HALT_REFUSE_WHY is cleared first.
+  local rc=0
+  GATE_HALT_REFUSE_WHY=''
+  GATE_HALT_REFUSE_CAPTURE=1
+  "$@" || rc=$?
+  GATE_HALT_REFUSE_CAPTURE=0
+  [ "$rc" = 0 ] && GATE_HALT_REFUSE_WHY=''
+  return "$rc"
+}
+
+gate_halt_auto_refused_row() {
+  # gate_halt_auto_refused_row <alias> <key> <record> <answered by> — one
+  # `auto-refused` row naming the record, who answered (`좌석` or `스테이지`),
+  # the record's recommended label (`(없음)` when it recommends none) and the
+  # captured reason. Writes nothing when no reason was captured, or when a row
+  # with the same record, answerer and reason already stands: the same refusal
+  # met twice is one fact. The row is not an answer — every reader of answers
+  # reads `중단 답` rows — so the record stays unanswered.
+  local alias="$1" key="$2" rec="$3" by="$4" tail why lab r
+  [ -n "${GATE_HALT_REFUSE_WHY:-}" ] || return 0
+  case "$by" in 좌석|스테이지) ;; *) return 0 ;; esac
+  tail=$(gate_halt_record_tail "$rec")
+  why=$(gate_row_safe "$GATE_HALT_REFUSE_WHY" 300)
+  lab=$(sed -n 's/^\*\*추천\*\*: //p' "$rec" 2>/dev/null | sed -n '1p')
+  case "$lab" in
+    '`'*'`'*) lab=${lab#\`}; lab=${lab%%\`*} ;;
+    *) lab='(없음)' ;;
+  esac
+  [ -n "$lab" ] || lab='(없음)'
+  while IFS= read -r r; do
+    [ -n "$r" ] || continue
+    [ "$(gate_row_field "$r" '중단 기록')" = "$tail" ] || continue
+    [ "$(gate_row_field "$r" '답한 주체')" = "$by" ] || continue
+    [ "$(gate_row_field "$r" '사유')" = "$why" ] && return 0
+  done <<EOF
+$( { gate_rows 'auto-refused' || true; } )
+EOF
+  gate_append 'auto-refused' "대상=$alias" "세그먼트=$key" "중단 기록=$tail" \
+    "답한 주체=$by" "추천=$(gate_row_safe "$lab" 120)" "사유=$why" "관측=$(now_iso)" || true
+}
+
 gate_halt_record_returned() {
   # gate_halt_record_returned <record> — `cc_halt_returned` on this run's
   # ledger, so the gate's bound and the watcher read the same answer.
@@ -27928,8 +28009,10 @@ gate_halt_stage_self_answer() {
   # file exists, and the caller is that very attempt) and the answer's route
   # (the row is consumed by this attempt's own `stage-result`, never carried).
   #
-  # Any refusal writes neither a row nor an attachment, and the stage ends on
-  # its record as before.
+  # A refusal writes neither a `중단 답` row nor an attachment, and the stage
+  # ends on its record as before; a refusal by a content check
+  # (`gate_halt_recommendation`, `gate_halt_design_check`) leaves one
+  # `auto-refused` row.
   local seg="$1" alias="$2"; shift 2
   local f k rec opt sid key att want rec_why skill hdig hlane hat row hlen ladder body rest part
   for f in "$@"; do
@@ -27989,13 +28072,23 @@ gate_halt_stage_self_answer() {
     warn "CC_CMDS_AUTOPILOT_AUTO_RESOLVE is off, so a stage does not answer its own halt record — it ends on the record"
     return "$GATE_EXIT_RULE"
   fi
-  # THE SEAT'S RULE, CALLED AS THE SEAT CALLS IT.
-  gate_halt_recommendation "$rec" || return "$?"
+  # THE SEAT'S RULE, CALLED AS THE SEAT CALLS IT, and its content refusal
+  # leaves the same `auto-refused` row the seat's does.
+  local crc=0
+  gate_halt_content_check gate_halt_recommendation "$rec" || crc=$?
+  if [ "$crc" != 0 ]; then
+    [ "$crc" != "$GATE_EXIT_RULE" ] || gate_halt_auto_refused_row "$alias" "$seg" "$rec" 스테이지
+    return "$crc"
+  fi
   if [ "$GATE_HALT_REC_LABEL" != "$GATE_STAGE_FREEZE_OPT" ] || [ "$opt" != "$GATE_STAGE_FREEZE_OPT" ]; then
     warn "a stage registers only \`$GATE_STAGE_FREEZE_OPT\`, and only when its record recommends it — the record recommends \`$GATE_HALT_REC_LABEL\`, the call names \`$opt\`: $rec"
     return "$GATE_EXIT_RULE"
   fi
-  gate_halt_design_check "$rec" || return "$?"
+  gate_halt_content_check gate_halt_design_check "$rec" || crc=$?
+  if [ "$crc" != 0 ]; then
+    [ "$crc" != "$GATE_EXIT_RULE" ] || gate_halt_auto_refused_row "$alias" "$seg" "$rec" 스테이지
+    return "$crc"
+  fi
   ladder=$GATE_HALT_LADDER_STAMP
   if ! gate_halt_answer_labels "$seg" "$rec" | grep -xF -- "$opt" >/dev/null; then
     warn "\`선택지\` is not one of the options this halt record lists verbatim: $opt"
@@ -45185,7 +45278,14 @@ EOF
       # and its step is closed by `gate_halt_draft_admit`'s record kinds, so the
       # design check that reads step substrings has nothing to read here.
       elif [ -n "$hdraft" ]; then
-        gate_halt_draft_admit "$hrec" "$seg" "$hby" "$alias" || return "$?"
+        # A content refusal of an automatic answer leaves an `auto-refused` row
+        # (`gate_halt_auto_refused_row`) and keeps its exit status.
+        local hcrc=0
+        gate_halt_content_check gate_halt_draft_admit "$hrec" "$seg" "$hby" "$alias" || hcrc=$?
+        if [ "$hcrc" != 0 ]; then
+          [ "$hcrc" != "$GATE_EXIT_RULE" ] || gate_halt_auto_refused_row "$alias" "$seg" "$hrec" "$hby"
+          return "$hcrc"
+        fi
         if [ "$hopt" != "$GATE_DRAFT_OPT" ]; then
           warn "an answer \`초안 그대로=예\` takes the option the draft names (\`$GATE_DRAFT_OPT\`), not \`$hopt\`"
           return "$GATE_EXIT_RULE"
@@ -45193,8 +45293,13 @@ EOF
         if [ "$hby" = "좌석" ]; then hkinds=$GATE_DRAFT_KINDS; fi
         hdm="$GATE_DRAFT_N/$GATE_DRAFT_N"
       elif [ "$hby" = "좌석" ] && [ -z "$hseatrun" ] && [ -z "$hsa" ]; then
-        gate_halt_recommendation "$hrec" || return "$?"
-        gate_halt_design_check "$hrec" || return "$?"
+        local hcrc=0
+        gate_halt_content_check gate_halt_recommendation "$hrec" || hcrc=$?
+        [ "$hcrc" != 0 ] || gate_halt_content_check gate_halt_design_check "$hrec" || hcrc=$?
+        if [ "$hcrc" != 0 ]; then
+          [ "$hcrc" != "$GATE_EXIT_RULE" ] || gate_halt_auto_refused_row "$alias" "$seg" "$hrec" "$hby"
+          return "$hcrc"
+        fi
         hladder=$GATE_HALT_LADDER_STAMP
         if [ -z "$hopt" ]; then
           hopt=$GATE_HALT_REC_LABEL
