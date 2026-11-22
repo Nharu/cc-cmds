@@ -4544,6 +4544,111 @@ pre_cone() {
     { grep -F "\`$1\`" "$CAP_LEDGER" || true; }
   }
 
+  # THE CLAUSE-EXEC FIXTURES (34qe 정산 · 34qt 실행 트리) SHARE THESE, so that
+  # each of the two cuts alone stands. `CX_SEC` is the section id the fixture's
+  # own assertions carry; each section sets it before its first `cx_fx`.
+  cx_auth_row() {  # cx_auth_row <행> — one row placed inside `## 인가` of the cap manifest
+    awk -v r="$1" '{ print } !d && $0 == "## 인가" { print r; d = 1 }' "$CAP_NM" > "$CAP_NM.ins" \
+      && mv "$CAP_NM.ins" "$CAP_NM"
+  }
+  cx_fx() {
+    # cx_fx <run-id> <절 행…> — the cap run with those clause rows, two merged
+    # segments, a seat and a routing shift in `CX_SHIFT`; the scripts the rows
+    # name are written into the target's worktree as `CX_TWT`.
+    local rid="$1" c; shift
+    CX_RID="$rid"
+    cap_fx_new "$rid"
+    mkdir -p "$CAP_DIR/halt/shift"
+    sed -i.bak '/^\*\*구속 다이제스트\*\*/d' "$CAP_NM" && rm -f "$CAP_NM.bak"
+    sed -i.bak '/^- `종료 절` /d' "$CAP_NM" && rm -f "$CAP_NM.bak"
+    for c in "$@"; do cx_auth_row "$c"; done
+    # A section that changes the manifest further defines `cx_fx_hook`; it runs
+    # before the seat launches the shift, so every digest is read after it.
+    if declare -F cx_fx_hook >/dev/null; then cx_fx_hook; fi
+    CX_TWT=$(sed -n 's/^- `target` | 별칭=infra | 메인 워크트리=\([^|]*\) |.*/\1/p' "$CAP_NM" | sed -n 1p)
+    case "$rid" in
+      RCXA) CX_SEAT="7e7e7e7e-5555-2222-3333-00000000000a" ;;
+      RCXB) CX_SEAT="7e7e7e7e-5555-2222-3333-00000000000b" ;;
+      *)    CX_SEAT=$(printf '7e7e7e7e-5555-2222-3333-%012x' "$(printf '%s' "$rid" | cksum | cut -d' ' -f1)") ;;
+    esac
+    { cap_usage_line 10000 5000 1000; } > "$NTX/$CX_SEAT.jsonl"
+    cap_gate "$CX_SEAT" '' act --manifest "$CAP_NM" --kind router-shift --target infra \
+             --cutpoint 커밋 --surface 워크트리쓰기 --snapshot-digest "$(cap_H "$CX_SEAT" '')" \
+             --rationale "픽스처 — 교대 기동" \
+             -- 상한 -p "/cc-cmds:autopilot-router-shift $CAP_NM"
+    check "${CX_SEC:-34qe}: 픽스처 $rid 의 교대 기동이 섰다" "$rc" "0"
+    [ "$rc" = "0" ] || printf '  %s: %s\n' "${CX_SEC:-34qe}" "$msg"
+    CX_SHIFT=$(row_field "$(cap_rows '교대 기동' | tail -1)" '세션 id')
+    { cap_usage_line 10000 5000 1000; } > "$NTX/$CX_SHIFT.jsonl"
+    hw_row segment 교대=0 id=Q1 "워크트리=$CONE_C" 상태=머지됨 선행=없음
+    hw_row segment 교대=0 id=Q2 "워크트리=$CONE_C" 상태=머지됨 선행=없음
+  }
+  cx_script() {  # cx_script <이름> <본문> — one script under the target worktree's scripts/
+    mkdir -p "$CX_TWT/scripts"
+    printf '%s\n' "$2" > "$CX_TWT/scripts/$1"
+    CX_MADE="${CX_MADE:-} $CX_TWT/scripts/$1"
+  }
+  cx_commit() {
+    # cx_commit [부모] — a commit of the parent (the target worktree's HEAD when
+    # none is named) with every script cx_script wrote added, made through an
+    # index of its own so the worktree, its index and its HEAD stay as they are;
+    # prints the full sha. The gate checks the commit a merge row names out into
+    # a tree of its own, so the scripts a clause runs have to be in that commit.
+    local p="${1:-HEAD}"
+    (cd "$CX_TWT" && export GIT_INDEX_FILE="$WORK/cx-index" && rm -f "$GIT_INDEX_FILE" \
+       && git read-tree "$p" && git add scripts \
+       && t=$(git write-tree) && rm -f "$GIT_INDEX_FILE" \
+       && git commit-tree "$t" -p "$p" -m cx-scripts)
+  }
+  cx_merged() {
+    # cx_merged <세그먼트> <머지 커밋> [상태] — a merged segment of infra. The
+    # `segment` row names no target, and the gate reads a segment's target from
+    # its authorization rows, so one such row is planted with it: without it the
+    # merge is no merge of infra in a run of two targets.
+    hw_row '자율 승인' kind=segment 결정=채택 대상=infra "세그먼트=$1"
+    hw_row segment 교대=0 "id=$1" "워크트리=$CONE_C" "상태=${3:-머지됨}" 선행=없음 "머지 커밋=$2"
+  }
+  cx_trees() {  # cx_trees — how many clause-exec trees the target's repository still lists
+    { (cd "$CX_TWT" && git worktree list --porcelain) | grep -c -- '-cx-' || true; }
+  }
+  cx_exec() {
+    # cx_exec <절> <표면> [--reach <도달>] [--destructive] -- <argv…> — the
+    # shift's clause-exec; leaves `rc`, `msg` and the anchor the gate printed in
+    # `cx_a`. `CX_MODE` set to `plan` sends the plan mode instead.
+    local c="$1" s="$2"; shift 2
+    # With auto-resolution on, an opaque act above a read owes a reach, as it
+    # does on `exec`; a script that writes nowhere but the worktree declares
+    # `런로컬` unless the call names another.
+    local reach=()
+    if [ "${1:-}" = "--reach" ]; then reach=(--reach "$2"); shift 2
+    elif [ "$s" != "읽기" ]; then reach=(--reach 런로컬); fi
+    local destr=()
+    if [ "${1:-}" = "--destructive" ]; then destr=(--destructive); shift; fi
+    [ "${1:-}" = "--" ] && shift
+    cap_gate "$CX_SHIFT" "$CX_RID#1" "${CX_MODE:-act}" --manifest "$CAP_NM" --kind clause-exec --target infra --segment - \
+             --cutpoint 커밋 --surface "$s" ${reach[@]+"${reach[@]}"} ${destr[@]+"${destr[@]}"} \
+             --snapshot-digest "$(cap_H "$CX_SHIFT" "$CX_RID#1")" --rationale "픽스처 — 종료 절 근거 실행" \
+             -- "절=$c" "$@"
+    cx_a=$( { grep -oE '\[clause-exec\] 행 A-[0-9a-f]{8}' "$CAP_ERR" || true; } | tail -1 | sed 's/^.*행 //')
+  }
+  cx_clause() {  # cx_clause <id> <상태> <근거> [추가 필드…] — the shift's clause row
+    local id="$1" st="$2" ev="$3"; shift 3
+    cap_gate "$CX_SHIFT" "$CX_RID#1" act --manifest "$CAP_NM" --kind clause --target infra \
+             --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$CX_SHIFT" "$CX_RID#1")" \
+             --rationale "픽스처 — 절 정산" -- "id=$id" "상태=$st" "근거=$ev" "$@"
+  }
+  cx_halt() {  # cx_halt <세그먼트> <자리> <필드…> — the shift's stop
+    local s="$1" site="$2"; shift 2
+    cap_gate "$CX_SHIFT" "$CX_RID#1" act --manifest "$CAP_NM" --kind shift-halt --target infra --segment "$s" \
+             --site "$site" --cutpoint 커밋 --surface 읽기 \
+             --snapshot-digest "$(cap_H "$CX_SHIFT" "$CX_RID#1")" --rationale "픽스처 — 절 근거 요청" -- "$@"
+  }
+  cx_n() { cap_rows "$1" | grep -c . || true; }
+  cx_xrow() { cap_rows '종료 절 실행' | tail -1; }
+  cx_cl() {  # cx_cl <id> <jq 식> — one expression over that clause's `clauses[]` element
+    cap_snap "$CX_SEAT" '' | jq -r --arg i "$1" "[.clauses[] | select(.id == \$i)] | first | $2"
+  }
+
   # THE SEAT-APPLY FIXTURES (34s 첫 답 · 34t 승계) SHARE THESE, so that each of
   # the two cuts alone stands. Each section takes an isolated run of its own by
   # `cap_fx_new`, a worktree of `$REPO` whose base tracks a rule file, a root
@@ -33259,7 +33364,11 @@ mkdir -p "$QB_SIDE"
 ( cd "$QB_SIDE" && git init -q . && git config user.email t@example.invalid && git config user.name T \
   && echo s > s.txt && git add -A && git commit -qm s && git branch -M main ) >/dev/null 2>&1
 SA_TARGET_ROW2="- \`target\` | 별칭=side | 메인 워크트리=$QB_SIDE | 공통 git 디렉터리=$(cd "$QB_SIDE" && git rev-parse --path-format=absolute --git-common-dir) | 베이스 브랜치=main | 홈=아니오 | 원격 슬러그=t/side | 절단점=커밋 | 말단 행위 상한=없음"
-SA_PREAUTH_EXTRA='git commit -q --allow-empty -m qb-clause'
+# The clause-exec branch below moves the base ref itself: a commit made in the
+# tree the gate checks out for it lands on a detached HEAD and moves nothing.
+# Its commit exists before the manifest names it, and moves no ref here.
+QB_CX=$(cd "$SA_WT" && git commit-tree 'main^{tree}' -p main -m qb-clause)
+SA_PREAUTH_EXTRA="git update-ref refs/heads/main $QB_CX"
 SA_AUTH_RAW='- `종료 절` | id=C1 | 문면=베이스 위의 근거 커밋이 있다'
 sa_manifest ''
 QG="$SA_RUN/base-guard"
@@ -33679,7 +33788,7 @@ qb_old=$(qb_main)
 CC_PIPELINE_SHIFT_ID="$SA_ID#1" CC_PIPELINE_STAGE_ID='' CC_PIPELINE_SEGMENT='' \
   sag act --manifest "$SA_MANIFEST" --kind clause-exec --target main --segment - --cutpoint 커밋 \
     --surface 워크트리쓰기 --reach 런로컬 --snapshot-digest "$(SAH)" --rationale "픽스처 — 종료 절 근거 실행" \
-    -- 절=C1 git commit -q --allow-empty -m qb-clause
+    -- 절=C1 git update-ref refs/heads/main "$QB_CX"
 QB_RT=$(qb_tl)
 check "15q: clause-exec 갈래로 베이스를 옮긴 행위도 11 과 기록을 남긴다" \
   "$rc|$( [ "$(qb_main)" != "$qb_old" ] && printf 이동 )|$(qb_warn '행위는 수행됨')|$(sed -n 's/^\*\*스텝\*\*: //p' "$QB_RT" 2>/dev/null)" \
@@ -40919,79 +41028,9 @@ CX_PREV_RO="${CC_GATE_TOKEN_RO-}"; CX_HAD_RO="${CC_GATE_TOKEN_RO+1}"
 export CC_GATE_TOKEN_RO="$CX_RO"
 CX_STORE="$WORK/cx-tracker"; CX_BIN="$WORK/cx-bin"
 mkdir -p "$CX_STORE" "$CX_BIN"
-cx_auth_row() {  # cx_auth_row <행> — one row placed inside `## 인가` of the cap manifest
-  awk -v r="$1" '{ print } !d && $0 == "## 인가" { print r; d = 1 }' "$CAP_NM" > "$CAP_NM.ins" \
-    && mv "$CAP_NM.ins" "$CAP_NM"
-}
-cx_fx() {
-  # cx_fx <run-id> <절 행…> — the cap run with those clause rows, two merged
-  # segments, a seat and a routing shift in `CX_SHIFT`; the scripts the rows
-  # name are written into the target's worktree as `CX_TWT`.
-  local rid="$1" c; shift
-  CX_RID="$rid"
-  cap_fx_new "$rid"
-  mkdir -p "$CAP_DIR/halt/shift"
-  sed -i.bak '/^\*\*구속 다이제스트\*\*/d' "$CAP_NM" && rm -f "$CAP_NM.bak"
-  sed -i.bak '/^- `종료 절` /d' "$CAP_NM" && rm -f "$CAP_NM.bak"
-  for c in "$@"; do cx_auth_row "$c"; done
-  CX_TWT=$(sed -n 's/^- `target` | 별칭=infra | 메인 워크트리=\([^|]*\) |.*/\1/p' "$CAP_NM" | sed -n 1p)
-  case "$rid" in
-    RCXA) CX_SEAT="7e7e7e7e-5555-2222-3333-00000000000a" ;;
-    *)    CX_SEAT="7e7e7e7e-5555-2222-3333-00000000000b" ;;
-  esac
-  { cap_usage_line 10000 5000 1000; } > "$NTX/$CX_SEAT.jsonl"
-  cap_gate "$CX_SEAT" '' act --manifest "$CAP_NM" --kind router-shift --target infra \
-           --cutpoint 커밋 --surface 워크트리쓰기 --snapshot-digest "$(cap_H "$CX_SEAT" '')" \
-           --rationale "픽스처 — 교대 기동" \
-           -- 상한 -p "/cc-cmds:autopilot-router-shift $CAP_NM"
-  check "34qe: 픽스처 $rid 의 교대 기동이 섰다" "$rc" "0"
-  [ "$rc" = "0" ] || printf '  34qe: %s\n' "$msg"
-  CX_SHIFT=$(row_field "$(cap_rows '교대 기동' | tail -1)" '세션 id')
-  { cap_usage_line 10000 5000 1000; } > "$NTX/$CX_SHIFT.jsonl"
-  hw_row segment 교대=0 id=Q1 "워크트리=$CONE_C" 상태=머지됨 선행=없음
-  hw_row segment 교대=0 id=Q2 "워크트리=$CONE_C" 상태=머지됨 선행=없음
-}
-cx_script() {  # cx_script <이름> <본문> — one script under the target worktree's scripts/
-  mkdir -p "$CX_TWT/scripts"
-  printf '%s\n' "$2" > "$CX_TWT/scripts/$1"
-  CX_MADE="${CX_MADE:-} $CX_TWT/scripts/$1"
-}
-cx_exec() {
-  # cx_exec <절> <표면> [--reach <도달>] -- <argv…> — the shift's clause-exec;
-  # leaves `rc`, `msg` and the anchor the gate printed in `cx_a`.
-  local c="$1" s="$2"; shift 2
-  # With auto-resolution on, an opaque act above a read owes a reach, as it
-  # does on `exec`; a script that writes nowhere but the worktree declares
-  # `런로컬` unless the call names another.
-  local reach=()
-  if [ "${1:-}" = "--reach" ]; then reach=(--reach "$2"); shift 2
-  elif [ "$s" != "읽기" ]; then reach=(--reach 런로컬); fi
-  local destr=()
-  if [ "${1:-}" = "--destructive" ]; then destr=(--destructive); shift; fi
-  [ "${1:-}" = "--" ] && shift
-  cap_gate "$CX_SHIFT" "$CX_RID#1" act --manifest "$CAP_NM" --kind clause-exec --target infra --segment - \
-           --cutpoint 커밋 --surface "$s" ${reach[@]+"${reach[@]}"} ${destr[@]+"${destr[@]}"} \
-           --snapshot-digest "$(cap_H "$CX_SHIFT" "$CX_RID#1")" --rationale "픽스처 — 종료 절 근거 실행" \
-           -- "절=$c" "$@"
-  cx_a=$( { grep -oE '\[clause-exec\] 행 A-[0-9a-f]{8}' "$CAP_ERR" || true; } | tail -1 | sed 's/^.*행 //')
-}
-cx_clause() {  # cx_clause <id> <상태> <근거> [추가 필드…] — the shift's clause row
-  local id="$1" st="$2" ev="$3"; shift 3
-  cap_gate "$CX_SHIFT" "$CX_RID#1" act --manifest "$CAP_NM" --kind clause --target infra \
-           --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$CX_SHIFT" "$CX_RID#1")" \
-           --rationale "픽스처 — 절 정산" -- "id=$id" "상태=$st" "근거=$ev" "$@"
-}
-cx_halt() {  # cx_halt <세그먼트> <자리> <필드…> — the shift's stop
-  local s="$1" site="$2"; shift 2
-  cap_gate "$CX_SHIFT" "$CX_RID#1" act --manifest "$CAP_NM" --kind shift-halt --target infra --segment "$s" \
-           --site "$site" --cutpoint 커밋 --surface 읽기 \
-           --snapshot-digest "$(cap_H "$CX_SHIFT" "$CX_RID#1")" --rationale "픽스처 — 절 근거 요청" -- "$@"
-}
-cx_n() { cap_rows "$1" | grep -c . || true; }
-cx_xrow() { cap_rows '종료 절 실행' | tail -1; }
-cx_cl() {  # cx_cl <id> <jq 식> — one expression over that clause's `clauses[]` element
-  cap_snap "$CX_SEAT" '' | jq -r --arg i "$1" "[.clauses[] | select(.id == \$i)] | first | $2"
-}
+# The clause-exec helpers (`cx_fx`, `cx_exec` and the rest) are in `pre_cone`,
+# in the head: 34qt calls them too.
+CX_SEC=34qe
 
 # ---- 관측된 꼴: 쓰기 · 재조회 · 충족 · 종료 ----
 cx_fx RCXA '- `종료 절` | id=C1 | 문면=FE 인계 코멘트가 티켓에 남아 있다' \
@@ -41001,8 +41040,8 @@ cx_script fe-handoff-comment.sh "printf '%s\\n' 'FE 인계: API 계약 v2' >> '$
 printf '%s' \"\${GH_TOKEN:-}\" > '$CX_STORE/token'
 printf '%s\\n' 'comment posted'"
 cx_script fe-handoff-check.sh "cat '$CX_STORE/comments'"
-CX_HEAD=$(cd "$CX_TWT" && git rev-parse HEAD)
-hw_row segment 교대=0 id=Q3 "워크트리=$CONE_C" 상태=머지됨 선행=없음 "머지 커밋=$CX_HEAD"
+CX_HEAD=$(cx_commit)
+cx_merged Q3 "$CX_HEAD"
 cx_ap0=$(cx_n '승인'); cx_bl0=$(cx_n 'blocked')
 cx_exec C1 외부상태변경 --reach 협업 -- sh scripts/fe-handoff-comment.sh
 cx_xa=$cx_a
@@ -41020,7 +41059,10 @@ check "34qe: 쓰기 실행 행이 절·회차·축2·결속·사전 인가 행·
 check "34qe: 옛 형식 사전 인가 행이 덮은 실행 행의 사전 인가 행은 - 다" \
   "$(row_field "$cx_w" '사전 인가 행')" "-"
 check "34qe: 행의 앵커가 그 행 prev 의 앞 8 hex 다" "$cx_xa" "A-$(row_field "$cx_w" 'prev' | cut -c1-8)"
-check "34qe: 행의 커밋은 실행 워크트리의 HEAD 다" "$(row_field "$cx_w" '커밋')" "$CX_HEAD"
+check "34qe: 행의 커밋은 마지막 머지의 고정 커밋이고 명령 뒤 HEAD 는 - 다" \
+  "$(row_field "$cx_w" '커밋')|$(row_field "$cx_w" '트리')|$(row_field "$cx_w" '트리 출처')|$(row_field "$cx_w" '한도 초과')|$(row_field "$cx_w" '명령 뒤 HEAD')" \
+  "$CX_HEAD|머지|Q3|아니오|-"
+check "34qe: 실행 트리는 행을 쓴 뒤 지워진다" "$(cx_trees)" "0"
 check "34qe: 행의 명령 sha256 은 argv 를 NUL 로 이은 바이트의 것이다" "$(row_field "$cx_w" '명령 sha256')" \
   "$(printf 'sh\0scripts/fe-handoff-comment.sh' | shasum -a 256 | cut -d' ' -f1)"
 
@@ -41113,17 +41155,30 @@ printf '%s\n' '{"id": 1}'
 EOF
 chmod +x "$CX_BIN/gh"
 
-# The run's last merge is not in the tree the command would run in.
-hw_row segment 교대=0 id=Q3 "워크트리=$CONE_C" 상태=머지됨 선행=없음 "머지 커밋=0123456789abcdef0123456789abcdef01234567"
+# The run's last merge names a commit the target does not hold.
+cx_merged Q3 0123456789abcdef0123456789abcdef01234567
 cx_n0=$(cx_n '종료 절 실행'); cx_ap0=$(cx_n '자율 승인')
 cx_exec C3 워크트리쓰기 -- sh scripts/cx-gist.sh
-check "34qe: 마지막 머지 커밋이 실행 워크트리 HEAD 의 조상이 아니면 거절된다" \
-  "$rc|$(cx_n '종료 절 실행')|$(cx_n '자율 승인')" "3|$cx_n0|$cx_ap0"
+check "34qe: 마지막 머지 커밋이 대상에서 커밋으로 해소되지 않으면 거절된다" \
+  "$rc|$(cx_n '종료 절 실행')|$(cx_n '자율 승인')|$(cx_trees)" "3|$cx_n0|$cx_ap0|0"
 case "$msg" in
-  *'0123456789abcdef0123456789abcdef01234567'*"$(cd "$CX_TWT" && git rev-parse HEAD)"*) ok "34qe: 조상 거절 문면이 머지 커밋과 HEAD 를 싣는다" ;;
-  *) bad "34qe: 조상 거절 문면이 머지 커밋과 HEAD 를 싣는다" "$msg" ;;
+  *'0123456789abcdef0123456789abcdef01234567'*'해소되지 않습니다'*) ok "34qe: 해소 거절 문면이 머지 커밋을 싣는다" ;;
+  *) bad "34qe: 해소 거절 문면이 머지 커밋을 싣는다" "$msg" ;;
 esac
-hw_row segment 교대=0 id=Q4 "워크트리=$CONE_C" 상태=머지됨 선행=없음 "머지 커밋=$(cd "$CX_TWT" && git rev-parse HEAD)"
+CX_Q4=$(cx_commit)
+cx_merged Q4 "$CX_Q4"
+
+# The checked-out tree is not the fixed commit, clean: the hook leaves an
+# untracked file in it, and nothing runs.
+export CC_GATE_CLAUSE_EXEC_TEST_DIRTY=1
+cx_exec C3 워크트리쓰기 -- sh scripts/cx-gist.sh
+unset CC_GATE_CLAUSE_EXEC_TEST_DIRTY
+check "34qe: 고정 커밋 그대로가 아닌 실행 트리에서는 돌지 않는다" \
+  "$rc|$(cx_n '종료 절 실행')|$(cx_trees)" "3|$cx_n0|0"
+case "$msg" in
+  *"is not the fixed commit $CX_Q4"*'tree source Q4'*) ok "34qe: 고정 커밋 거절 문면이 고정 커밋과 트리 출처를 싣는다" ;;
+  *) bad "34qe: 고정 커밋 거절 문면이 고정 커밋과 트리 출처를 싣는다" "$msg" ;;
+esac
 
 # Unknown clause, no covering row, a runner-shape cover.
 cx_exec C9 워크트리쓰기 -- sh scripts/cx-unit.sh
@@ -41196,17 +41251,13 @@ check "34qe: 대조 — 같은 기록에 사람 답은 선다" "$rc|$(( $(cx_n '
 
 # A GitHub write under a pre-authorized row fails under the read-scoped
 # credential, and so goes to a person.
-# The stand-in is reached through an exported function, not a PATH prefix:
-# run.sh puts the system prefixes ahead of the inherited PATH, so on a host
-# whose `gh` is /usr/bin/gh a PATH-only stand-in is shadowed by the real one.
-# The stub path rides an exported variable for the same scrubbed-shell reason
-# `g15_pr` gives.
-gh() { "$CX_GH_STUB" "$@"; }
-export -f gh
-export CX_GH_STUB="$CX_BIN/gh"
-cx_exec C5 외부상태변경 --reach 협업 -- gh api -X POST repos/t/infra/issues/1/comments -f body=x
-unset -f gh
-unset CX_GH_STUB
+# The stand-in is called by its absolute path, not through a PATH prefix or a
+# function: run.sh puts the system prefixes ahead of the inherited PATH, so on
+# a host whose `gh` is /usr/bin/gh a PATH-only stand-in is shadowed by the real
+# one, and the clause-exec command is exec'd by name as an external program,
+# which no shell function reaches. The pre-authorization matcher drops the
+# command path, so the row's `gh api -X POST …` still covers it.
+cx_exec C5 외부상태변경 --reach 협업 -- "$CX_BIN/gh" api -X POST repos/t/infra/issues/1/comments -f body=x
 cx_ga=$cx_a
 check "34qe: GitHub 쓰기는 읽기 자격 아래에서 실패한다" \
   "$( [ "$rc" != 0 ] && printf 실패 || printf "rc=$rc")|$(cat "$CX_STORE/gh-token" 2>/dev/null)|$(row_field "$(cx_xrow)" '절')" "실패|$CX_RO|C5"
@@ -41215,7 +41266,7 @@ cx_clause C5 충족 "실행 $cx_ga"
 check "34qe: 실패한 GitHub 쓰기를 인용한 충족은 거절된다" "$rc" "3"
 cx_halt - '종료 절 근거' '절=C5' "실행=$cx_ga" '질문=PR 코멘트를 사람이 남기는가?' '관측=HTTP 403'
 check "34qe: GitHub 쓰기 실패는 실행 결과를 실은 사람 정지로 간다" \
-  "$rc|$(grep -c '^\*\*실행 결과\*\*: 명령 gh api -X POST' "$CAP_DIR/halt/shift/clause-C5#1.md" 2>/dev/null)" "0|1"
+  "$rc|$(grep -cF "**실행 결과**: 명령 $CX_BIN/gh api -X POST" "$CAP_DIR/halt/shift/clause-C5#1.md" 2>/dev/null)" "0|1"
 
 # Outside every row: the stop carries the command draft and the expected result.
 cx_halt - '종료 절 근거' '절=C7' '추천=재시도' '추천 근거=x' '질문=?' '관측=x'
@@ -41307,6 +41358,382 @@ rmdir "$CX_TWT/scripts" 2>/dev/null || true
 unset CX_MADE
 if [ -n "$CX_HAD_RO" ]; then export CC_GATE_TOKEN_RO="$CX_PREV_RO"; else unset CC_GATE_TOKEN_RO; fi
 CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$CX_PREV_AR"
+
+# --- 34qt. 종료 절 근거 실행의 실행 트리 — 게이트가 원장에서 고정한 커밋을 꺼내 그 안에서 돌린다 ---
+# --- section: 34qt | group: cone | covers: act, plan, snapshot, clause-exec, gate_act_worktree, gate_on_exit, gate_clause_exec_evidence_check, kickoff | anchors: 34qt: 단어 없는 실행은 이 대상의 마지막 머지를 꺼내 메인 체크아웃을 건드리지 않는다, 34qt: 트리=머지 전 세그먼트는 그 워크트리 HEAD 에서 지명한 시험만 돈다, 34qt: 명령이 HEAD 를 옮긴 실행을 인용한 충족은 거절된다, 34qt: 꺼낸 트리 밖 절대 경로의 스크립트는 띄우지 않고 거절된다, 34qt: 시한에 닿은 실행은 143 과 한도 초과=예 로 남는다, 34qt: 신호를 받은 실행은 행을 한 번만 쓰고 트리를 남기지 않는다, 34qt: 실행 워크트리 갈래는 그 HEAD 를 꺼내고 실행 워크트리를 건드리지 않는다, 34qt: 시험 실행 절의 사전 인가 선택지가 기본값으로 표지된다 ---
+#
+# A CLAUSE-EXEC RUNS IN A TREE THE GATE CHECKS OUT FOR IT, AT A COMMIT THE GATE
+# FIXES FROM THE LEDGER. With no `트리=` word the commit is this target's last
+# merge, then the HEAD of a separate `실행 워크트리`, then the base tip; with
+# `트리=<segment>` it is that segment's worktree HEAD before its merge and its
+# merge commit after. The tree is detached, removed after the row on every
+# exit, and the command runs only when its HEAD is the fixed commit and nothing
+# is uncommitted in it. The row records the commit, the rule, the segment the
+# rule read, whether the limit cut the command and where HEAD stood after it.
+#
+# The target is the cap run's infra target, whose main worktree is the suite's
+# own repository: every commit below is made with `cx_commit` or `commit-tree`
+# and moves no ref of it, and the worktrees this section adds are removed at
+# its end.
+CX_SEC=34qt
+QT_PREV_AR="${CC_CMDS_AUTOPILOT_AUTO_RESOLVE:-}"
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=1
+QT_PREV_RO="${CC_GATE_TOKEN_RO-}"; QT_HAD_RO="${CC_GATE_TOKEN_RO+1}"
+export CC_GATE_TOKEN_RO=qt-ro-fixture
+QT_STORE="$WORK/qt-store"; mkdir -p "$QT_STORE"
+QT_ABS="$WORK/qt-abs-outside.sh"
+printf '%s\n' ": > '$QT_STORE/abs-ran'" > "$QT_ABS"
+qt_row() {  # qt_row <절> — that clause's last `종료 절 실행` row
+  cap_rows '종료 절 실행' | grep -F "| 절=$1 |" | tail -1
+}
+qt_nrows() { { cap_rows '종료 절 실행' | grep -cF "| 절=$1 |" || true; }; }
+qt_seg() {  # qt_seg <세그먼트> <워크트리> <상태> [필드…] — a segment of infra, with the row naming its target
+  local s="$1" w="$2" st="$3"; shift 3
+  hw_row '자율 승인' kind=segment 결정=채택 대상=infra "세그먼트=$s"
+  hw_row segment 교대=0 "id=$s" "워크트리=$w" "상태=$st" 선행=없음 "$@"
+}
+qt_wt_state() {  # qt_wt_state <워크트리> — its branch, HEAD and status in one line
+  (cd "$1" && printf '%s|%s|%s' "$(git symbolic-ref -q HEAD || printf -)" "$(git rev-parse HEAD)" \
+     "$(git status --porcelain | shasum -a 256 | cut -c1-12)")
+}
+qt_out() { cat "$CAP_OUT" 2>/dev/null; }
+
+# ---- 머지 뒤의 트리 · 머지 전 세그먼트 · 거절 · 출처 검사 ----
+cx_fx RQTA '- `종료 절` | id=C1 | 문면=마지막 머지 위에서 확인이 돈다' \
+           '- `종료 절` | id=C2 | 문면=세그먼트의 새 시험이 통과한다' \
+           '- `종료 절` | id=C3 | 문면=거절 갈래' \
+           '- `종료 절` | id=C4 | 문면=이전 런에서 착지한 변경이 동작한다' \
+           '- `종료 절` | id=C5 | 문면=완료된 세그먼트의 변경이 동작한다' \
+           '- `종료 절` | id=C6 | 문면=실행이 HEAD 를 옮기지 않는다' \
+           '- `종료 절` | id=C7 | 문면=스크립트가 돈다' \
+           '- `종료 절` | id=C8 | 문면=남은 트리 자리' \
+           '- `종료 절` | id=C9 | 문면=짧게 적힌 머지 커밋' \
+           '- `종료 절` | id=C10 | 문면=명령 자신의 143' \
+           '- `종료 절` | id=C11 | 문면=시한 초과' \
+           '- `종료 절` | id=C12 | 문면=시한 밖 구간' \
+           '- `종료 절` | id=C13 | 문면=신호' \
+           '- `종료 절` | id=C14 | 문면=예보' \
+           '- `사전 인가` | 형태=sh scripts/qt-echo.sh | 사유=실행 트리 확인' \
+           '- `사전 인가` | 형태=sh scripts/qt-sel.sh | 사유=지명한 시험 실행' \
+           '- `사전 인가` | 형태=sh scripts/qt-sleep.sh | 사유=시한 확인' \
+           '- `사전 인가` | 형태=sh scripts/qt-143.sh | 사유=명령 자신의 143' \
+           '- `사전 인가` | 형태=bash scripts/qt-abs.sh | 사유=트리 안 스크립트' \
+           "- \`사전 인가\` | 형태=bash $QT_ABS | 사유=트리 밖 스크립트" \
+           '- `사전 인가` | 형태=git commit --allow-empty -q -m qt-move | 사유=HEAD 를 옮기는 실행'
+cx_script qt-echo.sh 'printf "pwd=%s\n" "$(pwd -P)"
+printf "head=%s\n" "$(git rev-parse HEAD)"
+if [ -e qt-untracked ]; then echo untracked=보임; else echo untracked=없음; fi'
+cx_script qt-sel.sh 'case "${1:-}" in known) echo "known 만 실행" ;; *) echo "전량 실행" ;; esac'
+cx_script qt-sleep.sh ": > '$QT_STORE/started-'\"\${1:-x}\"
+echo started
+sleep 30"
+cx_script qt-143.sh 'exit 143'
+cx_script qt-abs.sh ": > '$QT_STORE/abs-ran'"
+QT_BASE=$(cd "$CX_TWT" && git rev-parse HEAD)
+QT_M0=$(cd "$CX_TWT" && git commit-tree 'HEAD^{tree}' -p HEAD -m qt-old-merge)
+QT_M1=$(cx_commit)
+cx_merged QE "$QT_M0"
+cx_merged Q3 "$QT_M1"
+
+# C1 — no word: this target's last merge, in a tree of its own.
+qt_main0=$(qt_wt_state "$CX_TWT")
+cx_exec C1 워크트리쓰기 -- sh scripts/qt-echo.sh
+qt_r=$(qt_row C1)
+check "34qt: 단어 없는 실행은 이 대상의 마지막 머지를 꺼내 메인 체크아웃을 건드리지 않는다" \
+  "$rc|$(row_field "$qt_r" '트리')|$(row_field "$qt_r" '트리 출처')|$(row_field "$qt_r" '커밋')|$(row_field "$qt_r" '명령 뒤 HEAD')|$(qt_wt_state "$CX_TWT")|$(cx_trees)" \
+  "0|머지|Q3|$QT_M1|-|$qt_main0|0"
+[ "$rc" = "0" ] || printf '  34qt: %s\n' "$msg"
+case "$(qt_out)" in
+  *"pwd="*"-run-RQTA-cx-C1-1"*"head=$QT_M1"*) ok "34qt: 명령은 절·회차의 -cx- 경로에서 고정 커밋을 HEAD 로 돈다" ;;
+  *) bad "34qt: 명령은 절·회차의 -cx- 경로에서 고정 커밋을 HEAD 로 돈다" "$(qt_out)" ;;
+esac
+
+# The plan mode forecasts the same commit and checks nothing out.
+qt_n0=$(cx_n '종료 절 실행')
+CX_MODE=plan cx_exec C14 워크트리쓰기 -- sh scripts/qt-echo.sh
+case "$rc|$(qt_out)" in
+  "0|"*"실행 트리 예보: 고정 커밋=$QT_M1 트리=머지 트리 출처=Q3 회차=1"*) ok "34qt: plan 은 고정 커밋과 트리 출처를 예보한다" ;;
+  *) bad "34qt: plan 은 고정 커밋과 트리 출처를 예보한다" "rc=$rc $(qt_out) $msg" ;;
+esac
+check "34qt: plan 은 트리를 꺼내지 않고 행을 쓰지 않는다" "$(cx_trees)|$(cx_n '종료 절 실행')" "0|$qt_n0"
+
+# C2 — a segment before its merge: its worktree HEAD, which holds the last merge.
+QT_SEG="$WORK/qt-seg"; QT_SEGN="$WORK/qt-segn"
+( cd "$CX_TWT" && git worktree add -q -b qt-seg "$QT_SEG" "$QT_M1" \
+  && cd "$QT_SEG" \
+  && printf '%s\n' 'case "${1:-}" in known) echo "known 만 실행" ;; unit-x) echo "unit-x 만 실행" ;; *) echo "전량 실행" ;; esac' > scripts/qt-sel.sh \
+  && git add scripts/qt-sel.sh && git commit -qm qt-seg ) >/dev/null 2>&1
+( cd "$CX_TWT" && git worktree add -q -b qt-segn "$QT_SEGN" "$QT_BASE" \
+  && cd "$QT_SEGN" && git commit --allow-empty -qm qt-segn ) >/dev/null 2>&1
+QT_SEG_HEAD=$(cd "$QT_SEG" && git rev-parse HEAD); QT_SEGN_HEAD=$(cd "$QT_SEGN" && git rev-parse HEAD)
+qt_seg QS "$QT_SEG" 실행중
+qt_seg QN "$QT_SEGN" 실행중
+qt_seg0=$(qt_wt_state "$QT_SEG")
+cx_exec C2 워크트리쓰기 -- 트리=QS sh scripts/qt-sel.sh unit-x
+qt_r=$(qt_row C2)
+case "$rc|$(qt_out)" in
+  "0|unit-x 만 실행") ok "34qt: 트리=머지 전 세그먼트는 그 워크트리 HEAD 에서 지명한 시험만 돈다" ;;
+  *) bad "34qt: 트리=머지 전 세그먼트는 그 워크트리 HEAD 에서 지명한 시험만 돈다" "rc=$rc $(qt_out) $msg" ;;
+esac
+check "34qt: 세그먼트 갈래 행이 트리=세그먼트 와 세그먼트 HEAD 를 싣고 세그먼트 워크트리는 그대로다" \
+  "$(row_field "$qt_r" '트리')|$(row_field "$qt_r" '트리 출처')|$(row_field "$qt_r" '커밋')|$(qt_wt_state "$QT_SEG")" \
+  "세그먼트|QS|$QT_SEG_HEAD|$qt_seg0"
+
+# Refusals: nothing is run, no row is written, no tree is left.
+qt_refused() {  # qt_refused <이름> <바라는 문면> <argv…> — one refused clause-exec of C3
+  local name="$1" want="$2" n0; shift 2
+  n0=$(cx_n '종료 절 실행')
+  cx_exec C3 워크트리쓰기 -- "$@"
+  case "$rc|$(cx_n '종료 절 실행')|$(cx_trees)|$msg" in
+    "3|$n0|0|"*"$want"*) ok "34qt: $name" ;;
+    *) bad "34qt: $name" "rc=$rc rows=$(cx_n '종료 절 실행')/$n0 trees=$(cx_trees) $msg" ;;
+  esac
+}
+qt_refused '마지막 머지를 담지 않은 머지 전 세그먼트의 트리= 는 두 커밋을 적고 거절된다' \
+  "$QT_SEGN_HEAD 가 대상 infra 의 마지막 머지 커밋 $QT_M1" 트리=QN sh scripts/qt-echo.sh
+qt_refused '원장에 없는 세그먼트의 트리= 는 거절된다' '원장에 그 세그먼트가 없습니다' 트리=QZ sh scripts/qt-echo.sh
+hw_row '자율 승인' kind=segment 결정=채택 대상=front 세그먼트=QF
+hw_row segment 교대=0 id=QF "워크트리=$QT_SEG" 상태=실행중 선행=없음
+qt_refused '다른 대상의 세그먼트를 지명한 트리= 는 거절된다' '대상 infra 의 세그먼트가 아닙니다' 트리=QF sh scripts/qt-echo.sh
+hw_row '자율 승인' kind=segment 결정=채택 대상=infra 세그먼트=Q1
+qt_refused '머지 커밋 없는 머지 세그먼트의 트리= 는 거절된다' '16진 커밋이 아닙니다' 트리=Q1 sh scripts/qt-echo.sh
+qt_refused '마지막 머지를 담지 않은 앞선 머지 세그먼트의 트리= 는 거절된다' \
+  "$QT_M0 가 대상 infra 의 마지막 머지 커밋 $QT_M1" 트리=QE sh scripts/qt-echo.sh
+qt_seg QR "$QT_SEG" 실행중 종류=리뷰전용
+qt_refused '리뷰 전용 세그먼트의 트리= 는 거절된다' '리뷰 전용 세그먼트' 트리=QR sh scripts/qt-echo.sh
+qt_refused '사전 인가 행이 덮지 않는 실행도 트리를 남기지 않는다' '' sh scripts/qt-none.sh
+export CC_GATE_CLAUSE_EXEC_TEST_DIRTY=1
+qt_refused '깨끗하지 않은 실행 트리는 고정 커밋·관측 HEAD·트리 출처를 적고 거절된다' \
+  "is not the fixed commit $QT_M1, clean — observed HEAD $QT_M1, tree source Q3" sh scripts/qt-echo.sh
+unset CC_GATE_CLAUSE_EXEC_TEST_DIRTY
+cx_exec C3 워크트리쓰기 -- 트리= sh scripts/qt-echo.sh
+check "34qt: 빈 트리= 는 어휘 거절이고 트리를 남기지 않는다" "$rc|$(cx_trees)" "2|0"
+
+# A segment that landed in an earlier run and has no `머지됨` row here: the
+# no-word tree, which must hold its merge commit.
+qt_seg QL '-' 완료 출처=R0 "머지 커밋=$QT_BASE"
+qt_seg QL2 '-' 완료 출처=R0 "머지 커밋=$QT_M0"
+cx_exec C4 워크트리쓰기 -- 트리=QL sh scripts/qt-echo.sh
+qt_r=$(qt_row C4)
+check "34qt: 착지한 입양 세그먼트의 트리= 는 단어 없는 트리를 꺼내고 트리 출처가 그 세그먼트다" \
+  "$rc|$(row_field "$qt_r" '트리')|$(row_field "$qt_r" '트리 출처')|$(row_field "$qt_r" '커밋')" "0|머지|QL|$QT_M1"
+qt_refused '머지 커밋이 고정 커밋의 조상이 아닌 입양 세그먼트의 트리= 는 거절된다' \
+  "트리=QL2 의 머지 커밋 $QT_M0 이 실행 트리의 커밋 $QT_M1" 트리=QL2 sh scripts/qt-echo.sh
+
+# A merged segment whose last state is `완료` is still merged: its merge commit.
+cx_merged QD "$QT_M1"
+hw_row segment 교대=0 id=QD "워크트리=$CONE_C" 상태=완료 선행=없음
+cx_exec C5 워크트리쓰기 -- 트리=QD sh scripts/qt-echo.sh
+qt_r=$(qt_row C5)
+check "34qt: 마지막 상태가 완료인 머지 세그먼트의 트리= 는 그 머지 커밋을 꺼낸다" \
+  "$rc|$(row_field "$qt_r" '트리')|$(row_field "$qt_r" '트리 출처')|$(row_field "$qt_r" '커밋')" "0|머지|QD|$QT_M1"
+
+# A command that moves HEAD in the tree is no evidence; one that does not is.
+cx_exec C6 워크트리쓰기 -- git commit --allow-empty -q -m qt-move
+qt_ma=$cx_a; qt_r=$(qt_row C6)
+case "$rc|$(row_field "$qt_r" '커밋')|$(row_field "$qt_r" '명령 뒤 HEAD')" in
+  "0|$QT_M1|$QT_M1") bad "34qt: HEAD 를 옮긴 실행 행은 고정 커밋과 옮긴 HEAD 를 싣는다" "$qt_r" ;;
+  "0|$QT_M1|"[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]*) ok "34qt: HEAD 를 옮긴 실행 행은 고정 커밋과 옮긴 HEAD 를 싣는다" ;;
+  *) bad "34qt: HEAD 를 옮긴 실행 행은 고정 커밋과 옮긴 HEAD 를 싣는다" "rc=$rc $qt_r $msg" ;;
+esac
+cx_clause C6 충족 "실행 $qt_ma"
+check "34qt: 명령이 HEAD 를 옮긴 실행을 인용한 충족은 거절된다" "$rc" "3"
+cx_exec C6 워크트리쓰기 -- sh scripts/qt-echo.sh
+qt_sa=$cx_a
+check "34qt: HEAD 를 옮기지 않은 실행의 명령 뒤 HEAD 는 - 다" "$rc|$(row_field "$(qt_row C6)" '명령 뒤 HEAD')" "0|-"
+cx_clause C6 충족 "실행 $qt_sa"
+check "34qt: HEAD 를 옮기지 않은 실행을 인용한 충족은 받아들여진다" "$rc" "0"
+[ "$rc" = "0" ] || printf '  34qt: %s\n' "$msg"
+
+# A script operand outside the tree is not run; the same script inside it is.
+qt_refused_c7() {
+  local n0; n0=$(cx_n '종료 절 실행')
+  cx_exec C7 워크트리쓰기 -- bash "$QT_ABS"
+  check "34qt: 꺼낸 트리 밖 절대 경로의 스크립트는 띄우지 않고 거절된다" \
+    "$rc|$(cx_n '종료 절 실행')|$( [ -e "$QT_STORE/abs-ran" ] && printf 돌았다 || printf 안돌았다)|$(cx_trees)" \
+    "3|$n0|안돌았다|0"
+  case "$msg" in
+    *"$QT_ABS"*'outside the execution tree'*) ok "34qt: 트리 밖 스크립트 거절 문면이 그 경로를 싣는다" ;;
+    *) bad "34qt: 트리 밖 스크립트 거절 문면이 그 경로를 싣는다" "$msg" ;;
+  esac
+}
+qt_refused_c7
+cx_exec C7 워크트리쓰기 -- bash scripts/qt-abs.sh
+check "34qt: 같은 스크립트를 트리 안 상대 경로로 부르면 돈다" \
+  "$rc|$( [ -e "$QT_STORE/abs-ran" ] && printf 돌았다 || printf 안돌았다)" "0|돌았다"
+
+# The clause-and-round path: something not a worktree is refused and left
+# alone; a dirty worktree left there is removed and checked out again.
+QT_P8="${CX_TWT%/}-run-RQTA-cx-C8-1"
+mkdir -p "$QT_P8" && : > "$QT_P8/keep"
+cx_exec C8 워크트리쓰기 -- sh scripts/qt-echo.sh
+check "34qt: 워크트리가 아닌 것이 차지한 자리는 건드리지 않고 거절된다" \
+  "$rc|$( [ -e "$QT_P8/keep" ] && printf 남음 || printf 사라짐)|$(qt_nrows C8)" "3|남음|0"
+rm -rf "$QT_P8"
+( cd "$CX_TWT" && git worktree add -q --detach "$QT_P8" "$QT_M1" ) >/dev/null 2>&1
+: > "$QT_P8/qt-untracked"
+cx_exec C8 워크트리쓰기 -- sh scripts/qt-echo.sh
+case "$rc|$(qt_out)|$(cx_trees)" in
+  "0|"*'untracked=없음'*"|0") ok "34qt: 그 자리의 더러운 남은 트리는 지우고 다시 꺼낸다" ;;
+  *) bad "34qt: 그 자리의 더러운 남은 트리는 지우고 다시 꺼낸다" "rc=$rc $(qt_out) trees=$(cx_trees) $msg" ;;
+esac
+
+# A merge commit written in 12 digits resolves to the full sha.
+QT_M2=$(cx_commit "$QT_M1")
+cx_merged Q4 "$(printf '%s' "$QT_M2" | cut -c1-12)"
+cx_exec C9 워크트리쓰기 -- sh scripts/qt-echo.sh
+qt_r=$(qt_row C9)
+check "34qt: 12 자리로 적힌 머지 커밋도 전체 sha 로 고정되어 행의 커밋이 40 자리다" \
+  "$rc|$(row_field "$qt_r" '커밋')|$(row_field "$qt_r" '트리 출처')" "0|$QT_M2|Q4"
+
+# The command's own 143 is not the limit's.
+cx_exec C10 워크트리쓰기 -- sh scripts/qt-143.sh
+qt_r=$(qt_row C10)
+check "34qt: 명령 자신이 143 으로 끝나면 한도 초과=아니오 다" \
+  "$rc|$(row_field "$qt_r" '종료 코드')|$(row_field "$qt_r" '한도 초과')|$(cx_trees)" "143|143|아니오|0"
+
+# The limit: shortened by the test hook, it cuts the command at the deadline.
+qt_timed() {  # qt_timed <절> <시한> — one clause-exec of qt-sleep.sh under that limit; leaves qt_el and qt_prep
+  local h t0 t1 st
+  h=$(cap_H "$CX_SHIFT" "$CX_RID#1")
+  export CC_GATE_CLAUSE_EXEC_TIMEOUT_TEST_SECONDS="$2"
+  t0=$(date +%s)
+  cap_gate "$CX_SHIFT" "$CX_RID#1" act --manifest "$CAP_NM" --kind clause-exec --target infra --segment - \
+           --cutpoint 커밋 --surface 워크트리쓰기 --reach 런로컬 --snapshot-digest "$h" \
+           --rationale "픽스처 — 시한" -- "절=$1" sh scripts/qt-sleep.sh "$1"
+  t1=$(date +%s)
+  unset CC_GATE_CLAUSE_EXEC_TIMEOUT_TEST_SECONDS
+  qt_el=$((t1 - t0))
+  st=$(sed -n 's/^\[clause-exec\] 시한 [0-9]*초 — 시작 \([0-9]*\),.*/\1/p' "$CAP_ERR" | tail -1)
+  qt_prep=$(( ${st:-$t0} - t0 ))
+}
+qt_timed C11 2
+qt_r=$(qt_row C11)
+check "34qt: 시한에 닿은 실행은 143 과 한도 초과=예 로 남는다" \
+  "$rc|$(qt_nrows C11)|$(row_field "$qt_r" '종료 코드')|$(row_field "$qt_r" '한도 초과')|$(cx_trees)" "143|1|143|예|0"
+check "34qt: 시한 2초의 실행은 잠든 30초를 기다리지 않는다" "$( [ "$qt_el" -le 25 ] && printf 안 || printf "밖 $qt_el")" "안"  # gate-load: 시한 2초 호출의 벽시계를 잠든 명령의 30초와 가른다
+check "34qt: 시한 초과 행이 스냅숏 실행 종료 코드 143 으로 보인다" "$(cx_cl C11 '.["실행"]["종료 코드"]')" "143"
+cx_exec C11 워크트리쓰기 -- sh scripts/qt-sleep.sh C11b
+check "34qt: 시한 초과 뒤의 같은 절 실행은 마지막 실행 실패로 거절된다" "$rc|$(qt_nrows C11)" "3|1"
+qt_timed C12 10
+qt_r=$(qt_row C12)
+printf '  34qt: 시한 10초 측정 — 벽시계 %s초 · 시한 밖 %s초 · 게이트 준비 %s초\n' "$qt_el" "$((qt_el - 10))" "$qt_prep"
+check "34qt: 시한 10초의 실행도 143 과 한도 초과=예 로 남는다" \
+  "$rc|$(row_field "$qt_r" '한도 초과')|$(cx_trees)" "143|예|0"
+check "34qt: 시한 밖 구간이 40초 이하다" "$( [ $((qt_el - 10)) -le 40 ] && printf 안 || printf "밖 $qt_el")" "안"  # gate-load: 시한 밖 구간을 하네스 상한의 여유와 견준다
+
+# A signal while the command runs: the gate's own group takes TERM.
+qt_h=$(cap_H "$CX_SHIFT" "$CX_RID#1")
+rm -f "$QT_STORE/started-C13"
+( cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
+  CLAUDE_CODE_SESSION_ID="$CX_SHIFT" CC_CLAUDE_BIN="$CAP_STUB" \
+  CC_PIPELINE_SHIFT_ID="$CX_RID#1" CC_PIPELINE_STAGE_ID='' CC_PIPELINE_SEGMENT='' \
+  exec perl -e 'setpgrp(0, 0); exec @ARGV or die "exec: $!"' bash "$GATE" act --manifest "$CAP_NM" \
+    --kind clause-exec --target infra --segment - --cutpoint 커밋 --surface 워크트리쓰기 --reach 런로컬 \
+    --snapshot-digest "$qt_h" --rationale "픽스처 — 신호" -- 절=C13 sh scripts/qt-sleep.sh C13 ) \
+  > "$WORK/qt-sig.out" 2> "$WORK/qt-sig.err" &
+qt_pid=$!
+for qt_i in $(seq 1 300); do
+  [ -e "$QT_STORE/started-C13" ] && break
+  sleep 0.1
+done
+kill -TERM -- "-$qt_pid" 2>/dev/null || true
+qt_rc=0; wait "$qt_pid" || qt_rc=$?
+qt_r=$(qt_row C13)
+qt_o=$(row_field "$qt_r" '출력')
+check "34qt: 신호를 받은 실행은 행을 한 번만 쓰고 트리를 남기지 않는다" \
+  "$qt_rc|$(qt_nrows C13)|$(row_field "$qt_r" '종료 코드')|$(row_field "$qt_r" '한도 초과')|$(cx_trees)" "143|1|143|아니오|0"
+check "34qt: 신호 뒤 행의 출력 sha256 이 호출이 끝난 뒤의 출력 파일과 같다" \
+  "$(shasum -a 256 "$qt_o" 2>/dev/null | cut -d' ' -f1)" "$(row_field "$qt_r" '출력 sha256')"
+
+# ---- 실행 워크트리 · 베이스 ----
+qt_target_row() {  # qt_target_row <실행 워크트리> — the infra row carries it; the target map digest follows
+  local line nd
+  : > "$CAP_NM.t"
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      '- `target`'*별칭=infra*)
+        case "$line" in *'실행 워크트리='*) line="${line%% | 실행 워크트리=*}" ;; esac
+        line="$line | 실행 워크트리=$1" ;;
+    esac
+    printf '%s\n' "$line" >> "$CAP_NM.t"
+  done < "$CAP_NM"
+  mv "$CAP_NM.t" "$CAP_NM"
+  nd=$(cd "$WT" && bash -c '
+    CC_ORCH_SOURCE_ONLY=1 . "'"$repo_root"'/plugins/cc-cmds/orchestrator/run.sh"
+    MANIFEST="'"$CAP_NM"'"
+    canonical_targets | shasum -a 256 | cut -d" " -f1')
+  : > "$CAP_NM.t"
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in '**대상 맵 다이제스트**: '*) line="**대상 맵 다이제스트**: $nd" ;; esac
+    printf '%s\n' "$line" >> "$CAP_NM.t"
+  done < "$CAP_NM"
+  mv "$CAP_NM.t" "$CAP_NM"
+}
+qt_track() { (cd "$CX_TWT" && git rev-parse -q --verify refs/remotes/origin/main || printf -); }
+QT_EWT="$WORK/qt-ewt"
+( cd "$CX_TWT" && git worktree add -q -b qt-ewt "$QT_EWT" "$QT_M1" \
+  && cd "$QT_EWT" && git commit --allow-empty -qm qt-ewt ) >/dev/null 2>&1
+: > "$QT_EWT/qt-untracked"
+QT_EWT_HEAD=$(cd "$QT_EWT" && git rev-parse HEAD)
+cx_fx_hook() { qt_target_row "$QT_EWT"; }
+cx_fx RQTB '- `종료 절` | id=E1 | 문면=실행 워크트리 위에서 확인이 돈다' \
+           '- `사전 인가` | 형태=sh scripts/qt-echo.sh | 사유=실행 트리 확인'
+unset -f cx_fx_hook
+qt_ewt0=$(qt_wt_state "$QT_EWT"); qt_tr0=$(qt_track)
+cx_exec E1 워크트리쓰기 -- sh scripts/qt-echo.sh
+qt_r=$(qt_row E1)
+check "34qt: 실행 워크트리 갈래는 그 HEAD 를 꺼내고 실행 워크트리를 건드리지 않는다" \
+  "$rc|$(row_field "$qt_r" '트리')|$(row_field "$qt_r" '트리 출처')|$(row_field "$qt_r" '커밋')|$(qt_wt_state "$QT_EWT")|$(qt_track)|$(cx_trees)" \
+  "0|실행워크트리|-|$QT_EWT_HEAD|$qt_ewt0|$qt_tr0|0"
+[ "$rc" = "0" ] || printf '  34qt: %s\n' "$msg"
+case "$(qt_out)" in
+  *'untracked=없음'*) ok "34qt: 실행 워크트리의 커밋되지 않은 파일을 명령이 보지 못한다" ;;
+  *) bad "34qt: 실행 워크트리의 커밋되지 않은 파일을 명령이 보지 못한다" "$(qt_out)" ;;
+esac
+
+# The same value as the main worktree is no separate tree: the base tip, the
+# remote-tracking ref after a fetch, or the local branch with no `origin`.
+cx_fx_hook() { qt_target_row "$CX_TWT"; }
+cx_fx RQTC '- `종료 절` | id=B1 | 문면=베이스 위에서 읽기가 돈다'
+unset -f cx_fx_hook
+cx_exec B1 읽기 -- git rev-parse HEAD
+qt_r=$(qt_row B1)
+if (cd "$CX_TWT" && git remote get-url origin) >/dev/null 2>&1; then
+  qt_want=$(qt_track)
+else
+  qt_want=$(cd "$CX_TWT" && git rev-parse refs/heads/main)
+fi
+check "34qt: 실행 워크트리가 메인 워크트리와 같으면 베이스 끝을 꺼낸다" \
+  "$rc|$(row_field "$qt_r" '트리')|$(row_field "$qt_r" '커밋')|$(qt_out)|$(cx_trees)" "0|베이스|$qt_want|$qt_want|0"
+[ "$rc" = "0" ] || printf '  34qt: %s\n' "$msg"
+
+# ---- 킥오프 5p 꼬리 ----
+qt_bd="$repo_root/plugins/cc-cmds/skills/autopilot/references/boundaries.md"
+qt_p1=$(grep -F "A clause that asks only for the repository's own tests or checks" "$qt_bd" || true)
+case "$qt_p1" in
+  *'` ← 기본값`'*'「스킬의 기본값」'*'`추천 출처: 기본값`'*'bash scripts/test-gate.sh'*) ok "34qt: 시험 실행 절의 사전 인가 선택지가 기본값으로 표지된다" ;;
+  *) bad "34qt: 시험 실행 절의 사전 인가 선택지가 기본값으로 표지된다" "$qt_p1" ;;
+esac
+qt_p2=$(grep -F 'Any other clause — one that asks for a paid or credentialed call' "$qt_bd" || true)
+case "$qt_p2" in
+  *'← 기본값'*) bad "34qt: 그 밖의 실행 절은 추천 없음 으로 남는다" "$qt_p2" ;;
+  *'`추천 없음`'*) ok "34qt: 그 밖의 실행 절은 추천 없음 으로 남는다" ;;
+  *) bad "34qt: 그 밖의 실행 절은 추천 없음 으로 남는다" "$qt_p2" ;;
+esac
+qt_lint=$( (cd "$repo_root" && bash scripts/lint-kickoff-recommendations.sh) 2>&1 ); qt_lrc=$?
+check "34qt: 킥오프 추천 린트가 통과한다" "$qt_lrc" "0"
+[ "$qt_lrc" = "0" ] || printf '  34qt: %s\n' "$qt_lint"
+
+for qt_w in "$QT_SEG" "$QT_SEGN" "$QT_EWT"; do
+  ( cd "$CX_TWT" && git worktree remove --force "$qt_w" ) >/dev/null 2>&1 || true
+done
+( cd "$CX_TWT" && git worktree prune && git branch -D qt-seg qt-segn qt-ewt ) >/dev/null 2>&1 || true
+for cx_f in $CX_MADE; do rm -f "$cx_f"; done
+rmdir "$CX_TWT/scripts" 2>/dev/null || true
+unset CX_MADE
+if [ -n "$QT_HAD_RO" ]; then export CC_GATE_TOKEN_RO="$QT_PREV_RO"; else unset CC_GATE_TOKEN_RO; fi
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$QT_PREV_AR"
 
 # --- 34m. 빈 대상 리뷰 정지 — 좌석은 구현 재파견으로 답하고, park 답은 park 행이 소비한다 ---
 # --- section: 34m | group: cone | covers: snapshot, act | anchors: 34m: 빈 대상 리뷰 정지의 좌석 답이 구현 재파견 행이 된다, 34m: 뒤의 park 행이 세그먼트 park 답을 소비한다, 34m: 리뷰 스킬이 빈 대상 정지의 고정 모양을 싣는다 ---

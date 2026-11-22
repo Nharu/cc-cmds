@@ -292,7 +292,7 @@ act --kind cycle      -- 사이클=<n> P0=<n> P1=<n> '리뷰 HEAD=<sha>' '리포
 act --kind problem    -- 동일성=<…> '현재 단=<n>' '생성 등급=<축2 토큰>'
 act --kind judgment   -- 등급=1 '판단 부류=<열세 값>' 기준=<…> '되돌리는 법=<명령>' 근거=<…>
 act --kind clause     -- id=<절 id> 상태=<충족|불가능|보류> 근거=<…>
-act --kind clause-exec --segment - -- 절=<절 id> <argv…>
+act --kind clause-exec --segment - -- 절=<절 id> [트리=<세그먼트 id>] <argv…>
 act --kind blocked    -- 스코프=run  원인=해소 사유=<선행 막힘의 사유> 근거=<…>
 act --kind blocked    -- 스코프=cone 원인=막힘 사유=<…> 근거=<…> '앵커 세그먼트=<id>' ['의존 세그먼트=<CSV>']
 act --kind obligation -- '의무 id=<RO-…>' 근거=<…>
@@ -301,6 +301,8 @@ act --kind obligation-drop -- 동일성=<problem 행의 동일성> 근거=<원�
 ```
 
 **A segment planned with `--from-declaration` takes no `선언 파일 집합` on any later row either.** The gate writes that set on the planning row and again on a re-declaration row after a re-convergence moves it; a value you pass anyway is replaced with the gate's and leaves a warning. A segment planned without a declaration still carries the set you pass on its planning row.
+
+**A `clause-exec` runs in a tree the gate checks out for it, at a commit the gate fixes from the ledger.** Issue it as `act --kind clause-exec --segment - … -- 절=<id> [트리=<세그먼트 id>] <argv…>`. When the clause's `문면` points at the change a segment added, pass `트리=<that segment id>`; when it points at the merged code or the base, pass no `트리=`. A segment brought in from an earlier run that already landed may be named the same way: the gate then runs in the tree it takes when no segment is named (the last merge, the execution worktree or the base) and refuses with 3 when that tree does not hold the segment's merge commit. Call `clause-exec` in the foreground with the tool's longest time limit and never move it to the background: the gate ends the command itself at 540 seconds and writes its row with `종료 코드=143` and `한도 초과=예`.
 
 **The rest of this section — the evidence each clause state carries, the order that settles the clauses before done, posting a review a clause asks for, a clause that asks for an execution and the evidence request — is in `references/termination.md`**, read on its row's entry condition in 「Branch procedures read on entry」.
 
