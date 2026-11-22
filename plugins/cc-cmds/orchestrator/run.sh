@@ -757,6 +757,15 @@ manifest_rule_lines() {
   grep -E '^\*\*[^*]+\*\*: (켬|끔)$' "$MANIFEST" </dev/null 2>/dev/null || true
 }
 
+decision_confirm_auto() {
+  # 0 when the run's decision-collection confirmation mode is `자동`: the
+  # `## 인가` line `**결정 수거 확정**: 자동`, exactly. An absent line or any
+  # other value is `수동`, so a manifest frozen before the line existed keeps
+  # waiting on a person. The value is `자동|수동` rather than `켬|끔` so that
+  # `manifest_rule_lines` does not take it for a rule setting.
+  [ "$(manifest_field '인가' '결정 수거 확정')" = '자동' ]
+}
+
 manifest_preauth_rows() {
   if manifest_memo_on; then manifest_memo_all "P	"; return 0; fi
   grep -E '^- `사전 인가`' "$MANIFEST" </dev/null 2>/dev/null || true
@@ -1224,9 +1233,10 @@ binding_set_bytes() {
   # the step graph one act at a time now, so a frozen plan would be a value that
   # is recorded and never compared, which is the exact defect class this
   # contract exists to remove.
-  local cc sb
+  local cc sb dc
   cc=$(manifest_field '인가' '비용 천장')
   sb=$(manifest_field '인가' '무진전 상한')
+  dc=$(manifest_field '인가' '결정 수거 확정')
   {
     printf 'goal\t%s\n' "$(manifest_field '인가' '종료 지점')"
     manifest_clauses | sed 's/^/clause\t/'
@@ -1365,6 +1375,11 @@ binding_set_bytes() {
     # The stagnation bound joins on the same terms and for the same reason: it
     # ends the run, so a value anything can raise mid-run is not a bound.
     [ -n "$sb" ] && printf 'stagnation\t%s\n' "$sb"
+    # The decision-collection confirmation mode joins on the same terms: `자동`
+    # lets the seat answer a decision-collection record with no person, so a
+    # value anything can flip mid-run would widen the seat's reach unseen. A
+    # manifest without the line contributes zero bytes and reads as `수동`.
+    [ -n "$dc" ] && printf 'decisionconfirm\t%s\n' "$dc"
     printf 'deadline\t%s\n' "$(manifest_field '인가' '벽시계 마감')"
   } | sort
 }
@@ -9117,7 +9132,7 @@ AUDIT_SKELETAL_RECONVERGE_CAP=2
 
 audit_key_collect_reconverge_lines() {
   # audit_key_collect_reconverge_lines <step id> <ledger> — the ledger lines,
-  # each followed by a space, of the re-convergences a person's answer to a
+  # each followed by a space, of the re-convergences an answer to a
   # decision-collection record opened on the key: for each record a `결정 수거`
   # row names, the first `세그먼트=- | 스테이지=<id> | 종류=reconverge` row not
   # still waiting to spawn after the record's first `중단 답` on the key, and
@@ -13689,7 +13704,7 @@ segment_cycle() {
         fi
         case " $dch " in
           *" $seg "*|*" 전체 "*)
-            park "$seg" act 막힘 "게이트 park" "결정 수거 보류 — 기록 $dcr 에 대한 사람의 답과 재수렴을 기다린다"
+            park "$seg" act 막힘 "게이트 park" "결정 수거 보류 — 기록 $dcr 에 대한 답과 재수렴을 기다린다"
             return 1 ;;
         esac
       fi
