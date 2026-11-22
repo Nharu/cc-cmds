@@ -152,10 +152,25 @@ class N {
     this.tagName = tag ? tag.toUpperCase() : null;
     this.doc = doc; this.attrs = new Map(); this.children = []; this.parentNode = null;
     this.listeners = {}; this.text = ""; this.hidden = false;
-    const cls = new Set();
-    this.classList = { toggle: (k, on) => { if (on) cls.add(k); else cls.delete(k); } };
+    // The class list reads and writes the class attribute, so a class added
+    // through it is what className and querySelector see.
+    const words = () => this.className.split(" ").filter(Boolean);
+    this.classList = {
+      toggle: (k, on) => {
+        const s = new Set(words());
+        if (on === undefined ? !s.has(k) : on) s.add(k); else s.delete(k);
+        this.className = Array.from(s).join(" ");
+      },
+      add: (k) => this.classList.toggle(k, true),
+      contains: (k) => words().includes(k),
+    };
   }
   get firstChild() { return this.children[0] || null; }
+  get nextSibling() {
+    if (!this.parentNode) return null;
+    const sibs = this.parentNode.children;
+    return sibs[sibs.indexOf(this) + 1] || null;
+  }
   get childNodes() { return this.children; }
   get className() { return this.getAttribute("class") || ""; }
   set className(v) { this.setAttribute("class", v); }
@@ -173,6 +188,12 @@ class N {
     if (c.tagName === null && c.fragment) { c.children.slice().forEach((k) => this.appendChild(k)); return c; }
     if (c.parentNode) c.parentNode.children.splice(c.parentNode.children.indexOf(c), 1);
     c.parentNode = this; this.children.push(c);
+    return c;
+  }
+  insertBefore(c, ref) {
+    if (!ref) return this.appendChild(c);
+    if (c.parentNode) c.parentNode.children.splice(c.parentNode.children.indexOf(c), 1);
+    c.parentNode = this; this.children.splice(this.children.indexOf(ref), 0, c);
     return c;
   }
   replaceChildren(...nodes) {
@@ -207,7 +228,20 @@ class N {
   }
 }
 
-async function boot(pathname, bodyOf) {
+// The tab's sessionStorage over a Map, so two boots handed the same Map share it
+// the way a reload shares the tab's storage.
+class Store {
+  constructor(m) { this.m = m; }
+  get length() { return this.m.size; }
+  key(i) { const k = Array.from(this.m.keys())[i]; return k === undefined ? null : k; }
+  getItem(k) { return this.m.has(k) ? this.m.get(k) : null; }
+  setItem(k, v) { this.m.set(k, String(v)); }
+  removeItem(k) { this.m.delete(k); }
+}
+
+// boot <pathname> <bodyOf> [{ search, hash, store, failWith }]
+async function boot(pathname, bodyOf, opts) {
+  opts = opts || {};
   const doc = {
     hidden: false, title: "", focused: null,
     createElement: (t) => new N(t, doc),
@@ -224,20 +258,57 @@ async function boot(pathname, bodyOf) {
   Object.defineProperty(doc, "activeElement", {
     get: () => (doc.focused && nodes.app.contains(doc.focused) ? doc.focused : doc.body),
   });
-  const c = { app: nodes.app, nodes, doc, selection: null, urls: [], timer: null, clock: 1800000000000 };
-  const fetchStub = async (url, opts) => {
+  const c = { app: nodes.app, nodes, doc, selection: null, urls: [], signals: [], timer: null, clock: 1800000000000,
+    failWith: opts.failWith || 0, followAbort: false };
+  // A held request waits on the promise c.hold returns. With c.followAbort the
+  // request also rejects when its signal aborts, as a browser's fetch does;
+  // without it the abort is ignored and the held answer still arrives late.
+  const fetchStub = async (url, fopts) => {
     if (url === "/healthz") return { json: async () => ({ version: "1" }) };
     c.urls.push(url);
-    if (c.hold) await c.hold(url);
+    const signal = fopts.signal || null;
+    c.signals.push(signal);
+    const held = c.hold ? c.hold(url) : null;
+    if (held) {
+      if (c.followAbort && signal) {
+        await Promise.race([held, new Promise((_, rej) => signal.addEventListener("abort",
+          () => rej(Object.assign(new Error("aborted"), { name: "AbortError" }))))]);
+      } else {
+        await held;
+      }
+    }
     if (c.failWith) return { status: c.failWith, ok: false };
     const body = bodyOf(url), etag = JSON.stringify(body);
-    if ((opts.headers || {})["If-None-Match"] === etag) return { status: 304, ok: false };
+    if ((fopts.headers || {})["If-None-Match"] === etag) return { status: 304, ok: false };
     return { status: 200, ok: true, headers: { get: () => etag }, json: async () => body };
   };
+  const loc = { pathname, search: opts.search || "", hash: opts.hash || "", host: "127.0.0.1:1", reload: () => {} };
+  const hist = {
+    state: null, scrollRestoration: "auto", replaced: [], pushed: [],
+    replaceState(s, _t, u) {
+      const x = new URL(u, "http://stub");
+      this.state = s; loc.pathname = x.pathname; loc.search = x.search; loc.hash = x.hash;
+      this.replaced.push(u);
+    },
+    pushState(s, _t, u) { this.pushed.push(u); },
+  };
+  const win = {
+    getSelection: () => c.selection,
+    scrollY: 0, scrolls: [], listeners: {},
+    scrollTo(_x, y) { this.scrolls.push(y); this.scrollY = y; },
+    addEventListener(t, f) { (this.listeners[t] = this.listeners[t] || []).push(f); },
+    fire(t) { (this.listeners[t] || []).forEach((f) => f({})); },
+  };
+  c.store = opts.store || new Map();
+  c.loc = loc; c.hist = hist; c.win = win;
   const sandbox = {
     document: doc,
-    window: { getSelection: () => c.selection },
-    location: { pathname, host: "127.0.0.1:1", reload: () => {} },
+    window: win,
+    location: loc,
+    history: hist,
+    sessionStorage: new Store(c.store),
+    AbortController,
+    URLSearchParams,
     fetch: fetchStub,
     setTimeout: (f) => { c.timer = f; return f; },
     clearTimeout: () => { c.timer = null; },
@@ -530,9 +601,9 @@ async function baseFilterCases() {
   report("늦게 온 옛 응답은 다시 유효해진 필터를 지우지 않는다", lastURL().includes("base=%2Fexp-only") && lastURL().endsWith("exp=1") && !!c.link("/run/exp-run"), true);
   await toggleExp();
 
-  // That late answer is on screen, and turning experiment runs off again asks for
-  // the same URL, so an unchanged response finds the filter missing with nothing new
-  // to draw.
+  // That late answer is not drawn — a later request replaced it — but its ETag is
+  // kept, so turning experiment runs off again asks for the same URL and gets a
+  // 304 that still finds the filter missing.
   await toggleExp();
   await pick("/exp-only");
   c.hold = holdExpOff;
@@ -621,7 +692,169 @@ async function waitCases() {
     text.includes("호스트 부하8823‰, 코어 18") && text.includes("해제 문턱1500‰") && text.includes("표본 시각"), true);
 }
 
-listCases().then(detailCases).then(endedHoldCases).then(baseFilterCases).then(seatCases).then(waitCases).catch((e) => { console.error(e && e.stack || e); process.exit(1); });
+// The list's filters in the address, what the tab keeps for each address, and
+// the answers a filter change leaves behind. Each wider period adds a run on an
+// older day, and `gen` moves the ETag when a case needs an answer to differ.
+function filterStub() {
+  const s = { gen: 1 };
+  const row = (id, day, base) => ({
+    id, goal: "목표 " + id, attention: "ended", state: "종단", ended_day: day, elapsed_s: 60,
+    ended_at: 1793700000, base, seg: {}, cost_usd: 1, result: { "class": "종료 조건 성립" }, waiting: [], prs: [],
+  });
+  s.bodyOf = (url) => {
+    const q = new URL(url, "http://stub").searchParams, days = q.get("days"), base = q.get("base");
+    const runs = [row("today-run", "2026-11-04", "/a"), row("old-run", "2026-11-01", "/a"), row("b-run", "2026-11-04", "/b")];
+    if (days !== "3") runs.push(row("week-run", "2026-10-30", "/a"));
+    if (days === "30" || days === "all") runs.push(row("month-run", "2026-10-15", "/a"));
+    return {
+      tz_offset_s: 32400, tz_label: "KST", generated_at: 1793700000 + s.gen, today: "2026-11-04",
+      runs: runs.filter((r) => !base || r.base === base), totals: {}, bases: ["/a", "/b"], hidden: 0, hidden_experiment: 0,
+    };
+  };
+  return s;
+}
+
+function detailBody() {
+  return {
+    tz_offset_s: 32400,
+    summary: { id: "r9", state: "진행중", attention: "watch", started_at: 1793700000, elapsed_s: 60, prs: [], notes: [] },
+    judgments: { items: [], by_class: {} }, waiting: [], steps: [], timeline: [], shifts: [],
+    clauses: [], reviews: [], segments: [], links: {}, cost: {},
+  };
+}
+
+const pressedOf = (c) => c.app.querySelectorAll("button").filter((b) => b.getAttribute("aria-pressed") === "true").map((b) => b.getAttribute("data-fk")).join(",");
+const buttonOf = (c, fk) => c.app.querySelectorAll("button").find((b) => b.getAttribute("data-fk") === fk);
+const clickOf = async (c, fk) => { buttonOf(c, fk).fire("click"); await c.settle(); };
+const countClass = (c, k) => { let n = 0; c.app.walk((x) => { if (x.classList.contains(k)) n++; }); return n; };
+const busyStale = (n) => !!n && n.getAttribute("aria-busy") === "true" && n.classList.contains("is-stale");
+
+async function addressCases() {
+  const st = filterStub();
+  let c = await boot("/", st.bodyOf, { search: "?days=30&base=%2Fa" });
+  report("쿼리 주소로 뜨면 첫 목록 요청이 그 필터다", c.urls[0], "/api/runs?days=30&base=%2Fa&dead=0&exp=0");
+  report("쿼리 주소로 뜨면 그 기간 단추가 눌려 있다", pressedOf(c), "days-30");
+  report("쿼리 주소로 뜨면 그 레포가 골라져 있다", c.select().querySelectorAll("option").filter((o) => o.hasAttribute("selected")).map((o) => o.getAttribute("value")).join(","), "/a");
+  report("정규 주소로 뜨면 주소를 고치지 않는다", c.hist.replaced.length, 0);
+  report("목록으로 뜨면 그 주소를 마지막 목록 주소로 둔다", c.store.get("cc-dash.v1.last-list"), "/?days=30&base=%2Fa");
+
+  c = await boot("/", st.bodyOf, { search: "?days=99&dead=yes&zz=1&exp=1&exp=0", hash: "#g-ended" });
+  report("잘못된 값으로 뜨면 그 필터의 기본값으로 읽는다", c.urls[0], "/api/runs?days=3&base=&dead=0&exp=1");
+  report("잘못된 주소는 정규 주소로 한 번 고쳐진다", JSON.stringify(c.hist.replaced), JSON.stringify(["/?exp=1#g-ended"]));
+  report("고친 주소에 해시가 남는다", c.loc.search + c.loc.hash, "?exp=1#g-ended");
+  report("잘못된 주소로 떠도 오류 화면이 없다", !c.app.textContent.includes("읽지 못했습니다") && c.nodes.offline.textContent === "" && !!c.link("/run/today-run"), true);
+}
+
+async function pendingCases() {
+  const st = filterStub();
+  const c = await boot("/", st.bodyOf);
+  const holds = [];
+  c.hold = (u) => new Promise((r) => holds.push({ u, r }));
+  const before = c.app.firstChild;
+  await clickOf(c, "days-7");
+  report("기간을 누르면 주소가 정규 주소로 한 번 바뀐다", JSON.stringify(c.hist.replaced), JSON.stringify(["/?days=7"]));
+  report("기간을 눌러도 히스토리 항목을 더하지 않는다", c.hist.pushed.length, 0);
+  report("응답 전에 누른 기간 단추가 눌려 있다", pressedOf(c), "days-7");
+  report("응답 전에는 화면을 다시 만들지 않는다", c.app.firstChild === before, true);
+  report("응답 전에 합계 타일 묶음이 바쁨과 흐림을 단다", busyStale(c.app.querySelector(".kpis")), true);
+  report("응답 전에 건수 문구·열 머리·런 묶음이 흐리다",
+    busyStale(c.app.querySelector(".shown")) && busyStale(c.app.querySelector(".cols")) && busyStale(c.app.querySelector(".g-ended")), true);
+  const cap = c.app.querySelector(".list-pending");
+  report("응답 전에 상태 문구가 필터 줄 바로 뒤에 있다",
+    !!cap && cap.getAttribute("role") === "status" && c.app.querySelector(".filters").nextSibling === cap &&
+    cap.textContent.includes("흐린 숫자는 이전 필터의 것입니다"), true);
+  await clickOf(c, "exp");
+  report("연달아 누르면 스위치도 곧바로 새 값이다", buttonOf(c, "exp").getAttribute("aria-checked"), "true");
+  report("연달아 눌러도 상태 문구는 하나다", countClass(c, "list-pending"), 1);
+  report("연달아 누르면 마지막 목록 주소가 새 정규 주소다", c.store.get("cc-dash.v1.last-list"), "/?days=7&exp=1");
+  holds[1].r();
+  await c.settle();
+  report("응답이 오면 바쁨·흐림·상태 문구가 없다",
+    countClass(c, "list-pending") === 0 && countClass(c, "is-stale") === 0 && c.app.querySelector(".kpis").getAttribute("aria-busy") === null, true);
+  report("응답이 오면 새 필터의 목록이다", !!c.link("/run/week-run") && pressedOf(c) === "days-7", true);
+  holds[0].r();
+  await c.settle();
+  report("밀려난 앞 요청이 뒤늦게 와도 기간이 그대로다", pressedOf(c), "days-7");
+}
+
+async function lateAnswerCases() {
+  for (const follow of [false, true]) {
+    const st = filterStub();
+    const c = await boot("/", st.bodyOf);
+    const holds = [];
+    c.hold = (u) => new Promise((r) => holds.push({ u, r }));
+    c.followAbort = follow;
+    const tag = follow ? "끊김을 따르는 대역: " : "끊김을 무시하는 대역: ";
+    st.gen++;
+    await c.poll();
+    const pollSignal = c.signals[c.signals.length - 1];
+    await clickOf(c, "days-30");
+    report(tag + "필터를 바꾸면 붙잡힌 앞 요청의 신호가 끊긴다", !!pollSignal && pollSignal.aborted, true);
+    const before = c.app.firstChild;
+    holds[0].r();
+    await c.settle();
+    report(tag + "옛 필터의 응답은 화면을 다시 만들지 않는다", c.app.firstChild === before, true);
+    report(tag + "옛 응답 뒤에도 눌린 단추가 새 기간이고 바쁨이 남는다", pressedOf(c) === "days-30" && busyStale(c.app.querySelector(".kpis")), true);
+    report(tag + "끊긴 요청 때문에 연결 끊김 화면이 뜨지 않는다", c.nodes.offline.textContent === "" && !c.nodes.conn.textContent.includes("연결 끊김"), true);
+    report(tag + "옛 응답은 다음 폴링을 걸지 않는다", c.timer, null);
+    holds[1].r();
+    await c.settle();
+    report(tag + "새 필터의 응답이 그려진다", c.app.firstChild !== before && !!c.link("/run/month-run") && countClass(c, "is-stale") === 0, true);
+  }
+}
+
+async function storeCases() {
+  const st = filterStub(), store = new Map();
+  const a = await boot("/", st.bodyOf, { search: "?days=30", store });
+  a.details("2026-11-01").open = true;
+  a.win.scrollY = 640;
+  a.win.fire("pagehide");
+  const saved = JSON.parse(store.get("cc-dash.v1.list:/?days=30") || "null");
+  report("떠날 때 그 주소의 항목에 펼침과 스크롤을 쓴다", !!saved && JSON.stringify(saved.flipped) + " " + saved.y, '[["day:2026-11-01",true]] 640');
+
+  const b = await boot("/", st.bodyOf, { search: "?days=30", store });
+  report("새로고침 뒤 브라우저 스크롤 복원을 끈다", b.hist.scrollRestoration, "manual");
+  report("새로고침 뒤 펼친 묶음이 열려 있다", b.details("2026-11-01").open, true);
+  report("새로고침 뒤 기본 열린 묶음은 그대로 열려 있다", b.details("2026-11-04").open, true);
+  report("첫 목록을 그린 뒤 저장 위치로 정확히 한 번 옮긴다", JSON.stringify(b.win.scrolls), "[640]");
+  st.gen++; await b.poll();
+  report("다음 폴링은 스크롤을 다시 옮기지 않는다", JSON.stringify(b.win.scrolls), "[640]");
+
+  const other = await boot("/", st.bodyOf, { search: "?days=7", store });
+  report("다른 주소는 그 주소의 항목만 읽는다", other.details("2026-11-01").open === false && other.win.scrolls.length === 0, true);
+
+  // One more address than the cap: the entry written longest ago goes.
+  const many = new Map();
+  for (let i = 0; i < 20; i++) many.set("cc-dash.v1.list:/?base=r" + i, JSON.stringify({ flipped: [], y: 0, at: 1000 + i }));
+  const p = await boot("/", st.bodyOf, { store: many });
+  p.win.fire("pagehide");
+  const kept = Array.from(many.keys()).filter((k) => k.indexOf("cc-dash.v1.list:") === 0);
+  report("목록 항목이 20 개를 넘으면 가장 오래 전에 쓴 것부터 지운다", kept.length + " " + many.has("cc-dash.v1.list:/?base=r0") + " " + many.has("cc-dash.v1.list:/"), "20 false true");
+
+  const broken = new Map([["cc-dash.v1.list:/", "{broken"]]);
+  const q = await boot("/", st.bodyOf, { store: broken });
+  report("깨진 저장 값은 항목 없음으로 읽고 목록을 그린다", !!q.link("/run/today-run") && q.win.scrolls.length === 0, true);
+}
+
+async function backLinkCases() {
+  const store = new Map([["cc-dash.v1.last-list", "/?days=30&base=%2Fa"]]);
+  const d1 = await boot("/run/r9", detailBody, { store });
+  const back = (c) => c.nodes["band-nav"].querySelectorAll("a")[0].getAttribute("href");
+  report("상세의 런 목록 링크가 마지막 목록 주소다", back(d1), "/?days=30&base=%2Fa");
+  report("상세로 떠도 주소와 마지막 목록 주소를 고치지 않는다",
+    d1.hist.replaced.length + " " + store.get("cc-dash.v1.last-list"), "0 /?days=30&base=%2Fa");
+  const d2 = await boot("/run/r9", detailBody);
+  report("마지막 목록 주소가 없으면 런 목록 링크가 / 다", back(d2), "/");
+  const d3 = await boot("/run/r9", detailBody, { store: new Map([["cc-dash.v1.last-list", "//elsewhere/"]]) });
+  report("목록 주소 꼴이 아닌 값이면 런 목록 링크가 / 다", back(d3), "/");
+  const e1 = await boot("/run/r9", detailBody, { store, failWith: 404 });
+  report("상세 오류의 런 목록으로 링크가 마지막 목록 주소다", !!e1.link("/?days=30&base=%2Fa"), true);
+  const e2 = await boot("/run/r9", detailBody, { failWith: 404 });
+  report("마지막 목록 주소가 없으면 상세 오류의 링크가 / 다", !!e2.link("/"), true);
+}
+
+listCases().then(detailCases).then(endedHoldCases).then(baseFilterCases).then(seatCases).then(waitCases)
+  .then(addressCases).then(pendingCases).then(lateAnswerCases).then(storeCases).then(backLinkCases).catch((e) => { console.error(e && e.stack || e); process.exit(1); });
 JS
 
 if command -v node >/dev/null 2>&1; then

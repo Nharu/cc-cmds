@@ -562,6 +562,7 @@ ORCH_TESTS := \
 	scripts/test-liveness-agreement.sh \
 	scripts/test-dashboard.sh \
 	scripts/test-dashboard-screen.sh \
+	scripts/test-dashboard-browser.sh \
 	scripts/test-observer.sh \
 	scripts/test-observer-checks.sh \
 	scripts/test-run-pane.sh \
