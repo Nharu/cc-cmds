@@ -49235,7 +49235,10 @@ gate_apply_supervise() {
   err="${out%.out}.err"
   mkdir -p "$RUN_DIR/log" 2>/dev/null || true
 
-  apply_probe "$wt" "$probe"; pre=$?
+  # The probe receives the run information and runs only where HEAD is the
+  # pinned commit `m`; the dispatch pinned this worktree to `m` a moment ago,
+  # so a mismatch here is defensive and reads as 사전 실패 with 「HEAD 불일치」.
+  apply_probe "$wt" "$probe" "$RUN_ID" "$seg" "$m"; pre=$?
   disp=$(apply_disposition "$nu" "$ne" "$pre")
   case "$disp" in
     건너뜀)
@@ -49257,6 +49260,8 @@ gate_apply_supervise() {
       # pre-probe other than 0 could not be read as 「필요」.
       nomap=""
       [ "$ne" = "-" ] && nomap=" — 적용 프로브 코드 행이 없어 필요 코드가 정의되지 않았다"
+      apply_probe_head_ok "$wt" "$m" >/dev/null \
+        || nomap="${nomap} — HEAD 불일치: 워크트리 HEAD 가 고정 커밋 $m 이 아니어서 프로브를 돌리지 않았다"
       wrc=0
       gate_apply_supervisor_row "$alias" "$seg" "$tok" "상태=park" "워크트리=$wt" "고정 커밋=$m" "적용=사전 실패" || wrc=$?
       if [ "$wrc" != "0" ]; then
@@ -49273,7 +49278,11 @@ gate_apply_supervise() {
 
   log "$seg: 적용 실행 (재시도 없음)"
   ( cd "$wt" && sh -c "$cmd" ) >"$out" 2>"$err" || rc=$?
-  apply_probe "$wt" "$probe"; post=$?
+  # A command that moved HEAD off `m` gets no post-probe: 적용 불명 with
+  # 「HEAD 불일치」 in its observation.
+  local headx=''
+  apply_probe "$wt" "$probe" "$RUN_ID" "$seg" "$m"; post=$?
+  apply_probe_head_ok "$wt" "$m" >/dev/null || headx=", HEAD 불일치 — 사후 프로브를 돌리지 않았다"
   disp=$(apply_disposition "$nu" "$ne" "$pre" "$rc" "$post")
   if [ "$disp" = "수렴" ]; then
     wrc=0
@@ -49330,9 +49339,9 @@ EOF
   fi
   gate_apply_unknown_open "$seg" \
     || gate_append 'blocked' "대상=-" "스코프=run" "원인=막힘" "사유=적용 불명 $seg" \
-         "관측=사전 프로브 exit $pre · 명령 exit $rc · 사후 프로브 exit $post ($map) — 워크트리 보존: $wt" \
+         "관측=사전 프로브 exit $pre · 명령 exit $rc · 사후 프로브 exit $post ($map)${headx} — 워크트리 보존: $wt" \
          "재개 명령=$(gate_row_safe "$cmd" 240)"
-  warn "적용 불명 — 명령 exit $rc, 사후 프로브 exit $post ($map). 워크트리를 남겼습니다: $wt"
+  warn "적용 불명 — 명령 exit $rc, 사후 프로브 exit $post ($map)${headx}. 워크트리를 남겼습니다: $wt"
   return "$GATE_EXIT_PARK"
 }
 
@@ -49868,6 +49877,15 @@ gate_perform_apply_settle() {
   if [ -e "$swt" ] || ! ( cd "$root" && git worktree add --detach "$swt" "$m" >/dev/null 2>&1 ); then
     gate_apply_settle_park "$alias" "$seg" '측정 실패' "고정 실패 — 정산 워크트리를 고정 커밋 ${m} 에 고정하지 못했다: ${swt}·${ent}"; return $?
   fi
+  # THE PROBE RUNS ONLY WHERE HEAD IS THE MERGE COMMIT, and it receives the
+  # full name `apply_probe_head_ok` resolved, never the raw `m`. The worktree
+  # was pinned to `m` just above, so a mismatch is defensive: no probe runs and
+  # the verdict is 측정 실패 with 「HEAD 불일치」.
+  local full
+  if ! full=$(apply_probe_head_ok "$swt" "$m"); then
+    gate_apply_worktree_drop "$root" "$swt"
+    gate_apply_settle_park "$alias" "$seg" '측정 실패' "HEAD 불일치 — 정산 워크트리 HEAD 가 고정 커밋 ${m} 이 아니어서 프로브를 돌리지 않았다·$ent"; return $?
+  fi
   t=${GATE_SETTLE_PROBE_TIMEOUT:-300}
   case "$t" in ''|*[!0-9]*) t=300 ;; esac
   mkdir -p "$RUN_DIR/log" 2>/dev/null || true
@@ -49876,7 +49894,8 @@ gate_perform_apply_settle() {
   # measurement not made, and the reason says so, so the morning can tell the
   # host's cause from the target's.
   if command -v perl >/dev/null 2>&1; then
-    ( cd "$swt" && gate_metrics_timed "$t" sh -c "$probe" ) >"$out" 2>&1 || rc=$?
+    ( cd "$swt" && gate_metrics_timed "$t" env "$APPLY_ENV_RUN_ID=$RUN_ID" "$APPLY_ENV_SEGMENT=$seg" \
+        "$APPLY_ENV_MERGE=$full" sh -c "$probe" ) >"$out" 2>&1 || rc=$?
   else
     rc=127; noperl=" — 시간 상한 도우미를 돌릴 perl 이 없다"
   fi

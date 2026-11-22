@@ -46695,6 +46695,73 @@ kill -9 "$sd6_live" 2>/dev/null || true
 wait "$sd6_live" 2>/dev/null || true
 rm -f "$sd6_dir/SD.sup" "$sd6_dir/SD.sup.start"
 
+# --- 38-21. 적용 프로브가 받는 런 정보 ---------------------------------------------
+# --- section: 38-21 | group: sb | covers: act, apply, supervise-apply, apply-settle, apply_probe, apply_probe_head_ok | anchors: 21: 감독자의 사전·사후 프로브가 런 id·세그먼트·머지 커밋을 받고 HEAD 는 머지 커밋이다, 21: 입구 a 의 정산 프로브가 같은 세 값을 받는다, 21: 입구 b 의 정산 프로브가 같은 세 값을 받는다, 21: 입구 d 의 정산 프로브는 증거 런이 아니라 이 런의 id 를 받는다 ---
+#
+# 프로브는 런이 바뀌어도 같은 문자열로 돌아야 하므로, 런 id·브랜치를 상수로 박지 않고
+# 실행 환경의 세 변수와 HEAD 로 자기 대상을 가린다. 프로브마다 받은 값과 HEAD 를 한
+# 줄씩 적게 해 감독자(사전·사후)와 정산의 세 입구가 같은 계약을 지키는지 잰다.
+sb21_rec="$WORK/sb21-probe.rec"
+sb21_probe() {  # sb21_probe <표지> — 받은 값을 적고 표지가 있으면 불필요, 없으면 필요
+  printf '%s' "printf '%s:%s:%s:%s\\n' \"\$CC_APPLY_RUN_ID\" \"\$CC_APPLY_SEGMENT\" \"\$CC_APPLY_MERGE_COMMIT\" \"\$(git rev-parse HEAD)\" >> $sb21_rec; test -e $1 && exit 0 || exit 21"
+}
+sb21_mark="$WORK/sb21-applied"
+rm -f "$sb21_rec" "$sb21_mark"
+SB_CODES='0 21' sb_apply_new '21 감독자' "$(sb21_probe "$sb21_mark")" "touch $sb21_mark"
+sb_reviewed_landing SB21
+sb_apply SB21
+case "$(sb_seg_last SB21)" in
+  *"상태=완료"*"적용=수렴"*) ;;
+  *) bad "21: 감독자 픽스처" "$(sb_seg_last SB21)" ;;
+esac
+check "21: 감독자의 사전·사후 프로브가 런 id·세그먼트·머지 커밋을 받고 HEAD 는 머지 커밋이다" \
+  "$(cat "$sb21_rec" 2>/dev/null)" "$SA_ID:SB21:$SB_M:$SB_M
+$SA_ID:SB21:$SB_M:$SB_M"
+
+# 입구 a — 끊긴 감독자. 정산 워크트리에서 프로브 한 번.
+sb21a_mark="$WORK/sb21a-applied"
+rm -f "$sb21_rec" "$sb21a_mark"
+SB_CODES='0 21' sb_apply_new '21 입구 a' "$(sb21_probe "$sb21a_mark")" "touch $sb21a_mark"
+sb_reviewed_landing SB21A
+sb_seg_put SB21A "상태=적용 준비" "워크트리=$(sb_apply_wt SB21A)" "고정 커밋=$SB_M" "적용 명령=touch" \
+  "감독 토큰=$(printf '%064d' 0)"
+touch "$sb21a_mark"
+sb_settle act SB21A
+case "$rc:$(sb_seg_last SB21A)" in
+  0:*"상태=완료"*"적용=정산"*"·입구 a"*) ;;
+  *) bad "21: 입구 a 픽스처" "rc=$rc $msg $(sb_seg_last SB21A)" ;;
+esac
+check "21: 입구 a 의 정산 프로브가 같은 세 값을 받는다" "$(cat "$sb21_rec" 2>/dev/null)" "$SA_ID:SB21A:$SB_M:$SB_M"
+
+# 입구 b — 명령이 실패해 불명으로 남은 세그먼트. 사전·사후 두 줄 뒤 정산 한 줄.
+sb21b_mark="$WORK/sb21b-applied"
+rm -f "$sb21_rec" "$sb21b_mark"
+SB_CODES='0 21' sb_apply_new '21 입구 b' "$(sb21_probe "$sb21b_mark")" 'exit 1'
+sb_reviewed_landing SB21B
+sb_apply SB21B
+touch "$sb21b_mark"
+sb_settle act SB21B
+case "$rc:$(sb_seg_last SB21B)" in
+  0:*"상태=완료"*"적용=정산"*"·입구 b"*) ;;
+  *) bad "21: 입구 b 픽스처" "rc=$rc $msg $(sb_seg_last SB21B)" ;;
+esac
+check "21: 입구 b 의 정산 프로브가 같은 세 값을 받는다" "$(cat "$sb21_rec" 2>/dev/null)" "$SA_ID:SB21B:$SB_M:$SB_M
+$SA_ID:SB21B:$SB_M:$SB_M
+$SA_ID:SB21B:$SB_M:$SB_M"
+
+# 입구 d — 이전 런이 착지시킨 세그먼트를 들여왔다. 프로브는 브랜치 이름이 아니라 이
+# 런의 id 와 머지 커밋으로 대상을 가려야 하므로, 받는 런 id 는 증거 런의 것이 아니다.
+sb21d_mark="$WORK/sb21d-applied"
+rm -f "$sb21_rec"; touch "$sb21d_mark"
+sd_import '21 입구 d' 20260901-000000e1 20260902-000000e1 "$(sb21_probe "$sb21d_mark")"
+sb_settle act SD
+case "$rc:$(sb_seg_last SD)" in
+  0:*"상태=완료"*"적용=정산"*"·입구 d"*) ;;
+  *) bad "21: 입구 d 픽스처" "rc=$rc $msg $(sb_seg_last SD)" ;;
+esac
+check "21: 입구 d 의 정산 프로브는 증거 런이 아니라 이 런의 id 를 받는다" \
+  "$(cat "$sb21_rec" 2>/dev/null)" "20260902-000000e1:SD:$SD_M:$SD_M"
+
 # ---------------------------------------------------------------------------
 # 39. The in-process seam holds what it claims
 # --- section: 39 | group: base | covers: gate_main | anchors: seam 1: 전역 교집합이 비어 있다, seam 2: stub 을 이름 대는 자리는 전부 fork 다, seam 3: 초기화를 거듭 불러도 죽지 않는다, seam 4: 거부 경로의 출력이 fork 와 같다 ---
