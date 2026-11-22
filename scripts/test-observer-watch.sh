@@ -610,6 +610,9 @@ for arm in $ARMS; do
 done
 OPID=$(tr -d '[:space:]' < "$S/cc-cmds/observer/observer.pid" 2>/dev/null)
 check "12 위임된 런의 watch.pid 는 관측기의 pid" "$(cat "$S/cc-cmds/run/$(printf '20261121-%08x' 1)/watch.pid" 2>/dev/null)" "$OPID"
+check "12 관측기가 저장한 작업 인자의 끝에 운반된 배너 스위치가 남는다" \
+  "$(tail -n 2 "$S/cc-cmds/run/$(printf '20261121-%08x' 1)/observer.jobs/watch.args" 2>/dev/null | tr '\n' ' ')" \
+  "--run-env CC_CMDS_AUTOPILOT_NOTIFY=0 "
 deadline=$(( $(now) + 60 ))
 i=0
 for arm in $ARMS; do
