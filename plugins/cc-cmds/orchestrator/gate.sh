@@ -30188,7 +30188,7 @@ gate_halt_answer_route() {
       # answer out by settling that clause, which it can do only while the
       # clause is still unsettled.
       case "$(gate_clause_last_state "$cl")" in
-        충족|불가능)
+        충족|불가능|이관)
           why="종료 절 $cl 이 이미 $(gate_clause_last_state "$cl") 로 정산돼 교대가 이 답을 실행할 갈래가 없습니다" ;;
       esac
     elif cl=$(gate_base_guard_key_alias "$key"); then
@@ -30949,6 +30949,65 @@ EOF
   printf '%s' "$last"
 }
 
+gate_clause_postrun_basis() {
+  # gate_clause_postrun_basis <id> — what makes that termination clause one
+  # whose evidence exists only after the run ends, or nothing when it is not
+  # one. `표지` when the clause row carries `근거 시점`, and then only when its
+  # value is exactly `종단 뒤`; with no such field, `문면 <phrase>` when the row
+  # binds no `근거 실행` and its `문면` holds `런 보고서에서 읽` (checked first)
+  # or `아침 보고서에서 읽`.
+  #
+  # THE PHRASE AND NOT THE REPORT'S NAME. A clause whose wording names the
+  # morning report but whose grounds are a test run during the night reads
+  # `아침 보고서` too, and judged on the name alone it would be closed as
+  # handed over without its test ever running. `…에서 읽` says the report is
+  # where the clause's evidence sits, and a bound `근거 실행` already says the
+  # evidence is an execution during the run.
+  #
+  # The manifest alone decides: no ledger row changes the answer, so the
+  # shift, the snapshot and the settlement read the same thing.
+  local row pt bx wd
+  row=$( { manifest_clause_rows_raw | grep -F "id=$1 " || true; } | sed -n '1p')
+  [ -n "$row" ] || return 0
+  case "$row" in
+    *' | 근거 시점='*|*'| 근거 시점='*)
+      pt=$(gate_row_field "$row" '근거 시점')
+      [ "$pt" = "종단 뒤" ] && printf '표지'
+      return 0 ;;
+  esac
+  bx=$(gate_row_field "$row" '근거 실행')
+  [ -z "$bx" ] || [ "$bx" = "-" ] || return 0
+  wd=$(gate_row_field "$row" '문면')
+  case "$wd" in
+    *'런 보고서에서 읽'*) printf '문면 런 보고서에서 읽' ;;
+    *'아침 보고서에서 읽'*) printf '문면 아침 보고서에서 읽' ;;
+  esac
+  return 0
+}
+
+gate_clause_postrun() {
+  # gate_clause_postrun <id> — exit 0 when that clause's evidence exists only
+  # after the run ends (`gate_clause_postrun_basis` names a basis), 1
+  # otherwise. One function decides both the answer and its basis.
+  [ -n "$(gate_clause_postrun_basis "$1")" ]
+}
+
+gate_clause_handover_dir() {
+  # The run's `clause-handover` directory, made on first use with mode 700, or
+  # nothing (exit 1) when it is not a real directory at the place it is named —
+  # the same symlink and physical-path check as `halt/shift`. The driver never
+  # makes it; the first `이관` settlement does.
+  local d="$RUN_DIR/clause-handover" have want
+  [ -n "${RUN_DIR:-}" ] && [ -d "$RUN_DIR" ] || return 1
+  [ -L "$d" ] && return 1
+  [ -d "$d" ] || mkdir -m 700 "$d" 2>/dev/null || return 1
+  [ -d "$d" ] && [ ! -L "$d" ] || return 1
+  have=$(cd -P -- "$d" 2>/dev/null && pwd -P) || return 1
+  want="$(cd -P -- "$RUN_DIR" 2>/dev/null && pwd -P)/clause-handover" || return 1
+  [ "$have" = "$want" ] || return 1
+  printf '%s' "$d"
+}
+
 gate_clause_open_request() {
   # gate_clause_open_request <id> — the record of that clause's evidence
   # request whose answer no shift has carried out yet, or nothing. A request
@@ -30982,7 +31041,11 @@ gate_clauses_json() {
   # `실행` is its last `종료 절 실행` row as anchor, exit code and axis 2 (null
   # when none) and `실행 이력` every such row in order — a shift whose context
   # was compacted gets a write's anchor back from there.
-  local first=1 id row st why req bx bxj xr xh xl xe
+  #
+  # `근거 시점` is `"종단 뒤"` when `gate_clause_postrun` holds for the clause
+  # and JSON null otherwise. A shift reads this key and never judges the
+  # wording itself: such a clause is settled `이관`, not asked about.
+  local first=1 id row st why req bx bxj xr xh xl xe ptj
   for id in $(gate_clause_ids); do
     row=$( { manifest_clause_rows_raw | grep -F "id=$id " || true; } | sed -n '1p')
     if gate_clause_settled "$id"; then
@@ -30995,6 +31058,7 @@ gate_clauses_json() {
     req=$(gate_clause_open_request "$id")
     bx=$(gate_row_field "$row" '근거 실행')
     if [ -n "$bx" ] && [ "$bx" != "-" ]; then bxj="\"$(gate_json_escape "$bx")\""; else bxj=null; fi
+    if gate_clause_postrun "$id"; then ptj='"종단 뒤"'; else ptj=null; fi
     xh=''; xl=null
     while IFS= read -r xr; do
       [ -n "$xr" ] || continue
@@ -31007,10 +31071,10 @@ $(gate_clause_exec_rows "$id")
 EOF
     [ "$first" = "1" ] || printf ',\n'
     first=0
-    printf '    {"id": "%s", "문면": "%s", "상태": "%s", "근거": "%s", "요청": "%s", "근거 실행": %s, "실행": %s, "실행 이력": [%s]}' \
+    printf '    {"id": "%s", "문면": "%s", "상태": "%s", "근거": "%s", "요청": "%s", "근거 실행": %s, "근거 시점": %s, "실행": %s, "실행 이력": [%s]}' \
       "$(gate_json_escape "$id")" "$(gate_json_escape "$(gate_row_field "$row" '문면')")" \
       "$(gate_json_escape "$st")" "$(gate_json_escape "$why")" "$(gate_json_escape "$req")" \
-      "$bxj" "$xl" "$xh"
+      "$bxj" "$ptj" "$xl" "$xh"
   done
   [ "$first" = "1" ] || printf '\n'
 }
@@ -43888,8 +43952,65 @@ EOF
       esac
       case "$cst" in
         충족)
+          # A CLAUSE WHOSE EVIDENCE EXISTS ONLY AFTER THE RUN ENDS IS NEVER
+          # `충족`, whatever its grounds say — checked before the review and
+          # execution checks, so grounds quoting an answer line cannot pass on
+          # the substring alone. Such a clause is handed over, not met.
+          if gate_clause_postrun "$cid"; then
+            warn "termination clause $cid takes its evidence only after the run ends ($(gate_clause_postrun_basis "$cid")) — it is not settled \`충족\` on any grounds; settle it with \`act --kind clause -- id=$cid 상태=이관\`"
+            return "$GATE_EXIT_RULE"
+          fi
           gate_clause_review_evidence_check "$(gate_field_of '근거' "$@")" || return $? ;;
         불가능) : ;;
+        이관)
+          # HANDED OVER TO THE MORNING. The clause's evidence exists only after
+          # the run ends, so the run settles it by leaving the material for the
+          # morning report: the reader's output, copied beside the run, with its
+          # digest on the row. The grounds are the gate's own words, like
+          # `자체 근거`, so a caller does not pass them.
+          local _hf _hbasis _hdir _htmp _hdst _hrc=0 _hsha _hn _herr
+          for _hf in "$@"; do
+            case "$_hf" in 근거=*)
+              warn "the grounds of an \`이관\` termination-clause row are written by the gate — a caller does not pass \`근거\`"
+              return "$GATE_EXIT_VOCAB" ;;
+            esac
+          done
+          _hbasis=$(gate_clause_postrun_basis "$cid")
+          if [ -z "$_hbasis" ]; then
+            warn "termination clause $cid does not take its evidence after the run ends (no \`근거 시점=종단 뒤\`, and its wording does not read its evidence from the run report) — \`이관\` settles only such a clause"
+            return "$GATE_EXIT_RULE"
+          fi
+          case "$(gate_clause_last_state "$cid")" in
+            충족|불가능|이관)
+              warn "termination clause $cid is already settled as $(gate_clause_last_state "$cid") — it is not handed over again"
+              return "$GATE_EXIT_RULE" ;;
+          esac
+          if [ -n "$(gate_clause_open_request "$cid")" ]; then
+            warn "termination clause $cid has an open evidence request ($(gate_clause_open_request "$cid")) — the person's answer settles it, not a handover"
+            return "$GATE_EXIT_RULE"
+          fi
+          _hdir=$(gate_clause_handover_dir) || {
+            warn "the run's clause-handover directory is not a real directory at ${RUN_DIR:-?}/clause-handover — termination clause $cid is not handed over"
+            return "$GATE_EXIT_RULE"; }
+          _hdst="$_hdir/$cid.md"
+          _htmp=$( (umask 077; mktemp "$_hdir/.$cid.XXXXXX") 2>/dev/null) || {
+            warn "could not make a temporary file in $_hdir — termination clause $cid is not handed over"
+            return "$GATE_EXIT_RULE"; }
+          bash "$GATE_DIR/run-leftovers.sh" "$MANIFEST" "${LEDGER:-}" --run-dir "$RUN_DIR" >"$_htmp" 2>/dev/null || _hrc=$?
+          if [ "$_hrc" != "0" ]; then
+            _herr=$(sed -n '1p' "$_htmp" 2>/dev/null)
+            rm -f "$_htmp"
+            warn "the leftover reader run-leftovers.sh ended with $_hrc (${_herr:-no output}) — termination clause $cid is not handed over"
+            return "$GATE_EXIT_RULE"
+          fi
+          chmod 600 "$_htmp" 2>/dev/null || true
+          mv -f "$_htmp" "$_hdst" || {
+            rm -f "$_htmp"
+            warn "could not put the handover copy at $_hdst — termination clause $cid is not handed over"
+            return "$GATE_EXIT_RULE"; }
+          _hsha=$(shasum -a 256 "$_hdst" 2>/dev/null | cut -d' ' -f1)
+          _hn=$(grep -c '^- \[' "$_hdst" 2>/dev/null) || _hn=0
+          set -- "$@" "근거=종단 재료 $_hdst · sha256 $_hsha · 항목 ${_hn}건 · 판별 $_hbasis" ;;
         보류)
           # A CLAUSE HANDED TO THE NEXT RUN, and its disposition is not
           # `불가능`'s. Impossible ends the clause forever; on hold says a
@@ -43965,7 +44086,7 @@ EOF
               done
             done
           done ;;
-        *) warn "the \`상태\` of a termination-clause row has to be one of \`충족\`, \`불가능\`, \`보류\` (observed: ${cst:-(none)})"
+        *) warn "the \`상태\` of a termination-clause row has to be one of \`충족\`, \`불가능\`, \`보류\`, \`이관\` (observed: ${cst:-(none)})"
            return "$GATE_EXIT_VOCAB" ;;
       esac
       # Evidence is a ledger reference or an observable artifact, never prose —
@@ -45479,10 +45600,18 @@ EOF
           warn "the manifest declares no termination clause $sclause"
           return "$GATE_EXIT_RULE"; }
         case "$(gate_clause_last_state "$sclause")" in
-          충족|불가능)
+          충족|불가능|이관)
             warn "termination clause $sclause is already settled as $(gate_clause_last_state "$sclause") — no evidence is asked for it"
             return "$GATE_EXIT_RULE" ;;
         esac
+        # A CLAUSE WHOSE EVIDENCE EXISTS ONLY AFTER THE RUN ENDS IS NOT ASKED
+        # ABOUT. Its evidence cannot be produced during the night, and the answer
+        # a person gave to such a request was the morning report written early;
+        # the run hands its material over instead.
+        if gate_clause_postrun "$sclause"; then
+          warn "termination clause $sclause takes its evidence only after the run ends ($(gate_clause_postrun_basis "$sclause")) — no evidence is asked for it; settle it with \`act --kind clause -- id=$sclause 상태=이관\`"
+          return "$GATE_EXIT_RULE"
+        fi
         # THE EXECUTION'S RESULT IS THE GATE'S LINE, read off the cited row: the
         # shift names the row and the gate copies what it recorded, the masked
         # `요지` included, so the record carries nothing the row does not.
@@ -46911,12 +47040,18 @@ gate_satisfied_done_line() {
   # the morning sees which clauses no one but the run looked at.
   local selfx
   selfx=$(gate_self_evidence_clause_ids)
+  # A clause settled `이관` is named too: the run did not meet it, it handed the
+  # material over to the morning report.
+  local ho
+  ho=$(gate_handover_clause_ids | tr '\n' ' ' | sed 's/[[:space:]]*$//')
   if [ -n "$qids" ]; then
-    printf '%s 종단 — 질의 잔여 %s건 · 승인 %s%s%s · 근거 %s' \
-      "$(now_iso)" "$qn" "$qids" "${held:+ · 보류 절 $held}" "${selfx:+ · 자체 근거 $selfx}" "$why"
+    printf '%s 종단 — 질의 잔여 %s건 · 승인 %s%s%s%s · 근거 %s' \
+      "$(now_iso)" "$qn" "$qids" "${held:+ · 보류 절 $held}" "${ho:+ · 이관 절 $ho}" \
+      "${selfx:+ · 자체 근거 $selfx}" "$why"
   else
-    printf '%s 종단 — 종료 조건 성립%s%s · 근거 %s' \
-      "$(now_iso)" "${held:+ · 보류 절 $held}" "${selfx:+ · 자체 근거 $selfx}" "$why"
+    printf '%s 종단 — 종료 조건 성립%s%s%s · 근거 %s' \
+      "$(now_iso)" "${held:+ · 보류 절 $held}" "${ho:+ · 이관 절 $ho}" \
+      "${selfx:+ · 자체 근거 $selfx}" "$why"
   fi
 }
 
@@ -52043,10 +52178,14 @@ gate_clause_exec_preconditions() {
   esac
   st=$(gate_clause_last_state "$id")
   case "$st" in
-    충족|불가능)
+    충족|불가능|이관)
       warn "termination clause $id is already settled ($st) — a settled clause takes no execution"
       return "$GATE_EXIT_RULE" ;;
   esac
+  if gate_clause_postrun "$id"; then
+    warn "termination clause $id takes its evidence only after the run ends ($(gate_clause_postrun_basis "$id")) — there is no execution to run for it during the run; settle it with \`act --kind clause -- id=$id 상태=이관\`"
+    return "$GATE_EXIT_RULE"
+  fi
   req=$(gate_clause_open_request "$id")
   if [ -n "$req" ]; then
     warn "termination clause $id has an open evidence request ($req) — the person's answer settles it, not an execution"
@@ -57564,16 +57703,19 @@ gate_verb_act() {
       # THE UNREACHABLE CLAUSES ARE NAMED, for the reason the satisfied arm
       # names held ones: the ledger rows carry `상태=불가능`, but the morning
       # reads this line and the render, and neither said which goal was lost.
-      local _void_imp _void_held
+      local _void_imp _void_held _void_ho
       _void_imp=$(gate_impossible_clause_ids | tr '\n' ' ' | sed 's/[[:space:]]*$//')
       _void_held=$(gate_held_clause_ids | tr '\n' ' ' | sed 's/[[:space:]]*$//')
+      _void_ho=$(gate_handover_clause_ids | tr '\n' ' ' | sed 's/[[:space:]]*$//')
       # The ending row below turns into `P0잔존` when the selector holds, and
-      # this line is written first, so it asks the same selector.
+      # this line is written first, so it asks the same selector. Both forms
+      # carry the handed-over clauses after the held ones.
       local _void_line
       _void_line=$(gate_p0_residual_done_line "$rationale" \
-          " · 무효화${_void_imp:+ · 불가능 절 $_void_imp}${_void_held:+ · 보류 절 $_void_held}") \
-        || _void_line=$(printf '%s 종단 — 무효화%s%s · 근거 %s' "$(now_iso)" \
-             "${_void_imp:+ · 불가능 절 $_void_imp}" "${_void_held:+ · 보류 절 $_void_held}" "$rationale")
+          " · 무효화${_void_imp:+ · 불가능 절 $_void_imp}${_void_held:+ · 보류 절 $_void_held}${_void_ho:+ · 이관 절 $_void_ho}") \
+        || _void_line=$(printf '%s 종단 — 무효화%s%s%s · 근거 %s' "$(now_iso)" \
+             "${_void_imp:+ · 불가능 절 $_void_imp}" "${_void_held:+ · 보류 절 $_void_held}" \
+             "${_void_ho:+ · 이관 절 $_void_ho}" "$rationale")
       gate_done_note "$_void_line"
       # Every `done` writer writes an ending row; gate_end_row says why.
       gate_end_row "무효화 종료" "$rationale" 해당없음 || true
@@ -58754,6 +58896,21 @@ gate_clause_settled() {
     # a row, so one here means the field was lost, and unsettled is the safe read.
     [ -n "$ids" ] || return 1
   fi
+  return 0
+}
+
+gate_handover_clause_ids() {
+  # Clauses whose LAST row is `이관`, in manifest order and as bare ids. They
+  # settle condition 10 like a met clause, and the `done` line names them so the
+  # morning can tell a clause the run met from one whose material it handed
+  # over to the morning report.
+  local cid last
+  for cid in $(gate_clause_ids); do
+    [ -n "$cid" ] || continue
+    last=$( { gate_rows '종료 절' | grep -F "id=$cid " || true; } | tail -1)
+    [ -n "$last" ] || continue
+    [ "$(gate_row_field "$last" '상태')" = "이관" ] && printf '%s\n' "$cid"
+  done
   return 0
 }
 
