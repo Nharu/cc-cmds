@@ -42,7 +42,8 @@
 #
 # The run-wide keys can also come from the environment, and a valid variable
 # beats the file: CC_CMDS_AUTOPILOT_DEFAULT_{LADDER_RUNGS,STAGNATION_BOUND,
-# COST_CEILING,DEADLINE,ROSTER_MODEL,PLUGIN_ALLOW,ACCOUNT_FAILOVER}. An invalid
+# COST_CEILING,DEADLINE,DECISION_CONFIRM,ROSTER_MODEL,PLUGIN_ALLOW,
+# ACCOUNT_FAILOVER}. An invalid
 # variable is ignored together with the file's value for the same key; an empty
 # one is unset.
 # PLUGIN_ALLOW is a `,`-separated list of `<이름>@<마켓>` keys and replaces every
@@ -201,7 +202,7 @@ done
 
 # The key table — a closed set. These two lines are the code side of the key
 # table SKILL.md 5o carries, and a lint compares the two sets.
-KD_RUN_KEYS='ladder-rungs stagnation-bound cost-ceiling deadline roster-model roster-model.<역할> auto-adopt plugin-allow account-failover'
+KD_RUN_KEYS='ladder-rungs stagnation-bound cost-ceiling deadline decision-confirm roster-model roster-model.<역할> auto-adopt plugin-allow account-failover'
 KD_REPO_KEYS='cutpoint review-ceiling terminal-cap dev-ids deploy-triggers act-allow apply-probe apply-probe-codes apply-actor plugin-allow'
 # Where `--carry` finds each key in a frozen manifest. Not compared by the lint
 # that compares the two lines above with 5o, so the test asserts that every key
@@ -214,6 +215,7 @@ kd_carry_field() {
     stagnation-bound)   printf '인가\t무진전 상한' ;;
     cost-ceiling)       printf '인가\t비용 천장' ;;
     deadline)           printf '인가\t벽시계 마감' ;;
+    decision-confirm)   printf '인가\t결정 수거 확정' ;;
     roster-model|roster-model.*) printf '행\t설계 로스터' ;;
     auto-adopt)         printf '행\t자동 채택' ;;
     cutpoint)           printf '대상\t절단점' ;;
@@ -235,7 +237,7 @@ KD_NAMED_REFUSED='termination launch defer notify apply-command apply-radius'
 
 KD_ENV_PREFIX='CC_CMDS_AUTOPILOT_DEFAULT'
 KD_ENV_FILE_VAR='CC_CMDS_AUTOPILOT_DEFAULTS_FILE'
-KD_ENV_RUN_VARS='CC_CMDS_AUTOPILOT_DEFAULT_ACCOUNT_FAILOVER CC_CMDS_AUTOPILOT_DEFAULT_COST_CEILING CC_CMDS_AUTOPILOT_DEFAULT_DEADLINE CC_CMDS_AUTOPILOT_DEFAULT_LADDER_RUNGS CC_CMDS_AUTOPILOT_DEFAULT_PLUGIN_ALLOW CC_CMDS_AUTOPILOT_DEFAULT_ROSTER_MODEL CC_CMDS_AUTOPILOT_DEFAULT_STAGNATION_BOUND'
+KD_ENV_RUN_VARS='CC_CMDS_AUTOPILOT_DEFAULT_ACCOUNT_FAILOVER CC_CMDS_AUTOPILOT_DEFAULT_COST_CEILING CC_CMDS_AUTOPILOT_DEFAULT_DEADLINE CC_CMDS_AUTOPILOT_DEFAULT_DECISION_CONFIRM CC_CMDS_AUTOPILOT_DEFAULT_LADDER_RUNGS CC_CMDS_AUTOPILOT_DEFAULT_PLUGIN_ALLOW CC_CMDS_AUTOPILOT_DEFAULT_ROSTER_MODEL CC_CMDS_AUTOPILOT_DEFAULT_STAGNATION_BOUND'
 
 KD_ABS_RE='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[+-][0-9]{2}:[0-9]{2}$'
 
@@ -636,7 +638,7 @@ kd_wide_instant() {
   deadline_instant "$s"
 }
 if [ "$KD_CARRY_GIVEN" = "1" ]; then
-  for kd_f in deadline_instant manifest_field target_field target_aliases manifest_preauth_rows manifest_autoadopt_rows_anywhere manifest_design_roster_rows_anywhere manifest_rekick_rows manifest_plugin_allow_rows manifest_failover_allow_rows apply_code_row_reask; do
+  for kd_f in deadline_instant manifest_field target_field target_aliases manifest_preauth_rows manifest_autoadopt_rows_anywhere manifest_design_roster_rows_anywhere manifest_rekick_rows manifest_plugin_allow_rows manifest_failover_allow_rows apply_code_row_reask apply_probe_run_bound; do
     command -v "$kd_f" >/dev/null 2>&1 || kd_refuse "run.sh 에 $kd_f 가 없습니다"
   done
   KD_KAT_E=$(kd_wide_instant "$KD_KAT")
@@ -805,6 +807,8 @@ kd_validate() {
       else
         kd_ign "$i" "$tok" "$rest"
       fi ;;
+    decision-confirm)
+      case "$v" in 자동|수동) ;; *) kd_ign "$i" '어휘 밖' '허용: 자동 수동' ;; esac ;;
     roster-model|roster-model.*)
       case "$v" in opus|sonnet|haiku) ;; *) kd_ign "$i" '어휘 밖' '허용: opus sonnet haiku' ;; esac ;;
     cutpoint)
@@ -1247,6 +1251,7 @@ kd_key_of_var() {
     CC_CMDS_AUTOPILOT_DEFAULT_STAGNATION_BOUND) printf 'stagnation-bound' ;;
     CC_CMDS_AUTOPILOT_DEFAULT_COST_CEILING) printf 'cost-ceiling' ;;
     CC_CMDS_AUTOPILOT_DEFAULT_DEADLINE) printf 'deadline' ;;
+    CC_CMDS_AUTOPILOT_DEFAULT_DECISION_CONFIRM) printf 'decision-confirm' ;;
     CC_CMDS_AUTOPILOT_DEFAULT_ROSTER_MODEL) printf 'roster-model' ;;
     CC_CMDS_AUTOPILOT_DEFAULT_PLUGIN_ALLOW) printf 'plugin-allow' ;;
     CC_CMDS_AUTOPILOT_DEFAULT_ACCOUNT_FAILOVER) printf 'account-failover' ;;
@@ -1519,6 +1524,9 @@ kd_effect() {   # kd_effect <index>; sets KD_WIDE and KD_EFF
       else
         KD_EFF="이 시각 뒤로 디스패치·머지가 없습니다"
       fi ;;
+    decision-confirm)
+      if [ "$v" = "자동" ]; then KD_WIDE=1; KD_EFF='좌석이 결정 수거 기록을 사람 없이 추천대로 확정합니다'
+      else KD_EFF='결정 수거 기록은 사람이 답합니다'; fi ;;
     roster-model)
       KD_EFF="기본 로스터의 모델 칸만 $v 로 바꿔 제안합니다 — 로스터 승인은 그대로 묻습니다" ;;
     roster-model.*)
@@ -1727,6 +1735,10 @@ if [ "$KD_CARRY_GIVEN" = "1" ]; then
     kd_carry_scalar run "$kd_k" "$(manifest_field '인가' "${kd_f#*	}")"
   done
   kd_out_not run deadline '간격으로 이어받음' '벽시계 마감은 값이 아니라 이전 런의 간격으로 다시 잡습니다 — 마감 행이 새 값입니다'
+  # A previous manifest without the line was read as `수동`, so that is the
+  # value carried: the follow-up run is never wider than the run it follows.
+  kd_dc=$(manifest_field '인가' '결정 수거 확정')
+  kd_carry_scalar run decision-confirm "${kd_dc:-수동}" auth
   for kd_k in roster-model 'roster-model.<역할>'; do
     kd_out_not run "$kd_k" '로스터 행' '설계 로스터 행은 행 그대로 이어받습니다 — 모델 칸 기본값은 쓰지 않습니다'
   done
@@ -1955,7 +1967,18 @@ EOF
     kd_carry_scalar "$kd_t" deploy-triggers "$(target_field "$kd_al" '배포트리거 식별자')"
     kd_t=$((kd_t + 1))
   done
-  kd_carry_scalar run apply-probe "$(manifest_field '요소' '적용 프로브')"
+  # A PROBE BOUND TO A RUN IS ASKED AGAIN, NOT CARRIED. A frozen probe string
+  # naming a run id (`apply_probe_run_bound`) answers for that run and not for
+  # the next one, so neither the probe nor its mapping is carried: both keys
+  # are `다시 물음` and the re-kickoff asks 5c for a new probe and mapping
+  # together. The file's mapping value is not offered as a `빈칸` row either —
+  # it was chosen for the old probe.
+  kd_rb=$(apply_probe_run_bound) || kd_rb=''
+  if [ -n "$kd_rb" ]; then
+    kd_out_not run apply-probe '다시 물음' "이전 매니페스트의 적용 프로브가 런 id ${kd_rb} 를 담고 있어 이어받지 않습니다 — 그 런에만 맞는 프로브이므로, 5c 로 새 프로브와 대응을 함께 다시 물어야 합니다"
+  else
+    kd_carry_scalar run apply-probe "$(manifest_field '요소' '적용 프로브')"
+  fi
   # The mapping is a `## 인가` row, not a field, and is offered as the
   # `<불필요>/<필요>` the file spells it in. The row itself is carried byte for
   # byte by the re-kickoff renderer; this is the value the kickoff asks with.
@@ -1968,7 +1991,9 @@ EOF
   # key is named `다시 물음` — the re-kickoff asks 5c on that row, and a seat
   # re-kickoff, which asks nothing, opens no successor run on it.
   kd_ac=$(manifest_apply_code_rows | head -1)
-  if apply_code_row_reask; then
+  if [ -n "$kd_rb" ]; then
+    kd_out_not run apply-probe-codes '다시 물음' "이전 매니페스트의 적용 프로브가 런 id ${kd_rb} 를 담고 있어 대응도 이어받지 않습니다 — 5c 로 새 프로브와 함께 대응을 다시 물어야 합니다"
+  elif apply_code_row_reask; then
     if kd_xi=$(kd_file_ok any apply-probe-codes); then
       kd_v="${E_NORM[kd_xi]}"
       printf '빈칸\t런\tapply-probe-codes\t%s\t%s\t0\t%s\n' "$(kd_cell "$kd_v")" "${E_SRC[kd_xi]}" \

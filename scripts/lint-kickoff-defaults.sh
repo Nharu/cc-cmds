@@ -26,11 +26,13 @@
 #      `JUDGMENT_CLASSES_FORBIDDEN=`); it sources them, and a copy is what
 #      would let the two vocabularies drift apart.                       [fail]
 #   4  nothing under the orchestrator or the hooks except the re-kickoff
-#      helper itself names `rekick.sh`. It reads a previous run's frozen
-#      answers for a new kickoff to carry; a running run that called it would
-#      be reading answers nobody confirmed for that run. Comments count, as in
-#      rule 1. The pattern is the file name, so the notification kind `rekick`
-#      the orchestrator already has is not caught.                       [fail]
+#      helper itself and the gate names `rekick.sh`. It reads a previous run's
+#      frozen answers for a new kickoff to carry; a running run that called it
+#      would be reading answers nobody confirmed for that run. The gate names
+#      it only to refuse a stage that calls the helper's mid-run urgency mark,
+#      which is a person's command. Comments count, as in rule 1. The pattern
+#      is the file name, so the notification kind `rekick` the orchestrator
+#      already has is not caught.                                        [fail]
 #
 # THE EXTRACTION RULE for rule 2:
 #
@@ -65,6 +67,7 @@ hooks_root="${HOOKS_ROOT:-$repo_root/plugins/cc-cmds/hooks}"
 skills_root="${SKILLS_ROOT:-$repo_root/plugins/cc-cmds/skills}"
 HELPER="$orch_root/kickoff-defaults.sh"
 REKICK="$orch_root/rekick.sh"
+GATE="$orch_root/gate.sh"
 # The 5o paragraph lives in the boundaries reference, which Step 1 reads when it
 # reaches the questions outside the fence.
 KICKOFF="$skills_root/autopilot/references/boundaries.md"
@@ -139,6 +142,7 @@ for dir in "$orch_root" "$hooks_root"; do
   while IFS= read -r f; do
     [[ -n "$f" ]] || continue
     [[ "$f" == "$REKICK" ]] && continue
+    [[ "$f" == "$GATE" ]] && continue
     callers="${callers}${f}
 "
   done <<EOF

@@ -17,7 +17,10 @@
 # not under `<base>`. The only files it makes are private copies in `TMPDIR`
 # (mode 600, removed on exit), and every read of a previous run's — or a lineage
 # ancestor's — manifest, authorization record and interview record is of such a
-# copy — so the bytes it measured are the bytes it reads.
+# copy — so the bytes it measured are the bytes it reads. THE ONE EXCEPTION IS
+# `mark-urgent`: it writes exactly one file, the named run directory's `urgent`
+# marker, with a temp file beside it moved in without overwriting, and nothing
+# else.
 #
 # `adopt`, `render-manifest` AND `verify-subset` READ THE DISK AND THE REMOTE.
 # Whether an unlanded segment of the previous run may be adopted is read at the
@@ -27,10 +30,12 @@
 # `git --no-optional-locks`, and no gate function that writes a ledger row is
 # called — so the sentence above stays true. `detect` reads no network.
 #
-# ONLY THE KICKOFF AND THE SEAT CALL THIS. Inside a pipeline run
+# ONLY THE KICKOFF AND THE SEAT CALL THIS — except `mark-urgent`, which only a
+# person's interactive `autopilot --urgent <run id>` calls. Inside a pipeline run
 # (`CC_PIPELINE_RUN_ID`, `CC_PIPELINE_STAGE_ID`, `CC_PIPELINE_SHIFT_ID` or
-# `CC_PIPELINE_REENTRY` set) every mode, `judge` included, refuses with exit 3
-# and an empty stdout before it reads anything.
+# `CC_PIPELINE_REENTRY` set) every mode, `judge` and `mark-urgent` included,
+# refuses with exit 3 and an empty stdout before it reads anything; the gate
+# refuses a stage's or a routing shift's `mark-urgent` call that unsets those.
 #
 # THE GATE IS NEVER SOURCED INTO THIS SHELL. `gate.sh` sources `run.sh` again,
 # and `run.sh`'s top-level `readonly` lines die on a second source in a shell
@@ -141,10 +146,16 @@
 # `--set` carries a value 5o confirmed for a `빈칸` row of `--carry`: `<범위>`
 # is that row's scope (`런`, or a target named by its alias or by the remote
 # slug `--carry` labels it with) and `<키>` its key, one of
-# ladder-rungs · stagnation-bound · cost-ceiling · apply-probe · apply-actor ·
+# ladder-rungs · stagnation-bound · cost-ceiling · decision-confirm · apply-probe · apply-actor ·
 # apply-probe-codes (scope `런`) or cutpoint · review-ceiling · terminal-cap · dev-ids ·
 # deploy-triggers (a target). The previous manifest must hold no value
-# there; anything else is refused. `render-manifest` writes the value into the
+# there; anything else is refused, except `apply-probe` when the previous
+# probe is bound to a run (`apply_probe_run_bound`): 5c asked for a new probe,
+# recorded under `5c 프로브`, and its one-line value replaces the old one,
+# backticked as the probe line was. That value is given without wrapping
+# backticks: one that starts or ends with a backtick is refused, because the
+# driver strips one from each end and would run another probe than the one the
+# new mapping row is hashed on. `render-manifest` writes the value into the
 # draft and `verify-subset` takes the same `--set` list, so the draft's value is
 # compared with the confirmed one rather than exempted.
 #
@@ -152,9 +163,11 @@
 # `render-manifest` copies it byte for byte with the rest of the section and
 # `verify-subset` refuses a draft whose row differs from the previous one —
 # added, dropped or changed. The one exception is a previous manifest whose
-# pipeline-run probe has no row, or a row carrying 2 (`apply_code_row_reask`):
-# with no row only 불필요=0 is defined and a row with 2 is refused by the
-# manifest check, so 5c is asked again. Then `render-manifest` drops the row,
+# pipeline-run probe has no row, a row carrying 2, or a probe bound to a run
+# (`apply_code_row_reask`): with no row only 불필요=0 is defined, a row with 2
+# is refused by the manifest check, and a bound probe answers only for the run
+# it names, so 5c is asked again — for a bound probe, for the probe as well,
+# and a draft without `--set 런:apply-probe` is refused. Then `render-manifest` drops the row,
 # `--set 런:apply-probe-codes=<불필요>/<필요>` writes the confirmed mapping as a
 # new row bound to the draft's probe bytes, and `verify-subset` accepts a row
 # that differs from the previous one only as that `--set` value, and refuses a
@@ -244,6 +257,9 @@
 #                  implement stage)
 #                  머지입양후보  <세그먼트>  <PR 번호>  <머지 커밋 40자>  <PR 헤드 40자>  [<수정 브랜치 워크트리>]
 #                  입양불가  <세그먼트>  <PR 번호|->  <사유 토큰>  [미입양=PR들여오기]
+#   mark-urgent    판정  표시함|이미|거부  <id>
+#                  고지  <한 줄>
+#                  (exit 0 for every verdict; `거부` and `이미` write nothing)
 #
 # An `입양후보` line's tail cells, each only when it applies and in this order:
 # `마지막행=park` (a person's branch, the segment's last row is `park`), then
@@ -329,6 +345,7 @@ RK_ARG=""; RK_ARG_GIVEN=0; RK_PREV=""; RK_BASE=""; RK_XSHA=""; RK_XGSHA=""
 RK_ACCEPTED=""; RK_NEWID=""; RK_KAT=""; RK_DEADLINE=""; RK_ASKED=""
 RK_VISUAL=""; RK_TARGETS=""; RK_ROWS=""; RK_RULES=""; RK_BIND=""; RK_GRANT_BLOCK=""
 RK_POS1=""; RK_POS2=""; RK_SETS=""; RK_BLANKS=""; RK_AUTO=0; RK_NOADOPT=0
+RK_MARK_RUN=""; RK_MARK_GIVEN=0
 
 rk_need() { [ $# -ge 2 ] || rk_usage "$1 에 값이 없습니다"; }
 while [ $# -gt 0 ]; do
@@ -340,6 +357,7 @@ while [ $# -gt 0 ]; do
     --expect-grant-sha256) rk_need "$@"; RK_XGSHA="$2"; shift 2 ;;
     --accepted)            rk_need "$@"; RK_ACCEPTED="$2"; shift 2 ;;
     --run-id)              rk_need "$@"; RK_NEWID="$2"; shift 2 ;;
+    --run)                 rk_need "$@"; RK_MARK_RUN="$2"; RK_MARK_GIVEN=1; shift 2 ;;
     --kickoff-at)          rk_need "$@"; RK_KAT="$2"; shift 2 ;;
     --deadline)            rk_need "$@"; RK_DEADLINE="$2"; shift 2 ;;
     --asked)               rk_need "$@"; RK_ASKED="$2"; shift 2 ;;
@@ -411,7 +429,9 @@ case "$RK_MODE" in
   adopt)
     rk_need_prev
     rk_hex64 "$RK_XSHA" || rk_usage "--expect-sha256 은 64자리 소문자 16진수입니다" ;;
-  '') rk_usage "모드가 없습니다 — detect | judge | verify | graph | render-manifest | render-interview | verify-subset | adopt" ;;
+  mark-urgent)
+    [ "$RK_MARK_GIVEN" = "1" ] || rk_usage "mark-urgent 에는 --run <런 id> 가 필요합니다" ;;
+  '') rk_usage "모드가 없습니다 — detect | judge | verify | graph | render-manifest | render-interview | verify-subset | adopt | mark-urgent" ;;
   *)  rk_usage "알 수 없는 모드입니다: $RK_MODE" ;;
 esac
 [ "$RK_NOADOPT" = "0" ] || [ "$RK_MODE" = "render-manifest" ] || rk_usage "--no-adopt 는 render-manifest 에만 씁니다"
@@ -448,7 +468,7 @@ for rk_f in manifest_field manifest_hdr_field manifest_row_fields manifest_plan_
             cc_live_stages cc_shift_is_live cc_relay_is_live cc_waiting_fresh_count cc_unanswered_halts cc_halt_answered \
             cc_unresolved_blocked cc_open_approval_rows cc_segment_states \
             dr_duration_seconds manifest_rekick_rows manifest_adoption_rows manifest_surface_approval_rows \
-            manifest_plugin_allow_rows manifest_failover_allow_rows slice_ids; do  command -v "$rk_f" >/dev/null 2>&1 || rk_refuse "run.sh 에 $rk_f 가 없습니다"
+            manifest_plugin_allow_rows manifest_failover_allow_rows manifest_urgent_rows run_urgent_source slice_ids; do  command -v "$rk_f" >/dev/null 2>&1 || rk_refuse "run.sh 에 $rk_f 가 없습니다"
 done
 
 # The plugin judgment — the functions the kickoff judges its plugin defaults
@@ -2836,6 +2856,9 @@ EOF
   printf '값\t종료 절 수\t%s\n' "${ncl:-0}"
   printf '값\t벽시계 마감\t%s\n' "$(manifest_field '인가' '벽시계 마감')"
   printf '값\t미선언 상황 처분\t%s\n' "$(manifest_field '인가' '미선언 상황 처분')"
+  local rkdc
+  rkdc=$(manifest_field '인가' '결정 수거 확정')
+  printf '값\t결정 수거 확정\t%s\n' "${rkdc:-수동}"
   printf '값\t시각 정합 마커\t%s\n' "$(manifest_field '인가' '시각 정합 마커')"
   printf '값\t설계 문서\t%s\n' "$(manifest_field '요소' '설계 문서')"
   while IFS= read -r row; do
@@ -3208,11 +3231,23 @@ rk_render() {
   RK_RENDER_WHY=$(rk_failover_rows "$RK_TMP/failover.rows") || return 1
   printf '%s' "$RK_RULES" > "$RK_TMP/rules.kv"
   [ -f "$RK_TMP/sets.tsv" ] || : > "$RK_TMP/sets.tsv"
+  # Urgency. A previous `급한 런` row carries in place, byte for byte. A previous
+  # run a person marked urgent mid-run (its run directory's marker says
+  # `출처=사람`) and whose manifest holds no row gives the successor one row
+  # with the source `이어받음`.
+  local urgrow="" prd
+  if [ -z "$(manifest_urgent_rows)" ]; then
+    prd=$(rundir_of_run_id "$RK_PREV" 2>/dev/null) || prd=""
+    if [ -n "$prd" ] && [ "$(run_urgent_source "$prd")" = "사람" ]; then
+      urgrow="- \`급한 런\` | 출처=이어받음 | 사유=$RK_PREV 에 사람이 도중에 단 급함"
+    fi
+  fi
   # A mapping row that cannot be carried is dropped, and a confirmed mapping is
   # written as a new row bound to the probe the draft will carry: the confirmed
   # `apply-probe` when one is set, the previous value otherwise.
-  local acdrop="" acrow="" acv acprobe bindsha="$RK_BIND"
+  local acdrop="" acrow="" acv acprobe bindsha="$RK_BIND" probebt=""
   if [ -z "$bindsha" ] && rk_upper_lineage_holds; then bindsha=$RK_UL_NOW; fi
+  apply_probe_run_bound >/dev/null && probebt=1
   if apply_code_row_reask; then
     acdrop=1
     acv=$(awk -F '\t' '$5 == "apply-probe-codes" { print $4 }' "$RK_TMP/sets.tsv")
@@ -3222,13 +3257,13 @@ rk_render() {
       acrow="- \`적용 프로브 코드\` | 불필요=${acv%%/*} | 필요=${acv#*/} | 프로브 sha256=$(apply_probe_sha "$(apply_unquote "$acprobe")")"
     fi
   fi
-  R_ACDROP="$acdrop" R_ACROW="$acrow" \
+  R_ACDROP="$acdrop" R_ACROW="$acrow" R_PROBEBT="$probebt" \
   R_SETS="$RK_TMP/sets.tsv" R_NEWID="$newid" R_KAT="$kat" R_DL="$dl" R_CONFIRM="$confirm" R_APPROVAL="$approval" \
   R_MAXCUT="$maxcut" R_VISUAL="$RK_VISUAL" R_DOUT="$G_DESIGN_OUT" R_IVKEEP="$G_IV_KEEP" R_DOCSHA="$G_DOC_SHA" \
   R_PLANF="$planf" R_PROV="$prov" R_TFILE="$( [ -n "$RK_TARGETS" ] && printf '%s' "$RK_TMP/targets.rows")" \
   R_RFILE="$( [ -n "$RK_ROWS" ] && printf '%s' "$RK_TMP/shape.rows")" R_RULES="$RK_TMP/rules.kv" \
   R_PADROP="$RK_TMP/plugin.drop" R_PFILE="$( [ -s "$RK_TMP/plugin.rows" ] && printf '%s' "$RK_TMP/plugin.rows")" \
-  R_FFILE="$( [ -s "$RK_TMP/failover.rows" ] && printf '%s' "$RK_TMP/failover.rows")" \
+  R_FFILE="$( [ -s "$RK_TMP/failover.rows" ] && printf '%s' "$RK_TMP/failover.rows")" R_URGROW="$urgrow" \
   R_BIND="$bindsha" R_IVPATH="docs/pipeline-run/$newid.interview.md" R_ADOPT="${RK_ADOPT_ROWS:-}" R_IVANC="$RK_IVANC" \
   awk '
     function field(line,   p) { p = index(line, "**: "); return substr(line, 3, p - 3) }
@@ -3246,6 +3281,7 @@ rk_render() {
         if (!acrow_done && ENVIRON["R_ACROW"] != "") { print ENVIRON["R_ACROW"]; acrow_done = 1 }
         if (!plugin_done && pfile != "") { while ((getline l < pfile) > 0) print l; close(pfile); plugin_done = 1 }
         if (!failover_done && ENVIRON["R_FFILE"] != "") { while ((getline l < ENVIRON["R_FFILE"]) > 0) print l; close(ENVIRON["R_FFILE"]); failover_done = 1 }
+        if (!urgrow_done && ENVIRON["R_URGROW"] != "") { print ENVIRON["R_URGROW"]; urgrow_done = 1 }
         # An interview row found up the lineage, its path moved to the new run.
         if (!ivanc_done && ENVIRON["R_IVANC"] != "") {
           line = ENVIRON["R_IVANC"]; sub(/인터뷰 기록=[^|]*\|/, "인터뷰 기록=" ENVIRON["R_IVPATH"] " |", line); print line; ivanc_done = 1
@@ -3326,6 +3362,8 @@ rk_render() {
     # The account rows of the previous run are carried in place, byte for
     # byte, with nothing judged again.
     /^- `계정 이전 허용`/ { print; next }
+    # The `급한 런` row of the previous run is carried in place, byte for byte.
+    /^- `급한 런`/ { print; next }
     # A mapping row the pipeline cannot run on is not carried; 5c answers it
     # again and the confirmed row is written when the section closes.
     /^- `적용 프로브 코드`/ { if (ENVIRON["R_ACDROP"] == "1") next; print; next }
@@ -3364,6 +3402,11 @@ rk_render() {
       if (sec == "## 인가" && f == "벽시계 마감") { print "**벽시계 마감**: " ENVIRON["R_DL"]; next }
       if (sec == "## 인가" && f == "시각 정합 마커" && ENVIRON["R_VISUAL"] != "") { print "**시각 정합 마커**: " ENVIRON["R_VISUAL"]; next }
       if ((f in rule) && $0 ~ /\*\*: (켬|끔)$/) { print "**" f "**: " rule[f]; next }
+      # A source probe bound to a run is overwritten by the confirmed probe, in
+      # the backticked form the probe line already had.
+      if (sec == "## 요소" && f == "적용 프로브" && ENVIRON["R_PROBEBT"] == "1" && (("요소", f) in rset)) {
+        print "**" f "**: `" rset["요소", f] "`"; rdone["요소", f] = 1; next
+      }
       if ((substr(sec, 4), f) in rset) { print "**" f "**: " rset[substr(sec, 4), f]; rdone[substr(sec, 4), f] = 1; next }
       print; next
     }
@@ -3430,6 +3473,7 @@ rk_set_field() {
     ladder-rungs)     printf '인가\t사다리 가용 단 수' ;;
     stagnation-bound) printf '인가\t무진전 상한' ;;
     cost-ceiling)     printf '인가\t비용 천장' ;;
+    decision-confirm) printf '인가\t결정 수거 확정' ;;
     apply-probe)      printf '요소\t적용 프로브' ;;
     apply-actor)      printf '요소\t적용 주체' ;;
     cutpoint)         printf '대상\t절단점' ;;
@@ -3502,13 +3546,42 @@ rk_sets_resolve() {
       [ "$sc" = "런" ] || { printf '%s' "--set $k 의 범위는 런입니다"; return 1; }
       pv=$(manifest_field "$sec" "$f")
     fi
+    # A PROBE BOUND TO A RUN IS THE ONE FILLED VALUE A `--set` REPLACES. The
+    # source probe names a run id (`apply_probe_run_bound`), so 5c was asked
+    # again and its answer overwrites the line. Argument parsing has already
+    # refused a value with a tab or newline, so the line stays one line. The
+    # render wraps the value in one pair of backticks and the driver strips
+    # exactly one from each end, so a value that itself starts or ends with a
+    # backtick would run as a different probe from the one hashed into the new
+    # mapping row: it is refused, and the person gives it without wrapping
+    # backticks, writing a trailing command substitution as `$(…)`.
+    if [ "$k" = "apply-probe" ] && [ -n "$pv" ] && apply_probe_run_bound >/dev/null; then
+      case "$v" in
+        '`'*|*'`') printf '%s' "--set 런:$k — 값이 백틱으로 시작하거나 끝납니다. 감싸는 백틱 없이 주고, 끝의 명령 치환은 \$(…) 로 씁니다: $v"; return 1 ;;
+      esac
+      pv=''
+    fi
     [ -z "$pv" ] || { printf '%s' "--set $sc:$k — 원천 매니페스트에 이미 값이 있어 빈칸이 아닙니다"; return 1; }
+    # A previous manifest without the line was read as `수동`; a blank there
+    # never widens the follow-up run.
+    if [ "$k" = "decision-confirm" ] && [ "$v" != "수동" ]; then
+      printf '%s' "--set $sc:$k — 원천 매니페스트에 줄이 없어 수동으로 읽혔으므로 이어받는 값은 수동입니다: $v"; return 1
+    fi
     awk -F '\t' -v s="$sc" -v f="$f" '$1 == s && $3 == f { d = 1 } END { exit !d }' "$out" \
       && { printf '%s' "--set $sc:$k 가 두 번 주어졌습니다"; return 1; }
     printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$sc" "$sec" "$f" "$v" "$k" "$rsc" >> "$out"
   done <<EOF
 $RK_SETS
 EOF
+  # A mapping confirmed for a bound probe without the new probe would bind the
+  # new row to the old run's probe.
+  local rbtok
+  if rbtok=$(apply_probe_run_bound) \
+     && awk -F '\t' '$5 == "apply-probe-codes" { d = 1 } END { exit !d }' "$out" \
+     && ! awk -F '\t' '$5 == "apply-probe" { d = 1 } END { exit !d }' "$out"; then
+    printf '%s' "--set 런:apply-probe-codes — 원천 적용 프로브가 런 id $rbtok 를 담고 있어, 5c 로 다시 물은 새 프로브(--set 런:apply-probe)도 함께 주어야 합니다"
+    return 1
+  fi
   return 0
 }
 
@@ -3671,11 +3744,13 @@ vs_in() { printf '%s\n' "$2" | grep -qxF -- "$1"; }
 
 # vs_set_is <scope> <field> <draft value> — a `--set` entry names this place,
 # and the draft carries exactly its value. That the entry is one 5o confirmed
-# is check 2b's to show, not this exemption's.
+# is check 2b's to show, not this exemption's. The three values reach awk
+# through the environment, which awk reads as bytes; `-v` would undo backslash
+# escapes and refuse a value with a backslash as different from itself.
 VS_SETS=""
 vs_set_is() {
   [ -n "$VS_SETS" ] && [ -s "$VS_SETS" ] || return 1
-  awk -F '\t' -v s="$1" -v f="$2" -v d="$3" '$1 == s && $3 == f { ok = ($4 == d); hit = 1 } END { exit !(hit && ok) }' "$VS_SETS"
+  VSI_S="$1" VSI_F="$2" VSI_D="$3" awk -F '\t' '$1 == ENVIRON["VSI_S"] && $3 == ENVIRON["VSI_F"] { ok = ($4 == ENVIRON["VSI_D"]); hit = 1 } END { exit !(hit && ok) }' "$VS_SETS"
 }
 
 # vs_blank_has <alias|런> <key> <value> — a `빈칸` row of the saved 5o output
@@ -3777,13 +3852,20 @@ EOF
   [ "$(MANIFEST="$prev" manifest_clause_rows_raw)" = "$(MANIFEST="$draft" manifest_clause_rows_raw)" ] \
     || why="${why:+$why; }종료 절 행이 다릅니다"
   # A field the previous run left empty may differ only by the value 5o
-  # confirmed for it (`--set`); the draft is compared with that value.
+  # confirmed for it (`--set`); the draft is compared with that value. A
+  # source probe bound to a run may differ only by the probe 5c was asked
+  # again for, which the draft carries backticked.
+  local pbound
+  pbound=$(MANIFEST="$prev" apply_probe_run_bound) || pbound=''
   for ks in '인가:비용 천장' '인가:무진전 상한' '인가:사다리 가용 단 수' '인가:미선언 상황 처분' \
-            '요소:적용 지점' '요소:적용 프로브' '요소:적용 주체'; do
+            '인가:결정 수거 확정' '요소:적용 지점' '요소:적용 프로브' '요소:적용 주체'; do
     k=${ks#*:}
     pval=$(MANIFEST="$prev" manifest_field "${ks%%:*}" "$k"); dval=$(MANIFEST="$draft" manifest_field "${ks%%:*}" "$k")
     [ "$pval" = "$dval" ] && continue
+    # A previous manifest without the line reads as `수동`, the value carried.
+    if [ "$k" = '결정 수거 확정' ] && [ -z "$pval" ] && [ "$dval" = '수동' ]; then continue; fi
     if [ -z "$pval" ] && vs_set_is 런 "$k" "$dval"; then continue; fi
+    if [ "$k" = "적용 프로브" ] && [ -n "$pbound" ] && vs_set_is 런 "$k" "$(apply_unquote "$dval")"; then continue; fi
     why="${why:+$why; }$k 가 원천과 다릅니다"
   done
   # The apply mapping row is the previous row, or none — except where the
@@ -3793,6 +3875,12 @@ EOF
   # apply of the new run would stop before its command.
   local acset dac
   if MANIFEST="$prev" apply_code_row_reask; then
+    # A probe bound to a run needs the new probe 5c was asked again for, not
+    # only a new mapping: a seat re-kickoff, which asks nothing, stops here and
+    # opens no successor run.
+    if [ -n "$pbound" ] && ! awk -F '\t' '$5 == "apply-probe" { d = 1 } END { exit !d }' "$VS_SETS" 2>/dev/null; then
+      why="${why:+$why; }원천의 적용 프로브가 런 id $pbound 를 담고 있어 5c 로 다시 물은 새 프로브(--set 런:apply-probe)가 필요합니다"
+    fi
     acset=$(awk -F '\t' '$5 == "apply-probe-codes" { print $4 }' "$VS_SETS" 2>/dev/null)
     dac=$(MANIFEST="$draft" manifest_apply_code_rows)
     if [ -n "$acset" ]; then
@@ -3847,6 +3935,10 @@ EOF
       # `5c`, is the value — the same one `--set` carries.
       if [ "$sk" = "apply-probe-codes" ] && [ -n "$(rk_asked_answer '5c')" ]; then
         [ "$(rk_asked_answer '5c')" = "$sv" ] || why="${why:+$why; }$srsc:$sk 의 확정값이 5c 답과 다릅니다"
+      # The probe has the same second source when the source probe was bound
+      # to a run: 5c asked for a new one, recorded under `5c 프로브`.
+      elif [ "$sk" = "apply-probe" ] && [ -n "$(rk_asked_answer '5c 프로브')" ]; then
+        [ "$(rk_asked_answer '5c 프로브')" = "$sv" ] || why="${why:+$why; }$srsc:$sk 의 확정값이 5c 프로브 답과 다릅니다"
       else
         MANIFEST="$prev" vs_blank_has "$ssc" "$sk" "$sv" \
           || why="${why:+$why; }$srsc:$sk 의 확정값이 5o 에서 확인한 빈칸 행과 다릅니다"
@@ -3857,6 +3949,7 @@ EOF
       elif [ "$sk" = "apply-probe-codes" ]; then
         dac=$(MANIFEST="$draft" manifest_apply_code_rows | head -n 1)
         sdv="$(manifest_row_fields "$dac" '불필요' 1 | head -1)/$(manifest_row_fields "$dac" '필요' 1 | head -1)"
+      elif [ "$sk" = "apply-probe" ]; then sdv=$(apply_unquote "$(MANIFEST="$draft" manifest_field "$ssec" "$sf")")
       else sdv=$(MANIFEST="$draft" manifest_field "$ssec" "$sf"); fi
       [ "$sdv" = "$sv" ] || why="${why:+$why; }초안의 $ssc:$sk 가 확정값이 아닙니다"
     done < "$VS_SETS"
@@ -4099,6 +4192,22 @@ $fa_d
 EOF
   fi
   vs_check '계정 이전' "$why"
+
+  # 7d — the `급한 런` row. A successor is urgent only by inheritance: a draft
+  # row is taken when the previous manifest holds that same row, or when the
+  # previous run's directory holds a valid urgency marker (a person's mid-run
+  # mark, which the renderer turns into a row with the source `이어받음`).
+  local ur_prev ur_d ur_prd
+  why=""
+  ur_prev=$(MANIFEST="$prev" manifest_urgent_rows)
+  ur_d=$(MANIFEST="$draft" manifest_urgent_rows)
+  if [ -n "$ur_d" ] && [ "$ur_d" != "$ur_prev" ]; then
+    ur_prd=$(rundir_of_run_id "$RK_PREV" 2>/dev/null) || ur_prd=""
+    if [ -z "$ur_prd" ] || [ -z "$(run_urgent_source "$ur_prd")" ]; then
+      why="초안의 급한 런 행이 앞선 런에 없고, 앞선 런 디렉터리에 유효한 급함 표지 파일도 없습니다: $ur_d"
+    fi
+  fi
+  vs_check '급한 런' "$why"
 
   # 8 — the interview row: exactly one when the draft plan holds a design or a
   # visual step (the stages that read the record), none when both are out, and
@@ -4470,7 +4579,67 @@ rk_adopt() {
   exit 0
 }
 
+# ---------------------------------------------------------------------------
+# mark-urgent — the one mode that writes: a run's urgency marker.
+# ---------------------------------------------------------------------------
+# rk_mark_say <판정> <id> [<고지>...] — the verdict line and its notice lines.
+rk_mark_say() {
+  local v="$1" id="$2" n
+  shift 2
+  printf 'cc-rekick v1\n판정\t%s\t%s\n' "$v" "$id"
+  for n in "$@"; do printf '고지\t%s\n' "$n"; done
+  exit 0
+}
+
+# rk_mark_existing <id> <marker> — the verdict for a marker that is already
+# there: `이미` with its source when it reads as urgent, else `거부` with its
+# path, so a person removes it and calls again.
+rk_mark_existing() {
+  local id="$1" f="$2" src
+  src=$(run_urgent_source "$(dirname "$f")")
+  if [ -n "$src" ]; then
+    rk_mark_say 이미 "$id" "이 런은 이미 급한 런입니다(출처=${src})"
+  fi
+  rk_mark_say 거부 "$id" "급함 표지 자리에 급함으로 읽히지 않는 파일이 있습니다 — 그 파일을 지우고 다시 부르십시오: $f"
+}
+
+rk_mark_urgent() {
+  # mark-urgent --run <id> — mark a running run urgent from a person's
+  # interactive session. The run directory is found by `rundir_of_run_id`
+  # alone (the session index and `session-lineage` are not read: a run waiting
+  # on a usage limit is usually one another session opened). Refused, writing
+  # nothing, when the id is not `<8 digits>-<8 hex>`, its directory is missing,
+  # its `done` is non-empty, or its pinned router copy predates urgency (no
+  # line starting with `def rt_urgent(`) — a mark such a run never reads is not
+  # reported as made. An existing marker is classified, never overwritten. The
+  # marker is written to a temp file and moved without overwriting; a move that
+  # lost to an earlier writer classifies that writer's file.
+  local id="$RK_MARK_RUN" rd f pin tmp
+  printf '%s' "$id" | grep -qE '^[0-9]{8}-[0-9a-f]{8}$' \
+    || rk_mark_say 거부 "$id" "런 id 의 꼴이 아닙니다 — <8자리 날짜>-<16진 8자리> 입니다"
+  rd=$(rundir_of_run_id "$id" 2>/dev/null) || rd=""
+  [ -n "$rd" ] && [ -d "$rd" ] || rk_mark_say 거부 "$id" "그 런의 런 디렉터리가 없습니다: ${rd:--}"
+  [ ! -s "$rd/done" ] || rk_mark_say 거부 "$id" "그 런은 이미 끝났습니다(done 이 있습니다): $rd/done"
+  pin="$rd/plugin/cc-cmds/orchestrator/route.sh"
+  if [ ! -f "$pin" ] || ! grep -q '^def rt_urgent(' "$pin" 2>/dev/null; then
+    rk_mark_say 거부 "$id" "이 런은 급함을 읽지 않는 이전 플러그인 사본으로 돌아 표시가 효과를 내지 않습니다: $pin"
+  fi
+  f="$rd/urgent"
+  if [ -e "$f" ] || [ -L "$f" ]; then rk_mark_existing "$id" "$f"; fi
+  tmp="$rd/urgent.tmp.$$"
+  printf 'cc-run-urgent v1\n출처=사람\n시각=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$tmp" 2>/dev/null \
+    || { rm -f "$tmp" 2>/dev/null; rk_mark_say 거부 "$id" "급함 표지의 임시 파일을 쓰지 못했습니다: $tmp"; }
+  mv -n "$tmp" "$f" 2>/dev/null || :
+  if [ -e "$tmp" ]; then
+    rm -f "$tmp" 2>/dev/null || :
+    [ -e "$f" ] || [ -L "$f" ] || rk_mark_say 거부 "$id" "급함 표지를 제자리로 옮기지 못했습니다: $f"
+    rk_mark_existing "$id" "$f"
+  fi
+  rk_mark_say 표시함 "$id" "이 런의 다음 라우터 판정부터 급한 런으로 판정합니다: $f"
+}
+
 case "$RK_MODE" in
+  mark-urgent)      rk_mark_urgent ;;
   adopt)            rk_adopt ;;
   detect)           rk_detect ;;
   judge)            rk_judge ;;
