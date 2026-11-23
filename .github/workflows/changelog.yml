@@ -1,0 +1,29 @@
+name: changelog
+
+# Every pull request, with no path filter: whether a fragment is owed depends on
+# which paths the PR changed, and that is scripts/changelog.sh's judgement, not
+# a trigger filter's.
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  fragment:
+    runs-on: ubuntu-24.04
+    steps:
+      # The whole history, so the merge base of the two shas is there to read.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # The branch name and the shas reach the script through env and are quoted
+      # in run, never spliced into it with an expression: a branch name may hold
+      # shell metacharacters.
+      - name: Release-note fragment rules
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: bash scripts/changelog.sh check --base "$BASE_SHA" --head "$HEAD_SHA" --branch "$HEAD_REF"
