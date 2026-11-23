@@ -5,7 +5,7 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [3.59.3] - 2026-11-23
+## [3.59.4] - 2026-11-23
 
 무거운 REST 목표와 test-gate 레인의 통과 기록이 git 을 부르기만 하면 트리·HEAD 커밋·베이스가 모두 같을 때만 다시 쓰이던 것을 좁혔다. 이제 git 셰임이 호출을 위치 질의, 전체 id 객체 읽기, 엄격 셋으로 나누고, 앞의 두 부류만 한 항목은 새 값 `git읽기` 로 기록되어 새 HEAD·베이스를 넘어서도 다시 쓰인다. 단, 읽은 파일과 추적 경로 집합이 같고, 기록한 객체 id 가 지금 저장소에서도 같은 있음·없음일 때만이다. 베이스 해소 스테이지의 시험 범위도 양쪽이 모두 바꾼 파일과 CI 워크플로의 경로 필터로 정하도록 고쳤다.
 
@@ -29,6 +29,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - 레포 루트 `CLAUDE.md` 의 `### 한 스테이지 안에서 다시 돌리기` 문단의 두 문장 — "git 을 쓰는 목표는 트리와 HEAD 커밋·베이스가 모두 같을 때만 다시 쓰인다." 와 "그 레인에 git 을 쓰는 절이 있으면 트리와 HEAD 커밋·베이스가 모두 같을 때만 다시 쓰인다." — 이 낡았다. 위치 질의와 전체 id 객체 읽기만 한 항목은 HEAD·베이스를 넘어 다시 쓰인다는 규칙으로 고친다.
 - 같은 `CLAUDE.md` 에 베이스 해소 스테이지가 읽을 워크플로 대응을 더한다. `lint.yml` 의 묶음은 REST 목표(`CHECK_PUSH_GOALS`), `gate.yml` 의 묶음은 `covers:`·`anchors:` 로 고른 test-gate 절(`CHECK_PUSH_SECTIONS`), `notify-macos.yml` 의 묶음은 `test-darwin-narrow` 의 항목 가운데 REST 목표와 `run-gate-darwin-sections` 의 절(18, 31ai, 84)이며, REST 목표에 없는 darwin 전용 항목은 고르지 않고 끝 메시지에 적는다. 이 대응이 없는 동안 cc-cmds 의 베이스 해소는 범위를 좁히지 않는다.
+
+## [3.59.3] - 2026-11-23
+
+부하가 높은 호스트에서 `watch.sh` 의 after-stage 배너가 문턱 뒤 다음 정기 전체 패스까지 밀리던 것을 고친다. 패스 끝의 만기 예약이 그때 새로 읽은 시각과 비교해, 패스 도중에 지난 문턱을 판정하지도 예약하지도 않았다.
+
+### Fixed
+
+- **`watch.sh` 만기 예약 기준 시각** — 탐침 주기를 전체 패스로 바꿀 다음 만기를, 패스가 팔을 판정하기 전에 읽은 시각과 비교해 예약한다. 패스 도중에 지난 시간 팔 문턱은 예약되어 다음 주기가 전체 패스가 된다. `scripts/test-watch.sh` 의 "조용한 런의 after-stage 만기" 단언(문턱 6초)이 부하가 높을 때만 지연 3 주기로 실패해 이 시험을 끌어오는 무인 런의 check-push 를 막던 일이 사라진다.
 
 ## [3.59.2] - 2026-11-23
 
