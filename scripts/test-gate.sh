@@ -10487,7 +10487,7 @@ else
   check "방출 파일이 방출자를 싣는다 (라우터)" "$(jq -r .actor "$EMITFILE")" "router"
   ( cd "$WT" && CC_PIPELINE_STAGE_ID='S5:SEG:2' gate_inproc exec --manifest "$FX_MANIFEST" \
       --target infra --segment SW --cutpoint 커밋 --surface 읽기 \
-      --snapshot-digest "$(HH)" --rationale x \
+      --snapshot-digest "$(CC_PIPELINE_STAGE_ID='S5:SEG:2' HH)" --rationale x \
       --emit-digest -- ls ) >/dev/null 2>&1
   # A DIFFERENT FILE, and that is the per-actor separation working: the derived
   # NAME sanitizes the id because a filename must, while the `actor` FIELD keeps
@@ -21322,7 +21322,8 @@ b1_21_before=$(grep -c '구속 튜플=B1' "$FX_LEDGER" || true)
 ( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" CC_PIPELINE_SEGMENT=SLV CC_PIPELINE_STAGE_ID='SLV#1' \
     gate_inproc exec \
     --manifest "$FX_MANIFEST" --target front --cutpoint 커밋 --surface 워크트리쓰기 \
-    --snapshot-digest "$(HL)" --rationale "픽스처 — 스테이지 좌석의 읽기 초과 exec" \
+    --snapshot-digest "$(CC_PIPELINE_SEGMENT=SLV CC_PIPELINE_STAGE_ID='SLV#1' HL)" \
+    --rationale "픽스처 — 스테이지 좌석의 읽기 초과 exec" \
     -- touch "$WORK/t21-stage" ); rc=$?
 check "스테이지 좌석의 exec 자체는 통과한다 (아래 두 단언이 거부 위에서 공허하지 않다)" "$rc" "0"
 check "스테이지로 표시된 읽기 초과 행위는 정체 카운터를 건드리지 않는다" "$(cat "$RD_21/progress-repeat")" "1"
@@ -25841,9 +25842,11 @@ check "생성 스크립트가 만든 위트니스 디렉터리로의 발행은 �
 # 가드를 직접 부르는 행으로는 `gate_verb_act` 에서 가드로 이어지는 배선이 재지지
 # 않아, 이 호출이 rc 3 으로 막혀도 스위트는 초록이었다. 그래서 여기서 게이트 경유로
 # 실제로 돌리고, 생성된 경로가 런 디렉터리 아래인지까지 본다.
+# The stage digest, read as the same stage: a stage caller is compared against
+# that value only, so the router's `HN` would be refused here.
 CC_PIPELINE_RUN_DIR="$RD3" CC_PIPELINE_STAGE_ID='SD#1' \
   gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
-      --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
+      --surface 트리밖쓰기 --snapshot-digest "$(CC_PIPELINE_STAGE_ID='SD#1' HN)" --rationale x \
       -- "$repo_root/plugins/cc-cmds/orchestrator/cc-team-witness-init.sh" review-beta
 check "설치본 루트의 위트니스 생성 스크립트를 게이트 경유로 실행하면 통과한다" "$rc" "0"
 case "$msg" in
@@ -25925,7 +25928,7 @@ dt31_dir_of() { printf '%s' "$1" | sed -nE 's/.*(^| )dir=([^ ]+).*/\2/p'; }
 dt31_gate() {
   CC_PIPELINE_RUN_ID="${DT31_RID:-$CONE_RUN_ID}" CC_PIPELINE_STAGE_ID='SD#1' TMPDIR="$DT31_T" \
     gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
-      --surface 트리밖쓰기 --reach 런로컬 --snapshot-digest "$(HN)" --rationale x \
+      --surface 트리밖쓰기 --reach 런로컬 --snapshot-digest "$(CC_PIPELINE_STAGE_ID='SD#1' HN)" --rationale x \
       -- "$DT31_TOOL" "$@"
 }
 dt31_gate checkout "$DT31/co.md" --prefix "$DT31_PFX" --expect "$DT31_CO_SHA" --pre
@@ -26168,7 +26171,7 @@ fi
 # 모두 예외 팔 없이 `*/*` 거부로 떨어지며, 이름이 `halt` 로 시작해도 `halt/*` 팔에 걸리지
 # 않는다는 것을 스테이지 id 를 단 호출로 잰다.
 CC_PIPELINE_STAGE_ID='S2#4' gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
-      --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
+      --surface 트리밖쓰기 --snapshot-digest "$(CC_PIPELINE_STAGE_ID='S2#4' HN)" --rationale x \
       -- touch "$RD3/halt-answer/S2#4.md"
 check "스테이지의 halt-answer/ 쓰기는 거절된다" "$rc" "3"
 case "$msg" in
@@ -26195,24 +26198,24 @@ vm_hook() {  # vm_hook <파일 경로> — 훅의 Write 판정과 사유
     | jq -r '(.hookSpecificOutput.permissionDecision // "allow") + " " + (.hookSpecificOutput.permissionDecisionReason // "")' 2>/dev/null
 }
 CC_PIPELINE_STAGE_ID='S2#4' gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
-      --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
+      --surface 트리밖쓰기 --snapshot-digest "$(CC_PIPELINE_STAGE_ID='S2#4' HN)" --rationale x \
       -- mkdir -p "$RD3/visual-migration"
 check "이관 진행 디렉터리 mkdir 는 통과한다" "$rc" "0"
 CC_PIPELINE_STAGE_ID='S2#4' gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
-      --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
+      --surface 트리밖쓰기 --snapshot-digest "$(CC_PIPELINE_STAGE_ID='S2#4' HN)" --rationale x \
       -- touch "$RD3/visual-migration/1.md"
 check "이관 진행 파일 visual-migration/1.md 쓰기는 통과한다" "$rc" "0"
 CC_PIPELINE_STAGE_ID='S2#4' gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
-      --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
+      --surface 트리밖쓰기 --snapshot-digest "$(CC_PIPELINE_STAGE_ID='S2#4' HN)" --rationale x \
       -- touch "$RD3/visual-migration/deep/1.md"
 check "이관 진행 디렉터리 두 단계 아래 쓰기는 거절된다" "$rc" "3"
 ln -s "$RD3/surface-digest" "$RD3/visual-migration/2.md" 2>/dev/null || true
 CC_PIPELINE_STAGE_ID='S2#4' gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
-      --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
+      --surface 트리밖쓰기 --snapshot-digest "$(CC_PIPELINE_STAGE_ID='S2#4' HN)" --rationale x \
       -- touch "$RD3/visual-migration/2.md"
 check "말단이 심링크인 이관 진행 파일 쓰기는 거절된다" "$rc" "3"
 CC_PIPELINE_STAGE_ID='S2#4' gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
-      --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
+      --surface 트리밖쓰기 --snapshot-digest "$(CC_PIPELINE_STAGE_ID='S2#4' HN)" --rationale x \
       -- touch "$RD3/visual-lane"
 check "런 지역 이관 기록 visual-lane 쓰기는 거절된다" "$rc" "3"
 case "$(vm_hook "$RD3/visual-migration/1.md")" in
@@ -26243,7 +26246,7 @@ fi
 VL3=$(mktemp -d "${TMPDIR:-/tmp}/cc-vl3.XXXXXX")
 mkdir -p "$VL3/repo/docs/visual-lane"
 CC_PIPELINE_STAGE_ID='S2#4' gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
-      --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
+      --surface 트리밖쓰기 --snapshot-digest "$(CC_PIPELINE_STAGE_ID='S2#4' HN)" --rationale x \
       -- touch "$VL3/repo/docs/visual-lane/d.md"
 check "문서 단위 레인 기록 쓰기는 Bash 에서 거절된다" "$rc/$( [ -e "$VL3/repo/docs/visual-lane/d.md" ] && printf yes || printf no )" "3/no"
 case "$msg" in
@@ -26253,7 +26256,7 @@ esac
 : > "$VL3/repo/docs/visual-lane/d.md"
 ln -s "$VL3/repo/docs/visual-lane/d.md" "$VL3/link.md"
 CC_PIPELINE_STAGE_ID='S2#4' gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
-      --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
+      --surface 트리밖쓰기 --snapshot-digest "$(CC_PIPELINE_STAGE_ID='S2#4' HN)" --rationale x \
       -- touch "$VL3/link.md"
 check "문서 단위 레인 기록을 가리키는 말단 심링크 쓰기도 거절된다" "$rc" "3"
 case "$(vm_hook "$VL3/repo/docs/visual-lane/d.md")" in
@@ -26269,7 +26272,7 @@ esac
 # document whose name merely starts with `visual-account`.
 mkdir -p "$VL3/repo/docs/visual-account"
 CC_PIPELINE_STAGE_ID='S2#4' gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
-      --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
+      --surface 트리밖쓰기 --snapshot-digest "$(CC_PIPELINE_STAGE_ID='S2#4' HN)" --rationale x \
       -- touch "$VL3/repo/docs/visual-account/d.md"
 check "문서 계정 기록 쓰기는 Bash 에서 거절된다" "$rc/$( [ -e "$VL3/repo/docs/visual-account/d.md" ] && printf yes || printf no )" "3/no"
 case "$msg" in
@@ -26277,17 +26280,17 @@ case "$msg" in
   *) bad "문서 계정 기록 거절 문면" "$msg" ;;
 esac
 CC_PIPELINE_STAGE_ID='S2#4' gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
-      --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
+      --surface 트리밖쓰기 --snapshot-digest "$(CC_PIPELINE_STAGE_ID='S2#4' HN)" --rationale x \
       -- bash -c "touch $VL3/repo/docs/visual-account/d.md"
 check "인터프리터 안의 문서 계정 기록 쓰기도 거절된다" "$rc/$( [ -e "$VL3/repo/docs/visual-account/d.md" ] && printf yes || printf no )" "3/no"
 : > "$VL3/repo/docs/visual-account/d.md"
 ln -s "$VL3/repo/docs/visual-account/d.md" "$VL3/alink.md"
 CC_PIPELINE_STAGE_ID='S2#4' gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
-      --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
+      --surface 트리밖쓰기 --snapshot-digest "$(CC_PIPELINE_STAGE_ID='S2#4' HN)" --rationale x \
       -- touch "$VL3/alink.md"
 check "문서 계정 기록을 가리키는 말단 심링크 쓰기도 거절된다" "$rc" "3"
 CC_PIPELINE_STAGE_ID='S2#4' gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
-      --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
+      --surface 트리밖쓰기 --snapshot-digest "$(CC_PIPELINE_STAGE_ID='S2#4' HN)" --rationale x \
       -- bash -c "touch $VL3/repo/docs/visual-account-notes.md"
 case "$msg" in
   *"a document's account record is written only by"*) bad "visual-account 로 시작하는 설계 문서 이름은 문서 계정 기록 거절에 걸리지 않는다" "$msg" ;;
@@ -26308,7 +26311,7 @@ rm -rf "$VL3"
 # 읽어 질문이 사람을 기다렸다. 스테이지 id 가 있으면 두 가드가 `halt/<id>.md` 하나와
 # 원자 쓰기의 점 접두 임시 이름만 받고, 거절 문면은 맞는 경로를 적는다.
 CC_PIPELINE_STAGE_ID='S2#4' gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
-      --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
+      --surface 트리밖쓰기 --snapshot-digest "$(CC_PIPELINE_STAGE_ID='S2#4' HN)" --rationale x \
       -- touch "$RD3/halt/S2.md"
 check "스테이지 S2#4 의 halt/S2.md 쓰기는 거절된다" "$rc" "3"
 gate_halt_text=$(CC_PIPELINE_STAGE_ID='S2#4' bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; gate_halt_name_refusal' _ "$GATE" 2>/dev/null)
@@ -26328,15 +26331,15 @@ hook_halt_out=$(printf '{"tool_name":"Write","tool_input":{"file_path":"%s"}}' "
 check "훅의 정지 기록 거부 문면이 게이트의 문면과 바이트가 같다" \
   "$(printf '%s' "$hook_halt_out" | jq -r '.hookSpecificOutput.permissionDecisionReason' 2>/dev/null)" "gate: $gate_halt_text"
 CC_PIPELINE_STAGE_ID='S2#4' gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
-      --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
+      --surface 트리밖쓰기 --snapshot-digest "$(CC_PIPELINE_STAGE_ID='S2#4' HN)" --rationale x \
       -- touch "$RD3/halt/S2#4.md"
 check "스테이지 S2#4 의 halt/S2#4.md 쓰기는 통과한다" "$rc" "0"
 CC_PIPELINE_STAGE_ID='S2#4' gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
-      --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
+      --surface 트리밖쓰기 --snapshot-digest "$(CC_PIPELINE_STAGE_ID='S2#4' HN)" --rationale x \
       -- touch "$RD3/halt/.S2#4.md.AbC123"
 check "원자 쓰기의 점 접두 임시 이름은 통과한다" "$rc" "0"
 CC_PIPELINE_STAGE_ID='S2#4' gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
-      --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
+      --surface 트리밖쓰기 --snapshot-digest "$(CC_PIPELINE_STAGE_ID='S2#4' HN)" --rationale x \
       -- mkdir -p "$RD3/halt"
 check "스테이지의 mkdir halt 는 통과한다" "$rc" "0"
 gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
@@ -30358,7 +30361,7 @@ rm -f "$RD/notify.seat"
     CC_PIPELINE_SEGMENT=SB CC_PIPELINE_STAGE_ID='SB#1' \
     TMUX="/tmp/tmux-g,x/default,4242,3" TMUX_PANE=%48 \
     bash "$GATE" act --manifest "$FX_MANIFEST" --kind segment --target infra --segment SBS1 \
-      --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(snapH)" \
+      --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(snapH_stage)" \
       --rationale "픽스처 — 스테이지는 좌석을 적지 않는다" -- "상태=계획됨" "워크트리=$WT" "선행=없음" \
     >/dev/null 2>&1 )
 check "스테이지 호출은 클릭 좌석을 적지 않는다" \
@@ -30394,7 +30397,7 @@ check "다른 서버 pid·창의 라우터 호출은 클릭 좌석을 그 창으
     CC_PIPELINE_SEGMENT=SB CC_PIPELINE_STAGE_ID='SB#1' \
     TMUX="/tmp/tmux-g,x/default,98817,3" TMUX_PANE=%60 \
     bash "$GATE" act --manifest "$FX_MANIFEST" --kind segment --target infra --segment SBS4 \
-      --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(snapH)" \
+      --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(snapH_stage)" \
       --rationale "픽스처 — 스테이지는 좌석을 옮기지 않는다" -- "상태=계획됨" "워크트리=$WT" "선행=없음" \
     >/dev/null 2>&1 )
 check "또 다른 창의 스테이지 호출은 옮긴 클릭 좌석을 바꾸지 않는다" \
@@ -42291,7 +42294,11 @@ spv_stage() {  # spv_stage <표면> [--reach <칸>] -- <argv…>
     CLAUDE_CODE_SESSION_ID="s-SPV-9" CC_CLAUDE_BIN="$CAP_STUB" \
     CC_PIPELINE_SHIFT_ID='' CC_PIPELINE_STAGE_ID='SPV#9' CC_PIPELINE_SEGMENT=SPV \
     bash "$GATE" exec --manifest "$CAP_NM" --target infra --segment SPV --cutpoint 커밋 \
-      --surface "$sf" --snapshot-digest "$(cap_H "$SAP_SEAT" '')" --rationale x "$@" ) > "$CAP_OUT" 2> "$CAP_ERR"; rc=$?
+      --surface "$sf" --snapshot-digest "$( ( cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
+          CLAUDE_CODE_SESSION_ID="s-SPV-9" CC_CLAUDE_BIN="$CAP_STUB" \
+          CC_PIPELINE_SHIFT_ID='' CC_PIPELINE_STAGE_ID='SPV#9' CC_PIPELINE_SEGMENT=SPV \
+          bash "$GATE" snapshot --manifest "$CAP_NM" --fields H 2>/dev/null ) )" \
+      --rationale x "$@" ) > "$CAP_OUT" 2> "$CAP_ERR"; rc=$?
   msg=$( { grep -h -vE '\[run\] ' "$CAP_OUT" "$CAP_ERR" || true; } | tr '\n' ' ' | sed 's/[[:space:]]*$//')
 }
 spv_stage 워크트리쓰기 -- cp "$WORK/spv-src.txt" "$SAP_WT/$SAP_RULE"
@@ -58695,7 +58702,7 @@ t3v_exec() {  # t3v_exec <스테이지 id> <argv...> — 발행 단계의 선언
     CC_PIPELINE_STAGE_ID="$sid" XDG_CONFIG_HOME="$WORK/vp83v-cfg" \
     CC_CLAUDE_BIN="$PJ_STUB" PJ_DIR="$PJ_DIR" PJ_VERDICT=park \
     bash "$GATE" exec --manifest "$RX_M" --target front3 --segment S3 --cutpoint push \
-      --surface 트리밖쓰기 --reach 기기전역 --snapshot-digest "$(rx_H "$RX_M")" \
+      --surface 트리밖쓰기 --reach 기기전역 --snapshot-digest "$(CC_PIPELINE_STAGE_ID="$sid" rx_H "$RX_M")" \
       --rationale '발행 계정 판독' -- "$@" 2>&1); rc=$?
   msg=$(printf '%s' "$out" | grep -vE '\[run\] ' | tr '\n' ' ' | sed 's/[[:space:]]*$//')
   printf '%s' "$out" > "$WORK/last-output.txt"
