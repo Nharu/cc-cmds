@@ -8,8 +8,9 @@
 #   T-POLICY-FAIL-* → expected exit 1
 # Every FAIL fixture is the OK pair with exactly one defect: a non-ASCII policy
 # line, a volatile token, an oversize policy, the harness pin absent or
-# doubled, a non-ASCII legacy line, the legacy file missing, or the policy
-# still carrying the v6 harness pin sentence. Four more cases are built at run
+# doubled, a non-ASCII legacy line, the legacy file missing, the policy
+# still carrying the v6 harness pin sentence, or the turn-economy batching pin
+# absent (FAIL-9). Four more cases are built at run
 # time from the OK pair: the policy and the legacy file each padded to exactly
 # the lint's size ceiling, and to one byte more.
 
