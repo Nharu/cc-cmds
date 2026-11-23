@@ -71003,16 +71003,16 @@ gate_relay_ci_time_arms() {
   wt=$(cc_ci_segment_row_field "$LEDGER" "$seg" '워크트리')
   h=$(cc_ci_worktree_head "$wt")
   if [ -z "$h" ]; then
-    last=$(printf '%s\n' "$recs" | awk 'NF > 0' | tail -1)
+    last=$(awk 'NF > 0' <<<"$recs" | tail -1)
     [ -n "$last" ] || return 0
     h=${last%%"$tab"*}
   fi
   g=$(cc_ci_round_get "$(cc_ci_round "$LEDGER" "$seg" "$h")" g)
   g=${g:-0}
-  v=$(printf '%s\n' "$recs" | LC_ALL=C awk -F'\t' -v sha="$h" -v g="$g" \
-    'NF > 0 && $1 == sha && $2 == g { p = $0 } END { printf "%s", p }')
-  if [ -n "$v" ] && [ "$g" = "0" ] && [ "$(printf '%s' "$v" | cut -f4)" = "미등록" ]; then
-    ep=$(cc_iso_to_epoch "$(printf '%s' "$v" | cut -f5)")
+  v=$(LC_ALL=C awk -F'\t' -v sha="$h" -v g="$g" \
+    'NF > 0 && $1 == sha && $2 == g { p = $0 } END { printf "%s", p }' <<<"$recs")
+  if [ -n "$v" ] && [ "$g" = "0" ] && [ "$(cut -f4 <<<"$v")" = "미등록" ]; then
+    ep=$(cc_iso_to_epoch "$(cut -f5 <<<"$v")")
     [ -z "$ep" ] || printf '%s\n' "$((ep + CC_CI_UNREGISTERED_GRACE_SECONDS))"
   fi
   clk=$(cc_ci_wait_clock "$RUN_DIR" "$LEDGER" "$seg" "$h" "$g" "$wt")
@@ -71034,7 +71034,7 @@ gate_relay_wake_timeout() {
   local now="$1" best="$GATE_WAKE_MAX_SECONDS" d e k n c poll s al slug br st ob
   local ds=""
   ds="$((GATE_RELAY_SEAT_START + $(gate_relay_hold)))"
-  for e in $(printf '%s' "$GATE_RELAY_W_RESET" | tr ',' ' '); do
+  for e in ${GATE_RELAY_W_RESET//,/ }; do
     k=${e##*:}
     case "$k" in ''|*[!0-9]*) continue ;; esac
     ds="$ds $((k + $(cc_reset_grace)))"
@@ -71043,7 +71043,7 @@ gate_relay_wake_timeout() {
   d=$(gate_relay_resume_clock); [ -z "$d" ] || ds="$ds $d"
   if [ -n "$GATE_RELAY_CONFIRM_SET" ]; then
     poll=$(gate_confirm_test_value "$GATE_CONFIRM_POLL_SECONDS" "${CC_GATE_CONFIRM_POLL_TEST_SECONDS:-}")
-    for n in $(printf '%s' "$GATE_RELAY_CONFIRM_SET" | tr ',' ' '); do
+    for n in ${GATE_RELAY_CONFIRM_SET//,/ }; do
       c=$(gate_confirm_count "$n")
       ds="$ds $((${c#* } + poll))"
     done
@@ -71056,10 +71056,10 @@ gate_relay_wake_timeout() {
     { [ -n "$slug" ] && [ -n "$br" ]; } || continue
     st=$(gate_master_state "$slug" "$br")
     [ -n "$st" ] || continue
-    ob=$(cc_iso_to_epoch "$(printf '%s' "$st" | jq -r '.observed_at // ""' 2>/dev/null || true)")
+    ob=$(cc_iso_to_epoch "$(jq -r '.observed_at // ""' <<<"$st" 2>/dev/null || true)")
     [ -z "$ob" ] || ds="$ds $((ob + GATE_MASTER_STALE_SECONDS))"
   done
-  for s in $(printf '%s' "$GATE_RELAY_W_CI" | tr ',' ' '); do
+  for s in ${GATE_RELAY_W_CI//,/ }; do
     for d in $(gate_relay_ci_time_arms "$s"); do ds="$ds $d"; done
   done
   for d in $ds; do
