@@ -2390,15 +2390,18 @@ eod_loop() {
   FX_PIDS="${FX_PIDS:-}$EOD_LOOP_PID "
 }
 eod_loop_exited() {
-  # eod_loop_exited — 루프가 10초 안에 스스로 끝나면 `exited`. 아니면 죽이고 `running`.
-  local i=0
-  while [ "$i" -lt 100 ]; do
+  # eod_loop_exited [초] — 루프가 그 초(기본 30) 안에 스스로 끝나면 `exited`. 아니면 죽이고
+  # `running`. 끝나야 하는 쪽의 기한은 지연이 아니라 멈춤을 가리는 울타리다 — 부하가 높은
+  # 호스트에서는 패스 하나가 몇 초씩 걸려 10초 안에 끝나지 못한 루프가 그대로 실패로 읽혔다.
+  # 기한은 반복 횟수가 아니라 벽시계로 잰다. 끝나지 않아야 하는 쪽은 기한만큼 기다리므로
+  # 그 단언은 짧은 기한을 직접 준다.
+  local until=$(( $(date +%s) + ${1:-30} ))
+  while [ "$(date +%s)" -lt "$until" ]; do
     if ! kill -0 "$EOD_LOOP_PID" 2>/dev/null; then
       wait "$EOD_LOOP_PID" 2>/dev/null || true
       printf 'exited'; return 0
     fi
     sleep 0.1
-    i=$((i + 1))
   done
   kill "$EOD_LOOP_PID" 2>/dev/null || true
   wait "$EOD_LOOP_PID" 2>/dev/null || true
@@ -2884,7 +2887,7 @@ idle_fixture
 printf '픽스처 원장 90000초 전 갱신 · 스테이지 0개 · 대기 승인 0건 · 비종단 세그먼트 1개 · 원장크기=1 · 마지막성장=%s\n' \
   "$(( $(date -u +%s) - 90000 ))" > "$RD/watch.heartbeat"
 idle_loop
-check "묵은 하트비트 위에 다시 띄운 감시자는 첫 반복에 내려가지 않고 계속 돈다" "$(eod_loop_exited)" "running"
+check "묵은 하트비트 위에 다시 띄운 감시자는 첫 반복에 내려가지 않고 계속 돈다" "$(eod_loop_exited 10)" "running"
 
 # 하루 넘게 지켜본 감시자로 부른다 — 막 뜬 루프로 재면 기동 시각 기준만으로도 끝나지
 # 않아, 중단 기록이 그 까닭이라는 것을 이 단언이 가려내지 못한다.
