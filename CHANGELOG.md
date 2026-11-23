@@ -5,7 +5,7 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [3.59.6] - 2026-11-24
+## [3.60.1] - 2026-11-24
 
 `make check-push` 의 REST 목표 유도가 릴리스 커밋의 두 파일을 유도 입력에서 뺀다. 판 번호 줄 하나만 바꾼 `plugin.json` 과 맨 위에 `## [` 묶음을 끼우기만 한 `CHANGELOG.md` 는 어떤 목표도 끌어오지 않는다. 판정 기준은 기존 통과 재사용 규칙의 릴리스 차이와 같은 경로별 판정 하나를 함께 쓴다.
 
@@ -18,6 +18,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Why
 
 판 올림 커밋은 판 번호를 이름 대는 목표까지 유도해, 릴리스 커밋마다 그 커밋과 무관한 REST 목표가 로컬 check-push 에서 다시 돌았다. 릴리스 파일만 바꾼 변경의 REST 시험은 master push 의 CI 전량이 맡는다.
+
+## [3.60.0] - 2026-11-24
+
+릴리스 노트와 버전 올림을 브랜치마다 손으로 하지 않습니다. 각 브랜치는 `changelog.d/` 에 조각 파일 하나를 두고, master 에 머지되면 릴리스 워크플로가 쌓인 조각을 하나의 버전 절로 묶어 `CHANGELOG.md` 와 `plugin.json` 을 올리는 `chore(release): vX.Y.Z` 커밋을 push 합니다. 같은 파일을 여러 브랜치가 고치던 충돌이 사라집니다.
+
+### Added
+
+- **`scripts/changelog.sh`** — `new` 는 현재 브랜치의 조각 틀을 만들고, `check` 는 PR 이 조각을 빚지는지와 조각의 형식을 판정하며, `assemble` 은 master 의 조각들을 가장 높은 등급만큼 버전을 올린 한 절로 조립하고 조각을 `changelog.d/archive/<버전>/` 으로 옮깁니다.
+- **`changelog` 워크플로** — 모든 PR 에서 조각 규칙을 검사합니다.
+- **`release` 워크플로** — master push 마다 조각을 조립해 릴리스 커밋을 push 하고, 그 커밋에 lint 런이 붙도록 lint 워크플로를 master 에서 한 번 띄웁니다. push 가 거부되면 새 master 끝에서 세 번까지 다시 조립합니다.
+
+### Changed
+
+- **lint 워크플로** — 릴리스 워크플로가 띄울 수 있도록 수동 실행 트리거를 받습니다.
+- **fleet master 판독** — master 끝이 봇의 릴리스 커밋(작성자 `github-actions[bot]`, 제목 `chore(release): v`, 바꾼 파일이 `CHANGELOG.md`·`plugin.json`·`changelog.d/` 아래뿐)이면 첫째 부모인 머지 커밋의 검사 결과를 합쳐 판정합니다. 릴리스 커밋에는 push 로 시작하는 검사 런이 붙지 않아, 머지 커밋의 빨간 게이트가 초록으로 보이던 틈을 막습니다.
 
 ## [3.59.5] - 2026-11-23
 

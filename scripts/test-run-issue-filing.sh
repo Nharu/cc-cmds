@@ -32,6 +32,8 @@ export CC_GATE_PIN_DISABLE=1
 
 script_dir=$(cd "$(dirname "$0")" && pwd)
 repo_root=$(cd "$script_dir/.." && pwd)
+# shellcheck source=wait-fixture.sh
+. "$repo_root/scripts/wait-fixture.sh"
 GATE="$repo_root/plugins/cc-cmds/orchestrator/gate.sh"
 # 아침 보고서 렌더링 열거는 Act 3 이 읽는 참조 파일에 있다.
 SKILL="$repo_root/plugins/cc-cmds/skills/autopilot/references/act3-report.md"
@@ -100,11 +102,13 @@ export PATH="$WORK/bin:$PATH"
 # 기록에 남고, 9번이 그것을 잡는다.
 export GH_REPO=decoy/decoy GH_HOST=decoy.invalid GH_ENTERPRISE_TOKEN=decoy-token
 
-# 수집기 스텁 — 호출 수를 세고 $WORK/round.json 을 그대로 낸다.
+# 수집기 스텁 — 호출 수를 세고 $WORK/round.json 을 그대로 낸다. 멈춤 뒤 출력 직전에
+# $WORK/calls-done 에 한 줄을 더해, 수집기가 끝났는지를 시각 없이 읽게 한다.
 cat > "$WORK/collector-stub" <<STUBEOF
 #!/usr/bin/env bash
 printf '1\n' >> "$WORK/calls"
 [ -n "\${CC_STUB_SLEEP:-}" ] && sleep "\$CC_STUB_SLEEP"
+printf '1\n' >> "$WORK/calls-done"
 cat "$WORK/round.json"
 STUBEOF
 chmod +x "$WORK/collector-stub"
@@ -210,6 +214,16 @@ wait_round() {
 snap_nowait() { g snapshot --manifest "$MANIFEST"; }
 snap() { snap_nowait; wait_round; }
 calls() { if [ -f "$WORK/calls" ]; then grep -c '' "$WORK/calls"; else printf 0; fi; }
+calls_done() { if [ -f "$WORK/calls-done" ]; then grep -c '' "$WORK/calls-done"; else printf 0; fi; }
+# snap_bg_returns — 게이트 동사를 배경으로 띄우고, 공용 기다림의 상한 안에 돌아오면
+# 예, 아니면 그 동사를 끊고 아니오를 낸다. 호출하는 셸에서 바로 부른다(명령 치환 안의
+# 배경 프로세스는 부모가 거둘 수 없다).
+snap_bg_returns() {
+  local p
+  snap_nowait &
+  p=$!
+  if wait_pid_gone "$p"; then SNAP_BG=예; else kill "$p" 2>/dev/null; SNAP_BG=아니오; fi
+}
 LEDGER_MARK=0
 fresh() {
   # 한 케이스의 시작 — 스탬프를 지우고 gh 로그·스크립트를 비우고 원장 위치를 표시한다.
@@ -489,55 +503,51 @@ check "8: 동시 진입 둘에 등록 시도는 한 번이다" "$(ghcount '| iss
 
 # --- 8b. 멈춘 gh 호출 --------------------------------------------------------------------
 # 회차는 게이트 동사가 띄운 분리 자식에서 돈다. 멈춘 GitHub 호출은 호출당 타임아웃으로 끊기고,
-# 그 호출이 실패한 것과 같은 분기를 탄다 — 새 사유를 만들지 않는다. 동사 자체의 경과와 회차가
-# 끝나기까지의 경과를 따로 잰다: 동사는 회차를 기다리지 않고, 회차는 타임아웃 덕에 멈춤보다
-# 먼저 끝난다. 멈춤을 타임아웃(1초)과 게이트 자신의 기동 시간을 더한 것보다 넉넉히 길게
-# 두어, 회차 경과가 멈춤보다 짧다는 단언이 타임아웃 말고는 설명되지 않게 한다. 회차 경과에는
-# 동사와 분리 회차의 두 번 기동, 자격·신원 조회, `wait_round` 의 대기가 함께 들어가 부하가
-# 걸린 러너에서 5~6초에 이르므로, 멈춤을 6초로 두면 타임아웃이 제대로 끊어도 경과가 멈춤과
-# 같아진다. 멈춤은 타임아웃이 프로세스 그룹째 끊으므로 길게 두어도 정상 경로의 시간은 늘지
-# 않고, 타임아웃이 고장 나면 경과가 멈춤 이상이 되어 `wait_round` 의 30초 상한 안에서 잡힌다.
-ROUND_STALL_S=20
+# 그 호출이 실패한 것과 같은 분기를 탄다 — 새 사유를 만들지 않는다. 동사가 돌아오는 것과
+# 회차가 끝나는 것을 따로 본다: 동사는 회차를 기다리지 않고, 회차는 타임아웃 덕에 멈춤보다
+# 먼저 끝난다. 멈춤은 1200초로 두어, 동사가 회차를 기다리거나 타임아웃이 고장 난 회귀는
+# 짧은 멈춤이 끝나 통과하는 일 없이 공용 기다림의 상한과 `wait_round` 의 상한에 걸린다.
+# 멈춤은 타임아웃이 프로세스 그룹째 끊으므로 길게 두어도 정상 경로의 시간은 늘지 않는다.
+# 타임아웃이 끊었다는 원인 증거는 조회 실패 건너뜀 행이다.
+ROUND_STALL_S=1200
 fresh; round T3/review
 printf '%s\n' "$ROUND_STALL_S" > "$WORK/gh-sleep/issue-list"
-t0=$SECONDS
-( export CC_METRICS_GH_TIMEOUT_S=1; snap_nowait )
-el_call=$((SECONDS - t0))
-wait_round
-el=$((SECONDS - t0))
+export CC_METRICS_GH_TIMEOUT_S=1
+snap_bg_returns
+unset CC_METRICS_GH_TIMEOUT_S
+if wait_round; then round_end=예; else round_end=아니오; fi
 check "8b: (선행) 멈춘 조회가 실제로 불렸다" "$(ghcount '| issue list ')" "1"
-check "8b: 멈춘 조회가 있어도 게이트 동사는 멈춤보다 먼저 돌아온다" "$([ "$el_call" -lt "$ROUND_STALL_S" ] && printf 예 || printf "아니오(${el_call}초)")" "예"
-check "8b: 멈춘 조회는 끊겨 회차가 멈춤보다 먼저 끝난다" "$([ "$el" -lt "$ROUND_STALL_S" ] && printf 예 || printf "아니오(${el}초)")" "예"
+check "8b: 멈춘 조회가 있어도 게이트 동사는 멈춤보다 먼저 돌아온다" "$SNAP_BG" "예"
+check "8b: 멈춘 조회는 끊겨 회차가 멈춤보다 먼저 끝난다" "$round_end" "예"
 check "8b: 끊긴 조회는 조회 실패 건너뜀 행을 남긴다" "$(field "$(skip_rows)" '사유')" "조회 실패"
 check "8b: 끊긴 조회 뒤에는 등록하지 않는다" "$(ghcount '| issue create ')" "0"
 fresh; round T3/review
 printf '%s\n' "$ROUND_STALL_S" > "$WORK/gh-sleep/issue-create"
-t0=$SECONDS
-( export CC_METRICS_GH_TIMEOUT_S=1; snap_nowait )
-el_call=$((SECONDS - t0))
-wait_round
-el=$((SECONDS - t0))
+export CC_METRICS_GH_TIMEOUT_S=1
+snap_bg_returns
+unset CC_METRICS_GH_TIMEOUT_S
+if wait_round; then round_end=예; else round_end=아니오; fi
 check "8b: (선행) 멈춘 등록이 실제로 불렸다" "$(ghcount '| issue create ')" "1"
-check "8b: 멈춘 등록이 있어도 게이트 동사는 멈춤보다 먼저 돌아온다" "$([ "$el_call" -lt "$ROUND_STALL_S" ] && printf 예 || printf "아니오(${el_call}초)")" "예"
-check "8b: 멈춘 등록은 끊겨 회차가 멈춤보다 먼저 끝난다" "$([ "$el" -lt "$ROUND_STALL_S" ] && printf 예 || printf "아니오(${el}초)")" "예"
+check "8b: 멈춘 등록이 있어도 게이트 동사는 멈춤보다 먼저 돌아온다" "$SNAP_BG" "예"
+check "8b: 멈춘 등록은 끊겨 회차가 멈춤보다 먼저 끝난다" "$round_end" "예"
 check "8b: 끊긴 등록은 조회 실패 건너뜀 행을 남긴다" "$(field "$(skip_rows)" '사유')" "조회 실패"
 check "8b: 끊긴 등록은 필링 행을 남기지 않는다" "$(nrows "$(file_rows)")" "0"
 
 # --- 8c. 분리 회차 · 기한 · 난스 ------------------------------------------------------------
 # 동사는 회차를 기다리지 않는다. 수집기가 8초 걸려도 동사는 그보다 먼저 돌아오고, 그때
-# 잠금은 아직 회차가 쥐고 있으며, 회차가 끝나면 필링은 동기로 돌던 때와 같다. 경과의
-# 문턱은 수집기의 멈춤 자체다 — 동사가 회차를 기다렸다면 `SECONDS` 차는 멈춤 이상이
-# 되고, 기다리지 않았다면 동사 자신의 지연만 남는다. 그 지연은 부하가 걸린 러너에서
-# 3초를 넘기도 하므로, 고정된 작은 문턱이 아니라 멈춤과 견준다.
+# 잠금은 아직 회차가 쥐고 있으며, 회차가 끝나면 필링은 동기로 돌던 때와 같다. 동사가
+# 기다리지 않았다는 판정은 시각이 아니라 동사가 돌아온 순간의 상태다 — 수집기가 아직
+# 끝나지 않았고(끝 표지가 늘지 않았다) 잠금을 회차가 쥐고 있다. 동사가 회차를 기다렸다면
+# 그 순간 수집기는 이미 끝났고 잠금도 풀렸다.
 fresh; round T3/review
 before=$(calls)
+done_before=$(calls_done)
 export CC_STUB_SLEEP=8
-t0=$SECONDS
 snap_nowait
-el_call=$((SECONDS - t0))
+done_after=$(calls_done)
 lock_after=$([ -d "$STATE_ROOT/.metrics.lock" ] && printf 있음 || printf 없음)
 wait_round
-check "8c: 수집기가 오래 걸려도 게이트 동사는 수집기의 멈춤보다 먼저 돌아온다" "$([ "$el_call" -lt "$CC_STUB_SLEEP" ] && printf 예 || printf "아니오(${el_call}초)")" "예"
+check "8c: 수집기가 오래 걸려도 게이트 동사는 수집기가 끝나기 전에 돌아온다" "$((done_after - done_before))" "0"
 unset CC_STUB_SLEEP
 check "8c: 동사가 돌아왔을 때 잠금은 아직 회차가 쥐고 있다" "$lock_after" "있음"
 check "8c: 분리 회차가 수집기를 한 번 부른다" "$(( $(calls) - before ))" "1"
@@ -547,18 +557,18 @@ check "8c: 분리 회차도 등록 필링 행을 남긴다" "$(field "$(file_row
 
 # 기한이 수집기를 끊는다. 끊긴 수집기는 실패한 수집기와 같은 갈래를 타고(rc 143), 잠금은
 # 풀리며, 필링은 없다. 수집기의 남은 자식이 출력을 쥐고 있어도 회차는 기다리지 않는다 —
-# 회차 경과가 멈춤보다 짧다는 단언이 그것을 잰다. 멈춤의 길이는 8b 와 같은 까닭으로
-# 기동 지연보다 넉넉히 길게 둔다 — 기한이 수집기의 그룹을 끊으므로 정상 경로는 늘지 않는다.
+# 회차가 `wait_round` 의 상한 안에 끝난다는 단언이 그것을 잰다. 멈춤은 8b 와 같은 1200초라,
+# 기한이 끊지 못하는 회귀는 그 상한에 걸린다. 기한이 수집기의 그룹을 끊으므로 정상 경로는
+# 늘지 않고, 끊었다는 원인 증거는 회차 로그의 rc=143 줄이다.
 fresh; round T3/review
 before=$(calls)
 lb=$(grep -c -F '계측 회차 실패 — 수집기 rc=143' "$ROUND_LOG" 2>/dev/null || true)
-t0=$SECONDS
-( export CC_METRICS_ROUND_TIMEOUT_S=1 CC_STUB_SLEEP="$ROUND_STALL_S"; snap )
-el=$((SECONDS - t0))
+( export CC_METRICS_ROUND_TIMEOUT_S=1 CC_STUB_SLEEP="$ROUND_STALL_S"; snap_nowait )
+if wait_round; then round_end=예; else round_end=아니오; fi
 la=$(grep -c -F '계측 회차 실패 — 수집기 rc=143' "$ROUND_LOG" 2>/dev/null || true)
 check "8c: (선행) 기한 사례의 수집기가 실제로 불렸다" "$(( $(calls) - before ))" "1"
 check "8c: 기한을 넘긴 수집기는 rc=143 실패로 회차 로그에 남는다" "$(( ${la:-0} - ${lb:-0} ))" "1"
-check "8c: 기한에 끊긴 회차는 멈춤보다 먼저 끝난다" "$([ "$el" -lt "$ROUND_STALL_S" ] && printf 예 || printf "아니오(${el}초)")" "예"
+check "8c: 기한에 끊긴 회차는 멈춤보다 먼저 끝난다" "$round_end" "예"
 check "8c: 기한에 끊긴 회차는 잠금을 푼다" "$([ -d "$STATE_ROOT/.metrics.lock" ] && printf 있음 || printf 없음)" "없음"
 check "8c: 기한에 끊긴 회차는 gh 를 부르지 않는다" "$(grep -c '' "$GH_LOG")" "0"
 check "8c: 기한에 끊긴 회차는 필링 행도 건너뜀 행도 남기지 않는다" "$(( $(nrows "$(file_rows)") + $(nrows "$(skip_rows)") ))" "0"
