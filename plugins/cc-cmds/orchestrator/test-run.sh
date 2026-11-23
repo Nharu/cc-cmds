@@ -2492,6 +2492,20 @@ else
   bad "앞부분이 겹치는 id" "B 와 B0 의 선언 다이제스트가 같다"
 fi
 
+# 선언 뒤에 파이프 버퍼보다 큰 꼬리가 붙은 문서 — pipefail 아래에서 판독기가
+# 일찍 끝나 앞 단계를 SIGPIPE 로 죽이면 맞게 읽은 값이 상태 141 로 돌아온다.
+{
+  printf '## 구현 슬라이싱\n\n**슬라이스 수**: 1\n\n### 슬라이스 A — 하나\n\n'
+  printf '**스킬**: implement\n**레포**: `o/r`\n**선언 파일**: `a.txt`\n**선행**: 없음\n**절단점**: 머지\n\n## 뒤 절\n\n'
+  awk 'BEGIN { for (i = 0; i < 20000; i++) print "뒤 절 본문 줄 " i " — 파이프 버퍼를 넘기는 꼬리" }'
+} > "$SLI/bigtail.md"
+bt_out=$(slice_field "$SLI/bigtail.md" A '선언 파일'); bt_rc=$?
+check "큰 꼬리 문서: slice_field 가 상태 0 으로 끝난다" "$bt_rc" "0"
+check "큰 꼬리 문서: slice_field 가 값을 읽는다" "$bt_out" '`a.txt`'
+slicing_body "$SLI/bigtail.md" >/dev/null; bt_rc=$?
+check "큰 꼬리 문서: slicing_body 가 상태 0 으로 끝난다" "$bt_rc" "0"
+check "큰 꼬리 문서: 꼬리 절은 본문에 들지 않는다" "$(slicing_body "$SLI/bigtail.md" | grep -c '뒤 절 본문' || true)" "0"
+
 # id 바로 뒤에 다중 바이트 글자가 오거나 줄이 id 로 끝나는 헤딩 — macOS awk 가
 # 잘라 낸 UTF-8 선두 바이트에서 죽지 않고, `slice_ids` 와 같은 id 로 읽는다.
 cat > "$SLI/mbtail.md" <<'FIXM'
@@ -7142,6 +7156,24 @@ if [ "$orph_hit2" != "0" ]; then
 else
   bad "고아 탐지" "죽은 S1.pid 가 고아로 보고되지 않는다 — 면제가 이름을 넘어 번졌다"
 fi
+# WHILE THE RESIDENT OBSERVER HOLDS THE JOB, `checks.pid` NAMES THE OBSERVER — a
+# live pid that does not run `checks.sh`. The relay's poller-liveness test asks
+# only whether the pid exists, so it must keep reading "a poller is alive", and
+# the orphan census must keep the record exempt by name. A live process that is
+# not the poller stands in for the observer.
+rm -f "$ORPH_RD/S1.pid"
+sleep 60 & orph_obs=$!
+printf '%s' "$orph_obs" > "$ORPH_RD/checks.pid"
+orph_live=$(
+  RUN_DIR=$ORPH_RD
+  eval "$(sed -n '/^gate_relay_poller_live()/,/^}/p' "$(dirname "$DRIVER")/gate.sh")"
+  if gate_relay_poller_live; then printf 'live'; else printf 'dead'; fi
+)
+check "관측기 pid 를 담은 checks.pid 를 교대 대기가 산 폴러로 읽는다" "$orph_live" "live"
+orph_out3=$(cc_orphan_stages "$ORPH_RD")
+orph_hit3=$( { printf '%s\n' "$orph_out3" | grep -cx 'checks' || true; } | tr -d ' ')
+check "관측기 pid 를 담은 checks.pid 는 고아로 보고되지 않는다" "$orph_hit3" "0"
+kill "$orph_obs" 2>/dev/null; wait "$orph_obs" 2>/dev/null
 rm -rf "$ORPH_RD"
 
 # ---------------------------------------------------------------------------
