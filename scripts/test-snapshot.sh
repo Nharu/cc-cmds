@@ -708,7 +708,7 @@ w_stall=$(cc_effective_stall "$RD_R1")
 # A driver-written marker: the gate's settlement leaves those alone, so killing
 # the holder below adds no row to this shared fixture ledger.
 printf '%s\n' "보유자=$W_HOLD" "지문=$(cc_proc_fingerprint "$W_HOLD")" "기록자=드라이버" "계보=S9" \
-  "그룹=org:h1" "까지=-" "갱신=$((w_now - w_stall - 1))" "종류=review" "논스=-" > "$RD_R1/S9.waiting"
+  "그룹=org:h1" "까지=-" "갱신=$((w_now - w_stall - 60))" "종류=review" "논스=-" > "$RD_R1/S9.waiting"
 SNAP_W="$WORK/waiting.json"
 ( cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null ) > "$SNAP_W"
 check "살아 있는 보유자의 표지는 waiting_stages 원소 하나다" "$(jq -r '.waiting_stages | length' "$SNAP_W")" "1"
