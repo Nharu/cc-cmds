@@ -30286,6 +30286,13 @@ gateb_stage() {
         bash "$GATE" "$@" 2>&1); rc=$?
   msg=$(printf '%s' "$out" | grep -vE '\[run\] ' | tr '\n' ' ' | sed 's/[[:space:]]*$//')
 }
+# The digest `gateb_stage` presents. A stage caller is compared against the stage
+# digest, whose vector half is the projection on its own segment, so the router's
+# `snapH` is refused there; this reads the snapshot as the same stage.
+snapH_stage() {
+  ( cd "$WT" && CC_PIPELINE_SEGMENT=SB CC_PIPELINE_STAGE_ID='SB#1' \
+      bash "$GATE" snapshot --manifest "$FX_MANIFEST" 2>/dev/null ) | jq -r .H
+}
 
 gateb_shift() {
   local out
@@ -30318,7 +30325,7 @@ notify_reset
 # `선행` at all and every one of them was refused before it could be recorded.
 # The refusal was correct; the fixtures had to learn the newer contract.
 gateb_stage act --manifest "$FX_MANIFEST" --kind segment --target infra --segment SBN1 \
-  --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(snapH)" \
+  --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(snapH_stage)" \
   --rationale "픽스처 — 스테이지 호출의 park 기록" -- "상태=park" "워크트리=$WT" "선행=없음"
 check "스테이지 호출에서도 세그먼트 park 행은 남는다" \
   "$(grep -cF 'id=SBN1 | 상태=park' "$FX_LEDGER" || true)" "1"
@@ -30517,7 +30524,7 @@ check "샤드 호출의 인가 행은 행위자=교대 를 싣는다"        "$(
 # The assertion spans both calls: exactly one banner, and it is the router's.
 notify_reset
 gateb_stage act --manifest "$FX_MANIFEST" --kind segment --target infra --segment SBN3 \
-  --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(snapH)" \
+  --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(snapH_stage)" \
   --rationale "픽스처 — 같은 세그먼트에 대한 스테이지 park" -- "상태=park" "워크트리=$WT" "선행=없음"
 gateb act --manifest "$FX_MANIFEST" --kind segment --target infra --segment SBN3 \
   --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(snapH)" \
