@@ -31012,7 +31012,7 @@ gate_clause_handover_fail() {
   # gate_clause_handover_fail <id> <refusal line> — refuses an `이관` whose
   # reader failed: prints the line, writes one `이관 실패` row for the clause
   # and returns the rule exit code. The line begins with the fixed head
-  # `이관 판독기 실패 — `, and the row carries it, narrowed to 200 characters,
+  # `이관 판독기 실패 — `, and the row carries it, narrowed to 200 bytes,
   # without the time and the `[run][…]` prefix `warn` puts before it.
   #
   # `교대` is the calling shift's ordinal, and 0 for any caller that is not a
@@ -44688,7 +44688,7 @@ EOF
         hw=$((hw - 40))
       done
       if [ "$hlen" -gt "$GATE_ROW_MAX" ]; then
-        warn "the handoff row does not fit in ${GATE_ROW_MAX} bytes even with its free text narrowed to the floor — \`CI 대기\`, \`리셋 대기\`, \`master 대기\`, \`확인 대기\` and \`답 대기 기록\` are never cut, so nothing is written"
+        warn "the handoff row does not fit in ${GATE_ROW_MAX} bytes even with its free text narrowed to the floor — \`CI 대기\`, \`리셋 대기\`, \`master 대기\`, \`확인 대기\`, \`답 대기 기록\` and \`이관 재기동\` are never cut, so nothing is written"
         return "$GATE_EXIT_VOCAB"
       fi
       gate_append 'handoff' "교대=$hn" "사유=$hwhy" \
@@ -70276,9 +70276,10 @@ gate_relay_route() {
   # launch, then the relay loop for as long as the shift it launched ends `대기`.
   #
   # A SUCCESSOR IS HANDLED BY THE SAME RULE AS THE FIRST SHIFT. rc 0 with a
-  # `대기` handoff after its launch row continues the loop; anything else — rc
-  # 0 under another reason, an approval (5), a dead shift — ends it and is the
-  # seat call's result, so the seat's three outcomes do not change.
+  # `대기` handoff after its launch row continues the loop, and so does a `중단`
+  # handoff the gate marked `이관 재기동=예`; anything else — rc 0 under another
+  # reason, an approval (5), a dead shift — ends it and is the seat call's
+  # result, so the seat's three outcomes do not change.
   local alias="$1" reason="$2" rc=0; shift 2
   GATE_RELAY_SEAT_START=$(date -u +%s)
   GATE_RELAY_INNER=""
@@ -70296,7 +70297,11 @@ gate_relay_route() {
   while [ "$rc" = "0" ]; do
     if [ -n "$GATE_RELAY_HANDOVER_RELAUNCH" ]; then
       GATE_RELAY_HANDOVER_RELAUNCH=""
-      [ ! -e "$RUN_DIR/done" ] || return 0
+      if [ -e "$RUN_DIR/done" ]; then
+        gate_relay_hand_back "$(cc_relay_wait_stages "$RUN_DIR")" "$(gate_relay_ci_segments)" \
+          "$(gate_relay_reset_set)" "런이 끝났다"
+        return 0
+      fi
       GATE_RELAY_ENTERED=""
       GATE_RELAY_INNER=1
       gate_launch_shift "$alias" 중단 "$@" || rc=$?
@@ -70739,15 +70744,20 @@ gate_relay_enter_if_waiting() {
   # Called between `wait "$spid"` and the removal of the shift's markers, for a
   # shift that ended rc 0. Enters the relay only when that shift's own latest
   # `handoff` is `대기` — the launch row is the ledger's latest `교대 기동`,
-  # since launches are serial — and writes `relay.live` here, before the
-  # caller removes `shift.live`. ALWAYS RETURNS 0: it is the tail of an `||`
-  # list under `set -e`.
+  # since launches are serial — or marks the next launch for the relay when that
+  # handoff is the gate's own `이관 재기동=예`. Either way `relay.live` is written
+  # here, before the caller removes `shift.live`, so a launch with no wait in
+  # front of it leaves no moment in which nothing holds the run. ALWAYS RETURNS
+  # 0: it is the tail of an `||` list under `set -e`.
   if gate_relay_reentry_allowed; then
     GATE_RELAY_STARTED=$(date -u +%s)
     gate_relay_write "$(cc_relay_wait_stages "$RUN_DIR")" "$(gate_relay_ci_segments)" \
       "$(gate_relay_reset_set)"
     GATE_RELAY_ENTERED=1
   elif gate_relay_handover_relaunch_pending; then
+    GATE_RELAY_STARTED=$(date -u +%s)
+    gate_relay_write "$(cc_relay_wait_stages "$RUN_DIR")" "$(gate_relay_ci_segments)" \
+      "$(gate_relay_reset_set)"
     GATE_RELAY_HANDOVER_RELAUNCH=1
   fi
   return 0

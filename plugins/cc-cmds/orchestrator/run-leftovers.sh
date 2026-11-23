@@ -32,7 +32,7 @@
 #                      or `이관`.
 # A source that cannot be read is an item (`[판독 실패]`), not a failure: only
 # an unreadable manifest or ledger ends the program with a non-zero code, its
-# reason on the first line of the output.
+# reason on the first line of stderr.
 #
 # THE PERSON'S PART IS A FIXED SENTENCE per source class, never a judgment read
 # off the finding.
@@ -44,7 +44,8 @@
 # It writes nothing — not to the ledger, not to the run directory.
 #
 # Exit codes: 0 printed; 2 usage error, or the manifest or the ledger
-# unreadable — the reason on the first line of stdout.
+# unreadable — the reason on the first line of stderr, stdout empty. The gate
+# keeps that line on an `이관` refusal and the morning report prints it.
 #
 # Compatibility: bash 3.2 — no associative arrays, no `mapfile`.
 
@@ -57,7 +58,7 @@ RL_TAIL='이 밖의 사람 몫은 「기다리는 결정」·「보류 큐」·�
 RL_EMPTY='확인하지 못한 항목이 원장과 디스크에 없습니다'
 RL_HANDOVER_RE='^종단 재료 (.+) · sha256 ([0-9a-f]{64}) · 항목 ([0-9]+)건 · 판별 (표지|문면 런 보고서에서 읽|문면 아침 보고서에서 읽)$'
 
-rl_fail() { printf 'run-leftovers: %s\n' "$1"; exit 2; }
+rl_fail() { printf 'run-leftovers: %s\n' "$1" >&2; exit 2; }
 
 MANIFEST=''
 LEDGER=''
@@ -259,12 +260,12 @@ done
 dv=$(sed -n 's/^\*\*설계 문서\*\*: *//p' "$MANIFEST" | sed -n '1p' | sed 's/[[:space:]]*$//')
 doc=''
 if [ -n "$dv" ] && [ "$dv" != "(없음)" ]; then
-  if [ -e "$RL_ROOT/$dv" ]; then doc="$RL_ROOT/$dv"
-  elif [ -e "/$dv" ]; then doc="/$dv"
+  if [ -f "$RL_ROOT/$dv" ]; then doc="$RL_ROOT/$dv"
+  elif [ -f "/$dv" ]; then doc="/$dv"
   fi
 fi
 if [ -n "$doc" ]; then
-  if [ ! -f "$doc" ] || [ ! -r "$doc" ]; then
+  if [ ! -r "$doc" ]; then
     rl_unreadable '미검증 잔여' "$doc" '설계 문서를 읽지 못했습니다'
   else
     # One line per open item: `<line>\t<id>\t<title>\t<class>`. The grade, the

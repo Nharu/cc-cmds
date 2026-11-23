@@ -41805,7 +41805,7 @@ check "34t: park 뒤에는 승계되지 않는다" "$rc" "3"
 CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$SAQ_PREV_AR"
 
 # --- 34qh. 종단 뒤 절의 이관 정산 — 게이트가 남김 목록 사본을 근거로 쓴다 ---
-# --- section: 34qh | group: cone | covers: act, snapshot, shift-halt, clause-exec, check_manifest, gate_done_conditions, leftovers, handoff, gate_relay_route | anchors: 34qh: 표지 절과 문면 절의 근거 시점은 종단 뒤이고 보통 절은 null 이다, 34qh: 종단 뒤 절의 종료 절 근거 요청은 거절된다, 34qh: 종단 뒤 절의 clause-exec 는 거절된다, 34qh: 종단 뒤 절의 충족은 중단 답 줄을 인용해도 거절된다, 34qh: 근거를 넘긴 이관은 어휘 오류다, 34qh: 첫 이관이 clause-handover 를 모드 700 으로 만든다, 34qh: 이관 행의 sha256 이 사본의 sha256 과 같다, 34qh: 이관 절이 done 줄에 실린다, 34qh: 음성 고정물의 두 절은 근거 시점이 null 이고 이관이 거절된다, 34qh: 열린 근거 요청이 있는 절의 이관은 거절되고 사본을 쓰지 않는다, 34qh: 판독기 run-leftovers.sh 가 실패하면 이관은 종료 절 행도 사본도 남기지 않는다, 34qh: 판독기 실패의 거절 줄은 정해진 머리로 시작하고 종료 코드와 표준 오류 첫 줄을 싣는다, 34qh: 판독기 실패는 이관 실패 행 하나를 교대 서수와 거절 줄로 남긴다, 34qh: 이관 실패 행 하나 뒤의 불가능은 거절되고 이관을 가리킨다, 34qh: 판독기 연속 실패 뒤 불가능 정산의 done 줄은 무효화다, 34qh: 심볼릭 링크인 clause-handover 에서 이관은 거절된다, 34qh: 불가능은 절마다 마지막 두 이관 실패 행이 이어진 두 교대일 때만 받아들여진다, 34qh: 승인을 든 보류 절의 이관은 머리 없이 거절되고 사본도 이관 실패 행도 없다, 34qh: 앞선 두 교대에 이미 행이 있는 절뿐이면 재기동하지 않는다, 34qh: 판독기 실패 뒤 중단 인계 행에 게이트가 이관 재기동=예 를 싣고 상한 안에 쓴다, 34qh: relay 는 표시된 중단 인계 뒤 다음 교대를 사유=중단 으로 한 번 띄우고 표시 없는 인계에서 멈춘다, 34qh: 무효화 done 줄은 불가능 절 뒤에 이관 절을 싣는다, 34qh: P0 잔존 무효화 done 줄도 이관 절을 싣는다, 34qh: 교대 지침과 리드 사본이 이관 판독기 실패 규칙을 싣는다 ---
+# --- section: 34qh | group: cone | covers: act, snapshot, shift-halt, clause-exec, check_manifest, gate_done_conditions, leftovers, handoff, gate_relay_route | anchors: 34qh: 표지 절과 문면 절의 근거 시점은 종단 뒤이고 보통 절은 null 이다, 34qh: 종단 뒤 절의 종료 절 근거 요청은 거절된다, 34qh: 종단 뒤 절의 clause-exec 는 거절된다, 34qh: 종단 뒤 절의 충족은 중단 답 줄을 인용해도 거절된다, 34qh: 근거를 넘긴 이관은 어휘 오류다, 34qh: 첫 이관이 clause-handover 를 모드 700 으로 만든다, 34qh: 이관 행의 sha256 이 사본의 sha256 과 같다, 34qh: 이관 절이 done 줄에 실린다, 34qh: 음성 고정물의 두 절은 근거 시점이 null 이고 이관이 거절된다, 34qh: 열린 근거 요청이 있는 절의 이관은 거절되고 사본을 쓰지 않는다, 34qh: 판독기 run-leftovers.sh 가 실패하면 이관은 종료 절 행도 사본도 남기지 않는다, 34qh: 판독기 실패의 거절 줄은 정해진 머리로 시작하고 종료 코드와 표준 오류 첫 줄을 싣는다, 34qh: 판독기 실패는 이관 실패 행 하나를 교대 서수와 거절 줄로 남긴다, 34qh: 이관 실패 행 하나 뒤의 불가능은 거절되고 이관을 가리킨다, 34qh: 판독기 연속 실패 뒤 불가능 정산의 done 줄은 무효화다, 34qh: 심볼릭 링크인 clause-handover 에서 이관은 거절된다, 34qh: 불가능은 절마다 마지막 두 이관 실패 행이 이어진 두 교대일 때만 받아들여진다, 34qh: 승인을 든 보류 절의 이관은 머리 없이 거절되고 사본도 이관 실패 행도 없다, 34qh: 실제 판독기의 실패 이유와 sha256·사본 쓰기 실패가 정해진 머리로 거절된다, 34qh: 한 교대에서 실패한 여러 절이 절마다 이관 실패 행 하나를 남긴다, 34qh: 앞선 두 교대에 이미 행이 있는 절뿐이면 재기동하지 않는다, 34qh: 판독기 실패 뒤 중단 인계 행에 게이트가 이관 재기동=예 를 싣고 상한 안에 쓴다, 34qh: relay 는 표시된 중단 인계 뒤 다음 교대를 사유=중단 으로 한 번 띄우고 표시 없는 인계에서 멈춘다, 34qh: 무효화 done 줄은 불가능 절 뒤에 이관 절을 싣는다, 34qh: P0 잔존 무효화 done 줄도 이관 절을 싣는다, 34qh: 교대 지침과 리드 사본이 이관 판독기 실패 규칙을 싣는다 ---
 #
 # A CLAUSE WHOSE EVIDENCE EXISTS ONLY AFTER THE RUN ENDS IS HANDED OVER, NOT
 # ASKED ABOUT. The gate judges such a clause from its `근거 시점=종단 뒤` marker
@@ -42029,7 +42029,9 @@ qh_fx RQH7 "6f6f6f6f-1111-2222-3333-000000000007" \
   '- `종료 절` | id=D5 | 문면=아침에 본다 | 근거 시점=종단 뒤' \
   '- `종료 절` | id=D6 | 문면=아침에 본다 | 근거 시점=종단 뒤' \
   '- `종료 절` | id=D7 | 문면=아침에 본다 | 근거 시점=종단 뒤' \
-  '- `종료 절` | id=D8 | 문면=아침에 본다 | 근거 시점=종단 뒤'
+  '- `종료 절` | id=D8 | 문면=아침에 본다 | 근거 시점=종단 뒤' \
+  '- `종료 절` | id=D9 | 문면=아침에 본다 | 근거 시점=종단 뒤' \
+  '- `종료 절` | id=D10 | 문면=아침에 본다 | 근거 시점=종단 뒤'
 qh_plant() {  # qh_plant <id> <교대…> — that clause's 이관 실패 rows, one per shift given
   local id="$1" k; shift
   for k in "$@"; do
@@ -42051,6 +42053,27 @@ qh_clause D8 이관
 check "34qh: 승인을 든 보류 절의 이관은 머리 없이 거절되고 사본도 이관 실패 행도 없다" \
   "$rc/$( [ -e "$CAP_DIR/clause-handover/D8.md" ] && printf 있음 || printf 없음)/$(qh_n '이관 실패')/$(printf '%s' "$msg" | grep -c '이관 판독기 실패' || true)" \
   "3/없음/$qh_n8/0"
+# Three clauses refused by real calls of one shift, each at another step: the
+# real reader pointed at a ledger that is not there, a directory standing where
+# the copy goes, and a handover directory that takes no file.
+cp "$(dirname "$GATE")/run-leftovers.sh" "$QH_PLUG/orchestrator/run-leftovers-real.sh"
+cat > "$QH_PLUG/orchestrator/run-leftovers.sh" <<'STUB'
+#!/usr/bin/env bash
+exec bash "$(dirname "$0")/run-leftovers-real.sh" "$1" /nonexistent/34qh.md --run-dir "$4"
+STUB
+QH_GATE_SAVE="$GATE"; GATE="$QH_PLUG/orchestrator/gate.sh"
+qh_clause D1 이관; qh_step="$rc:$(qh_refline)"
+GATE="$QH_GATE_SAVE"
+mkdir -p "$CAP_DIR/clause-handover/D9.md"
+qh_clause D9 이관; qh_step="$qh_step|$rc:$(qh_refline)"
+rm -rf "$CAP_DIR/clause-handover/D9.md"
+chmod 500 "$CAP_DIR/clause-handover"
+qh_clause D10 이관; qh_step="$qh_step|$rc:$(qh_refline)"
+chmod 700 "$CAP_DIR/clause-handover"
+check "34qh: 실제 판독기의 실패 이유와 sha256·사본 쓰기 실패가 정해진 머리로 거절된다" "$qh_step" \
+  "3:이관 판독기 실패 — 판독기 종료 코드 2 · run-leftovers: the ledger cannot be read: /nonexistent/34qh.md|3:이관 판독기 실패 — sha256|3:이관 판독기 실패 — 사본 쓰기"
+check "34qh: 한 교대에서 실패한 여러 절이 절마다 이관 실패 행 하나를 남긴다" \
+  "$(for qh_d in D1 D9 D10; do printf '%s/%s ' "$(qh_frow "$qh_d" | grep -c . || true)" "$(row_field "$(qh_frow "$qh_d" | tail -1)" '교대')"; done)" "1/1 1/1 1/1 "
 
 # ---- 이관 재기동: handoff 행의 게이트 필드와 relay 의 즉시 기동 ----
 qh_fx RQH8 "6f6f6f6f-1111-2222-3333-000000000008" \
@@ -42096,7 +42119,7 @@ qh_relay() {
   gate_launch_shift() {
     local hre=""
     qk=$((qk + 1))
-    printf '%s\n' "$2" >> "$QH_RELAY_LOG"
+    printf '%s/%s\n' "$2" "$( [ -e "$RUN_DIR/relay.live" ] && printf 있음 || printf 없음)" >> "$QH_RELAY_LOG"
     printf -- '- `교대 기동` | 서수=%s | 사유=%s | prev=x\n' "$((qk + 10))" "$2" >> "$LEDGER"
     [ "$qk" -gt "$qmarked" ] || hre=' | 이관 재기동=예'
     printf -- '- `handoff` | 교대=%s | 사유=중단 | 막힌 지점=x%s | 대상=infra | prev=x\n' "$((qk + 10))" "$hre" >> "$LEDGER"
@@ -42105,9 +42128,11 @@ qh_relay() {
   }
   gate_relay_route infra 상한 -p x
 }
+rm -f "$CAP_DIR/relay.live"
 hw_in qh_relay >/dev/null 2>&1
 check "34qh: relay 는 표시된 중단 인계 뒤 다음 교대를 사유=중단 으로 한 번 띄우고 표시 없는 인계에서 멈춘다" \
-  "$(tr '\n' ' ' < "$QH_RELAY_LOG")" "상한 중단 "
+  "$(sed 's|/.*||' "$QH_RELAY_LOG" | tr '\n' ' ')" "상한 중단 "
+check "34qh: 재기동한 교대는 relay.live 가 서 있는 채로 뜬다" "$(sed -n 2p "$QH_RELAY_LOG")" "중단/있음"
 check "34qh: 기동 행이 뒤따르면 재기동을 기다리지 않는다" \
   "$(hw_in gate_relay_handover_relaunch_pending >/dev/null 2>&1 && printf 예 || printf 아니오)" "아니오"
 
@@ -42241,6 +42266,9 @@ check "34ql: 리뷰 보고서가 없으면 판독 실패 줄이 나오고 종료
 mv "$QL_ROOT/docs/review/a.md.off" "$QL_ROOT/docs/review/a.md"
 ql_run "$QL_NM" "$QL_ROOT/docs/pipeline-run/none.md" --run-dir "$QL_RD"
 check "34ql: 원장이 없으면 종료 코드가 0 이 아니다" "$( [ "$ql_rc" != "0" ] && printf 0아님 || printf 0)" "0아님"
+check "34ql: 원장이 없으면 이유가 표준 오류의 첫 줄에 나오고 표준 출력은 비어 있다" \
+  "$QL_OUT|$(bash "$QL_READER" "$QL_NM" "$QL_ROOT/docs/pipeline-run/none.md" --run-dir "$QL_RD" 2>&1 >/dev/null | sed -n 1p)" \
+  "|run-leftovers: the ledger cannot be read: $QL_ROOT/docs/pipeline-run/none.md"
 printf '고친 줄\n' >> "$QL_RD/clause-handover/C3.md"
 ql_run "$QL_NM" "$QL_LG" --run-dir "$QL_RD"
 check "34ql: 사본을 고친 뒤 이관 줄은 바뀜이다" "$(ql_has "· 정산 재료 $QL_RD/clause-handover/C3.md (바뀜) · ")" "1"
@@ -42257,6 +42285,8 @@ grep -v '^\*\*설계 문서\*\*: ' "$QL_NM.keep" > "$QL_NM"
 check "34ql: 설계 문서 줄이 없으면 잔여 항목도 판독 실패도 없다" "$(ql_nodoc)" "0/0/0"
 sed 's|^\*\*설계 문서\*\*: .*|**설계 문서**: docs/ql-absent.md|' "$QL_NM.keep" > "$QL_NM"
 check "34ql: 어디에도 없는 설계 문서 경로는 잔여 항목도 판독 실패도 없다" "$(ql_nodoc)" "0/0/0"
+sed 's|^\*\*설계 문서\*\*: .*|**설계 문서**: docs/review|' "$QL_NM.keep" > "$QL_NM"
+check "34ql: 디렉터리를 가리키는 설계 문서 값은 잔여 항목도 판독 실패도 없다" "$(ql_nodoc)" "0/0/0"
 mv "$QL_NM.keep" "$QL_NM"
 QL_ACT3="$repo_root/plugins/cc-cmds/skills/autopilot/references/act3-report.md"
 ql_act3() {
