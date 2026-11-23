@@ -777,6 +777,29 @@ async function pendingCases() {
   report("밀려난 앞 요청이 뒤늦게 와도 기간이 그대로다", pressedOf(c), "days-7");
 }
 
+// Going back to the filter already on screen before the answer comes: the
+// answer for that address is a 304, and the busy marks still go away.
+async function revertCases() {
+  const st = filterStub();
+  const c = await boot("/", st.bodyOf);
+  const holds = [];
+  c.hold = (u) => new Promise((r) => holds.push({ u, r }));
+  await clickOf(c, "days-7");
+  await clickOf(c, "days-3");
+  report("되돌린 기간의 요청이 지금 화면의 주소다", holds[1] && holds[1].u, "/api/runs?days=3&base=&dead=0&exp=0");
+  const before = c.app.firstChild;
+  holds[1].r();
+  await c.settle();
+  report("되돌린 필터의 304 응답에도 바쁨·흐림·상태 문구가 없다",
+    c.app.firstChild !== before && countClass(c, "list-pending") === 0 && countClass(c, "is-stale") === 0 &&
+    c.app.querySelector(".kpis").getAttribute("aria-busy") === null, true);
+  report("되돌린 뒤 눌린 단추가 처음 기간이다", pressedOf(c), "days-3");
+  const after = c.app.firstChild;
+  holds[0].r();
+  await c.settle();
+  report("끊긴 앞 요청이 뒤늦게 와도 화면이 그대로다", c.app.firstChild === after && pressedOf(c) === "days-3" && !c.link("/run/week-run"), true);
+}
+
 async function lateAnswerCases() {
   for (const follow of [false, true]) {
     const st = filterStub();
@@ -854,7 +877,7 @@ async function backLinkCases() {
 }
 
 listCases().then(detailCases).then(endedHoldCases).then(baseFilterCases).then(seatCases).then(waitCases)
-  .then(addressCases).then(pendingCases).then(lateAnswerCases).then(storeCases).then(backLinkCases).catch((e) => { console.error(e && e.stack || e); process.exit(1); });
+  .then(addressCases).then(pendingCases).then(revertCases).then(lateAnswerCases).then(storeCases).then(backLinkCases).catch((e) => { console.error(e && e.stack || e); process.exit(1); });
 JS
 
 if command -v node >/dev/null 2>&1; then

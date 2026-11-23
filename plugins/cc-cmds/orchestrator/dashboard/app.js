@@ -48,6 +48,10 @@
   var flipped = new Map();
   // A response was held back from the screen and is still to be drawn.
   var redrawOwed = false;
+  // The screen carries the busy marks of a filter change, which only a redraw
+  // takes away, so the next answer is drawn even when it is a 304 for the
+  // address already on screen.
+  var pendingShown = false;
   // Until this wall-clock milli, the repo <select> may have its list open. Closing
   // a list without changing the value fires no event on some browsers, so the
   // hold runs out by itself rather than waiting for one.
@@ -477,6 +481,7 @@
       n.setAttribute("aria-busy", "true");
       n.classList.add("is-stale");
     });
+    pendingShown = true;
     if (!app.querySelector(".list-pending")) {
       box.parentNode.insertBefore(el("div", { cls: "loading-cap list-pending", role: "status" }, ico("i-refresh"), PENDING_CAP), box.nextSibling);
     }
@@ -1668,6 +1673,7 @@
           redraw(function () { app.replaceChildren(r.run ? detailError(r.run, res.error) : listError(res.error)); });
           app.removeAttribute("data-url");
           redrawOwed = false;
+          pendingShown = false;
           setFresh(lastOk);
         }
         schedule(period);
@@ -1676,7 +1682,7 @@
       var d = res.data;
       setTz(d.tz_offset_s, d.tz_label);
       var sameView = app.getAttribute("data-url") === url;
-      if (!res.same || !sameView || redrawOwed || baseGone(d, url)) {
+      if (!res.same || !sameView || redrawOwed || pendingShown || baseGone(d, url)) {
         if (sameView && readerBusy()) {
           redrawOwed = true;
         } else if (baseGone(d, url)) {
@@ -1687,6 +1693,7 @@
           redraw(function () { if (r.run) renderDetail(d); else renderList(d); });
           app.setAttribute("data-url", url);
           redrawOwed = false;
+          pendingShown = false;
           if (!r.run && restorePending) {
             restorePending = false;
             if (restoreY != null) window.scrollTo(0, restoreY);
