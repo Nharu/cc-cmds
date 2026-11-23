@@ -559,6 +559,7 @@ ORCH_TESTS := \
 	scripts/test-statusline.sh \
 	scripts/test-statusline-hook.sh \
 	scripts/test-stage-values-hook.sh \
+	scripts/test-stage-read-batch-hook.sh \
 	scripts/test-liveness-agreement.sh \
 	scripts/test-dashboard.sh \
 	scripts/test-dashboard-screen.sh \
