@@ -5,6 +5,14 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.59.3] - 2026-11-23
+
+부하가 높은 호스트에서 `watch.sh` 의 after-stage 배너가 문턱 뒤 다음 정기 전체 패스까지 밀리던 것을 고친다. 패스 끝의 만기 예약이 그때 새로 읽은 시각과 비교해, 패스 도중에 지난 문턱을 판정하지도 예약하지도 않았다.
+
+### Fixed
+
+- **`watch.sh` 만기 예약 기준 시각** — 탐침 주기를 전체 패스로 바꿀 다음 만기를, 패스가 팔을 판정하기 전에 읽은 시각과 비교해 예약한다. 패스 도중에 지난 시간 팔 문턱은 예약되어 다음 주기가 전체 패스가 된다. `scripts/test-watch.sh` 의 "조용한 런의 after-stage 만기" 단언(문턱 6초)이 부하가 높을 때만 지연 3 주기로 실패해 이 시험을 끌어오는 무인 런의 check-push 를 막던 일이 사라진다.
+
 ## [3.59.2] - 2026-11-23
 
 플러그인이 띄우는 배너마다 알림 소리가 정확히 하나 나게 한다. active-notify `fire-now` 배너와 "알림 테스트" 권한 테스트 배너는 지금까지 소리 없이 떴고, 같은 승인의 `answer` 배너는 게이트와 감시자가 겹쳐 올리면 한 배너에서 소리가 두 번 날 수 있었다.
