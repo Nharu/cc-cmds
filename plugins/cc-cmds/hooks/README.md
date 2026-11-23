@@ -942,6 +942,58 @@ start with a dot. Every path exits 0 with nothing on stdout or stderr, under
 **A file can outlive its session.** `SessionEnd` does not run for a killed
 process, so a consumer reads `last_activity_ms` as well as `state`.
 
+## The stage read batch hook
+
+`stage-read-batch.sh` is registered as the last entry of the top-level
+`PostToolBatch` array, with no matcher and `"timeout": 5`, after the session
+status snapshot entry, which stays as it is. It does not raise a banner and
+blocks nothing. `PostToolBatch` fires once after every call of a response has
+resolved, before the next model request, and its input carries that response's
+calls as `tool_calls[]`, so it is the one place that knows how many calls a
+response carried. The stage policy's `## Turn economy` section holds the rule;
+this hook tells a stage lead, at the point it chooses its next response, that
+it has been sending reads one at a time.
+
+**When it acts.** Only when `CC_PIPELINE_STAGE_ID` is set and not empty (a
+routing shift and a general session have none), the input's `hook_event_name`
+is `PostToolBatch` and the input has no `agent_id` (a team member or a
+subagent). Otherwise it reads the input, writes nothing and exits 0, as it
+does when `jq` is not found after the Homebrew PATH prepend and the
+`CC_CMDS_NOTIFY_PATH_DISABLE_PREPEND` test seam the other hooks use, and when
+the input is not a JSON object or has an empty `session_id`.
+
+**The verdict.** A response is a single-read response when `tool_calls` holds
+exactly one call and that call is read-only as `scripts/measure-read-chains.py`
+defines it: `Read`, `Grep` or `Glob`, or a `Bash` call whose first word ends in
+`/orchestrator/gate.sh` and whose second word is `snapshot`, or `exec` with
+`--surface 읽기` (or `--surface=읽기`) before the first `--`. The words come
+from a whitespace split with surrounding quotes dropped, a jq approximation of
+the script's `shlex` split; since the hint blocks nothing, a misjudged edge
+case only adds or drops one hint.
+
+**The count and when the hint goes out.** The session's state file
+`${TMPDIR:-/tmp}/cc-cmds-read-batch/<safe_sid>` holds how many single-read
+responses came in a row; `<safe_sid>` is the session id with every byte outside
+`[A-Za-z0-9_.-]` spelled `_`, as the snapshot hook spells it. A single-read
+response adds 1 and any other response (two or more calls, or one write or act
+call) puts it back to 0. The new count goes to a dot file in the same
+directory and is moved over the state file with `mv -f`. The hint goes out
+only when the count is 2, 6, 10, … (the count mod 4 is 2): right after the
+second single-read response, to stop a third, and then once every four
+responses so a long chain does not pile hints into the context. A state file
+that cannot be read or written ends the hook with nothing printed.
+
+**The output.** One object on stdout,
+`{"hookSpecificOutput":{"hookEventName":"PostToolBatch","additionalContext":"…"}}`,
+whose context is one ASCII line: `[cc-batch-hint] The last <n> responses each
+carried a single read-only call. If the reads you plan next do not depend on a
+result you have not seen, issue them together in one response (stage policy,
+Turn economy).` Nothing reaches stderr.
+
+**Every path exits 0.** It runs under `set -uo pipefail`, never `-e`: an exit
+2 from `PostToolBatch` stops the agent loop. It writes no ledger row, calls no
+notifier and makes no gate call.
+
 ## The run-status pane module
 
 `autopilot-status.tsx` is a plugin module (`"modules"` in `hooks.json`), not a
