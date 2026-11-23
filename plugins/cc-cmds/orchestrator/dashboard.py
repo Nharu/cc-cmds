@@ -509,7 +509,13 @@ def stop():
 # ---------------------------------------------------------------------------
 
 class State:
-    """Everything the handler threads share, behind one lock."""
+    """Everything the handler threads share.
+
+    The list (`runs`, and the idle check's `live_count`) and the detail each
+    have their own read model behind their own lock: a read model holds ledger
+    offsets and kept evaluations and is not thread-safe, and with one lock a
+    detail request waited behind a whole list computation. The tick cache is
+    guarded by a small lock of its own, held only to look up and to store."""
 
     def __init__(self, port, token, version, root, assets):
         self.port = port
@@ -517,8 +523,11 @@ class State:
         self.version = version
         self.root = root
         self.assets = assets
-        self.model = model.Model(root=root)
-        self.lock = threading.Lock()
+        self.list_model = model.Model(root=root)
+        self.list_lock = threading.Lock()
+        self.detail_model = model.Model(root=root)
+        self.detail_lock = threading.Lock()
+        self.cache_lock = threading.Lock()
         self.cache = {}
         self.activity = time.monotonic()
         self.hosts = {"127.0.0.1:%d" % port, "localhost:%d" % port}
@@ -526,26 +535,41 @@ class State:
     def touch(self):
         self.activity = time.monotonic()
 
-    def tick(self, key, compute):
-        """The pulled aggregate: shared by every client inside one tick."""
-        with self.lock:
+    def _cached(self, key):
+        with self.cache_lock:
             hit = self.cache.get(key)
+        if hit is not None and time.monotonic() - hit[0] < TICK_S:
+            return hit[1]
+        return None
+
+    def tick(self, key, compute):
+        """The pulled aggregate: shared by every client inside one tick.
+
+        A miss takes the lock of the model the key belongs to and looks at the
+        cache once more before computing, so concurrent requests for one key
+        still compute it once."""
+        entry = self._cached(key)
+        if entry is not None:
+            return entry
+        with (self.detail_lock if key[0] == "detail" else self.list_lock):
+            entry = self._cached(key)
+            if entry is not None:
+                return entry
             now = time.monotonic()
-            if hit is not None and now - hit[0] < TICK_S:
-                return hit[1]
             obj = compute()
             body = json.dumps(obj, ensure_ascii=False, sort_keys=True,
                               separators=(",", ":")).encode("utf-8")
             entry = (body, '"%s"' % hashlib.sha256(body).hexdigest()[:32])
-            self.cache[key] = (now, entry)
-            if len(self.cache) > 64:
-                for k in sorted(self.cache, key=lambda k: self.cache[k][0])[:32]:
-                    del self.cache[k]
+            with self.cache_lock:
+                self.cache[key] = (now, entry)
+                if len(self.cache) > 64:
+                    for k in sorted(self.cache, key=lambda k: self.cache[k][0])[:32]:
+                        del self.cache[k]
             return entry
 
     def live_count(self):
-        with self.lock:
-            return self.model.live_count()
+        with self.list_lock:
+            return self.list_model.live_count()
 
 
 def make_handler(st):
@@ -623,15 +647,16 @@ def make_handler(st):
                 dead = (q.get("dead") or ["0"])[0] == "1"
                 exp = (q.get("exp") or ["0"])[0] == "1"
                 entry = st.tick(("runs", days, base, dead, exp),
-                                lambda: st.model.runs(days=days, base=base, dead=dead, exp=exp))
+                                lambda: st.list_model.runs(days=days, base=base, dead=dead, exp=exp))
                 self._json(entry, head)
                 return
             if path.startswith("/api/runs/"):
                 run_id = unquote(path[len("/api/runs/"):])
-                if not run_id or "/" in run_id or run_id.startswith("."):
+                if (not run_id or "/" in run_id or run_id.startswith(".") or "\\" in run_id
+                        or "\0" in run_id):
                     self._refuse(404, "no such run")
                     return
-                entry = st.tick(("detail", run_id), lambda: st.model.detail(run_id))
+                entry = st.tick(("detail", run_id), lambda: st.detail_model.detail(run_id))
                 if entry[0] == b"null":
                     self._refuse(404, "no such run")
                     return

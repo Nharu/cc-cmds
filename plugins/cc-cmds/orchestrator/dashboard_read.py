@@ -38,6 +38,7 @@ import calendar
 import json
 import os
 import re
+import stat
 import subprocess
 import time
 
@@ -160,6 +161,54 @@ class ProcTable:
         if self._wake is None:
             self._wake = wake_epoch()
         return self._wake
+
+
+class ProcRecorder:
+    """A `ProcTable` stand-in that passes every question to the table behind it
+    and keeps (question, argument, answer) in the order they were asked.
+
+    One recorder wraps one `evaluate` of one source, so the list is exactly the
+    process facts that evaluation read. `alive` is set by a raw answer: an
+    `exists` that came back true counts as alive whether or not the recorded
+    fingerprint or group then matched, so a stage whose pid alone was reused is
+    alive here too. A `wake` question counts the same way, since it is only
+    asked for a waiter whose holder lives.
+    """
+
+    def __init__(self, table):
+        self.table = table
+        self.rows = table.rows
+        self.asked = []
+        self.alive = False
+
+    def _ask(self, kind, arg, answer):
+        self.asked.append((kind, arg, answer))
+        return answer
+
+    def exists(self, pid):
+        a = self.table.exists(pid)
+        if a:
+            self.alive = True
+        return self._ask("exists", pid, a)
+
+    def fingerprint(self, pid):
+        return self._ask("fingerprint", pid, self.table.fingerprint(pid))
+
+    def pgid(self, pid):
+        return self._ask("pgid", pid, self.table.pgid(pid))
+
+    def wake(self):
+        self.alive = True
+        return self._ask("wake", None, self.table.wake())
+
+
+def answers_hold(asked, table):
+    """Whether every recorded question asked again of `table` gets the same answer."""
+    for kind, arg, answer in asked:
+        a = table.wake() if kind == "wake" else getattr(table, kind)(arg)
+        if a != answer:
+            return False
+    return True
 
 
 def _pid_of(text):
@@ -1710,41 +1759,109 @@ class RunSource:
         self.base = base_of(ledger_path) if ledger_path else None
         self.ledger = Ledger(ledger_path) if ledger_path else None
         self.hb_value = None
-        self.frozen_key = None
-        self.frozen = None
-        # (관측 시각, 누적 usd) per `cost` row, kept beside a frozen evaluation:
+        # The last evaluation kept for reuse (`Reuse`), or None.
+        self.kept = None
+        # (관측 시각, 누적 usd) per `cost` row, kept beside a reused evaluation:
         # the day's share is taken from it at every request.
         self.cost_points = []
 
 
-def stamp_key(src):
+# The states whose evaluation can be reused. While the files and the process
+# facts an evaluation read stay as they were, time moving forward does not
+# take a run out of any of them: an abandoned run's idle time only grows, a
+# waiter that is not fresh only gets staler, and a dead relay or supervisor
+# does not come back by the clock alone. A state the clock does move
+# (진행중 to 정지경고, 정지경고 to 버려짐) is evaluated at every request.
+REUSABLE_STATES = ("종단", "버려짐", "승인대기")
+
+
+class Reuse:
+    """One evaluation kept on its source: the row before banding, the `now` it
+    was taken at, its reuse key, the process questions it asked with their
+    answers, whether any answer was alive, whether that `ps` reading succeeded,
+    and the heartbeat mtime the per-request `watch_age_s` is computed from."""
+
+    __slots__ = ("out", "now", "key", "asked", "alive", "ps_ok", "hbm")
+
+    def __init__(self, out, now, key, asked, alive, ps_ok, hbm):
+        self.out = out
+        self.now = now
+        self.key = key
+        self.asked = asked
+        self.alive = alive
+        self.ps_ok = ps_ok
+        self.hbm = hbm
+
+
+def _stat_key(path):
+    """(inode, size, mtime_ns) of `path`, or None when it cannot be stat'ed."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return (st.st_ino, st.st_size, st.st_mtime_ns)
+
+
+def manifest_path(src):
+    """The manifest `Model.manifest` reads for a source, or None without a base."""
+    if not src.base:
+        return None
+    return os.path.join(src.base, "docs", "pipeline-run", src.id + ".plan.md")
+
+
+def dir_entries_stamp(run_dir):
+    """(name, kind, size, mtime_ns, inode) for every entry right under the run
+    directory, in name order. A pid, `.start` or `.pgid` file rewritten in
+    place, and an entry created, removed or renamed, each change this."""
+    out = []
+    try:
+        it = os.scandir(run_dir)
+    except OSError:
+        return None
+    with it:
+        for e in it:
+            try:
+                st = e.stat()
+            except OSError:
+                try:
+                    st = e.stat(follow_symlinks=False)
+                except OSError:
+                    out.append((e.name, None, None, None, None))
+                    continue
+            out.append((e.name, stat.S_IFMT(st.st_mode), st.st_size, st.st_mtime_ns, st.st_ino))
+    out.sort()
+    return tuple(out)
+
+
+def reuse_key(src):
+    """What a kept evaluation stands on besides the process facts.
+
+    Every source: the ledger's size and mtime and the manifest's stat. A source
+    with a run directory adds the directory's own mtime, every entry right
+    under it, the `halt/` and `halt/shift/` listings with their mtimes and the
+    mtime of `log/`. Evaluation reads nothing under `log/`, so its entries are
+    not part of the key."""
     led = src.ledger
-    rd = src.run_dir
-
-    def mt(p):
-        try:
-            return os.stat(p).st_mtime_ns
-        except OSError:
-            return None
-
-    return (
+    mp = manifest_path(src)
+    key = (
         led.size if led else None,
         led.mtime_ns if led else None,
-        os.path.isfile(os.path.join(rd, "done")) if rd else None,
-        mt(os.path.join(rd, "watch.heartbeat")) if rd else None,
-        mt(os.path.join(rd, "log")) if rd else None,
-        # A marker-bearing run reads 종단 only once its shift is gone, and the
-        # shift ending changes no file — so 정산중 is never frozen, and these
-        # two make a frozen 종단 re-evaluate when a marker or a shift appears.
-        os.path.exists(os.path.join(rd, "ends-on-done")) if rd else None,
-        mt(os.path.join(rd, "shift.live")) if rd else None,
-        # A relay starting or refreshing can turn a frozen state back into 도는중.
-        mt(os.path.join(rd, "relay.live")) if rd else None,
-        # A waiter appearing or refreshing can turn a frozen 종단 back into 도는중.
-        waiting_stamp(rd) if rd else None,
-        # A halt record or its answer attachment appearing changes `waiting`.
-        halt_stamp(rd) if rd else None,
+        _stat_key(mp) if mp else None,
     )
+    rd = src.run_dir
+    if not rd:
+        return key
+    try:
+        rd_mt = os.stat(rd).st_mtime_ns
+    except OSError:
+        rd_mt = None
+    log = _stat_key(os.path.join(rd, "log"))
+    return key + (rd_mt, dir_entries_stamp(rd), halt_stamp(rd), log[2] if log else None)
+
+
+def watch_age(hbm, now):
+    """`watch_age_s` at `now` from the heartbeat mtime, None without one."""
+    return None if hbm is None else max(0, now - hbm)
 
 
 def halt_stamp(run_dir):
@@ -1952,28 +2069,18 @@ def today_share(points, midnight):
     return points[-1][1] - before
 
 
-def waiting_stamp(run_dir):
-    try:
-        names = sorted(n for n in os.listdir(run_dir) if n.endswith(".waiting") and not n.startswith("."))
-    except OSError:
-        return ()
-    out = []
-    for n in names:
-        try:
-            out.append((n, os.stat(os.path.join(run_dir, n)).st_mtime_ns))
-        except OSError:
-            pass
-    return tuple(out)
-
-
 class Model:
     """Every run under the run root and every reclaimed ledger beside them."""
 
-    def __init__(self, root=None, stall=STALL_S, abandon=ABANDON_S, window=WINDOW_S):
+    def __init__(self, root=None, stall=STALL_S, abandon=ABANDON_S, window=WINDOW_S, reuse=True):
+        """`reuse=False` evaluates every run afresh at every request and keeps
+        nothing; it exists for the tests that hold reuse against a fresh
+        evaluation, and no setting outside the code turns it on."""
         self.root = root or run_root()
         self.stall = stall
         self.abandon = abandon
         self.window = window
+        self.reuse = reuse
         self.sources = {}
         self.shells = []
         self.manifests = {}
@@ -2046,10 +2153,41 @@ class Model:
                 return s
         return None
 
-    def manifest(self, src):
-        if not src.base:
+    def lookup(self, run_id):
+        """The source the detail shows for `run_id`, without a full discovery
+        when the run directory is there.
+
+        An id that is empty, starts with `.` or holds `/`, a backslash or NUL
+        names no source. A directory of that name under the run root is judged
+        as `discover` judges it: without a `ledger-path` file it is a shell and
+        names no source, otherwise its kept source is used, made anew when the
+        ledger path or the directory differs. Only when no such directory
+        exists is the full discovery run, to find a reclaimed run. Kept
+        directory sources whose directory is gone are dropped first, so the
+        kept set never outgrows the runs on disk."""
+        for key in [k for k, s in self.sources.items() if s.run_dir and not os.path.isdir(s.run_dir)]:
+            del self.sources[key]
+        if (not run_id or run_id.startswith(".") or "/" in run_id or "\\" in run_id
+                or "\0" in run_id):
             return None
-        path = os.path.join(src.base, "docs", "pipeline-run", src.id + ".plan.md")
+        rd = os.path.join(self.root, run_id)
+        if os.path.isdir(rd):
+            lp_file = os.path.join(rd, "ledger-path")
+            if not os.path.isfile(lp_file):
+                return None
+            lp = cmd_subst(lp_file).strip()
+            src = self.sources.get(run_id)
+            if src is None or src.ledger_path != lp or src.run_dir != rd:
+                src = RunSource(run_id, rd, lp)
+                self.sources[run_id] = src
+            return src
+        self.discover()
+        return self.find(run_id)
+
+    def manifest(self, src):
+        path = manifest_path(src)
+        if path is None:
+            return None
         try:
             st = os.stat(path)
         except OSError:
@@ -2086,11 +2224,44 @@ class Model:
         its seat."""
         if src.ledger:
             src.ledger.refresh()
-        key = stamp_key(src)
-        if src.frozen is not None and src.frozen_key == key:
-            out = dict(src.frozen)
+        if not self.reuse:
+            out, _hbm = self._evaluate(src, procs, now)
             self._band(out, now, seats)
             return out
+        key = reuse_key(src)
+        kept = src.kept
+        if kept is not None and self._reusable(src, kept, key, procs, now):
+            out = dict(kept.out)
+            out["watch_age_s"] = watch_age(kept.hbm, now)
+            self._band(out, now, seats)
+            return out
+        rec = ProcRecorder(procs)
+        out, hbm = self._evaluate(src, rec, now)
+        if out["state"] in REUSABLE_STATES:
+            src.kept = Reuse(dict(out), now, key, rec.asked, rec.alive, rec.rows is not None, hbm)
+        else:
+            src.kept = None
+        self._band(out, now, seats)
+        return out
+
+    @staticmethod
+    def _reusable(src, kept, key, procs, now):
+        """Whether the kept evaluation stands at this request: its state is one
+        of the three, it read no live process fact out of a successful `ps`,
+        this request's `ps` succeeded and answers every recorded question the
+        same way, the key is the same, and the clock has not gone back. A
+        reclaimed run reads no process fact, so `ps` does not decide it."""
+        if kept.out["state"] not in REUSABLE_STATES or kept.key != key or now < kept.now:
+            return False
+        if src.run_dir is None:
+            return True
+        if not kept.ps_ok or kept.alive or procs.rows is None:
+            return False
+        return answers_hold(kept.asked, procs)
+
+    def _evaluate(self, src, procs, now):
+        """One run's row before banding, and the heartbeat mtime its
+        `watch_age_s` was computed from."""
         lines = src.ledger.lines() if src.ledger else []
         live = live_stages(src.run_dir, procs) if src.run_dir else []
         growth = self._growth(src)
@@ -2133,11 +2304,7 @@ class Model:
             points.append((iso_epoch(f.get("관측 시각")), cost))
         src.cost_points = points
         manifest = self.manifest(src)
-        watch_age = None
-        if src.run_dir:
-            hbm = mtime_s(os.path.join(src.run_dir, "watch.heartbeat"))
-            if hbm is not None:
-                watch_age = max(0, now - hbm)
+        hbm = mtime_s(os.path.join(src.run_dir, "watch.heartbeat")) if src.run_dir else None
         if src.run_dir is None:
             ended = None
             for ln in src.ledger.series("cost") if src.ledger else []:
@@ -2170,7 +2337,7 @@ class Model:
             "cost_usd": cost,
             "seg": seg,
             "live_stages": live,
-            "watch_age_s": watch_age,
+            "watch_age_s": watch_age(hbm, now),
             "run_dir": src.run_dir,
             "ended_at": ended,
             "notes": notes,
@@ -2196,14 +2363,7 @@ class Model:
         dl_epoch = iso_epoch(dl)
         out["deadline"] = dl_epoch if dl_epoch is not None else dl
         out["experiment"] = is_experiment(src.base)
-        if state == "종단":
-            src.frozen = dict(out)
-            src.frozen_key = key
-        else:
-            src.frozen = None
-            src.frozen_key = None
-        self._band(out, now, seats)
-        return out
+        return out, hbm
 
     def _band(self, out, now, seats=None):
         state = out["state"]
@@ -2365,8 +2525,7 @@ class Model:
     def detail(self, run_id, now=None):
         if now is None:
             now = int(time.time())
-        self.discover()
-        src = self.find(run_id)
+        src = self.lookup(run_id)
         if src is None:
             return None
         procs = ProcTable()
