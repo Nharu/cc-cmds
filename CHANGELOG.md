@@ -5,6 +5,24 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.57.1] - 2026-11-23
+
+무인 스테이지 리드가 앞 결과 없이 정할 수 있는 읽기를 한 응답에 묶도록 한다. 모든 스테이지·구성원·라우터 시프트에 먼저 실리는 스테이지 정책에 묶기 규칙 절을 두고, 스테이지 리드가 읽기 하나만 실은 응답을 연달아 낼 때 그 사실을 알려 주는 비차단 안내 훅을 더한다. 게이트·원장·응답당 게이트 호출 상한은 바꾸지 않는다.
+
+### Changed
+
+- **스테이지 정책의 `## Turn economy` 절** — `orchestrator/stage-policy.md` 의 `## Code and tools` 뒤에 네 불릿을 더했다. 요청마다 대화 전체를 다시 읽으므로 앞 결과에 기대지 않는 호출(Read·Grep·Glob, `gate.sh exec` 읽기, `gate.sh snapshot`)은 한 응답에 싣고, 지시가 이미 이름으로 가리키는 읽기는 쓸모없게 될 수 있어도 함께 싣되 아직 받지 않은 결과만이 정할 인자는 짐작하지 않는다. 한 다이제스트 위의 게이트 호출 상한(넷, 띄운 에이전트가 살아 있으면 둘)과 `bash -c` 금지는 그대로 적는다.
+- **정책 린트의 세 번째 고정 문장** — `scripts/lint-stage-policy-sources.sh` 가 묶기 규칙 문장이 현재 정책에 정확히 한 줄 있는지 본다. 픽스처마다 그 문장을 더했고, 그 문장만 빠진 `T-POLICY-FAIL-9-batch-pin-zero` 를 더했다.
+
+### Added
+
+- **읽기 묶기 안내 훅** — `hooks/stage-read-batch.sh` 를 `PostToolBatch` 끝 항목으로 등록했다. 스테이지 리드(`CC_PIPELINE_STAGE_ID` 가 있고 `agent_id` 가 없음)에만 작동하고, 호출 하나짜리 읽기 전용 응답이 연달아 온 수를 세션별 상태 파일에 세어 그 수가 2, 6, 10, … 일 때 `[cc-batch-hint]` 한 줄을 `additionalContext` 로 낸다. 아무것도 막지 않고 모든 경로가 exit 0 이다.
+- **시험** — `scripts/test-stage-read-batch-hook.sh`(작동 조건, 연속 수와 내는 때, 되돌림, 게이트 읽기 판정, jq 부재, JSON 아닌 입력, 등록). `make test` 의 오케스트레이터 시험 목록에 더했다.
+
+### Why
+
+- 3.50.0 이상 647 스테이지에서 도구 하나만 실은 요청이 70.5%, 3회 이상 이어진 읽기 연쇄 안의 요청이 46.0% 였다. 상한을 푼 3.50.0 은 두 비율을 거의 움직이지 못했다. 새 판으로 돈 스테이지 100개 이상의 창에서 연쇄 안 요청 35% 이하, 도구 하나 요청 60% 이하를 목표로 두고, 리뷰 P0·P1 수, 종단 상태 분포, 낡은 다이제스트 거부 비율은 나빠지지 않아야 한다. 판정은 착지 뒤의 측정이다.
+
 ## [3.57.0] - 2026-11-23
 
 무인 런의 PR 체크 폴링을 관측 데몬 `observer.py` 에 맡긴다. 지금까지는 런마다 `checks.sh` 가 PR 하나에 1분마다 `gh pr checks` 를 따로 불렀다. 이제 표지가 있는 고정 사본의 `checks.sh` 는 기동 줄을 바꾸지 않은 채 자기 인자를 관측기에 넘긴다. 관측기는 채택한 런들의 PR 을 1분에 한 번 GraphQL 읽기 질의 하나로 함께 묻고, 각 런의 `checks.out`·`checks.done` 을 지금과 같은 꼴로 쓴다.
