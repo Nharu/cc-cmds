@@ -1,0 +1,15 @@
+# cc-skill-triggers v1
+# fanout-policy 스킬의 발동 경계 시나리오. 형식과 기대값 대조 방식은 같은 디렉터리의 README.md 에 있다.
+# 이 스킬의 description·when_to_use 를 고치면 고치기 전과 고친 뒤에 같은 인자로
+#   scripts/skill-trigger-measure.sh --skill fanout-policy --model <모델> --budget-usd <N> --plugin-dir <디렉터리>...
+# 를 돌리고, 두 상태 디렉터리의 report.tsv 판정을 비교한다.
+id	기대	발화	근거
+parallel-refactor	cc-cmds:fanout-policy	이 열 개 파일 리팩터링을 에이전트 여러 개로 병렬로 돌려줘	발동 — 병렬 에이전트 발동 직전 (when_to_use)
+workflow-health	cc-cmds:fanout-policy	워크플로로 레포 다섯 개 헬스 체크를 한꺼번에 돌리자	발동 — 워크플로 사용 검토 (when_to_use)
+subagent-review	cc-cmds:fanout-policy	서브에이전트 셋 띄워서 각자 다른 모듈 리뷰 맡겨줘	발동 — Agent 도구로 일을 나눠 시킨다 (description 「다른 에이전트에게 일을 시킬 때」)
+should-fanout	cc-cmds:fanout-policy	이 작업 팬아웃하는 게 나을지 판단해줘	발동 — 팬아웃이 맞는 일인지 검토 (description)
+single-refactor	비발동	이 함수 하나만 리팩터링해줘	이웃 — 팬아웃이 아닌 단일 작업 요청
+promise-all	비발동	자바스크립트 Promise.all 로 병렬 요청 보내는 법 알려줘	이웃 — 병렬 어휘가 있으나 에이전트가 아니다
+ci-matrix	비발동	GitHub Actions matrix 로 테스트 병렬화하는 설정 짜줘	이웃 — 병렬 어휘가 CI 설정 안에 있다
+single-pr	cc-cmds:github-ops	이 브랜치로 PR 발행해줘	이웃 — 단일 작업이 다른 cc-cmds 스킬로 간다
+browser-split	cc-cmds:browser-policy	브라우저 자동화를 세 세션으로 나눠 돌릴 때 세션 이름 붙이는 법 알려줘	이웃 — 나눠 돌린다는 어휘가 겹치지만 질문은 세션명 규약

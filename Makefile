@@ -70,6 +70,7 @@ lint:
 	bash scripts/lint-stage-policy-sources.sh
 	bash scripts/lint-terminal-literals.sh
 	bash scripts/lint-interview-record-sections.sh
+	bash scripts/lint-skill-trigger-scenarios.sh
 	bash scripts/lint-interview-convention-refs.sh
 	bash scripts/lint-interview-verification.sh
 	bash scripts/lint-kickoff-defaults.sh
@@ -524,6 +525,8 @@ LINT_TESTS := \
 	scripts/test-lint-stage-policy-sources.sh \
 	scripts/test-lint-terminal-literals.sh \
 	scripts/test-lint-interview-record-sections.sh \
+	scripts/test-lint-skill-trigger-scenarios.sh \
+	scripts/test-skill-trigger-measure.sh \
 	scripts/test-lint-interview-convention-refs.sh \
 	scripts/test-lint-interview-verification.sh \
 	scripts/test-lint-kickoff-defaults.sh \

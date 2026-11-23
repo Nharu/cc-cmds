@@ -1,0 +1,15 @@
+# cc-skill-triggers v1
+# clickup-ops 스킬의 발동 경계 시나리오. 형식과 기대값 대조 방식은 같은 디렉터리의 README.md 에 있다.
+# 이 스킬의 description·when_to_use 를 고치면 고치기 전과 고친 뒤에 같은 인자로
+#   scripts/skill-trigger-measure.sh --skill clickup-ops --model <모델> --budget-usd <N> --plugin-dir <디렉터리>...
+# 를 돌리고, 두 상태 디렉터리의 report.tsv 판정을 비교한다.
+id	기대	발화	근거
+create-ticket	cc-cmds:clickup-ops	ClickUp 에 로그인 버그 티켓 만들어줘	발동 — 티켓 생성 직전 (when_to_use)
+start-from-ticket	cc-cmds:clickup-ops	ClickUp 티켓 86abc123 작업 시작하자	발동 — 티켓에서 출발한 작업 착수 (when_to_use)
+split-ticket	cc-cmds:clickup-ops	이 ClickUp 티켓을 BE 와 FE 두 티켓으로 나눠서 발행해줘	발동 — 떼어 낸 티켓 발행
+similar-first	cc-cmds:clickup-ops	ClickUp 에 결제 오류 관련 티켓이 이미 있는지 보고 없으면 새로 만들어줘	발동 — 유사 티켓 조회 뒤 생성 (description)
+gh-issue	cc-cmds:github-ops	GitHub 에 로그인 버그 이슈 등록해줘	이웃 — 이슈 대 티켓; GitHub 이슈는 github-ops
+jira-status	비발동	Jira 티켓 상태값 종류 설명해줘	이웃 — 다른 트래커의 티켓 질문
+clickup-api-code	비발동	ClickUp API 로 태스크 목록 가져오는 파이썬 코드 짜줘	이웃 — ClickUp 어휘가 있으나 티켓 작업이 아닌 코드 작성
+support-ticket	비발동	고객 지원 티켓 응대 문구 다듬어줘	이웃 — 티켓 명사가 있으나 이슈 트래커가 아니다
+ticket-to-word	anthropic-skills:docx	ClickUp 티켓 내용을 Word 문서로 정리해줘	이웃 — ClickUp 어휘가 있으나 산출물이 Word 문서
