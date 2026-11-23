@@ -109,6 +109,9 @@
   /* 그림자 — 중립색, 아주 옅게 */
   --shadow-1: 0 1px 2px rgba(22, 32, 46, 0.06);
 
+  /* 불투명도 — 바꾼 필터의 응답을 기다리는 이전 목록 */
+  --opacity-stale: 0.5;
+
   /* 글꼴 */
   --font-sans: -apple-system, "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
   --font-size-secondary: 12px;
@@ -367,6 +370,7 @@ main.wrap { padding-top: var(--space-9); padding-bottom: var(--space-13); }
 .sk-row:first-child { border-top: none; }
 .sk-row .sk + .sk { margin-top: var(--space-0); }
 .loading-cap { display: flex; align-items: center; gap: var(--space-3); color: var(--color-text-secondary); margin-top: var(--space-4); }
+.is-stale { opacity: var(--opacity-stale); }
 /* 오류 — 목록·서버 끊김 띠는 빨간 선 카드, 상세는 카드 안의 한 줄 */
 .err { display: flex; gap: var(--space-6); }
 .p-list .err, .offline .err { align-items: flex-start; margin-top: var(--space-4); padding: var(--space-7); background: var(--color-surface); border: var(--border-1) solid var(--color-bad-text); border-radius: var(--radius-3); }
