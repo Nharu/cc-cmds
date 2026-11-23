@@ -5,6 +5,20 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.59.4] - 2026-11-24
+
+`make check-push` 의 REST 목표 유도가 릴리스 커밋의 두 파일을 유도 입력에서 뺀다. 판 번호 줄 하나만 바꾼 `plugin.json` 과 맨 위에 `## [` 묶음을 끼우기만 한 `CHANGELOG.md` 는 어떤 목표도 끌어오지 않는다. 판정 기준은 기존 통과 재사용 규칙의 릴리스 차이와 같은 경로별 판정 하나를 함께 쓴다.
+
+### Fixed
+
+- **check-push 목표 유도** — `check_push_derive` 가 merge-base 와 head 사이에서 릴리스 꼴로 바뀐 두 파일을 `scripts/rest-readers.sh` 에 넘기는 목록에서 빼고, `check-push: 릴리스 차이로 유도에서 뺀 변경 파일 <N>개 — <경로들>` 줄과 도장 필드 `유도릴리스=` 로 남긴다. 판정할 수 없는 경로는 지금처럼 입력에 남고, 유도 목표 줄의 변경 파일 수는 바뀐 파일 전체를 센다. 기능 변경에 릴리스 커밋을 더한 변경의 유도 목표는 기능 변경만의 것과 같다.
+- **`scripts/test-reuse.sh` 경로별 판정** — `tr_release_rel_in` 의 경로마다의 꼴 확인을 `tr_release_path_in` 으로 떼어 내고, 섞인 변경에서도 릴리스 꼴 경로만 찍는 `tr_release_paths` 를 더했다. 재사용 판정의 바깥 동작은 그대로다.
+- **시험** — check-push 자가 시험에 릴리스만·기능+릴리스·두 파일의 다른 줄 변경·`items` 사례를, test-reuse 자가 시험에 `tr_release_paths` 사례를 더하고 두 하한을 올렸다.
+
+### Why
+
+판 올림 커밋은 판 번호를 이름 대는 목표까지 유도해, 릴리스 커밋마다 그 커밋과 무관한 REST 목표가 로컬 check-push 에서 다시 돌았다. 릴리스 파일만 바꾼 변경의 REST 시험은 master push 의 CI 전량이 맡는다.
+
 ## [3.59.3] - 2026-11-23
 
 부하가 높은 호스트에서 `watch.sh` 의 after-stage 배너가 문턱 뒤 다음 정기 전체 패스까지 밀리던 것을 고친다. 패스 끝의 만기 예약이 그때 새로 읽은 시각과 비교해, 패스 도중에 지난 문턱을 판정하지도 예약하지도 않았다.
