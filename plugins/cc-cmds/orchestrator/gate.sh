@@ -52772,7 +52772,15 @@ gate_perform_clause_exec() {
   # The series name is four bytes longer than the one the budget measures.
   free=$(( $(gate_free_budget "${fx[@]}") - 4 ))
   [ "$free" -lt 0 ] && free=0
-  gist=$(gate_row_safe "$gist" $(( free / 2 )))
+  # The gist takes what the command leaves: a short command keeps all of its
+  # bytes and the gist gets the rest, and only a command longer than half the
+  # budget holds the gist to that half. The row's fixed fields grow with the
+  # tree and the output path, so a fixed half cut a 160-character gist short.
+  local cneed gbud
+  cneed=$(printf '%s' "$*" | wc -c | tr -d ' ')
+  [ "$cneed" -gt $(( free / 2 )) ] && cneed=$(( free / 2 ))
+  gbud=$(( free - cneed ))
+  gist=$(gate_row_safe "$gist" "$gbud")
   cmd=$(gate_row_safe "$*" $(( free - $(printf '%s' "$gist" | wc -c | tr -d ' ') )))
   pfile=$(mktemp "${TMPDIR:-/tmp}/gate-cx-prev.XXXXXX") || pfile=''
   GATE_APPEND_PREV_OUT="$pfile"
