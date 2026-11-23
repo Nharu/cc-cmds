@@ -5,7 +5,7 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [3.56.1] - 2026-11-23
+## [3.59.1] - 2026-11-23
 
 플러그인이 띄우는 배너마다 알림 소리가 정확히 하나 나게 한다. active-notify `fire-now` 배너와 "알림 테스트" 권한 테스트 배너는 지금까지 소리 없이 떴고, 같은 승인의 `answer` 배너는 게이트와 감시자가 겹쳐 올리면 한 배너에서 소리가 두 번 날 수 있었다.
 
@@ -19,6 +19,77 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Why
 
 배너 하나는 사람에게 알리는 사건 하나를 처음 띄우는 것이다. 이미 소리가 나는 세션·autopilot 배너가 같은 자리를 갈아 끼우며 매번 울리는 지금의 동작과 같은 기준으로, 새로 소리를 넣는 배너와 승인 자리의 중복을 함께 맞춘다.
+
+## [3.59.0] - 2026-11-23
+
+무인 감사 스테이지 리드의 부기 exec 를 줄인다. 설계 문서의 다이제스트·크기·시각 측정과 감사 사본 복사, 독자 보고서 사본 복사, 조정 시작 시각과 감사 사본 해시를 각각 `doc-tidy.py` 한 호출로 묶는다. 첫 감사의 리드 부기 exec 는 스테이지당 약 22회에서 약 12회로 줄 것으로 본다. 측정 스크립트는 새 두 호출을 부기 exec 로 세고, 안쪽 명령별 분해에 하위 명령별 행으로 싣는다.
+
+### Added
+
+- **`doc-tidy.py stamp DOC [--keep COPY]`** — 문서를 바이트로 한 번 읽어 `sha256=`·`bytes=`·`at=` 을 내고, `--keep` 이면 같은 바이트를 사본에 원자적으로 쓰고 다시 읽어 `kept_sha256=` 을 낸다. 사본 쓰기가 실패하면 `keep_failed=` 를 내고 종료 코드는 0 이다.
+- **`doc-tidy.py keep-reports REPORT WITNESS...`** — 독자 증인 `reader-<k>.<phase>.md` 를 보고서 옆 `.reader-<k>.md` 로 바이트 그대로 쓴다. 이름 꼴이 틀리거나 같은 번호가 둘이거나 증인이 비어 있으면 아무것도 쓰지 않고 1 로 끝난다.
+- **`doc-tidy.py checkout --reviewed PATH`** — `checkout` 이 `at=` 을 늘 내고, `--reviewed` 파일의 `reviewed_sha256=`(없으면 `absent`)을 낸다.
+- **새 감사 절차 측정 시험** — `scripts/test-measure-bookkeeping.sh` 가 새 절차로 돈 감사 스테이지 픽스처에서 `by_command` 의 `doc-tidy.py stamp`·`doc-tidy.py keep-reports` 리드 횟수와 스테이지당 값, 옛 절차의 `cp`·`date`·`wc` 가 빠졌음을 단언한다.
+
+### Changed
+
+- **감사 스킬 절차** — `design-audit-unattended` 의 FREEZE, 독자 보고서 사본, 조정 패스 첫 응답, 마지막 측정이 위 세 호출을 쓴다. 난수 발급, 닫는 재해시, unmark 앞 재확인, 게시, 팀 정리는 그대로다.
+- **조정 패스 시각 규칙** — `조정 시작`·`조정 종료` 는 그 시각을 잰 행위가 낸 UTC 시각이다. `date`, 또는 무인 감사에서는 그 행위인 `doc-tidy.py` 호출의 `at=` 줄이다.
+- **부기 정의** — 측정 스크립트가 `doc-tidy.py` 의 `stamp`·`keep-reports` 도 `checkout`·`publish` 처럼 부기 exec 로 센다.
+
+## [3.58.0] - 2026-11-23
+
+런마다 60초 간격으로 전체 패스를 돌던 `watch.sh` 를 공용 관측 데몬에 맡긴다. 기동 줄은 그대로이고, 런의 고정 사본에 관측 규약 표지가 있으면 루프로 뜬 `watch.sh` 가 `observer.py adopt --job watch` 로 자기 인자를 넘기고 끝난다. 그 뒤 데몬의 watch 작업 모듈이 그 런의 탐침이 바뀌었을 때, 한 바퀴가 공표한 다음 기한이 지났을 때, 마지막 호출에서 300초가 지났을 때만 고정 사본의 `watch.sh --once` 를 부른다. 정지 판정, 배너, `blocked` 관측은 그대로 고정 사본의 `watch.sh` 안에 있다.
+
+### Added
+
+- **watch 작업 모듈** — `orchestrator/observer_watch.py`. 탐침 변화, 첫 바퀴, 지난 기한, 300초 최대 간격, 10초를 넘는 바퀴 틈(기계 잠듦·데몬 정지)에 `watch.sh --once --started <채택 시각> --alive-at <직전 바퀴 시각> <등록된 인자>` 를 부른다. 호출이 데몬 시한을 넘기면 60초 동안 변화에만 부르고, 종료 코드 3 이면 작업을 내려놓는다. 호출 사이에도 바퀴마다 `watch.heartbeat` 의 mtime 과 `watch.mode` 의 epoch 를 새로 하며, 판정 낱말은 바꾸지 않는다.
+- **위임된 한 바퀴** — 환경에 `CC_OBSERVER_PID` 가 있는 `watch.sh --once` 는 `watch.pid`·`watch.stall` 에 자기 pid 대신 그 pid 와 지문을 쓰고, 한 바퀴 뒤 `watch.next` 에 다음 기한과 탐침 글롭을 원자적으로 공표한다. `done` 꼬리의 끝 처리(알림, rekick)를 루프 판과 같은 조건으로 하고, 런이 끝났으면 종료 코드 3 으로 끝난다.
+- **새 인자 `--started`·`--alive-at`** — 위임된 판에서 24시간 유휴 종료의 하한과 장애 넘김 시계의 직전 관측 시각으로 쓴다. 정수가 아니면 2 로 끝난다.
+- **런 환경 운반 `--run-env <이름>=<값>`** — 데몬은 패스를 자기가 기동된 환경에서 돌리므로, 위임하는 루프가 배너 스위치 `CC_CMDS_AUTOPILOT_NOTIFY` 와 좌석 pane 의 `TMUX`·`TMUX_PANE` 가운데 값이 비지 않은 것을 이 인자로 덧붙여 넘긴다. 위임된 판은 세 이름을 지운 뒤 받은 값만 export 하므로, 런마다 고른 배너 스위치와 `notify.seat` 의 pane 이 데몬을 먼저 띄운 세션의 값으로 바뀌지 않는다. 세 이름 밖의 이름이나 `=` 이 없는 값은 2 로 끝나고, 맨 `--once` 와 루프 판은 이 인자로 환경을 바꾸지 않는다.
+- **시험** — `scripts/test-observer-watch.sh`. 모듈의 호출 규칙, pid 대체, `watch.next` 의 꼴, `done` 꼬리, 위임 분기의 갈래, 위임 중 소비자 판정, 실제 데몬 아래의 발화 시각과 한 바퀴 소요 시간, 런 환경 운반을 단언한다.
+
+### Changed
+
+- **기한 공표의 확장** — 전체 패스가 대기 기록 낡음, 중계 침묵·깨움 열쇠, CI 대기, 이월·재개·리셋 시계, 장애 넘김 대기, 24시간 유휴 종료의 기한도 `watch_expiry_offer` 로 내놓는다. 판정은 바뀌지 않고, 루프 판에서는 조용한 런의 전체 패스가 그 기한에 맞춰 더 일찍 돌 수 있을 뿐이다.
+- **좌석 문서** — `act2-seat.md` 의 감시기 설명에 위임과 되돌림 조건을 더했다.
+
+### Post-install notes
+
+- 런은 시작 때 고정한 자기 플러그인 사본을 돌린다. 이 판 전에 시작한 런은 끝날 때까지 지금의 60초 루프로 돈다.
+- `CC_CMDS_OBSERVER=off`, `CI`, python3 없음, 표지 없음, 10초 안에 채택되지 않음 가운데 하나면 지금의 루프로 돈다.
+
+## [3.57.1] - 2026-11-23
+
+게이트의 슬라이싱 판독기가 긴 설계 문서에서 맞게 읽은 값을 상태 141 로 돌려주던 결함을 고친다. 이 때문에 선언 파일 대조가 값을 읽지 못했다고 판정해, 구현 파견할 세그먼트를 확률적으로 park 했다.
+
+### Fixed
+
+- **`slicing_body`·`slice_field`** — awk 가 일치 직후 `exit` 하지 않고 입력을 끝까지 읽으면서 출력만 멈춘다. 게이트는 `set -o pipefail` 로 돈다. 그래서 `## 구현 슬라이싱` 뒤 본문이 파이프 버퍼보다 길면, 먼저 끝난 읽는 쪽이 앞 단계를 SIGPIPE 로 죽였고 파이프라인이 141 로 끝났다. 같은 파일의 `## 구현 시 검증 항목` 판독기와 같은 처리다. 파이프 버퍼보다 큰 꼬리를 붙인 문서로 두 판독기의 종료 상태와 읽은 값을 시험한다.
+
+### Post-install notes
+
+- 런은 시작 때 고정한 자기 플러그인 사본을 돌린다. 이 판 전에 시작한 런은 계속 옛 판독기를 쓴다.
+
+## [3.57.0] - 2026-11-23
+
+무인 런의 PR 체크 폴링을 관측 데몬 `observer.py` 에 맡긴다. 지금까지는 런마다 `checks.sh` 가 PR 하나에 1분마다 `gh pr checks` 를 따로 불렀다. 이제 표지가 있는 고정 사본의 `checks.sh` 는 기동 줄을 바꾸지 않은 채 자기 인자를 관측기에 넘긴다. 관측기는 채택한 런들의 PR 을 1분에 한 번 GraphQL 읽기 질의 하나로 함께 묻고, 각 런의 `checks.out`·`checks.done` 을 지금과 같은 꼴로 쓴다.
+
+### Added
+
+- **checks 작업 모듈** — `orchestrator/observer_checks.py`. 채택한 런들의 PR 을 GraphQL 별칭 질의 하나로 묻고, 런마다 `gh pr checks` 의 비 TTY 출력과 같은 행(`이름\t버킷\t경과\tURL`)과 같은 종료 판정으로 스냅숏을 만든다. 취소된 체크는 `gh` 처럼 `fail` 로 찍되 종료 코드 1 에는 세지 않는다. 한 페이지에 다 담기지 않는 PR 처럼 모듈이 덮지 못하는 상태를 만나면 그 런에 `checks.fallback` 을 두고 런의 `checks.sh` 를 직접 루프로 되돌린다.
+- **`checks.sh --once --from-snapshot <파일>`·`--spec`** — `--from-snapshot` 은 `gh` 대신 관측기가 준 스냅숏 파일에서 PR 과 체크를 읽어 한 바퀴를 돌고 마지막에 `quiet=<0|1>` 을 찍는다. `--spec` 은 물어볼 세그먼트마다 `<slug>\t<세그먼트>\t<머리 브랜치>` 를 찍고 끝나며, `gh` 를 부르지도 파일을 쓰지도 않는다. `--once` 바퀴의 `CC_OBSERVER_PID` 는 `checks.pid` 에 이 프로세스 대신 쓸 pid 다.
+- **시험** — `scripts/test-observer-checks.sh`(질의 울타리, 스냅숏 대조, 위임 종단, 표지 없는 사본, 되돌림, fleet 생존 판정). `make test` 의 오케스트레이터 시험 목록에 더했다.
+
+### Changed
+
+- **`checks.sh` 위임** — `--once`·`--spec` 이 아니고, 고정 사본에 `observer-protocol` 이 있고, `checks.fallback` 이 없고, `CC_CMDS_OBSERVER=off`·`CI` 가 아니며, python3 가 있으면 `observer.py adopt --job checks` 를 부르고, 채택되면 0 으로 끝난다. 위임 중에는 `checks.pid` 가 관측기 pid 를 담는다.
+- **fleet 재진입 생존 판정** — 폴러·감시기 생존 판정이 `observer.py` 를 도는 pid 도 산 것으로 읽는다. 좌석 문서의 감시기 복구 대조도 같다.
+- **관측기 데몬의 PATH** — 관측기가 데몬으로 뜰 때 `/usr/bin:/bin` 을 부른 쪽 PATH 의 앞이 아니라 뒤에 붙인다. 앞에 두면 `gh` 가 `/usr/bin` 에 있는 호스트에서 부른 쪽이 고른 `gh` 가 가려진다.
+
+### Post-install notes
+
+- 런은 시작 때 고정한 자기 플러그인 사본을 돌린다. 이 판 전에 시작한 런은 끝날 때까지 지금처럼 `checks.sh` 가 직접 폴링한다.
 
 ## [3.56.0] - 2026-11-22
 
