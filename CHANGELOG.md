@@ -5,6 +5,23 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.58.0] - 2026-11-23
+
+무인 감사 스테이지 리드의 부기 exec 를 줄인다. 설계 문서의 다이제스트·크기·시각 측정과 감사 사본 복사, 독자 보고서 사본 복사, 조정 시작 시각과 감사 사본 해시를 각각 `doc-tidy.py` 한 호출로 묶는다. 첫 감사의 리드 부기 exec 는 스테이지당 약 22회에서 약 12회로 줄 것으로 본다. 측정 스크립트는 부기 exec 를 안쪽 명령별로 가른 분해 출력을 낸다.
+
+### Added
+
+- **`doc-tidy.py stamp DOC [--keep COPY]`** — 문서를 바이트로 한 번 읽어 `sha256=`·`bytes=`·`at=` 을 내고, `--keep` 이면 같은 바이트를 사본에 원자적으로 쓰고 다시 읽어 `kept_sha256=` 을 낸다. 사본 쓰기가 실패하면 `keep_failed=` 를 내고 종료 코드는 0 이다.
+- **`doc-tidy.py keep-reports REPORT WITNESS...`** — 독자 증인 `reader-<k>.<phase>.md` 를 보고서 옆 `.reader-<k>.md` 로 바이트 그대로 쓴다. 이름 꼴이 틀리거나 같은 번호가 둘이거나 증인이 비어 있으면 아무것도 쓰지 않고 1 로 끝난다.
+- **`doc-tidy.py checkout --reviewed PATH`** — `checkout` 이 `at=` 을 늘 내고, `--reviewed` 파일의 `reviewed_sha256=`(없으면 `absent`)을 낸다.
+- **측정 스크립트 분해 출력** — `scripts/measure-bookkeeping.py` 가 JSON 의 종류별·합계에 `by_command` 를 싣고, 표 뒤에 `종류 | 안쪽 명령 | 횟수 | 스테이지당` 표를 덧붙인다. 열쇠는 argv0 basename 이고 `doc-tidy.py` 는 하위 명령까지 가른다.
+
+### Changed
+
+- **감사 스킬 절차** — `design-audit-unattended` 의 FREEZE, 독자 보고서 사본, 조정 패스 첫 응답, 마지막 측정이 위 세 호출을 쓴다. 난수 발급, 닫는 재해시, unmark 앞 재확인, 게시, 팀 정리는 그대로다.
+- **조정 패스 시각 규칙** — `조정 시작`·`조정 종료` 는 그 시각을 잰 행위가 낸 UTC 시각이다. `date`, 또는 무인 감사에서는 그 행위인 `doc-tidy.py` 호출의 `at=` 줄이다.
+- **부기 정의** — 측정 스크립트가 `doc-tidy.py` 의 `stamp`·`keep-reports` 도 `checkout`·`publish` 처럼 부기 exec 로 센다.
+
 ## [3.57.0] - 2026-11-23
 
 무인 런의 PR 체크 폴링을 관측 데몬 `observer.py` 에 맡긴다. 지금까지는 런마다 `checks.sh` 가 PR 하나에 1분마다 `gh pr checks` 를 따로 불렀다. 이제 표지가 있는 고정 사본의 `checks.sh` 는 기동 줄을 바꾸지 않은 채 자기 인자를 관측기에 넘긴다. 관측기는 채택한 런들의 PR 을 1분에 한 번 GraphQL 읽기 질의 하나로 함께 묻고, 각 런의 `checks.out`·`checks.done` 을 지금과 같은 꼴로 쓴다.
