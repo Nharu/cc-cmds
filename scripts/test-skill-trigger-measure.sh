@@ -149,7 +149,7 @@ if (( first_calls + second_calls == 36 )); then
 else
   fail "resume (first=$first_calls, second=$second_calls, expected a sum of 36)"; show
 fi
-dup=$(cat "$tmp/cli.first" "$STUB_CLI_LOG" | grep '^call ' | sort | uniq -c | awk '$1 > 3' | head -1)
+dup=$(cat "$tmp/cli.first" "$STUB_CLI_LOG" | grep '^call ' | sort | uniq -c | awk '$1 > 3')
 [[ -z "$dup" ]] && pass "no utterance ran more than three times across the two calls" || fail "an utterance ran more than three times: $dup"
 [[ "$ec" == "3" ]] && pass "measured with lines not 일치 exits 3" || { fail "full run exit=$ec, expected 3"; show; }
 
