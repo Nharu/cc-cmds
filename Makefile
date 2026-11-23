@@ -537,6 +537,7 @@ ORCH_TESTS := \
 	scripts/test-kickoff-hook-probe.sh \
 	scripts/test-rekick.sh \
 	scripts/test-team-witness-init.sh \
+	scripts/test-team-witness-publish.sh \
 	scripts/test-similar-items.sh \
 	scripts/test-base-split.sh \
 	scripts/test-gate-chain-equiv.sh \

@@ -11049,6 +11049,24 @@ rr_pguard 트리밖쓰기 "$RRP_INST/orchestrator/cc-team-witness-init.sh" "$RRP
 check "설치본 가드: 면제는 argv0 하나뿐이다 — 뒤의 피연산자는 rc 3" "$rr_pguard_rc" "3"
 rr_pguard 트리밖쓰기 "$RRP_INST/orchestrator/../hooks/gate-pretool.sh"
 check "설치본 가드: 상위 참조로 orchestrator 밖을 가리킨 argv0 는 면제되지 않는다" "$rr_pguard_rc" "3"
+# 위트니스 게시 도우미도 같은 철자로 규정되고 등급표가 이름으로 `트리밖쓰기` 로
+# 고정하므로, 초기화 도우미와 같은 면제와 같은 거부를 받는다.
+RRW_D="$RR/cc-team-witness-x.Q/.rev-a.round-1.0123456789abcdef"
+RRW_W="$RR/cc-team-witness-x.Q/rev-a.round-1.md"
+rr_pguard 트리밖쓰기 "$RRP_INST/orchestrator/cc-team-witness-publish.sh" "$RRW_D" "$RRW_W"
+check "설치본 가드: 게시 도우미를 argv0 로 직접 실행하면 rc 0" "$rr_pguard_rc" "0"
+RR_P_RUNDIR="$PRUN"; RR_P_GATEDIR="$PRUN/plugin/cc-cmds/orchestrator"
+rr_pguard 트리밖쓰기 "$RRP_INST/orchestrator/cc-team-witness-publish.sh" "$RRW_D" "$RRW_W"
+check "설치본 가드: 핀 source 루트의 게시 도우미 직접 실행도 rc 0" "$rr_pguard_rc" "0"
+unset RR_P_RUNDIR RR_P_GATEDIR
+RR_G_RUN="$PRUN"; RR_G_GATEDIR="$PRUN/plugin/cc-cmds/orchestrator"
+rr_guard 트리밖쓰기 "$PRUN/plugin/cc-cmds/orchestrator/cc-team-witness-publish.sh" "$RRW_D" "$RRW_W"
+check "배시 가드: 고정 런 사본의 게시 도우미를 argv0 로 직접 실행하면 rc 0" "$rr_guard_rc" "0"
+unset RR_G_RUN RR_G_GATEDIR
+rr_pguard 트리밖쓰기 bash "$RRP_INST/orchestrator/cc-team-witness-publish.sh" "$RRW_D" "$RRW_W"
+check "설치본 가드: 인터프리터로 감싼 게시 도우미 실행은 면제되지 않는다 (rc 3)" "$rr_pguard_rc" "3"
+rr_pguard 트리밖쓰기 "$RRP_INST/orchestrator/cc-team-witness-publish.sh" "$RRP_INST/orchestrator/gate.sh" "$RRW_W"
+check "설치본 가드: 게시 도우미도 뒤의 피연산자로 지명한 orchestrator 경로는 rc 3" "$rr_pguard_rc" "3"
 
 # --- 포장 안의 경로 — 원문 철자와 단어 단위 평가 -----------------------------
 # 두 가드는 어휘 정규화 결과와 그 물리 철자만 봤다. 정규화는 경로가 아닌 토큰에도

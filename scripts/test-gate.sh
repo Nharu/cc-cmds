@@ -7074,8 +7074,12 @@ pre_tguard() {
   # Every gate call here names the stub `gh` on its own `PATH="…` as well as
   # through `TG_ENV`: the call has to stay a process, and the in-process census
   # recognises a stub call by that spelling in the statement.
-  tg_H() { ( cd "$TG_A" && env "${TG_ENV[@]}" PATH="$TG/bin:$PATH" bash "$GATE" snapshot --manifest "$TG_M" 2>/dev/null ) | jq -r .H; }
-  tg_snap() { ( cd "$TG_A" && env "${TG_ENV[@]}" PATH="$TG/bin:$PATH" bash "$GATE" snapshot --manifest "$TG_M" 2>/dev/null ); }
+  #
+  # The snapshot is read as the same caller `tg_g` acts as. A stage is handed
+  # and compared against the stage digest, so a value read as the router and
+  # presented by `TG_CALLER` is refused as stale.
+  tg_H() { ( cd "$TG_A" && env "${TG_ENV[@]}" ${TG_CALLER:+"CC_PIPELINE_STAGE_ID=$TG_CALLER"} PATH="$TG/bin:$PATH" bash "$GATE" snapshot --manifest "$TG_M" 2>/dev/null ) | jq -r .H; }
+  tg_snap() { ( cd "$TG_A" && env "${TG_ENV[@]}" ${TG_CALLER:+"CC_PIPELINE_STAGE_ID=$TG_CALLER"} PATH="$TG/bin:$PATH" bash "$GATE" snapshot --manifest "$TG_M" 2>/dev/null ); }
   # tg_g <dir> <gate argv…> — `rc` and `msg` as `gate` leaves them, called with
   # the world's environment and the caller `TG_CALLER`.
   tg_g() {
@@ -12284,6 +12288,23 @@ graded_as '트리밖쓰기' '경로로 부른 초기화 스크립트도 같다' 
 # is that the wrong spelling is visibly wrong, not that it is refused.
 graded_as '워크트리쓰기' '인터프리터를 앞에 두면 등급이 되돌아간다' \
   -- bash /opt/cc/plugins/cc-cmds/orchestrator/cc-team-witness-init.sh review-x
+# The team member's witness publish helper and the lead's nonce helper, pinned
+# the same three ways as the initializer: by name, by the absolute spelling a
+# skill writes, and through an interpreter, which loses the row. The publish
+# helper links a draft to the witness name in a directory under TMPDIR, so it
+# writes outside the tree; the nonce helper prints values and opens nothing for
+# writing, so it is a read.
+graded_as '트리밖쓰기' '위트니스 게시 스크립트는 트리 밖을 쓴다' \
+  -- cc-team-witness-publish.sh /t/cc-team-witness-x/.rev-a.round-1.0123456789abcdef /t/cc-team-witness-x/rev-a.round-1.md
+graded_as '트리밖쓰기' '경로로 부른 게시 스크립트도 같다' \
+  -- /opt/cc/plugins/cc-cmds/orchestrator/cc-team-witness-publish.sh /t/cc-team-witness-x/.rev-a.round-1.0123456789abcdef /t/cc-team-witness-x/rev-a.round-1.md
+graded_as '워크트리쓰기' '인터프리터를 앞에 둔 게시 스크립트는 등급이 되돌아간다' \
+  -- bash /opt/cc/plugins/cc-cmds/orchestrator/cc-team-witness-publish.sh /t/cc-team-witness-x/.rev-a.round-1.0123456789abcdef /t/cc-team-witness-x/rev-a.round-1.md
+graded_as '읽기' 'nonce 스크립트는 읽기다' -- cc-team-nonce.sh rev-a@round-1 rev-b@round-1
+graded_as '읽기' '경로로 부른 nonce 스크립트도 같다' \
+  -- /opt/cc/plugins/cc-cmds/orchestrator/cc-team-nonce.sh rev-a@round-1
+graded_as '워크트리쓰기' '인터프리터를 앞에 둔 nonce 스크립트는 등급이 되돌아간다' \
+  -- bash /opt/cc/plugins/cc-cmds/orchestrator/cc-team-nonce.sh rev-a@round-1
 
 # The similar-item lookup. Its default path calls a remote judge, so an
 # adapter read is an external act unless the two local-only switches say
@@ -76303,6 +76324,299 @@ check "119: admit 의 급함 표시는 표를 내지 않는다" \
   "$rc|$n119|$(test -f "$TG_RD/admit/ticket/$(thp_key_norm "$TG_CALLER")" && echo 표)|$(ls -A "$u119_rd" | paste -sd, -)" \
   "2|문면||plugin"
 unset u119_id u119_rd u119_rk u119_warn r119_world r119_ls g119 c119 n119
+
+# ---------------------------------------------------------------------------
+# 120. 구성원 위트니스 게시 한 번, 스테이지 다이제스트, 라우터 다이제스트는 그대로
+# --- section: 120 | group: tguard | covers: exec, act, snapshot, grade, gate_stage_snapshot_digest, gate_stage_progress_vector, gate_stage_ancestry_has, gate_caller_snapshot_digest, gate_ancestry_window, gate_emit_digest_body | anchors: 120: 게시 도우미 한 번의 exec 가 증인을 게시한다, 120: 그 exec 는 원장에 exec 행 하나만 남긴다, 120: 센티널이 어긋난 초안은 아무것도 바꾸지 않는다, 120: 이미 게시된 증인은 덮지 않는다, 120: 일상 exec 행 수십 개 뒤에도 스테이지의 옛 값이 통과한다, 120: 일상 행이 아닌 행 8개 뒤에는 통과한다, 120: 일상 행이 아닌 행 9개 뒤에는 거부된다, 120: 자기 세그먼트의 진전에는 거부된다, 120: 다른 세그먼트의 진전에는 통과한다, 120: 방출 줄·방출 파일·snapshot H 가 같은 값이다, 120: 방출된 값이 곧바로 통과한다, 120: 탐색 —, 120: 벡터 —, 120: 라우터는 일상 행이어도 9행 뒤 거부한다, 120: 라우터는 다른 세그먼트의 진전에 거부한다, 120: 렌더의 스냅숏 해시는 라우터 값이다, 120: 라우터 조상 창 함수 본문이 그대로다 ---
+#
+# 팀 구성원은 위트니스를 초안 이름에 쓰고 게시 도우미 한 번으로 증인 이름에 링크해
+# 게시한다. 그 한 번이 게이트를 지나 원장에 exec 행 하나로 남는지, 확인에 걸린
+# 초안과 이미 게시된 증인에는 아무것도 바꾸지 않는지를 게이트 경유로 잰다.
+#
+# 스테이지 호출자의 다이제스트는 벡터 반쪽이 자기 세그먼트로 좁힌 투영이고, 팁
+# 반쪽의 조상 탐색은 일상 행(스테이지의 `읽기`·`트리밖쓰기` exec 행)을 세지 않고
+# 그 밖의 행만 여덟 개까지 센다. 원장 끝 512행 밖은 보지 않는다. 종단 시험은 픽스처
+# 세계에서 게이트를 프로세스로 부르고, 행 종류의 분류와 512행 상한은 게이트를
+# 소스 모드로 읽어 합성 원장에 건다 — 512행을 게이트로 쌓으면 이 절 하나가 몇 분이
+# 걸리고, 분류와 상한이 읽는 것은 행의 문면뿐이기 때문이다.
+#
+# 라우터 경로는 바뀌지 않았다: 같은 일상 행 9개가 라우터의 옛 값을 밀어내고, 다른
+# 세그먼트의 진전이 라우터의 옛 값을 거부하며, 렌더의 「스냅숏 해시」 는 라우터
+# 값이고, 라우터의 창 함수 본문은 고정된 문면 그대로다.
+# ---------------------------------------------------------------------------
+tg_world u120 -
+r120_world=$rc
+check "120: 세그먼트 행이 기록된다 (아래 단언의 전제)" "$r120_world" "0"
+# 스테이지는 세그먼트 SA 의 `SA#1`, 라우터는 스테이지 표지가 없는 호출자다. 라우터
+# 환경에 세그먼트를 싣지 않는 것이 요점이다 — 세그먼트만 있어도 스테이지로 읽힌다.
+U120_ENV_S=("${TG_ENV[@]}" CC_PIPELINE_SEGMENT=SA CC_PIPELINE_STAGE_ID='SA#1')
+U120_ENV_R=("${TG_ENV[@]}")
+# u120_H <s|r> — 그 호출자로 읽은 snapshot 의 H.
+u120_H() {
+  if [ "$1" = s ]; then
+    ( cd "$TG_A" && env "${U120_ENV_S[@]}" PATH="$TG/bin:$PATH" bash "$GATE" snapshot --manifest "$TG_M" 2>/dev/null ) | jq -r .H
+  else
+    ( cd "$TG_A" && env "${U120_ENV_R[@]}" PATH="$TG/bin:$PATH" bash "$GATE" snapshot --manifest "$TG_M" 2>/dev/null ) | jq -r .H
+  fi
+}
+# u120_x <s|r> <digest> <surface> <argv…> — 세그먼트 워크트리에서 낸 exec 하나.
+# `rc`·`msg` 를 남기고, 방출 줄의 H 를 `U120_NEXT` 에 둔다(다음 호출이 쓸 값).
+u120_x() {
+  local who="$1" h="$2" s="$3"; shift 3
+  if [ "$who" = s ]; then
+    msg=$( cd "$TG_WT" && env "${U120_ENV_S[@]}" PATH="$TG/bin:$PATH" bash "$GATE" exec --manifest "$TG_M" \
+             --target a --segment SA --cutpoint 커밋 --surface "$s" --reach 런로컬 \
+             --snapshot-digest "$h" --rationale x --emit-digest -- "$@" 2>&1 ); rc=$?
+  else
+    msg=$( cd "$TG_WT" && env "${U120_ENV_R[@]}" PATH="$TG/bin:$PATH" bash "$GATE" exec --manifest "$TG_M" \
+             --target a --segment SA --cutpoint 커밋 --surface "$s" --reach 런로컬 \
+             --snapshot-digest "$h" --rationale x --emit-digest -- "$@" 2>&1 ); rc=$?
+  fi
+  U120_NEXT=$(printf '%s\n' "$msg" \
+    | sed -n 's/^\[gate-digest\] H=\([0-9a-f]\{64\}-[0-9a-f]\{64\}\) actor=.*$/\1/p' | tail -n 1)
+}
+# u120_fill <n> <surface> <argv…> — 스테이지 exec n 번, 매번 앞 호출이 방출한 값으로.
+# 마지막 rc 가 0 이 아니면 `u120_fill_bad` 에 남긴다.
+u120_fill() {
+  local n="$1" i=0; shift
+  u120_fill_bad=""
+  U120_NEXT=$(u120_H s)
+  while [ "$i" -lt "$n" ]; do
+    i=$((i + 1))
+    u120_x s "$U120_NEXT" "$@"
+    [ "$rc" = 0 ] || u120_fill_bad="$u120_fill_bad [$i rc=$rc]"
+  done
+}
+u120_rows() { grep -c '^- `' "$TG_L" 2>/dev/null || true; }
+
+# --- (가)·(나) 게시 도우미 한 번 -------------------------------------------------
+u120_pub="$repo_root/plugins/cc-cmds/orchestrator/cc-team-witness-publish.sh"
+u120_wd="$TG/cc-team-witness-u120.d"
+mkdir -p "$u120_wd/partial"
+u120_w="$u120_wd/rev-a.round-1.md"
+u120_d1="$u120_wd/.rev-a.round-1.0123456789abcdef"
+printf '본문\n<!-- cc-witness: rev-a round-1 complete round-1:fedcba9876543210 -->\n' > "$u120_d1"
+cp "$u120_d1" "$TG/u120-d1.copy"
+n120a=$(u120_rows)
+u120_x s "$(u120_H s)" 트리밖쓰기 "$u120_pub" "$u120_d1" "$u120_w"
+r120a=$rc
+n120b=$(u120_rows)
+if [ "$r120a" = 0 ] && cmp -s "$u120_w" "$TG/u120-d1.copy" && [ ! -e "$u120_d1" ]; then
+  ok "120: 게시 도우미 한 번의 exec 가 증인을 게시한다"
+else
+  bad "120: 게시 도우미 한 번의 exec 가 증인을 게시한다" "rc=$r120a 증인=$( [ -f "$u120_w" ] && echo 있음 || echo 없음) 초안=$( [ -e "$u120_d1" ] && echo 남음 || echo 없음) $msg"
+fi
+l120=$(grep '^- `' "$TG_L" | tail -n 1)
+case "$((n120b - n120a))|$l120" in
+  "1|- \`자율 승인\` |"*"| 결정=exec |"*"| 축2=트리밖쓰기 |"*"| 행위자=스테이지 |"*)
+    ok "120: 그 exec 는 원장에 exec 행 하나만 남긴다" ;;
+  *) bad "120: 그 exec 는 원장에 exec 행 하나만 남긴다" "행 $n120a → $n120b, 마지막 행: $l120" ;;
+esac
+# 센티널의 역할이 증인 이름과 다르다 — 도우미가 2 로 끝나고 아무것도 만들지 않는다.
+u120_w2="$u120_wd/rev-b.round-1.md"
+u120_d2="$u120_wd/.rev-b.round-1.0123456789abcdef"
+printf '본문\n<!-- cc-witness: rev-a round-1 complete round-1:fedcba9876543210 -->\n' > "$u120_d2"
+cp "$u120_d2" "$TG/u120-d2.copy"
+u120_x s "$(u120_H s)" 트리밖쓰기 "$u120_pub" "$u120_d2" "$u120_w2"
+if [ "$rc" != 0 ] && [ ! -e "$u120_w2" ] && cmp -s "$u120_d2" "$TG/u120-d2.copy"; then
+  ok "120: 센티널이 어긋난 초안은 아무것도 바꾸지 않는다"
+else
+  bad "120: 센티널이 어긋난 초안은 아무것도 바꾸지 않는다" "rc=$rc 증인=$( [ -e "$u120_w2" ] && echo 생김 || echo 없음) $msg"
+fi
+# 같은 증인 이름에 다른 nonce 의 초안 — 도우미가 3 으로 끝나고 증인과 초안이 그대로다.
+u120_d3="$u120_wd/.rev-a.round-1.aaaaaaaaaaaaaaaa"
+printf '다른 본문\n<!-- cc-witness: rev-a round-1 complete round-1:0000000000000000 -->\n' > "$u120_d3"
+u120_x s "$(u120_H s)" 트리밖쓰기 "$u120_pub" "$u120_d3" "$u120_w"
+if [ "$rc" != 0 ] && cmp -s "$u120_w" "$TG/u120-d1.copy" && [ -f "$u120_d3" ]; then
+  ok "120: 이미 게시된 증인은 덮지 않는다"
+else
+  bad "120: 이미 게시된 증인은 덮지 않는다" "rc=$rc $msg"
+fi
+
+# --- (다) 스테이지 다이제스트, 종단 ----------------------------------------------
+# 일상 exec 행 16개 — 라우터의 여덟 행 창이라면 두 번 밀려났을 거리다.
+H120a=$(u120_H s)
+u120_fill 16 읽기 ls
+check "120: 일상 행 채우기가 모두 통과한다 (이 단언의 전제)" "${u120_fill_bad:-없음}" "없음"
+u120_x s "$H120a" 읽기 ls
+check "120: 일상 exec 행 수십 개 뒤에도 스테이지의 옛 값이 통과한다" "$rc" "0"
+# 일상 행이 아닌 행 — 스테이지의 `워크트리쓰기` exec 행. 8개는 창 안, 9개는 창 밖.
+H120b=$(u120_H s)
+u120_fill 8 워크트리쓰기 touch u120-w8
+check "120: 워크트리 쓰기 채우기가 모두 통과한다 (이 단언의 전제)" "${u120_fill_bad:-없음}" "없음"
+u120_x s "$H120b" 읽기 ls
+check "120: 일상 행이 아닌 행 8개 뒤에는 통과한다" "$rc" "0"
+H120c=$(u120_H s)
+u120_fill 9 워크트리쓰기 touch u120-w9
+u120_x s "$H120c" 읽기 ls
+check "120: 일상 행이 아닌 행 9개 뒤에는 거부된다" "$rc" "4"
+# 자기 세그먼트의 진전 — 라우터가 SA 의 상태를 바꾼다. 행 하나뿐이라 팁은 창 안이고,
+# 거부는 벡터 반쪽에서 온다.
+H120d=$(u120_H s)
+msg=$( cd "$TG_A" && env "${U120_ENV_R[@]}" PATH="$TG/bin:$PATH" bash "$GATE" act --manifest "$TG_M" \
+         --kind segment --target a --segment SA --cutpoint 커밋 --snapshot-digest "$(u120_H r)" \
+         --rationale x -- 상태=리뷰중 "워크트리=$TG_WT" "브랜치=$TG_BR" 선행=없음 2>&1 ); rc=$?
+check "120: 라우터가 SA 의 상태를 바꾼다 (이 단언의 전제)" "$rc" "0"
+u120_x s "$H120d" 읽기 ls
+check "120: 자기 세그먼트의 진전에는 거부된다" "$rc" "4"
+# 다른 세그먼트의 진전 — 라우터가 SB 를 연다(제 워크트리와 브랜치로). 스테이지의 옛
+# 값은 통과하고, 같은 자리에서 읽어 둔 라우터의 옛 값은 거부된다.
+( cd "$TG_A" && git worktree add -q -b seg/u120b "$TG/A-wt2" ) >/dev/null 2>&1
+H120e=$(u120_H s)
+R120e=$(u120_H r)
+msg=$( cd "$TG_A" && env "${U120_ENV_R[@]}" PATH="$TG/bin:$PATH" bash "$GATE" act --manifest "$TG_M" \
+         --kind segment --target a --segment SB --cutpoint 커밋 --snapshot-digest "$R120e" \
+         --rationale x -- 상태=실행중 "워크트리=$TG/A-wt2" 브랜치=seg/u120b 선행=없음 2>&1 ); rc=$?
+n120sb=$(grep -cE '^- `segment` .*\| id=SB( \||$)' "$TG_L" || true)
+if [ "$rc|$n120sb" = "0|1" ]; then
+  ok "120: 라우터가 SB 를 연다 (이 단언의 전제)"
+else
+  bad "120: 라우터가 SB 를 연다 (이 단언의 전제)" "rc=$rc 행=$n120sb $msg"
+fi
+u120_x s "$H120e" 읽기 ls
+check "120: 다른 세그먼트의 진전에는 통과한다" "$rc" "0"
+u120_x r "$R120e" 읽기 ls
+check "120: 라우터는 다른 세그먼트의 진전에 거부한다" "$rc" "4"
+# 방출 — 줄·파일·snapshot H 가 같은 값이고, 그 값이 곧바로 통과한다.
+u120_x s "$(u120_H s)" 읽기 ls
+e120_line=$U120_NEXT
+e120_path=$( cd "$TG_A" && env "${U120_ENV_S[@]}" PATH="$TG/bin:$PATH" bash "$GATE" digest-path --manifest "$TG_M" 2>/dev/null | tail -n 1 )
+e120_file=$(jq -r .H "$e120_path" 2>/dev/null || true)
+e120_snap=$(u120_H s)
+if [ -n "$e120_line" ] && [ "$e120_line" = "$e120_file" ] && [ "$e120_line" = "$e120_snap" ]; then
+  ok "120: 방출 줄·방출 파일·snapshot H 가 같은 값이다"
+else
+  bad "120: 방출 줄·방출 파일·snapshot H 가 같은 값이다" "줄=$e120_line 파일=$e120_file ($e120_path) snapshot=$e120_snap"
+fi
+u120_x s "$e120_line" 읽기 ls
+check "120: 방출된 값이 곧바로 통과한다" "$rc" "0"
+case "$e120_line" in
+  "$(u120_H r | cut -d- -f1)"-*) bad "120: 스테이지 값의 벡터 반쪽은 라우터의 것과 다르다" "$e120_line" ;;
+  *) ok "120: 스테이지 값의 벡터 반쪽은 라우터의 것과 다르다" ;;
+esac
+
+# --- (라) 라우터 다이제스트, 종단 ------------------------------------------------
+# 같은 일상 행 9개가 라우터의 옛 값을 밀어낸다 — 라우터의 창은 종류를 보지 않는다.
+R120f=$(u120_H r)
+u120_fill 9 읽기 ls
+u120_x r "$R120f" 읽기 ls
+check "120: 라우터는 일상 행이어도 9행 뒤 거부한다" "$rc" "4"
+# 스테이지가 부른 렌더도 「스냅숏 해시」 는 라우터 값이다 — 판단 결속 튜플과 같은 값.
+s120_render=$( cd "$TG_A" && env "${U120_ENV_S[@]}" PATH="$TG/bin:$PATH" bash "$GATE" snapshot --manifest "$TG_M" --render 2>/dev/null \
+                 | sed -n 's/^스냅숏 해시: //p' )
+check "120: 렌더의 스냅숏 해시는 라우터 값이다" "$s120_render" "$(u120_H r)"
+# 라우터의 창 함수와 그 호출 자리, 창 상수 — 주석을 뺀 문면이 고정값 그대로다.
+a120_body=$(awk '/^gate_ancestry_window\(\) \{/,/^\}/' "$GATE" | grep -v '^[[:space:]]*#')
+a120_want=$(printf '%s\n' 'gate_ancestry_window() {' \
+  "  { grep '^- \`' \"\$LEDGER\" 2>/dev/null || true; } | tail -n \"\$GATE_ANCESTRY_WINDOW\"" '}')
+a120_call=$(grep -cF 'elif ! grep -qE " \| prev=$obstip\$" <<<"$(gate_ancestry_window)"; then' "$GATE" || true)
+a120_k=$(grep -c '^readonly GATE_ANCESTRY_WINDOW=8$' "$GATE" || true)
+check "120: 라우터 조상 창 함수 본문이 그대로다" "$a120_body|$a120_call|$a120_k" "$a120_want|1|1"
+
+# --- (다) 탐색과 벡터, 합성 원장 -------------------------------------------------
+# 게이트를 소스 모드로 읽어 함수 하나를 부른다. 원장은 행 문면만 담은 합성
+# 파일이다 — 탐색과 투영이 읽는 것은 그것뿐이다.
+u120_anc() {  # u120_anc <원장> <팁> — gate_stage_ancestry_has 의 rc
+  bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; set +e; LEDGER="$2"; gate_stage_ancestry_has "$3"; printf "%s" "$?"' \
+    _ "$GATE" "$1" "$2" 2>/dev/null
+}
+u120_vec() {  # u120_vec <원장> <세그먼트> — gate_stage_progress_vector 의 출력
+  bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; set +e; LEDGER="$2"; MANIFEST="$3"; CC_PIPELINE_SEGMENT="$4"; CC_PIPELINE_STAGE_ID="$4#1"; export CC_PIPELINE_SEGMENT CC_PIPELINE_STAGE_ID; gate_stage_progress_vector' \
+    _ "$GATE" "$1" "$TG_M" "$2" 2>/dev/null
+}
+u120_rvec() {  # u120_rvec <원장> — gate_progress_vector 의 출력(라우터)
+  bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; set +e; LEDGER="$2"; MANIFEST="$3"; gate_progress_vector' \
+    _ "$GATE" "$1" "$TG_M" 2>/dev/null
+}
+T120=1111111111111111111111111111111111111111111111111111111111111111
+U120_I=0
+# u120_row <kind> — 합성 행 한 줄. 마지막 필드 prev 는 행마다 다른 값이다.
+u120_row() {
+  U120_I=$((U120_I + 1))
+  local p; p=$(printf '%064x' "$U120_I")
+  case "$1" in
+    읽기|트리밖쓰기|워크트리쓰기|외부상태변경)
+      printf -- '- `자율 승인` | kind= | 결정=exec | 대상=a | 세그먼트=SA | 축2=%s | 행위자=스테이지 | 근거=x | prev=%s\n' "$1" "$p" ;;
+    결과)  printf -- '- `자율 승인` | kind= | 결정=결과 | 대상=a | 세그먼트=SA | 축2=읽기 | 근거=rc=1 | prev=%s\n' "$p" ;;
+    라우터) printf -- '- `자율 승인` | kind=x | 결정=act | 대상=a | 세그먼트=SA | 축2=읽기 | 행위자=라우터 | 근거=x | prev=%s\n' "$p" ;;
+    승인)  printf -- '- `승인` | 승인 id=A120-%s | 상태=대기 | 막는 세그먼트=SA | prev=%s\n' "$U120_I" "$p" ;;
+  esac
+}
+# u120_led <file> <tip 행 종류> <채움…> — 팁을 prev 로 싣는 행 하나 뒤에 채움 행들.
+# 채움은 `<종류>x<수>` 의 나열이다.
+u120_led() {
+  local f="$1" k="$2" spec kind cnt j; shift 2
+  { printf '# 합성 원장\n\n'
+    printf -- '- `자율 승인` | kind= | 결정=exec | 대상=a | 세그먼트=SA | 축2=읽기 | 행위자=스테이지 | 근거=x | prev=%s\n' \
+      0000000000000000000000000000000000000000000000000000000000000000
+    case "$k" in
+      읽기) printf -- '- `자율 승인` | kind= | 결정=exec | 대상=a | 세그먼트=SA | 축2=읽기 | 행위자=스테이지 | 근거=x | prev=%s\n' "$T120" ;;
+      *)    printf -- '- `자율 승인` | kind= | 결정=exec | 대상=a | 세그먼트=SA | 축2=워크트리쓰기 | 행위자=스테이지 | 근거=x | prev=%s\n' "$T120" ;;
+    esac
+    for spec in "$@"; do
+      kind=${spec%x*}; cnt=${spec##*x}; j=0
+      while [ "$j" -lt "$cnt" ]; do j=$((j + 1)); u120_row "$kind"; done
+    done
+  } > "$f"
+}
+L120="$TG/u120-ledger.md"
+g120=""
+# 판정 하나: <기대 rc> <설명> <tip 행 종류> <채움…>
+u120_case() {
+  local want="$1" what="$2" k="$3" got; shift 3
+  u120_led "$L120" "$k" "$@"
+  got=$(u120_anc "$L120" "$T120")
+  [ "$got" = "$want" ] || g120="$g120 [$what: rc=$got, 기대 $want]"
+}
+u120_case 0 '팁 행 뒤 일상 행 40개'                  읽기   읽기x20 트리밖쓰기x20
+u120_case 0 '팁 행 포함 그 밖의 행 8개, 사이에 일상 행' 워크트리쓰기 읽기x5 워크트리쓰기x3 읽기x5 승인x2 라우터x2 읽기x5
+u120_case 1 '팁 행 포함 그 밖의 행 9개'               워크트리쓰기 읽기x5 워크트리쓰기x3 읽기x5 승인x2 라우터x3
+u120_case 1 '결과 행 9개'                             읽기   결과x9
+u120_case 0 '결과 행 8개'                             읽기   결과x8
+u120_case 1 '외부상태변경 스테이지 exec 행 9개'        읽기   외부상태변경x9
+u120_case 1 '워크트리쓰기 스테이지 exec 행 9개'        읽기   워크트리쓰기x9
+u120_case 1 '라우터 act 행 9개'                       읽기   라우터x9
+u120_case 1 '승인 행 9개'                             읽기   승인x9
+u120_case 0 '팁 행 뒤 일상 행 511개 (끝 512행 안)'     읽기   읽기x511
+u120_case 1 '팁 행 뒤 일상 행 512개 (끝 512행 밖)'     읽기   읽기x512
+u120_led "$L120" 읽기 읽기x3
+g120_none=$(u120_anc "$L120" 2222222222222222222222222222222222222222222222222222222222222222)
+[ "$g120_none" = 1 ] || g120="$g120 [원장에 없는 팁: rc=$g120_none]"
+check "120: 탐색 — 일상 행은 세지 않고 그 밖의 행을 여덟까지, 끝 512행 안에서 찾는다" "${g120:-없음}" "없음"
+
+# 벡터 — 기준 원장은 픽스처 세계의 실제 원장 사본이다(세그먼트 SA 행과 SB 행이 있다).
+V120="$TG/u120-vec.md"
+cp "$TG_L" "$V120"
+v120_0=$(u120_vec "$V120" SA)
+r120_0=$(u120_rvec "$V120")
+v120_bad=""
+# u120_vrow <기대: 같음|다름> <설명> <행…> — 기준 원장에 행을 더한 뒤 SA 의 투영을 견준다.
+u120_vrow() {
+  local want="$1" what="$2" got; shift 2
+  cp "$TG_L" "$V120"
+  printf '%s\n' "$@" >> "$V120"
+  if [ "$(u120_vec "$V120" SA)" = "$v120_0" ]; then got=같음; else got=다름; fi
+  [ "$got" = "$want" ] || v120_bad="$v120_bad [$what: $got, 기대 $want]"
+}
+[ -n "$v120_0" ] || v120_bad="$v120_bad [기준 투영이 비었다]"
+case "$v120_0" in *"segment=SB|"*) v120_bad="$v120_bad [투영에 SB 의 segment 줄이 있다]" ;; esac
+case "$v120_0" in *"segment=SA|"*) ;; *) v120_bad="$v120_bad [투영에 SA 의 segment 줄이 없다]" ;; esac
+case "$v120_0" in *"stage-normal="*) v120_bad="$v120_bad [투영에 stage-normal 줄이 있다]" ;; esac
+u120_vrow 같음 'SB 의 segment 행'   '- `segment` | id=SB | 상태=park | 선행=없음'
+u120_vrow 다름 'SA 의 segment 행'   '- `segment` | id=SA | 상태=park | 선행=없음'
+u120_vrow 같음 'SB 의 cycle 행'     '- `cycle` | 세그먼트=SB | 사이클=1'
+u120_vrow 다름 'SA 의 cycle 행'     '- `cycle` | 세그먼트=SA | 사이클=1'
+u120_vrow 다름 '종료 절 행'         '- `종료 절` | 절=C1 | 상태=충족'
+u120_vrow 다름 '해소된 blocked 행'  '- `blocked` | 범위=런 | 원인=해소'
+u120_vrow 같음 '일상 exec 행'       '- `자율 승인` | kind= | 결정=exec | 대상=a | 세그먼트=SA | 축2=읽기 | 행위자=스테이지 | 근거=x'
+cp "$TG_L" "$V120"
+printf '%s\n' '- `segment` | id=SB | 상태=park | 선행=없음' >> "$V120"
+[ "$(u120_rvec "$V120")" != "$r120_0" ] || v120_bad="$v120_bad [라우터 벡터가 SB 의 행에 움직이지 않았다]"
+check "120: 벡터 — 자기 세그먼트와 런 전역 성분에만 움직인다" "${v120_bad:-없음}" "없음"
+unset U120_ENV_S U120_ENV_R U120_NEXT U120_I u120_pub u120_wd u120_w u120_w2 u120_d1 u120_d2 u120_d3 \
+      n120a n120b r120a l120 H120a H120b H120c H120d H120e R120e R120f e120_line e120_path e120_file e120_snap \
+      s120_render a120_body a120_want a120_call a120_k T120 L120 g120 g120_none V120 v120_0 r120_0 v120_bad \
+      r120_world u120_fill_bad n120sb
 
 # --- epilogue-begin ---
 #

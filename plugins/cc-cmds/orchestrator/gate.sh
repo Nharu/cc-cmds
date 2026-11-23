@@ -1289,7 +1289,21 @@ readonly GATE_DISMISSAL_TEXT="The user doesn't want to proceed with this tool us
 # DO NOT RAISE THIS TO MAKE A REFUSAL GO AWAY. Raised far enough it restores the
 # unbounded behaviour while leaving no trace that it was restored; the honest
 # way back is to change what the window MEANS, deliberately, not its number.
+#
+# FOR A STAGE CALLER THE WINDOW COUNTS KIND, and that is the deliberate change
+# of meaning the paragraph above asks for, not a larger number. A stage's
+# routine rows — its own `exec` rows graded `읽기` or `트리밖쓰기` — are walked
+# past without being counted, and eight is the count of every other row
+# (`gate_stage_ancestry_has`). The dangerous changes listed at the top of this
+# note all land as rows that are not routine exec rows, so for a stage they are
+# still bounded by eight. The router's window is unchanged and still counts
+# distance. A stage's backward walk stops at GATE_STAGE_SEARCH_MAX rows from the
+# end whatever it has counted, so an old digest carried across a compaction is
+# not admitted from arbitrarily far back and the walk's cost is bounded by that
+# number instead of by the ledger's length. Measured, the 238 tip-overflow
+# refusals of review leads spanned 5473 rows in all, 23 on average.
 readonly GATE_ANCESTRY_WINDOW=8
+readonly GATE_STAGE_SEARCH_MAX=512
 
 # The cone row's segment list, bounded like every other free-length value on a
 # row. Its neighbours on that row are three Korean free-text fields clipped at
@@ -8084,6 +8098,20 @@ surface_of_argv0() {
     # running.
     cc-team-witness-init.sh)
       printf '트리밖쓰기' ;;
+    # The witness publisher: it checks a draft a team member wrote with the file
+    # edit tool inside the witness directory, links it to the witness name and
+    # removes the draft name. Both names are under that directory, which the run
+    # directory guard and the hook already let a stage write, and nothing under
+    # the worktree is touched — the same grade as the directory it writes into.
+    # One exec per witness, so the grade is what makes the honest declaration
+    # the only one that passes.
+    cc-team-witness-publish.sh)
+      printf '트리밖쓰기' ;;
+    # The nonce minter: one line per `<role>@<round>` argument on standard
+    # output, built from `openssl rand` inside the script. It opens no file for
+    # writing, takes no output operand and reaches no network, so it is a read.
+    cc-team-nonce.sh)
+      printf '읽기' ;;
     # The similar-item lookup. Called with no offline flag it sends issue titles
     # and bodies to a classification model off this machine — whether a key is
     # present is only known at run time, so argv cannot prove the send does not
@@ -12667,6 +12695,180 @@ gate_snapshot_digest_legacy() {
   { gate_progress_vector
     printf 'ledger=%s|%s\n' "${n:-0}" "$(gate_chain_tip)"
   } | shasum -a 256 | cut -d' ' -f1
+}
+
+gate_stage_progress_vector() {
+  # THE STAGE CALLER'S PROJECTION OF `gate_progress_vector`, and only a
+  # projection: every line it prints is a line the full vector prints for the
+  # same ledger, or a count over a subset of the rows one of its lines counts.
+  #
+  # A stage acts on its own segment and nothing else, so another segment's
+  # progress does not change the premise its digest protects — yet the full
+  # vector moved on it. Measured over the review stages of plugin 3.50.0 and
+  # later: 65 of the 80 vector-move refusals of a review lead came from another
+  # segment's progress alone. What stays here:
+  #
+  #   goal= target= clauses= unblocks=  run-wide, the same lines as the full
+  #                                     vector — settling a clause and clearing
+  #                                     a run-scope block move every stage.
+  #   segment= cycle=                   the line of CC_PIPELINE_SEGMENT only.
+  #   dispatches=                       the full vector's condition (a router
+  #                                     dispatch row for the segment, the three
+  #                                     classes that left a trace), with the
+  #                                     segment set narrowed to this segment.
+  #
+  # `stage-normal=` IS NOT HERE. This segment's normal terminations are already
+  # in the narrowed `dispatches=`, and every other one is another segment's
+  # progress.
+  #
+  # A STAGE WITH NO SEGMENT (empty or `-`, a document-level design or audit
+  # stage) acts on no segment, so it gets no segment or cycle line and
+  # `dispatches=0`: it is bound by the run-wide lines and the window alone.
+  #
+  # `gate_progress_vector` itself stays as it is. The judgment binding tuple
+  # (`gate_tuple_snap`) and the snapshot render read `gate_snapshot_digest`, and
+  # a stage-built tuple must keep matching the router's value.
+  local a seg n disp_segs own
+  local GATE_ROWS_MEMO_LEDGER GATE_ROWS_MEMO_N GATE_ROWS_MEMO_KINDS GATE_ROWS_MEMO_ROWS
+  seg="${CC_PIPELINE_SEGMENT:-}"
+  if [ "$seg" = "-" ]; then seg=""; fi
+  gate_ledger_warm segment cycle '자율 승인' stage-result '종료 절' blocked
+  printf 'goal=%s\n' "$(manifest_field '인가' '종료 지점' | shasum -a 256 | cut -d' ' -f1)"
+  for a in $(target_aliases); do
+    printf 'target=%s|%s|%s\n' "$a" \
+      "$(target_field "$a" '원격 슬러그')" "$(target_field "$a" '절단점')"
+  done | sort
+  own=0
+  if [ -n "$seg" ]; then
+    n=$( { gate_rows 'segment' || true; } | gate_rows_field_eq 'id' "$seg" | gate_count)
+    if [ "${n:-0}" -gt 0 ]; then
+      printf 'segment=%s|%s\n' "$seg" "$(gate_segment_field "$seg" '상태')"
+    fi
+    n=$( { gate_rows 'cycle' || true; } | gate_rows_field_eq '세그먼트' "$seg" | gate_count)
+    if [ "${n:-0}" -gt 0 ]; then
+      printf 'cycle=%s|%s\n' "$seg" "$n"
+    fi
+    # The dispatch-row selection of the full vector, read for membership only.
+    disp_segs=$( { gate_rows '자율 승인' | grep -F '| kind=skill |' || true; } \
+         | { grep -F '| 결정=act |' || true; } \
+         | { grep -F '| 행위자=' || true; } \
+         | { grep -vF '| 행위자=스테이지 |' || true; } \
+         | sed -n 's/.*| 세그먼트=\([^|]*\) |.*/\1/p' | sed 's/[[:space:]]*$//' \
+         | LC_ALL=C sort -u | tr '\n' ' ')
+    case " $disp_segs" in *" $seg "*) own=1 ;; esac
+  fi
+  if [ "$own" = "1" ]; then
+    printf 'dispatches=%s\n' \
+      "$( { gate_rows 'stage-result' || true; } | gate_rows_field_eq '세그먼트' "$seg" \
+          | LC_ALL=C awk '
+          BEGIN { key = " | 종단 부류="; klen = length(key); sep = " | "; n = 0 }
+          {
+            rest = $0; cls = ""
+            while ((p = index(rest, key)) > 0) {
+              rest = substr(rest, p + klen)
+              q = index(rest, sep)
+              cls = (q > 0) ? substr(rest, 1, q - 1) : rest
+            }
+            if (cls == "정상 완료" || cls == "의도된 park" || cls == "산출물 없는 정지") n++
+          }
+          END { printf "%d", n }
+        ')"
+  else
+    printf 'dispatches=0\n'
+  fi
+  printf 'clauses=%s\n' "$( { gate_rows '종료 절' || true; } | gate_count)"
+  printf 'unblocks=%s\n' \
+    "$( { gate_rows 'blocked' | grep -F '원인=해소' || true; } | gate_count)"
+}
+
+gate_stage_snapshot_digest() {
+  # `<stage vector sha256>-<chain tip>` — the two-part form of
+  # `gate_snapshot_digest`, with the vector half taken from the stage
+  # projection. The tip half is the same chain tip; what differs for a stage is
+  # how far back an observed tip may sit, which `gate_stage_ancestry_has` reads.
+  local vec
+  vec=$(gate_stage_progress_vector)
+  printf '%s-%s' \
+    "$(printf '%s\n' "$vec" | shasum -a 256 | cut -d' ' -f1)" \
+    "$(gate_chain_tip)"
+}
+
+gate_caller_snapshot_digest() {
+  # The digest this caller is handed and compared against: the stage digest for
+  # a stage (`cc_caller_is_stage`), the router's `gate_snapshot_digest` for
+  # everyone else — a routing shift included, which directs every segment. The
+  # act comparison, the `--emit-digest` line and file, and the snapshot's `H`
+  # all read this one function, so a stage can present the value it was given.
+  # The snapshot render's 「스냅숏 해시」 line and the judgment binding tuple
+  # stay on `gate_snapshot_digest`.
+  if cc_caller_is_stage; then
+    gate_stage_snapshot_digest
+  else
+    gate_snapshot_digest
+  fi
+}
+
+gate_stage_routine_awk() {
+  # The awk predicate for a stage's ROUTINE row, printed for inclusion in a
+  # program: a `자율 승인` row whose `결정` is `exec`, whose `행위자` is
+  # `스테이지` and whose `축2` is `읽기` or `트리밖쓰기`. Every field is located by
+  # its ` | <key>=` delimiter and compared whole, the last occurrence winning.
+  #
+  # NOT ROUTINE, on purpose: the `결정=결과` row a failure appends carries no
+  # `행위자`, so a stage exec failure and a router act failure cannot be told
+  # apart on it; and a stage exec graded `워크트리쓰기` or `외부상태변경`, because
+  # the dangerous changes the window exists for include acts that change
+  # external state, and the grade is already on the row.
+  cat <<'AWK'
+function gsr_field(line, key,    rest, p, q, v, klen) {
+  rest = line; v = ""; klen = length(key)
+  while ((p = index(rest, key)) > 0) {
+    rest = substr(rest, p + klen)
+    q = index(rest, " | ")
+    v = (q > 0) ? substr(rest, 1, q - 1) : rest
+  }
+  return v
+}
+function gsr_routine(line,    a) {
+  if (index(line, "- `자율 승인` | ") != 1) return 0
+  if (gsr_field(line, " | 결정=") != "exec") return 0
+  if (gsr_field(line, " | 행위자=") != "스테이지") return 0
+  a = gsr_field(line, " | 축2=")
+  return (a == "읽기" || a == "트리밖쓰기")
+}
+AWK
+}
+
+gate_stage_ancestry_has() {
+  # gate_stage_ancestry_has <observed tip> — rc 0 when the stage caller's tip
+  # may still be an ancestor: some row carrying ` | prev=<tip>` sits in the
+  # backward walk from the ledger's end that stops before the
+  # (GATE_ANCESTRY_WINDOW + 1)th non-routine row, within the last
+  # GATE_STAGE_SEARCH_MAX rows.
+  #
+  # THE WINDOW COUNTS KIND FOR A STAGE. A stage's own routine exec rows no longer
+  # push its tip out: measured, 82% of the rows that pushed a review lead's tip
+  # out of the eight-row window were the same segment's routine exec rows.
+  # Every row the window exists for — an approval issued, a stage ending, a
+  # run-scope park, a handoff, a router act, a failure's result row — is not a
+  # routine row and is still counted one by one, so those stay bounded by eight.
+  # The row carrying the tip is in the walk whatever its kind.
+  #
+  # One awk pass over a bounded tail, like the vector components; the ledger's
+  # length never enters the cost.
+  local tip="$1"
+  { grep '^- `' "$LEDGER" 2>/dev/null || true; } | tail -n "$GATE_STAGE_SEARCH_MAX" \
+    | LC_ALL=C awk -v tip="$tip" -v maxn="$GATE_ANCESTRY_WINDOW" "$(gate_stage_routine_awk)"'
+      { row[NR] = $0 }
+      END {
+        want = " | prev=" tip; wl = length(want); n = 0
+        for (i = NR; i >= 1; i--) {
+          r = row[i]
+          if (!gsr_routine(r)) { n++; if (n > maxn) exit 1 }
+          if (length(r) >= wl && substr(r, length(r) - wl + 1) == want) exit 0
+        }
+        exit 1
+      }'
 }
 
 gate_segment_field() {
@@ -20595,7 +20797,7 @@ gate_snapshot() {
   # emitted, empty included, so no reader has to tell an absent key from an empty
   # list. Outside the default `--fields` projection and outside `H`: the labels
   # are a pure function of rows the chain already covers. And outside the
-  # dispatch path by construction — `act` reads `gate_snapshot_digest`, never
+  # dispatch path by construction — `act` reads `gate_caller_snapshot_digest`, never
   # this object — so no label can refuse, park or hold anything.
   printf '  "stalls": [\n'
   gate_snapshot_stalls_json
@@ -20702,7 +20904,7 @@ gate_snapshot() {
   printf '  "apply_target_stopped": %s,\n' "$(gate_snapshot_apply_array "$apl" apply_target_stopped)"
   printf '  "ledger_damage": %s,\n' "$(gate_ledger_damage)"
   printf '  "chain_intact": %s,\n' "$(gate_chain_verify >/dev/null 2>&1 && printf 'true' || printf 'false')"
-  printf '  "H": "%s"\n' "$(gate_snapshot_digest)"
+  printf '  "H": "%s"\n' "$(gate_caller_snapshot_digest)"
   printf '}\n'
 }
 
@@ -21344,7 +21546,7 @@ gate_emit_digest_body() {
   # the same value the file gets, printed once at the single exit below, after
   # every warning, so it is the last line of the call's output.
   local tmp h actor
-  h=$(gate_snapshot_digest)
+  h=$(gate_caller_snapshot_digest)
   # THE EMITTING ACTOR TRAVELS WITH THE VALUE. The file name separates actors by
   # convention, and a convention is exactly what a caller can get wrong — so the
   # object also says who wrote it, and a consumer that finds an id other than
@@ -46510,6 +46712,10 @@ gate_drain_checks() {
   # segments run at once rather than with anything here. There is no numeric
   # cap on concurrent stages: what bounds it is the route's usage admission,
   # which dispatches a stage only while the lane's weekly allowance admits it.
+  # For a STAGE caller the window counts kind rather than distance
+  # (`gate_stage_ancestry_has`): its routine exec rows are walked past, and the
+  # rows a drain appends still count one each, so this exposure is the router's
+  # and the stage's alike, and the stage's routine rows no longer add to it.
   #
   # THE SWEEP, THE RENAME AND THE TRANSCRIPTION RUN UNDER ONE LOCK, and without it
   # the sweep undid the ordering it was written to keep. `gate_verb_act` holds no
@@ -55425,7 +55631,7 @@ gate_verb_act() {
   if [ "$verb" != "plan" ]; then
     [ -n "$snapdig" ] || { printf 'gate: --snapshot-digest is required\n' >&2; exit 2; }
     local now nowvec nowtip obsvec obstip stale=0 twopart=0
-    now=$(gate_snapshot_digest)
+    now=$(gate_caller_snapshot_digest)
     nowvec="${now%%-*}"; nowtip="${now##*-}"
     case "$snapdig" in
       *-*) twopart=1; obsvec="${snapdig%%-*}"; obstip="${snapdig##*-}" ;;
@@ -55473,6 +55679,9 @@ gate_verb_act() {
       # explains that a boundary firing always issues an approval, so counting
       # approvals would let the remedy reset the counter that fired it. What the
       # bound removes is the property that a value read hours ago passed forever.
+      # For a STAGE caller the window counts kind instead: its routine exec rows
+      # are walked past uncounted, and an approval, a stage ending or any other
+      # non-routine row still counts one each (`gate_stage_ancestry_has`).
       #
       # ANCHORED TO THE FIELD BOUNDARY AND TO END OF LINE. The boundary alone
       # still matched a carrier that supplies no separator at all, because a
@@ -55504,9 +55713,12 @@ gate_verb_act() {
       # closes the other's. A prefix of a real tip satisfies a substring match
       # even anchored, so the length check is what refuses it; a minted token is a
       # perfect 64-character lowercase hex, so the anchor is what refuses it.
-      if [ "$stale" = "0" ] && [ "$obstip" != "$nowtip" ] \
-         && ! grep -qE " \| prev=$obstip\$" <<<"$(gate_ancestry_window)"; then
-        stale=1
+      if [ "$stale" = "0" ] && [ "$obstip" != "$nowtip" ]; then
+        if cc_caller_is_stage; then
+          gate_stage_ancestry_has "$obstip" || stale=1
+        elif ! grep -qE " \| prev=$obstip\$" <<<"$(gate_ancestry_window)"; then
+          stale=1
+        fi
       fi
     fi
     if [ "$stale" != "0" ]; then
