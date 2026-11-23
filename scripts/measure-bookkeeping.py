@@ -34,7 +34,9 @@ What counts as bookkeeping: a `Bash` tool call whose command is the gate's
 `exec` (first word ending in `/orchestrator/gate.sh`, second word `exec`) and
 whose argv0 after ` -- ` has one of the basenames shasum, printenv, cp, date,
 rm, openssl, mktemp, mv, lockf, wc, or is `doc-tidy.py` with the subcommand
-`checkout` or `publish`.
+`checkout`, `publish`, `stamp` or `keep-reports`. Each such exec has a key,
+the basename of that argv0, or `doc-tidy.py <subcommand>` for the helper,
+whose subcommands differ in whether they count.
 
 Lead and member: a stream record with a `parent_tool_use_id` belongs to an
 agent the lead spawned (a member); one without it is the lead's. Only the
@@ -57,8 +59,13 @@ Figures per kind:
   digest_refusals        the lead's gate calls whose result is exit code 4
                          and whose output holds `stale snapshot digest`
                          (an auxiliary column)
+  by_command             the lead's bookkeeping execs split by key, each
+                         `{"execs": n, "per_stage": n / stages}`, ordered by
+                         count descending and then by key
 
-A value that cannot be computed is null in JSON and `-` in the table.
+A value that cannot be computed is null in JSON and `-` in the table. The
+table prints `by_command` as a second table, `종류 | 안쪽 명령 | 횟수 |
+스테이지당`, with no rows for a kind of zero stages.
 
 Exit codes: 0 when at least one run was read, 1 when none was (the table or
 object is still printed), 2 for a usage error. It writes to stdout only and
@@ -78,7 +85,7 @@ from collections import OrderedDict  # noqa: E402
 
 KINDS = ["design", "audit", "reconverge", "implement", "review", "lead-fix"]
 BOOKKEEPING = {"shasum", "printenv", "cp", "date", "rm", "openssl", "mktemp", "mv", "lockf", "wc"}
-DOC_TIDY_VERBS = {"checkout", "publish"}
+DOC_TIDY_VERBS = {"checkout", "publish", "stamp", "keep-reports"}
 STALE = "stale snapshot digest"
 ROW_PREFIX = "- `stage-result`"
 LOG_RE = re.compile(r"^(.+)#(\d+)\.json$")
@@ -159,29 +166,37 @@ def kind_of(rows, sid, stage, attempt):
     return kinds[0] if kinds else None
 
 
-def is_bookkeeping(command):
-    """(bookkeeping, gate call): whether COMMAND is a gate exec whose argv0
-    after ` -- ` is bookkeeping, and whether it calls the gate at all."""
+def bookkeeping_key(command):
+    """(key, gate call): the bookkeeping key of COMMAND when it is a gate exec
+    whose argv0 after ` -- ` is bookkeeping (None otherwise), and whether it
+    calls the gate at all."""
     if not isinstance(command, str):
-        return False, False
+        return None, False
     try:
         argv = shlex.split(command, posix=True)
     except ValueError:
-        return False, False
+        return None, False
     if len(argv) < 2 or not argv[0].endswith("/orchestrator/gate.sh"):
-        return False, False
+        return None, False
     is_gate = True
     if argv[1] != "exec" or "--" not in argv:
-        return False, is_gate
+        return None, is_gate
     rest = argv[argv.index("--") + 1:]
     if not rest:
-        return False, is_gate
+        return None, is_gate
     base = os.path.basename(rest[0])
     if base in BOOKKEEPING:
-        return True, is_gate
+        return base, is_gate
     if base == "doc-tidy.py" and len(rest) > 1 and rest[1] in DOC_TIDY_VERBS:
-        return True, is_gate
-    return False, is_gate
+        return "%s %s" % (base, rest[1]), is_gate
+    return None, is_gate
+
+
+def is_bookkeeping(command):
+    """(bookkeeping, gate call): whether COMMAND is a gate exec whose argv0
+    after ` -- ` is bookkeeping, and whether it calls the gate at all."""
+    key, is_gate = bookkeeping_key(command)
+    return key is not None, is_gate
 
 
 def result_text(content):
@@ -199,7 +214,8 @@ def read_log(path):
     sid = None
     reqs = OrderedDict()    # lead message id -> [bookkeeping flag per tool call]
     gate_calls = set()      # lead tool_use ids that called the gate
-    c = {"bookkeeping_execs": 0, "member_bookkeeping": 0, "digest_refusals": 0}
+    c = {"bookkeeping_execs": 0, "member_bookkeeping": 0, "digest_refusals": 0,
+         "by_command": {}}
     results = []
     with open(path, encoding="utf-8", errors="replace") as f:
         for line in f:
@@ -218,14 +234,16 @@ def read_log(path):
                 for b in msg.get("content") or []:
                     if not isinstance(b, dict) or b.get("type") != "tool_use":
                         continue
-                    bk, gate = False, False
+                    key, gate = None, False
                     if b.get("name") == "Bash":
                         inp = b.get("input") if isinstance(b.get("input"), dict) else {}
-                        bk, gate = is_bookkeeping(inp.get("command"))
+                        key, gate = bookkeeping_key(inp.get("command"))
+                    bk = key is not None
                     if lead:
                         calls.append(bk)
                         if bk:
                             c["bookkeeping_execs"] += 1
+                            c["by_command"][key] = c["by_command"].get(key, 0) + 1
                         if gate:
                             gate_calls.add(b.get("id"))
                     elif bk:
@@ -262,19 +280,32 @@ def finish(acc):
     k["exec_ratio_pct"] = pct(acc["bookkeeping_execs"], acc["lead_requests"])
     k["member_bookkeeping"] = acc["member_bookkeeping"]
     k["digest_refusals"] = acc["digest_refusals"]
+    k["by_command"] = OrderedDict(
+        (key, OrderedDict([("execs", n), ("per_stage", per(n, acc["stages"]))]))
+        for key, n in sorted(acc["by_command"].items(), key=lambda kv: (-kv[1], kv[0])))
     return k
+
+
+COUNTS = ("lead_requests", "bookkeeping_only", "bookkeeping_execs",
+          "member_bookkeeping", "digest_refusals")
 
 
 def empty():
     return {"stages": 0, "lead_requests": 0, "bookkeeping_only": 0,
-            "bookkeeping_execs": 0, "member_bookkeeping": 0, "digest_refusals": 0}
+            "bookkeeping_execs": 0, "member_bookkeeping": 0, "digest_refusals": 0,
+            "by_command": {}}
+
+
+def merge_commands(into, src):
+    for key, n in src.items():
+        into[key] = into.get(key, 0) + n
 
 
 def add(acc, c):
     acc["stages"] += 1
-    for key in ("lead_requests", "bookkeeping_only", "bookkeeping_execs",
-                "member_bookkeeping", "digest_refusals"):
+    for key in COUNTS:
         acc[key] += c[key]
+    merge_commands(acc["by_command"], c["by_command"])
 
 
 def fmt(v, digits=1, pct_=False):
@@ -334,8 +365,9 @@ def main(argv=None):
 
     total = empty()
     for acc in accs.values():
-        for key in total:
+        for key in ("stages",) + COUNTS:
             total[key] += acc[key]
+        merge_commands(total["by_command"], acc["by_command"])
     kinds = OrderedDict((k, finish(a)) for k, a in accs.items())
 
     if args.json:
@@ -358,6 +390,13 @@ def main(argv=None):
                 fmt(k["bookkeeping_only_pct"], pct_=True), k["bookkeeping_execs"],
                 fmt(k["execs_per_stage"]), fmt(k["exec_ratio_pct"], pct_=True),
                 k["member_bookkeeping"], k["digest_refusals"]))
+        lines.append("")
+        lines.append("종류 | 안쪽 명령 | 횟수 | 스테이지당")
+        for name, k in body:
+            if not k["stages"]:
+                continue
+            for key, v in k["by_command"].items():
+                lines.append("%s | %s | %d | %s" % (name, key, v["execs"], fmt(v["per_stage"], digits=2)))
         print("\n".join(lines))
     return 0 if scope["runs"] else 1
 

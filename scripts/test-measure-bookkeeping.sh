@@ -77,8 +77,8 @@ class S(object):
                 f.write(json.dumps(o, ensure_ascii=False) + "\n")
 
 
-def run(name, started, ledger_rows, logs, plugin=None, ledger=True):
-    d = os.path.join(root, name)
+def run(name, started, ledger_rows, logs, plugin=None, ledger=True, under=None):
+    d = os.path.join(under or root, name)
     os.makedirs(os.path.join(d, "log"))
     if started:
         epoch = int(datetime.datetime(*started, tzinfo=datetime.timezone.utc).timestamp())
@@ -138,6 +138,52 @@ run("20991001-bbbbbbbb", (2099, 10, 1), [("audit", "AU", "1", sid(3))], [("AU#1.
 run("20991103-cccccccc", (2099, 11, 3), [], [("AU#1.json", S(sid(6)))], ledger=False)
 # A plain file under the root is not a run and is not counted.
 open(os.path.join(root, "README"), "w").write("x\n")
+
+# A second root: the audit procedure that measures, copies and stamps through
+# doc-tidy.py, beside one stage of the procedure before it.
+root2 = os.path.join(base, "runs-new")
+os.makedirs(root2)
+DT = "/p/orchestrator/doc-tidy.py"
+WIT = "/r/cc-team-witness-audit-x"
+
+
+def new_audit(session, reaudit):
+    s = S(session)
+    s.req("m1", [("Bash", gate("%s stamp /d/docs/x.md --keep /d/docs/design-audit/audited/x.md" % DT))])  # bk
+    if reaudit:
+        s.req("m1b", [("Bash", gate("shasum -a 256 /d/docs/design-audit/audited/x.md"))])  # bk: re-audit scope
+    s.req("m2", [("Bash", gate("/p/orchestrator/cc-team-witness-init.sh audit-x"))])       # gate, not bk
+    s.req("m3", [("Bash", gate("openssl rand -hex 16")), ("Bash", gate("openssl rand -hex 16")),
+                 ("Bash", gate("openssl rand -hex 16"))])                                 # 3 bk
+    s.req("m4", [("Bash", gate("shasum -a 256 x.md"))], parent="toolu_member")            # member bk
+    s.req("m5", [("Bash", gate("shasum -a 256 /d/docs/x.md")),
+                 ("Bash", gate("%s keep-reports /d/docs/design-audit/x.md %s/reader-1.fanout.md "
+                               "%s/reader-2.fanout.md %s/reader-3.fanout.md" % (DT, WIT, WIT, WIT)))])  # 2 bk
+    s.req("m6", [("Bash", gate("diff a b")), ("Bash", gate("grep -n x /d/docs/x.md"))])     # gate, not bk
+    s.req("m7", [("Bash", gate("%s checkout /d/docs/x.md --prefix p --expect e "
+                               "--reviewed /d/docs/design-audit/audited/x.md" % DT))])     # bk
+    s.req("m8", [("Bash", gate("%s unmark /d/docs/x.md --archive a --doc-key k --writer w --since s" % DT)),
+                 ("Bash", gate("shasum -a 256 /d/docs/x.md"))])                          # 1 bk
+    s.req("m9", [("Bash", gate("%s publish p/doc.md /d/docs/x.md --expect e --lock l --cleanup" % DT))])  # bk
+    s.req("m10", [("Bash", gate("%s stamp /d/docs/x.md" % DT))])                           # bk
+    s.req("m11", [("Bash", gate("rm -rf %s" % WIT))])                                     # bk
+    return s
+
+
+run("20991201-dddddddd", (2099, 12, 1),
+    [("audit", "AU", "1", sid(11)), ("audit", "AU", "2", sid(12))],
+    [("AU#1.json", new_audit(sid(11), False)), ("AU#2.json", new_audit(sid(12), True))],
+    plugin="9.0.0", under=root2)
+
+old = S(sid(13))
+old_cmds = (["shasum -a 256 /d/docs/x.md"] * 6 + ["openssl rand -hex 16"] * 3 + ["cp a b"] * 4
+            + ["date -u +%Y-%m-%dT%H:%M:%SZ"] * 3 + ["wc -c /d/docs/x.md"] * 2
+            + ["%s checkout /d/docs/x.md --prefix p --expect e" % DT,
+               "%s publish p/doc.md /d/docs/x.md --expect e --lock l" % DT] + ["rm -rf x"] * 2)
+for i, c in enumerate(old_cmds):
+    old.req("o%d" % i, [("Bash", gate(c))])                                                # 22 bk
+run("20991130-eeeeeeee", (2099, 11, 30), [("audit", "AU", "1", sid(13))], [("AU#1.json", old)],
+    plugin="3.49.0", under=root2)
 PY
 python3 -B "$tmp/gen.py" "$tmp"
 R="$tmp/runs"
@@ -193,6 +239,52 @@ case "$out" in
   *"미분류 | 1 | 1 | 1 | 100.0% | 1 |"*) pass "표에 미분류 행이 있다" ;;
   *) fail "표에 미분류 행이 있다 — $out" ;;
 esac
+case "$out" in
+  *"종류 | 안쪽 명령 | 횟수 | 스테이지당"*"audit | doc-tidy.py checkout | 1 | 0.50"*) pass "표에 안쪽 명령 분해 표가 있다" ;;
+  *) fail "표에 안쪽 명령 분해 표가 있다 — $out" ;;
+esac
+out=$(python3 -B "$measure" --runs-root "$R" --json); rc=$?
+check "분해: 감사의 shasum 은 리드 것만 센다" "$(j '.kinds.audit.by_command.shasum.execs')" "1"
+check "분해: doc-tidy.py 는 하위 명령으로 가르고 apply 는 세지 않는다" \
+  "$(j '.kinds.audit.by_command | keys | map(select(startswith("doc-tidy.py"))) | join(",")')" "doc-tidy.py checkout"
+check "분해: 합계의 키별 횟수 합이 부기 exec 와 같다" \
+  "$(j '[.total.by_command[].execs] | add')" "$(j .total.bookkeeping_execs)"
+
+# ---- the doc-tidy audit procedure -------------------------------------------
+R2="$tmp/runs-new"
+out=$(python3 -B "$measure" --runs-root "$R2" --min-plugin-version 3.50.0 --json); rc=$?
+check "새 절차: rc 0" "$rc" "0"
+check "새 절차: 옛 판 런은 판으로 건너뛴다" "$(j .scope.skipped_version)" "1"
+check "새 절차: 감사 스테이지 둘" "$(j .kinds.audit.stages)" "2"
+check "새 절차: 감사 리드 부기 exec (첫 감사 11, 재감사 12)" "$(j .kinds.audit.bookkeeping_execs)" "23"
+check "새 절차: 감사 스테이지당 부기 exec" "$(j .kinds.audit.execs_per_stage)" "11.5"
+check "새 절차: 스테이지당 부기 exec 가 18 이하" "$(j '.kinds.audit.execs_per_stage <= 18')" "true"
+check "새 절차: 구성원 부기 exec 는 따로 센다" "$(j .kinds.audit.member_bookkeeping)" "2"
+check "새 절차: openssl 횟수" "$(j '.kinds.audit.by_command.openssl.execs')" "6"
+check "새 절차: openssl 스테이지당" "$(j '.kinds.audit.by_command.openssl.per_stage == 3')" "true"
+check "새 절차: shasum 횟수" "$(j '.kinds.audit.by_command.shasum.execs')" "5"
+check "새 절차: shasum 스테이지당" "$(j '.kinds.audit.by_command.shasum.per_stage')" "2.5"
+check "새 절차: doc-tidy.py stamp 횟수" "$(j '.kinds.audit.by_command["doc-tidy.py stamp"].execs')" "4"
+check "새 절차: doc-tidy.py stamp 스테이지당" "$(j '.kinds.audit.by_command["doc-tidy.py stamp"].per_stage == 2')" "true"
+check "새 절차: keep-reports 를 부기로 센다" "$(j '.kinds.audit.by_command["doc-tidy.py keep-reports"].execs')" "2"
+check "새 절차: unmark 는 세지 않는다" "$(j '.kinds.audit.by_command | has("doc-tidy.py unmark")')" "false"
+check "새 절차: cp·date·wc 가 없다" \
+  "$(j '.kinds.audit.by_command | [has("cp"), has("date"), has("wc")] | any')" "false"
+check "새 절차: 분해 정렬은 횟수 내림차순, 같으면 열쇠 순" \
+  "$(j '.kinds.audit.by_command | keys_unsorted | .[0:3] | join(",")')" "openssl,shasum,doc-tidy.py stamp"
+out=$(python3 -B "$measure" --runs-root "$R2" --json); rc=$?
+check "판 필터 없이: 옛 절차 스테이지가 cp 를 싣는다" "$(j '.kinds.audit.by_command.cp.execs')" "4"
+check "판 필터 없이: 감사 부기 exec 는 옛 절차 22 를 더한다" "$(j .kinds.audit.bookkeeping_execs)" "45"
+out=$(python3 -B "$measure" --runs-root "$R2" --min-plugin-version 3.50.0); rc=$?
+case "$out" in
+  *"종류 | 안쪽 명령 | 횟수 | 스테이지당"*"audit | openssl | 6 | 3.00"*) pass "새 절차 표에 분해 표 머리와 감사 행이 있다" ;;
+  *) fail "새 절차 표에 분해 표 머리와 감사 행이 있다 — $out" ;;
+esac
+if printf '%s\n' "$out" | sed -n '/^종류 | 안쪽 명령/,$p' | grep -q '^design | '; then
+  fail "스테이지가 0 인 종류는 분해 표에 싣지 않는다 — $out"
+else
+  pass "스테이지가 0 인 종류는 분해 표에 싣지 않는다"
+fi
 
 # ---- usage -------------------------------------------------------------------
 python3 -B "$measure" --json >/dev/null 2>&1; rc=$?
