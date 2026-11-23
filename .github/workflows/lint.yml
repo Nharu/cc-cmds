@@ -14,6 +14,12 @@ on:
   push:
     branches:
       - master
+  # The release workflow dispatches this on master after its push, because a
+  # push made with GITHUB_TOKEN starts no run: without it the release commit
+  # would carry no lint run at all. ci-duration.sh judges increments on
+  # pull_request runs and takes its baseline window from master push runs only,
+  # so a dispatched run neither fails on duration nor enters the window.
+  workflow_dispatch:
 
 # Naming one permission sets every unnamed one to `none`, so both are written:
 # `contents` for the checkout and `actions` for the duration signal to read the

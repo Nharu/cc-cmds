@@ -477,6 +477,7 @@ LINT_TESTS := \
 	scripts/test-lint-bash-portability.sh \
 	scripts/test-lint-test-clock.sh \
 	scripts/test-tz-pin.sh \
+	scripts/test-changelog.sh \
 	scripts/test-lint-skill-auq-spec.sh \
 	scripts/test-lint-verification-literals.sh \
 	scripts/test-lint-design-audit-pins.sh \
