@@ -2,9 +2,32 @@
 # Verify: PreToolUse hook matches `terminal-notifier ... -group
 # 'cc-cmds-active-notify'` bypass argv and emits α-path JSON regardless
 # of CC_CMDS_NOTIFY_INJECT_SID (γ branch is gated on is_notify=1).
+#
+# The command is read from the required-form block of SKILL.md §7 rather
+# than written here, so the document's command and the one this fixture
+# feeds the hook cannot drift apart: the line must carry `-sound 'default'`
+# and still be auto-approved.
 set -euo pipefail
 
-bypass_cmd="terminal-notifier -message 'cc-cmds permission test' -title '[cc-cmds] test' -group 'cc-cmds-active-notify'"
+skill_md="$(dirname "$PRETOOL_HOOK_SH")/../skills/active-notify/SKILL.md"
+[[ -f "$skill_md" ]] || { echo "FAIL: SKILL.md not found at $skill_md" >&2; exit 1; }
+# The `bash` block that follows the §7 heading, and in it the one notifier line.
+bypass_lines=$(awk '
+  /^## 7\. Permission test bypass/ { sec = 1; next }
+  sec && /^## / { exit }
+  sec && /^```bash$/ { blk = 1; next }
+  blk && /^```$/ { exit }
+  blk && index($0, "terminal-notifier -message '\''cc-cmds permission test'\''") { print }
+' "$skill_md")
+n=$(printf '%s' "$bypass_lines" | grep -c 'terminal-notifier' || true)
+[[ "$n" == "1" ]] || { echo "FAIL: expected 1 bypass line in SKILL.md §7 block, got $n" >&2; exit 1; }
+bypass_cmd=$(printf '%s\n' "$bypass_lines" | sed -E 's/^.*(terminal-notifier .*-execute '\'':'\'').*$/\1/')
+[[ "$bypass_cmd" == terminal-notifier* ]] || { echo "FAIL: could not cut the notifier command from: $bypass_lines" >&2; exit 1; }
+[[ "$bypass_cmd" == *"-group 'cc-cmds-active-notify' -sound 'default' -execute ':'"* ]] || {
+  echo "FAIL: bypass command lacks -sound 'default' between -group and -execute" >&2
+  echo "  got: $bypass_cmd" >&2
+  exit 1
+}
 session_id="test-pretool-bypass"
 
 stdin_json=$(jq -nc \

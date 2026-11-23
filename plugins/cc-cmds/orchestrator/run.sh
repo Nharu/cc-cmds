@@ -3157,8 +3157,15 @@ slicing_present() {
 }
 
 # Body of the declaration, via the same scanner.
+#
+# This reader and `slice_field` read their input to the end and stop printing
+# instead of calling `exit`, for the reason the readers of `## 구현 시 검증 항목`
+# below give:
+# under the gate's `set -o pipefail`, a reader that leaves early kills its
+# writer with SIGPIPE once the rest of the document outgrows the pipe buffer,
+# and the reader's match comes back as status 141.
 slicing_body() {
-  defenced "$1" | awk '/^## 구현 슬라이싱$/{inb=1; next} inb && /^## /{exit} inb {print}'
+  defenced "$1" | awk 'done { next } /^## 구현 슬라이싱$/{inb=1; next} inb && /^## /{done=1; next} inb {print}'
 }
 
 slice_ids() { slicing_body "$1" | sed -n 's/^### 슬라이스 \([A-Za-z0-9][A-Za-z0-9]*\).*/\1/p'; }
@@ -3174,12 +3181,13 @@ slice_field() {
   # since awks disagree on what index() returns for an empty needle.
   slicing_body "$1" | awk -v id="### 슬라이스 $2" -v key="$3" '
     BEGIN { idch = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789" }
+    done { next }
     index($0, id) == 1 {
       c = substr($0, length(id) + 1, 1)
       if (c == "" || index(idch, c) == 0) { inb = 1; next }
     }
-    inb && /^### /     { exit }
-    inb { pat = "^\\*\\*" key "\\*\\*: "; if ($0 ~ pat) { sub(pat, "", $0); print; exit } }
+    inb && /^### /     { done = 1; next }
+    inb { pat = "^\\*\\*" key "\\*\\*: "; if ($0 ~ pat) { sub(pat, "", $0); print; done = 1; next } }
   '
 }
 
@@ -7587,7 +7595,7 @@ doc_size_ceiling() {
   case "$1" in
     audit)      printf '162000' ;;
     reconverge) printf '196000' ;;
-    implement)  printf '172000' ;;
+    implement)  printf '180000' ;;
   esac
 }
 

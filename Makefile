@@ -74,6 +74,7 @@ lint:
 	bash scripts/lint-interview-verification.sh
 	bash scripts/lint-kickoff-defaults.sh
 	bash scripts/lint-kickoff-recommendations.sh
+	bash scripts/lint-countermeasure-records.sh
 	@jq empty plugins/cc-cmds/hooks/hooks.json
 # Every command path in hooks.json must exist and be executable. This REPLACES a
 # hard-coded assertion that named one hook, which had already stopped covering a
@@ -476,6 +477,7 @@ LINT_TESTS := \
 	scripts/test-lint-bash-portability.sh \
 	scripts/test-lint-test-clock.sh \
 	scripts/test-tz-pin.sh \
+	scripts/test-changelog.sh \
 	scripts/test-lint-skill-auq-spec.sh \
 	scripts/test-lint-verification-literals.sh \
 	scripts/test-lint-design-audit-pins.sh \
@@ -527,7 +529,8 @@ LINT_TESTS := \
 	scripts/test-lint-interview-convention-refs.sh \
 	scripts/test-lint-interview-verification.sh \
 	scripts/test-lint-kickoff-defaults.sh \
-	scripts/test-lint-kickoff-recommendations.sh
+	scripts/test-lint-kickoff-recommendations.sh \
+	scripts/test-lint-countermeasure-records.sh
 
 ORCH_TESTS := \
 	plugins/cc-cmds/orchestrator/test-run.sh \
@@ -559,11 +562,13 @@ ORCH_TESTS := \
 	scripts/test-statusline.sh \
 	scripts/test-statusline-hook.sh \
 	scripts/test-stage-values-hook.sh \
+	scripts/test-stage-read-batch-hook.sh \
 	scripts/test-liveness-agreement.sh \
 	scripts/test-dashboard.sh \
 	scripts/test-dashboard-screen.sh \
 	scripts/test-dashboard-browser.sh \
 	scripts/test-observer.sh \
+	scripts/test-observer-watch.sh \
 	scripts/test-observer-checks.sh \
 	scripts/test-run-pane.sh \
 	scripts/test-display-tz.sh \

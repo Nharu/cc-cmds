@@ -59,6 +59,10 @@ ARM → FIRE-NOW(s) → CANCEL/consume.
   `<sid>` below is the session id with every character outside
   `A-Za-z0-9_.-` replaced by `_`; `<armed_at>` is the ARM's epoch second.
 
+  Every mode below also passes `-sound default`: each fire tells a new
+  event, so each banner makes one sound — the armCount=1 fire that
+  replaces the session's slot included.
+
   mode=single, armCount=1: terminal-notifier invoked with
     `-group "cc-cmds-active-notify-<sid>"` (the session's own slot: the
     banner replaces this session's previous one-shot banner and never
@@ -199,7 +203,8 @@ ARM → FIRE-NOW(s) → CANCEL/consume.
      slot `-group "cc-cmds-active-notify-<sid>"` (banner replace
      semantics within the session); every other fire uses its own
      `<slot>@<armed_at>.<n>` group, and only the §7 bypass keeps the
-     global `cc-cmds-active-notify`. Repeat is unbounded — preserves
+     global `cc-cmds-active-notify`. Every fire, and the §7 bypass,
+     carries `-sound default`. Repeat is unbounded — preserves
      flag and increments `fire_count` on every fire-now, terminates
      only on user-issued CANCEL (no anti-spam guard — dynamic-trust
      model). ARM and CANCEL are local-disk file ops only and naturally
