@@ -17,7 +17,12 @@ lines=$(wc -l < "$NOTIFIER_LOG" | tr -d ' ')
 safe_sid="${CLAUDE_CODE_SESSION_ID//[^A-Za-z0-9_.-]/_}"
 want_group="-group cc-cmds-active-notify-${safe_sid}"
 got=$(head -1 "$NOTIFIER_LOG")
-[[ "$got" == *"$want_group" ]] || { echo "single armCount=1 must use exactly '$want_group'" >&2; cat "$NOTIFIER_LOG" >&2; exit 1; }
+# The group is followed by `-sound default`, so a space right after it keeps a
+# pile-up group (`<slot>@…`) from passing as the slot.
+[[ "$got" == *"$want_group -sound default"* ]] || { echo "single armCount=1 must use exactly '$want_group', then '-sound default'" >&2; cat "$NOTIFIER_LOG" >&2; exit 1; }
+# One banner, one sound: the one-shot fire that replaces the session slot still
+# tells a new event.
+grep -q -- '-sound default' "$NOTIFIER_LOG" || { echo "-sound default missing" >&2; cat "$NOTIFIER_LOG" >&2; exit 1; }
 # The source marker carries no brackets. terminal-notifier swallows a title
 # whose first character is one of `[ ( { < " -`, replacing it with the
 # application's own name — so the bracketed form erased the very marker it was
