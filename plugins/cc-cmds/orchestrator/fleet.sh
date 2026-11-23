@@ -2081,12 +2081,23 @@ fleet_master_observe_sha() {
   # THE LOGS ARE READ ONCE PER FAILURE SET. When the previous reading was a
   # settled `빨강` of the same tip over the same failed runs, its signatures
   # are this one's: a rerun is a new run id and is read afresh.
-  local slug="$1" h="$2" dl="$3" d="$4" prev="${5:-null}" line cid name concl app durl job s outp p
+  #
+  # A sixth argument names one more commit whose check runs join this one's
+  # into a single set judged by the same rules (the first parent of a bot
+  # release commit, fleet_master_bot_parent); a failed read of either is
+  # `판정 불가`.
+  local slug="$1" h="$2" dl="$3" d="$4" prev="${5:-null}" extra="${6:-}" line cid name concl app durl job s outp p
   local sigs="" prec="" fc="" fr="" names="" incomplete=""
+  local q='.check_runs[] | [(.id | tostring), .name, (.status // ""), (.conclusion // ""), (.app.slug // ""), (.details_url // "")] | join("\t")'
   fleet_master_in_budget "$dl" || { fleet_master_obs_json '판정 불가' '' '' '' ''; return 0; }
-  if ! fleet_master_gh "$d/runs" api --paginate "repos/$slug/commits/$h/check-runs?per_page=100" \
-         --jq '.check_runs[] | [(.id | tostring), .name, (.status // ""), (.conclusion // ""), (.app.slug // ""), (.details_url // "")] | join("\t")'; then
+  if ! fleet_master_gh "$d/runs" api --paginate "repos/$slug/commits/$h/check-runs?per_page=100" --jq "$q"; then
     fleet_master_obs_json '판정 불가' '' '' '' ''; return 0
+  fi
+  if [ -n "$extra" ]; then
+    if ! fleet_master_gh "$d/runs.extra" api --paginate "repos/$slug/commits/$extra/check-runs?per_page=100" --jq "$q"; then
+      fleet_master_obs_json '판정 불가' '' '' '' ''; return 0
+    fi
+    cat "$d/runs.extra" >> "$d/runs"
   fi
   names=$(cut -f2 "$d/runs")
   if ! grep -q . "$d/runs" || awk -F'\t' 'NF && $3 != "completed" { f = 1 } END { exit !f }' "$d/runs"; then
@@ -2142,6 +2153,43 @@ fleet_master_observe_sha() {
   done 3< "$d/runs"
   if [ -n "$incomplete" ]; then fleet_master_obs_json '판정 불가' '' '' '' '' "$names"; return 0; fi
   fleet_master_obs_json '빨강' "$prec" "$sigs" "$fc" "$fr" "$names"
+}
+
+fleet_master_bot_parent() {
+  # fleet_master_bot_parent <slug> <sha> <deadline epoch> <tmp dir> — prints
+  # the first parent when <sha> is a bot release commit, nothing when it is
+  # not; rc 1 when the commit could not be read.
+  #
+  # A bot release commit is what .github/workflows/release.yml pushes: its
+  # author is `github-actions[bot]`, its subject starts `chore(release): v`,
+  # and every file it changed against its first parent is CHANGELOG.md,
+  # plugins/cc-cmds/.claude-plugin/plugin.json or under changelog.d/. Anyone
+  # can write the name and the subject, so the file list is what the rule
+  # rests on: such a commit changes no code the checks test, and its first
+  # parent's (the merge commit's) results are its code's results. The push
+  # that made it starts no push-triggered run, so without its first parent the
+  # tip would carry the dispatched lint run alone and a red gate on the merge
+  # commit would read green.
+  local slug="$1" h="$2" dl="$3" d="$4" author subject parent f n=0
+  fleet_master_in_budget "$dl" || return 1
+  fleet_master_gh "$d/meta" api "repos/$slug/commits/$h" \
+    --jq '.commit.author.name, (.commit.message | split("\n")[0]), (.parents[0].sha // ""), (.files[]? | .filename, (.previous_filename // empty))' \
+    || return 1
+  author=$(sed -n '1p' "$d/meta"); subject=$(sed -n '2p' "$d/meta"); parent=$(sed -n '3p' "$d/meta")
+  [ "$author" = 'github-actions[bot]' ] || return 0
+  case "$subject" in 'chore(release): v'*) ;; *) return 0 ;; esac
+  printf '%s' "$parent" | grep -qE '^[0-9a-f]{40}$' || return 0
+  while IFS= read -r f; do
+    case "$f" in
+      '') ;;
+      CHANGELOG.md|plugins/cc-cmds/.claude-plugin/plugin.json|changelog.d/*) n=$(( n + 1 )) ;;
+      *) return 0 ;;
+    esac
+  done <<EOF
+$(tail -n +4 "$d/meta")
+EOF
+  [ "$n" -gt 0 ] || return 0
+  printf '%s' "$parent"
 }
 
 fleet_master_event_id() {
@@ -2435,7 +2483,7 @@ fleet_master_pair() {
   # fleet_master_pair <slug> <base> <worktree> <round epoch> <deadline epoch> —
   # observe one pair and rewrite its reading.
   local slug="$1" base="$2" wt="$3" round="$4" dl="$5" f sf prev d tip="" obs st settled=0 last mt
-  local newsigs ev=null eid json
+  local newsigs ev=null eid json parent first=""
   f=$(fleet_master_file "$slug" "$base"); sf="$f.settled"
   mkdir -p "$(fleet_master_dir)"
   mt=$(fleet_mtime "$f")
@@ -2447,7 +2495,17 @@ fleet_master_pair() {
     tip=$(tr -d '[:space:]' < "$d/tip")
   fi
   printf '%s' "$tip" | grep -qE '^[0-9a-f]{40}$' || tip=""
-  if [ -n "$tip" ]; then obs=$(fleet_master_observe_sha "$slug" "$tip" "$dl" "$d" "$prev")
+  # A bot release commit at the tip is read together with its first parent,
+  # and an event it opens names that parent as its first commit: the merge
+  # that brought the failure in, the same id the event got while the merge
+  # commit was the tip.
+  if [ -n "$tip" ]; then
+    if parent=$(fleet_master_bot_parent "$slug" "$tip" "$dl" "$d"); then
+      first="${parent:-$tip}"
+      obs=$(fleet_master_observe_sha "$slug" "$tip" "$dl" "$d" "$prev" "$parent")
+    else
+      obs=$(fleet_master_obs_json '판정 불가' '' '' '' '')
+    fi
   else obs=$(fleet_master_obs_json '판정 불가' '' '' '' ''); fi
   st=$(printf '%s' "$obs" | jq -r .state)
   # THE SETTLED CLOCK. A pair with no settled reading for
@@ -2467,8 +2525,8 @@ fleet_master_pair() {
         [(($p // {}).events // [])[] | select(.resolved_at == null) | .signatures[]?] as $open
         | $o.signatures[] | select(. as $s | (any($open[]; . == $s) | not))')
       if [ -n "$newsigs" ]; then
-        eid=$(fleet_master_event_id "$tip" "$newsigs")
-        ev=$(jq -cn --arg id "$eid" --arg t "$tip" --arg s "$newsigs" --argjson o "$obs" '
+        eid=$(fleet_master_event_id "$first" "$newsigs")
+        ev=$(jq -cn --arg id "$eid" --arg t "$first" --arg s "$newsigs" --argjson o "$obs" '
           {id: $id, first_commit: $t, signatures: ($s | split("\n") | map(select(. != "")) | unique),
            checks: $o.checks, resolved_at: null, resolved_commit: null, hold_started_at: null,
            repair: {state: "대기", pr: null, run_id: null, reason: null}}')

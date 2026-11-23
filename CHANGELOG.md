@@ -5,7 +5,7 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [3.60.0] - 2026-11-23
+## [3.61.0] - 2026-11-23
 
 종료 절의 근거 실행(`clause-exec`)을 게이트가 원장에서 고정한 커밋을 꺼낸 분리 워크트리에서 돌린다. 지금까지는 대상의 실행 디렉터리(메인 체크아웃이나 실행 워크트리)에서 그대로 돌고, 그 디렉터리 HEAD 가 런의 마지막 머지 커밋을 조상으로 지니는지만 보았다. 그래서 메인 체크아웃이 다른 브랜치에 있거나 머지보다 뒤처져 있으면 명령이 거절되거나, 머지 전 세그먼트의 새 시험을 돌릴 길이 없었다. 킥오프는 저장소 자신의 시험만 돌리는 절의 사전 인가 행 추가를 기본값으로 권한다.
 
@@ -27,6 +27,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - clause-exec 의 명령은 이제 시한 래퍼가 이름으로 exec 하는 외부 프로그램이어야 한다. 셸 함수나 내장 명령은 실행되지 않는다.
 - 이 판 전에 시작한 런은 시작 때 고정한 플러그인 사본을 돌리므로, 끝날 때까지 지금처럼 실행 디렉터리에서 돈다.
+
+## [3.60.0] - 2026-11-24
+
+릴리스 노트와 버전 올림을 브랜치마다 손으로 하지 않습니다. 각 브랜치는 `changelog.d/` 에 조각 파일 하나를 두고, master 에 머지되면 릴리스 워크플로가 쌓인 조각을 하나의 버전 절로 묶어 `CHANGELOG.md` 와 `plugin.json` 을 올리는 `chore(release): vX.Y.Z` 커밋을 push 합니다. 같은 파일을 여러 브랜치가 고치던 충돌이 사라집니다.
+
+### Added
+
+- **`scripts/changelog.sh`** — `new` 는 현재 브랜치의 조각 틀을 만들고, `check` 는 PR 이 조각을 빚지는지와 조각의 형식을 판정하며, `assemble` 은 master 의 조각들을 가장 높은 등급만큼 버전을 올린 한 절로 조립하고 조각을 `changelog.d/archive/<버전>/` 으로 옮깁니다.
+- **`changelog` 워크플로** — 모든 PR 에서 조각 규칙을 검사합니다.
+- **`release` 워크플로** — master push 마다 조각을 조립해 릴리스 커밋을 push 하고, 그 커밋에 lint 런이 붙도록 lint 워크플로를 master 에서 한 번 띄웁니다. push 가 거부되면 새 master 끝에서 세 번까지 다시 조립합니다.
+
+### Changed
+
+- **lint 워크플로** — 릴리스 워크플로가 띄울 수 있도록 수동 실행 트리거를 받습니다.
+- **fleet master 판독** — master 끝이 봇의 릴리스 커밋(작성자 `github-actions[bot]`, 제목 `chore(release): v`, 바꾼 파일이 `CHANGELOG.md`·`plugin.json`·`changelog.d/` 아래뿐)이면 첫째 부모인 머지 커밋의 검사 결과를 합쳐 판정합니다. 릴리스 커밋에는 push 로 시작하는 검사 런이 붙지 않아, 머지 커밋의 빨간 게이트가 초록으로 보이던 틈을 막습니다.
 
 ## [3.59.5] - 2026-11-23
 
