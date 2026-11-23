@@ -107,7 +107,12 @@ TT_DONE_ITEMS=""
 # the tested tree (empty: none). The repro and base-verdict commands and the
 # base contrast leave it off, since they run items to tell a defect apart; the
 # TT_JOBS 1 path never uses it. TT_REUSED collects the item keys a run reused,
-# comma-joined.
+# comma-joined. A record whose item called git on its checkout needs the same
+# input commit and base, except one whose item only asked where the repository
+# is and read objects by full id (`트리전체=git읽기`): it is reused across a new
+# HEAD and base when those ids are present or absent in TT_WORK as they were,
+# which the judge reads from TR_OBJ_REPO, set to TT_WORK before each judging
+# and never exported.
 TT_REUSE=0
 TT_REUSE_GDIR=""
 TT_REUSE_COMMIT=""
@@ -717,6 +722,7 @@ tt_item_reuse() {
   local key="$1" hit h e how
   tt_reuse_on || return 1
   tt_reuse_list
+  TR_OBJ_REPO="$TT_WORK"
   hit=$(tr_reuse_find "$TT_REUSE_GDIR" "$key" "$TT_TREE" "$TT_REUSE_COMMIT" "$TT_REUSE_BASE" "$(tt_doubles)" "$TT_REUSE_LIST") || return 1
   IFS=$'\t' read -r h e how <<EOF
 $hit
@@ -1053,6 +1059,7 @@ tt_pool_run() {
   # sections that ran. With nothing left to run the pool is done.
   if [ -n "$secs" ] && tt_reuse_on; then
     tt_reuse_list
+    TR_OBJ_REPO="$TT_WORK"
     picks=$(tr_lane_pick "$TT_REUSE_GDIR" "$secs" "$TT_TREE" "$TT_REUSE_COMMIT" "$TT_REUSE_BASE" \
       "$(tt_doubles)" "$TT_REUSE_LIST" tt_lane_digest)
     took=","

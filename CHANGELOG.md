@@ -5,7 +5,7 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [3.60.0] - 2026-11-23
+## [3.61.0] - 2026-11-23
 
 `gate.sh wait`·교대 대기(`gate_relay_wait`)·진행 채널(`feed.sh`)이 바퀴 사이에 정해진 초를 자던 자리를 관측 데몬의 깨움 FIFO 위의 `read -t` 로 바꾼다. 데몬이 런을 입양했으면 대기자는 런 디렉터리의 `observer.wake.d/<이름>.<pid>.fifo` 를 한 번 만들어 fd 7 로 열고, 데몬이 지켜보는 원장·pid 파일·중계 기록이 바뀌면 곧장 깬다. 파일 변화로 알려지지 않는 기한에는 시한에 깬다. 판정 순서, 출력 줄, 원장 행은 바뀌지 않는다.
 
@@ -23,6 +23,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - 런은 시작 때 고정한 자기 플러그인 사본을 돌린다. 이 판 전에 시작한 런은 끝날 때까지 지금의 5초 폴링과 진행 채널 간격으로 돈다.
 - 데몬이 꺼져 있으면(`CC_CMDS_OBSERVER=off`, `CI`, python3 없음 등) 모든 대기가 지금처럼 정해진 초를 잔다.
+
+## [3.60.0] - 2026-11-24
+
+릴리스 노트와 버전 올림을 브랜치마다 손으로 하지 않습니다. 각 브랜치는 `changelog.d/` 에 조각 파일 하나를 두고, master 에 머지되면 릴리스 워크플로가 쌓인 조각을 하나의 버전 절로 묶어 `CHANGELOG.md` 와 `plugin.json` 을 올리는 `chore(release): vX.Y.Z` 커밋을 push 합니다. 같은 파일을 여러 브랜치가 고치던 충돌이 사라집니다.
+
+### Added
+
+- **`scripts/changelog.sh`** — `new` 는 현재 브랜치의 조각 틀을 만들고, `check` 는 PR 이 조각을 빚지는지와 조각의 형식을 판정하며, `assemble` 은 master 의 조각들을 가장 높은 등급만큼 버전을 올린 한 절로 조립하고 조각을 `changelog.d/archive/<버전>/` 으로 옮깁니다.
+- **`changelog` 워크플로** — 모든 PR 에서 조각 규칙을 검사합니다.
+- **`release` 워크플로** — master push 마다 조각을 조립해 릴리스 커밋을 push 하고, 그 커밋에 lint 런이 붙도록 lint 워크플로를 master 에서 한 번 띄웁니다. push 가 거부되면 새 master 끝에서 세 번까지 다시 조립합니다.
+
+### Changed
+
+- **lint 워크플로** — 릴리스 워크플로가 띄울 수 있도록 수동 실행 트리거를 받습니다.
+- **fleet master 판독** — master 끝이 봇의 릴리스 커밋(작성자 `github-actions[bot]`, 제목 `chore(release): v`, 바꾼 파일이 `CHANGELOG.md`·`plugin.json`·`changelog.d/` 아래뿐)이면 첫째 부모인 머지 커밋의 검사 결과를 합쳐 판정합니다. 릴리스 커밋에는 push 로 시작하는 검사 런이 붙지 않아, 머지 커밋의 빨간 게이트가 초록으로 보이던 틈을 막습니다.
+
+## [3.59.5] - 2026-11-23
+
+무거운 REST 목표와 test-gate 레인의 통과 기록이 git 을 부르기만 하면 트리·HEAD 커밋·베이스가 모두 같을 때만 다시 쓰이던 것을 좁혔다. 이제 git 셰임이 호출을 위치 질의, 전체 id 객체 읽기, 엄격 셋으로 나누고, 앞의 두 부류만 한 항목은 새 값 `git읽기` 로 기록되어 새 HEAD·베이스를 넘어서도 다시 쓰인다. 단, 읽은 파일과 추적 경로 집합이 같고, 기록한 객체 id 가 지금 저장소에서도 같은 있음·없음일 때만이다. 베이스 해소 스테이지의 시험 범위도 양쪽이 모두 바꾼 파일과 CI 워크플로의 경로 필터로 정하도록 고쳤다.
+
+### Changed
+
+- **git 셰임의 호출 분류** — `scripts/test-reuse.sh` 의 셰임이 하위 명령·선택지·자리표시·`GIT_*` 환경 변수를 허용 목록으로 보고 위치 질의(`rev-parse --show-toplevel` 등)와 전체 id 객체 읽기를 가린다. 두 부류는 잠금 아래에서 돌고, 그 뒤 `.git` 의 `HEAD`·`config`·`objects/info/alternates` 접근시각을 되돌린다. 분류 밖의 형태, 잠금 실패, 신호로 인한 중단, 허용 목록 밖의 환경 변수(`GIT_CONFIG_GLOBAL`·`GIT_CONFIG_NOSYSTEM` 포함)는 모두 엄격으로 떨어진다. 신호로 끊긴 호출은 `git 신호` 표시를 남긴다.
+- **통과 기록** — `트리전체` 에 `git읽기` 값을 더했다. 그 기록은 `객체` 줄(id 별 있음·없음)을, 엄격으로 떨어진 기록은 `전체사유` 줄을 싣는다. 버전 줄은 그대로다.
+- **재사용 판정** — `git읽기` 기록은 커밋·베이스가 달라도 받되, `TR_OBJ_REPO` 가 가리키는 저장소에서 기록의 각 id 가 같은 상태일 때만 받는다. `TR_OBJ_REPO` 가 비었거나 저장소가 아니면 받지 않는다. `scripts/test-tree.sh` 가 항목·레인 재사용 전에 그 값을 작업 복제본으로 정한다.
+- **베이스 해소 스테이지의 시험 범위** — `implement-unattended/SKILL.md` 가 베이스 해소에서 돌릴 시험을 양쪽이 모두 바꾼 파일과 CI 워크플로의 `paths:` 필터로 고르고, 대조하거나 check-push 가 받는 이름으로 옮길 수 없으면 세그먼트 전체로 떨어지게 적는다.
+- **구현 리드 읽기 상한** — 위 베이스 해소 문단을 실은 `implement-unattended/SKILL.md` 의 문서 전 읽기 합(176144 바이트)이 구현 상한 172000 을 넘으므로, `run.sh` 의 `doc_size_ceiling implement` 를 180000 으로 올렸다. 바이트 예산 485000 과 경고 폭 24000 은 그대로라 구현 파견의 설계 문서 문턱은 313000 에서 305000 으로, 경고 문턱은 289000 에서 281000 으로 내려간다. 세 종류 가운데 가장 낮은 문턱(재수렴 289000·265000)은 그대로다.
+
+### Fixed
+
+- **시험** — `test-reuse` 자가 시험에 분류·수집·판정 경우를, `check-push` 자가 시험에 `git읽기` 목표·레인이 README 변경과 베이스 합침을 넘어 다시 쓰이고 추적 경로가 늘면 다시 도는 경우를, `test-meta-invariants` 에 베이스 해소 문장의 핵심 구절 고정을 더했다.
+
+### Why
+
+무거운 목표 다수가 저장소 위치만 묻거나 이미 아는 id 의 객체만 읽는데도, 접근시각 감시만으로는 그런 호출과 HEAD 를 읽는 호출이 구별되지 않아 커밋 하나마다 전부 다시 돌았다. 셰임이 증명할 수 있는 두 부류만 넓히고 나머지는 지금처럼 엄격으로 남겨, 재사용을 잘못 넓히는 길을 동시 실행 창과 이력 걷기 형태의 조상 의존 두 가지로 한정했다.
+
+### Post-install notes
+
+- 레포 루트 `CLAUDE.md` 의 `### 한 스테이지 안에서 다시 돌리기` 문단의 두 문장 — "git 을 쓰는 목표는 트리와 HEAD 커밋·베이스가 모두 같을 때만 다시 쓰인다." 와 "그 레인에 git 을 쓰는 절이 있으면 트리와 HEAD 커밋·베이스가 모두 같을 때만 다시 쓰인다." — 이 낡았다. 위치 질의와 전체 id 객체 읽기만 한 항목은 HEAD·베이스를 넘어 다시 쓰인다는 규칙으로 고친다.
+- 같은 `CLAUDE.md` 에 베이스 해소 스테이지가 읽을 워크플로 대응을 더한다. `lint.yml` 의 묶음은 REST 목표(`CHECK_PUSH_GOALS`), `gate.yml` 의 묶음은 `covers:`·`anchors:` 로 고른 test-gate 절(`CHECK_PUSH_SECTIONS`), `notify-macos.yml` 의 묶음은 `test-darwin-narrow` 의 항목 가운데 REST 목표와 `run-gate-darwin-sections` 의 절(18, 31ai, 84)이며, REST 목표에 없는 darwin 전용 항목은 고르지 않고 끝 메시지에 적는다. 이 대응이 없는 동안 cc-cmds 의 베이스 해소는 범위를 좁히지 않는다.
 
 ## [3.59.4] - 2026-11-23
 
