@@ -52153,7 +52153,7 @@ gate_clause_exec_resolve() {
   fi
   if [ -n "$seg" ]; then
     rows=$(gate_rows 'segment' | gate_rows_field_eq 'id' "$seg")
-    if [ -z "$(printf '%s\n' "$rows" | sed '/^$/d')" ]; then
+    if [ -z "${rows//$'\n'/}" ]; then
       warn "clause-exec: 트리=$seg — 원장에 그 세그먼트가 없습니다"
       return "$GATE_EXIT_RULE"
     fi
@@ -52365,7 +52365,7 @@ gate_clause_exec_checkout() {
     h=$( (cd "$p" 2>/dev/null && git rev-parse HEAD 2>/dev/null) || true)
     GATE_CLAUSE_EXEC_WT="$p"
     if [ "$h" = "$f" ] && gate_clause_exec_tree_clean "$p"; then
-      log "clause-exec 실행 트리 재사용 — $p ($(printf '%s' "$f" | cut -c1-12))"
+      log "clause-exec 실행 트리 재사용 — $p (${f:0:12})"
       return 0
     fi
     gate_apply_worktree_drop "$root" "$p"
@@ -52389,7 +52389,7 @@ gate_clause_exec_checkout() {
   if [ "${CC_GATE_CLAUSE_EXEC_TEST_DIRTY:-}" = "1" ]; then
     : > "$p/.cc-gate-clause-exec-test-dirty" 2>/dev/null || true
   fi
-  log "clause-exec 실행 트리 — $p (트리=$GATE_CLAUSE_EXEC_TREE 트리 출처=$GATE_CLAUSE_EXEC_TREE_SRC 고정 커밋 $(printf '%s' "$f" | cut -c1-12) 에 분리)"
+  log "clause-exec 실행 트리 — $p (트리=$GATE_CLAUSE_EXEC_TREE 트리 출처=$GATE_CLAUSE_EXEC_TREE_SRC 고정 커밋 ${f:0:12} 에 분리)"
   return 0
 }
 
@@ -52419,7 +52419,7 @@ gate_clause_exec_approval_key() {
 gate_clause_exec_path_norm() {
   # gate_clause_exec_path_norm <absolute path> — the path with `.` and empty
   # components dropped and each `..` folded into its parent, by text alone.
-  printf '%s\n' "$1" | awk -F/ '
+  awk -F/ '
     { n = 0
       for (i = 1; i <= NF; i++) {
         c = $i
@@ -52428,7 +52428,7 @@ gate_clause_exec_path_norm() {
         s[++n] = c
       }
       o = ""; for (i = 1; i <= n; i++) o = o "/" s[i]
-      print (o == "" ? "/" : o); exit }'
+      print (o == "" ? "/" : o); exit }' <<<"$1"
 }
 
 gate_clause_exec_script_outside() {
@@ -52777,7 +52777,7 @@ gate_perform_clause_exec() {
   # budget holds the gist to that half. The row's fixed fields grow with the
   # tree and the output path, so a fixed half cut a 160-character gist short.
   local cneed gbud
-  cneed=$(printf '%s' "$*" | wc -c | tr -d ' ')
+  cneed=$(LC_ALL=C; c="$*"; printf '%s' "${#c}")
   [ "$cneed" -gt $(( free / 2 )) ] && cneed=$(( free / 2 ))
   gbud=$(( free - cneed ))
   gist=$(gate_row_safe "$gist" "$gbud")
