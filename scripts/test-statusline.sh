@@ -114,7 +114,17 @@ hasnt(){ case "$2" in *"$3"*) bad "$1" "'$2' 에 '$3' 가 있음" ;; *) ok "$1" 
 # borrow segment can end the line in a `홈 HH:MM` clock, which is exactly the
 # trailing digit run the first expression removes, so the SB cases compare
 # literals and never call it.
-strip_clock() { sed -e 's/ [0-9][0-9:-]*$//' -e 's/원장 [0-9][^ ]* 전/원장 N/'; }
+#
+# THE ELAPSED IS NOT ALWAYS LAST. A run whose watcher heartbeat is missing or
+# stale, or whose observer is stale, gets its watcher slot appended after the
+# elapsed (`⟳ run-live S1 00:01 · 워처 없음`), so the trailing-digit expression
+# finds nothing to remove and the clock survives into the comparison. The
+# first expression takes the elapsed out from in front of that slot and keeps
+# the slot, which does name a fact both sides must agree on.
+strip_clock() {
+  sed -E -e 's/ [0-9][0-9:-]*( · (워처 [^ ]+|관측기 낡음))$/\1/' \
+    -e 's/ [0-9][0-9:-]*$//' -e 's/원장 [0-9][^ ]* 전/원장 N/'
+}
 
 # AND THE STRIPPING IS PINNED HERE, BECAUSE NOWHERE ELSE CAN PIN IT. Turned into
 # a no-op this function fails none of the three cases that call it — it only
@@ -149,6 +159,20 @@ check "시계 슬롯을 벗기면 앞 시점이 알려진 한 줄이 된다" \
   "$(printf '%s\n' "$_sc_a" | strip_clock)" "$_sc_want"
 check "시계 슬롯을 벗기면 뒤 시점이 같은 그 한 줄이 된다" \
   "$(printf '%s\n' "$_sc_b" | strip_clock)" "$_sc_want"
+
+# The same pair with the watcher slot after the elapsed, the shape a live stage
+# renders when its run has no watcher heartbeat. The slot must survive: it is
+# not a clock, and a scrubber that ate it would hide a watcher verdict.
+_sc_wa='⟳ run-live S1 00:01 · 워처 없음'
+_sc_wb='⟳ run-live S1 00:02 · 워처 없음'
+_sc_wwant='⟳ run-live S1 · 워처 없음'
+differ "워처 칸 대조쌍이 벗기기 전에는 서로 다르다" "$_sc_wa" "$_sc_wb"
+check "워처 칸 앞의 경과를 벗기면 앞 시점이 알려진 한 줄이 된다" \
+  "$(printf '%s\n' "$_sc_wa" | strip_clock)" "$_sc_wwant"
+check "워처 칸 앞의 경과를 벗기면 뒤 시점이 같은 그 한 줄이 된다" \
+  "$(printf '%s\n' "$_sc_wb" | strip_clock)" "$_sc_wwant"
+check "관측기 낡음 칸 앞의 경과도 벗기고 칸은 남긴다" \
+  "$(printf '%s\n' '⟳ run-live S1 00:07 · 관측기 낡음' | strip_clock)" '⟳ run-live S1 · 관측기 낡음'
 
 # The "no run" line. Byte-identical to every degraded path's output when no
 # borrow record is present, which is the property cases 10-13 exist to hold in
