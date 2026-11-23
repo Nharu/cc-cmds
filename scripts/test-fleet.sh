@@ -1684,7 +1684,9 @@ rec_set() {
   jq -c --arg id "mr-$E1" "if .id == \$id then $1 else . end" "$PACE/backlog.jsonl" > "$PACE/backlog.new" \
     && mv "$PACE/backlog.new" "$PACE/backlog.jsonl"
 }
-young() { local m; m=$(date -u -r "$1" +%s 2>/dev/null || printf 0); [ $(( $(date -u +%s) - m )) -lt 60 ] && printf yes || printf no; }
+# m_round dates the reading file back to 2020-01-01 00:00 before its round, so a
+# file newer than one minute past that was written again by the round.
+rewritten() { touch -t 202001010001 "$WORK/old-mark"; [ "$1" -nt "$WORK/old-mark" ] && printf yes || printf no; }
 
 # --- a settled reading opens an event; 진행 중 opens nothing ---------------------
 m_fresh m-open
@@ -1799,7 +1801,7 @@ kill "$LKP" 2>/dev/null; wait "$LKP" 2>/dev/null
 mkdir -p "$PACE/master.lock"; printf '%s\n' "$LKP" > "$PACE/master.lock/pid"; : > "$WORK/master.err"
 m_round
 check "죽은 pid 의 master.lock 은 그 라운드에 깨지고 판독이 다시 쓰인다" \
-  "$(grep -c 'master.lock 을 깬다' "$WORK/master.err" || true)/$(young "$PACE/$MFILE_REL")" "1/yes"
+  "$(grep -c 'master.lock 을 깬다' "$WORK/master.err" || true)/$(rewritten "$PACE/$MFILE_REL")" "1/yes"
 [ -d "$PACE/master.lock" ] && bad "라운드가 끝나면 master.lock 이 남지 않는다" "남아 있다" || ok "라운드가 끝나면 master.lock 이 남지 않는다"
 
 # ===========================================================================

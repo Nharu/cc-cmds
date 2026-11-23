@@ -1623,17 +1623,31 @@ G7B="$WORK/g7b.json"; mk_settings_empty "$G7B"
 check "G7b EMPTY 경로는 verify 를 수행한다" "$(apply "$G7B" "$WORK/p-2nl" empty)" "40"
 
 # G8. The poll cap moved from three seconds to one, and a status line that takes
-# longer than a second has already failed.
+# longer than a second has already failed. The slow status line sleeps 1200 s,
+# so an installer that waits for it instead of capping the poll is caught by the
+# shared wait ceiling, never by a short sleep running out first; which cap ended
+# it is read from the installer's own reason line, not from a clock. The stub
+# records its pid and `exec`s the sleep, so the process the installer kills is
+# the sleep itself, and the pid is on the reap list in case it is not.
 mkdir -p "$WORK/p-slow/orchestrator"
 cp "$CMDLIB" "$WORK/p-slow/orchestrator/"
-printf '#!/usr/bin/env bash\ncat >/dev/null\nsleep 5\nprintf X\n' > "$WORK/p-slow/orchestrator/statusline.sh"
+printf '#!/usr/bin/env bash\ncat >/dev/null\nprintf %%s "$$" > %s\nexec sleep 1200\n' "'$WORK/g8-stub.pid'" \
+  > "$WORK/p-slow/orchestrator/statusline.sh"
 chmod +x "$WORK/p-slow/orchestrator/statusline.sh"
 G8="$WORK/g8.json"; mk_settings_empty "$G8"
-g8_start=$SECONDS
-check "G8 느린 상태줄은 verify 에서 실패한다" "$(apply "$G8" "$WORK/p-slow" empty)" "40"
-g8_elapsed=$((SECONDS - g8_start))
-if [ "$g8_elapsed" -le 3 ]; then ok "G8 폴링 상한이 1초다 (경과 ${g8_elapsed}초)"
-else bad "G8 폴링 상한" "${g8_elapsed}초가 걸렸다 — 상한이 1초로 줄지 않았다"; fi
+_g8_gone() { ! kill -0 "$1" 2>/dev/null; }
+bash "$APPLY" --apply --settings "$G8" --plugin-dir "$WORK/p-slow" --require-state empty >/dev/null 2>"$WORK/g8.err" &
+g8_pid=$!
+FX_PIDS="${FX_PIDS:-}$g8_pid "
+if wait_until _g8_gone "$g8_pid"; then
+  g8_rc=0; wait "$g8_pid" || g8_rc=$?
+else
+  kill "$g8_pid" 2>/dev/null; wait "$g8_pid" 2>/dev/null; g8_rc=상한
+fi
+[ -s "$WORK/g8-stub.pid" ] && FX_PIDS="${FX_PIDS:-}$(cat "$WORK/g8-stub.pid") "
+check "G8 느린 상태줄은 verify 에서 실패한다" "$g8_rc" "40"
+check "G8 폴링 상한이 1초다: 1초를 넘겨 실패했다고 말한다" \
+  "$(grep -c '^검증 실패: 1초를 넘겼습니다$' "$WORK/g8.err" || true)" "1"
 
 # G9/G9b. THE WORK DIRECTORY IS CREATED ONLY AFTER THE LOCK ATTEMPT RESOLVES.
 # G9b is what fixes the decision: an early `mktemp -d` with a trap passes G9 and
