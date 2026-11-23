@@ -314,6 +314,11 @@ release_lock() {
   # AND IT IS ONE STEP, because there is one artifact. Releasing used to remove
   # the record and then the directory, which leaves a state — directory present,
   # record gone — that a concurrent arrival reads as its own acquisition window.
+  #
+  # THE WAKE FIFO IS CLOSED AND REMOVED HERE TOO, before the holder check, so a
+  # feed that ends through the EXIT trap leaves none behind; the observer
+  # removes one a killed feed left.
+  feed_wake_close
   [ "$LOCK_OWNED" = "1" ] || return 0
   rm -rf "$LOCKD"
   # A second call does nothing. The EXIT trap is the only caller today, and the
@@ -698,11 +703,8 @@ feed_wake_close() {
 # `sp` IS SET BEFORE THE TRAPS. Under `set -u` an EXIT trap that reads an unset
 # `sp` fails before `release_lock`, and `--once` never enters the sleep that
 # assigns it — so that path left its lock behind.
-#
-# THE EXIT TRAP ALSO CLOSES AND REMOVES THE WAKE FIFO, so a feed that ends
-# leaves none behind; the observer removes one a killed feed left.
 sp=""
-trap '[ -z "$sp" ] || kill "$sp" 2>/dev/null; feed_wake_close; release_lock' EXIT
+trap '[ -z "$sp" ] || kill "$sp" 2>/dev/null; release_lock' EXIT
 trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM
 take_lock
 
