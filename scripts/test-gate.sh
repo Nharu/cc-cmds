@@ -25990,7 +25990,7 @@ case "$msg" in
   *"reviewed_sha256=$DT31_AU_SHA"*) ok "checkout --reviewed 가 감사 사본의 sha256 을 낸다" ;;
   *) bad "checkout reviewed_sha256 출력" "$msg" ;;
 esac
-if printf '%s\n' "$msg" | grep -Eq '(^| )at=[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z( |$)'; then
+if [ "$(printf '%s\n' "$msg" | grep -Ec '(^| )at=[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z( |$)')" -gt 0 ]; then
   ok "checkout 이 UTC 시각 at= 줄을 낸다"
 else
   bad "checkout at= 출력" "$msg"
@@ -26008,7 +26008,7 @@ case "$msg" in
   *"sha256=$DT31_CO_SHA"*"bytes=$DT31_ST_BYTES"*"kept_sha256=$DT31_CO_SHA"*) ok "stamp --keep 이 sha256·bytes·kept_sha256 을 낸다" ;;
   *) bad "stamp --keep 출력" "$msg" ;;
 esac
-if printf '%s\n' "$msg" | grep -Eq '(^| )at=[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z( |$)'; then
+if [ "$(printf '%s\n' "$msg" | grep -Ec '(^| )at=[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z( |$)')" -gt 0 ]; then
   ok "stamp 가 UTC 시각 at= 줄을 낸다"
 else
   bad "stamp at= 출력" "$msg"

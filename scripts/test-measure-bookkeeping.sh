@@ -280,11 +280,8 @@ case "$out" in
   *"종류 | 안쪽 명령 | 횟수 | 스테이지당"*"audit | openssl | 6 | 3.00"*) pass "새 절차 표에 분해 표 머리와 감사 행이 있다" ;;
   *) fail "새 절차 표에 분해 표 머리와 감사 행이 있다 — $out" ;;
 esac
-if printf '%s\n' "$out" | sed -n '/^종류 | 안쪽 명령/,$p' | grep -q '^design | '; then
-  fail "스테이지가 0 인 종류는 분해 표에 싣지 않는다 — $out"
-else
-  pass "스테이지가 0 인 종류는 분해 표에 싣지 않는다"
-fi
+check "스테이지가 0 인 종류는 분해 표에 싣지 않는다" \
+  "$(printf '%s\n' "$out" | sed -n '/^종류 | 안쪽 명령/,$p' | grep -c '^design | ')" "0"
 
 # ---- usage -------------------------------------------------------------------
 python3 -B "$measure" --json >/dev/null 2>&1; rc=$?
