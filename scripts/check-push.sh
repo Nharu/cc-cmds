@@ -42,7 +42,10 @@
 # top, and plugin.json, changed in its version line alone, the record's input
 # commit is an ancestor of HEAD and the base is the same, the pass is reused
 # and its reuse line ends in `릴리스 차이` (scripts/test-reuse.sh states the
-# rule in full).
+# rule in full). A commit that adds top-level release note fragments
+# (`changelog.d/<name>.md`), alone or beside those two files, stands in the
+# same relation; a fragment changed or removed, or a path added under
+# changelog.d/archive/ or outside changelog.d/, runs the item again.
 #
 # THE GOALS ARE THE NAMED ONES PLUS THE ONES THE CHANGE REACHES. Before the
 # items are checked, `run` and `items` take the change — the head against its
@@ -1582,6 +1585,25 @@ check-push: CHECK_PUSH_JOBS=1 의 실패 단계는 목록 전체를 이름 댄�
   rel_commit 0.1.2 '## [0.1.2] - 2026-01-03\n- c\n\n## [0.1.1] - 2026-01-02\n- b\n\n' r.txt 'r3\n'
   out=$(crr CC_PIPELINE_RUN_ID=t); rc=$?
   check "F41 릴리스 밖 파일도 바꾼 릴리스 커밋 뒤에는 g1 이 다시 돈다" "$rc $(cur_reuse)" "0 $(ve make:check-cheap 없음)"
+  # A commit that adds a top-level release note fragment is in the release
+  # relation, alone or beside the two release files; one that changes a
+  # fragment already there runs g1 again.
+  (cd "$W" && mkdir -p changelog.d) > /dev/null 2>&1
+  rw changelog.d/seg-x.md '등급: patch\n\nx\n'
+  out=$(crr CC_PIPELINE_RUN_ID=t); rc=$?
+  check "F41 조각만 더한 커밋 뒤에는 g1 을 다시 쓴다" "$rc $(cur_reuse)" "0 $(ve make:check-cheap,make:g1 없음)"
+  check "F41 조각만 더한 커밋 뒤 g1 의 재사용 줄 꼬리가 릴리스 차이" \
+    "$(printf '%s\n' "$out" | grep -c '^check-push: 재사용 make:g1 ← .* (.*, 릴리스 차이)$')" "$(ve 1 0)"
+  rel_commit 0.1.3 '## [0.1.3] - 2026-01-04\n- d\n\n## [0.1.2] - 2026-01-03\n- c\n\n## [0.1.1] - 2026-01-02\n- b\n\n' changelog.d/seg-y.md '등급: patch\n\ny\n'
+  out=$(crr CC_PIPELINE_RUN_ID=t); rc=$?
+  check "F41 조각과 두 릴리스 파일을 함께 바꾼 커밋 뒤에도 g1 을 다시 쓴다" "$rc $(cur_reuse)" "0 $(ve make:check-cheap,make:g1 없음)"
+  # g1 is recorded again on a commit that already holds the fragment, so the
+  # next commit changes that fragment rather than adds it.
+  rw r.txt 'r4\n'
+  out=$(crr CC_PIPELINE_RUN_ID=t)
+  rw changelog.d/seg-x.md '등급: patch\n\nx2\n'
+  out=$(crr CC_PIPELINE_RUN_ID=t); rc=$?
+  check "F41 있던 조각을 고친 커밋 뒤에는 g1 이 다시 돈다" "$rc $(cur_reuse)" "0 $(ve make:check-cheap 없음)"
   # Location queries leave a `git읽기` record, reused across a new HEAD and a
   # merged base. Goal g1 and section s9 ask where the repository is; goal g2
   # and section s8, the control, read HEAD. The cases commit on branch hq; the
@@ -1902,8 +1924,8 @@ check-push: CHECK_PUSH_JOBS=1 의 실패 단계는 목록 전체를 이름 댄�
   rm -rf "$T"
   printf 'check-push self-test: %d passed, %d failed\n' "$passed" "$failed"
   # A floor on the count, so a refactor that silently skips cases cannot pass.
-  if [ "$passed" -lt 248 ]; then
-    printf 'check-push self-test: 통과 수 %d 가 하한 248 에 못 미칩니다\n' "$passed" >&2
+  if [ "$passed" -lt 252 ]; then
+    printf 'check-push self-test: 통과 수 %d 가 하한 252 에 못 미칩니다\n' "$passed" >&2
     return 1
   fi
   [ "$failed" = "0" ]
