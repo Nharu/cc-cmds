@@ -566,6 +566,7 @@ ORCH_TESTS := \
 	scripts/test-liveness-agreement.sh \
 	scripts/test-dashboard.sh \
 	scripts/test-dashboard-screen.sh \
+	scripts/test-dashboard-browser.sh \
 	scripts/test-observer.sh \
 	scripts/test-observer-watch.sh \
 	scripts/test-observer-checks.sh \
@@ -576,6 +577,7 @@ ORCH_TESTS := \
 	scripts/test-stage-supervisor.sh \
 	scripts/test-design-brief.sh \
 	scripts/test-route.sh \
+	scripts/test-wait-fixture.sh \
 	scripts/test-collect-run-metrics.sh \
 	scripts/test-design-path-report.sh \
 	scripts/test-measure-cycle-causes.sh \

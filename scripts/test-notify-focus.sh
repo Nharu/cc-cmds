@@ -865,16 +865,16 @@ check "L11 넘겨진 잠금: 도우미가 놓였다" "$(helpers)" "1"
 check "L11 넘겨진 잠금: 잃은 쪽은 실패 스탬프를 남기지 않는다" "$(failures)" "0"
 check "L11 넘겨진 잠금: 남은 잠금·옆으로 옮긴 것 없음" "$(leftovers)" "0"
 
-# L12. Detached: the click returns at once and the work lands afterwards.
+# L12. Detached: the click returns at once and the work lands afterwards. That
+# it did not wait is read from the state at the moment it returned, not from a
+# clock: the body opens only after its two-second raise, so a click that waited
+# for the body comes back with the `open` line already written.
 fresh
-t0=$(date +%s)
 env -i HOME="$WORK" PATH="$WORK/bin:/usr/bin:/bin" "${CLICK_ENV[@]}" \
   CC_CMDS_NOTIFY_FOCUS_TMUX="$WORK/bin/tmux" CC_CMDS_NOTIFY_FOCUS_FOREGROUND= \
   "${T1ENV[@]}" STUB_SLEEP_RAISE=2 /bin/sh -c "$V" >"$WORK/out" 2>"$WORK/err"
 rc=$?
-t1=$(date +%s)
 check "L12 분리: 종료 코드 0" "$rc" "0"
-check "L12 분리: 1초 안에 돌아온다" "$([ $((t1 - t0)) -le 1 ] && echo 예 || echo "아니오 $((t1 - t0))초")" "예"
 check "L12 분리: 돌아온 순간 open 은 아직 없다" "$(logn open)" "0"
 if wait_for "$LOG" '^open '; then ok "L12 분리: 본문이 뒤에서 끝났다"; else bad "L12 분리: 본문이 뒤에서 끝났다" "open 줄이 없다"; fi
 
@@ -972,13 +972,16 @@ check "L16 선택 중: 안내 배너 없음" "$([ -s "$NLOG" ] && echo 있음 ||
 KEEP=0
 
 # L17. The retries: `onspace` stays 6 → raise + open exactly three times within
-# 1.5 s; a re-raise answering 7 stops them; `onspace` 8 never retries.
-t0=$(date +%s)
+# 1.5 s; a re-raise answering 7 stops them; `onspace` 8 never retries. The wait
+# seam scales the 1.5 s stop and the 0.1 s step together, so what ends the loop
+# is read from the count, not a clock: each step sleeps 0.1 s, so the clock
+# stops it before 15 steps or so, and only a loop the clock never stops reaches
+# the iteration cap of 30 asks.
 click "L17 늘 6" "$WORK/bin/tmux" "$V" "${T1ENV[@]}" STUB_RC_ONSPACE=6
-t1=$(date +%s)
 check "L17 raise 세 번" "$(logn raise)" "3"
 check "L17 open 세 번" "$(logn open)" "3"
-check "L17 3초 안에 끝난다" "$([ $((t1 - t0)) -le 3 ] && echo 예 || echo "아니오 $((t1 - t0))초")" "예"
+n=$(logn onspace)
+check "L17 시계가 되풀이를 멈춘다: onspace 가 반복 상한 30번에 닿지 않는다" "$([ "${n:-0}" -lt 30 ] && echo 예 || echo "아니오 ${n}번")" "예"
 click "L17 다시 올리기가 7" "$WORK/bin/tmux" "$V" "${T1ENV[@]}" STUB_RC_ONSPACE=6 STUB_SEQ_RAISE="0 7"
 check "L17 7 뒤 raise 두 번" "$(logn raise)" "2"
 check "L17 7 뒤 open 한 번" "$(logn open)" "1"
