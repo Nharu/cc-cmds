@@ -74,6 +74,7 @@ lint:
 	bash scripts/lint-interview-verification.sh
 	bash scripts/lint-kickoff-defaults.sh
 	bash scripts/lint-kickoff-recommendations.sh
+	bash scripts/lint-countermeasure-records.sh
 	@jq empty plugins/cc-cmds/hooks/hooks.json
 # Every command path in hooks.json must exist and be executable. This REPLACES a
 # hard-coded assertion that named one hook, which had already stopped covering a
@@ -527,7 +528,8 @@ LINT_TESTS := \
 	scripts/test-lint-interview-convention-refs.sh \
 	scripts/test-lint-interview-verification.sh \
 	scripts/test-lint-kickoff-defaults.sh \
-	scripts/test-lint-kickoff-recommendations.sh
+	scripts/test-lint-kickoff-recommendations.sh \
+	scripts/test-lint-countermeasure-records.sh
 
 ORCH_TESTS := \
 	plugins/cc-cmds/orchestrator/test-run.sh \
