@@ -263,24 +263,28 @@ async function boot(pathname, bodyOf, opts) {
   // A held request waits on the promise c.hold returns. With c.followAbort the
   // request also rejects when its signal aborts, as a browser's fetch does;
   // without it the abort is ignored and the held answer still arrives late.
+  // c.holdBody holds the body the same way: the headers come at once and json()
+  // waits, rejecting on abort with c.followAbort as a browser's body read does.
+  const abortOf = (signal) => new Promise((_, rej) => {
+    const fail = () => rej(Object.assign(new Error("aborted"), { name: "AbortError" }));
+    if (signal.aborted) fail(); else signal.addEventListener("abort", fail);
+  });
+  const waitOn = async (held, signal) => {
+    if (!held) return;
+    if (c.followAbort && signal) await Promise.race([held, abortOf(signal)]);
+    else await held;
+  };
   const fetchStub = async (url, fopts) => {
     if (url === "/healthz") return { json: async () => ({ version: "1" }) };
     c.urls.push(url);
     const signal = fopts.signal || null;
     c.signals.push(signal);
-    const held = c.hold ? c.hold(url) : null;
-    if (held) {
-      if (c.followAbort && signal) {
-        await Promise.race([held, new Promise((_, rej) => signal.addEventListener("abort",
-          () => rej(Object.assign(new Error("aborted"), { name: "AbortError" }))))]);
-      } else {
-        await held;
-      }
-    }
+    await waitOn(c.hold ? c.hold(url) : null, signal);
     if (c.failWith) return { status: c.failWith, ok: false };
     const body = bodyOf(url), etag = JSON.stringify(body);
     if ((fopts.headers || {})["If-None-Match"] === etag) return { status: 304, ok: false };
-    return { status: 200, ok: true, headers: { get: () => etag }, json: async () => body };
+    const bodyHeld = c.holdBody ? c.holdBody(url) : null;
+    return { status: 200, ok: true, headers: { get: () => etag }, json: async () => { await waitOn(bodyHeld, signal); return body; } };
   };
   const loc = { pathname, search: opts.search || "", hash: opts.hash || "", host: "127.0.0.1:1", reload: () => {} };
   const hist = {
@@ -826,6 +830,28 @@ async function lateAnswerCases() {
   }
 }
 
+// A filter change that lands after an answer's headers and before its body:
+// the abort rejects the body read, and coming back to that filter within the
+// same server tick must read the body again rather than take a 304 with none.
+async function bodyAbortCases() {
+  const st = filterStub();
+  const c = await boot("/", st.bodyOf);
+  const holds = [];
+  c.followAbort = true;
+  c.holdBody = (u) => (u.includes("days=7") ? new Promise((r) => holds.push({ u, r })) : null);
+  await clickOf(c, "days-7");
+  await clickOf(c, "days-3");
+  report("본문을 읽는 중 끊긴 요청은 연결 끊김 화면을 띄우지 않는다", c.nodes.offline.textContent === "" && !c.nodes.conn.textContent.includes("연결 끊김"), true);
+  report("본문을 읽는 중 끊긴 뒤 되돌린 기간이 그려진다", pressedOf(c) === "days-3" && countClass(c, "is-stale") === 0, true);
+  await clickOf(c, "days-7");
+  report("본문 도중 끊긴 주소로 돌아오면 304 가 아니라 본문을 다시 받는다", holds.length, 2);
+  holds[1].r();
+  await c.settle();
+  report("본문 도중 끊긴 주소로 돌아오면 새 필터의 목록을 그리고 바쁨이 없다",
+    !!c.link("/run/week-run") && pressedOf(c) === "days-7" && countClass(c, "is-stale") === 0 && countClass(c, "list-pending") === 0, true);
+  report("본문 도중 끊긴 주소로 돌아온 응답이 다음 폴링을 건다", typeof c.timer, "function");
+}
+
 async function storeCases() {
   const st = filterStub(), store = new Map();
   const a = await boot("/", st.bodyOf, { search: "?days=30", store });
@@ -877,7 +903,7 @@ async function backLinkCases() {
 }
 
 listCases().then(detailCases).then(endedHoldCases).then(baseFilterCases).then(seatCases).then(waitCases)
-  .then(addressCases).then(pendingCases).then(revertCases).then(lateAnswerCases).then(storeCases).then(backLinkCases).catch((e) => { console.error(e && e.stack || e); process.exit(1); });
+  .then(addressCases).then(pendingCases).then(revertCases).then(lateAnswerCases).then(bodyAbortCases).then(storeCases).then(backLinkCases).catch((e) => { console.error(e && e.stack || e); process.exit(1); });
 JS
 
 if command -v node >/dev/null 2>&1; then

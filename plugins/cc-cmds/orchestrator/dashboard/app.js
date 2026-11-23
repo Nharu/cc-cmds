@@ -246,21 +246,28 @@
   // ------------------------------------------------------------- fetching
 
   // A request this page aborted is not the server going away, so it answers
-  // `aborted` rather than `offline`.
+  // `aborted` rather than `offline`, whether the abort lands before the headers
+  // or while the body is still being read. An ETag is kept only together with
+  // the body it names, and a 304 for an address with no kept body asks once
+  // more without the tag.
   function fetchJSON(url, poll, signal) {
     var headers = {};
     if (poll) headers["X-CC-Poll"] = "1";
     if (etags[url]) headers["If-None-Match"] = etags[url];
     var opts = { headers: headers, cache: "no-store" };
     if (signal) opts.signal = signal;
+    function failed(e) { return e && e.name === "AbortError" ? { aborted: true } : { offline: true }; }
     return fetch(url, opts).then(function (r) {
-      if (r.status === 304) return { same: true, data: cache[url] };
+      if (r.status === 304) {
+        if (cache[url] !== undefined) return { same: true, data: cache[url] };
+        if (!headers["If-None-Match"]) return { error: r.status };
+        delete etags[url];
+        return fetchJSON(url, poll, signal);
+      }
       if (!r.ok) return { error: r.status };
-      etags[url] = r.headers.get("ETag");
-      return r.json().then(function (d) { cache[url] = d; return { same: false, data: d }; });
-    }, function (e) {
-      return e && e.name === "AbortError" ? { aborted: true } : { offline: true };
-    });
+      var tag = r.headers.get("ETag");
+      return r.json().then(function (d) { etags[url] = tag; cache[url] = d; return { same: false, data: d }; }, failed);
+    }, failed);
   }
 
   function checkVersion(poll) {
@@ -1641,6 +1648,8 @@
 
   function refresh(poll) {
     if (document.hidden) return;
+    // A poll left from an earlier call would abort this one and ask again.
+    clearTimeout(timer);
     var r = route();
     applyRoute(r);
     var url = r.run ? "/api/runs/" + encodeURIComponent(r.run) : listURL();
