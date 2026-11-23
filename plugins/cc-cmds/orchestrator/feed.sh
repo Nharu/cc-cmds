@@ -628,7 +628,7 @@ feed_wake_usable() {
   { IFS= read -r p; } 2>/dev/null < "${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/observer/observer.pid" || :
   p=${p//[[:space:]]/}
   case "$p" in ''|*[!0-9]*) return 1 ;; esac
-  kill -0 "$p" 2>/dev/null
+  cc_pid_exists "$p"
 }
 
 feed_wake_open() {
