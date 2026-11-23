@@ -5,7 +5,7 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [3.57.1] - 2026-11-23
+## [3.59.1] - 2026-11-23
 
 대시보드 런 상세의 시간 띠에서 왼쪽 끝 시작 라벨과 오른쪽 끝 지금·종단 라벨이 가장 가까운 눈금 라벨과 포개지던 것을 고친다. 끝 라벨은 그대로 두고 겹칠 거리 안의 눈금 라벨을 숨긴다.
 
@@ -14,6 +14,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **시간 띠 끝 라벨 겹침** — `timeBand()` 가 눈금 라벨마다 실측보다 넉넉한 고정 글자 폭 표로 상자를 잡아, 시작 라벨이나 오른쪽 끝 라벨과 6 단위 안으로 붙는 눈금 라벨을 그리지 않는다. 그 눈금의 눈금선, 띠 높이, 끝 라벨의 위치와 정렬은 바뀌지 않는다.
 - **숨긴 자정의 날짜** — 숨긴 눈금 라벨이 자정 라벨이면 그 날짜를 다음에 보이는 비자정 눈금 라벨(`MM/DD HH:MM`)로 옮기고, 받을 라벨이 끝까지 없으면 오른쪽 끝 라벨을 `지금 MM/DD HH:MM`·`종단 MM/DD HH:MM` 으로 그린다. 간격 12시간 이상에서 옮길 곳이 없는 날짜는 이웃한 자정 라벨과 눈금선으로 읽는다.
 - **시험** — `scripts/test-dashboard-screen.sh` 에 S7 절을 더해, node DOM 대역으로 그린 시간 띠의 위쪽 라벨끼리 겹치지 않고 날짜가 남는지를 단언한다.
+
+## [3.59.0] - 2026-11-23
+
+무인 감사 스테이지 리드의 부기 exec 를 줄인다. 설계 문서의 다이제스트·크기·시각 측정과 감사 사본 복사, 독자 보고서 사본 복사, 조정 시작 시각과 감사 사본 해시를 각각 `doc-tidy.py` 한 호출로 묶는다. 첫 감사의 리드 부기 exec 는 스테이지당 약 22회에서 약 12회로 줄 것으로 본다. 측정 스크립트는 새 두 호출을 부기 exec 로 세고, 안쪽 명령별 분해에 하위 명령별 행으로 싣는다.
+
+### Added
+
+- **`doc-tidy.py stamp DOC [--keep COPY]`** — 문서를 바이트로 한 번 읽어 `sha256=`·`bytes=`·`at=` 을 내고, `--keep` 이면 같은 바이트를 사본에 원자적으로 쓰고 다시 읽어 `kept_sha256=` 을 낸다. 사본 쓰기가 실패하면 `keep_failed=` 를 내고 종료 코드는 0 이다.
+- **`doc-tidy.py keep-reports REPORT WITNESS...`** — 독자 증인 `reader-<k>.<phase>.md` 를 보고서 옆 `.reader-<k>.md` 로 바이트 그대로 쓴다. 이름 꼴이 틀리거나 같은 번호가 둘이거나 증인이 비어 있으면 아무것도 쓰지 않고 1 로 끝난다.
+- **`doc-tidy.py checkout --reviewed PATH`** — `checkout` 이 `at=` 을 늘 내고, `--reviewed` 파일의 `reviewed_sha256=`(없으면 `absent`)을 낸다.
+- **새 감사 절차 측정 시험** — `scripts/test-measure-bookkeeping.sh` 가 새 절차로 돈 감사 스테이지 픽스처에서 `by_command` 의 `doc-tidy.py stamp`·`doc-tidy.py keep-reports` 리드 횟수와 스테이지당 값, 옛 절차의 `cp`·`date`·`wc` 가 빠졌음을 단언한다.
+
+### Changed
+
+- **감사 스킬 절차** — `design-audit-unattended` 의 FREEZE, 독자 보고서 사본, 조정 패스 첫 응답, 마지막 측정이 위 세 호출을 쓴다. 난수 발급, 닫는 재해시, unmark 앞 재확인, 게시, 팀 정리는 그대로다.
+- **조정 패스 시각 규칙** — `조정 시작`·`조정 종료` 는 그 시각을 잰 행위가 낸 UTC 시각이다. `date`, 또는 무인 감사에서는 그 행위인 `doc-tidy.py` 호출의 `at=` 줄이다.
+- **부기 정의** — 측정 스크립트가 `doc-tidy.py` 의 `stamp`·`keep-reports` 도 `checkout`·`publish` 처럼 부기 exec 로 센다.
+
+## [3.58.0] - 2026-11-23
+
+런마다 60초 간격으로 전체 패스를 돌던 `watch.sh` 를 공용 관측 데몬에 맡긴다. 기동 줄은 그대로이고, 런의 고정 사본에 관측 규약 표지가 있으면 루프로 뜬 `watch.sh` 가 `observer.py adopt --job watch` 로 자기 인자를 넘기고 끝난다. 그 뒤 데몬의 watch 작업 모듈이 그 런의 탐침이 바뀌었을 때, 한 바퀴가 공표한 다음 기한이 지났을 때, 마지막 호출에서 300초가 지났을 때만 고정 사본의 `watch.sh --once` 를 부른다. 정지 판정, 배너, `blocked` 관측은 그대로 고정 사본의 `watch.sh` 안에 있다.
+
+### Added
+
+- **watch 작업 모듈** — `orchestrator/observer_watch.py`. 탐침 변화, 첫 바퀴, 지난 기한, 300초 최대 간격, 10초를 넘는 바퀴 틈(기계 잠듦·데몬 정지)에 `watch.sh --once --started <채택 시각> --alive-at <직전 바퀴 시각> <등록된 인자>` 를 부른다. 호출이 데몬 시한을 넘기면 60초 동안 변화에만 부르고, 종료 코드 3 이면 작업을 내려놓는다. 호출 사이에도 바퀴마다 `watch.heartbeat` 의 mtime 과 `watch.mode` 의 epoch 를 새로 하며, 판정 낱말은 바꾸지 않는다.
+- **위임된 한 바퀴** — 환경에 `CC_OBSERVER_PID` 가 있는 `watch.sh --once` 는 `watch.pid`·`watch.stall` 에 자기 pid 대신 그 pid 와 지문을 쓰고, 한 바퀴 뒤 `watch.next` 에 다음 기한과 탐침 글롭을 원자적으로 공표한다. `done` 꼬리의 끝 처리(알림, rekick)를 루프 판과 같은 조건으로 하고, 런이 끝났으면 종료 코드 3 으로 끝난다.
+- **새 인자 `--started`·`--alive-at`** — 위임된 판에서 24시간 유휴 종료의 하한과 장애 넘김 시계의 직전 관측 시각으로 쓴다. 정수가 아니면 2 로 끝난다.
+- **런 환경 운반 `--run-env <이름>=<값>`** — 데몬은 패스를 자기가 기동된 환경에서 돌리므로, 위임하는 루프가 배너 스위치 `CC_CMDS_AUTOPILOT_NOTIFY` 와 좌석 pane 의 `TMUX`·`TMUX_PANE` 가운데 값이 비지 않은 것을 이 인자로 덧붙여 넘긴다. 위임된 판은 세 이름을 지운 뒤 받은 값만 export 하므로, 런마다 고른 배너 스위치와 `notify.seat` 의 pane 이 데몬을 먼저 띄운 세션의 값으로 바뀌지 않는다. 세 이름 밖의 이름이나 `=` 이 없는 값은 2 로 끝나고, 맨 `--once` 와 루프 판은 이 인자로 환경을 바꾸지 않는다.
+- **시험** — `scripts/test-observer-watch.sh`. 모듈의 호출 규칙, pid 대체, `watch.next` 의 꼴, `done` 꼬리, 위임 분기의 갈래, 위임 중 소비자 판정, 실제 데몬 아래의 발화 시각과 한 바퀴 소요 시간, 런 환경 운반을 단언한다.
+
+### Changed
+
+- **기한 공표의 확장** — 전체 패스가 대기 기록 낡음, 중계 침묵·깨움 열쇠, CI 대기, 이월·재개·리셋 시계, 장애 넘김 대기, 24시간 유휴 종료의 기한도 `watch_expiry_offer` 로 내놓는다. 판정은 바뀌지 않고, 루프 판에서는 조용한 런의 전체 패스가 그 기한에 맞춰 더 일찍 돌 수 있을 뿐이다.
+- **좌석 문서** — `act2-seat.md` 의 감시기 설명에 위임과 되돌림 조건을 더했다.
+
+### Post-install notes
+
+- 런은 시작 때 고정한 자기 플러그인 사본을 돌린다. 이 판 전에 시작한 런은 끝날 때까지 지금의 60초 루프로 돈다.
+- `CC_CMDS_OBSERVER=off`, `CI`, python3 없음, 표지 없음, 10초 안에 채택되지 않음 가운데 하나면 지금의 루프로 돈다.
+
+## [3.57.1] - 2026-11-23
+
+게이트의 슬라이싱 판독기가 긴 설계 문서에서 맞게 읽은 값을 상태 141 로 돌려주던 결함을 고친다. 이 때문에 선언 파일 대조가 값을 읽지 못했다고 판정해, 구현 파견할 세그먼트를 확률적으로 park 했다.
+
+### Fixed
+
+- **`slicing_body`·`slice_field`** — awk 가 일치 직후 `exit` 하지 않고 입력을 끝까지 읽으면서 출력만 멈춘다. 게이트는 `set -o pipefail` 로 돈다. 그래서 `## 구현 슬라이싱` 뒤 본문이 파이프 버퍼보다 길면, 먼저 끝난 읽는 쪽이 앞 단계를 SIGPIPE 로 죽였고 파이프라인이 141 로 끝났다. 같은 파일의 `## 구현 시 검증 항목` 판독기와 같은 처리다. 파이프 버퍼보다 큰 꼬리를 붙인 문서로 두 판독기의 종료 상태와 읽은 값을 시험한다.
+
+### Post-install notes
+
+- 런은 시작 때 고정한 자기 플러그인 사본을 돌린다. 이 판 전에 시작한 런은 계속 옛 판독기를 쓴다.
 
 ## [3.57.0] - 2026-11-23
 
