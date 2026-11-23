@@ -610,16 +610,35 @@ cc_notify_group() {
 }
 
 cc_notify_sound() {
-  # EVERY BANNER MAKES A SOUND BUT ONE. The value is `default` for every token
-  # except `approval-ask`, which prints nothing and is raised without `-sound`.
-  # It stays a function so the one place that names it is still one place — a
-  # caller reading a literal out of this file would be the drift the shared
-  # emitter exists to prevent.
+  # cc_notify_sound <token> [item-key]
   #
-  # THE ONE SILENT TOKEN REWRITES A BANNER THAT ALREADY RANG. `approval-ask` is
-  # raised into an approval's own slot when the seat first asks that approval,
-  # after `answer` sounded for it; a sound there would ring the same decision
-  # twice, which is the duplicate it exists to remove.
+  # EVERY BANNER MAKES ONE SOUND. The value is `default` for every token, and
+  # the approval slot alone can print nothing: one banner, one sound. It stays a
+  # function so the one place that names it is still one place — a caller
+  # reading a literal out of this file would be the drift the shared emitter
+  # exists to prevent.
+  #
+  # AN APPROVAL'S SLOT RINGS ONCE WHILE IT IS HELD. `answer` and `approval-ask`
+  # raise into the same slot under the same key (`cc_notify_group`), so they
+  # share one mark: the directory `notify.rang/<key>` under the run directory.
+  # The process whose `mkdir` of it succeeds rings; every later banner into the
+  # slot replaces the one that rang and prints nothing here. That covers the
+  # seat's first ask after `answer` sounded, and the gate raising `answer` for
+  # an approval the watcher already announced. When `answer` never rang in the
+  # slot — it was demoted to the overflow slot by the cap — `approval-ask` takes
+  # the mark and rings, because it is the slot's first banner. `mkdir` is the
+  # claim for the reason `cc_notify_claim_ended` gives: asking "did it ring" and
+  # writing "it rang" must be one atomic act, or two racing raisers both ring.
+  # The parent is made first and its failure ignored; the leaf is made without
+  # `-p`, so an existing mark fails the claim.
+  #
+  # `hands` STAYS OUTSIDE THE MARK. Its `park-<segment>` key is raised again as a
+  # new event by a second park of the same segment and is never released, so a
+  # mark there would silence a new event.
+  #
+  # NO RUN DIRECTORY, OR A KEY THAT IS NOT ONE PATH COMPONENT, READS AS THE FIRST
+  # BANNER. With nothing to record the ring in there is no way to know a banner
+  # is being replaced, and a silent new banner is the worse failure.
   #
   # WHY IT IS NO LONGER AN AXIS. The old split gave sound only to the stacking
   # buckets, on the ground that re-firing into a replace slot is free and a sound
@@ -633,10 +652,28 @@ cc_notify_sound() {
   # rather than a concurrency, and the overflow body would count items answered
   # hours ago — a sound announcing a wait that is not happening. Reclamation
   # landed first.
+  local key="${2:-}"
   case "${1:-}" in
-    approval-ask) return 0 ;;
+    answer|approval-ask)
+      if [ -n "${RUN_DIR:-}" ] && [ -d "${RUN_DIR:-}" ] && cc_notify_rang_key_ok "$key"; then
+        mkdir "$RUN_DIR/notify.rang" 2>/dev/null || true
+        if ! mkdir "$RUN_DIR/notify.rang/$key" 2>/dev/null; then
+          return 0
+        fi
+      fi
+      ;;
   esac
   printf 'default'
+}
+
+cc_notify_rang_key_ok() {
+  # cc_notify_rang_key_ok <item-key> — 0 when the key names one directory under
+  # `notify.rang`: not empty, no `/`, and neither `.` nor `..`. A predicate, so
+  # it may return 1; every caller puts it in a condition.
+  case "${1:-}" in
+    ''|.|..|*/*) return 1 ;;
+  esac
+  return 0
 }
 
 cc_notify_body() {
@@ -782,9 +819,20 @@ cc_notify_stack_release() {
   # kills that property as a MARKER. Whoever comes next could no longer tell the
   # two kinds apart by whether a guard is present, and a banner clear added later
   # without one would not stand out.
+  #
+  # IT ALSO RELEASES THE SLOT'S RING MARK (`cc_notify_sound`), whether or not a
+  # stack file exists, for the same reason it needs no guard: removing the mark
+  # calls nothing and changes no screen. Every caller clears the slot's banner
+  # beside this call, so the mark lives exactly as long as the slot is held, and
+  # the slot's next banner rings again. Putting the removal beside the banner
+  # clear instead would put it behind that clear's router guard, and a guarded
+  # call would leave the mark to silence the next event.
   local key="$1" f t
   if [ -z "${RUN_DIR:-}" ] || [ ! -d "${RUN_DIR:-}" ]; then
     return 0
+  fi
+  if cc_notify_rang_key_ok "$key"; then
+    rmdir "$RUN_DIR/notify.rang/$key" 2>/dev/null || true
   fi
   f="$RUN_DIR/notify.stack"
   [ -f "$f" ] || return 0
@@ -1110,7 +1158,6 @@ cc_notify_fire() {
 
   title=$(cc_notify_title "$token")
   group=$(cc_notify_group "$token" "$key")
-  sound=$(cc_notify_sound "$token")
   click=$(cc_notify_click "$token")
   body=$(cc_notify_body "$body")
 
@@ -1124,6 +1171,13 @@ cc_notify_fire() {
     return 0
   fi
 
+  # THE SOUND IS DECIDED HERE, after the notifier check and right before the
+  # fire, because for an approval's slot deciding it takes the slot's ring mark:
+  # a call that cannot raise a banner must not leave a mark that would silence
+  # the next one. It also comes after the cap's demotion above, so an `answer`
+  # demoted to `overflow` takes no mark and the approval's slot stays unrung.
+  sound=$(cc_notify_sound "$token" "$key")
+
   # EVERY LINE THAT RAISES A BANNER CARRIES `-execute`. Its value is what
   # `notify-focus.sh exec-arg` built: `:`, or
   # `/bin/bash '<handler>' focus '<socket>' '<pid>' '<pane>'`. When no value can
@@ -1133,8 +1187,9 @@ cc_notify_fire() {
   #
   # Responsibility 3: launched detached, status never asked.
   #
-  # ONE LINE, NOT TWO. `cc_notify_sound` prints nothing only for `approval-ask`,
-  # which rewrites a banner that already rang, so `-sound` is an argument pair
+  # ONE LINE, NOT TWO. `cc_notify_sound` prints nothing only for a banner that
+  # replaces one which already rang in an approval's slot (`answer` or
+  # `approval-ask` whose ring mark was taken), so `-sound` is an argument pair
   # that is present or absent rather than a second firing line — a second line
   # is a second place `-execute` could be dropped from. The `+` expansion keeps
   # an empty pair from tripping `set -u` on bash 3.2.

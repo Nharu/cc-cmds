@@ -28,3 +28,6 @@ grep -qF -- "$want" "$NOTIFIER_LOG" || {
   cat "$NOTIFIER_LOG" >&2
   exit 1
 }
+# Every fire line carries the sound — each named sub-event is its own banner.
+nosound=$(grep -vc -- '-sound default' "$NOTIFIER_LOG" || true)
+[[ "$nosound" == "0" ]] || { echo "every fire line must carry -sound default ($nosound without)" >&2; cat "$NOTIFIER_LOG" >&2; exit 1; }

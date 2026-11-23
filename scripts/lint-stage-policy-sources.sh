@@ -17,12 +17,14 @@
 #   (iii)  the policy carries no volatile token (a date, a `run-<n>`, a
 #          `/Users/` path) — one would make the bytes differ per host or per
 #          run and break the shared cache head;
-#   (iv)   the two sentences the team-delivery contract rests on each appear
-#          on exactly one line of the current policy: the harness delivers the
-#          policy, the personal rules and the repository instructions to
-#          Agent-tool members (so leads must not paste them), and a team the
-#          stage skill prescribes is itself the instruction to spawn it (so the
-#          delegation rule cannot be read as "review alone").
+#   (iv)   three pinned sentences each appear on exactly one line of the
+#          current policy: two the team-delivery contract rests on — the
+#          harness delivers the policy, the personal rules and the repository
+#          instructions to Agent-tool members (so leads must not paste them),
+#          and a team the stage skill prescribes is itself the instruction to
+#          spawn it (so the delegation rule cannot be read as "review alone")
+#          — and the turn-economy rule that independent calls go out in one
+#          response, so it cannot drop out of the policy or ride on it twice.
 #
 # Usage:
 #   bash scripts/lint-stage-policy-sources.sh
@@ -50,6 +52,7 @@ LEGACY="$policy_root/legacy/stage-policy.v6.md"
 MAX_BYTES=8192
 PIN_HARNESS='Agents spawned with the Agent tool receive this policy, the personal rules and the repository instructions from the harness (the target repository'"'"'s own files by path); do not paste them.'
 PIN_TEAM='a team the stage skill prescribes is itself the instruction to spawn it'
+PIN_BATCH='Issue every call whose arguments do not depend on a result you have not seen in one response'
 
 fail=0
 checked=0
@@ -100,9 +103,9 @@ if [[ -n "$volatile" ]]; then
   done <<< "$volatile"
 fi
 
-# ---------- (iv) the two team-delivery pins ----------------------------------
+# ---------- (iv) the three pinned sentences ----------------------------------
 
-for pin in "$PIN_HARNESS" "$PIN_TEAM"; do
+for pin in "$PIN_HARNESS" "$PIN_TEAM" "$PIN_BATCH"; do
   checked=$((checked + 1))
   n=$(grep -cF -- "$pin" "$POLICY" || true)
   if [[ "${n:-0}" != "1" ]]; then

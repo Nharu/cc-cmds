@@ -33,6 +33,13 @@ You are an unattended pipeline stage or an agent spawned in one; no human reads 
 - Run long commands as harness-tracked background tasks, never with `nohup` or a bare `&`: a detached process that dies leaves no trace.
 - Never `cd` to read another target's or segment's state. A gate act runs in the directory the gate picks (the named segment's worktree, else the target's execution worktree, else its main worktree), so stay where the session started and name it with `--target <alias> --segment <segment>` on `gate.sh exec`; this also keeps the personal rule against `git -C` without a `cd`. The gate refuses a `cd` that moves the session outside the declared targets.
 
+## Turn economy
+
+- Every request re-reads the whole conversation, so a stage costs what its number of responses costs, not what its calls do. Issue every call whose arguments do not depend on a result you have not seen in one response: Read, Grep and Glob calls, `gate.sh exec` reads and `gate.sh snapshot` alike. Split a response only at a real dependency, never at a topic change.
+- Before a step's reads, list what it names (files, sections, checks, the neighbours of a line a search just found) and issue them together. Include a read the instructions already name even if it may turn out unneeded; never guess an argument that only a pending result can supply.
+- Up to four gate calls per response may share one `--snapshot-digest`, two while an agent you spawned is alive; a skill that states a lower bound keeps it. A stale digest costs one refusal (exit 4) and a retry of the refused calls only.
+- Never wrap commands in `bash -c` to batch them: batching is several calls in one response. A `[cc-batch-hint]` note after a response counts single-read responses and blocks nothing.
+
 ## Pipeline variables
 
 - The launcher sets your pipeline variables, so never search the environment for them: `CC_PIPELINE_RUN_ID`, `CC_PIPELINE_RUN_DIR` (the run directory), `CC_PIPELINE_MANIFEST`, `CC_PIPELINE_LEDGER`, `CC_PIPELINE_GRANT`, `CC_PIPELINE_GATE` (the gate's absolute path), `CC_PIPELINE_TARGET`, `CC_PIPELINE_SEGMENT`, `CC_PIPELINE_STAGE_ID` (`<step>#<attempt>`; this and the segment are empty in a routing shift), `CC_PIPELINE_SHIFT_ID` (a routing shift only), and, when they apply, `CC_PIPELINE_HALT_ANSWER` (an answer card's path), `CC_PIPELINE_REENTRY_CARD` (a re-entry card's path) and `CC_PIPELINE_AUDIT_PASS`.

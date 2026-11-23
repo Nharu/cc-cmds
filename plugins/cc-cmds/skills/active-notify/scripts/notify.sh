@@ -337,15 +337,24 @@ dispatch_fire() {
     # renders as `Terminal`. The bare marker is kept because there is no way to
     # change the application name (`-sender` and `-appIcon` are discontinued), so
     # the title is the only place provenance can live.
-    notifier_args=( -title "cc-cmds ${workflow}" -message "${summary}" -execute "$click" -group "$group" )
+    #
+    # EVERY FIRE MAKES A SOUND. `-sound default` rides on every mode: a banner is
+    # one event told to a person, and each fire tells a new one. That holds for
+    # the single one-shot fire too, which reuses the session's slot — the earlier
+    # ARM's banner belongs to an event already over, and terminal-notifier
+    # removes the delivered notification of that group before it adds the new
+    # request with its sound, so the sound plays once per fire.
+    notifier_args=( -title "cc-cmds ${workflow}" -message "${summary}" -execute "$click" -group "$group" -sound default )
     dispatch_notifier "${notifier_args[@]}" || true
   else
-    # repeat — same swallowing rule as the single-mode dispatch above.
+    # repeat — same swallowing rule and the same sound as the single-mode
+    # dispatch above; each repeat fire has its own group, so its own banner.
     dispatch_notifier \
       -title "cc-cmds ${workflow}" \
       -message "${summary}" \
       -execute "$click" \
-      -group "$group" || true
+      -group "$group" \
+      -sound default || true
   fi
 }
 

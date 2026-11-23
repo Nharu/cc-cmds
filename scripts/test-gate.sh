@@ -25981,6 +25981,66 @@ check "접두 아래에서 .. 로 빠져나간 publish --cleanup 은 1 로 끝�
 check "그 대조군은 원본과 두 디렉터리를 그대로 둔다" \
   "$(shasum -a 256 "$DT31/co.md" | cut -d' ' -f1)-$( [ -d "$DT31/plain" ] && [ -d "$DT31_D2" ] && printf 'yes' || printf 'no' )" \
   "$DT31_CO_SHA-yes"
+# checkout --reviewed — 조정 시작 시각과 감사 사본 해시를 같은 호출이 낸다.
+printf '# 감사 사본\n' > "$DT31/audited.md"
+DT31_AU_SHA=$(shasum -a 256 "$DT31/audited.md" | cut -d' ' -f1)
+dt31_gate checkout "$DT31/co.md" --prefix "$DT31_PFX" --expect "$DT31_CO_SHA" --reviewed "$DT31/audited.md"
+check "doc-tidy.py checkout --reviewed 를 게이트 경유로 실행하면 통과한다" "$rc" "0"
+case "$msg" in
+  *"reviewed_sha256=$DT31_AU_SHA"*) ok "checkout --reviewed 가 감사 사본의 sha256 을 낸다" ;;
+  *) bad "checkout reviewed_sha256 출력" "$msg" ;;
+esac
+if [ "$(printf '%s\n' "$msg" | grep -Ec '(^| )at=[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z( |$)')" -gt 0 ]; then
+  ok "checkout 이 UTC 시각 at= 줄을 낸다"
+else
+  bad "checkout at= 출력" "$msg"
+fi
+dt31_gate checkout "$DT31/co.md" --prefix "$DT31_PFX" --expect "$DT31_CO_SHA" --reviewed "$DT31/no-such.md"
+case "$msg" in
+  *"reviewed_sha256=absent"*) ok "없는 감사 사본의 checkout --reviewed 는 absent 를 낸다" ;;
+  *) bad "checkout reviewed_sha256=absent 출력" "$msg" ;;
+esac
+# stamp --keep — 한 번의 읽기에서 해시·크기·시각을 내고 같은 바이트로 사본을 쓴다.
+DT31_ST_BYTES=$(wc -c < "$DT31/co.md" | tr -d ' ')
+dt31_gate stamp "$DT31/co.md" --keep "$DT31/audited/sub/co.md"
+check "doc-tidy.py stamp --keep 을 게이트 경유로 실행하면 통과한다" "$rc" "0"
+case "$msg" in
+  *"sha256=$DT31_CO_SHA"*"bytes=$DT31_ST_BYTES"*"kept_sha256=$DT31_CO_SHA"*) ok "stamp --keep 이 sha256·bytes·kept_sha256 을 낸다" ;;
+  *) bad "stamp --keep 출력" "$msg" ;;
+esac
+if [ "$(printf '%s\n' "$msg" | grep -Ec '(^| )at=[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z( |$)')" -gt 0 ]; then
+  ok "stamp 가 UTC 시각 at= 줄을 낸다"
+else
+  bad "stamp at= 출력" "$msg"
+fi
+check "stamp --keep 의 사본은 원본과 바이트가 같다" \
+  "$(cmp -s "$DT31/co.md" "$DT31/audited/sub/co.md" && printf 'same' || printf 'diff')" "same"
+case "$msg" in
+  *"keep_failed="*) bad "stamp --keep 사본 실패" "$msg" ;;
+  *) ok "stamp --keep 이 keep_failed 를 내지 않는다" ;;
+esac
+# keep-reports — 증인 파일을 보고서 옆 reader-<k> 사본으로 바이트 그대로 쓴다.
+for k in 1 2 3; do printf '# reader-%s\n<!-- cc-design-audit v1; owner-doc=k -->\n본문 %s\n' "$k" "$k" > "$WPUB/reader-$k.fanout.md"; done
+mkdir -p "$DT31/rep"
+dt31_gate keep-reports "$DT31/rep/k.md" "$WPUB/reader-1.fanout.md" "$WPUB/reader-2.fanout.md" "$WPUB/reader-3.fanout.md"
+check "doc-tidy.py keep-reports 를 게이트 경유로 실행하면 통과한다" "$rc" "0"
+DT31_KR=0
+for k in 1 2 3; do
+  cmp -s "$WPUB/reader-$k.fanout.md" "$DT31/rep/k.reader-$k.md" && DT31_KR=$((DT31_KR + 1))
+done
+check "keep-reports 가 증인 셋을 바이트 그대로 사본으로 쓴다" "$DT31_KR" "3"
+case "$msg" in
+  *"kept=$DT31/rep/k.reader-1.md sha256="*) ok "keep-reports 가 파일마다 kept= 줄을 낸다" ;;
+  *) bad "keep-reports kept= 출력" "$msg" ;;
+esac
+printf 'x\n' > "$WPUB/notes.md"
+dt31_gate keep-reports "$DT31/rep/bad.md" "$WPUB/reader-1.fanout.md" "$WPUB/notes.md"
+check "증인 이름이 꼴이 아닌 keep-reports 는 1 로 끝난다" "$rc" "1"
+dt31_gate keep-reports "$DT31/rep/bad.md" "$WPUB/reader-1.fanout.md" "$WPUB/reader-1.fanout.md"
+check "같은 독자 번호가 둘인 keep-reports 는 1 로 끝난다" "$rc" "1"
+check "거절된 keep-reports 는 사본을 하나도 쓰지 않는다" \
+  "$(find "$DT31/rep" -name 'bad.reader-*' | wc -l | tr -d ' ')" "0"
+rm -f "$WPUB/notes.md" "$WPUB"/reader-[123].fanout.md
 unset DT31_RID
 rm -rf "$DT31"
 # 대조군 — 아무도 만들지 않는 이름은 예외가 아니다. 예외를 넓게 적어 두면 가드가
@@ -31293,24 +31353,77 @@ case "$tok_refusal_clear" in
   *) bad "폐쇄 집합(지우기)" "$(printf '%s' "$tok_refusal_clear" | tr '\n' ' ')" ;;
 esac
 
-# --- `approval-ask`, THE ONE SILENT TOKEN ------------------------------------
+# --- `approval-ask`, THE APPROVAL SLOT'S SECOND BANNER ------------------------
 #
-# It is outside the token table above on purpose: the walk asserts every row
-# sounds `default`, and this token is the one that does not — it rewrites an
-# approval's banner that already rang. So it is asserted here, on its own: both
-# closed sets take it, its group is the approval's own slot (`answer`'s, per
-# item key), its sound is empty, and its title carries the run name when one
-# is set.
-ask_row=$(bash -c '
+# It is outside the token table above on purpose: the table's rows sound
+# `default` unconditionally, and this token's sound depends on whether the
+# approval's slot already rang. So it is asserted here, on its own: both closed
+# sets take it, its group is the approval's own slot (`answer`'s, per item key),
+# its title carries the run name when one is set, and with no run directory —
+# nothing to tell whether a banner is being replaced — it rings as the slot's
+# first banner. Both subshells unset `RUN_DIR`, so a value an earlier part of the
+# file exported cannot decide the sound.
+ask_row=$(env -u RUN_DIR bash -c '
   . "'"$repo_root"'/plugins/cc-cmds/orchestrator/notify-run.sh"
   RUN_ID=RT
   CC_NOTIFY_SESSION_ID=SID9
   printf "%s|%s|%s|%s|%s" "$(cc_notify_group approval-ask KEY)" "$(cc_notify_group answer KEY)" \
-    "$(cc_notify_sound approval-ask)" "$(cc_notify_title approval-ask)" \
+    "$(cc_notify_sound approval-ask KEY)" "$(cc_notify_title approval-ask)" \
     "$(CC_NOTIFY_RUN_LABEL=런이름 cc_notify_title approval-ask)"
 ')
-check "approval-ask — 승인 슬롯·소리 없음·제목" "$ask_row" \
-  "cc-cmds-autopilot-RT-KEY|cc-cmds-autopilot-RT-KEY||cc-cmds · 답하세요|cc-cmds · 런이름 · 답하세요"
+check "approval-ask — 승인 슬롯·런 디렉터리 없으면 소리 default·제목" "$ask_row" \
+  "cc-cmds-autopilot-RT-KEY|cc-cmds-autopilot-RT-KEY|default|cc-cmds · 답하세요|cc-cmds · 런이름 · 답하세요"
+
+# --- AN APPROVAL'S SLOT RINGS ONCE WHILE IT IS HELD ---------------------------
+#
+# `answer` and `approval-ask` share the slot's ring mark `notify.rang/<key>`:
+# the first banner into the slot rings, every later one replaces it silently,
+# and releasing the slot (`cc_notify_stack_release`) lets the next one ring
+# again. Driven through `cc_notify_fire` against a recording notifier of this
+# block's own, in a run directory of its own, so no other part of the file
+# decides what is counted. Each case reads its own log; an empty log fails the
+# case rather than passing it with zero sounds. Both switches are pinned on,
+# because `approval-ask` reads the session switch and a value the caller's
+# environment carries would silence it. A case that fires twice waits for the
+# first notifier before the second fire, so the log's first line is the first
+# banner and not whichever detached notifier wrote first.
+rang_dir=$(mktemp -d "$WORK/rang.XXXXXX")
+mkdir -p "$rang_dir/bin" "$rang_dir/run"
+cat > "$rang_dir/bin/terminal-notifier" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$CC_TEST_NOTIFY_LOG"
+STUB
+chmod +x "$rang_dir/bin/terminal-notifier"
+rang_fire() {
+  # rang_fire <log> <script> — the script runs with the emitter sourced and
+  # `RUN_DIR` set to this block's run directory, then waits for the detached
+  # notifier, and prints "<banner lines>|<sound lines>|<sound on line 1>".
+  : > "$1"
+  env -u RUN_DIR -u CC_PIPELINE_SHIFT_ID -u CC_PIPELINE_REENTRY PATH="$rang_dir/bin:$PATH" \
+    CC_TEST_NOTIFY_LOG="$1" \
+    CC_CMDS_AUTOPILOT_NOTIFY=1 \
+    CC_CMDS_SESSION_NOTIFY=1 \
+    CC_CMDS_NOTIFY_PATH_DISABLE_PREPEND=1 \
+    CC_CMDS_NOTIFY_HOST_OS=Darwin \
+    CC_PIPELINE_SEGMENT= CC_PIPELINE_STAGE_ID= \
+    bash -c '. "$1"; RUN_DIR="$2"; RUN_ID=RTRANG; eval "$3"; wait' \
+    _ "$repo_root/plugins/cc-cmds/orchestrator/notify-run.sh" "$rang_dir/run" "$2" >/dev/null 2>&1
+  local n s f
+  n=$(grep -c . "$1" 2>/dev/null || true)
+  s=$(grep -cF -- '-sound default' "$1" 2>/dev/null || true)
+  f=$(head -1 "$1" 2>/dev/null | grep -cF -- '-sound default' || true)
+  printf '%s|%s|%s' "${n:-0}" "${s:-0}" "${f:-0}"
+}
+check "승인 자리 — 같은 키의 answer 두 번은 배너 둘·소리 하나" \
+  "$(rang_fire "$rang_dir/a.log" 'cc_notify_fire answer 질문 RK1; wait; cc_notify_fire answer 질문 RK1')" "2|1|1"
+check "승인 자리 — 반납한 뒤 같은 키의 answer 는 다시 울린다" \
+  "$(rang_fire "$rang_dir/b.log" 'cc_notify_stack_release RK1; cc_notify_fire answer 질문 RK1')" "1|1|1"
+check "승인 자리 — answer 다음 approval-ask 는 첫 줄만 울린다" \
+  "$(rang_fire "$rang_dir/c.log" 'cc_notify_fire answer 질문 RK2; wait; cc_notify_fire approval-ask 물음 RK2')" "2|1|1"
+check "승인 자리 — 울린 적 없는 자리의 approval-ask 는 울린다" \
+  "$(rang_fire "$rang_dir/d.log" 'cc_notify_fire approval-ask 물음 RK3')" "1|1|1"
+check "승인 자리 — 울린 자리는 표지 디렉터리를 남긴다" \
+  "$([ -d "$rang_dir/run/notify.rang/RK3" ] && echo 있음 || echo 없음)" "있음"
 ask_roundtrip=$(bash -c '
   . "'"$repo_root"'/plugins/cc-cmds/orchestrator/notify-run.sh"
   RUN_ID=RT
