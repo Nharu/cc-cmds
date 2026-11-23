@@ -96,14 +96,18 @@ naming the linked run for that one call:
 | Field | `approval-ask` |
 |---|---|
 | Group | the approval's own `cc-cmds-autopilot-<run id>-<id>`, so it replaces the approval's banner |
-| Sound | none — the line carries no `-sound` |
+| Sound | none when the approval's slot already rang (the line carries no `-sound`), `default` otherwise — the slot's ring mark `notify.rang/<id>` in the run directory decides |
 | Click | this session's pane, like `session-ask` |
 | Title | `cc-cmds · <run name> · 답하세요`, or `cc-cmds · 답하세요` with no run name |
 | Body | the `session-ask` body above |
 | Switch | the session switch, and seat 1 checks the autopilot switch before choosing it |
 | Attention | `auq`, in the approval's slot, with the attachment above |
 
-A second ask of the same approval, and every call with no link, raises
+An approval's slot rings once while it is held: `answer` and `approval-ask`
+share the mark, so the ask replaces a banner that already rang without a sound,
+and rings when the approval's `answer` never rang there (it was demoted to the
+overflow slot by the cap). Releasing the slot when the approval closes removes
+the mark. A second ask of the same approval, and every call with no link, raises
 `session-ask` as before. The run name is the run's `notify.label`, which the gate
 writes; the run's own `answer` banner carries it too, as `cc-cmds · <run name> ·
 답할 것이 생겼습니다`.

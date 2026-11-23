@@ -32,3 +32,6 @@ grep -q -- '-title cc-cmds iter' "$NOTIFIER_LOG" || { echo "FIRE: title missing"
 # Fired outside tmux — the driver clears TMUX and TMUX_PANE — so the click
 # value is the `:` fallback, and `-execute` is still there.
 grep -q -- '-execute :' "$NOTIFIER_LOG" || { echo "FIRE: -execute ':' no-op missing" >&2; exit 1; }
+# Each repeat fire is its own banner, so each line carries the sound.
+nosound=$(grep -vc -- '-sound default' "$NOTIFIER_LOG" || true)
+[[ "$nosound" == "0" ]] || { echo "FIRE: every fire line must carry -sound default ($nosound without)" >&2; cat "$NOTIFIER_LOG" >&2; exit 1; }

@@ -5,7 +5,7 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [3.59.2] - 2026-11-23
+## [3.59.4] - 2026-11-23
 
 런 대시보드의 목록·상세 API 응답을 빠르게 한다. 지금까지는 종단 런의 평가만 다시 썼고, 목록과 상세가 락 하나 아래에서 계산되어 상세 요청이 목록 계산 전체를 기다렸다. 이제 버려짐·승인대기 런의 평가도 읽은 파일과 프로세스 사실이 그대로인 동안 다시 쓰고, 목록과 상세는 각자의 읽기 모델과 락 아래에서 계산한다. 응답 본문·상태 코드·ETag 의 모양은 바뀌지 않는다.
 
@@ -23,6 +23,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Why
 
 - 이 호스트의 원천 구성을 본뜬 1,521개 원천의 합성 런 루트에서, 머지 기준 서버 대비 후보 서버의 중앙값이 3일 목록 4.739초 → 1.222초, 30일 목록 4.879초 → 1.388초, 30일 목록 계산 중에 들어온 상세 4.541초 → 0.111초로 줄었다.
+
+## [3.59.3] - 2026-11-23
+
+부하가 높은 호스트에서 `watch.sh` 의 after-stage 배너가 문턱 뒤 다음 정기 전체 패스까지 밀리던 것을 고친다. 패스 끝의 만기 예약이 그때 새로 읽은 시각과 비교해, 패스 도중에 지난 문턱을 판정하지도 예약하지도 않았다.
+
+### Fixed
+
+- **`watch.sh` 만기 예약 기준 시각** — 탐침 주기를 전체 패스로 바꿀 다음 만기를, 패스가 팔을 판정하기 전에 읽은 시각과 비교해 예약한다. 패스 도중에 지난 시간 팔 문턱은 예약되어 다음 주기가 전체 패스가 된다. `scripts/test-watch.sh` 의 "조용한 런의 after-stage 만기" 단언(문턱 6초)이 부하가 높을 때만 지연 3 주기로 실패해 이 시험을 끌어오는 무인 런의 check-push 를 막던 일이 사라진다.
+
+## [3.59.2] - 2026-11-23
+
+플러그인이 띄우는 배너마다 알림 소리가 정확히 하나 나게 한다. active-notify `fire-now` 배너와 "알림 테스트" 권한 테스트 배너는 지금까지 소리 없이 떴고, 같은 승인의 `answer` 배너는 게이트와 감시자가 겹쳐 올리면 한 배너에서 소리가 두 번 날 수 있었다.
+
+### Fixed
+
+- **active-notify `fire-now`** — single 한 번짜리(세션 자리를 갈아 끼우는 배너 포함), single `--count=N`, repeat 모두 `-sound default` 를 단다. 새 발사는 앞선 배너와 다른 사건을 처음 알리므로 매번 울린다.
+- **알림 테스트 우회 배너** — SKILL.md 필수 형식 명령과 루트 README 의 복구 명령에 `-sound 'default'` 를 넣었다. 자동 승인 훅의 패턴은 그대로이며 바뀐 명령도 그 패턴에 맞는다.
+- **승인 자리는 한 번 차 있는 동안 한 번만 울린다** — `answer` 와 `approval-ask` 가 런 디렉터리의 `notify.rang/<항목 키>` 표지를 `mkdir` 로 선점해, 처음 선점한 배너만 `default` 로 울리고 뒤의 배너는 소리 없이 갈아 끼운다. `answer` 가 쌓기 상한에 걸려 대기 자리로 강등된 승인에서는 `approval-ask` 가 그 자리의 첫 배너로 울린다. 소리는 terminal-notifier 존재 확인 뒤 발사 직전에 정하고, `cc_notify_stack_release` 가 승인 자리를 반납할 때 표지도 지운다. 런 디렉터리 없이 부른 `approval-ask` 는 첫 배너로 보고 울린다.
+- **시험** — fire-now 세 모드, 권한 테스트 우회 명령(SKILL.md 의 실제 줄을 읽는다), 세션 질문 훅의 승인 연결 묶음, 같은 승인 자리 두 번 올리기를 단언한다. `-group` 을 인자 줄 끝으로 읽던 두 픽스처(`attention-fire-main`, `fire-now-focus-arg`)는 `-group` 바로 뒤 낱말만 그룹으로 읽는다.
+
+### Why
+
+배너 하나는 사람에게 알리는 사건 하나를 처음 띄우는 것이다. 이미 소리가 나는 세션·autopilot 배너가 같은 자리를 갈아 끼우며 매번 울리는 지금의 동작과 같은 기준으로, 새로 소리를 넣는 배너와 승인 자리의 중복을 함께 맞춘다.
 
 ## [3.59.1] - 2026-11-23
 
