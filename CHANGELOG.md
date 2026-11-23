@@ -5,7 +5,7 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [3.58.1] - 2026-11-23
+## [3.59.1] - 2026-11-23
 
 무인 스테이지 리드가 앞 결과 없이 정할 수 있는 읽기를 한 응답에 묶도록 한다. 모든 스테이지·구성원·라우터 시프트에 먼저 실리는 스테이지 정책에 묶기 규칙 절을 두고, 스테이지 리드가 읽기 하나만 실은 응답을 연달아 낼 때 그 사실을 알려 주는 비차단 안내 훅을 더한다. 게이트·원장·응답당 게이트 호출 상한은 바꾸지 않는다.
 
@@ -22,6 +22,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Why
 
 - 3.50.0 이상 647 스테이지에서 도구 하나만 실은 요청이 70.5%, 3회 이상 이어진 읽기 연쇄 안의 요청이 46.0% 였다. 상한을 푼 3.50.0 은 두 비율을 거의 움직이지 못했다. 새 판으로 돈 스테이지 100개 이상의 창에서 연쇄 안 요청 35% 이하, 도구 하나 요청 60% 이하를 목표로 두고, 리뷰 P0·P1 수, 종단 상태 분포, 낡은 다이제스트 거부 비율은 나빠지지 않아야 한다. 판정은 착지 뒤의 측정이다.
+
+## [3.59.0] - 2026-11-23
+
+무인 감사 스테이지 리드의 부기 exec 를 줄인다. 설계 문서의 다이제스트·크기·시각 측정과 감사 사본 복사, 독자 보고서 사본 복사, 조정 시작 시각과 감사 사본 해시를 각각 `doc-tidy.py` 한 호출로 묶는다. 첫 감사의 리드 부기 exec 는 스테이지당 약 22회에서 약 12회로 줄 것으로 본다. 측정 스크립트는 새 두 호출을 부기 exec 로 세고, 안쪽 명령별 분해에 하위 명령별 행으로 싣는다.
+
+### Added
+
+- **`doc-tidy.py stamp DOC [--keep COPY]`** — 문서를 바이트로 한 번 읽어 `sha256=`·`bytes=`·`at=` 을 내고, `--keep` 이면 같은 바이트를 사본에 원자적으로 쓰고 다시 읽어 `kept_sha256=` 을 낸다. 사본 쓰기가 실패하면 `keep_failed=` 를 내고 종료 코드는 0 이다.
+- **`doc-tidy.py keep-reports REPORT WITNESS...`** — 독자 증인 `reader-<k>.<phase>.md` 를 보고서 옆 `.reader-<k>.md` 로 바이트 그대로 쓴다. 이름 꼴이 틀리거나 같은 번호가 둘이거나 증인이 비어 있으면 아무것도 쓰지 않고 1 로 끝난다.
+- **`doc-tidy.py checkout --reviewed PATH`** — `checkout` 이 `at=` 을 늘 내고, `--reviewed` 파일의 `reviewed_sha256=`(없으면 `absent`)을 낸다.
+- **새 감사 절차 측정 시험** — `scripts/test-measure-bookkeeping.sh` 가 새 절차로 돈 감사 스테이지 픽스처에서 `by_command` 의 `doc-tidy.py stamp`·`doc-tidy.py keep-reports` 리드 횟수와 스테이지당 값, 옛 절차의 `cp`·`date`·`wc` 가 빠졌음을 단언한다.
+
+### Changed
+
+- **감사 스킬 절차** — `design-audit-unattended` 의 FREEZE, 독자 보고서 사본, 조정 패스 첫 응답, 마지막 측정이 위 세 호출을 쓴다. 난수 발급, 닫는 재해시, unmark 앞 재확인, 게시, 팀 정리는 그대로다.
+- **조정 패스 시각 규칙** — `조정 시작`·`조정 종료` 는 그 시각을 잰 행위가 낸 UTC 시각이다. `date`, 또는 무인 감사에서는 그 행위인 `doc-tidy.py` 호출의 `at=` 줄이다.
+- **부기 정의** — 측정 스크립트가 `doc-tidy.py` 의 `stamp`·`keep-reports` 도 `checkout`·`publish` 처럼 부기 exec 로 센다.
 
 ## [3.58.0] - 2026-11-23
 

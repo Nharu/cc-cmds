@@ -34,8 +34,8 @@ What counts as bookkeeping: a `Bash` tool call whose command is the gate's
 `exec` (first word ending in `/orchestrator/gate.sh`, second word `exec`) and
 whose argv0 after ` -- ` has one of the basenames shasum, printenv, cp, date,
 rm, openssl, mktemp, mv, lockf, wc, cc-team-witness-publish.sh,
-cc-team-nonce.sh, or is `doc-tidy.py` with the subcommand `checkout` or
-`publish`.
+cc-team-nonce.sh, or is `doc-tidy.py` with the subcommand `checkout`,
+`publish`, `stamp` or `keep-reports`.
 
 Inner command key: every gate `exec` with an argv0 after ` -- ` gets a key,
 bookkeeping or not — the argv0's basename, or `doc-tidy.py <subcommand>` for
@@ -94,7 +94,7 @@ from collections import OrderedDict  # noqa: E402
 KINDS = ["design", "audit", "reconverge", "implement", "review", "lead-fix"]
 BOOKKEEPING = {"shasum", "printenv", "cp", "date", "rm", "openssl", "mktemp", "mv", "lockf", "wc",
                "cc-team-witness-publish.sh", "cc-team-nonce.sh"}
-DOC_TIDY_VERBS = {"checkout", "publish"}
+DOC_TIDY_VERBS = {"checkout", "publish", "stamp", "keep-reports"}
 STALE = "stale snapshot digest"
 ROW_PREFIX = "- `stage-result`"
 LOG_RE = re.compile(r"^(.+)#(\d+)\.json$")
