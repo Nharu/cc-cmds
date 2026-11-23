@@ -6,8 +6,10 @@
     doc-tidy.py unmark  DOC --archive ARCHIVE --doc-key KEY --writer NAME --since BASE [--lock FILE]
     doc-tidy.py check   BEFORE AFTER ARCHIVE
     doc-tidy.py tidy    DOC --archive ARCHIVE --doc-key KEY --writer NAME --below BYTES [--reviewed FROZEN] [--lock FILE]
-    doc-tidy.py checkout DOC --prefix PREFIX --expect SHA256 [--pre]
+    doc-tidy.py checkout DOC --prefix PREFIX --expect SHA256 [--pre] [--reviewed PATH]
     doc-tidy.py publish COPY DOC --expect SHA256 --lock FILE [--cleanup]
+    doc-tidy.py stamp   DOC [--keep COPY]
+    doc-tidy.py keep-reports REPORT WITNESS...
 
 Rule T1 moves every superseded-sentence parenthesis ` (대체된 문장: "...")` into
 an `### A<n>` piece and leaves ` (보관 A<n>)` in its place. Rule T3 moves, from a
@@ -66,7 +68,9 @@ namespace the gate's run-local proof accepts. `checkout` refuses when either
 variable is empty or `--prefix` is not that prefix byte for byte, and exits 65
 when DOC's sha256 is not `--expect`; both create nothing. Otherwise it makes a
 `<prefix>XXXXXXXX` directory, writes `doc.md` (and with `--pre` an identical
-`pre.md`) and prints `dir=<directory>` and `sha256=<value>`; a copy that fails
+`pre.md`) and prints `dir=<directory>`, `sha256=<value>` and `at=<time>`, then
+`reviewed_sha256=<value>` of the `--reviewed` file, or `reviewed_sha256=absent`
+when the option is not given or the file does not exist; a copy that fails
 removes the directory and exits 1. `publish` checks its arguments first, and
 with `--cleanup` that COPY's parent, resolved the way the gate's proof
 resolves a path (`..` from the physical parent, symlinked ancestors followed),
@@ -80,8 +84,23 @@ COPY's bytes — no temporary file beside DOC and no rename — printing
 only that removal fails the publish stands, the exit code is 0 and a
 `cleanup_failed=<directory>` line follows.
 
+`stamp` and `keep-reports` are the measuring and copying steps of the
+unattended audit. `stamp` reads DOC once as bytes and prints `sha256=<value>`,
+`bytes=<n>` and `at=<time>` from that one read. With `--keep COPY` it writes
+those same bytes to COPY by an atomic rename (creating missing parent
+directories), reads COPY back and prints `kept_sha256=<value>`; a copy that
+fails prints `keep_failed=<reason>` and still exits 0, because a lost copy does
+not stop the audit. `keep-reports` checks every operand before it writes: REPORT
+ends in `.md`, each WITNESS is a non-empty regular file named
+`reader-<k>.<phase>.md`, and no `k` appears twice. When all pass, each witness
+is written byte for byte, by an atomic rename, to REPORT without `.md` followed
+by `.reader-<k>.md`, with one `kept=<target> sha256=<value>` line per file;
+when one fails nothing is written and the exit code is 1. Every `at=` is UTC in
+the form `YYYY-MM-DDTHH:MM:SSZ`, the form of the audit report's time fields.
+
 Exit codes: 0 success (a publish whose cleanup alone failed included, with its
-`cleanup_failed=` line), 1 check failed or refused (nothing written; a
+`cleanup_failed=` line, and a `stamp` whose `--keep` copy alone failed, with
+its `keep_failed=` line), 1 check failed or refused (nothing written; a
 `checkout` copy that failed leaves nothing behind), 2 usage, 65 the document's
 sha256 is not the expected one (nothing written), 75 the `--lock` file is held
 by another process (nothing read or written).
@@ -550,9 +569,13 @@ def fence_for(content):
     return "`" * max(3, longest + 1)
 
 
+def utc_stamp():
+    """The current UTC time as `YYYY-MM-DDTHH:MM:SSZ`."""
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
 def render_block(pieces, writer, key):
-    stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    out = ["## 정리 %s — %s" % (stamp, writer), ""]
+    out = ["## 정리 %s — %s" % (utc_stamp(), writer), ""]
     for kind, n, heading, content in pieces:
         out.append("### %s%d" % (kind, n))
         if kind == "B":
@@ -818,6 +841,11 @@ def cmd_checkout(args):
         raise Refused("사본 복사 실패 — %s (만든 디렉터리를 지움)" % e)
     print("dir=%s" % d)
     print("sha256=%s" % got)
+    print("at=%s" % utc_stamp())
+    if args.reviewed and os.path.isfile(args.reviewed):
+        print("reviewed_sha256=%s" % sha256_of(args.reviewed))
+    else:
+        print("reviewed_sha256=absent")
     return 0
 
 
@@ -865,6 +893,53 @@ def cmd_publish(args):
         except OSError as e:
             print("doc-tidy publish: 사본 디렉터리 정리 실패 — %s" % e, file=sys.stderr)
             print("cleanup_failed=%s" % d)
+    return 0
+
+
+# ------------------------------------------------------------- audit steps
+
+WITNESS_NAME_RE = re.compile(r"^reader-([0-9]+)\.[^/]+\.md$")
+
+
+def cmd_stamp(args):
+    with open(args.doc, "rb") as f:
+        data = f.read()
+    print("sha256=%s" % hashlib.sha256(data).hexdigest())
+    print("bytes=%d" % len(data))
+    print("at=%s" % utc_stamp())
+    if args.keep:
+        try:
+            atomic_write(args.keep, data)
+            print("kept_sha256=%s" % sha256_of(args.keep))
+        except OSError as e:
+            print("keep_failed=%s" % e)
+    return 0
+
+
+def cmd_keep_reports(args):
+    if not args.report.endswith(".md"):
+        raise Refused("보고서 경로 %s 가 .md 로 끝나지 않음" % args.report)
+    stem = args.report[:-len(".md")]
+    plan = []
+    seen = set()
+    for w in args.witness:
+        m = WITNESS_NAME_RE.match(os.path.basename(w))
+        if not m:
+            raise Refused("증인 이름 %s 가 reader-<k>.<phase>.md 꼴이 아님" % w)
+        k = m.group(1)
+        if k in seen:
+            raise Refused("같은 독자 번호 %s 의 증인이 둘" % k)
+        seen.add(k)
+        if not os.path.isfile(w):
+            raise Refused("증인 %s 가 일반 파일이 아님" % w)
+        with open(w, "rb") as f:
+            data = f.read()
+        if not data:
+            raise Refused("증인 %s 가 비어 있음" % w)
+        plan.append(("%s.reader-%s.md" % (stem, k), data))
+    for target, data in plan:
+        atomic_write(target, data)
+        print("kept=%s sha256=%s" % (target, hashlib.sha256(data).hexdigest()))
     return 0
 
 
@@ -921,6 +996,7 @@ def main(argv):
     sp.add_argument("--prefix", required=True)
     sp.add_argument("--expect", required=True)
     sp.add_argument("--pre", action="store_true")
+    sp.add_argument("--reviewed")
 
     sp = sub.add_parser("publish")
     sp.add_argument("copy")
@@ -929,10 +1005,19 @@ def main(argv):
     sp.add_argument("--lock", required=True)
     sp.add_argument("--cleanup", action="store_true")
 
+    sp = sub.add_parser("stamp")
+    sp.add_argument("doc")
+    sp.add_argument("--keep")
+
+    sp = sub.add_parser("keep-reports")
+    sp.add_argument("report")
+    sp.add_argument("witness", nargs="+")
+
     args = p.parse_args(argv)
     handler = {"plan": cmd_plan, "apply": cmd_apply, "unmark": cmd_unmark,
                "check": cmd_check, "tidy": cmd_tidy,
-               "checkout": cmd_checkout, "publish": cmd_publish}[args.verb]
+               "checkout": cmd_checkout, "publish": cmd_publish,
+               "stamp": cmd_stamp, "keep-reports": cmd_keep_reports}[args.verb]
     # A verb's own argument and name checks run before the lock is tried, so a
     # refused name exits 1 even while another process holds the lock.
     precheck = {"publish": precheck_publish}.get(args.verb)

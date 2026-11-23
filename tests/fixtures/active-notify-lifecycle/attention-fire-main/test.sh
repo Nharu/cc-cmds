@@ -57,10 +57,13 @@ take_new() {
 }
 
 last_group() {
-  local line
+  # The group is the one word right after `-group`; other arguments (such as
+  # `-sound default`) may follow it on the line.
+  local line rest
   line=$(tail -n 1 "$NOTIFIER_LOG")
   [[ "$line" == *" -group "* ]] || fail "the stub log has no -group: $line"
-  printf '%s' "${line##* -group }"
+  rest="${line##* -group }"
+  printf '%s' "${rest%% *}"
 }
 
 # check_event <label> <summary> — the newest event against the newest banner.

@@ -129,6 +129,16 @@ d=$(fresh rekick-reads-defaults)
 printf 'bash "$RK_DIR/kickoff-defaults.sh" --carry "$m"\n' >> "$d/orchestrator/rekick.sh"
 case_run "rekick.sh 가 kickoff-defaults.sh 를 부른다" "$d" 1 "$R1"
 
+# 14. the gate names the re-kickoff helper to refuse its mid-run mark
+d=$(fresh gate-names-rekick)
+printf '# a stage never runs rekick.sh mark-urgent\n' >> "$d/orchestrator/gate.sh"
+case_run "gate.sh 가 rekick.sh 를 적는다" "$d" 0
+
+# 15. the gate's exemption is the gate alone — another orchestrator file is caught
+d=$(fresh route-names-rekick)
+printf '# a stage never runs rekick.sh mark-urgent\n' >> "$d/orchestrator/route.sh"
+case_run "route.sh 가 rekick.sh 를 적는다" "$d" 1 "$R4"
+
 echo "test-lint-kickoff-defaults: $passed passed, $failures failed"
 
 if (( failures > 0 )); then

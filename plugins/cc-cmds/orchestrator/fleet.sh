@@ -1468,16 +1468,20 @@ fleet_reentry_poller_live() {
   # and runs `checks.sh` (`fleet_reentry_script_live`). Stricter than the
   # gate's own test (`gate_relay_poller_live`, existence alone): a re-entry that
   # reads a pid the system handed to another process as a live poller starts
-  # none, and a run with no poller reads as a green night.
-  fleet_reentry_script_live "$1/checks.pid" 'checks\.sh'
+  # none, and a run with no poller reads as a green night. While the resident
+  # observer holds the run's checks job, `checks.pid` holds the observer's pid,
+  # so a process running `observer.py` is the live poller too.
+  fleet_reentry_script_live "$1/checks.pid" '(checks\.sh|observer\.py)'
 }
 
 fleet_reentry_watcher_live() {
   # fleet_reentry_watcher_live <run dir> — a bare pid in `watch.pid` that exists
   # and runs `watch.sh` (`fleet_reentry_script_live`). The watcher rewrites
   # that file with its own pid on every pass and never removes it, so a
-  # finished watcher leaves its pid behind.
-  fleet_reentry_script_live "$1/watch.pid" 'watch\.sh'
+  # finished watcher leaves its pid behind. The pid file of any job the
+  # resident observer holds names the observer, so a process running
+  # `observer.py` is read as the live watcher too.
+  fleet_reentry_script_live "$1/watch.pid" '(watch\.sh|observer\.py)'
 }
 
 fleet_reentry_script_live() {

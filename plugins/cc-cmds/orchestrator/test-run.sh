@@ -976,11 +976,39 @@ printf '**스킬**: implement-unattended\n**스텝**: Step 1 CFI-U3 BT-STOP — 
 printf '**스킬**: implement-unattended\n**스텝**: Step 3 CFI-U3 BT-STOP — 미결 결정 아님\n' > "$UCD/h2.md"
 check "미결 결정 정지 판별은 스텝 값 전체를 비교한다" \
   "$(halt_step_is_unclosed_decision "$UCD/h1.md" && printf y || printf n)$(halt_step_is_unclosed_decision "$UCD/h2.md" && printf y || printf n)" "yn"
-printf '**스킬**: implement-unattended\n**스텝**: Step 2 CFI-U3 BT-STOP — 사람 둔 어긋남\n' > "$UCD/k1.md"
-printf '**스킬**: implement-unattended\n**스텝**: Step 2 CFI-U3 BT-STOP — 사람 둔 어긋남 아님\n' > "$UCD/k2.md"
-printf '**스킬**: implement-unattended\n**스텝**: Step 2 CFI-U3 BT-STOP\n' > "$UCD/k3.md"
-check "사람 둔 어긋남 정지 판별은 스텝 값 전체를 비교한다 (꼬리만 다른 스텝·앞 접두만 같은 스텝·미결 결정 정지는 아님)" \
-  "$(for f in k1 k2 k3 h1; do halt_step_is_kept_drift "$UCD/$f.md" && printf y || printf n; done)" "ynnn"
+# 사람 둔 어긋남 판독은 첫 스텝 값의 공백을 모두 지우고 dash 다섯 종을 - 로 바꾼 뒤
+# CFI-U3BT-STOP 과 그 뒤 사람둔어긋남 을 찾는다. 철자가 조금 어긋난 기록도 참이고,
+# 꼬리 없는 BT-STOP·미결 결정·강제 표면 정지·뒤집힌 순서는 거짓이다.
+kd_n=0 kd_got='' kd_want=''
+while IFS='|' read -r kd_w kd_step; do
+  kd_n=$((kd_n + 1))
+  printf '%s\n' '**스킬**: implement-unattended' "**스텝**: $kd_step" '**분류**: gate-unanswerable' > "$UCD/kd$kd_n.md"
+  kd_want="$kd_want$kd_w"
+  if halt_step_is_kept_drift "$UCD/kd$kd_n.md"; then kd_got="${kd_got}y"; else kd_got="${kd_got}n"; fi
+done <<EOF
+y|Step 2 CFI-U3 BT-STOP — 사람 둔 어긋남
+y|Step 2 CFI-U3 BT-STOP — 사람 둔 어긋남 (2줄)
+y|Step 2 CFI-U3 BT-STOP — 사람 둔 어긋남 아님
+y|Step 2 CFI-U3 BT-STOP – 사람 둔 어긋남
+y|Step 2 CFI-U3 BT-STOP —  사람  둔 어긋남
+y|Step 2 CFI-U3  BT-STOP — 사람 둔 어긋남
+y|Step 2 CFI–U3 BT–STOP — 사람 둔 어긋남
+y|Step 2 CFI-U3 BT-STOP - 사람 둔 어긋남
+y|Step 2 CFI-U3 BT-STOP — 사람 둔 어긋남
+y|Step 2 CFI-U3 BT-STOP —$(printf '\302\240')사람 둔 어긋남
+y|Step 2 CFI-U3 BT-STOP$(printf '\343\200\200')—$(printf '\342\200\203')사람 둔 어긋남
+y|Step 2 CFI-U3 BT-STOP ‒ 사람 둔 어긋남
+y|Step 2 CFI-U3 BT-STOP ― 사람 둔 어긋남
+y|Step 2 CFI-U3 BT-STOP − 사람 둔 어긋남
+n|Step 2 CFI-U3 BT-STOP
+n|Step 1 CFI-U3 BT-STOP — 미결 결정
+n|Step 3 강제 표면 좌석 적용 — 사람 둔 어긋남
+n|사람 둔 어긋남 — Step 2 CFI-U3 BT-STOP
+EOF
+check "사람 둔 어긋남 판독은 꼬리·dash 종류·겹친 공백·유니코드 공백 변형을 받고 다른 정지는 받지 않는다" "$kd_got" "$kd_want"
+printf '%s\n' '**스텝**: Step 1 CFI-U3 BT-STOP — 미결 결정' '**스텝**: Step 2 CFI-U3 BT-STOP — 사람 둔 어긋남' > "$UCD/kd-two.md"
+check "사람 둔 어긋남 판독은 첫 스텝 줄만 읽고, 없는 파일은 거짓이다 (둘째 스텝 줄·미결 결정 정지는 아님)" \
+  "$(for f in kd-two kd-none h1; do halt_step_is_kept_drift "$UCD/$f.md" && printf y || printf n; done)" "nnn"
 # 검증기 — 설계 스킬이 쓰라고 한 표기는 통과하고, 그 밖의 값은 이유를 대며 거절된다.
 rs_full() {  # rs_full <file> <잔여 항목 값>
   {
@@ -1890,6 +1918,24 @@ fi
 mv "$MF.fo-save" "$MF"
 check "계정 이전 허용 행이 없으면 그 행을 얼리기 전과 같은 바이트다" \
   "$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)" "$bd_nocost"
+# 급한 런 행은 한도 대기 순번과 기증 계정 입장을 바꾸므로 같은 조건으로 같은 집합에 든다.
+cp "$MF" "$MF.ur-save"
+printf -- '- `급한 런` | 출처=킥오프 | 사유=픽스처\n' >> "$MF"
+bd_ur=$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)
+if [ "$bd_ur" = "$bd_nocost" ]; then
+  bad "구속 집합 감도" "급한 런 행을 더했는데 다이제스트가 그대로다"
+else
+  ok "급한 런 행이 생기면 구속 다이제스트가 움직인다"
+fi
+sed 's/출처=킥오프 | 사유=픽스처$/출처=핫픽스 | 사유=픽스처/' "$MF" > "$MF.c" && mv "$MF.c" "$MF"
+if [ "$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)" = "$bd_ur" ]; then
+  bad "구속 집합 감도" "급한 런 행의 출처를 바꿨는데 다이제스트가 그대로다"
+else
+  ok "급한 런 행의 출처가 바뀌면 구속 다이제스트가 움직인다"
+fi
+mv "$MF.ur-save" "$MF"
+check "급한 런 행이 없으면 그 행을 얼리기 전과 같은 바이트다" \
+  "$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)" "$bd_nocost"
 # 무진전 상한도 런을 끝내므로 같은 조건으로 같은 집합에 든다.
 awk '/^\*\*벽시계 마감\*\*: /{print; print "**무진전 상한**: 7"; next} {print}' "$MF" > "$MF.c" && mv "$MF.c" "$MF"
 check "픽스처가 실제로 상한 줄을 얻었다 (아래 둘이 공허하지 않다)" \
@@ -1901,6 +1947,25 @@ else
 fi
 grep -v '^\*\*무진전 상한\*\*: ' "$MF" > "$MF.c" && mv "$MF.c" "$MF"
 check "상한 필드가 없어도 그 필드를 얼리기 전과 같은 바이트다" \
+  "$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)" "$bd_nocost"
+# 결정 수거 확정은 좌석이 사람 없이 답하게 하므로 같은 조건으로 같은 집합에 든다.
+awk '/^\*\*벽시계 마감\*\*: /{print; print "**결정 수거 확정**: 자동"; next} {print}' "$MF" > "$MF.c" && mv "$MF.c" "$MF"
+check "픽스처가 실제로 결정 수거 확정 줄을 얻었다 (아래 셋이 공허하지 않다)" \
+  "$( { grep -c '^\*\*결정 수거 확정\*\*: 자동$' "$MF" || true; } )" "1"
+bd_dc=$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)
+if [ "$bd_dc" = "$bd_nocost" ]; then
+  bad "구속 집합 감도" "결정 수거 확정을 선언했는데 다이제스트가 그대로다"
+else
+  ok "결정 수거 확정이 생기면 구속 다이제스트가 움직인다"
+fi
+sed 's/^\*\*결정 수거 확정\*\*: 자동$/**결정 수거 확정**: 수동/' "$MF" > "$MF.c" && mv "$MF.c" "$MF"
+if [ "$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)" = "$bd_dc" ]; then
+  bad "구속 집합 감도" "결정 수거 확정 값을 바꿨는데 다이제스트가 그대로다 — 런 도중 자동으로 넓힐 수 있다"
+else
+  ok "결정 수거 확정 값이 바뀌면 구속 다이제스트가 움직인다"
+fi
+grep -v '^\*\*결정 수거 확정\*\*: ' "$MF" > "$MF.c" && mv "$MF.c" "$MF"
+check "결정 수거 확정 줄이 없으면 그 줄을 얼리기 전과 같은 바이트다" \
   "$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)" "$bd_nocost"
 
 # 수리 사건 행 — 플러그인 기본 동의로 띄운 수리 런의 사건은 얼린 집합에 든다. 행이
@@ -1949,6 +2014,74 @@ if ( check_manifest ) >/dev/null 2>&1; then
 else
   ok "칸이 다섯이 아닌 수리 사건 행은 런 시작에서 거부된다"
 fi
+
+# 급한 런 행 — 많아야 한 행, 출처는 킥오프·핫픽스·이어받음 셋 가운데 하나, 사유는
+# `|` 가 없고 공백으로 끝나지 않는 비지 않은 한 줄. 사람의 도중 표시(`사람`)는 표지 파일에만 있고 행이 되지 않는다.
+UR_ROW='- `급한 런` | 출처=킥오프 | 사유=픽스처 의도'
+ur_case() {   # ur_case <기대 통과 0|1> <이름> [<행>...]
+  local want="$1" name="$2"
+  shift 2
+  re_mf "$@"
+  if ( check_manifest ) >/dev/null 2>&1; then
+    if [ "$want" = "0" ]; then ok "$name"; else bad "급한 런 행" "$name — 통과했다"; fi
+  else
+    if [ "$want" = "1" ]; then ok "$name"; else bad "급한 런 행" "$name — 거부됐다: $( ( check_manifest ) 2>&1 | tail -1 )"; fi
+  fi
+}
+ur_case 0 "급한 런 행 하나는 매니페스트 검사를 통과한다" "$UR_ROW"
+ur_case 0 "출처=핫픽스 행도 통과한다" '- `급한 런` | 출처=핫픽스 | 사유=핫픽스 킥오프는 언제나 급한 런이다'
+ur_case 0 "출처=이어받음 행도 통과한다" '- `급한 런` | 출처=이어받음 | 사유=20261101-0123abcd 에 사람이 도중에 단 급함'
+ur_case 1 "급한 런 행이 둘이면 런 시작에서 거부된다" "$UR_ROW" "$UR_ROW"
+ur_case 1 "출처=사람 행은 런 시작에서 거부된다" '- `급한 런` | 출처=사람 | 사유=x'
+ur_case 1 "사유가 빈 급한 런 행은 거부된다" '- `급한 런` | 출처=킥오프 | 사유='
+ur_case 1 "칸이 넷인 급한 런 행은 거부된다" "$UR_ROW | 넷째"
+# 킥오프는 의도 첫 줄의 `|` 를 `/` 로 바꾸고 앞뒤 공백을 걷어 사유를 쓴다. 접지 않은
+# 첫 줄은 거부되고, 접은 사유와 첫 줄이 비었을 때의 고정 문자열은 통과한다.
+ur_case 1 "사유 안에 | 가 든 급한 런 행은 거부된다" '- `급한 런` | 출처=킥오프 | 사유=git log|head 결과를 고친다'
+ur_case 1 "사유가 공백으로 끝나는 급한 런 행은 거부된다" '- `급한 런` | 출처=킥오프 | 사유=픽스처 의도 '
+re_mf '- `급한 런` | 출처=킥오프 | 사유=git log|head 결과를 고친다'
+ur_msg=$( ( check_manifest ) 2>&1 | tail -1 )
+case "$ur_msg" in
+  *"「급한 런」 행의 형식이 어긋났습니다"*) ok "사유 안의 | 는 급한 런 행 형식 검사가 거부한다" ;;
+  *) bad "급한 런 행" "사유 안의 | 가 다른 이유로 거부됐다: $ur_msg" ;;
+esac
+ur_case 0 "| 를 / 로 접은 사유는 통과한다" '- `급한 런` | 출처=킥오프 | 사유=git log/head 결과를 고친다'
+ur_case 0 "첫 줄이 비었을 때의 고정 사유는 통과한다" '- `급한 런` | 출처=킥오프 | 사유=의도 첫 줄이 비어 있는 급한 킥오프'
+re_mf "$UR_ROW"
+check "급한 런 행의 출처를 읽는다" "$(manifest_urgent_source)" "킥오프"
+re_mf
+check "급한 런 행이 없으면 출처가 비어 있다" "$(manifest_urgent_source)" ""
+
+# 급함 표지 파일 — 운전자는 행이 있고 표지가 없을 때만 행의 출처로 쓰고, 먼저 있던
+# 표지는 바꾸지 않는다. 판독은 첫 줄이 `cc-run-urgent v1` 인 일반 파일만 급함으로 읽는다.
+UM="$WORK/urgent-mark"; rm -rf "$UM"; mkdir -p "$UM/a" "$UM/b" "$UM/c" "$UM/d"
+um_saved_rd="${RUN_DIR:-}"
+re_mf "$UR_ROW"
+RUN_DIR="$UM/a"; run_urgent_mark
+check "행이 있고 표지가 없으면 운전자가 행의 출처로 표지를 쓴다" \
+  "$(sed -n '1p;2p' "$UM/a/urgent" 2>/dev/null | paste -sd'|' -)/$(run_urgent_source "$UM/a")" \
+  "cc-run-urgent v1|출처=킥오프/킥오프"
+check "표지의 셋째 줄은 UTC 시각이다" \
+  "$( { grep -cE '^시각=[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$' "$UM/a/urgent" || true; } )" "1"
+check "표지를 쓰고 임시 파일을 남기지 않는다" "$(find "$UM/a" -name 'urgent.tmp.*' | wc -l | tr -d ' ')" "0"
+printf 'cc-run-urgent v1\n출처=사람\n시각=2026-11-01T00:00:00Z\n' > "$UM/b/urgent"
+RUN_DIR="$UM/b"; run_urgent_mark
+check "표지가 이미 있으면 운전자는 바꾸지 않는다" "$(run_urgent_source "$UM/b")" "사람"
+re_mf
+RUN_DIR="$UM/c"; run_urgent_mark
+check "행이 없으면 표지를 쓰지 않는다" "$( [ -e "$UM/c/urgent" ] && printf 있음 || printf 없음)" "없음"
+RUN_DIR="$um_saved_rd"
+printf 'cc-run-urgent v2\n출처=킥오프\n' > "$UM/d/urgent"
+check "첫 줄이 다른 표지는 급하지 않음으로 읽는다" "$(run_urgent_source "$UM/d")" ""
+: > "$UM/d/urgent"
+check "빈 표지는 급하지 않음으로 읽는다" "$(run_urgent_source "$UM/d")" ""
+rm -f "$UM/d/urgent"; mkdir "$UM/d/urgent"
+check "일반 파일이 아닌 표지는 급하지 않음으로 읽는다" "$(run_urgent_source "$UM/d")" ""
+rmdir "$UM/d/urgent"
+printf 'cc-run-urgent v1\n' > "$UM/d/urgent"
+check "출처 줄이 없는 유효한 표지는 출처 미상의 급함이다" "$(run_urgent_source "$UM/d")" "미상"
+check "표지가 없으면 급하지 않다" "$(run_urgent_source "$UM/c")" ""
+write_manifest "$MF"
 
 # 적용 프로브 코드 행 — 프로브의 종료 코드 대응은 `## 인가` 의 행으로 얼린다. 행이
 # 없으면 바이트를 하나도 내지 않아 기존 매니페스트의 다이제스트가 그대로이고, 있으면
@@ -2358,6 +2491,20 @@ if [ "$(slice_decl_digest "$SLI/prefix.md" B)" != "$(slice_decl_digest "$SLI/pre
 else
   bad "앞부분이 겹치는 id" "B 와 B0 의 선언 다이제스트가 같다"
 fi
+
+# 선언 뒤에 파이프 버퍼보다 큰 꼬리가 붙은 문서 — pipefail 아래에서 판독기가
+# 일찍 끝나 앞 단계를 SIGPIPE 로 죽이면 맞게 읽은 값이 상태 141 로 돌아온다.
+{
+  printf '## 구현 슬라이싱\n\n**슬라이스 수**: 1\n\n### 슬라이스 A — 하나\n\n'
+  printf '**스킬**: implement\n**레포**: `o/r`\n**선언 파일**: `a.txt`\n**선행**: 없음\n**절단점**: 머지\n\n## 뒤 절\n\n'
+  awk 'BEGIN { for (i = 0; i < 20000; i++) print "뒤 절 본문 줄 " i " — 파이프 버퍼를 넘기는 꼬리" }'
+} > "$SLI/bigtail.md"
+bt_out=$(slice_field "$SLI/bigtail.md" A '선언 파일'); bt_rc=$?
+check "큰 꼬리 문서: slice_field 가 상태 0 으로 끝난다" "$bt_rc" "0"
+check "큰 꼬리 문서: slice_field 가 값을 읽는다" "$bt_out" '`a.txt`'
+slicing_body "$SLI/bigtail.md" >/dev/null; bt_rc=$?
+check "큰 꼬리 문서: slicing_body 가 상태 0 으로 끝난다" "$bt_rc" "0"
+check "큰 꼬리 문서: 꼬리 절은 본문에 들지 않는다" "$(slicing_body "$SLI/bigtail.md" | grep -c '뒤 절 본문' || true)" "0"
 
 # id 바로 뒤에 다중 바이트 글자가 오거나 줄이 id 로 끝나는 헤딩 — macOS awk 가
 # 잘라 낸 UTF-8 선두 바이트에서 죽지 않고, `slice_ids` 와 같은 id 로 읽는다.
@@ -2848,6 +2995,114 @@ if apply_stage segA && [ "$(grep -c . "$AP_CNT")" = "1" ]; then
 else
   bad "뒤집힌 대응 수렴" "사전 0 이 「필요」 로 읽히지 않았다"
 fi
+
+# (5g) 프로브의 런 정보와 HEAD 보장 — 프로브는 머지 커밋이 HEAD 인 워크트리에서만
+# 돌고 CC_APPLY_RUN_ID·CC_APPLY_SEGMENT·CC_APPLY_MERGE_COMMIT 을 받으며, 적용 명령은
+# 그 셋을 받지 않는다. HEAD 가 머지 커밋이 아니면 프로브를 돌리지 않고 관측에
+# 「HEAD 불일치」 를 적는다.
+AP_WT="$(apply_worktree segA)"
+[ -d "$AP_WT" ] && ( cd "$AP_REPO" && git worktree remove --force "$AP_WT" >/dev/null 2>&1; git worktree prune >/dev/null 2>&1 )
+AP_ALT="$AP_DIR/alt-wt"
+( cd "$AP_REPO" && git worktree add -q --detach "$AP_ALT" "$AP_SHA" >/dev/null 2>&1 ) \
+  && ( cd "$AP_ALT" && git -c user.email=t@t -c user.name=t commit -q --allow-empty -m moved ) >/dev/null 2>&1
+AP_SHA2=$(cd "$AP_ALT" && git rev-parse HEAD)
+check "HEAD 표본: 다른 커밋의 워크트리가 있다 (아래가 공허하지 않다)" "$( [ "$AP_SHA2" != "$AP_SHA" ] && echo 다름 || echo 같음 )" "다름"
+check "apply_probe_head_ok: 맞으면 전체 이름을 찍는다" "$(apply_probe_head_ok "$AP_REPO" "$AP_SHA")" "$AP_SHA"
+check "apply_probe_head_ok: 짧은 이름도 전체 이름으로 푼다" "$(apply_probe_head_ok "$AP_REPO" "$(printf '%s' "$AP_SHA" | cut -c1-12)")" "$AP_SHA"
+ho_rc=0; ho_out=$(apply_probe_head_ok "$AP_ALT" "$AP_SHA") || ho_rc=$?
+check "apply_probe_head_ok: HEAD 가 다르면 1 이고 찍지 않는다" "$ho_rc/$ho_out" "1/"
+ho_rc=0; ho_out=$(apply_probe_head_ok "$AP_REPO" "0123456789abcdef0123456789abcdef01234567") || ho_rc=$?
+check "apply_probe_head_ok: 풀리지 않는 커밋이면 1" "$ho_rc/$ho_out" "1/"
+ho_rc=0; apply_probe_head_ok "$AP_REPO" "" >/dev/null || ho_rc=$?
+check "apply_probe_head_ok: 머지 커밋이 비면 1" "$ho_rc" "1"
+ho_rc=0; apply_probe_head_ok "$AP_DIR/no-such-wt" "$AP_SHA" >/dev/null || ho_rc=$?
+check "apply_probe_head_ok: 워크트리가 없으면 1" "$ho_rc" "1"
+( cd "$AP_REPO" && git worktree remove --force "$AP_ALT" >/dev/null 2>&1; git worktree prune >/dev/null 2>&1 )
+
+ap_manifest_probe() {   # ap_manifest_probe <적용명령> <프로브> <불필요> <필요>
+  {
+    printf '# a\n<!-- cc-run-manifest v1; run-id=ap; anchor-key=k -->\n\n'
+    printf '## 대상\n'
+    printf -- '- `target` | 별칭=only | 메인 워크트리=%s | 공통 git 디렉터리=%s | 베이스 브랜치=main | 홈=예 | 원격 슬러그=o/repo | 절단점=배포 | 말단 행위 상한=없음\n\n' "$AP_REPO" "$AP_CG"
+    printf '## 요소\n**적용 지점**: %s\n**적용 프로브**: %s\n**적용 주체**: 파이프라인\n' "$1" "$2"
+  } > "$AP_DIR/plan.md"
+  MANIFEST="$AP_DIR/plan.md"
+  printf -- '\n## 인가\n- `적용 프로브 코드` | 불필요=%s | 필요=%s | 프로브 sha256=%s\n' "$3" "$4" \
+    "$(apply_probe_sha "$(apply_probe_cmd segA)")" >> "$MANIFEST"
+}
+AP_RUNID_SAVE="${RUN_ID:-}"; RUN_ID="ap-env-run"
+AP_ENV="$AP_DIR/probe-env"; AP_CMDENV="$AP_DIR/cmd-env"
+ap_manifest_probe "sh -c 'env > $AP_CMDENV; echo 0 > $AP_ST'" \
+  "printf '%s:%s:%s:%s\n' \"\$CC_APPLY_RUN_ID\" \"\$CC_APPLY_SEGMENT\" \"\$CC_APPLY_MERGE_COMMIT\" \"\$(git rev-parse HEAD)\" >> $AP_ENV; exit \$(cat $AP_ST)" 0 21
+check "런 정보 픽스처의 대응 행이 이 프로브에 묶였다 (아래가 공허하지 않다)" "$(apply_probe_codes "$(apply_probe_cmd segA)")" "0 21"
+: > "$LEDGER"; : > "$AP_ENV"; rm -f "$AP_CMDENV"; printf '21\n' > "$AP_ST"
+if apply_stage segA; then ok "런 정보: 사전 21 → 사후 0 이 수렴한다"; else bad "런 정보 수렴" "수렴하지 않았다"; fi
+check "런 정보: 사전·사후 프로브가 세 변수와 HEAD 를 받는다" \
+  "$(cat "$AP_ENV")" "ap-env-run:segA:$AP_SHA:$AP_SHA
+ap-env-run:segA:$AP_SHA:$AP_SHA"
+check "런 정보: 적용 명령은 세 변수를 받지 않는다" \
+  "$( { grep -c '^CC_APPLY_' "$AP_CMDENV" || true; } )" "0"
+
+# 이미 있는 워크트리의 HEAD 가 머지 커밋이 아니면 사전 프로브가 돌지 않고 사전 실패다.
+AP_WT="$(apply_worktree segA)"
+( cd "$AP_REPO" && git worktree add -q --detach "$AP_WT" "$AP_SHA" >/dev/null 2>&1 ) \
+  && ( cd "$AP_WT" && git -c user.email=t@t -c user.name=t commit -q --allow-empty -m drift ) >/dev/null 2>&1
+check "재사용 워크트리의 HEAD 가 머지 커밋과 다르다 (아래가 공허하지 않다)" \
+  "$( [ "$(cd "$AP_WT" && git rev-parse HEAD)" != "$AP_SHA" ] && echo 다름 || echo 같음 )" "다름"
+: > "$LEDGER"; : > "$AP_ENV"; rm -f "$AP_CMDENV"; printf '21\n' > "$AP_ST"
+if apply_stage segA; then bad "HEAD 불일치 재사용" "어긋난 워크트리에서 처분이 났다"; else ok "HEAD 불일치 재사용: 적용을 거부한다"; fi
+check "HEAD 불일치 재사용: 프로브가 돌지 않는다" "$(grep -c . "$AP_ENV")" "0"
+check "HEAD 불일치 재사용: 적용 명령이 돌지 않는다" "$( [ -e "$AP_CMDENV" ] && echo 돌았다 || echo 안돌았다 )" "안돌았다"
+check "HEAD 불일치 재사용: 마지막 segment 행이 park 적용=사전 실패 다" \
+  "$( { grep -F '`segment`' "$LEDGER" || true; } | tail -1 | grep -c '상태=park | 적용=사전 실패' || true)" "1"
+check "HEAD 불일치 재사용: 관측이 HEAD 불일치를 적는다" "$( { grep -c 'HEAD 불일치' "$LEDGER" || true; } )" "1"
+( cd "$AP_REPO" && git worktree remove --force "$AP_WT" >/dev/null 2>&1; git worktree prune >/dev/null 2>&1 )
+
+# 명령이 HEAD 를 옮기면 사후 프로브가 돌지 않고 적용 불명이며 관측이 HEAD 불일치를 적는다.
+ap_manifest_probe "git -c user.email=t@t -c user.name=t commit -q --allow-empty -m moved; echo 0 > $AP_ST" \
+  "printf '%s\n' \"\$CC_APPLY_SEGMENT\" >> $AP_ENV; exit \$(cat $AP_ST)" 0 21
+: > "$LEDGER"; : > "$AP_ENV"; printf '21\n' > "$AP_ST"
+ap_rc=0; apply_stage segA || ap_rc=$?
+check "HEAD 이동 명령: 적용 불명으로 반경 정지에 넘긴다" "$ap_rc" "1"
+check "HEAD 이동 명령: 사후 프로브가 돌지 않는다 (사전 한 번만)" "$(grep -c . "$AP_ENV")" "1"
+check "HEAD 이동 명령: 종단 부류 적용 불명 행이 HEAD 불일치를 적는다" \
+  "$( { grep '종단 부류=적용 불명' "$LEDGER" | grep -c 'HEAD 불일치' || true; } )" "1"
+RUN_HALTED=0; rm -f "$RUN_DIR/halted-repo.txt" "$RUN_DIR/halted-segments.txt"; APPLY_PARKED_RADIUS=""
+AP_WT="$(apply_worktree segA)"
+[ -d "$AP_WT" ] && ( cd "$AP_REPO" && git worktree remove --force "$AP_WT" >/dev/null 2>&1; git worktree prune >/dev/null 2>&1 )
+RUN_ID="$AP_RUNID_SAVE"
+
+# (5h) 런 묶임 판정 — 원천 매니페스트의 프로브 문자열에 런 id 토큰이 16진 글자가
+# 아닌 경계 사이에 있으면 묶였다. 두 문법을 받고, 주체가 사람이거나 프로브가 없으면
+# 묶이지 않는다. 묶인 프로브는 대응 행이 온전해도 재질문 대상이다.
+ap_bound() {   # ap_bound <프로브> <주체> — 토큰 또는 「아님」
+  {
+    printf '# a\n<!-- cc-run-manifest v1; run-id=ap; anchor-key=k -->\n\n## 요소\n'
+    printf '**적용 지점**: make deploy\n**적용 프로브**: %s\n**적용 주체**: %s\n' "$1" "$2"
+  } > "$AP_DIR/bound.md"
+  MANIFEST="$AP_DIR/bound.md" apply_probe_run_bound || printf '아님'
+}
+check "런 묶임: 백틱 꼴 프로브 경로의 8-8 토큰" \
+  "$(ap_bound '`bash /t/docs/pipeline-deploy/20261112-ab8884f1-probe.sh`' 파이프라인)" "20261112-ab8884f1"
+check "런 묶임: 날짜 꼴 토큰" "$(ap_bound 'bash /t/2026-11-12-0bd7f01a/probe.sh' 파이프라인)" "2026-11-12-0bd7f01a"
+check "런 묶임: 문자열 끝의 토큰" "$(ap_bound 'check-run 20261113-bd6cfe75' 파이프라인)" "20261113-bd6cfe75"
+check "런 묶임: 문자열 시작의 토큰" "$(ap_bound '20261113-bd6cfe75.sh' 파이프라인)" "20261113-bd6cfe75"
+check "런 묶임: 앞에 16진 글자가 붙으면 아니다" "$(ap_bound 'x a20261113-bd6cfe75' 파이프라인)" "아님"
+check "런 묶임: 뒤에 16진 글자가 붙으면 아니다" "$(ap_bound 'x 20261113-bd6cfe75c' 파이프라인)" "아님"
+check "런 묶임: 붙은 토큰 뒤의 경계 토큰은 잡는다" "$(ap_bound 'a20261113-bd6cfe75 /20261114-0000abcd/' 파이프라인)" "20261114-0000abcd"
+check "런 묶임: 토큰이 없으면 아니다" "$(ap_bound 'make probe' 파이프라인)" "아님"
+check "런 묶임: 주체가 사람이면 아니다" "$(ap_bound 'bash 20261112-ab8884f1-probe.sh' 사람)" "아님"
+check "런 묶임: 프로브가 (없음) 이면 아니다" "$(ap_bound '(없음)' 파이프라인)" "아님"
+ap_bound 'bash 20261112-ab8884f1-probe.sh' 파이프라인 >/dev/null
+printf -- '\n## 인가\n- `적용 프로브 코드` | 불필요=0 | 필요=21 | 프로브 sha256=%s\n' \
+  "$(apply_probe_sha 'bash 20261112-ab8884f1-probe.sh')" >> "$AP_DIR/bound.md"
+check "런 묶임: 온전한 대응 행이 있어도 재질문 대상이다" \
+  "$(MANIFEST="$AP_DIR/bound.md" apply_code_row_reask && echo 재질문 || echo 이어받음)" "재질문"
+ap_bound 'make probe' 파이프라인 >/dev/null
+printf -- '\n## 인가\n- `적용 프로브 코드` | 불필요=0 | 필요=21 | 프로브 sha256=%s\n' \
+  "$(apply_probe_sha 'make probe')" >> "$AP_DIR/bound.md"
+check "런 묶임: 묶이지 않은 프로브의 온전한 대응 행은 이어받는다" \
+  "$(MANIFEST="$AP_DIR/bound.md" apply_code_row_reask && echo 재질문 || echo 이어받음)" "이어받음"
 
 # (6) 반경 판정 — 런은 전부 멈추고, 레포는 같은 레포만, 슬라이스 목록은 그 셋만.
 RUN_HALTED=0; rm -f "$RUN_DIR/halted-repo.txt" "$RUN_DIR/halted-segments.txt"
@@ -6901,6 +7156,24 @@ if [ "$orph_hit2" != "0" ]; then
 else
   bad "고아 탐지" "죽은 S1.pid 가 고아로 보고되지 않는다 — 면제가 이름을 넘어 번졌다"
 fi
+# WHILE THE RESIDENT OBSERVER HOLDS THE JOB, `checks.pid` NAMES THE OBSERVER — a
+# live pid that does not run `checks.sh`. The relay's poller-liveness test asks
+# only whether the pid exists, so it must keep reading "a poller is alive", and
+# the orphan census must keep the record exempt by name. A live process that is
+# not the poller stands in for the observer.
+rm -f "$ORPH_RD/S1.pid"
+sleep 60 & orph_obs=$!
+printf '%s' "$orph_obs" > "$ORPH_RD/checks.pid"
+orph_live=$(
+  RUN_DIR=$ORPH_RD
+  eval "$(sed -n '/^gate_relay_poller_live()/,/^}/p' "$(dirname "$DRIVER")/gate.sh")"
+  if gate_relay_poller_live; then printf 'live'; else printf 'dead'; fi
+)
+check "관측기 pid 를 담은 checks.pid 를 교대 대기가 산 폴러로 읽는다" "$orph_live" "live"
+orph_out3=$(cc_orphan_stages "$ORPH_RD")
+orph_hit3=$( { printf '%s\n' "$orph_out3" | grep -cx 'checks' || true; } | tr -d ' ')
+check "관측기 pid 를 담은 checks.pid 는 고아로 보고되지 않는다" "$orph_hit3" "0"
+kill "$orph_obs" 2>/dev/null; wait "$orph_obs" 2>/dev/null
 rm -rf "$ORPH_RD"
 
 # ---------------------------------------------------------------------------
@@ -13425,6 +13698,24 @@ wait_fifo_follow "$m" HF:k "$$" acct:ra1 no-room ""
 printf 'kindempty=%s\n' "$(hf_sk HF:k)"
 wait_drop "$m"
 
+# 급한 WAIT(일곱째 인자 1)는 급함 표지가 없는 살아 있는 항목을 같은 키로 다시 써
+# 순번(seq)을 지키며 급함을 달고, 표지는 새 논스를 받는다. 이미 급한 항목은 그대로다.
+hf_urg() { route_lease_of "$T" "$RUN_ID" "$1" 2>/dev/null | jq -r '"\(.urgent // false)"' 2>/dev/null; }
+hf_seq() { route_lease_of "$T" "$RUN_ID" "$1" 2>/dev/null | jq -r '.seq // "-"' 2>/dev/null; }
+m="$RUN_DIR/hfU.waiting"
+hf_put HF:u "$m"
+u_s0=$(hf_seq HF:u); u_n0=$(hf_nonce "$m"); u_f0=$(hf_urg HF:u)
+wait_fifo_follow "$m" HF:u "$$" acct:ra1 no-room implement 1
+u_n1=$(hf_nonce "$m")
+printf 'urgput=%s/%s/%s/%s\n' "$u_f0" "$(hf_urg HF:u)" \
+  "$( [ "$(hf_seq HF:u)" = "$u_s0" ] && [ "$u_s0" != "-" ] && printf seq-kept || printf "seq-moved:$u_s0")" \
+  "$( [ "$u_n1" != "$u_n0" ] && [ "$u_n1" = "$(route_lease_of "$T" "$RUN_ID" HF:u | jq -r '.nonce')" ] && printf fresh || printf stale)"
+wait_fifo_follow "$m" HF:u "$$" acct:ra1 no-room implement 1
+printf 'urgkept=%s\n' "$( [ "$(hf_nonce "$m")" = "$u_n1" ] && printf same || printf changed)"
+wait_fifo_follow "$m" HF:u "$$" acct:ra1 no-room implement
+printf 'urgplain=%s/%s\n' "$(hf_urg HF:u)" "$( [ "$(hf_nonce "$m")" = "$u_n1" ] && printf same || printf changed)"
+wait_drop "$m"
+
 # 대기 루프 — 첫 재질의는 그룹 없는 `host-saturated` WAIT, 다음 재질의는 GRANT. 두 번째
 # 질의 때 이 계보의 항목이 이미 없어야 한다.
 printf '2\n%s\n%s\n' "$$" "$(cc_proc_fingerprint "$$")" > "$RUN_DIR/watch.stall"
@@ -13498,6 +13789,10 @@ check "wait_fifo_follow 는 여섯째 인자 없이 다시 넣으면 종류 없�
 check "wait_fifo_follow 는 다시 넣는 항목에 여섯째 인자의 종류를 싣는다" "$(ra_get "$hf_out" kind6)" "wait/implement"
 check "wait_fifo_follow 는 항목이 표에 있으면 종류도 그대로 둔다" "$(ra_get "$hf_out" kindkept)" "implement"
 check "wait_fifo_follow 의 빈 여섯째 인자는 종류 없는 항목이다" "$(ra_get "$hf_out" kindempty)" "null"
+check "급한 WAIT 는 급함 없는 살아 있는 항목을 순번 그대로 급함을 달아 다시 쓴다" \
+  "$(ra_get "$hf_out" urgput)" "false/true/seq-kept/fresh"
+check "이미 급한 항목은 급한 WAIT 에서 다시 쓰지 않는다" "$(ra_get "$hf_out" urgkept)" "same"
+check "급함 없는 WAIT 는 급한 항목을 내리거나 바꾸지 않는다" "$(ra_get "$hf_out" urgplain)" "true/same"
 check "대기 루프는 다시 넣는 항목에 자기 스테이지 종류를 싣는다" \
   "$(ra_get "$hf_out" loopkind)/$(ra_get "$hf_out" loopc)" "review/0"
 check "spawn_route_wait 는 첫 대기 항목에 자기 스테이지 종류를 싣는다" "$(ra_get "$hf_out" spawnkind)" "wait/implement"

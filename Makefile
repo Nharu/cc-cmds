@@ -509,6 +509,7 @@ LINT_TESTS := \
 	scripts/test-measure-team-cost.sh \
 	scripts/test-measure-lead-context.sh \
 	scripts/test-measure-bookkeeping.sh \
+	scripts/test-measure-read-chains.sh \
 	scripts/test-measure-test-share.sh \
 	scripts/test-measure-test-slots.sh \
 	scripts/test-measure-discussion-passes.sh \
@@ -558,10 +559,13 @@ ORCH_TESTS := \
 	scripts/test-statusline.sh \
 	scripts/test-statusline-hook.sh \
 	scripts/test-stage-values-hook.sh \
+	scripts/test-stage-read-batch-hook.sh \
 	scripts/test-liveness-agreement.sh \
 	scripts/test-dashboard.sh \
 	scripts/test-dashboard-screen.sh \
 	scripts/test-observer.sh \
+	scripts/test-observer-watch.sh \
+	scripts/test-observer-checks.sh \
 	scripts/test-run-pane.sh \
 	scripts/test-display-tz.sh \
 	scripts/test-run-stops.sh \

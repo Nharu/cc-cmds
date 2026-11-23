@@ -305,9 +305,8 @@ evidence is the sidecar's `### 설계 문서 어긋남` block. On this scope the
 below come before the re-convergence's own halt-step rule, its decision-draft
 rule, its write constraints (CFI-6 and Constraints), the hash its working
 copy's `checkout --expect` takes, the before side of its Step 4 digest comparison and the
-place its Step 5 verdict returns to. The same skill's sub-case for a record
-whose `**스텝**` is exactly `Step 2 CFI-U3 BT-STOP — 사람 둔 어긋남` reads
-`## 사람 둔 어긋남 재수렴` below instead.
+place its Step 5 verdict returns to. The same skill's sub-case for a
+kept-drift stop reads `## 사람 둔 어긋남 재수렴` below instead.
 
 - **Evidence.** The record's `**관측 상세**` carries `설계 문서 어긋남=<n>건 · sha256 <hex>`. Run `visual-check.sh drift <document>` through the gate (`--surface 읽기`); when its count or sha256 differs from the record's piece, or it exits 1, halt with `분류: precondition-failed` naming both values. An exit 2 prints only the lines it could not find and no count line, so read the block instead: when the block's `- ` lines are, in number and verbatim, the drift lines the record's `**질문 문면**` quotes and the piece's `<n>`, and every printed line is one of them, that exit 2 is not that halt — the block is the one the person approved, and the lines it prints are lines that cannot be applied — the wording left the document, or its heading did not hold — so carry them to the Edit step below, which stops on them in the reflection stop's form. An exit 2 repeats on every attempt over the same document, so a `precondition-failed` here would never reach the person who can take the line out. **The scope is the block's lines and nothing wider**.
 - **Edit.** In the re-convergence's Step 3 working copy, before editing each line, check that its document wording stands verbatim inside a section `## 고칠 수 있는 절` lists; then rewrite it to the screen wording there, keeping the superseded decision sentence in place as Step 3 does. The five failures of `## 실패로 보는 경우` and a line that cannot be applied are judged on the working copy, before the publish; on any of them publish nothing.
@@ -337,14 +336,13 @@ whose `**스텝**` is exactly `Step 2 CFI-U3 BT-STOP — 사람 둔 어긋남` r
 ## 사람 둔 어긋남 재수렴
 
 `design-reconverge` reads this section from the sub-case of its `구속 티어 이탈`
-scope whose record's `**스텝**` is exactly `Step 2 CFI-U3 BT-STOP — 사람 둔 어긋남`.
+scope whose record is a kept-drift stop.
+Remove every whitespace character from the record's first `**스텝**` value and turn each of `—`, `–`, `‒`, `―` and `−` into `-`; the record is a kept-drift stop when what is left contains `CFI-U3BT-STOP` and, after it, `사람둔어긋남`.
 A person chose `재수렴` on drift lines they had left `문서대로 둠`. **The scope
 is the lines the record's `**질문 문면**` quotes, nothing wider.** Write each by
 the `화면대로 고침` rules of `## 고칠 수 있는 절` — the write may reach
-`## 팀이 정한 요구 결정` — without the re-convergence's Step 3 S1–S4. A line a
-forbidden section holds (`## 구현 슬라이싱`, `## 구현 시 검증 항목`,
-`## 베이스 제약`, `## 시각 정합 기준`, `## 검증 기록`) is not written: name it
-and its section in the result; the next implement attempt stops on it again.
+`## 팀이 정한 요구 결정` — without the re-convergence's Step 3 S1–S4.
+A line a forbidden section holds (`## 구현 슬라이싱`, `## 구현 시 검증 항목`, `## 베이스 제약`, `## 시각 정합 기준`, `## 검증 기록`), or whose colliding binding sentence stands in one of those sections, is not written: name it and the section that holds it or its colliding sentence in the result; the next implement attempt stops on it again.
 Write nothing to the visual sidecar.
 
 ## 종단

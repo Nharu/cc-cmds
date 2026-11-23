@@ -318,7 +318,13 @@ readonly LIT_VISUAL_PUBLISH_TERMINAL='시각 발행 단계를 마쳤습니다.'
 LOG_FILE=""
 
 log()  { printf '%s [run] %s\n' "$(now_iso)" "$*" >&2; }
-warn() { printf '%s [run][warn] %s\n' "$(now_iso)" "$*" >&2; }
+# The gate turns GATE_HALT_REFUSE_CAPTURE on around a content check of an
+# automatic halt answer, so the refusal's own text can go on its ledger row.
+warn() {
+  printf '%s [run][warn] %s\n' "$(now_iso)" "$*" >&2
+  [ "${GATE_HALT_REFUSE_CAPTURE:-0}" != 1 ] || GATE_HALT_REFUSE_WHY="$*"
+  return 0
+}
 die()  { printf '%s [run][stop] %s\n' "$(now_iso)" "$*" >&2; exit 1; }
 
 now_iso()  { date -u +%Y-%m-%dT%H:%M:%SZ; }
@@ -483,6 +489,7 @@ manifest_snapshot_take() {
   #   LA <row>     every `- \`라벨 인정\`` row anywhere, in order
   #   PA <row>     every `- \`플러그인 허용\`` row anywhere, in order
   #   FA <row>     every `- \`계정 이전 허용\`` row anywhere, in order
+  #   UR <row>     every `- \`급한 런\`` row anywhere, in order
   #   RE <row>     every `- \`수리 사건\`` row anywhere, in order
   #   VP <row>     every `- \`리뷰 PR\`` row anywhere, in order
   #   VG <row>     every `- \`리뷰 게시\`` row anywhere, in order
@@ -532,6 +539,7 @@ $(LC_ALL=C awk '
     index($0, "- `라벨 인정`") == 1 { print "LA\t" $0 }
     index($0, "- `플러그인 허용`") == 1 { print "PA\t" $0 }
     index($0, "- `계정 이전 허용`") == 1 { print "FA\t" $0 }
+    index($0, "- `급한 런`") == 1 { print "UR\t" $0 }
     index($0, "- `수리 사건`") == 1 { print "RE\t" $0 }
     index($0, "- `리뷰 PR`") == 1 { print "VP\t" $0 }
     index($0, "- `리뷰 게시`") == 1 { print "VG\t" $0 }
@@ -749,6 +757,15 @@ manifest_targets() {
 manifest_rule_lines() {
   if manifest_memo_on; then manifest_memo_all "R	"; return 0; fi
   grep -E '^\*\*[^*]+\*\*: (켬|끔)$' "$MANIFEST" </dev/null 2>/dev/null || true
+}
+
+decision_confirm_auto() {
+  # 0 when the run's decision-collection confirmation mode is `자동`: the
+  # `## 인가` line `**결정 수거 확정**: 자동`, exactly. An absent line or any
+  # other value is `수동`, so a manifest frozen before the line existed keeps
+  # waiting on a person. The value is `자동|수동` rather than `켬|끔` so that
+  # `manifest_rule_lines` does not take it for a rule setting.
+  [ "$(manifest_field '인가' '결정 수거 확정')" = '자동' ]
 }
 
 manifest_preauth_rows() {
@@ -1142,6 +1159,20 @@ manifest_failover_accounts() {
   manifest_failover_allow_rows | sed -n 's/^- `계정 이전 허용` | 계정=\([a-z0-9-]*\) |.*/\1/p'
 }
 
+manifest_urgent_rows() {
+  # Every `급한 런` row, in manifest order. A person's kickoff (or the hotfix
+  # kickoff, or a successor carrying it over) marks the run urgent with it; the
+  # check allows at most one, and the driver turns it into the run directory's
+  # urgency marker that the router reads.
+  if manifest_memo_on; then manifest_memo_all "UR	"; return 0; fi
+  grep -E '^- `급한 런`' "$MANIFEST" </dev/null 2>/dev/null || true
+}
+
+manifest_urgent_source() {
+  # The `출처` value of the `급한 런` row, or nothing when there is no row.
+  manifest_urgent_rows | sed -n '1s/^- `급한 런` | 출처=\([^ |]*\) |.*/\1/p'
+}
+
 run_failover_allowed() {
   # True when this run may move a shift off the seat lane: the manifest
   # carries at least one `계정 이전 허용` row AND the run is routed. Either
@@ -1218,9 +1249,10 @@ binding_set_bytes() {
   # the step graph one act at a time now, so a frozen plan would be a value that
   # is recorded and never compared, which is the exact defect class this
   # contract exists to remove.
-  local cc sb
+  local cc sb dc
   cc=$(manifest_field '인가' '비용 천장')
   sb=$(manifest_field '인가' '무진전 상한')
+  dc=$(manifest_field '인가' '결정 수거 확정')
   {
     printf 'goal\t%s\n' "$(manifest_field '인가' '종료 지점')"
     manifest_clauses | sed 's/^/clause\t/'
@@ -1325,6 +1357,13 @@ binding_set_bytes() {
     # an account no person accepted at kickoff. Whole-file scan, zero bytes
     # when absent, so a manifest written before this row existed keeps its digest.
     manifest_failover_allow_rows | sed 's/[[:space:]]\{1,\}/ /g;s/^/failoverallow\t/'
+    # THE `급한 런` ROW IS IN THE FROZEN SET, on the same terms, beside the
+    # `계정 이전 허용` rows. It lets the run's stages go ahead of other waiters and
+    # into a borrowed donor group's headroom; a row any act could append mid-run
+    # would let a stage spend the person's interactive share no person accepted
+    # at kickoff. Whole-file scan, zero bytes when absent, so a manifest written
+    # before this row existed keeps its digest.
+    manifest_urgent_rows | sed 's/[[:space:]]\{1,\}/ /g;s/^/urgent\t/'
     # THE `수리 사건` ROW IS IN THE FROZEN SET, on the same terms. It marks a run
     # the plugin started on its default consent, and the gate holds such a run's
     # authorization to that consent's bounds only while the row is there; a row
@@ -1359,6 +1398,11 @@ binding_set_bytes() {
     # The stagnation bound joins on the same terms and for the same reason: it
     # ends the run, so a value anything can raise mid-run is not a bound.
     [ -n "$sb" ] && printf 'stagnation\t%s\n' "$sb"
+    # The decision-collection confirmation mode joins on the same terms: `자동`
+    # lets the seat answer a decision-collection record with no person, so a
+    # value anything can flip mid-run would widen the seat's reach unseen. A
+    # manifest without the line contributes zero bytes and reads as `수동`.
+    [ -n "$dc" ] && printf 'decisionconfirm\t%s\n' "$dc"
     printf 'deadline\t%s\n' "$(manifest_field '인가' '벽시계 마감')"
   } | sort
 }
@@ -1714,7 +1758,7 @@ check_manifest() {
   bd=$(manifest_field '인가' '구속 다이제스트')
   if [ -n "$bd" ]; then
     [ "$(binding_set_bytes | shasum -a 256 | cut -d' ' -f1)" = "$bd" ] \
-      || die "구속 다이제스트가 얼린 집합과 일치하지 않습니다 — 목표·종료 절·대상·룰 설정·사전 인가·수리 사건·설계 로스터·베이스 발행·베이스 설계·출처 티켓·세그먼트 입양·머지 입양·강제 표면 승인·선행 착지·재킥오프·적용 프로브 코드·라벨 인정·플러그인 허용·계정 이전 허용·리뷰 PR·리뷰 게시·리뷰 깊이·리뷰 문면·마감 중 하나가 움직였습니다"
+      || die "구속 다이제스트가 얼린 집합과 일치하지 않습니다 — 목표·종료 절·대상·룰 설정·사전 인가·수리 사건·설계 로스터·베이스 발행·베이스 설계·출처 티켓·세그먼트 입양·머지 입양·강제 표면 승인·선행 착지·재킥오프·적용 프로브 코드·라벨 인정·플러그인 허용·계정 이전 허용·급한 런·리뷰 PR·리뷰 게시·리뷰 깊이·리뷰 문면·마감 중 하나가 움직였습니다"
   else
     warn "매니페스트에 구속 다이제스트가 없습니다 — 얼린 집합을 대조하지 않고 진행합니다"
   fi
@@ -2420,6 +2464,24 @@ EOF
 $fa_rows
 EOF
 
+  # 20c — the `급한 런` row: the kickoff's mark that the run is urgent. At most
+  # one row, `출처` one of the three kickoff-side sources (a person's mid-run mark
+  # is the run directory's marker file, never a manifest row) and a non-empty
+  # one-line reason with no `|` (the row's field separator) and no trailing
+  # space. The kickoff folds the intent's first line to that shape before it
+  # freezes the row.
+  local ur_rows ur_row ur_n=0
+  ur_rows=$(manifest_urgent_rows)
+  while IFS= read -r ur_row; do
+    [ -n "$ur_row" ] || continue
+    ur_n=$((ur_n + 1))
+    [ "$ur_n" -le 1 ] || die "「급한 런」 행이 둘 이상입니다 — 매니페스트마다 많아야 하나입니다"
+    grep -qE '^- `급한 런` \| 출처=(킥오프|핫픽스|이어받음) \| 사유=[^|]*[^ |]$' <<<"$ur_row" \
+      || die "「급한 런」 행의 형식이 어긋났습니다 — 받는 형태는 \`- \`급한 런\` | 출처=<킥오프|핫픽스|이어받음> | 사유=<한 줄>\` 입니다: $ur_row"
+  done <<EOF
+$ur_rows
+EOF
+
   # 20b — the `수리 사건` row: the event a repair run fixes, written by the
   # plugin's renderer and read by position. At most one — a run fixes one
   # event — and exactly five cells, the reading the gate's reader assumes: a
@@ -3095,8 +3157,15 @@ slicing_present() {
 }
 
 # Body of the declaration, via the same scanner.
+#
+# This reader and `slice_field` read their input to the end and stop printing
+# instead of calling `exit`, for the reason the readers of `## 구현 시 검증 항목`
+# below give:
+# under the gate's `set -o pipefail`, a reader that leaves early kills its
+# writer with SIGPIPE once the rest of the document outgrows the pipe buffer,
+# and the reader's match comes back as status 141.
 slicing_body() {
-  defenced "$1" | awk '/^## 구현 슬라이싱$/{inb=1; next} inb && /^## /{exit} inb {print}'
+  defenced "$1" | awk 'done { next } /^## 구현 슬라이싱$/{inb=1; next} inb && /^## /{done=1; next} inb {print}'
 }
 
 slice_ids() { slicing_body "$1" | sed -n 's/^### 슬라이스 \([A-Za-z0-9][A-Za-z0-9]*\).*/\1/p'; }
@@ -3112,12 +3181,13 @@ slice_field() {
   # since awks disagree on what index() returns for an empty needle.
   slicing_body "$1" | awk -v id="### 슬라이스 $2" -v key="$3" '
     BEGIN { idch = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789" }
+    done { next }
     index($0, id) == 1 {
       c = substr($0, length(id) + 1, 1)
       if (c == "" || index(idch, c) == 0) { inb = 1; next }
     }
-    inb && /^### /     { exit }
-    inb { pat = "^\\*\\*" key "\\*\\*: "; if ($0 ~ pat) { sub(pat, "", $0); print; exit } }
+    inb && /^### /     { done = 1; next }
+    inb { pat = "^\\*\\*" key "\\*\\*: "; if ($0 ~ pat) { sub(pat, "", $0); print; done = 1; next } }
   '
 }
 
@@ -3235,6 +3305,181 @@ residual_item_after_explicit() {
   local body
   body=$(residual_item_lines "$1" "$2") || return 1
   grep -qE '^(- )?(\*\*검증 시점\*\*|검증 시점): 구현 후[ \t]*$' <<<"$body"
+}
+
+# residual_items_malformed <doc> — the machine-checkable part of the
+# verification contract's well-formedness predicate over `## 구현 시 검증 항목`,
+# for an unattended design skill to run on its own saved document before it
+# freezes it or writes a halt record. One line per violation,
+# `<label><TAB><field><TAB><reason>`; a violation of the whole document is
+# labelled `문서`. Exit 0 when there is none (and when the section is absent),
+# 1 when there is one, 2 when the document cannot be read or has an unclosed
+# fence.
+#
+# What it checks, per item: the eight required fields; the closed values of
+# 분류, 잔여 사유, 검증 등급, 차단 부류, 검증 시점, 실행 주의 and 반증 시 처리
+# (an optional field only when its line is present); a present `차단 부류`
+# line that residual_item_block_class does not read back as its own value; a
+# terminal grade whose next line is not a `구현 시 검증 기록` line; a `/tmp`
+# literal anywhere in the item, fenced recipe lines included; a `실패 시 영향`
+# value beginning with `§` that no heading of the document resolves; a
+# sub-heading of the section that is not `### R<n>.` and a label used twice.
+# Across the document outside fences: the save-forbidden grade `미검증` in its
+# line form and its inline-tag form.
+#
+# What it leaves alone: the line rendering (a leading bullet, a key without
+# bold) — the readers above take all four renderings — and whether a
+# `사람-환경`/`외부-준비` item states `검증 시점: 구현 후`, which the design
+# ladder's own rule decides.
+residual_items_malformed() {
+  local doc="$1" out cls_lines label cls n
+  [ -n "$doc" ] && [ -f "$doc" ] && [ -r "$doc" ] || { echo "residual_items_malformed: 문서를 읽을 수 없음 — $doc" >&2; return 2; }
+  if fence_unclosed "$doc"; then
+    echo "residual_items_malformed: 닫히지 않은 펜스 — $doc" >&2
+    return 2
+  fi
+  out=$(defenced "$doc" | awk '
+    function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t\r]+$/, "", s); return s }
+    function clean(s) { gsub(/\t/, " ", s); return s }
+    function emit(l, f, r) { print l "\t" f "\t" clean(r) }
+    # The value of <k> on line s in the tolerant spelling, or the sentinel
+    # "\001" when the line is not a line of <k>. A key with nothing after its
+    # colon is present with an empty value: a recipe written as a fenced
+    # block under `**검증 레시피**:` is the canonical example.
+    function keyval(s, k,   r) {
+      sub(/^- /, "", s); r = s; sub(/[ \t\r]+$/, "", r)
+      if (r == "**" k "**:" || r == k ":") return ""
+      if (index(s, "**" k "**: ") == 1) return trim(substr(s, length(k) + 7))
+      if (index(s, k ": ") == 1) return trim(substr(s, length(k) + 3))
+      return "\001"
+    }
+    function inset(v, set) { return index(set, "|" v "|") > 0 }
+    function anchor_ok(part,   a, h, c) {
+      a = substr(part, length("§") + 1)
+      for (h in heads) {
+        if (index(a, h) != 1) continue
+        c = substr(a, length(h) + 1, 1)
+        if (c == "" || index(" ,.;:()/·", c) > 0) return 1
+      }
+      return 0
+    }
+    NR == FNR { raw[FNR] = $0; next }
+    { dl[FNR] = $0; nl = FNR }
+    END {
+      req = "주장|분류|잔여 사유|차단 사유|검증 레시피|기대 결과|실패 시 영향|검증 등급"
+      nreq = split(req, rk, "|")
+      v["분류"] = "|정적 사실|실행 측정|외부 환경|행동 가설|미니 구현|"
+      v["잔여 사유"] = "|구현 필요|검증 차단|예산 소진|분류 제외|"
+      v["검증 등급"] = "|구현 시 검증|검증됨(통과)|반증됨(실패)|검증불가(드리프트)|"
+      v["차단 부류"] = "|코드-부재|사람-환경|외부-준비|"
+      v["실행 주의"] = "|유료/외부 변이|머신 상태 변이|장시간(>10분)|파괴적|"
+      v["반증 시 처리"] = "|재수렴|파킹|"
+      v["검증 시점"] = ""
+      term = "|검증됨(통과)|반증됨(실패)|검증불가(드리프트)|"
+      # Headings of the whole document, outside fences, for anchor resolution:
+      # the text, and for `<label>. <title>` the label alone and the label
+      # after its parent `##` heading.
+      sec = ""; insec = 0; secseen = 0
+      for (i = 1; i <= nl; i++) {
+        s = dl[i]
+        if (s ~ /^#{1,4} /) {
+          h = s; sub(/^#+ /, "", h); h = trim(h)
+          if (h != "") heads[h] = 1
+          if (s ~ /^## /) sec = h
+          if (match(h, /^[A-Z]?[0-9]+(\.[0-9]+)*\.? /)) {
+            lab = substr(h, 1, RLENGTH - 1); sub(/\.$/, "", lab)
+            heads[lab] = 1
+            if (sec != "" && s !~ /^## /) heads[sec " " lab] = 1
+          }
+        }
+        if (s ~ /^(- )?(\*\*검증 등급\*\*|검증 등급): 미검증[ \t]*$/ || index(s, "[검증 등급: 미검증]") > 0)
+          emit("문서", "검증 등급", "저장 금지 토큰 `미검증` (" i " 행)")
+      }
+      # The first `## 구현 시 검증 항목` section: owner[i] is the item a line
+      # belongs to, 0 for the preamble and for lines under a bad sub-heading.
+      ni = 0; cur = 0
+      for (i = 1; i <= nl; i++) {
+        s = dl[i]
+        if (s ~ /^## /) {
+          if (insec) break
+          if (s == "## 구현 시 검증 항목") { insec = 1; secseen = 1 }
+          continue
+        }
+        if (!insec) continue
+        if (s ~ /^#{3,6} /) {
+          if (match(s, /^### R[0-9]+\.( |$)/)) {
+            ni++; cur = ni
+            lab = substr(s, 5, RLENGTH - 4); sub(/\.( )?$/, "", lab)
+            ilab[ni] = lab
+            if (lab in seen) emit(lab, "표제", "라벨이 겹침")
+            seen[lab] = 1
+            if (index(raw[i], "/tmp") > 0) emit(lab, "표제", "`/tmp` 글자가 있음 (" i " 행)")
+          } else {
+            cur = 0
+            emit("문서", "표제", "「" trim(s) "」 이 `### R<n>.` 꼴이 아님")
+          }
+          continue
+        }
+        owner[i] = cur
+      }
+      for (k = 1; k <= ni; k++) {
+        lab = ilab[k]
+        delete have
+        for (i = 1; i <= nl; i++) {
+          if (!((i in owner) && owner[i] == k)) continue
+          s = dl[i]
+          if (index(raw[i], "/tmp") > 0) emit(lab, "본문", "`/tmp` 글자가 있음 (" i " 행)")
+          for (j = 1; j <= nreq; j++) {
+            x = keyval(s, rk[j]); if (x == "\001") continue
+            have[rk[j]] = 1
+          }
+          for (f in v) {
+            x = keyval(s, f); if (x == "\001") continue
+            if (f == "검증 시점") {
+              if (x != "구현 전" && x != "구현 후" && x !~ /^구현 중\(.+\)$/)
+                emit(lab, f, "닫힌 어휘 밖의 값 「" x "」")
+            } else if (!inset(x, v[f])) {
+              emit(lab, f, "닫힌 어휘 밖의 값 「" x "」")
+            } else if (f == "차단 부류") {
+              print "@cls\t" lab "\t" x
+            }
+            if (f == "검증 등급" && inset(x, term)) {
+              nx = (i + 1 <= nl) ? dl[i + 1] : ""
+              if (keyval(nx, "구현 시 검증 기록") == "\001")
+                emit(lab, f, "끝 등급 「" x "」 바로 뒤에 `구현 시 검증 기록` 줄이 없음")
+            }
+          }
+          x = keyval(s, "실패 시 영향")
+          if (x != "\001" && index(x, "§") == 1) {
+            np = split(x, part, /[ \t]*[,，][ \t]*/)
+            for (j = 1; j <= np; j++) {
+              if (index(part[j], "§") != 1) continue
+              if (!anchor_ok(part[j]))
+                emit(lab, "실패 시 영향", "앵커 「" part[j] "」 가 문서의 표제로 풀리지 않음")
+            }
+          }
+        }
+        for (j = 1; j <= nreq; j++)
+          if (!(rk[j] in have)) emit(lab, rk[j], "필수 필드 없음")
+      }
+      if (!secseen) print "@none"
+    }
+  ' "$doc" -) || { echo "residual_items_malformed: 판독 실패 — $doc" >&2; return 2; }
+  case "$out" in *'@none'*) return 0 ;; esac
+  cls_lines=$(printf '%s\n' "$out" | grep '^@cls	' || true)
+  out=$(printf '%s\n' "$out" | grep -v '^@cls	' || true)
+  if [ -n "$cls_lines" ]; then
+    while IFS='	' read -r _ label cls; do
+      [ -n "$label" ] || continue
+      [ "$(residual_item_block_class "$doc" "$label")" = "$cls" ] && continue
+      out="${out:+$out
+}${label}	차단 부류	차단 부류 「${cls}」 가 잔여 사유 「$(residual_item_value "$doc" "$label" '잔여 사유')」 와 짝이 맞지 않음"
+    done <<<"$cls_lines"
+  fi
+  n=$(printf '%s' "$out" | grep -c . || true)
+  [ "$n" -gt 0 ] || return 0
+  printf '%s\n' "$out"
+  return 1
 }
 
 # ---------------------------------------------------------------------------
@@ -3598,15 +3843,37 @@ halt_step_is_unclosed_decision() {
   [ "$(sed -n '/^\*\*스텝\*\*: */{s///;s/[[:space:]]*$//;p;q;}' "$1")" = "Step 1 CFI-U3 BT-STOP — 미결 결정" ]
 }
 
-# halt_step_is_kept_drift <halt record> — 0 when the record's whole `**스텝**`
-# value is exactly `Step 2 CFI-U3 BT-STOP — 사람 둔 어긋남`: the halt an
-# implement stage writes when a screen slice meets a drift line the person
-# left `문서대로 둠`, which only a person answers. The whole value is compared,
-# never a cut at the first ` — `, so the shift's `구속-이탈` adoption, which
-# reads the step up to that cut, cannot pass for it.
+# halt_step_is_kept_drift <halt record> — 0 when the record is a kept-drift
+# stop: the halt an implement stage writes, as `Step 2 CFI-U3 BT-STOP — 사람 둔
+# 어긋남`, when a screen slice meets a drift line the person left `문서대로 둠`,
+# and which only a person answers. The record's first `**스텝**` value is read
+# normalized: every whitespace character is removed — the `[:space:]` class
+# under `LC_ALL=C` and the Unicode spaces U+00A0, U+1680, U+2000–U+200A,
+# U+2028, U+2029, U+202F, U+205F and U+3000, cut as UTF-8 byte sequences so
+# the reading does not depend on the locale — each of `—`, `–`, `‒`, `―` and
+# `−` becomes `-`, and the value is a kept-drift stop when `CFI-U3BT-STOP`
+# stands in it with `사람둔어긋남` after it, whatever trails. The reading is
+# wide on purpose: a record spelled slightly off (a tail, an en dash, doubled
+# spaces) is still read as person-only, so the person's `문서대로 둠` is never
+# overturned without a person. Reading too wide costs one more question to a
+# person; reading too narrow lets the shift or the seat answer it.
 halt_step_is_kept_drift() {
   [ -f "$1" ] || return 1
-  [ "$(sed -n '/^\*\*스텝\*\*: */{s///;s/[[:space:]]*$//;p;q;}' "$1")" = "Step 2 CFI-U3 BT-STOP — 사람 둔 어긋남" ]
+  local v u
+  v=$(sed -n '/^\*\*스텝\*\*: */{s///;p;q;}' "$1")
+  for u in $'\xc2\xa0' $'\xe1\x9a\x80' $'\xe2\x80\x80' $'\xe2\x80\x81' \
+    $'\xe2\x80\x82' $'\xe2\x80\x83' $'\xe2\x80\x84' $'\xe2\x80\x85' \
+    $'\xe2\x80\x86' $'\xe2\x80\x87' $'\xe2\x80\x88' $'\xe2\x80\x89' \
+    $'\xe2\x80\x8a' $'\xe2\x80\xa8' $'\xe2\x80\xa9' $'\xe2\x80\xaf' \
+    $'\xe2\x81\x9f' $'\xe3\x80\x80'; do
+    v=${v//"$u"/}
+  done
+  v=$(printf '%s' "$v" | LC_ALL=C tr -d '[:space:]')
+  for u in '—' '–' '‒' '―' '−'; do
+    v=${v//"$u"/-}
+  done
+  case "$v" in *CFI-U3BT-STOP*사람둔어긋남*) return 0 ;; esac
+  return 1
 }
 
 # `슬라이스 수` is a CHECKSUM, not an input: it is derived from the count of
@@ -5368,6 +5635,43 @@ rundir_of_run_id() {
   printf '%s' "${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/run/$1"
 }
 
+run_urgent_source() {
+  # run_urgent_source <run-dir> — the `출처` value of the run's urgency marker
+  # `<run-dir>/urgent`, or nothing when the run is not urgent. The marker is
+  # three lines (`cc-run-urgent v1`, `출처=<…>`, `시각=<ISO 8601 UTC>`); a file
+  # whose first line is not exactly `cc-run-urgent v1`, an empty file and
+  # anything that is not a regular file read as not urgent, so an unknown
+  # marker never puts one run ahead of another. A valid first line with no
+  # `출처` line still reads as urgent, with the source `미상`. The driver, the
+  # router's context and the person's mid-run mark command share this reading.
+  local f="${1:-}/urgent" first src
+  [ -n "${1:-}" ] && [ -f "$f" ] && [ ! -L "$f" ] && [ -s "$f" ] || return 0
+  first=$(sed -n '1p' "$f" 2>/dev/null) || return 0
+  [ "$first" = "cc-run-urgent v1" ] || return 0
+  src=$(awk 'sub(/^출처=/, "") && $0 != "" { print; exit }' "$f" 2>/dev/null) || src=""
+  printf '%s\n' "${src:-미상}"
+}
+
+run_urgent_mark() {
+  # run_urgent_mark — on every entry, turn the manifest's `급한 런` row into the
+  # run directory's urgency marker when the marker is absent. Written to a temp
+  # file in the same directory and moved without overwriting, so whichever
+  # writer is first (this entry, another entry, or a person's mid-run mark)
+  # keeps its file; urgency is the same either way and only the source line is
+  # the first writer's. A failure is a warning, never a stop.
+  local src tmp
+  [ -n "${MANIFEST:-}" ] && [ -n "${RUN_DIR:-}" ] || return 0
+  src=$(manifest_urgent_source 2>/dev/null) || src=""
+  [ -n "$src" ] || return 0
+  [ -e "$RUN_DIR/urgent" ] || [ -L "$RUN_DIR/urgent" ] && return 0
+  tmp="$RUN_DIR/urgent.tmp.$$"
+  if printf 'cc-run-urgent v1\n출처=%s\n시각=%s\n' "$src" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$tmp" 2>/dev/null; then
+    mv -n "$tmp" "$RUN_DIR/urgent" 2>/dev/null || :
+  fi
+  rm -f "$tmp" 2>/dev/null || :
+  return 0
+}
+
 rundir_init() {
   RUN_DIR=$(rundir_of_run_id "$RUN_ID") \
     || die "런 id 에 경로 성분이 있습니다 — 런 디렉터리 이름은 한 칸이어야 합니다: $RUN_ID"
@@ -5395,6 +5699,9 @@ rundir_init() {
   # that stops one segment; the gate refuses to write one anywhere but a real
   # directory at that place, so the driver makes it with the rest.
   mkdir -p "$RUN_DIR/halt" "$RUN_DIR/halt/shift" "$RUN_DIR/log" "$RUN_DIR/digest" "$RUN_DIR/shared"
+  # The urgency marker the router reads, from the manifest's `급한 런` row, on
+  # every entry and only when absent.
+  run_urgent_mark
   LOG_FILE="$RUN_DIR/log/driver.log"
   spawn_drop_dead_waiters
   printf '%s\n' "$(now_epoch)" > "$RUN_DIR/started-at"
@@ -6620,7 +6927,7 @@ spawn_route_wait() {
   #
   # THE HOLDER IS THIS SHELL'S OWN PID. `$$` names the top-level driver even in
   # a subshell, and a subshell that waits must be the one a reader checks.
-  local did="$1" kind="$2" ev="$3" bound="$4" env="$5" key m holder grp upto rec wnonce="-" rrc=0 lrc=0 wrc=0
+  local did="$1" kind="$2" ev="$3" bound="$4" env="$5" key m holder grp upto urg rec wnonce="-" rrc=0 lrc=0 wrc=0
   STAGE_SPAWN_PARK_REASON=$(wait_router_why "$env")
   if ! cc_effective_stall "$RUN_DIR" >/dev/null; then
     STAGE_SPAWN_PARK_REASON="$STAGE_SPAWN_PARK_REASON (실효 정지 임계를 읽지 못해 기다리지 않는다)"
@@ -6636,10 +6943,14 @@ spawn_route_wait() {
   holder=$(exec sh -c 'echo $PPID')
   grp=$(printf '%s' "$env" | jq -r '.group // "-"' 2>/dev/null || printf '%s' '-')
   upto=$(printf '%s' "$env" | jq -r '.until_epoch | if type == "number" then floor | tostring else "-" end' 2>/dev/null || printf '%s' '-')
+  # The entry is marked urgent only from the envelope's `urgent`; the shell does
+  # not read the lane pin again — the router already left `urgent` off a pinned
+  # request.
+  urg=$(printf '%s' "$env" | jq -r 'if .urgent == true then "1" else "" end' 2>/dev/null || printf '')
   if [ "$grp" != "-" ]; then
     rec=$(route_lease_wait_put --table "$(run_pace_root)/leases" --now "$(now_epoch)" --run-id "$RUN_ID" \
             --lineage "$SPAWN_LINEAGE" --group "$grp" --inventory "$RUN_DIR/inventory.json" \
-            --holder "$holder" ${kind:+--kind "$kind"} 2>/dev/null) || rrc=$?
+            --holder "$holder" ${kind:+--kind "$kind"} ${urg:+--urgent 1} 2>/dev/null) || rrc=$?
     if [ "$rrc" = "0" ]; then
       wnonce=$(printf '%s' "$rec" | jq -r '.nonce // "-"' 2>/dev/null || printf '%s' '-')
     else
@@ -8914,7 +9225,7 @@ AUDIT_SKELETAL_RECONVERGE_CAP=2
 
 audit_key_collect_reconverge_lines() {
   # audit_key_collect_reconverge_lines <step id> <ledger> — the ledger lines,
-  # each followed by a space, of the re-convergences a person's answer to a
+  # each followed by a space, of the re-convergences an answer to a
   # decision-collection record opened on the key: for each record a `결정 수거`
   # row names, the first `세그먼트=- | 스테이지=<id> | 종류=reconverge` row not
   # still waiting to spawn after the record's first `중단 답` on the key, and
@@ -11493,7 +11804,7 @@ wait_drop() {
 }
 
 wait_fifo_follow() {
-  # wait_fifo_follow <marker> <lineage> <holder> <group> <reason> [<kind>] — keep
+  # wait_fifo_follow <marker> <lineage> <holder> <group> <reason> [<kind> [<urgent>]] — keep
   # this wait's FIFO entry in step with the WAIT it was just given. <kind> is the
   # waiting stage's kind; an entry put back carries it as `--kind`, and an empty
   # or absent <kind> puts the entry back with no kind.
@@ -11511,7 +11822,16 @@ wait_fifo_follow() {
   # whose first put failed, would otherwise yield to every entry of that group
   # for good. The lease table, not the marker, says whether the entry is there,
   # so a marker that kept a nonce after its entry came down does not stop it.
-  local m="$1" lin="$2" holder="$3" grp="$4" why="$5" kind="${6:-}" nonce rec t
+  #
+  # AN URGENT WAIT RE-PUTS A LIVE ENTRY THAT IS NOT MARKED URGENT. <urgent> is
+  # `1` when the WAIT envelope carries `urgent: true` (a run marked urgent while
+  # this stage was already waiting); the entry is then written again under the
+  # same key with `--urgent 1`, which keeps its `seq`, and the marker takes the
+  # new entry's nonce — so the waiter moves ahead of the non-urgent waiters
+  # without losing its place among the urgent ones. An entry put back carries
+  # the same mark. The group-less arm and the host-hold drop do not change.
+  local m="$1" lin="$2" holder="$3" grp="$4" why="$5" kind="${6:-}" urg="${7:-}" nonce rec t
+  [ "$urg" = "1" ] || urg=""
   [ -f "$m" ] || return 0
   t="$(run_pace_root)/leases"
   nonce=$(cc_waiting_field "$m" '논스' | tr -d '[:space:]')
@@ -11524,12 +11844,13 @@ wait_fifo_follow() {
   fi
   if [ -n "$nonce" ] && [ "$nonce" != "-" ] \
      && route_lease_of "$t" "$RUN_ID" "$lin" 2>/dev/null \
-          | jq -e --arg n "$nonce" '.kind == "wait" and .nonce == $n' >/dev/null 2>&1; then
+          | jq -e --arg n "$nonce" --arg u "$urg" \
+              '.kind == "wait" and .nonce == $n and ($u == "" or .urgent == true)' >/dev/null 2>&1; then
     return 0
   fi
   rec=$(route_lease_wait_put --table "$t" --now "$(now_epoch)" --run-id "$RUN_ID" \
           --lineage "$lin" --group "$grp" --inventory "$RUN_DIR/inventory.json" \
-          --holder "${holder:-0}" ${kind:+--kind "$kind"} 2>/dev/null) || return 0
+          --holder "${holder:-0}" ${kind:+--kind "$kind"} ${urg:+--urgent 1} 2>/dev/null) || return 0
   nonce=$(printf '%s' "$rec" | jq -r '.nonce // "-"' 2>/dev/null || printf '%s' '-')
   [ "$nonce" != "-" ] || return 0
   # An entry the marker does not name is one no drop could find again.
@@ -11698,7 +12019,8 @@ stage_wait_loop() {
         wgrp=$(printf '%s' "$env" | jq -r '.group // "-"' 2>/dev/null || printf '%s' '-')
         wait_marker_set "$m" '갱신' "$(now_epoch)" '까지' "$upto" '그룹' "$wgrp" || true
         wait_fifo_follow "$m" "$lin" "$holder" "$wgrp" \
-          "$(printf '%s' "$env" | jq -r '.reason // ""' 2>/dev/null || true)" "$kind"
+          "$(printf '%s' "$env" | jq -r '.reason // ""' 2>/dev/null || true)" "$kind" \
+          "$(printf '%s' "$env" | jq -r 'if .urgent == true then "1" else "" end' 2>/dev/null || true)"
         # A WAIT without `reserve_seen` keeps the memory the marker already has.
         if printf '%s' "$env" | jq -e '(.reserve_seen | type) == "array"' >/dev/null 2>&1; then
           wait_marker_set "$m" '예비' "$(printf '%s' "$env" | jq -c '.reserve_seen' 2>/dev/null || printf '%s' '[]')" || true
@@ -11912,12 +12234,47 @@ apply_worktree() {
   printf '%s' "$p"
 }
 
+# THE RUN INFORMATION A PROBE RECEIVES. Every probe runs with these three
+# variables set, by the driver's S9 and by the gate's apply supervisor and
+# settlement alike, and the apply command itself receives none of them: the
+# command is the target's deployment, and its environment is not this
+# contract's to change. `CC_APPLY_RUN_ID` is the run executing the probe, also
+# when it settles a segment an earlier run adopted or merged;
+# `CC_APPLY_SEGMENT` is the segment id; `CC_APPLY_MERGE_COMMIT` is the full
+# 40-character name of that segment's merge commit, which is also the HEAD of
+# the worktree the probe runs in. A probe decides "is this run's merge
+# deployed" from the merge commit or HEAD, never from a run id or a branch
+# name: an adopted segment's branch carries the earlier run's id.
+readonly APPLY_ENV_RUN_ID=CC_APPLY_RUN_ID
+readonly APPLY_ENV_SEGMENT=CC_APPLY_SEGMENT
+readonly APPLY_ENV_MERGE=CC_APPLY_MERGE_COMMIT
+
+# apply_probe_head_ok <worktree> <merge commit> — prints the full name of the
+# merge commit and returns 0 when it resolves in <worktree> and equals that
+# worktree's HEAD; returns 1 with nothing printed otherwise (an empty argument,
+# a missing worktree, a commit that does not resolve, another HEAD). A probe
+# answer from a tree that is not the merge commit is no evidence about this
+# run's apply, so a caller that gets 1 does not run the probe.
+apply_probe_head_ok() {
+  local wt="$1" m="$2" full head
+  [ -n "$wt" ] && [ -n "$m" ] && [ -d "$wt" ] || return 1
+  full=$(cd "$wt" && git rev-parse --verify --quiet "${m}^{commit}" 2>/dev/null) || return 1
+  head=$(cd "$wt" && git rev-parse --verify --quiet HEAD 2>/dev/null) || return 1
+  [ -n "$full" ] && [ "$full" = "$head" ] || return 1
+  printf '%s' "$full"
+}
+
 apply_probe() {
+  # apply_probe <worktree> <probe> <run id> <segment> <merge commit>
   # Echoes nothing; the CALLER reads the exit status, which is the whole point
   # of `-detailed-exitcode`. Swallowing it into a string would put a parser
-  # between the tool and the decision.
-  local wt="$1" cmd="$2"
-  ( cd "$wt" && sh -c "$cmd" ) >/dev/null 2>&1
+  # between the tool and the decision. A worktree whose HEAD is not the merge
+  # commit runs no probe and returns 1, a value no mapping accepts, so the
+  # caller's verdict is 사전 실패 or 적용 불명; the caller calls
+  # `apply_probe_head_ok` again to write 「HEAD 불일치」 into its observation.
+  local wt="$1" cmd="$2" rid="${3:-}" seg="${4:-}" m="${5:-}" full
+  full=$(apply_probe_head_ok "$wt" "$m") || return 1
+  ( cd "$wt" && env "$APPLY_ENV_RUN_ID=$rid" "$APPLY_ENV_SEGMENT=$seg" "$APPLY_ENV_MERGE=$full" sh -c "$cmd" ) >/dev/null 2>&1
 }
 
 # The probe's exit-code mapping, frozen as the `## 인가` row
@@ -11979,18 +12336,48 @@ apply_code_row_check() {
     || die "적용 프로브 코드 행의 프로브 sha256 이 매니페스트의 적용 프로브 바이트와 맞지 않습니다 (행 $hx, 프로브 $want)"
 }
 
+# apply_probe_run_bound — status 0, printing the token, when the current
+# MANIFEST's frozen probe is bound to a run: the pipeline runs the apply, a
+# probe is frozen, and the unquoted probe string holds a run id of either
+# grammar (`<8 digits>-<8 hex>` or `<yyyy>-<mm>-<dd>-<8 hex>`) with no hex
+# character on either side. Any run's id counts. Only the manifest string is
+# read — never the script it names, and never the design document's slice
+# declaration — so every caller inside one re-kickoff gets the same answer
+# from the same source manifest. Status 1 otherwise.
+apply_probe_run_bound() {
+  local probe tok
+  [ -n "${MANIFEST:-}" ] || return 1
+  [ "$(apply_unquote "$(manifest_field '요소' '적용 주체')")" = "파이프라인" ] || return 1
+  probe=$(apply_unquote "$(manifest_field '요소' '적용 프로브')")
+  case "$probe" in ''|'(없음)'|'없음') return 1 ;; esac
+  tok=$(printf '%s\n' "$probe" | LC_ALL=C awk '{
+    s = $0; off = 0
+    while (match(substr(s, off + 1), /[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]|[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]/)) {
+      st = off + RSTART; len = RLENGTH
+      b = (st > 1) ? substr(s, st - 1, 1) : ""; a = substr(s, st + len, 1)
+      if (b !~ /[0-9a-f]/ && a !~ /[0-9a-f]/) { print substr(s, st, len); exit }
+      off = st
+    }
+  }')
+  [ -n "$tok" ] || return 1
+  printf '%s' "$tok"
+}
+
 # apply_code_row_reask — status 0 when the current MANIFEST's mapping cannot be
 # carried into a re-kickoff and 5c has to be asked again: the pipeline runs the
 # apply, a probe is frozen, and the `적용 프로브 코드` row is absent or carries
-# 2 in either value. Without a row only 불필요=0 is defined, so every needed
-# apply would be refused before it runs; a row carrying 2 is one the manifest
-# check refuses. A second row is left to the manifest check's own refusal.
+# 2 in either value, or the probe is bound to a run (`apply_probe_run_bound`).
+# Without a row only 불필요=0 is defined, so every needed apply would be
+# refused before it runs; a row carrying 2 is one the manifest check refuses;
+# a probe naming a run's id answers for that run and not for the next one. A
+# second row is left to the manifest check's own refusal.
 apply_code_row_reask() {
   local rows nu ne probe
   [ -n "${MANIFEST:-}" ] || return 1
   [ "$(apply_unquote "$(manifest_field '요소' '적용 주체')")" = "파이프라인" ] || return 1
   probe=$(apply_unquote "$(manifest_field '요소' '적용 프로브')")
   case "$probe" in ''|'(없음)'|'없음') return 1 ;; esac
+  apply_probe_run_bound >/dev/null && return 0
   rows=$(manifest_apply_code_rows)
   [ -n "$rows" ] || return 0
   case "$rows" in *"
@@ -12197,7 +12584,10 @@ apply_stage() {
   fi
   ledger_row 'segment' "id=$seg" "상태=적용 준비" "워크트리=$wt" "고정 커밋=$MERGE_COMMIT" "적용 명령=$cmd"
 
-  apply_probe "$wt" "$probe"; pre=$?
+  # A worktree left by an earlier attempt is reused without being pinned
+  # again, so its HEAD may not be the merge commit: `apply_probe` runs no probe
+  # there and the verdict below is 사전 실패 with 「HEAD 불일치」.
+  apply_probe "$wt" "$probe" "$RUN_ID" "$seg" "$MERGE_COMMIT"; pre=$?
   acct=$(stage_account_of "S9-$seg")
   case "$(apply_disposition "$nu" "$ne" "$pre")" in
     건너뜀)
@@ -12215,6 +12605,8 @@ apply_stage() {
        # apply leaves, so a later run reads a command that never ran as such.
        local nomap=""
        [ "$ne" = "-" ] && nomap=" — 적용 프로브 코드 행이 없어 필요 코드가 정의되지 않았다"
+       apply_probe_head_ok "$wt" "$MERGE_COMMIT" >/dev/null \
+         || nomap="${nomap} — HEAD 불일치: 워크트리 HEAD 가 머지 커밋 $MERGE_COMMIT 이 아니어서 프로브를 돌리지 않았다"
        ledger_row 'segment' "id=$seg" "상태=park" "적용=사전 실패" "워크트리=$wt" "고정 커밋=$MERGE_COMMIT"
        park "$seg" act 막힘 "게이트 park" "사전 프로브 실패(exit $pre, $map)${nomap} — 아무것도 건드리기 전에 거부한다" "$cmd"
        return 2 ;;
@@ -12223,7 +12615,11 @@ apply_stage() {
   log "$seg: S9 apply 실행 (재시도 없음) — $cmd"
   ( cd "$wt" && sh -c "$cmd" ) >"$RUN_DIR/log/S9-$seg.out" 2>"$RUN_DIR/log/S9-$seg.err"; rc=$?
 
-  apply_probe "$wt" "$probe"; post=$?
+  # A command that moved the worktree's HEAD leaves no tree the post-probe can
+  # answer for: no probe runs, and the outcome is 적용 불명 with 「HEAD 불일치」.
+  local headx=""
+  apply_probe "$wt" "$probe" "$RUN_ID" "$seg" "$MERGE_COMMIT"; post=$?
+  apply_probe_head_ok "$wt" "$MERGE_COMMIT" >/dev/null || headx=", HEAD 불일치 — 사후 프로브를 돌리지 않았다"
   acct=$(stage_account_of "S9-$seg")
   if [ "$(apply_disposition "$nu" "$ne" "$pre" "$rc" "$post")" = "수렴" ]; then
     ledger_row 'stage-result' "세그먼트=$seg" "스테이지=S9" "종료 코드=0" \
@@ -12240,7 +12636,7 @@ apply_stage() {
   # state, which is the one artifact a person will need in the morning.
   ledger_row 'stage-result' "세그먼트=$seg" "스테이지=S9" "종료 코드=$rc" \
     "압축 창=$(stage_window_of "S9-$seg")" "레인=$(stage_lane_of "S9-$seg")" ${acct:+"계정=$acct"} "기록자=드라이버" \
-    "아티팩트 술어 결과=1" "종단 부류=적용 불명" "관측=사전 $pre → 사후 $post ($map)" \
+    "아티팩트 술어 결과=1" "종단 부류=적용 불명" "관측=사전 $pre → 사후 $post ($map)${headx}" \
     "실패 서명=$(failure_signature apply '적용 불명' - -)"
   # A TARGET DEFECT STOPS ONLY THAT TARGET. The command exited 0 and the
   # post-probe still reads 「필요」: the segment park row carries the gate's
@@ -12261,7 +12657,7 @@ EOF
     return 3
   fi
   ledger_row 'segment' "id=$seg" "상태=park" "적용=불명" "워크트리=$wt" "고정 커밋=$MERGE_COMMIT"
-  park "$seg" run 불명 "게이트 park" "적용 불명 — 폭발 반경 '$radius' 정지, 워크트리 보존: $wt" "$cmd"
+  park "$seg" run 불명 "게이트 park" "적용 불명${headx} — 폭발 반경 '$radius' 정지, 워크트리 보존: $wt" "$cmd"
   report_append "사람 대조 필요" "$seg — apply 결과 불명, 반경 $radius. 워크트리 $wt 를 보존했다"
   APPLY_PARKED_RADIUS="$radius"
   return 1
@@ -13412,7 +13808,7 @@ segment_cycle() {
         fi
         case " $dch " in
           *" $seg "*|*" 전체 "*)
-            park "$seg" act 막힘 "게이트 park" "결정 수거 보류 — 기록 $dcr 에 대한 사람의 답과 재수렴을 기다린다"
+            park "$seg" act 막힘 "게이트 park" "결정 수거 보류 — 기록 $dcr 에 대한 답과 재수렴을 기다린다"
             return 1 ;;
         esac
       fi

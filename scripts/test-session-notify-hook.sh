@@ -607,8 +607,11 @@ done
 #
 # A run under the confined state root announced an approval (its id is a line of
 # `watch.announced-approvals`) and the session index names that run. The first
-# ask of that approval is raised into the approval's own group, silent, with the
-# session's click; the id lands in the run's `notify.asked-approvals`. Every
+# ask of that approval is raised into the approval's own group with the
+# session's click; the id lands in the run's `notify.asked-approvals`. It is
+# silent when the slot already rang — the approval's `answer` took the ring mark
+# `notify.rang/<id>`, which the cases that assert silence lay down first — and
+# rings, taking the mark itself, when it did not. Every
 # case where one link condition is missing raises `session-ask` as before. Each
 # case uses its own approval id, so one case's marker cannot decide another's.
 # ---------------------------------------------------------------------------
@@ -623,13 +626,15 @@ ap_pay() {  # ap_pay <sid> <questions json>
   pay "{\"session_id\":\"$1\",\"tool_name\":\"AskUserQuestion\",\"tool_input\":{\"questions\":$2}}"
 }
 
+# The approval's `answer` already rang in its slot.
+mkdir -p "$AP_RD/notify.rang/act-1a2b3c4d"
 P=$(ap_pay S-AP '[{"header":"승인","question":"승인 act-1a2b3c4d — 이 행위를 진행할까요?"}]')
 hook_run "$ASK_HOOK" "$P" "$PATH_FULL"
 notify_settle 1
 check "승인 연결 — 정규 접두 첫 물음은 배너 하나" "$(notify_lines)" "1"
 check "승인 연결 — 그룹이 승인 슬롯이다" \
   "$(grep -cF -- '-group cc-cmds-autopilot-R-LINK-act-1a2b3c4d ' "$NOTIFY_LOG" || true)" "1"
-check "승인 연결 — 소리를 달지 않는다" \
+check "승인 연결 — 이미 울린 승인 슬롯은 소리를 달지 않는다" \
   "$(grep -cF -- '-sound' "$NOTIFY_LOG" || true)" "0"
 check "승인 연결 — 클릭은 이 세션 창(tmux 밖이면 :)" \
   "$(grep -cE -- '-execute :$' "$NOTIFY_LOG" || true)" "1"
@@ -655,15 +660,22 @@ hook_run "$ASK_HOOK" "$P" "$PATH_FULL"
 notify_settle 1
 check "승인 연결 — 런 이름이 있으면 제목에 싣는다" \
   "$(grep -cF -- '-title cc-cmds · intent:demo-run · 답하세요 ' "$NOTIFY_LOG" || true)" "1"
+# No ring mark was laid down for this approval: its `answer` never rang in the
+# slot (a cap demotion, for one), so the ask is the slot's first banner.
+check "승인 연결 — 울린 적 없는 승인 슬롯의 첫 물음은 소리를 단다" \
+  "$(grep -cF -- '-sound default' "$NOTIFY_LOG" || true)" "1"
+check "승인 연결 — 울린 첫 물음이 승인 슬롯 표지를 남긴다" \
+  "$([ -d "$AP_RD/notify.rang/act-2a2b3c4d" ] && echo 있음 || echo 없음)" "있음"
 rm -f "$AP_RD/notify.label"
 assert_quiet "승인 연결 런 이름"
 
+mkdir -p "$AP_RD/notify.rang/vis-0a1b2c3d"
 P=$(ap_pay S-AP '[{"header":"vis-0a1b2c3d","question":"화면 판정 결과를 받아들일까요?"}]')
 hook_run "$ASK_HOOK" "$P" "$PATH_FULL"
 notify_settle 1
 check "승인 연결 — header 의 승인 id 로도 승인 슬롯" \
   "$(grep -cF -- '-group cc-cmds-autopilot-R-LINK-vis-0a1b2c3d ' "$NOTIFY_LOG" || true)" "1"
-check "승인 연결 — header 연결도 소리를 달지 않는다" \
+check "승인 연결 — header 연결도 이미 울린 슬롯에는 소리를 달지 않는다" \
   "$(grep -cF -- '-sound' "$NOTIFY_LOG" || true)" "0"
 assert_quiet "승인 연결 header"
 
