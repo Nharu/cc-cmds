@@ -76304,6 +76304,414 @@ check "119: admit 의 급함 표시는 표를 내지 않는다" \
   "2|문면||plugin"
 unset u119_id u119_rd u119_rk u119_warn r119_world r119_ls g119 c119 n119
 
+# ---------------------------------------------------------------------------
+# 120. 두 대기 루프와 진행 채널이 관측 데몬의 깨움 FIFO 에서 잔다
+# --- section: 120 | group: ledger_series | covers: gate_wake_usable, gate_wake_open, gate_wake_wait, gate_wake_close, gate_verb_wake_timeout, gate_verb_wait, gate_relay_wake_timeout, gate_relay_ci_time_arms, gate_relay_pause, gate_relay_wait, feed | anchors: 120: 데몬 pid·작업·깨움 디렉터리 중 하나라도 없으면 FIFO 를 열지 않고 잠으로 돌아간다, 120: 대조 — 셋이 다 있으면 FIFO 를 열고 시한에 1 을 돌려준다, 120: 한 바이트를 쓰면 1초 안에 0 으로 깬다, 120: 쓰지 않으면 시한에 1 이고 닫은 뒤 FIFO 가 남지 않는다, 120: 0 아닌 read 값은 시한으로 읽는다, 120: 지워진 FIFO 는 시한에 닫고 이름을 남긴다, 120: wait 의 시한은 마감·다음 박동·30초 중 가까운 것이고 지난 기한은 빼며 최소 1이다, 120: 교대 대기의 시한은 기한마다 그 기한까지의 초이고 없으면 30이다, 120: 깨움 바퀴는 feed_cycle 을 늘리지 않는다, 120: 깨움 바퀴가 새 행을 곧장 낸다, 120: 깨움 바퀴의 줄은 --once 의 줄과 같다, 120: 끝난 진행 채널은 FIFO 를 남기지 않는다, 120: feed.sh 와 gate.sh 의 깨움 헬퍼는 함수 머리말만 다르다, 120: 헬퍼 밖에서 fd 7 을 쓰는 줄이 없다, 120: 대조 — 같은 패턴이 헬퍼 안의 fd 7 줄을 찾는다, 120: 실제 관측기가 런을 입양하고 교대 대기가 FIFO 를 연다, 120: R2 깨움 행 덧붙임에서 교대 대기가 3초 안에 돌아온다, 120: R2 스테이지 pid 종료에서 교대 대기가 3초 안에 돌아온다, 120: R2 짧은 보유 상한의 반환은 기존 경로와 1초 안에서 같다, 120: R4 checks.observed 의 CI 판정 줄에서 교대 대기가 32초 안에 돌아온다, 120: R4 감독자 pid 의 파일 변화 없는 종료에서 교대 대기가 32초 안에 돌아온다, 120: R4 그 사이 중계 실효 판정은 실효 없음을 내지 않는다, 120: 위임 중 게이트의 heartbeat 나이 판독이 관측기가 갱신한 mtime 으로 양성이다 ---
+#
+# 관측 데몬이 런을 입양하면 런 디렉터리의 `observer.wake.d/` 에 대기자마다 FIFO 하나를
+# 두고, 데몬이 지켜보는 입력이 바뀌면 그 FIFO 에 줄 하나를 써 대기자를 곧장 깨운다.
+# `gate.sh wait`·교대 대기·`feed.sh` 의 바퀴 사이 잠이 그 FIFO 위의 `read -t` 다. 데몬
+# pid·입양된 작업·깨움 디렉터리 셋 중 하나라도 없으면 지금처럼 정해진 초를 잔다.
+#
+# 앞 일곱 부분은 데몬 없이 돈다. 데몬의 자리는 이 스위트의 잠자는 프로세스 하나가
+# pid 파일로 대신한다 — 헬퍼는 그 pid 가 살아 있는지만 읽는다. 마지막 부분(R2·R4)은
+# 임시 `XDG_STATE_HOME` 아래에 이 레포의 orchestrator 사본을 고정해 실제
+# `observer.py` 를 띄우고, 교대 대기가 돌아오는 시각을 잰다. CI 호스트에서는 데몬이
+# 뜨지 않으므로(그 환경 스위치) 그 부분을 건너뛴다. 데몬과 잠자는 프로세스는 절 끝에서
+# 내리고 임시 디렉터리를 지운다.
+# ---------------------------------------------------------------------------
+t120_ms() { python3 -c 'import time; print(int(time.time() * 1000))'; }
+t120_mtime_ns() { python3 -c 'import os, sys; print(os.stat(sys.argv[1]).st_mtime_ns)' "$1" 2>/dev/null || printf '0\n'; }
+# t120_poke <fifo> — 막히지 않는 쓰기로 줄 하나. 읽는 쪽이 없으면 아무것도 하지 않는다.
+t120_poke() {
+  python3 -c 'import os, sys
+try:
+    fd = os.open(sys.argv[1], os.O_WRONLY | os.O_NONBLOCK)
+    os.write(fd, b"\n")
+    os.close(fd)
+except OSError:
+    pass' "$1"
+}
+# t120_until <회수> <조건> — 0.5초 간격으로 조건이 설 때까지, 많아야 회수만큼.
+t120_until() {
+  local n=0
+  while [ "$n" -lt "$1" ]; do
+    if eval "$2"; then return 0; fi
+    sleep 0.5; n=$((n + 1))
+  done
+  return 1
+}
+t120_strays=""
+t120_sleeper() { sleep 900 >/dev/null 2>&1 & t120_sl=$!; t120_strays="$t120_strays $t120_sl"; }
+
+# 데몬의 대역: 살아 있는 pid 하나를 적은 상태 루트, 그리고 pid 파일이 없는 상태 루트.
+t120_sleeper; t120_fake=$t120_sl
+t120_fs="$WORK/s120-fake"; mkdir -p "$t120_fs/cc-cmds/observer"
+printf '%s\n' "$t120_fake" > "$t120_fs/cc-cmds/observer/observer.pid"
+t120_ns="$WORK/s120-none"; mkdir -p "$t120_ns/cc-cmds/observer"
+
+# 1. 되돌림 — 셋 중 하나가 없을 때.
+t120_probe() {  # t120_probe <상태 루트> — 「usable 0/1|FIFO 열림 0/1|wait rc」
+  local u=1 o=0 rc=0
+  XDG_STATE_HOME=$1
+  if gate_wake_usable; then u=0; fi
+  gate_wake_open probe
+  [ -z "$WAKE_FD7_FIFO" ] || o=1
+  gate_wake_wait 1 || rc=$?
+  gate_wake_close
+  printf '%s|%s|%s' "$u" "$o" "$rc"
+}
+t120_l=$(lsr_ledger s120-fb); t120_rd=${t120_l%/*}
+mkdir -p "$t120_rd/observer.jobs" "$t120_rd/observer.wake.d"; : > "$t120_rd/observer.jobs/watch.args"
+t120_a=$(lsr_in - "$t120_l" - t120_probe "$t120_ns" 2>/dev/null)
+rm -f "$t120_rd/observer.jobs/watch.args"
+t120_b=$(lsr_in - "$t120_l" - t120_probe "$t120_fs" 2>/dev/null)
+: > "$t120_rd/observer.jobs/watch.args"; rmdir "$t120_rd/observer.wake.d"
+t120_c=$(lsr_in - "$t120_l" - t120_probe "$t120_fs" 2>/dev/null)
+check "120: 데몬 pid·작업·깨움 디렉터리 중 하나라도 없으면 FIFO 를 열지 않고 잠으로 돌아간다" \
+  "$t120_a;$t120_b;$t120_c" "1|0|1;1|0|1;1|0|1"
+mkdir -p "$t120_rd/observer.wake.d"
+check "120: 대조 — 셋이 다 있으면 FIFO 를 열고 시한에 1 을 돌려준다" \
+  "$(lsr_in - "$t120_l" - t120_probe "$t120_fs" 2>/dev/null)|$(ls -A "$t120_rd/observer.wake.d" | wc -l | tr -d ' ')" "0|1|1|0"
+
+# 2. FIFO 깨움.
+t120_wake() {  # 「깨운 rc|쓴 뒤 1초 안|안 깨운 rc|닫은 뒤 남음|닫힌 fd 의 rc|지운 FIFO 뒤 닫힘」
+  local f w b r1=0 r2=0 r3=0 r4=0 left=0 shut=n quick=n
+  XDG_STATE_HOME=$1
+  gate_wake_open w
+  f=$WAKE_FD7_FIFO
+  ( sleep 1; t120_poke "$f"; t120_ms > "$2" ) &
+  gate_wake_wait 10 || r1=$?
+  b=$(t120_ms)
+  wait
+  w=$(cat "$2" 2>/dev/null || true)
+  [ -z "$w" ] || [ $((b - w)) -ge 1000 ] || quick=y
+  gate_wake_wait 1 || r2=$?
+  gate_wake_close
+  [ ! -e "$f" ] || left=1
+  gate_wake_open w
+  exec 7>&-
+  gate_wake_wait 2 || r3=$?
+  gate_wake_close
+  gate_wake_open w
+  rm -f "$WAKE_FD7_FIFO"
+  gate_wake_wait 1 || r4=$?
+  if [ -z "$WAKE_FD7_FIFO" ] && [ "$WAKE_FD7_NAME" = "w" ]; then shut=y; fi
+  gate_wake_close
+  printf '%s|%s|%s|%s|%s|%s|%s' "$r1" "$quick" "$r2" "$left" "$r3" "$r4" "$shut"
+}
+t120_w=$(lsr_in - "$t120_l" - t120_wake "$t120_fs" "$WORK/s120-wrote" 2>/dev/null)
+IFS='|' read -r t120_w1 t120_w2 t120_w3 t120_w4 t120_w5 t120_w6 t120_w7 <<< "$t120_w"
+check "120: 한 바이트를 쓰면 1초 안에 0 으로 깬다" "$t120_w1|$t120_w2" "0|y"
+check "120: 쓰지 않으면 시한에 1 이고 닫은 뒤 FIFO 가 남지 않는다" "$t120_w3|$t120_w4" "1|0"
+check "120: 0 아닌 read 값은 시한으로 읽는다" "$t120_w5" "1"
+check "120: 지워진 FIFO 는 시한에 닫고 이름을 남긴다" "$t120_w6|$t120_w7" "1|y"
+
+# 3. 시한 계산.
+t120_vt() {
+  local o="" a
+  for a in "1000 100 1000 600 1050" "1000 20 1000 600 1010" "1000 600 1000 15 1010" \
+           "1000 5 1000 600 1010" "1000 10 1000 600 1010"; do
+    # shellcheck disable=SC2086
+    o="${o:+$o,}$(gate_verb_wake_timeout $a)"
+  done
+  printf '%s' "$o"
+}
+check "120: wait 의 시한은 마감·다음 박동·30초 중 가까운 것이고 지난 기한은 빼며 최소 1이다" \
+  "$(lsr_in - "$t120_l" - t120_vt 2>/dev/null)" "30,10,5,30,1"
+t120_rt() {  # t120_rt <미등록 관측 ISO> <재개 시각 ISO> — 기한을 하나씩만 둔 상태의 시한들
+  local now o
+  now=$(date -u +%s)
+  GATE_RELAY_W_RESET="" GATE_RELAY_W_CI="" GATE_RELAY_CONFIRM_SET="" GATE_RELAY_SEAT_START=$now
+  o=$(gate_relay_wake_timeout "$now")
+  GATE_RELAY_SEAT_START=$((now - 93))
+  o="$o,$(CC_GATE_RELAY_HOLD_TEST_SECONDS=100 gate_relay_wake_timeout "$now")"
+  GATE_RELAY_SEAT_START=$now
+  GATE_RELAY_W_RESET="S1#1:$((now + 5))"
+  o="$o,$(CC_GATE_RESET_GRACE_TEST_SECONDS=3 gate_relay_wake_timeout "$now")"
+  GATE_RELAY_W_RESET="S1#1:$((now - 500))"
+  o="$o,$(CC_GATE_RESET_GRACE_TEST_SECONDS=3 gate_relay_wake_timeout "$now")"
+  GATE_RELAY_W_RESET="S1#1:$now"
+  o="$o,$(CC_GATE_RESET_GRACE_TEST_SECONDS=0 gate_relay_wake_timeout "$now")"
+  GATE_RELAY_W_RESET=""
+  mkdir -p "$RUN_DIR/confirm"; printf '1 %s\n' "$((now - 6))" > "$RUN_DIR/confirm/r1.n"
+  GATE_RELAY_CONFIRM_SET=r1
+  o="$o,$(CC_GATE_CONFIRM_POLL_TEST_SECONDS=10 gate_relay_wake_timeout "$now")"
+  GATE_RELAY_CONFIRM_SET=""
+  printf '%s\tS2\t1\t%s\t미등록\t-\t-\n' "$1" "0123456789abcdef0123456789abcdef01234567" > "$RUN_DIR/checks.observed"
+  GATE_RELAY_W_CI=S2
+  o="$o,$(gate_relay_wake_timeout "$now")"
+  GATE_RELAY_W_CI=""
+  printf -- '- `계정 이전` | 결과=대기 | 재개 시각=%s | prev=x\n' "$2" >> "$LEDGER"
+  o="$o,$(gate_relay_wake_timeout "$now")"
+  printf '%s' "$o"
+}
+t120_now=$(date -u +%s)
+t120_iso() { python3 -c 'import sys, time; print(time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(int(sys.argv[1]))))' "$1"; }
+t120_l=$(lsr_ledger s120-rt)
+# 시각 둘은 같은 초 안에서 재므로, 앞의 기대값은 그 초가 바뀌지 않는 한 고정이다.
+t120_r=$(lsr_in - "$t120_l" - t120_rt "$(t120_iso $((t120_now - 290)))" "$(t120_iso $((t120_now + 12)))" 2>/dev/null)
+case "$t120_r" in
+  "30,7,8,30,1,4,10,12"|"30,7,8,30,1,4,9,11") ok "120: 교대 대기의 시한은 기한마다 그 기한까지의 초이고 없으면 30이다" ;;
+  *) bad "120: 교대 대기의 시한은 기한마다 그 기한까지의 초이고 없으면 30이다" "got '$t120_r'" ;;
+esac
+
+# 4. feed — 깨움 바퀴. 강제 읽기는 CC_QUIET_PASS_EVERY 바퀴마다이고, 둘로 줄이면 센
+# 바퀴 둘째마다 원장을 다시 읽어 읽기 표지를 건드린다. 깨움 셋 뒤에도 표지가 그대로면
+# 깨움 바퀴가 세어지지 않은 것이다.
+t120_fl=$(lsr_ledger s120-feed); t120_fd=${t120_fl%/*}
+mkdir -p "$t120_fd/observer.jobs" "$t120_fd/observer.wake.d"; : > "$t120_fd/observer.jobs/watch.args"
+sleep 1.1
+XDG_STATE_HOME="$t120_fs" CC_QUIET_PASS_EVERY=2 bash "$repo_root/plugins/cc-cmds/orchestrator/feed.sh" \
+  --run-dir "$t120_fd" --ledger "$t120_fl" --interval 30 --stall 99999 > "$WORK/s120-feed.out" 2>&1 &
+t120_fp=$!
+t120_ff="$t120_fd/observer.wake.d/feed.$t120_fp.fifo"
+t120_until 20 '[ -p "$t120_ff" ] && [ -f "$t120_fd/.feed.readmark" ]' || true
+sleep 0.5
+t120_m0=$(t120_mtime_ns "$t120_fd/.feed.readmark")
+for t120_i in 1 2 3; do t120_poke "$t120_ff"; sleep 0.6; done
+check "120: 깨움 바퀴는 feed_cycle 을 늘리지 않는다" \
+  "$( [ -p "$t120_ff" ] && echo FIFO)|$( [ "$t120_m0" != "0" ] && [ "$(t120_mtime_ns "$t120_fd/.feed.readmark")" = "$t120_m0" ] && echo 그대로)" \
+  "FIFO|그대로"
+t120_row='- `stage-result` | 교대=0 | 세그먼트=S1 | 스테이지=S1#1 | 종류=implement | 종료 코드=0 | 종단 부류=정상 | 기록자=게이트 | prev=0'
+printf '%s\n' "$t120_row" >> "$t120_fl"
+t120_poke "$t120_ff"
+if t120_until 6 'grep -q "스테이지 S1#1 종단" "$WORK/s120-feed.out"'; then
+  ok "120: 깨움 바퀴가 새 행을 곧장 낸다"
+else
+  bad "120: 깨움 바퀴가 새 행을 곧장 낸다" "$(cat "$WORK/s120-feed.out")"
+fi
+t120_ol=$(lsr_ledger s120-feed-once)
+printf '%s\n' "$t120_row" >> "$t120_ol"
+check "120: 깨움 바퀴의 줄은 --once 의 줄과 같다" \
+  "$(grep '스테이지 S1#1 종단' "$WORK/s120-feed.out" | sed 's/^\[[^]]*\] //')" \
+  "$(XDG_STATE_HOME="$t120_ns" bash "$repo_root/plugins/cc-cmds/orchestrator/feed.sh" --run-dir "${t120_ol%/*}" \
+     --ledger "$t120_ol" --once --stall 99999 2>&1 | grep '스테이지 S1#1 종단' | sed 's/^\[[^]]*\] //')"
+: > "$t120_fd/done"
+t120_poke "$t120_ff"
+t120_until 10 '! kill -0 "$t120_fp" 2>/dev/null' || kill "$t120_fp" 2>/dev/null
+wait "$t120_fp" 2>/dev/null
+check "120: 끝난 진행 채널은 FIFO 를 남기지 않는다" "$(ls -A "$t120_fd/observer.wake.d" | wc -l | tr -d ' ')" "0"
+
+# 5. 헬퍼 동기.
+t120_blk() {
+  awk '/^# >>> wake helpers$/ { on = 1 } on { print } /^# <<< wake helpers$/ { on = 0 }' "$1" \
+    | sed 's/feed_wake_/gate_wake_/g'
+}
+t120_gb=$(t120_blk "$repo_root/plugins/cc-cmds/orchestrator/gate.sh")
+t120_fb=$(t120_blk "$repo_root/plugins/cc-cmds/orchestrator/feed.sh")
+check "120: feed.sh 와 gate.sh 의 깨움 헬퍼는 함수 머리말만 다르다" \
+  "$( [ "$t120_gb" = "$t120_fb" ] && echo 같음 || echo 다름)|$(printf '%s\n' "$t120_gb" | grep -c '^gate_wake_[a-z]*() {')" "같음|4"
+
+# 7. fd 7 — 헬퍼 블록 밖, 주석 줄 밖에서 fd 7 을 열거나 읽거나 닫는 줄.
+t120_fd7() {  # t120_fd7 <안|밖> <파일…>
+  local where=$1; shift
+  awk -v where="$where" '
+    /^# >>> wake helpers$/ { on = 1 }
+    /^# <<< wake helpers$/ { on = 0; next }
+    (where == "밖" && on) || (where == "안" && !on) { next }
+    /^[[:space:]]*#/ { next }
+    /(^|[^0-9&<>])7[<>]|[<>]&7([^0-9]|$)|-u 7([^0-9]|$)/ { print FILENAME ":" FNR }
+  ' "$@"
+}
+t120_o="$repo_root/plugins/cc-cmds/orchestrator"
+check "120: 헬퍼 밖에서 fd 7 을 쓰는 줄이 없다" \
+  "$(t120_fd7 밖 "$t120_o/gate.sh" "$t120_o/feed.sh" "$t120_o/liveness.sh" | tr '\n' ' ')" ""
+check "120: 대조 — 같은 패턴이 헬퍼 안의 fd 7 줄을 찾는다" \
+  "$(t120_fd7 안 "$t120_o/gate.sh" "$t120_o/feed.sh" | wc -l | tr -d ' ')" "6"
+
+# 8·6. 실제 관측기 — R2·R4 의 레시피와 위임 중 heartbeat 판독.
+if [ -n "${CI:-}" ] || ! command -v python3 >/dev/null 2>&1; then
+  skip "120: R2·R4 레시피는 관측기가 뜨지 않는 호스트(CI 또는 python3 없음)에서 건너뛴다"
+else
+  t120_S="$WORK/s120-obs"
+  t120_rid=20261123-0000c120
+  t120_rd="$t120_S/cc-cmds/run/$t120_rid"
+  mkdir -p "$t120_rd/plugin/cc-cmds" "$t120_S/cc-cmds/session"
+  cp -R "$repo_root/plugins/cc-cmds/orchestrator" "$t120_rd/plugin/cc-cmds/orchestrator"
+  cp -R "$repo_root/plugins/cc-cmds/.claude-plugin" "$t120_rd/plugin/cc-cmds/.claude-plugin"
+  t120_lg="$t120_rd/ledger.md"
+  printf '# 원장 픽스처\n\n## 실행 LS\n\n- `handoff` | 교대=1 | 사유=대기 | CI 대기=- | prev=x\n' > "$t120_lg"
+  printf '%s\n' "$t120_lg" > "$t120_rd/ledger-path"
+  printf '%s\n' "$(( $(date -u +%s) - 3600 ))" > "$t120_rd/started-at"
+  t120_env() {
+    env -u CI -u CC_CMDS_OBSERVER XDG_STATE_HOME="$t120_S" CC_OBSERVER_PERIOD=0.5 CC_OBSERVER_GRACE=600 \
+      CC_CMDS_ATTENTION_ROOT="$WORK/s120-attn" FLEET_PACE_ROOT="$WORK/s120-pace" "$@"
+  }
+  # t120_stage <키> <pid|sup> — 살아 있는 잠자는 프로세스 하나를 그 키의 스테이지 또는
+  # 감독자로 적는다. 스테이지는 지문 파일을 함께 둔다.
+  t120_stage() {
+    t120_sleeper
+    if [ "$2" = "pid" ]; then
+      printf '%s\n' "$t120_sl" > "$t120_rd/$1.pid"
+      lsr_in - "$t120_lg" - cc_proc_fingerprint "$t120_sl" > "$t120_rd/$1.start" 2>/dev/null
+    else
+      printf '%s\n' "$t120_sl" > "$t120_rd/$1.sup"
+    fi
+  }
+  # t120_relay <상태 루트> <보유 상한> <결과 파일> — 교대 대기를 한 번 돌려 「시작 ms 끝 ms rc」.
+  t120_relay() {
+    local r=0 s
+    XDG_STATE_HOME=$1
+    CC_GATE_RELAY_HOLD_TEST_SECONDS=$2; export CC_GATE_RELAY_HOLD_TEST_SECONDS
+    GATE_RELAY_FP=""; GATE_RELAY_STARTED=""; GATE_RELAY_SEAT_START=$(date -u +%s)
+    s=$(t120_ms)
+    gate_relay_wait >/dev/null 2>&1 || r=$?
+    printf '%s %s %s\n' "$s" "$(t120_ms)" "$r" > "$3"
+  }
+  t120_fifo_up() { t120_until 20 'ls "$t120_rd"/observer.wake.d/relay.*.fifo >/dev/null 2>&1'; }
+  # t120_ms_of <결과 파일> <사건 ms> — 사건에서 반환까지의 ms. 대기가 사건 전에 이미
+  # 돌아왔으면(빈 대기 집합 등) 비운다 — 그 반환은 사건에 깬 것이 아니다.
+  t120_ms_of() { awk -v t="$2" '$1 < t && $2 >= t { print $2 - t }' "$1" 2>/dev/null; }
+  t120_rc_of() { awk '{ print $3 }' "$1" 2>/dev/null; }
+  # 죽인 잠자는 프로세스는 곧장 거둔다. 좀비는 kill -0 에 살아 있다고 답한다.
+  t120_kill() { kill "$1" 2>/dev/null; wait "$1" 2>/dev/null; }
+
+  t120_adopt=$(t120_env bash "$t120_rd/plugin/cc-cmds/orchestrator/watch.sh" --run-dir "$t120_rd" --ledger "$t120_lg" \
+    --interval 2 --stall 99999 --silence 99999 --after-stage 99999 --run-open 99999 2>&1)
+  t120_until 40 '[ -s "$t120_S/cc-cmds/observer/observer.pid" ] && [ -d "$t120_rd/observer.wake.d" ]' || true
+  t120_stage S1 pid
+  t120_s1=$t120_sl
+
+  # R2 — 깨움 행 덧붙임.
+  lsr_in - "$t120_lg" - t120_relay "$t120_S" 120 "$WORK/s120-r2a" 2>/dev/null &
+  t120_rp=$!
+  if t120_fifo_up; then t120_up=1; else t120_up=0; fi
+  case "$t120_adopt|$t120_up" in
+    *"관측 데몬에 위임했습니다"*"|1") ok "120: 실제 관측기가 런을 입양하고 교대 대기가 FIFO 를 연다" ;;
+    *) bad "120: 실제 관측기가 런을 입양하고 교대 대기가 FIFO 를 연다" "adopt='$t120_adopt' fifo=$t120_up" ;;
+  esac
+  sleep 1
+  t120_t=$(t120_ms)
+  printf '%s\n' "$t120_row" >> "$t120_lg"
+  wait "$t120_rp" 2>/dev/null
+  t120_e1=$(t120_ms_of "$WORK/s120-r2a" "$t120_t")
+  printf '120 측정: R2 깨움 행 → 교대 대기 반환 %sms rc=%s\n' "$t120_e1" "$(t120_rc_of "$WORK/s120-r2a")"
+  if [ "$(t120_rc_of "$WORK/s120-r2a")" = "0" ] && [ -n "$t120_e1" ] && [ "$t120_e1" -le 3000 ]; then
+    ok "120: R2 깨움 행 덧붙임에서 교대 대기가 3초 안에 돌아온다"
+  else
+    bad "120: R2 깨움 행 덧붙임에서 교대 대기가 3초 안에 돌아온다" "$(cat "$WORK/s120-r2a" 2>/dev/null) 기준 $t120_t"
+  fi
+
+  # R2 — 스테이지 pid 종료. 새 대기 인계가 앞 stage-result 행을 기준 행 앞으로 보낸다.
+  printf -- '- `handoff` | 교대=2 | 사유=대기 | CI 대기=- | prev=x\n' >> "$t120_lg"
+  sleep 1
+  lsr_in - "$t120_lg" - t120_relay "$t120_S" 120 "$WORK/s120-r2b" 2>/dev/null &
+  t120_rp=$!
+  t120_fifo_up || true
+  sleep 1
+  t120_t=$(t120_ms)
+  t120_kill "$t120_s1"
+  wait "$t120_rp" 2>/dev/null
+  t120_e2=$(t120_ms_of "$WORK/s120-r2b" "$t120_t")
+  printf '120 측정: R2 스테이지 pid 종료 → 교대 대기 반환 %sms rc=%s\n' "$t120_e2" "$(t120_rc_of "$WORK/s120-r2b")"
+  if [ "$(t120_rc_of "$WORK/s120-r2b")" = "0" ] && [ -n "$t120_e2" ] && [ "$t120_e2" -le 3000 ]; then
+    ok "120: R2 스테이지 pid 종료에서 교대 대기가 3초 안에 돌아온다"
+  else
+    bad "120: R2 스테이지 pid 종료에서 교대 대기가 3초 안에 돌아온다" "$(cat "$WORK/s120-r2b" 2>/dev/null) 기준 $t120_t"
+  fi
+
+  # R2 — 짧은 보유 상한(5초)의 반환을 관측기가 없는 같은 꼴의 런과 견준다.
+  rm -f "$t120_rd/S1.pid" "$t120_rd/S1.start"
+  t120_stage S1 pid
+  t120_ol=$(lsr_ledger s120-old); t120_od=${t120_ol%/*}
+  cp "$t120_lg" "$t120_ol"
+  cp "$t120_rd/S1.pid" "$t120_rd/S1.start" "$t120_od/"
+  sleep 1
+  lsr_in - "$t120_lg" - t120_relay "$t120_S" 5 "$WORK/s120-r2c" 2>/dev/null
+  lsr_in - "$t120_ol" - t120_relay "$t120_S" 5 "$WORK/s120-r2d" 2>/dev/null
+  t120_hn=$(awk '{ print $2 - $1 }' "$WORK/s120-r2c" 2>/dev/null)
+  t120_ho=$(awk '{ print $2 - $1 }' "$WORK/s120-r2d" 2>/dev/null)
+  printf '120 측정: R2 보유 상한 5초 — 새 경로 %sms rc=%s, 기존 경로 %sms rc=%s\n' \
+    "$t120_hn" "$(t120_rc_of "$WORK/s120-r2c")" "$t120_ho" "$(t120_rc_of "$WORK/s120-r2d")"
+  t120_hd=$(( ${t120_hn:-0} - ${t120_ho:-99999} )); [ "$t120_hd" -ge 0 ] || t120_hd=$(( -t120_hd ))
+  if [ "$(t120_rc_of "$WORK/s120-r2c")|$(t120_rc_of "$WORK/s120-r2d")" = "1|1" ] && [ "$t120_hd" -le 1000 ]; then
+    ok "120: R2 짧은 보유 상한의 반환은 기존 경로와 1초 안에서 같다"
+  else
+    bad "120: R2 짧은 보유 상한의 반환은 기존 경로와 1초 안에서 같다" "새 $t120_hn 기존 $t120_ho"
+  fi
+  t120_kill "$t120_sl"
+  rm -f "$t120_rd/S1.pid" "$t120_rd/S1.start"
+
+  # 위임 중 heartbeat — 관측기가 패스 사이에도 새로 하는 mtime 을 게이트가 읽는다.
+  t120_hb=$(lsr_in - "$t120_lg" - gate_mtime "$t120_rd/watch.heartbeat" 2>/dev/null)
+  t120_hba=$(( $(date -u +%s) - ${t120_hb:-0} ))
+  if [ -n "$t120_hb" ] && [ "$t120_hba" -le 5 ]; then
+    ok "120: 위임 중 게이트의 heartbeat 나이 판독이 관측기가 갱신한 mtime 으로 양성이다"
+  else
+    bad "120: 위임 중 게이트의 heartbeat 나이 판독이 관측기가 갱신한 mtime 으로 양성이다" "mtime='$t120_hb' 나이=$t120_hba"
+  fi
+
+  # R4 — 관측기가 지켜보지 않는 두 변화: checks.observed 의 CI 판정 줄, 파일을 바꾸지
+  # 않는 감독자의 죽음. 교대 대기는 30초 상한의 시한에 깨어 32초 안에 돌아온다. 그 사이
+  # 중계 실효 판정(위임된 watch.sh --once 가 부르는 판정)을 2초마다 읽는다.
+  t120_eff=""
+  t120_sample() {  # t120_sample <대기 pid>
+    while kill -0 "$1" 2>/dev/null; do
+      if lsr_in - "$t120_lg" - cc_relay_is_effective "$t120_rd" "$t120_lg" 300 120 >/dev/null 2>&1; then
+        t120_eff="${t120_eff}y"
+      elif kill -0 "$1" 2>/dev/null; then
+        t120_eff="${t120_eff}n"
+      fi
+      sleep 2
+    done
+  }
+  t120_sleeper; printf '%s\n' "$t120_sl" > "$t120_rd/checks.pid"
+  printf -- '- `handoff` | 교대=3 | 사유=대기 | CI 대기=S9 | prev=x\n' >> "$t120_lg"
+  sleep 1
+  lsr_in - "$t120_lg" - t120_relay "$t120_S" 120 "$WORK/s120-r4a" 2>/dev/null &
+  t120_rp=$!
+  t120_fifo_up || true
+  sleep 1
+  t120_t=$(t120_ms)
+  printf '%s\tS9\t1\t%s\t통과\t-\t-\n' "$(t120_iso "$(date -u +%s)")" "89abcdef0123456789abcdef0123456789abcdef" > "$t120_rd/checks.observed"
+  t120_sample "$t120_rp"
+  wait "$t120_rp" 2>/dev/null
+  t120_e4=$(t120_ms_of "$WORK/s120-r4a" "$t120_t")
+  printf '120 측정: R4 checks.observed CI 판정 줄 → 교대 대기 반환 %sms rc=%s\n' "$t120_e4" "$(t120_rc_of "$WORK/s120-r4a")"
+  if [ "$(t120_rc_of "$WORK/s120-r4a")" = "0" ] && [ -n "$t120_e4" ] && [ "$t120_e4" -le 32000 ]; then
+    ok "120: R4 checks.observed 의 CI 판정 줄에서 교대 대기가 32초 안에 돌아온다"
+  else
+    bad "120: R4 checks.observed 의 CI 판정 줄에서 교대 대기가 32초 안에 돌아온다" "$(cat "$WORK/s120-r4a" 2>/dev/null) 기준 $t120_t"
+  fi
+
+  printf -- '- `handoff` | 교대=4 | 사유=대기 | CI 대기=- | prev=x\n' >> "$t120_lg"
+  t120_stage S8 sup
+  sleep 1
+  lsr_in - "$t120_lg" - t120_relay "$t120_S" 120 "$WORK/s120-r4b" 2>/dev/null &
+  t120_rp=$!
+  t120_fifo_up || true
+  sleep 1
+  t120_t=$(t120_ms)
+  t120_kill "$t120_sl"
+  t120_sample "$t120_rp"
+  wait "$t120_rp" 2>/dev/null
+  t120_e5=$(t120_ms_of "$WORK/s120-r4b" "$t120_t")
+  printf '120 측정: R4 감독자 pid 종료(파일 변화 없음) → 교대 대기 반환 %sms rc=%s\n' "$t120_e5" "$(t120_rc_of "$WORK/s120-r4b")"
+  if [ "$(t120_rc_of "$WORK/s120-r4b")" = "0" ] && [ -n "$t120_e5" ] && [ "$t120_e5" -le 32000 ]; then
+    ok "120: R4 감독자 pid 의 파일 변화 없는 종료에서 교대 대기가 32초 안에 돌아온다"
+  else
+    bad "120: R4 감독자 pid 의 파일 변화 없는 종료에서 교대 대기가 32초 안에 돌아온다" "$(cat "$WORK/s120-r4b" 2>/dev/null) 기준 $t120_t"
+  fi
+  printf '120 측정: R4 중계 실효 표본 %s\n' "$t120_eff"
+  case "$t120_eff" in
+    *n*|'') bad "120: R4 그 사이 중계 실효 판정은 실효 없음을 내지 않는다" "표본='$t120_eff' stall='$(cat "$t120_rd/stall" 2>/dev/null)'" ;;
+    *) check "120: R4 그 사이 중계 실효 판정은 실효 없음을 내지 않는다" "$(cat "$t120_rd/stall" 2>/dev/null)" "" ;;
+  esac
+
+  t120_env python3 "$t120_rd/plugin/cc-cmds/orchestrator/observer.py" stop >/dev/null 2>&1
+  rm -rf "$t120_S"
+  unset -f t120_env t120_stage t120_relay t120_fifo_up t120_ms_of t120_rc_of t120_sample t120_kill
+fi
+for t120_i in $t120_strays; do kill "$t120_i" 2>/dev/null; wait "$t120_i" 2>/dev/null; done
+rm -rf "$t120_fs" "$t120_ns" "$WORK/s120-feed.out" "$WORK/s120-wrote" "$WORK"/s120-r2? "$WORK"/s120-r4?
+unset -f t120_ms t120_mtime_ns t120_poke t120_until t120_sleeper t120_probe t120_wake t120_vt t120_rt t120_iso \
+  t120_blk t120_fd7
+unset t120_strays t120_sl t120_fake t120_fs t120_ns t120_l t120_rd t120_a t120_b t120_c t120_w t120_w1 t120_w2 \
+  t120_w3 t120_w4 t120_w5 t120_w6 t120_w7 t120_now t120_r t120_fl t120_fd t120_fp t120_ff t120_m0 t120_i t120_row \
+  t120_ol t120_gb t120_fb t120_o t120_S t120_rid t120_lg t120_adopt t120_s1 t120_rp t120_up t120_t t120_e1 t120_e2 \
+  t120_od t120_hn t120_ho t120_hd t120_hb t120_hba t120_eff t120_e4 t120_e5
+
 # --- epilogue-begin ---
 #
 # THE UNCONDITIONAL TAIL. A selected run has to report its own totals, carry its
