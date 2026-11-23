@@ -76419,42 +76419,38 @@ t120_vt() {
 }
 check "120: wait 의 시한은 마감·다음 박동·30초 중 가까운 것이고 지난 기한은 빼며 최소 1이다" \
   "$(lsr_in - "$t120_l" - t120_vt 2>/dev/null)" "30,10,5,30,1"
+# 시한 계산은 넘겨받은 현재 시각만 쓰므로, 시험은 벽시계 대신 고정 시각을 주입한다.
+t120_at=1900000000
 t120_rt() {  # t120_rt <미등록 관측 ISO> <재개 시각 ISO> — 기한을 하나씩만 둔 상태의 시한들
-  local now o
-  now=$(date -u +%s)
-  GATE_RELAY_W_RESET="" GATE_RELAY_W_CI="" GATE_RELAY_CONFIRM_SET="" GATE_RELAY_SEAT_START=$now
-  o=$(gate_relay_wake_timeout "$now")
-  GATE_RELAY_SEAT_START=$((now - 93))
-  o="$o,$(CC_GATE_RELAY_HOLD_TEST_SECONDS=100 gate_relay_wake_timeout "$now")"
-  GATE_RELAY_SEAT_START=$now
-  GATE_RELAY_W_RESET="S1#1:$((now + 5))"
-  o="$o,$(CC_GATE_RESET_GRACE_TEST_SECONDS=3 gate_relay_wake_timeout "$now")"
-  GATE_RELAY_W_RESET="S1#1:$((now - 500))"
-  o="$o,$(CC_GATE_RESET_GRACE_TEST_SECONDS=3 gate_relay_wake_timeout "$now")"
-  GATE_RELAY_W_RESET="S1#1:$now"
-  o="$o,$(CC_GATE_RESET_GRACE_TEST_SECONDS=0 gate_relay_wake_timeout "$now")"
+  local o
+  GATE_RELAY_W_RESET="" GATE_RELAY_W_CI="" GATE_RELAY_CONFIRM_SET="" GATE_RELAY_SEAT_START=$t120_at
+  o=$(gate_relay_wake_timeout "$t120_at")
+  GATE_RELAY_SEAT_START=$((t120_at - 93))
+  o="$o,$(CC_GATE_RELAY_HOLD_TEST_SECONDS=100 gate_relay_wake_timeout "$t120_at")"
+  GATE_RELAY_SEAT_START=$t120_at
+  GATE_RELAY_W_RESET="S1#1:$((t120_at + 5))"
+  o="$o,$(CC_GATE_RESET_GRACE_TEST_SECONDS=3 gate_relay_wake_timeout "$t120_at")"
+  GATE_RELAY_W_RESET="S1#1:$((t120_at - 500))"
+  o="$o,$(CC_GATE_RESET_GRACE_TEST_SECONDS=3 gate_relay_wake_timeout "$t120_at")"
+  GATE_RELAY_W_RESET="S1#1:$t120_at"
+  o="$o,$(CC_GATE_RESET_GRACE_TEST_SECONDS=0 gate_relay_wake_timeout "$t120_at")"
   GATE_RELAY_W_RESET=""
-  mkdir -p "$RUN_DIR/confirm"; printf '1 %s\n' "$((now - 6))" > "$RUN_DIR/confirm/r1.n"
+  mkdir -p "$RUN_DIR/confirm"; printf '1 %s\n' "$((t120_at - 6))" > "$RUN_DIR/confirm/r1.n"
   GATE_RELAY_CONFIRM_SET=r1
-  o="$o,$(CC_GATE_CONFIRM_POLL_TEST_SECONDS=10 gate_relay_wake_timeout "$now")"
+  o="$o,$(CC_GATE_CONFIRM_POLL_TEST_SECONDS=10 gate_relay_wake_timeout "$t120_at")"
   GATE_RELAY_CONFIRM_SET=""
   printf '%s\tS2\t1\t%s\t미등록\t-\t-\n' "$1" "0123456789abcdef0123456789abcdef01234567" > "$RUN_DIR/checks.observed"
   GATE_RELAY_W_CI=S2
-  o="$o,$(gate_relay_wake_timeout "$now")"
+  o="$o,$(gate_relay_wake_timeout "$t120_at")"
   GATE_RELAY_W_CI=""
   printf -- '- `계정 이전` | 결과=대기 | 재개 시각=%s | prev=x\n' "$2" >> "$LEDGER"
-  o="$o,$(gate_relay_wake_timeout "$now")"
+  o="$o,$(gate_relay_wake_timeout "$t120_at")"
   printf '%s' "$o"
 }
-t120_now=$(date -u +%s)
 t120_iso() { python3 -c 'import sys, time; print(time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(int(sys.argv[1]))))' "$1"; }
 t120_l=$(lsr_ledger s120-rt)
-# 시각 둘은 같은 초 안에서 재므로, 앞의 기대값은 그 초가 바뀌지 않는 한 고정이다.
-t120_r=$(lsr_in - "$t120_l" - t120_rt "$(t120_iso $((t120_now - 290)))" "$(t120_iso $((t120_now + 12)))" 2>/dev/null)
-case "$t120_r" in
-  "30,7,8,30,1,4,10,12"|"30,7,8,30,1,4,9,11") ok "120: 교대 대기의 시한은 기한마다 그 기한까지의 초이고 없으면 30이다" ;;
-  *) bad "120: 교대 대기의 시한은 기한마다 그 기한까지의 초이고 없으면 30이다" "got '$t120_r'" ;;
-esac
+t120_r=$(lsr_in - "$t120_l" - t120_rt "$(t120_iso $((t120_at - 290)))" "$(t120_iso $((t120_at + 12)))" 2>/dev/null)
+check "120: 교대 대기의 시한은 기한마다 그 기한까지의 초이고 없으면 30이다" "$t120_r" "30,7,8,30,1,4,10,12"
 
 # 4. feed — 깨움 바퀴. 강제 읽기는 CC_QUIET_PASS_EVERY 바퀴마다이고, 둘로 줄이면 센
 # 바퀴 둘째마다 원장을 다시 읽어 읽기 표지를 건드린다. 깨움 셋 뒤에도 표지가 그대로면
@@ -76708,7 +76704,7 @@ rm -rf "$t120_fs" "$t120_ns" "$WORK/s120-feed.out" "$WORK/s120-wrote" "$WORK"/s1
 unset -f t120_ms t120_mtime_ns t120_poke t120_until t120_sleeper t120_probe t120_wake t120_vt t120_rt t120_iso \
   t120_blk t120_fd7
 unset t120_strays t120_sl t120_fake t120_fs t120_ns t120_l t120_rd t120_a t120_b t120_c t120_w t120_w1 t120_w2 \
-  t120_w3 t120_w4 t120_w5 t120_w6 t120_w7 t120_now t120_r t120_fl t120_fd t120_fp t120_ff t120_m0 t120_i t120_row \
+  t120_w3 t120_w4 t120_w5 t120_w6 t120_w7 t120_at t120_r t120_fl t120_fd t120_fp t120_ff t120_m0 t120_i t120_row \
   t120_ol t120_gb t120_fb t120_o t120_S t120_rid t120_lg t120_adopt t120_s1 t120_rp t120_up t120_t t120_e1 t120_e2 \
   t120_od t120_hn t120_ho t120_hd t120_hb t120_hba t120_eff t120_e4 t120_e5
 
