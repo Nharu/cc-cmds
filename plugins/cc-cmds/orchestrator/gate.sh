@@ -34300,6 +34300,11 @@ release_meta_expected_tree() {
   # E* is the merged tree with plugin.json as T's bytes with the version line
   # bumped from T's by R's grade, and the changelog as T's preamble, R's head
   # entry under the new number with R's date, and T's entries.
+  # A segment that writes a release note fragment under changelog.d/ instead
+  # touches neither release file, so its merge onto a base moved by a release
+  # bot commit does not conflict and never reaches this function. A head entry
+  # the release bot assembled names the version the bot wrote into
+  # plugin.json, so a T the bot released keeps premise (e).
   local dir=$1 r=$2 t=$3 w mb mt rc=0 p v rev v_mb v_r v_t v_h g v_new pm lm blob_p blob_l
   GATE_META_WHY=""; GATE_META_TREE=""
   w=$(mktemp -d "${TMPDIR:-/tmp}/gate-meta.XXXXXX") || { GATE_META_WHY="no scratch directory"; return 1; }
