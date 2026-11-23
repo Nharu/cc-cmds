@@ -5,7 +5,7 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [3.59.2] - 2026-11-23
+## [3.59.3] - 2026-11-23
 
 무거운 REST 목표와 test-gate 레인의 통과 기록이 git 을 부르기만 하면 트리·HEAD 커밋·베이스가 모두 같을 때만 다시 쓰이던 것을 좁혔다. 이제 git 셰임이 호출을 위치 질의, 전체 id 객체 읽기, 엄격 셋으로 나누고, 앞의 두 부류만 한 항목은 새 값 `git읽기` 로 기록되어 새 HEAD·베이스를 넘어서도 다시 쓰인다. 단, 읽은 파일과 추적 경로 집합이 같고, 기록한 객체 id 가 지금 저장소에서도 같은 있음·없음일 때만이다. 베이스 해소 스테이지의 시험 범위도 양쪽이 모두 바꾼 파일과 CI 워크플로의 경로 필터로 정하도록 고쳤다.
 
@@ -29,6 +29,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - 레포 루트 `CLAUDE.md` 의 `### 한 스테이지 안에서 다시 돌리기` 문단의 두 문장 — "git 을 쓰는 목표는 트리와 HEAD 커밋·베이스가 모두 같을 때만 다시 쓰인다." 와 "그 레인에 git 을 쓰는 절이 있으면 트리와 HEAD 커밋·베이스가 모두 같을 때만 다시 쓰인다." — 이 낡았다. 위치 질의와 전체 id 객체 읽기만 한 항목은 HEAD·베이스를 넘어 다시 쓰인다는 규칙으로 고친다.
 - 같은 `CLAUDE.md` 에 베이스 해소 스테이지가 읽을 워크플로 대응을 더한다. `lint.yml` 의 묶음은 REST 목표(`CHECK_PUSH_GOALS`), `gate.yml` 의 묶음은 `covers:`·`anchors:` 로 고른 test-gate 절(`CHECK_PUSH_SECTIONS`), `notify-macos.yml` 의 묶음은 `test-darwin-narrow` 의 항목 가운데 REST 목표와 `run-gate-darwin-sections` 의 절(18, 31ai, 84)이며, REST 목표에 없는 darwin 전용 항목은 고르지 않고 끝 메시지에 적는다. 이 대응이 없는 동안 cc-cmds 의 베이스 해소는 범위를 좁히지 않는다.
+
+## [3.59.2] - 2026-11-23
+
+플러그인이 띄우는 배너마다 알림 소리가 정확히 하나 나게 한다. active-notify `fire-now` 배너와 "알림 테스트" 권한 테스트 배너는 지금까지 소리 없이 떴고, 같은 승인의 `answer` 배너는 게이트와 감시자가 겹쳐 올리면 한 배너에서 소리가 두 번 날 수 있었다.
+
+### Fixed
+
+- **active-notify `fire-now`** — single 한 번짜리(세션 자리를 갈아 끼우는 배너 포함), single `--count=N`, repeat 모두 `-sound default` 를 단다. 새 발사는 앞선 배너와 다른 사건을 처음 알리므로 매번 울린다.
+- **알림 테스트 우회 배너** — SKILL.md 필수 형식 명령과 루트 README 의 복구 명령에 `-sound 'default'` 를 넣었다. 자동 승인 훅의 패턴은 그대로이며 바뀐 명령도 그 패턴에 맞는다.
+- **승인 자리는 한 번 차 있는 동안 한 번만 울린다** — `answer` 와 `approval-ask` 가 런 디렉터리의 `notify.rang/<항목 키>` 표지를 `mkdir` 로 선점해, 처음 선점한 배너만 `default` 로 울리고 뒤의 배너는 소리 없이 갈아 끼운다. `answer` 가 쌓기 상한에 걸려 대기 자리로 강등된 승인에서는 `approval-ask` 가 그 자리의 첫 배너로 울린다. 소리는 terminal-notifier 존재 확인 뒤 발사 직전에 정하고, `cc_notify_stack_release` 가 승인 자리를 반납할 때 표지도 지운다. 런 디렉터리 없이 부른 `approval-ask` 는 첫 배너로 보고 울린다.
+- **시험** — fire-now 세 모드, 권한 테스트 우회 명령(SKILL.md 의 실제 줄을 읽는다), 세션 질문 훅의 승인 연결 묶음, 같은 승인 자리 두 번 올리기를 단언한다. `-group` 을 인자 줄 끝으로 읽던 두 픽스처(`attention-fire-main`, `fire-now-focus-arg`)는 `-group` 바로 뒤 낱말만 그룹으로 읽는다.
+
+### Why
+
+배너 하나는 사람에게 알리는 사건 하나를 처음 띄우는 것이다. 이미 소리가 나는 세션·autopilot 배너가 같은 자리를 갈아 끼우며 매번 울리는 지금의 동작과 같은 기준으로, 새로 소리를 넣는 배너와 승인 자리의 중복을 함께 맞춘다.
 
 ## [3.59.1] - 2026-11-23
 
