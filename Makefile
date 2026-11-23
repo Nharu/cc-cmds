@@ -224,7 +224,10 @@ check-cheap:
 # the base (in head mode, with origin/<base branch>, else the local branch; with
 # neither it is 판정불가 and nothing is added). A changed file no goal names is
 # listed and counted in the stamp; a derivation that cannot be computed ends 1
-# before any item runs, with no stamp.
+# before any item runs, with no stamp. CHANGELOG.md and plugin.json changed the
+# way a release commit changes them (scripts/test-reuse.sh's per-path check)
+# are not derivation input: a line of their own names them and the stamp keeps
+# them in `유도릴리스=`.
 #
 # check-cheap, each goal and each lane of sections run in a checkout of their
 # own and leave a record of the tracked files they read (a lane also the digest
