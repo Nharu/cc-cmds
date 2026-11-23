@@ -25981,6 +25981,66 @@ check "접두 아래에서 .. 로 빠져나간 publish --cleanup 은 1 로 끝�
 check "그 대조군은 원본과 두 디렉터리를 그대로 둔다" \
   "$(shasum -a 256 "$DT31/co.md" | cut -d' ' -f1)-$( [ -d "$DT31/plain" ] && [ -d "$DT31_D2" ] && printf 'yes' || printf 'no' )" \
   "$DT31_CO_SHA-yes"
+# checkout --reviewed — 조정 시작 시각과 감사 사본 해시를 같은 호출이 낸다.
+printf '# 감사 사본\n' > "$DT31/audited.md"
+DT31_AU_SHA=$(shasum -a 256 "$DT31/audited.md" | cut -d' ' -f1)
+dt31_gate checkout "$DT31/co.md" --prefix "$DT31_PFX" --expect "$DT31_CO_SHA" --reviewed "$DT31/audited.md"
+check "doc-tidy.py checkout --reviewed 를 게이트 경유로 실행하면 통과한다" "$rc" "0"
+case "$msg" in
+  *"reviewed_sha256=$DT31_AU_SHA"*) ok "checkout --reviewed 가 감사 사본의 sha256 을 낸다" ;;
+  *) bad "checkout reviewed_sha256 출력" "$msg" ;;
+esac
+if printf '%s\n' "$msg" | grep -Eq '(^| )at=[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z( |$)'; then
+  ok "checkout 이 UTC 시각 at= 줄을 낸다"
+else
+  bad "checkout at= 출력" "$msg"
+fi
+dt31_gate checkout "$DT31/co.md" --prefix "$DT31_PFX" --expect "$DT31_CO_SHA" --reviewed "$DT31/no-such.md"
+case "$msg" in
+  *"reviewed_sha256=absent"*) ok "없는 감사 사본의 checkout --reviewed 는 absent 를 낸다" ;;
+  *) bad "checkout reviewed_sha256=absent 출력" "$msg" ;;
+esac
+# stamp --keep — 한 번의 읽기에서 해시·크기·시각을 내고 같은 바이트로 사본을 쓴다.
+DT31_ST_BYTES=$(wc -c < "$DT31/co.md" | tr -d ' ')
+dt31_gate stamp "$DT31/co.md" --keep "$DT31/audited/sub/co.md"
+check "doc-tidy.py stamp --keep 을 게이트 경유로 실행하면 통과한다" "$rc" "0"
+case "$msg" in
+  *"sha256=$DT31_CO_SHA"*"bytes=$DT31_ST_BYTES"*"kept_sha256=$DT31_CO_SHA"*) ok "stamp --keep 이 sha256·bytes·kept_sha256 을 낸다" ;;
+  *) bad "stamp --keep 출력" "$msg" ;;
+esac
+if printf '%s\n' "$msg" | grep -Eq '(^| )at=[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z( |$)'; then
+  ok "stamp 가 UTC 시각 at= 줄을 낸다"
+else
+  bad "stamp at= 출력" "$msg"
+fi
+check "stamp --keep 의 사본은 원본과 바이트가 같다" \
+  "$(cmp -s "$DT31/co.md" "$DT31/audited/sub/co.md" && printf 'same' || printf 'diff')" "same"
+case "$msg" in
+  *"keep_failed="*) bad "stamp --keep 사본 실패" "$msg" ;;
+  *) ok "stamp --keep 이 keep_failed 를 내지 않는다" ;;
+esac
+# keep-reports — 증인 파일을 보고서 옆 reader-<k> 사본으로 바이트 그대로 쓴다.
+for k in 1 2 3; do printf '# reader-%s\n<!-- cc-design-audit v1; owner-doc=k -->\n본문 %s\n' "$k" "$k" > "$WPUB/reader-$k.fanout.md"; done
+mkdir -p "$DT31/rep"
+dt31_gate keep-reports "$DT31/rep/k.md" "$WPUB/reader-1.fanout.md" "$WPUB/reader-2.fanout.md" "$WPUB/reader-3.fanout.md"
+check "doc-tidy.py keep-reports 를 게이트 경유로 실행하면 통과한다" "$rc" "0"
+DT31_KR=0
+for k in 1 2 3; do
+  cmp -s "$WPUB/reader-$k.fanout.md" "$DT31/rep/k.reader-$k.md" && DT31_KR=$((DT31_KR + 1))
+done
+check "keep-reports 가 증인 셋을 바이트 그대로 사본으로 쓴다" "$DT31_KR" "3"
+case "$msg" in
+  *"kept=$DT31/rep/k.reader-1.md sha256="*) ok "keep-reports 가 파일마다 kept= 줄을 낸다" ;;
+  *) bad "keep-reports kept= 출력" "$msg" ;;
+esac
+printf 'x\n' > "$WPUB/notes.md"
+dt31_gate keep-reports "$DT31/rep/bad.md" "$WPUB/reader-1.fanout.md" "$WPUB/notes.md"
+check "증인 이름이 꼴이 아닌 keep-reports 는 1 로 끝난다" "$rc" "1"
+dt31_gate keep-reports "$DT31/rep/bad.md" "$WPUB/reader-1.fanout.md" "$WPUB/reader-1.fanout.md"
+check "같은 독자 번호가 둘인 keep-reports 는 1 로 끝난다" "$rc" "1"
+check "거절된 keep-reports 는 사본을 하나도 쓰지 않는다" \
+  "$(find "$DT31/rep" -name 'bad.reader-*' | wc -l | tr -d ' ')" "0"
+rm -f "$WPUB/notes.md" "$WPUB"/reader-[123].fanout.md
 unset DT31_RID
 rm -rf "$DT31"
 # 대조군 — 아무도 만들지 않는 이름은 예외가 아니다. 예외를 넓게 적어 두면 가드가
