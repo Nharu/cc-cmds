@@ -327,6 +327,8 @@ check "T2 반쪽 줄은 다음 틱에 들어간다" "$(jq_body '[s["id"] for s i
 check "T6 낯선 Host 는 403" "$(get "$P1" /api/runs -H "Host: evil.example:$P1")" "403"
 check "T6 POST 는 405" "$(get "$P1" /api/runs -X POST)" "405"
 check "T6 ../ 가 든 런 id 는 404" "$(get "$P1" '/api/runs/..%2F..%2Fetc')" "404"
+check "T34 역슬래시가 든 런 id 는 404" "$(get "$P1" '/api/runs/live-run%5Cx')" "404"
+check "T34 NUL 이 든 런 id 는 404" "$(get "$P1" '/api/runs/live-run%00x')" "404"
 check "T6 localhost 와 포트는 받는다" "$(get "$P1" /healthz -H "Host: localhost:$P1")" "200"
 check "T6 CSP 가 붙는다" "$(grep -ci "^content-security-policy: default-src 'self'" "$WORK/head")" "1"
 check "T6 CORS 머리가 없다" "$(grep -ci '^access-control-' "$WORK/head")" "0"
@@ -1012,6 +1014,328 @@ check "T31 여덟 런 모두 파견 대기 하나를 싣는다" \
   "[('wc-acct', 1), ('wc-drv', 1), ('wc-host', 1), ('wc-last', 1), ('wc-nocell', 1), ('wc-nolin', 1), ('wc-norow', 1), ('wc-odd', 1)]"
 check "T31 상세의 waiting 도 같은 갈래를 싣는다" \
   "$(ORCH_HOST_OS=Linux nq "[w['kind'] for w in m.Model(root='$WXR').detail('wc-acct', now=now)['waiting']]")" "['계정 한도']"
+
+# T32–T36 — a kept evaluation is reused only while nothing it read has moved,
+# the detail finds its run without a full discovery, and the list and the
+# detail compute under locks of their own. Every case holds the reusing model
+# against one built with `reuse=False`, which evaluates afresh at every call.
+# These runs sit in a run root of their own, beside a base with `.git` whose
+# ledgers they write, so the base's other ledgers are reclaimed runs.
+XDG_STATE_HOME="$WORK/rx"
+RXR="$XDG_STATE_HOME/cc-cmds/run"
+RB="$WORK/rxbase"; RBP="$RB/docs/pipeline-run"
+mkdir -p "$RXR" "$RB/.git" "$RBP"
+rx_run() { fx_mkrun "$1"; FX_LEDGER="$RBP/$1.md"; : > "$FX_LEDGER"; fx_ledger_path; }
+rx_run rx-end;   fx_segment S1 머지됨; fx_heartbeat 600 600; fx_done
+rx_run rx-dead;  fx_segment S1 실행중; fx_heartbeat 0 7200
+rx_run rx-wait;  fx_segment S1 실행중; fx_heartbeat 0 5; fx_approval A1 대기
+rx_run rx-run;   fx_segment S1 실행중; fx_heartbeat 0 5; fx_stage_live S1
+rx_run rx-stall; fx_segment S1 실행중; fx_heartbeat 0 1800
+rx_run rx-go;    fx_segment S1 실행중; fx_heartbeat 0 5
+printf -- '# 파이프라인 런 보고서 — rx-rec\n\n- `segment` | id=R1 | 상태=머지됨 | prev=x\n' > "$RBP/rx-rec.md"
+{
+  printf -- '# 파이프라인 런 보고서 — rx-recw\n\n- `segment` | id=S1 | 상태=실행중 | prev=x\n'
+  printf -- '- `승인` | 승인 id=Q1 | 상태=대기 | 대상=- | 절단점=경계 | 질문 문면=q | 답변 문면=- | 발행 시각=2026-10-01T00:00:00Z | 해소 시각=- | prev=x\n'
+} > "$RBP/rx-recw.md"
+fx_age_file "$RBP/rx-recw.md" 432000
+for id in iv-led iv-done iv-man iv-clock; do rx_run "$id"; fx_segment S1 실행중; fx_heartbeat 0 7200; done
+rx_run iv-halt;  fx_segment S1 머지됨; fx_done
+rx_run iv-entry; fx_segment S1 실행중; fx_heartbeat 0 5; fx_approval A1 대기
+# A dead stage whose `.start` is a live process's fingerprint: rewriting the pid
+# file alone, in place, brings the stage back to life.
+rx_run iv-pid;   fx_segment S1 실행중; fx_heartbeat 0 7200; fx_stage_dead S1
+sleep 120 &
+RX_LIVE=$!
+FX_PIDS="${FX_PIDS:-}$RX_LIVE "
+LC_ALL=C ps -o lstart= -p "$RX_LIVE" 2>/dev/null | sed 's/[[:space:]]\{1,\}/ /g;s/^ //;s/ $//' > "$FX_RUN_DIR/S1.start"
+# The process facts of these two come from a fake table: a stage pid and a
+# member waiter's holder that no real process has.
+rx_run iv-proc;  fx_segment S1 실행중; fx_heartbeat 0 7200
+printf '4242420' > "$FX_RUN_DIR/S1.pid"; printf 'FP1' > "$FX_RUN_DIR/S1.start"
+rx_run iv-wake;  fx_segment S1 실행중; fx_heartbeat 0 7200
+printf '보유자=4242421\n지문=FPW\n기록자=게이트\n계보=B:S1#1\n그룹=-\n까지=-\n갱신=%s\n종류=implement\n시도=1\n' \
+  "$(( $(date -u +%s) - 5 ))" > "$FX_RUN_DIR/S1.waiting"
+rx_run iv-ps;    fx_segment S1 실행중; fx_heartbeat 0 7200; fx_stage_dead S1
+rx_run rx-gone;  fx_segment S1 머지됨; fx_done
+mkdir -p "$RXR/rx-shell"
+mkdir -p "$RXR/rx-empty"; : > "$RXR/rx-empty/ledger-path"
+XDG_STATE_HOME="$NX"
+
+cat > "$WORK/rx.py" <<'PY'
+import json, os, shutil, sys, threading, time
+import dashboard_read as m
+
+root, live_pid = sys.argv[1], int(sys.argv[2])
+NOW = int(time.time())
+ALL = dict(days="all", dead=True, exp=True)
+
+
+def say(label, cond, detail=""):
+    print("%s\t%s\t%s" % ("ok" if cond else "bad", label, detail))
+
+
+def js(o):
+    return json.dumps(o, ensure_ascii=False, sort_keys=True, default=str)
+
+
+def counted(model):
+    """The ids `model` evaluated afresh, in order."""
+    seen = []
+    inner = model._evaluate
+
+    def wrap(src, procs, now):
+        seen.append(src.id)
+        return inner(src, procs, now)
+
+    model._evaluate = wrap
+    return seen
+
+
+class Fake:
+    """A process table whose answers the case sets: rows None is a failed `ps`."""
+
+    def __init__(self, rows, wake="0"):
+        self.rows = rows
+        self._wake = wake
+
+    def exists(self, pid):
+        return self.rows is not None and pid in self.rows
+
+    def fingerprint(self, pid):
+        return (self.rows or {}).get(pid, ("", ""))[1]
+
+    def pgid(self, pid):
+        return (self.rows or {}).get(pid, ("", ""))[0]
+
+    def wake(self):
+        return self._wake
+
+
+def src_of(model, rid):
+    model.discover()
+    return model.find(rid)
+
+
+# T32 — reuse returns what a fresh evaluation returns.
+R = m.Model(root=root)
+F = m.Model(root=root, reuse=False)
+seen = counted(R)
+first = R.runs(now=NOW, **ALL)
+states = {r["id"]: r["state"] for r in first["runs"]}
+want = {"rx-end": "종단", "rx-dead": "버려짐", "rx-wait": "승인대기", "rx-run": "도는중",
+        "rx-stall": "정지경고", "rx-go": "진행중"}
+say("T32 픽스처가 일곱 갈래 상태를 낸다",
+    {k: states.get(k) for k in want} == want
+    and states.get("rx-rec") in m.REUSABLE_STATES and states.get("rx-recw") in m.REUSABLE_STATES,
+    js(states))
+keep = sorted(k for k, s in states.items() if s in m.REUSABLE_STATES)
+del seen[:]
+second = R.runs(now=NOW, **ALL)
+say("T32 둘째 목록 호출은 세 상태의 런을 다시 평가하지 않는다",
+    not set(seen) & set(keep) and {"rx-end", "rx-dead", "rx-wait", "rx-rec", "rx-recw"} <= set(keep),
+    "다시 평가=%s 재사용 대상=%s" % (sorted(seen), keep))
+say("T32 둘째 목록 호출은 나머지 런을 새로 평가한다",
+    {"rx-run", "rx-stall", "rx-go"} <= set(seen), js(sorted(seen)))
+fresh = F.runs(now=NOW, **ALL)
+say("T32 첫째·둘째 목록 응답이 새 평가와 바이트로 같다",
+    js(first) == js(fresh) and js(second) == js(fresh))
+for rid in ("rx-end", "rx-dead", "rx-wait", "rx-run", "rx-stall", "rx-go", "rx-rec", "rx-recw"):
+    a1 = R.detail(rid, now=NOW)
+    a2 = R.detail(rid, now=NOW)
+    b = F.detail(rid, now=NOW)
+    say("T32 %s 상세가 두 번 다 새 평가와 같다" % rid, js(a1) == js(b) and js(a2) == js(b))
+say("T32 live_count 가 새 평가와 같다", R.live_count(now=NOW) == F.live_count(now=NOW))
+for rid in ("rx-run", "rx-go", "rx-stall"):
+    hb = m.mtime_s(os.path.join(root, rid, "watch.heartbeat"))
+    got = [r["watch_age_s"] for r in second["runs"] if r["id"] == rid]
+    say("T32 %s 의 watch_age_s 는 now - 심박 mtime 이다" % rid, got == [max(0, NOW - hb)], js(got))
+hb = m.mtime_s(os.path.join(root, "rx-end", "watch.heartbeat"))
+del seen[:]
+later = [r["watch_age_s"] for r in R.runs(now=NOW + 50, **ALL)["runs"] if r["id"] == "rx-end"]
+say("T32 재사용된 종단 런의 watch_age_s 는 그 호출의 now 로 센다",
+    "rx-end" not in seen and later == [NOW + 50 - hb], js(later))
+
+
+# T33 — anything an evaluation read that moves makes the next one fresh.
+def case(label, rid, mutate=None, before=None, after=None, at=NOW):
+    R = m.Model(root=root)
+    seen = counted(R)
+    src = src_of(R, rid)
+    tb = before or m.ProcTable()
+    R.evaluate(src, tb, NOW)
+    R.evaluate(src, tb, NOW)
+    say("T33 %s — 바뀌기 전에는 재사용된다" % label, seen.count(rid) == 1, js(seen))
+    if mutate:
+        mutate()
+    ta = after or m.ProcTable()
+    a = R.evaluate(src_of(R, rid), ta, at)
+    say("T33 %s — 바뀐 뒤에는 새로 평가한다" % label, seen.count(rid) == 2, js(seen))
+    F = m.Model(root=root, reuse=False)
+    b = F.evaluate(src_of(F, rid), ta, at)
+    say("T33 %s — 새 평가와 같다" % label, js(a) == js(b), "%s / %s" % (a["state"], b["state"]))
+
+
+def run_path(rid, *names):
+    return os.path.join(root, rid, *names)
+
+
+def ledger_of(rid):
+    with open(run_path(rid, "ledger-path")) as f:
+        return f.read().strip()
+
+
+def append(path, text):
+    with open(path, "a") as f:
+        f.write(text)
+
+
+case("원장 행 추가", "iv-led",
+     lambda: append(ledger_of("iv-led"), "- `segment` | id=S2 | 상태=머지됨 | prev=x\n"))
+
+
+def halt():
+    os.makedirs(run_path("iv-halt", "halt"), exist_ok=True)
+    with open(run_path("iv-halt", "halt", "S1#1.md"), "w") as f:
+        f.write("<!-- cc-pipeline-halt v1; writer=implement-unattended; reader=orchestrator -->\n"
+                "**스킬**: implement-unattended\n**스텝**: Step 3 — 픽스처\n**분류**: gate-unanswerable\n"
+                "**질문 문면**: 끝난 뒤 생긴 질문\n**선택지**:\n- `재시도` — 다시 돈다\n"
+                "**추천**: `재시도`\n<!-- /cc-pipeline-halt v1 -->\n")
+
+
+case("중단 기록 생성", "iv-halt", halt)
+case("done 생성", "iv-done", lambda: append(run_path("iv-done", "done"), "종단 — 픽스처\n"))
+case("런 디렉터리 새 항목", "iv-entry", lambda: append(run_path("iv-entry", "extra"), "x\n"))
+
+pid_file = run_path("iv-pid", "S1.pid")
+ino = os.stat(pid_file).st_ino
+
+
+def rewrite_pid():
+    with open(pid_file, "r+") as f:
+        f.seek(0)
+        f.truncate()
+        f.write(str(live_pid))
+
+
+case("pid 파일 제자리 재작성", "iv-pid", rewrite_pid)
+say("T33 pid 파일은 같은 inode 로 다시 쓰였다", os.stat(pid_file).st_ino == ino)
+
+man = os.path.join(os.path.dirname(ledger_of("iv-man")), "iv-man.plan.md")
+
+
+def write_man(deadline):
+    def go():
+        with open(man, "w") as f:
+            f.write("# 파이프라인 런 매니페스트 — iv-man\n\n## 대상\n"
+                    "- `target` | 별칭=cc-cmds | 원격 슬러그=Nharu/cc-cmds | 절단점=머지\n\n"
+                    "## 인가\n\n**벽시계 마감**: %s\n" % deadline)
+    return go
+
+
+case("매니페스트 생성", "iv-man", write_man("2099-01-01T00:00:00Z"))
+case("매니페스트 수정", "iv-man", write_man("2098-01-01T00:00:00Z, 늘림"))
+case("pid 존재 변화", "iv-proc", before=Fake({}), after=Fake({4242420: ("1", "FP1")}))
+case("ps 읽기 실패", "iv-ps", before=m.ProcTable(), after=Fake(None))
+case("시계 되감기", "iv-clock", at=NOW - 100)
+
+
+def chain(label, rid, tables):
+    R = m.Model(root=root)
+    F = m.Model(root=root, reuse=False)
+    same = True
+    shown = []
+    for t in tables:
+        a = R.evaluate(src_of(R, rid), t, NOW)
+        b = F.evaluate(src_of(F, rid), t, NOW)
+        same = same and js(a) == js(b)
+        shown.append(a["state"])
+    say("T33 %s — 표가 바뀔 때마다 새 평가와 같다" % label, same, js(shown))
+
+
+chain("지문 변화", "iv-proc",
+      [Fake({4242420: ("1", "FP1")}), Fake({4242420: ("1", "FPX")}), Fake({}), Fake({4242420: ("1", "FP1")})])
+chain("멤버 대기자의 깨어난 시각 변화", "iv-wake",
+      [Fake({}), Fake({4242421: ("1", "FPW")}), Fake({4242421: ("1", "FPW")}, wake=str(NOW)),
+       Fake({4242421: ("1", "FPW")}), Fake({})])
+
+R = m.Model(root=root)
+seen = counted(R)
+src = src_of(R, "rx-rec")
+R.evaluate(src, m.ProcTable(), NOW)
+R.evaluate(src, Fake(None), NOW)
+say("T33 회수된 런은 ps 읽기가 실패해도 재사용된다", seen.count("rx-rec") == 1, js(seen))
+
+# T34 — the detail's direct lookup answers what a full discovery answers.
+R = m.Model(root=root)
+M2 = m.Model(root=root)
+M2.lookup = lambda rid: (M2.discover(), M2.find(rid))[1]
+say("T34 껍데기 런의 상세는 둘 다 없음이다", R.detail("rx-shell", now=NOW) is None and M2.detail("rx-shell", now=NOW) is None)
+for rid in ("rx-empty", "rx-rec", "rx-recw", "rx-end", "no-such-run"):
+    say("T34 %s 상세가 전체 탐색과 같다" % rid, js(R.detail(rid, now=NOW)) == js(M2.detail(rid, now=NOW)))
+R.detail("rx-gone", now=NOW)
+had = "rx-gone" in R.sources
+shutil.rmtree(os.path.join(root, "rx-gone"))
+R.detail("rx-end", now=NOW)
+say("T34 지운 런의 원천은 다음 상세 뒤 남지 않는다", had and "rx-gone" not in R.sources, js(sorted(R.sources)))
+say("T34 지운 런의 상세가 전체 탐색과 같다", js(R.detail("rx-gone", now=NOW)) == js(M2.detail("rx-gone", now=NOW)))
+bs = os.path.join(root, "rx-bs\\x")
+os.makedirs(bs)
+with open(os.path.join(bs, "ledger-path"), "w") as f:
+    f.write(ledger_of("rx-end") + "\n")
+n = len(R.sources)
+say("T34 역슬래시·NUL 이 든 id 는 원천 없이 거부된다",
+    R.lookup("rx-bs\\x") is None and R.lookup("rx-end\0") is None and R.detail("rx-bs\\x", now=NOW) is None
+    and len(R.sources) == n)
+shutil.rmtree(bs)
+
+# T35 — freshness: a live run is never kept, and the abandon threshold is read
+# at the request's own clock.
+R = m.Model(root=root)
+R.runs(now=NOW, **ALL)
+say("T35 도는중·진행중·정지경고 런은 기록되지 않는다",
+    [R.find(rid).kept for rid in ("rx-run", "rx-go", "rx-stall")] == [None, None, None])
+g = m.heartbeat_growth(os.path.join(root, "rx-stall"))[0]
+src = R.find("rx-stall")
+got = [R.evaluate(src, m.ProcTable(), g + m.ABANDON_S + d)["state"] for d in (-1, 0, -1)]
+say("T35 정지경고 런은 버려짐 문턱 직전·직후·되감은 시각에 정지경고·버려짐·정지경고다",
+    got == ["정지경고", "버려짐", "정지경고"], js(got))
+
+# T36 — the detail computes while the list computation holds its lock.
+import dashboard as d
+
+st = d.State(1, "t", "v", root, {})
+started, release = threading.Event(), threading.Event()
+
+
+def slow():
+    started.set()
+    release.wait(20)
+    return {"runs": []}
+
+
+th = threading.Thread(target=lambda: st.tick(("runs", "all"), slow))
+th.start()
+started.wait(10)
+entry = st.tick(("detail", "rx-end"), lambda: st.detail_model.detail("rx-end", now=NOW))
+blocked = th.is_alive() and not release.is_set()
+release.set()
+th.join(20)
+say("T36 목록 계산이 락을 쥔 동안 상세 틱이 끝난다", blocked and entry is not None and b"rx-end" in entry[0])
+say("T36 목록 틱도 풀린 뒤 끝난다", not th.is_alive())
+print("end\t-\t-")
+PY
+(cd "$ORCH" && env -u CC_CMDS_AUTOPILOT_TZ XDG_STATE_HOME="$WORK/rx" PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$ORCH" \
+  python3 "$WORK/rx.py" "$RXR" "$RX_LIVE" > "$WORK/rx.out" 2> "$WORK/rx.err")
+RX_END=no
+while IFS="$(printf '\t')" read -r kind label detail; do
+  case "$kind" in
+    ok)  ok "$label" ;;
+    bad) bad "$label" "$detail" ;;
+    end) RX_END=yes ;;
+  esac
+done < "$WORK/rx.out"
+check "T32–T36 의 파이썬 단언이 끝까지 돌았다" "$RX_END" "yes"
+[ "$RX_END" = yes ] || sed 's/^/  rx: /' "$WORK/rx.err" >&2
 
 # T28 — the HTTP layer over this root: the toggle reaches the tick cache, the
 # shell row, and the evaluation cache picking up a new halt record.
