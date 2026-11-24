@@ -345,5 +345,85 @@ check "11 픽스처 런의 원장 바이트가 그대로다" "$(cksum < "$LEDGER
 if [ -e "$RD/halt" ]; then bad "11 halt/ 가 생기지 않는다" "생겼다"; else ok "11 halt/ 가 생기지 않는다"; fi
 if [ -s "$NOTE_LOG" ]; then bad "11 알림 도구 스텁이 불리지 않는다" "$(cat "$NOTE_LOG")"; else ok "11 알림 도구 스텁이 불리지 않는다"; fi
 
+# ---------------------------------------------------------------------------
+# 12. a batch job keeps a slot while the ticks are slow
+# ---------------------------------------------------------------------------
+# Six runs whose tick holds its slot for a second and is due again at once, and
+# one run of a batch job, are passed through `observe` and `batch` the way
+# `one_pass` orders them. With one shared limit the ticks of the previous pass
+# still held every slot whenever `batch` looked, so the batch never ran.
+out=$(python3 - "$ORCH" "$WORK/slots" <<'PY'
+import os, sys, threading, time
+sys.dont_write_bytecode = True
+sys.path.insert(0, sys.argv[1])
+import observer
+
+base = sys.argv[2]
+mu = threading.Lock()
+live = {"n": 0, "max": 0}
+calls = []
+
+
+class Slow:
+    PID_FILE = "slow.pid"
+
+    @staticmethod
+    def probes(run):
+        return []
+
+    @staticmethod
+    def tick(ctx, run, changed, now):
+        with mu:
+            live["n"] += 1
+            live["max"] = max(live["max"], live["n"])
+        time.sleep(1.0)
+        with mu:
+            live["n"] -= 1
+        return time.time()
+
+
+class Batched:
+    PID_FILE = "batched.pid"
+
+    @staticmethod
+    def probes(run):
+        return []
+
+    @staticmethod
+    def tick(ctx, run, changed, now):
+        return None
+
+    @staticmethod
+    def batch(ctx, runs, now):
+        calls.append(now)
+
+
+d = observer.Daemon()
+d.mods = {"slow": Slow, "batched": Batched}
+for i in range(7):
+    rd = os.path.join(base, "r%d" % i)
+    os.makedirs(rd)
+    r = observer.Run(rd)
+    r.jobs["batched" if i == 6 else "slow"] = observer.Job([])
+    d.runs[rd] = r
+end = time.time() + 3.0
+while time.time() < end:
+    now = time.time()
+    for r in list(d.runs.values()):
+        d.observe(r, now)
+    d.batch(now)
+    time.sleep(0.1)
+print("batches=%d" % len(calls))
+print("maxticks=%d" % live["max"])
+print("limit=%d" % observer.CHILD_LIMIT)
+PY
+)
+n=$(printf '%s\n' "$out" | sed -n 's/^batches=//p')
+if [ "${n:-0}" -ge 10 ]; then ok "12 틱이 슬롯을 붙잡고 있어도 일괄 질의가 주기마다 돈다"
+else bad "12 틱이 슬롯을 붙잡고 있어도 일괄 질의가 주기마다 돈다" "3초 동안 batch ${n:-0}번"; fi
+lim=$(printf '%s\n' "$out" | sed -n 's/^limit=//p')
+check "12 쉬고 있는 일괄 잡 몫으로 틱은 상한보다 하나 적게 돈다" \
+  "$(printf '%s\n' "$out" | sed -n 's/^maxticks=//p')" "$(( ${lim:-4} - 1 ))"
+
 printf '\ntest-observer: %d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" -eq 0 ]
