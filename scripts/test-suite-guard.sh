@@ -113,10 +113,35 @@ run_sg() {
   # foreground, outer fds closed (see the header).
   local tag="$1" strict="$2"; shift 2
   CC_SUITE_GUARD_STRICT="$strict" CC_SUITE_GUARD_GRACE_S=1 \
-  CC_SUITE_GUARD_LIMIT_S="${SG_LIMIT:-0}" CC_STEP_DEADLINE_EPOCH= \
+  CC_SUITE_GUARD_LIMIT_S=0 CC_STEP_DEADLINE_EPOCH= \
   CC_SUITE_GUARD_LSOF=lsof \
     bash "$SG" "$@" >"$W/$tag.out" 2>"$W/$tag.err" 3>&- 4>&- 5>&- 8<&-
   RC=$?
+}
+
+wrapper_rc() {
+  # wrapper_rc <wrapper pid> <signal|""> <pid file of the planted suite> — RC is
+  # the wrapper's status, read once the wrapper is gone; "상한" when it is still
+  # there at the shared ceiling, and then it and the planted pids are killed.
+  # The wrapper's trap only notes a signal, so one that arrives before it waits
+  # for the suite is acted on when a later one cuts that wait: with a signal
+  # named, every fiftieth look sends it again.
+  local wp="$1" wsig="$2" looks=0 p
+  wrapper_gone() {
+    _wait_fixture_gone "$wp" && return 0
+    looks=$((looks + 1))
+    [ -z "$wsig" ] || [ $((looks % 50)) != 0 ] || kill -"$wsig" "$wp" 2>/dev/null
+    return 1
+  }
+  if wait_until wrapper_gone; then
+    wait "$wp"
+    RC=$?
+    return
+  fi
+  RC=상한
+  kill -KILL "$wp" 2>/dev/null
+  wait "$wp" 2>/dev/null
+  for p in $(cat "$3" 2>/dev/null); do kill -KILL "$p" 2>/dev/null; done
 }
 
 # --- T1: a plain background leftover ----------------------------------------
@@ -196,7 +221,10 @@ wait "$c"
 EOF
 # The suite never ends by itself, so the wrapper's return, its 124 and its
 # deadline line are what show the deadline ended it.
-SG_LIMIT=3 run_sg t5 1 "$W/t5.sh" "$W/t5.pid"
+CC_SUITE_GUARD_STRICT=1 CC_SUITE_GUARD_GRACE_S=1 CC_SUITE_GUARD_LIMIT_S=3 \
+CC_STEP_DEADLINE_EPOCH= CC_SUITE_GUARD_LSOF=lsof \
+  bash "$SG" "$W/t5.sh" "$W/t5.pid" >"$W/t5.out" 2>"$W/t5.err" 3>&- 4>&- 5>&- 8<&- &
+wrapper_rc "$!" "" "$W/t5.pid"
 read -r sb sc < "$W/t5.pid" 2>/dev/null || { sb=""; sc=""; }
 check "T5: 마감을 넘기면 엄격 exit 124" "$RC" "124"
 has "T5: ::error:: 로 끝난다" "$W/t5.err" "::error::suite-guard: 마감을 넘겨"
@@ -443,8 +471,8 @@ for sig in INT TERM; do
     bad "T17 $sig: 묶음이 시작을 적지 않았다"
   fi
   kill -"$sig" "$w"
-  wait "$w"
-  check "T17 $sig: 래퍼 rc" "$?" "$want"
+  wrapper_rc "$w" "$sig" "$W/t17-$sig.pid"
+  check "T17 $sig: 래퍼 rc" "$RC" "$want"
   check_gone "T17 $sig: 묶음 bash 가 남지 않는다" "$sb"
   check_gone "T17 $sig: 그 자손이 남지 않는다" "$sc"
 done

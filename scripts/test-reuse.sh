@@ -1524,7 +1524,7 @@ a"
     "$(gcol '"$SG" version')|$([ -s "$S.mark" ] && echo 표지 || echo 없음)" "아니오|없음"
   # A stand-in for the real git that reads HEAD, writes its pid and lives until
   # it is killed (or the test shell is gone), so only the shim's TERM ends it.
-  local FG S2 sp fp
+  local FG S2 sp fp looks
   FG="$T/fakegit"
   S2="$T/items/2"
   mkdir -p "$FG"
@@ -1537,9 +1537,27 @@ a"
   sp=$!
   wait_until [ -s "$T/fakepid" ]
   fp=$(cat "$T/fakepid" 2>/dev/null)
+  # The shim's trap only notes the signal, so a TERM that arrives before the
+  # shim waits is acted on when a later one cuts that wait: every fiftieth look
+  # sends it again. The stand-in never ends by itself, so a shim that does not
+  # end its child is still running at the shared ceiling.
+  looks=0
+  shim_gone() {
+    _wait_fixture_gone "$sp" && return 0
+    looks=$((looks + 1))
+    [ $((looks % 50)) != 0 ] || kill -TERM "$sp" 2>/dev/null
+    return 1
+  }
   kill -TERM "$sp" 2>/dev/null
-  wait "$sp"
-  rc=$?
+  if wait_until shim_gone; then
+    wait "$sp"
+    rc=$?
+  else
+    rc=상한
+    kill -KILL "$sp" 2>/dev/null
+    wait "$sp" 2>/dev/null
+    [ -z "$fp" ] || kill -KILL "$fp" 2>/dev/null
+  fi
   tr_collect "$CK" "$S2" "$L" "$T/rst"
   check "수집: 위치 질의 도중 TERM 을 받은 셰임은 자식을 끝내고 128+15 로 끝나며 예" \
     "$rc|$([ -n "$fp" ] && ! kill -0 "$fp" 2>/dev/null && echo 자식끝남)|$(head -n 1 "$T/rst")" "143|자식끝남|예"
