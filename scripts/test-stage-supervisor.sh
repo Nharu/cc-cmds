@@ -450,10 +450,11 @@ check "(9) 사라진 pid 의 지문 캡처가 errexit 아래에서 호출자를 
 # is the vacuous pass this suite exists to refuse.
 # The record of a stage that exits at once lives for a few milliseconds, so the
 # sampler reads every 10 ms rather than at the shared wait's pace. It ends when
-# the row lands or when its caller, past the stage's end, writes <outfile>.stop.
+# the row lands, when its caller, past the stage's end, writes <outfile>.stop,
+# or when the suite's shell is gone.
 sample_kind() {  # sample_kind <segment> <outfile>
   local s="$1" out="$2" seen=0 broke=""
-  while [ ! -e "$out.stop" ]; do
+  while [ ! -e "$out.stop" ] && kill -0 "$WAIT_FIXTURE_OWNER" 2>/dev/null; do
     if [ -f "$RD/$s.pid" ]; then
       seen=1
       if [ ! -f "$RD/$s.kind" ]; then broke=".pid 는 있는데 .kind 가 없다"; break; fi
@@ -468,6 +469,7 @@ assert_immediate() {  # assert_immediate <segment> <expected-rc> <label>
   local s="$1" want="$2" label="$3" rc left f seen broke
   sample_kind "$s" "$WORK/sample-$s" &
   local sampler=$!
+  KILL_LIST="$KILL_LIST $sampler"
   dispatch "$s" >/dev/null
   g wait --manifest "$MANIFEST" --segment "$s" --interval 1 --timeout 60 >/dev/null; rc=$?
   : > "$WORK/sample-$s.stop"
