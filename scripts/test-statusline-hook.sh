@@ -189,22 +189,17 @@ check "L2 깨진 설정 JSON 에도 훅의 rc 는 0" "$HOOK_RC" "0"
 L3="$WORK/cfg-l3"; cfg_empty "$L3"
 L3FIFO="$WORK/l3.fifo"
 mkfifo "$L3FIFO"
-sleep 5 > "$L3FIFO" &
+# The writer holds the FIFO open for as long as this test shell lives, so a hook
+# that read stdin could not end before the shared ceiling.
+wait_holder > "$L3FIFO" &
 FX_PIDS="${FX_PIDS:-}$! "
 CLAUDE_CONFIG_DIR="$L3" bash "$HOOK" --plugin-dir "$PLUG" < "$L3FIFO" >/dev/null 2>/dev/null &
 l3_pid=$!
-l3_i=0
-while [ "$l3_i" -lt 30 ]; do
-  kill -0 "$l3_pid" 2>/dev/null || break
-  sleep 0.1
-  l3_i=$((l3_i + 1))
-done
-if kill -0 "$l3_pid" 2>/dev/null; then
-  kill "$l3_pid" 2>/dev/null
-  bad "L3 닫히지 않는 stdin" "훅이 3초 안에 끝나지 않았다"
-else
-  wait "$l3_pid" 2>/dev/null
+if wait_pid_gone "$l3_pid"; then
   ok "L3 닫히지 않는 stdin 에도 멈추지 않는다"
+else
+  kill "$l3_pid" 2>/dev/null
+  bad "L3 닫히지 않는 stdin" "훅이 닫히지 않는 stdin 에 멈춘다"
 fi
 
 # ---------------------------------------------------------------------------
