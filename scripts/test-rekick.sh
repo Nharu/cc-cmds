@@ -505,7 +505,7 @@ check "3: 살아 있는 스테이지가 있으면 done 이 있어도 진행 중�
 has "3: 그 문면은 아직 돌고 있다고 한다" "$OUT" "아직 돌고 있습니다"
 
 mk_prev RKSHIFT; fx_done
-sleep 120 & spid=$!; FX_PIDS="$FX_PIDS$spid "
+wait_holder >/dev/null 2>&1 & spid=$!; FX_PIDS="$FX_PIDS$spid "
 printf '%s\n%s\n' "$spid" "$(LC_ALL=C ps -o lstart= -p "$spid" | sed 's/[[:space:]]\{1,\}/ /g;s/^ //;s/ $//')" > "$FX_RUN_DIR/shift.live"
 detect_case "3 살아 있는 교대" RKSHIFT
 check "3: 살아 있는 교대가 있으면 진행 중이다" "$(col "$OUT" 판정)" "진행 중"
@@ -768,7 +768,7 @@ adopt_case "3b 멈춤" RKWQ 멈춤
 # same reason.
 mk_prev RKWRELAY
 fx_row 'handoff' "교대=1" "사유=대기" "버린 선택지=-" "CI 대기=S1"
-sleep 120 & rpid=$!; FX_PIDS="$FX_PIDS$rpid "
+wait_holder >/dev/null 2>&1 & rpid=$!; FX_PIDS="$FX_PIDS$rpid "
 printf '%s\n%s\nrefreshed=%s\n' "$rpid" "$(LC_ALL=C ps -o lstart= -p "$rpid" | sed 's/[[:space:]]\{1,\}/ /g;s/^ //;s/ $//')" "$(date -u +%s)" > "$FX_RUN_DIR/relay.live"
 detect_case "3b 산 중계" RKWRELAY 다시
 check "3b 산 중계: 살아 있는 중계가 있는 대기는 재킥 낱말에도 진행 중이다" "$(col "$OUT" 판정)" "진행 중"
@@ -777,7 +777,7 @@ close_src RKWRELAY RKSUCC-RKWRELAY
 check "3b 산 중계: 같은 런의 닫기도 거절되고 종료 행이 없다" "$rc/$(end_rows RKWRELAY | grep -c .)" "3/0"
 
 mk_prev RKWWAIT
-sleep 120 & wpid=$!; FX_PIDS="$FX_PIDS$wpid "
+wait_holder >/dev/null 2>&1 & wpid=$!; FX_PIDS="$FX_PIDS$wpid "
 printf '보유자=%s\n지문=%s\n기록자=게이트\n계보=B:I1#1\n그룹=-\n까지=-\n갱신=%s\n종류=implement\n시도=1\n' \
   "$wpid" "$(LC_ALL=C ps -o lstart= -p "$wpid" | sed 's/[[:space:]]\{1,\}/ /g;s/^ //;s/ $//')" "$(date -u +%s)" > "$FX_RUN_DIR/I1.waiting"
 detect_case "3b 신선한 대기 스테이지" RKWWAIT 다시

@@ -204,11 +204,8 @@ g() { ( cd "$WT" && bash "$GATE" "$@" >/dev/null 2>&1 ); }
 # 돌아오기 전에 잡히므로, 동사 뒤에 잠금이 없으면 회차가 없었거나 이미 끝난 것이다.
 ROUND_LOG="$STATE_ROOT/run/$RUN/log/metrics-round.log"
 wait_round() {
-  local i=0
-  while [ -d "$STATE_ROOT/.metrics.lock" ]; do
-    [ "$i" -lt 300 ] || { bad "회차 대기" "잠금이 30초 안에 풀리지 않았다"; return 1; }
-    sleep 0.1; i=$((i + 1))
-  done
+  wait_until test ! -d "$STATE_ROOT/.metrics.lock" \
+    || { bad "회차 대기" "잠금이 기다림 상한 안에 풀리지 않았다"; return 1; }
   return 0
 }
 snap_nowait() { g snapshot --manifest "$MANIFEST"; }
@@ -598,11 +595,8 @@ HALT_RUNS="$HALT_ROOT/runs"
 HALT_PIN=0123456789abcdef0123456789abcdef01234567
 HALT_UNFILED="$REPO/docs/pipeline-run/halt-report.unfiled"
 wait_halt() {
-  local i=0
-  while [ -d "$STATE_ROOT/.halt.lock" ]; do
-    [ "$i" -lt 300 ] || { bad "중단 리포트 회차 대기" "잠금이 30초 안에 풀리지 않았다"; return 1; }
-    sleep 0.1; i=$((i + 1))
-  done
+  wait_until test ! -d "$STATE_ROOT/.halt.lock" \
+    || { bad "중단 리포트 회차 대기" "잠금이 기다림 상한 안에 풀리지 않았다"; return 1; }
   return 0
 }
 hpath() { bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; gate_halt_record_path "$2"' _ "$GATE" "$1"; }

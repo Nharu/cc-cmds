@@ -1178,6 +1178,7 @@ tr_self_test() {
   check() { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "got「$2」 want「$3」"; fi; }
   has() { case "$2" in *"$3"*) ok "$1" ;; *) bad "$1" "「$3」 없음: $2" ;; esac; }
   hasnt() { case "$2" in *"$3"*) bad "$1" "「$3」 있음: $2" ;; *) ok "$1" ;; esac; }
+  . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/wait-fixture.sh"
   for v in $(compgen -e); do
     case "$v" in CC_TEST_SLOT*|CHECK_PUSH_*) unset "$v" ;; esac
   done
@@ -1521,24 +1522,45 @@ a"
   rm -rf "$CK/.git/refs/notes"
   check "수집: 체크아웃 안의 git version 은 표지 없이 아니오" \
     "$(gcol '"$SG" version')|$([ -s "$S.mark" ] && echo 표지 || echo 없음)" "아니오|없음"
-  # A stand-in for the real git that reads HEAD, writes its pid and sleeps.
-  local FG S2 sp fp
+  # A stand-in for the real git that reads HEAD, writes its pid and lives until
+  # it is killed (or the test shell is gone), so only the shim's TERM ends it.
+  local FG S2 sp fp looks
   FG="$T/fakegit"
   S2="$T/items/2"
   mkdir -p "$FG"
-  printf '#!/bin/sh\ncat %q > /dev/null\necho $$ > %q\nexec sleep 30\n' "$CK/.git/HEAD" "$T/fakepid" > "$FG/git"
+  printf '#!/bin/sh\ncat %q > /dev/null\necho $$ > %q\nwhile kill -0 %s 2>/dev/null; do sleep 1; done\n' "$CK/.git/HEAD" "$T/fakepid" "$WAIT_FIXTURE_OWNER" > "$FG/git"
   chmod +x "$FG/git"
   ( PATH="$FG:$PATH"; tr_shims "$CK" "$S2" )
   tr_baseline "$CK" "$S2" "$L"
   rm -f "$T/fakepid"
   ( cd "$CK" && exec "$S2.shim/git" rev-parse --show-toplevel ) > /dev/null 2>&1 &
   sp=$!
-  i=0
-  while [ ! -s "$T/fakepid" ] && [ "$i" -lt 100 ]; do sleep 0.1; i=$((i + 1)); done
+  wait_until [ -s "$T/fakepid" ]
   fp=$(cat "$T/fakepid" 2>/dev/null)
+  # The shim's trap only notes the signal, so a TERM that arrives before the
+  # shim waits is acted on when a later one cuts that wait: every fiftieth look
+  # sends it again. The stand-in never ends by itself, so a shim that does not
+  # end its child is still running at the shared ceiling.
+  looks=0
+  shim_gone() {
+    _wait_fixture_gone "$sp" && return 0
+    looks=$((looks + 1))
+    [ $((looks % 50)) != 0 ] || kill -TERM "$sp" 2>/dev/null
+    return 1
+  }
   kill -TERM "$sp" 2>/dev/null
-  wait "$sp"
-  rc=$?
+  if wait_until shim_gone; then
+    wait "$sp"
+    rc=$?
+    # A TERM sent again can cut the shim's wait for the child it has already
+    # ended, so the child is given the shared ceiling to be gone as well.
+    [ -z "$fp" ] || wait_until _wait_fixture_gone "$fp" || true
+  else
+    rc=상한
+    kill -KILL "$sp" 2>/dev/null
+    wait "$sp" 2>/dev/null
+    [ -z "$fp" ] || kill -KILL "$fp" 2>/dev/null
+  fi
   tr_collect "$CK" "$S2" "$L" "$T/rst"
   check "수집: 위치 질의 도중 TERM 을 받은 셰임은 자식을 끝내고 128+15 로 끝나며 예" \
     "$rc|$([ -n "$fp" ] && ! kill -0 "$fp" 2>/dev/null && echo 자식끝남)|$(head -n 1 "$T/rst")" "143|자식끝남|예"

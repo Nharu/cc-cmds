@@ -74,6 +74,11 @@ export CC_CMDS_DASHBOARD
 script_dir=$(cd "$(dirname "$0")" && pwd)
 repo_root=$(cd "$script_dir/.." && pwd)
 ORCH="$repo_root/plugins/cc-cmds/orchestrator"
+# shellcheck source=wait-fixture.sh
+. "$repo_root/scripts/wait-fixture.sh"
+# The stubs below source the same file from their own shells.
+TEST_WAIT_FIXTURE="$repo_root/scripts/wait-fixture.sh"
+export TEST_WAIT_FIXTURE
 
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/cc-fleet-test.XXXXXX")
 BG_PIDS=""
@@ -113,10 +118,15 @@ cat > "$FX/run.sh" <<'EOF'
 printf 'run %s CLAUDE_CONFIG_DIR=%s\n' "$*" "${CLAUDE_CONFIG_DIR:-}" >> "$TEST_LOG_DIR/run.log"
 # A slow driver keeps the dispatch job — and its run marker — alive. A repair
 # run (its manifest is an `rr-` one) sleeps TEST_REPAIR_RUN_SLEEP instead, so it
-# can outlive the lane's own run.
+# can outlive the lane's own run. With TEST_RUN_HOLD set a lane run lasts until
+# the test creates that file (or the test shell is gone), so a test that samples
+# while the run goes on ends the run when it has seen what it waits for.
 case "$*" in
   */rr-*) [ -z "${TEST_REPAIR_RUN_SLEEP:-}" ] || sleep "$TEST_REPAIR_RUN_SLEEP" ;;
-  *)      [ -z "${TEST_RUN_SLEEP:-}" ] || sleep "$TEST_RUN_SLEEP" ;;
+  *)      [ -z "${TEST_RUN_SLEEP:-}" ] || sleep "$TEST_RUN_SLEEP"
+          if [ -n "${TEST_RUN_HOLD:-}" ]; then
+            while [ ! -e "$TEST_RUN_HOLD" ] && kill -0 "$WAIT_FIXTURE_OWNER" 2>/dev/null; do sleep 0.1; done
+          fi ;;
 esac
 # With TEST_RUN_STEAL set the stub rewrites the dispatched record under the
 # driver's feet, so the dispatcher's `done` flip finds no line to flip.
@@ -705,7 +715,7 @@ check "프로브 열거 실패는 닫힌다 (lane/probe-failed)" "$(cut -f3,6 "$
 
 # --- run markers and the fleet ceiling ---------------------------------------------
 d_fresh d-mark m1
-sleep 30 & MP=$!; BG_PIDS="$BG_PIDS $MP"
+wait_holder >/dev/null 2>&1 & MP=$!; BG_PIDS="$BG_PIDS $MP"
 mkdir -p "$PACE/busy"
 printf '%s\n%s\n%s\n' "$MP" "$(fp_of "$MP")" "RX" > "$PACE/busy/u1.$MP"
 fleet dispatch u1 >/dev/null 2>&1
@@ -801,7 +811,10 @@ fleet dispatch u1 >/dev/null 2>&1
 check "state.json 부재는 유지로 읽혀 기동한다" "$(backlog_status a1)" "done"
 check "기동은 좌석 홈으로 gate.sh snapshot 을 한 번 부른다" "$(count_lines "$TEST_LOG_DIR/gate.log")" "1"
 check "snapshot 은 매니페스트를 받고 인벤토리 config_dir 을 CLAUDE_CONFIG_DIR 로 받는다" "$(sed -n '1p' "$TEST_LOG_DIR/gate.log")" "gate snapshot --manifest $MANIFEST CLAUDE_CONFIG_DIR=$H1"
-sleep 0.3
+# The watcher and the poller are started in the background; wait for their lines.
+watch_logged() { [ -s "$TEST_LOG_DIR/watch.log" ]; }
+checks_logged() { [ -s "$TEST_LOG_DIR/watch.log" ] && [ -s "$TEST_LOG_DIR/checks.log" ]; }
+wait_until watch_logged
 check "워처는 정확히 한 번 기동된다" "$(count_lines "$TEST_LOG_DIR/watch.log")" "1"
 check "워처 인자는 autopilot 의 기동 줄과 같은 임계를 싣는다 (--silence 300 포함)" "$(sed -n '1p' "$TEST_LOG_DIR/watch.log")" "watch --run-dir $RUNDIR --ledger $WT_MAIN/docs/pipeline-run/R1.md --stall 1200 --interval 60 --after-stage 120 --run-open 300 --silence 300"
 check "run.sh 는 앞단에서 그 계정의 홈으로 돈다" "$(sed -n '1p' "$TEST_LOG_DIR/run.log")" "run --manifest $MANIFEST CLAUDE_CONFIG_DIR=$H1"
@@ -821,7 +834,7 @@ d_fresh d-linked lk1
 set_backlog "$(backlog_record lk1 ".manifest_path = \"$LMAN\"")"
 rm -f "$TEST_LOG_DIR/checks.log"
 fleet dispatch u1 >/dev/null 2>&1
-sleep 0.3
+wait_until checks_logged
 check "연결 워크트리 매니페스트도 기동한다" "$(backlog_status lk1)" "done"
 [ -s "$WT_MAIN/docs/pipeline-run/R2.md" ] && ok "연결 워크트리 런의 스텁은 메인 워크트리에 생긴다" || bad "연결 워크트리 런의 스텁은 메인 워크트리에 생긴다" "absent"
 [ ! -e "$LWT/docs/pipeline-run/R2.md" ] && ok "연결 워크트리 아래에는 스텁이 생기지 않는다" || bad "연결 워크트리 아래에는 스텁이 생기지 않는다" "present"
@@ -835,7 +848,9 @@ rm -rf "$WORK/xdg/cc-cmds/run/R2"
 d_fresh d-race r1
 TEST_PROBE_SLEEP=1 fleet dispatch u1 >/dev/null 2>"$WORK/race-u1.err" &
 race_pid=$!
-sleep 0.4
+# The first lane holds the claim lock through its slow probe; the second starts
+# only once that lock is there.
+wait_until [ -d "$PACE/backlog.lock" ]
 fleet dispatch u2 >/dev/null 2>"$WORK/race-u2.err"
 wait "$race_pid" || true
 check "같은 pending 을 두 레인이 동시에 집어도 run.sh 는 한 번만 돈다" "$(count_lines "$TEST_LOG_DIR/run.log")" "1"
@@ -952,7 +967,9 @@ if [ "$kind" = "router-shift" ]; then
   # The watcher's line must already be there; waiting for it keeps a watcher
   # launched before this call from losing the race to it in the log, and a
   # watcher launched after this call still lands after this line.
-  i=0; while [ "$i" -lt 30 ] && ! grep -q "^watch $rid\$" "$TEST_LOG_DIR/t2.log" 2>/dev/null; do sleep 0.1; i=$((i + 1)); done
+  . "$TEST_WAIT_FIXTURE"
+  watch_line() { grep -q "^watch $rid\$" "$TEST_LOG_DIR/t2.log" 2>/dev/null; }
+  wait_until watch_line || true
 fi
 printf '%s %s %s CLAUDE_CONFIG_DIR=%s REENTRY=%s\n' "${kind:-$verb}" "$rid" "${first:--}" "${CLAUDE_CONFIG_DIR:-}" "${CC_PIPELINE_REENTRY:-}" >> "$TEST_LOG_DIR/t2.log"
 case "$verb:$kind" in
@@ -1008,7 +1025,7 @@ t2_run T2B '- `handoff` | 교대=1 | 사유=중단 | 대상=infra' "$T2_SETTLED"
 t2_run T2C "$T2_LAUNCH"; : > "$WORK/xdg/cc-cmds/run/T2C/needs-settle"; : > "$WORK/xdg/cc-cmds/run/T2C/done"
 t2_run T2D "$T2_SETTLED" '- `handoff` | 교대=1 | 사유=승인 | 대상=infra'
 t2_run T2E "$T2_SETTLED"
-sleep 300 & t2_relay=$!; BG_PIDS="$BG_PIDS $t2_relay"
+wait_holder >/dev/null 2>&1 & t2_relay=$!; BG_PIDS="$BG_PIDS $t2_relay"
 printf '%s\n%s\n' "$t2_relay" "$(bash -c '. "$1" && cc_proc_fingerprint "$2"' _ "$ORCH/liveness.sh" "$t2_relay")" > "$WORK/xdg/cc-cmds/run/T2E/relay.live"
 t2_run T2F "$T2_SETTLED"
 mkdir -p "$PACE/reentry"; printf '%s\n' "$T2BOOT" > "$PACE/reentry/T2F.boot"
@@ -1187,11 +1204,11 @@ t3_run F8 "$T2_LAUNCH" "$T3_WAIT"; : > "$WORK/xdg/cc-cmds/run/F8/fo-late"
 # chain starts only what is not alive. FD's `watch.pid` and FE's `checks.pid`
 # name a live process that does not run that script, which is not that loop.
 T3L="$WORK/t3live"; mkdir -p "$T3L"
-printf '#!/usr/bin/env bash\nsleep 300 & trap "kill $!" TERM\nwait\n' > "$T3L/watch.sh"
+printf '#!/usr/bin/env bash\nwhile :; do sleep 1; done\n' > "$T3L/watch.sh"
 cp "$T3L/watch.sh" "$T3L/checks.sh"
 bash "$T3L/watch.sh" & t3_watch=$!; BG_PIDS="$BG_PIDS $t3_watch"
 bash "$T3L/checks.sh" & t3_poll=$!; BG_PIDS="$BG_PIDS $t3_poll"
-sleep 300 & t3_other=$!; BG_PIDS="$BG_PIDS $t3_other"
+wait_holder >/dev/null 2>&1 & t3_other=$!; BG_PIDS="$BG_PIDS $t3_other"
 t3_run FA "$T2_LAUNCH" "$T3_WAIT"
 printf '%s' "$t3_watch" > "$WORK/xdg/cc-cmds/run/FA/watch.pid"; printf '%s\n' "$t3_poll" > "$WORK/xdg/cc-cmds/run/FA/checks.pid"
 t3_run FB "$T2_LAUNCH" "$T3_WAIT"; printf '%s' "$t3_watch" > "$WORK/xdg/cc-cmds/run/FB/watch.pid"
@@ -1204,7 +1221,7 @@ t3_run P1 "$T2_LAUNCH" "$T3_WAIT"
 printf '<!-- cc-run-manifest v1; run-id=P1; owner-doc=docs/x.md; origin-worktree=%s; -->\n' "$WT" > "$WORK/t2man/P1.plan.md"
 t3_run P2 "$T2_LAUNCH" "$T3_WAIT"; : > "$WORK/xdg/cc-cmds/run/P2/done"
 t3_run P3 "$T2_LAUNCH" "$T3_WAIT"
-sleep 300 & t3_relay=$!; BG_PIDS="$BG_PIDS $t3_relay"
+wait_holder >/dev/null 2>&1 & t3_relay=$!; BG_PIDS="$BG_PIDS $t3_relay"
 printf '%s\n%s\n' "$t3_relay" "$(bash -c '. "$1" && cc_proc_fingerprint "$2"' _ "$ORCH/liveness.sh" "$t3_relay")" > "$WORK/xdg/cc-cmds/run/P3/relay.live"
 touch -t 202001010000 "$WORK/xdg/cc-cmds/run/P3/relay.live"
 t3_run P4 "$T2_LAUNCH" "$T3_STOP"
@@ -1364,7 +1381,7 @@ check "status 는 running 을 표시한다" "$(fleet agent status 2>/dev/null | 
 # status: eligibility as the sensor published it, orphans, live markers
 usage_write '.accounts[2].login = "expired"'
 fleet sensor >/dev/null 2>&1
-sleep 30 & SP=$!; BG_PIDS="$BG_PIDS $SP"
+wait_holder >/dev/null 2>&1 & SP=$!; BG_PIDS="$BG_PIDS $SP"
 mkdir -p "$PACE/busy"; printf '%s\n%s\n%s\n' "$SP" "$(fp_of "$SP")" "RS" > "$PACE/busy/u1.$SP"
 fleet agent status > "$WORK/status.out" 2>/dev/null
 check "status 는 적격 레인을 적격으로 찍는다" "$(grep -c "^$L.dispatch.u1: 등록됨 — 적격$" "$WORK/status.out" || true)" "1"
@@ -1559,7 +1576,7 @@ check "(i) 임대 표를 읽을 수 없으면 lending-unrouted 이고 띄우지 
 fleet dispatch u1 >/dev/null 2>&1
 check "(i) u 레인은 임대 표를 읽지 않는다 — 같은 표에서 기동한다" "$(backlog_status lt1)" "done"
 l_fresh d-l-lease ll1
-sleep 60 & LHP=$!; BG_PIDS="$BG_PIDS $LHP"
+wait_holder >/dev/null 2>&1 & LHP=$!; BG_PIDS="$BG_PIDS $LHP"
 LHFP=$( . "$FX/liveness.sh"; TZ=UTC0 cc_proc_fingerprint "$LHP" )
 mkdir -p "$PACE/leases"
 jq -cn --argjson pid "$LHP" --arg fp "$LHFP" --arg h "$H_CC" --argjson now "$NOW" \
@@ -1585,7 +1602,7 @@ check "(ii) 드라이버 예약을 세고도 5000 아래면 기동한다" "$(bac
 
 # --- markers: the ceiling is the u lanes', the lending lane holds one run ----------------
 l_fresh d-l-ceil lc1
-sleep 30 & MP1=$!; sleep 30 & MP2=$!; BG_PIDS="$BG_PIDS $MP1 $MP2"
+wait_holder >/dev/null 2>&1 & MP1=$!; wait_holder >/dev/null 2>&1 & MP2=$!; BG_PIDS="$BG_PIDS $MP1 $MP2"
 mark u1 "$MP1" RA; mark u2 "$MP2" RB
 fleet dispatch cc >/dev/null 2>&1
 check "상한 면제: u 레인 둘이 살아 있어도 열린 cc 레인은 기동한다" "$(backlog_status lc1)" "done"
@@ -1848,7 +1865,7 @@ check "사건의 서명으로 실패하는 PR 은 보류하지 않는다" "$(mf 
 
 # --- master.lock: a live holder skips the round, a dead or stale one is broken ------
 m_fresh m-lock; gh_red "$TIP1" 101
-sleep 30 & LKP=$!; BG_PIDS="$BG_PIDS $LKP"
+wait_holder >/dev/null 2>&1 & LKP=$!; BG_PIDS="$BG_PIDS $LKP"
 mkdir -p "$PACE/master.lock"; printf '%s\n' "$LKP" > "$PACE/master.lock/pid"
 m_round
 [ -e "$PACE/$MFILE_REL" ] && bad "산 보유자의 젊은 master.lock 이면 그 라운드는 아무것도 읽지 않는다" "판독이 쓰였다" \
@@ -1874,7 +1891,7 @@ r_fresh() {
   fi
 }
 r_fresh r-ceil
-sleep 60 & RP1=$!; sleep 60 & RP2=$!; BG_PIDS="$BG_PIDS $RP1 $RP2"
+wait_holder >/dev/null 2>&1 & RP1=$!; wait_holder >/dev/null 2>&1 & RP2=$!; BG_PIDS="$BG_PIDS $RP1 $RP2"
 mark u1 "$RP1" X1; mark u2 "$RP2" X2
 fleet dispatch u1 >/dev/null 2>&1
 check "상한이 찬 함대에서도 수리 레코드는 자기 자리로 기동한다" "$(backlog_field "mr-$E1" '.status + "/" + .dispatched_lane')" "done/u1"
@@ -1885,7 +1902,7 @@ check "끝나면 수리 표지가 남지 않는다" "$(ls "$PACE/busy" | tr '\n'
 kill "$RP1" "$RP2" 2>/dev/null; wait "$RP1" "$RP2" 2>/dev/null
 
 r_fresh r-seat only
-sleep 60 & RP3=$!; BG_PIDS="$BG_PIDS $RP3"
+wait_holder >/dev/null 2>&1 & RP3=$!; BG_PIDS="$BG_PIDS $RP3"
 mark u2 "$RP3" rr-other; printf 'master-repair\n1\n' >> "$PACE/busy/u2.$RP3"
 fleet dispatch u1 >/dev/null 2>"$WORK/r-seat.err"
 check "산 수리 표지가 자리 수만큼이면 거부 행 repair-seat, 판정 칸은 -" "$(cut -f2-4,6 "$PACE/refusals.tsv")" "$(printf 'u1\trepair-seat\t-\t-')"
@@ -1907,15 +1924,11 @@ repair_append() {
     {schema: "cc-pace-backlog v1", id: ("mr-" + $e), kind: "master-repair", event_id: $e, slug: "o/n", base: "master",
      status: "pending", enqueued_at: $at, authorized_at: $at, deadline: $dl, base_commit: $bc,
      doc_sha256: "(해당 없음)", manifest_path: $m, lane: ""}')
-  until mkdir "$PACE/backlog.lock" 2>/dev/null; do [ "$n" -lt 50 ] || return 1; sleep 0.2; n=$(( n + 1 )); done
+  wait_until backlog_lock_take || return 1
   printf '%s\n' "$rec" >> "$PACE/backlog.jsonl"; rm -rf "$PACE/backlog.lock"
 }
+backlog_lock_take() { mkdir "$PACE/backlog.lock" 2>/dev/null; }
 EA=aaaaaaaaaaa1; EB=bbbbbbbbbbb2; EX=ccccccccccc3
-wait_for() {
-  # wait_for <seconds> <command…> — poll the fixture until the command succeeds.
-  local lim=$(( $1 * 5 )) n=0; shift
-  until "$@"; do [ "$n" -lt "$lim" ] || return 1; sleep 0.2; n=$(( n + 1 )); done
-}
 run_started() { [ "$(count_lines "$TEST_LOG_DIR/run.log")" != 0 ]; }
 rec_there() { [ -n "$(backlog_field "mr-$E1" .status 2>/dev/null)" ]; }
 fx_procs() { pgrep -f "$FX/fleet.sh (master-watch|repair-run)" | count_lines /dev/stdin; }
@@ -1924,12 +1937,12 @@ r_dispatched() { [ "$(backlog_status "mr-$1")" = dispatched ] || [ "$(backlog_st
 # Two live runs fill the ceiling; two repair records: the first takes the
 # repair seat, the second is refused while the first runs.
 m_fresh r-two; set_backlog
-sleep 60 & RP4=$!; sleep 60 & RP5=$!; BG_PIDS="$BG_PIDS $RP4 $RP5"
+wait_holder >/dev/null 2>&1 & RP4=$!; wait_holder >/dev/null 2>&1 & RP5=$!; BG_PIDS="$BG_PIDS $RP4 $RP5"
 mark u1 "$RP4" X1; mark u2 "$RP5" X2
 repair_append "$EA"; repair_append "$EB"
 TEST_REPAIR_RUN_SLEEP=4 fleet dispatch u1 >/dev/null 2>"$WORK/r-two-u1.err" &
 r2_u1=$!; BG_PIDS="$BG_PIDS $r2_u1"
-wait_for 10 r_dispatched "$EA"
+wait_until r_dispatched "$EA"
 fleet dispatch u2 >/dev/null 2>"$WORK/r-two-u2.err"
 check "상한이 찬 함대에서 첫 수리 레코드는 dispatched" "$(backlog_field "mr-$EA" '.status + "/" + .dispatched_lane')" "dispatched/u1"
 check "같은 때 둘째 수리 레코드는 repair-seat 거부 행을 남기고 pending 이다" \
@@ -1982,9 +1995,9 @@ for l in u1 u2; do
   eval "rb_$l=\$!"; eval "BG_PIDS=\"\$BG_PIDS \$rb_$l\""
 done
 runs_two() { [ "$(count_lines "$TEST_LOG_DIR/run.log")" -ge 2 ]; }
-wait_for 10 runs_two
+wait_until runs_two
 repair_append "$EX"
-wait_for 15 r_dispatched "$EX"
+wait_until r_dispatched "$EX"
 check "두 레인이 모두 런을 쥔 동안 덧붙인 수리 레코드는 몇 회차 안에 dispatched 다" "$(r_dispatched "$EX" && echo 예 || echo 아니오)" "예"
 rl=$(backlog_field "mr-$EX" .dispatched_lane)
 other=u1; [ "$rl" != u1 ] || other=u2
@@ -2002,9 +2015,9 @@ check "잡이 끝나면 실행 표지와 관측 자식의 자리가 남지 않�
 m_fresh r-race; gh_green "$TIP1"
 TEST_RUN_SLEEP=5 FLEET_MASTER_INTERVAL_TEST_SECONDS=2 fleet dispatch u1 >/dev/null 2>"$WORK/r-race.err" &
 rr_u1=$!; BG_PIDS="$BG_PIDS $rr_u1"
-wait_for 10 run_started
+wait_until run_started
 gh_red "$TIP1" 101
-wait_for 15 rec_there
+wait_until rec_there
 TEST_RUN_SLEEP=5 fleet dispatch u2 >/dev/null 2>"$WORK/r-race-u2.err" &
 rr_u2=$!; BG_PIDS="$BG_PIDS $rr_u2"
 wait "$rr_u1" "$rr_u2"
@@ -2019,21 +2032,25 @@ m_fresh r5; m_manifest "$WORK/M2.plan.md" M2
 set_backlog "$(backlog_record m1 ".manifest_path = \"$MMAN\"")" "$(backlog_record m2 ".manifest_path = \"$WORK/M2.plan.md\"")"
 gh_red "$TIP1" 101
 for l in u1 u2; do
-  FLEET_NOW_PIN='' TEST_RUN_SLEEP=20 FLEET_MASTER_INTERVAL_TEST_SECONDS=2 fleet dispatch "$l" >/dev/null 2>"$WORK/r5-$l.err" &
+  FLEET_NOW_PIN='' TEST_RUN_HOLD="$WORK/r5.release" FLEET_MASTER_INTERVAL_TEST_SECONDS=2 fleet dispatch "$l" >/dev/null 2>"$WORK/r5-$l.err" &
   eval "r5_$l=\$!"; eval "BG_PIDS=\"\$BG_PIDS \$r5_$l\""
 done
-# The runs last 20 seconds and the reading is sampled for up to 18 of them,
-# stopping at the third distinct observed_at: a host where one round takes
-# longer than the 2-second interval still shows the reading moving.
-seen=""; holders=0; n_seen=0; n=0
-while [ "$n" -lt 36 ] && [ "$n_seen" -lt 3 ]; do
-  sleep 0.5; n=$(( n + 1 ))
+# The runs last until the reading has been seen at its third distinct
+# observed_at, so a host where one round takes longer than the 2-second
+# interval still shows the reading moving. Every sample also records the most
+# holders master.lock ever named.
+seen=""; holders=0; n_seen=0
+r5_sample() {
+  local o h
   o=$(mf .observed_at); [ -z "$o" ] || seen=$(printf '%s\n%s' "$seen" "$o")
   if [ -d "$PACE/master.lock" ]; then
     h=$(count_lines "$PACE/master.lock/pid"); [ "$h" -le "$holders" ] || holders=$h
   fi
   n_seen=$(printf '%s\n' "$seen" | grep -v '^$' | sort -u | count_lines /dev/stdin)
-done
+  [ "$n_seen" -ge 3 ]
+}
+wait_until r5_sample
+: > "$WORK/r5.release"
 wait "$r5_u1" "$r5_u2"
 [ "$n_seen" -ge 3 ] && ok "관측 자식이 도는 동안 observed_at 이 두 번 이상 바뀐다 ($n_seen 가지)" \
   || bad "관측 자식이 도는 동안 observed_at 이 두 번 이상 바뀐다" "값 $n_seen 가지"

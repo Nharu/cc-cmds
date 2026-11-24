@@ -2619,8 +2619,9 @@ ci-base: 목록 없음 — job=21 「rest-tests (3)」 의 로그에 절 목록�
   # Pools in separate processes share one store. The make double logs when a
   # goal starts and ends, read off the clock at the line it writes; goal rc7
   # ends with 7, goal long waits until TERM reaches it, and goal deaf ignores
-  # TERM. Both live far past the shared wait ceiling, so a pool that waited for
-  # them would not end before that ceiling.
+  # TERM. Neither ends by itself before this suite's shell is gone, so a pool
+  # that waited for them would not end before the shared wait ceiling. Goal long
+  # logs `H long` once its TERM trap is in place.
   sed "s|@T@|$T|g" > "$T/bin/slowmake" <<'EOF'
 #!/usr/bin/env bash
 g="${2:-}"
@@ -2629,13 +2630,14 @@ case "$g" in
   rc7) exit 7 ;;
   long)
     trap 'printf "T %s\n" "$g" >> "@T@/slot.log"; kill "$sp" 2>/dev/null; exit 143' TERM
-    sleep 1200 &
+    while kill -0 "$WAIT_FIXTURE_OWNER" 2>/dev/null; do sleep 1; done &
     sp=$!
+    printf 'H %s\n' "$g" >> "@T@/slot.log"
     wait "$sp"
     exit 0 ;;
   deaf)
     trap '' TERM
-    sleep 1200 &
+    while kill -0 "$WAIT_FIXTURE_OWNER" 2>/dev/null; do sleep 1; done &
     printf 'P %s %s\n' "$g" "$!" >> "@T@/slot.log"
     wait
     exit 0 ;;
@@ -2658,10 +2660,9 @@ EOF
       . "$1"; trap "tt_cleanup; exit 143" TERM; TT_FAIL_FAST="${SPFF:-0}"
       cd "$2" && tt_clone > /dev/null && TT_JOBS=2 && { [ -z "${SPDL:-}" ] || TT_DEADLINE=$(( $(date +%s) + SPDL )); } && tt_pool_run "" "$3" > /dev/null; printf "rc=%s\n" "$?"; printf "sp-cut=%s\n" "$TT_CUT_GOALS" >&2; tt_cleanup' _ "$self" "$W" "$goals" > "$T/sp-$tag.out" 2> "$T/sp-$tag.err"
   }
-  # Waits until the double logged line $1 (up to 30 seconds).
+  # Waits until the double logged line $1, or the shared ceiling.
   logwait() {
-    local k=0
-    while [ "$k" -lt 30 ] && ! grep -q -- "$1" "$T/slot.log" 2>/dev/null; do sleep 1; k=$((k + 1)); done
+    wait_until grep -q -- "$1" "$T/slot.log" 2>/dev/null || true
   }
   # The most goals that ran at once, from the S and E lines.
   maxdepth() { awk '$1 == "S" { d++; if (d > m) m = d } $1 == "E" { d-- } END { print m + 0 }' "$T/slot.log"; }
@@ -2714,8 +2715,7 @@ EOF
   : > "$T/slot.log"
   sp A long CC_TEST_SLOTS=2 CC_TEST_SLOTS_DIR="$T/slots" &
   v=$!
-  logwait "^S long "
-  sleep 1
+  logwait "^H long$"
   kill -TERM "$v" 2>/dev/null
   wait "$v"
   check "F38 정리 때의 TERM 이 잡 셸을 지나 대역 목표까지 닿는다" "$(grep -c '^T long$' "$T/slot.log")" "1"
@@ -2920,8 +2920,8 @@ cat r$v.txt > /dev/null
 [ ! -f "$T/lfail-$v" ] || exit 1
 [ ! -f "$T/lgit-$v" ] || git rev-parse HEAD > /dev/null
 if [ -f "$T/lslow-$v" ]; then
-  i=0
-  while [ ! -f "$T/lgo" ] && [ "\$i" -lt 120 ]; do sleep 0.5; i=\$((i + 1)); done
+  . "$(dirname "$self")/wait-fixture.sh"
+  wait_until test -f "$T/lgo" || true
 fi
 exit 0
 EOF
@@ -3060,11 +3060,12 @@ EOF
   : > "$T/lgate.log"
   lrun N l1,l2,l3 1 &
   v=$!
-  k=0
+  lrec_one() { [ "$(lrecs)" -ge 1 ]; }
+  lruns_three() { [ "$(grep -c '^run:' "$T/lgate.log")" -ge 3 ]; }
   if [ "$lv" = 1 ]; then
-    while [ "$k" -lt 60 ] && [ "$(lrecs)" -lt 1 ]; do sleep 0.5; k=$((k + 1)); done
+    wait_until lrec_one || true
   else
-    while [ "$k" -lt 60 ] && [ "$(grep -c '^run:' "$T/lgate.log")" -lt 3 ]; do sleep 0.5; k=$((k + 1)); done
+    wait_until lruns_three || true
   fi
   kill -TERM "$v" 2>/dev/null
   wait "$v"
