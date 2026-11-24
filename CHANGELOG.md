@@ -5,7 +5,7 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [3.61.0] - 2026-11-23
+## [3.62.0] - 2026-11-23
 
 종료 절의 근거 실행(`clause-exec`)을 게이트가 원장에서 고정한 커밋을 꺼낸 분리 워크트리에서 돌린다. 지금까지는 대상의 실행 디렉터리(메인 체크아웃이나 실행 워크트리)에서 그대로 돌고, 그 디렉터리 HEAD 가 런의 마지막 머지 커밋을 조상으로 지니는지만 보았다. 그래서 메인 체크아웃이 다른 브랜치에 있거나 머지보다 뒤처져 있으면 명령이 거절되거나, 머지 전 세그먼트의 새 시험을 돌릴 길이 없었다. 킥오프는 저장소 자신의 시험만 돌리는 절의 사전 인가 행 추가를 기본값으로 권한다.
 
@@ -27,6 +27,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - clause-exec 의 명령은 이제 시한 래퍼가 이름으로 exec 하는 외부 프로그램이어야 한다. 셸 함수나 내장 명령은 실행되지 않는다.
 - 이 판 전에 시작한 런은 시작 때 고정한 플러그인 사본을 돌리므로, 끝날 때까지 지금처럼 실행 디렉터리에서 돈다.
+
+## [3.61.0] - 2026-11-23
+
+`gate.sh wait`·교대 대기(`gate_relay_wait`)·진행 채널(`feed.sh`)이 바퀴 사이에 정해진 초를 자던 자리를 관측 데몬의 깨움 FIFO 위의 `read -t` 로 바꾼다. 데몬이 런을 입양했으면 대기자는 런 디렉터리의 `observer.wake.d/<이름>.<pid>.fifo` 를 한 번 만들어 fd 7 로 열고, 데몬이 지켜보는 원장·pid 파일·중계 기록이 바뀌면 곧장 깬다. 파일 변화로 알려지지 않는 기한에는 시한에 깬다. 판정 순서, 출력 줄, 원장 행은 바뀌지 않는다.
+
+### Added
+
+- **깨움 헬퍼** — `gate.sh` 의 `gate_wake_usable`·`gate_wake_open`·`gate_wake_wait`·`gate_wake_close` 와 `feed.sh` 의 같은 본문(`feed_wake_*`). 데몬 pid 가 살아 있고, 런의 `observer.jobs/` 가 비지 않았고, `observer.wake.d/` 가 있을 때만 FIFO 를 연다. 셋 중 하나라도 없으면 지금처럼 잔다. 0 이 아닌 `read` 값은 모두 시한으로 읽는다.
+- **시한 계산** — `gate_verb_wake_timeout` 은 `--timeout` 마감과 다음 박동 줄 가운데 가까운 쪽까지, `gate_relay_wake_timeout` 은 좌석 호출의 보유 상한, 리셋 시계와 유예, `이월` 시계, 장애 넘김 재개 시각, 해소 확인의 다음 실행, `master 대기` 판독이 낡는 시각, CI 대기의 미등록 유예와 대기 상한 가운데 가장 가까운 기한까지 잔다. 둘 다 많아야 30초이고 적어도 1초이며, 지난 기한은 넣지 않는다.
+- **시험** — test-gate 절 120. 헬퍼의 되돌림과 FIFO 깨움, 두 시한 계산, `feed.sh` 깨움 바퀴, 두 파일 헬퍼의 동기, 헬퍼 밖 fd 7 사용 없음, 그리고 실제 관측 데몬 아래에서 교대 대기가 돌아오는 시각(깨움 행·스테이지 pid 종료 3초 안, 짧은 보유 상한의 반환이 기존 경로와 1초 안, `checks.observed` 의 CI 판정 줄·감독자 pid 의 파일 변화 없는 종료 32초 안)을 단언한다.
+
+### Changed
+
+- **`feed.sh` 의 바퀴 셈** — 데몬이 깨운 바퀴는 원장이 마지막 읽기보다 새로울 때만 읽고, `feed_cycle` 을 늘리지 않는다. 그래서 조용한 런의 강제 읽기는 데몬이 몇 번 깨우든 시한 바퀴 `CC_QUIET_PASS_EVERY` 번마다 한 번이다. 종료 트랩이 FIFO 를 닫고 지운다.
+
+### Post-install notes
+
+- 런은 시작 때 고정한 자기 플러그인 사본을 돌린다. 이 판 전에 시작한 런은 끝날 때까지 지금의 5초 폴링과 진행 채널 간격으로 돈다.
+- 데몬이 꺼져 있으면(`CC_CMDS_OBSERVER=off`, `CI`, python3 없음 등) 모든 대기가 지금처럼 정해진 초를 잔다.
 
 ## [3.60.1] - 2026-11-23
 

@@ -1130,6 +1130,18 @@ readonly GATE_WAIT_INTERVAL_DEFAULT=300
 readonly GATE_WAIT_TIMEOUT_DEFAULT=21600
 readonly GATE_WAIT_GRACE_SECONDS=10
 
+# THE LONGEST ONE FIFO WAIT OF `wait` OR THE RELAY SLEEPS while the resident
+# observer can wake it (`gate_wake_wait`). The time-based deadlines those loops
+# judge are computed into the wait (`gate_verb_wake_timeout`,
+# `gate_relay_wake_timeout`) and every change the observer watches wakes it at
+# once, so this bounds only the inputs the observer does not watch — a CI
+# verdict line in `checks.observed`, a supervisor that died without touching a
+# file. 30 is a quarter of the watcher's after-stage threshold (120 seconds),
+# so a late wake never reads as a relay without effect, and it is a sixth of
+# the wakes the 5-second poll made. With no observer the loops still poll every
+# GATE_WAIT_POLL_SECONDS.
+readonly GATE_WAKE_MAX_SECONDS=30
+
 # THE RELAY'S HOLD — how long one seat call may wait out of turn before it hands
 # the turn back. The seat call stays open for this plus one shift's life, and
 # 3600 is the literal "one shift lives an hour" (the longest measured was 3612.6
@@ -65374,6 +65386,111 @@ HALTBL
   return 0
 }
 
+# >>> wake helpers
+# The same block stands in feed.sh and gate.sh, byte for byte apart from the
+# function prefix (`feed_wake_` / `gate_wake_`); scripts/test-gate.sh compares
+# the two. Neither script sources the other, so each carries its own copy.
+#
+# WAITING ON THE RESIDENT OBSERVER'S WAKE FIFO. When the observer has adopted a
+# job of this run (`observer.jobs/` is not empty), its pid answers `kill -0` and
+# it has made the run's `observer.wake.d/`, a waiter makes its own FIFO there
+# once, `<name>.<pid>.fifo`, opens it read-write on fd 7 and sleeps in `read -t`
+# on it. The observer writes one newline into every FIFO of the run when an
+# input it watches changes, so the waiter wakes at once; with no write it wakes
+# at the timeout. Neither starts a process. When any of the three is missing
+# the waiter sleeps as before, and opens its FIFO after a sleep that finds them.
+#
+# EVERY NON-ZERO `read` STATUS IS A TIMEOUT. Bash 3.2 returns 1 when `read -t`
+# times out, not a value above 128, and a signal the caller's own traps did not
+# end the process on goes on to the same evaluation. FD 7 IS FIXED because bash
+# 3.2 has no `{var}<>` form that picks a free descriptor, and none of these
+# scripts uses fd 7 anywhere else. THE NAME CARRIES `$$` because bash 3.2 has no
+# `BASHPID`: one process holds one wait open at a time, and the observer
+# removes a FIFO whose pid no longer answers. No trap is set here.
+WAKE_FD7_FIFO=""
+WAKE_FD7_NAME=""
+
+gate_wake_usable() {
+  # 0 when the observer can wake this run's waiters: an adopted job, a live
+  # observer pid and the run's wake directory. Builtins only.
+  local j p="" any=""
+  [ -n "${RUN_DIR:-}" ] && [ -d "$RUN_DIR/observer.wake.d" ] || return 1
+  for j in "$RUN_DIR"/observer.jobs/*; do
+    if [ -e "$j" ]; then any=1; break; fi
+  done
+  [ -n "$any" ] || return 1
+  { IFS= read -r p; } 2>/dev/null < "${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/observer/observer.pid" || :
+  p=${p//[[:space:]]/}
+  case "$p" in ''|*[!0-9]*) return 1 ;; esac
+  cc_pid_exists "$p"
+}
+
+gate_wake_open() {
+  # gate_wake_open <name> — make and open this process's FIFO when none is open
+  # and the observer can wake it. A step that fails leaves no FIFO behind and
+  # the wait sleeps instead. Always 0.
+  local f
+  [ -z "$WAKE_FD7_FIFO" ] || return 0
+  WAKE_FD7_NAME=$1
+  gate_wake_usable || return 0
+  f="$RUN_DIR/observer.wake.d/$1.$$.fifo"
+  if mkfifo -m 600 "$f" 2>/dev/null; then
+    if { exec 7<>"$f"; } 2>/dev/null; then
+      WAKE_FD7_FIFO=$f
+      return 0
+    fi
+    rm -f "$f" 2>/dev/null
+  fi
+  return 0
+}
+
+gate_wake_wait() {
+  # gate_wake_wait <seconds> — 0 when the observer woke this wait, 1 when the
+  # seconds ran out. An open FIFO the observer can no longer wake is closed at
+  # the timeout. With no FIFO open, or a timeout that is not a whole number of
+  # seconds, it sleeps the seconds and then opens the FIFO when it now can.
+  local rc=0 n
+  if [ -n "$WAKE_FD7_FIFO" ] && [ "$1" -ge 1 ] 2>/dev/null; then
+    read -r -t "$1" -u 7 _ 2>/dev/null || rc=$?
+    [ "$rc" != "0" ] || return 0
+    if [ ! -p "$WAKE_FD7_FIFO" ] || ! gate_wake_usable; then
+      n=$WAKE_FD7_NAME
+      gate_wake_close
+      WAKE_FD7_NAME=$n
+    fi
+    return 1
+  fi
+  sleep "$1"
+  [ -n "$WAKE_FD7_FIFO" ] || [ -z "$WAKE_FD7_NAME" ] || gate_wake_open "$WAKE_FD7_NAME"
+  return 1
+}
+
+gate_wake_close() {
+  # Close and remove this process's FIFO when one is open. Always 0.
+  if [ -n "$WAKE_FD7_FIFO" ]; then
+    exec 7>&-
+    rm -f "$WAKE_FD7_FIFO" 2>/dev/null
+  fi
+  WAKE_FD7_FIFO=""
+  WAKE_FD7_NAME=""
+  return 0
+}
+# <<< wake helpers
+
+gate_verb_wake_timeout() {
+  # gate_verb_wake_timeout <start> <timeout> <last beat> <interval> <now> — the
+  # seconds one FIFO wait of `wait` may sleep: GATE_WAKE_MAX_SECONDS, or less
+  # when the `--timeout` deadline (exit 13) or the next heartbeat line comes
+  # sooner. A deadline already past is left out; never below 1.
+  local best="$GATE_WAKE_MAX_SECONDS" d
+  for d in $(($1 + $2)) $(($3 + $4)); do
+    [ "$d" -ge "$5" ] || continue
+    [ $((d - $5)) -ge "$best" ] || best=$((d - $5))
+  done
+  [ "$best" -ge 1 ] || best=1
+  printf '%s' "$best"
+}
+
 gate_verb_wait() {
   # gate_verb_wait <segment> <interval-seconds> <timeout-seconds>
   #
@@ -65414,19 +65531,29 @@ gate_verb_wait() {
   #   (5) pinned but no row: wait one grace period, re-run (2)/(3); still
   #       nothing → remove `.sup`/`.sup.start`/`.launch`, exit 14
   # `--timeout` elapsed while (2) still holds → 13.
+  #
+  # THE POLL SLEEPS ON THE OBSERVER'S WAKE FIFO when the observer can wake this
+  # run (`gate_wake_wait`): a stage or supervisor that ends changes a pid the
+  # observer watches and wakes the wait at once, and the timeout is the nearer
+  # of the `--timeout` deadline, the next heartbeat line and
+  # GATE_WAKE_MAX_SECONDS. Without the observer it polls every
+  # GATE_WAIT_POLL_SECONDS as before. Every return closes the FIFO first.
   local seg="$1" interval="$2" timeout="$3"
-  local start now elapsed last_beat=0 attempt row code klass grace_done=0 p s
+  local start now elapsed last_beat=0 attempt row code klass grace_done=0 p s ws
   start=$(date -u +%s)
+  gate_wake_open wait
   while :; do
-    now=$(date -u +%s); elapsed=$((now - start))
+    now=$(date -u +%s); elapsed=$((now - start)); ws=$SECONDS
     case " $GATE_SETTLED_SEGMENTS " in
       *" $seg "*)
         printf '%s [wait] %s 고아였고 정산됨 — rc=%s\n' "$(now_iso)" "$seg" "$GATE_EXIT_WAIT_SETTLED"
+        gate_wake_close
         return "$GATE_EXIT_WAIT_SETTLED" ;;
     esac
     if cc_stage_is_live "$RUN_DIR" "$seg" || cc_supervisor_is_live "$RUN_DIR" "$seg"; then
       if [ "$elapsed" -ge "$timeout" ]; then
         printf '%s [wait] %s timeout — rc=%s\n' "$(now_iso)" "$seg" "$GATE_EXIT_WAIT_TIMEOUT"
+        gate_wake_close
         return "$GATE_EXIT_WAIT_TIMEOUT"
       fi
       if [ "$last_beat" = "0" ] || [ $((now - last_beat)) -ge "$interval" ]; then
@@ -65445,12 +65572,18 @@ gate_verb_wait() {
         fi
         last_beat=$now
       fi
-      sleep "$GATE_WAIT_POLL_SECONDS"
+      if [ -n "$WAKE_FD7_FIFO" ]; then
+        gate_wake_wait "$(gate_verb_wake_timeout "$start" "$timeout" "$last_beat" "$interval" \
+          "$((now + SECONDS - ws))")" || true
+      else
+        gate_wake_wait "$GATE_WAIT_POLL_SECONDS" || true
+      fi
       continue
     fi
     attempt=$( { cat "$RUN_DIR/$seg.attempt" 2>/dev/null || true; } | tr -d '[:space:]')
     if [ -z "$attempt" ]; then
       printf '%s [wait] %s 파견 기록 없음 — rc=%s\n' "$(now_iso)" "$seg" "$GATE_EXIT_WAIT_NONE"
+      gate_wake_close
       return "$GATE_EXIT_WAIT_NONE"
     fi
     row=$( gate_stage_result_rows_of "$seg" \
@@ -65459,6 +65592,7 @@ gate_verb_wait() {
       klass=$(printf '%s' "$row" | tr '|' '\n' | sed -n 's/^ *종단 부류=//p' | sed 's/[[:space:]]*$//' | tail -1)
       if [ "$klass" = "외부 종료" ]; then
         printf '%s [wait] %s 고아였고 정산됨 — rc=%s\n' "$(now_iso)" "$seg" "$GATE_EXIT_WAIT_SETTLED"
+        gate_wake_close
         return "$GATE_EXIT_WAIT_SETTLED"
       fi
       code=$(printf '%s' "$row" | tr '|' '\n' | sed -n 's/^ *종료 코드=//p' | sed 's/[[:space:]]*$//' | tail -1)
@@ -65466,9 +65600,11 @@ gate_verb_wait() {
         ''|*[!0-9]*)
           printf 'gate: the `stage-result` row of this attempt has no numeric exit code (%s#%s: `종료 코드`=%s)\n' \
             "$seg" "$attempt" "${code:-(none)}" >&2
+          gate_wake_close
           return 1 ;;
       esac
       printf '%s [wait] %s 종단 — rc=%s\n' "$(now_iso)" "$seg" "$code"
+      gate_wake_close
       return "$code"
     fi
     # (3b) A supervisor that parked before it ever spawned leaves no
@@ -65478,6 +65614,7 @@ gate_verb_wait() {
     # the same exhausted group.
     if [ -n "$( { gate_rows 'blocked' | cc_rows_naming_lineage "B:$seg#$attempt" || true; } | tail -1)" ]; then
       printf '%s [wait] %s 라우터 park — 시도 %s — rc=%s\n' "$(now_iso)" "$seg" "$attempt" "$GATE_EXIT_ROUTE"
+      gate_wake_close
       return "$GATE_EXIT_ROUTE"
     fi
     # (3c) A supervisor that could not hold its lease — the table lock stayed
@@ -65502,10 +65639,12 @@ $( { gate_rows 'stage-wait' | cc_rows_naming_lineage "B:$seg#$attempt"; } 2>/dev
 EOF
     if [ "$wait_refused" = "1" ]; then
       printf '%s [wait] %s 대기 끝 거부 — 시도 %s — rc=%s\n' "$(now_iso)" "$seg" "$attempt" "$GATE_EXIT_DELEGATE"
+      gate_wake_close
       return "$GATE_EXIT_DELEGATE"
     fi
     if [ -n "$hold_cause" ]; then
       printf '%s [wait] %s 자원 대기 — 원인 %s — 시도 %s — rc=%s\n' "$(now_iso)" "$seg" "$hold_cause" "$attempt" "$GATE_EXIT_WAIT_LEASE_HOLD"
+      gate_wake_close
       return "$GATE_EXIT_WAIT_LEASE_HOLD"
     fi
     # Pinned, nothing alive, no row. Once: a grace period, because the
@@ -65520,6 +65659,7 @@ EOF
     rm -f "$RUN_DIR/$seg.sup" "$RUN_DIR/$seg.sup.start" "$RUN_DIR/$seg.launch"
     printf '%s [wait] %s 기동 실패 — 시도 %s 의 행이 없습니다 (잔여 sup·launch 를 지웠습니다) — rc=%s\n' \
       "$(now_iso)" "$seg" "$attempt" "$GATE_EXIT_WAIT_NOROW"
+    gate_wake_close
     return "$GATE_EXIT_WAIT_NOROW"
   done
 }
@@ -71431,6 +71571,101 @@ gate_relay_before_launch() {
   gate_relay_wait
 }
 
+gate_relay_ci_time_arms() {
+  # gate_relay_ci_time_arms <segment> — the epochs at which a CI wait on the
+  # segment wakes by time alone, one per line: round 0's `미등록` verdict at its
+  # `관측` plus the grace, and the wait clock plus the cap. Read from the same
+  # inputs `cc_ci_relay_condition` reads (the segment worktree's tip, its round,
+  # the round's newest verdict, `cc_ci_wait_clock`), past ones included; the
+  # caller drops what has passed. A verdict that wakes the relay at once is a
+  # row the observer sees, not a time, so it is not listed.
+  local seg="$1" tab recs last wt h g v ep clk
+  [ -n "$seg" ] || return 0
+  tab=$(printf '\t')
+  recs=$(cc_ci_records "$RUN_DIR" "$LEDGER" "$seg")
+  wt=$(cc_ci_segment_row_field "$LEDGER" "$seg" '워크트리')
+  h=$(cc_ci_worktree_head "$wt")
+  if [ -z "$h" ]; then
+    last=$(awk 'NF > 0' <<<"$recs" | tail -1)
+    [ -n "$last" ] || return 0
+    h=${last%%"$tab"*}
+  fi
+  g=$(cc_ci_round_get "$(cc_ci_round "$LEDGER" "$seg" "$h")" g)
+  g=${g:-0}
+  v=$(LC_ALL=C awk -F'\t' -v sha="$h" -v g="$g" \
+    'NF > 0 && $1 == sha && $2 == g { p = $0 } END { printf "%s", p }' <<<"$recs")
+  if [ -n "$v" ] && [ "$g" = "0" ] && [ "$(cut -f4 <<<"$v")" = "미등록" ]; then
+    ep=$(cc_iso_to_epoch "$(cut -f5 <<<"$v")")
+    [ -z "$ep" ] || printf '%s\n' "$((ep + CC_CI_UNREGISTERED_GRACE_SECONDS))"
+  fi
+  clk=$(cc_ci_wait_clock "$RUN_DIR" "$LEDGER" "$seg" "$h" "$g" "$wt")
+  [ -n "$clk" ] || return 0
+  ep=$(cc_iso_to_epoch "${clk%%"$tab"*}")
+  [ -z "$ep" ] || printf '%s\n' "$((ep + CC_CI_WAIT_CAP_SECONDS))"
+  return 0
+}
+
+gate_relay_wake_timeout() {
+  # gate_relay_wake_timeout <now> — how long the relay may sleep on the
+  # observer's wake FIFO: seconds to the earliest deadline still ahead of
+  # <now>, at most GATE_WAKE_MAX_SECONDS and at least 1. The deadlines are the
+  # ones no file change announces — the seat call's hold, each reset clock plus
+  # the grace, the `이월` clock, a failover wait's resume time, each confirmation
+  # record's next run, each `master 대기` reading going stale, and each CI wait's
+  # time arms. A deadline already past is not counted: a missed wake is caught by
+  # the next round, and counting it would turn the sleep into a busy loop.
+  local now="$1" best="$GATE_WAKE_MAX_SECONDS" d e k n c poll s al slug br st ob
+  local ds=""
+  ds="$((GATE_RELAY_SEAT_START + $(gate_relay_hold)))"
+  for e in ${GATE_RELAY_W_RESET//,/ }; do
+    k=${e##*:}
+    case "$k" in ''|*[!0-9]*) continue ;; esac
+    ds="$ds $((k + $(cc_reset_grace)))"
+  done
+  d=$(gate_relay_defer_clock); [ -z "$d" ] || ds="$ds $d"
+  d=$(gate_relay_resume_clock); [ -z "$d" ] || ds="$ds $d"
+  if [ -n "$GATE_RELAY_CONFIRM_SET" ]; then
+    poll=$(gate_confirm_test_value "$GATE_CONFIRM_POLL_SECONDS" "${CC_GATE_CONFIRM_POLL_TEST_SECONDS:-}")
+    for n in ${GATE_RELAY_CONFIRM_SET//,/ }; do
+      c=$(gate_confirm_count "$n")
+      ds="$ds $((${c#* } + poll))"
+    done
+  fi
+  for s in $(gate_relay_master_segments | tr ',' ' '); do
+    al=$(gate_segment_target_alias "$s")
+    [ -n "$al" ] || continue
+    slug=$(target_field "$al" '원격 슬러그' 2>/dev/null || true)
+    br=$(base_branch "$al" 2>/dev/null || true)
+    { [ -n "$slug" ] && [ -n "$br" ]; } || continue
+    st=$(gate_master_state "$slug" "$br")
+    [ -n "$st" ] || continue
+    ob=$(cc_iso_to_epoch "$(jq -r '.observed_at // ""' <<<"$st" 2>/dev/null || true)")
+    [ -z "$ob" ] || ds="$ds $((ob + GATE_MASTER_STALE_SECONDS))"
+  done
+  for s in ${GATE_RELAY_W_CI//,/ }; do
+    for d in $(gate_relay_ci_time_arms "$s"); do ds="$ds $d"; done
+  done
+  for d in $ds; do
+    case "$d" in ''|*[!0-9]*) continue ;; esac
+    [ "$d" -ge "$now" ] || continue
+    [ $((d - now)) -ge "$best" ] || best=$((d - now))
+  done
+  [ "$best" -ge 1 ] || best=1
+  printf '%s' "$best"
+}
+
+gate_relay_pause() {
+  # gate_relay_pause <now> — one sleep between two polls of the relay: on the
+  # observer's wake FIFO up to the nearest deadline when it is open, and
+  # GATE_WAIT_POLL_SECONDS otherwise. Always 0.
+  if [ -n "$WAKE_FD7_FIFO" ]; then
+    gate_wake_wait "$(gate_relay_wake_timeout "$1")" || true
+  else
+    gate_wake_wait "$GATE_WAIT_POLL_SECONDS" || true
+  fi
+  return 0
+}
+
 gate_relay_wait() {
   # The poll. Returns 0 when a wake condition stands (launch the successor) and
   # 1 after handing the turn back. The set is derived again here: a stage that
@@ -71473,7 +71708,16 @@ gate_relay_wait() {
   # the turn is handed back `확인 소진`; a record that left because a `중단 답`
   # row now names it empties the set as any other member does, and the
   # successor routes that answer. The watcher's keys do not carry this member.
-  local stages ci reset defer resume hold now mw cw
+  #
+  # BETWEEN TWO POLLS THE RELAY SLEEPS ON THE OBSERVER'S WAKE FIFO when the
+  # observer can wake this run (`gate_relay_pause`): a ledger row, a stage's or
+  # supervisor's end, a `checks` file or a reading file that changes wakes the
+  # next poll at once, and the sleep lasts until the nearest deadline no file
+  # change announces (`gate_relay_wake_timeout`). Without the observer it polls
+  # every GATE_WAIT_POLL_SECONDS as before. The order of the checks and the
+  # refresh of `relay.live` on every round do not change, and every return
+  # closes the FIFO first.
+  local stages ci reset defer resume hold now mw cw ws
   stages=$(cc_relay_wait_stages "$RUN_DIR")
   ci=$(gate_relay_ci_segments)
   reset=$(gate_relay_reset_set)
@@ -71487,23 +71731,28 @@ gate_relay_wait() {
   gate_relay_write "$stages" "$ci" "$reset"
   hold=$(gate_relay_hold)
   log "교대 대기 — 스테이지·감독자 ${stages:--} · CI ${ci:--} · 리셋 ${reset:--} · 이월 ${defer:--} · 계정 이전 ${resume:--} · master ${mw:--} · 확인 ${GATE_RELAY_CONFIRM_SET:--}"
+  gate_wake_open relay
   while :; do
-    now=$(date -u +%s)
+    now=$(date -u +%s); ws=$SECONDS
     if [ -e "$RUN_DIR/done" ]; then
+      gate_wake_close
       gate_relay_hand_back "$stages" "$ci" "$reset" "런이 끝났다"
       return 1
     fi
     if [ $((now - GATE_RELAY_SEAT_START)) -ge "$hold" ]; then
+      gate_wake_close
       gate_relay_hand_back "$stages" "$ci" "$reset" "좌석 호출의 대기 상한 ${hold}초가 지났다"
       return 1
     fi
     if [ -n "$ci" ] && ! gate_relay_poller_live; then
+      gate_wake_close
       gate_relay_hand_back "$stages" "$ci" "$reset" "CI 를 기다리는데 checks 폴러가 살아 있지 않다"
       return 1
     fi
     [ -z "$cw" ] || gate_relay_confirm_set "$cw"
     if [ -z "$stages" ] && [ -z "$ci" ] && [ -z "$reset" ] && [ -z "$defer" ] && [ -z "$resume" ] && [ -z "$mw" ] \
        && [ -z "$GATE_RELAY_CONFIRM_SET" ]; then
+      gate_wake_close
       if [ "$GATE_RELAY_CONFIRM_SPENT" = "1" ]; then
         gate_relay_hand_back "$stages" "$ci" "$reset" "확인 소진"
         return 1
@@ -71512,6 +71761,7 @@ gate_relay_wait() {
       return 0
     fi
     if [ -n "$GATE_RELAY_CONFIRM_SET" ] && gate_relay_confirm_due "$GATE_RELAY_CONFIRM_SET"; then
+      gate_wake_close
       log "교대 대기 끝 — 해소 확인이 일치했다 ($GATE_RELAY_CONFIRM_HIT)"
       gate_relay_hand_back "$stages" "$ci" "$reset" "해소 확인 일치"
       return 1
@@ -71524,19 +71774,21 @@ gate_relay_wait() {
     # return conditions above still apply; at the resume time the keys are read
     # as always, the `fr:` key among them.
     if cc_failover_waiting_now "$LEDGER" "$now"; then
-      sleep "$GATE_WAIT_POLL_SECONDS"
+      gate_relay_pause "$((now + SECONDS - ws))"
       gate_relay_write "$stages" "$ci" "$reset"
       continue
     fi
     if [ -n "$(cc_relay_wake_keys "$RUN_DIR" "$LEDGER")" ]; then
+      gate_wake_close
       log "교대 대기 끝 — 깨움 조건이 섰다"
       return 0
     fi
     if [ -n "$mw" ] && gate_relay_master_wake "$mw"; then
+      gate_wake_close
       log "교대 대기 끝 — master 판독이 바뀌었거나 낡았다"
       return 0
     fi
-    sleep "$GATE_WAIT_POLL_SECONDS"
+    gate_relay_pause "$((now + SECONDS - ws))"
     gate_relay_write "$stages" "$ci" "$reset"
   done
 }
