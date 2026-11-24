@@ -35,6 +35,8 @@ set -uo pipefail
 
 script_dir=$(cd "$(dirname "$0")" && pwd)
 repo_root=$(cd "$script_dir/.." && pwd)
+# shellcheck source=wait-fixture.sh
+. "$repo_root/scripts/wait-fixture.sh"
 ORCH="$repo_root/plugins/cc-cmds/orchestrator"
 # Called through a spelling with `..` in it, so the canonical form the value
 # carries is something the handler computed rather than what it was given.
@@ -346,14 +348,9 @@ click_argv() {
 logn() { grep -c -- "^$1" "$LOG" 2>/dev/null || true; }
 showline() { grep '^show ' "$LOG" 2>/dev/null || true; }
 # wait_for <file> <pattern> — a detached process writes later.
+has_line() { grep -q -- "$2" "$1" 2>/dev/null; }
 wait_for() {
-  local i=0
-  while [ "$i" -lt 50 ]; do
-    grep -q -- "$2" "$1" 2>/dev/null && return 0
-    sleep 0.1
-    i=$((i + 1))
-  done
-  return 1
+  wait_until has_line "$1" "$2"
 }
 
 V=$(value "$SOCK" 4242 %48)
@@ -639,26 +636,19 @@ traced() {
   grep -cE -- "^[0-9]+ $1\$" "$GTR" || true
 }
 # wait_count <file> <pattern> <n> — until the pattern has matched n lines.
+count_is() { [ "$(grep -c -- "$2" "$1" 2>/dev/null || true)" = "$3" ]; }
 wait_count() {
-  local i=0
-  while [ "$i" -lt 50 ]; do
-    [ "$(grep -c -- "$2" "$1" 2>/dev/null || true)" = "$3" ] && return 0
-    sleep 0.1
-    i=$((i + 1))
-  done
-  return 1
+  wait_until count_is "$1" "$2" "$3"
 }
 # wait_helper — until a built helper is in place and no build lock is left.
+helper_built() {
+  local h l
+  h=$(find "$CACHE/helper" -name notify-focus-ax -type f 2>/dev/null | wc -l | tr -d ' ')
+  l=$(find "$CACHE/helper" -maxdepth 1 -name '*.lock' 2>/dev/null | wc -l | tr -d ' ')
+  [ "$h" = 1 ] && [ "$l" = 0 ]
+}
 wait_helper() {
-  local i=0 h l
-  while [ "$i" -lt 50 ]; do
-    h=$(find "$CACHE/helper" -name notify-focus-ax -type f 2>/dev/null | wc -l | tr -d ' ')
-    l=$(find "$CACHE/helper" -maxdepth 1 -name '*.lock' 2>/dev/null | wc -l | tr -d ' ')
-    [ "$h" = 1 ] && [ "$l" = 0 ] && return 0
-    sleep 0.1
-    i=$((i + 1))
-  done
-  return 1
+  wait_until helper_built
 }
 rm -f "$NLOG" "$GTR"
 click "L6 신뢰 없음, 다른 Space" "$WORK/bin/tmux" "$V" "${T1ENV[@]}" "${GUIDE_ENV[@]}" \
@@ -789,7 +779,7 @@ BUILD_ENV=(CC_CMDS_NOTIFY_FOCUS_AX= CC_CMDS_NOTIFY_FOCUS_SWIFTC="$WORK/bin/swift
 rm -rf "$CACHE"; : > "$LOG"
 prime_run "L11 prime 1" "${T1ENV[@]}" "${BUILD_ENV[@]}" STUB_SLEEP_SWIFTC=1 &
 p1=$!
-sleep 0.2
+wait_for "$LOG" '^swiftc$' || true
 prime_run "L11 prime 2" "${T1ENV[@]}" "${BUILD_ENV[@]}" STUB_SLEEP_SWIFTC=1
 wait "$p1"
 check "L11 동시 prime 둘에 컴파일 한 번" "$(logn swiftc)" "1"
@@ -939,7 +929,7 @@ env -i HOME="$WORK" PATH="$WORK/bin:/usr/bin:/bin" "${CLICK_ENV[@]}" \
   CC_CMDS_NOTIFY_FOCUS_TMUX="$WORK/bin/tmux" "${T1ENV[@]}" STUB_SLEEP_FIND=1.5 \
   /bin/sh -c "$V" >/dev/null 2>&1 &
 old=$!
-sleep 0.5
+wait_for "$LOG" '^find$' || true
 KEEP=1
 click "L16 새 클릭" "$WORK/bin/tmux" "$V" "${T1ENV[@]}"
 : > "$LOG.after"
@@ -1022,7 +1012,7 @@ check "L20 항목 없음" "$(find "$CACHE/panes" -type f | wc -l | tr -d ' ')" "
 rm -rf "$CACHE"; : > "$LOG"
 prime_run "L21 prime 1" "${T1ENV[@]}" STUB_SLEEP_FIND=1 STUB_RC_TRUSTED=3 &
 p1=$!
-sleep 0.3
+wait_for "$LOG" '^find$' || true
 prime_run "L21 prime 2" "${T1ENV[@]}" STUB_RC_TRUSTED=3
 KEEP=1
 click "L21 합류한 클릭" "$WORK/bin/tmux" "$V" "${T1ENV[@]}"
@@ -1442,15 +1432,11 @@ real_unavailable() {
   fi
 }
 # wait_clients <count> — the clients attach in the background.
+clients_are() {
+  [ "$("$REAL_TMUX" -S "$S/s" list-clients -F x 2>/dev/null | wc -l | tr -d ' ')" = "$1" ]
+}
 wait_clients() {
-  local i=0 n
-  while [ "$i" -lt 50 ]; do
-    n=$("$REAL_TMUX" -S "$S/s" list-clients -F x 2>/dev/null | wc -l | tr -d ' ')
-    [ "$n" = "$1" ] && return 0
-    sleep 0.1
-    i=$((i + 1))
-  done
-  return 1
+  wait_until clients_are "$1"
 }
 real_suite() {
   local tm=$REAL_TMUX out rc spid sid wid pane before after v ttys t

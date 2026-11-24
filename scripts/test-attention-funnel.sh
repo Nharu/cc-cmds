@@ -31,6 +31,8 @@ export CC_CMDS_DASHBOARD
 
 script_dir=$(cd "$(dirname "$0")" && pwd)
 repo_root=$(cd "$script_dir/.." && pwd)
+# shellcheck source=wait-fixture.sh
+. "$repo_root/scripts/wait-fixture.sh"
 PLUGIN_ROOT="$repo_root/plugins/cc-cmds"
 ORCH="$PLUGIN_ROOT/orchestrator"
 ASK_HOOK="$PLUGIN_ROOT/hooks/session-ask-notify.sh"
@@ -88,18 +90,17 @@ mkdir -p "$HOME_DIR"
 # banners of the run beside the one a case asserts on, and their detached writes
 # land in no fixed order, so a case that counts one slot's lines has to wait for
 # that slot's lines.
+notify_lines_at_least() {
+  local want="$1" pat="${2:-}" n
+  if [ -n "$pat" ]; then
+    n=$(grep -cF -- "$pat" "$NOTIFY_LOG" 2>/dev/null || true)
+  else
+    n=$(grep -c . "$NOTIFY_LOG" 2>/dev/null || true)
+  fi
+  [ "${n:-0}" -ge "$want" ]
+}
 notify_settle() {
-  local want="$1" pat="${2:-}" i=0 n
-  while [ "$i" -lt 40 ]; do
-    if [ -n "$pat" ]; then
-      n=$(grep -cF -- "$pat" "$NOTIFY_LOG" 2>/dev/null || true)
-    else
-      n=$(grep -c . "$NOTIFY_LOG" 2>/dev/null || true)
-    fi
-    if [ "${n:-0}" -ge "$want" ]; then return 0; fi
-    sleep 0.1
-    i=$((i + 1))
-  done
+  wait_until notify_lines_at_least "$@"
   return 0
 }
 

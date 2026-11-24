@@ -20,6 +20,8 @@ set -uo pipefail
 
 script_dir=$(cd "$(dirname "$0")" && pwd)
 repo_root=$(cd "$script_dir/.." && pwd)
+# shellcheck source=wait-fixture.sh
+. "$repo_root/scripts/wait-fixture.sh"
 PLUGIN_ROOT="$repo_root/plugins/cc-cmds"
 HOOK="$PLUGIN_ROOT/hooks/session-permission-notify.sh"
 HOOKS_JSON="$PLUGIN_ROOT/hooks/hooks.json"
@@ -64,8 +66,10 @@ trap 'rm -rf "$WORK"' EXIT
 # Three PATH roots. The full one holds jq and a notifier stub that logs every
 # call, so "no new local banner" is a count of zero rather than an absence of
 # evidence. The no-jq root is the WHOLE PATH (a jq in /usr/bin would otherwise
-# still be found). The slow root puts a `mktemp` that sleeps in front: only the
-# detached half of `request` calls it.
+# still be found). The slow root puts a `mktemp` in front that blocks until the
+# test drops the release file (or the work directory is gone): only the
+# detached half of `request` calls it, so a `request` that waited for that half
+# would not return at all.
 BIN="$WORK/bin"
 BIN_NO_JQ="$WORK/bin-nj"
 BIN_SLOW="$WORK/bin-slow"
@@ -80,7 +84,7 @@ ln -s "$JQ" "$BIN/jq"
 ln -s "$BASH_BIN" "$BIN_NO_JQ/bash"
 cat > "$BIN_SLOW/mktemp" <<STUB
 #!$BASH_BIN
-sleep 3
+while [ ! -e "$WORK/slow.release" ] && [ -d "$WORK" ]; do sleep 0.1; done
 exec "$MKTEMP_BIN" "\$@"
 STUB
 chmod +x "$BIN_SLOW/mktemp"
@@ -530,19 +534,24 @@ check "병렬 — B 는 열림" "$(handled_state "cc-cmds-permission-sess-par@$F
 reset
 perm sess-race Bash '{"command":"sleep 1"}'
 FPR=$(fp_of "$P")
-t0=$(now_ms)
-hook_run request "$PATH_SLOW" CC_CMDS_NOTIFY_PERMISSION_SYNC=
-t1=$(now_ms)
-check "떼어 내기 — request 가 2초 안에 돌아온다" "$([ $((t1 - t0)) -lt 2000 ] && echo yes || echo "no ($((t1 - t0)) ms)")" "yes"
+rm -f "$WORK/slow.release"
+hook_run request "$PATH_SLOW" CC_CMDS_NOTIFY_PERMISSION_SYNC= &
+rq=$!
+# The detached half is held until the release file exists, so a request that
+# waited for it cannot end before the ceiling.
+if wait_pid_gone "$rq"; then rq_back=yes; else rq_back=no; kill "$rq" 2>/dev/null; fi
+check "떼어 내기 — 떼어 낸 절반이 막혀 있어도 request 가 돌아온다" "$rq_back" "yes"
+if [ -s "$OUTF" ] || [ -s "$ERR" ]; then
+  noisy="$noisy [request out=$(wc -c < "$OUTF" | tr -d ' ') err=$(head -c 200 "$ERR")]"
+fi
 check "떼어 내기 — 돌아온 순간 대기 표시가 있다" "$([ -e "$BASE/sess-race/pending.$FPR" ] && echo yes || echo no)" "yes"
 post sess-race PostToolUse Bash '{"command":"sleep 1"}'
 hook_run settle "$PATH_FULL"
 check "엇갈림 — 대기 중의 처리 신호는 표지를 바로 쓰지 않는다" "$(n_handled)" "0"
-i=0
-while [ "$i" -lt 100 ] && { [ "$(n_events)" -lt 1 ] || [ "$(n_handled)" -lt 1 ]; }; do
-  sleep 0.1; i=$((i + 1))
-done
-check "떼어 내기 — 사건이 10초 안에 생긴다" "$(n_events)" "1"
+: > "$WORK/slow.release"
+race_settled() { [ "$(n_events)" -ge 1 ] && [ "$(n_handled)" -ge 1 ]; }
+wait_until race_settled
+check "떼어 내기 — 풀린 뒤 사건이 생긴다" "$(n_events)" "1"
 check "엇갈림 — 사건 뒤 표지가 정확히 하나" "$(n_handled)" "1"
 check "엇갈림 — 표지 시각이 사건 시각보다 늦다" \
   "$(jq -rn --argjson e "$(events_json)" --argjson h "$(handled_json)" '$h[0].at_ms > $e[0].created_at_ms')" "true"

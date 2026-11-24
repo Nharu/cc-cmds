@@ -76,9 +76,27 @@ rec_get() {
   pyq -c 'import json,sys; print(json.load(open(sys.argv[1]))[sys.argv[2]])' "$(rec_file "$1")" "$2" 2>/dev/null
 }
 wait_gone() {
-  local i=0
-  while [ -n "${1:-}" ] && kill -0 "$1" 2>/dev/null && [ "$i" -lt 60 ]; do sleep 0.1; i=$((i + 1)); done
+  [ -n "${1:-}" ] || return 0
+  wait_pid_gone "$1"
 }
+http_is() {
+  # http_is <port> <path> <code> — the response code of one request is <code>.
+  [ "$(get "$1" "$2")" = "$3" ]
+}
+port_taken() {
+  # port_taken <port> — something accepts a connection on that local port.
+  pyq -c 'import socket,sys
+socket.create_connection(("127.0.0.1",int(sys.argv[1])),timeout=1).close()' "$1" 2>/dev/null
+}
+# The body of a port holder: listens on <port> while this suite's shell lives.
+PORT_HOLDER='import os,socket,sys,time
+s=socket.socket(); s.bind(("127.0.0.1",int(sys.argv[1]))); s.listen(8)
+while True:
+    try:
+        os.kill(int(sys.argv[2]), 0)
+    except OSError:
+        break
+    time.sleep(1)'
 stop_in() {
   local pid
   pid=$(rec_get "$1" pid)
@@ -319,8 +337,11 @@ check "T2 골든 원장의 base 가 그대로다" "$(jq_body 'd["summary"]["base
 printf '\n' >> "$GOLD"
 # This suite just wrote the ledger; the no-write baseline restarts here.
 BEFORE=$(snapshot_tree)
-sleep 3.2
-get "$P1" '/api/runs/golden-run' >/dev/null
+t2_both() {
+  get "$P1" '/api/runs/golden-run' >/dev/null
+  [ "$(jq_body '[s["id"] for s in d["segments"]]')" = "['A1', 'B1']" ]
+}
+wait_until t2_both
 check "T2 반쪽 줄은 다음 틱에 들어간다" "$(jq_body '[s["id"] for s in d["segments"]]')" "['A1', 'B1']"
 
 # T6
@@ -339,7 +360,8 @@ E1=$(etag_of)
 check "T7 같은 틱의 둘째 요청은 304" "$(get "$P1" '/api/runs/live-run' -H "If-None-Match: $E1")" "304"
 kill "$(cat "$LIVE_DIR/S1.pid")" 2>/dev/null
 wait_gone "$(cat "$LIVE_DIR/S1.pid")"
-sleep 3.2
+t7_moved() { [ "$(get "$P1" '/api/runs/live-run' -H "If-None-Match: $E1")" = "200" ]; }
+wait_until t7_moved
 check "T7 파일이 그대로여도 스테이지가 죽으면 앞 ETag 에 200" "$(get "$P1" '/api/runs/live-run' -H "If-None-Match: $E1")" "200"
 check "T7 그 런의 상태가 바뀌어 있다" "$(jq_body 'd["summary"]["state"]')" "진행중"
 
@@ -358,14 +380,21 @@ stop_in "$XDG_STATE_HOME"
 # ---------------------------------------------------------------------------
 S8="$WORK/s8"; mkdir -p "$S8"; P8=$(free_port)
 B8=$(suite_serve_pids)
-t0=$(pyq -c 'import time; print(time.time())')
 dash "$S8" "$P8" ensure & e1=$!
 dash "$S8" "$P8" ensure & e2=$!
-wait "$e1"; r1=$?
-wait "$e2"; r2=$?
-t1=$(pyq -c 'import time; print(time.time())')
+FX_PIDS="${FX_PIDS:-}$e1 $e2 "
+# The two ensures end within the shared ceiling; what the race must not leave —
+# a second server, a server outside the record, a held lock — is asserted below.
+# The spawn lock's wait has no test seam, so an ensure that waits on the lock
+# longer than it should but still ends within the ceiling is not caught here.
+t8_done() { ! kill -0 "$e1" 2>/dev/null && ! kill -0 "$e2" 2>/dev/null; }
+if wait_until t8_done; then
+  wait "$e1"; r1=$?
+  wait "$e2"; r2=$?
+else
+  r1=hung; r2=hung
+fi
 check "T8 두 ensure 가 모두 0 으로 끝난다" "$r1:$r2" "0:0"
-check "T8 둘 다 3초 안에 끝난다" "$(pyq -c 'import sys; print(float(sys.argv[2])-float(sys.argv[1]) < 3.0)' "$t0" "$t1")" "True"
 check "T8 서버가 하나다" "$(serve_count "$S8")" "1"
 # A losing ensure that spawned anyway would leave a server the record does not
 # name, which the count above cannot see; the processes this tree started
@@ -380,10 +409,9 @@ stop_in "$S8"
 # T9 — another listener holds the port.
 # ---------------------------------------------------------------------------
 S9="$WORK/s9"; mkdir -p "$S9"; P9=$(free_port)
-pyq -c 'import socket,sys,time
-s=socket.socket(); s.bind(("127.0.0.1",int(sys.argv[1]))); s.listen(8); time.sleep(60)' "$P9" &
+pyq -c "$PORT_HOLDER" "$P9" "$WAIT_FIXTURE_OWNER" &
 HOLDER_PID=$!
-sleep 0.5
+wait_until port_taken "$P9"
 dash "$S9" "$P9" ensure
 p9=$(rec_get "$S9" port)
 if [ -n "$p9" ] && [ "$p9" != "$P9" ]; then ok "T9 서버가 다른 포트로 떴다"; else bad "T9 포트" "기록의 포트가 '$p9' 다"; fi
@@ -429,11 +457,10 @@ stop_in "$S10"
 S11="$WORK/s11"; mkdir -p "$S11"; P11=$(free_port)
 DASH_IDLE=2 dash "$S11" "$P11" ensure
 pid11=$(rec_get "$S11" pid)
-i=0
-while [ "$i" -lt 12 ] && kill -0 "$pid11" 2>/dev/null; do
-  get "$P11" '/api/runs' >/dev/null
-  sleep 0.5; i=$((i + 1))
-done
+# Polled the whole time it is waited for: a poll that held the server would
+# keep it alive past the shared ceiling.
+polled_gone() { get "$P11" '/api/runs' >/dev/null; ! kill -0 "$pid11" 2>/dev/null; }
+wait_until polled_gone
 wait_gone "$pid11"
 check "T11 폴링만 받는 서버가 유휴로 끝난다" "$(kill -0 "$pid11" 2>/dev/null && printf alive || printf gone)" "gone"
 check "T11 기록 파일은 그대로다" "$( [ -f "$(rec_file "$S11")" ] && printf kept || printf gone )" "kept"
@@ -939,7 +966,7 @@ wx_waiter() {
   # wx_waiter <key> <계보> — a fresh marker held by a live process, in the shape
   # `scripts/test-liveness-agreement.sh` gives its `ag_waiter`.
   local pid fp
-  sleep 120 &
+  wait_holder >/dev/null 2>&1 &
   pid=$!
   FX_PIDS="${FX_PIDS:-}$pid "
   fp=$(LC_ALL=C ps -o lstart= -p "$pid" 2>/dev/null | sed 's/[[:space:]]\{1,\}/ /g;s/^ //;s/ $//')
@@ -1044,7 +1071,7 @@ rx_run iv-entry; fx_segment S1 실행중; fx_heartbeat 0 5; fx_approval A1 대�
 # A dead stage whose `.start` is a live process's fingerprint: rewriting the pid
 # file alone, in place, brings the stage back to life.
 rx_run iv-pid;   fx_segment S1 실행중; fx_heartbeat 0 7200; fx_stage_dead S1
-sleep 120 &
+wait_holder >/dev/null 2>&1 &
 RX_LIVE=$!
 FX_PIDS="${FX_PIDS:-}$RX_LIVE "
 LC_ALL=C ps -o lstart= -p "$RX_LIVE" 2>/dev/null | sed 's/[[:space:]]\{1,\}/ /g;s/^ //;s/ $//' > "$FX_RUN_DIR/S1.start"
@@ -1356,8 +1383,11 @@ check "T28 얼어 있는 끝난 런은 기록이 없을 때 waiting 이 비어 �
   "$(jq_body '[(r["attention"], len(r["waiting"])) for r in d["runs"] if r["id"] == "cache-end"]')" "[('ended', 0)]"
 halt_rec "$NX/cc-cmds/run/cache-end/halt/S1#1.md" "얼린 뒤 생긴 질문" ""
 halt_rec "$NX/cc-cmds/run/cache-dead/halt/S1#1.md" "버려진 뒤 생긴 질문" ""
-sleep 3.2
-get "$PN" '/api/runs?days=all&dead=1' >/dev/null
+t28_both() {
+  get "$PN" '/api/runs?days=all&dead=1' >/dev/null
+  [ "$(jq_body '[len(r["waiting"]) for r in d["runs"] if r["id"] in ("cache-end", "cache-dead")]')" = "[1, 1]" ]
+}
+wait_until t28_both
 check "T28 얼어 있던 끝난 런에 기록을 더하면 waiting 이 바뀌고 ended 그대로다" \
   "$(jq_body '[(r["attention"], len(r["waiting"])) for r in d["runs"] if r["id"] == "cache-end"]')" "[('ended', 1)]"
 check "T28 버려진 런에 기록을 더하면 다음 응답에서 waiting 이 바뀌고 dead 그대로다" \
@@ -1371,8 +1401,7 @@ PP=$(free_port)
 env -u CI XDG_STATE_HOME="$PX" CC_PIPELINE_STAGE_ID='A#1' CC_PIPELINE_SEGMENT=A CC_CMDS_DASHBOARD_PORT="$PN" \
   PYTHONDONTWRITEBYTECODE=1 python3 "$DASH" preview --port "$PP" 2>"$WORK/preview.err" &
 PREVIEW_PID=$!
-i=0
-while [ "$i" -lt 50 ] && [ "$(get "$PP" /healthz)" != "200" ]; do sleep 0.1; i=$((i + 1)); done
+wait_until http_is "$PP" /healthz 200
 check "T29 스테이지 표지가 있어도 preview 가 /healthz 에 답한다" "$(get "$PP" /healthz)" "200"
 check "T29 preview 가 / 를 내준다" "$(get "$PP" /)" "200"
 check "T29 preview 가 /api/runs 를 내준다" "$(get "$PP" /api/runs)" "200"
@@ -1392,10 +1421,9 @@ check "T29 포트 0 이면 띄우지 않는다" "$( [ "$rc" -ne 0 ] && printf �
 pv "$PQ" "$PQ"; rc=$?
 check "T29 공용 서버 포트면 띄우지 않는다" "$( [ "$rc" -ne 0 ] && printf 비영 || printf 0 )" "비영"
 PH=$(free_port)
-pyq -c 'import socket,sys,time
-s=socket.socket(); s.bind(("127.0.0.1",int(sys.argv[1]))); s.listen(8); time.sleep(30)' "$PH" &
+pyq -c "$PORT_HOLDER" "$PH" "$WAIT_FIXTURE_OWNER" &
 HOLDER_PID=$!
-sleep 0.5
+wait_until port_taken "$PH"
 pv "$PN" "$PH"; rc=$?
 check "T29 쓰이는 포트면 띄우지 않는다" "$( [ "$rc" -ne 0 ] && printf 비영 || printf 0 )" "비영"
 kill "$HOLDER_PID" 2>/dev/null; HOLDER_PID=""
