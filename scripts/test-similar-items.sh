@@ -135,7 +135,7 @@ PYEOF
 printf '{"kind": "fixed"}\n' > "$WORK/mode.json"
 python3 "$WORK/stub.py" "$WORK" &
 STUB_PID=$!
-for _ in $(seq 1 100); do [ -s "$WORK/port" ] && break; sleep 0.1; done
+wait_until [ -s "$WORK/port" ] || true
 PORT=$(cat "$WORK/port" 2>/dev/null)
 if [ -z "$PORT" ]; then
   bad "루프백 스텁이 뜬다" "포트 파일이 없다"

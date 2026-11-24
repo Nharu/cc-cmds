@@ -47,6 +47,8 @@ unset CC_ORCH_STAGE_AUTOCOMPACT CC_ORCH_STAGE_EFFORT CC_ORCH_STAGE_MODEL
 script_dir=$(cd "$(dirname "$0")" && pwd)
 repo_root=$(cd "$script_dir/.." && pwd)
 GATE="$repo_root/plugins/cc-cmds/orchestrator/gate.sh"
+# shellcheck source=wait-fixture.sh
+. "$repo_root/scripts/wait-fixture.sh"
 
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/cc-stage-supervisor.XXXXXX")
 export XDG_STATE_HOME="$WORK/state"
@@ -151,11 +153,22 @@ GRANTEOF
 # The stub CLI. Runs for CC_STUB_SLEEP seconds and reports a normal result; a
 # TERM ends it at once with 143 and no result line — the shape of a stage
 # stopped from outside. The `sleep` runs in the background so the trap is taken
-# immediately rather than after the sleep.
+# immediately rather than after the sleep. With CC_STUB_HOLD set it runs instead
+# until that file appears, so a case that must see the stage still running
+# releases it itself rather than racing a number of seconds; the hold also ends
+# when the suite's work directory or its shell is gone.
 STUB="$WORK/claude-stub"
 cat > "$STUB" <<'STUBEOF'
 #!/usr/bin/env bash
-sleep "${CC_STUB_SLEEP:-3}" &
+if [ -n "${CC_STUB_HOLD:-}" ]; then
+  h=$CC_STUB_HOLD
+  ( while [ ! -e "$h" ] && [ -d "${h%/*}" ] \
+      && { [ -z "${WAIT_FIXTURE_OWNER:-}" ] || kill -0 "$WAIT_FIXTURE_OWNER" 2>/dev/null; }; do
+      sleep 0.1
+    done ) &
+else
+  sleep "${CC_STUB_SLEEP:-3}" &
+fi
 sp=$!
 trap 'kill "$sp" 2>/dev/null; exit 143' TERM
 wait "$sp"
@@ -190,11 +203,10 @@ dispatch() {
     --trigger "$(rv_trig "$1")" -- review -p "$(rv_p "$1")"
 }
 rows_of() { { grep -F '`stage-result`' "$LEDGER" || true; } | { grep -cF "세그먼트=$1 " || true; }; }
-wait_file() {  # wait_file <path> <tenths> — poll until the file exists
-  local n=0
-  while [ ! -e "$1" ] && [ "$n" -lt "$2" ]; do sleep 0.1; n=$((n + 1)); done
-  [ -e "$1" ]
+wait_file() {  # wait_file <path> — until the file exists, or the shared ceiling
+  wait_until [ -e "$1" ]
 }
+sup_gone() { [ "$(alive "${1:-}")" = "dead" ]; }  # sup_gone <pid> — empty or gone
 
 # THE ENEMY. Every descendant of <root> found by walking `ppid` transitively,
 # then TERM to all of them — the shape of the harness's reap, measured.
@@ -227,23 +239,26 @@ bash "$2" act --manifest "$3" --kind skill --target repo --segment "$4" --cutpoi
 rc=$?
 t1=$(date +%s)
 printf '%s %s\n' "$rc" "$((t1 - t0))" > "$6.done"
-sleep 120
+# Lives until the enemy below kills it, or the suite's shell is gone.
+while kill -0 "$WAIT_FIXTURE_OWNER" 2>/dev/null; do sleep 1; done
 LEOF
-# The stub runs for 30 seconds. The dispatch act itself takes about 10 seconds
-# on a loaded CI runner, so a 10-second stub could not tell a dispatch that
-# returned early from one that waited for the stage to end.
-CC_STUB_SLEEP=30 bash "$LAUNCH" "$WT" "$GATE" "$MANIFEST" A "$(HH)" "$WORK/launch-A.out" "$(rv_trig A)" "$(rv_p A)" &
+# The stub holds until this suite releases it, so a dispatch that returned
+# while the hold stands cannot have waited for the stage to end, however long
+# the dispatch act itself took on the runner.
+A_HOLD="$WORK/hold-A"
+CC_STUB_HOLD="$A_HOLD" bash "$LAUNCH" "$WT" "$GATE" "$MANIFEST" A "$(HH)" "$WORK/launch-A.out" "$(rv_trig A)" "$(rv_p A)" &
 LA=$!; KILL_LIST="$KILL_LIST $LA"
-if ! wait_file "$WORK/launch-A.out.done" 300; then
-  bad "(1) 파견 반환" "30초 안에 파견 act 가 돌아오지 않았다: $(cat "$WORK/launch-A.out" 2>/dev/null)"
+if ! wait_file "$WORK/launch-A.out.done"; then
+  bad "(1) 파견 반환" "기다림 상한 안에 파견 act 가 돌아오지 않았다: $(cat "$WORK/launch-A.out" 2>/dev/null)"
 fi
 a_rc=""; a_el=""
 read -r a_rc a_el < "$WORK/launch-A.out.done" 2>/dev/null || true
 check "(1) 파견 act 가 성공으로 반환한다" "${a_rc:-none}" "0"
-if [ -n "$a_el" ] && [ "$a_el" -lt 30 ]; then
-  ok "(1) 파견이 스테이지 종단 전에 반환한다 (${a_el}초 < 스텁 30초)"
+a_rows=$(rows_of A)
+if [ -n "$a_rc" ] && [ ! -e "$A_HOLD" ] && [ "$a_rows" = "0" ]; then
+  ok "(1) 파견이 스테이지 종단 전에 반환한다 (스텁이 풀림을 기다리는 중, ${a_el}초)"
 else
-  bad "(1) 파견이 스테이지 종단 전에 반환한다" "경과 ${a_el:-없음}초 — 파견이 스테이지를 막고 있다"
+  bad "(1) 파견이 스테이지 종단 전에 반환한다" "반환 ${a_rc:-없음} · stage-result 행 ${a_rows} — 파견이 스테이지를 막고 있다"
 fi
 
 SUP_A=$( { cat "$RD/A.sup" 2>/dev/null || true; } | tr -d '[:space:]')
@@ -280,37 +295,42 @@ check "(3) 트리 워크 적 뒤에도 CLI 가 살아 있다" "$(alive "$PID_A")
 CTRL="$WORK/control.sh"
 cat > "$CTRL" <<'CEOF'
 #!/usr/bin/env bash
-sleep 120 &
+# The child and the control itself live until the enemy kills them, or the
+# suite's shell is gone.
+while kill -0 "$WAIT_FIXTURE_OWNER" 2>/dev/null; do sleep 1; done &
 printf '%s\n' "$!" > "$1"
-sleep 120
+while kill -0 "$WAIT_FIXTURE_OWNER" 2>/dev/null; do sleep 1; done
 CEOF
 bash "$CTRL" "$WORK/control.pid" &
 LC=$!; KILL_LIST="$KILL_LIST $LC"
-wait_file "$WORK/control.pid" 50 || true
+wait_file "$WORK/control.pid" || true
 CPID=$( { cat "$WORK/control.pid" 2>/dev/null || true; } | tr -d '[:space:]')
 KILL_LIST="$KILL_LIST $CPID"
 check "(4) 대조군 자식이 적 앞에서 살아 있었다" "$(alive "$CPID")" "alive"
 treekill "$LC"
 wait "$LC" 2>/dev/null || true
-sleep 1
+wait_until sup_gone "$CPID" || true
 check "(4) 대조군 — 혈통을 남긴 자식은 같은 적에 죽는다" "$(alive "$CPID")" "dead"
 
 # (8) RECORD FIRST, REMOVE AFTER. Sampled until the row lands: once `A.pid` has
 # been seen, its absence must never coincide with the row's absence. The row is
 # re-read after the pid is seen gone, because the append can land between the
-# two reads of one sample.
-seen_pid=0; order_bad=""; n=0
-while [ "$n" -lt 900 ]; do
+# two reads of one sample. The stage ends once its hold is released here.
+seen_pid=0; order_bad=""
+a_order_sample() {  # true once the row lands or the order is seen broken
+  local r
   r=$(rows_of A)
   if [ -f "$RD/A.pid" ]; then
     seen_pid=1
   elif [ "$seen_pid" = "1" ] && [ "$r" = "0" ]; then
     r=$(rows_of A)
-    if [ "$r" = "0" ]; then order_bad="A.pid 가 사라졌는데 stage-result 행이 없다"; break; fi
+    if [ "$r" = "0" ]; then order_bad="A.pid 가 사라졌는데 stage-result 행이 없다"; return 0; fi
   fi
-  [ "$r" != "0" ] && break
-  sleep 0.05; n=$((n + 1))
-done
+  [ "$r" != "0" ]
+}
+a_order_sample || true
+: > "$A_HOLD"
+wait_until a_order_sample || true
 check "(8) 기록-후-삭제 — pid 기록이 행보다 먼저 사라지지 않는다" "${order_bad:-ok}" "ok"
 check "(8) 그 관측이 실제로 pid 기록을 본 뒤의 것이다" "$seen_pid" "1"
 
@@ -373,8 +393,9 @@ check "(6) 토큰 없는 호출도 행을 쓰지 않는다" "$(rows_of C2)" "0"
 # recorded — an intended stop leaves a row.
 # ---------------------------------------------------------------------------
 seg D
-CC_STUB_SLEEP=30 dispatch D >/dev/null
-wait_file "$RD/D.pid" 50 || true
+# The stub holds until the TERM below, so it is certainly running at the checks.
+CC_STUB_HOLD="$WORK/hold-D" dispatch D >/dev/null
+wait_file "$RD/D.pid" || true
 SUP_D=$( { cat "$RD/D.sup" 2>/dev/null || true; } | tr -d '[:space:]')
 PID_D=$( { cat "$RD/D.pid" 2>/dev/null || true; } | tr -d '[:space:]')
 check "(7) TERM 전에 D 의 CLI 가 살아 있다" "$(alive "$PID_D")" "alive"
@@ -427,15 +448,18 @@ check "(9) 사라진 pid 의 지문 캡처가 errexit 아래에서 호출자를 
 # lands, `.pid` must never be present without `.kind` beside it. The sampler
 # also reports whether it saw the record at all — an invariant nothing observed
 # is the vacuous pass this suite exists to refuse.
+# The record of a stage that exits at once lives for a few milliseconds, so the
+# sampler reads every 10 ms rather than at the shared wait's pace. It ends when
+# the row lands or when its caller, past the stage's end, writes <outfile>.stop.
 sample_kind() {  # sample_kind <segment> <outfile>
-  local s="$1" out="$2" n=0 seen=0 broke=""
-  while [ "$n" -lt 3000 ]; do
+  local s="$1" out="$2" seen=0 broke=""
+  while [ ! -e "$out.stop" ]; do
     if [ -f "$RD/$s.pid" ]; then
       seen=1
       if [ ! -f "$RD/$s.kind" ]; then broke=".pid 는 있는데 .kind 가 없다"; break; fi
     fi
     [ "$(rows_of "$s")" != "0" ] && break
-    sleep 0.01; n=$((n + 1))
+    sleep 0.01
   done
   printf '%s|%s\n' "$seen" "${broke:-ok}" > "$out"
 }
@@ -446,6 +470,7 @@ assert_immediate() {  # assert_immediate <segment> <expected-rc> <label>
   local sampler=$!
   dispatch "$s" >/dev/null
   g wait --manifest "$MANIFEST" --segment "$s" --interval 1 --timeout 60 >/dev/null; rc=$?
+  : > "$WORK/sample-$s.stop"
   wait "$sampler" 2>/dev/null || true
   check "(9) $label — wait 이 스테이지 rc 를 통과시킨다" "$rc" "$want"
   check "(9) $label — stage-result 행이 정확히 하나" "$(rows_of "$s")" "1"
@@ -713,12 +738,21 @@ r12_inv() {  # r12_inv <enabled|disabled> <file>
 }
 r12_inv enabled "$HOME/.config/cc-lane/accounts.json"
 
-# A stub that also records the directory it was launched under.
+# A stub that also records the directory it was launched under. CC_STUB_HOLD
+# works as in the first stub.
 STUB_CFG="$WORK/claude-stub-cfg"
 cat > "$STUB_CFG" <<'STUBEOF'
 #!/usr/bin/env bash
 printf '%s\n' "${CLAUDE_CONFIG_DIR-unset}" > "${CC_STUB_CFG_OUT:-/dev/null}"
-sleep "${CC_STUB_SLEEP:-3}" &
+if [ -n "${CC_STUB_HOLD:-}" ]; then
+  h=$CC_STUB_HOLD
+  ( while [ ! -e "$h" ] && [ -d "${h%/*}" ] \
+      && { [ -z "${WAIT_FIXTURE_OWNER:-}" ] || kill -0 "$WAIT_FIXTURE_OWNER" 2>/dev/null; }; do
+      sleep 0.1
+    done ) &
+else
+  sleep "${CC_STUB_SLEEP:-3}" &
+fi
 sp=$!
 trap 'kill "$sp" 2>/dev/null; exit 143' TERM
 wait "$sp"
@@ -729,12 +763,20 @@ chmod +x "$STUB_CFG"
 
 # A stub whose stream carries what a cost sample is made of: timestamps around
 # the run and a result line with `duration_ms`. The stubs above write neither,
-# so their attempts leave no sample.
+# so their attempts leave no sample. CC_STUB_HOLD works as in the first stub.
 STUB_COST="$WORK/claude-stub-cost"
 cat > "$STUB_COST" <<'STUBEOF'
 #!/usr/bin/env bash
 printf '{"type":"system","subtype":"init","claude_code_version":"9.9.9","timestamp":"%s"}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-sleep "${CC_STUB_SLEEP:-1}"
+if [ -n "${CC_STUB_HOLD:-}" ]; then
+  h=$CC_STUB_HOLD
+  while [ ! -e "$h" ] && [ -d "${h%/*}" ] \
+    && { [ -z "${WAIT_FIXTURE_OWNER:-}" ] || kill -0 "$WAIT_FIXTURE_OWNER" 2>/dev/null; }; do
+    sleep 0.1
+  done
+else
+  sleep "${CC_STUB_SLEEP:-1}"
+fi
 printf '{"type":"assistant","timestamp":"%s"}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"duration_ms":1000,"total_cost_usd":0.01,"num_turns":1,"session_id":"stub-session"}'
 exit 0
@@ -754,11 +796,7 @@ costs_of() {  # costs_of <lineage> — that lineage's sample lines
 sup_done() {  # sup_done <segment> — until the supervisor's last line is in its log
   # `wait` returns once the segment records are gone, and the sample and the
   # recorder's warning are written after that.
-  local n=0
-  until grep -qF "스테이지 종단 — $1#1 " "$RD/log/$1#1.sup.log" 2>/dev/null || [ "$n" -ge 100 ]; do
-    sleep 0.1
-    n=$((n + 1))
-  done
+  wait_until grep -qF "스테이지 종단 — $1#1 " "$RD/log/$1#1.sup.log" 2>/dev/null || true
 }
 
 mk_run SUPR '(없음)'
@@ -776,9 +814,11 @@ r12_lease() {  # r12_lease <lineage> — the live lease's account, or nothing
 # live while the stage runs and gone once its row is down, and the row's
 # account is the token's.
 seg E
-CC_CLAUDE_BIN="$STUB_CFG" CC_STUB_CFG_OUT="$WORK/r12-cfg-E" CC_STUB_SLEEP=4 dispatch E >/dev/null; rc_e=$?
+# The stub holds until it is released below, so the checks of a running stage
+# do not race its end.
+CC_CLAUDE_BIN="$STUB_CFG" CC_STUB_CFG_OUT="$WORK/r12-cfg-E" CC_STUB_HOLD="$WORK/hold-E" dispatch E >/dev/null; rc_e=$?
 check "(12) 계정 부여 파견이 성공으로 반환한다" "$rc_e" "0"
-wait_file "$RD/E.pid" 50 || true
+wait_file "$RD/E.pid" || true
 check "(12) 토큰이 일곱 줄이다" "$(wc -l < "$RD/E.launch.taken" 2>/dev/null | tr -d '[:space:]')" "7"
 check "(12) 토큰 넷째·여섯째·일곱째 줄이 계보·계정·디렉터리다" \
   "$(sed -n '4p' "$RD/E.launch.taken" 2>/dev/null)|$(sed -n '6p' "$RD/E.launch.taken" 2>/dev/null)|$(sed -n '7p' "$RD/E.launch.taken" 2>/dev/null)" \
@@ -788,6 +828,7 @@ check "(12) 토큰 다섯째 줄은 임대 난스다 (- 가 아니다)" \
 check "(12) 감독자가 발사 전에 네 줄 창 기록을 쓰고 넷째 줄이 계정이다" \
   "$(wc -l < "$RD/E.window" 2>/dev/null | tr -d '[:space:]')/$(sed -n '4p' "$RD/E.window" 2>/dev/null)" "4/r12a"
 check "(12) 스테이지가 도는 동안 계보의 임대가 살아 있다" "$(r12_lease 'B:E#1')" "r12a"
+: > "$WORK/hold-E"
 g wait --manifest "$MANIFEST" --segment E --interval 1 --timeout 60 >/dev/null; rc_ew=$?
 check "(12) 그 스테이지가 끝까지 돈다" "$rc_ew" "0"
 check "(12) 래퍼가 부여된 디렉터리 아래에서 CLI 를 띄웠다" "$(cat "$WORK/r12-cfg-E" 2>/dev/null)" "$R12_CFG"
@@ -1037,10 +1078,11 @@ mk_run SUPN '(없음)'
 check "(12) 인벤토리 없이 연 런의 기준은 부재 표지다" "$( [ -L "$RD/inventory.json" ] && printf absent || printf other)" "absent"
 check "(12) 인벤토리 없이 연 런에는 라우팅 기록이 없다" "$( [ -e "$RD/routing-guard" ] && printf yes || printf no)" "no"
 seg I
-CC_CLAUDE_BIN="$STUB_COST" CC_STUB_SLEEP=1 dispatch I >/dev/null; rc_i=$?
+CC_CLAUDE_BIN="$STUB_COST" CC_STUB_HOLD="$WORK/hold-I" dispatch I >/dev/null; rc_i=$?
 check "(12) 인벤토리 없이 연 런의 파견이 성공으로 반환한다" "$rc_i" "0"
-wait_file "$RD/I.pid" 50 || true
+wait_file "$RD/I.pid" || true
 check "(12) 그 토큰은 라우팅 줄 없는 세 줄이다" "$(wc -l < "$RD/I.launch.taken" 2>/dev/null | tr -d '[:space:]')" "3"
+: > "$WORK/hold-I"
 g wait --manifest "$MANIFEST" --segment I --interval 1 --timeout 60 >/dev/null; rc_iw=$?
 check "(12) 라우팅 없이 뜬 스테이지가 끝까지 돈다" "$rc_iw" "0"
 check "(12) 라우팅되지 않은 파견은 임대 표에 아무것도 남기지 않는다" \
@@ -1070,14 +1112,15 @@ w13_block() {  # w13_block <holder pid> — another run's wait entry on the acco
     --run-id OTHER --lineage B:X#1 --account r12a --config-dir "$R12_CFG" --holder "$1" >/dev/null
 }
 waits_of() { { grep -F '`stage-wait`' "$LEDGER" || true; } | { grep -cF "계보=$1 " || true; }; }
-sleep 600 & W13_WRITER=$!; KILL_LIST="$KILL_LIST $W13_WRITER"
-sleep 600 & W13_BLOCK=$!; KILL_LIST="$KILL_LIST $W13_BLOCK"
+wait_holder >/dev/null 2>&1 & W13_WRITER=$!; KILL_LIST="$KILL_LIST $W13_WRITER"
+wait_holder >/dev/null 2>&1 & W13_BLOCK=$!; KILL_LIST="$KILL_LIST $W13_BLOCK"
+w13_waits_two() { [ "$(waits_of "$1")" -ge 2 ]; }  # w13_waits_two <lineage>
 
 mk_run SUPW '(없음)'
 w13_stall
 w13_block "$W13_BLOCK"
 seg W
-CC_CLAUDE_BIN="$STUB_CFG" CC_STUB_CFG_OUT="$WORK/r13-cfg-W" CC_STUB_SLEEP=1 dispatch W >/dev/null; rc_w=$?
+CC_CLAUDE_BIN="$STUB_CFG" CC_STUB_CFG_OUT="$WORK/r13-cfg-W" CC_STUB_HOLD="$WORK/hold-W" dispatch W >/dev/null; rc_w=$?
 check "(13) WAIT 파견은 정지가 아니라 0 으로 반환한다" "$rc_w" "0"
 check "(13) 반환 시점에 첫 stage-wait 행이 이미 있다" "$(waits_of 'B:W#1')" "1"
 check "(13) 반환 시점에 대기 표지가 있고 기록자는 게이트다" "$(sed -n 's/^기록자=//p' "$RD/W.waiting" 2>/dev/null)" "게이트"
@@ -1085,17 +1128,16 @@ check "(13) 표지의 보유자가 감독자다" \
   "$(sed -n 's/^보유자=//p' "$RD/W.waiting" 2>/dev/null)" "$( { cat "$RD/W.sup" 2>/dev/null || true; } | tr -d '[:space:]')"
 check "(13) 대기 토큰의 넷째 줄은 wait 다" "$(sed -n '4p' "$RD/W.launch" "$RD/W.launch.taken" 2>/dev/null)" "wait"
 check "(13) 시도 핀이 파견 시점에 쓰였다" "$( { cat "$RD/W.attempt" 2>/dev/null || true; } | tr -d '[:space:]')" "1"
-n=0
-while [ "$(waits_of 'B:W#1')" -lt 2 ] && [ "$n" -lt 100 ]; do sleep 0.1; n=$((n + 1)); done
+wait_until w13_waits_two 'B:W#1' || true
 check "(13) 감독자가 다음 덩어리에서 심장박동 행을 하나 더 쓴다" "$(waits_of 'B:W#1')" "2"
 check "(13) 대기 중에는 스테이지가 뜨지 않았다" "$( [ -e "$RD/W.pid" ] && printf yes || printf no)" "no"
 kill -TERM "$W13_BLOCK" 2>/dev/null; wait "$W13_BLOCK" 2>/dev/null || true
-wait_file "$RD/W.pid" 100 || true
+wait_file "$RD/W.pid" || true
 check "(13) 막던 대기자가 사라지면 감독자가 부여를 받아 스폰한다" "$( [ -e "$RD/W.pid" ] && printf yes || printf no)" "yes"
 # The marker goes only after `.pid`, `.kind` and `.start` all exist.
-n=0
-while [ -e "$RD/W.waiting" ] && [ "$n" -lt 50 ]; do sleep 0.1; n=$((n + 1)); done
+wait_until test ! -e "$RD/W.waiting" || true
 check "(13) 부여 뒤 대기 표지가 지워진다" "$( [ -e "$RD/W.waiting" ] && printf yes || printf no)" "no"
+: > "$WORK/hold-W"
 g wait --manifest "$MANIFEST" --segment W --interval 1 --timeout 60 >/dev/null; rc_ww=$?
 check "(13) 대기 뒤 뜬 스테이지가 끝까지 돈다" "$rc_ww" "0"
 check "(13) 심장박동 행은 둘뿐이다 (부여 뒤에는 쓰지 않는다)" "$(waits_of 'B:W#1')" "2"
@@ -1112,7 +1154,7 @@ check "(13) 대기 항목이 표에 남지 않는다" \
 # review class's expected duration. The first answer is WAIT with no release
 # time, which the router never parks; the supervisor's own turn parks it once a
 # release now could no longer finish in time.
-sleep 600 & W13_BLOCK=$!; KILL_LIST="$KILL_LIST $W13_BLOCK"
+wait_holder >/dev/null 2>&1 & W13_BLOCK=$!; KILL_LIST="$KILL_LIST $W13_BLOCK"
 W13_DL=$(( $(date +%s) + $(CC_ORCH_SOURCE_ONLY=1; . "$ORCH/run.sh"; printf '%s' "$EXPECTED_DURATION_REVIEW_S") + 4 ))
 mk_run SUPD '(없음)' "$(jq -rn --argjson e "$W13_DL" '$e | todate')"
 w13_stall
@@ -1121,8 +1163,7 @@ seg D
 dispatch D >/dev/null; rc_d=$?
 check "(13) 마감 전의 WAIT 파견도 0 으로 반환한다" "$rc_d" "0"
 SUP_D=$( { cat "$RD/D.sup" 2>/dev/null || true; } | tr -d '[:space:]')
-n=0
-while [ "$(alive "$SUP_D")" = "alive" ] && [ "$n" -lt 300 ]; do sleep 0.1; n=$((n + 1)); done
+wait_until sup_gone "$SUP_D" || true
 check "(13) 마감에 걸린 감독자는 스스로 끝난다" "$(alive "$SUP_D")" "dead"
 row_d=$( { grep -F '`blocked`' "$LEDGER" || true; } | { grep -F '사유=마감 초과 — D ' || true; } )
 check "(13) 마감 파킹은 cone 행 하나다" "$(printf '%s' "$row_d" | { grep -c . || true; })" "1"
@@ -1142,7 +1183,7 @@ kill -TERM "$W13_BLOCK" 2>/dev/null || true
 # `이월` row naming the card's line instead of the ordinary deadline row. The
 # card is planted under the attempt's name before the dispatch claims it; the
 # run's pinned gate is this checkout's, swapped by `mv` as above.
-sleep 600 & W13_BLOCK=$!; KILL_LIST="$KILL_LIST $W13_BLOCK"
+wait_holder >/dev/null 2>&1 & W13_BLOCK=$!; KILL_LIST="$KILL_LIST $W13_BLOCK"
 W13_DL=$(( $(date +%s) + $(CC_ORCH_SOURCE_ONLY=1; . "$ORCH/run.sh"; printf '%s' "$EXPECTED_DURATION_REVIEW_S") + 4 ))
 mk_run SUPDH '(없음)' "$(jq -rn --argjson e "$W13_DL" '$e | todate')"
 cp -p "$GATE" "$WORK/dh-gate.sh" && mv "$WORK/dh-gate.sh" "$RD/plugin/cc-cmds/orchestrator/gate.sh"
@@ -1154,8 +1195,7 @@ printf '<!-- cc-halt-answer v1; stage=DH#1 -->\n**중단 답 줄**: 7\n<!-- /cc-
 dispatch DH >/dev/null; rc_dh=$?
 check "(13) 카드를 실은 마감 전 WAIT 파견도 0 으로 반환한다" "$rc_dh" "0"
 SUP_DH=$( { cat "$RD/DH.sup" 2>/dev/null || true; } | tr -d '[:space:]')
-n=0
-while [ "$(alive "$SUP_DH")" = "alive" ] && [ "$n" -lt 300 ]; do sleep 0.1; n=$((n + 1)); done
+wait_until sup_gone "$SUP_DH" || true
 check "(13) 카드를 실은 감독자도 마감에 걸려 스스로 끝난다" "$(alive "$SUP_DH")" "dead"
 row_dh=$( { grep -F '`blocked`' "$LEDGER" || true; } | { grep -F '| 사유=중단 답 이월 — ' || true; } )
 check "(13) 카드를 실은 마감 파킹은 이월 행 하나다" "$(printf '%s' "$row_dh" | { grep -c . || true; })" "1"
@@ -1207,8 +1247,7 @@ case "$wait_rv" in
   *) bad "(13) 예비 공급 대기 행" "${wait_rv:-행 없음}" ;;
 esac
 SUP_RV=$( { cat "$RD/RV.sup" 2>/dev/null || true; } | tr -d '[:space:]')
-n=0
-while [ "$(alive "$SUP_RV")" = "alive" ] && [ "$n" -lt 1200 ]; do sleep 0.1; n=$((n + 1)); done
+wait_until sup_gone "$SUP_RV" || true
 check "(13) 리셋권이 눌리지 않으면 감독자가 마감에 스스로 끝난다" "$(alive "$SUP_RV")" "dead"
 row_rv=$( { grep -F '`blocked`' "$LEDGER" || true; } | { grep -F '사유=마감 초과 — RV ' || true; } )
 check "(13) 예비 공급 대기의 마감 파킹은 cone 행 하나다" "$(printf '%s' "$row_rv" | { grep -c . || true; })" "1"
@@ -1249,17 +1288,17 @@ w13r_open() {  # w13r_open <run-id> <key> — usage with the pass held, a run wi
   mk_run "$1" '(없음)' "$(jq -rn --argjson e "$W13_DL" '$e | todate')"
   w13_stall
   seg "$2"
-  CC_CLAUDE_BIN="$STUB_CFG" CC_STUB_SLEEP=1 dispatch "$2" >/dev/null
+  CC_CLAUDE_BIN="$STUB_CFG" CC_STUB_HOLD="$WORK/hold-$2" dispatch "$2" >/dev/null
 }
+w13r_rows_ge() { [ "$(waits_of "$1")" -ge "$2" ]; }  # w13r_rows_ge <lineage> <count>
 w13r_rows_past() {  # w13r_rows_past <lineage> <count> — wait until the lineage has more rows than <count> plus two
-  local n=0
-  while [ "$(waits_of "$1")" -lt $(( $2 + 3 )) ] && [ "$n" -lt 150 ]; do sleep 0.1; n=$((n + 1)); done
-  [ "$(waits_of "$1")" -ge $(( $2 + 3 )) ]
+  wait_until w13r_rows_ge "$1" $(( $2 + 3 ))
 }
 w13r_release() {  # w13r_release <key> — publish the reset, then the stage runs to its end
   w13r_usage '[]' 0.05 "$(date +%s)"
-  wait_file "$RD/$1.pid" 150 || true
+  wait_file "$RD/$1.pid" || true
   check "(13) 리셋이 반영되면 감독자가 부여를 받아 스폰한다 — $1" "$( [ -e "$RD/$1.pid" ] && printf yes || printf no)" "yes"
+  : > "$WORK/hold-$1"
   g wait --manifest "$MANIFEST" --segment "$1" --interval 1 --timeout 60 >/dev/null; rc_rw=$?
   check "(13) 그 스테이지가 끝까지 돈다 — $1" "$rc_rw" "0"
   case "$( { grep -F '`stage-lease`' "$LEDGER" || true; } | tail -1)" in
@@ -1273,8 +1312,7 @@ w13r_open SUPRA RA; rc_ra=$?
 check "(13) 리셋권 대기 변형의 파견이 0 으로 반환한다" "$rc_ra" "0"
 check "(13) 게이트가 심은 첫 표지의 예비에 그 리셋권이 눌리지 않은 채 있다" "$(seen_of RA)" "array:null"
 SUP_RA=$( { cat "$RD/RA.sup" 2>/dev/null || true; } | tr -d '[:space:]')
-n=0
-while [ "$(waits_of 'B:RA#1')" -lt 2 ] && [ "$n" -lt 50 ]; do sleep 0.1; n=$((n + 1)); done
+wait_until w13_waits_two 'B:RA#1' || true
 w13r_usage '[]' 0.99 "$W13R_OBS"
 ra0=$(waits_of 'B:RA#1')
 if w13r_rows_past 'B:RA#1' "$ra0"; then
@@ -1295,8 +1333,7 @@ check "(13) 눌림 대기는 끝까지 blocked 행을 쓰지 않는다" "$(block
 w13r_open SUPRD RDK; rc_rd=$?
 check "(13) 예비 손상 변형의 파견이 0 으로 반환한다" "$rc_rd" "0"
 SUP_RD=$( { cat "$RD/RDK.sup" 2>/dev/null || true; } | tr -d '[:space:]')
-n=0
-while [ "$(waits_of 'B:RDK#1')" -lt 2 ] && [ "$n" -lt 50 ]; do sleep 0.1; n=$((n + 1)); done
+wait_until w13_waits_two 'B:RDK#1' || true
 sleep 0.3
 awk 'index($0, "예비=") == 1 { print "예비=깨진 값"; next } { print }' "$RD/RDK.waiting" > "$RD/RDK.waiting.n" \
   && mv -f "$RD/RDK.waiting.n" "$RD/RDK.waiting"
@@ -1355,7 +1392,7 @@ rm -f "$WORK/r13g-env"
   spawn_route_wait 'S5:G:1' review first '' "$env"
 ) > "$WORK/r13g.log" 2>&1 &
 W13G=$!; KILL_LIST="$KILL_LIST $W13G"
-wait_file "$RD/G.waiting" 100 || true
+wait_file "$RD/G.waiting" || true
 g_env_seen=$(jq -c '.reserve_seen' "$WORK/r13g-env" 2>/dev/null || true)
 check "(13) 드라이버가 받은 봉투는 예비 공급 WAIT 이고 리셋권을 본 기억을 싣는다" \
   "$(jq -r '"\(.verdict):\(.reserve != null):\([.reserve_seen[]? | .id] | join(","))"' "$WORK/r13g-env" 2>/dev/null \
@@ -1374,7 +1411,7 @@ rm -f "$W13_USAGE"
 # no `segment` row. So the resume command the park records must carry `-`, and
 # the line is run back through `plan` beside a control that puts the step id in
 # its place — the control is what shows the assertion tells the two apart.
-sleep 600 & W13_BLOCK=$!; KILL_LIST="$KILL_LIST $W13_BLOCK"
+wait_holder >/dev/null 2>&1 & W13_BLOCK=$!; KILL_LIST="$KILL_LIST $W13_BLOCK"
 W13_PLAN_SAVE=$PLAN; W13_PD0_SAVE=$PD0
 PLAN='{ "design_required": true, "steps": [ { "id": "DS1", "skill": "design", "summary": "설계", "depends_on": [] } ] }'
 PD0=$(printf '%s\n' "$PLAN" | shasum -a 256 | cut -d' ' -f1)
@@ -1389,8 +1426,7 @@ g act --manifest "$MANIFEST" --kind skill --target repo --segment - --cutpoint �
   -- design -p "$ds_prompt" >/dev/null; rc_ds=$?
 check "(13) 설계 스텝의 WAIT 파견도 0 으로 반환한다" "$rc_ds" "0"
 SUP_DS=$( { cat "$RD/DS1.sup" 2>/dev/null || true; } | tr -d '[:space:]')
-n=0
-while [ "$(alive "$SUP_DS")" = "alive" ] && [ "$n" -lt 300 ]; do sleep 0.1; n=$((n + 1)); done
+wait_until sup_gone "$SUP_DS" || true
 check "(13) 마감에 걸린 설계 스텝의 감독자는 스스로 끝난다" "$(alive "$SUP_DS")" "dead"
 row_ds=$( { grep -F '`blocked`' "$LEDGER" || true; } | { grep -F '사유=마감 초과 — DS1 ' || true; } )
 if [ "$(printf '%s' "$row_ds" | { grep -c . || true; })" = "1" ]; then
@@ -1438,7 +1474,7 @@ kill -TERM "$W13_BLOCK" 2>/dev/null || true
 # read the end takes the very next grant and spawns, which is what `Q.pid` and a
 # `stage-lease` row of the lineage would show. The positive half is the
 # W case above — the same release with the run still open spawns.
-sleep 600 & W13_BLOCK=$!; KILL_LIST="$KILL_LIST $W13_BLOCK"
+wait_holder >/dev/null 2>&1 & W13_BLOCK=$!; KILL_LIST="$KILL_LIST $W13_BLOCK"
 mk_run SUPE '(없음)'
 w13_stall
 w13_block "$W13_BLOCK"
@@ -1449,8 +1485,7 @@ SUP_Q=$( { cat "$RD/Q.sup" 2>/dev/null || true; } | tr -d '[:space:]')
 check "(13) 런 종료 전에는 감독자가 대기 중이다" "$(alive "$SUP_Q")" "alive"
 printf '%s 종단 — 경계 B4 · 근거 픽스처\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$RD/done"
 kill -TERM "$W13_BLOCK" 2>/dev/null; wait "$W13_BLOCK" 2>/dev/null || true
-n=0
-while [ "$(alive "$SUP_Q")" = "alive" ] && [ "$n" -lt 100 ]; do sleep 0.1; n=$((n + 1)); done
+wait_until sup_gone "$SUP_Q" || true
 check "(13) 대기 중에 런이 끝나면 감독자가 스스로 끝난다" "$(alive "$SUP_Q")" "dead"
 check "(13) 끝난 런 위에서는 차단자가 풀려도 스테이지가 뜨지 않는다" \
   "$( [ -e "$RD/Q.pid" ] && printf yes || printf no)" "no"
@@ -1476,7 +1511,7 @@ check "(13) 런 종료로 정지한 시도의 wait 은 16 이다" "$rc_qw" "16"
 # key whose dispatch lock a live act holds. A lock whose holder is dead is
 # cleared, and of two acts that meet the same dead lock only one passes it.
 # ---------------------------------------------------------------------------
-sleep 600 & W14_BLOCK=$!; KILL_LIST="$KILL_LIST $W14_BLOCK"
+wait_holder >/dev/null 2>&1 & W14_BLOCK=$!; KILL_LIST="$KILL_LIST $W14_BLOCK"
 mk_run SUPK '(없음)'
 w13_stall
 w13_block "$W14_BLOCK"
@@ -1506,7 +1541,7 @@ check "(14) 그 plan 은 원장에 쓰지 않는다" "$(no_wait_rows)" "$k_sha"
 check "(14) 스냅숏의 waiting_stages 에 그 키 하나가 있다" \
   "$( ( cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" --fields waiting_stages 2>/dev/null ) | jq -rs '[.[] | if type == "object" then .waiting_stages else . end | arrays | .[].segment] | join(",")')" "K"
 
-sleep 600 & W14_HOLD=$!; KILL_LIST="$KILL_LIST $W14_HOLD"
+wait_holder >/dev/null 2>&1 & W14_HOLD=$!; KILL_LIST="$KILL_LIST $W14_HOLD"
 seg L
 printf '%s\n%s\n' "$W14_HOLD" "$(w14_fp "$W14_HOLD")" > "$RD/L.dispatching"
 dispatch L >/dev/null; rc_l=$?

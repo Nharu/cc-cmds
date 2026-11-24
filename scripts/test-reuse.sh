@@ -1178,6 +1178,7 @@ tr_self_test() {
   check() { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "got「$2」 want「$3」"; fi; }
   has() { case "$2" in *"$3"*) ok "$1" ;; *) bad "$1" "「$3」 없음: $2" ;; esac; }
   hasnt() { case "$2" in *"$3"*) bad "$1" "「$3」 있음: $2" ;; *) ok "$1" ;; esac; }
+  . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/wait-fixture.sh"
   for v in $(compgen -e); do
     case "$v" in CC_TEST_SLOT*|CHECK_PUSH_*) unset "$v" ;; esac
   done
@@ -1521,20 +1522,20 @@ a"
   rm -rf "$CK/.git/refs/notes"
   check "수집: 체크아웃 안의 git version 은 표지 없이 아니오" \
     "$(gcol '"$SG" version')|$([ -s "$S.mark" ] && echo 표지 || echo 없음)" "아니오|없음"
-  # A stand-in for the real git that reads HEAD, writes its pid and sleeps.
+  # A stand-in for the real git that reads HEAD, writes its pid and lives until
+  # it is killed (or the test shell is gone), so only the shim's TERM ends it.
   local FG S2 sp fp
   FG="$T/fakegit"
   S2="$T/items/2"
   mkdir -p "$FG"
-  printf '#!/bin/sh\ncat %q > /dev/null\necho $$ > %q\nexec sleep 30\n' "$CK/.git/HEAD" "$T/fakepid" > "$FG/git"
+  printf '#!/bin/sh\ncat %q > /dev/null\necho $$ > %q\nwhile kill -0 %s 2>/dev/null; do sleep 1; done\n' "$CK/.git/HEAD" "$T/fakepid" "$WAIT_FIXTURE_OWNER" > "$FG/git"
   chmod +x "$FG/git"
   ( PATH="$FG:$PATH"; tr_shims "$CK" "$S2" )
   tr_baseline "$CK" "$S2" "$L"
   rm -f "$T/fakepid"
   ( cd "$CK" && exec "$S2.shim/git" rev-parse --show-toplevel ) > /dev/null 2>&1 &
   sp=$!
-  i=0
-  while [ ! -s "$T/fakepid" ] && [ "$i" -lt 100 ]; do sleep 0.1; i=$((i + 1)); done
+  wait_until [ -s "$T/fakepid" ]
   fp=$(cat "$T/fakepid" 2>/dev/null)
   kill -TERM "$sp" 2>/dev/null
   wait "$sp"

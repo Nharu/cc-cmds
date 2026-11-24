@@ -59,6 +59,8 @@ export CC_GATE_PIN_SYNC_DISABLE
 script_dir=$(cd "$(dirname "$0")" && pwd)
 repo_root=$(cd "$script_dir/.." && pwd)
 GATE="$repo_root/plugins/cc-cmds/orchestrator/gate.sh"
+# shellcheck source=wait-fixture.sh
+. "$repo_root/scripts/wait-fixture.sh"
 
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/cc-snapshot-test.XXXXXX")
 trap 'rm -rf "$WORK"' EXIT
@@ -702,7 +704,7 @@ check "대기자가 없으면 렌더에 대기 줄이 없다" "$(grep -c '^대�
 # then read from the later of the refresh and the machine's wake, and the wake
 # reading is replaced in a subshell so all three cases are this suite's.
 RD_R1="$XDG_STATE_HOME/cc-cmds/run/R1"
-sleep 600 & W_HOLD=$!
+wait_holder >/dev/null 2>&1 & W_HOLD=$!
 w_now=$(date -u +%s)
 w_stall=$(cc_effective_stall "$RD_R1")
 # A driver-written marker: the gate's settlement leaves those alone, so killing

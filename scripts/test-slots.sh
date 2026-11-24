@@ -744,6 +744,7 @@ ts_self_test() {
   has() { case "$2" in *"$3"*) ok "$1" ;; *) bad "$1" "「$3」 없음: $2" ;; esac; }
   hasnt() { case "$2" in *"$3"*) bad "$1" "「$3」 있음: $2" ;; *) ok "$1" ;; esac; }
   self="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+  . "$(dirname "$self")/wait-fixture.sh"
   for v in $(compgen -e); do
     case "$v" in CC_TEST_SLOT*) unset "$v" ;; esac
   done
@@ -759,9 +760,9 @@ ts_self_test() {
   printf '1000\n' > "$TS_CLOCK"
   clock() { printf '%s\n' "$1" > "$TS_CLOCK"; }
   # Live stand-ins for pools and jobs, and one pid that is gone.
-  sleep 600 & pa=$!
-  sleep 600 & pb=$!
-  sleep 600 & pc=$!
+  wait_holder >/dev/null 2>&1 & pa=$!
+  wait_holder >/dev/null 2>&1 & pb=$!
+  wait_holder >/dev/null 2>&1 & pc=$!
   (exit 0) & dp=$!
   wait "$dp"
   cpus=$(getconf _NPROCESSORS_ONLN 2>/dev/null)
@@ -1064,13 +1065,11 @@ proc $pb $(ts_fp "$pb")
   (ts_job_shell bg "make:k" sh -c "printf '1005\n' > '$TS_CLOCK'")
   check "잡 셸: 10초 미만이면 무게를 쓰지 않는다" "$([ -f "$T/s/weights/make:k" ] && echo 있음 || echo 없음)" "없음"
   clock 1000
-  (ts_job_shell bg "" sh -c "echo \$\$ > '$T/child.pid'; trap 'echo got-term >> \"$T/js.log\"; kill \$sp 2>/dev/null; exit 9' TERM; sleep 60 & sp=\$!; wait \$sp") &
+  # The child lives until the TERM the job shell passes on (or the test shell
+  # is gone), and writes its pid file only once its trap is set.
+  (ts_job_shell bg "" sh -c "trap 'echo got-term >> \"$T/js.log\"; kill \$sp 2>/dev/null; exit 9' TERM; echo \$\$ > '$T/child.pid'; while kill -0 \$WAIT_FIXTURE_OWNER 2>/dev/null; do sleep 1; done & sp=\$!; wait \$sp") &
   w=$!
-  for f in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
-    [ -s "$T/child.pid" ] && break
-    sleep 1
-  done
-  sleep 1
+  wait_until [ -s "$T/child.pid" ]
   kill -TERM "$w" 2>/dev/null
   wait "$w"
   rc=$?
@@ -1083,15 +1082,12 @@ proc $pb $(ts_fp "$pb")
   # fails, which is when bash has reaped the child (a zombie still answers
   # kill -0). The child writes its pid file after setting its trap, so the
   # signal never arrives before the trap is in place.
-  kstub='kill() { builtin kill "$@"; local r=$? n=0; if [ "$1" = -TERM ]; then while builtin kill -0 "$2" 2>/dev/null && [ "$n" -lt 100 ]; do sleep 0.1; n=$((n + 1)); done; fi; return "$r"; }'
-  child="trap 'echo got-term >> \"$T/js.log\"; kill \$sp 2>/dev/null; exit 9' TERM; echo \$\$ > '$T/child.pid'; sleep 60 & sp=\$!; wait \$sp"
+  kstub='kill() { builtin kill "$@"; local r=$?; if [ "$1" = -TERM ]; then wait_until _wait_fixture_gone "$2" || true; fi; return "$r"; }'
+  child="trap 'echo got-term >> \"$T/js.log\"; kill \$sp 2>/dev/null; exit 9' TERM; echo \$\$ > '$T/child.pid'; while kill -0 \$WAIT_FIXTURE_OWNER 2>/dev/null; do sleep 1; done & sp=\$!; wait \$sp"
   rm -f "$T/child.pid" "$T/js.log"
   (eval "$kstub"; ts_job_shell bg "" sh -c "$child") &
   w=$!
-  for f in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
-    [ -s "$T/child.pid" ] && break
-    sleep 1
-  done
+  wait_until [ -s "$T/child.pid" ]
   kill -TERM "$w" 2>/dev/null
   wait "$w"
   rc=$?
@@ -1100,12 +1096,9 @@ proc $pb $(ts_fp "$pb")
   # trap it, so the foreground job shell is started through perl with INT back
   # at its default, in a bash that sources this script for its functions.
   rm -f "$T/child.pid" "$T/js.log"
-  perl -e '$SIG{INT} = "DEFAULT"; exec { $ARGV[0] } @ARGV;' -- "$BASH" -c '. "$1"; eval "$2"; TS_GOT=""; ts_job_shell fg "" sh -c "$3"' _ "$self" "$kstub" "$child" &
+  perl -e '$SIG{INT} = "DEFAULT"; exec { $ARGV[0] } @ARGV;' -- "$BASH" -c '. "$1"; . "$4"; eval "$2"; TS_GOT=""; ts_job_shell fg "" sh -c "$3"' _ "$self" "$kstub" "$child" "$(dirname "$self")/wait-fixture.sh" &
   w=$!
-  for f in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
-    [ -s "$T/child.pid" ] && break
-    sleep 1
-  done
+  wait_until [ -s "$T/child.pid" ]
   kill -INT "$w" 2>/dev/null
   wait "$w"
   rc=$?
@@ -1166,23 +1159,17 @@ proc $pb $(ts_fp "$pb")
   : > "$T/err"
   (CC_TEST_SLOTS=1 CC_TEST_SLOTS_DIR="$T/w" && export CC_TEST_SLOTS CC_TEST_SLOTS_DIR && ts_run_wrap "make:wt" "목표 wt" -- sh -c 'exit 0' 2>> "$T/err") &
   w=$!
-  for f in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
-    [ "$(slots_n "$T/w")" -ge 2 ] && break
-    sleep 1
-  done
+  slots_two() { [ "$(slots_n "$T/w")" -ge 2 ]; }
+  wait_until slots_two
   kill -TERM "$w" 2>/dev/null
   wait "$w"
   rc=$?
   check "감싸기: 기다리는 중에 받은 TERM 은 표를 돌려주고 143 으로 끝난다" "$rc $(slots_n "$T/w")" "143 1"
   # A TERM while the command runs reaches the command, and the slot comes back.
   rm -rf "$T/w" "$T/child.pid" "$T/js.log"
-  (CC_TEST_SLOTS=2 CC_TEST_SLOTS_DIR="$T/w" && export CC_TEST_SLOTS CC_TEST_SLOTS_DIR && ts_run_wrap "make:rt" "목표 rt" -- sh -c "echo \$\$ > '$T/child.pid'; trap 'echo got-term >> \"$T/js.log\"; kill \$sp 2>/dev/null; exit 9' TERM; sleep 60 & sp=\$!; wait \$sp" 2>/dev/null) &
+  (CC_TEST_SLOTS=2 CC_TEST_SLOTS_DIR="$T/w" && export CC_TEST_SLOTS CC_TEST_SLOTS_DIR && ts_run_wrap "make:rt" "목표 rt" -- sh -c "trap 'echo got-term >> \"$T/js.log\"; kill \$sp 2>/dev/null; exit 9' TERM; echo \$\$ > '$T/child.pid'; while kill -0 \$WAIT_FIXTURE_OWNER 2>/dev/null; do sleep 1; done & sp=\$!; wait \$sp" 2>/dev/null) &
   w=$!
-  for f in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
-    [ -s "$T/child.pid" ] && break
-    sleep 1
-  done
-  sleep 1
+  wait_until [ -s "$T/child.pid" ]
   kill -TERM "$w" 2>/dev/null
   wait "$w"
   rc=$?
