@@ -190,6 +190,21 @@ repo_root=${CC_TEST_GATE_REPO_ROOT:-$(cd "$script_dir/.." && pwd)}
 # The shared wait — `wait_until`, `wait_pid_gone`, `wait_holder` — that every
 # section waits with, so it is sourced here and not in a section body.
 . "$repo_root/scripts/wait-fixture.sh"
+# A POLL IS NOT TRACED. Which lines a wait runs — its own second try, and the
+# false branch of its condition — depends on when the awaited event lands, not
+# on the section, and the isolation comparison has no way to leave out a line of
+# a file other than this one. So a traced section waits with the trace off and
+# takes it back after. It runs in the calling shell, because a condition may set
+# variables there. `wait_pid_gone` calls the same name, so it waits this way too.
+eval "tg_wait_until_shared() $(declare -f wait_until | tail -n +2)"
+wait_until() {
+  local rc=0
+  case "$-" in
+    *x*) set +x; tg_wait_until_shared "$@" || rc=$?; set -x ;;
+    *) tg_wait_until_shared "$@" || rc=$? ;;
+  esac
+  return "$rc"
+}
 # EXPORTED, AND THAT IS NOT A STYLE CHOICE. Nothing in any child reads this out
 # of the environment — every use is in this shell, in a subshell, or in a
 # `bash -c` whose argv the parent interpolates — so the export reads as
@@ -6430,11 +6445,14 @@ pre_mf() {
 # `CC_CMDS_ORCH_HOST_OS` does before a fresh source, without a second source that
 # would die on a readonly constant.
 pre_ledger_series() {
+  # Section bodies call this, so whether the lines past the guard run inside a
+  # section depends on which earlier section of the cut already entered it, not
+  # on the section that calls it.
   [ -n "${PRE_LEDGER_SERIES_DONE:-}" ] && return 0
-  PRE_LEDGER_SERIES_DONE=1
-  pre_base
-  lsr_root="$WORK/ledger-series"
-  mkdir -p "$lsr_root"
+  PRE_LEDGER_SERIES_DONE=1 # gate-isolation: 변동
+  pre_base # gate-isolation: 변동
+  lsr_root="$WORK/ledger-series" # gate-isolation: 변동
+  mkdir -p "$lsr_root" # gate-isolation: 변동
 
   lsr_ledger() {
     # lsr_ledger <이름> — 빈 런 디렉터리 하나와 `## 실행 LS` 제목만 든 원장을 새로
