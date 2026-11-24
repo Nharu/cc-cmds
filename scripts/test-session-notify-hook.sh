@@ -27,6 +27,8 @@ set -uo pipefail
 
 script_dir=$(cd "$(dirname "$0")" && pwd)
 repo_root=$(cd "$script_dir/.." && pwd)
+# shellcheck source=wait-fixture.sh
+. "$repo_root/scripts/wait-fixture.sh"
 PLUGIN_ROOT="$repo_root/plugins/cc-cmds"
 ASK_HOOK="$PLUGIN_ROOT/hooks/session-ask-notify.sh"
 TURN_HOOK="$PLUGIN_ROOT/hooks/session-turn-notify.sh"
@@ -111,19 +113,18 @@ mkdir -p "$NOW_DIR"
 # The emitter launches the notifier detached and never asks its status, so a
 # write can land after the hook process has already exited. Bounded wait for the
 # positive cases, boolean assertion — never a comparison of elapsed seconds.
+notify_lines_at_least() {
+  local n
+  n=$(grep -c . "$NOTIFY_LOG" 2>/dev/null || true)
+  [ "${n:-0}" -ge "$1" ]
+}
 notify_settle() {
-  local want="$1" i=0 n
-  while [ "$i" -lt 40 ]; do
-    n=$(grep -c . "$NOTIFY_LOG" 2>/dev/null || true)
-    if [ "${n:-0}" -ge "$want" ]; then return 0; fi
-    sleep 0.1
-    i=$((i + 1))
-  done
+  wait_until notify_lines_at_least "$1"
   return 0
 }
 # A negative case cannot wait for a value that never arrives, so it waits a fixed
-# window instead. The window is the same order as the settle above, so a banner
-# this suite calls absent had at least as long to appear as one it calls present.
+# window instead. Load only delays a banner, so the window can let a late banner
+# slip past it but never makes a correct absence fail.
 notify_quiet_window() { sleep 0.5; }
 notify_lines() { grep -c . "$NOTIFY_LOG" 2>/dev/null || true; }
 

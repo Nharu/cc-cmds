@@ -45,8 +45,8 @@ fi
 pyq() { PYTHONDONTWRITEBYTECODE=1 python3 "$@"; }
 
 wait_gone() {
-  local i=0
-  while [ -n "${1:-}" ] && kill -0 "$1" 2>/dev/null && [ "$i" -lt 60 ]; do sleep 0.1; i=$((i + 1)); done
+  [ -n "${1:-}" ] || return 0
+  wait_pid_gone "$1"
 }
 free_port() {
   pyq -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()'
@@ -111,8 +111,8 @@ PP=$(free_port)
 env -u CI -u CC_PIPELINE_SEGMENT -u CC_PIPELINE_STAGE_ID XDG_STATE_HOME="$XDG_STATE_HOME" \
   PYTHONDONTWRITEBYTECODE=1 python3 "$DASH" preview --port "$PP" 2>"$WORK/preview.err" &
 PREVIEW_PID=$!
-i=0
-while [ "$i" -lt 50 ] && [ "$(get "$PP" /healthz)" != "200" ]; do sleep 0.1; i=$((i + 1)); done
+healthz_up() { [ "$(get "$PP" /healthz)" = "200" ]; }
+wait_until healthz_up
 check "S4 preview 가 /healthz 에 답한다" "$(get "$PP" /healthz)" "200"
 for path in / /run/screen-run; do
   check "S4 $path 가 200 이다" "$(get "$PP" "$path")" "200"

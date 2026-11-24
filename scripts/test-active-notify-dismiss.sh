@@ -49,6 +49,8 @@ set -uo pipefail
 
 script_dir=$(cd "$(dirname "$0")" && pwd)
 repo_root=$(cd "$script_dir/.." && pwd)
+# shellcheck source=wait-fixture.sh
+. "$repo_root/scripts/wait-fixture.sh"
 PLUGIN_ROOT="$repo_root/plugins/cc-cmds"
 HOOK="$PLUGIN_ROOT/hooks/session-return-dismiss.sh"
 SEAT1="$PLUGIN_ROOT/hooks/session-ask-notify.sh"
@@ -100,9 +102,11 @@ OUTF="$WORK/hook.out"
 cat > "$BIN/terminal-notifier" <<'STUB'
 #!/usr/bin/env bash
 argv="$*"
-lock="$NC_STATE.lock"; i=0
+lock="$NC_STATE.lock"
+# Every holder releases the lock in its EXIT trap, so the wait has no count of
+# its own; a holder that never lets go shows as the suite's wait on its rows.
 while ! mkdir "$lock" 2>/dev/null; do
-  sleep 0.01; i=$((i + 1)); [ "$i" -gt 500 ] && break
+  sleep 0.01
 done
 # The call is logged only after the table change is complete, still inside the
 # lock, so a waiter that sees the log line reads the finished table.
@@ -222,22 +226,15 @@ set_armed_at() {  # rewrite the flag's armed_at so the next fire gets its own gr
 }
 nc_raw() { base_env terminal-notifier "$@" >/dev/null 2>&1; }
 row_count() { awk -F'\t' -v g="$1" '$1 == g' "$NC_STATE" 2>/dev/null | grep -c . || true; }
+row_present() { [ "$(row_count "$1")" -ge 1 ]; }
+row_absent()  { [ "$(row_count "$1")" = "0" ]; }
 wait_row() {  # wait_row <group> — the seats fire detached
-  local i=0
-  while [ "$i" -lt 50 ]; do
-    [ "$(row_count "$1")" -ge 1 ] && return 0
-    sleep 0.1; i=$((i + 1))
-  done
-  return 0
+  wait_until row_present "$1"
 }
 wait_row_gone() {
-  local i=0
-  while [ "$i" -lt 50 ]; do
-    [ "$(row_count "$1")" = "0" ] && return 0
-    sleep 0.1; i=$((i + 1))
-  done
-  return 0
+  wait_until row_absent "$1"
 }
+nc_logged() { grep -q -- "$1" "$NC_LOG" 2>/dev/null; }
 quiet_window() { sleep 0.5; }
 
 seat1_fire() {
@@ -364,7 +361,7 @@ expect_dismiss_a
 CASE=9; reset_state; seed
 printf '%s' '{"session_id":"abc","last_assistant_message":"본문 한 줄.\n**cc-cmds 차례 넘김**: 이유"}' \
   | base_env bash "$SEAT2" >/dev/null 2>&1
-i=0; while [ "$i" -lt 50 ] && ! grep -q -- '-group cc-cmds-session-abc' "$NC_LOG"; do sleep 0.1; i=$((i + 1)); done
+wait_until nc_logged '-group cc-cmds-session-abc'
 check "9 — 좌석 2 가 세션 자리를 다시 띄웠다" "$(row_count cc-cmds-session-abc)" "1"
 SEED_TABLE=$(cat "$NC_STATE"); : > "$NC_LOG"
 hook_run "$(ups abc "$(printf '<task-notification>\n<task-id>x</task-id>\n<tool-use-id>y</tool-use-id>')")"
@@ -555,7 +552,7 @@ CASE=42; reset_state; seed
 P42=$(jq -cn --argjson c "$(crons "$LOOP_TEXT")" '{session_id:"abc",hook_event_name:"Stop",stop_hook_active:false,last_assistant_message:"본문 한 줄.\n**cc-cmds 차례 넘김**: 이유",session_crons:$c}')
 printf '%s' "$P42" | base_env bash "$SEAT2" >/dev/null 2>&1
 hook_run "$P42"
-i=0; while [ "$i" -lt 50 ] && ! grep -q -- '-group cc-cmds-session-abc' "$NC_LOG"; do sleep 0.1; i=$((i + 1)); done
+wait_until nc_logged '-group cc-cmds-session-abc'
 check "42 — 좌석 2 가 오늘처럼 세션 자리를 띄운다" "$(grep -c -- '-group cc-cmds-session-abc' "$NC_LOG" || true)" "1"
 check "42 — 상태 파일도 쓰인다" "$(jq -c . "$(state_file abc)" 2>/dev/null)" "$(jq -cn --arg t "$LOOP_TEXT" '[$t]')"
 check "42 — 귀환 닫기 훅은 아무것도 지우지 않았다" "$(touch_lines)" "0"
