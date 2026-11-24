@@ -1067,8 +1067,8 @@ proc $pb $(ts_fp "$pb")
   clock 1000
   # The child lives until the TERM the job shell passes on (or the test shell
   # is gone), and writes its pid file only once its trap is set and the pid of
-  # its holder is known, so a TERM sent after that file always ends the holder.
-  # The holder keeps none of this self-test's output streams.
+  # its holder is known, so a TERM sent after that file reaches a trap that can
+  # name the holder. The holder keeps none of this self-test's output streams.
   (ts_job_shell bg "" sh -c "trap 'echo got-term >> \"$T/js.log\"; kill \$sp 2>/dev/null; exit 9' TERM; while kill -0 \$WAIT_FIXTURE_OWNER 2>/dev/null; do sleep 1; done >/dev/null 2>&1 & sp=\$!; echo \$\$ > '$T/child.pid'; wait \$sp") &
   w=$!
   wait_until [ -s "$T/child.pid" ]

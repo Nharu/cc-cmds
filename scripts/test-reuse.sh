@@ -1552,6 +1552,9 @@ a"
   if wait_until shim_gone; then
     wait "$sp"
     rc=$?
+    # A TERM sent again can cut the shim's wait for the child it has already
+    # ended, so the child is given the shared ceiling to be gone as well.
+    [ -z "$fp" ] || wait_until _wait_fixture_gone "$fp" || true
   else
     rc=상한
     kill -KILL "$sp" 2>/dev/null
