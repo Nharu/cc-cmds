@@ -2672,13 +2672,15 @@ tr_in_run "$TR_RUN_SH" tr_active_lock_case
 # ===========================================================================
 FXO="$repo_root/tests/fixtures/route-usage-contract/route-observe.jsonl"
 OB="$WORK/ob"
-# 한도와 락 대기를 작게 미리 정한 래퍼. 같은 이름을 먼저 readonly 로 두면 route.sh
-# 의 가드가 다시 선언하지 못하고 앞선 값이 남는다(그 오류는 소싱의 표준 오류로 버린다).
+# 한도와 락 대기를 미리 정한 래퍼. 같은 이름을 먼저 readonly 로 두면 route.sh 의
+# 가드가 다시 선언하지 못하고 앞선 값이 남는다(그 오류는 소싱의 표준 오류로 버린다).
+# 락 대기 예산은 기본이 공용 기다림 상한의 열 배라, 아무도 쥐지 않은 락을 예산이
+# 모자라 놓치는 일이 없다. 잡힌 락을 놓는 단언은 TRO_LOCK=0 으로 한 번만 시도한다.
 WRAPO="$WORK/wrap-observe.sh"
 cat > "$WRAPO" <<'EOF'
 #!/usr/bin/env bash
 set -uo pipefail
-readonly ROUTE_OBSERVE_MAX_BYTES="$TRO_MAX" ROUTE_OBSERVE_KEEP_S="$TRO_KEEP" ROUTE_LEASE_LOCK_WAIT_S=1
+readonly ROUTE_OBSERVE_MAX_BYTES="$TRO_MAX" ROUTE_OBSERVE_KEEP_S="$TRO_KEEP" ROUTE_LEASE_LOCK_WAIT_S="${TRO_LOCK:-1200}"
 . "$TRH_ORCH/liveness.sh"
 . "$TRH_ORCH/route.sh" 2>/dev/null
 route__main "$@"
@@ -2838,7 +2840,7 @@ $newl"
 P="$OB/locked"
 mkdir -p "$P/observe/.lock"
 printf '%s\n%s\n' "$TR_HOLDER" "$TR_HOLDER_FP" > "$P/observe/.lock/owner"
-rc=0; out=$(OBW="$WRAPO" obtxn "$P" "$OBWAIT" TRO_MAX=16777216 TRO_KEEP=10368000 2>"$OB/locked.err") || rc=$?
+rc=0; out=$(OBW="$WRAPO" obtxn "$P" "$OBWAIT" TRO_MAX=16777216 TRO_KEEP=10368000 TRO_LOCK=0 2>"$OB/locked.err") || rc=$?
 check "관측: 락이 잡혀 있으면 봉투·rc 가 같다" "$rc/$out" "0/$(obtxn "$OB/wait2" "$OBWAIT")"
 check "관측: 락이 잡혀 있으면 줄을 버리고 경고한다" \
   "$(obn "$P")/$(grep -c '관측 로그 락을 잡지 못해' "$OB/locked.err")/$([ -d "$P/observe/.lock" ] && printf 남음)" "0/1/남음"
