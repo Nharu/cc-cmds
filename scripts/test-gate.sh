@@ -198,12 +198,12 @@ repo_root=${CC_TEST_GATE_REPO_ROOT:-$(cd "$script_dir/.." && pwd)}
 # variables there. `wait_pid_gone` calls the same name, so it waits this way too.
 eval "tg_wait_until_shared() $(declare -f wait_until | tail -n +2)"
 wait_until() {
-  local rc=0
+  local tg_wait_rc=0
   case "$-" in
-    *x*) set +x; tg_wait_until_shared "$@" || rc=$?; set -x ;;
-    *) tg_wait_until_shared "$@" || rc=$? ;;
+    *x*) set +x; tg_wait_until_shared "$@" || tg_wait_rc=$?; set -x ;;
+    *) tg_wait_until_shared "$@" || tg_wait_rc=$? ;;
   esac
-  return "$rc"
+  return "$tg_wait_rc"
 }
 # EXPORTED, AND THAT IS NOT A STYLE CHOICE. Nothing in any child reads this out
 # of the environment — every use is in this shell, in a subshell, or in a
