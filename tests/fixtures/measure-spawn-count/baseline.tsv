@@ -27,7 +27,7 @@ pipeline	plugins/cc-cmds/hooks/gate-pretool.sh	19
 pipeline	plugins/cc-cmds/orchestrator/liveness.sh	34
 cond	os	Darwin
 cond	bash	3.2.57(1)-release
-cond	stubs	68e1597dce3d4e63042bb92a86e2376f6ba3516c1ab966e2003fda92a87578a3
+cond	stubs	05f902612590d2fafa8fefb42c808e9f657e50a3f54f952783f53e2ea151186d
 cond	spec	2d24a03e307d9c4618838424f0595cb814ac6b426739cf8ab661fb30f93c856a
 cond	fixture	455c105d381e8ea29d49b81b6cf90ad4f7bbe9d9278f18c51e84d43cc3e980e1
 cond	u8-caller	stage

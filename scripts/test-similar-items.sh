@@ -29,6 +29,8 @@ for v in $(compgen -v CC_PIPELINE_); do unset "$v"; done
 
 script_dir=$(cd "$(dirname "$0")" && pwd)
 repo_root=$(cd "$script_dir/.." && pwd)
+# shellcheck source=wait-fixture.sh
+. "$repo_root/scripts/wait-fixture.sh"
 ORCH="$repo_root/plugins/cc-cmds/orchestrator"
 SI="$ORCH/similar-items.py"
 CREATE="$ORCH/clickup-create.py"
@@ -111,7 +113,7 @@ class H(BaseHTTPRequestHandler):
             mode = json.load(f)
         kind = mode.get("kind", "fixed")
         if kind == "hang":
-            time.sleep(60)
+            time.sleep(1200)
             return
         if kind != "fixed":
             self.reply(int(kind))
@@ -393,11 +395,14 @@ CC_CMDS_CRED_STORE="$WORK/store-good" run_si file --corpus "$WORK/small.json" --
 check "503 — 쌍마다 3건(재시도 2)" "$(reqs)" "6"
 check "503 — lexical" "$(jf 'd["status"]')" "lexical"
 has "503 — 알림" "$(jf 'd["notice"]')" "(사유: 판정 응답 없음)"
+# The stub holds the request for 1200 s, so a lookup that waits for the reply
+# instead of its own deadline is caught by the shared wait ceiling, never by a
+# short hang running out first. The cause is the `timeout` reason below.
 set_mode '{"kind": "hang"}'
-start=$SECONDS
-CC_CMDS_CRED_STORE="$WORK/store-good" run_si file --corpus "$WORK/small.json" --issue 1 --format json
-elapsed=$((SECONDS - start))
-if [ "$elapsed" -le 35 ]; then ok "무응답 — 35초 안에 끝난다 (${elapsed}s)"; else bad "무응답 — 35초 안에 끝난다" "${elapsed}s"; fi
+CC_CMDS_CRED_STORE="$WORK/store-good" run_si file --corpus "$WORK/small.json" --issue 1 --format json &
+si_pid=$!
+if wait_pid_gone "$si_pid"; then ok "무응답 — 기한 안에 끝난다"
+else kill "$si_pid" 2>/dev/null; bad "무응답 — 기한 안에 끝난다" "공용 기다림의 상한 안에 끝나지 않았다"; fi
 check "무응답 — timeout" "$(jf 'd["reason"]')" "timeout"
 check "무응답 — 종료 코드 0 과 lexical" "$(jf 'd["status"]')" "lexical"
 

@@ -35,6 +35,13 @@ export CC_CMDS_OBSERVER
 CC_CMDS_ATTENTION_ROOT=/dev/null/cc-cmds-attention
 export CC_CMDS_ATTENTION_ROOT
 
+# The stage stubs below are `wait_holder` processes from the shared wait file:
+# they live while the suite's shell does, so no fixed lifetime can run out
+# under a loaded host before the assertions that read them.
+_fx_repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+# shellcheck source=wait-fixture.sh
+. "$_fx_repo_root/scripts/wait-fixture.sh"
+
 # --------------------------------------------------------------------------
 # Run directory and ledger
 # --------------------------------------------------------------------------
@@ -129,7 +136,7 @@ fx_stage_live() {
   # fx_stage_live <segment> — a stage that is running, with a matching
   # fingerprint. Records the pid in FX_LAST_PID so the caller can reap it.
   local seg="$1" pid
-  sleep 120 &
+  wait_holder &
   pid=$!
   printf '%s' "$pid" > "$FX_RUN_DIR/$seg.pid"
   # `LC_ALL`, matching the product's capture. The fixture is read back by a gate
@@ -149,7 +156,7 @@ fx_stage_dead() {
   # have existed and guaranteed not to be running. That is stricter than
   # inventing a large number, which could collide with something real.
   local seg="$1" pid
-  sleep 0 &
+  true &
   pid=$!
   wait "$pid" 2>/dev/null || true
   printf '%s' "$pid" > "$FX_RUN_DIR/$seg.pid"
@@ -161,7 +168,7 @@ fx_stage_reused() {
   # match. This is the case `kill -0` alone gets wrong, and the one that made a
   # run unable to terminate: condition 7 has no resolving verb.
   local seg="$1" pid
-  sleep 120 &
+  wait_holder &
   pid=$!
   printf '%s' "$pid" > "$FX_RUN_DIR/$seg.pid"
   printf '%s' "Mon Jan  1 00:00:00 2001" > "$FX_RUN_DIR/$seg.start"
@@ -189,7 +196,7 @@ fx_stage_driver_live() {
   # unless job control gave it its own, so a written-in assumption would make
   # this fixture pass against a predicate that compares nothing.
   local seg="$1" pid
-  sleep 120 &
+  wait_holder &
   pid=$!
   printf '%s' "$pid" > "$FX_RUN_DIR/$seg.pid"
   ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ' > "$FX_RUN_DIR/$seg.pgid"
@@ -204,7 +211,7 @@ fx_stage_driver_reused() {
   # fixture starts can be in it, so the mismatch is guaranteed rather than
   # merely likely.
   local seg="$1" pid
-  sleep 120 &
+  wait_holder &
   pid=$!
   printf '%s' "$pid" > "$FX_RUN_DIR/$seg.pid"
   printf '%s\n' "1" > "$FX_RUN_DIR/$seg.pgid"
@@ -221,7 +228,7 @@ fx_stage_unverifiable() {
   # `ps` writes into it, so a stage observed inside that window has the sibling
   # the glob filter demands and nothing to compare against.
   local seg="$1" pid
-  sleep 120 &
+  wait_holder &
   pid=$!
   printf '%s' "$pid" > "$FX_RUN_DIR/$seg.pid"
   : > "$FX_RUN_DIR/$seg.start"
@@ -250,7 +257,7 @@ fx_stage_driver_reused_leader() {
   # carries the pid — a group of its own is exactly what a group kill misses.
   local seg="$1" pid
   set -m
-  sleep 120 &
+  wait_holder &
   pid=$!
   set +m
   printf '%s' "$pid" > "$FX_RUN_DIR/$seg.pid"
@@ -263,7 +270,7 @@ fx_stage_driver_reused_leader() {
 
 fx_reap() {
   # fx_reap — kill every process a fixture started. Call from the suite's trap;
-  # a `sleep 120` left behind outlives the test run by two minutes.
+  # a holder left behind lingers until it next sees the suite's shell gone.
   local pid
   for pid in ${FX_PIDS:-}; do
     kill "$pid" 2>/dev/null || true
@@ -328,12 +335,12 @@ fx_watch_pid() {
   # come up yet" and "died" are the same observation.
   local kind="$1" pid
   if [ "$kind" = "live" ]; then
-    sleep 120 &
+    wait_holder &
     pid=$!
     FX_PIDS="${FX_PIDS:-}$pid "
     export FX_PIDS
   else
-    sleep 0 &
+    true &
     pid=$!
     wait "$pid" 2>/dev/null || true
   fi

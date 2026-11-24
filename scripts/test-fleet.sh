@@ -155,9 +155,11 @@ at=$(jq -rn --argjson e "$TEST_NOW" '$e | todate'); dl=$(jq -rn --argjson e "$TE
 printf 'manifest=%s\ngrant=%s/g.md\nrun_id=rr-%s\nrendered_at=%s\ndeadline=%s\ndoc_sha256=(해당 없음)\n' "$m" "$TEST_REPAIR_DIR" "$e" "$at" "$dl"
 EOF
 # The remote, from files under $TEST_GH: the tip, `runs.<sha>` (the check runs
-# as the reader's --jq prints them), `steps.<job>`, `log.<job>`, `pulls` and
-# `compare.<sha>`. Every call is logged; a path no file answers fails, and so
-# does every call while `$TEST_GH/down` exists.
+# as the reader's --jq prints them), `meta.<sha>` (one commit's author, subject,
+# first parent and files, as the reader's --jq prints them; the tip answers a
+# commit without one, and `meta.<sha>.down` fails it), `steps.<job>`,
+# `log.<job>`, `pulls` and `compare.<sha>`. Every call is logged; a path no
+# file answers fails, and so does every call while `$TEST_GH/down` exists.
 cat > "$WORK/bin/gh" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$TEST_GH/calls"
@@ -171,7 +173,11 @@ for a in "$@"; do
 done
 case "$p" in
   repos/*/commits/*/check-runs*) h=${p%/check-runs*}; f="$TEST_GH/runs.${h##*/}" ;;
-  repos/*/commits/*) f="$TEST_GH/tip" ;;
+  repos/*/commits/*)
+    h=${p##*/}
+    if [ -e "$TEST_GH/meta.$h.down" ]; then exit 1
+    elif [ -e "$TEST_GH/meta.$h" ]; then f="$TEST_GH/meta.$h"
+    else f="$TEST_GH/tip"; fi ;;
   repos/*/actions/jobs/*/logs) j=${p%/logs}; f="$TEST_GH/log.${j##*/}" ;;
   repos/*/actions/jobs/*) f="$TEST_GH/steps.${p##*/}" ;;
   repos/*/pulls*) f="$TEST_GH/pulls" ;;
@@ -1684,7 +1690,9 @@ rec_set() {
   jq -c --arg id "mr-$E1" "if .id == \$id then $1 else . end" "$PACE/backlog.jsonl" > "$PACE/backlog.new" \
     && mv "$PACE/backlog.new" "$PACE/backlog.jsonl"
 }
-young() { local m; m=$(date -u -r "$1" +%s 2>/dev/null || printf 0); [ $(( $(date -u +%s) - m )) -lt 60 ] && printf yes || printf no; }
+# m_round dates the reading file back to 2020-01-01 00:00 before its round, so a
+# file newer than one minute past that was written again by the round.
+rewritten() { touch -t 202001010001 "$WORK/old-mark"; [ "$1" -nt "$WORK/old-mark" ] && printf yes || printf no; }
 
 # --- a settled reading opens an event; 진행 중 opens nothing ---------------------
 m_fresh m-open
@@ -1720,6 +1728,58 @@ check "진행 중은 새 tip 을 싣되 사건을 해소하지 않는다" "$(mf 
 gh_green "$TIP2"; m_round
 check "결론 난 초록은 사건을 해소한다" \
   "$(mf '.state + "/" + .events[0].resolved_commit + "/" + .events[0].repair.state + "/" + (.events[0].resolved_at != null | tostring)')" "초록/$TIP2/해소/true"
+
+# --- a bot release commit at the tip is read with its first parent ---------------
+PAR=$(printf '%040d' 3)
+EP=$(eid_of "$PAR" 'build|Run tests')
+gh_bot() {
+  # gh_bot <sha> <parent> <author> <subject> <file…> — that commit's metadata
+  # as the reader's --jq prints it.
+  local h="$1" p="$2" a="$3" s="$4"; shift 4
+  { printf '%s\n%s\n%s\n' "$a" "$s" "$p"; printf '%s\n' "$@"; } > "$TEST_GH/meta.$h"
+}
+BOT='github-actions[bot]'; REL='chore(release): v1.2.0'
+REL_FILES="CHANGELOG.md plugins/cc-cmds/.claude-plugin/plugin.json changelog.d/archive/1.2.0/a.md changelog.d/a.md"
+m_fresh m-bot
+# shellcheck disable=SC2086
+gh_bot "$TIP1" "$PAR" "$BOT" "$REL" $REL_FILES
+: > "$TEST_GH/runs.$TIP1"; gh_red "$PAR" 101; m_round
+check "검사가 없는 봇 릴리스 tip 은 첫째 부모의 빨강 게이트와 합쳐 빨강이고, tip 은 그대로 tip 이다" \
+  "$(mf '.state + "/" + .tip + "/" + (.signatures | join(","))')" "빨강/$TIP1/build|Run tests"
+check "그 사건의 첫 커밋과 id 는 첫째 부모로 정해진다" \
+  "$(mf '[.events[] | .id + "/" + .first_commit] | join(" ")')" "$EP/$PAR"
+check "렌더러도 첫째 부모를 첫 커밋으로 받는다" "$(grep -c -- "--event $EP .*--first-commit $PAR " "$TEST_LOG_DIR/repair.log" || true)" "1"
+
+m_fresh m-bot-green
+# shellcheck disable=SC2086
+gh_bot "$TIP1" "$PAR" "$BOT" "$REL" $REL_FILES
+gh_green "$TIP1"
+printf '%s\t%s\t%s\t%s\t%s\t%s\n' 22 'gate (1)' completed success github-actions '' > "$TEST_GH/runs.$PAR"
+m_round
+check "봇 릴리스 tip 과 첫째 부모가 모두 초록이면 초록이다" \
+  "$(mf '.state + "/" + (.events | length | tostring)')/$(gh_calls "commits/$PAR/check-runs")" "초록/0/1"
+
+for variant in author subject files; do
+  m_fresh "m-bot-$variant"
+  case "$variant" in
+    author)  gh_bot "$TIP1" "$PAR" 'someone' "$REL" CHANGELOG.md ;;
+    subject) gh_bot "$TIP1" "$PAR" "$BOT" 'chore(ci): v1.2.0' CHANGELOG.md ;;
+    files)   gh_bot "$TIP1" "$PAR" "$BOT" "$REL" CHANGELOG.md scripts/x.sh ;;
+  esac
+  gh_green "$TIP1"; gh_red "$PAR" 101; m_round
+  check "봇 릴리스 조건 하나가 어긋나면 ($variant) tip 의 검사만 읽는다" \
+    "$(mf '.state + "/" + (.events | length | tostring)')/$(gh_calls "commits/$PAR/check-runs")" "초록/0/0"
+done
+
+m_fresh m-bot-meta-down
+touch "$TEST_GH/meta.$TIP1.down"; gh_green "$TIP1"; m_round
+check "tip 커밋을 읽지 못하면 판정 불가다" "$(mf '.state')/$(gh_calls "commits/$TIP1/check-runs")" "판정 불가/0"
+
+m_fresh m-bot-parent-down
+# shellcheck disable=SC2086
+gh_bot "$TIP1" "$PAR" "$BOT" "$REL" $REL_FILES
+gh_green "$TIP1"; m_round
+check "첫째 부모의 검사를 읽지 못하면 판정 불가다" "$(mf '.state')" "판정 불가"
 
 # --- the same failure back on the same first commit opens its event again --------
 m_fresh m-reopen; gh_red "$TIP1" 101; m_round
@@ -1799,7 +1859,7 @@ kill "$LKP" 2>/dev/null; wait "$LKP" 2>/dev/null
 mkdir -p "$PACE/master.lock"; printf '%s\n' "$LKP" > "$PACE/master.lock/pid"; : > "$WORK/master.err"
 m_round
 check "죽은 pid 의 master.lock 은 그 라운드에 깨지고 판독이 다시 쓰인다" \
-  "$(grep -c 'master.lock 을 깬다' "$WORK/master.err" || true)/$(young "$PACE/$MFILE_REL")" "1/yes"
+  "$(grep -c 'master.lock 을 깬다' "$WORK/master.err" || true)/$(rewritten "$PACE/$MFILE_REL")" "1/yes"
 [ -d "$PACE/master.lock" ] && bad "라운드가 끝나면 master.lock 이 남지 않는다" "남아 있다" || ok "라운드가 끝나면 master.lock 이 남지 않는다"
 
 # ===========================================================================
