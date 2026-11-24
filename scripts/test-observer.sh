@@ -31,6 +31,8 @@ export CC_PIPELINE_RUN_ID
 
 script_dir=$(cd "$(dirname "$0")" && pwd)
 repo_root=$(cd "$script_dir/.." && pwd)
+# shellcheck source=wait-fixture.sh
+. "$repo_root/scripts/wait-fixture.sh"
 ORCH="$repo_root/plugins/cc-cmds/orchestrator"
 
 if ! command -v python3 >/dev/null 2>&1; then
@@ -141,15 +143,6 @@ mode_of(){ python3 -c 'import os,sys; print(oct(os.stat(sys.argv[1]).st_mode & 0
 age_back(){ python3 -c 'import os,sys,time; t=time.time()-float(sys.argv[2]); os.utime(sys.argv[1],(t,t))' "$1" "$2"; }
 alive()  { kill -0 "$1" 2>/dev/null; }
 
-# wait_for <seconds> <command...> — poll every 0.1 s until the command succeeds.
-wait_for() {
-  local n=$(( $1 * 10 )); shift
-  while [ "$n" -gt 0 ]; do
-    "$@" && return 0
-    sleep 0.1; n=$((n - 1))
-  done
-  return 1
-}
 is_running(){ [ "$(st "$1")" = running ]; }
 file_is()   { [ "$(tr -d '[:space:]' < "$1" 2>/dev/null)" = "$2" ]; }
 
@@ -157,7 +150,7 @@ file_is()   { [ "$(tr -d '[:space:]' < "$1" 2>/dev/null)" = "$2" ]; }
 # 1. ensure starts it
 # ---------------------------------------------------------------------------
 python3 "$OA" ensure; check "1 ensure 는 0 으로 끝난다" "$?" 0
-wait_for 5 is_running "$OA"
+wait_until is_running "$OA"
 check "1 status 가 running" "$(st "$OA")" running
 P1=$(rec_of pid)
 check "1 record.json 의 열쇠 여섯" \
@@ -180,7 +173,7 @@ P2=$(rec_of pid)
 differ "2 높은 판본의 ensure 는 교체한다" "$P2" "$P1"
 check "2 교체한 기록의 판본" "$(rec_of version)" 1.1.0
 if alive "$P1"; then bad "2 옛 데몬이 내려갔다" "pid $P1 가 살아 있다"; else ok "2 옛 데몬이 내려갔다"; fi
-wait_for 5 is_running "$OB"
+wait_until is_running "$OB"
 
 # ---------------------------------------------------------------------------
 # 3. a stopped observer is hung, and ensure replaces it
@@ -192,7 +185,7 @@ python3 "$OB" ensure
 P3=$(rec_of pid)
 differ "3 hung 이면 ensure 가 교체한다" "$P3" "$P2"
 if alive "$P2"; then bad "3 멈춘 데몬은 KILL 로 내려갔다" "pid $P2 가 살아 있다"; else ok "3 멈춘 데몬은 KILL 로 내려갔다"; fi
-wait_for 5 is_running "$OB"
+wait_until is_running "$OB"
 check "3 새 데몬이 running" "$(st "$OB")" running
 
 # ---------------------------------------------------------------------------
@@ -227,7 +220,7 @@ G="$WORK/grace"; mkdir -p "$G/cc-cmds/run" "$G/cc-cmds/session"; ROOTS="$ROOTS $
 env XDG_STATE_HOME="$G" CC_OBSERVER_GRACE=1 CC_OBSERVER_PERIOD=0.2 python3 "$OA" ensure
 GP=$(cat "$G/cc-cmds/observer/observer.pid" 2>/dev/null | tr -d '[:space:]')
 gone() { ! alive "$GP"; }
-if [ -n "$GP" ] && wait_for 8 gone; then ok "5 등록도 채택도 없으면 유예 뒤 끝난다"; else bad "5 유예 종료" "pid ${GP:-없음}"; fi
+if [ -n "$GP" ] && wait_until gone; then ok "5 등록도 채택도 없으면 유예 뒤 끝난다"; else bad "5 유예 종료" "pid ${GP:-없음}"; fi
 if [ -e "$G/cc-cmds/observer/record.json" ] || [ -e "$G/cc-cmds/observer/observer.pid" ]; then
   bad "5 유예 종료 뒤 기록과 observer.pid 가 없다" "$(ls "$G/cc-cmds/observer" | tr '\n' ' ')"
 else
@@ -267,7 +260,7 @@ differ "6 고정 사본이 런 밖을 가리키는 런은 0 이 아니다" "$?" 
 # 9. what the judging call saw
 # ---------------------------------------------------------------------------
 seen_ok() { grep -q "^observer=$(opid)\$" "$RD/fixt.seen" 2>/dev/null; }
-wait_for 5 seen_ok
+wait_until seen_ok
 check "9 판정 호출의 CC_OBSERVER_PID 가 데몬 pid" "$(sed -n 's/^observer=//p' "$RD/fixt.seen" 2>/dev/null)" "$(opid)"
 check "9 판정 호출의 환경에 CC_PIPELINE_* 가 없다" "$(grep -c '^leak=' "$RD/fixt.seen" 2>/dev/null)" 0
 
@@ -279,22 +272,29 @@ FIFO="$WD/test.$$.fifo"
 mkfifo -m 600 "$FIFO"
 exec 7<>"$FIFO"
 drain() { while read -r -t 1 -u 7 _; do :; done; }
+# One byte read off the wake FIFO; `wait_until` repeats it until a byte comes.
+wake_byte() { read -r -t 1 -u 7 _; }
 sleep 1; drain
 printf '1\n' > "$RD/fixt.probe"
-if read -r -t 3 -u 7 _; then ok "8 탐침이 바뀌면 FIFO 에 한 바이트가 온다"; else bad "8 탐침 변화의 깨움" "3초 안에 오지 않았다"; fi
-for n in 2 3 4; do printf '%s\n' "$n" > "$RD/fixt.probe"; sleep 0.8; done
+if wait_until wake_byte; then ok "8 탐침이 바뀌면 FIFO 에 한 바이트가 온다"; else bad "8 탐침 변화의 깨움" "공용 상한 안에 오지 않았다"; fi
+# Three changes, a period apart, with nothing read in between; the first byte is
+# waited for, and what is left is counted over a quiet window.
+printf '2\n' > "$RD/fixt.probe"; sleep 0.8
+printf '3\n' > "$RD/fixt.probe"; sleep 0.8
+printf '4\n' > "$RD/fixt.probe"; sleep 0.8
 got=0
+wait_until wake_byte && got=1
 while read -r -t 1 -u 7 _; do got=$((got + 1)); done
 check "8 읽지 않은 채 세 번 바꿔도 read 는 한 번만 성공한다" "$got" 1
 
-sleep 0 & DEADP=$!; wait "$DEADP" 2>/dev/null
+true & DEADP=$!; wait "$DEADP" 2>/dev/null
 mkfifo -m 600 "$WD/dead.$DEADP.fifo"
 dead_gone() { [ ! -e "$WD/dead.$DEADP.fifo" ]; }
-if wait_for 3 dead_gone; then ok "8 주인 pid 가 죽은 FIFO 는 지워진다"; else bad "8 죽은 주인의 FIFO" "남아 있다"; fi
+if wait_until dead_gone; then ok "8 주인 pid 가 죽은 FIFO 는 지워진다"; else bad "8 죽은 주인의 FIFO" "남아 있다"; fi
 
 mkfifo -m 600 "$WD/noreader.$$.fifo"
 printf '5\n' > "$RD/fixt.probe"
-if read -r -t 3 -u 7 _; then ok "8 읽는 쪽이 없는 FIFO 앞에서 바퀴가 막히지 않는다"; else bad "8 읽는 쪽 없는 FIFO" "다른 FIFO 의 깨움이 오지 않았다"; fi
+if wait_until wake_byte; then ok "8 읽는 쪽이 없는 FIFO 앞에서 바퀴가 막히지 않는다"; else bad "8 읽는 쪽 없는 FIFO" "다른 FIFO 의 깨움이 오지 않았다"; fi
 rm -f "$WD/noreader.$$.fifo"
 
 printf 'pid=1\nrefreshed=100\n' > "$RD/relay.live"
@@ -302,7 +302,7 @@ sleep 1; drain
 printf 'pid=1\nrefreshed=200\n' > "$RD/relay.live"
 if read -r -t 2 -u 7 _; then bad "8 relay.live 의 refreshed= 만 바뀐 것은 깨우지 않는다" "깨움이 왔다"; else ok "8 relay.live 의 refreshed= 만 바뀐 것은 깨우지 않는다"; fi
 printf 'pid=2\nrefreshed=300\n' > "$RD/relay.live"
-if read -r -t 3 -u 7 _; then ok "8 relay.live 의 다른 내용이 바뀌면 깨운다"; else bad "8 relay.live 내용 변화" "깨움이 오지 않았다"; fi
+if wait_until wake_byte; then ok "8 relay.live 의 다른 내용이 바뀌면 깨운다"; else bad "8 relay.live 내용 변화" "깨움이 오지 않았다"; fi
 exec 7>&-
 rm -f "$FIFO"
 
@@ -312,12 +312,12 @@ rm -f "$FIFO"
 P4=$(opid)
 kill -KILL "$P4"
 gone4() { ! alive "$P4"; }
-wait_for 3 gone4
+wait_until gone4
 python3 "$OB" ensure
 P5=$(opid)
 differ "7 KILL 뒤 ensure 는 새 데몬을 띄운다" "$P5" "$P4"
 readopted() { file_is "$RD/fixt.pid" "$P5"; }
-if wait_for 5 readopted; then ok "7 새 데몬이 세션 색인으로 그 런을 다시 채택해 pid 파일을 다시 쓴다"
+if wait_until readopted; then ok "7 새 데몬이 세션 색인으로 그 런을 다시 채택해 pid 파일을 다시 쓴다"
 else bad "7 재채택" "fixt.pid=$(cat "$RD/fixt.pid" 2>/dev/null), 데몬=$P5"; fi
 
 # ---------------------------------------------------------------------------
@@ -329,7 +329,7 @@ if [ -e "$RD/fixt.pid" ]; then bad "10 stop 은 작업 pid 파일을 지운다" 
 if [ -e "$RD/observer.jobs/fixt.args" ]; then ok "10 stop 뒤에도 args 는 남는다(재기동 복원)"; else bad "10 args 보존" "지워졌다"; fi
 OP="$RD/plugin/cc-cmds/orchestrator/observer.py"
 python3 "$OP" ensure
-wait_for 5 is_running "$OP"
+wait_until is_running "$OP"
 P6=$(opid)
 check "10 고정 사본으로 뜬 데몬이 사용 표지에 자기 pid 를 쓴다" "$(sed -n 's/^pid=//p' "$RD/observer.code-inuse" 2>/dev/null)" "$P6"
 fp_want=$(LC_ALL=C ps -o lstart= -p "$P6" | tr -s ' ' | sed 's/^ //; s/ $//')
