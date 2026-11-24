@@ -7825,7 +7825,7 @@ check "권장 한도는 10분 아래로 내려가지 않는다" \
   "$(grep -c '^test-gate: 권장 한도 — 600000ms$' "$est_dir/e.out" || true)" "1"
 # With no record there is no table to fit the model to.
 mkdir -p "$est_dir/bare/scripts"
-cp "$est_suite" "$est_dir/bare/scripts/test-gate.sh"
+cp "$est_suite" "$repo_root/scripts/wait-fixture.sh" "$est_dir/bare/scripts/"
 CC_TEST_GATE_REPO_ROOT="$est_dir/bare" CC_GATE_TIMING_RECORD="$est_dir/empty.tsv" \
   bash "$est_dir/bare/scripts/test-gate.sh" --estimate --sections 0d > "$est_dir/b.out" 2>&1 || true
 check "표가 비면 출처는 없음, 합계는 없고 한도는 상한이다" \
@@ -7867,7 +7867,7 @@ env -u CC_GATE_TIMING_RECORD CC_TEST_GATE_REPO_ROOT="$est_dir/bare" \
 check "기록 변수가 없으면 공통 git 디렉터리의 파일에 쓴다" \
   "$(cut -f1,2 "$est_dir/bare/.git/cc-cmds-gate-timing.tsv" 2>/dev/null | tr '\t' ' ')" "k 8"
 mkdir -p "$est_dir/nogit/scripts"
-cp "$est_suite" "$est_dir/nogit/scripts/test-gate.sh"
+cp "$est_suite" "$repo_root/scripts/wait-fixture.sh" "$est_dir/nogit/scripts/"
 est_rc=0
 env -u CC_GATE_TIMING_RECORD GIT_CEILING_DIRECTORIES="$est_dir" CC_TEST_GATE_REPO_ROOT="$est_dir/nogit" \
   bash "$est_dir/nogit/scripts/test-gate.sh" --record-add "$est_dir/add2.tsv" > /dev/null 2> "$est_dir/nogit.err" || est_rc=$?
@@ -60652,7 +60652,7 @@ CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$CC_GATE_PREV_AR83P"
 
 # ---------------------------------------------------------------------------
 # 84. gate_metrics_timed leaves nothing behind in a detached child under make
-# --- section: 84 | group: darwin | covers: gate_metrics_timed | anchors: 84: 무동작 명령은 rc 0 으로 돌아온다, 84: 시간 초과는 rc 143 이다, 84: 감시 시간의 sleep 이 남지 않는다, 84: 시간 초과된 명령의 자손이 남지 않는다, 84: 호출자의 fd 3 이상 보유자가 남지 않는다, 84: make 가 떼어 낸 자식이 살아 있는 동안 돌아온다 ---
+# --- section: 84 | group: darwin | covers: gate_metrics_timed | anchors: 84: 무동작 명령은 rc 0 으로 돌아온다, 84: 시간 초과는 rc 143 이다, 84: 감시 시간의 sleep 이 남지 않는다, 84: 시간 초과된 명령의 자손이 남지 않는다, 84: 호출자의 fd 3 이상 보유자가 남지 않는다, 84: make 가 떼어 낸 자식의 측정 뒤 공용 상한 안에 돌아온다 ---
 #
 # The metrics round is a detached child of whatever ran the gate, so under
 # `make -jN` it carries make's jobserver pipe. The old function backgrounded a
@@ -60682,9 +60682,9 @@ W84="$WORK/s84"; mkdir -p "$W84"; : > "$W84/marker"
 # can still be listed for a moment under load, so each count is retaken with the
 # shared wait until it reads zero.
 #
-# After its counts the child stays alive until the test drops `release` (or the
-# test shell is gone), so make returning while the child is still alive is the
-# evidence that make does not wait for the detached child.
+# The child ends right after its counts, so make returning at all is the
+# evidence: what could still hold make past that point is a leaked sleep, and
+# a leaked sleep outlives the shared ceiling.
 u84=$(( (RANDOM * 32768 + RANDOM) % 900000 + 100000 ))
 cat > "$W84/child.sh" <<'EOF'
 gate="$1"; o="$2"; u="$3"
@@ -60712,10 +60712,6 @@ lsof -t -- "$o/marker" > "$o/holders" 2>/dev/null 7<&- || true
 grep -vx "$$" "$o/holders" 7<&- | grep -c . > "$o/n.fd" 7<&- || true
 exec 7<&-
 echo done > "$o/done"
-while [ ! -e "$o/release" ]; do
-  [ -z "${WAIT_FIXTURE_OWNER:-}" ] || kill -0 "$WAIT_FIXTURE_OWNER" 2>/dev/null || break
-  sleep 0.1
-done
 EOF
 cat > "$W84/recipe.sh" <<EOF
 . "$repo_root/scripts/wait-fixture.sh"
@@ -60725,21 +60721,23 @@ child_over() { [ -e "$W84/done" ] || ! kill -0 "\$p" 2>/dev/null; }
 wait_until child_over || true
 EOF
 printf 'all: a b\na:\n\tbash "%s"\nb:\n\t@:\n' "$W84/recipe.sh" > "$W84/mk"
-rm -f "$W84/release"
 ( MAKEFLAGS= MFLAGS= MAKELEVEL= make -j2 -f "$W84/mk" >"$W84/make.out" 2>&1 3>&- 4>&- 5>&- ) &
 p84=$!
+# The child's own calls and counts come first and take their own time; only
+# once it has written `done` (or make is already gone) does the wait for make
+# start, so the two never share one ceiling.
+d84_ready() { [ -e "$W84/done" ] || ! kill -0 "$p84" 2>/dev/null; }
+wait_until d84_ready || true
 m84=돌아옴
 wait_pid_gone "$p84" || { m84=안돌아옴; pkill -P "$p84" 2>/dev/null || true; kill "$p84" 2>/dev/null || true; }
 c84=$(cat "$W84/child.pid" 2>/dev/null)
-if [ -n "$c84" ] && kill -0 "$c84" 2>/dev/null; then c84s=살아있음; else c84s=끝남; fi
-: > "$W84/release"
 if [ -e "$W84/done" ]; then
   check "84: 무동작 명령은 rc 0 으로 돌아온다" "$(cat "$W84/nbad")" "0"
   check "84: 시간 초과는 rc 143 이다" "$(cat "$W84/to.rc")" "143"
   check "84: 감시 시간의 sleep 이 남지 않는다" "$(cat "$W84/n.watch")" "0"
   check "84: 시간 초과된 명령의 자손이 남지 않는다" "$(cat "$W84/n.desc")" "0"
   check "84: 호출자의 fd 3 이상 보유자가 남지 않는다" "$(cat "$W84/n.fd")" "0"
-  check "84: make 가 떼어 낸 자식이 살아 있는 동안 돌아온다" "$m84|$c84s" "돌아옴|살아있음"
+  check "84: make 가 떼어 낸 자식의 측정 뒤 공용 상한 안에 돌아온다" "$m84" "돌아옴"
 else
   bad "84: 떼어 낸 자식이 끝까지 돌지 못했다" "$(cat "$W84/child.log" "$W84/make.out" 2>/dev/null)"
 fi
