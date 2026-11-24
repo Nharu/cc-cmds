@@ -346,7 +346,7 @@ esac
 # Spelling the set out means a suite added to this tree that calls the gate
 # family has to be added here as well. That edit is the point rather than a cost:
 # it is the one moment somebody looks at whether the new suite kills the channel.
-_selected_want="test-attention-funnel.sh test-fleet.sh test-gate-chain-equiv.sh test-gate-oracle.sh test-gate.sh test-kickoff-defaults.sh test-kickoff-hook-probe.sh test-liveness-agreement.sh test-local-bundle.sh test-lost-dispatch.sh test-measure-test-share.sh test-meta-invariants.sh test-orchestrator-pretool-hook.sh test-reader-model-pair-audit.sh test-rekick.sh test-repair.sh test-run-issue-filing.sh test-run.sh test-slots.sh test-snapshot.sh test-solo-audit-experiment.sh test-stage-supervisor.sh test-suite-isolation.sh test-tree.sh test-visual-check.sh test-waiting-decisions.sh"
+_selected_want="test-attention-funnel.sh test-fleet.sh test-gate-chain-equiv.sh test-gate-oracle.sh test-gate.sh test-kickoff-defaults.sh test-kickoff-hook-probe.sh test-liveness-agreement.sh test-local-bundle.sh test-lost-dispatch.sh test-measure-test-share.sh test-meta-invariants.sh test-observer-watch.sh test-orchestrator-pretool-hook.sh test-reader-model-pair-audit.sh test-rekick.sh test-repair.sh test-run-issue-filing.sh test-run.sh test-slots.sh test-snapshot.sh test-solo-audit-experiment.sh test-stage-supervisor.sh test-suite-isolation.sh test-tree.sh test-visual-check.sh test-waiting-decisions.sh"
 _selected_got=$(printf '%s\n' $_selected_names | sort | tr '\n' ' ' \
                   | sed -e 's/  */ /g' -e 's/^ //' -e 's/ $//')
 check "누출 술어가 고르는 스위트 집합이 그대로다" "$_selected_got" "$_selected_want"
@@ -2187,7 +2187,21 @@ done <<'EOF'
 반영 실패|autopilot-router-shift/references/visual-dispatch.md|the seat does not ask the person to answer it, but to run `/cc-cmds:visual <설계 문서> 구현 승인` again once the run has ended
 아침 보고|autopilot/references/act3-report.md|adds its stop record but not the option `결정 첨부 후 다시 반영`
 아침 보고|autopilot/references/act3-report.md|이 기록에는 답을 받을 수 없으니 답하지 말고, 런이 끝난 뒤 `/cc-cmds:visual <설계 문서 절대 경로> 구현 승인` 을 다시 실행하면
+사람 둔 어긋남 판독|implement-unattended/SKILL.md|Remove every whitespace character from the record's first `**스텝**` value and turn each of `—`, `–`, `‒`, `―` and `−` into `-`; the record is a kept-drift stop when what is left contains `CFI-U3BT-STOP` and, after it, `사람둔어긋남`.
+사람 둔 어긋남 판독|_common/approval-reflection.md|Remove every whitespace character from the record's first `**스텝**` value and turn each of `—`, `–`, `‒`, `―` and `−` into `-`; the record is a kept-drift stop when what is left contains `CFI-U3BT-STOP` and, after it, `사람둔어긋남`.
+사람 둔 어긋남 판독|design-reconverge/SKILL.md|Remove every whitespace character from the record's first `**스텝**` value and turn each of `—`, `–`, `‒`, `―` and `−` into `-`; the record is a kept-drift stop when what is left contains `CFI-U3BT-STOP` and, after it, `사람둔어긋남`.
+사람 둔 어긋남 판독|_common/pipeline-sidecar.md|Remove every whitespace character from the record's first `**스텝**` value and turn each of `—`, `–`, `‒`, `―` and `−` into `-`; the record is a kept-drift stop when what is left contains `CFI-U3BT-STOP` and, after it, `사람둔어긋남`.
+사람 둔 어긋남 판독|autopilot-router-shift/references/halt-answer-1.md|Remove every whitespace character from the record's first `**스텝**` value and turn each of `—`, `–`, `‒`, `―` and `−` into `-`; the record is a kept-drift stop when what is left contains `CFI-U3BT-STOP` and, after it, `사람둔어긋남`.
+금지 절 표시|implement-unattended/SKILL.md|, or whose colliding binding sentence stands in one of those sections,
+금지 절 표시|_common/approval-reflection.md|, or whose colliding binding sentence stands in one of those sections,
 EOF
+# The kept-drift stop is read wide (whitespace removed, dashes folded), so no
+# copy may still describe it as an exact `**스텝**` value: a reader holding to
+# the exact wording leaves a slightly misspelled record to the shift.
+for lit in 'is exactly `Step 2 CFI-U3 BT-STOP — 사람 둔 어긋남`' 'whole `**스텝**` is `Step 2 CFI-U3 BT-STOP — 사람 둔 어긋남`'; do
+  n=$(grep -rcF -- "$lit" "$SK" | awk -F: '{ s += $NF } END { print s + 0 }')
+  check "스킬 트리 어디에도 「${lit}」 이 없다" "$n" "0"
+done
 # The second same end keeps the sidecar at `대기`; a copy that writes
 # `실패 — <종단>` there stops the automatic retry and asks a person.
 for f in _common/approval-reflection.md design-reconverge/SKILL.md; do
@@ -2195,6 +2209,34 @@ for f in _common/approval-reflection.md design-reconverge/SKILL.md; do
   n2=$(grep -cF -- '실패 — <the end>' "$SK/$f" || true)
   check "반영 종단 ${f} 가 두 번째 같은 종단에 실패 줄을 쓰지 않는다" "$(( ${n:-0} + ${n2:-0} ))" "0"
 done
+# ---------------------------------------------------------------------------
+# A base resolution narrows its push check to the files both sides of the merge
+# changed, so each sentence that keeps the narrowing safe is pinned: the
+# definition, the ban on gathering earlier stages' items, the workflow path
+# filter that adds what CI skips, the matched pair a matched filter needs, the
+# fallback to the whole segment when a filter or a mapping cannot be read, and
+# the names check-push takes. A copy that loses one narrows further than CI
+# backs, and stays green.
+# ---------------------------------------------------------------------------
+while IFS='|' read -r who file lit; do
+  [ -n "$file" ] || continue
+  n=$(grep -cF -- "$lit" "$SK/$file" || true)
+  check "$who ${file} 가 「${lit}」 을 싣는다" "$([ "${n:-0}" -ge 1 ] && echo 예 || echo 아니오)" "예"
+done <<'EOF'
+베이스 해소|implement-unattended/SKILL.md|**The files the merge touched are the files both sides changed since the merge base.**
+베이스 해소|implement-unattended/SKILL.md|For each commit `git merge-base --all HEAD^1 HEAD^2` prints, intersect `git diff --no-renames --name-only <merge base> HEAD^1` with `git diff --no-renames --name-only <merge base> HEAD^2`
+베이스 해소|implement-unattended/SKILL.md|**Do not gather the items earlier stages ran from the ledger or the run directory.**
+베이스 해소|implement-unattended/SKILL.md|match the files the pull request changes (`git diff --no-renames --name-only HEAD^2 HEAD`) against it by GitHub's path filter rules
+베이스 해소|implement-unattended/SKILL.md|When no file matches, CI does not run that workflow's set on this pull request, so add the items of that set whose axis covers the files the pull request changes
+베이스 해소|implement-unattended/SKILL.md|one file the pull request changes paired verbatim with the `paths:` entry it matched. A workflow with no pair written counts as not matched
+베이스 해소|implement-unattended/SKILL.md|**When a workflow cannot be matched in place, do not narrow.**
+베이스 해소|implement-unattended/SKILL.md|pick by the axes of every file the segment changed against the merged base sha (`git diff --no-renames --name-only <merged base sha>...HEAD`) instead of the intersection
+베이스 해소|implement-unattended/SKILL.md|sections by `covers:`·`anchors:` into `CHECK_PUSH_SECTIONS`, goals as the REST goals (`print-rest-goals` names) of the scripts whose body calls or reads those files by path into `CHECK_PUSH_GOALS`
+베이스 해소|implement-unattended/SKILL.md|an item that file says has no name `check-push` takes is not picked, and the terminal message names it as an item not picked
+베이스 해소|implement-unattended/SKILL.md|over the scope the paragraph **The checks a base resolution runs** below sets
+EOF
+n=$(grep -cF -- 'for the files the merge touched' "$SK/implement-unattended/SKILL.md" || true)
+check "베이스 해소 implement-unattended/SKILL.md 가 범위 없는 「for the files the merge touched」 를 싣지 않는다" "${n:-0}" "0"
 reflect_para() {
   # reflect_para <file> — the reflection-dispatch paragraph of the visual wait,
   # from its bold head up to the next bold paragraph head.

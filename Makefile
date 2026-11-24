@@ -74,6 +74,7 @@ lint:
 	bash scripts/lint-interview-verification.sh
 	bash scripts/lint-kickoff-defaults.sh
 	bash scripts/lint-kickoff-recommendations.sh
+	bash scripts/lint-countermeasure-records.sh
 	@jq empty plugins/cc-cmds/hooks/hooks.json
 # Every command path in hooks.json must exist and be executable. This REPLACES a
 # hard-coded assertion that named one hook, which had already stopped covering a
@@ -224,7 +225,10 @@ check-cheap:
 # the base (in head mode, with origin/<base branch>, else the local branch; with
 # neither it is 판정불가 and nothing is added). A changed file no goal names is
 # listed and counted in the stamp; a derivation that cannot be computed ends 1
-# before any item runs, with no stamp.
+# before any item runs, with no stamp. CHANGELOG.md and plugin.json changed the
+# way a release commit changes them (scripts/test-reuse.sh's per-path check)
+# are not derivation input: a line of their own names them and the stamp keeps
+# them in `유도릴리스=`.
 #
 # check-cheap, each goal and each lane of sections run in a checkout of their
 # own and leave a record of the tracked files they read (a lane also the digest
@@ -476,6 +480,7 @@ LINT_TESTS := \
 	scripts/test-lint-bash-portability.sh \
 	scripts/test-lint-test-clock.sh \
 	scripts/test-tz-pin.sh \
+	scripts/test-changelog.sh \
 	scripts/test-lint-skill-auq-spec.sh \
 	scripts/test-lint-verification-literals.sh \
 	scripts/test-lint-design-audit-pins.sh \
@@ -509,6 +514,7 @@ LINT_TESTS := \
 	scripts/test-measure-team-cost.sh \
 	scripts/test-measure-lead-context.sh \
 	scripts/test-measure-bookkeeping.sh \
+	scripts/test-measure-read-chains.sh \
 	scripts/test-measure-test-share.sh \
 	scripts/test-measure-test-slots.sh \
 	scripts/test-measure-discussion-passes.sh \
@@ -526,7 +532,8 @@ LINT_TESTS := \
 	scripts/test-lint-interview-convention-refs.sh \
 	scripts/test-lint-interview-verification.sh \
 	scripts/test-lint-kickoff-defaults.sh \
-	scripts/test-lint-kickoff-recommendations.sh
+	scripts/test-lint-kickoff-recommendations.sh \
+	scripts/test-lint-countermeasure-records.sh
 
 ORCH_TESTS := \
 	plugins/cc-cmds/orchestrator/test-run.sh \
@@ -558,10 +565,14 @@ ORCH_TESTS := \
 	scripts/test-statusline.sh \
 	scripts/test-statusline-hook.sh \
 	scripts/test-stage-values-hook.sh \
+	scripts/test-stage-read-batch-hook.sh \
 	scripts/test-liveness-agreement.sh \
 	scripts/test-dashboard.sh \
 	scripts/test-dashboard-screen.sh \
+	scripts/test-dashboard-browser.sh \
 	scripts/test-observer.sh \
+	scripts/test-observer-watch.sh \
+	scripts/test-observer-checks.sh \
 	scripts/test-run-pane.sh \
 	scripts/test-display-tz.sh \
 	scripts/test-run-stops.sh \
@@ -569,6 +580,7 @@ ORCH_TESTS := \
 	scripts/test-stage-supervisor.sh \
 	scripts/test-design-brief.sh \
 	scripts/test-route.sh \
+	scripts/test-wait-fixture.sh \
 	scripts/test-collect-run-metrics.sh \
 	scripts/test-design-path-report.sh \
 	scripts/test-measure-cycle-causes.sh \

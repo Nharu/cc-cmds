@@ -114,7 +114,17 @@ hasnt(){ case "$2" in *"$3"*) bad "$1" "'$2' 에 '$3' 가 있음" ;; *) ok "$1" 
 # borrow segment can end the line in a `홈 HH:MM` clock, which is exactly the
 # trailing digit run the first expression removes, so the SB cases compare
 # literals and never call it.
-strip_clock() { sed -e 's/ [0-9][0-9:-]*$//' -e 's/원장 [0-9][^ ]* 전/원장 N/'; }
+#
+# THE ELAPSED IS NOT ALWAYS LAST. A run whose watcher heartbeat is missing or
+# stale, or whose observer is stale, gets its watcher slot appended after the
+# elapsed (`⟳ run-live S1 00:01 · 워처 없음`), so the trailing-digit expression
+# finds nothing to remove and the clock survives into the comparison. The
+# first expression takes the elapsed out from in front of that slot and keeps
+# the slot, which does name a fact both sides must agree on.
+strip_clock() {
+  sed -E -e 's/ [0-9][0-9:-]*( · (워처 [^ ]+|관측기 낡음))$/\1/' \
+    -e 's/ [0-9][0-9:-]*$//' -e 's/원장 [0-9][^ ]* 전/원장 N/'
+}
 
 # AND THE STRIPPING IS PINNED HERE, BECAUSE NOWHERE ELSE CAN PIN IT. Turned into
 # a no-op this function fails none of the three cases that call it — it only
@@ -149,6 +159,20 @@ check "시계 슬롯을 벗기면 앞 시점이 알려진 한 줄이 된다" \
   "$(printf '%s\n' "$_sc_a" | strip_clock)" "$_sc_want"
 check "시계 슬롯을 벗기면 뒤 시점이 같은 그 한 줄이 된다" \
   "$(printf '%s\n' "$_sc_b" | strip_clock)" "$_sc_want"
+
+# The same pair with the watcher slot after the elapsed, the shape a live stage
+# renders when its run has no watcher heartbeat. The slot must survive: it is
+# not a clock, and a scrubber that ate it would hide a watcher verdict.
+_sc_wa='⟳ run-live S1 00:01 · 워처 없음'
+_sc_wb='⟳ run-live S1 00:02 · 워처 없음'
+_sc_wwant='⟳ run-live S1 · 워처 없음'
+differ "워처 칸 대조쌍이 벗기기 전에는 서로 다르다" "$_sc_wa" "$_sc_wb"
+check "워처 칸 앞의 경과를 벗기면 앞 시점이 알려진 한 줄이 된다" \
+  "$(printf '%s\n' "$_sc_wa" | strip_clock)" "$_sc_wwant"
+check "워처 칸 앞의 경과를 벗기면 뒤 시점이 같은 그 한 줄이 된다" \
+  "$(printf '%s\n' "$_sc_wb" | strip_clock)" "$_sc_wwant"
+check "관측기 낡음 칸 앞의 경과도 벗기고 칸은 남긴다" \
+  "$(printf '%s\n' '⟳ run-live S1 00:07 · 관측기 낡음' | strip_clock)" '⟳ run-live S1 · 관측기 낡음'
 
 # The "no run" line. Byte-identical to every degraded path's output when no
 # borrow record is present, which is the property cases 10-13 exist to hold in
@@ -1623,17 +1647,31 @@ G7B="$WORK/g7b.json"; mk_settings_empty "$G7B"
 check "G7b EMPTY 경로는 verify 를 수행한다" "$(apply "$G7B" "$WORK/p-2nl" empty)" "40"
 
 # G8. The poll cap moved from three seconds to one, and a status line that takes
-# longer than a second has already failed.
+# longer than a second has already failed. The slow status line sleeps 1200 s,
+# so an installer that waits for it instead of capping the poll is caught by the
+# shared wait ceiling, never by a short sleep running out first; which cap ended
+# it is read from the installer's own reason line, not from a clock. The stub
+# records its pid and `exec`s the sleep, so the process the installer kills is
+# the sleep itself, and the pid is on the reap list in case it is not.
 mkdir -p "$WORK/p-slow/orchestrator"
 cp "$CMDLIB" "$WORK/p-slow/orchestrator/"
-printf '#!/usr/bin/env bash\ncat >/dev/null\nsleep 5\nprintf X\n' > "$WORK/p-slow/orchestrator/statusline.sh"
+printf '#!/usr/bin/env bash\ncat >/dev/null\nprintf %%s "$$" > %s\nexec sleep 1200\n' "'$WORK/g8-stub.pid'" \
+  > "$WORK/p-slow/orchestrator/statusline.sh"
 chmod +x "$WORK/p-slow/orchestrator/statusline.sh"
 G8="$WORK/g8.json"; mk_settings_empty "$G8"
-g8_start=$SECONDS
-check "G8 느린 상태줄은 verify 에서 실패한다" "$(apply "$G8" "$WORK/p-slow" empty)" "40"
-g8_elapsed=$((SECONDS - g8_start))
-if [ "$g8_elapsed" -le 3 ]; then ok "G8 폴링 상한이 1초다 (경과 ${g8_elapsed}초)"
-else bad "G8 폴링 상한" "${g8_elapsed}초가 걸렸다 — 상한이 1초로 줄지 않았다"; fi
+_g8_gone() { ! kill -0 "$1" 2>/dev/null; }
+bash "$APPLY" --apply --settings "$G8" --plugin-dir "$WORK/p-slow" --require-state empty >/dev/null 2>"$WORK/g8.err" &
+g8_pid=$!
+FX_PIDS="${FX_PIDS:-}$g8_pid "
+if wait_until _g8_gone "$g8_pid"; then
+  g8_rc=0; wait "$g8_pid" || g8_rc=$?
+else
+  kill "$g8_pid" 2>/dev/null; wait "$g8_pid" 2>/dev/null; g8_rc=상한
+fi
+[ -s "$WORK/g8-stub.pid" ] && FX_PIDS="${FX_PIDS:-}$(cat "$WORK/g8-stub.pid") "
+check "G8 느린 상태줄은 verify 에서 실패한다" "$g8_rc" "40"
+check "G8 폴링 상한이 1초다: 1초를 넘겨 실패했다고 말한다" \
+  "$(grep -c '^검증 실패: 1초를 넘겼습니다$' "$WORK/g8.err" || true)" "1"
 
 # G9/G9b. THE WORK DIRECTORY IS CREATED ONLY AFTER THE LOCK ATTEMPT RESOLVES.
 # G9b is what fixes the decision: an early `mktemp -d` with a trap passes G9 and

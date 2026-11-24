@@ -916,6 +916,8 @@ check "5: verify 가 원천 매니페스트의 전체 sha256 을 낸다" "$(prin
 check "5: verify 가 원천 인가 기록의 전체 sha256 을 낸다" "$(printf '%s\n' "$out" | awk -F'\t' '$1 == "해시" && $2 == "인가 기록" { print $3 }')" "$(sha "$BASE/docs/pipeline-grant/RKV.md")"
 check "5: verify 가 인터뷰 기록의 전체 sha256 을 낸다" "$(printf '%s\n' "$out" | awk -F'\t' '$1 == "해시" && $2 == "인터뷰" { print $3 }')" "$(sha "$BASE/docs/pipeline-run/RKV.interview.md")"
 check "5: 깨끗한 원천에는 질문 행이 없다" "$(cnt "$out" 질문)" "0"
+check "5: 결정 수거 확정 줄이 없는 원천의 verify 는 그 값을 수동으로 낸다" \
+  "$(printf '%s\n' "$out" | awk -F'\t' '$1 == "값" && $2 == "결정 수거 확정" { print $3 }')" "수동"
 
 vfail() {  # vfail <label> <want check name>
   local o r
@@ -1205,6 +1207,22 @@ mod "$WORK/v-cl.md" 's/| 문면=픽스처 절$/| 문면=바뀐 절/'
 vs "종료 절 행이 바뀐 초안은 실패한다" 실패 "$WORK/v-cl.md" "$E" 고정값
 mod "$WORK/v-ap.md" 's/^\*\*적용 주체\*\*: (해당 없음)$/**적용 주체**: 사람/'
 vs "적용 주체가 바뀐 초안은 실패한다" 실패 "$WORK/v-ap.md" "$E" 고정값
+# 결정 수거 확정 — 줄이 없는 원천은 수동으로 읽혀, 이어받는 값은 수동뿐이다.
+dc_draft() {  # dc_draft <out> <값> — NM1 의 미선언 상황 처분 줄 뒤에 결정 수거 확정 줄
+  awk -v v="$2" '{ print } /^\*\*미선언 상황 처분\*\*: / { print "**결정 수거 확정**: " v }' "$NM1" > "$1"
+}
+dc_draft "$WORK/v-dca.md" 자동
+dc_draft "$WORK/v-dcm.md" 수동
+check "7: 결정 수거 확정 줄을 하나씩 더한 초안을 만들었다" \
+  "$(grep -c '^\*\*결정 수거 확정\*\*: 자동$' "$WORK/v-dca.md")/$(grep -c '^\*\*결정 수거 확정\*\*: 수동$' "$WORK/v-dcm.md")" "1/1"
+vs "줄이 없는 원천에 결정 수거 확정 자동을 더한 초안은 실패한다" 실패 "$WORK/v-dca.md" "$E" 고정값
+vs "줄이 없는 원천에 결정 수거 확정 수동을 적은 초안은 통과한다" 통과 "$WORK/v-dcm.md" "$E"
+rk render-manifest --prev "$SRC" --base "$BASE" --run-id RKN9 --kickoff-at "$KAT1" --deadline "$DL1" \
+   --expect-sha256 "$PMSHA" --expect-grant-sha256 "$PGSHA" --asked "$E" \
+   --set '런:decision-confirm=자동' > "$WORK/v-dcset.md"; rc=$?
+check "7: --set 런:decision-confirm=자동 은 거부된다" "$([ "$rc" != 0 ] && echo 거부)" "거부"
+has "7: 그 거부는 수동으로 읽힌 원천을 든다" "$(cat "$WORK/rk.err")" "수동으로 읽혔으므로"
+unset -f dc_draft
 mod "$WORK/v-dep.md" 's/"depends_on": \[\]/"depends_on": ["D1"]/'
 vs "지운 id 를 가리키는 depends_on 은 실패한다" 실패 "$WORK/v-dep.md" "$E" 의존
 { cat "$NM1"; printf -- '- `사전 인가` | 이어받은 런=%s | 매니페스트 sha256=%s | 인가 기록 sha256=%s\n' "$SRC" "$PMSHA" "$PGSHA"; } > "$WORK/v-prov2.md"
@@ -1414,6 +1432,19 @@ check "7: --rule 이 룰 설정 줄을 그 답으로 쓴다" "$(grep -c '^\*\*�
 vs "룰 설정 키를 7.7 답으로 고친 초안은 통과한다" 통과 "$WORK/v-rule.md" "$WORK/asked-rule"
 vs "덮는 답 없이 룰 설정 줄이 바뀐 초안은 실패한다" 실패 "$WORK/v-rule.md" "$E" 고정값
 
+# (c2) 결정 수거 확정 자동을 가진 원천 — 초안이 그 줄을 바이트 그대로 잇는다.
+P_AXES='**결정 수거 확정**: 자동' mk_prev RKDCA; fx_done
+PMD=$(sha "$BASE/docs/pipeline-run/RKDCA.plan.md"); PGD=$(sha "$BASE/docs/pipeline-grant/RKDCA.md")
+check "7: 결정 수거 확정 자동인 원천의 verify 는 그 값을 낸다" \
+  "$(rk verify --prev RKDCA --base "$BASE" | awk -F'\t' '$1 == "값" && $2 == "결정 수거 확정" { print $3 }')" "자동"
+rk render-manifest --prev RKDCA --base "$BASE" --run-id RKN5D --kickoff-at "$KAT1" --deadline "$DL1" \
+   --expect-sha256 "$PMD" --expect-grant-sha256 "$PGD" --asked "$E" > "$WORK/v-dcc.md"
+check "7: 초안은 원천의 결정 수거 확정 줄을 그대로 잇는다" "$(grep -c '^\*\*결정 수거 확정\*\*: 자동$' "$WORK/v-dcc.md")" "1"
+VS_PREV="$BASE/docs/pipeline-run/RKDCA.plan.md"; VS_PMSHA="$PMD"; VS_PGSHA="$PGD"
+vs "결정 수거 확정 자동을 이은 초안은 통과한다" 통과 "$WORK/v-dcc.md" "$E"
+sed 's/^\*\*결정 수거 확정\*\*: 자동$/**결정 수거 확정**: 수동/' "$WORK/v-dcc.md" > "$WORK/v-dcc2.md"
+vs "원천의 결정 수거 확정과 다른 값의 초안은 실패한다" 실패 "$WORK/v-dcc2.md" "$E" 고정값
+
 # (d) The base binding, re-bound by a 7.8 answer.
 NOWBASE=$(sha "$BASE/docs/rk-base.md")
 PMB=$(sha "$BASE/docs/pipeline-run/RKVB.plan.md"); PGB=$(sha "$BASE/docs/pipeline-grant/RKVB.md")
@@ -1588,6 +1619,92 @@ out=$(rk render-manifest --prev RKARK --base "$BASE" --run-id RKARKN --kickoff-a
 check "7: 이어받는 대응 행이 있으면 --set 런:apply-probe-codes 는 render-manifest 가 1 로 거절한다" "$rc/$out" "1/"
 grep -vF -- "$AC_ROW" "$WORK/v-ark.md" > "$WORK/v-ark-drop.md"
 vs "이어받는 대응 행을 뺀 초안은 실패한다" 실패 "$WORK/v-ark-drop.md" "$E" 고정값
+VS_PREV="$PM"; VS_PMSHA="$PMSHA"; VS_PGSHA="$PGSHA"
+
+# (g2) A probe the pipeline runs that names a run id is carried neither as the
+# probe nor as its mapping: 5c is asked for a new probe and mapping, and the
+# draft carries both, the mapping bound to the new probe's bytes.
+RB_OLD='make probe RUN=20261121-4e3d8e05'
+RB_NEW='make probe RUN="$CC_APPLY_RUN_ID"'
+RB_ROW="- \`적용 프로브 코드\` | 불필요=0 | 필요=21 | 프로브 sha256=$(printf '%s' "$RB_OLD" | shasum -a 256 | cut -d' ' -f1)"
+RB_NROW="- \`적용 프로브 코드\` | 불필요=0 | 필요=21 | 프로브 sha256=$(printf '%s' "$RB_NEW" | shasum -a 256 | cut -d' ' -f1)"
+P_PROBE="\`$RB_OLD\`" P_AA=파이프라인 P_CUT=배포 P_GCUT=배포 P_EXTRA="$RB_ROW" mk_prev RKRB; fx_done
+mf_check "$BASE/docs/pipeline-run/RKRB.plan.md"; rc=$?
+check "7: 런 id 를 담은 프로브의 원천이 check_manifest 를 통과한다 (다음 단언이 공허하지 않다)" "$rc" "0"
+vac=$(rk verify --prev RKRB --base "$BASE")
+PMA=$(printf '%s\n' "$vac" | awk -F'\t' '$1 == "해시" && $2 == "매니페스트" { print $3 }')
+PGA=$(printf '%s\n' "$vac" | awk -F'\t' '$1 == "해시" && $2 == "인가 기록" { print $3 }')
+VS_PREV="$BASE/docs/pipeline-run/RKRB.plan.md"; VS_PMSHA="$PMA"; VS_PGSHA="$PGA"
+"$BASH" "$KD" --carry "$VS_PREV" --kickoff-at "$KAT1" --expect-sha256 "$PMA" > "$WORK/carry-rb" 2>/dev/null
+check "7: 런 id 를 담은 프로브 원천의 실제 --carry 는 프로브와 대응 모두 다시 물음을 낸다" \
+  "$(awk -F'\t' '$3 == "apply-probe" || $3 == "apply-probe-codes" { print $1"|"$3"|"$4 }' "$WORK/carry-rb")" \
+  "이어받지 않음|apply-probe|다시 물음
+이어받지 않음|apply-probe-codes|다시 물음"
+rk render-manifest --prev RKRB --base "$BASE" --run-id RKRBN --kickoff-at "$KAT1" --deadline "$DL1" \
+   --expect-sha256 "$PMA" --expect-grant-sha256 "$PGA" > "$WORK/v-rb.md"; rc=$?
+check "7: --set 없는 render-manifest 는 0 이고 대응 행을 싣지 않는다" "$rc/$(grep -c '^- `적용 프로브 코드`' "$WORK/v-rb.md")" "0/0"
+vs "5c 를 다시 묻지 않은 초안은 실패한다" 실패 "$WORK/v-rb.md" "$E" 고정값 --blank-rows "$WORK/carry-rb"
+o=$(rk verify-subset "$WORK/v-rb.md" "$VS_PREV" --expect-sha256 "$PMA" --expect-grant-sha256 "$PGA" --asked "$E" --blank-rows "$WORK/carry-rb")
+has "7: 그 실패 문면은 프로브가 담은 런 id 를 든다" "$o" "런 id 20261121-4e3d8e05 를 담고 있어"
+out=$(rk render-manifest --prev RKRB --base "$BASE" --run-id RKRBN --kickoff-at "$KAT1" --deadline "$DL1" \
+        --expect-sha256 "$PMA" --expect-grant-sha256 "$PGA" --set '런:apply-probe-codes=0/21' 2>/dev/null); rc=$?
+check "7: 새 프로브 없이 대응만 준 --set 은 render-manifest 가 1 로 거절한다" "$rc/$out" "1/"
+has "7: 그 거절 문면은 런 id 를 든다" "$(cat "$WORK/rk.err")" "런 id 20261121-4e3d8e05"
+out=$(rk render-manifest --prev RKRB --base "$BASE" --run-id RKRBN --kickoff-at "$KAT1" --deadline "$DL1" \
+        --expect-sha256 "$PMA" --expect-grant-sha256 "$PGA" --set "런:apply-probe=make probe${TAB}x" \
+        --set '런:apply-probe-codes=0/21' 2>/dev/null); rc=$?
+check "7: 탭이 든 새 프로브의 --set 은 render-manifest 가 용법 오류 2 로 거절한다" "$rc/$out" "2/"
+printf '5c 프로브\t%s\n5c\t0/21\n' "$RB_NEW" > "$WORK/asked-rb"
+RB_SETS=(--set "런:apply-probe=$RB_NEW" --set '런:apply-probe-codes=0/21')
+rk render-manifest --prev RKRB --base "$BASE" --run-id RKRBN --kickoff-at "$KAT1" --deadline "$DL1" \
+   --expect-sha256 "$PMA" --expect-grant-sha256 "$PGA" --asked "$WORK/asked-rb" "${RB_SETS[@]}" > "$WORK/v-rb5c.md"; rc=$?
+check "7: 5c 로 다시 물은 프로브와 대응을 준 render-manifest 는 0 으로 끝난다" "$rc" "0"
+check "7: 그 초안은 새 프로브를 역따옴표로 싣는다" \
+  "$(grep -c '^\*\*적용 프로브\*\*: ' "$WORK/v-rb5c.md")/$(grep -cxF -- "**적용 프로브**: \`$RB_NEW\`" "$WORK/v-rb5c.md")" "1/1"
+check "7: 그 초안의 대응 행은 새 프로브 바이트에 묶인다" \
+  "$(grep -c '^- `적용 프로브 코드`' "$WORK/v-rb5c.md")/$(grep -cxF -- "$RB_NROW" "$WORK/v-rb5c.md")" "1/1"
+mf_check "$WORK/v-rb5c.md"; rc=$?
+check "7: 그 초안이 check_manifest 를 통과한다" "$rc" "0"
+vs "5c 로 다시 물은 프로브와 대응을 실은 초안은 같은 --set 으로 통과한다" 통과 "$WORK/v-rb5c.md" "$WORK/asked-rb" "" \
+  "${RB_SETS[@]}" --blank-rows "$WORK/carry-rb"
+printf '5c 프로브\tmake probe\n5c\t0/21\n' > "$WORK/asked-rbx"
+vs "5c 프로브 답과 다른 프로브 --set 은 실패한다" 실패 "$WORK/v-rb5c.md" "$WORK/asked-rbx" 확정값 \
+  "${RB_SETS[@]}" --blank-rows "$WORK/carry-rb"
+# The render wraps the new probe in one pair of backticks and the driver
+# strips one from each end, so a value that starts or ends with a backtick
+# would run as another probe than the one the new mapping row is hashed on.
+RB_BT='test "$(cat REV)" = `git rev-parse HEAD`'
+out=$(rk render-manifest --prev RKRB --base "$BASE" --run-id RKRBN --kickoff-at "$KAT1" --deadline "$DL1" \
+        --expect-sha256 "$PMA" --expect-grant-sha256 "$PGA" --set "런:apply-probe=$RB_BT" \
+        --set '런:apply-probe-codes=0/21' 2>/dev/null); rc=$?
+check "7: 끝이 백틱인 새 프로브의 --set 은 render-manifest 가 1 로 거절한다" "$rc/$out" "1/"
+has "7: 그 거절 문면은 백틱을 든다" "$(cat "$WORK/rk.err")" "값이 백틱으로 시작하거나 끝납니다"
+out=$(rk render-manifest --prev RKRB --base "$BASE" --run-id RKRBN --kickoff-at "$KAT1" --deadline "$DL1" \
+        --expect-sha256 "$PMA" --expect-grant-sha256 "$PGA" --set "런:apply-probe=\`$RB_NEW\`" \
+        --set '런:apply-probe-codes=0/21' 2>/dev/null); rc=$?
+check "7: 백틱으로 감싼 새 프로브의 --set 은 render-manifest 가 1 로 거절한다" "$rc/$out" "1/"
+has "7: 그 거절 문면도 백틱을 든다" "$(cat "$WORK/rk.err")" "값이 백틱으로 시작하거나 끝납니다"
+# A new probe with a backslash is compared as bytes: the draft that carries it
+# passes the fixed-value and confirmed-value checks.
+RB_BS='test -f "rev\.$CC_APPLY_RUN_ID" && printf "%s\n" ok'
+RB_BSROW="- \`적용 프로브 코드\` | 불필요=0 | 필요=21 | 프로브 sha256=$(printf '%s' "$RB_BS" | shasum -a 256 | cut -d' ' -f1)"
+printf '5c 프로브\t%s\n5c\t0/21\n' "$RB_BS" > "$WORK/asked-rbbs"
+RB_BSSETS=(--set "런:apply-probe=$RB_BS" --set '런:apply-probe-codes=0/21')
+rk render-manifest --prev RKRB --base "$BASE" --run-id RKRBN --kickoff-at "$KAT1" --deadline "$DL1" \
+   --expect-sha256 "$PMA" --expect-grant-sha256 "$PGA" --asked "$WORK/asked-rbbs" "${RB_BSSETS[@]}" > "$WORK/v-rbbs.md"; rc=$?
+check "7: 역슬래시가 든 새 프로브의 render-manifest 는 0 이고 대응 행이 그 바이트에 묶인다" \
+  "$rc/$(grep -cxF -- "**적용 프로브**: \`$RB_BS\`" "$WORK/v-rbbs.md")/$(grep -cxF -- "$RB_BSROW" "$WORK/v-rbbs.md")" "0/1/1"
+mf_check "$WORK/v-rbbs.md"; rc=$?
+check "7: 그 초안이 check_manifest 를 통과한다" "$rc" "0"
+vs "역슬래시가 든 새 프로브를 실은 초안은 같은 --set 으로 통과한다" 통과 "$WORK/v-rbbs.md" "$WORK/asked-rbbs" "" \
+  "${RB_BSSETS[@]}" --blank-rows "$WORK/carry-rb"
+VS_PREV="$BASE/docs/pipeline-run/RKARK.plan.md"
+vac=$(rk verify --prev RKARK --base "$BASE")
+PMA=$(printf '%s\n' "$vac" | awk -F'\t' '$1 == "해시" && $2 == "매니페스트" { print $3 }')
+PGA=$(printf '%s\n' "$vac" | awk -F'\t' '$1 == "해시" && $2 == "인가 기록" { print $3 }')
+out=$(rk render-manifest --prev RKARK --base "$BASE" --run-id RKARKN --kickoff-at "$KAT1" --deadline "$DL1" \
+        --expect-sha256 "$PMA" --expect-grant-sha256 "$PGA" --set "런:apply-probe=$RB_NEW" 2>/dev/null); rc=$?
+check "7: 런 id 를 담지 않은 프로브에 --set 런:apply-probe 는 지금처럼 render-manifest 가 1 로 거절한다" "$rc/$out" "1/"
 VS_PREV="$PM"; VS_PMSHA="$PMSHA"; VS_PGSHA="$PGSHA"
 
 # (h) The label acknowledgement rows are carried in the place the shape rows
@@ -2238,6 +2355,13 @@ check "12: 후속 매니페스트에는 플러그인 허용 행이 바이트 그
   "$(grep -c '^- `플러그인 허용`' "$SL_OUT")/$(grep -cxF -- "$PA_ROW" "$SL_OUT")" "1/1"
 mf_check "$SL_OUT"; rc=$?
 check "12: 플러그인 허용 행을 이어 쓴 후속 초안이 check_manifest 를 통과한다" "$rc" "0"
+
+# A seat source whose pipeline-run probe names a run id: the seat asks nothing,
+# so it cannot get the new probe 5c would ask for, and no successor passes.
+P_PROBE="\`$RB_OLD\`" P_AA=파이프라인 P_CUT=배포 P_GCUT=배포 P_EXTRA="$SEAT_ROW
+$RB_ROW" mk_seat RKRBS 마감
+seat_link RKRBS RKRBS1
+check "12: 런 id 를 담은 프로브의 좌석 원천은 verify-subset --auto 가 실패한다" "$SL_VS" "실패"
 [ "$rc" = 0 ] || tail -1 "$WORK/check.err" >&2
 check "12: 키가 켬인 행만 이으면 렌더와 verify-subset 이 플러그인 알림을 내지 않는다" \
   "$(cat "$WORK/sl.rerr" "$WORK/sl.verr" | grep -c '^플러그인 알림' || true)" "0"
@@ -4335,6 +4459,125 @@ check "17: 의도 문면 뒤에 붙인 id 는 런 id 인자가 아니어서 인�
 P_KAT='2026-10-29T00:00:00Z' mk_prev 20261020-00f0000a; fx_done
 out=$(rk_as s-20261020-00f0000a detect --arg '전혀 다른 일을 한다')
 check "17: 후보가 하나인 세션의 새 런 고지는 그대로다" "$(col "$out" 고지)" "이 세션이 연 런(20261020-00f0000a)과 다른 의도로 보고 새 런으로 시작합니다 — 이어받으려면 인자 없이 다시 부르세요"
+
+# ---------------------------------------------------------------------------
+# 18. 급함 — 사람의 도중 표시(mark-urgent)와 재킥오프의 급함 이어받기
+# ---------------------------------------------------------------------------
+# ur_rd <id> [route.sh 원천|none] — 그 런의 런 디렉터리와 고정 라우터 사본. none 이면 사본이 없다.
+ur_rd() {
+  local rd="$XDG_STATE_HOME/cc-cmds/run/$1"
+  mkdir -p "$rd/plugin/cc-cmds/orchestrator"
+  [ "${2:-}" = none ] || cp "${2:-$ORCH/route.sh}" "$rd/plugin/cc-cmds/orchestrator/route.sh"
+  printf '%s' "$rd"
+}
+ur_sum() { find "$1" -type f 2>/dev/null | LC_ALL=C sort | while IFS= read -r f; do printf '%s %s\n' "$f" "$(sha "$f")"; done | shasum -a 256 | cut -d' ' -f1; }
+# ur_mark <id> [세션] — 다른 세션에서 부른 mark-urgent. UR_OUT 에 출력, UR_V 에 판정과 런 id.
+# 명령 치환 안에서 부르면 UR_OUT 이 부모 셸에 남지 않으므로 그대로 부른다.
+ur_mark() {
+  UR_OUT=$(rk_as "${2:-s-ur-other}" mark-urgent --run "$1")
+  UR_V="$(col "$UR_OUT" 판정)/$(col "$UR_OUT" 판정 3)"
+}
+UR1=20261101-0000a001
+UR1D=$(ur_rd "$UR1")
+ur_mark "$UR1"
+check "18: 다른 세션이 연 런도 표시한다" "$UR_V" "표시함/$UR1"
+has "18: 표시함의 고지는 다음 라우터 판정을 말한다" "$(col "$UR_OUT" 고지)" "다음 라우터 판정부터 급한 런으로 판정합니다"
+check "18: 표지는 사람 출처의 세 줄이다" \
+  "$(sed -n '1p;2p' "$UR1D/urgent" | paste -sd'|' -)/$(sed -n '3p' "$UR1D/urgent" | grep -cE '^시각=[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$')/$(wc -l < "$UR1D/urgent" | tr -d ' ')" \
+  "cc-run-urgent v1|출처=사람/1/3"
+check "18: 임시 파일이 남지 않는다" "$(find "$UR1D" -maxdepth 1 -name 'urgent.tmp.*' | wc -l | tr -d ' ')" "0"
+before=$(ur_sum "$UR1D")
+ur_mark "$UR1"
+check "18: 다시 부르면 이미" "$UR_V" "이미/$UR1"
+has "18: 이미의 고지는 표지의 출처를 든다" "$(col "$UR_OUT" 고지)" "출처=사람"
+check "18: 이미는 아무것도 쓰지 않는다" "$(ur_sum "$UR1D")" "$before"
+
+UR2=20261101-0000a002
+UR2D=$(ur_rd "$UR2")
+printf 'garbage\n' > "$UR2D/urgent"
+before=$(ur_sum "$UR2D")
+ur_mark "$UR2"
+check "18: 급함으로 읽히지 않는 표지 자리는 거부" "$UR_V" "거부/$UR2"
+has "18: 그 거부는 파일을 지우라고 경로를 든다" "$(col "$UR_OUT" 고지)" "$UR2D/urgent"
+check "18: 그 거부는 표지를 덮어쓰지 않는다" "$(ur_sum "$UR2D")" "$before"
+
+ur_mark RKUR-bad
+check "18: 런 id 의 꼴이 아니면 거부" "$UR_V" "거부/RKUR-bad"
+ur_mark 20261101-0000a0ff
+check "18: 런 디렉터리가 없으면 거부" "$UR_V" "거부/20261101-0000a0ff"
+check "18: 없는 런 디렉터리를 만들지 않는다" "$([ -e "$XDG_STATE_HOME/cc-cmds/run/20261101-0000a0ff" ] && echo 있음 || echo 없음)" "없음"
+UR3=20261101-0000a003
+UR3D=$(ur_rd "$UR3")
+printf '끝\n' > "$UR3D/done"
+ur_mark "$UR3"
+check "18: 끝난 런은 거부" "$UR_V" "거부/$UR3"
+check "18: 끝난 런에 표지를 쓰지 않는다" "$([ -e "$UR3D/urgent" ] && echo 있음 || echo 없음)" "없음"
+UR4=20261101-0000a004
+UR4D=$(ur_rd "$UR4" none)
+ur_mark "$UR4"
+check "18: 고정 라우터 사본이 없으면 거부" "$UR_V" "거부/$UR4"
+printf '#!/usr/bin/env bash\n# def rt_urgent( 는 주석이라 세지 않는다\ndef rt_other: 1;\n' > "$WORK/route-old.sh"
+UR5=20261101-0000a005
+UR5D=$(ur_rd "$UR5" "$WORK/route-old.sh")
+ur_mark "$UR5"
+check "18: 급함을 읽지 않는 고정 사본은 거부" "$UR_V" "거부/$UR5"
+has "18: 그 거부는 이전 플러그인 사본을 말한다" "$(col "$UR_OUT" 고지)" "이전 플러그인 사본"
+check "18: 거부한 런들에 표지가 없다" "$([ -e "$UR4D/urgent" ] || [ -e "$UR5D/urgent" ] && echo 있음 || echo 없음)" "없음"
+
+# 옮기기에서 앞선 쓰기에 진 표시는 그 쓰기의 표지를 분류한다. mv 대역은 표지 자리에 킥오프
+# 출처의 표지를 먼저 놓고 옮기지 않는다. 운전자가 PATH 앞에 시스템 경로를 두므로 대역은
+# PATH 의 파일이 아니라 내보낸 셸 함수다.
+UR6=20261101-0000a006
+UR6D=$(ur_rd "$UR6")
+UR_OUT=$( cd "$WORK" \
+  && mv() { printf 'cc-run-urgent v1\n출처=킥오프\n시각=2026-11-01T00:00:00Z\n' > "$3"; return 1; } \
+  && export -f mv \
+  && CLAUDE_CODE_SESSION_ID=s-ur-other "$BASH" "$RK" mark-urgent --run "$UR6" 2>"$WORK/rk.err" )
+check "18: 옮기기에서 진 표시는 이미" "$(col "$UR_OUT" 판정)" "이미"
+has "18: 그 이미는 앞선 쓰기의 출처를 든다" "$(col "$UR_OUT" 고지)" "출처=킥오프"
+check "18: 진 표시의 임시 파일은 남지 않는다" "$(find "$UR6D" -maxdepth 1 -name 'urgent.tmp.*' | wc -l | tr -d ' ')" "0"
+
+# render-manifest — 앞선 런의 급한 런 행은 바이트 그대로 하나 옮긴다.
+UR_ROW="- \`급한 런\` | 출처=킥오프 | 사유=픽스처"
+P_EXTRA="$UR_ROW" mk_prev RKUR; fx_done
+mf_check "$BASE/docs/pipeline-run/RKUR.plan.md"; rc=$?
+check "18: 급한 런 행을 가진 원천이 check_manifest 를 통과한다" "$rc" "0"
+vur=$(rk verify --prev RKUR --base "$BASE")
+PMU=$(printf '%s\n' "$vur" | awk -F'\t' '$1 == "해시" && $2 == "매니페스트" { print $3 }')
+PGU=$(printf '%s\n' "$vur" | awk -F'\t' '$1 == "해시" && $2 == "인가 기록" { print $3 }')
+rk graph --prev RKUR --base "$BASE" --expect-sha256 "$PMU" >/dev/null
+rk render-manifest --prev RKUR --base "$BASE" --run-id RKNU --kickoff-at "$KAT1" --deadline "$DL1" \
+   --expect-sha256 "$PMU" --expect-grant-sha256 "$PGU" > "$WORK/v-ur.md"; rc=$?
+check "18: 급한 런 행이 초안에 바이트 그대로 하나 옮겨진다" \
+  "$rc/$(grep -c '^- `급한 런`' "$WORK/v-ur.md")/$(grep -cxF -- "$UR_ROW" "$WORK/v-ur.md")" "0/1/1"
+VS_PREV="$BASE/docs/pipeline-run/RKUR.plan.md"; VS_PMSHA="$PMU"; VS_PGSHA="$PGU"
+vs "급한 런 행이 원천과 같은 초안은 통과한다" 통과 "$WORK/v-ur.md" "$E"
+sed 's/^\(- `급한 런` | 출처=킥오프 | 사유=\)픽스처$/\1바꿈/' "$WORK/v-ur.md" > "$WORK/v-ur-mod.md"
+vs "원천과 다른 급한 런 행은 표지 없이 실패한다" 실패 "$WORK/v-ur-mod.md" "$E" "급한 런"
+
+# render-manifest — 행이 없는 앞선 런에 사람이 도중에 단 급함은 이어받음 행 하나가 된다.
+mk_prev RKUH; fx_done
+UHD="$XDG_STATE_HOME/cc-cmds/run/RKUH"
+printf 'cc-run-urgent v1\n출처=사람\n시각=2026-11-01T00:00:00Z\n' > "$UHD/urgent"
+vuh=$(rk verify --prev RKUH --base "$BASE")
+PMUH=$(printf '%s\n' "$vuh" | awk -F'\t' '$1 == "해시" && $2 == "매니페스트" { print $3 }')
+PGUH=$(printf '%s\n' "$vuh" | awk -F'\t' '$1 == "해시" && $2 == "인가 기록" { print $3 }')
+rk graph --prev RKUH --base "$BASE" --expect-sha256 "$PMUH" >/dev/null
+rk render-manifest --prev RKUH --base "$BASE" --run-id RKNH --kickoff-at "$KAT1" --deadline "$DL1" \
+   --expect-sha256 "$PMUH" --expect-grant-sha256 "$PGUH" > "$WORK/v-uh.md"; rc=$?
+check "18: 사람 표지는 초안에 이어받음 행 하나가 된다" \
+  "$rc/$(grep -c '^- `급한 런`' "$WORK/v-uh.md")/$(grep -cxF -- '- `급한 런` | 출처=이어받음 | 사유=RKUH 에 사람이 도중에 단 급함' "$WORK/v-uh.md")" "0/1/1"
+VS_PREV="$BASE/docs/pipeline-run/RKUH.plan.md"; VS_PMSHA="$PMUH"; VS_PGSHA="$PGUH"
+vs "사람 표지가 받치는 이어받음 행은 통과한다" 통과 "$WORK/v-uh.md" "$E"
+mv "$UHD/urgent" "$UHD/urgent.off"
+vs "표지가 없으면 원천에 없는 급한 런 행은 실패한다" 실패 "$WORK/v-uh.md" "$E" "급한 런"
+printf 'garbage\n' > "$UHD/urgent"
+vs "유효하지 않은 표지는 원천에 없는 급한 런 행을 받치지 않는다" 실패 "$WORK/v-uh.md" "$E" "급한 런"
+printf 'cc-run-urgent v1\n출처=킥오프\n시각=2026-11-01T00:00:00Z\n' > "$UHD/urgent"
+rk render-manifest --prev RKUH --base "$BASE" --run-id RKNH --kickoff-at "$KAT1" --deadline "$DL1" \
+   --expect-sha256 "$PMUH" --expect-grant-sha256 "$PGUH" > "$WORK/v-uk.md"; rc=$?
+check "18: 사람이 아닌 출처의 표지는 행을 만들지 않는다" "$rc/$(grep -c '^- `급한 런`' "$WORK/v-uk.md")" "0/0"
+rm -f "$UHD/urgent" "$UHD/urgent.off"
 
 printf '\n%d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" -eq 0 ]

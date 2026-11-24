@@ -1,0 +1,86 @@
+name: release
+
+# Every push to master assembles the fragments waiting there into one version
+# section and pushes a `chore(release): vX.Y.Z` commit.
+#
+# THE PUSH MAKES NO NEW RUN. A push made with GITHUB_TOKEN starts no workflow
+# run (workflow_dispatch and repository_dispatch aside), so the release commit
+# does not start this workflow again, and no push-triggered lint or gate run
+# lands on it either. That is why the last step dispatches lint.yml on master
+# once the push succeeded.
+#
+# ONE RUN AT A TIME, NONE CANCELLED. The concurrency group keeps one running and
+# at most one pending; a newer pending run replaces an older one. Each run
+# assembles from the master tip, not the event sha, so a replaced run's
+# fragments are picked up by the run that replaced it.
+on:
+  push:
+    branches:
+      - master
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+# The repository's default workflow permission is read, so the write is asked
+# for here: `contents` for the push, `actions` for the lint dispatch.
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    steps:
+      # The whole first-parent history: the fragments are ordered by the master
+      # commit that added each.
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+
+      # Up to three attempts. A push refused as non-fast-forward throws the
+      # attempt's assembly away, takes the new master tip and assembles again
+      # from there. A failed run pushes nothing, so its fragments stay on master
+      # and the next master push's run assembles them too.
+      - name: Assemble and push the release commit
+        id: release
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          for attempt in 1 2 3; do
+            rc=0
+            ver=$(bash scripts/changelog.sh assemble) || rc=$?
+            if [ "$rc" = 3 ]; then
+              echo "조립할 조각이 없다 — 릴리스하지 않는다"
+              exit 0
+            fi
+            if [ "$rc" != 0 ]; then
+              echo "changelog.sh assemble 이 ${rc} 로 끝났다 — push 하지 않는다" >&2
+              exit 1
+            fi
+            moved=$(git diff --cached --name-only --diff-filter=AR -- "changelog.d/archive/${ver}/")
+            git add CHANGELOG.md plugins/cc-cmds/.claude-plugin/plugin.json
+            git commit -q -m "chore(release): v${ver}" -m "$moved"
+            if git push origin HEAD:master; then
+              echo "pushed=true" >> "$GITHUB_OUTPUT"
+              echo "v${ver} 를 master 에 push 했다 (시도 ${attempt})"
+              exit 0
+            fi
+            echo "push 가 거부되었다 (시도 ${attempt}) — master 끝에서 다시 조립한다" >&2
+            git fetch origin master
+            git reset --hard origin/master
+            git clean -fdq -- changelog.d
+          done
+          echo "push 가 세 번 거부되었다 — 릴리스하지 않는다" >&2
+          exit 1
+
+      # Once, after the push that succeeded. A failure here fails the run: the
+      # release commit is already on master, and this is the signal that no lint
+      # run landed on it. `--ref master` runs the master tip at dispatch time,
+      # which is a newer commit when another push came in between.
+      - name: Run lint on the release commit
+        if: steps.release.outputs.pushed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run lint.yml --ref master

@@ -175,8 +175,11 @@ fi
 # THE SEAT ASKING A RUN'S APPROVAL REWRITES THAT APPROVAL'S BANNER, ONCE. When
 # this one question stands in for an approval a run already announced (see
 # `cc_notify_approval_link`), the first ask is raised as `approval-ask` into the
-# approval's own slot, silent, so the person sees one entry for one decision
-# instead of the approval's banner and a second one for the same question. The
+# approval's own slot, so the person sees one entry for one decision instead of
+# the approval's banner and a second one for the same question. It replaces that
+# banner without a sound when the slot already rang, and rings when it did not
+# (the approval's `answer` was demoted by the cap, for one): the slot's ring
+# mark in `cc_notify_sound` decides, so one banner makes one sound. The
 # id goes into the run's `notify.asked-approvals` first, so a later ask of the
 # same approval — the person is already looking at it — is an ordinary
 # `session-ask`. The autopilot switch is read as well: with it off, the approval

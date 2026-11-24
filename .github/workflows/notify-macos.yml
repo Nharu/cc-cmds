@@ -37,6 +37,7 @@ on:
       - 'scripts/test-gate.sh'
       - 'scripts/test-liveness-agreement.sh'
       - 'scripts/run-fixture.sh'
+      - 'scripts/wait-fixture.sh'
       - 'scripts/target-guard-fixtures.sh'
       # Every suite on this leg runs under the per-suite wrapper, the make step
       # is armed by the sourced step guard, and the wrapper's own suite checks
