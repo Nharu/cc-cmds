@@ -506,6 +506,7 @@ all_ticked() {
   for r in $starve_runs; do [ -s "$r/mark.ticked" ] || return 1; done
   return 0
 }
+# lint-test-clock: disable=elapsed-compare 대기 상한일 뿐 판정은 아래 n_ticked 의 check 가 한다
 while ! all_ticked && [ $(( $(date +%s) - t_adopt )) -lt 30 ]; do sleep 0.5; done
 n_ticked=0
 for r in $starve_runs; do [ -s "$r/mark.ticked" ] && n_ticked=$((n_ticked + 1)); done
