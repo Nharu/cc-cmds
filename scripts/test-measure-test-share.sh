@@ -583,14 +583,15 @@ echo x > "$FREPO/scripts/check-push-ci.tsv"
 fgit 2026-11-15T00:00:00Z commit -q -a -m later
 got=$(rep)
 rc=$?
-is "보고: 첫 줄의 창과 경계" "$rc $(printf '%s\n' "$got" | head -n 1)" "0 창: 2026-11-03T00:00:00Z ~ 지금 · 경계: 2026-11-10T00:00:00Z"
+is "보고: 첫 줄의 창과 경계" "$rc ${got%%$'\n'*}" "0 창: 2026-11-03T00:00:00Z ~ 지금 · 경계: 2026-11-10T00:00:00Z"
 is "보고: 창은 경계 7일 전부터라 앞선 런은 빠진다" "$(printf '%s\n' "$got" | cell 스테이지\ 종류 이전)" ""
 case "$got" in *"이후 표본 없음") pass "보고: 이후 표본 없음" ;; *) fail "보고: 이후 표본 없음 줄이 없다" ;; esac
 case "$got" in *판정:*) fail "보고: 판정 줄이 있다" ;; *) pass "보고: 판정 줄이 없다" ;; esac
 
 # origin/master, when it is there, decides instead of HEAD.
 fgit 2026-11-15T00:00:00Z update-ref refs/remotes/origin/master HEAD~2
-case "$(rep --since 2026-10-30 | head -n 1)" in
+got=$(rep --since 2026-10-30)
+case "${got%%$'\n'*}" in
   *"경계: 없음") pass "보고: origin/master 가 있으면 그 이력으로 경계를 본다" ;;
   *) fail "보고: origin/master 이력을 보지 않았다" ;;
 esac
