@@ -203,7 +203,7 @@ for seg in $SEGMENTS; do
       continue
     fi
     sec=$(rl_section_lines "$f" "$RL_P2_HEAD") || {
-      # A report skips the headings that do not apply, so a missing P2 heading
+      # A report with no P2 finding writes no P2 section, so a missing heading
       # is read against the report's own count: zero P2 is zero items.
       p2n=$(grep -E "$RL_SUMMARY_RE" "$f" 2>/dev/null | sed -n '1p' | sed -E "s/$RL_SUMMARY_RE.*/\\1/")
       case "$p2n" in

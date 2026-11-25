@@ -43057,7 +43057,7 @@ qh_txt() {  # qh_txt <파일> — the fixed forms that file must carry, as a/b/c
 check "34qh: 교대 지침과 리드 사본이 이관 판독기 실패 규칙을 싣는다" "$(qh_txt "$QH_TERM")|$(qh_txt "$QH_LEAD")" "abcdef|abcdef"
 
 # --- 34ql. 남김 목록 판독기 — 원장과 디스크에서 사람 몫을 결정적으로 뽑는다 ---
-# --- section: 34ql | group: cone | covers: leftovers | anchors: 34ql: 판독기 출력이 P2 둘을 출처와 함께 싣는다, 34ql: 문단만 있는 미검토 영역은 첫 줄이 한 항목이다, 34ql: 차단 부류 줄 없는 구현 필요 항목은 코드-부재다, 34ql: 검증됨으로 뒤집힌 항목은 나오지 않는다, 34ql: 머리 줄의 항목 수가 항목 줄 수와 같다, 34ql: 이관 줄의 판별 꼬리가 이관 행의 것과 바이트 그대로 같다, 34ql: 리뷰 보고서가 없으면 판독 실패 줄이 나오고 종료 코드는 0 이다, 34ql: 원장이 없으면 종료 코드가 0 이 아니다, 34ql: 사본을 고친 뒤 이관 줄은 바뀜이다, 34ql: 설계 문서가 (없음) 이면 잔여 항목도 판독 실패도 없다, 34ql: 설계 문서 줄이 없으면 잔여 항목도 판독 실패도 없다, 34ql: 아침 보고서 지침이 판독기 출력을 축자로 옮긴다, 34ql: P2 표제가 없고 발견 요약의 P2 가 0건이면 항목도 판독 실패도 없다, 34ql: 미검토 영역 표제가 없으면 항목도 판독 실패도 없다, 34ql: P2 표제가 없는데 발견 요약의 P2 가 1건 이상이면 판독 실패 줄이 나온다, 34ql: P2 표제 없이 부분 복구 발견 요약만 있으면 판독 실패 줄이 나온다 ---
+# --- section: 34ql | group: cone | covers: leftovers | anchors: 34ql: 판독기 출력이 P2 둘을 출처와 함께 싣는다, 34ql: 문단만 있는 미검토 영역은 첫 줄이 한 항목이다, 34ql: 차단 부류 줄 없는 구현 필요 항목은 코드-부재다, 34ql: 검증됨으로 뒤집힌 항목은 나오지 않는다, 34ql: 머리 줄의 항목 수가 항목 줄 수와 같다, 34ql: 이관 줄의 판별 꼬리가 이관 행의 것과 바이트 그대로 같다, 34ql: 리뷰 보고서가 없으면 판독 실패 줄이 나오고 종료 코드는 0 이다, 34ql: 원장이 없으면 종료 코드가 0 이 아니다, 34ql: 사본을 고친 뒤 이관 줄은 바뀜이다, 34ql: 설계 문서가 (없음) 이면 잔여 항목도 판독 실패도 없다, 34ql: 설계 문서 줄이 없으면 잔여 항목도 판독 실패도 없다, 34ql: 아침 보고서 지침이 판독기 출력을 축자로 옮긴다, 34ql: P2 표제가 없고 발견 요약의 P2 가 0건이면 항목도 판독 실패도 없다, 34ql: 미검토 영역 표제가 없으면 항목도 판독 실패도 없다, 34ql: P2 표제가 없는데 발견 요약의 P2 가 1건 이상이면 판독 실패 줄이 나온다, 34ql: P2 표제 없이 부분 복구 발견 요약만 있으면 판독 실패 줄이 나온다, 34ql: 표제 생략 고정물에서도 머리 줄의 항목 수가 항목 줄 수와 같다 ---
 #
 # THE MORNING'S LIST OF WHAT NO ONE CONFIRMED IS READ, NOT WRITTEN. The reader
 # `run-leftovers.sh` takes the manifest and the ledger and prints one item per
@@ -43162,7 +43162,7 @@ printf '# 리뷰\n\n- **발견 요약(부분 복구)**: 🔴 P0 미상 | 🟠 P1
 QL_LG2="$QL_ROOT/docs/pipeline-run/RQL2.md"
 { printf '# 원장\n\n'
   for s in c d e f; do
-    printf -- '- `cycle` | 교대=1 | 세그먼트=%s | 사이클=1 | 모드=전체 | 리포트 경로=docs/review/%s.md | prev=x\n' "$(printf '%s' "$s" | tr 'a-z' 'A-Z')" "$s"
+    printf -- '- `cycle` | 교대=1 | 세그먼트=%s | 사이클=1 | 모드=전체 | 리포트 경로=docs/review/%s.md | prev=x\n' "$(printf '%s' "$s" | tr '[:lower:]' '[:upper:]')" "$s"
   done
 } > "$QL_LG2"
 ql_run "$QL_NM" "$QL_LG2" --run-dir "$QL_RD"
