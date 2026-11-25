@@ -788,5 +788,242 @@ running_fixture
 plain --run-env CC_CMDS_AUTOPILOT_NOTIFY=1; check "13 맨 --once 도 --run-env 를 받아들인다" "$?" "0"
 check "13 맨 --once 는 --run-env 로 환경을 바꾸지 않는다" "$(state_of)" "$off_line"
 
+# ---------------------------------------------------------------------------
+# 14. A slow pass: the call's time limit, the hold after a timeout, and the
+#     pass's ledger excerpt.
+#
+# The hold runs on the observer's own signature, so the job is driven through a
+# real `Daemon` and a `Ctx` whose call is replaced: the gate's own traces
+# (`started-at` and the `자율 승인`, `pace` and `master 판독` rows) do not break
+# the hold, any other row, a halt record, a stage that changed while the slow
+# pass ran and a rewritten ledger do. The time limit is the real `Ctx.call` on a
+# pinned script that sleeps past the default ten seconds. The excerpt is held by
+# its effect: a pass over the same run with and without three thousand
+# `자율 승인` rows decides the same and leaves no excerpt behind.
+# ---------------------------------------------------------------------------
+HR="$WORK/holdrun"; HL="$WORK/holdledger.md"
+mkdir -p "$HR/observer.jobs" "$HR/halt"
+: > "$HR/observer.jobs/watch.args"
+printf '%s\n' "$HL" > "$HR/ledger-path"
+printf '%s\n' 1577836800 > "$HR/started-at"
+printf -- '- `run` | run-id=H | 시작=2020-01-01T00:00:00Z | prev=x\n' > "$HL"
+out=$(python3 - "$ORCH" "$HR" "$HL" <<'PY'
+import os, re, sys, types
+sys.dont_write_bytecode = True
+sys.path.insert(0, sys.argv[1])
+import observer
+rd, led = sys.argv[2], sys.argv[3]
+d = observer.Daemon()
+m = d.mods["watch"]
+r = observer.Run(rd)
+r.jobs["watch"] = observer.Job(["--run-dir", rd, "--ledger", led])
+d.runs[rd] = r
+
+
+class C(observer.Ctx):
+    def __init__(s):
+        super().__init__(d, "watch")
+        s.limits, s.logs, s.rc, s.during = [], [], -9, None
+
+    def call(s, run, argv, timeout=None):
+        s.limits.append(timeout)
+        if s.during:
+            s.during()
+            s.during = None
+        return s.rc, ""
+
+    def log(s, msg):
+        s.logs.append(msg.replace(rd, "RUN"))
+
+    def slots(s):
+        return 2, 4
+
+
+c = C()
+n = [0]
+
+
+def rows(*kinds):
+    with open(led, "a") as f:
+        for k in kinds:
+            n[0] += 1
+            f.write("- `%s` | 교대=1 | 근거=%d | prev=x\n" % (k, n[0]))
+
+
+def gate_entry():
+    n[0] += 1
+    with open(os.path.join(rd, "started-at"), "w") as f:
+        f.write("%d\n" % (1577836800 + n[0]))
+    rows("자율 승인", "pace", "master 판독")
+
+
+def step(name, t, changed=True):
+    k = len(c.limits)
+    m.tick(c, rd, changed, float(t))
+    print("%s=%s" % (name, "call" if len(c.limits) > k else "skip"))
+
+
+step("first", 30000)
+print("limit=%s" % c.limits[0])
+print("timeout-line=%s" % bool(re.fullmatch(
+    r"watch\.sh 시한 초과 RUN — 60초 동안 변화에만 부른다 슬롯 2/4 load1 [0-9.]+ 원장 [0-9]+B", c.logs[-1])))
+gate_entry()
+step("quiet1", 30001)
+gate_entry()
+step("quiet2", 30002)
+rows("segment")
+step("loud", 30003)
+gate_entry()
+step("quiet3", 30004)
+
+
+def stage_ends():
+    open(os.path.join(rd, "S1.pid"), "w").close()
+
+
+c.during = stage_ends
+with open(os.path.join(rd, "halt", "H#1.md"), "w") as f:
+    f.write("q\n")
+step("halt", 30005)
+step("during", 30006)
+gate_entry()
+step("quiet4", 30007)
+with open(led, "r+") as f:
+    f.truncate(10)
+step("shrunk", 30008)
+c.rc = 0
+ticks = iter([0.0, 11.5])
+real = m.time
+m.time = types.SimpleNamespace(monotonic=lambda: next(ticks))
+step("slow", 30100, False)
+m.time = real
+print("slow-line=%s" % bool(re.fullmatch(r"watch\.sh 느린 판 RUN 11\.5초 원장 [0-9]+B", c.logs[-1])))
+PY
+)
+check "14 watch 잡은 ctx.call 에 30초 시한을 넘긴다" "$(v limit)" "30"
+check "14 시한 초과 줄은 슬롯·load1·원장 크기를 적는다" "$(v timeout-line)" "True"
+check "14 보류 중 started-at 재기록과 자율 승인·pace·master 판독 행에는 부르지 않는다" "$(v quiet1)/$(v quiet2)" "skip/skip"
+check "14 보류 중 다른 종류 행이 붙으면 부른다" "$(v loud)" "call"
+check "14 다시 든 보류도 게이트 흔적에는 부르지 않는다" "$(v quiet3)" "skip"
+check "14 보류 중 halt/ 에 기록이 생기면 부른다" "$(v halt)" "call"
+check "14 판이 도는 동안 생긴 *.pid 변화는 보류에 막히지 않는다" "$(v during)" "call"
+check "14 그 뒤의 게이트 흔적에는 다시 부르지 않는다" "$(v quiet4)" "skip"
+check "14 원장이 짧아지면 부른다" "$(v shrunk)" "call"
+check "14 10초 넘게 걸린 판은 느린 판 줄을 남긴다" "$(v slow-line)" "True"
+
+CR="$S/cc-cmds/run/ctxrun"
+mkdir -p "$CR/plugin/cc-cmds/orchestrator"
+printf '#!/usr/bin/env bash\nsleep 12\nexit 0\n' > "$CR/plugin/cc-cmds/orchestrator/watch.sh"
+out=$(python3 - "$ORCH" "$CR" <<'PY'
+import sys, threading
+sys.dont_write_bytecode = True
+sys.path.insert(0, sys.argv[1])
+import observer
+d = observer.Daemon()
+rd = sys.argv[2]
+res = {}
+
+
+def go(job):
+    res[job] = observer.Ctx(d, job).call(rd, ["watch.sh"], timeout=30)[0]
+
+
+th = [threading.Thread(target=go, args=(j,)) for j in ("watch", "nojob")]
+for t in th:
+    t.start()
+for t in th:
+    t.join()
+print("watch-rc=%s" % res["watch"])
+print("nojob-killed=%s" % (res["nojob"] < 0))
+print("limits=%s/%s" % (observer.Ctx(d, "watch").call_limit(), observer.Ctx(d, "nojob").call_limit()))
+PY
+)
+check "14 실제 Ctx 로 12초 걸리는 watch 판은 끝까지 돌아 0" "$(v watch-rc)" "0"
+check "14 시한 상수가 없는 잡은 같은 스크립트가 10초에 죽는다" "$(v nojob-killed)" "True"
+check "14 잡별 호출 상한" "$(v limits)" "30.0/10.0"
+
+auto_rows() {
+  awk -v n="$1" 'BEGIN {
+    pad = ""; for (j = 0; j < 26; j++) pad = pad "abcdefghij"
+    for (i = 1; i <= n; i++)
+      printf "- `자율 승인` | 교대=1 | kind= | 결정=exec | 대상=cc-cmds | 세그먼트=- | 절단점=커밋 | 축2=읽기 | 행위 다이제스트=%064d | argv=cat /x/%s | 근거=읽기 %d | prev=%064x\n", i, pad, i, i
+  }'
+}
+mixed_run() {
+  # mixed_run <dir> <n> — RD/LG for a run with segment, approval, wait, block
+  # and halt-answer rows, then n `자율 승인` rows, then a terminal
+  # `stage-result`. The rows a line number names come before the block.
+  RD="$1/R1"; LG="$1/ledger.md"
+  mkdir -p "$RD/halt"
+  printf '%s\n' 1577836800 > "$RD/started-at"
+  printf '**스텝**: Step 3\n' > "$RD/halt/S2#1.md"
+  printf '**스텝**: Step 3\n' > "$RD/halt/S9#1.md"
+  {
+    printf -- '- `run` | run-id=R1 | 시작=2020-01-01T00:00:00Z | prev=x\n'
+    printf -- '- `segment` | id=S1 | 상태=실행중 | prev=x\n'
+    printf -- '- `segment` | id=S2 | 상태=실행중 | prev=x\n'
+    printf -- '- `segment` | id=S3 | 상태=머지됨 | prev=x\n'
+    printf -- '- `승인` | 승인 id=A1 | 상태=대기 | 절단점=머지 | prev=x\n'
+    printf -- '- `승인` | 승인 id=A2 | 상태=대기 | 절단점=커밋 | prev=x\n'
+    printf -- '- `승인` | 승인 id=A2 | 상태=승인 | 절단점=커밋 | prev=x\n'
+    printf -- '- `stage-wait` | 스테이지=S1 | 계보=B:S1#1 | prev=x\n'
+    printf -- '- `blocked` | 스코프=run | 사유=시험 막힘 | 원인=막힘 | 대상=S2 | prev=x\n'
+    printf -- '- `blocked` | 스코프=run | 사유=라이브니스 침묵 | 원인=불명 | 대상=- | 관측=2020-01-01T00:00:00Z | prev=x\n'
+    printf -- '- `중단 답` | 중단 기록=/R1/halt/S9#1.md | prev=x\n'
+    printf -- '- `handoff` | 교대=1 | prev=x\n'
+    printf -- '- `교대 기동` | 교대=2 | 기록 시각=2020-01-01T00:00:00Z | prev=x\n'
+    auto_rows "$2"
+    printf -- '- `stage-result` | 세그먼트=S2 | 스테이지=S2 | 세션 id=abc | 실행 버전=1 | 종료 코드=0 | 종단 부류=정상 완료 | prev=x\n'
+  } > "$LG"
+}
+dead_pid() {
+  local p=999999
+  while kill -0 "$p" 2>/dev/null; do p=$((p - 1)); done
+  printf '%s' "$p"
+}
+cost_pass() {
+  # cost_pass <dir> <n> — one delegated pass over mixed_run; prints what it decided.
+  local t0 rc d
+  mixed_run "$1" "$2"
+  : > "$RD/.watch.ledger-view.$(dead_pid)"
+  : > "$RD/.watch.ledger-view.$OBS"
+  : > "$NOTIFY_LOG"
+  t0=$(now)
+  env -u CC_CMDS_AUTOPILOT_NOTIFY CC_CMDS_NOTIFY_HOST_OS=Darwin CC_OBSERVER_PID="$OBS" \
+    bash "$WATCH" --run-dir "$RD" --ledger "$LG" --once --started "$t0" >/dev/null 2>&1
+  rc=$?
+  wait_until grep -q 'A1' "$NOTIFY_LOG"
+  sleep 1
+  d=$(first_line "$RD/watch.next")
+  printf 'rc=%s\n' "$rc"
+  printf 'mode=%s\n' "$(awk 'NR == 1 { print $1 }' "$RD/watch.mode" 2>/dev/null)"
+  # The deadline is a time: it is printed as an offset from the pass's start,
+  # and compared apart from the rest within the seconds a pass takes.
+  if [ -n "$d" ]; then printf 'next=%s\n' $((d - t0)); else printf 'next=\n'; fi
+  sed -n '2,$p' "$RD/watch.next" 2>/dev/null
+  LC_ALL=C sort "$NOTIFY_LOG"
+  ls -a "$RD" | grep -e '^watch\.announced' -e '^stall$' | LC_ALL=C sort
+  cut -f2- "$RD/stall" 2>/dev/null
+  printf 'views=%s\n' "$(ls -a "$RD" | grep '^\.watch\.ledger-view\.' | tr '\n' ' ')"
+}
+with=$(cost_pass "$WORK/c14w" 3000)
+without=$(cost_pass "$WORK/c14o" 0)
+nw=$(printf '%s\n' "$with" | sed -n 's/^next=//p'); no=$(printf '%s\n' "$without" | sed -n 's/^next=//p')
+if [ -n "$nw" ] && [ -n "$no" ] && [ $((nw - no)) -ge -3 ] && [ $((nw - no)) -le 3 ]; then
+  ok "14 두 원장에서 다음 마감이 판 시작으로부터 같은 거리다"
+else
+  bad "14 두 원장에서 다음 마감이 판 시작으로부터 같은 거리다" "with '$nw' without '$no'"
+fi
+with=$(printf '%s\n' "$with" | grep -v '^next=')
+without=$(printf '%s\n' "$without" | grep -v '^next=')
+if [ "$with" = "$without" ]; then
+  ok "14 자율 승인 행 3000개를 더한 원장과 뺀 원장에서 판정이 같다"
+else
+  bad "14 자율 승인 행 3000개를 더한 원장과 뺀 원장에서 판정이 같다" "$(diff <(printf '%s\n' "$with") <(printf '%s\n' "$without") | tr '\n' ' ')"
+fi
+check "14 그 판은 열린 승인의 배너를 낸다" "$(printf '%s\n' "$with" | grep -c '승인 A1 이 답을 기다립니다' || true)" "1"
+check "14 판 뒤에는 제 발췌도 죽은 프로세스의 발췌도 남지 않고 살아 있는 프로세스의 것만 남는다" \
+  "$(printf '%s\n' "$with" | sed -n 's/^views=//p')" ".watch.ledger-view.$OBS "
+
 printf '\ntest-observer-watch: %d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" -eq 0 ]
