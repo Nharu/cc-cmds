@@ -116,6 +116,7 @@ hook_run() {
   env -u CC_PIPELINE_SEGMENT -u CC_PIPELINE_STAGE_ID -u CC_PIPELINE_SHIFT_ID \
       -u CC_PIPELINE_REENTRY -u CC_PIPELINE_RUN_ID -u RUN_ID -u RUN_DIR \
       -u CC_CMDS_SESSION_NOTIFY -u CC_CMDS_AUTOPILOT_NOTIFY -u TMUX -u TMUX_PANE \
+      -u CC_CMDS_REMOTE_PERMISSION_DECISION -u CLAUDE_CODE_ENTRYPOINT \
       PATH="$path" \
       HOME="$HOMEDIR" \
       TMPDIR="$T" \
@@ -141,8 +142,13 @@ events_json()  { if [ -d "$SPOOL/events" ];  then find "$SPOOL/events"  -name '*
 handled_json() { if [ -d "$SPOOL/handled" ]; then find "$SPOOL/handled" -name '*.json' -type f -exec cat {} + | jq -s -c 'sort_by(.at_ms)'; else echo '[]'; fi; }
 ev() { events_json | jq -r "$1"; }
 
-# The fingerprint, computed here from its definition rather than by the hook.
+# The fingerprint and the normalized key, computed here from their definitions
+# rather than by the hook.
 fp_of() { jq -cS '{tool_name, tool_input}' "$1" | SHA | cut -c1-16; }
+nk_of() { jq -cS '{tool_name, tool_input} | walk(if type == "number" then . + 0 else . end)' "$1" | SHA | cut -c1-16; }
+
+# The remote decision switch on, in an interactive session.
+ON="CC_CMDS_REMOTE_PERMISSION_DECISION=1 CLAUDE_CODE_ENTRYPOINT=cli"
 
 # The handled rule of the event contract: an exact marker on the same slot, or a
 # prefix marker the slot starts with, whose time is later than the event's.
@@ -181,7 +187,8 @@ S=sess-1
 IN='{"command":"make check","description":"run the checks"}'
 perm "$S" Bash "$IN"
 FP=$(fp_of "$P")
-hook_run request "$PATH_FULL"
+NK=$(nk_of "$P")
+hook_run request "$PATH_FULL" $ON
 check "사건 하나가 생긴다" "$(n_events)" "1"
 check "kind" "$(ev '.[0].kind')" "permission"
 check "token" "$(ev '.[0].token')" "permission"
@@ -189,15 +196,64 @@ check "slot 은 세션@지문" "$(ev '.[0].slot')" "cc-cmds-permission-$S@$FP"
 check "제목 (세션 제목 없음)" "$(ev '.[0].title')" "cc-cmds · 권한 확인을 기다립니다"
 check "본문은 도구 이름 한 줄과 요약" "$(ev '.[0].body')" "Bash
 make check — run the checks"
-check "actionable 거짓" "$(ev '.[0].actionable')" "false"
-check "accepts 비어 있음" "$(ev '.[0].accepts | tojson')" "[]"
-check "reply 네 필드" "$(ev '.[0].reply | tojson')" \
-  "$(jq -cn --arg s "$S" '{surface: "permission", session_id: $s, tool_name: "Bash", input_summary: "make check — run the checks"}')"
+check "스위치 켠 대화형 세션 — actionable 참" "$(ev '.[0].actionable')" "true"
+check "스위치 켠 대화형 세션 — accepts 는 결정 봉투" "$(ev '.[0].accepts | tojson')" '["permission-decision"]'
+REPLY_BASH=$(jq -cn --arg s "$S" '{surface: "permission", session_id: $s, tool_name: "Bash", input_summary: "make check — run the checks"}')
+check "reply 네 필드" "$(ev '.[0].reply | tojson')" "$REPLY_BASH"
 check "origin.session_id" "$(ev '.[0].origin.session_id')" "$S"
 check "open 표시가 남고 pending 은 없다" \
   "$([ -f "$BASE/$S/open.$FP" ] && [ ! -e "$BASE/$S/pending.$FP" ] && echo yes || echo no)" "yes"
+check "표시 파일 내용은 <지문> <정규화 키>" "$(cat "$BASE/$S/open.$FP" 2>/dev/null)" "$FP $NK"
+check "정규화 키는 16자 16진수" "$(printf '%s' "$NK" | grep -cE '^[0-9a-f]{16}$')" "1"
 check "seen 이 기록된다" "$([ -s "$BASE/$S/seen" ] && echo yes || echo no)" "yes"
 check "첨부 임시 파일이 남지 않는다" "$(find "$T" -maxdepth 1 -name 'cc-attention-detail.*' | wc -l | tr -d ' ')" "0"
+
+# The request's event is answerable only with the switch on, an interactive
+# entrypoint, no pipeline marker and no running subagent. Each other case keeps
+# the reply target for display.
+act_case() { # act_case <label> <sid> [env...]
+  local label="$1" sid="$2"; shift 2
+  reset
+  perm "$sid" Bash "$IN"
+  hook_run request "$PATH_FULL" "$@"
+  check "$label — 사건 하나" "$(n_events)" "1"
+  check "$label — actionable 거짓" "$(ev '.[0].actionable')" "false"
+  check "$label — accepts 비어 있음" "$(ev '.[0].accepts | tojson')" "[]"
+  check "$label — 답 대상 그대로" "$(ev '.[0].reply | del(.session_id) | tojson')" \
+    "$(printf '%s' "$REPLY_BASH" | jq -c 'del(.session_id)')"
+}
+act_case "스위치 꺼짐" sess-a1 CLAUDE_CODE_ENTRYPOINT=cli
+act_case "스위치 값이 1 아님" sess-a2 CC_CMDS_REMOTE_PERMISSION_DECISION=true CLAUDE_CODE_ENTRYPOINT=cli
+act_case "비대화형 sdk-cli" sess-a3 CC_CMDS_REMOTE_PERMISSION_DECISION=1 CLAUDE_CODE_ENTRYPOINT=sdk-cli
+act_case "진입점 빔" sess-a4 CC_CMDS_REMOTE_PERMISSION_DECISION=1
+act_case "CC_PIPELINE_RUN_ID 만 있음" sess-a5 $ON CC_PIPELINE_RUN_ID=r1
+
+reset
+SA=sess-a6
+plain "$SA" SubagentStart '{"agent_id":"sub6","agent_type":"general-purpose"}'
+hook_run agent-start "$PATH_FULL" $ON
+perm "$SA" Bash "$IN"
+hook_run request "$PATH_FULL" $ON
+check "agent-start 뒤 — actionable 거짓" "$(ev '.[0].actionable')" "false"
+check "agent-start 뒤 — accepts 비어 있음" "$(ev '.[0].accepts | tojson')" "[]"
+check "agent-start 뒤 — 답 대상 그대로" "$(ev '.[0].reply.tool_name')" "Bash"
+plain "$SA" SubagentStop '{"agent_id":"sub6","agent_type":"general-purpose"}'
+hook_run agent-stop "$PATH_FULL" $ON
+perm "$SA" Bash '{"command":"make lint"}'
+hook_run request "$PATH_FULL" $ON
+check "agent-stop 뒤 — 다시 actionable 참" \
+  "$(ev '[.[] | select(.reply.input_summary == "make lint")] | .[0].actionable')" "true"
+
+# The marker's normalized key does not depend on how the numbers are written.
+reset
+perm sess-nk1 Bash '{"command":"ls","timeout":1000}'
+NK1=$(nk_of "$P")
+perm sess-nk1 Bash '{"command":"ls","timeout":1000.0}'
+NK2=$(nk_of "$P")
+hook_run request "$PATH_FULL" $ON
+FPX=$(fp_of "$P")
+check "숫자 표기가 다른 입력 — 정규화 키 같음" "$NK2" "$NK1"
+check "숫자 표기가 다른 입력 — 표시 파일은 좌석의 지문과 같은 키" "$(cat "$BASE/sess-nk1/open.$FPX" 2>/dev/null)" "$FPX $NK1"
 
 # The session title, read from the title hook's current title file.
 reset
@@ -594,6 +650,12 @@ hook_run notification "$PATH_FULL"
 check "보조 신호 — PermissionRequest 가 없었으면 사건이 생긴다" "$(n_events)" "1"
 check "보조 신호 — 슬롯" "$(ev '.[0].slot')" "cc-cmds-permission-sess-n1@notification"
 check "보조 신호 — reply 는 null" "$(ev '.[0].reply')" "null"
+check "보조 신호 — actionable 거짓" "$(ev '.[0].actionable')" "false"
+reset
+notif sess-n1
+hook_run notification "$PATH_FULL" $ON
+check "보조 신호 — 스위치 켠 대화형 세션에서도 actionable 거짓" "$(ev '.[0].actionable')" "false"
+check "보조 신호 — 스위치 켠 대화형 세션에서도 reply 는 null" "$(ev '.[0].reply')" "null"
 check "보조 신호 — 본문" "$(ev '.[0].body')" "도구를 알 수 없는 권한 확인이 열렸습니다
 Claude needs your permission to use Bash"
 check "보조 신호 — open.notification" "$([ -f "$BASE/sess-n1/open.notification" ] && echo yes || echo no)" "yes"

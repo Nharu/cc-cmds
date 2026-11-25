@@ -241,8 +241,14 @@ cc_attention_emit() {
               all($reply.questions[]; (.id | nestr) and (.options | length) >= 1)
             elif $kind == "approval" then
               ($reply.options | length) >= 1
+            elif $kind == "permission" then
+              ($reply.session_id | nestr) and ($reply.tool_name | nestr)
+              and ($reply.input_summary | type) == "string"
             else false end)
          else false end) as $act
+      | (if $act | not then []
+         elif $kind == "permission" then ["permission-decision"]
+         else ["option"] end) as $accepts
       | (if $d != null and ($d.body | nestr) then $d.body else $body end) as $b
       | (if $kind == "approval" then
            if $d == null or (($d.body | nestr) | not) then empty
@@ -265,7 +271,7 @@ cc_attention_emit() {
       | $id,
         ({schema: 1, id: $id, host: $host, created_at_ms: ($ms | tonumber),
           kind: $kind, token: $token, slot: $slot, title: $title, body: $b,
-          actionable: $act, accepts: (if $act then ["option"] else [] end),
+          actionable: $act, accepts: $accepts,
           origin: {
             session_id: ((if $reply != null and ($reply.session_id | nestr) then $reply.session_id else $sid end) | nn),
             run_id: ((if $reply != null and ($reply.run_id | nestr) then $reply.run_id else $run end) | nn),

@@ -115,7 +115,7 @@ event = { schema: 1, id, host, created_at_ms,
 | `title` | string | the banner title |
 | `body` | string | the whole, untruncated text |
 | `actionable` | boolean | whether the event can be answered remotely |
-| `accepts` | array | `["option"]` when `actionable` is true, `[]` otherwise |
+| `accepts` | array | `[]` when `actionable` is false; when true, `["permission-decision"]` for a `permission` event and `["option"]` for every other kind |
 | `origin` | object | the six keys below |
 | `reply` | object or null | the reply target, or null |
 
@@ -262,10 +262,13 @@ written as false.
 | `auq` | the reply surface is `auq`, it has at least one question, and every question has at least one option |
 | `question-form` | the reply surface is `question-form` and every question has an `id` and at least one option |
 | `approval` | the reply surface is `approval` and `options` is not empty |
-| `permission` | never — the first version has no envelope for a permission decision |
+| `permission` | the reply surface is `permission`, `session_id` and `tool_name` are non-empty strings, and `input_summary` is a string |
 | any other kind | never; `reply` is null |
 
-`accepts` follows `actionable` alone: `["option"]` when true, `[]` when false.
+`accepts` is derived from the kind: `[]` when `actionable` is false; when it is
+true, `["permission-decision"]` for a `permission` event, which a decision
+envelope answers, and `["option"]` for every other kind, which an option-label
+envelope answers.
 
 **What the producer owes:** a question-form producer passes `actionable: true`
 only when every question is single-select and none is shown conditionally. A

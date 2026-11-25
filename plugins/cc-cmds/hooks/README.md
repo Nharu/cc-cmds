@@ -677,7 +677,8 @@ written, when the tool is `AskUserQuestion`.
 - `seen` — the epoch milliseconds of the session's last `PermissionRequest`,
   a subagent's included;
 - `pending.<fp>` — made in the synchronous part of `request`, moved to
-  `open.<fp>` once the event is written;
+  `open.<fp>` once the event is written; both hold one line
+  `<fp> <normalized key>`, by which the decision helper finds its dialog;
 - `open.<fp>`, `open.notification` — a dialog whose event is written and not
   yet closed;
 - `agent.<agent_id>` — a running subagent.
@@ -705,6 +706,17 @@ event. Then `pending.<fp>` moves to `open.<fp>`; when that move fails, a settle
 signal took the pending file meanwhile, and the exact marker is written there,
 after the event. The dialog appears only once the hook has returned, which is
 why the heavy part is detached.
+
+**Answerable or not.** The request's event carries `actionable: true` and
+`accepts: ["permission-decision"]` only when the remote decision switch
+`CC_CMDS_REMOTE_PERMISSION_DECISION` is exactly `1`, `CLAUDE_CODE_ENTRYPOINT`
+is `cli` (any other value, empty included, counts as a non-interactive
+session), none of the five pipeline markers is set and no `agent.*` marker of
+the session exists. Otherwise it carries `actionable: false` and `accepts: []`
+with the same reply target, for display only. The fallback signal's event is
+always `actionable: false` with a null reply. The seat itself still answers no
+dialog; the decision is taken by the hook of "The remote permission decision"
+below.
 
 **The summary.** Bash shows the command and, when present, `— <description>`;
 Edit the path and the old and new strings; MultiEdit the path and every edit;
@@ -1267,3 +1279,98 @@ marker.
 holds the reply id that owns one cell (the call's `tool_use_id` or the form id),
 keyed by the spool root and the cell, so test spools and the real one never
 mix. It is how a cell finds its applied record.
+
+## The remote permission decision
+
+A `permission-decision` envelope the relay left in this session's mailbox
+answers the open permission dialog with allow or deny. The envelope, its
+acceptance conditions and its apply order are fixed in
+`../skills/_common/remote-reply.md` (`## 결정 봉투`); this section says which
+file moves them.
+
+| File | Role |
+| --- | --- |
+| `remote-reply/index.tsx` | The mode's `classic.PermissionRequest` hook: the gate, and the race between the dialog and the decision helper |
+| `session-permission-decide.sh` | Every read and write of the spool and the seat state for a decision, as subcommands: `wait`, `commit`, `note`, and `key` for the tests |
+
+**The switch.** Nothing happens unless `CC_CMDS_REMOTE_PERMISSION_DECISION`
+is exactly `1` in the environment Claude Code starts with — export it in the
+shell that launches `claude`, or set it in the `env` block of a settings file.
+The permission seat (through the shell) and the mode (through `$.env.get`) read
+this one value; there is no spool file for it. It ships off. Turn it on only
+after these were seen in a real interactive session: the hook waits for
+minutes with the dialog on screen and an allow and a deny each take effect
+once; a local answer given first ends the wait and leaves no applied record;
+a subagent's dialog takes no remote decision.
+
+**The gate.** The hook returns `next(e)` untouched when the mode is not active
+(see "The remote reply seam"), the input has `agent_id`, the tool is
+`AskUserQuestion` or not a string, the switch is off, the session id is
+missing, or the spool root is not a directory. The helper repeats the shell
+side: `jq`, `cc_caller_is_router`, the spool root.
+
+**The race.** Otherwise the hook starts the dialog (`next(e)`, "below") and one
+`wait` child with `{session_id, tool_name, tool_input, tmpdir, rejected}`;
+`tmpdir` is the mode's `TMPDIR`. The child looks once a second and prints
+`<address> <reply_id>` for the first candidate, or ends with no output when
+the seat's marker is gone (or never appeared within 30 seconds), an `agent.*`
+marker exists, its parent is gone, or the latest event of the slot is handled.
+When below ends with a decision, or `next.signal` aborts (the person answered,
+a hook above settled first), the child is stopped and below stands. A below
+that ends without a decision does not stop the wait. A candidate goes to
+`commit`; a refused commit adds the reply id to `rejected` and starts the child
+again. After a commit that printed a decision the hook looks at below and the
+signal once more; if the local side won meanwhile, below stands even though
+the applied record is written. Otherwise allow returns
+`{ decision: { behavior: 'allow' } }` and deny returns
+`{ decision: { behavior: 'deny', message: '원격 거부 — 발신=<sender>' } }`.
+
+**Which dialog.** The helper finds the seat's `pending.<fp>` or `open.<fp>` by
+the normalized key in it (the mode re-serializes the tool input, so the bytes
+can differ from the seat's) and uses the fingerprint that marker names for the
+slot `cc-cmds-permission-<sid>@<fp>`. Of the `permission` events of that slot
+only the latest (largest `created_at_ms`, then id) is this call's; an envelope
+for an earlier event of the same slot answers a call that already ended and is
+refused.
+
+**What `commit` checks and writes.** The envelope's keys and types, its
+`event_id` host prefix and the host, the expiry, the marker still present and
+no `agent.*` marker, the event's `accepts` holding `permission-decision`, the
+slot, the latest event and not handled, the reply target equal to the event's,
+no applied record or pick-up marker of that reply id, and the sender listed in
+`remote-senders.json` with `permission-decision`. Then it writes the pick-up
+marker, claims the target cell, writes the applied record and the
+`reply-applied` handled marker with the seam's own functions, so the seam's
+`cleanup` removes these files as its own. A deny also removes the call's
+`pending.<fp>` / `open.<fp>`, since a denied call raises no tool event. It
+prints `{"behavior":…,"sender":…}`. The seam never applies a decision
+envelope, and its mailbox clock does not call `scan` for a mailbox that holds
+only decision envelopes.
+
+**The diagnostic log.** Every ending that applies nothing leaves one line in
+`decide.log` of the seat state directory, `<UTC ISO time> <event id or -> <reason>`,
+never the envelope or the command. The reasons:
+`근거없음-agent표지`, `표지없음-30초`, `표지사라짐`, `사건처리됨`, `부모소멸`,
+`발신자불허`, `만료`, `호스트불일치`, `대상불일치`, `슬롯불일치`, `늦은사건`,
+`이미적용`, `꼴위반`, `확정실패`, `로컬먼저`, `중단신호`, `확정뒤로컬먼저`,
+`훅실패`.
+
+**The limits it accepts.**
+
+- A process of the same user that reads a registered sender id and copies an
+  open event's reply target can approve its own dialog. Such a process can
+  already edit the settings or type into the terminal, so the envelope does
+  not widen that boundary.
+- An applied record cannot be taken back: when the local answer lands after
+  `commit` wrote the record and before the hook returned, or the helper or the
+  mode stops there, the record and the actual outcome can disagree.
+- Of parallel calls with the same input, the remote decision applies to the
+  one that commits first; the others stay local dialogs.
+- The main session is read from two absences: no `agent_id` in the input and
+  no `agent.*` marker. When the `SubagentStart` hook times out or fails, a
+  subagent's dialog can take a remote decision.
+
+**Tests.** `scripts/test-session-permission-decide.sh` runs the helper against
+the real seat and seam (including a byte comparison of the functions copied
+from the seam); `remote-reply/index.test.ts` covers the hook's branches with
+`claude plugin test`.
