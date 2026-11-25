@@ -44436,7 +44436,7 @@ EOF
             return $?; }
           _herr=$(bash "$GATE_DIR/run-leftovers.sh" "$MANIFEST" "${LEDGER:-}" --run-dir "$RUN_DIR" 2>&1 >"$_htmp") || _hrc=$?
           if [ "$_hrc" != "0" ]; then
-            _herr=$(printf '%s\n' "$_herr" | sed -n '1p')
+            _herr=${_herr%%$'\n'*}
             rm -f "$_htmp"
             gate_clause_handover_fail "$cid" "이관 판독기 실패 — 판독기 종료 코드 ${_hrc}${_herr:+ · $_herr}"
             return $?
@@ -44450,7 +44450,7 @@ EOF
             gate_clause_handover_fail "$cid" "이관 판독기 실패 — 사본 쓰기"
             return $?; }
           _hsha=$(shasum -a 256 "$_hdst" 2>/dev/null | cut -d' ' -f1) || _hsha=""
-          if [ "${#_hsha}" != "64" ] || [ -n "$(printf '%s' "$_hsha" | tr -d '0-9a-f')" ]; then
+          if [ "${#_hsha}" != "64" ] || [ -n "${_hsha//[0-9a-f]/}" ]; then
             gate_clause_handover_fail "$cid" "이관 판독기 실패 — sha256"
             return $?
           fi
