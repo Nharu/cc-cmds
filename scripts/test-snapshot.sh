@@ -59,6 +59,8 @@ export CC_GATE_PIN_SYNC_DISABLE
 script_dir=$(cd "$(dirname "$0")" && pwd)
 repo_root=$(cd "$script_dir/.." && pwd)
 GATE="$repo_root/plugins/cc-cmds/orchestrator/gate.sh"
+# shellcheck source=wait-fixture.sh
+. "$repo_root/scripts/wait-fixture.sh"
 
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/cc-snapshot-test.XXXXXX")
 trap 'rm -rf "$WORK"' EXIT
@@ -702,13 +704,13 @@ check "대기자가 없으면 렌더에 대기 줄이 없다" "$(grep -c '^대�
 # then read from the later of the refresh and the machine's wake, and the wake
 # reading is replaced in a subshell so all three cases are this suite's.
 RD_R1="$XDG_STATE_HOME/cc-cmds/run/R1"
-sleep 600 & W_HOLD=$!
+wait_holder >/dev/null 2>&1 & W_HOLD=$!
 w_now=$(date -u +%s)
 w_stall=$(cc_effective_stall "$RD_R1")
 # A driver-written marker: the gate's settlement leaves those alone, so killing
 # the holder below adds no row to this shared fixture ledger.
 printf '%s\n' "보유자=$W_HOLD" "지문=$(cc_proc_fingerprint "$W_HOLD")" "기록자=드라이버" "계보=S9" \
-  "그룹=org:h1" "까지=-" "갱신=$((w_now - w_stall - 1))" "종류=review" "논스=-" > "$RD_R1/S9.waiting"
+  "그룹=org:h1" "까지=-" "갱신=$((w_now - w_stall - 60))" "종류=review" "논스=-" > "$RD_R1/S9.waiting"
 SNAP_W="$WORK/waiting.json"
 ( cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null ) > "$SNAP_W"
 check "살아 있는 보유자의 표지는 waiting_stages 원소 하나다" "$(jq -r '.waiting_stages | length' "$SNAP_W")" "1"
@@ -3064,6 +3066,16 @@ for f in "$RC_SKILL" "$AU_SKILL"; do
   check "$n: 사본 절차가 doc-tidy.py checkout 과 publish 를 부른다" \
     "$(has "$f" "/orchestrator/doc-tidy.py checkout <document> --prefix <prefix> --expect")/$(has "$f" "/orchestrator/doc-tidy.py publish <dir>/doc.md <document> --expect <1's sha256> --lock \"\${RUN_DIR}/designdoc.lock\" --cleanup")" "예/예"
 done
+# 감사의 동결·사본·시각 측정은 doc-tidy.py 의 stamp·keep-reports·checkout --reviewed 한 호출씩으로
+# 묶였다 — FREEZE 의 shasum·wc -c 처방이 남으면 리드는 두 절차 가운데 아무거나 고른다.
+check "design-audit-unattended: FREEZE 가 stamp --keep 한 호출로 해시·크기·시각과 감사 사본을 얻는다" \
+  "$(has "$AU_SKILL" "/orchestrator/doc-tidy.py stamp <document> --keep <base>/docs/design-audit/audited/{slug}.md")" 예
+check "design-audit-unattended: 독자 보고서 사본은 keep-reports 한 호출이다" \
+  "$(has "$AU_SKILL" "/orchestrator/doc-tidy.py keep-reports <base>/docs/design-audit/{slug}.md")" 예
+check "design-audit-unattended: 조정의 checkout 이 감사 사본을 --reviewed 로 잰다" \
+  "$(has "$AU_SKILL" "--reviewed <base>/docs/design-audit/audited/{slug}.md")" 예
+check "design-audit-unattended: FREEZE 에 wc -c 처방이 없다" \
+  "$(has "$AU_SKILL" "\`FROZEN_BYTES\` (\`wc -c\`)")" 아니오
 # 파이프라인 값은 세션 시작 훅의 [cc-stage-values] 블록에서 먼저 가져오고 printenv 는 블록이 없을
 # 때의 대체 원천일 뿐이다 — printenv 를 처방하는 무인 스킬이 그 블록을 말하지 않으면 리드는 값마다
 # 게이트 호출 하나를 계속 쓴다.

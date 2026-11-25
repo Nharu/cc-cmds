@@ -18,6 +18,12 @@
 // waits, for a bounded time, while they hold a text selection or press the repo
 // <select>.
 //
+// The list's four filters live in the address as a canonical query and change
+// it with replaceState only; the turned date groups and the scroll live in this
+// tab's sessionStorage under that address and come back on Back and reload. A
+// filter change marks the old numbers stale at once, aborts the request in
+// flight, and no answer but the last request's, for the current filter, is drawn.
+//
 // Clock text is drawn in the server's display time zone: an epoch is shifted
 // by the response's `tz_offset_s` and read through the UTC accessors, so the
 // browser's own zone never appears. Durations on the list use the response's
@@ -42,6 +48,10 @@
   var flipped = new Map();
   // A response was held back from the screen and is still to be drawn.
   var redrawOwed = false;
+  // The screen carries the busy marks of a filter change, which only a redraw
+  // takes away, so the next answer is drawn even when it is a 304 for the
+  // address already on screen.
+  var pendingShown = false;
   // Until this wall-clock milli, the repo <select> may have its list open. Closing
   // a list without changing the value fires no event on some browsers, so the
   // hold runs out by itself rather than waiting for one.
@@ -52,6 +62,23 @@
   // place after the copy, so the hold cannot wait for the reader to clear it.
   var textHold = null;
   var TEXT_HOLD_MS = 15000;
+  // The request whose answer may still be drawn: a new refresh() aborts the one
+  // before it, and an answer from any refresh() but the last is dropped.
+  var inflight = null;
+  var refreshSeq = 0;
+  // The list's view rides in the address as a canonical query, and what the
+  // address cannot carry (the turned <details>, the scroll) rides in this tab's
+  // sessionStorage under that address.
+  var DAYS = ["3", "7", "30", "all"];
+  var LAST_KEY = "cc-dash.v1.last-list";
+  var LIST_PREFIX = "cc-dash.v1.list:";
+  var LIST_KEEP = 20;
+  // Set when a list page loads and cleared by the first list response drawn, so
+  // the scroll waits for rows to scroll over and the skeleton's 0 saves nothing.
+  var restorePending = false;
+  var restoreY = null;
+  var scrollTimer = null;
+  var PENDING_CAP = "바꾼 필터의 목록을 불러오는 중… 흐린 숫자는 이전 필터의 것입니다.";
   var FOCUSABLE = "a, button, select, summary";
   var PERIODS = [["3", "3일"], ["7", "7일"], ["30", "30일"], ["all", "전체"]];
   var WEEKDAYS = ["일", "월", "화", "수", "목", "금", "토"];
@@ -218,18 +245,29 @@
 
   // ------------------------------------------------------------- fetching
 
-  function fetchJSON(url, poll) {
+  // A request this page aborted is not the server going away, so it answers
+  // `aborted` rather than `offline`, whether the abort lands before the headers
+  // or while the body is still being read. An ETag is kept only together with
+  // the body it names, and a 304 for an address with no kept body asks once
+  // more without the tag.
+  function fetchJSON(url, poll, signal) {
     var headers = {};
     if (poll) headers["X-CC-Poll"] = "1";
     if (etags[url]) headers["If-None-Match"] = etags[url];
-    return fetch(url, { headers: headers, cache: "no-store" }).then(function (r) {
-      if (r.status === 304) return { same: true, data: cache[url] };
+    var opts = { headers: headers, cache: "no-store" };
+    if (signal) opts.signal = signal;
+    function failed(e) { return e && e.name === "AbortError" ? { aborted: true } : { offline: true }; }
+    return fetch(url, opts).then(function (r) {
+      if (r.status === 304) {
+        if (cache[url] !== undefined) return { same: true, data: cache[url] };
+        if (!headers["If-None-Match"]) return { error: r.status };
+        delete etags[url];
+        return fetchJSON(url, poll, signal);
+      }
       if (!r.ok) return { error: r.status };
-      etags[url] = r.headers.get("ETag");
-      return r.json().then(function (d) { cache[url] = d; return { same: false, data: d }; });
-    }, function () {
-      return { offline: true };
-    });
+      var tag = r.headers.get("ETag");
+      return r.json().then(function (d) { etags[url] = tag; cache[url] = d; return { same: false, data: d }; }, failed);
+    }, failed);
   }
 
   function checkVersion(poll) {
@@ -328,7 +366,7 @@
         el("div", { cls: "msg" },
           el("b", { text: missing ? "이 런을 찾을 수 없습니다" : "런 상세를 읽지 못했습니다" }),
           el("span", { cls: "sub small num", text: missing ? id + " 의 런 디렉터리와 원장이 모두 없습니다." : "서버가 " + status + " 로 답했습니다." })),
-        el("a", { cls: "lnk", href: "/", text: "런 목록으로" })));
+        el("a", { cls: "lnk", href: lastListHref(), text: "런 목록으로" })));
   }
 
   // ------------------------------------------------------------------ list
@@ -336,6 +374,136 @@
   function listURL() {
     return "/api/runs?days=" + view.days + "&base=" + encodeURIComponent(view.base) +
       "&dead=" + (view.dead ? 1 : 0) + "&exp=" + (view.exp ? 1 : 0);
+  }
+
+  // The list page's own address: the API's keys in a fixed order, a key at its
+  // default left out, so one view has one address — the storage key, the last
+  // list address and the corrected address bar all use it.
+  function listHref() {
+    var q = [];
+    if (view.days !== "3") q.push("days=" + view.days);
+    if (view.base) q.push("base=" + encodeURIComponent(view.base));
+    if (view.dead) q.push("dead=1");
+    if (view.exp) q.push("exp=1");
+    return "/" + (q.length ? "?" + q.join("&") : "");
+  }
+
+  // A value the address cannot mean falls back to that filter's default; a key
+  // given twice counts its first value, and an unknown key is dropped.
+  function readQuery(search) {
+    var q = new URLSearchParams(search || "");
+    var days = q.get("days");
+    return {
+      days: DAYS.indexOf(days) >= 0 ? days : "3",
+      base: q.get("base") || "",
+      dead: q.get("dead") === "1",
+      exp: q.get("exp") === "1"
+    };
+  }
+
+  function replaceAddress(href) {
+    try { history.replaceState(history.state, "", href + location.hash); } catch (e) { /* the bar stays as it is */ }
+  }
+
+  // Storage that is missing, refused or holding a broken value reads as no entry.
+  function storeGet(key) {
+    try { return sessionStorage.getItem(key); } catch (e) { return null; }
+  }
+
+  function storeSet(key, value) {
+    try { sessionStorage.setItem(key, value); } catch (e) { /* nothing is kept */ }
+  }
+
+  function readEntry(href) {
+    var raw = storeGet(LIST_PREFIX + href);
+    if (raw == null) return null;
+    try {
+      var v = JSON.parse(raw);
+      if (!v || !Array.isArray(v.flipped)) return null;
+      return { flipped: v.flipped.filter(function (p) { return Array.isArray(p) && typeof p[0] === "string" && typeof p[1] === "boolean"; }),
+        y: typeof v.y === "number" && isFinite(v.y) ? Math.max(0, Math.round(v.y)) : 0 };
+    } catch (e) {
+      return null;
+    }
+  }
+
+  // Past LIST_KEEP entries the ones written longest ago go first.
+  function pruneEntries() {
+    try {
+      var keys = [];
+      for (var i = 0; i < sessionStorage.length; i++) {
+        var k = sessionStorage.key(i);
+        if (k && k.indexOf(LIST_PREFIX) === 0) keys.push(k);
+      }
+      if (keys.length <= LIST_KEEP) return;
+      var at = {};
+      keys.forEach(function (k) {
+        var t = 0;
+        try { t = Number(JSON.parse(sessionStorage.getItem(k)).at) || 0; } catch (e) { t = 0; }
+        at[k] = t;
+      });
+      keys.sort(function (a, b) { return at[a] - at[b]; });
+      keys.slice(0, keys.length - LIST_KEEP).forEach(function (k) { sessionStorage.removeItem(k); });
+    } catch (e) { /* nothing to prune through */ }
+  }
+
+  // Writes the turned <details> and, when asked and the scroll is not waiting to
+  // be restored, the scroll; otherwise the entry's scroll stays what it was.
+  function saveEntry(withY) {
+    if (route().run) return;
+    var href = listHref(), old = readEntry(href);
+    var y = withY && !restorePending ? Math.max(0, Math.round(window.scrollY || 0)) : (old ? old.y : 0);
+    var pairs = [];
+    flipped.forEach(function (v, k) { pairs.push([k, v]); });
+    storeSet(LIST_PREFIX + href, JSON.stringify({ flipped: pairs, y: y, at: Date.now() }));
+    pruneEntries();
+  }
+
+  function lastListHref() {
+    var v = storeGet(LAST_KEY);
+    return typeof v === "string" && /^\/(\?[^#]*)?$/.test(v) ? v : "/";
+  }
+
+  // The screen as it stands is told the new filter at once: the controls take
+  // the new values, and what still shows the old filter's numbers is marked busy
+  // and dimmed under a status line. The next redraw builds #app anew, which is
+  // what takes the marks away.
+  function markPending() {
+    var box = app.querySelector(".filters");
+    if (!box) return;
+    var btns = box.querySelectorAll("button");
+    for (var i = 0; i < btns.length; i++) {
+      var fk = btns[i].getAttribute("data-fk") || "";
+      if (fk.indexOf("days-") === 0) btns[i].setAttribute("aria-pressed", fk === "days-" + view.days ? "true" : "false");
+      else if (fk === "exp") btns[i].setAttribute("aria-checked", view.exp ? "true" : "false");
+      else if (fk === "dead") btns[i].setAttribute("aria-checked", view.dead ? "true" : "false");
+    }
+    var sels = box.querySelectorAll("select");
+    for (var j = 0; j < sels.length; j++) if (sels[j].getAttribute("id") === "repo-sel") sels[j].value = view.base;
+    var marks = [app.querySelector(".kpis"), box.querySelector(".shown"), app.querySelector(".cols"), app.querySelector(".empty")];
+    var secs = app.querySelectorAll("section");
+    for (var s = 0; s < secs.length; s++) if (secs[s].classList.contains("group")) marks.push(secs[s]);
+    marks.forEach(function (n) {
+      if (!n) return;
+      n.setAttribute("aria-busy", "true");
+      n.classList.add("is-stale");
+    });
+    pendingShown = true;
+    if (!app.querySelector(".list-pending")) {
+      box.parentNode.insertBefore(el("div", { cls: "loading-cap list-pending", role: "status" }, ico("i-refresh"), PENDING_CAP), box.nextSibling);
+    }
+  }
+
+  // Every way of changing the list's filters: the address is replaced, never
+  // pushed, so Back leaves the dashboard rather than stepping through filters.
+  function setView(patch) {
+    Object.keys(patch).forEach(function (k) { view[k] = patch[k]; });
+    var href = listHref();
+    replaceAddress(href);
+    storeSet(LAST_KEY, href);
+    markPending();
+    clearTimeout(timer);
+    refresh(false);
   }
 
   // The repo <select> offers only `bases`, so a chosen repo missing from them
@@ -503,7 +671,7 @@
     var seg = el("div", { cls: "seg", role: "group", "aria-label": "기간" });
     PERIODS.forEach(function (p) {
       seg.appendChild(el("button", { type: "button", "aria-pressed": view.days === p[0] ? "true" : "false", text: p[1], "data-fk": "days-" + p[0],
-        onclick: function () { view.days = p[0]; refresh(false); } }));
+        onclick: function () { setView({ days: p[0] }); } }));
     });
     box.appendChild(seg);
 
@@ -513,7 +681,7 @@
       onmousedown: function () { selectHeldUntil = Date.now() + SELECT_HOLD_MS; },
       onkeydown: function (e) { selectHeldUntil = e.key === "Escape" ? 0 : Date.now() + SELECT_HOLD_MS; },
       onblur: function () { selectHeldUntil = 0; },
-      onchange: function (e) { selectHeldUntil = 0; view.base = e.target.value; refresh(false); } });
+      onchange: function (e) { selectHeldUntil = 0; setView({ base: e.target.value }); } });
     if (bases.length <= 1) {
       sel.appendChild(el("option", { value: "", text: bases.length ? bases[0] + " (하나뿐)" : "레포 없음" }));
       sel.setAttribute("disabled", "");
@@ -531,11 +699,11 @@
     var hiddenExp = d.hidden_experiment || 0;
     box.appendChild(switchBtn("exp", view.exp, "i-flask", "실험 런 보기",
       view.exp ? shownExp + "건 표시 중" : (hiddenExp ? "숨긴 " + hiddenExp : "숨긴 실험 런 없음"),
-      !view.exp && !hiddenExp, function () { view.exp = !view.exp; refresh(false); }));
+      !view.exp && !hiddenExp, function () { setView({ exp: !view.exp }); }));
     var hiddenDead = d.hidden || 0;
     box.appendChild(switchBtn("dead", view.dead, "i-archive", "버려진 런 보기",
       view.dead ? dead.length + "건 표시 중" : (hiddenDead ? "숨긴 " + hiddenDead : "숨긴 버려진 런 없음"),
-      !view.dead && !hiddenDead, function () { view.dead = !view.dead; refresh(false); }));
+      !view.dead && !hiddenDead, function () { setView({ dead: !view.dead }); }));
 
     var total = runs.length + hiddenDead + hiddenExp;
     box.appendChild(el("span", { cls: "shown num" }, total + "건 중 ", el("b", { text: String(runs.length) }), "건 표시"));
@@ -562,7 +730,7 @@
       el("b", { text: view.days === "all" ? "보일 런이 없습니다" : "최근 " + periodLabel() + "에 끝나거나 도는 런이 없습니다" }),
       el("span", { cls: "num", text: parts.length ? parts.join(" · ") + "이 있습니다." : "숨긴 런도 없습니다." }),
       wider ? el("button", { type: "button", cls: "btn", text: "기간 " + wider[1] + "로 넓히기", "data-fk": "widen",
-        onclick: function () { view.days = wider[0]; refresh(false); } }) : null);
+        onclick: function () { setView({ days: wider[0] }); } }) : null);
   }
 
   function groupHead(icon, id, title, sub, count) {
@@ -583,7 +751,7 @@
   function nowLine(now) {
     if (now && now.stage) {
       return el("div", { cls: "ell" }, span("step", now.stage), " ",
-        span("kind", (now.kind || "종류 미상") + (now.attempt ? " · 시도 " + now.attempt : "")));
+        span("kind", (now.kind || "종류 미상") + (now.attempt ? " · 통산 시도 " + now.attempt : "")));
     }
     if (now && now.blocked) {
       return el("div", { cls: "ell", title: now.blocked }, span("step", "막힘"), " ", span("kind", now.blocked));
@@ -931,7 +1099,7 @@
       if (n && n.stage) {
         line.appendChild(tag("run", "도는 중", "i-play"));
         line.appendChild(el("b", { text: n.stage }));
-        line.appendChild(el("span", { text: (n.kind || "종류 미상") + (n.attempt ? " · 시도 " + n.attempt : "") }));
+        line.appendChild(el("span", { text: (n.kind || "종류 미상") + (n.attempt ? " · 통산 시도 " + n.attempt : "") }));
       } else if (n && n.blocked) {
         line.appendChild(tag("neutral", "막힘"));
         line.appendChild(el("span", { text: n.blocked }));
@@ -952,9 +1120,23 @@
       line.appendChild(el("div", { cls: "sbox " + sboxClass(s.status), role: "listitem" },
         el("div", { cls: "top" }, dotFor(s.status), span("id", s.id)),
         span("kd", stepKind(s) + (segs.length ? " · " + segs.join(" ") : "")),
-        span("st num", s.status + (s.attempts > 1 ? " · 시도 " + s.attempts : ""))));
+        span("st num", (s.live || []).length === 1 ? s.status + " · " + s.live[0].nth + "회째"
+          : s.status + (s.attempts > 1 ? " · " + s.attempts + "회" : ""))));
     });
     return line;
+  }
+
+  // The attempt cell of a row with one running attempt: the row's own count
+  // and the run-wide attempt number, each named.
+  function liveTries(e) {
+    return e.nth + "회째 · 통산 " + (e.attempt || "?");
+  }
+
+  function stepTries(s) {
+    var live = s.live || [];
+    if (live.length === 1) return liveTries(live[0]);
+    if (live.length > 1) return (s.attempts || 0) + " · 도는 중 " + live.length + "개";
+    return String(s.attempts || 0);
   }
 
   function th(text, cls) { return el("th", { cls: cls, text: text }); }
@@ -978,7 +1160,7 @@
         td((g.deps || []).length ? g.deps.join(", ") : "-"),
         prCellEl,
         td(String((g.cycles || []).length), "r num"),
-        td(String(c.attempts || 0), "r num")));
+        td(c.live ? liveTries(c.live) : String(c.attempts || 0), "r num")));
     });
     t.appendChild(tb);
     return t;
@@ -995,7 +1177,7 @@
         : (s.status === "도는 중" && s.started != null ? dur(now - s.started) + "째" : "-");
       tb.appendChild(el("tr", { cls: hasSeg ? "has-seg" : null },
         td(s.id, "sid"), td(stepKind(s)), el("td", null, statusTag(s.status)),
-        td(String(s.attempts || 0), "r num"),
+        td(stepTries(s), "r num"),
         td(s.started != null ? fmtMDHM(s.started) : "-", "num"),
         td(s.ended != null ? fmtMDHM(s.ended) : "-", "num"),
         td(took, "r num"), td(s.usd != null ? usd(s.usd) : "-", "r num"), td(s.end_class || "-", "w")));
@@ -1013,30 +1195,95 @@
     return steps[steps.length - 1];
   }
 
+  // Estimated width of a time-band label at font size 12, in SVG user units.
+  // Every factor is wider than the measured system font, so a label judged
+  // clear of its neighbour is clear on screen too.
+  function bandTextWidth(s) {
+    var em = 0;
+    for (var i = 0; i < s.length; i++) {
+      var c = s.charCodeAt(i), ch = s.charAt(i);
+      if (c >= 0xac00 && c <= 0xd7a3) em += 1.0;
+      else if (ch === ":" || ch === "/" || ch === " ") em += 0.4;
+      else em += 0.7;
+    }
+    return em * 12;
+  }
+
+  // Decides which tick labels of the time band are drawn and with what text.
+  // A tick label that comes within 6 units of the start label or the right-end
+  // label is hidden (its grid line stays). The date of a hidden midnight label
+  // moves to the next visible non-midnight label, or, when none takes it, onto
+  // the right-end label; a visible midnight label met first drops it.
+  // g: { left, right, startText, endText(dated) } — the edge labels' anchors and texts.
+  function bandLabels(ticks, g, endDated) {
+    var GAP = 6;
+    var endText = g.endText(endDated);
+    var sBox = { a: g.left, b: g.left + bandTextWidth(g.startText) };
+    var eBox = { a: g.right - bandTextWidth(endText), b: g.right };
+    var hit = function (a, b) {
+      return (a < eBox.b + GAP && b > eBox.a - GAP) || (a < sBox.b + GAP && b > sBox.a - GAP);
+    };
+    var out = [], pending = false;
+    ticks.forEach(function (k) {
+      var text = k.midnight ? fmtMD(k.t) + " 00:00" : fmtHM(k.t);
+      var half = bandTextWidth(text) / 2;
+      if (hit(k.x - half, k.x + half)) {
+        if (k.midnight) pending = true;
+        return;
+      }
+      if (k.midnight) { pending = false; out.push({ x: k.x, text: text }); return; }
+      if (pending) {
+        text = fmtMDHM(k.t);
+        half = bandTextWidth(text) / 2;
+        if (hit(k.x - half, k.x + half)) return;
+        pending = false;
+      }
+      out.push({ x: k.x, text: text });
+    });
+    return { labels: out, endText: endText, pending: pending };
+  }
+
   function barClass(cls) {
     if (cls === "정상 완료") return "b-ok";
     if (cls === "의도된 park") return "b-park";
     return "b-bad";
   }
 
+  // A band row's name: the step and segment the response paired the attempt
+  // with, else the segment, else the stage.
+  function bandRow(t) {
+    if (t.step && t.seg) return t.step + " · " + t.seg;
+    return t.step || t.seg || t.stage || "?";
+  }
+
   function timeBand(d, now) {
     var ended = d.summary.state === "종단";
-    var items = (d.timeline || []).filter(function (t) { return t.start != null && t.end != null; });
-    var skipped = (d.timeline || []).length - items.length;
+    var all = d.timeline || [];
+    var done = all.filter(function (t) { return !t.live; });
+    var running = all.filter(function (t) { return t.live; });
+    var items = done.filter(function (t) { return t.start != null && t.end != null; })
+      .concat(running.filter(function (t) { return t.start != null; }));
+    var skipped = done.filter(function (t) { return t.start == null || t.end == null; }).length;
+    var skippedLive = running.filter(function (t) { return t.start == null; }).length;
     var shifts = (d.shifts || []).filter(function (s) { return s.at != null; });
     var box = el("div", { cls: "tband" },
       el("h3", { cls: "sub-h" }, ico("i-clock", "ico-sm"), "시간 띠 — 시도마다 한 막대, 막대에 올리면 시도와 교대 이름이 보입니다"));
+    var notes = function () {
+      if (skipped) box.appendChild(el("div", { cls: "note num", text: "시작이나 끝 시각을 모르는 시도 " + skipped + "건은 띠에 그리지 않았습니다." }));
+      if (skippedLive) box.appendChild(el("div", { cls: "note num", text: "시작 시각을 모르는 도는 중 시도 " + skippedLive + "건도 띠에 그리지 않았습니다." }));
+    };
     if (!items.length) {
-      box.appendChild(el("div", { cls: "empty-line", text: "시작과 끝을 아는 시도가 없어 시간 띠를 그리지 않았습니다." }));
+      box.appendChild(el("div", { cls: "empty-line", text: "그릴 수 있는 시도가 없어 시간 띠를 그리지 않았습니다." }));
+      notes();
       return box;
     }
     var rows = [], rowOf = {};
     items.forEach(function (t) {
-      var k = t.stage || "?";
+      var k = bandRow(t);
       if (rowOf[k] == null) { rowOf[k] = rows.length; rows.push(k); }
     });
     var times = [];
-    items.forEach(function (t) { times.push(t.start, t.end); });
+    items.forEach(function (t) { times.push(t.start); if (!t.live) times.push(t.end); });
     shifts.forEach(function (s) { times.push(s.at); });
     if (d.run_start != null) times.push(d.run_start);
     if (!ended) times.push(now);
@@ -1052,14 +1299,28 @@
     var grid = sv("g");
     var step = tickStep(t1 - t0), off = tz ? tz.off : 0;
     var first = Math.ceil((t0 + off) / step) * step - off;
+    var ticks = [];
     for (var t = first; t < t1; t += step) {
       if (t <= t0) continue;
+      ticks.push({ t: t, x: x(t), midnight: (t + off) % 86400 === 0 });
       grid.appendChild(sv("line", { "class": "grid", x1: x(t), y1: TOP, x2: x(t), y2: TOP + rows.length * RH }));
-      var atMidnight = (t + off) % 86400 === 0;
-      grid.appendChild(sv("text", { "class": "t-sub", x: x(t), y: 16, "text-anchor": "middle" }, atMidnight ? fmtMD(t) + " 00:00" : fmtHM(t)));
     }
-    grid.appendChild(sv("text", { "class": "t-sub", x: L, y: 16 }, fmtMDHM(t0)));
-    grid.appendChild(sv("text", { "class": "t-main", x: W - R, y: 16, "text-anchor": "end" }, ended ? "종단 " + fmtHM(t1) : "지금 " + fmtHM(now)));
+    var edge = {
+      left: L, right: W - R, startText: fmtMDHM(t0),
+      endText: function (dated) {
+        var te = ended ? t1 : now;
+        return (ended ? "종단 " : "지금 ") + (dated ? fmtMDHM(te) : fmtHM(te));
+      }
+    };
+    // A date still waiting after the first pass goes onto the right-end label;
+    // the wider label is judged once more and no third pass follows.
+    var band = bandLabels(ticks, edge, false);
+    if (band.pending) band = bandLabels(ticks, edge, true);
+    band.labels.forEach(function (k) {
+      grid.appendChild(sv("text", { "class": "t-sub", x: k.x, y: 16, "text-anchor": "middle" }, k.text));
+    });
+    grid.appendChild(sv("text", { "class": "t-sub", x: L, y: 16 }, edge.startText));
+    grid.appendChild(sv("text", { "class": "t-main", x: W - R, y: 16, "text-anchor": "end" }, band.endText));
     svg.appendChild(grid);
 
     var lines = sv("g");
@@ -1071,13 +1332,26 @@
     svg.appendChild(lines);
 
     var bars = sv("g");
+    var drewLive = false;
+    var tEnd = ended ? t1 : now;
     items.forEach(function (t) {
-      var y = TOP + rowOf[t.stage || "?"] * RH + 4;
-      var w = Math.max(2, x(t.end) - x(t.start));
-      var rect = sv("rect", { "class": barClass(t["class"]), x: x(t.start), y: y, width: Math.round(w * 10) / 10, height: 14, rx: 2 });
-      var title = (t.stage || "?") + " 시도 " + (t.attempt || "?") + " · " + (t.kind || "종류 미상") + " · " +
-        fmtMDHM(t.start) + "–" + fmtHM(t.end) + " · " + (t["class"] || "부류 미상") +
-        (t.usd != null ? " · " + usd(t.usd) : "") + (t.shift ? " · 띄운 교대 " + t.shift : "");
+      var name = bandRow(t);
+      var y = TOP + rowOf[name] * RH + 4;
+      var head = name + " · 통산 시도 " + (t.attempt || "?") + " · " + (t.kind || "종류 미상") + " · ";
+      var rect, title;
+      if (t.live) {
+        drewLive = true;
+        // A running bar ends exactly on the now line, so its width is the
+        // difference of the two rounded coordinates.
+        var lw = Math.max(2, Math.round((x(tEnd) - x(t.start)) * 10) / 10);
+        rect = sv("rect", { "class": "b-live", x: x(t.start), y: y, width: lw, height: 14, rx: 2 });
+        title = head + fmtMDHM(t.start) + "–지금 · 도는 중 · " + dur(Math.max(0, tEnd - t.start)) + "째";
+      } else {
+        var w = Math.max(2, x(t.end) - x(t.start));
+        rect = sv("rect", { "class": barClass(t["class"]), x: x(t.start), y: y, width: Math.round(w * 10) / 10, height: 14, rx: 2 });
+        title = head + fmtMDHM(t.start) + "–" + fmtHM(t.end) + " · " + (t["class"] || "부류 미상") +
+          (t.usd != null ? " · " + usd(t.usd) : "") + (t.shift ? " · 띄운 교대 " + t.shift : "");
+      }
       rect.appendChild(sv("title", null, title));
       bars.appendChild(rect);
     });
@@ -1094,11 +1368,13 @@
     svg.appendChild(marks);
     box.appendChild(svg);
 
-    box.appendChild(el("div", { cls: "legend" },
+    var legend = el("div", { cls: "legend" },
       el("span", null, el("i", { cls: "sw ok" }), "정상 완료"),
       el("span", null, el("i", { cls: "sw bad" }), "실패(크래시·정지)"),
-      el("span", null, el("i", { cls: "sw park" }), "의도된 park"),
-      el("span", null, el("i", { cls: "sw shift" }), "교대")));
+      el("span", null, el("i", { cls: "sw park" }), "의도된 park"));
+    if (drewLive) legend.appendChild(el("span", null, el("i", { cls: "sw live" }), "도는 중"));
+    legend.appendChild(el("span", null, el("i", { cls: "sw shift" }), "교대"));
+    box.appendChild(legend);
     if (shifts.length) {
       var ul = el("ul", { cls: "shifts" });
       shifts.forEach(function (s) {
@@ -1107,7 +1383,7 @@
       });
       box.appendChild(ul);
     }
-    if (skipped) box.appendChild(el("div", { cls: "note num", text: "시작이나 끝 시각을 모르는 시도 " + skipped + "건은 띠에 그리지 않았습니다." }));
+    notes();
     return box;
   }
 
@@ -1469,7 +1745,7 @@
     document.body.classList.toggle("on-detail", !!r.run);
     var nav = document.getElementById("band-nav");
     if (nav && r.run && !nav.firstChild) {
-      nav.replaceChildren(el("a", { cls: "back", href: "/" }, ico("i-back"), "런 목록"), span("crumb num", r.run));
+      nav.replaceChildren(el("a", { cls: "back", href: lastListHref() }, ico("i-back"), "런 목록"), span("crumb num", r.run));
     }
   }
 
@@ -1480,13 +1756,22 @@
 
   function refresh(poll) {
     if (document.hidden) return;
+    // A poll left from an earlier call would abort this one and ask again.
+    clearTimeout(timer);
     var r = route();
     applyRoute(r);
     var url = r.run ? "/api/runs/" + encodeURIComponent(r.run) : listURL();
     var period = r.run ? 3000 : 5000;
     if (!app.firstChild) app.replaceChildren(r.run ? loadingDetail() : loadingList());
     checkVersion(poll);
-    fetchJSON(url, poll).then(function (res) {
+    if (inflight) inflight.abort();
+    inflight = typeof AbortController === "function" ? new AbortController() : null;
+    var seq = ++refreshSeq;
+    fetchJSON(url, poll, inflight ? inflight.signal : null).then(function (res) {
+      // A refresh() since this one owns the screen and the next poll; an answer
+      // for a list address other than the current one is a filter already left.
+      if (seq !== refreshSeq || res.aborted) return;
+      if (!r.run && url !== listURL()) return;
       if (res.offline) {
         setConn(false, !!r.run);
         showOffline(!!r.run);
@@ -1505,6 +1790,7 @@
           redraw(function () { app.replaceChildren(r.run ? detailError(r.run, res.error) : listError(res.error)); });
           app.removeAttribute("data-url");
           redrawOwed = false;
+          pendingShown = false;
           setFresh(lastOk);
         }
         schedule(period);
@@ -1513,18 +1799,22 @@
       var d = res.data;
       setTz(d.tz_offset_s, d.tz_label);
       var sameView = app.getAttribute("data-url") === url;
-      if (!res.same || !sameView || redrawOwed || baseGone(d, url)) {
+      if (!res.same || !sameView || redrawOwed || pendingShown || baseGone(d, url)) {
         if (sameView && readerBusy()) {
           redrawOwed = true;
         } else if (baseGone(d, url)) {
           // An empty base is never missing, so this asks at most once more.
-          view.base = "";
-          refresh(false);
+          setView({ base: "" });
           return;
         } else {
           redraw(function () { if (r.run) renderDetail(d); else renderList(d); });
           app.setAttribute("data-url", url);
           redrawOwed = false;
+          pendingShown = false;
+          if (!r.run && restorePending) {
+            restorePending = false;
+            if (restoreY != null) window.scrollTo(0, restoreY);
+          }
         }
       }
       if (redrawOwed) {
@@ -1541,6 +1831,41 @@
     });
   }
 
+  // A list page takes its filters from the address and writes the canonical form
+  // back, then reads what this tab kept for that address. The browser's own
+  // scroll restoration ends on the skeleton before the rows arrive, so it is off.
+  function bootList() {
+    if (route().run) return;
+    var q = readQuery(location.search);
+    view.days = q.days; view.base = q.base; view.dead = q.dead; view.exp = q.exp;
+    var href = listHref();
+    if (location.pathname + location.search !== href) replaceAddress(href);
+    try { history.scrollRestoration = "manual"; } catch (e) { /* the browser restores as it likes */ }
+    var saved = readEntry(href);
+    if (saved) {
+      saved.flipped.forEach(function (p) { flipped.set(p[0], p[1]); });
+      restoreY = saved.y;
+    }
+    restorePending = true;
+    storeSet(LAST_KEY, href);
+  }
+
+  bootList();
+  window.addEventListener("scroll", function () {
+    if (route().run || restorePending) return;
+    clearTimeout(scrollTimer);
+    scrollTimer = setTimeout(function () { saveEntry(true); }, 250);
+  });
+  app.addEventListener("toggle", function () {
+    if (route().run) return;
+    rememberOpen();
+    saveEntry(false);
+  }, true);
+  window.addEventListener("pagehide", function () {
+    if (route().run) return;
+    rememberOpen();
+    saveEntry(true);
+  });
   document.addEventListener("visibilitychange", function () {
     if (document.hidden) { clearTimeout(timer); spendTextHold(); } else refresh(true);
   });

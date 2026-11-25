@@ -346,7 +346,7 @@ esac
 # Spelling the set out means a suite added to this tree that calls the gate
 # family has to be added here as well. That edit is the point rather than a cost:
 # it is the one moment somebody looks at whether the new suite kills the channel.
-_selected_want="test-attention-funnel.sh test-fleet.sh test-gate-chain-equiv.sh test-gate-oracle.sh test-gate.sh test-kickoff-defaults.sh test-kickoff-hook-probe.sh test-liveness-agreement.sh test-local-bundle.sh test-lost-dispatch.sh test-measure-test-share.sh test-meta-invariants.sh test-orchestrator-pretool-hook.sh test-reader-model-pair-audit.sh test-rekick.sh test-repair.sh test-run-issue-filing.sh test-run.sh test-slots.sh test-snapshot.sh test-solo-audit-experiment.sh test-stage-supervisor.sh test-suite-isolation.sh test-tree.sh test-visual-check.sh test-waiting-decisions.sh"
+_selected_want="test-attention-funnel.sh test-fleet.sh test-gate-chain-equiv.sh test-gate-oracle.sh test-gate.sh test-kickoff-defaults.sh test-kickoff-hook-probe.sh test-liveness-agreement.sh test-local-bundle.sh test-lost-dispatch.sh test-measure-test-share.sh test-meta-invariants.sh test-observer-watch.sh test-orchestrator-pretool-hook.sh test-reader-model-pair-audit.sh test-rekick.sh test-repair.sh test-run-issue-filing.sh test-run.sh test-slots.sh test-snapshot.sh test-solo-audit-experiment.sh test-stage-supervisor.sh test-suite-isolation.sh test-tree.sh test-visual-check.sh test-waiting-decisions.sh"
 _selected_got=$(printf '%s\n' $_selected_names | sort | tr '\n' ' ' \
                   | sed -e 's/  */ /g' -e 's/^ //' -e 's/ $//')
 check "누출 술어가 고르는 스위트 집합이 그대로다" "$_selected_got" "$_selected_want"
@@ -2209,6 +2209,34 @@ for f in _common/approval-reflection.md design-reconverge/SKILL.md; do
   n2=$(grep -cF -- '실패 — <the end>' "$SK/$f" || true)
   check "반영 종단 ${f} 가 두 번째 같은 종단에 실패 줄을 쓰지 않는다" "$(( ${n:-0} + ${n2:-0} ))" "0"
 done
+# ---------------------------------------------------------------------------
+# A base resolution narrows its push check to the files both sides of the merge
+# changed, so each sentence that keeps the narrowing safe is pinned: the
+# definition, the ban on gathering earlier stages' items, the workflow path
+# filter that adds what CI skips, the matched pair a matched filter needs, the
+# fallback to the whole segment when a filter or a mapping cannot be read, and
+# the names check-push takes. A copy that loses one narrows further than CI
+# backs, and stays green.
+# ---------------------------------------------------------------------------
+while IFS='|' read -r who file lit; do
+  [ -n "$file" ] || continue
+  n=$(grep -cF -- "$lit" "$SK/$file" || true)
+  check "$who ${file} 가 「${lit}」 을 싣는다" "$([ "${n:-0}" -ge 1 ] && echo 예 || echo 아니오)" "예"
+done <<'EOF'
+베이스 해소|implement-unattended/SKILL.md|**The files the merge touched are the files both sides changed since the merge base.**
+베이스 해소|implement-unattended/SKILL.md|For each commit `git merge-base --all HEAD^1 HEAD^2` prints, intersect `git diff --no-renames --name-only <merge base> HEAD^1` with `git diff --no-renames --name-only <merge base> HEAD^2`
+베이스 해소|implement-unattended/SKILL.md|**Do not gather the items earlier stages ran from the ledger or the run directory.**
+베이스 해소|implement-unattended/SKILL.md|match the files the pull request changes (`git diff --no-renames --name-only HEAD^2 HEAD`) against it by GitHub's path filter rules
+베이스 해소|implement-unattended/SKILL.md|When no file matches, CI does not run that workflow's set on this pull request, so add the items of that set whose axis covers the files the pull request changes
+베이스 해소|implement-unattended/SKILL.md|one file the pull request changes paired verbatim with the `paths:` entry it matched. A workflow with no pair written counts as not matched
+베이스 해소|implement-unattended/SKILL.md|**When a workflow cannot be matched in place, do not narrow.**
+베이스 해소|implement-unattended/SKILL.md|pick by the axes of every file the segment changed against the merged base sha (`git diff --no-renames --name-only <merged base sha>...HEAD`) instead of the intersection
+베이스 해소|implement-unattended/SKILL.md|sections by `covers:`·`anchors:` into `CHECK_PUSH_SECTIONS`, goals as the REST goals (`print-rest-goals` names) of the scripts whose body calls or reads those files by path into `CHECK_PUSH_GOALS`
+베이스 해소|implement-unattended/SKILL.md|an item that file says has no name `check-push` takes is not picked, and the terminal message names it as an item not picked
+베이스 해소|implement-unattended/SKILL.md|over the scope the paragraph **The checks a base resolution runs** below sets
+EOF
+n=$(grep -cF -- 'for the files the merge touched' "$SK/implement-unattended/SKILL.md" || true)
+check "베이스 해소 implement-unattended/SKILL.md 가 범위 없는 「for the files the merge touched」 를 싣지 않는다" "${n:-0}" "0"
 reflect_para() {
   # reflect_para <file> — the reflection-dispatch paragraph of the visual wait,
   # from its bold head up to the next bold paragraph head.

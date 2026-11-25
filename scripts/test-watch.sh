@@ -35,6 +35,8 @@ script_dir=$(cd "$(dirname "$0")" && pwd)
 repo_root=$(cd "$script_dir/.." && pwd)
 WATCH="$repo_root/plugins/cc-cmds/orchestrator/watch.sh"
 . "$repo_root/scripts/run-fixture.sh"
+# shellcheck source=wait-fixture.sh
+. "$repo_root/scripts/wait-fixture.sh"
 
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/cc-watch-test.XXXXXX")
 WAITER_PIDS=""
@@ -135,17 +137,14 @@ export FLEET_PACE_ROOT
 # a stub's write can land after the watcher process has already exited, and every
 # assertion about the log has to wait for it rather than read once.
 #
-# Bounded, and the assertion itself stays a boolean: this waits for a COUNT to be
-# reached and never compares elapsed seconds against anything.
+# The wait is the shared `wait_until`, so it ends as soon as the count is reached
+# and only a regression pays the shared ceiling. The assertion itself stays a
+# boolean on what the log holds: this never compares elapsed seconds.
+notify_reached() { local n; n=$(grep -c . "$NOTIFY_LOG" 2>/dev/null || true); [ "${n:-0}" -ge "$NOTIFY_WANT" ]; }
 notify_settle() {
   # notify_settle <expected-line-count>
-  local want="$1" i=0 n
-  while [ "$i" -lt 60 ]; do
-    n=$(grep -c . "$NOTIFY_LOG" 2>/dev/null || true)
-    if [ "${n:-0}" -ge "$want" ]; then return 0; fi
-    sleep 0.1
-    i=$((i + 1))
-  done
+  NOTIFY_WANT="$1"
+  wait_until notify_reached || true
   return 0
 }
 
@@ -313,7 +312,7 @@ seed_waiter() {
   # this case's run directory, held by a live process this suite owns (its pid
   # left in WAITER_PID). The holder is what makes the key a member; the refresh
   # age is what decides whether it is fresh.
-  sleep 600 & WAITER_PID=$!; WAITER_PIDS="$WAITER_PIDS $WAITER_PID"
+  wait_holder & WAITER_PID=$!; WAITER_PIDS="$WAITER_PIDS $WAITER_PID"
   printf '보유자=%s\n지문=%s\n기록자=게이트\n계보=B:%s#1\n그룹=org:h1\n까지=-\n갱신=%s\n종류=implement\n논스=-\n시도=1\n' \
     "$WAITER_PID" "$( . "$repo_root/plugins/cc-cmds/orchestrator/liveness.sh"; cc_proc_fingerprint "$WAITER_PID" )" \
     "$1" "$(( $(date -u +%s) - $2 ))" > "$RD/$1.waiting"
@@ -593,7 +592,7 @@ shift_fixture() {
 }
 
 shift_fixture
-sleep 120 & SHIFT_LIVE_PID=$!
+wait_holder & SHIFT_LIVE_PID=$!
 FX_PIDS="${FX_PIDS:-}$SHIFT_LIVE_PID "
 printf '%s\n%s\n' "$SHIFT_LIVE_PID" "$(cc_proc_fingerprint "$SHIFT_LIVE_PID")" > "$RD/shift.live"
 run --after-stage 0 >/dev/null
@@ -1401,10 +1400,16 @@ fresh
 printf -- '- `segment` | id=S1 | 상태=실행중\n' > "$LG"
 bash "$WATCH" --run-dir "$RD" --ledger "$LG" --interval 1 >/dev/null 2>&1 &
 wpid=$!
-sleep 1
-hb_a=$(date -u -r "$RD/watch.heartbeat" +%s 2>/dev/null || printf '')
-sleep 2
-hb_b=$(date -u -r "$RD/watch.heartbeat" +%s 2>/dev/null || printf '')
+# Two events rather than two fixed sleeps: the first heartbeat, then a heartbeat
+# whose mtime is later than the first one read. A watcher that stops after its
+# first pass never produces the second and fails at the shared ceiling.
+hb_mtime() { date -u -r "$RD/watch.heartbeat" +%s 2>/dev/null || printf ''; }
+hb_seen() { [ -f "$RD/watch.heartbeat" ] && [ -f "$RD/watch.pid" ]; }
+hb_moved() { local t; t=$(hb_mtime); [ -n "$t" ] && [ -n "$hb_a" ] && [ "$t" -gt "$hb_a" ]; }
+wait_until hb_seen || true
+hb_a=$(hb_mtime)
+wait_until hb_moved || true
+hb_b=$(hb_mtime)
 if [ -f "$RD/watch.pid" ] && [ "$(cat "$RD/watch.pid" 2>/dev/null)" = "$wpid" ]; then
   ok "감시자가 자기 pid 를 런 디렉터리에 남긴다"
 else
@@ -2373,7 +2378,7 @@ n_settle() { grep -cF -- '세션에서 정산을 이어가세요' "$NOTIFY_LOG" 
 eod_mark() { printf '1\n' > "$RD/ends-on-done"; }
 eod_shift() {
   # eod_shift — 살아 있는 교대. 지문까지 맞춰 적어야 `cc_shift_is_live` 가 산 것으로 읽는다.
-  sleep 120 & EOD_SHIFT_PID=$!
+  wait_holder & EOD_SHIFT_PID=$!
   FX_PIDS="${FX_PIDS:-}$EOD_SHIFT_PID "
   printf '%s\n%s\n' "$EOD_SHIFT_PID" "$(cc_proc_fingerprint "$EOD_SHIFT_PID")" > "$RD/shift.live"
 }
@@ -2390,19 +2395,39 @@ eod_loop() {
   FX_PIDS="${FX_PIDS:-}$EOD_LOOP_PID "
 }
 eod_loop_exited() {
-  # eod_loop_exited — 루프가 10초 안에 스스로 끝나면 `exited`. 아니면 죽이고 `running`.
-  local i=0
-  while [ "$i" -lt 100 ]; do
-    if ! kill -0 "$EOD_LOOP_PID" 2>/dev/null; then
-      wait "$EOD_LOOP_PID" 2>/dev/null || true
-      printf 'exited'; return 0
-    fi
-    sleep 0.1
-    i=$((i + 1))
-  done
+  # eod_loop_exited — 루프가 스스로 끝나면 곧 `exited`. 공용 기다림 상한까지 끝나지 않으면
+  # 죽여 거두고 `running`. 이 자리의 상한은 판정이 아니라 끝나지 않는 회귀를 끊는 울타리다
+  # — 자리마다 초를 고르면 부하가 높은 호스트에서 패스가 늦어질 때마다 그 초를 늘리게 된다.
+  # 끝나지 않아야 하는 쪽은 이 함수가 아니라 하트비트 수로 재는 `beats_running` 이 맡는다.
+  if wait_pid_gone "$EOD_LOOP_PID"; then
+    printf 'exited'; return 0
+  fi
   kill "$EOD_LOOP_PID" 2>/dev/null || true
   wait "$EOD_LOOP_PID" 2>/dev/null || true
   printf 'running'
+}
+beats_seen() {
+  # beats_running 의 조건 — 대상이 사라졌거나, 묵은 내용과 빈 내용이 아닌 하트비트가 앞서
+  # 본 것과 달라진 횟수가 BEATS_WANT 에 닿았으면 참. 관측 상태는 전역 변수로 이어 간다.
+  local cur
+  kill -0 "$BEATS_PID" 2>/dev/null || return 0
+  cur=$(cat "$BEATS_FILE" 2>/dev/null || true)
+  if [ -n "$cur" ] && [ "$cur" != "$BEATS_STALE" ] && [ "$cur" != "$BEATS_LAST" ]; then
+    BEATS_LAST=$cur; BEATS_N=$((BEATS_N + 1))
+  fi
+  [ "$BEATS_N" -ge "$BEATS_WANT" ]
+}
+beats_running() {
+  # beats_running <pid> <하트비트 파일> <묵은 내용> <수> — 그 pid 가 서로 다른 하트비트를
+  # <수> 번 쓴 뒤에도 살아 있으면 `running` 과 0, 그 전에 사라졌거나 공용 상한에 닿았으면
+  # `exited` 와 1. 하트비트는 반복마다 한 번 쓰이므로 관측한 서로 다른 내용의 수는 그
+  # 프로세스가 마친 반복 수를 넘지 않는다. 관측이 하나를 놓치면 기다림이 길어질 뿐이다.
+  BEATS_PID="$1" BEATS_FILE="$2" BEATS_STALE="$3" BEATS_WANT="$4" BEATS_N=0 BEATS_LAST=""
+  wait_until beats_seen || true
+  if [ "$BEATS_N" -ge "$BEATS_WANT" ] && kill -0 "$BEATS_PID" 2>/dev/null; then
+    printf 'running'; return 0
+  fi
+  printf 'exited'; return 1
 }
 eod_stop_loop() {
   kill "$EOD_LOOP_PID" 2>/dev/null || true
@@ -2522,10 +2547,15 @@ eod_shift
 eod_age_ledger 300
 printf '2026-10-10T00:00:00Z 종단 — 종료 조건 성립\n' > "$RD/done"
 eod_loop 100
-sleep 1.2
-eod_hb1=$(cat "$RD/watch.heartbeat" 2>/dev/null || true)
-sleep 1.5
-eod_hb2=$(cat "$RD/watch.heartbeat" 2>/dev/null || true)
+# 첫 하트비트를 읽고, 내용이 그것과 달라지길 기다린다 — 꼬리에서 하트비트가 멈춘 회귀는
+# 공용 상한에서 같은 내용 둘로 실패한다.
+eod_hb_now() { cat "$RD/watch.heartbeat" 2>/dev/null || true; }
+eod_hb_seen() { [ -n "$(eod_hb_now)" ]; }
+eod_hb_moved() { local c; c=$(eod_hb_now); [ -n "$c" ] && [ "$c" != "$eod_hb1" ]; }
+wait_until eod_hb_seen || true
+eod_hb1=$(eod_hb_now)
+wait_until eod_hb_moved || true
+eod_hb2=$(eod_hb_now)
 eod_stop_loop
 check "(나) 세그먼트 0개의 꼬리에서 배너가 없다" "$(notify_lines)" "0"
 check "(나) stall 도 1회성 마커도 없다" "$(eod_quiet_markers)" "quiet"
@@ -2667,13 +2697,11 @@ r7_drive() {
   local where="$1" racer i
   : > "$R7_LOG"
   (
-    i=0
-    while [ "$i" -lt 50 ]; do
-      if [ "$where" = before ] && [ -n "$(ls "$RD"/watch.announced-settle-stall-* 2>/dev/null || true)" ]; then break; fi
-      if [ "$where" = after ] && grep -q '^resume$' "$R7_LOG" 2>/dev/null; then break; fi
-      sleep 0.05
-      i=$((i + 1))
-    done
+    r7_cue() {
+      if [ "$where" = before ]; then [ -n "$(ls "$RD"/watch.announced-settle-stall-* 2>/dev/null || true)" ]
+      else grep -q '^resume$' "$R7_LOG" 2>/dev/null; fi
+    }
+    wait_until r7_cue || true
     printf '2026-10-10T00:00:00Z 종단 — 종료 조건 성립\n' > "$RD/done"
     mkdir "$RD/notify.ended" 2>/dev/null && printf 'ended\n' >> "$R7_LOG"
   ) &
@@ -2883,8 +2911,34 @@ esac
 idle_fixture
 printf '픽스처 원장 90000초 전 갱신 · 스테이지 0개 · 대기 승인 0건 · 비종단 세그먼트 1개 · 원장크기=1 · 마지막성장=%s\n' \
   "$(( $(date -u +%s) - 90000 ))" > "$RD/watch.heartbeat"
+idle_stale=$(cat "$RD/watch.heartbeat")
+# 시간이 아니라 반복 수로 잰다. 새로 뜬 감시자의 첫 반복은 조용한 런에서도 전체 반복이고,
+# 그 뒤 전체 반복은 CC_QUIET_PASS_EVERY 번째마다 온다. 그래서 서로 다른 하트비트를
+# CC_QUIET_PASS_EVERY + 1 번 본 때에는 종료 판정을 지난 전체 반복이 둘 끝났다.
+idle_beats=$(( CC_QUIET_PASS_EVERY + 1 ))
 idle_loop
-check "묵은 하트비트 위에 다시 띄운 감시자는 첫 반복에 내려가지 않고 계속 돈다" "$(eod_loop_exited)" "running"
+check "묵은 하트비트 위에 다시 띄운 감시자는 첫 반복에 내려가지 않고 계속 돈다" \
+  "$(beats_running "$EOD_LOOP_PID" "$RD/watch.heartbeat" "$idle_stale" "$idle_beats")" "running"
+eod_stop_loop
+
+# 위 판정 도우미의 대조 — 하트비트를 한 번 쓰고 끝나는 가짜는 `running` 이 아니고, 계속
+# 다시 쓰는 가짜는 `running` 이다. 앞쪽이 없으면 위 단언은 첫 반복에 내려가는 감시자도
+# 통과시키는 판정인지 가려지지 않는다.
+beats_fake="$WORK/beats-fake.heartbeat"
+rm -f "$beats_fake"
+( printf 'beat-once\n' > "$beats_fake" ) &
+beats_once_pid=$!; FX_PIDS="${FX_PIDS:-}$beats_once_pid "
+beats_once_out=$(beats_running "$beats_once_pid" "$beats_fake" "" "$idle_beats"); beats_once_rc=$?
+check "대조: 하트비트를 한 번 쓰고 끝나는 가짜는 계속 돈다로 판정되지 않는다" \
+  "$beats_once_out:$( [ "$beats_once_rc" -ne 0 ] && printf 비영 || printf 영 )" "exited:비영"
+wait "$beats_once_pid" 2>/dev/null || true
+rm -f "$beats_fake"
+( beats_n=0; while :; do beats_n=$((beats_n + 1)); printf 'beat-%s\n' "$beats_n" > "$beats_fake"; sleep 0.2; done ) &
+beats_loop_pid=$!; FX_PIDS="${FX_PIDS:-}$beats_loop_pid "
+beats_loop_out=$(beats_running "$beats_loop_pid" "$beats_fake" "" "$idle_beats"); beats_loop_rc=$?
+check "대조: 하트비트를 계속 다시 쓰는 가짜는 계속 돈다로 판정된다" "$beats_loop_out:$beats_loop_rc" "running:0"
+kill "$beats_loop_pid" 2>/dev/null || true
+wait_pid_gone "$beats_loop_pid" || true
 
 # 하루 넘게 지켜본 감시자로 부른다 — 막 뜬 루프로 재면 기동 시각 기준만으로도 끝나지
 # 않아, 중단 기록이 그 까닭이라는 것을 이 단언이 가려내지 못한다.
@@ -2938,7 +2992,7 @@ sil_measure_at() {
   bad "기본 임계 경계" "측정 패스가 원장 유휴 ${want}초를 다섯 번 모두 읽지 못했다 (마지막 '${seen}')"
 }
 sil_live() {  # sil_live <파일> — 이 스위트가 가진 살아 있는 프로세스를 pid·지문으로 적는다
-  sleep 600 & SIL_PID=$!; FX_PIDS="${FX_PIDS:-}$SIL_PID "
+  wait_holder & SIL_PID=$!; FX_PIDS="${FX_PIDS:-}$SIL_PID "
   printf '%s\n%s\n' "$SIL_PID" "$(cc_proc_fingerprint "$SIL_PID")" > "$1"
 }
 sil_dead() {  # sil_dead — 이 셸이 거둔 죽은 pid 하나, SIL_DEAD 에
@@ -3029,7 +3083,7 @@ sil_fleet() {  # sil_fleet <유휴> [표지의 런 id] — busy/ 에 살아 있�
   sil_case "$1"
   run="${2:-$(basename "$RD")}"
   mkdir -p "$FLEET_PACE_ROOT/busy"
-  sleep 600 & SIL_FLEET_PID=$!; FX_PIDS="${FX_PIDS:-}$SIL_FLEET_PID "
+  wait_holder & SIL_FLEET_PID=$!; FX_PIDS="${FX_PIDS:-}$SIL_FLEET_PID "
   printf '%s\n%s\n%s\n' "$SIL_FLEET_PID" "$(TZ=UTC0 cc_proc_fingerprint "$SIL_FLEET_PID")" "$run" \
     > "$FLEET_PACE_ROOT/busy/u1.$SIL_FLEET_PID"
 }
@@ -3469,14 +3523,13 @@ qp_loop() {  # qp_loop <인자…> — 진짜 루프를 띄운다. pid 는 QP_PI
 qp_stop() { kill "$QP_PID" 2>/dev/null; wait "$QP_PID" 2>/dev/null; }
 qp_int() { case "${1:-}" in ''|*[!0-9]*) printf 아님 ;; *) printf 수 ;; esac; }
 qp_done() { { grep -c '^S [0-9]* [01] 1$' "$QP_LOG" 2>/dev/null || true; } | tr -d ' '; }  # 끝난 주기 수
-qp_wait() {  # qp_wait <주기 수> — 그만큼 끝날 때까지, 최대 60초
-  local i=0
-  while [ "$i" -lt 600 ]; do
-    [ "$(qp_done)" -ge "$1" ] && return 0
-    sleep 0.1; i=$((i + 1))
-  done
+qp_reached() { [ "$(qp_done)" -ge "$QP_WANT" ]; }
+qp_wait() {  # qp_wait <주기 수> — 그만큼 끝날 때까지, 공용 기다림 상한 안에서
+  QP_WANT="$1"
+  wait_until qp_reached || true
   return 0
 }
+qp_last_full() { case "$(qp_seq)" in *F) return 0 ;; esac; return 1; }  # 직전 주기가 전체 패스
 qp_seq() {  # 끝난 주기마다 F(전체 패스)·P(탐침 주기)
   "$qp_awk" '$1 == "A" { f = 1 } $1 == "S" && $4 == "1" { printf "%s", (f ? "F" : "P"); f = 0 }' "$QP_LOG"
 }
@@ -3544,11 +3597,7 @@ for qp_when in 같은초 다음초; do
   qp_res=""
   for qp_k in 원장 중단 대기갱신 릴레이 정지행; do
     # 직전 주기가 전체 패스로 끝날 때까지 기다린 뒤 바꾼다.
-    qp_i=0
-    while [ "$qp_i" -lt 600 ]; do
-      case "$(qp_seq)" in *F) break ;; esac
-      sleep 0.1; qp_i=$((qp_i + 1))
-    done
+    wait_until qp_last_full || true
     [ "$qp_when" = 다음초 ] && sleep 1.2
     qp_c0=$(qp_done)
     qp_change "$qp_k"
@@ -3597,7 +3646,7 @@ for qp_as in 6 4; do
     *) bad "조용한 런의 after-stage 만기" "문턱 ${qp_as}초에서 지연 $qp_lag 주기 ($(qp_seq))" ;;
   esac
 done
-unset -f qp_quiet qp_loop qp_stop qp_done qp_wait qp_seq qp_first_full_from qp_change
+unset -f qp_quiet qp_loop qp_stop qp_done qp_reached qp_wait qp_last_full qp_seq qp_first_full_from qp_change
 
 # 일하는 런의 `watch.mode` — 원장이 방금 자랐고 아무도 기다리지 않으면 work 다.
 fresh

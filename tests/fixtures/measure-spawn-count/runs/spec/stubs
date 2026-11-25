@@ -24,6 +24,7 @@ ln
 ls
 make
 mkdir
+mkfifo
 mktemp
 mv
 od
