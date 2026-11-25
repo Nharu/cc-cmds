@@ -218,13 +218,29 @@ cc_attention_emit() {
            has_nestr("session_id") and has_nestr("form_id")
            and (.questions | type == "array")
            and all(.questions[]; type == "object" and has_nestr("id") and has_str("question")
-                   and (.options | labels_ok))
+                   and (.options | labels_ok)
+                   and ((has("kind") | not) or (.kind | type) == "string")
+                   and ((has("allow_other") | not) or (.allow_other | type) == "boolean"))
+         elif $kind == "turn" then
+           has_nestr("session_id")
          elif $kind == "approval" then
            has_str("run_id") and has_str("approval_id") and has_str("question")
            and (.options | type == "array") and all(.options[]; type == "string")
          elif $kind == "permission" then
            has_nestr("session_id") and has_nestr("tool_name") and has_str("input_summary")
          else false end);
+      def qkind: (.kind // "single");
+      # The answer kinds an answerable event takes, in the fixed order option,
+      # text; an unanswerable event takes none.
+      def accepts_for($kind; $act; $reply):
+        if $act | not then []
+        elif $kind == "auq" then ["option", "text"]
+        elif $kind == "question-form" then
+          (if all($reply.questions[]; qkind == "single") then ["option"] else [] end)
+          + (if any($reply.questions[]; qkind == "text" or .allow_other == true) then ["text"] else [] end)
+        elif $kind == "turn" then ["text"]
+        elif $kind == "approval" then ["option"]
+        else [] end;
       def nn: if . == "" then null else . end;
 
       (if $has == "1" then (try ($detail | fromjson) catch null) else null end) as $d
@@ -238,7 +254,10 @@ cc_attention_emit() {
               ($reply.questions | length) >= 1
               and all($reply.questions[]; (.options | length) >= 1)
             elif $kind == "question-form" then
-              all($reply.questions[]; (.id | nestr) and (.options | length) >= 1)
+              all($reply.questions[]; (.id | nestr)
+                  and (qkind == "text" or (qkind == "single" and (.options | length) >= 1)))
+            elif $kind == "turn" then
+              true
             elif $kind == "approval" then
               ($reply.options | length) >= 1
             else false end)
@@ -265,7 +284,7 @@ cc_attention_emit() {
       | $id,
         ({schema: 1, id: $id, host: $host, created_at_ms: ($ms | tonumber),
           kind: $kind, token: $token, slot: $slot, title: $title, body: $b,
-          actionable: $act, accepts: (if $act then ["option"] else [] end),
+          actionable: $act, accepts: accepts_for($kind; $act; $reply),
           origin: {
             session_id: ((if $reply != null and ($reply.session_id | nestr) then $reply.session_id else $sid end) | nn),
             run_id: ((if $reply != null and ($reply.run_id | nestr) then $reply.run_id else $run end) | nn),

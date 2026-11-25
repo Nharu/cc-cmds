@@ -87,5 +87,47 @@ CC_NOTIFY_SESSION_TITLE=$(cc_notify_session_title_read "$sid")
 export CC_NOTIFY_SESSION_TITLE
 CC_NOTIFY_SESSION_ID="$sid"
 export CC_NOTIFY_SESSION_ID
-cc_notify_fire session-turn "$reason" >/dev/null 2>&1
+
+# THE FUNNEL ATTACHMENT MAKES THE TURN ANSWERABLE BY A REMOTE INSTRUCTION, and
+# only in a session that runs no pipeline. The session's forward index —
+# `${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/session/<session id>`, one run
+# id per line, written by the gate — is read by the same rule the approval link
+# reader in `notify-run.sh` uses: a session id of `[A-Za-z0-9-]` only, a run id
+# of `[A-Za-z0-9_-]` only, and a run counts when its run directory exists. One
+# such run makes this the router seat of a run, and then no attachment is made,
+# so the event stays `reply: null` and takes no answer. A session id of another
+# shape or a state root that cannot be told leaves the attachment out as well;
+# a missing index is a session that kicked off no run. The attachment is made
+# after every gate above and right before the banner call, as the question seat
+# does, and a failure to make it raises the banner as before: the banner
+# arguments are the same bytes with and without it.
+detail=
+attach=0
+if [[ $sid =~ ^[A-Za-z0-9-]+$ ]]; then
+  state_root="${XDG_STATE_HOME:-${HOME:-}/.local/state}"
+  case "$state_root" in
+    ''|/.local/state) ;;
+    *)
+      attach=1
+      index="$state_root/cc-cmds/session/$sid"
+      if [ -f "$index" ]; then
+        while IFS= read -r rid || [ -n "$rid" ]; do
+          [[ $rid =~ ^[A-Za-z0-9_-]+$ ]] || continue
+          if [ -d "$state_root/cc-cmds/run/$rid" ]; then
+            attach=0
+            break
+          fi
+        done <"$index" 2>/dev/null
+      fi
+      ;;
+  esac
+fi
+if [ "$attach" -eq 1 ]; then
+  detail_json=$(jq -cn --arg sid "$sid" \
+    '{kind: "turn", actionable: true, reply: {surface: "turn", session_id: $sid}}' 2>/dev/null) || detail_json=
+  if [ -n "$detail_json" ]; then
+    detail=$(cc_attention_detail_make "$detail_json" 2>/dev/null) || detail=
+  fi
+fi
+CC_NOTIFY_ATTENTION_DETAIL="$detail" cc_notify_fire session-turn "$reason" >/dev/null 2>&1
 exit 0

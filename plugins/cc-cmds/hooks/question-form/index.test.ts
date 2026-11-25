@@ -500,5 +500,25 @@ describe('되돌리기와 배너', () => {
         ],
       },
     })
+    // argv 셋째 원소는 원격 사건에만 쓰이는 질문지 사실이다. allowOther 를 적지 않은 질문은
+    // 기타 입력을 받는 것으로 넘긴다.
+    const detail = JSON.parse(run.argv[2] ?? '{}')
+    expect(detail.questions.map((q: any) => [q.id, q.kind, q.allow_other])).toEqual([
+      ['scope', 'single', true],
+      ['why', 'text', true],
+    ])
+  })
+
+  test('배너 인자: allowOther 가 false 인 질문은 allow_other 거짓', async ($, on) => {
+    const { w } = world(on)
+    await start($)
+    const input = twoQuestions() as any
+    input.questions[0].allowOther = false
+    await call($, input)
+    const detail = JSON.parse(w.runs[0].argv[2] ?? '{}')
+    expect(detail.questions.map((q: any) => [q.id, q.kind, q.allow_other])).toEqual([
+      ['scope', 'single', false],
+      ['why', 'text', true],
+    ])
   })
 })

@@ -9,7 +9,7 @@
   "title": "cc-cmds — 질문지",
   "body": "범위와 순서를 골라 주세요.",
   "actionable": true,
-  "accepts": ["option"],
+  "accepts": ["option", "text"],
   "origin": {
     "session_id": "5f0c9a2e-4b1d-4e7a-9c3f-2a8d6e1b0c47",
     "run_id": null,
@@ -23,8 +23,8 @@
     "session_id": "5f0c9a2e-4b1d-4e7a-9c3f-2a8d6e1b0c47",
     "form_id": "form-7",
     "questions": [
-      {"id": "scope", "question": "범위는?", "options": [{"label": "전부"}, {"label": "일부"}]},
-      {"id": "order", "question": "순서는?", "options": [{"label": "먼저"}, {"label": "나중"}]}
+      {"id": "scope", "question": "범위는?", "options": [{"label": "전부"}, {"label": "일부"}], "kind": "single", "allow_other": true},
+      {"id": "order", "question": "순서는?", "options": [{"label": "먼저"}, {"label": "나중"}], "kind": "single", "allow_other": false}
     ]
   }
 }
