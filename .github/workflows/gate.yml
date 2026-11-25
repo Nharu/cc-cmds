@@ -135,7 +135,9 @@ jobs:
   # `run` of a plan that failed before deciding — every condition is written
   # `!= '0'`), `mode` is `전량` or `선택` (a run that did not select is
   # `전량`), `selected` the closed section list of a narrowed run and `count`
-  # how many sections run. `rows` is the matrix (runners 1..R/L, then the extra rows
+  # how many sections run — written by the select step on a pull request and
+  # by the table step on a whole run, which has no select step, so every later
+  # `count != '0'` sees the real number on both. `rows` is the matrix (runners 1..R/L, then the extra rows
   # R+1..R+E), `regular` is R — the regular rows the table actually has, which a
   # narrowed table may hold fewer of than K — `runners` and `lanes` what the
   # shard target needs to agree with it, `extra` is E and `work` is how many
@@ -148,7 +150,7 @@ jobs:
       run: ${{ steps.due.outputs.run || '1' }}
       mode: ${{ steps.select.outputs.mode || '전량' }}
       selected: ${{ steps.select.outputs.selected }}
-      count: ${{ steps.select.outputs.count }}
+      count: ${{ steps.select.outputs.count || steps.table.outputs.count }}
       rows: ${{ steps.table.outputs.rows }}
       regular: ${{ steps.table.outputs.regular }}
       runners: ${{ steps.table.outputs.runners }}
@@ -173,7 +175,8 @@ jobs:
       # pull request and every later step is skipped while the run is green.
       # `format` makes it the string '' first. A job output whose value is
       # empty is not set at all and reads as null in the same way, so the job
-      # output `run` above falls back to '1' when the step did not run.
+      # output `run` above falls back to '1' when the step did not run, and
+      # `count` falls back to the table step's when the select step did not.
       - name: Is a run due
         id: due
         if: github.event_name != 'pull_request'
@@ -327,6 +330,19 @@ jobs:
             echo "gate-plan: 판정 전량 — $(cat "$plan/reason")"
           fi
           mode=$(cat "$plan/mode"); sel=$(cat "$plan/selected")
+          # A WHOLE RUN WRITES `count` HERE. The select step runs on a pull
+          # request only, and an empty job output reads as 0 in every later
+          # `count != '0'`: a whole run would skip every shard and end green.
+          # A whole run whose suite lists no section is a broken plan, not an
+          # empty one, so it fails.
+          if [ "$mode" = "전량" ]; then
+            count=$(make -s print-gate-sections | grep -c . || true)
+            if [ "${count:-0}" -lt 1 ]; then
+              echo "::error::전량 판정인데 스위트가 절을 하나도 내지 않았습니다"
+              exit 1
+            fi
+            echo "count=$count" >> "$GITHUB_OUTPUT"
+          fi
           n=$(make -s print-gate-shards); lanes=$(make -s print-gate-lanes); s=$(make -s print-gate-slots)
           share="-"
           if [ "$mode" = "선택" ] && [ -z "$sel" ]; then

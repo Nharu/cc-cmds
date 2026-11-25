@@ -15,16 +15,24 @@
 #      inside one directory, `**` crosses them). The filter is read with
 #      mikefarah/yq after `explode(.)`.
 #   2. The files of the selection machinery itself mean the whole suite.
-#   3. `Makefile`: a changed line, or the target or variable holding it, whose
-#      name carries `gate`, `GATE` or `isolation` means the whole suite; any
-#      other Makefile change is ignored.
+#   3. `Makefile`: the whole suite when a changed line, or the target or
+#      variable holding it, names `gate`, `GATE` or `isolation`; when the line
+#      is an `export` or `unexport` line; when its owner is a name make reads
+#      for every recipe (`SHELL`, `.SHELLFLAGS`, `.ONESHELL`, `MAKEFLAGS`,
+#      `.EXPORT_ALL_VARIABLES` and the like); and when its owner is a variable
+#      every shard recipe sees — an exported one, or one an exported variable
+#      or a gate-named variable or target refers to, followed through further
+#      references. Any other Makefile change is ignored.
 #   4. `scripts/test-gate.sh`: a section whose body changed is picked, found by
 #      comparing the `--digests` of the two commits (both indexed by the head's
 #      code). In the head (before `# --- preamble-end ---`) comment and blank
 #      lines are ignored; `pre_base` means the whole suite, `pre_<group>` the
 #      sections of that group, any other head function the sections that name
 #      it (following the head functions that call it), and a statement outside
-#      every function the whole suite. The tail (after
+#      every function the whole suite. A head function the walk reaches that a
+#      line outside every function names — in the head or in the tail — or
+#      that no section names and no head function calls, means the whole
+#      suite too: it runs outside any one section. The tail (after
 #      `# --- epilogue-begin ---`) and a container block with no section marker
 #      mean the whole suite.
 #   5. Orchestrator files become nodes. `gate.sh` and the files it sources at
@@ -190,13 +198,15 @@ function words(node, s,   n, a, i, t, m, b, j) {
 # for each line number listed in <want>, the class being IGN (comment or
 # blank), F (inside a function), V (a top-level assignment), B (a `case
 # "$verb"` arm of `gate_main`) or TOP (any other top-level statement). `tok`
-# prints the word rows of every F, V and B node, comment lines left out. A
-# nonzero <stop> reads only the lines above it.
+# prints the word rows of every F, V and B node, comment lines left out. `top`
+# prints the word rows of every line outside a function (TOP and V), as the
+# one node `T:`. A nonzero <stop> reads only the lines above it.
 sel_shmap() {
   LC_ALL=C awk -v mode="$1" -v want="$3" -v maxl="$4" -v q="$sel_q" "$sel_awk_words"'
     BEGIN { if (mode == "map") while ((getline l < want) > 0) w[l + 0] = 1 }
     function out() {
       if (mode == "map") { if (NR in w) print NR "\t" (ign ? "IGN" : cls) "\t" nm; return }
+      if (mode == "top") { if (!ign && cls != "F" && cls != "B") { self = ""; words("T:", line) }; return }
       if (ign || cls == "TOP") return
       self = (cls == "B" ? "" : nm)
       words(cls ":" nm, line)
@@ -372,52 +382,116 @@ sel_region() {
 
 # The owner of each Makefile line listed in <want>: `<line><TAB><owner><TAB><hit>`,
 # the owner being the variable or target the line belongs to (empty for none)
-# and <hit> 1 when the line or its owner names gate, GATE or isolation.
+# and <hit> why the line reaches every gate recipe — `gate` (the line or its
+# owner names gate, GATE or isolation), `export` (an export or unexport line),
+# `special` (an owner make reads for every recipe), `env` (an owner every gate
+# recipe sees: exported, or referred to from an exported variable or a
+# gate-named variable or target, through further references) — or `-`. The
+# file is read twice: once for the owners' text and the exported names, once
+# for the rows.
 sel_mkmap() {
   LC_ALL=C awk -v want="$2" '
-    BEGIN { while ((getline l < want) > 0) w[l + 0] = 1 }
-    {
-      line = $0
+    BEGIN {
+      while ((getline l < want) > 0) w[l + 0] = 1
+      split("SHELL .SHELLFLAGS .ONESHELL MAKEFLAGS MFLAGS MAKEFILES .EXPORT_ALL_VARIABLES .POSIX .NOTPARALLEL .SILENT .IGNORE .DELETE_ON_ERROR .DEFAULT .SUFFIXES .RECIPEPREFIX .DEFAULT_GOAL VPATH GNUMAKEFLAGS", sp, " ")
+      for (i in sp) special[sp[i]] = 1
+    }
+    function owner(line) {
       if (cont) o = cur
       else if (indef) { o = defn; if (line ~ /^endef/) indef = 0 }
       else if (line ~ /^\t/) o = tgt
       else if (line ~ /^[ \t]*(#.*)?$/) o = ""
-      else if (line ~ /^define[ \t]+/) { defn = line; sub(/^define[ \t]+/, "", defn); sub(/[ \t].*$/, "", defn); o = defn; indef = 1; tgt = "" }
-      else if (line ~ /^(override[ \t]+|export[ \t]+)?[A-Za-z_][A-Za-z0-9_.-]*[ \t]*(::=|:=|\?=|\+=|!=|=)/) { o = line; sub(/^(override|export)[ \t]+/, "", o); sub(/[ \t]*(::=|:=|\?=|\+=|!=|=).*$/, "", o); tgt = "" }
-      else if (line ~ /^[^ \t#][^=]*:/) { o = line; sub(/:.*$/, "", o); tgt = o }
+      else if (line ~ /^define[ \t]+/) { defn = line; sub(/^define[ \t]+/, "", defn); sub(/[ \t].*$/, "", defn); o = defn; indef = 1; tgt = ""; isvar[o] = 1 }
+      else if (line ~ /^(override[ \t]+)?(export[ \t]+)?[A-Za-z_][A-Za-z0-9_.-]*[ \t]*(::=|:=|\?=|\+=|!=|=)/) { o = line; sub(/^(override[ \t]+)?(export[ \t]+)?/, "", o); sub(/[ \t]*(::=|:=|\?=|\+=|!=|=).*$/, "", o); tgt = ""; isvar[o] = 1 }
+      else if (line ~ /^[^ \t#][^=]*:/) { o = line; sub(/:.*$/, "", o); sub(/[ \t]+$/, "", o); tgt = o }
       else { o = ""; tgt = "" }
       cur = o
       cont = (line ~ /\\$/)
-      if (NR in w) print NR "\t" o "\t" ((line ~ /gate|GATE|isolation/ || o ~ /gate|GATE|isolation/) ? 1 : 0)
-    }' "$1"
+      return o
+    }
+    function isexport(line) { return (line ~ /^(override[ \t]+)?(export|unexport)([ \t]|$)/) }
+    function refs(s,   r) {
+      while (match(s, /\$[({][A-Za-z_][A-Za-z0-9_.-]*/)) {
+        r = substr(s, RSTART + 2, RLENGTH - 2)
+        if (!(r in env)) { env[r] = 1; q[++qt] = r }
+        s = substr(s, RSTART + RLENGTH)
+      }
+    }
+    FNR == NR {
+      o = owner($0)
+      if (o != "") txt[o] = txt[o] " " $0
+      if (o ~ /^\.EXPORT_ALL_VARIABLES/) allexp = 1
+      if (isexport($0) && $0 ~ /^(override[ \t]+)?export([ \t]|$)/) {
+        e = $0; sub(/^(override[ \t]+)?export[ \t]*/, "", e); sub(/[ \t]*(::=|:=|\?=|\+=|!=|=).*$/, "", e)
+        n = split(e, a, /[ \t]+/)
+        for (i = 1; i <= n; i++) if (a[i] != "") exported[a[i]] = 1
+      }
+      next
+    }
+    FNR == 1 {
+      cont = 0; indef = 0; tgt = ""; cur = ""
+      qt = 0
+      for (o in txt) if ((o in exported) || o ~ /gate|GATE|isolation/ || (allexp && (o in isvar))) { if (!(o in env)) { env[o] = 1; q[++qt] = o } }
+      for (h = 1; h <= qt; h++) refs(txt[q[h]])
+    }
+    {
+      line = $0
+      o = owner(line)
+      if (!(FNR in w)) next
+      hit = "-"
+      if (line ~ /gate|GATE|isolation/ || o ~ /gate|GATE|isolation/) hit = "gate"
+      else if (isexport(line)) hit = "export"
+      else if (o in special) hit = "special"
+      else if (o != "" && (o in env)) hit = "env"
+      print FNR "\t" o "\t" hit
+    }' "$1" "$1"
+}
+
+# The word rows of the suite's tail (the lines after `# --- epilogue-begin ---`),
+# comment and blank lines left out, as the one node `T:`: the tail runs on
+# every call, so a head function it names is called by the whole suite.
+sel_tailtok() {
+  LC_ALL=C awk -v q="$sel_q" "$sel_awk_words"'
+    BEGIN { self = "" }
+    $0 ~ /^# --- epilogue-begin ---$/ { tail = 1; next }
+    tail && $0 !~ /^[ \t]*$/ && $0 !~ /^[ \t]*#/ { words("T:", $0) }' "$1"
 }
 
 # The head-function walk of the suite: from each name in <starts>, the sections
 # naming it and, through every head function calling it, the sections naming
 # those. A caller `pre_base` means the whole suite, a caller `pre_<group>` adds
-# that group's sections. Prints `<name><TAB>FULL` or `<name><TAB>SECS<TAB><ids>`.
+# that group's sections. The rows of node `T:` are the head's lines outside
+# every function and the tail's lines; a function they name runs outside any
+# one section, so reaching it means the whole suite. So does reaching a
+# function other than a `pre_<group>` that no section names and no head
+# function calls: whatever calls it is not a section, and dropping it to no
+# section would let the pull request run nothing. Prints
+# `<name><TAB>FULL<TAB><why>` (`pre_base`, `top:<function>` or
+# `none:<function>`) or `<name><TAB>SECS<TAB><ids>`.
 sel_hclimb() {
   LC_ALL=C awk -F'\t' '
-    FILENAME == ARGV[1] { if ($1 ~ /^F:/) { n = substr($1, 3); if ($2 != n) callers[$2] = callers[$2] " " n }; next }
+    FILENAME == ARGV[1] { if ($1 == "T:") top[$2] = 1; else if ($1 ~ /^F:/) { n = substr($1, 3); if ($2 != n) callers[$2] = callers[$2] " " n }; next }
     FILENAME == ARGV[2] { st[$2] = st[$2] " " $1; next }
     FILENAME == ARGV[3] { split($1, a, " "); if (a[1] == "SEC" && a[4] != "-" && a[5] != "-") grp[a[5]] = grp[a[5]] " " a[4]; next }
     FILENAME == ARGV[4] { ns++; start[ns] = $1; next }
-    function climb(s,   q, vis, h, t, x, out, n, a, i, y, full) {
-      h = 1; t = 1; q[1] = s; vis[s] = 1; out = ""; full = 0
-      while (h <= t && !full) {
+    function climb(s,   q, vis, h, t, x, out, n, a, i, y, why) {
+      h = 1; t = 1; q[1] = s; vis[s] = 1; out = ""; why = ""
+      while (h <= t && why == "") {
         x = q[h++]
+        if (x !~ /^pre_/ && (x in top)) { why = "top:" x; break }
+        if (x !~ /^pre_/ && st[x] == "" && callers[x] == "") { why = "none:" x; break }
         out = out st[x]
         n = split(callers[x], a, " ")
         for (i = 1; i <= n; i++) {
           y = a[i]
           if (y in vis) continue
           vis[y] = 1
-          if (y == "pre_base") { full = 1; break }
+          if (y == "pre_base") { why = "pre_base"; break }
           if (y ~ /^pre_/) out = out grp[substr(y, 5)]
           q[++t] = y
         }
       }
-      if (full) print s "\tFULL"
+      if (why != "") print s "\tFULL\t" why
       else print s "\tSECS\t" out
     }
     END { for (k = 1; k <= ns; k++) climb(start[k]) }
@@ -561,15 +635,23 @@ sel_capped() {
 # --- the steps ---------------------------------------------------------------
 
 sel_makefile() {
-  local row ln owner
+  local row ln owner hit want
   sel_hunks "$BASE" "$HEAD" Makefile "$W/mk.del" "$W/mk.add" || sel_die "Makefile 의 변경을 읽지 못했습니다"
   git show "$BASE:Makefile" > "$W/mk.base" 2>/dev/null || : > "$W/mk.base"
   git show "$HEAD:Makefile" > "$W/mk.head" 2>/dev/null || : > "$W/mk.head"
-  { sel_mkmap "$W/mk.base" "$W/mk.del"; sel_mkmap "$W/mk.head" "$W/mk.add"; } > "$W/mk.rows"
-  row=$(awk -F'\t' '$3 == 1 { print $1 "\t" $2; exit }' "$W/mk.rows")
+  { sel_mkmap "$W/mk.base" "$W/mk.del" || sel_die "베이스 Makefile 을 읽지 못했습니다"
+    sel_mkmap "$W/mk.head" "$W/mk.add" || sel_die "헤드 Makefile 을 읽지 못했습니다"; } > "$W/mk.rows"
+  want=$(( $(grep -c . "$W/mk.del") + $(grep -c . "$W/mk.add") ))
+  [ "$(grep -c . "$W/mk.rows")" = "$want" ] || sel_die "Makefile 의 바뀐 줄마다 소유자 행이 나오지 않았습니다"
+  row=$(awk -F'\t' '$3 != "-" { print $1 "\t" $2 "\t" $3; exit }' "$W/mk.rows")
   if [ -n "$row" ]; then
-    ln=${row%%$'\t'*}; owner=${row#*$'\t'}
-    sel_full Makefile "${owner:-줄 $ln}" "Makefile 의 gate 계열 줄·타깃·변수가 바뀌었습니다"
+    ln=${row%%$'\t'*}; row=${row#*$'\t'}; owner=${row%%$'\t'*}; hit=${row#*$'\t'}
+    case "$hit" in
+      export)  sel_full Makefile "${owner:-줄 $ln}" "Makefile 의 export·unexport 줄이 바뀌었습니다" ;;
+      special) sel_full Makefile "${owner:-줄 $ln}" "Makefile 이 모든 레시피에 읽는 $owner 가 바뀌었습니다" ;;
+      env)     sel_full Makefile "${owner:-줄 $ln}" "gate 레시피가 보는 Makefile 변수 $owner 가 바뀌었습니다 (export 되거나 export·gate 계열 정의가 참조)" ;;
+      *)       sel_full Makefile "${owner:-줄 $ln}" "Makefile 의 gate 계열 줄·타깃·변수가 바뀌었습니다" ;;
+    esac
   fi
   awk -F'\t' '{ print ($2 == "" ? "-" : $2) }' "$W/mk.rows" | sort -u > "$W/mk.owners"
   while IFS= read -r owner; do
@@ -654,10 +736,19 @@ sel_suite() {
     sort -u "$W/hstart" -o "$W/hstart"
     pre=$(awk '$1 == "PRE" { print $2 }' "$W/idx.head")
     sel_shmap tok "$W/h/$SEL_SUITE" - "$pre" > "$W/htok"
+    sel_shmap top "$W/h/$SEL_SUITE" - "$pre" >> "$W/htok"
+    sel_tailtok "$W/h/$SEL_SUITE" >> "$W/htok"
     sel_hclimb "$W/htok" "$W/stok" "$W/idx.head" "$W/hstart" > "$W/hclimb"
+    [ "$(grep -c . "$W/hclimb")" = "$(grep -c . "$W/hstart")" ] || sel_die "머리 함수 오르기가 시작점마다 한 줄을 내지 않았습니다"
     while IFS=$'\t' read -r nm r list; do
       if [ "$r" = FULL ]; then
-        sel_full "$SEL_SUITE" "$nm()" "스위트 머리의 $nm 를 pre_base 가 부릅니다"
+        case "$list" in
+          "top:$nm") sel_full "$SEL_SUITE" "$nm()" "스위트 머리의 $nm 를 머리·꼬리의 함수 밖 문장이 부릅니다" ;;
+          "none:$nm") sel_full "$SEL_SUITE" "$nm()" "스위트 머리의 $nm 를 부르는 절도 머리 함수도 없습니다" ;;
+          top:*) sel_full "$SEL_SUITE" "$nm()" "스위트 머리의 $nm 에서 거슬러 닿은 ${list#top:} 를 머리·꼬리의 함수 밖 문장이 부릅니다" ;;
+          none:*) sel_full "$SEL_SUITE" "$nm()" "스위트 머리의 $nm 에서 거슬러 닿은 ${list#none:} 를 부르는 절도 머리 함수도 없습니다" ;;
+          *) sel_full "$SEL_SUITE" "$nm()" "스위트 머리의 $nm 를 pre_base 가 부릅니다" ;;
+        esac
       fi
       list=$(printf '%s\n' "$list" | sel_join)
       sel_unit "$SEL_SUITE" "$nm()" "${list:-(없음)}"
@@ -831,7 +922,19 @@ on:
 jobs: {}
 EOF
   printf 'echo shard\n' > "$R/scripts/gate-shard.sh"
-  printf 'lint:\n\t@echo lint\ngate-run:\n\t@echo run\n' > "$R/Makefile"
+  # TZ is exported and takes TEST_TZ, RUN_FLAG is read by a gate recipe, SHELL
+  # is read by every recipe, and LINT_FLAG by a target that is not gate's.
+  cat > "$R/Makefile" <<'EOF'
+TEST_TZ := Asia/Seoul
+export TZ := $(TEST_TZ)
+RUN_FLAG := x
+LINT_FLAG := y
+SHELL := /bin/sh
+lint:
+	@echo lint $(LINT_FLAG)
+gate-run:
+	@echo run $(RUN_FLAG)
+EOF
   printf 'readme\n' > "$R/README.md"
   printf 'print("tool")\n' > "$R/plugins/cc-cmds/orchestrator/tool.py"
   cat > "$R/plugins/cc-cmds/orchestrator/gate.sh" <<'EOF'
@@ -924,7 +1027,17 @@ pre_base() {
 pre_grp() {
   echo grp
 }
+top_only() {
+  echo top-only
+}
+tail_only() {
+  echo tail-only
+}
+orphan_fn() {
+  echo orphan
+}
 echo top
+top_only
 # --- preamble-end ---
 # --- 1. first ---
 # --- section: 1 | group: base | covers: snap ---
@@ -943,6 +1056,7 @@ echo "$GATE_LIMIT"
 echo fifth
 # --- epilogue-begin ---
 echo end
+tail_only
 EOF
   g() { git -c user.name=gate-select -c user.email=gate-select@localhost -c commit.gpgsign=false -c core.hooksPath=/dev/null "$@"; }
   (cd "$R" && g init -q && g add -A && g commit -q -m base) || { bad "gate-select 자기 시험" "임시 레포를 만들지 못했습니다"; rm -rf "$T"; return 1; }
@@ -976,14 +1090,32 @@ EOF
   tab=$'\t'
 
   sc "(a) 기계 장치 파일이 바뀌면 전량" 전량 fx_sub "$R/scripts/gate-shard.sh" 'echo shard' 'echo shard2'
-  sc "(b) Makefile 의 gate 계열 타깃 안 줄이 바뀌면 전량" 전량 fx_sub "$R/Makefile" "${tab}@echo run" "${tab}@echo run2"
-  sc "(b) Makefile 의 gate 계열 아닌 타깃 줄은 무시" "절${tab}" fx_sub "$R/Makefile" "${tab}@echo lint" "${tab}@echo lint2"
+  sc "(b) Makefile 의 gate 계열 타깃 안 줄이 바뀌면 전량" 전량 fx_sub "$R/Makefile" "${tab}@echo run \$(RUN_FLAG)" "${tab}@echo run2 \$(RUN_FLAG)"
+  sc "(b) Makefile 의 gate 계열 아닌 타깃 줄은 무시" "절${tab}" fx_sub "$R/Makefile" "${tab}@echo lint \$(LINT_FLAG)" "${tab}@echo lint2 \$(LINT_FLAG)"
+  sc "(b) export 된 변수가 참조하는 Makefile 변수가 바뀌면 전량" 전량 fx_sub "$R/Makefile" 'TEST_TZ := Asia/Seoul' 'TEST_TZ := UTC0'
+  if grep -q '^gate-select: Makefile:TEST_TZ → 전량 — gate 레시피가 보는 Makefile 변수 TEST_TZ 가 바뀌었습니다' "$T/err"; then
+    ok "(b) 표준 오류가 export 연쇄로 닿은 변수를 적는다"
+  else
+    bad "(b) 표준 오류가 export 연쇄로 닿은 변수를 적는다" "$(cat "$T/err")"
+  fi
+  sc "(b) Makefile 의 export 줄이 바뀌면 전량" 전량 fx_sub "$R/Makefile" 'export TZ := $(TEST_TZ)' 'export TZ := UTC0'
+  sc "(b) gate 레시피가 참조하는 Makefile 변수가 바뀌면 전량" 전량 fx_sub "$R/Makefile" 'RUN_FLAG := x' 'RUN_FLAG := z'
+  sc "(b) 모든 레시피가 읽는 SHELL 이 바뀌면 전량" 전량 fx_sub "$R/Makefile" 'SHELL := /bin/sh' 'SHELL := /bin/bash'
+  sc "(b) gate 계열 아닌 타깃만 참조하는 Makefile 변수는 무시" "절${tab}" fx_sub "$R/Makefile" 'LINT_FLAG := y' 'LINT_FLAG := w'
   sc "(c) 필터 밖 경로는 보지 않는다" "절${tab}" fx_sub "$R/README.md" 'readme' 'readme2'
   sc "(d) 스위트 머리의 주석 줄은 무시" "절${tab}" fx_after "$S" 'echo top' '# a note'
   sc "(d) 스위트 머리의 pre_base 안이면 전량" 전량 fx_sub "$S" '  echo base' '  echo base2'
   sc "(d) 스위트 머리의 pre_<group> 안이면 그 그룹 절과 선행 폐포" "절${tab}1,2,3" fx_sub "$S" '  echo grp' '  echo grp2'
   sc "(d) 스위트 머리의 다른 함수는 그 이름을 담은 절, 머리 함수 간 호출을 따라간다" "절${tab}1,2" fx_sub "$S" '  echo one' '  echo one2'
   sc "(d) 스위트 머리의 함수 밖 최상위 문장이면 전량" 전량 fx_sub "$S" 'echo top' 'echo top2'
+  sc "(d) 머리의 함수 밖 문장만 부르는 머리 함수가 바뀌면 전량" 전량 fx_sub "$S" '  echo top-only' '  echo top-only2'
+  if grep -q '^gate-select: scripts/test-gate.sh:top_only() → 전량 — .*함수 밖 문장이 부릅니다$' "$T/err"; then
+    ok "(d) 표준 오류가 함수 밖 문장의 호출을 적는다"
+  else
+    bad "(d) 표준 오류가 함수 밖 문장의 호출을 적는다" "$(cat "$T/err")"
+  fi
+  sc "(d) 꼬리만 부르는 머리 함수가 바뀌면 전량" 전량 fx_sub "$S" '  echo tail-only' '  echo tail-only2'
+  sc "(d) 절도 머리 함수도 부르지 않는 머리 함수가 바뀌면 전량" 전량 fx_sub "$S" '  echo orphan' '  echo orphan2'
   sc "(e) 스위트 꼬리가 바뀌면 전량" 전량 fx_sub "$S" 'echo end' 'echo end2'
   sc "(e) 표지 없는 컨테이너 절이 바뀌면 전량" 전량 fx_sub "$S" '# the container block carries no marker' '# the container block, changed'
   sc "(f) 절 본문의 변경은 다이제스트가 고른 절과 그 needs 선행" "절${tab}1,2" fx_sub "$S" 'gamma' 'gamma --again'
@@ -1067,8 +1199,8 @@ EOF
   rm -rf "$T"
   printf 'gate-select self-test: %d passed, %d failed\n' "$passed" "$failed"
   # A floor on the count, so a refactor that silently skips cases cannot pass.
-  if [ "$passed" -lt 28 ]; then
-    printf 'gate-select self-test: 통과 수 %d 가 하한 28 에 못 미칩니다\n' "$passed" >&2
+  if [ "$passed" -lt 38 ]; then
+    printf 'gate-select self-test: 통과 수 %d 가 하한 38 에 못 미칩니다\n' "$passed" >&2
     return 1
   fi
   [ "$failed" = "0" ]
