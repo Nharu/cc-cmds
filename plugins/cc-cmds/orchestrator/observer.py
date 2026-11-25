@@ -70,6 +70,9 @@ ADOPT_POLL_S = 0.2
 CHILD_LIMIT = 4
 BATCH_DEFER_LOG_S = 60.0
 CHILD_TIMEOUT_S = 10.0
+# The most a job module may raise its own call limit to with `CALL_TIMEOUT_S`.
+CHILD_TIMEOUT_MAX_S = 30.0
+TICK_DEFER_LOG_S = 60.0
 LOG_CAP = 1 << 20
 DEFAULT_PERIOD = 2.0
 DEFAULT_GRACE = 300.0
@@ -806,6 +809,10 @@ class Job:
         self.deadline = None
         self.pending = True
         self.thread = None
+        # The first pass this job was due on and found no slot, and the last
+        # `바퀴 미룸` line it left; both None while it is not waiting.
+        self.waiting_since = None
+        self.wait_logged = None
 
 
 class Run:
@@ -823,17 +830,31 @@ class Ctx:
         self.job = job
         self.pid = daemon.pid
 
-    def call(self, run, argv, timeout=CHILD_TIMEOUT_S):
+    def call_limit(self):
+        """This job's limit on one call: the module's `CALL_TIMEOUT_S`, at most
+        `CHILD_TIMEOUT_MAX_S`, or `CHILD_TIMEOUT_S` when the module sets none."""
+        mod = self._d.mods.get(self.job)
+        own = getattr(mod, "CALL_TIMEOUT_S", None)
+        try:
+            own = float(own) if own is not None and not isinstance(own, bool) else None
+        except (TypeError, ValueError):
+            own = None
+        if own is None or own <= 0:
+            return CHILD_TIMEOUT_S
+        return min(own, CHILD_TIMEOUT_MAX_S)
+
+    def call(self, run, argv, timeout=None):
         """Run one of the run's pinned scripts: (rc, stdout)."""
         if not argv or not SCRIPT_RE.match(str(argv[0])) or not run_dir_ok(run):
             return 127, ""
         path = os.path.join(run, "plugin", "cc-cmds", "orchestrator", argv[0])
         if not os.path.isfile(path):
             return 127, ""
+        cap = self.call_limit()
         try:
-            t = min(float(timeout), CHILD_TIMEOUT_S)
+            t = cap if timeout is None else min(float(timeout), cap)
         except (TypeError, ValueError):
-            t = CHILD_TIMEOUT_S
+            t = cap
         env = child_env({"CC_OBSERVER_PID": str(self._d.pid)})
         try:
             p = subprocess.Popen(["bash", path] + [str(a) for a in argv[1:]], env=env, cwd="/",
@@ -866,6 +887,36 @@ class Ctx:
     def log(self, msg):
         log("[%s] %s" % (self.job, msg))
 
+    def slots(self):
+        """(slots held now, `CHILD_LIMIT`); the count is None when the run table
+        kept changing under this thread's read."""
+        for _ in range(3):
+            try:
+                return self._d.busy(), CHILD_LIMIT
+            except RuntimeError:
+                continue
+        return None, CHILD_LIMIT
+
+    def signature_excluding(self, run, names):
+        """The observer's own signature of `run`, by its probe set and file
+        signatures, without the probes named in `names` (`LEDGER` for the
+        ledger, a path relative to the run directory otherwise). None when the
+        run is not adopted."""
+        r = self._d.runs.get(run)
+        if r is None:
+            return None
+        for _ in range(3):
+            try:
+                return self._d.signature(r, exclude=tuple(names))
+            except RuntimeError:
+                continue
+        return None
+
+    def ledger_path(self, run):
+        """The ledger `ledger-path` names, when it is an absolute path."""
+        led = (read_text(os.path.join(run, "ledger-path"), 4096) or "").split("\n", 1)[0]
+        return led if led and os.path.isabs(led) else None
+
 
 def kill_group(p):
     try:
@@ -883,6 +934,9 @@ class Daemon:
         self.started = time.monotonic()
         self.period = env_float("CC_OBSERVER_PERIOD", DEFAULT_PERIOD)
         self.grace = env_float("CC_OBSERVER_GRACE", DEFAULT_GRACE)
+        self.tick_defer_log = env_float("CC_OBSERVER_TICK_DEFER_LOG", TICK_DEFER_LOG_S)
+        self.exit_reason = None   # "대체" or "유예" once `serve` decides to end
+        self.signum = None        # the last end signal received
         self.mods = load_modules()
         self.runs = {}
         self.facts = {}        # (kind, sid) -> {"sig", "retry"}
@@ -948,6 +1002,40 @@ class Daemon:
     def tick_room(self):
         return self.busy() < CHILD_LIMIT - self.batch_reserve()
 
+    # A TICK THAT IS DUE COMES BEFORE A FACT RECOMPUTATION, AND THE LONGEST
+    # WAITING TICK FIRST. A pass starts the ticks, then reaps the finished
+    # recomputations and starts new ones, so a slot a reaped recomputation freed
+    # went straight back to the recomputations; with dozens of registrations
+    # running up to the child timeout on a loaded host, the ticks saw a free slot
+    # almost never, and when they did the run that came first in the table took
+    # it. So `start_ticks` collects every run's due jobs and starts them by the
+    # time each first found no slot, and while any due job is left waiting the
+    # same pass starts a recomputation only when none is running: one is kept
+    # going so the status line never stops outright, even when that one goes a
+    # slot over the limit for the child timeout. The batch reservation is
+    # unchanged.
+    def start_ticks(self, due, now):
+        """Start the due jobs, longest waiting first; the number left waiting."""
+        due.sort(key=lambda c: c[2].waiting_since if c[2].waiting_since is not None else now)
+        waiting = 0
+        for rd, job, j in due:
+            if self.tick_room():
+                j.waiting_since = None
+                j.wait_logged = None
+                was = j.pending
+                j.pending = False
+                j.thread = threading.Thread(target=self.run_tick, args=(rd, job, j, was, now), daemon=True)
+                j.thread.start()
+                continue
+            waiting += 1
+            if j.waiting_since is None:
+                j.waiting_since = j.wait_logged = now
+            elif now - j.wait_logged >= self.tick_defer_log:
+                j.wait_logged = now
+                log("바퀴 미룸 %s %s — 슬롯 %d/%d 가 %d초째 차 있다"
+                    % (job, rd, self.busy(), CHILD_LIMIT, int(now - j.waiting_since)))
+        return waiting
+
     # A deferred batch leaves a line once a starved stretch reaches
     # `BATCH_DEFER_LOG_S`, and again after each further stretch of that length,
     # so a job that stops being asked about is visible in `observer.log`.
@@ -965,7 +1053,10 @@ class Daemon:
         beat()
         self.write_inuse()
         self.restore()
-        log("관측기 기동 pid=%d 판본=%s 모듈=%s" % (self.pid, plugin_version(), ",".join(sorted(self.mods))))
+        names = sorted(k for k in os.environ if k.startswith("CC_OBSERVER_"))
+        log("관측기 기동 pid=%d 판본=%s 모듈=%s 부모=%s 환경=%s"
+            % (self.pid, plugin_version(), ",".join(sorted(self.mods)), parent_note(),
+               ",".join(names) or "-"))
 
     def write_inuse(self):
         cr = os.path.realpath(CODE_ROOT)
@@ -1002,7 +1093,13 @@ class Daemon:
             t = read_text(self.inuse, 4096) or ""
             if ("pid=%d\n" % self.pid) in t:
                 unlink_quiet(self.inuse)
-        log("관측기 종료 pid=%d" % self.pid)
+        if self.exit_reason:
+            why = self.exit_reason
+        elif self.signum is not None:
+            why = "신호 %d" % self.signum
+        else:
+            why = "그 밖"
+        log("관측기 종료 pid=%d 사유=%s" % (self.pid, why))
 
     def restore(self):
         """Re-adopt from the session indexes: runs with `.args`, the mark and no `done`."""
@@ -1138,11 +1235,13 @@ class Daemon:
                     globs.append(g)
         return globs
 
-    def signature(self, run):
+    def signature(self, run, exclude=()):
         rd = run.rd
         items = []
         seen = set()
         for g in self.probes_of(run):
+            if g in exclude:
+                continue
             if g == "LEDGER":
                 led = (read_text(os.path.join(rd, "ledger-path"), 4096) or "").split("\n", 1)[0]
                 if led and os.path.isabs(led):
@@ -1153,7 +1252,7 @@ class Daemon:
                 continue
             for p in sorted(glob.glob(os.path.join(rd, g))):
                 rel = os.path.relpath(p, rd)
-                if rel in seen or os.path.basename(p) in self.skip:
+                if rel in seen or rel in exclude or os.path.basename(p) in self.skip:
                     continue
                 seen.add(rel)
                 if rel == "relay.live":
@@ -1165,10 +1264,12 @@ class Daemon:
         return tuple(items)
 
     def observe(self, run, now):
+        """Sign one run and mark its jobs pending on a change; the jobs whose tick
+        is due and not running, as (run directory, job, Job)."""
         if not os.path.isdir(run.rd):
             for job in list(run.jobs):
                 self.drop(run.rd, job)
-            return
+            return []
         sig = self.signature(run)
         changed = run.sig is not None and sig != run.sig
         run.sig = sig
@@ -1176,18 +1277,16 @@ class Daemon:
         if changed:
             touch(os.path.join(run.rd, "observer.wake"))
             self.wake_fifos(run)
+        due = []
         for job, j in list(run.jobs.items()):
             if changed:
                 j.pending = True
-            due = j.pending or (j.deadline is not None and now >= j.deadline)
-            if not due or (j.thread is not None and j.thread.is_alive()):
+            if not (j.pending or (j.deadline is not None and now >= j.deadline)):
                 continue
-            if not self.tick_room():
+            if j.thread is not None and j.thread.is_alive():
                 continue
-            was = j.pending
-            j.pending = False
-            j.thread = threading.Thread(target=self.run_tick, args=(run.rd, job, j, was, now), daemon=True)
-            j.thread.start()
+            due.append((run.rd, job, j))
+        return due
 
     def run_tick(self, rd, job, j, changed, now):
         try:
@@ -1303,7 +1402,10 @@ class Daemon:
             items.append(("title", stat_sig(os.path.join(state_root(), "session-title-now", sid))))
         return tuple(items)
 
-    def recompute(self, now):
+    def recompute(self, now, waiting=0):
+        # While a due tick is waiting for a slot, at most one recomputation runs.
+        if waiting and self.children:
+            return
         for kind in ("sl", "pane"):
             kd = obs_path(kind)
             try:
@@ -1334,6 +1436,9 @@ class Daemon:
                             continue
                     elif exp is not None and now < exp - self.period:
                         continue
+                if waiting:
+                    self.start_facts(kind, sid, reg, sig)
+                    return
                 if not self.tick_room():
                     return
                 self.start_facts(kind, sid, reg, sig)
@@ -1462,12 +1567,14 @@ class Daemon:
         beat()
         self.take_requests()
         self.apply_drops()
+        due = []
         for run in list(self.runs.values()):
-            self.observe(run, now)
+            due += self.observe(run, now)
+        waiting = self.start_ticks(due, now)
         self.batch(now)
         self.apply_drops()
         self.reap_children()
-        self.recompute(now)
+        self.recompute(now, waiting)
 
     def serve(self):
         self.start()
@@ -1479,11 +1586,13 @@ class Daemon:
                 log("바퀴 실패: %s" % e)
             if self.superseded():
                 log("다른 관측기가 기록을 가졌다")
+                self.exit_reason = "대체"
                 break
             if self.runs or self.children or self.registered():
                 self.idle_since = time.monotonic()
             elif time.monotonic() - self.idle_since >= self.grace:
                 log("유예 종료")
+                self.exit_reason = "유예"
                 break
             while not self.stopping and time.monotonic() - t0 < self.period:
                 time.sleep(min(0.1, self.period))
@@ -1551,6 +1660,19 @@ def read_reg(path):
     return out
 
 
+def parent_note():
+    """`<ppid>:<the parent's command name>`, `?` for a name `ps` did not give."""
+    ppid = os.getppid()
+    name = ""
+    try:
+        r = subprocess.run(["ps", "-o", "comm=", "-p", str(ppid)], stdout=subprocess.PIPE,
+                           stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL, timeout=5)
+        name = os.path.basename(r.stdout.decode("utf-8", "replace").strip())
+    except (OSError, subprocess.SubprocessError):
+        name = ""
+    return "%d:%s" % (ppid, "".join(name.split()) or "?")
+
+
 def facts_expires(path):
     t = read_text(path, 1 << 20)
     if t is None:
@@ -1566,6 +1688,7 @@ def serve():
     d = Daemon()
 
     def on_signal(signum, frame):
+        d.signum = signum
         d.stopping = True
     for s in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
         signal.signal(s, on_signal)
