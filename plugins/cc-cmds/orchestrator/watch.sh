@@ -416,8 +416,8 @@ live_stages() { cc_live_stages "$RUN_DIR"; }
 # The name starts with a dot and ends in no probe suffix, so neither the probe
 # set below nor the observer's reads it as a change. The copy is removed at the
 # end of the pass and on exit; a pass killed by its caller's time limit runs no
-# exit trap, so making a copy also removes the copies of processes that are
-# gone.
+# exit trap, so making a copy also removes the copies whose pid no process
+# holds. A reused pid only keeps a stale copy until that process is gone too.
 LEDGER_VIEW=""
 
 ledger_view_make() {
@@ -429,7 +429,7 @@ ledger_view_make() {
     p=${f##*.}
     case "$p" in ''|*[!0-9]*) continue ;; esac
     [ "$p" = "$$" ] && continue
-    kill -0 "$p" 2>/dev/null || rm -f "$f"
+    cc_pid_exists "$p" || rm -f "$f"
   done
   v="$RUN_DIR/.watch.ledger-view.$$"
   { LC_ALL=C grep -v '^- `자율 승인`' "$LEDGER" > "$v"; } 2>/dev/null || rc=$?
