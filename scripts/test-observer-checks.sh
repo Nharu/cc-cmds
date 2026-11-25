@@ -456,31 +456,59 @@ pid_runs() { # pid_runs <pid file> <ERE> — the pid in the file is alive and ru
   [[ "$cmd" =~ $2 ]]
 }
 observed_lines() { [ -s "$1/checks.observed" ] && [ "$(grep -c '' < "$1/checks.observed" | tr -d ' ')" -ge "$2" ]; }
+pid_gone() { ! alive "$1"; }
+pid_stopped() { case "$(ps -p "$1" -o stat= 2>/dev/null)" in T*) return 0 ;; *) return 1 ;; esac; }
+
+# The kickoff line is never waited on without a ceiling: one whose adoption
+# misses the observer's deadline falls into its own loop and ends only on `done`.
+kick() { # kick <run dir> — the kickoff line in the background; its pid in KICK_PID
+  bash "$1/plugin/cc-cmds/orchestrator/checks.sh" --run-dir "$1" --ledger "$(ledger_of "$1")" \
+    --manifest "$(manifest_of "$1")" --interval 1 > "$1/checks.log" 2>&1 < /dev/null &
+  KICK_PID=$!; STRAYS="$STRAYS $KICK_PID"
+}
+kick_end() { # kick_end <run dir> — waits for it within the ceiling; its code in KICK_RC
+  if wait_until pid_gone "$KICK_PID"; then
+    wait "$KICK_PID"; KICK_RC=$?
+    return 0
+  fi
+  KICK_RC=안끝남
+  : > "$1/done"
+  # A TERM would not end it: the poller's trap does not exit.
+  wait_until pid_gone "$KICK_PID" || kill -KILL "$KICK_PID" 2>/dev/null
+  wait "$KICK_PID" 2>/dev/null
+  return 1
+}
+kick_log() { # kick_log <run dir> — what the kickoff line printed, only when it did not end 0
+  [ "$KICK_RC" = 0 ] || printf ' — %s' "$(cat "$1/checks.log" 2>/dev/null)"
+}
 
 R_D=$(make_run 20261101-000000d1)
 printf 'p1\n' > "$FX/phase"
 : > "$GH_LOG"
-bash "$R_D/plugin/cc-cmds/orchestrator/checks.sh" --run-dir "$R_D" --ledger "$(ledger_of "$R_D")" \
-  --manifest "$(manifest_of "$R_D")" --interval 1 > "$R_D/checks.log" 2>&1 < /dev/null
-check "D 기동 줄이 관측기에 넘기고 0 으로 끝난다" "$?" 0
-OP=$(opid)
-if [ -n "$OP" ] && alive "$OP"; then ok "D 관측기가 떠 있다"; else bad "D 관측기" "$(cat "$R_D/checks.log")"; fi
-if pid_is "$R_D/checks.pid" "$OP"; then ok "D checks.pid 가 관측기 pid 다"; else bad "D checks.pid" "$(cat "$R_D/checks.pid" 2>/dev/null) vs $OP"; fi
-if wait_until observed_lines "$R_D" 4; then
-  cut -f2- "$R_D/checks.observed" > "$WORK/d.lines"
-  if diff "$WORK/r1a.p1.lines" "$WORK/d.lines" > "$WORK/d.diff"; then
-    ok "D 위임된 관측 줄이 gh 판의 같은 상태 줄과 같다"
+kick "$R_D"; kick_end "$R_D"
+check "D 기동 줄이 관측기에 넘기고 0 으로 끝난다" "$KICK_RC$(kick_log "$R_D")" 0
+# Without the delegation every assertion below is already decided, and each
+# would pay the ceiling to say so.
+if [ "$KICK_RC" = 0 ]; then
+  OP=$(opid)
+  if [ -n "$OP" ] && alive "$OP"; then ok "D 관측기가 떠 있다"; else bad "D 관측기" "$(cat "$R_D/checks.log")"; fi
+  if pid_is "$R_D/checks.pid" "$OP"; then ok "D checks.pid 가 관측기 pid 다"; else bad "D checks.pid" "$(cat "$R_D/checks.pid" 2>/dev/null) vs $OP"; fi
+  if wait_until observed_lines "$R_D" 4; then
+    cut -f2- "$R_D/checks.observed" > "$WORK/d.lines"
+    if diff "$WORK/r1a.p1.lines" "$WORK/d.lines" > "$WORK/d.diff"; then
+      ok "D 위임된 관측 줄이 gh 판의 같은 상태 줄과 같다"
+    else
+      bad "D 관측 줄 대조" "$(tr '\n' '|' < "$WORK/d.diff")"
+    fi
   else
-    bad "D 관측 줄 대조" "$(tr '\n' '|' < "$WORK/d.diff")"
+    bad "D 관측 줄" "$(cat "$R_D/checks.log") / $(tail -n 5 "$S/cc-cmds/observer/observer.log" 2>/dev/null)"
   fi
-else
-  bad "D 관측 줄" "$(cat "$R_D/checks.log") / $(tail -n 5 "$S/cc-cmds/observer/observer.log" 2>/dev/null)"
+  check "D 관측기가 연 gh 호출은 graphql 질의뿐이다" \
+    "$( { grep -vc '^api graphql -f query clean$' "$GH_LOG" || true; } | tr -d ' ')" 0
+  : > "$R_D/done"
+  if wait_until test ! -e "$R_D/checks.pid"; then ok "D done 뒤 작업이 내려지고 checks.pid 가 지워진다"; else bad "D done 뒤" "$(cat "$R_D/checks.pid")"; fi
+  if [ ! -e "$R_D/checks.fallback" ]; then ok "D 정상 경로는 되돌림 표지를 남기지 않는다"; else bad "D fallback" "$(cat "$R_D/checks.fallback")"; fi
 fi
-check "D 관측기가 연 gh 호출은 graphql 질의뿐이다" \
-  "$( { grep -vc '^api graphql -f query clean$' "$GH_LOG" || true; } | tr -d ' ')" 0
-: > "$R_D/done"
-if wait_until test ! -e "$R_D/checks.pid"; then ok "D done 뒤 작업이 내려지고 checks.pid 가 지워진다"; else bad "D done 뒤" "$(cat "$R_D/checks.pid")"; fi
-if [ ! -e "$R_D/checks.fallback" ]; then ok "D 정상 경로는 되돌림 표지를 남기지 않는다"; else bad "D fallback" "$(cat "$R_D/checks.fallback")"; fi
 
 # ===========================================================================
 # U. A pinned copy without the mark runs its own loop: `checks.pid` names the
@@ -502,7 +530,9 @@ if wait_pid_gone "$U_PID"; then ok "U 자기 루프는 done 으로 끝난다"; e
 # ===========================================================================
 # B. A state the batch cannot cover (more contexts than one page) hands the run
 # back: `checks.fallback` appears, the job is dropped, and `checks.pid` names a
-# process running the run's own `checks.sh`.
+# process running the run's own `checks.sh`. The delegation ends in a state the
+# batch does cover, and the phase turns after it: a state handed back in the very
+# pass that adopted it leaves the kickoff line no window to see the adoption in.
 # ===========================================================================
 copy_old p1 pf
 cat > "$FX/gql/pf.json" <<EOF
@@ -513,19 +543,58 @@ cat > "$FX/gql/pf.json" <<EOF
   "seg/none": {"number": 14, "sha": "$SHA_D", "contexts": []}
 }}
 EOF
-printf 'pf\n' > "$FX/phase"
+printf 'p1\n' > "$FX/phase"
 R_B=$(make_run 20261101-000000f2)
-bash "$R_B/plugin/cc-cmds/orchestrator/checks.sh" --run-dir "$R_B" --ledger "$(ledger_of "$R_B")" \
-  --manifest "$(manifest_of "$R_B")" --interval 1 > "$R_B/checks.log" 2>&1 < /dev/null
-check "B 기동 줄은 위임하고 0 으로 끝난다" "$?" 0
-if wait_until test -e "$R_B/checks.fallback"; then ok "B 덮지 못하는 상태에서 checks.fallback 이 생긴다"; else bad "B fallback" "$(tail -n 5 "$S/cc-cmds/observer/observer.log" 2>/dev/null)"; fi
-if wait_until pid_runs "$R_B/checks.pid" '(^|/)checks\.sh( |$)'; then
-  ok "B 되돌린 런은 checks.sh 가 자기 루프를 돈다"
-  STRAYS="$STRAYS $(tr -d '[:space:]' < "$R_B/checks.pid")"
-else
-  bad "B checks.pid" "$(cat "$R_B/checks.pid" 2>/dev/null)"
+kick "$R_B"; kick_end "$R_B"
+check "B 기동 줄은 위임하고 0 으로 끝난다" "$KICK_RC$(kick_log "$R_B")" 0
+if [ "$KICK_RC" = 0 ]; then
+  # The observer reads this file while it turns, so it turns in one step.
+  printf 'pf\n' > "$FX/phase.next" && mv "$FX/phase.next" "$FX/phase"
+  if wait_until test -e "$R_B/checks.fallback"; then ok "B 덮지 못하는 상태에서 checks.fallback 이 생긴다"; else bad "B fallback" "$(tail -n 5 "$S/cc-cmds/observer/observer.log" 2>/dev/null)"; fi
+  if wait_until pid_runs "$R_B/checks.pid" '(^|/)checks\.sh( |$)'; then
+    ok "B 되돌린 런은 checks.sh 가 자기 루프를 돈다"
+    STRAYS="$STRAYS $(tr -d '[:space:]' < "$R_B/checks.pid")"
+  else
+    bad "B checks.pid" "$(cat "$R_B/checks.pid" 2>/dev/null)"
+  fi
 fi
 : > "$R_B/done"
+
+# ===========================================================================
+# N. A kickoff line nobody adopts in time is ended within the ceiling: with the
+# observer stopped, the delegation misses its deadline and `checks.sh` runs its
+# own loop, and `kick_end` ends that loop and reports it as not ended.
+# ===========================================================================
+OP=$(opid)
+if [ -z "$OP" ] || ! alive "$OP"; then
+  bad "N 관측기" "관측기가 떠 있지 않다"
+else
+  kill -STOP "$OP"
+  if wait_until pid_stopped "$OP"; then
+    R_N=$(make_run 20261101-000000f3)
+    # A stopped observer's heartbeat ages; past the default 30 seconds `ensure`
+    # would replace it, and the delegation would succeed after all.
+    CC_OBSERVER_HUNG_AFTER=600 kick "$R_N"
+    if wait_until pid_is "$R_N/checks.pid" "$KICK_PID"; then
+      ok "N 채택되지 않은 기동 줄은 자기 루프를 돈다"
+      if grep -q '시한 안에 채택되지 않았다' "$R_N/checks.log"; then
+        ok "N 자기 루프는 채택 시한을 넘긴 것이다"
+      else
+        bad "N 채택 시한" "$(cat "$R_N/checks.log")"
+      fi
+      CC_TEST_WAIT_CEILING=2 kick_end "$R_N"
+      check "N 상한이 되도록 끝나지 않은 기동 줄을 끝나지 않은 것으로 적는다" "$KICK_RC" 안끝남
+      if pid_gone "$KICK_PID"; then ok "N 상한에 닿은 기동 줄이 남지 않는다"; else bad "N 남은 기동 줄" "$KICK_PID"; fi
+    else
+      bad "N 자기 루프 진입" "$(cat "$R_N/checks.pid" 2>/dev/null) vs $KICK_PID / $(cat "$R_N/checks.log" 2>/dev/null)"
+      : > "$R_N/done"
+      kick_end "$R_N"
+    fi
+  else
+    bad "N 관측기 정지" "$(ps -p "$OP" -o stat= 2>/dev/null)"
+  fi
+  kill -CONT "$OP" 2>/dev/null
+fi
 
 # ===========================================================================
 # L. The fleet's liveness reads a pid running `observer.py serve` as the live
