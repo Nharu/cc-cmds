@@ -197,7 +197,7 @@ mkenv() {
       expires_at_ms: ($now + 600000)}' | jq "$f" > "$SPOOL/inbox/s-$sid/$rid.json"
 }
 dlog() { cat "$BASE/$1/decide.log" 2>/dev/null; }
-has_reason() { if dlog "$1" | grep -q " $2\$"; then echo yes; else echo no; fi; }
+has_reason() { if grep -q " $2\$" "$BASE/$1/decide.log" 2>/dev/null; then echo yes; else echo no; fi; }
 
 IN='{"command":"make check","description":"run the checks"}'
 
