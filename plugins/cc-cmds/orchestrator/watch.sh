@@ -405,7 +405,50 @@ ledger_idle_read() {
 
 live_stages() { cc_live_stages "$RUN_DIR"; }
 
-open_approvals() { cc_open_approvals "$LEDGER"; }
+# THE PASS'S LEDGER EXCERPT. Every gate entry appends an `자율 승인` row, so on a
+# working run those rows are most of the ledger, and every read a pass makes
+# walks them again. `pass` makes, once at its head, a copy of the ledger
+# without them in `$RUN_DIR/.watch.ledger-view.<pid>` and sets `LEDGER_VIEW` to
+# it; the readers that match rows of other kinds by their head mark take
+# `${LEDGER_VIEW:-$LEDGER}`, which outside a pass is the ledger itself. Which
+# reader takes which is written at the head of `pass`.
+#
+# The name starts with a dot and ends in no probe suffix, so neither the probe
+# set below nor the observer's reads it as a change. The copy is removed at the
+# end of the pass and on exit; a pass killed by its caller's time limit runs no
+# exit trap, so making a copy also removes the copies of processes that are
+# gone.
+LEDGER_VIEW=""
+
+ledger_view_make() {
+  local v f p rc=0
+  LEDGER_VIEW=""
+  [ -n "$RUN_DIR" ] && [ -d "$RUN_DIR" ] && [ -f "$LEDGER" ] || return 0
+  for f in "$RUN_DIR"/.watch.ledger-view.*; do
+    [ -f "$f" ] || continue
+    p=${f##*.}
+    case "$p" in ''|*[!0-9]*) continue ;; esac
+    [ "$p" = "$$" ] && continue
+    kill -0 "$p" 2>/dev/null || rm -f "$f"
+  done
+  v="$RUN_DIR/.watch.ledger-view.$$"
+  { LC_ALL=C grep -v '^- `자율 승인`' "$LEDGER" > "$v"; } 2>/dev/null || rc=$?
+  # 1 is "no line selected", an excerpt that is empty; 2 is a failed read.
+  if [ "$rc" -le 1 ]; then
+    LEDGER_VIEW=$v
+  else
+    rm -f "$v"
+  fi
+  return 0
+}
+
+ledger_view_drop() {
+  [ -n "$LEDGER_VIEW" ] && rm -f "$LEDGER_VIEW"
+  LEDGER_VIEW=""
+  return 0
+}
+
+open_approvals() { cc_open_approvals "${LEDGER_VIEW:-$LEDGER}"; }
 
 open_approval_ids() {
   # The SET of open approval ids, one per line — not their count.
@@ -419,9 +462,9 @@ open_approval_ids() {
   #
   # The approval table of `liveness.sh` gives the same set in one pass; where
   # that table declines (`cc__table_into` fails) the per-id pipeline below runs.
-  local id st cp tbl open="" nl=$'\n'
+  local id st cp tbl open="" nl=$'\n' led="${LEDGER_VIEW:-$LEDGER}"
   [ -n "$LEDGER" ] || return 0
-  if declare -F cc__table_into >/dev/null && cc__table_into tbl cc__approval_table "$LEDGER"; then
+  if declare -F cc__table_into >/dev/null && cc__table_into tbl cc__approval_table "$led"; then
     while IFS=$'\037' read -r id st cp; do
       [ -n "$id" ] && [ "$st" = "대기" ] || continue
       open="${open:+$open$nl}$id"
@@ -434,10 +477,10 @@ $open
 EOF
     return 0
   fi
-  for id in $( { grep -E '^- `승인`' "$LEDGER" 2>/dev/null || true; } \
+  for id in $( { grep -E '^- `승인`' "$led" 2>/dev/null || true; } \
                | tr '|' '\n' | sed -n 's/^ *승인 id=//p' | sed 's/[[:space:]]*$//' | sort -u); do
     [ -n "$id" ] || continue
-    st=$( { grep -E '^- `승인`' "$LEDGER" 2>/dev/null | grep -F "| 승인 id=$id |" || true; } | tail -1 \
+    st=$( { grep -E '^- `승인`' "$led" 2>/dev/null | grep -F "| 승인 id=$id |" || true; } | tail -1 \
           | tr '|' '\n' | sed -n 's/^ *상태=//p' | sed 's/[[:space:]]*$//' | tail -1)
     if [ "$st" = "대기" ]; then printf '%s\n' "$id"; fi
   done
@@ -499,7 +542,7 @@ watch_gate_approval_read() {
   return 0
 }
 
-nonterminal_segments() { cc_nonterminal_segments "$LEDGER"; }
+nonterminal_segments() { cc_nonterminal_segments "${LEDGER_VIEW:-$LEDGER}"; }
 
 # `YYYY-MM-DDTHH:MM:SSZ` → epoch seconds, or empty. The conversion moved to
 # `liveness.sh` when the relay's CI wake clock needed it there too: one parser
@@ -533,7 +576,7 @@ run_open_into() {
         if (index(s, "시작=") == 1) { v = substr(s, length("시작=") + 1); got = 1 }
       }
       if (got) { sub(/[[:space:]]+$/, "", v); print v }
-    }' "$LEDGER" 2>/dev/null) || at=""
+    }' "${LEDGER_VIEW:-$LEDGER}" 2>/dev/null) || at=""
   [ -n "$at" ] || return 0
   cc_iso_to_epoch_into ep "$at"
   [ -n "$ep" ] || return 0
@@ -768,7 +811,7 @@ seat_turn_open() {
     /^- `handoff` / { h = NR }
     /^- `교대 기동` / { l = NR }
     END { exit((h > 0 && h > l) ? 0 : 1) }
-  ' "$LEDGER" 2>/dev/null
+  ' "${LEDGER_VIEW:-$LEDGER}" 2>/dev/null
 }
 
 fleet_run_marker_live() {
@@ -824,7 +867,7 @@ failover_clock_note() {
   if [ "${1:-}" = probe ]; then
     at=$W_FO_AT; last=$W_FO_LAST; prev_at=$W_FO_PREV; held=$W_FO_HELD
   else
-    at=$(cc_failover_wait_resume "$LEDGER" 2>/dev/null || true)
+    at=$(cc_failover_wait_resume "${LEDGER_VIEW:-$LEDGER}" 2>/dev/null || true)
     { IFS= read -r last; IFS= read -r prev_at; IFS= read -r held; } 2>/dev/null < "$f" || :
     # A DELEGATED PASS runs only on a change or a deadline, so the last pass can
     # lie far back while the daemon watched the run all along. `--alive-at` is
@@ -874,7 +917,7 @@ failover_waiting() {
   case "$held" in ''|*[!0-9]*) held=0 ;; esac
   watch_now_into now
   rc=0
-  cc_failover_waiting_now "$LEDGER" "$(( now - held ))" "$CC_FAILOVER_WATCH_SLACK_SECONDS" || rc=$?
+  cc_failover_waiting_now "${LEDGER_VIEW:-$LEDGER}" "$(( now - held ))" "$CC_FAILOVER_WATCH_SLACK_SECONDS" || rc=$?
   if [ "${fo_wait-unset}" != unset ]; then
     if [ "$rc" = 0 ]; then fo_wait=1; else fo_wait=0; fi
   fi
@@ -1034,7 +1077,7 @@ $(LC_ALL=C awk -F'|' -v w="$why" '
         else if (index(f, "관측=") == 1) o = substr(f, 8)
       }
       if (c == "불명" && t == "-" && r == w && o != "") print o
-    }' "$LEDGER" 2>/dev/null || true)
+    }' "${LEDGER_VIEW:-$LEDGER}" 2>/dev/null || true)
 EOF
   [ "$hit" = 1 ] || return 0
   [ "$( { cc_unresolved_blocked "$LEDGER" | cut -f2 | grep -cxF "$why" || true; } )" = "0" ] || return 0
@@ -1071,7 +1114,7 @@ beat() {
   # moves the last ledger row only when nothing else ends after it, and a
   # different stage's terminal rows can land below that wait while the router
   # sits in `gate.sh wait` for the waiter.
-  live_w=$(( ${live:-0} + $(cc_waiting_fresh_count "$RUN_DIR" "$LEDGER" "$STALL") ))
+  live_w=$(( ${live:-0} + $(cc_waiting_fresh_count "$RUN_DIR" "${LEDGER_VIEW:-$LEDGER}" "$STALL") ))
   pend=$(open_approvals)
   nonterm=$(nonterminal_segments)
 
@@ -1214,7 +1257,7 @@ settle_stall_arm() {
   [ ! -f "$RUN_DIR/done" ] || return 0
   [ "$live" = "0" ] && [ "$pend" = "0" ] && [ "$nonterm" = "0" ] || return 0
   [ "${shw:-0}" = "0" ] || return 0
-  [ "$(cc_segment_count "$LEDGER")" -ge 1 ] 2>/dev/null || return 0
+  [ "$(cc_segment_count "${LEDGER_VIEW:-$LEDGER}")" -ge 1 ] 2>/dev/null || return 0
   [ "$(cc_unresolved_blocked "$LEDGER" | grep -c . || true)" = "0" ] || return 0
   [ -n "${quiet:-}" ] && [ "$quiet" -ge "$thr" ] || return 0
   [ "${relay_eff:-0}" = "0" ] || return 0
@@ -1247,6 +1290,19 @@ pass() {
   # fired nor offered, so its banner waited for the next scheduled full pass.
   local pass_t0
   watch_now_into pass_t0
+  # WHICH READER TAKES THE EXCERPT (`ledger_view_make`). A reader takes it when
+  # it picks its rows by their head mark from kinds other than `자율 승인` and
+  # compares their positions only with one another — the approval and segment
+  # tables and counts, the `run` row's stamp, the `handoff`/`교대 기동` order,
+  # the account-failover rows, the waiting stages' `stage-result`/`blocked`
+  # rows and the copied stall rows. A reader keeps the ledger when it reads the
+  # file's own size, mtime or last row, when it matches a field anywhere in a
+  # row (the unresolved-block fold takes a `계보=` from any row, and an
+  # `자율 승인` row's `argv=` can carry one), when it compares a row's line
+  # number with one written down elsewhere (`막힌 답 줄`, the relay's reference
+  # row), or when it is the gate's own reader — the run state, the halt
+  # records, the relay, the quiet predicate and the approval question.
+  ledger_view_make
   beat
   failover_clock_note
   # THE GATE'S IDLE TIME SITS BESIDE `age` because two arms read it: the
@@ -1492,7 +1548,7 @@ pass() {
   release_stall_marker "$RUN_DIR/watch.announced-run-open" "세그먼트 미개시"
   run_open_into run_age
   if [ "$live_w" = "0" ] && [ "$pend" = "0" ] \
-     && [ "$(cc_segment_count "$LEDGER")" = "0" ] \
+     && [ "$(cc_segment_count "${LEDGER_VIEW:-$LEDGER}")" = "0" ] \
      && [ -n "$run_age" ] && [ "$run_age" -ge "$RUN_OPEN" ] \
      && [ "$age" -ge "$AFTER_STAGE" ] \
      && [ -n "$gate_idle" ] && [ "$gate_idle" -ge "$AFTER_STAGE" ] \
@@ -1564,7 +1620,7 @@ pass() {
   sh_unheld=$nonterm
   if [ "$shw" -gt 0 ]; then
     sh_held=$(cc_shift_halt_held "$RUN_DIR" "$LEDGER")
-    sh_unheld=$(cc_nonterminal_segment_ids "$LEDGER" | CC_SHW_HELD="$sh_held" awk '
+    sh_unheld=$(cc_nonterminal_segment_ids "${LEDGER_VIEW:-$LEDGER}" | CC_SHW_HELD="$sh_held" awk '
       BEGIN { n = split(ENVIRON["CC_SHW_HELD"], a, "\n"); for (i = 1; i <= n; i++) if (a[i] != "") h[a[i]] = 1 }
       NF && !($0 in h) { c++ }
       END { printf "%d", c }')
@@ -1582,7 +1638,7 @@ EOF
      && [ -n "$quiet" ] && [ "$quiet" -ge "$thr" ] \
      && [ "$relay_eff" = "0" ] && ! failover_waiting \
      && { [ "$nonterm" -ge 1 ] \
-          || { [ "$(cc_segment_count "$LEDGER")" = "0" ] \
+          || { [ "$(cc_segment_count "${LEDGER_VIEW:-$LEDGER}")" = "0" ] \
                && [ ! -f "$RUN_DIR/watch.announced-run-open" ]; }; } \
      && done_empty \
      && ! grep -q '라이브니스 침묵' "$RUN_DIR/stall" 2>/dev/null \
@@ -1591,7 +1647,7 @@ EOF
     # again — the key is still a member — so the only recovery is to end that
     # holder, after which settlement closes the attempt. Say so by pid, or the
     # person resumes a router that will refuse to dispatch the key.
-    stale=$(cc_waiting_records "$RUN_DIR" "$LEDGER" "$STALL" \
+    stale=$(cc_waiting_records "$RUN_DIR" "${LEDGER_VIEW:-$LEDGER}" "$STALL" \
             | awk -F'\t' '$8 == "false" { printf "%s%s(보유자 %s)", (n++ ? ", " : ""), $1, $6 }')
     if [ -n "$stale" ]; then
       announce "런이 ${age}초 동안 아무것도 쓰지 않았습니다 (살아 있는 스테이지 0, 갱신이 멈춘 대기자: ${stale})" \
@@ -1913,6 +1969,7 @@ EOF
   WATCH_EXPIRY=$expiry
   # The probe's reference, touched after this pass's last write to the run
   # directory, so nothing this pass wrote reads as new on the next cycle.
+  ledger_view_drop
   if [ -d "$RUN_DIR" ]; then : > "$RUN_DIR/.watch.fullpass"; fi
   return 0
 }
@@ -2107,6 +2164,7 @@ run_is_over() {
 W_AGE=0; W_LIVE=0; W_PEND=0; W_NONTERM=0; W_SIZE=0; W_GREW=""
 W_FO_AT=""; W_FO_LAST=""; W_FO_PREV=""; W_FO_HELD=""
 W_QUIET=0; WATCH_EXPIRY=""; WATCH_STALL_LAST=""
+trap ledger_view_drop EXIT
 
 if [ "$ONCE" = "1" ] && [ "$WATCH_DELEGATED" = "0" ]; then
   pass
