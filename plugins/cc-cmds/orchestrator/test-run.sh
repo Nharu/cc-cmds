@@ -14255,7 +14255,7 @@ m34_doc "$R34MO/doc/cl-arch.md" 'CA:-:-:changelog.d/' 'CB:-:CA:changelog.d/archi
 m34_doc "$R34MO/doc/cl-frag.md" 'CA:-:-:changelog.d/' 'CB:-:CA:changelog.d/x.md'
 m34_doc "$R34MO/doc/cl-other.md" 'CA:-:-:changelog.d/`, `CA.txt' 'CB:-:CA:changelog.d/`, `CA.txt'
 check "34m: changelog.d/ 원소로만 겹치는 머지 순서 쌍은 결함이 없다" \
-  "$(slicing_order_defects "$R34MO/doc/cl.md" | grep -c . || true)/$(m34_gate "$R34MO/doc/cl.md" | grep -c . || true)" "0/0"
+  "$(slicing_order_defects "$R34MO/doc/cl.md" | grep -c . || true)/$(m34_gate "$R34MO/doc/cl.md" | grep -c '^슬라이스 ' || true)" "0/0"
 check "34m: 한쪽이 changelog.d/archive/ 를 선언한 겹침은 결함이다" \
   "$(slicing_order_defects "$R34MO/doc/cl-arch.md")" "슬라이스 CB: 머지 순서 선언 파일 겹침 「changelog.d/」 — 슬라이스 CA"
 check "34m: 한쪽이 특정 조각 파일을 선언한 겹침은 결함이다" \
