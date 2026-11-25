@@ -331,6 +331,10 @@ OP="$RD/plugin/cc-cmds/orchestrator/observer.py"
 python3 "$OP" ensure
 wait_until is_running "$OP"
 P6=$(opid)
+# The daemon is seen running before start() writes the mark, so wait for the
+# mark to carry its pid instead of reading it right after the daemon is up.
+mark_has_pid() { [ "$(sed -n 's/^pid=//p' "$RD/observer.code-inuse" 2>/dev/null)" = "$P6" ]; }
+wait_until mark_has_pid
 check "10 고정 사본으로 뜬 데몬이 사용 표지에 자기 pid 를 쓴다" "$(sed -n 's/^pid=//p' "$RD/observer.code-inuse" 2>/dev/null)" "$P6"
 fp_want=$(LC_ALL=C ps -o lstart= -p "$P6" | tr -s ' ' | sed 's/^ //; s/ $//')
 check "10 사용 표지의 지문이 ps lstart" "$(sed -n 's/^fingerprint=//p' "$RD/observer.code-inuse" 2>/dev/null)" "$fp_want"
