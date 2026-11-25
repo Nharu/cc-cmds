@@ -1,0 +1,3 @@
+test-gate.sh:7:elapsed-bound
+test-gate.sh:7:retired-marker
+test-gate.sh:8:retired-marker
