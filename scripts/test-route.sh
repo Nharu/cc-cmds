@@ -2921,7 +2921,8 @@ expect "몰아 쓰기 GRANT 의 order 는 단계 칸과 근거 칸만 채운다"
     burst_length_s: 28800, burst_length_source: \"declared\", threshold_bp: null, ratio_source: null, tier: null,
     r7_bp: null, admitted: null, picked_by: \"spread\", load5_bp: 1000, affinity_account: null, affinity_hold_bp: null,
     ask_need_bp: null, ask_r7_bp: null, ask_fits: null, ask_avoided: null,
-    pressure_bp_h: 0, five_hour_state: \"known\", five_hour_basis: null, five_hour_mismatch: null}"
+    pressure_bp_h: 0, five_hour_state: \"known\", five_hour_basis: null, five_hour_mismatch: null,
+    reset_loss_bp: null, reset_loss_cands: {}}"
 expect "단계 기록이 없으면 쉼/absent 이고 문턱을 싣는다" "$(decide 'del(.phase)')" \
   '.order | .phase == "rest" and .phase_source == "absent" and .until_epoch == null and .burst_length_s == 28800
    and .burst_length_source == "default" and .threshold_bp == 3413 and .ratio_source == "default"'
@@ -4084,9 +4085,9 @@ check "고정 입장 판정: 계정 없는 no-room 없음" \
 check "고정 입장 판정: 모은 봉투는 쉰 줄" "$(grep -c . "$PINSEEN")" 50
 
 # ===========================================================================
-# 새 단계 정렬의 분산과 유지. 두 단계 모두 대여 층·U 부류 다음 키가 유지(유효한 직전
-# 계정이고 그 그룹의 load5 가 문턱 아래면 0), 그다음 W7, 분산(load5 = 5시간 사용 + 그
-# 그룹 live 임대의 5시간 예약 합), 주간 키다. 유지 문턱은 상한 8000 의 50% 인 4000 이다.
+# 새 단계 정렬의 분산과 유지. 두 단계 모두 대여 층·U 부류 다음 키가 W7 과 리셋 손실,
+# 그다음 유지(유효한 직전 계정이고 그 그룹의 load5 가 문턱 아래면 0), 분산(load5 = 5시간
+# 사용 + 그 그룹 live 임대의 5시간 예약 합), 주간 키다. 유지 문턱은 상한 8000 의 50% 인 4000 이다.
 # 직전 계정은 런 디렉터리의 `route-affinity` 를 문맥 `affinity` 로 실은 것이다.
 # ===========================================================================
 AF_JQ='
@@ -4149,9 +4150,9 @@ for ph in burst rest; do
   expect "유지 $ph (f): 설정에 유지 칸이 없으면 유지가 꺼진다" \
     "$(decide "$AF_JQ $pf | $AFB | AFF(\"y\"; 60) | del(.config.affinity)")" \
     '.account == "x" and .order.picked_by == "spread" and .order.affinity_account == null and .order.affinity_hold_bp == null'
-  expect "유지 $ph (g): W7 이 0 보다 큰 다른 계정이 있어도 문턱 아래 직전 계정이 이긴다" \
+  expect "유지 $ph (g): W7 이 0 보다 큰 다른 계정이 문턱 아래 직전 계정을 이긴다" \
     "$(decide "$AF_JQ $pf | $AFB | .usage.accounts[0] = UW(\"x\"; W(0.0; \$now + 3600); W(0.1; \$now + 3600)) | AFF(\"y\"; 60)")" \
-    '.account == "y" and .order.picked_by == "affinity"'
+    '.account == "x" and .order.picked_by == "w7" and .order.affinity_account == "y"'
   expect "유지 $ph (g) 대조: 직전 계정이 없으면 W7 이 정한다" \
     "$(decide "$AF_JQ $pf | $AFB | .usage.accounts[0] = UW(\"x\"; W(0.0; \$now + 3600); W(0.1; \$now + 3600))")" \
     '.account == "x" and .order.picked_by == "w7"'
@@ -4183,11 +4184,12 @@ tr_affinity_rec_case() {
   check "기록: 부여 기록 한 줄의 근거가 봉투의 order 와 같다" \
     "$(jq -c '[.schema, .run_id, .lineage, .event, .basis, .account, .group, .picked_by, .load5_bp, .affinity_account, .affinity_hold_bp,
               .ask_need_bp, .ask_r7_bp, .ask_fits, .ask_avoided, .pressure_bp_h, .five_hour_state, .five_hour_basis,
-              .five_hour_mismatch]' "$RUN_DIR/route-picks.jsonl")" \
+              .five_hour_mismatch, .reset_loss_bp, .reset_loss_cands]' "$RUN_DIR/route-picks.jsonl")" \
     "$(printf '%s' "$out" | jq -c '["cc-cmds-route-pick v1", "r1", "S1", "first", .basis, .account, .group,
        .order.picked_by, .order.load5_bp, .order.affinity_account, .order.affinity_hold_bp,
        .order.ask_need_bp, .order.ask_r7_bp, .order.ask_fits, .order.ask_avoided,
-       .order.pressure_bp_h, .order.five_hour_state, .order.five_hour_basis, .order.five_hour_mismatch]')"
+       .order.pressure_bp_h, .order.five_hour_state, .order.five_hour_basis, .order.five_hour_mismatch,
+       .order.reset_loss_bp, .order.reset_loss_cands]')"
   check "기록: 부여 기록이 압력과 5시간 창 상태·근거·어긋남 칸을 싣는다" \
     "$(jq -c '[has("pressure_bp_h"), has("five_hour_state"), has("five_hour_basis"), has("five_hour_mismatch")]' "$RUN_DIR/route-picks.jsonl")" \
     '[true,true,true,true]'
@@ -4322,8 +4324,9 @@ tr_in_run "$TR_RUN_SH" tr_host_case
 # ===========================================================================
 # 5시간 한도 없음과 주간 리셋 압력. 주간 창이 알려진 그룹의 5시간 창은 사용량 행에 5시간
 # 값이 없으면(키 부재·null) `unlimited`/`absent`, 사용률 0 이고 비용 표본이 5시간 판독 없는
-# 주간 표본뿐이면 `unlimited`/`evidence` 다. 압력 P 는 한도 없는 그룹만 받고, 몰아 쓰기는
-# W7 다음·분산 앞, 쉼은 층·r7 다음·붙든 계정 앞에서 가른다.
+# 주간 표본뿐이면 `unlimited`/`evidence` 다. 압력 P 와 리셋 손실 L 은 한도 없는 그룹만 받는다.
+# 두 단계 모두 W7 다음이 손실 표지(L > 0 이면 0), 손실 계정의 P 이고 그 뒤가 유지다. 손실이
+# 없는 계정의 P 는 몰아 쓰기에서 유지 다음·분산 앞, 쉼에서 층·r7 다음·붙든 계정 앞에서 가른다.
 # 표본은 구간마다 프레임 2(위생 문턱 3 미만)이고 계정마다 하나라 비용 칸이 서지 않는다 —
 # 예약은 주입 설정이 정한다.
 # ===========================================================================
@@ -4388,7 +4391,8 @@ un_seq() {
 # 5시간 3000·주간 1200(TK7 3 × 400) 이다. 예약 없는 P 는 u5 435, u7 208 이고, u5 가 두 부여의
 # 주간 2400 을 지면 P 가 round(1600 × 3600 / 33120) = 174 로 u7 아래가 된다. 그때 u5 의 입회
 # 합은 주간 6000 + 2400 + 1200 = 9600, 5시간 0 + 6000 + 3000 = 9000 이라 둘 다 여유 안이다 —
-# 셋째 부여의 u7 은 입회 실패가 아니라 압력으로 골라진다.
+# 셋째 부여의 u7 은 입회 실패가 아니라 압력으로 골라진다. u1·u2 는 리셋 손실 L 이 0 이고
+# u3–u7 은 L > 0(예약 둘을 진 u5 도 1252)이라, 손실 계정끼리 P 가 두 단계 모두에서 가른다.
 UN11='ONLY(["u1","u2","u3","u4","u5","u6","u7"])
   | USE([Z5("u1"; 0.26; 544320), Z5("u2"; 0.03; 591120), Z5("u3"; 0.16; 457920), Z5("u4"; 0.12; 270720),
          Z5("u5"; 0.60; 33120), Z5("u6"; 0.11; 461520), Z5("u7"; 0.35; 112320)])
@@ -4410,11 +4414,8 @@ expect "11-01 몰아 쓰기: 셋째 부여 앞의 u5 도 입회한다(주간 합
   '.admitted == true and .failed == [] and .reservation_bp == {five_hour: 3000, seven_day: 1200}'
 check "11-01: 셋째 부여 앞 u5 의 입회 합" "$((6000 + 2 * 1200 + 1200))/$((0 + 2 * 3000 + 3000))" "9600/9000"
 out=$(decide "$UN_JQ del(.phase) | $UN11E")
-expect "11-01 쉼: 첫 부여는 P 를 뺀 쉼 키(층·r7)가 고르는 계정이다" "$out" \
-  '.order.phase == "rest" and (.order.threshold_bp as $T
-     | [["u1", 7400], ["u2", 9700], ["u3", 8400], ["u4", 8800], ["u5", 4000], ["u6", 8900], ["u7", 6500]]
-     | map({a: .[0], r: .[1], t: (if .[1] < $T then 0 else 1 end)})
-     | sort_by([.t, (if .t == 0 then .r else 0 - .r end)]) | .[0].a) == .account'
+expect "11-01 쉼: 첫 부여도 손실 계정끼리 P 가 골라 u5 이다" "$out" \
+  '.order.phase == "rest" and .account == "u5" and .order.picked_by == "pressure"'
 
 # 2. 5시간 창이 빠진 계정. 키를 지운 행과 null 행 모두 그 그룹에 다른 런의 live 임대가 있어도
 # 입회하고 `admitted_as` 가 known 이다. 대여 등록 행이면 window-stale 로 거절되지 않는다.
@@ -4490,9 +4491,9 @@ expect "회귀: 주간 창까지 없으면 unknown-concurrency" \
 expect "회귀: 한도 있는 계정의 W7 > 0 이 한도 없는 계정의 P 보다 앞선다" \
   "$(decide "$UN_JQ ONLY([\"x\",\"y\"]) | USE([UW(\"x\"; W(0.1; \$now + 3600); W(0.1; \$now + 3600)), N5(\"y\"; 0.5; 36000)])")" \
   '.account == "x" and .order.picked_by == "w7" and .order.five_hour_state == "known"'
-expect "회귀: W7 = 0 인 한도 있는 계정은 P > 0 인 한도 없는 계정 뒤다" \
+expect "회귀: W7 = 0 인 한도 있는 계정은 리셋 손실이 있는 한도 없는 계정 뒤다" \
   "$(decide "$UN_JQ ONLY([\"x\",\"y\"]) | USE([UA(\"x\"; 0.1; 0.0), N5(\"y\"; 0.5; 36000)])")" \
-  '.account == "y" and .order.picked_by == "pressure" and .order.pressure_bp_h == 500'
+  '.account == "y" and .order.picked_by == "reset-loss" and .order.pressure_bp_h == 500'
 check "회귀: 가장 최근 표본에 5시간 창이 있으면 더 오래된 표본에 없어도 한도 있음" \
   "$(g5 "$UNZ | EVON([EVS(\"a\"; 0; 1000; (\$now - 10)), EVS(\"a\"; 1; 2000; null)])" acct:a)" "known/-"
 
@@ -4529,24 +4530,59 @@ check "표본 증거: 리셋권이 덮는 창을 바꿀 때 evidence 창은 사�
   '["evidence",false]'
 
 # 7. 유지(D8 꼴). y 는 직전 계정이고 두 live 임대가 5시간 6000(문턱 4000 이상)·주간 4800 을
-# 진다. x 는 P 가 더 크고 따로 입회한다.
+# 진다. x 는 P 가 더 크고 따로 입회한다. 리셋 손실은 x 4684·y 259 로 둘 다 0 보다 커서,
+# 손실 계정끼리 P(x 500 대 y 32)가 유지보다 먼저 가른다.
 UNA='ITEMS([LG("r7"; "X#1"; "y"; true), LG("r8"; "X#1"; "y"; true)]) | AFON | AFF("y"; 60)'
-expect "유지: 한도 없는 직전 계정은 load5 가 문턱 이상이어도 P 가 큰 계정을 이긴다" \
+expect "유지: 한도 없는 직전 계정도 둘 다 손실 계정이면 P 가 큰 계정에 진다" \
   "$(decide "$AF_JQ $UN_JQ ONLY([\"x\",\"y\"]) | USE([N5(\"x\"; 0.5; 36000), N5(\"y\"; 0.2; 360000)]) | $UNA")" \
-  '.account == "y" and .order.picked_by == "affinity" and .order.affinity_account == "y" and .order.load5_bp == 6000'
+  '.account == "x" and .order.picked_by == "pressure" and .order.affinity_account == "y"'
 expect "유지 대조: 같은 load5 의 한도 있는 직전 계정은 유지가 풀린다" \
   "$(decide "$AF_JQ $UN_JQ ONLY([\"x\",\"y\"]) | USE([UA(\"x\"; 0.0; 0.5), UA(\"y\"; 0.0; 0.2)]) | $UNA")" \
   '.account == "x" and .order.picked_by == "spread" and .order.affinity_account == "y"'
 
-# 8. 쉼 키. 쉼에서는 층·r7 이 P 보다 앞서고, 그 앞 키가 모두 같을 때만 P 가 가른다.
+# 8. 쉼 키. 리셋 손실 계정은 쉼에서도 층·r7 보다 앞선다. 손실이 없는 계정끼리는 층·r7 이
+# P 보다 앞서고, 그 앞 키가 모두 같을 때만 P 가 가른다. 아래 x 는 L 0, y 는 L 4684 다.
 UNP='ONLY(["x","y"]) | USE([N5("x"; 0.2; 540000), N5("y"; 0.5; 36000)])'
-expect "쉼 키: P 와 층·r7 이 엇갈리면 층·r7 이 고른다" "$(decide "$UN_JQ del(.phase) | $UNP")" \
-  '.order.phase == "rest" and .order.tier == "above" and .account == "x"'
-expect "쉼 키 대조: 몰아 쓰기에서는 같은 둘에서 P 가 고른다" "$(decide "$UN_JQ $UNP")" \
-  '.account == "y" and .order.picked_by == "pressure"'
+expect "쉼 키: P 와 층·r7 이 엇갈려도 리셋 손실 계정이 고른다" "$(decide "$UN_JQ del(.phase) | $UNP")" \
+  '.order.phase == "rest" and .account == "y" and .order.picked_by == "reset-loss"'
+expect "쉼 키 대조: 몰아 쓰기에서도 같은 둘에서 리셋 손실 계정이 고른다" "$(decide "$UN_JQ $UNP")" \
+  '.account == "y" and .order.picked_by == "reset-loss"'
 expect "쉼 키: W7·load5·층·r7 이 같으면 P 가 큰 계정이고 picked_by 는 pressure" \
   "$(decide "$UN_JQ del(.phase) | ONLY([\"x\",\"y\"]) | USE([N5(\"x\"; 0.5; 72000), N5(\"y\"; 0.5; 36000)])")" \
   '.order.phase == "rest" and .account == "y" and .order.picked_by == "pressure" and .order.pressure_bp_h == 500'
+
+# 8b. 리셋 손실. 11-24 함대 — u4 는 리셋 15시간 앞 주간 88%, u3 는 리셋 65시간 앞 64% 이고
+# 이 런이 u3 에 붙어 다른 런의 live 임대 하나(주간 1200)를 u3 에 진다. 리셋 손실 L 은 이번 주
+# 평균 속도로 리셋까지 쓰면 남는 몫이라 u4 337, u3 0 이고, 손실 계정 u4 가 붙듦을 깬다.
+# u4 가 95% 면 L 0 이라 지금 순서(붙듦)로 돌아간다. 붙듦 없이 u3 가 53% 면 둘 다 손실
+# 계정(u3 1355, u4 337)이고 P(u4 80, u3 72)가 가른다. 부여당 주간 예약은 주입 설정으로
+# 300(TK7 3 × 100)이라 95% 인 u4 도 입회한다 — 기본 예약 2400 이면 88% 인 u4 가 입회하지 못한다.
+UNC='.config.c.seven_day.default = 0.01'
+UNL="ONLY([\"u3\",\"u4\"]) | USE([Z5(\"u3\"; 0.64; 234000), Z5(\"u4\"; 0.88; 54000)]) | EV([\"u3\",\"u4\"]) | ITEMS([LG(\"r7\"; \"X#1\"; \"u3\"; true)]) | AFON | AFF(\"u3\"; 60) | $UNC"
+for ph in burst rest; do
+  if [ "$ph" = burst ]; then pf='.'; else pf='del(.phase)'; fi
+  expect "리셋 손실 $ph (가): 리셋이 가까운 손실 계정 u4 가 붙든 u3 를 이긴다" \
+    "$(decide "$AF_JQ $UN_JQ $pf | $UNL")" \
+    '.verdict == "GRANT" and .account == "u4" and .order.picked_by == "reset-loss" and .order.affinity_account == "u3"
+     and .order.reset_loss_bp == 337 and .order.reset_loss_cands == {u4: 337}'
+  expect "리셋 손실 $ph (나): u4 의 손실이 0 이면 붙듦이 u3 를 지킨다" \
+    "$(decide "$AF_JQ $UN_JQ $pf | ${UNL/0.88/0.95}")" \
+    '.account == "u3" and .order.picked_by == "affinity" and .order.reset_loss_bp == 0 and .order.reset_loss_cands == {}'
+  expect "리셋 손실 $ph (다): 손실 계정 둘이면 P 가 붙듦보다 앞선다" \
+    "$(decide "$AF_JQ $UN_JQ $pf | ONLY([\"u3\",\"u4\"]) | USE([Z5(\"u3\"; 0.53; 234000), Z5(\"u4\"; 0.88; 54000)]) | EV([\"u3\",\"u4\"]) | AFON | AFF(\"u3\"; 60) | $UNC")" \
+    '.account == "u4" and .order.picked_by == "pressure" and .order.pressure_bp_h == 80
+     and .order.reset_loss_cands == {u3: 1355, u4: 337}'
+done
+check "리셋 손실 (라): 이번 주에 지난 시간이 0 이면 L 0" \
+  "$(un_jq 'ONLY(["a"]) | USE([N5("a"; 0.0; 604800)])' 'rt_prep($schema) as $p | rt_loss7($p.c; $p.groups["acct:a"]; 10000)')" 0
+check "리셋 손실 (라): 이번 주에 1초 지나고 사용 0 이면 L 은 창 끝 전부" \
+  "$(un_jq 'ONLY(["a"]) | USE([N5("a"; 0.0; 604799)])' 'rt_prep($schema) as $p | rt_loss7($p.c; $p.groups["acct:a"]; 10000)')" 10000
+check "리셋 손실 (라): 주간 창을 모르는 그룹은 L 0" \
+  "$(un_jq 'ONLY(["a"]) | USE([UW("a"; null; null)])' 'rt_prep($schema) as $p | [$p.groups["acct:a"].windows.seven_day.state, rt_loss7($p.c; $p.groups["acct:a"]; 10000)]')" \
+  '["unknown",0]'
+expect "리셋 손실 (라): 한도 있는 그룹의 부여는 L 을 세지 않는다" \
+  "$(decide "$UN_JQ ONLY([\"a\"]) | USE([UA(\"a\"; 0.1; 0.1)])")" \
+  '.verdict == "GRANT" and .order.reset_loss_bp == null and .order.reset_loss_cands == {}'
 
 # 9. 기록. rt_new 밖의 부여(재부착)는 세 칸이 null 이다. 한도 있음·absent·evidence 는 위
 # 사례들의 봉투가 싣는다.
@@ -4555,6 +4591,8 @@ expect "기록: 재부착 부여는 압력과 5시간 창 칸이 null 이다" "$
   '.verdict == "GRANT" and .basis == "resume-bound"
    and .order.pressure_bp_h == null and .order.five_hour_state == null and .order.five_hour_basis == null
    and .order.five_hour_mismatch == null'
+expect "기록: 재부착 부여는 리셋 손실 두 칸이 null 이다" "$out" \
+  '.verdict == "GRANT" and .basis == "resume-bound" and .order.reset_loss_bp == null and .order.reset_loss_cands == null'
 
 # 10. 한도 있음 쪽 증거가 이긴다. 5시간 키가 없고 표본 증거가 한도 없음이어도, 해제 시각이
 # 지금보다 뒤인 프레임의 5시간 판독이 있으면 한도 없음이 아니다.
