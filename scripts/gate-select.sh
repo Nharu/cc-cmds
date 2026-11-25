@@ -17,9 +17,11 @@
 #   2. The files of the selection machinery itself mean the whole suite.
 #   3. `Makefile`: the whole suite when a changed line, or the target or
 #      variable holding it, names `gate`, `GATE` or `isolation`; when the line
-#      is an `export` or `unexport` line; when its owner is a name make reads
-#      for every recipe (`SHELL`, `.SHELLFLAGS`, `.ONESHELL`, `MAKEFLAGS`,
-#      `.EXPORT_ALL_VARIABLES` and the like); and when its owner is a variable
+#      is an `export` or `unexport` line, or a conditional, include, vpath or
+#      undefine directive; when its owner is a name make reads for every
+#      recipe (`SHELL`, `.SHELLFLAGS`, `.ONESHELL`, `MAKEFLAGS`,
+#      `.EXPORT_ALL_VARIABLES` and the like) or passes to recipes from the
+#      environment (`PATH`, `TMPDIR` and the like); and when its owner is a variable
 #      every shard recipe sees — an exported one, or one an exported variable
 #      or a gate-named variable or target refers to, followed through further
 #      references. Any other Makefile change is ignored.
@@ -384,16 +386,20 @@ sel_region() {
 # the owner being the variable or target the line belongs to (empty for none)
 # and <hit> why the line reaches every gate recipe — `gate` (the line or its
 # owner names gate, GATE or isolation), `export` (an export or unexport line),
-# `special` (an owner make reads for every recipe), `env` (an owner every gate
-# recipe sees: exported, or referred to from an exported variable or a
-# gate-named variable or target, through further references) — or `-`. The
+# `directive` (a conditional, include, vpath or undefine line, which can guard
+# or bring in any of the others), `special` (an owner make reads for every
+# recipe, or one make passes to recipes from the environment), `env` (an
+# owner every gate recipe sees: exported — by name, by a bare `export` or by
+# `.EXPORT_ALL_VARIABLES` — or referred to from an exported variable or a
+# gate-named variable or target as `$(NAME)`, `${NAME}`, `$X` or
+# `$(call NAME`, through further references) — or `-`. The
 # file is read twice: once for the owners' text and the exported names, once
 # for the rows.
 sel_mkmap() {
   LC_ALL=C awk -v want="$2" '
     BEGIN {
       while ((getline l < want) > 0) w[l + 0] = 1
-      split("SHELL .SHELLFLAGS .ONESHELL MAKEFLAGS MFLAGS MAKEFILES .EXPORT_ALL_VARIABLES .POSIX .NOTPARALLEL .SILENT .IGNORE .DELETE_ON_ERROR .DEFAULT .SUFFIXES .RECIPEPREFIX .DEFAULT_GOAL VPATH GNUMAKEFLAGS", sp, " ")
+      split("SHELL .SHELLFLAGS .ONESHELL MAKEFLAGS MFLAGS MAKEFILES .EXPORT_ALL_VARIABLES .POSIX .NOTPARALLEL .SILENT .IGNORE .DELETE_ON_ERROR .DEFAULT .SUFFIXES .RECIPEPREFIX .DEFAULT_GOAL VPATH GNUMAKEFLAGS MAKE MAKESHELL MAKEOVERRIDES .EXTRA_PREREQS .SECONDEXPANSION PATH HOME TMPDIR LANG LC_ALL BASH_ENV", sp, " ")
       for (i in sp) special[sp[i]] = 1
     }
     function owner(line) {
@@ -401,28 +407,31 @@ sel_mkmap() {
       else if (indef) { o = defn; if (line ~ /^endef/) indef = 0 }
       else if (line ~ /^\t/) o = tgt
       else if (line ~ /^[ \t]*(#.*)?$/) o = ""
-      else if (line ~ /^define[ \t]+/) { defn = line; sub(/^define[ \t]+/, "", defn); sub(/[ \t].*$/, "", defn); o = defn; indef = 1; tgt = ""; isvar[o] = 1 }
-      else if (line ~ /^(override[ \t]+)?(export[ \t]+)?[A-Za-z_][A-Za-z0-9_.-]*[ \t]*(::=|:=|\?=|\+=|!=|=)/) { o = line; sub(/^(override[ \t]+)?(export[ \t]+)?/, "", o); sub(/[ \t]*(::=|:=|\?=|\+=|!=|=).*$/, "", o); tgt = ""; isvar[o] = 1 }
+      else if (line ~ /^ *((override|export)[ \t]+)*define[ \t]+/) { defn = line; sub(/^ *((override|export)[ \t]+)*define[ \t]+/, "", defn); sub(/[ \t].*$/, "", defn); o = defn; indef = 1; tgt = ""; isvar[o] = 1 }
+      else if (line ~ /^ *(override[ \t]+)?(export[ \t]+)?[A-Za-z_.][A-Za-z0-9_.-]*[ \t]*(::=|:=|\?=|\+=|!=|=)/) { o = line; sub(/^ *(override[ \t]+)?(export[ \t]+)?/, "", o); sub(/[ \t]*(::=|:=|\?=|\+=|!=|=).*$/, "", o); tgt = ""; isvar[o] = 1 }
       else if (line ~ /^[^ \t#][^=]*:/) { o = line; sub(/:.*$/, "", o); sub(/[ \t]+$/, "", o); tgt = o }
       else { o = ""; tgt = "" }
       cur = o
       cont = (line ~ /\\$/)
       return o
     }
-    function isexport(line) { return (line ~ /^(override[ \t]+)?(export|unexport)([ \t]|$)/) }
-    function refs(s,   r) {
-      while (match(s, /\$[({][A-Za-z_][A-Za-z0-9_.-]*/)) {
-        r = substr(s, RSTART + 2, RLENGTH - 2)
-        if (!(r in env)) { env[r] = 1; q[++qt] = r }
-        s = substr(s, RSTART + RLENGTH)
-      }
+    function isexport(line) { return (line ~ /^ *(override[ \t]+)?(export|unexport)([ \t]|$)/) }
+    function isdirective(line) { return (line ~ /^ *(ifeq|ifneq|ifdef|ifndef|else|endif|-include|include|sinclude|vpath|undefine)([ \t]|$)/) }
+    function addref(r) { if (!(r in env)) { env[r] = 1; q[++qt] = r } }
+    function refs(s,   t, r) {
+      t = s
+      while (match(t, /\$[({][A-Za-z_.][A-Za-z0-9_.-]*/)) { addref(substr(t, RSTART + 2, RLENGTH - 2)); t = substr(t, RSTART + RLENGTH) }
+      t = s
+      while (match(t, /\$[({]call[ \t]+[A-Za-z_.][A-Za-z0-9_.-]*/)) { r = substr(t, RSTART + 2, RLENGTH - 2); sub(/^call[ \t]+/, "", r); addref(r); t = substr(t, RSTART + RLENGTH) }
+      t = s
+      while (match(t, /\$[A-Za-z_]/)) { addref(substr(t, RSTART + 1, 1)); t = substr(t, RSTART + RLENGTH) }
     }
     FNR == NR {
       o = owner($0)
       if (o != "") txt[o] = txt[o] " " $0
-      if (o ~ /^\.EXPORT_ALL_VARIABLES/) allexp = 1
-      if (isexport($0) && $0 ~ /^(override[ \t]+)?export([ \t]|$)/) {
-        e = $0; sub(/^(override[ \t]+)?export[ \t]*/, "", e); sub(/[ \t]*(::=|:=|\?=|\+=|!=|=).*$/, "", e)
+      if (o ~ /^\.EXPORT_ALL_VARIABLES/ || $0 ~ /^ *export[ \t]*(#.*)?$/) allexp = 1
+      if (isexport($0) && $0 ~ /^ *(override[ \t]+)?export([ \t]|$)/) {
+        e = $0; sub(/^ *(override[ \t]+)?export[ \t]*/, "", e); sub(/^define[ \t]+/, "", e); sub(/[ \t]*(::=|:=|\?=|\+=|!=|=).*$/, "", e)
         n = split(e, a, /[ \t]+/)
         for (i = 1; i <= n; i++) if (a[i] != "") exported[a[i]] = 1
       }
@@ -441,6 +450,7 @@ sel_mkmap() {
       hit = "-"
       if (line ~ /gate|GATE|isolation/ || o ~ /gate|GATE|isolation/) hit = "gate"
       else if (isexport(line)) hit = "export"
+      else if (line !~ /^\t/ && isdirective(line)) hit = "directive"
       else if (o in special) hit = "special"
       else if (o != "" && (o in env)) hit = "env"
       print FNR "\t" o "\t" hit
@@ -648,6 +658,7 @@ sel_makefile() {
     ln=${row%%$'\t'*}; row=${row#*$'\t'}; owner=${row%%$'\t'*}; hit=${row#*$'\t'}
     case "$hit" in
       export)  sel_full Makefile "${owner:-줄 $ln}" "Makefile 의 export·unexport 줄이 바뀌었습니다" ;;
+      directive) sel_full Makefile "${owner:-줄 $ln}" "Makefile 의 조건·include·vpath 지시문이 바뀌었습니다" ;;
       special) sel_full Makefile "${owner:-줄 $ln}" "Makefile 이 모든 레시피에 읽는 $owner 가 바뀌었습니다" ;;
       env)     sel_full Makefile "${owner:-줄 $ln}" "gate 레시피가 보는 Makefile 변수 $owner 가 바뀌었습니다 (export 되거나 export·gate 계열 정의가 참조)" ;;
       *)       sel_full Makefile "${owner:-줄 $ln}" "Makefile 의 gate 계열 줄·타깃·변수가 바뀌었습니다" ;;
@@ -930,6 +941,10 @@ export TZ := $(TEST_TZ)
 RUN_FLAG := x
 LINT_FLAG := y
 SHELL := /bin/sh
+.SHELLFLAGS = -c
+ifeq ($(CI),true)
+CI_FLAG := 1
+endif
 lint:
 	@echo lint $(LINT_FLAG)
 gate-run:
@@ -1049,6 +1064,8 @@ gamma
 # --- 3. third ---
 # --- section: 3 | group: grp | covers: - ---
 echo "$GATE_LIMIT"
+top_only
+tail_only
 # --- 4. container ---
 # the container block carries no marker
 # --- 5. fifth ---
@@ -1101,6 +1118,8 @@ EOF
   sc "(b) Makefile 의 export 줄이 바뀌면 전량" 전량 fx_sub "$R/Makefile" 'export TZ := $(TEST_TZ)' 'export TZ := UTC0'
   sc "(b) gate 레시피가 참조하는 Makefile 변수가 바뀌면 전량" 전량 fx_sub "$R/Makefile" 'RUN_FLAG := x' 'RUN_FLAG := z'
   sc "(b) 모든 레시피가 읽는 SHELL 이 바뀌면 전량" 전량 fx_sub "$R/Makefile" 'SHELL := /bin/sh' 'SHELL := /bin/bash'
+  sc "(b) 점으로 시작하는 특수 변수의 = 대입이 바뀌면 전량" 전량 fx_sub "$R/Makefile" '.SHELLFLAGS = -c' '.SHELLFLAGS = -ec'
+  sc "(b) Makefile 의 조건 지시문이 바뀌면 전량" 전량 fx_sub "$R/Makefile" 'ifeq ($(CI),true)' 'ifeq ($(CI),yes)'
   sc "(b) gate 계열 아닌 타깃만 참조하는 Makefile 변수는 무시" "절${tab}" fx_sub "$R/Makefile" 'LINT_FLAG := y' 'LINT_FLAG := w'
   sc "(c) 필터 밖 경로는 보지 않는다" "절${tab}" fx_sub "$R/README.md" 'readme' 'readme2'
   sc "(d) 스위트 머리의 주석 줄은 무시" "절${tab}" fx_after "$S" 'echo top' '# a note'
@@ -1108,13 +1127,20 @@ EOF
   sc "(d) 스위트 머리의 pre_<group> 안이면 그 그룹 절과 선행 폐포" "절${tab}1,2,3" fx_sub "$S" '  echo grp' '  echo grp2'
   sc "(d) 스위트 머리의 다른 함수는 그 이름을 담은 절, 머리 함수 간 호출을 따라간다" "절${tab}1,2" fx_sub "$S" '  echo one' '  echo one2'
   sc "(d) 스위트 머리의 함수 밖 최상위 문장이면 전량" 전량 fx_sub "$S" 'echo top' 'echo top2'
-  sc "(d) 머리의 함수 밖 문장만 부르는 머리 함수가 바뀌면 전량" 전량 fx_sub "$S" '  echo top-only' '  echo top-only2'
+  sc "(d) 머리의 함수 밖 문장이 부르는 머리 함수가 바뀌면 절이 함께 불러도 전량" 전량 fx_sub "$S" '  echo top-only' '  echo top-only2'
   if grep -q '^gate-select: scripts/test-gate.sh:top_only() → 전량 — .*함수 밖 문장이 부릅니다$' "$T/err"; then
     ok "(d) 표준 오류가 함수 밖 문장의 호출을 적는다"
   else
     bad "(d) 표준 오류가 함수 밖 문장의 호출을 적는다" "$(cat "$T/err")"
   fi
-  sc "(d) 꼬리만 부르는 머리 함수가 바뀌면 전량" 전량 fx_sub "$S" '  echo tail-only' '  echo tail-only2'
+  # top_only and tail_only are named by section 3 as well, so without the
+  # rows of the lines outside every function the walk would answer `3`.
+  sc "(d) 꼬리가 부르는 머리 함수가 바뀌면 절이 함께 불러도 전량" 전량 fx_sub "$S" '  echo tail-only' '  echo tail-only2'
+  if grep -q '^gate-select: scripts/test-gate.sh:tail_only() → 전량 — .*함수 밖 문장이 부릅니다$' "$T/err"; then
+    ok "(d) 표준 오류가 꼬리의 호출을 적는다"
+  else
+    bad "(d) 표준 오류가 꼬리의 호출을 적는다" "$(cat "$T/err")"
+  fi
   sc "(d) 절도 머리 함수도 부르지 않는 머리 함수가 바뀌면 전량" 전량 fx_sub "$S" '  echo orphan' '  echo orphan2'
   sc "(e) 스위트 꼬리가 바뀌면 전량" 전량 fx_sub "$S" 'echo end' 'echo end2'
   sc "(e) 표지 없는 컨테이너 절이 바뀌면 전량" 전량 fx_sub "$S" '# the container block carries no marker' '# the container block, changed'
@@ -1199,8 +1225,8 @@ EOF
   rm -rf "$T"
   printf 'gate-select self-test: %d passed, %d failed\n' "$passed" "$failed"
   # A floor on the count, so a refactor that silently skips cases cannot pass.
-  if [ "$passed" -lt 38 ]; then
-    printf 'gate-select self-test: 통과 수 %d 가 하한 38 에 못 미칩니다\n' "$passed" >&2
+  if [ "$passed" -lt 41 ]; then
+    printf 'gate-select self-test: 통과 수 %d 가 하한 41 에 못 미칩니다\n' "$passed" >&2
     return 1
   fi
   [ "$failed" = "0" ]

@@ -261,6 +261,12 @@ jobs:
           fi
           if [ "$mode" = "전량" ]; then
             count=$(grep -c . "$plan/all-sections" || true)
+            # The same check the table step makes on a whole run: a whole
+            # verdict over a suite that lists no section is a broken plan.
+            if [ "${count:-0}" -lt 1 ]; then
+              echo "::error::전량 판정인데 스위트가 절을 하나도 내지 않았습니다"
+              exit 1
+            fi
             echo "gate-plan: 판정 전량 — $reason"
           else
             count=$(printf '%s' "$sel" | tr ',' '\n' | grep -c . || true)
