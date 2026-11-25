@@ -45,8 +45,8 @@ fi
 pyq() { PYTHONDONTWRITEBYTECODE=1 python3 "$@"; }
 
 wait_gone() {
-  local i=0
-  while [ -n "${1:-}" ] && kill -0 "$1" 2>/dev/null && [ "$i" -lt 60 ]; do sleep 0.1; i=$((i + 1)); done
+  [ -n "${1:-}" ] || return 0
+  wait_pid_gone "$1"
 }
 free_port() {
   pyq -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()'
@@ -111,8 +111,8 @@ PP=$(free_port)
 env -u CI -u CC_PIPELINE_SEGMENT -u CC_PIPELINE_STAGE_ID XDG_STATE_HOME="$XDG_STATE_HOME" \
   PYTHONDONTWRITEBYTECODE=1 python3 "$DASH" preview --port "$PP" 2>"$WORK/preview.err" &
 PREVIEW_PID=$!
-i=0
-while [ "$i" -lt 50 ] && [ "$(get "$PP" /healthz)" != "200" ]; do sleep 0.1; i=$((i + 1)); done
+healthz_up() { [ "$(get "$PP" /healthz)" = "200" ]; }
+wait_until healthz_up
 check "S4 preview 가 /healthz 에 답한다" "$(get "$PP" /healthz)" "200"
 for path in / /run/screen-run; do
   check "S4 $path 가 200 이다" "$(get "$PP" "$path")" "200"
@@ -152,10 +152,25 @@ class N {
     this.tagName = tag ? tag.toUpperCase() : null;
     this.doc = doc; this.attrs = new Map(); this.children = []; this.parentNode = null;
     this.listeners = {}; this.text = ""; this.hidden = false;
-    const cls = new Set();
-    this.classList = { toggle: (k, on) => { if (on) cls.add(k); else cls.delete(k); } };
+    // The class list reads and writes the class attribute, so a class added
+    // through it is what className and querySelector see.
+    const words = () => this.className.split(" ").filter(Boolean);
+    this.classList = {
+      toggle: (k, on) => {
+        const s = new Set(words());
+        if (on === undefined ? !s.has(k) : on) s.add(k); else s.delete(k);
+        this.className = Array.from(s).join(" ");
+      },
+      add: (k) => this.classList.toggle(k, true),
+      contains: (k) => words().includes(k),
+    };
   }
   get firstChild() { return this.children[0] || null; }
+  get nextSibling() {
+    if (!this.parentNode) return null;
+    const sibs = this.parentNode.children;
+    return sibs[sibs.indexOf(this) + 1] || null;
+  }
   get childNodes() { return this.children; }
   get className() { return this.getAttribute("class") || ""; }
   set className(v) { this.setAttribute("class", v); }
@@ -173,6 +188,12 @@ class N {
     if (c.tagName === null && c.fragment) { c.children.slice().forEach((k) => this.appendChild(k)); return c; }
     if (c.parentNode) c.parentNode.children.splice(c.parentNode.children.indexOf(c), 1);
     c.parentNode = this; this.children.push(c);
+    return c;
+  }
+  insertBefore(c, ref) {
+    if (!ref) return this.appendChild(c);
+    if (c.parentNode) c.parentNode.children.splice(c.parentNode.children.indexOf(c), 1);
+    c.parentNode = this; this.children.splice(this.children.indexOf(ref), 0, c);
     return c;
   }
   replaceChildren(...nodes) {
@@ -207,7 +228,20 @@ class N {
   }
 }
 
-async function boot(pathname, bodyOf) {
+// The tab's sessionStorage over a Map, so two boots handed the same Map share it
+// the way a reload shares the tab's storage.
+class Store {
+  constructor(m) { this.m = m; }
+  get length() { return this.m.size; }
+  key(i) { const k = Array.from(this.m.keys())[i]; return k === undefined ? null : k; }
+  getItem(k) { return this.m.has(k) ? this.m.get(k) : null; }
+  setItem(k, v) { this.m.set(k, String(v)); }
+  removeItem(k) { this.m.delete(k); }
+}
+
+// boot <pathname> <bodyOf> [{ search, hash, store, failWith }]
+async function boot(pathname, bodyOf, opts) {
+  opts = opts || {};
   const doc = {
     hidden: false, title: "", focused: null,
     createElement: (t) => new N(t, doc),
@@ -224,20 +258,61 @@ async function boot(pathname, bodyOf) {
   Object.defineProperty(doc, "activeElement", {
     get: () => (doc.focused && nodes.app.contains(doc.focused) ? doc.focused : doc.body),
   });
-  const c = { app: nodes.app, nodes, doc, selection: null, urls: [], timer: null, clock: 1800000000000 };
-  const fetchStub = async (url, opts) => {
+  const c = { app: nodes.app, nodes, doc, selection: null, urls: [], signals: [], timer: null, clock: 1800000000000,
+    failWith: opts.failWith || 0, followAbort: false };
+  // A held request waits on the promise c.hold returns. With c.followAbort the
+  // request also rejects when its signal aborts, as a browser's fetch does;
+  // without it the abort is ignored and the held answer still arrives late.
+  // c.holdBody holds the body the same way: the headers come at once and json()
+  // waits, rejecting on abort with c.followAbort as a browser's body read does.
+  const abortOf = (signal) => new Promise((_, rej) => {
+    const fail = () => rej(Object.assign(new Error("aborted"), { name: "AbortError" }));
+    if (signal.aborted) fail(); else signal.addEventListener("abort", fail);
+  });
+  const waitOn = async (held, signal) => {
+    if (!held) return;
+    if (c.followAbort && signal) await Promise.race([held, abortOf(signal)]);
+    else await held;
+  };
+  const fetchStub = async (url, fopts) => {
     if (url === "/healthz") return { json: async () => ({ version: "1" }) };
     c.urls.push(url);
-    if (c.hold) await c.hold(url);
+    const signal = fopts.signal || null;
+    c.signals.push(signal);
+    await waitOn(c.hold ? c.hold(url) : null, signal);
     if (c.failWith) return { status: c.failWith, ok: false };
     const body = bodyOf(url), etag = JSON.stringify(body);
-    if ((opts.headers || {})["If-None-Match"] === etag) return { status: 304, ok: false };
-    return { status: 200, ok: true, headers: { get: () => etag }, json: async () => body };
+    if ((fopts.headers || {})["If-None-Match"] === etag) return { status: 304, ok: false };
+    const bodyHeld = c.holdBody ? c.holdBody(url) : null;
+    return { status: 200, ok: true, headers: { get: () => etag }, json: async () => { await waitOn(bodyHeld, signal); return body; } };
   };
+  const loc = { pathname, search: opts.search || "", hash: opts.hash || "", host: "127.0.0.1:1", reload: () => {} };
+  const hist = {
+    state: null, scrollRestoration: "auto", replaced: [], pushed: [],
+    replaceState(s, _t, u) {
+      const x = new URL(u, "http://stub");
+      this.state = s; loc.pathname = x.pathname; loc.search = x.search; loc.hash = x.hash;
+      this.replaced.push(u);
+    },
+    pushState(s, _t, u) { this.pushed.push(u); },
+  };
+  const win = {
+    getSelection: () => c.selection,
+    scrollY: 0, scrolls: [], listeners: {},
+    scrollTo(_x, y) { this.scrolls.push(y); this.scrollY = y; },
+    addEventListener(t, f) { (this.listeners[t] = this.listeners[t] || []).push(f); },
+    fire(t) { (this.listeners[t] || []).forEach((f) => f({})); },
+  };
+  c.store = opts.store || new Map();
+  c.loc = loc; c.hist = hist; c.win = win;
   const sandbox = {
     document: doc,
-    window: { getSelection: () => c.selection },
-    location: { pathname, host: "127.0.0.1:1", reload: () => {} },
+    window: win,
+    location: loc,
+    history: hist,
+    sessionStorage: new Store(c.store),
+    AbortController,
+    URLSearchParams,
     fetch: fetchStub,
     setTimeout: (f) => { c.timer = f; return f; },
     clearTimeout: () => { c.timer = null; },
@@ -530,9 +605,9 @@ async function baseFilterCases() {
   report("늦게 온 옛 응답은 다시 유효해진 필터를 지우지 않는다", lastURL().includes("base=%2Fexp-only") && lastURL().endsWith("exp=1") && !!c.link("/run/exp-run"), true);
   await toggleExp();
 
-  // That late answer is on screen, and turning experiment runs off again asks for
-  // the same URL, so an unchanged response finds the filter missing with nothing new
-  // to draw.
+  // That late answer is not drawn — a later request replaced it — but its ETag is
+  // kept, so turning experiment runs off again asks for the same URL and gets a
+  // 304 that still finds the filter missing.
   await toggleExp();
   await pick("/exp-only");
   c.hold = holdExpOff;
@@ -621,7 +696,403 @@ async function waitCases() {
     text.includes("호스트 부하8823‰, 코어 18") && text.includes("해제 문턱1500‰") && text.includes("표본 시각"), true);
 }
 
-listCases().then(detailCases).then(endedHoldCases).then(baseFilterCases).then(seatCases).then(waitCases).catch((e) => { console.error(e && e.stack || e); process.exit(1); });
+// S7: the run detail's time band. The label widths are the design's estimate
+// table written out again here, not taken from app.js, so a change to the table
+// has to be made in both places.
+const BAND_OFF = 32400, BAND_GAP = 6;
+function bandWidth(s) {
+  let em = 0;
+  for (const ch of s) {
+    const c = ch.codePointAt(0);
+    if (c >= 0xac00 && c <= 0xd7a3) em += 1.0;
+    else if (ch === ":" || ch === "/" || ch === " ") em += 0.4;
+    else em += 0.7;
+  }
+  return em * 12;
+}
+const bandPad = (n) => (n < 10 ? "0" : "") + n;
+const bandMD = (e) => { const d = new Date((e + BAND_OFF) * 1000); return bandPad(d.getUTCMonth() + 1) + "/" + bandPad(d.getUTCDate()); };
+
+// Draws a run whose band spans t0..t1 and reads the band's top row back.
+async function drawBand(t0, t1, ended) {
+  const c = await boot("/run/tb", () => ({
+    tz_offset_s: BAND_OFF,
+    summary: { id: "tb", state: ended ? "종단" : "진행중", attention: "watch", started_at: t0, elapsed_s: t1 - t0,
+      ended_at: ended ? t1 : null, prs: [], notes: [] },
+    run_start: t0,
+    judgments: { items: [], by_class: {} }, waiting: [], steps: [],
+    timeline: [{ stage: "A", attempt: 1, kind: "implement", start: t0, end: t1, "class": "정상 완료" }], shifts: [],
+    clauses: [], reviews: [], segments: [], links: {}, cost: {},
+  }));
+  let svg = null;
+  c.app.walk((n) => { if (!svg && n.tagName === "SVG" && n.getAttribute("class") === "tb") svg = n; });
+  const labels = [], ticks = [];
+  let grid = 0;
+  if (svg) svg.walk((n) => {
+    if (n.tagName === "LINE" && n.getAttribute("class") === "grid") grid++;
+    if (n.tagName !== "TEXT" || n.getAttribute("y") !== "16") return;
+    const x = Number(n.getAttribute("x")), anchor = n.getAttribute("text-anchor"), text = n.textContent, w = bandWidth(text);
+    const box = anchor === "middle" ? [x - w / 2, x + w / 2] : anchor === "end" ? [x - w, x] : [x, x + w];
+    labels.push({ text, anchor, a: box[0], b: box[1] });
+    if (anchor === "middle") ticks.push(text);
+  });
+  const end = labels.find((l) => l.anchor === "end");
+  let overlaps = 0;
+  for (let i = 0; i < labels.length; i++) for (let j = i + 1; j < labels.length; j++) {
+    if (labels[i].a < labels[j].b + BAND_GAP && labels[i].b + BAND_GAP > labels[j].a) overlaps++;
+  }
+  return { labels, ticks, grid, overlaps, end: end ? end.text : null };
+}
+
+// Tick times the band places: multiples of step in the display zone, t0 < t < t1.
+function bandTicks(t0, t1, step) {
+  const out = [];
+  for (let t = Math.ceil((t0 + BAND_OFF) / step) * step - BAND_OFF; t < t1; t += step) if (t > t0) out.push(t);
+  return out;
+}
+
+async function timebandCases() {
+  // The ticket's run: KST 11/21 23:13 to 11/23 03:42, three-hour ticks.
+  const T0 = Date.UTC(2026, 10, 21, 14, 13) / 1000, T1 = Date.UTC(2026, 10, 22, 18, 42) / 1000;
+  const live = await drawBand(T0, T1, false);
+  report("티켓 런 위쪽 라벨끼리 6 단위 안으로 붙는 쌍이 없다", live.overlaps, 0);
+  report("티켓 런의 11/22 00:00 눈금 라벨이 숨는다", live.ticks.includes("11/22 00:00"), false);
+  report("티켓 런의 끝 03:00 눈금 라벨이 숨는다", live.ticks.includes("03:00"), false);
+  report("티켓 런의 11/22 03:00 라벨이 날짜를 받아 보인다", live.ticks.includes("11/22 03:00"), true);
+  report("티켓 런의 11/23 00:00 라벨이 그대로 보인다", live.ticks.includes("11/23 00:00"), true);
+  report("티켓 런의 오른쪽 끝 라벨이 지금 03:42 다", live.end, "지금 03:42");
+  report("티켓 런의 눈금선이 10개다", live.grid, 10);
+  const done = await drawBand(T0, T1, true);
+  report("끝난 티켓 런 위쪽 라벨끼리 6 단위 안으로 붙는 쌍이 없다", done.overlaps, 0);
+  report("끝난 티켓 런의 오른쪽 끝 라벨이 종단 03:42 다", done.end, "종단 03:42");
+
+  // Starts and ends one minute either side of a tick, eight steps long.
+  const REF = Date.UTC(2026, 10, 1, 15, 0) / 1000;
+  for (const step of [900, 3600, 10800, 43200, 86400, 604800]) {
+    const tick = Math.ceil((REF + BAND_OFF) / step) * step - BAND_OFF;
+    const starts = [["시작 1분 전", tick - 60], ["시작 1분 뒤", tick + 60],
+      ["끝 1분 전", tick - 60 - 8 * step], ["끝 1분 뒤", tick + 60 - 8 * step]];
+    for (const [name, t0] of starts) for (const ended of [false, true]) {
+      const t1 = t0 + 8 * step, r = await drawBand(t0, t1, ended), ts = bandTicks(t0, t1, step), wrong = [];
+      if (r.overlaps) wrong.push("겹침 " + r.overlaps);
+      if (r.grid !== ts.length) wrong.push("눈금선 " + r.grid + "/" + ts.length);
+      const shown = r.labels.map((l) => l.text);
+      if (step < 86400) {
+        ts.filter((t) => (t + BAND_OFF) % 86400 === 0).forEach((t) => {
+          if (!shown.some((s) => s.includes(bandMD(t)))) wrong.push("날짜 " + bandMD(t) + " 없음");
+        });
+      } else {
+        ts.slice(1, -2).forEach((t) => {
+          if (!r.ticks.includes(bandMD(t) + " 00:00")) wrong.push(bandMD(t) + " 00:00 숨음");
+        });
+      }
+      report("간격 " + step + "초 " + name + " " + (ended ? "끝난 런" : "진행 중 런"), wrong.join(", ") || "없음", "없음");
+    }
+  }
+
+  // Live runs that end one minute after midnight, fifteen-minute ticks.
+  const MID1 = Date.UTC(2026, 10, 2, 15, 1) / 1000;
+  const ten = await drawBand(MID1 - 600, MID1, false);
+  report("10분 런의 자정 라벨이 숨는다", ten.ticks.includes("11/03 00:00"), false);
+  report("10분 런의 오른쪽 끝 라벨이 날짜를 단다", ten.end, "지금 11/03 00:01");
+  report("10분 런 위쪽 라벨끼리 6 단위 안으로 붙는 쌍이 없다", ten.overlaps, 0);
+  const three = await drawBand(MID1 - 180, MID1, false);
+  report("3분 런의 자정 라벨이 보인다", three.ticks.includes("11/03 00:00"), true);
+  report("3분 런의 오른쪽 끝 라벨은 날짜가 없다", three.end, "지금 00:01");
+  report("3분 런 위쪽 라벨끼리 6 단위 안으로 붙는 쌍이 없다", three.overlaps, 0);
+}
+
+// The list's filters in the address, what the tab keeps for each address, and
+// the answers a filter change leaves behind. Each wider period adds a run on an
+// older day, and `gen` moves the ETag when a case needs an answer to differ.
+function filterStub() {
+  const s = { gen: 1 };
+  const row = (id, day, base) => ({
+    id, goal: "목표 " + id, attention: "ended", state: "종단", ended_day: day, elapsed_s: 60,
+    ended_at: 1793700000, base, seg: {}, cost_usd: 1, result: { "class": "종료 조건 성립" }, waiting: [], prs: [],
+  });
+  s.bodyOf = (url) => {
+    const q = new URL(url, "http://stub").searchParams, days = q.get("days"), base = q.get("base");
+    const runs = [row("today-run", "2026-11-04", "/a"), row("old-run", "2026-11-01", "/a"), row("b-run", "2026-11-04", "/b")];
+    if (days !== "3") runs.push(row("week-run", "2026-10-30", "/a"));
+    if (days === "30" || days === "all") runs.push(row("month-run", "2026-10-15", "/a"));
+    return {
+      tz_offset_s: 32400, tz_label: "KST", generated_at: 1793700000 + s.gen, today: "2026-11-04",
+      runs: runs.filter((r) => !base || r.base === base), totals: {}, bases: ["/a", "/b"], hidden: 0, hidden_experiment: 0,
+    };
+  };
+  return s;
+}
+
+function detailBody() {
+  return {
+    tz_offset_s: 32400,
+    summary: { id: "r9", state: "진행중", attention: "watch", started_at: 1793700000, elapsed_s: 60, prs: [], notes: [] },
+    judgments: { items: [], by_class: {} }, waiting: [], steps: [], timeline: [], shifts: [],
+    clauses: [], reviews: [], segments: [], links: {}, cost: {},
+  };
+}
+
+const pressedOf = (c) => c.app.querySelectorAll("button").filter((b) => b.getAttribute("aria-pressed") === "true").map((b) => b.getAttribute("data-fk")).join(",");
+const buttonOf = (c, fk) => c.app.querySelectorAll("button").find((b) => b.getAttribute("data-fk") === fk);
+const clickOf = async (c, fk) => { buttonOf(c, fk).fire("click"); await c.settle(); };
+const countClass = (c, k) => { let n = 0; c.app.walk((x) => { if (x.classList.contains(k)) n++; }); return n; };
+const busyStale = (n) => !!n && n.getAttribute("aria-busy") === "true" && n.classList.contains("is-stale");
+
+async function addressCases() {
+  const st = filterStub();
+  let c = await boot("/", st.bodyOf, { search: "?days=30&base=%2Fa" });
+  report("쿼리 주소로 뜨면 첫 목록 요청이 그 필터다", c.urls[0], "/api/runs?days=30&base=%2Fa&dead=0&exp=0");
+  report("쿼리 주소로 뜨면 그 기간 단추가 눌려 있다", pressedOf(c), "days-30");
+  report("쿼리 주소로 뜨면 그 레포가 골라져 있다", c.select().querySelectorAll("option").filter((o) => o.hasAttribute("selected")).map((o) => o.getAttribute("value")).join(","), "/a");
+  report("정규 주소로 뜨면 주소를 고치지 않는다", c.hist.replaced.length, 0);
+  report("목록으로 뜨면 그 주소를 마지막 목록 주소로 둔다", c.store.get("cc-dash.v1.last-list"), "/?days=30&base=%2Fa");
+
+  c = await boot("/", st.bodyOf, { search: "?days=99&dead=yes&zz=1&exp=1&exp=0", hash: "#g-ended" });
+  report("잘못된 값으로 뜨면 그 필터의 기본값으로 읽는다", c.urls[0], "/api/runs?days=3&base=&dead=0&exp=1");
+  report("잘못된 주소는 정규 주소로 한 번 고쳐진다", JSON.stringify(c.hist.replaced), JSON.stringify(["/?exp=1#g-ended"]));
+  report("고친 주소에 해시가 남는다", c.loc.search + c.loc.hash, "?exp=1#g-ended");
+  report("잘못된 주소로 떠도 오류 화면이 없다", !c.app.textContent.includes("읽지 못했습니다") && c.nodes.offline.textContent === "" && !!c.link("/run/today-run"), true);
+}
+
+async function pendingCases() {
+  const st = filterStub();
+  const c = await boot("/", st.bodyOf);
+  const holds = [];
+  c.hold = (u) => new Promise((r) => holds.push({ u, r }));
+  const before = c.app.firstChild;
+  await clickOf(c, "days-7");
+  report("기간을 누르면 주소가 정규 주소로 한 번 바뀐다", JSON.stringify(c.hist.replaced), JSON.stringify(["/?days=7"]));
+  report("기간을 눌러도 히스토리 항목을 더하지 않는다", c.hist.pushed.length, 0);
+  report("응답 전에 누른 기간 단추가 눌려 있다", pressedOf(c), "days-7");
+  report("응답 전에는 화면을 다시 만들지 않는다", c.app.firstChild === before, true);
+  report("응답 전에 합계 타일 묶음이 바쁨과 흐림을 단다", busyStale(c.app.querySelector(".kpis")), true);
+  report("응답 전에 건수 문구·열 머리·런 묶음이 흐리다",
+    busyStale(c.app.querySelector(".shown")) && busyStale(c.app.querySelector(".cols")) && busyStale(c.app.querySelector(".g-ended")), true);
+  const cap = c.app.querySelector(".list-pending");
+  report("응답 전에 상태 문구가 필터 줄 바로 뒤에 있다",
+    !!cap && cap.getAttribute("role") === "status" && c.app.querySelector(".filters").nextSibling === cap &&
+    cap.textContent.includes("흐린 숫자는 이전 필터의 것입니다"), true);
+  await clickOf(c, "exp");
+  report("연달아 누르면 스위치도 곧바로 새 값이다", buttonOf(c, "exp").getAttribute("aria-checked"), "true");
+  report("연달아 눌러도 상태 문구는 하나다", countClass(c, "list-pending"), 1);
+  report("연달아 누르면 마지막 목록 주소가 새 정규 주소다", c.store.get("cc-dash.v1.last-list"), "/?days=7&exp=1");
+  holds[1].r();
+  await c.settle();
+  report("응답이 오면 바쁨·흐림·상태 문구가 없다",
+    countClass(c, "list-pending") === 0 && countClass(c, "is-stale") === 0 && c.app.querySelector(".kpis").getAttribute("aria-busy") === null, true);
+  report("응답이 오면 새 필터의 목록이다", !!c.link("/run/week-run") && pressedOf(c) === "days-7", true);
+  holds[0].r();
+  await c.settle();
+  report("밀려난 앞 요청이 뒤늦게 와도 기간이 그대로다", pressedOf(c), "days-7");
+}
+
+// Going back to the filter already on screen before the answer comes: the
+// answer for that address is a 304, and the busy marks still go away.
+async function revertCases() {
+  const st = filterStub();
+  const c = await boot("/", st.bodyOf);
+  const holds = [];
+  c.hold = (u) => new Promise((r) => holds.push({ u, r }));
+  await clickOf(c, "days-7");
+  await clickOf(c, "days-3");
+  report("되돌린 기간의 요청이 지금 화면의 주소다", holds[1] && holds[1].u, "/api/runs?days=3&base=&dead=0&exp=0");
+  const before = c.app.firstChild;
+  holds[1].r();
+  await c.settle();
+  report("되돌린 필터의 304 응답에도 바쁨·흐림·상태 문구가 없다",
+    c.app.firstChild !== before && countClass(c, "list-pending") === 0 && countClass(c, "is-stale") === 0 &&
+    c.app.querySelector(".kpis").getAttribute("aria-busy") === null, true);
+  report("되돌린 뒤 눌린 단추가 처음 기간이다", pressedOf(c), "days-3");
+  const after = c.app.firstChild;
+  holds[0].r();
+  await c.settle();
+  report("끊긴 앞 요청이 뒤늦게 와도 화면이 그대로다", c.app.firstChild === after && pressedOf(c) === "days-3" && !c.link("/run/week-run"), true);
+}
+
+async function lateAnswerCases() {
+  for (const follow of [false, true]) {
+    const st = filterStub();
+    const c = await boot("/", st.bodyOf);
+    const holds = [];
+    c.hold = (u) => new Promise((r) => holds.push({ u, r }));
+    c.followAbort = follow;
+    const tag = follow ? "끊김을 따르는 대역: " : "끊김을 무시하는 대역: ";
+    st.gen++;
+    await c.poll();
+    const pollSignal = c.signals[c.signals.length - 1];
+    await clickOf(c, "days-30");
+    report(tag + "필터를 바꾸면 붙잡힌 앞 요청의 신호가 끊긴다", !!pollSignal && pollSignal.aborted, true);
+    const before = c.app.firstChild;
+    holds[0].r();
+    await c.settle();
+    report(tag + "옛 필터의 응답은 화면을 다시 만들지 않는다", c.app.firstChild === before, true);
+    report(tag + "옛 응답 뒤에도 눌린 단추가 새 기간이고 바쁨이 남는다", pressedOf(c) === "days-30" && busyStale(c.app.querySelector(".kpis")), true);
+    report(tag + "끊긴 요청 때문에 연결 끊김 화면이 뜨지 않는다", c.nodes.offline.textContent === "" && !c.nodes.conn.textContent.includes("연결 끊김"), true);
+    report(tag + "옛 응답은 다음 폴링을 걸지 않는다", c.timer, null);
+    holds[1].r();
+    await c.settle();
+    report(tag + "새 필터의 응답이 그려진다", c.app.firstChild !== before && !!c.link("/run/month-run") && countClass(c, "is-stale") === 0, true);
+  }
+}
+
+// A filter change that lands after an answer's headers and before its body:
+// the abort rejects the body read, and coming back to that filter within the
+// same server tick must read the body again rather than take a 304 with none.
+async function bodyAbortCases() {
+  const st = filterStub();
+  const c = await boot("/", st.bodyOf);
+  const holds = [];
+  c.followAbort = true;
+  c.holdBody = (u) => (u.includes("days=7") ? new Promise((r) => holds.push({ u, r })) : null);
+  await clickOf(c, "days-7");
+  await clickOf(c, "days-3");
+  report("본문을 읽는 중 끊긴 요청은 연결 끊김 화면을 띄우지 않는다", c.nodes.offline.textContent === "" && !c.nodes.conn.textContent.includes("연결 끊김"), true);
+  report("본문을 읽는 중 끊긴 뒤 되돌린 기간이 그려진다", pressedOf(c) === "days-3" && countClass(c, "is-stale") === 0, true);
+  await clickOf(c, "days-7");
+  report("본문 도중 끊긴 주소로 돌아오면 304 가 아니라 본문을 다시 받는다", holds.length, 2);
+  holds[1].r();
+  await c.settle();
+  report("본문 도중 끊긴 주소로 돌아오면 새 필터의 목록을 그리고 바쁨이 없다",
+    !!c.link("/run/week-run") && pressedOf(c) === "days-7" && countClass(c, "is-stale") === 0 && countClass(c, "list-pending") === 0, true);
+  report("본문 도중 끊긴 주소로 돌아온 응답이 다음 폴링을 건다", typeof c.timer, "function");
+}
+
+async function storeCases() {
+  const st = filterStub(), store = new Map();
+  const a = await boot("/", st.bodyOf, { search: "?days=30", store });
+  a.details("2026-11-01").open = true;
+  a.win.scrollY = 640;
+  a.win.fire("pagehide");
+  const saved = JSON.parse(store.get("cc-dash.v1.list:/?days=30") || "null");
+  report("떠날 때 그 주소의 항목에 펼침과 스크롤을 쓴다", !!saved && JSON.stringify(saved.flipped) + " " + saved.y, '[["day:2026-11-01",true]] 640');
+
+  const b = await boot("/", st.bodyOf, { search: "?days=30", store });
+  report("새로고침 뒤 브라우저 스크롤 복원을 끈다", b.hist.scrollRestoration, "manual");
+  report("새로고침 뒤 펼친 묶음이 열려 있다", b.details("2026-11-01").open, true);
+  report("새로고침 뒤 기본 열린 묶음은 그대로 열려 있다", b.details("2026-11-04").open, true);
+  report("첫 목록을 그린 뒤 저장 위치로 정확히 한 번 옮긴다", JSON.stringify(b.win.scrolls), "[640]");
+  st.gen++; await b.poll();
+  report("다음 폴링은 스크롤을 다시 옮기지 않는다", JSON.stringify(b.win.scrolls), "[640]");
+
+  const other = await boot("/", st.bodyOf, { search: "?days=7", store });
+  report("다른 주소는 그 주소의 항목만 읽는다", other.details("2026-11-01").open === false && other.win.scrolls.length === 0, true);
+
+  // One more address than the cap: the entry written longest ago goes.
+  const many = new Map();
+  for (let i = 0; i < 20; i++) many.set("cc-dash.v1.list:/?base=r" + i, JSON.stringify({ flipped: [], y: 0, at: 1000 + i }));
+  const p = await boot("/", st.bodyOf, { store: many });
+  p.win.fire("pagehide");
+  const kept = Array.from(many.keys()).filter((k) => k.indexOf("cc-dash.v1.list:") === 0);
+  report("목록 항목이 20 개를 넘으면 가장 오래 전에 쓴 것부터 지운다", kept.length + " " + many.has("cc-dash.v1.list:/?base=r0") + " " + many.has("cc-dash.v1.list:/"), "20 false true");
+
+  const broken = new Map([["cc-dash.v1.list:/", "{broken"]]);
+  const q = await boot("/", st.bodyOf, { store: broken });
+  report("깨진 저장 값은 항목 없음으로 읽고 목록을 그린다", !!q.link("/run/today-run") && q.win.scrolls.length === 0, true);
+}
+
+async function backLinkCases() {
+  const store = new Map([["cc-dash.v1.last-list", "/?days=30&base=%2Fa"]]);
+  const d1 = await boot("/run/r9", detailBody, { store });
+  const back = (c) => c.nodes["band-nav"].querySelectorAll("a")[0].getAttribute("href");
+  report("상세의 런 목록 링크가 마지막 목록 주소다", back(d1), "/?days=30&base=%2Fa");
+  report("상세로 떠도 주소와 마지막 목록 주소를 고치지 않는다",
+    d1.hist.replaced.length + " " + store.get("cc-dash.v1.last-list"), "0 /?days=30&base=%2Fa");
+  const d2 = await boot("/run/r9", detailBody);
+  report("마지막 목록 주소가 없으면 런 목록 링크가 / 다", back(d2), "/");
+  const d3 = await boot("/run/r9", detailBody, { store: new Map([["cc-dash.v1.last-list", "//elsewhere/"]]) });
+  report("목록 주소 꼴이 아닌 값이면 런 목록 링크가 / 다", back(d3), "/");
+  const e1 = await boot("/run/r9", detailBody, { store, failWith: 404 });
+  report("상세 오류의 런 목록으로 링크가 마지막 목록 주소다", !!e1.link("/?days=30&base=%2Fa"), true);
+  const e2 = await boot("/run/r9", detailBody, { failWith: 404 });
+  report("마지막 목록 주소가 없으면 상세 오류의 링크가 / 다", !!e2.link("/"), true);
+}
+
+// S8: a running attempt in the run detail and the list's now cell. The detail
+// is a running run whose segment A went implement, review, implement and is in
+// review again, with one more running attempt whose start is unknown.
+const nodesOf = (root, f) => { const out = []; root.walk((n) => { if (f(n)) out.push(n); }); return out; };
+const classed = (root, k) => nodesOf(root, (n) => n.classList.contains(k));
+
+function liveDetail(T0, timeline) {
+  const liveR1 = { seg: "A", attempt: "4", nth: 2, start: T0 + 3700 };
+  return {
+    tz_offset_s: 32400,
+    summary: { id: "lv", state: "진행중", attention: "watch", started_at: T0, elapsed_s: 7200, prs: [], notes: [],
+      now: { stage: "A", kind: "review", attempt: "4", blocked: null } },
+    run_start: T0,
+    judgments: { items: [], by_class: {} }, waiting: [],
+    steps: [
+      { id: "I1", skill: "implement", kind: "implement", status: "끝남", attempts: 2, end_class: "정상 완료",
+        started: T0, ended: T0 + 3600, usd: 1, segments: [{ id: "A", status: "끝남", attempts: 2, live: null }], live: [] },
+      { id: "R1", skill: "review", kind: "review", status: "도는 중", attempts: 1, end_class: null,
+        started: T0 + 3700, ended: null, usd: 0.5, segments: [{ id: "A", status: "도는 중", attempts: 1, live: liveR1 }], live: [liveR1] },
+    ],
+    timeline, shifts: [],
+    clauses: [], reviews: [], segments: [{ id: "A", state: "실행중", deps: [], cycles: [] }], links: {}, cost: {},
+  };
+}
+
+async function liveCases() {
+  const T0 = Date.UTC(2026, 10, 20, 0, 0) / 1000;
+  const done = (attempt, kind, step, a, b) => ({ stage: "A", attempt, kind, start: T0 + a, end: T0 + b, "class": "정상 완료",
+    live: false, seg: "A", step, usd: 0.5, shift: null });
+  const running = { stage: "A", attempt: "4", kind: "review", start: T0 + 3700, end: null, "class": null,
+    live: true, seg: "A", step: "R1", usd: null, shift: null };
+  const unknown = { stage: "S2", attempt: null, kind: "audit", start: null, end: null, "class": null,
+    live: true, seg: null, step: null, usd: null, shift: null };
+  const c = await boot("/run/lv", () => liveDetail(T0, [done("1", "implement", "I1", 0, 1200),
+    done("2", "review", "R1", 1300, 2400), done("3", "implement", "I1", 2500, 3600), running, unknown]));
+  const svg = nodesOf(c.app, (n) => n.tagName === "SVG" && n.getAttribute("class") === "tb")[0];
+  const rects = svg ? nodesOf(svg, (n) => n.tagName === "RECT") : [];
+  const liveBars = rects.filter((n) => n.getAttribute("class") === "b-live");
+  const nowLine = svg ? nodesOf(svg, (n) => n.tagName === "LINE" && n.getAttribute("class") === "now")[0] : null;
+  report("도는 막대가 하나 그려진다", liveBars.length, 1);
+  const bar = liveBars[0];
+  report("도는 막대의 오른쪽 끝이 지금 선이다",
+    !!bar && !!nowLine && Math.abs(Number(bar.getAttribute("x")) + Number(bar.getAttribute("width")) - Number(nowLine.getAttribute("x1"))) <= 0.1, true);
+  const tip = bar ? bar.textContent : "";
+  report("도는 막대 툴팁에 도는 중과 통산 시도가 있다", tip.includes("도는 중") && tip.includes("통산 시도"), true);
+  const rowNames = svg ? nodesOf(svg, (n) => n.tagName === "TEXT" && n.getAttribute("x") === "8").map((n) => n.textContent) : [];
+  report("띠 행 이름에 I1 · A 와 R1 · A 가 있다", rowNames.includes("I1 · A") && rowNames.includes("R1 · A"), true);
+  const doneTips = rects.filter((n) => n.getAttribute("class") === "b-ok").map((n) => n.textContent);
+  report("끝난 막대 툴팁이 행 이름과 통산 시도로 시작한다", doneTips.length === 3 && doneTips[0].indexOf("I1 · A · 통산 시도 1 · ") === 0, true);
+  report("범례에 도는 중 견본이 있다", classed(c.app, "legend").some((n) => n.textContent.includes("도는 중")) && classed(c.app, "live").length === 1, true);
+  report("시작을 모르는 도는 시도를 따로 안내한다",
+    classed(c.app, "note").some((n) => n.textContent.includes("시작 시각을 모르는 도는 중 시도 1건")), true);
+  const table = nodesOf(c.app, (n) => n.tagName === "TABLE" && n.getAttribute("class") === "tbl")[0];
+  const r1 = table ? nodesOf(table, (n) => n.tagName === "TR").find((tr) => tr.children[0] && tr.children[0].textContent === "R1") : null;
+  const cells = r1 ? r1.children.map((td) => td.textContent) : [];
+  report("스텝 표 R1 행의 시도 칸이 회째와 통산을 적는다", /^\d+회째 · 통산 \d+$/.test(cells[3] || ""), true);
+  report("스텝 표 R1 행의 끝·종단 부류가 비고 걸린 시간이 째로 끝난다",
+    cells[5] === "-" && cells[8] === "-" && /째$/.test(cells[6] || ""), true);
+  const segs = nodesOf(c.app, (n) => n.tagName === "TABLE" && n.getAttribute("class") === "segs");
+  const segTries = segs.map((t) => nodesOf(t, (n) => n.tagName === "TD").map((td) => td.textContent).pop());
+  report("세그먼트 표의 도는 자식 시도 칸이 회째와 통산을 적는다", segTries.includes("2회째 · 통산 4"), true);
+  report("스텝 흐름 상자가 도는 스텝의 횟수를 회째로 적는다",
+    classed(c.app, "sbox").some((n) => n.textContent.includes("도는 중 · 2회째")), true);
+  report("상세 지금 줄에 통산 시도가 있다", classed(c.app, "nowline").some((n) => n.textContent.includes("통산 시도 4")), true);
+
+  const e = await boot("/run/lv", () => liveDetail(T0, [unknown]));
+  const box = classed(e.app, "tband")[0];
+  report("그릴 시도가 없으면 새 빈 상태 문장과 도는 몫 안내를 함께 둔다",
+    !!box && classed(box, "empty-line").some((n) => n.textContent === "그릴 수 있는 시도가 없어 시간 띠를 그리지 않았습니다.") &&
+    classed(box, "note").some((n) => n.textContent.includes("시작 시각을 모르는 도는 중 시도 1건")), true);
+
+  const l = await boot("/", () => ({
+    tz_offset_s: 32400, tz_label: "KST", generated_at: T0 + 7200, today: "2026-11-20",
+    runs: [{ id: "lv", goal: "목표 lv", attention: "watch", state: "진행중", started_at: T0, elapsed_s: 7200, base: "/a",
+      seg: {}, cost_usd: 1, waiting: [], prs: [], now: { stage: "A", kind: "review", attempt: "4", blocked: null } }],
+    totals: {}, bases: ["/a"], hidden: 0, hidden_experiment: 0,
+  }));
+  report("목록 지금 칸에 통산 시도가 있다", l.app.textContent.includes("review · 통산 시도 4"), true);
+}
+
+const fail = (e) => { console.error(e && e.stack || e); process.exit(1); };
+if (process.argv[3] === "timeband") timebandCases().catch(fail);
+else if (process.argv[3] === "live") liveCases().catch(fail);
+else listCases().then(detailCases).then(endedHoldCases).then(baseFilterCases).then(seatCases).then(waitCases)
+  .then(addressCases).then(pendingCases).then(revertCases).then(lateAnswerCases).then(bodyAbortCases).then(storeCases).then(backLinkCases).catch(fail);
 JS
 
 if command -v node >/dev/null 2>&1; then
@@ -634,6 +1105,43 @@ elif [ -n "${CI:-}" ]; then
   bad "S6 node" "CI 에 node 가 없어 폴링 시험을 돌릴 수 없다"
 else
   printf 'SKIP: S6 — 이 호스트에 node 가 없다\n'
+fi
+
+# ---------------------------------------------------------------------------
+# S7 — the run detail's time band keeps its edge labels clear of the tick labels.
+# The same harness draws runs under node with the `timeband` argument; the label
+# boxes come from the design's estimated width table, written out again in the
+# harness, and no two labels on the top row may come within 6 units. A hidden
+# midnight label's date has to survive on another label where the design keeps it.
+# ---------------------------------------------------------------------------
+if command -v node >/dev/null 2>&1; then
+  node "$WORK/redraw.js" "$SCREEN/app.js" timeband >"$WORK/timeband.out" 2>"$WORK/timeband.err"
+  check "S7 하니스가 끝까지 돈다" "$? $(tail -n 1 "$WORK/timeband.err")" "0 "
+  while IFS=$'\t' read -r name got want; do
+    check "S7 $name" "$got" "$want"
+  done <"$WORK/timeband.out"
+elif [ -n "${CI:-}" ]; then
+  bad "S7 node" "CI 에 node 가 없어 시간 띠 시험을 돌릴 수 없다"
+else
+  printf 'SKIP: S7 — 이 호스트에 node 가 없다\n'
+fi
+
+# ---------------------------------------------------------------------------
+# S8 — a running attempt is drawn and named. The same harness, with the `live`
+# argument, draws a running run whose segment went implement and review in turn:
+# the running bar reaches the now line, the band rows pair step and segment,
+# and every attempt number on the page says which count it is.
+# ---------------------------------------------------------------------------
+if command -v node >/dev/null 2>&1; then
+  node "$WORK/redraw.js" "$SCREEN/app.js" live >"$WORK/live.out" 2>"$WORK/live.err"
+  check "S8 하니스가 끝까지 돈다" "$? $(tail -n 1 "$WORK/live.err")" "0 "
+  while IFS=$'\t' read -r name got want; do
+    check "S8 $name" "$got" "$want"
+  done <"$WORK/live.out"
+elif [ -n "${CI:-}" ]; then
+  bad "S8 node" "CI 에 node 가 없어 도는 시도 시험을 돌릴 수 없다"
+else
+  printf 'SKIP: S8 — 이 호스트에 node 가 없다\n'
 fi
 
 printf '\ntest-dashboard-screen: %d passed, %d failed\n' "$passed" "$failed"

@@ -677,7 +677,7 @@ else
   ag_waiter() {
     # ag_waiter <key> <갱신 age> <시도> <계보> — a marker held by a live process.
     local pid fp
-    sleep 120 &
+    wait_holder >/dev/null 2>&1 &
     pid=$!
     FX_PIDS="${FX_PIDS:-}$pid "
     fp=$(LC_ALL=C ps -o lstart= -p "$pid" 2>/dev/null | sed 's/[[:space:]]\{1,\}/ /g;s/^ //;s/ $//')
@@ -715,7 +715,7 @@ else
     # ag_relay <refreshed age> <stages> [fingerprint override] — a relay record
     # held by a live process, in the gate's line order.
     local pid fp now
-    sleep 120 &
+    wait_holder >/dev/null 2>&1 &
     pid=$!
     FX_PIDS="${FX_PIDS:-}$pid "
     fp=$(LC_ALL=C ps -o lstart= -p "$pid" 2>/dev/null | sed 's/[[:space:]]\{1,\}/ /g;s/^ //;s/ $//')
@@ -896,7 +896,7 @@ ag_shift_live() {
   # for the reason `run-fixture.sh` keeps its own capture.
   local rd="$1" pid="${2:-}"
   if [ -z "$pid" ]; then
-    sleep 300 & pid=$!
+    wait_holder >/dev/null 2>&1 & pid=$!
     FX_PIDS="${FX_PIDS:-}$pid "; export FX_PIDS
   fi
   { printf '%s\n' "$pid"
@@ -985,7 +985,7 @@ st_expect() {
   if [ "$ladder" = fresh ]; then printf '%s' "$fresh"; else printf '%s' "$ladder"; fi
 }
 
-sleep 300 & ST_PID=$!
+wait_holder >/dev/null 2>&1 & ST_PID=$!
 FX_PIDS="${FX_PIDS:-}$ST_PID "; export FX_PIDS
 # The dashboard's port reads every case in both call shapes as well. The table
 # holds the marker, `done` and a live shift in every combination, which is the
@@ -1504,12 +1504,11 @@ PY
   env -u CI -u CC_CMDS_OBSERVER -u CC_PIPELINE_SEGMENT -u CC_PIPELINE_STAGE_ID \
     python3 "$OW_PY" adopt --run-dir "$FX_RUN_DIR" --job watchfx </dev/null >/dev/null 2>"$WORK/ow.err" || ow_rc=$?
   check "OW 관측기가 감시기 작업을 맡는다 (adopt 종료 코드)" "$ow_rc" 0
-  i=0
-  while [ "$i" -lt 50 ] && [ ! -s "$FX_RUN_DIR/watch.heartbeat" ]; do sleep 0.1; i=$((i + 1)); done
+  wait_until [ -s "$FX_RUN_DIR/watch.heartbeat" ]
   ow_pid=$(tr -d '[:space:]' < "$XDG_STATE_HOME/cc-cmds/observer/observer.pid" 2>/dev/null)
   check "OW watch.pid 가 관측기의 pid 다" "$(tr -d '[:space:]' < "$FX_RUN_DIR/watch.pid" 2>/dev/null)" "${ow_pid:-없음}"
   if [ -s "$FX_RUN_DIR/watch.heartbeat" ]; then ok "OW 관측기가 watch.heartbeat 를 쓴다"
-  else bad "OW 관측기가 watch.heartbeat 를 쓴다" "5초 안에 생기지 않았다 — $(cat "$WORK/ow.err" 2>/dev/null)"; fi
+  else bad "OW 관측기가 watch.heartbeat 를 쓴다" "기다림 상한 안에 생기지 않았다 — $(cat "$WORK/ow.err" 2>/dev/null)"; fi
   ow_grew=$(sed -n 's/.*마지막성장=\([0-9][0-9]*\).*/\1/p' "$FX_RUN_DIR/watch.heartbeat" 2>/dev/null)
   ow_sl=$(fx_statusline_stdin sess-obw | bash "$SL")
   check "OW 상태줄 — 그 런을 그린다" "$(printf '%s' "$ow_sl" | cut -d' ' -f2)" run-obw
@@ -1531,8 +1530,7 @@ PY
   check "OW liveness — 원장 성장 시각은 관측기가 쓴 하트비트의 값이다" \
     "$(CC_RD="$FX_RUN_DIR" bash -c '. "$0"; cc_ledger_growth_at "$CC_RD"' "$LIVENESS")" "${ow_grew:-없음}"
   python3 "$OW_PY" stop >/dev/null 2>&1
-  i=0
-  while [ "$i" -lt 50 ] && [ -e "$XDG_STATE_HOME/cc-cmds/observer/observer.pid" ]; do sleep 0.1; i=$((i + 1)); done
+  wait_until test ! -e "$XDG_STATE_HOME/cc-cmds/observer/observer.pid"
   check "OW stop 뒤에 observer.pid 가 남지 않는다" \
     "$([ -e "$XDG_STATE_HOME/cc-cmds/observer/observer.pid" ] && echo 남음 || echo 없음)" 없음
 else

@@ -1240,6 +1240,13 @@ pass() {
   local age live live_w pend nonterm run_age gate_idle size grew silent id newly stale
   local cause reason slug mk thr quiet relay_eff halts="" fo_wait="" ub line expiry="" now
   local shw_rows="" shw=0 shall=0 swait=0 sh_held sh_unheld sh_name sh_site sh_anchor sh_path sh_q sh_new sh_drop
+  # THE PASS'S OWN CLOCK, read before any arm reads one. The expiry offers at
+  # the end of the pass compare against this rather than against the clock at
+  # the time they are made: on a loaded host a pass takes seconds, and a
+  # threshold that fell between an arm's judgment and the offer was neither
+  # fired nor offered, so its banner waited for the next scheduled full pass.
+  local pass_t0
+  watch_now_into pass_t0
   beat
   failover_clock_note
   # THE GATE'S IDLE TIME SITS BESIDE `age` because two arms read it: the
@@ -1865,9 +1872,11 @@ EOF
   # run (the main loop runs a full pass once the memory clock reaches it). Each
   # arm offers the time its clock conditions would all hold — the latest of its
   # thresholds — when the conditions that are not about time hold now; a time
-  # already past offers nothing, so an arm that fired or cannot fire does not
-  # keep forcing full passes. The offers err early, never late: an early full
-  # pass costs one pass, a late one delays a banner.
+  # the pass's own clock had already reached offers nothing, so an arm that
+  # fired or cannot fire does not keep forcing full passes. A time that fell
+  # during this pass is still offered and makes the next cycle a full one,
+  # because the arm judged before it. The offers err early, never late: an
+  # early full pass costs one pass, a late one delays a banner.
   local t sx=""
   watch_now_into now
   if [ "$live_w" = "0" ] && [ "$pend" = "0" ] && [ "$nonterm" -ge 1 ] 2>/dev/null \
@@ -1910,10 +1919,12 @@ EOF
 
 watch_expiry_offer() {
   # watch_expiry_offer <epoch> — lowers the calling pass's `expiry` to <epoch>
-  # when <epoch> is still ahead of the memory clock.
+  # when <epoch> is still ahead of the clock the calling pass read before its
+  # arms (`pass_t0`), or of the memory clock when there is no such pass.
   local t="${1:-}" n
   case "$t" in ''|*[!0-9]*) return 0 ;; esac
-  watch_now_into n
+  n=${pass_t0:-}
+  case "$n" in ''|*[!0-9]*) watch_now_into n ;; esac
   [ "$t" -gt "$n" ] || return 0
   if [ -z "${expiry:-}" ] || [ "$t" -lt "$expiry" ]; then expiry=$t; fi
   return 0

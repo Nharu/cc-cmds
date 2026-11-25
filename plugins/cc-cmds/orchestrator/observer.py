@@ -68,6 +68,7 @@ STOP_WAIT_S = 5.0
 ADOPT_WAIT_S = 10.0
 ADOPT_POLL_S = 0.2
 CHILD_LIMIT = 4
+BATCH_DEFER_LOG_S = 60.0
 CHILD_TIMEOUT_S = 10.0
 LOG_CAP = 1 << 20
 DEFAULT_PERIOD = 2.0
@@ -887,6 +888,7 @@ class Daemon:
         self.facts = {}        # (kind, sid) -> {"sig", "retry"}
         self.children = []     # recompute children
         self.batches = {}      # job -> thread
+        self.batch_wait = {}   # job -> {"since", "logged"} while deferred
         self.drops = []
         self.live = set()
         self.mu = threading.Lock()
@@ -922,6 +924,39 @@ class Daemon:
             if t.is_alive():
                 n += 1
         return n
+
+    # A BATCH JOB THAT IS NOT RUNNING KEEPS ONE SLOT FOR ITSELF. Every pass
+    # starts the ticks and the fact recomputations before it calls `batch`, and
+    # under a heavy host a tick holds its slot up to the child timeout, so with a
+    # shared limit the ticks of the previous pass were still alive whenever
+    # `batch` looked, and the batched question ran only on the first pass of a
+    # fresh observer. The ticks and the recomputations therefore stop one slot
+    # short of the limit for every batch job that has runs and is not running,
+    # and the limit on all of them together stays `CHILD_LIMIT`.
+    def batch_reserve(self):
+        n = 0
+        for job, mod in self.mods.items():
+            if not callable(getattr(mod, "batch", None)):
+                continue
+            t = self.batches.get(job)
+            if t is not None and t.is_alive():
+                continue
+            if any(job in r.jobs for r in self.runs.values()):
+                n += 1
+        return n
+
+    def tick_room(self):
+        return self.busy() < CHILD_LIMIT - self.batch_reserve()
+
+    # A deferred batch leaves a line once a starved stretch reaches
+    # `BATCH_DEFER_LOG_S`, and again after each further stretch of that length,
+    # so a job that stops being asked about is visible in `observer.log`.
+    def batch_deferred(self, job, now):
+        w = self.batch_wait.setdefault(job, {"since": now, "logged": now})
+        if now - w["logged"] >= BATCH_DEFER_LOG_S:
+            w["logged"] = now
+            log("batch 미룸 %s — 슬롯 %d/%d 가 %d초째 차 있다"
+                % (job, self.busy(), CHILD_LIMIT, int(now - w["since"])))
 
     # -- start and end -----------------------------------------------------
 
@@ -1147,7 +1182,7 @@ class Daemon:
             due = j.pending or (j.deadline is not None and now >= j.deadline)
             if not due or (j.thread is not None and j.thread.is_alive()):
                 continue
-            if self.busy() >= CHILD_LIMIT:
+            if not self.tick_room():
                 continue
             was = j.pending
             j.pending = False
@@ -1171,8 +1206,12 @@ class Daemon:
             if not runs:
                 continue
             t = self.batches.get(job)
-            if (t is not None and t.is_alive()) or self.busy() >= CHILD_LIMIT:
+            if t is not None and t.is_alive():
                 continue
+            if self.busy() >= CHILD_LIMIT:
+                self.batch_deferred(job, now)
+                continue
+            self.batch_wait.pop(job, None)
 
             def work(fn=fn, job=job, runs=runs):
                 try:
@@ -1295,7 +1334,7 @@ class Daemon:
                             continue
                     elif exp is not None and now < exp - self.period:
                         continue
-                if self.busy() >= CHILD_LIMIT:
+                if not self.tick_room():
                     return
                 self.start_facts(kind, sid, reg, sig)
 

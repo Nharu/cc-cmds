@@ -107,7 +107,12 @@ TT_DONE_ITEMS=""
 # the tested tree (empty: none). The repro and base-verdict commands and the
 # base contrast leave it off, since they run items to tell a defect apart; the
 # TT_JOBS 1 path never uses it. TT_REUSED collects the item keys a run reused,
-# comma-joined.
+# comma-joined. A record whose item called git on its checkout needs the same
+# input commit and base, except one whose item only asked where the repository
+# is and read objects by full id (`트리전체=git읽기`): it is reused across a new
+# HEAD and base when those ids are present or absent in TT_WORK as they were,
+# which the judge reads from TR_OBJ_REPO, set to TT_WORK before each judging
+# and never exported.
 TT_REUSE=0
 TT_REUSE_GDIR=""
 TT_REUSE_COMMIT=""
@@ -717,6 +722,7 @@ tt_item_reuse() {
   local key="$1" hit h e how
   tt_reuse_on || return 1
   tt_reuse_list
+  TR_OBJ_REPO="$TT_WORK"
   hit=$(tr_reuse_find "$TT_REUSE_GDIR" "$key" "$TT_TREE" "$TT_REUSE_COMMIT" "$TT_REUSE_BASE" "$(tt_doubles)" "$TT_REUSE_LIST") || return 1
   IFS=$'\t' read -r h e how <<EOF
 $hit
@@ -1053,6 +1059,7 @@ tt_pool_run() {
   # sections that ran. With nothing left to run the pool is done.
   if [ -n "$secs" ] && tt_reuse_on; then
     tt_reuse_list
+    TR_OBJ_REPO="$TT_WORK"
     picks=$(tr_lane_pick "$TT_REUSE_GDIR" "$secs" "$TT_TREE" "$TT_REUSE_COMMIT" "$TT_REUSE_BASE" \
       "$(tt_doubles)" "$TT_REUSE_LIST" tt_lane_digest)
     took=","
@@ -1953,13 +1960,14 @@ tt_st_probe() {
 
 tt_self_test() {
   local passed=0 failed=0 T self out rc line W sa sb1 sb2 sm sh shb shn sx tm tb2 th snap1 snap2 log fh v rec stamps before
-  local sbf shf tbf thf tbfhn tbfhb
+  local sbf shf tbf thf tbfhn tbfhb after
   ok()  { passed=$((passed + 1)); printf 'PASS: %s\n' "$1"; }
   bad() { failed=$((failed + 1)); printf 'FAIL: %s — %s\n' "$1" "${2:-}" >&2; }
   check() { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "got「$2」 want「$3」"; fi; }
   has() { case "$2" in *"$3"*) ok "$1" ;; *) bad "$1" "「$3」 없음: $2" ;; esac; }
   hasnt() { case "$2" in *"$3"*) bad "$1" "「$3」 있음: $2" ;; *) ok "$1" ;; esac; }
   self="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+  . "$(dirname "$self")/wait-fixture.sh"
   tt_st_scrub
   unset CLAUDE_X
   T=$(mktemp -d "${TMPDIR:-/tmp}/test-tree-selftest.XXXXXX") || return 1
@@ -2610,7 +2618,10 @@ ci-base: 목록 없음 — job=21 「rest-tests (3)」 의 로그에 절 목록�
   # --- F38 시험 자리 -----------------------------------------------------------
   # Pools in separate processes share one store. The make double logs when a
   # goal starts and ends, read off the clock at the line it writes; goal rc7
-  # ends with 7, goal long waits until TERM reaches it.
+  # ends with 7, goal long waits until TERM reaches it, and goal deaf ignores
+  # TERM. Neither ends by itself before this suite's shell is gone, so a pool
+  # that waited for them would not end before the shared wait ceiling. Goal long
+  # logs `H long` once its TERM trap is in place.
   sed "s|@T@|$T|g" > "$T/bin/slowmake" <<'EOF'
 #!/usr/bin/env bash
 g="${2:-}"
@@ -2619,13 +2630,14 @@ case "$g" in
   rc7) exit 7 ;;
   long)
     trap 'printf "T %s\n" "$g" >> "@T@/slot.log"; kill "$sp" 2>/dev/null; exit 143' TERM
-    sleep 60 &
+    while kill -0 "$WAIT_FIXTURE_OWNER" 2>/dev/null; do sleep 1; done &
     sp=$!
+    printf 'H %s\n' "$g" >> "@T@/slot.log"
     wait "$sp"
     exit 0 ;;
   deaf)
     trap '' TERM
-    sleep 30 &
+    while kill -0 "$WAIT_FIXTURE_OWNER" 2>/dev/null; do sleep 1; done &
     printf 'P %s %s\n' "$g" "$!" >> "@T@/slot.log"
     wait
     exit 0 ;;
@@ -2648,10 +2660,9 @@ EOF
       . "$1"; trap "tt_cleanup; exit 143" TERM; TT_FAIL_FAST="${SPFF:-0}"
       cd "$2" && tt_clone > /dev/null && TT_JOBS=2 && { [ -z "${SPDL:-}" ] || TT_DEADLINE=$(( $(date +%s) + SPDL )); } && tt_pool_run "" "$3" > /dev/null; printf "rc=%s\n" "$?"; printf "sp-cut=%s\n" "$TT_CUT_GOALS" >&2; tt_cleanup' _ "$self" "$W" "$goals" > "$T/sp-$tag.out" 2> "$T/sp-$tag.err"
   }
-  # Waits until the double logged line $1 (up to 30 seconds).
+  # Waits until the double logged line $1, or the shared ceiling.
   logwait() {
-    local k=0
-    while [ "$k" -lt 30 ] && ! grep -q -- "$1" "$T/slot.log" 2>/dev/null; do sleep 1; k=$((k + 1)); done
+    wait_until grep -q -- "$1" "$T/slot.log" 2>/dev/null || true
   }
   # The most goals that ran at once, from the S and E lines.
   maxdepth() { awk '$1 == "S" { d++; if (d > m) m = d } $1 == "E" { d-- } END { print m + 0 }' "$T/slot.log"; }
@@ -2665,16 +2676,21 @@ EOF
   logwait "^S a1 "
   sp B b1 CC_TEST_SLOTS=1 CC_TEST_SLOTS_DIR="$T/slots" SLOW_SECS=3 &
   wait "$v" $!
+  after=$(date +%s)
   check "F38 자리 하나면 두 풀의 잡이 겹치지 않는다" "$(maxdepth)|$(cat "$T/sp-A.out" "$T/sp-B.out" | tr '\n' ' ')" "1|rc=0 rc=0 "
   check "F38 먼저 온 풀의 다음 잡이 나중 풀의 잡보다 먼저 돈다" "$(awk '$1 == "S" { printf "%s ", $2 }' "$T/slot.log")" "a1 a2 b1 "
   has "F38 자리를 잡은 잡은 CC_TEST_SLOT_HELD=1 을 받는다" "$(grep '^S b1 ' "$T/slot.log")" "held=1"
   out=$(sed -n 's/^test-tree: 자리 잡음 목표 b1 (\([0-9][0-9]*\)초 대기)$/\1/p' "$T/sp-B.err")
   line=$(sed -n 's/^test-tree: 끝 — 목표 b1 rc=0 \([0-9][0-9]*\)초$/\1/p' "$T/sp-B.err")
-  v=$(( $(logat E b1) - $(logat S b1) ))
-  if [ -n "$out" ] && [ -n "$line" ] && [ "$out" -ge 2 ] && [ $((line - v)) -lt "$out" ]; then
+  # b1 takes the only slot after a2 has ended, so a time counted from the slot
+  # is at most the seconds from a2's end line to the moment both pools were
+  # reaped; a time that took the wait in started before a2 did and is longer
+  # by the wait than that span, which the 2-second floor makes non-zero.
+  v=$(logat E a2)
+  if [ -n "$out" ] && [ -n "$line" ] && [ -n "$v" ] && [ "$out" -ge 2 ] && [ $((after - v)) -ge "$line" ]; then
     ok "F38 목표 시간에 자리 대기가 빠진다"
   else
-    bad "F38 목표 시간에 자리 대기가 빠진다" "대기=$out 끝=$line 대역=$v $(cat "$T/sp-B.err")"
+    bad "F38 목표 시간에 자리 대기가 빠진다" "대기=$out 끝=$line a2끝=$v 회수=$after $(cat "$T/sp-B.err")"
   fi
 
   rm -rf "$T/slots"
@@ -2699,8 +2715,7 @@ EOF
   : > "$T/slot.log"
   sp A long CC_TEST_SLOTS=2 CC_TEST_SLOTS_DIR="$T/slots" &
   v=$!
-  logwait "^S long "
-  sleep 1
+  logwait "^H long$"
   kill -TERM "$v" 2>/dev/null
   wait "$v"
   check "F38 정리 때의 TERM 이 잡 셸을 지나 대역 목표까지 닿는다" "$(grep -c '^T long$' "$T/slot.log")" "1"
@@ -2754,16 +2769,15 @@ EOF
   # With TT_FAIL_FAST 1 the first failure stops the pool: the other job is
   # stopped and named unfinished, and the status is the failure's.
   : > "$T/slot.log"
-  v=$(date +%s)
   sp A rc7,long CC_TEST_SLOTS=0 SPFF=1 &
-  wait $!
-  v=$(( $(date +%s) - v ))
+  v=$!
+  if wait_pid_gone "$v"; then v=예; else kill -TERM "$v" 2>/dev/null; wait "$v" 2>/dev/null; v=아니오; fi
   check "F41 조기 종료: 실패가 이기고 도는 잡은 끊긴다" "$(cat "$T/sp-A.out")|$(grep -c '^T long$' "$T/slot.log")" "rc=1|1"
   has "F41 조기 종료: 실패 확정 줄" "$(cat "$T/sp-A.err")" "test-tree: 실패 확정 — 목표 rc7 rc=7"
   has "F41 조기 종료: 멈춘 까닭" "$(cat "$T/sp-A.err")" "test-tree: 멈춤 — 실패 확정 · 새 잡을 시작하지 않고 도는 잡 1개를 끊는다"
   has "F41 조기 종료: 끝나지 않은 항목 줄" "$(cat "$T/sp-A.err")" "test-tree: 끝나지 않은 항목 — long"
   check "F41 조기 종료: 실패에 끊긴 목표는 시간 예산에 잘린 목표가 아니다" "$(sed -n 's/^sp-cut=//p' "$T/sp-A.err")" ""
-  if [ "$v" -lt 20 ]; then ok "F41 조기 종료는 긴 잡을 기다리지 않는다"; else bad "F41 조기 종료는 긴 잡을 기다리지 않는다" "${v}초"; fi
+  check "F41 조기 종료는 긴 잡을 기다리지 않는다: 풀이 공용 상한 안에 끝난다" "$v" "예"
   # Without it every job runs to its end, and the failure is said when it is
   # reaped, before the slower job ends, and not again after the pool.
   : > "$T/slot.log"
@@ -2777,10 +2791,9 @@ EOF
   # A job that ignores TERM is killed after the grace, and the deadline makes
   # the pool unfinished, not failed: status 5 and the goal named as cut.
   : > "$T/slot.log"
-  v=$(date +%s)
   sp A deaf CC_TEST_SLOTS=0 SPDL=4 CC_CHECK_PUSH_STOP_GRACE=1 &
-  wait $!
-  v=$(( $(date +%s) - v ))
+  v=$!
+  if wait_pid_gone "$v"; then v=예; else kill -TERM "$v" 2>/dev/null; wait "$v" 2>/dev/null; v=아니오; fi
   check "F41 마감: 미완은 종료 코드 5" "$(cat "$T/sp-A.out")" "rc=5"
   has "F41 마감: 멈춘 까닭" "$(cat "$T/sp-A.err")" "test-tree: 멈춤 — 시간 예산 마감"
   has "F41 마감: 끊긴 잡의 줄" "$(cat "$T/sp-A.err")" "test-tree: 끊음 — 목표 deaf rc="
@@ -2788,10 +2801,11 @@ EOF
   has "F41 마감: 잘린 목표를 돌려준다" "$(cat "$T/sp-A.err")" "sp-cut=deaf"
   hasnt "F41 마감: 실패 확정이 아니다" "$(cat "$T/sp-A.err")" "실패 확정"
   e=$(awk '$1 == "P" && $2 == "deaf" { print $3 }' "$T/slot.log")
-  if [ -n "$e" ] && ! kill -0 "$e" 2>/dev/null && [ "$v" -lt 20 ]; then
+  if [ -n "$e" ] && ! kill -0 "$e" 2>/dev/null && [ "$v" = 예 ]; then
     ok "F41 TERM 을 무시하는 잡은 유예 뒤 KILL 로 내려간다"
   else
-    bad "F41 TERM 을 무시하는 잡은 유예 뒤 KILL 로 내려간다" "pid=$e ${v}초"
+    [ -z "$e" ] || kill -KILL "$e" 2>/dev/null
+    bad "F41 TERM 을 무시하는 잡은 유예 뒤 KILL 로 내려간다" "pid=$e 상한안종료=$v"
   fi
 
   # --- F40 항목 체크아웃과 재사용 --------------------------------------------------
@@ -2906,8 +2920,8 @@ cat r$v.txt > /dev/null
 [ ! -f "$T/lfail-$v" ] || exit 1
 [ ! -f "$T/lgit-$v" ] || git rev-parse HEAD > /dev/null
 if [ -f "$T/lslow-$v" ]; then
-  i=0
-  while [ ! -f "$T/lgo" ] && [ "\$i" -lt 120 ]; do sleep 0.5; i=\$((i + 1)); done
+  . "$(dirname "$self")/wait-fixture.sh"
+  wait_until test -f "$T/lgo" || true
 fi
 exit 0
 EOF
@@ -3046,11 +3060,12 @@ EOF
   : > "$T/lgate.log"
   lrun N l1,l2,l3 1 &
   v=$!
-  k=0
+  lrec_one() { [ "$(lrecs)" -ge 1 ]; }
+  lruns_three() { [ "$(grep -c '^run:' "$T/lgate.log")" -ge 3 ]; }
   if [ "$lv" = 1 ]; then
-    while [ "$k" -lt 60 ] && [ "$(lrecs)" -lt 1 ]; do sleep 0.5; k=$((k + 1)); done
+    wait_until lrec_one || true
   else
-    while [ "$k" -lt 60 ] && [ "$(grep -c '^run:' "$T/lgate.log")" -lt 3 ]; do sleep 0.5; k=$((k + 1)); done
+    wait_until lruns_three || true
   fi
   kill -TERM "$v" 2>/dev/null
   wait "$v"

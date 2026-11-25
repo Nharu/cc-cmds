@@ -443,7 +443,10 @@ Dispatcher behavior:
   ignored entirely. The dispatcher is class-agnostic — it does not see
   the event class label, only that one more instance fired.
 - **Banner**: `terminal-notifier -title "cc-cmds ${workflow}"
-  -message "${summary}" -execute "$click" -group …`. Single + `arm_count == 1`
+  -message "${summary}" -execute "$click" -group … -sound default`. Every
+  mode carries `-sound default`: each fire tells a new event, so each
+  banner makes one sound — the single one-shot fire that replaces the
+  session slot included. Single + `arm_count == 1`
   uses the session slot `cc-cmds-active-notify-<sid>` (banner replace
   semantics within the session); every other fire uses
   `cc-cmds-active-notify-<sid>@<armed_at>.<fire_count>` (pile-up).
@@ -937,7 +940,7 @@ if [ "$(uname -s)" != "Darwin" ]; then
 elif ! command -v terminal-notifier >/dev/null 2>&1; then
   echo "terminal-notifier가 미설치라 권한 테스트를 건너뜁니다. brew install terminal-notifier 후 다시 시도하세요."
 else
-  { terminal-notifier -message 'cc-cmds permission test' -title '[cc-cmds] test' -group 'cc-cmds-active-notify' -execute ':' 2>/dev/null || true; }
+  { terminal-notifier -message 'cc-cmds permission test' -title '[cc-cmds] test' -group 'cc-cmds-active-notify' -sound 'default' -execute ':' 2>/dev/null || true; }
   echo "권한 테스트 명령을 실행했습니다. macOS 권한 다이얼로그가 표시되면 허용을 클릭하세요. 다이얼로그/배너가 안 보이면 시스템 설정 → 알림 → terminal-notifier에서 허용 상태를 확인 또는 수동 활성화."
 fi
 ```
@@ -971,6 +974,12 @@ Design notes:
   ARM cycle's banner shares the group. Closing a session's banners on
   return does not reach it either: it is neither the slot nor starts
   with the slot followed by `@`.
+- **`-sound 'default'`** — the test banner makes the same macOS default
+  sound every fire-now banner makes, so the test shows what a real
+  banner sounds like. It sits after `-group` and before `-execute`; the
+  hook's pattern only asks that `-group 'cc-cmds-active-notify'` follow
+  `terminal-notifier`, so the extra pair does not change the
+  auto-approval.
 - **Bypass is NOT subject to §3's silent-skip contract.** The bypass
   path's contract is the inverse: precondition fail → user-visible
   Korean guidance via the combined-Bash stdout (first-run UX

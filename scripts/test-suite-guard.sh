@@ -15,7 +15,9 @@
 #     MAKELEVEL=`, outer fds closed), so it makes its own jobserver pipe;
 #   - decoys the harness starts close every outer fd and are signalled only
 #     through the harness's own `$!`;
-#   - every planted `sleep` lasts a few seconds and expires by itself.
+#   - every planted holder ends at the test's own `kill`, at the sweep under
+#     test, or within a second of this suite's shell ending; the one planted
+#     holder whose own lifetime the control measures (T6) keeps a fixed life.
 #
 # Every planted process is told apart by its pid, written to a file by the
 # suite that planted it; nothing is matched by name.
@@ -28,6 +30,11 @@ SG="$repo_root/scripts/suite-guard.sh"
 CSG="$repo_root/scripts/ci-step-guard.sh"
 DETACH="$repo_root/plugins/cc-cmds/orchestrator/detach.sh"
 WF="$repo_root/.github/workflows/notify-macos.yml"
+# shellcheck source=wait-fixture.sh
+. "$repo_root/scripts/wait-fixture.sh"
+# The planted suites below source the same file from their own shells.
+TEST_WAIT_FIXTURE="$repo_root/scripts/wait-fixture.sh"
+export TEST_WAIT_FIXTURE
 
 for f in "$SG" "$CSG" "$DETACH" "$WF"; do
   if [ ! -f "$f" ]; then
@@ -63,10 +70,8 @@ hasnt() {
 }
 
 gone() {
-  # gone <pid> — true once the pid is gone, waiting up to 3s.
-  local i=0
-  while kill -0 "$1" 2>/dev/null && [ "$i" -lt 30 ]; do sleep 0.1; i=$((i + 1)); done
-  ! kill -0 "$1" 2>/dev/null
+  # gone <pid> — true once the pid is gone, waiting up to the shared ceiling.
+  wait_until _wait_fixture_gone "$1"
 }
 
 check_gone() {
@@ -76,15 +81,6 @@ check_gone() {
 }
 
 now() { perl -MTime::HiRes=time -e 'printf "%.2f\n", time'; }
-
-elapsed_lt() {
-  # elapsed_lt <label> <t0> <t1> <limit-s>
-  if awk -v a="$2" -v b="$3" -v l="$4" 'BEGIN { exit !(b - a < l) }'; then
-    ok "$1"
-  else
-    bad "$1 — 경과 $(awk -v a="$2" -v b="$3" 'BEGIN { printf "%.2f", b - a }')s 가 ${4}s 이상"
-  fi
-}
 
 elapsed_ge() {
   # elapsed_ge <label> <t0> <t1> <floor-s>
@@ -107,10 +103,8 @@ ps_row() {
 }
 
 wait_file() {
-  # wait_file <path> — up to 5s for a non-empty file.
-  local i=0
-  while [ ! -s "$1" ] && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
-  [ -s "$1" ]
+  # wait_file <path> — until the file is non-empty, or the shared ceiling.
+  wait_until [ -s "$1" ]
 }
 
 RC=0
@@ -119,15 +113,40 @@ run_sg() {
   # foreground, outer fds closed (see the header).
   local tag="$1" strict="$2"; shift 2
   CC_SUITE_GUARD_STRICT="$strict" CC_SUITE_GUARD_GRACE_S=1 \
-  CC_SUITE_GUARD_LIMIT_S="${SG_LIMIT:-0}" CC_STEP_DEADLINE_EPOCH= \
+  CC_SUITE_GUARD_LIMIT_S=0 CC_STEP_DEADLINE_EPOCH= \
   CC_SUITE_GUARD_LSOF=lsof \
     bash "$SG" "$@" >"$W/$tag.out" 2>"$W/$tag.err" 3>&- 4>&- 5>&- 8<&-
   RC=$?
 }
 
+wrapper_rc() {
+  # wrapper_rc <wrapper pid> <signal|""> <pid file of the planted suite> — RC is
+  # the wrapper's status, read once the wrapper is gone; "상한" when it is still
+  # there at the shared ceiling, and then it and the planted pids are killed.
+  # The wrapper's trap only notes a signal, so one that arrives before it waits
+  # for the suite is acted on when a later one cuts that wait: with a signal
+  # named, every fiftieth look sends it again.
+  local wp="$1" wsig="$2" looks=0 p
+  wrapper_gone() {
+    _wait_fixture_gone "$wp" && return 0
+    looks=$((looks + 1))
+    [ -z "$wsig" ] || [ $((looks % 50)) != 0 ] || kill -"$wsig" "$wp" 2>/dev/null
+    return 1
+  }
+  if wait_until wrapper_gone; then
+    wait "$wp"
+    RC=$?
+    return
+  fi
+  RC=상한
+  kill -KILL "$wp" 2>/dev/null
+  wait "$wp" 2>/dev/null
+  for p in $(cat "$3" 2>/dev/null); do kill -KILL "$p" 2>/dev/null; done
+}
+
 # --- T1: a plain background leftover ----------------------------------------
 cat >"$W/t1.sh" <<'EOF'
-sleep 6 &
+while kill -0 "$WAIT_FIXTURE_OWNER" 2>/dev/null; do sleep 1; done &
 echo "$!" > "$1"
 exit 0
 EOF
@@ -146,7 +165,7 @@ check_gone "T1 비엄격: 스윕 뒤 심은 sleep 이 없다" "$p"
 
 # --- T2: a leftover in a new process group ----------------------------------
 cat >"$W/t2.sh" <<'EOF'
-( set -m; sleep 6 & echo "$!" > "$1" )
+( set -m; while kill -0 "$WAIT_FIXTURE_OWNER" 2>/dev/null; do sleep 1; done & echo "$!" > "$1" )
 exit 0
 EOF
 run_sg t2 1 "$W/t2.sh" "$W/t2.pid"
@@ -158,15 +177,15 @@ check_gone "T2: 스윕 뒤 없다" "$p"
 
 # --- T3: the foreground sleep of a loop that was TERMed ---------------------
 cat >"$W/t3.sh" <<'EOF'
+. "$TEST_WAIT_FIXTURE"
 ( while :; do sleep 6; done ) &
 lp=$!
 sp=""
-i=0
-while [ -z "$sp" ] && [ "$i" -lt 50 ]; do
-  sleep 0.1
-  i=$((i + 1))
+sp_found() {
   sp=$(ps -A -o pid=,ppid=,comm= | awk -v p="$lp" '$2 == p && $3 ~ /sleep$/ { print $1; exit }')
-done
+  [ -n "$sp" ]
+}
+wait_until sp_found
 kill -TERM "$lp"
 wait "$lp" 2>/dev/null
 echo "$sp" > "$1"
@@ -181,7 +200,7 @@ check_gone "T3: 스윕 뒤 없다" "$p"
 
 # --- T4: a grandchild detached by the tree's own cc_detach_exec -------------
 printf '%s\n' ". \"$DETACH\"" \
-  'cc_detach_exec /dev/null /dev/null sleep 6 > "$1"' \
+  'cc_detach_exec /dev/null /dev/null bash -c '\''while kill -0 "$0" 2>/dev/null; do sleep 1; done'\'' "$WAIT_FIXTURE_OWNER" > "$1"' \
   'exit 0' >"$W/t4.sh"
 run_sg t4 1 "$W/t4.sh" "$W/t4.pid"
 p=$(cat "$W/t4.pid" 2>/dev/null)
@@ -195,14 +214,17 @@ check_gone "T4: 스윕 뒤 없다" "$p"
 # --- T5: a suite stopped in the foreground after its summary ----------------
 cat >"$W/t5.sh" <<'EOF'
 echo "summary: 1 passed"
-sleep 30 &
+while kill -0 "$WAIT_FIXTURE_OWNER" 2>/dev/null; do sleep 1; done &
 c=$!
 echo "$$ $c" > "$1"
 wait "$c"
 EOF
-t0=$(now)
-SG_LIMIT=3 run_sg t5 1 "$W/t5.sh" "$W/t5.pid"
-t1=$(now)
+# The suite never ends by itself, so the wrapper's return, its 124 and its
+# deadline line are what show the deadline ended it.
+CC_SUITE_GUARD_STRICT=1 CC_SUITE_GUARD_GRACE_S=1 CC_SUITE_GUARD_LIMIT_S=3 \
+CC_STEP_DEADLINE_EPOCH= CC_SUITE_GUARD_LSOF=lsof \
+  bash "$SG" "$W/t5.sh" "$W/t5.pid" >"$W/t5.out" 2>"$W/t5.err" 3>&- 4>&- 5>&- 8<&- &
+wrapper_rc "$!" "" "$W/t5.pid"
 read -r sb sc < "$W/t5.pid" 2>/dev/null || { sb=""; sc=""; }
 check "T5: 마감을 넘기면 엄격 exit 124" "$RC" "124"
 has "T5: ::error:: 로 끝난다" "$W/t5.err" "::error::suite-guard: 마감을 넘겨"
@@ -210,9 +232,12 @@ has "T5: 덤프에 묶음 bash" "$W/t5.err" "그룹 구성원 pid=${sb}\$"
 has "T5: 덤프에 그 자식" "$W/t5.err" "그룹 구성원 pid=${sc}\$"
 check_gone "T5: 묶음 bash 가 없다" "$sb"
 check_gone "T5: 그 자식이 없다" "$sc"
-elapsed_lt "T5: 한도 3초 + 유예 안에 끝난다" "$t0" "$t1" 10
 
 # --- T6: a jobserver holder under make -j3 ----------------------------------
+# The holder keeps a fixed life of 8 seconds: the control (b) measures that
+# make without the wrapper waits that long, so the holder must end by itself.
+# (a) is judged by the wrapper's TERM to the holder, not by how soon make
+# returned.
 printf '%s\n' ". \"$DETACH\"" \
   'cc_detach_exec /dev/null /dev/null sleep 8 > "$1"' \
   'exit 0' >"$W/t6-leave.sh"
@@ -222,16 +247,13 @@ printf 'all: a b c\na:\n\tbash "%s" "%s"\nb:\n\t@sleep 0.2\nc:\n\t@sleep 0.2\n' 
   "$W/t6-leave.sh" "$W/t6b.pid" >"$W/t6b.mk"
 
 # (a) with the wrapper, strict.
-t0=$(now)
 MAKEFLAGS= MFLAGS= MAKELEVEL= CC_SUITE_GUARD_STRICT=1 CC_SUITE_GUARD_GRACE_S=1 \
 CC_SUITE_GUARD_LIMIT_S=0 CC_STEP_DEADLINE_EPOCH= CC_SUITE_GUARD_LSOF=lsof \
   make -j3 -f "$W/t6a.mk" >"$W/t6a.out" 2>&1 3>&- 4>&- 5>&- 8<&- 9<&-
 rc=$?
-t1=$(now)
 p=$(cat "$W/t6a.pid" 2>/dev/null)
 if [ "$rc" != 0 ]; then ok "T6(a): 엄격이면 make 가 실패한다"; else bad "T6(a): 엄격인데 make 가 0 으로 끝났다"; show "$W/t6a.out"; fi
 has "T6(a): 래퍼가 보유자를 거둔다" "$W/t6a.out" "TERM → pid=${p}\$"
-elapsed_lt "T6(a): make 가 유예 + δ 안에 반환한다(보유자 수명 8초)" "$t0" "$t1" 6
 check_gone "T6(a): 보유자가 없다" "$p"
 
 # (b) the control: the same Makefile without the wrapper waits for the holder.
@@ -245,12 +267,16 @@ elapsed_ge "T6(b) 대조: 래퍼 없는 make 는 보유자 수명만큼 기다�
 cat >"$W/t7.sh" <<'EOF'
 lsof -w -a -p "$$" -d 9 -F n > "$1.lsof"
 sed -n 's/^n//p' "$1.lsof" > "$1.tmp" && mv "$1.tmp" "$1"
-sleep 6 &
-sleep 2
+while kill -0 "$WAIT_FIXTURE_OWNER" 2>/dev/null; do sleep 1; done &
+# The suite ends only once the second decoy holds the marker on its own fd.
+. "$TEST_WAIT_FIXTURE"
+wait_until test -e "$1.go"
 exit 0
 EOF
-sleep 20 3>&- 4>&- 5>&- 8<&- 9<&- &
+wait_holder 3>&- 4>&- 5>&- 8<&- 9<&- &
 d1=$!
+# Process start times are read to the second, so the first decoy is started a
+# second before the wrapper.
 sleep 1
 CC_SUITE_GUARD_STRICT=1 CC_SUITE_GUARD_GRACE_S=1 CC_SUITE_GUARD_LIMIT_S=0 \
 CC_STEP_DEADLINE_EPOCH= CC_SUITE_GUARD_LSOF=lsof \
@@ -258,11 +284,15 @@ CC_STEP_DEADLINE_EPOCH= CC_SUITE_GUARD_LSOF=lsof \
 w=$!
 d2=""
 if wait_file "$W/t7.path"; then
-  sleep 20 3>&- 4>&- 5>&- 8<&- 9<&- 5<"$(cat "$W/t7.path")" &
+  wait_holder 3>&- 4>&- 5>&- 8<&- 9<&- 5<"$(cat "$W/t7.path")" &
   d2=$!
+  # The decoy holds the marker once its own shell is running.
+  d2_holds() { [ -n "$(lsof -w -a -p "$d2" -d 5 -F n 2>/dev/null)" ]; }
+  wait_until d2_holds || true
 else
   bad "T7: 묶음이 표지 경로를 적지 않았다"
 fi
+: > "$W/t7.path.go"
 wait "$w"
 rc=$?
 check "T7: 묶음의 진짜 잔존은 거둔다(exit 3)" "$rc" "3"
@@ -293,7 +323,7 @@ if PATH="$HIDE_PATH" command -v lsof >/dev/null 2>&1; then
 else
   cat >"$W/t10.sh" <<'EOF'
 echo ran > "$1"
-sleep 6 &
+while kill -0 "$WAIT_FIXTURE_OWNER" 2>/dev/null; do sleep 1; done &
 echo "$!" > "$2"
 exit 0
 EOF
@@ -337,26 +367,26 @@ check "T11: 깨끗한 묶음 50회에서 exit 3 이 0회" "$n3" "0"
 check "T11: 깨끗한 묶음 50회에서 보유자 나열이 0회" "$nh" "0"
 
 # --- T12: the arming line's deadline ----------------------------------------
+# The holder never ends by itself, so make's return, the deadline line and the
+# holder's TERM are what show the step's deadline ended it.
 printf '%s\n' ". \"$DETACH\"" \
-  "cc_detach_exec /dev/null /dev/null sleep 20 > \"$W/t12.pid\"" >"$W/t12-leave.sh"
-printf 'all: a\na:\n\tbash "%s"\n' "$W/t12-leave.sh" >"$W/t12.mk"
-t0=$(now)
+  'cc_detach_exec /dev/null /dev/null bash -c '\''while kill -0 "$0" 2>/dev/null; do sleep 1; done'\'' "$WAIT_FIXTURE_OWNER" > "$1"' \
+  >"$W/t12-leave.sh"
+printf 'all: a\na:\n\tbash "%s" "%s"\n' "$W/t12-leave.sh" "$W/t12.pid" >"$W/t12.mk"
 MAKEFLAGS= MFLAGS= MAKELEVEL= CC_SUITE_GUARD_STRICT=1 CC_JOB_T0="$(date +%s)" \
 CC_JOB_BUDGET_S=4 CC_STEP_DUMP_MARGIN_S=0 CC_SUITE_GUARD_GRACE_S=1 CC_SUITE_GUARD_LSOF=lsof \
   bash -e -c '. "$1"; make -j3 -f "$2"' _ "$CSG" "$W/t12.mk" >"$W/t12.out" 2>&1 3>&- 4>&- 5>&- 8<&- 9<&-
 rc=$?
-t1=$(now)
 p=$(cat "$W/t12.pid" 2>/dev/null)
 if [ "$rc" != 0 ]; then ok "T12: 마감에서 거둔 뒤 0 아닌 값으로 끝난다 (rc=$rc)"; else bad "T12: 마감을 넘겼는데 0 으로 끝났다"; show "$W/t12.out"; fi
 has "T12: 마감 도달을 알린다" "$W/t12.out" "::error::ci-step-guard: 단계 마감에 이르렀다"
 has "T12: 대기자를 W2'·W1·W3 로 분류한다" "$W/t12.out" "분류: (W2'|W1|W3) "
 has "T12: 떼어 낸 보유자를 덤프한다" "$W/t12.out" "보유자 pid=${p}\$"
 check_gone "T12: 보유자가 없다" "$p"
-elapsed_lt "T12: 보유자 수명(20초) 전에 끝난다" "$t0" "$t1" 15
 
 # --- T13: a descendant that closed the marker fd ----------------------------
 cat >"$W/t13.sh" <<'EOF'
-sleep 8 3>&- 4>&- 5>&- 9>&- &
+while kill -0 "$WAIT_FIXTURE_OWNER" 2>/dev/null; do sleep 1; done 3>&- 4>&- 5>&- 9>&- &
 echo "$!" > "$1"
 exit 0
 EOF
@@ -365,6 +395,8 @@ p=$(cat "$W/t13.pid" 2>/dev/null)
 hasnt "T13: 표지로 잡히지 않는다(알려진 사각)" "$W/t13.err" "보유자 pid=${p}\$"
 has "T13: 그룹 교차 확인 줄로 기록된다" "$W/t13.err" "그룹 구성원 pid=${p}\$"
 has "T13: 교차 확인 머리 줄" "$W/t13.err" "그룹 교차 확인 — 묶음 그룹"
+# The sweep does not reach it, so the test ends it.
+[ -z "$p" ] || { kill "$p" 2>/dev/null; wait_until _wait_fixture_gone "$p" || true; }
 
 # --- T14: the marker removed before the sweep -------------------------------
 cat >"$W/t14.sh" <<'EOF'
@@ -418,9 +450,9 @@ fi
 
 # --- T17: INT and TERM to the wrapper ---------------------------------------
 cat >"$W/t17.sh" <<'EOF'
-sleep 6 &
+while kill -0 "$WAIT_FIXTURE_OWNER" 2>/dev/null; do sleep 1; done &
 echo "$$ $!" > "$1"
-sleep 6
+while kill -0 "$WAIT_FIXTURE_OWNER" 2>/dev/null; do sleep 1; done
 EOF
 for sig in INT TERM; do
   case "$sig" in INT) want=130 ;; TERM) want=143 ;; esac
@@ -439,8 +471,8 @@ for sig in INT TERM; do
     bad "T17 $sig: 묶음이 시작을 적지 않았다"
   fi
   kill -"$sig" "$w"
-  wait "$w"
-  check "T17 $sig: 래퍼 rc" "$?" "$want"
+  wrapper_rc "$w" "$sig" "$W/t17-$sig.pid"
+  check "T17 $sig: 래퍼 rc" "$RC" "$want"
   check_gone "T17 $sig: 묶음 bash 가 남지 않는다" "$sb"
   check_gone "T17 $sig: 그 자손이 남지 않는다" "$sc"
 done

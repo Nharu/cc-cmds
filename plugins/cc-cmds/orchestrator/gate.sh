@@ -1130,6 +1130,18 @@ readonly GATE_WAIT_INTERVAL_DEFAULT=300
 readonly GATE_WAIT_TIMEOUT_DEFAULT=21600
 readonly GATE_WAIT_GRACE_SECONDS=10
 
+# THE LONGEST ONE FIFO WAIT OF `wait` OR THE RELAY SLEEPS while the resident
+# observer can wake it (`gate_wake_wait`). The time-based deadlines those loops
+# judge are computed into the wait (`gate_verb_wake_timeout`,
+# `gate_relay_wake_timeout`) and every change the observer watches wakes it at
+# once, so this bounds only the inputs the observer does not watch — a CI
+# verdict line in `checks.observed`, a supervisor that died without touching a
+# file. 30 is a quarter of the watcher's after-stage threshold (120 seconds),
+# so a late wake never reads as a relay without effect, and it is a sixth of
+# the wakes the 5-second poll made. With no observer the loops still poll every
+# GATE_WAIT_POLL_SECONDS.
+readonly GATE_WAKE_MAX_SECONDS=30
+
 # THE RELAY'S HOLD — how long one seat call may wait out of turn before it hands
 # the turn back. The seat call stays open for this plus one shift's life, and
 # 3600 is the literal "one shift lives an hour" (the longest measured was 3612.6
@@ -1151,6 +1163,15 @@ readonly GATE_CONFIRM_TIMEOUT_SECONDS=60
 readonly GATE_CONFIRM_MAX=144
 readonly GATE_CONFIRM_KEY_MAX=3
 readonly GATE_CONFIRM_OUT_MAX=4096
+
+# One clause-exec act's whole limit, counted from the moment the act takes the
+# clause-exec arm: the tree resolution, the base fetch, the checkout and the
+# command all run inside it, so the gate ends the act and writes its row before
+# the shift's foreground tool limit of 600 seconds cuts the call. The test hook
+# `CC_GATE_CLAUSE_EXEC_TIMEOUT_TEST_SECONDS` is read only where the limit is
+# compared, through gate_confirm_test_value, so it can shorten and never
+# lengthen it.
+readonly GATE_CLAUSE_EXEC_TIMEOUT_SECONDS=540
 
 # THE FURTHEST RESET CLOCK A WAIT IS TAKEN ON — one five_hour window (18000)
 # plus the grace `CC_RESET_GRACE_SECONDS` (60) the relay adds before it wakes.
@@ -5569,6 +5590,24 @@ GATE_UNDECLARED=0
 # tree instead of resolving its own. The `GATE_*` row in `_gp_env_assign`
 # refuses the argv spelling of the same injection.
 GATE_UNDECLARED_WT=''
+
+# The clause-exec act's execution tree and what fixed it, set by the act's own
+# resolution and checkout and read by gate_act_worktree, the preconditions,
+# the performer and gate_on_exit's cleanup. NOT EXPORTED, for the reason the
+# undeclared tree above is not: the command must not see them in its
+# environment, and another gate process must never stand the clause-exec arm
+# of gate_act_worktree up from a parent's value. `export -n` first, so a value
+# a parent did export loses the attribute before it is cleared.
+export -n GATE_CLAUSE_EXEC_ACTIVE GATE_CLAUSE_EXEC_ALIAS GATE_CLAUSE_EXEC_WT GATE_CLAUSE_EXEC_ROOT \
+  GATE_CLAUSE_EXEC_RUNNING GATE_CLAUSE_EXEC_TREE_SEG GATE_CLAUSE_EXEC_T0 GATE_CLAUSE_EXEC_TREE \
+  GATE_CLAUSE_EXEC_TREE_SRC GATE_CLAUSE_EXEC_RAW GATE_CLAUSE_EXEC_LASTMERGE GATE_CLAUSE_EXEC_LANDED \
+  GATE_CLAUSE_EXEC_NEEDS_FETCH GATE_CLAUSE_EXEC_FIXED GATE_CLAUSE_EXEC_PATH GATE_CLAUSE_EXEC_SIG \
+  GATE_CLAUSE_EXEC_UNRESOLVED 2>/dev/null || true
+GATE_CLAUSE_EXEC_ACTIVE=''; GATE_CLAUSE_EXEC_ALIAS=''; GATE_CLAUSE_EXEC_WT=''; GATE_CLAUSE_EXEC_ROOT=''
+GATE_CLAUSE_EXEC_RUNNING=''; GATE_CLAUSE_EXEC_TREE_SEG=''; GATE_CLAUSE_EXEC_T0=''; GATE_CLAUSE_EXEC_TREE=''
+GATE_CLAUSE_EXEC_TREE_SRC=''; GATE_CLAUSE_EXEC_RAW=''; GATE_CLAUSE_EXEC_LASTMERGE=''; GATE_CLAUSE_EXEC_LANDED=''
+GATE_CLAUSE_EXEC_NEEDS_FETCH=''; GATE_CLAUSE_EXEC_FIXED=''; GATE_CLAUSE_EXEC_PATH=''; GATE_CLAUSE_EXEC_SIG=''
+GATE_CLAUSE_EXEC_UNRESOLVED=''
 
 surface_of_mv() {
   # surface_of_mv [options] <source>... <dest>   (argv0 already dropped)
@@ -21206,6 +21245,11 @@ gate_on_exit() {
   gate_ci_match_lock_release
   # The one-read copy of a seat-apply record is the gate's own scratch file.
   [ -z "${GATE_SA_COPY:-}" ] || rm -f "$GATE_SA_COPY"
+  # A clause-exec execution tree does not outlive the gate process that
+  # checked it out, whichever way that process leaves: a refusal after the
+  # checkout, a `die`, a cut limit, a failed or a successful command. The
+  # performer removes it after its row and this finds nothing left then.
+  [ -z "${GATE_CLAUSE_EXEC_WT:-}" ] || gate_clause_exec_cleanup 2>/dev/null || true
   # A call the gate itself stopped (`die`, exit 1) leaves its text where the
   # next reader looks: the shift's stop file and, inside a drain unit, the drain
   # marker. A rule refusal (2, 3, 11, …) already has its own row and is not
@@ -24914,8 +24958,10 @@ gate_main() {
       act) [ "$kind" = "clause-exec" ] || { [ "$kind" = "remote-check" ] && [ "$destructive" = "0" ]; } || {
               printf 'gate: --reach is used with act only on --kind remote-check and clause-exec, and --destructive only on clause-exec\n' >&2
               exit 2; } ;;
-      plan) [ -z "$kind" ] || {
-              printf 'gate: --reach and --destructive are used only with a plan that has no --kind\n' >&2
+      # A clause-exec plan forecasts the act with the same argv, so it takes the
+      # same reach and destructive mark the act owes.
+      plan) [ -z "$kind" ] || [ "$kind" = "clause-exec" ] || {
+              printf 'gate: --reach and --destructive are used only with a plan that has no --kind or with --kind clause-exec\n' >&2
               exit 2; } ;;
       *) printf 'gate: --reach and --destructive are used only with exec and with a plan that has no --kind (verb received: %s)\n' "$verb" >&2
          exit 2 ;;
@@ -48257,8 +48303,21 @@ gate_act_worktree() {
   # the caller being that stage (`gate_caller_is_audit_stage`) and on the tree
   # already existing as a worktree of this target, which the dispatch made — so
   # the design step, the router and every segment keep their resolution.
+  #
+  # A CLAUSE-EXEC ACT RUNS IN THE TREE THE GATE CHECKED OUT FOR IT, and only
+  # while that act is in this process: the arm stands on a variable that is
+  # never exported, set once the checkout is done, and answers only for the
+  # act's own target with no segment or `-`. Every other combination resolves
+  # as before. The approval id and the staleness probe, which another gate
+  # process must reproduce, do not read this path; they read the fixed commit.
   local wt
   [ "${GATE_UNDECLARED:-0}" = "1" ] && { printf '%s' "$GATE_UNDECLARED_WT"; return 0; }
+  if [ "${GATE_CLAUSE_EXEC_ACTIVE:-}" = "1" ] && [ -n "${GATE_CLAUSE_EXEC_WT:-}" ] \
+     && [ "$1" = "${GATE_CLAUSE_EXEC_ALIAS:-}" ]; then
+    case "${2:-}" in
+      ''|-) printf '%s' "$GATE_CLAUSE_EXEC_WT"; return 0 ;;
+    esac
+  fi
   case "${2:-}" in
     ''|-) if gate_caller_is_audit_stage \
              && wt=$(gate_audit_worktree_path "$1") \
@@ -48647,6 +48706,13 @@ gate_plan_unchecked_axes() {
       # cone anchor. Naming the axis is what lets the router expect them instead
       # of meeting them.
       warn "  - record row field validity (${kind}) — the \`키=값\` fields after -- are checked at record time, so an act with the same argv can come back 2 or 6" ;;
+    clause-exec)
+      # The dry run checks no tree out and fetches nothing, so the checks that
+      # stand on the checked-out tree were not run, and the base tip it read
+      # may not be the one the act checks out after its fetch.
+      warn "  - execution tree HEAD and clean check — act checks the fixed commit out and refuses with 3 when the tree's HEAD is not it or the tree is not clean"
+      warn "  - grade on the checked-out tree — this preview graded in the unchecked-out directory; act grades in the tree it checks out"
+      warn "  - base tip after the fetch — this preview read the tracking ref as it stands; act fetches the base first, so its fixed commit can differ" ;;
   esac
 }
 
@@ -52317,21 +52383,401 @@ gate_clause_exec_argv_sha() {
   } | shasum -a 256 | cut -d' ' -f1
 }
 
+gate_clause_exec_hex_commit() {
+  # gate_clause_exec_hex_commit <value> — 0 when the value is 7 to 64 hex
+  # digits, the shape a `머지 커밋` field takes. A whole-value check without a
+  # pipe: an early exit under pipefail would read as no match.
+  case "$1" in ''|*[!0-9a-f]*) return 1 ;; esac
+  [ "${#1}" -ge 7 ] && [ "${#1}" -le 64 ]
+}
+
 gate_clause_exec_last_merge() {
-  # The run's last merge commit: the `머지 커밋` of the last `segment` row with
-  # `상태=머지됨` whose value is a commit, or nothing.
-  local r v last=''
+  # gate_clause_exec_last_merge <alias> — this target's last merge, printed as
+  # `<머지 커밋> <segment>`: the last `segment` row with `상태=머지됨` whose
+  # `머지 커밋` is a commit and whose segment acts in this target, or nothing.
+  # A segment whose target cannot be told is no segment of this target.
+  local al="$1" r v s last=''
   while IFS= read -r r; do
     [ -n "$r" ] || continue
     v=$(gate_row_field "$r" '머지 커밋')
-    # A whole-value hex check without a pipe: an early exit under pipefail
-    # would read as no match.
-    case "$v" in ''|*[!0-9a-f]*) continue ;; esac
-    [ "${#v}" -ge 7 ] && [ "${#v}" -le 64 ] && last="$v"
+    gate_clause_exec_hex_commit "$v" || continue
+    s=$(gate_row_field "$r" 'id')
+    [ -n "$s" ] && [ "$(gate_segment_target_alias "$s")" = "$al" ] || continue
+    last="$v $s"
   done <<EOF
 $(gate_rows 'segment' | gate_rows_field_eq '상태' '머지됨')
 EOF
   printf '%s' "$last"
+}
+
+gate_clause_exec_limit() {
+  # The whole limit of one clause-exec act in seconds; the test hook can only
+  # shorten it.
+  gate_confirm_test_value "$GATE_CLAUSE_EXEC_TIMEOUT_SECONDS" "${CC_GATE_CLAUSE_EXEC_TIMEOUT_TEST_SECONDS:-}"
+}
+
+gate_clause_exec_remaining() {
+  # The seconds left of the limit, counted from GATE_CLAUSE_EXEC_T0; zero or
+  # less once it is spent.
+  local now
+  now=$(date +%s)
+  printf '%s' $(( $(gate_clause_exec_limit) - (now - ${GATE_CLAUSE_EXEC_T0:-$now}) ))
+}
+
+gate_clause_exec_resolve() {
+  # gate_clause_exec_resolve <alias> — the resolution step: which tree rule
+  # applies, the value the fixed commit is read from, the tree source, the
+  # round and the execution tree's path, read from the ledger and from refs
+  # only. Nothing is fetched or checked out here, so `plan` and the staleness
+  # recomputation run exactly this. The clause id is GATE_CLAUSE_EXEC_ID and
+  # the named segment GATE_CLAUSE_EXEC_TREE_SEG. Exit 3 with a warning on a
+  # refusal.
+  #
+  # The rules, in order:
+  #   1. a named segment of this target with no `머지됨` row and no landing:
+  #      its worktree's HEAD (`트리=세그먼트`), which must hold this target's
+  #      last merge (checked in gate_clause_exec_fix);
+  #   2. a named segment with a `머지됨` row: the `머지 커밋` of its last such
+  #      row (`트리=머지`), which must be this target's last merge or descend
+  #      from it;
+  #   3. otherwise this target's last merge (`트리=머지`);
+  #   4. otherwise the HEAD of a `실행 워크트리` other than the main worktree
+  #      (`트리=실행워크트리`, never fetched), else the base tip
+  #      (`트리=베이스`): the remote-tracking ref after a fetch, or the local
+  #      branch on a target with no `origin`.
+  # A named segment that landed from an earlier run and has no `머지됨` row in
+  # this run takes rules 3 and 4, with its own merge commit required to be an
+  # ancestor of the fixed commit and itself as the tree source.
+  local al="$1" id="$GATE_CLAUSE_EXEC_ID" seg="$GATE_CLAUSE_EXEC_TREE_SEG"
+  local main lm rows mrow lrow r v wt xw base n
+  GATE_CLAUSE_EXEC_TREE=''; GATE_CLAUSE_EXEC_TREE_SRC=''; GATE_CLAUSE_EXEC_RAW=''
+  GATE_CLAUSE_EXEC_LASTMERGE=''; GATE_CLAUSE_EXEC_LANDED=''; GATE_CLAUSE_EXEC_NEEDS_FETCH=''
+  GATE_CLAUSE_EXEC_FIXED=''; GATE_CLAUSE_EXEC_PATH=''; GATE_CLAUSE_EXEC_ROOT=''
+  # The id becomes a path component; a separator, a space, a control character
+  # or a leading dot would name another place.
+  case "$id" in
+    ''|.*|*/*|*[[:space:]]*|*[[:cntrl:]]*)
+      warn "clause-exec: 절 id '$id' 는 실행 트리 경로에 쓸 수 없습니다 — '/'·공백·제어 문자를 지니거나 '.' 으로 시작합니다"
+      return "$GATE_EXIT_RULE" ;;
+  esac
+  main=$(target_field "$al" '메인 워크트리' 2>/dev/null || true)
+  case "$main" in
+    ''|'(없음)') warn "clause-exec: 대상 $al 에 메인 워크트리가 없어 실행 트리를 정할 수 없습니다"; return "$GATE_EXIT_RULE" ;;
+  esac
+  main=${main%/}
+  GATE_CLAUSE_EXEC_ROOT="$main"
+  lm=$(gate_clause_exec_last_merge "$al")
+  if [ -n "$lm" ]; then
+    GATE_CLAUSE_EXEC_LASTMERGE=${lm%% *}
+  fi
+  if [ -n "$seg" ]; then
+    rows=$(gate_rows 'segment' | gate_rows_field_eq 'id' "$seg")
+    if [ -z "${rows//$'\n'/}" ]; then
+      warn "clause-exec: 트리=$seg — 원장에 그 세그먼트가 없습니다"
+      return "$GATE_EXIT_RULE"
+    fi
+    if [ "$(gate_segment_target_alias "$seg")" != "$al" ]; then
+      warn "clause-exec: 트리=$seg — 그 세그먼트는 대상 $al 의 세그먼트가 아닙니다"
+      return "$GATE_EXIT_RULE"
+    fi
+    mrow=$(printf '%s\n' "$rows" | gate_rows_field_eq '상태' '머지됨' | sed '/^$/d' | tail -1)
+    lrow=''
+    if [ -z "$mrow" ]; then
+      while IFS= read -r r; do
+        [ -n "$r" ] || continue
+        gate_segment_row_landed "$r" && lrow="$r"
+      done <<EOF
+$rows
+EOF
+    fi
+    if [ -n "$mrow" ]; then
+      v=$(gate_row_field "$mrow" '머지 커밋')
+      if ! gate_clause_exec_hex_commit "$v"; then
+        warn "clause-exec: 트리=$seg — 그 세그먼트의 머지됨 행의 머지 커밋 '$v' 가 7~64 자리 16진 커밋이 아닙니다"
+        return "$GATE_EXIT_RULE"
+      fi
+      GATE_CLAUSE_EXEC_TREE='머지'; GATE_CLAUSE_EXEC_TREE_SRC="$seg"; GATE_CLAUSE_EXEC_RAW="$v"
+    elif [ -n "$lrow" ]; then
+      v=$(gate_row_field "$lrow" '머지 커밋')
+      if ! gate_clause_exec_hex_commit "$v"; then
+        warn "clause-exec: 트리=$seg — 그 세그먼트의 착지 행의 머지 커밋 '$v' 가 7~64 자리 16진 커밋이 아닙니다"
+        return "$GATE_EXIT_RULE"
+      fi
+      GATE_CLAUSE_EXEC_LANDED="$v"; GATE_CLAUSE_EXEC_TREE_SRC="$seg"
+    else
+      if gate_segment_review_only "$seg"; then
+        warn "clause-exec: 트리=$seg — 리뷰 전용 세그먼트의 워크트리는 남의 PR 헤드라 실행 트리가 되지 않습니다"
+        return "$GATE_EXIT_RULE"
+      fi
+      if ! wt=$(gate_segment_worktree_of_target "$seg" "$al"); then
+        warn "clause-exec: 트리=$seg — 머지 전 세그먼트인데 대상 $al 의 워크트리가 없습니다"
+        return "$GATE_EXIT_RULE"
+      fi
+      v=$( (cd "$wt" 2>/dev/null && git rev-parse --verify --quiet 'HEAD^{commit}' 2>/dev/null) || true)
+      if [ -z "$v" ]; then
+        warn "clause-exec: 트리=$seg — 세그먼트 워크트리 $wt 의 HEAD 가 커밋으로 해소되지 않습니다"
+        return "$GATE_EXIT_RULE"
+      fi
+      GATE_CLAUSE_EXEC_TREE='세그먼트'; GATE_CLAUSE_EXEC_TREE_SRC="$seg"; GATE_CLAUSE_EXEC_RAW="$v"
+    fi
+  fi
+  if [ -z "$GATE_CLAUSE_EXEC_TREE" ]; then
+    if [ -n "$GATE_CLAUSE_EXEC_LASTMERGE" ]; then
+      GATE_CLAUSE_EXEC_TREE='머지'; GATE_CLAUSE_EXEC_RAW="$GATE_CLAUSE_EXEC_LASTMERGE"
+      [ -n "$GATE_CLAUSE_EXEC_TREE_SRC" ] || GATE_CLAUSE_EXEC_TREE_SRC=${lm#* }
+    else
+      xw=$(target_field "$al" '실행 워크트리' 2>/dev/null || true)
+      xw=${xw%/}
+      if [ -n "$xw" ] && [ "$xw" != '(없음)' ] && [ "$xw" != "$main" ]; then
+        v=$( (cd "$xw" 2>/dev/null && git rev-parse --verify --quiet 'HEAD^{commit}' 2>/dev/null) || true)
+        if [ -z "$v" ]; then
+          warn "clause-exec: 대상 $al 의 실행 워크트리 $xw 의 HEAD 가 커밋으로 해소되지 않습니다 — 베이스 끝으로 내려가지 않습니다"
+          return "$GATE_EXIT_RULE"
+        fi
+        GATE_CLAUSE_EXEC_TREE='실행워크트리'; GATE_CLAUSE_EXEC_RAW="$v"
+      else
+        base=$(base_branch "$al" 2>/dev/null || true)
+        if [ -z "$base" ]; then
+          warn "clause-exec: 대상 $al 에 베이스 브랜치가 없어 실행 트리를 정할 수 없습니다"
+          return "$GATE_EXIT_RULE"
+        fi
+        GATE_CLAUSE_EXEC_TREE='베이스'
+        if target_has_origin "$al"; then
+          GATE_CLAUSE_EXEC_RAW="refs/remotes/origin/${base}"; GATE_CLAUSE_EXEC_NEEDS_FETCH=1
+        else
+          GATE_CLAUSE_EXEC_RAW="refs/heads/${base}"
+        fi
+      fi
+      [ -n "$GATE_CLAUSE_EXEC_TREE_SRC" ] || GATE_CLAUSE_EXEC_TREE_SRC='-'
+    fi
+  fi
+  n=$(gate_clause_exec_rows "$id" | sed '/^$/d' | wc -l | tr -d ' ')
+  GATE_CLAUSE_EXEC_ROUND=$((n + 1))
+  GATE_CLAUSE_EXEC_PATH="${main}${WORKTREE_INFIX}${RUN_ID}-cx-${id}-${GATE_CLAUSE_EXEC_ROUND}"
+  return 0
+}
+
+gate_clause_exec_fetch() {
+  # gate_clause_exec_fetch <alias> — update the base's remote-tracking ref once,
+  # from the target's main worktree, under the seconds left of the limit. Its
+  # work tree and HEAD are neither read nor moved. Status 1 when it did not run
+  # or failed; the caller warns and uses the ref as it stands.
+  local al="$1" base rem
+  base=$(base_branch "$al" 2>/dev/null || true)
+  [ -n "$base" ] || return 1
+  rem=$(gate_clause_exec_remaining)
+  [ "$rem" -gt 0 ] || return 1
+  GATE_ACT_CWD="$GATE_CLAUSE_EXEC_ROOT" gate_run_readonly gate_metrics_timed "$rem" \
+    env GIT_TERMINAL_PROMPT=0 git fetch --quiet --no-tags origin "+refs/heads/${base}:refs/remotes/origin/${base}" \
+    >/dev/null 2>&1
+}
+
+gate_clause_exec_full() {
+  # gate_clause_exec_full <value> — the full sha the value resolves to as a
+  # commit in the target's main worktree, or nothing.
+  (cd "$GATE_CLAUSE_EXEC_ROOT" 2>/dev/null && git rev-parse --verify --quiet "${1}^{commit}" 2>/dev/null) || true
+}
+
+gate_clause_exec_fix() {
+  # gate_clause_exec_fix <alias> <fetch: 1|0> — fix the commit after
+  # gate_clause_exec_resolve: fetch the base when the rule needs it and <fetch>
+  # is 1, resolve every commit to its full sha, and run the ancestry checks of
+  # rules 1 and 2 and of a landed segment. With <fetch> 0 nothing is fetched,
+  # which is what `plan` and the staleness recomputation read. Sets
+  # GATE_CLAUSE_EXEC_FIXED. Exit 3 with a warning on a refusal; a merge
+  # commit that does not resolve without a fetch also sets
+  # GATE_CLAUSE_EXEC_UNRESOLVED=1.
+  local al="$1" allow="$2" fetched=0 f lm l
+  GATE_CLAUSE_EXEC_UNRESOLVED=''
+  if [ "$GATE_CLAUSE_EXEC_NEEDS_FETCH" = "1" ] && [ "$allow" = "1" ]; then
+    fetched=1
+    gate_clause_exec_fetch "$al" \
+      || warn "clause-exec: ${GATE_CLAUSE_EXEC_RAW#refs/remotes/} 갱신이 시한 안에 끝나지 않았거나 실패했습니다 — 지금의 $GATE_CLAUSE_EXEC_RAW 끝을 꺼냅니다"
+  fi
+  f=$(gate_clause_exec_full "$GATE_CLAUSE_EXEC_RAW")
+  lm=''; [ -z "$GATE_CLAUSE_EXEC_LASTMERGE" ] || lm=$(gate_clause_exec_full "$GATE_CLAUSE_EXEC_LASTMERGE")
+  l=''; [ -z "$GATE_CLAUSE_EXEC_LANDED" ] || l=$(gate_clause_exec_full "$GATE_CLAUSE_EXEC_LANDED")
+  # A merge commit the ledger names may not be in the local object store yet:
+  # one update of the base ref, then the same resolution again.
+  if { [ -z "$f" ] || { [ -n "$GATE_CLAUSE_EXEC_LASTMERGE" ] && [ -z "$lm" ]; } || { [ -n "$GATE_CLAUSE_EXEC_LANDED" ] && [ -z "$l" ]; }; } \
+     && [ "$fetched" = "0" ] && [ "$GATE_CLAUSE_EXEC_TREE" != '실행워크트리' ] && [ "$GATE_CLAUSE_EXEC_TREE" != '세그먼트' ]; then
+    if [ "$allow" = "1" ] && target_has_origin "$al"; then
+      fetched=1
+      gate_clause_exec_fetch "$al" \
+        || warn "clause-exec: 머지 커밋을 찾으려던 베이스 갱신이 시한 안에 끝나지 않았거나 실패했습니다"
+      [ -n "$f" ] || f=$(gate_clause_exec_full "$GATE_CLAUSE_EXEC_RAW")
+      [ -z "$GATE_CLAUSE_EXEC_LASTMERGE" ] || [ -n "$lm" ] || lm=$(gate_clause_exec_full "$GATE_CLAUSE_EXEC_LASTMERGE")
+      [ -z "$GATE_CLAUSE_EXEC_LANDED" ] || [ -n "$l" ] || l=$(gate_clause_exec_full "$GATE_CLAUSE_EXEC_LANDED")
+    elif [ "$allow" != "1" ]; then
+      GATE_CLAUSE_EXEC_UNRESOLVED=1
+    fi
+  fi
+  if [ -z "$f" ]; then
+    warn "clause-exec: 실행 트리의 커밋 $GATE_CLAUSE_EXEC_RAW (트리=$GATE_CLAUSE_EXEC_TREE, 트리 출처=$GATE_CLAUSE_EXEC_TREE_SRC) 가 커밋으로 해소되지 않습니다"
+    return "$GATE_EXIT_RULE"
+  fi
+  if [ -n "$GATE_CLAUSE_EXEC_LASTMERGE" ] && [ -z "$lm" ]; then
+    warn "clause-exec: 대상 $al 의 마지막 머지 커밋 $GATE_CLAUSE_EXEC_LASTMERGE 가 커밋으로 해소되지 않습니다"
+    return "$GATE_EXIT_RULE"
+  fi
+  if [ -n "$GATE_CLAUSE_EXEC_LANDED" ] && [ -z "$l" ]; then
+    warn "clause-exec: 트리=$GATE_CLAUSE_EXEC_TREE_SEG 의 머지 커밋 $GATE_CLAUSE_EXEC_LANDED 가 커밋으로 해소되지 않습니다"
+    return "$GATE_EXIT_RULE"
+  fi
+  case "$GATE_CLAUSE_EXEC_TREE" in
+    세그먼트|머지)
+      if [ -n "$lm" ] && [ "$f" != "$lm" ] \
+         && ! (cd "$GATE_CLAUSE_EXEC_ROOT" && git merge-base --is-ancestor "$lm" "$f" 2>/dev/null); then
+        warn "clause-exec: 트리=$GATE_CLAUSE_EXEC_TREE_SEG 의 커밋 $f 가 대상 $al 의 마지막 머지 커밋 $lm 을 조상으로 지니지 않습니다 — 마지막 머지 뒤의 코드에서 돌지 않습니다"
+        return "$GATE_EXIT_RULE"
+      fi ;;
+  esac
+  if [ -n "$l" ] && [ "$l" != "$f" ] \
+     && ! (cd "$GATE_CLAUSE_EXEC_ROOT" && git merge-base --is-ancestor "$l" "$f" 2>/dev/null); then
+    warn "clause-exec: 트리=$GATE_CLAUSE_EXEC_TREE_SEG 의 머지 커밋 $l 이 실행 트리의 커밋 $f (트리=$GATE_CLAUSE_EXEC_TREE) 의 조상이 아닙니다"
+    return "$GATE_EXIT_RULE"
+  fi
+  GATE_CLAUSE_EXEC_FIXED="$f"
+  return 0
+}
+
+gate_clause_exec_listed() {
+  # gate_clause_exec_listed <root> <path> — 0 when the path is a worktree of the
+  # repository at <root>, by that repository's own worktree list, compared in
+  # the spelling given and in its physical spelling.
+  local root="$1" p="$2" pp='' l
+  [ -d "$p" ] && pp=$(cd -P -- "$p" 2>/dev/null && pwd -P) || pp=''
+  while IFS= read -r l; do
+    case "$l" in
+      "worktree $p") return 0 ;;
+    esac
+    [ -n "$pp" ] && [ "$l" = "worktree $pp" ] && return 0
+  done <<EOF
+$( (cd "$root" 2>/dev/null && git worktree list --porcelain 2>/dev/null) || true)
+EOF
+  return 1
+}
+
+gate_clause_exec_tree_clean() {
+  # gate_clause_exec_tree_clean <dir> — 0 when `git status --porcelain` there
+  # answers and prints nothing.
+  local s
+  s=$( (cd "$1" 2>/dev/null && git status --porcelain 2>/dev/null) ) || return 1
+  [ -z "$s" ]
+}
+
+gate_clause_exec_checkout() {
+  # gate_clause_exec_checkout <alias> — check the fixed commit out, detached, at
+  # this clause and round's `-cx-` path in the target's main repository, under
+  # the seconds left of the limit. A tree already there that is a worktree of
+  # this target is reused when its HEAD is the fixed commit and it is clean,
+  # and removed and checked out again otherwise; anything else at the path is
+  # refused. The path is recorded in GATE_CLAUSE_EXEC_WT before `git worktree
+  # add` runs, so a checkout the limit cuts in half is removed by
+  # gate_on_exit's cleanup too. Exit 3 with a warning on a refusal.
+  local p="$GATE_CLAUSE_EXEC_PATH" root="$GATE_CLAUSE_EXEC_ROOT" f="$GATE_CLAUSE_EXEC_FIXED" h rem
+  if [ -e "$p" ] || [ -L "$p" ]; then
+    if ! gate_clause_exec_listed "$root" "$p"; then
+      warn "clause-exec: 실행 트리 자리 $p 를 대상의 워크트리가 아닌 것이 차지하고 있습니다 — 건드리지 않고 실행하지 않습니다"
+      return "$GATE_EXIT_RULE"
+    fi
+    h=$( (cd "$p" 2>/dev/null && git rev-parse HEAD 2>/dev/null) || true)
+    GATE_CLAUSE_EXEC_WT="$p"
+    if [ "$h" = "$f" ] && gate_clause_exec_tree_clean "$p"; then
+      log "clause-exec 실행 트리 재사용 — $p (${f:0:12})"
+      return 0
+    fi
+    gate_apply_worktree_drop "$root" "$p"
+    if [ -e "$p" ]; then
+      warn "clause-exec: 남은 실행 트리 $p 를 지우지 못했습니다"
+      return "$GATE_EXIT_RULE"
+    fi
+  fi
+  ( cd "$root" 2>/dev/null && git worktree prune >/dev/null 2>&1 ) || true
+  GATE_CLAUSE_EXEC_WT="$p"
+  rem=$(gate_clause_exec_remaining)
+  [ "$rem" -ge 1 ] || rem=1
+  if ! GATE_ACT_CWD="$root" gate_run_readonly gate_metrics_timed "$rem" \
+         git worktree add --quiet --detach "$p" "$f" >/dev/null 2>&1; then
+    warn "clause-exec: 실행 트리를 $p 에 고정 커밋 $f 로 꺼내지 못했습니다(시한 안에 끝나지 않았거나 실패)"
+    return "$GATE_EXIT_RULE"
+  fi
+  # A test hook that can only make the gate refuse more: an untracked file in
+  # the fresh tree, so the clean check in the preconditions has something to
+  # refuse.
+  if [ "${CC_GATE_CLAUSE_EXEC_TEST_DIRTY:-}" = "1" ]; then
+    : > "$p/.cc-gate-clause-exec-test-dirty" 2>/dev/null || true
+  fi
+  log "clause-exec 실행 트리 — $p (트리=$GATE_CLAUSE_EXEC_TREE 트리 출처=$GATE_CLAUSE_EXEC_TREE_SRC 고정 커밋 ${f:0:12} 에 분리)"
+  return 0
+}
+
+gate_clause_exec_cleanup() {
+  # Remove the clause-exec execution tree, once: the performer calls it after
+  # the row, and gate_on_exit calls it on every exit, which finds nothing left
+  # to do when the performer already did.
+  local p="${GATE_CLAUSE_EXEC_WT:-}" root="${GATE_CLAUSE_EXEC_ROOT:-}"
+  GATE_CLAUSE_EXEC_ACTIVE=''
+  GATE_CLAUSE_EXEC_WT=''
+  [ -n "$p" ] && [ -n "$root" ] || return 0
+  gate_apply_worktree_drop "$root" "$p"
+  return 0
+}
+
+gate_clause_exec_approval_key() {
+  # gate_clause_exec_approval_key <alias> — prints `cx/<clause id>/<named
+  # segment or ->` and returns 0 when this process is a clause-exec act on that
+  # target; 1 otherwise. The approval id's tree argument for such an act: the
+  # same from every gate process, and free of the fixed commit, so a merge that
+  # lands later keeps the id and the staleness check reads the move.
+  [ -n "${GATE_CLAUSE_EXEC_ID:-}" ] && [ -n "${GATE_CLAUSE_EXEC_ALIAS:-}" ] \
+    && [ "$1" = "$GATE_CLAUSE_EXEC_ALIAS" ] || return 1
+  printf 'cx/%s/%s' "$GATE_CLAUSE_EXEC_ID" "${GATE_CLAUSE_EXEC_TREE_SEG:--}"
+}
+
+gate_clause_exec_path_norm() {
+  # gate_clause_exec_path_norm <absolute path> — the path with `.` and empty
+  # components dropped and each `..` folded into its parent, by text alone.
+  awk -F/ '
+    { n = 0
+      for (i = 1; i <= NF; i++) {
+        c = $i
+        if (c == "" || c == ".") continue
+        if (c == "..") { if (n > 0) n--; continue }
+        s[++n] = c
+      }
+      o = ""; for (i = 1; i <= n; i++) o = o "/" s[i]
+      print (o == "" ? "/" : o); exit }' <<<"$1"
+}
+
+gate_clause_exec_script_outside() {
+  # gate_clause_exec_script_outside <tree> <argv…> — prints the script operand
+  # and returns 0 when the argv starts with an interpreter the preauthorization
+  # rule reads (bash, sh, zsh, python3, node, by basename) and its script
+  # operand — the first word after the first that does not start with `-`, the
+  # position that rule reads — is an absolute path that, `..` folded, is not
+  # under the tree. Returns 1 otherwise. Only that one operand is seen: what the
+  # script itself reads or runs, a program named by an absolute path, a runner's
+  # arguments and a relative path climbing out with `..` are not.
+  local t="$1" tp w op='' n
+  shift
+  case " bash sh zsh python3 node " in
+    *" ${1##*/} "*) ;;
+    *) return 1 ;;
+  esac
+  shift
+  for w in "$@"; do
+    case "$w" in -*) continue ;; esac
+    op="$w"; break
+  done
+  case "$op" in /*) ;; *) return 1 ;; esac
+  n=$(gate_clause_exec_path_norm "$op")
+  tp=$(cd -P -- "$t" 2>/dev/null && pwd -P) || tp="$t"
+  case "$n/" in
+    "${t%/}/"*|"${tp%/}/"*) return 1 ;;
+  esac
+  printf '%s' "$op"
+  return 0
 }
 
 gate_clause_exec_evidence_check() {
@@ -52366,6 +52812,10 @@ gate_clause_exec_evidence_check() {
     warn "clause $id: the cited execution $xa belongs to clause $(gate_row_field "$x" '절')"; return "$GATE_EXIT_RULE"; }
   [ "$(gate_row_field "$x" '종료 코드')" = "0" ] || {
     warn "clause $id: the cited execution $xa ended with $(gate_row_field "$x" '종료 코드') — a failed execution is not evidence"; return "$GATE_EXIT_RULE"; }
+  # The fixed commit is checked before the command only; a command that moved
+  # the tree's HEAD ran on two commits, and the row says so.
+  [ "$(gate_row_field "$x" '명령 뒤 HEAD')" = "-" ] || {
+    warn "clause $id: the cited execution $xa ran on the fixed commit $(gate_row_field "$x" '커밋') but left HEAD at $(gate_row_field "$x" '명령 뒤 HEAD' | sed 's/^$/(필드 없음)/') — it is not evidence"; return "$GATE_EXIT_RULE"; }
   xs=$(gate_row_field "$x" '축2')
   case "$xs" in
     트리밖쓰기|외부상태변경)
@@ -52382,6 +52832,8 @@ gate_clause_exec_evidence_check() {
       esac
       [ "$(gate_row_field "$r" '종료 코드')" = "0" ] || {
         warn "clause $id: the re-read $ra ended with $(gate_row_field "$r" '종료 코드')"; return "$GATE_EXIT_RULE"; }
+      [ "$(gate_row_field "$r" '명령 뒤 HEAD')" = "-" ] || {
+        warn "clause $id: the re-read $ra ran on the fixed commit $(gate_row_field "$r" '커밋') but left HEAD at $(gate_row_field "$r" '명령 뒤 HEAD' | sed 's/^$/(필드 없음)/') — it is not evidence"; return "$GATE_EXIT_RULE"; }
       [ "$rn" -gt "$xn" ] || {
         warn "clause $id: the re-read $ra does not come after the execution $xa"; return "$GATE_EXIT_RULE"; }
       [ "$(gate_row_field "$r" '명령 sha256')" != "$(gate_row_field "$x" '명령 sha256')" ] || {
@@ -52484,13 +52936,17 @@ gate_clause_exec_preconditions() {
     fi
     [ "${GATE_SURFACE:-읽기}" = "읽기" ] && bind='-'
   fi
-  # THE RUN'S LAST MERGE IS IN THE TREE THE COMMAND RUNS IN, or the evidence is
-  # about code the run did not ship.
-  mc=$(gate_clause_exec_last_merge)
-  if [ -n "$mc" ]; then
+  # THE COMMAND RUNS ON THE FIXED COMMIT AND NOTHING ELSE. The tree the gate
+  # checked out has that commit as its HEAD and nothing uncommitted in it, or
+  # the evidence is about code nobody can name.
+  if [ "${GATE_CLAUSE_EXEC_ACTIVE:-}" = "1" ]; then
     head=$( (cd "${GATE_ACT_CWD:-.}" 2>/dev/null && git rev-parse HEAD 2>/dev/null) || true)
-    if ! (cd "${GATE_ACT_CWD:-.}" 2>/dev/null && git merge-base --is-ancestor "$mc" HEAD 2>/dev/null); then
-      warn "clause $id: the run's last merge commit $mc is not an ancestor of HEAD ${head:-미상} in ${GATE_ACT_CWD:-.} — the command would not run on the merged code"
+    if [ "$head" != "$GATE_CLAUSE_EXEC_FIXED" ] || ! gate_clause_exec_tree_clean "${GATE_ACT_CWD:-.}"; then
+      warn "clause $id: the execution tree ${GATE_ACT_CWD:-.} is not the fixed commit $GATE_CLAUSE_EXEC_FIXED, clean — observed HEAD ${head:-미상}, tree source ${GATE_CLAUSE_EXEC_TREE_SRC:--} (트리=${GATE_CLAUSE_EXEC_TREE:--}); nothing was run"
+      return "$GATE_EXIT_RULE"
+    fi
+    if mc=$(gate_clause_exec_script_outside "$GATE_ACT_CWD" "$@"); then
+      warn "clause $id: the script $mc is outside the execution tree $GATE_ACT_CWD — run it by its path inside the tree; nothing was run"
       return "$GATE_EXIT_RULE"
     fi
   fi
@@ -52570,16 +53026,45 @@ gate_perform_clause_exec() {
   # evidence command into its own output file, hand the output to the caller,
   # and write the `종료 절 실행` row with its anchor. The `자율 승인` row is
   # already written. Returns the command's own status.
+  #
+  # THE COMMAND RUNS UNDER WHAT IS LEFT OF THE ACT'S LIMIT, in the execution
+  # tree, as an external program with stdin on /dev/null. A command the limit
+  # cuts, or one never started because nothing was left, is a 143 row with
+  # `한도 초과=예`; any other 143 is the command's own and reads `아니오`.
+  #
+  # THE ROW IS WRITTEN ONCE, AFTER THE COMMAND'S GROUP IS GONE. While the
+  # command runs, a TERM, INT or HUP to this shell or to the two subshells
+  # around the command only raises a flag; the perl parent passes the signal
+  # to the command's group and returns 128 + the signal, the row records that,
+  # the tree is removed, and only then does the gate end on the signal.
   local al="$1" graded="$2"; shift 2
   local id="$GATE_CLAUSE_EXEC_ID" k="${GATE_CLAUSE_EXEC_ROUND:-1}" dir out rc=0
-  local osha head free gist cmd pfile prev
+  local osha head free gist cmd pfile prev rem t1 t2 over='아니오' after ah sig
   dir=$(gate_clause_exec_dir) || {
     warn "the run's clause-exec directory is not a real directory at $RUN_DIR/clause-exec — nothing was run"
     return "$GATE_EXIT_RULE"; }
   out="$dir/$id#$k.out"
   gate_pair_open || die "could not write the 짝 정리 open row — an act whose cleanup is not recorded is not performed"
-  # No pipe between the command and its file: the status is the command's.
-  ( umask 077; gate_run_readonly "$@" >"$out" 2>&1 ) || rc=$?
+  rem=$(gate_clause_exec_remaining)
+  printf '[clause-exec] 시한 %s초 — 시작 %s, 명령에 남은 %s초\n' "$(gate_clause_exec_limit)" "${GATE_CLAUSE_EXEC_T0:--}" "$rem" >&2
+  GATE_CLAUSE_EXEC_SIG=''
+  trap 'GATE_CLAUSE_EXEC_SIG=15' TERM
+  trap 'GATE_CLAUSE_EXEC_SIG=2' INT
+  trap 'GATE_CLAUSE_EXEC_SIG=1' HUP
+  GATE_CLAUSE_EXEC_RUNNING=1
+  if [ "$rem" -le 0 ]; then
+    ( umask 077; : >"$out" )
+    rc=143; over='예'
+  else
+    t1=$(date +%s)
+    # No pipe between the command and its file: the status is the command's.
+    ( trap ':' TERM INT HUP; umask 077; gate_run_readonly gate_metrics_timed "$rem" "$@" >"$out" 2>&1 ) || rc=$?
+    t2=$(date +%s)
+    if [ "$rc" = "143" ] && [ $((t2 - t1)) -ge $((rem - 1)) ]; then
+      over='예'
+    fi
+  fi
+  GATE_CLAUSE_EXEC_RUNNING=''
   chmod 600 "$out" 2>/dev/null || true
   cat "$out" 2>/dev/null || true
   if [ "$rc" != "0" ]; then
@@ -52589,21 +53074,40 @@ gate_perform_clause_exec() {
       "축2=$graded" "근거=rc=$rc"
   fi
   osha=$(shasum -a 256 "$out" 2>/dev/null | cut -d' ' -f1)
-  head=$( (cd "${GATE_ACT_CWD:-.}" 2>/dev/null && git rev-parse HEAD 2>/dev/null) || true)
+  # `커밋` is the fixed commit the command was started on. Where the tree's
+  # HEAD stands now goes beside it: `-` when it did not move, the moved HEAD's
+  # full sha otherwise, `미상` when it cannot be read.
+  head="${GATE_CLAUSE_EXEC_FIXED:-}"
+  ah=$( (cd "${GATE_ACT_CWD:-.}" 2>/dev/null && git rev-parse HEAD 2>/dev/null) || true)
+  if [ -z "$ah" ]; then after='미상'
+  elif [ "$ah" = "$head" ]; then after='-'
+  else after="$ah"
+  fi
   gist=$(gate_clause_exec_gist "$out")
   local -a fx=("절=$id" "회차=$k" "명령=" "명령 sha256=${GATE_CLAUSE_EXEC_SHA:--}"
     "축2=${GATE_SURFACE:--}" "결속=${GATE_CLAUSE_EXEC_BIND:--}" "사전 인가 행=${GATE_CLAUSE_EXEC_ROWN:--}"
-    "커밋=${head:--}" "종료 코드=$rc" "출력=$out" "출력 sha256=${osha:--}")
+    "커밋=${head:--}" "트리=${GATE_CLAUSE_EXEC_TREE:--}" "트리 출처=${GATE_CLAUSE_EXEC_TREE_SRC:--}"
+    "한도 초과=$over" "명령 뒤 HEAD=$after" "종료 코드=$rc" "출력=$out" "출력 sha256=${osha:--}")
   # The series name is four bytes longer than the one the budget measures.
   free=$(( $(gate_free_budget "${fx[@]}") - 4 ))
   [ "$free" -lt 0 ] && free=0
-  gist=$(gate_row_safe "$gist" $(( free / 2 )))
+  # The gist takes what the command leaves: a short command keeps all of its
+  # bytes and the gist gets the rest, and only a command longer than half the
+  # budget holds the gist to that half. The row's fixed fields grow with the
+  # tree and the output path, so a fixed half cut a 160-character gist short.
+  local cneed gbud
+  cneed=$(LC_ALL=C; c="$*"; printf '%s' "${#c}")
+  [ "$cneed" -gt $(( free / 2 )) ] && cneed=$(( free / 2 ))
+  gbud=$(( free - cneed ))
+  gist=$(gate_row_safe "$gist" "$gbud")
   cmd=$(gate_row_safe "$*" $(( free - $(printf '%s' "$gist" | wc -c | tr -d ' ') )))
   pfile=$(mktemp "${TMPDIR:-/tmp}/gate-cx-prev.XXXXXX") || pfile=''
   GATE_APPEND_PREV_OUT="$pfile"
   gate_append '종료 절 실행' "절=$id" "회차=$k" "명령=$cmd" \
     "명령 sha256=${GATE_CLAUSE_EXEC_SHA:--}" "축2=${GATE_SURFACE:--}" "결속=${GATE_CLAUSE_EXEC_BIND:--}" \
-    "사전 인가 행=${GATE_CLAUSE_EXEC_ROWN:--}" "커밋=${head:--}" "종료 코드=$rc" "출력=$out" \
+    "사전 인가 행=${GATE_CLAUSE_EXEC_ROWN:--}" "커밋=${head:--}" \
+    "트리=${GATE_CLAUSE_EXEC_TREE:--}" "트리 출처=${GATE_CLAUSE_EXEC_TREE_SRC:--}" \
+    "한도 초과=$over" "명령 뒤 HEAD=$after" "종료 코드=$rc" "출력=$out" \
     "출력 sha256=${osha:--}" "요지=$gist"
   GATE_APPEND_PREV_OUT=''
   prev=''
@@ -52613,6 +53117,13 @@ gate_perform_clause_exec() {
     printf '[clause-exec] 행 A-%s\n' "$(printf '%s' "$prev" | cut -c1-8)" >&2
   else
     warn "the 종료 절 실행 row was written but its anchor could not be read back"
+  fi
+  gate_clause_exec_cleanup
+  sig="$GATE_CLAUSE_EXEC_SIG"
+  trap - TERM INT HUP
+  if [ -n "$sig" ]; then
+    warn "clause-exec: 명령이 도는 동안 신호 $sig 를 받았습니다 — 행을 쓰고 실행 트리를 지운 뒤 끝납니다"
+    exit $((128 + sig))
   fi
   return "$rc"
 }
@@ -54304,6 +54815,15 @@ gate_act_cell_front() {
     [ "${GATE_ADMIT:-}" != "1" ] || actwt="$GATE_ADMIT_CWD"
     if [ -n "$actwt" ]; then
       GATE_GRADE_CWD=$(gate_real_prefix "$actwt")
+      # THE GRADING BASE OF A CLAUSE-EXEC IS LOGGED HERE, AND ONLY HERE. No row
+      # records this value, so without the line a test cannot see that the
+      # checkout finished before the first reader took its path. The line
+      # stands only while the clause-exec arm is up and this assignment took
+      # the checked-out tree; every other act leaves no such line.
+      if [ "${GATE_CLAUSE_EXEC_ACTIVE:-}" = "1" ] && [ -n "${GATE_CLAUSE_EXEC_WT:-}" ] \
+         && [ "$actwt" = "$GATE_CLAUSE_EXEC_WT" ]; then
+        log "clause-exec 등급 판정 기준 — $GATE_GRADE_CWD"
+      fi
     fi
   fi
 
@@ -55161,13 +55681,25 @@ gate_verb_act() {
   # check and the `plan` forecast — reads the command the same way `exec` would
   # read it, so its refusals, approval waits and parks are `exec`'s own.
   GATE_CLAUSE_EXEC_ID=""
+  GATE_CLAUSE_EXEC_TREE_SEG=""
   if [ "$kind" = "clause-exec" ]; then
+    # THE DEADLINE STARTS HERE, ahead of the tree resolution, the base fetch and
+    # the checkout, so every wait of this act is inside the one limit.
+    GATE_CLAUSE_EXEC_T0=$(date +%s)
     case "${1:-}" in
       절=?*) GATE_CLAUSE_EXEC_ID="${1#절=}"; shift ;;
-      *) warn "act --kind clause-exec 의 argv 는 「절=<id> <명령 낱말…>」 입니다 — 첫 낱말이 그 실행이 근거를 만들 종료 절입니다"
+      *) warn "act --kind clause-exec 의 argv 는 「절=<id> [트리=<세그먼트 id>] <명령 낱말…>」 입니다 — 첫 낱말이 그 실행이 근거를 만들 종료 절입니다"
          exit "$GATE_EXIT_VOCAB" ;;
     esac
-    [ $# -ge 1 ] || { warn "act --kind clause-exec 는 「절=<id>」 뒤에 실행할 명령이 있어야 합니다"; exit "$GATE_EXIT_VOCAB"; }
+    # The optional second word names a SEGMENT, never a commit: the gate reads
+    # the commit from the ledger, so the shift only says whose change the
+    # clause is about. It leaves the argv here too, so the command digest and
+    # the `근거 실행` binding read the command alone.
+    case "${1:-}" in
+      트리=?*) GATE_CLAUSE_EXEC_TREE_SEG="${1#트리=}"; shift ;;
+      트리=) warn "act --kind clause-exec 의 「트리=」 에는 세그먼트 id 가 있어야 합니다"; exit "$GATE_EXIT_VOCAB" ;;
+    esac
+    [ $# -ge 1 ] || { warn "act --kind clause-exec 는 「절=<id>」(와 「트리=<세그먼트 id>」) 뒤에 실행할 명령이 있어야 합니다"; exit "$GATE_EXIT_VOCAB"; }
   fi
   local argv="$*" impl_budget_out='' impl_cj_out='' decl_phrase_due=''
 
@@ -55664,6 +56196,26 @@ gate_verb_act() {
   # freeze/staleness probe each resolved somewhere the act was not. Registration
   # now records that worktree beside the undeclared flag and the resolver
   # returns it, so all four readers and this assignment take one value.
+  #
+  # A CLAUSE-EXEC ACT FIXES ITS TREE FIRST. The resolution reads the ledger and
+  # refs only; the base fetch and the checkout follow it directly, under the
+  # act's one limit, so the grading base and the act's cwd below both read the
+  # checked-out tree. `plan` resolves and fixes without fetching and checks
+  # nothing out, and names what it did not check.
+  if [ "$kind" = "clause-exec" ]; then
+    GATE_CLAUSE_EXEC_ALIAS="$alias"
+    gate_clause_exec_resolve "$alias" || exit $?
+    if [ "$verb" = "plan" ]; then
+      if ! gate_clause_exec_fix "$alias" 0; then
+        [ "${GATE_CLAUSE_EXEC_UNRESOLVED:-}" = "1" ] || exit "$GATE_EXIT_RULE"
+        GATE_CLAUSE_EXEC_FIXED='미상'
+      fi
+    else
+      gate_clause_exec_fix "$alias" 1 || exit $?
+      gate_clause_exec_checkout "$alias" || exit $?
+      GATE_CLAUSE_EXEC_ACTIVE=1
+    fi
+  fi
   GATE_ACT_CWD=$(gate_act_worktree "$alias" "$segment")
   # A bare command runs where the session issued it, not where the segment's
   # worktree is, so the bare form grades and roots it there.
@@ -57640,7 +58192,9 @@ gate_verb_act() {
     else
       # THE SAME RESOLUTION THE ISSUER USES. Asking for the id with a tree the
       # issuer did not key it on looks up an approval that was never written.
-      ap_id=$(gate_act_approval_id "$alias" "$argv" "$(gate_act_worktree "$alias" "$segment")")
+      local ap_tree
+      ap_tree=$(gate_clause_exec_approval_key "$alias") || ap_tree=$(gate_act_worktree "$alias" "$segment")
+      ap_id=$(gate_act_approval_id "$alias" "$argv" "$ap_tree")
     fi
     ap_st=$(gate_approval_state "$ap_id")
     local ap_cons=1
@@ -58166,6 +58720,12 @@ gate_verb_act() {
     # thing a forecast must not do.
     printf '통과 예상: kind=%s target=%s 절단점=%s 유도=%s 축2=%s\n' \
       "$kind" "$alias" "$GATE_ACT_EFFECTIVE" "${GATE_ACT_DERIVED:--}" "$graded"
+    # Which commit the act would check out, from the tree rules read only: the
+    # forecast checks nothing out and fetches nothing.
+    if [ "$kind" = "clause-exec" ]; then
+      printf '실행 트리 예보: 고정 커밋=%s 트리=%s 트리 출처=%s 회차=%s\n' \
+        "${GATE_CLAUSE_EXEC_FIXED:-미상}" "${GATE_CLAUSE_EXEC_TREE:--}" "${GATE_CLAUSE_EXEC_TREE_SRC:--}" "${GATE_CLAUSE_EXEC_ROUND:--}"
+    fi
     # The pair the same argv would open as an act, forecast and never written:
     # the dry run writes no row. Only the kinds that run their argv open one.
     case "$kind" in
@@ -58738,9 +59298,24 @@ gate_act_approval_fresh() {
   # against this approval's fragment — a silently wrong answer in both
   # directions. An empty result is strictly better: it says so and is taken as
   # fresh, which is what the paragraph above already prescribes.
+  #
+  # A CLAUSE-EXEC APPROVAL IS ABOUT A COMMIT, NOT A DIRECTORY. Its tree is
+  # checked out and removed inside one gate process, so the fragment is
+  # compared against the fixed commit the tree rules give now, recomputed read
+  # only and without a fetch; a recomputation that refuses is unmeasurable and
+  # the act's own resolution then gives the same refusal.
   local frag cur wt
   frag=$(gate_act_tuple_head "$1")
   [ -n "$frag" ] || return 0
+  if gate_clause_exec_approval_key "$2" >/dev/null; then
+    cur=$( { gate_clause_exec_resolve "$2" && gate_clause_exec_fix "$2" 0 && printf '%s' "$GATE_CLAUSE_EXEC_FIXED"; } 2>/dev/null ) || cur=''
+    [ -n "$cur" ] || {
+      warn "could not recompute the fixed commit to check the binding tuple of approval $1 against — this is not a tree that moved, so it is taken as fresh"
+      return 0
+    }
+    [ "$frag" = "${cur:0:${#frag}}" ]
+    return
+  fi
   wt=$(gate_act_worktree "$2" "${3:-}")
   if [ -n "$wt" ]; then
     cur=$(cd "$wt" 2>/dev/null && git rev-parse HEAD 2>/dev/null || true)
@@ -58843,8 +59418,18 @@ gate_issue_act_approval() {
   ad=$(printf '%s' "$argv" | shasum -a 256 | cut -d' ' -f1)
   # Resolved ONCE and used by both the id and the head below, so the two cannot
   # answer about different trees.
-  wt=$(gate_act_worktree "$alias" "$seg")
-  id=$(gate_act_approval_id "$alias" "$argv" "$wt")
+  # A clause-exec act is keyed on its clause and named segment and frozen on
+  # its fixed commit, which another gate process recomputes from the ledger;
+  # the checked-out path is gone by then.
+  local cx=''
+  if cx=$(gate_clause_exec_approval_key "$alias"); then
+    wt=''
+    id=$(gate_act_approval_id "$alias" "$argv" "$cx")
+  else
+    cx=''
+    wt=$(gate_act_worktree "$alias" "$seg")
+    id=$(gate_act_approval_id "$alias" "$argv" "$wt")
+  fi
   # PRESENCE WAS THE WRONG GUARD ONCE THE TUPLE GOT A READER. The id is derived
   # from the alias and the argv and holds no sha, so an approval that has gone
   # stale keeps its id — and a presence check then refused to issue the very
@@ -58865,7 +59450,12 @@ gate_issue_act_approval() {
   # An unresolved tree leaves the head EMPTY rather than `cd ""`-ing into the
   # gate's own directory and freezing a stranger's sha into the binding tuple.
   # `gate_act_approval_fresh` already treats a tuple with no head as fresh.
-  if [ -n "$wt" ]; then
+  if [ -n "$cx" ]; then
+    case "${GATE_CLAUSE_EXEC_FIXED:-}" in
+      ''|미상) head='' ;;
+      *) head="$GATE_CLAUSE_EXEC_FIXED" ;;
+    esac
+  elif [ -n "$wt" ]; then
     head=$(cd "$wt" 2>/dev/null && git rev-parse HEAD 2>/dev/null || true)
   else
     head=''
@@ -60190,6 +60780,11 @@ gate_run_readonly() {
   # origin-worktree pin, and `git -C <path>` was ungradeable.
   local line dir="${GATE_ACT_CWD:-}"
   (
+    # While a clause-exec command runs, this subshell must outlive a signal to
+    # the process group: bash puts a subshell's caught signals back to their
+    # default, and a subshell that died first would let the gate shell write
+    # the row before the timed parent had reaped the command's group.
+    [ "${GATE_CLAUSE_EXEC_RUNNING:-}" != "1" ] || trap ':' TERM INT HUP
     while IFS= read -r line; do
       [ -n "$line" ] || continue
       export "$line"
@@ -64791,6 +65386,111 @@ HALTBL
   return 0
 }
 
+# >>> wake helpers
+# The same block stands in feed.sh and gate.sh, byte for byte apart from the
+# function prefix (`feed_wake_` / `gate_wake_`); scripts/test-gate.sh compares
+# the two. Neither script sources the other, so each carries its own copy.
+#
+# WAITING ON THE RESIDENT OBSERVER'S WAKE FIFO. When the observer has adopted a
+# job of this run (`observer.jobs/` is not empty), its pid answers `kill -0` and
+# it has made the run's `observer.wake.d/`, a waiter makes its own FIFO there
+# once, `<name>.<pid>.fifo`, opens it read-write on fd 7 and sleeps in `read -t`
+# on it. The observer writes one newline into every FIFO of the run when an
+# input it watches changes, so the waiter wakes at once; with no write it wakes
+# at the timeout. Neither starts a process. When any of the three is missing
+# the waiter sleeps as before, and opens its FIFO after a sleep that finds them.
+#
+# EVERY NON-ZERO `read` STATUS IS A TIMEOUT. Bash 3.2 returns 1 when `read -t`
+# times out, not a value above 128, and a signal the caller's own traps did not
+# end the process on goes on to the same evaluation. FD 7 IS FIXED because bash
+# 3.2 has no `{var}<>` form that picks a free descriptor, and none of these
+# scripts uses fd 7 anywhere else. THE NAME CARRIES `$$` because bash 3.2 has no
+# `BASHPID`: one process holds one wait open at a time, and the observer
+# removes a FIFO whose pid no longer answers. No trap is set here.
+WAKE_FD7_FIFO=""
+WAKE_FD7_NAME=""
+
+gate_wake_usable() {
+  # 0 when the observer can wake this run's waiters: an adopted job, a live
+  # observer pid and the run's wake directory. Builtins only.
+  local j p="" any=""
+  [ -n "${RUN_DIR:-}" ] && [ -d "$RUN_DIR/observer.wake.d" ] || return 1
+  for j in "$RUN_DIR"/observer.jobs/*; do
+    if [ -e "$j" ]; then any=1; break; fi
+  done
+  [ -n "$any" ] || return 1
+  { IFS= read -r p; } 2>/dev/null < "${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/observer/observer.pid" || :
+  p=${p//[[:space:]]/}
+  case "$p" in ''|*[!0-9]*) return 1 ;; esac
+  cc_pid_exists "$p"
+}
+
+gate_wake_open() {
+  # gate_wake_open <name> — make and open this process's FIFO when none is open
+  # and the observer can wake it. A step that fails leaves no FIFO behind and
+  # the wait sleeps instead. Always 0.
+  local f
+  [ -z "$WAKE_FD7_FIFO" ] || return 0
+  WAKE_FD7_NAME=$1
+  gate_wake_usable || return 0
+  f="$RUN_DIR/observer.wake.d/$1.$$.fifo"
+  if mkfifo -m 600 "$f" 2>/dev/null; then
+    if { exec 7<>"$f"; } 2>/dev/null; then
+      WAKE_FD7_FIFO=$f
+      return 0
+    fi
+    rm -f "$f" 2>/dev/null
+  fi
+  return 0
+}
+
+gate_wake_wait() {
+  # gate_wake_wait <seconds> — 0 when the observer woke this wait, 1 when the
+  # seconds ran out. An open FIFO the observer can no longer wake is closed at
+  # the timeout. With no FIFO open, or a timeout that is not a whole number of
+  # seconds, it sleeps the seconds and then opens the FIFO when it now can.
+  local rc=0 n
+  if [ -n "$WAKE_FD7_FIFO" ] && [ "$1" -ge 1 ] 2>/dev/null; then
+    read -r -t "$1" -u 7 _ 2>/dev/null || rc=$?
+    [ "$rc" != "0" ] || return 0
+    if [ ! -p "$WAKE_FD7_FIFO" ] || ! gate_wake_usable; then
+      n=$WAKE_FD7_NAME
+      gate_wake_close
+      WAKE_FD7_NAME=$n
+    fi
+    return 1
+  fi
+  sleep "$1"
+  [ -n "$WAKE_FD7_FIFO" ] || [ -z "$WAKE_FD7_NAME" ] || gate_wake_open "$WAKE_FD7_NAME"
+  return 1
+}
+
+gate_wake_close() {
+  # Close and remove this process's FIFO when one is open. Always 0.
+  if [ -n "$WAKE_FD7_FIFO" ]; then
+    exec 7>&-
+    rm -f "$WAKE_FD7_FIFO" 2>/dev/null
+  fi
+  WAKE_FD7_FIFO=""
+  WAKE_FD7_NAME=""
+  return 0
+}
+# <<< wake helpers
+
+gate_verb_wake_timeout() {
+  # gate_verb_wake_timeout <start> <timeout> <last beat> <interval> <now> — the
+  # seconds one FIFO wait of `wait` may sleep: GATE_WAKE_MAX_SECONDS, or less
+  # when the `--timeout` deadline (exit 13) or the next heartbeat line comes
+  # sooner. A deadline already past is left out; never below 1.
+  local best="$GATE_WAKE_MAX_SECONDS" d
+  for d in $(($1 + $2)) $(($3 + $4)); do
+    [ "$d" -ge "$5" ] || continue
+    [ $((d - $5)) -ge "$best" ] || best=$((d - $5))
+  done
+  [ "$best" -ge 1 ] || best=1
+  printf '%s' "$best"
+}
+
 gate_verb_wait() {
   # gate_verb_wait <segment> <interval-seconds> <timeout-seconds>
   #
@@ -64831,19 +65531,29 @@ gate_verb_wait() {
   #   (5) pinned but no row: wait one grace period, re-run (2)/(3); still
   #       nothing → remove `.sup`/`.sup.start`/`.launch`, exit 14
   # `--timeout` elapsed while (2) still holds → 13.
+  #
+  # THE POLL SLEEPS ON THE OBSERVER'S WAKE FIFO when the observer can wake this
+  # run (`gate_wake_wait`): a stage or supervisor that ends changes a pid the
+  # observer watches and wakes the wait at once, and the timeout is the nearer
+  # of the `--timeout` deadline, the next heartbeat line and
+  # GATE_WAKE_MAX_SECONDS. Without the observer it polls every
+  # GATE_WAIT_POLL_SECONDS as before. Every return closes the FIFO first.
   local seg="$1" interval="$2" timeout="$3"
-  local start now elapsed last_beat=0 attempt row code klass grace_done=0 p s
+  local start now elapsed last_beat=0 attempt row code klass grace_done=0 p s ws
   start=$(date -u +%s)
+  gate_wake_open wait
   while :; do
-    now=$(date -u +%s); elapsed=$((now - start))
+    now=$(date -u +%s); elapsed=$((now - start)); ws=$SECONDS
     case " $GATE_SETTLED_SEGMENTS " in
       *" $seg "*)
         printf '%s [wait] %s 고아였고 정산됨 — rc=%s\n' "$(now_iso)" "$seg" "$GATE_EXIT_WAIT_SETTLED"
+        gate_wake_close
         return "$GATE_EXIT_WAIT_SETTLED" ;;
     esac
     if cc_stage_is_live "$RUN_DIR" "$seg" || cc_supervisor_is_live "$RUN_DIR" "$seg"; then
       if [ "$elapsed" -ge "$timeout" ]; then
         printf '%s [wait] %s timeout — rc=%s\n' "$(now_iso)" "$seg" "$GATE_EXIT_WAIT_TIMEOUT"
+        gate_wake_close
         return "$GATE_EXIT_WAIT_TIMEOUT"
       fi
       if [ "$last_beat" = "0" ] || [ $((now - last_beat)) -ge "$interval" ]; then
@@ -64862,12 +65572,18 @@ gate_verb_wait() {
         fi
         last_beat=$now
       fi
-      sleep "$GATE_WAIT_POLL_SECONDS"
+      if [ -n "$WAKE_FD7_FIFO" ]; then
+        gate_wake_wait "$(gate_verb_wake_timeout "$start" "$timeout" "$last_beat" "$interval" \
+          "$((now + SECONDS - ws))")" || true
+      else
+        gate_wake_wait "$GATE_WAIT_POLL_SECONDS" || true
+      fi
       continue
     fi
     attempt=$( { cat "$RUN_DIR/$seg.attempt" 2>/dev/null || true; } | tr -d '[:space:]')
     if [ -z "$attempt" ]; then
       printf '%s [wait] %s 파견 기록 없음 — rc=%s\n' "$(now_iso)" "$seg" "$GATE_EXIT_WAIT_NONE"
+      gate_wake_close
       return "$GATE_EXIT_WAIT_NONE"
     fi
     row=$( gate_stage_result_rows_of "$seg" \
@@ -64876,6 +65592,7 @@ gate_verb_wait() {
       klass=$(printf '%s' "$row" | tr '|' '\n' | sed -n 's/^ *종단 부류=//p' | sed 's/[[:space:]]*$//' | tail -1)
       if [ "$klass" = "외부 종료" ]; then
         printf '%s [wait] %s 고아였고 정산됨 — rc=%s\n' "$(now_iso)" "$seg" "$GATE_EXIT_WAIT_SETTLED"
+        gate_wake_close
         return "$GATE_EXIT_WAIT_SETTLED"
       fi
       code=$(printf '%s' "$row" | tr '|' '\n' | sed -n 's/^ *종료 코드=//p' | sed 's/[[:space:]]*$//' | tail -1)
@@ -64883,9 +65600,11 @@ gate_verb_wait() {
         ''|*[!0-9]*)
           printf 'gate: the `stage-result` row of this attempt has no numeric exit code (%s#%s: `종료 코드`=%s)\n' \
             "$seg" "$attempt" "${code:-(none)}" >&2
+          gate_wake_close
           return 1 ;;
       esac
       printf '%s [wait] %s 종단 — rc=%s\n' "$(now_iso)" "$seg" "$code"
+      gate_wake_close
       return "$code"
     fi
     # (3b) A supervisor that parked before it ever spawned leaves no
@@ -64895,6 +65614,7 @@ gate_verb_wait() {
     # the same exhausted group.
     if [ -n "$( { gate_rows 'blocked' | cc_rows_naming_lineage "B:$seg#$attempt" || true; } | tail -1)" ]; then
       printf '%s [wait] %s 라우터 park — 시도 %s — rc=%s\n' "$(now_iso)" "$seg" "$attempt" "$GATE_EXIT_ROUTE"
+      gate_wake_close
       return "$GATE_EXIT_ROUTE"
     fi
     # (3c) A supervisor that could not hold its lease — the table lock stayed
@@ -64919,10 +65639,12 @@ $( { gate_rows 'stage-wait' | cc_rows_naming_lineage "B:$seg#$attempt"; } 2>/dev
 EOF
     if [ "$wait_refused" = "1" ]; then
       printf '%s [wait] %s 대기 끝 거부 — 시도 %s — rc=%s\n' "$(now_iso)" "$seg" "$attempt" "$GATE_EXIT_DELEGATE"
+      gate_wake_close
       return "$GATE_EXIT_DELEGATE"
     fi
     if [ -n "$hold_cause" ]; then
       printf '%s [wait] %s 자원 대기 — 원인 %s — 시도 %s — rc=%s\n' "$(now_iso)" "$seg" "$hold_cause" "$attempt" "$GATE_EXIT_WAIT_LEASE_HOLD"
+      gate_wake_close
       return "$GATE_EXIT_WAIT_LEASE_HOLD"
     fi
     # Pinned, nothing alive, no row. Once: a grace period, because the
@@ -64937,6 +65659,7 @@ EOF
     rm -f "$RUN_DIR/$seg.sup" "$RUN_DIR/$seg.sup.start" "$RUN_DIR/$seg.launch"
     printf '%s [wait] %s 기동 실패 — 시도 %s 의 행이 없습니다 (잔여 sup·launch 를 지웠습니다) — rc=%s\n' \
       "$(now_iso)" "$seg" "$attempt" "$GATE_EXIT_WAIT_NOROW"
+    gate_wake_close
     return "$GATE_EXIT_WAIT_NOROW"
   done
 }
@@ -70848,6 +71571,101 @@ gate_relay_before_launch() {
   gate_relay_wait
 }
 
+gate_relay_ci_time_arms() {
+  # gate_relay_ci_time_arms <segment> — the epochs at which a CI wait on the
+  # segment wakes by time alone, one per line: round 0's `미등록` verdict at its
+  # `관측` plus the grace, and the wait clock plus the cap. Read from the same
+  # inputs `cc_ci_relay_condition` reads (the segment worktree's tip, its round,
+  # the round's newest verdict, `cc_ci_wait_clock`), past ones included; the
+  # caller drops what has passed. A verdict that wakes the relay at once is a
+  # row the observer sees, not a time, so it is not listed.
+  local seg="$1" tab recs last wt h g v ep clk
+  [ -n "$seg" ] || return 0
+  tab=$(printf '\t')
+  recs=$(cc_ci_records "$RUN_DIR" "$LEDGER" "$seg")
+  wt=$(cc_ci_segment_row_field "$LEDGER" "$seg" '워크트리')
+  h=$(cc_ci_worktree_head "$wt")
+  if [ -z "$h" ]; then
+    last=$(awk 'NF > 0' <<<"$recs" | tail -1)
+    [ -n "$last" ] || return 0
+    h=${last%%"$tab"*}
+  fi
+  g=$(cc_ci_round_get "$(cc_ci_round "$LEDGER" "$seg" "$h")" g)
+  g=${g:-0}
+  v=$(LC_ALL=C awk -F'\t' -v sha="$h" -v g="$g" \
+    'NF > 0 && $1 == sha && $2 == g { p = $0 } END { printf "%s", p }' <<<"$recs")
+  if [ -n "$v" ] && [ "$g" = "0" ] && [ "$(cut -f4 <<<"$v")" = "미등록" ]; then
+    ep=$(cc_iso_to_epoch "$(cut -f5 <<<"$v")")
+    [ -z "$ep" ] || printf '%s\n' "$((ep + CC_CI_UNREGISTERED_GRACE_SECONDS))"
+  fi
+  clk=$(cc_ci_wait_clock "$RUN_DIR" "$LEDGER" "$seg" "$h" "$g" "$wt")
+  [ -n "$clk" ] || return 0
+  ep=$(cc_iso_to_epoch "${clk%%"$tab"*}")
+  [ -z "$ep" ] || printf '%s\n' "$((ep + CC_CI_WAIT_CAP_SECONDS))"
+  return 0
+}
+
+gate_relay_wake_timeout() {
+  # gate_relay_wake_timeout <now> — how long the relay may sleep on the
+  # observer's wake FIFO: seconds to the earliest deadline still ahead of
+  # <now>, at most GATE_WAKE_MAX_SECONDS and at least 1. The deadlines are the
+  # ones no file change announces — the seat call's hold, each reset clock plus
+  # the grace, the `이월` clock, a failover wait's resume time, each confirmation
+  # record's next run, each `master 대기` reading going stale, and each CI wait's
+  # time arms. A deadline already past is not counted: a missed wake is caught by
+  # the next round, and counting it would turn the sleep into a busy loop.
+  local now="$1" best="$GATE_WAKE_MAX_SECONDS" d e k n c poll s al slug br st ob
+  local ds=""
+  ds="$((GATE_RELAY_SEAT_START + $(gate_relay_hold)))"
+  for e in ${GATE_RELAY_W_RESET//,/ }; do
+    k=${e##*:}
+    case "$k" in ''|*[!0-9]*) continue ;; esac
+    ds="$ds $((k + $(cc_reset_grace)))"
+  done
+  d=$(gate_relay_defer_clock); [ -z "$d" ] || ds="$ds $d"
+  d=$(gate_relay_resume_clock); [ -z "$d" ] || ds="$ds $d"
+  if [ -n "$GATE_RELAY_CONFIRM_SET" ]; then
+    poll=$(gate_confirm_test_value "$GATE_CONFIRM_POLL_SECONDS" "${CC_GATE_CONFIRM_POLL_TEST_SECONDS:-}")
+    for n in ${GATE_RELAY_CONFIRM_SET//,/ }; do
+      c=$(gate_confirm_count "$n")
+      ds="$ds $((${c#* } + poll))"
+    done
+  fi
+  for s in $(gate_relay_master_segments | tr ',' ' '); do
+    al=$(gate_segment_target_alias "$s")
+    [ -n "$al" ] || continue
+    slug=$(target_field "$al" '원격 슬러그' 2>/dev/null || true)
+    br=$(base_branch "$al" 2>/dev/null || true)
+    { [ -n "$slug" ] && [ -n "$br" ]; } || continue
+    st=$(gate_master_state "$slug" "$br")
+    [ -n "$st" ] || continue
+    ob=$(cc_iso_to_epoch "$(jq -r '.observed_at // ""' <<<"$st" 2>/dev/null || true)")
+    [ -z "$ob" ] || ds="$ds $((ob + GATE_MASTER_STALE_SECONDS))"
+  done
+  for s in ${GATE_RELAY_W_CI//,/ }; do
+    for d in $(gate_relay_ci_time_arms "$s"); do ds="$ds $d"; done
+  done
+  for d in $ds; do
+    case "$d" in ''|*[!0-9]*) continue ;; esac
+    [ "$d" -ge "$now" ] || continue
+    [ $((d - now)) -ge "$best" ] || best=$((d - now))
+  done
+  [ "$best" -ge 1 ] || best=1
+  printf '%s' "$best"
+}
+
+gate_relay_pause() {
+  # gate_relay_pause <now> — one sleep between two polls of the relay: on the
+  # observer's wake FIFO up to the nearest deadline when it is open, and
+  # GATE_WAIT_POLL_SECONDS otherwise. Always 0.
+  if [ -n "$WAKE_FD7_FIFO" ]; then
+    gate_wake_wait "$(gate_relay_wake_timeout "$1")" || true
+  else
+    gate_wake_wait "$GATE_WAIT_POLL_SECONDS" || true
+  fi
+  return 0
+}
+
 gate_relay_wait() {
   # The poll. Returns 0 when a wake condition stands (launch the successor) and
   # 1 after handing the turn back. The set is derived again here: a stage that
@@ -70890,7 +71708,16 @@ gate_relay_wait() {
   # the turn is handed back `확인 소진`; a record that left because a `중단 답`
   # row now names it empties the set as any other member does, and the
   # successor routes that answer. The watcher's keys do not carry this member.
-  local stages ci reset defer resume hold now mw cw
+  #
+  # BETWEEN TWO POLLS THE RELAY SLEEPS ON THE OBSERVER'S WAKE FIFO when the
+  # observer can wake this run (`gate_relay_pause`): a ledger row, a stage's or
+  # supervisor's end, a `checks` file or a reading file that changes wakes the
+  # next poll at once, and the sleep lasts until the nearest deadline no file
+  # change announces (`gate_relay_wake_timeout`). Without the observer it polls
+  # every GATE_WAIT_POLL_SECONDS as before. The order of the checks and the
+  # refresh of `relay.live` on every round do not change, and every return
+  # closes the FIFO first.
+  local stages ci reset defer resume hold now mw cw ws
   stages=$(cc_relay_wait_stages "$RUN_DIR")
   ci=$(gate_relay_ci_segments)
   reset=$(gate_relay_reset_set)
@@ -70904,23 +71731,28 @@ gate_relay_wait() {
   gate_relay_write "$stages" "$ci" "$reset"
   hold=$(gate_relay_hold)
   log "교대 대기 — 스테이지·감독자 ${stages:--} · CI ${ci:--} · 리셋 ${reset:--} · 이월 ${defer:--} · 계정 이전 ${resume:--} · master ${mw:--} · 확인 ${GATE_RELAY_CONFIRM_SET:--}"
+  gate_wake_open relay
   while :; do
-    now=$(date -u +%s)
+    now=$(date -u +%s); ws=$SECONDS
     if [ -e "$RUN_DIR/done" ]; then
+      gate_wake_close
       gate_relay_hand_back "$stages" "$ci" "$reset" "런이 끝났다"
       return 1
     fi
     if [ $((now - GATE_RELAY_SEAT_START)) -ge "$hold" ]; then
+      gate_wake_close
       gate_relay_hand_back "$stages" "$ci" "$reset" "좌석 호출의 대기 상한 ${hold}초가 지났다"
       return 1
     fi
     if [ -n "$ci" ] && ! gate_relay_poller_live; then
+      gate_wake_close
       gate_relay_hand_back "$stages" "$ci" "$reset" "CI 를 기다리는데 checks 폴러가 살아 있지 않다"
       return 1
     fi
     [ -z "$cw" ] || gate_relay_confirm_set "$cw"
     if [ -z "$stages" ] && [ -z "$ci" ] && [ -z "$reset" ] && [ -z "$defer" ] && [ -z "$resume" ] && [ -z "$mw" ] \
        && [ -z "$GATE_RELAY_CONFIRM_SET" ]; then
+      gate_wake_close
       if [ "$GATE_RELAY_CONFIRM_SPENT" = "1" ]; then
         gate_relay_hand_back "$stages" "$ci" "$reset" "확인 소진"
         return 1
@@ -70929,6 +71761,7 @@ gate_relay_wait() {
       return 0
     fi
     if [ -n "$GATE_RELAY_CONFIRM_SET" ] && gate_relay_confirm_due "$GATE_RELAY_CONFIRM_SET"; then
+      gate_wake_close
       log "교대 대기 끝 — 해소 확인이 일치했다 ($GATE_RELAY_CONFIRM_HIT)"
       gate_relay_hand_back "$stages" "$ci" "$reset" "해소 확인 일치"
       return 1
@@ -70941,19 +71774,21 @@ gate_relay_wait() {
     # return conditions above still apply; at the resume time the keys are read
     # as always, the `fr:` key among them.
     if cc_failover_waiting_now "$LEDGER" "$now"; then
-      sleep "$GATE_WAIT_POLL_SECONDS"
+      gate_relay_pause "$((now + SECONDS - ws))"
       gate_relay_write "$stages" "$ci" "$reset"
       continue
     fi
     if [ -n "$(cc_relay_wake_keys "$RUN_DIR" "$LEDGER")" ]; then
+      gate_wake_close
       log "교대 대기 끝 — 깨움 조건이 섰다"
       return 0
     fi
     if [ -n "$mw" ] && gate_relay_master_wake "$mw"; then
+      gate_wake_close
       log "교대 대기 끝 — master 판독이 바뀌었거나 낡았다"
       return 0
     fi
-    sleep "$GATE_WAIT_POLL_SECONDS"
+    gate_relay_pause "$((now + SECONDS - ws))"
     gate_relay_write "$stages" "$ci" "$reset"
   done
 }

@@ -27,7 +27,12 @@
 # every goal of the job pool run in a checkout of their own and leave a record
 # of the tracked files they read (scripts/test-reuse.sh); a later run whose
 # tree gives those files the same contents, under the same doubles and tools,
-# within 24 hours, skips the item and says so. Sections do the same per lane:
+# within 24 hours, skips the item and says so. An item that called git on its
+# checkout read the whole tree and is reused only on the same tree, input
+# commit and base, unless its only git calls were location queries
+# (`git rev-parse --show-toplevel` and its kin) and reads of objects named by
+# full 40-digit ids: that pass is reused across a new HEAD and a new base while
+# each of those ids is present or absent as it was. Sections do the same per lane:
 # a lane that passed records the files it read and the digest of the cut it
 # ran, and a later run skips the sections of every record whose files and cut
 # are unchanged, then cuts and runs only the rest. `items` runs the goals,
@@ -47,7 +52,13 @@
 # are CHECK_PUSH_GOALS in the order given, then each derived goal not named,
 # in `print-rest-goals` order. A line `check-push: 유도 목표 — …` says what was
 # derived and a line `check-push: 유도 근거 없는 변경 파일 …` lists the changed
-# files no goal reads; the stamp keeps `유도목표=` and `유도없음=`. With
+# files no goal reads; the stamp keeps `유도목표=` and `유도없음=`. A change of
+# CHANGELOG.md or plugins/cc-cmds/.claude-plugin/plugin.json that has the shape
+# of a release commit (scripts/test-reuse.sh's per-path check,
+# tr_release_path_in) is left out of what rest-readers.sh reads, whatever else
+# the change holds: a line `check-push: 릴리스 차이로 유도에서 뺀 변경 파일 …`
+# names those paths and the stamp keeps them in `유도릴리스=`; a path the check
+# cannot judge stays in. The changed-file count still counts every path. With
 # neither base ref in head mode nothing is derived and the line and the stamp
 # say 판정불가. A derivation that cannot be computed (a git or make step
 # failed) ends 1 before any item runs, with `check-push: 유도 실패 — <step>`
@@ -241,15 +252,19 @@ check_push_gate_unchanged() {
 # merge mode, against the base branch in head mode) to a file in TT_DIR, asks
 # rest-readers.sh which goals of the tested tree read them, and sets
 # CP_DERIVED (the derived goals comma-joined, or 판정불가), CP_UNREAD (the
-# changed paths no goal reads, space-joined), CP_UNREAD_N and CP_CHANGED_N.
+# changed paths no goal reads, space-joined), CP_UNREAD_N, CP_CHANGED_N (every
+# changed path), CP_RELEASE (the changed paths left out of the derivation as
+# release-shaped, space-joined, in the order of the change) and CP_RELEASE_N.
 # Returns 0, or 1
 # with CP_DERIVE_STAGE naming the step that failed.
 check_push_derive() {
-  local mode="$1" base="$2" head="$3" br ref="" mb list out err k v
+  local mode="$1" base="$2" head="$3" br ref="" mb list input rel gdir p out err k v
   CP_DERIVED=""
   CP_UNREAD=""
   CP_UNREAD_N=0
   CP_CHANGED_N=0
+  CP_RELEASE=""
+  CP_RELEASE_N=0
   CP_DERIVE_STAGE=""
   CP_DERIVE_WHY=""
   if [ "$mode" = head ]; then
@@ -271,7 +286,24 @@ check_push_derive() {
   err="$TT_DIR/derive-err"
   git -c core.quotePath=false diff --name-only --no-renames "$mb" "$head" > "$list" 2>/dev/null || { CP_DERIVE_STAGE="git diff $mb $head"; return 1; }
   CP_CHANGED_N=$(grep -c . "$list")
-  if ! tt_scrubbed bash "$CP_READERS" derive --tree "$TT_WORK" --changed "$list" --make "${CC_TEST_TREE_MAKE:-make}" > "$out" 2> "$err" < /dev/null; then
+  # A release-shaped change of a release path is not derivation input; with no
+  # readable common git directory nothing is left out.
+  input="$TT_DIR/derive-input"
+  rel="$TT_DIR/derive-release"
+  : > "$rel"
+  if gdir=$(check_push_common_dir); then
+    tr_release_paths "$gdir" "$mb" "$head" > "$rel"
+  fi
+  : > "$input"
+  while IFS= read -r p; do
+    if [ -n "$p" ] && grep -Fxq -- "$p" "$rel"; then
+      CP_RELEASE="${CP_RELEASE:+$CP_RELEASE }$p"
+      CP_RELEASE_N=$((CP_RELEASE_N + 1))
+    else
+      printf '%s\n' "$p" >> "$input"
+    fi
+  done < "$list"
+  if ! tt_scrubbed bash "$CP_READERS" derive --tree "$TT_WORK" --changed "$input" --make "${CC_TEST_TREE_MAKE:-make}" > "$out" 2> "$err" < /dev/null; then
     CP_DERIVE_STAGE=$(sed -n 's/^rest-readers: 유도 실패 — //p' "$err" | tail -n 1)
     [ -n "$CP_DERIVE_STAGE" ] || CP_DERIVE_STAGE="rest-readers.sh"
     cat "$err" >&2
@@ -640,6 +672,9 @@ check_push_run() {
     if [ "$CP_UNREAD_N" -gt 0 ]; then
       printf 'check-push: 유도 근거 없는 변경 파일 %s개 — %s\n' "$CP_UNREAD_N" "$CP_UNREAD"
     fi
+    if [ "$CP_RELEASE_N" -gt 0 ]; then
+      printf 'check-push: 릴리스 차이로 유도에서 뺀 변경 파일 %s개 — %s\n' "$CP_RELEASE_N" "$CP_RELEASE"
+    fi
     goals=$(check_push_union "$goals" "$CP_DERIVED")
   fi
 
@@ -871,6 +906,7 @@ check_push_run() {
     printf 'fetch베이스=%s\n' "$fbase"
     printf '유도목표=%s\n' "$(tt_or_none "$CP_DERIVED")"
     printf '유도없음=%s\n' "$CP_UNREAD_N"
+    printf '유도릴리스=%s\n' "$(tt_or_none "$(printf '%s' "$CP_RELEASE" | tr ' ' ',')")"
   } > "$CP_TMP_STAMP" || return 1
   mv -f "$CP_TMP_STAMP" "$stamp" || return 1
   CP_TMP_STAMP=""
@@ -1138,7 +1174,7 @@ EOF
   has "F12 묶음 단계마다 자리를 잡는다" "$out" "check-push: 자리 잡음 단계 lint (0초 대기)"
   has "F12 마지막 묶음 단계도 자리를 잡는다" "$out" "check-push: 자리 잡음 단계 check-cheap (0초 대기)"
   out=$(sed -n 's/=.*$//p' "$stamp" | tr '\n' ' ')
-  check "F12 도장 v2 필드" "$out" "v commit at bash 합침 base base출처 fetch tested_tree sections goals 절+베이스 충돌경로 대역 병렬 자리대기 재사용 재사용절 시간예산 시도 CI몫 fetch베이스 유도목표 유도없음 "
+  check "F12 도장 v2 필드" "$out" "v commit at bash 합침 base base출처 fetch tested_tree sections goals 절+베이스 충돌경로 대역 병렬 자리대기 재사용 재사용절 시간예산 시도 CI몫 fetch베이스 유도목표 유도없음 유도릴리스 "
   check "F12 재사용을 끈 실행의 도장은 재사용=꺼짐" "$(check_push_field "$stamp" 재사용)" "꺼짐"
   check "F12 재사용을 끈 실행의 도장은 재사용절=꺼짐" "$(check_push_field "$stamp" 재사용절)" "꺼짐"
   check "F12 사적 저장소에서는 자리를 기다리지 않는다" "$(check_push_field "$stamp" 자리대기)" "0"
@@ -1577,6 +1613,58 @@ check-push: CHECK_PUSH_JOBS=1 의 실패 단계는 목록 전체를 이름 댄�
   rel_commit 0.1.2 '## [0.1.2] - 2026-01-03\n- c\n\n## [0.1.1] - 2026-01-02\n- b\n\n' r.txt 'r3\n'
   out=$(crr CC_PIPELINE_RUN_ID=t); rc=$?
   check "F41 릴리스 밖 파일도 바꾼 릴리스 커밋 뒤에는 g1 이 다시 돈다" "$rc $(cur_reuse)" "0 $(ve make:check-cheap 없음)"
+  # Location queries leave a `git읽기` record, reused across a new HEAD and a
+  # merged base. Goal g1 and section s9 ask where the repository is; goal g2
+  # and section s8, the control, read HEAD. The cases commit on branch hq; the
+  # base cases merge branch qb into it with --no-ff and name qb in FETCH_HEAD,
+  # so qb is an ancestor of HEAD. The git watch shim sorts a call with a
+  # GIT_CONFIG_GLOBAL or GIT_CONFIG_NOSYSTEM in its environment as strict, so
+  # these runs drop the two the self-test exports and keep the user's git
+  # configuration out with a HOME of their own.
+  reuse_has() { case ",$(cur_reuse)," in *",$1,"*) echo 예 ;; *) echo 아니오 ;; esac; }
+  sec_has() { case ",$(cur_field 재사용절)," in *",$1,"*) echo 예 ;; *) echo 아니오 ;; esac; }
+  whole_of() { awk -F'\t' '$1 == "트리전체" { print $2 }' "$items_dir/make:$1/$(cur_tree)" 2>/dev/null; }
+  mkdir -p "$T/home/.config"
+  cpq() { cprun -u GIT_CONFIG_GLOBAL -u GIT_CONFIG_NOSYSTEM HOME="$T/home" XDG_CONFIG_HOME="$T/home/.config" "$@"; }
+  crq() { cpq "$@" CHECK_PUSH_REUSE=1 CHECK_PUSH_JOBS=2 CHECK_PUSH_GOALS=g1 CHECK_PUSH_SECTIONS=s9; }
+  crc() { cpq "$@" CHECK_PUSH_REUSE=1 CHECK_PUSH_JOBS=2 CHECK_PUSH_GOALS=g2 CHECK_PUSH_SECTIONS=s8; }
+  printf 'git rev-parse --show-toplevel > /dev/null\n' > "$T/run-g1"
+  printf 'git rev-parse HEAD > /dev/null\n' > "$T/run-g2"
+  printf 'goals.txt\n' > "$T/reads-g2"
+  rm -rf "$items_dir"
+  (
+    cd "$W" || exit 1
+    sgit checkout -q -b hq h
+    printf '#!/usr/bin/env bash\n# fixture\n# --- section: s1 | group: g | covers: x | anchors: y ---\n# --- section: s8 | group: g | covers: x | anchors: y ---\n# --- section: s9 | group: g | covers: x | anchors: y ---\n# f1\n# end\n' > scripts/test-gate.sh
+    printf 'git rev-parse HEAD > /dev/null\n' > sections/s8.sh
+    printf 'git rev-parse --show-toplevel > /dev/null\n' > sections/s9.sh
+    sgit add -A && sgit commit -q -m Q1
+  ) > /dev/null 2>&1
+  out=$(crq); rc=$?
+  check "F41 git읽기: 위치 질의만 한 g1 은 git읽기로 기록된다" "$rc $(whole_of g1)" "0 $(ve git읽기 '')"
+  out=$(crc); rc=$?
+  check "F41 git읽기 대조군: rev-parse HEAD 를 부른 g2 는 트리 전체로 기록된다" "$rc $(whole_of g2)" "0 $(ve 예 '')"
+  rw README.md 'readme 2\n'
+  out=$(crq); rc=$?
+  check "F41 git읽기: 읽지 않은 파일만 바꾼 다음 커밋에서 g1 과 레인 s9 를 재사용한다" "$rc $(reuse_has make:g1) $(sec_has s9)" "0 $(ve '예 예' '아니오 아니오')"
+  out=$(crc); rc=$?
+  check "F41 git읽기 대조군: g2 와 레인 s8 은 다음 커밋에서 다시 돈다" "$rc $(reuse_has make:g2) $(sec_has s8)" "0 아니오 아니오"
+  rw goals.txt 'g2\ng1\n'
+  out=$(crq); rc=$?
+  check "F41 git읽기: g1 이 읽는 파일을 바꾼 커밋에서 g1 은 다시 돌고 레인 s9 는 재사용한다" "$rc $(reuse_has make:g1) $(sec_has s9)" "0 아니오 $(ve 예 아니오)"
+  (cd "$W" && sgit branch -q qb hq && sgit checkout -q qb && printf 'readme 3\n' > README.md && sgit commit -q -am QB1 \
+    && sgit checkout -q hq && sgit merge -q --no-ff --no-edit qb) > /dev/null 2>&1
+  fh_line "$(cd "$W" && git rev-parse qb)"
+  out=$(crq CC_PIPELINE_RUN_ID=t); rc=$?
+  check "F41 git읽기: 읽지 않은 파일의 내용만 바꾼 베이스를 합친 뒤 g1 과 레인 s9 를 재사용한다" \
+    "$rc $(cur_field 합침) $(reuse_has make:g1) $(sec_has s9)" "0 조상 $(ve '예 예' '아니오 아니오')"
+  (cd "$W" && sgit checkout -q qb && printf 'q\n' > qnew.txt && sgit add -A && sgit commit -q -m QB2 \
+    && sgit checkout -q hq && sgit merge -q --no-ff --no-edit qb) > /dev/null 2>&1
+  fh_line "$(cd "$W" && git rev-parse qb)"
+  out=$(crq CC_PIPELINE_RUN_ID=t); rc=$?
+  check "F41 git읽기: 추적 경로를 하나 더한 베이스를 합친 뒤 g1 과 레인 s9 는 다시 돈다" \
+    "$rc $(cur_field 합침) $(reuse_has make:g1) $(sec_has s9)" "0 조상 아니오 아니오"
+  rm -f "$T/run-g2" "$T/reads-g2"
   rm -f "$T/run-g1"
   rm -f "$T/reads-cc" "$T/reads-g1"
   (cd "$W" && sgit checkout -q h) > /dev/null 2>&1
@@ -1642,6 +1730,68 @@ check-push: CHECK_PUSH_JOBS=1 의 실패 단계는 목록 전체를 이름 댄�
   check "F43 items 통과" "$rc" "0"
   has "F43 items 도 유도 목표 줄을 찍는다" "$out" "check-push: 유도 목표 — 변경 파일 5개, 유도 1개: run/tools/r.sh"
   has "F43 items 가 지명 없이 유도 목표를 돌린다" "$(grep -e '^make:' "$T/order.log" | grep -v print-rest-goals)" "run/tools/r.sh"
+  (cd "$W" && sgit checkout -q h) > /dev/null 2>&1
+
+  # --- F44 릴리스 차이는 유도 입력에서 빠진다 ------------------------------------------
+  # Branch e carries CHANGELOG.md and plugin.json, a run/ goal whose entry
+  # script only names those two paths and a run/ goal whose entry script reads
+  # data/feat.txt. Each case commits on a new branch from e and runs with e as
+  # the base.
+  local se fa fb F44_BUMP rpjf="plugins/cc-cmds/.claude-plugin/plugin.json"
+  rpj() { printf '{\n  "name": "%s",\n  "version": "%s",\n  "description": "d"\n}\n' "${2:-x}" "$1" > "$rpjf"; }
+  rlog() { printf '# Changelog\n\nintro\n\n%b## [1.0.0] - 2026-01-01\n- %s\n' "$1" "${2:-a}" > CHANGELOG.md; }
+  (
+    cd "$W" || exit 1
+    sgit checkout -q -b e h
+    mkdir -p tools data plugins/cc-cmds/.claude-plugin
+    printf 'g1\ng2\nrun/tools/rel.sh\nrun/tools/feat.sh\n' > goals.txt
+    printf 'cat CHANGELOG.md plugins/cc-cmds/.claude-plugin/plugin.json\n' > tools/rel.sh
+    printf 'cat data/feat.txt\n' > tools/feat.sh
+    printf 'f\n' > data/feat.txt
+    rpj 1.0.0 && rlog ''
+    sgit add -A && sgit commit -q -m E
+  ) > /dev/null 2>&1
+  se=$(cd "$W" && git rev-parse HEAD)
+  F44_BUMP="rpj 1.0.1 && rlog '## [1.0.1] - 2026-01-02\n- b\n\n'"
+  # Commits the commands of $2 on branch $1 (made from e when it is new) and
+  # runs check-push against e on it, with a fresh order log and no stamp of
+  # that tree; prints the run's output and leaves its status in $T/f44-rc.
+  f44_run() {
+    (cd "$W" && { sgit checkout -q "$1" 2> /dev/null || sgit checkout -q -b "$1" "$se"; } && eval "$2" && sgit add -A && sgit commit -q -m "$1") > /dev/null 2>&1
+    rm -f "$(f44_stamp)"
+    : > "$T/order.log"
+    cprun CHECK_PUSH_BASE="$se" CHECK_PUSH_JOBS=1
+    printf '%s' "$?" > "$T/f44-rc"
+  }
+  f44_stamp() { printf '%s/.git/cc-cmds-check-push/%s' "$W" "$(cd "$W" && git rev-parse 'HEAD^{tree}')"; }
+  f44_field() { check_push_field "$(f44_stamp)" "$1"; }
+  out=$(f44_run er "$F44_BUMP")
+  check "F44 C1 릴리스 커밋만 더한 head 는 통과" "$(cat "$T/f44-rc")" "0"
+  has "F44 C1 유도 목표 줄은 변경 파일 2개, 유도 0개" "$out" "check-push: 유도 목표 — 변경 파일 2개, 유도 0개: 없음"
+  has "F44 C1 릴리스 줄이 두 경로를 찍는다" "$out" "check-push: 릴리스 차이로 유도에서 뺀 변경 파일 2개 — CHANGELOG.md $rpjf"
+  hasnt "F44 C1 유도 근거 없음 줄이 없다" "$out" "유도 근거 없는 변경 파일"
+  check "F44 C1 두 파일을 담은 목표가 돌지 않는다" "$(dgoals)" ""
+  check "F44 C1 도장의 유도목표·유도없음·유도릴리스" "$(f44_field 유도목표) $(f44_field 유도없음) $(f44_field 유도릴리스)" "없음 0 CHANGELOG.md,$rpjf"
+  out=$(f44_run ef "printf 'f2\n' > data/feat.txt")
+  fa="$(cat "$T/f44-rc") $(f44_field 유도목표)"
+  out=$(f44_run ef "$F44_BUMP")
+  fb="$(cat "$T/f44-rc") $(f44_field 유도목표)"
+  check "F44 C2 기능 커밋 위에 릴리스 커밋을 더해도 유도목표가 같다" "$fb" "$fa"
+  check "F44 C2 그 유도목표는 기능 파일을 읽는 목표 하나다" "$fa" "0 run/tools/feat.sh"
+  out=$(f44_run ep "rpj 1.0.1 y && rlog '## [1.0.1] - 2026-01-02\n- b\n\n'")
+  has "F44 plugin.json 의 다른 줄도 바꾸면 릴리스 줄은 CHANGELOG.md 만 찍는다" "$out" "check-push: 릴리스 차이로 유도에서 뺀 변경 파일 1개 — CHANGELOG.md"
+  check "F44 plugin.json 의 다른 줄도 바꾸면 plugin.json 이 남아 두 파일을 담은 목표가 돈다" \
+    "$(cat "$T/f44-rc") $(f44_field 유도목표) $(f44_field 유도릴리스) $(dgoals)" "0 run/tools/rel.sh CHANGELOG.md make:--no-print-directory run/tools/rel.sh "
+  out=$(f44_run el "rpj 1.0.1 && rlog '' 'a fixed'")
+  check "F44 CHANGELOG 기존 항목 본문을 고치면 CHANGELOG.md 는 빠지지 않는다" \
+    "$(cat "$T/f44-rc") $(f44_field 유도목표) $(f44_field 유도릴리스)" "0 run/tools/rel.sh $rpjf"
+  # items derives the same way on the head of C1.
+  (cd "$W" && sgit checkout -q er) > /dev/null 2>&1
+  : > "$T/order.log"
+  out=$(cd "$W" && env CHECK_PUSH_REUSE=1 CHECK_PUSH_BASE="$se" CHECK_PUSH_JOBS=2 bash "$self" items 2>&1); rc=$?
+  check "F44 items 통과" "$rc" "0"
+  has "F44 items 도 릴리스 줄을 찍는다" "$out" "check-push: 릴리스 차이로 유도에서 뺀 변경 파일 2개 — CHANGELOG.md $rpjf"
+  hasnt "F44 items 는 두 파일을 담은 목표를 돌리지 않는다" "$(grep -e '^make:' "$T/order.log" | grep -v print-rest-goals)" "run/tools/rel.sh"
   (cd "$W" && sgit checkout -q h) > /dev/null 2>&1
 
   # --- F42 시간 예산, 이어 돌리기, CI 몫, 조기 종료 ------------------------------------
@@ -1845,8 +1995,8 @@ check-push: CHECK_PUSH_JOBS=1 의 실패 단계는 목록 전체를 이름 댄�
   rm -rf "$T"
   printf 'check-push self-test: %d passed, %d failed\n' "$passed" "$failed"
   # A floor on the count, so a refactor that silently skips cases cannot pass.
-  if [ "$passed" -lt 241 ]; then
-    printf 'check-push self-test: 통과 수 %d 가 하한 241 에 못 미칩니다\n' "$passed" >&2
+  if [ "$passed" -lt 262 ]; then
+    printf 'check-push self-test: 통과 수 %d 가 하한 262 에 못 미칩니다\n' "$passed" >&2
     return 1
   fi
   [ "$failed" = "0" ]

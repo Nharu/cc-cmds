@@ -187,6 +187,24 @@ script_dir=$(cd "$(dirname "$0")" && pwd)
 # full run from the checkout never sets the variable, so the derivation below
 # is what it always was.
 repo_root=${CC_TEST_GATE_REPO_ROOT:-$(cd "$script_dir/.." && pwd)}
+# The shared wait — `wait_until`, `wait_pid_gone`, `wait_holder` — that every
+# section waits with, so it is sourced here and not in a section body.
+. "$repo_root/scripts/wait-fixture.sh"
+# A POLL IS NOT TRACED. Which lines a wait runs — its own second try, and the
+# false branch of its condition — depends on when the awaited event lands, not
+# on the section, and the isolation comparison has no way to leave out a line of
+# a file other than this one. So a traced section waits with the trace off and
+# takes it back after. It runs in the calling shell, because a condition may set
+# variables there. `wait_pid_gone` calls the same name, so it waits this way too.
+eval "tg_wait_until_shared() $(declare -f wait_until | tail -n +2)"
+wait_until() {
+  local tg_wait_rc=0
+  case "$-" in
+    *x*) set +x; tg_wait_until_shared "$@" || tg_wait_rc=$?; set -x ;;
+    *) tg_wait_until_shared "$@" || tg_wait_rc=$? ;;
+  esac
+  return "$tg_wait_rc"
+}
 # EXPORTED, AND THAT IS NOT A STYLE CHOICE. Nothing in any child reads this out
 # of the environment — every use is in this shell, in a subshell, or in a
 # `bash -c` whose argv the parent interpolates — so the export reads as
@@ -3698,7 +3716,7 @@ STUBEOF
   }
   au15_wait() {  # au15_wait <run id> <step id> — sets rc
     ( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" \
-      gate_inproc wait --manifest "$WORK/plan-$1.md" --segment "$2" --interval 1 --timeout 60 ) >/dev/null 2>&1; rc=$?
+      gate_inproc wait --manifest "$WORK/plan-$1.md" --segment "$2" --interval 1 --timeout "${CC_TEST_WAIT_CEILING:-120}" ) >/dev/null 2>&1; rc=$?
   }
   au15_rows() {  # au15_rows <run id> <fixed text> — that run's stage-result rows carrying it
     { grep -F '`stage-result`' "$WT/docs/pipeline-run/$1.md" 2>/dev/null || true; } | { grep -F "$2" || true; }
@@ -4577,6 +4595,111 @@ pre_cone() {
     { grep -F "\`$1\`" "$CAP_LEDGER" || true; }
   }
 
+  # THE CLAUSE-EXEC FIXTURES (34qe 정산 · 34qt 실행 트리) SHARE THESE, so that
+  # each of the two cuts alone stands. `CX_SEC` is the section id the fixture's
+  # own assertions carry; each section sets it before its first `cx_fx`.
+  cx_auth_row() {  # cx_auth_row <행> — one row placed inside `## 인가` of the cap manifest
+    awk -v r="$1" '{ print } !d && $0 == "## 인가" { print r; d = 1 }' "$CAP_NM" > "$CAP_NM.ins" \
+      && mv "$CAP_NM.ins" "$CAP_NM"
+  }
+  cx_fx() {
+    # cx_fx <run-id> <절 행…> — the cap run with those clause rows, two merged
+    # segments, a seat and a routing shift in `CX_SHIFT`; the scripts the rows
+    # name are written into the target's worktree as `CX_TWT`.
+    local rid="$1" c; shift
+    CX_RID="$rid"
+    cap_fx_new "$rid"
+    mkdir -p "$CAP_DIR/halt/shift"
+    sed -i.bak '/^\*\*구속 다이제스트\*\*/d' "$CAP_NM" && rm -f "$CAP_NM.bak"
+    sed -i.bak '/^- `종료 절` /d' "$CAP_NM" && rm -f "$CAP_NM.bak"
+    for c in "$@"; do cx_auth_row "$c"; done
+    # A section that changes the manifest further defines `cx_fx_hook`; it runs
+    # before the seat launches the shift, so every digest is read after it.
+    if declare -F cx_fx_hook >/dev/null; then cx_fx_hook; fi
+    CX_TWT=$(sed -n 's/^- `target` | 별칭=infra | 메인 워크트리=\([^|]*\) |.*/\1/p' "$CAP_NM" | sed -n 1p)
+    case "$rid" in
+      RCXA) CX_SEAT="7e7e7e7e-5555-2222-3333-00000000000a" ;;
+      RCXB) CX_SEAT="7e7e7e7e-5555-2222-3333-00000000000b" ;;
+      *)    CX_SEAT=$(printf '7e7e7e7e-5555-2222-3333-%012x' "$(printf '%s' "$rid" | cksum | cut -d' ' -f1)") ;;
+    esac
+    { cap_usage_line 10000 5000 1000; } > "$NTX/$CX_SEAT.jsonl"
+    cap_gate "$CX_SEAT" '' act --manifest "$CAP_NM" --kind router-shift --target infra \
+             --cutpoint 커밋 --surface 워크트리쓰기 --snapshot-digest "$(cap_H "$CX_SEAT" '')" \
+             --rationale "픽스처 — 교대 기동" \
+             -- 상한 -p "/cc-cmds:autopilot-router-shift $CAP_NM"
+    check "${CX_SEC:-34qe}: 픽스처 $rid 의 교대 기동이 섰다" "$rc" "0"
+    [ "$rc" = "0" ] || printf '  %s: %s\n' "${CX_SEC:-34qe}" "$msg"
+    CX_SHIFT=$(row_field "$(cap_rows '교대 기동' | tail -1)" '세션 id')
+    { cap_usage_line 10000 5000 1000; } > "$NTX/$CX_SHIFT.jsonl"
+    hw_row segment 교대=0 id=Q1 "워크트리=$CONE_C" 상태=머지됨 선행=없음
+    hw_row segment 교대=0 id=Q2 "워크트리=$CONE_C" 상태=머지됨 선행=없음
+  }
+  cx_script() {  # cx_script <이름> <본문> — one script under the target worktree's scripts/
+    mkdir -p "$CX_TWT/scripts"
+    printf '%s\n' "$2" > "$CX_TWT/scripts/$1"
+    CX_MADE="${CX_MADE:-} $CX_TWT/scripts/$1"
+  }
+  cx_commit() {
+    # cx_commit [부모] — a commit of the parent (the target worktree's HEAD when
+    # none is named) with every script cx_script wrote added, made through an
+    # index of its own so the worktree, its index and its HEAD stay as they are;
+    # prints the full sha. The gate checks the commit a merge row names out into
+    # a tree of its own, so the scripts a clause runs have to be in that commit.
+    local p="${1:-HEAD}"
+    (cd "$CX_TWT" && export GIT_INDEX_FILE="$WORK/cx-index" && rm -f "$GIT_INDEX_FILE" \
+       && git read-tree "$p" && git add scripts \
+       && t=$(git write-tree) && rm -f "$GIT_INDEX_FILE" \
+       && git commit-tree "$t" -p "$p" -m cx-scripts)
+  }
+  cx_merged() {
+    # cx_merged <세그먼트> <머지 커밋> [상태] — a merged segment of infra. The
+    # `segment` row names no target, and the gate reads a segment's target from
+    # its authorization rows, so one such row is planted with it: without it the
+    # merge is no merge of infra in a run of two targets.
+    hw_row '자율 승인' kind=segment 결정=채택 대상=infra "세그먼트=$1"
+    hw_row segment 교대=0 "id=$1" "워크트리=$CONE_C" "상태=${3:-머지됨}" 선행=없음 "머지 커밋=$2"
+  }
+  cx_trees() {  # cx_trees — how many clause-exec trees the target's repository still lists
+    { (cd "$CX_TWT" && git worktree list --porcelain) | grep -c -- '-cx-' || true; }
+  }
+  cx_exec() {
+    # cx_exec <절> <표면> [--reach <도달>] [--destructive] -- <argv…> — the
+    # shift's clause-exec; leaves `rc`, `msg` and the anchor the gate printed in
+    # `cx_a`. `CX_MODE` set to `plan` sends the plan mode instead.
+    local c="$1" s="$2"; shift 2
+    # With auto-resolution on, an opaque act above a read owes a reach, as it
+    # does on `exec`; a script that writes nowhere but the worktree declares
+    # `런로컬` unless the call names another.
+    local reach=()
+    if [ "${1:-}" = "--reach" ]; then reach=(--reach "$2"); shift 2
+    elif [ "$s" != "읽기" ]; then reach=(--reach 런로컬); fi
+    local destr=()
+    if [ "${1:-}" = "--destructive" ]; then destr=(--destructive); shift; fi
+    [ "${1:-}" = "--" ] && shift
+    cap_gate "$CX_SHIFT" "$CX_RID#1" "${CX_MODE:-act}" --manifest "$CAP_NM" --kind clause-exec --target infra --segment - \
+             --cutpoint 커밋 --surface "$s" ${reach[@]+"${reach[@]}"} ${destr[@]+"${destr[@]}"} \
+             --snapshot-digest "$(cap_H "$CX_SHIFT" "$CX_RID#1")" --rationale "픽스처 — 종료 절 근거 실행" \
+             -- "절=$c" "$@"
+    cx_a=$( { grep -oE '\[clause-exec\] 행 A-[0-9a-f]{8}' "$CAP_ERR" || true; } | tail -1 | sed 's/^.*행 //')
+  }
+  cx_clause() {  # cx_clause <id> <상태> <근거> [추가 필드…] — the shift's clause row
+    local id="$1" st="$2" ev="$3"; shift 3
+    cap_gate "$CX_SHIFT" "$CX_RID#1" act --manifest "$CAP_NM" --kind clause --target infra \
+             --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$CX_SHIFT" "$CX_RID#1")" \
+             --rationale "픽스처 — 절 정산" -- "id=$id" "상태=$st" "근거=$ev" "$@"
+  }
+  cx_halt() {  # cx_halt <세그먼트> <자리> <필드…> — the shift's stop
+    local s="$1" site="$2"; shift 2
+    cap_gate "$CX_SHIFT" "$CX_RID#1" act --manifest "$CAP_NM" --kind shift-halt --target infra --segment "$s" \
+             --site "$site" --cutpoint 커밋 --surface 읽기 \
+             --snapshot-digest "$(cap_H "$CX_SHIFT" "$CX_RID#1")" --rationale "픽스처 — 절 근거 요청" -- "$@"
+  }
+  cx_n() { cap_rows "$1" | grep -c . || true; }
+  cx_xrow() { cap_rows '종료 절 실행' | tail -1; }
+  cx_cl() {  # cx_cl <id> <jq 식> — one expression over that clause's `clauses[]` element
+    cap_snap "$CX_SEAT" '' | jq -r --arg i "$1" "[.clauses[] | select(.id == \$i)] | first | $2"
+  }
+
   # THE SEAT-APPLY FIXTURES (34s 첫 답 · 34t 승계) SHARE THESE, so that each of
   # the two cuts alone stands. Each section takes an isolated run of its own by
   # `cap_fx_new`, a worktree of `$REPO` whose base tracks a rule file, a root
@@ -4864,11 +4987,16 @@ case "$(sed -n "${k}p" "$CC_TEST_RL_PLAN")" in
   wait-kill) handoff 대기 "${CC_TEST_RL_CI:--}"; kill "$CC_TEST_RL_KILL" 2>/dev/null ;;
   wait-reset) handoff 대기 - "$CC_TEST_RL_RESET" ;;
   cap)       handoff 상한 - ;;
-  fgwait)    bash "$g" wait --manifest "$m" --segment "$CC_TEST_RL_SEG" --interval 1 --timeout 60 \
+  fgwait)    bash "$g" wait --manifest "$m" --segment "$CC_TEST_RL_SEG" --interval 1 --timeout "${CC_TEST_WAIT_CEILING:-120}" \
                > /dev/null 2>&1 ;;
   # Held until the test drops `release`, so a second launcher meets a live shift.
+  # It also ends when the test shell that owns it is gone, so a failed run
+  # leaves no held stub behind.
   hold)      printf '{"type":"stub","pid":%s}\n' "$$"
-             i=0; while [ ! -e "$o/release" ] && [ "$i" -lt 1200 ]; do sleep 0.1; i=$((i + 1)); done
+             while [ ! -e "$o/release" ]; do
+               [ -z "${WAIT_FIXTURE_OWNER:-}" ] || kill -0 "$WAIT_FIXTURE_OWNER" 2>/dev/null || break
+               sleep 0.1
+             done
              handoff 상한 - ;;
   # A shift the usage limit killed: a binding `rejected` frame, a 429 result, no handoff.
   limitdie)  printf '%s\n' '{"type":"system","subtype":"init","session_id":"sid-rl"}' \
@@ -4903,18 +5031,37 @@ STUB
           -- "$1" -p "/cc-cmds:autopilot-router-shift $CAP_NM"
       printf '%s\n' "$rc" > "$RL_O/call.rc"
       cp "$CAP_OUT" "$RL_O/call.out"; cp "$CAP_ERR" "$RL_O/call.err" ) &
-    RL_BG=$!
+    RL_BG=$!; FX_PIDS="${FX_PIDS:-}$RL_BG "
   }
   rl_join() {  # rl_join — wait for the background call; leaves `rc`
     wait "$RL_BG" 2>/dev/null || true
     rc=$(cat "$RL_O/call.rc" 2>/dev/null || printf 'none')
   }
-  rl_until() {  # rl_until <seconds> <command…> — poll every 0.1 s; 1 on timeout
-    local end=$(( $(date +%s) + $1 )); shift
-    while ! "$@"; do
-      [ "$(date +%s)" -lt "$end" ] || return 1
-      sleep 0.1
-    done
+  rl_abort() {
+    # rl_abort — the awaited event did not come within the shared ceiling. The
+    # relay would wait out its hold (3000 s by default), so end it and the call
+    # here; the `rl_join` after this then returns at once.
+    local p; p=$(rl_pid_of relay.live)
+    [ -z "$p" ] || kill "$p" 2>/dev/null || true
+    kill "$RL_BG" 2>/dev/null || true
+  }
+  rl_wake_cause() {
+    # rl_wake_cause <relay output> <사유 of the launch row> — `깨움` when the
+    # launch came from a wake: its reason is `대기` and the call's output holds no
+    # line saying the seat call's hold ran out. Anything else is `깨움 아님`.
+    if [ "$2" = 대기 ] \
+       && ! grep -qE '대기가 이어진다 — 좌석 호출의 대기 상한 [0-9]+초가 지났다' "$1" 2>/dev/null; then
+      printf '깨움'
+    else
+      printf '깨움 아님'
+    fi
+  }
+  rl_woke() {
+    # rl_woke <start file> — `<up|none>:<cause>` for the launch that file records,
+    # the cause read from the call's output and the last `교대 기동` row. Read
+    # after `rl_join`, which copies the output.
+    printf '%s:%s' "$( [ -e "$RL_O/$1" ] && printf up || printf none)" \
+      "$(rl_wake_cause "$RL_O/call.out" "$(row_field "$(cap_rows '교대 기동' | tail -1)" '사유')")"
   }
   rl_has() { [ -e "$RL_O/$1" ]; }
   rl_calls() { cat "$RL_O/k" 2>/dev/null || printf 0; }
@@ -4940,17 +5087,27 @@ STUB
     p=$(rl_pid_of relay.live); [ -n "$p" ] && kill -0 "$p" 2>/dev/null && return 0
     return 1
   }
+  rl_sample_one() {  # one sample: RL_GAP counts samples with no live marker, RL_STUBS keeps the most stubs alive at once
+    local s
+    rl_live_marker || RL_GAP=$((RL_GAP + 1))
+    s=$(rl_live_stubs); [ "$s" -le "$RL_STUBS" ] || RL_STUBS="$s"
+  }
   rl_sample() {
-    # rl_sample <seconds> [<file in RL_O that ends it>] — sample every 0.1 s.
-    # RL_GAP counts samples with no live marker, RL_STUBS keeps the most stubs
-    # alive at once.
-    local end=$(( $(date +%s) + $1 )) stop="${2:-}" s
+    # rl_sample <seconds> — sample every 0.1 s for that long. An observation
+    # window, not a wait: a busy host takes fewer samples, never a false failure.
+    local end=$(( $(date +%s) + $1 ))
     while [ "$(date +%s)" -lt "$end" ]; do
-      [ -z "$stop" ] || [ ! -e "$RL_O/$stop" ] || break
-      rl_live_marker || RL_GAP=$((RL_GAP + 1))
-      s=$(rl_live_stubs); [ "$s" -le "$RL_STUBS" ] || RL_STUBS="$s"
+      rl_sample_one
       sleep 0.1
     done
+  }
+  rl_sample_step() {  # rl_sample_step <file in RL_O> — 0 once it exists, else one sample and 1
+    [ ! -e "$RL_O/$1" ] || return 0
+    rl_sample_one
+    return 1
+  }
+  rl_sample_until() {  # rl_sample_until <file in RL_O> — sample until that file exists; 1 at the shared ceiling
+    wait_until rl_sample_step "$1"
   }
   rl_launches() { { cap_rows '교대 기동' | grep -c . || true; } | tr -d ' '; }
   rl_lines() { { grep -c . "$CAP_LEDGER" || true; } | tr -d ' '; }
@@ -4993,7 +5150,7 @@ STUB
         _ "$GATE" "$CAP_DIR" "$CAP_LEDGER" "$@" )
   }
   rl_dead_pid() {  # rl_dead_pid — a pid that has been reaped
-    local p; sleep 0 & p=$!; wait "$p" 2>/dev/null || true; printf '%s' "$p"
+    local p; true & p=$!; wait "$p" 2>/dev/null || true; printf '%s' "$p"
   }
 }
 
@@ -6036,18 +6193,20 @@ pre_sb() {
     case "$(sb_seg_last "$1")" in *"상태=적용 준비"*) sb_apply_wait "$1" ;; esac
   }
 
+  sb_apply_done() {
+    # sb_apply_done <세그먼트> — 분리 감독자가 끝났다: 기동 토큰도 감독자 자기 기록도
+    # 없고 마지막 행이 적용 준비 가 아니다.
+    local d="$SA_RUN/apply"
+    [ ! -e "$d/$1.launch" ] && [ ! -e "$d/$1.sup.self" ] || return 1
+    case "$(sb_seg_last "$1")" in *"상태=적용 준비"*) return 1 ;; esac
+    return 0
+  }
   sb_apply_wait() {
-    # sb_apply_wait <세그먼트> — 그 세그먼트의 분리 감독자가 끝날 때까지(최대 30초)
-    # 기다린다. 끝은 기동 토큰도 감독자 자기 기록도 없고 마지막 행이 적용 준비 가
-    # 아닌 때다. 감독자의 stdout·stderr 를 raw·msg 뒤에 붙인다.
-    local d="$SA_RUN/apply" i=0 sout
-    while [ "$i" -lt 150 ]; do
-      if [ ! -e "$d/$1.launch" ] && [ ! -e "$d/$1.sup.self" ]; then
-        case "$(sb_seg_last "$1")" in *"상태=적용 준비"*) ;; *) break ;; esac
-      fi
-      sleep 0.2; i=$((i + 1))
-    done
-    [ "$i" -lt 150 ] || bad "적용 감독자 대기 ($1)" "30초 안에 끝나지 않았다: $(sb_seg_last "$1")" # gate-load: 감독자가 끝나기까지 30초 상한
+    # sb_apply_wait <세그먼트> — 그 세그먼트의 분리 감독자가 끝날 때까지 공용 상한
+    # 안에서 기다린다. 감독자의 stdout·stderr 를 raw·msg 뒤에 붙인다.
+    local sout
+    wait_until sb_apply_done "$1" \
+      || bad "적용 감독자 대기 ($1)" "공용 상한 안에 끝나지 않았다: $(sb_seg_last "$1")"
     sout=$(cat "$SA_RUN/log/apply-$1.sup.out" "$SA_RUN/log/apply-$1.sup.err" 2>/dev/null || true)
     raw="$raw $(printf '%s' "$sout" | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
     msg="$msg $(printf '%s' "$sout" | grep -vE '\[run\] ' | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
@@ -6286,11 +6445,14 @@ pre_mf() {
 # `CC_CMDS_ORCH_HOST_OS` does before a fresh source, without a second source that
 # would die on a readonly constant.
 pre_ledger_series() {
+  # Section bodies call this, so whether the lines past the guard run inside a
+  # section depends on which earlier section of the cut already entered it, not
+  # on the section that calls it.
   [ -n "${PRE_LEDGER_SERIES_DONE:-}" ] && return 0
-  PRE_LEDGER_SERIES_DONE=1
-  pre_base
-  lsr_root="$WORK/ledger-series"
-  mkdir -p "$lsr_root"
+  PRE_LEDGER_SERIES_DONE=1 # gate-isolation: 변동
+  pre_base # gate-isolation: 변동
+  lsr_root="$WORK/ledger-series" # gate-isolation: 변동
+  mkdir -p "$lsr_root" # gate-isolation: 변동
 
   lsr_ledger() {
     # lsr_ledger <이름> — 빈 런 디렉터리 하나와 `## 실행 LS` 제목만 든 원장을 새로
@@ -6744,11 +6906,12 @@ BSXSTUBEOF
     # — dispatch one run-scope stage and wait on it. The act's code is left in
     # BSX_ACT_RC, the wait's in BSX_WAIT_RC. With BSX_RESUME set, the dispatch
     # re-attaches that session.
-    # The wait is an upper bound, not a pause: a stub stage ends in a second, so
-    # 60 is ample. `끝까지` is for a stage whose body itself makes many gate calls:
-    # it repeats the 60-second wait for as long as the wait ends on its timeout
-    # (13), so the stage's own last line, not the host's speed, ends it.
-    local m="$WORK/bsx-$1.md" t="${6:-60}" p
+    # The wait is an upper bound, not a pause: it ends when the stage ends, and
+    # its default is the shared wait ceiling. `끝까지` is for a stage whose body
+    # itself makes many gate calls: it repeats the wait for as long as the wait
+    # ends on its timeout (13), so the stage's own last line, not the host's
+    # speed, ends it.
+    local m="$WORK/bsx-$1.md" t="${6:-${CC_TEST_WAIT_CEILING:-120}}" p
     p=$(bsx_p "$1" "$4")
     ( cd "$WT" && XDG_STATE_HOME="$BSX_STATE" CC_CLAUDE_BIN="$2" \
       bash "$GATE" act --manifest "$m" --kind skill --target infra --segment - --cutpoint 커밋 \
@@ -6759,7 +6922,7 @@ BSXSTUBEOF
       BSX_WAIT_RC=13
       while [ "$BSX_WAIT_RC" = "13" ]; do
         ( cd "$WT" && XDG_STATE_HOME="$BSX_STATE" CC_CLAUDE_BIN="$2" \
-          bash "$GATE" wait --manifest "$m" --segment "$5" --interval 1 --timeout 60 ) >/dev/null 2>&1; BSX_WAIT_RC=$?
+          bash "$GATE" wait --manifest "$m" --segment "$5" --interval 1 --timeout "${CC_TEST_WAIT_CEILING:-120}" ) >/dev/null 2>&1; BSX_WAIT_RC=$?
       done
       return 0
     fi
@@ -7680,7 +7843,7 @@ check "권장 한도는 10분 아래로 내려가지 않는다" \
   "$(grep -c '^test-gate: 권장 한도 — 600000ms$' "$est_dir/e.out" || true)" "1"
 # With no record there is no table to fit the model to.
 mkdir -p "$est_dir/bare/scripts"
-cp "$est_suite" "$est_dir/bare/scripts/test-gate.sh"
+cp "$est_suite" "$repo_root/scripts/wait-fixture.sh" "$est_dir/bare/scripts/"
 CC_TEST_GATE_REPO_ROOT="$est_dir/bare" CC_GATE_TIMING_RECORD="$est_dir/empty.tsv" \
   bash "$est_dir/bare/scripts/test-gate.sh" --estimate --sections 0d > "$est_dir/b.out" 2>&1 || true
 check "표가 비면 출처는 없음, 합계는 없고 한도는 상한이다" \
@@ -7722,7 +7885,7 @@ env -u CC_GATE_TIMING_RECORD CC_TEST_GATE_REPO_ROOT="$est_dir/bare" \
 check "기록 변수가 없으면 공통 git 디렉터리의 파일에 쓴다" \
   "$(cut -f1,2 "$est_dir/bare/.git/cc-cmds-gate-timing.tsv" 2>/dev/null | tr '\t' ' ')" "k 8"
 mkdir -p "$est_dir/nogit/scripts"
-cp "$est_suite" "$est_dir/nogit/scripts/test-gate.sh"
+cp "$est_suite" "$repo_root/scripts/wait-fixture.sh" "$est_dir/nogit/scripts/"
 est_rc=0
 env -u CC_GATE_TIMING_RECORD GIT_CEILING_DIRECTORIES="$est_dir" CC_TEST_GATE_REPO_ROOT="$est_dir/nogit" \
   bash "$est_dir/nogit/scripts/test-gate.sh" --record-add "$est_dir/add2.tsv" > /dev/null 2> "$est_dir/nogit.err" || est_rc=$?
@@ -7752,10 +7915,15 @@ CC_TEST_GATE_ORACLE_INNER=1 CC_TEST_GATE_REPO_ROOT="$repo_root" CC_GATE_PROGRESS
 est_nest=없음; [ -e "$est_dir/nest.tsv" ] && est_nest=있음
 check "중첩 호출은 기록도 진행 줄도 쓰지 않는다" \
   "$est_nest|$(grep -c '^test-gate: 진행 — ' "$est_dir/nest.err" || true)" "없음|0"
-( env -u CC_TEST_GATE_ORACLE_INNER CC_TEST_GATE_REPO_ROOT="$repo_root" CC_GATE_PROGRESS_SECS=1 \
+# The pipeline runs in the background so the wait for its end is an event: the
+# child writes `child_end` when it ends, and the pipe's reader ends only once
+# the loop lets the pipe go.
+( ( env -u CC_TEST_GATE_ORACLE_INNER CC_TEST_GATE_REPO_ROOT="$repo_root" CC_GATE_PROGRESS_SECS=1 \
     TMPDIR="$est_dir" bash "$est_dir/slow.sh" --run-one 0d 2>&1 > "$est_dir/p.out"
-  date +%s > "$est_dir/child_end" ) | cat > "$est_dir/p.err"
-date +%s > "$est_dir/pipe_end"
+  date +%s > "$est_dir/child_end" ) | cat > "$est_dir/p.err" ) &
+est_pipe=$!
+est_pipe_end=끝남
+wait_pid_gone "$est_pipe" || { est_pipe_end=안끝남; kill "$est_pipe" 2>/dev/null || true; }
 est_lines=$(grep -c '^test-gate: 진행 — ' "$est_dir/p.err" || true)
 est_shape=$(grep '^test-gate: 진행 — ' "$est_dir/p.err" \
   | grep -c -v -E '^test-gate: 진행 — 절 [^ ]+ [0-9]+초째\(예상 ([0-9]+초|없음)\) · 전체 [0-9]+초\(예상 ([0-9]+초|없음)\)$' || true)
@@ -7766,11 +7934,9 @@ else
 fi
 check "진행 줄은 stdout 에 섞이지 않고 합계 줄은 그대로다" \
   "$(grep -c '^test-gate: 진행' "$est_dir/p.out" || true)|$(grep -c -E '^test-gate: [0-9]+ passed, 0 failed$' "$est_dir/p.out" || true)" "0|1"
-est_gap=$(( $(cat "$est_dir/pipe_end") - $(cat "$est_dir/child_end") ))
 est_left=$(pgrep -f "$est_dir/slow.sh" 2>/dev/null | grep -c . || true)
-# gate-load: 자식 종료에서 파이프를 놓기까지 2초 상한
-check "자식이 끝나면 루프가 2초 안에 파이프를 놓고 남지 않는다" \
-  "$([ "$est_gap" -le 2 ] && echo 2초안 || echo "${est_gap}초")|${est_left:-0}" "2초안|0"
+check "자식이 끝나면 루프가 파이프를 놓고 남지 않는다" \
+  "$est_pipe_end|$([ -s "$est_dir/child_end" ] && echo 자식끝 || echo 자식안끝)|${est_left:-0}" "끝남|자식끝|0"
 rm -rf "$est_dir"
 
 # ---------------------------------------------------------------------------
@@ -10114,7 +10280,8 @@ e12_end() {  # e12_end <case> [live] — one B4 ending on a fresh run dir; leave
       set +e
       sp=""
       if [ "$E12_LIVE" = live ]; then
-        sleep 30 & sp=$!
+        . "'"$repo_root"'/scripts/wait-fixture.sh"
+        wait_holder >/dev/null 2>&1 & sp=$!
         printf "%s\n%s\n" "$sp" "$(cc_proc_fingerprint "$sp")" > "$RUN_DIR/shift.live"
       fi
       gate_end_run B4 "비용이 선언 천장에 닿았습니다 (100/100)"
@@ -11326,7 +11493,7 @@ sg_launch() {  # sg_launch <argv-out> <env-out> [--resume <id>] — a stub launc
         --cutpoint 커밋 --surface 워크트리쓰기 --snapshot-digest "$(HH)" --rationale x "$@" \
         --trigger '첫 리뷰' -- review -p "$(rv_x R1 SG)" 2>&1); rc=$?
   ( cd "$WT" && CC_CLAUDE_BIN="$STUB" \
-    bash "$GATE" wait --manifest "$FX_MANIFEST" --segment SG --interval 1 --timeout 60 >/dev/null 2>&1 )
+    bash "$GATE" wait --manifest "$FX_MANIFEST" --segment SG --interval 1 --timeout "${CC_TEST_WAIT_CEILING:-120}" >/dev/null 2>&1 )
 }
 sg_launch "$WORK/sg-argv-0.txt" "$WORK/sg-env-0.txt"
 check "재개 픽스처의 첫 기동이 끝까지 간다" "$rc" "0"
@@ -11459,8 +11626,8 @@ esac
 # the stage's outcome waits for it first. `wait` blocks on the detached
 # supervisor and answers the stage's own rc — the stub's 0.
 wait_out=$(cd "$WT" && CC_CLAUDE_BIN="$STUB" \
-      bash "$GATE" wait --manifest "$FX_MANIFEST" --segment SL --interval 1 --timeout 60 2>&1); wait_rc=$?
-check "wait 이 파견된 스테이지의 rc 를 그대로 돌려준다" "$wait_rc" "0" # gate-load: wait 가 60초 상한 안에 끝나야 한다
+      bash "$GATE" wait --manifest "$FX_MANIFEST" --segment SL --interval 1 --timeout "${CC_TEST_WAIT_CEILING:-120}" 2>&1); wait_rc=$?
+check "wait 이 파견된 스테이지의 rc 를 그대로 돌려준다" "$wait_rc" "0"
 # The plugin root actually reaches the wrapper, and it is the directory that
 # contains the skills — not the orchestrator directory.
 if [ -f "$WORK/stub-argv.txt" ]; then
@@ -11555,7 +11722,7 @@ out=$(cd "$WT" && CC_CLAUDE_BIN="$STUB" CC_STUB_ARGV_OUT="$WORK/stub-argv-sl4.tx
       -- generic "/cc-cmds:x" 2>&1); rc=$?
 check "표 밖 종류(generic)의 기동도 끝까지 간다" "$rc" "0"
 wait_out=$(cd "$WT" && CC_CLAUDE_BIN="$STUB" \
-      bash "$GATE" wait --manifest "$FX_MANIFEST" --segment SL4 --interval 1 --timeout 60 2>&1); wait_rc=$?
+      bash "$GATE" wait --manifest "$FX_MANIFEST" --segment SL4 --interval 1 --timeout "${CC_TEST_WAIT_CEILING:-120}" 2>&1); wait_rc=$?
 check "표 밖 종류의 argv 에는 --autocompact 가 없다" "$(si_argv_has "$WORK/stub-argv-sl4.txt" --autocompact)" "0"
 sl4_row=$(grep '^- `stage-result` ' "$FX_LEDGER" | grep -F '세그먼트=SL4 ' | tail -1)
 case "$sl4_row" in
@@ -11573,7 +11740,7 @@ out=$(cd "$WT" && CC_CLAUDE_BIN="$STUB" CC_STUB_ARGV_OUT="$WORK/stub-argv-sl5.tx
       --trigger '첫 리뷰' -- review -p "$(rv_x R1 SL5)" 2>&1); rc=$?
 check "끄기 스위치 아래의 review 기동도 끝까지 간다" "$rc" "0"
 wait_out=$(cd "$WT" && CC_CLAUDE_BIN="$STUB" \
-      bash "$GATE" wait --manifest "$FX_MANIFEST" --segment SL5 --interval 1 --timeout 60 2>&1); wait_rc=$?
+      bash "$GATE" wait --manifest "$FX_MANIFEST" --segment SL5 --interval 1 --timeout "${CC_TEST_WAIT_CEILING:-120}" 2>&1); wait_rc=$?
 check "CC_ORCH_STAGE_AUTOCOMPACT=off 면 review 의 argv 에도 --autocompact 가 없다" "$(si_argv_has "$WORK/stub-argv-sl5.txt" --autocompact)" "0"
 sl5_row=$(grep '^- `stage-result` ' "$FX_LEDGER" | grep -F '세그먼트=SL5 ' | tail -1)
 case "$sl5_row" in
@@ -11612,7 +11779,7 @@ out=$(cd "$WT" && CC_CLAUDE_BIN="$STUB" CC_STUB_ARGV_OUT="$WORK/stub-argv-sl6.tx
       --trigger '첫 리뷰' -- review -p "$(rv_x R1 SL6)" 2>&1); rc=$?
 check "두 끄기 스위치 아래의 기동도 끝까지 간다" "$rc" "0"
 wait_out=$(cd "$WT" && CC_CLAUDE_BIN="$STUB" \
-      bash "$GATE" wait --manifest "$FX_MANIFEST" --segment SL6 --interval 1 --timeout 60 2>&1); wait_rc=$?
+      bash "$GATE" wait --manifest "$FX_MANIFEST" --segment SL6 --interval 1 --timeout "${CC_TEST_WAIT_CEILING:-120}" 2>&1); wait_rc=$?
 check "끄기 스위치 아래의 argv 에는 --effort 도 --model 도 없다" \
   "$(si_argv_has "$WORK/stub-argv-sl6.txt" --effort):$(si_argv_has "$WORK/stub-argv-sl6.txt" --model)" "0:0"
 check "끄기 스위치는 압축 창 주입을 건드리지 않는다" "$(si_argv_value "$WORK/stub-argv-sl6.txt" --autocompact)" "300000"
@@ -14003,8 +14170,8 @@ chmod +x "$STUB15C"
   -- design -p "$design15c" ) >/dev/null 2>&1; rc=$?
 check "15c: 세그먼트 행 0개 매니페스트에서 --segment - 설계 파견이 기동한다" "$rc" "0"
 ( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" CC_CLAUDE_BIN="$STUB15C" \
-  bash "$GATE" wait --manifest "$M15C" --segment D1 --interval 1 --timeout 60 ) >/dev/null 2>&1; rc=$?
-check "15c: 단계 id 로 wait 하면 스테이지 rc 0 을 돌려준다" "$rc" "0" # gate-load: wait 가 60초 상한 안에 끝나야 한다
+  bash "$GATE" wait --manifest "$M15C" --segment D1 --interval 1 --timeout "${CC_TEST_WAIT_CEILING:-120}" ) >/dev/null 2>&1; rc=$?
+check "15c: 단계 id 로 wait 하면 스테이지 rc 0 을 돌려준다" "$rc" "0"
 rows15c() { { grep -F '`stage-result`' "$L15C" 2>/dev/null || true; } | { grep -F "$1" || true; }; }
 check "15c: 설계 단계의 stage-result 행이 세그먼트=- · 스테이지=단계 id 다" \
   "$(rows15c '| 세그먼트=- | 스테이지=D1 | 종류=design |' | grep -c . || true)" "1"
@@ -14018,8 +14185,7 @@ check "15c: 스테이지는 세그먼트 - 와 단계 id 기반 스테이지 id 
 # The prelude of the next call must not read the finished record as a lost
 # dispatch: a second wait answers from the same row and adds none.
 ( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" CC_CLAUDE_BIN="$STUB15C" \
-  bash "$GATE" wait --manifest "$M15C" --segment D1 --interval 1 --timeout 60 ) >/dev/null 2>&1; rc=$?
-# gate-load: wait 가 60초 상한 안에 끝나야 한다
+  bash "$GATE" wait --manifest "$M15C" --segment D1 --interval 1 --timeout "${CC_TEST_WAIT_CEILING:-120}" ) >/dev/null 2>&1; rc=$?
 check "15c: 같은 단계를 다시 기다려도 rc 0 이고 행은 늘지 않는다" \
   "$rc/$(rows15c '스테이지=D1 ' | grep -c . || true)" "0/1"
 check "15c: 파견 뒤에도 원장에 segment 행이 생기지 않는다" \
@@ -14046,7 +14212,7 @@ chmod +x "$STUB15CF"
   --surface 워크트리쓰기 --snapshot-digest "$(H15C)" --rationale x \
   -- design -p "$design15c" ) >/dev/null 2>&1
 ( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" CC_CLAUDE_BIN="$STUB15CF" \
-  bash "$GATE" wait --manifest "$M15C" --segment D1 --interval 1 --timeout 60 ) >/dev/null 2>&1
+  bash "$GATE" wait --manifest "$M15C" --segment D1 --interval 1 --timeout "${CC_TEST_WAIT_CEILING:-120}" ) >/dev/null 2>&1
 check "15c: 문서를 동결하고 그렇게 말한 설계 단계는 정상 완료다" \
   "$(rows15c '스테이지=D1 ' | tail -1 | tr '|' '\n' | sed -n 's/^ *종단 부류=//p' | sed 's/[[:space:]]*$//')" "정상 완료"
 rm -f "$WT/docs/fixture-design.md"
@@ -14083,7 +14249,7 @@ launch15x() {
     --surface 워크트리쓰기 --snapshot-digest "$(H15X "$1")" --rationale x \
     -- design -p "$(prompt15x "$1")" ) >/dev/null 2>&1 || true
   ( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" CC_CLAUDE_BIN="$2" \
-    bash "$GATE" wait --manifest "$1" --segment D1 --interval 1 --timeout 60 ) >/dev/null 2>&1 || true
+    bash "$GATE" wait --manifest "$1" --segment D1 --interval 1 --timeout "${CC_TEST_WAIT_CEILING:-120}" ) >/dev/null 2>&1 || true
 }
 settle15x() {
   # settle15x <manifest> <clause id> <상태> <근거>
@@ -14401,7 +14567,7 @@ resume15x() {
     -- design -p "$(prompt15x "$1")" 2>&1); rc=$?
   [ "$rc" = "0" ] || return 0
   ( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" CC_CLAUDE_BIN="$2" \
-    bash "$GATE" wait --manifest "$1" --segment D1 --interval 1 --timeout 60 ) >/dev/null 2>&1 || true
+    bash "$GATE" wait --manifest "$1" --segment D1 --interval 1 --timeout "${CC_TEST_WAIT_CEILING:-120}" ) >/dev/null 2>&1 || true
 }
 fresh15x R15P 'docs/fixture-design-15p.md' K1
 settle15x "$WORK/plan-R15P.md" K1 불가능 "설계 문서가 동결되지 않는다"
@@ -14539,7 +14705,7 @@ launch15d() {  # launch15d <segment> [--resume <id>] — dispatch through the st
         -- implement -p "/cc-cmds:implement-unattended 원래 프롬프트" 2>&1); rc=$?
   [ "$rc" = "0" ] || return 0
   ( cd "$WT" && CC_CLAUDE_BIN="$STUB15D" \
-    bash "$GATE" wait --manifest "$FX_MANIFEST" --segment "$s" --interval 1 --timeout 60 >/dev/null 2>&1 )
+    bash "$GATE" wait --manifest "$FX_MANIFEST" --segment "$s" --interval 1 --timeout "${CC_TEST_WAIT_CEILING:-120}" >/dev/null 2>&1 )
 }
 last15d() {  # last15d <segment> <field> — that field of the segment's last stage-result row
   { grep '^- `stage-result` ' "$FX_LEDGER" || true; } | { grep -F "세그먼트=$1 " || true; } | tail -1 \
@@ -14766,7 +14932,7 @@ launch15r() {  # launch15r <segment> [--resume <id>] — dispatch through the re
         -- implement -p "/cc-cmds:implement-unattended 원래 프롬프트" 2>&1); rc=$?
   [ "$rc" = "0" ] || return 0
   ( cd "$WT" && CC_CLAUDE_BIN="$STUB15R" \
-    bash "$GATE" wait --manifest "$FX_MANIFEST" --segment "$s" --interval 1 --timeout 60 >/dev/null 2>&1 )
+    bash "$GATE" wait --manifest "$FX_MANIFEST" --segment "$s" --interval 1 --timeout "${CC_TEST_WAIT_CEILING:-120}" >/dev/null 2>&1 )
 }
 refmsg15r=$(cd "$WT" && CC_GATE_SOURCE_ONLY=1 bash -c '. "'"$GATE"'"; refusal_message')
 
@@ -15486,7 +15652,7 @@ ahead15e=$( cd "$WT" && git commit-tree "main^{tree}" -p "$orig15e" -m ahead-15e
 au15_dispatch R15EA "$STUB_AU_AUDIT" audit "$audit15e"
 check "15e: 동결된 설계 뒤 감사 파견이 기동한다" "$rc" "0"
 au15_wait R15EA A1
-check "15e: 감사 단계를 단계 id 로 wait 하면 rc 0 이다" "$rc" "0" # gate-load: wait 가 60초 상한 안에 끝나야 한다
+check "15e: 감사 단계를 단계 id 로 wait 하면 rc 0 이다" "$rc" "0"
 check "15e: 감사 단계의 stage-result 행이 세그먼트=- · 스테이지=A1 · 종류=audit 이다" \
   "$(au15_rows R15EA '| 세그먼트=- | 스테이지=A1 | 종류=audit |' | grep -c . || true)" "1"
 check "15e: 단계 id 를 세그먼트로 쓴 감사 행은 없다" \
@@ -15523,7 +15689,6 @@ gateL exec --manifest "$WORK/plan-R15EA.md" --target infra --segment - --cutpoin
 check "15e: 감사 스테이지가 아닌 호출자의 --segment - 행위는 메인 워크트리에서 돈다" \
   "$rc/$(printf ' %s \n' "$msg" | grep -cF -- " $WT " || true)/$(printf ' %s \n' "$msg" | grep -cF -- " $AW15E " || true)" "0/1/0"
 au15_wait R15EA A1
-# gate-load: wait 가 60초 상한 안에 끝나야 한다
 check "15e: 같은 감사 단계를 다시 기다려도 rc 0 이고 외부 종료 행이 생기지 않는다" \
   "$rc/$(au15_rows R15EA '스테이지=A1 ' | grep -c . || true)/$(au15_rows R15EA '종단 부류=외부 종료' | grep -c . || true)" "0/1/0"
 check "15e: 감사 파견 뒤에도 원장에 segment 행이 생기지 않는다" \
@@ -16709,7 +16874,7 @@ printf '# 시각 사이드카\n\n**상태**: 검토 통과\n' > "$SC15V"
 au15_dispatch R15V "$STUB_VIS15" visual "$visual15v"
 check "15v: 검토 통과 사이드카를 둔 시각 파견이 기동한다" "$rc" "0"
 au15_wait R15V S2V
-check "15v: 그 시각 단계의 기다림이 상한 안에 끝난다 (아래 판정이 앞 행을 읽지 않는다)" "$rc" "0" # gate-load: wait 가 60초 상한 안에 끝나야 한다
+check "15v: 그 시각 단계의 기다림이 상한 안에 끝난다 (아래 판정이 앞 행을 읽지 않는다)" "$rc" "0"
 check "15v: 종결 문구와 검토 통과 사이드카가 함께인 시각 단계는 정상 완료다" "$(au15_class R15V S2V visual)" "정상 완료"
 # A step that ended `정상 완료` on its screens is not dispatched again in the
 # same run: only the design system round trip re-opens a finished visual step,
@@ -20816,7 +20981,7 @@ out=$(cd "$WT" && XDG_STATE_HOME="$STATE_LATE" CC_CLAUDE_BIN="$STUB_AU_HOLLOW" \
 check "15h: 브리프를 문서 인자로 단 implement 파견이 기동한다" "$rc" "0"
 [ "$rc" = "0" ] || bad "15h 파견 출력" "$(printf '%s' "$out" | tail -5 | tr '\n' ' ')"
 ( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" \
-  gate_inproc wait --manifest "$WORK/plan-R15HA.md" --segment S2 --interval 1 --timeout 60 ) >/dev/null 2>&1
+  gate_inproc wait --manifest "$WORK/plan-R15HA.md" --segment S2 --interval 1 --timeout "${CC_TEST_WAIT_CEILING:-120}" ) >/dev/null 2>&1
 bash -s "$repo_root/plugins/cc-cmds/orchestrator/run.sh" "$WORK/plan-R15HA.md" "$WORK/brief15h-driver.md" 2>"$WORK/h15drv.err" <<'EOF'
   CC_ORCH_SOURCE_ONLY=1 . "$1" >/dev/null
   set +eu
@@ -22806,7 +22971,7 @@ b_settle_victim() {
   [ "$3" = y ] && printf '1\n' > "$d/ends-on-done"
   [ "$4" = y ] && printf '종단 — 픽스처\n' > "$d/done"
   if [ "$5" = y ]; then
-    sleep 600 & pid=$!
+    wait_holder >/dev/null 2>&1 & pid=$!
     FX_PIDS="${FX_PIDS:-}$pid "; export FX_PIDS
     { printf '%s\n' "$pid"
       LC_ALL=C ps -o lstart= -p "$pid" 2>/dev/null | sed 's/[[:space:]]\{1,\}/ /g;s/^ //;s/ $//'
@@ -22867,15 +23032,18 @@ printf '%s\n' "$(( $(date -u +%s) - BAGE_OLD ))" > "$B4D/started-at"
 fx_age_file "$B4D/fixture-ledger.md" "$BAGE_OLD"
 fx_age_file "$B4D" "$BAGE_OLD"
 b_victim RV-B4 "$BAGE_OLD" 종단; B4V="$B_VICTIM"
+b4_before=$(date -u +%s)
 b_trigger RB4
 check "B4 대조군은 같은 패스에서 사라진다" "$(b_exists "$B4V")" "no"
 check "B4 현재 런은 자기를 지우지 못한다" "$(b_isdir "$B4D")" "yes"
 # 그리고 왜 도달 불가인지. `rundir_init` 이 런-오픈 분기보다 먼저 돌아 자기
 # `started-at` 을 now 로 다시 쓰므로, 회수가 도달할 때 보존 시계가 언제나 0 이다.
+# The old value lies BAGE_OLD (ten days) in the past, so "rewritten" is an
+# ordering: the value is no earlier than the clock read just before the trigger
+# and no later than the clock read after it.
 b4_now=$(date -u +%s); b4_started=$(cat "$B4D/started-at" 2>/dev/null || printf 0)
-# gate-load: 다시 쓴 시각과 지금의 차가 120초 안이어야 한다
 check "B4 자기 started-at 은 게이트 진입이 now 로 다시 썼다" \
-  "$(if [ $((b4_now - b4_started)) -lt 120 ]; then printf yes; else printf no; fi)" "yes"
+  "$(if [ "$b4_started" -ge "$b4_before" ] && [ "$b4_started" -le "$b4_now" ]; then printf yes; else printf no; fi)" "yes"
 
 # --- B5 / B6 — 인덱스 정리 ---------------------------------------------------
 b_victim RV-B5      "$BAGE_OLD"   종단; B5V="$B_VICTIM"
@@ -22911,7 +23079,9 @@ B7_LOG="$WORK/b7-appended.txt"
 # 때문이다. 건너뛴 것까지 적으면 게이트가 스스로 포기한 쓰기를 유실로 세게 된다.
 (
   i=1
-  while [ "$i" -le 60 ]; do
+  # The count is the number of appends and the sleep the spacing that makes them
+  # race the prune; nothing here waits for an event.
+  while [ "$i" -le 60 ]; do # lint-test-clock: disable=poll-count 횟수는 쓰기 개수이고 잠은 경합 간격이다 — 사건을 기다리는 루프가 아니다
     # THE RUN DIRECTORY IS CREATED FIRST, because that is the order the gate
     # writes in — the directory is already there, holding the run's handles,
     # when the id reaches the session index. An id appended without one is
@@ -23059,12 +23229,12 @@ printf 'RV-B7C\n' > "$B7C"
 ) &
 B7C_PID=$!
 FX_PIDS="${FX_PIDS:-}$B7C_PID "
-b7c_rounds=0
-while [ "$b7c_rounds" -lt 200 ] && kill -0 "$B7C_PID" 2>/dev/null; do
+# The rewrites go on for as long as the writer runs; the writer ends by itself
+# after its 800 appends.
+while kill -0 "$B7C_PID" 2>/dev/null; do
   grep -vxF 'RV-B7C' "$B7C" > "$B7C.tmp" 2>/dev/null
   sleep 0.02
   mv "$B7C.tmp" "$B7C" 2>/dev/null || true
-  b7c_rounds=$((b7c_rounds + 1))
 done
 wait "$B7C_PID" 2>/dev/null || true
 b7c_missing=0
@@ -23406,7 +23576,7 @@ fx_age_file "$B17L" "$BAGE_OLD"
 b_victim RV-B17F "$BAGE_OLD" 종단; B17F="$B_VICTIM"
 printf 'pid=%s\nfingerprint=%s\n' "$$" "Thu Jan  1 00:00:00 1970" > "$B17F/observer.code-inuse"
 fx_age_file "$B17F" "$BAGE_OLD"
-sleep 0 & B17_DEAD=$!; wait "$B17_DEAD" 2>/dev/null || true
+true & B17_DEAD=$!; wait "$B17_DEAD" 2>/dev/null || true
 b_victim RV-B17D "$BAGE_OLD" 종단; B17D="$B_VICTIM"
 printf 'pid=%s\nfingerprint=%s\n' "$B17_DEAD" "$B17_FP" > "$B17D/observer.code-inuse"
 fx_age_file "$B17D" "$BAGE_OLD"
@@ -23770,7 +23940,7 @@ esac
 # The dispatch above detached a supervisor running the no-op CLI; its
 # `stage-result` row lands asynchronously, so it is waited for here rather
 # than left to race the rows the sections below count.
-gateN wait --manifest "$NM" --segment SD --interval 1 --timeout 60
+gateN wait --manifest "$NM" --segment SD --interval 1 --timeout "${CC_TEST_WAIT_CEILING:-120}"
 
 # --- 31i. Grade 2 becomes the approval its own refusal used to promise ------
 # --- section: 31i | group: cone | covers: act | anchors: 등급 2 판단은 절단점=판단 승인으로 응답한다 ---
@@ -24119,7 +24289,7 @@ n_emit_before=$( { grep -F '출처=스테이지 방출' "$LEDGER2" || true; } | 
 # The dispatch returns at once; the absorber runs in the detached supervisor
 # when the stage ends, so the row is waited for before it is counted.
 ( cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CC_CLAUDE_BIN="$JSTUB" \
-  bash "$GATE" wait --manifest "$NM" --segment SJ --interval 1 --timeout 60 ) >/dev/null 2>&1
+  bash "$GATE" wait --manifest "$NM" --segment SJ --interval 1 --timeout "${CC_TEST_WAIT_CEILING:-120}" ) >/dev/null 2>&1
 n_emit_after=$( { grep -F '출처=스테이지 방출' "$LEDGER2" || true; } | grep -c . || true)
 check "합집합을 통과하지 못한 방출 판단은 자율 승인 행을 쓰지 않는다" "$n_emit_after" "$n_emit_before"
 case "$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -F '절단점=판단' | tail -1)" in
@@ -24986,7 +25156,7 @@ n_emit_before2=$( { grep -F '출처=스테이지 방출' "$LEDGER2" || true; } |
   --surface 워크트리쓰기 --snapshot-digest "$(HN)" --rationale x \
   --trigger '첫 리뷰' -- review -p "$(rv_x "$CONE_RUN_ID" SJ2 "$CANON_TOP")" ) >/dev/null 2>&1
 ( cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CC_CLAUDE_BIN="$JSTUB2" \
-  bash "$GATE" wait --manifest "$NM" --segment SJ2 --interval 1 --timeout 60 ) >/dev/null 2>&1
+  bash "$GATE" wait --manifest "$NM" --segment SJ2 --interval 1 --timeout "${CC_TEST_WAIT_CEILING:-120}" ) >/dev/null 2>&1
 n_emit_after2=$( { grep -F '출처=스테이지 방출' "$LEDGER2" || true; } | grep -c . || true)
 if [ "${n_emit_after2:-0}" -gt "${n_emit_before2:-0}" ]; then
   ok "합집합을 통과한 방출 판단은 출처=스테이지 방출 행을 만든다 (흡수기를 지우면 이 단언이 실패한다)"
@@ -25030,7 +25200,7 @@ napp_before=$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -cF '절단점=
   --surface 워크트리쓰기 --snapshot-digest "$(HN)" --rationale x \
   --trigger '첫 리뷰' -- review -p "$(rv_x "$CONE_RUN_ID" SJ3 "$CANON_TOP")" ) >/dev/null 2>&1
 ( cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CC_CLAUDE_BIN="$JSTUB3" \
-  bash "$GATE" wait --manifest "$NM" --segment SJ3 --interval 1 --timeout 60 ) >/dev/null 2>&1
+  bash "$GATE" wait --manifest "$NM" --segment SJ3 --interval 1 --timeout "${CC_TEST_WAIT_CEILING:-120}" ) >/dev/null 2>&1
 napp_after=$( { grep -F '`승인`' "$LEDGER2" || true; } | grep -cF '절단점=판단' || true)
 if [ "${napp_after:-0}" -gt "${napp_before:-0}" ]; then
   ok "부류 없는 방출 판단은 조용히 버려지지 않고 승인으로 올라간다"
@@ -27391,10 +27561,7 @@ if [ -f "$DONE_DIR/done" ]; then
 else
   bad "done 파일" "$DONE_DIR/done 이 없다 — 뒤따르는 단언이 전부 공허하다"
 fi
-done4_i=0
-while [ "$done4_i" -lt 30 ] && ! grep -qF -- '-title cc-cmds · 결과를 확인하세요' "$DONE_NLOG" 2>/dev/null; do
-  sleep 0.1; done4_i=$((done4_i + 1))
-done
+wait_until grep -qF -- '-title cc-cmds · 결과를 확인하세요' "$DONE_NLOG" 2>/dev/null || true
 check "좌석의 종료 제안이 ended 를 한 번 울린다" \
   "$( { grep -cF -- '-title cc-cmds · 결과를 확인하세요' "$DONE_NLOG" || true; } | tr -d ' ')" "1"
 check "그 발사가 런의 종단 점유와 발사 표시를 남긴다" \
@@ -27632,10 +27799,7 @@ check "Q2: 그 거절이 런을 끝내 done 을 남긴다" \
 check "Q2: 종료 조건 성립 종료 행이 하나 남는다" \
   "$( { grep -F '| 결정=종료 |' "$LEDGER5" 2>/dev/null || true; } | { grep -F '| 기준=종료 조건 성립 |' || true; } \
       | { grep -F '| 종료 부류=완료 |' || true; } | grep -c . || true)" "1"
-done5_i=0
-while [ "$done5_i" -lt 30 ] && ! grep -qF -- '-title cc-cmds · 결과를 확인하세요' "$DONE5_NLOG" 2>/dev/null; do
-  sleep 0.1; done5_i=$((done5_i + 1))
-done
+wait_until grep -qF -- '-title cc-cmds · 결과를 확인하세요' "$DONE5_NLOG" 2>/dev/null || true
 check "Q2: 그 종단이 ended 를 한 번 울린다" \
   "$( { grep -cF -- '-title cc-cmds · 결과를 확인하세요' "$DONE5_NLOG" || true; } | tr -d ' ')" "1"
 case "$(head -n 1 "$DONE5_DIR/done" 2>/dev/null || true)" in
@@ -28388,7 +28552,7 @@ emit_collect() {
   # read while the dispatch blocked, rather than weakening them to the rows.
   local _w _rd _att
   _w=$(cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CC_CLAUDE_BIN="$2" \
-       bash "$GATE" wait --manifest "$NM" --segment "$1" --interval 1 --timeout 60 2>&1); rc=$?
+       bash "$GATE" wait --manifest "$NM" --segment "$1" --interval 1 --timeout "${CC_TEST_WAIT_CEILING:-120}" 2>&1); rc=$?
   _rd="$STATE_CONE/cc-cmds/run/$CONE_RUN_ID"
   _att=$( { cat "$_rd/$1.attempt" 2>/dev/null || true; } | tr -d '[:space:]')
   out="$out
@@ -28410,7 +28574,7 @@ check "그 물음을 무효로 닫는다" "$rc" "0"
 # to re-open it, and before the disposition existed that refusal came back as a
 # bare non-zero in the middle of the recording function.
 emit_torn SJ4 "$JSTUB4"
-check "닫힌 물음을 다시 방출해도 게이트는 앞서와 같은 값으로 끝난다" "$rc" "$torn_rc1" # gate-load: 두 wait 가 모두 60초 상한 안에 끝나야 같은 값이다
+check "닫힌 물음을 다시 방출해도 게이트는 앞서와 같은 값으로 끝난다" "$rc" "$torn_rc1"
 case "$out" in
   *"스테이지 종단"*) ok "기록 함수가 끝까지 도달한다 (흡수기에서 죽지 않는다)" ;;
   *) bad "흡수기 탈출" "스테이지 종단 줄이 없다 — 기록 도중 게이트가 죽었다: $out" ;;
@@ -30281,14 +30445,13 @@ chmod +x "$WORK/bin/terminal-notifier"
 # The emitter launches the notifier DETACHED and never asks its status, so a
 # write can land after the gate process has exited. Bounded wait, boolean
 # assertion — never a comparison of elapsed seconds.
+notify_have() {  # notify_have <수> — 알림 로그에 그만큼의 줄이 왔다
+  local n
+  n=$(grep -c . "$NOTIFY_LOG" 2>/dev/null || true)
+  [ "${n:-0}" -ge "$1" ]
+}
 notify_settle() {
-  local want="$1" i=0 n
-  while [ "$i" -lt 60 ]; do
-    n=$(grep -c . "$NOTIFY_LOG" 2>/dev/null || true)
-    if [ "${n:-0}" -ge "$want" ]; then return 0; fi
-    sleep 0.1
-    i=$((i + 1))
-  done
+  wait_until notify_have "$1" 2>/dev/null || true
   return 0
 }
 notify_lines() { grep -c . "$NOTIFY_LOG" 2>/dev/null || true; }
@@ -30464,8 +30627,7 @@ check "샤드 호출은 배너를 올리지 않는다" "$(notify_lines)" "0"
 # on passing: a predicate that is right in one direction and wrong in the other
 # satisfies all of them. The two directions are asserted together from here on.
 SEAT_EMITTER="$(dirname "$GATE")/notify-run.sh"
-seat_clear() {  # seat_clear <shift-id> <segment> <stage-id> — `-remove` 회수
-  local i=0
+seat_clear() {  # seat_clear <shift-id> <segment> <stage-id> <기대 수> — `-remove` 회수
   : > "$NOTIFY_LOG"
   ( cd "$WT" && PATH="$WORK/bin:$PATH" \
     CC_CMDS_AUTOPILOT_NOTIFY=1 \
@@ -30478,17 +30640,18 @@ seat_clear() {  # seat_clear <shift-id> <segment> <stage-id> — `-remove` 회�
     bash -c '. "$0"; cc_notify_clear answer X' "$SEAT_EMITTER" ) >/dev/null 2>&1
   # THE WAIT IS NOT SKIPPED WHEN ZERO IS EXPECTED. The emitter launches the
   # notifier detached, so a count read immediately comes back 0 from the race and
-  # the suppression assertion would pass without any suppression existing. This
-  # leaves early only once a line has landed, so the zero case pays the full wait.
-  while [ "$i" -lt 30 ]; do
-    if grep -q -- '-remove' "$NOTIFY_LOG" 2>/dev/null; then break; fi
-    sleep 0.1
-    i=$((i + 1))
-  done
+  # the suppression assertion would pass without any suppression existing. A call
+  # that expects a removal waits for it with the shared wait; one that expects
+  # none looks for the same short span the other quiet checks here use.
+  if [ "$4" = 0 ]; then
+    sleep 3
+  else
+    wait_until grep -q -- '-remove' "$NOTIFY_LOG" 2>/dev/null || true
+  fi
   grep -c -- '-remove' "$NOTIFY_LOG" 2>/dev/null || true
 }
-check "샤드 좌석에서는 배너를 내리지도 못한다" "$(seat_clear 'R2#1' '' '')" "0"
-check "리드 좌석의 소거는 그대로 산다" "$(seat_clear '' '' '')" "1"
+check "샤드 좌석에서는 배너를 내리지도 못한다" "$(seat_clear 'R2#1' '' '' 0)" "0"
+check "리드 좌석의 소거는 그대로 산다" "$(seat_clear '' '' '' 1)" "1"
 notify_reset
 
 # THE TABLE, AND ALL THREE ROWS OF IT. One variable per row is what makes this an
@@ -31353,24 +31516,77 @@ case "$tok_refusal_clear" in
   *) bad "폐쇄 집합(지우기)" "$(printf '%s' "$tok_refusal_clear" | tr '\n' ' ')" ;;
 esac
 
-# --- `approval-ask`, THE ONE SILENT TOKEN ------------------------------------
+# --- `approval-ask`, THE APPROVAL SLOT'S SECOND BANNER ------------------------
 #
-# It is outside the token table above on purpose: the walk asserts every row
-# sounds `default`, and this token is the one that does not — it rewrites an
-# approval's banner that already rang. So it is asserted here, on its own: both
-# closed sets take it, its group is the approval's own slot (`answer`'s, per
-# item key), its sound is empty, and its title carries the run name when one
-# is set.
-ask_row=$(bash -c '
+# It is outside the token table above on purpose: the table's rows sound
+# `default` unconditionally, and this token's sound depends on whether the
+# approval's slot already rang. So it is asserted here, on its own: both closed
+# sets take it, its group is the approval's own slot (`answer`'s, per item key),
+# its title carries the run name when one is set, and with no run directory —
+# nothing to tell whether a banner is being replaced — it rings as the slot's
+# first banner. Both subshells unset `RUN_DIR`, so a value an earlier part of the
+# file exported cannot decide the sound.
+ask_row=$(env -u RUN_DIR bash -c '
   . "'"$repo_root"'/plugins/cc-cmds/orchestrator/notify-run.sh"
   RUN_ID=RT
   CC_NOTIFY_SESSION_ID=SID9
   printf "%s|%s|%s|%s|%s" "$(cc_notify_group approval-ask KEY)" "$(cc_notify_group answer KEY)" \
-    "$(cc_notify_sound approval-ask)" "$(cc_notify_title approval-ask)" \
+    "$(cc_notify_sound approval-ask KEY)" "$(cc_notify_title approval-ask)" \
     "$(CC_NOTIFY_RUN_LABEL=런이름 cc_notify_title approval-ask)"
 ')
-check "approval-ask — 승인 슬롯·소리 없음·제목" "$ask_row" \
-  "cc-cmds-autopilot-RT-KEY|cc-cmds-autopilot-RT-KEY||cc-cmds · 답하세요|cc-cmds · 런이름 · 답하세요"
+check "approval-ask — 승인 슬롯·런 디렉터리 없으면 소리 default·제목" "$ask_row" \
+  "cc-cmds-autopilot-RT-KEY|cc-cmds-autopilot-RT-KEY|default|cc-cmds · 답하세요|cc-cmds · 런이름 · 답하세요"
+
+# --- AN APPROVAL'S SLOT RINGS ONCE WHILE IT IS HELD ---------------------------
+#
+# `answer` and `approval-ask` share the slot's ring mark `notify.rang/<key>`:
+# the first banner into the slot rings, every later one replaces it silently,
+# and releasing the slot (`cc_notify_stack_release`) lets the next one ring
+# again. Driven through `cc_notify_fire` against a recording notifier of this
+# block's own, in a run directory of its own, so no other part of the file
+# decides what is counted. Each case reads its own log; an empty log fails the
+# case rather than passing it with zero sounds. Both switches are pinned on,
+# because `approval-ask` reads the session switch and a value the caller's
+# environment carries would silence it. A case that fires twice waits for the
+# first notifier before the second fire, so the log's first line is the first
+# banner and not whichever detached notifier wrote first.
+rang_dir=$(mktemp -d "$WORK/rang.XXXXXX")
+mkdir -p "$rang_dir/bin" "$rang_dir/run"
+cat > "$rang_dir/bin/terminal-notifier" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$CC_TEST_NOTIFY_LOG"
+STUB
+chmod +x "$rang_dir/bin/terminal-notifier"
+rang_fire() {
+  # rang_fire <log> <script> — the script runs with the emitter sourced and
+  # `RUN_DIR` set to this block's run directory, then waits for the detached
+  # notifier, and prints "<banner lines>|<sound lines>|<sound on line 1>".
+  : > "$1"
+  env -u RUN_DIR -u CC_PIPELINE_SHIFT_ID -u CC_PIPELINE_REENTRY PATH="$rang_dir/bin:$PATH" \
+    CC_TEST_NOTIFY_LOG="$1" \
+    CC_CMDS_AUTOPILOT_NOTIFY=1 \
+    CC_CMDS_SESSION_NOTIFY=1 \
+    CC_CMDS_NOTIFY_PATH_DISABLE_PREPEND=1 \
+    CC_CMDS_NOTIFY_HOST_OS=Darwin \
+    CC_PIPELINE_SEGMENT= CC_PIPELINE_STAGE_ID= \
+    bash -c '. "$1"; RUN_DIR="$2"; RUN_ID=RTRANG; eval "$3"; wait' \
+    _ "$repo_root/plugins/cc-cmds/orchestrator/notify-run.sh" "$rang_dir/run" "$2" >/dev/null 2>&1
+  local n s f
+  n=$(grep -c . "$1" 2>/dev/null || true)
+  s=$(grep -cF -- '-sound default' "$1" 2>/dev/null || true)
+  f=$(head -1 "$1" 2>/dev/null | grep -cF -- '-sound default' || true)
+  printf '%s|%s|%s' "${n:-0}" "${s:-0}" "${f:-0}"
+}
+check "승인 자리 — 같은 키의 answer 두 번은 배너 둘·소리 하나" \
+  "$(rang_fire "$rang_dir/a.log" 'cc_notify_fire answer 질문 RK1; wait; cc_notify_fire answer 질문 RK1')" "2|1|1"
+check "승인 자리 — 반납한 뒤 같은 키의 answer 는 다시 울린다" \
+  "$(rang_fire "$rang_dir/b.log" 'cc_notify_stack_release RK1; cc_notify_fire answer 질문 RK1')" "1|1|1"
+check "승인 자리 — answer 다음 approval-ask 는 첫 줄만 울린다" \
+  "$(rang_fire "$rang_dir/c.log" 'cc_notify_fire answer 질문 RK2; wait; cc_notify_fire approval-ask 물음 RK2')" "2|1|1"
+check "승인 자리 — 울린 적 없는 자리의 approval-ask 는 울린다" \
+  "$(rang_fire "$rang_dir/d.log" 'cc_notify_fire approval-ask 물음 RK3')" "1|1|1"
+check "승인 자리 — 울린 자리는 표지 디렉터리를 남긴다" \
+  "$([ -d "$rang_dir/run/notify.rang/RK3" ] && echo 있음 || echo 없음)" "있음"
 ask_roundtrip=$(bash -c '
   . "'"$repo_root"'/plugins/cc-cmds/orchestrator/notify-run.sh"
   RUN_ID=RT
@@ -33352,7 +33568,14 @@ mkdir -p "$QB_SIDE"
 ( cd "$QB_SIDE" && git init -q . && git config user.email t@example.invalid && git config user.name T \
   && echo s > s.txt && git add -A && git commit -qm s && git branch -M main ) >/dev/null 2>&1
 SA_TARGET_ROW2="- \`target\` | 별칭=side | 메인 워크트리=$QB_SIDE | 공통 git 디렉터리=$(cd "$QB_SIDE" && git rev-parse --path-format=absolute --git-common-dir) | 베이스 브랜치=main | 홈=아니오 | 원격 슬러그=t/side | 절단점=커밋 | 말단 행위 상한=없음"
-SA_PREAUTH_EXTRA='git commit -q --allow-empty -m qb-clause'
+# The clause-exec branch below moves the base ref itself: a commit made in the
+# tree the gate checks out for it lands on a detached HEAD and moves nothing.
+# Its commit exists before the manifest names it, and moves no ref here. The
+# branch is moved with `git branch -f`, which the grading table reads as a
+# worktree write; git refuses that on a branch some worktree has checked out,
+# so the main worktree is detached right before that act.
+QB_CX=$(cd "$SA_WT" && git commit-tree 'main^{tree}' -p main -m qb-clause)
+SA_PREAUTH_EXTRA="git branch -f main $QB_CX"
 SA_AUTH_RAW='- `종료 절` | id=C1 | 문면=베이스 위의 근거 커밋이 있다'
 sa_manifest ''
 QG="$SA_RUN/base-guard"
@@ -33674,14 +33897,13 @@ qb_bgx() {  # qb_bgx <출력 파일> <argv…> — Q8 의 exec 하나를 뒤에�
     printf '%s' "$r" > "$f.rc" ) &
   qb_bg=$!
 }
-qb_await() {  # qb_await <출력 파일> — 기다림 줄이 보이면 0, 그 전에 뒤의 호출이 끝나거나 60 초가 지나면 1
-  local i=0
-  while [ "$i" -lt 600 ]; do
-    grep -qF -- "$QB_WAITLINE" "$1" 2>/dev/null && return 0
-    kill -0 "$qb_bg" 2>/dev/null || { grep -qF -- "$QB_WAITLINE" "$1" 2>/dev/null; return "$?"; }
-    sleep 0.1; i=$((i + 1))
-  done
-  return 1
+qb_seen() {  # qb_seen <출력 파일> — 기다림 줄이 보였거나 뒤의 호출이 끝났으면 0
+  grep -qF -- "$QB_WAITLINE" "$1" 2>/dev/null && return 0
+  ! kill -0 "$qb_bg" 2>/dev/null
+}
+qb_await() {  # qb_await <출력 파일> — 기다림 줄이 보이면 0, 그 전에 뒤의 호출이 끝나거나 공용 상한이 지나면 1
+  wait_until qb_seen "$1" || return 1
+  grep -qF -- "$QB_WAITLINE" "$1" 2>/dev/null
 }
 qb_bgend() {  # qb_bgend <출력 파일> — 뒤의 호출을 기다려 sag 처럼 rc·msg·raw 를 채운다
   local out
@@ -33702,7 +33924,6 @@ qb_bgx "$QB_WOUT" touch qb-w0
 if qb_await "$QB_WOUT"; then qb_wsaw=예; else qb_wsaw=아니오; fi
 rm -f "$QG/main.writing"
 qb_bgend "$QB_WOUT"
-# gate-load: 기다림 줄이 보이기까지 60초 상한
 check "15q: 기록 없는 작성 중 표지는 바로 11 로 끝내지 않고 기다렸다가 표지가 걷히면 다시 대조해 통과한다" \
   "$qb_wsaw|$rc|$(qb_did "$SA_SEGWT/qb-w0")|$(( $(qb_recs) - qb_n0 ))" "예|0|수행|0"
 qb_say 0 '표지가 걷힌 뒤'
@@ -33716,7 +33937,6 @@ qb_bgx "$QB_WOUT" touch qb-w1
 if qb_await "$QB_WOUT"; then qb_wsaw=예; else qb_wsaw=아니오; fi
 qb_wput "$(printf 'a\tb\t%s\t%s\t%s' "$qb_at" "$QB_WREC" "$QG/main.latch.Q8")"
 qb_bgend "$QB_WOUT"
-# gate-load: 기다림 줄이 보이기까지 60초 상한
 check "15q: 다른 행위가 같은 이동의 기록을 쓰는 중이면 새 기록 없이 11 이다" \
   "$qb_wsaw|$rc|$(qb_did "$SA_SEGWT/qb-w1")|$(( $(qb_recs) - qb_n0 ))|$( [ -e "$QG/main.writing" ] && printf 표지 )" "예|11|-|0|표지"
 check "15q: 작성 중 표지를 기다린 11 의 경고는 그 표지가 덧적은 기록 경로를 말한다" \
@@ -33771,10 +33991,11 @@ check "15q: 라우터의 베이스 이동 shift-halt 는 2 로 거부되고 기�
 
 # (하5) clause-exec 갈래 --------------------------------------------------------------
 qb_old=$(qb_main)
+( cd "$SA_WT" && git checkout -q --detach ) >/dev/null 2>&1
 CC_PIPELINE_SHIFT_ID="$SA_ID#1" CC_PIPELINE_STAGE_ID='' CC_PIPELINE_SEGMENT='' \
   sag act --manifest "$SA_MANIFEST" --kind clause-exec --target main --segment - --cutpoint 커밋 \
     --surface 워크트리쓰기 --reach 런로컬 --snapshot-digest "$(SAH)" --rationale "픽스처 — 종료 절 근거 실행" \
-    -- 절=C1 git commit -q --allow-empty -m qb-clause
+    -- 절=C1 git branch -f main "$QB_CX"
 QB_RT=$(qb_tl)
 check "15q: clause-exec 갈래로 베이스를 옮긴 행위도 11 과 기록을 남긴다" \
   "$rc|$( [ "$(qb_main)" != "$qb_old" ] && printf 이동 )|$(qb_warn '행위는 수행됨')|$(sed -n 's/^\*\*스텝\*\*: //p' "$QB_RT" 2>/dev/null)" \
@@ -37599,13 +37820,15 @@ eb_launch() {  # eb_launch <교대 id> <세그먼트> <스테이지 id> <done �
     --rationale "픽스처 — 종단 배너를 재는 교대" \
     -- "${5:-상한}" -p "/cc-cmds:autopilot-router-shift $CAP_NM" > "$CAP_OUT" 2> "$CAP_ERR"; rc=$?
 }
-eb_ended() {  # the `ended` banners the notifier stub was handed, after a bounded wait
-  local i=0
-  while [ "$i" -lt 30 ]; do
-    grep -qF -- '-title cc-cmds · 결과를 확인하세요' "$EB_LOG" 2>/dev/null && break
-    sleep 0.1; i=$((i + 1))
-  done
-  { grep -cF -- '-title cc-cmds · 결과를 확인하세요' "$EB_LOG" 2>/dev/null || true; } | tr -d ' '
+eb_count() { { grep -cF -- '-title cc-cmds · 결과를 확인하세요' "$EB_LOG" 2>/dev/null || true; } | tr -d ' '; }
+eb_any() { grep -qF -- '-title cc-cmds · 결과를 확인하세요' "$EB_LOG" 2>/dev/null; }
+eb_ended() {  # the `ended` banners the notifier stub was handed, after the shared wait for the first
+  wait_until eb_any 2>/dev/null || true
+  eb_count
+}
+eb_quiet() {  # eb_quiet — the count after a short look, for a banner that must not come
+  sleep 0.5
+  eb_count
 }
 eb_has() { { grep -F -- '-title cc-cmds · 결과를 확인하세요' "$EB_LOG" 2>/dev/null || true; } | { grep -cF -- "$1" || true; } | tr -d ' '; }
 eb_reset() { rm -f "$CAP_DIR/done"; rm -rf "$CAP_DIR/notify.ended"; : > "$EB_LOG"; }
@@ -37633,7 +37856,7 @@ eb_launch '' '' '' ''
 check "(h) 좌석의 교대 기동이 0 이다" "$rc" "0"
 check "(h) 좌석의 router-shift 가 표지를 쓴다" "$(eb_marker)" "written"
 check "(h) done 없이 돌아온 교대 뒤에는 점유도 배너도 없다" \
-  "$( [ -d "$CAP_DIR/notify.ended" ] && printf 'claimed' || printf 'none'):$(eb_ended)" "none:0"
+  "$( [ -d "$CAP_DIR/notify.ended" ] && printf 'claimed' || printf 'none'):$(eb_quiet)" "none:0"
 
 # One `ended`, the clean-finish sentence, and the `fired` mark beside the claim.
 eb_reset
@@ -37651,7 +37874,7 @@ check "(h) 점유가 잡힌 런에서 두 번째 교대 복귀는 울지 않는�
 eb_reset
 eb_launch 'R34H#1' '' '' '2026-01-01T00:00:00Z 종단 — 종료 조건 성립 · 근거 x'
 check "(h) 교대 좌석에서는 done 뒤의 교대 복귀가 울지 않는다" \
-  "$( [ -d "$CAP_DIR/notify.ended" ] && printf 'claimed' || printf 'none'):$(sleep 0.5; eb_ended)" "none:0"
+  "$( [ -d "$CAP_DIR/notify.ended" ] && printf 'claimed' || printf 'none'):$(eb_quiet)" "none:0"
 
 # The sentence follows `done`'s first line.
 eb_reset
@@ -40050,11 +40273,14 @@ rm -f "$SLN_DOC"
 # A SHIFT THAT HAS NOTHING LEFT BUT WAITING ENDS `handoff 사유=대기`, AND THE
 # SEAT'S `router-shift` CALL WAITS IN THE SHELL. Measured from outside: while
 # the relay waits no stub `claude` is alive, no launch is counted and no row is
-# written; it wakes within a poll of the condition; the markers hand over with
-# no sample that finds none; and it hands the turn back rather than launching
-# when it may not go on. Every call runs in the background so the wait can be
-# sampled while it happens, and the 10-second windows are the test's own: twice
-# the 5-second poll.
+# written; it wakes on the condition; the markers hand over with no sample that
+# finds none; and it hands the turn back rather than launching when it may not
+# go on. Every call runs in the background so the wait can be sampled while it
+# happens. That a successor came from the wake and not from the hold running
+# out is read from evidence, not from a window on the clock: the launch is
+# awaited under the shared ceiling, which is far shorter than the relay's
+# 3000-second default hold, and its cause is the launch row's `사유` with no
+# hold-expiry line in the call's output (`rl_wake_cause`).
 # ---------------------------------------------------------------------------
 cap_fx_new RRL1
 RL_SEAT="e4e4e4e4-1111-2222-3333-444444444444"
@@ -40068,13 +40294,27 @@ cap_gate "$RL_SEAT" '' act --manifest "$CAP_NM" --kind segment --target infra --
          --rationale x -- 워크트리="$CONE_A" 상태=실행중 선행=없음
 check "34e: 릴레이 픽스처의 세그먼트 행이 기록된다" "$rc" "0"
 
+# THE CAUSE JUDGE ON TWO MADE TRACES, so the cause checks below are not passed
+# by a judge that answers `깨움` to everything: a relay output whose hold ran
+# out, and one with no such line.
+printf '%s [relay] 대기가 이어진다 — 좌석 호출의 대기 상한 3000초가 지났다 · 같은 호출을 대기 로 다시 낸다\n' \
+  2026-11-24T00:00:00Z > "$WORK/34e-trace-expired.out"
+printf '%s [relay] 해소 확인 일치 · 좌석이 해소 확인 답을 낸다\n' 2026-11-24T00:00:00Z > "$WORK/34e-trace-woke.out"
+check "34e: 원인 판정 대조 — 대기 상한 만기 줄이 있는 흔적은 깨움이 아니다" \
+  "$(rl_wake_cause "$WORK/34e-trace-expired.out" 대기)" "깨움 아님"
+check "34e: 원인 판정 대조 — 만기 줄 없이 사유=대기 인 흔적은 깨움이다" \
+  "$(rl_wake_cause "$WORK/34e-trace-woke.out" 대기)" "깨움"
+check "34e: 원인 판정 대조 — 사유가 대기 가 아닌 기동은 깨움이 아니다" \
+  "$(rl_wake_cause "$WORK/34e-trace-woke.out" 상한)" "깨움 아님"
+rm -f "$WORK/34e-trace-expired.out" "$WORK/34e-trace-woke.out"
+
 # THE NEGATIVE CONTROL: the same stub waiting the old way, in the foreground,
 # is a live shift for the whole wait. Without this the zero below could be a
 # sampler that never sees a stub at all.
 rl_stage RL1; rl_s="$RL_SPID"
 rl_case fg fgwait
 RL_SEG=RL1 rl_call 상한
-rl_until 60 rl_has start.1 || bad "34e 음성 대조" "스텁이 뜨지 않았다" # gate-load: 스텁 기동까지 60초 상한
+wait_until rl_has start.1 || bad "34e 음성 대조" "스텁이 뜨지 않았다"
 rl_sample 3
 rl_stage_end "$rl_s"
 rl_join
@@ -40088,9 +40328,9 @@ rl_stage RL1; rl_s="$RL_SPID"
 rl_case stage wait cap
 rl_n0=$(rl_launches)
 rl_call 상한
-rl_until 60 test -e "$CAP_DIR/shift.live" || bad "34e 스테이지 대기" "교대 표지가 서지 않았다" # gate-load: 교대 표지가 서기까지 60초 상한
-rl_sample 30 end.1
-rl_until 15 rl_relay_waiting || bad "34e 스테이지 대기" "릴레이가 대기에 들지 않았다" # gate-load: 릴레이 대기 진입까지 15초 상한
+wait_until test -e "$CAP_DIR/shift.live" || bad "34e 스테이지 대기" "교대 표지가 서지 않았다"
+rl_sample_until end.1 || bad "34e 스테이지 대기" "첫 교대가 끝나지 않았다"
+wait_until rl_relay_waiting || bad "34e 스테이지 대기" "릴레이가 대기에 들지 않았다"
 RL_STUBS=0
 rl_l0=$(rl_lines)
 rl_sample 6
@@ -40098,13 +40338,10 @@ check "34e: (1) 스테이지 대기 동안 살아 있는 교대 스텁이 없다
 check "34e: (1) 대기 동안 스텁 호출 수가 늘지 않는다" "$(rl_calls)" "1"
 check "34e: (1) 대기 동안 원장 행 수가 변하지 않는다" "$(rl_lines)" "$rl_l0"
 check "34e: (1) 대기 동안 기동 행은 첫 기동 하나뿐이다" "$(rl_launches)" "$((rl_n0 + 1))"
-rl_t=$(date +%s)
 rl_stage_end "$rl_s"
-rl_sample 15 start.2
+rl_sample_until start.2 || { bad "34e 스테이지 대기" "스테이지가 끝난 뒤 후임이 뜨지 않았다"; rl_abort; }
 rl_join
-# gate-load: 스테이지 종료에서 후임 기동까지 10초 상한
-check "34e: (1) 스테이지가 끝난 뒤 10초 안에 후임이 뜬다" \
-  "$( rl_has start.2 && [ $(( $(cat "$RL_O/start.2") - rl_t )) -le 10 ] && printf in || printf out)" "in"
+check "34e: (1) 스테이지가 끝나면 깨움으로 후임이 뜬다" "$(rl_woke start.2)" "up:깨움"
 check "34e: (1) 릴레이가 사는 동안 살아 있는 표지가 없는 샘플이 없다" "$RL_GAP" "0"
 check "34e: (1) 후임이 상한 으로 끝나면 루프가 끝나고 rc 0 이다" "$rc:$(rl_calls)" "0:2"
 check "34e: (1) 루프가 다시 띄운 교대의 기동 행은 사유=대기 다" \
@@ -40115,24 +40352,21 @@ check "34e: (1) 루프가 다시 띄운 교대의 기동 행은 사유=대기 �
 # wakes it within a poll, and the successor's launch drains the lines into
 # `checks` rows above its own `교대 기동` row, so its first snapshot reads the
 # verdict the relay woke on.
-sleep 300 & RL_POLL=$!; FX_PIDS="${FX_PIDS:-}$RL_POLL "
+wait_holder & RL_POLL=$!; FX_PIDS="${FX_PIDS:-}$RL_POLL "
 printf '%s\n' "$RL_POLL" > "$CAP_DIR/checks.pid"
 rl_case ci wait plain
 RL_CI=RLC1 rl_call 상한
-rl_until 60 rl_has end.1 || bad "34e CI 대기" "스텁이 끝나지 않았다" # gate-load: 스텁 종료까지 60초 상한
-rl_until 15 rl_relay_waiting || bad "34e CI 대기" "릴레이가 대기에 들지 않았다" # gate-load: 릴레이 대기 진입까지 15초 상한
+wait_until rl_has end.1 || bad "34e CI 대기" "스텁이 끝나지 않았다"
+wait_until rl_relay_waiting || bad "34e CI 대기" "릴레이가 대기에 들지 않았다"
 rl_l0=$(rl_lines); rl_c0=$( { cap_rows checks | grep -c . || true; } | tr -d ' ')
 for rl_i in 1 2 3 4 5 6 7 8; do rl_observe RLC1 대기; rl_sample 1; done
 check "34e: (2) 대기 줄에는 깨지 않는다" "$(rl_has start.2 && printf woke || printf held)" "held"
 check "34e: (2) CI 대기 동안 살아 있는 교대 스텁이 없다" "$RL_STUBS:$(rl_calls)" "0:1"
 check "34e: (2) 폴러가 쓰는 동안 원장 행 수가 변하지 않는다" "$(rl_lines)" "$rl_l0"
-rl_t=$(date +%s)
 rl_observe RLC1 통과
-rl_until 15 rl_has start.2
+wait_until rl_has start.2 || { bad "34e CI 대기" "통과 줄 뒤 후임이 뜨지 않았다"; rl_abort; }
 rl_join
-# gate-load: 통과 줄에서 후임 기동까지 10초 상한
-check "34e: (2) 통과 줄 뒤 10초 안에 후임이 뜬다" \
-  "$( rl_has start.2 && [ $(( $(cat "$RL_O/start.2") - rl_t )) -le 10 ] && printf in || printf out)" "in"
+check "34e: (2) 통과 줄 뒤 깨움으로 후임이 뜬다" "$(rl_woke start.2)" "up:깨움"
 check "34e: (2) 후임의 기동이 폴러의 줄을 교대 기동 행 앞의 checks 행으로 배수한다" \
   "$( { cat "$CAP_DIR/checks.observed" 2>/dev/null || true; } | { grep -c "$(printf '\t')통과$(printf '\t')" || true; } | tr -d ' '):$(awk '
       /^- `checks` / && /\| 상태=통과 \|/ && /\| 세그먼트=RLC1( \||$)/ { c = NR }
@@ -40147,9 +40381,9 @@ check "34e: (2) 후임의 기동이 폴러의 줄을 교대 기동 행 앞의 ch
 # launch is new evidence and wakes it within a poll.
 rl_observe RLC2 통과
 rl_case drained wait plain
-RL_CI=RLC2 RL_HOLD=60 rl_call 상한
-rl_until 60 rl_has end.1
-rl_until 15 rl_relay_waiting || bad "34e 배수된 전이" "릴레이가 대기에 들지 않았다" # gate-load: 릴레이 대기 진입까지 15초 상한
+RL_CI=RLC2 rl_call 상한
+wait_until rl_has end.1
+wait_until rl_relay_waiting || bad "34e 배수된 전이" "릴레이가 대기에 들지 않았다"
 rl_sample 6
 check "34e: (3) 배수된 통과는 대기 인계보다 앞의 checks 행이다" \
   "$(awk '/^- `checks` / && /\| 상태=통과 \|/ && /\| 세그먼트=RLC2( \||$)/ { c = NR }
@@ -40157,13 +40391,10 @@ check "34e: (3) 배수된 통과는 대기 인계보다 앞의 checks 행이다"
           END { print (c && h && c < h) ? "before" : "no" }' "$CAP_LEDGER")" "before"
 check "34e: (3) 기동 앞에 배수된 통과는 그 교대가 소비해 다시 깨우지 않는다" \
   "$(rl_has start.2 && printf woke || printf held)" "held"
-rl_t=$(date +%s)
 rl_observe RLC2 통과
-rl_until 15 rl_has start.2
+wait_until rl_has start.2 || { bad "34e 배수된 전이" "기동 뒤 관측된 판정에 후임이 뜨지 않았다"; rl_abort; }
 rl_join
-# gate-load: 관측에서 후임 기동까지 10초 상한
-check "34e: (3) 기동 뒤에 관측된 판정은 10초 안에 후임을 띄운다" \
-  "$( rl_has start.2 && [ $(( $(cat "$RL_O/start.2") - rl_t )) -le 10 ] && printf in || printf out)" "in"
+check "34e: (3) 기동 뒤에 관측된 판정은 깨움으로 후임을 띄운다" "$(rl_woke start.2)" "up:깨움"
 
 # (4) A DEAD POLLER UNDER A CI WAIT HANDS THE TURN BACK: rc 0, the line, a
 # `handback`, and nothing launched or written.
@@ -40171,7 +40402,7 @@ rl_stage_end "$RL_POLL"
 rl_n0=$(rl_launches)
 rl_case deadpoller wait
 RL_CI=RLC3 rl_call 상한
-rl_until 60 rl_has end.1
+wait_until rl_has end.1
 rl_l0=$(rl_lines)
 rl_join
 check "34e: (4) 폴러가 죽은 CI 대기는 rc 0 으로 돌아온다" "$rc" "0"
@@ -40187,7 +40418,7 @@ rl_stage RL1; rl_s="$RL_SPID"
 rl_n0=$(rl_launches)
 rl_case hold wait
 RL_HOLD=2 rl_call 상한
-rl_until 60 rl_has end.1
+wait_until rl_has end.1
 rl_l0=$(rl_lines)
 rl_join
 check "34e: (5) 상한 반환은 rc 0 과 대기가 이어진다 줄이다" \
@@ -40203,7 +40434,7 @@ rl_old=$(rl_pid_of relay.live)
 rl_case reentry
 rl_t=$(date +%s)
 RL_HOLD=2 rl_call 대기
-rl_until 30 eval '[ "$(rl_pid_of relay.live)" != "$rl_old" ]'
+wait_until eval '[ "$(rl_pid_of relay.live)" != "$rl_old" ]'
 rl_new=$(rl_pid_of relay.live)
 rl_ref=$(sed -n 's/^refreshed=//p' "$CAP_DIR/relay.live")
 rl_hb=$(grep -c '^handback=' "$CAP_DIR/relay.live" || true)
@@ -40219,13 +40450,10 @@ check "34e: (6) 깨지 않은 재진입은 다시 돌려줄 뿐 띄우지 않는
 # empty, so the launch goes at once; that successor ends `상한`.
 rl_stage_end "$rl_s"
 rl_case reentry-empty cap
-rl_t=$(date +%s)
 rl_call 대기
-rl_until 30 rl_has start.1
+wait_until rl_has start.1 || { bad "34e 빈 재진입" "재진입이 기동하지 않았다"; rl_abort; }
 rl_join
-# gate-load: 재진입에서 기동까지 10초 상한
-check "34e: (7) 재진입 시점의 빈 대기 집합은 곧바로 기동한다" \
-  "$( rl_has start.1 && [ $(( $(cat "$RL_O/start.1") - rl_t )) -le 10 ] && printf in || printf out):$rc" "in:0"
+check "34e: (7) 재진입 시점의 빈 대기 집합은 깨움으로 기동한다" "$(rl_woke start.1):$rc" "up:깨움:0"
 check "34e: (7) 그 기동 행은 사유=대기 다" "$(row_field "$(cap_rows '교대 기동' | tail -1)" '사유')" "대기"
 
 # (8) THE LATEST HANDOFF IS `상한`: re-entry is refused with exit 3.
@@ -40247,13 +40475,11 @@ check "34e: (9) 두 스테이지 대기가 상한으로 돌아온다" "$rc:$(rl_
 rl_stage_end "$rl_sa"
 printf -- '- `stage-result` | 교대=0 | id=RLa:implement#1 | 종단 부류=정상 완료 | prev=x\n' >> "$CAP_LEDGER"
 rl_case two-reentry cap
-rl_t=$(date +%s)
 rl_call 대기
-rl_until 30 rl_has start.1
+wait_until rl_has start.1 || { bad "34e 두 스테이지" "기준 행 뒤의 stage-result 로 기동하지 않았다"; rl_abort; }
 rl_join
-# gate-load: 재진입에서 기동까지 10초 상한
 check "34e: (9) 남은 스테이지가 살아 있어도 기준 행 뒤의 stage-result 로 깨어난다" \
-  "$( rl_has start.1 && [ $(( $(cat "$RL_O/start.1") - rl_t )) -le 10 ] && printf in || printf out):$(kill -0 "$rl_sb" 2>/dev/null && printf alive || printf dead)" "in:alive"
+  "$(rl_woke start.1):$(kill -0 "$rl_sb" 2>/dev/null && printf alive || printf dead)" "up:깨움:alive"
 rl_stage_end "$rl_sb"
 
 # (10) THE STAGE ENDS AFTER THE HANDOFF AND BEFORE THE SHIFT DOES: the set
@@ -40261,11 +40487,9 @@ rl_stage_end "$rl_sb"
 rl_stage RL1
 rl_case between wait-kill cap
 RL_KILL="$RL_SPID" rl_call 상한
-rl_until 60 rl_has start.2
+wait_until rl_has start.2 || { bad "34e 인계 뒤 종료" "후임이 뜨지 않았다"; rl_abort; }
 rl_join
-# gate-load: 교대 종료에서 후임 기동까지 10초 상한
-check "34e: (10) 인계 뒤 스테이지가 끝나면 릴레이 시작에서 곧바로 기동한다" \
-  "$( rl_has start.2 && [ $(( $(cat "$RL_O/start.2") - $(cat "$RL_O/end.1") )) -le 10 ] && printf in || printf out):$rc" "in:0"
+check "34e: (10) 인계 뒤 스테이지가 끝나면 릴레이 시작에서 깨움으로 기동한다" "$(rl_woke start.2):$rc" "up:깨움:0"
 
 # (11) A SHIFT THAT HANDS OFF `대기` AND THEN FAILS does not enter the relay;
 # its code comes back.
@@ -40282,7 +40506,7 @@ check "34e: (11) 대기 인계 뒤 0 이 아닌 rc 는 그대로 돌아오고 �
 # `relay.live` is dead, and no successor is launched.
 rl_case killed wait
 rl_call 상한
-rl_until 60 rl_relay_waiting
+wait_until rl_relay_waiting
 rl_rp=$(rl_pid_of relay.live)
 kill -TERM "$rl_rp" 2>/dev/null
 rl_join
@@ -40356,7 +40580,7 @@ check "34e: (16) SILENCE ≤ STALL" "$( [ "$rl_sil" -le "$rl_stall" ] && printf 
 # gate runs, so the line is still in `checks.observed`; the re-entering
 # `router-shift -- 대기` is the act that turns it into a `checks` row, between
 # the `대기` handoff and the launch it makes.
-sleep 300 & RL_POLL=$!; FX_PIDS="${FX_PIDS:-}$RL_POLL "
+wait_holder & RL_POLL=$!; FX_PIDS="${FX_PIDS:-}$RL_POLL "
 printf '%s\n' "$RL_POLL" > "$CAP_DIR/checks.pid"
 rl_case ci-handback wait
 RL_CI=RLC4 RL_HOLD=2 rl_call 상한
@@ -40366,13 +40590,10 @@ rl_observe RLC4 통과
 check "34e: (18) 좌석 턴에 관측된 통과는 아직 행이 아니다" \
   "$( { cap_rows checks | grep -cE '\| 세그먼트=RLC4( \||$)' || true; } | tr -d ' ')" "0"
 rl_case ci-reentry cap
-rl_t=$(date +%s)
 rl_call 대기
-rl_until 30 rl_has start.1
+wait_until rl_has start.1 || { bad "34e 재진입 배수" "배수한 통과로 기동하지 않았다"; rl_abort; }
 rl_join
-# gate-load: 재진입에서 기동까지 10초 상한
-check "34e: (18) 재진입 act 가 배수한 통과로 곧바로 기동한다" \
-  "$( rl_has start.1 && [ $(( $(cat "$RL_O/start.1") - rl_t )) -le 10 ] && printf in || printf out):$rc" "in:0"
+check "34e: (18) 재진입 act 가 배수한 통과로 깨움으로 기동한다" "$(rl_woke start.1):$rc" "up:깨움:0"
 check "34e: (18) 그 checks 행은 대기 인계 뒤, 재진입의 기동 행 앞에 있다" \
   "$(awk '/^- `handoff` / && /\| 사유=대기 \|/ && /\| CI 대기=RLC4 \|/ { h = NR }
           /^- `checks` / && /\| 상태=통과 \|/ && /\| 세그먼트=RLC4( \||$)/ { c = NR }
@@ -40386,7 +40607,7 @@ rl_stage RL1; rl_s="$RL_SPID"
 rl_n0=$(rl_launches)
 rl_case done wait
 rl_call 상한
-rl_until 60 rl_relay_waiting
+wait_until rl_relay_waiting
 printf '종단\n' > "$CAP_DIR/done"
 rl_join
 check "34e: (17) 대기 중 런이 끝나면 띄우지 않고 돌려준다" \
@@ -41017,12 +41238,13 @@ qw_wait() {
   # qw_wait <기대 수> <고정 문자열…> — qw_n after a bounded wait for that many.
   # The notifier is launched detached, a removal included, so a line can land
   # after the watcher has exited.
-  local want="$1" i=0; shift
-  while [ "$i" -lt 60 ]; do
-    [ "$(qw_n "$@")" -ge "$want" ] && break
-    sleep 0.1; i=$((i + 1))
-  done
+  local want="$1"; shift
+  wait_until qw_ge "$want" "$@" 2>/dev/null || true
   qw_n "$@"
+}
+qw_ge() {  # qw_ge <기대 수> <고정 문자열…> — 그만큼의 줄이 왔다
+  local want="$1"; shift
+  [ "$(qw_n "$@")" -ge "$want" ]
 }
 qw_quiet() {  # qw_quiet <고정 문자열…> — qw_n after a short wait, for a line that must not come
   sleep 0.3
@@ -41222,79 +41444,9 @@ CX_PREV_RO="${CC_GATE_TOKEN_RO-}"; CX_HAD_RO="${CC_GATE_TOKEN_RO+1}"
 export CC_GATE_TOKEN_RO="$CX_RO"
 CX_STORE="$WORK/cx-tracker"; CX_BIN="$WORK/cx-bin"
 mkdir -p "$CX_STORE" "$CX_BIN"
-cx_auth_row() {  # cx_auth_row <행> — one row placed inside `## 인가` of the cap manifest
-  awk -v r="$1" '{ print } !d && $0 == "## 인가" { print r; d = 1 }' "$CAP_NM" > "$CAP_NM.ins" \
-    && mv "$CAP_NM.ins" "$CAP_NM"
-}
-cx_fx() {
-  # cx_fx <run-id> <절 행…> — the cap run with those clause rows, two merged
-  # segments, a seat and a routing shift in `CX_SHIFT`; the scripts the rows
-  # name are written into the target's worktree as `CX_TWT`.
-  local rid="$1" c; shift
-  CX_RID="$rid"
-  cap_fx_new "$rid"
-  mkdir -p "$CAP_DIR/halt/shift"
-  sed -i.bak '/^\*\*구속 다이제스트\*\*/d' "$CAP_NM" && rm -f "$CAP_NM.bak"
-  sed -i.bak '/^- `종료 절` /d' "$CAP_NM" && rm -f "$CAP_NM.bak"
-  for c in "$@"; do cx_auth_row "$c"; done
-  CX_TWT=$(sed -n 's/^- `target` | 별칭=infra | 메인 워크트리=\([^|]*\) |.*/\1/p' "$CAP_NM" | sed -n 1p)
-  case "$rid" in
-    RCXA) CX_SEAT="7e7e7e7e-5555-2222-3333-00000000000a" ;;
-    *)    CX_SEAT="7e7e7e7e-5555-2222-3333-00000000000b" ;;
-  esac
-  { cap_usage_line 10000 5000 1000; } > "$NTX/$CX_SEAT.jsonl"
-  cap_gate "$CX_SEAT" '' act --manifest "$CAP_NM" --kind router-shift --target infra \
-           --cutpoint 커밋 --surface 워크트리쓰기 --snapshot-digest "$(cap_H "$CX_SEAT" '')" \
-           --rationale "픽스처 — 교대 기동" \
-           -- 상한 -p "/cc-cmds:autopilot-router-shift $CAP_NM"
-  check "34qe: 픽스처 $rid 의 교대 기동이 섰다" "$rc" "0"
-  [ "$rc" = "0" ] || printf '  34qe: %s\n' "$msg"
-  CX_SHIFT=$(row_field "$(cap_rows '교대 기동' | tail -1)" '세션 id')
-  { cap_usage_line 10000 5000 1000; } > "$NTX/$CX_SHIFT.jsonl"
-  hw_row segment 교대=0 id=Q1 "워크트리=$CONE_C" 상태=머지됨 선행=없음
-  hw_row segment 교대=0 id=Q2 "워크트리=$CONE_C" 상태=머지됨 선행=없음
-}
-cx_script() {  # cx_script <이름> <본문> — one script under the target worktree's scripts/
-  mkdir -p "$CX_TWT/scripts"
-  printf '%s\n' "$2" > "$CX_TWT/scripts/$1"
-  CX_MADE="${CX_MADE:-} $CX_TWT/scripts/$1"
-}
-cx_exec() {
-  # cx_exec <절> <표면> [--reach <도달>] -- <argv…> — the shift's clause-exec;
-  # leaves `rc`, `msg` and the anchor the gate printed in `cx_a`.
-  local c="$1" s="$2"; shift 2
-  # With auto-resolution on, an opaque act above a read owes a reach, as it
-  # does on `exec`; a script that writes nowhere but the worktree declares
-  # `런로컬` unless the call names another.
-  local reach=()
-  if [ "${1:-}" = "--reach" ]; then reach=(--reach "$2"); shift 2
-  elif [ "$s" != "읽기" ]; then reach=(--reach 런로컬); fi
-  local destr=()
-  if [ "${1:-}" = "--destructive" ]; then destr=(--destructive); shift; fi
-  [ "${1:-}" = "--" ] && shift
-  cap_gate "$CX_SHIFT" "$CX_RID#1" act --manifest "$CAP_NM" --kind clause-exec --target infra --segment - \
-           --cutpoint 커밋 --surface "$s" ${reach[@]+"${reach[@]}"} ${destr[@]+"${destr[@]}"} \
-           --snapshot-digest "$(cap_H "$CX_SHIFT" "$CX_RID#1")" --rationale "픽스처 — 종료 절 근거 실행" \
-           -- "절=$c" "$@"
-  cx_a=$( { grep -oE '\[clause-exec\] 행 A-[0-9a-f]{8}' "$CAP_ERR" || true; } | tail -1 | sed 's/^.*행 //')
-}
-cx_clause() {  # cx_clause <id> <상태> <근거> [추가 필드…] — the shift's clause row
-  local id="$1" st="$2" ev="$3"; shift 3
-  cap_gate "$CX_SHIFT" "$CX_RID#1" act --manifest "$CAP_NM" --kind clause --target infra \
-           --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$CX_SHIFT" "$CX_RID#1")" \
-           --rationale "픽스처 — 절 정산" -- "id=$id" "상태=$st" "근거=$ev" "$@"
-}
-cx_halt() {  # cx_halt <세그먼트> <자리> <필드…> — the shift's stop
-  local s="$1" site="$2"; shift 2
-  cap_gate "$CX_SHIFT" "$CX_RID#1" act --manifest "$CAP_NM" --kind shift-halt --target infra --segment "$s" \
-           --site "$site" --cutpoint 커밋 --surface 읽기 \
-           --snapshot-digest "$(cap_H "$CX_SHIFT" "$CX_RID#1")" --rationale "픽스처 — 절 근거 요청" -- "$@"
-}
-cx_n() { cap_rows "$1" | grep -c . || true; }
-cx_xrow() { cap_rows '종료 절 실행' | tail -1; }
-cx_cl() {  # cx_cl <id> <jq 식> — one expression over that clause's `clauses[]` element
-  cap_snap "$CX_SEAT" '' | jq -r --arg i "$1" "[.clauses[] | select(.id == \$i)] | first | $2"
-}
+# The clause-exec helpers (`cx_fx`, `cx_exec` and the rest) are in `pre_cone`,
+# in the head: 34qt calls them too.
+CX_SEC=34qe
 
 # ---- 관측된 꼴: 쓰기 · 재조회 · 충족 · 종료 ----
 cx_fx RCXA '- `종료 절` | id=C1 | 문면=FE 인계 코멘트가 티켓에 남아 있다' \
@@ -41304,8 +41456,8 @@ cx_script fe-handoff-comment.sh "printf '%s\\n' 'FE 인계: API 계약 v2' >> '$
 printf '%s' \"\${GH_TOKEN:-}\" > '$CX_STORE/token'
 printf '%s\\n' 'comment posted'"
 cx_script fe-handoff-check.sh "cat '$CX_STORE/comments'"
-CX_HEAD=$(cd "$CX_TWT" && git rev-parse HEAD)
-hw_row segment 교대=0 id=Q3 "워크트리=$CONE_C" 상태=머지됨 선행=없음 "머지 커밋=$CX_HEAD"
+CX_HEAD=$(cx_commit)
+cx_merged Q3 "$CX_HEAD"
 cx_ap0=$(cx_n '승인'); cx_bl0=$(cx_n 'blocked')
 cx_exec C1 외부상태변경 --reach 협업 -- sh scripts/fe-handoff-comment.sh
 cx_xa=$cx_a
@@ -41323,7 +41475,10 @@ check "34qe: 쓰기 실행 행이 절·회차·축2·결속·사전 인가 행·
 check "34qe: 옛 형식 사전 인가 행이 덮은 실행 행의 사전 인가 행은 - 다" \
   "$(row_field "$cx_w" '사전 인가 행')" "-"
 check "34qe: 행의 앵커가 그 행 prev 의 앞 8 hex 다" "$cx_xa" "A-$(row_field "$cx_w" 'prev' | cut -c1-8)"
-check "34qe: 행의 커밋은 실행 워크트리의 HEAD 다" "$(row_field "$cx_w" '커밋')" "$CX_HEAD"
+check "34qe: 행의 커밋은 마지막 머지의 고정 커밋이고 명령 뒤 HEAD 는 - 다" \
+  "$(row_field "$cx_w" '커밋')|$(row_field "$cx_w" '트리')|$(row_field "$cx_w" '트리 출처')|$(row_field "$cx_w" '한도 초과')|$(row_field "$cx_w" '명령 뒤 HEAD')" \
+  "$CX_HEAD|머지|Q3|아니오|-"
+check "34qe: 실행 트리는 행을 쓴 뒤 지워진다" "$(cx_trees)" "0"
 check "34qe: 행의 명령 sha256 은 argv 를 NUL 로 이은 바이트의 것이다" "$(row_field "$cx_w" '명령 sha256')" \
   "$(printf 'sh\0scripts/fe-handoff-comment.sh' | shasum -a 256 | cut -d' ' -f1)"
 
@@ -41416,17 +41571,30 @@ printf '%s\n' '{"id": 1}'
 EOF
 chmod +x "$CX_BIN/gh"
 
-# The run's last merge is not in the tree the command would run in.
-hw_row segment 교대=0 id=Q3 "워크트리=$CONE_C" 상태=머지됨 선행=없음 "머지 커밋=0123456789abcdef0123456789abcdef01234567"
+# The run's last merge names a commit the target does not hold.
+cx_merged Q3 0123456789abcdef0123456789abcdef01234567
 cx_n0=$(cx_n '종료 절 실행'); cx_ap0=$(cx_n '자율 승인')
 cx_exec C3 워크트리쓰기 -- sh scripts/cx-gist.sh
-check "34qe: 마지막 머지 커밋이 실행 워크트리 HEAD 의 조상이 아니면 거절된다" \
-  "$rc|$(cx_n '종료 절 실행')|$(cx_n '자율 승인')" "3|$cx_n0|$cx_ap0"
+check "34qe: 마지막 머지 커밋이 대상에서 커밋으로 해소되지 않으면 거절된다" \
+  "$rc|$(cx_n '종료 절 실행')|$(cx_n '자율 승인')|$(cx_trees)" "3|$cx_n0|$cx_ap0|0"
 case "$msg" in
-  *'0123456789abcdef0123456789abcdef01234567'*"$(cd "$CX_TWT" && git rev-parse HEAD)"*) ok "34qe: 조상 거절 문면이 머지 커밋과 HEAD 를 싣는다" ;;
-  *) bad "34qe: 조상 거절 문면이 머지 커밋과 HEAD 를 싣는다" "$msg" ;;
+  *'0123456789abcdef0123456789abcdef01234567'*'해소되지 않습니다'*) ok "34qe: 해소 거절 문면이 머지 커밋을 싣는다" ;;
+  *) bad "34qe: 해소 거절 문면이 머지 커밋을 싣는다" "$msg" ;;
 esac
-hw_row segment 교대=0 id=Q4 "워크트리=$CONE_C" 상태=머지됨 선행=없음 "머지 커밋=$(cd "$CX_TWT" && git rev-parse HEAD)"
+CX_Q4=$(cx_commit)
+cx_merged Q4 "$CX_Q4"
+
+# The checked-out tree is not the fixed commit, clean: the hook leaves an
+# untracked file in it, and nothing runs.
+export CC_GATE_CLAUSE_EXEC_TEST_DIRTY=1
+cx_exec C3 워크트리쓰기 -- sh scripts/cx-gist.sh
+unset CC_GATE_CLAUSE_EXEC_TEST_DIRTY
+check "34qe: 고정 커밋 그대로가 아닌 실행 트리에서는 돌지 않는다" \
+  "$rc|$(cx_n '종료 절 실행')|$(cx_trees)" "3|$cx_n0|0"
+case "$msg" in
+  *"is not the fixed commit $CX_Q4"*'tree source Q4'*) ok "34qe: 고정 커밋 거절 문면이 고정 커밋과 트리 출처를 싣는다" ;;
+  *) bad "34qe: 고정 커밋 거절 문면이 고정 커밋과 트리 출처를 싣는다" "$msg" ;;
+esac
 
 # Unknown clause, no covering row, a runner-shape cover.
 cx_exec C9 워크트리쓰기 -- sh scripts/cx-unit.sh
@@ -41499,17 +41667,13 @@ check "34qe: 대조 — 같은 기록에 사람 답은 선다" "$rc|$(( $(cx_n '
 
 # A GitHub write under a pre-authorized row fails under the read-scoped
 # credential, and so goes to a person.
-# The stand-in is reached through an exported function, not a PATH prefix:
-# run.sh puts the system prefixes ahead of the inherited PATH, so on a host
-# whose `gh` is /usr/bin/gh a PATH-only stand-in is shadowed by the real one.
-# The stub path rides an exported variable for the same scrubbed-shell reason
-# `g15_pr` gives.
-gh() { "$CX_GH_STUB" "$@"; }
-export -f gh
-export CX_GH_STUB="$CX_BIN/gh"
-cx_exec C5 외부상태변경 --reach 협업 -- gh api -X POST repos/t/infra/issues/1/comments -f body=x
-unset -f gh
-unset CX_GH_STUB
+# The stand-in is called by its absolute path, not through a PATH prefix or a
+# function: run.sh puts the system prefixes ahead of the inherited PATH, so on
+# a host whose `gh` is /usr/bin/gh a PATH-only stand-in is shadowed by the real
+# one, and the clause-exec command is exec'd by name as an external program,
+# which no shell function reaches. The pre-authorization matcher drops the
+# command path, so the row's `gh api -X POST …` still covers it.
+cx_exec C5 외부상태변경 --reach 협업 -- "$CX_BIN/gh" api -X POST repos/t/infra/issues/1/comments -f body=x
 cx_ga=$cx_a
 check "34qe: GitHub 쓰기는 읽기 자격 아래에서 실패한다" \
   "$( [ "$rc" != 0 ] && printf 실패 || printf "rc=$rc")|$(cat "$CX_STORE/gh-token" 2>/dev/null)|$(row_field "$(cx_xrow)" '절')" "실패|$CX_RO|C5"
@@ -41518,7 +41682,7 @@ cx_clause C5 충족 "실행 $cx_ga"
 check "34qe: 실패한 GitHub 쓰기를 인용한 충족은 거절된다" "$rc" "3"
 cx_halt - '종료 절 근거' '절=C5' "실행=$cx_ga" '질문=PR 코멘트를 사람이 남기는가?' '관측=HTTP 403'
 check "34qe: GitHub 쓰기 실패는 실행 결과를 실은 사람 정지로 간다" \
-  "$rc|$(grep -c '^\*\*실행 결과\*\*: 명령 gh api -X POST' "$CAP_DIR/halt/shift/clause-C5#1.md" 2>/dev/null)" "0|1"
+  "$rc|$(grep -cF "**실행 결과**: 명령 $CX_BIN/gh api -X POST" "$CAP_DIR/halt/shift/clause-C5#1.md" 2>/dev/null)" "0|1"
 
 # Outside every row: the stop carries the command draft and the expected result.
 cx_halt - '종료 절 근거' '절=C7' '추천=재시도' '추천 근거=x' '질문=?' '관측=x'
@@ -41610,6 +41774,458 @@ rmdir "$CX_TWT/scripts" 2>/dev/null || true
 unset CX_MADE
 if [ -n "$CX_HAD_RO" ]; then export CC_GATE_TOKEN_RO="$CX_PREV_RO"; else unset CC_GATE_TOKEN_RO; fi
 CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$CX_PREV_AR"
+
+# --- 34qt. 종료 절 근거 실행의 실행 트리 — 게이트가 원장에서 고정한 커밋을 꺼내 그 안에서 돌린다 ---
+# --- section: 34qt | group: cone | covers: act, plan, snapshot, clause-exec, gate_act_worktree, gate_on_exit, gate_clause_exec_evidence_check, gate_act_approval_id, gate_act_approval_fresh, gate_issue_act_approval, kickoff | anchors: 34qt: 단어 없는 실행은 이 대상의 마지막 머지를 꺼내 메인 체크아웃을 건드리지 않는다, 34qt: 등급 판정 기준 줄의 경로가 같은 호출의 실행 트리 줄 경로와 같다, 34qt: 다른 게이트 프로세스의 재제출에서 같은 승인 id 가 해소되어 행위를 연다, 34qt: 답 뒤에 머지가 내려앉으면 같은 승인 id 가 낡고 그 id 에 새 대기 행이 붙는다, 34qt: 트리=머지 전 세그먼트는 그 워크트리 HEAD 에서 지명한 시험만 돈다, 34qt: 명령이 HEAD 를 옮긴 실행을 인용한 충족은 거절된다, 34qt: 꺼낸 트리 밖 절대 경로의 스크립트는 띄우지 않고 거절된다, 34qt: 시한에 닿은 실행은 143 과 한도 초과=예 로 남는다, 34qt: 신호를 받은 실행은 행을 한 번만 쓰고 트리를 남기지 않는다, 34qt: 실행 워크트리 갈래는 그 HEAD 를 꺼내고 실행 워크트리를 건드리지 않는다, 34qt: 시험 실행 절의 사전 인가 선택지가 기본값으로 표지된다 ---
+#
+# A CLAUSE-EXEC RUNS IN A TREE THE GATE CHECKS OUT FOR IT, AT A COMMIT THE GATE
+# FIXES FROM THE LEDGER. With no `트리=` word the commit is this target's last
+# merge, then the HEAD of a separate `실행 워크트리`, then the base tip; with
+# `트리=<segment>` it is that segment's worktree HEAD before its merge and its
+# merge commit after. The tree is detached, removed after the row on every
+# exit, and the command runs only when its HEAD is the fixed commit and nothing
+# is uncommitted in it. The row records the commit, the rule, the segment the
+# rule read, whether the limit cut the command and where HEAD stood after it.
+#
+# The target is the cap run's infra target, whose main worktree is the suite's
+# own repository: every commit below is made with `cx_commit` or `commit-tree`
+# and moves no ref of it, and the worktrees this section adds are removed at
+# its end.
+CX_SEC=34qt
+QT_PREV_AR="${CC_CMDS_AUTOPILOT_AUTO_RESOLVE:-}"
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=1
+QT_PREV_RO="${CC_GATE_TOKEN_RO-}"; QT_HAD_RO="${CC_GATE_TOKEN_RO+1}"
+export CC_GATE_TOKEN_RO=qt-ro-fixture
+QT_STORE="$WORK/qt-store"; mkdir -p "$QT_STORE"
+QT_ABS="$WORK/qt-abs-outside.sh"
+printf '%s\n' ": > '$QT_STORE/abs-ran'" > "$QT_ABS"
+qt_row() {  # qt_row <절> — that clause's last `종료 절 실행` row
+  cap_rows '종료 절 실행' | grep -F "| 절=$1 |" | tail -1
+}
+qt_nrows() { { cap_rows '종료 절 실행' | grep -cF "| 절=$1 |" || true; }; }
+qt_seg() {  # qt_seg <세그먼트> <워크트리> <상태> [필드…] — a segment of infra, with the row naming its target
+  local s="$1" w="$2" st="$3"; shift 3
+  hw_row '자율 승인' kind=segment 결정=채택 대상=infra "세그먼트=$s"
+  hw_row segment 교대=0 "id=$s" "워크트리=$w" "상태=$st" 선행=없음 "$@"
+}
+qt_wt_state() {  # qt_wt_state <워크트리> — its branch, HEAD and status in one line
+  (cd "$1" && printf '%s|%s|%s' "$(git symbolic-ref -q HEAD || printf -)" "$(git rev-parse HEAD)" \
+     "$(git status --porcelain | shasum -a 256 | cut -c1-12)")
+}
+qt_out() { cat "$CAP_OUT" 2>/dev/null; }
+
+# ---- 머지 뒤의 트리 · 머지 전 세그먼트 · 거절 · 출처 검사 ----
+cx_fx RQTA '- `종료 절` | id=C1 | 문면=마지막 머지 위에서 확인이 돈다' \
+           '- `종료 절` | id=C2 | 문면=세그먼트의 새 시험이 통과한다' \
+           '- `종료 절` | id=C3 | 문면=거절 갈래' \
+           '- `종료 절` | id=C4 | 문면=이전 런에서 착지한 변경이 동작한다' \
+           '- `종료 절` | id=C5 | 문면=완료된 세그먼트의 변경이 동작한다' \
+           '- `종료 절` | id=C6 | 문면=실행이 HEAD 를 옮기지 않는다' \
+           '- `종료 절` | id=C7 | 문면=스크립트가 돈다' \
+           '- `종료 절` | id=C8 | 문면=남은 트리 자리' \
+           '- `종료 절` | id=C9 | 문면=짧게 적힌 머지 커밋' \
+           '- `종료 절` | id=C10 | 문면=명령 자신의 143' \
+           '- `종료 절` | id=C11 | 문면=시한 초과' \
+           '- `종료 절` | id=C12 | 문면=시한 밖 구간' \
+           '- `종료 절` | id=C13 | 문면=신호' \
+           '- `종료 절` | id=C14 | 문면=예보' \
+           '- `사전 인가` | 형태=sh scripts/qt-echo.sh | 사유=실행 트리 확인' \
+           '- `사전 인가` | 형태=sh scripts/qt-sel.sh | 사유=지명한 시험 실행' \
+           '- `사전 인가` | 형태=sh scripts/qt-sleep.sh | 사유=시한 확인' \
+           '- `사전 인가` | 형태=sh scripts/qt-143.sh | 사유=명령 자신의 143' \
+           '- `사전 인가` | 형태=bash scripts/qt-abs.sh | 사유=트리 안 스크립트' \
+           "- \`사전 인가\` | 형태=bash $QT_ABS | 사유=트리 밖 스크립트" \
+           '- `사전 인가` | 형태=git commit --allow-empty -q -m qt-move | 사유=HEAD 를 옮기는 실행'
+cx_script qt-echo.sh 'printf "pwd=%s\n" "$(pwd -P)"
+printf "head=%s\n" "$(git rev-parse HEAD)"
+if [ -e qt-untracked ]; then echo untracked=보임; else echo untracked=없음; fi'
+cx_script qt-sel.sh 'case "${1:-}" in known) echo "known 만 실행" ;; *) echo "전량 실행" ;; esac'
+cx_script qt-sleep.sh ": > '$QT_STORE/started-'\"\${1:-x}\"
+echo started
+sleep 1200"
+cx_script qt-143.sh 'exit 143'
+cx_script qt-abs.sh ": > '$QT_STORE/abs-ran'"
+QT_BASE=$(cd "$CX_TWT" && git rev-parse HEAD)
+QT_M0=$(cd "$CX_TWT" && git commit-tree 'HEAD^{tree}' -p HEAD -m qt-old-merge)
+QT_M1=$(cx_commit)
+cx_merged QE "$QT_M0"
+cx_merged Q3 "$QT_M1"
+
+# C1 — no word: this target's last merge, in a tree of its own.
+qt_main0=$(qt_wt_state "$CX_TWT")
+cx_exec C1 워크트리쓰기 -- sh scripts/qt-echo.sh
+qt_r=$(qt_row C1)
+check "34qt: 단어 없는 실행은 이 대상의 마지막 머지를 꺼내 메인 체크아웃을 건드리지 않는다" \
+  "$rc|$(row_field "$qt_r" '트리')|$(row_field "$qt_r" '트리 출처')|$(row_field "$qt_r" '커밋')|$(row_field "$qt_r" '명령 뒤 HEAD')|$(qt_wt_state "$CX_TWT")|$(cx_trees)" \
+  "0|머지|Q3|$QT_M1|-|$qt_main0|0"
+[ "$rc" = "0" ] || printf '  34qt: %s\n' "$msg"
+case "$(qt_out)" in
+  *"pwd="*"-run-RQTA-cx-C1-1"*"head=$QT_M1"*) ok "34qt: 명령은 절·회차의 -cx- 경로에서 고정 커밋을 HEAD 로 돈다" ;;
+  *) bad "34qt: 명령은 절·회차의 -cx- 경로에서 고정 커밋을 HEAD 로 돈다" "$(qt_out)" ;;
+esac
+# The grading base is the checked-out tree, and the checkout came first. The
+# base is logged as a physical path and the checkout under the main worktree's
+# spelling, so both are compared after resolving their (still existing) parent.
+qt_phys() { [ -n "$1" ] || return 0; printf '%s/%s' "$(cd "$(dirname "$1")" 2>/dev/null && pwd -P)" "$(basename "$1")"; }
+qt_ln_wt=$( { grep -n -m1 'clause-exec 실행 트리 — ' "$CAP_ERR" || true; } )
+qt_ln_gb=$( { grep -n -m1 'clause-exec 등급 판정 기준 — ' "$CAP_ERR" || true; } )
+qt_p_wt=$(printf '%s' "$qt_ln_wt" | sed -n 's/.*clause-exec 실행 트리 — \([^ ]*\) (.*/\1/p')
+qt_p_gb=$(printf '%s' "$qt_ln_gb" | sed -n 's/.*clause-exec 등급 판정 기준 — \(.*\)$/\1/p')
+case "$(qt_phys "$qt_p_gb")" in
+  *"-run-RQTA-cx-C1-1") check "34qt: 등급 판정 기준 줄의 경로가 같은 호출의 실행 트리 줄 경로와 같다" \
+                          "$(qt_phys "$qt_p_gb")" "$(qt_phys "$qt_p_wt")" ;;
+  *) bad "34qt: 등급 판정 기준 줄의 경로가 같은 호출의 실행 트리 줄 경로와 같다" "기준=$qt_p_gb 트리=$qt_p_wt" ;;
+esac
+if [ -n "$qt_ln_wt" ] && [ -n "$qt_ln_gb" ] && [ "${qt_ln_wt%%:*}" -lt "${qt_ln_gb%%:*}" ]; then
+  ok "34qt: 실행 트리 줄이 등급 판정 기준 줄보다 앞에 있다"
+else
+  bad "34qt: 실행 트리 줄이 등급 판정 기준 줄보다 앞에 있다" "트리=${qt_ln_wt%%:*} 기준=${qt_ln_gb%%:*}"
+fi
+
+# The plan mode forecasts the same commit and checks nothing out.
+qt_n0=$(cx_n '종료 절 실행')
+CX_MODE=plan cx_exec C14 워크트리쓰기 -- sh scripts/qt-echo.sh
+case "$rc|$(qt_out)" in
+  "0|"*"실행 트리 예보: 고정 커밋=$QT_M1 트리=머지 트리 출처=Q3 회차=1"*) ok "34qt: plan 은 고정 커밋과 트리 출처를 예보한다" ;;
+  *) bad "34qt: plan 은 고정 커밋과 트리 출처를 예보한다" "rc=$rc $(qt_out) $msg" ;;
+esac
+check "34qt: plan 은 트리를 꺼내지 않고 행을 쓰지 않는다" "$(cx_trees)|$(cx_n '종료 절 실행')" "0|$qt_n0"
+
+# C2 — a segment before its merge: its worktree HEAD, which holds the last merge.
+QT_SEG="$WORK/qt-seg"; QT_SEGN="$WORK/qt-segn"
+( cd "$CX_TWT" && git worktree add -q -b qt-seg "$QT_SEG" "$QT_M1" \
+  && cd "$QT_SEG" \
+  && printf '%s\n' 'case "${1:-}" in known) echo "known 만 실행" ;; unit-x) echo "unit-x 만 실행" ;; *) echo "전량 실행" ;; esac' > scripts/qt-sel.sh \
+  && git add scripts/qt-sel.sh && git commit -qm qt-seg ) >/dev/null 2>&1
+( cd "$CX_TWT" && git worktree add -q -b qt-segn "$QT_SEGN" "$QT_BASE" \
+  && cd "$QT_SEGN" && git commit --allow-empty -qm qt-segn ) >/dev/null 2>&1
+QT_SEG_HEAD=$(cd "$QT_SEG" && git rev-parse HEAD); QT_SEGN_HEAD=$(cd "$QT_SEGN" && git rev-parse HEAD)
+qt_seg QS "$QT_SEG" 실행중
+qt_seg QN "$QT_SEGN" 실행중
+qt_seg0=$(qt_wt_state "$QT_SEG")
+cx_exec C2 워크트리쓰기 -- 트리=QS sh scripts/qt-sel.sh unit-x
+qt_r=$(qt_row C2)
+case "$rc|$(qt_out)" in
+  "0|unit-x 만 실행") ok "34qt: 트리=머지 전 세그먼트는 그 워크트리 HEAD 에서 지명한 시험만 돈다" ;;
+  *) bad "34qt: 트리=머지 전 세그먼트는 그 워크트리 HEAD 에서 지명한 시험만 돈다" "rc=$rc $(qt_out) $msg" ;;
+esac
+check "34qt: 세그먼트 갈래 행이 트리=세그먼트 와 세그먼트 HEAD 를 싣고 세그먼트 워크트리는 그대로다" \
+  "$(row_field "$qt_r" '트리')|$(row_field "$qt_r" '트리 출처')|$(row_field "$qt_r" '커밋')|$(qt_wt_state "$QT_SEG")" \
+  "세그먼트|QS|$QT_SEG_HEAD|$qt_seg0"
+
+# Refusals: nothing is run, no row is written, no tree is left.
+qt_refused() {  # qt_refused <이름> <바라는 문면> <argv…> — one refused clause-exec of C3
+  local name="$1" want="$2" n0; shift 2
+  n0=$(cx_n '종료 절 실행')
+  cx_exec C3 워크트리쓰기 -- "$@"
+  case "$rc|$(cx_n '종료 절 실행')|$(cx_trees)|$msg" in
+    "3|$n0|0|"*"$want"*) ok "34qt: $name" ;;
+    *) bad "34qt: $name" "rc=$rc rows=$(cx_n '종료 절 실행')/$n0 trees=$(cx_trees) $msg" ;;
+  esac
+}
+qt_refused '마지막 머지를 담지 않은 머지 전 세그먼트의 트리= 는 두 커밋을 적고 거절된다' \
+  "$QT_SEGN_HEAD 가 대상 infra 의 마지막 머지 커밋 $QT_M1" 트리=QN sh scripts/qt-echo.sh
+qt_refused '원장에 없는 세그먼트의 트리= 는 거절된다' '원장에 그 세그먼트가 없습니다' 트리=QZ sh scripts/qt-echo.sh
+hw_row '자율 승인' kind=segment 결정=채택 대상=front 세그먼트=QF
+hw_row segment 교대=0 id=QF "워크트리=$QT_SEG" 상태=실행중 선행=없음
+qt_refused '다른 대상의 세그먼트를 지명한 트리= 는 거절된다' '대상 infra 의 세그먼트가 아닙니다' 트리=QF sh scripts/qt-echo.sh
+hw_row '자율 승인' kind=segment 결정=채택 대상=infra 세그먼트=Q1
+qt_refused '머지 커밋 없는 머지 세그먼트의 트리= 는 거절된다' '16진 커밋이 아닙니다' 트리=Q1 sh scripts/qt-echo.sh
+qt_refused '마지막 머지를 담지 않은 앞선 머지 세그먼트의 트리= 는 거절된다' \
+  "$QT_M0 가 대상 infra 의 마지막 머지 커밋 $QT_M1" 트리=QE sh scripts/qt-echo.sh
+qt_seg QR "$QT_SEG" 실행중 종류=리뷰전용
+qt_refused '리뷰 전용 세그먼트의 트리= 는 거절된다' '리뷰 전용 세그먼트' 트리=QR sh scripts/qt-echo.sh
+qt_refused '사전 인가 행이 덮지 않는 실행도 트리를 남기지 않는다' '' sh scripts/qt-none.sh
+export CC_GATE_CLAUSE_EXEC_TEST_DIRTY=1
+qt_refused '깨끗하지 않은 실행 트리는 고정 커밋·관측 HEAD·트리 출처를 적고 거절된다' \
+  "is not the fixed commit $QT_M1, clean — observed HEAD $QT_M1, tree source Q3" sh scripts/qt-echo.sh
+unset CC_GATE_CLAUSE_EXEC_TEST_DIRTY
+cx_exec C3 워크트리쓰기 -- 트리= sh scripts/qt-echo.sh
+check "34qt: 빈 트리= 는 어휘 거절이고 트리를 남기지 않는다" "$rc|$(cx_trees)" "2|0"
+
+# A segment that landed in an earlier run and has no `머지됨` row here: the
+# no-word tree, which must hold its merge commit.
+qt_seg QL '-' 완료 출처=R0 "머지 커밋=$QT_BASE"
+qt_seg QL2 '-' 완료 출처=R0 "머지 커밋=$QT_M0"
+cx_exec C4 워크트리쓰기 -- 트리=QL sh scripts/qt-echo.sh
+qt_r=$(qt_row C4)
+check "34qt: 착지한 입양 세그먼트의 트리= 는 단어 없는 트리를 꺼내고 트리 출처가 그 세그먼트다" \
+  "$rc|$(row_field "$qt_r" '트리')|$(row_field "$qt_r" '트리 출처')|$(row_field "$qt_r" '커밋')" "0|머지|QL|$QT_M1"
+qt_refused '머지 커밋이 고정 커밋의 조상이 아닌 입양 세그먼트의 트리= 는 거절된다' \
+  "트리=QL2 의 머지 커밋 $QT_M0 이 실행 트리의 커밋 $QT_M1" 트리=QL2 sh scripts/qt-echo.sh
+
+# A merged segment whose last state is `완료` is still merged: its merge commit.
+cx_merged QD "$QT_M1"
+hw_row segment 교대=0 id=QD "워크트리=$CONE_C" 상태=완료 선행=없음
+cx_exec C5 워크트리쓰기 -- 트리=QD sh scripts/qt-echo.sh
+qt_r=$(qt_row C5)
+check "34qt: 마지막 상태가 완료인 머지 세그먼트의 트리= 는 그 머지 커밋을 꺼낸다" \
+  "$rc|$(row_field "$qt_r" '트리')|$(row_field "$qt_r" '트리 출처')|$(row_field "$qt_r" '커밋')" "0|머지|QD|$QT_M1"
+
+# A command that moves HEAD in the tree is no evidence; one that does not is.
+cx_exec C6 워크트리쓰기 -- git commit --allow-empty -q -m qt-move
+qt_ma=$cx_a; qt_r=$(qt_row C6)
+case "$rc|$(row_field "$qt_r" '커밋')|$(row_field "$qt_r" '명령 뒤 HEAD')" in
+  "0|$QT_M1|$QT_M1") bad "34qt: HEAD 를 옮긴 실행 행은 고정 커밋과 옮긴 HEAD 를 싣는다" "$qt_r" ;;
+  "0|$QT_M1|"[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]*) ok "34qt: HEAD 를 옮긴 실행 행은 고정 커밋과 옮긴 HEAD 를 싣는다" ;;
+  *) bad "34qt: HEAD 를 옮긴 실행 행은 고정 커밋과 옮긴 HEAD 를 싣는다" "rc=$rc $qt_r $msg" ;;
+esac
+cx_clause C6 충족 "실행 $qt_ma"
+check "34qt: 명령이 HEAD 를 옮긴 실행을 인용한 충족은 거절된다" "$rc" "3"
+cx_exec C6 워크트리쓰기 -- sh scripts/qt-echo.sh
+qt_sa=$cx_a
+check "34qt: HEAD 를 옮기지 않은 실행의 명령 뒤 HEAD 는 - 다" "$rc|$(row_field "$(qt_row C6)" '명령 뒤 HEAD')" "0|-"
+cx_clause C6 충족 "실행 $qt_sa"
+check "34qt: HEAD 를 옮기지 않은 실행을 인용한 충족은 받아들여진다" "$rc" "0"
+[ "$rc" = "0" ] || printf '  34qt: %s\n' "$msg"
+check "34qt: clause-exec 아닌 act 는 등급 판정 기준 줄을 남기지 않는다" \
+  "$rc|$( { grep -c 'clause-exec 등급 판정 기준 — ' "$CAP_ERR" || true; } )" "0|0"
+
+# A script operand outside the tree is not run; the same script inside it is.
+qt_refused_c7() {
+  local n0; n0=$(cx_n '종료 절 실행')
+  cx_exec C7 워크트리쓰기 -- bash "$QT_ABS"
+  check "34qt: 꺼낸 트리 밖 절대 경로의 스크립트는 띄우지 않고 거절된다" \
+    "$rc|$(cx_n '종료 절 실행')|$( [ -e "$QT_STORE/abs-ran" ] && printf 돌았다 || printf 안돌았다)|$(cx_trees)" \
+    "3|$n0|안돌았다|0"
+  case "$msg" in
+    *"$QT_ABS"*'outside the execution tree'*) ok "34qt: 트리 밖 스크립트 거절 문면이 그 경로를 싣는다" ;;
+    *) bad "34qt: 트리 밖 스크립트 거절 문면이 그 경로를 싣는다" "$msg" ;;
+  esac
+}
+qt_refused_c7
+cx_exec C7 워크트리쓰기 -- bash scripts/qt-abs.sh
+check "34qt: 같은 스크립트를 트리 안 상대 경로로 부르면 돈다" \
+  "$rc|$( [ -e "$QT_STORE/abs-ran" ] && printf 돌았다 || printf 안돌았다)" "0|돌았다"
+
+# The clause-and-round path: something not a worktree is refused and left
+# alone; a dirty worktree left there is removed and checked out again.
+QT_P8="${CX_TWT%/}-run-RQTA-cx-C8-1"
+mkdir -p "$QT_P8" && : > "$QT_P8/keep"
+cx_exec C8 워크트리쓰기 -- sh scripts/qt-echo.sh
+check "34qt: 워크트리가 아닌 것이 차지한 자리는 건드리지 않고 거절된다" \
+  "$rc|$( [ -e "$QT_P8/keep" ] && printf 남음 || printf 사라짐)|$(qt_nrows C8)" "3|남음|0"
+rm -rf "$QT_P8"
+( cd "$CX_TWT" && git worktree add -q --detach "$QT_P8" "$QT_M1" ) >/dev/null 2>&1
+: > "$QT_P8/qt-untracked"
+cx_exec C8 워크트리쓰기 -- sh scripts/qt-echo.sh
+case "$rc|$(qt_out)|$(cx_trees)" in
+  "0|"*'untracked=없음'*"|0") ok "34qt: 그 자리의 더러운 남은 트리는 지우고 다시 꺼낸다" ;;
+  *) bad "34qt: 그 자리의 더러운 남은 트리는 지우고 다시 꺼낸다" "rc=$rc $(qt_out) trees=$(cx_trees) $msg" ;;
+esac
+
+# A merge commit written in 12 digits resolves to the full sha.
+QT_M2=$(cx_commit "$QT_M1")
+cx_merged Q4 "$(printf '%s' "$QT_M2" | cut -c1-12)"
+cx_exec C9 워크트리쓰기 -- sh scripts/qt-echo.sh
+qt_r=$(qt_row C9)
+check "34qt: 12 자리로 적힌 머지 커밋도 전체 sha 로 고정되어 행의 커밋이 40 자리다" \
+  "$rc|$(row_field "$qt_r" '커밋')|$(row_field "$qt_r" '트리 출처')" "0|$QT_M2|Q4"
+
+# The command's own 143 is not the limit's.
+cx_exec C10 워크트리쓰기 -- sh scripts/qt-143.sh
+qt_r=$(qt_row C10)
+check "34qt: 명령 자신이 143 으로 끝나면 한도 초과=아니오 다" \
+  "$rc|$(row_field "$qt_r" '종료 코드')|$(row_field "$qt_r" '한도 초과')|$(cx_trees)" "143|143|아니오|0"
+
+# The limit: shortened by the test hook, it cuts the command at the deadline.
+# The command sleeps 1200 seconds, so a limit that does not cut it never ends
+# the call: the call runs in the background and the wait for its end is the
+# shared one, which fails at the ceiling. What proves the cut is the 143 and
+# 한도 초과=예 below, not a wall-clock bound.
+qt_timed() {  # qt_timed <절> <시한> — one clause-exec of qt-sleep.sh under that limit; leaves rc, qt_el and qt_prep
+  local h t0 t1 st p
+  h=$(cap_H "$CX_SHIFT" "$CX_RID#1")
+  export CC_GATE_CLAUSE_EXEC_TIMEOUT_TEST_SECONDS="$2"
+  rm -f "$WORK/qt-timed.rc"
+  t0=$(date +%s)
+  ( cap_gate "$CX_SHIFT" "$CX_RID#1" act --manifest "$CAP_NM" --kind clause-exec --target infra --segment - \
+             --cutpoint 커밋 --surface 워크트리쓰기 --reach 런로컬 --snapshot-digest "$h" \
+             --rationale "픽스처 — 시한" -- "절=$1" sh scripts/qt-sleep.sh "$1"
+    printf '%s' "$rc" > "$WORK/qt-timed.rc" ) &
+  p=$!
+  if ! wait_pid_gone "$p"; then
+    bad "34qt: 시한 $2초의 실행" "공용 상한 안에 끝나지 않았다 — 시한이 잠든 명령을 끊지 않았다"
+    pkill -TERM -f "scripts/qt-sleep.sh $1" 2>/dev/null || true
+    kill "$p" 2>/dev/null || true
+  fi
+  t1=$(date +%s)
+  unset CC_GATE_CLAUSE_EXEC_TIMEOUT_TEST_SECONDS
+  rc=$(cat "$WORK/qt-timed.rc" 2>/dev/null); rc=${rc:-없음}
+  qt_el=$((t1 - t0))
+  st=$(sed -n 's/^\[clause-exec\] 시한 [0-9]*초 — 시작 \([0-9]*\),.*/\1/p' "$CAP_ERR" | tail -1)
+  qt_prep=$(( ${st:-$t0} - t0 ))
+}
+qt_timed C11 2
+qt_r=$(qt_row C11)
+check "34qt: 시한에 닿은 실행은 143 과 한도 초과=예 로 남는다" \
+  "$rc|$(qt_nrows C11)|$(row_field "$qt_r" '종료 코드')|$(row_field "$qt_r" '한도 초과')|$(cx_trees)" "143|1|143|예|0"
+check "34qt: 시한 초과 행이 스냅숏 실행 종료 코드 143 으로 보인다" "$(cx_cl C11 '.["실행"]["종료 코드"]')" "143"
+cx_exec C11 워크트리쓰기 -- sh scripts/qt-sleep.sh C11b
+check "34qt: 시한 초과 뒤의 같은 절 실행은 마지막 실행 실패로 거절된다" "$rc|$(qt_nrows C11)" "3|1"
+qt_timed C12 10
+qt_r=$(qt_row C12)
+printf '  34qt: 시한 10초 측정 — 벽시계 %s초 · 시한 밖 %s초 · 게이트 준비 %s초\n' "$qt_el" "$((qt_el - 10))" "$qt_prep"
+check "34qt: 시한 10초의 실행도 143 과 한도 초과=예 로 남는다" \
+  "$rc|$(row_field "$qt_r" '한도 초과')|$(cx_trees)" "143|예|0"
+
+# A signal while the command runs: the gate's own group takes TERM.
+qt_h=$(cap_H "$CX_SHIFT" "$CX_RID#1")
+rm -f "$QT_STORE/started-C13"
+( cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
+  CLAUDE_CODE_SESSION_ID="$CX_SHIFT" CC_CLAUDE_BIN="$CAP_STUB" \
+  CC_PIPELINE_SHIFT_ID="$CX_RID#1" CC_PIPELINE_STAGE_ID='' CC_PIPELINE_SEGMENT='' \
+  exec perl -e 'setpgrp(0, 0); exec @ARGV or die "exec: $!"' bash "$GATE" act --manifest "$CAP_NM" \
+    --kind clause-exec --target infra --segment - --cutpoint 커밋 --surface 워크트리쓰기 --reach 런로컬 \
+    --snapshot-digest "$qt_h" --rationale "픽스처 — 신호" -- 절=C13 sh scripts/qt-sleep.sh C13 ) \
+  > "$WORK/qt-sig.out" 2> "$WORK/qt-sig.err" &
+qt_pid=$!
+wait_until test -e "$QT_STORE/started-C13" || bad "34qt: 신호 시험" "명령이 공용 상한 안에 시작하지 않았다"
+kill -TERM -- "-$qt_pid" 2>/dev/null || true
+qt_rc=0; wait "$qt_pid" || qt_rc=$?
+qt_r=$(qt_row C13)
+qt_o=$(row_field "$qt_r" '출력')
+check "34qt: 신호를 받은 실행은 행을 한 번만 쓰고 트리를 남기지 않는다" \
+  "$qt_rc|$(qt_nrows C13)|$(row_field "$qt_r" '종료 코드')|$(row_field "$qt_r" '한도 초과')|$(cx_trees)" "143|1|143|아니오|0"
+check "34qt: 신호 뒤 행의 출력 sha256 이 호출이 끝난 뒤의 출력 파일과 같다" \
+  "$(shasum -a 256 "$qt_o" 2>/dev/null | cut -d' ' -f1)" "$(row_field "$qt_r" '출력 sha256')"
+
+# ---- 실행 워크트리 · 베이스 ----
+qt_target_row() {  # qt_target_row <실행 워크트리> — the infra row carries it; the target map digest follows
+  local line nd
+  : > "$CAP_NM.t"
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      '- `target`'*별칭=infra*)
+        case "$line" in *'실행 워크트리='*) line="${line%% | 실행 워크트리=*}" ;; esac
+        line="$line | 실행 워크트리=$1" ;;
+    esac
+    printf '%s\n' "$line" >> "$CAP_NM.t"
+  done < "$CAP_NM"
+  mv "$CAP_NM.t" "$CAP_NM"
+  nd=$(cd "$WT" && bash -c '
+    CC_ORCH_SOURCE_ONLY=1 . "'"$repo_root"'/plugins/cc-cmds/orchestrator/run.sh"
+    MANIFEST="'"$CAP_NM"'"
+    canonical_targets | shasum -a 256 | cut -d" " -f1')
+  : > "$CAP_NM.t"
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in '**대상 맵 다이제스트**: '*) line="**대상 맵 다이제스트**: $nd" ;; esac
+    printf '%s\n' "$line" >> "$CAP_NM.t"
+  done < "$CAP_NM"
+  mv "$CAP_NM.t" "$CAP_NM"
+}
+qt_track() { (cd "$CX_TWT" && git rev-parse -q --verify refs/remotes/origin/main || printf -); }
+QT_EWT="$WORK/qt-ewt"
+( cd "$CX_TWT" && git worktree add -q -b qt-ewt "$QT_EWT" "$QT_M1" \
+  && cd "$QT_EWT" && git commit --allow-empty -qm qt-ewt ) >/dev/null 2>&1
+: > "$QT_EWT/qt-untracked"
+QT_EWT_HEAD=$(cd "$QT_EWT" && git rev-parse HEAD)
+cx_fx_hook() { qt_target_row "$QT_EWT"; }
+cx_fx RQTB '- `종료 절` | id=E1 | 문면=실행 워크트리 위에서 확인이 돈다' \
+           '- `사전 인가` | 형태=sh scripts/qt-echo.sh | 사유=실행 트리 확인'
+unset -f cx_fx_hook
+qt_ewt0=$(qt_wt_state "$QT_EWT"); qt_tr0=$(qt_track)
+cx_exec E1 워크트리쓰기 -- sh scripts/qt-echo.sh
+qt_r=$(qt_row E1)
+check "34qt: 실행 워크트리 갈래는 그 HEAD 를 꺼내고 실행 워크트리를 건드리지 않는다" \
+  "$rc|$(row_field "$qt_r" '트리')|$(row_field "$qt_r" '트리 출처')|$(row_field "$qt_r" '커밋')|$(qt_wt_state "$QT_EWT")|$(qt_track)|$(cx_trees)" \
+  "0|실행워크트리|-|$QT_EWT_HEAD|$qt_ewt0|$qt_tr0|0"
+[ "$rc" = "0" ] || printf '  34qt: %s\n' "$msg"
+case "$(qt_out)" in
+  *'untracked=없음'*) ok "34qt: 실행 워크트리의 커밋되지 않은 파일을 명령이 보지 못한다" ;;
+  *) bad "34qt: 실행 워크트리의 커밋되지 않은 파일을 명령이 보지 못한다" "$(qt_out)" ;;
+esac
+
+# The same value as the main worktree is no separate tree: the base tip, the
+# remote-tracking ref after a fetch, or the local branch with no `origin`.
+cx_fx_hook() { qt_target_row "$CX_TWT"; }
+cx_fx RQTC '- `종료 절` | id=B1 | 문면=베이스 위에서 읽기가 돈다'
+unset -f cx_fx_hook
+cx_exec B1 읽기 -- git rev-parse HEAD
+qt_r=$(qt_row B1)
+if (cd "$CX_TWT" && git remote get-url origin) >/dev/null 2>&1; then
+  qt_want=$(qt_track)
+else
+  qt_want=$(cd "$CX_TWT" && git rev-parse refs/heads/main)
+fi
+check "34qt: 실행 워크트리가 메인 워크트리와 같으면 베이스 끝을 꺼낸다" \
+  "$rc|$(row_field "$qt_r" '트리')|$(row_field "$qt_r" '커밋')|$(qt_out)|$(cx_trees)" "0|베이스|$qt_want|$qt_want|0"
+[ "$rc" = "0" ] || printf '  34qt: %s\n' "$msg"
+
+# ---- 승인 대기 · 다른 프로세스의 재제출 · 낡음 ----
+# A clause-exec reaches an approval wait through the reach cell, not the
+# pre-authorization: with auto-resolution off, a worktree write the table
+# grades and a whole-shape row covers, declared `협업`, parks as `도달모순` and
+# the park is issued as an approval. A read the table proved passes the reach
+# judgment whatever it declares, so it cannot stand here. The id is keyed on the
+# clause and the tree word, so another gate process finds it; the freshness
+# probe recomputes the fixed commit, so a merge landing after the answer makes
+# it stale.
+cx_fx RQTD '- `종료 절` | id=A1 | 문면=승인을 거쳐 쓰기가 돈다' \
+           '- `종료 절` | id=A2 | 문면=답 뒤에 머지가 내려앉는다' \
+           '- `사전 인가` | 형태=git commit --allow-empty -q -m qt-ap | 사유=승인 대기 갈래'
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=0
+qt_ap_last() {  # qt_ap_last — the id of the last waiting approval row
+  cap_rows '승인' | grep -F '상태=대기' | tail -1 | tr '|' '\n' | sed -n 's/^ *승인 id=//p' | sed 's/[[:space:]]*$//'
+}
+qt_ap_rows() {  # qt_ap_rows <승인 id> <상태> — how many rows of that id carry that state
+  { cap_rows '승인' | grep -F "승인 id=$1 " | grep -cF "상태=$2" || true; }
+}
+qt_ap_state() {  # qt_ap_state <승인 id> — the state on that id's last row
+  cap_rows '승인' | grep -F "승인 id=$1 " | tail -1 | tr '|' '\n' | sed -n 's/^ *상태=//p' | sed 's/[[:space:]]*$//'
+}
+cx_exec A1 워크트리쓰기 --reach 협업 -- git commit --allow-empty -q -m qt-ap
+qt_ap1=$(qt_ap_last)
+check "34qt: park 칸에 이른 clause-exec 는 승인을 발급하고 5 로 끝난다" \
+  "$rc|$( [ -n "$qt_ap1" ] && printf 발급 || printf 없음)|$(qt_nrows A1)|$(cx_trees)" "5|발급|0|0"
+[ "$rc" = "5" ] || printf '  34qt: %s\n' "$msg"
+hw_row 승인 "승인 id=$qt_ap1" 상태=승인 '해소 시각=테스트'
+cx_exec A1 워크트리쓰기 --reach 협업 -- git commit --allow-empty -q -m qt-ap
+case "$rc|$(qt_nrows A1)|$(cat "$CAP_ERR")" in
+  "0|1|"*"승인 $qt_ap1 이 해소되어 이 행위를 엽니다"*) ok "34qt: 다른 게이트 프로세스의 재제출에서 같은 승인 id 가 해소되어 행위를 연다" ;;
+  *) bad "34qt: 다른 게이트 프로세스의 재제출에서 같은 승인 id 가 해소되어 행위를 연다" "rc=$rc rows=$(qt_nrows A1) $msg" ;;
+esac
+cx_exec A2 워크트리쓰기 --reach 협업 -- git commit --allow-empty -q -m qt-ap
+qt_ap2=$(qt_ap_last)
+check "34qt: 다른 절의 같은 argv 는 다른 승인 id 로 발급된다" \
+  "$rc|$( [ -n "$qt_ap2" ] && [ "$qt_ap2" != "$qt_ap1" ] && printf 다름 || printf "같음 $qt_ap2")" "5|다름"
+hw_row 승인 "승인 id=$qt_ap2" 상태=승인 '해소 시각=테스트'
+cx_merged QM "$QT_M1"
+cx_exec A2 워크트리쓰기 --reach 협업 -- git commit --allow-empty -q -m qt-ap
+case "$rc|$(qt_nrows A2)|$(qt_ap_state "$qt_ap2")|$(qt_ap_rows "$qt_ap2" 대기)|$(cat "$CAP_ERR")" in
+  "5|0|대기|2|"*"the tree moved after approval $qt_ap2"*) ok "34qt: 답 뒤에 머지가 내려앉으면 같은 승인 id 가 낡고 그 id 에 새 대기 행이 붙는다" ;;
+  *) bad "34qt: 답 뒤에 머지가 내려앉으면 같은 승인 id 가 낡고 그 id 에 새 대기 행이 붙는다" \
+       "rc=$rc rows=$(qt_nrows A2) state=$(qt_ap_state "$qt_ap2") waits=$(qt_ap_rows "$qt_ap2" 대기) $msg" ;;
+esac
+check "34qt: 승인 대기 갈래의 출구도 트리를 남기지 않는다" "$(cx_trees)" "0"
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE=1
+
+# ---- 킥오프 5p 꼬리 ----
+qt_bd="$repo_root/plugins/cc-cmds/skills/autopilot/references/boundaries.md"
+qt_p1=$(grep -F "A clause that asks only for the repository's own tests or checks" "$qt_bd" || true)
+case "$qt_p1" in
+  *'` ← 기본값`'*'「스킬의 기본값」'*'`추천 출처: 기본값`'*'bash scripts/test-gate.sh'*) ok "34qt: 시험 실행 절의 사전 인가 선택지가 기본값으로 표지된다" ;;
+  *) bad "34qt: 시험 실행 절의 사전 인가 선택지가 기본값으로 표지된다" "$qt_p1" ;;
+esac
+qt_p2=$(grep -F 'Any other clause — one that asks for a paid or credentialed call' "$qt_bd" || true)
+case "$qt_p2" in
+  *'← 기본값'*) bad "34qt: 그 밖의 실행 절은 추천 없음 으로 남는다" "$qt_p2" ;;
+  *'`추천 없음`'*) ok "34qt: 그 밖의 실행 절은 추천 없음 으로 남는다" ;;
+  *) bad "34qt: 그 밖의 실행 절은 추천 없음 으로 남는다" "$qt_p2" ;;
+esac
+qt_lint=$( (cd "$repo_root" && bash scripts/lint-kickoff-recommendations.sh) 2>&1 ); qt_lrc=$?
+check "34qt: 킥오프 추천 린트가 통과한다" "$qt_lrc" "0"
+[ "$qt_lrc" = "0" ] || printf '  34qt: %s\n' "$qt_lint"
+
+for qt_w in "$QT_SEG" "$QT_SEGN" "$QT_EWT"; do
+  ( cd "$CX_TWT" && git worktree remove --force "$qt_w" ) >/dev/null 2>&1 || true
+done
+( cd "$CX_TWT" && git worktree prune && git branch -D qt-seg qt-segn qt-ewt ) >/dev/null 2>&1 || true
+for cx_f in $CX_MADE; do rm -f "$cx_f"; done
+rmdir "$CX_TWT/scripts" 2>/dev/null || true
+unset CX_MADE
+if [ -n "$QT_HAD_RO" ]; then export CC_GATE_TOKEN_RO="$QT_PREV_RO"; else unset CC_GATE_TOKEN_RO; fi
+CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$QT_PREV_AR"
 
 # --- 34m. 빈 대상 리뷰 정지 — 좌석은 구현 재파견으로 답하고, park 답은 park 행이 소비한다 ---
 # --- section: 34m | group: cone | covers: snapshot, act | anchors: 34m: 빈 대상 리뷰 정지의 좌석 답이 구현 재파견 행이 된다, 34m: 뒤의 park 행이 세그먼트 park 답을 소비한다, 34m: 리뷰 스킬이 빈 대상 정지의 고정 모양을 싣는다 ---
@@ -43218,7 +43834,7 @@ rv_act() {  # rv_act <스텁 모드> <세그먼트> <스테이지 종류> <프�
   ( cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
     CLAUDE_CODE_SESSION_ID="$RV_SHIFT" CC_CLAUDE_BIN="$CAP_STUB" \
     CC_PIPELINE_SHIFT_ID="$RV_RID#1" CC_PIPELINE_STAGE_ID='' CC_PIPELINE_SEGMENT='' \
-    bash "$GATE" wait --manifest "$CAP_NM" --segment "$seg" --interval 1 --timeout 60 ) >/dev/null 2>&1
+    bash "$GATE" wait --manifest "$CAP_NM" --segment "$seg" --interval 1 --timeout "${CC_TEST_WAIT_CEILING:-120}" ) >/dev/null 2>&1
   rc=$r
 }
 rv_skill_rows() {  # rv_skill_rows <세그먼트> — 그 세그먼트의 skill 파견 행 수
@@ -43610,7 +44226,7 @@ ds_fp() {  # ds_fp <pid> — the fingerprint `cc_proc_fingerprint` records
   { LC_ALL=C ps -o lstart= -p "$1" 2>/dev/null || true; } | sed 's/[[:space:]]\{1,\}/ /g;s/^ //;s/ $//'
 }
 ds_dead() {  # ds_dead — a pid that has been reaped
-  local p; sleep 0 & p=$!; wait "$p" 2>/dev/null || true; printf '%s' "$p"
+  local p; true & p=$!; wait "$p" 2>/dev/null || true; printf '%s' "$p"
 }
 ds_unrec() { { cap_rows handoff | grep -cF '| 사유=무기록 |' || true; } | tr -d ' '; }
 mkdir -p "$CAP_DIR/log"
@@ -43638,7 +44254,7 @@ check "34h: shift.live 와 shift.in-progress 가 지워진다" \
 # THE LAUNCHER LIVES. A second launch with no handoff, its shift dead and its
 # launcher a live process: nothing is written and the file stays as it was.
 printf -- '- `교대 기동` | 교대=0 | 서수=2 | 사유=상한 | 대상=infra | 기록 시각=2026-10-15T00:10:00Z | prev=x\n' >> "$CAP_LEDGER"
-sleep 300 & DS_LIVE=$!; FX_PIDS="${FX_PIDS:-}$DS_LIVE "
+wait_holder & DS_LIVE=$!; FX_PIDS="${FX_PIDS:-}$DS_LIVE "
 printf '%s\n%s\n%s\n%s\n' "$(ds_dead)" 'Thu Jan  1 00:00:00 2026' "$DS_LIVE" "$(ds_fp "$DS_LIVE")" \
   > "$CAP_DIR/shift.live"
 ds_before=$(cat "$CAP_DIR/shift.live")
@@ -43695,7 +44311,7 @@ rg_call() {
 rl_case race hold
 rg_n0=$(rl_launches)
 rg_call A 중단; RG_A=$RG_BG
-rl_until 60 rl_has start.1 || bad "34g 겹친 기동" "첫 교대가 뜨지 않았다" # gate-load: 첫 교대 기동까지 60초 상한
+wait_until rl_has start.1 || bad "34g 겹친 기동" "첫 교대가 뜨지 않았다"
 rg_call B 중단; RG_B=$RG_BG
 wait "$RG_B" 2>/dev/null || true
 check "34g: (1) 뒤에 든 호출은 3 이고 교대를 띄우지 않는다" \
@@ -43743,7 +44359,7 @@ rm -rf "$RG_U"
 
 # (4) A `대기` HAND-BACK LEAVES `relay.live` WITH ITS `handback=` LINE: the
 # claim wrote the file inside the lock, and the hold returns through it.
-sleep 300 & RG_POLL=$!; FX_PIDS="${FX_PIDS:-}$RG_POLL "
+wait_holder & RG_POLL=$!; FX_PIDS="${FX_PIDS:-}$RG_POLL "
 printf '%s\n' "$RG_POLL" > "$CAP_DIR/checks.pid"
 printf -- '- `handoff` | 교대=0 | 사유=대기 | 버린 선택지=- | 막힌 지점=- | 다음 후보=- | CI 대기=RGC1 | 대상=infra | prev=x\n' >> "$CAP_LEDGER"
 rl_case handback
@@ -43936,7 +44552,7 @@ cap_gate "$RJ_SEAT" '' act --manifest "$CAP_NM" --kind segment --target infra --
          --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$RJ_SEAT" '')" \
          --rationale x -- 워크트리="$CONE_A" 상태=실행중 선행=없음
 check "34j: 리셋 대기 픽스처의 세그먼트 행이 기록된다" "$rc" "0"
-RJ_G=2; RJ_POLL=5
+RJ_G=2
 
 # (1) THE LAST-FRAME RULE, on five streams and one that is not a limit death.
 RJ_F="$WORK/rj-frames"; rm -rf "$RJ_F"; mkdir -p "$RJ_F"
@@ -43984,46 +44600,43 @@ check "34j: (2) 가까운 시계의 키는 받아 그 철자로 적는다" \
 
 # (3) T1 — THE RESET PLUS THE GRACE. The shift hands off `대기` on a cut whose
 # reset is ahead; the relay holds past the reset and launches the successor
-# within two polls of reset + G.
+# at or after reset + G, from the wake and not from the hold.
 rj_r1=$(( $(date +%s) + 20 ))
 rl_plant_cut RJ1 1 "$rj_r1"
 rl_case reset wait-reset cap
 RL_RESET=RJ1 RL_GRACE=$RJ_G rl_call 상한
-rl_until 60 rl_has end.1 || bad "34j 리셋 대기" "첫 교대가 끝나지 않았다" # gate-load: 첫 교대 종료까지 60초 상한
-rl_until 15 rl_relay_waiting || bad "34j 리셋 대기" "릴레이가 대기에 들지 않았다" # gate-load: 릴레이 대기 진입까지 15초 상한
+wait_until rl_has end.1 || bad "34j 리셋 대기" "첫 교대가 끝나지 않았다"
+wait_until rl_relay_waiting || bad "34j 리셋 대기" "릴레이가 대기에 들지 않았다"
 check "34j: (3) relay.live 의 reset= 줄이 끊긴 스테이지와 그 시계를 싣는다" \
   "$(sed -n 's/^reset=//p' "$CAP_DIR/relay.live")" "RJ1:$rj_r1"
 rl_sample 2
-# gate-load: 표본을 마친 시각이 리셋+G 전이어야 한다
-check "34j: (3) 리셋+G 전에는 후속 교대가 뜨지 않는다" \
-  "$(rl_has start.2 && printf woke || printf held):$( [ "$(date +%s)" -lt $((rj_r1 + RJ_G)) ] && printf early || printf late)" "held:early"
-rl_until 60 rl_has start.2
+check "34j: (3) 표본 동안 후속 교대가 뜨지 않는다" "$(rl_has start.2 && printf woke || printf held)" "held"
+wait_until rl_has start.2 || { bad "34j 리셋 대기" "리셋 뒤 후속 교대가 뜨지 않았다"; rl_abort; }
 rl_join
 rj_at1=$(rl_iso_ep "$(row_field "$(cap_rows '교대 기동' | tail -1)" '기록 시각')")
 check "34j: 리셋+G 에서 후속 교대가 뜬다" \
   "$rc:$(rl_calls):$(row_field "$(cap_rows '교대 기동' | tail -1)" '사유')" "0:2:대기"
-# gate-load: 후속 기동이 G + 2·poll 안이어야 한다
-check "34j: (3) C2 — 리셋에서 후속 교대 기동의 기록 시각까지가 G 이상, G + 2·poll 이하다" \
-  "$( [ "${rj_at1:-0}" -ge $((rj_r1 + RJ_G)) ] && [ "${rj_at1:-0}" -le $((rj_r1 + RJ_G + 2 * RJ_POLL)) ] && printf in || printf "out:${rj_at1:-}-$rj_r1")" "in"
+check "34j: (3) C2 — 후속 교대 기동의 기록 시각이 리셋+G 이후이고 깨움으로 떴다" \
+  "$( [ "${rj_at1:-0}" -ge $((rj_r1 + RJ_G)) ] && printf after || printf "before:${rj_at1:-}-$rj_r1"):$(rl_woke start.2)" "after:up:깨움"
 
-# (4) AN EARLIER `한도 해제` ROW below the cut row wakes the relay within a poll,
-# long before the reset.
-rj_r2=$(( $(date +%s) + 900 ))
+# (4) AN EARLIER `한도 해제` ROW below the cut row wakes the relay long before
+# the reset. The reset is an hour away, past the shared ceiling many times, so
+# a successor that came from the reset could not be awaited here at all.
+rj_r2=$(( $(date +%s) + 3600 ))
 rl_plant_cut RJ2 1 "$rj_r2"
 rl_case cleared wait-reset cap
 RL_RESET=RJ2 RL_GRACE=$RJ_G rl_call 상한
-rl_until 60 rl_has end.1 || bad "34j 한도 해제" "첫 교대가 끝나지 않았다" # gate-load: 첫 교대 종료까지 60초 상한
-rl_until 15 rl_relay_waiting || bad "34j 한도 해제" "릴레이가 대기에 들지 않았다" # gate-load: 릴레이 대기 진입까지 15초 상한
+wait_until rl_has end.1 || bad "34j 한도 해제" "첫 교대가 끝나지 않았다"
+wait_until rl_relay_waiting || bad "34j 한도 해제" "릴레이가 대기에 들지 않았다"
 rl_sample 3
 check "34j: (4) 한도 해제 행이 서기 전에는 깨지 않는다" "$(rl_has start.2 && printf woke || printf held)" "held"
 rj_t=$(date +%s)
 printf -- '- `한도 해제` | 교대=0 | 근거=픽스처 | 레인=~/.claude | 기록 시각=%s | prev=x\n' "$(rl_ep_iso "$rj_t")" >> "$CAP_LEDGER"
-rl_until 30 rl_has start.2
+wait_until rl_has start.2 || { bad "34j 한도 해제" "한도 해제 행 뒤 후속 교대가 뜨지 않았다"; rl_abort; }
 rl_join
 rj_at2=$(rl_iso_ep "$(row_field "$(cap_rows '교대 기동' | tail -1)" '기록 시각')")
-# gate-load: 후속 기동이 G + 2·poll 안이어야 한다
-check "34j: (4) C2 — 더 이른 한도 해제 행에서 후속 교대 기동까지가 G + 2·poll 이하다" \
-  "$rc:$( [ "${rj_at2:-0}" -le $((rj_t + RJ_G + 2 * RJ_POLL)) ] && printf in || printf "out:${rj_at2:-}-$rj_t")" "0:in"
+check "34j: (4) C2 — 후속 교대 기동이 한도 해제 행 뒤, 리셋 전에 깨움으로 떴다" \
+  "$rc:$( [ "${rj_at2:-0}" -ge "$rj_t" ] && [ "${rj_at2:-0}" -lt "$rj_r2" ] && printf in || printf "out:${rj_at2:-}-$rj_t"):$(rl_woke start.2)" "0:in:up:깨움"
 
 # (5) T1′ REFUSED: a shift the limit killed with a clock past the horizon, and
 # one that died with no clock at all. The seat's `대기` is 3 and launches
@@ -44060,17 +44673,16 @@ rj_n=$(row_field "$(cap_rows '교대 기동' | tail -1)" '서수')
 check "34j: (6) 가까운 시계로 죽은 교대도 무기록으로 끝난다" "$rc:$(row_field "$(cap_rows handoff | tail -1)" '사유')" "1:무기록"
 rl_case near-reissue cap
 RL_GRACE=$RJ_G rl_call 대기
-rl_until 30 rl_relay_waiting || bad "34j T1′" "릴레이가 대기에 들지 않았다" # gate-load: 릴레이 대기 진입까지 30초 상한
+wait_until rl_relay_waiting || bad "34j T1′" "릴레이가 대기에 들지 않았다"
 rl_sample 3
 check "34j: T1′ 의 대기가 리셋까지 기다린다" \
   "$(sed -n 's/^reset=//p' "$CAP_DIR/relay.live")|$(sed -n 's/^ci=//p' "$CAP_DIR/relay.live")|$(rl_has start.1 && printf woke || printf held)" \
   "교대#$rj_n:$rj_r3|-|held"
-rl_until 60 rl_has start.1
+wait_until rl_has start.1 || { bad "34j T1′" "리셋 뒤 후속 교대가 뜨지 않았다"; rl_abort; }
 rl_join
 rj_at3=$(rl_iso_ep "$(row_field "$(cap_rows '교대 기동' | tail -1)" '기록 시각')")
-# gate-load: 후속 기동이 G + 2·poll 안이어야 한다
-check "34j: (6) C2 — T1′ 의 후속은 리셋+G 이후, G + 2·poll 안에 뜬다" \
-  "$rc:$( [ "${rj_at3:-0}" -ge $((rj_r3 + RJ_G)) ] && [ "${rj_at3:-0}" -le $((rj_r3 + RJ_G + 2 * RJ_POLL)) ] && printf in || printf "out:${rj_at3:-}-$rj_r3")" "0:in"
+check "34j: (6) C2 — T1′ 의 후속은 리셋+G 이후에 깨움으로 뜬다" \
+  "$rc:$( [ "${rj_at3:-0}" -ge $((rj_r3 + RJ_G)) ] && printf after || printf "before:${rj_at3:-}-$rj_r3"):$(rl_woke start.1)" "0:after:up:깨움"
 
 # (7) THE SLEEP CLASS. The host slept across the reset: the reset is already
 # past when the relay runs, so it wakes at its first poll. The base of such a
@@ -44082,13 +44694,12 @@ rl_plant_cut RJ4 1 "$rj_r4"
 sleep 1
 rl_case sleep wait-reset cap
 RL_RESET=RJ4 RL_GRACE=$RJ_G rl_call 상한
-rl_until 60 rl_has start.2
+wait_until rl_has start.2 || { bad "34j 잠든 리셋" "후속 교대가 뜨지 않았다"; rl_abort; }
 rl_join
 rj_wk=$(cat "$RL_O/end.1" 2>/dev/null || printf 0)
 rj_at4=$(rl_iso_ep "$(row_field "$(cap_rows '교대 기동' | tail -1)" '기록 시각')")
-# gate-load: 후속 기동이 G + 2·poll 안이어야 한다
-check "34j: (7) C2 — 깨어난 시각에서 후속 교대 기동까지가 G + 2·poll 이하다" \
-  "$rc:$( [ "${rj_at4:-0}" -le $((rj_wk + RJ_G + 2 * RJ_POLL)) ] && printf in || printf "out:${rj_at4:-}-$rj_wk")" "0:in"
+check "34j: (7) C2 — 후속 교대 기동이 깨어난 시각 이후에 깨움으로 뜬다" \
+  "$rc:$( [ "${rj_at4:-0}" -ge "$rj_wk" ] && printf after || printf "before:${rj_at4:-}-$rj_wk"):$(rl_woke start.2)" "0:after:up:깨움"
 ORCH_HOST_OS=Darwin CC_SYSCTL_TEST_VALUES="kern.sleeptime=$((rj_r4 - 10)),kern.waketime=$rj_wk" \
   CC_GATE_RESET_GRACE_TEST_SECONDS=$RJ_G rl_gate_fn gate_reattach_anchor_write RJ4 > /dev/null 2>&1 || true
 check "34j: (7) 그 재부착의 기준은 깨어난 시각이다" \
@@ -44271,8 +44882,8 @@ fk_usage 'acct("seat"; free)'
 rl_stage FK0; fk_s="$RL_SPID"
 rl_case forelay wait cap
 HOME="$FK_H" rl_call 상한
-rl_until 60 rl_has end.1 || bad "34w 릴레이 갈래" "첫 교대가 끝나지 않았다" # gate-load: 첫 교대 종료까지 60초 상한
-rl_until 15 rl_relay_waiting || bad "34w 릴레이 갈래" "릴레이가 대기에 들지 않았다" # gate-load: 릴레이 대기 진입까지 15초 상한
+wait_until rl_has end.1 || bad "34w 릴레이 갈래" "첫 교대가 끝나지 않았다"
+wait_until rl_relay_waiting || bad "34w 릴레이 갈래" "릴레이가 대기에 들지 않았다"
 fk_n0=$(fk_launches)
 fk_abort() {
   cap_gate "$FK_SEAT" '' act --manifest "$CAP_NM" --kind router-shift --target infra \
@@ -44283,7 +44894,7 @@ HOME="$FK_H" fk_abort
 check "34w: 릴레이가 기다리는 동안의 사유=중단 은 거부 3 이고 기동이 없다" "$rc|$(fk_launches)" "3|$fk_n0"
 fk_usage
 rl_stage_end "$fk_s"
-rl_until 30 rl_has end.2 || bad "34w 릴레이 갈래" "후임이 뜨지 않았다" # gate-load: 후임 종료까지 30초 상한
+wait_until rl_has end.2 || { bad "34w 릴레이 갈래" "후임이 뜨지 않았다"; rl_abort; }
 rl_join
 check "34w: 릴레이가 깨어 낸 후임은 여유 계정에서 뜬다" \
   "$rc|$(cat "$RL_O/cfg.1" 2>/dev/null)|$(cat "$RL_O/cfg.2" 2>/dev/null)|$(row_field "$(fk_last)" 결과)" \
@@ -44377,7 +44988,7 @@ fk_foreign_lease() {  # fk_foreign_lease <보유자 pid> — 다른 런이 u-a �
   ( cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CC_GATE_SOURCE_ONLY=1 bash -c '. "$1" </dev/null; RUN_ID=RFOOTHER; shift; gate_failover_lease_put "$@"' \
       _ "$GATE" u-a "$FK_H/.claude-u-a" "$1" shift-1 '{"five_hour":6000,"seven_day":6000}' ) >/dev/null 2>&1
 }
-sleep 300 & fk_holder=$!; FX_PIDS="${FX_PIDS:-}$fk_holder "
+wait_holder & fk_holder=$!; FX_PIDS="${FX_PIDS:-}$fk_holder "
 fk_foreign_lease "$fk_holder"
 check "34w: 다른 런의 임대가 표에 선다" "$?" "0"
 rl_case forank cap
@@ -44388,7 +44999,7 @@ check "34w: 다른 런의 예약으로 순위가 갈리면 remaining_bp 가 큰 
 kill "$fk_holder" 2>/dev/null || true; wait "$fk_holder" 2>/dev/null || true
 fk_new RFOD u-a u-b
 fk_usage 'acct("u-a"; free | .windows.five_hour = win(0.2; 3600)) | acct("u-b"; free | .windows.five_hour = win(0.4; 3600))'
-sleep 300 & fk_holder=$!; FX_PIDS="${FX_PIDS:-}$fk_holder "
+wait_holder & fk_holder=$!; FX_PIDS="${FX_PIDS:-}$fk_holder "
 fk_foreign_lease "$fk_holder"
 check "34w: 죽을 보유자의 임대도 표에 선다" "$?" "0"
 kill "$fk_holder" 2>/dev/null || true; wait "$fk_holder" 2>/dev/null || true
@@ -44406,9 +45017,9 @@ fk_aff() { cat "$CAP_DIR/route-affinity" 2>/dev/null || printf 없음; }
 fk_aff0=$(fk_aff)
 rl_case folease hold
 HOME="$FK_H" rl_call 상한
-rl_until 60 rl_has start.1 || bad "34w 임대" "교대가 뜨지 않았다" # gate-load: 교대 기동까지 60초 상한
+wait_until rl_has start.1 || bad "34w 임대" "교대가 뜨지 않았다"
 fk_lease_up() { [ -n "$(fk_lease)" ]; }
-rl_until 10 fk_lease_up || bad "34w 임대" "임대가 서지 않았다" # gate-load: 임대가 서기까지 10초 상한
+wait_until fk_lease_up || bad "34w 임대" "임대가 서지 않았다"
 fk_l=$(fk_lease)
 check "34w: 이전 교대가 고른 계정에 failover-shift 임대를 잡고 보유자가 그 교대다" \
   "$(printf '%s' "$fk_l" | jq -r '[.run_id, .lineage, .account, .basis] | join("|")')|$(printf '%s' "$fk_l" | jq -r '(.reservation_bp.five_hour > 0 or .reservation_bp.seven_day > 0)')|$(printf '%s' "$fk_l" | jq -r --arg p "$(cat "$RL_O/pid.1")" 'any(.holders[]?; (.pid | tostring) == $p)')" \
@@ -46115,8 +46726,7 @@ rm -f "$sb15_out" "$sb15_rc"
     --cutpoint 배포 --surface 외부상태변경 --snapshot-digest "$(SAH)" --rationale x -- 적용 \
     > "$sb15_out" 2>&1; echo $? > "$sb15_rc"; sleep 120 ) &
 sb15_root=$!
-sb15_i=0
-while [ ! -s "$sb15_rc" ] && [ "$sb15_i" -lt 600 ]; do sleep 0.2; sb15_i=$((sb15_i + 1)); done
+wait_until test -s "$sb15_rc" || true
 check "15: 적용 행위가 2분 안에 돌아온다" "$(tr -d '[:space:]' < "$sb15_rc" 2>/dev/null)" "0"
 if [ -e "$sb15_mark" ]; then bad "15: 행위 반환 시점" "명령이 이미 끝나 표지가 있다"
 else ok "15: 행위가 돌아온 때 명령은 아직 끝나지 않았다"; fi
@@ -46140,22 +46750,15 @@ sb15_pids=$(sb15_tree "$sb15_root")
 kill -9 $sb15_pids 2>/dev/null || true
 wait "$sb15_root" 2>/dev/null || true
 # 부모를 잃은 자손은 init 이 거둘 때까지 잠깐 좀비로 남아 kill -0 에 답한다.
-sb15_i=0
-while [ "$sb15_i" -lt 25 ]; do
-  sb15_alive=0
-  for p in $sb15_pids; do kill -0 "$p" 2>/dev/null && sb15_alive=$((sb15_alive + 1)); done
-  [ "$sb15_alive" = "0" ] && break
-  sleep 0.2; sb15_i=$((sb15_i + 1))
-done
-check "15: 행위를 부른 프로세스 트리가 모두 죽었다" "$sb15_alive" "0"
-sb15_i=0
-while [ "$sb15_i" -lt 150 ]; do
-  if [ ! -e "$SA_RUN/apply/SB15.sup.self" ]; then
-    case "$(sb_seg_last SB15)" in *"상태=적용 준비"*) ;; *) break ;; esac
-  fi
-  sleep 0.2; sb15_i=$((sb15_i + 1))
-done
-[ "$sb15_i" -lt 150 ] || bad "15: 감독자 대기" "30초 안에 끝나지 않았다: $(sb_seg_last SB15)" # gate-load: 감독자가 끝나기까지 30초 상한
+sb15_count_alive() {
+  local p n=0
+  for p in $sb15_pids; do kill -0 "$p" 2>/dev/null && n=$((n + 1)); done
+  printf '%s' "$n"
+}
+sb15_none_alive() { [ "$(sb15_count_alive)" = "0" ]; }
+wait_until sb15_none_alive 2>/dev/null || true
+check "15: 행위를 부른 프로세스 트리가 모두 죽었다" "$(sb15_count_alive)" "0"
+wait_until sb_apply_done SB15 || bad "15: 감독자 대기" "공용 상한 안에 끝나지 않았다: $(sb_seg_last SB15)"
 if [ -e "$sb15_mark" ]; then ok "15: 트리를 죽인 뒤에도 명령이 끝까지 돌았다"
 else bad "15: 표지" "명령이 끝나지 않았다"; fi
 case "$(sb_seg_last SB15)" in
@@ -46179,7 +46782,7 @@ sb16_lv() {  # sb16_lv <함수> <인자…> — liveness.sh 만 실은 새 프�
   bash -c '. "$1" >/dev/null 2>&1; shift; "$@"' _ \
     "$repo_root/plugins/cc-cmds/orchestrator/liveness.sh" "$@" 2>/dev/null
 }
-sleep 300 &
+wait_holder &
 sb16_pid=$!
 printf '%s\n' "$sb16_pid" > "$SA_RUN/apply/SB16.sup"
 cc_proc_fingerprint "$sb16_pid" > "$SA_RUN/apply/SB16.sup.start"
@@ -46318,7 +46921,7 @@ touch "$sb18_mark"
 sb18_base=$(sa_rows)
 # 살아 있는 감독자 — 정산은 적용이 아직 바꾸는 대상을 재지 않는다.
 mkdir -p "$SA_RUN/apply"
-sleep 300 &
+wait_holder &
 sb18_live=$!
 printf '%s\n' "$sb18_live" > "$SA_RUN/apply/SB18.sup"
 cc_proc_fingerprint "$sb18_live" > "$SA_RUN/apply/SB18.sup.start"
@@ -46774,7 +47377,7 @@ check "19d: 증거가 서지 않으면 프로브 없이 검증 불성립 판정�
 sd_import '19d 살아 있음' 20260901-000000d6 20260902-000000d6 'exit 0'
 sd6_dir="$XDG_STATE_HOME/cc-cmds/run/20260901-000000d6/apply"
 mkdir -p "$sd6_dir"
-sleep 300 &
+wait_holder &
 sd6_live=$!
 printf '%s\n' "$sd6_live" > "$sd6_dir/SD.sup"
 cc_proc_fingerprint "$sd6_live" > "$sd6_dir/SD.sup.start"
@@ -48000,7 +48603,7 @@ printf '1\n' > "$RD40/W40E.attempt"
 printf '99999\n' > "$RD40/W40E.sup"
 printf 'Fri Sep 4 00:00:00 2026\n' > "$RD40/W40E.sup.start"
 printf 'deadbeef\n\n' > "$RD40/W40E.launch"
-gateL wait --manifest "$FX_MANIFEST" --segment W40E --interval 1 --timeout 60
+gateL wait --manifest "$FX_MANIFEST" --segment W40E --interval 1 --timeout "${CC_TEST_WAIT_CEILING:-120}"
 check "(e) 시도는 찍혔는데 행이 없으면 14" "$rc" "14"
 w40e_left=""
 for w40e_f in W40E.sup W40E.sup.start W40E.launch; do
@@ -48248,8 +48851,8 @@ gateL exec --manifest "$FX_MANIFEST" --target infra --segment S42A --cutpoint �
       -- touch "$WT/s42-router.txt"
 check "42 라우터의 읽기 초과 exec 가 통과한다" "$rc" "0"
 ( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" CC_CLAUDE_BIN="$STUB42A" \
-  bash "$GATE" wait --manifest "$FX_MANIFEST" --segment S42A --interval 1 --timeout 60 ) >/dev/null 2>&1; rc=$?
-check "42 (A) 의 wait 이 스테이지 rc 0 을 돌려준다" "$rc" "0" # gate-load: wait 가 60초 상한 안에 끝나야 한다
+  bash "$GATE" wait --manifest "$FX_MANIFEST" --segment S42A --interval 1 --timeout "${CC_TEST_WAIT_CEILING:-120}" ) >/dev/null 2>&1; rc=$?
+check "42 (A) 의 wait 이 스테이지 rc 0 을 돌려준다" "$rc" "0"
 k42a=$(klass42 S42A)
 if [ -n "$k42a" ] && [ "$k42a" != "정상 완료" ]; then
   ok "라우터 행만 늘어난 스테이지는 정상 완료가 아니다 ($k42a)"
@@ -48269,8 +48872,8 @@ canon_report "$rid42" S42B >/dev/null
   --surface 워크트리쓰기 --snapshot-digest "$(HL)" --rationale x \
   --trigger '첫 리뷰' -- review -p "$(rv_x "$rid42" S42B)" ) >/dev/null 2>&1
 ( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" CC_CLAUDE_BIN="$STUB42B" \
-  bash "$GATE" wait --manifest "$FX_MANIFEST" --segment S42B --interval 1 --timeout 60 ) >/dev/null 2>&1; rc=$?
-check "42 (B) 의 wait 이 스테이지 rc 0 을 돌려준다" "$rc" "0" # gate-load: wait 가 60초 상한 안에 끝나야 한다
+  bash "$GATE" wait --manifest "$FX_MANIFEST" --segment S42B --interval 1 --timeout "${CC_TEST_WAIT_CEILING:-120}" ) >/dev/null 2>&1; rc=$?
+check "42 (B) 의 wait 이 스테이지 rc 0 을 돌려준다" "$rc" "0"
 check "스테이지 자신이 게이트를 한 번 부르면 정상 완료다" "$(klass42 S42B)" "정상 완료"
 check "42 (B) 의 스테이지 행에 행위자=스테이지 가 찍혀 있다" \
   "$( { grep -F '`자율 승인`' "$FX_LEDGER" || true; } | { grep -F '세그먼트=S42B ' || true; } | { grep -cF '| 행위자=스테이지 |' || true; } )" "1"
@@ -49623,13 +50226,18 @@ check "57p: 그 클론은 바이트 그대로다" "$(p57p_state "$P57P_UNREACH")
 # (9) 매달리는 원격 → 20초 감시가 끊는다 -------------------------------------------
 # ssh 전송을 오래 자는 명령으로 갈아 끼워 네트워크 없이 매달린다. `#` 이 git 이 덧붙이는
 # 인자를 주석으로 만든다.
+# The transport sleeps far past the 20-second watch, so a watch that does not
+# cut it never ends the call: the call runs in the background and the shared
+# wait ends it at the ceiling. The lower bound shows the watch waited at all.
 p57p_t0=$(date +%s)
-P57P_SSH="sleep $P57P_SLEEP #" p57p_take "$P57P/rd-hang" "$P57P_HANG/plugins/cc-cmds"
+( P57P_SSH="sleep $P57P_SLEEP #" p57p_take "$P57P/rd-hang" "$P57P_HANG/plugins/cc-cmds" ) &
+p57p_hp=$!
+p57p_hend=끝남
+wait_pid_gone "$p57p_hp" || { p57p_hend=안끝남; kill "$p57p_hp" 2>/dev/null || true; }
 p57p_el=$(( $(date +%s) - p57p_t0 ))
-# gate-load: 매달리는 fetch 가 끊기기까지의 경과가 35초 안이어야 한다
 check "57p: 매달리는 원격은 20초 상한 안에 fetch 실패로 끝난다" \
-  "$(p57p_pin "$P57P/rd-hang" origin-sync)/$( [ "$p57p_el" -ge 15 ] && [ "$p57p_el" -le 35 ] && printf 상한안 || printf "경과${p57p_el}s" )" \
-  "fetch 실패/상한안"
+  "$(p57p_pin "$P57P/rd-hang" origin-sync)/$p57p_hend/$( [ "$p57p_el" -ge 15 ] && printf 감시함 || printf "경과${p57p_el}s" )" \
+  "fetch 실패/끝남/감시함"
 check "57p: 그때도 런은 로컬 HEAD 로 고정된다" \
   "$(p57p_pin "$P57P/rd-hang" method)/$(p57p_pin "$P57P/rd-hang" commit)" "archive/$P57P_C1"
 pkill -f "sleep $P57P_SLEEP" 2>/dev/null || true
@@ -51115,7 +51723,7 @@ s71_twin() {
       rm -f "$tw/$skill-$verb.err"
       if [ "$verb" = act ]; then
         ( cd "$WT" && XDG_STATE_HOME="$S71_STATE" CC_CLAUDE_BIN="$STUB" \
-          bash "$GATE" wait --manifest "$S71_MAN" --segment ST --interval 1 --timeout 60 ) >/dev/null 2>&1
+          bash "$GATE" wait --manifest "$S71_MAN" --segment ST --interval 1 --timeout "${CC_TEST_WAIT_CEILING:-120}" ) >/dev/null 2>&1
       fi
     done
   done
@@ -52929,12 +53537,7 @@ p69_gate() {
 p69_wait_round() {
   # 회차를 띄운 호출 뒤, 분리 자식이 잠금을 풀 때까지 유계로 기다린다. 잠금은 동사가
   # 돌아오기 전에 잡히므로, 없으면 회차가 없었거나 이미 끝난 것이다.
-  local i=0
-  while [ -d "$P69_LOCK" ]; do
-    [ "$i" -lt 300 ] || { bad "69: 회차 대기" "잠금이 30초 안에 풀리지 않았다"; return 1; } # gate-load: 회차 잠금이 풀리기까지 30초 상한
-    sleep 0.1; i=$((i + 1))
-  done
-  return 0
+  wait_until test ! -d "$P69_LOCK" || { bad "69: 회차 대기" "잠금이 공용 상한 안에 풀리지 않았다"; return 1; }
 }
 P69_ROUND_LOG="$P69_STATE/cc-cmds/run/$P69_RID/log/metrics-round.log"
 p69_calls() { if [ -f "$P69_CALLS" ]; then grep -c '' "$P69_CALLS"; else printf 0; fi; }
@@ -54640,7 +55243,7 @@ check "75: 선점 거부는 원장에 한 바이트도 쓰지 않는다" "$(lsr_
 
 # 같은 키의 파견 잠금과 대기 구성원 — 행위가 17 로 거부하는 두 판정.
 lsr75_k=$(lsr75_new k75)
-sleep 600 & lsr75_kp=$!
+wait_holder & lsr75_kp=$!
 lsr75_kfp=$( . "$repo_root/plugins/cc-cmds/orchestrator/liveness.sh"; cc_proc_fingerprint "$lsr75_kp" )
 printf '%s\n%s\n' "$lsr75_kp" "$lsr75_kfp" > "${lsr75_k%/*}/SK1.dispatching"
 check "75: 살아 있는 보유자의 파견 잠금은 잡히지 않는다" \
@@ -54752,7 +55355,7 @@ check "75: 계보의 blocked 행이 있으면 정산 행은 없고 표지만 치
 lsr75_v=$(lsr75_new v75)
 lsr75_wt "$lsr75_v" SE3 999999 드라이버
 lsr75_wt "$lsr75_v" SE4 999999 게이트
-sleep 600 & lsr75_vp=$!
+wait_holder & lsr75_vp=$!
 printf '%s\n%s\n' "$lsr75_vp" "$( . "$repo_root/plugins/cc-cmds/orchestrator/liveness.sh"; cc_proc_fingerprint "$lsr75_vp" )" > "${lsr75_v%/*}/SE4.dispatching"
 lsr75_in "$lsr75_v" '' '' gate_settle_dead_waiters >/dev/null 2>&1
 check "75: 드라이버 표지와 잠긴 키는 정산하지 않는다" \
@@ -56020,12 +56623,24 @@ check "95: TH2 대조 — 중단 인계 뒤에는 재진입도 시계도 없다"
 # 이월만 남은 대기는 빈 집합 갈래로 곧장 돌아오지 않는다. 깨울 시각(마감 1초 뒤)이
 # 붙듦 상한보다 멀면 상한에서 좌석에 돌려준다. 상한은 시험 훅으로 2초로 줄이고, 줄이지
 # 않은 상한이 3000 초이며 훅이 그것을 늘리지 못한다는 것을 따로 본다.
-lsr93_rwait() {  # lsr93_rwait <원장> <매니페스트> — 「rc|2초 이상 걸림|좌석에 돌려준 사유」
-  FX_MANIFEST=$2 CC_GATE_RELAY_HOLD_TEST_SECONDS=2 lsr93_in "$1" eval '
+lsr93_rwait() {  # lsr93_rwait <원장> <매니페스트> [붙듦 상한] — 「rc|2초 이상 걸림|좌석에 돌려준 사유」
+  FX_MANIFEST=$2 CC_GATE_RELAY_HOLD_TEST_SECONDS=${3:-2} lsr93_in "$1" eval '
     GATE_RELAY_FP=fp; GATE_RELAY_STARTED=""; GATE_RELAY_SEAT_START=$(date -u +%s); s=$GATE_RELAY_SEAT_START
     r=0; o=$(gate_relay_wait 2>/dev/null) || r=$?
     printf "%s|%s|%s" "$r" "$( [ $(( $(date -u +%s) - s )) -ge 2 ] && printf y || printf n)" \
       "$(printf "%s\n" "$o" | sed -n "s/.*\[relay\] 대기가 이어진다 — \(.*\) · 같은 호출을 대기 로 다시 낸다\$/\1/p")"' 2>/dev/null
+}
+# The two controls below must end at once. They are given a 1200-second hold, so
+# a wait that holds instead of ending never returns: it runs in the background
+# and the shared wait ends it at the ceiling.
+lsr93_rwait_end() {  # lsr93_rwait_end <원장> <매니페스트> — 「rc|좌석에 돌려준 사유|끝남 여부」
+  local f="$WORK/lsr93-rwait.out" p e=끝남 a b c
+  rm -f "$f"
+  ( lsr93_rwait "$1" "$2" 1200 > "$f" ) &
+  p=$!
+  wait_pid_gone "$p" || { e=안끝남; pkill -P "$p" 2>/dev/null || true; kill "$p" 2>/dev/null || true; }
+  IFS='|' read -r a b c < "$f" 2>/dev/null || true
+  printf '%s|%s|%s' "${a:-}" "${c:-}" "$e"
 }
 check "95: TH2 줄이지 않은 붙듦 상한은 3000 초이고 시험 훅은 그것을 늘리지 못한다" \
   "$(sed -n 's/^readonly GATE_RELAY_HOLD_SECONDS=\([0-9][0-9]*\)$/\1/p' "$lsr75/cc-cmds/orchestrator/gate.sh")|$(lsr93_in "$lsr93_l" eval 'unset CC_GATE_RELAY_HOLD_TEST_SECONDS; gate_relay_hold; printf "|"; CC_GATE_RELAY_HOLD_TEST_SECONDS=5000 gate_relay_hold' 2>/dev/null)" \
@@ -56034,13 +56649,11 @@ lsr93_l=$(lsr93_dfx th2h)
 lsr93_hrow "$lsr93_l" 이월
 check "95: TH2 마감 전 이월만 남은 대기는 붙듦 상한에서 좌석에 돌려준다" \
   "$(lsr93_rwait "$lsr93_l" "$FX_MANIFEST")" "1|y|좌석 호출의 대기 상한 2초가 지났다"
-# gate-load: 곧장 끝나는 대기가 2초 안에 끝나야 한다
 check "95: TH2 대조 — 지난 마감의 이월 대기는 깨움 조건으로 곧장 끝난다" \
-  "$(lsr93_rwait "$lsr93_l" "$lsr93_mfp")" "0|n|"
+  "$(lsr93_rwait_end "$lsr93_l" "$lsr93_mfp")" "0||끝남"
 lsr93_hrow "$lsr93_l" 중단
-# gate-load: 곧장 끝나는 대기가 2초 안에 끝나야 한다
 check "95: TH2 대조 — 이월이 빠진 대기는 빈 집합으로 곧장 끝난다" \
-  "$(lsr93_rwait "$lsr93_l" "$FX_MANIFEST")" "0|n|"
+  "$(lsr93_rwait_end "$lsr93_l" "$FX_MANIFEST")" "0||끝남"
 
 # TH9 — 마감 뒤의 이월 인계는 끝맺음이 설 때만 받는다. 서지 않으면 행 없이 거절되고,
 # 같은 원장의 중단 인계는 재질문 가드 1 을 지난다. 그래서 지난 깨울 시각을 단 이월
@@ -57078,9 +57691,10 @@ check "61c: 오염된 환경과 깨끗한 환경의 프로브 출력이 같다" 
 # 잠금을 쓰지 않으므로 잴 것이 없다.
 if [ -x /usr/bin/lockf ]; then
   mkdir -p "$SA_RUN"
-  /usr/bin/lockf -k "$SA_RUN/ledger.lock" sleep 300 >/dev/null 2>&1 &
+  /usr/bin/lockf -k "$SA_RUN/ledger.lock" bash -c '. "$1"; wait_holder' _ "$repo_root/scripts/wait-fixture.sh" >/dev/null 2>&1 &
   c61_lpid=$!
-  sleep 1
+  c61_lock_held() { ! /usr/bin/lockf -k -t 0 "$SA_RUN/ledger.lock" true 2>/dev/null; }
+  wait_until c61_lock_held || bad "61c: 원장 잠금" "보유자가 공용 상한 안에 잠금을 쥐지 않았다"
   c61_t0=$(date -u +%s)
   c61_locked=$(c61_probe GRADE_PROBE_CHILD_TIMEOUT=60); c61_lrc=$?
   c61_dt=$(( $(date -u +%s) - c61_t0 ))
@@ -57281,7 +57895,7 @@ gateB plan --manifest "$WORK/bsx-RB1.md" --kind skill --target infra --segment -
   --surface 워크트리쓰기 -- split -p "$(bsx_p RB1 "$BSX_P_SPLIT")"
 check "76:감사가 끝나기 전의 분할 파견은 거부된다" "$rc" "3"
 bsx_launch RB1 "$WORK/bin/bsx-audit" audit "$BSX_P_AUDIT" A1
-check "76:감사 파견이 기동하고 wait 가 rc 0 을 돌려준다" "$BSX_ACT_RC/$BSX_WAIT_RC" "0/0" # gate-load: 스테이지가 대기 상한 안에 끝나야 한다
+check "76:감사 파견이 기동하고 wait 가 rc 0 을 돌려준다" "$BSX_ACT_RC/$BSX_WAIT_RC" "0/0"
 check "76:감사 단계의 stage-result 행이 세그먼트=- · 스테이지=단계 id · 종류=audit 다" \
   "$(bsx_rows RB1 '| 세그먼트=- | 스테이지=A1 | 종류=audit ' | grep -c . || true)" "1"
 check "76:감사 단계가 정상 완료로 끝난다" "$(bsx_class RB1 '| 스테이지=A1 | 종류=audit ')" "정상 완료"
@@ -57320,14 +57934,14 @@ case "$msg" in
   *) bad "76재수렴 선행 문면" "$msg" ;;
 esac
 bsx_launch RB1F "$WORK/bin/bsx-audit" audit "$BSX_P_AUDIT" A1
-check "76:동결 문서로 다시 킥오프한 런은 설계 행 없이 감사를 띄운다" "$BSX_ACT_RC/$BSX_WAIT_RC" "0/0" # gate-load: 스테이지가 대기 상한 안에 끝나야 한다
+check "76:동결 문서로 다시 킥오프한 런은 설계 행 없이 감사를 띄운다" "$BSX_ACT_RC/$BSX_WAIT_RC" "0/0"
 check "76:그 감사가 정상 완료로 끝난다" "$(bsx_class RB1F '| 스테이지=A1 | 종류=audit ')" "정상 완료"
 # A `--resume` carries the router's fixed sentence, not the slash command, so the
 # prompt check does not apply to it — the session is pinned to the step's rows.
 bsx_sid=$(bsx_rows RB1F '| 스테이지=A1 | 종류=audit ' | tail -1 | tr '|' '\n' | sed -n 's/^ *세션 id=//p' | sed 's/[[:space:]]*$//')
 BSX_RESUME="$bsx_sid" bsx_launch RB1F "$WORK/bin/bsx-audit" audit \
   "중단 기록 x 의 질문에 사람이 \`y\` 을 골랐습니다. 그 선택지를 질문의 답으로 받아, 기록이 적은 스텝부터 이어서 진행하세요." A1
-check "76:고정 문장으로 감사 세션을 재부착하는 --resume 파견은 기동한다" "$BSX_ACT_RC/$BSX_WAIT_RC" "0/0" # gate-load: 스테이지가 대기 상한 안에 끝나야 한다
+check "76:고정 문장으로 감사 세션을 재부착하는 --resume 파견은 기동한다" "$BSX_ACT_RC/$BSX_WAIT_RC" "0/0"
 check "76:그 재부착이 감사 행을 하나 더 남긴다" \
   "$(bsx_rows RB1F '| 세그먼트=- | 스테이지=A1 | 종류=audit ' | grep -c . || true)" "2"
 # A person adopts the audit's composed requirement on an audit that ended
@@ -59926,7 +60540,7 @@ check "83p: 런 끝은 남은 열림을 부른다" "$(p83_n ok)|$(p83_st "$l83")
 # 런 끝은 살아 있는 스테이지의 열림을 건너뛰고 `-` 열림은 언제나 부른다. 상한을 넘기면
 # 새 정리를 시작하지 않는다.
 p83_clear; l83=$(lsr_ledger p83-live)
-sleep 300 &
+wait_holder &
 p83_sp=$!
 printf '%s\n' "$p83_sp" > "${l83%/*}/S7.pid"
 cc_proc_fingerprint "$p83_sp" > "${l83%/*}/S7.start"
@@ -60056,7 +60670,7 @@ CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$CC_GATE_PREV_AR83P"
 
 # ---------------------------------------------------------------------------
 # 84. gate_metrics_timed leaves nothing behind in a detached child under make
-# --- section: 84 | group: darwin | covers: gate_metrics_timed | anchors: 84: 무동작 명령은 rc 0 으로 돌아온다, 84: 시간 초과는 rc 143 이다, 84: 감시 시간의 sleep 이 남지 않는다, 84: 시간 초과된 명령의 자손이 남지 않는다, 84: 호출자의 fd 3 이상 보유자가 남지 않는다, 84: make 가 루프 시간 안에 돌아온다 ---
+# --- section: 84 | group: darwin | covers: gate_metrics_timed | anchors: 84: 무동작 명령은 rc 0 으로 돌아온다, 84: 시간 초과는 rc 143 이다, 84: 감시 시간의 sleep 이 남지 않는다, 84: 시간 초과된 명령의 자손이 남지 않는다, 84: 호출자의 fd 3 이상 보유자가 남지 않는다, 84: make 가 떼어 낸 자식의 측정 뒤 공용 상한 안에 돌아온다 ---
 #
 # The metrics round is a detached child of whatever ran the gate, so under
 # `make -jN` it carries make's jobserver pipe. The old function backgrounded a
@@ -60079,67 +60693,74 @@ CC_CMDS_AUTOPILOT_AUTO_RESOLVE="$CC_GATE_PREV_AR83P"
 W84="$WORK/s84"; mkdir -p "$W84"; : > "$W84/marker"
 # The sleeps are counted machine-wide, so their lengths carry a fraction drawn
 # for this run: another copy of this section running at the same time (a sweep
-# chunk beside a solo) leaves sleeps of other lengths, which are not counted. A
-# signalled process can still be listed for a moment under load, so each count
-# is retaken for up to three seconds until it reads zero.
+# chunk beside a solo) leaves sleeps of other lengths, which are not counted.
+# Every such sleep is 1200 seconds or more, longer than the shared wait ceiling:
+# a leaked one is still listed when a count gives up, and a leaked one holding
+# make's fds keeps make from returning within the ceiling. A signalled process
+# can still be listed for a moment under load, so each count is retaken with the
+# shared wait until it reads zero.
+#
+# The child ends right after its counts, so make returning at all is the
+# evidence: what could still hold make past that point is a leaked sleep, and
+# a leaked sleep outlives the shared ceiling.
 u84=$(( (RANDOM * 32768 + RANDOM) % 900000 + 100000 ))
 cat > "$W84/child.sh" <<'EOF'
 gate="$1"; o="$2"; u="$3"
+. "$4"
 CC_GATE_SOURCE_ONLY=1 . "$gate" </dev/null
 exec 7<"$o/marker"
+echo "$$" > "$o/child.pid"
 count84() { ps -A -o command= | grep -cxE "$1" || true; }
-settle84() {  # settle84 <pattern> — the count, retaken until zero or 3 s
-  local n k=0
-  n=$(count84 "$1")
-  while [ "$n" != "0" ] && [ "$k" -lt 30 ]; do sleep 0.1; k=$((k + 1)); n=$(count84 "$1"); done
-  printf '%s\n' "$n"
+zero84() { [ "$(count84 "$1")" = "0" ]; }
+settle84() {  # settle84 <pattern> — the count, retaken until zero or the shared ceiling
+  wait_until zero84 "$1" 2>/dev/null || true
+  count84 "$1"
 }
-t0=$(perl -MTime::HiRes=time -e 'printf "%.2f", time')
 i=0; nbad=0
 while [ "$i" -lt 40 ]; do
-  gate_metrics_timed "6.$u" true || nbad=$((nbad + 1))
+  gate_metrics_timed "1200.$u" true || nbad=$((nbad + 1))
   i=$((i + 1))
 done
 rc=0
-gate_metrics_timed 1 bash -c "sleep 7.${u}1 & sleep 7.${u}2" || rc=$?
+gate_metrics_timed 1 bash -c "sleep 1201.${u}1 & sleep 1201.${u}2" || rc=$?
 echo "$nbad" > "$o/nbad"; echo "$rc" > "$o/to.rc"
-settle84 "sleep 6\\.$u" > "$o/n.watch"
-settle84 "sleep 7\\.${u}[12]" > "$o/n.desc"
-t1=$(perl -MTime::HiRes=time -e 'printf "%.2f", time')
-echo "$t0 $t1" > "$o/loop"
+settle84 "sleep 1200\\.$u" > "$o/n.watch"
+settle84 "sleep 1201\\.${u}[12]" > "$o/n.desc"
 lsof -t -- "$o/marker" > "$o/holders" 2>/dev/null 7<&- || true
 grep -vx "$$" "$o/holders" 7<&- | grep -c . > "$o/n.fd" 7<&- || true
 exec 7<&-
 echo done > "$o/done"
 EOF
 cat > "$W84/recipe.sh" <<EOF
+. "$repo_root/scripts/wait-fixture.sh"
 . "$repo_root/plugins/cc-cmds/orchestrator/detach.sh"
-p=\$(cc_detach_exec "$W84/child.log" "$W84/child.log" bash "$W84/child.sh" "$repo_root/plugins/cc-cmds/orchestrator/gate.sh" "$W84" "$u84")
-i=0
-while [ ! -e "$W84/done" ] && kill -0 "\$p" 2>/dev/null && [ "\$i" -lt 600 ]; do
-  sleep 0.1; i=\$((i + 1))
-done
+p=\$(cc_detach_exec "$W84/child.log" "$W84/child.log" bash "$W84/child.sh" "$repo_root/plugins/cc-cmds/orchestrator/gate.sh" "$W84" "$u84" "$repo_root/scripts/wait-fixture.sh")
+child_over() { [ -e "$W84/done" ] || ! kill -0 "\$p" 2>/dev/null; }
+wait_until child_over || true
 EOF
 printf 'all: a b\na:\n\tbash "%s"\nb:\n\t@:\n' "$W84/recipe.sh" > "$W84/mk"
-t84a=$(perl -MTime::HiRes=time -e 'printf "%.2f", time')
-MAKEFLAGS= MFLAGS= MAKELEVEL= make -j2 -f "$W84/mk" >"$W84/make.out" 2>&1 3>&- 4>&- 5>&-
-t84b=$(perl -MTime::HiRes=time -e 'printf "%.2f", time')
+( MAKEFLAGS= MFLAGS= MAKELEVEL= make -j2 -f "$W84/mk" >"$W84/make.out" 2>&1 3>&- 4>&- 5>&- ) &
+p84=$!
+# The child's own calls and counts come first and take their own time; only
+# once it has written `done` (or make is already gone) does the wait for make
+# start, so the two never share one ceiling.
+d84_ready() { [ -e "$W84/done" ] || ! kill -0 "$p84" 2>/dev/null; }
+wait_until d84_ready || true
+m84=돌아옴
+wait_pid_gone "$p84" || { m84=안돌아옴; pkill -P "$p84" 2>/dev/null || true; kill "$p84" 2>/dev/null || true; }
+c84=$(cat "$W84/child.pid" 2>/dev/null)
 if [ -e "$W84/done" ]; then
   check "84: 무동작 명령은 rc 0 으로 돌아온다" "$(cat "$W84/nbad")" "0"
   check "84: 시간 초과는 rc 143 이다" "$(cat "$W84/to.rc")" "143"
   check "84: 감시 시간의 sleep 이 남지 않는다" "$(cat "$W84/n.watch")" "0"
   check "84: 시간 초과된 명령의 자손이 남지 않는다" "$(cat "$W84/n.desc")" "0"
   check "84: 호출자의 fd 3 이상 보유자가 남지 않는다" "$(cat "$W84/n.fd")" "0"
-  read -r l84a l84b < "$W84/loop"
-  if awk -v m="$(awk -v a="$t84a" -v b="$t84b" 'BEGIN { print b - a }')" \
-         -v l="$(awk -v a="$l84a" -v b="$l84b" 'BEGIN { print b - a }')" 'BEGIN { exit !(m < l + 3) }'; then
-    ok "84: make 가 루프 시간 안에 돌아온다"
-  else
-    bad "84: make 가 루프 시간 안에 돌아온다" "make ${t84a} - ${t84b}, 루프 ${l84a} - ${l84b}" # gate-load: make 경과가 루프 경과보다 3초 넘게 길면 안 된다
-  fi
+  check "84: make 가 떼어 낸 자식의 측정 뒤 공용 상한 안에 돌아온다" "$m84" "돌아옴"
 else
-  bad "84: 떼어 낸 자식이 끝까지 돌지 못했다" "$(cat "$W84/child.log" "$W84/make.out" 2>/dev/null)" # gate-load: 자식이 대기 상한 안에 끝나야 한다
+  bad "84: 떼어 낸 자식이 끝까지 돌지 못했다" "$(cat "$W84/child.log" "$W84/make.out" 2>/dev/null)"
 fi
+[ -z "$c84" ] || wait_until _wait_fixture_gone "$c84" 2>/dev/null || true
+pkill -f "sleep 120[01]\\.$u84" 2>/dev/null || true
 
 # ---------------------------------------------------------------------------
 # 85. A segment an earlier run cut is adopted through the manifest
@@ -61465,8 +62086,10 @@ cat > "$X83S/emulator" <<X83EOF
 printf 'emulator %s\n' "\$*" >> "$X83L"
 if [ "\$1" = -list-avds ]; then printf 'cc-R83X-S5-p\nother-avd\n'; exit 0; fi
 : > "$X83D/emu.live"
-i=0
-while [ -e "$X83D/emu.hold" ] && [ "\$i" -lt 600 ]; do sleep 0.1; i=\$((i + 1)); done
+while [ -e "$X83D/emu.hold" ]; do
+  [ -z "\${WAIT_FIXTURE_OWNER:-}" ] || kill -0 "\$WAIT_FIXTURE_OWNER" 2>/dev/null || break
+  sleep 0.1
+done
 rm -f "$X83D/emu.live"
 exit 0
 X83EOF
@@ -61695,10 +62318,8 @@ check "83x: 읽기로 신고한 xcrun --find 는 여전히 열린다" "$rc|$(gre
 : > "$X83D/emu.hold"
 ( x83_run emulator -avd cc-R83X-S5-p -port 5560; printf '%s' "$rc" > "$X83D/emu.rc" ) &
 x83_ep=$!
-x83_i=0
-while ! { [ -e "$X83D/emu.live" ] && [ -n "$(x83_tsv cc-R83X-S5-p)" ]; } && [ "$x83_i" -lt 300 ]; do
-  sleep 0.1; x83_i=$((x83_i + 1))
-done
+x83_emu_up() { [ -e "$X83D/emu.live" ] && [ -n "$(x83_tsv cc-R83X-S5-p)" ]; }
+wait_until x83_emu_up || true
 check "83x 픽스처의 에뮬레이터가 도는 동안 목록에 있다 (아래가 공허하지 않다)" "$(x83_tsv cc-R83X-S5-p)" "S5/emulator-5560"
 x83_run adb -s emulator-5560 install a.apk
 check "83x: 도는 에뮬레이터의 시리얼을 겨누는 adb 는 열린다" "$rc" "0"
@@ -62529,11 +63150,11 @@ d86_h() { { grep -E '^[0-9a-f]{64}(-[0-9a-f]{64})?$' "$1" 2>/dev/null || true; }
 D86_DASH="$(cd "$(dirname "$GATE")" && pwd)/dashboard.py"
 d86_alive() { if [ -n "$1" ] && kill -0 "$1" 2>/dev/null; then printf yes; else printf no; fi; }
 d86_stop() {
-  local pid i=0
+  local pid
   pid=$(d86_pid "$1")
   [ -n "$pid" ] || return 0
   kill "$pid" 2>/dev/null || true
-  while kill -0 "$pid" 2>/dev/null && [ "$i" -lt 60 ]; do sleep 0.1; i=$((i + 1)); done
+  wait_until _wait_fixture_gone "$pid" || true
 }
 d86_port() { python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()'; }
 D86_PORT=$(d86_port)
@@ -66577,10 +67198,12 @@ cj88e_new() {  # cj88e_new <라벨> <none|fix> — cb60_new 의 픽스처, cycle
 }
 cj88e_live() {
   # cj88e_live <종류> — 세그먼트 CK 의 살아 있는 스테이지. `fx_stage_live` 를 쓰지 않는다 —
-  # `cb60_head` 가 `sleep` 을 함수로 가려 그 `sleep 120 &` 는 곧바로 끝난다.
+  # `cb60_head` 가 `sleep` 을 함수로 가려 그 보유자는 곧바로 끝나거나 헛돈다. 그래서
+  # 보유자의 잠은 가림을 건너뛰는 `command sleep` 이고, 공용 보유자와 같이 시험 셸이
+  # 살아 있는 동안 산다.
   local pid
   mkdir -p "$SA_RUN"
-  command sleep 120 & pid=$!
+  ( while kill -0 "$WAIT_FIXTURE_OWNER" 2>/dev/null; do command sleep 1; done ) & pid=$!
   printf '%s' "$pid" > "$SA_RUN/CK.pid"
   LC_ALL=C ps -o lstart= -p "$pid" 2>/dev/null \
     | sed 's/[[:space:]]\{1,\}/ /g;s/^ //;s/ $//' > "$SA_RUN/CK.start"
@@ -67104,13 +67727,12 @@ esac
 # 띄우고, 다시 붙고, 동결 뒤를 본다. 재부착은 슬래시 명령이 아니라 고정 문장을 싣고
 # 이 단계의 행에 묶이므로, 티어 강제는 그것을 읽지 않는다.
 bsx_launch RTS "$WORK/bin/bsx-design" design "$TIER_P_SOLO" D1
-# gate-load: 스테이지가 대기 상한 안에 끝나야 한다
 check "89: solo 설계 스테이지가 동결 문서로 정상 완료한다" \
   "$BSX_ACT_RC/$BSX_WAIT_RC/$(bsx_class RTS '| 스테이지=D1 | 종류=design ')" "0/0/정상 완료"
 tier_sid=$(bsx_rows RTS '| 스테이지=D1 | 종류=design ' | tail -1 | tr '|' '\n' | sed -n 's/^ *세션 id=//p' | sed 's/[[:space:]]*$//')
 BSX_RESUME="$tier_sid" bsx_launch RTS "$WORK/bin/bsx-design" design \
   "중단 기록 x 의 질문에 사람이 \`y\` 을 골랐습니다. 그 선택지를 질문의 답으로 받아, 기록이 적은 스텝부터 이어서 진행하세요." D1
-check "89: solo 설계 스테이지의 재부착은 거부되지 않는다" "$BSX_ACT_RC/$BSX_WAIT_RC" "0/0" # gate-load: 스테이지가 대기 상한 안에 끝나야 한다
+check "89: solo 설계 스테이지의 재부착은 거부되지 않는다" "$BSX_ACT_RC/$BSX_WAIT_RC" "0/0"
 check "89: 그 재부착이 설계 행을 하나 더 남긴다" \
   "$(bsx_rows RTS '| 세그먼트=- | 스테이지=D1 | 종류=design ' | grep -c . || true)" "2"
 check "89: solo 런의 동결 뒤 다음 스텝은 구현이다" \
@@ -67170,7 +67792,6 @@ check "89: 같은 로스터 행을 지닌 discuss-audit 계획은 통과한다 (
 bsx_launch RTSP "$WORK/bin/bsx-design" design "$TIER_P_SOLO" D1
 printf '1\n' > "$BSX_STATE/cc-cmds/run/RTSP/stub-au-composed"
 bsx_launch RTSP "$WORK/bin/bsx-audit" audit "$TIER_P_AUDIT" A1
-# gate-load: 스테이지가 대기 상한 안에 끝나야 한다
 check "89: solo-audit 런의 감사가 정상 완료한다" \
   "$BSX_ACT_RC/$BSX_WAIT_RC/$(bsx_class RTSP '| 스테이지=A1 | 종류=audit ')" "0/0/정상 완료"
 check "89: solo-audit 런은 단독 설계 뒤 감사, 감사 뒤 구현이다" \
@@ -69155,12 +69776,7 @@ p96_gate() {
       && gate_inproc "$@" >/dev/null 2>&1 )
 }
 p96_wait_round() {
-  local i=0
-  while [ -d "$P96_LOCK" ]; do
-    [ "$i" -lt 300 ] || { bad "96: 회차 대기" "잠금이 30초 안에 풀리지 않았다"; return 1; } # gate-load: 회차 잠금이 풀리기까지 30초 상한
-    sleep 0.1; i=$((i + 1))
-  done
-  return 0
+  wait_until test ! -d "$P96_LOCK" || { bad "96: 회차 대기" "잠금이 공용 상한 안에 풀리지 않았다"; return 1; }
 }
 p96_record() {
   # p96_record <파일 이름> <상태> <원장> [정착 토큰] — 손으로 쓴 런별 기록 하나.
@@ -69467,17 +70083,17 @@ p96c_kick() {
 }
 p96c_wait() {
   # p96c_wait [상태 홈] — 그 상태 홈의 회차 잠금과 정지 보고 잠금이 풀릴 때까지.
-  local i=0 st="${1:-$P96C_STATE}"
-  while [ -d "$st/cc-cmds/attention-round/lock" ] || [ -d "$st/cc-cmds/.halt.lock" ]; do
-    if [ "$i" -ge 900 ]; then
-      # 실패를 가를 재료로 회차 로그의 끝을 싣고, 뒤 단계가 같은 잠금에 막히지 않게 지운다.
-      bad "96c: 회차 대기" "잠금이 90초 안에 풀리지 않았다 — $(tail -n 5 "$P96C_STATE"/cc-cmds/run/*/log/attention-round.log "$P96C/hostrd/log/attention-round.log" 2>/dev/null | tr '\n' ' ')" # gate-load: 회차 잠금이 풀리기까지 90초 상한
-      rm -rf "$st/cc-cmds/attention-round/lock"
-      return 1
-    fi
-    sleep 0.1; i=$((i + 1))
-  done
+  local st="${1:-$P96C_STATE}"
+  if ! wait_until p96c_unlocked "$st"; then
+    # 실패를 가를 재료로 회차 로그의 끝을 싣고, 뒤 단계가 같은 잠금에 막히지 않게 지운다.
+    bad "96c: 회차 대기" "잠금이 공용 상한 안에 풀리지 않았다 — $(tail -n 5 "$P96C_STATE"/cc-cmds/run/*/log/attention-round.log "$P96C/hostrd/log/attention-round.log" 2>/dev/null | tr '\n' ' ')"
+    rm -rf "$st/cc-cmds/attention-round/lock"
+    return 1
+  fi
   return 0
+}
+p96c_unlocked() {  # p96c_unlocked <상태 홈> — 회차 잠금과 정지 보고 잠금이 모두 없다
+  [ ! -d "$1/cc-cmds/attention-round/lock" ] && [ ! -d "$1/cc-cmds/.halt.lock" ]
 }
 p96c_record() {
   # p96c_record <run-id> <상태> <원장> <RUN_DIR> [pid] [지문] — 손으로 쓴 런별 기록 하나.
@@ -69739,7 +70355,7 @@ p96c_run T7 "# 파이프라인 런 보고서 — T7
 p96c_run T8 "# 파이프라인 런 보고서 — T8
 
 $P96C_END"
-sleep 300 &
+wait_holder &
 p96c_sp=$!
 p96c_fp=$(bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; cc_proc_fingerprint "$2"' _ "$GATE" "$p96c_sp" 2>/dev/null)
 printf '%s\n%s\n' "$p96c_sp" "$p96c_fp" > "$P96C/rd/T8/shift.live"
@@ -70596,7 +71212,7 @@ check "98m: 대기 끝 이관 기동의 -p 는 끊긴 세션의 기록이다" \
 # 예산은 시험 전용 이음매로 1~3초로 줄인다.
 # ---------------------------------------------------------------------------
 pre_ledger_series
-sleep 300 >/dev/null 2>&1 &
+wait_holder >/dev/null 2>&1 &
 h98h_hold=$!
 sh -c 'exit 0' &
 h98h_dead=$!
@@ -70660,12 +71276,19 @@ h98h_hold_fp=$(h98h_in "$h98h_pb" "$h98h_lb" route__fp "$h98h_hold" 2>/dev/null)
 h98h_in "$h98h_pb" "$h98h_lb" h98h_c_lease LS 'B:SHB#1' nb grant "$h98h_hold" >/dev/null 2>&1
 h98h_seed "$h98h_db" SHB
 h98h_lock "$h98h_pb"
+# The call runs in the background: a retry that never stops fails at the shared
+# wait ceiling instead of hanging the suite. The lower bound shows the budget was
+# spent twice before the end.
 SECONDS=0
-h98h_bout=$(CC_ROUTE_LEASE_HOLD_WAIT_TEST_SECONDS=1 h98h_in "$h98h_pb" "$h98h_lb" h98h_c_fail SHB 'B:SHB#1' nb 2>/dev/null)
+( CC_ROUTE_LEASE_HOLD_WAIT_TEST_SECONDS=1 h98h_in "$h98h_pb" "$h98h_lb" h98h_c_fail SHB 'B:SHB#1' nb \
+    > "$lsr_root/h98h-b.out" 2>/dev/null ) &
+h98h_bp=$!
+wait_pid_gone "$h98h_bp" || { bad "98h: 잠금 경합의 확보" "공용 상한 안에 끝나지 않았다"; kill "$h98h_bp" 2>/dev/null || true; }
 h98h_bel=$SECONDS
+h98h_bout=$(cat "$lsr_root/h98h-b.out" 2>/dev/null)
 check "98h: 잠금이 보유 총예산 내내 바쁘면 감독자는 rc 3 으로 끝나고 기동하지 않는다" "$h98h_bout" "3|3"
-if [ "$h98h_bel" -ge 2 ] && [ "$h98h_bel" -le 10 ]; then ok "98h: 확보는 보유 예산의 두 배 안에서 다시 시도한다"
-else bad "98h: 확보는 보유 예산의 두 배 안에서 다시 시도한다" "${h98h_bel}초"; fi # gate-load: 재시도까지의 경과가 10초 안이어야 한다
+if [ "$h98h_bel" -ge 2 ]; then ok "98h: 확보는 보유 예산을 두 번 쓴 뒤에 끝난다"
+else bad "98h: 확보는 보유 예산을 두 번 쓴 뒤에 끝난다" "${h98h_bel}초"; fi
 check "98h: 그 끝은 lease-hold-busy 원인 행 하나를 남긴다" \
   "$( { grep '^- `stage-wait` ' "$h98h_lb" | grep -cF '| 계보=B:SHB#1 | 그룹=- | 계정=- | 까지=- | 비용=- | 비용 출처=- | 근거=lease-hold-busy' || true; } )" "1"
 check "98h: 옛 임대를 nonce 로 반납한다" "$(cat "$h98h_db/released" 2>/dev/null)" "B:SHB#1 nb"
@@ -70701,15 +71324,19 @@ check "98h: resume 사건의 재파견도 원인 행 뒤에 입장으로 닫힌�
   "$(H98H_ENV=$h98h_GRANT h98h_in "$h98h_ps" "$h98h_ls" eval 'GATE_RESUME=sess-98h; gate_resume_binding_of() { printf -; }; gate_resume_grant_ok() { return 0; }; r=0; gate_launch_route infra SHS implement >/dev/null 2>&1 || r=$?; printf "%s %s %s" "$r" "$GATE_ROUTE_LINEAGE" "$GATE_ROUTE_EVENT"' 2>/dev/null)" \
   "0 B:SHS#2 resume"
 
-# 이미 보유자인 감독자는 잠금이 바빠도 곧바로 확보한다. 잠금을 기다렸다면 보유 예산
-# 1초를 두 번 다 쓰고 rc 3 이 되므로, rc 0 과 1초 이하의 경과가 잠금을 건너뛴 증거다
-# (SECONDS 는 초 경계에서 바뀌어 부하 아래 0 이 1 로 읽힐 수 있다).
+# 이미 보유자인 감독자는 잠금이 바빠도 곧바로 확보한다. 보유 예산을 1200초로 주므로
+# 잠금을 기다렸다면 호출이 공용 대기 상한 안에 끝나지 않는다 — 상한 안에 rc 0 으로
+# 끝난 것이 잠금을 건너뛴 증거다. 호출은 배경에서 돌고 그 끝을 공용 대기로 본다.
 h98h_pf="$lsr_root/pace98h-f"; rm -rf "$h98h_pf"
 h98h_lf=$(lsr75_new h98hf)
 h98h_lock "$h98h_pf"
-# gate-load: 확보 경과가 1초 이하여야 한다
+( CC_ROUTE_LEASE_HOLD_WAIT_TEST_SECONDS=1200 h98h_in "$h98h_pf" "$h98h_lf" eval 'h98h_c_lease LS "B:SHF#1" nf grant $$ >/dev/null 2>&1; r=0; gate_sup_lease_secure "B:SHF#1" nf || r=$?; printf "%s" "$r"' \
+    > "$lsr_root/h98h-f.out" 2>/dev/null ) &
+h98h_fp=$!
+h98h_fend=끝남
+wait_pid_gone "$h98h_fp" || { h98h_fend=안끝남; kill "$h98h_fp" 2>/dev/null || true; }
 check "98h: 이미 보유자인 감독자는 잠금이 바빠도 곧바로 확보한다" \
-  "$(CC_ROUTE_LEASE_HOLD_WAIT_TEST_SECONDS=1 h98h_in "$h98h_pf" "$h98h_lf" eval 'h98h_c_lease LS "B:SHF#1" nf grant $$ >/dev/null 2>&1; SECONDS=0; r=0; gate_sup_lease_secure "B:SHF#1" nf || r=$?; e=$SECONDS; [ "$e" -le 1 ] && e=곧바로; printf "%s|%s" "$r" "$e"' 2>/dev/null)" "0|곧바로"
+  "$(cat "$lsr_root/h98h-f.out" 2>/dev/null)|$h98h_fend" "0|끝남"
 
 # act 쪽 보유는 재시도 없이 rc 3 으로 돌아가고, 감독자의 확보가 잠금이 풀린 뒤 보유자에 든다.
 h98h_pa="$lsr_root/pace98h-a"; rm -rf "$h98h_pa"
@@ -75502,9 +76129,9 @@ s111_d() {  # s111_d <cwd> <별칭> <키> <종류> — 결정된 기동 디렉�
   s111_in "$1" eval "gate_stage_launch_dir $2 $3 $4 2>/dev/null || printf 거절"
 }
 s111_launch() {  # s111_launch <파견 디렉터리> <별칭> <세그먼트> — 파견 반쪽의 rc; 감독자가 끝나기를 기다린다
-  local r i=0
+  local r
   r=$(s111_in "$1" eval "r=0; gate_launch_stage $2 $3 implement -p x-$3 >/dev/null 2>&1 || r=\$?; printf '%s' \"\$r\"")
-  while [ -e "$TG_RD/$3.sup" ] && [ "$i" -lt 150 ]; do sleep 0.2; i=$((i + 1)); done
+  wait_until test ! -e "$TG_RD/$3.sup" || true
   printf '%s' "$r"
 }
 s111_instr() {  # s111_instr <스텁 이름> — 그 기동이 받은 지시 파일의 대상 훅 문단 수, 파일이 없으면 「없음」
@@ -75673,7 +76300,7 @@ s113_route() {
 s113_r=$(s113_call "$S113/ledger.md" "$s113_doc" '
   printf "%s|%s|%s|%s|%s" "$(doc_size_threshold audit | tr "\t" /)" "$(doc_size_threshold reconverge | tr "\t" /)" \
     "$(doc_size_threshold implement | tr "\t" /)" "$(doc_size_min_threshold 1)" "$(doc_size_min_threshold 2)"' 2>/dev/null)
-check "113b: 크기 표가 세 종류의 문턱과 경고 문턱을 낸다" "$s113_r" "323000/299000|289000/265000|313000/289000|289000|265000"
+check "113b: 크기 표가 세 종류의 문턱과 경고 문턱을 낸다" "$s113_r" "323000/299000|289000/265000|305000/281000|289000|265000"
 s113_r=$(s113_call "$S113/ledger.md" "$s113_doc" '
   printf "%s|%s" "$(doc_size_verdict reconverge "$DOC" | cut -f1)" "$(doc_size_verdict audit "$DOC" | cut -f1)"' 2>/dev/null)
 check "113b: 문턱 위 문서는 재수렴에 초과이고 감사에 경고다" "$s113_r" "초과|경고"
@@ -76100,7 +76727,7 @@ unset S115 s115_tool s115_rev s115_rc s115_sz s115_sha s115_m s115_ck
 S116="$WORK/s116"; rm -rf "$S116"; mkdir -p "$S116"
 s116_route="$repo_root/plugins/cc-cmds/orchestrator/route.sh"
 s116_now=$(date +%s)
-( sleep 600 >/dev/null 2>&1 & printf '%s' "$!" > "$S116/holder.pid" )
+( wait_holder >/dev/null 2>&1 & printf '%s' "$!" > "$S116/holder.pid" )
 s116_holder=$(cat "$S116/holder.pid")
 # s116_put <표> <계보> [--kind <종류>] — 계정 a 의 대기 항목 하나.
 s116_put() {
@@ -76363,6 +76990,410 @@ check "119: admit 의 급함 표시는 표를 내지 않는다" \
   "$rc|$n119|$(test -f "$TG_RD/admit/ticket/$(thp_key_norm "$TG_CALLER")" && echo 표)|$(ls -A "$u119_rd" | paste -sd, -)" \
   "2|문면||plugin"
 unset u119_id u119_rd u119_rk u119_warn r119_world r119_ls g119 c119 n119
+
+# ---------------------------------------------------------------------------
+# 120. 두 대기 루프와 진행 채널이 관측 데몬의 깨움 FIFO 에서 잔다
+# --- section: 120 | group: ledger_series | covers: gate_wake_usable, gate_wake_open, gate_wake_wait, gate_wake_close, gate_verb_wake_timeout, gate_verb_wait, gate_relay_wake_timeout, gate_relay_ci_time_arms, gate_relay_pause, gate_relay_wait, feed | anchors: 120: 데몬 pid·작업·깨움 디렉터리 중 하나라도 없으면 FIFO 를 열지 않고 잠으로 돌아간다, 120: 대조 — 셋이 다 있으면 FIFO 를 열고 시한에 1 을 돌려준다, 120: 한 바이트를 쓰면 1초 안에 0 으로 깬다, 120: 쓰지 않으면 시한에 1 이고 닫은 뒤 FIFO 가 남지 않는다, 120: 0 아닌 read 값은 시한으로 읽는다, 120: 지워진 FIFO 는 시한에 닫고 이름을 남긴다, 120: wait 의 시한은 마감·다음 박동·30초 중 가까운 것이고 지난 기한은 빼며 최소 1이다, 120: 교대 대기의 시한은 기한마다 그 기한까지의 초이고 없으면 30이다, 120: 깨움 바퀴는 feed_cycle 을 늘리지 않는다, 120: 깨움 바퀴가 새 행을 곧장 낸다, 120: 깨움 바퀴의 줄은 --once 의 줄과 같다, 120: 끝난 진행 채널은 FIFO 를 남기지 않는다, 120: feed.sh 와 gate.sh 의 깨움 헬퍼는 함수 머리말만 다르다, 120: 헬퍼 밖에서 fd 7 을 쓰는 줄이 없다, 120: 대조 — 같은 패턴이 헬퍼 안의 fd 7 줄을 찾는다, 120: 실제 관측기가 런을 입양하고 교대 대기가 FIFO 를 연다, 120: R2 깨움 행 덧붙임에서 교대 대기가 3초 안에 돌아온다, 120: R2 스테이지 pid 종료에서 교대 대기가 3초 안에 돌아온다, 120: R2 짧은 보유 상한의 반환은 기존 경로와 1초 안에서 같다, 120: R4 checks.observed 의 CI 판정 줄에서 교대 대기가 32초 안에 돌아온다, 120: R4 감독자 pid 의 파일 변화 없는 종료에서 교대 대기가 32초 안에 돌아온다, 120: R4 그 사이 중계 실효 판정은 실효 없음을 내지 않는다, 120: 위임 중 게이트의 heartbeat 나이 판독이 관측기가 갱신한 mtime 으로 양성이다 ---
+#
+# 관측 데몬이 런을 입양하면 런 디렉터리의 `observer.wake.d/` 에 대기자마다 FIFO 하나를
+# 두고, 데몬이 지켜보는 입력이 바뀌면 그 FIFO 에 줄 하나를 써 대기자를 곧장 깨운다.
+# `gate.sh wait`·교대 대기·`feed.sh` 의 바퀴 사이 잠이 그 FIFO 위의 `read -t` 다. 데몬
+# pid·입양된 작업·깨움 디렉터리 셋 중 하나라도 없으면 지금처럼 정해진 초를 잔다.
+#
+# 앞 일곱 부분은 데몬 없이 돈다. 데몬의 자리는 이 스위트의 잠자는 프로세스 하나가
+# pid 파일로 대신한다 — 헬퍼는 그 pid 가 살아 있는지만 읽는다. 마지막 부분(R2·R4)은
+# 임시 `XDG_STATE_HOME` 아래에 이 레포의 orchestrator 사본을 고정해 실제
+# `observer.py` 를 띄우고, 교대 대기가 돌아오는 시각을 잰다. CI 호스트에서는 데몬이
+# 뜨지 않으므로(그 환경 스위치) 그 부분을 건너뛴다. 데몬과 잠자는 프로세스는 절 끝에서
+# 내리고 임시 디렉터리를 지운다.
+# ---------------------------------------------------------------------------
+t120_ms() { python3 -c 'import time; print(int(time.time() * 1000))'; }
+t120_mtime_ns() { python3 -c 'import os, sys; print(os.stat(sys.argv[1]).st_mtime_ns)' "$1" 2>/dev/null || printf '0\n'; }
+# t120_poke <fifo> — 막히지 않는 쓰기로 줄 하나. 읽는 쪽이 없으면 아무것도 하지 않는다.
+t120_poke() {
+  python3 -c 'import os, sys
+try:
+    fd = os.open(sys.argv[1], os.O_WRONLY | os.O_NONBLOCK)
+    os.write(fd, b"\n")
+    os.close(fd)
+except OSError:
+    pass' "$1"
+}
+# t120_until <회수> <조건> — 0.5초 간격으로 조건이 설 때까지, 많아야 회수만큼.
+t120_until() {
+  local n=0
+  while [ "$n" -lt "$1" ]; do
+    if eval "$2"; then return 0; fi
+    sleep 0.5; n=$((n + 1))
+  done
+  return 1
+}
+t120_strays=""
+t120_sleeper() { wait_holder >/dev/null 2>&1 & t120_sl=$!; t120_strays="$t120_strays $t120_sl"; }
+
+# 데몬의 대역: 살아 있는 pid 하나를 적은 상태 루트, 그리고 pid 파일이 없는 상태 루트.
+t120_sleeper; t120_fake=$t120_sl
+t120_fs="$WORK/s120-fake"; mkdir -p "$t120_fs/cc-cmds/observer"
+printf '%s\n' "$t120_fake" > "$t120_fs/cc-cmds/observer/observer.pid"
+t120_ns="$WORK/s120-none"; mkdir -p "$t120_ns/cc-cmds/observer"
+
+# 1. 되돌림 — 셋 중 하나가 없을 때.
+t120_probe() {  # t120_probe <상태 루트> — 「usable 0/1|FIFO 열림 0/1|wait rc」
+  local u=1 o=0 rc=0
+  XDG_STATE_HOME=$1
+  if gate_wake_usable; then u=0; fi
+  gate_wake_open probe
+  [ -z "$WAKE_FD7_FIFO" ] || o=1
+  gate_wake_wait 1 || rc=$?
+  gate_wake_close
+  printf '%s|%s|%s' "$u" "$o" "$rc"
+}
+t120_l=$(lsr_ledger s120-fb); t120_rd=${t120_l%/*}
+mkdir -p "$t120_rd/observer.jobs" "$t120_rd/observer.wake.d"; : > "$t120_rd/observer.jobs/watch.args"
+t120_a=$(lsr_in - "$t120_l" - t120_probe "$t120_ns" 2>/dev/null)
+rm -f "$t120_rd/observer.jobs/watch.args"
+t120_b=$(lsr_in - "$t120_l" - t120_probe "$t120_fs" 2>/dev/null)
+: > "$t120_rd/observer.jobs/watch.args"; rmdir "$t120_rd/observer.wake.d"
+t120_c=$(lsr_in - "$t120_l" - t120_probe "$t120_fs" 2>/dev/null)
+check "120: 데몬 pid·작업·깨움 디렉터리 중 하나라도 없으면 FIFO 를 열지 않고 잠으로 돌아간다" \
+  "$t120_a;$t120_b;$t120_c" "1|0|1;1|0|1;1|0|1"
+mkdir -p "$t120_rd/observer.wake.d"
+check "120: 대조 — 셋이 다 있으면 FIFO 를 열고 시한에 1 을 돌려준다" \
+  "$(lsr_in - "$t120_l" - t120_probe "$t120_fs" 2>/dev/null)|$(ls -A "$t120_rd/observer.wake.d" | wc -l | tr -d ' ')" "0|1|1|0"
+
+# 2. FIFO 깨움.
+t120_wake() {  # 「깨운 rc|쓴 뒤 1초 안|안 깨운 rc|닫은 뒤 남음|닫힌 fd 의 rc|지운 FIFO 뒤 닫힘」
+  local f w b r1=0 r2=0 r3=0 r4=0 left=0 shut=n quick=n
+  XDG_STATE_HOME=$1
+  gate_wake_open w
+  f=$WAKE_FD7_FIFO
+  ( sleep 1; t120_poke "$f"; t120_ms > "$2" ) &
+  gate_wake_wait 10 || r1=$?
+  b=$(t120_ms)
+  wait
+  w=$(cat "$2" 2>/dev/null || true)
+  [ -z "$w" ] || [ $((b - w)) -ge 1000 ] || quick=y
+  gate_wake_wait 1 || r2=$?
+  gate_wake_close
+  [ ! -e "$f" ] || left=1
+  gate_wake_open w
+  exec 7>&-
+  gate_wake_wait 2 || r3=$?
+  gate_wake_close
+  gate_wake_open w
+  rm -f "$WAKE_FD7_FIFO"
+  gate_wake_wait 1 || r4=$?
+  if [ -z "$WAKE_FD7_FIFO" ] && [ "$WAKE_FD7_NAME" = "w" ]; then shut=y; fi
+  gate_wake_close
+  printf '%s|%s|%s|%s|%s|%s|%s' "$r1" "$quick" "$r2" "$left" "$r3" "$r4" "$shut"
+}
+t120_w=$(lsr_in - "$t120_l" - t120_wake "$t120_fs" "$WORK/s120-wrote" 2>/dev/null)
+IFS='|' read -r t120_w1 t120_w2 t120_w3 t120_w4 t120_w5 t120_w6 t120_w7 <<< "$t120_w"
+check "120: 한 바이트를 쓰면 1초 안에 0 으로 깬다" "$t120_w1|$t120_w2" "0|y"
+check "120: 쓰지 않으면 시한에 1 이고 닫은 뒤 FIFO 가 남지 않는다" "$t120_w3|$t120_w4" "1|0"
+check "120: 0 아닌 read 값은 시한으로 읽는다" "$t120_w5" "1"
+check "120: 지워진 FIFO 는 시한에 닫고 이름을 남긴다" "$t120_w6|$t120_w7" "1|y"
+
+# 3. 시한 계산.
+t120_vt() {
+  local o="" a
+  for a in "1000 100 1000 600 1050" "1000 20 1000 600 1010" "1000 600 1000 15 1010" \
+           "1000 5 1000 600 1010" "1000 10 1000 600 1010"; do
+    # shellcheck disable=SC2086
+    o="${o:+$o,}$(gate_verb_wake_timeout $a)"
+  done
+  printf '%s' "$o"
+}
+check "120: wait 의 시한은 마감·다음 박동·30초 중 가까운 것이고 지난 기한은 빼며 최소 1이다" \
+  "$(lsr_in - "$t120_l" - t120_vt 2>/dev/null)" "30,10,5,30,1"
+# 시한 계산은 넘겨받은 현재 시각만 쓰므로, 시험은 벽시계 대신 고정 시각을 주입한다.
+t120_at=1900000000
+t120_rt() {  # t120_rt <미등록 관측 ISO> <재개 시각 ISO> — 기한을 하나씩만 둔 상태의 시한들
+  local o
+  GATE_RELAY_W_RESET="" GATE_RELAY_W_CI="" GATE_RELAY_CONFIRM_SET="" GATE_RELAY_SEAT_START=$t120_at
+  o=$(gate_relay_wake_timeout "$t120_at")
+  GATE_RELAY_SEAT_START=$((t120_at - 93))
+  o="$o,$(CC_GATE_RELAY_HOLD_TEST_SECONDS=100 gate_relay_wake_timeout "$t120_at")"
+  GATE_RELAY_SEAT_START=$t120_at
+  GATE_RELAY_W_RESET="S1#1:$((t120_at + 5))"
+  o="$o,$(CC_GATE_RESET_GRACE_TEST_SECONDS=3 gate_relay_wake_timeout "$t120_at")"
+  GATE_RELAY_W_RESET="S1#1:$((t120_at - 500))"
+  o="$o,$(CC_GATE_RESET_GRACE_TEST_SECONDS=3 gate_relay_wake_timeout "$t120_at")"
+  GATE_RELAY_W_RESET="S1#1:$t120_at"
+  o="$o,$(CC_GATE_RESET_GRACE_TEST_SECONDS=0 gate_relay_wake_timeout "$t120_at")"
+  GATE_RELAY_W_RESET=""
+  mkdir -p "$RUN_DIR/confirm"; printf '1 %s\n' "$((t120_at - 6))" > "$RUN_DIR/confirm/r1.n"
+  GATE_RELAY_CONFIRM_SET=r1
+  o="$o,$(CC_GATE_CONFIRM_POLL_TEST_SECONDS=10 gate_relay_wake_timeout "$t120_at")"
+  GATE_RELAY_CONFIRM_SET=""
+  printf '%s\tS2\t1\t%s\t미등록\t-\t-\n' "$1" "0123456789abcdef0123456789abcdef01234567" > "$RUN_DIR/checks.observed"
+  GATE_RELAY_W_CI=S2
+  o="$o,$(gate_relay_wake_timeout "$t120_at")"
+  GATE_RELAY_W_CI=""
+  printf -- '- `계정 이전` | 결과=대기 | 재개 시각=%s | prev=x\n' "$2" >> "$LEDGER"
+  o="$o,$(gate_relay_wake_timeout "$t120_at")"
+  printf '%s' "$o"
+}
+t120_iso() { python3 -c 'import sys, time; print(time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(int(sys.argv[1]))))' "$1"; }
+t120_l=$(lsr_ledger s120-rt)
+t120_r=$(lsr_in - "$t120_l" - t120_rt "$(t120_iso $((t120_at - 290)))" "$(t120_iso $((t120_at + 12)))" 2>/dev/null)
+check "120: 교대 대기의 시한은 기한마다 그 기한까지의 초이고 없으면 30이다" "$t120_r" "30,7,8,30,1,4,10,12"
+
+# 4. feed — 깨움 바퀴. 강제 읽기는 CC_QUIET_PASS_EVERY 바퀴마다이고, 둘로 줄이면 센
+# 바퀴 둘째마다 원장을 다시 읽어 읽기 표지를 건드린다. 깨움 셋 뒤에도 표지가 그대로면
+# 깨움 바퀴가 세어지지 않은 것이다.
+t120_fl=$(lsr_ledger s120-feed); t120_fd=${t120_fl%/*}
+mkdir -p "$t120_fd/observer.jobs" "$t120_fd/observer.wake.d"; : > "$t120_fd/observer.jobs/watch.args"
+sleep 1.1
+XDG_STATE_HOME="$t120_fs" CC_QUIET_PASS_EVERY=2 bash "$repo_root/plugins/cc-cmds/orchestrator/feed.sh" \
+  --run-dir "$t120_fd" --ledger "$t120_fl" --interval 30 --stall 99999 > "$WORK/s120-feed.out" 2>&1 &
+t120_fp=$!
+t120_ff="$t120_fd/observer.wake.d/feed.$t120_fp.fifo"
+t120_until 20 '[ -p "$t120_ff" ] && [ -f "$t120_fd/.feed.readmark" ]' || true
+sleep 0.5
+t120_m0=$(t120_mtime_ns "$t120_fd/.feed.readmark")
+for t120_i in 1 2 3; do t120_poke "$t120_ff"; sleep 0.6; done
+check "120: 깨움 바퀴는 feed_cycle 을 늘리지 않는다" \
+  "$( [ -p "$t120_ff" ] && echo FIFO)|$( [ "$t120_m0" != "0" ] && [ "$(t120_mtime_ns "$t120_fd/.feed.readmark")" = "$t120_m0" ] && echo 그대로)" \
+  "FIFO|그대로"
+t120_row='- `stage-result` | 교대=0 | 세그먼트=S1 | 스테이지=S1#1 | 종류=implement | 종료 코드=0 | 종단 부류=정상 | 기록자=게이트 | prev=0'
+printf '%s\n' "$t120_row" >> "$t120_fl"
+t120_poke "$t120_ff"
+if t120_until 6 'grep -q "스테이지 S1#1 종단" "$WORK/s120-feed.out"'; then
+  ok "120: 깨움 바퀴가 새 행을 곧장 낸다"
+else
+  bad "120: 깨움 바퀴가 새 행을 곧장 낸다" "$(cat "$WORK/s120-feed.out")"
+fi
+t120_ol=$(lsr_ledger s120-feed-once)
+printf '%s\n' "$t120_row" >> "$t120_ol"
+check "120: 깨움 바퀴의 줄은 --once 의 줄과 같다" \
+  "$(grep '스테이지 S1#1 종단' "$WORK/s120-feed.out" | sed 's/^\[[^]]*\] //')" \
+  "$(XDG_STATE_HOME="$t120_ns" bash "$repo_root/plugins/cc-cmds/orchestrator/feed.sh" --run-dir "${t120_ol%/*}" \
+     --ledger "$t120_ol" --once --stall 99999 2>&1 | grep '스테이지 S1#1 종단' | sed 's/^\[[^]]*\] //')"
+: > "$t120_fd/done"
+t120_poke "$t120_ff"
+t120_until 10 '! kill -0 "$t120_fp" 2>/dev/null' || kill "$t120_fp" 2>/dev/null
+wait "$t120_fp" 2>/dev/null
+check "120: 끝난 진행 채널은 FIFO 를 남기지 않는다" "$(ls -A "$t120_fd/observer.wake.d" | wc -l | tr -d ' ')" "0"
+
+# 5. 헬퍼 동기.
+t120_blk() {
+  awk '/^# >>> wake helpers$/ { on = 1 } on { print } /^# <<< wake helpers$/ { on = 0 }' "$1" \
+    | sed 's/feed_wake_/gate_wake_/g'
+}
+t120_gb=$(t120_blk "$repo_root/plugins/cc-cmds/orchestrator/gate.sh")
+t120_fb=$(t120_blk "$repo_root/plugins/cc-cmds/orchestrator/feed.sh")
+check "120: feed.sh 와 gate.sh 의 깨움 헬퍼는 함수 머리말만 다르다" \
+  "$( [ "$t120_gb" = "$t120_fb" ] && echo 같음 || echo 다름)|$(printf '%s\n' "$t120_gb" | grep -c '^gate_wake_[a-z]*() {')" "같음|4"
+
+# 7. fd 7 — 헬퍼 블록 밖, 주석 줄 밖에서 fd 7 을 열거나 읽거나 닫는 줄.
+t120_fd7() {  # t120_fd7 <안|밖> <파일…>
+  local where=$1; shift
+  awk -v where="$where" '
+    /^# >>> wake helpers$/ { on = 1 }
+    /^# <<< wake helpers$/ { on = 0; next }
+    (where == "밖" && on) || (where == "안" && !on) { next }
+    /^[[:space:]]*#/ { next }
+    /(^|[^0-9&<>])7[<>]|[<>]&7([^0-9]|$)|-u 7([^0-9]|$)/ { print FILENAME ":" FNR }
+  ' "$@"
+}
+t120_o="$repo_root/plugins/cc-cmds/orchestrator"
+check "120: 헬퍼 밖에서 fd 7 을 쓰는 줄이 없다" \
+  "$(t120_fd7 밖 "$t120_o/gate.sh" "$t120_o/feed.sh" "$t120_o/liveness.sh" | tr '\n' ' ')" ""
+check "120: 대조 — 같은 패턴이 헬퍼 안의 fd 7 줄을 찾는다" \
+  "$(t120_fd7 안 "$t120_o/gate.sh" "$t120_o/feed.sh" | wc -l | tr -d ' ')" "6"
+
+# 8·6. 실제 관측기 — R2·R4 의 레시피와 위임 중 heartbeat 판독.
+if [ -n "${CI:-}" ] || ! command -v python3 >/dev/null 2>&1; then
+  skip "120: R2·R4 레시피는 관측기가 뜨지 않는 호스트(CI 또는 python3 없음)에서 건너뛴다"
+else
+  t120_S="$WORK/s120-obs"
+  t120_rid=20261123-0000c120
+  t120_rd="$t120_S/cc-cmds/run/$t120_rid"
+  mkdir -p "$t120_rd/plugin/cc-cmds" "$t120_S/cc-cmds/session"
+  cp -R "$repo_root/plugins/cc-cmds/orchestrator" "$t120_rd/plugin/cc-cmds/orchestrator"
+  cp -R "$repo_root/plugins/cc-cmds/.claude-plugin" "$t120_rd/plugin/cc-cmds/.claude-plugin"
+  t120_lg="$t120_rd/ledger.md"
+  printf '# 원장 픽스처\n\n## 실행 LS\n\n- `handoff` | 교대=1 | 사유=대기 | CI 대기=- | prev=x\n' > "$t120_lg"
+  printf '%s\n' "$t120_lg" > "$t120_rd/ledger-path"
+  printf '%s\n' "$(( $(date -u +%s) - 3600 ))" > "$t120_rd/started-at"
+  t120_env() {
+    env -u CI -u CC_CMDS_OBSERVER XDG_STATE_HOME="$t120_S" CC_OBSERVER_PERIOD=0.5 CC_OBSERVER_GRACE=600 \
+      CC_CMDS_ATTENTION_ROOT="$WORK/s120-attn" FLEET_PACE_ROOT="$WORK/s120-pace" "$@"
+  }
+  # t120_stage <키> <pid|sup> — 살아 있는 잠자는 프로세스 하나를 그 키의 스테이지 또는
+  # 감독자로 적는다. 스테이지는 지문 파일을 함께 둔다.
+  t120_stage() {
+    t120_sleeper
+    if [ "$2" = "pid" ]; then
+      printf '%s\n' "$t120_sl" > "$t120_rd/$1.pid"
+      lsr_in - "$t120_lg" - cc_proc_fingerprint "$t120_sl" > "$t120_rd/$1.start" 2>/dev/null
+    else
+      printf '%s\n' "$t120_sl" > "$t120_rd/$1.sup"
+    fi
+  }
+  # t120_relay <상태 루트> <보유 상한> <결과 파일> — 교대 대기를 한 번 돌려 「시작 ms 끝 ms rc」.
+  t120_relay() {
+    local r=0 s
+    XDG_STATE_HOME=$1
+    CC_GATE_RELAY_HOLD_TEST_SECONDS=$2; export CC_GATE_RELAY_HOLD_TEST_SECONDS
+    GATE_RELAY_FP=""; GATE_RELAY_STARTED=""; GATE_RELAY_SEAT_START=$(date -u +%s)
+    s=$(t120_ms)
+    gate_relay_wait >/dev/null 2>&1 || r=$?
+    printf '%s %s %s\n' "$s" "$(t120_ms)" "$r" > "$3"
+  }
+  t120_fifo_up() { t120_until 20 'ls "$t120_rd"/observer.wake.d/relay.*.fifo >/dev/null 2>&1'; }
+  # t120_ms_of <결과 파일> <사건 ms> — 사건에서 반환까지의 ms. 대기가 사건 전에 이미
+  # 돌아왔으면(빈 대기 집합 등) 비운다 — 그 반환은 사건에 깬 것이 아니다.
+  t120_ms_of() { awk -v t="$2" '$1 < t && $2 >= t { print $2 - t }' "$1" 2>/dev/null; }
+  t120_rc_of() { awk '{ print $3 }' "$1" 2>/dev/null; }
+  # 죽인 잠자는 프로세스는 곧장 거둔다. 좀비는 kill -0 에 살아 있다고 답한다.
+  t120_kill() { kill "$1" 2>/dev/null; wait "$1" 2>/dev/null; }
+
+  t120_adopt=$(t120_env bash "$t120_rd/plugin/cc-cmds/orchestrator/watch.sh" --run-dir "$t120_rd" --ledger "$t120_lg" \
+    --interval 2 --stall 99999 --silence 99999 --after-stage 99999 --run-open 99999 2>&1)
+  t120_until 40 '[ -s "$t120_S/cc-cmds/observer/observer.pid" ] && [ -d "$t120_rd/observer.wake.d" ]' || true
+  t120_stage S1 pid
+  t120_s1=$t120_sl
+
+  # R2 — 깨움 행 덧붙임.
+  lsr_in - "$t120_lg" - t120_relay "$t120_S" 120 "$WORK/s120-r2a" 2>/dev/null &
+  t120_rp=$!
+  if t120_fifo_up; then t120_up=1; else t120_up=0; fi
+  case "$t120_adopt|$t120_up" in
+    *"관측 데몬에 위임했습니다"*"|1") ok "120: 실제 관측기가 런을 입양하고 교대 대기가 FIFO 를 연다" ;;
+    *) bad "120: 실제 관측기가 런을 입양하고 교대 대기가 FIFO 를 연다" "adopt='$t120_adopt' fifo=$t120_up" ;;
+  esac
+  sleep 1
+  t120_t=$(t120_ms)
+  printf '%s\n' "$t120_row" >> "$t120_lg"
+  wait "$t120_rp" 2>/dev/null
+  t120_e1=$(t120_ms_of "$WORK/s120-r2a" "$t120_t")
+  printf '120 측정: R2 깨움 행 → 교대 대기 반환 %sms rc=%s\n' "$t120_e1" "$(t120_rc_of "$WORK/s120-r2a")"
+  if [ "$(t120_rc_of "$WORK/s120-r2a")" = "0" ] && [ -n "$t120_e1" ] && [ "$t120_e1" -le 3000 ]; then
+    ok "120: R2 깨움 행 덧붙임에서 교대 대기가 3초 안에 돌아온다"
+  else
+    bad "120: R2 깨움 행 덧붙임에서 교대 대기가 3초 안에 돌아온다" "$(cat "$WORK/s120-r2a" 2>/dev/null) 기준 $t120_t"
+  fi
+
+  # R2 — 스테이지 pid 종료. 새 대기 인계가 앞 stage-result 행을 기준 행 앞으로 보낸다.
+  printf -- '- `handoff` | 교대=2 | 사유=대기 | CI 대기=- | prev=x\n' >> "$t120_lg"
+  sleep 1
+  lsr_in - "$t120_lg" - t120_relay "$t120_S" 120 "$WORK/s120-r2b" 2>/dev/null &
+  t120_rp=$!
+  t120_fifo_up || true
+  sleep 1
+  t120_t=$(t120_ms)
+  t120_kill "$t120_s1"
+  wait "$t120_rp" 2>/dev/null
+  t120_e2=$(t120_ms_of "$WORK/s120-r2b" "$t120_t")
+  printf '120 측정: R2 스테이지 pid 종료 → 교대 대기 반환 %sms rc=%s\n' "$t120_e2" "$(t120_rc_of "$WORK/s120-r2b")"
+  if [ "$(t120_rc_of "$WORK/s120-r2b")" = "0" ] && [ -n "$t120_e2" ] && [ "$t120_e2" -le 3000 ]; then
+    ok "120: R2 스테이지 pid 종료에서 교대 대기가 3초 안에 돌아온다"
+  else
+    bad "120: R2 스테이지 pid 종료에서 교대 대기가 3초 안에 돌아온다" "$(cat "$WORK/s120-r2b" 2>/dev/null) 기준 $t120_t"
+  fi
+
+  # R2 — 짧은 보유 상한(5초)의 반환을 관측기가 없는 같은 꼴의 런과 견준다.
+  rm -f "$t120_rd/S1.pid" "$t120_rd/S1.start"
+  t120_stage S1 pid
+  t120_ol=$(lsr_ledger s120-old); t120_od=${t120_ol%/*}
+  cp "$t120_lg" "$t120_ol"
+  cp "$t120_rd/S1.pid" "$t120_rd/S1.start" "$t120_od/"
+  sleep 1
+  lsr_in - "$t120_lg" - t120_relay "$t120_S" 5 "$WORK/s120-r2c" 2>/dev/null
+  lsr_in - "$t120_ol" - t120_relay "$t120_S" 5 "$WORK/s120-r2d" 2>/dev/null
+  t120_hn=$(awk '{ print $2 - $1 }' "$WORK/s120-r2c" 2>/dev/null)
+  t120_ho=$(awk '{ print $2 - $1 }' "$WORK/s120-r2d" 2>/dev/null)
+  printf '120 측정: R2 보유 상한 5초 — 새 경로 %sms rc=%s, 기존 경로 %sms rc=%s\n' \
+    "$t120_hn" "$(t120_rc_of "$WORK/s120-r2c")" "$t120_ho" "$(t120_rc_of "$WORK/s120-r2d")"
+  t120_hd=$(( ${t120_hn:-0} - ${t120_ho:-99999} )); [ "$t120_hd" -ge 0 ] || t120_hd=$(( -t120_hd ))
+  if [ "$(t120_rc_of "$WORK/s120-r2c")|$(t120_rc_of "$WORK/s120-r2d")" = "1|1" ] && [ "$t120_hd" -le 1000 ]; then
+    ok "120: R2 짧은 보유 상한의 반환은 기존 경로와 1초 안에서 같다"
+  else
+    bad "120: R2 짧은 보유 상한의 반환은 기존 경로와 1초 안에서 같다" "새 $t120_hn 기존 $t120_ho"
+  fi
+  t120_kill "$t120_sl"
+  rm -f "$t120_rd/S1.pid" "$t120_rd/S1.start"
+
+  # 위임 중 heartbeat — 관측기가 패스 사이에도 새로 하는 mtime 을 게이트가 읽는다.
+  t120_hb=$(lsr_in - "$t120_lg" - gate_mtime "$t120_rd/watch.heartbeat" 2>/dev/null)
+  t120_hba=$(( $(date -u +%s) - ${t120_hb:-0} ))
+  if [ -n "$t120_hb" ] && [ "$t120_hba" -le 5 ]; then
+    ok "120: 위임 중 게이트의 heartbeat 나이 판독이 관측기가 갱신한 mtime 으로 양성이다"
+  else
+    bad "120: 위임 중 게이트의 heartbeat 나이 판독이 관측기가 갱신한 mtime 으로 양성이다" "mtime='$t120_hb' 나이=$t120_hba"
+  fi
+
+  # R4 — 관측기가 지켜보지 않는 두 변화: checks.observed 의 CI 판정 줄, 파일을 바꾸지
+  # 않는 감독자의 죽음. 교대 대기는 30초 상한의 시한에 깨어 32초 안에 돌아온다. 그 사이
+  # 중계 실효 판정(위임된 watch.sh --once 가 부르는 판정)을 2초마다 읽는다.
+  t120_eff=""
+  t120_sample() {  # t120_sample <대기 pid>
+    while kill -0 "$1" 2>/dev/null; do
+      if lsr_in - "$t120_lg" - cc_relay_is_effective "$t120_rd" "$t120_lg" 300 120 >/dev/null 2>&1; then
+        t120_eff="${t120_eff}y"
+      elif kill -0 "$1" 2>/dev/null; then
+        t120_eff="${t120_eff}n"
+      fi
+      sleep 2
+    done
+  }
+  t120_sleeper; printf '%s\n' "$t120_sl" > "$t120_rd/checks.pid"
+  printf -- '- `handoff` | 교대=3 | 사유=대기 | CI 대기=S9 | prev=x\n' >> "$t120_lg"
+  sleep 1
+  lsr_in - "$t120_lg" - t120_relay "$t120_S" 120 "$WORK/s120-r4a" 2>/dev/null &
+  t120_rp=$!
+  t120_fifo_up || true
+  sleep 1
+  t120_t=$(t120_ms)
+  printf '%s\tS9\t1\t%s\t통과\t-\t-\n' "$(t120_iso "$(date -u +%s)")" "89abcdef0123456789abcdef0123456789abcdef" > "$t120_rd/checks.observed"
+  t120_sample "$t120_rp"
+  wait "$t120_rp" 2>/dev/null
+  t120_e4=$(t120_ms_of "$WORK/s120-r4a" "$t120_t")
+  printf '120 측정: R4 checks.observed CI 판정 줄 → 교대 대기 반환 %sms rc=%s\n' "$t120_e4" "$(t120_rc_of "$WORK/s120-r4a")"
+  if [ "$(t120_rc_of "$WORK/s120-r4a")" = "0" ] && [ -n "$t120_e4" ] && [ "$t120_e4" -le 32000 ]; then
+    ok "120: R4 checks.observed 의 CI 판정 줄에서 교대 대기가 32초 안에 돌아온다"
+  else
+    bad "120: R4 checks.observed 의 CI 판정 줄에서 교대 대기가 32초 안에 돌아온다" "$(cat "$WORK/s120-r4a" 2>/dev/null) 기준 $t120_t"
+  fi
+
+  printf -- '- `handoff` | 교대=4 | 사유=대기 | CI 대기=- | prev=x\n' >> "$t120_lg"
+  t120_stage S8 sup
+  sleep 1
+  lsr_in - "$t120_lg" - t120_relay "$t120_S" 120 "$WORK/s120-r4b" 2>/dev/null &
+  t120_rp=$!
+  t120_fifo_up || true
+  sleep 1
+  t120_t=$(t120_ms)
+  t120_kill "$t120_sl"
+  t120_sample "$t120_rp"
+  wait "$t120_rp" 2>/dev/null
+  t120_e5=$(t120_ms_of "$WORK/s120-r4b" "$t120_t")
+  printf '120 측정: R4 감독자 pid 종료(파일 변화 없음) → 교대 대기 반환 %sms rc=%s\n' "$t120_e5" "$(t120_rc_of "$WORK/s120-r4b")"
+  if [ "$(t120_rc_of "$WORK/s120-r4b")" = "0" ] && [ -n "$t120_e5" ] && [ "$t120_e5" -le 32000 ]; then
+    ok "120: R4 감독자 pid 의 파일 변화 없는 종료에서 교대 대기가 32초 안에 돌아온다"
+  else
+    bad "120: R4 감독자 pid 의 파일 변화 없는 종료에서 교대 대기가 32초 안에 돌아온다" "$(cat "$WORK/s120-r4b" 2>/dev/null) 기준 $t120_t"
+  fi
+  printf '120 측정: R4 중계 실효 표본 %s\n' "$t120_eff"
+  case "$t120_eff" in
+    *n*|'') bad "120: R4 그 사이 중계 실효 판정은 실효 없음을 내지 않는다" "표본='$t120_eff' stall='$(cat "$t120_rd/stall" 2>/dev/null)'" ;;
+    *) check "120: R4 그 사이 중계 실효 판정은 실효 없음을 내지 않는다" "$(cat "$t120_rd/stall" 2>/dev/null)" "" ;;
+  esac
+
+  t120_env python3 "$t120_rd/plugin/cc-cmds/orchestrator/observer.py" stop >/dev/null 2>&1
+  rm -rf "$t120_S"
+  unset -f t120_env t120_stage t120_relay t120_fifo_up t120_ms_of t120_rc_of t120_sample t120_kill
+fi
+for t120_i in $t120_strays; do kill "$t120_i" 2>/dev/null; wait "$t120_i" 2>/dev/null; done
+rm -rf "$t120_fs" "$t120_ns" "$WORK/s120-feed.out" "$WORK/s120-wrote" "$WORK"/s120-r2? "$WORK"/s120-r4?
+unset -f t120_ms t120_mtime_ns t120_poke t120_until t120_sleeper t120_probe t120_wake t120_vt t120_rt t120_iso \
+  t120_blk t120_fd7
+unset t120_strays t120_sl t120_fake t120_fs t120_ns t120_l t120_rd t120_a t120_b t120_c t120_w t120_w1 t120_w2 \
+  t120_w3 t120_w4 t120_w5 t120_w6 t120_w7 t120_at t120_r t120_fl t120_fd t120_fp t120_ff t120_m0 t120_i t120_row \
+  t120_ol t120_gb t120_fb t120_o t120_S t120_rid t120_lg t120_adopt t120_s1 t120_rp t120_up t120_t t120_e1 t120_e2 \
+  t120_od t120_hn t120_ho t120_hd t120_hb t120_hba t120_eff t120_e4 t120_e5
 
 # --- epilogue-begin ---
 #

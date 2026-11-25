@@ -59,6 +59,8 @@ export CC_GATE_PIN_SYNC_DISABLE
 script_dir=$(cd "$(dirname "$0")" && pwd)
 repo_root=$(cd "$script_dir/.." && pwd)
 GATE="$repo_root/plugins/cc-cmds/orchestrator/gate.sh"
+# shellcheck source=wait-fixture.sh
+. "$repo_root/scripts/wait-fixture.sh"
 
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/cc-snapshot-test.XXXXXX")
 trap 'rm -rf "$WORK"' EXIT
@@ -702,13 +704,13 @@ check "대기자가 없으면 렌더에 대기 줄이 없다" "$(grep -c '^대�
 # then read from the later of the refresh and the machine's wake, and the wake
 # reading is replaced in a subshell so all three cases are this suite's.
 RD_R1="$XDG_STATE_HOME/cc-cmds/run/R1"
-sleep 600 & W_HOLD=$!
+wait_holder >/dev/null 2>&1 & W_HOLD=$!
 w_now=$(date -u +%s)
 w_stall=$(cc_effective_stall "$RD_R1")
 # A driver-written marker: the gate's settlement leaves those alone, so killing
 # the holder below adds no row to this shared fixture ledger.
 printf '%s\n' "보유자=$W_HOLD" "지문=$(cc_proc_fingerprint "$W_HOLD")" "기록자=드라이버" "계보=S9" \
-  "그룹=org:h1" "까지=-" "갱신=$((w_now - w_stall - 1))" "종류=review" "논스=-" > "$RD_R1/S9.waiting"
+  "그룹=org:h1" "까지=-" "갱신=$((w_now - w_stall - 60))" "종류=review" "논스=-" > "$RD_R1/S9.waiting"
 SNAP_W="$WORK/waiting.json"
 ( cd "$WT" && bash "$GATE" snapshot --manifest "$MANIFEST" 2>/dev/null ) > "$SNAP_W"
 check "살아 있는 보유자의 표지는 waiting_stages 원소 하나다" "$(jq -r '.waiting_stages | length' "$SNAP_W")" "1"
