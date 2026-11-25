@@ -68695,7 +68695,7 @@ graded_as '읽기' '89p: fence-check 는 읽기다' -- "$CC_ORCH/base-split.py" 
 
 # ---------------------------------------------------------------------------
 # 89q. 티켓 배달의 스킬 문면
-# --- section: 89q | group: tier | covers: 킥오프 문면, design_delivery, ticket-delivery | anchors: 89q: 킥오프가 판정의 배달 방식을 대조하고 묻는다, 89q: 킥오프가 하위 런의 설계 생략과 착수 행을 싣는다, 89q: 경계 문면이 티켓 배달 런의 종료 절과 5r 을 싣는다, 89q: 자가 점검이 티켓 배달 꼴과 출처 티켓 꼴을 싣는다, 89q: 재킥오프가 새 런 id 로 착수 행을 쓴다, 89q: 아침 보고가 두 절을 싣는다, 89q: 설계 두 갈래가 티켓 배달 절을 공유한다, 89q: 분할과 리뷰가 티켓 배달을 읽는다, 89q: 공유 계약의 닫힘 경로가 구현 중단을 든다, 89q: 두 감사가 Step 6 에서 조정 패스를 읽는다, 89q: 조정 패스가 티켓 배정 규율을 싣는다, 89q: 설계 생략 재작성이 시각 단계를 남긴다, 89q: Step 3 이 화면 작업의 시각 단계를 묻는다, 89q: 진입 판단이 설계 없는 그래프의 시각 단계 모양을 안내한다 ---
+# --- section: 89q | group: tier | covers: 킥오프 문면, design_delivery, ticket-delivery | anchors: 89q: 킥오프가 판정의 배달 방식을 대조하고 묻는다, 89q: 킥오프가 하위 런의 설계 생략과 착수 행을 싣는다, 89q: 경계 문면이 티켓 배달 런의 종료 절과 5r 을 싣는다, 89q: 자가 점검이 티켓 배달 꼴과 출처 티켓 꼴을 싣는다, 89q: 재킥오프가 새 런 id 로 착수 행을 쓴다, 89q: 아침 보고가 두 절을 싣는다, 89q: 설계 두 갈래가 티켓 배달 절을 공유한다, 89q: 분할과 리뷰가 티켓 배달을 읽는다, 89q: 공유 계약의 닫힘 경로가 구현 중단을 든다, 89q: 두 감사가 Step 6 에서 조정 패스를 읽는다, 89q: 조정 패스가 티켓 배정 규율을 싣는다, 89q: 설계 생략 재작성이 시각 단계를 남긴다, 89q: Step 3 이 화면 작업의 시각 단계를 묻는다, 89q: 진입 판단이 설계 없는 그래프의 시각 단계 모양을 안내한다, 89q: 새 추천 꼬리가 스킬 기본값 꼴을 쓴다 ---
 #
 # 게이트와 스크립트는 다른 절이 재므로 여기서는 문면만 대조한다. 옛 문면이 남으면 같은
 # 일을 두 가지로 적은 것이 되므로 없음도 함께 단언한다.
@@ -68749,6 +68749,8 @@ check "89q: Step 3 이 화면 작업의 시각 단계를 묻는다" \
   "$(tkx_has "$tkq_ap" '**Visual step for screen work.**')/$(tkx_has "$tkq_ap" '(header chip `시각 단계`)')/$(tkx_has "$tkq_ap" '- label `시각 단계 추가`')/$(tkx_has "$tkq_ap" '- label `없이 진행`')" "있음/있음/있음/있음"
 check "89q: 진입 판단이 설계 없는 그래프의 시각 단계 모양을 안내한다" \
   "$(tkx_has "$tkq_ep" 'a graph with neither — an implement run with no design — gives it no predecessor (`depends_on: []`).')/$(tkx_has "$tkq_ep" 'or on the `design` step when the graph has no audit.')" "있음/없음"
+check "89q: 새 추천 꼬리가 스킬 기본값 꼴을 쓴다" \
+  "$(tkx_has "$tkq_ap" 'that the document'"'"'s `**화면**` field names a screen id on a slice `추천 출처: 기본값`.')/$(tkx_has "$tkq_ap" 'that the list was picked from the upper ticket block'"'"'s wording `추천 출처: 기본값`')/$(tkx_has "$tkq_ap" '추천 출처: 문서 화면 필드')/$(tkx_has "$tkq_ap" '추천 출처: 상위 티켓 블록')" "있음/있음/없음/없음"
 
 # ---------------------------------------------------------------------------
 # 89r. 아침 보고의 상위 착지 판정
