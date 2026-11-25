@@ -14247,6 +14247,28 @@ check "34m: 사유 누락은 두 검증기가 모두 그 슬라이스의 결함�
 check "34m: 슬라이스 소유 결함만 있는 선언은 계획자 경로로 가지 않는다" \
   "$(slicing_branch "$R34MO/doc/nr.md" 2>/dev/null)/$(slicing_branch "$R34MO/doc/ov.md" 2>/dev/null)" "선언통치/선언통치"
 
+# 릴리스 노트 조각 디렉터리: 머지 순서로만 묶인 두 슬라이스가 둘 다 정확히
+# `changelog.d/` 를 선언한 겹침은 결함이 아니고, 한쪽이 그 아래 archive/ 나 특정
+# 조각 파일을 선언하면 그대로 겹침이다. 그 쌍을 건너뛴 뒤에도 다른 원소의 겹침은 잡는다.
+m34_doc "$R34MO/doc/cl.md" 'CA:-:-:changelog.d/' 'CB:-:CA:changelog.d/'
+m34_doc "$R34MO/doc/cl-arch.md" 'CA:-:-:changelog.d/' 'CB:-:CA:changelog.d/archive/'
+m34_doc "$R34MO/doc/cl-frag.md" 'CA:-:-:changelog.d/' 'CB:-:CA:changelog.d/x.md'
+m34_doc "$R34MO/doc/cl-other.md" 'CA:-:-:changelog.d/`, `CA.txt' 'CB:-:CA:changelog.d/`, `CA.txt'
+check "34m: changelog.d/ 원소로만 겹치는 머지 순서 쌍은 결함이 없다" \
+  "$(slicing_order_defects "$R34MO/doc/cl.md" | grep -c . || true)/$(m34_gate "$R34MO/doc/cl.md" | grep -c . || true)" "0/0"
+check "34m: 한쪽이 changelog.d/archive/ 를 선언한 겹침은 결함이다" \
+  "$(slicing_order_defects "$R34MO/doc/cl-arch.md")" "슬라이스 CB: 머지 순서 선언 파일 겹침 「changelog.d/」 — 슬라이스 CA"
+check "34m: 한쪽이 특정 조각 파일을 선언한 겹침은 결함이다" \
+  "$(slicing_order_defects "$R34MO/doc/cl-frag.md")" "슬라이스 CB: 머지 순서 선언 파일 겹침 「changelog.d/」 — 슬라이스 CA"
+check "34m: changelog.d/ 쌍을 건너뛴 뒤에도 다른 원소의 겹침은 결함이다" \
+  "$(slicing_order_defects "$R34MO/doc/cl-other.md")" "슬라이스 CB: 머지 순서 선언 파일 겹침 「CA.txt」 — 슬라이스 CA"
+m34d=$(m34_drv "$R34MO/doc/cl-arch.md"); m34g=$(m34_gate "$R34MO/doc/cl-arch.md")
+if [ -n "$m34d" ] && [ "$m34d" = "$m34g" ]; then
+  ok "34m: changelog.d/archive/ 겹침의 문면이 드라이버와 게이트에서 바이트 같다"
+else
+  bad "34m: changelog.d/archive/ 겹침 문면" "드라이버 「${m34d}」 · 게이트 「${m34g}」"
+fi
+
 # 주 루프 — 머지 순서 후행은 앞 슬라이스가 done.txt 에 든 뒤에만 돌고, 앞 슬라이스가
 # 서면 종류를 적은 문면으로 park 된다. 결함 슬라이스는 그것만 park 된다. 다섯째 열이
 # 없는 옛 계획은 전과 같은 순서로 돈다.

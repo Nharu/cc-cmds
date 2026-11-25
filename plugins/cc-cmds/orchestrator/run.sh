@@ -3959,11 +3959,19 @@ slice_files_overlap() {
   # shares a prefix with one of T's, the shorter of the two printed; nothing
   # when the two sets are prefix-disjoint. The same prefix match
   # `gate_fileset_escape` uses to judge whether a path is covered.
+  #
+  # One pair is not an overlap: both elements exactly `changelog.d/`. Each
+  # slice adds there only its own top-level release note fragment, named by
+  # its branch slug, so the files differ by name and never conflict as text.
+  # The exception is that bare element alone — `changelog.d/archive/`, a
+  # particular fragment file, or any path outside `changelog.d/` against
+  # either side still overlaps by the prefix match.
   local p q
   while IFS= read -r p; do
     [ -n "$p" ] || continue
     while IFS= read -r q; do
       [ -n "$q" ] || continue
+      [ "$p" = "changelog.d/" ] && [ "$q" = "changelog.d/" ] && continue
       case "$q" in "$p"|"$p"*) printf '%s' "$p"; return 0 ;; esac
       case "$p" in "$q"*) printf '%s' "$q"; return 0 ;; esac
     done <<EOF
@@ -3986,8 +3994,10 @@ slicing_order_defects() {
   # is `선행`. A slice in P(S) lands before S is cut, so S's base already holds
   # it; a slice in M(S) \ P(S) lands after S is cut and before S merges, which
   # is a change S never saw. S's declared files have to be prefix-disjoint from
-  # all of those, and nothing is exempt: a generated index or a version file
-  # merged from two bases conflicts, or merges a combination nobody read.
+  # all of those, and no file is exempt: a generated index or a version file
+  # merged from two bases conflicts, or merges a combination nobody read. The
+  # one pair `slice_files_overlap` does not count is two bare `changelog.d/`
+  # elements, where each slice adds only its own differently named fragment.
   #
   # A `선행` token naming a later slice is not a defect: no such ordering rule
   # was ever written for `선행`, and adding one now would park frozen documents.
