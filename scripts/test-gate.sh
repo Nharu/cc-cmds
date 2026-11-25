@@ -43057,7 +43057,7 @@ qh_txt() {  # qh_txt <파일> — the fixed forms that file must carry, as a/b/c
 check "34qh: 교대 지침과 리드 사본이 이관 판독기 실패 규칙을 싣는다" "$(qh_txt "$QH_TERM")|$(qh_txt "$QH_LEAD")" "abcdef|abcdef"
 
 # --- 34ql. 남김 목록 판독기 — 원장과 디스크에서 사람 몫을 결정적으로 뽑는다 ---
-# --- section: 34ql | group: cone | covers: leftovers | anchors: 34ql: 판독기 출력이 P2 둘을 출처와 함께 싣는다, 34ql: 문단만 있는 미검토 영역은 첫 줄이 한 항목이다, 34ql: 차단 부류 줄 없는 구현 필요 항목은 코드-부재다, 34ql: 검증됨으로 뒤집힌 항목은 나오지 않는다, 34ql: 머리 줄의 항목 수가 항목 줄 수와 같다, 34ql: 이관 줄의 판별 꼬리가 이관 행의 것과 바이트 그대로 같다, 34ql: 리뷰 보고서가 없으면 판독 실패 줄이 나오고 종료 코드는 0 이다, 34ql: 원장이 없으면 종료 코드가 0 이 아니다, 34ql: 사본을 고친 뒤 이관 줄은 바뀜이다, 34ql: 설계 문서가 (없음) 이면 잔여 항목도 판독 실패도 없다, 34ql: 설계 문서 줄이 없으면 잔여 항목도 판독 실패도 없다, 34ql: 아침 보고서 지침이 판독기 출력을 축자로 옮긴다 ---
+# --- section: 34ql | group: cone | covers: leftovers | anchors: 34ql: 판독기 출력이 P2 둘을 출처와 함께 싣는다, 34ql: 문단만 있는 미검토 영역은 첫 줄이 한 항목이다, 34ql: 차단 부류 줄 없는 구현 필요 항목은 코드-부재다, 34ql: 검증됨으로 뒤집힌 항목은 나오지 않는다, 34ql: 머리 줄의 항목 수가 항목 줄 수와 같다, 34ql: 이관 줄의 판별 꼬리가 이관 행의 것과 바이트 그대로 같다, 34ql: 리뷰 보고서가 없으면 판독 실패 줄이 나오고 종료 코드는 0 이다, 34ql: 원장이 없으면 종료 코드가 0 이 아니다, 34ql: 사본을 고친 뒤 이관 줄은 바뀜이다, 34ql: 설계 문서가 (없음) 이면 잔여 항목도 판독 실패도 없다, 34ql: 설계 문서 줄이 없으면 잔여 항목도 판독 실패도 없다, 34ql: 아침 보고서 지침이 판독기 출력을 축자로 옮긴다, 34ql: P2 표제가 없고 발견 요약의 P2 가 0건이면 항목도 판독 실패도 없다, 34ql: 미검토 영역 표제가 없으면 항목도 판독 실패도 없다, 34ql: P2 표제가 없는데 발견 요약의 P2 가 1건 이상이면 판독 실패 줄이 나온다, 34ql: P2 표제 없이 부분 복구 발견 요약만 있으면 판독 실패 줄이 나온다 ---
 #
 # THE MORNING'S LIST OF WHAT NO ONE CONFIRMED IS READ, NOT WRITTEN. The reader
 # `run-leftovers.sh` takes the manifest and the ledger and prints one item per
@@ -43151,6 +43151,32 @@ ql_act3() {
   case "$(cat "$QL_ACT3" 2>/dev/null)" in (*'「확인하지 못한 항목을 읽지 못했습니다 — <the first line of its error>」'*) printf d ;; esac
 }
 check "34ql: 아침 보고서 지침이 판독기 출력을 축자로 옮긴다" "$(ql_act3)" "abcd"
+# A review report skips the headings that do not apply. A missing P2 heading
+# is read against the report's own `발견 요약` count, and a missing unreviewed
+# heading is no item at all; only a P2 count above zero, or no count of the
+# template's shape, is a read failure.
+printf '# 리뷰\n\n- **발견 요약**: 🔴 P0 0건 | 🟠 P1 0건 | 🟡 P2 0건 | 🟢 P3 1건\n\n## 🟢 P3 (개선 제안)\n\n- P3 지적\n\n## 미검토 영역\n\n- 다른 미검토 범위\n' > "$QL_ROOT/docs/review/c.md"
+printf '# 리뷰\n\n- **발견 요약**: 🔴 P0 0건 | 🟠 P1 0건 | 🟡 P2 1건 | 🟢 P3 0건\n\n## 🟡 P2 (차후 이슈 등록 권장)\n\n- 셋째 P2 지적\n' > "$QL_ROOT/docs/review/d.md"
+printf '# 리뷰\n\n- **발견 요약**: 🔴 P0 0건 | 🟠 P1 0건 | 🟡 P2 2건 | 🟢 P3 0건\n\n## 미검토 영역\n\n- 셋째 미검토 범위\n' > "$QL_ROOT/docs/review/e.md"
+printf '# 리뷰\n\n- **발견 요약(부분 복구)**: 🔴 P0 미상 | 🟠 P1 미상 | 🟡 P2 미상 | 🟢 P3 미상\n\n## 미검토 영역\n\n- 넷째 미검토 범위\n' > "$QL_ROOT/docs/review/f.md"
+QL_LG2="$QL_ROOT/docs/pipeline-run/RQL2.md"
+{ printf '# 원장\n\n'
+  for s in c d e f; do
+    printf -- '- `cycle` | 교대=1 | 세그먼트=%s | 사이클=1 | 모드=전체 | 리포트 경로=docs/review/%s.md | prev=x\n' "$(printf '%s' "$s" | tr 'a-z' 'A-Z')" "$s"
+  done
+} > "$QL_LG2"
+ql_run "$QL_NM" "$QL_LG2" --run-dir "$QL_RD"
+check "34ql: P2 표제가 없고 발견 요약의 P2 가 0건이면 항목도 판독 실패도 없다" \
+  "$ql_rc/$(ql_has '- [리뷰 P2] 세그먼트 C ')/$(ql_has "- [판독 실패] 리뷰 P2 · $QL_ROOT/docs/review/c.md ")/$(ql_has '- [리뷰 미검토] 세그먼트 C · 다른 미검토 범위 · ')" "0/0/0/1"
+check "34ql: 미검토 영역 표제가 없으면 항목도 판독 실패도 없다" \
+  "$(ql_has '- [리뷰 미검토] 세그먼트 D ')/$(ql_has "- [판독 실패] 리뷰 미검토 · $QL_ROOT/docs/review/d.md ")/$(ql_has '- [리뷰 P2] 세그먼트 D · 셋째 P2 지적 · ')" "0/0/1"
+check "34ql: P2 표제가 없는데 발견 요약의 P2 가 1건 이상이면 판독 실패 줄이 나온다" \
+  "$(ql_has "- [판독 실패] 리뷰 P2 · $QL_ROOT/docs/review/e.md · ")/$(ql_has '- [리뷰 P2] 세그먼트 E ')" "1/0"
+check "34ql: P2 표제 없이 부분 복구 발견 요약만 있으면 판독 실패 줄이 나온다" \
+  "$(ql_has "- [판독 실패] 리뷰 P2 · $QL_ROOT/docs/review/f.md · ")/$(ql_has '- [리뷰 미검토] 세그먼트 F · 넷째 미검토 범위 · ')" "1/1"
+ql_items=$(printf '%s\n' "$QL_OUT" | grep -c '^- \[' || true)
+check "34ql: 표제 생략 고정물에서도 머리 줄의 항목 수가 항목 줄 수와 같다" \
+  "$(printf '%s\n' "$QL_OUT" | sed -n 1p | sed 's/^.* · 항목 \([0-9]*\)건$/\1/')/$ql_items" "8/8"
 
 # --- 34r. 강제 표면의 출처 — 좌석 적용 밖에서 바뀐 분류 경로는 리뷰와 머지에 닿지 못한다 ---
 # --- section: 34r | group: cone | covers: act, snapshot, surface-class | anchors: 34r: 사람의 좌석 커밋은 통과한다, 34r: 승계된 좌석 커밋도 통과한다, 34r: 베이스만 바꾼 경로는 통과한다, 34r: 베이스를 머지한 커밋은 통과한다, 34r: 리베이스한 브랜치의 규칙 파일이 좌석 바이트다, 34r: 출처가 깨진 세그먼트의 리뷰가 blocked 행으로 막힌다, 34r: 좌석 커밋 뒤 재리뷰 전의 머지는 거절된다, 34r: 재리뷰 뒤의 머지는 통과한다, 34r: 출처가 깨진 머지는 거절된다, 34r: review-line 이 좌석 커밋을 나열한다, 34r: 스냅숏이 강제 표면과 좌석 적용 커밋을 낸다, 34r: 스테이지의 규칙 파일 cp 는 exec 에서 거절된다, 34r: HEAD 가 추적하지 않는 CLAUDE.md 의 거절은 exec 거절이 아니라 리뷰-후-적용 규칙의 것이다, 34r: 바이트에 묶인 리뷰 행이 있어도 런 디렉터리 밖 사본의 설정 홈 CLAUDE.md cp 는 park 없이 거절된다, 34r: 런 디렉터리 제안본의 설정 홈 CLAUDE.md cp 는 park 없이 거절된다, 34r: 그 cp 를 적은 좌석 실행 기록의 좌석 답은 거절되고 행을 남기지 않는다, 34r: 드라이버는 그 거절에서 머지하지 않고 park 한다 ---

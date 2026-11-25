@@ -20,10 +20,14 @@
 #                      `델타` (a full or a resolution review does not carry the
 #                      earlier cycles' P2 over), every earlier report of the
 #                      segment is read too, and a line seen before is printed
-#                      once.
+#                      once. A report without that heading holds no P2 item
+#                      when its unindented `발견 요약` line counts zero P2;
+#                      a count of one or more, or no line of that shape (the
+#                      `발견 요약(부분 복구)` form included), is `[판독 실패]`.
 #   2. 리뷰 미검토   — the `## 미검토 영역` section of that last report, one item
 #                      per unindented `- ` line, or its first non-empty line
-#                      when the section holds no such line.
+#                      when the section holds no such line. A report without
+#                      that heading holds no item.
 #   3. 미검증 잔여   — the `### R<n>.` blocks of the design document's
 #                      `## 구현 시 검증 항목` whose grade still reads
 #                      `구현 시 검증`.
@@ -54,6 +58,7 @@ export LC_ALL=C
 
 RL_P2_HEAD='## 🟡 P2 (차후 이슈 등록 권장)'
 RL_UNREVIEWED_HEAD='## 미검토 영역'
+RL_SUMMARY_RE='^- \*\*발견 요약\*\*: 🔴 P0 [0-9]+건 \| 🟠 P1 [0-9]+건 \| 🟡 P2 ([0-9]+)건 \| 🟢 P3 [0-9]+건'
 RL_TAIL='이 밖의 사람 몫은 「기다리는 결정」·「보류 큐」·「남은 외부 상태」·「사람 대조 필요」 절에 있습니다'
 RL_EMPTY='확인하지 못한 항목이 원장과 디스크에 없습니다'
 RL_HANDOVER_RE='^종단 재료 (.+) · sha256 ([0-9a-f]{64}) · 항목 ([0-9]+)건 · 판별 (표지|문면 런 보고서에서 읽|문면 아침 보고서에서 읽)$'
@@ -198,7 +203,14 @@ for seg in $SEGMENTS; do
       continue
     fi
     sec=$(rl_section_lines "$f" "$RL_P2_HEAD") || {
-      rl_unreadable '리뷰 P2' "$f" "표제 「${RL_P2_HEAD}」 이 없습니다"
+      # A report skips the headings that do not apply, so a missing P2 heading
+      # is read against the report's own count: zero P2 is zero items.
+      p2n=$(grep -E "$RL_SUMMARY_RE" "$f" 2>/dev/null | sed -n '1p' | sed -E "s/$RL_SUMMARY_RE.*/\\1/")
+      case "$p2n" in
+        0) ;;
+        '') rl_unreadable '리뷰 P2' "$f" "표제 「${RL_P2_HEAD}」 이 없고 발견 요약 줄의 P2 수를 읽지 못했습니다" ;;
+        *) rl_unreadable '리뷰 P2' "$f" "표제 「${RL_P2_HEAD}」 이 없는데 발견 요약의 P2 가 ${p2n}건입니다" ;;
+      esac
       continue; }
     while IFS= read -r ln; do
       [ -n "$ln" ] || continue
@@ -231,9 +243,9 @@ for seg in $SEGMENTS; do
     rl_unreadable '리뷰 미검토' "$f" '리뷰 보고서를 읽지 못했습니다'
     continue
   fi
-  sec=$(rl_section_lines "$f" "$RL_UNREVIEWED_HEAD") || {
-    rl_unreadable '리뷰 미검토' "$f" "표제 「${RL_UNREVIEWED_HEAD}」 이 없습니다"
-    continue; }
+  # A report with nothing unreviewed skips this heading, and there is no count
+  # to hold it against, so a missing heading is zero items.
+  sec=$(rl_section_lines "$f" "$RL_UNREVIEWED_HEAD") || continue
   listed=$(printf '%s\n' "$sec" | awk -F'\t' 'NF && substr($2, 1, 2) == "- "')
   if [ -z "$listed" ]; then
     listed=$(printf '%s\n' "$sec" | awk -F'\t' 'NF { t = $2; sub(/^[[:space:]]+/, "", t); if (t != "") { print; exit } }')
