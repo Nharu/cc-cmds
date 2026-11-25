@@ -638,7 +638,7 @@ GATE_SLOTS := $(shell echo $$(( $(GATE_SHARDS) * $(GATE_LANES) )))
 # above and, when their room runs out, on extra rows S+1..S+E, one runner each.
 # GATE_ISO_EXTRA is the most CI's plan job may open; GATE_EXTRA is how many the
 # table a runner was handed actually has, which only the plan job knows.
-GATE_ISO_EXTRA ?= 8
+GATE_ISO_EXTRA ?= 20
 GATE_EXTRA ?= 0
 
 # So CI can read the numbers instead of spelling them a second time.
