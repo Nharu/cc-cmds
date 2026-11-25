@@ -12854,10 +12854,13 @@ gate_stage_snapshot_digest() {
   # `gate_snapshot_digest`, with the vector half taken from the stage
   # projection. The tip half is the same chain tip; what differs for a stage is
   # how far back an observed tip may sit, which `gate_stage_ancestry_has` reads.
+  # The here-string feeds shasum the same bytes as `printf '%s\n'` would (the
+  # vector and one newline) without a pipeline element whose first word is a
+  # builtin, a fork the spawn-count measure cannot see.
   local vec
   vec=$(gate_stage_progress_vector)
   printf '%s-%s' \
-    "$(printf '%s\n' "$vec" | shasum -a 256 | cut -d' ' -f1)" \
+    "$(shasum -a 256 <<<"$vec" | cut -d' ' -f1)" \
     "$(gate_chain_tip)"
 }
 
