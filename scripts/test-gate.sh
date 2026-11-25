@@ -77432,7 +77432,7 @@ unset t120_strays t120_sl t120_fake t120_fs t120_ns t120_l t120_rd t120_a t120_b
 
 # ---------------------------------------------------------------------------
 # 121. 구성원 위트니스 게시 한 번, 스테이지 다이제스트, 라우터 다이제스트는 그대로
-# --- section: 121 | group: tguard | covers: exec, act, snapshot, grade, gate_stage_snapshot_digest, gate_stage_progress_vector, gate_stage_ancestry_has, gate_caller_snapshot_digest, gate_ancestry_window, gate_emit_digest_body | anchors: 121: 게시 도우미 한 번의 exec 가 증인을 게시한다, 121: 그 exec 는 원장에 exec 행 하나만 남긴다, 121: 센티널이 어긋난 초안은 아무것도 바꾸지 않는다, 121: 이미 게시된 증인은 덮지 않는다, 121: 일상 exec 행 수십 개 뒤에도 스테이지의 옛 값이 통과한다, 121: 일상 행이 아닌 행 8개 뒤에는 통과한다, 121: 일상 행이 아닌 행 9개 뒤에는 거부된다, 121: 자기 세그먼트의 진전에는 거부된다, 121: 다른 세그먼트의 진전에는 통과한다, 121: 방출 줄·방출 파일·snapshot H 가 같은 값이다, 121: 방출된 값이 곧바로 통과한다, 121: 탐색 —, 121: 벡터 —, 121: 라우터는 일상 행이어도 9행 뒤 거부한다, 121: 라우터는 다른 세그먼트의 진전에 거부한다, 121: 렌더의 스냅숏 해시는 라우터 값이다, 121: 라우터 조상 창 함수 본문이 그대로다 ---
+# --- section: 121 | group: tguard | covers: exec, act, snapshot, grade, gate_stage_snapshot_digest, gate_stage_progress_vector, gate_stage_ancestry_has, gate_caller_snapshot_digest, gate_ancestry_window, gate_emit_digest_body | anchors: 121: 게시 도우미 한 번의 exec 가 증인을 게시한다, 121: 그 exec 는 원장에 exec 행 하나만 남긴다, 121: 센티널이 어긋난 초안은 아무것도 바꾸지 않는다, 121: 이미 게시된 증인은 덮지 않는다, 121: 일상 exec 행 수십 개 뒤에도 스테이지의 옛 값이 통과한다, 121: 일상 행이 아닌 행 8개 뒤에는 통과한다, 121: 일상 행이 아닌 행 9개 뒤에는 거부된다, 121: 자기 세그먼트의 진전에는 거부된다, 121: 다른 세그먼트의 진전에는 통과한다, 121: 방출 줄·방출 파일·snapshot H 가 같은 값이다, 121: 방출된 값이 곧바로 통과한다, 121: 탐색 —, 121: 벡터 —, 121: 비스테이지 기동 행이 없는 세그먼트에서도 자기 정상 완료 뒤의 옛 다이제스트는 벡터가 다르다, 121: 라우터는 일상 행이어도 9행 뒤 거부한다, 121: 라우터는 다른 세그먼트의 진전에 거부한다, 121: 렌더의 스냅숏 해시는 라우터 값이다, 121: 라우터 조상 창 함수 본문이 그대로다 ---
 #
 # 팀 구성원은 위트니스를 초안 이름에 쓰고 게시 도우미 한 번으로 증인 이름에 링크해
 # 게시한다. 그 한 번이 게이트를 지나 원장에 exec 행 하나로 남는지, 확인에 걸린
@@ -77706,7 +77706,7 @@ u121_vrow() {
 [ -n "$v121_0" ] || v121_bad="$v121_bad [기준 투영이 비었다]"
 case "$v121_0" in *"segment=SB|"*) v121_bad="$v121_bad [투영에 SB 의 segment 줄이 있다]" ;; esac
 case "$v121_0" in *"segment=SA|"*) ;; *) v121_bad="$v121_bad [투영에 SA 의 segment 줄이 없다]" ;; esac
-case "$v121_0" in *"stage-normal="*) v121_bad="$v121_bad [투영에 stage-normal 줄이 있다]" ;; esac
+case "$v121_0" in *"stage-normal="*) ;; *) v121_bad="$v121_bad [투영에 stage-normal 줄이 없다]" ;; esac
 u121_vrow 같음 'SB 의 segment 행'   '- `segment` | id=SB | 상태=park | 선행=없음'
 u121_vrow 다름 'SA 의 segment 행'   '- `segment` | id=SA | 상태=park | 선행=없음'
 u121_vrow 같음 'SB 의 cycle 행'     '- `cycle` | 세그먼트=SB | 사이클=1'
@@ -77714,6 +77714,34 @@ u121_vrow 다름 'SA 의 cycle 행'     '- `cycle` | 세그먼트=SA | 사이클
 u121_vrow 다름 '종료 절 행'         '- `종료 절` | 절=C1 | 상태=충족'
 u121_vrow 다름 '해소된 blocked 행'  '- `blocked` | 범위=런 | 원인=해소'
 u121_vrow 같음 '일상 exec 행'       '- `자율 승인` | kind= | 결정=exec | 대상=a | 세그먼트=SA | 축2=읽기 | 행위자=스테이지 | 근거=x'
+v121_pre="$v121_bad"; v121_bad=""
+u121_vrow 다름 'SA 의 정상 완료 stage-result 행' '- `stage-result` | 세그먼트=SA | 스테이지=SA | 종류=implement | 종료 코드=0 | 종단 부류=정상 완료'
+u121_vrow 같음 'SB 의 정상 완료 stage-result 행' '- `stage-result` | 세그먼트=SB | 스테이지=SB | 종류=implement | 종료 코드=0 | 종단 부류=정상 완료'
+u121_vrow 같음 'SA 의 크래시 stage-result 행'    '- `stage-result` | 세그먼트=SA | 스테이지=SA | 종류=implement | 종료 코드=1 | 종단 부류=크래시'
+check "121: 벡터 — 자기 세그먼트의 정상 완료에만 stage-normal 이 움직인다" "${v121_bad:-없음}" "없음"
+v121_bad=""
+# 비스테이지 기동 행이 없는 세그먼트 — 기준 원장에 SA 를 이름하는 `kind=skill`·`결정=act`
+# 행 가운데 행위자가 스테이지가 아닌 것이 없어 좁힌 dispatches= 가 0 이다. 그런 SA 에서도
+# 정상 완료 행 하나가 스테이지 다이제스트의 벡터 반쪽을 바꾸므로, 그 앞에서 읽어 둔 값은
+# 벡터 비교에서 거부된다.
+u121_sdig() {  # u121_sdig <원장> — 세그먼트 SA 스테이지로 본 gate_stage_snapshot_digest
+  bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; set +e; LEDGER="$2"; MANIFEST="$3"; CC_PIPELINE_SEGMENT=SA; CC_PIPELINE_STAGE_ID="SA#1"; export CC_PIPELINE_SEGMENT CC_PIPELINE_STAGE_ID; gate_stage_snapshot_digest' \
+    _ "$GATE" "$1" "$TG_M" 2>/dev/null
+}
+d121_disp=$(grep -F '| kind=skill |' "$TG_L" | grep -F '| 결정=act |' | grep -F '| 세그먼트=SA |' \
+              | grep -F '| 행위자=' | grep -cvF '| 행위자=스테이지 |' || true)
+case "$d121_disp|$v121_0" in
+  "0|"*"dispatches=0"*) ;;
+  *) v121_bad="$v121_bad [전제: SA 의 비스테이지 기동 행 ${d121_disp}개, 투영의 dispatches 가 0 이 아님]" ;;
+esac
+cp "$TG_L" "$V121"
+d121_before=$(u121_sdig "$V121" | cut -d- -f1)
+printf '%s\n' '- `stage-result` | 세그먼트=SA | 스테이지=SA | 종류=implement | 종료 코드=0 | 종단 부류=정상 완료' >> "$V121"
+d121_after=$(u121_sdig "$V121" | cut -d- -f1)
+[ -n "$d121_before" ] || v121_bad="$v121_bad [스테이지 다이제스트가 비었다]"
+[ "$d121_before" != "$d121_after" ] || v121_bad="$v121_bad [정상 완료 뒤에도 벡터 반쪽이 같다]"
+check "121: 비스테이지 기동 행이 없는 세그먼트에서도 자기 정상 완료 뒤의 옛 다이제스트는 벡터가 다르다" "${v121_bad:-없음}" "없음"
+v121_bad="$v121_pre"
 cp "$TG_L" "$V121"
 printf '%s\n' '- `segment` | id=SB | 상태=park | 선행=없음' >> "$V121"
 [ "$(u121_rvec "$V121")" != "$r121_0" ] || v121_bad="$v121_bad [라우터 벡터가 SB 의 행에 움직이지 않았다]"
@@ -77721,7 +77749,8 @@ check "121: 벡터 — 자기 세그먼트와 런 전역 성분에만 움직인�
 unset U121_ENV_S U121_ENV_R U121_NEXT U121_I u121_pub u121_wd u121_w u121_w2 u121_d1 u121_d2 u121_d3 \
       n121a n121b r121a l121 H121a H121b H121c H121d H121e R121e R121f e121_line e121_path e121_file e121_snap \
       s121_render a121_body a121_want a121_call a121_k T121 L121 g121 g121_none V121 v121_0 r121_0 v121_bad \
-      r121_world u121_fill_bad n121sb
+      r121_world u121_fill_bad n121sb v121_pre d121_disp d121_before d121_after
+unset -f u121_sdig
 
 # --- epilogue-begin ---
 #

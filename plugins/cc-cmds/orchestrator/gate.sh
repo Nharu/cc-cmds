@@ -12755,14 +12755,21 @@ gate_stage_progress_vector() {
   #                                     dispatch row for the segment, the three
   #                                     classes that left a trace), with the
   #                                     segment set narrowed to this segment.
+  #   stage-normal=                     the full vector's count, over the
+  #                                     `stage-result` rows of this segment only.
   #
-  # `stage-normal=` IS NOT HERE. This segment's normal terminations are already
-  # in the narrowed `dispatches=`, and every other one is another segment's
-  # progress.
+  # `stage-normal=` IS NARROWED, NOT DROPPED. The narrowed `dispatches=` counts
+  # only a segment that some dispatch row with a non-stage `행위자` names, so on
+  # a segment with no such row this segment's normal terminations would reach
+  # no line at all, and a digest read before one would still pass after it.
+  # Counting this segment's `정상 완료` rows here moves the vector on them
+  # whether or not such a dispatch row exists; every other segment's are another
+  # segment's progress and stay out.
   #
   # A STAGE WITH NO SEGMENT (empty or `-`, a document-level design or audit
-  # stage) acts on no segment, so it gets no segment or cycle line and
-  # `dispatches=0`: it is bound by the run-wide lines and the window alone.
+  # stage) acts on no segment, so it gets no segment or cycle line,
+  # `dispatches=0` and `stage-normal=0`: it is bound by the run-wide lines and
+  # the window alone.
   #
   # `gate_progress_vector` itself stays as it is. The judgment binding tuple
   # (`gate_tuple_snap`) and the snapshot render read `gate_snapshot_digest`, and
@@ -12814,6 +12821,28 @@ gate_stage_progress_vector() {
         ')"
   else
     printf 'dispatches=0\n'
+  fi
+  # The same one-pass read as the full vector's `stage-normal=`: the class is
+  # located by its delimiter and compared whole, positively, under `LC_ALL=C`.
+  if [ -n "$seg" ]; then
+    printf 'stage-normal=%s\n' \
+      "$( { gate_rows 'stage-result' || true; } | gate_rows_field_eq '세그먼트' "$seg" \
+          | LC_ALL=C awk '
+          BEGIN { key = " | 종단 부류="; klen = length(key); sep = " | "; n = 0 }
+          {
+            rest = $0; value = ""; seen = 0
+            while ((p = index(rest, key)) > 0) {
+              rest = substr(rest, p + klen)
+              q = index(rest, sep)
+              value = (q > 0) ? substr(rest, 1, q - 1) : rest
+              seen = 1
+            }
+            if (seen && value == "정상 완료") n++
+          }
+          END { printf "%d", n }
+        ')"
+  else
+    printf 'stage-normal=0\n'
   fi
   printf 'clauses=%s\n' "$( { gate_rows '종료 절' || true; } | gate_count)"
   printf 'unblocks=%s\n' \
