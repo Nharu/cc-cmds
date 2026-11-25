@@ -1,0 +1,5 @@
+sample.sh:4:stub-lifetime
+sample.sh:6:stub-lifetime
+sample.sh:7:stub-lifetime
+sample.sh:8:stub-lifetime
+sample.sh:12:stub-lifetime

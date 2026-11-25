@@ -3,3 +3,17 @@
 # delete an entry when its line is fixed. Regenerate with
 # bash scripts/lint-test-clock.sh --write-baseline
 plugins/cc-cmds/orchestrator/test-run.sh|elapsed-bound|if [ $((feed_t1 - feed_t0)) -le "$FEED_IV" ]; then
+plugins/cc-cmds/orchestrator/test-run.sh|poll-count|for _ in $(seq 1 100); do
+plugins/cc-cmds/orchestrator/test-run.sh|poll-count|for _ in $(seq 1 20); do
+plugins/cc-cmds/orchestrator/test-run.sh|poll-count|n=0; while [ ! -f "$RA/run/segW.waiting" ] && [ "$n" -lt 100 ]; do sleep 0.1; n=$((n + 1)); done
+plugins/cc-cmds/orchestrator/test-run.sh|poll-count|n=0; while [ "$(ra_waits)" -lt 2 ] && [ "$n" -lt 100 ]; do sleep 0.1; n=$((n + 1)); done
+plugins/cc-cmds/orchestrator/test-run.sh|stub-lifetime|"$LOCK_TOOL" -k "$RUN_DIR/designdoc.lock" sleep 3 &
+plugins/cc-cmds/orchestrator/test-run.sh|stub-lifetime|sleep 30 &
+plugins/cc-cmds/orchestrator/test-run.sh|stub-lifetime|sleep 45 &
+plugins/cc-cmds/orchestrator/test-run.sh|stub-lifetime|sleep 60 & PA=$!
+plugins/cc-cmds/orchestrator/test-run.sh|stub-lifetime|sleep 60 & PB=$!
+plugins/cc-cmds/orchestrator/test-run.sh|stub-lifetime|sleep 60 & PC=$!
+plugins/cc-cmds/orchestrator/test-run.sh|stub-lifetime|sleep 60 & PD=$!
+plugins/cc-cmds/orchestrator/test-run.sh|stub-lifetime|sleep 60 & orph_obs=$!
+plugins/cc-cmds/orchestrator/test-run.sh|stub-lifetime|sleep 600 & RA_BLOCK=$!
+plugins/cc-cmds/orchestrator/test-run.sh|stub-lifetime|sleep 600 & RA_WRITER=$!

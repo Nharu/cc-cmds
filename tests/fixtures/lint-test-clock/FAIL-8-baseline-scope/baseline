@@ -1,0 +1,2 @@
+# Fixture baseline: an entry under scripts/ is refused.
+scripts/test-route.sh|elapsed-compare|if [ "$el" -lt 2 ]; then

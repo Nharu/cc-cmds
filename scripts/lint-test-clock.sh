@@ -6,7 +6,8 @@
 # a slow CI runner — the suite did nothing wrong, the runner was busy. The rule
 # for new code is: inject the time, read the clock at the very call that judges
 # it, or keep the value well clear of the boundary; never lengthen a deadline to
-# make room. This lint finds the two shapes that break it.
+# make room. This lint finds the shapes that break it, and the fixed-lifetime
+# stubs and counted polls that hide a deadline in a number of seconds or rounds.
 #
 # Anchors. A variable is an anchor when the same file assigns it from the wall
 # clock: `name=$(date +%s)`, `name=$(date -u +%s)`, `name=$EPOCHSECONDS` (a
@@ -38,25 +39,35 @@
 #                  its physical lines (accepted or not) takes no
 #                  `elapsed-compare`; the hit is reported on the logical line's
 #                  first physical line.
+#   stub-lifetime  a background `sleep` with a literal duration — `sleep 600 &`,
+#                  `command sleep 120 &`, `( sleep 600 >/dev/null 2>&1 & ... )`,
+#                  `sleep 0 &`, the same line inside a heredoc stub body. A
+#                  redirection between the duration and the `&` does not hide
+#                  it. A stub whose lifetime is a number of seconds dies before
+#                  the assertion that leans on it once the host is slow enough;
+#                  start it as `wait_holder &`, make a dead pid with `true &`
+#                  and `wait`, or end it with the test's own `kill`. A
+#                  foreground `sleep` inside a background subshell
+#                  (`( ...; sleep 1; ... ) &`) is not flagged.
+#   poll-count     a `for`, `while` or `until` loop whose header bounds a
+#                  counter with a number literal — `[ "$i" -lt 100 ]` (either
+#                  side, `-lt`/`-le`/`-gt`/`-ge`), `$(seq 1 50)`, `{1..50}`,
+#                  `(( i < 50 ))` — and whose body, up to its `done`, calls
+#                  `sleep`. Such a loop gives up after a number of rounds, so
+#                  its deadline is a number of seconds in disguise; wait with
+#                  `wait_until` or `wait_pid_gone` (scripts/wait-fixture.sh)
+#                  under the shared ceiling instead. The hit is reported on the
+#                  loop's header line. Nested loops are matched by `do`/`done`.
+#   retired-marker the `# gate-load:` marker, on any line. It used to excuse an
+#                  elapsed-time hit in test-gate.sh; that excuse is gone, and
+#                  such a hit fails there as it does in any other file.
+#   baseline-scope a baseline entry whose path starts with `scripts/`. The
+#                  suites under scripts/ carry no baseline entry: a hit there is
+#                  fixed or carries an escape comment with its reason. The entry
+#                  is reported against the baseline file and its line, and is
+#                  not used to answer a hit.
 #
-# Comment-only lines are not checked.
-#
-# Load marker (scripts/test-gate.sh only, told by the file name). A judgement
-# line — a line that calls `check` or `bad`, the first physical line of a
-# multi-line `check` — may carry `# gate-load: <reason>` at its end; when it ends
-# with a backslash the marker sits alone on the comment-only line right above
-# it. In a file named test-gate.sh an `elapsed-bound` or `elapsed-compare` hit
-# is accepted when the judgement line it connects to carries the marker: the
-# first physical line of its logical line when that line calls `check`/`bad`,
-# every `bad` line of the block when the hit is the condition of an `if`, and
-# otherwise only the escape comment (naming the `check` that judges the value).
-# Such a hit is never taken into the baseline, and a baseline entry for one
-# fails. The marker does not accept `clock-margin`. A marker fails on its own
-# (`gate-load-reason`, `gate-load-orphan`, `gate-load-outside`,
-# `gate-load-order`) when its reason is empty or holds ` — `, when its line
-# calls neither `check` nor `bad` (a comment-only marker line passes only right
-# above a backslash-ended judgement line), when it is outside test-gate.sh, or
-# when it follows `# gate-isolation: 변동` on the same line.
+# Comment-only lines are not checked, except for `retired-marker`.
 #
 # Escape. `# lint-test-clock: disable=<rule> <reason>` at the end of the line,
 # or on the comment-only line right above it, suppresses <rule> there. It is
@@ -70,7 +81,12 @@
 # the key, so editing other lines does not age it. A hit beyond the baseline
 # fails, and so does a baseline entry that no longer hits: the baseline only
 # shrinks, and fixing an old hit means deleting its entry. `--write-baseline`
-# rewrites the file from the current hits.
+# rewrites the file from the current hits, leaving out the hits under
+# `scripts/`, which stay failures.
+#
+# Files. The test scripts `scripts/test-*.sh` and
+# `plugins/cc-cmds/orchestrator/test-*.sh`, and the shared fixtures they source,
+# `scripts/run-fixture.sh` and `scripts/wait-fixture.sh`.
 #
 # Usage:
 #   bash scripts/lint-test-clock.sh                    # lint the test scripts
@@ -117,6 +133,9 @@ else
   while IFS= read -r f; do FILES+=("$f"); done < <(
     {
       find "$repo_root/scripts" -maxdepth 1 -name 'test-*.sh'
+      for f in run-fixture.sh wait-fixture.sh; do
+        [[ -f "$repo_root/scripts/$f" ]] && echo "$repo_root/scripts/$f"
+      done
       [[ -d "$repo_root/plugins/cc-cmds/orchestrator" ]] \
         && find "$repo_root/plugins/cc-cmds/orchestrator" -maxdepth 1 -name 'test-*.sh'
     } | LC_ALL=C sort
@@ -139,7 +158,6 @@ hits="$work/hits"
 # lines:
 #   H <TAB> <line no> <TAB> <path>|<rule>|<trimmed line>
 #   D <TAB> <line no> <TAB> <path>
-#   M <TAB> <line no> <TAB> <path> <TAB> <marker rule>
 # shellcheck disable=SC2016
 AWK_PROG='
 function strip_comment(s,    i, c, p) {
@@ -377,63 +395,88 @@ function close_elapsed(    k, n, t, key, ch) {
     }
   } while (ch)
 }
-function is_call(c) { return c ~ /(^|[;&|({]|(^|[ \t])(then|else|do))[ \t]*(check|bad)[ \t]/ }
-function is_bad(c) { return c ~ /(^|[;&|({]|(^|[ \t])(then|else|do))[ \t]*bad[ \t]/ }
-function count_re(c, re,    n) {
-  n = 0
-  while (match(c, re)) { n++; c = substr(c, RSTART + RLENGTH) }
-  return n
-}
-# A judgement line carries the marker: at its end, or, when it ends with a
-# backslash, on the comment-only line right above it.
-function marked(no) { return ENDBS[no] ? ((no - 1) in MKC) : (no in MK) }
 function emit_hit(no, rule) { printf "H\t%d\t%s|%s|%s\n", no, path, rule, LTXT[no] }
-# A hit in test-gate.sh is accepted by the marker on the judgement line it
-# connects to; elsewhere it goes to the baseline comparison.
-function report(no, rule) {
-  if (!is_tg) { emit_hit(no, rule); return }
-  if (is_call(LLCODE)) { if (!marked(LLF)) emit_hit(no, rule); return }
-  if (LLCODE ~ /^[ \t]*if[ \t]/) {
-    NP++; PNO[NP] = no; PRULE[NP] = rule; PBASE[NP] = LLD0; PBAD[NP] = ""; POPEN[NP] = 1
-    return
-  }
-  emit_hit(no, rule)
-}
-function resolve(p,    nb, k, b, ok) {
-  POPEN[p] = 0
-  nb = split(PBAD[p], b, " ")
-  ok = (nb > 0)
-  for (k = 1; k <= nb; k++) if (!marked(b[k] + 0)) ok = 0
-  if (!ok) emit_hit(PNO[p], PRULE[p])
-}
 function flush_ll(    k, rawb) {
   if (!LLF) return
   rawb = 0
   for (k = LLF; k <= LLL; k++) if (k in BRAW) rawb = 1
-  for (k = LLF; k <= LLL; k++) if ((k in BRAW) && !(k in BDIS)) report(k, "elapsed-bound")
-  if (!rawb && !LLCDIS && cmp_hit(LLCODE, LLSC)) report(LLF, "elapsed-compare")
+  for (k = LLF; k <= LLL; k++) if ((k in BRAW) && !(k in BDIS)) emit_hit(k, "elapsed-bound")
+  if (!rawb && !LLCDIS && cmp_hit(LLCODE, LLSC)) emit_hit(LLF, "elapsed-compare")
   LLF = 0
 }
-function marker_check(l, comment_only, c,    mi, rest, gi) {
-  mi = index(l, "# gate-load:")
-  if (!mi) return
-  rest = substr(l, mi + length("# gate-load:"))
-  gi = index(rest, " #"); if (gi) rest = substr(rest, 1, gi - 1)
-  rest = trim(rest)
-  if (rest == "" || index(rest, " — ")) printf "M\t%d\t%s\tgate-load-reason\n", FNR, path
-  if (!is_tg) printf "M\t%d\t%s\tgate-load-outside\n", FNR, path
-  gi = index(l, "# gate-isolation:")
-  if (gi && gi < mi) printf "M\t%d\t%s\tgate-load-order\n", FNR, path
-  if (comment_only) { pend_mk = FNR; MKC[FNR] = 1; return }
-  if (!is_call(c)) printf "M\t%d\t%s\tgate-load-orphan\n", FNR, path
-  MK[FNR] = 1
+# The line with the text inside quotes replaced by "x", one for one, so a word
+# in a string is not read as a keyword and every index still points into the
+# original line.
+function blank_quotes(s,    out, i, n, c, q) {
+  out = ""; q = ""; n = length(s)
+  for (i = 1; i <= n; i++) {
+    c = substr(s, i, 1)
+    if (c == "\\" && q != "'"'"'" && i < n) { out = out (q == "" ? substr(s, i, 2) : "xx"); i++; continue }
+    if (q == "") { if (c == "\"" || c == "'"'"'") q = c; out = out c; continue }
+    if (c == q) { q = ""; out = out c; continue }
+    out = out "x"
+  }
+  return out
+}
+# A loop header that bounds a counter with a number literal.
+function counter_header(h) {
+  if (h ~ /\$\(seq([ \t]+[0-9]+)+[ \t]*\)/) return 1
+  if (h ~ /\{[0-9]+\.\.[0-9]+(\.\.[0-9]+)?\}/) return 1
+  if (h ~ CMP_VN || h ~ CMP_NV) return 1
+  if (h ~ /\(\([^)]*[A-Za-z_][A-Za-z0-9_]*[ \t]*(<|<=|>|>=)[ \t]*[0-9]+/) return 1
+  if (h ~ /\(\([^)]*[0-9]+[ \t]*(<|<=|>|>=)[ \t]*\$?[A-Za-z_]/) return 1
+  return 0
+}
+# One shell word of the loop grammar at command position: a loop keyword opens
+# a header, `do` opens a body (a frame), `done` closes the innermost frame, and
+# `sleep` marks every open frame as calling it.
+function loop_word(kw, pos,    k) {
+  if (kw == "for" || kw == "while" || kw == "until") {
+    pend = 1; pend_line = FNR; pend_text = ""; pend_from = pos; pend_dis = ("poll-count" in DIS)
+    return
+  }
+  if (kw == "do") {
+    ND++
+    if (pend) {
+      FH[ND] = counter_header(pend_text " " substr(code, pend_from, pos - pend_from))
+      FL[ND] = pend_line; FD[ND] = pend_dis
+    } else { FH[ND] = 0; FL[ND] = FNR; FD[ND] = 1 }
+    FSL[ND] = 0; pend = 0
+    return
+  }
+  if (kw == "done") {
+    if (ND < 1) return
+    if (FH[ND] && FSL[ND] && !FD[ND]) emit_hit(FL[ND], "poll-count")
+    ND--
+    return
+  }
+  for (k = 1; k <= ND; k++) FSL[k] = 1
+}
+function loop_rules(    q, rest, base, ks, kw, pre) {
+  q = blank_quotes(code)
+  if (index(q, "sleep") && match(q, STUB_RE) && !("stub-lifetime" in DIS)) emit_hit(FNR, "stub-lifetime")
+  base = 0; rest = q
+  while (match(rest, /(^|[^A-Za-z0-9_-])(for|while|until|done|do|sleep)([^A-Za-z0-9_-]|$)/)) {
+    ks = RSTART; if (substr(rest, ks, 1) !~ /[a-z]/) ks++
+    kw = substr(rest, ks); sub(/[^a-z].*$/, "", kw)
+    pre = substr(q, 1, base + ks - 1); sub(/[ \t]+$/, "", pre)
+    if (pre == "" || pre ~ /[;&|({!]$/ || pre ~ /(^|[^A-Za-z0-9_])(then|do|else|command)$/) loop_word(kw, base + ks)
+    base += ks + length(kw) - 1
+    rest = substr(q, base + 1)
+  }
+  if (pend) { pend_text = pend_text " " substr(code, pend_from); pend_from = 1 }
 }
 BEGIN {
   DATE_RE = "[A-Za-z_][A-Za-z0-9_]*=\"?(\\$\\(date[ \t]+(-u[ \t]+)?[\"'"'"']?\\+%s[\"'"'"']?\\)|\\$\\{?EPOCHSECONDS\\}?)"
   PRINTF_RE = "printf[ \t]+-v[ \t]+[A-Za-z_][A-Za-z0-9_]*[ \t]+[\"'"'"']?%\\(%s\\)T"
+  STUB_RE = "(^|[^A-Za-z0-9_.-])(command[ \t]+)?sleep[ \t]+[0-9][0-9.]*([ \t]*[0-9]*[<>]+&?[ \t]*[^ \t;&|()<>]+)*[ \t]*&([^&>]|$)"
+  CV = "\"?\\$\\{?[A-Za-z_][A-Za-z0-9_]*\\}?\"?"
+  CN = "\"?[0-9]+\"?"
+  CMP_VN = CV "[ \t]+-(lt|le|gt|ge)[ \t]+" CN "([^0-9A-Za-z_]|$)"
+  CMP_NV = "(^|[^A-Za-z0-9_$])" CN "[ \t]+-(lt|le|gt|ge)[ \t]+" CV
 }
 FNR == NR {
-  if (FNR == 1) { is_tg = (path ~ /(^|\/)test-gate\.sh$/); SC = 0; prevraw = ""; bump_next = 0 }
+  if (FNR == 1) { SC = 0; prevraw = ""; bump_next = 0 }
   scope_step($0)
   if ($0 ~ /^[ \t]*#/) next
   code = index($0, "#") ? strip_comment($0) : $0
@@ -465,7 +508,7 @@ FNR == NR {
   }
   next
 }
-FNR == 1 { close_elapsed(); SC = 0; prevraw = ""; bump_next = 0 }
+FNR == 1 { close_elapsed(); SC = 0; prevraw = ""; bump_next = 0; ND = 0; pend = 0 }
 {
   line = $0
   scope_step(line)
@@ -473,14 +516,10 @@ FNR == 1 { close_elapsed(); SC = 0; prevraw = ""; bump_next = 0 }
   if (comment_only) { code = ""; cmt = line }
   else if (index(line, "#")) { code = strip_comment(line); cmt = substr(line, length(code) + 1) }
   else { code = line; cmt = "" }
-  if (pend_mk) {
-    if (comment_only || !is_call(code) || line !~ /\\$/) printf "M\t%d\t%s\tgate-load-orphan\n", pend_mk, path
-    pend_mk = 0
-  }
-  if (index(line, "gate-load:")) marker_check(line, comment_only, code)
   for (r in DIS) delete DIS[r]
   if (index(cmt, "lint-test-clock:")) parse_disable(cmt)
   if (comment_only) {
+    if (index(line, "# gate-load:") && !("retired-marker" in DIS)) printf "H\t%d\t%s|retired-marker|%s\n", FNR, path, trim(line)
     for (r in PREV) delete PREV[r]
     for (r in DIS) PREV[r] = 1
     prev_no = FNR
@@ -491,24 +530,18 @@ FNR == 1 { close_elapsed(); SC = 0; prevraw = ""; bump_next = 0 }
 
   if (line ~ /\\$/) ENDBS[FNR] = 1
   LTXT[FNR] = trim(line)
-  if (!LLF) { LLF = FNR; LLCODE = ""; LLSC = SC; LLCDIS = 0; LLD0 = ifdepth }
+  if (index(line, "# gate-load:") && !("retired-marker" in DIS)) emit_hit(FNR, "retired-marker")
+  if (!LLF) { LLF = FNR; LLCODE = ""; LLSC = SC; LLCDIS = 0 }
   LLL = FNR
   c2 = code; sub(/\\$/, "", c2)
   LLCODE = LLCODE " " c2
   if ("elapsed-compare" in DIS) LLCDIS = 1
   if ("elapsed-bound" in DIS) BDIS[FNR] = 1
   if (index(code, "((")) arith_rules()
-  if (NP && is_bad(code)) for (p = 1; p <= NP; p++) if (POPEN[p]) PBAD[p] = PBAD[p] " " FNR
-  ifdepth += count_re(code, "(^|[;&|({ \t])if[ \t]") - count_re(code, "(^|[;&| \t])fi([ \t;)&|]|$)")
-  if (ifdepth < 0) ifdepth = 0
+  if (index(code, "sleep") || index(code, "do") || index(code, "for") || index(code, "while") || index(code, "until")) loop_rules()
   if (!(FNR in ENDBS)) flush_ll()
-  for (p = 1; p <= NP; p++) if (POPEN[p] && ifdepth <= PBASE[p]) resolve(p)
 }
-END {
-  flush_ll()
-  for (p = 1; p <= NP; p++) if (POPEN[p]) resolve(p)
-  if (pend_mk) printf "M\t%d\t%s\tgate-load-orphan\n", pend_mk, path
-}
+END { flush_ll() }
 function arith_rules(    s, i, j, c, dollar, d, end, inner, n, margin, bound, before, after) {
   margin = 0; bound = 0
   s = code
@@ -555,35 +588,37 @@ if (( scan_failed )); then
 fi
 
 reasonless=$(LC_ALL=C awk -F '\t' '$1 == "D" { print $3 ":" $2 }' "$hits")
-markers=$(LC_ALL=C awk -F '\t' '$1 == "M" { print $3 ":" $2 "\t" $4 }' "$hits")
 verdicts=""
 
-# An elapsed-time hit in test-gate.sh is answered by the load marker or the
-# escape comment, never by the baseline: it is not written into it, and an
-# entry naming one is refused.
-TG_KEY_RE='^([^|]*/)?test-gate[.]sh[|]elapsed-(bound|compare)[|]'
-
 if (( write_baseline )); then
+  # A hit under scripts/ is not written: it stays a failure (baseline-scope).
   tmp="$work/baseline"
   {
     echo "# lint-test-clock baseline — wall-clock assertions already in the tree."
     echo "# One hit per line as <path>|<rule>|<trimmed line text>. It only shrinks:"
     echo "# delete an entry when its line is fixed. Regenerate with"
     echo "# bash scripts/lint-test-clock.sh --write-baseline"
-    LC_ALL=C awk -v tg="$TG_KEY_RE" '/^H\t/ { sub(/^H\t[^\t]*\t/, ""); if ($0 !~ tg) print }' "$hits" | LC_ALL=C sort
+    LC_ALL=C awk '/^H\t/ { sub(/^H\t[^\t]*\t/, ""); if ($0 !~ /^scripts\//) print }' "$hits" | LC_ALL=C sort
   } > "$tmp"
   mv "$tmp" "$baseline"
   echo "lint-test-clock: wrote $(grep -cv '^#' "$baseline" || true) entr(y/ies) to $baseline"
-  verdicts=$(LC_ALL=C awk -F '\t' -v tg="$TG_KEY_RE" '
-    $1 == "H" { k = $0; sub(/^H\t[^\t]*\t/, "", k); if (k ~ tg) print "NEW\t" $2 "\t" k }
+  verdicts=$(LC_ALL=C awk -F '\t' '
+    $1 == "H" { k = $0; sub(/^H\t[^\t]*\t/, "", k); if (k ~ /^scripts\//) print "NEW\t" $2 "\t" k }
   ' "$hits")
 else
   # Each hit takes one matching baseline entry; what is left on either side is a
   # violation. The baseline is read with getline so a missing file reads as an
-  # empty one.
-  verdicts=$(LC_ALL=C awk -F '\t' -v bf="$baseline" -v tg="$TG_KEY_RE" '
-    BEGIN { while ((getline l < bf) > 0) { if (l ~ /^#/ || l ~ /^[ \t]*$/) continue; if (l ~ tg) { print "REFUSED\t-\t" l; continue } b[l]++ } }
-    $1 == "H" { k = $0; sub(/^H\t[^\t]*\t/, "", k); if (k !~ tg && b[k] > 0) { b[k]--; next } print "NEW\t" $2 "\t" k }
+  # empty one. An entry under scripts/ answers no hit and fails by itself.
+  verdicts=$(LC_ALL=C awk -F '\t' -v bf="$baseline" '
+    BEGIN {
+      while ((getline l < bf) > 0) {
+        bn++
+        if (l ~ /^#/ || l ~ /^[ \t]*$/) continue
+        if (l ~ /^scripts\//) { print "SCOPE\t" bn "\t" l; continue }
+        b[l]++
+      }
+    }
+    $1 == "H" { k = $0; sub(/^H\t[^\t]*\t/, "", k); if (b[k] > 0) { b[k]--; next } print "NEW\t" $2 "\t" k }
     END { for (k in b) for (i = 0; i < b[k]; i++) print "STALE\t-\t" k }
   ' "$hits")
 fi
@@ -595,30 +630,30 @@ if [[ -n "$reasonless" ]]; then
     violations=$((violations + 1))
   done <<< "$reasonless"
 fi
-if [[ -n "$markers" ]]; then
-  while IFS=$'\t' read -r at rule; do
-    case "$rule" in
-      gate-load-reason)  why="the load marker needs a reason that holds no ' — '" ;;
-      gate-load-orphan)  why="the load marker sits on a line that calls neither check nor bad (alone on a comment line, it belongs right above a judgement line ending with a backslash)" ;;
-      gate-load-outside) why="the load marker belongs to scripts/test-gate.sh only" ;;
-      *)                 why="the load marker goes in front of '# gate-isolation: 변동', not after it" ;;
-    esac
-    echo "FAIL: $at — $rule: $why" >&2
-    violations=$((violations + 1))
-  done <<< "$markers"
-fi
 if [[ -n "$verdicts" ]]; then
   while IFS=$'\t' read -r kind no key; do
     path=${key%%|*}; rest=${key#*|}; rule=${rest%%|*}
-    if [[ "$kind" == NEW && "$key" =~ $TG_KEY_RE ]]; then
-      echo "FAIL: $path:$no — $rule: a wall-clock assertion whose judgement line carries no gate-load marker" >&2
-      echo "       advice: mark the judgement line with the load marker, or name the check that judges the value in a disable comment" >&2
-    elif [[ "$kind" == NEW ]]; then
-      echo "FAIL: $path:$no — $rule: a wall-clock assertion that is not in the baseline" >&2
-      echo "       advice: inject the time, read the clock at the call that judges it, or keep the value well clear of the boundary; do not lengthen the deadline" >&2
-    elif [[ "$kind" == REFUSED ]]; then
-      echo "FAIL: baseline entry refused — $key" >&2
-      echo "       advice: an elapsed-time hit in test-gate.sh is not baselined; delete the entry and mark the judgement line" >&2
+    if [[ "$kind" == NEW ]]; then
+      case "$rule" in
+        stub-lifetime)
+          why="a background sleep with a fixed lifetime"
+          advice="start the holder as 'wait_holder &', make a dead pid with 'true &' and 'wait', or end the process with the test's own kill" ;;
+        poll-count)
+          why="a polling loop that gives up after a fixed number of rounds"
+          advice="wait with wait_until or wait_pid_gone (scripts/wait-fixture.sh) under the shared ceiling CC_TEST_WAIT_CEILING" ;;
+        retired-marker)
+          why="the retired gate-load marker"
+          advice="make the assertion independent of load (wait for the event, keep a lower bound, compare the order of events) and delete the marker" ;;
+        *)
+          why="a wall-clock assertion that is not in the baseline"
+          advice="inject the time, read the clock at the call that judges it, or keep the value well clear of the boundary; do not lengthen the deadline" ;;
+      esac
+      [[ "$path" == scripts/* ]] && advice="$advice; the baseline takes no entry under scripts/"
+      echo "FAIL: $path:$no — $rule: $why" >&2
+      echo "       advice: $advice" >&2
+    elif [[ "$kind" == SCOPE ]]; then
+      echo "FAIL: ${baseline##*/}:$no — baseline-scope: a baseline entry under scripts/ — $key" >&2
+      echo "       advice: fix the line, or give it an escape comment with its reason, and delete the entry" >&2
     else
       echo "FAIL: baseline entry no longer hits — $key" >&2
       echo "       advice: the baseline only shrinks; delete the entry (or rerun with --write-baseline)" >&2
