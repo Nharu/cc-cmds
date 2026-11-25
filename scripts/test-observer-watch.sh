@@ -898,6 +898,10 @@ m.time = types.SimpleNamespace(monotonic=lambda: next(ticks))
 step("slow", 30100, False)
 m.time = real
 print("slow-line=%s" % bool(re.fullmatch(r"watch\.sh 느린 판 RUN 11\.5초 원장 [0-9]+B", c.logs[-1])))
+# The slow pass ended at 30111.5: a quiet tick two seconds later is no stall,
+# and one more than ten seconds after the last tick ended is.
+step("after-slow", 30113.5, False)
+step("stalled", 30124.5, False)
 PY
 )
 check "14 watch 잡은 ctx.call 에 30초 시한을 넘긴다" "$(v limit)" "30"
@@ -910,6 +914,8 @@ check "14 판이 도는 동안 생긴 *.pid 변화는 보류에 막히지 않는
 check "14 그 뒤의 게이트 흔적에는 다시 부르지 않는다" "$(v quiet4)" "skip"
 check "14 원장이 짧아지면 부른다" "$(v shrunk)" "call"
 check "14 10초 넘게 걸린 판은 느린 판 줄을 남긴다" "$(v slow-line)" "True"
+check "14 끝까지 돈 느린 판 뒤 변화 없는 바퀴는 판을 부르지 않는다" "$(v after-slow)" "skip"
+check "14 직전 바퀴가 끝난 뒤 10초 넘게 바퀴가 없었으면 부른다" "$(v stalled)" "call"
 
 CR="$S/cc-cmds/run/ctxrun"
 mkdir -p "$CR/plugin/cc-cmds/orchestrator"

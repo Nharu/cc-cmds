@@ -520,5 +520,44 @@ else
 fi
 env XDG_STATE_HOME="$H" python3 "$OD" stop
 
+# ---------------------------------------------------------------------------
+# 15. while a tick waits, the one recomputation goes round the registrations
+# ---------------------------------------------------------------------------
+# Three status line registrations whose inputs move on every pass, the way a
+# session with a live run does when its ledger grows while its child runs.
+# `recompute` is called as a waiting pass with no child running, and starting a
+# child is recorded instead of run, so every registration stays eligible. The
+# one slot must reach every registration, not the first one in sorted order on
+# every pass.
+RR="$WORK/rotate"
+RT="$RR/cc-cmds/run/20261103-0000000r/plugin/cc-cmds/orchestrator"
+mkdir -p "$RT" "$RR/cc-cmds/session" "$RR/cc-cmds/observer/sl"
+printf 'sleep 30\n' > "$RT/statusline.sh"
+for i in 1 2 3; do
+  printf '' > "$RR/cc-cmds/session/rot$i"
+  printf 'script=%s\nsid=rot%s\ntranscript=t0\ncwd=/\n' "$RT/statusline.sh" "$i" \
+    > "$RR/cc-cmds/observer/sl/rot$i.reg"
+done
+out=$(XDG_STATE_HOME="$RR" python3 - "$ORCH" "$RR/cc-cmds/observer/sl" "$RT/statusline.sh" <<'PY'
+import os, sys
+sys.dont_write_bytecode = True
+sys.path.insert(0, sys.argv[1])
+import observer
+
+kd, script = sys.argv[2], sys.argv[3]
+d = observer.Daemon()
+started = []
+d.start_facts = lambda kind, sid, reg, sig: started.append(sid)
+for n in range(6):
+    for i in (1, 2, 3):
+        with open(os.path.join(kd, "rot%d.reg" % i), "w") as f:
+            f.write("script=%s\nsid=rot%d\ntranscript=t%d\ncwd=/\n" % (script, i, n))
+    d.recompute(1000.0 + n, waiting=1)
+print("started=%s" % ",".join(started))
+PY
+)
+check "15 바퀴가 기다리는 동안 사실 계산 슬롯 하나가 입력이 바뀌는 등록들을 돌아가며 준다" \
+  "$(printf '%s\n' "$out" | sed -n 's/^started=//p')" "rot1,rot2,rot3,rot1,rot2,rot3"
+
 printf '\ntest-observer: %d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" -eq 0 ]

@@ -940,6 +940,7 @@ class Daemon:
         self.mods = load_modules()
         self.runs = {}
         self.facts = {}        # (kind, sid) -> {"sig", "retry"}
+        self.facts_started = {}  # (kind, sid) -> pass time its last recomputation started
         self.children = []     # recompute children
         self.batches = {}      # job -> thread
         self.batch_wait = {}   # job -> {"since", "logged"} while deferred
@@ -1403,9 +1404,14 @@ class Daemon:
         return tuple(items)
 
     def recompute(self, now, waiting=0):
-        # While a due tick is waiting for a slot, at most one recomputation runs.
+        # While a due tick is waiting for a slot, at most one recomputation runs,
+        # and it goes to the eligible registration whose last recomputation
+        # started longest ago: a registration whose inputs move while its child
+        # runs is eligible again at once, and would otherwise take the one slot
+        # on every pass ahead of every registration sorted after it.
         if waiting and self.children:
             return
+        pick = None
         for kind in ("sl", "pane"):
             kd = obs_path(kind)
             try:
@@ -1437,16 +1443,24 @@ class Daemon:
                     elif exp is not None and now < exp - self.period:
                         continue
                 if waiting:
-                    self.start_facts(kind, sid, reg, sig)
-                    return
+                    last = self.facts_started.get(key, float("-inf"))
+                    if pick is None or last < pick[0]:
+                        pick = (last, kind, sid, reg, sig)
+                    continue
                 if not self.tick_room():
                     return
+                self.facts_started[key] = now
                 self.start_facts(kind, sid, reg, sig)
+        if pick is not None:
+            _, kind, sid, reg, sig = pick
+            self.facts_started[(kind, sid)] = now
+            self.start_facts(kind, sid, reg, sig)
 
     def forget(self, kind, sid):
         unlink_quiet(obs_path(kind, sid + ".reg"))
         unlink_quiet(obs_path(kind, sid + ".facts"))
         self.facts.pop((kind, sid), None)
+        self.facts_started.pop((kind, sid), None)
 
     def start_facts(self, kind, sid, reg, sig):
         k = KINDS[kind]

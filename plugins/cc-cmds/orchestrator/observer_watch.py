@@ -10,7 +10,7 @@ WHEN A PASS IS CALLED. On a change of the run directory (the observer's base
 probe set plus the probe globs the last pass published in `watch.next`), on the
 first tick after adoption or after an observer restart, when the deadline on
 the first line of `watch.next` has come, when no pass ran for `MAX_GAP_S`, and
-when the gap since this job's previous tick exceeds `STALL_GAP_S` — the host
+when the gap since this job's previous tick ended exceeds `STALL_GAP_S` — the host
 slept or the observer was held, and the clocks the pass judges on moved without
 anything on disk changing. A pass that ran out of its time limit
 (`CALL_TIMEOUT_S`) holds every call for `TIMEOUT_BACKOFF_S` but one for a change
@@ -218,9 +218,10 @@ def tick(ctx, run, changed, now):
         st = _mem.get(run)
         first = st is None
         if first:
-            st = _mem[run] = {"last_call": None, "last_tick": None, "hold_until": 0.0,
-                              "hold_base": None}
+            st = _mem[run] = {"last_call": None, "last_tick": None, "last_end": None,
+                              "hold_until": 0.0, "hold_base": None}
         prev_tick = st["last_tick"]
+        prev_end = st["last_end"]
         st["last_tick"] = now
 
     due = changed or first
@@ -230,7 +231,9 @@ def tick(ctx, run, changed, now):
         d = _deadline(run)
         if d is not None and d <= now:
             due = True
-    if not due and prev_tick is not None and now - prev_tick > STALL_GAP_S:
+    # The gap runs from where the previous tick ended, so a pass that ran to the
+    # end over many seconds is not itself taken for a stall.
+    if not due and prev_end is not None and now - prev_end > STALL_GAP_S:
         due = True
     if now < st["hold_until"]:
         due = changed and _hold_broken(ctx, run, st["hold_base"])
@@ -248,6 +251,7 @@ def tick(ctx, run, changed, now):
         t0 = time.monotonic()
         rc, _ = ctx.call(run, argv, timeout=CALL_TIMEOUT_S)
         took = time.monotonic() - t0
+        end = now + took
         if rc >= 0 and took >= SLOW_PASS_S:
             ctx.log("watch.sh 느린 판 %s %.1f초 원장 %sB" % (run, took, _ledger_bytes(ctx, run)))
         if rc == RUN_OVER_RC:
@@ -258,9 +262,12 @@ def tick(ctx, run, changed, now):
         if rc < 0:
             ctx.log("watch.sh 시한 초과 %s — %d초 동안 변화에만 부른다 %s"
                     % (run, TIMEOUT_BACKOFF_S, _diag(ctx, run)))
-            st["hold_until"] = now + TIMEOUT_BACKOFF_S
+            st["hold_until"] = end + TIMEOUT_BACKOFF_S
         elif rc != 0:
             ctx.log("watch.sh 종료 코드 %d %s" % (rc, run))
+        st["last_end"] = end
+    else:
+        st["last_end"] = now
 
     _keep_marks(run, now)
     return now + 1.0
