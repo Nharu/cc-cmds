@@ -24,6 +24,8 @@ set -uo pipefail
 
 script_dir=$(cd "$(dirname "$0")" && pwd)
 repo_root=$(cd "$script_dir/.." && pwd)
+# shellcheck source=wait-fixture.sh
+. "$repo_root/scripts/wait-fixture.sh"
 PLUGIN="$repo_root/plugins/cc-cmds"
 SEAM="$PLUGIN/hooks/remote-reply/seam.sh"
 PRETOOL="$PLUGIN/hooks/remote-reply/pretool.sh"
@@ -300,25 +302,34 @@ check "3 기록이 applied-sopen.json 과 같음(적용 시각 밖)" \
 # 3b. wait — prints the first candidate of the open call, skips a rejected
 #     reply id, and finds an approval envelope by the question's approval id.
 # ---------------------------------------------------------------------------
-# wait_for <stdin> — run `seam.sh wait` for at most five seconds; prints its line.
-wait_for() {
-  local pid i
+# wait_start <stdin> — start `seam.sh wait` in the background; sets WAIT_PID.
+wait_start() {
   printf '%s' "$1" | env HOME="$s/home" XDG_STATE_HOME="$s/state" CC_CMDS_ATTENTION_ROOT="$ROOT" \
     CLAUDE_PLUGIN_ROOT="$PLUGIN" bash "$SEAM" wait > "$WORK/wait.out" 2>/dev/null &
-  pid=$!
-  for i in 1 2 3 4 5 6 7 8 9 10; do
-    kill -0 "$pid" 2>/dev/null || break
-    sleep 0.5
-  done
-  kill "$pid" 2>/dev/null
-  wait "$pid" 2>/dev/null
+  WAIT_PID=$!
+}
+# wait_for <stdin> — `seam.sh wait` returns once it prints a candidate; waits
+# for that return under the shared ceiling and prints its line.
+wait_for() {
+  wait_start "$1"
+  wait_pid_gone "$WAIT_PID" || { kill "$WAIT_PID" 2>/dev/null; wait "$WAIT_PID" 2>/dev/null; }
+  cat "$WORK/wait.out"
+}
+# wait_quiet <stdin> — the absence case: `seam.sh wait` polls once a second
+# and never returns without a candidate, so give it a quiet window of three
+# passes, then end it and print whatever it wrote.
+wait_quiet() {
+  wait_start "$1"
+  sleep 3
+  kill "$WAIT_PID" 2>/dev/null
+  wait "$WAIT_PID" 2>/dev/null
   cat "$WORK/wait.out"
 }
 fresh
 env1=$(put_env "$AUQ1")
 win=$(auq_call "$env1" "$SID1" | jq -c '. + {rejected: []}')
 check "3b wait 가 열린 호출의 봉투를 냄" "$(wait_for "$win")" "$SAFE1 $RID_AUQ1"
-check "3b wait 가 거절한 reply_id 를 건너뜀" "$(wait_for "$(printf '%s' "$win" | jq -c --arg r "$RID_AUQ1" '.rejected = [$r]')")" ""
+check "3b wait 가 거절한 reply_id 를 건너뜀" "$(wait_quiet "$(printf '%s' "$win" | jq -c --arg r "$RID_AUQ1" '.rejected = [$r]')")" ""
 enva=$(put_env "$APPR")
 index_run "$SID2"
 awin=$(head -n 1 "$FX/frame-sat.jsonl" | jq -c --arg sid "$SID2" '.message.content[0] | {session_id: $sid, tool_use_id: .id, questions: .input.questions, rejected: []}')
@@ -339,9 +350,11 @@ check "4 수령 표지가 이 세션 것" "$(jq -r '.session_id' "$ROOT/inbox/r-
 hin=$(head -n 1 "$FX/frame-sat.jsonl" | jq -c --arg sid "$SID2" \
   '.message.content[0] | {hook_event_name: "PreToolUse", session_id: $sid, tool_name: "AskUserQuestion",
                           tool_use_id: .id, tool_input: .input}')
-t0=$(now_ms)
+# pretool.sh has no wait of its own to stretch, so "it does not wait" is judged
+# by its evidence: the answer it prints and the handled marker it writes in the
+# same call. A pretool that started waiting would show here only through the
+# runner's own ceiling.
 pretool "$hin"
-t1=$(now_ms)
 check "4 S-at 출력" "$(out | jq -cS .)" \
   "$(jq -cnS --argjson a "$(tail -n 1 "$FX/frame-sat.jsonl" | jq -c '.toolUseResult.answers')" \
      '{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "allow", updatedInput: {answers: $a}}}')"
@@ -349,7 +362,6 @@ check "4 출력이 한 줄" "$(wc -l < "$OUTF" | tr -d ' ')" "1"
 check "4 기록이 applied-sat.json 과 같음(적용 시각 밖)" \
   "$(jq -cS 'del(.applied_at_ms)' "$(applied_of "$RID_APPR")" 2>/dev/null)" \
   "$(jq -cS 'del(.applied_at_ms)' "$FX/applied-sat.json")"
-if [ $((t1 - t0)) -lt 3000 ]; then ok "4 S-at 이 기다리지 않음"; else bad "4 S-at 이 기다리지 않음" "$((t1 - t0)) ms"; fi
 check "4 처리 표지 slot 이 승인 사건 slot" "$(jq -r '.slot' "$(find "$ROOT/handled" -name '*.json' -print -quit)")" "$APPR_SLOT"
 
 # ---------------------------------------------------------------------------
@@ -606,13 +618,10 @@ pretool "$(printf '%s' "$hin" | jq -c '. + {agent_id: "a1"}')"
 rejected "10 agent_id 가 있으면 출력 없음" "$b"
 for m in CC_PIPELINE_SEGMENT CC_PIPELINE_STAGE_ID CC_PIPELINE_SHIFT_ID CC_PIPELINE_REENTRY; do
   EXTRA_ENV="$m=x"
-  t0=$(now_ms)
   pretool "$hin"
-  t1=$(now_ms)
   EXTRA_ENV=""
   rejected "10 표지 $m 이 있으면 출력 없음" "$b"
 done
-if [ $((t1 - t0)) -lt 3000 ]; then ok "10 출력 없는 S-at 이 곧바로 끝남"; else bad "10 출력 없는 S-at 이 곧바로 끝남" "$((t1 - t0)) ms"; fi
 
 # ---------------------------------------------------------------------------
 # 11. Cleanup — only after the envelope is gone; envelopes are never removed.

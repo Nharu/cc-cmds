@@ -47,6 +47,9 @@
 # thrown-away clone. A missing object, a failing git call or a byte the check
 # cannot place makes the item run again. git is called only for a record whose
 # differing paths are all release paths; the reuse line says `릴리스 차이`.
+# check-push's goal derivation reads the same per-path shape
+# (tr_release_path_in, through tr_release_paths) to leave a release-shaped
+# change of either path out of its input, whatever else the change holds.
 #
 # A RELEASE NOTE FRAGMENT ADDED ON TOP IS PART OF THE RELEASE RELATION. Today's
 # listing may also hold paths the record's listing lacks when every one of
@@ -837,34 +840,46 @@ tr_release_rel() {
 
 # The body of tr_release_rel, run in a subshell with scratch directory $4.
 tr_release_rel_in() {
-  local gdir="$1" old="$2" new="$3" tmp="$4" p m1 m2 k psz osz nsz msz rsz
-  local seen_log="" seen_pj="" seen_frag="" frag
+  local gdir="$1" old="$2" new="$3" tmp="$4" p m1 m2
   trg() { git --git-dir="$gdir" "$@"; }
   trg cat-file -e "$old^{commit}" && trg cat-file -e "$new^{commit}" || return 1
   trg merge-base --is-ancestor "$old" "$new" || return 1
   trg diff --no-renames --no-ext-diff --name-only -z "$old" "$new" -- > "$tmp/names" || return 1
   [ -s "$tmp/names" ] || return 1
   while IFS= read -r -d '' p; do
-    frag=""
     case "$p" in
-      "$TR_REL_LOG") seen_log=1 ;;
-      "$TR_REL_PJ") seen_pj=1 ;;
       changelog.d/*/*) return 1 ;;
-      changelog.d/?*.md) seen_frag=1; frag=1 ;;
-      *) return 1 ;;
+      changelog.d/?*.md)
+        # A fragment is taken only when it is new: absent from the record's
+        # input commit and a regular file in today's.
+        m1=$(trg ls-tree "$old" -- "$p") && m2=$(trg ls-tree "$new" -- "$p") || return 1
+        [ -z "$m1" ] && [ -n "$m2" ] || return 1
+        case "$m2" in 100644\ blob\ *|100755\ blob\ *) ;; *) return 1 ;; esac
+        continue
+        ;;
     esac
-    m1=$(trg ls-tree "$old" -- "$p") && m2=$(trg ls-tree "$new" -- "$p") || return 1
-    if [ -n "$frag" ]; then
-      # A fragment is taken only when it is new: absent from the record's input
-      # commit and a regular file in today's.
-      [ -z "$m1" ] && [ -n "$m2" ] || return 1
-      case "$m2" in 100644\ blob\ *|100755\ blob\ *) ;; *) return 1 ;; esac
-    else
-      [ -n "$m1" ] && [ "${m1%% *}" = "${m2%% *}" ] || return 1
-    fi
+    tr_release_path_in "$gdir" "$old" "$new" "$p" "$tmp" < /dev/null || return 1
   done < "$tmp/names"
-  [ -n "$seen_log$seen_pj$seen_frag" ] || return 1
-  if [ -n "$seen_pj" ]; then
+  return 0
+}
+
+# 0 when the change of path $4 between commits $2 and $3 of the repository
+# whose common git directory is $1 has the shape of a release commit: the path
+# is CHANGELOG.md or plugin.json, both commits hold it with the same mode,
+# plugin.json differs in its version line alone and CHANGELOG.md by one block
+# inserted on top (the head comment). 1 otherwise, a missing object or a
+# failing git call included. Runs in its caller's subshell, with scratch
+# directory $5; nothing is printed.
+tr_release_path_in() {
+  local gdir="$1" old="$2" new="$3" p="$4" tmp="$5" m1 m2 k psz osz nsz msz rsz
+  trg() { git --git-dir="$gdir" "$@"; }
+  case "$p" in
+    "$TR_REL_LOG"|"$TR_REL_PJ") ;;
+    *) return 1 ;;
+  esac
+  m1=$(trg ls-tree "$old" -- "$p") && m2=$(trg ls-tree "$new" -- "$p") || return 1
+  [ -n "$m1" ] && [ "${m1%% *}" = "${m2%% *}" ] || return 1
+  if [ "$p" = "$TR_REL_PJ" ]; then
     trg cat-file blob "$new:$TR_REL_PJ" > "$tmp/pn" && trg cat-file blob "$old:$TR_REL_PJ" > "$tmp/po" || return 1
     # The one changed line, when both sides have as many lines and it is the
     # version line on both; the old side rewritten with it must be the new side
@@ -879,8 +894,7 @@ tr_release_rel_in() {
     awk -v k="$k" 'FNR == NR { if (FNR == k) l = $0; next } { print (FNR == k ? l : $0) }' "$tmp/pn" "$tmp/po" > "$tmp/pr" || return 1
     awk '{ print }' "$tmp/po" > "$tmp/ps" || return 1
     cmp -s "$tmp/pr" "$tmp/pn" && cmp -s "$tmp/ps" "$tmp/po" || return 1
-  fi
-  if [ -n "$seen_log" ]; then
+  else
     trg cat-file blob "$new:$TR_REL_LOG" > "$tmp/cn" && trg cat-file blob "$old:$TR_REL_LOG" > "$tmp/co" || return 1
     k=$(awk '/^## \[/ { print NR; exit }' "$tmp/co")
     [ -n "$k" ] || return 1
@@ -904,6 +918,48 @@ tr_release_rel_in() {
     [ -z "$(tail -c 1 "$tmp/cm" | tr -d '\n')" ] || return 1
   fi
   return 0
+}
+
+# Prints, one per line, CHANGELOG.md and then plugin.json when the diff
+# between commits $2 and $3 of the repository whose common git directory is $1
+# names it and tr_release_path_in finds its change release-shaped, whatever
+# other paths the diff names; $2 must be an ancestor of $3. Prints nothing for
+# a commit that is no ancestor, a missing object or a failing git call, writes
+# nothing to standard error and returns 0.
+tr_release_paths() {
+  local gdir="$1" old="$2" new="$3" tmp
+  [ -n "$gdir" ] && [ -d "$gdir" ] || return 0
+  case "$old" in ''|*[!0-9a-f]*) return 0 ;; esac
+  case "$new" in ''|*[!0-9a-f]*) return 0 ;; esac
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/tr-release.XXXXXX" 2> /dev/null) || return 0
+  ( unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_COMMON_DIR
+    tr_release_paths_in "$gdir" "$old" "$new" "$tmp" ) < /dev/null 2> /dev/null
+  rm -rf "$tmp"
+  return 0
+}
+
+# The body of tr_release_paths, run in a subshell with scratch directory $4.
+# The paths are printed together once every check has run.
+tr_release_paths_in() {
+  local gdir="$1" old="$2" new="$3" tmp="$4" p out=""
+  local seen_log="" seen_pj=""
+  trg() { git --git-dir="$gdir" "$@"; }
+  trg cat-file -e "$old^{commit}" && trg cat-file -e "$new^{commit}" || return 0
+  trg merge-base --is-ancestor "$old" "$new" || return 0
+  trg diff --no-renames --no-ext-diff --name-only -z "$old" "$new" -- > "$tmp/names" || return 0
+  while IFS= read -r -d '' p; do
+    case "$p" in
+      "$TR_REL_LOG") seen_log=1 ;;
+      "$TR_REL_PJ") seen_pj=1 ;;
+    esac
+  done < "$tmp/names"
+  if [ -n "$seen_log" ] && tr_release_path_in "$gdir" "$old" "$new" "$TR_REL_LOG" "$tmp"; then
+    out="$TR_REL_LOG"$'\n'
+  fi
+  if [ -n "$seen_pj" ] && tr_release_path_in "$gdir" "$old" "$new" "$TR_REL_PJ" "$tmp"; then
+    out="$out$TR_REL_PJ"$'\n'
+  fi
+  printf '%s' "$out"
 }
 
 # Judges record $1 against tree $3 (listing $7) for item $2, input commit $4,
@@ -1149,6 +1205,7 @@ tr_self_test() {
   check() { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "got「$2」 want「$3」"; fi; }
   has() { case "$2" in *"$3"*) ok "$1" ;; *) bad "$1" "「$3」 없음: $2" ;; esac; }
   hasnt() { case "$2" in *"$3"*) bad "$1" "「$3」 있음: $2" ;; *) ok "$1" ;; esac; }
+  . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/wait-fixture.sh"
   for v in $(compgen -e); do
     case "$v" in CC_TEST_SLOT*|CHECK_PUSH_*) unset "$v" ;; esac
   done
@@ -1492,24 +1549,45 @@ a"
   rm -rf "$CK/.git/refs/notes"
   check "수집: 체크아웃 안의 git version 은 표지 없이 아니오" \
     "$(gcol '"$SG" version')|$([ -s "$S.mark" ] && echo 표지 || echo 없음)" "아니오|없음"
-  # A stand-in for the real git that reads HEAD, writes its pid and sleeps.
-  local FG S2 sp fp
+  # A stand-in for the real git that reads HEAD, writes its pid and lives until
+  # it is killed (or the test shell is gone), so only the shim's TERM ends it.
+  local FG S2 sp fp looks
   FG="$T/fakegit"
   S2="$T/items/2"
   mkdir -p "$FG"
-  printf '#!/bin/sh\ncat %q > /dev/null\necho $$ > %q\nexec sleep 30\n' "$CK/.git/HEAD" "$T/fakepid" > "$FG/git"
+  printf '#!/bin/sh\ncat %q > /dev/null\necho $$ > %q\nwhile kill -0 %s 2>/dev/null; do sleep 1; done\n' "$CK/.git/HEAD" "$T/fakepid" "$WAIT_FIXTURE_OWNER" > "$FG/git"
   chmod +x "$FG/git"
   ( PATH="$FG:$PATH"; tr_shims "$CK" "$S2" )
   tr_baseline "$CK" "$S2" "$L"
   rm -f "$T/fakepid"
   ( cd "$CK" && exec "$S2.shim/git" rev-parse --show-toplevel ) > /dev/null 2>&1 &
   sp=$!
-  i=0
-  while [ ! -s "$T/fakepid" ] && [ "$i" -lt 100 ]; do sleep 0.1; i=$((i + 1)); done
+  wait_until [ -s "$T/fakepid" ]
   fp=$(cat "$T/fakepid" 2>/dev/null)
+  # The shim's trap only notes the signal, so a TERM that arrives before the
+  # shim waits is acted on when a later one cuts that wait: every fiftieth look
+  # sends it again. The stand-in never ends by itself, so a shim that does not
+  # end its child is still running at the shared ceiling.
+  looks=0
+  shim_gone() {
+    _wait_fixture_gone "$sp" && return 0
+    looks=$((looks + 1))
+    [ $((looks % 50)) != 0 ] || kill -TERM "$sp" 2>/dev/null
+    return 1
+  }
   kill -TERM "$sp" 2>/dev/null
-  wait "$sp"
-  rc=$?
+  if wait_until shim_gone; then
+    wait "$sp"
+    rc=$?
+    # A TERM sent again can cut the shim's wait for the child it has already
+    # ended, so the child is given the shared ceiling to be gone as well.
+    [ -z "$fp" ] || wait_until _wait_fixture_gone "$fp" || true
+  else
+    rc=상한
+    kill -KILL "$sp" 2>/dev/null
+    wait "$sp" 2>/dev/null
+    [ -z "$fp" ] || kill -KILL "$fp" 2>/dev/null
+  fi
   tr_collect "$CK" "$S2" "$L" "$T/rst"
   check "수집: 위치 질의 도중 TERM 을 받은 셰임은 자식을 끝내고 128+15 로 끝나며 예" \
     "$rc|$([ -n "$fp" ] && ! kill -0 "$fp" 2>/dev/null && echo 자식끝남)|$(head -n 1 "$T/rst")" "143|자식끝남|예"
@@ -1645,6 +1723,22 @@ a"
   check "릴리스: CHANGELOG 기존 항목 본문을 고치면 재실행" "$(rel_after "pj_ver 1.0.1 && log_top '' 'a fixed'")" "재실행|재실행"
   check "릴리스: 끼운 묶음이 ## [ 로 시작하지 않으면 재실행" "$(rel_after "pj_ver 1.0.1 && log_top 'note\n\n'")" "재실행|재실행"
   check "릴리스: 릴리스 밖 파일도 바꾸면 재실행" "$(rel_after "$BUMP && printf 'o2\n' > o.txt")" "재실행|재실행"
+  # Commits the commands of $1 on top of c0 and prints the paths
+  # tr_release_paths names from commit $2 (default c0) to it, space-joined,
+  # then `rc=<status>`, with its standard error; the repository goes back to c0.
+  rp_after() {
+    local c
+    ( cd "$R" && eval "$1" && sg add -A && sg commit -q --allow-empty -m rel ) > /dev/null 2>&1
+    c=$(cd "$R" && git rev-parse HEAD)
+    { tr_release_paths "$RG" "${2:-$c0}" "$c" 2>&1; printf 'rc=%s' "$?"; } | tr '\n' ' '
+    ( cd "$R" && git reset -q --hard "$c0" ) > /dev/null 2>&1
+  }
+  check "릴리스 경로: 릴리스 밖 파일도 바꾼 릴리스 커밋은 두 경로를 다 찍는다" "$(rp_after "$BUMP && printf 'o2\n' > o.txt")" "CHANGELOG.md $PJ rc=0"
+  check "릴리스 경로: plugin.json 의 다른 줄도 바꾸면 CHANGELOG.md 만" "$(rp_after "pj_ver 1.0.1 y && log_top '## [1.0.1] - 2026-01-02\n- b\n\n'")" "CHANGELOG.md rc=0"
+  check "릴리스 경로: CHANGELOG 기존 항목 본문을 고치면 plugin.json 만" "$(rp_after "pj_ver 1.0.1 && log_top '' 'a fixed'")" "$PJ rc=0"
+  check "릴리스 경로: 릴리스 밖 파일만 바꾸면 아무것도 찍지 않는다" "$(rp_after "printf 'o2\n' > o.txt")" "rc=0"
+  check "릴리스 경로: 형제 커밋이면 아무것도, 오류 출력도 없다" "$(rp_after "$BUMP" "$cs")" "rc=0"
+  check "릴리스 경로: 없는 객체면 아무것도, 오류 출력도 없다" "$(rp_after "$BUMP" 0123456789abcdef0123456789abcdef01234567)" "rc=0"
   check "릴리스: 베이스가 다르면 재실행" "$(rel_after "$BUMP" r b2)" "재실행|재실행"
   check "릴리스: 기록 커밋이 같은 트리의 형제(조상 아님)면 재실행" "$(rel_after "$BUMP" s)" "재실행|재실행"
   # Release note fragments: c0 holds changelog.d/old.md, and a commit may add
@@ -1699,8 +1793,8 @@ a"
   rm -rf "$T"
   printf 'test-reuse self-test: %d passed, %d failed\n' "$passed" "$failed"
   # A floor on the count, so a refactor that silently skips cases cannot pass.
-  if [ "$passed" -lt 149 ]; then
-    printf 'test-reuse self-test: 통과 수 %d 가 하한 %d 에 못 미칩니다\n' "$passed" 149 >&2
+  if [ "$passed" -lt 155 ]; then
+    printf 'test-reuse self-test: 통과 수 %d 가 하한 %d 에 못 미칩니다\n' "$passed" 155 >&2
     return 1
   fi
   [ "$failed" = "0" ]

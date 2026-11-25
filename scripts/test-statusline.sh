@@ -456,7 +456,7 @@ hasnt "8g 종료한 런에는 미기동 접미사도 붙지 않는다" "$out" "�
 # and its start fingerprint, and the name is outside the `*.pid` glob.
 sl_shift_live() {
   local pid
-  sleep 120 &
+  wait_holder >/dev/null 2>&1 &
   pid=$!
   { printf '%s\n' "$pid"
     LC_ALL=C ps -o lstart= -p "$pid" 2>/dev/null | sed 's/[[:space:]]\{1,\}/ /g;s/^ //;s/ $//'
@@ -1647,17 +1647,31 @@ G7B="$WORK/g7b.json"; mk_settings_empty "$G7B"
 check "G7b EMPTY 경로는 verify 를 수행한다" "$(apply "$G7B" "$WORK/p-2nl" empty)" "40"
 
 # G8. The poll cap moved from three seconds to one, and a status line that takes
-# longer than a second has already failed.
+# longer than a second has already failed. The slow status line sleeps 1200 s,
+# so an installer that waits for it instead of capping the poll is caught by the
+# shared wait ceiling, never by a short sleep running out first; which cap ended
+# it is read from the installer's own reason line, not from a clock. The stub
+# records its pid and `exec`s the sleep, so the process the installer kills is
+# the sleep itself, and the pid is on the reap list in case it is not.
 mkdir -p "$WORK/p-slow/orchestrator"
 cp "$CMDLIB" "$WORK/p-slow/orchestrator/"
-printf '#!/usr/bin/env bash\ncat >/dev/null\nsleep 5\nprintf X\n' > "$WORK/p-slow/orchestrator/statusline.sh"
+printf '#!/usr/bin/env bash\ncat >/dev/null\nprintf %%s "$$" > %s\nexec sleep 1200\n' "'$WORK/g8-stub.pid'" \
+  > "$WORK/p-slow/orchestrator/statusline.sh"
 chmod +x "$WORK/p-slow/orchestrator/statusline.sh"
 G8="$WORK/g8.json"; mk_settings_empty "$G8"
-g8_start=$SECONDS
-check "G8 느린 상태줄은 verify 에서 실패한다" "$(apply "$G8" "$WORK/p-slow" empty)" "40"
-g8_elapsed=$((SECONDS - g8_start))
-if [ "$g8_elapsed" -le 3 ]; then ok "G8 폴링 상한이 1초다 (경과 ${g8_elapsed}초)"
-else bad "G8 폴링 상한" "${g8_elapsed}초가 걸렸다 — 상한이 1초로 줄지 않았다"; fi
+_g8_gone() { ! kill -0 "$1" 2>/dev/null; }
+bash "$APPLY" --apply --settings "$G8" --plugin-dir "$WORK/p-slow" --require-state empty >/dev/null 2>"$WORK/g8.err" &
+g8_pid=$!
+FX_PIDS="${FX_PIDS:-}$g8_pid "
+if wait_until _g8_gone "$g8_pid"; then
+  g8_rc=0; wait "$g8_pid" || g8_rc=$?
+else
+  kill "$g8_pid" 2>/dev/null; wait "$g8_pid" 2>/dev/null; g8_rc=상한
+fi
+[ -s "$WORK/g8-stub.pid" ] && FX_PIDS="${FX_PIDS:-}$(cat "$WORK/g8-stub.pid") "
+check "G8 느린 상태줄은 verify 에서 실패한다" "$g8_rc" "40"
+check "G8 폴링 상한이 1초다: 1초를 넘겨 실패했다고 말한다" \
+  "$(grep -c '^검증 실패: 1초를 넘겼습니다$' "$WORK/g8.err" || true)" "1"
 
 # G9/G9b. THE WORK DIRECTORY IS CREATED ONLY AFTER THE LOCK ATTEMPT RESOLVES.
 # G9b is what fixes the decision: an early `mktemp -d` with a trap passes G9 and
@@ -1709,23 +1723,24 @@ cas_race() {
   # install polls its verify run, and that poll is the window: the file is
   # rewritten while the installer is inside it, so the compare finds a different
   # file than the snapshot and nothing is written. The verify stub leaves a
-  # sentinel before it sleeps, and the rewrite waits for that sentinel rather
-  # than a fixed delay: the snapshot precedes the verify run, so the sentinel
-  # proves the snapshot is already taken however loaded the machine is.
-  local s="$1" started="$WORK/p-half/verify-started" n=0
+  # sentinel and then holds until the rewrite is done, and the rewrite waits
+  # for that sentinel rather than a fixed delay: the snapshot precedes the
+  # verify run, so the sentinel proves the snapshot is already taken, and the
+  # release file proves the rewrite landed before the verify run answered,
+  # however loaded the machine is.
+  local s="$1" started="$WORK/p-half/verify-started" release="$WORK/p-half/verify-release"
   mk_settings_empty "$s"
   mkdir -p "$WORK/p-half/orchestrator"
   cp "$CMDLIB" "$WORK/p-half/orchestrator/"
-  rm -f "$started"
-  printf '#!/usr/bin/env bash\ncat >/dev/null\n: > "%s"\nsleep 0.4\nprintf ONE-LINE\n' "$started" > "$WORK/p-half/orchestrator/statusline.sh"
+  rm -f "$started" "$release"
+  printf '#!/usr/bin/env bash\ncat >/dev/null\n: > "%s"\nwhile [ ! -e "%s" ]; do sleep 0.05; done\nprintf ONE-LINE\n' \
+    "$started" "$release" > "$WORK/p-half/orchestrator/statusline.sh"
   chmod +x "$WORK/p-half/orchestrator/statusline.sh"
   bash "$APPLY" --apply --settings "$s" --plugin-dir "$WORK/p-half" --require-state empty >/dev/null 2>/dev/null &
   local ap=$!
-  while [ ! -e "$started" ] && [ "$n" -lt 200 ]; do
-    sleep 0.05
-    n=$((n + 1))
-  done
+  wait_until test -e "$started"
   jq '.theme = "moved-under-the-installer"' "$s" > "$s.race" 2>/dev/null && mv "$s.race" "$s"
+  : > "$release"
   wait "$ap"
   CAS_RC=$?
 }
@@ -2514,7 +2529,7 @@ dm_awake "done + 살아 있는 shift.live(정산중)" dm-b3 "⟳ dm-b3 정산 �
 dm_run dm-b4 aband 0; dm_stamp -600 "$FX_LEDGER"
 dm_awake "미래 시각 원장" dm-b4 "dm-b4"
 dm_run dm-b5 aband 7200
-sleep 120 & dm_b5_pid=$!; FX_PIDS="${FX_PIDS:-}$dm_b5_pid "
+wait_holder >/dev/null 2>&1 & dm_b5_pid=$!; FX_PIDS="${FX_PIDS:-}$dm_b5_pid "
 printf '보유자=%s\n갱신=%s\n' "$dm_b5_pid" "$DM_NOW" > "$FX_RUN_DIR/S1.waiting"
 dm_awake "살아 있는 보유자의 *.waiting" dm-b5
 dm_run dm-b6 aband 1800
@@ -2886,15 +2901,17 @@ check "SB04 유효 기록으로의 심볼릭 링크 — 대체 줄, rc 0" "$rc|$
 bclear; mkdir -p "$BREC_DIR"; ln -s "$BFX/missing" "$BREC"
 out=$(slb "$LANE" sess-none); rc=$?
 check "SB04 끊어진 심볼릭 링크 — 대체 줄, rc 0" "$rc|$out" "0|$BFALL"
-# A FIFO blocks whoever opens it. The watchdog bounds the render, which has to
-# come back before it.
+# A FIFO blocks whoever opens it, and nothing ever writes this one, so a render
+# that opened it would not come back before the shared ceiling.
 bclear; mkdir -p "$BREC_DIR"; mkfifo "$BREC"
 slb "$LANE" sess-none > "$WORK/sb04-fifo.out" 2>/dev/null &
 p=$!
-( sleep 5; kill "$p" 2>/dev/null ) &
-w=$!
-rc=0; wait "$p" || rc=$?
-kill "$w" 2>/dev/null; wait "$w" 2>/dev/null
+sb04_gone() { ! kill -0 "$p" 2>/dev/null; }
+if wait_until sb04_gone; then
+  rc=0; wait "$p" || rc=$?
+else
+  kill "$p" 2>/dev/null; wait "$p" 2>/dev/null; rc=상한
+fi
 check "SB04 FIFO 는 열지 않고 감시견보다 먼저 대체 줄" "$rc|$(cat "$WORK/sb04-fifo.out")" "0|$BFALL"
 if [ "$(id -u)" = "0" ]; then
   skip "SB04 권한 000 기록" "root 로는 권한 비트가 강제되지 않는다"
@@ -3340,11 +3357,11 @@ mkdir -p "${OB_PROTO%/*}"; printf '1\n' > "$OB_PROTO"
 obr() { fx_statusline_stdin sess-ob | env -u CI -u CC_CMDS_OBSERVER "$@" PATH="$SLCMP_BIN:$PATH" bash "$SL" 2>/dev/null; }
 ob_fresh() { mkdir -p "$OBD"; date -u +%s > "$OBD/ensure.at"; }
 ob_calls() { grep -c 'ensure --sl-session sess-ob ' "$SLCMP_PY" 2>/dev/null || true; }
+ob_calls_at_least() { [ "$(ob_calls)" -ge "$1" ]; }
 ob_wait_calls() {
-  # ob_wait_calls <n> — wait up to 3 seconds for the detached stub to have
-  # written n calls, then print the count.
-  local i=0
-  while [ "$i" -lt 30 ] && [ "$(ob_calls)" -lt "$1" ]; do sleep 0.1; i=$((i + 1)); done
+  # ob_wait_calls <n> — wait for the detached stub to have written n calls,
+  # then print the count.
+  wait_until ob_calls_at_least "$1"
   ob_calls
 }
 MARK=" · 관측기 낡음"
@@ -3360,7 +3377,7 @@ printf '%d\n' "$$" > "$OBD/observer.pid"; date -u +%s > "$OBD/heartbeat"
 hasnt "OB2 관측기가 살아 있고 하트비트가 새로우면 표지가 없다" "$(obr)" "$MARK"
 printf '%d\n' $(( $(date -u +%s) - 31 )) > "$OBD/heartbeat"
 has "OB2 하트비트가 31초 묵으면 표지" "$(obr)" "$MARK"
-sleep 0 & ob_dead=$!; wait "$ob_dead" 2>/dev/null
+true & ob_dead=$!; wait "$ob_dead" 2>/dev/null
 printf '%d\n' "$ob_dead" > "$OBD/observer.pid"; date -u +%s > "$OBD/heartbeat"
 if kill -0 "$ob_dead" 2>/dev/null; then
   skip "OB2 pid 가 답하지 않으면 표지" "끝난 pid $ob_dead 가 그새 다시 쓰였다"
@@ -3445,8 +3462,7 @@ if command -v python3 >/dev/null 2>&1; then
   env -u CI -u CC_CMDS_OBSERVER -u CC_PIPELINE_SEGMENT -u CC_PIPELINE_STAGE_ID \
     python3 "$OBPY" ensure --sl-session sess-ob --sl-script "$SL" \
     --sl-transcript /dev/null </dev/null >/dev/null 2>&1
-  i=0
-  while [ "$i" -lt 100 ] && [ ! -s "$OBD/sl/sess-ob.facts" ]; do sleep 0.1; i=$((i + 1)); done
+  wait_until test -s "$OBD/sl/sess-ob.facts"
   if [ -s "$OBD/sl/sess-ob.facts" ]; then
     ok "OB6 실제 관측기가 이 세션의 사실 블록을 쓴다"
     check "OB6 사실 블록의 첫 줄" "$(head -1 "$OBD/sl/sess-ob.facts")" "cc-sl-facts 1"
@@ -3457,11 +3473,10 @@ if command -v python3 >/dev/null 2>&1; then
     check "OB6 실제 관측기의 사실 블록으로 그린 줄이 직접 경로와 같다 (시계 칸 제외)" \
       "$(printf '%s\n' "$ob_fast" | strip_clock)" "$(printf '%s\n' "$ob_direct" | strip_clock)"
   else
-    bad "OB6 실제 관측기가 이 세션의 사실 블록을 쓴다" "10초 안에 $OBD/sl/sess-ob.facts 가 생기지 않았다"
+    bad "OB6 실제 관측기가 이 세션의 사실 블록을 쓴다" "공용 상한 안에 $OBD/sl/sess-ob.facts 가 생기지 않았다"
   fi
   python3 "$OBPY" stop >/dev/null 2>&1
-  i=0
-  while [ "$i" -lt 50 ] && [ -e "$OBD/observer.pid" ]; do sleep 0.1; i=$((i + 1)); done
+  wait_until test ! -e "$OBD/observer.pid"
   check "OB6 stop 뒤에 observer.pid 가 남지 않는다" "$([ -e "$OBD/observer.pid" ] && echo 남음 || echo 없음)" 없음
 else
   skip "OB6 실제 관측기" "python3 이 없다"

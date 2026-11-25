@@ -54,6 +54,8 @@ repo_root=$(cd "$script_dir/.." && pwd)
 CAPTURE="$repo_root/plugins/cc-cmds/orchestrator/visual-capture.sh"
 CHECK="$repo_root/plugins/cc-cmds/orchestrator/visual-check.sh"
 TOKENS="$repo_root/tests/fixtures/visual-check/tokens.css"
+# shellcheck source=wait-fixture.sh
+. "$repo_root/scripts/wait-fixture.sh"
 
 for need in "$CAPTURE" "$CHECK" "$TOKENS"; do
   [[ -f "$need" ]] || { echo "test-visual-capture: missing $need" >&2; exit 2; }
@@ -83,7 +85,9 @@ for a in "$@"; do
   url=$a
 done
 case "${FAKE_CHROME_MODE:-ok}" in
-  hang) exec sleep 30 ;;
+  # Never ends by itself before this suite's shell is gone: only the helper's
+  # time limit can end it.
+  hang) while kill -0 "$WAIT_FIXTURE_OWNER" 2>/dev/null; do sleep 1; done; exit 0 ;;
   fetch)
     python3 -I -c 'import sys, urllib.request as u
 o = u.build_opener(u.ProxyHandler({}))

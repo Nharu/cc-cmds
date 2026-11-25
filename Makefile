@@ -225,7 +225,10 @@ check-cheap:
 # the base (in head mode, with origin/<base branch>, else the local branch; with
 # neither it is 판정불가 and nothing is added). A changed file no goal names is
 # listed and counted in the stamp; a derivation that cannot be computed ends 1
-# before any item runs, with no stamp.
+# before any item runs, with no stamp. CHANGELOG.md and plugin.json changed the
+# way a release commit changes them (scripts/test-reuse.sh's per-path check)
+# are not derivation input: a line of their own names them and the stamp keeps
+# them in `유도릴리스=`.
 #
 # check-cheap, each goal and each lane of sections run in a checkout of their
 # own and leave a record of the tracked files they read (a lane also the digest
@@ -566,6 +569,7 @@ ORCH_TESTS := \
 	scripts/test-liveness-agreement.sh \
 	scripts/test-dashboard.sh \
 	scripts/test-dashboard-screen.sh \
+	scripts/test-dashboard-browser.sh \
 	scripts/test-observer.sh \
 	scripts/test-observer-watch.sh \
 	scripts/test-observer-checks.sh \
@@ -576,6 +580,7 @@ ORCH_TESTS := \
 	scripts/test-stage-supervisor.sh \
 	scripts/test-design-brief.sh \
 	scripts/test-route.sh \
+	scripts/test-wait-fixture.sh \
 	scripts/test-collect-run-metrics.sh \
 	scripts/test-design-path-report.sh \
 	scripts/test-measure-cycle-causes.sh \
@@ -633,7 +638,7 @@ GATE_SLOTS := $(shell echo $$(( $(GATE_SHARDS) * $(GATE_LANES) )))
 # above and, when their room runs out, on extra rows S+1..S+E, one runner each.
 # GATE_ISO_EXTRA is the most CI's plan job may open; GATE_EXTRA is how many the
 # table a runner was handed actually has, which only the plan job knows.
-GATE_ISO_EXTRA ?= 8
+GATE_ISO_EXTRA ?= 20
 GATE_EXTRA ?= 0
 
 # So CI can read the numbers instead of spelling them a second time.

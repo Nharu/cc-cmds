@@ -54,6 +54,8 @@ export CC_CMDS_AUTOPILOT_NOTIFY
 
 script_dir=$(cd "$(dirname "$0")" && pwd)
 repo_root=$(cd "$script_dir/.." && pwd)
+# shellcheck source=wait-fixture.sh
+. "$repo_root/scripts/wait-fixture.sh"
 TR_ORCH="$repo_root/plugins/cc-cmds/orchestrator"
 TR_ROUTE="$TR_ORCH/route.sh"
 # 소싱할 run.sh 는 이 한 변수에서 정한다. 가드 절은 이 경로와, 스위치를 뒤집은
@@ -115,13 +117,15 @@ pexpect() { expect "$1" "$2" "$3"; pinrec "$2"; }
 count_results() { local n; n=$(grep -c "^$1	" "$RESULTS" 2>/dev/null || true); printf '%s' "${n:-0}"; }
 count_files() { local n=0 f; for f in "$1"/*.lease; do [ -e "$f" ] && n=$((n + 1)); done; printf '%s' "$n"; }
 
-# 보유자 픽스처. 살아 있는 보유자는 부모가 거두지 않도록 떼어 낸 `sleep` 이다 —
+# 보유자 픽스처. 살아 있는 보유자는 부모가 거두지 않도록 떼어 낸 `wait_holder` 다 —
 # 거두지 않은 자식은 죽어도 좀비로 남아 `kill -0` 과 `ps` 에 산 것처럼 보인다.
-tr_spawn() { ( sleep 600 >/dev/null 2>&1 & printf '%s' "$!" > "$WORK/spawn.pid" ); cat "$WORK/spawn.pid"; }
+# 보유자는 시험 셸(WAIT_FIXTURE_OWNER)이 사는 동안 살고, 그 셸이 끝나면 스스로 끝나며,
+# 시험이 보내는 `kill` 에는 곧 죽는다. 그래서 실행이 길어져도 마지막 단언까지 산다.
+tr_spawn() { ( wait_holder >/dev/null 2>&1 & printf '%s' "$!" > "$WORK/spawn.pid" ); cat "$WORK/spawn.pid"; }
 TR_HOLDER=$(tr_spawn)
 TR_PIDS="$TR_PIDS $TR_HOLDER"
 TR_HOLDER_FP=$( . "$TR_ORCH/liveness.sh"; TZ=UTC0 cc_proc_fingerprint "$TR_HOLDER" )
-sleep 0 &
+true &
 TR_DEAD=$!
 wait "$TR_DEAD" 2>/dev/null
 TR_DEAD_FP='Thu Jan 1 00:00:00 1970'
@@ -217,8 +221,9 @@ cat > "$WRAP" <<'EOF'
 set -uo pipefail
 . "$TRH_ORCH/liveness.sh"
 . "$TRH_ORCH/route.sh"
-trh_e() { local i=0; while [ ! -e "$1" ] && [ "$i" -lt 400 ]; do sleep 0.05; i=$((i + 1)); done; }
-trh_s() { local i=0; while [ ! -s "$1" ] && [ "$i" -lt 400 ]; do sleep 0.05; i=$((i + 1)); done; }
+. "$TRH_WAIT_FIXTURE"
+trh_e() { wait_until test -e "$1"; }
+trh_s() { wait_until test -s "$1"; }
 route__hook_locked() { eval "${TRH_LOCKED:-:}"; }
 route__hook_listed() { eval "${TRH_LISTED:-:}"; }
 route__hook_decided() { eval "${TRH_DECIDED:-:}"; }
@@ -246,6 +251,51 @@ esac
 route__main "$@"
 EOF
 export TRH_ORCH="$TR_ORCH"
+export TRH_WAIT_FIXTURE="$repo_root/scripts/wait-fixture.sh"
+
+# "락을 기다리지 않는다" 를 재는 자리의 래퍼. 입장·보유 대기 예산을 소싱 전에 readonly
+# 1200초로 둬서, 락을 기다리는 회귀는 짧은 예산에 끝나 통과하지 않고 공용 기다림의
+# 상한에 걸린다. 첫 인자가 run 이면 둘째 인자의 run.sh 를 소싱하고 나머지 인자를
+# 명령으로 부르고, 아니면 route.sh 의 서브커맨드로 넘긴다.
+TR_WRAPL="$WORK/wrap-long-lock.sh"
+cat > "$TR_WRAPL" <<'EOF'
+#!/usr/bin/env bash
+set -uo pipefail
+readonly ROUTE_LEASE_LOCK_WAIT_S=1200 ROUTE_LEASE_HOLD_WAIT_S=1200
+case "${1:-}" in
+  run)
+    rs="$2"
+    shift 2
+    CC_ORCH_SOURCE_ONLY=1
+    . "$rs" 2>/dev/null
+    set +e
+    "$@" ;;
+  *)
+    . "$TRH_ORCH/liveness.sh"
+    . "$TRH_ORCH/route.sh" 2>/dev/null
+    route__main "$@" ;;
+esac
+EOF
+
+# tr_bg_call <표준 출력> <표준 오류> <명령…> — 호출을 배경으로 띄우고 끝날 때까지
+# 공용 기다림으로 본다. 종료 코드는 TR_BG_RC 에 두고, 상한 안에 끝나지 않으면 그
+# 프로세스를 끊고 TR_BG_RC 를 `상한` 으로 둔다.
+_tr_bg_gone() { ! kill -0 "$1" 2>/dev/null; }
+tr_bg_call() {
+  local o="$1" e="$2" p
+  shift 2
+  "$@" >"$o" 2>"$e" &
+  p=$!
+  TR_PIDS="$TR_PIDS $p"
+  if wait_until _tr_bg_gone "$p"; then
+    TR_BG_RC=0
+    wait "$p" || TR_BG_RC=$?
+  else
+    kill "$p" 2>/dev/null
+    wait "$p" 2>/dev/null
+    TR_BG_RC=상한
+  fi
+}
 
 # ===========================================================================
 # 정적 검사
@@ -305,6 +355,7 @@ tr_in_run() {
     CC_ORCH_SOURCE_ONLY=1
     . "$rs"
     set +e
+    TR_CUR_RUN_SH="$rs"
     "$@"
   )
 }
@@ -426,7 +477,7 @@ tr_contract() {
 }
 
 tr_g_matrix() {
-  local lb="$1" b="$2" tier st d rc out eout gv el
+  local lb="$1" b="$2" tier st d rc out eout gv
   mkdir -p "$b"
   for tier in 1 2 3 4 2x 3x; do
     for st in absent valid corrupt; do
@@ -463,7 +514,9 @@ tr_g_matrix() {
   check "$lb: 잘못된 UTF-8 값의 경고 문면" "$(grep -c '바이트 그대로 실을 수 없다' "$d/err")" 1
   unset CLAUDE_CONFIG_DIR
 
-  # 독이 든 표에서도 휴면 호출은 표를 건드리지 않는다.
+  # 독이 든 표에서도 휴면 호출은 표를 건드리지 않는다. 락은 살아 있는 보유자가 쥐고,
+  # 호출은 대기 예산을 1200초로 둔 래퍼에서 돈다 — 락을 기다리는 회귀는 공용 기다림의
+  # 상한에 걸린다.
   for st in absent valid corrupt; do
     d="$b/poison-$st"
     tr_tier 4 "$d"
@@ -477,13 +530,11 @@ tr_g_matrix() {
     tr_age "$RUN_PACE_ROOT/leases" 978307200
     : > "$d/marker"
     eout=$(resolve_account)
-    SECONDS=0
-    rc=0
-    out=$(route__resolve_as 0 "$(tr_req)" 2>/dev/null) || rc=$?
-    el=$SECONDS
-    gv=$(route__resolve_as 0 "$(tr_req)" 2>/dev/null | jq -j '.config_dir')
-    if [ "$el" -lt 2 ]; then ok "$lb: 독이 든 표·인벤토리 $st — 락 대기 없이 끝난다"
-    else bad "$lb: 독이 든 표·인벤토리 $st — 락 대기 없이 끝난다" "${el}초"; fi
+    tr_bg_call "$d/poison.out" /dev/null bash "$TR_WRAPL" run "$TR_CUR_RUN_SH" route__resolve_as 0 "$(tr_req)"
+    rc=$TR_BG_RC
+    gv=$(jq -j '.config_dir' < "$d/poison.out" 2>/dev/null)
+    if [ "$rc" != 상한 ]; then ok "$lb: 독이 든 표·인벤토리 $st — 락 대기 없이 끝난다"
+    else bad "$lb: 독이 든 표·인벤토리 $st — 락 대기 없이 끝난다" "공용 기다림의 상한 안에 끝나지 않았다"; fi
     check "$lb: 독이 든 표·인벤토리 $st — rc" "$rc" 0
     check "$lb: 독이 든 표·인벤토리 $st — 설정 디렉터리" "$gv" "$eout"
     check "$lb: 독이 든 표·인벤토리 $st — 바뀐 파일 없음" "$(find "$RUN_PACE_ROOT" -newer "$d/marker" | sed -n '1p')" ""
@@ -921,17 +972,13 @@ br_case "유효 파일을 가리키는 심링크" "$BRD/link.json" "$CORRUPT"
 ln -s "$BRD/missing.json" "$BRD/dangling.json"
 br_case "끊긴 심링크" "$BRD/dangling.json" "$CORRUPT"
 br_case "상대 경로 인자" "one.json" "$CORRUPT"
-# FIFO 는 열면 막힌다. 감시 프로세스가 시간 제한을 걸고, 판독기는 그 전에 끝나야 한다.
+# FIFO 는 열면 막힌다. 판독기를 배경으로 띄워 공용 기다림으로 보고, 상한 안에 끝나지
+# 않으면 tr_bg_call 이 끊어 종료 코드가 `상한` 이 되므로 이 단언이 실패한다.
 mkfifo "$BRD/fifo.json"
 before=$(br_tree)
-br_read "$BRD/fifo.json" > "$BRO/fifo.out" 2>"$BRO/fifo.err" &
-p=$!
-( sleep 5; kill "$p" 2>/dev/null ) &
-w=$!
-rc=0; wait "$p" || rc=$?
-kill "$w" 2>/dev/null; wait "$w" 2>/dev/null
+tr_bg_call "$BRO/fifo.out" "$BRO/fifo.err" br_read "$BRD/fifo.json"
 check "차용 기록 FIFO 는 열지 않고 곧바로 손상" \
-  "$rc|$(cat "$BRO/fifo.out")|$(wc -c < "$BRO/fifo.err" | tr -d ' ')|$([ "$(br_tree)" = "$before" ] && printf same || printf changed)" \
+  "$TR_BG_RC|$(cat "$BRO/fifo.out")|$(wc -c < "$BRO/fifo.err" | tr -d ' ')|$([ "$(br_tree)" = "$before" ] && printf same || printf changed)" \
   "0|$CORRUPT|0|same"
 if [ "$(id -u)" = "0" ]; then
   ok "차용 기록 mode 000 파일(root 는 권한을 우회하므로 생략)"
@@ -1021,7 +1068,7 @@ tr_frames_read_case() {
   export RUN_DIR="$b/run"
   mkdir -p "$RUN_DIR/log" "$b/t"
   { ts_line $((NOW - 100)); rl_line 0.2 0.3; } > "$RUN_DIR/log/S1.json"
-  { ts_line $((NOW - 50)); rl_line 0.25 null; } > "$RUN_DIR/log/S1.retry.json"
+  { ts_line $((NOW - 60)); rl_line 0.25 null; } > "$RUN_DIR/log/S1.retry.json"
   { ts_line $((NOW - 90)); rl_line 0.6 0.7; } > "$RUN_DIR/log/shift-1.json"
   { ts_line $((NOW - 80)); rl_line 0.9 0.9; } > "$RUN_DIR/log/S2.json"
   live_lease "$b/t" r1 S1 a
@@ -1775,14 +1822,14 @@ f=$(ls "$d"/*.lease)
 jq -c '.schema = "cc-cmds-lease v0"' "$f" > "$f.n"
 mv "$f.n" "$f"
 tr_age "$f" 978307200
-expect "부팅 전 mtime 이어도 파싱되는 모르는 스키마는 깨짐" "$(txn "$d" '.' --boot-epoch "$((NOW - 10))")" '.verdict == "PARK" and .reason == "lease-table-corrupt"'
+expect "부팅 전 mtime 이어도 파싱되는 모르는 스키마는 깨짐" "$(txn "$d" '.' --boot-epoch "$((NOW - 600))")" '.verdict == "PARK" and .reason == "lease-table-corrupt"'
 
 # stale-깨짐: 부팅 전 파싱 불가 파일은 제외·보고·보존, 현 부팅이면 PARK.
 d=$(tnew stale-corrupt)
 mkdir -p "$d"
 printf '' > "$d/r9+x.lease"
 tr_age "$d/r9+x.lease" 978307200
-out=$(txn "$d" '.' --boot-epoch "$((NOW - 10))")
+out=$(txn "$d" '.' --boot-epoch "$((NOW - 600))")
 expect "부팅 전 파싱 불가 파일은 PARK 없이 보고된다" "$out" ".verdict == \"GRANT\" and .stale_corrupt == [\"$d/r9+x.lease\"]"
 check "부팅 전 파싱 불가 파일은 디스크에 남는다" "$([ -f "$d/r9+x.lease" ] && printf 있음)" "있음"
 d=$(tnew stale-corrupt-noboot)
@@ -1793,7 +1840,7 @@ expect "부팅 시각이 비면 건너뛰지 않고 PARK" "$(txn "$d" '.')" '.ve
 d=$(tnew stale-corrupt-current)
 mkdir -p "$d"
 printf '' > "$d/r9+x.lease"
-expect "현 부팅의 파싱 불가 파일은 PARK" "$(txn "$d" '.' --boot-epoch "$((NOW - 10))")" '.verdict == "PARK" and .reason == "lease-table-corrupt"'
+expect "현 부팅의 파싱 불가 파일은 PARK" "$(txn "$d" '.' --boot-epoch "$((NOW - 600))")" '.verdict == "PARK" and .reason == "lease-table-corrupt"'
 
 # 대기 항목과 대기 프리미티브.
 d=$(tnew waits)
@@ -2248,7 +2295,7 @@ mkdir -p "$S"
 ctx 'ONLY(["a"]) | USE([UA("a"; 0.1; 0.6)]) | REQ({event: "resume"})' \
   | env TRH_DECIDED="kill $H2; touch '$S/A.d'; sleep 2" bash "$WRAP" lease-txn --table "$d" --now "$NOW" --boot-epoch "" --holder "$TR_HOLDER" > "$S/A.out" 2>&1 &
 pa=$!
-i=0; while [ ! -e "$S/A.d" ] && [ "$i" -lt 200 ]; do sleep 0.05; i=$((i + 1)); done
+wait_until test -e "$S/A.d" || bad "재개 거래가 판정 지점에 닿는다" "$S/A.d 가 생기지 않았다"
 ctx 'ONLY(["a"]) | USE([UA("a"; 0.1; 0.6)]) | REQ({run_id: "r2"})' \
   | bash "$TR_ROUTE" lease-txn --table "$d" --now "$NOW" --boot-epoch "" --holder "$TR_HOLDER" > "$S/B.out" 2>&1 &
 pb=$!
@@ -2291,11 +2338,13 @@ mkdir -p "$d/.lock"
 printf '%s\n%s\n' "$TR_HOLDER" "$TR_HOLDER_FP" > "$d/.lock/owner"
 rc=0; bash "$WRAPH" lease-hold "$d" r1 S1 n-r1-S1 "$H3" >/dev/null 2>&1 || rc=$?
 check "(가) 입장 예산보다 길게 쥔 락 — 예산 인자 없는 hold 는 rc 3" "$rc" 3
+# 락은 배경이 잠시 뒤 푼다. hold 의 예산은 공용 기다림 상한의 열 배라, 예산이 모자라
+# 끝나는 일 없이 락이 풀리면 곧 끝나야 하고, 끝나지 않는 회귀는 상한에서 드러난다.
 ( sleep 1; rm -rf "$d/.lock" ) &
 pl=$!
-rc=0; bash "$WRAPH" lease-hold "$d" r1 S1 n-r1-S1 "$H3" 3 >/dev/null 2>&1 || rc=$?
+tr_bg_call /dev/null /dev/null bash "$WRAPH" lease-hold "$d" r1 S1 n-r1-S1 "$H3" 1200
 wait "$pl"
-check "(가) 보유 예산보다 짧게 쥔 락 — 긴 예산 hold 는 rc 0" "$rc" 0
+check "(가) 보유 예산보다 짧게 쥔 락 — 긴 예산 hold 는 rc 0" "$TR_BG_RC" 0
 expect "(가) 긴 예산 hold 가 보유자를 더한다" "$(cat "$d/$(tr_key r1 S1).lease")" "any(.holders[]; .pid == $H3)"
 mkdir -p "$d/.lock"
 printf '%s\n%s\n' "$TR_HOLDER" "$TR_HOLDER_FP" > "$d/.lock/owner"
@@ -2346,12 +2395,12 @@ check "(라) nonce 가 그대로인 짝은 지워진다" "$([ -e "$d/$k1.lease" 
 check "(라) 다른 nonce 로 바뀐 기록은 남는다" "$([ -e "$d/$k2.lease" ] && printf 있음 || printf 없음)" "있음"
 mkdir -p "$d/.lock"
 printf '%s\n%s\n' "$TR_HOLDER" "$TR_HOLDER_FP" > "$d/.lock/owner"
-SECONDS=0
-rc=0; bash "$TR_ROUTE" lease-sweep-done "$d" "$k2" n-r1-S2 || rc=$?
-el=$SECONDS
+# 대기 예산을 1200초로 둔 래퍼라, 락을 기다리는 회귀는 공용 기다림의 상한에 걸린다.
+tr_bg_call "$WORK/sweep-busy.out" "$WORK/sweep-busy.err" bash "$TR_WRAPL" lease-sweep-done "$d" "$k2" n-r1-S2
+rc=$TR_BG_RC
 check "(라) 락이 바쁘면 rc 3" "$rc" 3
 check "(라) 락이 바쁘면 아무것도 지우지 않는다" "$([ -e "$d/$k2.lease" ] && printf 있음 || printf 없음)" "있음"
-if [ "$el" -le 1 ]; then ok "(라) 훑기는 락을 기다리지 않는다"; else bad "(라) 훑기는 락을 기다리지 않는다" "${el}초"; fi
+if [ "$rc" != 상한 ]; then ok "(라) 훑기는 락을 기다리지 않는다"; else bad "(라) 훑기는 락을 기다리지 않는다" "공용 기다림의 상한 안에 끝나지 않았다"; fi
 rm -rf "$d/.lock"
 rc=0; bash "$TR_ROUTE" lease-sweep-done "$d" || rc=$?
 check "(라) 짝이 없으면 rc 2" "$rc" 2
@@ -2567,12 +2616,12 @@ else
   d=$(tnew nolockdir)
   live_lease "$d" r1 S1 a
   chmod 555 "$d"
-  SECONDS=0
-  rc=0; bash "$TR_ROUTE" lease-release "$d" r1 S1 n-r1-S1 2>/dev/null || rc=$?
-  el=$SECONDS
+  # 대기 예산을 1200초로 둔 래퍼라, 락 만들기를 되풀이하는 회귀는 공용 기다림의 상한에 걸린다.
+  tr_bg_call "$WORK/nolockdir.out" /dev/null bash "$TR_WRAPL" lease-release "$d" r1 S1 n-r1-S1
+  rc=$TR_BG_RC
   chmod 755 "$d"
   check "락을 만들 수 없는 표 → 곧바로 rc 4" "$rc" 4
-  if [ "$el" -lt 2 ]; then ok "락을 만들 수 없는 표에서 헛돌지 않는다"; else bad "락을 만들 수 없는 표에서 헛돌지 않는다" "${el}초"; fi
+  if [ "$rc" != 상한 ]; then ok "락을 만들 수 없는 표에서 헛돌지 않는다"; else bad "락을 만들 수 없는 표에서 헛돌지 않는다" "공용 기다림의 상한 안에 끝나지 않았다"; fi
   d=$(tnew unlistable)
   live_lease "$d" r2 S1 b
   chmod 300 "$d"
@@ -2623,13 +2672,15 @@ tr_in_run "$TR_RUN_SH" tr_active_lock_case
 # ===========================================================================
 FXO="$repo_root/tests/fixtures/route-usage-contract/route-observe.jsonl"
 OB="$WORK/ob"
-# 한도와 락 대기를 작게 미리 정한 래퍼. 같은 이름을 먼저 readonly 로 두면 route.sh
-# 의 가드가 다시 선언하지 못하고 앞선 값이 남는다(그 오류는 소싱의 표준 오류로 버린다).
+# 한도와 락 대기를 미리 정한 래퍼. 같은 이름을 먼저 readonly 로 두면 route.sh 의
+# 가드가 다시 선언하지 못하고 앞선 값이 남는다(그 오류는 소싱의 표준 오류로 버린다).
+# 락 대기 예산은 기본이 공용 기다림 상한의 열 배라, 아무도 쥐지 않은 락을 예산이
+# 모자라 놓치는 일이 없다. 잡힌 락을 놓는 단언은 TRO_LOCK=0 으로 한 번만 시도한다.
 WRAPO="$WORK/wrap-observe.sh"
 cat > "$WRAPO" <<'EOF'
 #!/usr/bin/env bash
 set -uo pipefail
-readonly ROUTE_OBSERVE_MAX_BYTES="$TRO_MAX" ROUTE_OBSERVE_KEEP_S="$TRO_KEEP" ROUTE_LEASE_LOCK_WAIT_S=1
+readonly ROUTE_OBSERVE_MAX_BYTES="$TRO_MAX" ROUTE_OBSERVE_KEEP_S="$TRO_KEEP" ROUTE_LEASE_LOCK_WAIT_S="${TRO_LOCK:-1200}"
 . "$TRH_ORCH/liveness.sh"
 . "$TRH_ORCH/route.sh" 2>/dev/null
 route__main "$@"
@@ -2758,7 +2809,7 @@ done
 # 새 줄이 남는다. 문턱은 그 둘의 바이트 합과 같게 둔다.
 P="$OB/prune"
 newl=$(cat "$OB/wait/observe/route.jsonl")
-recent=$(printf '%s' "$FXO1" | jq -c --argjson t "$((NOW - 10))" '.at = $t')
+recent=$(printf '%s' "$FXO1" | jq -c --argjson t "$((NOW - 60))" '.at = $t')
 old=$(printf '%s' "$FXO1" | jq -c --argjson t "$((NOW - 2000))" '.at = $t')
 lim=$(( $(printf '%s\n%s\n' "$recent" "$newl" | wc -c | tr -d ' ') ))
 mkdir -p "$P/observe"
@@ -2789,7 +2840,7 @@ $newl"
 P="$OB/locked"
 mkdir -p "$P/observe/.lock"
 printf '%s\n%s\n' "$TR_HOLDER" "$TR_HOLDER_FP" > "$P/observe/.lock/owner"
-rc=0; out=$(OBW="$WRAPO" obtxn "$P" "$OBWAIT" TRO_MAX=16777216 TRO_KEEP=10368000 2>"$OB/locked.err") || rc=$?
+rc=0; out=$(OBW="$WRAPO" obtxn "$P" "$OBWAIT" TRO_MAX=16777216 TRO_KEEP=10368000 TRO_LOCK=0 2>"$OB/locked.err") || rc=$?
 check "관측: 락이 잡혀 있으면 봉투·rc 가 같다" "$rc/$out" "0/$(obtxn "$OB/wait2" "$OBWAIT")"
 check "관측: 락이 잡혀 있으면 줄을 버리고 경고한다" \
   "$(obn "$P")/$(grep -c '관측 로그 락을 잡지 못해' "$OB/locked.err")/$([ -d "$P/observe/.lock" ] && printf 남음)" "0/1/남음"
@@ -5004,6 +5055,9 @@ check "대기 항목: 열 인자 꼴은 급함 거짓과 바이트가 같다" \
                      rt_wait_record({items: []}; "r1"; "S1"; "a"; "/h"; "n"; 1; []; $schema; "implement"; false)] | (.[0] == .[1]) and (.[0] | has("urgent") | not)')" true
 du=$(tnew urgwaits)
 uput() { bash "$TR_ROUTE" lease-wait-put --table "$du" --now "$NOW" --run-id r1 --lineage "$1" --account a --config-dir /h/.claude-a --holder "$TR_HOLDER" "${@:2}"; }
+# 보유자가 일찍 죽으면 lease-wait-put 은 빈 출력을 내므로, 그 회귀를 이 이름으로 먼저 드러낸다.
+check "lease-wait-put 단언 앞: 보유자 TR_HOLDER 가 살아 있다" \
+  "$( . "$TR_ORCH/liveness.sh"; TZ=UTC0 cc_proc_fingerprint "$TR_HOLDER" )" "$TR_HOLDER_FP"
 u0=$(uput U0 --kind implement)
 expect "lease-wait-put --urgent 없이는 urgent 키가 없다" "$u0" '(has("urgent") | not) and .seq == 1'
 u1=$(uput U1 --kind implement --urgent 1)

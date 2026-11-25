@@ -314,6 +314,11 @@ release_lock() {
   # AND IT IS ONE STEP, because there is one artifact. Releasing used to remove
   # the record and then the directory, which leaves a state — directory present,
   # record gone — that a concurrent arrival reads as its own acquisition window.
+  #
+  # THE WAKE FIFO IS CLOSED AND REMOVED HERE TOO, before the holder check, so a
+  # feed that ends through the EXIT trap leaves none behind; the observer
+  # removes one a killed feed left.
+  feed_wake_close
   [ "$LOCK_OWNED" = "1" ] || return 0
   rm -rf "$LOCKD"
   # A second call does nothing. The EXIT trap is the only caller today, and the
@@ -587,6 +592,97 @@ run_is_over() {
   return 1
 }
 
+# >>> wake helpers
+# The same block stands in feed.sh and gate.sh, byte for byte apart from the
+# function prefix (`feed_wake_` / `gate_wake_`); scripts/test-gate.sh compares
+# the two. Neither script sources the other, so each carries its own copy.
+#
+# WAITING ON THE RESIDENT OBSERVER'S WAKE FIFO. When the observer has adopted a
+# job of this run (`observer.jobs/` is not empty), its pid answers `kill -0` and
+# it has made the run's `observer.wake.d/`, a waiter makes its own FIFO there
+# once, `<name>.<pid>.fifo`, opens it read-write on fd 7 and sleeps in `read -t`
+# on it. The observer writes one newline into every FIFO of the run when an
+# input it watches changes, so the waiter wakes at once; with no write it wakes
+# at the timeout. Neither starts a process. When any of the three is missing
+# the waiter sleeps as before, and opens its FIFO after a sleep that finds them.
+#
+# EVERY NON-ZERO `read` STATUS IS A TIMEOUT. Bash 3.2 returns 1 when `read -t`
+# times out, not a value above 128, and a signal the caller's own traps did not
+# end the process on goes on to the same evaluation. FD 7 IS FIXED because bash
+# 3.2 has no `{var}<>` form that picks a free descriptor, and none of these
+# scripts uses fd 7 anywhere else. THE NAME CARRIES `$$` because bash 3.2 has no
+# `BASHPID`: one process holds one wait open at a time, and the observer
+# removes a FIFO whose pid no longer answers. No trap is set here.
+WAKE_FD7_FIFO=""
+WAKE_FD7_NAME=""
+
+feed_wake_usable() {
+  # 0 when the observer can wake this run's waiters: an adopted job, a live
+  # observer pid and the run's wake directory. Builtins only.
+  local j p="" any=""
+  [ -n "${RUN_DIR:-}" ] && [ -d "$RUN_DIR/observer.wake.d" ] || return 1
+  for j in "$RUN_DIR"/observer.jobs/*; do
+    if [ -e "$j" ]; then any=1; break; fi
+  done
+  [ -n "$any" ] || return 1
+  { IFS= read -r p; } 2>/dev/null < "${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/observer/observer.pid" || :
+  p=${p//[[:space:]]/}
+  case "$p" in ''|*[!0-9]*) return 1 ;; esac
+  cc_pid_exists "$p"
+}
+
+feed_wake_open() {
+  # feed_wake_open <name> — make and open this process's FIFO when none is open
+  # and the observer can wake it. A step that fails leaves no FIFO behind and
+  # the wait sleeps instead. Always 0.
+  local f
+  [ -z "$WAKE_FD7_FIFO" ] || return 0
+  WAKE_FD7_NAME=$1
+  feed_wake_usable || return 0
+  f="$RUN_DIR/observer.wake.d/$1.$$.fifo"
+  if mkfifo -m 600 "$f" 2>/dev/null; then
+    if { exec 7<>"$f"; } 2>/dev/null; then
+      WAKE_FD7_FIFO=$f
+      return 0
+    fi
+    rm -f "$f" 2>/dev/null
+  fi
+  return 0
+}
+
+feed_wake_wait() {
+  # feed_wake_wait <seconds> — 0 when the observer woke this wait, 1 when the
+  # seconds ran out. An open FIFO the observer can no longer wake is closed at
+  # the timeout. With no FIFO open, or a timeout that is not a whole number of
+  # seconds, it sleeps the seconds and then opens the FIFO when it now can.
+  local rc=0 n
+  if [ -n "$WAKE_FD7_FIFO" ] && [ "$1" -ge 1 ] 2>/dev/null; then
+    read -r -t "$1" -u 7 _ 2>/dev/null || rc=$?
+    [ "$rc" != "0" ] || return 0
+    if [ ! -p "$WAKE_FD7_FIFO" ] || ! feed_wake_usable; then
+      n=$WAKE_FD7_NAME
+      feed_wake_close
+      WAKE_FD7_NAME=$n
+    fi
+    return 1
+  fi
+  sleep "$1"
+  [ -n "$WAKE_FD7_FIFO" ] || [ -z "$WAKE_FD7_NAME" ] || feed_wake_open "$WAKE_FD7_NAME"
+  return 1
+}
+
+feed_wake_close() {
+  # Close and remove this process's FIFO when one is open. Always 0.
+  if [ -n "$WAKE_FD7_FIFO" ]; then
+    exec 7>&-
+    rm -f "$WAKE_FD7_FIFO" 2>/dev/null
+  fi
+  WAKE_FD7_FIFO=""
+  WAKE_FD7_NAME=""
+  return 0
+}
+# <<< wake helpers
+
 [ -d "$RUN_DIR" ] || { printf 'feed: 런 디렉터리가 없습니다: %s\n' "$RUN_DIR" >&2; exit 2; }
 # THE TRAP GOES UP BEFORE THE LOCK DOES, and `HUP` is on it. Installed after
 # `take_lock`, a signal arriving in between left the lock behind with nothing to
@@ -612,24 +708,51 @@ trap '[ -z "$sp" ] || kill "$sp" 2>/dev/null; release_lock' EXIT
 trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM
 take_lock
 
+# THE WAIT BETWEEN CYCLES IS THE OBSERVER'S WAKE FIFO when the observer can wake
+# this run, and the interval otherwise. A `--once` pass never waits, and an
+# interval that is not a positive whole number of seconds cannot be a `read -t`
+# timeout, so neither opens a FIFO.
+feed_wake_ok() {
+  [ "$ONCE" != "1" ] || return 1
+  case "$INTERVAL" in ''|*[!0-9]*|0) return 1 ;; esac
+  [ "$INTERVAL" -ge 1 ] 2>/dev/null
+}
+! feed_wake_ok || feed_wake_open feed
+
 # QUIET RUNS ARE READ ON A MULTIPLE. While the watcher reports the run quiet
 # (`cc_watch_mode_quiet`), every `CC_QUIET_PASS_EVERY`-th cycle reads the ledger
 # whatever its age and runs the watcher-silence check; the cycles between skip
 # a ledger older than the last read and skip the check. Both counts start at
 # this process's first cycle, which always reads. A working run checks the
 # watcher's silence every cycle.
+#
+# A CYCLE THE OBSERVER WOKE IS NOT COUNTED. It reads the ledger only when it is
+# newer than the last read, checks the watcher's silence only in a working run,
+# and leaves `feed_cycle` where it was, so the forced reads of a quiet run stay
+# one per `CC_QUIET_PASS_EVERY` timed cycles however often the observer wakes it.
 feed_cycle=0
+feed_woke=0
 while :; do
   feed_read=0; feed_silence=1
-  if [ $((feed_cycle % ${CC_QUIET_PASS_EVERY:-4})) -eq 0 ]; then
-    feed_read=1
-  elif cc_watch_mode_quiet "$RUN_DIR" "$INTERVAL"; then
-    feed_silence=0
+  if [ "$feed_woke" = "1" ]; then
+    if cc_watch_mode_quiet "$RUN_DIR" "$INTERVAL"; then feed_silence=0; fi
+  else
+    if [ $((feed_cycle % ${CC_QUIET_PASS_EVERY:-4})) -eq 0 ]; then
+      feed_read=1
+    elif cc_watch_mode_quiet "$RUN_DIR" "$INTERVAL"; then
+      feed_silence=0
+    fi
+    feed_cycle=$((feed_cycle + 1))
   fi
-  feed_cycle=$((feed_cycle + 1))
   pass "$feed_read" "$feed_silence"
   [ "$ONCE" = "1" ] && break
   run_is_over && break
-  sleep "$INTERVAL" & sp=$!; wait "$sp"; sp=""
+  feed_woke=0
+  if [ -n "$WAKE_FD7_FIFO" ]; then
+    if feed_wake_wait "$INTERVAL"; then feed_woke=1; fi
+  else
+    sleep "$INTERVAL" & sp=$!; wait "$sp"; sp=""
+    ! feed_wake_ok || feed_wake_open feed
+  fi
 done
 exit 0

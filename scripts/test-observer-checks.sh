@@ -27,6 +27,8 @@ unset CI CC_CMDS_OBSERVER _v
 
 script_dir=$(cd "$(dirname "$0")" && pwd)
 repo_root=$(cd "$script_dir/.." && pwd)
+# shellcheck source=wait-fixture.sh
+. "$repo_root/scripts/wait-fixture.sh"
 ORCH="$repo_root/plugins/cc-cmds/orchestrator"
 
 if ! command -v python3 >/dev/null 2>&1; then
@@ -61,15 +63,6 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# wait_for <seconds> <command...> — poll every 0.1 s until the command succeeds.
-wait_for() {
-  local n=$(( $1 * 10 )); shift
-  while [ "$n" -gt 0 ]; do
-    "$@" && return 0
-    sleep 0.1; n=$((n - 1))
-  done
-  return 1
-}
 alive() { kill -0 "$1" 2>/dev/null; }
 opid()  { tr -d '[:space:]' < "$S/cc-cmds/observer/observer.pid" 2>/dev/null; }
 
@@ -473,7 +466,7 @@ check "D 기동 줄이 관측기에 넘기고 0 으로 끝난다" "$?" 0
 OP=$(opid)
 if [ -n "$OP" ] && alive "$OP"; then ok "D 관측기가 떠 있다"; else bad "D 관측기" "$(cat "$R_D/checks.log")"; fi
 if pid_is "$R_D/checks.pid" "$OP"; then ok "D checks.pid 가 관측기 pid 다"; else bad "D checks.pid" "$(cat "$R_D/checks.pid" 2>/dev/null) vs $OP"; fi
-if wait_for 30 observed_lines "$R_D" 4; then
+if wait_until observed_lines "$R_D" 4; then
   cut -f2- "$R_D/checks.observed" > "$WORK/d.lines"
   if diff "$WORK/r1a.p1.lines" "$WORK/d.lines" > "$WORK/d.diff"; then
     ok "D 위임된 관측 줄이 gh 판의 같은 상태 줄과 같다"
@@ -486,7 +479,7 @@ fi
 check "D 관측기가 연 gh 호출은 graphql 질의뿐이다" \
   "$( { grep -vc '^api graphql -f query clean$' "$GH_LOG" || true; } | tr -d ' ')" 0
 : > "$R_D/done"
-if wait_for 30 test ! -e "$R_D/checks.pid"; then ok "D done 뒤 작업이 내려지고 checks.pid 가 지워진다"; else bad "D done 뒤" "$(cat "$R_D/checks.pid")"; fi
+if wait_until test ! -e "$R_D/checks.pid"; then ok "D done 뒤 작업이 내려지고 checks.pid 가 지워진다"; else bad "D done 뒤" "$(cat "$R_D/checks.pid")"; fi
 if [ ! -e "$R_D/checks.fallback" ]; then ok "D 정상 경로는 되돌림 표지를 남기지 않는다"; else bad "D fallback" "$(cat "$R_D/checks.fallback")"; fi
 
 # ===========================================================================
@@ -498,13 +491,13 @@ rm -f "$R_U/plugin/cc-cmds/orchestrator/observer-protocol"
 bash "$R_U/plugin/cc-cmds/orchestrator/checks.sh" --run-dir "$R_U" --ledger "$(ledger_of "$R_U")" \
   --manifest "$(manifest_of "$R_U")" --interval 1 > "$R_U/checks.log" 2>&1 < /dev/null &
 U_PID=$!; STRAYS="$STRAYS $U_PID"
-if wait_for 20 pid_is "$R_U/checks.pid" "$U_PID"; then
+if wait_until pid_is "$R_U/checks.pid" "$U_PID"; then
   ok "U 표지 없는 사본은 자기 루프를 돌고 checks.pid 가 그 pid 다"
 else
   bad "U checks.pid" "$(cat "$R_U/checks.pid" 2>/dev/null) vs $U_PID"
 fi
 : > "$R_U/done"
-if wait_for 20 eval '! alive "$U_PID"'; then ok "U 자기 루프는 done 으로 끝난다"; else bad "U 루프 종료" "$U_PID"; fi
+if wait_pid_gone "$U_PID"; then ok "U 자기 루프는 done 으로 끝난다"; else bad "U 루프 종료" "$U_PID"; fi
 
 # ===========================================================================
 # B. A state the batch cannot cover (more contexts than one page) hands the run
@@ -525,8 +518,8 @@ R_B=$(make_run 20261101-000000f2)
 bash "$R_B/plugin/cc-cmds/orchestrator/checks.sh" --run-dir "$R_B" --ledger "$(ledger_of "$R_B")" \
   --manifest "$(manifest_of "$R_B")" --interval 1 > "$R_B/checks.log" 2>&1 < /dev/null
 check "B 기동 줄은 위임하고 0 으로 끝난다" "$?" 0
-if wait_for 30 test -e "$R_B/checks.fallback"; then ok "B 덮지 못하는 상태에서 checks.fallback 이 생긴다"; else bad "B fallback" "$(tail -n 5 "$S/cc-cmds/observer/observer.log" 2>/dev/null)"; fi
-if wait_for 30 pid_runs "$R_B/checks.pid" '(^|/)checks\.sh( |$)'; then
+if wait_until test -e "$R_B/checks.fallback"; then ok "B 덮지 못하는 상태에서 checks.fallback 이 생긴다"; else bad "B fallback" "$(tail -n 5 "$S/cc-cmds/observer/observer.log" 2>/dev/null)"; fi
+if wait_until pid_runs "$R_B/checks.pid" '(^|/)checks\.sh( |$)'; then
   ok "B 되돌린 런은 checks.sh 가 자기 루프를 돈다"
   STRAYS="$STRAYS $(tr -d '[:space:]' < "$R_B/checks.pid")"
 else
@@ -541,7 +534,7 @@ fi
 awk '/^fleet_reentry_(poller|watcher|script)_live\(\) \{/{f=1} f{print} f && /^\}/{f=0}' \
   "$ORCH/fleet.sh" > "$WORK/fleet-live.sh"
 R_L="$WORK/live-run"; mkdir -p "$R_L"
-sleep 60 & SLEEPER=$!; disown "$SLEEPER" 2>/dev/null; STRAYS="$STRAYS $SLEEPER"
+wait_holder >/dev/null 2>&1 & SLEEPER=$!; disown "$SLEEPER" 2>/dev/null; STRAYS="$STRAYS $SLEEPER"
 OP=$(opid)
 if [ -z "$OP" ] || ! alive "$OP"; then
   bad "L 관측기" "관측기가 떠 있지 않다"

@@ -109,6 +109,11 @@
   /* 그림자 — 중립색, 아주 옅게 */
   --shadow-1: 0 1px 2px rgba(22, 32, 46, 0.06);
 
+  /* 불투명도 — 바꾼 필터의 응답을 기다리는 이전 목록 */
+  --opacity-stale: 0.5;
+  /* 불투명도 — 시간 띠에서 아직 도는 시도의 막대 채움 */
+  --opacity-live: 0.35;
+
   /* 글꼴 */
   --font-sans: -apple-system, "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
   --font-size-secondary: 12px;
@@ -367,6 +372,7 @@ main.wrap { padding-top: var(--space-9); padding-bottom: var(--space-13); }
 .sk-row:first-child { border-top: none; }
 .sk-row .sk + .sk { margin-top: var(--space-0); }
 .loading-cap { display: flex; align-items: center; gap: var(--space-3); color: var(--color-text-secondary); margin-top: var(--space-4); }
+.is-stale { opacity: var(--opacity-stale); }
 /* 오류 — 목록·서버 끊김 띠는 빨간 선 카드, 상세는 카드 안의 한 줄 */
 .err { display: flex; gap: var(--space-6); }
 .p-list .err, .offline .err { align-items: flex-start; margin-top: var(--space-4); padding: var(--space-7); background: var(--color-surface); border: var(--border-1) solid var(--color-bad-text); border-radius: var(--radius-3); }
@@ -476,12 +482,14 @@ table.tbl { width: 100%; border-collapse: collapse; }
 .tb .b-bad { fill: var(--color-bad-fill); }
 .tb .b-park { fill: var(--color-neutral-fill); }
 .tb .b-gap { fill: var(--color-surface); stroke: var(--color-neutral-fill); stroke-width: 1; stroke-dasharray: 4 3; }
+.tb .b-live { fill: var(--color-run-fill); fill-opacity: var(--opacity-live); stroke: var(--color-run-fill); stroke-width: 1; stroke-dasharray: 3 2; }
 .tb .shift { fill: var(--color-text-secondary); }
 .sw { width: var(--space-7); height: var(--space-4); border-radius: var(--radius-1); display: inline-block; }
 .sw.ok { background: var(--color-ok-tint); border: var(--border-1) solid var(--color-ok-fill); }
 .sw.bad { background: var(--color-bad-fill); }
 .sw.park { background: var(--color-neutral-fill); }
 .sw.gap { background: var(--color-surface); border: var(--border-1) dashed var(--color-neutral-fill); }
+.sw.live { background: color-mix(in srgb, var(--color-run-fill) 35%, transparent); border: var(--border-1) dashed var(--color-run-fill); }
 .sw.shift { width: var(--space-4); height: var(--space-4); background: var(--color-text-secondary); transform: rotate(45deg); border-radius: var(--space-0); }
 .shifts { margin: var(--space-5) var(--space-0) var(--space-0); padding: var(--space-0); list-style: none; display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--space-4) var(--space-7); font-size: var(--font-size-secondary); }
 .shifts li { display: flex; gap: var(--space-4); align-items: baseline; }
