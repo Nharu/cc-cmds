@@ -30791,7 +30791,7 @@ check "F4 — 강제 표면 이동의 무효화 쓰기가 발사한다" \
 # and it carries the paragraph explaining why it is beside that file rather than
 # inside it. The printf carries a third `%s` for the handed-over clauses, which
 # also wraps its arguments onto one more line, so the notice sits sixteen lines
-# past the anchor and 18 leaves room for one more. The arm did not move; the
+# past the anchor and 18 leaves room for two more. The arm did not move; the
 # helper's reach had to.
 check "F4 — 무효화 종료의 done 표시가 발사한다" \
   "$(fires_at '종단 — 무효화%s%s%s · 근거' 18)" "fires"
