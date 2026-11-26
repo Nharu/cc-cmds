@@ -942,9 +942,16 @@ for pair in "리드:$AP_ROUTER" "교대:$RS_CORPUS"; do
   for lit in \
     '**Settle the termination clauses before you propose done.** Enter this order when no unmerged, unparked segment is left to dispatch, no stage is alive, no `shift_halts[]` element holds a segment, and no segment parked by a `스코프=cone` row reading `사유=시각 승인 대기` still has its `시각-승인` approval open in `pending_approvals[]`.' \
     'While one is open, end with `사유=승인` as item 2 of 「Dispatching the visual stage」 says, and do not propose done.' \
-    '1. Read the snapshot'"'"'s `clauses[]` — one element per termination clause, with its `id`, `문면`, `상태` (`미정산`, `충족`, `불가능` or `보류`), `근거`, `요청` (the evidence request still open on it), `근거 실행` (the execution shape the kickoff bound the clause to, or `null`), `실행` (the last `종료 절 실행` row'"'"'s `앵커`, `종료 코드` and `축2`, or `null`) and `실행 이력` (every such row in order — take a write'"'"'s anchor back from here after your context was compacted).' \
-    '2. For each element whose `상태` is `미정산`, find by gate reads the evidence its `문면` asks for' \
-    '4. Once every clause is settled, check with `plan --kind propose-done` and then take `act --kind propose-done`.' \
+    '1. Read the snapshot'"'"'s `clauses[]` — one element per termination clause, with its `id`, `문면`, `상태` (`미정산`, `충족`, `불가능`, `보류` or `이관`), `근거`, `요청` (the evidence request still open on it), `근거 실행` (the execution shape the kickoff bound the clause to, or `null`), `근거 시점` (`"종단 뒤"` when the gate judges the clause'"'"'s evidence to exist only after the run ends, else `null` — read this key and never judge the wording yourself), `실행` (the last `종료 절 실행` row'"'"'s `앵커`, `종료 코드` and `축2`, or `null`) and `실행 이력` (every such row in order — take a write'"'"'s anchor back from here after your context was compacted).' \
+    '2. For each element whose `상태` is `미정산` and whose `근거 시점` is `"종단 뒤"`, neither look for its evidence nor ask for it: settle it with `act --kind clause -- id=<id> 상태=이관`, and the gate writes the grounds. Issue that `이관` for every such element, in `clauses[]` order, before the shift ends — a refusal of an earlier clause does not keep you from issuing the later ones in this shift.' \
+    'begins with `이관 판독기 실패 — `, the leftover reader failed (or the `clause-handover` place check, the write of the copy or its sha256 did): do not issue it again for that clause in this shift and write no evidence request for it (the gate refuses one).' \
+    'put, for each clause refused that way and in `clauses[]` order, `이관 판독기 실패 <id> — <거부 줄>` joined with ` ; ` into the one `막힌 지점`' \
+    'Every such refusal leaves one `이관 실패` row for that clause (`id`, `교대`, `거부`), written by the gate.' \
+    'The gate checks this `불가능` against the clause'"'"'s `이관 실패` rows and refuses it (exit 3, pointing at `상태=이관`) when they do not show two consecutive shifts.' \
+    '3. For each other element whose `상태` is `미정산`, find by gate reads the evidence its `문면` asks for' \
+    '5. Once every clause is settled, check with `plan --kind propose-done` and then take `act --kind propose-done`.' \
+    '- **`이관` carries no grounds from you** — write `act --kind clause -- id=<id> 상태=이관` and nothing else (passing `근거` is exit 2).' \
+    'one already settled `충족`, `불가능` or `이관` or held `보류` naming its approval, one with an open evidence request, and one whose handover failed — the `clause-handover` place check, writing the copy, the reader'"'"'s exit status or the copy'"'"'s sha256. Only that last refusal begins with the fixed head `이관 판독기 실패 — ` and leaves an `이관 실패` row.' \
     '- **`충족` cites the ledger or an observable artifact** — a row anchor `A-<8 hex>`, a merge commit'"'"'s full sha, a PR number, a run-directory or document path with its line, or `중단 답 줄 <n> · 첨부 <경로>` — never prose alone. For grounds that cite no execution the gate checks only that `근거` is not empty and, when they name a posted review, that the review'"'"'s `리뷰 게시` row reads `대조=일치`; the rest of keeping to this is yours.' \
     'Grounds citing `실행 A-…` are checked by the gate: the row is this clause'"'"'s `종료 절 실행` row and exited 0' \
     'The gate adds `자체 근거=예` to a row that passed; never pass it yourself (exit 2).' \
@@ -973,7 +980,7 @@ for pair in "리드:$AP_ROUTER" "교대:$RS_CORPUS"; do
   done
 done
 for lit in \
-  '| `종료 절 근거` | 「Settling the termination clauses and proposing done」: a termination clause whose evidence neither a read nor a `clause-exec` of this run produced | `근거 제출` only; a person answers |' \
+  '| `종료 절 근거` | 「Settling the termination clauses and proposing done」: a termination clause whose evidence neither a read nor a `clause-exec` of this run produced. A clause whose `근거 시점` is `"종단 뒤"` does not come here: it is settled `이관`, and the gate refuses this site for it with exit 3 | `근거 제출` only; a person answers |' \
   "--segment - \\" \
   "-- '절=<절 id>'" \
   '**Do not end on `사유=중단` with a clause unsettled unless every unsettled clause has an open evidence request.**' \
@@ -3252,6 +3259,38 @@ printf -- '- `중단 답` | 교대=1 | 세그먼트=S8 | 중단 기록=%s | 스�
 check "사람의 새 답이 서면 returned_halts 는 비고 새 답이 answered_halts 에 오른다" \
   "$(ret_read gate_returned_halts_json 'length')/$(ret_read gate_answered_halts_json '[.[] | .option]')" '0/["재시도"]'
 rm -rf "$RET_DIR"
+
+# ---------------------------------------------------------------------------
+# 14. clauses[] carries `근거 시점` — "종단 뒤" for a clause whose evidence
+# exists only after the run ends, null otherwise
+#
+# The gate judges it from the manifest alone: a marked row, or a row with no
+# bound execution whose wording says its evidence is read from the morning or
+# run report. A plain clause, and a clause that only names the report, read
+# null, so the shift never judges the wording itself.
+# ---------------------------------------------------------------------------
+PT_DIR=$(mktemp -d "${TMPDIR:-/tmp}/cc-snap-postrun.XXXXXX")
+PT_MANIFEST="$PT_DIR/plan.md"
+PT_LEDGER="$PT_DIR/ledger.md"
+{
+  printf -- '- `종료 절` | id=C1 | 문면=확인 결과는 아침 보고서에서 읽는다\n'
+  printf -- '- `종료 절` | id=C2 | 문면=주의 좌석의 결과가 남는다 | 근거 시점=종단 뒤\n'
+  printf -- '- `종료 절` | id=C3 | 문면=시험이 통과한다\n'
+  printf -- '- `종료 절` | id=C4 | 문면=아침 보고서에 시험 결과가 실린다\n'
+} > "$PT_MANIFEST"
+: > "$PT_LEDGER"
+pt_read() {  # pt_read <jq> — gate_clauses_json on the fixture manifest, through jq
+  local frag
+  frag=$(CC_GATE_SOURCE_ONLY=1 bash -c '
+    . "$1" >/dev/null 2>&1; set +e +u
+    LEDGER="$2"; MANIFEST="$3"; RUN_ID=R; RUN_DIR="$4"
+    gate_clauses_json 2>/dev/null' _ "$GATE" "$PT_LEDGER" "$PT_MANIFEST" "$PT_DIR")
+  printf '[%s]' "$frag" | jq -c "$1"
+}
+check "clauses[] 의 근거 시점: 문면 판별·표지는 종단 뒤, 보통 절과 보고서 이름만 든 절은 null" \
+  "$(pt_read '[.[] | [.id, .["근거 시점"]]]')" \
+  '[["C1","종단 뒤"],["C2","종단 뒤"],["C3",null],["C4",null]]'
+rm -rf "$PT_DIR"
 
 # ---------------------------------------------------------------------------
 # 계정 이전 대기 — 릴레이의 재개 시각 원소와 깨움 키, 게이트·워처가 함께 읽는 대기 판독.

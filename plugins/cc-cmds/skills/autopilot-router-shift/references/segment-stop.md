@@ -26,7 +26,7 @@ gate.sh act --manifest <매니페스트> --kind shift-halt --target <alias> --se
 | `master 수리 불가` | `references/review-next-2.md`: `다음` reads `master 수리 불가` — the segment waits on a base-branch failure no repair run could be started for, and holds that event's representative marker | never |
 | `적용 정산` | 「Merging and applying a segment」: `act --kind apply-settle` ended in `park … 정산 판정=필요` or `측정 실패` | never |
 | `들여온 적용 정산` | 「Merging and applying a segment」: the segment is in the snapshot's `apply_imported` | never |
-| `종료 절 근거` | 「Settling the termination clauses and proposing done」: a termination clause whose evidence neither a read nor a `clause-exec` of this run produced | `근거 제출` only; a person answers |
+| `종료 절 근거` | 「Settling the termination clauses and proposing done」: a termination clause whose evidence neither a read nor a `clause-exec` of this run produced. A clause whose `근거 시점` is `"종단 뒤"` does not come here: it is settled `이관`, and the gate refuses this site for it with exit 3 | `근거 제출` only; a person answers |
 | `리뷰 게시 거절` | `act --kind review-post` exit 3: there is no dedicated write credential and this host's `gh` login could not be read either (not logged in, or expired), the posting account is not the frozen one, the review was already posted and matched, GitHub refused the post (a 4xx), or the post's outcome is unknown (no status line, a 5xx) and no post row was written — the gate's refusal line carried in `관측` says which | never |
 | `게시 대조` | `act --kind review-post` exit 3: the review GitHub holds after the post does not match the rendered request, or cannot be read | never |
 | `보류 리뷰 선점` | `act --kind review-post` exit 3: the posting account already holds a pending review on the pull request | never |
