@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "tool_use_id": "host-a1.1793499994000.55667788",
+  "session_id": "5f0c2d4e-1111-4a2b-9c3d-000000000001",
+  "reply_id": "host-a1.1793500004000.5e6f7081",
+  "event_id": "host-a1.1793499994000.55667788",
+  "answers_sha256": "3026a0ca485e5831657ba0120fa8dd66b3425427bfb0a2be0db743e2305cc7c5",
+  "transport": "app",
+  "sender": "app:dev-7f3a",
+  "applied_at_ms": 1793500010000
+}

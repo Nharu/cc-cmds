@@ -35,6 +35,22 @@
 # redaction and the event go to a detached job. `CC_CMDS_NOTIFY_PERMISSION_SYNC=1`
 # runs that job in the foreground, for tests only.
 #
+# ANSWERABLE ONLY WHERE A REMOTE DECISION CAN LAND. The request's event carries
+# `actionable: true` only when `CC_CMDS_REMOTE_PERMISSION_DECISION` is exactly
+# `1`, `CLAUDE_CODE_ENTRYPOINT` is `cli` (any other value, empty included, is
+# read as a non-interactive session), none of the five pipeline markers is set
+# and no `agent.*` marker of the session exists. Otherwise it is `false`, with
+# the same reply target for display. The decision itself is taken by the
+# remote-reply mod's PermissionRequest hook and `session-permission-decide.sh`,
+# never by this seat.
+#
+# THE MARKER NAMES ITS DIALOG. `pending.<fp>` (and `open.<fp>` after the move,
+# which keeps the bytes) holds one line `<fp> <normalized key>`. The decision
+# helper re-serializes the tool input it was handed, so its fingerprint bytes
+# may differ from this seat's; it finds the marker by the normalized key, whose
+# numbers are rewritten by jq arithmetic first, and takes the fingerprint the
+# marker names.
+#
 # PENDING, THEN OPEN, SO A MARKER NEVER PRECEDES ITS EVENT. A settle signal can
 # arrive before the detached job wrote the event. A marker written then would
 # carry an earlier time than the event and close nothing. So a settle that
@@ -132,8 +148,23 @@ now_ms() {
 # key-sorted compact JSON. `request` and `settle` call this one function, so the
 # two sides cannot disagree on the bytes hashed.
 fingerprint() {
+  hash16 '{tool_name, tool_input}'
+}
+
+# The normalized key: the same object with every number rewritten by jq
+# arithmetic (`.+0`), so `1`, `1.0` and `1e0` — and a large integer the hook
+# above re-serialized as a double — all hash alike. The decision helper computes
+# this key from its own input and finds the dialog's marker by it; the marker
+# then names the fingerprint, so the slot stays the one this seat wrote.
+normkey() {
+  hash16 '{tool_name, tool_input} | walk(if type == "number" then . + 0 else . end)'
+}
+
+# hash16 <jq filter> — the first 16 hex digits of the sha256 of the filter's
+# key-sorted compact output on the payload, followed by a newline.
+hash16() {
   local canon sum
-  canon=$(printf '%s' "$input" | jq -cS '{tool_name, tool_input}' 2>/dev/null) || return 1
+  canon=$(printf '%s' "$input" | jq -cS "$1" 2>/dev/null) || return 1
   [ -n "$canon" ] || return 1
   if command -v shasum >/dev/null 2>&1; then
     sum=$(printf '%s\n' "$canon" | shasum -a 256 2>/dev/null) || return 1
@@ -271,7 +302,7 @@ def known($t; $o):
      | ($r.lines + (if ($rest | length) > 0 then ["기타 입력: " + ($rest | tojson)] else [] end)) | join("\n")
    else ($in | pp("")) end) as $summary0
 | ($summary0 | red) as $summary
-| {kind: "permission", actionable: false,
+| {kind: "permission", actionable: $act,
    reply: {surface: "permission", session_id: $sid, tool_name: $t, input_summary: $summary},
    body: ($t + "\n" + $summary)}
 '
@@ -282,13 +313,30 @@ notification_prog="$redact_defs"'
  body: ("도구를 알 수 없는 권한 확인이 열렸습니다" + "\n" + ((.message // "") | redin | if type == "string" then . else tojson end | red))}
 '
 
-# write_event <slot> <jq program> — build the attachment with jq straight into
-# a `cc-attention-detail.*` file and hand it to the tap. Returns 1 when no
+# answerable — whether the request's event may be answered remotely: the
+# remote decision switch is on, the session is interactive, no pipeline marker
+# is set and no subagent of the session is running. Anything else leaves the
+# reply target for display only.
+answerable() {
+  [ "${CC_CMDS_REMOTE_PERMISSION_DECISION:-}" = "1" ] || return 1
+  [ "${CLAUDE_CODE_ENTRYPOINT:-}" = "cli" ] || return 1
+  [ -z "${CC_PIPELINE_SEGMENT:-}" ] || return 1
+  [ -z "${CC_PIPELINE_STAGE_ID:-}" ] || return 1
+  [ -z "${CC_PIPELINE_SHIFT_ID:-}" ] || return 1
+  [ -z "${CC_PIPELINE_RUN_ID:-}" ] || return 1
+  [ -z "${CC_PIPELINE_REENTRY:-}" ] || return 1
+  if any_exists "$dir"/agent.*; then return 1; fi
+  return 0
+}
+
+# write_event <slot> <jq program> [<act>] — build the attachment with jq
+# straight into a `cc-attention-detail.*` file and hand it to the tap. `<act>`
+# is the JSON boolean the request program reads as `$act`. Returns 1 when no
 # attachment could be built.
 write_event() {
-  local slot="$1" prog="$2" tmp title
+  local slot="$1" prog="$2" act="${3:-false}" tmp title
   tmp=$(mktemp "${TMPDIR:-/tmp}/cc-attention-detail.XXXXXX" 2>/dev/null) || return 1
-  if ! printf '%s' "$input" | jq -c --arg sid "$sid" "$prog" > "$tmp" 2>/dev/null; then
+  if ! printf '%s' "$input" | jq -c --arg sid "$sid" --argjson act "$act" "$prog" > "$tmp" 2>/dev/null; then
     rm -f "$tmp" 2>/dev/null
     return 1
   fi
@@ -315,8 +363,8 @@ mark_exact() {
 # means a settle signal took the pending file meanwhile, so the exact marker is
 # written here, after the event.
 emit_request() {
-  local fp="$1" slot="$slot_prefix$1"
-  write_event "$slot" "$request_prog" || { rm -f "$dir/pending.$fp" 2>/dev/null; return 0; }
+  local fp="$1" act="$2" slot="$slot_prefix$1"
+  write_event "$slot" "$request_prog" "$act" || { rm -f "$dir/pending.$fp" 2>/dev/null; return 0; }
   if ! mv "$dir/pending.$fp" "$dir/open.$fp" 2>/dev/null; then
     mark_exact "$slot"
   fi
@@ -345,11 +393,13 @@ case "$role" in
       AskUserQuestion) exit 0 ;;
     esac
     fp=$(fingerprint) || exit 0
-    : > "$dir/pending.$fp" 2>/dev/null || exit 0
+    nk=$(normkey) || exit 0
+    if answerable; then act=true; else act=false; fi
+    printf '%s %s\n' "$fp" "$nk" > "$dir/pending.$fp" 2>/dev/null || exit 0
     if [ "${CC_CMDS_NOTIFY_PERMISSION_SYNC:-}" = "1" ]; then
-      emit_request "$fp" </dev/null >/dev/null 2>&1
+      emit_request "$fp" "$act" </dev/null >/dev/null 2>&1
     else
-      { emit_request "$fp"; } </dev/null >/dev/null 2>&1 &
+      { emit_request "$fp" "$act"; } </dev/null >/dev/null 2>&1 &
     fi
     ;;
   settle)

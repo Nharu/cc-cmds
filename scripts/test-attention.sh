@@ -494,7 +494,9 @@ norm_case() {
   f=$(one_file "$ROOT/events")
   check "9 $label: 사건이 생김" "$(nfiles "$ROOT/events")" "1"
   check "9 $label: actionable" "$(field "$f" '.actionable')" "$want"
-  if [ "$want" = true ]; then
+  if [ "$want" = true ] && [ "$(field "$f" '.kind')" = permission ]; then
+    check "9 $label: accepts" "$(jq -c '.accepts' "$f")" '["permission-decision"]'
+  elif [ "$want" = true ]; then
     check "9 $label: accepts" "$(jq -c '.accepts' "$f")" '["option"]'
   else
     check "9 $label: accepts" "$(jq -c '.accepts' "$f")" '[]'
@@ -526,7 +528,15 @@ norm_case "선택지 없는 질문의 질문지" session-ask "$SSLOT" "$(jq -cn 
                         {id: "q2", question: "?", options: []}]}}')" false
 norm_case "actionable 참을 넘긴 permission" permission "cc-cmds-permission-$SID" "$(jq -cn --arg s "$SID" \
   '{kind: "permission", actionable: true,
+    reply: {surface: "permission", session_id: $s, tool_name: "Bash", input_summary: "ls"}}')" true
+norm_case "actionable 거짓을 넘긴 permission" permission "cc-cmds-permission-$SID" "$(jq -cn --arg s "$SID" \
+  '{kind: "permission", actionable: false,
     reply: {surface: "permission", session_id: $s, tool_name: "Bash", input_summary: "ls"}}')" false
+f=$(one_file "$ROOT/events")
+check "9 actionable 거짓을 넘긴 permission: 답 대상 그대로" "$(field "$f" '.reply.tool_name')" "Bash"
+norm_case "도구 이름이 빈 permission" permission "cc-cmds-permission-$SID" "$(jq -cn --arg s "$SID" \
+  '{kind: "permission", actionable: true,
+    reply: {surface: "permission", session_id: $s, tool_name: "", input_summary: "ls"}}')" false
 norm_case "RUN_ID 와 다른 reply run_id" answer "$ASLOT" "$(with_reply)" true RUN_ID="other-run"
 f=$(one_file "$ROOT/events")
 check "9 RUN_ID 와 다른 reply run_id: origin.run_id" "$(field "$f" '.origin.run_id')" "$RID"
@@ -576,7 +586,10 @@ neg_case "잘못된 id" event-turn.json '.id = "mbp-1.123.xyz"'
 neg_case "승인 slot 어긋남" event-approval.json '.slot = "cc-cmds-autopilot-x-J-0000abcd"'
 neg_case "승인 body 와 질문 어긋남" event-approval.json '.body = "승인 J-0000abcd"'
 neg_case "repo 절대경로" event-auq.json '.origin.repo = "/home/me/dev/cc-cmds"'
-neg_case "actionable permission" event-permission.json '.actionable = true | .accepts = ["option"]'
+neg_case "권한 사건의 accepts 가 종류별 도출과 다름" event-permission.json '.actionable = true | .accepts = ["option"]'
+neg_case "답할 수 있는 권한 사건에 option" event-permission-act.json '.accepts = ["option"]'
+neg_case "권한 아닌 사건에 permission-decision" event-approval.json '.accepts = ["permission-decision"]'
+neg_case "답할 수 없는 권한 사건에 permission-decision" event-permission.json '.accepts = ["permission-decision"]'
 neg_case "표지 원인 밖" handled-clear.json '.cause = "expired"'
 neg_case "접두 표지 @ 없음" handled-dismiss-prefix.json '.slot = "cc-cmds-active-notify-x"'
 

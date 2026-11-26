@@ -39,8 +39,9 @@
 # answer that is missing or is not a string never matches.
 #
 # Run without file arguments, the lint also checks that every fixture kind has
-# at least one file: the four envelope shapes (auq single-select, auq with a
-# multi-select question, question-form, approval), a marker without and with
+# at least one file: the five envelope shapes (auq single-select, auq with a
+# multi-select question, question-form, approval, a permission decision), a
+# marker without and with
 # woken_at_ms, a submit pair, a frame pair for an ordinary question, a frame
 # pair for an approval question, and a wake literal.
 
@@ -51,7 +52,7 @@ repo_root=$(cd "$script_dir/.." && pwd)
 doc="$repo_root/plugins/cc-cmds/skills/_common/remote-reply.md"
 fixtures="$repo_root/tests/fixtures/remote-reply"
 
-ENVELOPE_KEYS=(schema reply_id event_id host kind target answers provenance expires_at_ms pickup_by_ms)
+ENVELOPE_KEYS=(schema reply_id event_id host kind target answers decision provenance expires_at_ms pickup_by_ms)
 PICKED_KEYS=(schema reply_id session_id picked_at_ms apply_by_ms woken_at_ms)
 APPLIED_KEYS=(schema tool_use_id session_id reply_id event_id answers_sha256 transport sender applied_at_ms)
 # "<surface> <address>"
@@ -59,12 +60,14 @@ ADDRESS_PAIRS=(
   "approval r-<target.run_id>"
   "auq s-<safe_sid(target.session_id)>"
   "question-form s-<safe_sid(target.session_id)>"
+  "permission s-<safe_sid(target.session_id)>"
 )
 COVERAGE=(
   envelope-auq-single
   envelope-auq-multi
   envelope-question-form
   envelope-approval
+  envelope-permission
   picked-plain
   picked-woken
   pair-submit
@@ -186,7 +189,12 @@ envelope_prog="$defs"'
 def target_errors:
   if type != "object" then "target is not an object"
   elif (.surface | type) != "string" or (. as $t | any($surfaces[]; . == $t.surface) | not)
-  then "target.surface is not one of auq, question-form, approval"
+  then "target.surface is not one of auq, question-form, approval, permission"
+  elif .surface == "permission" then
+    (if (.session_id | nestr) and (.tool_name | nestr) then empty
+     else "permission target lacks a non-empty session_id or tool_name" end),
+    (if (.input_summary | type) == "string" then empty
+     else "permission target input_summary is not a string" end)
   elif .surface == "auq" then
     (if (.session_id | nestr) and (.tool_use_id | nestr) then empty
      else "auq target lacks a non-empty session_id or tool_use_id" end),
@@ -241,11 +249,22 @@ def answer_errors($qs; $surface):
     end;
 def envelope_errors:
   . as $e
-  | (["schema","reply_id","event_id","host","kind","target","answers","provenance","expires_at_ms"]) as $base
+  | ($e.kind == "permission-decision") as $decision
+  | (["schema","reply_id","event_id","host","kind","target","provenance","expires_at_ms"]
+     + (if $decision then ["decision"] else ["answers"] end)) as $base
   | ($e.target | type == "object" and (.surface | type) == "string"
      and (. as $t | any($run_surfaces[]; . == $t.surface))) as $run
-  | (if has("text") or has("decision") then "an option envelope carries text or decision" else empty end),
-    (($e | keys) - $base - ["pickup_by_ms", "text", "decision"]) as $extra
+  | (if $decision then
+       (if has("text") or has("answers") then "a decision envelope carries text or answers" else empty end),
+       (if .decision == "allow" or .decision == "deny" then empty else "decision is not allow or deny" end),
+       (if ($e.target | type) == "object" and $e.target.surface == "permission" then empty
+        else "a decision envelope target.surface is not permission" end)
+     else
+       (if has("text") or has("decision") then "an option envelope carries text or decision" else empty end),
+       (if ($e.target | type) == "object" and $e.target.surface == "permission"
+        then "an option envelope target.surface is permission" else empty end)
+     end),
+    (($e | keys) - $base - ["pickup_by_ms", "text", "decision", "answers"]) as $extra
     | (if ($extra | length) == 0 then empty else "unknown key(s): \($extra | join(", "))" end),
     (($base - ($e | keys))) as $missing
     | (if ($missing | length) == 0 then empty else "missing key(s): \($missing | join(", "))" end),
@@ -258,7 +277,8 @@ def envelope_errors:
      then empty else "reply_id is not <host_id>.<epoch_ms>.<8 hex> starting with host" end),
     (if (.event_id | nestr) and (.host | type) == "string" and (.event_id | startswith($e.host + "."))
      then empty else "event_id does not start with <host>." end),
-    (if .kind == "option" then empty else "kind is not option" end),
+    (if .kind == "option" or .kind == "permission-decision" then empty
+     else "kind is not option or permission-decision" end),
     (if (.provenance | type) == "object"
         and (.provenance | keys) == ["received_at_ms", "sender", "transport", "transport_ref"]
      then
@@ -278,6 +298,7 @@ def envelope_errors:
      then empty else "pickup_by_ms is not in received_at_ms < pickup_by_ms <= expires_at_ms" end),
     ([.target | target_errors]) as $te
     | if ($te | length) > 0 then $te[]
+      elif .kind != "option" or .target.surface == "permission" then empty
       else
         (.target | questions_of) as $qs
         | (if any($qs[]; (.q | has_sep) or any(.labels[]; has_sep))
