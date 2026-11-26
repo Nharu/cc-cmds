@@ -1,6 +1,7 @@
 // 원격 답 모드 시험의 공용 세계. 같은 진입으로 실리는 런 패널과 질문지까지 돌 수 있게
 // 엔진 밑의 연산(세션·패널·상태 줄·보관·시계·환경)을 스텁으로 세우고, 스풀은 메모리 안의
-// 디렉터리 이름표로, seam.sh 는 하위 명령마다 정해 둔 출력으로 흉내 낸다. 표지 변수 다섯은
+// 디렉터리 이름표로, seam.sh 와 결정 도우미는 하위 명령마다 정해 둔 출력으로, 권한 대화창은
+// 맨 아래의 권한 요청 훅으로 흉내 낸다. 표지 변수 다섯은
 // 늘 명시적으로 모의해 호스트 환경을 읽지 않으며, 세계 연산의 스텁은 { value } 형식으로 답한다.
 import type { On } from 'claude-code'
 import { mock } from 'claude-code/testing'
@@ -17,7 +18,7 @@ export type Reply = string | string[] | ((c: SeamCall) => string)
 export type Submitted = { text: string; origin: { kind: string; name?: string } }
 
 export type WorldOptions = {
-  env?: Partial<Record<(typeof MARKS)[number], string>>
+  env?: Partial<Record<(typeof MARKS)[number] | 'CC_CMDS_REMOTE_PERMISSION_DECISION' | 'TMPDIR', string>>
   // null 이면 HOME 을 두지 않는다.
   home?: string | null
   // 거짓이면 스풀 루트가 없다.
@@ -41,6 +42,18 @@ export function world(on: On, options: WorldOptions = {}) {
     // 대기 자식마다 낼 한 줄. undefined 면 줄 없이 끝난다.
     waits: [] as (string | undefined)[],
     waitDelayMs: 1000,
+    // 결정 도우미: 부명령 기록·정해 둔 출력·답하기 전의 일, 그리고 그 대기 자식의 큐.
+    decides: [] as SeamCall[],
+    decideReplies: {} as Record<string, Reply>,
+    decideBefore: {} as Record<string, ($: any) => Promise<void>>,
+    decideSpawns: [] as { argv: string[]; input?: string }[],
+    decideWaits: [] as (string | undefined)[],
+    decideWaitDelayMs: 1000,
+    // 권한 대화창(결정 훅의 아래 단계): 이만큼 뒤에 이 결과로 끝난다.
+    dialogs: 0,
+    dialogDelayMs: 600_000,
+    dialogResult: { decision: { behavior: 'deny', message: '로컬 거부' } } as Record<string, unknown>,
+    reads: [] as string[],
     isSpawnFailing: false,
     // 로컬 대화창: 이만큼 뒤에 이 답으로 끝난다.
     localDelayMs: 5000,
@@ -61,6 +74,8 @@ export function world(on: On, options: WorldOptions = {}) {
     CC_PIPELINE_SHIFT_ID: '',
     CC_PIPELINE_RUN_ID: '',
     CC_PIPELINE_REENTRY: '',
+    CC_CMDS_REMOTE_PERMISSION_DECISION: '1',
+    TMPDIR: '/t/',
     ...options.env,
   })
   if (options.spool !== false) w.dirs[ROOT] = []
@@ -86,6 +101,13 @@ export function world(on: On, options: WorldOptions = {}) {
     await clock.sleep(w.localDelayMs)
 
     return { result: { questions: e.questions, answers: w.localAnswers } }
+  })
+  // 권한 대화창. 플러그인의 권한 요청 훅 아래에서 사람이 답하거나(결정) 답하지 않는다({}).
+  on('classic.PermissionRequest', async () => {
+    w.dialogs += 1
+    await clock.sleep(w.dialogDelayMs)
+
+    return w.dialogResult as any
   })
   // 세계 연산.
   on('session.id', () => ({ value: w.sessionId }))
@@ -113,34 +135,43 @@ export function world(on: On, options: WorldOptions = {}) {
     return { value: names.map(name => ({ name, kind: 'file' as const, size: 1, mtimeMs: 1, isLink: false })) }
   })
   on('fs.read', (_$, e) => {
+    w.reads.push(e.path)
     const text = w.files[e.path]
     if (text === undefined) throw enoent()
 
     return { value: text }
   })
-  // seam.sh 만 기록하고 정해 둔 출력으로 답한다. 다른 헬퍼(런 패널, 배너)는 빈 출력이다.
+  // seam.sh 와 결정 도우미만 기록하고 정해 둔 출력으로 답한다. 다른 헬퍼(런 패널, 배너)는 빈 출력이다.
+  const answer = (r: Reply | undefined, c: SeamCall) => (typeof r === 'function' ? r(c) : Array.isArray(r) ? (r.shift() ?? '') : (r ?? ''))
   on('process.run', async ($, e) => {
     const init = (e.init ?? {}) as { stdin?: string }
     const at = e.argv.findIndex(a => a.endsWith('/hooks/remote-reply/seam.sh'))
+    const dat = e.argv.findIndex(a => a.endsWith('/hooks/session-permission-decide.sh'))
     let stdout = ''
     if (at >= 0) {
       const c: SeamCall = { sub: e.argv[at + 1] ?? '', args: e.argv.slice(at + 2), stdin: init.stdin }
       w.seams.push(c)
       await w.before[c.sub]?.($)
-      const r = w.replies[c.sub]
-      stdout = typeof r === 'function' ? r(c) : Array.isArray(r) ? (r.shift() ?? '') : (r ?? '')
+      stdout = answer(w.replies[c.sub], c)
+    } else if (dat >= 0) {
+      const c: SeamCall = { sub: e.argv[dat + 1] ?? '', args: e.argv.slice(dat + 2), stdin: init.stdin }
+      w.decides.push(c)
+      await w.decideBefore[c.sub]?.($)
+      stdout = answer(w.decideReplies[c.sub], c)
     }
 
     return { value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
+  // 대기 자식은 띄운 명령별 큐에서 한 줄을 받는다(seam.sh wait / 결정 도우미 wait).
   on('process.spawn', async function* (_$, e) {
-    w.spawns.push({ argv: [...e.argv], input: e.input })
+    const isDecide = e.argv.some(a => a.endsWith('/hooks/session-permission-decide.sh'))
+    ;(isDecide ? w.decideSpawns : w.spawns).push({ argv: [...e.argv], input: e.input })
     if (w.isSpawnFailing) throw new Error('spawn 실패')
-    const line = w.waits.shift()
-    await clock.sleep(w.waitDelayMs)
+    const line = (isDecide ? w.decideWaits : w.waits).shift()
+    await clock.sleep(isDecide ? w.decideWaitDelayMs : w.waitDelayMs)
     if (line !== undefined) yield { stream: 'stdout' as const, text: `${line}\n` }
 
-    return { code: 0, signal: null }
+    return { value: { code: 0, signal: null } }
   })
 
   return { w, clock }
@@ -165,3 +196,11 @@ export const turnDone = ($: any, agentId?: string) =>
   $.turn.complete({ answer: '', durationMs: 1, isAborted: false, turnId: 't', reason: 'answer', ...(agentId ? { agentId } : {}) })
 
 export const seamSubs = (w: { seams: SeamCall[] }) => w.seams.map(c => c.sub)
+
+export const decideSubs = (w: { decides: SeamCall[] }) => w.decides.map(c => c.sub)
+
+export const PERMIT_INPUT = { command: 'make check', description: 'run the checks' }
+
+// 권한 대화창 하나를 연다. 결과는 결정 훅(또는 그 아래 대화창)이 돌려준 값이다.
+export const permit = ($: any, extra: Record<string, unknown> = {}) =>
+  $.classic.PermissionRequest({ session_id: SID, tool_name: 'Bash', tool_input: PERMIT_INPUT, permission_mode: 'default', ...extra })

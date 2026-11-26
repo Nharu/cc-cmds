@@ -2,6 +2,8 @@
 // 질문지에 넣고, 런 주소 승인 봉투를 가져가 쉬는 라우터 좌석을 깨운다. 스풀을 읽고 쓰는
 // 일(수락 판정, 수령, 적용 기록, 처리 표지, 정리)은 모두 seam.sh 가 하고, 이 모드는 `$.fs`
 // 로 이름만 본 뒤 언제 무엇을 seam.sh 에 맡길지와 경합의 승자만 정한다.
+// 권한 대화창의 원격 허용·거부(결정 봉투)는 권한 요청 훅이 받는다. 그 스풀 읽기와 쓰기는
+// 모두 session-permission-decide.sh 가 하고, 이 모드는 언제 부를지와 대화창과의 경합만 정한다.
 // 상태 모드가 질문지 모드 다음에 이 모드를 등록한다.
 import type { Hook, Register, Timer } from 'claude-code'
 
@@ -82,6 +84,36 @@ async function envelopes($: Dollar, dir: string): Promise<string[]> {
   }
 }
 
+// 봉투 경로 → 그 봉투의 `kind`. 읽거나 파싱하지 못한 봉투는 빈 문자열로 기억한다.
+const kindOf = new Map<string, string>()
+
+// 세션 우편함의 봉투 가운데 결정 봉투를 뺀 것. 앞 틱에 없던 이름만 한 번 읽어 종류를
+// 기억하고, 목록에서 사라진 이름은 잊는다. 읽지 못한 봉투는 센다 — 결정 봉투는 권한 요청
+// 훅이 받으므로, 세면 거절·만료된 결정 봉투가 살핌 틱마다 헛된 scan 을 부른다.
+async function optionEnvelopes($: Dollar, dir: string, names: string[]): Promise<string[]> {
+  const present = new Set(names.map(name => `${dir}/${name}`))
+  for (const path of [...kindOf.keys()]) {
+    if (path.startsWith(`${dir}/`) && !present.has(path)) kindOf.delete(path)
+  }
+  const kept: string[] = []
+  for (const name of names) {
+    const path = `${dir}/${name}`
+    if (!kindOf.has(path)) {
+      let kind = ''
+      try {
+        const text = await $.fs.read(path)
+        const parsed = typeof text === 'string' ? (JSON.parse(text) as { kind?: unknown }) : null
+        if (parsed && typeof parsed.kind === 'string') kind = parsed.kind
+      } catch {
+        kind = ''
+      }
+      kindOf.set(path, kind)
+    }
+    if (kindOf.get(path) !== 'permission-decision') kept.push(name)
+  }
+  return kept
+}
+
 // 정방향 색인의 런 id. 색인이 없으면 빈 목록이다.
 async function indexRuns($: Dollar, sid: string): Promise<string[]> {
   try {
@@ -158,7 +190,8 @@ async function look($: Dollar) {
   ticks += 1
   const sid = await $.session.id()
   if (ticks % CLEANUP_TICKS === 0) await seam($, 'cleanup', [], JSON.stringify({ session_id: sid }))
-  const own = await envelopes($, `${spoolRoot()}/inbox/s-${safeSid(sid)}`)
+  const ownDir = `${spoolRoot()}/inbox/s-${safeSid(sid)}`
+  const own = await optionEnvelopes($, ownDir, await envelopes($, ownDir))
   const runNames: string[] = []
   for (const run of await indexRuns($, sid)) {
     for (const name of await envelopes($, `${spoolRoot()}/inbox/r-${run}`)) runNames.push(`${run}/${name}`)
@@ -262,6 +295,87 @@ async function race($: Dollar, e: { tool_use_id: string; questions: Question[] }
   }
 }
 
+// 결정 도우미. 대기는 spawn 의 긴 호출 하나이고, 확정과 진단 기록은 짧은 run 이다.
+const decideArgv = ($: Dollar, sub: string, args: readonly string[]) => ['bash', `${$.plugin.root}/hooks/session-permission-decide.sh`, sub, ...args]
+
+async function decide($: Dollar, sub: string, args: readonly string[], stdin: string): Promise<string> {
+  const r = await $.process.run(decideArgv($, sub, args), { stdin, timeoutMs: SEAM_TIMEOUT_MS })
+  return r.exitCode === 0 ? r.stdout : ''
+}
+
+// 원격 결정을 적용하지 않고 끝난 사유 한 줄. 실패해도 결정 훅을 막지 않는다.
+async function note($: Dollar, reason: string, stdin: string) {
+  await decide($, 'note', [reason], stdin).catch(() => undefined)
+}
+
+type Permit = { session_id: string; tool_name: string; tool_input: unknown; tmpdir: string }
+type Remote = { decision: { behavior: 'allow' } | { behavior: 'deny'; message: string } }
+
+const hasDecision = (r: unknown) => !!r && typeof r === 'object' && (r as { decision?: unknown }).decision != null
+
+// 권한 대화창 하나를 두고 아래 단계(대화창과 로컬 답)와 원격 결정 봉투가 경합한다. 아래
+// 단계가 결정을 담고 끝났거나 중단 신호가 왔으면 원격 결정을 돌려주지 않는다 — 확정 전에도,
+// 확정이 결정을 돌려준 뒤에도. 돌려준 undefined 는 아래 단계를 그대로 돌려주라는 뜻이다.
+async function decideRace($: Dollar, call: Permit, below: Promise<unknown>, signal: AbortSignal): Promise<Remote | undefined> {
+  let isBelowDecided = false
+  const belowDecides = new Promise<{ kind: 'below' }>(resolve => {
+    below.then(
+      r => {
+        if (!hasDecision(r)) return
+        isBelowDecided = true
+        resolve({ kind: 'below' })
+      },
+      () => {
+        isBelowDecided = true
+        resolve({ kind: 'below' })
+      },
+    )
+  })
+  const aborted = new Promise<{ kind: 'abort' }>(resolve => {
+    if (signal.aborted) resolve({ kind: 'abort' })
+    else signal.addEventListener('abort', () => resolve({ kind: 'abort' }), { once: true })
+  })
+  const stdin = JSON.stringify(call)
+  const lost = async () => {
+    await note($, signal.aborted ? '중단신호' : '로컬먼저', stdin)
+    return undefined
+  }
+  const rejected: string[] = []
+  for (;;) {
+    if (isBelowDecided || signal.aborted) return lost()
+    const child = $.process.spawn({ argv: decideArgv($, 'wait', []), input: JSON.stringify({ ...call, rejected }) })
+    const found = firstLine(child).then(
+      line => ({ kind: 'found' as const, line }),
+      () => ({ kind: 'found' as const, line: undefined }),
+    )
+    const first = await Promise.race([belowDecides, aborted, found])
+    if (first.kind !== 'found') {
+      void child.return(undefined).catch(() => undefined)
+      return lost()
+    }
+    const [addr, rid] = (first.line ?? '').split(' ')
+    if (!addr || !rid) return undefined
+    if (isBelowDecided || signal.aborted) return lost()
+    let out: { behavior?: unknown; sender?: unknown } | undefined
+    try {
+      out = JSON.parse((await decide($, 'commit', [addr, rid], stdin)).split('\n')[0] ?? '') as typeof out
+    } catch {
+      out = undefined
+    }
+    if (out && typeof out === 'object' && (out.behavior === 'allow' || out.behavior === 'deny') && typeof out.sender === 'string') {
+      // 확정 사이에 로컬이 이겼으면 적용 기록은 남았어도 결정은 돌려주지 않는다.
+      if (isBelowDecided || signal.aborted) {
+        await note($, '확정뒤로컬먼저', stdin)
+        return undefined
+      }
+      return out.behavior === 'allow'
+        ? { decision: { behavior: 'allow' } }
+        : { decision: { behavior: 'deny', message: `원격 거부 — 발신=${out.sender}` } }
+    }
+    rejected.push(rid)
+  }
+}
+
 export const register: Register = on => {
   // 대화형이고 표지 다섯이 모두 비어 있고 HOME 이 있을 때만 활성이 된다. /clear·재개로
   // 다시 오면 같은 판정을 다시 한다. 판정이나 시계가 실패해도 세션은 그대로 간다.
@@ -310,6 +424,28 @@ export const register: Register = on => {
       return (await race($, { tool_use_id: args.tool_use_id, questions: args.questions }, local)) as Awaited<typeof local>
     } catch {
       return local
+    }
+  })
+
+  // 권한 대화창의 원격 결정. 원격 결정 스위치가 켜진 활성 세션의 메인 대화창에서만 경합하고,
+  // 그 밖에는 next(e) 를 그대로 돌려준다. next(e) 는 어느 갈래에서도 한 번만 부른다 — 다시
+  // 부르면 대화창이 한 번 더 열린다. 그래서 몸 전체의 거부는 스스로 삼키고, 아래 단계를 띄운
+  // 뒤면 그것을, 띄우기 전이면 next(e) 를 돌려준다.
+  on('classic.PermissionRequest', async ($, e, next) => {
+    let below: ReturnType<typeof next> | undefined
+    try {
+      const input = e as unknown as { agent_id?: string; session_id?: string; tool_name?: string; tool_input?: unknown }
+      if (!isActive || input.agent_id || input.tool_name === 'AskUserQuestion' || typeof input.tool_name !== 'string') return next(e)
+      if ((await $.env.get('CC_CMDS_REMOTE_PERMISSION_DECISION')) !== '1') return next(e)
+      if (typeof input.session_id !== 'string' || input.session_id === '' || !(await isAwake($))) return next(e)
+      const tmpdir = (await $.env.get('TMPDIR')) || '/tmp'
+      const call: Permit = { session_id: input.session_id, tool_name: input.tool_name, tool_input: input.tool_input, tmpdir }
+      const local = next(e)
+      below = local
+      const remote = await decideRace($, call, local, next.signal)
+      return remote ?? (await local)
+    } catch {
+      return below ?? next(e)
     }
   })
 

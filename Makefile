@@ -70,6 +70,7 @@ lint:
 	bash scripts/lint-stage-policy-sources.sh
 	bash scripts/lint-terminal-literals.sh
 	bash scripts/lint-interview-record-sections.sh
+	bash scripts/lint-skill-trigger-scenarios.sh
 	bash scripts/lint-interview-convention-refs.sh
 	bash scripts/lint-interview-verification.sh
 	bash scripts/lint-kickoff-defaults.sh
@@ -227,6 +228,16 @@ check-cheap:
 # way a release commit changes them (scripts/test-reuse.sh's per-path check)
 # are not derivation input: a line of their own names them and the stamp keeps
 # them in `유도릴리스=`.
+#
+# An unattended check-push leaves the goals scripts/check-push-ci.tsv lists to
+# the pull request's rest-tests when they came in only by derivation, CI runs
+# the REST goals for the head, and the change holds neither the goal's entry
+# script nor its direct targets nor the list: each gets a `check-push: CI 몫 —
+# <goal>` line and joins `CI몫=` in the stamp. 로컬에서 돌리려면
+# `CHECK_PUSH_GOALS` 로 지명한다. check-items leaves nothing to CI.
+#
+# The sections and goals that failed last in this worktree start first in the
+# next check-push or check-items of it.
 #
 # check-cheap, each goal and each lane of sections run in a checkout of their
 # own and leave a record of the tracked files they read (a lane also the digest
@@ -500,6 +511,8 @@ LINT_TESTS := \
 	scripts/test-lint-stage-policy-sources.sh \
 	scripts/test-lint-terminal-literals.sh \
 	scripts/test-lint-interview-record-sections.sh \
+	scripts/test-lint-skill-trigger-scenarios.sh \
+	scripts/test-skill-trigger-measure.sh \
 	scripts/test-lint-interview-convention-refs.sh \
 	scripts/test-lint-interview-verification.sh \
 	scripts/test-lint-kickoff-defaults.sh \
@@ -514,6 +527,7 @@ ORCH_TESTS := \
 	scripts/test-kickoff-hook-probe.sh \
 	scripts/test-rekick.sh \
 	scripts/test-team-witness-init.sh \
+	scripts/test-team-witness-publish.sh \
 	scripts/test-similar-items.sh \
 	scripts/test-base-split.sh \
 	scripts/test-gate-chain-equiv.sh \
@@ -524,6 +538,7 @@ ORCH_TESTS := \
 	scripts/test-test-gate-full-pretool-hook.sh \
 	scripts/test-session-notify-hook.sh \
 	scripts/test-session-permission-notify.sh \
+	scripts/test-session-permission-decide.sh \
 	scripts/test-session-title-hook.sh \
 	scripts/test-session-status-snapshot.sh \
 	scripts/test-remote-reply.sh \

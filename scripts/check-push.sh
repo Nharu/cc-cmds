@@ -128,6 +128,19 @@
 # for a path this head changed (`CI몫=` in the stamp). A stamp removes the
 # record; a failure leaves it.
 #
+# A HEAVY DERIVED GOAL IS LEFT TO CI FROM THE FIRST ATTEMPT when the tested
+# tree's scripts/check-push-ci.tsv lists it, the run is unattended, the goal
+# came in by derivation and CHECK_PUSH_GOALS does not name it, lint.yml runs
+# the REST goals for this head, and the change holds neither the goal's entry
+# script nor one of its direct targets nor the list itself. Whatever of this
+# cannot be decided runs the goal here. Each such goal gets a `check-push: CI 몫
+# — <goal> (유도로만 들어왔고 …)` line and joins `CI몫=` in the stamp. To run
+# one here, name it in CHECK_PUSH_GOALS. items leaves nothing to CI.
+#
+# WHAT FAILED LAST STARTS FIRST. run and items keep the sections and goals that
+# failed in cc-cmds-last-failed.tsv under this worktree's own git directory,
+# and the next run's job pool starts those first (scripts/test-tree.sh).
+#
 # Exit codes: 0 passed / stamped, 1 a check failed or no stamp, 2 usage, a
 # base that is not a commit, or an unattended run whose head changed
 # plugins/cc-cmds/orchestrator/gate.sh against its merge-base with the base
@@ -158,6 +171,8 @@ CP_REUSE="${CHECK_PUSH_REUSE:-1}"
 CP_BUDGET="${CHECK_PUSH_BUDGET_SECS:-}"
 CP_FAIL_FAST="${CHECK_PUSH_FAIL_FAST:-}"
 CP_RESUME_DIR="cc-cmds-check-push-resume"
+CP_CI_LIST="scripts/check-push-ci.tsv"
+CP_LAST_FAILED="cc-cmds-last-failed.tsv"
 
 check_push_usage() {
   printf 'check-push: 사용법 — run / items / verify / --self-test 중 하나\n' >&2
@@ -255,7 +270,8 @@ check_push_gate_unchanged() {
 # changed paths no goal reads, space-joined), CP_UNREAD_N, CP_CHANGED_N (every
 # changed path), CP_RELEASE (the changed paths left out of the derivation as
 # release-shaped, space-joined, in the order of the change) and CP_RELEASE_N.
-# Returns 0, or 1
+# CP_CHANGED_LIST is every changed path, one per line, set only when the
+# derivation ran to its end and empty otherwise. Returns 0, or 1
 # with CP_DERIVE_STAGE naming the step that failed.
 check_push_derive() {
   local mode="$1" base="$2" head="$3" br ref="" mb list input rel gdir p out err k v
@@ -263,6 +279,7 @@ check_push_derive() {
   CP_UNREAD=""
   CP_UNREAD_N=0
   CP_CHANGED_N=0
+  CP_CHANGED_LIST=""
   CP_RELEASE=""
   CP_RELEASE_N=0
   CP_DERIVE_STAGE=""
@@ -315,6 +332,7 @@ check_push_derive() {
       근거없음) CP_UNREAD="${CP_UNREAD:+$CP_UNREAD }$v"; CP_UNREAD_N=$((CP_UNREAD_N + 1)) ;;
     esac
   done < "$out"
+  CP_CHANGED_LIST=$(cat "$list")
   return 0
 }
 
@@ -443,16 +461,52 @@ EOF
   return 1
 }
 
+# 0 when goal $1 is left to CI from the first attempt: the run is unattended,
+# the goal came in by derivation and is not in the named list $2, the tested
+# tree's CP_CI_LIST lists it with at least one direct target, the change holds
+# neither the list nor the goal's entry script nor a direct target, and CI runs
+# the REST goals for head $4 against base $3. Anything else, an undecided step
+# included, is 1.
+check_push_ci_defers() {
+  local g="$1" named="$2" list="$TT_WORK/$CP_CI_LIST" k v p t targets=() row=()
+  [ -n "${CC_PIPELINE_RUN_ID:-}" ] && [ -n "${CP_CHANGED_LIST:-}" ] || return 1
+  case "$g" in run/?*) ;; *) return 1 ;; esac
+  case ",$named," in *",$g,"*) return 1 ;; esac
+  case ",$CP_DERIVED," in *",$g,"*) ;; *) return 1 ;; esac
+  [ -f "$list" ] && [ -r "$list" ] || return 1
+  while IFS=$'\t' read -r k v || [ -n "$k" ]; do
+    case "$k" in ''|'#'*) continue ;; esac
+    [ "$k" = "$g" ] || continue
+    IFS=' ' read -r -a row <<EOF
+$v
+EOF
+    targets+=(${row[@]+"${row[@]}"})
+  done < "$list"
+  [ "${#targets[@]}" -gt 0 ] || return 1
+  while IFS= read -r p; do
+    for t in "$CP_CI_LIST" "${g#run/}" "${targets[@]}"; do
+      case "$t" in
+        */) case "$p" in "$t"*) return 1 ;; esac ;;
+        *) [ "$p" != "$t" ] || return 1 ;;
+      esac
+    done
+  done <<EOF
+$CP_CHANGED_LIST
+EOF
+  check_push_ci_covers "$3" "$4"
+}
+
 # run (the default) checks and stamps; items runs check-cheap, the sections and
 # the goals only so their passes are recorded, and touches no stamp.
 check_push_run() {
   local verb="${1:-run}" make_bin commit tree gdir stamp_dir stamp mode src base="" fetch="없음" secs goals added="없음" doubles rc stage="" step old got how key steps it rec
   local start budget ff deadline="" sdone="" cutstep="" left="" prc=0 unfinished=0 now
-  local rs="" rs_first="" tries="" cutl="" fbase="없음" ob of ot why ci="" g n keep rest
+  local rs="" rs_first="" tries="" cutl="" fbase="없음" ob of ot why ci="" g n keep rest named
   start=$(date +%s)
   make_bin="${CC_CHECK_PUSH_MAKE:-make}"
   secs="${CHECK_PUSH_SECTIONS:-}"
   goals="${CHECK_PUSH_GOALS:-}"
+  named="$goals"
   case "$CP_JOBS" in
     ''|*[!0-9]*|0*)
       printf 'check-push: CHECK_PUSH_JOBS=%s 는 양의 정수가 아니다 — 비우면 4, 1 이면 직렬로 돈다\n' "$(printf %q "$CP_JOBS")" >&2
@@ -520,6 +574,13 @@ check_push_run() {
   # The lanes merge their times into this repository's record, not the clone's,
   # which is thrown away.
   TT_RECORD="$gdir/cc-cmds-gate-timing.tsv"
+  # What failed last is this worktree's own, so it lives under this worktree's
+  # git directory and not the common one; without it the pool keeps no record.
+  if TT_LAST_FAILED=$(git rev-parse --absolute-git-dir 2>/dev/null) && [ -n "$TT_LAST_FAILED" ]; then
+    TT_LAST_FAILED="$TT_LAST_FAILED/$CP_LAST_FAILED"
+  else
+    TT_LAST_FAILED=""
+  fi
   if ! git diff --quiet HEAD -- 2>/dev/null; then
     printf 'check-push: 경고 — 작업 트리에 커밋되지 않은 추적 변경이 있다. 그 변경은 검사되지도 push 되지도 않는다\n' >&2
   fi
@@ -686,17 +747,19 @@ check_push_run() {
   fi
 
   # A GOAL THE BUDGET CUT TWICE ON THIS HEAD IS LEFT TO CI when CI runs it for
-  # this head. Every goal left in TT_GOALS is in the tested tree's REST goal
-  # list, because tt_check_items refuses any other. items does not leave one
-  # out: recording its pass is what items is for.
-  if [ "$verb" = run ] && [ -n "$cutl" ] && [ -n "$TT_GOALS" ]; then
+  # this head, and so is a listed heavy goal that only the derivation brought in
+  # (check_push_ci_defers). Every goal left in TT_GOALS is in the tested tree's
+  # REST goal list, because tt_check_items refuses any other. items does not
+  # leave one out: recording its pass is what items is for.
+  if [ "$verb" = run ] && [ -n "$TT_GOALS" ]; then
     keep=""
     rest="$TT_GOALS,"
     while [ -n "$rest" ]; do
       g="${rest%%,*}"
       rest="${rest#*,}"
       [ -n "$g" ] || continue
-      n=$(check_push_cut_count "$cutl" "$g")
+      n=0
+      [ -z "$cutl" ] || n=$(check_push_cut_count "$cutl" "$g")
       case "$n" in ''|*[!0-9]*) n=0 ;; esac
       if [ "$n" -ge 2 ]; then
         if check_push_ci_covers "$base" "$commit"; then
@@ -705,6 +768,11 @@ check_push_run() {
           continue
         fi
         printf 'check-push: CI 몫 아님 — %s (시간 예산에 %s번 잘렸지만 %s) · 로컬에서 다시 돈다\n' "$g" "$n" "$CP_CI_WHY" >&2
+      fi
+      if check_push_ci_defers "$g" "$named" "$base" "$commit"; then
+        printf 'check-push: CI 몫 — %s (유도로만 들어왔고 직접 대상이 바뀌지 않음, PR 의 rest-tests 가 돌린다)\n' "$g" >&2
+        ci="${ci:+$ci,}$g"
+        continue
       fi
       keep="${keep:+$keep,}$g"
     done
@@ -1981,6 +2049,167 @@ check-push: CHECK_PUSH_JOBS=1 의 실패 단계는 목록 전체를 이름 댄�
   check "F42 거부는 검사 전에 끝난다" "$(grep -c '^bundle:' "$T/order.log")" "0"
   (cd "$W" && sgit checkout -q h) > /dev/null 2>&1
 
+  # --- F45 유도로만 든 무거운 목표는 처음부터 CI 몫 ---------------------------------------
+  # Branch v carries two run/ goals: r.sh, which the tree's list names with the
+  # direct targets data/direct.txt and data/dir/, and u.sh, which it does not.
+  # Both read data/in.txt. Each case commits on a new branch from v and runs
+  # with v as the base.
+  local sv R45=run/tools/r.sh L45="유도로만 들어왔고 직접 대상이 바뀌지 않음, PR 의 rest-tests 가 돌린다" W45
+  (
+    cd "$W" || exit 1
+    sgit checkout -q -b v h
+    mkdir -p tools data/dir scripts .github/workflows
+    printf 'g1\ng2\nrun/tools/r.sh\nrun/tools/u.sh\n' > goals.txt
+    printf 'cat data/in.txt data/direct.txt data/dir/a.txt data/dirx.txt\n' > tools/r.sh
+    printf 'cat data/in.txt\n' > tools/u.sh
+    printf 'in\n' > data/in.txt
+    printf 'd\n' > data/direct.txt
+    printf 'a\n' > data/dir/a.txt
+    printf 'x\n' > data/dirx.txt
+    printf '# c\n\nrun/tools/r.sh\tdata/direct.txt data/dir/\n' > scripts/check-push-ci.tsv
+    printf "on:\n  pull_request:\n    paths:\n      - 'data/**'\n      - 'tools/**'\njobs:\n  rest-tests:\n    runs-on: x\n" > .github/workflows/lint.yml
+    sgit add -A && sgit commit -q -m V
+  ) > /dev/null 2>&1 || bad "F45 픽스처" "v 커밋 실패"
+  sv=$(cd "$W" && git rev-parse v)
+  W45=0
+  # Commits the commands $1 on a new branch from v and leaves it checked out.
+  v45_at() {
+    W45=$((W45 + 1))
+    (cd "$W" && sgit checkout -q -b "v$W45" v && eval "$1" && sgit add -A && sgit commit -q -m "v$W45") > /dev/null 2>&1
+    fh_line "$sv"
+    : > "$T/order.log"
+  }
+  v45() { cprun CC_PIPELINE_RUN_ID=t CHECK_PUSH_JOBS=1 "$@"; }
+  V45_IN="printf 'in2\n' > data/in.txt"
+
+  v45_at "$V45_IN"
+  out=$(cprun CC_PIPELINE_RUN_ID=t CHECK_PUSH_JOBS=2); rc=$?
+  check "F45 첫 시도에서 이연: 통과하고 도장 CI몫 은 그 목표다" "$rc $(cur_field CI몫) $(cur_field 시도)" "0 $R45 1"
+  has "F45 이연 줄" "$out" "check-push: CI 몫 — $R45 ($L45)"
+  check "F45 이연 줄은 이연한 목표에만 나온다" "$(printf '%s\n' "$out" | grep -c 'CI 몫')" "1"
+  check "F45 이연한 목표는 돌지 않고 목록에 없는 유도 목표는 돈다" "$(dgoals)" "make:--no-print-directory run/tools/u.sh "
+  check "F45 도장의 goals 에서 빠지고 유도목표에는 남는다" "$(cur_field goals) $(cur_field 유도목표)" "run/tools/u.sh run/tools/r.sh,run/tools/u.sh"
+  out=$(cvrun)
+  has "F45 verify 가 CI 몫 줄을 목표 이름만으로 찍는다" "$out" "check-push: CI 몫 — $R45 (로컬에서 돌리지 않았다)"
+  fh_line "$sv"
+  out=$(v45 CHECK_PUSH_JOBS=1 CHECK_PUSH_GOALS=g2); rc=$?
+  check "F45 다른 목표를 지명해도 유도로만 든 목표는 이연한다" "$rc $(cur_field CI몫)" "0 $R45"
+
+  v45_at "$V45_IN"
+  hb0=$(cd "$W" && git rev-parse HEAD)
+  rsf="$W/.git/cc-cmds-check-push-resume/$hb0"
+  mkdir -p "${rsf%/*}"
+  printf 'v=1\ncommit=%s\nbase=%s\n처음=%s\n시도=2\n잘린목표=g2:2\n' "$hb0" "$sv" "$(date +%s)" > "$rsf"
+  out=$(v45 CHECK_PUSH_GOALS=g2); rc=$?
+  check "F45 두 번 잘린 목표와 이연 목표가 함께: 통과하고 둘 다 CI몫" "$rc $(cur_field CI몫)" "0 g2,$R45"
+  has "F45 함께: 두 번 잘린 목표의 줄" "$out" "check-push: CI 몫 — g2 (이 커밋의 시도에서 시간 예산에 두 번 잘림, PR 의 rest-tests 가 돌린다)"
+  has "F45 함께: 이연 목표의 줄" "$out" "check-push: CI 몫 — $R45 ($L45)"
+  check "F45 함께: 남은 유도 목표만 돈다" "$(dgoals)" "make:--no-print-directory run/tools/u.sh "
+
+  # Every case where it runs here: the goal runs and no line names it CI's.
+  v45_local() {
+    local ran=아니오
+    case "$(dgoals)" in *"$R45 "*) ran=예 ;; esac
+    check "$1" "rc=$rc CI몫=$(cur_field CI몫) 돎=$ran 줄=$(printf '%s\n' "$out" | grep -c 'CI 몫')" "rc=0 CI몫=없음 돎=예 줄=0"
+  }
+  v45_at "$V45_IN"
+  out=$(cprun CHECK_PUSH_BASE="$sv" CHECK_PUSH_JOBS=1); rc=$?
+  v45_local "F45 무인 런이 아니면 로컬에서 돈다"
+  v45_at "$V45_IN"
+  out=$(v45 CHECK_PUSH_GOALS="$R45"); rc=$?
+  v45_local "F45 지명하고 유도에도 든 목표는 로컬에서 돈다"
+  v45_at "printf 'h2\n' > h.txt; printf 'd2\n' > data/zz.txt"
+  out=$(v45 CHECK_PUSH_GOALS="$R45"); rc=$?
+  v45_local "F45 지명만 하고 유도에 들지 않은 목표도 로컬에서 돈다"
+  v45_at "$V45_IN; printf 'd2\n' > data/direct.txt"
+  out=$(v45); rc=$?
+  v45_local "F45 직접 대상이 바뀌면 로컬에서 돈다"
+  v45_at "$V45_IN; printf 'a2\n' > data/dir/a.txt"
+  out=$(v45); rc=$?
+  v45_local "F45 접두 직접 대상 아래가 바뀌면 로컬에서 돈다"
+  v45_at "printf 'x2\n' > data/dirx.txt"
+  out=$(v45); rc=$?
+  check "F45 접두는 이름이 이어지는 다른 파일에 맞지 않는다" "$rc $(cur_field CI몫)" "0 $R45"
+  v45_at "$V45_IN; printf '# e\n' >> tools/r.sh"
+  out=$(v45); rc=$?
+  v45_local "F45 진입 파일이 바뀌면 로컬에서 돈다"
+  v45_at "$V45_IN; printf '# more\n' >> scripts/check-push-ci.tsv"
+  out=$(v45); rc=$?
+  v45_local "F45 목록이 바뀌면 로컬에서 돈다"
+  v45_at "$V45_IN; sgit rm -q scripts/check-push-ci.tsv"
+  out=$(v45); rc=$?
+  v45_local "F45 head 가 목록을 지우면 로컬에서 돈다"
+  v45_at "$V45_IN; printf 'on:\n  pull_request:\n    paths:\n      - docs/x.md\njobs:\n  rest-tests:\n    runs-on: x\n' > .github/workflows/lint.yml"
+  out=$(v45); rc=$?
+  v45_local "F45 CI 가 돌리지 않는 커밋이면 로컬에서 돈다"
+  # The base carries no list at all, and one whose row has no direct target.
+  (cd "$W" && sgit checkout -q -b vn v && sgit rm -q scripts/check-push-ci.tsv && sgit commit -q -m VN \
+    && sgit checkout -q -b vb v && printf 'run/tools/r.sh\n' > scripts/check-push-ci.tsv && sgit commit -q -am VB) > /dev/null 2>&1
+  for p in vn vb; do
+    (cd "$W" && sgit checkout -q -b "$p-w" "$p" && printf 'in2\n' > data/in.txt && sgit commit -q -am "$p-w") > /dev/null 2>&1
+    fh_line "$(cd "$W" && git rev-parse "$p")"
+    : > "$T/order.log"
+    out=$(v45); rc=$?
+    v45_local "F45 목록이 없거나 줄에 직접 대상이 없으면 로컬에서 돈다($p)"
+  done
+  v45_at "$V45_IN"
+  out=$(cd "$W" && env CC_PIPELINE_RUN_ID=t CHECK_PUSH_REUSE=1 CHECK_PUSH_JOBS=2 bash "$self" items 2>&1); rc=$?
+  check "F45 items 는 이연하지 않는다" "$rc $(grep -c "^make:--no-print-directory $R45\$" "$T/order.log")" "0 1"
+  hasnt "F45 items 는 CI 몫 줄을 내지 않는다" "$out" "CI 몫"
+  # An undecided derivation leaves no change list, and without one nothing is
+  # left to CI. The first answer shows the same call defers with the list.
+  out=$(
+    cd "$W" || exit 1
+    TT_DIR="$T" TT_WORK="$W" CC_PIPELINE_RUN_ID=t CP_DERIVED="$R45" CP_CHANGED_LIST="data/in.txt"
+    check_push_ci_defers "$R45" "" "$sv" HEAD && printf '이연 '
+    CHECK_PUSH_BASE_BRANCH=nosuch
+    check_push_derive head "" HEAD
+    printf '%s[%s] ' "$CP_DERIVED" "$CP_CHANGED_LIST"
+    CP_DERIVED="$R45"
+    check_push_ci_defers "$R45" "" "$sv" HEAD || printf '로컬'
+  )
+  check "F45 유도가 판정불가면 변경 목록이 비고 로컬에서 돈다" "$out" "이연 판정불가[] 로컬"
+  (cd "$W" && sgit checkout -q h) > /dev/null 2>&1
+
+  # The list this repository carries: every goal is a REST goal and every
+  # direct target is in the tree.
+  local root45 rg45 rows45=0 miss45="" k45 v45t t45
+  root45=$(cd "$(dirname "$self")/.." && pwd)
+  rg45=$(cd "$root45" && MAKEFLAGS='' MFLAGS='' MAKELEVEL='' make -s --no-print-directory print-rest-goals 2>/dev/null)
+  while IFS=$'\t' read -r k45 v45t; do
+    case "$k45" in ''|'#'*) continue ;; esac
+    rows45=$((rows45 + 1))
+    printf '%s\n' "$rg45" | grep -Fxq -- "$k45" || miss45="$miss45 목표:$k45"
+    [ -n "$v45t" ] || miss45="$miss45 대상없음:$k45"
+    for t45 in $v45t; do
+      case "$t45" in
+        */) [ -d "$root45/$t45" ] || miss45="$miss45 $t45" ;;
+        *) [ -f "$root45/$t45" ] || miss45="$miss45 $t45" ;;
+      esac
+    done
+  done < "$root45/$CP_CI_LIST"
+  check "F45 이 저장소의 목록: 목표가 모두 REST 목표이고 직접 대상이 트리에 있다" "$([ "$rows45" -gt 0 ] && echo 있음)|$miss45" "있음|"
+
+  # --- F46 지난 실패 기록은 부른 워크트리의 것이다 ------------------------------------------
+  local lf46="$W/.git/cc-cmds-last-failed.tsv" wt46="$T/wt46" lw46
+  lf46n() { cut -f 2,3 "$1" 2>/dev/null | tr '\t\n' ': '; }
+  (cd "$W" && sgit worktree add -q --detach "$wt46" h) > /dev/null 2>&1 || bad "F46 픽스처" "워크트리 실패"
+  lw46=$(cd "$wt46" && git rev-parse --absolute-git-dir)/cc-cmds-last-failed.tsv
+  rm -f "$lf46"
+  : > "$T/fail-g1"
+  out=$(cprun CHECK_PUSH_JOBS=1 CHECK_PUSH_GOALS=g1); rc=$?
+  check "F46 CHECK_PUSH_JOBS=1 의 실패는 적지 않는다" "$rc $([ -e "$lf46" ] && echo 있음 || echo 없음)" "1 없음"
+  out=$(cprun CHECK_PUSH_JOBS=2 CHECK_PUSH_GOALS=g1,g2); rc=$?
+  check "F46 run 이 실패한 목표를 부른 워크트리의 git 디렉터리에 적는다" "$rc $(lf46n "$lf46")" "1 목표:g1 "
+  rm -f "$T/fail-g1"
+  : > "$T/fail-g2"
+  out=$(cd "$wt46" && env CHECK_PUSH_JOBS=2 CHECK_PUSH_REUSE=1 CHECK_PUSH_GOALS=g1,g2 bash "$self" items 2>&1); rc=$?
+  rm -f "$T/fail-g2"
+  check "F46 items 도 적고, 다른 워크트리의 기록은 건드리지 않는다" "$rc $(lf46n "$lw46")|$(lf46n "$lf46")" "1 목표:g2 |목표:g1 "
+  out=$(cprun CHECK_PUSH_JOBS=2 CHECK_PUSH_GOALS=g1,g2); rc=$?
+  check "F46 통과하면 자기 기록만 지운다" "$rc $(lf46n "$lf46")|$(lf46n "$lw46")" "0 |목표:g2 "
+  (cd "$W" && sgit worktree remove --force "$wt46") > /dev/null 2>&1
+
   # --- (5) a commit that changes the tree has no stamp ------------------------------
   (cd "$W" && printf 'two\n' > h.txt && sgit commit -q -am second)
   out=$(cvrun); rc=$?
@@ -1995,8 +2224,8 @@ check-push: CHECK_PUSH_JOBS=1 의 실패 단계는 목록 전체를 이름 댄�
   rm -rf "$T"
   printf 'check-push self-test: %d passed, %d failed\n' "$passed" "$failed"
   # A floor on the count, so a refactor that silently skips cases cannot pass.
-  if [ "$passed" -lt 262 ]; then
-    printf 'check-push self-test: 통과 수 %d 가 하한 262 에 못 미칩니다\n' "$passed" >&2
+  if [ "$passed" -lt 293 ]; then
+    printf 'check-push self-test: 통과 수 %d 가 하한 293 에 못 미칩니다\n' "$passed" >&2
     return 1
   fi
   [ "$failed" = "0" ]

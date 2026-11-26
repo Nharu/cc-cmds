@@ -1,0 +1,16 @@
+# cc-skill-triggers v1
+# local-html 스킬의 발동 경계 시나리오. 형식과 기대값 대조 방식은 같은 디렉터리의 README.md 에 있다.
+# 이 스킬의 description·when_to_use 를 고치면 고치기 전과 고친 뒤에 같은 인자로
+#   scripts/skill-trigger-measure.sh --skill local-html --model <모델> --budget-usd <N> --plugin-dir <디렉터리>...
+# 를 돌리고, 두 상태 디렉터리의 report.tsv 판정을 비교한다.
+id	기대	발화	근거
+sales-report	cc-cmds:local-html	이번 분기 매출 분석을 HTML 리포트로 정리해줘	발동 — HTML 리포트 새로 발행 (when_to_use)
+design-page	cc-cmds:local-html	설계 문서를 HTML 페이지로 발행해줘	발동 — HTML 문서 발행 (description)
+fix-table	cc-cmds:local-html	아까 만든 HTML 리포트에서 표가 좁게 나오는 거 고쳐줘	발동 — 기존 HTML 문서 수정 (when_to_use 「기존 것을 고칠 때」)
+minutes-html	cc-cmds:local-html	회의록을 이미지까지 넣은 HTML 파일 하나로 만들어줘	발동 — 이미지를 인라인한 자기완결 HTML (description)
+minutes-word	anthropic-skills:docx	회의록을 Word 문서로 만들어줘	이웃 — 외부 문서 스킬 Word
+report-pdf	anthropic-skills:pdf	이 보고서를 PDF 로 만들어줘	이웃 — 외부 문서 스킬 PDF
+sales-chart	dataviz	월별 매출 차트 그려줘	이웃 — 외부 차트 스킬
+slides	anthropic-skills:pptx	이 분석을 발표 슬라이드로 만들어줘	이웃 — 외부 슬라이드 스킬
+react-form	비발동	React 로 로그인 폼 컴포넌트 만들어줘	이웃 — 웹 코드 작업, 문서 발행이 아니다
+section-vs-div	비발동	HTML 의 section 과 div 차이 알려줘	이웃 — HTML 어휘가 있으나 문서 발행이 아니다

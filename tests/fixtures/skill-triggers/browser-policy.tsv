@@ -1,0 +1,15 @@
+# cc-skill-triggers v1
+# browser-policy 스킬의 발동 경계 시나리오. 형식과 기대값 대조 방식은 같은 디렉터리의 README.md 에 있다.
+# 이 스킬의 description·when_to_use 를 고치면 고치기 전과 고친 뒤에 같은 인자로
+#   scripts/skill-trigger-measure.sh --skill browser-policy --model <모델> --budget-usd <N> --plugin-dir <디렉터리>...
+# 를 돌리고, 두 상태 디렉터리의 report.tsv 판정을 비교한다.
+id	기대	발화	근거
+session-name	cc-cmds:browser-policy	playwright 로 로그인 화면 자동화 시작할 건데 세션 이름 어떻게 정해?	발동 — 세션명 작명 규칙 (description, when_to_use 「세션명을 정할 때」)
+headed-when	cc-cmds:browser-policy	playwright 를 headed 로 띄워도 되는 경우가 언제야?	발동 — `--headed` 승격 조건 (description)
+fanout-sessions	cc-cmds:browser-policy	에이전트 세 개가 각자 브라우저를 쓸 때 playwright 세션명 배분 규칙 알려줘	발동 — 팬아웃 시 인덱스 배분; fanout-policy 와 어휘가 겹친다
+human-gate	cc-cmds:browser-policy	브라우저 자동화하다가 캡차에 막혔어, 어떻게 해야 해?	발동 — 사람 개입 게이트에 막혔을 때 (when_to_use)
+screenshot	playwright-cli	https://example.com 열어서 스크린샷 찍어줘	이웃 — 브라우저 조작 자체는 playwright-cli 스킬; 정책 스킬은 그것을 대체하지 않는다 (notes)
+form-fill	playwright-cli	이 웹 페이지 폼 채워서 제출되는지 확인해줘	이웃 — 폼 채우기 조작은 playwright-cli 스킬; 설명문 어긋남 의심 — when_to_use 「브라우저 자동화를 시작하거나」 가 이 발화에도 걸려 정책 스킬이 먼저 불릴 수 있다
+css-center	비발동	CSS flexbox 로 가운데 정렬하는 법 알려줘	이웃 — 웹 지식 질문, 브라우저 자동화가 아니다
+browser-cache	비발동	크롬 브라우저 캐시 지우는 방법 알려줘	이웃 — 브라우저 명사가 있으나 자동화가 아니다
+html-report	cc-cmds:local-html	분석 결과를 HTML 리포트로 만들어줘	이웃 — 시각 검증에 playwright 를 쓰지만 시작점은 HTML 발행 규약 local-html
