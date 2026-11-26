@@ -45,6 +45,9 @@
 # script from skill prose both write `bash <path>`. Do not delete it from those
 # four on the grounds that it is written here.
 #
+# Inside the directory it also creates `partial/`, the round-1 checkpoint
+# directory, so members write checkpoints there without a `mkdir` of their own.
+#
 # Prints the created directory to stdout and nothing else, so the caller can
 # record the printed path literally. Diagnostics go to stderr.
 #
@@ -151,6 +154,11 @@ if [ -z "$WITNESS_ROOT" ] || [ ! -d "$WITNESS_ROOT" ]; then
 fi
 STAGE_TAG=$(printf '%s' "${CC_PIPELINE_STAGE_ID:-}" | tr -c 'A-Za-z0-9._-' '-')
 WITNESS_DIR=$(mktemp -d "${WITNESS_ROOT}/cc-team-witness-${slug}${STAGE_TAG:+.${STAGE_TAG}}.XXXXXX")
+
+# `partial/` is where a round-1 member writes its progress checkpoints with the
+# file edit tool, one new file per seq. Made here, with or without a stage id,
+# so no member has to run a `mkdir` of its own before its first checkpoint.
+mkdir "${WITNESS_DIR}/partial"
 
 if [ -n "${CC_PIPELINE_STAGE_ID:-}" ]; then
   printf '%s\n' "$CC_PIPELINE_STAGE_ID" > "${WITNESS_DIR}/.attempt"
