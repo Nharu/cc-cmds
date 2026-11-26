@@ -8151,7 +8151,7 @@ check "다이제스트는 --list 의 절마다 한 줄이다" \
   "$isf_rc|${isf_shape:-0}|$(cut -f1 "$isf_dir/d.tsv" | LC_ALL=C sort | cmp -s - "$isf_dir/list" && echo same)" "0|0|same"
 check "--from 으로 같은 파일을 주면 같은 목록이다" \
   "$(bash "$isf_suite" --digests --from "$isf_suite" 2>/dev/null | cmp -s - "$isf_dir/d.tsv" && echo same)" "same"
-awk '{ if ($0 == "# This was the file'"'"'s only silent fallback. An id nobody declared says so and" && !m) { print $0 " x"; m = 1 } else print }' \
+awk '{ if ($0 == "# This was once the file'"'"'s only silent fallback: an empty `--sections` printed" && !m) { print $0 " x"; m = 1 } else print }' \
   "$isf_suite" > "$isf_dir/edit.sh"
 bash "$isf_suite" --digests --from "$isf_dir/edit.sh" > "$isf_dir/e.tsv" 2>/dev/null || true
 check "한 절 본문의 바뀐 줄은 그 절의 다이제스트만 바꾼다" \
@@ -8234,7 +8234,7 @@ check "컷 다이제스트는 임시 디렉터리가 달라도 같다" \
 check "컷 다이제스트는 임시 디렉터리에 아무것도 남기지 않는다" \
   "$(find "$cdg_dir/t1" "$cdg_dir/t2" -mindepth 1 | grep -c . || true)" "0"
 cp "$cdg_suite" "$cdg_dir/out/plain.sh"
-awk '{ if ($0 == "# This was the file'"'"'s only silent fallback. An id nobody declared says so and" && !m) { print $0 " x"; m = 1 } else print }' \
+awk '{ if ($0 == "# This was once the file'"'"'s only silent fallback: an empty `--sections` printed" && !m) { print $0 " x"; m = 1 } else print }' \
   "$cdg_suite" > "$cdg_dir/out/in.sh"
 awk '{ if (index($0, "# 0e. ") == 1 && !m) { print $0 " x"; m = 1 } else print }' \
   "$cdg_suite" > "$cdg_dir/out/nb.sh"
