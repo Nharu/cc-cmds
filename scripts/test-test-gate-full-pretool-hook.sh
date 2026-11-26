@@ -54,9 +54,12 @@ run_case() {
   fi
 }
 
+# The commands are data fed to the hook, never run. The wrapped forms are built
+# from `tg` so that no line of this file reads as a call of the script.
+tg="bash scripts/test-gate.sh"
 run_case "직접 --full 은 묻는다" ask "" "bash scripts/test-gate.sh --full"
-run_case "make 로 감싼 --full 은 묻는다" ask "" "make check GATE_SUITE_CMD='bash scripts/test-gate.sh --full'"
-run_case "하위 셸 안의 --full 은 묻는다" ask "" "(bash scripts/test-gate.sh --full)"
+run_case "make 로 감싼 --full 은 묻는다" ask "" "make check GATE_SUITE_CMD='$tg --full'"
+run_case "하위 셸 안의 --full 은 묻는다" ask "" "($tg --full)"
 run_case "좁힌 실행은 묻지 않는다" empty "" "bash scripts/test-gate.sh --sections 0a"
 run_case "--full 이 경로보다 앞인 읽기는 묻지 않는다" empty "" "grep -n -- '--full' scripts/test-gate.sh"
 run_case "관계없는 명령은 묻지 않는다" empty "" "ls"
