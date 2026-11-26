@@ -20,12 +20,16 @@
 # that the next run passes with, a reasonless disable cannot be written away,
 # and a scan root with nothing to scan exits 2.
 #
-# The `elapsed-compare` rule and the load marker are held by cases this script
-# writes into a scratch scan root, one file each: a hit and a pass per detected
-# form, the three ways a hit connects to a judgement line, the marker's own four
-# checks, the marker above a backslash-ended judgement line (taken) and above a
-# one-line one (refused), and a test-gate.sh entry in the baseline (refused).
-# The case text is assembled from pieces — the marker, the clock reads and the
+# The `elapsed-compare` rule and the four rules beside it are held by cases
+# this script writes into a scratch scan root, one file each: a hit and a pass
+# per detected `elapsed-compare` form; a hit, a pass and an escape for
+# `stub-lifetime` and `poll-count` (a nested loop included); the retired marker
+# at a line end, alone on a comment line, and beside an elapsed-time hit in
+# test-gate.sh that it no longer excuses; and a baseline entry under scripts/,
+# which is refused when read and never written. The last runs a copy of the
+# lint in a scratch tree, which also holds the shared fixtures the lint scans
+# besides the test scripts. The case text sits inside quotes or is assembled
+# from pieces — the marker, the disable comments, the clock reads and the
 # elapsed reads never appear whole in this file — so the lint passes over this
 # script with no disable comment and no baseline entry.
 
@@ -92,7 +96,7 @@ for fixture in "$fixtures"/*/; do
 done
 
 # --write-baseline takes the hits it finds, and the next run passes with them.
-for name in FAIL-1-small-margin FAIL-2-elapsed-bound; do
+for name in FAIL-1-small-margin FAIL-2-elapsed-bound FAIL-5-stub-lifetime FAIL-6-poll-count; do
   b="$work/$name.baseline"
   ec=0
   SCAN_ROOT="$fixtures/$name" BASELINE="$b" bash "$lint" --write-baseline >/dev/null 2>&1 || ec=$?
@@ -157,8 +161,9 @@ S='SEC''ONDS'
 EL="el=\$$S"
 NOW='$(da''te +%s)'
 MK="# gate"'-load:'
-GI="# gate"'-isolation: 변동'
 DIS="# lint-test-clock"': disable=elapsed-compare'
+DIS_STUB="# lint-test-clock"': disable=stub-lifetime'
+DIS_POLL="# lint-test-clock"': disable=poll-count'
 CMP_LT='[ "$el" -''lt 5 ]'
 
 # One hit and one pass per detected form. A pass is the lower-bound twin, which
@@ -189,58 +194,67 @@ expect_case "elapsed-compare: 다른 함수의 같은 이름은 경과가 아니
 mkcase logical other.sh "$EL" 'r=$( echo \' "  \"\$($CMP_LT && echo y)\" )"
 expect_case "elapsed-compare: 백슬래시로 이은 논리 줄을 첫 물리 줄로 낸다" logical 1 "other.sh:2:elapsed-compare"
 
-# The three ways a hit in test-gate.sh connects to its judgement line.
-mkcase conn-check test-gate.sh "$EL" "check \"c\" \"\$($CMP_LT && echo y)\" y $MK 경과 상한"
-expect_case "연결 — 같은 논리 줄의 check 에 표지가 있으면 받는다" conn-check 0
-mkcase conn-check-bare test-gate.sh "$EL" "check \"c\" \"\$($CMP_LT && echo y)\" y"
-expect_case "연결 — 표지 없는 check 는 거절한다" conn-check-bare 1 "test-gate.sh:2:elapsed-compare"
-mkcase conn-above test-gate.sh "$EL" "$MK 경과 상한" 'check "c" \' "  \"\$($CMP_LT && echo y)\" y"
-expect_case "윗줄 꼴 — 백슬래시로 끝나는 여러 줄 check 위의 표지는 받는다" conn-above 0
-mkcase conn-above-one test-gate.sh "$EL" "$MK 경과 상한" "check \"c\" \"\$($CMP_LT && echo y)\" y"
-expect_case "윗줄 꼴 — 줄 끝에 달 수 있는 판정 줄 위의 표지는 거절한다" conn-above-one 1 \
-  "test-gate.sh:2:gate-load-orphan" "test-gate.sh:3:elapsed-compare"
-mkcase conn-if test-gate.sh "$EL" "if $CMP_LT; then ok \"c\"" "else bad \"c\" \"\${el}s\"; fi $MK 경과 상한"
-expect_case "연결 — if 조건이면 블록 안 bad 줄의 표지를 본다" conn-if 0
-mkcase conn-if-bare test-gate.sh "$EL" "if $CMP_LT; then ok \"c\"" "else bad \"c\" \"\${el}s\"; fi"
-expect_case "연결 — if 블록의 bad 줄에 표지가 없으면 거절한다" conn-if-bare 1 "test-gate.sh:2:elapsed-compare"
-mkcase conn-other test-gate.sh "$EL" "r=\$($CMP_LT && echo y)" 'check "c" "$r" y'
-expect_case "연결 — 판정 줄이 없는 비교는 거절한다" conn-other 1 "test-gate.sh:2:elapsed-compare"
-mkcase conn-other-dis test-gate.sh "$EL" "r=\$($CMP_LT && echo y) $DIS check c 가 판정" 'check "c" "$r" y'
-expect_case "연결 — 판정 줄이 없는 비교는 탈출 주석으로 받는다" conn-other-dis 0
-mkcase bound-marked test-gate.sh "t0=$NOW" "t1=$NOW" "check \"c\" \"\$([ \$((t1 - t0)) -''le 1 ] && echo y)\" y $MK 경과 상한"
-expect_case "표지는 test-gate.sh 의 elapsed-bound 도 받는다" bound-marked 0
-mkcase margin-marked test-gate.sh "t0=$NOW" "check \"c\" \"\$((t0 ''+ 5))\" 1 $MK 여유"
-expect_case "표지는 clock-margin 을 받지 않는다" margin-marked 1 "test-gate.sh:2:clock-margin"
+# stub-lifetime: a background sleep with a literal duration, redirections
+# between them included; a foreground sleep, also inside a background subshell,
+# and a duration that is not a literal pass.
+mkcase stub-hit other.sh 'sleep 30 &'
+expect_case "stub-lifetime: 배경 sleep 리터럴을 잡는다" stub-hit 1 "other.sh:1:stub-lifetime"
+mkcase stub-redir other.sh 'command sleep 5 >/dev/null 2>&1 & pid=$!'
+expect_case "stub-lifetime: command 와 리다이렉션을 건너 잡는다" stub-redir 1 "other.sh:1:stub-lifetime"
+mkcase stub-miss other.sh '( echo a; sleep 1; echo b ) & w=$!' 'sleep 1 && echo y' 'sleep "$d" &' 'echo "sleep 5 &"'
+expect_case "stub-lifetime: 배경 서브셸 안 전경 sleep·&&·리터럴 아닌 길이·문자열은 잡지 않는다" stub-miss 0
+mkcase stub-dis other.sh "$DIS_STUB 수명 자체가 단언의 주제다" 'sleep 30 &'
+expect_case "stub-lifetime: 윗줄 탈출 주석으로 받는다" stub-dis 0
 
-# The marker's own four checks.
-mkcase mk-reason test-gate.sh "check \"c\" a a $MK"
-expect_case "표지 검사 — 빈 사유" mk-reason 1 "test-gate.sh:1:gate-load-reason"
-mkcase mk-dash test-gate.sh "check \"c\" a a $MK 가 — 나"
-expect_case "표지 검사 — 사유의 ' — '" mk-dash 1 "test-gate.sh:1:gate-load-reason"
-mkcase mk-orphan test-gate.sh "x=1 $MK 경과 상한"
-expect_case "표지 검사 — check/bad 가 없는 줄" mk-orphan 1 "test-gate.sh:1:gate-load-orphan"
-mkcase mk-outside other.sh "check \"c\" a a $MK 경과 상한"
-expect_case "표지 검사 — test-gate.sh 밖" mk-outside 1 "other.sh:1:gate-load-outside"
-mkcase mk-order test-gate.sh "check \"c\" a a $GI $MK 경과 상한"
-expect_case "표지 검사 — gate-isolation 뒤의 표지" mk-order 1 "test-gate.sh:1:gate-load-order"
+# poll-count: a counted loop that sleeps, an outer counted loop whose inner
+# loop sleeps; a counted loop with no sleep and an uncounted outer loop around
+# a counted inner one with no sleep pass.
+mkcase poll-hit other.sh 'i=0' 'while [ "$i" -lt 9 ]; do sleep 1; i=$((i + 1)); done'
+expect_case "poll-count: 숫자 리터럴 카운터에 sleep 하는 루프를 잡는다" poll-hit 1 "other.sh:2:poll-count"
+mkcase poll-nested other.sh 'for i in $(seq 1 3); do' '  while [ ! -f x ]; do sleep 1; done' 'done'
+expect_case "poll-count: 안쪽 루프의 sleep 도 바깥 횟수 루프의 본문이다" poll-nested 1 "other.sh:1:poll-count"
+mkcase poll-miss other.sh 'for i in $(seq 1 9); do echo "$i"; done' \
+  'while [ ! -f x ]; do' '  for i in {1..3}; do echo "$i"; done' '  sleep 1' 'done'
+expect_case "poll-count: sleep 없는 횟수 루프와 횟수 없는 폴링은 잡지 않는다" poll-miss 0
+mkcase poll-dis other.sh "$DIS_POLL 횟수 자체가 단언의 주제다" 'for i in {1..3}; do sleep 1; done'
+expect_case "poll-count: 윗줄 탈출 주석으로 받는다" poll-dis 0
 
-# A test-gate.sh hit is never answered by the baseline, and is never written.
-mkcase tg-baseline test-gate.sh "$EL" "check \"c\" \"\$($CMP_LT && echo y)\" y"
-printf '%s\n' "test-gate.sh|elapsed-compare|check \"c\" \"\$($CMP_LT && echo y)\" y" > "$work/tg.baseline"
-CASE_BASELINE="$work/tg.baseline" expect_case "test-gate.sh 의 경과 적중은 기준선이 받지 않는다" tg-baseline 1 "test-gate.sh:2:elapsed-compare"
+# retired-marker: the marker fails wherever it is, and no longer answers an
+# elapsed-time hit in test-gate.sh, which takes an escape comment instead.
+mkcase rm-end other.sh "x=1 $MK 경과 상한"
+expect_case "retired-marker: 줄 끝 표지를 잡는다" rm-end 1 "other.sh:1:retired-marker"
+mkcase rm-comment other.sh "$MK 경과 상한" 'check "c" \' '  a a'
+expect_case "retired-marker: 주석 전용 줄의 표지를 잡는다" rm-comment 1 "other.sh:1:retired-marker"
+mkcase rm-tg test-gate.sh "$EL" "check \"c\" \"\$($CMP_LT && echo y)\" y $MK 경과 상한"
+expect_case "retired-marker: test-gate.sh 의 경과 적중은 표지가 있어도 실패한다" rm-tg 1 \
+  "test-gate.sh:2:elapsed-compare" "test-gate.sh:2:retired-marker"
+mkcase tg-dis test-gate.sh "$EL" "r=\$($CMP_LT && echo y) $DIS check c 가 판정" 'check "c" "$r" y'
+expect_case "test-gate.sh 의 경과 적중도 탈출 주석으로 받는다" tg-dis 0
+
+# baseline-scope: an entry under scripts/ is refused and answers nothing.
+mkcase scope test-gate.sh "$EL" "check \"c\" \"\$($CMP_LT && echo y)\" y"
+printf '%s\n' "scripts/test-gate.sh|elapsed-compare|check \"c\" \"\$($CMP_LT && echo y)\" y" > "$work/scope.baseline"
+CASE_BASELINE="$work/scope.baseline" expect_case "baseline-scope: scripts/ 경로 항목은 거절되고 적중을 받지 않는다" scope 1 \
+  "scope.baseline:1:baseline-scope" "test-gate.sh:2:elapsed-compare"
+
+# In the tree layout the lint scans the test scripts and the shared fixtures,
+# and --write-baseline writes no entry under scripts/.
+tree="$work/tree"
+mkdir -p "$tree/scripts"
+cp "$lint" "$tree/scripts/lint-test-clock.sh"
+printf '%s\n' '#!/usr/bin/env bash' 'n='"$NOW" 'echo "$((n ''+ 5))"' > "$tree/scripts/test-x.sh"
+printf '%s\n' 'sleep 60 &' > "$tree/scripts/run-fixture.sh"
+printf '%s\n' 'for i in {1..5}; do sleep 1; done' > "$tree/scripts/wait-fixture.sh"
+printf '%s\n' 'sleep 60 &' > "$tree/scripts/other-fixture.sh"
 ec=0
-SCAN_ROOT="$cases/tg-baseline" BASELINE="$work/tg.baseline" bash "$lint" >/dev/null 2>"$work/err" || ec=$?
-if [[ "$ec" == 1 ]] && grep -q '^FAIL: baseline entry refused — test-gate.sh|elapsed-compare|' "$work/err"; then
-  pass "test-gate.sh 의 경과 적중 기준선 항목은 그 자체로 실패한다"
+BASELINE="$work/tree.baseline" bash "$tree/scripts/lint-test-clock.sh" --write-baseline >/dev/null 2>"$work/err" || ec=$?
+got=$(reported "$work/err" | paste -s -d ' ' -)
+want_set="scripts/run-fixture.sh:1:stub-lifetime scripts/test-x.sh:3:clock-margin scripts/wait-fixture.sh:1:poll-count"
+if [[ "$ec" == 1 && "$got" == "$want_set" ]] && ! grep -q '^scripts/' "$work/tree.baseline"; then
+  pass "--write-baseline 은 scripts/ 적중을 쓰지 않고 실패로 남기며, 공용 픽스처 둘을 훑는다"
 else
-  fail "test-gate.sh 기준선 항목 — exit=$ec, 거절 줄 없음"
-fi
-ec=0
-SCAN_ROOT="$cases/tg-baseline" BASELINE="$work/tg-w.baseline" bash "$lint" --write-baseline >/dev/null 2>&1 || ec=$?
-if [[ "$ec" == 1 ]] && ! grep -q '^test-gate.sh|' "$work/tg-w.baseline"; then
-  pass "--write-baseline 은 test-gate.sh 의 경과 적중을 쓰지 않고 실패로 남긴다"
-else
-  fail "--write-baseline 이 test-gate.sh 적중을 다뤘다 — exit=$ec"
+  fail "트리 배치 — exit=$ec, 위반 「${got}」(기대 「${want_set}」)"
+  sed 's/^/    /' "$work/err" >&2
 fi
 
 printf 'test-lint-test-clock: %d passed, %d failed\n' "$passed" "$failures"

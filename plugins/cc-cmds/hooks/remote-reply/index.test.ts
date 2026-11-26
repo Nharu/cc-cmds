@@ -1,4 +1,4 @@
-// 원격 답 모드의 활성 판정·열린 질문 경합·질문지 적용·깨우기·시계 복구·잠든 상태.
+// 원격 답 모드의 활성 판정·열린 질문 경합·질문지 적용·깨우기·시계 복구·잠든 상태·권한 대화창의 원격 결정.
 import { describe, expect, test } from 'claude-code/testing'
 
 import { call, formIdOf, mount, twoQuestions } from '../question-form/kit'
@@ -6,7 +6,7 @@ import type { FormInput } from '../question-form/spec'
 import { isOpen, openRecord } from '../question-form/transitions'
 import { normalizeForm } from '../question-form/validate'
 import { CLEANUP_TICKS, IDLE_MS, SCAN_MS } from './index'
-import { MARKS, OWN, QUESTIONS, ROOT, SID, STATE, ask, prompt, seamSubs, start, turnDone, turnStart, world } from './kit'
+import { MARKS, OWN, PERMIT_INPUT, QUESTIONS, ROOT, SID, STATE, ask, decideSubs, permit, prompt, seamSubs, start, turnDone, turnStart, world } from './kit'
 
 const REMOTE = { '어디까지?': '넓게' }
 const LITERAL = '<cc-remote-approval run=run-1 id=a-0123abcd/>'
@@ -19,6 +19,9 @@ const runMailbox = (w: any) => {
 }
 
 const scanOut = (form: unknown, wake: unknown[] = []) => JSON.stringify({ form, wake })
+
+// 결정 도우미의 허용 확정 출력.
+const ALLOW_LINE = '{"behavior":"allow","sender":"app:dev-7f3a"}\n'
 
 describe('활성 판정', () => {
   test('대화형이고 표지가 없으면 활성이 되어 정리부터 한다', async ($, on) => {
@@ -402,6 +405,211 @@ describe('깨우기', () => {
     expect(seamSubs(w)).toContain('wake-mark')
   })
 })
+
+describe('권한 대화창의 원격 결정', () => {
+  const LOCAL = { decision: { behavior: 'deny', message: '로컬 거부' } }
+  const CALL = { session_id: SID, tool_name: 'Bash', tool_input: PERMIT_INPUT, tmpdir: '/t/' }
+  const ALLOW = ALLOW_LINE
+  const DENY = '{"behavior":"deny","sender":"app:dev-7f3a"}\n'
+
+  // 결정 훅이 끼어들지 않으면 대화창의 결과가 그대로 나가고 도우미는 뜨지 않는다.
+  const passes = async (w: any, clock: any, p: Promise<unknown>) => {
+    await clock.advance(600_000)
+    expect(await p).toEqual(LOCAL)
+    expect(w.decideSpawns).toHaveLength(0)
+    expect(w.decides).toHaveLength(0)
+    expect(w.dialogs).toBe(1)
+  }
+
+  test('활성이 아니면(비대화형) next(e) 를 그대로 돌려준다', async ($, on) => {
+    const { w, clock } = world(on)
+    await start($, false)
+    await passes(w, clock, permit($))
+  })
+
+  test('agent_id 가 있으면 next(e) 를 그대로 돌려준다', async ($, on) => {
+    const { w, clock } = world(on)
+    await start($)
+    await passes(w, clock, permit($, { agent_id: 'agent-1' }))
+  })
+
+  test('AskUserQuestion 이면 next(e) 를 그대로 돌려준다', async ($, on) => {
+    const { w, clock } = world(on)
+    await start($)
+    await passes(w, clock, permit($, { tool_name: 'AskUserQuestion' }))
+  })
+
+  test('원격 결정 스위치가 꺼져 있으면 next(e) 를 그대로 돌려준다', async ($, on) => {
+    const { w, clock } = world(on, { env: { CC_CMDS_REMOTE_PERMISSION_DECISION: '' } })
+    await start($)
+    await passes(w, clock, permit($))
+  })
+
+  test('스풀 루트가 없으면 next(e) 를 그대로 돌려준다', async ($, on) => {
+    const { w, clock } = world(on, { spool: false })
+    await start($)
+    await passes(w, clock, permit($))
+  })
+
+  test('후보가 오면 확정하고 허용을 돌려준다', async ($, on) => {
+    const { w, clock } = world(on)
+    w.decideWaits = [`s-${SID} r1`]
+    w.decideReplies.commit = ALLOW
+    await start($)
+    const p = permit($)
+    await clock.advance(1000)
+    expect(await p).toEqual({ decision: { behavior: 'allow' } })
+    expect(w.decideSpawns[0].argv.slice(-1)).toEqual(['wait'])
+    expect(JSON.parse(w.decideSpawns[0].input ?? '{}')).toEqual({ ...CALL, rejected: [] })
+    const commit = w.decides.find(c => c.sub === 'commit')
+    expect(commit?.args).toEqual([`s-${SID}`, 'r1'])
+    expect(JSON.parse(commit?.stdin ?? '{}')).toEqual(CALL)
+    expect(w.spawns).toHaveLength(0)
+  })
+
+  test('거부 확정은 발신자를 밝힌 거부 문면을 돌려준다', async ($, on) => {
+    const { w, clock } = world(on)
+    w.decideWaits = [`s-${SID} r1`]
+    w.decideReplies.commit = DENY
+    await start($)
+    const p = permit($)
+    await clock.advance(1000)
+    expect(await p).toEqual({ decision: { behavior: 'deny', message: '원격 거부 — 발신=app:dev-7f3a' } })
+  })
+
+  test('아래 단계가 결정을 먼저 내면 그 결정을 돌려주고 확정하지 않는다', async ($, on) => {
+    const { w, clock } = world(on)
+    w.dialogDelayMs = 1000
+    w.decideWaits = [`s-${SID} r1`]
+    w.decideWaitDelayMs = 600_000
+    w.decideReplies.commit = ALLOW
+    await start($)
+    const p = permit($)
+    await clock.advance(1000)
+    expect(await p).toEqual(LOCAL)
+    await clock.advance(600_000)
+    expect(decideSubs(w)).not.toContain('commit')
+    expect(w.decides.find(c => c.sub === 'note')?.args).toEqual(['로컬먼저'])
+  })
+
+  test('아래 단계가 결정 없이 끝나면 계속 기다려 원격 결정을 돌려준다', async ($, on) => {
+    const { w, clock } = world(on)
+    w.dialogDelayMs = 500
+    w.dialogResult = {}
+    w.decideWaits = [`s-${SID} r1`]
+    w.decideWaitDelayMs = 2000
+    w.decideReplies.commit = ALLOW
+    await start($)
+    const p = permit($)
+    await clock.advance(2000)
+    expect(await p).toEqual({ decision: { behavior: 'allow' } })
+  })
+
+  test('확정이 거절되면 그 reply_id 를 빼고 다시 기다린다', async ($, on) => {
+    const { w, clock } = world(on)
+    w.decideWaits = [`s-${SID} r1`, `s-${SID} r2`]
+    w.decideReplies.commit = ['', ALLOW]
+    await start($)
+    const p = permit($)
+    await clock.advance(1000)
+    await clock.advance(1000)
+    expect(await p).toEqual({ decision: { behavior: 'allow' } })
+    expect(w.decideSpawns).toHaveLength(2)
+    expect(JSON.parse(w.decideSpawns[1].input ?? '{}').rejected).toEqual(['r1'])
+    expect(w.decides.filter(c => c.sub === 'commit').map(c => c.args[1])).toEqual(['r1', 'r2'])
+  })
+
+  test('확정 출력이 JSON 이 아니거나 behavior 가 다르면 다시 기다린다', async ($, on) => {
+    const { w, clock } = world(on)
+    w.decideWaits = [`s-${SID} r1`, `s-${SID} r2`, `s-${SID} r3`]
+    w.decideReplies.commit = ['허용\n', '{"behavior":"ask","sender":"app:dev-7f3a"}\n', DENY]
+    await start($)
+    const p = permit($)
+    await clock.advance(1000)
+    await clock.advance(1000)
+    await clock.advance(1000)
+    expect(await p).toEqual({ decision: { behavior: 'deny', message: '원격 거부 — 발신=app:dev-7f3a' } })
+    expect(JSON.parse(w.decideSpawns[2].input ?? '{}').rejected).toEqual(['r1', 'r2'])
+  })
+
+  test('확정 사이에 아래 단계가 결정을 내면 확정의 결정 대신 아래 단계를 돌려준다', async ($, on) => {
+    const { w, clock } = world(on)
+    w.dialogDelayMs = 1500
+    w.decideWaits = [`s-${SID} r1`]
+    w.decideReplies.commit = ALLOW
+    w.decideBefore.commit = () => clock.sleep(1000)
+    await start($)
+    const p = permit($)
+    await clock.advance(1000)
+    await clock.advance(1000)
+    expect(await p).toEqual(LOCAL)
+    expect(decideSubs(w)).toContain('commit')
+    expect(w.decides.find(c => c.sub === 'note')?.args).toEqual(['확정뒤로컬먼저'])
+  })
+
+  test('대기 자식이 줄 없이 끝나면 확정하지 않고 아래 단계를 돌려준다', async ($, on) => {
+    const { w, clock } = world(on)
+    w.dialogDelayMs = 5000
+    w.decideWaits = [undefined]
+    await start($)
+    const p = permit($)
+    await clock.advance(5000)
+    expect(await p).toEqual(LOCAL)
+    expect(decideSubs(w)).not.toContain('commit')
+    expect(w.decideSpawns).toHaveLength(1)
+  })
+
+  test('결정 봉투만 있는 우편함에서는 살핌 틱이 scan 을 부르지 않는다', async ($, on) => {
+    const { w, clock } = world(on)
+    await start($)
+    await turnStart($)
+    await formIdOf((await call($, twoQuestions())).text)
+    w.dirs[OWN] = ['r1.json']
+    w.files[`${OWN}/r1.json`] = JSON.stringify({ schema: 1, reply_id: 'r1', kind: 'permission-decision' })
+    await clock.advance(SCAN_MS * 3)
+    expect(seamSubs(w)).not.toContain('scan')
+    expect(w.reads.filter(path => path === `${OWN}/r1.json`)).toHaveLength(1)
+    w.dirs[OWN] = ['r1.json', 'r2.json']
+    w.files[`${OWN}/r2.json`] = JSON.stringify({ schema: 1, reply_id: 'r2', kind: 'option' })
+    w.replies.scan = scanOut(null)
+    await clock.advance(SCAN_MS)
+    expect(seamSubs(w)).toContain('scan')
+    expect(JSON.parse(w.seams[w.seams.length - 1].stdin ?? '{}').form).not.toBeNull()
+  })
+})
+
+test(
+  '위 계층이 먼저 정착하면(중단 신호) 대기를 끝내고 확정하지 않는다',
+  {
+    plugins: [
+      {
+        name: 'above',
+        tier: 'prepend',
+        register(on) {
+          on('classic.PermissionRequest', async ($, e, next) => {
+            void next(e).catch(() => undefined)
+            await $.clock.sleep(1500)
+
+            return { decision: { behavior: 'deny', message: '위 계층' } }
+          })
+        },
+      },
+    ],
+  },
+  async ($, on) => {
+    const { w, clock } = world(on)
+    w.decideWaits = [`s-${SID} r1`]
+    w.decideWaitDelayMs = 5000
+    w.decideReplies.commit = ALLOW_LINE
+    await start($)
+    const p = permit($)
+    await clock.advance(1500)
+    expect(await p).toEqual({ decision: { behavior: 'deny', message: '위 계층' } })
+    await clock.advance(10_000)
+    expect(decideSubs(w)).not.toContain('commit')
+    expect(w.decides.find(c => c.sub === 'note')?.args).toEqual(['중단신호'])
+  },
+)
 
 describe('시계 복구', () => {
   test('살핌 주기가 거부되어 끝나면 사람 사건 없이 감시 주기가 다시 건다', async ($, on) => {

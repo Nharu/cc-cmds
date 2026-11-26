@@ -1,6 +1,6 @@
 # 원격 답 — 원격으로 받은 선택지 답을 세션의 열린 질문에 넣는 규칙
 
-원격 전송(텔레그램, 앱)으로 받은 선택지 답을, 세션이 열어 둔 질문(AskUserQuestion, 질문지, autopilot 승인 질문)에 넣는 규칙의 정본이다. 스풀 루트와 사건 기록, 처리 표지, `safe_sid`, 파일 만들기 규칙은 `plugins/cc-cmds/skills/_common/attention-event.md` 가 정하고, 이 문서는 그 위에서 봉투, 우편함, 수령 표지, 이음매 규약, 깨우기 리터럴, 원격 적용 기록, 게이트 응답 경로 필드, 중계의 결과 유도를 정한다. 우편함·수령 표지·적용 기록 경로의 이름, 칸, 지우기 규칙은 이 문서가 정본이며, 공용 문서의 스풀 경로표와 그 아래 원격 답 경로 단락은 같은 이름과 작성자, 같은 지우기 규칙을 적는다.
+원격 전송(텔레그램, 앱)으로 받은 선택지 답을, 세션이 열어 둔 질문(AskUserQuestion, 질문지, autopilot 승인 질문)에 넣는 규칙과, 권한 확인 프롬프트에 허용·거부를 넣는 결정 봉투의 규칙의 정본이다. 스풀 루트와 사건 기록, 처리 표지, `safe_sid`, 파일 만들기 규칙은 `plugins/cc-cmds/skills/_common/attention-event.md` 가 정하고, 이 문서는 그 위에서 봉투, 우편함, 수령 표지, 이음매 규약, 깨우기 리터럴, 원격 적용 기록, 게이트 응답 경로 필드, 중계의 결과 유도를 정한다. 우편함·수령 표지·적용 기록 경로의 이름, 칸, 지우기 규칙은 이 문서가 정본이며, 공용 문서의 스풀 경로표와 그 아래 원격 답 경로 단락은 같은 이름과 작성자, 같은 지우기 규칙을 적는다.
 
 이 문서는 형식을 고정할 뿐 코드를 싣지 않는다. 세션 이음매, 중계, 게이트의 응답 경로 필드는 뒤 티켓이 이 형식을 읽어 구현한다. 아래 네 표(`## 봉투 키`, `## 수령 표지 키`, `## 적용 기록 키`, `## 주소 규칙`)는 스키마 린트 `scripts/lint-remote-reply-schema.sh` 가 읽어 자기 목록과 대조하므로, 표 하나를 바꾸면 린트의 목록도 함께 바꾼다.
 
@@ -18,7 +18,7 @@
 
 ## 원격 답 규칙
 
-- 첫 판의 봉투 종류는 `option` 하나다. `text`·`decision` 키는 첫 판 봉투에 없다.
+- 봉투 종류는 `option`(선택지 답)과 `permission-decision`(권한 확인 프롬프트의 허용·거부, 아래 `## 결정 봉투`) 둘이다. `text` 키는 어느 봉투에도 없고, `decision` 키는 결정 봉투에만, `answers` 키는 `option` 봉투에만 있다. 이 절의 나머지 규칙은 `option` 봉투의 것이다.
 - 모든 라벨은 그 질문의 선택지 라벨과 바이트로 같고, 기타 입력은 없다. `multi_select` 가 거짓인 질문, 질문지의 질문, 승인의 질문은 라벨이 정확히 하나다. 질문지는 모든 질문이 단일 선택이고 조건부 표시가 없을 때만 답할 수 있는 사건이므로 질문지 봉투도 질문마다 라벨 하나다.
 - `answers` 는 대상의 모든 질문을 `question_index`(0부터) 오름차순으로 꼭 한 번씩 덮는다. 승인 대상은 질문 하나(`question_index` 0)다.
 - `multi_select` 가 참인 질문의 라벨은 하나 이상이고 서로 다르다. 그 질문의 답 문자열은 봉투의 라벨들을 열린 호출의 선택지 순서로 늘어놓고 `, `(쉼표와 공백)로 이은 것이다. 봉투 안 라벨 순서는 따지지 않으므로 같은 라벨 집합은 같은 답 문자열과 같은 해시를 낳는다. 그런 질문의 선택지 라벨 중 하나라도 `, ` 를 담으면 그 봉투는 적용하지 않는다.
@@ -47,14 +47,15 @@
 | `reply_id` | string | 봉투 id, `<host_id>.<epoch_ms>.<8 hex>`, 앞부분이 `host` 와 같다 |
 | `event_id` | string | 대상 사건의 id, `host` + `.` 로 시작한다 |
 | `host` | string | 호스트 id, `[a-z0-9-]{1,32}` |
-| `kind` | string | `option` |
-| `target` | object | 사건 `reply` 의 축자 사본, `surface` 는 `auq`·`question-form`·`approval` 중 하나이고 그 surface 의 필수 필드를 모두 가진다 |
-| `answers` | array | `{question_index, labels}` 의 배열, 원격 답 규칙대로 |
+| `kind` | string | `option` 또는 `permission-decision` |
+| `target` | object | 사건 `reply` 의 축자 사본. `option` 봉투의 `surface` 는 `auq`·`question-form`·`approval` 중 하나, 결정 봉투의 `surface` 는 `permission` 이며, 그 surface 의 필수 필드를 모두 가진다 |
+| `answers` | array | `option` 봉투에만(필수), `{question_index, labels}` 의 배열, 원격 답 규칙대로 |
+| `decision` | string | 결정 봉투에만(필수), `allow` 또는 `deny` |
 | `provenance` | object | `transport`·`sender`·`received_at_ms`·`transport_ref` 네 키, 필드 문법대로 |
 | `expires_at_ms` | number | `provenance.received_at_ms` 보다 큰 정수 |
 | `pickup_by_ms` | number | 런 주소 봉투에만, `received_at_ms < pickup_by_ms <= expires_at_ms` |
 
-`target` 의 surface 별 필드는 공용 문서의 답 대상 표 그대로다 — `auq` 는 `session_id`, `tool_use_id`, `questions[{question, header, multi_select, options[{label}]}]`, `question-form` 은 `session_id`, `form_id`, `questions[{id, question, options[{label}]}]`, `approval` 은 `run_id`, `approval_id`, `question`(`승인 <approval_id> — <질문>`), `options`(게이트의 라벨 문자열 배열).
+`target` 의 surface 별 필드는 공용 문서의 답 대상 표 그대로다 — `auq` 는 `session_id`, `tool_use_id`, `questions[{question, header, multi_select, options[{label}]}]`, `question-form` 은 `session_id`, `form_id`, `questions[{id, question, options[{label}]}]`, `approval` 은 `run_id`, `approval_id`, `question`(`승인 <approval_id> — <질문>`), `options`(게이트의 라벨 문자열 배열), `permission` 은 `session_id`·`tool_name`(비지 않은 문자열), `input_summary`(문자열).
 
 ## 주소 규칙
 
@@ -65,6 +66,7 @@
 | `approval` | `r-<target.run_id>` |
 | `auq` | `s-<safe_sid(target.session_id)>` |
 | `question-form` | `s-<safe_sid(target.session_id)>` |
+| `permission` | `s-<safe_sid(target.session_id)>` |
 
 ## 우편함
 
@@ -94,15 +96,15 @@
 
 **활성 조건** — 대화형 터미널, 주 루프(agentId 없음), 그리고 라우터 판정 `cc_caller_is_router`(`plugins/cc-cmds/orchestrator/notify-run.sh`)가 읽는 파이프라인 표지 `CC_PIPELINE_SEGMENT`·`CC_PIPELINE_STAGE_ID`·`CC_PIPELINE_SHIFT_ID`·`CC_PIPELINE_REENTRY` 가 모두 비어 있음. 사람의 autopilot 라우터 좌석은 해당하고, 교대·스테이지·launchd 부팅 재진입은 해당하지 않는다.
 
-**수락 조건** — 다음을 모두 만족해야 적용한다.
+**수락 조건** — 다음을 모두 만족해야 적용한다. 이 절의 이음매는 `option` 봉투만 적용하며, 결정 봉투는 이음매가 아니라 아래 `## 결정 봉투` 의 결정 도우미가 적용한다.
 
 1. 봉투 `host` 가 이 기계의 호스트 id 와 같다.
-2. 사건 기록 `events/<event_id>.json` 이 있고 `schema` 가 1 이며 `accepts` 에 `option` 이 있다.
+2. 사건 기록 `events/<event_id>.json` 이 있고 `schema` 가 1 이며 `accepts` 에 `option` 이 있다. 답할 수 있는 권한 사건의 `accepts` 는 `["permission-decision"]` 이므로 이음매는 그 사건을 가리키는 봉투를 여기서 거절한다.
 3. 대상이 열린 호출과 바이트로 같다. `auq` 는 `target.tool_use_id` 가 열린 호출의 id 와 같고, 질문마다 `question`·`header`·`multi_select`·선택지 라벨 목록이 호출 입력과 같다. 대응은 `question` ↔ 호출 입력 `question`, `header` ↔ `header`, `multi_select` ↔ 호출 입력 `multiSelect`(키가 없으면 거짓), 라벨 목록 ↔ 호출 입력 `options[].label` 의 순서 목록이며, 문자열은 바이트로 비교한다(선택지 설명은 비교하지 않는다). 질문지는 `form_id` 와 질문마다 `id`·`question`·라벨 목록이 같다. 승인은 열린 호출의 질문이 정확히 하나이고 그 질문이 `target.question` 과 바이트로 같으며, 그 질문의 선택지 라벨을 각각 정규화한 집합이 `target.options` 의 집합과 같다. 정규화는 게이트의 `gate_menu_normalize` 와 같이 첫 ` ← ` 부터 끝까지를 떼는 것이다. 질문이 둘 이상인 호출에는 승인 봉투를 적용하지 않으므로 승인의 답 해시는 그 질문 하나를 덮는다.
 4. 모든 라벨이 원격 답 규칙을 만족한다.
 5. `now < expires_at_ms` 다.
 6. 아직 적용되지 않았다 — `applied/<봉투의 reply_id>.json` 이 없고, 표지가 있다면 그 `session_id` 가 자기 것이거나, 런 주소 봉투에서 그 `session_id` 와 자기 세션 id 가 모두 그 런의 계보에 있다. 그리고 같은 대상 칸(`auq`·승인은 열린 호출의 tool_use_id, 질문지는 `form_id`)의 적용 기록이 이미 있지 않다. 그래서 호출 하나에 적용 기록은 많아야 하나다. 대상 칸으로 기록을 찾는 수단과, 이 확인을 적용 방식 (나)의 쓰기와 한 번에 묶는 수단은 이음매 구현 티켓이 정한다.
-7. 세션 주소 봉투(`auq`·`question-form`)는 `provenance.sender` 가 발신자 인가 파일 `$HOME/.config/cc-cmds/remote-senders.json` 의 `senders[].id` 에 있고 그 발신자의 `capabilities` 에 봉투 `kind` 가 있다. 런 주소 승인 봉투에 대한 같은 재확인은 이 문서의 수락 조건이 아니며 게이트 원격 승인 티켓의 수락 조건이다. 그 전까지 같은 사용자의 프로세스가 스풀에 봉투를 써 승인 질문을 닫게 할 수 있는 위험은 받아들인 위험으로 남는다.
+7. 세션 주소 선택지 봉투(`auq`·`question-form`)는 `provenance.sender` 가 발신자 인가 파일 `$HOME/.config/cc-cmds/remote-senders.json` 의 `senders[].id` 에 있고 그 발신자의 `capabilities` 에 봉투 `kind` 가 있다. 런 주소 승인 봉투에 대한 같은 재확인은 이 문서의 수락 조건이 아니며 게이트 원격 승인 티켓의 수락 조건이다. 그 전까지 같은 사용자의 프로세스가 스풀에 봉투를 써 승인 질문을 닫게 할 수 있는 위험은 받아들인 위험으로 남는다.
 8. 질문지 봉투는 대상 질문 어디에도 사람의 초안(선택, 자유 입력, 메모 중 하나라도)이 없다. 초안이 있으면 원격 `choose(..)` 를 부르지 않고 그 봉투를 거절하며, 로컬 대화창은 그대로 남아 손 답을 받는다. 단일 선택 질문의 `choose` 는 이미 고른 라벨을 다시 누르면 선택을 풀므로, 이 조건이 없으면 사람이 먼저 고른 라벨을 원격 답이 비운 묶음이 제출되어 「적용됨」 으로 보고된다.
 
 **적용 방식** — 순서는 고정이다.
@@ -128,6 +130,33 @@
 
 **귀환 훅과의 순서** — AskUserQuestion 봉투는 적용 방식 (다)가 결과 반환 전에 일어나므로, 반환 뒤 사후 도구 훅 쪽에서 처리 표지가 어떤 원인으로 남든 `reply-applied` 가 먼저다. 공용 문서의 읽기 규칙은 사건보다 늦은 가장 이른 표지의 원인을 쓰므로 원인은 `reply-applied` 로 읽힌다. 사후 도구 훅의 귀환 정리는 원격 답이 적용된 호출에도 로컬 답과 같이 돌아 그 세션의 배너를 거둔다. 질문지는 (다)가 제출 뒤에 오므로 이 순서가 서지 않으며, 질문지 봉투의 결과는 적용 기록이 먼저 정하므로 처리 표지의 원인에 기대지 않는다. 귀환 훅은 고치지 않는다.
 
+## 결정 봉투
+
+권한 확인 프롬프트(`PermissionRequest`)에 허용·거부를 넣는 봉투다. 원격 답 모드(`plugins/cc-cmds/hooks/remote-reply/index.tsx`)의 `classic.PermissionRequest` 훅이 언제 부를지와 경합의 승자를 정하고, 결정 도우미 `plugins/cc-cmds/hooks/session-permission-decide.sh` 가 스풀을 읽고 쓰는 모든 일을 한다. 이음매(`remote-reply/seam.sh`)는 결정 봉투를 적용하지 않는다. 결정 봉투는 원격 결정 스위치(`CC_CMDS_REMOTE_PERMISSION_DECISION=1`)가 켜진 대화형 메인 세션에서만 쓰인다.
+
+- **키** — `schema`(1), `reply_id`, `event_id`, `host`, `kind`(`permission-decision`), `target`, `decision`(`allow` 또는 `deny`), `provenance`, `expires_at_ms` 아홉뿐이다. `answers`·`text`·`pickup_by_ms` 는 없다. 필드 문법은 위 `## 필드 문법` 그대로다.
+- **대상과 주소** — `target` 은 권한 사건 `reply` 의 축자 사본(`surface: "permission"`)이고, 주소는 `s-<safe_sid(target.session_id)>` 다.
+- **도우미 입력** — `{session_id, tool_name, tool_input, rejected, tmpdir}`. `session_id`·`tool_name`·`tool_input` 은 훅 입력의 값이고, `tmpdir` 은 모드가 읽은 `TMPDIR` 이다. 도우미는 좌석 훅과 같은 계산으로 좌석 상태 디렉터리를 정하고, 좌석 표지 `pending.<지문>`·`open.<지문>` 에 적힌 정규화 키로 이 호출의 표지를 찾아 그 표지가 적은 지문을 슬롯 `cc-cmds-permission-<sid>@<지문>` 에 쓴다.
+- **경로 값의 꼴** — 수락 조건보다 먼저, `addr` 가 `s-<safe_sid(이 세션 id)>` 와 바이트로 같고 `reply_id`·`event_id` 가 필드 문법에 맞는지 보며, 빈 값·`.` 으로 시작하는 값·`/` 를 담은 값은 거절한다.
+
+**수락 조건** — 다음을 모두 만족해야 적용한다.
+
+1. 봉투 `host` 가 이 기계의 호스트 id 와 같다.
+2. 사건 기록 `events/<event_id>.json` 이 있고 `schema` 가 1, `kind` 가 `permission`, `accepts` 에 `permission-decision` 이 있으며, `slot` 이 이 호출의 슬롯과 같고, 그 사건이 같은 슬롯의 권한 사건 가운데 `created_at_ms` 가 가장 큰(같으면 id 사전순 마지막) 사건이며, 아직 처리됨이 아니다.
+3. `target` 이 사건 `reply` 와 바이트로 같고(키 정렬 압축 JSON 비교), `target.session_id` 가 이 세션 id, `target.tool_name` 이 이 호출의 `tool_name` 이며, 주소가 `s-<safe_sid>` 다.
+4. `kind` 가 `permission-decision` 이고 `decision` 이 `allow`·`deny` 중 하나이며, 키가 결정 봉투의 키 밖에 없다.
+5. `now < expires_at_ms` 다.
+6. 아직 적용되지 않았다 — `applied/<reply_id>.json` 이 없고, 수령 표지가 있다면 그 `session_id` 가 자기 것이며, 같은 대상 칸(사건 id)의 적용 기록이 없다. 대상 칸 선점은 이음매와 같은 자리의 파일로 하여 이음매의 정리가 그대로 지운다.
+7. 발신자 인가 파일 `$HOME/.config/cc-cmds/remote-senders.json` 의 `schema` 가 1 이고 `senders` 가 배열이며, `provenance.sender` 가 그 `senders[].id` 에 있고 그 발신자의 `capabilities` 에 `permission-decision` 이 있다.
+8. 좌석 표지 `pending.<지문>` 또는 `open.<지문>` 이 아직 있다.
+9. 그 좌석 상태 디렉터리에 띄운 에이전트 표지 `agent.*` 가 하나도 없다.
+
+**적용 순서** — (가) 수령 표지 `inbox/s-<safe_sid>/<reply_id>.picked` 를 만들고 다시 읽어 자기 것인지 본다, (나) 적용 기록 `applied/<reply_id>.json` 을 쓰고(대상 칸 `tool_use_id` 는 사건 id, `answers_sha256` 은 `decision` 바이트의 sha256) 다시 읽어 맞을 때만 다음으로 간다, (다) 사건 슬롯에 원인 `reply-applied` 처리 표지를 남긴다, (라) 결정이 `deny` 면 그 호출의 `pending.<지문>`·`open.<지문>` 을 지운다, (마) `{"behavior":"allow"|"deny","sender":<발신자>}` 한 줄을 찍는다. 기록이 결과보다 먼저다. 수령 표지·적용 기록·대상 칸 파일의 내용과 쓰고 다시 읽는 순서는 이음매의 것과 같은 바이트이므로, 이음매의 정리 부명령이 봉투 종류를 가리지 않고 지운다.
+
+**진단 기록** — 도우미와 결정 훅은 원격 결정을 적용하지 않고 끝날 때마다 좌석 상태 디렉터리의 `decide.log` 에 `<UTC ISO 시각> <사건 id 또는 -> <사유>` 한 줄을 남긴다. 사유는 고정 어휘다. 봉투 내용과 도구 명령 원문은 남기지 않는다. 이 문서가 거절에서 「아무것도 쓰지 않는다」 고 적은 곳은 스풀과 좌석 표지를 말하며, 이 한 줄은 그 밖이다.
+
+**로컬 우선** — 대화창은 결정 훅이 기다리는 동안 그대로 그려지고 손 답을 받는다. 아래 단계(대화창)가 결정을 먼저 내거나 중단 신호가 오면 확정을 부르지 않고, 확정이 결정을 돌려준 뒤에도 그 사이 로컬이 이겼으면 로컬 결과를 돌려준다. 그 경우 적용 기록과 `reply-applied` 처리 표지는 남지만 도구 결정은 로컬 답으로 난다 — 받아들이는 한계다. 같은 입력의 병렬 호출 둘은 한 슬롯을 나눠 쓰므로 결정 봉투 하나는 먼저 확정한 호출 하나에만 적용된다.
+
 ## 깨우기 리터럴
 
 ```text
@@ -147,7 +176,7 @@
 | Key | Type | Value |
 | --- | --- | --- |
 | `schema` | number | `1` |
-| `tool_use_id` | string | 대상 칸 — `auq`·승인은 열린 호출의 tool_use_id, 질문지는 대상의 `form_id` |
+| `tool_use_id` | string | 대상 칸 — `auq`·승인은 열린 호출의 tool_use_id, 질문지는 대상의 `form_id`, 결정 봉투는 봉투의 `event_id`(사건 id) |
 | `session_id` | string | 적용한 세션의 id |
 | `reply_id` | string | 봉투의 `reply_id`, `<host_id>.<epoch_ms>.<8 hex>` |
 | `event_id` | string | 봉투의 `event_id` |
@@ -159,6 +188,8 @@
 **`answers_sha256` 의 원상 (AskUserQuestion 대상 — 일반 질문과 승인)** — 열린 호출 입력의 `questions` 순서대로, 질문마다 `question` 의 UTF-8 바이트, 바이트 0x1F, 돌려주는 `answers[question]` 문자열의 UTF-8 바이트, 바이트 0x1E 를 이어 붙인 바이트열이다. 그 sha256 의 소문자 16진 64자. 이음매와 게이트가 같은 식으로 계산한다. 게이트 쪽은 전사에서 이은 AskUserQuestion `tool_use` 의 `input.questions` 순서와 `toolUseResult.answers` 로 같은 바이트열을 만든다 — `jq -j` 로 질문 문면, `"\u001f"`, 답, `"\u001e"` 를 차례로 출력해 `shasum -a 256` 에 넘긴다. 답 하나라도 문자열이 아니거나 없으면 맞지 않는 것으로 본다.
 
 **`answers_sha256` 의 원상 (질문지 대상)** — 제출이 기록을 소비한 뒤 이음매에 돌려준 답 묶음 텍스트, 곧 실제로 제출된 텍스트(현재 트리에서는 `$.prompt.submit({ text: bundleText(…) })` 의 `text`)의 UTF-8 바이트 그대로다. 사람이 그 사이 칸에 쓴 자유 입력·메모가 묶음에 들어가도 해시는 제출된 바이트를 덮는다. 질문지에는 돌려주는 `answers` 맵이 없으므로 AskUserQuestion 꼴의 원상을 쓰지 않는다.
+
+**`answers_sha256` 의 원상 (결정 봉투)** — 봉투 `decision` 문자열의 UTF-8 바이트(`allow` 또는 `deny`, 줄바꿈 없음) 그대로다.
 
 이 해시는 게이트 닫힘 행의 기존 `답변 다이제스트`(승인 id 슬롯 하나의 답 문자열의 sha256)와 원상이 다르며, 닫힘 행에 옮기지 않는다. 응답 토큰과 `답변 다이제스트` 의 뜻은 바뀌지 않는다.
 
@@ -180,7 +211,7 @@
 봉투 하나의 결과는 아래 순서로 처음 맞는 것이다. 이음매는 거절 파일을 쓰지 않으므로 결과는 파일에서 유도한다.
 
 1. `applied/<reply_id>.json` 이 있다 → 적용됨.
-2. 사건이 공용 문서의 읽기 규칙으로 처리됨이고 그 원인이 `reply-applied` 가 아니다 → 처리됨. 현재 트리에는 `reply-applied` 밖의 원인으로 처리 표지를 쓰는 운영 코드가 없으므로 이 결과는 지금은 생기지 않는다. 원인이 `reply-applied` 인 표지는 그것만으로 이 봉투의 결과가 되지 않는다. 중계는 적용 기록의 대상 칸(`tool_use_id` 키)과 이 봉투의 대상(`auq` 는 `target.tool_use_id`, 질문지는 `target.form_id`)을 대조한다. 같은 대상 칸의 적용 기록이 없으면 그 표지를 이 봉투의 결과로 보지 않고 다음 규칙으로 간다. 같은 대상 칸의 적용 기록이 다른 `reply_id` 로 있으면 그 호출은 다른 봉투의 원격 답으로 끝난 것이므로 처리됨이다. 승인 봉투의 대상에는 대상 칸과 대조할 값이 없으므로 `reply-applied` 표지는 승인 봉투의 결과가 되지 않는다. 대상 칸으로 기록을 찾는 수단은 중계 티켓이 정한다.
+2. 사건이 공용 문서의 읽기 규칙으로 처리됨이고 그 원인이 `reply-applied` 가 아니다 → 처리됨. 현재 트리에는 `reply-applied` 밖의 원인으로 처리 표지를 쓰는 운영 코드가 없으므로 이 결과는 지금은 생기지 않는다. 원인이 `reply-applied` 인 표지는 그것만으로 이 봉투의 결과가 되지 않는다. 중계는 적용 기록의 대상 칸(`tool_use_id` 키)과 이 봉투의 대상(`auq` 는 `target.tool_use_id`, 질문지는 `target.form_id`, 결정 봉투는 봉투의 `event_id`)을 대조한다. 같은 대상 칸의 적용 기록이 없으면 그 표지를 이 봉투의 결과로 보지 않고 다음 규칙으로 간다. 같은 대상 칸의 적용 기록이 다른 `reply_id` 로 있으면 그 호출은 다른 봉투의 원격 답으로 끝난 것이므로 처리됨이다. 승인 봉투의 대상에는 대상 칸과 대조할 값이 없으므로 `reply-applied` 표지는 승인 봉투의 결과가 되지 않는다. 대상 칸으로 기록을 찾는 수단은 중계 티켓이 정한다.
 3. 중계가 그 봉투에 「세션 필요」를 아직 알리지 않았고, (가) 런 주소 봉투이며 `<reply_id>.picked` 가 없고 `now >= pickup_by_ms` 이거나, (나) `<reply_id>.picked` 가 있고 `now >= apply_by_ms` 이다 → 세션 필요. 봉투마다 한 번 알리고 봉투는 만료까지 둔다. 알렸다는 사실은 중계가 스풀의 `relay/` 아래 자기 기록에 남기며, 그 형식은 중계 티켓이 정한다.
 4. `now >= expires_at_ms` → 거절.
 5. 그 밖 → 대기.
@@ -191,7 +222,7 @@
 
 - 초안이 있어 거절된 질문지 봉투 — 세션 주소 봉투는 거절 때 수령 표지를 쓰지 않으므로 결과는 만료에 거절이다. 사람이 그 질문지에 이어 답하면 실제 결말은 로컬 답이다.
 - 같은 세션의 형제 사건이 로컬로 답해진 봉투 — 그 세션 슬롯의 표지가 다른 사건의 `reply-applied` 뿐이면 2번이 그 표지를 이 봉투의 결과로 보지 않으므로, 결과는 대기를 거쳐 만료에 거절이다.
-- 로컬 답이 이긴 봉투 — 처리 표지를 쓰는 운영 코드가 없어 처리됨이 나가지 않는다. 수령 표지가 남은 봉투는 「세션 필요」 뒤 만료에 거절이고, 남지 않은 봉투는 만료에 거절이다.
+- 로컬 답이 이긴 봉투 — 처리 표지를 쓰는 운영 코드가 없어 처리됨이 나가지 않는다. 결정 봉투는 예외로, 권한 사건에서는 좌석 훅이 도구 결과·턴 끝에 `permission-settled` 처리 표지를 써서 처리됨이 나간다. 수령 표지가 남은 봉투는 「세션 필요」 뒤 만료에 거절이고, 남지 않은 봉투는 만료에 거절이다.
 - 같은 호출에 걸린 둘째 봉투가 승인 봉투인 경우 — 수락 조건 6 으로 거절되지만 승인 봉투는 2번의 대상 칸 대조가 없으므로, 수령 표지가 남아 「세션 필요」 로 보고된다.
 - 호출 단계의 수락 조건(3, 6)에서 거절된 런 주소 봉투 — 수령 표지가 남아 `apply_by_ms` 에 「세션 필요」 로 보고된다. 실제 결말은 좌석의 거절이다. 수령 때 볼 수 있는 조건은 수령 판정이 먼저 보므로 이 경우는 열린 승인 질문이 봉투와 맞지 않을 때로 좁혀진다.
 
@@ -219,4 +250,4 @@
 
 ## 고정 예제와 린트
 
-고정 예제는 `tests/fixtures/remote-reply/` 에 있고 파일 이름 앞부분이 종류를 정한다 — `envelope-<이름>.json`(봉투), `picked-<이름>.json`(수령 표지), `applied-<이름>.json` 과 짝 `submit-<이름>.txt`(질문지의 제출 바이트) 또는 `frame-<이름>.jsonl`(전사 두 줄), `wake-<이름>.txt`(깨우기 리터럴). 린트는 `scripts/lint-remote-reply-schema.sh`, 그 시험은 `scripts/test-lint-remote-reply-schema.sh` 이며 둘 다 `make lint`·`make test` 에 걸려 있다.
+고정 예제는 `tests/fixtures/remote-reply/` 에 있고 파일 이름 앞부분이 종류를 정한다 — `envelope-<이름>.json`(봉투), `picked-<이름>.json`(수령 표지), `applied-<이름>.json` 과 짝 `submit-<이름>.txt`(질문지의 제출 바이트, 결정 봉투는 `decision` 바이트) 또는 `frame-<이름>.jsonl`(전사 두 줄), `wake-<이름>.txt`(깨우기 리터럴). 린트는 `scripts/lint-remote-reply-schema.sh`, 그 시험은 `scripts/test-lint-remote-reply-schema.sh` 이며 둘 다 `make lint`·`make test` 에 걸려 있다.

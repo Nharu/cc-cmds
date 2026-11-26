@@ -1,0 +1,21 @@
+{
+  "schema": 1,
+  "reply_id": "host-a1.1793500004000.5e6f7081",
+  "event_id": "host-a1.1793499994000.55667788",
+  "host": "host-a1",
+  "kind": "permission-decision",
+  "target": {
+    "surface": "permission",
+    "session_id": "5f0c2d4e-1111-4a2b-9c3d-000000000001",
+    "tool_name": "Write",
+    "input_summary": "경로: /tmp/out.txt\n내용:\nhello"
+  },
+  "decision": "deny",
+  "provenance": {
+    "transport": "app",
+    "sender": "app:dev-7f3a",
+    "received_at_ms": 1793500004000,
+    "transport_ref": "device dev-7f3a message 13"
+  },
+  "expires_at_ms": 1793500604000
+}

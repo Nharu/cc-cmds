@@ -2606,8 +2606,13 @@ class Model:
             if t is not None:
                 done_text = t.strip()
         attempts = run_attempts(led, timeline)
+        running = live_items(src.run_dir, lines, summary["live_stages"], attempts,
+                             {s["id"] for s in segments})
         steps, owner = run_steps((manifest or {}).get("steps") or [], attempts, segments,
-                                 summary["live_stages"], src.run_dir)
+                                 summary["live_stages"], src.run_dir, running)
+        for t in timeline:
+            t["step"] = owner.get(t["_line"])
+        timeline = timeline + running
         cost.update(cost_split(summary["cost_usd"], attempts, owner))
         mpath = os.path.join(src.base, "docs", "pipeline-run", src.id + ".plan.md") if src.base else None
         run_fields = split_fields(led.series("run")[0]) if led and led.series("run") else {}
@@ -2681,6 +2686,7 @@ class Model:
         for (series, ln), no in zip(led.rows, led.linenos):
             if series == "stage-result":
                 f = split_fields(ln)
+                segs = _field_whole_values(ln, "세그먼트")
                 pending = {
                     # The ledger line of the row that opened the attempt, which
                     # the step and cost views key on; never in the response.
@@ -2696,6 +2702,11 @@ class Model:
                     "duration_s": None,
                     "usd": None,
                     "reattach": None,
+                    "live": False,
+                    "seg": segs[0] if len(segs) == 1 and segs[0] not in ("", "-") else None,
+                    # The step id the attempt is counted under, filled from
+                    # `run_steps`' owner once the steps are known.
+                    "step": None,
                 }
                 out.append(pending)
             elif series == "cost":
@@ -2840,20 +2851,79 @@ def _run_scope_tries(step_id, kind, attempts):
     return sorted(own + again, key=lambda a: a["line"])
 
 
-def run_steps(plan_steps, attempts, segments, live, run_dir):
-    """`steps` in plan order, and the step id each attempt line is counted under."""
+def live_items(run_dir, lines, live, attempts, segment_ids):
+    """One timeline entry per live stage, its start read from the same sources
+    a finished attempt's start is read from; none for a name whose attempt
+    already has its result row."""
+    if not run_dir:
+        return []
+    done = set()
+    for a in attempts:
+        ver = a["item"]["attempt"] if a["item"] else None
+        for name in [a["stage"]] + a["segs"]:
+            if name and name != "-":
+                done.add((name, ver))
+    logd = os.path.join(run_dir, "log")
+    out = []
+    for name in live:
+        attempt = None
+        f = os.path.join(run_dir, name + ".attempt")
+        if os.path.isfile(f):
+            attempt = _strip_blanks(read_text(f) or "") or None
+        if attempt is not None and (name, attempt) in done:
+            continue
+        start, start_src, reattach = None, "없음", None
+        if attempt is not None:
+            stem = os.path.join(logd, "%s#%s" % (name, attempt))
+            sup = read_sup(stem + ".sup.log")
+            if sup:
+                reattach = sup["reattach"]
+                if sup["start"] is not None:
+                    start, start_src = sup["start"], "sup"
+            if start is None:
+                try:
+                    st = os.stat(stem + ".err")
+                    if st.st_size == 0:
+                        start, start_src = int(st.st_mtime // 1), "err"
+                except OSError:
+                    pass
+        out.append({
+            "stage": name, "attempt": attempt, "kind": stage_kind(run_dir, lines, name),
+            "class": None, "rc": None, "shift": None,
+            "start": start, "start_src": start_src,
+            "end": None, "end_src": "없음",
+            "duration_s": None, "usd": None, "reattach": reattach,
+            "live": True, "seg": name if name in segment_ids else None, "step": None,
+        })
+    return out
+
+
+def _live_entry(item, nth):
+    return {"seg": item["seg"], "attempt": item["attempt"], "nth": nth, "start": item["start"]}
+
+
+def run_steps(plan_steps, attempts, segments, live, run_dir, running=()):
+    """`steps` in plan order, and the step id each attempt line is counted under.
+
+    `running` are the live timeline entries; each is attached to the step that
+    counts its stage as running, and gets that step's id as its `step`."""
     owner = {}
     skills = [s["skill"] for s in plan_steps]
+    by_name = {}
+    for item in running:
+        by_name.setdefault(item["stage"], item)
     out = []
     for step in plan_steps:
         sid, skill = step["id"], step["skill"]
         children = []
+        now = []
         if skill in ("implement", "review"):
             unique = skills.count(skill) == 1
             tries = []
             for seg in segments:
                 mine = [a for a in attempts if seg["id"] in a["segs"]]
                 attached = [a for a in mine if unique and _SEG_STEP_SKILL.get(a["seg_kind"]) == skill]
+                here = None
                 if seg["state"] == "머지됨":
                     st = "끝남"
                 elif seg["state"] == "park":
@@ -2861,9 +2931,14 @@ def run_steps(plan_steps, attempts, segments, live, run_dir):
                 elif seg["id"] in live and unique and _SEG_STEP_SKILL.get(
                         _live_kind(run_dir, seg["id"], mine)) == skill:
                     st = "도는 중"
+                    item = by_name.get(seg["id"])
+                    if item is not None and item["step"] is None:
+                        item["step"] = sid
+                        here = _live_entry(item, len(attached) + 1)
+                        now.append(here)
                 else:
                     st = _status_of(attached)
-                children.append({"id": seg["id"], "status": st, "attempts": len(attached)})
+                children.append({"id": seg["id"], "status": st, "attempts": len(attached), "live": here})
                 tries.extend(attached)
             tries.sort(key=lambda a: a["line"])
             status = next((s for s in _STATUS_ORDER if any(c["status"] == s for c in children)), "대기")
@@ -2874,12 +2949,22 @@ def run_steps(plan_steps, attempts, segments, live, run_dir):
             names = {sid, _DRIVER_NAME.get(kind or "")}
             status = "도는 중" if any(n in names for n in live) else _status_of(tries)
             kind = tries[-1]["kind"] if tries else None
+            for item in running:
+                if item["stage"] in names and item["step"] is None:
+                    item["step"] = sid
+                    now.append(_live_entry(item, len(tries) + 1))
         for a in tries:
             owner.setdefault(a["line"], sid)
         started, ended, usd = _span(tries)
+        end_class = tries[-1]["class"] if tries else None
+        if now:
+            starts = [e["start"] for e in now if e["start"] is not None]
+            started = min(starts) if starts else None
+            ended = end_class = None
         out.append({"id": sid, "skill": skill, "kind": kind, "status": status, "attempts": len(tries),
-                    "end_class": tries[-1]["class"] if tries else None,
-                    "started": started, "ended": ended, "usd": usd, "segments": children})
+                    "end_class": end_class,
+                    "started": started, "ended": ended, "usd": usd, "segments": children,
+                    "live": now})
     return out, owner
 
 

@@ -274,11 +274,12 @@ written as false.
 | `question-form` | the reply surface is `question-form` and every question has an `id` and is either a `text` question or a `single` question with at least one option (an entry without `kind` reads as `single`) |
 | `turn` | the reply surface is `turn` |
 | `approval` | the reply surface is `approval` and `options` is not empty |
-| `permission` | never — the first version has no envelope for a permission decision |
+| `permission` | the reply surface is `permission`, `session_id` and `tool_name` are non-empty strings, and `input_summary` is a string |
 | any other kind | never; `reply` is null |
 
 **`accepts` is derived in one place, the library,** from the kind and the
-reply target. Its values keep the fixed order `"option"`, `"text"`:
+reply target. Its option and text values keep the fixed order `"option"`,
+`"text"`:
 
 | Kind | `accepts` when `actionable` is true |
 | --- | --- |
@@ -286,6 +287,7 @@ reply target. Its values keep the fixed order `"option"`, `"text"`:
 | `question-form` | `"option"` when every question's `kind` is `single`, then `"text"` when any question's `kind` is `text` or its `allow_other` is true: `["option"]`, `["option","text"]` or `["text"]` |
 | `turn` | `["text"]` |
 | `approval` | `["option"]` |
+| `permission` | `["permission-decision"]`, which a decision envelope answers |
 
 When `actionable` is false, `accepts` is always `[]`, so an approval event
 never takes text.

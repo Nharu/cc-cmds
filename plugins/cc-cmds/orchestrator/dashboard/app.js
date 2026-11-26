@@ -751,7 +751,7 @@
   function nowLine(now) {
     if (now && now.stage) {
       return el("div", { cls: "ell" }, span("step", now.stage), " ",
-        span("kind", (now.kind || "종류 미상") + (now.attempt ? " · 시도 " + now.attempt : "")));
+        span("kind", (now.kind || "종류 미상") + (now.attempt ? " · 통산 시도 " + now.attempt : "")));
     }
     if (now && now.blocked) {
       return el("div", { cls: "ell", title: now.blocked }, span("step", "막힘"), " ", span("kind", now.blocked));
@@ -1099,7 +1099,7 @@
       if (n && n.stage) {
         line.appendChild(tag("run", "도는 중", "i-play"));
         line.appendChild(el("b", { text: n.stage }));
-        line.appendChild(el("span", { text: (n.kind || "종류 미상") + (n.attempt ? " · 시도 " + n.attempt : "") }));
+        line.appendChild(el("span", { text: (n.kind || "종류 미상") + (n.attempt ? " · 통산 시도 " + n.attempt : "") }));
       } else if (n && n.blocked) {
         line.appendChild(tag("neutral", "막힘"));
         line.appendChild(el("span", { text: n.blocked }));
@@ -1120,9 +1120,23 @@
       line.appendChild(el("div", { cls: "sbox " + sboxClass(s.status), role: "listitem" },
         el("div", { cls: "top" }, dotFor(s.status), span("id", s.id)),
         span("kd", stepKind(s) + (segs.length ? " · " + segs.join(" ") : "")),
-        span("st num", s.status + (s.attempts > 1 ? " · 시도 " + s.attempts : ""))));
+        span("st num", (s.live || []).length === 1 ? s.status + " · " + s.live[0].nth + "회째"
+          : s.status + (s.attempts > 1 ? " · " + s.attempts + "회" : ""))));
     });
     return line;
+  }
+
+  // The attempt cell of a row with one running attempt: the row's own count
+  // and the run-wide attempt number, each named.
+  function liveTries(e) {
+    return e.nth + "회째 · 통산 " + (e.attempt || "?");
+  }
+
+  function stepTries(s) {
+    var live = s.live || [];
+    if (live.length === 1) return liveTries(live[0]);
+    if (live.length > 1) return (s.attempts || 0) + " · 도는 중 " + live.length + "개";
+    return String(s.attempts || 0);
   }
 
   function th(text, cls) { return el("th", { cls: cls, text: text }); }
@@ -1146,7 +1160,7 @@
         td((g.deps || []).length ? g.deps.join(", ") : "-"),
         prCellEl,
         td(String((g.cycles || []).length), "r num"),
-        td(String(c.attempts || 0), "r num")));
+        td(c.live ? liveTries(c.live) : String(c.attempts || 0), "r num")));
     });
     t.appendChild(tb);
     return t;
@@ -1163,7 +1177,7 @@
         : (s.status === "도는 중" && s.started != null ? dur(now - s.started) + "째" : "-");
       tb.appendChild(el("tr", { cls: hasSeg ? "has-seg" : null },
         td(s.id, "sid"), td(stepKind(s)), el("td", null, statusTag(s.status)),
-        td(String(s.attempts || 0), "r num"),
+        td(stepTries(s), "r num"),
         td(s.started != null ? fmtMDHM(s.started) : "-", "num"),
         td(s.ended != null ? fmtMDHM(s.ended) : "-", "num"),
         td(took, "r num"), td(s.usd != null ? usd(s.usd) : "-", "r num"), td(s.end_class || "-", "w")));
@@ -1235,24 +1249,41 @@
     return "b-bad";
   }
 
+  // A band row's name: the step and segment the response paired the attempt
+  // with, else the segment, else the stage.
+  function bandRow(t) {
+    if (t.step && t.seg) return t.step + " · " + t.seg;
+    return t.step || t.seg || t.stage || "?";
+  }
+
   function timeBand(d, now) {
     var ended = d.summary.state === "종단";
-    var items = (d.timeline || []).filter(function (t) { return t.start != null && t.end != null; });
-    var skipped = (d.timeline || []).length - items.length;
+    var all = d.timeline || [];
+    var done = all.filter(function (t) { return !t.live; });
+    var running = all.filter(function (t) { return t.live; });
+    var items = done.filter(function (t) { return t.start != null && t.end != null; })
+      .concat(running.filter(function (t) { return t.start != null; }));
+    var skipped = done.filter(function (t) { return t.start == null || t.end == null; }).length;
+    var skippedLive = running.filter(function (t) { return t.start == null; }).length;
     var shifts = (d.shifts || []).filter(function (s) { return s.at != null; });
     var box = el("div", { cls: "tband" },
       el("h3", { cls: "sub-h" }, ico("i-clock", "ico-sm"), "시간 띠 — 시도마다 한 막대, 막대에 올리면 시도와 교대 이름이 보입니다"));
+    var notes = function () {
+      if (skipped) box.appendChild(el("div", { cls: "note num", text: "시작이나 끝 시각을 모르는 시도 " + skipped + "건은 띠에 그리지 않았습니다." }));
+      if (skippedLive) box.appendChild(el("div", { cls: "note num", text: "시작 시각을 모르는 도는 중 시도 " + skippedLive + "건도 띠에 그리지 않았습니다." }));
+    };
     if (!items.length) {
-      box.appendChild(el("div", { cls: "empty-line", text: "시작과 끝을 아는 시도가 없어 시간 띠를 그리지 않았습니다." }));
+      box.appendChild(el("div", { cls: "empty-line", text: "그릴 수 있는 시도가 없어 시간 띠를 그리지 않았습니다." }));
+      notes();
       return box;
     }
     var rows = [], rowOf = {};
     items.forEach(function (t) {
-      var k = t.stage || "?";
+      var k = bandRow(t);
       if (rowOf[k] == null) { rowOf[k] = rows.length; rows.push(k); }
     });
     var times = [];
-    items.forEach(function (t) { times.push(t.start, t.end); });
+    items.forEach(function (t) { times.push(t.start); if (!t.live) times.push(t.end); });
     shifts.forEach(function (s) { times.push(s.at); });
     if (d.run_start != null) times.push(d.run_start);
     if (!ended) times.push(now);
@@ -1301,13 +1332,26 @@
     svg.appendChild(lines);
 
     var bars = sv("g");
+    var drewLive = false;
+    var tEnd = ended ? t1 : now;
     items.forEach(function (t) {
-      var y = TOP + rowOf[t.stage || "?"] * RH + 4;
-      var w = Math.max(2, x(t.end) - x(t.start));
-      var rect = sv("rect", { "class": barClass(t["class"]), x: x(t.start), y: y, width: Math.round(w * 10) / 10, height: 14, rx: 2 });
-      var title = (t.stage || "?") + " 시도 " + (t.attempt || "?") + " · " + (t.kind || "종류 미상") + " · " +
-        fmtMDHM(t.start) + "–" + fmtHM(t.end) + " · " + (t["class"] || "부류 미상") +
-        (t.usd != null ? " · " + usd(t.usd) : "") + (t.shift ? " · 띄운 교대 " + t.shift : "");
+      var name = bandRow(t);
+      var y = TOP + rowOf[name] * RH + 4;
+      var head = name + " · 통산 시도 " + (t.attempt || "?") + " · " + (t.kind || "종류 미상") + " · ";
+      var rect, title;
+      if (t.live) {
+        drewLive = true;
+        // A running bar ends exactly on the now line, so its width is the
+        // difference of the two rounded coordinates.
+        var lw = Math.max(2, Math.round((x(tEnd) - x(t.start)) * 10) / 10);
+        rect = sv("rect", { "class": "b-live", x: x(t.start), y: y, width: lw, height: 14, rx: 2 });
+        title = head + fmtMDHM(t.start) + "–지금 · 도는 중 · " + dur(Math.max(0, tEnd - t.start)) + "째";
+      } else {
+        var w = Math.max(2, x(t.end) - x(t.start));
+        rect = sv("rect", { "class": barClass(t["class"]), x: x(t.start), y: y, width: Math.round(w * 10) / 10, height: 14, rx: 2 });
+        title = head + fmtMDHM(t.start) + "–" + fmtHM(t.end) + " · " + (t["class"] || "부류 미상") +
+          (t.usd != null ? " · " + usd(t.usd) : "") + (t.shift ? " · 띄운 교대 " + t.shift : "");
+      }
       rect.appendChild(sv("title", null, title));
       bars.appendChild(rect);
     });
@@ -1324,11 +1368,13 @@
     svg.appendChild(marks);
     box.appendChild(svg);
 
-    box.appendChild(el("div", { cls: "legend" },
+    var legend = el("div", { cls: "legend" },
       el("span", null, el("i", { cls: "sw ok" }), "정상 완료"),
       el("span", null, el("i", { cls: "sw bad" }), "실패(크래시·정지)"),
-      el("span", null, el("i", { cls: "sw park" }), "의도된 park"),
-      el("span", null, el("i", { cls: "sw shift" }), "교대")));
+      el("span", null, el("i", { cls: "sw park" }), "의도된 park"));
+    if (drewLive) legend.appendChild(el("span", null, el("i", { cls: "sw live" }), "도는 중"));
+    legend.appendChild(el("span", null, el("i", { cls: "sw shift" }), "교대"));
+    box.appendChild(legend);
     if (shifts.length) {
       var ul = el("ul", { cls: "shifts" });
       shifts.forEach(function (s) {
@@ -1337,7 +1383,7 @@
       });
       box.appendChild(ul);
     }
-    if (skipped) box.appendChild(el("div", { cls: "note num", text: "시작이나 끝 시각을 모르는 시도 " + skipped + "건은 띠에 그리지 않았습니다." }));
+    notes();
     return box;
   }
 

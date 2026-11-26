@@ -201,6 +201,55 @@ expect_fail "expires_at_ms not after received_at_ms" "expires_at_ms is not"
 fresh; mutate envelope-approval.json '.pickup_by_ms = .expires_at_ms + 1'
 expect_fail "pickup_by_ms after expires_at_ms" "pickup_by_ms is not in"
 
+# --- decision envelopes -----------------------------------------------------
+
+for f in envelope-permission-allow.json envelope-permission-deny.json; do
+  rc=0
+  bash "$LINT" "$SRC/$f" >/dev/null 2>&1 || rc=$?
+  check "the decision envelope $f passes" "$rc" 0
+done
+deny_hash=$(shasum -a 256 < "$SRC/submit-permission-deny.txt" | awk '{ print $1 }')
+check "the decision record carries the sha256 of the bare decision bytes" \
+  "$(jq -r .answers_sha256 "$SRC/applied-permission-deny.json")" \
+  "$(printf 'deny' | shasum -a 256 | awk '{ print $1 }')"
+check "the decision submit file holds no trailing newline" "$deny_hash" \
+  "$(printf 'deny' | shasum -a 256 | awk '{ print $1 }')"
+check "the decision record's target cell is the event id" \
+  "$(jq -r '.tool_use_id == .event_id' "$SRC/applied-permission-deny.json")" "true"
+
+fresh; mutate envelope-permission-allow.json '.answers = [{"question_index": 0, "labels": ["허용"]}]'
+expect_fail "a decision envelope with answers" "carries text or answers"
+
+fresh; mutate envelope-permission-allow.json '.decision = "ask"'
+expect_fail "a decision value outside allow and deny" "decision is not allow or deny"
+
+fresh; mutate envelope-permission-allow.json 'del(.decision)'
+expect_fail "a decision envelope without decision" "missing key(s): decision"
+
+fresh; mutate envelope-auq-single.json '.decision = "allow"'
+expect_fail "an option envelope with decision" "carries text or decision"
+
+fresh; mutate envelope-permission-allow.json '.pickup_by_ms = .expires_at_ms'
+expect_fail "a decision envelope with pickup_by_ms" "carries pickup_by_ms"
+
+fresh; mutate envelope-permission-allow.json '.target.tool_name = ""'
+expect_fail "a permission target with an empty tool_name" "lacks a non-empty session_id or tool_name"
+
+fresh; mutate envelope-permission-allow.json '.target.input_summary = 1'
+expect_fail "a permission target with a non-string input_summary" "input_summary is not a string"
+
+fresh; mutate envelope-permission-allow.json '.kind = "option"'
+expect_fail "an option envelope aimed at a permission target" "an option envelope target.surface is permission"
+
+fresh; mutate envelope-auq-single.json '.kind = "permission-decision" | del(.answers) | .decision = "allow"'
+expect_fail "a decision envelope aimed at a question" "a decision envelope target.surface is not permission"
+
+fresh; rm "$D/envelope-permission-allow.json" "$D/envelope-permission-deny.json"
+expect_fail "no decision envelope" "no fixture of kind envelope-permission"
+
+fresh; printf 'deny\n' > "$D/submit-permission-deny.txt"
+expect_fail "a decision submit file with a trailing newline" "not the sha256 of submit-permission-deny.txt"
+
 fresh; printf '{"schema":1}\n{"schema":1}\n' > "$D/envelope-auq-single.json"
 expect_fail "two JSON values in one envelope" "exactly one JSON value"
 

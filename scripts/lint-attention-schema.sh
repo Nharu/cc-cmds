@@ -150,11 +150,16 @@ def actionable_shape($r):
      true
    elif $r.kind == "approval" then
      ($r.reply.options | length) >= 1
+   elif $r.kind == "permission" then
+     ($r.reply.session_id | nestr) and ($r.reply.tool_name | nestr)
+     and ($r.reply.input_summary | type) == "string"
    else false end);
 # The accepts value the producer derives: [] for an unanswerable event, else by
-# kind, in the fixed order option, text.
+# kind, in the fixed order option, text, or the one decision kind for a
+# permission event.
 def accepts_for($r):
   if $r.actionable != true then []
+  elif $r.kind == "permission" then ["permission-decision"]
   elif $r.kind == "auq" then ["option", "text"]
   elif $r.kind == "question-form" then
     (if all($r.reply.questions[]; qkind == "single") then ["option"] else [] end)
@@ -206,7 +211,6 @@ def event_errors:
      else "reply does not match the kind surface or lacks a required field" end),
     (if .actionable != true or actionable_shape($r) then empty
      else "actionable is true but the reply does not allow an answer" end),
-    (if .kind != "permission" or .actionable == false then empty else "a permission event is actionable" end),
     (if .kind == "approval" then approval_id_errors($r)
      elif (.id | type) == "string" and (.host | type) == "string" and (.id | ordinary_id($r.host)) then empty
      else "id is not <host>.<epoch_ms>.<8 hex>" end);

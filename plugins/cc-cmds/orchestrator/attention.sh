@@ -231,9 +231,11 @@ cc_attention_emit() {
          else false end);
       def qkind: (.kind // "single");
       # The answer kinds an answerable event takes, in the fixed order option,
-      # text; an unanswerable event takes none.
+      # text, or the one decision kind for a permission event; an unanswerable
+      # event takes none.
       def accepts_for($kind; $act; $reply):
         if $act | not then []
+        elif $kind == "permission" then ["permission-decision"]
         elif $kind == "auq" then ["option", "text"]
         elif $kind == "question-form" then
           (if all($reply.questions[]; qkind == "single") then ["option"] else [] end)
@@ -260,6 +262,9 @@ cc_attention_emit() {
               true
             elif $kind == "approval" then
               ($reply.options | length) >= 1
+            elif $kind == "permission" then
+              ($reply.session_id | nestr) and ($reply.tool_name | nestr)
+              and ($reply.input_summary | type) == "string"
             else false end)
          else false end) as $act
       | (if $d != null and ($d.body | nestr) then $d.body else $body end) as $b

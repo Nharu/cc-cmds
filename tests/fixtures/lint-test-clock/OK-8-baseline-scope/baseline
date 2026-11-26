@@ -1,0 +1,2 @@
+# Fixture baseline: the entry's path is outside scripts/.
+scripts-run.sh|clock-margin|out=$(txn --boot-epoch "$((NOW - 10))")

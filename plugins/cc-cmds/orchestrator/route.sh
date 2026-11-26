@@ -1052,6 +1052,20 @@ def rt_p7($c; $G; $top):
   | if ($x.state != "known") or (($x.resets_at | type) != "number") or ($x.resets_at <= $c.now) then 0
     else (([0, $top - $x.u_bp - $G.sigma.seven_day] | max) * 3600 / ($x.resets_at - $c.now)) | round end;
 
+# 리셋 손실 L(주간 bp 정수). 이번 주에 지난 시간 e 동안의 평균 속도로 리셋까지 계속 쓰면
+# 리셋 때 주간 창 끝 `$top` 아래에 남아 사라지는 몫이다 — `$top` 에서 그 그룹 live 임대의
+# 주간 예약 σ7 과 관측한 주간 사용을 7일로 늘린 값을 빼고 0 아래는 0 이다. 리셋에 다가갈수록
+# 지금 남은 몫에 가까워진다. 주간 창이 known 이 아니거나 리셋 시각이 수가 아니거나 지금보다
+# 뒤가 아니거나 e 가 0 이하이면 0 이다. 5시간 한도가 없는 그룹에만 부른다 — 한도 있는
+# 그룹의 리셋 손실은 W7 이다.
+def rt_loss7($c; $G; $top):
+  $G.windows.seven_day as $x
+  | if ($x.state != "known") or (($x.resets_at | type) != "number") or ($x.resets_at <= $c.now) then 0
+    else (604800 - ($x.resets_at - $c.now)) as $e
+      | if $e <= 0 then 0
+        else ([0, $top - $G.sigma.seven_day - $x.u_bp * 604800 / $e] | max) | round end
+    end;
+
 # 관측 줄에 싣는 ρ7(하루당 bp 정수). 5시간 창을 쉬지 않고 채울 때의 하루당 주간 소진
 # 상한 k × 48000 의 반올림이고, k 는 `rt_m7` 결과의 `k_ppm` 으로 셈한다. `rt_m7` 이
 # null 이면(5시간 한도 없음, 또는 k 를 셀 수 없음) null 이다.
@@ -1436,7 +1450,8 @@ def rt_grant_new($p; $a; $adm; $basis):
            + {threshold_bp: null, ratio_source: null, tier: null, r7_bp: null, admitted: null,
               picked_by: null, load5_bp: null, affinity_account: null, affinity_hold_bp: null,
               ask_need_bp: null, ask_r7_bp: null, ask_fits: null, ask_avoided: null,
-              pressure_bp_h: null, five_hour_state: null, five_hour_basis: null, five_hour_mismatch: null})};
+              pressure_bp_h: null, five_hour_state: null, five_hour_basis: null, five_hour_mismatch: null,
+              reset_loss_bp: null, reset_loss_cands: null})};
 # 질문으로 멈출 수 있는 스테이지의 종류. 이 종류는 멈춘 뒤 같은 계정의 재부착으로만
 # 답을 받는다. 문맥에 `config.ask` 가 있고 요청 종류가 이 목록에 있을 때만 새 기준이 켜진다.
 def rt_ask_kinds: ["design", "audit", "split", "visual", "implement", "review", "lead-fix", "reconverge"];
@@ -1491,10 +1506,13 @@ def rt_ask_order($on; $s; $avoided):
   if $on then {ask_need_bp: $s[0].ask.need, ask_r7_bp: $s[0].ask.r7, ask_fits: $s[0].ask.fits, ask_avoided: $avoided}
   else {} end;
 # 새 단계 정렬의 키 배열과 그 자리 이름. 두 단계 모두 대여 층·U 부류 다음이 새 기준의
-# 두 자리(`ask-headroom`), 그다음 유지(유효한 직전 계정이고 그 그룹의 load5 가 문턱
-# 아래면 0 — 5시간 창이 한도 없음인 그룹은 load5 와 문턱을 보지 않고 직전 계정이면 0),
-# 버려질 한도 W7, 분산(load5 작은 순), 주간 키, 붙든 계정, id 다. 쉼의 주간 키는 층과
-# r7 두 자리다.
+# 두 자리(`ask-headroom`), 그다음 리셋 손실의 세 자리 — 버려질 한도 W7 큰 순, 손실 표지
+# (리셋 손실 L 이 0 보다 크면 0), 표지가 0 인 후보의 주간 리셋 압력 P 큰 순 — 이고, 그
+# 뒤가 유지(유효한 직전 계정이고 그 그룹의 load5 가 문턱 아래면 0 — 5시간 창이 한도
+# 없음인 그룹은 load5 와 문턱을 보지 않고 직전 계정이면 0), 분산(load5 작은 순), 주간 키,
+# 붙든 계정, id 다. 쉼의 주간 키는 층과 r7 두 자리다. 리셋 손실을 유지 앞에 두는 것은
+# 리셋 때 사라질 몫이 있는 계정을 새 부여가 붙듦을 깨고 먼저 쓰게 하려는 것이다 — 손실이
+# 없는 계정끼리는 세 자리가 모두 같아(W7 0, 표지 1, 0) 그 뒤의 키가 순서를 정한다.
 # 새 기준의 두 자리는 질문 가능 스테이지에서 재부착까지 버티지 못하는 후보를 뒤로
 # 보낸다 — 버티면 [0, 0], 버티지 못하면 [1, -r7](주간 창 미상이면 [1, 0])이라 버티지
 # 못하는 후보끼리는 r7 이 큰 순이다. 버틴다는 것은 r7 이 `(1 + resume_n) × 주간 예약`
@@ -1505,21 +1523,27 @@ def rt_ask_order($on; $s; $avoided):
 # 1등이 새 기준이 없어도 1등이었던 부여도 그렇게 적힌다. 새 기준이 결과를 바꿨는지는
 # 봉투 `order` 의 `ask_avoided` 가 비어 있지 않은지로만 판정한다.
 def rt_new_sticky($p): .a.id as $id | if any(($p.c.sticky // [])[]; . == $id) then 0 else 1 end;
-# 주간 리셋 압력 P 는 5시간 한도가 없는 그룹만 0 보다 크다. 몰아 쓰기에서는 W7 다음·분산
-# 앞이고, 쉼에서는 주간 키(층·r7) 다음·붙든 계정 앞이다 — 쉼의 층·r7 이 P 보다 앞선다.
+# 주간 리셋 압력 P 와 리셋 손실 L 은 5시간 한도가 없는 그룹만 0 보다 크다. 손실 계정끼리는
+# 유지 앞의 손실 자리에서 P 가 가른다. 손실이 없는 계정의 P 는 몰아 쓰기에서 유지 다음·분산
+# 앞이고, 쉼에서는 주간 키(층·r7) 다음·붙든 계정 앞이다.
 def rt_new_kb($p):
   [(if .a.lend_enrolled == true then 1 else 0 end), (if .a.class == "U" then 1 else 0 end), .askk[0], .askk[1],
-   .aff, (0 - .w7), (0 - (.p7 // 0)), .load5,
+   (0 - .w7), .lf, (0 - .lp), .aff, (0 - (.p7 // 0)), .load5,
    (0 - (if .a.lend_enrolled == true
          then ((.a.lend.dec.ceiling_bp // 0) - (rt_ueff($p.groups[.a.group].windows.seven_day) // 10000))
          else .a.remaining_bp end)),
    rt_new_sticky($p), .a.id];
 def rt_new_kr($p):
   [(if .a.lend_enrolled == true then 1 else 0 end), (if .a.class == "U" then 1 else 0 end), .askk[0], .askk[1],
-   .aff, (0 - .w7), .load5,
+   (0 - .w7), .lf, (0 - .lp), .aff, .load5,
    .tier, (if .tier == 0 then .r7 elif .tier == 1 then (0 - .r7) else 0 end), (0 - (.p7 // 0)), rt_new_sticky($p), .a.id];
-def rt_new_names_b: ["lend", "class", "ask-headroom", "ask-headroom", "affinity", "w7", "pressure", "spread", "weekly", "sticky", "id"];
-def rt_new_names_r: ["lend", "class", "ask-headroom", "ask-headroom", "affinity", "w7", "spread", "weekly", "weekly", "pressure", "sticky", "id"];
+def rt_new_names_b: ["lend", "class", "ask-headroom", "ask-headroom", "w7", "reset-loss", "pressure", "affinity", "pressure", "spread", "weekly", "sticky", "id"];
+def rt_new_names_r: ["lend", "class", "ask-headroom", "ask-headroom", "w7", "reset-loss", "pressure", "affinity", "spread", "weekly", "weekly", "pressure", "sticky", "id"];
+# 봉투 `order` 의 리셋 손실 칸. 고른 후보의 L(한도 있는 그룹이면 null)과, 입회한 후보 가운데
+# L 이 0 보다 큰 것의 계정 id 별 L(키는 계정 id 순, 없으면 빈 객체)이다.
+def rt_loss_order($s):
+  {reset_loss_bp: $s[0].loss,
+   reset_loss_cands: ([$s[] | select((.loss // 0) > 0) | {key: .a.id, value: .loss}] | sort_by(.key) | from_entries)};
 # 고른 그룹의 5시간 창 상태, 판정 근거와 어긋남. 근거는 창의 `basis` 칸이다 — 발행 판정이
 # 정한 창은 한도 있음이어도 `published` 이고, 발행 판정이 없는 창은 형태 추정이 한도
 # 없음을 냈을 때만 근거가 있다. 어긋남은 발행 판정에 진 추정 판정이고 없으면 null 이다.
@@ -1897,11 +1921,14 @@ def rt_new_pick($p; $cands; $basis):
        | (($x.state? // null) == "unlimited") as $unl
        | (if $unl then (if $H != null and .a.id == $H then 0 else 1 end)
           elif $H != null and .a.id == $H and $l5 < $Taff then 0 else 1 end) as $aff0
-       | (if $unl then rt_p7($p.c; $G; (if .a.lend_enrolled == true then (.a.lend.dec.ceiling_bp // 0) else 10000 end))
-          else 0 end) as $p7
+       | (if .a.lend_enrolled == true then (.a.lend.dec.ceiling_bp // 0) else 10000 end) as $top
+       | (if $unl then rt_p7($p.c; $G; $top) else 0 end) as $p7
+       # 리셋 손실. 한도 있는 그룹의 리셋 손실은 W7 이라 L 을 세지 않는다(null).
+       | (if $unl then rt_loss7($p.c; $G; $top) else null end) as $loss
+       | (if ($loss // 0) > 0 then 0 else 1 end) as $lf
        | (if $askon then rt_ask_fit($p.c; $G; .a; .adm) else null end) as $ask
        | ($ask != null and ($ask.fits | not)) as $short
-       | . + {load5: $l5, aff0: $aff0, p7: $p7, ask: $ask,
+       | . + {load5: $l5, aff0: $aff0, p7: $p7, loss: $loss, lf: $lf, lp: (if $lf == 0 then $p7 else 0 end), ask: $ask,
               askk: (if $short then [1, (if $ask.r7 == null then 0 else 0 - $ask.r7 end)] else [0, 0] end),
               aff: (if $short then 1 else $aff0 end)}] as $cands
   | (if $ph.phase == "burst" then
@@ -1910,6 +1937,7 @@ def rt_new_pick($p; $cands; $basis):
           order: ({picked_by: rt_picked_by([$s[0:2][] | rt_new_kb($p)]; rt_new_names_b),
                    load5_bp: $s[0].load5, affinity_account: $H, affinity_hold_bp: $Taff,
                    pressure_bp_h: $s[0].p7}
+                  + rt_loss_order($s)
                   + rt_five_rec($p.groups[$s[0].a.group])
                   + rt_ask_order($askon; $s; (if $askon then rt_ask_avoided($s; rt_new_kb($p)) else null end)))}
      else
@@ -1934,6 +1962,7 @@ def rt_new_pick($p; $cands; $basis):
                    picked_by: rt_picked_by([$s[0:2][] | rt_new_kr($p)]; rt_new_names_r),
                    load5_bp: $b.load5, affinity_account: $H, affinity_hold_bp: $Taff,
                    pressure_bp_h: $b.p7}
+                  + rt_loss_order($s)
                   + rt_five_rec($p.groups[$b.a.group])
                   + rt_ask_order($askon; $s; (if $askon then rt_ask_avoided($s; rt_new_kr($p)) else null end)))}
      end) as $pick
@@ -3949,7 +3978,8 @@ route__affinity_grant() {
            ask_need_bp: $env.order.ask_need_bp, ask_r7_bp: $env.order.ask_r7_bp,
            ask_fits: $env.order.ask_fits, ask_avoided: $env.order.ask_avoided,
            pressure_bp_h: $env.order.pressure_bp_h, five_hour_state: $env.order.five_hour_state,
-           five_hour_basis: $env.order.five_hour_basis, five_hour_mismatch: $env.order.five_hour_mismatch}' 2>/dev/null) || line=""
+           five_hour_basis: $env.order.five_hour_basis, five_hour_mismatch: $env.order.five_hour_mismatch,
+           reset_loss_bp: $env.order.reset_loss_bp, reset_loss_cands: $env.order.reset_loss_cands}' 2>/dev/null) || line=""
   if [ -z "$line" ] || ! printf '%s\n' "$line" >> "$RUN_DIR/route-picks.jsonl" 2>/dev/null; then
     route__warn "부여 기록을 덧붙이지 못했다 ($RUN_DIR/route-picks.jsonl)"
   fi
