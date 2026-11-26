@@ -111,6 +111,8 @@
 
   /* 불투명도 — 바꾼 필터의 응답을 기다리는 이전 목록 */
   --opacity-stale: 0.5;
+  /* 불투명도 — 시간 띠에서 아직 도는 시도의 막대 채움 */
+  --opacity-live: 0.35;
 
   /* 글꼴 */
   --font-sans: -apple-system, "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
@@ -480,12 +482,14 @@ table.tbl { width: 100%; border-collapse: collapse; }
 .tb .b-bad { fill: var(--color-bad-fill); }
 .tb .b-park { fill: var(--color-neutral-fill); }
 .tb .b-gap { fill: var(--color-surface); stroke: var(--color-neutral-fill); stroke-width: 1; stroke-dasharray: 4 3; }
+.tb .b-live { fill: var(--color-run-fill); fill-opacity: var(--opacity-live); stroke: var(--color-run-fill); stroke-width: 1; stroke-dasharray: 3 2; }
 .tb .shift { fill: var(--color-text-secondary); }
 .sw { width: var(--space-7); height: var(--space-4); border-radius: var(--radius-1); display: inline-block; }
 .sw.ok { background: var(--color-ok-tint); border: var(--border-1) solid var(--color-ok-fill); }
 .sw.bad { background: var(--color-bad-fill); }
 .sw.park { background: var(--color-neutral-fill); }
 .sw.gap { background: var(--color-surface); border: var(--border-1) dashed var(--color-neutral-fill); }
+.sw.live { background: color-mix(in srgb, var(--color-run-fill) 35%, transparent); border: var(--border-1) dashed var(--color-run-fill); }
 .sw.shift { width: var(--space-4); height: var(--space-4); background: var(--color-text-secondary); transform: rotate(45deg); border-radius: var(--space-0); }
 .shifts { margin: var(--space-5) var(--space-0) var(--space-0); padding: var(--space-0); list-style: none; display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--space-4) var(--space-7); font-size: var(--font-size-secondary); }
 .shifts li { display: flex; gap: var(--space-4); align-items: baseline; }

@@ -1008,8 +1008,89 @@ async function backLinkCases() {
   report("마지막 목록 주소가 없으면 상세 오류의 링크가 / 다", !!e2.link("/"), true);
 }
 
+// S8: a running attempt in the run detail and the list's now cell. The detail
+// is a running run whose segment A went implement, review, implement and is in
+// review again, with one more running attempt whose start is unknown.
+const nodesOf = (root, f) => { const out = []; root.walk((n) => { if (f(n)) out.push(n); }); return out; };
+const classed = (root, k) => nodesOf(root, (n) => n.classList.contains(k));
+
+function liveDetail(T0, timeline) {
+  const liveR1 = { seg: "A", attempt: "4", nth: 2, start: T0 + 3700 };
+  return {
+    tz_offset_s: 32400,
+    summary: { id: "lv", state: "진행중", attention: "watch", started_at: T0, elapsed_s: 7200, prs: [], notes: [],
+      now: { stage: "A", kind: "review", attempt: "4", blocked: null } },
+    run_start: T0,
+    judgments: { items: [], by_class: {} }, waiting: [],
+    steps: [
+      { id: "I1", skill: "implement", kind: "implement", status: "끝남", attempts: 2, end_class: "정상 완료",
+        started: T0, ended: T0 + 3600, usd: 1, segments: [{ id: "A", status: "끝남", attempts: 2, live: null }], live: [] },
+      { id: "R1", skill: "review", kind: "review", status: "도는 중", attempts: 1, end_class: null,
+        started: T0 + 3700, ended: null, usd: 0.5, segments: [{ id: "A", status: "도는 중", attempts: 1, live: liveR1 }], live: [liveR1] },
+    ],
+    timeline, shifts: [],
+    clauses: [], reviews: [], segments: [{ id: "A", state: "실행중", deps: [], cycles: [] }], links: {}, cost: {},
+  };
+}
+
+async function liveCases() {
+  const T0 = Date.UTC(2026, 10, 20, 0, 0) / 1000;
+  const done = (attempt, kind, step, a, b) => ({ stage: "A", attempt, kind, start: T0 + a, end: T0 + b, "class": "정상 완료",
+    live: false, seg: "A", step, usd: 0.5, shift: null });
+  const running = { stage: "A", attempt: "4", kind: "review", start: T0 + 3700, end: null, "class": null,
+    live: true, seg: "A", step: "R1", usd: null, shift: null };
+  const unknown = { stage: "S2", attempt: null, kind: "audit", start: null, end: null, "class": null,
+    live: true, seg: null, step: null, usd: null, shift: null };
+  const c = await boot("/run/lv", () => liveDetail(T0, [done("1", "implement", "I1", 0, 1200),
+    done("2", "review", "R1", 1300, 2400), done("3", "implement", "I1", 2500, 3600), running, unknown]));
+  const svg = nodesOf(c.app, (n) => n.tagName === "SVG" && n.getAttribute("class") === "tb")[0];
+  const rects = svg ? nodesOf(svg, (n) => n.tagName === "RECT") : [];
+  const liveBars = rects.filter((n) => n.getAttribute("class") === "b-live");
+  const nowLine = svg ? nodesOf(svg, (n) => n.tagName === "LINE" && n.getAttribute("class") === "now")[0] : null;
+  report("도는 막대가 하나 그려진다", liveBars.length, 1);
+  const bar = liveBars[0];
+  report("도는 막대의 오른쪽 끝이 지금 선이다",
+    !!bar && !!nowLine && Math.abs(Number(bar.getAttribute("x")) + Number(bar.getAttribute("width")) - Number(nowLine.getAttribute("x1"))) <= 0.1, true);
+  const tip = bar ? bar.textContent : "";
+  report("도는 막대 툴팁에 도는 중과 통산 시도가 있다", tip.includes("도는 중") && tip.includes("통산 시도"), true);
+  const rowNames = svg ? nodesOf(svg, (n) => n.tagName === "TEXT" && n.getAttribute("x") === "8").map((n) => n.textContent) : [];
+  report("띠 행 이름에 I1 · A 와 R1 · A 가 있다", rowNames.includes("I1 · A") && rowNames.includes("R1 · A"), true);
+  const doneTips = rects.filter((n) => n.getAttribute("class") === "b-ok").map((n) => n.textContent);
+  report("끝난 막대 툴팁이 행 이름과 통산 시도로 시작한다", doneTips.length === 3 && doneTips[0].indexOf("I1 · A · 통산 시도 1 · ") === 0, true);
+  report("범례에 도는 중 견본이 있다", classed(c.app, "legend").some((n) => n.textContent.includes("도는 중")) && classed(c.app, "live").length === 1, true);
+  report("시작을 모르는 도는 시도를 따로 안내한다",
+    classed(c.app, "note").some((n) => n.textContent.includes("시작 시각을 모르는 도는 중 시도 1건")), true);
+  const table = nodesOf(c.app, (n) => n.tagName === "TABLE" && n.getAttribute("class") === "tbl")[0];
+  const r1 = table ? nodesOf(table, (n) => n.tagName === "TR").find((tr) => tr.children[0] && tr.children[0].textContent === "R1") : null;
+  const cells = r1 ? r1.children.map((td) => td.textContent) : [];
+  report("스텝 표 R1 행의 시도 칸이 회째와 통산을 적는다", /^\d+회째 · 통산 \d+$/.test(cells[3] || ""), true);
+  report("스텝 표 R1 행의 끝·종단 부류가 비고 걸린 시간이 째로 끝난다",
+    cells[5] === "-" && cells[8] === "-" && /째$/.test(cells[6] || ""), true);
+  const segs = nodesOf(c.app, (n) => n.tagName === "TABLE" && n.getAttribute("class") === "segs");
+  const segTries = segs.map((t) => nodesOf(t, (n) => n.tagName === "TD").map((td) => td.textContent).pop());
+  report("세그먼트 표의 도는 자식 시도 칸이 회째와 통산을 적는다", segTries.includes("2회째 · 통산 4"), true);
+  report("스텝 흐름 상자가 도는 스텝의 횟수를 회째로 적는다",
+    classed(c.app, "sbox").some((n) => n.textContent.includes("도는 중 · 2회째")), true);
+  report("상세 지금 줄에 통산 시도가 있다", classed(c.app, "nowline").some((n) => n.textContent.includes("통산 시도 4")), true);
+
+  const e = await boot("/run/lv", () => liveDetail(T0, [unknown]));
+  const box = classed(e.app, "tband")[0];
+  report("그릴 시도가 없으면 새 빈 상태 문장과 도는 몫 안내를 함께 둔다",
+    !!box && classed(box, "empty-line").some((n) => n.textContent === "그릴 수 있는 시도가 없어 시간 띠를 그리지 않았습니다.") &&
+    classed(box, "note").some((n) => n.textContent.includes("시작 시각을 모르는 도는 중 시도 1건")), true);
+
+  const l = await boot("/", () => ({
+    tz_offset_s: 32400, tz_label: "KST", generated_at: T0 + 7200, today: "2026-11-20",
+    runs: [{ id: "lv", goal: "목표 lv", attention: "watch", state: "진행중", started_at: T0, elapsed_s: 7200, base: "/a",
+      seg: {}, cost_usd: 1, waiting: [], prs: [], now: { stage: "A", kind: "review", attempt: "4", blocked: null } }],
+    totals: {}, bases: ["/a"], hidden: 0, hidden_experiment: 0,
+  }));
+  report("목록 지금 칸에 통산 시도가 있다", l.app.textContent.includes("review · 통산 시도 4"), true);
+}
+
 const fail = (e) => { console.error(e && e.stack || e); process.exit(1); };
 if (process.argv[3] === "timeband") timebandCases().catch(fail);
+else if (process.argv[3] === "live") liveCases().catch(fail);
 else listCases().then(detailCases).then(endedHoldCases).then(baseFilterCases).then(seatCases).then(waitCases)
   .then(addressCases).then(pendingCases).then(revertCases).then(lateAnswerCases).then(bodyAbortCases).then(storeCases).then(backLinkCases).catch(fail);
 JS
@@ -1043,6 +1124,24 @@ elif [ -n "${CI:-}" ]; then
   bad "S7 node" "CI 에 node 가 없어 시간 띠 시험을 돌릴 수 없다"
 else
   printf 'SKIP: S7 — 이 호스트에 node 가 없다\n'
+fi
+
+# ---------------------------------------------------------------------------
+# S8 — a running attempt is drawn and named. The same harness, with the `live`
+# argument, draws a running run whose segment went implement and review in turn:
+# the running bar reaches the now line, the band rows pair step and segment,
+# and every attempt number on the page says which count it is.
+# ---------------------------------------------------------------------------
+if command -v node >/dev/null 2>&1; then
+  node "$WORK/redraw.js" "$SCREEN/app.js" live >"$WORK/live.out" 2>"$WORK/live.err"
+  check "S8 하니스가 끝까지 돈다" "$? $(tail -n 1 "$WORK/live.err")" "0 "
+  while IFS=$'\t' read -r name got want; do
+    check "S8 $name" "$got" "$want"
+  done <"$WORK/live.out"
+elif [ -n "${CI:-}" ]; then
+  bad "S8 node" "CI 에 node 가 없어 도는 시도 시험을 돌릴 수 없다"
+else
+  printf 'SKIP: S8 — 이 호스트에 node 가 없다\n'
 fi
 
 printf '\ntest-dashboard-screen: %d passed, %d failed\n' "$passed" "$failed"

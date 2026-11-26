@@ -90,10 +90,6 @@ mkdir -p "$PROFILE"
 
 pyq() { PYTHONDONTWRITEBYTECODE=1 python3 "$@"; }
 
-wait_gone() {
-  local i=0
-  while [ -n "${1:-}" ] && kill -0 "$1" 2>/dev/null && [ "$i" -lt 60 ]; do sleep 0.1; i=$((i + 1)); done
-}
 free_port() {
   pyq -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()'
 }
@@ -102,7 +98,7 @@ cleanup() {
   pkill -KILL -f -- "$PROFILE" 2>/dev/null
   if [ -n "${PREVIEW_PID:-}" ]; then
     kill "$PREVIEW_PID" 2>/dev/null
-    wait_gone "$PREVIEW_PID"
+    wait_pid_gone "$PREVIEW_PID"
   fi
   fx_reap
   rm -rf "$WORK"
@@ -120,8 +116,8 @@ PP=$(free_port)
 env -u CI -u CC_PIPELINE_SEGMENT -u CC_PIPELINE_STAGE_ID XDG_STATE_HOME="$XDG_STATE_HOME" \
   PYTHONDONTWRITEBYTECODE=1 python3 "$DASH" preview --port "$PP" 2>"$WORK/preview.err" &
 PREVIEW_PID=$!
-i=0
-while [ "$i" -lt 50 ] && [ "$(get "$PP" /healthz)" != "200" ]; do sleep 0.1; i=$((i + 1)); done
+preview_up() { [ "$(get "$PP" /healthz)" = "200" ]; }
+wait_until preview_up
 check "B preview 가 /healthz 에 답한다" "$(get "$PP" /healthz)" "200"
 
 cat >"$WORK/drive.js" <<'JS'

@@ -592,7 +592,7 @@ sr '세그먼트=A' '스테이지=S5' '실행 버전=1' '종단 부류=정상 �
 sr '세그먼트=A' '스테이지=A' '종류=lead-fix' '실행 버전=2' '종단 부류=크래시 rc=1'; cst 5.25 2026-10-01T08:00:00Z
 sr '세그먼트=A' '스테이지=S4' '실행 버전=2' '종단 부류=정상 완료'; cst 6.0 2026-10-01T09:00:00Z
 sr '세그먼트=A' '스테이지=A' '종류=review' '실행 버전=3' '종단 부류=정상 완료'; cst 6.5 2026-10-01T10:00:00Z
-sr '세그먼트=A' '스테이지=A' '종류=reconverge' '실행 버전=4' '종단 부류=정상 완료'; cst 7.0 2026-10-01T11:00:00Z
+sr '세그먼트=A' '스테이지=A' '종류=reconverge' '실행 버전=3' '종단 부류=정상 완료'; cst 7.0 2026-10-01T11:00:00Z
 sr '세그먼트=B' '스테이지=B' '종류=implement' '실행 버전=1' '종단 부류=정상 완료'
 fx_row '자율 승인' 'kind=exec' 'argv=x| kind=judgment |y' '계보=B:A#1'
 fx_row '자율 승인' 'kind=judgment' '결정=채택' '세그먼트=A' '판단 부류=감사-발견' '등급=1' '기준=c1' '되돌리는 법=r1' \
@@ -625,6 +625,9 @@ fx_row '승인' '승인 id=K1' '상태=승인' '대상=-' '절단점=경계' '�
 fx_row 'cycle' '세그먼트=A' '사이클=1' 'P0=1' 'P1=2' '모드=전체' '리뷰 종결=수정' '리포트 경로=/r/a1.md'
 fx_row 'cycle' '세그먼트=A' '사이클=2' 'P0=0' 'P1=0' '모드=확인'
 fx_stage_live A; fx_stage_meta A review 4
+# The running review's supervisor log: its first line is the attempt's start.
+mkdir -p "$FX_RUN_DIR/log"
+printf '2026-10-01T11:30:00Z [run] 매니페스트 검사 통과 — 픽스처\n' > "$FX_RUN_DIR/log/A#4.sup.log"
 
 fx_mkrun nb-two; FX_LEDGER="$NBP/nb-two.md"; : > "$FX_LEDGER"; fx_ledger_path; fx_heartbeat 0 5
 {
@@ -638,6 +641,11 @@ fx_row 'segment' 'id=A' '상태=실행중' 'PR=21'
 fx_row 'segment' 'id=B' '상태=실행중' 'PR=22' '레포=not a slug'
 sr '세그먼트=A' '스테이지=A' '종류=implement' '실행 버전=1' '종단 부류=정상 완료'
 sr '세그먼트=A' '스테이지=A' '종류=review' '실행 버전=1' '종단 부류=정상 완료'
+# A running review with neither a supervisor log nor an `.err`, so its start is
+# unknown; and B, whose running attempt already has its result row.
+sr '세그먼트=B' '스테이지=B' '종류=implement' '실행 버전=2' '종단 부류=정상 완료'
+fx_stage_live A; fx_stage_meta A review 2
+fx_stage_live B; fx_stage_meta B implement 2
 
 # An experiment base: under `<state home>/cc-cmds/`, as a suite's scratch tree is.
 EBP="$NX/cc-cmds/exp/repo/docs/pipeline-run"
@@ -797,10 +805,26 @@ done
 # T23 — steps, from plan steps and `stage-result` rows in both writers' shapes.
 STEPS=$(nq "[(s['id'], s['kind'], s['status'], s['attempts'], s['end_class']) for s in M.detail('nb-anchor', now=now)['steps']]")
 check "T23 스텝 진행 (park 뒤 완료, S2 와 재수렴, 드라이버 이름만, 시도 없음, 세그먼트 두 꼴, .kind=review)" "$STEPS" \
-  "[('D1', 'design', '끝남', 2, '정상 완료'), ('AU', 'reconverge', '실패', 2, '외부 종료'), ('SP', 'split', '끝남', 1, '정상 완료'), ('V1', None, '대기', 0, None), ('I1', 'implement', '끝남', 3, '정상 완료'), ('R1', 'review', '도는 중', 3, '정상 완료')]"
+  "[('D1', 'design', '끝남', 2, '정상 완료'), ('AU', 'reconverge', '실패', 2, '외부 종료'), ('SP', 'split', '끝남', 1, '정상 완료'), ('V1', None, '대기', 0, None), ('I1', 'implement', '끝남', 3, '정상 완료'), ('R1', 'review', '도는 중', 3, None)]"
 check "T23 세그먼트가 두 스텝에 자식으로 달린다" \
   "$(nq "[(s['id'], s['segments']) for s in M.detail('nb-anchor', now=now)['steps'] if s['segments']]")" \
-  "[('I1', [{'id': 'A', 'status': '끝남', 'attempts': 2}, {'id': 'B', 'status': '끝남', 'attempts': 1}]), ('R1', [{'id': 'A', 'status': '도는 중', 'attempts': 3}, {'id': 'B', 'status': '끝남', 'attempts': 0}])]"
+  "[('I1', [{'id': 'A', 'status': '끝남', 'attempts': 2, 'live': None}, {'id': 'B', 'status': '끝남', 'attempts': 1, 'live': None}]), ('R1', [{'id': 'A', 'status': '도는 중', 'attempts': 3, 'live': {'seg': 'A', 'attempt': '4', 'nth': 4, 'start': 1790854200}}, {'id': 'B', 'status': '끝남', 'attempts': 0, 'live': None}])]"
+check "T23 도는 시도는 timeline 의 마지막 항목 하나이고 감독 로그 첫 줄이 시작이다" \
+  "$(nq "(lambda tl: ([t['live'] for t in tl].count(True), tl[-1]['live'], [(t['end'], t['end_src'], t['attempt'], t['seg'], t['step'], t['start'], t['start_src'], t['class'], t['usd']) for t in tl if t['live']]))(M.detail('nb-anchor', now=now)['timeline'])")" \
+  "(1, True, [(None, '없음', '4', 'A', 'R1', 1790854200, 'sup', None, None)])"
+check "T23 도는 R1 의 시작은 도는 시도의 시작이고 끝과 종단 부류는 비어 있다" \
+  "$(nq "[(s['started'], s['ended'], s['end_class'], s['live']) for s in M.detail('nb-anchor', now=now)['steps'] if s['id'] == 'R1']")" \
+  "[(1790854200, None, None, [{'seg': 'A', 'attempt': '4', 'nth': 4, 'start': 1790854200}])]"
+check "T23 끝난 항목의 step 은 그 결과 행을 센 스텝이다" \
+  "$(nq "[(t['stage'], t['kind'], t['seg'], t['step']) for t in M.detail('nb-anchor', now=now)['timeline'] if not t['live'] and t['kind'] in ('implement', 'design')]")" \
+  "[('D1', 'design', None, 'D1'), ('D1', 'design', None, 'D1'), ('A', 'implement', 'A', 'I1'), ('B', 'implement', 'B', 'I1')]"
+check "T23 비용 불명 수는 도는 시도를 세지 않는다" \
+  "$(nq "(M.detail('nb-anchor', now=now)['cost']['unknown'], M.detail('nb-anchor', now=now)['cost']['external_end'])")" "(1, 1)"
+check "T23 시작을 모르는 도는 시도는 start 가 null 이고 그 스텝의 started 도 null 이다" \
+  "$(nq "(lambda d: ([(t['stage'], t['start'], t['start_src'], t['step']) for t in d['timeline'] if t['live']], [(s['id'], s['started'], s['ended'], s['end_class'], [e['nth'] for e in s['live']]) for s in d['steps'] if s['live']]))(M.detail('nb-two', now=now))")" \
+  "([('A', None, '없음', 'R1')], [('R1', None, None, None, [2])])"
+check "T23 같은 실행 버전의 결과 행이 이미 있는 이름은 도는 시도 항목이 없다" \
+  "$(nq "[t['stage'] for t in M.detail('nb-two', now=now)['timeline'] if t['live'] and t['stage'] == 'B']")" "[]"
 check "T23 스텝의 시작·끝·비용은 시도에서 온다" \
   "$(nq "[(s['id'], s['ended'], s['usd']) for s in M.detail('nb-anchor', now=now)['steps'] if s['id'] in ('D1', 'I1')]")" \
   "[('D1', 1790820000, 2.0), ('I1', 1790845200, 1.75)]"
@@ -810,7 +834,7 @@ check "T23 now 는 살아 있는 스테이지의 이름·종류·시도다" \
   "$(row_of nb-anchor 'r["now"]' all)" "[{'stage': 'A', 'kind': 'review', 'attempt': '4', 'blocked': None}]"
 check "T23 timeline 항목 모양이 그대로다" \
   "$(nq "sorted(set(k for t in M.detail('nb-anchor', now=now)['timeline'] for k in t))")" \
-  "['attempt', 'class', 'duration_s', 'end', 'end_src', 'kind', 'rc', 'reattach', 'shift', 'stage', 'start', 'start_src', 'usd']"
+  "['attempt', 'class', 'duration_s', 'end', 'end_src', 'kind', 'live', 'rc', 'reattach', 'seg', 'shift', 'stage', 'start', 'start_src', 'step', 'usd']"
 
 # T24 — the cost breakdowns, each summing to the run's total.
 check "T24 by_step (세그먼트 reconverge 비용은 기타)" \
@@ -854,7 +878,7 @@ check "T27 계보=B: 자율 승인 행이 섞여도 상태 토큰이 같다" \
 check "T27 그 행은 judgments 에 들지 않는다" "$(nq "M.detail('lin-with', now=now)['judgments']['items']")" "[]"
 check "T27 timeline 이 줄 번호를 더하기 전과 같다" \
   "$(nq "json.dumps(M.detail('tl-run', now=now)['timeline'], ensure_ascii=False, sort_keys=True)")" \
-  '[{"attempt": "1", "class": "정상 완료", "duration_s": null, "end": 1790816400, "end_src": "cost", "kind": "design", "rc": 0, "reattach": null, "shift": null, "stage": "D1", "start": null, "start_src": "없음", "usd": 1.0}, {"attempt": "1", "class": "정상 완료", "duration_s": null, "end": 1790820000, "end_src": "cost", "kind": null, "rc": 0, "reattach": null, "shift": null, "stage": "S4", "start": null, "start_src": "없음", "usd": 2.5}, {"attempt": "2", "class": "외부 종료", "duration_s": null, "end": null, "end_src": "없음", "kind": "review", "rc": 1, "reattach": null, "shift": null, "stage": "A", "start": null, "start_src": "없음", "usd": null}]'
+  '[{"attempt": "1", "class": "정상 완료", "duration_s": null, "end": 1790816400, "end_src": "cost", "kind": "design", "live": false, "rc": 0, "reattach": null, "seg": null, "shift": null, "stage": "D1", "start": null, "start_src": "없음", "step": null, "usd": 1.0}, {"attempt": "1", "class": "정상 완료", "duration_s": null, "end": 1790820000, "end_src": "cost", "kind": null, "live": false, "rc": 0, "reattach": null, "seg": "A", "shift": null, "stage": "S4", "start": null, "start_src": "없음", "step": null, "usd": 2.5}, {"attempt": "2", "class": "외부 종료", "duration_s": null, "end": null, "end_src": "없음", "kind": "review", "live": false, "rc": 1, "reattach": null, "seg": "A", "shift": null, "stage": "A", "start": null, "start_src": "없음", "step": null, "usd": null}]'
 LN="$WORK/ln/ln-run"; mkdir -p "$LN"; halt_rec "$LN/halt/S1.md" "되돌림 질문" ""
 check "T27 원장을 나눠 읽어도 되돌림 판정이 한 번에 읽은 것과 같다" \
   "$(cd "$ORCH" && pyq -c '
