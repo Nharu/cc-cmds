@@ -202,6 +202,13 @@ case "$base" in
   *) ok "이름에 # 이 남지 않는다" ;;
 esac
 check "attempt 파일은 정제되지 않은 원본 id 를 담는다" "$(cat "$out/.attempt")" "SB-1#2"
+# The round-1 checkpoint directory is made with the witness directory, so no
+# member runs a `mkdir` before its first checkpoint.
+if [ -d "$out/partial" ] && [ ! -L "$out/partial" ]; then
+  ok "스테이지 id 가 있을 때 partial/ 디렉터리를 만든다"
+else
+  bad "스테이지 id 가 있을 때 partial/ 디렉터리를 만든다" "$out/partial"
+fi
 
 # ---------------------------------------------------------------------------
 # No stage id — nothing to discriminate, so no tag and no stamp
@@ -211,6 +218,17 @@ if [ -e "$d/.attempt" ]; then
   bad "스테이지 id 가 없으면 attempt 를 쓰지 않는다" "$d/.attempt 가 생겼다"
 else
   ok "스테이지 id 가 없으면 attempt 를 쓰지 않는다"
+fi
+if [ -d "$d/partial" ] && [ ! -L "$d/partial" ]; then
+  ok "스테이지 id 가 없어도 partial/ 디렉터리를 만든다"
+else
+  bad "스테이지 id 가 없어도 partial/ 디렉터리를 만든다" "$d/partial"
+fi
+d_fb=$(run_init '' '' review-alpha)
+if [ -d "$d_fb/partial" ]; then
+  ok "폴백 루트에서도 partial/ 디렉터리를 만든다"
+else
+  bad "폴백 루트에서도 partial/ 디렉터리를 만든다" "$d_fb/partial"
 fi
 # `cc-team-witness-<slug>.XXXXXX` — one dot before the mktemp suffix, none for
 # a tag. Asserted on the dot count so an empty tag leaving `..` is caught.

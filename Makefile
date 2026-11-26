@@ -25,7 +25,7 @@ export CC_GATE_PIN_SYNC_DISABLE := 1
 TEST_TZ := Asia/Seoul
 export TZ := $(TEST_TZ)
 
-.PHONY: lint readme check check-unattended-refusal check-gate-suite policy-drift rule-enforcement testtest-rest gate-shard print-gate-shards print-gate-lanes print-gate-slots print-gate-sections print-gate-digests rest-shard print-rest-shards print-rest-goals test-active-notify test-orchestrator test-darwin test-darwin-narrow run-gate-shard-selftest run-check-gate-selftest run-rest-shard-selftest print-test-tz tz-probe check-cheap check-push check-push-verify check-items run-check-push-selftest run-test-tree-selftest run-test-slots-selftest run-test-reuse-selftest run-rest-readers-selftest run-gate-timing-selftest run-ci-duration-selftest print-gate-iso-extra run-gate-isolation-selftest isolation-check isolation-sweep isolation-capacity
+.PHONY: lint readme check check-unattended-refusal check-gate-suite policy-drift rule-enforcement testtest-rest gate-shard print-gate-shards print-gate-lanes print-gate-slots print-gate-sections print-gate-digests rest-shard print-rest-shards print-rest-goals test-active-notify test-orchestrator test-darwin test-darwin-narrow run-gate-shard-selftest run-check-gate-selftest run-rest-shard-selftest print-test-tz tz-probe check-cheap check-push check-push-verify check-items run-check-push-selftest run-test-tree-selftest run-test-slots-selftest run-test-reuse-selftest run-rest-readers-selftest run-gate-timing-selftest run-ci-duration-selftest run-gate-full-selftest run-gate-select-selftest print-gate-iso-extra run-gate-isolation-selftest isolation-check isolation-sweep isolation-capacity
 
 lint:
 	bash scripts/lint-skill-invariants.sh
@@ -229,6 +229,16 @@ check-cheap:
 # way a release commit changes them (scripts/test-reuse.sh's per-path check)
 # are not derivation input: a line of their own names them and the stamp keeps
 # them in `유도릴리스=`.
+#
+# An unattended check-push leaves the goals scripts/check-push-ci.tsv lists to
+# the pull request's rest-tests when they came in only by derivation, CI runs
+# the REST goals for the head, and the change holds neither the goal's entry
+# script nor its direct targets nor the list: each gets a `check-push: CI 몫 —
+# <goal>` line and joins `CI몫=` in the stamp. 로컬에서 돌리려면
+# `CHECK_PUSH_GOALS` 로 지명한다. check-items leaves nothing to CI.
+#
+# The sections and goals that failed last in this worktree start first in the
+# next check-push or check-items of it.
 #
 # check-cheap, each goal and each lane of sections run in a checkout of their
 # own and leave a record of the tracked files they read (a lane also the digest
@@ -543,6 +553,7 @@ ORCH_TESTS := \
 	scripts/test-kickoff-hook-probe.sh \
 	scripts/test-rekick.sh \
 	scripts/test-team-witness-init.sh \
+	scripts/test-team-witness-publish.sh \
 	scripts/test-similar-items.sh \
 	scripts/test-base-split.sh \
 	scripts/test-gate-chain-equiv.sh \
@@ -617,7 +628,8 @@ test: $(NOTIFY_TESTS:%=run/%) $(LINT_TESTS:%=run/%) $(ORCH_TESTS:%=run/%) \
 	run-gate-shard-selftest run-check-gate-selftest \
 	run-rest-shard-selftest run-check-push-selftest run-test-tree-selftest \
 	run-test-slots-selftest run-test-reuse-selftest run-rest-readers-selftest \
-	run-gate-timing-selftest run-ci-duration-selftest run-gate-isolation-selftest
+	run-gate-timing-selftest run-ci-duration-selftest run-gate-full-selftest run-gate-select-selftest \
+	run-gate-isolation-selftest
 
 # How many runners the gate suite runs on (N), and how many rows each runner
 # runs at once (L, its lanes). The partition is cut into S = N × L rows; runner
@@ -689,7 +701,8 @@ REST_GOALS := $(NOTIFY_TESTS:%=run/%) $(LINT_TESTS:%=run/%) $(ORCH_TESTS_REST:%=
 	run-gate-shard-selftest run-check-gate-selftest \
 	run-rest-shard-selftest run-check-push-selftest run-test-tree-selftest \
 	run-test-slots-selftest run-test-reuse-selftest run-rest-readers-selftest \
-	run-gate-timing-selftest run-ci-duration-selftest run-gate-isolation-selftest
+	run-gate-timing-selftest run-ci-duration-selftest run-gate-full-selftest run-gate-select-selftest \
+	run-gate-isolation-selftest
 
 test-rest: $(REST_GOALS)
 
@@ -890,6 +903,12 @@ run-gate-timing-selftest:
 
 run-ci-duration-selftest:
 	bash scripts/ci-duration.sh --self-test
+
+run-gate-full-selftest:
+	bash scripts/gate-full.sh --self-test
+
+run-gate-select-selftest:
+	bash scripts/gate-select.sh --self-test
 
 run-check-push-selftest:
 	bash scripts/check-push.sh --self-test

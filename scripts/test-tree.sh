@@ -94,6 +94,12 @@ TT_UNFINISHED_SECTIONS=""
 TT_UNFINISHED_GOALS=""
 TT_CUT_GOALS=""
 TT_DONE_ITEMS=""
+# The file the pool keeps the sections and goals that failed last in, so the
+# next pool starts them first. Empty (the default, and what every caller but
+# check-push's run and items leaves it at) means it is neither read nor
+# written. It only moves the order: nothing is skipped, retried or passed by it.
+TT_LAST_FAILED=""
+TT_LAST_FAILED_MAX_AGE=86400
 
 # The host-wide test slots every job of the pool, and each of the two calls of
 # the TT_JOBS 1 path, waits for before it starts (scripts/test-slots.sh).
@@ -880,8 +886,9 @@ tt_lane_done() {
 # and a `needs:` closure never runs in two lanes. When no cut can be had (a
 # test-gate double without a gate-shard double, a tree whose gate-shard.sh
 # lacks --only, a cut that fails)
-# every section runs in one lane: the same coverage, only slower. The heaviest
-# job starts first and a job with no estimate counts as the heaviest, so a long
+# every section runs in one lane: the same coverage, only slower. A job that
+# holds an item TT_LAST_FAILED names starts first; then the heaviest job starts
+# first and a job with no estimate counts as the heaviest, so a long
 # job does not start last. bash 3.2: no `wait -n` and no associative arrays; a
 # slot is watched with kill -0. A job is judged when it is reaped, and a
 # failure is said at once — the `실패 확정` line and the job's whole output —
@@ -996,6 +1003,72 @@ tt_pool_finish() {
   printf '%s: %s — %s rc=%s %d초\n' "$TT_PREFIX" "$word" "${TT_PJ_NAME[$i]}" "$rc" "${TT_PJ_EL[$i]}" >&2
 }
 
+# The lines of TT_LAST_FAILED that count: `<epoch><TAB><절|목표><TAB><id or goal>`,
+# not from the future and no older than TT_LAST_FAILED_MAX_AGE. A broken line, an
+# old one and a file that cannot be read count as absent.
+tt_last_failed_lines() {
+  [ -n "${TT_LAST_FAILED:-}" ] && [ -f "$TT_LAST_FAILED" ] || return 0
+  awk -F '\t' -v now="$(date +%s)" -v max="$TT_LAST_FAILED_MAX_AGE" \
+    'NF == 3 && $1 ~ /^[0-9]+$/ && ($2 == "절" || $2 == "목표") && $3 != "" && now - $1 >= 0 && now - $1 <= max' \
+    "$TT_LAST_FAILED" 2>/dev/null
+  return 0
+}
+
+# The recorded names of kind $1 (절 or 목표), as `,a,b,`.
+tt_last_failed_names() {
+  tt_last_failed_lines | awk -F '\t' -v k="$1" '$2 == k { s = s $3 "," } END { printf ",%s", s }'
+}
+
+# Takes the comma-joined names $2 of kind $1 out of the record and puts the
+# comma-joined names $3 in with the time now, one line per name. The file is
+# replaced whole by a rename; a failure to write changes nothing and is not
+# said, because the record decides only the order.
+tt_last_failed_update() {
+  local kind="$1" drop="$2" add="$3" old new tmp
+  [ -n "${TT_LAST_FAILED:-}" ] && [ ! -d "$TT_LAST_FAILED" ] || return 0
+  old=$(tt_last_failed_lines)
+  new=$(printf '%s\n' "$old" | awk -F '\t' -v k="$kind" -v names=",$drop,$add," -v add="$add" -v now="$(date +%s)" '
+    $0 != "" && !($2 == k && index(names, "," $3 ",")) { print }
+    END {
+      n = split(add, a, ",")
+      for (i = 1; i <= n; i++) if (a[i] != "" && !(a[i] in seen)) { seen[a[i]] = 1; printf "%s\t%s\t%s\n", now, k, a[i] }
+    }')
+  [ "$new" != "$old" ] || return 0
+  tmp=$(mktemp "${TT_LAST_FAILED%/*}/.cc-cmds-last-failed.XXXXXX" 2>/dev/null) || return 0
+  { [ -z "$new" ] || printf '%s\n' "$new"; } > "$tmp" 2>/dev/null && mv -f "$tmp" "$TT_LAST_FAILED" 2>/dev/null || rm -f "$tmp" 2>/dev/null
+  return 0
+}
+
+# Puts the judgement of the ended job $1 into the record: the items it failed
+# go in, a job that passed takes its own items out.
+tt_last_failed_note() {
+  local i="$1" kind=목표
+  [ "${TT_PJ_KIND[$i]}" != lane ] || kind=절
+  if [ "${TT_PJ_BAD[$i]:-0}" = 1 ]; then
+    tt_last_failed_update "$kind" "" "${TT_PJ_FIDS[$i]}"
+  else
+    tt_last_failed_update "$kind" "${TT_PJ_ARG[$i]}" ""
+  fi
+}
+
+# The sort key of job $1 against the recorded sections $2 and goals $3 (as
+# tt_last_failed_names prints them): 0 when it holds a recorded item, else 1.
+tt_pool_first() {
+  local i="$1" rest id
+  if [ "${TT_PJ_KIND[$i]}" = goal ]; then
+    case "$3" in *",${TT_PJ_ARG[$i]},"*) printf 0; return 0 ;; esac
+  else
+    rest="${TT_PJ_ARG[$i]},"
+    while [ -n "$rest" ]; do
+      id="${rest%%,*}"
+      rest="${rest#*,}"
+      [ -n "$id" ] || continue
+      case "$2" in *",$id,"*) printf 0; return 0 ;; esac
+    done
+  fi
+  printf 1
+}
+
 # Judges the ended job $1: TT_PJ_BAD[$1] 1 when it failed, and TT_PJ_FIDS[$1]
 # the items it failed. A goal fails on a nonzero exit; a lane on a nonzero
 # exit, a missing total line or a total line that counts a failure — the
@@ -1032,7 +1105,7 @@ tt_pool_judge() {
 tt_pool_run() {
   local secs="$1" goals="$2" est lanes n=0 i k load ids rest g e h jeff tab
   local t0 now lastp next=0 ndone=0 running=0 rc old oi fsecs="" fgoals="" picks took shards
-  local stop="" nfail=0 pids usecs="" ugoals=""
+  local stop="" nfail=0 pids usecs="" ugoals="" lfsecs lfgoals
   local order=()
   tab=$(printf '\t')
   TT_PJ_KIND=(); TT_PJ_ARG=(); TT_PJ_NAME=(); TT_PJ_EST=(); TT_PJ_PID=(); TT_PJ_T0=()
@@ -1068,6 +1141,7 @@ tt_pool_run() {
       printf '%s: 재사용 절 %s ← %s (%s%s)\n' "$TT_PREFIX" "$ids" "$h" "$e" "$(tt_reuse_how "$how")" >&2
       TT_REUSED_SECTIONS="${TT_REUSED_SECTIONS:+$TT_REUSED_SECTIONS,}$ids"
       TT_DONE_ITEMS="${TT_DONE_ITEMS:+$TT_DONE_ITEMS,}$ids"
+      tt_last_failed_update 절 "$ids" ""
       took="$took$ids,"
     done <<EOF
 $picks
@@ -1146,8 +1220,12 @@ EOF
   [ "$jeff" -le "$n" ] || jeff="$n"
   TT_JOBS_USED="$jeff"
 
-  order=($(i=0; while [ "$i" -lt "$n" ]; do printf '%s\t%s\n' "${TT_PJ_EST[$i]:-999999999}" "$i"; i=$((i + 1)); done \
-    | sort -t "$tab" -k1,1nr -k2,2n | cut -f2))
+  # What failed last time first, so an item that still fails says so early;
+  # then the longest estimate, then the order the jobs were put in.
+  lfsecs=$(tt_last_failed_names 절)
+  lfgoals=$(tt_last_failed_names 목표)
+  order=($(i=0; while [ "$i" -lt "$n" ]; do printf '%s\t%s\t%s\n' "$(tt_pool_first "$i" "$lfsecs" "$lfgoals")" "${TT_PJ_EST[$i]:-999999999}" "$i"; i=$((i + 1)); done \
+    | sort -t "$tab" -k1,1n -k2,2nr -k3,3n | cut -f3))
 
   # Each job starts only once it has its slots: one try per pass, and a job
   # that cannot have them yet leaves the start loop to the next second. A goal
@@ -1204,6 +1282,7 @@ EOF
           TT_PJ_DONE[$i]=1
           TT_PJ_RC[$i]=0
           TT_PJ_EL[$i]=0
+          tt_last_failed_update 목표 "${TT_PJ_ARG[$i]}" ""
           next=$((next + 1))
           ndone=$((ndone + 1))
           continue
@@ -1234,6 +1313,7 @@ EOF
           tt_item_done "${TT_PJ_IT[$i]:-}" 1 "${TT_PJ_KEY[$i]}" 0
         fi
         tt_pool_judge "$i"
+        tt_last_failed_note "$i"
         nfail=$((nfail + 1))
         TT_PJ_SHOWN[$i]=1
         printf '%s: 실패 확정 — %s rc=1 (시작하지 못했다)\n' "$TT_PREFIX" "${TT_PJ_NAME[$i]}" >&2
@@ -1256,6 +1336,7 @@ EOF
         tt_item_done "${TT_PJ_IT[$i]:-}" "$rc" "${TT_PJ_KEY[$i]}" "${TT_PJ_REC[$i]:-0}"
       fi
       tt_pool_judge "$i"
+      tt_last_failed_note "$i"
       if [ "${TT_PJ_BAD[$i]}" = 1 ]; then
         nfail=$((nfail + 1))
         TT_PJ_SHOWN[$i]=1
@@ -1504,8 +1585,9 @@ tt_base_contrast() {
   local base="$1" secs="$2" goals="$3" rc rest it fs="" fg=""
   local psecs="" pgoals="" bsecs="" bgoals="" dsecs="" dgoals=""
   # The base is run to tell a defect apart, so nothing is reused or recorded,
-  # and every item runs to its end whatever stop conditions the caller had.
-  local TT_REUSE=0 TT_DEADLINE="" TT_FAIL_FAST=0
+  # and every item runs to its end whatever stop conditions the caller had. The
+  # base's failures are not the caller's, so they stay out of its record too.
+  local TT_REUSE=0 TT_DEADLINE="" TT_FAIL_FAST=0 TT_LAST_FAILED=""
   TT_PRE_ITEMS=""
   TT_BRANCH_ITEMS=""
   TT_BASE_DROPPED=""
@@ -2652,13 +2734,14 @@ EOF
   # sets TT_FAIL_FAST and SPDL=<n> a deadline n seconds after the clone, so a
   # slow clone on a loaded host does not use it up before the first job
   # starts; the goals the deadline cut go to standard error as `sp-cut=`.
+  # SPJOBS is the jobs at a time (default 2) and SPLF the TT_LAST_FAILED file.
   sp() {
     local tag="$1" goals="$2"
     shift 2
     cd "$W" || exit 2
     exec env CC_TEST_TREE_MAKE="$T/bin/slowmake" CC_TEST_TREE_GATE="$T/bin/gate" "$@" bash -c '
-      . "$1"; trap "tt_cleanup; exit 143" TERM; TT_FAIL_FAST="${SPFF:-0}"
-      cd "$2" && tt_clone > /dev/null && TT_JOBS=2 && { [ -z "${SPDL:-}" ] || TT_DEADLINE=$(( $(date +%s) + SPDL )); } && tt_pool_run "" "$3" > /dev/null; printf "rc=%s\n" "$?"; printf "sp-cut=%s\n" "$TT_CUT_GOALS" >&2; tt_cleanup' _ "$self" "$W" "$goals" > "$T/sp-$tag.out" 2> "$T/sp-$tag.err"
+      . "$1"; trap "tt_cleanup; exit 143" TERM; TT_FAIL_FAST="${SPFF:-0}" TT_LAST_FAILED="${SPLF:-}"
+      cd "$2" && tt_clone > /dev/null && TT_JOBS="${SPJOBS:-2}" && { [ -z "${SPDL:-}" ] || TT_DEADLINE=$(( $(date +%s) + SPDL )); } && tt_pool_run "" "$3" > /dev/null; printf "rc=%s\n" "$?"; printf "sp-cut=%s\n" "$TT_CUT_GOALS" >&2; tt_cleanup' _ "$self" "$W" "$goals" > "$T/sp-$tag.out" 2> "$T/sp-$tag.err"
   }
   # Waits until the double logged line $1, or the shared ceiling.
   logwait() {
@@ -2822,12 +2905,13 @@ cat tracked.txt > /dev/null
 EOF
   chmod +x "$T/bin/rmake"
   mkdir -p "$T/emptyobj"
-  # One pool of <goals> with reuse set to $2 and records under $T/rg.
+  # One pool of <goals> with reuse set to $2 and records under $T/rg; RPLF is
+  # the TT_LAST_FAILED file.
   rp() {
     (cd "$W" && env CC_TEST_TREE_MAKE="$T/bin/rmake" CC_TEST_TREE_GATE="$T/bin/gate" GIT_ALTERNATE_OBJECT_DIRECTORIES="$T/emptyobj" bash -c '
       . "$1"; cd "$2" && tt_clone > /dev/null && TT_COMMIT=$(tt_git rev-parse HEAD) && TT_TREE=$(tt_git rev-parse "HEAD^{tree}") \
         && tt_checkout "$TT_COMMIT" && TT_JOBS=2 && TT_REUSE="$5" && TT_REUSE_GDIR="$3" && TT_REUSE_COMMIT="$TT_COMMIT" \
-        && tt_pool_run "" "$4" > /dev/null; printf "rc=%s reused=%s\n" "$?" "$TT_REUSED"; tt_cleanup' _ "$self" "$W" "$T/rg" "$1" "$2")
+        && TT_LAST_FAILED="${RPLF:-}" && tt_pool_run "" "$4" > /dev/null; printf "rc=%s reused=%s\n" "$?" "$TT_REUSED"; tt_cleanup' _ "$self" "$W" "$T/rg" "$1" "$2")
   }
   v=0
   if tr_canary "$T/probe"; then v=1; fi
@@ -2929,7 +3013,8 @@ EOF
   printf 'u\n' > "$LW/unread.txt"
   (cd "$LW" && sgit init -q && sgit add -A && sgit commit -q -m L) > /dev/null 2>&1 || bad "F42 픽스처 준비" "git 실패"
   # One run of sections <secs> as process <tag> with reuse set to <reuse>,
-  # through tt_run_items at LJOBS jobs (default 2), records under $T/lg. Start
+  # through tt_run_items at LJOBS jobs (default 2), records under $T/lg and
+  # LLF the TT_LAST_FAILED file. Start
   # it with `&` or in a subshell: it execs, so a TERM sent to $! reaches it.
   lrun() {
     local tag="$1" secs="$2" re="$3"
@@ -2938,7 +3023,7 @@ EOF
     exec env CC_TEST_TREE_GATE="$T/bin/lgate" CC_TEST_TREE_SHARD="$T/bin/lshard" "$@" bash -c '
       . "$1"; trap "tt_cleanup; exit 143" TERM; cd "$2" && tt_clone > /dev/null && TT_COMMIT=$(tt_git rev-parse HEAD) \
         && TT_TREE=$(tt_git rev-parse "HEAD^{tree}") && tt_checkout "$TT_COMMIT" && TT_JOBS="${LJOBS:-2}" && TT_REUSE="$5" \
-        && TT_REUSE_GDIR="$3" && TT_REUSE_COMMIT="$TT_COMMIT" && tt_run_items "$4" "" > /dev/null
+        && TT_LAST_FAILED="${LLF:-}" && TT_REUSE_GDIR="$3" && TT_REUSE_COMMIT="$TT_COMMIT" && tt_run_items "$4" "" > /dev/null
       printf "rc=%s reused=%s\n" "$?" "$TT_REUSED_SECTIONS"; tt_cleanup' _ "$self" "$LW" "$T/lg" "$secs" "$re" \
       > "$T/lr-$tag.out" 2> "$T/lr-$tag.err"
   }
@@ -3080,6 +3165,94 @@ EOF
     check "F42 카나리아 정지 볼륨: 다시 띄운 실행은 셋을 돈다" "$(lres O)" "rc=0||3"
   fi
 
+  # --- F43 지난 실패 먼저 ----------------------------------------------------------
+  # The gate double answers --estimate with rc7 and q1 short and the others
+  # long, so without a record the long goals start first. One job at a time, so
+  # the S lines are the start order.
+  sed "s|@T@|$T|g" > "$T/bin/egate" <<'EOF'
+#!/usr/bin/env bash
+[ "${1:-}" != --estimate ] || printf 'make:rc7\t1\nmake:q1\t1\nmake:w9\t100\nmake:w8\t90\n'
+exit 0
+EOF
+  chmod +x "$T/bin/egate"
+  # A pool of <goals> against record <file>; prints `<rc>|<start order>`.
+  lf() {
+    local goals="$1" file="$2"
+    shift 2
+    : > "$T/slot.log"
+    (sp LF "$goals" CC_TEST_SLOTS=0 CC_TEST_TREE_GATE="$T/bin/egate" SPJOBS=1 SPLF="$file" "$@")
+    printf '%s|%s' "$(cat "$T/sp-LF.out")" "$(awk '$1 == "S" { printf "%s ", $2 }' "$T/slot.log")"
+  }
+  # The record <file> without its times.
+  lfnames() { cut -f 2,3 "$1" 2>/dev/null | tr '\t\n' ': '; }
+  mkdir -p "$T/lfa" "$T/lfb"
+  out=$(lf w9,w8,rc7 "$T/lfa/f")
+  check "F43 기록이 없으면 예상 긴 순이다" "$out" "rc=1|w9 w8 rc7 "
+  check "F43 실패한 목표가 기록된다" "$(lfnames "$T/lfa/f")" "목표:rc7 "
+  check "F43 기록 한 줄은 시각·종류·이름이고 임시 파일이 남지 않는다" \
+    "$(grep -cE "^[0-9]+$(printf '\t')목표$(printf '\t')rc7\$" "$T/lfa/f")|$(ls -A "$T/lfa")" "1|f"
+  out=$(lf w9,w8,rc7 "$T/lfa/f")
+  check "F43 기록된 목표는 예상이 짧아도 먼저 뜬다" "$out" "rc=1|rc7 w9 w8 "
+  check "F43 다시 실패해도 항목마다 한 줄이다" "$(lfnames "$T/lfa/f")" "목표:rc7 "
+  out=$(lf w9,w8,rc7 "$T/lfb/f")
+  check "F43 다른 파일의 기록은 읽지 않는다" "$out" "rc=1|w9 w8 rc7 "
+  out=$(lf rc7,w9 "$T/lfb/f" SPFF=1)
+  check "F43 조기 종료: 실패만 남고 시작하지 않은 목표는 적지 않는다" "$out|$(lfnames "$T/lfb/f")" "rc=1|rc7 |목표:rc7 "
+
+  printf '%s\t목표\tq1\n%s\t목표\tother\n' "$(date +%s)" "$(date +%s)" > "$T/lfa/f"
+  out=$(lf w9,q1 "$T/lfa/f")
+  check "F43 통과하면 그 항목만 지운다" "$out|$(lfnames "$T/lfa/f")" "rc=0|q1 w9 |목표:other "
+  printf '%s\t목표\tlong\n%s\t목표\tw9\n' "$(date +%s)" "$(date +%s)" > "$T/lfa/f"
+  before=$(cat "$T/lfa/f")
+  out=$(lf long,w9 "$T/lfa/f" SPDL=4 CC_CHECK_PUSH_STOP_GRACE=1)
+  check "F43 미완: 끊긴 목표와 시작하지 않은 목표의 기록이 그대로 남는다" "${out%%|*}|$(cat "$T/lfa/f")" "rc=5|$before"
+  printf '%s\t목표\tq1\n깨진 줄\n\t목표\tq1\nx\t목표\tq1\n%s\t잡\tq1\n%s\t목표\tq1\n' "$(( $(date +%s) - 90000 ))" "$(date +%s)" "$(( $(date +%s) + 90000 ))" > "$T/lfa/f"
+  out=$(lf w9,q1 "$T/lfa/f")
+  check "F43 24시간 넘은 줄·깨진 줄·앞선 시각의 줄은 무시한다" "$out" "rc=0|w9 q1 "
+  rm -rf "$T/lfa/f"
+  mkdir "$T/lfa/f"
+  out=$(lf w9,rc7 "$T/lfa/f")
+  check "F43 읽지 못하는 기록이면 지금 순서로 돌고 판정이 같다" "$out|$(ls -A "$T/lfa/f")" "rc=1|w9 rc7 |"
+  out=$(lf w9,rc7 "$T/nodir/f")
+  check "F43 쓰지 못해도 판정이 같다" "$out|$([ -e "$T/nodir" ] && echo 있음 || echo 없음)" "rc=1|w9 rc7 |없음"
+  hasnt "F43 쓰지 못한 까닭을 표준 오류에 내지 않는다" "$(cat "$T/sp-LF.err")" "nodir"
+  out=$(lf w9,rc7 "")
+  check "F43 TT_LAST_FAILED 가 비면 파일이 생기지 않는다" "$out|$(find "$T" -name '*last-failed*' | wc -l | tr -d ' ')" "rc=1|w9 rc7 |0"
+  rm -rf "$T/lfa/f"
+  : > "$T/rmake.log"
+  out=$(rp r1 1 2> "$T/rp.err")
+  printf '%s\t목표\tr1\n' "$(date +%s)" > "$T/lfa/f"
+  out=$(RPLF="$T/lfa/f" rp r1 1 2> "$T/rp.err")
+  check "F43 재사용한 목표도 지운다" "${out%% *}|$(lfnames "$T/lfa/f")" "rc=0|"
+  rm -rf "$T/rg"
+
+  # Lanes: one section each, two at a time, so the last one starts only after
+  # another ended.
+  rm -rf "$T/lg" "$T/lfa/f"
+  : > "$T/lgate.log"
+  (lrun P l1,l2,l3 0 LLF="$T/lfa/f")
+  check "F43 기록이 없으면 레인은 놓인 차례다" "$(grep '^run:' "$T/lgate.log" | tail -n 1)" "run:l3"
+  printf '%s\t절\tl3\n' "$(date +%s)" > "$T/lfa/f"
+  touch "$T/lfail-l3"
+  : > "$T/lgate.log"
+  (lrun P l1,l2,l3 0 LLF="$T/lfa/f")
+  rm -f "$T/lfail-l3"
+  check "F43 기록된 절을 담은 레인이 먼저 뜨고 다시 실패하면 남는다" \
+    "$(grep '^run:' "$T/lgate.log" | tail -n 1)|$(lfnames "$T/lfa/f")" "run:l2|절:l3 "
+  (lrun P l1,l2,l3 0 LLF="$T/lfa/f")
+  check "F43 레인이 통과하면 담은 절을 지운다" "$(lfnames "$T/lfa/f")" ""
+  (lrun P l1,l2,l3 1 LLF="$T/lfa/f")
+  printf '%s\t절\tl2\n' "$(date +%s)" > "$T/lfa/f"
+  (lrun P l1,l2,l3 1 LLF="$T/lfa/f")
+  check "F43 재사용한 절도 지운다" "$(lfnames "$T/lfa/f")" ""
+  printf '%s\t절\tl2\n' "$(date +%s)" > "$T/lfa/f"
+  before=$(cat "$T/lfa/f")
+  (lrun P l1,l2,l3 0 LJOBS=1 LLF="$T/lfa/f")
+  check "F43 CHECK_PUSH_JOBS=1 의 직렬 경로는 기록을 건드리지 않는다" "$(cat "$T/lfa/f")" "$before"
+  TT_PJ_KIND=(lane); TT_PJ_ARG=("a1,b2")
+  check "F43 레인은 담은 절 하나로 우선이 되고 이름의 일부로는 되지 않는다" \
+    "$(tt_pool_first 0 ",x,b2," ",")$(tt_pool_first 0 ",b,a1x," ",a1,")" "01"
+
   # --- F28 repro side ---------------------------------------------------------
   out=$(find "$T/tmp" -maxdepth 1 -name 'cc-test-tree.*' | wc -l | tr -d ' ')
   check "F28 repro(판정, 5, 6)·base-verdict(판정, 3~6)와 라이브러리 뒤 TMPDIR 에 cc-test-tree.* 가 없다" "$out" "0"
@@ -3087,8 +3260,8 @@ EOF
   rm -rf "$T"
   printf 'test-tree self-test: %d passed, %d failed\n' "$passed" "$failed"
   # A floor on the count, so a refactor that silently skips cases cannot pass.
-  if [ "$passed" -lt 222 ]; then
-    printf 'test-tree self-test: 통과 수 %d 가 하한 203 에 못 미칩니다\n' "$passed" >&2
+  if [ "$passed" -lt 243 ]; then
+    printf 'test-tree self-test: 통과 수 %d 가 하한 243 에 못 미칩니다\n' "$passed" >&2
     return 1
   fi
   [ "$failed" = "0" ]

@@ -92,10 +92,13 @@
 #                                                      already made (CI's plan job),
 #                                                      or its column 4, 5 or 6
 #   bash scripts/gate-shard.sh --shards N --check [--from-table F --extra E]
+#                              [--only IDS]
 #                                                      the shards' union equals the
-#                                                      --list set, no id twice, and
+#                                                      --list set (with --only, the
+#                                                      named ids), no id twice, and
 #                                                      the row ids are exactly
-#                                                      1..N+E
+#                                                      1..N+E (N the regular rows
+#                                                      the narrowed table made)
 #   bash scripts/gate-shard.sh --timing F --weights   id<TAB>ms<TAB>표|추정 per
 #                                                      section: the table's ms, or
 #                                                      the span-rate estimate below
@@ -552,8 +555,13 @@ shard_row() {
 # 13-row table pass under `--shards 26`: rows 14..26 are then simply absent, the
 # run-row check counts only rows that carry ids, and the lane that should run
 # them is skipped in silence.
+#
+# A NARROWED TABLE IS HELD TO THE IDS IT WAS ASKED FOR. With `--only` the rows
+# list exactly the named ids, so the union is compared with that list as given
+# (the caller passes it already closed over `needs:`), and <what> names the set
+# in the messages.
 shard_check() {
-  local table="$1" ids_f="$2" n="$3"
+  local table="$1" ids_f="$2" n="$3" what="${4:---list}"
   local tmp rc=0
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/gate-shard-check.XXXXXX")
   awk -F '\t' '{ print $1 }' "$table" | LC_ALL=C sort > "$tmp/rows"
@@ -574,10 +582,10 @@ shard_check() {
     rc=3; printf 'gate-shard: 어느 샤드에도 없는 절 — %s\n' "$(tr '\n' ' ' < "$tmp/missing")" >&2
   fi
   if [ -s "$tmp/extra" ]; then
-    rc=3; printf 'gate-shard: --list 에 없는 절이 샤드에 있음 — %s\n' "$(tr '\n' ' ' < "$tmp/extra")" >&2
+    rc=3; printf 'gate-shard: %s 에 없는 절이 샤드에 있음 — %s\n' "$what" "$(tr '\n' ' ' < "$tmp/extra")" >&2
   fi
   if [ "$rc" = "0" ]; then
-    printf 'gate-shard: 커버리지 일치 — 절 %s개, 샤드 합집합이 --list 집합과 같고 중복 없음\n' "$(grep -c . "$tmp/want")"
+    printf 'gate-shard: 커버리지 일치 — 절 %s개, 샤드 합집합이 %s 집합과 같고 중복 없음\n' "$(grep -c . "$tmp/want")" "$what"
   fi
   rm -rf "$tmp"
   return "$rc"
@@ -813,6 +821,18 @@ shard_self_test() {
   bash "$0" --suite "$T/s20.sh" --shards 2 --only x,ghost --table > /dev/null 2>&1; rc=$?
   if [ "$rc" = "3" ]; then ok "(y) --only 의 모르는 id 는 exit 3"; else bad "(y) --only 의 모르는 id 는 exit 3" "rc=$rc"; fi
 
+  # (z) the narrowed coverage check: the union is the named ids, and the rows
+  # are the two regular rows the narrowed table made.
+  printf '%s\n' "$out" > "$T/p20.tsv"
+  if bash "$0" --suite "$T/s20.sh" --shards 2 --check --from-table "$T/p20.tsv" --only x,z,p > /dev/null 2>&1; then ok "(z) 좁힌 표의 --check --only 는 지명 절 집합과 정규 행 수로 통과한다"; else bad "(z) 좁힌 표의 --check --only 는 지명 절 집합과 정규 행 수로 통과한다" "비영 종료"; fi
+  if bash "$0" --suite "$T/s20.sh" --timing "$T/t20.tsv" --shards 4 --check --only x,z,p > /dev/null 2>&1; then ok "(z) 표를 직접 짜는 --check --only 는 자기 행 수를 센다"; else bad "(z) 표를 직접 짜는 --check --only 는 자기 행 수를 센다" "비영 종료"; fi
+  bash "$0" --suite "$T/s20.sh" --shards 2 --check --from-table "$T/p20.tsv" --only x,y,z,p > /dev/null 2>"$T/e20"; rc=$?
+  if [ "$rc" = "3" ] && grep -q '어느 샤드에도 없는 절 — y' "$T/e20"; then ok "(z) 지명했는데 표에 없는 절은 --check --only 에서 실패한다"; else bad "(z) 지명했는데 표에 없는 절은 --check --only 에서 실패한다" "rc=$rc $(cat "$T/e20")"; fi
+  bash "$0" --suite "$T/s20.sh" --shards 2 --check --from-table "$T/p20.tsv" --only x,z > /dev/null 2>"$T/e20"; rc=$?
+  if [ "$rc" = "3" ] && grep -q -e '--only 에 없는 절이 샤드에 있음 — p' "$T/e20"; then ok "(z) 지명하지 않은 절이 표에 있으면 --check --only 에서 실패한다"; else bad "(z) 지명하지 않은 절이 표에 있으면 --check --only 에서 실패한다" "rc=$rc $(cat "$T/e20")"; fi
+  bash "$0" --suite "$T/s20.sh" --shards 3 --check --from-table "$T/p20.tsv" --only x,z,p > /dev/null 2>&1; rc=$?
+  if [ "$rc" = "3" ]; then ok "(z) 표가 낸 정규 행 수와 다른 --shards 는 --check --only 에서 실패한다"; else bad "(z) 표가 낸 정규 행 수와 다른 --shards 는 --check --only 에서 실패한다" "rc=$rc"; fi
+
   # (p) --isolate with nothing changed keeps the regular rows as they are and
   # only adds the three empty columns.
   out=$(bash "$0" --suite "$T/s7.sh" --timing "$T/t7.tsv" --shards 2 --table 2>/dev/null)
@@ -879,8 +899,8 @@ shard_self_test() {
   rm -rf "$T"
   printf 'gate-shard self-test: %d passed, %d failed\n' "$passed" "$failed"
   # A floor on the count, so a refactor that silently skips cases cannot pass.
-  if [ "$passed" -lt 49 ]; then
-    printf 'gate-shard self-test: 통과 수 %d 가 하한 49 에 못 미칩니다\n' "$passed" >&2
+  if [ "$passed" -lt 54 ]; then
+    printf 'gate-shard self-test: 통과 수 %d 가 하한 54 에 못 미칩니다\n' "$passed" >&2
     return 1
   fi
   [ "$failed" = "0" ]
@@ -951,10 +971,6 @@ case "$only" in
       exit 2
     fi ;;
 esac
-if [ -n "$only" ] && [ "$mode" = "check" ]; then
-  printf 'gate-shard: --only 는 --check 와 함께 쓰지 않습니다 (덮는 범위 검사는 --list 전체를 본다)\n' >&2
-  exit 2
-fi
 case "$shards" in ''|*[!0-9]*|0) shard_usage ;; esac
 case "$iso_extra" in ''|*[!0-9]*) shard_usage ;; esac
 case "$extra" in ''|*[!0-9]*) shard_usage ;; esac
@@ -996,7 +1012,17 @@ case "$mode" in
     shard_row "$work/table" "$shard_k" "$col" "$shards"
     exit $? ;;
   check)
-    if [ -n "$from_table" ]; then
+    # A narrowed table has as many regular rows as it made, at most --shards:
+    # a table already made is checked against the --shards its caller read off
+    # it, and one made here counts its own rows.
+    if [ -n "$only" ]; then
+      printf '%s\n' "$only" | tr ',' '\n' | grep -v '^$' > "$work/only-ids"
+      if [ -n "$from_table" ]; then
+        shard_check "$from_table" "$work/only-ids" "$((shards + extra))" "--only"
+      else
+        shard_check "$work/table" "$work/only-ids" "$(grep -c . "$work/table")" "--only"
+      fi
+    elif [ -n "$from_table" ]; then
       shard_check "$from_table" "$work/ids" "$((shards + extra))"
     else
       shard_check "$work/table" "$work/ids" "$((shards + $(awk -F '\t' -v n="$shards" '$1 > n' "$work/table" | grep -c .)))"

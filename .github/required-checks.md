@@ -6,7 +6,7 @@
   (워크플로 실행 `40448029690` gate · `40448029582` lint · `40448029603` notify-macos, 2026-10-27, 37개 중 34개 success — `gate-isolation`·`rest-tests (1)`·`rest-tests (3)` 은 failure. 그 실행에는 추가 행 `gate-shards (27)` 도 있었고, 아래 까닭으로 목록과 수에 넣지 않는다)
 - `gate-isolation` 은 잡에 `name:` 이 없어 체크 이름이 잡 키 그대로다. 위 실행에서 체크 런으로 생긴 것을 확인했다.
 
-**추가 행 이름은 이 목록에 없다.** gate 의 matrix 는 고정 목록이 아니라 `gate-plan` 이 낸 행 목록이다. 정규 러너 1..26 뒤에, 바뀐 절의 격리 작업이 정규 행의 여유를 넘친 PR 에서만 추가 행 `gate-shards (27)` 이상(최대 `Makefile` 의 `GATE_ISO_EXTRA` 개)이 붙는다. 바뀐 절이 없거나 여유에 다 실린 PR 에는 그 체크 런이 생기지 않으므로, required 로 걸면 그런 PR 이 무기한 대기한다. 추가 행의 실패는 그 행의 체크와 `gate-isolation` 에 드러난다.
+**추가 행 이름은 이 목록에 없다.** gate 의 matrix 는 고정 목록이 아니라 `gate-plan` 이 낸 행 목록이다. 전량 판정의 실행에서는 정규 러너 1..26 뒤에(좁힌 판정에서는 정규 행 1..K 뒤에), 바뀐 절의 격리 작업이 정규 행의 여유를 넘친 PR 에서만 추가 행 `gate-shards (27)` 이상(최대 `Makefile` 의 `GATE_ISO_EXTRA` 개)이 붙는다. 바뀐 절이 없거나 여유에 다 실린 PR 에는 그 체크 런이 생기지 않으므로, required 로 걸면 그런 PR 이 무기한 대기한다. 추가 행의 실패는 그 행의 체크와 `gate-isolation` 에 드러난다.
 
 ## 게이트 소속 (26) — `.github/workflows/gate.yml` 의 샤드 matrix
 
@@ -39,7 +39,9 @@ gate-shards (25)
 gate-shards (26)
 ```
 
-샤드 수는 `Makefile` 의 `GATE_SHARDS` 하나가 정한다. matrix 는 `gate-plan` 이 그 값으로 만들고 `shard-coverage` 가 표와 대조하므로, 그 값을 바꾸면 이 목록만 같은 커밋에서 맞춘다.
+전량 판정의 실행에서 샤드 수는 `Makefile` 의 `GATE_SHARDS` 하나가 정한다. 그 실행의 matrix 는 `gate-plan` 이 그 값으로 만들고 `shard-coverage` 가 표와 대조하므로, 그 값을 바꾸면 이 목록만 같은 커밋에서 맞춘다.
+
+**위 26개가 모두 생기는 것은 전량 판정의 실행뿐이다.** PR 의 gate 는 `scripts/gate-select.sh` 가 고른 절만 돈다. 좁힌 PR 은 정규 행을 1..K 만 띄우고(K 는 선택 절의 추정 시간이 정한다), 0절 PR 은 샤드 체크 런을 만들지 않는다. 그래서 이 목록을 그대로 required 로 걸면 좁힌 PR 과 0절 PR 은 생기지 않은 샤드 체크를 무기한 기다린다.
 
 ## 나머지 (10)
 
@@ -55,6 +57,8 @@ rest-tests (3)      .github/workflows/lint.yml
 rest-duration       .github/workflows/lint.yml
 lint-and-test-macos .github/workflows/notify-macos.yml
 ```
+
+gate 의 실패 보고 잡 `gate-full-report` 는 master 의 schedule·workflow_dispatch 실행에서만 생기고 PR 에는 붙지 않는 체크라 이 목록에 넣지 않는다.
 
 `rest-tests` 의 샤드 수는 `Makefile` 의 `REST_SHARDS` 가 정한다. 바꿀 때는 `.github/workflows/lint.yml` 의 matrix 와 이 목록을 같은 커밋에서 맞춘다.
 

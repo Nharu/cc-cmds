@@ -7237,8 +7237,12 @@ pre_tguard() {
   # Every gate call here names the stub `gh` on its own `PATH="…` as well as
   # through `TG_ENV`: the call has to stay a process, and the in-process census
   # recognises a stub call by that spelling in the statement.
-  tg_H() { ( cd "$TG_A" && env "${TG_ENV[@]}" PATH="$TG/bin:$PATH" bash "$GATE" snapshot --manifest "$TG_M" 2>/dev/null ) | jq -r .H; }
-  tg_snap() { ( cd "$TG_A" && env "${TG_ENV[@]}" PATH="$TG/bin:$PATH" bash "$GATE" snapshot --manifest "$TG_M" 2>/dev/null ); }
+  #
+  # The snapshot is read as the same caller `tg_g` acts as. A stage is handed
+  # and compared against the stage digest, so a value read as the router and
+  # presented by `TG_CALLER` is refused as stale.
+  tg_H() { ( cd "$TG_A" && env "${TG_ENV[@]}" ${TG_CALLER:+"CC_PIPELINE_STAGE_ID=$TG_CALLER"} PATH="$TG/bin:$PATH" bash "$GATE" snapshot --manifest "$TG_M" 2>/dev/null ) | jq -r .H; }
+  tg_snap() { ( cd "$TG_A" && env "${TG_ENV[@]}" ${TG_CALLER:+"CC_PIPELINE_STAGE_ID=$TG_CALLER"} PATH="$TG/bin:$PATH" bash "$GATE" snapshot --manifest "$TG_M" 2>/dev/null ); }
   # tg_g <dir> <gate argv…> — `rc` and `msg` as `gate` leaves them, called with
   # the world's environment and the caller `TG_CALLER`.
   tg_g() {
@@ -10650,7 +10654,7 @@ else
   check "방출 파일이 방출자를 싣는다 (라우터)" "$(jq -r .actor "$EMITFILE")" "router"
   ( cd "$WT" && CC_PIPELINE_STAGE_ID='S5:SEG:2' gate_inproc exec --manifest "$FX_MANIFEST" \
       --target infra --segment SW --cutpoint 커밋 --surface 읽기 \
-      --snapshot-digest "$(HH)" --rationale x \
+      --snapshot-digest "$(CC_PIPELINE_STAGE_ID='S5:SEG:2' HH)" --rationale x \
       --emit-digest -- ls ) >/dev/null 2>&1
   # A DIFFERENT FILE, and that is the per-actor separation working: the derived
   # NAME sanitizes the id because a filename must, while the `actor` FIELD keeps
@@ -12451,6 +12455,23 @@ graded_as '트리밖쓰기' '경로로 부른 초기화 스크립트도 같다' 
 # is that the wrong spelling is visibly wrong, not that it is refused.
 graded_as '워크트리쓰기' '인터프리터를 앞에 두면 등급이 되돌아간다' \
   -- bash /opt/cc/plugins/cc-cmds/orchestrator/cc-team-witness-init.sh review-x
+# The team member's witness publish helper and the lead's nonce helper, pinned
+# the same three ways as the initializer: by name, by the absolute spelling a
+# skill writes, and through an interpreter, which loses the row. The publish
+# helper links a draft to the witness name in a directory under TMPDIR, so it
+# writes outside the tree; the nonce helper prints values and opens nothing for
+# writing, so it is a read.
+graded_as '트리밖쓰기' '위트니스 게시 스크립트는 트리 밖을 쓴다' \
+  -- cc-team-witness-publish.sh /t/cc-team-witness-x/.rev-a.round-1.0123456789abcdef /t/cc-team-witness-x/rev-a.round-1.md
+graded_as '트리밖쓰기' '경로로 부른 게시 스크립트도 같다' \
+  -- /opt/cc/plugins/cc-cmds/orchestrator/cc-team-witness-publish.sh /t/cc-team-witness-x/.rev-a.round-1.0123456789abcdef /t/cc-team-witness-x/rev-a.round-1.md
+graded_as '워크트리쓰기' '인터프리터를 앞에 둔 게시 스크립트는 등급이 되돌아간다' \
+  -- bash /opt/cc/plugins/cc-cmds/orchestrator/cc-team-witness-publish.sh /t/cc-team-witness-x/.rev-a.round-1.0123456789abcdef /t/cc-team-witness-x/rev-a.round-1.md
+graded_as '읽기' 'nonce 스크립트는 읽기다' -- cc-team-nonce.sh rev-a@round-1 rev-b@round-1
+graded_as '읽기' '경로로 부른 nonce 스크립트도 같다' \
+  -- /opt/cc/plugins/cc-cmds/orchestrator/cc-team-nonce.sh rev-a@round-1
+graded_as '워크트리쓰기' '인터프리터를 앞에 둔 nonce 스크립트는 등급이 되돌아간다' \
+  -- bash /opt/cc/plugins/cc-cmds/orchestrator/cc-team-nonce.sh rev-a@round-1
 
 # The similar-item lookup. Its default path calls a remote judge, so an
 # adapter read is an external act unless the two local-only switches say
@@ -16739,7 +16760,7 @@ rm -f "$k15_led"
 
 # ---------------------------------------------------------------------------
 # 15v. The run-scope visual step: exempt from the segment row, judged by its sidecar
-# --- section: 15v | group: base | covers: act, plan, snapshot, check_manifest, supervise | anchors: 15v: 시각 발행을 뺀 모든 설정 변종이 Claude Design 네 도구를 거부하고 시각 발행 변종은 DesignSync 만 거부한다, 15v: 감사가 끝나기 전의 시각 파견은 거부된다, 15v: 시각 단계가 없는 계획에서는 시각 면제가 서지 않는다, 15v: 감사 뒤 --segment - 시각 파견의 plan 이 통과한다, 15v: - implement 는 여전히 거부된다, 15v: 시각 단계의 stage-result 행이 세그먼트=- · 스테이지=S2V · 종류=visual 이다, 15v: 아무것도 남기지 않은 시각 단계는 공허한 성공이다, 15v: 시각 단계의 계속은 사이드카와 시각 종결 문구를 이름 대는 계속 메시지를 싣는다, 15v: 종결 문구만 있고 검토 통과 사이드카가 없는 시각 단계는 공허한 성공이다, 15v: 종결 문구와 검토 통과 사이드카가 함께인 시각 단계는 정상 완료다, 15v: 시각 단계가 둘인 계획은 매니페스트 검사가 거부한다, 15v: 감사 단계를 기다리지 않는 시각 단계는 매니페스트 검사가 거부한다, 15v: 시각 단계에 기대지 않는 구현 단계는 매니페스트 검사가 거부한다, 15v: 감사 없는 계획의 시각 단계는 설계 단계에 기대면 받힌다 ---
+# --- section: 15v | group: base | covers: act, plan, snapshot, check_manifest, supervise | anchors: 15v: 시각 발행을 뺀 모든 설정 변종이 Claude Design 네 도구를 거부하고 시각 발행 변종은 DesignSync 만 거부한다, 15v: 감사가 끝나기 전의 시각 파견은 거부된다, 15v: 시각 단계가 없는 계획에서는 시각 면제가 서지 않는다, 15v: 감사 뒤 --segment - 시각 파견의 plan 이 통과한다, 15v: - implement 는 여전히 거부된다, 15v: 시각 단계의 stage-result 행이 세그먼트=- · 스테이지=S2V · 종류=visual 이다, 15v: 아무것도 남기지 않은 시각 단계는 공허한 성공이다, 15v: 시각 단계의 계속은 사이드카와 시각 종결 문구를 이름 대는 계속 메시지를 싣는다, 15v: 종결 문구만 있고 검토 통과 사이드카가 없는 시각 단계는 공허한 성공이다, 15v: 종결 문구와 검토 통과 사이드카가 함께인 시각 단계는 정상 완료다, 15v: 시각 단계가 둘인 계획은 매니페스트 검사가 거부한다, 15v: 감사 단계를 기다리지 않는 시각 단계는 매니페스트 검사가 거부한다, 15v: 시각 단계에 기대지 않는 구현 단계는 매니페스트 검사가 거부한다, 15v: 감사 없는 계획의 시각 단계는 설계 단계에 기대면 받힌다, 15v: 설계 생략 모양의 시각 단계는 선행 없이 받힌다, 15v: 설계 생략 모양에서 시각 단계에 기대지 않는 구현 단계는 거부된다 ---
 #
 # The visual step is the fourth row of the run-scope table. It generates the
 # night's screens from the audited document and builds no segment, so it is
@@ -16911,6 +16932,15 @@ case "$(snap15v_err '{ "design_required": true, "steps": [ { "id": "D1", "skill"
 esac
 check "15v: 감사 없는 계획의 시각 단계는 설계 단계에 기대면 받힌다" \
   "$(snap15v_err '{ "design_required": true, "steps": [ { "id": "D1", "skill": "design", "summary": "설계", "depends_on": [] }, { "id": "S2V", "skill": "visual", "summary": "시각", "depends_on": ["D1"] }, { "id": "S2", "skill": "implement", "summary": "구현", "depends_on": ["S2V"] } ] }' | grep -c '시각 단계' || true)" "0"
+# The design-skip rewrite's shape: no design and no audit, S2V with no predecessor.
+plan15v_skip='{ "design_required": false, "steps": [ { "id": "S2V", "skill": "visual", "summary": "시각", "depends_on": [] }, { "id": "S2P", "skill": "visual-publish", "summary": "시각 발행", "depends_on": ["S2V"] }, { "id": "S2", "skill": "implement", "summary": "구현", "depends_on": ["S2V"] }, { "id": "V3", "skill": "review", "summary": "리뷰", "depends_on": ["S2"] } ] }'
+err15v_skip="$(snap15v_err "$plan15v_skip")"
+check "15v: 설계 생략 모양의 시각 단계는 선행 없이 받힌다" \
+  "$(printf '%s\n' "$err15v_skip" | grep -c '시각 단계' || true)/$(printf '%s\n' "$err15v_skip" | grep -c '시각 발행 단계' || true)" "0/0"
+case "$(snap15v_err "$(printf '%s' "$plan15v_skip" | jq -c '(.steps[] | select(.id == "S2") | .depends_on) = []')")" in
+  *"구현 단계 S2 이 시각 단계 S2V 에 기대지 않습니다"*) ok "15v: 설계 생략 모양에서 시각 단계에 기대지 않는 구현 단계는 거부된다" ;;
+  *) bad "15v: 설계 생략 모양에서 시각 단계에 기대지 않는 구현 단계는 거부된다" "-" ;;
+esac
 rm -f "$WORK/plan15v-shape.md"
 
 # ---------------------------------------------------------------------------
@@ -21466,7 +21496,8 @@ b1_21_before=$(grep -c '구속 튜플=B1' "$FX_LEDGER" || true)
 ( cd "$WT" && XDG_STATE_HOME="$STATE_LATE" CC_PIPELINE_SEGMENT=SLV CC_PIPELINE_STAGE_ID='SLV#1' \
     gate_inproc exec \
     --manifest "$FX_MANIFEST" --target front --cutpoint 커밋 --surface 워크트리쓰기 \
-    --snapshot-digest "$(HL)" --rationale "픽스처 — 스테이지 좌석의 읽기 초과 exec" \
+    --snapshot-digest "$(CC_PIPELINE_SEGMENT=SLV CC_PIPELINE_STAGE_ID='SLV#1' HL)" \
+    --rationale "픽스처 — 스테이지 좌석의 읽기 초과 exec" \
     -- touch "$WORK/t21-stage" ); rc=$?
 check "스테이지 좌석의 exec 자체는 통과한다 (아래 두 단언이 거부 위에서 공허하지 않다)" "$rc" "0"
 check "스테이지로 표시된 읽기 초과 행위는 정체 카운터를 건드리지 않는다" "$(cat "$RD_21/progress-repeat")" "1"
@@ -25990,9 +26021,11 @@ check "생성 스크립트가 만든 위트니스 디렉터리로의 발행은 �
 # 가드를 직접 부르는 행으로는 `gate_verb_act` 에서 가드로 이어지는 배선이 재지지
 # 않아, 이 호출이 rc 3 으로 막혀도 스위트는 초록이었다. 그래서 여기서 게이트 경유로
 # 실제로 돌리고, 생성된 경로가 런 디렉터리 아래인지까지 본다.
+# The stage digest, read as the same stage: a stage caller is compared against
+# that value only, so the router's `HN` would be refused here.
 CC_PIPELINE_RUN_DIR="$RD3" CC_PIPELINE_STAGE_ID='SD#1' \
   gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
-      --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
+      --surface 트리밖쓰기 --snapshot-digest "$(CC_PIPELINE_STAGE_ID='SD#1' HN)" --rationale x \
       -- "$repo_root/plugins/cc-cmds/orchestrator/cc-team-witness-init.sh" review-beta
 check "설치본 루트의 위트니스 생성 스크립트를 게이트 경유로 실행하면 통과한다" "$rc" "0"
 case "$msg" in
@@ -26074,7 +26107,7 @@ dt31_dir_of() { printf '%s' "$1" | sed -nE 's/.*(^| )dir=([^ ]+).*/\2/p'; }
 dt31_gate() {
   CC_PIPELINE_RUN_ID="${DT31_RID:-$CONE_RUN_ID}" CC_PIPELINE_STAGE_ID='SD#1' TMPDIR="$DT31_T" \
     gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
-      --surface 트리밖쓰기 --reach 런로컬 --snapshot-digest "$(HN)" --rationale x \
+      --surface 트리밖쓰기 --reach 런로컬 --snapshot-digest "$(CC_PIPELINE_STAGE_ID='SD#1' HN)" --rationale x \
       -- "$DT31_TOOL" "$@"
 }
 dt31_gate checkout "$DT31/co.md" --prefix "$DT31_PFX" --expect "$DT31_CO_SHA" --pre
@@ -26377,7 +26410,7 @@ fi
 # 모두 예외 팔 없이 `*/*` 거부로 떨어지며, 이름이 `halt` 로 시작해도 `halt/*` 팔에 걸리지
 # 않는다는 것을 스테이지 id 를 단 호출로 잰다.
 CC_PIPELINE_STAGE_ID='S2#4' gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
-      --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
+      --surface 트리밖쓰기 --snapshot-digest "$(CC_PIPELINE_STAGE_ID='S2#4' HN)" --rationale x \
       -- touch "$RD3/halt-answer/S2#4.md"
 check "스테이지의 halt-answer/ 쓰기는 거절된다" "$rc" "3"
 case "$msg" in
@@ -26404,24 +26437,24 @@ vm_hook() {  # vm_hook <파일 경로> — 훅의 Write 판정과 사유
     | jq -r '(.hookSpecificOutput.permissionDecision // "allow") + " " + (.hookSpecificOutput.permissionDecisionReason // "")' 2>/dev/null
 }
 CC_PIPELINE_STAGE_ID='S2#4' gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
-      --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
+      --surface 트리밖쓰기 --snapshot-digest "$(CC_PIPELINE_STAGE_ID='S2#4' HN)" --rationale x \
       -- mkdir -p "$RD3/visual-migration"
 check "이관 진행 디렉터리 mkdir 는 통과한다" "$rc" "0"
 CC_PIPELINE_STAGE_ID='S2#4' gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
-      --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
+      --surface 트리밖쓰기 --snapshot-digest "$(CC_PIPELINE_STAGE_ID='S2#4' HN)" --rationale x \
       -- touch "$RD3/visual-migration/1.md"
 check "이관 진행 파일 visual-migration/1.md 쓰기는 통과한다" "$rc" "0"
 CC_PIPELINE_STAGE_ID='S2#4' gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
-      --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
+      --surface 트리밖쓰기 --snapshot-digest "$(CC_PIPELINE_STAGE_ID='S2#4' HN)" --rationale x \
       -- touch "$RD3/visual-migration/deep/1.md"
 check "이관 진행 디렉터리 두 단계 아래 쓰기는 거절된다" "$rc" "3"
 ln -s "$RD3/surface-digest" "$RD3/visual-migration/2.md" 2>/dev/null || true
 CC_PIPELINE_STAGE_ID='S2#4' gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
-      --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
+      --surface 트리밖쓰기 --snapshot-digest "$(CC_PIPELINE_STAGE_ID='S2#4' HN)" --rationale x \
       -- touch "$RD3/visual-migration/2.md"
 check "말단이 심링크인 이관 진행 파일 쓰기는 거절된다" "$rc" "3"
 CC_PIPELINE_STAGE_ID='S2#4' gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
-      --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
+      --surface 트리밖쓰기 --snapshot-digest "$(CC_PIPELINE_STAGE_ID='S2#4' HN)" --rationale x \
       -- touch "$RD3/visual-lane"
 check "런 지역 이관 기록 visual-lane 쓰기는 거절된다" "$rc" "3"
 case "$(vm_hook "$RD3/visual-migration/1.md")" in
@@ -26452,7 +26485,7 @@ fi
 VL3=$(mktemp -d "${TMPDIR:-/tmp}/cc-vl3.XXXXXX")
 mkdir -p "$VL3/repo/docs/visual-lane"
 CC_PIPELINE_STAGE_ID='S2#4' gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
-      --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
+      --surface 트리밖쓰기 --snapshot-digest "$(CC_PIPELINE_STAGE_ID='S2#4' HN)" --rationale x \
       -- touch "$VL3/repo/docs/visual-lane/d.md"
 check "문서 단위 레인 기록 쓰기는 Bash 에서 거절된다" "$rc/$( [ -e "$VL3/repo/docs/visual-lane/d.md" ] && printf yes || printf no )" "3/no"
 case "$msg" in
@@ -26462,7 +26495,7 @@ esac
 : > "$VL3/repo/docs/visual-lane/d.md"
 ln -s "$VL3/repo/docs/visual-lane/d.md" "$VL3/link.md"
 CC_PIPELINE_STAGE_ID='S2#4' gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
-      --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
+      --surface 트리밖쓰기 --snapshot-digest "$(CC_PIPELINE_STAGE_ID='S2#4' HN)" --rationale x \
       -- touch "$VL3/link.md"
 check "문서 단위 레인 기록을 가리키는 말단 심링크 쓰기도 거절된다" "$rc" "3"
 case "$(vm_hook "$VL3/repo/docs/visual-lane/d.md")" in
@@ -26478,7 +26511,7 @@ esac
 # document whose name merely starts with `visual-account`.
 mkdir -p "$VL3/repo/docs/visual-account"
 CC_PIPELINE_STAGE_ID='S2#4' gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
-      --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
+      --surface 트리밖쓰기 --snapshot-digest "$(CC_PIPELINE_STAGE_ID='S2#4' HN)" --rationale x \
       -- touch "$VL3/repo/docs/visual-account/d.md"
 check "문서 계정 기록 쓰기는 Bash 에서 거절된다" "$rc/$( [ -e "$VL3/repo/docs/visual-account/d.md" ] && printf yes || printf no )" "3/no"
 case "$msg" in
@@ -26486,17 +26519,17 @@ case "$msg" in
   *) bad "문서 계정 기록 거절 문면" "$msg" ;;
 esac
 CC_PIPELINE_STAGE_ID='S2#4' gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
-      --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
+      --surface 트리밖쓰기 --snapshot-digest "$(CC_PIPELINE_STAGE_ID='S2#4' HN)" --rationale x \
       -- bash -c "touch $VL3/repo/docs/visual-account/d.md"
 check "인터프리터 안의 문서 계정 기록 쓰기도 거절된다" "$rc/$( [ -e "$VL3/repo/docs/visual-account/d.md" ] && printf yes || printf no )" "3/no"
 : > "$VL3/repo/docs/visual-account/d.md"
 ln -s "$VL3/repo/docs/visual-account/d.md" "$VL3/alink.md"
 CC_PIPELINE_STAGE_ID='S2#4' gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
-      --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
+      --surface 트리밖쓰기 --snapshot-digest "$(CC_PIPELINE_STAGE_ID='S2#4' HN)" --rationale x \
       -- touch "$VL3/alink.md"
 check "문서 계정 기록을 가리키는 말단 심링크 쓰기도 거절된다" "$rc" "3"
 CC_PIPELINE_STAGE_ID='S2#4' gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
-      --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
+      --surface 트리밖쓰기 --snapshot-digest "$(CC_PIPELINE_STAGE_ID='S2#4' HN)" --rationale x \
       -- bash -c "touch $VL3/repo/docs/visual-account-notes.md"
 case "$msg" in
   *"a document's account record is written only by"*) bad "visual-account 로 시작하는 설계 문서 이름은 문서 계정 기록 거절에 걸리지 않는다" "$msg" ;;
@@ -26517,7 +26550,7 @@ rm -rf "$VL3"
 # 읽어 질문이 사람을 기다렸다. 스테이지 id 가 있으면 두 가드가 `halt/<id>.md` 하나와
 # 원자 쓰기의 점 접두 임시 이름만 받고, 거절 문면은 맞는 경로를 적는다.
 CC_PIPELINE_STAGE_ID='S2#4' gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
-      --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
+      --surface 트리밖쓰기 --snapshot-digest "$(CC_PIPELINE_STAGE_ID='S2#4' HN)" --rationale x \
       -- touch "$RD3/halt/S2.md"
 check "스테이지 S2#4 의 halt/S2.md 쓰기는 거절된다" "$rc" "3"
 gate_halt_text=$(CC_PIPELINE_STAGE_ID='S2#4' bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; gate_halt_name_refusal' _ "$GATE" 2>/dev/null)
@@ -26537,15 +26570,15 @@ hook_halt_out=$(printf '{"tool_name":"Write","tool_input":{"file_path":"%s"}}' "
 check "훅의 정지 기록 거부 문면이 게이트의 문면과 바이트가 같다" \
   "$(printf '%s' "$hook_halt_out" | jq -r '.hookSpecificOutput.permissionDecisionReason' 2>/dev/null)" "gate: $gate_halt_text"
 CC_PIPELINE_STAGE_ID='S2#4' gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
-      --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
+      --surface 트리밖쓰기 --snapshot-digest "$(CC_PIPELINE_STAGE_ID='S2#4' HN)" --rationale x \
       -- touch "$RD3/halt/S2#4.md"
 check "스테이지 S2#4 의 halt/S2#4.md 쓰기는 통과한다" "$rc" "0"
 CC_PIPELINE_STAGE_ID='S2#4' gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
-      --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
+      --surface 트리밖쓰기 --snapshot-digest "$(CC_PIPELINE_STAGE_ID='S2#4' HN)" --rationale x \
       -- touch "$RD3/halt/.S2#4.md.AbC123"
 check "원자 쓰기의 점 접두 임시 이름은 통과한다" "$rc" "0"
 CC_PIPELINE_STAGE_ID='S2#4' gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
-      --surface 트리밖쓰기 --snapshot-digest "$(HN)" --rationale x \
+      --surface 트리밖쓰기 --snapshot-digest "$(CC_PIPELINE_STAGE_ID='S2#4' HN)" --rationale x \
       -- mkdir -p "$RD3/halt"
 check "스테이지의 mkdir halt 는 통과한다" "$rc" "0"
 gateN exec --manifest "$NM" --target infra --segment SD --cutpoint 커밋 \
@@ -30488,6 +30521,13 @@ gateb_stage() {
         bash "$GATE" "$@" 2>&1); rc=$?
   msg=$(printf '%s' "$out" | grep -vE '\[run\] ' | tr '\n' ' ' | sed 's/[[:space:]]*$//')
 }
+# The digest `gateb_stage` presents. A stage caller is compared against the stage
+# digest, whose vector half is the projection on its own segment, so the router's
+# `snapH` is refused there; this reads the snapshot as the same stage.
+snapH_stage() {
+  ( cd "$WT" && CC_PIPELINE_SEGMENT=SB CC_PIPELINE_STAGE_ID='SB#1' \
+      gate_inproc snapshot --manifest "$FX_MANIFEST" 2>/dev/null ) | jq -r .H
+}
 
 gateb_shift() {
   local out
@@ -30520,7 +30560,7 @@ notify_reset
 # `선행` at all and every one of them was refused before it could be recorded.
 # The refusal was correct; the fixtures had to learn the newer contract.
 gateb_stage act --manifest "$FX_MANIFEST" --kind segment --target infra --segment SBN1 \
-  --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(snapH)" \
+  --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(snapH_stage)" \
   --rationale "픽스처 — 스테이지 호출의 park 기록" -- "상태=park" "워크트리=$WT" "선행=없음"
 check "스테이지 호출에서도 세그먼트 park 행은 남는다" \
   "$(grep -cF 'id=SBN1 | 상태=park' "$FX_LEDGER" || true)" "1"
@@ -30553,7 +30593,7 @@ rm -f "$RD/notify.seat"
     CC_PIPELINE_SEGMENT=SB CC_PIPELINE_STAGE_ID='SB#1' \
     TMUX="/tmp/tmux-g,x/default,4242,3" TMUX_PANE=%48 \
     bash "$GATE" act --manifest "$FX_MANIFEST" --kind segment --target infra --segment SBS1 \
-      --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(snapH)" \
+      --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(snapH_stage)" \
       --rationale "픽스처 — 스테이지는 좌석을 적지 않는다" -- "상태=계획됨" "워크트리=$WT" "선행=없음" \
     >/dev/null 2>&1 )
 check "스테이지 호출은 클릭 좌석을 적지 않는다" \
@@ -30589,7 +30629,7 @@ check "다른 서버 pid·창의 라우터 호출은 클릭 좌석을 그 창으
     CC_PIPELINE_SEGMENT=SB CC_PIPELINE_STAGE_ID='SB#1' \
     TMUX="/tmp/tmux-g,x/default,98817,3" TMUX_PANE=%60 \
     bash "$GATE" act --manifest "$FX_MANIFEST" --kind segment --target infra --segment SBS4 \
-      --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(snapH)" \
+      --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(snapH_stage)" \
       --rationale "픽스처 — 스테이지는 좌석을 옮기지 않는다" -- "상태=계획됨" "워크트리=$WT" "선행=없음" \
     >/dev/null 2>&1 )
 check "또 다른 창의 스테이지 호출은 옮긴 클릭 좌석을 바꾸지 않는다" \
@@ -30719,7 +30759,7 @@ check "샤드 호출의 인가 행은 행위자=교대 를 싣는다"        "$(
 # The assertion spans both calls: exactly one banner, and it is the router's.
 notify_reset
 gateb_stage act --manifest "$FX_MANIFEST" --kind segment --target infra --segment SBN3 \
-  --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(snapH)" \
+  --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(snapH_stage)" \
   --rationale "픽스처 — 같은 세그먼트에 대한 스테이지 park" -- "상태=park" "워크트리=$WT" "선행=없음"
 gateb act --manifest "$FX_MANIFEST" --kind segment --target infra --segment SBN3 \
   --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(snapH)" \
@@ -42939,7 +42979,11 @@ spv_stage() {  # spv_stage <표면> [--reach <칸>] -- <argv…>
     CLAUDE_CODE_SESSION_ID="s-SPV-9" CC_CLAUDE_BIN="$CAP_STUB" \
     CC_PIPELINE_SHIFT_ID='' CC_PIPELINE_STAGE_ID='SPV#9' CC_PIPELINE_SEGMENT=SPV \
     bash "$GATE" exec --manifest "$CAP_NM" --target infra --segment SPV --cutpoint 커밋 \
-      --surface "$sf" --snapshot-digest "$(cap_H "$SAP_SEAT" '')" --rationale x "$@" ) > "$CAP_OUT" 2> "$CAP_ERR"; rc=$?
+      --surface "$sf" --snapshot-digest "$( ( cd "$WT" && XDG_STATE_HOME="$STATE_CONE" CLAUDE_CONFIG_DIR="$NCFG" \
+          CLAUDE_CODE_SESSION_ID="s-SPV-9" CC_CLAUDE_BIN="$CAP_STUB" \
+          CC_PIPELINE_SHIFT_ID='' CC_PIPELINE_STAGE_ID='SPV#9' CC_PIPELINE_SEGMENT=SPV \
+          bash "$GATE" snapshot --manifest "$CAP_NM" --fields H 2>/dev/null ) )" \
+      --rationale x "$@" ) > "$CAP_OUT" 2> "$CAP_ERR"; rc=$?
   msg=$( { grep -h -vE '\[run\] ' "$CAP_OUT" "$CAP_ERR" || true; } | tr '\n' ' ' | sed 's/[[:space:]]*$//')
 }
 spv_stage 워크트리쓰기 -- cp "$WORK/spv-src.txt" "$SAP_WT/$SAP_RULE"
@@ -59341,7 +59385,7 @@ t3v_exec() {  # t3v_exec <스테이지 id> <argv...> — 발행 단계의 선언
     CC_PIPELINE_STAGE_ID="$sid" XDG_CONFIG_HOME="$WORK/vp83v-cfg" \
     CC_CLAUDE_BIN="$PJ_STUB" PJ_DIR="$PJ_DIR" PJ_VERDICT=park \
     bash "$GATE" exec --manifest "$RX_M" --target front3 --segment S3 --cutpoint push \
-      --surface 트리밖쓰기 --reach 기기전역 --snapshot-digest "$(rx_H "$RX_M")" \
+      --surface 트리밖쓰기 --reach 기기전역 --snapshot-digest "$(CC_PIPELINE_STAGE_ID="$sid" rx_H "$RX_M")" \
       --rationale '발행 계정 판독' -- "$@" 2>&1); rc=$?
   msg=$(printf '%s' "$out" | grep -vE '\[run\] ' | tr '\n' ' ' | sed 's/[[:space:]]*$//')
   printf '%s' "$out" > "$WORK/last-output.txt"
@@ -68756,7 +68800,7 @@ graded_as '읽기' '89p: fence-check 는 읽기다' -- "$CC_ORCH/base-split.py" 
 
 # ---------------------------------------------------------------------------
 # 89q. 티켓 배달의 스킬 문면
-# --- section: 89q | group: tier | covers: 킥오프 문면, design_delivery, ticket-delivery | anchors: 89q: 킥오프가 판정의 배달 방식을 대조하고 묻는다, 89q: 킥오프가 하위 런의 설계 생략과 착수 행을 싣는다, 89q: 경계 문면이 티켓 배달 런의 종료 절과 5r 을 싣는다, 89q: 자가 점검이 티켓 배달 꼴과 출처 티켓 꼴을 싣는다, 89q: 재킥오프가 새 런 id 로 착수 행을 쓴다, 89q: 아침 보고가 두 절을 싣는다, 89q: 설계 두 갈래가 티켓 배달 절을 공유한다, 89q: 분할과 리뷰가 티켓 배달을 읽는다, 89q: 공유 계약의 닫힘 경로가 구현 중단을 든다, 89q: 두 감사가 Step 6 에서 조정 패스를 읽는다, 89q: 조정 패스가 티켓 배정 규율을 싣는다 ---
+# --- section: 89q | group: tier | covers: 킥오프 문면, design_delivery, ticket-delivery | anchors: 89q: 킥오프가 판정의 배달 방식을 대조하고 묻는다, 89q: 킥오프가 하위 런의 설계 생략과 착수 행을 싣는다, 89q: 경계 문면이 티켓 배달 런의 종료 절과 5r 을 싣는다, 89q: 자가 점검이 티켓 배달 꼴과 출처 티켓 꼴을 싣는다, 89q: 재킥오프가 새 런 id 로 착수 행을 쓴다, 89q: 아침 보고가 두 절을 싣는다, 89q: 설계 두 갈래가 티켓 배달 절을 공유한다, 89q: 분할과 리뷰가 티켓 배달을 읽는다, 89q: 공유 계약의 닫힘 경로가 구현 중단을 든다, 89q: 두 감사가 Step 6 에서 조정 패스를 읽는다, 89q: 조정 패스가 티켓 배정 규율을 싣는다, 89q: 설계 생략 재작성이 시각 단계를 남긴다, 89q: Step 3 이 화면 작업의 시각 단계를 묻는다, 89q: 진입 판단이 설계 없는 그래프의 시각 단계 모양을 안내한다, 89q: 새 추천 꼬리가 스킬 기본값 꼴을 쓴다 ---
 #
 # 게이트와 스크립트는 다른 절이 재므로 여기서는 문면만 대조한다. 옛 문면이 남으면 같은
 # 일을 두 가지로 적은 것이 되므로 없음도 함께 단언한다.
@@ -68803,6 +68847,15 @@ check "89q: 두 감사가 Step 6 에서 조정 패스를 읽는다" \
   "$(tkx_has "$tkq_au" '**Read `${CLAUDE_SKILL_DIR}/references/03-adjustment-pass.md`.**')/$(tkx_has "$tkq_uu" '**Read `${CLAUDE_SKILL_DIR}/../design-audit/references/03-adjustment-pass.md`.**')" "있음/있음"
 check "89q: 조정 패스가 티켓 배정 규율을 싣는다" \
   "$(tkx_has "$tkq_ad" '## Ticket-delivery assignment (T3 and T4)')/$(tkx_has "$tkq_ad" '**A new open entry goes to exactly one ticket.**')/$(tkx_has "$tkq_ad" '**`닿는 슬라이스` stays the scope.**')/$(tkx_has "$tkq_ad" '**A new residual item goes to exactly one ticket.**')/$(tkx_has "$tkq_ad" '**An existing assignment does not move.**')/$(tkx_has "$tkq_ad" 'carries its ticket-list edit by `## Ticket-delivery assignment (T3 and T4)`')" "있음/있음/있음/있음/있음/있음"
+tkq_ep="$repo_root/plugins/cc-cmds/orchestrator/prompts/entry-plan.md"
+check "89q: 설계 생략 재작성이 시각 단계를 남긴다" \
+  "$(tkx_has "$tkq_ap" 'the graph `implement` → `review`, the tier keys')/$(tkx_has "$tkq_ap" 'A judged `S2V` step stays, with `depends_on` `[]`')/$(tkx_has "$tkq_ap" '「설계만 빠지고 시각 단계는 남습니다 — 시각 스테이지가 화면을 만들고, 화면을 구현하는 슬라이스는 그 화면의 승인을 기다립니다.」')/$(tkx_has "$tkq_ap" '`**대상 화면**` takes a list only and never offers `설계에 위임`')" "없음/있음/있음/있음"
+check "89q: Step 3 이 화면 작업의 시각 단계를 묻는다" \
+  "$(tkx_has "$tkq_ap" '**Visual step for screen work.**')/$(tkx_has "$tkq_ap" '(header chip `시각 단계`)')/$(tkx_has "$tkq_ap" '- label `시각 단계 추가`')/$(tkx_has "$tkq_ap" '- label `없이 진행`')" "있음/있음/있음/있음"
+check "89q: 진입 판단이 설계 없는 그래프의 시각 단계 모양을 안내한다" \
+  "$(tkx_has "$tkq_ep" 'a graph with neither — an implement run with no design — gives it no predecessor (`depends_on: []`).')/$(tkx_has "$tkq_ep" 'or on the `design` step when the graph has no audit.')" "있음/없음"
+check "89q: 새 추천 꼬리가 스킬 기본값 꼴을 쓴다" \
+  "$(tkx_has "$tkq_ap" 'that the document'"'"'s `**화면**` field names a screen id on a slice `추천 출처: 기본값`.')/$(tkx_has "$tkq_ap" 'that the list was picked from the upper ticket block'"'"'s wording `추천 출처: 기본값`')/$(tkx_has "$tkq_ap" '추천 출처: 문서 화면 필드')/$(tkx_has "$tkq_ap" '추천 출처: 상위 티켓 블록')" "있음/있음/없음/없음"
 
 # ---------------------------------------------------------------------------
 # 89r. 아침 보고의 상위 착지 판정
@@ -75783,7 +75836,7 @@ check "107:두 대상의 세그먼트 행이 기록된다 (아래 단언의 전�
 
 # 단언 1 — 두 번째 대상의 링크된 워크트리는 허용 집합 안이다.
 s106_home=$(tg_snap | jq -S . 2>/dev/null)
-s106_b=$( ( cd "$S106/B-wt" && env "${TG_ENV[@]}" PATH="$TG/bin:$PATH" bash "$GATE" snapshot --manifest "$TG_M" 2>/dev/null ) | jq -S . 2>/dev/null)
+s106_b=$( ( cd "$S106/B-wt" && env "${TG_ENV[@]}" ${TG_CALLER:+"CC_PIPELINE_STAGE_ID=$TG_CALLER"} PATH="$TG/bin:$PATH" bash "$GATE" snapshot --manifest "$TG_M" 2>/dev/null ) | jq -S . 2>/dev/null)
 if [ -n "$s106_home" ] && [ "$s106_home" = "$s106_b" ]; then
   ok "107:두 번째 대상의 링크된 워크트리에서 낸 스냅숏은 홈과 같다"
 else
@@ -77464,6 +77517,328 @@ unset t120_strays t120_sl t120_fake t120_fs t120_ns t120_l t120_rd t120_a t120_b
   t120_w3 t120_w4 t120_w5 t120_w6 t120_w7 t120_at t120_r t120_fl t120_fd t120_fp t120_ff t120_m0 t120_i t120_row \
   t120_ol t120_gb t120_fb t120_o t120_S t120_rid t120_lg t120_adopt t120_s1 t120_rp t120_up t120_t t120_e1 t120_e2 \
   t120_od t120_hn t120_ho t120_hd t120_hb t120_hba t120_eff t120_e4 t120_e5
+
+# ---------------------------------------------------------------------------
+# 121. 구성원 위트니스 게시 한 번, 스테이지 다이제스트, 라우터 다이제스트는 그대로
+# --- section: 121 | group: tguard | covers: exec, act, snapshot, grade, gate_stage_snapshot_digest, gate_stage_progress_vector, gate_stage_ancestry_has, gate_caller_snapshot_digest, gate_ancestry_window, gate_emit_digest_body | anchors: 121: 게시 도우미 한 번의 exec 가 증인을 게시한다, 121: 그 exec 는 원장에 exec 행 하나만 남긴다, 121: 센티널이 어긋난 초안은 아무것도 바꾸지 않는다, 121: 이미 게시된 증인은 덮지 않는다, 121: 일상 exec 행 수십 개 뒤에도 스테이지의 옛 값이 통과한다, 121: 일상 행이 아닌 행 8개 뒤에는 통과한다, 121: 일상 행이 아닌 행 9개 뒤에는 거부된다, 121: 자기 세그먼트의 진전에는 거부된다, 121: 다른 세그먼트의 진전에는 통과한다, 121: 방출 줄·방출 파일·snapshot H 가 같은 값이다, 121: 방출된 값이 곧바로 통과한다, 121: 탐색 —, 121: 벡터 —, 121: 비스테이지 기동 행이 없는 세그먼트에서도 자기 정상 완료 뒤의 옛 다이제스트는 벡터가 다르다, 121: 라우터는 일상 행이어도 9행 뒤 거부한다, 121: 라우터는 다른 세그먼트의 진전에 거부한다, 121: 렌더의 스냅숏 해시는 라우터 값이다, 121: 라우터 조상 창 함수 본문이 그대로다 ---
+#
+# 팀 구성원은 위트니스를 초안 이름에 쓰고 게시 도우미 한 번으로 증인 이름에 링크해
+# 게시한다. 그 한 번이 게이트를 지나 원장에 exec 행 하나로 남는지, 확인에 걸린
+# 초안과 이미 게시된 증인에는 아무것도 바꾸지 않는지를 게이트 경유로 잰다.
+#
+# 스테이지 호출자의 다이제스트는 벡터 반쪽이 자기 세그먼트로 좁힌 투영이고, 팁
+# 반쪽의 조상 탐색은 일상 행(스테이지의 `읽기`·`트리밖쓰기` exec 행)을 세지 않고
+# 그 밖의 행만 여덟 개까지 센다. 원장 끝 512행 밖은 보지 않는다. 종단 시험은 픽스처
+# 세계에서 게이트를 프로세스로 부르고, 행 종류의 분류와 512행 상한은 게이트를
+# 소스 모드로 읽어 합성 원장에 건다 — 512행을 게이트로 쌓으면 이 절 하나가 몇 분이
+# 걸리고, 분류와 상한이 읽는 것은 행의 문면뿐이기 때문이다.
+#
+# 라우터 경로는 바뀌지 않았다: 같은 일상 행 9개가 라우터의 옛 값을 밀어내고, 다른
+# 세그먼트의 진전이 라우터의 옛 값을 거부하며, 렌더의 「스냅숏 해시」 는 라우터
+# 값이고, 라우터의 창 함수 본문은 고정된 문면 그대로다.
+# ---------------------------------------------------------------------------
+tg_world u121 -
+r121_world=$rc
+check "121: 세그먼트 행이 기록된다 (아래 단언의 전제)" "$r121_world" "0"
+# 스테이지는 세그먼트 SA 의 `SA#1`, 라우터는 스테이지 표지가 없는 호출자다. 라우터
+# 환경에 세그먼트를 싣지 않는 것이 요점이다 — 세그먼트만 있어도 스테이지로 읽힌다.
+U121_ENV_S=("${TG_ENV[@]}" CC_PIPELINE_SEGMENT=SA CC_PIPELINE_STAGE_ID='SA#1')
+U121_ENV_R=("${TG_ENV[@]}")
+# u121_H <s|r> — 그 호출자로 읽은 snapshot 의 H.
+u121_H() {
+  if [ "$1" = s ]; then
+    ( cd "$TG_A" && env "${U121_ENV_S[@]}" PATH="$TG/bin:$PATH" bash "$GATE" snapshot --manifest "$TG_M" 2>/dev/null ) | jq -r .H
+  else
+    ( cd "$TG_A" && env "${U121_ENV_R[@]}" PATH="$TG/bin:$PATH" bash "$GATE" snapshot --manifest "$TG_M" 2>/dev/null ) | jq -r .H
+  fi
+}
+# u121_x <s|r> <digest> <surface> <argv…> — 세그먼트 워크트리에서 낸 exec 하나.
+# `rc`·`msg` 를 남기고, 방출 줄의 H 를 `U121_NEXT` 에 둔다(다음 호출이 쓸 값).
+u121_x() {
+  local who="$1" h="$2" s="$3"; shift 3
+  if [ "$who" = s ]; then
+    msg=$( cd "$TG_WT" && env "${U121_ENV_S[@]}" PATH="$TG/bin:$PATH" bash "$GATE" exec --manifest "$TG_M" \
+             --target a --segment SA --cutpoint 커밋 --surface "$s" --reach 런로컬 \
+             --snapshot-digest "$h" --rationale x --emit-digest -- "$@" 2>&1 ); rc=$?
+  else
+    msg=$( cd "$TG_WT" && env "${U121_ENV_R[@]}" PATH="$TG/bin:$PATH" bash "$GATE" exec --manifest "$TG_M" \
+             --target a --segment SA --cutpoint 커밋 --surface "$s" --reach 런로컬 \
+             --snapshot-digest "$h" --rationale x --emit-digest -- "$@" 2>&1 ); rc=$?
+  fi
+  U121_NEXT=$(printf '%s\n' "$msg" \
+    | sed -n 's/^\[gate-digest\] H=\([0-9a-f]\{64\}-[0-9a-f]\{64\}\) actor=.*$/\1/p' | tail -n 1)
+}
+# u121_fill <n> <surface> <argv…> — 스테이지 exec n 번, 매번 앞 호출이 방출한 값으로.
+# 마지막 rc 가 0 이 아니면 `u121_fill_bad` 에 남긴다.
+u121_fill() {
+  local n="$1" i=0; shift
+  u121_fill_bad=""
+  U121_NEXT=$(u121_H s)
+  while [ "$i" -lt "$n" ]; do
+    i=$((i + 1))
+    u121_x s "$U121_NEXT" "$@"
+    [ "$rc" = 0 ] || u121_fill_bad="$u121_fill_bad [$i rc=$rc]"
+  done
+}
+u121_rows() { grep -c '^- `' "$TG_L" 2>/dev/null || true; }
+
+# --- (가)·(나) 게시 도우미 한 번 -------------------------------------------------
+u121_pub="$repo_root/plugins/cc-cmds/orchestrator/cc-team-witness-publish.sh"
+u121_wd="$TG/cc-team-witness-u121.d"
+mkdir -p "$u121_wd/partial"
+u121_w="$u121_wd/rev-a.round-1.md"
+u121_d1="$u121_wd/.rev-a.round-1.0123456789abcdef"
+printf '본문\n<!-- cc-witness: rev-a round-1 complete round-1:fedcba9876543210 -->\n' > "$u121_d1"
+cp "$u121_d1" "$TG/u121-d1.copy"
+n121a=$(u121_rows)
+u121_x s "$(u121_H s)" 트리밖쓰기 "$u121_pub" "$u121_d1" "$u121_w"
+r121a=$rc
+n121b=$(u121_rows)
+if [ "$r121a" = 0 ] && cmp -s "$u121_w" "$TG/u121-d1.copy" && [ ! -e "$u121_d1" ]; then
+  ok "121: 게시 도우미 한 번의 exec 가 증인을 게시한다"
+else
+  bad "121: 게시 도우미 한 번의 exec 가 증인을 게시한다" "rc=$r121a 증인=$( [ -f "$u121_w" ] && echo 있음 || echo 없음) 초안=$( [ -e "$u121_d1" ] && echo 남음 || echo 없음) $msg"
+fi
+l121=$(grep '^- `' "$TG_L" | tail -n 1)
+case "$((n121b - n121a))|$l121" in
+  "1|- \`자율 승인\` |"*"| 결정=exec |"*"| 축2=트리밖쓰기 |"*"| 행위자=스테이지 |"*)
+    ok "121: 그 exec 는 원장에 exec 행 하나만 남긴다" ;;
+  *) bad "121: 그 exec 는 원장에 exec 행 하나만 남긴다" "행 $n121a → $n121b, 마지막 행: $l121" ;;
+esac
+# 센티널의 역할이 증인 이름과 다르다 — 도우미가 2 로 끝나고 아무것도 만들지 않는다.
+u121_w2="$u121_wd/rev-b.round-1.md"
+u121_d2="$u121_wd/.rev-b.round-1.0123456789abcdef"
+printf '본문\n<!-- cc-witness: rev-a round-1 complete round-1:fedcba9876543210 -->\n' > "$u121_d2"
+cp "$u121_d2" "$TG/u121-d2.copy"
+u121_x s "$(u121_H s)" 트리밖쓰기 "$u121_pub" "$u121_d2" "$u121_w2"
+if [ "$rc" != 0 ] && [ ! -e "$u121_w2" ] && cmp -s "$u121_d2" "$TG/u121-d2.copy"; then
+  ok "121: 센티널이 어긋난 초안은 아무것도 바꾸지 않는다"
+else
+  bad "121: 센티널이 어긋난 초안은 아무것도 바꾸지 않는다" "rc=$rc 증인=$( [ -e "$u121_w2" ] && echo 생김 || echo 없음) $msg"
+fi
+# 같은 증인 이름에 다른 nonce 의 초안 — 도우미가 3 으로 끝나고 증인과 초안이 그대로다.
+u121_d3="$u121_wd/.rev-a.round-1.aaaaaaaaaaaaaaaa"
+printf '다른 본문\n<!-- cc-witness: rev-a round-1 complete round-1:0000000000000000 -->\n' > "$u121_d3"
+u121_x s "$(u121_H s)" 트리밖쓰기 "$u121_pub" "$u121_d3" "$u121_w"
+if [ "$rc" != 0 ] && cmp -s "$u121_w" "$TG/u121-d1.copy" && [ -f "$u121_d3" ]; then
+  ok "121: 이미 게시된 증인은 덮지 않는다"
+else
+  bad "121: 이미 게시된 증인은 덮지 않는다" "rc=$rc $msg"
+fi
+
+# --- (다) 스테이지 다이제스트, 종단 ----------------------------------------------
+# 일상 exec 행 16개 — 라우터의 여덟 행 창이라면 두 번 밀려났을 거리다.
+H121a=$(u121_H s)
+u121_fill 16 읽기 ls
+check "121: 일상 행 채우기가 모두 통과한다 (이 단언의 전제)" "${u121_fill_bad:-없음}" "없음"
+u121_x s "$H121a" 읽기 ls
+check "121: 일상 exec 행 수십 개 뒤에도 스테이지의 옛 값이 통과한다" "$rc" "0"
+# 일상 행이 아닌 행 — 스테이지의 `워크트리쓰기` exec 행. 8개는 창 안, 9개는 창 밖.
+H121b=$(u121_H s)
+u121_fill 8 워크트리쓰기 touch u121-w8
+check "121: 워크트리 쓰기 채우기가 모두 통과한다 (이 단언의 전제)" "${u121_fill_bad:-없음}" "없음"
+u121_x s "$H121b" 읽기 ls
+check "121: 일상 행이 아닌 행 8개 뒤에는 통과한다" "$rc" "0"
+H121c=$(u121_H s)
+u121_fill 9 워크트리쓰기 touch u121-w9
+u121_x s "$H121c" 읽기 ls
+check "121: 일상 행이 아닌 행 9개 뒤에는 거부된다" "$rc" "4"
+# 자기 세그먼트의 진전 — 라우터가 SA 의 상태를 바꾼다. 행 하나뿐이라 팁은 창 안이고,
+# 거부는 벡터 반쪽에서 온다.
+H121d=$(u121_H s)
+msg=$( cd "$TG_A" && env "${U121_ENV_R[@]}" PATH="$TG/bin:$PATH" bash "$GATE" act --manifest "$TG_M" \
+         --kind segment --target a --segment SA --cutpoint 커밋 --snapshot-digest "$(u121_H r)" \
+         --rationale x -- 상태=리뷰중 "워크트리=$TG_WT" "브랜치=$TG_BR" 선행=없음 2>&1 ); rc=$?
+check "121: 라우터가 SA 의 상태를 바꾼다 (이 단언의 전제)" "$rc" "0"
+u121_x s "$H121d" 읽기 ls
+check "121: 자기 세그먼트의 진전에는 거부된다" "$rc" "4"
+# 다른 세그먼트의 진전 — 라우터가 SB 를 연다(제 워크트리와 브랜치로). 스테이지의 옛
+# 값은 통과하고, 같은 자리에서 읽어 둔 라우터의 옛 값은 거부된다.
+( cd "$TG_A" && git worktree add -q -b seg/u121b "$TG/A-wt2" ) >/dev/null 2>&1
+H121e=$(u121_H s)
+R121e=$(u121_H r)
+msg=$( cd "$TG_A" && env "${U121_ENV_R[@]}" PATH="$TG/bin:$PATH" bash "$GATE" act --manifest "$TG_M" \
+         --kind segment --target a --segment SB --cutpoint 커밋 --snapshot-digest "$R121e" \
+         --rationale x -- 상태=실행중 "워크트리=$TG/A-wt2" 브랜치=seg/u121b 선행=없음 2>&1 ); rc=$?
+n121sb=$(grep -cE '^- `segment` .*\| id=SB( \||$)' "$TG_L" || true)
+if [ "$rc|$n121sb" = "0|1" ]; then
+  ok "121: 라우터가 SB 를 연다 (이 단언의 전제)"
+else
+  bad "121: 라우터가 SB 를 연다 (이 단언의 전제)" "rc=$rc 행=$n121sb $msg"
+fi
+u121_x s "$H121e" 읽기 ls
+check "121: 다른 세그먼트의 진전에는 통과한다" "$rc" "0"
+u121_x r "$R121e" 읽기 ls
+check "121: 라우터는 다른 세그먼트의 진전에 거부한다" "$rc" "4"
+# 방출 — 줄·파일·snapshot H 가 같은 값이고, 그 값이 곧바로 통과한다.
+u121_x s "$(u121_H s)" 읽기 ls
+e121_line=$U121_NEXT
+e121_path=$( cd "$TG_A" && env "${U121_ENV_S[@]}" PATH="$TG/bin:$PATH" bash "$GATE" digest-path --manifest "$TG_M" 2>/dev/null | tail -n 1 )
+e121_file=$(jq -r .H "$e121_path" 2>/dev/null || true)
+e121_snap=$(u121_H s)
+if [ -n "$e121_line" ] && [ "$e121_line" = "$e121_file" ] && [ "$e121_line" = "$e121_snap" ]; then
+  ok "121: 방출 줄·방출 파일·snapshot H 가 같은 값이다"
+else
+  bad "121: 방출 줄·방출 파일·snapshot H 가 같은 값이다" "줄=$e121_line 파일=$e121_file ($e121_path) snapshot=$e121_snap"
+fi
+u121_x s "$e121_line" 읽기 ls
+check "121: 방출된 값이 곧바로 통과한다" "$rc" "0"
+case "$e121_line" in
+  "$(u121_H r | cut -d- -f1)"-*) bad "121: 스테이지 값의 벡터 반쪽은 라우터의 것과 다르다" "$e121_line" ;;
+  *) ok "121: 스테이지 값의 벡터 반쪽은 라우터의 것과 다르다" ;;
+esac
+
+# --- (라) 라우터 다이제스트, 종단 ------------------------------------------------
+# 같은 일상 행 9개가 라우터의 옛 값을 밀어낸다 — 라우터의 창은 종류를 보지 않는다.
+R121f=$(u121_H r)
+u121_fill 9 읽기 ls
+u121_x r "$R121f" 읽기 ls
+check "121: 라우터는 일상 행이어도 9행 뒤 거부한다" "$rc" "4"
+# 스테이지가 부른 렌더도 「스냅숏 해시」 는 라우터 값이다 — 판단 결속 튜플과 같은 값.
+s121_render=$( cd "$TG_A" && env "${U121_ENV_S[@]}" PATH="$TG/bin:$PATH" bash "$GATE" snapshot --manifest "$TG_M" --render 2>/dev/null \
+                 | sed -n 's/^스냅숏 해시: //p' )
+check "121: 렌더의 스냅숏 해시는 라우터 값이다" "$s121_render" "$(u121_H r)"
+# 라우터의 창 함수와 그 호출 자리, 창 상수 — 주석을 뺀 문면이 고정값 그대로다.
+a121_body=$(awk '/^gate_ancestry_window\(\) \{/,/^\}/' "$GATE" | grep -v '^[[:space:]]*#')
+a121_want=$(printf '%s\n' 'gate_ancestry_window() {' \
+  "  { grep '^- \`' \"\$LEDGER\" 2>/dev/null || true; } | tail -n \"\$GATE_ANCESTRY_WINDOW\"" '}')
+a121_call=$(grep -cF 'elif ! grep -qE " \| prev=$obstip\$" <<<"$(gate_ancestry_window)"; then' "$GATE" || true)
+a121_k=$(grep -c '^readonly GATE_ANCESTRY_WINDOW=8$' "$GATE" || true)
+check "121: 라우터 조상 창 함수 본문이 그대로다" "$a121_body|$a121_call|$a121_k" "$a121_want|1|1"
+
+# --- (다) 탐색과 벡터, 합성 원장 -------------------------------------------------
+# 게이트를 소스 모드로 읽어 함수 하나를 부른다. 원장은 행 문면만 담은 합성
+# 파일이다 — 탐색과 투영이 읽는 것은 그것뿐이다.
+u121_anc() {  # u121_anc <원장> <팁> — gate_stage_ancestry_has 의 rc
+  bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; set +e; LEDGER="$2"; gate_stage_ancestry_has "$3"; printf "%s" "$?"' \
+    _ "$GATE" "$1" "$2" 2>/dev/null
+}
+u121_vec() {  # u121_vec <원장> <세그먼트> — gate_stage_progress_vector 의 출력
+  bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; set +e; LEDGER="$2"; MANIFEST="$3"; CC_PIPELINE_SEGMENT="$4"; CC_PIPELINE_STAGE_ID="$4#1"; export CC_PIPELINE_SEGMENT CC_PIPELINE_STAGE_ID; gate_stage_progress_vector' \
+    _ "$GATE" "$1" "$TG_M" "$2" 2>/dev/null
+}
+u121_rvec() {  # u121_rvec <원장> — gate_progress_vector 의 출력(라우터)
+  bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; set +e; LEDGER="$2"; MANIFEST="$3"; gate_progress_vector' \
+    _ "$GATE" "$1" "$TG_M" 2>/dev/null
+}
+T121=1111111111111111111111111111111111111111111111111111111111111111
+U121_I=0
+# u121_row <kind> — 합성 행 한 줄. 마지막 필드 prev 는 행마다 다른 값이다.
+u121_row() {
+  U121_I=$((U121_I + 1))
+  local p; p=$(printf '%064x' "$U121_I")
+  case "$1" in
+    읽기|트리밖쓰기|워크트리쓰기|외부상태변경)
+      printf -- '- `자율 승인` | kind= | 결정=exec | 대상=a | 세그먼트=SA | 축2=%s | 행위자=스테이지 | 근거=x | prev=%s\n' "$1" "$p" ;;
+    결과)  printf -- '- `자율 승인` | kind= | 결정=결과 | 대상=a | 세그먼트=SA | 축2=읽기 | 근거=rc=1 | prev=%s\n' "$p" ;;
+    라우터) printf -- '- `자율 승인` | kind=x | 결정=act | 대상=a | 세그먼트=SA | 축2=읽기 | 행위자=라우터 | 근거=x | prev=%s\n' "$p" ;;
+    승인)  printf -- '- `승인` | 승인 id=A121-%s | 상태=대기 | 막는 세그먼트=SA | prev=%s\n' "$U121_I" "$p" ;;
+  esac
+}
+# u121_led <file> <tip 행 종류> <채움…> — 팁을 prev 로 싣는 행 하나 뒤에 채움 행들.
+# 채움은 `<종류>x<수>` 의 나열이다.
+u121_led() {
+  local f="$1" k="$2" spec kind cnt j; shift 2
+  { printf '# 합성 원장\n\n'
+    printf -- '- `자율 승인` | kind= | 결정=exec | 대상=a | 세그먼트=SA | 축2=읽기 | 행위자=스테이지 | 근거=x | prev=%s\n' \
+      0000000000000000000000000000000000000000000000000000000000000000
+    case "$k" in
+      읽기) printf -- '- `자율 승인` | kind= | 결정=exec | 대상=a | 세그먼트=SA | 축2=읽기 | 행위자=스테이지 | 근거=x | prev=%s\n' "$T121" ;;
+      *)    printf -- '- `자율 승인` | kind= | 결정=exec | 대상=a | 세그먼트=SA | 축2=워크트리쓰기 | 행위자=스테이지 | 근거=x | prev=%s\n' "$T121" ;;
+    esac
+    for spec in "$@"; do
+      kind=${spec%x*}; cnt=${spec##*x}; j=0
+      while [ "$j" -lt "$cnt" ]; do j=$((j + 1)); u121_row "$kind"; done
+    done
+  } > "$f"
+}
+L121="$TG/u121-ledger.md"
+g121=""
+# 판정 하나: <기대 rc> <설명> <tip 행 종류> <채움…>
+u121_case() {
+  local want="$1" what="$2" k="$3" got; shift 3
+  u121_led "$L121" "$k" "$@"
+  got=$(u121_anc "$L121" "$T121")
+  [ "$got" = "$want" ] || g121="$g121 [$what: rc=$got, 기대 $want]"
+}
+u121_case 0 '팁 행 뒤 일상 행 40개'                  읽기   읽기x20 트리밖쓰기x20
+u121_case 0 '팁 행 포함 그 밖의 행 8개, 사이에 일상 행' 워크트리쓰기 읽기x5 워크트리쓰기x3 읽기x5 승인x2 라우터x2 읽기x5
+u121_case 1 '팁 행 포함 그 밖의 행 9개'               워크트리쓰기 읽기x5 워크트리쓰기x3 읽기x5 승인x2 라우터x3
+u121_case 1 '결과 행 9개'                             읽기   결과x9
+u121_case 0 '결과 행 8개'                             읽기   결과x8
+u121_case 1 '외부상태변경 스테이지 exec 행 9개'        읽기   외부상태변경x9
+u121_case 1 '워크트리쓰기 스테이지 exec 행 9개'        읽기   워크트리쓰기x9
+u121_case 1 '라우터 act 행 9개'                       읽기   라우터x9
+u121_case 1 '승인 행 9개'                             읽기   승인x9
+u121_case 0 '팁 행 뒤 일상 행 511개 (끝 512행 안)'     읽기   읽기x511
+u121_case 1 '팁 행 뒤 일상 행 512개 (끝 512행 밖)'     읽기   읽기x512
+u121_led "$L121" 읽기 읽기x3
+g121_none=$(u121_anc "$L121" 2222222222222222222222222222222222222222222222222222222222222222)
+[ "$g121_none" = 1 ] || g121="$g121 [원장에 없는 팁: rc=$g121_none]"
+check "121: 탐색 — 일상 행은 세지 않고 그 밖의 행을 여덟까지, 끝 512행 안에서 찾는다" "${g121:-없음}" "없음"
+
+# 벡터 — 기준 원장은 픽스처 세계의 실제 원장 사본이다(세그먼트 SA 행과 SB 행이 있다).
+V121="$TG/u121-vec.md"
+cp "$TG_L" "$V121"
+v121_0=$(u121_vec "$V121" SA)
+r121_0=$(u121_rvec "$V121")
+v121_bad=""
+# u121_vrow <기대: 같음|다름> <설명> <행…> — 기준 원장에 행을 더한 뒤 SA 의 투영을 견준다.
+u121_vrow() {
+  local want="$1" what="$2" got; shift 2
+  cp "$TG_L" "$V121"
+  printf '%s\n' "$@" >> "$V121"
+  if [ "$(u121_vec "$V121" SA)" = "$v121_0" ]; then got=같음; else got=다름; fi
+  [ "$got" = "$want" ] || v121_bad="$v121_bad [$what: $got, 기대 $want]"
+}
+[ -n "$v121_0" ] || v121_bad="$v121_bad [기준 투영이 비었다]"
+case "$v121_0" in *"segment=SB|"*) v121_bad="$v121_bad [투영에 SB 의 segment 줄이 있다]" ;; esac
+case "$v121_0" in *"segment=SA|"*) ;; *) v121_bad="$v121_bad [투영에 SA 의 segment 줄이 없다]" ;; esac
+case "$v121_0" in *"stage-normal="*) ;; *) v121_bad="$v121_bad [투영에 stage-normal 줄이 없다]" ;; esac
+u121_vrow 같음 'SB 의 segment 행'   '- `segment` | id=SB | 상태=park | 선행=없음'
+u121_vrow 다름 'SA 의 segment 행'   '- `segment` | id=SA | 상태=park | 선행=없음'
+u121_vrow 같음 'SB 의 cycle 행'     '- `cycle` | 세그먼트=SB | 사이클=1'
+u121_vrow 다름 'SA 의 cycle 행'     '- `cycle` | 세그먼트=SA | 사이클=1'
+u121_vrow 다름 '종료 절 행'         '- `종료 절` | 절=C1 | 상태=충족'
+u121_vrow 다름 '해소된 blocked 행'  '- `blocked` | 범위=런 | 원인=해소'
+u121_vrow 같음 '일상 exec 행'       '- `자율 승인` | kind= | 결정=exec | 대상=a | 세그먼트=SA | 축2=읽기 | 행위자=스테이지 | 근거=x'
+v121_pre="$v121_bad"; v121_bad=""
+u121_vrow 다름 'SA 의 정상 완료 stage-result 행' '- `stage-result` | 세그먼트=SA | 스테이지=SA | 종류=implement | 종료 코드=0 | 종단 부류=정상 완료'
+u121_vrow 같음 'SB 의 정상 완료 stage-result 행' '- `stage-result` | 세그먼트=SB | 스테이지=SB | 종류=implement | 종료 코드=0 | 종단 부류=정상 완료'
+u121_vrow 같음 'SA 의 크래시 stage-result 행'    '- `stage-result` | 세그먼트=SA | 스테이지=SA | 종류=implement | 종료 코드=1 | 종단 부류=크래시'
+check "121: 벡터 — 자기 세그먼트의 정상 완료에만 stage-normal 이 움직인다" "${v121_bad:-없음}" "없음"
+v121_bad=""
+# 비스테이지 기동 행이 없는 세그먼트 — 기준 원장에 SA 를 이름하는 `kind=skill`·`결정=act`
+# 행 가운데 행위자가 스테이지가 아닌 것이 없어 좁힌 dispatches= 가 0 이다. 그런 SA 에서도
+# 정상 완료 행 하나가 스테이지 다이제스트의 벡터 반쪽을 바꾸므로, 그 앞에서 읽어 둔 값은
+# 벡터 비교에서 거부된다.
+u121_sdig() {  # u121_sdig <원장> — 세그먼트 SA 스테이지로 본 gate_stage_snapshot_digest
+  bash -c 'CC_GATE_SOURCE_ONLY=1 . "$1" </dev/null; set +e; LEDGER="$2"; MANIFEST="$3"; CC_PIPELINE_SEGMENT=SA; CC_PIPELINE_STAGE_ID="SA#1"; export CC_PIPELINE_SEGMENT CC_PIPELINE_STAGE_ID; gate_stage_snapshot_digest' \
+    _ "$GATE" "$1" "$TG_M" 2>/dev/null
+}
+d121_disp=$(grep -F '| kind=skill |' "$TG_L" | grep -F '| 결정=act |' | grep -F '| 세그먼트=SA |' \
+              | grep -F '| 행위자=' | grep -cvF '| 행위자=스테이지 |' || true)
+case "$d121_disp|$v121_0" in
+  "0|"*"dispatches=0"*) ;;
+  *) v121_bad="$v121_bad [전제: SA 의 비스테이지 기동 행 ${d121_disp}개, 투영의 dispatches 가 0 이 아님]" ;;
+esac
+cp "$TG_L" "$V121"
+d121_before=$(u121_sdig "$V121" | cut -d- -f1)
+printf '%s\n' '- `stage-result` | 세그먼트=SA | 스테이지=SA | 종류=implement | 종료 코드=0 | 종단 부류=정상 완료' >> "$V121"
+d121_after=$(u121_sdig "$V121" | cut -d- -f1)
+[ -n "$d121_before" ] || v121_bad="$v121_bad [스테이지 다이제스트가 비었다]"
+[ "$d121_before" != "$d121_after" ] || v121_bad="$v121_bad [정상 완료 뒤에도 벡터 반쪽이 같다]"
+check "121: 비스테이지 기동 행이 없는 세그먼트에서도 자기 정상 완료 뒤의 옛 다이제스트는 벡터가 다르다" "${v121_bad:-없음}" "없음"
+v121_bad="$v121_pre"
+cp "$TG_L" "$V121"
+printf '%s\n' '- `segment` | id=SB | 상태=park | 선행=없음' >> "$V121"
+[ "$(u121_rvec "$V121")" != "$r121_0" ] || v121_bad="$v121_bad [라우터 벡터가 SB 의 행에 움직이지 않았다]"
+check "121: 벡터 — 자기 세그먼트와 런 전역 성분에만 움직인다" "${v121_bad:-없음}" "없음"
+unset U121_ENV_S U121_ENV_R U121_NEXT U121_I u121_pub u121_wd u121_w u121_w2 u121_d1 u121_d2 u121_d3 \
+      n121a n121b r121a l121 H121a H121b H121c H121d H121e R121e R121f e121_line e121_path e121_file e121_snap \
+      s121_render a121_body a121_want a121_call a121_k T121 L121 g121 g121_none V121 v121_0 r121_0 v121_bad \
+      r121_world u121_fill_bad n121sb v121_pre d121_disp d121_before d121_after
+unset -f u121_sdig
 
 # --- epilogue-begin ---
 #
