@@ -30517,7 +30517,7 @@ gateb_stage() {
 # `snapH` is refused there; this reads the snapshot as the same stage.
 snapH_stage() {
   ( cd "$WT" && CC_PIPELINE_SEGMENT=SB CC_PIPELINE_STAGE_ID='SB#1' \
-      bash "$GATE" snapshot --manifest "$FX_MANIFEST" 2>/dev/null ) | jq -r .H
+      gate_inproc snapshot --manifest "$FX_MANIFEST" 2>/dev/null ) | jq -r .H
 }
 
 gateb_shift() {
@@ -75748,7 +75748,7 @@ check "107:두 대상의 세그먼트 행이 기록된다 (아래 단언의 전�
 
 # 단언 1 — 두 번째 대상의 링크된 워크트리는 허용 집합 안이다.
 s106_home=$(tg_snap | jq -S . 2>/dev/null)
-s106_b=$( ( cd "$S106/B-wt" && env "${TG_ENV[@]}" PATH="$TG/bin:$PATH" bash "$GATE" snapshot --manifest "$TG_M" 2>/dev/null ) | jq -S . 2>/dev/null)
+s106_b=$( ( cd "$S106/B-wt" && env "${TG_ENV[@]}" ${TG_CALLER:+"CC_PIPELINE_STAGE_ID=$TG_CALLER"} PATH="$TG/bin:$PATH" bash "$GATE" snapshot --manifest "$TG_M" 2>/dev/null ) | jq -S . 2>/dev/null)
 if [ -n "$s106_home" ] && [ "$s106_home" = "$s106_b" ]; then
   ok "107:두 번째 대상의 링크된 워크트리에서 낸 스냅숏은 홈과 같다"
 else
