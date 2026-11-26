@@ -454,7 +454,7 @@ for mode in default bypassPermissions; do
   rm -rf "$s/root" "$s/state"
   mkdir -p "$s/root" "$s/state"
   turn_hook "$mode"
-  evf=$(find "$ROOT/events" -name '*.json' 2>/dev/null | head -n 1)
+  evf=$(find "$ROOT/events" -name '*.json' 2>/dev/null | awk 'NR==1')
   if [ -z "$evf" ]; then
     perm_event+=("사건 없음"); perm_scan+=(""); perm_pick+=("")
     continue
