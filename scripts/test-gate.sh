@@ -30786,12 +30786,15 @@ fires_at() {
 }
 check "F4 — 강제 표면 이동의 무효화 쓰기가 발사한다" \
   "$(fires_at '사유=강제 표면 이동' 24)" "fires"
-# The window is 16 rather than 8 for the same reason the 80 below is not 60: the
+# The window is 18 rather than 8 for the same reason the 80 below is not 60: the
 # itemised disposition report now lands between the `done` write and the notice,
 # and it carries the paragraph explaining why it is beside that file rather than
-# inside it. The arm did not move; the helper's reach had to.
+# inside it. The printf carries a third `%s` for the handed-over clauses, which
+# also wraps its arguments onto one more line, so the notice sits sixteen lines
+# past the anchor and 18 leaves room for one more. The arm did not move; the
+# helper's reach had to.
 check "F4 — 무효화 종료의 done 표시가 발사한다" \
-  "$(fires_at '종단 — 무효화%s%s · 근거' 16)" "fires"
+  "$(fires_at '종단 — 무효화%s%s%s · 근거' 18)" "fires"
 # The anchor is the accepted proposal's `done` write, not the literal the line
 # prints. That literal now lives in `gate_satisfied_done_line`, which both
 # all-met endings call, so anchoring on it measured a function that fires
