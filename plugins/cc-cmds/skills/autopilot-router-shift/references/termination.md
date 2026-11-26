@@ -30,6 +30,10 @@
 2. **Ran, and failed or did not match** — ask with `shift-halt -- 절=<id> 실행=A-… 질문=… 관측=…`. The gate writes the `**실행 결과**` line from that row. Do not run it again: the gate refuses a clause execution after a failed one, and the record's `근거 제출` is the person's checked result as an attachment, not a re-run.
 3. **Outside the authorization** — ask with `shift-halt -- 절=<id> '명령 초안=<argv>' '기대 결과=<한 줄>' [추천=근거 제출 '추천 근거=…'] 질문=… 관측=…`. Take this way too when `clause-exec` ended without a new `종료 절 실행` row for the clause — a precondition or rule refusal (exit 3) or a reach park: put the argv you issued in `명령 초안` and the gate's exit code and refusal line in `관측`. An approval wait is handled as on `exec`: the clause stays `미정산` until that approval is answered.
 
+**A clause bound to `근거 실행=bash scripts/test-gate.sh --sections` takes its section ids from the selector.** Run `bash scripts/gate-select.sh --base <before> --head <merge>` on the merged change — `<merge>` is the merge commit the clause judges (the last merge `clause-exec` checks out as its tree when the segment's tree is not fixed) and `<before>` its first parent — join the ids it prints with commas and append them after `--sections` in the `clause-exec` argv. When the selector answers `전량` or no section, or ends with a non-zero code, do not run the clause: ask through way 3 above.
+
+**A clause bound to the older row `형태=bash scripts/test-gate.sh` runs that shape with the merge's first parent as `CC_GATE_SELECT_BASE`.** A pass that ran no section — the line `바뀐 축의 절 없음` with exit 0 — is not evidence for the clause: ask through way 3 above rather than settling it `충족`.
+
 **Ask with `shift-halt` at site `종료 절 근거`**, which stops no segment: pass `--segment -` and name the clause in `절`.
 
 ```

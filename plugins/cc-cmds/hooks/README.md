@@ -281,12 +281,16 @@ nothing unless Apple events to iTerm2 are already allowed, so it cannot bring
 up a permission prompt. A hook whose session switch is off starts none, because
 the emitter checks the switch before it builds the value.
 
-**Fifteen `hooks.json` entries pin `"timeout": 5`: the two seats' entries, the
+**Twenty-six `hooks.json` entries pin `"timeout": 5`: the two seats' entries, the
 return hook's three** (`UserPromptSubmit`, `PostToolUse` with the matcher
 `AskUserQuestion`, and `Stop`), **the session title hook's
-`UserPromptSubmit` entry, and the permission prompt seat's nine**. The `Bash` entry under `PreToolUse` has no
-timeout and the `Edit|Write|MultiEdit` entry has 10, so "every entry" would be
-wrong. All of these events block, and the default is long, so an emitter that
+`UserPromptSubmit` entry, the permission prompt seat's nine, the session
+status snapshot hook's seven, and one each for the stage read batch hook, the
+remote reply `PreToolUse` hook, the stage values hook and the test-gate
+full-run hook**. Of the two `Bash` entries under `PreToolUse`, the active-notify
+one has no timeout and the test-gate full-run one has 5; the
+`Edit|Write|MultiEdit` entry and the status line `SessionStart` entry have 10,
+so "every entry" would be wrong. All of these events block, and the default is long, so an emitter that
 stalls for any reason would stall the session with it. Nothing in the design
 depends on the number: the measured worst case for a hook body is 84 ms
 synchronous and 23 ms detached, and a stubbed notifier measured 62.6 ms — five
@@ -396,6 +400,37 @@ its local banner and leaves no remote event.
 **What is rewritten.** When a prefix is attached, `updatedInput` is the whole
 `tool_input` with only `command` replaced, so `description` and `timeout`
 survive. With no prefix there is no `updatedInput`.
+
+## The test-gate full-run hook
+
+`test-gate-full-pretool.sh` is a second `PreToolUse` entry with the matcher
+`Bash`. It asks a person before a command runs the whole test-gate suite, which
+`scripts/test-gate.sh --full` runs serially for hours.
+
+**What it reads.** The command in `tool_input.command` is split into words on
+whitespace and on `( ) { } ; & | < >` — the same boundaries the active-notify
+hook uses for a command's first word — plus the backtick, with quote characters
+removed. When a word ending in `test-gate.sh` is later followed by the word
+`--full`, the hook prints one line,
+`{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask","permissionDecisionReason":"전량 test-gate 는 직렬로 수 시간 걸립니다 — 사람 승인이 필요합니다"}}`;
+otherwise it prints nothing. So
+`make check GATE_SUITE_CMD='bash scripts/test-gate.sh --full'`,
+`(bash scripts/test-gate.sh --full)` and a command substitution ask, and
+`grep -n -- '--full' scripts/test-gate.sh` does not.
+
+**What it does not see.** A script path or `--full` hidden behind a variable or
+a glob, or a copy of the script under another name, is not caught: the hook
+asks about the plain spelling of a full run, it does not stop a call written to
+go around it. A commit message or heredoc that carries the two words in that
+order, or a `--full` belonging to a command after a pipe, also asks; that false
+ask is accepted.
+
+**In an unattended stage.** When `CC_PIPELINE_RUN_ID` is set the hook prints
+nothing and exits 0 before reading the command. There test-gate refuses
+`--full` itself with exit 2, and an `ask` that no person answers would only
+stop the stage. A missing `jq` or an unreadable `tool_input.command` also
+prints nothing; every path exits 0. `scripts/test-test-gate-full-pretool-hook.sh`
+checks the cases.
 
 ## The return hook
 

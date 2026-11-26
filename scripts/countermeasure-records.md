@@ -74,6 +74,19 @@
 **상태**: 세션에 로드됨
 **판정**: 미판정
 
+### test-gate 전량 승인 훅
+**종류**: 훅
+**위치**: `plugins/cc-cmds/hooks/test-gate-full-pretool.sh`
+**막을 사례**: `scripts/test-test-gate-full-pretool-hook.sh#run_case "make 로 감싼 --full 은 묻는다"` — 대화형 세션에서 직렬로 수 시간 걸리는 test-gate 전량 실행을 사람에게 묻지 않고 띄우는 경우에 승인을 묻는다
+**이웃 사례**: `scripts/test-test-gate-full-pretool-hook.sh#run_case "--full 이 경로보다 앞인 읽기는 묻지 않는다"` — `--full` 을 스크립트 경로보다 앞에 둔 읽기 명령과 좁힌 실행에는 묻지 않는다
+**우회 경로**: 변수나 글롭으로 스크립트 경로나 `--full` 을 가린 호출, 다른 이름으로 복사한 스크립트는 걸리지 않는다; 사람이 터미널에서 직접 친 명령에는 훅이 없다; 무인 스테이지(`CC_PIPELINE_RUN_ID` 가 있는 환경)에서는 훅이 비키고 test-gate 자신의 거절이 막는다
+**오차단**: 미측정
+**재시도**: 미측정
+**사람 개입**: 미측정
+**유지 보수**: 미측정
+**상태**: 세션에 로드됨
+**판정**: 미판정
+
 ### 시나리오 발동 경계 린트
 **종류**: 린트
 **위치**: `scripts/lint-skill-trigger-scenarios.sh`

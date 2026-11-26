@@ -134,7 +134,13 @@ export CC_CMDS_ATTENTION
 # since 09-12, which left it ahead of `origin` 70% of the time and broke the
 # `git pull --ff-only` every apply in this tree uses. The value is captured
 # first so a failure can say what was inherited.
+#
+# WHETHER THIS IS AN UNATTENDED RUN is kept the same way, as a bit and nothing
+# more: after the loop below `CC_PIPELINE_RUN_ID` is always empty, and `--full`
+# refuses to start the serial full run inside an unattended run.
 GATE_ACT_CWD_INHERITED="${GATE_ACT_CWD:-}"
+tg_unattended=0
+[ -z "${CC_PIPELINE_RUN_ID:-}" ] || tg_unattended=1
 for v in $(compgen -e | grep '^CC_PIPELINE_' || true); do unset "$v"; done
 unset GATE_ACT_CWD
 # The tmux location goes as well. Every `plan`/`act`/`exec` by the router passes
@@ -253,20 +259,19 @@ RUNSH="$repo_root/plugins/cc-cmds/orchestrator/run.sh"
 # its first sub-block; what it asserts before that is its own, and what the
 # sub-blocks assert is theirs.
 #
-# EVERY ESCAPE HATCH POINTS AT THE FULL RUN. An id nobody declared, a marker
-# that is missing, a section that is not there — each of them runs MORE, never
-# less, so a wrong mapping costs time and never coverage. `--run-one` is the
-# one caller for which that escape is itself the wrong direction: a worker
-# dispatched with an id runs that id and nothing else, and a worker that fell
-# back to the full run would report hours of green under a name the
-# dispatch-return reconciliation then counts as that section. So `--run-one`
-# takes exactly one id and treats an unknown one as a hard error.
+# NO ESCAPE HATCH POINTS AT THE FULL RUN. The full run is serial and takes
+# hours, so it starts only when `--full` asks for it. An id nobody declared, a
+# marker that is missing, a `--timing-table` with nothing to select — each of
+# them stops with exit 2 and runs no section, which costs a retry and never
+# coverage. `--run-one` takes exactly one id: a worker dispatched with an id
+# runs that id and nothing else. A call with no mode argument and no query
+# argument selects the sections the change crosses (`--changed`); a selection
+# that cannot be made stops too, rather than widening to the full run.
 #
-# THE EXCEPTIONS ARE THE PICKS THAT RESOLVE TO THE WRONG THING, and they are
-# exceptions because they fail in the forbidden direction: the pick RESOLVES,
+# THE PICKS THAT RESOLVE TO THE WRONG THING are the ones that need a check of
+# their own, because they fail in the forbidden direction: the pick RESOLVES,
 # to a subset of what was asked for or to something else entirely, so the run
-# covers less while reporting green. All four known ones are hard errors rather
-# than fallbacks.
+# covers less while reporting green. All four known ones are hard errors.
 #
 #   - A DUPLICATE id, caught at INDEX time, with a message that names both
 #     banners rather than the id alone.
@@ -318,8 +323,8 @@ RUNSH="$repo_root/plugins/cc-cmds/orchestrator/run.sh"
 # of the cut — its assertions count toward the totals and its `anchors:` are
 # checked — so `--run-one` can run more than one section, and the count on the
 # narrowed-run line is the closure's. A `needs:` id that no banner declares
-# follows the caller's escape rule: `--sections` runs everything, `--run-one`
-# stops, for the same reason an unknown requested id does.
+# stops `--sections` and `--run-one` alike, for the same reason an unknown
+# requested id does.
 # ---------------------------------------------------------------------------
 SELF="$script_dir/${0##*/}"
 sections_want=""
@@ -350,27 +355,46 @@ digests_from_given=0
 # tree uses the value to tell whether the code those sections stand on is still
 # the same on another; it runs no assertion and leaves nothing behind.
 cutdig_mode=0
+# `--full` is the serial full run and the only argument that reaches it.
+# `--changed` selects the sections the change between a base and the working
+# tree crosses, and a call that names no mode and asks no query is taken as
+# `--changed`. Whether a query argument was given is kept as one bit, because
+# an empty operand (`--timing-table ''`) still names the query.
+full_mode=0
+changed_mode=0
+tg_query_given=0
+est_table_given=0
+# THE SELECTION'S BASE IS READ HERE ONCE AND DROPPED, like the timing and
+# progress variables below. A section that calls an argument-less test-gate in
+# a fixture repository, and the oracle's child, would otherwise inherit the
+# outer caller's base — a commit that repository does not have — and stop.
+tg_select_base="${CC_GATE_SELECT_BASE:-}"
+unset CC_GATE_SELECT_BASE
 # The arguments as given, for the slot re-exec below.
 tg_orig_args=("$@")
 while [ "$#" -gt 0 ]; do
   case "$1" in
+    --full)
+      full_mode=1; shift ;;
+    --changed)
+      changed_mode=1; shift ;;
     --list)
-      sections_list=1; shift ;;
+      sections_list=1; tg_query_given=1; shift ;;
     --estimate)
       est_mode=1; shift ;;
     --goals)
-      est_goals="${2-}"; est_goals_given=1
+      est_goals="${2-}"; est_goals_given=1; tg_query_given=1
       if [ "$#" -ge 2 ]; then shift 2; else shift; fi ;;
     --timing-table)
-      est_table_out="${2-}"
+      est_table_out="${2-}"; est_table_given=1; tg_query_given=1
       if [ "$#" -ge 2 ]; then shift 2; else shift; fi ;;
     --record-add)
-      rec_add_file="${2-}"
+      rec_add_file="${2-}"; tg_query_given=1
       if [ "$#" -ge 2 ]; then shift 2; else shift; fi ;;
     --digests)
-      digests_mode=1; shift ;;
+      digests_mode=1; tg_query_given=1; shift ;;
     --cut-digest)
-      cutdig_mode=1; shift ;;
+      cutdig_mode=1; tg_query_given=1; shift ;;
     --from)
       digests_from="${2-}"; digests_from_given=1
       if [ "$#" -ge 2 ]; then shift 2; else shift; fi ;;
@@ -385,15 +409,15 @@ while [ "$#" -gt 0 ]; do
     --run-one=*)
       sections_want="${1#--run-one=}"; sections_strict=1; shift ;;
     --oracle-judge)
-      oracle_mode="judge"; oracle_arg1="${2-}"
+      oracle_mode="judge"; oracle_arg1="${2-}"; tg_query_given=1
       if [ "$#" -ge 2 ]; then shift 2; else shift; fi ;;
     --oracle-probe)
-      oracle_mode="probe"; shift ;;
+      oracle_mode="probe"; tg_query_given=1; shift ;;
     --oracle-wrap)
-      oracle_mode="wrap"; oracle_arg1="${2-}"; oracle_arg2="${3-}"
+      oracle_mode="wrap"; oracle_arg1="${2-}"; oracle_arg2="${3-}"; tg_query_given=1
       if [ "$#" -ge 3 ]; then shift 3; else shift "$#"; fi ;;
     *)
-      printf 'test-gate: 모르는 인자입니다: %s (쓸 수 있는 것: --list, --sections <id>[,<id>...], --run-one <id>, --estimate [--goals <목표>[,<목표>...]] [--timing-table <path>], --record-add <file>, --digests [--from <file>], --sections <id>[,<id>...] --cut-digest, 그리고 오라클 시험용 --oracle-judge <dir> / --oracle-probe / --oracle-wrap <script> <map>)\n' "$1" >&2
+      printf 'test-gate: 모르는 인자입니다: %s (쓸 수 있는 것: --list, --sections <id>[,<id>...], --run-one <id>, --changed, --full, --estimate [--goals <목표>[,<목표>...]] [--timing-table <path>], --record-add <file>, --digests [--from <file>], --sections <id>[,<id>...] --cut-digest, 그리고 오라클 시험용 --oracle-judge <dir> / --oracle-probe / --oracle-wrap <script> <map>)\n' "$1" >&2
       exit 2 ;;
   esac
 done
@@ -404,16 +428,14 @@ if [ "$sections_strict" = "1" ]; then
       exit 2 ;;
   esac
 fi
-# AN EMPTY SELECTION IS THE ONE FALLBACK THIS FILE TAKES IN SILENCE. An unknown
-# id says so and runs everything; `--run-one ''` stops just above. An empty
-# `--sections` printed nothing and ran all of it, so a dispatcher whose id list
-# came back empty billed the whole suite while believing it had asked for a
-# slice. The escape rule is not weakened: it governs ids nobody declared, and an
-# empty operand is not an id. It does not replace the partitioner's own empty
-# shard either — that exits 4 first on the normal path, and this closes the
+# AN EMPTY SELECTION STOPS. An unknown id stops below and `--run-one ''` stops
+# just above. An empty `--sections` once printed nothing and ran all of it, so
+# a dispatcher whose id list came back empty billed the whole suite while
+# believing it had asked for a slice. It does not replace the partitioner's own
+# empty shard — that exits 4 first on the normal path, and this closes the
 # direct call that goes around it.
 if [ "$sections_given" = "1" ] && [ -z "$sections_want" ]; then
-  printf 'test-gate: --sections 에 빈 값이 왔습니다 — 전량을 원하면 플래그를 주지 마세요\n' >&2
+  printf 'test-gate: --sections 에 빈 값이 왔습니다 — 전량은 --full\n' >&2
   exit 2
 fi
 # THE CUT DIGEST NAMES ONE CUT OR NONE. It is the digest of what `--sections`
@@ -428,6 +450,138 @@ if [ "$cutdig_mode" = "1" ]; then
      || [ "$digests_from_given" = "1" ] || [ -n "$oracle_mode" ]; then
     printf 'test-gate: --cut-digest 는 --sections <id>[,<id>...] 와만 함께 씁니다\n' >&2
     exit 2
+  fi
+fi
+
+# `--full` AND `--changed` ARE MODES OF THEIR OWN. Neither takes the other, a
+# section pick, `--from`, or a query beside it — `--estimate` aside, and the
+# full run is never estimated. These checks come before the unattended refusal
+# below, so a malformed call says what is wrong with it wherever it runs.
+if [ "$full_mode" = "1" ] || [ "$changed_mode" = "1" ]; then
+  if [ "$full_mode" = "1" ] && [ "$changed_mode" = "1" ]; then
+    printf 'test-gate: --full 과 --changed 는 함께 쓰지 않습니다\n' >&2
+    exit 2
+  fi
+  tg_mode_flag="--changed"
+  [ "$full_mode" != "1" ] || tg_mode_flag="--full"
+  if [ "$sections_given" = "1" ] || [ "$sections_strict" = "1" ] \
+     || [ "$digests_from_given" = "1" ] || [ "$tg_query_given" = "1" ]; then
+    printf 'test-gate: %s 는 --sections / --run-one / --from 이나 --estimate 밖의 조회 인자와 함께 쓰지 않습니다\n' "$tg_mode_flag" >&2
+    exit 2
+  fi
+  if [ "$full_mode" = "1" ] && [ "$est_mode" = "1" ]; then
+    printf 'test-gate: --full 은 --estimate 와 함께 쓰지 않습니다 — 전량은 예상하지 않습니다\n' >&2
+    exit 2
+  fi
+fi
+# A TIMING TABLE WITH NOTHING TO SELECT STOPS. With no section pick and no
+# estimate, the call used to fall through every selection to the full run.
+if [ "$est_table_given" = "1" ] && [ "$sections_given" != "1" ] \
+   && [ "$sections_strict" != "1" ] && [ "$est_mode" != "1" ]; then
+  printf 'test-gate: --timing-table 은 --sections / --run-one / --estimate 가운데 하나와 함께 씁니다 — 절을 돌리지 않고 멈춥니다\n' >&2
+  exit 2
+fi
+# THE FULL RUN IS A PERSON'S CALL. An unattended run that reaches `--full`
+# stops here, before the slot re-exec, and runs no section.
+if [ "$full_mode" = "1" ] && [ "$tg_unattended" = "1" ]; then
+  printf 'test-gate: 무인 런에서는 전량을 돌리지 않습니다 — 중단 기록을 쓰고 사람의 결정을 기다립니다(사람이 직접 --full 을 돌리거나 CI 브랜치 전량을 띄웁니다)\n' >&2
+  exit 2
+fi
+# A CALL THAT NAMES NOTHING IS `--changed`. Only the outer call: the oracle
+# calls its child — this file for the full run, the cut copy for a narrowed
+# one — with no argument and `CC_TEST_GATE_ORACLE_INNER` set, and that child
+# runs what it was given.
+if [ -z "${CC_TEST_GATE_ORACLE_INNER:-}" ] && [ "$full_mode" != "1" ] \
+   && [ "$changed_mode" != "1" ] && [ "$sections_given" != "1" ] \
+   && [ "$sections_strict" != "1" ] && [ "$digests_from_given" != "1" ] \
+   && [ "$tg_query_given" != "1" ] && [ "$est_mode" != "1" ]; then
+  changed_mode=1
+fi
+
+# THE CHANGED-AXIS SELECTION. The base is `CC_GATE_SELECT_BASE` when given,
+# else the merge-base with HEAD of whichever of origin/HEAD, origin/master and
+# master resolves, is not the branch checked out, and lies closest to HEAD —
+# the rule `make check` uses to find its base. The head is a commit built from
+# the working tree in a temporary index, so uncommitted and untracked files
+# count; no ref points at it, and the real index, tree and refs are untouched.
+# `scripts/gate-select.sh` judges the pair and its stderr passes through. A
+# pick of sections continues as `--sections <ids>` would, slot and all; no
+# section stops with 0; a full-run answer or a selector failure stops with 2
+# and runs nothing, so a change whose axis cannot be told names its sections.
+tg_refuse_select() {
+  printf 'test-gate: 바뀐 축의 절을 고르지 못했습니다 — %s\n' "$1" >&2
+  printf 'test-gate: 절을 지명해 돌리거나(--sections <id>[,<id>...]), 사람이 승인한 뒤 --full 로 돌리거나, CI 의 브랜치 전량을 띄웁니다\n' >&2
+  exit 2
+}
+if [ "$changed_mode" = "1" ]; then
+  if [ -n "$tg_select_base" ]; then
+    tg_base=$(cd "$repo_root" && git rev-parse --verify --quiet "$tg_select_base^{commit}" 2>/dev/null) \
+      || tg_refuse_select "CC_GATE_SELECT_BASE 의 기준점 「${tg_select_base}」 를 이 저장소에서 찾지 못했습니다"
+  else
+    tg_base=$(
+      cd "$repo_root" || exit 0
+      cur=$(git symbolic-ref -q --short HEAD 2>/dev/null) || cur=""
+      mb=""
+      for ref in origin/HEAD origin/master master; do
+        [ "$ref" != "$cur" ] || continue
+        git rev-parse --verify --quiet "$ref^{commit}" > /dev/null 2>&1 || continue
+        m=$(git merge-base "$ref" HEAD 2>/dev/null) || continue
+        if [ -z "$mb" ] || git merge-base --is-ancestor "$mb" "$m" 2>/dev/null; then mb="$m"; fi
+      done
+      printf '%s' "$mb"
+    )
+    [ -n "$tg_base" ] \
+      || tg_refuse_select "기준점을 찾지 못했습니다 (origin/HEAD, origin/master, master 가운데 지금 브랜치가 아니면서 HEAD 와 merge-base 를 갖는 것이 없습니다)"
+  fi
+  tg_head=$(
+    cd "$repo_root" || { printf 'ERR cd'; exit 0; }
+    tg_sd=$(mktemp -d "${TMPDIR:-/tmp}/cc-gate-snap.XXXXXX") || { printf 'ERR mktemp -d'; exit 0; }
+    trap 'rm -rf "$tg_sd"' EXIT
+    GIT_INDEX_FILE="$tg_sd/index"
+    export GIT_INDEX_FILE
+    git read-tree HEAD > /dev/null 2>&1 || { printf 'ERR git read-tree HEAD'; exit 0; }
+    git add -A > /dev/null 2>&1 || { printf 'ERR git add -A'; exit 0; }
+    t=$(git write-tree 2>/dev/null) || { printf 'ERR git write-tree'; exit 0; }
+    c=$(GIT_AUTHOR_NAME=test-gate GIT_AUTHOR_EMAIL=test-gate@localhost \
+        GIT_COMMITTER_NAME=test-gate GIT_COMMITTER_EMAIL=test-gate@localhost \
+        git commit-tree "$t" -p HEAD -m 'test-gate --changed snapshot' 2>/dev/null) \
+      || { printf 'ERR git commit-tree'; exit 0; }
+    printf '%s' "$c"
+  )
+  case "$tg_head" in
+    ''|ERR*) tg_refuse_select "머리 스냅샷을 만들지 못했습니다 (${tg_head#ERR } 실패)" ;;
+  esac
+  tg_sel_rc=0
+  tg_sel_out=$(cd "$repo_root" && bash "$repo_root/scripts/gate-select.sh" --base "$tg_base" --head "$tg_head" < /dev/null) \
+    || tg_sel_rc=$?
+  tg_sel_first=$(printf '%s\n' "$tg_sel_out" | sed -n '1p')
+  tg_tab=$(printf '\t')
+  if [ "$tg_sel_rc" != "0" ]; then
+    tg_refuse_select "선택기가 종료 코드 $tg_sel_rc 로 끝났습니다 (원인은 위의 gate-select 줄)"
+  fi
+  case "$tg_sel_first" in
+    "절$tg_tab"*) tg_sel_ids="${tg_sel_first#"절$tg_tab"}" ;;
+    "전량$tg_tab"*) tg_refuse_select "${tg_sel_first#"전량$tg_tab"}" ;;
+    *) tg_refuse_select "선택기가 알 수 없는 답을 냈습니다: $tg_sel_first" ;;
+  esac
+  if [ -z "$tg_sel_ids" ]; then
+    tg_sel_m=$(cd "$repo_root" && git diff --name-only "$tg_base" "$tg_head" 2>/dev/null | grep -c . || true)
+    if [ "${tg_sel_m:-0}" -gt 0 ]; then
+      printf 'test-gate: 바뀐 축의 절 없음 — 돌 절이 없습니다 — 바뀐 파일 %d개가 어느 절도 고르지 않았습니다(gate 경로 필터 밖이거나 절에 닿지 않는 파일)\n' "$tg_sel_m" >&2
+    else
+      printf 'test-gate: 바뀐 축의 절 없음 — 돌 절이 없습니다\n' >&2
+    fi
+    exit 0
+  fi
+  tg_sel_n=$(printf '%s\n' "$tg_sel_ids" | tr ',' '\n' | grep -c .)
+  printf 'test-gate: 바뀐 축의 절 — %d개 (%s)\n' "$tg_sel_n" "$tg_sel_ids" >&2
+  sections_want="$tg_sel_ids"
+  sections_given=1
+  changed_mode=0
+  if [ "$est_mode" = "1" ]; then
+    tg_orig_args=(--sections "$tg_sel_ids" --estimate)
+  else
+    tg_orig_args=(--sections "$tg_sel_ids")
   fi
 fi
 
@@ -693,13 +847,44 @@ KEYEOF
 # the first line is due, so a run shorter than the interval computes nothing.
 # Each second it checks that the wrapper is still there, and the wrapper sends
 # it TERM and reaps it the moment the child ends; its `sleep` holds no stream.
+#
+# THE LINE CARRIES THE SECTION'S PLACE, `<k>/<n>번째`. `<n>` counts the cut's
+# keys that are sections — `@head`, `@pre-<group>` and the `-` of a section
+# with no id are not, a section pulled in through `needs:` is — and `<k>` counts
+# the sections whose start the marker file holds after the caller's own lines.
+# Every second the loop also prints one `test-gate: 절 시작 —` line per section
+# that started since the last look, in marker order; how many it printed sits
+# in `<dir>/started`, so the wrapper's read after the loop stops picks up where
+# the loop left off and a section is announced once.
+tg_progress_starts() {
+  local marks="$1" skip="$2" t0="$3" dir="$4" done_n=0
+  [ -f "$marks" ] || return 0
+  [ -f "$dir/started" ] && done_n=$(cat "$dir/started" 2>/dev/null)
+  case "$done_n" in ''|*[!0-9]*) done_n=0 ;; esac
+  LC_ALL=C awk -F '\t' -v skip="$skip" -v t0="$t0" -v done_n="$done_n" -v KEYS="$dir/keys" -v OUT="$dir/started.tmp" '
+    function sec(x) { gsub(/,/, ".", x); return x + 0 }
+    BEGIN { while ((getline line < KEYS) > 0) if (line !~ /^@/ && line != "-") n++ }
+    NR > skip && $1 != "" && $1 !~ /^@/ && $1 != "-" {
+      k++
+      if (k > done_n) printf "test-gate: 절 시작 — %s · %d/%d번째 · 전체 %d초\n", $1, k, n, sec($2) - sec(t0)
+    }
+    END { print (k > done_n ? k : done_n) > OUT }' "$marks" >&2 \
+    && mv "$dir/started.tmp" "$dir/started"
+}
 tg_progress_loop() {
-  local wpid="$1" marks="$2" skip="$3" t0="$4" dir="$5" i rec now src
+  local wpid="$1" marks="$2" skip="$3" t0="$4" dir="$5" i rec now src stop=""
+  # TERM only raises a flag, so a start-line read in progress finishes — its
+  # lines and its count in `<dir>/started` — before the loop returns, and the
+  # wrapper's last read never prints a line twice.
+  trap 'stop=1' TERM
   while :; do
     i=0
     while [ "$i" -lt "$tg_progress_secs" ]; do
       sleep 1 < /dev/null > /dev/null 2>&1
+      [ -z "$stop" ] || return 0
       kill -0 "$wpid" 2>/dev/null || return 0
+      tg_progress_starts "$marks" "$skip" "$t0" "$dir"
+      [ -z "$stop" ] || return 0
       i=$((i + 1))
     done
     if [ ! -f "$dir/est" ]; then
@@ -713,15 +898,15 @@ tg_progress_loop() {
     LC_ALL=C awk -F '\t' -v skip="$skip" -v t0="$t0" -v now="$now" -v EST="$dir/est" -v KEYS="$dir/keys" '
       function sec(x) { gsub(/,/, ".", x); return x + 0 }
       function shown(ms) { return int((ms + 500) / 1000) "초" }
-      NR > skip && $1 != "" { key = $1; kt = $2 }
+      NR > skip && $1 != "" { key = $1; kt = $2; if ($1 !~ /^@/ && $1 != "-") k++ }
       END {
         if (key == "") { key = "@head"; kt = t0 }
         while ((getline line < EST) > 0) { split(line, f, "\t"); est[f[1]] = f[2]; if (f[1] !~ /^(@|make:)/) known = 1 }
         tot = 0
-        while ((getline line < KEYS) > 0) if (line in est) tot += est[line]
+        while ((getline line < KEYS) > 0) { if (line in est) tot += est[line]; if (line !~ /^@/ && line != "-") n++ }
         ee = (key in est) ? shown(est[key]) : "없음"
         et = known ? shown(tot) : "없음"
-        printf "test-gate: 진행 — 절 %s %d초째(예상 %s) · 전체 %d초(예상 %s)\n", key, sec(now) - sec(kt), ee, sec(now) - sec(t0), et
+        printf "test-gate: 진행 — 절 %s %d초째(예상 %s) · 전체 %d초(예상 %s) · %d/%d번째\n", key, sec(now) - sec(kt), ee, sec(now) - sec(t0), et, k, n
       }' "$src" >&2
   done
 }
@@ -1218,6 +1403,9 @@ oracle_run() {
   if [ -n "$tpl" ]; then
     kill -TERM "$tpl" 2>/dev/null
     wait "$tpl" 2>/dev/null || true
+    # The sections that started in the loop's last second, or in a run shorter
+    # than one, are announced here, after the loop is gone.
+    tg_progress_starts "$tg_progress_marks" "$tg_progress_skip" "$tg_child_t0" "$tg_progress_dir"
   fi
   wait "$tpo" 2>/dev/null || true
   wait "$tpe" 2>/dev/null || true
@@ -1586,13 +1774,14 @@ if [ "$sections_list" = "1" ] || [ -n "$sections_want" ] || [ "$est_mode" = "1" 
         printf 'test-gate: 구역 표시를 찾지 못해 절 목록을 낼 수 없습니다 (`# --- preamble-end ---`, `# --- epilogue-begin ---`)\n' >&2
         exit 2
       fi
-      # The full run this falls back to has no cut, so it has no cut digest.
       if [ "$cutdig_mode" = "1" ]; then
         printf 'test-gate: 구역 표시를 찾지 못해 컷 다이제스트를 낼 수 없습니다\n' >&2
         exit 2
       fi
-      printf 'test-gate: 구역 표시를 찾지 못했습니다 — 전량 실행합니다\n' >&2
-      sec_idx="" ;;
+      # A pick or an estimate with no index stops rather than running the full
+      # run: no cut can be built, and the full run is `--full`'s alone.
+      printf 'test-gate: 구역 표시를 찾지 못해 절을 고를 수 없습니다 (`# --- preamble-end ---`, `# --- epilogue-begin ---`) — 절을 돌리지 않고 멈춥니다\n' >&2
+      exit 2 ;;
   esac
 fi
 
@@ -1653,7 +1842,7 @@ sec_ranges=""
 sec_pulled=""
 if [ "$est_mode" = "1" ] && [ -z "$sections_want" ]; then
   if [ -z "$est_goals" ] && [ -z "$est_table_out" ]; then
-    printf 'test-gate: --estimate 는 --sections / --run-one / --goals / --timing-table 가운데 하나와 함께 씁니다\n' >&2
+    printf 'test-gate: --estimate 는 --sections / --run-one / --goals / --timing-table 가운데 하나와 함께 씁니다 — 인자 없는 기본 호출의 예상은 --changed --estimate\n' >&2
     exit 2
   fi
   tg_rec_path=$(tg_record_path) || tg_rec_path=""
@@ -1747,11 +1936,10 @@ FRONTEOF
   fi
 
   if [ -n "$sec_miss" ] && [ "$sections_strict" = "1" ]; then
-    # `--run-one` NEVER FALLS BACK. The full run is the safe escape for a
-    # human typing `--sections`; for a dispatched worker it is the forbidden
-    # direction — hours of green returned under the name of the one
-    # section the reconciliation then marks as run. An unknown id reached
-    # through `needs:` is the same pick failing one step later.
+    # `--run-one` NEVER FALLS BACK: a full run would return hours of green
+    # under the name of the one section the reconciliation then marks as run.
+    # An unknown id reached through `needs:` is the same pick failing one step
+    # later.
     if [ -n "$sec_need_by" ]; then
       printf 'test-gate: --run-one 이 끌어오는 절 id 를 모릅니다: 절 %s 의 needs: 가 가리키는 %s — 전량으로 떨어지지 않고 여기서 멈춥니다 (`--list` 로 id 를 확인하세요)\n' "$sec_need_by" "$sec_miss" >&2
       exit 2
@@ -1759,37 +1947,27 @@ FRONTEOF
     printf 'test-gate: --run-one 에 모르는 절 id 입니다: %s — 전량으로 떨어지지 않고 여기서 멈춥니다 (`--list` 로 id 를 확인하세요)\n' "$sec_miss" >&2
     exit 2
   fi
-  # An unknown id makes `--sections` run everything, and the full run is no cut.
   if [ -n "$sec_miss" ] && [ "$cutdig_mode" = "1" ]; then
-    printf 'test-gate: --cut-digest 에 모르는 절 id 입니다: %s — 실행하면 전량이 돌아 컷이 없습니다\n' "$sec_miss" >&2
+    printf 'test-gate: --cut-digest 에 모르는 절 id 입니다: %s — 컷을 만들 수 없습니다\n' "$sec_miss" >&2
     exit 2
   fi
-  # THE ESTIMATE FOLLOWS THE SAME ESCAPE. An unknown id under `--sections`
-  # would run everything, so the estimate says that and gives the maximum
-  # limit rather than estimating a run nobody asked for; `--run-one` stopped
-  # above with its own code.
-  if [ -n "$sec_miss" ] && [ "$est_mode" = "1" ]; then
+  # `--sections` STOPS ON AN UNKNOWN ID TOO, with or without `--estimate`, in
+  # the same shape as `--run-one`: the full run is `--full`'s alone, and an
+  # estimate of a run that will not happen is no answer.
+  if [ -n "$sec_miss" ]; then
     if [ -n "$sec_need_by" ]; then
-      printf 'test-gate: 절 %s 의 needs: 가 모르는 절 id 를 가리킵니다: %s — 실행하면 전량이 돈다 (전량은 예상하지 않는다)\n' "$sec_need_by" "$sec_miss"
+      printf 'test-gate: --sections 가 끌어오는 절 id 를 모릅니다: 절 %s 의 needs: 가 가리키는 %s — 전량으로 떨어지지 않고 여기서 멈춥니다 (`--list` 로 id 를 확인하세요)\n' "$sec_need_by" "$sec_miss" >&2
     else
-      printf 'test-gate: 모르는 절 id 입니다: %s — 실행하면 전량이 돈다 (전량은 예상하지 않는다)\n' "$sec_miss"
+      printf 'test-gate: --sections 에 모르는 절 id 입니다: %s — 전량으로 떨어지지 않고 여기서 멈춥니다 (`--list` 로 id 를 확인하세요)\n' "$sec_miss" >&2
     fi
-    printf 'test-gate: 권장 한도 — 7200000ms\n'
-    printf 'test-gate: 합계가 백그라운드 한도를 넘는다 — 한 번에 끝나지 않을 수 있다\n'
-    exit 0
+    exit 2
   fi
-  if [ -z "$sec_miss" ] && [ "$est_mode" = "1" ]; then
+  if [ "$est_mode" = "1" ]; then
     tg_rec_path=$(tg_record_path) || tg_rec_path=""
     tg_estimate_print "$tg_rec_path"
     exit 0
   fi
-  if [ -n "$sec_miss" ]; then
-    if [ -n "$sec_need_by" ]; then
-      printf 'test-gate: 절 %s 의 needs: 가 모르는 절 id 를 가리킵니다: %s — 전량 실행합니다\n' "$sec_need_by" "$sec_miss" >&2
-    else
-      printf 'test-gate: 모르는 절 id 입니다: %s — 전량 실행합니다\n' "$sec_miss" >&2
-    fi
-  else
+  if [ -z "$sec_miss" ]; then
     sec_pre=$(printf '%s\n' "$sec_idx" | sed -n 's/^PRE \([0-9]*\)$/\1/p')
     sec_epi=$(printf '%s\n' "$sec_idx" | sed -n 's/^EPI \([0-9]*\)$/\1/p')
     sec_dir=$(mktemp -d "${TMPDIR:-/tmp}/cc-gate-sections.XXXXXX")
@@ -2169,10 +2347,13 @@ fi
 # every noise line is unattributed and the whole run takes the strict side, which
 # is correct but says nothing about WHICH section broke. Building it costs one awk
 # pass over this file.
-if [ "$est_mode" = "1" ]; then
-  printf 'test-gate: 절 목록을 만들지 못해 실행하면 전량이 돈다 (전량은 예상하지 않는다)\n'
-  printf 'test-gate: 권장 한도 — 7200000ms\n'
-  exit 0
+#
+# THE LAST FENCE. An outer call reaches this point only through `--full`; any
+# other path that arrives here is a branch the parsing above failed to close,
+# and it stops rather than starting hours of serial run nobody asked for.
+if [ -z "${CC_TEST_GATE_ORACLE_INNER:-}" ] && { [ "$full_mode" != "1" ] || [ "$est_mode" = "1" ]; }; then
+  printf 'test-gate: 전량은 --full 로만 돕니다 — 이 호출은 어느 절도 고르지 못해 절을 돌리지 않고 멈춥니다\n' >&2
+  exit 2
 fi
 if [ -z "${CC_TEST_GATE_ORACLE_INNER:-}" ]; then
   oracle_full_idx="$sec_idx"
@@ -7676,16 +7857,15 @@ rm -rf "$orp_dir"
 # 0d. An empty selection stops instead of quietly becoming the whole suite
 # --- section: 0d | group: static | covers: - | anchors: 빈 --sections 는 exit 2 로 멈춘다 ---
 # ---------------------------------------------------------------------------
-# This was the file's only silent fallback. An id nobody declared says so and
-# runs everything; `--run-one ''` stops one guard above. An empty `--sections`
-# printed nothing and ran all of it — so a dispatcher whose id list came back
-# empty billed the whole suite while believing it had asked for a slice, and the
-# bill is the only place it showed.
+# This was once the file's only silent fallback: an empty `--sections` printed
+# nothing and ran all of it — so a dispatcher whose id list came back empty
+# billed the whole suite while believing it had asked for a slice, and the bill
+# is the only place it showed. An unknown id stops too, and `--run-one ''` stops
+# one guard above.
 #
-# The escape rule is not weakened and the control below is what says so: the
-# rule governs ids nobody declared, and an empty operand is not an id. Both
-# spellings are asserted because they take different arms of the parser and a
-# guard on one of them leaves the other open.
+# Both spellings are asserted because they take different arms of the parser
+# and a guard on one of them leaves the other open; the control below keeps a
+# guard that refuses every `--sections` from passing.
 emp_rc=0; bash "$SELF" --sections '' >/dev/null 2>&1 || emp_rc=$?
 check "빈 --sections 는 exit 2 로 멈춘다" "$emp_rc" "2"
 emp_rc=0; bash "$SELF" --sections= >/dev/null 2>&1 || emp_rc=$?
@@ -7854,8 +8034,8 @@ check "표가 비면 출처는 없음, 합계는 없고 한도는 상한이다" 
   "$(grep -c -E '^0d	-	없음$|^test-gate: 예상 합계 — 없음|^test-gate: 권장 한도 — 7200000ms$' "$est_dir/b.out" || true)" "3"
 est_rc=0
 bash "$est_suite" --estimate --sections nosuch > "$est_dir/u.out" 2>&1 || est_rc=$?
-check "모르는 id 의 예상은 전량이라고 말하고 상한을 권한다" \
-  "$est_rc|$(grep -c '^test-gate: 권장 한도 — 7200000ms$' "$est_dir/u.out" || true)" "0|1"
+check "모르는 id 의 예상은 종료 2 로 멈추고 권장 한도를 내지 않는다" \
+  "$est_rc|$(grep -c '^test-gate: 권장 한도 — ' "$est_dir/u.out" || true)" "2|0"
 est_rc=0; bash "$est_suite" --goals g1 > /dev/null 2>&1 || est_rc=$?
 check "--estimate 없는 --goals 는 exit 2 다" "$est_rc" "2"
 est_rc=0; bash "$est_suite" --estimate > /dev/null 2>&1 || est_rc=$?
@@ -7930,12 +8110,19 @@ est_pipe_end=끝남
 wait_pid_gone "$est_pipe" || { est_pipe_end=안끝남; kill "$est_pipe" 2>/dev/null || true; }
 est_lines=$(grep -c '^test-gate: 진행 — ' "$est_dir/p.err" || true)
 est_shape=$(grep '^test-gate: 진행 — ' "$est_dir/p.err" \
-  | grep -c -v -E '^test-gate: 진행 — 절 [^ ]+ [0-9]+초째\(예상 ([0-9]+초|없음)\) · 전체 [0-9]+초\(예상 ([0-9]+초|없음)\)$' || true)
+  | grep -c -v -E '^test-gate: 진행 — 절 [^ ]+ [0-9]+초째\(예상 ([0-9]+초|없음)\) · 전체 [0-9]+초\(예상 ([0-9]+초|없음)\) · [0-9]+/[0-9]+번째$' || true)
 if [ "${est_lines:-0}" -ge 2 ] && [ "${est_shape:-1}" = "0" ]; then
   ok "진행 줄은 감싸는 쪽 stderr 에 정해진 모양으로 찍힌다 (${est_lines}줄)" # gate-isolation: 변동
 else
   bad "진행 줄" "줄 ${est_lines:-0}, 모양이 다른 줄 ${est_shape:-?}: $(grep '^test-gate: 진행' "$est_dir/p.err" | awk 'NR<=2' | tr '\n' ' ')"
 fi
+# The section-start line is split off by its own prefix and held to its own
+# shape: the one section of the cut, announced once, numbered against a cut of
+# one section, and the progress lines after it count that section as started.
+check "절 시작 줄은 컷의 절마다 한 번, 정해진 모양으로 찍힌다" \
+  "$(grep -c '^test-gate: 절 시작 — ' "$est_dir/p.err" || true)|$(grep -c -E '^test-gate: 절 시작 — 0d · 1/1번째 · 전체 [0-9]+초$' "$est_dir/p.err" || true)" "1|1"
+check "절이 시작된 뒤의 진행 줄은 그 절을 순번에 센다" \
+  "$(grep '^test-gate: 진행 — 절 0d ' "$est_dir/p.err" | grep -c -v ' · 1/1번째$' || true)" "0"
 check "진행 줄은 stdout 에 섞이지 않고 합계 줄은 그대로다" \
   "$(grep -c '^test-gate: 진행' "$est_dir/p.out" || true)|$(grep -c -E '^test-gate: [0-9]+ passed, 0 failed$' "$est_dir/p.out" || true)" "0|1"
 est_left=$(pgrep -f "$est_dir/slow.sh" 2>/dev/null | grep -c . || true)
@@ -7964,7 +8151,7 @@ check "다이제스트는 --list 의 절마다 한 줄이다" \
   "$isf_rc|${isf_shape:-0}|$(cut -f1 "$isf_dir/d.tsv" | LC_ALL=C sort | cmp -s - "$isf_dir/list" && echo same)" "0|0|same"
 check "--from 으로 같은 파일을 주면 같은 목록이다" \
   "$(bash "$isf_suite" --digests --from "$isf_suite" 2>/dev/null | cmp -s - "$isf_dir/d.tsv" && echo same)" "same"
-awk '{ if ($0 == "# This was the file'"'"'s only silent fallback. An id nobody declared says so and" && !m) { print $0 " x"; m = 1 } else print }' \
+awk '{ if ($0 == "# This was once the file'"'"'s only silent fallback: an empty `--sections` printed" && !m) { print $0 " x"; m = 1 } else print }' \
   "$isf_suite" > "$isf_dir/edit.sh"
 bash "$isf_suite" --digests --from "$isf_dir/edit.sh" > "$isf_dir/e.tsv" 2>/dev/null || true
 check "한 절 본문의 바뀐 줄은 그 절의 다이제스트만 바꾼다" \
@@ -8047,7 +8234,7 @@ check "컷 다이제스트는 임시 디렉터리가 달라도 같다" \
 check "컷 다이제스트는 임시 디렉터리에 아무것도 남기지 않는다" \
   "$(find "$cdg_dir/t1" "$cdg_dir/t2" -mindepth 1 | grep -c . || true)" "0"
 cp "$cdg_suite" "$cdg_dir/out/plain.sh"
-awk '{ if ($0 == "# This was the file'"'"'s only silent fallback. An id nobody declared says so and" && !m) { print $0 " x"; m = 1 } else print }' \
+awk '{ if ($0 == "# This was once the file'"'"'s only silent fallback: an empty `--sections` printed" && !m) { print $0 " x"; m = 1 } else print }' \
   "$cdg_suite" > "$cdg_dir/out/in.sh"
 awk '{ if (index($0, "# 0e. ") == 1 && !m) { print $0 " x"; m = 1 } else print }' \
   "$cdg_suite" > "$cdg_dir/out/nb.sh"
@@ -8219,6 +8406,139 @@ check "표지 읽기 — 줄 끝·윗줄·코드 줄 위·읽을 수 없는 파�
   "$(tlr_rd "$tlr_dir/src.sh" 2)|$(tlr_rd "$tlr_dir/src.sh" 4)|$(tlr_rd "$tlr_dir/src.sh" 6)|$(tlr_rd "$tlr_dir/none.sh" 2)|$(tlr_rd "" 2)" \
   "경과 상한|윗줄 사유|||"
 rm -rf "$tlr_dir"
+
+# ---------------------------------------------------------------------------
+# 0j. An argument-less call runs the changed axis, and only `--full` runs everything
+# --- section: 0j | group: static | covers: - | anchors: 인자 없는 호출은 선택기와 같은 절을 고른다, 무인 런의 --full 은 절 없이 종료 2 로 멈춘다, 구역 표시 없는 사본의 좁힌 실행은 절 없이 종료 2 다 ---
+# ---------------------------------------------------------------------------
+# The full run is serial and takes hours, so the only way into it is `--full`.
+# A call with no mode and no query selects the sections the change between a
+# base and the working tree crosses, through `scripts/gate-select.sh`; a change
+# that crosses none ends with 0, one whose axis cannot be told stops with 2. The
+# branches that once fell through to the full run — an unknown id, the
+# `needs:` that names one, the same two under `--estimate`, a bare
+# `--timing-table`, a copy whose section markers are gone — each stop with 2
+# and start no section.
+#
+# Every call goes through `chg_call`, which drops the nested-call marker this
+# section inherits (so the outer rules apply), drops `CC_PIPELINE_RUN_ID` unless
+# the call sets it, gives the call its own marker file, and reads back
+# `<exit status>|<sections started>` — the PASS and FAIL lines plus the section
+# keys in the marker file. The calls that would start the full run if a refusal
+# regressed run against copies under the scratch directory, in the background
+# under the shared wait ceiling, so a regression is a failure here and not an
+# hours-long run. The selector calls work on a scratch repository: a branch
+# `work` cut from `master`, which is the base the argument-less call finds.
+chg_dir=$(mktemp -d "${TMPDIR:-/tmp}/cc-gate-changed.XXXXXX")
+chg_suite="$repo_root/scripts/test-gate.sh"
+chg_call() {
+  local tag="$1" p n m
+  shift
+  ( env -u CC_TEST_GATE_ORACLE_INNER -u CC_PIPELINE_RUN_ID TMPDIR="$chg_dir" \
+      CC_GATE_TIMING_OUT="$chg_dir/$tag.tsv" "$@" > "$chg_dir/$tag.out" 2>&1
+    printf '%s' "$?" > "$chg_dir/$tag.rc" ) < /dev/null &
+  p=$!
+  if ! wait_pid_gone "$p"; then
+    pkill -f "$chg_dir/" 2>/dev/null || true
+    kill "$p" 2>/dev/null || true
+    printf '안끝남' > "$chg_dir/$tag.rc"
+  fi
+  n=$(grep -c -E '^(PASS|FAIL):' "$chg_dir/$tag.out" 2>/dev/null || true)
+  m=$(grep -v '^@' "$chg_dir/$tag.tsv" 2>/dev/null | grep -c . || true)
+  printf '%s|%s' "$(cat "$chg_dir/$tag.rc" 2>/dev/null)" "$(( ${n:-0} + ${m:-0} ))"
+}
+chg_has() { grep -c -- "$2" "$chg_dir/$1.out" 2>/dev/null || true; }
+mkdir -p "$chg_dir/plain"
+cp "$chg_suite" "$repo_root/scripts/wait-fixture.sh" "$chg_dir/plain/"
+chg_plain="$chg_dir/plain/test-gate.sh"
+
+# The full run in an unattended run, and the mode arguments that do not mix.
+# The malformed `--full` calls carry the unattended variable as well, so a
+# combination check that regressed still stops before any section; the line
+# each call prints says which check stopped it.
+check "무인 런의 --full 은 절 없이 종료 2 로 멈춘다" \
+  "$(chg_call full CC_PIPELINE_RUN_ID=x CC_TEST_GATE_REPO_ROOT="$repo_root" bash "$chg_plain" --full)|$(chg_has full '^test-gate: 무인 런에서는 전량을 돌리지 않습니다 — 중단 기록을 쓰고 사람의 결정을 기다립니다')" \
+  "2|0|1"
+check "--full --estimate 는 무인 거절보다 앞서 조합 오류로 멈춘다" \
+  "$(chg_call fe CC_PIPELINE_RUN_ID=x CC_TEST_GATE_REPO_ROOT="$repo_root" bash "$chg_plain" --full --estimate)|$(chg_has fe '^test-gate: --full 은 --estimate 와 함께 쓰지 않습니다')|$(chg_has fe '무인 런에서는')" \
+  "2|0|1|0"
+check "--full 과 --changed, --full 과 --run-one 은 함께 오지 않는다" \
+  "$(chg_call fc CC_PIPELINE_RUN_ID=x CC_TEST_GATE_REPO_ROOT="$repo_root" bash "$chg_plain" --full --changed) $(chg_call fr CC_PIPELINE_RUN_ID=x CC_TEST_GATE_REPO_ROOT="$repo_root" bash "$chg_plain" --full --run-one 0a)" \
+  "2|0 2|0"
+check "--changed 는 절 지명이나 --list 와 함께 오지 않는다" \
+  "$(chg_call cs CC_TEST_GATE_REPO_ROOT="$repo_root" bash "$chg_plain" --changed --sections 0a) $(chg_call cl CC_TEST_GATE_REPO_ROOT="$repo_root" bash "$chg_plain" --changed --list)" \
+  "2|0 2|0"
+
+# The branches that fell through to the full run, with the variable unset.
+check "--sections 의 모르는 id 는 예상이 있든 없든 절 없이 종료 2 다" \
+  "$(chg_call un CC_TEST_GATE_REPO_ROOT="$repo_root" bash "$chg_plain" --sections nosuch) $(chg_call une CC_TEST_GATE_REPO_ROOT="$repo_root" bash "$chg_plain" --sections nosuch --estimate)|$(chg_has une '^test-gate: 권장 한도')" \
+  "2|0 2|0|0"
+mkdir -p "$chg_dir/needs"
+cp "$repo_root/scripts/wait-fixture.sh" "$chg_dir/needs/"
+awk '{ if (index($0, "# --- section: 0d | group: static | covers: - | anchors: ") == 1) sub(/\| anchors: /, "| needs: nosuch | anchors: "); print }' \
+  "$chg_suite" > "$chg_dir/needs/test-gate.sh"
+check "needs: 가 모르는 id 를 끌어오는 --sections 도 예상이 있든 없든 절 없이 종료 2 다" \
+  "$(grep -c '^# --- section: 0d .*| needs: nosuch |' "$chg_dir/needs/test-gate.sh") $(chg_call nd CC_TEST_GATE_REPO_ROOT="$repo_root" bash "$chg_dir/needs/test-gate.sh" --sections 0d)|$(chg_has nd 'needs: 가 가리키는 nosuch') $(chg_call nde CC_TEST_GATE_REPO_ROOT="$repo_root" bash "$chg_dir/needs/test-gate.sh" --sections 0d --estimate)" \
+  "1 2|0|1 2|0"
+check "실행 방식 인자 없는 --timing-table 은 절 없이 종료 2 다" \
+  "$(chg_call tt CC_TEST_GATE_REPO_ROOT="$repo_root" bash "$chg_plain" --timing-table "$chg_dir/table.tsv")|$([ -e "$chg_dir/table.tsv" ] && echo 표있음 || echo 표없음)" \
+  "2|0|표없음"
+mkdir -p "$chg_dir/nomark"
+cp "$repo_root/scripts/wait-fixture.sh" "$chg_dir/nomark/"
+grep -v -x -F '# --- preamble-end ---' "$chg_suite" > "$chg_dir/nomark/test-gate.sh"
+check "구역 표시 없는 사본의 좁힌 실행은 절 없이 종료 2 다" \
+  "$(chg_call nm1 CC_TEST_GATE_REPO_ROOT="$repo_root" bash "$chg_dir/nomark/test-gate.sh" --sections 0d) $(chg_call nm2 CC_TEST_GATE_REPO_ROOT="$repo_root" bash "$chg_dir/nomark/test-gate.sh" --run-one 0d) $(chg_call nm3 CC_TEST_GATE_REPO_ROOT="$repo_root" bash "$chg_dir/nomark/test-gate.sh" --sections 0d --estimate)|$(chg_has nm3 '^test-gate: 권장 한도')" \
+  "2|0 2|0 2|0|0"
+
+# The control: a known id still runs, and announces its one section.
+check "알려진 id 의 좁힌 실행은 그대로 돌고 절 시작 줄을 한 번 찍는다" \
+  "$(chg_call ok CC_TEST_GATE_REPO_ROOT="$repo_root" bash "$chg_plain" --run-one 0d | cut -d'|' -f1)|$(chg_has ok '^test-gate: 절 시작 — 0d · 1/1번째 · 전체 [0-9]*초$')" \
+  "0|1"
+
+# The selection, on a scratch repository.
+chg_r="$chg_dir/repo"
+mkdir -p "$chg_r/scripts" "$chg_r/.github/workflows"
+cp "$chg_suite" "$repo_root/scripts/gate-select.sh" "$repo_root/scripts/_yq-preflight.sh" \
+  "$repo_root/scripts/wait-fixture.sh" "$chg_r/scripts/"
+cp "$repo_root/.github/workflows/gate.yml" "$chg_r/.github/workflows/"
+chg_git() { ( cd "$chg_r" && git -c user.name=test-gate -c user.email=test-gate@localhost -c commit.gpgsign=false "$@" ); }
+if chg_git init -q > /dev/null 2>&1 && chg_git add -A && chg_git commit -q -m base > /dev/null 2>&1 \
+   && chg_git branch -M master && chg_git checkout -q -b work; then
+  chg_tg() { chg_call "$1" CC_TEST_GATE_REPO_ROOT="$chg_r" bash "$chg_r/scripts/test-gate.sh" "${@:2}"; }
+  check "바뀐 것이 없는 인자 없는 호출은 절 없이 종료 0 이다" \
+    "$(chg_tg clean)|$(chg_has clean '^test-gate: 바뀐 축의 절 없음 — 돌 절이 없습니다$')" "0|0|1"
+  printf 'x\n' > "$chg_r/notes.txt"
+  check "경로 필터 밖 파일만 바뀌면 그 수를 덧붙이고 종료 0 이다" \
+    "$(chg_tg outside)|$(chg_has outside '^test-gate: 바뀐 축의 절 없음 — 돌 절이 없습니다 — 바뀐 파일 1개가 어느 절도 고르지 않았습니다')" "0|0|1"
+  rm -f "$chg_r/notes.txt"
+  check "CC_GATE_SELECT_BASE 가 기준점이 되고, 찾지 못하는 값이면 종료 2 다" \
+    "$(chg_call sb CC_GATE_SELECT_BASE=master CC_TEST_GATE_REPO_ROOT="$chg_r" bash "$chg_r/scripts/test-gate.sh") $(chg_call sbx CC_GATE_SELECT_BASE=no-such-commit CC_TEST_GATE_REPO_ROOT="$chg_r" bash "$chg_r/scripts/test-gate.sh")" "0|0 2|0"
+  awk '{ print } index($0, "check \"비지 않은 --sections 는 가드를 지나간다\"") == 1 && !d { print ": chg-fixture"; d = 1 }' \
+    "$chg_suite" > "$chg_r/scripts/test-gate.sh"
+  chg_h=$(chg_git stash create 2>/dev/null)
+  chg_sel=$(cd "$chg_r" && bash scripts/gate-select.sh --base master --head "$chg_h" 2>/dev/null | sed -n '1p')
+  chg_pick=$(chg_tg pick --changed --estimate)
+  chg_ids=$(sed -n 's/^test-gate: 바뀐 축의 절 — [0-9]*개 (\(.*\))$/\1/p' "$chg_dir/pick.out")
+  check "인자 없는 호출은 선택기와 같은 절을 고른다" \
+    "$chg_sel|$chg_pick|$chg_ids|$(grep -c '^0d	' "$chg_dir/pick.out" || true)" "절	0d|0|0|0d|1"
+  check "--changed --estimate 는 절을 돌리지 않는다 (같은 선택이 돌 절만 예상한다)" \
+    "$(chg_has pick '^PASS:')" "0"
+  chg_git checkout -q -- scripts/test-gate.sh
+  awk 'NR == 2 { print ":" } { print }' "$chg_suite" > "$chg_r/scripts/test-gate.sh"
+  check "축을 가를 수 없는 변경의 인자 없는 호출은 절 없이 종료 2 다" \
+    "$(chg_tg full)|$(chg_has full '^test-gate: 바뀐 축의 절을 고르지 못했습니다 — ')" "2|0|1"
+  chg_git checkout -q -- scripts/test-gate.sh
+  printf '#!/usr/bin/env bash\necho "gate-select: 의도된 실패" >&2\nexit 3\n' > "$chg_r/scripts/gate-select.sh"
+  check "선택기가 실패하면 인자 없는 호출은 절 없이 종료 2 다" \
+    "$(chg_tg selfail)|$(chg_has selfail '^test-gate: 바뀐 축의 절을 고르지 못했습니다 — 선택기가 종료 코드 3 로 끝났습니다')|$(chg_has selfail '^gate-select: 의도된 실패$')" "2|0|1|1"
+  chg_git checkout -q -- scripts/gate-select.sh
+  check "선택 뒤 저장소의 인덱스와 ref 는 그대로다" \
+    "$(chg_git status --porcelain | grep -c . || true)|$(chg_git for-each-ref --format='%(refname)' | tr '\n' ' ')" \
+    "0|refs/heads/master refs/heads/work "
+else
+  bad "0j 선택 픽스처" "임시 저장소를 만들지 못했습니다"
+fi
+rm -rf "$chg_dir"
 
 # ---------------------------------------------------------------------------
 # 1. The snapshot is a JSON object, not a table
@@ -59279,6 +59599,10 @@ pb_is "83b: 스크립트 자리 뒤의 -c 는 스크립트 인자다"          '
 pb_is "83b: 셸 -e 는 코드 플래그가 아니다"                     'P=1 형태=완전' 'P 형태' 'bash -e scripts/x.sh a'    'bash -e scripts/x.sh a'
 pb_is "83b: python3 -s 도 코드 플래그가 아니다"                'P=1 형태=완전' 'P 형태' 'python3 -s tools/a.py x'   'python3 -s tools/a.py x'
 pb_is "83b: make test 는 러너 그대로다"                        'P=1 형태=러너' 'P 형태' 'make test' 'make test'
+# 킥오프가 제안하는 시험 실행 형태. 밤의 판정 쪽이 고른 절 id 를 뒤에 붙인 실행은
+# 받고, 같은 스크립트의 전량 실행은 받지 않는다.
+pb_is "83b: test-gate --sections 형태는 절 id 를 붙인 실행을 완전 형태로 받는다" 'P=1 형태=완전' 'P 형태' 'bash scripts/test-gate.sh --sections' 'bash scripts/test-gate.sh --sections 5,7'
+pb_is "83b: 같은 형태는 --full 실행을 받지 않는다"            'P=0' 'P' 'bash scripts/test-gate.sh --sections' 'bash scripts/test-gate.sh --full'
 pb_is "83b: npm run 도 러너 그대로다"                          'P=1 형태=러너' 'P 형태' 'npm run'   'npm run build'
 pb_is "83b: pytest x 도 러너 그대로다"                         'P=1 형태=러너' 'P 형태' 'pytest x'  'pytest x'
 pb_is "83b: bash scripts/x.sh 행이 x.sh.evil 을 열지 않는다"   'P=0 형태=없음' 'P 형태' 'bash scripts/x.sh' 'bash scripts/x.sh.evil'
