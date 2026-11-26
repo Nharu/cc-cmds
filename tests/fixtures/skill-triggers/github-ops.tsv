@@ -1,0 +1,15 @@
+# cc-skill-triggers v1
+# github-ops 스킬의 발동 경계 시나리오. 형식과 기대값 대조 방식은 같은 디렉터리의 README.md 에 있다.
+# 이 스킬의 description·when_to_use 를 고치면 고치기 전과 고친 뒤에 같은 인자로
+#   scripts/skill-trigger-measure.sh --skill github-ops --model <모델> --budget-usd <N> --plugin-dir <디렉터리>...
+# 를 돌리고, 두 상태 디렉터리의 report.tsv 판정을 비교한다.
+id	기대	발화	근거
+create-issue	cc-cmds:github-ops	로그인 실패 버그를 GitHub 이슈로 등록해줘	발동 — 이슈 생성 직전 (when_to_use)
+open-pr	cc-cmds:github-ops	지금 브랜치로 PR 열고 이슈 12번 연결해줘	발동 — PR 발행과 이슈 연결 (description)
+merge-pr	cc-cmds:github-ops	PR 34 CI 통과하면 머지해줘	발동 — 머지 절차와 CI 대기 분기 (description)
+inline-review	cc-cmds:github-ops	이 PR 에 인라인 리뷰 코멘트 몇 개 남겨줘	발동 — 인라인 리뷰 코멘트 묶음 제출 (description)
+clickup-bug	cc-cmds:clickup-ops	이 버그 ClickUp 티켓으로 만들어줘	이웃 — 이슈 대 티켓; ClickUp 티켓은 clickup-ops
+rebase-vs-merge	비발동	git rebase 랑 merge 차이 설명해줘	이웃 — git 어휘가 있으나 GitHub 이슈·PR 작업이 아니다
+actions-yaml	비발동	GitHub Actions 워크플로 YAML 문법 오류 고쳐줘	이웃 — GitHub 어휘가 있으나 이슈·PR 작업이 아니다
+perf-issue	비발동	이 코드의 성능 이슈가 뭔지 분석해줘	이웃 — 이슈 명사가 있으나 이슈 트래커가 아니다
+pr-weekly-word	anthropic-skills:docx	이번 주 머지된 PR 목록을 Word 보고서로 만들어줘	이웃 — PR 어휘가 있으나 산출물이 Word 문서

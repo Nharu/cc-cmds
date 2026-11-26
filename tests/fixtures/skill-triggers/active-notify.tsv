@@ -1,0 +1,25 @@
+# cc-skill-triggers v1
+# active-notify 스킬의 발동 경계 시나리오. 형식과 기대값 대조 방식은 같은 디렉터리의 README.md 에 있다.
+# 이 스킬의 description·when_to_use 를 고치면 고치기 전과 고친 뒤에 같은 인자로
+#   scripts/skill-trigger-measure.sh --skill active-notify --model <모델> --budget-usd <N> --plugin-dir <디렉터리>...
+# 를 돌리고, 두 상태 디렉터리의 report.tsv 판정을 비교한다.
+# 갈래(등록·권한 테스트·취소)는 기대값에 나타나지 않으므로 근거 열에 적는다.
+id	기대	발화	근거
+arm-done	cc-cmds:active-notify	이 빌드 끝나면 알려줘	등록 갈래 — description (a) 의 1인칭 완료 알림 요청 「끝나면 알려줘」
+arm-repeat	cc-cmds:active-notify	매 턴 끝날 때마다 알려줘	등록 갈래 — `매`·`마다` 키워드로 repeat 모드에 들어가는 발화 (when_to_use ARM)
+arm-start-end	cc-cmds:active-notify	테스트 돌리기 시작할 때랑 끝날 때 알림 줘	등록 갈래 — 복수 sub-event; 명사형 테스트와 작업 경계가 함께 있어 권한 테스트가 아닌 ARM 으로 간다 (when_to_use 제외 절 (a)(c))
+perm-test-ko	cc-cmds:active-notify	알림 테스트 한 번 해줘	권한 테스트 갈래 — notes 가 권한 다이얼로그를 띄우는 발화로 드는 문장
+perm-test-alert	cc-cmds:active-notify	test alert	권한 테스트 갈래 — description (b) 의 영문 어휘
+perm-test-permission	cc-cmds:active-notify	permission test 해봐	권한 테스트 갈래 — description (b) 의 영문 어휘에 한국어 동사
+cancel-ko	cc-cmds:active-notify	알림 취소	취소 갈래 — description (c) 의 어휘 그대로
+cancel-en	cc-cmds:active-notify	stop the alerts	취소 갈래 — description (c) 의 영문 어휘
+cancel-variant	cc-cmds:active-notify	아까 걸어 둔 매번 알림 이제 그만 꺼줘	취소 갈래 — 예시 밖 취소 표현; 설명문 어긋남 의심 — 취소 어휘 예시가 「알림 취소」·「stop the alerts」 둘뿐이라 변형 표현이 경계 밖으로 읽힐 수 있다
+noun-test	비발동	npm test 돌려줘	이웃 — 명사형 테스트, 알림 동사 없음 (when_to_use 제외 절 (b))
+android-test	비발동	안드로이드 instrumentation 테스트 실패 원인 찾아줘	이웃 — 명사형 테스트가 별도 작업 대상 (when_to_use 제외 절 (b))
+push-api-review	비발동	푸시 알림 API 연동 코드 리뷰해줘	이웃 — 알림 기능 자체를 다루는 코드 작업
+notify-code	비발동	notify.sh 의 cancel 분기 코드 설명해줘	이웃 — 취소 어휘가 겹치는 알림 헬퍼 코드 설명
+third-person	비발동	팀원에게 배포 끝났다고 알려줘	이웃 — 3인칭 전달; 1인칭 알림 요청이 아니다
+tell-me-fact	비발동	git rebase 할 때 주의할 점 한 줄로 알려줘	이웃 — 「알려줘」 가 정보 요청 (킥오프 사전 시험의 비발동 발화)
+slack-config	비발동	슬랙 알림 채널 설정 방법 알려줘	이웃 — 알림 명사와 「알려줘」 가 함께 있는 정보 요청
+gh-notify	cc-cmds:github-ops	PR 머지되면 리뷰어들한테 알림 가게 PR 발행해줘	이웃 — 3인칭 알림 어휘가 PR 발행 요청 안에 있어 github-ops 로 간다
+clickup-notify	cc-cmds:clickup-ops	ClickUp 에 배포 알림 티켓 하나 만들어줘	이웃 — 알림 어휘가 티켓 생성 요청 안에 있어 clickup-ops 로 간다

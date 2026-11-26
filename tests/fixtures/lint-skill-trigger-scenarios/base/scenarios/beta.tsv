@@ -1,0 +1,9 @@
+# cc-skill-triggers v1
+# 시험용 시나리오 — beta
+id	기대	발화	근거
+t1	cc-cmds:beta	베타 발동 하나	발동
+t2	cc-cmds:beta	베타 발동 둘	발동
+t3	cc-cmds:beta	베타 발동 셋	발동
+n1	비발동	베타 이웃 하나	이웃
+n2	cc-cmds:alpha	베타 이웃 둘	이웃
+n3	비발동	베타 이웃 셋	이웃

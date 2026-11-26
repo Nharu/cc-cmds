@@ -1,0 +1,8 @@
+# cc-skill-triggers v1
+id	expect	utterance	why
+t1	cc-cmds:alpha	알파 발동 하나	발동
+t2	cc-cmds:alpha	알파 발동 둘	발동
+t3	cc-cmds:alpha	알파 발동 셋	발동
+n1	비발동	알파 이웃 하나	이웃
+n2	cc-cmds:beta	알파 이웃 둘	이웃
+n3	playwright-cli	알파 이웃 셋	외부 이웃
