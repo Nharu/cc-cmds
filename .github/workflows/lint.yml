@@ -90,6 +90,12 @@ jobs:
   # THE CEILING ENDS A HUNG SHARD. The longest green shard observed took about 40
   # minutes; without `timeout-minutes` a suite that never ends holds its runner
   # for the default 360 minutes.
+  #
+  # The step ceiling sits under the job ceiling so a hung shard ends as a failure.
+  # A job that reaches its own `timeout-minutes` ends `cancelled`, and the
+  # pipeline's check poller does not count a cancelled check as failed, so a hang
+  # would read as green. A step that reaches its `timeout-minutes` while the job
+  # is still running is marked failed by the runner, and so is its job.
   rest-tests:
     runs-on: ubuntu-24.04
     timeout-minutes: 90
@@ -115,6 +121,7 @@ jobs:
         run: echo "CC_TEST_T0=$(date +%s)" >> "$GITHUB_ENV"
 
       - name: Run rest shard ${{ matrix.shard }}
+        timeout-minutes: 80
         run: |
           mkdir -p "$RUNNER_TEMP/rest-timing"
           CC_SUITE_TIMING_DIR="$RUNNER_TEMP/rest-timing" make -j"$(nproc)" rest-shard SHARD=${{ matrix.shard }}
