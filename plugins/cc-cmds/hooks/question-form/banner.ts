@@ -3,7 +3,8 @@
 // 실제 실행은 index.tsx 가 한다. agent_id 는 넣지 않는다(주 세션의 질문지다).
 //
 // stdin 은 로컬 배너의 입력이라 질문 머리말과 질문만 싣는다. 원격 사건에만 쓰이는
-// 질문지 id·질문 id·종류·조건 여부·선택지 라벨은 argv 셋째 원소의 JSON 하나로 넘기고,
+// 질문지 id·질문 id·종류·조건 여부·기타 입력 허용 여부(allow_other)·선택지 라벨은
+// argv 셋째 원소의 JSON 하나로 넘기고,
 // 훅이 그것으로 깔때기 첨부를 만든다.
 
 import { TOOL_FULL_NAME } from './spec'
@@ -26,6 +27,7 @@ export function bannerCall(root: string, sessionId: string, form: FormInput, for
       question: q.question,
       kind: q.kind,
       conditional: q.when !== undefined,
+      allow_other: q.allowOther !== false,
       options: (q.options ?? []).map(o => ({ label: o.label })),
     })),
   })

@@ -2,7 +2,7 @@
 # Test the attention taps inside the banner funnel — the event tap in
 # `cc_notify_fire`, the handled tap in `cc_notify_clear`, and the attachments the
 # seats hand them — by driving the seats' own entry points: the question seat
-# hook, the return hook, the gate (sourced only, against a fixture run) and the
+# hook, the turn seat hook, the return hook, the gate (sourced only, against a fixture run) and the
 # watcher.
 #
 # WHAT THIS SUITE READS. The spool root is a directory this suite creates and
@@ -36,6 +36,7 @@ repo_root=$(cd "$script_dir/.." && pwd)
 PLUGIN_ROOT="$repo_root/plugins/cc-cmds"
 ORCH="$PLUGIN_ROOT/orchestrator"
 ASK_HOOK="$PLUGIN_ROOT/hooks/session-ask-notify.sh"
+TURN_HOOK="$PLUGIN_ROOT/hooks/session-turn-notify.sh"
 RETURN_HOOK="$PLUGIN_ROOT/hooks/session-return-dismiss.sh"
 GATE="$ORCH/gate.sh"
 WATCH="$ORCH/watch.sh"
@@ -150,6 +151,7 @@ check "1 답 대상의 도구 호출 id" "$(event_jq .reply.tool_use_id)" "toolu
 check "1 답 대상의 다중 선택 여부" "$(event_jq '[.reply.questions[].multi_select] | map(tostring) | join(",")')" "false,true"
 check "1 답 대상의 선택지 라벨" "$(event_jq '[.reply.questions[0].options[].label] | join(",")')" "전부,일부"
 check "1 답할 수 있음" "$(event_jq .actionable)" "true"
+check "1 auq 는 선택지와 텍스트를 받음" "$(event_jq '.accepts | join(",")')" "option,text"
 check "1 슬롯은 세션 그룹" "$(event_jq .slot)" "cc-cmds-session-$SID"
 check "1 첨부 파일이 남지 않음" "$(n_leftover_detail)" "0"
 
@@ -175,7 +177,7 @@ check "1 사건이 없는 길에서도 첨부 파일이 남지 않음" "$(n_left
 # 2. The question seat — the question form's call.
 # --------------------------------------------------------------------------
 FORM_STDIN='{"hook_event_name":"PreToolUse","session_id":"'"$SID"'","tool_name":"mcp__cc-cmds__question_form","tool_input":{"questions":[{"header":"범위","question":"어디까지 바꿀까요?"},{"header":"순서","question":"무엇부터 할까요?"}]}}'
-FORM_ARG='{"form_id":"form-abc","questions":[{"id":"q1","header":"범위","question":"어디까지 바꿀까요?","kind":"single","conditional":false,"options":[{"label":"전부"},{"label":"일부"}]},{"id":"q2","header":"순서","question":"무엇부터 할까요?","kind":"single","conditional":false,"options":[{"label":"가"}]}]}'
+FORM_ARG='{"form_id":"form-abc","questions":[{"id":"q1","header":"범위","question":"어디까지 바꿀까요?","kind":"single","conditional":false,"allow_other":false,"options":[{"label":"전부"},{"label":"일부"}]},{"id":"q2","header":"순서","question":"무엇부터 할까요?","kind":"single","conditional":false,"allow_other":false,"options":[{"label":"가"}]}]}'
 spool
 hook_run "$ASK_HOOK" "$(pay "$FORM_STDIN")" "$PATH_FULL" bash "$ASK_HOOK" "$FORM_ARG"
 check "2 질문지 사건 하나" "$(n_events)" "1"
@@ -183,23 +185,87 @@ check "2 사건 종류" "$(event_jq .kind)" "question-form"
 check "2 답 대상의 질문지 id" "$(event_jq .reply.form_id)" "form-abc"
 check "2 답 대상의 질문 id" "$(event_jq '[.reply.questions[].id] | join(",")')" "q1,q2"
 check "2 단일 선택만 있으면 답할 수 있음" "$(event_jq .actionable)" "true"
+check "2 기타 입력 없는 단일 선택만 있으면 선택지만 받음" "$(event_jq '.accepts | join(",")')" "option"
+check "2 답 대상 질문 항목이 종류와 기타 입력 여부를 실음" \
+  "$(event_jq '[.reply.questions[] | "\(.kind)/\(.allow_other)"] | join(",")')" "single/false,single/false"
 check "2 본문은 전체 문면" "$(event_jq .body)" "범위 — 어디까지 바꿀까요?
 순서 — 무엇부터 할까요?"
 
-spool
-hook_run "$ASK_HOOK" "$(pay "$FORM_STDIN")" "$PATH_FULL" bash "$ASK_HOOK" \
-  "$(printf '%s' "$FORM_ARG" | jq -c '.questions[1].kind = "multi"')"
-check "2 복수 선택 질문이 있으면 답할 수 없음" "$(event_jq .actionable)" "false"
-spool
-hook_run "$ASK_HOOK" "$(pay "$FORM_STDIN")" "$PATH_FULL" bash "$ASK_HOOK" \
-  "$(printf '%s' "$FORM_ARG" | jq -c '.questions[1].conditional = true')"
-check "2 조건부 질문이 있으면 답할 수 없음" "$(event_jq .actionable)" "false"
+form_case() {
+  # form_case <label> <jq filter on FORM_ARG> <want actionable> <want accepts>
+  spool
+  hook_run "$ASK_HOOK" "$(pay "$FORM_STDIN")" "$PATH_FULL" bash "$ASK_HOOK" \
+    "$(printf '%s' "$FORM_ARG" | jq -c "$2")"
+  check "2 $1: 답할 수 있음" "$(event_jq .actionable)" "$3"
+  check "2 $1: accepts" "$(event_jq '.accepts | join(",")')" "$4"
+}
+form_case "기타 입력을 받는 단일 선택" '.questions[0].allow_other = true' true "option,text"
+form_case "자유 입력 질문" '.questions[1] |= (.kind = "text" | .options = [])' true "text"
+form_case "자유 입력과 기타 입력" \
+  '.questions[0].allow_other = true | .questions[1] |= (.kind = "text" | .options = [])' true "text"
+form_case "allow_other 를 적지 않은 질문" '.questions[0] |= del(.allow_other)' true "option"
+check "2 allow_other 를 적지 않은 질문: 답 대상은 거짓으로 실음" \
+  "$(event_jq '.reply.questions[0].allow_other')" "false"
+form_case "복수 선택 질문" '.questions[1].kind = "multi"' false ""
+check "2 복수 선택 질문: 답 대상은 그 종류를 그대로 실음" "$(event_jq '.reply.questions[1].kind')" "multi"
+form_case "조건부 질문" '.questions[1].conditional = true' false ""
+form_case "조건부 자유 입력 질문" \
+  '.questions[1] |= (.kind = "text" | .options = [] | .conditional = true)' false ""
 spool
 hook_run "$ASK_HOOK" "$(pay "$FORM_STDIN")" "$PATH_FULL" bash "$ASK_HOOK"
 check "2 추가 인자가 없어도 질문지 사건" "$(event_jq .kind)" "question-form"
 check "2 추가 인자가 없으면 답 대상 없음" "$(event_jq .reply)" "null"
 check "2 추가 인자가 없으면 답할 수 없음" "$(event_jq .actionable)" "false"
 check "2 첨부 파일이 남지 않음" "$(n_leftover_detail)" "0"
+
+# --------------------------------------------------------------------------
+# 2b. The turn seat — the reply target follows the session's forward index.
+# --------------------------------------------------------------------------
+TURN_PAY='{"session_id":"'"$SID"'","last_assistant_message":"본문 한 줄.\n**cc-cmds 차례 넘김**: 다음 지시를 기다립니다"}'
+TURN_INDEX="$WORK/state/cc-cmds/session/$SID"
+TURN_RID="R-turn-index-0001"
+TURN_RUN_DIR="$WORK/state/cc-cmds/run/$TURN_RID"
+turn_case() {
+  # turn_case <label> — one marked turn; the notifier log holds its argv after.
+  : > "$NOTIFY_LOG"
+  spool
+  hook_run "$TURN_HOOK" "$(pay "$TURN_PAY")" "$PATH_FULL" bash "$TURN_HOOK"
+  check "2b $1: 종료 상태" "$?" "0"
+  check "2b $1: 출력 없음" "$(cat "$WORK/hook.out" "$WORK/hook.err" | wc -c | tr -d ' ')" "0"
+  check "2b $1: 첨부 파일이 남지 않음" "$(n_leftover_detail)" "0"
+  notify_settle 1
+}
+rm -f "$TURN_INDEX"
+turn_case "색인 없음"
+check "2b 색인 없음: 사건 하나" "$(n_events)" "1"
+check "2b 색인 없음: 답 대상은 차례 넘김" "$(event_jq .reply.surface)" "turn"
+check "2b 색인 없음: 답 대상의 세션" "$(event_jq .reply.session_id)" "$SID"
+check "2b 색인 없음: 답할 수 있음" "$(event_jq .actionable)" "true"
+check "2b 색인 없음: 텍스트만 받음" "$(event_jq '.accepts | join(",")')" "text"
+argv_attached=$(cat "$NOTIFY_LOG")
+
+mkdir -p "${TURN_INDEX%/*}" "$TURN_RUN_DIR"
+printf 'not a run id!\n%s\n' "$TURN_RID" > "$TURN_INDEX"
+turn_case "런 디렉터리가 있는 런이 색인에 있음"
+check "2b 런이 있음: 사건 하나" "$(n_events)" "1"
+check "2b 런이 있음: 답 대상 없음" "$(event_jq .reply)" "null"
+check "2b 런이 있음: 답할 수 없음" "$(event_jq .actionable)" "false"
+check "2b 런이 있음: accepts 비어 있음" "$(event_jq '.accepts | length')" "0"
+argv_plain=$(cat "$NOTIFY_LOG")
+check "2b 첨부 유무와 무관하게 알림 도구 argv 가 같다" "$argv_attached" "$argv_plain"
+check "2b argv 비교가 빈 값이 아니다" "$([ -n "$argv_plain" ] && echo yes || echo no)" "yes"
+
+rmdir "$TURN_RUN_DIR"
+turn_case "색인에 있으나 런 디렉터리가 없음"
+check "2b 런 디렉터리 없음: 답 대상은 차례 넘김" "$(event_jq .reply.surface)" "turn"
+check "2b 런 디렉터리 없음: 텍스트만 받음" "$(event_jq '.accepts | join(",")')" "text"
+rm -f "$TURN_INDEX"
+
+: > "$NOTIFY_LOG"
+spool
+hook_run "$TURN_HOOK" "$(pay "$TURN_PAY")" "$PATH_FULL" CC_CMDS_SESSION_NOTIFY=0 bash "$TURN_HOOK"
+check "2b 스위치가 꺼지면 사건 0" "$(n_events)" "0"
+check "2b 스위치가 꺼지면 첨부 파일이 남지 않음" "$(n_leftover_detail)" "0"
 
 # --------------------------------------------------------------------------
 # 3. The return hook closes the session's slot.

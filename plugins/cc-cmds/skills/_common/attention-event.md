@@ -115,7 +115,7 @@ event = { schema: 1, id, host, created_at_ms,
 | `title` | string | the banner title |
 | `body` | string | the whole, untruncated text |
 | `actionable` | boolean | whether the event can be answered remotely |
-| `accepts` | array | `[]` when `actionable` is false; when true, `["permission-decision"]` for a `permission` event and `["option"]` for every other kind |
+| `accepts` | array | the envelope kinds the event takes: `[]` when `actionable` is false, otherwise by kind (see Answerable events) |
 | `origin` | object | the six keys below |
 | `reply` | object or null | the reply target, or null |
 
@@ -146,7 +146,7 @@ account name read-only and shows the directory name when it cannot.
 | --- | --- | --- |
 | `auq` | `auq` | a session asks a question |
 | `question-form` | `question-form` | a session shows a question form |
-| `turn` | 없음 | a session's turn ended |
+| `turn` | `turn` | a session's turn ended |
 | `approval` | `approval` | an autopilot approval waits |
 | `run-end` | 없음 | a run ended |
 | `run-stop` | 없음 | a run stopped (rekick-off or resume notice) |
@@ -198,7 +198,8 @@ copies it verbatim and never builds a new one.
 {surface: "auq", session_id, tool_use_id,
  questions: [{question, header, multi_select, options: [{label}]}]}
 {surface: "question-form", session_id, form_id,
- questions: [{id, question, options: [{label}]}]}
+ questions: [{id, question, options: [{label}], kind, allow_other}]}
+{surface: "turn", session_id}
 {surface: "approval", run_id, approval_id, question, options}
 {surface: "permission", session_id, tool_name, input_summary}
 ```
@@ -206,14 +207,24 @@ copies it verbatim and never builds a new one.
 | Surface | Required fields |
 | --- | --- |
 | `auq` | `session_id`, `tool_use_id` (non-empty strings); `questions` an array whose every entry has `question` and `header` strings, a boolean `multi_select`, and `options` an array of `{label}` |
-| `question-form` | `session_id`, `form_id` (non-empty strings); `questions` an array whose every entry has a non-empty string `id`, a `question` string and `options` an array of `{label}` |
+| `question-form` | `session_id`, `form_id` (non-empty strings); `questions` an array whose every entry has a non-empty string `id`, a `question` string and `options` an array of `{label}`; an entry's `kind`, when present, is a string and its `allow_other`, when present, a boolean |
+| `turn` | `session_id` (non-empty string) |
 | `approval` | `run_id`, `approval_id`, `question` (strings); `options` an array of strings — the gate's own labels, `["승인","거부","무효"]` for a judgment approval and `[]` for an act or boundary approval |
 | `permission` | `session_id`, `tool_name` (non-empty strings), `input_summary` (string) |
 
 The library keeps the attachment's `reply` as is when its `surface` is the
 event's kind and it has the required fields of that surface, and writes null
-otherwise. Kinds without a reply surface (`turn`, `run-end`, `run-stop`,
-`run-blocked`, `active-notify`) always carry `reply: null`.
+otherwise. Kinds without a reply surface (`run-end`, `run-stop`,
+`run-blocked`, `active-notify`) always carry `reply: null`. A `turn` event
+carries its reply target only when the seat attached one; otherwise it is null.
+
+**Question-form question entries.** The producer always writes `kind` — the
+form question's own type: `single` (single choice), `text` (free text) or
+`multi` (multiple choice) — and `allow_other`, whether a single-choice question
+also takes a typed answer. An entry without them, written before the two fields
+existed, is still accepted and reads as `kind: "single"` and
+`allow_other: false`. A form that holds a `multi` question keeps its reply
+target for display only: it is never answerable and its `accepts` is `[]`.
 
 ## Slots
 
@@ -260,22 +271,34 @@ written as false.
 | Kind | `actionable` may be true when |
 | --- | --- |
 | `auq` | the reply surface is `auq`, it has at least one question, and every question has at least one option |
-| `question-form` | the reply surface is `question-form` and every question has an `id` and at least one option |
+| `question-form` | the reply surface is `question-form` and every question has an `id` and is either a `text` question or a `single` question with at least one option (an entry without `kind` reads as `single`) |
+| `turn` | the reply surface is `turn` |
 | `approval` | the reply surface is `approval` and `options` is not empty |
 | `permission` | the reply surface is `permission`, `session_id` and `tool_name` are non-empty strings, and `input_summary` is a string |
 | any other kind | never; `reply` is null |
 
-`accepts` is derived from the kind: `[]` when `actionable` is false; when it is
-true, `["permission-decision"]` for a `permission` event, which a decision
-envelope answers, and `["option"]` for every other kind, which an option-label
-envelope answers.
+**`accepts` is derived in one place, the library,** from the kind and the
+reply target. Its option and text values keep the fixed order `"option"`,
+`"text"`:
+
+| Kind | `accepts` when `actionable` is true |
+| --- | --- |
+| `auq` | `["option","text"]` |
+| `question-form` | `"option"` when every question's `kind` is `single`, then `"text"` when any question's `kind` is `text` or its `allow_other` is true: `["option"]`, `["option","text"]` or `["text"]` |
+| `turn` | `["text"]` |
+| `approval` | `["option"]` |
+| `permission` | `["permission-decision"]`, which a decision envelope answers |
+
+When `actionable` is false, `accepts` is always `[]`, so an approval event
+never takes text.
 
 **What the producer owes:** a question-form producer passes `actionable: true`
-only when every question is single-select and none is shown conditionally. A
-form with a multi-select, text or conditional question is passed as false, and
-its reply target stays for display: the reply target has no field for the
-question type or a display condition, so an option-label envelope can answer
-only a form made of single-select questions.
+only when every question is single choice or free text and none is shown
+conditionally. A form with a multiple-choice or conditional question is passed
+as false, and its reply target stays for display. The turn seat attaches a
+`turn` reply target only in a session that no run's forward index names with a
+run directory present, so a router seat that kicked off a run never takes a
+remote instruction.
 
 ## Approval events
 

@@ -292,6 +292,32 @@ check "T12 last_assistant_message 키 부재 — 무발사" "$(notify_lines)" "0
 check "T12 종료 코드" "$HOOK_RC" "0"
 assert_quiet "T12"
 
+# THE TURN SEAT'S ATTACHMENT DOES NOT CHANGE ITS BANNER. With no forward index
+# the seat hands the attention tap a reply target, and with an index that names a
+# run whose directory exists it hands none; the notifier argv is the same bytes
+# either way. The index lives under the confined state root.
+ATT_SID="S-ATTACH"
+ATT_INDEX="$STATE/cc-cmds/session/$ATT_SID"
+ATT_RUN_DIR="$STATE/cc-cmds/run/R-attach-0001"
+P=$(pay '{"session_id":"S-ATTACH","last_assistant_message":"본문 한 줄.\n**cc-cmds 차례 넘김**: 첨부 비교"}')
+rm -f "$ATT_INDEX"
+hook_run "$TURN_HOOK" "$P" "$PATH_FULL"
+notify_settle 1
+check "차례 첨부 — 색인 없음: 발사한다" "$(notify_lines)" "1"
+check "차례 첨부 — 색인 없음: 종료 코드" "$HOOK_RC" "0"
+assert_quiet "차례 첨부 — 색인 없음"
+argv_without_index=$(cat "$NOTIFY_LOG")
+mkdir -p "${ATT_INDEX%/*}" "$ATT_RUN_DIR"
+printf '%s\n' "R-attach-0001" > "$ATT_INDEX"
+hook_run "$TURN_HOOK" "$P" "$PATH_FULL"
+notify_settle 1
+check "차례 첨부 — 런이 있는 색인: 발사한다" "$(notify_lines)" "1"
+check "차례 첨부 — 런이 있는 색인: 종료 코드" "$HOOK_RC" "0"
+assert_quiet "차례 첨부 — 런이 있는 색인"
+check "차례 첨부 — 두 갈래의 알림 도구 argv 가 같다" "$(cat "$NOTIFY_LOG")" "$argv_without_index"
+rm -f "$ATT_INDEX"
+rmdir "$ATT_RUN_DIR"
+
 # ---------------------------------------------------------------------------
 # The firing gate — BOTH SEATS
 #
