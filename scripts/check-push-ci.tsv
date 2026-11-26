@@ -1,0 +1,19 @@
+# The heavy REST goals an unattended `check-push run` leaves to the pull
+# request's rest-tests from the first attempt on, when the change reaches them
+# only by derivation.
+#
+# One goal per line: `<goal><TAB><direct targets>`, the targets
+# repository-relative paths separated by spaces; a target ending in `/` is a
+# prefix. Lines starting with `#` and empty lines are comments. The direct
+# targets are the files the goal mainly tests, not every file it reads.
+#
+# A goal is left to CI only when the run is unattended, CHECK_PUSH_GOALS does
+# not name it, CI runs the REST goals for the head, and the change holds
+# neither the goal's entry script, nor one of its direct targets, nor this
+# file. Anything that cannot be decided runs the goal locally.
+#
+# A goal that fails in CI is taken out of this list.
+run/scripts/test-rekick.sh	plugins/cc-cmds/orchestrator/rekick.sh plugins/cc-cmds/orchestrator/kickoff-defaults.sh scripts/run-fixture.sh
+run/scripts/test-solo-audit-experiment.sh	scripts/solo-audit-experiment.sh scripts/solo-audit-compare.sh tests/fixtures/solo-audit-experiment/
+run/scripts/test-reader-model-pair-audit.sh	scripts/reader-model-pair-audit.sh
+run/scripts/test-suite-isolation.sh	plugins/cc-cmds/orchestrator/test-run.sh plugins/cc-cmds/hooks/gate-pretool.sh

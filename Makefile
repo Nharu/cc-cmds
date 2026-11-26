@@ -230,6 +230,16 @@ check-cheap:
 # are not derivation input: a line of their own names them and the stamp keeps
 # them in `유도릴리스=`.
 #
+# An unattended check-push leaves the goals scripts/check-push-ci.tsv lists to
+# the pull request's rest-tests when they came in only by derivation, CI runs
+# the REST goals for the head, and the change holds neither the goal's entry
+# script nor its direct targets nor the list: each gets a `check-push: CI 몫 —
+# <goal>` line and joins `CI몫=` in the stamp. 로컬에서 돌리려면
+# `CHECK_PUSH_GOALS` 로 지명한다. check-items leaves nothing to CI.
+#
+# The sections and goals that failed last in this worktree start first in the
+# next check-push or check-items of it.
+#
 # check-cheap, each goal and each lane of sections run in a checkout of their
 # own and leave a record of the tracked files they read (a lane also the digest
 # of the cut it ran); a later check-push whose tree keeps those files (and that
