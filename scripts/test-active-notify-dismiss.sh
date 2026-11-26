@@ -395,6 +395,26 @@ CASE=15; reset_state; seed
 hook_run "$(ups abc "$(printf 'please read\n<pasted_content id="1">\nlog line\n</pasted_content id="1">')")"
 expect_dismiss_a
 
+# 15r — a remote instruction the remote reply mode submitted: its first line is
+# the remote input mark, and nobody came back.
+CASE=15ra; reset_state; seed
+hook_run "$(ups abc "$(printf '[cc-cmds 원격 입력] 발신=app:dk-7f3a91\n\n시험을 다시 돌려 주세요.')")"
+expect_nothing
+CASE=15rb; reset_state; seed
+hook_run "$(ups abc '[cc-cmds 원격 입력] 발신=tg:123456789')"
+expect_nothing
+# The mark further down, a sender outside the grammar, or more on the mark's
+# line is the person typing.
+CASE=15rc; reset_state; seed
+hook_run "$(ups abc "$(printf '손으로 쓴 글\n[cc-cmds 원격 입력] 발신=app:dk-7f3a91')")"
+expect_dismiss_a
+CASE=15rd; reset_state; seed
+hook_run "$(ups abc "$(printf '[cc-cmds 원격 입력] 발신=bad sender\n\n지시')")"
+expect_dismiss_a
+CASE=15re; reset_state; seed
+hook_run "$(ups abc "$(printf ' [cc-cmds 원격 입력] 발신=app:dk-7f3a91\n\n지시')")"
+expect_dismiss_a
+
 # ---------------------------------------------------------------------------
 # 16–29 — the scheduled-task record
 # ---------------------------------------------------------------------------

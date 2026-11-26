@@ -1,4 +1,4 @@
-// 원격 답 모드의 활성 판정·열린 질문 경합·질문지 적용·깨우기·시계 복구·잠든 상태·권한 대화창의 원격 결정.
+// 원격 답 모드의 활성 판정·열린 질문 경합·질문지 적용·원격 텍스트 답·깨우기·시계 복구·잠든 상태·권한 대화창의 원격 결정.
 import { describe, expect, test } from 'claude-code/testing'
 
 import { call, formIdOf, mount, twoQuestions } from '../question-form/kit'
@@ -189,7 +189,8 @@ describe('질문지 적용', () => {
     const scan = JSON.parse(w.seams[1].stdin ?? '{}')
     expect(scan.session_id).toBe(SID)
     expect(scan.form.form_id).toBe(formId)
-    expect(scan.form.questions[0]).toEqual({ id: 'scope', question: '어디까지?', options: [{ label: '좁게' }, { label: '넓게' }] })
+    expect(scan.form.questions[0]).toEqual({ id: 'scope', question: '어디까지?', options: [{ label: '좁게' }, { label: '넓게' }], kind: 'single', allow_other: true })
+    expect(scan.form.questions[1]).toEqual({ id: 'why', question: '왜?', options: [], kind: 'text', allow_other: true })
     expect(w.seams[2].args).toEqual(['r1'])
     const record = w.seams[3]
     expect(record.args).toEqual([SID, 'r1'])
@@ -260,7 +261,8 @@ describe('질문지 적용', () => {
     expect(isOpen(after[1])).toBe(true)
     w.submitDrop = undefined
     await clock.advance(60_000)
-    expect(seamSubs(w).slice(4)).toEqual(['scan', 'form-pick', 'form-record'])
+    // 쉬고 있고 봉투 이름이 남아 있으므로 그 뒤의 틱은 차례 넘김 후보를 더 물을 수 있다.
+    expect(seamSubs(w).slice(4, 7)).toEqual(['scan', 'form-pick', 'form-record'])
     expect(JSON.parse(w.seams[4].stdin ?? '{}').form.form_id).toBe(formId)
     expect(w.toasts).toHaveLength(1)
   })
@@ -290,6 +292,167 @@ describe('질문지 적용', () => {
     expect(seamSubs(w).filter(s => s === 'scan')).toHaveLength(1)
     await clock.advance(SCAN_MS)
     expect(seamSubs(w).filter(s => s === 'scan')).toHaveLength(2)
+  })
+})
+
+describe('원격 텍스트 답', () => {
+  const SENDER = 'app:dk-7f3a91'
+  const MARK = `[cc-cmds 원격 입력] 발신=${SENDER}`
+  const openForm = async ($: any) => formIdOf((await call($, twoQuestions())).text) ?? ''
+  const turnOut = (turn: unknown) => JSON.stringify({ form: null, turn, wake: [] })
+  const TURN = { reply_id: 'r2', text: '시험을 다시 돌리고\n실패한 절만 고쳐 주세요.', sender: SENDER, created_at_ms: 1_010_000 }
+
+  test('질문지 텍스트 봉투는 기타 칸 입력으로 넣고 묶음 뒤에 표지 줄을 단 텍스트로 기록한다', async ($, on) => {
+    const { w, clock } = world(on)
+    await start($)
+    await turnStart($)
+    await openForm($)
+    w.dirs[OWN] = ['r1.json']
+    w.replies.scan = scanOut({ reply_id: 'r1', picks: [{ id: 'scope', label: '넓게' }, { id: 'why', text: '일정이 이번 주라서' }], kind: 'text', sender: SENDER })
+    w.replies['form-pick'] = 'r1\n'
+    await clock.advance(SCAN_MS)
+    expect(seamSubs(w)).toEqual(['cleanup', 'scan', 'form-pick', 'form-record'])
+    const sent = w.submits[w.submits.length - 1]
+    expect(sent.origin.kind).toBe('plugin')
+    expect(sent.asUser).toBeUndefined()
+    expect(sent.text.startsWith('[cc-cmds 질문지 답]')).toBe(true)
+    expect(sent.text.endsWith(`\n${MARK}`)).toBe(true)
+    expect(sent.text).toContain('일정이 이번 주라서')
+    expect(w.seams[3].stdin).toBe(sent.text)
+  })
+
+  test('선택지 봉투의 질문지 제출에는 표지 줄이 없다', async ($, on) => {
+    const { w, clock } = world(on)
+    await start($)
+    await turnStart($)
+    await openForm($)
+    w.dirs[OWN] = ['r1.json']
+    w.replies.scan = scanOut({ reply_id: 'r1', picks: [{ id: 'scope', label: '넓게' }], kind: 'option', sender: SENDER })
+    w.replies['form-pick'] = 'r1\n'
+    await clock.advance(SCAN_MS)
+    expect(seamSubs(w)).toContain('form-record')
+    expect(w.submits[w.submits.length - 1].text).not.toContain('[cc-cmds 원격 입력]')
+  })
+
+  test('발신자 꼴이 어긋난 질문지 텍스트 봉투는 수령 표지를 거두고 제출하지 않는다', async ($, on) => {
+    const { w, clock } = world(on)
+    await start($)
+    await turnStart($)
+    await openForm($)
+    w.dirs[OWN] = ['r1.json']
+    w.replies.scan = scanOut({ reply_id: 'r1', picks: [{ id: 'why', text: '이유' }], kind: 'text', sender: 'bad sender' })
+    w.replies['form-pick'] = 'r1\n'
+    const sent = w.submits.length
+    await clock.advance(SCAN_MS)
+    expect(seamSubs(w)).toEqual(['cleanup', 'scan', 'form-pick', 'form-unpick'])
+    expect(w.submits).toHaveLength(sent)
+  })
+
+  test('쉬는 세션은 차례 넘김 봉투를 기록한 뒤 사용자 차례로 제출한다', async ($, on) => {
+    const { w, clock } = world(on)
+    w.dirs[OWN] = ['r2.json']
+    w.replies.scan = turnOut(TURN)
+    w.replies['turn-pick'] = 'r2\n'
+    w.replies['turn-record'] = 'r2\n'
+    await start($)
+    await clock.advance(IDLE_MS - SCAN_MS)
+    expect(seamSubs(w)).toEqual(['cleanup'])
+    await clock.advance(SCAN_MS)
+    expect(seamSubs(w)).toEqual(['cleanup', 'scan', 'turn-pick', 'turn-record'])
+    expect(JSON.parse(w.seams[1].stdin ?? '{}')).toEqual({ session_id: SID, form: null, turn: true })
+    expect(w.seams[2].args).toEqual(['r2'])
+    expect(JSON.parse(w.seams[2].stdin ?? '{}')).toEqual({ session_id: SID })
+    expect(w.seams[3].args).toEqual([SID, 'r2'])
+    const text = `${MARK}\n\n${TURN.text}`
+    expect(w.seams[3].stdin).toBe(text)
+    expect(w.submits).toEqual([{ text, origin: expect.objectContaining({ kind: 'plugin' }), asUser: true }])
+  })
+
+  test('차례가 돌고 있으면 차례 넘김을 묻지 않는다', async ($, on) => {
+    const { w, clock } = world(on)
+    w.dirs[OWN] = ['r2.json']
+    w.replies.scan = turnOut(TURN)
+    w.replies['turn-pick'] = 'r2\n'
+    await start($)
+    await turnStart($)
+    await clock.advance(IDLE_MS * 2)
+    expect(seamSubs(w)).not.toContain('scan')
+    expect(seamSubs(w)).not.toContain('turn-pick')
+    expect(w.submits).toHaveLength(0)
+  })
+
+  test('세션 시작 앞에 생긴 사건의 새 지시는 받지 않는다', async ($, on) => {
+    const { w, clock } = world(on)
+    w.dirs[OWN] = ['r2.json']
+    w.replies.scan = turnOut({ ...TURN, created_at_ms: 999_000 })
+    w.replies['turn-pick'] = 'r2\n'
+    await start($)
+    await clock.advance(IDLE_MS)
+    expect(seamSubs(w)).toContain('scan')
+    expect(seamSubs(w)).not.toContain('turn-pick')
+    expect(w.submits).toHaveLength(0)
+  })
+
+  test('사건 뒤에 사람 입력이 있었으면 새 지시를 받지 않는다', async ($, on) => {
+    const { w, clock } = world(on)
+    w.dirs[OWN] = ['r2.json']
+    w.replies.scan = turnOut(TURN)
+    w.replies['turn-pick'] = 'r2\n'
+    await start($)
+    await clock.advance(20_000)
+    await $.prompt.change({ text: '이전 글', cursor: 0, origin: { kind: 'history' } })
+    await clock.advance(IDLE_MS + SCAN_MS)
+    expect(seamSubs(w)).toContain('scan')
+    expect(seamSubs(w)).not.toContain('turn-pick')
+  })
+
+  test('기록이 어긋나면 수령 표지를 거두고 제출하지 않는다', async ($, on) => {
+    const { w, clock } = world(on)
+    w.dirs[OWN] = ['r2.json']
+    w.replies.scan = turnOut(TURN)
+    w.replies['turn-pick'] = 'r2\n'
+    w.replies['turn-record'] = ''
+    await start($)
+    await clock.advance(IDLE_MS)
+    expect(seamSubs(w)).toEqual(['cleanup', 'scan', 'turn-pick', 'turn-record', 'turn-unpick'])
+    expect(w.seams[4].args).toEqual(['r2'])
+    expect(JSON.parse(w.seams[4].stdin ?? '{}')).toEqual({ session_id: SID })
+    expect(w.submits).toHaveLength(0)
+  })
+
+  test('수령 표지가 이 세션의 것이 아니면 기록도 제출도 하지 않는다', async ($, on) => {
+    const { w, clock } = world(on)
+    w.dirs[OWN] = ['r2.json']
+    w.replies.scan = turnOut(TURN)
+    w.replies['turn-pick'] = ''
+    await start($)
+    await clock.advance(IDLE_MS)
+    expect(seamSubs(w)).toEqual(['cleanup', 'scan', 'turn-pick'])
+    expect(w.submits).toHaveLength(0)
+  })
+
+  test('첫 줄이 원격 표지 줄인 제출은 사람 입력이 아니다', async ($, on) => {
+    const { w, clock } = world(on)
+    runMailbox(w)
+    w.replies.scan = scanOut(null, [WAKE])
+    w.replies['wake-mark'] = `${LITERAL}\n`
+    await start($)
+    await clock.advance(40_000)
+    await prompt($, `${MARK}\n\n원격 지시`)
+    await clock.advance(SCAN_MS)
+    expect(seamSubs(w)).toContain('wake-mark')
+  })
+
+  test('표지 줄이 첫 줄이 아니면 사람 입력이다', async ($, on) => {
+    const { w, clock } = world(on)
+    runMailbox(w)
+    w.replies.scan = scanOut(null, [WAKE])
+    w.replies['wake-mark'] = `${LITERAL}\n`
+    await start($)
+    await clock.advance(40_000)
+    await prompt($, `손으로 쓴 글\n${MARK}`)
+    await clock.advance(SCAN_MS)
+    expect(seamSubs(w)).not.toContain('wake-mark')
   })
 })
 

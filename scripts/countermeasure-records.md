@@ -97,3 +97,4 @@
 - `plugins/cc-cmds/hooks/session-turn-notify.sh` — 턴이 끝났음을 알림으로 알릴 뿐이다
 - `plugins/cc-cmds/hooks/session-title.sh` — 세션 제목을 정할 뿐이다
 - `plugins/cc-cmds/hooks/statusline-sessionstart.sh` — 상태 줄을 설치하는 표시 장치일 뿐이다
+- `plugins/cc-cmds/hooks/remote-reply/posttool.sh` — 원격 텍스트 답의 표지 줄을 추가 맥락으로 낼 뿐 어떤 행위도 막지 않는다

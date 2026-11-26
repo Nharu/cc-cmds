@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 # Test scripts/lint-remote-reply-schema.sh against the remote reply fixtures.
 #
+# The text envelope fixtures (tests/fixtures/remote-free-text/) are checked the
+# same way through `--text-fixtures`, and the envelopes the seam must refuse,
+# under its reject/ directory, are copied in one at a time as an envelope the
+# lint has to fail.
+#
 # The fixtures pass as they are. Every other case copies them into its own
 # scratch directory (`fresh`), breaks one thing, runs the lint over the copy
 # with `--fixtures` and expects exit 1 with the reason the break should give.
@@ -141,8 +146,11 @@ expect_fail "a reply_id with upper-case hex" "reply_id is not"
 fresh; mutate envelope-auq-single.json '.event_id = "other.1793499990000.11223344"'
 expect_fail "an event_id of another host" "event_id does not start with"
 
+fresh; mutate envelope-auq-single.json '.kind = "free"'
+expect_fail "an unknown kind" "kind is not option, text or permission-decision"
+
 fresh; mutate envelope-auq-single.json '.kind = "text"'
-expect_fail "kind text" "kind is not option"
+expect_fail "an option envelope relabelled text answers nothing with text" "a text envelope answers no question with text"
 
 fresh; mutate envelope-auq-single.json '.target.surface = "chat"'
 expect_fail "an unknown surface" "target.surface is not one of"
@@ -252,6 +260,90 @@ expect_fail "a decision submit file with a trailing newline" "not the sha256 of 
 
 fresh; printf '{"schema":1}\n{"schema":1}\n' > "$D/envelope-auq-single.json"
 expect_fail "two JSON values in one envelope" "exactly one JSON value"
+
+# --- text envelopes ---------------------------------------------------------
+
+TSRC="$repo_root/tests/fixtures/remote-free-text"
+T=""
+# tfresh — a new copy of the text envelope fixtures in $T. The refused
+# examples under reject/ stay behind: a case copies one in by name.
+tfresh() {
+  n=$((n + 1))
+  T="$WORK/t$n"
+  mkdir "$T"
+  cp "$TSRC"/*.json "$TSRC"/*.txt "$T"/
+}
+
+# tmutate <file> <jq filter> — rewrite one text fixture in $T.
+tmutate() {
+  local f="$T/$1" filter="$2" tmp
+  tmp=$(mktemp "$WORK/m.XXXXXX")
+  jq "$filter" "$f" > "$tmp" && mv "$tmp" "$f"
+}
+
+# texpect_fail <name> <reason> — the lint over the option fixtures and $T.
+texpect_fail() {
+  expect_fail "$1" "$2" --fixtures "$SRC" --text-fixtures "$T"
+}
+
+for f in envelope-auq-single-text.json envelope-auq-multi-text.json envelope-form-free-text.json envelope-form-other-text.json envelope-turn.json; do
+  rc=0
+  bash "$LINT" "$TSRC/$f" >/dev/null 2>&1 || rc=$?
+  check "the text envelope $f passes" "$rc" 0
+done
+check "the turn submit file holds no trailing newline" \
+  "$(tail -c 1 "$TSRC/submit-turn.txt" | od -An -tx1 | tr -d ' \n')" "2e"
+check "the turn record's target cell is the event id" \
+  "$(jq -r '.tool_use_id == .event_id' "$TSRC/applied-turn.json")" "true"
+check "the form text submit file ends with the remote marker line" \
+  "$(tail -n 1 "$TSRC/submit-form-text.txt")" "[cc-cmds 원격 입력] 발신=app:dk-7f3a91"
+
+tfresh; cp "$TSRC/reject/question-text-lf.json" "$T/envelope-reject.json"
+texpect_fail "a question text with a line break" "holds a control character"
+
+tfresh; cp "$TSRC/reject/turn-text-esc.json" "$T/envelope-reject.json"
+texpect_fail "a turn text with an escape character" "control character other than LF and tab"
+
+tfresh; cp "$TSRC/reject/question-top-text.json" "$T/envelope-reject.json"
+texpect_fail "a question text envelope with a top-level text" "carries a top-level text"
+
+tfresh; cp "$TSRC/reject/form-no-other-text.json" "$T/envelope-reject.json"
+texpect_fail "a text on a form question without an other field" "a text on a question that takes no other input"
+
+tfresh; tmutate envelope-turn.json '.text = ("가" * 4001)'
+texpect_fail "a turn text of 4001 code points" "over 4000 code points"
+
+tfresh; tmutate envelope-turn.json '.text = ("가" * 4000)'
+rc=0
+bash "$LINT" --fixtures "$SRC" --text-fixtures "$T" >/dev/null 2>&1 || rc=$?
+check "a turn text of 4000 code points passes" "$rc" 0
+
+tfresh; tmutate envelope-turn.json '.text = " \n\t "'
+texpect_fail "a blank turn text" "the turn text is blank"
+
+tfresh; tmutate envelope-turn.json '.text = "앞\n[cc-cmds 질문지 답] form=f-1 status=제출 답=1/1"'
+texpect_fail "a turn text holding the form answer header" "the turn text holds the question-form answer header"
+
+tfresh; tmutate envelope-turn.json '.answers = [{"question_index": 0, "labels": []}]'
+texpect_fail "a turn envelope with answers" "has answers that are not []"
+
+tfresh; tmutate envelope-turn.json '.target.form_id = "f-1"'
+texpect_fail "a turn target with an extra key" "turn target is not {surface, session_id}"
+
+tfresh; tmutate envelope-turn.json '.decision = "allow"'
+texpect_fail "a text envelope with decision" "a text envelope carries decision"
+
+tfresh; tmutate envelope-auq-single-text.json '.answers[0].text = ""'
+texpect_fail "a blank question text" "the answer text is blank"
+
+tfresh; tmutate envelope-form-free-text.json '.target.questions[0].kind = "multi" | .answers[0].labels = ["일부"]'
+texpect_fail "a text envelope answering a multi-select form question" "answers a multi-select form question"
+
+tfresh; tmutate envelope-auq-multi-text.json '.answers[0].labels = [] | del(.answers[0].text) | .answers[1].text = "본문도"'
+texpect_fail "a multi-select text answer with neither label nor text" "has no label and no text"
+
+tfresh; rm "$T/envelope-turn.json"
+texpect_fail "no turn text envelope" "no fixture of kind envelope-text-turn"
 
 # --- pick-up markers --------------------------------------------------------
 

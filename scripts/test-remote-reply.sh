@@ -374,7 +374,8 @@ ftarget=$(jq -c '.target | {form_id, session_id, questions}' "$envf")
 fin=$(jq -cn --arg sid "$SID1" --argjson f "$ftarget" '{session_id: $sid, form: $f}')
 seam "$fin" scan
 check "5 scan 이 질문지 봉투와 고른 라벨을 냄" "$(out | jq -c '.form')" \
-  "{\"reply_id\":\"$RID_FORM\",\"picks\":[{\"id\":\"q1\",\"label\":\"내일 아침\"},{\"id\":\"q2\",\"label\":\"당번\"}]}"
+  "{\"reply_id\":\"$RID_FORM\",\"picks\":[{\"id\":\"q1\",\"label\":\"내일 아침\"},{\"id\":\"q2\",\"label\":\"당번\"}],\"kind\":\"option\",\"sender\":\"tg:123456789\"}"
+check "5 scan 은 차례 넘김을 묻지 않으면 turn 이 null" "$(out | jq -c '.turn')" "null"
 check "5 scan 은 질문지 봉투에 아무것도 쓰지 않음" "$(ls "$ROOT/inbox/$SAFE1" | wc -l | tr -d ' ')" "1"
 seam "$fin" form-pick "$RID_FORM"
 check "5 form-pick 이 reply_id 를 냄" "$(out)" "$RID_FORM"
@@ -417,6 +418,16 @@ check "5 다른 세션의 거두기는 표지를 지우지 않음" "$(jq -r '.se
 fother=$(jq -cn --arg sid "$SID1" --argjson f "$(jq -c '.target | {form_id: "f-00000000", session_id, questions}' "$envf")" '{session_id: $sid, form: $f}')
 seam "$fother" scan
 check "5 다른 form_id 의 열린 질문지에는 후보 없음" "$(out | jq -c '.form')" "null"
+
+# A form event that accepts text but not option takes no option envelope: the
+# seam reads the event with the envelope's own kind.
+fresh
+envf=$(put_env "$FORM")
+put_event "$envf" "cc-cmds-session-ask-$SID1" '.accepts = ["text"]'
+fin=$(jq -cn --arg sid "$SID1" --argjson f "$(jq -c '.target | {form_id, session_id, questions}' "$envf")" '{session_id: $sid, form: $f}')
+before=$(listing)
+seam "$fin" form-pick "$RID_FORM"
+rejected "5 accepts 에 option 이 없는 질문지 사건은 선택지 봉투를 받지 않음" "$before"
 
 # ---------------------------------------------------------------------------
 # 6. Rejections — each violation writes nothing, prints nothing, rc 0.

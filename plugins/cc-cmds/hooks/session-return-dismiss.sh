@@ -26,9 +26,13 @@
 # payload field tells those apart from typing. So, in order:
 #   1. the text a previous `Stop` recorded for this session (or the head of a
 #      truncated record) — not a return;
-#   2. a leading XML-shaped element — not a return, except a leading
+#   2. a first line that is the remote input mark
+#      `[cc-cmds 원격 입력] 발신=<sender>` — not a return: the remote reply mode
+#      submitted an instruction someone sent from elsewhere, and nobody came
+#      back to this session;
+#   3. a leading XML-shaped element — not a return, except a leading
 #      `<pasted_content …>`, which is the person pasting;
-#   3. everything else — a return.
+#   4. everything else — a return.
 # Accepted misses, all in the cheap direction (the banner stays until the next
 # return): an answer closed with Esc and a local-only slash command fire no event
 # at all; typing exactly the text of a pending scheduled task, and typing that
@@ -144,15 +148,20 @@ EOF
   return 1
 }
 
-# Stage 2. A leading XML-shaped element is a harness envelope. bash's `^`
+# Stage 3. A leading XML-shaped element is a harness envelope. bash's `^`
 # anchors at the start of the whole string, not of each line — which is why
 # this is not a `grep -E` pipe as in active-notify-pretool.sh: line by line,
 # `hi\n<task-notification>` would read as an envelope and stay open.
 envelope_re='^[[:space:]]*<[A-Za-z][A-Za-z0-9_-]*([[:space:]>/])'
 pasted_re='^[[:space:]]*<pasted_content([[:space:]>])'
+# Stage 2. The remote input mark as the whole first line: the line ends at the first
+# line feed or at the end of the prompt. The sender grammar is the one the
+# remote reply seam accepts.
+remote_re=$'^\\[cc-cmds 원격 입력\\] 발신=[A-Za-z0-9_.@:-]{1,64}(\n|$)'
 
 is_return_prompt() {
   if is_recorded_cron; then return 1; fi
+  if [[ $prompt =~ $remote_re ]]; then return 1; fi
   if [[ $prompt =~ $pasted_re ]]; then return 0; fi
   if [[ $prompt =~ $envelope_re ]]; then return 1; fi
   return 0

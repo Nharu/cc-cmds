@@ -1,0 +1,5 @@
+[cc-cmds 질문지 답] form=f-7d2e4a10 status=제출 답=2/2
+```json
+{"schema":"cc-form-answers/1","form":"f-7d2e4a10","status":"제출","answers":[{"id":"scope","header":"범위","question":"범위는 어디까지로 할까요?","kind":"single","options":["전부","일부"],"state":"답","selected":["일부"],"other":"","note":"","answer":"일부"},{"id":"why","header":"이유","question":"그렇게 고른 이유는?","kind":"text","options":[],"state":"답","selected":[],"other":"릴리스 일정이 이번 주라서입니다","note":"","answer":"릴리스 일정이 이번 주라서입니다"}]}
+```
+[cc-cmds 원격 입력] 발신=app:dk-7f3a91

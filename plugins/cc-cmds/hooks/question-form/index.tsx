@@ -225,7 +225,13 @@ export type Delivery = { consumed: true; text: string; dropped?: string } | { co
 // 있고, 원격 답은 다음 틱에 같은 질문지를 다시 겨눌 수 있다. 소비 전에 거울을 지우는 것은
 // 제출이 지나는 프롬프트 훅의 rejoin 이 지워질 보관을 되살리지 않게 하려는 것이다. take 는
 // 열린 기록을 받아 소비한 기록(제출이나 취소 단계)을 돌려주거나, 소비하지 않으면 undefined 다.
-async function deliver($: Dollar, status: FormStatus, take: (r: FormRecord | undefined) => FormRecord | undefined): Promise<Delivery> {
+// tail 은 묶음 뒤에 그대로 붙여 함께 제출하는 꼬리다(원격 텍스트 답의 표지 줄).
+async function deliver(
+  $: Dollar,
+  status: FormStatus,
+  take: (r: FormRecord | undefined) => FormRecord | undefined,
+  tail?: string,
+): Promise<Delivery> {
   let held: FormRecord | undefined
   let taken: FormRecord | undefined
   await update($, recordAtom, r => {
@@ -235,7 +241,7 @@ async function deliver($: Dollar, status: FormStatus, take: (r: FormRecord | und
   })
   if (!taken || !held) return { consumed: false }
   const done = taken
-  const text = bundleText(done.id, status, done.form, done.drafts)
+  const text = bundleText(done.id, status, done.form, done.drafts) + (tail ?? '')
   await landFocus($, null)
   await mirror($, null, done.sessionId)
   const sent = await $.prompt.submit({ text })
@@ -280,13 +286,20 @@ const hasDraft = (rec: FormRecord) =>
   })
 
 // 원격 답이 대상으로 삼는 열린 질문지. 이 세션이 연 열린 기록만 내놓는다 — 다른 세션의
-// 기록이나 닫힌 기록이면 null 이다.
+// 기록이나 닫힌 기록이면 null 이다. 질문마다 종류와 기타 입력 허용 여부를 배너 인자와 같은
+// 계산으로 싣는다 — 이음매가 봉투 대상(배너가 만든 사건의 답 대상)과 바이트로 대조한다.
 export type FormTarget = {
   form_id: string
   session_id: string
-  questions: { id: string; question: string; options: { label: string }[] }[]
+  questions: { id: string; question: string; options: { label: string }[]; kind: string; allow_other: boolean }[]
   hasDraft: boolean
 }
+
+// 원격 답 하나: 선택지 봉투는 라벨, 텍스트 봉투는 라벨이나 텍스트.
+export type RemotePick = { id: string; label: string } | { id: string; text: string }
+
+// 원격 텍스트 답을 담은 제출의 끝에 다는 표지 줄.
+export const remoteMarkLine = (sender: string) => `[cc-cmds 원격 입력] 발신=${sender}`
 
 export async function openFormTarget($: Dollar): Promise<FormTarget | null> {
   const rec = await read($, recordAtom)
@@ -296,21 +309,34 @@ export async function openFormTarget($: Dollar): Promise<FormTarget | null> {
   return {
     form_id: rec.id,
     session_id: rec.sessionId,
-    questions: rec.form.questions.map(q => ({ id: q.id, question: q.question, options: (q.options ?? []).map(o => ({ label: o.label })) })),
+    questions: rec.form.questions.map(q => ({
+      id: q.id,
+      question: q.question,
+      options: (q.options ?? []).map(o => ({ label: o.label })),
+      kind: q.kind,
+      allow_other: q.allowOther !== false,
+    })),
     hasDraft: hasDraft(rec),
   }
 }
 
-// 원격 답 적용: 한 번의 기록 갱신 안에서 열림·id 일치·초안 없음을 보고, 질문마다 choose 를,
-// 이어서 submit 을 적용한다. 그 사이에 사람의 누름이 끼어들 창이 없다. 소비했으면 버튼의
-// 제출과 같은 나머지 일을 하고 제출 텍스트를 돌려준다.
-export function applyRemote($: Dollar, formId: string, picks: readonly { id: string; label: string }[]): Promise<Delivery> {
-  return deliver($, '제출', r => {
-    if (!isOpen(r) || r.id !== formId || hasDraft(r)) return undefined
-    let rec: FormRecord = r
-    for (const pick of picks) rec = choose(rec, pick.id, pick.label).record
-    return submit(rec)
-  })
+// 원격 답 적용: 한 번의 기록 갱신 안에서 열림·id 일치·초안 없음을 보고, 질문마다 라벨은
+// choose 를, 텍스트는 기타 칸 입력과 같은 typeText 를, 이어서 submit 을 적용한다. 그 사이에
+// 사람의 누름이 끼어들 창이 없다. 소비했으면 버튼의 제출과 같은 나머지 일을 하고 제출
+// 텍스트를 돌려준다. sender 가 있으면(텍스트 봉투) 묶음 뒤에 원격 표지 줄을 단다.
+export function applyRemote($: Dollar, formId: string, picks: readonly RemotePick[], sender?: string): Promise<Delivery> {
+  const tail = sender === undefined ? undefined : `\n${remoteMarkLine(sender)}`
+  return deliver(
+    $,
+    '제출',
+    r => {
+      if (!isOpen(r) || r.id !== formId || hasDraft(r)) return undefined
+      let rec: FormRecord = r
+      for (const pick of picks) rec = 'text' in pick ? typeText(rec, pick.id, 'other', pick.text) : choose(rec, pick.id, pick.label).record
+      return submit(rec)
+    },
+    tail,
+  )
 }
 
 // 열린 기록을 순수 전이로 바꾼다. 제목이나 바라는 크기가 바뀌었으면 패널을 다시 열고,
