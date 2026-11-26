@@ -15,7 +15,7 @@ export const OWN = `${ROOT}/inbox/s-${SID}`
 
 export type SeamCall = { sub: string; args: string[]; stdin?: string }
 export type Reply = string | string[] | ((c: SeamCall) => string)
-export type Submitted = { text: string; origin: { kind: string; name?: string } }
+export type Submitted = { text: string; origin: { kind: string; name?: string; asUser?: boolean }; asUser?: boolean }
 
 export type WorldOptions = {
   env?: Partial<Record<(typeof MARKS)[number] | 'CC_CMDS_REMOTE_PERMISSION_DECISION' | 'TMPDIR', string>>
@@ -87,7 +87,10 @@ export function world(on: On, options: WorldOptions = {}) {
   // 이벤트는 결과를 그대로 돌려준다.
   on('session.start', (_$, e) => ({ cwd: e.cwd }))
   on('prompt.submit', (_$, e) => {
-    w.submits.push({ text: e.text, origin: e.origin as Submitted['origin'] })
+    // asUser 는 제출 옵션이고 엔진은 그것을 출처에 싣는다. 어느 쪽에 왔든 참일 때만 적는다.
+    const origin = e.origin as Submitted['origin']
+    const isAsUser = (e as { asUser?: boolean }).asUser === true || origin?.asUser === true
+    w.submits.push({ text: e.text, origin, ...(isAsUser ? { asUser: true } : {}) })
     if (w.submitDrop !== undefined) return { drop: w.submitDrop }
 
     return { text: e.text, context: e.context }

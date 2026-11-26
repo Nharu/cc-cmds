@@ -9,30 +9,47 @@
 # `plugins/cc-cmds/skills/_common/attention-event.md` (spool, events, handled
 # markers, file creation). This script moves them; it does not restate them.
 #
-# SUBCOMMANDS (the mode in `index.tsx` and `pretool.sh` are the callers):
+# SUBCOMMANDS (the mode in `index.tsx`, `pretool.sh` and `posttool.sh` are the
+# callers):
 #   wait                       stdin {session_id, tool_use_id, questions, rejected}
 #                              polls once a second for a candidate envelope of the
 #                              open call and prints `<addr> <reply_id>`
 #   commit <addr> <reply_id>   stdin {session_id, tool_use_id, questions}
 #                              acceptance, pick-up, applied record, handled
-#                              marker; prints the answer map
+#                              marker (and, for a text envelope, the mark file);
+#                              prints the answer map
 #   sat                        stdin the PreToolUse hook input; applies a picked
 #                              run-address approval envelope and prints the hook
 #                              decision
-#   scan                       stdin {session_id, form}; prints
-#                              {form: {reply_id, picks} | null, wake: [...]}
-#                              after picking up run-address envelopes
+#   mark-take                  stdin the PostToolUse hook input; prints the
+#                              remote-input line as additional context when a
+#                              text envelope answered the call, and removes the
+#                              mark file
+#   scan                       stdin {session_id, form, turn}; prints
+#                              {form: {reply_id, picks, kind, sender} | null,
+#                               turn: {reply_id, text, sender, created_at_ms}
+#                                     | null, wake: [...]}
+#                              after picking up run-address envelopes; `turn`
+#                              is looked for only when the input's `turn` is true
 #   form-pick <reply_id>       stdin {session_id, form}; prints the reply id when
 #                              the pick-up marker is this session's
 #   form-unpick <reply_id>     stdin {session_id}; removes this session's marker
 #   form-record <session_id> <reply_id>
 #                              stdin the submitted text; applied record and
 #                              handled marker
+#   turn-pick <reply_id>       stdin {session_id}; prints the reply id when the
+#                              pick-up marker of a new instruction is this
+#                              session's
+#   turn-unpick <reply_id>     stdin {session_id}; removes this session's marker
+#   turn-record <session_id> <reply_id>
+#                              stdin the text about to be submitted; applied
+#                              record and handled marker; prints the reply id
 #   wake-mark <run_id> <reply_id>
 #                              stdin {session_id}; marks the envelope woken and
 #                              prints the wake literal once
 #   cleanup                    stdin {session_id}; removes this role's files
-#                              whose envelope is gone
+#                              whose envelope is gone, and mark files older
+#                              than 24 hours
 #
 # THE GATE, in order, before any subcommand; a false step ends with rc 0 and no
 # output: jq present; `cc_caller_is_router`; the spool root exists. The root
@@ -149,18 +166,23 @@ seam_create() {
 # Events and handled markers
 # --------------------------------------------------------------------------
 
-# seam_event_record <event_id> — print the event's slot and created_at_ms on one
-# line separated by a tab when the record is schema 1 and accepts `option`;
-# print nothing otherwise. Handled markers are not read here.
+# seam_event_record <event_id> <kind> — print the event's slot and created_at_ms
+# on one line separated by a tab when the record is schema 1 and its `accepts`
+# holds the envelope kind; print nothing otherwise. Handled markers are not
+# read here.
 seam_event_record() {
-  local ev="$1" f
+  local ev="$1" kind="${2:-}" f
   case "$ev" in
     ''|.*|*/*) return 0 ;;
   esac
+  case "$kind" in
+    option|text) ;;
+    *) return 0 ;;
+  esac
   f="$root/events/$ev.json"
   [ -f "$f" ] || return 0
-  jq -r 'select(.schema == 1 and ((.accepts // []) | type) == "array"
-                and any(.accepts[]; . == "option")
+  jq -r --arg k "$kind" 'select(.schema == 1 and ((.accepts // []) | type) == "array"
+                and any(.accepts[]; . == $k)
                 and (.slot | type) == "string" and (.slot | length) > 0
                 and (.created_at_ms | type) == "number")
          | "\(.slot)\t\(.created_at_ms)"' "$f" 2>/dev/null || return 0
@@ -192,14 +214,14 @@ seam_handled_state() {
         then "handled" else "open" end' 2>/dev/null
 }
 
-# seam_event <event_id> — print the event's slot and created_at_ms on one line
-# separated by a tab when the record is schema 1, accepts `option` and is not
-# handled by the reader rules; print nothing otherwise. Markers that could not
-# be read reject the envelope: an unread marker may be the one that closed the
-# event, and applying an answer to a closed question is the worse outcome.
+# seam_event <event_id> <kind> — print the event's slot and created_at_ms on one
+# line separated by a tab when the record is schema 1, accepts the kind and is
+# not handled by the reader rules; print nothing otherwise. Markers that could
+# not be read reject the envelope: an unread marker may be the one that closed
+# the event, and applying an answer to a closed question is the worse outcome.
 seam_event() {
   local info slot created state
-  info=$(seam_event_record "$1")
+  info=$(seam_event_record "$1" "${2:-}")
   [ -n "$info" ] || return 0
   slot=${info%%	*}
   created=${info#*	}
@@ -213,38 +235,57 @@ seam_event() {
 # --------------------------------------------------------------------------
 
 # The envelope checks that need no file other than the envelope: schema, kind,
-# host (1), the address rule, the target against the open call or form (3), the
-# answer rules (4) and expiry (5). Prints one JSON object with what the apply
-# needs, or nothing.
+# host (1), the address rule, the target against the open call, form or idle
+# turn (3), the answer and text rules (4) and expiry (5). Prints one JSON object
+# with what the apply needs, or nothing. An option envelope is read exactly as
+# before the text kind existed: no `text` key of it is looked at.
+#
+# A remote text is a string that is not blank, holds at most 4000 code points
+# and no control character (C0, DEL, C1); a turn text may hold LF and tab. The
+# question-form header check needs NFC and runs outside jq (seam_text_clean).
 ACCEPT_JQ='
 def ctl: test("[\u001e\u001f]");
 def dupes: length != (unique | length);
 def norm: split(" ← ")[0];
 def strs: type == "array" and all(.[]; type == "string");
+def rtext($turn):
+  type == "string" and test("\\S") and length <= 4000
+  and (explode | all(.[]; (. >= 32 and (. < 127 or . > 159))
+                          or ($turn and (. == 9 or . == 10))));
 . as $e
 | $e.target as $t
-| select($e.schema == 1 and $e.kind == "option" and $e.reply_id == $rid)
+| $e.kind as $k
+| select($e.schema == 1 and ($k == "option" or $k == "text") and $e.reply_id == $rid)
 | select($e.host == $host)
 | select(($e.expires_at_ms | type) == "number" and $now < $e.expires_at_ms)
 | select(($e.event_id | type) == "string" and ($e.event_id | startswith($host + ".")))
 | select(($e.provenance | type) == "object"
          and ($e.provenance.transport | type) == "string"
          and ($e.provenance.sender | type) == "string")
+| select($k == "option" or ($e.provenance.sender | test("^[A-Za-z0-9_.@:-]{1,64}$")))
 | select(($t | type) == "object")
 | ($t.surface) as $s
-| select(if $s == "approval" then $addr == ("r-" + ($t.run_id | tostring))
+| select(if $s == "approval" then $k == "option" and $addr == ("r-" + ($t.run_id | tostring))
          elif $s == "auq" or $s == "question-form" then $addr == ("s-" + $safe) and $t.session_id == $sid
+         elif $s == "turn" then $k == "text" and $addr == ("s-" + $safe) and $t.session_id == $sid
          else false end)
+| if $s == "turn" then
+    select($mode == "turn" and $e.answers == [] and ($e.text | rtext(true)))
+    | {cell: $e.event_id, text: $e.text}
+  else
+  select($k == "option" or ($e | has("text") | not))
 | (if $s == "auq" then
      [ $t.questions[]? | {q: .question, h: .header, m: (.multi_select == true),
-                          labels: [ .options[]?.label ]} ]
+                          k: "single", o: true, labels: [ .options[]?.label ]} ]
    elif $s == "question-form" then
-     [ $t.questions[]? | {id: .id, q: .question, m: false, labels: [ .options[]?.label ]} ]
+     [ $t.questions[]? | {id: .id, q: .question, m: false, k: (.kind // "single"),
+                          o: (.allow_other // false), labels: [ .options[]?.label ]} ]
    else
-     [ {q: $t.question, m: false, labels: ($t.options // [])} ]
+     [ {q: $t.question, m: false, k: "single", o: false, labels: ($t.options // [])} ]
    end) as $tq
 | select(($tq | length) >= 1)
-| select(all($tq[]; (.q | type) == "string" and (.labels | strs) and (.labels | length) >= 1))
+| select(all($tq[]; (.q | type) == "string" and (.labels | strs)
+                    and ((.labels | length) >= 1 or ($k == "text" and .k == "text"))))
 | select(all($tq[]; (.q | ctl | not) and all(.labels[]; ctl | not)))
 | select(all($tq[]; .labels | dupes | not))
 | select(all($tq[]; (.m | not) or all(.labels[]; contains(", ") | not)))
@@ -256,10 +297,22 @@ def strs: type == "array" and all(.[]; type == "string");
            | $tq[$i] as $q
            | ($x | type) == "object" and $x.question_index == $i
              and ($x.labels | strs)
-             and (if $q.m then ($x.labels | length) >= 1 and ($x.labels | dupes | not)
-                  else ($x.labels | length) == 1 end)
-             and all($x.labels[]; . as $l | $q.labels | index([$l]) != null) ]
+             and all($x.labels[]; . as $l | $q.labels | index([$l]) != null)
+             and (if $k == "option" then
+                    (if $q.m then ($x.labels | length) >= 1 and ($x.labels | dupes | not)
+                     else ($x.labels | length) == 1 end)
+                  else
+                    ($x | has("text")) as $ht
+                    | ($x.labels | length) as $n
+                    | (($ht | not) or ($x.text | rtext(false)))
+                      and ($x.labels | dupes | not)
+                      and (if $q.k == "text" then $n == 0 and $ht
+                           elif $q.k != "single" then false
+                           elif $q.m then $n >= 1 or $ht
+                           else ($n == 1 and ($ht | not)) or ($n == 0 and $ht and $q.o) end)
+                  end) ]
          | all)
+| select($k == "option" or any($a[]; has("text")))
 | (if $mode == "call" then
      ($call.questions // []) as $cq
      | if $s == "auq" then
@@ -272,8 +325,12 @@ def strs: type == "array" and all(.[]; type == "string");
          | {cell: $call.tool_use_id,
             answers: (reduce range(0; $cq | length) as $i ({};
               $cq[$i] as $c | $a[$i].labels as $ls
+              | (if $k == "text" then $a[$i].text else null end) as $tx
               | . + {($c.question):
-                     (if $tq[$i].m then [ $c.options[].label | select(. as $l | $ls | index([$l]) != null) ] | join(", ")
+                     (if $tq[$i].m then
+                        [ ($c.options[].label | select(. as $l | $ls | index([$l]) != null)),
+                          ($tx | strings) ] | join(", ")
+                      elif $tx != null then $tx
                       else $ls[0] end)}))}
        elif $s == "approval" then
          select(($cq | length) == 1 and $cq[0].question == $t.question)
@@ -292,25 +349,46 @@ def strs: type == "array" and all(.[]; type == "string");
      | select([ range(0; $fq | length) as $i
                 | $fq[$i] as $f | $tq[$i] as $q
                 | $f.id == $q.id and $f.question == $q.q
-                  and ([ $f.options[]?.label ] == $q.labels) ] | all)
+                  and ([ $f.options[]?.label ] == $q.labels)
+                  and (($f.kind // "single") == $q.k)
+                  and (($f.allow_other // false) == $q.o) ] | all)
      | {cell: $t.form_id,
-        picks: [ range(0; $tq | length) as $i | {id: $tq[$i].id, label: $a[$i].labels[0]} ]}
+        picks: [ range(0; $tq | length) as $i
+                 | if $k == "text" and ($a[$i] | has("text")) then {id: $tq[$i].id, text: $a[$i].text}
+                   else {id: $tq[$i].id, label: $a[$i].labels[0]} end ]}
    elif $mode == "pickup" then
      select($s == "approval") | {cell: null}
    else empty end)
-| . + {surface: $s, event_id: $e.event_id,
+  end
+| . + {kind: $k, surface: $s, event_id: $e.event_id,
        transport: $e.provenance.transport, sender: $e.provenance.sender,
        approval_id: (if $s == "approval" then $t.approval_id else null end)}
 '
 
+# seam_text_clean <envelope> — true when no text of a text envelope holds the
+# question-form answer header after NFC normalization. jq has no
+# normalization, so perl's Unicode::Normalize does it; a missing or failing
+# perl is a refusal. The texts already passed the control-character rule, so
+# joining them with LF cannot make the one-line header out of two texts.
+seam_text_clean() {
+  local texts
+  texts=$(jq -r '(.text | strings), (.answers[]? | objects | .text | strings)' "$1" 2>/dev/null) || return 1
+  printf '%s' "$texts" \
+    | perl -Mutf8 -CSD -MUnicode::Normalize -0777 -ne \
+        'exit(index(NFC($_), "[cc-cmds 질문지 답]") >= 0 ? 1 : 0)' 2>/dev/null
+}
+
 # seam_accept <mode> <addr> <reply_id> <sid> <now> <input-json>
 #   mode call   — the open AskUserQuestion call {tool_use_id, questions}
 #   mode form   — {form: <open form target>}
+#   mode turn   — an idle session's new instruction (input unused); the
+#                 session must have no run in its forward index
 #   mode pickup — run-address pick-up (conditions 1, 2, 4, 5, lineage, no marker)
-# Prints the accepted JSON (with `slot`) or nothing.
+# Prints the accepted JSON (with `slot` and the event's `created_at_ms`) or
+# nothing.
 seam_accept() {
   local mode="$1" addr="$2" rid="$3" sid="$4" now="$5" input="$6"
-  local env host out ev slotinfo slot marker msid run cell h claim
+  local env host out ev kind slotinfo slot created marker msid run cell h claim
   seam_is_addr "$addr" || return 0
   seam_is_rid "$rid" || return 0
   seam_is_sid "$sid" || return 0
@@ -326,11 +404,21 @@ seam_accept() {
   [ -n "$out" ] || return 0
   case "$out" in *"$nl"*) return 0 ;; esac
 
-  # 2 — the event exists, accepts `option` and is not handled.
+  kind=$(printf '%s' "$out" | jq -r '.kind' 2>/dev/null) || return 0
+  if [ "$kind" = text ]; then
+    seam_text_clean "$env" || return 0
+  fi
+
+  # 2 — the event exists, accepts the envelope kind and is not handled.
   ev=$(printf '%s' "$out" | jq -r '.event_id' 2>/dev/null) || return 0
-  slotinfo=$(seam_event "$ev")
+  slotinfo=$(seam_event "$ev" "$kind")
   [ -n "$slotinfo" ] || return 0
   slot=${slotinfo%%	*}
+  created=${slotinfo#*	}
+
+  # A new instruction goes only to a session that no run's gate has written
+  # into the forward index: a router seat takes none.
+  if [ "$mode" = turn ] && [ -n "$(seam_runs "$sid")" ]; then return 0; fi
 
   # 6 — not applied yet; the marker is this session's or inheritable; the
   # target cell's claim is free or this envelope's.
@@ -364,16 +452,17 @@ seam_accept() {
   if [ -z "$run" ]; then
     local senders="${HOME:-}/.config/cc-cmds/remote-senders.json" ok
     [ -f "$senders" ] || return 0
-    ok=$(jq -r --arg s "$(printf '%s' "$out" | jq -r '.sender')" '
+    ok=$(jq -r --arg s "$(printf '%s' "$out" | jq -r '.sender')" --arg k "$kind" '
            select(.schema == 1 and (.senders | type) == "array")
            | [ .senders[] | select(type == "object" and .id == $s
                                    and ((.capabilities // []) | type) == "array"
-                                   and any(.capabilities[]; . == "option")) ]
+                                   and any(.capabilities[]; . == $k)) ]
            | length' "$senders" 2>/dev/null) || return 0
     case "$ok" in ''|0) return 0 ;; esac
   fi
 
-  printf '%s' "$out" | jq -c --arg slot "$slot" '. + {slot: $slot}' 2>/dev/null
+  printf '%s' "$out" | jq -c --arg slot "$slot" --argjson c "$created" \
+    '. + {slot: $slot, created_at_ms: $c}' 2>/dev/null
 }
 
 # --------------------------------------------------------------------------
@@ -421,10 +510,21 @@ seam_record() {
   [ -n "$want" ] && [ "$want" = "$got" ]
 }
 
+# seam_mark_path <tool_use_id> — the remote-input mark file of one
+# AskUserQuestion call: a state file beside the target claims, never a spool
+# path.
+seam_mark_path() {
+  local h
+  h=$(printf '%s\037%s' "$root" "$1" | seam_sha256) || return 1
+  printf '%s/remote-reply/mark/%s' "$state" "$h"
+}
+
 # seam_commit_call <addr> <reply_id> <call-json> [need-marker] — the whole commit
-# for an open AskUserQuestion call; prints the answer map on success.
+# for an open AskUserQuestion call; prints the answer map on success. A text
+# envelope also leaves the mark file holding the sender id, for the
+# PostToolUse hook to turn into the remote-input line.
 seam_commit_call() {
-  local addr="$1" rid="$2" call="$3" need="${4:-}" sid now acc answers hash cell ev slot transport sender
+  local addr="$1" rid="$2" call="$3" need="${4:-}" sid now acc answers hash cell ev slot transport sender kind mark
   sid=$(printf '%s' "$call" | jq -r '.session_id // empty' 2>/dev/null) || return 0
   now=$(cc_attention__ms) || return 0
   acc=$(seam_accept call "$addr" "$rid" "$sid" "$now" "$call")
@@ -438,9 +538,14 @@ seam_commit_call() {
   slot=$(printf '%s' "$acc" | jq -r '.slot') || return 0
   transport=$(printf '%s' "$acc" | jq -r '.transport') || return 0
   sender=$(printf '%s' "$acc" | jq -r '.sender') || return 0
+  kind=$(printf '%s' "$acc" | jq -r '.kind') || return 0
   seam_pick "$addr" "$rid" "$sid" "$now" || return 0
   seam_record "$cell" "$sid" "$rid" "$ev" "$hash" "$transport" "$sender" "$now" || return 0
   cc_attention_handled "$slot" reply-applied
+  if [ "$kind" = text ]; then
+    mark=$(seam_mark_path "$cell") || mark=""
+    [ -n "$mark" ] && seam_create "${mark%/*}" "${mark##*/}" "$sender"
+  fi
   printf '%s\n' "$answers"
 }
 
@@ -529,7 +634,7 @@ cmd_sat() {
 }
 
 cmd_scan() {
-  local input sid safe now form fout f rid acc runs run marker msid wake info
+  local input sid safe now form fout tout f rid acc runs run marker msid wake info
   input=$(cat)
   sid=$(printf '%s' "$input" | jq -r '.session_id // empty' 2>/dev/null) || return 0
   seam_is_sid "$sid" || return 0
@@ -544,7 +649,20 @@ cmd_scan() {
       rid=${rid%.json}
       acc=$(seam_accept form "s-$safe" "$rid" "$sid" "$now" "$input")
       [ -n "$acc" ] || continue
-      fout=$(printf '%s' "$acc" | jq -c --arg rid "$rid" '{reply_id: $rid, picks}' 2>/dev/null) || fout=null
+      fout=$(printf '%s' "$acc" | jq -c --arg rid "$rid" '{reply_id: $rid, picks, kind, sender}' 2>/dev/null) || fout=null
+      break
+    done
+  fi
+  # The mode asks for a new instruction only while the session is idle.
+  tout=null
+  if [ "$(printf '%s' "$input" | jq -r '.turn == true' 2>/dev/null)" = true ]; then
+    for f in "$root/inbox/s-$safe"/*.json; do
+      [ -f "$f" ] || continue
+      rid=${f##*/}
+      rid=${rid%.json}
+      acc=$(seam_accept turn "s-$safe" "$rid" "$sid" "$now" "{}")
+      [ -n "$acc" ] || continue
+      tout=$(printf '%s' "$acc" | jq -c --arg rid "$rid" '{reply_id: $rid, text, sender, created_at_ms}' 2>/dev/null) || tout=null
       break
     done
   fi
@@ -568,7 +686,7 @@ cmd_scan() {
       wake="$wake$info$nl"
     done
   done
-  printf '%s' "$wake" | jq -cs --argjson form "$fout" '{form: $form, wake: .}' 2>/dev/null
+  printf '%s' "$wake" | jq -cs --argjson form "$fout" --argjson turn "$tout" '{form: $form, turn: $turn, wake: .}' 2>/dev/null
 }
 
 # seam_wake_candidate <run> <reply_id> <sid> <now> — print
@@ -593,7 +711,7 @@ seam_wake_candidate() {
         | .target.approval_id // empty' "$f" 2>/dev/null) || return 0
   printf '%s' "$aid" | grep -Eq '^[A-Za-z0-9_-]{1,55}-[0-9a-f]{8}$' || return 0
   ev=$(jq -r '.event_id // empty' "$f" 2>/dev/null) || return 0
-  [ -n "$(seam_event "$ev")" ] || return 0
+  [ -n "$(seam_event "$ev" option)" ] || return 0
   jq -cn --arg run "$run" --arg aid "$aid" --arg rid "$rid" '{run_id: $run, approval_id: $aid, reply_id: $rid}'
 }
 
@@ -625,7 +743,7 @@ cmd_form_unpick() {
 }
 
 cmd_form_record() {
-  local sid="${1:-}" rid="${2:-}" safe f marker msid now hash info cell ev transport sender slotinfo slot
+  local sid="${1:-}" rid="${2:-}" safe f marker msid now hash info cell ev transport sender kind slotinfo slot
   seam_is_sid "$sid" || return 0
   seam_is_rid "$rid" || return 0
   safe=$(seam_safe_sid "$sid")
@@ -642,20 +760,84 @@ cmd_form_record() {
                 and (.target.form_id | type) == "string"
                 and (.event_id | type) == "string"
                 and (.provenance.transport | type) == "string"
-                and (.provenance.sender | type) == "string")
-         | [.target.form_id, .event_id, .provenance.transport, .provenance.sender] | @tsv' "$f" 2>/dev/null) || return 0
+                and (.provenance.sender | type) == "string"
+                and (.kind == "option" or .kind == "text"))
+         | [.target.form_id, .event_id, .provenance.transport, .provenance.sender, .kind] | @tsv' "$f" 2>/dev/null) || return 0
   [ -n "$info" ] || return 0
-  IFS='	' read -r cell ev transport sender <<EOF
+  IFS='	' read -r cell ev transport sender kind <<EOF
 $info
 EOF
   # The submit has already run its prompt hooks, and the return hook marks a
   # submitted bundle handled, so the event is read without the handled filter:
   # for a form envelope the applied record, not the marker, decides the result.
-  slotinfo=$(seam_event_record "$ev")
+  # A form applied from a text envelope reads the event as a text event.
+  slotinfo=$(seam_event_record "$ev" "$kind")
   [ -n "$slotinfo" ] || return 0
   slot=${slotinfo%%	*}
   seam_record "$cell" "$sid" "$rid" "$ev" "$hash" "$transport" "$sender" "$now" || return 0
   cc_attention_handled "$slot" reply-applied
+}
+
+cmd_turn_pick() {
+  local rid="${1:-}" input sid safe now acc
+  input=$(cat)
+  sid=$(printf '%s' "$input" | jq -r '.session_id // empty' 2>/dev/null) || return 0
+  seam_is_sid "$sid" || return 0
+  safe=$(seam_safe_sid "$sid")
+  now=$(cc_attention__ms) || return 0
+  acc=$(seam_accept turn "s-$safe" "$rid" "$sid" "$now" "{}")
+  [ -n "$acc" ] || return 0
+  seam_pick "s-$safe" "$rid" "$sid" "$now" || return 0
+  printf '%s\n' "$rid"
+}
+
+# turn-record — the record comes before the submit, so the acceptance still
+# holds here: the marker is this session's, the event is not handled yet. The
+# submitted text must be the remote-input line, one empty line and the
+# envelope text, byte for byte; its bytes are the record's hash and the event
+# id is its target cell.
+cmd_turn_record() {
+  local sid="${1:-}" rid="${2:-}" safe marker msid now hash want acc cell ev slot transport sender
+  seam_is_sid "$sid" || return 0
+  seam_is_rid "$rid" || return 0
+  hash=$(seam_sha256) || return 0
+  safe=$(seam_safe_sid "$sid")
+  marker="$root/inbox/s-$safe/$rid.picked"
+  [ -f "$marker" ] || return 0
+  msid=$(jq -r '.session_id // empty' "$marker" 2>/dev/null) || return 0
+  [ "$msid" = "$sid" ] || return 0
+  now=$(cc_attention__ms) || return 0
+  acc=$(seam_accept turn "s-$safe" "$rid" "$sid" "$now" "{}")
+  [ -n "$acc" ] || return 0
+  want=$(printf '%s' "$acc" | jq -j '"[cc-cmds 원격 입력] 발신=" + .sender + "\n\n" + .text' 2>/dev/null | seam_sha256) || return 0
+  [ "$want" = "$hash" ] || return 0
+  cell=$(printf '%s' "$acc" | jq -r '.cell') || return 0
+  ev=$(printf '%s' "$acc" | jq -r '.event_id') || return 0
+  slot=$(printf '%s' "$acc" | jq -r '.slot') || return 0
+  transport=$(printf '%s' "$acc" | jq -r '.transport') || return 0
+  sender=$(printf '%s' "$acc" | jq -r '.sender') || return 0
+  seam_record "$cell" "$sid" "$rid" "$ev" "$hash" "$transport" "$sender" "$now" || return 0
+  cc_attention_handled "$slot" reply-applied
+  printf '%s\n' "$rid"
+}
+
+# mark-take — stdin the PostToolUse input of an AskUserQuestion call. When a
+# text envelope answered the call, print the hook output carrying the
+# remote-input line as additional context, then remove the mark file. No file,
+# or a sender id outside the sender character set, prints nothing.
+cmd_mark_take() {
+  local input tu mark sender
+  input=$(cat)
+  tu=$(printf '%s' "$input" | jq -r '.tool_use_id // empty' 2>/dev/null) || return 0
+  [ -n "$tu" ] || return 0
+  mark=$(seam_mark_path "$tu") || return 0
+  [ -f "$mark" ] || return 0
+  sender=""
+  IFS= read -r sender < "$mark" 2>/dev/null || true
+  rm -f "$mark"
+  printf '%s' "$sender" | grep -Eq '^[A-Za-z0-9_.@:-]{1,64}$' || return 0
+  jq -cn --arg s "$sender" \
+    '{hookSpecificOutput: {hookEventName: "PostToolUse", additionalContext: ("[cc-cmds 원격 입력] 발신=" + $s)}}'
 }
 
 cmd_wake_mark() {
@@ -725,6 +907,11 @@ cmd_cleanup() {
     [ -e "$root/applied/$line.json" ] && continue
     seam_envelope_gone "$line" && rm -f "$f"
   done
+  # A mark file the PostToolUse hook never took (the hook did not run, the
+  # session ended) is removed once it is more than 24 hours old.
+  if [ -d "$state/remote-reply/mark" ]; then
+    find "$state/remote-reply/mark" -maxdepth 1 -type f -mmin +1440 -exec rm -f {} + 2>/dev/null
+  fi
 }
 
 sub="${1:-}"
@@ -737,6 +924,10 @@ case "$sub" in
   form-pick) cmd_form_pick "$@" ;;
   form-unpick) cmd_form_unpick "$@" ;;
   form-record) cmd_form_record "$@" ;;
+  turn-pick) cmd_turn_pick "$@" ;;
+  turn-unpick) cmd_form_unpick "$@" ;;
+  turn-record) cmd_turn_record "$@" ;;
+  mark-take) cmd_mark_take "$@" ;;
   wake-mark) cmd_wake_mark "$@" ;;
   cleanup) cmd_cleanup "$@" ;;
 esac 2>/dev/null || true

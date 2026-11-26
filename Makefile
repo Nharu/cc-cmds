@@ -570,6 +570,7 @@ ORCH_TESTS := \
 	scripts/test-session-title-hook.sh \
 	scripts/test-session-status-snapshot.sh \
 	scripts/test-remote-reply.sh \
+	scripts/test-remote-free-text.sh \
 	scripts/test-notify-focus.sh \
 	scripts/test-attention.sh \
 	scripts/test-attention-funnel.sh \

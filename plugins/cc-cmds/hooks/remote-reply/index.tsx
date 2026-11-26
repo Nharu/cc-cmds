@@ -1,5 +1,6 @@
-// 원격 선택지 답 모드. 중계가 우편함에 놓은 선택지 답 봉투를 이 세션의 열린 질문이나
-// 질문지에 넣고, 런 주소 승인 봉투를 가져가 쉬는 라우터 좌석을 깨운다. 스풀을 읽고 쓰는
+// 원격 선택지·텍스트 답 모드. 중계가 우편함에 놓은 선택지 답·텍스트 답 봉투를 이 세션의 열린
+// 질문이나 질문지에 넣고, 쉬는 세션에는 차례 넘김 텍스트 봉투를 새 지시로 제출하며, 런 주소
+// 승인 봉투를 가져가 쉬는 라우터 좌석을 깨운다. 스풀을 읽고 쓰는
 // 일(수락 판정, 수령, 적용 기록, 처리 표지, 정리)은 모두 seam.sh 가 하고, 이 모드는 `$.fs`
 // 로 이름만 본 뒤 언제 무엇을 seam.sh 에 맡길지와 경합의 승자만 정한다.
 // 권한 대화창의 원격 허용·거부(결정 봉투)는 권한 요청 훅이 받는다. 그 스풀 읽기와 쓰기는
@@ -8,8 +9,8 @@
 import type { Hook, Register, Timer } from 'claude-code'
 
 import { anyMarked } from '../pipeline-marks'
-import { applyRemote, openFormTarget } from '../question-form/index'
-import type { FormTarget } from '../question-form/index'
+import { applyRemote, openFormTarget, remoteMarkLine } from '../question-form/index'
+import type { FormTarget, RemotePick } from '../question-form/index'
 
 type Dollar = Parameters<Hook<'session.start'>>[0]
 
@@ -30,8 +31,21 @@ const SEAM_TIMEOUT_MS = 20_000
 // 깨우기 리터럴의 정규식. seam.sh 가 낸 줄을 제출 전에 다시 확인한다.
 export const WAKE_RE = /^<cc-remote-approval run=[A-Za-z0-9-]{1,64} id=[A-Za-z0-9_-]{1,55}-[0-9a-f]{8}\/>$/
 
+// 원격 표지 줄의 발신자 꼴. 첫 줄이 표지 줄인 프롬프트는 원격 지시이고 사람 입력이 아니다.
+const SENDER_RE = /^[A-Za-z0-9_.@:-]{1,64}$/
+const MARK_PREFIX = '[cc-cmds 원격 입력] 발신='
+export const isRemoteMarked = (text: string) => {
+  const first = text.split('\n', 1)[0] ?? ''
+  return first.startsWith(MARK_PREFIX) && SENDER_RE.test(first.slice(MARK_PREFIX.length))
+}
+
 type Wake = { run_id: string; approval_id: string; reply_id: string }
-type ScanOut = { form: { reply_id: string; picks: { id: string; label: string }[] } | null; wake: Wake[] }
+type Turn = { reply_id: string; text: string; sender: string; created_at_ms: number }
+type ScanOut = {
+  form: { reply_id: string; picks: RemotePick[]; kind?: string; sender?: string } | null
+  turn?: Turn | null
+  wake: Wake[]
+}
 type Question = { question: string; header?: string; multiSelect?: boolean; options?: { label: string }[] }
 
 let isActive = false
@@ -184,7 +198,8 @@ async function tick($: Dollar) {
 
 const formArg = (t: FormTarget) => ({ form_id: t.form_id, session_id: t.session_id, questions: t.questions })
 
-// 살핌 틱 하나: 이름만 보고, 후보가 없으면 프로세스를 띄우지 않는다.
+// 살핌 틱 하나: 이름만 보고, 후보가 없으면 프로세스를 띄우지 않는다. 쉬고 있고 자기 세션
+// 우편함에 봉투가 있으면 열린 질문지가 없어도 차례 넘김 후보를 묻는다.
 async function look($: Dollar) {
   if (!(await isAwake($))) return
   ticks += 1
@@ -197,14 +212,15 @@ async function look($: Dollar) {
     for (const name of await envelopes($, `${spoolRoot()}/inbox/r-${run}`)) runNames.push(`${run}/${name}`)
   }
   const target = own.length > 0 ? await openFormTarget($) : null
-  if (target === null && runNames.length === 0) return
   const now = await $.clock.now()
   const idle = await isIdle($, now)
+  const askTurn = idle && own.length > 0
+  if (target === null && runNames.length === 0 && !askTurn) return
   const key = JSON.stringify([own, runNames, target?.form_id ?? null, idle])
   if (key === lastScanKey && now - lastScanCallAt < RESCAN_MS) return
   lastScanKey = key
   lastScanCallAt = now
-  const raw = await seam($, 'scan', [], JSON.stringify({ session_id: sid, form: target ? formArg(target) : null }))
+  const raw = await seam($, 'scan', [], JSON.stringify({ session_id: sid, form: target ? formArg(target) : null, turn: askTurn }))
   let out: ScanOut
   try {
     out = JSON.parse(raw) as ScanOut
@@ -212,6 +228,7 @@ async function look($: Dollar) {
     return
   }
   if (out.form && target && (await applyForm($, sid, target, out.form))) return
+  if (out.turn && askTurn && (await applyTurn($, sid, out.turn))) return
   const first = out.wake?.[0]
   if (first && (await isIdle($, await $.clock.now()))) await wake($, sid, first)
 }
@@ -224,13 +241,38 @@ async function applyForm($: Dollar, sid: string, target: FormTarget, form: NonNu
   const stdin = JSON.stringify({ session_id: sid, form: formArg(target) })
   const picked = (await seam($, 'form-pick', [form.reply_id], stdin)).trim()
   if (picked !== form.reply_id) return false
-  const delivered = await applyRemote($, target.form_id, form.picks)
+  const sender = form.kind === 'text' ? form.sender : undefined
+  if (form.kind === 'text' && (typeof sender !== 'string' || !SENDER_RE.test(sender))) {
+    await seam($, 'form-unpick', [form.reply_id], JSON.stringify({ session_id: sid }))
+    return false
+  }
+  const delivered = await applyRemote($, target.form_id, form.picks, sender)
   if (delivered.consumed && delivered.dropped === undefined) {
     await seam($, 'form-record', [sid, form.reply_id], delivered.text)
     return true
   }
   await seam($, 'form-unpick', [form.reply_id], JSON.stringify({ session_id: sid }))
   return delivered.consumed
+}
+
+// 차례 넘김 봉투 하나: 아직 쉬고 있고 마지막 사람 입력이 그 사건보다 앞일 때만 수령하고,
+// 적용 기록과 처리 표지를 먼저 남긴 뒤 사용자 차례로 제출한다. 수령이나 기록이 어긋나면
+// 방금 만든 수령 표지를 거두고 아무것도 제출하지 않는다.
+async function applyTurn($: Dollar, sid: string, turn: Turn): Promise<boolean> {
+  if (typeof turn.reply_id !== 'string' || typeof turn.text !== 'string' || typeof turn.sender !== 'string') return false
+  if (typeof turn.created_at_ms !== 'number' || !SENDER_RE.test(turn.sender)) return false
+  if (!(await isIdle($, await $.clock.now())) || lastHumanAt >= turn.created_at_ms) return false
+  const stdin = JSON.stringify({ session_id: sid })
+  const picked = (await seam($, 'turn-pick', [turn.reply_id], stdin)).trim()
+  if (picked !== turn.reply_id) return false
+  const text = `${remoteMarkLine(turn.sender)}\n\n${turn.text}`
+  const recorded = (await seam($, 'turn-record', [sid, turn.reply_id], text)).trim()
+  if (recorded !== turn.reply_id) {
+    await seam($, 'turn-unpick', [turn.reply_id], stdin)
+    return false
+  }
+  await $.prompt.submit({ text, asUser: true })
+  return true
 }
 
 async function wake($: Dollar, sid: string, one: Wake) {
@@ -484,15 +526,16 @@ export const register: Register = on => {
     return next(e)
   }).catch(($, e, next) => next(e))
 
-  // 플러그인 출처 제출(깨우기 자신, 질문지 묶음)은 사람 입력이 아니므로 듣지 않는다.
+  // 플러그인 출처 제출(깨우기 자신, 질문지 묶음, 원격 새 지시)은 사람 입력이 아니므로 듣지
+  // 않는다. 첫 줄이 원격 표지 줄인 제출도 원격 지시이므로 사람 입력으로 세지 않는다.
   on('prompt.submit', { origin: { kind: 'composer' } }, async ($, e, next) => {
-    await noteHuman($)
+    if (!isRemoteMarked(e.text)) await noteHuman($)
 
     return next(e)
   }).catch(($, e, next) => next(e))
 
   on('prompt.submit', { origin: { kind: 'bridge' } }, async ($, e, next) => {
-    await noteHuman($)
+    if (!isRemoteMarked(e.text)) await noteHuman($)
 
     return next(e)
   }).catch(($, e, next) => next(e))

@@ -438,13 +438,18 @@ is there, and its payload carries no field that tells the two apart.
    one of the texts the last `Stop` recorded, or a recorded text ends in the
    truncation mark (`… [+N chars]` or `... [+N chars]`) and the prompt starts
    with its head, a `/loop` repeat or a `ScheduleWakeup` wake-up is arriving.
-2. **A prompt that opens with an XML-shaped element is not a return.** Leading
+2. **A prompt whose first line is the remote-input line is not a return.** The
+   line is `[cc-cmds 원격 입력] 발신=<sender>` with the sender grammar the remote
+   reply seam accepts, and it is the whole first line (no leading space). The
+   remote reply mode submitted an instruction someone sent from elsewhere; nobody
+   came back to this session.
+3. **A prompt that opens with an XML-shaped element is not a return.** Leading
    whitespace is allowed; the pattern is tested with `[[ =~ ]]` on the whole
    prompt, so `^` binds to the very start and a tag on the second line does not
    count. A background agent's `<task-notification>` arrives in this form.
    `<pasted_content …>` is the exception and is a return, because it is the
    wrapper around text the person pasted.
-3. **Everything else is a return**, including a message typed while the model is
+4. **Everything else is a return**, including a message typed while the model is
    still working. No time window is used.
 
 The scheduled-task check comes before the envelope check, so a scheduled text
@@ -1179,8 +1184,9 @@ no process and no pane.
 
 ## The remote reply seam
 
-`remote-reply/` puts an option answer the relay left in the attention spool's
-mailbox into this session's open question or question form, and picks up a
+`remote-reply/` puts an option or text answer the relay left in the attention
+spool's mailbox into this session's open question or question form, submits a
+new instruction to an idle session whose last turn handed over, and picks up a
 run-address approval answer for the autopilot router seat. The formats
 (envelope, mailbox, pick-up marker, acceptance conditions, apply order, answer
 strings, wake literal, applied record) are fixed in
@@ -1189,9 +1195,10 @@ this section says which file moves them.
 
 | File | Role |
 | --- | --- |
-| `remote-reply/index.tsx` | The mode, registered by the run-status pane module right after the question form. Activation, the open-question race, the mailbox and watch clocks, the question-form apply, the idle check and the wake prompt |
-| `remote-reply/seam.sh` | Every read and write of the spool, as subcommands: `wait`, `commit`, `sat`, `scan`, `form-pick`, `form-unpick`, `form-record`, `wake-mark`, `cleanup` |
+| `remote-reply/index.tsx` | The mode, registered by the run-status pane module right after the question form. Activation, the open-question race, the mailbox and watch clocks, the question-form apply, the idle check, the new-instruction submit and the wake prompt |
+| `remote-reply/seam.sh` | Every read and write of the spool, as subcommands: `wait`, `commit`, `sat`, `scan`, `form-pick`, `form-unpick`, `form-record`, `turn-pick`, `turn-unpick`, `turn-record`, `mark-take`, `wake-mark`, `cleanup` |
 | `remote-reply/pretool.sh` | The `PreToolUse(AskUserQuestion)` entry, the third for that matcher, `"timeout": 5`; it runs `seam.sh sat` |
+| `remote-reply/posttool.sh` | The `PostToolUse(AskUserQuestion)` entry, after the return hook and the status snapshot, `"timeout": 5`; it runs `seam.sh mark-take` |
 
 **Only the shell writes.** The mode looks at names with `$.fs` (the spool root
 `$HOME/.local/state/cc-cmds/attention`, the forward index, the mailboxes) and
@@ -1247,6 +1254,36 @@ return hook may already have marked the event handled during that submit; the
 envelope is then refused at the next `form-pick`, and the event carries a
 `return` marker with no applied record and no answer delivered.
 
+**Text envelopes.** A `text` envelope answers the same targets with a sender
+registered for `text`, under the text rules of the envelope document; the
+acceptance reads the event with the envelope's own kind, so an event whose
+`accepts` lacks `text` (an approval, a router seat's turn) takes none. In an
+AskUserQuestion answer a single-select text is the answer string itself and a
+multi-select text follows the chosen labels after `, `. `commit` of a text
+envelope also writes
+`${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/remote-reply/mark/<sha256>`
+(keyed like a target cell, holding the sender id); when the call's tool use
+ends, `posttool.sh` runs `mark-take`, which prints the remote-input line
+`[cc-cmds 원격 입력] 발신=<sender>` as additional context and removes the file.
+A question form applied from a text envelope types each text into its question
+with the same transition a person's typing uses, and its submitted bundle ends
+with a line feed and the remote-input line; the applied record hashes those
+bytes.
+
+**New instructions.** On an idle tick with an envelope in this session's own
+mailbox, the mode asks `scan` with `turn: true`, and `scan` returns at most one
+`turn` envelope as `{reply_id, text, sender, created_at_ms}`. A turn envelope
+is accepted only when the session's forward index names no run with a run
+directory. The mode takes it only when the last person input is older than the
+event; it makes the pick-up marker with `turn-pick`, builds the submit text
+(the remote-input line, an empty line, the envelope text), passes those bytes
+to `turn-record`, which writes the applied record (the event id is its target
+cell) and the `reply-applied` marker, and then submits the text as the person
+(`asUser`). A failed record removes the marker with `turn-unpick` and submits
+nothing. A prompt whose first line is the remote-input line is not a person's
+input to the mode, and the return hook does not read it as the person coming
+back.
+
 **Handled markers.** Every acceptance reads the spool's handled markers by the
 shared reader rules. The marker files reach one `jq` through a pipe, one line
 per file, never as arguments, so their number is not bounded by the argument
@@ -1272,8 +1309,8 @@ no process when no mailbox holds a `.json`, and does not call `scan` again
 within 60 seconds when the names, the open form id and the idle state are the
 same as the last call's. `seam.sh cleanup` runs right after activation and
 every 80 ticks; it removes pick-up markers, applied records and target cell
-files whose envelope is gone, and never an envelope, an event or a handled
-marker.
+files whose envelope is gone, as well as mark files more than 24 hours old; it
+never removes an envelope, an event or a handled marker.
 
 **Target cells.** `${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/remote-reply/target/<sha256>`
 holds the reply id that owns one cell (the call's `tool_use_id` or the form id),

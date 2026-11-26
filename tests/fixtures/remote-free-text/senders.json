@@ -1,0 +1,7 @@
+{
+  "schema": 1,
+  "senders": [
+    {"id": "app:dk-7f3a91", "capabilities": ["option", "text"]},
+    {"id": "tg:123456789", "capabilities": ["option"]}
+  ]
+}

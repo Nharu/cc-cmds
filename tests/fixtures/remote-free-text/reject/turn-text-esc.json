@@ -1,0 +1,20 @@
+{
+  "schema": 1,
+  "reply_id": "host-a1.1793600005000.e5f6a7b8",
+  "event_id": "host-a1.1793599995000.e5e5e5e5",
+  "host": "host-a1",
+  "kind": "text",
+  "target": {
+    "surface": "turn",
+    "session_id": "5f0c2d4e-1111-4a2b-9c3d-000000000001"
+  },
+  "answers": [],
+  "text": "시험을 다시 돌려 주세요\u001b[2J",
+  "provenance": {
+    "transport": "app",
+    "sender": "app:dk-7f3a91",
+    "received_at_ms": 1793600005000,
+    "transport_ref": "push 7f3a91/0105"
+  },
+  "expires_at_ms": 1793600605000
+}
