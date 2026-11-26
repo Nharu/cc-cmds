@@ -16760,7 +16760,7 @@ rm -f "$k15_led"
 
 # ---------------------------------------------------------------------------
 # 15v. The run-scope visual step: exempt from the segment row, judged by its sidecar
-# --- section: 15v | group: base | covers: act, plan, snapshot, check_manifest, supervise | anchors: 15v: 시각 발행을 뺀 모든 설정 변종이 Claude Design 네 도구를 거부하고 시각 발행 변종은 DesignSync 만 거부한다, 15v: 감사가 끝나기 전의 시각 파견은 거부된다, 15v: 시각 단계가 없는 계획에서는 시각 면제가 서지 않는다, 15v: 감사 뒤 --segment - 시각 파견의 plan 이 통과한다, 15v: - implement 는 여전히 거부된다, 15v: 시각 단계의 stage-result 행이 세그먼트=- · 스테이지=S2V · 종류=visual 이다, 15v: 아무것도 남기지 않은 시각 단계는 공허한 성공이다, 15v: 시각 단계의 계속은 사이드카와 시각 종결 문구를 이름 대는 계속 메시지를 싣는다, 15v: 종결 문구만 있고 검토 통과 사이드카가 없는 시각 단계는 공허한 성공이다, 15v: 종결 문구와 검토 통과 사이드카가 함께인 시각 단계는 정상 완료다, 15v: 시각 단계가 둘인 계획은 매니페스트 검사가 거부한다, 15v: 감사 단계를 기다리지 않는 시각 단계는 매니페스트 검사가 거부한다, 15v: 시각 단계에 기대지 않는 구현 단계는 매니페스트 검사가 거부한다, 15v: 감사 없는 계획의 시각 단계는 설계 단계에 기대면 받힌다 ---
+# --- section: 15v | group: base | covers: act, plan, snapshot, check_manifest, supervise | anchors: 15v: 시각 발행을 뺀 모든 설정 변종이 Claude Design 네 도구를 거부하고 시각 발행 변종은 DesignSync 만 거부한다, 15v: 감사가 끝나기 전의 시각 파견은 거부된다, 15v: 시각 단계가 없는 계획에서는 시각 면제가 서지 않는다, 15v: 감사 뒤 --segment - 시각 파견의 plan 이 통과한다, 15v: - implement 는 여전히 거부된다, 15v: 시각 단계의 stage-result 행이 세그먼트=- · 스테이지=S2V · 종류=visual 이다, 15v: 아무것도 남기지 않은 시각 단계는 공허한 성공이다, 15v: 시각 단계의 계속은 사이드카와 시각 종결 문구를 이름 대는 계속 메시지를 싣는다, 15v: 종결 문구만 있고 검토 통과 사이드카가 없는 시각 단계는 공허한 성공이다, 15v: 종결 문구와 검토 통과 사이드카가 함께인 시각 단계는 정상 완료다, 15v: 시각 단계가 둘인 계획은 매니페스트 검사가 거부한다, 15v: 감사 단계를 기다리지 않는 시각 단계는 매니페스트 검사가 거부한다, 15v: 시각 단계에 기대지 않는 구현 단계는 매니페스트 검사가 거부한다, 15v: 감사 없는 계획의 시각 단계는 설계 단계에 기대면 받힌다, 15v: 설계 생략 모양의 시각 단계는 선행 없이 받힌다, 15v: 설계 생략 모양에서 시각 단계에 기대지 않는 구현 단계는 거부된다 ---
 #
 # The visual step is the fourth row of the run-scope table. It generates the
 # night's screens from the audited document and builds no segment, so it is
@@ -16932,6 +16932,15 @@ case "$(snap15v_err '{ "design_required": true, "steps": [ { "id": "D1", "skill"
 esac
 check "15v: 감사 없는 계획의 시각 단계는 설계 단계에 기대면 받힌다" \
   "$(snap15v_err '{ "design_required": true, "steps": [ { "id": "D1", "skill": "design", "summary": "설계", "depends_on": [] }, { "id": "S2V", "skill": "visual", "summary": "시각", "depends_on": ["D1"] }, { "id": "S2", "skill": "implement", "summary": "구현", "depends_on": ["S2V"] } ] }' | grep -c '시각 단계' || true)" "0"
+# The design-skip rewrite's shape: no design and no audit, S2V with no predecessor.
+plan15v_skip='{ "design_required": false, "steps": [ { "id": "S2V", "skill": "visual", "summary": "시각", "depends_on": [] }, { "id": "S2P", "skill": "visual-publish", "summary": "시각 발행", "depends_on": ["S2V"] }, { "id": "S2", "skill": "implement", "summary": "구현", "depends_on": ["S2V"] }, { "id": "V3", "skill": "review", "summary": "리뷰", "depends_on": ["S2"] } ] }'
+err15v_skip="$(snap15v_err "$plan15v_skip")"
+check "15v: 설계 생략 모양의 시각 단계는 선행 없이 받힌다" \
+  "$(printf '%s\n' "$err15v_skip" | grep -c '시각 단계' || true)/$(printf '%s\n' "$err15v_skip" | grep -c '시각 발행 단계' || true)" "0/0"
+case "$(snap15v_err "$(printf '%s' "$plan15v_skip" | jq -c '(.steps[] | select(.id == "S2") | .depends_on) = []')")" in
+  *"구현 단계 S2 이 시각 단계 S2V 에 기대지 않습니다"*) ok "15v: 설계 생략 모양에서 시각 단계에 기대지 않는 구현 단계는 거부된다" ;;
+  *) bad "15v: 설계 생략 모양에서 시각 단계에 기대지 않는 구현 단계는 거부된다" "-" ;;
+esac
 rm -f "$WORK/plan15v-shape.md"
 
 # ---------------------------------------------------------------------------
@@ -68721,7 +68730,7 @@ graded_as '읽기' '89p: fence-check 는 읽기다' -- "$CC_ORCH/base-split.py" 
 
 # ---------------------------------------------------------------------------
 # 89q. 티켓 배달의 스킬 문면
-# --- section: 89q | group: tier | covers: 킥오프 문면, design_delivery, ticket-delivery | anchors: 89q: 킥오프가 판정의 배달 방식을 대조하고 묻는다, 89q: 킥오프가 하위 런의 설계 생략과 착수 행을 싣는다, 89q: 경계 문면이 티켓 배달 런의 종료 절과 5r 을 싣는다, 89q: 자가 점검이 티켓 배달 꼴과 출처 티켓 꼴을 싣는다, 89q: 재킥오프가 새 런 id 로 착수 행을 쓴다, 89q: 아침 보고가 두 절을 싣는다, 89q: 설계 두 갈래가 티켓 배달 절을 공유한다, 89q: 분할과 리뷰가 티켓 배달을 읽는다, 89q: 공유 계약의 닫힘 경로가 구현 중단을 든다, 89q: 두 감사가 Step 6 에서 조정 패스를 읽는다, 89q: 조정 패스가 티켓 배정 규율을 싣는다 ---
+# --- section: 89q | group: tier | covers: 킥오프 문면, design_delivery, ticket-delivery | anchors: 89q: 킥오프가 판정의 배달 방식을 대조하고 묻는다, 89q: 킥오프가 하위 런의 설계 생략과 착수 행을 싣는다, 89q: 경계 문면이 티켓 배달 런의 종료 절과 5r 을 싣는다, 89q: 자가 점검이 티켓 배달 꼴과 출처 티켓 꼴을 싣는다, 89q: 재킥오프가 새 런 id 로 착수 행을 쓴다, 89q: 아침 보고가 두 절을 싣는다, 89q: 설계 두 갈래가 티켓 배달 절을 공유한다, 89q: 분할과 리뷰가 티켓 배달을 읽는다, 89q: 공유 계약의 닫힘 경로가 구현 중단을 든다, 89q: 두 감사가 Step 6 에서 조정 패스를 읽는다, 89q: 조정 패스가 티켓 배정 규율을 싣는다, 89q: 설계 생략 재작성이 시각 단계를 남긴다, 89q: Step 3 이 화면 작업의 시각 단계를 묻는다, 89q: 진입 판단이 설계 없는 그래프의 시각 단계 모양을 안내한다, 89q: 새 추천 꼬리가 스킬 기본값 꼴을 쓴다 ---
 #
 # 게이트와 스크립트는 다른 절이 재므로 여기서는 문면만 대조한다. 옛 문면이 남으면 같은
 # 일을 두 가지로 적은 것이 되므로 없음도 함께 단언한다.
@@ -68768,6 +68777,15 @@ check "89q: 두 감사가 Step 6 에서 조정 패스를 읽는다" \
   "$(tkx_has "$tkq_au" '**Read `${CLAUDE_SKILL_DIR}/references/03-adjustment-pass.md`.**')/$(tkx_has "$tkq_uu" '**Read `${CLAUDE_SKILL_DIR}/../design-audit/references/03-adjustment-pass.md`.**')" "있음/있음"
 check "89q: 조정 패스가 티켓 배정 규율을 싣는다" \
   "$(tkx_has "$tkq_ad" '## Ticket-delivery assignment (T3 and T4)')/$(tkx_has "$tkq_ad" '**A new open entry goes to exactly one ticket.**')/$(tkx_has "$tkq_ad" '**`닿는 슬라이스` stays the scope.**')/$(tkx_has "$tkq_ad" '**A new residual item goes to exactly one ticket.**')/$(tkx_has "$tkq_ad" '**An existing assignment does not move.**')/$(tkx_has "$tkq_ad" 'carries its ticket-list edit by `## Ticket-delivery assignment (T3 and T4)`')" "있음/있음/있음/있음/있음/있음"
+tkq_ep="$repo_root/plugins/cc-cmds/orchestrator/prompts/entry-plan.md"
+check "89q: 설계 생략 재작성이 시각 단계를 남긴다" \
+  "$(tkx_has "$tkq_ap" 'the graph `implement` → `review`, the tier keys')/$(tkx_has "$tkq_ap" 'A judged `S2V` step stays, with `depends_on` `[]`')/$(tkx_has "$tkq_ap" '「설계만 빠지고 시각 단계는 남습니다 — 시각 스테이지가 화면을 만들고, 화면을 구현하는 슬라이스는 그 화면의 승인을 기다립니다.」')/$(tkx_has "$tkq_ap" '`**대상 화면**` takes a list only and never offers `설계에 위임`')" "없음/있음/있음/있음"
+check "89q: Step 3 이 화면 작업의 시각 단계를 묻는다" \
+  "$(tkx_has "$tkq_ap" '**Visual step for screen work.**')/$(tkx_has "$tkq_ap" '(header chip `시각 단계`)')/$(tkx_has "$tkq_ap" '- label `시각 단계 추가`')/$(tkx_has "$tkq_ap" '- label `없이 진행`')" "있음/있음/있음/있음"
+check "89q: 진입 판단이 설계 없는 그래프의 시각 단계 모양을 안내한다" \
+  "$(tkx_has "$tkq_ep" 'a graph with neither — an implement run with no design — gives it no predecessor (`depends_on: []`).')/$(tkx_has "$tkq_ep" 'or on the `design` step when the graph has no audit.')" "있음/없음"
+check "89q: 새 추천 꼬리가 스킬 기본값 꼴을 쓴다" \
+  "$(tkx_has "$tkq_ap" 'that the document'"'"'s `**화면**` field names a screen id on a slice `추천 출처: 기본값`.')/$(tkx_has "$tkq_ap" 'that the list was picked from the upper ticket block'"'"'s wording `추천 출처: 기본값`')/$(tkx_has "$tkq_ap" '추천 출처: 문서 화면 필드')/$(tkx_has "$tkq_ap" '추천 출처: 상위 티켓 블록')" "있음/있음/없음/없음"
 
 # ---------------------------------------------------------------------------
 # 89r. 아침 보고의 상위 착지 판정
