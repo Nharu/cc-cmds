@@ -1731,18 +1731,65 @@ EOF
   # banner once more. The approval marker keeps its ids instead because a
   # reopened approval is meant to stay quiet; a returned answer is a question
   # the person has to see again.
-  while IFS=$'\t' read -r sh_name sh_site sh_anchor sh_path; do
-    [ -n "$sh_name" ] || continue
-    grep -qxF "$sh_name" "$RUN_DIR/watch.announced-shift-halts" 2>/dev/null && continue
-    printf '%s\n' "$sh_name" >> "$RUN_DIR/watch.announced-shift-halts"
-    sh_q=$(cc_shift_halt_question "$sh_path")
-    [ -n "$sh_q" ] || sh_q='(질문 문면 없음)'
-    CC_NOTIFY_ATTENTION_DETAIL= cc_notify_fire answer "교대 정지 ${sh_name} · ${sh_site} — 「${sh_q}」" "shift-halt-${sh_name}" || true
-    announce "교대 정지 기록 ${sh_name}(${sh_site})이 사람의 답을 기다립니다 — 「${sh_q}」" \
-             "세션으로 돌아가 이 기록에 답하면 런이 이어집니다"
-  done <<EOF
+  #
+  # RAISED ONLY ONCE NOTHING HOLDS THE SEAT. While a shift is alive
+  # (`cc_shift_is_live`) or a relay is effective (`relay_eff`), the seat has no
+  # turn in which to ask a shift halt record — it asks them when the shift
+  # returns, and a relay keeps its `router-shift` call waiting in the shell. A
+  # banner raised then sends the person to a session with nothing to answer. So
+  # `sh_defer` is 1 while either holds, and the raising loop below is skipped
+  # whole: no name is added to the marker and no line is announced, so the first
+  # pass after the hold lifts raises one banner for each record still waiting,
+  # and a record answered meanwhile never rings. The take-down loop runs every
+  # pass as before.
+  #
+  # THE HOLD HAS A CEILING, `STALL`. A shift that stays alive without moving
+  # would otherwise keep every banner down: when the records hold every segment
+  # in flight, `shall` is 1 and the general stall arm keeps quiet too. So a
+  # waiting record whose file is `STALL` old or older ends the hold, and while
+  # the hold stands each record offers its own `mtime + STALL` as this pass's
+  # expiry, so a delegated pass runs again at that moment. When no approval and
+  # no record waits, nothing is computed and `sh_defer` stays 0.
+  sh_defer=0
+  if [ $((pend + shw)) -gt 0 ]; then
+    sh_hold=0
+    if cc_shift_is_live "$RUN_DIR" || [ "$relay_eff" = "1" ]; then sh_hold=1; fi
+    if [ "$sh_hold" = "1" ]; then
+      sh_now=${pass_t0:-}
+      case "$sh_now" in ''|*[!0-9]*) watch_now_into sh_now ;; esac
+      sh_over=0
+      sh_mts=""
+      while IFS=$'\t' read -r sh_name sh_site sh_anchor sh_path; do
+        [ -n "$sh_name" ] || continue
+        sh_mt=$(file_mtime "$sh_path")
+        case "$sh_mt" in ''|*[!0-9]*) continue ;; esac
+        if [ "$sh_mt" -le $((sh_now - STALL)) ]; then sh_over=1; fi
+        sh_mts="$sh_mts $sh_mt"
+      done <<EOF
 $shw_rows
 EOF
+      if [ "$sh_over" = "0" ]; then
+        sh_defer=1
+        for sh_mt in $sh_mts; do
+          watch_expiry_offer $((sh_mt + STALL))
+        done
+      fi
+    fi
+  fi
+  if [ "$sh_defer" = "0" ]; then
+    while IFS=$'\t' read -r sh_name sh_site sh_anchor sh_path; do
+      [ -n "$sh_name" ] || continue
+      grep -qxF "$sh_name" "$RUN_DIR/watch.announced-shift-halts" 2>/dev/null && continue
+      printf '%s\n' "$sh_name" >> "$RUN_DIR/watch.announced-shift-halts"
+      sh_q=$(cc_shift_halt_question "$sh_path")
+      [ -n "$sh_q" ] || sh_q='(질문 문면 없음)'
+      CC_NOTIFY_ATTENTION_DETAIL= cc_notify_fire answer "교대 정지 ${sh_name} · ${sh_site} — 「${sh_q}」" "shift-halt-${sh_name}" || true
+      announce "교대 정지 기록 ${sh_name}(${sh_site})이 사람의 답을 기다립니다 — 「${sh_q}」" \
+               "세션으로 돌아가 이 기록에 답하면 런이 이어집니다"
+    done <<EOF
+$shw_rows
+EOF
+  fi
   if [ -s "$RUN_DIR/watch.announced-shift-halts" ]; then
     sh_new=""; sh_drop=0
     while IFS= read -r sh_name; do
@@ -1765,28 +1812,30 @@ EOF
     fi
   fi
 
-  # THE AGGREGATE COUNTS SHIFT HALT RECORDS BESIDE APPROVALS. `swait` is the
-  # whole run waiting on a person: nothing runs and every segment in flight is
-  # held by a waiting record. The marker stays a once-per-run presence mark for
-  # approvals; a record name it does not list raises the banner again and is
-  # appended to it, so a new evidence request after an approval wait is still
-  # heard. With no waiting record the condition, the text and the marker are
-  # what they were.
-  sh_new=0
-  if [ "$shw" -gt 0 ] && [ -f "$RUN_DIR/watch.announced-waiting" ]; then
-    while IFS=$'\t' read -r sh_name sh_site sh_anchor sh_path; do
-      [ -n "$sh_name" ] || continue
-      grep -qxF "$sh_name" "$RUN_DIR/watch.announced-waiting" 2>/dev/null || sh_new=1
-    done <<EOF
-$shw_rows
-EOF
+  # THE AGGREGATE RINGS ONCE PER WAITING SPELL. The spell is the run as a whole
+  # waiting on a person: `swait` is 1 (nothing runs and every segment in flight
+  # is held by a waiting record), some approval or shift halt record waits, and
+  # the hold above is off — while a shift or an effective relay is alive the
+  # router is moving, so "the run waits on a person" is not true yet.
+  #
+  # `watch.announced-waiting` marks "inside a spell whose aggregate has gone
+  # up"; its content is never read, so a marker an older copy of this file left
+  # holding record names reads as the same presence mark. Entering a spell
+  # raises the banner once with the count at that moment; a record or an
+  # approval added inside the spell rings through its own banner, not this one.
+  # Leaving the spell — an answer that starts a shift again, a stage that comes
+  # alive, the last wait answered — takes the banner down and removes the
+  # marker, so the next spell rings again. `swait` itself is unchanged: the
+  # stall arms read it as before.
+  if [ "$swait" = "1" ] && [ $((pend + shw)) -gt 0 ] && [ "$sh_defer" = "0" ]; then
+    sh_spell=1
+  else
+    sh_spell=0
   fi
-  if [ "$swait" = "1" ] && [ $((pend + shw)) -gt 0 ] \
-     && { [ ! -f "$RUN_DIR/watch.announced-waiting" ] || [ "$sh_new" = "1" ]; }; then
-    [ -f "$RUN_DIR/watch.announced-waiting" ] || : > "$RUN_DIR/watch.announced-waiting"
-    if [ "$shw" -gt 0 ]; then
-      printf '%s\n' "$shw_rows" | awk -F '\t' 'NF { print $1 }' >> "$RUN_DIR/watch.announced-waiting"
-    fi
+  if [ "$sh_spell" = "0" ]; then
+    watch_answer_run_clear
+  elif [ ! -f "$RUN_DIR/watch.announced-waiting" ]; then
+    : > "$RUN_DIR/watch.announced-waiting"
     if [ "$shw" = "0" ]; then
       announce "모든 세그먼트가 승인 대기이거나 종단입니다 (대기 승인 ${pend}건)" \
                "런은 막힌 것이 아니라 사람이 손대기 전까지 끝난 것입니다"
@@ -2047,6 +2096,20 @@ EOF
   return 0
 }
 
+watch_answer_run_clear() {
+  # Takes the whole-run "waiting on a person" banner down when its marker says
+  # one went up: clears the run's `answer-run` group from the notification
+  # centre and removes `watch.announced-waiting`. The clear is best effort and
+  # the marker goes either way, so the next waiting spell rings again. The
+  # banner holds no stacking slot, so there is nothing to release. Called by the
+  # full pass when a waiting spell ends and by both `done` tails before the
+  # ended banner, after which no pass is left to read the spell's end.
+  [ -f "$RUN_DIR/watch.announced-waiting" ] || return 0
+  cc_notify_clear answer-run || true
+  rm -f "$RUN_DIR/watch.announced-waiting"
+  return 0
+}
+
 watch_next_write() {
   # watch_next_write <first line> — publishes `watch.next` for the observer
   # daemon: the first line is the epoch of the next pass this run needs without
@@ -2202,6 +2265,7 @@ if [ "$WATCH_DELEGATED" = "1" ]; then
     if cc_run_end_settled "$RUN_DIR" \
        || { [ -n "$done_mt" ] && [ $(( watch_now - done_mt )) -ge "$STALL" ]; }; then
       announce "런이 종단했습니다 — 감시를 멈춥니다" "$(cat "$RUN_DIR/done" 2>/dev/null || printf '종단 표시 있음')"
+      watch_answer_run_clear
       cc_notify_ended_once "$(cc_notify_ended_text "$RUN_DIR")" || true
       if [ "$(cc_unresolved_blocked "$LEDGER" | grep -c . || true)" != "0" ] \
          && [ ! -f "$RUN_DIR/watch.announced-loop-exit" ]; then
@@ -2281,7 +2345,9 @@ while :; do
       # A BACKSTOP, NOT THE OWNER. The gate's sites take the claim first in the
       # ordinary case and this raises nothing then; it speaks when no gate site
       # reached the run — a stage's boundary, or a shift still alive at `STALL`.
-      # The sentence comes from `done` as the gate's does.
+      # The sentence comes from `done` as the gate's does. The whole-run waiting
+      # banner comes down first: a run that ended no longer waits on a person.
+      watch_answer_run_clear
       cc_notify_ended_once "$(cc_notify_ended_text "$RUN_DIR")" || true
       # NARROWED TO THE CASE THE PASS-SIDE ARM CANNOT REACH, which is what earns
       # this arm its place rather than duplicating one that already exists.
