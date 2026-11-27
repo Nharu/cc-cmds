@@ -1096,13 +1096,13 @@ tl_result() {
   jq -cn --arg ts "$(ts "$1")" --arg t "$2" '{type: "user", timestamp: $ts, message: {role: "user", content: [{type: "tool_result", tool_use_id: "t", content: $t}]}}'
 }
 tl_turn() {
-  # tl_turn <ts-offset> <message id> <input> <creation> <read> <output> [도구 이름] [Bash 명령]
+  # tl_turn <ts-offset> <message id> <input> <creation> <read> <output> [도구 이름] [Bash 명령 또는 file_path]
   jq -cn --arg ts "$(ts "$1")" --arg id "$2" --argjson i "$3" --argjson c "$4" --argjson r "$5" --argjson o "$6" \
     --arg tool "${7:-}" --arg cmd "${8:-}" '
     {type: "assistant", timestamp: $ts,
      message: {id: $id, usage: {input_tokens: $i, cache_creation_input_tokens: $c, cache_read_input_tokens: $r, output_tokens: $o},
                content: (if $tool == "" then [{type: "text", text: "x"}]
-                         else [{type: "tool_use", id: "u", name: $tool, input: (if $tool == "Bash" then {command: $cmd} else {file_path: "/x"} end)}] end)}}'
+                         else [{type: "tool_use", id: "u", name: $tool, input: (if $tool == "Bash" then {command: $cmd} else {file_path: (if $cmd == "" then "/x" else $cmd end)} end)}] end)}}'
 }
 sentinel() { printf '**Role**: %s. 마지막 줄은 `<!-- cc-witness: %s %s complete %s:ab12 -->` 이다.' "$1" "$1" "$2" "$2"; }
 m16_session() {
@@ -1207,6 +1207,38 @@ check "16: (종류, 설계 스킬) 셈은 구간을 낸 파일·아닌 파일 �
 check "16: 종류별 파일 셈에도 게시 파일 수가 붙는다" "$(jline '.files.design | [.member_published, .non_member_published] | join(",")')" "1,1"
 check "16: 기준선의 members 는 요약과 같은 층이다" "$(jline '.members["design|재개|round-2+"].requests')" "1"
 check "16: 기준선은 첫 회차 품질을 모은다" "$(jline '.quality | [.segments, .p0.median, .p1_unknown] | join(",")')" "2,0.5,1"
+# 초안·게시 도우미 처방 — 증인 초안의 Write 가 첫 증인 쓰기이고, 게시 도우미 호출이 게시다.
+# 체크포인트(`partial/`)·역할 요약(`prompt/`) 아래의 Write 와 `.md` 로 끝나는 이름은 초안이
+# 아니다.
+reset_all
+R16W=20261002-eeeeee04
+mk_rundir "$R16W"; mk_stream "$STATE/run/$R16W/log/S1#1.json" 1
+mk_ledger "$R16W" "$(sr_row S1 S1 design 1 sid-m16w '정상 완료' '300000(argv)' '~/.claude')"
+WD=/s/cc-team-witness-x.AbC123
+tl_user 0 "$(sentinel lead round-1)" | mk_transcript "$HOME_A" -repo sid-m16w
+{
+  tl_user 0 "$(sentinel arch round-1)"
+  tl_turn 1 e1 100 1000 0 10 Read
+  tl_turn 2 e2 100 0 1000 10 Bash 'gate.sh exec --surface 읽기 -- grep -n x f'
+  tl_turn 3 e3 100 0 1000 10 Write "$WD/.arch.round-1.0123456789abcdef"
+  tl_turn 4 e4 100 0 1000 10 Read
+  tl_turn 5 e5 100 0 1000 10 Bash "/p/orchestrator/cc-team-witness-publish.sh $WD/.arch.round-1.0123456789abcdef $WD/arch.round-1.md"
+} | mk_transcript "$HOME_A" -repo sid-m16w e.jsonl
+{
+  tl_user 0 "$(sentinel crit round-1)"
+  tl_turn 1 f1 100 1000 0 10 Read
+  tl_turn 2 f2 100 0 1000 10 Write "$WD/partial/crit.round-1.seq-1.0123456789abcdef.md"
+  tl_turn 3 f3 100 0 1000 10 Read
+  tl_turn 4 f4 100 0 1000 10 Write "$WD/prompt/.crit.round-1.0123456789abcdef"
+  tl_turn 5 f5 100 0 1000 10 Read
+  tl_turn 6 f6 100 0 1000 10 Write "$WD/.crit.round-1.0123456789abcdef.md"
+  tl_turn 7 f7 100 0 1000 10 Read
+} | mk_transcript "$HOME_A" -repo sid-m16w f.jsonl
+collect
+check "16: 초안 처방 런도 exit 0 이다" "$rc" "0"
+check "16: 재탐색 턴은 증인 초안의 첫 Write 앞에서 멈춘다" "$(jmem "$R16W" "$(mfile e.jsonl) | .spans[0].reexplore")" "2"
+check "16: partial/·prompt/ 아래와 .md 로 끝나는 Write 는 첫 증인 쓰기가 아니다" "$(jmem "$R16W" "$(mfile f.jsonl) | .spans[0].reexplore")" "4"
+check "16: 게시 도우미 호출이 게시다(초안 Write 만으로는 게시가 아니다)" "$(jmem "$R16W" '[.stages[0].files[] | .file + "=" + (.published | tostring)] | sort | join(",")')" "e.jsonl=true,f.jsonl=false"
 
 # --- 17. 합성 구간 표지 — 런별 `synthesis` 와 요약의 `synthesis` ------------------------------
 # 표지 스테이지 id 의 `#` 앞은 설계 스테이지 행의 `스테이지` 칸(세그먼트 칸은 `-`)에, 뒤는

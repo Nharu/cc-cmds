@@ -45,8 +45,9 @@
 #                             (`사라짐`)과 전사가 하나도 남지 않은 런(`전사 삭제`)은 빼고,
 #                             포함 런 수와 사유별 제외 런 수를 함께 낸다. 서브에이전트 파일
 #                             셈은 (종류, 설계 스킬)마다 구간을 낸 파일과 내지 않은 파일로
-#                             나누고, 각각에서 증인을 게시한 파일(`mv -n` 을 담은 `Bash`
-#                             요청이 있는 파일) 수를 함께 낸다(`kind_skill_files`).
+#                             나누고, 각각에서 증인을 게시한 파일(`mv -n` 이나
+#                             `cc-team-witness-publish.sh` 를 담은 `Bash` 요청이 있는 파일)
+#                             수를 함께 낸다(`kind_skill_files`).
 #   --budget <초>             한 회차의 벽시계 예산(기본 20, 환경변수
 #                             `CC_METRICS_ROUND_BUDGET_S`). 상한이나 예산에 걸린 런은 수집하지
 #                             않고 미수집으로 센다 — 그 회차는 차단되어 판정을 내지 않고, 기록이
@@ -903,14 +904,17 @@ ROWS
 
 # 서브에이전트 전사 파일 하나를 구간으로 나누는 jq 프로그램(입력은 `-Rn` 의 줄들). 구간은
 # 센티널 줄을 가진 사용자 메시지에서만 열린다. 첫 구간 앞의 요청은 어느 구간에도 들지 않고
-# `unspanned_requests` 로만 센다. 재탐색 턴은 구간 안에서 첫 증인 임시 파일 생성(`mktemp`)
-# 이나 게시(`mv -n`) 앞에 놓인 읽기 부류 도구 요청 수다 — `Read`·`Grep`·`Glob`·`LS`, 게이트의
-# `--surface 읽기` 호출, 그리고 읽기 명령으로 시작하는 `Bash`. 300초 이상 공백 뒤 캐시 다시
-# 쓰기는 같은 키 재개 구간(앞 구간과 기저 토큰이 같은 구간)에서만 세고, 그 밖의 구간은 null
-# 이다 — 새 디스패치의 첫 요청은 `first_creation` 으로 따로 잰다. `published` 는 파일 단위
-# 값으로, 첫 구간 앞을 포함해 파일 어디서든 `mv -n` 을 담은 `Bash` 요청이 있으면 참이다 —
-# 구간 판독과 독립인 증인 게시 여부라 기준선의 팀원 파일 분모로 쓴다(`mktemp` 만으로는
-# 게시가 아니다).
+# `unspanned_requests` 로만 센다. 재탐색 턴은 구간 안에서 첫 증인 쓰기 앞에 놓인 읽기 부류
+# 도구 요청 수다 — `Read`·`Grep`·`Glob`·`LS`, 게이트의 `--surface 읽기` 호출, 그리고 읽기
+# 명령으로 시작하는 `Bash`. 첫 증인 쓰기는 증인 초안의 첫 `Write`(마지막 이름이 앞의 점과
+# `.{역할}.{라운드}.<16자 16진수>` 꼴이고 `partial/`·`prompt/` 아래가 아닌 파일), 또는 예전
+# 처방의 임시 파일 생성(`mktemp`)·게시(`mv -n`)나 게시 도우미(`cc-team-witness-publish.sh`)를
+# 담은 `Bash` 요청이다. 300초 이상 공백 뒤 캐시 다시 쓰기는 같은 키 재개 구간(앞 구간과 기저
+# 토큰이 같은 구간)에서만 세고, 그 밖의 구간은 null 이다 — 새 디스패치의 첫 요청은
+# `first_creation` 으로 따로 잰다. `published` 는 파일 단위 값으로, 첫 구간 앞을 포함해 파일
+# 어디서든 `mv -n` 이나 `cc-team-witness-publish.sh` 를 담은 `Bash` 요청이 있으면 참이다 —
+# 구간 판독과 독립인 증인 게시 여부라 기준선의 팀원 파일 분모로 쓴다(`mktemp` 나 초안
+# `Write` 만으로는 게시가 아니다).
 CM_JQ_MEMBER='
 def ep: if . == null then null else (sub("\\.[0-9]+Z$"; "Z") | try fromdateiso8601 catch null) end;
 def base: sub("-rev[0-9]+$"; "");
@@ -922,8 +926,12 @@ def readish: (.name // "") as $n
   | if ($n == "Read" or $n == "Grep" or $n == "Glob" or $n == "LS") then true
     elif $n == "Bash" then ((.input.command? // "") | if type == "string" then (test("--surface[ =]읽기") or test("^\\s*(cat|head|tail|grep|rg|ls|find|wc|sed -n)\\b")) else false end)
     else false end;
-def witness_write: (.name // "") == "Bash" and ((.input.command? // "") | if type == "string" then test("mktemp|mv -n") else false end);
-def publish: (.name // "") == "Bash" and ((.input.command? // "") | if type == "string" then test("mv -n") else false end);
+def witness_draft: (.name // "") == "Write" and ((.input.file_path? // "") | if type == "string" then
+    (test("(^|/)(partial|prompt)/[^/]*$") | not) and test("(^|/)\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[0-9a-f]{16}$")
+  else false end);
+def witness_write: witness_draft
+  or ((.name // "") == "Bash" and ((.input.command? // "") | if type == "string" then test("mktemp|mv -n|cc-team-witness-publish\\.sh") else false end));
+def publish: (.name // "") == "Bash" and ((.input.command? // "") | if type == "string" then test("mv -n|cc-team-witness-publish\\.sh") else false end);
 reduce (inputs | fromjson? | objects) as $l (
   {spans: [], r: [], seen: {}, loose: 0, pub: false};
   (if $l.type == "assistant" and (.pub | not) and any(($l | blocks)[] | select(.type == "tool_use"); publish) then .pub = true else . end)
