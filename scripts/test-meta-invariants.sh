@@ -1011,6 +1011,10 @@ done
 # broken stage, the session-started probe, the attempt cap, the reset-time
 # hold, the flag itself, and the continuation prompt — which must be one string
 # in both copies, since a slash command in its place restarts the skill.
+# A crash whose row reads `일시 원인=예` — a dropped connection or a server
+# error — qualifies too, on the shift's own turn as the evidence the connection
+# is back; that branch, its paragraph head and its rationale marker are pinned
+# with the rest, and the paragraph is compared byte for byte across the copies.
 # ---------------------------------------------------------------------------
 reattach_section() {
   awk '/^#### Re-attaching a cut stage$/ { f = 1; next } f && /^#+ / { exit } f' "$1"
@@ -1034,6 +1038,9 @@ for pair in "리드:$AP_ROUTER" "교대:$RS_CORPUS"; do
     'Four or more means the original and three re-attachments all ended cut' \
     'and only a cut adds to this count' \
     'A limit must have cleared first.' \
+    '`종단 부류=크래시` and `일시 원인=예`' \
+    'A dropped connection or a server error must have come back first.' \
+    '연결 복귀 근거=교대 턴' \
     '--resume <세션 id>' \
     'never the slash command again' \
     '| 서수=<n> |' \
@@ -1053,6 +1060,22 @@ for pair in "리드:$AP_ROUTER" "교대:$RS_CORPUS"; do
   if [ -z "$reattach_prompt" ]; then reattach_prompt="$prompt"; else reattach_prompt_rs="$prompt"; fi
 done
 check "두 사본의 이어 가기 프롬프트가 바이트 동일하다" "$reattach_prompt_rs" "$reattach_prompt"
+
+# THE TRANSIENT-CRASH RE-ATTACHMENT, one paragraph in both copies: the shift's
+# own turn is the evidence a dropped connection or a server error came back.
+reattach_transient() {
+  reattach_section "$1" | grep -F -- '**A dropped connection or a server error must have come back first.**' || true
+}
+rt_lead=$(reattach_transient "$AP_ROUTER")
+rt_shift=$(reattach_transient "$RS_CORPUS")
+check "두 사본의 일시 원인 재부착 문단이 한 줄씩 있다" \
+  "$(printf '%s\n' "$rt_lead" | grep -c . || true)/$(printf '%s\n' "$rt_shift" | grep -c . || true)" "1/1"
+check "두 사본의 일시 원인 재부착 문단이 바이트 동일하다" "$rt_shift" "$rt_lead"
+# The review recovery reads the same widened field, so both copies name both causes.
+for pair in "리드:$AP_ROUTER" "교대:$RS_CORPUS"; do
+  check "${pair%%:*} 사본의 리뷰 전송 단절 문단이 서버 오류까지 말한다" \
+    "$(grep -cF -- 'the review died of a dropped connection or a server error with nothing saved' "${pair#*:}" || true)" "1"
+done
 
 # THE DELEGATED RE-ATTACHMENT, one paragraph in both copies: when none of the
 # three signs that a limit cleared holds, a cut on an inventory account is

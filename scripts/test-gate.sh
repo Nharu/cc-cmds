@@ -44728,7 +44728,7 @@ check "34o: 교대 스킬이 사람의 새 답을 넘기기 전에 런 범위 �
   "$(grep -cF '**Release a run-scope routing block first.**' "$RP_SHIFT" || true)" "1"
 
 # --- 34k. 전송 단절 리뷰 — 저장물 없이 죽은 리뷰를 같은 경로로 두 번까지 다시 보낸다 ---
-# --- section: 34k | group: cone | covers: act, snapshot | anchors: 34k: 연결 오류로 죽은 리뷰의 게이트 행이 일시 원인=예 를 싣는다, 34k: 리뷰 파견 행이 리포트 경로를 자르지 않고 싣는다, 34k: 셋째 전송 단절 재파견은 rc 3 이고 행이 없다 ---
+# --- section: 34k | group: cone | covers: act, snapshot | anchors: 34k: 연결 오류로 죽은 리뷰의 게이트 행이 일시 원인=예 를 싣는다, 34k: 리뷰 파견 행이 리포트 경로를 자르지 않고 싣는다, 34k: 셋째 전송 단절 재파견은 rc 3 이고 행이 없다, 34k: 서버 오류 500 으로 죽은 리뷰의 게이트 행이 일시 원인=예 를 싣는다, 34k: 일시 원인=예 크래시의 --resume 재부착이 통과해 같은 세션 id 의 새 행을 남긴다 ---
 #
 # A REVIEW THAT DIED OF A DROPPED CONNECTION BEFORE SAVING ANYTHING is sent
 # again by the shift with `--recovery '전송 단절'`, and the gate admits it only
@@ -44756,6 +44756,22 @@ case "${CC_TEST_RV_MODE:-}" in
     printf '{"type":"system","subtype":"init","session_id":"%s"}\n' "$sid"
     printf '{"type":"result","subtype":"error_during_execution","is_error":true,"session_id":"%s","result":"tool loop aborted"}\n' "$sid"
     exit 1 ;;
+  s500)
+    printf '{"type":"system","subtype":"init","session_id":"%s"}\n' "$sid"
+    printf '{"type":"result","subtype":"success","is_error":true,"api_error_status":500,"session_id":"%s","result":"API Error: 500 Internal server error. This is a server-side issue, usually temporary — try again in a moment."}\n' "$sid"
+    exit 1 ;;
+  s529)
+    printf '{"type":"system","subtype":"init","session_id":"%s"}\n' "$sid"
+    printf '{"type":"result","subtype":"success","is_error":true,"api_error_status":529,"session_id":"%s","result":"API Error: 529 Overloaded"}\n' "$sid"
+    exit 1 ;;
+  s400)
+    printf '{"type":"system","subtype":"init","session_id":"%s"}\n' "$sid"
+    printf '{"type":"result","subtype":"success","is_error":true,"api_error_status":400,"session_id":"%s","result":"API Error: 400 invalid_request_error"}\n' "$sid"
+    exit 1 ;;
+  done)
+    printf '{"type":"system","subtype":"init","session_id":"%s"}\n' "$sid"
+    printf '{"type":"result","subtype":"success","is_error":false,"session_id":"%s","result":"done"}\n' "$sid"
+    exit 0 ;;
 esac
 exit 0
 STUB
@@ -44889,6 +44905,52 @@ check "34k: 다른 원인의 크래시 행은 일시 원인=아니오 다" \
 rv_n3=$(rv_skill_rows RV2)
 rv_act other RV2 review "$(rv_prompt RV2 "$RV_RP2")" --recovery '전송 단절'
 check "34k: 다른 원인의 크래시 뒤 --recovery 는 rc 3 이고 행이 없다" "$rc/$(rv_skill_rows RV2)" "3/$rv_n3"
+
+# A SERVER ERROR IS TRANSIENT BY ITS STATUS. A review whose stream ends on a
+# 500 or a 529 terminal object is a crash with `일시 원인=예`, the same field the
+# dropped connection above sets; a 400 is a deterministic crash and is not.
+rv_srv() {  # rv_srv <스텁 모드> <세그먼트> — 그 세그먼트를 세우고 첫 리뷰를 그 모드로 파견한다
+  local seg_rc
+  cap_gate "$RV_SEAT" '' act --manifest "$CAP_NM" --kind segment --target infra --segment "$2" \
+           --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$RV_SEAT" '')" \
+           --rationale x -- 워크트리="$CONE_A" 상태=실행중 선행=없음
+  seg_rc=$rc
+  rv_act "$1" "$2" review "$(rv_prompt "$2" "$(rv_rp34 "$2")")" --trigger '첫 리뷰'
+  rc="$seg_rc/$rc"
+}
+rv_srv s500 RV3
+check "34k: 서버 오류 500 으로 죽은 리뷰의 게이트 행이 일시 원인=예 를 싣는다" \
+  "$rc/$(row_field "$(rv_crash RV3)" '종단 부류')/$(row_field "$(rv_crash RV3)" '일시 원인')" "0/0/크래시/예"
+rv_srv s529 RV4
+check "34k: 서버 오류 529 로 죽은 리뷰의 게이트 행이 일시 원인=예 를 싣는다" \
+  "$rc/$(row_field "$(rv_crash RV4)" '종단 부류')/$(row_field "$(rv_crash RV4)" '일시 원인')" "0/0/크래시/예"
+rv_srv s400 RV5
+check "34k: 400 으로 죽은 리뷰의 게이트 행은 일시 원인=아니오 다" \
+  "$rc/$(row_field "$(rv_crash RV5)" '종단 부류')/$(row_field "$(rv_crash RV5)" '일시 원인')" "0/0/크래시/아니오"
+
+# AND SUCH A CRASH IS RE-ATTACHED. The gate admits a `--resume` on the crashed
+# session whatever the last row's class, so the router's widened rule needs no
+# gate change: the continued attempt runs under the same session id and lands a
+# row of its own beside the crash row. An implement stage carries it here: a
+# review dispatch is also held to its canonical `--report-path`, a check this
+# assertion is not about.
+cap_gate "$RV_SEAT" '' act --manifest "$CAP_NM" --kind segment --target infra --segment RV6 \
+         --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$RV_SEAT" '')" \
+         --rationale x -- 워크트리="$CONE_A" 상태=실행중 선행=없음
+rv_s6=$rc
+rv_act s500 RV6 implement '/cc-cmds:implement-unattended "세그먼트 RV6"'
+rv_i6=$rc
+rv_row6=$(cap_rows 'stage-result' | grep -F '| 세그먼트=RV6 |' | grep -F '| 기록자=게이트 |' | tail -1)
+check "34k: 서버 오류 500 으로 죽은 구현의 게이트 행이 일시 원인=예 를 싣는다" \
+  "$rv_s6/$rv_i6/$(row_field "$rv_row6" '종단 부류')/$(row_field "$rv_row6" '일시 원인')" "0/0/크래시/예"
+rv_sid6=$(row_field "$rv_row6" '세션 id')
+rv_rows6() { { cap_rows 'stage-result' | grep -F '| 세그먼트=RV6 |' | grep -cF "| 세션 id=$rv_sid6 |" || true; } | tr -d ' '; }
+rv_n6=$(rv_rows6)
+rv_act done RV6 implement "계정 사용량 한도나 프로세스 종료, 연결 끊김이나 서버 오류로 앞 턴이 끊겼고, 이제 이어서 진행할 수 있습니다. 중단된 지점부터 하던 절차를 그대로 이어 가세요 — 처음부터 다시 하지 말고, 이미 끝난 라운드와 이미 쓴 절·커밋은 다시 하지 마세요." \
+  --resume "$rv_sid6"
+check "34k: 일시 원인=예 크래시의 --resume 재부착이 통과해 같은 세션 id 의 새 행을 남긴다" \
+  "$rc/$( [ -n "$rv_sid6" ] && [ "$rv_sid6" != "미상" ] && printf 'sid' )/$(rv_rows6)" \
+  "0/sid/$((rv_n6 + 1))"
 CAP_STUB="$RV_CAP_STUB_SAVE"
 
 # --- 34l. 전송 단절 교대 — 무기록 교대를 연결 확인 뒤에 다시 띄운다 ---------------
