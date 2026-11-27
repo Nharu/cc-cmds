@@ -655,6 +655,31 @@ check "11 봉투가 사라진 뒤 표지·기록·선점 파일을 지움" "$lef
 check "11 사건과 처리 표지는 지우지 않음" "$(ls "$ROOT/events" | wc -l | tr -d ' ') $(handled_count)" "1 1"
 
 # ---------------------------------------------------------------------------
+# 11b. post-replay after an option reply — no mark, so the array is empty, and
+#      the status snapshot still moves to working. The host is pinned off
+#      Darwin so the return dismiss never reaches a real notifier.
+# ---------------------------------------------------------------------------
+fresh
+mkdir -p "$s/tmp"
+env1=$(put_env "$AUQ1")
+put_event "$env1" "cc-cmds-session-ask-$SID1"
+call=$(auq_call "$env1" "$SID1")
+seam "$call" commit "$SAFE1" "$RID_AUQ1"
+replay_in=$(printf '%s' "$call" | jq -c --argjson a "$(out)" '. + {answers: $a}')
+printf '%s' "$replay_in" \
+  | env -i HOME="$s/home" PATH="$PATH" TMPDIR="$s/tmp" XDG_STATE_HOME="$s/state" \
+      CC_CMDS_ATTENTION_ROOT="$ROOT" CLAUDE_PLUGIN_ROOT="$PLUGIN" CC_CMDS_NOTIFY_HOST_OS=Linux \
+      CC_CMDS_AUTOPILOT_NOTIFY=0 CC_CMDS_DASHBOARD=off \
+      bash "$SEAM" post-replay > "$OUTF" 2> "$ERR"
+RC=$?
+if [ "$RC" -ne 0 ] || [ -s "$ERR" ]; then
+  LOUD=$((LOUD + 1))
+  printf 'loud run: rc=%s stderr=%s\n' "$RC" "$(head -c 200 "$ERR")" >&2
+fi
+check "11b 선택지 답의 다시 돌리기는 빈 배열" "$(out)" "[]"
+check "11b 선택지 답의 다시 돌리기도 상태 스냅숏이 working" "$(jq -r '.state' "$ROOT"/status/*.json 2>/dev/null)" "working"
+
+# ---------------------------------------------------------------------------
 # 12. Activation — each router marker silences every subcommand; neither shell
 #     names the test seat of the spool root; the hooks.json entry.
 # ---------------------------------------------------------------------------

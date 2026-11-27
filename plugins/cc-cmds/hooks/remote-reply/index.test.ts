@@ -167,6 +167,93 @@ describe('열린 질문 경합', () => {
   })
 })
 
+describe('원격 승리 뒤 사후 도구 훅 다시 돌리기', () => {
+  const MARK_LINE = '[cc-cmds 원격 입력] 발신=app:dev-7f3a'
+  const TEXT = { '어디까지?': '중간쯤으로' }
+
+  test('원격 텍스트 답이 이기면 확정 뒤 한 번 다시 돌리고 표지 줄을 context 로 돌려준다', async ($, on) => {
+    const { w, clock } = world(on)
+    w.waits = [`s-${SID} r1`]
+    w.replies.commit = JSON.stringify(TEXT)
+    w.replies['post-replay'] = `${JSON.stringify([MARK_LINE])}\n`
+    await start($)
+    const p = ask($, 'tu-1')
+    await clock.advance(1000)
+    const r = await p
+    expect(r.result).toEqual({ questions: QUESTIONS, answers: TEXT })
+    expect(r.context).toEqual([MARK_LINE])
+    const subs = seamSubs(w).filter(s => s === 'commit' || s === 'post-replay')
+    expect(subs).toEqual(['commit', 'post-replay'])
+    const replayed = w.seams.find(c => c.sub === 'post-replay')
+    expect(replayed?.args).toEqual([])
+    expect(JSON.parse(replayed?.stdin ?? '{}')).toEqual({ session_id: SID, tool_use_id: 'tu-1', questions: QUESTIONS, answers: TEXT })
+  })
+
+  test('원격 선택지 답이 이겨도 한 번 다시 돌리고, 빈 배열이면 context 가 없다', async ($, on) => {
+    const { w, clock } = world(on)
+    w.waits = [`s-${SID} r1`]
+    w.replies.commit = JSON.stringify(REMOTE)
+    w.replies['post-replay'] = '[]\n'
+    await start($)
+    const p = ask($, 'tu-1')
+    await clock.advance(1000)
+    const r = await p
+    expect(r).toEqual({ result: { questions: QUESTIONS, answers: REMOTE } })
+    expect(w.seams.filter(c => c.sub === 'post-replay')).toHaveLength(1)
+  })
+
+  test('로컬이 먼저 끝나면 다시 돌리지 않는다', async ($, on) => {
+    const { w, clock } = world(on)
+    w.waits = [`s-${SID} r1`]
+    w.waitDelayMs = 600_000
+    w.replies.commit = JSON.stringify(REMOTE)
+    w.replies['post-replay'] = `${JSON.stringify([MARK_LINE])}\n`
+    await start($)
+    const p = ask($, 'tu-1')
+    await clock.advance(5000)
+    const r = await p
+    expect(r.result.answers).toEqual(w.localAnswers)
+    await clock.advance(600_000)
+    expect(seamSubs(w)).not.toContain('post-replay')
+  })
+
+  test('확정이 거절되면 다시 돌리지 않는다', async ($, on) => {
+    const { w, clock } = world(on)
+    w.waits = [`s-${SID} r1`]
+    w.replies.commit = ''
+    w.replies['post-replay'] = `${JSON.stringify([MARK_LINE])}\n`
+    await start($)
+    const p = ask($, 'tu-1')
+    await clock.advance(1000)
+    await clock.advance(5000)
+    const r = await p
+    expect(r.result.answers).toEqual(w.localAnswers)
+    expect(seamSubs(w)).toContain('commit')
+    expect(seamSubs(w)).not.toContain('post-replay')
+  })
+
+  for (const [name, setUp] of [
+    ['0 아닌 종료 코드', (w: any) => (w.exitCodes['post-replay'] = 1)],
+    ['JSON 아닌 출력', (w: any) => (w.replies['post-replay'] = '표지\n')],
+    ['배열 아닌 JSON', (w: any) => (w.replies['post-replay'] = `${JSON.stringify({ context: MARK_LINE })}\n`)],
+    ['호출 거부', (w: any) => w.refusedSubs.add('post-replay')],
+  ] as const) {
+    test(`다시 돌리기가 ${name}로 끝나면 맥락 없는 원격 결과를 돌려준다`, async ($, on) => {
+      const { w, clock } = world(on)
+      w.waits = [`s-${SID} r1`]
+      w.replies.commit = JSON.stringify(TEXT)
+      w.replies['post-replay'] = `${JSON.stringify([MARK_LINE])}\n`
+      setUp(w)
+      await start($)
+      const p = ask($, 'tu-1')
+      await clock.advance(1000)
+      const r = await p
+      expect(r).toEqual({ result: { questions: QUESTIONS, answers: TEXT } })
+      expect(w.locals).toBe(1)
+    })
+  }
+})
+
 describe('질문지 적용', () => {
   const openForm = async ($: any) => formIdOf((await call($, twoQuestions())).text) ?? ''
 

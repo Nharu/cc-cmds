@@ -294,8 +294,22 @@ async function firstLine(child: AsyncGenerator<{ stream: string; text: string },
   }
 }
 
+// 원격이 이긴 호출은 도구가 돌지 않아 하네스가 사후 도구 훅을 돌리지 않는다. 확정 직후 seam.sh
+// 가 그 훅들을 하네스와 같은 꼴의 입력으로 다시 돌리고 남긴 추가 맥락 문자열을 돌려준다. 실패·
+// 거절·해석할 수 없는 출력은 빈 목록이다 — 다시 돌리기는 답의 적용과 경합의 승자를 바꾸지 않는다.
+async function replay($: Dollar, call: { session_id: string; tool_use_id: string; questions: Question[] }, answers: object): Promise<string[]> {
+  try {
+    const out: unknown = JSON.parse(await seam($, 'post-replay', [], JSON.stringify({ ...call, answers })))
+    return Array.isArray(out) ? out.filter((one): one is string => typeof one === 'string' && one !== '') : []
+  } catch {
+    return []
+  }
+}
+
 // 열린 질문 하나를 두고 로컬 대화창과 원격 봉투가 경합한다. 승자는 이 훅이 돌려준 값이다 —
-// 확정을 시작하기 전에 로컬이 끝났으면 로컬 결과를 그대로 돌려주고 기록은 남지 않는다.
+// 확정을 시작하기 전에 로컬이 끝났으면 로컬 결과를 그대로 돌려주고 기록은 남지 않는다. 원격이
+// 이기면 도구 결과는 답 맵 그대로이고, 사후 도구 훅을 다시 돌려 남은 추가 맥락(텍스트 답의 원격
+// 표지 줄)이 있으면 그것을 결과와 다른 자리인 context 로 함께 돌려준다.
 async function race($: Dollar, e: { tool_use_id: string; questions: Question[] }, local: Promise<unknown>): Promise<unknown> {
   let isLocalDone = false
   const localDone = local.then(
@@ -332,7 +346,10 @@ async function race($: Dollar, e: { tool_use_id: string; questions: Question[] }
     } catch {
       answers = undefined
     }
-    if (answers && typeof answers === 'object' && !Array.isArray(answers)) return { result: { questions: e.questions, answers } }
+    if (answers && typeof answers === 'object' && !Array.isArray(answers)) {
+      const context = await replay($, call, answers)
+      return context.length > 0 ? { result: { questions: e.questions, answers }, context } : { result: { questions: e.questions, answers } }
+    }
     rejected.push(rid)
   }
 }

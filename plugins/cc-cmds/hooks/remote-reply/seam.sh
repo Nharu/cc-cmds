@@ -25,6 +25,13 @@
 #                              remote-input line as additional context when a
 #                              text envelope answered the call, and removes the
 #                              mark file
+#   post-replay                stdin {session_id, tool_use_id, questions,
+#                              answers} of a call the mode answered from a
+#                              remote envelope; runs the PostToolUse hooks
+#                              hooks.json runs for AskUserQuestion, in its
+#                              order, on the input the harness would have given
+#                              them, and prints their additional context
+#                              strings as one JSON string array line
 #   scan                       stdin {session_id, form, turn}; prints
 #                              {form: {reply_id, picks, kind, sender} | null,
 #                               turn: {reply_id, text, sender, created_at_ms}
@@ -522,7 +529,8 @@ seam_mark_path() {
 # seam_commit_call <addr> <reply_id> <call-json> [need-marker] — the whole commit
 # for an open AskUserQuestion call; prints the answer map on success. A text
 # envelope also leaves the mark file holding the sender id, for the
-# PostToolUse hook to turn into the remote-input line.
+# PostToolUse hook (or the mode's replay of it) to turn into the remote-input
+# line.
 seam_commit_call() {
   local addr="$1" rid="$2" call="$3" need="${4:-}" sid now acc answers hash cell ev slot transport sender kind mark
   sid=$(printf '%s' "$call" | jq -r '.session_id // empty' 2>/dev/null) || return 0
@@ -840,6 +848,53 @@ cmd_mark_take() {
     '{hookSpecificOutput: {hookEventName: "PostToolUse", additionalContext: ("[cc-cmds 원격 입력] 발신=" + $s)}}'
 }
 
+# The PostToolUse hooks hooks.json runs for an AskUserQuestion call, in its
+# order: one script path under the plugin root per line, then its arguments.
+# The helper test holds this list equal to hooks.json.
+POST_HOOKS='hooks/session-return-dismiss.sh
+hooks/session-status-snapshot.sh
+hooks/remote-reply/posttool.sh
+hooks/session-permission-notify.sh settle'
+
+# post-replay — a call the mode answered from a remote envelope never runs the
+# tool, so the harness runs no PostToolUse hook for it. Build the input the
+# harness gives those hooks (no `agent_id`: the mode races only on the main
+# loop; no `cwd`: the hooks fall back to the working directory, which is the
+# session's), run each hook of the list on it, and print every non-empty
+# additional context string they leave as one JSON string array line. A hook
+# that fails or prints nothing or no JSON is skipped; an input that does not
+# hold the call prints `[]`.
+cmd_post_replay() {
+  local input sid tu hook_in line script out ctx all=""
+  input=$(cat)
+  sid=$(printf '%s' "$input" | jq -r '.session_id // empty' 2>/dev/null) || sid=""
+  tu=$(printf '%s' "$input" | jq -r '.tool_use_id // empty' 2>/dev/null) || tu=""
+  if ! seam_is_sid "$sid" || [ -z "$tu" ] \
+     || ! printf '%s' "$input" | jq -e '(.questions | type) == "array" and (.answers | type) == "object"' >/dev/null 2>&1; then
+    printf '[]\n'
+    return 0
+  fi
+  hook_in=$(printf '%s' "$input" | jq -c '{hook_event_name: "PostToolUse", session_id, tool_name: "AskUserQuestion",
+                                           tool_use_id, tool_input: {questions}, tool_response: {questions, answers}}' 2>/dev/null) || hook_in=""
+  if [ -z "$hook_in" ]; then
+    printf '[]\n'
+    return 0
+  fi
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    set -- $line
+    script=$1
+    shift
+    out=$(printf '%s' "$hook_in" | CLAUDE_PLUGIN_ROOT="$plugin_root" bash "$plugin_root/$script" "$@" 2>/dev/null) || continue
+    [ -n "$out" ] || continue
+    ctx=$(printf '%s' "$out" | jq -c 'objects | .hookSpecificOutput | objects | .additionalContext | strings | select(length > 0)' 2>/dev/null) || continue
+    [ -n "$ctx" ] && all="$all$ctx$nl"
+  done <<EOF
+$POST_HOOKS
+EOF
+  printf '%s' "$all" | jq -cs '.' 2>/dev/null || printf '[]\n'
+}
+
 cmd_wake_mark() {
   local run="${1:-}" rid="${2:-}" input sid now info d marker json literal
   input=$(cat)
@@ -907,8 +962,9 @@ cmd_cleanup() {
     [ -e "$root/applied/$line.json" ] && continue
     seam_envelope_gone "$line" && rm -f "$f"
   done
-  # A mark file the PostToolUse hook never took (the hook did not run, the
-  # session ended) is removed once it is more than 24 hours old.
+  # A mark file neither the harness's PostToolUse hook nor the mode's replay of
+  # it after a remote win took (the replay failed, the session ended) is
+  # removed once it is more than 24 hours old.
   if [ -d "$state/remote-reply/mark" ]; then
     find "$state/remote-reply/mark" -maxdepth 1 -type f -mmin +1440 -exec rm -f {} + 2>/dev/null
   fi
@@ -928,6 +984,7 @@ case "$sub" in
   turn-unpick) cmd_form_unpick "$@" ;;
   turn-record) cmd_turn_record "$@" ;;
   mark-take) cmd_mark_take "$@" ;;
+  post-replay) cmd_post_replay "$@" ;;
   wake-mark) cmd_wake_mark "$@" ;;
   cleanup) cmd_cleanup "$@" ;;
 esac 2>/dev/null || true
