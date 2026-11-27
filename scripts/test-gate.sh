@@ -8701,24 +8701,67 @@ fi
 # variant but the shift one is checked; the shift variant's empty allow-list is
 # asserted with its web denial below. The visual publish variant also allows the
 # three artifact tools, because publishing the screens is that stage's work.
+# The re-convergence and design audit variants also allow the Read and the Edit
+# of this run's working-copy namespace under the temporary directory, because
+# those two stages edit the design document through such a copy.
+#
+# The spelling is counted here the way `doc-tidy.py` counts it — `TMPDIR`,
+# `/tmp` when empty, trailing `/` removed but a lone `/` kept — and the run id
+# is the fixture run directory's name.
+wc1b_t="${TMPDIR:-}"; [ -n "$wc1b_t" ] || wc1b_t=/tmp
+while [ "$wc1b_t" != "/" ] && [ "${wc1b_t%/}" != "$wc1b_t" ]; do wc1b_t="${wc1b_t%/}"; done
+wc1b_rid=$(basename "$(dirname "$SETTINGS_DIR")")
+wc1b_read="Read(/$wc1b_t/cc-proto-$wc1b_rid-*/**)"
+wc1b_edit="Edit(/$wc1b_t/cc-proto-$wc1b_rid-*/**)"
 allow_wide=0
 for f in "$SETTINGS_DIR"/*.json; do
   [ -f "$f" ] || continue
   [ "$(basename "$f")" = "shift.json" ] && continue
-  if [ "$(basename "$f")" = "visual-publish.json" ]; then
-    want1b='["Artifact","ArtifactComments","ArtifactData","WebFetch","WebSearch"]'
-  else
-    want1b='["WebFetch","WebSearch"]'
-  fi
+  case "$(basename "$f")" in
+    visual-publish.json)
+      want1b='["Artifact","ArtifactComments","ArtifactData","WebFetch","WebSearch"]' ;;
+    reconverge.json | audit.json)
+      want1b=$(jq -cn --arg r "$wc1b_read" --arg e "$wc1b_edit" '["WebFetch","WebSearch",$r,$e] | sort') ;;
+    *)
+      want1b='["WebFetch","WebSearch"]' ;;
+  esac
   if ! jq -e --argjson w "$want1b" '.permissions.allow // [] | map(select(test("CLAUDE\\.md\\)$") | not)) | sort == $w' \
        "$f" >/dev/null 2>&1; then
     allow_wide=$((allow_wide + 1))
     printf '      %s: %s\n' "$(basename "$f")" "$(jq -c '.permissions.allow' "$f")" >&2
   fi
 done
-check "allow 목록에 CLAUDE.md 읽기와 웹 조사 도구(시각 발행 변종은 Artifact 세 도구까지) 말고는 없다" "$allow_wide" "0"
+check "allow 목록에 CLAUDE.md 읽기와 웹 조사 도구(시각 발행 변종은 Artifact 세 도구까지, 재수렴·감사 변종은 작업 사본 규칙 둘까지) 말고는 없다" "$allow_wide" "0"
 check "allow 를 세는 설정에 시각 발행 변종이 있다 (위가 공허하지 않다)" \
   "$( [ -f "$SETTINGS_DIR/visual-publish.json" ] && printf 있음 || printf 없음)" "있음"
+# The two working-copy rules, each exactly once, in the two variants that edit
+# through a copy. Named by file, so a variant that is missing reads as a count
+# of zero rather than as a skipped loop.
+for k in reconverge audit; do
+  check "$k 변종의 allow 에 이 런 작업 사본의 Read 규칙이 정확히 하나 있다" \
+    "$(jq -r --arg r "$wc1b_read" '[.permissions.allow // [] | .[] | select(. == $r)] | length' "$SETTINGS_DIR/$k.json" 2>/dev/null || printf 없음)" "1"
+  check "$k 변종의 allow 에 이 런 작업 사본의 Edit 규칙이 정확히 하나 있다" \
+    "$(jq -r --arg e "$wc1b_edit" '[.permissions.allow // [] | .[] | select(. == $e)] | length' "$SETTINGS_DIR/$k.json" 2>/dev/null || printf 없음)" "1"
+  # The rules are the whole grant: the directory list is the one every other
+  # stage variant carries, so the temporary directory was not granted beside it.
+  if [ -f "$SETTINGS_DIR/$k.json" ] && [ -f "$SETTINGS_DIR/generic.json" ] \
+     && [ "$(jq -c '.permissions.additionalDirectories' "$SETTINGS_DIR/$k.json")" = "$(jq -c '.permissions.additionalDirectories' "$SETTINGS_DIR/generic.json")" ]; then
+    ok "$k 변종의 디렉터리 부여가 generic 변종과 같다 (작업 사본은 디렉터리로 열지 않는다)"
+  else
+    bad "$k 디렉터리 부여" "$(jq -c '.permissions.additionalDirectories' "$SETTINGS_DIR/$k.json" 2>&1)"
+  fi
+done
+# And no other variant names the namespace at all.
+wc1b_other=0
+for f in "$SETTINGS_DIR"/*.json; do
+  [ -f "$f" ] || continue
+  case "$(basename "$f")" in reconverge.json | audit.json) continue ;; esac
+  if jq -e '.permissions.allow // [] | map(select(contains("cc-proto-"))) | length > 0' "$f" >/dev/null 2>&1; then
+    wc1b_other=$((wc1b_other + 1))
+    printf '      %s: %s\n' "$(basename "$f")" "$(jq -c '.permissions.allow' "$f")" >&2
+  fi
+done
+check "재수렴·감사를 뺀 변종의 allow 에 작업 사본 항목이 없다" "$wc1b_other" "0"
 
 # The attempt term of the session id is DERIVED, not passed as argv. Without it
 # a stage that died before producing anything kept its session id and every
@@ -8883,6 +8926,32 @@ if [ -n "$PI_K3" ] && [ "$PI_K3" != "$PI_K2" ]; then
 else
   bad "허용 키와 재유도 키" "$PI_K2 → $PI_K3"
 fi
+# The working-copy rules of the re-convergence and audit variants carry the
+# temporary directory's spelling, so that spelling is a key input: a gate opened
+# under another `TMPDIR` must re-render rather than keep the old spelling's rules.
+PI_KT1=$(TMPDIR="$PI_DIR/tmp-a" pi_gate "$PI_MAN" gate_settings_key 2>/dev/null)
+PI_KT2=$(TMPDIR="$PI_DIR/tmp-b" pi_gate "$PI_MAN" gate_settings_key 2>/dev/null)
+if [ -n "$PI_KT1" ] && [ -n "$PI_KT2" ] && [ "$PI_KT1" != "$PI_KT2" ]; then
+  ok "TMPDIR 만 바꾸면 재유도 키가 바뀐다"
+else
+  bad "TMPDIR 와 재유도 키" "$PI_KT1 → $PI_KT2"
+fi
+# A spelling holding a glob metacharacter would match more than the run's
+# namespace, so the render writes no working-copy rule and still succeeds. The
+# ordinary render above is the control: it does carry the two rules, so their
+# absence below is the refusal and not a render that never writes them.
+check "대조군: 보통 렌더의 재수렴·감사 변종 allow 에는 작업 사본 항목이 둘씩 있다" \
+  "$(jq -r '[.permissions.allow // [] | .[] | select(contains("cc-proto-"))] | length' "$PI_OUT/reconverge.json" 2>/dev/null)/$(jq -r '[.permissions.allow // [] | .[] | select(contains("cc-proto-"))] | length' "$PI_OUT/audit.json" 2>/dev/null)" "2/2"
+pi_wc_rc=0
+TMPDIR="$PI_DIR/tmp-*" pi_gate "$PI_MAN" gate_write_settings "$PI_DIR/out-glob" >/dev/null 2>&1 || pi_wc_rc=$?
+check "TMPDIR 에 glob 메타 문자가 있어도 렌더는 성공한다" "$pi_wc_rc" "0"
+pi_wc_bad=0
+for k in reconverge audit; do
+  [ -f "$PI_DIR/out-glob/$k.json" ] \
+    && jq -e '.permissions.allow // [] | map(select(contains("cc-proto-"))) | length == 0' "$PI_DIR/out-glob/$k.json" >/dev/null 2>&1 \
+    || { pi_wc_bad=$((pi_wc_bad + 1)); printf '      %s: %s\n' "$k" "$(jq -c '.permissions.allow' "$PI_DIR/out-glob/$k.json" 2>&1)" >&2; }
+done
+check "그 렌더의 재수렴·감사 변종 allow 에 작업 사본 항목이 없다 (닫힌 쪽 실패)" "$pi_wc_bad" "0"
 
 # ---------------------------------------------------------------------------
 # 2. Vocabulary — closed sets refuse by status, never by `die`
