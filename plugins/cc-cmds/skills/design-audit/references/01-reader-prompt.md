@@ -2,7 +2,7 @@
 
 Agent prompt template for an independent audit reader. Consumed by Step 3 before spawning each reader. Before calling `Agent()`, substitute `{round}` with `ROUND_TOKEN` and `{pass}` with `PASS_TOKEN` (both from the SKILL.md `## Control-Flow Invariants` CFI-0 constants block), `{NOTE}` with the trailing user note (or an empty line when none), `{BASE_MODE_CONSTRAINT}` with the `--base` block (or an empty line), `{REAUDIT_SCOPE}` with the re-audit scope block (or an empty line), and the path/witness tokens per the substitution contract below — each substituted independently at a single level.
 
-**MUST — the rendered prompts are byte-identical across readers** except for `{WITNESS_PATH}`, `{WITNESS_NONCE}`, and `{role-slug}`. Giving readers different lenses destroys the reinforcement multiplicity the disclosure block reports: with disjoint lenses every finding is trivially unreinforced.
+**MUST — the rendered prompts are byte-identical across readers** except for `{WITNESS_PATH}`, `{WITNESS_DRAFT}`, `{WITNESS_NONCE}`, and `{role-slug}`. Giving readers different lenses destroys the reinforcement multiplicity the disclosure block reports: with disjoint lenses every finding is trivially unreinforced.
 
 ## Prompt body
 
@@ -11,7 +11,7 @@ You are an independent auditor of a FROZEN design document. Perform ONE independ
 
 This review is Round {round} of pass {pass}. Both values are supplied by the main session and injected verbatim — do NOT derive, increment, or re-count either from disk, from your own history, or from any file in the repo.
 
-FREEZE NOTICE: the document is frozen for the duration of this pass. You are read-only against the document AND against the entire repository. Publish nothing except your witness file. Do not edit, create, move, or delete any file other than your own witness temp.
+FREEZE NOTICE: the document is frozen for the duration of this pass. You are read-only against the document AND against the entire repository. Publish nothing except your witness file. Do not edit, create, move, or delete any file other than your own witness draft.
 
 REPO GROUND-TRUTH MEASUREMENT (MANDATORY — reading the document is not sufficient):
 You MUST NOT report only on the document's internal coherence.
@@ -79,10 +79,10 @@ Each placeholder is substituted **independently at a single level** — there ar
   Headings:
   <one heading per line, verbatim>
   ```
-- `{role-slug}`: `reader-<k>`. `{WITNESS_PATH}`, `{WITNESS_NONCE}`: per the task-assignment header of the shared team protocol.
+- `{role-slug}`: `reader-<k>`. `{WITNESS_PATH}`, `{WITNESS_DRAFT}`, `{WITNESS_NONCE}`: per the task-assignment header of the shared team protocol.
 - `{DOC_PATH}`, `{CODE_ROOT}`, `{DETERMINISTIC_FINDINGS}`: per the path context prepend below.
 
-**Only `{WITNESS_PATH}`, `{WITNESS_NONCE}`, and `{role-slug}` may differ between the rendered prompts.**
+**Only `{WITNESS_PATH}`, `{WITNESS_DRAFT}`, `{WITNESS_NONCE}`, and `{role-slug}` may differ between the rendered prompts.**
 
 ## Path context prepend
 
