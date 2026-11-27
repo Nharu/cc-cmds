@@ -1043,7 +1043,7 @@ for pair in "리드:$AP_ROUTER" "교대:$RS_CORPUS"; do
     '`종단 부류=크래시` and `일시 원인=예`' \
     '`일시 원인=예`**, whatever the stage kind' \
     'A dropped connection or a server error must have come back first.' \
-    'A `review` stage is re-attached with the two arguments every review dispatch carries.' \
+    'A `review` stage is re-attached with the report path and trigger every review dispatch carries.' \
     '연결 복귀 근거=교대 턴' \
     '--resume <세션 id>' \
     'never the slash command again' \
@@ -1081,7 +1081,7 @@ check "두 사본의 일시 원인 재부착 문단이 바이트 동일하다" "
 # crashed-review recovery either; the paragraph that adds both is one line in
 # both copies, byte for byte, and names the two flags it adds.
 reattach_review() {
-  reattach_section "$1" | grep -F -- '**A `review` stage is re-attached with the two arguments every review dispatch carries.**' || true
+  reattach_section "$1" | grep -F -- '**A `review` stage is re-attached with the report path and trigger every review dispatch carries.**' || true
 }
 rr_lead=$(reattach_review "$AP_ROUTER")
 rr_shift=$(reattach_review "$RS_CORPUS")
@@ -1092,6 +1092,8 @@ check "리뷰 재부착 문단이 --trigger 와 --report-path 를 싣는다" \
   "$(printf '%s\n' "$rr_lead" | grep -cF -- "--trigger '<토큰>'" || true)/$(printf '%s\n' "$rr_lead" | grep -cF -- ' --report-path <path>' || true)" "1/1"
 check "리뷰 재부착 문단이 거절 뒤 리뷰 크래시 복구로 넘긴다" \
   "$(printf '%s\n' "$rr_lead" | grep -cF -- 'means this subsection declines the review: go on to 「Recovering a review stage that crashed」' || true)" "1"
+check "리뷰 재부착 문단이 라우터 판단 계기의 사유와 exit 3 거절을 다룬다" \
+  "$(printf '%s\n' "$rr_lead" | grep -cF -- "add \`--trigger-reason '<사유>'\` too" || true)/$(printf '%s\n' "$rr_lead" | grep -cF -- 'an exit `3` whose refusal text does not name 「파견 자리 대조」' || true)" "1/1"
 # The review recovery reads the same widened field, so both copies name both causes.
 for pair in "리드:$AP_ROUTER" "교대:$RS_CORPUS"; do
   check "${pair%%:*} 사본의 리뷰 전송 단절 문단이 서버 오류까지 말한다" \
