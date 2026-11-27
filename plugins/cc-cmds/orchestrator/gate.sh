@@ -23371,6 +23371,56 @@ gate_lane_sidecar_read() {
   printf '%s' "${v:-(미상)}"
 }
 
+gate_wc_tmpdir() {
+  # The temporary directory a stage's working copies sit under, SPELLED THE WAY
+  # `doc-tidy.py checkout` spells it: `TMPDIR`, `/tmp` when that is empty, every
+  # trailing `/` removed but a lone `/` kept. Never resolved to its physical
+  # path — a rule written with the `/private/var/…` spelling was measured to
+  # refuse the Read of a copy made under the `/var/…` one, so the rule and the
+  # copy have to come from the same spelling.
+  local t="${TMPDIR:-}"
+  [ -n "$t" ] || t=/tmp
+  while [ "$t" != "/" ] && [ "${t%/}" != "$t" ]; do t="${t%/}"; done
+  printf '%s' "$t"
+}
+
+gate_wc_allow() {
+  # The `permissions.allow` entries that let the re-convergence and design
+  # audit stages Read and Edit the working copies `doc-tidy.py checkout` makes
+  # for them, as a comma-joined JSON fragment, or nothing.
+  #
+  # THE NAMESPACE IS THE RUN, NOT THE STAGE. A copy's name carries the stage
+  # key, but the settings are rendered per kind at run open, before any stage
+  # key exists, so `cc-proto-<run id>-*` is the narrowest form a static rule
+  # can name. Another run's copies and the host's other temporary files do not
+  # match it.
+  #
+  # IT FAILS CLOSED. A spelling that is not absolute, an empty part, or a glob
+  # metacharacter, a backslash or a control byte in either part would make the
+  # pattern match more than that namespace, so no rule is written and one
+  # warning line says why: the stage is refused as before, and the grant never
+  # grows past what was meant.
+  local t rid
+  t=$(gate_wc_tmpdir)
+  rid=${RUN_DIR%/}; rid=${rid##*/}
+  case "$t" in
+    /*) ;;
+    *) log "작업 사본 허용 규칙을 쓰지 않음 — TMPDIR 철자가 절대 경로가 아님: $t"; return 0 ;;
+  esac
+  if [ -z "$rid" ]; then
+    log "작업 사본 허용 규칙을 쓰지 않음 — 런 id 가 비어 있음"
+    return 0
+  fi
+  case "$t$rid" in
+    *[][*?{}\\]* | *[[:cntrl:]]*)
+      log "작업 사본 허용 규칙을 쓰지 않음 — TMPDIR 철자나 런 id 에 glob 메타 문자·역슬래시·제어 문자가 있음"
+      return 0 ;;
+  esac
+  printf '"%s", "%s"' \
+    "$(gate_json_escape "Read(/$t/cc-proto-$rid-*/**)")" \
+    "$(gate_json_escape "Edit(/$t/cc-proto-$rid-*/**)")"
+}
+
 gate_settings_key() {
   # A digest of everything `gate_write_settings` renders FROM. When it has not
   # moved, that function cannot produce different bytes, so the probe render and
@@ -23413,6 +23463,9 @@ gate_settings_key() {
     printf 'doc-base-phys\t%s\n' "$( [ -n "${DOC_BASE:-}" ] && cd "$DOC_BASE" 2>/dev/null && pwd -P || true)"
     printf 'config-dir\t%s\n' "$(gate_seat_config_dir)"
     printf 'home\t%s\n' "${HOME:-}"
+    # The working-copy rules of the re-convergence and audit variants carry
+    # this spelling; the run id they carry is already in `run-dir`.
+    printf 'tmpdir\t%s\n' "$(gate_wc_tmpdir)"
     # The target rows verbatim: both worktree fields of every declared target
     # are interpolated into `additionalDirectories`.
     manifest_targets | sed 's/^/target\t/'
@@ -23666,6 +23719,20 @@ $(gate_segment_worktrees_for_settings)"
   pl_user=$(gate_plugin_user_keys)
   pl_allow=$(gate_plugin_allow_keys)
 
+  # THE WORKING-COPY RULES, BUILT ONCE AND GIVEN TO TWO VARIANTS. The
+  # re-convergence and design audit stages edit the design document through a
+  # copy `doc-tidy.py checkout` makes under the temporary directory, which no
+  # directory above reaches and the hook below never sees for Read. Measured:
+  # a re-convergence stage was refused the Read of its own copy and its segment
+  # stayed blocked to the end of the run. A path rule naming the run's copy
+  # namespace was measured to open both the Read and the Edit, where granting
+  # the temporary directory opened the Read alone and would have opened every
+  # other session's temporary files with it. No other kind edits through such
+  # a copy, so no other variant names it, and Write stays unnamed: the copy is
+  # made by the gated checkout, never by a file tool.
+  local wc_allow
+  wc_allow=$(gate_wc_allow)
+
   for k in $STAGE_KINDS; do
     f=$(gate_settings_file "$k")
     # Every stage variant ALLOWS `WebFetch` / `WebSearch` explicitly (the else
@@ -23729,6 +23796,9 @@ $(gate_segment_worktrees_for_settings)"
     fi
     if [ "$k" = "visual-publish" ]; then
       kind_allow="${kind_allow}, \"Artifact\", \"ArtifactComments\", \"ArtifactData\""
+    fi
+    if [ "$k" = "reconverge" ] || [ "$k" = "audit" ]; then
+      [ -z "$wc_allow" ] || kind_allow="${kind_allow}, ${wc_allow}"
     fi
     pl_shift=0
     [ "$k" != "shift" ] || pl_shift=1
