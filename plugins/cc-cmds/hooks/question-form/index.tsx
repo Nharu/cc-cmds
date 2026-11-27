@@ -50,7 +50,7 @@ import {
   typeText,
 } from './transitions'
 import type { FormEditor, FormRecord, Move } from './transitions'
-import { normalizeForm, validateForm } from './validate'
+import { normalizeForm, repairForm, validateForm } from './validate'
 
 type Dollar = Parameters<Hook<'session.start'>>[0]
 
@@ -424,7 +424,10 @@ export const register: Register = on => {
     if ((await read($, lastOriginAtom)) === 'bridge') return { deny: unavailableResult('remote') }
 
     const args = e as unknown as Record<string, unknown>
-    const input = { title: args.title, intro: args.intro, replaces: args.replaces, questions: args.questions }
+    // 뜻이 분명한 위반을 먼저 고치고, 고친 입력에 남은 위반이 있으면 전부를 한 번에 거절한다.
+    // 거절하면 고친 결과는 버린다.
+    const repaired = repairForm({ title: args.title, intro: args.intro, replaces: args.replaces, questions: args.questions })
+    const input = repaired.input as Record<string, unknown>
     const current = (await read($, recordAtom)) ?? undefined
     const invalid = validateForm(input, isOpen(current) ? current.id : undefined)
     if (invalid) return { deny: invalid }
@@ -447,7 +450,7 @@ export const register: Register = on => {
     before.delete(e.tool_use_id)
     if (decision.kind === 'new') await banner($, form, id)
 
-    return { result: openResult(id, form.questions.length, opened.isPlaced) }
+    return { result: openResult(id, form.questions.length, opened.isPlaced, repaired.fixes) }
   }).catch(async ($, e) => {
     // 이 호출이 만든 기록과 패널을 지우고 거절한다.
     if (before.has(e.tool_use_id)) {
