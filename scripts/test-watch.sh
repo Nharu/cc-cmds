@@ -3656,5 +3656,158 @@ read -r qp_m qp_e < "$RD/watch.mode" 2>/dev/null || qp_m=""
 check "일하는 런: watch.mode 는 work 와 epoch 한 줄이다" "$qp_m:$(qp_int "${qp_e:-}")" "work:수"
 unset -f qp_int
 
+# ---------------------------------------------------------------------------
+# 총괄 대기 배너(`answer-run`) — 대기 구간마다 한 번 울리고, 구간이 끝나면 내리며,
+# 교대나 유효한 릴레이가 살아 있는 동안은 교대 정지 기록별 배너와 함께 미룬다.
+#
+# 대기 구간은 `swait=1`, 대기 승인이나 답을 기다리는 교대 정지 기록이 하나 이상,
+# 미룸 없음의 셋이 모두 참인 동안이다. 발사는 스텁 로그의 `-group <총괄 그룹> ` 줄,
+# 해제는 `-remove <총괄 그룹>` 줄로 남는다. 해제 줄은 끝에 빈칸이 없어 발사로 세이지
+# 않는다. 알림은 떼어 낸 프로세스가 쓰므로 양의 단언은 그 줄 수가 닿을 때까지
+# 기다리고, 0 의 단언은 다른 사례처럼 잠깐 쉰 뒤 읽는다.
+# ---------------------------------------------------------------------------
+ar_group()   { printf 'cc-cmds-autopilot-%s-답' "$(basename "$RD")"; }
+ar_fires()   { has_group "$(ar_group)"; }
+ar_removes() { grep -cxF -- "-remove $(ar_group)" "$NOTIFY_LOG" 2>/dev/null || true; }
+ar_halts()   { grep -cE -- '-group [^ ]*-shift-halt-[^ ]* ' "$NOTIFY_LOG" 2>/dev/null || true; }
+ar_marker()  { [ -f "$RD/watch.announced-waiting" ] && printf 있음 || printf 없음; }
+ar_reached() {
+  [ "$(ar_fires)" -ge "$AR_FIRES" ] && [ "$(ar_removes)" -ge "$AR_REMOVES" ] \
+    && [ "$(ar_halts)" -ge "$AR_HALTS" ]
+}
+ar_wait() {
+  # ar_wait <총괄 발사> <총괄 해제> <기록별 발사> — 세 수가 모두 닿을 때까지 기다린다.
+  AR_FIRES="$1" AR_REMOVES="$2" AR_HALTS="$3"
+  wait_until ar_reached || true
+  sleep 0.2
+  return 0
+}
+ar_answer() {  # ar_answer <기록 이름> — 그 기록에 답한 `중단 답` 행
+  printf -- '- `중단 답` | 중단 기록=%s | 선택지=재시도 | prev=x\n' "$RD/halt/shift/$1.md" >> "$LG"
+}
+ar_relay() {  # ar_relay — 갱신 시각이 지금인 살아 있는 릴레이와 대기 인계
+  printf -- '- `교대 기동` | 서수=1 | 사유=상한\n- `handoff` | 교대=1 | 사유=대기 | CI 대기=-\n' >> "$LG"
+  sil_live "$RD/relay.live"
+  printf 'refreshed=%s\nstarted=%s\nstages=-\nci=-\n' "$(date -u +%s)" "$(date -u +%s)" >> "$RD/relay.live"
+}
+
+# 1. 재발사 없음 — 진행 중인 S1 을 붙잡는 기록이 하나씩 늘어도 총괄은 한 번이다.
+fresh
+: > "$NOTIFY_LOG"
+printf -- '- `segment` | id=S1 | 상태=실행중\n' > "$LG"
+for ar_c in C1 C2 C3; do
+  shw_seed "clause-$ar_c" '종료 절 근거' S1
+  runk 1 >/dev/null
+done
+ar_wait 1 0 3
+check "총괄 배너: 기록 셋이 차례로 쓰여도 총괄은 한 번 울린다" "$(ar_fires)" "1"
+check "총괄 배너: 기록별 배너는 기록마다 하나씩 셋이다" "$(ar_halts)" "3"
+
+# 2. 대기 해제 — 이어서 기록 셋에 답하면 구간이 끝나 총괄을 내리고 표지를 지운다.
+for ar_c in C1 C2 C3; do ar_answer "clause-$ar_c#1"; done
+runk 1 >/dev/null
+ar_wait 1 1 3
+check "총괄 배너: 대기가 풀린 패스에 총괄 그룹을 한 번 내린다" "$(ar_removes)" "1"
+check "총괄 배너: 대기가 풀리면 표지가 없어진다" "$(ar_marker)" "없음"
+shw_seed clause-C4 '종료 절 근거' S1
+runk 1 >/dev/null
+ar_wait 2 1 4
+check "총괄 배너: 다시 대기에 들어가면 총괄이 다시 울린다" "$(ar_fires)" "2"
+
+# 3. 승인만 있는 대기 — 런당 한 번이 아니라 대기 구간마다 울린다.
+fresh
+: > "$NOTIFY_LOG"
+printf -- '- `segment` | id=S1 | 상태=머지됨\n' > "$LG"
+approval_row A1
+runk 1 >/dev/null
+ar_wait 1 0 0
+check "총괄 배너: 승인만 있는 대기에서 한 번 울린다" "$(ar_fires)" "1"
+printf -- '- `승인` | 승인 id=A1 | 상태=승인\n' >> "$LG"
+runk 1 >/dev/null
+ar_wait 1 1 0
+check "총괄 배너: 승인이 닫히면 총괄을 내린다" "$(ar_removes)" "1"
+check "총괄 배너: 승인이 닫히면 표지가 없어진다" "$(ar_marker)" "없음"
+approval_row A2
+runk 1 >/dev/null
+ar_wait 2 1 0
+check "총괄 배너: 새 승인으로 다시 대기에 들어가면 다시 울린다" "$(ar_fires)" "2"
+
+# 4. 교대 생존 미룸 — 살아 있는 교대 옆에서는 기록별 배너도 총괄도 띄우지 않는다.
+fresh
+: > "$NOTIFY_LOG"
+printf -- '- `segment` | id=S1 | 상태=실행중\n' > "$LG"
+sil_live "$RD/shift.live"
+shw_seed S1 '적용 정산' S1
+runk 1 >/dev/null
+sleep 0.2
+check "미룸: 교대가 살아 있으면 기록별 배너를 띄우지 않는다" "$(ar_halts)" "0"
+check "미룸: 교대가 살아 있으면 총괄을 띄우지 않는다" "$(ar_fires)" "0"
+check "미룸: 미루는 동안 기록 이름을 표지에 남기지 않는다" \
+  "$( [ -s "$RD/watch.announced-shift-halts" ] && printf 있음 || printf 없음)" "없음"
+rm -f "$RD/shift.live"
+runk 1 >/dev/null
+ar_wait 1 0 1
+check "미룸: 교대가 끝난 첫 패스에 기록별 배너가 한 번 뜬다" "$(ar_halts)" "1"
+check "미룸: 교대가 끝난 첫 패스에 총괄이 한 번 뜬다" "$(ar_fires)" "1"
+
+# 5. 유효한 릴레이 미룸 — 4 와 같은 단언.
+fresh
+: > "$NOTIFY_LOG"
+printf -- '- `segment` | id=S1 | 상태=실행중\n' > "$LG"
+ar_relay
+shw_seed S1 '적용 정산' S1
+runk 1 >/dev/null
+sleep 0.2
+check "미룸: 유효한 릴레이가 있으면 기록별 배너를 띄우지 않는다" "$(ar_halts)" "0"
+check "미룸: 유효한 릴레이가 있으면 총괄을 띄우지 않는다" "$(ar_fires)" "0"
+rm -f "$RD/relay.live"
+runk 1 >/dev/null
+ar_wait 1 0 1
+check "미룸: 릴레이가 끝난 첫 패스에 기록별 배너가 한 번 뜬다" "$(ar_halts)" "1"
+check "미룸: 릴레이가 끝난 첫 패스에 총괄이 한 번 뜬다" "$(ar_fires)" "1"
+
+# 6. 상한 — 기록 파일이 STALL(기본 1200초)보다 오래됐으면 살아 있는 교대 옆에서도
+# 미루지 않는다.
+fresh
+: > "$NOTIFY_LOG"
+printf -- '- `segment` | id=S1 | 상태=실행중\n' > "$LG"
+sil_live "$RD/shift.live"
+shw_seed S1 '적용 정산' S1
+fx_age_file "$RD/halt/shift/S1#1.md" 1300
+runk 1 >/dev/null
+ar_wait 1 0 1
+check "상한: STALL 을 넘긴 기록은 살아 있는 교대 옆에서도 기록별 배너를 띄운다" "$(ar_halts)" "1"
+check "상한: STALL 을 넘긴 기록은 살아 있는 교대 옆에서도 총괄을 띄운다" "$(ar_fires)" "1"
+
+# 7. 구간 안에서 교대 재기동 — 총괄이 떠 있는 동안 교대가 다시 살면 구간이 끝난다.
+fresh
+: > "$NOTIFY_LOG"
+printf -- '- `segment` | id=S1 | 상태=실행중\n' > "$LG"
+shw_seed S1 '적용 정산' S1
+runk 1 >/dev/null
+ar_wait 1 0 1
+check "재기동: 앞 패스에서 총괄이 떠 있다" "$(ar_marker)" "있음"
+sil_live "$RD/shift.live"
+runk 1 >/dev/null
+ar_wait 1 1 1
+check "재기동: 교대가 다시 살면 총괄 그룹을 내린다" "$(ar_removes)" "1"
+check "재기동: 교대가 다시 살면 표지가 없어진다" "$(ar_marker)" "없음"
+
+# 8. 런 종단 — 총괄이 떠 있는 런에 `done` 이 서면 루프의 종료 꼬리가 총괄을 내린다.
+fresh
+: > "$NOTIFY_LOG"
+printf -- '- `segment` | id=S1 | 상태=머지됨\n' > "$LG"
+approval_row A1
+runk 1 >/dev/null
+ar_wait 1 0 0
+check "종단: 앞 패스에서 총괄이 떠 있다" "$(ar_marker)" "있음"
+printf '시험 종단\n' > "$RD/done"
+eod_loop 99999
+check "종단: done 을 읽은 루프가 감시를 멈춘다" "$(eod_loop_exited)" "exited"
+ar_wait 1 1 0
+check "종단: 종료 꼬리가 총괄 그룹을 내린다" "$(ar_removes)" "1"
+check "종단: 종료 꼬리가 표지를 지운다" "$(ar_marker)" "없음"
+unset -f ar_group ar_fires ar_removes ar_halts ar_marker ar_reached ar_wait ar_answer ar_relay
+
 printf '\ntest-watch: %d passed, %d failed, %d skipped\n' "$passed" "$failed" "$skipped"
 [ "$failed" = "0" ]
