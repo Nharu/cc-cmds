@@ -1313,8 +1313,8 @@ readonly GATE_DISMISSAL_TEXT="The user doesn't want to proceed with this tool us
 #
 # FOR A STAGE CALLER THE WINDOW COUNTS KIND, and that is the deliberate change
 # of meaning the paragraph above asks for, not a larger number. A stage's
-# routine rows — its own `exec` rows graded `읽기` or `트리밖쓰기` — are walked
-# past without being counted, and eight is the count of every other row
+# routine rows — its own `exec` rows graded `읽기`, or graded `트리밖쓰기` with
+# `도달=런로컬` — are walked past without being counted, and eight is the count of every other row
 # (`gate_stage_ancestry_has`). The dangerous changes listed at the top of this
 # note all land as rows that are not routine exec rows, so for a stage they are
 # still bounded by eight. The router's window is unchanged and still counts
@@ -8142,6 +8142,10 @@ surface_of_argv0() {
     # removes the draft name. Both names are under that directory, which the run
     # directory guard and the hook already let a stage write, and nothing under
     # the worktree is touched — the same grade as the directory it writes into.
+    # That the two names are under a witness directory is checked by the helper
+    # itself, not assumed: it folds the witness directory to its physical path
+    # and ends without changing anything unless that path's parent is one of the
+    # two witness roots the initializer makes directories under.
     # One exec per witness, so the grade is what makes the honest declaration
     # the only one that passes.
     cc-team-witness-publish.sh)
@@ -12882,8 +12886,17 @@ gate_caller_snapshot_digest() {
 gate_stage_routine_awk() {
   # The awk predicate for a stage's ROUTINE row, printed for inclusion in a
   # program: a `자율 승인` row whose `결정` is `exec`, whose `행위자` is
-  # `스테이지` and whose `축2` is `읽기` or `트리밖쓰기`. Every field is located by
-  # its ` | <key>=` delimiter and compared whole, the last occurrence winning.
+  # `스테이지`, and whose `축2` is `읽기`, or is `트리밖쓰기` with `도달` exactly
+  # `런로컬`. Every field is located by its ` | <key>=` delimiter and compared
+  # whole, the last occurrence winning; ` | 도달=` does not match inside
+  # ` | 유도 도달=`, whose key is preceded by `유도 ` and not by the delimiter.
+  #
+  # WHY `트리밖쓰기` NEEDS `도달`: the grade is the same token for a temp file this
+  # run owns and for a write outside the run (a production database, a file
+  # under the user's home), and where the act lands is told apart only by the
+  # row's separate `도달=` field. So a `트리밖쓰기` row whose `도달` is anything
+  # but `런로컬` — `prod`, `기기전역`, `미상`, `-`, or no field at all — counts as
+  # one of the other rows, like any act that may change state outside the run.
   #
   # NOT ROUTINE, on purpose: the `결정=결과` row a failure appends carries no
   # `행위자`, so a stage exec failure and a router act failure cannot be told
@@ -12905,7 +12918,9 @@ function gsr_routine(line,    a) {
   if (gsr_field(line, " | 결정=") != "exec") return 0
   if (gsr_field(line, " | 행위자=") != "스테이지") return 0
   a = gsr_field(line, " | 축2=")
-  return (a == "읽기" || a == "트리밖쓰기")
+  if (a == "읽기") return 1
+  if (a == "트리밖쓰기") return (gsr_field(line, " | 도달=") == "런로컬")
+  return 0
 }
 AWK
 }
