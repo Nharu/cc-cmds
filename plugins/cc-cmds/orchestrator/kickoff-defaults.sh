@@ -45,7 +45,8 @@
 # COST_CEILING,DEADLINE,DECISION_CONFIRM,ROSTER_MODEL,PLUGIN_ALLOW,
 # ACCOUNT_FAILOVER}. An invalid
 # variable is ignored together with the file's value for the same key; an empty
-# one is unset.
+# one is unset. Two run-wide keys, `auto-adopt` and `act-allow`, have no
+# variable: they are read from the file only.
 # PLUGIN_ALLOW is a `,`-separated list of `<이름>@<마켓>` keys and replaces every
 # run-wide `plugin-allow` line of the file; its value `없음` means no run-wide
 # plugin default for this run. One element of the wrong shape (an empty one, or
@@ -163,7 +164,9 @@
 # `출처=길이`. Without that row, or without `--auto`, the failure line stands.
 #
 # Every key of the key table yields, per scope it lives in, an `적용` row, a
-# `빈칸` row or an `이어받지 않음` row — except `plugin-allow`, which yields rows
+# `빈칸` row or an `이어받지 않음` row. `act-allow`, a key of both scopes, yields
+# them once for the run, as `auto-adopt` does: the manifest's `사전 인가` rows
+# carry no target. The exception is `plugin-allow`, which yields rows
 # per plugin key: a `권한` row (under one `적용` summary) or an `이어받지 않음`
 # row for each previous `플러그인 허용` row, a `빈칸` row for each applied default
 # no previous row holds, an `이어받지 않음` row for each ignored default of a key
@@ -202,7 +205,7 @@ done
 
 # The key table — a closed set. These two lines are the code side of the key
 # table SKILL.md 5o carries, and a lint compares the two sets.
-KD_RUN_KEYS='ladder-rungs stagnation-bound cost-ceiling deadline decision-confirm roster-model roster-model.<역할> auto-adopt plugin-allow account-failover'
+KD_RUN_KEYS='ladder-rungs stagnation-bound cost-ceiling deadline decision-confirm roster-model roster-model.<역할> auto-adopt plugin-allow account-failover act-allow'
 KD_REPO_KEYS='cutpoint review-ceiling terminal-cap dev-ids deploy-triggers act-allow apply-probe apply-probe-codes apply-actor plugin-allow'
 # Where `--carry` finds each key in a frozen manifest. Not compared by the lint
 # that compares the two lines above with 5o, so the test asserts that every key
@@ -766,12 +769,14 @@ kd_is_runner_form() {
 #   E_NORM E_ID E_X      normalized value, list identity, extra (deadline form)
 #   E_PLACED             1 when the key is known and in the right scope
 #   E_SECDUP             1 when its section header is duplicated
+#   E_FOLD               on a run-wide `act-allow` entry, the note naming the
+#                        section rows folded into it (empty otherwise)
 # ---------------------------------------------------------------------------
 KD_N=0
 kd_add() {   # kd_add <scope> <key> <raw> <src>
   E_SCOPE[KD_N]="$1"; E_KEY[KD_N]="$2"; E_RAW[KD_N]="$3"; E_SRC[KD_N]="$4"
   E_ST[KD_N]='ok'; E_RT[KD_N]=''; E_RM[KD_N]=''; E_NORM[KD_N]="$3"; E_ID[KD_N]=''; E_X[KD_N]=''
-  E_PLACED[KD_N]=0; E_SECDUP[KD_N]=0
+  E_PLACED[KD_N]=0; E_SECDUP[KD_N]=0; E_FOLD[KD_N]=''
   KD_I=$KD_N
   KD_N=$((KD_N + 1))
 }
@@ -1017,9 +1022,11 @@ kd_place() {
   case "$k" in
     roster-model.*)
       if printf '%s\n' "${k#roster-model.}" | grep -E '^[a-z0-9-]+$' >/dev/null; then want=run; fi ;;
-    plugin-allow)
-      # The one key of both scopes: a run-wide line and a section line are both
-      # in place, and the two lists are gathered into one union.
+    plugin-allow|act-allow)
+      # The two keys of both scopes: a run-wide line and a section line are both
+      # in place. The plugin lists are gathered into one union; a run-wide
+      # `act-allow` row is weighed against the section rows of the same form
+      # after the same-scope checks.
       want="$where" ;;
     *)
       if [ "$k" != "roster-model.<역할>" ] && kd_in "$k" "$KD_RUN_KEYS"; then want=run
@@ -1228,6 +1235,63 @@ while [ "$kd_i" -lt "$KD_N" ]; do
         done
       fi ;;
   esac
+  kd_i=$((kd_i + 1))
+done
+
+# The same `형태` in the run-wide area and in target sections: the same-scope
+# rule above, widened across the two scopes. Only applied entries meet here, so
+# a run-wide row both of whose lines a same-scope `값 충돌` voided blocks no
+# section row, and the sections that are not targets (hidden) or sit under a
+# bad header (ignored) are not weighed. When every section row agrees with the
+# run-wide row, under the same-scope predicate, they fold into it; when one
+# differs in surface, reach or cleanup, the run-wide row and every section row
+# of that form go, whatever the order of the sections.
+kd_aa_src() {   # kd_aa_src <index> — the entry's place as a conflict text names it
+  case "${E_SCOPE[$1]}" in
+    run) printf '런 전체 %s' "${E_SRC[$1]}" ;;
+    *) printf '%s %s' "${KD_TARGET[${E_SCOPE[$1]}]}" "${E_SRC[$1]}" ;;
+  esac
+}
+kd_i=0
+while [ "$kd_i" -lt "$KD_N" ]; do
+  if [ "${E_ST[kd_i]}" = "ok" ] && [ "${E_KEY[kd_i]}" = "act-allow" ] && [ "${E_SCOPE[kd_i]}" = "run" ]; then
+    kd_members=''; kd_conflict=0; kd_reason_diff=0
+    kd_j=0
+    while [ "$kd_j" -lt "$KD_N" ]; do
+      if [ "${E_ST[kd_j]}" = "ok" ] && [ "${E_KEY[kd_j]}" = "act-allow" ] \
+         && [ "${E_ID[kd_j]}" = "${E_ID[kd_i]}" ]; then
+        case "${E_SCOPE[kd_j]}" in
+          [0-9]*)
+            kd_members="$kd_members $kd_j"
+            if { case "${E_X[kd_i]}${E_X[kd_j]}" in *표면=*) true ;; *) false ;; esac; } \
+               && [ "${E_X[kd_j]%% | 사유=*}" != "${E_X[kd_i]%% | 사유=*}" ]; then
+              kd_conflict=1
+            elif [ "${E_X[kd_j]}" != "${E_X[kd_i]}" ]; then
+              kd_reason_diff=1
+            fi ;;
+        esac
+      fi
+      kd_j=$((kd_j + 1))
+    done
+    if [ -n "$kd_members" ] && [ "$kd_conflict" = "1" ]; then
+      for kd_m in "$kd_i" $kd_members; do
+        kd_srcs=''
+        for kd_o in "$kd_i" $kd_members; do
+          [ "$kd_o" = "$kd_m" ] && continue
+          kd_srcs="${kd_srcs:+$kd_srcs, }$(kd_aa_src "$kd_o")"
+        done
+        kd_ign "$kd_m" '범위 충돌' "같은 형태의 행이 $kd_srcs 에 다른 표면·도달·짝 정리로 있습니다 — 런 전체 행과 레포 구획 행을 모두 쓰지 않고 5p 에서 다시 묻습니다"
+      done
+    elif [ -n "$kd_members" ]; then
+      kd_srcs=''
+      for kd_m in $kd_members; do
+        kd_srcs="${kd_srcs:+$kd_srcs, }$(kd_aa_src "$kd_m")"
+        E_ST[kd_m]='hide'
+      done
+      E_FOLD[kd_i]="레포 구획($kd_srcs)의 같은 형태 행을 이 행 하나로 접었습니다"
+      [ "$kd_reason_diff" = "1" ] && E_FOLD[kd_i]="${E_FOLD[kd_i]} — 사유가 다른 행은 런 전체 행의 사유를 씁니다"
+    fi
+  fi
   kd_i=$((kd_i + 1))
 done
 
@@ -1465,10 +1529,13 @@ done
 
 # A pre-authorization row reaches every target of the run, because the matcher
 # does not look at the target. With two or more targets only a `형태` written in
-# every target's section is applied; the rest are offered again at 5p.
+# every target's section is applied; the rest are offered again at 5p. A
+# run-wide row counts as written in every section: it is skipped here, and the
+# section rows of its form were already folded into it or voided above.
 kd_i=0
 while [ "$kd_i" -lt "$KD_N" ]; do
-  if [ "$KD_NT" -gt 1 ] && [ "${E_ST[kd_i]}" = "ok" ] && [ "${E_KEY[kd_i]}" = "act-allow" ]; then
+  if [ "$KD_NT" -gt 1 ] && [ "${E_ST[kd_i]}" = "ok" ] && [ "${E_KEY[kd_i]}" = "act-allow" ] \
+     && [ "${E_SCOPE[kd_i]}" != "run" ]; then
     kd_all=1; kd_diff=0; kd_t=0
     while [ "$kd_t" -lt "$KD_NT" ]; do
       kd_found=0; kd_j=0
@@ -1490,7 +1557,8 @@ while [ "$kd_i" -lt "$KD_N" ]; do
 done
 kd_i=0
 while [ "$kd_i" -lt "$KD_N" ]; do
-  if [ "$KD_NT" -gt 1 ] && [ "${E_ST[kd_i]}" = "ok" ] && [ "${E_KEY[kd_i]}" = "act-allow" ]; then
+  if [ "$KD_NT" -gt 1 ] && [ "${E_ST[kd_i]}" = "ok" ] && [ "${E_KEY[kd_i]}" = "act-allow" ] \
+     && [ "${E_SCOPE[kd_i]}" != "run" ]; then
     if [ "${E_ALL[kd_i]}" != "1" ]; then
       kd_ign "$kd_i" '일부 대상만' '이 런의 일부 대상에만 있는 형태입니다 — 5p 에서 「이 런의 모든 대상에 적용」 과 함께 다시 묻습니다'
     elif [ "${E_SCOPE[kd_i]}" != "0" ]; then
@@ -1592,7 +1660,8 @@ kd_effect() {   # kd_effect <index>; sets KD_WIDE and KD_EFF
           표면=*) KD_EFF="$KD_EFF. 표면·도달·짝 정리·사유 가운데 대상마다 다른 칸이 있습니다 — 첫 대상(${KD_TARGET[0]})의 행을 씁니다" ;;
           *) KD_EFF="$KD_EFF. 사유가 대상마다 다릅니다 — 첫 대상(${KD_TARGET[0]})의 사유를 씁니다" ;;
         esac
-      fi ;;
+      fi
+      [ -z "${E_FOLD[$i]:-}" ] || KD_EFF="$KD_EFF. ${E_FOLD[$i]}" ;;
     apply-probe)
       KD_EFF='5c 에 적용 프로브로 미리 채우는 제안입니다 — 적용 명령과 파급 범위는 새로 묻습니다' ;;
     apply-probe-codes)

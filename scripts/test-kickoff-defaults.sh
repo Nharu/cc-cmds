@@ -532,6 +532,105 @@ case "$(col "$out" act-allow 7)" in
 esac
 
 # ---------------------------------------------------------------------------
+# 런 전체 act-allow — 첫 구획 머리 앞의 행은 모든 대상에 적용되고, 같은 형태의
+# 구획 행과는 같은 범위 안 규칙을 넓혀 접거나 둘 다 버린다.
+# ---------------------------------------------------------------------------
+# aa_n <output> <적용|무시> [reason token] — act-allow rows of that kind.
+aa_n() {
+  printf '%s\n' "$1" | awk -F'\t' -v t="$2" -v r="${3:-}" \
+    '$1 == t && $3 == "act-allow" && (r == "" || $6 == r)' | grep -c . || true
+}
+AA_GF='act-allow = 형태=git fetch | 사유=베이스 갱신'
+AA_RD='act-allow = 형태=gh release create | 표면=외부상태변경 | 도달=dev | 사유=a'
+AA_RP='act-allow = 형태=gh release create | 표면=외부상태변경 | 도달=prod | 사유=a'
+
+out=$(kf "$AA_GF" $T)
+check "런 전체 act-allow 한 줄은 적용된다" "$(st "$out" act-allow)" "적용"
+check "그 행의 범위 칸은 런, 출처는 파일:1" "$(col "$out" act-allow 2)|$(col "$out" act-allow 5)" "런|파일:1"
+case "$(col "$out" act-allow 7)" in
+  *'(이 런의 모든 대상에 적용)'*) ok "런 전체 act-allow 의 효과 줄은 모든 대상에 적용을 말한다" ;;
+  *) bad "런 전체 act-allow 의 효과 줄은 모든 대상에 적용을 말한다" "$(col "$out" act-allow 7)" ;;
+esac
+
+out=$(kf "$AA_GF
+[Nharu/cc-cmds]
+cutpoint = 머지" --target Nharu/cc-remote)
+check "구획이 없는 레포의 런에도 런 전체 act-allow 가 적용된다" "$(st "$out" act-allow)|$(col "$out" act-allow 2)" "적용|런"
+
+out=$(kf "$AA_GF
+[Nharu/cc-cmds]
+$AA_GF" $T)
+check "런 전체 행과 같은 구획 행: 적용 행 하나, 범위 런" "$(aa_n "$out" 적용)|$(col "$out" act-allow 2)" "1|런"
+check "접힌 구획 행은 행을 내지 않는다" "$(aa_n "$out" 무시)|$(rows "$out")" "0|1"
+case "$(col "$out" act-allow 7)" in
+  *'레포 구획(Nharu/cc-cmds 파일:3)의 같은 형태 행을 이 행 하나로 접었습니다') ok "접힌 출처를 효과 줄 끝에 적는다" ;;
+  *) bad "접힌 출처를 효과 줄 끝에 적는다" "$(col "$out" act-allow 7)" ;;
+esac
+
+out=$(kf "$AA_GF
+[Nharu/cc-cmds]
+act-allow = 형태=git fetch | 사유=다른 사유" $T)
+check "사유만 다른 구획 행도 접히고 런 전체 행의 사유를 쓴다" "$(aa_n "$out" 적용)|$(col "$out" act-allow 4)" "1|형태=git fetch | 사유=베이스 갱신"
+case "$(col "$out" act-allow 7)" in
+  *'접었습니다 — 사유가 다른 행은 런 전체 행의 사유를 씁니다') ok "사유가 다르면 접힘 덧말에 고지가 붙는다" ;;
+  *) bad "사유가 다르면 접힘 덧말에 고지가 붙는다" "$(col "$out" act-allow 7)" ;;
+esac
+
+out=$(kf "$AA_RD
+[Nharu/cc-cmds]
+$AA_RP" $T)
+check "도달만 다른 런 전체·구획 행은 둘 다 범위 충돌" "$(aa_n "$out" 무시 '범위 충돌')|$(aa_n "$out" 적용)" "2|0"
+check "범위 충돌 문면은 상대 출처와 5p 재질문을 말한다 (런 전체 행)" "$(col "$out" act-allow 7)" \
+  "같은 형태의 행이 Nharu/cc-cmds 파일:3 에 다른 표면·도달·짝 정리로 있습니다 — 런 전체 행과 레포 구획 행을 모두 쓰지 않고 5p 에서 다시 묻습니다"
+check "범위 충돌 문면 (구획 행)" \
+  "$(printf '%s\n' "$out" | awk -F'\t' '$1=="무시" && $3=="act-allow" && $5=="파일:3" { print $7 }')" \
+  "같은 형태의 행이 런 전체 파일:1 에 다른 표면·도달·짝 정리로 있습니다 — 런 전체 행과 레포 구획 행을 모두 쓰지 않고 5p 에서 다시 묻습니다"
+
+out=$(kf "act-allow = 형태=gh release create | 사유=a
+[Nharu/cc-cmds]
+$AA_RD" $T)
+check "옛 형식 런 전체 행과 새 형식 구획 행은 범위 충돌" "$(aa_n "$out" 무시 '범위 충돌')|$(aa_n "$out" 적용)" "2|0"
+
+out=$(kf "$AA_GF" $T)
+check "런 전체 act-allow 는 더는 자리 틀림이 아니다" "$(aa_n "$out" 무시 '자리 틀림')" "0"
+check "레포 구획 act-allow 는 여전히 자리 틀림 없이 적용" "$(kv repo act-allow '형태=gh pr | 사유=리뷰')" "적용"
+
+out=$(kf "$AA_GF" --target a/one --target b/two)
+check "여러 대상: 런 전체 행만 있으면 적용 하나, 일부 대상만 없음" \
+  "$(aa_n "$out" 적용)|$(aa_n "$out" 무시 '일부 대상만')" "1|0"
+
+out=$(kf "$AA_GF
+[a/one]
+$AA_GF" --target a/one --target b/two)
+check "여러 대상: 런 전체 행 + 한 구획 같은 행 → 적용 하나(범위 런), 일부 대상만 없음" \
+  "$(aa_n "$out" 적용)|$(col "$out" act-allow 2)|$(aa_n "$out" 무시 '일부 대상만')" "1|런|0"
+case "$(col "$out" act-allow 7)" in
+  *'레포 구획(a/one 파일:3)의 같은 형태 행을'*) ok "여러 대상: 접힘 덧말이 접힌 대상을 적는다" ;;
+  *) bad "여러 대상: 접힘 덧말이 접힌 대상을 적는다" "$(col "$out" act-allow 7)" ;;
+esac
+
+out=$(kf "$AA_RD
+[a/one]
+$AA_RD
+[b/two]
+$AA_RP" --target a/one --target b/two)
+check "여러 대상: 한 구획이라도 다르면 그 형태의 세 행이 모두 범위 충돌" \
+  "$(aa_n "$out" 무시 '범위 충돌')|$(aa_n "$out" 적용)" "3|0"
+
+out=$(kf "$AA_GF
+[a/one]
+act-allow = 형태=make lint | 사유=x" --target a/one --target b/two)
+check "여러 대상: 런 전체 행이 없는 형태가 한 구획에만 있으면 일부 대상만" \
+  "$(aa_n "$out" 무시 '일부 대상만')|$(aa_n "$out" 적용)" "1|1"
+
+out=$(kf "$AA_RD
+$AA_RP
+[Nharu/cc-cmds]
+$AA_RD" $T)
+check "런 전체 안 값 충돌로 빠진 형태의 구획 행은 지금 규칙대로 적용" \
+  "$(st "$out" act-allow 1)|$(st "$out" act-allow 2)|$(st "$out" act-allow 3)" "값 충돌|값 충돌|적용"
+
+# ---------------------------------------------------------------------------
 # 환경변수
 # ---------------------------------------------------------------------------
 out=$(CC_CMDS_AUTOPILOT_DEFAULT_LADDER_RUNGS=2 kf 'ladder-rungs = 4' $T)
@@ -1011,6 +1110,15 @@ check "--carry: 그 행은 이어받지 않음 형식 오류" \
   "$(printf '%s\n' "$out" | awk -F'\t' '$1=="이어받지 않음" && $3=="act-allow" { print $4; exit }')" "형식 오류"
 CW_ROWS="$CW_ROWS_SAVE"
 cw_write "$CW"
+
+# 런 전체 영역의 act-allow 도 이전 매니페스트와의 비교에 들어간다.
+out=$(kc 'act-allow = 형태=gh release view | 사유=릴리스 확인
+[Nharu/cc-cmds]
+cutpoint = 머지')
+case "$(printf '%s\n' "$out" | awk -F'\t' '$1=="차이" && $2=="런" && $3=="act-allow" { print $5; exit }')" in
+  *'gh release view'*) ok "--carry: 런 전체 act-allow 의 형태가 차이 행의 파일 값에 들어간다" ;;
+  *) bad "--carry: 런 전체 act-allow 의 형태가 차이 행의 파일 값에 들어간다" "$out" ;;
+esac
 
 # 적용 프로브 코드 행은 `<불필요>/<필요>` 로 이어받는다. 원천 절단점이 머지라
 # 파일의 적용 키는 불활성이고, 차이 행도 빈칸 행도 생기지 않는다.
