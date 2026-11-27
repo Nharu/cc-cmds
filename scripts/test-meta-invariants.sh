@@ -1105,6 +1105,8 @@ done
 for pair in "리드:$AP_ROUTER" "교대:$RS_CORPUS"; do
   check "${pair%%:*} 사본의 리뷰 크래시 복구가 같은 세션의 모든 시도로 위트니스를 찾는다" \
     "$(grep -cF -- '**A re-attached review keeps its session and does not stamp again**' "${pair#*:}" || true)/$(grep -cF -- "grep -rlxF --include=.attempt -e '<segment>#<실행 버전 1>' [-e '<segment>#<실행 버전 2>' …]" "${pair#*:}" || true)" "1/1"
+  check "${pair%%:*} 사본의 리뷰 크래시 복구가 계정을 옮긴 세션의 재진입 카드 원 스테이지도 대조한다" \
+    "$(grep -cF -- 'kept its predecessor'"'"'s witness directory, so also check, with `ls` through the gate, whether' "${pair#*:}" || true)" "1"
 done
 check "리뷰 재부착 문단이 거절 뒤 복구가 재개 세션의 모든 시도를 대조한다고 적는다" \
   "$(printf '%s\n' "$rr_lead" | grep -cF -- 'whose item 3 compares the witness stamp with every attempt of the re-attached session, not with the last attempt alone.' || true)" "1"
