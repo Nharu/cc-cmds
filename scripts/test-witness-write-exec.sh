@@ -64,18 +64,12 @@ for v in header witness; do
   if [[ "$n" == 1 ]]; then ok; else bad "$v: the publish helper call appears $n times (want 1)"; fi
 done
 for v in header checkpoint; do
-  if printf '%s\n' "${!v}" | grep -qE '(^|[^A-Za-z_-])(mktemp|mkdir)([^A-Za-z_-]|$)'; then
-    bad "$v prescribes mktemp or mkdir: $(printf '%s\n' "${!v}" | grep -nE '(^|[^A-Za-z_-])(mktemp|mkdir)([^A-Za-z_-]|$)' | head -3)"
-  else
-    ok
-  fi
-  if printf '%s\n' "${!v}" | grep -qE '(^|[^A-Za-z_.-])mv( |`)'; then
-    bad "$v prescribes mv: $(printf '%s\n' "${!v}" | grep -nE '(^|[^A-Za-z_.-])mv( |`)' | head -3)"
-  else
-    ok
-  fi
+  hit=$(grep -nE '(^|[^A-Za-z_-])(mktemp|mkdir)([^A-Za-z_-]|$)' <<<"${!v}") || hit=''
+  if [[ -n "$hit" ]]; then bad "$v prescribes mktemp or mkdir: ${hit}"; else ok; fi
+  hit=$(grep -nE '(^|[^A-Za-z_.-])mv( |`)' <<<"${!v}") || hit=''
+  if [[ -n "$hit" ]]; then bad "$v prescribes mv: ${hit}"; else ok; fi
 done
-if printf '%s\n' "$witness" | grep -qE 'T=\$\(mktemp|mkdir -p|mv -n "\$T"'; then
+if grep -qE 'T=\$\(mktemp|mkdir -p|mv -n "\$T"' <<<"$witness"; then
   bad "witness section still prescribes a temp-file publish"
 else
   ok
@@ -136,7 +130,7 @@ while IFS= read -r f; do
   for d in "${declared[@]}"; do
     [[ "$f" == "$d" ]] && { in=1; break; }
   done
-  if [[ $in -eq 1 ]]; then ok; else bad "older witness prescription outside the declared files: $f — $(grep -nE -- "$old_witness|$old_checkpoint" "$f" | head -2)"; fi
+  if [[ $in -eq 1 ]]; then ok; else bad "older witness prescription outside the declared files: $f — $(grep -nE -m 2 -- "$old_witness|$old_checkpoint" "$f")"; fi
 done <<<"$hits"
 
 # 4. Substitution lists carry {WITNESS_DRAFT}.
