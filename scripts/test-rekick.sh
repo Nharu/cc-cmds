@@ -2172,7 +2172,7 @@ seat_link() {
   c=$("$BASH" "$KD" --carry "$pm" --kickoff-at "$SL_KAT" --expect-sha256 "$SL_PMS" $auto 2>/dev/null)
   SL_DL=$(printf '%s\n' "$c" | awk -F'\t' '$1 == "마감" && $2 == "ok" { print $3 }')
   [ -f "${SL_ASKED:-}" ] || { SL_ASKED="$WORK/asked-seat"; : > "$SL_ASKED"; }
-  SL_OUT="$BASE/docs/pipeline-run/$new.plan.md"; SL_VS=""
+  SL_OUT="$BASE/docs/pipeline-run/$new.plan.md"; SL_VS=""; SL_VSN=""
   # shellcheck disable=SC2086
   rk render-manifest $auto --prev "$src" --base "$BASE" --run-id "$new" --kickoff-at "$SL_KAT" --deadline "$SL_DL" \
      --expect-sha256 "$SL_PMS" --expect-grant-sha256 "$SL_PGS" --asked "$SL_ASKED" "$@" > "$WORK/sl.draft"; SL_RC=$?
@@ -2282,22 +2282,26 @@ check "12: 하나만 답하면 남은 대기는 원천중단 하나다" "$(col "
 printf '원천승인 AP-5\t원천에 두고 새 런 열기\n원천중단 I1#1.md\t원천에 두고 새 런 열기\n' > "$WORK/asked-or2"
 out=$(jdg "$OR" --asked "$WORK/asked-or2")
 check "12: 둘 다 답하면 허용이다 (열린 기록)" "$(col "$out" 판정)/$(cnt "$out" 대기)" "허용/0"
+# A person's no under either key still counts as answered for the judge (the
+# key is there); what refuses it is verify-subset, below. Judged before any
+# link exists, since a successor draft of this source fires L13.
+for or_no in '원천승인 AP-5' '원천중단 I1#1.md'; do
+  { printf '원천승인 AP-5\t원천에 두고 새 런 열기\n원천중단 I1#1.md\t원천에 두고 새 런 열기\n'
+    printf '%s\t후속 런을 열지 않음\n' "$or_no"; } > "$WORK/asked-or-no-${or_no%% *}"
+  out=$(jdg "$OR" --asked "$WORK/asked-or-no-${or_no%% *}")
+  check "12: ${or_no%% *} 에 후속 런을 열지 않음을 답해도 judge 는 키를 답한 것으로 센다" \
+    "$(col "$out" 판정)/$(cnt "$out" 대기)" "허용/0"
+done
 SL_ASKED="$WORK/asked-or2"; seat_link "$OR" 20261101-ad000002
 check "12: 열린 기록에 답한 좌석 경로는 렌더와 verify-subset 을 통과한다" "$SL_RC/$SL_VS" "0/통과"
 [ "$SL_VS" = "통과" ] || tail -3 "$WORK/sl.rerr" "$WORK/sl.verr" >&2
 # A person's no under either key is not an answer that opens the successor run:
-# the judge counts the key as answered, and verify-subset refuses the draft.
+# verify-subset refuses the draft on 원천기록 and on nothing else.
 or_new=3
 for or_no in '원천승인 AP-5' '원천중단 I1#1.md'; do
-  { printf '원천승인 AP-5\t원천에 두고 새 런 열기\n원천중단 I1#1.md\t원천에 두고 새 런 열기\n'
-    printf '%s\t후속 런을 열지 않음\n' "$or_no"; } > "$WORK/asked-or-no"
-  out=$(jdg "$OR" --asked "$WORK/asked-or-no")
-  check "12: ${or_no%% *} 에 후속 런을 열지 않음을 답해도 judge 는 키를 답한 것으로 센다" \
-    "$(col "$out" 판정)/$(cnt "$out" 대기)" "허용/0"
-  SL_ASKED="$WORK/asked-or-no"; seat_link "$OR" "20261101-ad00000$or_new"
+  SL_ASKED="$WORK/asked-or-no-${or_no%% *}"; seat_link "$OR" "20261101-ad00000$or_new"
   check "12: ${or_no%% *} 에 후속 런을 열지 않음을 답한 좌석 경로는 verify-subset 이 원천기록으로 거절한다" \
-    "$SL_RC/$SL_VS" "0/실패"
-  has "12: ${or_no%% *} 거절의 실패한 검사는 원천기록이다" "$SL_VSN" "원천기록"
+    "$SL_RC/$SL_VS/$SL_VSN" "0/실패/원천기록"
   or_new=$((or_new + 1))
 done
 SL_ASKED=""
