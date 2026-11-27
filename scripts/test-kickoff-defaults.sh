@@ -39,6 +39,11 @@ BOUNDARIES="$repo_root/plugins/cc-cmds/skills/autopilot/references/boundaries.md
 
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/cc-kickoff-defaults-test.XXXXXX")
 trap 'rm -rf "$WORK"' EXIT
+# The helper's private copies go under this suite's own temporary directory, so
+# the census of leftover copies below counts this suite's calls only and not
+# those of another suite running the same helper at the same time.
+TMPDIR="$WORK/tmp"; mkdir -p "$TMPDIR"
+export TMPDIR
 
 passed=0
 failed=0
