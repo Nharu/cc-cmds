@@ -1099,6 +1099,15 @@ for pair in "리드:$AP_ROUTER" "교대:$RS_CORPUS"; do
   check "${pair%%:*} 사본의 리뷰 전송 단절 문단이 서버 오류까지 말한다" \
     "$(grep -cF -- 'the review died of a dropped connection or a server error with nothing saved' "${pair#*:}" || true)" "1"
 done
+# A re-attached review keeps its session id and never re-stamps its witness
+# directory, so the crashed-review recovery compares the `.attempt` stamp with
+# every attempt of that session, one `-e` per attempt, in both copies.
+for pair in "리드:$AP_ROUTER" "교대:$RS_CORPUS"; do
+  check "${pair%%:*} 사본의 리뷰 크래시 복구가 같은 세션의 모든 시도로 위트니스를 찾는다" \
+    "$(grep -cF -- '**A re-attached review keeps its session and does not stamp again**' "${pair#*:}" || true)/$(grep -cF -- "grep -rlxF --include=.attempt -e '<segment>#<실행 버전 1>' [-e '<segment>#<실행 버전 2>' …]" "${pair#*:}" || true)" "1/1"
+done
+check "리뷰 재부착 문단이 거절 뒤 복구가 재개 세션의 모든 시도를 대조한다고 적는다" \
+  "$(printf '%s\n' "$rr_lead" | grep -cF -- 'whose item 3 compares the witness stamp with every attempt of the re-attached session, not with the last attempt alone.' || true)" "1"
 
 # THE DELEGATED RE-ATTACHMENT, one paragraph in both copies: when none of the
 # three signs that a limit cleared holds, a cut on an inventory account is
