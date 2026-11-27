@@ -1015,6 +1015,8 @@ done
 # error — qualifies too, on the shift's own turn as the evidence the connection
 # is back; that branch, its paragraph head and its rationale marker are pinned
 # with the rest, and the paragraph is compared byte for byte across the copies.
+# A review re-attachment carries the report path and trigger the gate requires
+# of every review dispatch; that paragraph is pinned the same way.
 # ---------------------------------------------------------------------------
 reattach_section() {
   awk '/^#### Re-attaching a cut stage$/ { f = 1; next } f && /^#+ / { exit } f' "$1"
@@ -1039,7 +1041,9 @@ for pair in "리드:$AP_ROUTER" "교대:$RS_CORPUS"; do
     'and only a cut adds to this count' \
     'A limit must have cleared first.' \
     '`종단 부류=크래시` and `일시 원인=예`' \
+    '`일시 원인=예`**, whatever the stage kind' \
     'A dropped connection or a server error must have come back first.' \
+    'A `review` stage is re-attached with the two arguments every review dispatch carries.' \
     '연결 복귀 근거=교대 턴' \
     '--resume <세션 id>' \
     'never the slash command again' \
@@ -1071,6 +1075,23 @@ rt_shift=$(reattach_transient "$RS_CORPUS")
 check "두 사본의 일시 원인 재부착 문단이 한 줄씩 있다" \
   "$(printf '%s\n' "$rt_lead" | grep -c . || true)/$(printf '%s\n' "$rt_shift" | grep -c . || true)" "1/1"
 check "두 사본의 일시 원인 재부착 문단이 바이트 동일하다" "$rt_shift" "$rt_lead"
+# A REVIEW IS RE-ATTACHED WITH ITS REPORT PATH AND TRIGGER. The gate holds a
+# review `--resume` to the last dispatch's report path and a declared trigger,
+# so the fixed sentence alone is refused with exit 2 and never reaches the
+# crashed-review recovery either; the paragraph that adds both is one line in
+# both copies, byte for byte, and names the two flags it adds.
+reattach_review() {
+  reattach_section "$1" | grep -F -- '**A `review` stage is re-attached with the two arguments every review dispatch carries.**' || true
+}
+rr_lead=$(reattach_review "$AP_ROUTER")
+rr_shift=$(reattach_review "$RS_CORPUS")
+check "두 사본의 리뷰 재부착 문단이 한 줄씩 있다" \
+  "$(printf '%s\n' "$rr_lead" | grep -c . || true)/$(printf '%s\n' "$rr_shift" | grep -c . || true)" "1/1"
+check "두 사본의 리뷰 재부착 문단이 바이트 동일하다" "$rr_shift" "$rr_lead"
+check "리뷰 재부착 문단이 --trigger 와 --report-path 를 싣는다" \
+  "$(printf '%s\n' "$rr_lead" | grep -cF -- "--trigger '<토큰>'" || true)/$(printf '%s\n' "$rr_lead" | grep -cF -- ' --report-path <path>' || true)" "1/1"
+check "리뷰 재부착 문단이 거절 뒤 리뷰 크래시 복구로 넘긴다" \
+  "$(printf '%s\n' "$rr_lead" | grep -cF -- 'means this subsection declines the review: go on to 「Recovering a review stage that crashed」' || true)" "1"
 # The review recovery reads the same widened field, so both copies name both causes.
 for pair in "리드:$AP_ROUTER" "교대:$RS_CORPUS"; do
   check "${pair%%:*} 사본의 리뷰 전송 단절 문단이 서버 오류까지 말한다" \

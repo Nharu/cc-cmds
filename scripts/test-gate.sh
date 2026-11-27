@@ -44728,7 +44728,7 @@ check "34o: 교대 스킬이 사람의 새 답을 넘기기 전에 런 범위 �
   "$(grep -cF '**Release a run-scope routing block first.**' "$RP_SHIFT" || true)" "1"
 
 # --- 34k. 전송 단절 리뷰 — 저장물 없이 죽은 리뷰를 같은 경로로 두 번까지 다시 보낸다 ---
-# --- section: 34k | group: cone | covers: act, snapshot | anchors: 34k: 연결 오류로 죽은 리뷰의 게이트 행이 일시 원인=예 를 싣는다, 34k: 리뷰 파견 행이 리포트 경로를 자르지 않고 싣는다, 34k: 셋째 전송 단절 재파견은 rc 3 이고 행이 없다, 34k: 서버 오류 500 으로 죽은 리뷰의 게이트 행이 일시 원인=예 를 싣는다, 34k: 일시 원인=예 크래시의 --resume 재부착이 통과해 같은 세션 id 의 새 행을 남긴다 ---
+# --- section: 34k | group: cone | covers: act, snapshot | anchors: 34k: 연결 오류로 죽은 리뷰의 게이트 행이 일시 원인=예 를 싣는다, 34k: 리뷰 파견 행이 리포트 경로를 자르지 않고 싣는다, 34k: 셋째 전송 단절 재파견은 rc 3 이고 행이 없다, 34k: 서버 오류 500 으로 죽은 리뷰의 게이트 행이 일시 원인=예 를 싣는다, 34k: 일시 원인=예 크래시의 --resume 재부착이 통과해 같은 세션 id 의 새 행을 남긴다, 34k: 일시 원인=예 크래시의 리뷰 재부착이 리포트 경로와 계기를 싣고 통과해 같은 세션 id 의 새 행을 남긴다 ---
 #
 # A REVIEW THAT DIED OF A DROPPED CONNECTION BEFORE SAVING ANYTHING is sent
 # again by the shift with `--recovery '전송 단절'`, and the gate admits it only
@@ -44931,9 +44931,8 @@ check "34k: 400 으로 죽은 리뷰의 게이트 행은 일시 원인=아니오
 # AND SUCH A CRASH IS RE-ATTACHED. The gate admits a `--resume` on the crashed
 # session whatever the last row's class, so the router's widened rule needs no
 # gate change: the continued attempt runs under the same session id and lands a
-# row of its own beside the crash row. An implement stage carries it here: a
-# review dispatch is also held to its canonical `--report-path`, a check this
-# assertion is not about.
+# row of its own beside the crash row. An implement stage carries it here; the
+# review stage, held to its report path and trigger besides, follows below.
 cap_gate "$RV_SEAT" '' act --manifest "$CAP_NM" --kind segment --target infra --segment RV6 \
          --cutpoint 커밋 --surface 읽기 --snapshot-digest "$(cap_H "$RV_SEAT" '')" \
          --rationale x -- 워크트리="$CONE_A" 상태=실행중 선행=없음
@@ -44951,6 +44950,30 @@ rv_act done RV6 implement "계정 사용량 한도나 프로세스 종료, 연�
 check "34k: 일시 원인=예 크래시의 --resume 재부착이 통과해 같은 세션 id 의 새 행을 남긴다" \
   "$rc/$( [ -n "$rv_sid6" ] && [ "$rv_sid6" != "미상" ] && printf 'sid' )/$(rv_rows6)" \
   "0/sid/$((rv_n6 + 1))"
+
+# A REVIEW STAGE IS RE-ATTACHED WITH ITS REPORT PATH AND TRIGGER. RV3 died of a
+# 500 above, so it qualifies for re-attachment before the crashed-review
+# recovery. The gate holds a review `--resume` to the last dispatch's report
+# path and a declared trigger: the router copy's fixed sentence alone is refused
+# with exit 2 and no row, and the same sentence ending in ` --report-path` with
+# the dispatch's `계기` as `--trigger` — the router rule's review form — passes
+# under the same session id, on the first dispatch's path rather than `-r2`.
+rv_cont=$(grep -oE -- '-p "계정 사용량 한도[^"]*"' \
+  "$repo_root/plugins/cc-cmds/skills/autopilot-router-shift/references/re-attach.md" | head -1)
+rv_cont=${rv_cont#-p \"}; rv_cont=${rv_cont%\"}
+rv_row3=$(rv_crash RV3)
+rv_sid3=$(row_field "$rv_row3" '세션 id')
+rv_rp3=$(row_field "$(rv_last_skill RV3)" '리포트 경로')
+rv_trig3=$(row_field "$(rv_last_skill RV3)" '계기')
+rv_rows3() { { cap_rows 'stage-result' | grep -F '| 세그먼트=RV3 |' | grep -cF "| 세션 id=$rv_sid3 |" || true; } | tr -d ' '; }
+rv_n3s=$(rv_skill_rows RV3); rv_n3r=$(rv_rows3)
+rv_act done RV3 review "$rv_cont" --resume "$rv_sid3" --trigger "$rv_trig3"
+check "34k: 리포트 경로 없는 고정 문장만의 리뷰 재부착은 rc 2 이고 행이 없다" \
+  "$rc/$(rv_skill_rows RV3)/$(rv_rows3)" "2/$rv_n3s/$rv_n3r"
+rv_act done RV3 review "$rv_cont --report-path $rv_rp3" --resume "$rv_sid3" --trigger "$rv_trig3"
+check "34k: 일시 원인=예 크래시의 리뷰 재부착이 리포트 경로와 계기를 싣고 통과해 같은 세션 id 의 새 행을 남긴다" \
+  "$rc/$( [ -n "$rv_sid3" ] && [ "$rv_sid3" != "미상" ] && [ -n "$rv_rp3" ] && printf 'sid' )/$rv_trig3/$(rv_rows3)/$(row_field "$(rv_last_skill RV3)" '리포트 경로')" \
+  "0/sid/첫 리뷰/$((rv_n3r + 1))/$rv_rp3"
 CAP_STUB="$RV_CAP_STUB_SAVE"
 
 # --- 34l. 전송 단절 교대 — 무기록 교대를 연결 확인 뒤에 다시 띄운다 ---------------
