@@ -66917,7 +66917,7 @@ check "88h: 머지 전 선머지 세그먼트의 재합류 파견은 implement_n
 
 # ---------------------------------------------------------------------------
 # 88c. 릴리스 메타만의 충돌 — 기대 트리, 고정 도우미, 머지 대조의 메타 해소
-# --- section: 88c | group: ledger_series | covers: release_meta_expected_tree, gate_meta_resolved, gate_meta_resolved_export, gate_meta_merge, gate_base_check_row, gate_base_next, gate_merge_check_value, gate_done_conditions, gate_apply_preconditions, gate_segment_apply_state | anchors: 88c: 빚지지 않은 메타 해소 착지의 적용 전제는 rc 0 이고 빚지지 않음을 세운다, 88c: 적용 명령이 있는 메타 해소 착지는 전제 4 를 지나고 대상 HEAD 는 리뷰 HEAD 다, 88c: 증명되지 않는 둘째 부모의 착지는 전제 4 로 거부되고 증명 실패 사유를 싣는다, 88c: 릴리스 파일에서만 충돌한 베이스는 부류 릴리스 메타 다, 88c: 도우미의 머지 커밋은 판을 베이스 위로 다시 매긴다, 88c: 메타 해소 HEAD 의 다음은 머지 이고 베이스 판정은 일치 다, 88c: 판을 잘못 매긴 머지는 메타 해소가 아니라 해소 리뷰 다, 88c: 항목 본문에 판 번호가 든 변경 기록은 전제 (f) 에서 떨어진다, 88c: 덮지 않는 메타 해소 머지의 머지 대조는 메타 해소 다, 88c: 조건 11 은 메타 해소 를 통과시킨다, 88c: 메타 해소 HEAD 를 판정한 일치 행 뒤에도 다음은 머지 다, 88c: 리뷰-후-머지 는 메타 해소 HEAD 를 받을 때만 리뷰 뒤 머지 커밋을 통과시킨다, 88c: 메타 해소 HEAD 가 다시 충돌하면 그 HEAD 가 판정되고 다음은 베이스 해소 다 ---
+# --- section: 88c | group: ledger_series | covers: release_meta_expected_tree, gate_meta_resolved, gate_meta_resolved_export, gate_meta_merge, gate_base_check_row, gate_base_next, gate_merge_check_value, gate_done_conditions, gate_apply_preconditions, gate_segment_apply_state | anchors: 88c: 빚지지 않은 메타 해소 착지의 적용 전제는 rc 0 이고 빚지지 않음을 세운다, 88c: 적용 명령이 있는 메타 해소 착지는 전제 4 를 지나고 대상 HEAD 는 리뷰 HEAD 다, 88c: 증명되지 않는 둘째 부모의 착지는 전제 4 로 거부되고 증명 실패 사유를 싣는다, 88c: 릴리스 파일에서만 충돌한 베이스는 부류 릴리스 메타 다, 88c: 도우미의 머지 커밋은 판을 베이스 위로 다시 매긴다, 88c: 메타 해소 HEAD 의 다음은 머지 이고 베이스 판정은 일치 다, 88c: 판을 잘못 매긴 머지는 메타 해소가 아니라 해소 리뷰 다, 88c: 항목 본문에 판 번호가 든 변경 기록은 전제 (f) 에서 떨어진다, 88c: 덮지 않는 메타 해소 머지의 머지 대조는 메타 해소 다, 88c: 조건 11 은 메타 해소 를 통과시킨다, 88c: 메타 해소 HEAD 를 판정한 일치 행 뒤에도 다음은 머지 다, 88c: 리뷰-후-머지 는 메타 해소 HEAD 를 받을 때만 리뷰 뒤 머지 커밋을 통과시킨다, 88c: 메타 해소 HEAD 가 다시 충돌하면 그 HEAD 가 판정되고 다음은 베이스 해소 다, 88c: 조각만 더한 세그먼트는 봇이 릴리스한 베이스와 충돌하지 않아 판정은 이동 이고 해소가 필요 없다, 88c: 기존 방식 세그먼트는 봇이 조립한 머리 항목의 베이스와 릴리스 메타 로 충돌한다, 88c: 봇이 조립한 베이스 위의 도우미 머지는 판을 다시 매긴 E* 이고 메타 해소로 증명된다 ---
 #
 # 두 세그먼트가 같은 플러그인의 판을 올리면 `plugin.json` 과 `CHANGELOG.md` 에서만
 # 충돌하고, 그 해소는 판단이 아니다. 여기서는 같은 등급(minor) 의 두 올림을 쓴다 —
@@ -67112,6 +67112,76 @@ for bad88c in "$LB88C" "$LS88C"; do
     *) bad "88c: 증명되지 않는 둘째 부모의 착지" "$ap88c_out" ;;
   esac
 done
+
+# 조각 방식과의 공존 — 세그먼트가 릴리스 노트 조각(`changelog.d/<이름>.md`)만 더하고,
+# 베이스가 머지 뒤 봇 릴리스 커밋(두 릴리스 파일을 바꾸고 조각을 `changelog.d/archive/<판>/`
+# 으로 옮김)으로 움직여도 위의 해소 장치는 그대로 선다. 두 픽스처는 위 저장소와 원장을
+# 건드리지 않도록 같은 구성을 자기 디렉터리에 새로 만든다.
+#   (i) 조각만 더한 세그먼트는 봇이 릴리스한 베이스와 충돌하지 않아 해소가 필요 없다.
+#   (ii) 기존 방식 세그먼트는 봇이 조립한 머리 항목을 가진 베이스와 릴리스 메타로 충돌하고,
+#        그 머리 항목의 판이 베이스의 version 과 같아 전제 (e) 가 서므로 도우미가 E* 를 만든다.
+cl88cb() {  # cl88cb <판> <날짜> <리드 문단> <항목> — 봇이 조각 하나로 조립한 항목을 맨 위에 얹는다
+  { sed -n '1,2p' CHANGELOG.md; printf '## [%s] - %s\n\n%s\n\n### Added\n- %s\n\n' "$1" "$2" "$3" "$4"; sed '1,2d' CHANGELOG.md; } > CHANGELOG.new
+  mv CHANGELOG.new CHANGELOG.md
+}
+up88cf() {  # 상류: 조각 방식 PR 의 머지, 그 뒤 봇 릴리스 커밋
+  mkdir -p changelog.d \
+    && printf '등급: minor\n\n상류 기능을 더합니다.\n\n### Added\n- 상류 기능\n' > changelog.d/up.md && echo u > up.txt \
+    && git add -A && git commit -qm 'feat: 상류 기능' \
+    && pj88c 1.1.0 && cl88cb 1.1.0 2026-10-13 '상류 기능을 더합니다.' '상류 기능' \
+    && mkdir -p changelog.d/archive/1.1.0 && git mv changelog.d/up.md changelog.d/archive/1.1.0/up.md \
+    && git add -A && git commit -qm 'chore(release): v1.1.0'
+}
+segfrag88cf() {  # 세그먼트: 조각 방식 — 두 릴리스 파일은 건드리지 않는다
+  mkdir -p changelog.d \
+    && printf '등급: patch\n\n세그먼트 기능을 고칩니다.\n\n### Fixed\n- 세그먼트 기능\n' > changelog.d/seg-88c.md && echo s > seg.txt
+}
+segold88cf() {  # 세그먼트: 기존 방식 — 판을 올리고 변경 기록 머리에 항목을 얹는다
+  pj88c 1.1.0 && cl88c 1.1.0 2026-10-14 '세그먼트 기능' && echo s > seg.txt
+}
+fx88cf() {  # fx88cf <이름> <세그먼트 함수> <상류 함수> — FD88C·FR88C·FT88C·FM88C·FL88C 를 세운다
+  FD88C="$D88C/$1"; mkdir -p "$FD88C"
+  ( git init -q --bare "$FD88C/origin.git" && git init -q "$FD88C/repo" && cd "$FD88C/repo" \
+    && git config user.email t@example.invalid && git config user.name T \
+    && git config "url.$FD88C/origin.git.insteadOf" https://github.com/o/r.git \
+    && mkdir -p plugins/cc-cmds/.claude-plugin && pj88c 1.0.0 \
+    && printf '# Changelog\n\n## [1.0.0] - 2026-10-01\n\n### Added\n- 처음\n' > CHANGELOG.md \
+    && git add -A && git commit -qm one && git branch -M main \
+    && git remote add origin https://github.com/o/r.git && git push -q origin main \
+    && git worktree add -q -b seg-88c "$FD88C/seg" main \
+    && git clone -q -b main "$FD88C/origin.git" "$FD88C/up" && cd "$FD88C/up" \
+    && git config user.email t@example.invalid && git config user.name T ) >/dev/null 2>&1
+  FR88C=$( ( cd "$FD88C/seg" && "$2" && git add -A && git commit -qm seg && git rev-parse HEAD ) 2>/dev/null)
+  FT88C=$( ( cd "$FD88C/up" && "$3" && git push -q origin HEAD:main && git rev-parse HEAD ) 2>/dev/null)
+  ( cd "$FD88C/repo" && git fetch -q origin ) >/dev/null 2>&1
+  FM88C="$FD88C/manifest.md"
+  printf '## 대상\n\n- `target` | 별칭=t | 메인 워크트리=%s | 베이스 브랜치=main | 홈=예 | 원격 슬러그=o/r | 절단점=머지\n\n## 요소\n\n**설계 문서**: docs/x.md\n\n## 인가\n\n' "$FD88C/repo" > "$FM88C"
+  FL88C=$(lsr_ledger "w88c-$1")
+  printf '1\n' > "${FL88C%/*}/routing-guard"
+  printf -- '- `segment` | 교대=1 | id=S | 상태=실행중 | 워크트리=%s | 브랜치=seg-88c | 선행=없음 | prev=x\n' "$FD88C/seg" >> "$FL88C"
+  printf -- '- `cycle` | 교대=1 | 세그먼트=S | 사이클=1 | P0=0 | P1=0 | 리뷰 HEAD=%s | 리포트 경로=%s | prev=x\n' \
+    "$FR88C" "$(lsr_rp_report "$FD88C/c1.md" 0 0 차단)" >> "$FL88C"
+}
+qf88c() { lsr_in Linux "$FL88C" - lsr_rp_in "$FM88C" "$@" 2>/dev/null; }
+cf88c() {
+  local rc88c=0
+  lsr_in Linux "$FL88C" - lsr_rp_in "$FM88C" gate_record_row base-check S t >/dev/null 2>&1 || rc88c=$?
+  printf '%s' "$rc88c"
+}
+
+fx88cf frag segfrag88cf up88cf
+check "88c: 조각만 더한 세그먼트는 봇이 릴리스한 베이스와 충돌하지 않아 판정은 이동 이고 해소가 필요 없다" \
+  "$(cf88c)|$(lsr_last_fields "$FL88C" '베이스 판정' 베이스 판정 부류)|$(qf88c gate_segment_review_next S)" \
+  "0|$FT88C|이동|-|CI 대기"
+
+fx88cf old segold88cf up88cf
+check "88c: 기존 방식 세그먼트는 봇이 조립한 머리 항목의 베이스와 릴리스 메타 로 충돌한다" \
+  "$(cf88c)|$(lsr_last_fields "$FL88C" '베이스 판정' 베이스 판정 부류)|$(qf88c gate_segment_review_next S)" \
+  "0|$FT88C|충돌|릴리스 메타|베이스 해소"
+FMM88C=$(qf88c gate_meta_merge S)
+check "88c: 봇이 조립한 베이스 위의 도우미 머지는 판을 다시 매긴 E* 이고 메타 해소로 증명된다" \
+  "$(cd "$FD88C/seg" && git rev-list --parents -n 1 HEAD | cut -d' ' -f2-)|$(cd "$FD88C/seg" && sed -n 's/^  "version": "\(.*\)",$/\1/p' "$PJ88C")|$(cd "$FD88C/seg" && grep '^## \[' CHANGELOG.md | tr '\n' ';')|$(qf88c gate_meta_resolved "$FD88C/seg" "$FR88C" "$FMM88C" "$FT88C" >/dev/null && printf 0 || printf 1)" \
+  "$FR88C $FT88C|1.2.0|## [1.2.0] - 2026-10-14;## [1.1.0] - 2026-10-13;## [1.0.0] - 2026-10-01;|0"
 
 # ---------------------------------------------------------------------------
 # 88m. 재번호 사슬 — 베이스가 거듭 움직일 때의 메타 해소와 코드 충돌 한도
