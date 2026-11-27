@@ -39,7 +39,8 @@ export const TOOL_DESCRIPTION = [
   '사람에게 여러 질문을 한 장의 질문지 패널로 묻는다. 지금 물을 수 있는 질문이 둘 이상이거나, 한 질문이 선택지 다섯 개 이상·메모·자유 입력만의 답·복수 선택의 미리보기를 필요로 할 때 쓴다.',
   `결과의 첫 토큰을 읽는다(<tool_use_error> 감싸개를 벗기고 처음 나오는 ${TOKEN_PREFIX}[A-Z]+).`,
   `${TOKEN_PREFIX}OPEN 이면 이 턴을 곧바로 끝낸다. 답은 사람이 제출하면 새 턴에 [cc-cmds 질문지 답] 으로 시작하는 메시지로 온다.`,
-  `${TOKEN_PREFIX}INVALID 이면 입력을 고쳐 다시 부르고, ${TOKEN_PREFIX}BUSY 이면 replaces 로 갈아 끼우거나 답을 기다리고, ${TOKEN_PREFIX}UNAVAILABLE 이면 AskUserQuestion 으로 묻는다.`,
+  `${TOKEN_PREFIX}INVALID 이면 결과에 적힌 위반을 모두 고쳐 한 번만 다시 부르고, ${TOKEN_PREFIX}BUSY 이면 replaces 로 갈아 끼우거나 답을 기다리고, ${TOKEN_PREFIX}UNAVAILABLE 이면 AskUserQuestion 으로 묻는다.`,
+  `라벨 끝 추천 화살표·손으로 만든 기타 선택지·열거 밖 recommended·없는 when 라벨·머리말과 제목 길이 초과는 도구가 고쳐서 열고 ${TOKEN_PREFIX}OPEN 결과에 적는다.`,
 ].join(' ')
 
 const OPTION_SCHEMA = {
@@ -75,7 +76,8 @@ export const INPUT_SCHEMA = {
           options: {
             type: 'array',
             items: OPTION_SCHEMA,
-            description: 'single·multi 는 2개 이상, text 는 두지 않는다. 「기타」·「직접 입력」 같은 라벨은 만들지 않는다(allowOther 가 그린다)',
+            description:
+              'single 은 1개 이상(1개면 제안값 하나에 기타 입력이 붙는다 — allowOther 를 끄지 않는다), multi 는 2개 이상, text 는 두지 않는다. 「기타」·「직접 입력」 같은 라벨은 만들지 않는다(allowOther 가 그린다)',
           },
           allowOther: { type: 'boolean', description: '기본 true. 「기타」 자유 입력을 보인다' },
           allowNote: { type: 'boolean', description: '기본 true. 「메모 (선택)」 입력칸을 보인다' },
@@ -99,8 +101,15 @@ export const INPUT_SCHEMA = {
   additionalProperties: false,
 } as const
 
-// 결과 토큰과 본문.
-export function openResult(id: string, count: number, isPlaced: boolean): string {
+// 거절·열림 결과에 줄로 적는 위반과 고친 것은 이 수까지다.
+export const REPORT_MAX = 30
+
+// 고칠 수 없는 위반 하나. 칸은 입력 안의 경로다.
+export type Violation = { field: string; reason: string }
+
+// 결과 토큰과 본문. fixes 는 도구가 고친 것 한 줄씩(`<칸>: <무엇을 어떻게>`)이고, 있을 때만
+// 본문 끝에 적는다.
+export function openResult(id: string, count: number, isPlaced: boolean, fixes: readonly string[] = []): string {
   const lines = [
     `${TOKEN_PREFIX}OPEN ${id} 질문 ${count}건`,
     '질문지를 열었습니다. 이 턴을 지금 끝내세요: 다른 도구를 부르지 말고, 답을 짐작하거나 질문을 본문에 다시 적지 말고, 차례 넘김 표지를 쓰지 마세요(질문지 배너가 이미 나갔습니다).',
@@ -109,10 +118,23 @@ export function openResult(id: string, count: number, isPlaced: boolean): string
   if (!isPlaced) {
     lines.push('패널이 좁은 화면이라 아직 그려지지 않았습니다. 상태 줄의 /question-form 안내가 사람에게 보이므로 따로 알리지 말고 턴을 끝내세요.')
   }
+  if (fixes.length > 0) {
+    lines.push(`도구가 입력의 위반 ${fixes.length}건을 고쳐서 열었습니다. 다시 부르지 마세요. 다음 질문지부터는 처음부터 이렇게 쓰세요:`)
+    for (const fix of fixes.slice(0, REPORT_MAX)) lines.push(`- ${fix}`)
+    if (fixes.length > REPORT_MAX) lines.push(`- … 외 ${fixes.length - REPORT_MAX}건`)
+  }
   return lines.join('\n')
 }
 
 export const invalidResult = (field: string, reason: string) => `${TOKEN_PREFIX}INVALID ${field}: ${reason}`
+
+// 위반 전부를 입력 순서대로 한 줄씩 적고, 끝에 위반 수와 한 번만 다시 부르라는 줄을 둔다.
+export function invalidListResult(violations: readonly Violation[]): string {
+  const lines = violations.slice(0, REPORT_MAX).map(v => invalidResult(v.field, v.reason))
+  if (violations.length > REPORT_MAX) lines.push(`… 외 ${violations.length - REPORT_MAX}건`)
+  lines.push(`위반 ${violations.length}건을 모두 적었습니다. 모두 고쳐 한 번만 다시 부르세요.`)
+  return lines.join('\n')
+}
 export const busyResult = (id: string) => `${TOKEN_PREFIX}BUSY ${id}`
 export const unavailableResult = (reason: UnavailableReason) => `${TOKEN_PREFIX}UNAVAILABLE ${reason}`
 

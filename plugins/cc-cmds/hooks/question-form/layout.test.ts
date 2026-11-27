@@ -87,6 +87,16 @@ describe('줄 모형', () => {
     expect(hotkeys.filter(h => h !== undefined)).toEqual(['1', '2', '3', '4', '5', '6', '7', '8', '9', '0', 'm'])
   })
 
+  test('선택지 1개 single 은 선택지 줄 하나와 기타 줄을 그리고, 열 때 포커스가 그 선택지에 선다', () => {
+    const one: FormInput = { title: '하나', questions: [{ id: 'o', header: '제안', question: '이 값으로?', kind: 'single', options: [opt('제안값')], allowOther: true, allowNote: true }] }
+    const r = openRecord({ id: 'f-00000008', toolUseId: 'tu', form: one, drafts: {}, sessionId: 'sid', now: 0 })
+    const rows = layoutRows(r, null)
+    expect(rows.filter(x => x.kind === 'option')).toHaveLength(1)
+    expect(rows.filter(x => x.kind === 'other')).toHaveLength(1)
+    expect(landingKey(r)).toBe('q1-o1')
+    expect(focusStops(rows).slice(0, 2)).toEqual(['q1-o1', 'q1-other'])
+  })
+
   test('미리보기는 포커스가 그 선택지에 있을 때만 줄이 된다', () => {
     const withPreview: FormInput = { title: '미리', questions: [{ ...single, options: [opt('가', { preview: '가 미리보기' }), opt('나')] }] }
     const r = openRecord({ id: 'f-00000003', toolUseId: 'tu', form: withPreview, drafts: {}, sessionId: 'sid', now: 0 })

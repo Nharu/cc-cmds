@@ -121,6 +121,51 @@ describe('가용성 순서', () => {
   })
 })
 
+describe('보정과 일괄 보고', () => {
+  test('고칠 수 있는 위반이 섞인 질문지는 첫 호출에 열리고, 고친 것이 칸 경로와 함께 적힌다', async ($, on) => {
+    const { w } = world(on)
+    await start($)
+    const input = twoQuestions() as any
+    input.questions[0].header = '가'.repeat(13)
+    input.questions[0].options[1].label = '넓게 ← 에이전트 추천'
+    delete input.questions[0].options[0].recommended
+    const { text, isRefused } = await call($, input)
+    expect(isRefused).toBe(false)
+    expect(text).toMatch(/^QUESTION_FORM_OPEN f-[0-9a-f]{8} 질문 2건\n/)
+    const lines = text.split('\n')
+    expect(lines[1]).toContain('이 턴을 지금 끝내세요')
+    expect(lines[3]).toBe('도구가 입력의 위반 2건을 고쳐서 열었습니다. 다시 부르지 마세요. 다음 질문지부터는 처음부터 이렇게 쓰세요:')
+    expect(lines[4]).toStartWith('- questions[0].header: ')
+    expect(lines[5]).toStartWith('- questions[0].options[1].label: ')
+    expect(lines).toHaveLength(6)
+    // 열린 질문지는 고친 값을 갖는다.
+    const detail = JSON.parse(w.runs[0].argv[2] ?? '{}')
+    expect(detail.questions[0].header).toBe(`${'가'.repeat(11)}…`)
+    expect(detail.questions[0].options.map((o: any) => o.label)).toEqual(['좁게', '넓게'])
+  })
+
+  test('고칠 수 없는 위반 둘은 한 번의 거절에 두 줄로 나온다', async ($, on) => {
+    world(on)
+    await start($)
+    const input = twoQuestions() as any
+    input.questions[0].options[1].label = '미답'
+    input.questions[1].question = ''
+    const { text, isRefused } = await call($, input)
+    expect(isRefused).toBe(true)
+    const lines = text.split('\n').filter(l => l.startsWith('QUESTION_FORM_INVALID '))
+    expect(lines.map(l => l.split(':')[0])).toEqual(['QUESTION_FORM_INVALID questions[0].options[1].label', 'QUESTION_FORM_INVALID questions[1].question'])
+    expect(text).toContain('위반 2건을 모두 적었습니다')
+  })
+
+  test('위반이 없는 질문지의 OPEN 결과에는 고친 것 줄이 없다', async ($, on) => {
+    world(on)
+    await start($)
+    const { text } = await call($, twoQuestions())
+    expect(text).toMatch(/^QUESTION_FORM_OPEN f-[0-9a-f]{8} 질문 2건\n/)
+    expect(text).not.toContain('고쳐서 열었습니다')
+  })
+})
+
 describe('여러 줄 칸의 줄바꿈·탭·CR', () => {
   // 엔진이 받는다고 잰 것은 text 자식의 LF 뿐이라, 나머지는 실제로 그려지는지까지 본다.
   const fields: [string, (f: any, v: string) => void][] = [
