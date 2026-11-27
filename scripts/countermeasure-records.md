@@ -84,3 +84,4 @@
 - `plugins/cc-cmds/hooks/session-turn-notify.sh` — 턴이 끝났음을 알림으로 알릴 뿐이다
 - `plugins/cc-cmds/hooks/session-title.sh` — 세션 제목을 정할 뿐이다
 - `plugins/cc-cmds/hooks/statusline-sessionstart.sh` — 상태 줄을 설치하는 표시 장치일 뿐이다
+- `plugins/cc-cmds/hooks/witness-write-pretool.sh` — 런 밖 증인 디렉터리의 구성원 초안·체크포인트 Write 를 스스로 승인할 뿐 어떤 행위도 막지 않는다

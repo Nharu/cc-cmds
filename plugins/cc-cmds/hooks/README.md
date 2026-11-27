@@ -397,6 +397,43 @@ its local banner and leaves no remote event.
 `tool_input` with only `command` replaced, so `description` and `timeout`
 survive. With no prefix there is no `updatedInput`.
 
+## The witness write hook
+
+`witness-write-pretool.sh` is a `PreToolUse` hook on the Write tool. An
+agent-team member writes its round's witness to a draft name with the Write
+tool and its progress checkpoints under `partial/`, then publishes the draft
+with one helper call. Outside a pipeline run each of those Writes would raise a
+permission dialog in the middle of a member's round; this hook answers them with
+`permissionDecision: "allow"` and leaves every other Write to the default
+permission gate. It prints nothing for a Write it does not recognise and never
+exits 2, so it allows calls and never blocks one.
+
+A Write is allowed only when all of these hold:
+
+- `CC_PIPELINE_RUN_DIR` is unset, and `XDG_STATE_HOME`, when set, is absolute.
+- `file_path` is absolute and has no `..` component.
+- Its parent, resolved to the physical path, is a witness directory
+  `<root>/cc-team-witness-<id>` or that directory's `partial`, where `<root>` is
+  `${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/design` resolved the same way.
+- The leaf is a draft `.{role}.{round}.<16 hex>` in the witness directory, or a
+  checkpoint `{role}.{round}.seq-<n>.<16 hex>.md` in `partial`, with role and
+  round tokens in `A-Za-z0-9_-`.
+- Neither the witness directory nor `partial`, as written, is a symbolic link;
+  the leaf is not one, and an existing leaf is a regular file with link count 1.
+
+The role brief `prompt/{role-slug}.md`, the published witness itself and any
+other name get no decision.
+
+**Why it is silent inside a run.** In a pipeline session the gate decides every
+act and its witness root is the run directory, not `<root>`; a second decision
+here would sit beside the gate's. The hook therefore gives no decision whenever
+`CC_PIPELINE_RUN_DIR` is set.
+
+**Where it does not stand.** The review seat promotion runner starts its
+sessions with settings whose `enabledPlugins` turns every account plugin off and
+keeps only its own `--plugin-dir` copy with its own witness hook, so this hook
+does not run there.
+
 ## The return hook
 
 `session-return-dismiss.sh` closes the banners a session raised once the person
