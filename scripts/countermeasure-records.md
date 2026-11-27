@@ -111,3 +111,4 @@
 - `plugins/cc-cmds/hooks/session-title.sh` — 세션 제목을 정할 뿐이다
 - `plugins/cc-cmds/hooks/statusline-sessionstart.sh` — 상태 줄을 설치하는 표시 장치일 뿐이다
 - `plugins/cc-cmds/hooks/remote-reply/posttool.sh` — 원격 텍스트 답의 표지 줄을 추가 맥락으로 낼 뿐 어떤 행위도 막지 않는다
+- `plugins/cc-cmds/hooks/witness-write-pretool.sh` — 런 밖 증인 디렉터리의 구성원 초안·체크포인트 Write 를 스스로 승인할 뿐 어떤 행위도 막지 않는다

@@ -743,7 +743,7 @@ write_session_env() {
     printf -- '--output-format\t플래그\tjson\tstream-json\t다름\t비용 기록을 실행기가 진다(result.json 의 total_cost_usd)\n'
     printf -- '--max-budget-usd\t플래그\t%s\t(싣지 않음)\t다름\t세션 예산을 실행기가 진다\n' "$RESERVE_RUN"
     printf -- '-p\t플래그\t리뷰 명령과 지시문\t리뷰 명령과 지시문\t다름\t게이트 밖 세션의 지시문(중단 기록 자리, 게이트·매니페스트 없음)을 더한다\n'
-    printf '권한\t설정\tacceptEdits 모드, 대상 복제본 읽기·git 조회·하위 에이전트·플러그인 스크립트·리드의 증인 nonce 명령(openssl rand -hex <바이트 수>), 쓰기는 아래 네 경로(Edit 규칙, 보고서는 파일 규칙, 팀 규약의 증인 발행 명령은 상태·중단 기록 디렉터리 아래에서 증인 승인 훅)\t(게이트 훅이 행위마다 판정)\t다름\t게이트 훅이 없어 설정 파일의 모드와 허용·거부 목록, 그리고 증인 발행 명령과 nonce 명령만 승인하는 훅이 범위를 정한다; 실행기 설정은 그 밖의 쓰기와 네트워크 쓰기를 열지 않고, 레인 사용자 설정의 규칙은 게이트 스테이지처럼 합쳐진다\n'
+    printf '권한\t설정\tacceptEdits 모드, 대상 복제본 읽기·git 조회·하위 에이전트·플러그인 스크립트(팀 규약의 게시 도우미·nonce 도우미 포함), 쓰기는 아래 네 경로(Edit 규칙 — 증인 초안·체크포인트의 Write 포함, 보고서는 파일 규칙), 옛 증인 발행 명령과 옛 nonce 명령(openssl rand -hex <바이트 수>)은 이전 코퍼스 호환으로 상태·중단 기록 디렉터리 아래에서 증인 승인 훅이 계속 허용\t(게이트 훅이 행위마다 판정)\t다름\t게이트 훅이 없어 설정 파일의 모드와 허용·거부 목록, 그리고 증인 발행 명령과 nonce 명령만 승인하는 훅이 범위를 정한다; 실행기 설정은 그 밖의 쓰기와 네트워크 쓰기를 열지 않고, 레인 사용자 설정의 규칙은 게이트 스테이지처럼 합쳐진다\n'
     printf '대상 복제본\t쓰기 경로\truns/<n>-<갈래>/target\t(세그먼트 워크트리)\t다름\t원격 없는 대상 복제본을 리뷰한다\n'
     printf -- '--report-path\t쓰기 경로\truns/<n>-<갈래>/report.md\t(게이트의 정본 보고서 경로)\t다름\t갈래마다 보고서 자리를 실행기가 정한다\n'
     printf 'XDG_STATE_HOME\t쓰기 경로\truns/<n>-<갈래>/state\t(물려받은 상태 루트)\t다름\t증인 스크래치를 갈래 디렉터리 아래에 둔다\n'
@@ -883,9 +883,13 @@ witness_hook_write() {
 #!/usr/bin/env bash
 # PreToolUse hook of the review sessions scripts/review-seat-promotion-pair.sh
 # launches. Arguments: a log file, then the directories a witness command may
-# name. It allows a Bash call made only of the team protocol's witness
-# commands, separated by newlines, `&&` or `;`, each naming paths below one of
-# those directories:
+# name. The team protocol now writes a witness draft and a checkpoint with the
+# Write tool (opened by the state directory's Edit rule, never through this
+# hook) and publishes and issues nonces through the plugin's helpers (opened by
+# the plugin directory rule). This hook keeps allowing the older shell
+# commands below, so a transcript corpus written before that change still runs.
+# It allows a Bash call made only of those older witness commands, separated
+# by newlines, `&&` or `;`, each naming paths below one of those directories:
 #   <var>=$(mktemp [-d] <path>)   mktemp [-d] <path>   mkdir -p <path>
 #   mv [-n] <path|"$var"> <path>  echo "$var"   cat > <path|"$var"> <<'TAG'
 #   openssl rand -hex <n>         (the lead's witness nonce, names no path;
@@ -1133,9 +1137,10 @@ HOOK
 # agent_hook_write <file> — the PreToolUse hook on Agent and Task calls. It
 # decides nothing; it appends one line per call to the log its first argument
 # names: `<model or ->\t<seat or ->\t<agent_id or ->\t<description>`. The seat
-# is the role slug of the member's own hidden temp in the team protocol's
-# header, `/.<slug>.<round/phase>.XXXXXX`; peers' witnesses, which a later
-# round names by path, have no such temp and are not taken for it.
+# is the role slug of the member's own hidden draft in the team protocol's
+# header, `/.<slug>.<round/phase>.<16 hex>` (the older header's temp
+# `/.<slug>.<round/phase>.XXXXXX` is read too); peers' witnesses, which a later
+# round names by path, have no such name and are not taken for it.
 agent_hook_write() {
   cat > "$1" <<'HOOK'
 #!/usr/bin/env bash
@@ -1143,7 +1148,7 @@ log="$1"
 in=$(cat)
 printf '%s' "$in" | jq -r '
   (.tool_input // {}) as $t
-  | ([($t.prompt // "") | scan("/\\.([A-Za-z0-9_-]+)\\.[A-Za-z0-9_-]+\\.XXXXXX")] | map(.[0]) | unique) as $s
+  | ([($t.prompt // "") | scan("/\\.([A-Za-z0-9_-]+)\\.[A-Za-z0-9_-]+\\.(?:XXXXXX|[0-9a-f]{16})(?![0-9A-Za-z_.-])")] | map(.[0]) | unique) as $s
   | [ ($t.model // "-"),
       (if ($s | length) == 1 then $s[0] else "-" end),
       (.agent_id // "-"),
@@ -1174,7 +1179,13 @@ HOOK
 # scripts are opened by `<plugin dir>/*` (a `:*` suffix would need a space after
 # the directory's slash), a path naming `..` refused. Network tools are refused.
 #
-# A member publishes its witness with the team protocol's commands as written:
+# A member writes its witness draft and its round-1 checkpoints with the Write
+# tool, which the `Edit(/<state>/**)` rule opens, and publishes with one call
+# of `<plugin dir>/orchestrator/cc-team-witness-publish.sh`, which the plugin
+# directory rule opens; the lead takes nonces and draft tokens from one call of
+# `<plugin dir>/orchestrator/cc-team-nonce.sh`, opened by the same rule. The
+# rules and the hook below stay for the older commands, kept allowed so a
+# corpus written before that change still runs:
 # `T=$(mktemp "$(dirname <witness>)/.<role>.<round>.XXXXXX")`, `mv -n "$T"
 # <witness>`, and for the round-1 checkpoint `mkdir -p "$(dirname
 # <witness>)/partial"` and a plain `mv`. No allow rule matches the first: a rule
@@ -1191,12 +1202,12 @@ HOOK
 # deviations.tsv count. A hook's allow
 # does not lift a deny rule.
 #
-# The lead mints each member's witness nonce with `openssl rand -hex 8`, a Bash
-# call of its own that no plugin script makes for it and that neither the
-# read-only defaults nor `acceptEdits` approve. A refused call lands in
-# `permission_denials` and the protocol's witness would go unpublished, so that exact command is opened
-# by a rule, and the hook also allows it as one of the commands of a call.
-# Leads also mint every member's nonce in one call (`openssl rand -hex 24`,
+# Before the nonce helper, the lead minted each member's witness nonce with
+# `openssl rand -hex 8`, a Bash call that neither the read-only defaults nor
+# `acceptEdits` approve. A refused call lands in `permission_denials` and the
+# witness would go unpublished, so that exact command stays opened by a rule
+# for the older corpus, and the hook also allows it as one of the commands of a
+# call. Leads also minted every member's nonce in one call (`openssl rand -hex 24`,
 # `-hex 32`), so the hook allows any byte count from 1 to 999; an exact rule
 # cannot name them all, and a wildcard rule would also match the command
 # redirected or given more arguments, which the hook refuses.
