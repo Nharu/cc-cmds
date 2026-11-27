@@ -322,7 +322,9 @@
 # The `--asked` file lists the questions this re-kickoff actually asked, one
 # `<키><TAB><답 축자>` per line. The keys the checks read: `대상확인 <별칭>`,
 # `대상추가 <별칭>`, `5p`, `5q`, `5u <별칭> <체크>`, `5e`, `5e 값`, `5l`, `5o <범위>:<키>`,
-# `7.7 절단점 <별칭>`, `7.7 룰 <키>`, `7.7 자동채택`, `7.8`, `입양 <세그먼트>`. Any other key covers
+# `7.7 절단점 <별칭>`, `7.7 룰 <키>`, `7.7 자동채택`, `7.8`, `입양 <세그먼트>`,
+# `원천승인 <승인 id>`, `원천중단 <기록 이름>` (the last two pass only when their
+# answer is 「원천에 두고 새 런 열기」). Any other key covers
 # nothing, and every answer, whatever its key, must stand verbatim in the
 # draft's `사용자 확인 문면`. `5e` is the person's answer as given — a relative
 # form such as `+8h` included — and `5e 값` the absolute instant the kickoff
@@ -2905,7 +2907,10 @@ EOF
 }
 
 # rk_judge_asked <key> — the seat's `--asked` file has a line with that key.
-# The answer itself is not read: what it allows, verify-subset measures again.
+# The answer itself is not read: verify-subset reads it again — `7.8` and
+# `7.7 자동채택` in the rows they cover, and the source record keys
+# (`원천승인`, `원천중단`) in its `원천기록` check, which passes only
+# 「원천에 두고 새 런 열기」.
 rk_judge_asked() {
   [ -n "$RK_ASKED" ] || return 1
   awk -F '\t' -v k="$1" '$1 == k { f = 1 } END { exit !f }' "$RK_ASKED"
@@ -4193,6 +4198,22 @@ EOF
   [ "$(MANIFEST="$prev" manifest_source_ticket_rows | sort)" = "$(MANIFEST="$draft" manifest_source_ticket_rows | sort)" ] \
     || why="출처 티켓 행이 원천과 다릅니다"
   vs_check 출처티켓 "$why"
+
+  # 4c — a source record's wait (`원천승인 <승인 id>`, `원천중단 <기록 이름>`)
+  # lets the successor run open only on 「원천에 두고 새 런 열기」: judge
+  # counts the key as answered whatever its answer, so a person's
+  # 「후속 런을 열지 않음」, or any other answer, is refused here.
+  local rkey rans
+  why=""
+  while IFS= read -r rkey; do
+    [ -n "$rkey" ] || continue
+    rans=$(rk_asked_answer "$rkey")
+    [ "$rans" = "원천에 두고 새 런 열기" ] \
+      || why="${why:+$why; }$rkey 의 답이 「원천에 두고 새 런 열기」 가 아닙니다"
+  done <<EOF
+$(awk -F '\t' '(index($1, "원천승인 ") == 1 || index($1, "원천중단 ") == 1) && !s[$1]++ { print $1 }' "$RK_ASKED")
+EOF
+  vs_check 원천기록 "$why"
 
   # 5 — every answer stands verbatim in the confirmation text.
   local qk qa

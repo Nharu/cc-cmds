@@ -2156,7 +2156,7 @@ check "12: 답 없는 중단 기록은 미답 중단 사실로 센다" "$(fact "
 # ---------------------------------------------------------------------------
 # seat_link <src> <new> [render args…] — items 2, 5 and 7.1–7.5 of the seat's
 # path; SL_AUTO empty takes the person's path instead. Sets SL_RC (render),
-# SL_VS (verify-subset verdict), SL_OUT (the draft, written only on 0). SL_DOC
+# SL_VS (verify-subset verdict), SL_VSN (its failed check names), SL_OUT (the draft, written only on 0). SL_DOC
 # and SL_DOCSHA name the design document of a source that is not on DOC. The
 # stderr of the render and of verify-subset land in sl.rerr and sl.verr; SL_MID
 # names a function run between the two calls.
@@ -2186,8 +2186,9 @@ seat_link() {
   grant_block "$new" "${P_GCUT:-머지}" '픽스처가 끝나면' "$conf" "${SL_DOCSHA:-$DOCSHA}" > "$WORK/sl.block"
   [ -z "${SL_MID:-}" ] || "$SL_MID"
   # shellcheck disable=SC2086
-  SL_VS=$(col "$(rk verify-subset "$SL_OUT" "$pm" --expect-sha256 "$SL_PMS" --expect-grant-sha256 "$SL_PGS" \
-            --asked "$SL_ASKED" --grant "$WORK/sl.block" $auto)" 판정)
+  v=$(rk verify-subset "$SL_OUT" "$pm" --expect-sha256 "$SL_PMS" --expect-grant-sha256 "$SL_PGS" \
+        --asked "$SL_ASKED" --grant "$WORK/sl.block" $auto)
+  SL_VS=$(col "$v" 판정); SL_VSN=$(col "$v" 판정 3)
   cp "$WORK/rk.err" "$WORK/sl.verr"
   write_grant "$new" "${SL_DOC:-$DOC}" "$WORK/sl.block"
 }
@@ -2284,6 +2285,21 @@ check "12: 둘 다 답하면 허용이다 (열린 기록)" "$(col "$out" 판정)
 SL_ASKED="$WORK/asked-or2"; seat_link "$OR" 20261101-ad000002
 check "12: 열린 기록에 답한 좌석 경로는 렌더와 verify-subset 을 통과한다" "$SL_RC/$SL_VS" "0/통과"
 [ "$SL_VS" = "통과" ] || tail -3 "$WORK/sl.rerr" "$WORK/sl.verr" >&2
+# A person's no under either key is not an answer that opens the successor run:
+# the judge counts the key as answered, and verify-subset refuses the draft.
+or_new=3
+for or_no in '원천승인 AP-5' '원천중단 I1#1.md'; do
+  { printf '원천승인 AP-5\t원천에 두고 새 런 열기\n원천중단 I1#1.md\t원천에 두고 새 런 열기\n'
+    printf '%s\t후속 런을 열지 않음\n' "$or_no"; } > "$WORK/asked-or-no"
+  out=$(jdg "$OR" --asked "$WORK/asked-or-no")
+  check "12: ${or_no%% *} 에 후속 런을 열지 않음을 답해도 judge 는 키를 답한 것으로 센다" \
+    "$(col "$out" 판정)/$(cnt "$out" 대기)" "허용/0"
+  SL_ASKED="$WORK/asked-or-no"; seat_link "$OR" "20261101-ad00000$or_new"
+  check "12: ${or_no%% *} 에 후속 런을 열지 않음을 답한 좌석 경로는 verify-subset 이 원천기록으로 거절한다" \
+    "$SL_RC/$SL_VS" "0/실패"
+  has "12: ${or_no%% *} 거절의 실패한 검사는 원천기록이다" "$SL_VSN" "원천기록"
+  or_new=$((or_new + 1))
+done
 SL_ASKED=""
 
 # The seat's procedure gives await its own tool ceiling.
