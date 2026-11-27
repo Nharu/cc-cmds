@@ -44959,7 +44959,7 @@ check "34k: 일시 원인=예 크래시의 --resume 재부착이 통과해 같�
 # the dispatch's `계기` as `--trigger` — the router rule's review form — passes
 # under the same session id, on the first dispatch's path rather than `-r2`.
 rv_cont=$(grep -oE -- '-p "계정 사용량 한도[^"]*"' \
-  "$repo_root/plugins/cc-cmds/skills/autopilot-router-shift/references/re-attach.md" | head -1)
+  "$repo_root/plugins/cc-cmds/skills/autopilot-router-shift/references/re-attach.md" | awk 'NR==1')
 rv_cont=${rv_cont#-p \"}; rv_cont=${rv_cont%\"}
 rv_row3=$(rv_crash RV3)
 rv_sid3=$(row_field "$rv_row3" '세션 id')
