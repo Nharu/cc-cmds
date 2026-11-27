@@ -5,6 +5,24 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.70.0] - 2026-11-27
+
+에이전트 팀 구성원이 증인과 체크포인트를 쓰는 방법이 바뀌었습니다. 구성원은 이제 Write 도구로 초안 하나를 쓰고, 돌아가기 직전에 게시 도우미를 한 번 부릅니다. 임시 파일을 만들고 `mv -n` 으로 옮기던 Bash 명령 두 개가 이 호출 하나로 줄었습니다. 체크포인트에는 Bash 명령이 아예 들지 않습니다. 리드는 nonce 를 스테이지마다 nonce 도우미 한 번으로 받아 둡니다. 런 밖 대화형 세션에서는 새 PreToolUse 훅이 구성원의 초안·체크포인트 Write 를 스스로 승인합니다. 그래서 권한 확인 모드에서도 구성원의 라운드가 권한 요청에 멈추지 않습니다.
+
+### Added
+
+- **증인 쓰기 허용 훅** — `hooks/witness-write-pretool.sh` 가 Write 도구의 PreToolUse 훅으로 등록됩니다. 파이프라인 런 밖에서, 증인 디렉터리의 초안 이름 `.{role}.{round}.<16자 16진수>` 와 `partial/` 아래 체크포인트 이름 `{role}.{round}.seq-<n>.<16자 16진수>.md` 에만 허용 결정을 냅니다. 상대 경로, `..` 성분, 심볼릭 링크, 링크 수 2 이상인 대상, 역할 지시서 자리와 그 밖의 모든 Write 에는 결정을 내지 않고, 어떤 호출도 막지 않습니다.
+- **프로토콜의 도우미 규율** — 공용 팀 프로토콜의 머리말과 증인 파일 절은 초안 경로 `{WITNESS_DRAFT}` 를 치환값으로 더합니다. 증인 쓰기는 Write 도구로 초안을 쓴 뒤 `cc-team-witness-publish.sh` 를 앞에 `bash` 없이 한 번 부르는 꼴로 바뀝니다. nonce 와 초안 토큰은 `cc-team-nonce.sh` 에서 옵니다. 역할 이름과 라운드·단계 토큰에는 `A-Za-z0-9_-` 문자만 씁니다. 도우미를 쓸 수 없을 때는 옛 수단으로 물러서지 않고 그 한 줄을 반환합니다.
+- **시험 둘** — `scripts/test-witness-write-pretool-hook.sh` 는 훅이 허용하는 이름과 결정을 내지 않는 경우, 등록을 단언합니다. `scripts/test-witness-write-exec.sh` 는 두 가지를 단언합니다. 하나는 프로토콜이 증인 쓰기마다 게시 도우미 호출 하나만 처방하고 체크포인트에는 Bash 명령을 처방하지 않는다는 것입니다. 다른 하나는 옛 처방 문면이 이번 변경의 선언 파일 밖에 남지 않는다는 것입니다.
+
+### Changed
+
+- **체크포인트 꼴** — 체크포인트는 `seq` 마다 새 파일 `partial/{role}.{round}.seq-<n>.<초안 토큰>.md` 로 Write 도구가 한 번씩 씁니다. 센티널 끝에는 `draft=<초안 토큰>` 이 붙습니다. `partial/` 은 증인 초기화 도우미가 만듭니다.
+- **복구 갈래가 체크포인트를 고르는 규칙** — `review-unattended` 의 복구 갈래는 한 `(역할, 라운드)` 의 후보를 센티널의 `draft=` 값으로 묶습니다. 수정 시각이 가장 늦은 후보가 속한 묶음 안에서 `seq` 가 가장 큰 파일을 고릅니다. `draft=` 없는 이전 코퍼스는 한 묶음으로 읽습니다.
+- **지표 수집기 판독** — `collect-run-metrics.sh` 는 초안 Write 와 게시 도우미 호출을 증인 쓰기와 게시로 셉니다. 옛 `mktemp`·`mv -n` 꼴도 계속 읽습니다.
+- **좌석 승격 실행기** — 주석과 권한 표 문면이 새 처방을 적습니다. 에이전트 훅의 좌석 기록은 새 초안 이름도 잡습니다. 옛 명령은 이전 코퍼스 호환으로 계속 허용합니다.
+- **스킬 본문** — `design`, `review`, `review-unattended`, `review-lite`, `design-audit`, `design-audit-unattended` 와 감사 리더 프롬프트의 치환값 목록에 `{WITNESS_DRAFT}` 가 더해집니다.
+
 ## [3.69.0] - 2026-11-27
 
 autopilot 킥오프 기본값 파일의 런 전체 영역(첫 `[<owner>/<name>]` 구획 앞)에 적은 `act-allow` 행을 받습니다. 그 행은 그 런의 모든 대상에 적용되고, 기본값 파일에 구획이 없는 레포의 런에도 적용됩니다. 레포 구획의 `act-allow` 도 지금처럼 받습니다.
