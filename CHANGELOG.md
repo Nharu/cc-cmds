@@ -5,6 +5,14 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.70.1] - 2026-11-28
+
+원격에서 보낸 답이 열린 AskUserQuestion 호출의 경합에서 이기면, 그 호출에도 로컬 답과 같이 사후 도구 훅이 돈다. 그래서 그 세션의 데스크톱 배너가 걷히고 세션 상태 스냅숏이 `working` 으로 갱신되며, 원격 텍스트 답의 표지 줄 `[cc-cmds 원격 입력] 발신=<발신자>` 가 모델에게 전달된다.
+
+### Fixed
+
+- **원격 승리 호출의 사후 도구 훅** — 원격 답 모드가 호출 결과를 직접 돌려주면 도구가 돌지 않아 하네스가 `PostToolUse(AskUserQuestion)` 훅을 하나도 돌리지 않았다. 그 결과 배너가 남고 상태 스냅숏이 질문 대기에 머물렀으며, 텍스트 답의 표지 줄이 모델에 닿지 않고 표지 파일만 하루 뒤 정리될 때까지 남았다. 이제 모드가 확정 직후 이음매의 새 하위 명령 `seam.sh post-replay` 로 같은 훅 넷(귀환 정리, 상태 스냅숏, 원격 표지, 권한 알림 정리)을 `hooks.json` 순서대로 하네스와 같은 꼴의 입력으로 돌리고, 훅들이 낸 추가 맥락을 호출 결과의 `context` 로 돌려준다. 다시 돌리기가 실패해도 원격 답은 그대로 적용된다.
+
 ## [3.70.0] - 2026-11-27
 
 에이전트 팀 구성원이 증인과 체크포인트를 쓰는 방법이 바뀌었습니다. 구성원은 이제 Write 도구로 초안 하나를 쓰고, 돌아가기 직전에 게시 도우미를 한 번 부릅니다. 임시 파일을 만들고 `mv -n` 으로 옮기던 Bash 명령 두 개가 이 호출 하나로 줄었습니다. 체크포인트에는 Bash 명령이 아예 들지 않습니다. 리드는 nonce 를 스테이지마다 nonce 도우미 한 번으로 받아 둡니다. 런 밖 대화형 세션에서는 새 PreToolUse 훅이 구성원의 초안·체크포인트 Write 를 스스로 승인합니다. 그래서 권한 확인 모드에서도 구성원의 라운드가 권한 요청에 멈추지 않습니다.
