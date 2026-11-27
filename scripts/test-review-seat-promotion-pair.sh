@@ -436,6 +436,10 @@ expect_eq "the Agent hook logs the seat of the member's own temp, not its peers'
 expect_eq "a call with no model or no temp logs -, and a nested call its agent id" \
   "none#-	-	a7	Find lints" \
   "$(agent_logs "$(jq -n --arg p "$peers" '{description: "Find\tlints", prompt: $p}')" a7)"
+draft='/w/.logic.round-2.0123456789abcdef'
+expect_eq "the Agent hook logs the seat of the member's own draft, and not a longer name or a .md file" \
+  "none#opus	logic	-	draft|none#opus	-	-	longer" \
+  "$(agent_logs "$(jq -n --arg p "$peers. Write to $draft, then publish" '{description: "draft", prompt: $p, model: "opus"}')")|$(agent_logs "$(jq -n --arg p "$peers. ${draft}0 ${draft}.md" '{description: "longer", prompt: $p, model: "opus"}')")"
 expect_eq "a prompt carrying two seats' temps names no seat" \
   "none#sonnet	-	-	two" \
   "$(agent_logs "$(jq -n --arg p "$own .tests.round-1.XXXXXX /.tests.round-1.XXXXXX" '{description: "two", prompt: $p, model: "sonnet"}')")"
@@ -452,11 +456,34 @@ proto="$repo_root/plugins/cc-cmds/skills/_common/agent-team-protocol.md"
 wp="$rd/state/cc-cmds/design/cc-team-witness-review-x.Ab12Cd/logic.round-1.md"
 # from_proto <protocol text> — the text with the header's escaped quotes undone
 # and its placeholders filled for one witness.
-from_proto() { printf '%s' "$1" | sed -e 's/\\"/"/g' -e "s|{WITNESS_PATH}|$wp|g" -e 's/{role-slug}/logic/g' -e 's|{round/phase}|round-1|g'; }
-p_mk=$(grep -oE 'T=\$\(mktemp \\"\$\(dirname \{WITNESS_PATH\}\)/[^ `]*\\"\)' "$proto" | awk 'NR == 1' || true)
-p_mv=$(grep -oE 'mv -n \\"\$T\\" \{WITNESS_PATH\}' "$proto" | awk 'NR == 1' || true)
-p_mkd=$(grep -oE 'mkdir -p "\$\(dirname \{WITNESS_PATH\}\)/partial"' "$proto" | awk 'NR == 1' || true)
-if [[ -n "$p_mk" && -n "$p_mv" && -n "$p_mkd" ]]; then pass "the protocol still writes the three witness commands the hook is fed"; else fail "a witness command is gone from $proto: [$p_mk] [$p_mv] [$p_mkd]"; fi
+wdr="$(dirname "$wp")/.logic.round-1.0123456789abcdef"
+from_proto() { printf '%s' "$1" | sed -e 's/\\"/"/g' -e "s|{WITNESS_PATH}|$wp|g" -e "s|{WITNESS_DRAFT}|$wdr|g" -e "s|<plugin root>|$pdx|g" -e 's/{role-slug}/logic/g' -e 's|{round/phase}|round-1|g'; }
+# The protocol's own commands: one publish-helper call per witness and one
+# nonce-helper call per stage, both run from the plugin directory, so the
+# plugin directory rule opens them and the witness hook neither decides nor
+# logs them. The draft and the checkpoint are Write tool calls, which reach no
+# Bash hook.
+p_pub=$(grep -oE '<plugin root>/orchestrator/cc-team-witness-publish\.sh \{WITNESS_DRAFT\} \{WITNESS_PATH\}' "$proto" | awk 'NR == 1' || true)
+p_iss=$(grep -oE '<plugin root>/orchestrator/cc-team-nonce\.sh <role-slug>@<round/phase>\.\.\.' "$proto" | awk 'NR == 1' || true)
+if [[ -n "$p_pub" && -n "$p_iss" ]]; then pass "the protocol still names the publish helper and the nonce helper"; else fail "a helper call is gone from $proto: [$p_pub] [$p_iss]"; fi
+c_pub=$(from_proto "$p_pub"); c_iss="$pdx/orchestrator/cc-team-nonce.sh logic@round-1 logic@round-1-rev1"
+expect_eq "both helper calls start below the plugin directory the settings open" "yes|yes" \
+  "$([[ $c_pub == "$pdx/orchestrator/"* ]] && echo yes)|$([[ $c_iss == "$pdx/orchestrator/"* ]] && echo yes)"
+expect_eq "the settings open the draft's directory with an Edit rule" "true" \
+  "$(jq -r --arg s "Edit(/$rd/state/**)" '.permissions.allow | index($s) != null' "$st")"
+ml="$rd/witness-misses.log"
+rm -f "$ml"
+expect_eq "the witness hook gives the helper calls no decision, so the plugin rule decides them" "none|none" \
+  "$(hook_says "$c_pub")|$(hook_says "$c_iss")"
+wo=$(jq -n --arg f "$wdr" '{hook_event_name: "PreToolUse", tool_name: "Write", tool_input: {file_path: $f, content: "x"}}' | bash -c "$hc" 2>/dev/null || true)
+wo2=$(jq -n --arg f "$(dirname "$wp")/partial/logic.round-1.seq-1.0123456789abcdef.md" '{hook_event_name: "PreToolUse", tool_name: "Write", tool_input: {file_path: $f, content: "x"}}' | bash -c "$hc" 2>/dev/null || true)
+expect_eq "the witness hook gives a draft or checkpoint Write no decision" "|" "$wo|$wo2"
+if [[ ! -e "$ml" ]]; then pass "the hook logs neither helper call nor a Write"; else fail "the hook logged: $(cat "$ml")"; fi
+# The older commands stay allowed for a corpus written before the helpers, so
+# they are fixed strings here rather than read from the protocol.
+p_mk='T=$(mktemp \"$(dirname {WITNESS_PATH})/.{role-slug}.{round/phase}.XXXXXX\")'
+p_mv='mv -n \"$T\" {WITNESS_PATH}'
+p_mkd='mkdir -p "$(dirname {WITNESS_PATH})/partial"'
 c_mk=$(from_proto "$p_mk"); c_mv=$(from_proto "$p_mv"); c_mkd=$(from_proto "$p_mkd")
 pdir=$(dirname "$wp")/partial
 expect_eq "the hook allows the protocol's witness commands below the state home and the halt directory" \
@@ -502,12 +529,12 @@ hook_says "mkdir -p $rd/target/out" > /dev/null
 if [[ ! -e "$ml" ]]; then pass "the hook logs no call that only mentions the words or runs mkdir outside those directories"; else fail "the hook logged: $(cat "$ml")"; fi
 expect_eq "the hook allows mkdir -p of the state home and the halt directory themselves" "allow|allow" \
   "$(hook_says "mkdir -p $rd/state")|$(hook_says "mkdir -p \"$rd/halt\"")"
-# The lead mints every witness nonce with the protocol's own command, a call of
-# its own: the settings open exactly it, and the hook allows it alone, several
-# in one call, or beside a witness command, and nothing that writes or pipes it.
-p_nonce=$(grep -oE 'openssl rand -hex 8' "$proto" | awk 'NR == 1' || true)
-if [[ -n "$p_nonce" ]]; then pass "the protocol still names the nonce command the settings and the hook open"; else fail "the nonce command is gone from $proto"; fi
-expect_eq "the settings open the protocol's nonce command exactly" "Bash($p_nonce)" \
+# Before the nonce helper the lead minted every witness nonce with its own
+# command, a call of its own: the settings still open exactly it, and the hook
+# allows it alone, several in one call, or beside a witness command, and
+# nothing that writes or pipes it.
+p_nonce='openssl rand -hex 8'
+expect_eq "the settings open the older nonce command exactly" "Bash($p_nonce)" \
   "$(jq -r '[.permissions.allow[] | select(startswith("Bash(openssl"))] | join("|")' "$st")"
 expect_eq "the hook allows the nonce command alone, several at once and beside a witness command" "allow|allow|allow" \
   "$(hook_says "$p_nonce")|$(hook_says "$p_nonce"$'\n'"$p_nonce; $p_nonce")|$(hook_says "$c_mkd && $p_nonce")"
