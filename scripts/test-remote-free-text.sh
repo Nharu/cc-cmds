@@ -565,6 +565,67 @@ check "10 hooks.json 의 PostToolUse(AskUserQuestion) 원격 표지 항목" \
 if [ -x "$POSTTOOL" ]; then ok "10 posttool.sh 가 실행 가능"; else bad "10 posttool.sh 가 실행 가능" "실행 권한 없음"; fi
 check "10 posttool.sh 에 시험 자리 이름 없음" "$(grep -c 'CC_CMDS_ATTENTION_ROOT' "$POSTTOOL")" "0"
 
+# ---------------------------------------------------------------------------
+# 10b. post-replay — after a remote win the harness runs no PostToolUse hook, so
+#      the mode asks the seam to run them on the call it answered. The hooks run
+#      for real: the notifier is the logging stub and the dismiss runs in the
+#      foreground.
+# ---------------------------------------------------------------------------
+# replay <stdin> [<env>...] — run `seam.sh post-replay` the way the mode does,
+# from a clean environment.
+replay() {
+  local input="$1"; shift
+  printf '%s' "$input" | env -i HOME="$s/home" PATH="$BIN:/usr/bin:/bin" TMPDIR="$s/tmp" \
+    XDG_STATE_HOME="$s/state" CC_CMDS_ATTENTION_ROOT="$ROOT" CLAUDE_PLUGIN_ROOT="$PLUGIN" \
+    CC_CMDS_NOTIFY_PATH_DISABLE_PREPEND=1 CC_CMDS_NOTIFY_HOST_OS=Darwin CC_CMDS_NOTIFY_DISMISS_SYNC=1 \
+    CC_CMDS_AUTOPILOT_NOTIFY=0 CC_CMDS_DASHBOARD=off CC_TEST_NOTIFY_LOG="$s/notifier.log" \
+    "$@" bash "$SEAM" post-replay > "$OUTF" 2> "$ERR"
+  RC=$?
+  loud
+}
+
+fresh
+env1=$(put_env "$AUQ1")
+put_event_fx "$FX/event-auq.json"
+call=$(auq_call "$env1" "$SID1")
+seam "$call" commit "$SAFE1" "$RID_AUQ1"
+replay_in=$(printf '%s' "$call" | jq -c --argjson a "$(out)" '. + {answers: $a}')
+mark=$(mark_of "$TU_AUQ1")
+replay "$replay_in"
+check "10b 원격 텍스트 답의 다시 돌리기는 표지 줄 하나를 담은 배열" "$(out | jq -c .)" "$(jq -cn --arg l "$MARK_LINE" '[$l]')"
+if [ -e "$mark" ]; then bad "10b 다시 돌리기가 표지 파일을 지움" "남아 있다"; else ok "10b 다시 돌리기가 표지 파일을 지움"; fi
+check "10b 상태 스냅숏이 working" "$(jq -r '.state' "$ROOT"/status/*.json 2>/dev/null)" "working"
+check "10b 귀환 정리가 배너 목록을 읽음" "$(grep -c -- '-list ALL' "$s/notifier.log" 2>/dev/null)" "1"
+replay "$replay_in"
+check "10b 같은 입력의 둘째 다시 돌리기는 빈 배열" "$(out)" "[]"
+
+# A pipeline marker closes the seam: nothing is printed and the mark stays.
+fresh
+env1=$(put_env "$AUQ1")
+put_event_fx "$FX/event-auq.json"
+seam "$call" commit "$SAFE1" "$RID_AUQ1"
+mark=$(mark_of "$TU_AUQ1")
+replay "$replay_in" CC_PIPELINE_SEGMENT=A
+check "10b 파이프라인 표지 아래에서는 아무것도 내지 않음" "$(out)" ""
+check "10b 파이프라인 표지 아래에서는 표지 파일을 남김" "$(cat "$mark" 2>/dev/null)" "$SENDER"
+
+# Input the mode never sends is an empty array.
+replay '{"session_id":"bad id!","tool_use_id":"tu","questions":[],"answers":{}}'
+check "10b 문법 밖 세션 id 는 빈 배열" "$(out)" "[]"
+replay "$(printf '%s' "$replay_in" | jq -c 'del(.tool_use_id)')"
+check "10b tool_use_id 없는 입력은 빈 배열" "$(out)" "[]"
+replay "$(printf '%s' "$replay_in" | jq -c '.answers = []')"
+check "10b 객체가 아닌 답은 빈 배열" "$(out)" "[]"
+replay 'not json'
+check "10b JSON 이 아닌 입력은 빈 배열" "$(out)" "[]"
+
+# The replayed hooks are the hooks.json PostToolUse hooks that match
+# AskUserQuestion, in the same order.
+check "10b 다시 돌리는 훅 목록이 hooks.json 과 같음" \
+  "$(sed -n "/^POST_HOOKS='/,/'\$/p" "$SEAM" | sed -e "s/^POST_HOOKS='//" -e "s/'\$//")" \
+  "$(jq -r '.hooks.PostToolUse[] | select(.matcher == "AskUserQuestion" or .matcher == "*") | .hooks[].command' "$HOOKS_JSON" \
+     | sed -e 's|^bash "\${CLAUDE_PLUGIN_ROOT}/||' -e 's|"||')"
+
 check "11 모든 실행이 rc 0 이고 stderr 가 비어 있음" "$LOUD" "0"
 
 echo "test-remote-free-text: $passed passed, $failed failed"

@@ -36,6 +36,9 @@ export function world(on: On, options: WorldOptions = {}) {
     files: {} as Record<string, string>,
     seams: [] as SeamCall[],
     replies: {} as Record<string, Reply>,
+    // seam.sh 하위 명령의 종료 코드(없으면 0)와, 시간 초과처럼 호출 자체가 거부될 하위 명령.
+    exitCodes: {} as Record<string, number>,
+    refusedSubs: new Set<string>(),
     // 하위 명령이 답하기 전에 세계에서 일어날 일(그 사이 사람이 질문지를 바꾸는 따위).
     before: {} as Record<string, ($: any) => Promise<void>>,
     spawns: [] as { argv: string[]; input?: string }[],
@@ -151,11 +154,14 @@ export function world(on: On, options: WorldOptions = {}) {
     const at = e.argv.findIndex(a => a.endsWith('/hooks/remote-reply/seam.sh'))
     const dat = e.argv.findIndex(a => a.endsWith('/hooks/session-permission-decide.sh'))
     let stdout = ''
+    let exitCode = 0
     if (at >= 0) {
       const c: SeamCall = { sub: e.argv[at + 1] ?? '', args: e.argv.slice(at + 2), stdin: init.stdin }
       w.seams.push(c)
       await w.before[c.sub]?.($)
+      if (w.refusedSubs.has(c.sub)) throw new Error('process.run 시간 초과')
       stdout = answer(w.replies[c.sub], c)
+      exitCode = w.exitCodes[c.sub] ?? 0
     } else if (dat >= 0) {
       const c: SeamCall = { sub: e.argv[dat + 1] ?? '', args: e.argv.slice(dat + 2), stdin: init.stdin }
       w.decides.push(c)
@@ -163,7 +169,7 @@ export function world(on: On, options: WorldOptions = {}) {
       stdout = answer(w.decideReplies[c.sub], c)
     }
 
-    return { value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+    return { value: { exitCode, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
   // 대기 자식은 띄운 명령별 큐에서 한 줄을 받는다(seam.sh wait / 결정 도우미 wait).
   on('process.spawn', async function* (_$, e) {

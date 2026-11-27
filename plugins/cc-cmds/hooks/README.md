@@ -1268,9 +1268,9 @@ this section says which file moves them.
 | File | Role |
 | --- | --- |
 | `remote-reply/index.tsx` | The mode, registered by the run-status pane module right after the question form. Activation, the open-question race, the mailbox and watch clocks, the question-form apply, the idle check, the new-instruction submit and the wake prompt |
-| `remote-reply/seam.sh` | Every read and write of the spool, as subcommands: `wait`, `commit`, `sat`, `scan`, `form-pick`, `form-unpick`, `form-record`, `turn-pick`, `turn-unpick`, `turn-record`, `mark-take`, `wake-mark`, `cleanup` |
+| `remote-reply/seam.sh` | Every read and write of the spool, as subcommands: `wait`, `commit`, `sat`, `scan`, `form-pick`, `form-unpick`, `form-record`, `turn-pick`, `turn-unpick`, `turn-record`, `mark-take`, `post-replay`, `wake-mark`, `cleanup` |
 | `remote-reply/pretool.sh` | The `PreToolUse(AskUserQuestion)` entry, the third for that matcher, `"timeout": 5`; it runs `seam.sh sat` |
-| `remote-reply/posttool.sh` | The `PostToolUse(AskUserQuestion)` entry, after the return hook and the status snapshot, `"timeout": 5`; it runs `seam.sh mark-take` |
+| `remote-reply/posttool.sh` | The `PostToolUse(AskUserQuestion)` entry, after the return hook and the status snapshot, `"timeout": 5`; it runs `seam.sh mark-take`. After a remote win the harness does not run it; `seam.sh post-replay` does |
 
 **Only the shell writes.** The mode looks at names with `$.fs` (the spool root
 `$HOME/.local/state/cc-cmds/attention`, the forward index, the mailboxes) and
@@ -1295,8 +1295,19 @@ local dialog has ended by then, its result stands and nothing is written.
 Otherwise `seam.sh commit` checks the acceptance conditions, writes the pick-up
 marker (where it applies), claims the target cell, writes and reads back the
 applied record and leaves a handled marker with the cause `reply-applied`, and
-prints the answer map; the mode returns `{ result: { questions, answers } }`.
-A refused commit adds the reply id to the child's skip list and starts the
+prints the answer map. Because the mode answers the call itself, the tool
+never runs and the harness runs no `PostToolUse` hook for it, so the mode then
+runs `seam.sh post-replay` with the call and the answer map. It builds the
+input the harness would have given (`hook_event_name`, `session_id`,
+`tool_name`, `tool_use_id`, `tool_input`, `tool_response`; no `agent_id`, no
+`cwd`), runs the four `PostToolUse` hooks that match `AskUserQuestion` in
+`hooks.json` order (the return dismiss, the status snapshot, `posttool.sh`,
+`session-permission-notify.sh settle`), and prints a one-line JSON array of
+every non-empty `additionalContext` they gave; it always exits 0. The mode
+returns `{ result: { questions, answers }, context }` when that array is not
+empty and `{ result: { questions, answers } }` otherwise — a non-zero exit, a
+refused call or output that is not a JSON array counts as empty, and the remote
+win stands. A refused commit adds the reply id to the child's skip list and starts the
 child again. A call whose input already has `answers` is passed on untouched.
 
 **The pre-tool entry.** For one question opening with `승인 <approval_id> — `,
@@ -1337,6 +1348,8 @@ envelope also writes
 (keyed like a target cell, holding the sender id); when the call's tool use
 ends, `posttool.sh` runs `mark-take`, which prints the remote-input line
 `[cc-cmds 원격 입력] 발신=<sender>` as additional context and removes the file.
+On a call the mode won, that hook runs inside `post-replay`, and the line
+reaches the model as the call result's `context`.
 A question form applied from a text envelope types each text into its question
 with the same transition a person's typing uses, and its submitted bundle ends
 with a line feed and the remote-input line; the applied record hashes those
