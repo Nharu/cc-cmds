@@ -150,7 +150,7 @@ line_has() {
     bad "$f: anchor found on $n lines (want 1): $anchor"
     return
   fi
-  if [[ "$lines" == *'{WITNESS_DRAFT}'* ]]; then ok; else bad "$f: the substitution list at «$anchor» lacks {WITNESS_DRAFT}"; fi
+  if [[ "$lines" == *'{WITNESS_DRAFT}'* ]]; then ok; else bad "$f: the substitution list at «${anchor}» lacks {WITNESS_DRAFT}"; fi
 }
 line_has plugins/cc-cmds/skills/design-audit/SKILL.md '**MUST — byte-identical prompts, and one model.**'
 line_has plugins/cc-cmds/skills/design-audit-unattended/SKILL.md '**MUST — byte-identical prompts, and one model.**'
