@@ -308,8 +308,8 @@ detect_case() {
 # 10. 거절 — 런 안에서는 어느 모드도 읽지 않는다
 # ---------------------------------------------------------------------------
 for var in CC_PIPELINE_RUN_ID CC_PIPELINE_STAGE_ID CC_PIPELINE_SHIFT_ID CC_PIPELINE_REENTRY; do
-  for mode in 'detect --arg x' 'judge --prev X --base /x' 'verify --prev X --base /x' 'graph --prev X --base /x' \
-              'render-manifest --prev X --base /x' 'render-manifest --auto --prev X --base /x' \
+  for mode in 'detect --arg x' 'await --arg x --timeout 1' 'judge --prev X --base /x' 'verify --prev X --base /x' 'graph --prev X --base /x' \
+              'render-manifest --prev X --base /x''render-manifest --auto --prev X --base /x' \
               'render-interview --prev X --base /x' \
               'verify-subset a b' 'verify-subset --auto a b' \
               "adopt --prev X --base /x --expect-sha256 $(printf '%064d' 0)" \
@@ -501,14 +501,16 @@ check "3: 이어받기의 마지막 줄은 처음부터 묻는 길이다" "$(pri
 
 mk_prev RKLIVE; fx_stage_live I1; fx_done
 detect_case "3 살아 있는 스테이지" RKLIVE
-check "3: 살아 있는 스테이지가 있으면 done 이 있어도 진행 중이다" "$(col "$OUT" 판정)" "진행 중"
-has "3: 그 문면은 아직 돌고 있다고 한다" "$OUT" "아직 돌고 있습니다"
+check "3: 살아 있는 스테이지가 있고 done 이 있으면 끝남 대기다" "$(col "$OUT" 판정)/$(col "$OUT" 판정 3)" "끝남 대기/RKLIVE"
+has "3: 그 문면은 끝났지만 아직 도는 프로세스가 있다고 한다" "$OUT" "이전 런 RKLIVE 은 끝났지만 아직 도는 프로세스가 있습니다 — 끝난 뒤 판정합니다"
+has "3: 남은 프로세스 줄이 그 스테이지를 든다" "$OUT" "남은 프로세스${TAB}스테이지${TAB}I1"
 
 mk_prev RKSHIFT; fx_done
 wait_holder >/dev/null 2>&1 & spid=$!; FX_PIDS="$FX_PIDS$spid "
 printf '%s\n%s\n' "$spid" "$(LC_ALL=C ps -o lstart= -p "$spid" | sed 's/[[:space:]]\{1,\}/ /g;s/^ //;s/ $//')" > "$FX_RUN_DIR/shift.live"
 detect_case "3 살아 있는 교대" RKSHIFT
-check "3: 살아 있는 교대가 있으면 진행 중이다" "$(col "$OUT" 판정)" "진행 중"
+check "3: 살아 있는 교대가 있고 done 이 있으면 끝남 대기다" "$(col "$OUT" 판정)" "끝남 대기"
+has "3: 남은 프로세스 줄의 종류는 교대다" "$OUT" "남은 프로세스${TAB}교대${TAB}-"
 
 mk_prev RKBROKEN
 rm -f "$FX_LEDGER"; mkdir -p "$FX_LEDGER"
@@ -855,7 +857,7 @@ detect_case "3c 재킥오프" RKVE
 check "3c: 재킥오프 판정도 같은 고지를 싣는다" "$(col "$OUT" 판정)/$(vnote "$OUT")" \
   "재킥오프/승인 뒤 문서 바뀜 — 비교 기준 없음, 다음 시각 단계가 재사용과 다시 생성을 묻고 다시 생성을 고르면 승인한 화면을 잃습니다"
 
-mk_prev RKVL; fx_stage_live I1; fx_done
+mk_prev RKVL; fx_stage_live I1
 detect_case "3c 진행 중" RKVL
 check "3c: 진행 중 판정에는 승인 고지가 없다" "$(col "$OUT" 판정)/$(vnote "$OUT")" "진행 중/"
 mk_prev RKVC; fx_done
@@ -2006,7 +2008,10 @@ done
 
 mk_seat RKJ-L5 마감; fx_approval AP-9 대기
 out=$(jdg RKJ-L5)
-check "12: L5 — 열린 승인이 있으면 금지" "$(col "$out" 판정)/$(fired "$out")/$(fact "$out" '열린 승인')" "금지/L5 /1"
+check "12: 열린 승인이 있으면 금지가 아니라 대기다" "$(col "$out" 판정)/$(cnt "$out" 금지선)/$(fact "$out" '열린 승인')" "대기/0/1"
+check "12: 그 대기 줄은 원천승인 키와 질문 문면을 싣는다" \
+  "$(printf '%s\n' "$out" | awk -F'\t' '$1 == "대기" { printf "%s/%s/%s", $2, $3, $4 }')" \
+  "원천승인/원천승인 AP-9/픽스처 — 이 기록은 원천에 남고, 새 런이 같은 자리에 이르면 다시 묻습니다"
 
 P_EXTRA="$SEAT_ROW
 $(prov7 RKJROOT0 3 RKJROOT 마감)" mk_seat RKJ-L6 마감
@@ -2118,9 +2123,10 @@ check "12: 하나만 답하면 대기이고 남은 줄은 어휘다" "$(col "$ou
 printf '7.8\t묶는다\n7.7 자동채택\t빼고 간다\n' > "$WORK/asked-w2"
 out=$(jdg RKJ-W --asked "$WORK/asked-w2")
 check "12: 둘 다 답하면 허용이다" "$(col "$out" 판정)/$(cnt "$out" 대기)" "허용/0"
-fx_approval AP-W 대기
-out=$(jdg RKJ-W --asked "$WORK/asked-w2")
-check "12: 금지선이 있으면 답해도 금지다" "$(col "$out" 판정)" "금지"
+P_EXTRA="$SEAT_ROW
+- \`베이스 설계\` | 문서=docs/rk-base.md | sha256=$OLDBASESHA | 티켓=T1" P_AUTOADOPT='설계-골격' mk_seat RKJ-WL3 해당없음 포기
+out=$(jdg RKJ-WL3 --asked "$WORK/asked-w2")
+has "12: 금지선이 있으면 답해도 금지다" "$(col "$out" 판정)/$(fired "$out")" "금지/L3 "
 hasnt "12: 마감에 관한 금지선은 없다" "$(printf '%s\n' "$out" | awk -F'\t' '$1 == "금지선"')" "마감을"
 
 # detect and judge agree on whether a run ended, fixture by fixture.
@@ -2143,7 +2149,7 @@ mk_seat RKJ-HALT 마감
 mkdir -p "$FX_RUN_DIR/halt"; printf '# 중단\n\n**분류**: gate-unanswerable\n' > "$FX_RUN_DIR/halt/I1#1.md"
 agree "답 없는 중단" RKJ-HALT
 out=$(jdg RKJ-HALT)
-check "12: 답 없는 중단 기록은 L5 로 셈한다" "$(fact "$out" '미답 중단')" "1"
+check "12: 답 없는 중단 기록은 미답 중단 사실로 센다" "$(fact "$out" '미답 중단')" "1"
 
 # ---------------------------------------------------------------------------
 # 12. render-manifest --auto · verify-subset --auto — 좌석 경로 끝까지
@@ -2195,6 +2201,94 @@ adopt_run() {
   fx_session_index "s-$1" "$1"
 }
 prov_of() { grep -E '^- `사전 인가` \| 이어받은 런=' "$1"; }
+
+# An ended source with something still running: detect says `끝남 대기`, await
+# polls until it stops (or its ceiling), and only then does the seat's path
+# open. For each end token the seat may carry on from.
+n=0
+for tok in 마감 천장 무진전; do
+  n=$((n + 1))
+  aw="20261101-aa00000$n"
+  mk_seat "$aw" "$tok"; fx_stage_live I1; aw_pid=$FX_LAST_PID
+  detect_case "12 끝남 대기 ($tok)" "$aw"
+  check "12: 끝난 원천에 살아 있는 스테이지가 있으면 끝남 대기다 ($tok)" "$(col "$OUT" 판정)/$(col "$OUT" 판정 3)" "끝남 대기/$aw"
+  has "12: 끝남 대기의 남은 프로세스 줄 ($tok)" "$OUT" "남은 프로세스${TAB}스테이지${TAB}I1"
+  before=$(src_sum "$aw")
+  out=$(rk_as "s-$aw" await --arg "$aw" --timeout 2); rc=$?
+  check "12: 도는 동안 await 은 상한으로 0 을 낸다 ($tok)" "$rc/${out%%$'\n'*}/$(col "$out" '대기 결과')" "0/cc-rekick v1/상한"
+  has "12: 상한 뒤에 남은 프로세스 줄이 온다 ($tok)" "$out" "남은 프로세스${TAB}스테이지${TAB}I1"
+  check "12: await 은 원천 파일·런 디렉터리·색인을 바꾸지 않는다 ($tok)" "$(src_sum "$aw")" "$before"
+  kill "$aw_pid" 2>/dev/null; wait "$aw_pid" 2>/dev/null
+  out=$(rk_as "s-$aw" await --arg "$aw" --timeout 5); rc=$?
+  check "12: 프로세스가 끝나면 await 은 끝남이다 ($tok)" "$rc/$(col "$out" '대기 결과')/$(cnt "$out" '남은 프로세스')" "0/끝남/0"
+  detect_case "12 끝남 대기 뒤 ($tok)" "$aw"
+  check "12: 끝난 뒤 detect 는 재킥오프다 ($tok)" "$(col "$OUT" 판정)" "재킥오프"
+  out=$(jdg "$aw")
+  check "12: 끝난 뒤 judge 는 허용이다 ($tok)" "$(col "$out" 판정)/$(fired "$out")" "허용/"
+
+  # A supervisor alone — the stage CLI exited, its result row not yet written.
+  mk_seat "20261101-ab00000$n" "$tok"; fx_supervisor_live I1; sv_pid=$FX_LAST_PID
+  detect_case "12 감독자만 ($tok)" "20261101-ab00000$n"
+  check "12: 감독자만 남아도 끝남 대기다 ($tok)" "$(col "$OUT" 판정)" "끝남 대기"
+  out=$(rk_as "s-20261101-ab00000$n" await --arg "20261101-ab00000$n" --timeout 1)
+  check "12: 감독자만 남으면 await 은 상한이고 종류는 감독자다 ($tok)" \
+    "$(col "$out" '대기 결과')/$(col "$out" '남은 프로세스')/$(col "$out" '남은 프로세스' 3)" "상한/감독자/I1"
+  kill "$sv_pid" 2>/dev/null; wait "$sv_pid" 2>/dev/null
+
+  # No `done`, or an empty one: the run did not end, so it is in progress.
+  mk_seat "20261101-ac00000$n" "$tok"; fx_stage_live I1
+  rm -f "$FX_RUN_DIR/done"
+  detect_case "12 done 없음 ($tok)" "20261101-ac00000$n"
+  check "12: done 이 없으면 살아 있는 원천은 진행 중이다 ($tok)" "$(col "$OUT" 판정)" "진행 중"
+  : > "$FX_RUN_DIR/done"
+  detect_case "12 빈 done ($tok)" "20261101-ac00000$n"
+  check "12: 빈 done 이면 살아 있는 원천은 진행 중이다 ($tok)" "$(col "$OUT" 판정)" "진행 중"
+
+  # Usage: the ceiling is 1..570 and an argument is a run id; inside a run, 3.
+  for t in 0 571 x 1000; do
+    out=$(rk await --arg "$aw" --timeout "$t"); rc=$?
+    check "12: await --timeout $t 은 2 다 ($tok)" "$rc/$out" "2/"
+  done
+  out=$(rk await --arg "$aw"); rc=$?
+  check "12: --timeout 없는 await 은 2 다 ($tok)" "$rc" "2"
+  out=$(rk await --arg "다시 $aw" --timeout 1); rc=$?
+  check "12: 런 id 하나가 아닌 await 인자는 2 다 ($tok)" "$rc" "2"
+  out=$(rk detect --arg "$aw" --timeout 1); rc=$?
+  check "12: --timeout 을 detect 에 주면 2 다 ($tok)" "$rc" "2"
+  out=$(cd "$WORK" && env CC_PIPELINE_RUN_ID=x "$BASH" "$RK" await --arg "$aw" --timeout 1 2>/dev/null); rc=$?
+  check "12: 런 안의 await 은 3 으로 거부한다 ($tok)" "$rc/$out" "3/"
+done
+out=$(rk_as s-OTHER await --arg 20261101-ffffffff --timeout 1); rc=$?
+check "12: 찾지 못한 런의 await 은 지정 불가이고 대기 결과 줄이 없다" \
+  "$rc/$(col "$out" 판정)/$(cnt "$out" '대기 결과')" "0/지정 불가/0"
+
+# The source's open records are the seat's questions, not a prohibition.
+OR=20261101-ad000001
+mk_seat "$OR" 마감; fx_approval AP-5 대기
+mkdir -p "$FX_RUN_DIR/halt"
+printf '# 중단\n\n**분류**: gate-unanswerable\n**질문 문면**: 픽스처 중단 질문\n' > "$FX_RUN_DIR/halt/I1#1.md"
+out=$(jdg "$OR")
+check "12: 열린 승인과 답 없는 중단 기록이 있으면 대기 둘이고 금지선이 없다" \
+  "$(col "$out" 판정)/$(cnt "$out" 대기)/$(cnt "$out" 금지선)" "대기/2/0"
+check "12: 두 대기의 종류와 키" \
+  "$(printf '%s\n' "$out" | awk -F'\t' '$1 == "대기" { printf "%s=%s ", $2, $3 }')" \
+  "원천승인=원천승인 AP-5 원천중단=원천중단 I1#1.md "
+has "12: 중단 기록의 대기는 그 질문 문면을 싣는다" "$out" "픽스처 중단 질문 — 이 기록은 원천에 남고"
+check "12: 사실 줄 값은 그대로다" "$(fact "$out" '열린 승인')/$(fact "$out" '미답 중단')" "1/1"
+printf '원천승인 AP-5\t원천에 두고 새 런 열기\n' > "$WORK/asked-or1"
+out=$(jdg "$OR" --asked "$WORK/asked-or1")
+check "12: 하나만 답하면 남은 대기는 원천중단 하나다" "$(col "$out" 판정)/$(cnt "$out" 대기)/$(col "$out" 대기)" "대기/1/원천중단"
+printf '원천승인 AP-5\t원천에 두고 새 런 열기\n원천중단 I1#1.md\t원천에 두고 새 런 열기\n' > "$WORK/asked-or2"
+out=$(jdg "$OR" --asked "$WORK/asked-or2")
+check "12: 둘 다 답하면 허용이다 (열린 기록)" "$(col "$out" 판정)/$(cnt "$out" 대기)" "허용/0"
+SL_ASKED="$WORK/asked-or2"; seat_link "$OR" 20261101-ad000002
+check "12: 열린 기록에 답한 좌석 경로는 렌더와 verify-subset 을 통과한다" "$SL_RC/$SL_VS" "0/통과"
+[ "$SL_VS" = "통과" ] || tail -3 "$WORK/sl.rerr" "$WORK/sl.verr" >&2
+SL_ASKED=""
+
+# The seat's procedure gives await its own tool ceiling.
+has "12: 좌석 절차가 await 을 도구 timeout 600000 으로 부른다" \
+  "$(grep -F 'await --arg' "$repo_root/plugins/cc-cmds/skills/autopilot/references/act2-seat.md")" "600000"
 
 # Link 0 (a person's kickoff) → links 1, 2, 3 by the seat; the fourth is refused.
 mk_seat RKS0 마감

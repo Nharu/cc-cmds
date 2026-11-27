@@ -58,6 +58,20 @@
 # reaches that: the kickoff and the seat call this program, the chain does not,
 # and the seat's `judge` refuses an un-ended run.
 #
+# AN ENDED RUN WITH SOMETHING STILL RUNNING IS `끝남 대기`, NOT `진행 중`. A
+# boundary end (deadline, ceiling, no progress) writes a non-empty `done` without
+# waiting for a live stage, so the stage's `stage-result` row lands after the
+# end. When the run directory holds a non-empty `done` (`-s`, the reading the
+# candidate state uses) and the waiting predicate holds, `detect` prints
+# `판정 끝남 대기 <id>`, one `남은 프로세스` line per live process and one notice,
+# and ends. The waiting predicate is `rk_await_live`: the four predicates above,
+# or a non-empty `cc_relay_wait_stages` — the stages, their supervisors and the
+# detached apply supervisors a relay waits on. The supervisor writes the
+# `stage-result` row after the stage CLI exits and only then removes its files,
+# so the four alone would let a run read as idle before its last result row is
+# written. `await` polls the same predicate. A run with no `done`, or an empty
+# one, goes on to the four predicates and `진행 중` as before.
+#
 # ONLY A RE-KICKOFF WORD ADOPTS AN UN-ENDED RUN. The close that follows an
 # adoption cannot be undone, and an empty argument or a resume word (`이어서`,
 # `재개`, `계속`, `resume`) is how a person comes back to a run that was cut. So
@@ -92,6 +106,7 @@
 # Usage
 #
 #   rekick.sh detect --arg <인자>            (<인자> may end in a run id: `[다시|재개|…] <런 id>`)
+#   rekick.sh await --arg <런 id> --timeout <초>   (<초> 1 to 570)
 #   rekick.sh judge --prev <id> --base <base> [--asked <파일>]
 #   rekick.sh verify --prev <id> --base <base>
 #   rekick.sh graph --prev <id> --base <base> [--expect-sha256 <hex>] [--accepted <별칭,…>]
@@ -108,9 +123,12 @@
 #
 # `judge` is the seat's verdict on a run that just ended, read-only like every
 # other mode and reading neither the terminal nor stdin. It evaluates every
-# prohibition line (L14 L1 L2 L3 L5 L6 L7 L9 L15 L16 L10 L11 L12 L13) and prints
-# each that fires; its only waits are the two questions `verify` asks, and a
-# wait whose key the `--asked` file already holds is not printed — the answer
+# prohibition line (L14 L1 L2 L3 L6 L7 L9 L15 L16 L10 L11 L12 L13) and prints
+# each that fires; its waits are the two questions `verify` asks and one
+# question per record the source still waits on — each open approval
+# (`원천승인 <승인 id>`) and each unanswered halt record (`원천중단 <기록 이름>`),
+# carrying that record's own question text — and a wait whose key the
+# `--asked` file already holds is not printed — the answer
 # is not read here, `verify-subset` measures what it allows. It never decides
 # a deadline: that is the kickoff helper's `--carry --auto`. L13 reads only
 # the manifests under this `<base>`; a source carried on from another base is
@@ -225,8 +243,9 @@
 # `render-manifest` (the draft's bytes) and `render-interview` (the record's
 # bytes), which print nothing else.
 #
-#   detect         판정  재킥오프|대기|새 런|없음|진행 중|완료|지정 불가  [<id>  [<base>]]
+#   detect         판정  재킥오프|대기|새 런|없음|진행 중|끝남 대기|완료|지정 불가  [<id>  [<base>]]
 #                  판정  후보  <n>
+#                  남은 프로세스  스테이지|감독자|적용|교대|중계|대기 스테이지  <세그먼트|개수|->
 #                  후보  <id>  최신|-  살아 있음|대기|끝남|완료|무효화|판정불가  <대기 원인|->  <킥오프 일시>  <의도 첫 줄>
 #                  갈래  게이트 종료|강제 표면 이동 무효화|대기 이어받기|완료 런 입양
 #                  대기 원인  승인 대기|사람 대기|한도 대기|무기록|멈춤
@@ -235,7 +254,7 @@
 #                  고지  <한 줄>          굵게  <굵게 보일 한 줄>
 #   judge          판정  허용|대기|금지
 #                  금지선  <L>  <사유>
-#                  대기  베이스설계|어휘  <--asked 키>  <질문 문면>
+#                  대기  베이스설계|어휘|원천승인|원천중단  <--asked 키>  <질문 문면>
 #                  사실  종료 토큰|연쇄|진전|열린 승인|미답 중단|종료 절|남은 단계  <값>
 #   verify        검사  다이제스트|인터뷰|인가|머리  통과|실패  <사유>
 #                  해시  매니페스트|인가 기록|인터뷰  <hex|->
@@ -257,6 +276,10 @@
 #                  implement stage)
 #                  머지입양후보  <세그먼트>  <PR 번호>  <머지 커밋 40자>  <PR 헤드 40자>  [<수정 브랜치 워크트리>]
 #                  입양불가  <세그먼트>  <PR 번호|->  <사유 토큰>  [미입양=PR들여오기]
+#   await          대기 결과  끝남|상한  <경과 초>
+#                  남은 프로세스  <종류>  <이름>   (only after `상한`)
+#                  (a run id it cannot pick prints detect's `판정 지정 불가` and
+#                  `고지` lines instead, and no `대기 결과` line)
 #   mark-urgent    판정  표시함|이미|거부  <id>
 #                  고지  <한 줄>
 #                  (exit 0 for every verdict; `거부` and `이미` write nothing)
@@ -345,7 +368,7 @@ RK_ARG=""; RK_ARG_GIVEN=0; RK_PREV=""; RK_BASE=""; RK_XSHA=""; RK_XGSHA=""
 RK_ACCEPTED=""; RK_NEWID=""; RK_KAT=""; RK_DEADLINE=""; RK_ASKED=""
 RK_VISUAL=""; RK_TARGETS=""; RK_ROWS=""; RK_RULES=""; RK_BIND=""; RK_GRANT_BLOCK=""
 RK_POS1=""; RK_POS2=""; RK_SETS=""; RK_BLANKS=""; RK_AUTO=0; RK_NOADOPT=0
-RK_MARK_RUN=""; RK_MARK_GIVEN=0
+RK_MARK_RUN=""; RK_MARK_GIVEN=0; RK_TIMEOUT=""; RK_TIMEOUT_GIVEN=0
 
 rk_need() { [ $# -ge 2 ] || rk_usage "$1 에 값이 없습니다"; }
 while [ $# -gt 0 ]; do
@@ -358,6 +381,7 @@ while [ $# -gt 0 ]; do
     --accepted)            rk_need "$@"; RK_ACCEPTED="$2"; shift 2 ;;
     --run-id)              rk_need "$@"; RK_NEWID="$2"; shift 2 ;;
     --run)                 rk_need "$@"; RK_MARK_RUN="$2"; RK_MARK_GIVEN=1; shift 2 ;;
+    --timeout)             rk_need "$@"; RK_TIMEOUT="$2"; RK_TIMEOUT_GIVEN=1; shift 2 ;;
     --kickoff-at)          rk_need "$@"; RK_KAT="$2"; shift 2 ;;
     --deadline)            rk_need "$@"; RK_DEADLINE="$2"; shift 2 ;;
     --asked)               rk_need "$@"; RK_ASKED="$2"; shift 2 ;;
@@ -407,6 +431,14 @@ rk_need_prev() {
 case "$RK_MODE" in
   detect)
     [ "$RK_ARG_GIVEN" = "1" ] || rk_usage "detect 에는 --arg 가 필요합니다 (빈 인자는 --arg '')" ;;
+  await)
+    [ "$RK_ARG_GIVEN" = "1" ] || rk_usage "await 에는 --arg <런 id> 가 필요합니다"
+    [ "$RK_TIMEOUT_GIVEN" = "1" ] || rk_usage "await 에는 --timeout <초> 가 필요합니다"
+    case "$RK_TIMEOUT" in
+      ''|*[!0-9]*) rk_usage "--timeout 은 1 이상 570 이하의 정수입니다: '$RK_TIMEOUT'" ;;
+    esac
+    { [ "${#RK_TIMEOUT}" -le 3 ] && [ "$RK_TIMEOUT" -ge 1 ] && [ "$RK_TIMEOUT" -le 570 ]; } \
+      || rk_usage "--timeout 은 1 이상 570 이하의 정수입니다: '$RK_TIMEOUT'" ;;
   verify|render-interview|judge)
     rk_need_prev ;;
   graph)
@@ -431,9 +463,10 @@ case "$RK_MODE" in
     rk_hex64 "$RK_XSHA" || rk_usage "--expect-sha256 은 64자리 소문자 16진수입니다" ;;
   mark-urgent)
     [ "$RK_MARK_GIVEN" = "1" ] || rk_usage "mark-urgent 에는 --run <런 id> 가 필요합니다" ;;
-  '') rk_usage "모드가 없습니다 — detect | judge | verify | graph | render-manifest | render-interview | verify-subset | adopt | mark-urgent" ;;
+  '') rk_usage "모드가 없습니다 — detect | await | judge | verify | graph | render-manifest | render-interview | verify-subset | adopt | mark-urgent" ;;
   *)  rk_usage "알 수 없는 모드입니다: $RK_MODE" ;;
 esac
+[ "$RK_TIMEOUT_GIVEN" = "0" ] || [ "$RK_MODE" = "await" ] || rk_usage "--timeout 은 await 에만 씁니다"
 [ "$RK_NOADOPT" = "0" ] || [ "$RK_MODE" = "render-manifest" ] || rk_usage "--no-adopt 는 render-manifest 에만 씁니다"
 if [ "$RK_AUTO" = "1" ]; then
   case "$RK_MODE" in
@@ -466,6 +499,7 @@ for rk_f in manifest_field manifest_hdr_field manifest_row_fields manifest_plan_
             check_manifest rundir_of_run_id deadline_instant cutpoint_index cutpoint_token \
             judgment_class_ok judgment_class_forbidden \
             cc_live_stages cc_shift_is_live cc_relay_is_live cc_waiting_fresh_count cc_unanswered_halts cc_halt_answered \
+            cc_stage_is_live cc_supervisor_is_live cc_relay_wait_stages \
             cc_unresolved_blocked cc_open_approval_rows cc_segment_states \
             dr_duration_seconds manifest_rekick_rows manifest_adoption_rows manifest_surface_approval_rows \
             manifest_plugin_allow_rows manifest_failover_allow_rows manifest_urgent_rows run_urgent_source slice_ids; do  command -v "$rk_f" >/dev/null 2>&1 || rk_refuse "run.sh 에 $rk_f 가 없습니다"
@@ -888,6 +922,46 @@ rk_is_live() {
   if cc_shift_is_live "$RK_PRD" 2>/dev/null; then return 0; fi
   if cc_relay_is_live "$RK_PRD" 2>/dev/null; then return 0; fi
   return 1
+}
+
+# rk_await_live — the waiting predicate `detect`'s `끝남 대기` and `await` share:
+# `rk_is_live`, or a non-empty `cc_relay_wait_stages` — a stage whose CLI has
+# exited while its supervisor has not yet written the `stage-result` row, and a
+# detached apply supervisor, are waited on too.
+rk_await_live() {
+  rk_is_live && return 0
+  [ -n "$(cc_relay_wait_stages "$RK_PRD" 2>/dev/null)" ]
+}
+
+# rk_remaining_lines — one `남은 프로세스<TAB><종류><TAB><이름>` line per live
+# process of the run RK_PRD names: a stage (`*.pid` whose stage is live), a
+# supervisor (`*.sup` whose stage is not live but whose supervisor is), a
+# detached apply (`apply:<seg>` of `cc_relay_wait_stages`), the shift, the
+# relay, and the fresh waiting stages by count.
+rk_remaining_lines() {
+  local f k seen=" " keys nwait
+  for f in "$RK_PRD"/*.pid "$RK_PRD"/*.sup; do
+    [ -f "$f" ] || continue
+    k=${f##*/}
+    case "$k" in *.pid) k=${k%.pid} ;; *.sup) k=${k%.sup} ;; esac
+    case "$k" in ''|watch|checks) continue ;; esac
+    case "$seen" in *" $k "*) continue ;; esac
+    seen="$seen$k "
+    if cc_stage_is_live "$RK_PRD" "$k" 2>/dev/null; then
+      printf '남은 프로세스\t스테이지\t%s\n' "$k"
+    elif cc_supervisor_is_live "$RK_PRD" "$k" 2>/dev/null; then
+      printf '남은 프로세스\t감독자\t%s\n' "$k"
+    fi
+  done
+  keys=$(cc_relay_wait_stages "$RK_PRD" 2>/dev/null)
+  printf '%s\n' "$keys" | tr ',' '\n' | while IFS= read -r k; do
+    case "$k" in apply:?*) printf '남은 프로세스\t적용\t%s\n' "${k#apply:}" ;; esac
+  done
+  if cc_shift_is_live "$RK_PRD" 2>/dev/null; then printf '남은 프로세스\t교대\t-\n'; fi
+  if cc_relay_is_live "$RK_PRD" 2>/dev/null; then printf '남은 프로세스\t중계\t-\n'; fi
+  nwait=$(cc_waiting_fresh_count "$RK_PRD" "$RK_PL" 2>/dev/null)
+  case "$nwait" in 0) ;; *) printf '남은 프로세스\t대기 스테이지\t%s\n' "${nwait:--}" ;; esac
+  return 0
 }
 
 # rk_clauses_all_met <states> — 0 when the manifest declares at least one
@@ -1805,6 +1879,18 @@ $lines"
   exit 0
 }
 
+# rk_locate_run_id <session> <index> <trimmed argument> — 1 when the argument
+# does not end in a run id (`rk_arg_run_id`); otherwise the run it names is
+# picked with `rk_detect_pick` (which ends the program with `지정 불가` when it
+# cannot be) and checked with `rk_not_reviewer`, and 0 is returned with
+# RK_PREV, RK_BASE, the paths and MANIFEST set. `detect` and `await` share it.
+rk_locate_run_id() {
+  rk_arg_run_id "$3" || return 1
+  rk_detect_pick "$1" "$2" "$RK_ARG_ID"
+  rk_not_reviewer
+  return 0
+}
+
 rk_detect() {
   local sid="${CLAUDE_CODE_SESSION_ID:-}" idx id rd lp b kat e best_id="" best_e="" best_base="" accepted=""
   printf 'cc-rekick v1\n'
@@ -1819,9 +1905,7 @@ rk_detect() {
   word=$(rk_arg_word "$n")
 
   # A run id argument judges that run alone: no candidates, no intent.
-  if rk_arg_run_id "$raw"; then
-    rk_detect_pick "$sid" "$idx" "$RK_ARG_ID"
-    rk_not_reviewer
+  if rk_locate_run_id "$sid" "$idx" "$raw"; then
     [ "$RK_ARG_WORD" != "rekick" ] || rekick_word=1
     RK_PICKED=1
     rk_detect_judge "$rekick_word"
@@ -1883,6 +1967,10 @@ rk_detect_judge() {
   local rekick_word="$1"
   # Eligibility, in order; the first branch that applies decides.
   local ub inv=0 gate_tok mark err states
+  # A run that wrote a non-empty `done` while a process of it still runs ended
+  # by a boundary that does not wait for its stages: it is waited on, not
+  # resumed.
+  if [ -n "$RK_PRD" ] && [ -s "$RK_PRD/done" ] && rk_await_live; then rk_detect_ended_wait; fi
   if rk_is_live; then rk_detect_open running; fi
 
   # A run that met every termination clause is done, unless a segment it left
@@ -2068,6 +2156,48 @@ rk_detect_open() {
   exit 0
 }
 
+# rk_detect_ended_wait — the `끝남 대기` verdict: the run ended (a non-empty
+# `done`) and something of it still runs. Nothing is adopted; the seat waits
+# with `await` and detects again, and a person is shown the lines and stops.
+rk_detect_ended_wait() {
+  printf '판정\t끝남 대기\t%s\n' "$RK_PREV"
+  rk_remaining_lines
+  printf '고지\t이전 런 %s 은 끝났지만 아직 도는 프로세스가 있습니다 — 끝난 뒤 판정합니다\n' "$RK_PREV"
+  exit 0
+}
+
+# rk_await — poll the waiting predicate of the run a run id argument names,
+# every `min(10, 남은 초)` seconds, until it is false (`끝남`) or `--timeout`
+# seconds have passed (`상한`, followed by the `남은 프로세스` lines). It writes
+# nothing and reads no network; a run it cannot pick ends as `detect` does,
+# with `지정 불가`.
+rk_await() {
+  local sid="${CLAUDE_CODE_SESSION_ID:-}" idx raw start now left nap
+  raw=$(rk_trim "$RK_ARG")
+  rk_arg_run_id "$raw" || rk_usage "await 의 --arg 는 런 id 하나여야 합니다: '$RK_ARG'"
+  [ "$raw" = "$RK_ARG_ID" ] || rk_usage "await 의 --arg 는 런 id 하나여야 합니다: '$RK_ARG'"
+  case "$sid" in ''|.|..|*/*) idx="" ;; *) idx="${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/session/$sid" ;; esac
+  printf 'cc-rekick v1\n'
+  rk_locate_run_id "$sid" "$idx" "$raw" || exit 0
+  start=$(date +%s)
+  while :; do
+    now=$(date +%s)
+    if ! rk_await_live; then
+      printf '대기 결과\t끝남\t%s\n' "$((now - start))"
+      exit 0
+    fi
+    left=$((RK_TIMEOUT - (now - start)))
+    if [ "$left" -le 0 ]; then
+      printf '대기 결과\t상한\t%s\n' "$((now - start))"
+      rk_remaining_lines
+      exit 0
+    fi
+    nap=10
+    [ "$left" -ge "$nap" ] || nap=$left
+    sleep "$nap"
+  done
+}
+
 # rk_detect_held — the `진행 중` verdict for a run `rk_detect_wait` would adopt,
 # called with an argument that is not a re-kickoff word: what it waits on is
 # named, nothing is adopted, and the way to adopt it is said.
@@ -2192,6 +2322,46 @@ rk_unanswered_halt_names() {
     fi
     RK_HALT_N=$((RK_HALT_N + 1))
     RK_HALT_LIST="${RK_HALT_LIST:+$RK_HALT_LIST, }$rel"
+  done
+  return 0
+}
+
+# rk_open_record_pairs <run dir> <ledger> — one `<키><TAB><질문>` line per
+# record the source still waits on, chosen as `rk_open_approvals` and
+# `rk_unanswered_halt_names` choose them: `원천승인 <승인 id>` with the question
+# text of that id's last `승인` row, then `원천중단 <기록 이름>` (the name under
+# `halt/`, `shift/<이름>` for one under `halt/shift/`) with the value of the
+# record's first `**질문 문면**:` line. A text that cannot be read is
+# 「(질문 문면을 읽지 못했습니다)」. Every question ends with the sentence that
+# the record stays with the source.
+rk_open_record_pairs() {
+  local rd="${1%/}" led="$2" ap aid acut last q f name rel tail
+  local stay=' — 이 기록은 원천에 남고, 새 런이 같은 자리에 이르면 다시 묻습니다'
+  local unread='(질문 문면을 읽지 못했습니다)'
+  ap=$(cc_open_approval_rows "$led" 2>/dev/null) || ap=""
+  while IFS="$TAB" read -r aid acut; do
+    [ -n "$aid" ] || continue
+    last=$( { grep -E '^- `승인`' "$led" 2>/dev/null | grep -F "| 승인 id=$aid |" || true; } | tail -n 1)
+    q=$(manifest_row_fields "$last" '질문 문면' | tail -n 1 | tr '\t' ' ')
+    printf '원천승인 %s\t%s%s\n' "$aid" "${q:-$unread}" "$stay"
+  done <<EOF
+$ap
+EOF
+  [ -n "$rd" ] && [ -d "$rd/halt" ] || return 0
+  for f in "$rd"/halt/*.md "$rd"/halt/shift/*.md; do
+    [ -f "$f" ] || continue
+    case "$f" in *.answer.md) continue ;; esac
+    name=${f##*/}
+    case "$f" in
+      "$rd"/halt/shift/*) rel="shift/$name" ;;
+      *) rel="$name" ;;
+    esac
+    tail="/${rd##*/}/halt/$rel"
+    if [ -n "$led" ] && cc_halt_answered "$led" "$tail"; then
+      continue
+    fi
+    q=$( { grep -m 1 -E '^\*\*질문 문면\*\*:' "$f" 2>/dev/null || true; } | sed -E 's/^\*\*질문 문면\*\*:[[:space:]]*//' | tr '\t' ' ')
+    printf '원천중단 %s\t%s%s\n' "$rel" "${q:-$unread}" "$stay"
   done
   return 0
 }
@@ -2610,12 +2780,21 @@ EOF
     포기|이어받음) rk_fire L3 "원천 런 $RK_PREV 의 종료 부류가 $ekind 입니다" ;;
   esac
 
-  # L5 — nothing the source still waits on.
+  # What the source still waits on is asked, one record at a time: each open
+  # approval and each unanswered halt record is a wait carrying that record's
+  # own question. The record stays with the source; the answer only says
+  # whether to open the successor run without it.
   rk_open_approvals "$RK_PL"
   rk_unanswered_halt_names "$RK_PRD" "$RK_PL"
-  if [ "$RK_AP_N" -gt 0 ] || [ "$RK_HALT_N" -gt 0 ]; then
-    rk_fire L5 "원천 런 $RK_PREV 에 열린 승인 ${RK_AP_N}건·답 없는 중단 기록 ${RK_HALT_N}건이 있습니다"
-  fi
+  local rkey rq
+  while IFS="$TAB" read -r rkey rq; do
+    [ -n "$rkey" ] || continue
+    rk_judge_asked "$rkey" && continue
+    waits="${waits}대기${TAB}${rkey%% *}${TAB}${rkey}${TAB}${rq}
+"
+  done <<EOF
+$(rk_open_record_pairs "$RK_PRD" "$RK_PL")
+EOF
 
   # L6 · L7 — the chain's count against the consent row's cap, and the row.
   rk_chain "$MANIFEST" "$RK_PL" "$RK_PREV"
@@ -2639,8 +2818,8 @@ EOF
 
   # L16 — the source's design document is at the lowest size threshold or
   # above, so the re-kicked run's first audit, re-convergence or implement
-  # dispatch would be blocked before it starts. It stands with no halt record,
-  # which L5 needs. An unreadable document does not fire it: that run's first
+  # dispatch would be blocked before it starts. It stands with no halt record in
+  # the source. An unreadable document does not fire it: that run's first
   # dispatch blocks on the unreadable document itself.
   local szdoc szf szb szt szk szv
   szdoc=$(manifest_field '요소' '설계 문서')
@@ -2667,7 +2846,7 @@ EOF
   fi
 
   # L12 — the source's frozen files, through `verify`. Its two questions are
-  # the only waits.
+  # waits too, beside the open records' above.
   ( rk_verify ) > "$RK_TMP/judge-verify.out" 2>/dev/null
   local ivwhy
   ivwhy=$(awk -F '\t' '$1 == "검사" && $2 == "인터뷰" && $3 == "실패" && index($4, "계보") == 1 { print $4; exit }' "$RK_TMP/judge-verify.out")
@@ -4644,6 +4823,7 @@ case "$RK_MODE" in
   mark-urgent)      rk_mark_urgent ;;
   adopt)            rk_adopt ;;
   detect)           rk_detect ;;
+  await)            rk_await ;;
   judge)            rk_judge ;;
   verify)           rk_verify ;;
   graph)            rk_graph ;;

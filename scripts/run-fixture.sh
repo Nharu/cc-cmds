@@ -149,6 +149,24 @@ fx_stage_live() {
   export FX_LAST_PID FX_PIDS
 }
 
+fx_supervisor_live() {
+  # fx_supervisor_live <segment> — a supervisor that is running, with a
+  # matching fingerprint, and no stage pid: the window after the stage CLI
+  # exited and before the supervisor wrote its `stage-result` row. The pid goes
+  # to `<seg>.sup` and the fingerprint to `<seg>.sup.start`, captured as
+  # `fx_stage_live` captures `.start`. Records the pid in FX_LAST_PID and
+  # FX_PIDS so the caller can reap it.
+  local seg="$1" pid
+  wait_holder &
+  pid=$!
+  printf '%s' "$pid" > "$FX_RUN_DIR/$seg.sup"
+  LC_ALL=C ps -o lstart= -p "$pid" 2>/dev/null \
+    | sed 's/[[:space:]]\{1,\}/ /g;s/^ //;s/ $//' > "$FX_RUN_DIR/$seg.sup.start"
+  FX_LAST_PID="$pid"
+  FX_PIDS="${FX_PIDS:-}$pid "
+  export FX_LAST_PID FX_PIDS
+}
+
 fx_stage_dead() {
   # fx_stage_dead <segment> — a pid file whose process has exited.
   #
