@@ -6,6 +6,15 @@
 #   bash scripts/lint-remote-reply-schema.sh <file>...         the named files only
 #   bash scripts/lint-remote-reply-schema.sh --doc <path> ...  read the tables from <path>
 #   bash scripts/lint-remote-reply-schema.sh --fixtures <dir>  treat <dir> as the fixtures
+#   bash scripts/lint-remote-reply-schema.sh --text-fixtures <dir>
+#                                                  treat <dir> as the text envelope fixtures
+#
+# Run without file arguments, the lint reads two directories: the option and
+# decision fixtures (tests/fixtures/remote-reply/) and the text envelope
+# fixtures (tests/fixtures/remote-free-text/). In the second, the event records
+# (`event-*.json`) and the sender file (`senders.json`) are inputs of the seam
+# suite, not reply records, and are skipped; so are its subdirectories, which
+# hold the envelopes the seam must refuse.
 #
 # The file name's prefix decides what a file is:
 #   envelope-<name>.json   an envelope (inbox/<addr>/<reply_id>.json)
@@ -39,8 +48,10 @@
 # answer that is missing or is not a string never matches.
 #
 # Run without file arguments, the lint also checks that every fixture kind has
-# at least one file: the four envelope shapes (auq single-select, auq with a
-# multi-select question, question-form, approval), a marker without and with
+# at least one file: the five option and decision envelope shapes (auq
+# single-select, auq with a multi-select question, question-form, approval, a
+# permission decision), the four text envelope shapes (auq single-select, auq
+# with a multi-select question, question-form, turn), a marker without and with
 # woken_at_ms, a submit pair, a frame pair for an ordinary question, a frame
 # pair for an approval question, and a wake literal.
 
@@ -50,8 +61,9 @@ script_dir=$(cd "$(dirname "$0")" && pwd)
 repo_root=$(cd "$script_dir/.." && pwd)
 doc="$repo_root/plugins/cc-cmds/skills/_common/remote-reply.md"
 fixtures="$repo_root/tests/fixtures/remote-reply"
+text_fixtures="$repo_root/tests/fixtures/remote-free-text"
 
-ENVELOPE_KEYS=(schema reply_id event_id host kind target answers provenance expires_at_ms pickup_by_ms)
+ENVELOPE_KEYS=(schema reply_id event_id host kind target answers text decision provenance expires_at_ms pickup_by_ms)
 PICKED_KEYS=(schema reply_id session_id picked_at_ms apply_by_ms woken_at_ms)
 APPLIED_KEYS=(schema tool_use_id session_id reply_id event_id answers_sha256 transport sender applied_at_ms)
 # "<surface> <address>"
@@ -59,12 +71,19 @@ ADDRESS_PAIRS=(
   "approval r-<target.run_id>"
   "auq s-<safe_sid(target.session_id)>"
   "question-form s-<safe_sid(target.session_id)>"
+  "turn s-<safe_sid(target.session_id)>"
+  "permission s-<safe_sid(target.session_id)>"
 )
 COVERAGE=(
   envelope-auq-single
   envelope-auq-multi
   envelope-question-form
   envelope-approval
+  envelope-permission
+  envelope-text-auq-single
+  envelope-text-auq-multi
+  envelope-text-question-form
+  envelope-text-turn
   picked-plain
   picked-woken
   pair-submit
@@ -76,7 +95,7 @@ WAKE_RE='^<cc-remote-approval run=[A-Za-z0-9-]{1,64} id=[A-Za-z0-9_-]{1,55}-[0-9
 APPROVAL_Q_RE='^승인 [A-Za-z0-9_-]{1,55}-[0-9a-f]{8} — '
 
 usage() {
-  echo "usage: lint-remote-reply-schema.sh [--doc <path>] [--fixtures <dir>] [<file>...]" >&2
+  echo "usage: lint-remote-reply-schema.sh [--doc <path>] [--fixtures <dir>] [--text-fixtures <dir>] [<file>...]" >&2
   exit 2
 }
 
@@ -91,6 +110,11 @@ while [[ $# -gt 0 ]]; do
     --fixtures)
       [[ $# -ge 2 ]] || usage
       fixtures="$2"
+      shift 2
+      ;;
+    --text-fixtures)
+      [[ $# -ge 2 ]] || usage
+      text_fixtures="$2"
       shift 2
       ;;
     --)
@@ -180,13 +204,27 @@ def re($r): type == "string" and test($r);
 def reply_id_ok: re("\\A[a-z0-9-]{1,32}\\.[0-9]+\\.[0-9a-f]{8}\\z");
 def labels_ok: type == "array" and length >= 1 and all(.[]; type == "object" and (.label | type) == "string");
 def one_value: if length != 1 then error("the file does not hold exactly one JSON value") else .[0] end;
+# A remote text: not blank, at most 4000 code points, no C0, DEL or C1 control
+# character; a turn text may hold LF and tab.
+def rtext($turn):
+  type == "string" and test("\\S") and length <= 4000
+  and (explode | all(.[]; (. >= 32 and (. < 127 or . > 159)) or ($turn and (. == 9 or . == 10))));
+def holds_header: type == "string" and contains("[cc-cmds 질문지 답]");
 '
 
 envelope_prog="$defs"'
 def target_errors:
   if type != "object" then "target is not an object"
   elif (.surface | type) != "string" or (. as $t | any($surfaces[]; . == $t.surface) | not)
-  then "target.surface is not one of auq, question-form, approval"
+  then "target.surface is not one of auq, question-form, turn, approval, permission"
+  elif .surface == "turn" then
+    (if (.session_id | nestr) and (keys == ["session_id", "surface"]) then empty
+     else "turn target is not {surface, session_id} with a non-empty session_id" end)
+  elif .surface == "permission" then
+    (if (.session_id | nestr) and (.tool_name | nestr) then empty
+     else "permission target lacks a non-empty session_id or tool_name" end),
+    (if (.input_summary | type) == "string" then empty
+     else "permission target input_summary is not a string" end)
   elif .surface == "auq" then
     (if (.session_id | nestr) and (.tool_use_id | nestr) then empty
      else "auq target lacks a non-empty session_id or tool_use_id" end),
@@ -200,8 +238,10 @@ def target_errors:
      else "question-form target lacks a non-empty session_id or form_id" end),
     (if (.questions | type) == "array" and (.questions | length) >= 1
         and all(.questions[]; type == "object" and (.id | nestr) and (.question | type) == "string"
-                and (.options | labels_ok))
-     then empty else "question-form target questions are not {id, question, options[{label}]}" end)
+                and ((has("kind") | not) or .kind == "single" or .kind == "multi" or .kind == "text")
+                and ((has("allow_other") | not) or (.allow_other | type) == "boolean")
+                and ((.options | labels_ok) or ((.kind // "single") == "text" and .options == [])))
+     then empty else "question-form target questions are not {id, question, options[{label}], kind?, allow_other?}" end)
   else
     (if (.run_id | re("\\A[A-Za-z0-9-]{1,64}\\z")) then empty else "approval target run_id is malformed" end),
     (if (.approval_id | re("\\A[A-Za-z0-9_-]{1,55}-[0-9a-f]{8}\\z")) then empty
@@ -214,25 +254,53 @@ def target_errors:
      then empty else "approval target options is not a non-empty array of strings" end)
   end;
 def questions_of:
-  if .surface == "approval" then [{q: .question, labels: .options, multi: false}]
-  else [.questions[] | {q: .question, labels: [.options[].label], multi: (.multi_select == true)}] end;
+  if .surface == "approval" then [{q: .question, labels: .options, multi: false, kind: "single", other: false}]
+  elif .surface == "question-form" then
+    [.questions[] | {q: .question, labels: [.options[].label], multi: false,
+                     kind: (.kind // "single"), other: (.allow_other // false)}]
+  else [.questions[] | {q: .question, labels: [.options[].label], multi: (.multi_select == true),
+                        kind: "single", other: true}] end;
 def has_sep: contains("\u001e") or contains("\u001f");
-def answer_errors($qs; $surface):
+def answer_errors($qs; $surface; $text):
   ($qs | length) as $n
   | if (.answers | type) != "array" then "answers is not an array"
-    elif any(.answers[]; type != "object" or (keys != ["labels", "question_index"])
+    elif any(.answers[]; type != "object"
+             or (if $text then (keys - ["text"]) != ["labels", "question_index"]
+                 else keys != ["labels", "question_index"] end)
              or (.question_index | int | not) or (.labels | type) != "array"
              or any(.labels[]; type != "string"))
-    then "an answer is not {question_index, labels[<string>]}"
+    then (if $text then "an answer is not {question_index, labels[<string>], text?}"
+          else "an answer is not {question_index, labels[<string>]}" end)
     elif [.answers[].question_index] != [range(0; $n)]
     then "answers do not cover every question once in ascending question_index"
+    elif $text and (any(.answers[]; has("text")) | not)
+    then "a text envelope answers no question with text"
     else
       .answers[] as $a
       | $qs[$a.question_index] as $q
+      | ($a.labels | length) as $nl
+      | ($a | has("text")) as $ht
       | (if all($a.labels[]; . as $l | any($q.labels[]; . == $l)) then empty
          else "question \($a.question_index): a label is not byte-equal to one of its options"
               + (if $surface == "approval" then " (target.options)" else "" end) end),
-        (if $q.multi then
+        (if $text then
+           (if ($ht | not) or ($a.text | rtext(false)) then empty
+            else "question \($a.question_index): the answer text is blank, over 4000 code points or holds a control character" end),
+           (if $ht and ($a.text | holds_header)
+            then "question \($a.question_index): the answer text holds the question-form answer header" else empty end),
+           (if ($a.labels | unique | length) == $nl then empty
+            else "question \($a.question_index): an answer repeats a label" end),
+           (if $q.kind == "text" then
+              (if $nl == 0 and $ht then empty
+               else "question \($a.question_index): a free-text question answer is not one text without labels" end)
+            elif $q.kind != "single" then "question \($a.question_index): a text envelope answers a multi-select form question"
+            elif $q.multi then
+              (if $nl >= 1 or $ht then empty else "question \($a.question_index): a multi-select answer has no label and no text" end)
+            elif $nl == 1 and ($ht | not) then empty
+            elif $nl == 0 and $ht and $q.other then empty
+            elif $nl == 0 and $ht then "question \($a.question_index): a text on a question that takes no other input"
+            else "question \($a.question_index): a single-select answer is not one label or one text" end)
+         elif $q.multi then
            (if ($a.labels | length) >= 1 then empty else "question \($a.question_index): a multi-select answer has no label" end),
            (if ($a.labels | unique | length) == ($a.labels | length) then empty
             else "question \($a.question_index): a multi-select answer repeats a label" end)
@@ -241,11 +309,35 @@ def answer_errors($qs; $surface):
     end;
 def envelope_errors:
   . as $e
-  | (["schema","reply_id","event_id","host","kind","target","answers","provenance","expires_at_ms"]) as $base
+  | ($e.kind == "permission-decision") as $decision
+  | ($e.kind == "text") as $text
+  | ($text and ($e.target | type) == "object" and $e.target.surface == "turn") as $turn
+  | (["schema","reply_id","event_id","host","kind","target","provenance","expires_at_ms"]
+     + (if $decision then ["decision"] elif $turn then ["answers", "text"] else ["answers"] end)) as $base
   | ($e.target | type == "object" and (.surface | type) == "string"
      and (. as $t | any($run_surfaces[]; . == $t.surface))) as $run
-  | (if has("text") or has("decision") then "an option envelope carries text or decision" else empty end),
-    (($e | keys) - $base - ["pickup_by_ms", "text", "decision"]) as $extra
+  | (if $decision then
+       (if has("text") or has("answers") then "a decision envelope carries text or answers" else empty end),
+       (if .decision == "allow" or .decision == "deny" then empty else "decision is not allow or deny" end),
+       (if ($e.target | type) == "object" and $e.target.surface == "permission" then empty
+        else "a decision envelope target.surface is not permission" end)
+     elif $text then
+       (if has("decision") then "a text envelope carries decision" else empty end),
+       (if ($e.target | type) == "object" and ($e.target.surface == "permission" or $e.target.surface == "approval")
+        then "a text envelope target.surface is \($e.target.surface)" else empty end),
+       (if $turn then
+          (if .answers == [] then empty else "a turn text envelope has answers that are not []" end),
+          (if (.text | rtext(true)) then empty
+           else "the turn text is blank, over 4000 code points or holds a control character other than LF and tab" end),
+          (if (.text | holds_header) then "the turn text holds the question-form answer header" else empty end)
+        elif has("text") then "a question text envelope carries a top-level text"
+        else empty end)
+     else
+       (if has("text") or has("decision") then "an option envelope carries text or decision" else empty end),
+       (if ($e.target | type) == "object" and $e.target.surface == "permission"
+        then "an option envelope target.surface is permission" else empty end)
+     end),
+    (($e | keys) - $base - ["pickup_by_ms", "text", "decision", "answers"]) as $extra
     | (if ($extra | length) == 0 then empty else "unknown key(s): \($extra | join(", "))" end),
     (($base - ($e | keys))) as $missing
     | (if ($missing | length) == 0 then empty else "missing key(s): \($missing | join(", "))" end),
@@ -258,7 +350,8 @@ def envelope_errors:
      then empty else "reply_id is not <host_id>.<epoch_ms>.<8 hex> starting with host" end),
     (if (.event_id | nestr) and (.host | type) == "string" and (.event_id | startswith($e.host + "."))
      then empty else "event_id does not start with <host>." end),
-    (if .kind == "option" then empty else "kind is not option" end),
+    (if .kind == "option" or .kind == "text" or .kind == "permission-decision" then empty
+     else "kind is not option, text or permission-decision" end),
     (if (.provenance | type) == "object"
         and (.provenance | keys) == ["received_at_ms", "sender", "transport", "transport_ref"]
      then
@@ -278,6 +371,7 @@ def envelope_errors:
      then empty else "pickup_by_ms is not in received_at_ms < pickup_by_ms <= expires_at_ms" end),
     ([.target | target_errors]) as $te
     | if ($te | length) > 0 then $te[]
+      elif (.kind != "option" and .kind != "text") or .target.surface == "permission" or .target.surface == "turn" then empty
       else
         (.target | questions_of) as $qs
         | (if any($qs[]; (.q | has_sep) or any(.labels[]; has_sep))
@@ -288,13 +382,14 @@ def envelope_errors:
            then "a question has two options with the same label" else empty end),
           (if any($qs[]; .multi and any(.labels[]; contains(", ")))
            then "a multi-select question has an option label holding \", \"" else empty end),
-          answer_errors($qs; $e.target.surface)
+          answer_errors($qs; $e.target.surface; $text)
       end;
 def envelope_kind:
-  if (.target | type) != "object" then "unknown"
-  elif .target.surface == "auq" then
-    (if any(.target.questions[]?; .multi_select == true) then "envelope-auq-multi" else "envelope-auq-single" end)
-  else "envelope-" + (.target.surface | tostring) end;
+  (if .kind == "text" then "envelope-text-" else "envelope-" end) as $p
+  | if (.target | type) != "object" then "unknown"
+    elif .target.surface == "auq" then
+      $p + (if any(.target.questions[]?; .multi_select == true) then "auq-multi" else "auq-single" end)
+    else $p + (.target.surface | tostring) end;
 one_value
 | if type != "object" then "E the record is not a JSON object"
   else (envelope_errors | "E " + .), ("K " + envelope_kind) end
@@ -569,6 +664,18 @@ if [[ ${#files[@]} -eq 0 ]]; then
       echo "FAIL: no fixtures under $fixtures" >&2
       fail=1
     fi
+  fi
+  if [[ ! -d "$text_fixtures" ]]; then
+    echo "FAIL: text fixtures directory missing: $text_fixtures" >&2
+    fail=1
+  else
+    for f in "$text_fixtures"/*; do
+      [[ -f "$f" ]] || continue
+      case "$(basename "$f")" in
+        event-*.json | senders.json) continue ;;
+      esac
+      files+=("$f")
+    done
   fi
 fi
 

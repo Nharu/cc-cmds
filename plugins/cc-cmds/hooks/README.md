@@ -281,12 +281,16 @@ nothing unless Apple events to iTerm2 are already allowed, so it cannot bring
 up a permission prompt. A hook whose session switch is off starts none, because
 the emitter checks the switch before it builds the value.
 
-**Fifteen `hooks.json` entries pin `"timeout": 5`: the two seats' entries, the
+**Twenty-six `hooks.json` entries pin `"timeout": 5`: the two seats' entries, the
 return hook's three** (`UserPromptSubmit`, `PostToolUse` with the matcher
 `AskUserQuestion`, and `Stop`), **the session title hook's
-`UserPromptSubmit` entry, and the permission prompt seat's nine**. The `Bash` entry under `PreToolUse` has no
-timeout and the `Edit|Write|MultiEdit` entry has 10, so "every entry" would be
-wrong. All of these events block, and the default is long, so an emitter that
+`UserPromptSubmit` entry, the permission prompt seat's nine, the session
+status snapshot hook's seven, and one each for the stage read batch hook, the
+remote reply `PreToolUse` hook, the stage values hook and the test-gate
+full-run hook**. Of the two `Bash` entries under `PreToolUse`, the active-notify
+one has no timeout and the test-gate full-run one has 5; the
+`Edit|Write|MultiEdit` entry and the status line `SessionStart` entry have 10,
+so "every entry" would be wrong. All of these events block, and the default is long, so an emitter that
 stalls for any reason would stall the session with it. Nothing in the design
 depends on the number: the measured worst case for a hook body is 84 ms
 synchronous and 23 ms detached, and a stubbed notifier measured 62.6 ms — five
@@ -434,6 +438,37 @@ sessions with settings whose `enabledPlugins` turns every account plugin off and
 keeps only its own `--plugin-dir` copy with its own witness hook, so this hook
 does not run there.
 
+## The test-gate full-run hook
+
+`test-gate-full-pretool.sh` is a second `PreToolUse` entry with the matcher
+`Bash`. It asks a person before a command runs the whole test-gate suite, which
+`scripts/test-gate.sh --full` runs serially for hours.
+
+**What it reads.** The command in `tool_input.command` is split into words on
+whitespace and on `( ) { } ; & | < >` — the same boundaries the active-notify
+hook uses for a command's first word — plus the backtick, with quote characters
+removed. When a word ending in `test-gate.sh` is later followed by the word
+`--full`, the hook prints one line,
+`{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask","permissionDecisionReason":"전량 test-gate 는 직렬로 수 시간 걸립니다 — 사람 승인이 필요합니다"}}`;
+otherwise it prints nothing. So
+`make check GATE_SUITE_CMD='bash scripts/test-gate.sh --full'`,
+`(bash scripts/test-gate.sh --full)` and a command substitution ask, and
+`grep -n -- '--full' scripts/test-gate.sh` does not.
+
+**What it does not see.** A script path or `--full` hidden behind a variable or
+a glob, or a copy of the script under another name, is not caught: the hook
+asks about the plain spelling of a full run, it does not stop a call written to
+go around it. A commit message or heredoc that carries the two words in that
+order, or a `--full` belonging to a command after a pipe, also asks; that false
+ask is accepted.
+
+**In an unattended stage.** When `CC_PIPELINE_RUN_ID` is set the hook prints
+nothing and exits 0 before reading the command. There test-gate refuses
+`--full` itself with exit 2, and an `ask` that no person answers would only
+stop the stage. A missing `jq` or an unreadable `tool_input.command` also
+prints nothing; every path exits 0. `scripts/test-test-gate-full-pretool-hook.sh`
+checks the cases.
+
 ## The return hook
 
 `session-return-dismiss.sh` closes the banners a session raised once the person
@@ -475,13 +510,18 @@ is there, and its payload carries no field that tells the two apart.
    one of the texts the last `Stop` recorded, or a recorded text ends in the
    truncation mark (`… [+N chars]` or `... [+N chars]`) and the prompt starts
    with its head, a `/loop` repeat or a `ScheduleWakeup` wake-up is arriving.
-2. **A prompt that opens with an XML-shaped element is not a return.** Leading
+2. **A prompt whose first line is the remote-input line is not a return.** The
+   line is `[cc-cmds 원격 입력] 발신=<sender>` with the sender grammar the remote
+   reply seam accepts, and it is the whole first line (no leading space). The
+   remote reply mode submitted an instruction someone sent from elsewhere; nobody
+   came back to this session.
+3. **A prompt that opens with an XML-shaped element is not a return.** Leading
    whitespace is allowed; the pattern is tested with `[[ =~ ]]` on the whole
    prompt, so `^` binds to the very start and a tag on the second line does not
    count. A background agent's `<task-notification>` arrives in this form.
    `<pasted_content …>` is the exception and is a return, because it is the
    wrapper around text the person pasted.
-3. **Everything else is a return**, including a message typed while the model is
+4. **Everything else is a return**, including a message typed while the model is
    still working. No time window is used.
 
 The scheduled-task check comes before the envelope check, so a scheduled text
@@ -714,7 +754,8 @@ written, when the tool is `AskUserQuestion`.
 - `seen` — the epoch milliseconds of the session's last `PermissionRequest`,
   a subagent's included;
 - `pending.<fp>` — made in the synchronous part of `request`, moved to
-  `open.<fp>` once the event is written;
+  `open.<fp>` once the event is written; both hold one line
+  `<fp> <normalized key>`, by which the decision helper finds its dialog;
 - `open.<fp>`, `open.notification` — a dialog whose event is written and not
   yet closed;
 - `agent.<agent_id>` — a running subagent.
@@ -742,6 +783,17 @@ event. Then `pending.<fp>` moves to `open.<fp>`; when that move fails, a settle
 signal took the pending file meanwhile, and the exact marker is written there,
 after the event. The dialog appears only once the hook has returned, which is
 why the heavy part is detached.
+
+**Answerable or not.** The request's event carries `actionable: true` and
+`accepts: ["permission-decision"]` only when the remote decision switch
+`CC_CMDS_REMOTE_PERMISSION_DECISION` is exactly `1`, `CLAUDE_CODE_ENTRYPOINT`
+is `cli` (any other value, empty included, counts as a non-interactive
+session), none of the five pipeline markers is set and no `agent.*` marker of
+the session exists. Otherwise it carries `actionable: false` and `accepts: []`
+with the same reply target, for display only. The fallback signal's event is
+always `actionable: false` with a null reply. The seat itself still answers no
+dialog; the decision is taken by the hook of "The remote permission decision"
+below.
 
 **The summary.** Bash shows the command and, when present, `— <description>`;
 Edit the path and the old and new strings; MultiEdit the path and every edit;
@@ -1204,8 +1256,9 @@ no process and no pane.
 
 ## The remote reply seam
 
-`remote-reply/` puts an option answer the relay left in the attention spool's
-mailbox into this session's open question or question form, and picks up a
+`remote-reply/` puts an option or text answer the relay left in the attention
+spool's mailbox into this session's open question or question form, submits a
+new instruction to an idle session whose last turn handed over, and picks up a
 run-address approval answer for the autopilot router seat. The formats
 (envelope, mailbox, pick-up marker, acceptance conditions, apply order, answer
 strings, wake literal, applied record) are fixed in
@@ -1214,9 +1267,10 @@ this section says which file moves them.
 
 | File | Role |
 | --- | --- |
-| `remote-reply/index.tsx` | The mode, registered by the run-status pane module right after the question form. Activation, the open-question race, the mailbox and watch clocks, the question-form apply, the idle check and the wake prompt |
-| `remote-reply/seam.sh` | Every read and write of the spool, as subcommands: `wait`, `commit`, `sat`, `scan`, `form-pick`, `form-unpick`, `form-record`, `wake-mark`, `cleanup` |
+| `remote-reply/index.tsx` | The mode, registered by the run-status pane module right after the question form. Activation, the open-question race, the mailbox and watch clocks, the question-form apply, the idle check, the new-instruction submit and the wake prompt |
+| `remote-reply/seam.sh` | Every read and write of the spool, as subcommands: `wait`, `commit`, `sat`, `scan`, `form-pick`, `form-unpick`, `form-record`, `turn-pick`, `turn-unpick`, `turn-record`, `mark-take`, `wake-mark`, `cleanup` |
 | `remote-reply/pretool.sh` | The `PreToolUse(AskUserQuestion)` entry, the third for that matcher, `"timeout": 5`; it runs `seam.sh sat` |
+| `remote-reply/posttool.sh` | The `PostToolUse(AskUserQuestion)` entry, after the return hook and the status snapshot, `"timeout": 5`; it runs `seam.sh mark-take` |
 
 **Only the shell writes.** The mode looks at names with `$.fs` (the spool root
 `$HOME/.local/state/cc-cmds/attention`, the forward index, the mailboxes) and
@@ -1272,6 +1326,36 @@ return hook may already have marked the event handled during that submit; the
 envelope is then refused at the next `form-pick`, and the event carries a
 `return` marker with no applied record and no answer delivered.
 
+**Text envelopes.** A `text` envelope answers the same targets with a sender
+registered for `text`, under the text rules of the envelope document; the
+acceptance reads the event with the envelope's own kind, so an event whose
+`accepts` lacks `text` (an approval, a router seat's turn) takes none. In an
+AskUserQuestion answer a single-select text is the answer string itself and a
+multi-select text follows the chosen labels after `, `. `commit` of a text
+envelope also writes
+`${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/remote-reply/mark/<sha256>`
+(keyed like a target cell, holding the sender id); when the call's tool use
+ends, `posttool.sh` runs `mark-take`, which prints the remote-input line
+`[cc-cmds 원격 입력] 발신=<sender>` as additional context and removes the file.
+A question form applied from a text envelope types each text into its question
+with the same transition a person's typing uses, and its submitted bundle ends
+with a line feed and the remote-input line; the applied record hashes those
+bytes.
+
+**New instructions.** On an idle tick with an envelope in this session's own
+mailbox, the mode asks `scan` with `turn: true`, and `scan` returns at most one
+`turn` envelope as `{reply_id, text, sender, created_at_ms}`. A turn envelope
+is accepted only when the session's forward index names no run with a run
+directory. The mode takes it only when the last person input is older than the
+event; it makes the pick-up marker with `turn-pick`, builds the submit text
+(the remote-input line, an empty line, the envelope text), passes those bytes
+to `turn-record`, which writes the applied record (the event id is its target
+cell) and the `reply-applied` marker, and then submits the text as the person
+(`asUser`). A failed record removes the marker with `turn-unpick` and submits
+nothing. A prompt whose first line is the remote-input line is not a person's
+input to the mode, and the return hook does not read it as the person coming
+back.
+
 **Handled markers.** Every acceptance reads the spool's handled markers by the
 shared reader rules. The marker files reach one `jq` through a pipe, one line
 per file, never as arguments, so their number is not bounded by the argument
@@ -1297,10 +1381,105 @@ no process when no mailbox holds a `.json`, and does not call `scan` again
 within 60 seconds when the names, the open form id and the idle state are the
 same as the last call's. `seam.sh cleanup` runs right after activation and
 every 80 ticks; it removes pick-up markers, applied records and target cell
-files whose envelope is gone, and never an envelope, an event or a handled
-marker.
+files whose envelope is gone, as well as mark files more than 24 hours old; it
+never removes an envelope, an event or a handled marker.
 
 **Target cells.** `${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/remote-reply/target/<sha256>`
 holds the reply id that owns one cell (the call's `tool_use_id` or the form id),
 keyed by the spool root and the cell, so test spools and the real one never
 mix. It is how a cell finds its applied record.
+
+## The remote permission decision
+
+A `permission-decision` envelope the relay left in this session's mailbox
+answers the open permission dialog with allow or deny. The envelope, its
+acceptance conditions and its apply order are fixed in
+`../skills/_common/remote-reply.md` (`## 결정 봉투`); this section says which
+file moves them.
+
+| File | Role |
+| --- | --- |
+| `remote-reply/index.tsx` | The mode's `classic.PermissionRequest` hook: the gate, and the race between the dialog and the decision helper |
+| `session-permission-decide.sh` | Every read and write of the spool and the seat state for a decision, as subcommands: `wait`, `commit`, `note`, and `key` for the tests |
+
+**The switch.** Nothing happens unless `CC_CMDS_REMOTE_PERMISSION_DECISION`
+is exactly `1` in the environment Claude Code starts with — export it in the
+shell that launches `claude`, or set it in the `env` block of a settings file.
+The permission seat (through the shell) and the mode (through `$.env.get`) read
+this one value; there is no spool file for it. It ships off. Turn it on only
+after these were seen in a real interactive session: the hook waits for
+minutes with the dialog on screen and an allow and a deny each take effect
+once; a local answer given first ends the wait and leaves no applied record;
+a subagent's dialog takes no remote decision.
+
+**The gate.** The hook returns `next(e)` untouched when the mode is not active
+(see "The remote reply seam"), the input has `agent_id`, the tool is
+`AskUserQuestion` or not a string, the switch is off, the session id is
+missing, or the spool root is not a directory. The helper repeats the shell
+side: `jq`, `cc_caller_is_router`, the spool root.
+
+**The race.** Otherwise the hook starts the dialog (`next(e)`, "below") and one
+`wait` child with `{session_id, tool_name, tool_input, tmpdir, rejected}`;
+`tmpdir` is the mode's `TMPDIR`. The child looks once a second and prints
+`<address> <reply_id>` for the first candidate, or ends with no output when
+the seat's marker is gone (or never appeared within 30 seconds), an `agent.*`
+marker exists, its parent is gone, or the latest event of the slot is handled.
+When below ends with a decision, or `next.signal` aborts (the person answered,
+a hook above settled first), the child is stopped and below stands. A below
+that ends without a decision does not stop the wait. A candidate goes to
+`commit`; a refused commit adds the reply id to `rejected` and starts the child
+again. After a commit that printed a decision the hook looks at below and the
+signal once more; if the local side won meanwhile, below stands even though
+the applied record is written. Otherwise allow returns
+`{ decision: { behavior: 'allow' } }` and deny returns
+`{ decision: { behavior: 'deny', message: '원격 거부 — 발신=<sender>' } }`.
+
+**Which dialog.** The helper finds the seat's `pending.<fp>` or `open.<fp>` by
+the normalized key in it (the mode re-serializes the tool input, so the bytes
+can differ from the seat's) and uses the fingerprint that marker names for the
+slot `cc-cmds-permission-<sid>@<fp>`. Of the `permission` events of that slot
+only the latest (largest `created_at_ms`, then id) is this call's; an envelope
+for an earlier event of the same slot answers a call that already ended and is
+refused.
+
+**What `commit` checks and writes.** The envelope's keys and types, its
+`event_id` host prefix and the host, the expiry, the marker still present and
+no `agent.*` marker, the event's `accepts` holding `permission-decision`, the
+slot, the latest event and not handled, the reply target equal to the event's,
+no applied record or pick-up marker of that reply id, and the sender listed in
+`remote-senders.json` with `permission-decision`. Then it writes the pick-up
+marker, claims the target cell, writes the applied record and the
+`reply-applied` handled marker with the seam's own functions, so the seam's
+`cleanup` removes these files as its own. A deny also removes the call's
+`pending.<fp>` / `open.<fp>`, since a denied call raises no tool event. It
+prints `{"behavior":…,"sender":…}`. The seam never applies a decision
+envelope, and its mailbox clock does not call `scan` for a mailbox that holds
+only decision envelopes.
+
+**The diagnostic log.** Every ending that applies nothing leaves one line in
+`decide.log` of the seat state directory, `<UTC ISO time> <event id or -> <reason>`,
+never the envelope or the command. The reasons:
+`근거없음-agent표지`, `표지없음-30초`, `표지사라짐`, `사건처리됨`, `부모소멸`,
+`발신자불허`, `만료`, `호스트불일치`, `대상불일치`, `슬롯불일치`, `늦은사건`,
+`이미적용`, `꼴위반`, `확정실패`, `로컬먼저`, `중단신호`, `확정뒤로컬먼저`,
+`훅실패`.
+
+**The limits it accepts.**
+
+- A process of the same user that reads a registered sender id and copies an
+  open event's reply target can approve its own dialog. Such a process can
+  already edit the settings or type into the terminal, so the envelope does
+  not widen that boundary.
+- An applied record cannot be taken back: when the local answer lands after
+  `commit` wrote the record and before the hook returned, or the helper or the
+  mode stops there, the record and the actual outcome can disagree.
+- Of parallel calls with the same input, the remote decision applies to the
+  one that commits first; the others stay local dialogs.
+- The main session is read from two absences: no `agent_id` in the input and
+  no `agent.*` marker. When the `SubagentStart` hook times out or fails, a
+  subagent's dialog can take a remote decision.
+
+**Tests.** `scripts/test-session-permission-decide.sh` runs the helper against
+the real seat and seam (including a byte comparison of the functions copied
+from the seam); `remote-reply/index.test.ts` covers the hook's branches with
+`claude plugin test`.

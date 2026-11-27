@@ -484,9 +484,9 @@ check "8 문서의 토큰 표를 읽음" "$([ "$rows" -ge 14 ] && echo yes || ec
 # 9. Normalisation, origin.run_id from the reply, origin.repo.
 # --------------------------------------------------------------------------
 norm_case() {
-  # norm_case <label> <token> <slot> <detail-json> <want actionable> [<VAR=value>...]
-  local label="$1" token="$2" slot="$3" detail="$4" want="$5" f a
-  shift 5
+  # norm_case <label> <token> <slot> <detail-json> <want actionable> <want accepts> [<VAR=value>...]
+  local label="$1" token="$2" slot="$3" detail="$4" want="$5" want_acc="$6" f a
+  shift 6
   fresh_root
   a=$(att "$detail")
   run_lib "cc_attention_emit $(q "$token") $(q "$slot") t b $(q "$a")" "$@"
@@ -494,43 +494,93 @@ norm_case() {
   f=$(one_file "$ROOT/events")
   check "9 $label: 사건이 생김" "$(nfiles "$ROOT/events")" "1"
   check "9 $label: actionable" "$(field "$f" '.actionable')" "$want"
-  if [ "$want" = true ]; then
-    check "9 $label: accepts" "$(jq -c '.accepts' "$f")" '["option"]'
-  else
-    check "9 $label: accepts" "$(jq -c '.accepts' "$f")" '[]'
-  fi
+  check "9 $label: accepts" "$(jq -c '.accepts' "$f")" "$want_acc"
   collect
 }
-norm_case "답할 수 있는 auq (대조군)" session-ask "$SSLOT" "$(auq_detail true '[{"label":"왼쪽"},{"label":"오른쪽"}]')" true
-norm_case "선택지 없는 질문의 auq" session-ask "$SSLOT" "$(auq_detail true '[]')" false
+norm_case "답할 수 있는 auq (대조군)" session-ask "$SSLOT" "$(auq_detail true '[{"label":"왼쪽"},{"label":"오른쪽"}]')" true '["option","text"]'
+norm_case "선택지 없는 질문의 auq" session-ask "$SSLOT" "$(auq_detail true '[]')" false '[]'
 # The seat's first ask of an announced approval: `approval-ask` raises `auq` in
 # the approval's own slot, and a canonical-prefix question is never answerable.
-norm_case "승인 슬롯의 auq" approval-ask "$ASLOT" "$(auq_detail false '[{"label":"승인"},{"label":"거부"}]')" false RUN_ID="$RID"
+norm_case "승인 슬롯의 auq" approval-ask "$ASLOT" "$(auq_detail false '[{"label":"승인"},{"label":"거부"}]')" false '[]' RUN_ID="$RID"
 f=$(one_file "$ROOT/events")
 check "9 승인 슬롯의 auq: kind" "$(field "$f" '.kind')" "auq"
 check "9 승인 슬롯의 auq: slot 은 승인 그룹" "$(field "$f" '.slot')" "$ASLOT"
 check "9 승인 슬롯의 auq: token" "$(field "$f" '.token')" "approval-ask"
 norm_case "선택지가 빈 승인" answer "$ASLOT" "$(jq -cn --arg b "$AQ" --arg r "$RID" --arg a "$AID" \
   '{kind: "approval", actionable: true, body: $b,
-    reply: {surface: "approval", run_id: $r, approval_id: $a, question: $b, options: []}}')" false RUN_ID="$RID"
+    reply: {surface: "approval", run_id: $r, approval_id: $a, question: $b, options: []}}')" false '[]' RUN_ID="$RID"
 norm_case "표면이 다른 reply" session-ask "$SSLOT" "$(jq -cn --arg s "$SID" \
   '{kind: "auq", actionable: true,
     reply: {surface: "question-form", session_id: $s, form_id: "f1",
-            questions: [{id: "q1", question: "?", options: [{label: "a"}]}]}}')" false
+            questions: [{id: "q1", question: "?", options: [{label: "a"}]}]}}')" false '[]'
 f=$(one_file "$ROOT/events")
 check "9 표면이 다른 reply: reply null" "$(field "$f" '.reply')" "null"
 norm_case "선택지 없는 질문의 질문지" session-ask "$SSLOT" "$(jq -cn --arg s "$SID" \
   '{kind: "question-form", actionable: true,
     reply: {surface: "question-form", session_id: $s, form_id: "f1",
             questions: [{id: "q1", question: "?", options: [{label: "a"}]},
-                        {id: "q2", question: "?", options: []}]}}')" false
+                        {id: "q2", question: "?", options: []}]}}')" false '[]'
 norm_case "actionable 참을 넘긴 permission" permission "cc-cmds-permission-$SID" "$(jq -cn --arg s "$SID" \
   '{kind: "permission", actionable: true,
-    reply: {surface: "permission", session_id: $s, tool_name: "Bash", input_summary: "ls"}}')" false
-norm_case "RUN_ID 와 다른 reply run_id" answer "$ASLOT" "$(with_reply)" true RUN_ID="other-run"
+    reply: {surface: "permission", session_id: $s, tool_name: "Bash", input_summary: "ls"}}')" true '["permission-decision"]'
+norm_case "actionable 거짓을 넘긴 permission" permission "cc-cmds-permission-$SID" "$(jq -cn --arg s "$SID" \
+  '{kind: "permission", actionable: false,
+    reply: {surface: "permission", session_id: $s, tool_name: "Bash", input_summary: "ls"}}')" false '[]'
+f=$(one_file "$ROOT/events")
+check "9 actionable 거짓을 넘긴 permission: 답 대상 그대로" "$(field "$f" '.reply.tool_name')" "Bash"
+norm_case "도구 이름이 빈 permission" permission "cc-cmds-permission-$SID" "$(jq -cn --arg s "$SID" \
+  '{kind: "permission", actionable: true,
+    reply: {surface: "permission", session_id: $s, tool_name: "", input_summary: "ls"}}')" false '[]'
+norm_case "RUN_ID 와 다른 reply run_id" answer "$ASLOT" "$(with_reply)" true '["option"]' RUN_ID="other-run"
 f=$(one_file "$ROOT/events")
 check "9 RUN_ID 와 다른 reply run_id: origin.run_id" "$(field "$f" '.origin.run_id')" "$RID"
 check "9 RUN_ID 와 다른 reply run_id: id" "$(field "$f" '.id')" "local.appr.$RID.$AID"
+
+# The turn reply target: kept and answerable when the attachment carries one,
+# null and unanswerable otherwise.
+turn_detail() { jq -cn --arg s "$SID" --argjson act "$1" '{kind: "turn", actionable: $act, reply: {surface: "turn", session_id: $s}}'; }
+norm_case "답 대상 있는 차례 넘김" session-turn "$SSLOT" "$(turn_detail true)" true '["text"]'
+f=$(one_file "$ROOT/events")
+check "9 답 대상 있는 차례 넘김: reply 표면" "$(field "$f" '.reply.surface')" "turn"
+norm_case "답할 수 없다고 넘긴 차례 넘김" session-turn "$SSLOT" "$(turn_detail false)" false '[]'
+norm_case "세션 id 가 빈 차례 넘김 답 대상" session-turn "$SSLOT" \
+  '{"kind":"turn","actionable":true,"reply":{"surface":"turn","session_id":""}}' false '[]'
+f=$(one_file "$ROOT/events")
+check "9 세션 id 가 빈 차례 넘김 답 대상: reply null" "$(field "$f" '.reply')" "null"
+norm_case "답 대상 없는 차례 넘김" session-turn "$SSLOT" '{"kind":"turn","actionable":true,"reply":null}' false '[]'
+
+# The question-form answer kinds: single choice with and without the typed
+# answer, free text, multiple choice, a malformed entry, and an entry written
+# before the two fields existed.
+form_detail() {
+  # form_detail <questions-json>
+  jq -cn --arg s "$SID" --argjson q "$1" \
+    '{kind: "question-form", actionable: true,
+      reply: {surface: "question-form", session_id: $s, form_id: "f1", questions: $q}}'
+}
+Q_SINGLE='{"id":"q1","question":"?","options":[{"label":"a"},{"label":"b"}],"kind":"single","allow_other":false}'
+Q_SINGLE_OTHER='{"id":"q1","question":"?","options":[{"label":"a"},{"label":"b"}],"kind":"single","allow_other":true}'
+Q_TEXT='{"id":"q2","question":"?","options":[],"kind":"text","allow_other":false}'
+Q_MULTI='{"id":"q2","question":"?","options":[{"label":"a"}],"kind":"multi","allow_other":true}'
+Q_OTHER_STR='{"id":"q1","question":"?","options":[{"label":"a"}],"kind":"single","allow_other":"yes"}'
+norm_case "기타 입력 없는 단일 선택 질문지" session-ask "$SSLOT" \
+  "$(form_detail "[$Q_SINGLE]")" true '["option"]'
+norm_case "기타 입력을 받는 단일 선택 질문지" session-ask "$SSLOT" \
+  "$(form_detail "[$Q_SINGLE_OTHER,$Q_SINGLE]")" true '["option","text"]'
+norm_case "자유 입력이 든 질문지" session-ask "$SSLOT" \
+  "$(form_detail "[$Q_SINGLE_OTHER,$Q_TEXT]")" true '["text"]'
+norm_case "복수 선택이 든 질문지" session-ask "$SSLOT" \
+  "$(form_detail "[$Q_SINGLE_OTHER,$Q_MULTI]")" false '[]'
+f=$(one_file "$ROOT/events")
+check "9 복수 선택이 든 질문지: 답 대상은 표시용으로 남음" "$(field "$f" '.reply.questions[1].kind')" "multi"
+norm_case "allow_other 가 불리언이 아닌 질문지" session-ask "$SSLOT" \
+  "$(form_detail "[$Q_OTHER_STR]")" false '[]'
+f=$(one_file "$ROOT/events")
+check "9 allow_other 가 불리언이 아닌 질문지: reply null" "$(field "$f" '.reply')" "null"
+norm_case "kind 가 문자열이 아닌 질문지" session-ask "$SSLOT" \
+  "$(form_detail '[{"id":"q1","question":"?","options":[{"label":"a"}],"kind":1}]')" false '[]'
+norm_case "두 칸 없는 옛 질문 항목의 질문지" session-ask "$SSLOT" \
+  "$(form_detail '[{"id":"q1","question":"?","options":[{"label":"a"}]}]')" true '["option"]'
 
 repo_case() {
   # repo_case <label> <CC_NOTIFY_REPO value> <want> [<VAR=value>...]
@@ -576,7 +626,17 @@ neg_case "잘못된 id" event-turn.json '.id = "mbp-1.123.xyz"'
 neg_case "승인 slot 어긋남" event-approval.json '.slot = "cc-cmds-autopilot-x-J-0000abcd"'
 neg_case "승인 body 와 질문 어긋남" event-approval.json '.body = "승인 J-0000abcd"'
 neg_case "repo 절대경로" event-auq.json '.origin.repo = "/home/me/dev/cc-cmds"'
-neg_case "actionable permission" event-permission.json '.actionable = true | .accepts = ["option"]'
+neg_case "권한 사건의 accepts 가 종류별 도출과 다름" event-permission.json '.actionable = true | .accepts = ["option"]'
+neg_case "답할 수 있는 권한 사건에 option" event-permission-act.json '.accepts = ["option"]'
+neg_case "권한 아닌 사건에 permission-decision" event-approval.json '.accepts = ["permission-decision"]'
+neg_case "답할 수 없는 권한 사건에 permission-decision" event-permission.json '.accepts = ["permission-decision"]'
+neg_case "auq accepts 에 text 없음" event-auq.json '.accepts = ["option"]'
+neg_case "auq accepts 순서 뒤바뀜" event-auq.json '.accepts = ["text", "option"]'
+neg_case "차례 넘김 답 대상 있는데 accepts 비어 있음" event-turn-text.json '.accepts = []'
+neg_case "차례 넘김 답 대상의 세션 id 없음" event-turn-text.json 'del(.reply.session_id)'
+neg_case "자유 입력 질문지가 option 을 받음" event-question-form-text.json '.accepts = ["option", "text"]'
+neg_case "질문지 allow_other 가 문자열" event-question-form.json '.reply.questions[0].allow_other = "true"'
+neg_case "승인 사건이 text 를 받음" event-approval.json '.accepts = ["option", "text"]'
 neg_case "표지 원인 밖" handled-clear.json '.cause = "expired"'
 neg_case "접두 표지 @ 없음" handled-dismiss-prefix.json '.slot = "cc-cmds-active-notify-x"'
 

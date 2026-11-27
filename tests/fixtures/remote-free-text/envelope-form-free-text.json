@@ -1,0 +1,39 @@
+{
+  "schema": 1,
+  "reply_id": "host-a1.1793600003000.c3d4e5f6",
+  "event_id": "host-a1.1793599993000.c3c3c3c3",
+  "host": "host-a1",
+  "kind": "text",
+  "target": {
+    "surface": "question-form",
+    "session_id": "5f0c2d4e-1111-4a2b-9c3d-000000000001",
+    "form_id": "f-7d2e4a10",
+    "questions": [
+      {
+        "id": "scope",
+        "question": "범위는 어디까지로 할까요?",
+        "options": [{"label": "전부"}, {"label": "일부"}],
+        "kind": "single",
+        "allow_other": false
+      },
+      {
+        "id": "why",
+        "question": "그렇게 고른 이유는?",
+        "options": [],
+        "kind": "text",
+        "allow_other": true
+      }
+    ]
+  },
+  "answers": [
+    {"question_index": 0, "labels": ["일부"]},
+    {"question_index": 1, "labels": [], "text": "릴리스 일정이 이번 주라서입니다"}
+  ],
+  "provenance": {
+    "transport": "app",
+    "sender": "app:dk-7f3a91",
+    "received_at_ms": 1793600003000,
+    "transport_ref": "push 7f3a91/0103"
+  },
+  "expires_at_ms": 1793600603000
+}

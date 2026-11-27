@@ -891,13 +891,15 @@ rk_is_live() {
 }
 
 # rk_clauses_all_met <states> — 0 when the manifest declares at least one
-# `종료 절` and the ledger left every one of them `충족`.
+# `종료 절` and the ledger left every one of them `충족` or `이관` (a clause
+# whose evidence exists only after the run ends, its material handed over to
+# the morning report).
 rk_clauses_all_met() {
   local nclause=0 nmet=0 cid cst cev
   while IFS="$TAB" read -r cid cst cev; do
     [ -n "$cid" ] || continue
     nclause=$((nclause + 1))
-    [ "$cst" = "충족" ] && nmet=$((nmet + 1))
+    case "$cst" in 충족|이관) nmet=$((nmet + 1)) ;; esac
   done <<EOF
 $1
 EOF
@@ -2314,15 +2316,15 @@ rk_end_row() {
     }' "$1" 2>/dev/null || true
 }
 
-# rk_progress_rows <ledger> — the rows that show a run moved: a `종료 절` met, a
-# segment merged or done, any `cycle`, and a normal completion of a design or
+# rk_progress_rows <ledger> — the rows that show a run moved: a `종료 절` met or
+# handed over (`이관`), a segment merged or done, any `cycle`, and a normal completion of a design or
 # design-audit stage. A row carrying `출처=` is a copy from elsewhere and does
 # not count.
 rk_progress_rows() {
   grep -E '^- `(종료 절|segment|cycle|stage-result)` \| ' "$1" 2>/dev/null \
     | grep -v ' | 출처=' \
     | awk '
-        index($0, "- `종료 절` | ") == 1 { if ($0 ~ / \| 상태=충족( \||$)/) print; next }
+        index($0, "- `종료 절` | ") == 1 { if ($0 ~ / \| 상태=(충족|이관)( \||$)/) print; next }
         index($0, "- `segment` | ") == 1 { if ($0 ~ / \| 상태=(머지됨|완료)( \||$)/) print; next }
         index($0, "- `cycle` | ") == 1 { print; next }
         index($0, "- `stage-result` | ") == 1 {
@@ -2593,7 +2595,7 @@ rk_judge() {
   while IFS="$TAB" read -r cid cst cev; do
     [ -n "$cid" ] || continue
     nclause=$((nclause + 1))
-    [ "$cst" = "충족" ] && nmet=$((nmet + 1))
+    case "$cst" in 충족|이관) nmet=$((nmet + 1)) ;; esac
   done <<EOF
 $states
 EOF

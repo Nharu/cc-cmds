@@ -25,7 +25,7 @@ export CC_GATE_PIN_SYNC_DISABLE := 1
 TEST_TZ := Asia/Seoul
 export TZ := $(TEST_TZ)
 
-.PHONY: lint readme check check-unattended-refusal check-gate-suite policy-drift rule-enforcement testtest-rest gate-shard print-gate-shards print-gate-lanes print-gate-slots print-gate-sections print-gate-digests rest-shard print-rest-shards print-rest-goals test-active-notify test-orchestrator test-darwin test-darwin-narrow run-gate-shard-selftest run-check-gate-selftest run-rest-shard-selftest print-test-tz tz-probe check-cheap check-push check-push-verify check-items run-check-push-selftest run-test-tree-selftest run-test-slots-selftest run-test-reuse-selftest run-rest-readers-selftest run-gate-timing-selftest run-ci-duration-selftest run-gate-full-selftest run-gate-select-selftest print-gate-iso-extra run-gate-isolation-selftest isolation-check isolation-sweep isolation-capacity
+.PHONY: lint readme check check-gate-suite policy-drift rule-enforcement testtest-rest gate-shard print-gate-shards print-gate-lanes print-gate-slots print-gate-sections print-gate-digests rest-shard print-rest-shards print-rest-goals test-active-notify test-orchestrator test-darwin test-darwin-narrow run-gate-shard-selftest run-check-gate-selftest run-rest-shard-selftest print-test-tz tz-probe check-cheap check-push check-push-verify check-items run-check-push-selftest run-test-tree-selftest run-test-slots-selftest run-test-reuse-selftest run-rest-readers-selftest run-gate-timing-selftest run-ci-duration-selftest run-gate-full-selftest run-gate-select-selftest print-gate-iso-extra run-gate-isolation-selftest isolation-check isolation-sweep isolation-capacity
 
 lint:
 	bash scripts/lint-skill-invariants.sh
@@ -70,6 +70,7 @@ lint:
 	bash scripts/lint-stage-policy-sources.sh
 	bash scripts/lint-terminal-literals.sh
 	bash scripts/lint-interview-record-sections.sh
+	bash scripts/lint-skill-trigger-scenarios.sh
 	bash scripts/lint-interview-convention-refs.sh
 	bash scripts/lint-interview-verification.sh
 	bash scripts/lint-kickoff-defaults.sh
@@ -154,15 +155,13 @@ lint:
 readme:
 	bash scripts/generate-readme.sh
 
-# The unattended refusal of check-gate-suite is decided before lint and readme,
-# so a run that would be refused does not spend them first. A prerequisite
-# alone would not order it: this Makefile is run with -jN, and prerequisites of
-# one target have no order between them. So `check` has the refusal as its one
-# prerequisite and calls lint and readme from its recipe. The recursive calls
-# name this file, so `make -f <path> check` from another directory finds it.
+# `check` runs lint and readme, the README check and then check-gate-suite, in
+# that order, from its recipe: this Makefile is run with -jN, and prerequisites
+# of one target have no order between them. The recursive calls name this file,
+# so `make -f <path> check` from another directory finds it.
 CHECK_MAKEFILE := $(abspath $(lastword $(MAKEFILE_LIST)))
 
-check: check-unattended-refusal
+check:
 	@$(MAKE) --no-print-directory -f '$(CHECK_MAKEFILE)' lint readme
 	@git diff --exit-code README.md || (echo "README.md is stale — run 'make readme' and commit" >&2; exit 1)
 	@$(MAKE) --no-print-directory -f '$(CHECK_MAKEFILE)' check-gate-suite
@@ -230,6 +229,16 @@ check-cheap:
 # are not derivation input: a line of their own names them and the stamp keeps
 # them in `유도릴리스=`.
 #
+# An unattended check-push leaves the goals scripts/check-push-ci.tsv lists to
+# the pull request's rest-tests when they came in only by derivation, CI runs
+# the REST goals for the head, and the change holds neither the goal's entry
+# script nor its direct targets nor the list: each gets a `check-push: CI 몫 —
+# <goal>` line and joins `CI몫=` in the stamp. 로컬에서 돌리려면
+# `CHECK_PUSH_GOALS` 로 지명한다. check-items leaves nothing to CI.
+#
+# The sections and goals that failed last in this worktree start first in the
+# next check-push or check-items of it.
+#
 # check-cheap, each goal and each lane of sections run in a checkout of their
 # own and leave a record of the tracked files they read (a lane also the digest
 # of the cut it ran); a later check-push whose tree keeps those files (and that
@@ -251,11 +260,11 @@ check-items:
 # `make lint` passes a gate.sh that no longer grades `gh pr merge` — and the
 # procedure every commit goes through was `lint readme` alone, so a change to
 # gate.sh that followed the procedure to the letter had no local step that ever
-# ran it. Running it unconditionally would be worse than not running it: the
-# full suite takes about three hours serially, and a procedure that costs that
-# on every commit is one people skip, which puts back the very state this closes.
-# PR CI already runs the suite on the merge ref, so this adds no new duty; it
-# runs the same suite earlier, on the machine that made the change.
+# ran it. The default command is the suite's argument-less call, which runs only
+# the sections the change crosses, chosen by scripts/gate-select.sh against the
+# base found below; a change whose axis it cannot tell stops with 2 and names
+# the way out. The full serial run takes hours and is `--full` or CI's
+# scheduled run, never this target's default.
 #
 # The comparison is against the merge-base with the base branch and the diff is
 # taken against the working tree, so committed, staged and unstaged edits all
@@ -274,28 +283,22 @@ check-items:
 # and skip the suite. An explicit GATE_SUITE_BASE that does not resolve, or no
 # candidate left at all, is the no-base case and runs the suite.
 #
-# The full suite takes about three hours serially — the twenty-six CI shards
-# add up to about 280 minutes, more than that because every shard pays its own
-# prelude — so it ends within neither the foreground tool limit nor the
-# two-hour background one, and the full regression is PR CI's job (twenty-six
-# shards, about 11 minutes each on average and the slowest about 16). A change
-# whose gate.sh edit crosses only some sections narrows the run with
-# GATE_SUITE_CMD='bash scripts/test-gate.sh --sections <id,...>' — the same
-# section choice the repository's test rules ask for. Interactively the default
-# stays the full suite, and the message before the run says what it costs and
-# how to narrow it. An unattended run (CC_PIPELINE_RUN_ID set) refuses the
-# default rather than starting it: `check` fails and names the narrowing, and a
-# run with no PR leaves the full regression unjudged and says so in the stage
-# report. The refusal reads where GATE_SUITE_CMD came from, not what it says, so
-# a command passed on the command line runs as given; that is how a person runs
-# the whole suite on purpose, not a way out for a stage.
-# The refusal is not a skip: nothing passes until a suite command has run.
+# The default GATE_SUITE_CMD is the suite's argument-less call: it selects the
+# sections the change crosses and runs those, and the merge-base the probe below
+# found reaches it as CC_GATE_SELECT_BASE, so both agree on the base. A
+# GATE_SUITE_BASE that does not resolve is passed as given, and the suite stops
+# on it. A change the selector cannot place, or one that crosses no section, is
+# the suite's own answer (2, or 0 with a line saying nothing ran). Naming the
+# sections — GATE_SUITE_CMD='bash scripts/test-gate.sh --sections <id,...>' —
+# is the way a stage runs the axis it changed. The full serial run takes hours;
+# it is `bash scripts/test-gate.sh --full`, which a person approves and an
+# unattended run refuses, or CI's scheduled full run on master.
 GATE_SUITE_TRIGGER := plugins/cc-cmds/orchestrator/gate.sh
 GATE_SUITE_CMD ?= bash scripts/test-gate.sh
 GATE_SUITE_BASE ?=
 
-# The one place that finds the base and decides whether gate.sh changed, shared
-# by check-gate-suite and check-unattended-refusal. It runs inside a recipe's
+# The one place that finds the base and decides whether gate.sh changed, for
+# check-gate-suite and its selftest. It runs inside a recipe's
 # single shell, so every line ends in `\` and every shell `$` is doubled. It
 # leaves `base`, `mb` and `gs_state`: nobase (no base resolved), difffail
 # (`git diff` failed), unchanged, or changed.
@@ -321,25 +324,12 @@ else \
 fi
 endef
 
-GATE_SUITE_REFUSAL := check-gate-suite: 무인 런에서는 기본값 전량을 시작하지 않는다 — 전량은 직렬 약 3시간(CI 26샤드 소요 합 약 280분)이라 백그라운드 도구 상한 2시간 안에도 끝나지 않는다. GATE_SUITE_CMD 를 지명해 바꾼 축의 절만 돌린다: GATE_SUITE_CMD='bash scripts/test-gate.sh --sections <id,...>'. 전량 회귀는 PR CI(26샤드, 샤드당 평균 약 11분, 가장 긴 샤드 약 16분)가 진다 — PR 이 없는 런에서는 미판정으로 남기고 스테이지 보고에 적는다
-
-# The same refusal check-gate-suite makes, decided up front for `check`: an
-# unattended run whose GATE_SUITE_CMD came from this file, on a tree where the
-# suite would run (no base, or gate.sh changed). A failing `git diff` passes
-# here and is left to check-gate-suite, which ends on it with 1 as before.
-check-unattended-refusal:
-	@if [ -n "$${CC_PIPELINE_RUN_ID:-}" ] && [ '$(origin GATE_SUITE_CMD)' = file ]; then \
-	  $(GATE_SUITE_PROBE); \
-	  case "$$gs_state" in \
-	    nobase|changed) echo "$(GATE_SUITE_REFUSAL)" >&2; exit 1 ;; \
-	  esac; \
-	fi
-
 check-gate-suite:
 	@run_suite() { \
-	  if [ -n "$${CC_PIPELINE_RUN_ID:-}" ] && [ '$(origin GATE_SUITE_CMD)' = file ]; then \
-	    echo "$(GATE_SUITE_REFUSAL)" >&2; \
-	    return 1; \
+	  if [ -n "$$mb" ]; then \
+	    CC_GATE_SELECT_BASE="$$mb"; export CC_GATE_SELECT_BASE; \
+	  elif [ -n "$$base" ]; then \
+	    CC_GATE_SELECT_BASE="$$base"; export CC_GATE_SELECT_BASE; \
 	  fi; \
 	  $(GATE_SUITE_CMD); \
 	}; \
@@ -356,7 +346,7 @@ check-gate-suite:
 	  exit 0; \
 	fi; \
 	echo "check-gate-suite: $(GATE_SUITE_TRIGGER) 가 $$base 대비 바뀌어 게이트 스위트를 돌린다"; \
-	echo "check-gate-suite: 전량은 직렬 약 3시간(CI 26샤드 소요 합 약 280분)이라 포그라운드 도구 상한도, 백그라운드 도구 상한 2시간도 넘는다 — 바꾼 축의 절만 돌리려면 GATE_SUITE_CMD='bash scripts/test-gate.sh --sections <id,...>' 로 좁힌다 (전량 회귀는 PR CI 가 26샤드로 진다)"; \
+	echo "check-gate-suite: 기본 명령은 바뀐 축의 절만 고른다 — 절을 지명하려면 GATE_SUITE_CMD='bash scripts/test-gate.sh --sections <id,...>', 직렬 전량은 사람이 승인한 --full 이나 CI 정기 전량이다"; \
 	run_suite
 
 # Whether check-gate-suite decides anything. `make -n check | grep test-gate`
@@ -373,22 +363,22 @@ check-gate-suite:
 # gate.sh change: the closer base must win and the suite must not run. The
 # seventh is the same commit with local master checked out: master is not its
 # own base, so the committed change counts and the suite runs — F and G are each
-# other's control. The eighth is a pair under CC_PIPELINE_RUN_ID: the default
-# command is refused with a message naming GATE_SUITE_CMD and the --sections
-# narrowing, offering no full command beside it and no forty-minute figure, and
-# a named command runs. The ninth is a pair on `check` itself under the same
-# variable: with the default command `check` fails on the refusal before lint
-# prints a line, and with a named command it goes on to lint. The scratch
-# repository has none of the files lint reads, so lint fails there and the exit
-# code alone cannot tell the early refusal from a lint failure — what tells
-# them apart is whether lint's first recipe line is in the output.
+# other's control. The eighth runs under CC_PIPELINE_RUN_ID: a named suite
+# command runs, and nothing in the output refuses it — an unattended run's
+# full-run refusal belongs to the suite's `--full`, not to this Makefile. The
+# ninth is `check` itself under the same variable with no suite command named:
+# it goes on to lint without a refusal. The scratch repository has none of the
+# files lint reads, so lint fails there and the exit code says nothing — what
+# says it got there is lint's first recipe line in the output. The tenth names
+# a suite command that writes CC_GATE_SELECT_BASE to a file: the base the probe
+# found is what the suite receives.
 # The make binary is taken through a second variable on purpose: a recipe line
 # that names $(MAKE) directly is executed even under `make -n`.
 CHECK_GATE_SELFTEST_MAKEFILE := $(abspath $(lastword $(MAKEFILE_LIST)))
 CHECK_GATE_SELFTEST_MAKE := $(MAKE)
 
 run-check-gate-selftest:
-	@unset MAKEFLAGS MFLAGS MAKELEVEL GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GATE_SUITE_BASE GATE_SUITE_CMD CC_PIPELINE_RUN_ID; \
+	@unset MAKEFLAGS MFLAGS MAKELEVEL GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GATE_SUITE_BASE GATE_SUITE_CMD CC_PIPELINE_RUN_ID CC_GATE_SELECT_BASE; \
 	t=$$(mktemp -d) || exit 1; trap 'rm -rf "$$t"' EXIT; \
 	r=$$t/repo; mk='$(CHECK_GATE_SELFTEST_MAKEFILE)'; trig='$(GATE_SUITE_TRIGGER)'; \
 	fail() { echo "run-check-gate-selftest: $$*" >&2; exit 1; }; \
@@ -419,25 +409,17 @@ run-check-gate-selftest:
 	gc checkout -q master || fail "경우 G 를 준비하지 못했다"; \
 	suite "touch '$$t/ran'" || fail "경우 G: make 가 실패했다: $$(cat "$$t/out")"; \
 	[ -e "$$t/ran" ] || fail "경우 G: 로컬 master 에서 커밋된 gate.sh 변경에 스위트가 돌지 않았다"; \
-	( export CC_PIPELINE_RUN_ID=selftest; rm -f "$$t/ran"; \
-	  '$(CHECK_GATE_SELFTEST_MAKE)' --no-print-directory -f "$$mk" check-gate-suite >"$$t/out" 2>&1 ) \
-	  && fail "경우 H: 무인 런이 기본 전량 스위트를 거절하지 않았다: $$(cat "$$t/out")"; \
-	grep -q 'GATE_SUITE_CMD 를 지명' "$$t/out" || fail "경우 H: 거절이 아닌 이유로 실패했다: $$(cat "$$t/out")"; \
-	grep -qF -- '--sections' "$$t/out" || fail "경우 H: 거절이 --sections 로 좁히는 법을 적지 않는다: $$(cat "$$t/out")"; \
-	if grep -qF "GATE_SUITE_CMD='bash scripts/test-gate.sh'" "$$t/out"; then fail "경우 H: 거절이 절 인자 없는 전량 명령을 선택지로 내민다: $$(cat "$$t/out")"; fi; \
-	if grep -qF '40분' "$$t/out"; then fail "경우 H: 거절이 전량 소요를 40분으로 적는다: $$(cat "$$t/out")"; fi; \
-	( export CC_PIPELINE_RUN_ID=selftest; suite "touch '$$t/ran'" ) || fail "경우 H: 지명한 스위트 명령이 무인 런에서 거절됐다: $$(cat "$$t/out")"; \
+	( export CC_PIPELINE_RUN_ID=selftest; suite "touch '$$t/ran'" ) || fail "경우 H: 지명한 스위트 명령이 무인 런에서 실패했다: $$(cat "$$t/out")"; \
 	[ -e "$$t/ran" ] || fail "경우 H: 무인 런에서 지명한 스위트 명령이 돌지 않았다"; \
+	if grep -q '무인 런에서는' "$$t/out"; then fail "경우 H: Makefile 이 무인 런을 거절했다: $$(cat "$$t/out")"; fi; \
 	( export CC_PIPELINE_RUN_ID=selftest; \
-	  '$(CHECK_GATE_SELFTEST_MAKE)' --no-print-directory -f "$$mk" check >"$$t/out" 2>&1 ) \
-	  && fail "경우 I: 무인 런의 check 가 기본 전량을 거절하지 않았다: $$(cat "$$t/out")"; \
-	grep -q 'GATE_SUITE_CMD 를 지명' "$$t/out" || fail "경우 I: check 가 거절 문면 없이 끝났다: $$(cat "$$t/out")"; \
-	if grep -qF 'lint-skill-invariants' "$$t/out"; then fail "경우 I: 거절보다 lint 가 먼저 돌았다: $$(cat "$$t/out")"; fi; \
-	( export CC_PIPELINE_RUN_ID=selftest; \
-	  '$(CHECK_GATE_SELFTEST_MAKE)' --no-print-directory -f "$$mk" check GATE_SUITE_CMD="touch '$$t/ran'" >"$$t/out" 2>&1 ); \
-	grep -qF 'lint-skill-invariants' "$$t/out" || fail "경우 I: 스위트 명령을 지명한 check 가 lint 까지 가지 않았다: $$(cat "$$t/out")"; \
-	if grep -q 'GATE_SUITE_CMD 를 지명' "$$t/out"; then fail "경우 I: 스위트 명령을 지명했는데 거절했다: $$(cat "$$t/out")"; fi; \
-	echo "run-check-gate-selftest: 아홉 경우 통과"
+	  '$(CHECK_GATE_SELFTEST_MAKE)' --no-print-directory -f "$$mk" check >"$$t/out" 2>&1 ); \
+	grep -qF 'lint-skill-invariants' "$$t/out" || fail "경우 I: 스위트 명령을 지명하지 않은 무인 런의 check 가 lint 까지 가지 않았다: $$(cat "$$t/out")"; \
+	if grep -q '무인 런에서는' "$$t/out"; then fail "경우 I: check 가 무인 런을 거절했다: $$(cat "$$t/out")"; fi; \
+	want=$$(git merge-base origin/master HEAD) || fail "경우 J 를 준비하지 못했다"; \
+	suite "printenv CC_GATE_SELECT_BASE > '$$t/base'" || fail "경우 J: make 가 실패했다: $$(cat "$$t/out")"; \
+	[ "$$(cat "$$t/base" 2>/dev/null)" = "$$want" ] || fail "경우 J: 스위트가 받은 기준점이 프로브의 merge-base 가 아니다: $$(cat "$$t/base" 2>/dev/null) / $$want"; \
+	echo "run-check-gate-selftest: 열 경우 통과"
 
 # What the next run's stages will read as `# Personal rules`: the counts and
 # bytes per tag of the user-scope CLAUDE.md, its untagged and malformed bullets,
@@ -460,7 +442,7 @@ rule-enforcement:
 # lines they were strictly serial no matter what -j said, and that is the whole
 # of the suite's wall clock: measured on this repository, the twenty-three
 # smallest scripts together account for thirty-five seconds of a run whose
-# length the large ones set, the gate suite alone taking about three hours.
+# length the large ones set, the gate suite's full run alone taking hours.
 # Serially every one of them waits behind the two large ones for nothing.
 #
 # Concurrency is safe without further isolation and the tests already say so:
@@ -529,6 +511,8 @@ LINT_TESTS := \
 	scripts/test-lint-stage-policy-sources.sh \
 	scripts/test-lint-terminal-literals.sh \
 	scripts/test-lint-interview-record-sections.sh \
+	scripts/test-lint-skill-trigger-scenarios.sh \
+	scripts/test-skill-trigger-measure.sh \
 	scripts/test-lint-interview-convention-refs.sh \
 	scripts/test-lint-interview-verification.sh \
 	scripts/test-lint-kickoff-defaults.sh \
@@ -553,11 +537,14 @@ ORCH_TESTS := \
 	scripts/test-measure-spawn-count.sh \
 	scripts/test-snapshot.sh \
 	scripts/test-orchestrator-pretool-hook.sh \
+	scripts/test-test-gate-full-pretool-hook.sh \
 	scripts/test-session-notify-hook.sh \
 	scripts/test-session-permission-notify.sh \
+	scripts/test-session-permission-decide.sh \
 	scripts/test-session-title-hook.sh \
 	scripts/test-session-status-snapshot.sh \
 	scripts/test-remote-reply.sh \
+	scripts/test-remote-free-text.sh \
 	scripts/test-notify-focus.sh \
 	scripts/test-attention.sh \
 	scripts/test-attention-funnel.sh \
@@ -685,8 +672,9 @@ tz-probe:
 
 # `test` minus the gate suite. CI runs this in the always-on leg because the
 # gate suite runs sharded in its own workflow, and running it in both places
-# would put back the three serial hours that the sharding removes. Locally `test`
-# is still the whole thing.
+# would put back the serial hours that the sharding removes. Locally `test` runs
+# the gate suite's argument-less default, the sections the change crosses; the
+# full regression is `bash scripts/test-gate.sh --full`, or CI's scheduled run.
 ORCH_TESTS_REST := $(filter-out scripts/test-gate.sh,$(ORCH_TESTS))
 
 REST_GOALS := $(NOTIFY_TESTS:%=run/%) $(LINT_TESTS:%=run/%) $(ORCH_TESTS_REST:%=run/%) \

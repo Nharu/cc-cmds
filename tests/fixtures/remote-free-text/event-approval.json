@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "id": "host-a1.1793599996000.f6f6f6f6",
+  "host": "host-a1",
+  "created_at_ms": 1793599996000,
+  "kind": "approval",
+  "token": "approval-ask",
+  "slot": "cc-cmds-autopilot-20261101-a5df83a0-judg-0001-1a2b3c4d",
+  "title": "cc-cmds — 승인",
+  "body": "승인 judg-0001-1a2b3c4d — 계속할까요?",
+  "actionable": true,
+  "accepts": ["option"],
+  "origin": {
+    "session_id": "5f0c2d4e-1111-4a2b-9c3d-000000000001",
+    "run_id": "20261101-a5df83a0",
+    "config_dir": "/home/me/.claude",
+    "cwd": "/home/me/dev/cc-cmds",
+    "repo": null,
+    "tmux_pane": null
+  },
+  "reply": null
+}

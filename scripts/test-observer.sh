@@ -413,8 +413,10 @@ for i in range(7):
 end = time.time() + 3.0
 while time.time() < end:
     now = time.time()
+    due = []
     for r in list(d.runs.values()):
-        d.observe(r, now)
+        due += d.observe(r, now)
+    d.start_ticks(due, now)
     d.batch(now)
     time.sleep(0.1)
 print("batches=%d" % len(calls))
@@ -428,6 +430,134 @@ else bad "12 틱이 슬롯을 붙잡고 있어도 일괄 질의가 주기마다 
 lim=$(printf '%s\n' "$out" | sed -n 's/^limit=//p')
 check "12 쉬고 있는 일괄 잡 몫으로 틱은 상한보다 하나 적게 돈다" \
   "$(printf '%s\n' "$out" | sed -n 's/^maxticks=//p')" "$(( ${lim:-4} - 1 ))"
+
+# ---------------------------------------------------------------------------
+# 13. the start and end lines say who started it and why it ended
+# ---------------------------------------------------------------------------
+# Case 5's observer was started with two `CC_OBSERVER_` variables of its own and
+# ended by the grace, so its log holds both lines.
+GL="$G/cc-cmds/observer/observer.log"
+start_line=$(grep '관측기 기동 pid=' "$GL" 2>/dev/null | tail -1)
+case "$start_line" in
+  *" 부모="[0-9]*:*" 환경="*CC_OBSERVER_GRACE*) ok "13 기동 줄에 부모 pid·명령 이름과 CC_OBSERVER_ 변수 이름이 있다" ;;
+  *) bad "13 기동 줄의 부모·환경" "$start_line" ;;
+esac
+case "$start_line" in
+  *CC_OBSERVER_GRACE=*|*CC_OBSERVER_PERIOD=*) bad "13 기동 줄은 변수 값을 남기지 않는다" "$start_line" ;;
+  *) ok "13 기동 줄은 변수 값을 남기지 않는다" ;;
+esac
+check "13 유예 종료 뒤 종료 줄의 사유가 유예" \
+  "$(grep '관측기 종료 pid=' "$GL" 2>/dev/null | tail -1 | sed -n 's/.* 사유=//p')" "유예"
+
+# ---------------------------------------------------------------------------
+# 14. the ticks of every run start while slow recomputations fill the slots
+# ---------------------------------------------------------------------------
+# Eight status line registrations whose script sleeps past the child timeout,
+# and six runs of a job whose tick leaves a mark file. A recomputation took the
+# slot a reaped one freed in the same pass, so the ticks found no slot for as
+# long as recomputations kept failing; every run's tick must start within 30s
+# of its adoption, and a tick kept waiting leaves a `바퀴 미룸` line.
+H="$WORK/starve"; mkdir -p "$H/cc-cmds/run" "$H/cc-cmds/session"; ROOTS="$ROOTS $H"
+TD="$WORK/tree-d"
+mkdir -p "$TD/.claude-plugin" "$TD/orchestrator"
+cp "$ORCH/observer.py" "$ORCH/observer-protocol" "$TD/orchestrator/"
+printf '{"name":"cc-cmds","version":"1.0.0"}\n' > "$TD/.claude-plugin/plugin.json"
+cat > "$TD/orchestrator/observer_mark.py" <<'PY'
+import os
+
+JOB = "mark"
+PID_FILE = "mark.pid"
+
+
+def probes(run):
+    return []
+
+
+def tick(ctx, run, changed, now):
+    with open(os.path.join(run, "mark.ticked"), "a") as f:
+        f.write("%d\n" % int(now))
+    return now + 1.0
+PY
+printf 'sleep 30\n' > "$TD/orchestrator/statusline.sh"
+OD="$TD/orchestrator/observer.py"
+for i in 1 2 3 4 5 6 7 8; do
+  printf '' > "$H/cc-cmds/session/sl$i"
+  mkdir -p "$H/cc-cmds/observer/sl"
+  printf 'script=%s\nsid=sl%s\ntranscript=\ncwd=/\n' "$TD/orchestrator/statusline.sh" "$i" \
+    > "$H/cc-cmds/observer/sl/sl$i.reg"
+done
+starve_runs=""
+for i in 1 2 3 4 5 6; do
+  r="$H/cc-cmds/run/20261102-0000000$i"
+  mkdir -p "$r/plugin"; cp -R "$TD" "$r/plugin/cc-cmds"
+  starve_runs="$starve_runs $r"
+done
+# The observer starts on the registrations alone, so its first passes fill the
+# slots with sleeping recomputations before any run is adopted.
+env XDG_STATE_HOME="$H" CC_OBSERVER_TICK_DEFER_LOG=1 python3 "$OD" ensure
+sleep 2
+t_adopt=$(date +%s)
+for r in $starve_runs; do
+  env XDG_STATE_HOME="$H" CC_OBSERVER_TICK_DEFER_LOG=1 python3 "$OD" adopt --run-dir "$r" --job mark -- x \
+    >/dev/null 2>&1 || bad "14 채택" "$r"
+done
+all_ticked() {
+  local r
+  for r in $starve_runs; do [ -s "$r/mark.ticked" ] || return 1; done
+  return 0
+}
+# lint-test-clock: disable=elapsed-compare 대기 상한일 뿐 판정은 아래 n_ticked 의 check 가 한다
+while ! all_ticked && [ $(( $(date +%s) - t_adopt )) -lt 30 ]; do sleep 0.5; done
+n_ticked=0
+for r in $starve_runs; do [ -s "$r/mark.ticked" ] && n_ticked=$((n_ticked + 1)); done
+check "14 사실 계산이 슬롯을 채워도 채택 뒤 30초 안에 여섯 런의 잡 바퀴가 모두 돈다" "$n_ticked" 6
+HL="$H/cc-cmds/observer/observer.log"
+check "14 바퀴 실패 줄이 없다" "$(grep -c '바퀴 실패' "$HL" 2>/dev/null)" 0
+if grep -q '바퀴 미룸 mark .* — 슬롯 [0-9]*/[0-9]* 가 [0-9]*초째 차 있다' "$HL" 2>/dev/null; then
+  ok "14 슬롯을 기다린 잡 바퀴가 바퀴 미룸 줄을 남긴다"
+else
+  bad "14 바퀴 미룸 줄" "$(tail -5 "$HL" 2>/dev/null | tr '\n' '|')"
+fi
+env XDG_STATE_HOME="$H" python3 "$OD" stop
+
+# ---------------------------------------------------------------------------
+# 15. while a tick waits, the one recomputation goes round the registrations
+# ---------------------------------------------------------------------------
+# Three status line registrations whose inputs move on every pass, the way a
+# session with a live run does when its ledger grows while its child runs.
+# `recompute` is called as a waiting pass with no child running, and starting a
+# child is recorded instead of run, so every registration stays eligible. The
+# one slot must reach every registration, not the first one in sorted order on
+# every pass.
+RR="$WORK/rotate"
+RT="$RR/cc-cmds/run/20261103-0000000r/plugin/cc-cmds/orchestrator"
+mkdir -p "$RT" "$RR/cc-cmds/session" "$RR/cc-cmds/observer/sl"
+printf 'sleep 30\n' > "$RT/statusline.sh"
+for i in 1 2 3; do
+  printf '' > "$RR/cc-cmds/session/rot$i"
+  printf 'script=%s\nsid=rot%s\ntranscript=t0\ncwd=/\n' "$RT/statusline.sh" "$i" \
+    > "$RR/cc-cmds/observer/sl/rot$i.reg"
+done
+out=$(XDG_STATE_HOME="$RR" python3 - "$ORCH" "$RR/cc-cmds/observer/sl" "$RT/statusline.sh" <<'PY'
+import os, sys
+sys.dont_write_bytecode = True
+sys.path.insert(0, sys.argv[1])
+import observer
+
+kd, script = sys.argv[2], sys.argv[3]
+d = observer.Daemon()
+started = []
+d.start_facts = lambda kind, sid, reg, sig: started.append(sid)
+for n in range(6):
+    for i in (1, 2, 3):
+        with open(os.path.join(kd, "rot%d.reg" % i), "w") as f:
+            f.write("script=%s\nsid=rot%d\ntranscript=t%d\ncwd=/\n" % (script, i, n))
+    d.recompute(1000.0 + n, waiting=1)
+print("started=%s" % ",".join(started))
+PY
+)
+check "15 바퀴가 기다리는 동안 사실 계산 슬롯 하나가 입력이 바뀌는 등록들을 돌아가며 준다" \
+  "$(printf '%s\n' "$out" | sed -n 's/^started=//p')" "rot1,rot2,rot3,rot1,rot2,rot3"
 
 printf '\ntest-observer: %d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" -eq 0 ]

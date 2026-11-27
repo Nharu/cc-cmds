@@ -14,7 +14,7 @@ The section you are reading has **no prescribed format** — measured across the
 - `E_atomic` — co-landing vocabulary: `같은 커밋`, `원자적으로 함께`, `함께 착지`, `동시에`, `분리 적용이 불가능`, and the `N + M` notation.
 - `E_order` — sequencing vocabulary: `먼저`, `그다음`, `보다 반드시 먼저`, `선행조건`, `마지막에`.
 - `E_file` — items sharing a file are in the same segment by default.
-- `E_release` — an item naming `CHANGELOG`, a `plugin.json` bump, or `chore(release)` is **forced into a single final segment**.
+- `E_release` — an item that edits `CHANGELOG` directly, bumps `plugin.json`, or makes a `chore(release)` commit is **forced into a single final segment**. An item that only adds a release note fragment under `changelog.d/` is not a release item: every segment adds its own fragment, so a fragment path is never a reason to group items into one segment, for `E_file` neither.
 
 **E. Grouping.** Take connected components of `E_atomic ∪ E_file`, then topologically sort by `E_order`. If two components have an `E_order` cycle between them they are inseparable: merge.
 

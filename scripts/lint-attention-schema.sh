@@ -122,7 +122,11 @@ def reply_ok($kind):
      has_nestr("session_id") and has_nestr("form_id")
      and (.questions | type == "array")
      and all(.questions[]; type == "object" and has_nestr("id") and has_str("question")
-             and (.options | labels_ok))
+             and (.options | labels_ok)
+             and ((has("kind") | not) or (.kind | type) == "string")
+             and ((has("allow_other") | not) or (.allow_other | type) == "boolean"))
+   elif $kind == "turn" then
+     has_nestr("session_id")
    elif $kind == "approval" then
      has_str("run_id") and has_str("approval_id") and has_str("question")
      and (.options | type == "array") and all(.options[]; type == "string")
@@ -134,15 +138,35 @@ def repo_ok:
   and ((split("/") | .[1]) as $n | $n != "." and $n != "..");
 def ordinary_id($host):
   re("\\A[a-z0-9-]{1,32}\\.[0-9]+\\.[0-9a-f]{8}\\z") and startswith($host + ".");
+def qkind: (.kind // "single");
 def actionable_shape($r):
   ($r.reply | reply_ok($r.kind)) and
   (if $r.kind == "auq" then
      ($r.reply.questions | length) >= 1 and all($r.reply.questions[]; (.options | length) >= 1)
    elif $r.kind == "question-form" then
-     all($r.reply.questions[]; (.id | nestr) and (.options | length) >= 1)
+     all($r.reply.questions[]; (.id | nestr)
+         and (qkind == "text" or (qkind == "single" and (.options | length) >= 1)))
+   elif $r.kind == "turn" then
+     true
    elif $r.kind == "approval" then
      ($r.reply.options | length) >= 1
+   elif $r.kind == "permission" then
+     ($r.reply.session_id | nestr) and ($r.reply.tool_name | nestr)
+     and ($r.reply.input_summary | type) == "string"
    else false end);
+# The accepts value the producer derives: [] for an unanswerable event, else by
+# kind, in the fixed order option, text, or the one decision kind for a
+# permission event.
+def accepts_for($r):
+  if $r.actionable != true then []
+  elif $r.kind == "permission" then ["permission-decision"]
+  elif $r.kind == "auq" then ["option", "text"]
+  elif $r.kind == "question-form" then
+    (if all($r.reply.questions[]; qkind == "single") then ["option"] else [] end)
+    + (if any($r.reply.questions[]; qkind == "text" or .allow_other == true) then ["text"] else [] end)
+  elif $r.kind == "turn" then ["text"]
+  elif $r.kind == "approval" then ["option"]
+  else [] end;
 def approval_id_errors($r):
   if (($r.id | type) == "string" and ($r.host | type) == "string"
       and ($r.id | startswith($r.host + ".appr."))) | not
@@ -174,8 +198,9 @@ def event_errors:
     (if (.slot | nestr) then empty else "slot is not a non-empty string" end),
     (if (.title | type) == "string" and (.body | type) == "string" then empty else "title or body is not a string" end),
     (if (.actionable | type) == "boolean" then empty else "actionable is not a boolean" end),
-    (if .accepts == (if .actionable == true then ["option"] else [] end) then empty
-     else "accepts does not follow actionable" end),
+    (if .actionable == true and (actionable_shape($r) | not) then empty
+     elif .accepts == accepts_for($r) then empty
+     else "accepts does not follow actionable and the kind" end),
     (if (.origin | type) == "object" and (.origin | keys) == $okeys
         and (.origin.config_dir | type) == "string"
         and all(.origin | (.session_id, .run_id, .cwd, .repo, .tmux_pane); . == null or type == "string")
@@ -186,7 +211,6 @@ def event_errors:
      else "reply does not match the kind surface or lacks a required field" end),
     (if .actionable != true or actionable_shape($r) then empty
      else "actionable is true but the reply does not allow an answer" end),
-    (if .kind != "permission" or .actionable == false then empty else "a permission event is actionable" end),
     (if .kind == "approval" then approval_id_errors($r)
      elif (.id | type) == "string" and (.host | type) == "string" and (.id | ordinary_id($r.host)) then empty
      else "id is not <host>.<epoch_ms>.<8 hex>" end);

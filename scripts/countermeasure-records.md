@@ -74,6 +74,32 @@
 **상태**: 세션에 로드됨
 **판정**: 미판정
 
+### test-gate 전량 승인 훅
+**종류**: 훅
+**위치**: `plugins/cc-cmds/hooks/test-gate-full-pretool.sh`
+**막을 사례**: `scripts/test-test-gate-full-pretool-hook.sh#run_case "make 로 감싼 --full 은 묻는다"` — 대화형 세션에서 직렬로 수 시간 걸리는 test-gate 전량 실행을 사람에게 묻지 않고 띄우는 경우에 승인을 묻는다
+**이웃 사례**: `scripts/test-test-gate-full-pretool-hook.sh#run_case "--full 이 경로보다 앞인 읽기는 묻지 않는다"` — `--full` 을 스크립트 경로보다 앞에 둔 읽기 명령과 좁힌 실행에는 묻지 않는다
+**우회 경로**: 변수나 글롭으로 스크립트 경로나 `--full` 을 가린 호출, 다른 이름으로 복사한 스크립트는 걸리지 않는다; 사람이 터미널에서 직접 친 명령에는 훅이 없다; 무인 스테이지(`CC_PIPELINE_RUN_ID` 가 있는 환경)에서는 훅이 비키고 test-gate 자신의 거절이 막는다
+**오차단**: 미측정
+**재시도**: 미측정
+**사람 개입**: 미측정
+**유지 보수**: 미측정
+**상태**: 세션에 로드됨
+**판정**: 미판정
+
+### 시나리오 발동 경계 린트
+**종류**: 린트
+**위치**: `scripts/lint-skill-trigger-scenarios.sh`
+**막을 사례**: `tests/fixtures/lint-skill-trigger-scenarios/FAIL-missing-file/` — 모델 발동 스킬에 시나리오 파일이 없는 경우; `tests/fixtures/lint-skill-trigger-scenarios/FAIL-extra-file/` — 모델 발동 집합 밖 이름의 시나리오 파일이 있는 경우; `tests/fixtures/lint-skill-trigger-scenarios/FAIL-version-token/` — 첫 줄 판 토큰이 틀린 경우; `tests/fixtures/lint-skill-trigger-scenarios/FAIL-header/` — 열 머리 줄이 틀린 경우; `tests/fixtures/lint-skill-trigger-scenarios/FAIL-field-count/` — 데이터 줄의 칸 수가 넷이 아닌 경우; `tests/fixtures/lint-skill-trigger-scenarios/FAIL-empty-field/` — 빈 칸이 있는 경우; `tests/fixtures/lint-skill-trigger-scenarios/FAIL-whitespace/` — 칸 앞뒤에 공백이 있는 경우; `tests/fixtures/lint-skill-trigger-scenarios/FAIL-id-grammar/` — id 문법 위반; `tests/fixtures/lint-skill-trigger-scenarios/FAIL-id-duplicate/` — 파일 안 id 중복; `tests/fixtures/lint-skill-trigger-scenarios/FAIL-utterance-duplicate/` — 집합 전체에서 같은 발화가 두 번 나오는 경우; `tests/fixtures/lint-skill-trigger-scenarios/FAIL-unknown-cc-name/` — 모델 발동 집합에 없는 `cc-cmds:` 이름을 기대하는 경우; `tests/fixtures/lint-skill-trigger-scenarios/FAIL-external-grammar/` — 외부 스킬 이름 문법 위반; `tests/fixtures/lint-skill-trigger-scenarios/FAIL-trigger-floor/` — 발동 발화가 셋보다 적은 경우; `tests/fixtures/lint-skill-trigger-scenarios/FAIL-neighbor-floor/` — 이웃 발화가 셋보다 적은 경우; `tests/fixtures/lint-skill-trigger-scenarios/FAIL-no-external/` — 집합 전체에 외부 스킬을 기대하는 줄이 없는 경우; `tests/fixtures/lint-skill-trigger-scenarios/FAIL-missing-key-counted/` — `disable-model-invocation` 키가 없는 스킬을 모델 발동으로 세어 시나리오 파일을 요구하는 경우
+**이웃 사례**: `tests/fixtures/lint-skill-trigger-scenarios/base/` — 형식과 완결성을 갖춘 시나리오 집합은 통과시킨다
+**우회 경로**: 형식은 맞지만 기대값이 실제 경계와 다른 발화는 통과한다(경계가 맞는지는 측정 하네스만 잰다); `SCENARIO_ROOT`·`SKILLS_ROOT` 를 덮어써 부르면 다른 트리를 검사한다; 설명문(description·when_to_use)을 고치고 측정 하네스로 다시 재지 않아도 린트는 통과한다; 모델 발동 집합은 `plugins/cc-cmds/skills/*/SKILL.md` 만 보므로 다른 플러그인이나 사용자 스킬은 감지되지 않는다 — 린트 본문, 시험과 픽스처, Makefile 의 등록만 찾아보았다
+**오차단**: 미측정
+**재시도**: 미측정
+**사람 개입**: 미측정
+**유지 보수**: 미측정
+**상태**: 세션에 로드됨
+**판정**: 미판정
+
 ## 대책 아닌 감지 파일
 
 - `plugins/cc-cmds/hooks/active-notify-pretool.sh` — 알림 헬퍼의 디스패처 호출을 스스로 승인할 뿐 어떤 행위도 막지 않는다
@@ -84,4 +110,5 @@
 - `plugins/cc-cmds/hooks/session-turn-notify.sh` — 턴이 끝났음을 알림으로 알릴 뿐이다
 - `plugins/cc-cmds/hooks/session-title.sh` — 세션 제목을 정할 뿐이다
 - `plugins/cc-cmds/hooks/statusline-sessionstart.sh` — 상태 줄을 설치하는 표시 장치일 뿐이다
+- `plugins/cc-cmds/hooks/remote-reply/posttool.sh` — 원격 텍스트 답의 표지 줄을 추가 맥락으로 낼 뿐 어떤 행위도 막지 않는다
 - `plugins/cc-cmds/hooks/witness-write-pretool.sh` — 런 밖 증인 디렉터리의 구성원 초안·체크포인트 Write 를 스스로 승인할 뿐 어떤 행위도 막지 않는다

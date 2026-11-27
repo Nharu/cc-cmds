@@ -51,6 +51,18 @@
 # (tr_release_path_in, through tr_release_paths) to leave a release-shaped
 # change of either path out of its input, whatever else the change holds.
 #
+# A RELEASE NOTE FRAGMENT ADDED ON TOP IS PART OF THE RELEASE RELATION. Today's
+# listing may also hold paths the record's listing lacks when every one of
+# them is a top-level fragment, `changelog.d/<name>.md` with no directory
+# below changelog.d/; every path of the record's listing is still in today's
+# with the same key. A record that read named paths only is then `같음` when
+# those paths are unchanged, as before. Any other record goes through the
+# release branch, which takes added fragments alone or with the two release
+# paths, and git checks that each such fragment is absent from the record's
+# input commit and present in today's. A fragment changed, deleted or renamed,
+# a path added under changelog.d/archive/ and a path added anywhere outside
+# the top level of changelog.d/ make the item run again.
+#
 # Sourced by scripts/test-tree.sh. Run, it has only its self-test:
 #   bash scripts/test-reuse.sh --self-test
 #
@@ -828,13 +840,24 @@ tr_release_rel() {
 
 # The body of tr_release_rel, run in a subshell with scratch directory $4.
 tr_release_rel_in() {
-  local gdir="$1" old="$2" new="$3" tmp="$4" p
+  local gdir="$1" old="$2" new="$3" tmp="$4" p m1 m2
   trg() { git --git-dir="$gdir" "$@"; }
   trg cat-file -e "$old^{commit}" && trg cat-file -e "$new^{commit}" || return 1
   trg merge-base --is-ancestor "$old" "$new" || return 1
   trg diff --no-renames --no-ext-diff --name-only -z "$old" "$new" -- > "$tmp/names" || return 1
   [ -s "$tmp/names" ] || return 1
   while IFS= read -r -d '' p; do
+    case "$p" in
+      changelog.d/*/*) return 1 ;;
+      changelog.d/?*.md)
+        # A fragment is taken only when it is new: absent from the record's
+        # input commit and a regular file in today's.
+        m1=$(trg ls-tree "$old" -- "$p") && m2=$(trg ls-tree "$new" -- "$p") || return 1
+        [ -z "$m1" ] && [ -n "$m2" ] || return 1
+        case "$m2" in 100644\ blob\ *|100755\ blob\ *) ;; *) return 1 ;; esac
+        continue
+        ;;
+    esac
     tr_release_path_in "$gdir" "$old" "$new" "$p" "$tmp" < /dev/null || return 1
   done < "$tmp/names"
   return 0
@@ -1064,7 +1087,11 @@ tr_judge_awk() {
       if (H["항목"] != key || H["대역"] != doubles || H["도구"] != fp || fp == "") exit 1
       if (H["시각"] !~ /^[0-9]+$/) exit 1
       age = now - H["시각"]; if (age < 0 || age > maxage) exit 1
-      if (n1 != n2) exit 1
+      # Every path of the record is in the listing of today under the same
+      # key; that listing may add top-level release note fragments and
+      # nothing else.
+      na = 0
+      for (p in k2) if (!(p in k1)) { if (p !~ /^changelog\.d\/[^\/]+\.md$/) exit 1; na++ }
       for (p in k1) if (!(p in k2) || k1[p] != k2[p]) exit 1
       if (H["트리전체"] != "예" && H["트리전체"] != "아니오" && H["트리전체"] != "git읽기") exit 1
       for (i = 1; i <= nr; i++) if (!(rd[i] in b1)) exit 1
@@ -1081,12 +1108,12 @@ tr_judge_awk() {
         printf "%s\t%s\t같음%s\n", H["시험트리"], H["시각표기"], tail
         exit 0
       }
-      # The release branch: the same base, and every differing path, at least
-      # one, a release path.
+      # The release branch: the same base, every path whose blob differs a
+      # release path, and at least one such path or one added fragment.
       if (rel == "" || H["베이스"] != base || H["커밋"] !~ /^[0-9a-f]+$/) exit 1
       nd = 0
       for (p in b1) if (b1[p] != b2[p]) { if (p != rlog && p != rpj) exit 1; nd++ }
-      if (nd == 0) exit 1
+      if (nd == 0 && na == 0) exit 1
       printf "후보\t%s\t%s\t%s%s\n", H["커밋"], H["시험트리"], H["시각표기"], tail
       exit 0
     }
@@ -1657,6 +1684,7 @@ a"
   pj_ver() { printf '{\n  "name": "%s",\n  "version": "%s",\n  "description": "d"\n}\n' "${2:-x}" "$1" > "$PJ"; }
   log_top() { printf '# Changelog\n\nintro\n\n%b## [1.0.0] - 2026-01-01\n- %s\n' "$1" "${2:-a}" > CHANGELOG.md; }
   ( cd "$R" && git init -q . && pj_ver 1.0.0 && log_top '' && printf 'o\n' > o.txt \
+      && mkdir -p changelog.d && printf 'f\n' > changelog.d/old.md \
       && sg add -A && sg commit -q -m c0 ) > /dev/null 2>&1 || { bad "릴리스 픽스처" "git"; return 1; }
   c0=$(cd "$R" && git rev-parse HEAD)
   r0=$(cd "$R" && git rev-parse 'HEAD^{tree}')
@@ -1713,6 +1741,25 @@ a"
   check "릴리스 경로: 없는 객체면 아무것도, 오류 출력도 없다" "$(rp_after "$BUMP" 0123456789abcdef0123456789abcdef01234567)" "rc=0"
   check "릴리스: 베이스가 다르면 재실행" "$(rel_after "$BUMP" r b2)" "재실행|재실행"
   check "릴리스: 기록 커밋이 같은 트리의 형제(조상 아님)면 재실행" "$(rel_after "$BUMP" s)" "재실행|재실행"
+  # Release note fragments: c0 holds changelog.d/old.md, and a commit may add
+  # top-level fragments beside or instead of the two release paths.
+  local FRAG="printf 'f\n' > changelog.d/seg-x.md"
+  check "릴리스: 최상위 조각만 더한 커밋은 트리 전체 기록을 릴리스 차이로, 읽은 경로 기록을 같음으로 재사용" "$(rel_after "$FRAG")" "릴리스 차이|같음"
+  check "릴리스: 조각과 두 릴리스 파일을 함께 바꾼 커밋은 둘 다 재사용" "$(rel_after "$BUMP && $FRAG")" "릴리스 차이|릴리스 차이"
+  check "릴리스: 있던 조각을 고치면 재실행" "$(rel_after "$BUMP && printf 'f2\n' > changelog.d/old.md")" "재실행|재실행"
+  check "릴리스: changelog.d/archive/ 아래에 더하면 재실행" "$(rel_after "$BUMP && mkdir -p changelog.d/archive/1.0.1 && $FRAG && mv changelog.d/seg-x.md changelog.d/archive/1.0.1/")" "재실행|재실행"
+  check "릴리스: 최상위 changelog.d/ 밖에 .md 를 더하면 재실행" "$(rel_after "$BUMP && mkdir -p docs && printf 'n\n' > docs/seg-x.md")" "재실행|재실행"
+  # The git side on its own, from c0: a new fragment passes; a fragment added
+  # under archive/, a changed fragment and a deleted one do not.
+  rel_rc() {
+    local c
+    ( cd "$R" && eval "$1" && sg add -A && sg commit -q -m rel ) > /dev/null 2>&1
+    c=$(cd "$R" && git rev-parse HEAD)
+    if tr_release_rel "$RG" "$c0" "$c"; then printf 0; else printf 1; fi
+    ( cd "$R" && git reset -q --hard "$c0" ) > /dev/null 2>&1
+  }
+  check "릴리스: git 쪽은 새 최상위 조각만 받고 archive/ 아래 추가·조각 수정·조각 삭제는 거절" \
+    "$(rel_rc "$FRAG") $(rel_rc "mkdir -p changelog.d/archive && printf 'f\n' > changelog.d/archive/seg-x.md") $(rel_rc "printf 'f2\n' > changelog.d/old.md") $(rel_rc 'rm changelog.d/old.md')" "0 1 1 1"
   out=$( ( cd "$R" && eval "$BUMP" && sg add -A && sg commit -q -m rel ) > /dev/null 2>&1
     c=$(cd "$R" && git rev-parse HEAD); t=$(cd "$R" && git rev-parse 'HEAD^{tree}'); tr_list "$R" "$c" "$T/lr"
     tr_reuse_find "$RG" make:mw "$t" "$c" b1 없음 "$T/lr" 2>&1; printf 'rc=%s|' "$?"
@@ -1746,8 +1793,8 @@ a"
   rm -rf "$T"
   printf 'test-reuse self-test: %d passed, %d failed\n' "$passed" "$failed"
   # A floor on the count, so a refactor that silently skips cases cannot pass.
-  if [ "$passed" -lt 149 ]; then
-    printf 'test-reuse self-test: 통과 수 %d 가 하한 %d 에 못 미칩니다\n' "$passed" 149 >&2
+  if [ "$passed" -lt 155 ]; then
+    printf 'test-reuse self-test: 통과 수 %d 가 하한 %d 에 못 미칩니다\n' "$passed" 155 >&2
     return 1
   fi
   [ "$failed" = "0" ]

@@ -73,8 +73,8 @@
 # into every other regular row that still has room, the roomiest first, a group
 # the overlay pulls in adding its prelude. A row the overlay does not fit is an
 # uncovered pair, reported and not an error. A solo that finds no row is: exit
-# 5. A closure that reaches an id `--list` does not have is exit 2 — the
-# selector runs everything for an unknown id.
+# 5. A closure that reaches an id `--list` does not have is exit 2 — test-gate
+# stops with exit 2 on an unknown id, so such a row could never run.
 #
 # With `--isolate` every row has three more columns: the laid-over ids (4), the
 # solos (5, `;`-separated, each `<1|2>:<X>,<closure>` — 2 being the solo the
@@ -368,8 +368,8 @@ shard_partition() {
         # The changed sections, each with its needs closure along the same
         # graph the components were built from: the banner needs.
         # A closure that reaches an id --list does not have is an error, not a
-        # warning: the selector runs everything for an unknown id, so one solo
-        # would become a full run.
+        # warning: test-gate stops with exit 2 on an unknown id, so one solo
+        # would fail its whole lane.
         ebad = 0; nx = 0
         na = split(ISO, xa, ",")
         for (i = 1; i <= na; i++) {

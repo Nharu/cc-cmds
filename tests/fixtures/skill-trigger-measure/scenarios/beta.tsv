@@ -1,0 +1,9 @@
+# cc-skill-triggers v1
+# 측정 하네스 시험에서 모든 줄이 일치하는 파일 — 종료 코드 0 의 갈래.
+id	기대	발화	근거
+b1	cc-cmds:beta	베타 하나 [발동:cc-cmds:beta]	일치
+b2	cc-cmds:beta	베타 둘 [발동:cc-cmds:beta]	일치
+b3	cc-cmds:beta	베타 셋 [발동:cc-cmds:beta]	일치
+m1	비발동	베타 이웃 하나	일치
+m2	비발동	베타 이웃 둘	일치
+m3	playwright-cli	베타 이웃 셋 [발동:playwright-cli]	외부 스킬 — 일치

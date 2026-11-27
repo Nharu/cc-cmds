@@ -972,6 +972,31 @@ EOF
   return 0
 }
 
+clause_postrun_check() {
+  # Every `종료 절` row's optional `근거 시점`: at most one, its value exactly
+  # `종단 뒤`, and never beside `근거 실행` on the same row — a clause whose
+  # evidence exists only after the run ends has no execution to run during it.
+  # A manifest without the field checks as before. The binding digest already
+  # freezes the whole row.
+  local row v
+  while IFS= read -r row; do
+    [ -n "$row" ] || continue
+    case "$row" in *"| 근거 시점="*) ;; *) continue ;; esac
+    v=$(manifest_row_fields "$row" '근거 시점' 1)
+    [ "$(printf '%s\n' "$v" | wc -l | tr -d ' ')" = 1 ] \
+      || die "「종료 절」 행의 「근거 시점」이 둘 이상입니다: $row"
+    v="${v%"${v##*[! ]}"}"
+    [ "$v" = "종단 뒤" ] \
+      || die "「종료 절」 행의 「근거 시점」 값은 「종단 뒤」 하나입니다: ${v:-(빈 값)}"
+    case "$row" in
+      *"| 근거 실행="*) die "「종료 절」 행에 「근거 시점」과 「근거 실행」을 함께 둘 수 없습니다: $row" ;;
+    esac
+  done <<EOF
+$(manifest_clause_rows_raw)
+EOF
+  return 0
+}
+
 # The interpreter options that take the program as a code string. A new-form
 # `사전 인가` row whose shape ends in one opens every program the act can spell,
 # so the writers refuse it. One list, read by both writers.
@@ -1800,6 +1825,7 @@ check_manifest() {
   # 9 (cont.) — a `종료 절` row's `근거 실행` binding. A shape no `사전 인가`
   # row covers binds the clause to an execution the run can never open.
   clause_binding_check
+  clause_postrun_check
   # 9 (cont.) — the `사전 인가` rows' new-form fields. A new-form row decides
   # where an act lands and runs its cleanup with no person, so a row that would
   # freeze with no effect, open every program, or run a cleanup through a shell
@@ -3959,11 +3985,19 @@ slice_files_overlap() {
   # shares a prefix with one of T's, the shorter of the two printed; nothing
   # when the two sets are prefix-disjoint. The same prefix match
   # `gate_fileset_escape` uses to judge whether a path is covered.
+  #
+  # One pair is not an overlap: both elements exactly `changelog.d/`. Each
+  # slice adds there only its own top-level release note fragment, named by
+  # its branch slug, so the files differ by name and never conflict as text.
+  # The exception is that bare element alone — `changelog.d/archive/`, a
+  # particular fragment file, or any path outside `changelog.d/` against
+  # either side still overlaps by the prefix match.
   local p q
   while IFS= read -r p; do
     [ -n "$p" ] || continue
     while IFS= read -r q; do
       [ -n "$q" ] || continue
+      [ "$p" = "changelog.d/" ] && [ "$q" = "changelog.d/" ] && continue
       case "$q" in "$p"|"$p"*) printf '%s' "$p"; return 0 ;; esac
       case "$p" in "$q"*) printf '%s' "$q"; return 0 ;; esac
     done <<EOF
@@ -3986,8 +4020,10 @@ slicing_order_defects() {
   # is `선행`. A slice in P(S) lands before S is cut, so S's base already holds
   # it; a slice in M(S) \ P(S) lands after S is cut and before S merges, which
   # is a change S never saw. S's declared files have to be prefix-disjoint from
-  # all of those, and nothing is exempt: a generated index or a version file
-  # merged from two bases conflicts, or merges a combination nobody read.
+  # all of those, and no file is exempt: a generated index or a version file
+  # merged from two bases conflicts, or merges a combination nobody read. The
+  # one pair `slice_files_overlap` does not count is two bare `changelog.d/`
+  # elements, where each slice adds only its own differently named fragment.
   #
   # A `선행` token naming a later slice is not a defect: no such ordering rule
   # was ever written for `선행`, and adding one now would park frozen documents.

@@ -8,7 +8,7 @@ export const MARKS = ['CC_PIPELINE_SEGMENT', 'CC_PIPELINE_STAGE_ID', 'CC_PIPELIN
 export const TOOL = 'mcp__cc-cmds__question_form'
 export const PANE = 'cc-cmds-question-form'
 
-export type Submitted = { text: string; origin: { kind: string; name?: string }; context: readonly string[] }
+export type Submitted = { text: string; origin: { kind: string; name?: string; asUser?: boolean }; context: readonly string[]; asUser?: boolean }
 
 export type WorldOptions = {
   env?: Partial<Record<(typeof MARKS)[number], string>>
@@ -57,7 +57,10 @@ export function world(on: On, options: WorldOptions = {}) {
   on('session.start', (_$, e) => ({ cwd: e.cwd }))
   on('session.end', (_$, e) => ({ sessionId: e.sessionId }))
   on('prompt.submit', (_$, e) => {
-    w.submits.push({ text: e.text, origin: e.origin as Submitted['origin'], context: e.context ?? [] })
+    // asUser 는 제출 옵션이고 엔진은 그것을 출처에 싣는다. 어느 쪽에 왔든 참일 때만 적는다.
+    const origin = e.origin as Submitted['origin']
+    const isAsUser = (e as { asUser?: boolean }).asUser === true || origin?.asUser === true
+    w.submits.push({ text: e.text, origin, context: e.context ?? [], ...(isAsUser ? { asUser: true } : {}) })
 
     return { text: e.text, context: e.context }
   })

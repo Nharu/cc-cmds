@@ -1,0 +1,9 @@
+# cc-skill-triggers v1
+# 측정 하네스 시험의 판정 골든. 발화 안의 대괄호 표지가 스텁의 응답을 고른다.
+id	기대	발화	근거
+a1	cc-cmds:alpha	알파 하나 [발동:cc-cmds:alpha]	세 번 모두 기대대로 — 일치
+a2	cc-cmds:alpha	알파 둘 [발동:cc-cmds:beta]	세 번 모두 다른 스킬 — 어긋남
+a3	cc-cmds:alpha	알파 셋 [발동:cc-cmds:alpha] [둘째만 비발동]	둘째만 비발동 — 불안정
+n1	비발동	알파 이웃 하나	Skill 호출 없음 — 관측 비발동, 일치
+n2	비발동	알파 이웃 둘 [셋째 오류]	셋째 실행이 무효 — 미측정
+n3	missing-ext	알파 이웃 셋 [발동:missing-ext]	기대 스킬이 목록에 없음 — 무효(목록 없음), 미측정

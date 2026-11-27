@@ -1,0 +1,21 @@
+{
+  "schema": 1,
+  "reply_id": "host-a1.1793500003000.4d5e6f70",
+  "event_id": "host-a1.1793499993000.44556677",
+  "host": "host-a1",
+  "kind": "permission-decision",
+  "target": {
+    "surface": "permission",
+    "session_id": "5f0c2d4e-1111-4a2b-9c3d-000000000001",
+    "tool_name": "Bash",
+    "input_summary": "make check — run the checks"
+  },
+  "decision": "allow",
+  "provenance": {
+    "transport": "app",
+    "sender": "app:dev-7f3a",
+    "received_at_ms": 1793500003000,
+    "transport_ref": "device dev-7f3a message 12"
+  },
+  "expires_at_ms": 1793500603000
+}
