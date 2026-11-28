@@ -21,6 +21,13 @@ INIT="$ORCH/cc-team-witness-init.sh"
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/cc-witness-publish-test.XXXXXX")
 trap 'chmod -R u+w "$WORK" 2>/dev/null; rm -rf "$WORK"' EXIT
 
+# The publisher compares the witness directory's parent with two roots read from
+# the environment, so both are set here and a value a calling stage exported is
+# not what the fixtures are measured against.
+RUNDIR="$WORK/run"; mkdir -p "$RUNDIR"
+export CC_PIPELINE_RUN_DIR="$RUNDIR"
+export XDG_STATE_HOME="$WORK/xdg"
+
 passed=0
 failed=0
 ok()    { passed=$((passed + 1)); printf 'PASS: %s\n' "$1"; }
@@ -42,7 +49,6 @@ done
 
 # Witness directories come from the initializer, with and without a stage id,
 # so the publisher is tested against the directories it will really meet.
-RUNDIR="$WORK/run"; mkdir -p "$RUNDIR"
 WD=$(CC_PIPELINE_RUN_DIR="$RUNDIR" CC_PIPELINE_STAGE_ID='S-1#1' "$INIT" review-t)
 WD_NOSTAGE=$(env -u CC_PIPELINE_STAGE_ID CC_PIPELINE_RUN_DIR="$RUNDIR" "$INIT" review-t)
 
@@ -266,6 +272,92 @@ pub "$DNS" "$WN"
 check "스테이지 id 없는 디렉터리에서 게시: 종료 값 0" "$RC" "0"
 present "스테이지 id 없는 디렉터리에서 게시: 증인이 있다" "$WN"
 absent "스테이지 id 없는 디렉터리에서 게시: 초안 이름이 지워졌다" "$DNS"
+
+# ---------------------------------------------------------------------------
+# Line 1, the location — the witness directory's physical parent is a root
+# ---------------------------------------------------------------------------
+# pubv <env 인자…> -- <초안> <증인> — `pub` 를 고친 환경에서. RC, OUT, ERR 를 남긴다.
+pubv() {
+  local a=() o e
+  while [ "$1" != -- ]; do a+=("$1"); shift; done
+  shift
+  o="$WORK/out.$$"; e="$WORK/err.$$"
+  env "${a[@]}" "$PUB" "$@" >"$o" 2>"$e"; RC=$?
+  OUT=$(cat "$o"); ERR=$(cat "$e"); rm -f "$o" "$e"
+}
+# loc_bad <label> <dir> <env 인자…> — that directory is refused on line 1 and
+# nothing changes. The draft is made in <dir>, which must already exist.
+loc_bad() {
+  local label="$1" dir="$2" d w before; shift 2
+  d=$(mk_draft "$dir" loc-a round-1 "${TOKS[2]}" "$NONCE_A" "body $label")
+  w="$dir/loc-a.round-1.md"
+  before=$(cat "$d")
+  pubv "$@" -- "$d" "$w"
+  check "위치($label): 종료 값 2" "$RC" "2"
+  has "위치($label): 어긋난 이름 한 줄" "$ERR" "어긋난 이름 — 증인 디렉터리가 증인 루트 아래가 아니다"
+  absent "위치($label): 증인을 만들지 않는다" "$w"
+  check "위치($label): 초안이 바이트 그대로다" "$(cat "$d")" "$before"
+}
+# loc_ok <label> <draft dir as called> <env 인자…> — published from that directory.
+loc_ok() {
+  local label="$1" dir="$2" d w; shift 2
+  d=$(mk_draft "$dir" loc-b round-1 "${TOKS[3]}" "$NONCE_A" "body $label")
+  w="$dir/loc-b.round-1.md"
+  pubv "$@" -- "$d" "$w"
+  check "위치($label): 종료 값 0" "$RC" "0"
+  has "위치($label): 게시됨 한 줄" "$OUT" "게시됨 — $w"
+  present "위치($label): 증인이 있다" "$w"
+  absent "위치($label): 초안 이름이 지워졌다" "$d"
+}
+
+# A name of the right shape whose parent is neither root.
+mkdir -p "$WORK/stray/cc-team-witness-stray.ABCDEF"
+loc_bad "두 루트 밖의 부모" "$WORK/stray/cc-team-witness-stray.ABCDEF" CC_PIPELINE_RUN_DIR="$RUNDIR"
+# A directory nested one level deeper under a root is not under it either.
+mkdir -p "$RUNDIR/sub/cc-team-witness-deep.ABCDEF"
+loc_bad "루트의 손자 디렉터리" "$RUNDIR/sub/cc-team-witness-deep.ABCDEF" CC_PIPELINE_RUN_DIR="$RUNDIR"
+
+# Each root on its own.
+WD_RUN=$(env -u CC_PIPELINE_STAGE_ID CC_PIPELINE_RUN_DIR="$RUNDIR" "$INIT" loc-run)
+loc_ok "런 루트" "$WD_RUN" CC_PIPELINE_RUN_DIR="$RUNDIR" XDG_STATE_HOME="$WORK/xdg-none"
+WD_XDG=$(env -u CC_PIPELINE_STAGE_ID -u CC_PIPELINE_RUN_DIR XDG_STATE_HOME="$WORK/xdg" "$INIT" loc-xdg)
+loc_ok "XDG 루트" "$WD_XDG" -u CC_PIPELINE_RUN_DIR XDG_STATE_HOME="$WORK/xdg"
+WD_XDG2=$(env -u CC_PIPELINE_STAGE_ID -u CC_PIPELINE_RUN_DIR XDG_STATE_HOME="$WORK/xdg" "$INIT" loc-xdg2)
+loc_ok "런 디렉터리 값이 있어도 XDG 루트" "$WD_XDG2" CC_PIPELINE_RUN_DIR="$RUNDIR" XDG_STATE_HOME="$WORK/xdg"
+mkdir -p "$WORK/home"
+WD_HOME=$(env -u CC_PIPELINE_STAGE_ID -u CC_PIPELINE_RUN_DIR -u XDG_STATE_HOME HOME="$WORK/home" "$INIT" loc-home)
+loc_ok "XDG_STATE_HOME 없이 HOME 기본값" "$WD_HOME" -u CC_PIPELINE_RUN_DIR -u XDG_STATE_HOME HOME="$WORK/home"
+# The run root alone does not admit a directory under the XDG root's place
+# when XDG_STATE_HOME names somewhere else.
+WD_XDG3=$(env -u CC_PIPELINE_STAGE_ID -u CC_PIPELINE_RUN_DIR XDG_STATE_HOME="$WORK/xdg" "$INIT" loc-xdg3)
+loc_bad "다른 XDG_STATE_HOME 아래로 부름" "$WD_XDG3" CC_PIPELINE_RUN_DIR="$RUNDIR" XDG_STATE_HOME="$WORK/xdg-none"
+
+# Symbolic links are folded: a root reached through a link, and a run root given
+# in its link spelling, both match.
+ln -s "$RUNDIR" "$WORK/run-link"
+WD_L=$(env -u CC_PIPELINE_STAGE_ID CC_PIPELINE_RUN_DIR="$RUNDIR" "$INIT" loc-link)
+loc_ok "링크로 가리킨 경로로 부름" "$WORK/run-link/${WD_L##*/}" CC_PIPELINE_RUN_DIR="$RUNDIR"
+WD_L2=$(env -u CC_PIPELINE_STAGE_ID CC_PIPELINE_RUN_DIR="$RUNDIR" "$INIT" loc-link2)
+loc_ok "런 디렉터리 값이 링크 철자" "$WD_L2" CC_PIPELINE_RUN_DIR="$WORK/run-link" XDG_STATE_HOME="$WORK/xdg-none"
+
+# A relative XDG_STATE_HOME is not compared, even when the directory it names
+# from the current directory is the witness directory's parent.
+mkdir -p "$WORK/rel/cc-cmds/design/cc-team-witness-rel.ABCDEF"
+(
+  f0=$failed
+  cd "$WORK" || exit 1
+  loc_bad "상대 XDG_STATE_HOME" "$WORK/rel/cc-cmds/design/cc-team-witness-rel.ABCDEF" \
+    -u CC_PIPELINE_RUN_DIR XDG_STATE_HOME=rel
+  # The subshell's counters do not reach the parent; hand them back by status.
+  [ "$failed" -eq "$f0" ]
+)
+if [ "$?" -eq 0 ]; then ok "위치(상대 XDG_STATE_HOME): 하위 셸의 단언이 모두 통과"
+else bad "위치(상대 XDG_STATE_HOME): 하위 셸의 단언이 모두 통과" "위 FAIL 줄"; fi
+
+# A witness directory that is itself a link under a root, pointing outside.
+mkdir -p "$WORK/outside/cc-team-witness-out.ABCDEF"
+ln -s "$WORK/outside/cc-team-witness-out.ABCDEF" "$RUNDIR/cc-team-witness-lnk.ABCDEF"
+loc_bad "루트 밖을 가리키는 링크 디렉터리" "$RUNDIR/cc-team-witness-lnk.ABCDEF" CC_PIPELINE_RUN_DIR="$RUNDIR"
 
 # ---------------------------------------------------------------------------
 # The nonce minter

@@ -25,7 +25,17 @@
 #
 #   1. The witness name is `{role-slug}.{round/phase}.md`, the draft is
 #      `.{role-slug}.{round/phase}.<16 hex>` in the same directory string, and
-#      that directory's name begins with `cc-team-witness-`.
+#      that directory's name begins with `cc-team-witness-`. Then the directory
+#      is folded to its physical path (`cd -P` and `pwd -P`); that physical name
+#      also begins with `cc-team-witness-`, and its parent equals one of the two
+#      witness roots folded the same way — `CC_PIPELINE_RUN_DIR` when it is set,
+#      or `${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/design`. Those are the
+#      two places `cc-team-witness-init.sh` makes a witness directory, and the
+#      gate's grade for this name (`트리밖쓰기`, a write inside a witness
+#      directory) rests on that location, so the helper that takes the grade
+#      checks it. A second root that is not absolute is not compared, as the
+#      initializer refuses a relative root. A directory that cannot be folded
+#      matches no root.
 #   2. The draft name exists, and 3. it is a regular file and not a symbolic
 #      link — `ln` with no option follows a symlinked source and links its
 #      target, so this is what ties the published content to the draft itself.
@@ -37,7 +47,8 @@
 #
 #   | line | state                                              | exit | line printed                  |
 #   | ---- | -------------------------------------------------- | ---- | ----------------------------- |
-#   | 1    | a name is not of the shape in 1                    | 2    | 어긋난 이름                   |
+#   | 1    | a name is not of the shape in 1, or the directory  | 2    | 어긋난 이름                   |
+#   |      | is not under a witness root (not foldable too)     |      |                               |
 #   | 2    | the draft name does not exist                      | 2    | 초안 없음                     |
 #   | 3    | the draft is a symlink or not a regular file       | 2    | 초안이 일반 파일이 아님       |
 #   | 4    | the sentinel or the nonce does not match           | 2    | 센티널 어긋남 — <what>        |
@@ -61,6 +72,12 @@
 #
 # `.attempt` is not read: `cc-team-witness-init.sh` writes it only when a stage
 # id is set, so an interactive team's witness directory has none.
+#
+# Environment:
+#   CC_PIPELINE_RUN_DIR  — the first witness root, when set and not empty.
+#   XDG_STATE_HOME       — the second witness root is
+#                          <XDG_STATE_HOME>/cc-cmds/design, defaulting to
+#                          $HOME/.local/state; not compared when not absolute.
 
 set -uo pipefail
 
@@ -109,6 +126,41 @@ case "${wdir##*/}" in
   cc-team-witness-*) ;;
   *) say_bad "어긋난 이름 — 디렉터리 이름이 cc-team-witness- 로 시작하지 않는다: $wdir" 2 ;;
 esac
+
+# Line 1, the location. Every path is folded to its physical form before it is
+# compared, so a root reached through a symbolic link still matches and a
+# witness directory that is itself a link to somewhere else does not.
+phys_dir() {
+  # The physical path of an existing directory; fails for anything else.
+  [ -n "$1" ] || return 1
+  (CDPATH='' cd -P -- "$1" 2>/dev/null && pwd -P)
+}
+not_under_root() {
+  say_bad "어긋난 이름 — 증인 디렉터리가 증인 루트 아래가 아니다: $wdir" 2
+}
+pwdir=$(phys_dir "$wdir") || not_under_root
+case "${pwdir##*/}" in cc-team-witness-*) ;; *) not_under_root ;; esac
+pparent=${pwdir%/*}
+[ -n "$pparent" ] || pparent=/
+under_root=no
+if [ -n "${CC_PIPELINE_RUN_DIR:-}" ] && proot=$(phys_dir "$CC_PIPELINE_RUN_DIR") \
+   && [ "$proot" = "$pparent" ]; then
+  under_root=yes
+fi
+if [ -n "${XDG_STATE_HOME:-}" ]; then
+  xbase=$XDG_STATE_HOME
+elif [ -n "${HOME:-}" ]; then
+  xbase=$HOME/.local/state
+else
+  xbase=
+fi
+case "$xbase" in
+  /*)
+    if proot=$(phys_dir "$xbase/cc-cmds/design") && [ "$proot" = "$pparent" ]; then
+      under_root=yes
+    fi ;;
+esac
+[ "$under_root" = yes ] || not_under_root
 
 # Lines 2 and 3 — the draft itself. `-e` is false for a dangling link, so the
 # link test comes first in the order that reports a link as a link.
