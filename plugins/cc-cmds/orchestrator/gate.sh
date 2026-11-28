@@ -45373,7 +45373,7 @@ EOF
       # same act ends the run: a run with a progress axis that carried an answer
       # over after its deadline would otherwise never end.
       if [ "$hwhy" = "이월" ] && gate_defer_end_due; then
-        gate_end_run 마감 "$(gate_defer_end_why)" 마감 || true
+        gate_end_run_synced 마감 "$(gate_defer_end_why)" 마감 || true
       fi
       ;;
     limit-cleared)
@@ -47845,6 +47845,22 @@ gate_end_run() {
   return 0
 }
 
+gate_end_run_synced() {
+  # gate_end_run_synced <gate_end_run 의 인자…> — end the run, then sync the
+  # merged targets' main worktrees; the status is `gate_end_run`'s own.
+  #
+  # EVERY END INSIDE THE GATE GOES THROUGH HERE, not through `gate_end_run`
+  # itself. The sync stays out of that function's body because the driver
+  # calls it through `run_gate_call gate_end_run` in the middle of its walk (a
+  # deadline park), where a sync would run under live stages. `wtc_main_sync
+  # 경계` reads `done`, leaves a live fixed graph to its own tail and skips while
+  # a stage or relay is alive.
+  local rc=0
+  gate_end_run "$@" || rc=$?
+  if [ "$rc" -eq 0 ]; then wtc_main_sync 경계 || true; fi
+  return "$rc"
+}
+
 gate_satisfied_done_line() {
   # gate_satisfied_done_line <근거> — print the `done` line of a run that ends
   # with every termination condition met.
@@ -48017,21 +48033,21 @@ gate_verb_end_overdue() {
   # unclassified: it takes `마감`, so the successor derivation picks the
   # automatic branch and the carried answers reach the next run.
   if gate_defer_end_due; then
-    gate_end_run 마감 "$(gate_defer_end_why)" 마감
+    gate_end_run_synced 마감 "$(gate_defer_end_why)" 마감
     return 0
   fi
   fleet=$(gate_fleet_busy_state)
   why="벽시계 마감이 지났고 종료 토큰이 없다"
   case "$fleet" in
-    live) gate_end_run 마감 "$why — 고정 그래프 실행 표지가 살아 있다" 마감 ;;
-    dead) gate_end_run 마감 "$why — 고정 그래프 실행 표지의 프로세스가 없다(분류 없이 멈춘 런)" 해당없음 ;;
+    live) gate_end_run_synced 마감 "$why — 고정 그래프 실행 표지가 살아 있다" 마감 ;;
+    dead) gate_end_run_synced 마감 "$why — 고정 그래프 실행 표지의 프로세스가 없다(분류 없이 멈춘 런)" 해당없음 ;;
     *)
       if cc_shift_is_live "$RUN_DIR" || cc_relay_is_live "$RUN_DIR" \
          || [ "$(cc_live_stages "$RUN_DIR" 2>/dev/null || printf 0)" -gt 0 ] 2>/dev/null; then
         gate_progress_axes_unbounded || return 0
-        gate_end_run 마감 "$why — 살아 있는 shift 나 스테이지가 있다" 마감
+        gate_end_run_synced 마감 "$why — 살아 있는 shift 나 스테이지가 있다" 마감
       else
-        gate_end_run 마감 "$why — 살아 있는 구동기를 관측하지 못했다(분류 없이 멈춘 런)" 해당없음
+        gate_end_run_synced 마감 "$why — 살아 있는 구동기를 관측하지 못했다(분류 없이 멈춘 런)" 해당없음
       fi ;;
   esac
 }
@@ -48093,7 +48109,7 @@ gate_verb_end_abandoned() {
     이어받음) why="다른 런이 이 런을 이어받았다${succ:+ — 후계 런 $succ}" ;;
     포기)     why="사람이 이 런을 포기했다" ;;
   esac
-  gate_end_run "$cause" "$why" 해당없음 "$cause"
+  gate_end_run_synced "$cause" "$why" 해당없음 "$cause"
 }
 
 gate_verb_drain_release() {
@@ -48235,7 +48251,7 @@ gate_run_ended_ok() {
     # under `act` and `exec` alone. After it, `done` exists and the first arm
     # above answers every later call with the same refusal this arm gives.
     case "$verb" in
-      act|exec) gate_end_run 마감 "$mark" 마감 || true ;;
+      act|exec) gate_end_run_synced 마감 "$mark" 마감 || true ;;
     esac
   elif gate_defer_end_due; then
     # THE ONE CLOCK ENDING A RUN WITH A PROGRESS AXIS GETS. Such a run is ended
@@ -48246,7 +48262,7 @@ gate_run_ended_ok() {
     # under an acting verb only, for the reason the arm above gives.
     mark=$(gate_defer_end_why)
     case "$verb" in
-      act|exec) gate_end_run 마감 "$mark" 마감 || true ;;
+      act|exec) gate_end_run_synced 마감 "$mark" 마감 || true ;;
     esac
   else
     return 0
@@ -59229,7 +59245,7 @@ gate_verb_act() {
         local end_why end_kind=완료
         end_why="${rationale:-다음 의무 지목 불가}"
         [ -z "$(gate_pending_approval_ids 판단)" ] || end_kind=""
-        gate_end_run "종료 조건 성립" "$end_why" 해당없음 "$end_kind" "" \
+        gate_end_run_synced "종료 조건 성립" "$end_why" 해당없음 "$end_kind" "" \
           "$(gate_satisfied_done_line "$end_why")" || true
         gate_write_disposition_report || true
         wtc_run 라우터 || true
@@ -73454,7 +73470,7 @@ gate_b5_stagnation_bound() {
   printf '%s\n' "$h" > "$RUN_DIR/stagnation-digest"
   printf '%s\n' "$n" > "$RUN_DIR/stagnation-repeat"
   [ "$n" -lt "$bound" ] && return 0
-  gate_end_run B5 "진전 해시가 라우터 판정 연속 ${n}회 동안 불변입니다 (상한 ${bound})"
+  gate_end_run_synced B5 "진전 해시가 라우터 판정 연속 ${n}회 동안 불변입니다 (상한 ${bound})"
 }
 
 gate_b4_cost() {
@@ -73480,7 +73496,7 @@ gate_b4_cost() {
   # every act; ending the run is not a question, so letting suppression reach it
   # would turn a bound into a thing a single grant switches off for good.
   if [ "$pct" -ge 100 ]; then
-    gate_end_run B4 "비용이 선언 천장에 닿았습니다 (${spent}/${declared})"
+    gate_end_run_synced B4 "비용이 선언 천장에 닿았습니다 (${spent}/${declared})"
     return 0
   fi
   # B4 has no counter to restart, so a resolution records the share it was

@@ -14,11 +14,24 @@
 # budget/wall-clock parks, open judgment approvals), because its `완료` is
 # decided from slice landings alone.
 #
+# THE MAIN WORKTREE IS SYNCED ON EVERY END, NOT ONLY A COMPLETE ONE.
+# `wtc_main_sync` puts each merged target's main worktree back on its base
+# branch when that is safe and fast-forwards it to the fetched remote base. It
+# runs from `wtc_run` whether or not the run completed, and from the gate's
+# `gate_end_run_synced` when a deadline, a B4/B5 boundary or an abandonment
+# ends a router run, so a run that stopped short of completion still leaves
+# its targets' main worktrees current. It has its own once mark, so a boundary
+# end that synced first does not keep the later `wtc_run` from sweeping
+# segments.
+#
 # WHAT IT DOES NOT DO. It writes nothing to `done`, parks nothing, raises no
 # banner, adds no ledger row form and returns 0 whatever happens: a cleanup
 # failure is reported, never escalated. It never passes `--force` to
-# `git worktree remove` or `-D` to `git branch`, never prunes, never fetches,
-# and never deletes a remote branch. The only refs it deletes outside a merged
+# `git worktree remove` or `-D` to `git branch`, never prunes, never stashes,
+# never switches branches by force, and never deletes a remote branch. It
+# fetches nothing except the main worktree sync's one fetch of each target's
+# base branch into its remote-tracking ref; the segment worktree and branch
+# passes fetch nothing. The only refs it deletes outside a merged
 # segment's branch are a reviewer run's own, under `refs/cc-review/<run id>/`. Every git call runs in a subshell rooted
 # at the declared target's main worktree, its exit status is captured and
 # checked here, and its stderr is dropped — a `ls-remote` error can print the
@@ -258,12 +271,19 @@ wtc_seg_field_values() {
 
 wtc_run() {
   # wtc_run <라우터|드라이버> — the only entry point. Always returns 0.
-  local mode="${1:-라우터}" why caller mark
+  local mode="${1:-라우터}" why caller mark rc=0
   caller=$(pwd -P 2>/dev/null || true)
   if [ "$mode" = "드라이버" ]; then
-    why=$(wtc_driver_should_run) || { wtc_say '워크트리 정리' "생략 — ${why:-판정 실패}"; return 0; }
+    why=$(wtc_driver_should_run) || rc=$?
   else
-    why=$(wtc_router_should_run) || { wtc_say '워크트리 정리' "생략 — ${why:-판정 실패}"; return 0; }
+    why=$(wtc_router_should_run) || rc=$?
+  fi
+  if [ "$rc" -ne 0 ]; then
+    # Segments are swept only on a complete run; the main worktree is synced
+    # on any end of a run whose ledger is this run's own.
+    wtc_say '워크트리 정리' "생략 — ${why:-판정 실패}"
+    if wtc_run_scope_ok; then wtc_main_sync "$mode" || true; fi
+    return 0
   fi
   if [ -z "${MANIFEST:-}" ]; then
     wtc_say '워크트리 정리' '생략 — 매니페스트 없음(--doc 모드)'
@@ -277,10 +297,21 @@ wtc_run() {
   mark="${RUN_DIR:-}/worktree-cleanup.once"
   if [ -n "${RUN_DIR:-}" ] && [ -d "$mark" ]; then
     wtc_say '워크트리 정리' '생략 — 이 런 디렉터리에서 이미 정리함'
+    wtc_main_sync "$mode" || true
     return 0
   fi
   [ -z "${RUN_DIR:-}" ] || mkdir "$mark" 2>/dev/null || true
   wtc_sweep "$mode" "$caller" || true
+  return 0
+}
+
+wtc_run_scope_ok() {
+  # wtc_run_scope_ok — 0 when the run has a manifest and its ledger is this
+  # run's own file: the two checks `wtc_run` reports before it sweeps, asked
+  # here silently.
+  [ -n "${MANIFEST:-}" ] || return 1
+  [ -n "${LEDGER:-}" ] && [ "$(basename "$LEDGER")" = "${RUN_ID:-}.md" ] || return 1
+  if grep -q '^## 실행 ' "$LEDGER" 2>/dev/null; then return 1; fi
   return 0
 }
 
@@ -390,6 +421,11 @@ EOF
   done <<EOF
 $cands
 EOF
+
+  # The main worktree goes back to its base before the branch pass reads the
+  # worktree list, so a merged segment's branch the main worktree sat on is
+  # not kept as `다른 워크트리에 체크아웃됨`.
+  wtc_main_sync "$mode" || true
 
   # The branch pass: only a terminal `머지됨` segment gets past step 1.
   local b kept rsha lsha after afail
@@ -511,6 +547,169 @@ EOF
   wtc_say '워크트리 정리' "런 완주($mode) — 워크트리 제거 $wt_rm · 보존 $wt_keep · 브랜치 삭제 $br_del · 보존 $br_keep"
   [ $((ref_del + ref_keep)) -eq 0 ] \
     || wtc_say '워크트리 정리' "런 완주($mode) — 리뷰 ref 제거 $ref_del · 보존 $ref_keep"
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# The main worktree sync.
+# ---------------------------------------------------------------------------
+wtc_main_sync() {
+  # wtc_main_sync <라우터|드라이버|경계> — put each merged target's main
+  # worktree on its base branch when that is safe and fast-forward it to the
+  # fetched remote base. One `메인 워크트리 정리` line per target, or one skip
+  # line. Always returns 0.
+  #
+  # `경계` IS THE GATE'S BOUNDARY END, which can end a run while work is still
+  # in flight. A live fixed-graph driver syncs from its own tail, so that call
+  # leaves no line; a live stage or relay may be reading or landing in the main
+  # worktree, so that call reports the skip and takes no once mark.
+  local mode="${1:-라우터}" n=0 mark states merged aliases nt a sid mc mcs="" nl=$'\n'
+  if [ "$mode" = "경계" ]; then
+    [ -n "${RUN_DIR:-}" ] && [ -s "$RUN_DIR/done" ] || return 0
+    if declare -F gate_fleet_busy_state >/dev/null 2>&1 \
+       && [ "$(gate_fleet_busy_state 2>/dev/null || true)" = "live" ]; then
+      return 0
+    fi
+    if declare -F cc_live_stages >/dev/null 2>&1; then
+      n=$(cc_live_stages "$RUN_DIR" 2>/dev/null || printf 0)
+      case "$n" in ''|*[!0-9]*) n=0 ;; esac
+    fi
+    if declare -F cc_relay_is_live >/dev/null 2>&1 && cc_relay_is_live "$RUN_DIR" >/dev/null 2>&1; then
+      n=$((n + 1))
+    fi
+    if [ "$n" -gt 0 ]; then
+      wtc_say '메인 워크트리 정리' "생략 — 살아 있는 스테이지·릴레이($n)"
+      return 0
+    fi
+  fi
+  if [ -n "${RUN_DIR:-}" ]; then
+    mark="$RUN_DIR/main-sync.once"
+    if ! mkdir "$mark" 2>/dev/null; then
+      [ -d "$mark" ] && return 0
+    fi
+  fi
+  states=$(cc_segment_states "${LEDGER:-}" 2>/dev/null || true)
+  merged=$(printf '%s\n' "$states" | awk -F '\t' '$1 != "" && $2 == "머지됨" { print $1 }')
+  if [ -z "$merged" ]; then
+    wtc_say '메인 워크트리 정리' '생략 — 이 런의 머지 없음'
+    return 0
+  fi
+  aliases=$(target_aliases 2>/dev/null | awk 'NF' || true)
+  nt=$(printf '%s\n' "$aliases" | awk 'NF' | wc -l | tr -d ' ')
+  # With more than one target a merge is attached to the target whose fetched
+  # base contains its `머지 커밋`; a merged row without one is attached to none.
+  if [ "${nt:-0}" -gt 1 ]; then
+    while IFS= read -r sid; do
+      [ -n "$sid" ] || continue
+      mc=$(wtc_seg_field_values "${LEDGER:-}" "$sid" '머지 커밋' | awk 'NF && $0 != "-"' | tail -1)
+      if [ -z "$mc" ]; then
+        wtc_say '메인 워크트리 정리' "생략 — 머지 대상 판별 불가(세그먼트 $sid)"
+      else
+        mcs="${mcs}${mc}${nl}"
+      fi
+    done <<EOF
+$merged
+EOF
+  fi
+  for a in $aliases; do
+    wtc_main_sync_one "$a" "${nt:-0}" "$mcs" || true
+  done
+  return 0
+}
+
+wtc_main_sync_one() {
+  # wtc_main_sync_one <alias> <target count> <merge commits> — one target.
+  # The first unmet step names the reason and ends the target.
+  local a="$1" nt="$2" mcs="$3" root base reason="" sw="" res="" rc out x p
+  local R="" L="" cur head rsha safe mc hit
+  root=$(target_field "$a" '메인 워크트리' 2>/dev/null || true)
+  [ -n "$root" ] || root=$(alias_root "$a" 2>/dev/null || true)
+  base=$(target_field "$a" '베이스 브랜치' 2>/dev/null || true)
+  if [ -z "$root" ] || [ ! -d "$root" ]; then
+    reason='메인 워크트리 없음'
+  elif [ -z "$base" ]; then
+    reason='베이스 브랜치 미선언'
+  fi
+  if [ -z "$reason" ]; then
+    for x in MERGE_HEAD CHERRY_PICK_HEAD REVERT_HEAD BISECT_LOG rebase-merge rebase-apply; do
+      p=$( cd "$root" && git rev-parse --git-path "$x" 2>/dev/null ) || p=""
+      [ -n "$p" ] || continue
+      case "$p" in /*) : ;; *) p="$root/$p" ;; esac
+      if [ -e "$p" ]; then reason="진행 중인 git 작업($x)"; break; fi
+    done
+  fi
+  if [ -z "$reason" ]; then
+    rc=0; out=$( cd "$root" && git status --porcelain --untracked-files=no 2>/dev/null ) || rc=$?
+    if [ "$rc" -ne 0 ]; then reason="판정 읽기 실패(상태 git 종료 $rc)"
+    elif [ -n "$out" ]; then reason='커밋하지 않은 추적 변경'
+    fi
+  fi
+  if [ -z "$reason" ]; then
+    rc=0
+    ( cd "$root" && GIT_TERMINAL_PROMPT=0 git fetch --no-tags --quiet origin \
+        "+refs/heads/$base:refs/remotes/origin/$base" </dev/null >/dev/null 2>&1 ) || rc=$?
+    if [ "$rc" -ne 0 ]; then
+      reason="원격 fetch 실패(git 종료 $rc)"
+    else
+      R=$( cd "$root" && git rev-parse --verify --quiet "refs/remotes/origin/$base^{commit}" 2>/dev/null ) || R=""
+      [ -n "$R" ] || reason='원격 fetch 실패(원격 베이스 없음)'
+    fi
+  fi
+  if [ -z "$reason" ] && [ "$nt" -gt 1 ]; then
+    hit=""
+    for mc in $mcs; do
+      if ( cd "$root" && git merge-base --is-ancestor "$mc" "$R" ) >/dev/null 2>&1; then hit=1; break; fi
+    done
+    [ -n "$hit" ] || return 0
+  fi
+  if [ -z "$reason" ]; then
+    cur=$( cd "$root" && git symbolic-ref --quiet --short HEAD 2>/dev/null ) || cur=""
+    if [ "$cur" != "$base" ]; then
+      head=$( cd "$root" && git rev-parse --verify --quiet 'HEAD^{commit}' 2>/dev/null ) || head=""
+      safe=""
+      if [ -n "$head" ] && ( cd "$root" && git merge-base --is-ancestor "$head" "$R" ) >/dev/null 2>&1; then
+        safe=1
+      elif [ -n "$cur" ] && [ -n "$head" ]; then
+        rc=0; out=$( cd "$root" && GIT_TERMINAL_PROMPT=0 git ls-remote --exit-code --heads origin "refs/heads/$cur" </dev/null 2>/dev/null ) || rc=$?
+        if [ "$rc" -eq 0 ]; then
+          rsha=$(printf '%s\n' "$out" | awk -F '\t' -v r="refs/heads/$cur" '$2 == r { print $1 }')
+          [ "$rsha" != "$head" ] || safe=1
+        fi
+      fi
+      if [ -z "$safe" ]; then
+        if [ -z "$cur" ]; then reason='전환 불안전(분리 HEAD 가 베이스에 없음)'
+        else reason="전환 불안전($cur — 베이스에 머지되지 않았고 원격과 같은 커밋도 아님)"
+        fi
+      elif ! ( cd "$root" && git show-ref --verify --quiet "refs/heads/$base" ) >/dev/null 2>&1; then
+        reason='로컬 베이스 브랜치 없음'
+      else
+        rc=0; ( cd "$root" && git switch --quiet --no-guess "$base" ) </dev/null >/dev/null 2>&1 || rc=$?
+        if [ "$rc" -ne 0 ]; then reason="전환 거부(git 종료 $rc)"
+        else sw="전환 ${cur:-분리 HEAD}→$base · "
+        fi
+      fi
+    fi
+  fi
+  if [ -z "$reason" ]; then
+    L=$( cd "$root" && git rev-parse --verify --quiet "refs/heads/$base^{commit}" 2>/dev/null ) || L=""
+    if [ -n "$L" ] && [ "$L" = "$R" ]; then
+      res='이미 최신'
+    elif [ -n "$L" ] && ( cd "$root" && git merge-base --is-ancestor "$L" "$R" ) >/dev/null 2>&1; then
+      rc=0; ( cd "$root" && git merge --ff-only --quiet "refs/remotes/origin/$base" ) </dev/null >/dev/null 2>&1 || rc=$?
+      if [ "$rc" -ne 0 ]; then reason="당김 거부(git 종료 $rc)"
+      else res="당김 $(printf '%s' "$L" | cut -c1-12)..$(printf '%s' "$R" | cut -c1-12)"
+      fi
+    elif [ -n "$L" ] && ( cd "$root" && git merge-base --is-ancestor "$R" "$L" ) >/dev/null 2>&1; then
+      reason='로컬이 원격보다 앞섬'
+    else
+      reason='로컬과 원격이 갈라짐'
+    fi
+  fi
+  if [ -n "$reason" ]; then
+    wtc_say '메인 워크트리 정리' "보존 · $a · ${root:--} · ${sw}사유=$reason"
+  else
+    wtc_say '메인 워크트리 정리' "정리 · $a · $root · ${sw}$res"
+  fi
   return 0
 }
 

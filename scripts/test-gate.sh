@@ -7628,6 +7628,22 @@ WTCPROBE
     { grep -E '^- \*\*(워크트리|브랜치) 정리\*\*' "${WTC_LED:-$WLED}" 2>/dev/null || true; } \
       | awk -v s="$1" 'index($0, s) { print; exit }'
   }
+  wtc_mlines() {
+    # wtc_mlines <고정 문자열> — 원장에서 그 문자열을 담은 메인 워크트리 정리 줄의 수
+    { grep -E '^- \*\*메인 워크트리 정리\*\*' "${WTC_LED:-$WLED}" 2>/dev/null || true; } \
+      | awk -v s="$1" 'index($0, s) { n++ } END { print n + 0 }'
+  }
+  wtc_ahead() {
+    # wtc_ahead <파일> — 메인은 그대로 두고 origin 의 master 만 커밋 하나 앞서게 한다
+    local c="$WD/ahead-$1"
+    ( git clone -q -b master "$WORIGIN" "$c" && cd "$c" && git config user.email t@example.invalid \
+      && git config user.name T && printf '%s\n' "$1" > "$1" && git add -A && git commit -qm "$1" \
+      && git push -q origin master ) >/dev/null 2>&1
+  }
+  wtc_head() {
+    # wtc_head — 메인의 브랜치 이름(분리면 -)과 HEAD 커밋
+    printf '%s@%s' "$(cd "$WMAIN" && git symbolic-ref --quiet --short HEAD || printf -)" "$(cd "$WMAIN" && git rev-parse HEAD)"
+  }
   wtc_wt() {
     # wtc_wt <경로> — 메인의 porcelain 에 그 경로가 등록돼 있으면 있음, 아니면 없음
     local out
@@ -73606,7 +73622,7 @@ unset -f drv_new drv_skip
 
 # ---------------------------------------------------------------------------
 # 104d. 런 완주 정리 — 게이트 호출 자리와 판독 함수의 정의 수
-# --- section: 104d | covers: worktree-cleanup, gate_rows | anchors: 104d: 게이트의 정리 호출은 두 종단 갈래에 하나씩이다, 104d: 옮긴 판독 함수는 두 파일을 통틀어 정의가 하나씩이다 ---
+# --- section: 104d | covers: worktree-cleanup, gate_rows, gate_end_run_synced | anchors: 104d: 게이트의 정리 호출은 두 종단 갈래에 하나씩이다, 104d: 옮긴 판독 함수는 두 파일을 통틀어 정의가 하나씩이다, 104d: 게이트의 종료 직접 호출은 감싼 함수 안의 한 줄뿐이다 ---
 #
 # 정적 판독. 주석 줄을 뺀 gate.sh 에서 호출 줄이 둘이고, 하나는 수락 분기의
 # 처분 보고서 줄 바로 뒤에 와서 같은 분기의 ended 발화보다 앞서며, 다른 하나는
@@ -73636,7 +73652,142 @@ check "104d: 옮긴 판독 함수는 두 파일을 통틀어 정의가 하나씩
   "gate_rows=1 gate_row_field=1 gate_pending_approval_ids=1 "
 check "104d: 정의는 정리 파일 쪽에 있다" \
   "$( { grep -cE '^(gate_rows|gate_row_field|gate_pending_approval_ids)\(\)' "$WTC_SRC" || true; } )" "3"
-unset d104 c104 p104 f104 d104n
+# 경계 종료는 감싼 함수 하나로만 간다. 주석 줄을 빼고, 감싼 함수 이름을 지운 뒤에도
+# `gate_end_run` 을 부르는 줄은 감싼 함수 본문 안의 한 줄뿐이어야 한다.
+e104=$(awk '
+  /^gate_end_run_synced\(\)/ { inw = 1 }
+  /^[[:space:]]*#/ { next }
+  { l = $0; gsub(/gate_end_run_synced/, "", l) }
+  l ~ /(^|[^_[:alnum:]])gate_end_run([^_[:alnum:](]|$)/ { print (inw ? "감싼" : NR) }
+  inw && /^}/ { inw = 0 }' "$GATE" | paste -s -d, -)
+check "104d: 게이트의 종료 직접 호출은 감싼 함수 안의 한 줄뿐이다" "$e104" "감싼"
+check "104d: 감싼 함수 본문이 경계 모드 메인 정리를 부른다" \
+  "$(awk '/^gate_end_run_synced\(\)/ { on = 1 } on && !/^[[:space:]]*#/ && /wtc_main_sync 경계/ { n++ } on && /^}/ { on = 0 } END { print n + 0 }' "$GATE")" "1"
+unset d104 c104 p104 f104 d104n e104
+
+# ---------------------------------------------------------------------------
+# 104e. 런 종료 메인 워크트리 정리 — 베이스 유지와 최신화
+# --- section: 104e | group: wtc | covers: worktree-cleanup, wtc_main_sync, wtc_run, wtc_sweep, gate_end_run_synced | anchors: 104e: 베이스의 메인이 원격 최신으로 당겨진다, 104e: 원격에 같은 커밋으로 올라간 브랜치에서 베이스로 바꾸고 당긴다, 104e: 완주가 아닌 런도 머지가 있으면 메인을 당긴다, 104e: 메인이 앉아 있던 머지된 세그먼트 브랜치는 전환 뒤 지워진다, 104e: 살아 있는 스테이지가 있으면 생략 줄만 남기고 표지를 잡지 않는다 ---
+#
+# 정리 루틴을 게이트의 소싱 전용 판본에서 부르고, 메인 워크트리의 브랜치·HEAD·파일과
+# 원장의 `메인 워크트리 정리` 줄을 본다. origin 만 앞서게 하는 것은 따로 받은 복제본이다.
+# ---------------------------------------------------------------------------
+pre_wtc
+
+# 1 · 9 — 베이스에 있고 origin 이 한 커밋 앞선 완주 런. 다시 불러도 줄이 늘지 않는다.
+wtc_new
+wtc_seg M1 머지됨
+h1=$(cd "$WMAIN" && git rev-parse HEAD)
+wtc_ahead f1; r1=$(git --git-dir="$WORIGIN" rev-parse master)
+wtc_end
+out=$(wtc_call 라우터)
+check "104e: 베이스의 메인이 원격 최신으로 당겨진다" \
+  "$(wtc_head)/$(wtc_mlines "정리 · main · $WMAIN · 당김 $(printf '%s' "$h1" | cut -c1-12)..$(printf '%s' "$r1" | cut -c1-12)")/$(wtc_mlines '')/${out##*|}" \
+  "master@$r1/1/1/rc=0"
+wtc_call 라우터 >/dev/null
+wtc_call 드라이버 >/dev/null
+check "104e: 다시 부르면 메인 줄이 늘지 않는다" "$(wtc_mlines '')" "1"
+
+# 2 — 원격에 같은 커밋으로 올라간 다른 브랜치.
+wtc_new
+wtc_seg M2 머지됨
+( cd "$WMAIN" && git switch -q -c feat/side && printf 's\n' > s.txt && git add s.txt && git commit -qm side \
+  && git push -q origin feat/side ) >/dev/null 2>&1
+wtc_ahead f2; r2=$(git --git-dir="$WORIGIN" rev-parse master)
+wtc_end
+wtc_call 라우터 >/dev/null
+check "104e: 원격에 같은 커밋으로 올라간 브랜치에서 베이스로 바꾸고 당긴다" \
+  "$(wtc_head)/$(wtc_br feat/side)/$(wtc_mlines "정리 · main · $WMAIN · 전환 feat/side→master · 당김 ")" "master@$r2/있음/1"
+
+# 3 — 원격에 없는 커밋을 가진 브랜치.
+wtc_new
+wtc_seg M3 머지됨
+( cd "$WMAIN" && git switch -q -c local/only && printf 'l\n' > l.txt && git add l.txt && git commit -qm l ) >/dev/null 2>&1
+h3=$(wtc_head)
+wtc_end
+wtc_call 라우터 >/dev/null
+check "104e: 원격에 없는 커밋의 브랜치는 그대로 둔다" \
+  "$(wtc_head)/$(wtc_mlines "보존 · main · $WMAIN · 사유=전환 불안전(local/only — 베이스에 머지되지 않았고 원격과 같은 커밋도 아님)")" "$h3/1"
+
+# 4 — 추적 변경. stash 하지 않는다.
+wtc_new
+wtc_seg M4 머지됨
+wtc_ahead f4
+printf 'changed\n' > "$WMAIN/a.txt"; h4=$(wtc_head)
+wtc_end
+wtc_call 라우터 >/dev/null
+check "104e: 추적 변경이 있으면 바꾸지도 당기지도 않는다" \
+  "$(wtc_head)/$(cat "$WMAIN/a.txt")/$(cd "$WMAIN" && git stash list | awk 'NF' | wc -l | tr -d ' ')/$(wtc_mlines "보존 · main · $WMAIN · 사유=커밋하지 않은 추적 변경")" \
+  "$h4/changed/0/1"
+
+# 5 — 로컬 커밋과 다른 원격 커밋.
+wtc_new
+wtc_seg M5 머지됨
+wtc_ahead f5
+( cd "$WMAIN" && printf 'loc\n' > loc.txt && git add loc.txt && git commit -qm loc ) >/dev/null 2>&1
+h5=$(wtc_head)
+wtc_end
+wtc_call 라우터 >/dev/null
+check "104e: 갈라진 베이스는 당기지 않는다" "$(wtc_head)/$(wtc_mlines '사유=로컬과 원격이 갈라짐')" "$h5/1"
+
+# 6 — 마감으로 끝난 런의 머지됨. 세그먼트 워크트리는 남는다.
+wtc_new
+wtc_seg M6 머지됨; w6m="$WW"
+wtc_ahead f6; r6=$(git --git-dir="$WORIGIN" rev-parse master)
+wtc_end 마감 -
+wtc_call 라우터 >/dev/null
+check "104e: 완주가 아닌 런도 머지가 있으면 메인을 당긴다" \
+  "$(wtc_wt "$w6m")/$(wtc_lines '생략 — 종료 행 재킥 원인 마감 · 종료 부류 없음')/$(wtc_lines '')/$(wtc_head)/$(wtc_mlines '정리 · main · ')" \
+  "있음/1/1/master@$r6/1"
+
+# 7 — 머지됨이 없는 완주 런.
+wtc_new
+wtc_seg M7 완료
+wtc_ahead f7; h7=$(wtc_head)
+wtc_end
+wtc_call 라우터 >/dev/null
+check "104e: 머지가 없는 런은 메인을 건드리지 않는다" \
+  "$(wtc_head)/$(wtc_mlines '생략 — 이 런의 머지 없음')/$(wtc_mlines '')" "$h7/1/1"
+
+# 8 — 닿지 않는 origin.
+wtc_new
+wtc_seg M8 머지됨
+h8=$(wtc_head)
+( cd "$WMAIN" && git remote set-url origin "$WD/no-such.git" )
+wtc_end
+wtc_call 라우터 >/dev/null
+check "104e: fetch 가 실패하면 메인을 그대로 둔다" "$(wtc_head)/$(wtc_mlines "보존 · main · $WMAIN · 사유=원격 fetch 실패(git 종료 ")" "$h8/1"
+
+# 10 — 메인이 이 런의 머지된 세그먼트 브랜치에 앉아 있던 완주 런.
+wtc_new
+b10="seg/$WRID-M10"
+( cd "$WMAIN" && git switch -q -c "$b10" && printf 'm\n' > m.txt && git add m.txt && git commit -qm m \
+  && git push -q -u origin "$b10" ) >/dev/null 2>&1
+wtc_row segment id=M10 상태=머지됨 "워크트리=$WD/main-run-$WRID-M10" "브랜치=$b10"
+wtc_end
+wtc_call 라우터 >/dev/null
+check "104e: 메인이 앉아 있던 머지된 세그먼트 브랜치는 전환 뒤 지워진다" \
+  "$(wtc_head | cut -d@ -f1)/$(wtc_br "$b10")/$(wtc_mlines "전환 ${b10}→master · 이미 최신")/$(wtc_lines "삭제 · $b10 · 세그먼트 M10")" "master/없음/1/1"
+
+# 11 — 경계 모드. done 이 없으면 아무것도 없고, 살아 있는 스테이지가 있으면 생략 줄만 남는다.
+wtc_new
+wtc_seg M11 머지됨; w11m="$WW"
+wtc_ahead f11; r11=$(git --git-dir="$WORIGIN" rev-parse master); h11=$(wtc_head)
+wtc_end
+out=$(wtc_call wtc_main_sync 경계)
+check "104e: 경계 모드는 done 이 없으면 아무것도 하지 않는다" "$(wtc_mlines '')/$(wtc_head)/${out##*|}" "0/$h11/rc=0"
+printf '2026-01-01T00:00:00Z 종단 — 경계 B4 · 근거 x\n' > "$WRUN/done"
+wtc_call eval 'cc_live_stages() { printf 2; }; wtc_main_sync 경계' >/dev/null
+check "104e: 살아 있는 스테이지가 있으면 생략 줄만 남기고 표지를 잡지 않는다" \
+  "$(wtc_mlines '생략 — 살아 있는 스테이지·릴레이(2)')/$(wtc_mlines '')/$( [ -d "$WRUN/main-sync.once" ] && printf 있음 || printf 없음)/$(wtc_head)" \
+  "1/1/없음/$h11"
+wtc_call wtc_main_sync 경계 >/dev/null
+check "104e: 살아 있는 것이 없으면 경계 모드가 당긴다" \
+  "$(wtc_head)/$(wtc_mlines '정리 · main · ')/$( [ -d "$WRUN/main-sync.once" ] && printf 있음 || printf 없음)" "master@$r11/1/있음"
+wtc_call 라우터 >/dev/null
+check "104e: 경계 쪽이 먼저 했어도 뒤의 정리가 세그먼트를 치우고 메인 줄은 늘지 않는다" \
+  "$(wtc_wt "$w11m")/$(wtc_mlines '')" "없음/2"
+unset h1 r1 r2 h3 h4 h5 w6m r6 h7 h8 b10 w11m r11 h11
 
 # ---------------------------------------------------------------------------
 # 108. 리뷰어 런 — 리뷰 전용 세그먼트의 계획·리뷰 줄·쓰기 거절·게시·대조
