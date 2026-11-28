@@ -37,6 +37,12 @@ rm, openssl, mktemp, mv, lockf, wc, cc-team-witness-publish.sh,
 cc-team-nonce.sh, or is `doc-tidy.py` with the subcommand `checkout`,
 `publish`, `stamp` or `keep-reports`.
 
+The baseline bookkeeping set is the same set without the doc-tidy subcommands
+`stamp` and `keep-reports`. It is the set the before-change baseline figures
+were counted with — both subcommands entered the set later — so a before/after
+comparison reads the `base_*` columns, which count with it. The existing
+columns keep the current set.
+
 Inner command key: every gate `exec` with an argv0 after ` -- ` gets a key,
 bookkeeping or not — the argv0's basename, or `doc-tidy.py <subcommand>` for
 the doc-tidy helper. The breakdown counts each key per actor, so a command
@@ -65,6 +71,16 @@ Figures per kind:
                          and whose output holds `stale snapshot digest`
                          (an auxiliary column)
   member_digest_refusals the same refusal on the members' gate calls
+  base_bookkeeping_execs the lead's execs in the baseline bookkeeping set
+  base_member_bookkeeping
+                         the members' execs in the baseline bookkeeping set
+  base_execs_per_stage   base_bookkeeping_execs / stages
+  base_member_execs_per_stage
+                         base_member_bookkeeping / stages
+  digest_refusals_per_stage
+                         digest_refusals / stages
+  member_digest_refusals_per_stage
+                         member_digest_refusals / stages
   by_command             inner command key -> bookkeeping (whether the key is
                          in the bookkeeping set), lead, member (gate execs of
                          that key per actor), lead_per_stage, member_per_stage;
@@ -74,6 +90,15 @@ The table prints the per-kind figures first, then the breakdown, one row per
 kind and inner command key; a kind with no stage prints no breakdown row.
 
 A value that cannot be computed is null in JSON and `-` in the table.
+
+Shared definitions: another script that must count the same way loads this
+file by path (importlib.util.spec_from_file_location; `main` runs only when
+the file is executed) and uses these module-level names instead of copying
+them — `BOOKKEEPING`, `DOC_TIDY_VERBS` and `BASE_DOC_TIDY_VERBS` with
+`inner_key(rest)` for the bookkeeping sets, `read_ledger(path)` with
+`kind_of(rows, sid, stage, attempt)` for the stage kind of a session, and
+`stage_logs(run)` with `per_stage(count, stages)` for the per-stage
+denominator.
 
 Exit codes: 0 when at least one run was read, 1 when none was (the table or
 object is still printed), 2 for a usage error. It writes to stdout only and
@@ -95,6 +120,8 @@ KINDS = ["design", "audit", "reconverge", "implement", "review", "lead-fix"]
 BOOKKEEPING = {"shasum", "printenv", "cp", "date", "rm", "openssl", "mktemp", "mv", "lockf", "wc",
                "cc-team-witness-publish.sh", "cc-team-nonce.sh"}
 DOC_TIDY_VERBS = {"checkout", "publish", "stamp", "keep-reports"}
+# The baseline figures were counted before `stamp` and `keep-reports` joined.
+BASE_DOC_TIDY_VERBS = DOC_TIDY_VERBS - {"stamp", "keep-reports"}
 STALE = "stale snapshot digest"
 ROW_PREFIX = "- `stage-result`"
 LOG_RE = re.compile(r"^(.+)#(\d+)\.json$")
@@ -175,34 +202,43 @@ def kind_of(rows, sid, stage, attempt):
     return kinds[0] if kinds else None
 
 
-def exec_key(command):
-    """(key, bookkeeping, gate call) of COMMAND: the inner command key of a
-    gate exec with an argv0 after ` -- ` (None otherwise), whether that key is
-    bookkeeping, and whether COMMAND calls the gate at all."""
-    if not isinstance(command, str):
-        return None, False, False
-    try:
-        argv = shlex.split(command, posix=True)
-    except ValueError:
-        return None, False, False
-    if len(argv) < 2 or not argv[0].endswith("/orchestrator/gate.sh"):
-        return None, False, False
-    if argv[1] != "exec" or "--" not in argv:
-        return None, False, True
-    rest = argv[argv.index("--") + 1:]
-    if not rest:
-        return None, False, True
+def inner_key(rest):
+    """(key, bookkeeping, baseline bookkeeping) of REST, the non-empty argv
+    after a gate exec's ` -- `: the inner command key, and whether that key is
+    in the current and in the baseline bookkeeping set."""
     base = os.path.basename(rest[0])
     if base == "doc-tidy.py":
         sub = rest[1] if len(rest) > 1 else None
-        return ("doc-tidy.py %s" % sub if sub else base), sub in DOC_TIDY_VERBS, True
-    return base, base in BOOKKEEPING, True
+        return ("doc-tidy.py %s" % sub if sub else base), sub in DOC_TIDY_VERBS, sub in BASE_DOC_TIDY_VERBS
+    return base, base in BOOKKEEPING, base in BOOKKEEPING
+
+
+def exec_key(command):
+    """(key, bookkeeping, baseline bookkeeping, gate call) of COMMAND: the
+    inner command key of a gate exec with an argv0 after ` -- ` (None
+    otherwise), whether that key is in the current and in the baseline
+    bookkeeping set, and whether COMMAND calls the gate at all."""
+    if not isinstance(command, str):
+        return None, False, False, False
+    try:
+        argv = shlex.split(command, posix=True)
+    except ValueError:
+        return None, False, False, False
+    if len(argv) < 2 or not argv[0].endswith("/orchestrator/gate.sh"):
+        return None, False, False, False
+    if argv[1] != "exec" or "--" not in argv:
+        return None, False, False, True
+    rest = argv[argv.index("--") + 1:]
+    if not rest:
+        return None, False, False, True
+    key, bk, base_bk = inner_key(rest)
+    return key, bk, base_bk, True
 
 
 def is_bookkeeping(command):
     """(bookkeeping, gate call): whether COMMAND is a gate exec whose argv0
     after ` -- ` is bookkeeping, and whether it calls the gate at all."""
-    _, bk, gate = exec_key(command)
+    _, bk, _, gate = exec_key(command)
     return bk, gate
 
 
@@ -223,7 +259,8 @@ def read_log(path):
     gate_calls = set()      # lead tool_use ids that called the gate
     member_gate_calls = set()
     c = {"bookkeeping_execs": 0, "member_bookkeeping": 0, "digest_refusals": 0,
-         "member_digest_refusals": 0, "by_command": {}}
+         "member_digest_refusals": 0, "base_bookkeeping_execs": 0, "base_member_bookkeeping": 0,
+         "by_command": {}}
     results = []
     with open(path, encoding="utf-8", errors="replace") as f:
         for line in f:
@@ -242,10 +279,10 @@ def read_log(path):
                 for b in msg.get("content") or []:
                     if not isinstance(b, dict) or b.get("type") != "tool_use":
                         continue
-                    key, bk, gate = None, False, False
+                    key, bk, base_bk, gate = None, False, False, False
                     if b.get("name") == "Bash":
                         inp = b.get("input") if isinstance(b.get("input"), dict) else {}
-                        key, bk, gate = exec_key(inp.get("command"))
+                        key, bk, base_bk, gate = exec_key(inp.get("command"))
                     if key is not None:
                         e = c["by_command"].setdefault(key, {"bookkeeping": bk, "lead": 0, "member": 0})
                         e["lead" if lead else "member"] += 1
@@ -253,11 +290,15 @@ def read_log(path):
                         calls.append(bk)
                         if bk:
                             c["bookkeeping_execs"] += 1
+                        if base_bk:
+                            c["base_bookkeeping_execs"] += 1
                         if gate:
                             gate_calls.add(b.get("id"))
                     else:
                         if bk:
                             c["member_bookkeeping"] += 1
+                        if base_bk:
+                            c["base_member_bookkeeping"] += 1
                         if gate:
                             member_gate_calls.add(b.get("id"))
             elif o.get("type") == "user":
@@ -285,6 +326,43 @@ def per(x, n):
     return float(x) / n if n else None
 
 
+def per_stage(count, stages):
+    """COUNT per stage, where STAGES is the number of attempt logs `stage_logs`
+    joined to the kind; None when there is no stage."""
+    return per(count, stages)
+
+
+def stage_logs(run):
+    """(stage, attempt, log path, session id, kind) for every attempt log of
+    the run directory RUN, in name order. The kind is None when the log carries
+    no session id or no `stage-result` row of the run ledger names it; a log
+    with a kind counts as one stage of that kind, which is the per-stage
+    denominator."""
+    logdir = os.path.join(run, "log")
+    rows = read_ledger((read_file(os.path.join(run, "ledger-path")) or "").strip())
+    for logname in sorted(os.listdir(logdir)):
+        m = LOG_RE.match(logname)
+        if not m:
+            continue
+        path = os.path.join(logdir, logname)
+        sid = log_session(path)
+        kind = kind_of(rows, sid, m.group(1), m.group(2)) if sid else None
+        yield m.group(1), m.group(2), path, sid, kind
+
+
+def log_session(path):
+    """The first `session_id` the attempt log at PATH carries, or None."""
+    with open(path, encoding="utf-8", errors="replace") as f:
+        for line in f:
+            try:
+                o = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(o, dict) and isinstance(o.get("session_id"), str):
+                return o["session_id"]
+    return None
+
+
 def finish(acc):
     k = OrderedDict()
     k["stages"] = acc["stages"]
@@ -292,22 +370,29 @@ def finish(acc):
     k["bookkeeping_only"] = acc["bookkeeping_only"]
     k["bookkeeping_only_pct"] = pct(acc["bookkeeping_only"], acc["lead_requests"])
     k["bookkeeping_execs"] = acc["bookkeeping_execs"]
-    k["execs_per_stage"] = per(acc["bookkeeping_execs"], acc["stages"])
+    k["execs_per_stage"] = per_stage(acc["bookkeeping_execs"], acc["stages"])
     k["exec_ratio_pct"] = pct(acc["bookkeeping_execs"], acc["lead_requests"])
     k["member_bookkeeping"] = acc["member_bookkeeping"]
     k["digest_refusals"] = acc["digest_refusals"]
     k["member_digest_refusals"] = acc["member_digest_refusals"]
+    k["base_bookkeeping_execs"] = acc["base_bookkeeping_execs"]
+    k["base_member_bookkeeping"] = acc["base_member_bookkeeping"]
+    k["base_execs_per_stage"] = per_stage(acc["base_bookkeeping_execs"], acc["stages"])
+    k["base_member_execs_per_stage"] = per_stage(acc["base_member_bookkeeping"], acc["stages"])
+    k["digest_refusals_per_stage"] = per_stage(acc["digest_refusals"], acc["stages"])
+    k["member_digest_refusals_per_stage"] = per_stage(acc["member_digest_refusals"], acc["stages"])
     by = OrderedDict()
     for key, e in sorted(acc["by_command"].items(), key=lambda kv: (-(kv[1]["lead"] + kv[1]["member"]), kv[0])):
         by[key] = OrderedDict([("bookkeeping", e["bookkeeping"]), ("lead", e["lead"]), ("member", e["member"]),
-                               ("lead_per_stage", per(e["lead"], acc["stages"])),
-                               ("member_per_stage", per(e["member"], acc["stages"]))])
+                               ("lead_per_stage", per_stage(e["lead"], acc["stages"])),
+                               ("member_per_stage", per_stage(e["member"], acc["stages"]))])
     k["by_command"] = by
     return k
 
 
 COUNTS = ("lead_requests", "bookkeeping_only", "bookkeeping_execs",
-          "member_bookkeeping", "digest_refusals", "member_digest_refusals")
+          "member_bookkeeping", "digest_refusals", "member_digest_refusals",
+          "base_bookkeeping_execs", "base_member_bookkeeping")
 
 
 def empty():
@@ -372,14 +457,9 @@ def main(argv=None):
                 scope["skipped_version"] += 1
                 continue
         scope["runs"] += 1
-        rows = read_ledger((read_file(os.path.join(run, "ledger-path")) or "").strip())
-        for logname in sorted(os.listdir(logdir)):
-            m = LOG_RE.match(logname)
-            if not m:
-                continue
+        for _, _, path, _, kind in stage_logs(run):
             scope["attempt_logs"] += 1
-            sid, c = read_log(os.path.join(logdir, logname))
-            kind = kind_of(rows, sid, m.group(1), m.group(2)) if sid else None
+            _, c = read_log(path)
             if kind is None:
                 scope["unclassified_logs"] += 1
                 add(unclassified, c)
@@ -404,14 +484,17 @@ def main(argv=None):
             if args.min_plugin_version else "")]
         lines.append("적용 범위: 읽은 런 %d · ledger-path 나 log/ 가 없어 건너뜀 %d · 시작일로 건너뜀 %d · 플러그인 판으로 건너뜀 %d · 시도 로그 %d · 미분류 %d" % tuple(scope.values()))
         lines.append("리드만 셈 (parent_tool_use_id 없는 기록). 구성원의 부기 exec 는 따로 적고 스테이지당 수에 넣지 않는다.")
-        lines.append("종류 | 스테이지 | 리드 요청 | 부기 전용 요청 | 부기 전용 비율 | 부기 exec | 스테이지당 부기 exec | exec 기준 비율 | 구성원 부기 exec | 다이제스트 거부(보조) | 구성원 다이제스트 거부")
+        lines.append("종류 | 스테이지 | 리드 요청 | 부기 전용 요청 | 부기 전용 비율 | 부기 exec | 스테이지당 부기 exec | exec 기준 비율 | 구성원 부기 exec | 다이제스트 거부(보조) | 구성원 다이제스트 거부"
+                     " | 기준 집합 스테이지당 리드 부기 | 기준 집합 스테이지당 구성원 부기 | 스테이지당 리드 다이제스트 거부 | 스테이지당 구성원 다이제스트 거부")
         body = list(kinds.items()) + [("미분류", finish(unclassified)), ("합계", finish(total))]
         for name, k in body:
-            lines.append("%s | %d | %d | %d | %s | %d | %s | %s | %d | %d | %d" % (
+            lines.append("%s | %d | %d | %d | %s | %d | %s | %s | %d | %d | %d | %s | %s | %s | %s" % (
                 name, k["stages"], k["lead_requests"], k["bookkeeping_only"],
                 fmt(k["bookkeeping_only_pct"], pct_=True), k["bookkeeping_execs"],
                 fmt(k["execs_per_stage"]), fmt(k["exec_ratio_pct"], pct_=True),
-                k["member_bookkeeping"], k["digest_refusals"], k["member_digest_refusals"]))
+                k["member_bookkeeping"], k["digest_refusals"], k["member_digest_refusals"],
+                fmt(k["base_execs_per_stage"], 2), fmt(k["base_member_execs_per_stage"], 2),
+                fmt(k["digest_refusals_per_stage"], 2), fmt(k["member_digest_refusals_per_stage"], 2)))
         lines.append("")
         lines.append("안쪽 명령별 분해 (게이트 exec 의 -- 뒤 명령, 부기 집합 밖의 명령도 포함):")
         lines.append("종류 | 안쪽 명령 | 부기 | 리드 | 구성원 | 리드 스테이지당 | 구성원 스테이지당")
