@@ -149,6 +149,20 @@ fx_stage_live() {
   export FX_LAST_PID FX_PIDS
 }
 
+fx_supervisor_live() {
+  # fx_supervisor_live <segment> — a supervisor that is running, with a
+  # matching fingerprint, and no stage pid: the window after the stage CLI
+  # exited and before the supervisor wrote its `stage-result` row. The pid goes
+  # to `<seg>.sup` and the fingerprint to `<seg>.sup.start`. The process and
+  # its fingerprint come from `fx_stage_live` under a scratch name and are moved
+  # into place, so this file keeps one fingerprint capture. FX_LAST_PID and
+  # FX_PIDS are set by that call, so the caller can reap the process.
+  local seg="$1" tmp="$1.fx-sup"
+  fx_stage_live "$tmp"
+  mv "$FX_RUN_DIR/$tmp.pid" "$FX_RUN_DIR/$seg.sup"
+  mv "$FX_RUN_DIR/$tmp.start" "$FX_RUN_DIR/$seg.sup.start"
+}
+
 fx_stage_dead() {
   # fx_stage_dead <segment> — a pid file whose process has exited.
   #
