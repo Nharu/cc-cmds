@@ -83,13 +83,17 @@ TT_POOL_PIDS=""
 # check-push's stop conditions for the pool. TT_DEADLINE is an epoch second
 # (empty: none) and TT_FAIL_FAST 1 stops at the first failure; once either is
 # met the pool starts no job and stops the running ones (TERM, then KILL after
-# CC_CHECK_PUSH_STOP_GRACE seconds, default 60). Every other caller leaves both
-# off, so its pool runs every job to its end. After a pool,
+# CC_CHECK_PUSH_STOP_GRACE seconds, default 60). TT_FAIL_DRAIN 1 changes what
+# the first failure does: the pool still starts no job, but lets the running
+# ones end and records them as usual, so a goal that passed keeps its record;
+# a deadline met while it drains stops them as above. Every other caller
+# leaves all three off, so its pool runs every job to its end. After a pool,
 # TT_UNFINISHED_SECTIONS and TT_UNFINISHED_GOALS name what was stopped or never
 # started, TT_CUT_GOALS the goals a deadline stopped while they ran, and
 # TT_DONE_ITEMS the sections and goals that ended, reused ones included.
 TT_DEADLINE=""
 TT_FAIL_FAST=0
+TT_FAIL_DRAIN=0
 TT_UNFINISHED_SECTIONS=""
 TT_UNFINISHED_GOALS=""
 TT_CUT_GOALS=""
@@ -896,7 +900,10 @@ tt_lane_done() {
 # every job runs to its end, so one run names every failure; with TT_DEADLINE
 # past or TT_FAIL_FAST 1 after a failure the pool starts nothing more, stops
 # the running jobs, records none of them and names them, with the jobs it
-# never started, on a `끝나지 않은 항목` line.
+# never started, on a `끝나지 않은 항목` line. With TT_FAIL_DRAIN 1 as well, a
+# failure only stops the starting: the running jobs end, are judged and
+# recorded as usual, and the pool ends when none is left running, naming the
+# jobs it never started as unfinished; a deadline met meanwhile stops them.
 
 # The estimate of key $1 in the estimate file $2 in whole seconds, or nothing.
 tt_pool_est_of() {
@@ -1105,7 +1112,7 @@ tt_pool_judge() {
 tt_pool_run() {
   local secs="$1" goals="$2" est lanes n=0 i k load ids rest g e h jeff tab
   local t0 now lastp next=0 ndone=0 running=0 rc old oi fsecs="" fgoals="" picks took shards
-  local stop="" nfail=0 pids usecs="" ugoals="" lfsecs lfgoals
+  local stop="" nfail=0 pids usecs="" ugoals="" lfsecs lfgoals drain=""
   local order=()
   tab=$(printf '\t')
   TT_PJ_KIND=(); TT_PJ_ARG=(); TT_PJ_NAME=(); TT_PJ_EST=(); TT_PJ_PID=(); TT_PJ_T0=()
@@ -1240,7 +1247,16 @@ EOF
     elif [ "${TT_FAIL_FAST:-0}" = 1 ] && [ "$nfail" -gt 0 ]; then
       stop="실패 확정"
     fi
-    if [ -n "$stop" ]; then
+    if [ "$stop" = "실패 확정" ] && [ "${TT_FAIL_DRAIN:-0}" = 1 ]; then
+      # Draining: the line is said once, on entry, with the jobs running then;
+      # nothing more starts, and the running jobs are reaped below as usual
+      # until none is left. A deadline met meanwhile takes the branch below.
+      if [ -z "$drain" ]; then
+        drain=1
+        printf '%s: 멈춤 — %s · 새 잡을 시작하지 않고 도는 잡 %d개는 끝까지 돌려 기록한다\n' "$TT_PREFIX" "$stop" "$running" >&2
+      fi
+      [ "$running" -gt 0 ] || break
+    elif [ -n "$stop" ]; then
       # The running jobs are stopped, waited for and left unrecorded; their
       # checkouts go as a failed job's do.
       pids=""
@@ -1273,7 +1289,7 @@ EOF
       done
       break
     fi
-    while [ "$running" -lt "$jeff" ] && [ "$next" -lt "$n" ]; do
+    while [ -z "$drain" ] && [ "$running" -lt "$jeff" ] && [ "$next" -lt "$n" ]; do
       i="${order[$next]}"
       if [ "${TT_PJ_KIND[$i]}" = goal ] && [ -z "${TT_PJ_PREP[$i]:-}" ]; then
         TT_PJ_PREP[$i]=1
@@ -2731,7 +2747,8 @@ EOF
   # One pool of <goals> as process <tag>, two jobs at a time, with the
   # variables given after the goals. Start it with `&`: the background shell
   # becomes the pool's own bash, so a TERM sent to $! reaches the pool. SPFF=1
-  # sets TT_FAIL_FAST and SPDL=<n> a deadline n seconds after the clone, so a
+  # sets TT_FAIL_FAST, SPFD=1 TT_FAIL_DRAIN (the running jobs end and are
+  # recorded after a failure) and SPDL=<n> a deadline n seconds after the clone, so a
   # slow clone on a loaded host does not use it up before the first job
   # starts; the goals the deadline cut go to standard error as `sp-cut=`.
   # SPJOBS is the jobs at a time (default 2) and SPLF the TT_LAST_FAILED file.
@@ -2740,7 +2757,7 @@ EOF
     shift 2
     cd "$W" || exit 2
     exec env CC_TEST_TREE_MAKE="$T/bin/slowmake" CC_TEST_TREE_GATE="$T/bin/gate" "$@" bash -c '
-      . "$1"; trap "tt_cleanup; exit 143" TERM; TT_FAIL_FAST="${SPFF:-0}" TT_LAST_FAILED="${SPLF:-}"
+      . "$1"; trap "tt_cleanup; exit 143" TERM; TT_FAIL_FAST="${SPFF:-0}" TT_FAIL_DRAIN="${SPFD:-0}" TT_LAST_FAILED="${SPLF:-}"
       cd "$2" && tt_clone > /dev/null && TT_JOBS="${SPJOBS:-2}" && { [ -z "${SPDL:-}" ] || TT_DEADLINE=$(( $(date +%s) + SPDL )); } && tt_pool_run "" "$3" > /dev/null; printf "rc=%s\n" "$?"; printf "sp-cut=%s\n" "$TT_CUT_GOALS" >&2; tt_cleanup' _ "$self" "$W" "$goals" > "$T/sp-$tag.out" 2> "$T/sp-$tag.err"
   }
   # Waits until the double logged line $1, or the shared ceiling.
@@ -2849,8 +2866,10 @@ EOF
   check "F38 무게 계산: 벽시계 10초 미만이면 갱신하지 않는다" "$(ts_weight_calc "0m50.000s 0m0.000s" 9)" ""
 
   # --- F41 풀의 멈춤 조건과 실패의 즉시 보고 ------------------------------------
-  # With TT_FAIL_FAST 1 the first failure stops the pool: the other job is
-  # stopped and named unfinished, and the status is the failure's.
+  # With TT_FAIL_FAST 1 alone the first failure stops the pool: the other job
+  # is stopped and named unfinished, and the status is the failure's. With
+  # TT_FAIL_DRAIN 1 as well the running job ends and is recorded, and only the
+  # job never started is unfinished; a deadline met while draining stops it.
   : > "$T/slot.log"
   sp A rc7,long CC_TEST_SLOTS=0 SPFF=1 &
   v=$!
@@ -2861,6 +2880,33 @@ EOF
   has "F41 조기 종료: 끝나지 않은 항목 줄" "$(cat "$T/sp-A.err")" "test-tree: 끝나지 않은 항목 — long"
   check "F41 조기 종료: 실패에 끊긴 목표는 시간 예산에 잘린 목표가 아니다" "$(sed -n 's/^sp-cut=//p' "$T/sp-A.err")" ""
   check "F41 조기 종료는 긴 잡을 기다리지 않는다: 풀이 공용 상한 안에 끝난다" "$v" "예"
+  # Draining: rc7 fails at once, w9 sleeps and ends by itself, and w8 waits
+  # behind the two jobs at a time and never starts.
+  : > "$T/slot.log"
+  sp A rc7,w9,w8 CC_TEST_SLOTS=0 SPFF=1 SPFD=1 SLOW_SECS=3 &
+  wait $!
+  check "F41 드레인: 실패가 이기고 도는 잡은 끊기지 않고 끝 줄을 남긴다" "$(cat "$T/sp-A.out")|$(grep -c '^E w9 ' "$T/slot.log")|$(grep -c '^T ' "$T/slot.log")" "rc=1|1|0"
+  has "F41 드레인: 끝난 잡의 끝 줄" "$(cat "$T/sp-A.err")" "test-tree: 끝 — 목표 w9 rc=0"
+  check "F41 드레인: 멈춤 줄은 들어갈 때 한 번, 도는 잡 수와 함께" \
+    "$(grep -c '^test-tree: 멈춤 — 실패 확정 · 새 잡을 시작하지 않고 도는 잡 1개는 끝까지 돌려 기록한다$' "$T/sp-A.err")|$(grep -c '^test-tree: 멈춤' "$T/sp-A.err")" "1|1"
+  check "F41 드레인: 시작하지 않은 잡만 끝나지 않은 항목이고 시작되지 않았다" \
+    "$(grep '끝나지 않은 항목' "$T/sp-A.err")|$(grep -c '^S w8 ' "$T/slot.log")" "test-tree: 끝나지 않은 항목 — w8|0"
+  check "F41 드레인: 시간 예산에 잘린 목표가 없다" "$(sed -n 's/^sp-cut=//p' "$T/sp-A.err")" ""
+  # A deadline met while draining stops the running job as a deadline does,
+  # says its own stop line once more, and names the job cut; the failure still
+  # decides the status.
+  : > "$T/slot.log"
+  sp A rc7,deaf CC_TEST_SLOTS=0 SPFF=1 SPFD=1 SPDL=4 CC_CHECK_PUSH_STOP_GRACE=1 &
+  v=$!
+  if wait_pid_gone "$v"; then v=예; else kill -TERM "$v" 2>/dev/null; wait "$v" 2>/dev/null; v=아니오; fi
+  check "F41 드레인 중 마감: 실패가 이기고 상한 안에 끝난다" "$(cat "$T/sp-A.out")|$v" "rc=1|예"
+  check "F41 드레인 중 마감: 드레인 멈춤 줄 한 번과 마감 멈춤 줄 한 번" \
+    "$(grep -c '^test-tree: 멈춤 — 실패 확정 · 새 잡을 시작하지 않고 도는 잡 1개는 끝까지 돌려 기록한다$' "$T/sp-A.err")|$(grep -c '^test-tree: 멈춤 — 시간 예산 마감 · ' "$T/sp-A.err")" "1|1"
+  has "F41 드레인 중 마감: 끊긴 잡의 줄" "$(cat "$T/sp-A.err")" "test-tree: 끊음 — 목표 deaf rc="
+  has "F41 드레인 중 마감: 끝나지 않은 항목 줄" "$(cat "$T/sp-A.err")" "test-tree: 끝나지 않은 항목 — deaf"
+  has "F41 드레인 중 마감: 잘린 목표를 돌려준다" "$(cat "$T/sp-A.err")" "sp-cut=deaf"
+  e=$(awk '$1 == "P" && $2 == "deaf" { print $3 }' "$T/slot.log")
+  [ -z "$e" ] || kill -KILL "$e" 2>/dev/null
   # Without it every job runs to its end, and the failure is said when it is
   # reaped, before the slower job ends, and not again after the pool.
   : > "$T/slot.log"
@@ -3260,8 +3306,8 @@ EOF
   rm -rf "$T"
   printf 'test-tree self-test: %d passed, %d failed\n' "$passed" "$failed"
   # A floor on the count, so a refactor that silently skips cases cannot pass.
-  if [ "$passed" -lt 243 ]; then
-    printf 'test-tree self-test: 통과 수 %d 가 하한 243 에 못 미칩니다\n' "$passed" >&2
+  if [ "$passed" -lt 253 ]; then
+    printf 'test-tree self-test: 통과 수 %d 가 하한 253 에 못 미칩니다\n' "$passed" >&2
     return 1
   fi
   [ "$failed" = "0" ]

@@ -198,7 +198,10 @@ check-cheap:
 #                           base and skips what already passed
 #   CHECK_PUSH_FAIL_FAST    1 stops the jobs at the first failure, 0 runs them
 #                           all to their end (unset or empty: 1 in an
-#                           unattended run, else 0; check-items always 0)
+#                           unattended run, else 0; check-items always 0).
+#                           An unattended run with a time budget only stops
+#                           starting jobs then: the running ones end and keep
+#                           their pass records, until the budget runs out
 #   CC_TEST_SLOTS           host-wide test slots, one CPU's share each: a
 #                           positive whole number, or auto for max(4, CPUs);
 #                           0 turns them off. Unset or empty, an unattended
