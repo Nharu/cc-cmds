@@ -739,6 +739,28 @@ check "일시 원인 판정 8: 단절 뒤 성공 봉투가 종단이면 거짓" 
 printf '%s\n' "$LIM_INIT" '{"type":"result","is_error":true,"result":"Can'"'"'t reach the API"}' > "$LIMD/t9.json"
 check "일시 원인 판정 9: Can't reach 문구도 참 (따옴표가 든 문구)" "$(ste "$LIMD/t9.json")" "0"
 check "일시 원인 판정 10: 없는 파일과 빈 인자는 거짓" "$(ste "$LIMD/none.json")$(ste '')" "11"
+# 서버 오류(5xx) 는 문면이 아니라 종단 객체의 상태 값으로 읽는다. 실제 500 종단은
+# 숫자 상태를 싣고, 문자열로 직렬화된 상태도 같은 값으로 읽는다.
+TR_500='{"type":"result","subtype":"success","is_error":true,"api_error_status":500,"session_id":"s-tr","result":"API Error: 500 Internal server error. This is a server-side issue, usually temporary — try again in a moment."}'
+printf '%s\n' "$LIM_INIT" "$TR_500" > "$LIMD/t11.json"
+check "일시 원인 판정 11: 실제 꼴의 500 종단은 참" "$(ste "$LIMD/t11.json")" "0"
+printf '%s\n' "$LIM_INIT" \
+  '{"type":"result","subtype":"success","is_error":true,"api_error_status":529,"result":"Overloaded"}' > "$LIMD/t12.json"
+check "일시 원인 판정 12: 529 종단은 참" "$(ste "$LIMD/t12.json")" "0"
+check "일시 원인 판정 13: 옛 rejected 뒤 529 종단(한도 판정 e 꼴)은 참" "$(ste "$LIMD/e.json")" "0"
+check "일시 원인 판정 13 대조: 같은 스트림은 한도 판정에서 거짓" "$(sle "$LIMD/e.json")" "1:"
+printf '%s\n' "$LIM_INIT" \
+  '{"type":"result","subtype":"success","is_error":true,"api_error_status":"503","result":"Service Unavailable"}' > "$LIMD/t14.json"
+check "일시 원인 판정 14: 문자열 \"503\" 상태도 참" "$(ste "$LIMD/t14.json")" "0"
+printf '%s\n' "$LIM_INIT" \
+  '{"type":"result","subtype":"success","is_error":true,"api_error_status":400,"result":"API Error: 400 invalid_request_error"}' > "$LIMD/t15.json"
+check "일시 원인 판정 15: 400 종단은 거짓" "$(ste "$LIMD/t15.json")" "1"
+printf '%s\n' "$LIM_INIT" \
+  '{"type":"user","message":{"content":[{"type":"tool_result","content":"{\"api_error_status\":500,\"result\":\"API Error: 500\"}"}]}}' \
+  "$LIM_OK" > "$LIMD/t16.json"
+check "일시 원인 판정 16: 도구 출력 안의 500 은 거짓 (종단은 성공)" "$(ste "$LIMD/t16.json")" "1"
+printf '%s\n' "$LIM_INIT" "$TR_500" "$LIM_OK" > "$LIMD/t17.json"
+check "일시 원인 판정 17: 500 오류 객체 뒤 성공 봉투가 종단이면 거짓" "$(ste "$LIMD/t17.json")" "1"
 
 check "읽기 사상: 한도 종료 는 크래시로 읽는다" "$(terminal_route_class '한도 종료')" "크래시"
 for rc_class in '정상 완료' '의도된 park' '산출물 없는 정지' '공허한 성공' '크래시' \

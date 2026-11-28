@@ -25018,7 +25018,8 @@ gate_main() {
          exit 2 ;;
     esac
   fi
-  # `--recovery` marks a review re-dispatch after a dropped connection; on any
+  # `--recovery` marks a review re-dispatch after a dropped connection or a
+  # server error (a crash row's `일시 원인=예`); on any
   # other verb or kind it would be a marker the caller believes is recorded.
   # The stage kind is checked where the dispatch argv is known.
   if [ -n "$GATE_RECOVERY" ]; then
@@ -32967,7 +32968,7 @@ gate_review_recovery_refusal() {
   # re-dispatch marked `--recovery '전송 단절'` may not go, one sentence; nothing
   # when every premise holds. The marker only repeats an authorized dispatch
   # with the same arguments, so what it needs is proof the review died of a
-  # dropped connection before saving anything, and a count:
+  # dropped connection or a server error before saving anything, and a count:
   #   (가) the segment's last gate `review` stage-result row is a `크래시` with
   #        `일시 원인=예`;
   #   (나) the segment's last review dispatch row that recorded `리포트 경로`
@@ -57926,8 +57927,8 @@ gate_verb_act() {
   # and the approval row. `--recovery` is a review's marker only — on any other
   # dispatch it is out of range, exit 2. Its premises are the ledger's, and one
   # that fails is exit 3 with no row: the re-dispatch repeats an authorized
-  # dispatch, and only a review that died of a dropped connection with nothing
-  # saved may repeat it.
+  # dispatch, and only a review that died of a dropped connection or a server
+  # error with nothing saved may repeat it.
   #
   # The path rides on the row as a fixed field and is never clipped: a clipped
   # path would make the recovery's comparison silently wrong. So the fixed
@@ -59500,7 +59501,7 @@ gate_verb_act() {
       "근거=$(gate_row_safe "$rationale" 240)"
   else
     # A review dispatch carries its report path and, on a re-dispatch after a
-    # dropped connection, the recovery marker, both as fixed fields: `근거`
+    # dropped connection or a server error, the recovery marker, both as fixed fields: `근거`
     # takes what they leave, and the path is never clipped (its fit was
     # measured before any row). The declared trigger rides beside the path; a
     # `라우터 판단` trigger's reason opens `근거`, so the one clip below takes
@@ -66617,7 +66618,7 @@ gate_record_stage_outcome() {
     fi
   fi
   # `일시 원인` ON A CRASH ROW AND ON NO OTHER. Whether the crash was a dropped
-  # connection is the premise the router's `--recovery '전송 단절'` dispatch is
+  # connection or a server error (5xx, 529) is the premise the router's `--recovery '전송 단절'` dispatch is
   # admitted on, and the router cannot call the driver's reader; the row is
   # where it reads it. Judged only on a stream handed down by the caller, the
   # same rule the limit carve-out above keeps: only that one is the pinned
@@ -70432,7 +70433,7 @@ gate_shift_trace_unrecorded() {
     why="${why}; 교대 자신의 스트림이 한도 종료 형상이다"
   fi
   # `일시 원인` — whether the lost shift's own stream ended on a dropped
-  # connection, by the driver's one reader. The launcher reads this field to
+  # connection or a server error (5xx, 529), by the driver's one reader. The launcher reads this field to
   # decide on its probe, and the seat reads it on the snapshot's `handoff[]`;
   # neither re-reads the stream.
   local transient='아니오'
@@ -71219,8 +71220,8 @@ gate_launch_shift() {
     return "$GATE_EXIT_APPROVAL"
   fi
 
-  # A SHIFT LOST TO A DROPPED CONNECTION IS RELAUNCHED ONCE THE CONNECTION
-  # ANSWERS. When the last handoff is the gate's `무기록` row with
+  # A SHIFT LOST TO A DROPPED CONNECTION OR A SERVER ERROR IS RELAUNCHED ONCE
+  # THE CONNECTION ANSWERS. When the last handoff is the gate's `무기록` row with
   # `일시 원인=예`, the launch waits and probes first, up to three times; the
   # verdict is read from that row and the stream is not matched again. The
   # probe sits here, inside the launcher, because the launcher is already

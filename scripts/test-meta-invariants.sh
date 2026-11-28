@@ -1011,6 +1011,12 @@ done
 # broken stage, the session-started probe, the attempt cap, the reset-time
 # hold, the flag itself, and the continuation prompt — which must be one string
 # in both copies, since a slash command in its place restarts the skill.
+# A crash whose row reads `일시 원인=예` — a dropped connection or a server
+# error — qualifies too, on the shift's own turn as the evidence the connection
+# is back; that branch, its paragraph head and its rationale marker are pinned
+# with the rest, and the paragraph is compared byte for byte across the copies.
+# A review re-attachment carries the report path and trigger the gate requires
+# of every review dispatch; that paragraph is pinned the same way.
 # ---------------------------------------------------------------------------
 reattach_section() {
   awk '/^#### Re-attaching a cut stage$/ { f = 1; next } f && /^#+ / { exit } f' "$1"
@@ -1034,6 +1040,11 @@ for pair in "리드:$AP_ROUTER" "교대:$RS_CORPUS"; do
     'Four or more means the original and three re-attachments all ended cut' \
     'and only a cut adds to this count' \
     'A limit must have cleared first.' \
+    '`종단 부류=크래시` and `일시 원인=예`' \
+    '`일시 원인=예`**, whatever the stage kind' \
+    'A dropped connection or a server error must have come back first.' \
+    'A `review` stage is re-attached with the report path and trigger every review dispatch carries.' \
+    '연결 복귀 근거=교대 턴' \
     '--resume <세션 id>' \
     'never the slash command again' \
     '| 서수=<n> |' \
@@ -1053,6 +1064,52 @@ for pair in "리드:$AP_ROUTER" "교대:$RS_CORPUS"; do
   if [ -z "$reattach_prompt" ]; then reattach_prompt="$prompt"; else reattach_prompt_rs="$prompt"; fi
 done
 check "두 사본의 이어 가기 프롬프트가 바이트 동일하다" "$reattach_prompt_rs" "$reattach_prompt"
+
+# THE TRANSIENT-CRASH RE-ATTACHMENT, one paragraph in both copies: the shift's
+# own turn is the evidence a dropped connection or a server error came back.
+reattach_transient() {
+  reattach_section "$1" | grep -F -- '**A dropped connection or a server error must have come back first.**' || true
+}
+rt_lead=$(reattach_transient "$AP_ROUTER")
+rt_shift=$(reattach_transient "$RS_CORPUS")
+check "두 사본의 일시 원인 재부착 문단이 한 줄씩 있다" \
+  "$(printf '%s\n' "$rt_lead" | grep -c . || true)/$(printf '%s\n' "$rt_shift" | grep -c . || true)" "1/1"
+check "두 사본의 일시 원인 재부착 문단이 바이트 동일하다" "$rt_shift" "$rt_lead"
+# A REVIEW IS RE-ATTACHED WITH ITS REPORT PATH AND TRIGGER. The gate holds a
+# review `--resume` to the last dispatch's report path and a declared trigger,
+# so the fixed sentence alone is refused with exit 2 and never reaches the
+# crashed-review recovery either; the paragraph that adds both is one line in
+# both copies, byte for byte, and names the two flags it adds.
+reattach_review() {
+  reattach_section "$1" | grep -F -- '**A `review` stage is re-attached with the report path and trigger every review dispatch carries.**' || true
+}
+rr_lead=$(reattach_review "$AP_ROUTER")
+rr_shift=$(reattach_review "$RS_CORPUS")
+check "두 사본의 리뷰 재부착 문단이 한 줄씩 있다" \
+  "$(printf '%s\n' "$rr_lead" | grep -c . || true)/$(printf '%s\n' "$rr_shift" | grep -c . || true)" "1/1"
+check "두 사본의 리뷰 재부착 문단이 바이트 동일하다" "$rr_shift" "$rr_lead"
+check "리뷰 재부착 문단이 --trigger 와 --report-path 를 싣는다" \
+  "$(printf '%s\n' "$rr_lead" | grep -cF -- "--trigger '<토큰>'" || true)/$(printf '%s\n' "$rr_lead" | grep -cF -- ' --report-path <path>' || true)" "1/1"
+check "리뷰 재부착 문단이 거절 뒤 리뷰 크래시 복구로 넘긴다" \
+  "$(printf '%s\n' "$rr_lead" | grep -cF -- 'means this subsection declines the review: go on to 「Recovering a review stage that crashed」' || true)" "1"
+check "리뷰 재부착 문단이 라우터 판단 계기의 사유와 exit 3 거절을 다룬다" \
+  "$(printf '%s\n' "$rr_lead" | grep -cF -- "add \`--trigger-reason '<사유>'\` too" || true)/$(printf '%s\n' "$rr_lead" | grep -cF -- 'an exit `3` whose refusal text does not name 「파견 자리 대조」' || true)" "1/1"
+# The review recovery reads the same widened field, so both copies name both causes.
+for pair in "리드:$AP_ROUTER" "교대:$RS_CORPUS"; do
+  check "${pair%%:*} 사본의 리뷰 전송 단절 문단이 서버 오류까지 말한다" \
+    "$(grep -cF -- 'the review died of a dropped connection or a server error with nothing saved' "${pair#*:}" || true)" "1"
+done
+# A re-attached review keeps its session id and never re-stamps its witness
+# directory, so the crashed-review recovery compares the `.attempt` stamp with
+# every attempt of that session, one `-e` per attempt, in both copies.
+for pair in "리드:$AP_ROUTER" "교대:$RS_CORPUS"; do
+  check "${pair%%:*} 사본의 리뷰 크래시 복구가 같은 세션의 모든 시도로 위트니스를 찾는다" \
+    "$(grep -cF -- '**A re-attached review keeps its session and does not stamp again**' "${pair#*:}" || true)/$(grep -cF -- "grep -rlxF --include=.attempt -e '<segment>#<실행 버전 1>' [-e '<segment>#<실행 버전 2>' …]" "${pair#*:}" || true)" "1/1"
+  check "${pair%%:*} 사본의 리뷰 크래시 복구가 계정을 옮긴 세션의 재진입 카드 원 스테이지도 대조한다" \
+    "$(grep -cF -- 'kept its predecessor'"'"'s witness directory, so also check, with `ls` through the gate, whether' "${pair#*:}" || true)" "1"
+done
+check "리뷰 재부착 문단이 거절 뒤 복구가 재개 세션의 모든 시도를 대조한다고 적는다" \
+  "$(printf '%s\n' "$rr_lead" | grep -cF -- 'whose item 3 compares the witness stamp with every attempt of the re-attached session, not with the last attempt alone.' || true)" "1"
 
 # THE DELEGATED RE-ATTACHMENT, one paragraph in both copies: when none of the
 # three signs that a limit cleared holds, a cut on an inventory account is

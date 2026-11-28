@@ -10535,9 +10535,12 @@ stage_limit_exit() {
 
 stage_transient_exit() {
   # stage_transient_exit <stream>
-  # Whether one attempt's own stream shows it died of a dropped connection.
-  #   exit 0  the terminal object's text names a connection error, the stream is
-  #           not a limit death, and that object's api_error_status is not 429
+  # Whether one attempt's own stream shows it died of a dropped connection or a
+  # server error (5xx, 529 among them).
+  #   exit 0  the stream is not a limit death, that object's api_error_status is
+  #           not 429, and either the terminal object's api_error_status is
+  #           500–599 (a number or a numeric string alike) or its text names a
+  #           connection error
   #   exit 1  anything else, and every failure (no argument, no or empty file,
   #           no jq, a jq error)
   # THE TERMINAL OBJECT ONLY: the last top-level `result` (its `.result`) or
@@ -10550,6 +10553,12 @@ stage_transient_exit() {
   # A LIMIT DEATH IS NOT TRANSIENT. It has a reset time to wait for, and the
   # limit path is the one that waits for it; a 429 is the same, whatever the
   # rest of its shape.
+  #
+  # A SERVER ERROR IS READ BY ITS STATUS, NOT ITS TEXT. The terminal object of
+  # a stage that died of an API 500 carries `"api_error_status":500`; the text
+  # around it ("usually temporary") is wording that can change without notice.
+  # The status is compared as a string, as the 429 check is, so a serialization
+  # that writes it as "503" is read the same.
   #
   # THE DRIVER AND THE GATE ARE ITS ONLY CALLERS. Each writes the verdict as the
   # row field `일시 원인=예|아니오`, and the router and the seat read that field.
@@ -10564,6 +10573,7 @@ stage_transient_exit() {
       | if ($p | type) == "object" and ($p.type == "result" or $p.type == "error") then $p else . end)
     | if . == null then "-"
       elif (.api_error_status | tostring) == "429" then "-"
+      elif ((.api_error_status | tostring) | test("^5[0-9][0-9]$")) then "="
       else
         ([.result, .error, .message] | map(txt) | join(" ")) as $t
         | if any(["ENOTFOUND", "EAI_AGAIN", "ECONNRESET", "ETIMEDOUT", "ECONNREFUSED",
@@ -13467,7 +13477,8 @@ review_recover() {
   # below — the no-directory case would take the cannot-name park carrying the
   # wrong reason, and the Step-4 verdict would be unreachable.
   [ -z "$dirs" ] || n=$(printf '%s\n' "$dirs" | grep -c .)
-  # A REVIEW THAT DIED OF A DROPPED CONNECTION BEFORE SAVING ANYTHING is sent
+  # A REVIEW THAT DIED OF A DROPPED CONNECTION OR A SERVER ERROR (5xx, 529)
+  # BEFORE SAVING ANYTHING is sent
   # again rather than parked: a crash whose S5 row reads `일시 원인=예`, no
   # report at `rp` and no witness directory for the attempt. The bound is this
   # driver's own S5 rows with that field after the segment's last `cycle` row —
@@ -14245,7 +14256,8 @@ segment_cycle() {
           park "$seg" cone 무효화 "게이트 park" "$CONTINUE_PARK_REASON" "${CONTINUE_PARK_RECALL:-(없음)}"; return 1
         fi
       elif [ "$class" != "정상 완료" ]; then
-        # 2 is the dropped-connection re-dispatch: the same cycle, the same
+        # 2 is the re-dispatch after a dropped connection or a server error
+        # (the row's `일시 원인=예`): the same cycle, the same
         # report path and the same line, as a fresh dispatch rather than a
         # `--resume`. It is not `redo` — that one moves to a report path of its
         # own — and the same-signature stop is not on this path at all.
