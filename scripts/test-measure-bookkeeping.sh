@@ -221,6 +221,71 @@ check "합계는 분류된 종류만 더한다" "$(j .total.bookkeeping_execs)" 
 check "합계의 구성원 다이제스트 거부" "$(j .total.member_digest_refusals)" "1"
 check "요청 없는 종류의 비율은 null" "$(j .kinds.design.exec_ratio_pct)" "null"
 
+# ---- per-stage columns in the baseline bookkeeping set -------------------------
+# The audit stages here use no doc-tidy stamp or keep-reports, so the baseline
+# set counts what the current set counts: lead 6, members 2, over 2 stages.
+check "기준 집합 리드 부기 exec (stamp·keep-reports 가 없으면 지금 집합과 같다)" "$(j .kinds.audit.base_bookkeeping_execs)" "6"
+check "기준 집합 스테이지당 리드 부기" "$(j '.kinds.audit.base_execs_per_stage == 3')" "true"
+check "기준 집합 스테이지당 구성원 부기" "$(j '.kinds.audit.base_member_execs_per_stage == 1')" "true"
+check "스테이지당 리드 다이제스트 거부" "$(j .kinds.audit.digest_refusals_per_stage)" "0.5"
+check "스테이지당 구성원 다이제스트 거부" "$(j .kinds.audit.member_digest_refusals_per_stage)" "0.5"
+check "스테이지 없는 종류의 스테이지당 새 열은 null" \
+  "$(j '.kinds.design | [.base_execs_per_stage, .base_member_execs_per_stage, .digest_refusals_per_stage, .member_digest_refusals_per_stage] | map(tostring) | join(",")')" "null,null,null,null"
+check "합계의 기준 집합 리드 부기 exec" "$(j .total.base_bookkeeping_execs)" "8"
+
+# ---- shared definitions, loaded by path ------------------------------------------
+# A replay loads the script by path and must get the same sets, stage kinds and
+# per-stage denominator the script itself counts with.
+cat > "$tmp/load.py" <<'PY'
+import importlib.util, json, os, sys
+
+spec = importlib.util.spec_from_file_location("measure_bookkeeping", sys.argv[1])
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+root = sys.argv[2]
+out = {
+    "base_verbs": sorted(m.BASE_DOC_TIDY_VERBS),
+    "stamp": list(m.inner_key(["/p/orchestrator/doc-tidy.py", "stamp", "x.md"])),
+    "checkout": list(m.inner_key(["/p/orchestrator/doc-tidy.py", "checkout", "x.md"])),
+    "shasum": list(m.inner_key(["/usr/bin/shasum", "-a", "256"])),
+    "mkdir": list(m.inner_key(["mkdir", "-p", "x"])),
+    "two_kinds": m.kind_of({"s": [("audit", "A1", "1"), ("reconverge", "A1", "2")]}, "s", "A1", "2"),
+    "per_stage_empty": m.per_stage(3, 0),
+}
+stages, base, base_member = {}, {}, {}
+for name in sorted(os.listdir(root)):
+    run = os.path.join(root, name)
+    if not (os.path.isfile(os.path.join(run, "ledger-path")) and os.path.isdir(os.path.join(run, "log"))):
+        continue
+    for _, _, path, _, kind in m.stage_logs(run):
+        if kind is None:
+            continue
+        _, c = m.read_log(path)
+        stages[kind] = stages.get(kind, 0) + 1
+        base[kind] = base.get(kind, 0) + c["base_bookkeeping_execs"]
+        base_member[kind] = base_member.get(kind, 0) + c["base_member_bookkeeping"]
+out["kinds"] = {k: {"stages": stages[k], "base_execs_per_stage": m.per_stage(base[k], stages[k]),
+                    "base_member_execs_per_stage": m.per_stage(base_member[k], stages[k])} for k in stages}
+print(json.dumps(out, ensure_ascii=False))
+PY
+loaded=$(python3 -B "$tmp/load.py" "$measure" "$R"); rc=$?
+check "경로로 불러 쓴다: rc 0" "$rc" "0"
+l() { jq -r "$1" <<< "$loaded"; }
+check "불러 쓴 기준 doc-tidy 하위 명령은 checkout·publish 뿐" "$(l '.base_verbs | join(",")')" "checkout,publish"
+check "불러 쓴 분류: doc-tidy stamp 는 지금 집합에만 든다" "$(l '.stamp | map(tostring) | join(",")')" "doc-tidy.py stamp,true,false"
+check "불러 쓴 분류: doc-tidy checkout 은 두 집합에 든다" "$(l '.checkout | map(tostring) | join(",")')" "doc-tidy.py checkout,true,true"
+check "불러 쓴 분류: shasum 은 경로를 떼고 두 집합에 든다" "$(l '.shasum | map(tostring) | join(",")')" "shasum,true,true"
+check "불러 쓴 분류: mkdir 은 어느 집합에도 없다" "$(l '.mkdir | map(tostring) | join(",")')" "mkdir,false,false"
+check "불러 쓴 종류 잇는 규칙: 두 종류면 스테이지·실행 버전으로 가른다" "$(l .two_kinds)" "reconverge"
+check "불러 쓴 분모: 스테이지가 없으면 null" "$(l .per_stage_empty)" "null"
+for kind in audit reconverge; do
+  check "불러 쓴 분모가 스크립트의 $kind 스테이지 수와 같다" "$(l ".kinds.$kind.stages")" "$(j ".kinds.$kind.stages")"
+  check "불러 쓴 정의로 셈한 $kind 기준 집합 스테이지당 리드 부기가 스크립트와 같다" \
+    "$(l ".kinds.$kind.base_execs_per_stage")" "$(j ".kinds.$kind.base_execs_per_stage")"
+  check "불러 쓴 정의로 셈한 $kind 기준 집합 스테이지당 구성원 부기가 스크립트와 같다" \
+    "$(l ".kinds.$kind.base_member_execs_per_stage")" "$(j ".kinds.$kind.base_member_execs_per_stage")"
+done
+
 # ---- breakdown by inner command ----------------------------------------------
 check "분해: 부기 밖 mkdir 도 구성원 몫으로 나온다" "$(j '.kinds.audit.by_command.mkdir | [.bookkeeping, .lead, .member] | @csv')" "false,0,2"
 check "분해: 구성원 스테이지당 mkdir" "$(j '.kinds.audit.by_command.mkdir.member_per_stage == 1')" "true"
@@ -312,6 +377,14 @@ check "새 절차: 분해 정렬은 리드+구성원 합 내림차순" \
   "$(j '.kinds.audit.by_command | keys_unsorted | .[0:3] | join(",")')" "shasum,openssl,doc-tidy.py stamp"
 check "새 절차: 부기 키의 리드 합이 부기 exec 와 같다" \
   "$(j '[.total.by_command[] | select(.bookkeeping) | .lead] | add')" "$(j .total.bookkeeping_execs)"
+# Each new audit stage makes two doc-tidy stamp calls and one keep-reports
+# call, which the baseline set leaves out: lead 23 - 6 = 17 over 2 stages.
+check "새 절차: 기준 집합은 stamp·keep-reports 를 뺀다 (리드 23 - 6)" "$(j .kinds.audit.base_bookkeeping_execs)" "17"
+check "새 절차: 기준 집합 스테이지당 리드 부기" "$(j .kinds.audit.base_execs_per_stage)" "8.5"
+check "새 절차: 지금 집합의 기존 열은 그대로" "$(j .kinds.audit.execs_per_stage)" "11.5"
+check "새 절차: 기준 집합 스테이지당 구성원 부기" "$(j '.kinds.audit.base_member_execs_per_stage == 1')" "true"
+check "새 절차: 거부가 없으면 스테이지당 거부는 0" \
+  "$(j '[.kinds.audit.digest_refusals_per_stage, .kinds.audit.member_digest_refusals_per_stage] | map(. == 0) | all')" "true"
 out=$(python3 -B "$measure" --runs-root "$R2" --json); rc=$?
 check "판 필터 없이: 옛 절차 스테이지가 cp 를 싣는다" "$(j '.kinds.audit.by_command.cp.lead')" "4"
 check "판 필터 없이: 감사 부기 exec 는 옛 절차 22 를 더한다" "$(j .kinds.audit.bookkeeping_execs)" "45"
@@ -319,6 +392,14 @@ out=$(python3 -B "$measure" --runs-root "$R2" --min-plugin-version 3.50.0); rc=$
 case "$out" in
   *"종류 | 안쪽 명령 | 부기 | 리드 | 구성원"*"audit | openssl | 예 | 6 | 0 | 3.0 | 0.0"*) pass "새 절차 표에 분해 표 머리와 감사 행이 있다" ;;
   *) fail "새 절차 표에 분해 표 머리와 감사 행이 있다 — $out" ;;
+esac
+case "$out" in
+  *"| 기준 집합 스테이지당 리드 부기 | 기준 집합 스테이지당 구성원 부기 | 스테이지당 리드 다이제스트 거부 | 스테이지당 구성원 다이제스트 거부"*) pass "주 표 머리에 스테이지당 새 열 넷" ;;
+  *) fail "주 표 머리에 스테이지당 새 열 넷 — $out" ;;
+esac
+case "$out" in
+  *"audit | 2 | "*"| 8.50 | 1.00 | 0.00 | 0.00"*) pass "새 절차 표의 감사 행 끝에 스테이지당 새 열" ;;
+  *) fail "새 절차 표의 감사 행 끝에 스테이지당 새 열 — $out" ;;
 esac
 check "스테이지가 0 인 종류는 분해 표에 싣지 않는다" \
   "$(printf '%s\n' "$out" | sed -n '/^종류 | 안쪽 명령/,$p' | grep -c '^design | ')" "0"
