@@ -110,7 +110,10 @@
 #   CHECK_PUSH_FAIL_FAST    1 stops the job pool at its first failure, 0 runs
 #                           every job to its end. Unset or empty, an
 #                           unattended run is 1 and any other run 0; items
-#                           is always 0
+#                           is always 0. An unattended run with 1 and a
+#                           budget only stops starting jobs at the first
+#                           failure: the running ones end and keep their
+#                           pass records, and the budget still cuts them
 #   CC_CHECK_PUSH_STOP_GRACE  seconds a stopped job gets between TERM and
 #                           KILL (default 60)
 #   CC_CHECK_PUSH_MAKE      the make for lint, readme and check-cheap (default
@@ -841,9 +844,12 @@ check_push_run() {
   done
 
   # The job pool stops at the deadline and, with fail-fast, at its first
-  # failure. The CHECK_PUSH_JOBS=1 path runs the sections in one test-gate
-  # call and the goals in one make, with no record a later attempt could
-  # reuse, so the budget does not reach it.
+  # failure. An unattended run with a deadline drains instead of stopping at
+  # that failure: no job starts, the running ones end and keep their pass
+  # records, and the deadline still cuts them. Interactive fail-fast and a run
+  # with the budget off stop the running jobs. The CHECK_PUSH_JOBS=1 path runs
+  # the sections in one test-gate call and the goals in one make, with no
+  # record a later attempt could reuse, so neither reaches it.
   if [ -z "$stage" ] && [ -z "$cutstep" ]; then
     TT_FAIL_FAST="$ff"
     if [ "$TT_JOBS" -gt 1 ]; then
@@ -853,6 +859,11 @@ check_push_run() {
       if [ -n "$deadline" ] && { [ -n "$TT_SECTIONS" ] || [ -n "$TT_GOALS" ]; }; then
         printf 'check-push: 경고 — CHECK_PUSH_JOBS=1 의 직렬 경로는 통과 기록이 없어 시간 예산 %s초를 절·목표에 적용하지 않는다\n' "$budget" >&2
       fi
+    fi
+    if [ -n "${CC_PIPELINE_RUN_ID:-}" ] && [ "$verb" = run ] && [ "$ff" = 1 ] && [ -n "$TT_DEADLINE" ]; then
+      TT_FAIL_DRAIN=1
+    else
+      TT_FAIL_DRAIN=0
     fi
     tt_run_items "$TT_SECTIONS" "$TT_GOALS"
     prc=$?
@@ -2020,22 +2031,52 @@ check-push: CHECK_PUSH_JOBS=1 의 실패 단계는 목록 전체를 이름 댄�
   check "F42 조상이 아닌 기록 베이스: 새 베이스, base출처=FETCH_HEAD, 시도 1" "$rc $(cur_field base) $(cur_field base출처) $(cur_field 시도)" "0 $sm4 FETCH_HEAD 1"
   has "F42 조상이 아닌 기록 베이스: 잇지 않는 까닭" "$out" "가 방금 fetch 한 베이스 $sm4 의 조상이 아니다"
 
-  # Unattended early stop: g1 fails at once while g2 sleeps; the run ends 1
-  # long before g2 would, names g1 alone and g2 as unfinished.
+  # Unattended early stop drains: g1 fails at once, g2 sleeps a few seconds
+  # and passes, and g3 waits behind the two jobs at a time and never starts.
+  # The run ends 1 after g2 ends, keeps g2's pass record and names g3 alone as
+  # unfinished; the next attempt, with g1 fixed, reuses g2. The commit changes
+  # goals.txt, which g1 reads, so no earlier record of g1 holds, and g2 reads
+  # b.txt so its pass leaves a record.
+  rw goals.txt 'g1\ng2\ng3\n'
+  printf 'b.txt\n' > "$T/reads-g2"
   : > "$T/fail-g1"
-  printf 'sleep 30\n' > "$T/run-g2"
+  printf 'sleep 3\n' > "$T/run-g2"
   fh_line "$sm4"
-  t0=$(date +%s)
-  out=$(cprun CC_PIPELINE_RUN_ID=t CHECK_PUSH_JOBS=2 CC_CHECK_PUSH_STOP_GRACE=2 CHECK_PUSH_GOALS=g1,g2); rc=$?
-  el=$(( $(date +%s) - t0 ))
+  out=$(cprun CC_PIPELINE_RUN_ID=t CHECK_PUSH_REUSE=1 CHECK_PUSH_JOBS=2 CC_CHECK_PUSH_STOP_GRACE=2 CHECK_PUSH_GOALS=g1,g2,g3); rc=$?
   check "F42 무인 조기 종료: 종료 코드 1" "$rc" "1"
-  if [ "$el" -lt 25 ]; then ok "F42 무인 조기 종료: 느린 목표를 기다리지 않는다"; else bad "F42 무인 조기 종료: 느린 목표를 기다리지 않는다" "${el}초"; fi
-  has "F42 무인 조기 종료: 끝나지 않은 항목 줄" "$out" "check-push: 끝나지 않은 항목 — g2"
+  has "F42 무인 조기 종료: 도는 목표는 끝까지 돌아 끝 줄을 남긴다" "$out" "check-push: 끝 — 목표 g2 rc=0"
+  has "F42 무인 조기 종료: 드레인 멈춤 줄" "$out" "check-push: 멈춤 — 실패 확정 · 새 잡을 시작하지 않고 도는 잡 1개는 끝까지 돌려 기록한다"
+  has "F42 무인 조기 종료: 시작하지 않은 목표만 끝나지 않은 항목" "$out" "check-push: 끝나지 않은 항목 — g3"
   has "F42 무인 조기 종료: 실패한 항목만 단계에 든다" "$out" "check-push: 합친 트리 실패 — base=$sm4 단계=목표=g1"
   case "$out" in
     *"check-push: 실패 확정 — 목표 g1 rc=1"*"검사 실패 — 도장을 찍지 않는다"*) ok "F42 무인 조기 종료: 실패 확정 줄이 마지막 판정 줄보다 앞" ;;
     *) bad "F42 무인 조기 종료: 실패 확정 줄이 마지막 판정 줄보다 앞" "$out" ;;
   esac
+  rm -f "$T/fail-g1"
+  fh_line "$sm4"
+  : > "$T/order.log"
+  out=$(cprun CC_PIPELINE_RUN_ID=t CHECK_PUSH_REUSE=1 CHECK_PUSH_JOBS=2 CHECK_PUSH_GOALS=g1,g2,g3); rc=$?
+  check "F42 무인 조기 종료 뒤 고친 시도: 통과하고 드레인이 남긴 g2 를 다시 돌리지 않는다" \
+    "$rc $(grep -c '^make:--no-print-directory g2$' "$T/order.log")" "0 $(ve 0 1)"
+  has "F42 무인 조기 종료 뒤 고친 시도: g2 의 재사용 줄" "$out" "$(ve 'check-push: 재사용 make:g2 ← ' 'check-push: 통과')"
+  # Interactive fail-fast named 1 still stops the running job, and so does an
+  # unattended run with the budget off, which has no deadline to bound a drain.
+  : > "$T/fail-g1"
+  printf 'sleep 30\n' > "$T/run-g2"
+  for p in "대화형 CHECK_PUSH_FAIL_FAST=1" "무인 CHECK_PUSH_BUDGET_SECS=0"; do
+    fh_line "$sm4"
+    t0=$(date +%s)
+    case "$p" in
+      대화형*) out=$(cprun CHECK_PUSH_FAIL_FAST=1 CHECK_PUSH_JOBS=2 CC_CHECK_PUSH_STOP_GRACE=2 CHECK_PUSH_GOALS=g1,g2,g3); rc=$? ;;
+      *) out=$(cprun CC_PIPELINE_RUN_ID=t CHECK_PUSH_BUDGET_SECS=0 CHECK_PUSH_JOBS=2 CC_CHECK_PUSH_STOP_GRACE=2 CHECK_PUSH_GOALS=g1,g2,g3); rc=$? ;;
+    esac
+    el=$(( $(date +%s) - t0 ))
+    check "F42 $p: 종료 코드 1" "$rc" "1"
+    if [ "$el" -lt 25 ]; then ok "F42 $p: 느린 목표를 기다리지 않는다"; else bad "F42 $p: 느린 목표를 기다리지 않는다" "${el}초"; fi
+    has "F42 $p: 도는 잡을 끊는다" "$out" "check-push: 멈춤 — 실패 확정 · 새 잡을 시작하지 않고 도는 잡 1개를 끊는다"
+    has "F42 $p: 끊긴 목표와 시작하지 않은 목표가 끝나지 않은 항목" "$out" "check-push: 끝나지 않은 항목 — g2,g3"
+  done
+  rm -f "$T/reads-g2"
   # Interactive runs every job to its end, and says the failure first.
   printf 'sleep 3\n' > "$T/run-g2"
   out=$(cprun CHECK_PUSH_JOBS=2 CHECK_PUSH_GOALS=g1,g2); rc=$?
@@ -2193,8 +2234,8 @@ check-push: CHECK_PUSH_JOBS=1 의 실패 단계는 목록 전체를 이름 댄�
   check "F45 유도가 판정불가면 변경 목록이 비고 로컬에서 돈다" "$out" "이연 판정불가[] 로컬"
   (cd "$W" && sgit checkout -q h) > /dev/null 2>&1
 
-  # The list this repository carries: every goal is a REST goal and every
-  # direct target is in the tree.
+  # The list this repository carries: every goal is a REST goal, every direct
+  # target is in the tree, and the two heaviest goals are on it.
   local root45 rg45 rows45=0 miss45="" k45 v45t t45
   root45=$(cd "$(dirname "$self")/.." && pwd)
   rg45=$(cd "$root45" && MAKEFLAGS='' MFLAGS='' MAKELEVEL='' make -s --no-print-directory print-rest-goals 2>/dev/null)
@@ -2211,6 +2252,27 @@ check-push: CHECK_PUSH_JOBS=1 의 실패 단계는 목록 전체를 이름 댄�
     done
   done < "$root45/$CP_CI_LIST"
   check "F45 이 저장소의 목록: 목표가 모두 REST 목표이고 직접 대상이 트리에 있다" "$([ "$rows45" -gt 0 ] && echo 있음)|$miss45" "있음|"
+  local tr45="run/plugins/cc-cmds/orchestrator/test-run.sh" ss45="run/scripts/test-stage-supervisor.sh"
+  check "F45 이 저장소의 목록: test-run.sh 와 test-stage-supervisor.sh 의 줄과 직접 대상" \
+    "$(awk -F '\t' -v a="$tr45" -v b="$ss45" '($1 == a && $2 == "plugins/cc-cmds/orchestrator/run.sh plugins/cc-cmds/orchestrator/liveness.sh") || ($1 == b && $2 == "plugins/cc-cmds/orchestrator/stage-wrapper.sh plugins/cc-cmds/orchestrator/run.sh plugins/cc-cmds/orchestrator/liveness.sh") { n++ } END { print n + 0 }' "$root45/$CP_CI_LIST")" "2"
+  # The judgement on this repository's list: a change to gate.sh alone leaves
+  # both goals to CI, a change to run.sh runs them here. The rest of the input
+  # is the F45 fixture's: the unattended mark, the derived list, and lint.yml
+  # of branch v, whose paths match what branch v1 changed against v.
+  mkdir -p "$T/real45/scripts" "$T/real45/.github/workflows"
+  cp "$root45/$CP_CI_LIST" "$T/real45/$CP_CI_LIST"
+  (cd "$W" && git show v:.github/workflows/lint.yml) > "$T/real45/.github/workflows/lint.yml" 2>/dev/null
+  out=$(
+    cd "$W" || exit 1
+    TT_WORK="$T/real45" CC_PIPELINE_RUN_ID=t CP_DERIVED="$tr45,$ss45"
+    for g in "$tr45" "$ss45"; do
+      for p in plugins/cc-cmds/orchestrator/gate.sh plugins/cc-cmds/orchestrator/run.sh; do
+        CP_CHANGED_LIST="$p"
+        if check_push_ci_defers "$g" "" "$sv" v1; then printf 'CI '; else printf '로컬 '; fi
+      done
+    done
+  )
+  check "F45 이 저장소의 목록: 두 목표는 gate.sh 만 바꾼 변경에서 CI 몫, run.sh 를 바꾼 변경에서 로컬" "$out" "CI 로컬 CI 로컬 "
 
   # --- F46 지난 실패 기록은 부른 워크트리의 것이다 ------------------------------------------
   local lf46="$W/.git/cc-cmds-last-failed.tsv" wt46="$T/wt46" lw46
@@ -2246,8 +2308,8 @@ check-push: CHECK_PUSH_JOBS=1 의 실패 단계는 목록 전체를 이름 댄�
   rm -rf "$T"
   printf 'check-push self-test: %d passed, %d failed\n' "$passed" "$failed"
   # A floor on the count, so a refactor that silently skips cases cannot pass.
-  if [ "$passed" -lt 297 ]; then
-    printf 'check-push self-test: 통과 수 %d 가 하한 297 에 못 미칩니다\n' "$passed" >&2
+  if [ "$passed" -lt 310 ]; then
+    printf 'check-push self-test: 통과 수 %d 가 하한 310 에 못 미칩니다\n' "$passed" >&2
     return 1
   fi
   [ "$failed" = "0" ]

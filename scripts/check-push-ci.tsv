@@ -12,8 +12,14 @@
 # neither the goal's entry script, nor one of its direct targets, nor this
 # file. Anything that cannot be decided runs the goal locally.
 #
-# A goal that fails in CI is taken out of this list.
+# When a goal this list leaves to CI fails in CI, the pull request that fixes
+# the failure adds the changed files that caused it to the goal's direct
+# targets. plugins/cc-cmds/orchestrator/gate.sh and
+# plugins/cc-cmds/skills/_common/stage-policy.md are never added: every heavy
+# goal reads them, and gate.sh changes run test-gate sections locally anyway.
 run/scripts/test-rekick.sh	plugins/cc-cmds/orchestrator/rekick.sh plugins/cc-cmds/orchestrator/kickoff-defaults.sh scripts/run-fixture.sh
 run/scripts/test-solo-audit-experiment.sh	scripts/solo-audit-experiment.sh scripts/solo-audit-compare.sh tests/fixtures/solo-audit-experiment/
 run/scripts/test-reader-model-pair-audit.sh	scripts/reader-model-pair-audit.sh
 run/scripts/test-suite-isolation.sh	plugins/cc-cmds/orchestrator/test-run.sh plugins/cc-cmds/hooks/gate-pretool.sh
+run/plugins/cc-cmds/orchestrator/test-run.sh	plugins/cc-cmds/orchestrator/run.sh plugins/cc-cmds/orchestrator/liveness.sh
+run/scripts/test-stage-supervisor.sh	plugins/cc-cmds/orchestrator/stage-wrapper.sh plugins/cc-cmds/orchestrator/run.sh plugins/cc-cmds/orchestrator/liveness.sh
