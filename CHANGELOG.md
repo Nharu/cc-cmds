@@ -5,6 +5,15 @@ All notable changes to cc-cmds are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.70.5] - 2026-11-28
+
+무인 런의 스테이지 다이제스트 창이 런 밖에 닿는 쓰기를 일상 행으로 넘기지 않게 하고, 팀 구성원의 증인 게시 도우미가 자기 등급이 기대는 위치 전제를 스스로 확인하게 했습니다.
+
+### Fixed
+
+- **스테이지 창의 일상 행** — 스테이지의 `트리밖쓰기` exec 행은 이제 `도달=런로컬` 일 때만 일상 행으로 세지 않고 지나갑니다. `도달` 이 `prod`·`기기전역`·`미상` 등인 `트리밖쓰기` 행은 그 밖의 행으로 세어, 런 밖의 쓰기가 사이에 끼면 옛 다이제스트가 여덟 행 창 안에서만 통과합니다.
+- **게시 도우미의 위치 확인** — `cc-team-witness-publish.sh` 가 증인 디렉터리를 물리 경로로 접어, 그 부모가 `CC_PIPELINE_RUN_DIR` 나 `${XDG_STATE_HOME:-$HOME/.local/state}/cc-cmds/design` 이 아니면 「어긋난 이름」으로 아무것도 바꾸지 않고 끝납니다. 심볼릭 링크로 가리킨 루트는 맞고, 루트 밖을 가리키는 링크 디렉터리와 절대 경로가 아닌 `XDG_STATE_HOME` 은 맞지 않습니다.
+
 ## [3.70.4] - 2026-11-28
 
 autopilot 좌석이 마감·비용 천장·무진전으로 끝난 런의 후속 런을 여는 판단을 아직 도는 프로세스가 끝난 뒤로 미루고, 원천 런에 남은 열린 승인과 답 없는 중단 기록을 금지 사유가 아니라 사람에게 묻는 대기 질문으로 다룹니다.
